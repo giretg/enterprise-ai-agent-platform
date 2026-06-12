@@ -17,6 +17,65 @@ export interface Agent {
   version: string
 }
 
+export interface MemoryVersion {
+  id: string
+  version: string
+  label: string
+  content: string
+  createdAt: string
+  isActive: boolean
+}
+
+export interface AgentResource {
+  id: string
+  type: 'policy' | 'secret' | 'file' | 'connector' | 'tool'
+  name: string
+  scope: string
+  version: string
+}
+
+export interface AgentTool {
+  id: string
+  name: string
+  description: string
+  scope: string
+}
+
+export interface ModelConfig {
+  provider: string
+  model: string
+  temperature: number
+  maxTokens: number
+  guardrails: string[]
+}
+
+export interface AgentDetail {
+  id: string
+  name: string
+  role: string
+  status: Agent['status']
+  version: string
+  lifecycle: string
+  serviceAccount: string
+  apiKeyPreview: string
+  systemPrompt: string
+  memoryVersions: MemoryVersion[]
+  activeMemoryVersionId: string
+  resources: AgentResource[]
+  tools: AgentTool[]
+  modelConfig: ModelConfig
+  permissions: string[]
+}
+
+export interface TrainingDiff {
+  summary: string
+  before: string
+  after: string
+  evalGatePassed: boolean
+  writeGateToken: string
+  approvalChain: string[]
+}
+
 export interface InvoiceProposal {
   id: string
   supplier: string
@@ -46,6 +105,7 @@ export interface Ticket {
   agentVersion?: string
   model?: string
   proposal?: InvoiceProposal
+  trainingDiff?: TrainingDiff
   createdAt: string
   updatedAt: string
 }

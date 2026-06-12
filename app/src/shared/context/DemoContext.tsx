@@ -7,15 +7,18 @@ import {
   type ReactNode,
 } from 'react'
 import {
-  agents,
   dashboardStats,
   demoProposalTemplate,
+  initialAgentDetails,
   initialAuditLog,
   initialTickets,
 } from '../mock-data'
 import type {
+  Agent,
+  AgentDetail,
   AuditEntry,
   InvoiceProposal,
+  MemoryVersion,
   ProcessingJob,
   Ticket,
   TicketStatus,
@@ -25,7 +28,8 @@ interface DemoContextValue {
   tickets: Ticket[]
   auditLog: AuditEntry[]
   stats: typeof dashboardStats
-  agents: typeof agents
+  agents: Agent[]
+  agentDetails: Record<string, AgentDetail>
   processingJobs: ProcessingJob[]
   currentProposal: InvoiceProposal | null
   uploadInvoice: (fileName: string) => string
@@ -33,7 +37,10 @@ interface DemoContextValue {
   sendForApproval: (proposal: InvoiceProposal) => string
   approveTicket: (ticketId: string) => void
   rejectTicket: (ticketId: string) => void
+  approveTrainingTicket: (ticketId: string) => void
+  rollbackMemory: (agentId: string, memoryVersionId: string) => void
   getTicket: (ticketId: string) => Ticket | undefined
+  getAgentDetail: (agentId: string) => AgentDetail | undefined
   moveTicket: (ticketId: string, status: TicketStatus) => void
 }
 
@@ -61,6 +68,8 @@ function nowIso(): string {
 export function DemoProvider({ children }: { children: ReactNode }) {
   const [tickets, setTickets] = useState<Ticket[]>(initialTickets)
   const [auditLog, setAuditLog] = useState<AuditEntry[]>(initialAuditLog)
+  const [agentDetails, setAgentDetails] =
+    useState<Record<string, AgentDetail>>(initialAgentDetails)
   const [processingJobs, setProcessingJobs] = useState<ProcessingJob[]>([])
   const [currentProposal, setCurrentProposal] = useState<InvoiceProposal | null>(
     null,
@@ -213,19 +222,138 @@ export function DemoProvider({ children }: { children: ReactNode }) {
     [appendAudit, moveTicket],
   )
 
+  const approveTrainingTicket = useCallback(
+    (ticketId: string) => {
+      const ticket = tickets.find((t) => t.id === ticketId)
+      if (!ticket?.trainingDiff || !ticket.agentId) return
+
+      const agentId = ticket.agentId
+      const newMemId = nextId('mem-bk')
+      const newVersion = '2.2.0'
+
+      setAgentDetails((prev) => {
+        const agent = prev[agentId]
+        if (!agent) return prev
+
+        const newMemory: MemoryVersion = {
+          id: newMemId,
+          version: newVersion,
+          label: 'Éles — jóváhagyott tanítás',
+          content: agent.memoryVersions
+            .find((m) => m.isActive)
+            ?.content.replace(
+              ticket.trainingDiff!.before,
+              ticket.trainingDiff!.after,
+            ) ?? ticket.trainingDiff!.after,
+          createdAt: nowIso(),
+          isActive: true,
+        }
+
+        return {
+          ...prev,
+          [agentId]: {
+            ...agent,
+            version: newVersion,
+            memoryVersions: [
+              newMemory,
+              ...agent.memoryVersions.map((m) => ({ ...m, isActive: false })),
+            ],
+            activeMemoryVersionId: newMemId,
+          },
+        }
+      })
+
+      moveTicket(ticketId, 'done')
+      appendAudit({
+        actor: 'Kovács Anna',
+        actorType: 'human',
+        action: 'memory.promoted',
+        resource: `${agentId} → mem v${newVersion}`,
+        agentVersion: newVersion,
+      })
+      appendAudit({
+        actor: 'system',
+        actorType: 'system',
+        action: 'write_gate.consumed',
+        resource: ticket.trainingDiff.writeGateToken,
+        agentVersion: newVersion,
+      })
+    },
+    [appendAudit, moveTicket, tickets],
+  )
+
+  const rollbackMemory = useCallback(
+    (agentId: string, memoryVersionId: string) => {
+      setAgentDetails((prev) => {
+        const agent = prev[agentId]
+        if (!agent) return prev
+
+        const target = agent.memoryVersions.find((m) => m.id === memoryVersionId)
+        if (!target || target.isActive) return prev
+
+        return {
+          ...prev,
+          [agentId]: {
+            ...agent,
+            version: target.version,
+            activeMemoryVersionId: memoryVersionId,
+            memoryVersions: agent.memoryVersions.map((m) => ({
+              ...m,
+              isActive: m.id === memoryVersionId,
+              label:
+                m.id === memoryVersionId
+                  ? 'Éles — rollback után'
+                  : m.label.replace(' — jelenlegi', '').replace(' — rollback után', ''),
+            })),
+          },
+        }
+      })
+
+      appendAudit({
+        actor: 'Kovács Anna',
+        actorType: 'human',
+        action: 'memory.rollback',
+        resource: `${agentId} → ${memoryVersionId}`,
+      })
+    },
+    [appendAudit],
+  )
+
   const getTicket = useCallback(
     (ticketId: string) => tickets.find((t) => t.id === ticketId),
     [tickets],
   )
 
+  const getAgentDetail = useCallback(
+    (agentId: string) => agentDetails[agentId],
+    [agentDetails],
+  )
+
   const openTicketCount = tickets.filter((t) => t.status !== 'done').length
+  const activeAgentCount = Object.values(agentDetails).filter(
+    (a) => a.status === 'active',
+  ).length
+
+  const agentsList = useMemo(
+    () =>
+      Object.values(agentDetails).map((a) => ({
+        id: a.id,
+        name: a.name,
+        role: a.role,
+        model: a.modelConfig.model,
+        status: a.status,
+        version: a.version,
+      })),
+    [agentDetails],
+  )
 
   const stats = useMemo(
     () => ({
       ...dashboardStats,
       openTickets: openTicketCount,
+      activeAgents: activeAgentCount,
     }),
-    [openTicketCount],
+    [openTicketCount, activeAgentCount],
   )
 
   const value = useMemo(
@@ -233,7 +361,8 @@ export function DemoProvider({ children }: { children: ReactNode }) {
       tickets,
       auditLog,
       stats,
-      agents,
+      agents: agentsList,
+      agentDetails,
       processingJobs,
       currentProposal,
       uploadInvoice,
@@ -241,13 +370,18 @@ export function DemoProvider({ children }: { children: ReactNode }) {
       sendForApproval,
       approveTicket,
       rejectTicket,
+      approveTrainingTicket,
+      rollbackMemory,
       getTicket,
+      getAgentDetail,
       moveTicket,
     }),
     [
       tickets,
       auditLog,
       stats,
+      agentsList,
+      agentDetails,
       processingJobs,
       currentProposal,
       uploadInvoice,
@@ -255,7 +389,10 @@ export function DemoProvider({ children }: { children: ReactNode }) {
       sendForApproval,
       approveTicket,
       rejectTicket,
+      approveTrainingTicket,
+      rollbackMemory,
       getTicket,
+      getAgentDetail,
       moveTicket,
     ],
   )

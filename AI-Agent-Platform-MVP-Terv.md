@@ -4,7 +4,7 @@
 **Verzió:** 0.1 — MVP prototípus terv
 **Dátum:** 2026-06-12
 **Kapcsolódó anyag:** `AI-Agent-Platform-Koncepcio.md` (v0.1)
-**Státusz:** M1 fázis — fejlesztés alatt (2026-06-12)
+**Státusz:** M2 fázis kész — M3 következik (2026-06-12)
 **Kapcsolódó anyag:** `AI-Agent-Platform-Koncepcio.md` (v0.1)
 
 ---
@@ -25,7 +25,7 @@
 | Demó-forgatókönyv (M1, 1–5. lépés) | ✅ Kész | Számla → jóváhagyás végigkattintható |
 | Prototype banner | ✅ Kész | „mock data” jelzés a felületen |
 | **M1 fázis** | ✅ **Kész** | C1, C2, C3, S1, S2 |
-| **M2 fázis** | ⬜ Hátra | C4, C5, C7, C8 |
+| **M2 fázis** | ✅ **Kész** | C4, C5, C7, C8 + tanítási ciklus rollback |
 | **M3 fázis** | ⬜ Hátra | C6, C9, C10, C11 |
 
 ### Képernyő-katalógus — állapot
@@ -35,11 +35,11 @@
 | C1 | Áttekintő dashboard | P1 | ✅ Kész |
 | C2 | Kanban board | P1 | ✅ Kész |
 | C3 | Ticket részlet | P1 | ✅ Kész |
-| C4 | Agent Registry (lista) | P1 | ⬜ M2 |
-| C5 | Agent részlet / anatómia | P1 | ⬜ M2 |
+| C4 | Agent Registry (lista) | P1 | ✅ Kész |
+| C5 | Agent részlet / anatómia | P1 | ✅ Kész |
 | C6 | Agent létrehozó wizard | P2 | ⬜ M3 |
-| C7 | Tanítási ticket + Rollback | P1 | ⬜ M2 |
-| C8 | Audit log (teljes nézet) | P1 | ⬜ M2 (előnézet C1-en) |
+| C7 | Tanítási ticket + Rollback | P1 | ✅ Kész |
+| C8 | Audit log (teljes nézet) | P1 | ✅ Kész |
 | C9 | Erőforrás-katalógus | P2 | ⬜ M3 |
 | C10 | Model Gateway / Observability | P2 | ⬜ M3 |
 | C11 | Playbook nézet | P2 | ⬜ M3 |
@@ -56,8 +56,8 @@
 | 2 | Sandbox: számla feltöltés | ✅ |
 | 3 | Agent szimulált feldolgozás → ticket létrehozás | ✅ |
 | 4 | Board: ticket megnyitás → jóváhagyás / visszadobás | ✅ |
-| 5 | Jóváhagyás után Done + audit napló frissül | ✅ (audit append, teljes C8 nézet M2) |
-| 6 | Tanítási ciklus + Rollback | ⬜ M2 |
+| 5 | Jóváhagyás után Done + audit napló frissül | ✅ |
+| 6 | Tanítási ciklus + Rollback | ✅ |
 
 ---
 
@@ -233,7 +233,7 @@ A mockup UI-komponensei és képernyő-struktúrája **átvihetők** az 1. fázi
 
 ## 9. Következő lépés és nyitott kérdések
 
-**Azonnali következő lépés:** az **M2 fázis** — Agent registry (C4, C5), tanítási ciklus rollbackkel (C7), teljes audit log (C8).
+**Azonnali következő lépés:** az **M3 fázis** — erőforrás-katalógus (C9), Model Gateway/observability (C10), Playbook nézet (C11), agent-wizard (C6).
 
 **Pár döntés, ami a prototípust élesíti (nem blokkoló, menet közben is tisztázható):**
 

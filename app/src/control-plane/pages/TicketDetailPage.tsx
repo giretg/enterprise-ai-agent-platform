@@ -10,7 +10,8 @@ function formatHuf(amount: number): string {
 export function TicketDetailPage() {
   const { ticketId } = useParams<{ ticketId: string }>()
   const navigate = useNavigate()
-  const { getTicket, approveTicket, rejectTicket } = useDemo()
+  const { getTicket, approveTicket, rejectTicket, approveTrainingTicket } =
+    useDemo()
 
   const ticket = ticketId ? getTicket(ticketId) : undefined
 
@@ -29,8 +30,13 @@ export function TicketDetailPage() {
   }
 
   const proposal = ticket.proposal
-  const canApprove =
+  const training = ticket.trainingDiff
+  const canApproveWork =
     ticket.status === 'awaiting_human' && ticket.proposal !== undefined
+  const canApproveTraining =
+    ticket.type === 'training' &&
+    ticket.status === 'in_review' &&
+    training !== undefined
 
   return (
     <div>
@@ -45,6 +51,9 @@ export function TicketDetailPage() {
         <div>
           <div className="mb-2 flex flex-wrap gap-2">
             <Badge variant="mono">{ticket.id}</Badge>
+            {ticket.type === 'training' && (
+              <Badge variant="purple">tanítási ticket</Badge>
+            )}
             <Badge variant="info">{ticket.status.replace('_', ' ')}</Badge>
             {ticket.agentVersion && (
               <Badge variant="mono">agent v{ticket.agentVersion}</Badge>
@@ -59,7 +68,7 @@ export function TicketDetailPage() {
           </p>
         </div>
 
-        {canApprove && (
+        {(canApproveWork || canApproveTraining) && (
           <div className="flex gap-2">
             <button
               type="button"
@@ -74,7 +83,11 @@ export function TicketDetailPage() {
             <button
               type="button"
               onClick={() => {
-                approveTicket(ticket.id)
+                if (canApproveTraining) {
+                  approveTrainingTicket(ticket.id)
+                } else {
+                  approveTicket(ticket.id)
+                }
                 navigate('/control-plane/board')
               }}
               className="rounded-md bg-emerald-700 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-600"
@@ -85,7 +98,7 @@ export function TicketDetailPage() {
         )}
       </div>
 
-      {canApprove && (
+      {canApproveWork && (
         <div className="mb-6 rounded-lg border border-amber-800/50 bg-amber-950/20 p-4">
           <div className="flex items-center gap-2">
             <Badge variant="warning">Human-in-the-loop kapu</Badge>
@@ -94,6 +107,54 @@ export function TicketDetailPage() {
               éles könyvelés előtt
             </span>
           </div>
+        </div>
+      )}
+
+      {training && (
+        <div className="mb-6 space-y-4">
+          <div className="rounded-lg border border-violet-800/50 bg-violet-950/20 p-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge variant="purple">Tanítási ticket</Badge>
+              {training.evalGatePassed && (
+                <Badge variant="success">Eval-kapu: passed</Badge>
+              )}
+              <Badge variant="mono">write-gate token</Badge>
+            </div>
+            <p className="mt-2 text-sm text-violet-200">{training.summary}</p>
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            <Card title="Memória diff — előtte">
+              <pre className="whitespace-pre-wrap font-mono text-xs text-red-300/80">
+                {training.before}
+              </pre>
+            </Card>
+            <Card title="Memória diff — utána (javasolt)">
+              <pre className="whitespace-pre-wrap font-mono text-xs text-emerald-300/80">
+                {training.after}
+              </pre>
+            </Card>
+          </div>
+
+          <Card title="Jóváhagyási lánc">
+            <ol className="list-inside list-decimal space-y-1 text-sm text-slate-300">
+              {training.approvalChain.map((step) => (
+                <li key={step}>{step}</li>
+              ))}
+            </ol>
+            <div className="mt-4 rounded border border-slate-700/60 bg-slate-900/50 px-3 py-2 font-mono text-xs text-slate-400">
+              Write-gate token (szerveroldali, egyszer használatos):{' '}
+              <span className="text-amber-300">{training.writeGateToken}</span>
+            </div>
+            {ticket.agentId && (
+              <Link
+                to={`/control-plane/agents/${ticket.agentId}`}
+                className="mt-3 inline-block text-xs text-sky-400 hover:text-sky-300"
+              >
+                Agent anatómia → Rollback a jóváhagyás után
+              </Link>
+            )}
+          </Card>
         </div>
       )}
 
@@ -145,7 +206,7 @@ export function TicketDetailPage() {
             </Card>
           </div>
         </div>
-      ) : (
+      ) : !training ? (
         <Card title="Ticket napló">
           <p className="text-sm text-slate-400">
             Ez a ticket nem tartalmaz könyvelési javaslatot. Állapot:{' '}
@@ -155,7 +216,7 @@ export function TicketDetailPage() {
             Létrehozva: {new Date(ticket.createdAt).toLocaleString('hu-HU')}
           </p>
         </Card>
-      )}
+      ) : null}
 
       {ticket.status === 'done' && (
         <div className="mt-6 rounded-lg border border-emerald-800/50 bg-emerald-950/20 p-4">

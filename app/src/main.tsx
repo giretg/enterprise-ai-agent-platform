@@ -3,7 +3,10 @@ import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import App from './App.tsx'
 import { DemoProvider } from './shared/context/DemoContext.tsx'
+import { initFirebaseAnalytics } from './shared/firebase/index.ts'
 import './index.css'
+
+void initFirebaseAnalytics()
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

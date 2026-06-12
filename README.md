@@ -12,13 +12,14 @@ Kattintható UI mockup a **Kontrollált Enterprise AI Agent Platform** koncepci�
 - [`../AI-Agent-Platform-Koncepcio.md`](../AI-Agent-Platform-Koncepcio.md) — teljes koncepció
 - [`../AI-Agent-Platform-MVP-Terv.md`](../AI-Agent-Platform-MVP-Terv.md) — MVP fejlesztési terv
 
-## Demó-forgatókönyv (M1)
+## Demó-forgatókönyv
 
 1. Control Plane → Áttekintés
-2. Sandbox → Számla feltöltése
-3. Agent szimulált feldolgozás → javaslat
-4. Küldés jóváhagyásra → ticket a boardon
-5. Ticket megnyitása → Jóváhagy → Done + audit
+2. Sandbox → Számla feltöltése → jóváhagyásra küldés
+3. Board → ticket jóváhagyás (Awaiting Human)
+4. **TKT-1030** tanítási ticket → memória diff jóváhagyás
+5. **Könyvelő Agent** anatómia → memória verzió + **Rollback**
+6. **Audit log** → teljes, szűrhető napló
 
 ## Futtatás
 
@@ -29,6 +30,33 @@ npm run dev
 ```
 
 Nyisd meg: http://localhost:5173
+
+## Firebase Hosting
+
+Projekt: **enterprise-ai-demo**  
+Élő URL (deploy után): https://enterprise-ai-demo.web.app
+
+### Előkészítés (egyszer)
+
+```bash
+npx -y firebase-tools@latest login
+npx -y firebase-tools@latest use enterprise-ai-demo
+```
+
+Opcionális: másold `app/.env.example` → `app/.env` (a build env var-okat onnan olvassa).
+
+### Deploy
+
+```bash
+cd app
+npm run deploy
+```
+
+Ez buildeli a Vite appot (`app/dist`) és feltölti Firebase Hostingra. SPA routing: minden útvonal `index.html`-re irányul (`firebase.json` rewrite).
+
+### Firebase SDK
+
+Az app inicializálja a Firebase-t és (böngészőben) az Analytics-t: `app/src/shared/firebase/index.ts`.
 
 ## Technológia
 

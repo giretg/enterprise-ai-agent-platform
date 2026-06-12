@@ -64,7 +64,17 @@ export function DashboardPage() {
       </div>
 
       <div className="mt-6 grid gap-6 lg:grid-cols-2">
-        <Card title="Aktív agentek">
+        <Card
+          title="Aktív agentek"
+          action={
+            <Link
+              to="/control-plane/agents"
+              className="text-xs text-sky-400 hover:text-sky-300"
+            >
+              Registry →
+            </Link>
+          }
+        >
           <div className="overflow-x-auto">
             <table className="w-full text-left text-sm">
               <thead>
@@ -133,7 +143,18 @@ export function DashboardPage() {
         </Card>
       </div>
 
-      <Card title="Audit előnézet (append-only)" className="mt-6">
+      <Card
+        title="Audit előnézet (append-only)"
+        className="mt-6"
+        action={
+          <Link
+            to="/control-plane/audit"
+            className="text-xs text-sky-400 hover:text-sky-300"
+          >
+            Teljes napló →
+          </Link>
+        }
+      >
         <div className="mb-3 flex items-center gap-2">
           <Badge variant="success">Audited</Badge>
           <Badge variant="mono">tamper-evident hash-lánc</Badge>
