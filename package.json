@@ -1,0 +1,14 @@
+{
+  "name": "enterprise-ai-agent-platform",
+  "private": true,
+  "scripts": {
+    "build": "npm ci --prefix app && npm run build --prefix app",
+    "start": "superstatic serve app/dist --config superstatic.json --port $PORT --host 0.0.0.0"
+  },
+  "dependencies": {
+    "superstatic": "^9.2.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
