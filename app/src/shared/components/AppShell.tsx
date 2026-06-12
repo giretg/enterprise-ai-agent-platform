@@ -1,6 +1,10 @@
+import { Show, SignInButton, SignUpButton, UserButton } from '@clerk/react'
 import { NavLink } from 'react-router-dom'
 import type { ReactNode } from 'react'
 import { PrototypeBanner } from './PrototypeBanner'
+
+const authButtonClass =
+  'rounded-full border border-white/12 bg-white/5 px-4 py-2 text-xs font-semibold text-ink-soft transition-colors hover:border-coral/40 hover:text-ink'
 
 const linkClass = ({ isActive }: { isActive: boolean }) =>
   `rounded-full px-3.5 py-1.5 text-sm font-medium transition-all duration-200 ${
@@ -68,12 +72,35 @@ export function AppShell({
               ))}
             </nav>
           </div>
-          <NavLink
-            to={switchLink.to}
-            className="rounded-full border border-white/12 bg-white/5 px-4 py-2 text-xs font-semibold text-ink-soft transition-colors hover:border-coral/40 hover:text-ink"
-          >
-            {switchLink.label}
-          </NavLink>
+          <div className="flex shrink-0 items-center gap-2">
+            <Show when="signed-out">
+              <SignInButton mode="modal">
+                <button type="button" className={authButtonClass}>
+                  Bejelentkezés
+                </button>
+              </SignInButton>
+              <SignUpButton mode="modal">
+                <button
+                  type="button"
+                  className={`${authButtonClass} border-coral/30 bg-coral/10 text-ink hover:border-coral/50`}
+                >
+                  Regisztráció
+                </button>
+              </SignUpButton>
+            </Show>
+            <Show when="signed-in">
+              <UserButton
+                appearance={{
+                  elements: {
+                    avatarBox: 'h-9 w-9',
+                  },
+                }}
+              />
+            </Show>
+            <NavLink to={switchLink.to} className={authButtonClass}>
+              {switchLink.label}
+            </NavLink>
+          </div>
         </div>
         <nav className="flex items-center gap-1 overflow-x-auto px-5 pb-3 lg:hidden">
           {navItems.map((item) => (

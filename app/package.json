@@ -11,6 +11,7 @@
     "deploy": "npm run build && cd .. && npx -y firebase-tools@latest deploy --only hosting"
   },
   "dependencies": {
+    "@clerk/react": "^6.9.1",
     "firebase": "^12.14.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
