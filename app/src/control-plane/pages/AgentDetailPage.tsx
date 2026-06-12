@@ -1,12 +1,15 @@
 import { Link, useParams } from 'react-router-dom'
 import { Badge } from '../../shared/components/Badge'
 import { Card } from '../../shared/components/Card'
+import { AgentAvatar } from '../../shared/components/AgentAvatar'
+import { getPersona, humanStatus } from '../../shared/agent-persona'
 import { useDemo } from '../../shared/context/DemoContext'
 
 const resourceTypeLabels = {
   policy: 'Policy',
   secret: 'Secret',
   file: 'File',
+  dataset: 'Dataset',
   connector: 'Connector',
   tool: 'Tool',
 } as const
@@ -19,13 +22,16 @@ export function AgentDetailPage() {
 
   if (!agent) {
     return (
-      <div className="text-center">
-        <p className="text-slate-400">Agent nem található</p>
+      <div className="atelier-card mx-auto max-w-md p-10 text-center">
+        <p className="text-4xl" aria-hidden>
+          🕵️
+        </p>
+        <p className="mt-3 text-ink-soft">Ezt a munkatársat nem találom.</p>
         <Link
           to="/control-plane/agents"
-          className="mt-4 inline-block text-sky-400"
+          className="mt-4 inline-block font-medium text-honey hover:underline"
         >
-          ← Registry
+          ← Vissza a csapathoz
         </Link>
       </div>
     )
@@ -33,33 +39,49 @@ export function AgentDetailPage() {
 
   const activeMemory = agent.memoryVersions.find((m) => m.isActive)
   const rollbackCandidates = agent.memoryVersions.filter((m) => !m.isActive)
+  const persona = getPersona(agent)
+  const mood = humanStatus(agent.status)
 
   return (
     <div>
       <Link
         to="/control-plane/agents"
-        className="mb-4 inline-block text-sm text-slate-400 hover:text-slate-200"
+        className="mb-5 inline-block text-sm text-ink-soft transition-colors hover:text-ink"
       >
-        ← Agent Registry
+        ← Vissza a csapathoz
       </Link>
 
-      <div className="mb-6 flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <div className="mb-2 flex flex-wrap gap-2">
-            <Badge variant="mono">{agent.id}</Badge>
-            <Badge variant="mono">v{agent.version}</Badge>
-            <Badge variant={agent.status === 'active' ? 'success' : 'warning'}>
-              {agent.status}
-            </Badge>
-            <Badge variant="info">{agent.lifecycle}</Badge>
+      {/* Persona hero */}
+      <div className="rise-in atelier-card mb-7 flex flex-col gap-5 p-6 sm:flex-row sm:items-center">
+        <AgentAvatar agent={agent} size="xl" />
+        <div className="min-w-0 flex-1">
+          <div className="flex flex-wrap items-center gap-3">
+            <h1 className="font-display text-3xl font-semibold text-ink">
+              {persona.nickname}
+            </h1>
+            <span
+              className="inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium"
+              style={{ background: `${mood.dot}1f`, color: mood.color }}
+            >
+              {mood.emoji} {mood.label}
+            </span>
           </div>
-          <h1 className="text-2xl font-semibold text-slate-50">{agent.name}</h1>
-          <p className="mt-1 text-sm text-slate-400">{agent.role}</p>
+          <p className="mt-1 text-sm text-ink-soft">
+            {agent.name} · {agent.role}
+          </p>
+          <p className="font-display mt-3 max-w-2xl text-lg italic text-ink">
+            “{persona.greeting}”
+          </p>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <Badge variant="info">{agent.lifecycle}</Badge>
+            <Badge variant="mono">v{agent.version}</Badge>
+            <Badge variant="mono">{agent.id}</Badge>
+          </div>
         </div>
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <Card title="Identitás (service account)">
+        <Card title="🪪 Személyazonosság">
           <dl className="space-y-2 text-sm">
             <Row label="Service account" value={agent.serviceAccount} mono />
             <Row label="API-kulcs" value={agent.apiKeyPreview} mono />
@@ -73,7 +95,7 @@ export function AgentDetailPage() {
           </div>
         </Card>
 
-        <Card title="Modell-konfiguráció (Model Gateway)">
+        <Card title="🧠 Az agya (modell)">
           <dl className="space-y-2 text-sm">
             <Row label="Provider" value={agent.modelConfig.provider} />
             <Row label="Modell" value={agent.modelConfig.model} mono />
@@ -89,14 +111,14 @@ export function AgentDetailPage() {
           </div>
         </Card>
 
-        <Card title="Alapprompt (system prompt)" className="lg:col-span-2">
-          <pre className="whitespace-pre-wrap rounded border border-slate-700/60 bg-slate-900/60 p-4 font-mono text-xs leading-relaxed text-slate-300">
+        <Card title="💬 Ki ő? (alapprompt)" className="lg:col-span-2">
+          <pre className="atelier-soft whitespace-pre-wrap p-4 font-mono text-xs leading-relaxed text-ink-soft">
             {agent.systemPrompt}
           </pre>
         </Card>
 
         <Card
-          title="Memória (verziózott, write-gate-elt)"
+          title="📚 Amit megtanult (memória)"
           className="lg:col-span-2"
           action={
             activeMemory && (
@@ -108,60 +130,60 @@ export function AgentDetailPage() {
             {agent.memoryVersions.map((mem) => (
               <div
                 key={mem.id}
-                className={`rounded-lg border p-4 ${
+                className={`rounded-2xl border p-4 ${
                   mem.isActive
-                    ? 'border-emerald-800/50 bg-emerald-950/20'
-                    : 'border-slate-700/50 bg-slate-900/40'
+                    ? 'border-sage/35 bg-sage/8'
+                    : 'border-white/10 bg-white/[0.02]'
                 }`}
               >
                 <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex flex-wrap gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <Badge variant="mono">v{mem.version}</Badge>
-                    <span className="text-sm font-medium text-slate-200">
+                    <span className="text-sm font-medium text-ink">
                       {mem.label}
                     </span>
-                    {mem.isActive && <Badge variant="success">aktív</Badge>}
+                    {mem.isActive && <Badge variant="success">✨ aktív</Badge>}
                   </div>
                   {!mem.isActive && (
                     <button
                       type="button"
                       onClick={() => rollbackMemory(agent.id, mem.id)}
-                      className="rounded border border-amber-700/60 bg-amber-950/30 px-3 py-1 text-xs font-medium text-amber-200 hover:bg-amber-950/50"
+                      className="rounded-full border border-honey/40 bg-honey/10 px-3 py-1 text-xs font-medium text-honey transition-colors hover:bg-honey/20"
                     >
-                      ↩ Rollback ide
+                      ↩ Visszaállítás ide
                     </button>
                   )}
                 </div>
-                <pre className="whitespace-pre-wrap font-mono text-xs text-slate-400">
+                <pre className="whitespace-pre-wrap font-mono text-xs text-ink-soft">
                   {mem.content}
                 </pre>
-                <p className="mt-2 text-xs text-slate-600">
+                <p className="mt-2 text-xs text-ink-faint">
                   {new Date(mem.createdAt).toLocaleString('hu-HU')}
                 </p>
               </div>
             ))}
           </div>
           {rollbackCandidates.length > 0 && (
-            <p className="mt-4 text-xs text-amber-300/70">
-              A Rollback gomb visszaállítja az agent memóriáját egy korábbi
-              verzióra — minden lépés auditálva.
+            <p className="mt-4 text-xs text-honey/80">
+              A visszaállítás egy korábbi emlékhez téríti vissza a munkatársat —
+              minden lépés feljegyezve a naplóba.
             </p>
           )}
         </Card>
 
-        <Card title="Hozzárendelt erőforrások">
+        <Card title="🔑 Amihez hozzáfér">
           {agent.resources.length === 0 ? (
-            <p className="text-sm text-slate-500">Nincs erőforrás</p>
+            <p className="text-sm text-ink-faint">Egyelőre semmihez sincs hozzákötve.</p>
           ) : (
             <ul className="space-y-2">
               {agent.resources.map((r) => (
                 <li
                   key={r.id}
-                  className="flex items-center justify-between rounded border border-slate-700/50 px-3 py-2"
+                  className="atelier-soft flex items-center justify-between px-3 py-2"
                 >
                   <div>
-                    <p className="text-sm text-slate-200">{r.name}</p>
-                    <p className="text-xs text-slate-500">
+                    <p className="text-sm text-ink">{r.name}</p>
+                    <p className="text-xs text-ink-faint">
                       {resourceTypeLabels[r.type]} · {r.scope}
                     </p>
                   </div>
@@ -172,18 +194,15 @@ export function AgentDetailPage() {
           )}
         </Card>
 
-        <Card title="Eszközök / képességek">
+        <Card title="🛠️ Amit tud (képességek)">
           {agent.tools.length === 0 ? (
-            <p className="text-sm text-slate-500">Nincs eszköz</p>
+            <p className="text-sm text-ink-faint">Még nincs külön eszköze.</p>
           ) : (
             <ul className="space-y-2">
               {agent.tools.map((t) => (
-                <li
-                  key={t.id}
-                  className="rounded border border-slate-700/50 px-3 py-2"
-                >
-                  <p className="font-mono text-sm text-slate-200">{t.name}</p>
-                  <p className="text-xs text-slate-500">{t.description}</p>
+                <li key={t.id} className="atelier-soft px-3 py-2">
+                  <p className="font-mono text-sm text-ink">{t.name}</p>
+                  <p className="text-xs text-ink-faint">{t.description}</p>
                   <Badge variant="mono" className="mt-1">
                     {t.scope}
                   </Badge>
@@ -208,9 +227,9 @@ function Row({
 }) {
   return (
     <div className="flex justify-between gap-4">
-      <dt className="text-slate-500">{label}</dt>
+      <dt className="text-ink-faint">{label}</dt>
       <dd
-        className={`text-right ${mono ? 'font-mono text-xs text-slate-300' : 'text-slate-200'}`}
+        className={`text-right ${mono ? 'font-mono text-xs text-ink-soft' : 'text-ink'}`}
       >
         {value}
       </dd>

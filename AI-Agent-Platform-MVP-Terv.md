@@ -4,7 +4,7 @@
 **Verzió:** 0.1 — MVP prototípus terv
 **Dátum:** 2026-06-12
 **Kapcsolódó anyag:** `AI-Agent-Platform-Koncepcio.md` (v0.1)
-**Státusz:** M2 fázis kész — M3 következik (2026-06-12)
+**Státusz:** Prototípus kész — teljes képernyő-katalógus (2026-06-12)
 **Kapcsolódó anyag:** `AI-Agent-Platform-Koncepcio.md` (v0.1)
 
 ---
@@ -26,7 +26,8 @@
 | Prototype banner | ✅ Kész | „mock data” jelzés a felületen |
 | **M1 fázis** | ✅ **Kész** | C1, C2, C3, S1, S2 |
 | **M2 fázis** | ✅ **Kész** | C4, C5, C7, C8 + tanítási ciklus rollback |
-| **M3 fázis** | ⬜ Hátra | C6, C9, C10, C11 |
+| **M3 fázis** | ✅ **Kész** | C6, C9, C10, C11 |
+| **P3 képernyők** | ✅ **Kész** | C12 IAM, C13 Admin paraméterezés |
 
 ### Képernyő-katalógus — állapot
 
@@ -37,14 +38,14 @@
 | C3 | Ticket részlet | P1 | ✅ Kész |
 | C4 | Agent Registry (lista) | P1 | ✅ Kész |
 | C5 | Agent részlet / anatómia | P1 | ✅ Kész |
-| C6 | Agent létrehozó wizard | P2 | ⬜ M3 |
+| C6 | Agent létrehozó wizard | P2 | ✅ Kész |
 | C7 | Tanítási ticket + Rollback | P1 | ✅ Kész |
 | C8 | Audit log (teljes nézet) | P1 | ✅ Kész |
-| C9 | Erőforrás-katalógus | P2 | ⬜ M3 |
-| C10 | Model Gateway / Observability | P2 | ⬜ M3 |
-| C11 | Playbook nézet | P2 | ⬜ M3 |
-| C12 | IAM / hozzáférés | P3 | ⬜ M3 |
-| C13 | Admin paraméterezés | P3 | ⬜ M3 |
+| C9 | Erőforrás-katalógus | P2 | ✅ Kész |
+| C10 | Model Gateway / Observability | P2 | ✅ Kész |
+| C11 | Playbook nézet | P2 | ✅ Kész |
+| C12 | IAM / hozzáférés | P3 | ✅ Kész |
+| C13 | Admin paraméterezés | P3 | ✅ Kész |
 | S1 | Könyvelő munkatér | P1 | ✅ Kész |
 | S2 | Javaslat-részlet | P1 | ✅ Kész |
 
@@ -233,7 +234,7 @@ A mockup UI-komponensei és képernyő-struktúrája **átvihetők** az 1. fázi
 
 ## 9. Következő lépés és nyitott kérdések
 
-**Azonnali következő lépés:** az **M3 fázis** — erőforrás-katalógus (C9), Model Gateway/observability (C10), Playbook nézet (C11), agent-wizard (C6).
+**Azonnali következő lépés:** ügyfél-prezentáció / Firebase deploy.
 
 **Pár döntés, ami a prototípust élesíti (nem blokkoló, menet közben is tisztázható):**
 

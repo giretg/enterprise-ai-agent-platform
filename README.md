@@ -20,6 +20,12 @@ Kattintható UI mockup a **Kontrollált Enterprise AI Agent Platform** koncepci�
 4. **TKT-1030** tanítási ticket → memória diff jóváhagyás
 5. **Könyvelő Agent** anatómia → memória verzió + **Rollback**
 6. **Audit log** → teljes, szűrhető napló
+7. **Agent wizard** → `/control-plane/agents/new`
+8. **Erőforrás-katalógus** → `/control-plane/resources`
+9. **Model Gateway** → `/control-plane/models`
+10. **Playbook** → `/control-plane/playbook` (Sandbox demó után frissül)
+11. **IAM** → `/control-plane/iam` (emberek + agent service accountok)
+12. **Admin** → `/control-plane/admin` (tickettípusok, állapotgép, jóváhagyási láncok)
 
 ## Futtatás
 

@@ -28,10 +28,73 @@ export interface MemoryVersion {
 
 export interface AgentResource {
   id: string
-  type: 'policy' | 'secret' | 'file' | 'connector' | 'tool'
+  type: 'policy' | 'secret' | 'file' | 'connector' | 'tool' | 'dataset'
   name: string
   scope: string
   version: string
+}
+
+export interface CatalogResource {
+  id: string
+  type: AgentResource['type']
+  name: string
+  scope: 'org' | 'sandbox' | 'agent'
+  version: string
+  description: string
+  boundAgentIds: string[]
+}
+
+export interface CreateAgentInput {
+  name: string
+  role: string
+  systemPrompt: string
+  resourceIds: string[]
+  provider: string
+  model: string
+  temperature: number
+  permissions: string[]
+}
+
+export interface ModelUsageDay {
+  date: string
+  tokens: number
+  costEur: number
+}
+
+export interface AgentModelUsage {
+  agentId: string
+  agentName: string
+  model: string
+  tokensToday: number
+  costTodayEur: number
+  tokensMonth: number
+  costMonthEur: number
+}
+
+export interface GuardrailViolation {
+  id: string
+  timestamp: string
+  agentName: string
+  rule: string
+  severity: 'low' | 'medium' | 'high'
+  action: string
+}
+
+export interface PlaybookStep {
+  id: string
+  order: number
+  label: string
+  actor: 'agent' | 'human' | 'system'
+  description: string
+}
+
+export interface PlaybookActualStep {
+  id: string
+  order: number
+  label: string
+  auditAction: string
+  timestamp: string
+  matched: boolean
 }
 
 export interface AgentTool {
@@ -136,6 +199,68 @@ export interface ProcessingJob {
   fileName: string
   status: 'processing' | 'complete'
   startedAt: string
+}
+
+export type HumanRole =
+  | 'platform_admin'
+  | 'agent_admin'
+  | 'approver'
+  | 'operator'
+  | 'auditor'
+
+export interface HumanUser {
+  id: string
+  name: string
+  email: string
+  role: HumanRole
+  authProvider: 'Clerk SSO' | 'Keycloak' | 'Local (demo)'
+  lastLogin: string
+  permissions: string[]
+  status: 'active' | 'invited' | 'disabled'
+}
+
+export interface AgentServiceAccount {
+  id: string
+  agentId: string
+  agentName: string
+  serviceAccount: string
+  apiKeyPreview: string
+  keyExpiresAt: string
+  runtime: 'trusted_internal' | 'untrusted_external'
+  permissions: string[]
+  status: 'active' | 'rotating' | 'revoked'
+}
+
+export interface RoleDefinition {
+  id: HumanRole
+  label: string
+  description: string
+  permissions: string[]
+}
+
+export interface TicketTransition {
+  from: TicketStatus | '*'
+  to: TicketStatus
+  allowedRoles: HumanRole[]
+  requiresApproval?: boolean
+}
+
+export interface ApprovalChainStep {
+  order: number
+  role: HumanRole | 'any_approver'
+  label: string
+}
+
+export interface TicketTypeConfig {
+  id: string
+  type: TicketType
+  label: string
+  description: string
+  allowedStatuses: TicketStatus[]
+  transitions: TicketTransition[]
+  defaultAssignee: string
+  approvalChain: ApprovalChainStep[]
+  writeGateRequired: boolean
 }
 
 export const TICKET_COLUMNS: { key: TicketStatus; label: string }[] = [

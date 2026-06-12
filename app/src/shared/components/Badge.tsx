@@ -10,13 +10,13 @@ type BadgeVariant =
   | 'mono'
 
 const variants: Record<BadgeVariant, string> = {
-  default: 'bg-slate-700 text-slate-200 border-slate-600',
-  success: 'bg-emerald-950 text-emerald-300 border-emerald-800',
-  warning: 'bg-amber-950 text-amber-300 border-amber-800',
-  danger: 'bg-red-950 text-red-300 border-red-800',
-  info: 'bg-sky-950 text-sky-300 border-sky-800',
-  purple: 'bg-violet-950 text-violet-300 border-violet-800',
-  mono: 'bg-slate-900 text-slate-400 border-slate-700 font-mono text-[10px]',
+  default: 'bg-white/5 text-ink-soft border-white/10',
+  success: 'bg-sage/12 text-sage border-sage/30',
+  warning: 'bg-honey/12 text-honey border-honey/30',
+  danger: 'bg-coral/15 text-coral border-coral/35',
+  info: 'bg-sky/12 text-sky border-sky/30',
+  purple: 'bg-grape/12 text-grape border-grape/30',
+  mono: 'bg-night-2 text-ink-faint border-white/10 font-mono text-[10px]',
 }
 
 export function Badge({
@@ -30,7 +30,7 @@ export function Badge({
 }) {
   return (
     <span
-      className={`inline-flex items-center rounded border px-2 py-0.5 text-xs font-medium ${variants[variant]} ${className}`}
+      className={`inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium ${variants[variant]} ${className}`}
     >
       {children}
     </span>

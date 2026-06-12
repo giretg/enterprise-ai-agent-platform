@@ -1,16 +1,171 @@
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,500&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 @import 'tailwindcss';
 
 @theme {
-  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  /* Typography — soul + warmth, never a spaceship */
+  --font-sans: 'Hanken Grotesk', system-ui, -apple-system, sans-serif;
+  --font-display: 'Fraunces', Georgia, serif;
   --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  /* Atelier palette — warm espresso night, cream light, sunset accents */
+  --color-night: #181210;
+  --color-night-2: #1f1714;
+  --color-card: #261c18;
+  --color-card-2: #2e221c;
+  --color-line: #43332b;
+
+  --color-ink: #f6ecdd;
+  --color-ink-soft: #cdb9a6;
+  --color-ink-faint: #9a8678;
+
+  --color-coral: #ec7a5f;
+  --color-coral-deep: #c85c44;
+  --color-honey: #f2b35e;
+  --color-sage: #8fc08a;
+  --color-rose: #e98aa6;
+  --color-sky: #82b6cf;
+  --color-grape: #b69ae0;
 }
 
-body {
-  margin: 0;
-  font-family: var(--font-sans);
-  -webkit-font-smoothing: antialiased;
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    margin: 0;
+    font-family: var(--font-sans);
+    color: var(--color-ink);
+    background-color: var(--color-night);
+    background-image:
+      radial-gradient(
+        58rem 40rem at 8% -8%,
+        rgba(236, 122, 95, 0.16),
+        transparent 60%
+      ),
+      radial-gradient(
+        48rem 36rem at 102% 4%,
+        rgba(242, 179, 94, 0.13),
+        transparent 58%
+      ),
+      radial-gradient(
+        60rem 50rem at 50% 118%,
+        rgba(143, 192, 138, 0.08),
+        transparent 60%
+      );
+    background-attachment: fixed;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Soft paper grain over everything */
+  body::before {
+    content: '';
+    position: fixed;
+    inset: 0;
+    z-index: 0;
+    pointer-events: none;
+    opacity: 0.4;
+    mix-blend-mode: soft-light;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='180' height='180'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='0.5'/%3E%3C/svg%3E");
+  }
+
+  #root {
+    position: relative;
+    z-index: 1;
+    min-height: 100vh;
+  }
+
+  ::selection {
+    background: rgba(236, 122, 95, 0.3);
+    color: var(--color-ink);
+  }
+
+  ::-webkit-scrollbar {
+    width: 11px;
+    height: 11px;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-line);
+    border-radius: 9999px;
+    border: 3px solid transparent;
+    background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #5a463b;
+    background-clip: content-box;
+  }
 }
 
-#root {
-  min-height: 100vh;
+@layer components {
+  /* Warm surface used across the app */
+  .atelier-card {
+    background:
+      linear-gradient(168deg, var(--color-card-2), var(--color-card));
+    border: 1px solid var(--color-line);
+    border-radius: 1.25rem;
+    box-shadow:
+      0 1px 0 0 rgba(255, 240, 222, 0.04) inset,
+      0 18px 40px -28px rgba(0, 0, 0, 0.85);
+  }
+
+  .atelier-soft {
+    background: rgba(40, 30, 25, 0.5);
+    border: 1px solid rgba(120, 92, 78, 0.28);
+    border-radius: 1rem;
+  }
+
+  .lift {
+    transition:
+      transform 0.35s cubic-bezier(0.2, 0.7, 0.2, 1),
+      box-shadow 0.35s cubic-bezier(0.2, 0.7, 0.2, 1),
+      border-color 0.35s ease;
+  }
+  .lift:hover {
+    transform: translateY(-4px);
+    border-color: rgba(236, 122, 95, 0.45);
+    box-shadow:
+      0 1px 0 0 rgba(255, 240, 222, 0.05) inset,
+      0 26px 50px -26px rgba(0, 0, 0, 0.9);
+  }
+}
+
+/* ---- Motion ------------------------------------------------------------ */
+@keyframes breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.045); }
+}
+
+@keyframes soul {
+  0%, 100% { box-shadow: 0 0 0 0 currentColor; opacity: 1; }
+  50% { box-shadow: 0 0 0 5px transparent; opacity: 0.7; }
+}
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes drift {
+  0%, 100% { transform: translateY(0) rotate(0deg); }
+  50% { transform: translateY(-6px) rotate(1.5deg); }
+}
+
+.animate-breathe { animation: breathe 5.5s ease-in-out infinite; }
+.animate-soul { animation: soul 2.4s ease-in-out infinite; }
+.animate-drift { animation: drift 7s ease-in-out infinite; }
+
+.rise-in {
+  opacity: 0;
+  animation: rise 0.7s cubic-bezier(0.2, 0.7, 0.2, 1) forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-breathe,
+  .animate-soul,
+  .animate-drift,
+  .rise-in {
+    animation: none;
+  }
+  .rise-in { opacity: 1; }
 }

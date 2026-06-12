@@ -1,9 +1,18 @@
 import type {
   Agent,
   AgentDetail,
+  AgentModelUsage,
+  AgentServiceAccount,
   AuditEntry,
+  CatalogResource,
   DashboardStats,
+  GuardrailViolation,
+  HumanUser,
+  ModelUsageDay,
+  PlaybookStep,
+  RoleDefinition,
   Ticket,
+  TicketTypeConfig,
   TrainingDiff,
 } from '../types'
 
@@ -383,3 +392,397 @@ export const demoProposalTemplate = {
   model: 'gpt-4.1-mini',
   sourceFileName: demoInvoiceFileName,
 }
+
+export const catalogResources: CatalogResource[] = [
+  {
+    id: 'res-pol-01',
+    type: 'policy' as const,
+    name: 'Könyvelési policy',
+    scope: 'org' as const,
+    version: '3.2',
+    description: 'Szervezeti könyvelési szabályok és jóváhagyási küszöbök',
+    boundAgentIds: ['agent-bookkeeper-01'],
+  },
+  {
+    id: 'res-file-01',
+    type: 'file' as const,
+    name: 'Szállítói lista — jóváhagyott',
+    scope: 'org' as const,
+    version: '2026-Q2',
+    description: 'Jóváhagyott beszállítók és alapértelmezett főkönyvi számok',
+    boundAgentIds: ['agent-bookkeeper-01'],
+  },
+  {
+    id: 'res-conn-01',
+    type: 'connector' as const,
+    name: 'Könyvelő szoftver API',
+    scope: 'sandbox' as const,
+    version: '1.0',
+    description: 'Read-only kapcsolat a könyvelő rendszerhez',
+    boundAgentIds: ['agent-bookkeeper-01'],
+  },
+  {
+    id: 'res-conn-02',
+    type: 'connector' as const,
+    name: 'Stripe Settlement API',
+    scope: 'org' as const,
+    version: '2024-11',
+    description: 'PSP elszámolási batch lekérés',
+    boundAgentIds: ['agent-recon-01'],
+  },
+  {
+    id: 'res-sec-01',
+    type: 'secret' as const,
+    name: 'PSP API kulcs (scoped)',
+    scope: 'org' as const,
+    version: 'rot-2026-05',
+    description: 'Rotálható, agent-scoped API hitelesítő',
+    boundAgentIds: ['agent-recon-01'],
+  },
+  {
+    id: 'res-ds-01',
+    type: 'dataset' as const,
+    name: 'Számla minták (eval)',
+    scope: 'org' as const,
+    version: '1.2',
+    description: 'Tanítási és eval tesztkészlet — 120 annotált számla',
+    boundAgentIds: ['agent-bookkeeper-01'],
+  },
+  {
+    id: 'res-tool-shared',
+    type: 'tool' as const,
+    name: 'create_approval_ticket',
+    scope: 'org' as const,
+    version: '2.0',
+    description: 'Board ticket létrehozás human-in-the-loop kapuval',
+    boundAgentIds: ['agent-bookkeeper-01', 'agent-recon-01', 'agent-doc-01'],
+  },
+]
+
+export const modelUsageByDay: ModelUsageDay[] = [
+  { date: '06-06', tokens: 38200, costEur: 9.8 },
+  { date: '06-07', tokens: 42100, costEur: 10.5 },
+  { date: '06-08', tokens: 39500, costEur: 9.9 },
+  { date: '06-09', tokens: 44800, costEur: 11.2 },
+  { date: '06-10', tokens: 51200, costEur: 12.9 },
+  { date: '06-11', tokens: 46900, costEur: 11.8 },
+  { date: '06-12', tokens: 48200, costEur: 12.4 },
+]
+
+export const agentModelUsage: AgentModelUsage[] = [
+  {
+    agentId: 'agent-bookkeeper-01',
+    agentName: 'Könyvelő Agent',
+    model: 'gpt-4.1-mini',
+    tokensToday: 28400,
+    costTodayEur: 7.1,
+    tokensMonth: 186000,
+    costMonthEur: 46.5,
+  },
+  {
+    agentId: 'agent-recon-01',
+    agentName: 'Reconciliation Agent',
+    model: 'gpt-4.1',
+    tokensToday: 15200,
+    costTodayEur: 4.2,
+    tokensMonth: 98000,
+    costMonthEur: 27.4,
+  },
+  {
+    agentId: 'agent-doc-01',
+    agentName: 'Dokumentum Agent',
+    model: 'claude-sonnet-4',
+    tokensToday: 4600,
+    costTodayEur: 1.1,
+    tokensMonth: 32000,
+    costMonthEur: 7.8,
+  },
+]
+
+export const guardrailViolations: GuardrailViolation[] = [
+  {
+    id: 'GR-001',
+    timestamp: '2026-06-11T14:22:00Z',
+    agentName: 'Dokumentum Agent',
+    rule: 'PII-redaction',
+    severity: 'low',
+    action: 'blocked_output — emberi felülvizsgálat kért',
+  },
+  {
+    id: 'GR-002',
+    timestamp: '2026-06-09T09:15:00Z',
+    agentName: 'Könyvelő Agent',
+    rule: 'prompt-injection-scan',
+    severity: 'medium',
+    action: 'sanitized — rejtett utasítás eltávolítva a PDF-ből',
+  },
+]
+
+export const invoicePlaybookIntended: PlaybookStep[] = [
+  {
+    id: 'pb-1',
+    order: 1,
+    label: 'Dokumentum feltöltés',
+    actor: 'human',
+    description: 'Felhasználó feltölt egy beszállítói számlát a Sandboxban',
+  },
+  {
+    id: 'pb-2',
+    order: 2,
+    label: 'Mezőkinyerés',
+    actor: 'agent',
+    description: 'Könyvelő Agent kinyeri a számla mezőit',
+  },
+  {
+    id: 'pb-3',
+    order: 3,
+    label: 'Könyvelési javaslat',
+    actor: 'agent',
+    description: 'Agent javaslatot készít főkönyvi számra és költséghelyre',
+  },
+  {
+    id: 'pb-4',
+    order: 4,
+    label: 'Jóváhagyási ticket',
+    actor: 'agent',
+    description: 'Ticket létrejön Awaiting Human állapotban',
+  },
+  {
+    id: 'pb-5',
+    order: 5,
+    label: 'Emberi jóváhagyás',
+    actor: 'human',
+    description: 'Könyvelő ellenőrzi és jóváhagyja',
+  },
+  {
+    id: 'pb-6',
+    order: 6,
+    label: 'Audit naplózás',
+    actor: 'system',
+    description: 'Minden lépés append-only audit logba kerül',
+  },
+]
+
+export const availablePermissions = [
+  'board.ticket.create',
+  'board.ticket.read',
+  'sandbox.invoice.upload',
+  'sandbox.invoice.read',
+  'docs.read',
+  'psp.settlement.read',
+]
+
+export const availableModels = [
+  { provider: 'OpenAI (via Model Gateway)', model: 'gpt-4.1-mini' },
+  { provider: 'OpenAI (via Model Gateway)', model: 'gpt-4.1' },
+  { provider: 'Anthropic (via Model Gateway)', model: 'claude-sonnet-4' },
+]
+
+export const humanUsers: HumanUser[] = [
+  {
+    id: 'usr-001',
+    name: 'Kovács Anna',
+    email: 'kovacs.anna@ostoros-novaj.hu',
+    role: 'approver',
+    authProvider: 'Clerk SSO',
+    lastLogin: '2026-06-12T08:42:00Z',
+    permissions: [
+      'board.ticket.approve',
+      'board.ticket.read',
+      'training.approve',
+      'audit.read',
+    ],
+    status: 'active',
+  },
+  {
+    id: 'usr-002',
+    name: 'Nagy Péter',
+    email: 'nagy.peter@ostoros-novaj.hu',
+    role: 'approver',
+    authProvider: 'Clerk SSO',
+    lastLogin: '2026-06-11T16:10:00Z',
+    permissions: [
+      'board.ticket.approve',
+      'training.approve',
+      'audit.read',
+      'resources.policy.approve',
+    ],
+    status: 'active',
+  },
+  {
+    id: 'usr-003',
+    name: 'Excellence Pay Admin',
+    email: 'admin@excellencepay.hu',
+    role: 'platform_admin',
+    authProvider: 'Clerk SSO',
+    lastLogin: '2026-06-12T07:00:00Z',
+    permissions: [
+      'admin.config',
+      'iam.manage',
+      'agent.create',
+      'agent.retire',
+      'audit.export',
+    ],
+    status: 'active',
+  },
+  {
+    id: 'usr-004',
+    name: 'Szabó Gábor',
+    email: 'szabo.gabor@ostoros-novaj.hu',
+    role: 'operator',
+    authProvider: 'Clerk SSO',
+    lastLogin: '2026-06-10T11:30:00Z',
+    permissions: ['board.ticket.create', 'sandbox.invoice.upload', 'board.ticket.read'],
+    status: 'active',
+  },
+  {
+    id: 'usr-005',
+    name: 'Belső auditor',
+    email: 'audit@ostoros-novaj.hu',
+    role: 'auditor',
+    authProvider: 'Clerk SSO',
+    lastLogin: '2026-06-09T14:00:00Z',
+    permissions: ['audit.read', 'audit.export', 'playbook.read'],
+    status: 'active',
+  },
+]
+
+export const agentServiceAccounts: AgentServiceAccount[] = [
+  {
+    id: 'sa-001',
+    agentId: 'agent-bookkeeper-01',
+    agentName: 'Könyvelő Agent',
+    serviceAccount: 'sa-bookkeeper@ostoros-novaj.internal',
+    apiKeyPreview: 'cp_sk_••••••••4f2a',
+    keyExpiresAt: '2026-09-01T00:00:00Z',
+    runtime: 'trusted_internal',
+    permissions: [
+      'board.ticket.create',
+      'board.ticket.read',
+      'sandbox.invoice.upload',
+      'sandbox.invoice.read',
+    ],
+    status: 'active',
+  },
+  {
+    id: 'sa-002',
+    agentId: 'agent-recon-01',
+    agentName: 'Reconciliation Agent',
+    serviceAccount: 'sa-recon@ostoros-novaj.internal',
+    apiKeyPreview: 'cp_sk_••••••••9b1c',
+    keyExpiresAt: '2026-08-15T00:00:00Z',
+    runtime: 'trusted_internal',
+    permissions: ['board.ticket.create', 'psp.settlement.read'],
+    status: 'active',
+  },
+  {
+    id: 'sa-003',
+    agentId: 'agent-doc-01',
+    agentName: 'Dokumentum Agent',
+    serviceAccount: 'sa-doc@ostoros-novaj.internal',
+    apiKeyPreview: 'cp_sk_••••••••7d4e',
+    keyExpiresAt: '2026-07-01T00:00:00Z',
+    runtime: 'trusted_internal',
+    permissions: ['docs.read', 'board.ticket.create'],
+    status: 'active',
+  },
+  {
+    id: 'sa-004',
+    agentId: 'agent-cowork-demo',
+    agentName: 'Cowork Demo (külső runtime)',
+    serviceAccount: 'sa-cowork-demo@external.local',
+    apiKeyPreview: 'cp_sk_••••••••demo',
+    keyExpiresAt: '2026-06-20T00:00:00Z',
+    runtime: 'untrusted_external',
+    permissions: ['board.ticket.read', 'board.ticket.create'],
+    status: 'active',
+  },
+]
+
+export const roleDefinitions: RoleDefinition[] = [
+  {
+    id: 'platform_admin',
+    label: 'Platform admin',
+    description: 'Control plane konfiguráció — kizárólag szállítói csapat',
+    permissions: ['admin.config', 'iam.manage', 'agent.create', 'agent.retire', 'audit.export'],
+  },
+  {
+    id: 'agent_admin',
+    label: 'Agent admin',
+    description: 'Agent életciklus, erőforrás-kötés, modell-konfig',
+    permissions: ['agent.create', 'agent.configure', 'resources.bind', 'training.propose'],
+  },
+  {
+    id: 'approver',
+    label: 'Jóváhagyó',
+    description: 'Human-in-the-loop kapuk — munka- és tanítási ticketek',
+    permissions: ['board.ticket.approve', 'training.approve', 'resources.policy.approve'],
+  },
+  {
+    id: 'operator',
+    label: 'Operátor',
+    description: 'Sandbox munka, ticket létrehozás, napi üzem',
+    permissions: ['board.ticket.create', 'sandbox.invoice.upload', 'board.ticket.read'],
+  },
+  {
+    id: 'auditor',
+    label: 'Auditor',
+    description: 'Csak olvasás — audit, playbook, compliance export',
+    permissions: ['audit.read', 'audit.export', 'playbook.read'],
+  },
+]
+
+export const ticketTypeConfigs: TicketTypeConfig[] = [
+  {
+    id: 'tt-work',
+    type: 'work',
+    label: 'Interakciós (munka-) ticket',
+    description:
+      'Agent végrehajt egy feladatot — nem módosíthatja önmagát. Olvas → cselekedj → naplózz.',
+    allowedStatuses: [
+      'backlog',
+      'in_review',
+      'approved',
+      'in_progress',
+      'awaiting_human',
+      'done',
+    ],
+    transitions: [
+      { from: 'backlog', to: 'in_review', allowedRoles: ['operator', 'agent_admin'] },
+      { from: 'in_review', to: 'approved', allowedRoles: ['approver'], requiresApproval: true },
+      { from: 'approved', to: 'in_progress', allowedRoles: ['operator', 'agent_admin'] },
+      { from: 'in_progress', to: 'awaiting_human', allowedRoles: ['operator', 'agent_admin'] },
+      { from: 'awaiting_human', to: 'done', allowedRoles: ['approver'], requiresApproval: true },
+      { from: 'awaiting_human', to: 'in_review', allowedRoles: ['approver'] },
+    ],
+    defaultAssignee: 'Könyvelő Agent / emberi jóváhagyó',
+    approvalChain: [
+      { order: 1, role: 'approver', label: 'Szakmai ellenőrzés (könyvelő)' },
+    ],
+    writeGateRequired: false,
+  },
+  {
+    id: 'tt-training',
+    type: 'training',
+    label: 'Tanítási ticket',
+    description:
+      'Kizárólag ez frissítheti az agent memóriáját. Write-gate token + eval-kapu kötelező.',
+    allowedStatuses: ['backlog', 'in_review', 'approved', 'done'],
+    transitions: [
+      { from: 'backlog', to: 'in_review', allowedRoles: ['agent_admin'] },
+      {
+        from: 'in_review',
+        to: 'approved',
+        allowedRoles: ['approver'],
+        requiresApproval: true,
+      },
+      { from: 'approved', to: 'done', allowedRoles: ['platform_admin', 'approver'] },
+    ],
+    defaultAssignee: 'Controlling / könyvelő jóváhagyó',
+    approvalChain: [
+      { order: 1, role: 'approver', label: 'Kovács Anna (könyvelő)' },
+      { order: 2, role: 'approver', label: 'Nagy Péter (controlling)' },
+    ],
+    writeGateRequired: true,
+  },
+]
