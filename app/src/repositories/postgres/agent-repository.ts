@@ -1,0 +1,150 @@
+import type { Agent, Document, Prisma } from '@prisma/client'
+import bcrypt from 'bcryptjs'
+import { randomBytes } from 'crypto'
+import { prisma } from '@/lib/db'
+import type { AgentRepository, DocumentRepository } from '../interfaces'
+
+export class PostgresAgentRepository implements AgentRepository {
+  async findMany(): Promise<Agent[]> {
+    return prisma.agent.findMany({ orderBy: { createdAt: 'desc' } })
+  }
+
+  async findById(id: string): Promise<Agent | null> {
+    return prisma.agent.findUnique({ where: { id } })
+  }
+
+  async findByIdWithDetails(id: string) {
+    const agent = await prisma.agent.findUnique({
+      where: { id },
+      include: {
+        memory: {
+          include: {
+            currentVersion: true,
+            versions: { orderBy: { version: 'desc' }, take: 5 },
+          },
+        },
+        agentResources: { include: { resource: true } },
+        apiKeys: { where: { status: 'active' }, take: 1 },
+      },
+    })
+
+    if (!agent) return null
+
+    return {
+      agent,
+      memoryContent: agent.memory.currentVersion?.content ?? null,
+      memoryVersion: agent.memory.currentVersion?.version ?? null,
+      resources: agent.agentResources.map((ar) => ({
+        id: ar.resource.id,
+        name: ar.resource.name,
+        type: ar.resource.type,
+        scope: ar.resource.scope,
+        version: ar.resource.version,
+        accessMode: ar.accessMode,
+      })),
+      apiKeyPreview: agent.apiKeys[0] ? 'cp_sk_•••••••• (scoped)' : null,
+    }
+  }
+
+  async create(input: {
+    name: string
+    roleDescription: string
+    systemPrompt: string
+    modelConfig: Agent['modelConfig']
+    initialMemory?: string
+    createdById: string
+  }) {
+    const memory = await prisma.memory.create({ data: {} })
+
+    const memoryVersion = await prisma.memoryVersion.create({
+      data: {
+        memoryId: memory.id,
+        version: 1,
+        content: input.initialMemory ?? '',
+        status: 'active',
+        source: 'createAgent',
+        approvedById: input.createdById,
+      },
+    })
+
+    await prisma.memory.update({
+      where: { id: memory.id },
+      data: { currentVersionId: memoryVersion.id },
+    })
+
+    const agent = await prisma.agent.create({
+      data: {
+        name: input.name,
+        roleDescription: input.roleDescription,
+        systemPrompt: input.systemPrompt,
+        modelConfig: input.modelConfig as Prisma.InputJsonValue,
+        status: 'active',
+        currentVersion: 1,
+        memoryId: memory.id,
+      },
+    })
+
+    await prisma.agentVersion.create({
+      data: {
+        agentId: agent.id,
+        version: 1,
+        systemPromptSnapshot: input.systemPrompt,
+        modelConfigSnapshot: input.modelConfig as Prisma.InputJsonValue,
+        memoryVersionId: memoryVersion.id,
+      },
+    })
+
+    const rawKey = `cp_sk_${randomBytes(16).toString('hex')}`
+    await prisma.agentApiKey.create({
+      data: {
+        agentId: agent.id,
+        keyHash: await bcrypt.hash(rawKey, 10),
+        scopes: ['ticket:read', 'ticket:create'],
+        status: 'active',
+      },
+    })
+
+    return { agent, apiKey: rawKey }
+  }
+
+  async authenticateApiKey(rawKey: string) {
+    if (!rawKey.startsWith('cp_sk_')) return null
+
+    const activeKeys = await prisma.agentApiKey.findMany({
+      where: { status: 'active' },
+      select: { agentId: true, keyHash: true, scopes: true, id: true },
+    })
+
+    for (const key of activeKeys) {
+      if (await bcrypt.compare(rawKey, key.keyHash)) {
+        await prisma.agentApiKey.update({
+          where: { id: key.id },
+          data: { lastUsedAt: new Date() },
+        })
+        return {
+          agentId: key.agentId,
+          scopes: key.scopes as string[],
+        }
+      }
+    }
+
+    return null
+  }
+}
+
+export class PostgresDocumentRepository implements DocumentRepository {
+  async findById(id: string): Promise<Document | null> {
+    return prisma.document.findUnique({ where: { id } })
+  }
+
+  async create(data: Omit<Document, 'id' | 'createdAt'>): Promise<Document> {
+    return prisma.document.create({ data })
+  }
+
+  async update(
+    id: string,
+    data: Partial<Pick<Document, 'status' | 'extractedText'>>,
+  ): Promise<Document> {
+    return prisma.document.update({ where: { id }, data })
+  }
+}

@@ -1,0 +1,286 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum UserRole {
+  admin
+  approver
+  operator
+  viewer
+}
+
+enum AgentStatus {
+  draft
+  active
+  retired
+}
+
+enum ApiKeyStatus {
+  active
+  revoked
+}
+
+enum MemoryVersionStatus {
+  proposed
+  active
+  rolled_back
+}
+
+enum ResourceType {
+  secret
+  policy
+  file
+  dataset
+  connector
+  tool
+}
+
+enum ResourceScope {
+  global
+  group
+  single
+}
+
+enum AccessMode {
+  read
+  use
+}
+
+enum TicketType {
+  interaction
+  training
+}
+
+enum TicketState {
+  backlog
+  in_review
+  approved
+  in_progress
+  awaiting_human
+  done
+  rejected
+}
+
+enum AssigneeType {
+  human
+  agent
+}
+
+enum DocumentStatus {
+  uploaded
+  processing
+  processed
+  failed
+}
+
+enum AuditActorType {
+  human
+  agent
+  system
+}
+
+model User {
+  id              String   @id @default(uuid()) @db.Uuid
+  externalAuthId  String   @unique @map("external_auth_id")
+  email           String
+  name            String
+  role            UserRole @default(viewer)
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  approvedMemoryVersions MemoryVersion[] @relation("MemoryApprovedBy")
+  createdTickets         Ticket[]        @relation("TicketCreatedBy")
+  uploadedDocuments      Document[]      @relation("DocumentUploadedBy")
+
+  @@map("users")
+}
+
+model Agent {
+  id              String      @id @default(uuid()) @db.Uuid
+  name            String
+  roleDescription String      @map("role_description")
+  systemPrompt    String      @map("system_prompt")
+  modelConfig     Json        @map("model_config")
+  status          AgentStatus @default(draft)
+  currentVersion  Int         @default(1) @map("current_version")
+  memoryId        String      @unique @map("memory_id") @db.Uuid
+  createdAt       DateTime    @default(now()) @map("created_at") @db.Timestamptz
+
+  memory       Memory          @relation(fields: [memoryId], references: [id])
+  versions     AgentVersion[]
+  apiKeys      AgentApiKey[]
+  agentResources AgentResource[]
+  tickets      Ticket[]
+  modelCalls   ModelCall[]
+
+  @@map("agents")
+}
+
+model AgentVersion {
+  id                   String   @id @default(uuid()) @db.Uuid
+  agentId              String   @map("agent_id") @db.Uuid
+  version              Int
+  systemPromptSnapshot String   @map("system_prompt_snapshot")
+  modelConfigSnapshot  Json     @map("model_config_snapshot")
+  memoryVersionId      String   @map("memory_version_id") @db.Uuid
+  createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  agent         Agent         @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  memoryVersion MemoryVersion @relation(fields: [memoryVersionId], references: [id])
+
+  @@unique([agentId, version])
+  @@map("agent_versions")
+}
+
+model AgentApiKey {
+  id         String       @id @default(uuid()) @db.Uuid
+  agentId    String       @map("agent_id") @db.Uuid
+  keyHash    String       @map("key_hash")
+  scopes     Json
+  status     ApiKeyStatus @default(active)
+  createdAt  DateTime     @default(now()) @map("created_at") @db.Timestamptz
+  lastUsedAt DateTime?    @map("last_used_at") @db.Timestamptz
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@map("agent_api_keys")
+}
+
+model Memory {
+  id               String  @id @default(uuid()) @db.Uuid
+  currentVersionId String? @map("current_version_id") @db.Uuid
+
+  agent          Agent?
+  versions       MemoryVersion[] @relation("MemoryVersions")
+  currentVersion MemoryVersion?  @relation("MemoryCurrentVersion", fields: [currentVersionId], references: [id])
+
+  @@map("memories")
+}
+
+model MemoryVersion {
+  id               String              @id @default(uuid()) @db.Uuid
+  memoryId         String              @map("memory_id") @db.Uuid
+  version          Int
+  content          String
+  diffFromPrevious Json?               @map("diff_from_previous")
+  status           MemoryVersionStatus @default(proposed)
+  source           String?
+  approvedById     String?             @map("approved_by") @db.Uuid
+  createdAt        DateTime            @default(now()) @map("created_at") @db.Timestamptz
+
+  memory         Memory         @relation("MemoryVersions", fields: [memoryId], references: [id], onDelete: Cascade)
+  approvedBy     User?          @relation("MemoryApprovedBy", fields: [approvedById], references: [id])
+  agentVersions  AgentVersion[]
+  currentForMemory Memory[]     @relation("MemoryCurrentVersion")
+
+  @@unique([memoryId, version])
+  @@map("memory_versions")
+}
+
+model Resource {
+  id        String        @id @default(uuid()) @db.Uuid
+  type      ResourceType
+  name      String
+  scope     ResourceScope
+  version   Int           @default(1)
+  dataRef   String        @map("data_ref")
+  createdAt DateTime      @default(now()) @map("created_at") @db.Timestamptz
+
+  agentResources AgentResource[]
+
+  @@map("resources")
+}
+
+model AgentResource {
+  agentId    String     @map("agent_id") @db.Uuid
+  resourceId String     @map("resource_id") @db.Uuid
+  accessMode AccessMode @map("access_mode")
+
+  agent    Agent    @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  resource Resource @relation(fields: [resourceId], references: [id], onDelete: Cascade)
+
+  @@id([agentId, resourceId])
+  @@map("agent_resources")
+}
+
+model Document {
+  id            String         @id @default(uuid()) @db.Uuid
+  filename      String
+  storageRef    String         @map("storage_ref")
+  extractedText String?        @map("extracted_text")
+  status        DocumentStatus @default(uploaded)
+  uploadedById  String         @map("uploaded_by") @db.Uuid
+  createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz
+
+  uploadedBy User     @relation("DocumentUploadedBy", fields: [uploadedById], references: [id])
+  tickets    Ticket[]
+
+  @@map("documents")
+}
+
+model Ticket {
+  id               String        @id @default(uuid()) @db.Uuid
+  type             TicketType
+  title            String
+  state            TicketState   @default(backlog)
+  assigneeType     AssigneeType? @map("assignee_type")
+  assigneeId       String?       @map("assignee_id") @db.Uuid
+  agentId          String?       @map("agent_id") @db.Uuid
+  payload          Json          @default("{}")
+  sourceDocumentId String?       @map("source_document_id") @db.Uuid
+  executeAfter     DateTime?     @map("execute_after") @db.Timestamptz
+  dueBy            DateTime?     @map("due_by") @db.Timestamptz
+  createdById      String        @map("created_by") @db.Uuid
+  createdAt        DateTime      @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt        DateTime      @updatedAt @map("updated_at") @db.Timestamptz
+
+  agent          Agent?    @relation(fields: [agentId], references: [id])
+  sourceDocument Document? @relation(fields: [sourceDocumentId], references: [id])
+  createdBy      User      @relation("TicketCreatedBy", fields: [createdById], references: [id])
+  modelCalls     ModelCall[]
+
+  @@map("tickets")
+}
+
+model AuditLog {
+  id             String         @id @default(uuid()) @db.Uuid
+  seq            BigInt         @default(autoincrement())
+  actorType      AuditActorType @map("actor_type")
+  actorId        String?        @map("actor_id") @db.Uuid
+  agentVersion   Int?           @map("agent_version")
+  action         String
+  targetType     String         @map("target_type")
+  targetId       String?        @map("target_id") @db.Uuid
+  modelUsed      String?        @map("model_used")
+  inputRef       String?        @map("input_ref")
+  outputRef      String?        @map("output_ref")
+  policyDecision String?        @map("policy_decision")
+  prevHash       String?        @map("prev_hash")
+  hash           String?
+  metadata       Json?
+  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz
+
+  @@map("audit_log")
+}
+
+model ModelCall {
+  id               String   @id @default(uuid()) @db.Uuid
+  agentId          String   @map("agent_id") @db.Uuid
+  ticketId         String?  @map("ticket_id") @db.Uuid
+  provider         String
+  model            String
+  promptTokens     Int      @map("prompt_tokens")
+  completionTokens Int      @map("completion_tokens")
+  costEstimate     Decimal  @map("cost_estimate") @db.Decimal(12, 6)
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  agent  Agent   @relation(fields: [agentId], references: [id])
+  ticket Ticket? @relation(fields: [ticketId], references: [id])
+
+  @@map("model_calls")
+}

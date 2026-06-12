@@ -1,0 +1,69 @@
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,500&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: 'Hanken Grotesk', system-ui, -apple-system, sans-serif;
+  --font-display: 'Fraunces', Georgia, serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  --color-night: #181210;
+  --color-night-2: #1f1714;
+  --color-card: #261c18;
+  --color-card-2: #2e221c;
+  --color-line: #43332b;
+
+  --color-ink: #f6ecdd;
+  --color-ink-soft: #cdb9a6;
+  --color-ink-faint: #9a8678;
+
+  --color-coral: #ec7a5f;
+  --color-coral-deep: #c85c44;
+  --color-honey: #f2b35e;
+  --color-sage: #8fc08a;
+  --color-rose: #e98aa6;
+  --color-sky: #82b6cf;
+  --color-grape: #b69ae0;
+}
+
+@layer base {
+  html {
+    color-scheme: dark;
+  }
+
+  body {
+    margin: 0;
+    font-family: var(--font-sans);
+    color: var(--color-ink);
+    background-color: var(--color-night);
+    background-image:
+      radial-gradient(58rem 40rem at 8% -8%, rgba(236, 122, 95, 0.16), transparent 60%),
+      radial-gradient(48rem 36rem at 102% 4%, rgba(242, 179, 94, 0.13), transparent 58%),
+      radial-gradient(60rem 50rem at 50% 118%, rgba(143, 192, 138, 0.08), transparent 60%);
+    background-attachment: fixed;
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+@layer components {
+  .atelier-card {
+    background: linear-gradient(168deg, var(--color-card-2), var(--color-card));
+    border: 1px solid var(--color-line);
+    border-radius: 1.25rem;
+    box-shadow:
+      0 1px 0 0 rgba(255, 240, 222, 0.04) inset,
+      0 18px 40px -28px rgba(0, 0, 0, 0.85);
+  }
+
+  .atelier-soft {
+    background: rgba(40, 30, 25, 0.5);
+    border: 1px solid rgba(120, 92, 78, 0.28);
+    border-radius: 1rem;
+  }
+}
+
+@keyframes breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.045); }
+}
+
+.animate-breathe { animation: breathe 5.5s ease-in-out infinite; }

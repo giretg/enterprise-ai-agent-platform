@@ -1,81 +1,51 @@
-# Enterprise AI Agent Platform — MVP Prototípus
+# Enterprise AI Agent Platform
 
-Kattintható UI mockup a **Kontrollált Enterprise AI Agent Platform** koncepcióhoz.
+Kontrollált Enterprise AI Agent Platform — Fázis 1 (Next.js + Postgres).
 
-- **Control Plane** — governance, board, ticketek, audit
+- **Control Plane** — governance, board, ticketek, audit, agent registry
 - **Sandbox** — könyvelő agent munkatér, számlafeldolgozás
-
-> Prototípus: mock adatok, szimulált logika, nincs valódi backend vagy LLM.
 
 ## Dokumentáció
 
-- [`../AI-Agent-Platform-Koncepcio.md`](../AI-Agent-Platform-Koncepcio.md) — teljes koncepció
-- [`../AI-Agent-Platform-MVP-Terv.md`](../AI-Agent-Platform-MVP-Terv.md) — MVP fejlesztési terv
-
-## Demó-forgatókönyv
-
-1. Control Plane → Áttekintés
-2. Sandbox → Számla feltöltése → jóváhagyásra küldés
-3. Board → ticket jóváhagyás (Awaiting Human)
-4. **TKT-1030** tanítási ticket → memória diff jóváhagyás
-5. **Könyvelő Agent** anatómia → memória verzió + **Rollback**
-6. **Audit log** → teljes, szűrhető napló
-7. **Agent wizard** → `/control-plane/agents/new`
-8. **Erőforrás-katalógus** → `/control-plane/resources`
-9. **Model Gateway** → `/control-plane/models`
-10. **Playbook** → `/control-plane/playbook` (Sandbox demó után frissül)
-11. **IAM** → `/control-plane/iam` (emberek + agent service accountok)
-12. **Admin** → `/control-plane/admin` (tickettípusok, állapotgép, jóváhagyási láncok)
+- [`AI-Agent-Platform-Fazis1-Spec.md`](AI-Agent-Platform-Fazis1-Spec.md) — Fázis 1 fejlesztői spec
+- [`AI-Agent-Platform-Koncepcio.md`](AI-Agent-Platform-Koncepcio.md) — teljes koncepció
+- [`AI-Agent-Platform-MVP-Terv.md`](AI-Agent-Platform-MVP-Terv.md) — MVP fejlesztési terv
 
 ## Futtatás
 
 ```bash
 cd app
+cp .env.example .env.local
 npm install
+npm run db:push
+npm run db:seed
 npm run dev
 ```
 
-Nyisd meg: http://localhost:5173
+Nyisd meg: http://localhost:3000/control-plane
 
-## Firebase Hosting
+A repó gyökeréből: `npm run dev`, `npm run build`.
 
-Projekt: **enterprise-ai-demo**  
-Élő URL (deploy után): https://enterprise-ai-demo.web.app
+Részletes útmutató: [`app/README.md`](app/README.md)
 
-### Előkészítés (egyszer)
+## Deploy
 
-```bash
-npx -y firebase-tools@latest login
-npx -y firebase-tools@latest use enterprise-ai-demo
-```
-
-Opcionális: másold `app/.env.example` → `app/.env` (a build env var-okat onnan olvassa).
-
-### Deploy
-
-```bash
-cd app
-npm run deploy
-```
-
-Ez buildeli a Vite appot (`app/dist`) és feltölti Firebase Hostingra. SPA routing: minden útvonal `index.html`-re irányul (`firebase.json` rewrite).
-
-### Firebase SDK
-
-Az app inicializálja a Firebase-t és (böngészőben) az Analytics-t: `app/src/shared/firebase/index.ts`.
+Firebase App Hosting — a Next.js app az `app/` mappában fut (`firebase.json` → `rootDir: app`).
 
 ## Technológia
 
-- React 19 + Vite + TypeScript
-- Tailwind CSS v4
-- React Router
-- Kliens oldali mock state (DemoContext)
+- Next.js 16 (App Router) + React 19 + TypeScript
+- Postgres (Prisma) — Neon
+- Clerk auth + RBAC
+- Gemini Model Gateway
 
 ## Struktúra
 
 ```
 app/src/
-  control-plane/   # 1. app — irányítóközpont
-  sandbox/         # 2. app — munkatér
-  shared/          # mock adat, típusok, közös UI
+  domain/          # üzleti logika
+  repositories/    # Postgres implementációk
+  auth/            # AuthProvider absztrakció
+  app/             # Next.js routes + server actions
+  components/      # UI komponensek
 ```

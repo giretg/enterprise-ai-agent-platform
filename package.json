@@ -2,11 +2,12 @@
   "name": "enterprise-ai-agent-platform",
   "private": true,
   "scripts": {
+    "dev": "npm run dev --prefix app",
     "build": "npm ci --prefix app && npm run build --prefix app",
-    "start": "superstatic serve app/dist --config superstatic.json --port $PORT --host 0.0.0.0"
-  },
-  "dependencies": {
-    "superstatic": "^9.2.0"
+    "start": "npm run start --prefix app",
+    "db:push": "npm run db:push --prefix app",
+    "db:seed": "npm run db:seed --prefix app",
+    "test:acceptance": "npm run test:acceptance --prefix app"
   },
   "engines": {
     "node": ">=20"
