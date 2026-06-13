@@ -11,6 +11,7 @@
     "db:migrate": "prisma migrate dev",
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts",
+    "db:backfill-audit": "tsx scripts/backfill-audit-hashes.ts",
     "test:acceptance": "tsx scripts/acceptance-e2e.ts",
     "postinstall": "prisma generate"
   },

@@ -54,7 +54,11 @@ Jóváhagyási műveletekhez állítsd: `DEV_AUTH_ROLE=approver`
 
 ## Deploy
 
-Firebase App Hosting (`apphosting.yaml`, `firebase.json` → `rootDir: app`).
+Firebase App Hosting — részletes útmutató: [`DEPLOY.md`](../DEPLOY.md)
+
+```bash
+npm run deploy   # repó gyökeréből
+```
 
 ## Dokumentáció
 

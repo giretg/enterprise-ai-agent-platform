@@ -8,7 +8,7 @@
 
 ---
 
-## Implementációs állapot (2026-06-12, éjjeli frissítés)
+## Implementációs állapot (2026-06-12, délutáni frissítés)
 
 **Kódbázis:** `app/` (Next.js App Router)
 
@@ -36,14 +36,17 @@
 | Könyvelő agent flow (8. szakasz) | ✅ | Runtime + acceptance E2E zöld |
 | Tanítás v1 + rollback (9. szakasz) | ✅ | `TrainingService` + **C7** `/control-plane/training` |
 | Audit log v1 (3.1, 5. szakasz) | ✅ | Append-only, hash mezők üresen |
-| UI bekötés (10. szakasz) | ✅ | C1–C5, **C7**, C8, S1–S2 ✅; **Kanban drag** ✅; mockup polish ⬜ |
+| UI bekötés (10. szakasz) | ✅ | C1–C5, **C7**, C8, S1–S2; Kanban drag; mockup polish ✅ |
 | Agent wizard UI | ✅ | `/control-plane/agents/new` (admin) |
 | Seed (Könyvelő Agent) | ✅ | `npm run db:seed` |
 | DB migráció Neon-on | ✅ | Séma + seed futott (2026-06-12) |
 | Production build | ✅ | `npm run build` zöld (2026-06-12) |
 | Acceptance (14. szakasz) | ✅ | `npm run test:acceptance` — 22/22 zöld (2026-06-12) |
+| **Deploy konfig** | ✅ | `app/apphosting.yaml`, `DEPLOY.md`, `npm run deploy` |
+| **Production deploy** | ⬜ | Firebase App Hosting — secrets + `firebase deploy` (manuális lépés) |
+| **Clerk webhook (prod)** | ⬜ | Dashboard regisztráció deploy után (lásd `DEPLOY.md`) |
 
-**Következő lépés:** Production deploy (Vercel/Firebase App Hosting), Clerk webhook endpoint regisztrálása Dashboard-on, UI polish (mockup finomhangolás).
+**Következő lépés:** Production deploy futtatása (`npm run deploy`), Clerk webhook regisztrálása production URL-re.
 
 **Acceptance futtatás:** `cd app && npm run test:acceptance`
 
@@ -54,6 +57,13 @@
 - ✅ Dev fallback: Clerk kulcs nélkül `DevAuthProvider` + „Dev auth” badge
 - ✅ Webhook: `POST /api/webhooks/clerk` — `verifyWebhook`, `user.created`/`user.updated` → Prisma upsert
 - ⬜ Hiányzik: org support (Fázis 2+)
+- ⬜ Hiányzik: production webhook endpoint regisztráció (deploy után)
+
+**UI polish (2026-06-12):**
+- ✅ Dashboard: governance státusz kártya (guardrail/hash-lánc Fázis 2 badge), demó flow linkek, jóváhagyásra váró számláló
+- ✅ Kanban: magyar állapotcímkék, oszlop accent színek
+- ✅ ProposalCard: strukturált számla-javaslat megjelenítés (S2, C3)
+- ✅ Ticket detail: magyar címkék, raw payload `<details>` alatt
 
 ---
 
@@ -431,6 +441,7 @@ src/
 | WP5 | Audit + tanítás | Audit log v1, C8, tanítás-verziózás, rollback, C7 | 1 hét | ✅ |
 | WP6 | Integráció + acceptance | End-to-end összekötés, acceptance-forgatókönyvek, hibajavítás | 0,5–1 hét | ✅ |
 | WP7 | UI + auth polish | Kanban drag, C7 oldal, agent wizard, Clerk webhook | 0,5 hét | ✅ |
+| WP8 | Deploy prep + UI polish | `apphosting.yaml`, `DEPLOY.md`, dashboard/governance, ProposalCard | 0,25 hét | ✅ |
 
 **Összesen: ~5–7 hét**, 1–2 fejlesztő (egybevág a roadmap becslésével).
 

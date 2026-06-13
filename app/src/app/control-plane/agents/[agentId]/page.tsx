@@ -2,6 +2,8 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { getAgent } from '@/app/actions/platform'
 import { Badge, Card } from '@/components/ui/shell'
+import { AgentAvatar } from '@/components/agents/agent-avatar'
+import { personaFor, humanStatus } from '@/lib/agent-persona'
 
 export default async function AgentDetailPage({
   params,
@@ -14,13 +16,39 @@ export default async function AgentDetailPage({
 
   const { agent, memoryContent, memoryVersion, resources, apiKeyPreview } = res.data
   const modelConfig = agent.modelConfig as Record<string, unknown>
+  const persona = personaFor(agent.name)
+  const mood = humanStatus(agent.status)
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center gap-3">
-        <h1 className="font-display text-3xl font-semibold">{agent.name}</h1>
-        <Badge tone="success">{agent.status}</Badge>
-      </div>
+      <Link
+        href="/control-plane/agents"
+        className="inline-block text-sm font-medium text-ink-soft hover:text-coral-deep"
+      >
+        ← Vissza a csapathoz
+      </Link>
+
+      {/* Persona header — meet the coworker */}
+      <Card className="animate-rise">
+        <div className="flex flex-wrap items-center gap-5">
+          <AgentAvatar name={agent.name} status={agent.status} size="lg" />
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-3">
+              <h1 className="font-display text-[2.2rem] font-semibold leading-none">
+                {persona.nickname}
+              </h1>
+              <span className="text-2xl" aria-hidden>
+                {persona.emoji}
+              </span>
+              <Badge tone={agent.status === 'active' ? 'success' : 'neutral'}>{mood.label}</Badge>
+            </div>
+            <p className="mt-2 text-sm text-ink-faint">{agent.name}</p>
+            <p className="mt-2 max-w-2xl text-base italic text-ink-soft">“{persona.greeting}”</p>
+          </div>
+        </div>
+        <div className="estate-rule my-4" />
+        <p className="text-sm leading-relaxed text-ink-soft">{persona.trait}</p>
+      </Card>
 
       <div className="grid gap-6 lg:grid-cols-2">
         <Card title="System prompt">

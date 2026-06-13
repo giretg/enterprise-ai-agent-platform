@@ -89,9 +89,7 @@ export class TicketService {
       modelUsed: null,
       inputRef: ticket.state,
       outputRef: params.toState,
-      policyDecision: 'n/a',
-      prevHash: null,
-      hash: null,
+      policyDecision: 'allowed',
       metadata: params.note ? { note: params.note } : null,
     })
 

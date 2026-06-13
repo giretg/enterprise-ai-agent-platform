@@ -3,7 +3,9 @@
 import { useRouter } from 'next/navigation'
 import { useState, useTransition } from 'react'
 import { transitionTicket } from '@/app/actions/platform'
+import { ProposalCard } from '@/components/tickets/proposal-card'
 import { Badge, Card } from '@/components/ui/shell'
+import { TICKET_STATE_LABELS, TICKET_STATE_TONE } from '@/lib/ticket-labels'
 
 type TicketView = {
   id: string
@@ -88,24 +90,15 @@ export function TicketMeta({ ticket }: { ticket: TicketView }) {
 
   return (
     <>
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-3">
         <h1 className="font-display text-2xl font-semibold">{ticket.title}</h1>
-        <Badge>{ticket.state}</Badge>
-        <Badge tone="neutral">{ticket.type}</Badge>
+        <Badge tone={TICKET_STATE_TONE[ticket.state] ?? 'neutral'}>
+          {TICKET_STATE_LABELS[ticket.state] ?? ticket.state}
+        </Badge>
+        <Badge tone="neutral">{ticket.type === 'training' ? 'Tanítás' : 'Interakció'}</Badge>
       </div>
 
-      {proposal && (
-        <Card title="Könyvelési javaslat" className="mt-6">
-          <dl className="grid gap-3 sm:grid-cols-2 text-sm">
-            {Object.entries(proposal).map(([key, value]) => (
-              <div key={key}>
-                <dt className="text-ink-faint">{key}</dt>
-                <dd className="font-medium">{String(value)}</dd>
-              </div>
-            ))}
-          </dl>
-        </Card>
-      )}
+      {proposal && <ProposalCard proposal={proposal} className="mt-6" />}
 
       {diff && (
         <Card title="Tanítási diff" className="mt-6">
@@ -113,8 +106,11 @@ export function TicketMeta({ ticket }: { ticket: TicketView }) {
         </Card>
       )}
 
-      <Card title="Payload (raw)" className="mt-6">
-        <pre className="overflow-x-auto text-xs text-ink-soft">{JSON.stringify(payload, null, 2)}</pre>
+      <Card title="Payload (debug)" className="mt-6">
+        <details>
+          <summary className="cursor-pointer text-xs text-ink-faint">Raw JSON megjelenítése</summary>
+          <pre className="mt-3 overflow-x-auto text-xs text-ink-soft">{JSON.stringify(payload, null, 2)}</pre>
+        </details>
       </Card>
     </>
   )

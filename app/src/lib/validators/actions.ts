@@ -43,8 +43,27 @@ export const createTrainingSchema = z.object({
   source: z.string().min(1),
 })
 
+export const goldenSetAssertionSchema = z.object({
+  description: z.string().min(1),
+  type: z.enum(['contains', 'not_contains', 'min_length']),
+  value: z.union([z.string(), z.number()]),
+})
+
 export const approveTrainingSchema = z.object({
   ticketId: z.string().uuid(),
+  overrideEval: z.boolean().optional(),
+})
+
+export const createEvalSchema = z.object({
+  agentId: z.string().uuid(),
+  name: z.string().min(1),
+  goldenSet: z.array(goldenSetAssertionSchema).min(1),
+})
+
+export const runEvalSchema = z.object({
+  evalId: z.string().uuid(),
+  agentId: z.string().uuid(),
+  proposedContent: z.string().min(1),
 })
 
 export const rollbackMemorySchema = z.object({

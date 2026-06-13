@@ -226,8 +226,8 @@ async function scenario3_training(operatorId: string, approverId: string, agentI
   }
 
   try {
-    const mv = await services.training.approveTraining(trainingTicket.id, approverId)
-    pass('Tanítás jóváhagyva', `memory v${mv.version}`)
+    const result = await services.training.approveTraining(trainingTicket.id, approverId)
+    pass('Tanítás jóváhagyva', `memory v${result.memoryVersion.version}`)
   } catch (e) {
     fail('approveTraining', e instanceof Error ? e.message : String(e))
     return
@@ -388,8 +388,89 @@ async function scenarioAgentApi(agentId: string) {
   }
 }
 
+/** 7. Fázis 2 governance — hash-lánc, eval-kapu, write-gate */
+async function scenario7_governance(operatorId: string, approverId: string, agentId: string) {
+  console.log('\n[7] Fázis 2 governance (hash-lánc, eval, write-gate)')
+
+  const verify = await services.auditChain.verifyChain()
+  if (verify.ok) {
+    pass('Audit hash-lánc verify', `${verify.checked} bejegyzés`)
+  } else {
+    fail('Audit hash-lánc verify', `törés seq ${verify.firstBreakSeq}`)
+    return
+  }
+
+  await prisma.eval.updateMany({ where: { agentId, status: 'active' }, data: { status: 'retired' } })
+
+  const evalDef = await services.eval.create({
+    agentId,
+    name: 'acceptance-governance',
+    goldenSet: [
+      {
+        description: 'kötelező magic phrase',
+        type: 'contains',
+        value: 'XYZZY_ACCEPTANCE_GATE',
+      },
+    ],
+  })
+
+  const before = await repositories.agents.findByIdWithDetails(agentId)
+  const proposedContent = `${before?.memoryContent ?? ''}\nTartalom magic phrase nélkül.`
+
+  const trainingTicket = await services.training.createTrainingTicket({
+    agentId,
+    proposedContent,
+    source: 'acceptance-governance',
+    createdById: operatorId,
+  })
+
+  let blocked = false
+  try {
+    await services.training.approveTraining(trainingTicket.id, approverId)
+  } catch (e) {
+    blocked = true
+    const msg = e instanceof Error ? e.message : String(e)
+    if (msg.startsWith('eval_failed')) {
+      pass('Eval-kapu blokkol rossz tartalmat')
+    } else {
+      fail('Eval-kapu blokkolás', msg)
+    }
+  }
+  if (!blocked) fail('Eval-kapu', 'nem blokkolta a jóváhagyást')
+
+  const blockedAudit = await repositories.audit.findMany({
+    action: 'memory.write.eval_blocked',
+    limit: 5,
+  })
+  if (blockedAudit.length > 0) pass('Audit: memory.write.eval_blocked')
+  else fail('Audit eval_blocked', 'nincs bejegyzés')
+
+  try {
+    const result = await services.training.approveTraining(trainingTicket.id, approverId, {
+      overrideEval: true,
+    })
+    pass('Eval override + jóváhagyás', `memory v${result.memoryVersion.version}`)
+
+    const token = await prisma.writeGateToken.findUnique({ where: { id: result.writeGateTokenId } })
+    if (token?.status === 'consumed') pass('Write-gate token consumed')
+    else fail('Write-gate token', `status=${token?.status ?? 'missing'}`)
+  } catch (e) {
+    fail('Eval override approve', e instanceof Error ? e.message : String(e))
+    return
+  }
+
+  const overrideAudit = await repositories.audit.findMany({
+    action: 'memory.write.eval_override',
+    limit: 5,
+  })
+  if (overrideAudit.length > 0) pass('Audit: memory.write.eval_override')
+  else fail('Audit eval_override', 'nincs bejegyzés')
+
+  await prisma.eval.update({ where: { id: evalDef.id }, data: { status: 'retired' } })
+}
+
 async function main() {
-  console.log('=== Fázis 1 Acceptance (spec §14) ===\n')
+  console.log('=== Fázis 1–2 Acceptance (spec §14 + governance) ===\n')
 
   const operator = await getUser('operator')
   const approver = await getUser('approver')
@@ -410,6 +491,7 @@ async function main() {
   }
   await scenario5_forbiddenTransition(operator.id, agent.id)
   await scenario6_reproducibility(ticketId, agent.id)
+  await scenario7_governance(operator.id, approver.id, agent.id)
   await scenarioAgentApi(agent.id)
 
   const passed = results.filter((r) => r.ok).length

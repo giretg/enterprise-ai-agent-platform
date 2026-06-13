@@ -10,8 +10,8 @@ export default function SandboxLayout({ children }: { children: React.ReactNode 
 
   return (
     <AppShell
-      appName="Sandbox"
-      appSubtitle="Könyvelő munkatér · Data Plane"
+      appName="A Présház"
+      appSubtitle="Sandbox · Könyvelő munkatér"
       navItems={navItems}
       accentColor="teal"
       pathname={pathname}

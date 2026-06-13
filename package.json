@@ -7,7 +7,9 @@
     "start": "npm run start --prefix app",
     "db:push": "npm run db:push --prefix app",
     "db:seed": "npm run db:seed --prefix app",
-    "test:acceptance": "npm run test:acceptance --prefix app"
+    "db:backfill-audit": "npm run db:backfill-audit --prefix app",
+    "test:acceptance": "npm run test:acceptance --prefix app",
+    "deploy": "npx -y firebase-tools@latest deploy --only apphosting"
   },
   "engines": {
     "node": ">=20"

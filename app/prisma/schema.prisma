@@ -117,6 +117,8 @@ model Agent {
   agentResources AgentResource[]
   tickets      Ticket[]
   modelCalls   ModelCall[]
+  writeGateTokens WriteGateToken[]
+  evals           Eval[]
 
   @@map("agents")
 }
@@ -158,6 +160,7 @@ model Memory {
   agent          Agent?
   versions       MemoryVersion[] @relation("MemoryVersions")
   currentVersion MemoryVersion?  @relation("MemoryCurrentVersion", fields: [currentVersionId], references: [id])
+  writeGateTokens WriteGateToken[]
 
   @@map("memories")
 }
@@ -177,6 +180,7 @@ model MemoryVersion {
   approvedBy     User?          @relation("MemoryApprovedBy", fields: [approvedById], references: [id])
   agentVersions  AgentVersion[]
   currentForMemory Memory[]     @relation("MemoryCurrentVersion")
+  evalRuns       EvalRun[]
 
   @@unique([memoryId, version])
   @@map("memory_versions")
@@ -243,6 +247,7 @@ model Ticket {
   sourceDocument Document? @relation(fields: [sourceDocumentId], references: [id])
   createdBy      User      @relation("TicketCreatedBy", fields: [createdById], references: [id])
   modelCalls     ModelCall[]
+  writeGateTokens WriteGateToken[]
 
   @@map("tickets")
 }
@@ -283,4 +288,76 @@ model ModelCall {
   ticket Ticket? @relation(fields: [ticketId], references: [id])
 
   @@map("model_calls")
+}
+
+// ── Fázis 2: Write-gate token ──────────────────────────────────────────────
+
+enum WriteGateTokenStatus {
+  issued
+  consumed
+  expired
+  revoked
+}
+
+model WriteGateToken {
+  id               String               @id @default(uuid()) @db.Uuid
+  trainingTicketId String               @map("training_ticket_id") @db.Uuid
+  agentId          String               @map("agent_id") @db.Uuid
+  targetMemoryId   String               @map("target_memory_id") @db.Uuid
+  expectedDiffHash String               @map("expected_diff_hash")
+  tokenHash        String               @map("token_hash")
+  signature        String
+  status           WriteGateTokenStatus @default(issued)
+  issuedAt         DateTime             @default(now()) @map("issued_at") @db.Timestamptz
+  expiresAt        DateTime             @map("expires_at") @db.Timestamptz
+  consumedAt       DateTime?            @map("consumed_at") @db.Timestamptz
+
+  trainingTicket Ticket @relation(fields: [trainingTicketId], references: [id], onDelete: Cascade)
+  agent          Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  targetMemory   Memory @relation(fields: [targetMemoryId], references: [id], onDelete: Cascade)
+
+  @@map("write_gate_tokens")
+}
+
+// ── Fázis 2: Eval-kapu ────────────────────────────────────────────────────
+
+enum EvalStatus {
+  active
+  retired
+}
+
+enum EvalRunTrigger {
+  pre_training_approval
+  scheduled
+  manual
+}
+
+model Eval {
+  id        String     @id @default(uuid()) @db.Uuid
+  agentId   String     @map("agent_id") @db.Uuid
+  name      String
+  goldenSet Json       @map("golden_set")
+  status    EvalStatus @default(active)
+
+  agent Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  runs  EvalRun[]
+
+  @@map("evals")
+}
+
+model EvalRun {
+  id              String         @id @default(uuid()) @db.Uuid
+  evalId          String         @map("eval_id") @db.Uuid
+  trigger         EvalRunTrigger
+  agentVersion    Int            @map("agent_version")
+  memoryVersionId String?        @map("memory_version_id") @db.Uuid
+  passed          Boolean
+  score           Float
+  details         Json
+  createdAt       DateTime       @default(now()) @map("created_at") @db.Timestamptz
+
+  eval          Eval           @relation(fields: [evalId], references: [id], onDelete: Cascade)
+  memoryVersion MemoryVersion? @relation(fields: [memoryVersionId], references: [id])
+
+  @@map("eval_runs")
 }

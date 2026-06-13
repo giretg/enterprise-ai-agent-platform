@@ -87,9 +87,7 @@ export class ModelGateway {
         modelUsed: model,
         inputRef: `tokens:${promptTokens}`,
         outputRef: `tokens:${completionTokens}`,
-        policyDecision: 'n/a',
-        prevHash: null,
-        hash: null,
+        policyDecision: 'allowed',
         metadata: { costEstimate },
       })
 

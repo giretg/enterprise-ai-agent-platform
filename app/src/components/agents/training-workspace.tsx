@@ -17,6 +17,12 @@ type TrainingPayload = {
   source?: string
 }
 
+type ApproveResult = {
+  memoryVersion: { version: number }
+  writeGateTokenId: string
+  evalRun: { passed: boolean; score: number } | null
+} | null
+
 function trainingPayload(ticket: Ticket): TrainingPayload {
   if (typeof ticket.payload === 'object' && ticket.payload !== null && !Array.isArray(ticket.payload)) {
     return ticket.payload as TrainingPayload
@@ -39,6 +45,8 @@ export function TrainingWorkspace({
   const [content, setContent] = useState('')
   const [rollbackTo, setRollbackTo] = useState(1)
   const [message, setMessage] = useState<string | null>(null)
+  const [lastApprove, setLastApprove] = useState<ApproveResult>(null)
+  const [evalBlockedFor, setEvalBlockedFor] = useState<string | null>(null)
 
   const selectedAgent = agents.find((a) => a.id === agentId)
 
@@ -140,20 +148,58 @@ export function TrainingWorkspace({
                     </div>
                   )}
                   {ticket.state === 'awaiting_human' && (
-                    <button
-                      type="button"
-                      disabled={pending}
-                      className="mt-3 rounded-full bg-sage/20 px-4 py-2 text-sm font-semibold text-sage disabled:opacity-50"
-                      onClick={() => {
-                        startTransition(async () => {
-                          const res = await approveTraining({ ticketId: ticket.id })
-                          setMessage(res.success ? 'Memória frissítve' : res.error)
-                          if (res.success) router.refresh()
-                        })
-                      }}
-                    >
-                      Jóváhagyás (approver)
-                    </button>
+                    <div className="mt-3 flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        disabled={pending}
+                        className="rounded-full bg-sage/20 px-4 py-2 text-sm font-semibold text-sage disabled:opacity-50"
+                        onClick={() => {
+                          setEvalBlockedFor(null)
+                          setLastApprove(null)
+                          startTransition(async () => {
+                            const res = await approveTraining({ ticketId: ticket.id })
+                            if (res.success) {
+                              setLastApprove(res.data as ApproveResult)
+                              setMessage(null)
+                              router.refresh()
+                            } else if (res.error?.startsWith('eval_failed')) {
+                              setEvalBlockedFor(ticket.id)
+                              setMessage(res.error)
+                            } else {
+                              setMessage(res.error ?? 'Hiba')
+                            }
+                          })
+                        }}
+                      >
+                        Jóváhagyás (write-gate)
+                      </button>
+
+                      {evalBlockedFor === ticket.id && (
+                        <button
+                          type="button"
+                          disabled={pending}
+                          className="rounded-full bg-coral/15 px-4 py-2 text-sm font-semibold text-coral-deep disabled:opacity-50"
+                          onClick={() => {
+                            startTransition(async () => {
+                              const res = await approveTraining({
+                                ticketId: ticket.id,
+                                overrideEval: true,
+                              })
+                              if (res.success) {
+                                setLastApprove(res.data as ApproveResult)
+                                setEvalBlockedFor(null)
+                                setMessage(null)
+                                router.refresh()
+                              } else {
+                                setMessage(res.error ?? 'Hiba')
+                              }
+                            })
+                          }}
+                        >
+                          Eval override (naplózva)
+                        </button>
+                      )}
+                    </div>
                   )}
                 </li>
               )
@@ -188,7 +234,26 @@ export function TrainingWorkspace({
         </div>
       </Card>
 
-      {message && <p className="text-sm text-ink-soft">{message}</p>}
+      {message && (
+        <p className={`text-sm ${message.startsWith('eval_failed') ? 'text-coral-deep' : 'text-ink-soft'}`}>
+          {message}
+        </p>
+      )}
+
+      {lastApprove && (
+        <div className="atelier-soft rounded-xl p-4 text-sm">
+          <p className="mb-1 font-semibold text-sage">✓ Memória frissítve — v{lastApprove.memoryVersion.version}</p>
+          <p className="font-mono text-xs text-ink-faint">
+            Write-gate token: {lastApprove.writeGateTokenId.slice(0, 16)}…
+          </p>
+          {lastApprove.evalRun && (
+            <p className={`mt-1 text-xs ${lastApprove.evalRun.passed ? 'text-sage' : 'text-honey'}`}>
+              Eval: {lastApprove.evalRun.passed ? '✓ átment' : '⚠ figyelmeztetéssel override'}
+              {' '}· score {Math.round(lastApprove.evalRun.score * 100)}%
+            </p>
+          )}
+        </div>
+      )}
     </div>
   )
 }

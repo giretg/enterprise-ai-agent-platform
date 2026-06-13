@@ -1,6 +1,8 @@
 import { prisma } from '@/lib/db'
 import type { AuditRepository, TicketRepository } from '@/repositories/interfaces'
 import type { TicketService } from '../ticket/ticket-service'
+import type { WriteGateService } from '../writegate/write-gate-service'
+import type { EvalService } from '../eval/eval-service'
 
 function computeDiff(before: string, after: string) {
   return {
@@ -15,6 +17,8 @@ export class TrainingService {
     private tickets: TicketRepository,
     private audit: AuditRepository,
     private ticketService: TicketService,
+    private writeGate: WriteGateService,
+    private evalService: EvalService,
   ) {}
 
   async createTrainingTicket(params: {
@@ -59,7 +63,11 @@ export class TrainingService {
     })
   }
 
-  async approveTraining(ticketId: string, approverId: string) {
+  async approveTraining(
+    ticketId: string,
+    approverId: string,
+    opts: { overrideEval?: boolean } = {},
+  ) {
     const ticket = await this.tickets.findById(ticketId)
     if (!ticket || ticket.type !== 'training') throw new Error('Training ticket not found')
     if (ticket.state !== 'awaiting_human') throw new Error('Ticket not awaiting approval')
@@ -67,10 +75,7 @@ export class TrainingService {
     const approver = await prisma.user.findUnique({ where: { id: approverId } })
     if (!approver) throw new Error('Approver not found')
 
-    const payload = ticket.payload as {
-      proposedContent: string
-      source?: string
-    }
+    const payload = ticket.payload as { proposedContent: string; source?: string }
 
     const agent = await prisma.agent.findUnique({
       where: { id: ticket.agentId! },
@@ -78,6 +83,68 @@ export class TrainingService {
     })
     if (!agent) throw new Error('Agent not found')
 
+    // 1. Eval-kapu: pre_training_approval (ha van aktív eval az agenthez)
+    let evalRun = null
+    const activeEval = await this.evalService.findActiveForAgent(agent.id)
+    if (activeEval) {
+      evalRun = await this.evalService.run({
+        evalId: activeEval.id,
+        proposedContent: payload.proposedContent,
+        agentVersion: agent.currentVersion,
+        trigger: 'pre_training_approval',
+      })
+
+      if (!evalRun.passed && !opts.overrideEval) {
+        await this.audit.append({
+          actorType: 'human',
+          actorId: approverId,
+          agentVersion: agent.currentVersion,
+          action: 'memory.write.eval_blocked',
+          targetType: 'memory',
+          targetId: agent.memoryId,
+          modelUsed: null,
+          inputRef: activeEval.id,
+          outputRef: evalRun.id,
+          policyDecision: `eval_failed:score=${evalRun.score.toFixed(2)}`,
+          metadata: evalRun.details,
+        })
+        throw new Error(
+          `eval_failed: score ${Math.round(evalRun.score * 100)}% — use overrideEval to proceed`,
+        )
+      }
+
+      if (!evalRun.passed && opts.overrideEval) {
+        await this.audit.append({
+          actorType: 'human',
+          actorId: approverId,
+          agentVersion: agent.currentVersion,
+          action: 'memory.write.eval_override',
+          targetType: 'memory',
+          targetId: agent.memoryId,
+          modelUsed: null,
+          inputRef: activeEval.id,
+          outputRef: evalRun.id,
+          policyDecision: `eval_override:score=${evalRun.score.toFixed(2)}`,
+          metadata: evalRun.details,
+        })
+      }
+    }
+
+    // 2. Write-gate token kiállítás
+    const gateToken = await this.writeGate.issue({
+      trainingTicketId: ticketId,
+      agentId: agent.id,
+      targetMemoryId: agent.memoryId,
+      proposedContent: payload.proposedContent,
+    })
+
+    // 3. Write-gate token consume (diffHash-ellenőrzés + aláírás-verifikáció)
+    await this.writeGate.consume({
+      tokenId: gateToken.id,
+      actualProposedContent: payload.proposedContent,
+    })
+
+    // 4. Memória-írás — csak sikeres gate-consume után
     const currentVersion = agent.memory.currentVersion
     const maxVersionRow = await prisma.memoryVersion.aggregate({
       where: { memoryId: agent.memoryId },
@@ -111,7 +178,6 @@ export class TrainingService {
       data: { currentVersionId: memoryVersion.id },
     })
 
-    // A jóváhagyási kapu (awaiting_human → approved) az állapotgépen át, validálva + auditálva (4.1).
     await this.ticketService.transition({
       ticketId,
       toState: 'approved',
@@ -129,13 +195,13 @@ export class TrainingService {
       modelUsed: null,
       inputRef: String(currentVersion?.version ?? 0),
       outputRef: String(nextVersion),
-      policyDecision: 'n/a',
-      prevHash: null,
-      hash: null,
-      metadata: null,
+      policyDecision: evalRun?.passed === false
+        ? `write_gate_consumed:eval_override`
+        : 'write_gate_consumed',
+      metadata: { writeGateTokenId: gateToken.id, evalRunId: evalRun?.id ?? null },
     })
 
-    return memoryVersion
+    return { memoryVersion, writeGateTokenId: gateToken.id, evalRun }
   }
 
   async rollbackMemory(agentId: string, toVersion: number, actorId: string) {
@@ -180,9 +246,7 @@ export class TrainingService {
       modelUsed: null,
       inputRef: active ? String(active.version) : null,
       outputRef: String(toVersion),
-      policyDecision: 'n/a',
-      prevHash: null,
-      hash: null,
+      policyDecision: 'rollback',
       metadata: null,
     })
 

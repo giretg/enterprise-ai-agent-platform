@@ -30,7 +30,11 @@ Részletes útmutató: [`app/README.md`](app/README.md)
 
 ## Deploy
 
-Firebase App Hosting — a Next.js app az `app/` mappában fut (`firebase.json` → `rootDir: app`).
+Firebase App Hosting — részletes útmutató: [`DEPLOY.md`](DEPLOY.md)
+
+```bash
+npm run deploy
+```
 
 ## Technológia
 

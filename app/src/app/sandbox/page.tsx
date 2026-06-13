@@ -59,14 +59,20 @@ export default function WorkspacePage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="font-display text-3xl font-semibold">Könyvelő munkatér</h1>
-        <p className="mt-1 text-ink-soft">Szöveg/PDF-text feltöltés → valódi Gemini hívás</p>
+      <div className="animate-rise">
+        <p className="text-sm font-medium uppercase tracking-[0.2em] text-sage">A présház</p>
+        <h1 className="mt-2 font-display text-[2.4rem] font-semibold leading-tight">
+          Add ide Borinak az első számlát
+        </h1>
+        <p className="mt-2 max-w-xl text-ink-soft">
+          Illeszd be a számla szövegét, a könyvelő munkatárs pedig pillanatok alatt elkészíti
+          a könyvelési javaslatot — amit aztán a Pincében nyugodtan átnézhetsz.
+        </p>
       </div>
 
       <Card title="Dokumentum (szöveg)">
         <textarea
-          className="mb-4 w-full rounded-lg border border-line bg-night-2 p-4 font-mono text-sm"
+          className="mb-4 w-full rounded-xl border border-line bg-night-2 p-4 font-mono text-sm text-ink focus:border-coral/50 focus:outline-none"
           rows={12}
           value={text}
           onChange={(e) => setText(e.target.value)}
@@ -75,7 +81,7 @@ export default function WorkspacePage() {
           type="button"
           disabled={pending}
           onClick={runFlow}
-          className="rounded-full bg-sage/25 px-6 py-3 text-sm font-semibold text-sage hover:bg-sage/35 disabled:opacity-50"
+          className="rounded-full bg-sage px-6 py-3 text-sm font-semibold text-card shadow-[0_10px_24px_-12px_rgba(93,138,79,0.7)] transition-transform hover:-translate-y-0.5 disabled:opacity-50"
         >
           {pending ? 'Feldolgozás…' : 'Feldolgozás indítása'}
         </button>

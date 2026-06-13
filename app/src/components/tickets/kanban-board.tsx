@@ -6,15 +6,16 @@ import { useState, useTransition } from 'react'
 import type { Ticket } from '@prisma/client'
 import { transitionTicket } from '@/app/actions/platform'
 import { Badge, Card } from '@/components/ui/shell'
+import { TICKET_STATE_LABELS } from '@/lib/ticket-labels'
 
 const COLUMNS = [
-  { key: 'backlog', label: 'Backlog' },
-  { key: 'in_review', label: 'In Review' },
-  { key: 'awaiting_human', label: 'Awaiting Human' },
-  { key: 'approved', label: 'Approved' },
-  { key: 'in_progress', label: 'In Progress' },
-  { key: 'done', label: 'Done' },
-  { key: 'rejected', label: 'Rejected' },
+  { key: 'backlog', label: TICKET_STATE_LABELS.backlog, accent: 'border-ink-faint/30' },
+  { key: 'in_review', label: TICKET_STATE_LABELS.in_review, accent: 'border-honey/40' },
+  { key: 'awaiting_human', label: TICKET_STATE_LABELS.awaiting_human, accent: 'border-coral/40' },
+  { key: 'approved', label: TICKET_STATE_LABELS.approved, accent: 'border-sage/40' },
+  { key: 'in_progress', label: TICKET_STATE_LABELS.in_progress, accent: 'border-sky/40' },
+  { key: 'done', label: TICKET_STATE_LABELS.done, accent: 'border-sage/60' },
+  { key: 'rejected', label: TICKET_STATE_LABELS.rejected, accent: 'border-coral/60' },
 ] as const
 
 type ColumnKey = (typeof COLUMNS)[number]['key']
@@ -57,7 +58,7 @@ export function KanbanBoard({ tickets }: { tickets: Ticket[] }) {
           return (
             <div
               key={col.key}
-              className={`min-w-[240px] flex-shrink-0 rounded-xl transition-colors ${
+              className={`min-w-[240px] flex-shrink-0 rounded-xl border-t-2 ${col.accent} pt-3 transition-colors ${
                 isTarget ? 'bg-coral/5 ring-1 ring-coral/30' : ''
               }`}
               onDragOver={(e) => {

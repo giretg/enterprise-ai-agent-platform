@@ -49,8 +49,9 @@ export interface DocumentRepository {
 }
 
 export interface AuditRepository {
-  append(data: Omit<AuditLog, 'id' | 'seq' | 'createdAt'>): Promise<AuditLog>
+  append(data: Omit<AuditLog, 'id' | 'seq' | 'createdAt' | 'hash' | 'prevHash'>): Promise<AuditLog>
   findMany(filter?: { action?: string; limit?: number }): Promise<AuditLog[]>
+  findAll(): Promise<AuditLog[]>
 }
 
 export interface ModelCallRepository {

@@ -3,7 +3,7 @@
 import { Show, SignInButton, SignUpButton, UserButton } from '@clerk/nextjs'
 
 const authButtonClass =
-  'rounded-full border border-white/12 bg-white/5 px-4 py-2 text-xs font-semibold text-ink-soft transition-colors hover:border-coral/40 hover:text-ink'
+  'rounded-full border border-line bg-card px-4 py-2 text-xs font-semibold text-ink-soft transition-colors hover:border-coral/40 hover:text-coral-deep'
 
 export function ShellAuth({ clerkEnabled }: { clerkEnabled: boolean }) {
   if (!clerkEnabled) {
@@ -25,7 +25,7 @@ export function ShellAuth({ clerkEnabled }: { clerkEnabled: boolean }) {
         <SignUpButton mode="modal">
           <button
             type="button"
-            className={`${authButtonClass} border-coral/30 bg-coral/10 text-ink hover:border-coral/50`}
+            className={`${authButtonClass} border-coral/30 bg-coral/10 text-coral-deep hover:border-coral/50`}
           >
             Regisztráció
           </button>

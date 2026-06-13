@@ -26,6 +26,8 @@ import { fail, ok, type ActionResult } from '@/lib/result'
 import {
   agentIdSchema,
   approveTrainingSchema,
+  createEvalSchema,
+  runEvalSchema,
   costSummarySchema,
   createAgentSchema,
   createTrainingSchema,
@@ -145,9 +147,7 @@ export async function createAgent(input: {
       modelUsed: null,
       inputRef: null,
       outputRef: result.agent.name,
-      policyDecision: 'n/a',
-      prevHash: null,
-      hash: null,
+      policyDecision: 'allowed',
       metadata: null,
     })
 
@@ -227,14 +227,59 @@ export async function createTrainingTicket(input: {
   }
 }
 
-export async function approveTraining(input: { ticketId: string }) {
+export async function approveTraining(input: { ticketId: string; overrideEval?: boolean }) {
   try {
     const user = await requireRole('approver')
-    const { ticketId } = approveTrainingSchema.parse(input)
-    const memoryVersion = await services.training.approveTraining(ticketId, user.id)
-    return ok(memoryVersion)
+    const parsed = approveTrainingSchema.parse(input)
+    const result = await services.training.approveTraining(parsed.ticketId, user.id, {
+      overrideEval: parsed.overrideEval,
+    })
+    return ok(result)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to approve training')
+  }
+}
+
+export async function createEval(input: {
+  agentId: string
+  name: string
+  goldenSet: Array<{ description: string; type: string; value: string | number }>
+}) {
+  try {
+    await requireRole('admin')
+    const parsed = createEvalSchema.parse(input)
+    const evalDef = await services.eval.create(parsed)
+    return ok(evalDef)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to create eval')
+  }
+}
+
+export async function runEval(input: { evalId: string; agentId: string; proposedContent: string }) {
+  try {
+    await requireRole('approver')
+    const parsed = runEvalSchema.parse(input)
+    const agent = await repositories.agents.findById(parsed.agentId)
+    if (!agent) return fail('Agent not found')
+    const evalRun = await services.eval.run({
+      evalId: parsed.evalId,
+      proposedContent: parsed.proposedContent,
+      agentVersion: agent.currentVersion,
+      trigger: 'manual',
+    })
+    return ok(evalRun)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to run eval')
+  }
+}
+
+export async function listEvalsForAgent(input: { agentId: string }) {
+  try {
+    await requireRole('viewer')
+    const evals = await services.eval.findAllForAgent(input.agentId)
+    return ok(evals)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to list evals')
   }
 }
 
@@ -289,6 +334,27 @@ export async function getModelCostSummary(input?: { range?: unknown }) {
     return ok(summary)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to get cost summary')
+  }
+}
+
+export async function verifyAuditChain() {
+  try {
+    await requireRole('approver')
+    const result = await services.auditChain.verifyChain()
+    return ok(result)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Verification failed')
+  }
+}
+
+export async function exportAuditSiem(input?: { since?: string }) {
+  try {
+    await requireRole('admin')
+    const since = input?.since ? new Date(input.since) : undefined
+    const jsonLines = await services.auditChain.exportJsonLines(since)
+    return ok({ content: jsonLines, filename: `audit-siem-${new Date().toISOString().slice(0, 10)}.jsonl` })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Export failed')
   }
 }
 

@@ -16,8 +16,8 @@ export default function ControlPlaneLayout({ children }: { children: React.React
 
   return (
     <AppShell
-      appName="Control Plane"
-      appSubtitle="Ostoros-Novaj · Enterprise AI"
+      appName="A Pince"
+      appSubtitle="Control Plane · Ostoros-Novaj"
       navItems={navItems}
       accentColor="slate"
       pathname={pathname}

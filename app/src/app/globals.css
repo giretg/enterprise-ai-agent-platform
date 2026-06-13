@@ -1,4 +1,4 @@
-@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;1,9..144,500&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;0,9..144,700;0,9..144,900;1,9..144,400;1,9..144,500&family=Hanken+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
 @import "tailwindcss";
 
 @theme {
@@ -6,28 +6,31 @@
   --font-display: 'Fraunces', Georgia, serif;
   --font-mono: 'JetBrains Mono', ui-monospace, monospace;
 
-  --color-night: #181210;
-  --color-night-2: #1f1714;
-  --color-card: #261c18;
-  --color-card-2: #2e221c;
-  --color-line: #43332b;
+  /* ── Surfaces: warm ivory estate paper (light) ───────────────── */
+  --color-night: #f8f2e6;      /* page base — warm cream */
+  --color-night-2: #f1e8d6;    /* recessed cream (inputs, wells) */
+  --color-card: #fffdf8;       /* primary card — warm white */
+  --color-card-2: #fbf4e6;     /* secondary card / hover cream */
+  --color-line: #e8dcc4;       /* hairline border, warm sand */
 
-  --color-ink: #f6ecdd;
-  --color-ink-soft: #cdb9a6;
-  --color-ink-faint: #9a8678;
+  /* ── Ink: deep wine-brown reading colour ─────────────────────── */
+  --color-ink: #2c1e17;        /* near-black espresso */
+  --color-ink-soft: #6c574a;   /* warm brown body */
+  --color-ink-faint: #9d8a78;  /* muted caption */
 
-  --color-coral: #ec7a5f;
-  --color-coral-deep: #c85c44;
-  --color-honey: #f2b35e;
-  --color-sage: #8fc08a;
-  --color-rose: #e98aa6;
-  --color-sky: #82b6cf;
-  --color-grape: #b69ae0;
+  /* ── Estate accents (cellar palette) ─────────────────────────── */
+  --color-coral: #b23a55;      /* primary — bordeaux rose */
+  --color-coral-deep: #8c2840; /* deep wine */
+  --color-honey: #b07d24;      /* harvest gold */
+  --color-sage: #5d8a4f;       /* vineyard green */
+  --color-rose: #c25f7d;       /* rosé */
+  --color-sky: #4d86a6;        /* river sky */
+  --color-grape: #7d5fae;      /* grape must */
 }
 
 @layer base {
   html {
-    color-scheme: dark;
+    color-scheme: light;
   }
 
   body {
@@ -35,35 +38,75 @@
     font-family: var(--font-sans);
     color: var(--color-ink);
     background-color: var(--color-night);
+    /* Sun-through-the-cellar warmth: rosé, gold and vineyard washes */
     background-image:
-      radial-gradient(58rem 40rem at 8% -8%, rgba(236, 122, 95, 0.16), transparent 60%),
-      radial-gradient(48rem 36rem at 102% 4%, rgba(242, 179, 94, 0.13), transparent 58%),
-      radial-gradient(60rem 50rem at 50% 118%, rgba(143, 192, 138, 0.08), transparent 60%);
+      radial-gradient(60rem 42rem at 6% -10%, rgba(178, 58, 85, 0.07), transparent 60%),
+      radial-gradient(52rem 38rem at 104% 2%, rgba(176, 125, 36, 0.09), transparent 58%),
+      radial-gradient(64rem 52rem at 50% 120%, rgba(93, 138, 79, 0.06), transparent 60%);
     background-attachment: fixed;
     -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background: rgba(178, 58, 85, 0.18);
+    color: var(--color-coral-deep);
+  }
+
+  /* Display serif: high optical-size contrast, like an estate label */
+  .font-display {
+    font-optical-sizing: auto;
+    font-variation-settings: 'opsz' 120;
+    letter-spacing: -0.012em;
   }
 }
 
 @layer components {
+  /* Estate card — warm paper, hairline edge, soft cellar shadow */
   .atelier-card {
-    background: linear-gradient(168deg, var(--color-card-2), var(--color-card));
+    background:
+      linear-gradient(168deg, var(--color-card), var(--color-card-2));
     border: 1px solid var(--color-line);
     border-radius: 1.25rem;
     box-shadow:
-      0 1px 0 0 rgba(255, 240, 222, 0.04) inset,
-      0 18px 40px -28px rgba(0, 0, 0, 0.85);
+      0 1px 0 0 rgba(255, 255, 255, 0.7) inset,
+      0 1px 2px -1px rgba(70, 45, 30, 0.10),
+      0 22px 44px -34px rgba(90, 55, 35, 0.40);
   }
 
+  /* Soft inset well — a slip of cream inside a card */
   .atelier-soft {
-    background: rgba(40, 30, 25, 0.5);
-    border: 1px solid rgba(120, 92, 78, 0.28);
+    background: rgba(241, 232, 214, 0.55);
+    border: 1px solid rgba(214, 196, 164, 0.55);
     border-radius: 1rem;
   }
+
+  /* A hairline gold rule, like the estate's foil line */
+  .estate-rule {
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--color-line) 18%, var(--color-line) 82%, transparent);
+  }
 }
 
+/* ── Living motion — agents that breathe and have a soul ───────── */
 @keyframes breathe {
   0%, 100% { transform: scale(1); }
-  50% { transform: scale(1.045); }
+  50%      { transform: scale(1.05); }
 }
-
 .animate-breathe { animation: breathe 5.5s ease-in-out infinite; }
+
+@keyframes soul {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.45; transform: scale(0.82); }
+}
+.animate-soul { animation: soul 2.6s ease-in-out infinite; }
+
+@keyframes rise {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.animate-rise { animation: rise 0.6s cubic-bezier(0.22, 1, 0.36, 1) both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-breathe, .animate-soul, .animate-rise { animation: none !important; }
+}
