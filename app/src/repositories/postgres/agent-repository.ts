@@ -73,6 +73,10 @@ export class PostgresAgentRepository implements AgentRepository {
 
     return {
       agentVersion: agentVersion.version,
+      roleInstruction: agentVersion.roleInstructionSnapshot,
+      behaviorProfile: agentVersion.behaviorProfileSnapshot,
+      roleInstructionVersion: agentVersion.roleInstructionVersion,
+      behaviorProfileVersion: agentVersion.behaviorProfileVersion,
       memoryVersion: agentVersion.memoryVersion?.version ?? null,
       model: agentVersion.modelConfigSnapshot,
       recipe: agentVersion.recipeVersion
@@ -87,8 +91,8 @@ export class PostgresAgentRepository implements AgentRepository {
 
   async create(input: {
     name: string
-    roleDescription: string
-    systemPrompt: string
+    roleInstruction: string
+    behaviorProfile: string
     modelConfig: Agent['modelConfig']
     initialMemory?: string
     createdById: string
@@ -114,11 +118,13 @@ export class PostgresAgentRepository implements AgentRepository {
     const agent = await prisma.agent.create({
       data: {
         name: input.name,
-        roleDescription: input.roleDescription,
-        systemPrompt: input.systemPrompt,
+        roleInstruction: input.roleInstruction,
+        behaviorProfile: input.behaviorProfile,
         modelConfig: input.modelConfig as Prisma.InputJsonValue,
         status: 'active',
         currentVersion: 1,
+        currentRoleInstructionVersion: 1,
+        currentBehaviorProfileVersion: 1,
         memoryId: memory.id,
       },
     })
@@ -127,7 +133,10 @@ export class PostgresAgentRepository implements AgentRepository {
       data: {
         agentId: agent.id,
         version: 1,
-        systemPromptSnapshot: input.systemPrompt,
+        roleInstructionSnapshot: input.roleInstruction,
+        behaviorProfileSnapshot: input.behaviorProfile,
+        roleInstructionVersion: 1,
+        behaviorProfileVersion: 1,
         modelConfigSnapshot: input.modelConfig as Prisma.InputJsonValue,
         memoryVersionId: memoryVersion.id,
       },
@@ -144,6 +153,69 @@ export class PostgresAgentRepository implements AgentRepository {
     })
 
     return { agent, apiKey: rawKey }
+  }
+
+  async updateInstruction(input: {
+    agentId: string
+    roleInstruction?: string
+    behaviorProfile?: string
+  }) {
+    const agent = await prisma.agent.findUnique({ where: { id: input.agentId } })
+    if (!agent) throw new Error('Agent not found')
+
+    const nextRole = input.roleInstruction ?? agent.roleInstruction
+    const nextBehavior = input.behaviorProfile ?? agent.behaviorProfile
+    const roleChanged = nextRole !== agent.roleInstruction
+    const behaviorChanged = nextBehavior !== agent.behaviorProfile
+
+    if (!roleChanged && !behaviorChanged) {
+      throw new Error('No instruction change provided')
+    }
+
+    // A reprodukálhatósághoz az új snapshot örökli az aktuális agent-verzió
+    // memória- és recipe-kötését (§5.3).
+    const currentVersion = await prisma.agentVersion.findUnique({
+      where: { agentId_version: { agentId: agent.id, version: agent.currentVersion } },
+    })
+    if (!currentVersion) throw new Error('Current agent version snapshot missing')
+
+    const nextRoleVersion = agent.currentRoleInstructionVersion + (roleChanged ? 1 : 0)
+    const nextBehaviorVersion = agent.currentBehaviorProfileVersion + (behaviorChanged ? 1 : 0)
+    const nextAgentVersion = agent.currentVersion + 1
+
+    await prisma.$transaction([
+      prisma.agentVersion.create({
+        data: {
+          agentId: agent.id,
+          version: nextAgentVersion,
+          roleInstructionSnapshot: nextRole,
+          behaviorProfileSnapshot: nextBehavior,
+          roleInstructionVersion: nextRoleVersion,
+          behaviorProfileVersion: nextBehaviorVersion,
+          modelConfigSnapshot: currentVersion.modelConfigSnapshot as Prisma.InputJsonValue,
+          memoryVersionId: currentVersion.memoryVersionId,
+          recipeVersionId: currentVersion.recipeVersionId,
+        },
+      }),
+      prisma.agent.update({
+        where: { id: agent.id },
+        data: {
+          roleInstruction: nextRole,
+          behaviorProfile: nextBehavior,
+          currentVersion: nextAgentVersion,
+          currentRoleInstructionVersion: nextRoleVersion,
+          currentBehaviorProfileVersion: nextBehaviorVersion,
+        },
+      }),
+    ])
+
+    return {
+      agentVersion: nextAgentVersion,
+      roleInstructionVersion: nextRoleVersion,
+      behaviorProfileVersion: nextBehaviorVersion,
+      roleChanged,
+      behaviorChanged,
+    }
   }
 
   async authenticateApiKey(rawKey: string) {

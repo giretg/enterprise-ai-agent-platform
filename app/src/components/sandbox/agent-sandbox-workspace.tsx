@@ -27,7 +27,7 @@ type KbDocument = { id: string; filename: string; status: string; createdAt: Dat
 type AgentSummary = {
   id: string
   name: string
-  roleDescription: string
+  roleInstruction: string
 }
 
 export function AgentSandboxWorkspace({

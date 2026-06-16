@@ -21,7 +21,7 @@ export default async function AgentSandboxPage({
       agent={{
         id: agent.id,
         name: agent.name,
-        roleDescription: agent.roleDescription,
+        roleInstruction: agent.roleInstruction,
       }}
     />
   )

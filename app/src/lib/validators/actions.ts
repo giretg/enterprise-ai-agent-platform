@@ -121,8 +121,8 @@ export const costSummarySchema = z.object({
 
 export const createAgentSchema = z.object({
   name: z.string().min(1),
-  roleDescription: z.string().min(1),
-  systemPrompt: z.string().min(1),
+  roleInstruction: z.string().min(1),
+  behaviorProfile: z.string().min(1),
   modelConfig: z.object({
     provider: z.string().min(1),
     model: z.string().min(1),
@@ -130,6 +130,16 @@ export const createAgentSchema = z.object({
     maxTokens: z.number().int().positive().optional(),
   }),
 })
+
+export const updateAgentInstructionSchema = z
+  .object({
+    agentId: z.string().uuid(),
+    roleInstruction: z.string().min(1).optional(),
+    behaviorProfile: z.string().min(1).optional(),
+  })
+  .refine((v) => v.roleInstruction !== undefined || v.behaviorProfile !== undefined, {
+    message: 'Legalább a szerep-instrukciót vagy a viselkedés-profilt meg kell adni',
+  })
 
 export const createInteractionTicketSchema = z.object({
   agentId: z.string().uuid(),

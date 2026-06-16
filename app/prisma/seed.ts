@@ -6,10 +6,13 @@ import bcrypt from 'bcryptjs'
 
 const prisma = new PrismaClient()
 
-const WIKI_AGENT_PROMPT = `Te az Excellence Pay belső tudás-asszisztense vagy.
-Kizárólag a jóváhagyott belső tudásbázisra támaszkodva válaszolj.
-Magyarul, tömören válaszolj, és minden lényegi állításhoz adj forráshivatkozást.
-Ha nincs elég forrás, mondd ki, hogy nincs elég forrás.`
+// Szerep-instrukció ("mit csinál") és viselkedés-profil ("hogyan") külön
+// verziózva (§4.2/§5.3).
+const WIKI_ROLE_INSTRUCTION = `Te az Excellence Pay belső tudás-asszisztense vagy.
+Kizárólag a jóváhagyott belső tudásbázisra támaszkodva válaszolsz a felhasználók kérdéseire.`
+
+const WIKI_BEHAVIOR_PROFILE = `Magyarul, tömören válaszolj, és minden lényegi állításhoz adj forráshivatkozást.
+Ha nincs elég forrás, mondd ki, hogy nincs elég forrás, és ne találj ki tényt.`
 
 const INITIAL_MEMORY = `Excellence Pay belső tudásbázis - kezdő tartalom:
 - Az MVP célja architektúra-teljes walking skeleton létrehozása.
@@ -235,11 +238,13 @@ async function main() {
   const agent = await prisma.agent.create({
     data: {
       name: 'Wiki Agent',
-      roleDescription: 'Belső tudásbázisból citált válaszadás',
-      systemPrompt: WIKI_AGENT_PROMPT,
+      roleInstruction: WIKI_ROLE_INSTRUCTION,
+      behaviorProfile: WIKI_BEHAVIOR_PROFILE,
       modelConfig,
       status: 'active',
       currentVersion: 1,
+      currentRoleInstructionVersion: 1,
+      currentBehaviorProfileVersion: 1,
       memoryId: memory.id,
     },
   })
@@ -248,7 +253,10 @@ async function main() {
     data: {
       agentId: agent.id,
       version: 1,
-      systemPromptSnapshot: WIKI_AGENT_PROMPT,
+      roleInstructionSnapshot: WIKI_ROLE_INSTRUCTION,
+      behaviorProfileSnapshot: WIKI_BEHAVIOR_PROFILE,
+      roleInstructionVersion: 1,
+      behaviorProfileVersion: 1,
       modelConfigSnapshot: modelConfig,
       memoryVersionId: memoryVersion.id,
     },

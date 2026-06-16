@@ -58,7 +58,7 @@ export default async function AgentRegistryPage() {
                 <div className="estate-rule my-4" />
 
                 <div className="flex items-center justify-between text-xs text-ink-faint">
-                  <span>{agent.roleDescription}</span>
+                  <span>{agent.roleInstruction}</span>
                   <span className="font-mono">
                     v{agent.currentVersion} ·{' '}
                     {(agent.modelConfig as { model?: string }).model ?? '—'}

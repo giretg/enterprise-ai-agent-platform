@@ -3,6 +3,7 @@ import { notFound } from 'next/navigation'
 import { getAgent, getAgentGovernance } from '@/app/actions/platform'
 import { Badge, Card } from '@/components/ui/shell'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
+import { UpdateInstructionForm } from '@/components/agents/update-instruction-form'
 import { personaFor, humanStatus } from '@/lib/agent-persona'
 import { sandboxKindForAgent, sandboxLabelForKind } from '@/lib/agent-kind'
 
@@ -68,8 +69,11 @@ export default async function AgentDetailPage({
       </Card>
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <Card title="System prompt">
-          <pre className="whitespace-pre-wrap text-sm text-ink-soft">{agent.systemPrompt}</pre>
+        <Card title={`Szerep-instrukció (v${agent.currentRoleInstructionVersion}) — „mit csinál”`}>
+          <pre className="whitespace-pre-wrap text-sm text-ink-soft">{agent.roleInstruction}</pre>
+        </Card>
+        <Card title={`Viselkedés-profil (v${agent.currentBehaviorProfileVersion}) — „hogyan”`}>
+          <pre className="whitespace-pre-wrap text-sm text-ink-soft">{agent.behaviorProfile}</pre>
         </Card>
         <Card title="Modell konfig">
           <pre className="text-sm text-ink-soft">{JSON.stringify(modelConfig, null, 2)}</pre>
@@ -146,6 +150,14 @@ export default async function AgentDetailPage({
           </Card>
         </div>
       )}
+
+      <UpdateInstructionForm
+        agentId={agent.id}
+        roleInstruction={agent.roleInstruction}
+        behaviorProfile={agent.behaviorProfile}
+        roleVersion={agent.currentRoleInstructionVersion}
+        behaviorVersion={agent.currentBehaviorProfileVersion}
+      />
 
       <Card title="Tanítás">
         <p className="text-sm text-ink-soft">

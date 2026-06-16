@@ -2,12 +2,12 @@ export type AgentSandboxKind = 'wiki' | 'bookkeeper' | 'generic'
 
 export type AgentSandboxSource = {
   name: string
-  roleDescription?: string | null
-  systemPrompt?: string | null
+  roleInstruction?: string | null
+  behaviorProfile?: string | null
 }
 
 export function sandboxKindForAgent(agent: AgentSandboxSource): AgentSandboxKind {
-  const text = [agent.name, agent.roleDescription, agent.systemPrompt]
+  const text = [agent.name, agent.roleInstruction, agent.behaviorProfile]
     .filter(Boolean)
     .join(' ')
     .toLowerCase()

@@ -31,6 +31,7 @@ import {
   costSummarySchema,
   createSandboxReportSchema,
   createAgentSchema,
+  updateAgentInstructionSchema,
   createTrainingSchema,
   askWikiSchema,
   processDocumentSchema,
@@ -166,8 +167,8 @@ export async function getAgentGovernance(input: { agentId: string }) {
 
 export async function createAgent(input: {
   name: string
-  roleDescription: string
-  systemPrompt: string
+  roleInstruction: string
+  behaviorProfile: string
   modelConfig: {
     provider: string
     model: string
@@ -200,6 +201,45 @@ export async function createAgent(input: {
     return ok(result)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to create agent')
+  }
+}
+
+export async function updateAgentInstruction(input: {
+  agentId: string
+  roleInstruction?: string
+  behaviorProfile?: string
+}) {
+  try {
+    const user = await requireRole('admin')
+    const parsed = updateAgentInstructionSchema.parse(input)
+    const result = await repositories.agents.updateInstruction(parsed)
+
+    const changed = [
+      result.roleChanged ? 'roleInstruction' : null,
+      result.behaviorChanged ? 'behaviorProfile' : null,
+    ].filter(Boolean)
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: result.agentVersion,
+      action: 'agent.version',
+      targetType: 'agent',
+      targetId: parsed.agentId,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: `v${result.agentVersion}`,
+      policyDecision: 'allowed',
+      metadata: {
+        changed,
+        roleInstructionVersion: result.roleInstructionVersion,
+        behaviorProfileVersion: result.behaviorProfileVersion,
+      },
+    })
+
+    return ok(result)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update agent instruction')
   }
 }
 

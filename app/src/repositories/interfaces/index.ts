@@ -74,18 +74,39 @@ export interface AgentRepository {
     version: number,
   ): Promise<{
     agentVersion: number
+    roleInstruction: string
+    behaviorProfile: string
+    roleInstructionVersion: number
+    behaviorProfileVersion: number
     memoryVersion: number | null
     model: unknown
     recipe: { name: string; version: number; status: string } | null
   } | null>
   create(input: {
     name: string
-    roleDescription: string
-    systemPrompt: string
+    roleInstruction: string
+    behaviorProfile: string
     modelConfig: Agent['modelConfig']
     initialMemory?: string
     createdById: string
   }): Promise<{ agent: Agent; apiKey: string }>
+  /**
+   * Frissíti a szerep-instrukciót és/vagy a viselkedés-profilt (§5.3). Csak a
+   * ténylegesen változó összetevő al-verzióját lépteti, új `agent_versions`
+   * snapshotot fagyaszt (mindkét szöveg + modell + memória + recipe), és lépteti
+   * az agent `currentVersion`-jét. Legalább az egyik mező kötelező és változnia kell.
+   */
+  updateInstruction(input: {
+    agentId: string
+    roleInstruction?: string
+    behaviorProfile?: string
+  }): Promise<{
+    agentVersion: number
+    roleInstructionVersion: number
+    behaviorProfileVersion: number
+    roleChanged: boolean
+    behaviorChanged: boolean
+  }>
   authenticateApiKey(rawKey: string): Promise<{ agentId: string; scopes: string[] } | null>
 }
 

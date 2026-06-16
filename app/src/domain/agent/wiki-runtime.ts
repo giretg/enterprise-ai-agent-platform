@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type { AgentRepository, TicketRepository } from '@/repositories/interfaces'
+import { composeSystemPrompt } from '@/lib/agent-prompt'
 import type { ModelGateway } from '../gateway/model-gateway'
 import type { ToolBrokerService } from '../tool-broker/tool-broker-service'
 import { TicketService } from '../ticket/ticket-service'
@@ -144,7 +145,7 @@ export class WikiAgentRuntime {
       agentId: params.agentId,
       ticketId: ticket.id,
       messages: [
-        { role: 'system', content: agentDetails.agent.systemPrompt },
+        { role: 'system', content: composeSystemPrompt(agentDetails.agent) },
         {
           role: 'system',
           content: `${answerInstruction}\n\nForrásrészletek:\n${sourceContext}`,

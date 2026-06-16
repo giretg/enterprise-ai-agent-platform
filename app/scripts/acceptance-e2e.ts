@@ -83,6 +83,24 @@ async function getWikiAgent() {
   return agent
 }
 
+/**
+ * Idempotencia: a dispatcher per-agent **napi** hívás-keretet érvényesít
+ * (`maxCallsPerDay`). Mivel a suite ugyanazt a seed-agentet és egy közös
+ * (megosztott) DB-t használ, több azonos napi futás kimerítené a keretet és a
+ * `dispatchTicket` `budget_blocked`-ot adna (a wiki-flow ticket `ready`-ben
+ * ragadna). A ma keletkezett `model_calls` telemetria törlése a futás elején
+ * nullázza a napi felhasználást — külön tábla, az append-only audit-láncot nem
+ * érinti.
+ */
+async function resetSameDayBudget(agentId: string) {
+  const since = new Date()
+  since.setHours(0, 0, 0, 0)
+  const { count } = await prisma.modelCall.deleteMany({
+    where: { agentId, createdAt: { gte: since } },
+  })
+  if (count > 0) console.log(`Napi hívás-keret nullázva (törölt model_calls: ${count})`)
+}
+
 function actor(role: UserRole, userId: string) {
   return { type: 'human' as const, userId, role }
 }
@@ -1949,6 +1967,141 @@ async function scenario25_measurementReport() {
   }
 }
 
+/**
+ * 26. Szerep-instrukció és viselkedés-profil külön verziózva (§4.2/§5.3, Epik 3).
+ * Eldobható agenten: create → mindkét snapshot v1; behaviour-only update → behavior v2,
+ * role marad v1; role-only update → role v2; a régi agent-verziók snapshotjai
+ * változatlanok (reprodukálhatóság); üres frissítés elutasítva.
+ */
+const ROLE_BEHAVIOR_TEST_AGENT = 'Acceptance Szerep/Viselkedés Agent'
+
+async function cleanupRoleBehaviorTestAgents() {
+  const agents = await prisma.agent.findMany({ where: { name: ROLE_BEHAVIOR_TEST_AGENT } })
+  for (const agent of agents) {
+    await prisma.agentVersion.deleteMany({ where: { agentId: agent.id } })
+    await prisma.agentApiKey.deleteMany({ where: { agentId: agent.id } })
+    await prisma.agent.delete({ where: { id: agent.id } })
+    await prisma.memory.update({
+      where: { id: agent.memoryId },
+      data: { currentVersionId: null },
+    })
+    await prisma.memoryVersion.deleteMany({ where: { memoryId: agent.memoryId } })
+    await prisma.memory.delete({ where: { id: agent.memoryId } })
+  }
+}
+
+async function scenario26_roleBehaviorVersioning(createdById: string) {
+  console.log('\n[26] Szerep/viselkedés külön verziózás (§5.3)')
+
+  await cleanupRoleBehaviorTestAgents()
+
+  const R1 = 'Szerep v1: belső tudásbázisból válaszolsz.'
+  const B1 = 'Viselkedés v1: magyarul, tömören, forráshivatkozással.'
+  const B2 = 'Viselkedés v2: magyarul, tömören, forrással ÉS confidence-szel.'
+  const R2 = 'Szerep v2: belső tudásbázis + jóváhagyott külső források.'
+
+  try {
+    const { agent } = await repositories.agents.create({
+      name: ROLE_BEHAVIOR_TEST_AGENT,
+      roleInstruction: R1,
+      behaviorProfile: B1,
+      modelConfig: { provider: 'chatgpt-oauth', model: 'stub', temperature: 0.2 },
+      createdById,
+    })
+
+    if (
+      agent.currentVersion === 1 &&
+      agent.currentRoleInstructionVersion === 1 &&
+      agent.currentBehaviorProfileVersion === 1
+    ) {
+      pass('Create — agent v1, szerep v1, viselkedés v1')
+    } else {
+      fail('Create verziók', JSON.stringify(agent))
+    }
+
+    const snap1 = await repositories.agents.findVersionSnapshot(agent.id, 1)
+    if (
+      snap1?.roleInstruction === R1 &&
+      snap1?.behaviorProfile === B1 &&
+      snap1?.roleInstructionVersion === 1 &&
+      snap1?.behaviorProfileVersion === 1
+    ) {
+      pass('Snapshot v1 — mindkét szöveg + al-verzió befagyasztva')
+    } else {
+      fail('Snapshot v1', JSON.stringify(snap1))
+    }
+
+    // Csak viselkedés változik.
+    const upd2 = await repositories.agents.updateInstruction({
+      agentId: agent.id,
+      behaviorProfile: B2,
+    })
+    if (
+      upd2.agentVersion === 2 &&
+      upd2.behaviorChanged &&
+      !upd2.roleChanged &&
+      upd2.behaviorProfileVersion === 2 &&
+      upd2.roleInstructionVersion === 1
+    ) {
+      pass('Viselkedés-only update — agent v2, viselkedés v2, szerep marad v1')
+    } else {
+      fail('Viselkedés update', JSON.stringify(upd2))
+    }
+
+    const snap2 = await repositories.agents.findVersionSnapshot(agent.id, 2)
+    const snap1Again = await repositories.agents.findVersionSnapshot(agent.id, 1)
+    if (
+      snap2?.roleInstruction === R1 &&
+      snap2?.behaviorProfile === B2 &&
+      snap2?.behaviorProfileVersion === 2 &&
+      snap1Again?.behaviorProfile === B1 // a régi verzió változatlan
+    ) {
+      pass('Reprodukálhatóság — v2 az új, v1 snapshot immutábilis')
+    } else {
+      fail('Snapshot history', JSON.stringify({ snap2, snap1Again }))
+    }
+
+    // Csak szerep változik.
+    const upd3 = await repositories.agents.updateInstruction({
+      agentId: agent.id,
+      roleInstruction: R2,
+    })
+    if (
+      upd3.agentVersion === 3 &&
+      upd3.roleChanged &&
+      !upd3.behaviorChanged &&
+      upd3.roleInstructionVersion === 2 &&
+      upd3.behaviorProfileVersion === 2
+    ) {
+      pass('Szerep-only update — agent v3, szerep v2, viselkedés marad v2')
+    } else {
+      fail('Szerep update', JSON.stringify(upd3))
+    }
+
+    const snap3 = await repositories.agents.findVersionSnapshot(agent.id, 3)
+    if (snap3?.roleInstruction === R2 && snap3?.behaviorProfile === B2) {
+      pass('Snapshot v3 — R2 + B2 befagyasztva')
+    } else {
+      fail('Snapshot v3', JSON.stringify(snap3))
+    }
+
+    // Üres / azonos frissítés elutasítva.
+    let rejected = false
+    try {
+      await repositories.agents.updateInstruction({ agentId: agent.id })
+    } catch {
+      rejected = true
+    }
+    if (rejected) {
+      pass('Üres frissítés elutasítva (nincs new verzió)')
+    } else {
+      fail('Üres frissítés', 'nem dobott hibát')
+    }
+  } finally {
+    await cleanupRoleBehaviorTestAgents()
+  }
+}
+
 /** 21. Goose Docker E2E — opcionális, HARNESS_DOCKER_E2E=1 + image + platform */
 async function scenario20_dockerGooseE2E() {
   console.log('\n[21] Goose Docker E2E (opcionális)')
@@ -2101,6 +2254,8 @@ async function main() {
   console.log(`Agent: ${agent.name} (${agent.id.slice(0, 8)}…)`)
   console.log(`Operator: ${operator.name}, Approver: ${approver.name}`)
 
+  await resetSameDayBudget(agent.id)
+
   const memoryVersionBeforeTraining = (
     await repositories.agents.findByIdWithDetails(agent.id)
   )?.memoryVersion ?? 1
@@ -2135,6 +2290,7 @@ async function main() {
   await scenario23_cloudRunJobLauncher()
   await scenario24_governanceReport()
   await scenario25_measurementReport()
+  await scenario26_roleBehaviorVersioning(approver.id)
   await scenarioAgentApi(agent.id)
 
   const passed = results.filter((r) => r.ok && !r.skipped).length

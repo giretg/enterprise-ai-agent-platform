@@ -187,11 +187,15 @@ model Invitation {
 model Agent {
   id              String      @id @default(uuid()) @db.Uuid
   name            String
-  roleDescription String      @map("role_description")
-  systemPrompt    String      @map("system_prompt")
+  // Szerep-instrukció ("mit csinál") és viselkedés-profil ("hogyan") külön
+  // verziózva (§4.2/§5.3) — egymástól függetlenül frissíthető és visszakereshető.
+  roleInstruction String      @map("role_instruction")
+  behaviorProfile String      @map("behavior_profile")
   modelConfig     Json        @map("model_config")
   status          AgentStatus @default(draft)
   currentVersion  Int         @default(1) @map("current_version")
+  currentRoleInstructionVersion Int @default(1) @map("current_role_instruction_version")
+  currentBehaviorProfileVersion Int @default(1) @map("current_behavior_profile_version")
   memoryId        String      @unique @map("memory_id") @db.Uuid
   createdAt       DateTime    @default(now()) @map("created_at") @db.Timestamptz
 
@@ -211,14 +215,18 @@ model Agent {
 }
 
 model AgentVersion {
-  id                   String   @id @default(uuid()) @db.Uuid
-  agentId              String   @map("agent_id") @db.Uuid
-  version              Int
-  systemPromptSnapshot String   @map("system_prompt_snapshot")
-  modelConfigSnapshot  Json     @map("model_config_snapshot")
-  memoryVersionId      String   @map("memory_version_id") @db.Uuid
-  recipeVersionId      String?  @map("recipe_version_id") @db.Uuid
-  createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz
+  id                      String   @id @default(uuid()) @db.Uuid
+  agentId                 String   @map("agent_id") @db.Uuid
+  version                 Int
+  roleInstructionSnapshot String   @map("role_instruction_snapshot")
+  behaviorProfileSnapshot String   @map("behavior_profile_snapshot")
+  // Mely al-verziókat fagyasztotta ez az agent-verzió (reprodukálhatóság).
+  roleInstructionVersion  Int      @map("role_instruction_version")
+  behaviorProfileVersion  Int      @map("behavior_profile_version")
+  modelConfigSnapshot     Json     @map("model_config_snapshot")
+  memoryVersionId         String   @map("memory_version_id") @db.Uuid
+  recipeVersionId         String?  @map("recipe_version_id") @db.Uuid
+  createdAt               DateTime @default(now()) @map("created_at") @db.Timestamptz
 
   agent         Agent          @relation(fields: [agentId], references: [id], onDelete: Cascade)
   memoryVersion MemoryVersion  @relation(fields: [memoryVersionId], references: [id])

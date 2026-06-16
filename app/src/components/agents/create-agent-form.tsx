@@ -30,8 +30,8 @@ export function CreateAgentForm() {
             setError(null)
             const res = await createAgent({
               name: String(fd.get('name')),
-              roleDescription: String(fd.get('roleDescription')),
-              systemPrompt: String(fd.get('systemPrompt')),
+              roleInstruction: String(fd.get('roleInstruction')),
+              behaviorProfile: String(fd.get('behaviorProfile')),
               modelConfig: {
                 ...DEFAULT_MODEL,
                 temperature: Number(fd.get('temperature') ?? DEFAULT_MODEL.temperature),
@@ -57,22 +57,23 @@ export function CreateAgentForm() {
           />
         </label>
         <label className="block text-sm">
-          <span className="text-ink-soft">Szerepkör leírás</span>
-          <input
-            name="roleDescription"
+          <span className="text-ink-soft">Szerep-instrukció („mit csinál”)</span>
+          <textarea
+            name="roleInstruction"
             required
+            rows={3}
             className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm"
-            placeholder="Belső tudásbázisból citált válaszadás"
+            placeholder="Te az Excellence Pay belső tudás-asszisztense vagy. Kizárólag a jóváhagyott belső tudásbázisból válaszolsz."
           />
         </label>
         <label className="block text-sm">
-          <span className="text-ink-soft">System prompt</span>
+          <span className="text-ink-soft">Viselkedés-profil („hogyan”)</span>
           <textarea
-            name="systemPrompt"
+            name="behaviorProfile"
             required
-            rows={6}
+            rows={5}
             className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm"
-            placeholder="Te az Excellence Pay belső tudás-asszisztense vagy..."
+            placeholder="Magyarul, tömören válaszolj, minden állításhoz adj forráshivatkozást..."
           />
         </label>
         <label className="block text-sm">

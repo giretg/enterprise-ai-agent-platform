@@ -42,7 +42,7 @@ export default async function SandboxIndexPage() {
                     </div>
                     <p className="mt-1 text-sm text-ink-faint">{agent.name}</p>
                     <p className="mt-3 text-sm leading-relaxed text-ink-soft">
-                      {agent.roleDescription}
+                      {agent.roleInstruction}
                     </p>
                   </div>
                 </div>

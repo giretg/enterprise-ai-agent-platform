@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { prisma } from '@/lib/db'
 import type { AgentRepository, DocumentRepository, TicketRepository } from '@/repositories/interfaces'
+import { composeSystemPrompt } from '@/lib/agent-prompt'
 import type { ModelGateway } from '../gateway/model-gateway'
 import { TicketService } from '../ticket/ticket-service'
 
@@ -67,7 +68,7 @@ export class BookkeeperAgentRuntime {
       const { content } = await this.gateway.call({
         agentId,
         messages: [
-          { role: 'system', content: agentDetails.agent.systemPrompt },
+          { role: 'system', content: composeSystemPrompt(agentDetails.agent) },
           {
             role: 'system',
             content: `Memória (aktív verzió):\n${agentDetails.memoryContent ?? '(üres)'}`,
