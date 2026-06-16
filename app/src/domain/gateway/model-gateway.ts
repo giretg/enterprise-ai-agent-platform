@@ -41,6 +41,8 @@ export type ModelProviderResult = {
   content: string
   usage?: { promptTokens?: number; completionTokens?: number }
   latencyMs: number
+  /** A provider által ténylegesen használt modell (pl. a feloldott `gpt-5.5`). */
+  model?: string
 }
 
 export interface ModelProvider {
@@ -143,12 +145,14 @@ export class ChatGptOAuthProvider implements ModelProvider {
     const data = (await response.json()) as {
       content?: string
       usage?: { promptTokens?: number; completionTokens?: number }
+      model?: string
     }
 
     return {
       content: data.content ?? '',
       usage: data.usage,
       latencyMs: Date.now() - started,
+      model: data.model,
     }
   }
 }
@@ -211,12 +215,15 @@ export class ModelGateway {
       const promptTokens = result.usage?.promptTokens ?? Math.ceil(prompt.length / 4)
       const completionTokens = result.usage?.completionTokens ?? Math.ceil(content.length / 4)
       const costEstimate = 0
+      // A ténylegesen használt modellt naplózzuk (a provider feloldhatja a
+      // sentinel modell-azonosítót, pl. `chatgpt-oauth-default` → `gpt-5.5`).
+      const usedModel = result.model || model
 
       await this.modelCalls.create({
         agentId: params.agentId,
         ticketId: params.ticketId ?? null,
         provider: this.provider.name,
-        model,
+        model: usedModel,
         promptTokens,
         completionTokens,
         costEstimate: new Prisma.Decimal(costEstimate),
@@ -231,7 +238,7 @@ export class ModelGateway {
         action: 'model.call',
         targetType: 'ticket',
         targetId: params.ticketId ?? null,
-        modelUsed: model,
+        modelUsed: usedModel,
         inputRef: `tokens:${promptTokens}`,
         outputRef: `tokens:${completionTokens}`,
         policyDecision: 'allowed',
