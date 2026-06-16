@@ -1,12 +1,12 @@
 # Kontrollált Enterprise AI Agent Platform — MVP fejlesztési specifikáció és roadmap (walking skeleton)
 
 **Készítette:** Excellence Pay KFT (Enterprise AI tanácsadás)
-**Verzió:** 1.0 — fejlesztői átadási csomag
-**Dátum:** 2026-06-15
+**Verzió:** 1.0 + CR-MVP-001 — fejlesztői átadási csomag
+**Dátum:** 2026-06-15; CR-MVP-001 hozzáadva: 2026-06-16
 **Forrásdokumentum:** `AI-Agent-Platform-MVP-Terv-v1.0.md` (architektúra-teljes MVP / walking skeleton)
 **Háttér:** `AI-Agent-Platform-Koncepcio.md` (v0.8)
 **Olvasó:** a fejlesztő(k). Direkt, technikai. Feltételezi az MVP-terv ismeretét.
-**Státusz:** kivitelezésre kész — a nyitott döntések (D1, D3, D4, D6) ebben a dokumentumban default-javaslattal **lezárva** (lásd 1. fejezet).
+**Státusz:** kivitelezésre kész — a nyitott döntések (D1, D3, D4, D6) ebben a dokumentumban default-javaslattal **lezárva** (lásd 1. fejezet). A CR-MVP-001 új, levágható stretch elem; nem része az eredeti core MVP acceptance gate-nek.
 
 ---
 
@@ -17,6 +17,14 @@ Az `AI-Agent-Platform-MVP-Terv-v1.0.md` eldönti **mit** építünk: egy archite
 **Vezérelv (a tervből változatlanul):** az MVP célja **nem egy use case bizonyítása**, hanem hogy **minden architektúra-komponens egy alapszinten működjön és egy valódi végigfutásban összeálljon**. A wiki-agent cseppszabatos paraméterezés — a váz onnantól bármilyen agenttel feltölthető a kód érdemi átírása nélkül.
 
 > **Fontos elhatárolás:** ez **nem** az `AI-Agent-Platform-Fazis1-Spec.md`-ben leírt rendszer. Az a régi v0.1 koncepcióra épült (kattintható mockup, könyvelő/számla-agent, Gemini/Claude modell). Ez a spec a **v1.0 walking skeletont** specifikálja: **wiki-agent**, **kizárólag ChatGPT OAuth** modellforrás, **Goose harness Cloud Run Jobban**, **Tool Broker + dispatcher**. A két anyag nem keverendő.
+
+### 0.1 Change request log
+
+Ez a fejezet fejlesztői olvasatra külön jelöli, ha az eredeti v1.0 MVP scope-hoz képest új elem került a specifikációba. Az érintett részekben a change request azonosítója szögletes zárójelben szerepel.
+
+| CR | Dátum | Új elem | MVP-hatás | Fejlesztői státusz |
+|---|---|---|---|---|
+| **CR-MVP-001** | 2026-06-16 | Sandbox App Container / App Registry v0 | A wiki-riport A0 single-file HTML preview/export formája. Stretch / demo-bónusz; nem blokkolja a core MVP-t. | Csak akkor implementálandó, ha S1-S4/S2 zöld és a core wiki E2E nem csúszik. |
 
 ---
 
@@ -32,7 +40,7 @@ A v1.0 terv 10. fejezetének nyitott döntései ebben a specben az alábbi defau
 | D4 | Hosting | **GCP** (Cloud Run + Cloud Run Jobs + Cloud SQL + Secret Manager) | A Cloud Run Jobs miatt koherens |
 | D5 | Reflexió-feeder (4.6.3) | **Következő iteráció** (nem MVP) | A write-gate demó enélkül is teljes |
 | D6 | Csapat / időkeret | **2 fejlesztő, ~9–10 hét** (1 senior full-stack + 1 platform/infra) | A terv 11. ütemezése erre van kalibrálva |
-| D7 | Sandbox App Container / App Registry | **MVP-vékony szelet** | A0 single-file HTML app registry + preview + `.html` export beleférhet; A1-A3 app-platform, adatmodell-generálás, deployment és graduation Fázis 2 |
+| D7 | Sandbox App Container / App Registry **[CR-MVP-001]** | **Stretch / demo-bónusz** | A0 single-file HTML riportnézet + preview + `.html` export akkor fér bele, ha S1-S4/S2 nem csúszik; A1-A3 app-platform, adatmodell-generálás, deployment és graduation Fázis 2 |
 
 **Csapat-szereposztás (javaslat a roadmaphoz):**
 
@@ -302,7 +310,7 @@ status (enum: uploaded | processing | processed | failed)
 connector_id (fk, nullable), uploaded_by (fk users), created_at
 ```
 
-**`sandbox_apps`** *(MVP-vékony App Registry — A0 single-file app)*
+**`sandbox_apps`** *(stretch App Registry — A0 single-file riportnézet, [CR-MVP-001])*
 ```
 id, tenant_id, name, slug, description (text, nullable)
 level (enum: A0)                  -- MVP-ben csak single-file HTML app
@@ -314,7 +322,7 @@ current_version_id (fk sandbox_app_versions, nullable)
 created_at, updated_at
 ```
 
-**`sandbox_app_versions`** *(verziózott, letölthető artefakt)*
+**`sandbox_app_versions`** *(verziózott, letölthető artefakt, [CR-MVP-001])*
 ```
 id, app_id (fk sandbox_apps), version (int)
 artifact_type (enum: single_html)
@@ -326,7 +334,7 @@ created_by_agent_id (fk agents, nullable)
 created_at
 ```
 
-**MVP-korlát:** nincs többfájlos build, nincs sandbox-adatmodell generálás, nincs automatikus deploy és nincs külső connector-hozzáférés az appból. A preview sandboxed iframe-ben fut; az export `.html` letöltés + hash.
+**[CR-MVP-001] MVP-korlát:** ez stretch scope, nem hard acceptance gate. Nincs többfájlos build, nincs sandbox-adatmodell generálás, nincs automatikus deploy és nincs külső connector-hozzáférés az appból. A preview külön originről kiszolgált sandboxed iframe-ben fut szigorú CSP-vel; az export `.html` letöltés + hash.
 
 ### 4.8 Append-only hash-láncolt audit
 
@@ -528,17 +536,18 @@ generateReport({ agentId, templateId }) -> { ticketId }    [operator+]   -- 1 el
 ```
 **Kipróbálható, ha:** a felhasználó végigvisz egy kérdés→válasz→(opcionális tanítás)→jóváhagyás folyamatot, és minden a boardon/auditban látszik.
 
-#### 5.10.1 Sandbox App Container / App Registry — MVP-vékony szelet
+#### 5.10.1 Sandbox App Container / App Registry — stretch / demo-bónusz [CR-MVP-001]
 
-**Válasz a scope-kérdésre:** igen, ebből tehető valami nagyon alap az MVP-be, de csak **A0 single-file app** szinten. Ez nem teljes Goose-szerű app-platform és nem graduation-ready export, hanem egy bizonyító szelet: az AI vagy az operator létrehoz egy különálló sandbox mini-appot, a felhasználó preview-ban megnyitja, majd `.html` fájlként letölti.
+**Change request megjegyzés:** ez a rész a CR-MVP-001 új eleme. Igen, ebből tehető valami nagyon alap az MVP-be, de **stretchként**, nem kemény acceptance criteriaként. Csak **A0 single-file app** szinten fér bele, és a wiki-pilothoz kell kötni: az A0 app a generált riport önálló, megnyitható HTML-nézete. Ha S2 vagy a Goose-harness kritikus út csúszik, ez az első levágható elem.
 
 **MVP in scope:**
 - App Registry lista a sandboxban: név, státusz, verzió, létrehozó, létrehozó ticket/agent.
-- Egyetlen app-típus: `single_html` (HTML/CSS/JS egy fájlban, külső dependency nélkül).
-- Sandboxed iframe preview: `sandbox` attribútummal, hálózat/secret/connector nélkül.
+- Egyetlen app-típus: `single_html` (HTML/CSS/JS egy fájlban; külső dependency futását CSP blokkolja).
+- Preview külön, cookieless originről; iframe `sandbox="allow-scripts"` **`allow-same-origin` nélkül**.
+- Preview CSP minimum: `default-src 'none'; connect-src 'none'`; inline JS-hez kontrollált `script-src` policy. Ezzel nincs platform-session, nincs API-hozzáférés, nincs hálózat/secret/connector.
 - Verzió létrehozása és aktiválása; régi verzió megtekinthető vagy visszaállítható.
-- Export: `.html` letöltés + `content_hash` megjelenítése.
-- Audit: létrehozás, verziózás, preview/export esemény.
+- Export: `.html` letöltés + `content_hash` megjelenítése; export után a fájl biztonsági szintje olyan, mint bármely letöltött HTML fájlé.
+- Audit: létrehozás, verziózás, preview/export és cross-tenant access-denied esemény.
 
 **Out of scope MVP-ben:** többfájlos app bundle, npm build, app-saját adatmodell, külső API/connector az appból, deploy ügyfélkörnyezetbe, Docker/Git export, automatikus A1-A3 graduation.
 
@@ -549,7 +558,8 @@ createSandboxApp({ name, description, createdFromTicketId? })
 upsertSandboxAppVersion({ appId, html, changeSummary })
   -> { versionId, version, contentHash }                 [operator+ vagy agent toolon át]
 listSandboxApps() -> { apps[] }                          [viewer+]
-getSandboxAppPreview({ appId, version? }) -> { html }    [viewer+] -- iframe-ben renderelve
+getSandboxAppPreviewUrl({ appId, version? })
+  -> { previewUrl, contentHash }                         [viewer+] -- külön preview-origin
 exportSandboxApp({ appId, version? })
   -> { filename, contentRef, contentHash }               [operator+]
 ```
@@ -575,7 +585,7 @@ memory.update | memory.rollback | memory.write_denied
 agent.create | agent.version | agent.key_rotate | agent.suspend
 recipe.create | recipe.version | recipe.approve
 dispatch.start | dispatch.budget_blocked
-sandbox_app.create | sandbox_app.version | sandbox_app.preview | sandbox_app.export
+sandbox_app.create | sandbox_app.version | sandbox_app.preview | sandbox_app.export | sandbox_app.access_denied   -- [CR-MVP-001]
 ```
 **Kipróbálható, ha:** a demó végén egy adott eredményhez megmutatható a **teljes láncolat**: input → agent-/memória-/recipe-verzió → modell- és eszközhívások → jóváhagyó; és a `verifyChain()` zöld.
 
@@ -655,8 +665,8 @@ Goose-konténer; `goose run` recipe-vel; provider→Gateway, extension→Broker;
 **Epik 6 — Tanítás / memória**
 verziózott `MemoryStore`; tanítási ticket + javasolt diff; jóváhagyási lánc; **write-gate token** (aláírt, egyszer használatos, diffhez kötött); verzió-promóció + rollback; retrieval-napló. *(S5.)*
 
-**Epik 7 — Sandbox use case (wiki) + App Registry v0**
-tudásfeltöltés; kérdés→citált válasz+indoklás UI; jóváhagyásra küldés; lezárás; 1 előre definiált riport-sablon; **A0 Sandbox App Registry** (single-file HTML app, preview, verzió, export). *(S6.)*
+**Epik 7 — Sandbox use case (wiki) + App Registry stretch [CR-MVP-001]**
+tudásfeltöltés; kérdés→citált válasz+indoklás UI; jóváhagyásra küldés; lezárás; 1 előre definiált riport-sablon. **Stretch:** a riport önálló A0 HTML sandbox appként megnyitható, verziózott és exportálható. *(S6.)*
 
 **Epik 8 — Governance és mérés**
 human-in-the-loop kapu; token/költség dashboard minimum; bizonytalan eset eszkaláció; egyszerű eval dataset + manuális értékelő felület; a 9.2 negatív tesztek.
@@ -671,10 +681,11 @@ human-in-the-loop kapu; token/költség dashboard minimum; bizonytalan eset eszk
 | **1. Control Plane + IAM** | 2–3 | Epik 1–2 | Dev B (A: infra/IaC) | Ticket végigvihető, hash-lánc él, 4 szerep, meghívás |
 | **2. Gateway + Broker + Registry** | 4–5 | Epik 3–4 | A: Gateway+Broker, B: Registry | Modellhívás + eszközhívás naplózva; agent anatómia |
 | **3. Harness + Dispatcher** | 6–7 (≈1,5) | Epik 5 | Dev A | Valódi `goose run` ticketenként a dispatcher mögött |
-| **4. Tanítás + Sandbox** | 7–9 (≈2) | Epik 6–7 (S5, S6) | B: Sandbox+tanítás-UI + App Registry v0, A: write-gate+MemoryStore | Write-gate + rollback; citált wiki-válasz; A0 app preview/export |
+| **4. Tanítás + Sandbox** | 7–9 (≈2) | Epik 6–7 (S5, S6) | B: Sandbox+tanítás-UI, A: write-gate+MemoryStore | Write-gate + rollback; citált wiki-válasz. Stretch, ha a kritikus út zöld: A0 riport preview/export |
 | **5. Governance + mérés + demó** | 10 (≈1) | Epik 8 + negatív tesztek | Dev B (A: budget/kill-switch) | A 4. fejezet demó + 4 negatív teszt zöld |
 
 > Az ütemezés a spike-eredménytől függ. Ha S2 (OAuth-mediáció) csúszik, az a kritikus út — azonnal eszkalálandó.
+> **[CR-MVP-001] D7 scope guard:** az App Registry v0 nem blokkolhatja a walking skeleton DoD-t. Csúszás esetén levágandó stretch; a core MVP a 9.1/1–8 teljesülésével kész.
 
 ---
 
@@ -692,7 +703,8 @@ A walking skeleton akkor kész, ha **valódi adaton, stabilan** teljesül:
 6. Visszakereshető, **melyik agent-/memória-/recipe-verzió + input** alapján született az eredmény.
 7. Van **rövid mérési riport** (válaszminőség, átfutás, visszadobás, költség/ticket).
 8. **Architektúra-teljesség:** mind az 5.1–5.11 komponens legalább egyszer szerepel egy valódi végigfutásban.
-9. Az App Registry v0 bizonyított: legalább egy A0 sandbox app létrejön, preview-ban megnyílik, verziózott, és `.html` exportként letölthető hash-sel.
+
+**Stretch / demo-bónusz [CR-MVP-001]:** az App Registry v0 akkor tekinthető bemutathatónak, ha a wiki-riportból legalább egy A0 sandbox app létrejön, külön origin + CSP mellett preview-ban megnyílik, verziózott, és `.html` exportként letölthető hash-sel. Ez nem blokkolja a core MVP elfogadását.
 
 ### 9.2 Kötelező negatív tesztek (governance-bizonyítékok)
 
@@ -702,10 +714,15 @@ A walking skeleton akkor kész, ha **valódi adaton, stabilan** teljesül:
 | N2 | Agent egy nem engedélyezett toolt hív | Tool Broker blokk + `tool.call.denied` audit-flag |
 | N3 | Külső „tanuld meg, hogy…" prompt | **Nem** ír memóriát (write-gate token nélkül nincs írás) |
 | N4 | Goose-konténer közvetlen internet/rendszer-elérés kísérlete | Egress blokk; a kísérlet nem jut ki |
+| N5 *(D7 / CR-MVP-001 stretch esetén)* | Tenant A appId-vel lekéri vagy exportálja tenant B sandbox appját | Szerver elutasít + `sandbox_app.access_denied` audit |
+
+N1-N4 a core MVP kötelező negatív tesztje. N5 akkor kötelező, ha a D7 App Registry stretch leszállításra kerül.
 
 ### 9.3 End-to-end demó-forgatókönyv
 
-A v1.0 terv 4. fejezetének 11 lépése a demó-script alapja, kiegészítve az App Registry v0-val: belépés (IAM) → agent létrehozása → tudásfeltöltés → kérdés (ticket) → dispatch + `goose run` → citált válasz → jóváhagyás → tanítás (write-gate) → rollback → **A0 sandbox app létrehozás/preview/export** → audit-láncolat → 4 negatív teszt.
+A v1.0 terv 4. fejezetének 11 lépése a demó-script alapja: belépés (IAM) → agent létrehozása → tudásfeltöltés → kérdés (ticket) → dispatch + `goose run` → citált válasz → jóváhagyás → tanítás (write-gate) → rollback → audit-láncolat → negatív tesztek.
+
+**Stretch demó, ha D7 / CR-MVP-001 belefér:** a generált wiki-riport önálló A0 sandbox appként is megnyílik preview-ban, majd `.html` exportként letölthető.
 
 ---
 
@@ -717,7 +734,8 @@ A v1.0 terv 4. fejezetének 11 lépése a demó-script alapja, kiegészítve az 
 - **Human approval:** kötelező a tudásfrissítésnél és a kifelé menő/bizonytalan válasznál.
 - **Rate/budget/kill-switch:** per-agent budget cap; eszköz-szintű rate limit; agent-felfüggesztés (`setAgentStatus(suspended)`).
 - **Prompt injection:** a dokumentum-/web-tartalom **adat, nem utasítás**; a write-gate token nem csalható ki promptból.
-- **Sandbox app preview:** A0 app sandboxed iframe-ben fut; nincs secret, nincs connector, nincs külső hálózati jogosultság. Exportkor hash készül, az export auditált.
+- **Sandbox app preview (stretch, [CR-MVP-001]):** A0 app külön, cookieless preview-originről jön; iframe `sandbox="allow-scripts"` **`allow-same-origin` nélkül**; CSP minimum `default-src 'none'; connect-src 'none'`, kontrollált `script-src` policyvel. Így az AI által generált JS nem éri el a platform sessionjét/API-jait, nem tölthet külső dependencyt és nem hálózhat. Exportkor hash készül, az export auditált; az exportált `.html` biztonsági kockázata a letöltött HTML fájlok szintje.
+- **Tenant izoláció (stretch, [CR-MVP-001]):** preview/export végpontok minden hívásnál tenant scope-ot ellenőriznek; cross-tenant appId `sandbox_app.access_denied` auditot ír.
 - **Lock-out védelem:** utolsó aktív admin nem zárható ki; admin a saját szerepét nem írhatja át.
 
 ---
@@ -730,7 +748,7 @@ A v1.0 terv 4. fejezetének 11 lépése a demó-script alapja, kiegészítve az 
 | Minőség | citált válaszok aránya; forrás-lefedettség; emberi visszadobási arány | ticket payload + transitions |
 | Kontroll | jóváhagyott vs. automatikus lépések; audit-lánc teljessége | `audit_log` + `verifyChain` |
 | Költség | (becsült) token/költség per ticket; runtime-költség / nap | `model_calls`, Cloud Run Jobs metrikák |
-| Sandbox app | létrehozott appok száma; preview/export események; app-verziók száma | `sandbox_apps`, `sandbox_app_versions`, `audit_log` |
+| Sandbox app (stretch, [CR-MVP-001]) | létrehozott appok száma; preview/export/access-denied események; app-verziók száma | `sandbox_apps`, `sandbox_app_versions`, `audit_log` |
 
 A dashboard MVP-ben egyszerű (Epik 8): aggregált számok + ticketenkénti lebontás. Eval: kis kérdéskészlet + manuális értékelő felület.
 
@@ -741,7 +759,7 @@ A dashboard MVP-ben egyszerű (Epik 8): aggregált számok + ticketenkénti lebo
 - **Az S2 (OAuth-mediáció) a kritikus út.** A Goose provider ↔ ChatGPT OAuth illeszkedés ismeretlen. Ha a flat-rate kvóta vagy a provider-csatorna nem fér össze a Gatewayjel, az az MVP modellforrását érinti → azonnal Gergő/Koordinátor.
 - **A két átjáró nem opcionális.** Ha bármelyik komponens „kényelemből" közvetlenül elérné a modellt vagy egy eszközt, az MVP fő állítása sérül. A negatív tesztek (N1–N4) ezt fogják meg.
 - **Scope-fegyelem.** A kísértés, hogy egy komponenst „rendesen" építsünk meg. Minden komponens a **legszűkebb működő formában** készül; a mélységet a use case-ek élesedése hajtja, nem az MVP.
-- **App Registry v0 nem válhat rejtett platformépítéssé.** MVP-ben kizárólag A0 single-file HTML preview/export. Ha adatmodell, build pipeline, külső API vagy deploy kell, az Fázis 2.
+- **[CR-MVP-001] App Registry v0 nem válhat rejtett platformépítéssé.** Ez stretch, nem hard gate. MVP-ben kizárólag a wiki-riport A0 single-file HTML preview/exportja fér bele. Ha adatmodell, build pipeline, külső API vagy deploy kell, az Fázis 2.
 - **A v1.0 terv 5. epik-szövegének „OpenAI + Gemini" megjegyzése elavult** (D2 előtti maradvány). Mérvadó: **kizárólag ChatGPT OAuth**.
 - **Elhalasztott komponensek (terv 1.4 / koncepció 10.B):** sensitivity router, OPA/Cedar, külső memory substrate, hibrid retrieval, saját model hosting — mind **cserepont mögé** építve, nem implementálva. Éles ügyfél előtt újra validálandók.
 
@@ -751,7 +769,7 @@ A dashboard MVP-ben egyszerű (Epik 8): aggregált számok + ticketenkénti lebo
 
 A fejlesztés akkor kész, ha:
 
-- [ ] Mind a 8 epik leszállítva; a 9.1 nyolc kritériuma valódi adaton stabil.
+- [ ] Mind a 8 core epik leszállítva; a 9.1 nyolc kritériuma valódi adaton stabil. D7 / CR-MVP-001 App Registry stretch nélkül is késznek tekinthető.
 - [ ] A 9.2 négy negatív tesztje (N1–N4) zöld.
 - [ ] A 9.3 end-to-end demó kattintható forgatókönyvként lefut.
 - [ ] `verifyChain()` zöld egy teljes demó-futás után.
@@ -798,7 +816,7 @@ A fejlesztés akkor kész, ha:
 | Tool Broker — repository metódusok | **Kész (2026-06-15)** | `ToolBrokerRepository` új metódusai: `findCapabilitiesForAgent`, `findConnectorsForAgent`, `findDocumentsForConnector`. |
 | Tool Broker — kbSearch kiterjesztés | **Kész (2026-06-15)** | `ToolBrokerService.kbSearch` mostantól az agent KB-connectorához kapcsolt dokumentumokat is átkutatja a memória-tartalom mellett. |
 | Sandbox — dokumentumfeltöltés és KB-linking | **Kész (2026-06-15)** | `/sandbox` oldal kapott dokumentumfeltöltés szekciót (fájl + szöveges beillesztés), KB-dokumentum listát és linking flow-t. Server actions: `processDocumentForWiki`, `listDocumentsForAgent`. |
-| Sandbox App Registry v0 | Hátra van | Új MVP-vékony scope (2026-06-16): A0 single-file HTML app registry, preview iframe, verziózás, `.html` export + hash, audit (`sandbox_app.*`). Nem része a jelenlegi kódnak. |
+| Sandbox App Registry v0 **[CR-MVP-001]** | Stretch / hátra van | Új levágható scope (2026-06-16): generált wiki-riport A0 single-file HTML appként, külön-origin preview iframe, verziózás, `.html` export + hash, audit (`sandbox_app.*`, `sandbox_app.access_denied`). Nem része a core MVP-nek és nem része a jelenlegi kódnak. |
 | Seed / alapértelmezett agent | Kész alap | A seed most `Wiki Agent`-et hoz létre `chatgpt-oauth` modellkonfiggal és belső tudásbázis kezdőmemóriával. |
 | Training / write-gate | **Kész (2026-06-15)** | Training ticket, diff, write-gate issue/consume (aláírt, egyszer használatos, diffhez kötött), memória verzió promóció, rollback és eval-kapu működik. First-class `training_tickets` tábla (§4.4) bekerült: `proposed_diff`, `write_gate_token_ref` (a kiállított token referenciája — nyers token sosem tárolt), `eval_result` és `target_memory_version`. A `TrainingService.createTrainingTicket` írja a sort a cél-verzióval; az `approveTraining` rögzíti a token-ref-et és az eval-eredményt. Az **S5/N3 negatív tesztek** (replay/kétszeres consume tiltva, lejárt token tiltva + `expired` státusz, hamisított aláírás tiltva) az acceptance e2e-ben zöldek. |
 | Eval alap | Részben kész | Egyszerű eval definíció és futtatás van. Wiki-agentre szabott S6 eval plan még nincs. |
@@ -814,18 +832,18 @@ A fejlesztés akkor kész, ha:
 | Epik 4 — Tool Broker + connector | Részben kész | Valódi MCP-proxy adapter; Goose extension bekötés; Secret Manager injektálás igazolása. *(Connector/capability admin UI kész 2026-06-15; repository metódusok és kbSearch kiterjesztés kész 2026-06-15.)* |
 | Epik 5 — Harness (Goose) + Dispatcher | Részben kész | S1-S4 spike; Goose image/recipe; Cloud Run Job indítás; dispatcher futtató processz `LISTEN/NOTIFY` + cron safety net; job completion/timeout lock release; egress deny és developer-extension lezárás igazolása. |
 | Epik 6 — Tanítás / memória | Részben kész | Hátra: retrieval-napló dedikált nézete; rollback UI finomítás. *(Spec szerinti `training_tickets` modell, write-gate token-ref külön kezelése és a token lejárat/újrajátszás/aláírás-hamisítás negatív tesztek kész 2026-06-15.)* |
-| Epik 7 — Sandbox use case (wiki) + App Registry v0 | Részben kész | `askWiki` ticket létrehozás és `getAnswer` citált válasz UI; jóváhagyásra küldés flow; 1 riport-sablon; GCS/GCS-helyettes absztrakció `uploadDocument`-hez; régi bookkeeper runtime kiváltása wiki runtime-mal; A0 sandbox app registry + preview + export. *(Dokumentumfeltöltés, KB-linking UI és `processDocumentForWiki` server action kész 2026-06-15; App Registry v0 új scope 2026-06-16.)* |
+| Epik 7 — Sandbox use case (wiki) + App Registry stretch **[CR-MVP-001]** | Részben kész | `askWiki` ticket létrehozás és `getAnswer` citált válasz UI; jóváhagyásra küldés flow; 1 riport-sablon; GCS/GCS-helyettes absztrakció `uploadDocument`-hez; régi bookkeeper runtime kiváltása wiki runtime-mal. Stretch: generált riport A0 sandbox appként preview/export. *(Dokumentumfeltöltés, KB-linking UI és `processDocumentForWiki` server action kész 2026-06-15; App Registry v0 új levágható scope 2026-06-16.)* |
 | Epik 8 — Governance és mérés | Részben kész | Költség/dashboard alap van, de hiányzik a Tool Broker mérés, ticketenkénti bontás, bizonytalan eset eszkalációs policy, N1-N4 negatív tesztek teljes automatizálása és rövid mérési riport. |
 
 ### 15.3 Következő javasolt fejlesztési sorrend
 
 1. **S1-S4 spike előkészítése:** Goose recipe + Cloud Run Job proof, majd Model Gateway és a most elkészült Tool Broker útvonal rákötése.
 2. **Wiki sandbox E2E:** `askWiki` ticket létrehozás `ready` állapotban, dispatcher indítás, citált válasz visszaírása.
-3. **Sandbox App Registry v0:** `sandbox_apps` / `sandbox_app_versions`, preview iframe, `.html` export + audit.
-4. **Tool Broker hardening:** MCP-proxy adapter, Secret Manager injektálás, connector/capability admin UI.
-5. **Agent anatómia reprodukálhatóság:** agent-/memória-/recipe-verzió megjelenítése lezárt ticketen.
-6. **Negatív tesztek:** N1 és a Tool Broker capability deny részben adott (`ticket.transition.denied`, `tool.call.denied`); N3-N4 a Goose/egress spike után automatizálható.
+3. **Tool Broker hardening:** MCP-proxy adapter, Secret Manager injektálás, connector/capability admin UI.
+4. **Agent anatómia reprodukálhatóság:** agent-/memória-/recipe-verzió megjelenítése lezárt ticketen.
+5. **Negatív tesztek:** N1 és a Tool Broker capability deny részben adott (`ticket.transition.denied`, `tool.call.denied`); N3-N4 a Goose/egress spike után automatizálható.
+6. **Stretch, ha a core zöld [CR-MVP-001]:** Sandbox App Registry v0 (`sandbox_apps` / `sandbox_app_versions`, külön-origin preview, `.html` export, N5 cross-tenant deny).
 
 ---
 
-*Forrásalap: `AI-Agent-Platform-MVP-Terv-v1.0.md` (2026-06-15) és `AI-Agent-Platform-Koncepcio.md` v0.8 (forrásellenőrzés: 2026-06-14; App Registry kiegészítés: 2026-06-16). A modellstratégia eldöntve (D2: kizárólag ChatGPT OAuth); az OAuth-mediáció és kvótakezelés az S2 spike-on validálandó. A D1/D3/D4/D6/D7 döntések ebben a specben default-javaslattal lezárva — üzleti változás esetén az érintett fejezet újranyitandó.*
+*Forrásalap: `AI-Agent-Platform-MVP-Terv-v1.0.md` (2026-06-15) és `AI-Agent-Platform-Koncepcio.md` v0.8 (forrásellenőrzés: 2026-06-14; App Registry kiegészítés / CR-MVP-001: 2026-06-16). A modellstratégia eldöntve (D2: kizárólag ChatGPT OAuth); az OAuth-mediáció és kvótakezelés az S2 spike-on validálandó. A D1/D3/D4/D6 döntések ebben a specben default-javaslattal lezárva; D7 / CR-MVP-001 stretch, csúszás esetén levágható — üzleti változás esetén az érintett fejezet újranyitandó.*

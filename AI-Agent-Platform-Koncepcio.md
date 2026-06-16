@@ -13,7 +13,7 @@
 
 > **Változásnapló (v0.5 → v0.6):** az 5. fejezet (Execution / Sandbox Plane) kibővítve azzal a koncepcióval, hogy a munkatér nem csak megjeleníti az agentek munkáját, hanem **agent-által fejleszthető alkalmazásplatform** — egy Canvas-szerű, de valódi, perzisztens appokat futtató felület, ahol az AI igény szerint épít és karbantart belső alkalmazásokat (pl. CRM, ha a cégnek nincs). A keret kulcsa a **scratchpad-pozicionálás**: a sandbox hivatalosan AI-munkafelület, nem a cég éles infrastruktúrája — a kockázat az ismert, vállalható „Excel-szintű" kockázat (Excel-analógia), nem éles rendszer SLA. Az enterprise-megfelelést **governance-by-construction** (beépített alapelvek + elfogadási kapu), **scratchpad-szintű mentés/verziózás** (git-szerű projekt, test→live promóció, kód-vs-adat snapshot) és **graduation/kiszervezés** (egy gombos export a cég saját rendszerébe) adja, GDPR-feldolgozói caveattel. Új/átírt alfejezetek: 5.4 (kettős sík + Canvas-keret + „szabadság a kerítésen belül"), 5.5 (scratchpad-pozicionálás, Excel-felelősséghatár, GDPR-caveat), 5.6 (governance-by-construction: állandó system prompt + elfogadási kapu + kritikussági szintezés L0–L3) és 5.6.1 (a két audit-szint összekapcsolása auditori nézőpontból: kerítés-audit a control plane-ben + sandbox-belső audit, a graduation mint audit-érési trigger), 5.7 (verziózás, mentés, test→live promóció), 5.8 (graduation/kiszervezés + a sandbox-vízió). A 6. fejezet adat-/kontrollhatára frissítve a scratchpad-kerettel.
 
-> **Változásnapló (v0.7 → v0.8):** az 5. fejezet önálló **Sandbox App Container / App Registry** réteggel bővült (5.9). Ez explicitté teszi, hogyan lesz az agent-fejleszthető sandboxból tényleges, nyilvántartott, preview-olható, verziózott és exportálható alkalmazásréteg. A Goose Apps / MCP Apps mintájából a mechanizmust vesszük át (AI által létrehozott, elkülönített mini-app, iframe/sandbox preview, letölthető artefakt), de enterprise környezetben saját registry, policy, audit, export és graduation-kapuk alá tesszük. Az MVP-ben ebből csak egy nagyon vékony szelet javasolt: A0 single-file HTML app registry + preview + download/export, nem teljes többfájlos app-platform.
+> **Változásnapló (v0.7 → v0.8):** az 5. fejezet önálló **Sandbox App Container / App Registry** réteggel bővült (5.9). Ez explicitté teszi, hogyan lesz az agent-fejleszthető sandboxból tényleges, nyilvántartott, preview-olható, verziózott és exportálható alkalmazásréteg. A Goose Apps / MCP Apps mintájából a mechanizmust vesszük át (AI által létrehozott, elkülönített mini-app, iframe/sandbox preview, letölthető artefakt), de enterprise környezetben saját registry, policy, audit, export és graduation-kapuk alá tesszük. Az MVP-ben ebből csak egy nagyon vékony, levágható stretch-szelet javasolt: A0 single-file HTML riportnézet + preview + download/export, nem teljes többfájlos app-platform.
 
 > A fejezetek elején **"Közérthetően"** dobozok segítenek azoknak, akik nem járatosak az AI-agentek világában: ezek egyszerű nyelven, hasonlatokkal mondják el, miről szól az adott rész. Az alábbi fogalomtár a leggyakoribb szakszavakat magyarázza.
 
@@ -1164,19 +1164,19 @@ A Goose-ban látott minta értékes, de enterprise termékként nem önmagában 
 
 | Szint | App típusa | Példa | Futás / export |
 |---|---|---|---|
-| **A0 — Single-file app** | önálló HTML/CSS/JS, nincs backend, nincs külső dependency | kalkulátor, vizualizáció, egyszerű riportnézet | sandboxed iframe preview + `.html` letöltés |
+| **A0 — Single-file app** | önálló HTML/CSS/JS, nincs backend, nincs külső dependency | generált wiki-riport önálló HTML-nézete, kalkulátor, vizualizáció | külön originről kiszolgált sandboxed iframe preview + `.html` letöltés |
 | **A1 — Static app bundle** | többfájlos frontend build, statikus assetekkel | belső dashboard, többnézetes riport | statikus hosting + `.zip` export |
 | **A2 — Sandbox data app** | sandbox-natív adatmodellt olvas/ír | mini CRM, ügylista, státusztábla | app bundle + schema + adat snapshot export |
 | **A3 — Integrated app** | Tool Broker connectoron át külső rendszerhez kapcsolódik | ERP-előkészítő, számla-egyeztető | approval-köteles futás + graduation csomag |
 
-**MVP-hez illeszkedő minimum:** az első verzióban nem kell teljes A1-A3 platform. Elég egy **A0 App Registry**:
+**MVP-hez illeszkedő stretch minimum:** az első verzióban nem kell teljes A1-A3 platform, és az App Registry nem része a kontrollált agent-futás mag-bizonyításának. Ha a kritikus út (különösen a Goose/Model Gateway/Tool Broker integráció) stabilan halad, demó-bónuszként elég egy **A0 App Registry**, amely a wiki-pilot riportgenerálásának természetes kimenete: egy önálló, megnyitható HTML riportnézet.
 
 - app létrehozása névvel, leírással, kritikussági szinttel;
 - egyetlen HTML/CSS/JS artefakt tárolása;
-- sandboxed preview iframe-ben;
+- preview külön, cookieless originről kiszolgált sandboxed iframe-ben;
 - verziószám és `created_by` / `created_by_agent` metaadat;
 - letöltés `.html` fájlként;
-- audit: `sandbox_app.create`, `sandbox_app.version`, `sandbox_app.export`.
+- audit: `sandbox_app.create`, `sandbox_app.version`, `sandbox_app.preview`, `sandbox_app.export`, `sandbox_app.access_denied`.
 
 Ez már demonstrálja a Goose-szerű élményt: az AI létrehoz egy különálló, megnyitható appot, a felhasználó kipróbálja, majd letöltheti. Közben a mi architektúránkban marad: a létrehozás tickethez/agenthez köthető, a preview izolált, az export naplózott, és később ugyanebből nőhet ki a többfájlos, adatmodelles, graduálható app-platform.
 
@@ -1189,7 +1189,7 @@ sandbox_app.preview({ appId, version }) -> { previewUrl }
 sandbox_app.export({ appId, version }) -> { artifactRef, checksum }
 ```
 
-**Biztonsági alapelv:** az App Container alapból nem kap hálózatot, secretet vagy connector-hozzáférést. Ha egy app külső adatot akar használni, azt csak explicit App Policy + Tool Broker capability + audit mellett teheti. Így az app-generálás nem kerülőút a Model Gateway, Tool Broker és human approval megkerülésére.
+**Biztonsági alapelv:** az App Container alapból nem kap hálózatot, secretet vagy connector-hozzáférést. Ez nem pusztán attól igaz, hogy iframe-ben fut, hanem attól, hogy a preview **külön originről** jön, a frame `sandbox="allow-scripts"` beállítást kap **`allow-same-origin` nélkül**, és a preview válaszon szigorú CSP van (minimum: `default-src 'none'; connect-src 'none'`; az inline futáshoz kontrollált `script-src` policy). Így az AI által generált JS nem éri el a platform sessionjét, API-jait vagy connectorait, és külső `<script src=...>` / hálózati hívás sem működik. Ha egy app külső adatot akar használni, azt csak explicit App Policy + Tool Broker capability + audit mellett teheti. Az exportált `.html` már a cég/felhasználó saját környezetében fut: ott a kockázata olyan, mint bármely letöltött HTML fájlé, ami illeszkedik az Excel-szintű scratchpad felelősséghatárhoz.
 
 ---
 
@@ -1209,7 +1209,7 @@ sandbox_app.export({ appId, version }) -> { artifactRef, checksum }
 | **Sandbox-kód + git-history, test/live környezet** | Execution Plane (2) | Verziózott; live-ba csak emberi go-live kapuval (5.7) |
 | **Sandbox mentés / verzió / snapshot (mi biztosítjuk)** | Sandbox-szolgáltatás | A scratchpad biztonsági hálója: kód-rollback + adat point-in-time (5.7) |
 | **Sandbox App Registry metaadat** | Execution Plane (2) / Sandbox-szolgáltatás | App-katalógus: név, verzió, policy, export státusz, létrehozó agent/felhasználó (5.9) |
-| **Sandbox app artefaktum** (HTML / bundle / export csomag) | Execution Plane (2) | Hordozható, letölthető app-csomag; preview izolált konténerben/iframe-ben (5.9) |
+| **Sandbox app artefaktum** (HTML / bundle / export csomag) | Execution Plane (2) | Hordozható, letölthető app-csomag; preview izolált külön origin + CSP + sandboxed iframe mellett (5.9) |
 
 **Kritikus elv:** a 2. appból érkező adat (pl. egy feltöltött számla tartalma) az agent számára **adat, nem utasítás**. A jogosultságokat és az engedélyezett műveleteket mindig **szerveroldalon, a control plane-ben** kényszerítjük ki — soha nem a promptban (prompt injection elleni alapelv).
 
@@ -1545,7 +1545,7 @@ Minden MVP-jelölt use case-hez legyen egy egyoldalas leírás az alábbi szerke
 
 - dokumentumfeltöltés vagy adatsor-import;
 - számla/dokumentum feldolgozási dashboard;
-- App Registry v0: single-file sandbox app preview + `.html` export (5.9);
+- stretch: generált riport önálló A0 HTML sandbox appként, preview + `.html` export (5.9);
 - agent-javaslat megjelenítése forrással és indoklással;
 - jóváhagyásra küldés;
 - jóváhagyott eredmény lezárása.
