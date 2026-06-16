@@ -29,6 +29,7 @@ export type TicketFilter = {
 export interface TicketRepository {
   findMany(filter?: TicketFilter): Promise<Ticket[]>
   findReadyForDispatch(now: Date, limit: number): Promise<Ticket[]>
+  findStaleInProgressDispatches(cutoff: Date, limit: number): Promise<Ticket[]>
   findById(id: string): Promise<Ticket | null>
   create(
     data: Omit<Ticket, 'id' | 'createdAt' | 'updatedAt' | 'lockToken' | 'lockedAt'> &
@@ -42,6 +43,7 @@ export interface TicketRepository {
   ): Promise<Ticket>
   acquireDispatchLock(id: string, lockToken: string, now: Date): Promise<Ticket | null>
   releaseDispatchLock(id: string, lockToken: string): Promise<void>
+  completeDispatchLock(id: string, lockToken: string): Promise<Ticket | null>
   recordTransition(data: Omit<TicketTransition, 'id' | 'ts'>): Promise<TicketTransition>
   findTransitions(ticketId: string): Promise<TicketTransition[]>
 }
@@ -56,6 +58,15 @@ export interface AgentRepository {
     recipe: { name: string; ticketType: string; version: number; status: string } | null
     resources: { id: string; name: string; type: string; scope: string; version: number; accessMode: string }[]
     apiKeyPreview: string | null
+  } | null>
+  findVersionSnapshot(
+    agentId: string,
+    version: number,
+  ): Promise<{
+    agentVersion: number
+    memoryVersion: number | null
+    model: unknown
+    recipe: { name: string; version: number; status: string } | null
   } | null>
   create(input: {
     name: string

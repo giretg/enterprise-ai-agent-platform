@@ -1,33 +1,31 @@
 import type { HarnessLauncher } from './dispatcher-service'
+import {
+  buildHarnessContainerEnv,
+  harnessEnvToCloudRunOverrides,
+} from './harness-run-env'
+import { cloudRunJobRunEndpoint, getCloudRunAccessToken } from './cloud-run-auth'
 
 export type CloudRunJobLauncherConfig = {
   projectId: string
   location: string
   jobName: string
   bearerToken?: string
-}
-
-type MetadataTokenResponse = {
-  access_token?: string
+  callbackUrl?: string
+  callbackToken?: string
+  commandJson?: string
+  harnessMode?: string
+  recipePath?: string
+  modelGatewayUrl?: string
+  toolBrokerMcpUrl?: string
+  platformApiUrl?: string
+  harnessAgentApiKey?: string
+  egressEnforce?: boolean
+  stubBrokerFallback?: boolean
 }
 
 function requireConfigValue(name: string, value: string | undefined): string {
   if (!value) throw new Error(`Missing Cloud Run harness config: ${name}`)
   return value
-}
-
-async function getMetadataServerToken(): Promise<string> {
-  const response = await fetch(
-    'http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token',
-    { headers: { 'Metadata-Flavor': 'Google' } },
-  )
-  if (!response.ok) {
-    throw new Error(`Metadata server token request failed: ${response.status}`)
-  }
-
-  const data = (await response.json()) as MetadataTokenResponse
-  if (!data.access_token) throw new Error('Metadata server token response is missing access_token')
-  return data.access_token
 }
 
 export function cloudRunConfigFromEnv(): CloudRunJobLauncherConfig {
@@ -36,6 +34,17 @@ export function cloudRunConfigFromEnv(): CloudRunJobLauncherConfig {
     location: requireConfigValue('HARNESS_CLOUD_RUN_LOCATION', process.env.HARNESS_CLOUD_RUN_LOCATION),
     jobName: requireConfigValue('HARNESS_CLOUD_RUN_JOB_NAME', process.env.HARNESS_CLOUD_RUN_JOB_NAME),
     bearerToken: process.env.HARNESS_CLOUD_RUN_BEARER_TOKEN,
+    callbackUrl: process.env.HARNESS_CALLBACK_URL,
+    callbackToken: process.env.HARNESS_CALLBACK_TOKEN,
+    commandJson: process.env.HARNESS_COMMAND_JSON,
+    harnessMode: process.env.HARNESS_MODE,
+    recipePath: process.env.HARNESS_RECIPE_PATH,
+    modelGatewayUrl: process.env.MODEL_GATEWAY_URL,
+    toolBrokerMcpUrl: process.env.TOOL_BROKER_MCP_URL,
+    platformApiUrl: process.env.PLATFORM_API_URL,
+    harnessAgentApiKey: process.env.HARNESS_AGENT_API_KEY,
+    egressEnforce: process.env.HARNESS_EGRESS_ENFORCE === 'true',
+    stubBrokerFallback: process.env.HARNESS_STUB_BROKER_FALLBACK === '1',
   }
 }
 
@@ -48,16 +57,31 @@ export class CloudRunJobHarnessLauncher implements HarnessLauncher {
     ticketId: string
     agentId: string
     lockToken: string
+    agentVersion?: number
+    question?: string
   }): Promise<{ jobId: string; executionName?: string }> {
-    const token = this.config.bearerToken ?? (await getMetadataServerToken())
-    const endpoint = [
-      'https://run.googleapis.com/v2/projects',
-      encodeURIComponent(this.config.projectId),
-      'locations',
-      encodeURIComponent(this.config.location),
-      'jobs',
-      encodeURIComponent(this.config.jobName),
-    ].join('/')
+    const token = await getCloudRunAccessToken(this.config.bearerToken)
+    const endpoint = cloudRunJobRunEndpoint(
+      this.config.projectId,
+      this.config.location,
+      this.config.jobName,
+    )
+
+    const env = buildHarnessContainerEnv(input, {
+      callbackUrl: this.config.callbackUrl,
+      callbackToken: this.config.callbackToken,
+      commandJson: this.config.commandJson,
+      harnessMode: this.config.harnessMode,
+      recipePath: this.config.recipePath,
+      modelGatewayUrl: this.config.modelGatewayUrl,
+      toolBrokerMcpUrl: this.config.toolBrokerMcpUrl,
+      platformApiUrl: this.config.platformApiUrl,
+      harnessAgentApiKey: this.config.harnessAgentApiKey,
+      egressEnforce: this.config.egressEnforce,
+      stubBrokerFallback:
+        this.config.stubBrokerFallback ??
+        (this.config.harnessMode === 'goose' || !this.config.harnessMode),
+    })
 
     const response = await fetch(`${endpoint}:run`, {
       method: 'POST',
@@ -67,15 +91,7 @@ export class CloudRunJobHarnessLauncher implements HarnessLauncher {
       },
       body: JSON.stringify({
         overrides: {
-          containerOverrides: [
-            {
-              env: [
-                { name: 'TICKET_ID', value: input.ticketId },
-                { name: 'AGENT_ID', value: input.agentId },
-                { name: 'DISPATCH_LOCK_TOKEN', value: input.lockToken },
-              ],
-            },
-          ],
+          containerOverrides: [{ env: harnessEnvToCloudRunOverrides(env) }],
         },
       }),
     })

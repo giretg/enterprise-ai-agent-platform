@@ -62,7 +62,26 @@ export async function getTicket(input: { id: string }) {
     const { id } = ticketIdSchema.parse(input)
     const ticket = await repositories.tickets.findById(id)
     if (!ticket) return fail('Ticket not found')
-    return ok(ticket)
+
+    let reproduction: {
+      agentVersion: number
+      memoryVersion: number | null
+      model: unknown
+      recipe: { name: string; version: number; status: string } | null
+    } | null = null
+
+    const payload =
+      typeof ticket.payload === 'object' && ticket.payload !== null && !Array.isArray(ticket.payload)
+        ? (ticket.payload as Record<string, unknown>)
+        : null
+    const payloadAgentVersion =
+      typeof payload?.agentVersion === 'number' ? payload.agentVersion : null
+
+    if (ticket.agentId && payloadAgentVersion !== null) {
+      reproduction = await repositories.agents.findVersionSnapshot(ticket.agentId, payloadAgentVersion)
+    }
+
+    return ok({ ...ticket, reproduction })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to get ticket')
   }
@@ -296,6 +315,19 @@ export async function listDocumentsForAgent(input: { agentId: string }) {
   }
 }
 
+function readWikiPayload(payload: unknown) {
+  const record =
+    typeof payload === 'object' && payload !== null && !Array.isArray(payload)
+      ? (payload as Record<string, unknown>)
+      : {}
+  return {
+    answer: typeof record.answer === 'string' ? record.answer : '',
+    sources: Array.isArray(record.sources) ? record.sources : [],
+    rationale: typeof record.rationale === 'string' ? record.rationale : '',
+    confidence: typeof record.confidence === 'string' ? record.confidence : 'medium',
+  }
+}
+
 export async function askWiki(input: { agentId: string; question: string }) {
   try {
     const user = await requireRole('operator')
@@ -304,21 +336,32 @@ export async function askWiki(input: { agentId: string; question: string }) {
       ...parsed,
       createdById: user.id,
     })
+
+    const { getHarnessLauncherMode, isAsyncHarnessLauncher } = await import('@/lib/harness-launcher-mode')
+    const launcherMode = getHarnessLauncherMode()
+    const asyncHarness = isAsyncHarnessLauncher(launcherMode)
+
+    // Ready ticket + pg_notify; a worker is felveszi, de dev-ben askWiki is indíthat.
     const dispatch = await services.dispatcher.dispatchTicket(ticket.id)
     const updated = await repositories.tickets.findById(ticket.id)
-    const payload =
-      typeof updated?.payload === 'object' && updated.payload !== null && !Array.isArray(updated.payload)
-        ? (updated.payload as Record<string, unknown>)
-        : {}
+    const wikiAnswer = readWikiPayload(updated?.payload)
+
+    if (asyncHarness && !wikiAnswer.answer.trim()) {
+      return ok({
+        ticketId: ticket.id,
+        pending: true,
+        launcherMode,
+        answer: null,
+        ticket: updated,
+        dispatch,
+      })
+    }
 
     return ok({
       ticketId: ticket.id,
-      answer: {
-        answer: typeof payload.answer === 'string' ? payload.answer : '',
-        sources: Array.isArray(payload.sources) ? payload.sources : [],
-        rationale: typeof payload.rationale === 'string' ? payload.rationale : '',
-        confidence: typeof payload.confidence === 'string' ? payload.confidence : 'medium',
-      },
+      pending: false,
+      launcherMode,
+      answer: wikiAnswer,
       ticket: updated,
       dispatch,
     })

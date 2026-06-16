@@ -1,4 +1,5 @@
 import type { Prisma, Ticket, TicketTransition } from '@prisma/client'
+import { notifyTicketReady } from '@/lib/dispatch-notify'
 import { prisma } from '@/lib/db'
 import type { TicketFilter, TicketRepository } from '../interfaces'
 
@@ -34,11 +35,25 @@ export class PostgresTicketRepository implements TicketRepository {
     })
   }
 
+  async findStaleInProgressDispatches(cutoff: Date, limit: number): Promise<Ticket[]> {
+    return prisma.ticket.findMany({
+      where: {
+        state: 'in_progress',
+        lockToken: { not: null },
+        lockedAt: { lte: cutoff },
+      },
+      orderBy: { lockedAt: 'asc' },
+      take: limit,
+    })
+  }
+
   async create(
     data: Omit<Ticket, 'id' | 'createdAt' | 'updatedAt' | 'lockToken' | 'lockedAt'> &
       Partial<Pick<Ticket, 'lockToken' | 'lockedAt'>>,
   ): Promise<Ticket> {
-    return prisma.ticket.create({ data: data as Prisma.TicketUncheckedCreateInput })
+    const ticket = await prisma.ticket.create({ data: data as Prisma.TicketUncheckedCreateInput })
+    if (ticket.state === 'ready') await notifyTicketReady(ticket.id)
+    return ticket
   }
 
   async update(
@@ -47,10 +62,12 @@ export class PostgresTicketRepository implements TicketRepository {
       Pick<Ticket, 'state' | 'payload' | 'assigneeType' | 'assigneeId' | 'lockToken' | 'lockedAt'>
     >,
   ): Promise<Ticket> {
-    return prisma.ticket.update({
+    const ticket = await prisma.ticket.update({
       where: { id },
       data: data as Prisma.TicketUpdateInput,
     })
+    if (data.state === 'ready') await notifyTicketReady(ticket.id)
+    return ticket
   }
 
   async acquireDispatchLock(id: string, lockToken: string, now: Date): Promise<Ticket | null> {
@@ -67,6 +84,15 @@ export class PostgresTicketRepository implements TicketRepository {
       where: { id, lockToken },
       data: { lockToken: null, lockedAt: null },
     })
+  }
+
+  async completeDispatchLock(id: string, lockToken: string): Promise<Ticket | null> {
+    const result = await prisma.ticket.updateMany({
+      where: { id, lockToken },
+      data: { lockToken: null, lockedAt: null },
+    })
+    if (result.count !== 1) return null
+    return this.findById(id)
   }
 
   async recordTransition(

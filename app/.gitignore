@@ -34,6 +34,9 @@ yarn-error.log*
 .env*
 !.env.example
 
+# GCP harness job config (contains secrets) — keep only the .example
+infra/gcp/harness-job.env
+
 # vercel
 .vercel
 

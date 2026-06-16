@@ -14,6 +14,12 @@ type TicketView = {
   state: string
   payload: unknown
   sourceDocumentId: string | null
+  reproduction?: {
+    agentVersion: number
+    memoryVersion: number | null
+    model: unknown
+    recipe: { name: string; version: number; status: string } | null
+  } | null
 }
 
 export function TicketActions({ ticket }: { ticket: TicketView }) {
@@ -129,26 +135,40 @@ export function TicketMeta({ ticket }: { ticket: TicketView }) {
         </Card>
       )}
 
-      {(payload?.agentVersion != null || payload?.memoryVersion != null || payload?.model != null) && (
+      {(payload?.agentVersion != null ||
+        payload?.memoryVersion != null ||
+        payload?.model != null ||
+        payload?.recipeName != null ||
+        payload?.recipeVersion != null ||
+        ticket.reproduction?.recipe) && (
         <Card title="Agent anatómia (reprodukálhatóság)" className="mt-6">
           <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-3">
-            {payload.agentVersion != null && (
+            {(payload?.agentVersion != null || ticket.reproduction?.agentVersion != null) && (
               <>
                 <dt className="text-ink-faint">Agent verzió</dt>
                 <dd className="col-span-1 font-mono text-ink sm:col-span-2">
-                  v{String(payload.agentVersion as string | number)}
+                  v{String(payload?.agentVersion ?? ticket.reproduction?.agentVersion)}
                 </dd>
               </>
             )}
-            {payload.memoryVersion != null && (
+            {(payload?.memoryVersion != null || ticket.reproduction?.memoryVersion != null) && (
               <>
                 <dt className="text-ink-faint">Memória verzió</dt>
                 <dd className="col-span-1 font-mono text-ink sm:col-span-2">
-                  v{String(payload.memoryVersion as string | number)}
+                  v{String(payload?.memoryVersion ?? ticket.reproduction?.memoryVersion)}
                 </dd>
               </>
             )}
-            {payload.model != null && (
+            {(payload?.recipeName != null || ticket.reproduction?.recipe?.name) && (
+              <>
+                <dt className="text-ink-faint">Recipe</dt>
+                <dd className="col-span-1 font-mono text-ink sm:col-span-2">
+                  {String(payload?.recipeName ?? ticket.reproduction?.recipe?.name)} v
+                  {String(payload?.recipeVersion ?? ticket.reproduction?.recipe?.version)}
+                </dd>
+              </>
+            )}
+            {payload?.model != null && (
               <>
                 <dt className="text-ink-faint">Modell</dt>
                 <dd className="col-span-1 font-mono text-ink sm:col-span-2">

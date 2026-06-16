@@ -154,8 +154,17 @@ function WikiSandbox({ agent }: { agent: AgentSummary }) {
         return
       }
 
-      setMessage(`Ticket létrejött: ${answerRes.data.ticketId}`)
-      router.push(`/sandbox/proposals/${answerRes.data.ticketId}`)
+      const data = answerRes.data as {
+        ticketId: string
+        pending?: boolean
+      }
+
+      if (data.pending) {
+        setMessage('A kérdés feldolgozás alatt — a válasz hamarosan megjelenik a ticketen.')
+      } else {
+        setMessage(`Ticket létrejött: ${data.ticketId}`)
+      }
+      router.push(`/sandbox/proposals/${data.ticketId}`)
     })
   }
 

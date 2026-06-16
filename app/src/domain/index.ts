@@ -8,6 +8,10 @@ import { WriteGateService } from '@/domain/writegate/write-gate-service'
 import { EvalService } from '@/domain/eval/eval-service'
 import { DispatcherService, type HarnessLauncher } from '@/domain/dispatcher/dispatcher-service'
 import { CloudRunJobHarnessLauncher, cloudRunConfigFromEnv } from '@/domain/dispatcher/cloud-run-job-launcher'
+import {
+  DockerLocalHarnessLauncher,
+  dockerLocalConfigFromEnv,
+} from '@/domain/dispatcher/docker-local-harness-launcher'
 import { AllowlistAuthorizer, ToolBrokerService } from '@/domain/tool-broker/tool-broker-service'
 import { RecipeService } from '@/domain/recipe/recipe-service'
 import { IamService } from '@/domain/iam/iam-service'
@@ -71,6 +75,7 @@ const localWikiHarnessLauncher: HarnessLauncher = {
 function createHarnessLauncher(): HarnessLauncher {
   const mode = process.env.HARNESS_LAUNCHER_MODE ?? 'local-wiki'
   if (mode === 'local-wiki') return localWikiHarnessLauncher
+  if (mode === 'docker-local') return new DockerLocalHarnessLauncher(dockerLocalConfigFromEnv())
   if (mode === 'cloud-run-job') return new CloudRunJobHarnessLauncher(cloudRunConfigFromEnv())
   throw new Error(`Unsupported HARNESS_LAUNCHER_MODE: ${mode}`)
 }
@@ -79,7 +84,7 @@ const dispatcherService = new DispatcherService(
   repositories.tickets,
   repositories.audit,
   repositories.modelCalls,
-  createHarnessLauncher(),
+  () => createHarnessLauncher(),
 )
 
 export const services = {

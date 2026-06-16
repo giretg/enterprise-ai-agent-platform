@@ -2,9 +2,10 @@
  * MVP v1 acceptance — walking skeleton smoke checks
  * Futtatás: npm run test:acceptance (app/)
  */
-import { readFile } from 'fs/promises'
+import { readFile, mkdtemp, rm } from 'fs/promises'
+import { tmpdir } from 'os'
 import { config } from 'dotenv'
-import { resolve } from 'path'
+import { join, resolve } from 'path'
 import { randomUUID } from 'crypto'
 
 config({ path: resolve(process.cwd(), '.env.local') })
@@ -12,12 +13,39 @@ config({ path: resolve(process.cwd(), '.env') })
 
 import type { UserRole } from '@prisma/client'
 import { services } from '../src/domain'
+import { runHarnessEntrypoint } from '../src/harness/job-entrypoint'
+import { buildGooseCommandJson } from '../src/harness/goose-command'
+import { prepareGooseHarnessEnv } from '../src/harness/goose-config'
+import { handleMcpRequest } from '../src/harness/platform-mcp-bridge'
+import {
+  assertEgressDenyByDefault,
+  collectAllowedHarnessHosts,
+  EgressPolicyViolation,
+  evaluateEgressAllowlist,
+} from '../src/harness/egress-guard'
+import { POST as gatewayChatCompletions } from '../src/app/api/v1/gateway/v1/chat/completions/route'
+import { DISPATCH_NOTIFY_CHANNEL } from '../src/lib/dispatch-notify'
 import { prisma } from '../src/lib/db'
 import { repositories } from '../src/repositories/postgres'
 import { assertRole } from '../src/auth/types'
 
 const SAMPLE_WIKI_QUESTION =
   'Mi az MVP célja, és milyen átjárókon kell átmennie az agent műveleteinek?'
+
+function ensureOAuthStubForAcceptance() {
+  const url = process.env.CHATGPT_OAUTH_PROVIDER_URL?.trim()
+  const key = process.env.CHATGPT_OAUTH_PROVIDER_KEY?.trim()
+  if (!url || !key) {
+    process.env.CHATGPT_OAUTH_PROVIDER_URL = 'stub'
+    process.env.CHATGPT_OAUTH_PROVIDER_KEY = 'stub'
+  }
+}
+
+function isOAuthConfiguredForAcceptance() {
+  const url = process.env.CHATGPT_OAUTH_PROVIDER_URL?.trim()
+  const key = process.env.CHATGPT_OAUTH_PROVIDER_KEY?.trim()
+  return Boolean(url && key)
+}
 
 type Result = { name: string; ok: boolean; skipped?: boolean; detail?: string }
 
@@ -59,10 +87,12 @@ function actor(role: UserRole, userId: string) {
 async function scenario1_e2e(operatorId: string, approverId: string, agentId: string) {
   console.log('\n[1] Wiki kérdés flow smoke')
 
-  if (!process.env.CHATGPT_OAUTH_PROVIDER_URL || !process.env.CHATGPT_OAUTH_PROVIDER_KEY) {
+  if (!isOAuthConfiguredForAcceptance()) {
     skip('Wiki kérdés flow', 'ChatGPT OAuth provider nincs beállítva (S2 spike pending)')
     return null
   }
+
+  const usingStub = process.env.CHATGPT_OAUTH_PROVIDER_URL === 'stub'
 
   let ticketId: string
   try {
@@ -77,7 +107,7 @@ async function scenario1_e2e(operatorId: string, approverId: string, agentId: st
     const payload = answered?.payload as { confidence?: string }
     pass(
       'ready ticket + dispatcher + ChatGPT OAuth válasz',
-      `ticket=${ticketId.slice(0, 8)}… dispatch=${dispatch.status} confidence=${payload?.confidence ?? 'n/a'}`,
+      `ticket=${ticketId.slice(0, 8)}… dispatch=${dispatch.status} confidence=${payload?.confidence ?? 'n/a'}${usingStub ? ' (stub)' : ''}`,
     )
   } catch (e) {
     fail('ready ticket + dispatcher + ChatGPT OAuth válasz', e instanceof Error ? e.message : String(e))
@@ -335,12 +365,28 @@ async function scenario6_reproducibility(ticketId: string | null, agentId: strin
     agentVersion?: number
     model?: string
     answer?: unknown
+    recipeName?: string
+    recipeVersion?: number
   }
 
   if (payload?.agentVersion && payload?.model) {
     pass('Ticket payload: agentVersion + model', `v${payload.agentVersion}, ${payload.model}`)
   } else {
     fail('Ticket payload meta', JSON.stringify({ agentVersion: payload?.agentVersion, model: payload?.model }))
+  }
+
+  if (payload?.recipeName && payload?.recipeVersion != null) {
+    pass('Ticket payload: recipe snapshot', `${payload.recipeName} v${payload.recipeVersion}`)
+  } else {
+    fail('Ticket payload recipe', JSON.stringify({ recipeName: payload?.recipeName, recipeVersion: payload?.recipeVersion }))
+  }
+
+  const snapshot = await repositories.agents.findVersionSnapshot(agentId, payload?.agentVersion ?? 1)
+  const recipe = snapshot?.recipe
+  if (recipe && recipe.name === payload?.recipeName) {
+    pass('AgentVersion recipe visszakereshető', `${recipe.name} v${recipe.version}`)
+  } else {
+    fail('AgentVersion recipe', JSON.stringify(recipe))
   }
 
   const agentVersion = await prisma.agentVersion.findUnique({
@@ -916,8 +962,925 @@ async function scenario10_sandboxAppRegistry(operatorId: string, agentId: string
   }
 }
 
+/** 12. Harness completion callback — Cloud Run Job lock release szerződés */
+async function scenario11_harnessCompletion(operatorId: string, agentId: string) {
+  console.log('\n[12] Harness completion callback (lock release + idempotencia)')
+
+  const successLock = randomUUID()
+  const failedLock = randomUUID()
+  const successTicket = await repositories.tickets.create({
+    type: 'interaction',
+    title: 'Acceptance: harness completion success',
+    state: 'in_progress',
+    assigneeType: 'agent',
+    assigneeId: agentId,
+    agentId,
+    payload: { question: 'completion success' },
+    sourceDocumentId: null,
+    executeAfter: null,
+    dueBy: null,
+    lockToken: successLock,
+    lockedAt: new Date(),
+    createdById: operatorId,
+  })
+  const failedTicket = await repositories.tickets.create({
+    type: 'interaction',
+    title: 'Acceptance: harness completion failure',
+    state: 'in_progress',
+    assigneeType: 'agent',
+    assigneeId: agentId,
+    agentId,
+    payload: { question: 'completion failure' },
+    sourceDocumentId: null,
+    executeAfter: null,
+    dueBy: null,
+    lockToken: failedLock,
+    lockedAt: new Date(),
+    createdById: operatorId,
+  })
+
+  try {
+    const completed = await services.dispatcher.completeHarnessRun({
+      ticketId: successTicket.id,
+      lockToken: successLock,
+      status: 'succeeded',
+      jobId: 'acceptance-job-success',
+    })
+    const afterSuccess = await repositories.tickets.findById(successTicket.id)
+    if (completed.status === 'completed' && afterSuccess?.lockToken === null) {
+      pass('Harness success completion felszabadítja a lockot')
+    } else {
+      fail('Harness success completion', `status=${completed.status} lock=${afterSuccess?.lockToken}`)
+    }
+
+    const repeated = await services.dispatcher.completeHarnessRun({
+      ticketId: successTicket.id,
+      lockToken: successLock,
+      status: 'succeeded',
+      jobId: 'acceptance-job-success',
+    })
+    if (repeated.status === 'already_completed') pass('Harness completion idempotens ismétlésre')
+    else fail('Harness completion idempotencia', `status=${repeated.status}`)
+
+    try {
+      await services.dispatcher.completeHarnessRun({
+        ticketId: failedTicket.id,
+        lockToken: randomUUID(),
+        status: 'succeeded',
+        jobId: 'acceptance-job-bad-lock',
+      })
+      fail('Harness completion hibás lock tiltás', 'hibás lock átment')
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      if (msg.includes('lock token mismatch')) pass('Harness completion hibás lock tiltva')
+      else fail('Harness completion hibás lock tiltás', msg)
+    }
+
+    const failed = await services.dispatcher.completeHarnessRun({
+      ticketId: failedTicket.id,
+      lockToken: failedLock,
+      status: 'failed',
+      jobId: 'acceptance-job-failed',
+      error: 'simulated failure',
+    })
+    const afterFailure = await repositories.tickets.findById(failedTicket.id)
+    if (failed.status === 'completed' && afterFailure?.state === 'ready' && afterFailure.lockToken === null) {
+      pass('Harness failure completion visszateszi ready állapotba')
+    } else {
+      fail(
+        'Harness failure completion',
+        `status=${failed.status} state=${afterFailure?.state} lock=${afterFailure?.lockToken}`,
+      )
+    }
+
+    const completeAudit = await repositories.audit.findMany({ action: 'dispatch.complete', limit: 5 })
+    const deniedAudit = await repositories.audit.findMany({ action: 'dispatch.complete.denied', limit: 5 })
+    if (completeAudit.length && deniedAudit.length) pass('Audit: dispatch.complete + denied')
+    else fail('Harness completion audit', `complete=${completeAudit.length} denied=${deniedAudit.length}`)
+  } finally {
+    await prisma.ticket.deleteMany({ where: { id: { in: [successTicket.id, failedTicket.id] } } })
+  }
+}
+
+/** N1. Viewer nem hagyhat jóvá — ticket.transition.denied audit */
+async function scenarioN1_viewerCannotApprove(operatorId: string, agentId: string) {
+  console.log('\n[N1] Viewer jóváhagyás tiltás')
+
+  const suffix = randomUUID().slice(0, 8)
+  const viewer = await prisma.user.create({
+    data: {
+      externalAuthId: `acc-viewer-${suffix}`,
+      email: `viewer-${suffix}@acc.test`,
+      name: 'Acc Viewer',
+      role: 'viewer',
+      status: 'active',
+      tenantId: (await prisma.user.findFirst())?.tenantId ?? randomUUID(),
+    },
+  })
+
+  const ticket = await repositories.tickets.create({
+    type: 'interaction',
+    title: 'Acceptance: viewer approve deny',
+    state: 'awaiting_human',
+    assigneeType: 'agent',
+    assigneeId: agentId,
+    agentId,
+    payload: { answer: 'teszt', confidence: 'low' },
+    sourceDocumentId: null,
+    executeAfter: null,
+    dueBy: null,
+    createdById: operatorId,
+  })
+
+  try {
+    let blocked = false
+    try {
+      await services.tickets.transition({
+        ticketId: ticket.id,
+        toState: 'approved',
+        actor: { type: 'human', userId: viewer.id, role: 'viewer' },
+      })
+    } catch (e) {
+      blocked = true
+      pass('Viewer awaiting_human → approved elutasítva', e instanceof Error ? e.message : String(e))
+    }
+
+    if (!blocked) fail('Viewer jóváhagyás tiltás', 'átmenet engedélyezett volt')
+
+    const unchanged = await repositories.tickets.findById(ticket.id)
+    if (unchanged?.state === 'awaiting_human') pass('Ticket awaiting_human maradt')
+    else fail('Ticket állapot megmaradt', `state=${unchanged?.state}`)
+
+    const deniedAudit = await repositories.audit.findMany({
+      action: 'ticket.transition.denied',
+      limit: 20,
+    })
+    const hasDeny = deniedAudit.some(
+      (row) => row.targetId === ticket.id && row.outputRef === 'approved',
+    )
+    if (hasDeny) pass('Audit: ticket.transition.denied viewer jóváhagyásnál')
+    else fail('Viewer deny audit', `target=${ticket.id}`)
+  } finally {
+    await prisma.ticket.delete({ where: { id: ticket.id } })
+    await prisma.user.delete({ where: { id: viewer.id } })
+  }
+}
+
+/** 13. Harness entrypoint — Cloud Run konténer belépési szerződés */
+async function scenario12_harnessEntrypoint() {
+  console.log('\n[13] Harness entrypoint (callback-only + command failure)')
+
+  const successCalls: Array<{ url: string; body: Record<string, unknown> }> = []
+  const successFetch: typeof fetch = async (input, init) => {
+    successCalls.push({
+      url: String(input),
+      body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>,
+    })
+    return new Response(JSON.stringify({ success: true }), { status: 200 })
+  }
+
+  const success = await runHarnessEntrypoint(
+    {
+      TICKET_ID: randomUUID(),
+      AGENT_ID: randomUUID(),
+      DISPATCH_LOCK_TOKEN: randomUUID(),
+      HARNESS_CALLBACK_URL: 'https://platform.example.test',
+      HARNESS_CALLBACK_TOKEN: 'callback-secret',
+    },
+    {
+      fetch: successFetch,
+      log: { log() {}, error() {} },
+    },
+  )
+
+  if (
+    success.status === 'succeeded' &&
+    success.completionStatus === 200 &&
+    successCalls[0]?.url.includes('/api/v1/harness/tickets/') &&
+    successCalls[0]?.body.status === 'succeeded'
+  ) {
+    pass('Harness entrypoint callback-only success')
+  } else {
+    fail('Harness entrypoint callback-only success', JSON.stringify({ success, calls: successCalls }))
+  }
+
+  const failureCalls: Array<{ body: Record<string, unknown> }> = []
+  const failureFetch: typeof fetch = async (_input, init) => {
+    failureCalls.push({
+      body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>,
+    })
+    return new Response(JSON.stringify({ success: true }), { status: 200 })
+  }
+  const failed = await runHarnessEntrypoint(
+    {
+      TICKET_ID: randomUUID(),
+      AGENT_ID: randomUUID(),
+      DISPATCH_LOCK_TOKEN: randomUUID(),
+      HARNESS_CALLBACK_URL: 'https://platform.example.test/complete/{ticketId}',
+      HARNESS_CALLBACK_TOKEN: 'callback-secret',
+      HARNESS_COMMAND_JSON: '["goose","run","--no-session"]',
+    },
+    {
+      fetch: failureFetch,
+      spawnCommand: async () => ({ exitCode: 17, signal: null }),
+      log: { log() {}, error() {} },
+    },
+  )
+
+  if (
+    failed.status === 'failed' &&
+    failureCalls[0]?.body.status === 'failed' &&
+    String(failureCalls[0]?.body.error ?? '').includes('exitCode=17')
+  ) {
+    pass('Harness entrypoint parancshiba failed callbacket küld')
+  } else {
+    fail('Harness entrypoint parancshiba', JSON.stringify({ failed, calls: failureCalls }))
+  }
+}
+
+/** 14. Goose command builder — HARNESS_MODE=goose alapértelmezett parancs */
+async function scenario13_gooseCommandBuilder() {
+  console.log('\n[14] Goose command builder')
+
+  const ticketId = randomUUID()
+  const question = SAMPLE_WIKI_QUESTION
+  const built = buildGooseCommandJson({
+    HARNESS_MODE: 'goose',
+    TICKET_ID: ticketId,
+    AGENT_VERSION: '3',
+    HARNESS_RECIPE_PATH: '/recipes/wiki-answer.yaml',
+    HARNESS_QUESTION: question,
+  })
+
+  if (!built) {
+    fail('Goose command builder', 'null result')
+    return
+  }
+
+  const args = JSON.parse(built) as string[]
+  const expected = [
+    'goose',
+    'run',
+    '--no-session',
+    '--max-turns',
+    '25',
+    '--provider',
+    'openai',
+    '--model',
+    'chatgpt-oauth-default',
+    '--recipe',
+    '/recipes/wiki-answer.yaml',
+    '--params',
+    `ticket_id=${ticketId}`,
+    '--params',
+    'agent_version=3',
+    '--params',
+    `question=${question}`,
+  ]
+
+  if (JSON.stringify(args) === JSON.stringify(expected)) {
+    pass('Goose command JSON a wiki-answer recipe paraméterekkel')
+  } else {
+    fail('Goose command builder', JSON.stringify(args))
+  }
+
+  const entry = await runHarnessEntrypoint(
+    {
+      TICKET_ID: ticketId,
+      AGENT_ID: randomUUID(),
+      DISPATCH_LOCK_TOKEN: randomUUID(),
+      HARNESS_CALLBACK_URL: 'https://platform.example.test',
+      HARNESS_CALLBACK_TOKEN: 'callback-secret',
+      HARNESS_MODE: 'goose',
+      AGENT_VERSION: '2',
+      HARNESS_QUESTION: question,
+    },
+    {
+      fetch: async () => new Response(JSON.stringify({ success: true }), { status: 200 }),
+      spawnCommand: async (command, args) => {
+        if (command !== 'goose' || !args.includes('--recipe') || !args.includes('--provider')) {
+          throw new Error(`unexpected command: ${command} ${args.join(' ')}`)
+        }
+        return { exitCode: 0, signal: null }
+      },
+      log: { log() {}, error() {} },
+    },
+  )
+
+  if (entry.status === 'succeeded') pass('Harness entrypoint HARNESS_MODE=goose success path')
+  else fail('Harness entrypoint goose mode', entry.status)
+}
+
+/** 16. OpenAI-kompatibilis Gateway API — agent kulcs + ModelGateway */
+async function scenario15_gatewayOpenAI(agentId: string) {
+  console.log('\n[16] Gateway OpenAI API (S2)')
+
+  const rawKey = await readSeedDemoApiKey()
+  if (!rawKey) {
+    skip('Gateway OpenAI API', 'nincs .seed-demo-api-key')
+    return
+  }
+
+  ensureOAuthStubForAcceptance()
+
+  const ticket = await repositories.tickets.create({
+    type: 'interaction',
+    title: 'Acceptance: gateway API',
+    state: 'in_progress',
+    assigneeType: 'agent',
+    assigneeId: agentId,
+    agentId,
+    payload: { question: SAMPLE_WIKI_QUESTION },
+    sourceDocumentId: null,
+    executeAfter: null,
+    dueBy: null,
+    createdById: (await getUser('operator')).id,
+  })
+
+  try {
+    const response = await gatewayChatCompletions(
+      new Request('http://local/api/v1/gateway/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${rawKey}`,
+          'content-type': 'application/json',
+          'x-ticket-id': ticket.id,
+        },
+        body: JSON.stringify({
+          model: 'chatgpt-oauth-default',
+          messages: [{ role: 'user', content: SAMPLE_WIKI_QUESTION }],
+        }),
+      }),
+    )
+
+    const body = (await response.json()) as {
+      choices?: Array<{ message?: { content?: string } }>
+      usage?: { prompt_tokens?: number }
+    }
+
+    if (
+      response.status === 200 &&
+      body.choices?.[0]?.message?.content &&
+      body.choices[0].message.content.trim().length > 0
+    ) {
+      pass('Gateway /v1/chat/completions OpenAI formátum', `tokens=${body.usage?.prompt_tokens ?? 'n/a'}`)
+    } else {
+      fail('Gateway OpenAI API', `status=${response.status} body=${JSON.stringify(body).slice(0, 200)}`)
+    }
+  } finally {
+    await prisma.ticket.delete({ where: { id: ticket.id } })
+  }
+}
+
+/** 17. Goose harness config — provider→Gateway, extension→Broker bridge */
+async function scenario16_gooseHarnessConfig() {
+  console.log('\n[17] Goose harness config (S2/S3)')
+
+  const ticketId = randomUUID()
+  const tempRoot = await mkdtemp(join(tmpdir(), 'goose-config-acceptance-'))
+
+  try {
+    const env = await prepareGooseHarnessEnv({
+      HARNESS_MODE: 'goose',
+      TICKET_ID: ticketId,
+      AGENT_ID: randomUUID(),
+      DISPATCH_LOCK_TOKEN: randomUUID(),
+      HARNESS_CALLBACK_URL: 'http://127.0.0.1:3000',
+      HARNESS_CALLBACK_TOKEN: 'test',
+      MODEL_GATEWAY_URL: 'http://127.0.0.1:3000/api/v1/gateway/v1',
+      PLATFORM_API_URL: 'http://127.0.0.1:3000',
+      HARNESS_AGENT_API_KEY: 'cp_sk_test',
+      GOOSE_PATH_ROOT: tempRoot,
+      HARNESS_MCP_BRIDGE_SCRIPT: join(process.cwd(), 'scripts/platform-mcp-bridge.ts'),
+    })
+
+    const configYaml = await readFile(join(tempRoot, 'config', 'config.yaml'), 'utf8')
+    if (
+      env.OPENAI_BASE_URL?.includes('/api/v1/gateway/v1') &&
+      configYaml.includes('developer:') &&
+      configYaml.includes('enabled: false') &&
+      configYaml.includes('platform_broker:') &&
+      configYaml.includes('kb_search')
+    ) {
+      pass('Goose harness config — developer off + platform_broker stdio')
+    } else {
+      fail('Goose harness config', configYaml.slice(0, 300))
+    }
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true })
+  }
+}
+
+/** 18. MCP bridge — tools/list + kb_search proxy szerződés */
+async function scenario17_mcpBridge(agentId: string, agentVersion: number) {
+  console.log('\n[18] MCP bridge (S3)')
+
+  const listed = await handleMcpRequest(
+    { jsonrpc: '2.0', id: 1, method: 'tools/list' },
+    async () => ({}),
+  )
+
+  const tools = (listed.result as { tools?: Array<{ name: string }> } | undefined)?.tools ?? []
+  if (tools.some((tool) => tool.name === 'kb_search') && tools.some((tool) => tool.name === 'board_write')) {
+    pass('MCP bridge tools/list — kb_search + board_write')
+  } else {
+    fail('MCP bridge tools/list', JSON.stringify(listed))
+  }
+
+  const search = await services.toolBroker.invoke({
+    agentId,
+    agentVersion,
+    tool: 'kb_search',
+    args: { query: 'MVP gateway broker', k: 2 },
+  })
+
+  const called = await handleMcpRequest(
+    {
+      jsonrpc: '2.0',
+      id: 2,
+      method: 'tools/call',
+      params: {
+        name: 'kb_search',
+        arguments: { query: 'MVP gateway broker', k: 2 },
+      },
+    },
+    async (tool, args) => {
+      if (tool !== 'kb_search') throw new Error(`unexpected tool ${tool}`)
+      const result = await services.toolBroker.invoke({
+        agentId,
+        agentVersion,
+        tool: 'kb_search',
+        args: { query: String(args.query), k: Number(args.k ?? 2) },
+      })
+      if (result.denied) throw new Error(result.reason)
+      return 'hits' in result.result ? result.result : result.result
+    },
+  )
+
+  const text = JSON.stringify(called.result)
+  if (!search.denied && text.includes('hits')) {
+    pass('MCP bridge tools/call — kb_search proxy')
+  } else {
+    fail('MCP bridge tools/call', text.slice(0, 200))
+  }
+}
+
+/** N4. Egress deny-by-default — allowlist + enforce probe (S4) */
+async function scenarioN4_egressGuard() {
+  console.log('\n[N4] Egress deny-by-default (S4)')
+
+  const allowed = collectAllowedHarnessHosts({
+    MODEL_GATEWAY_URL: 'http://127.0.0.1:3000/api/v1/gateway/v1',
+    PLATFORM_API_URL: 'http://127.0.0.1:3000',
+    HARNESS_CALLBACK_URL: 'http://127.0.0.1:3000/api/v1/harness/tickets/{ticketId}/complete',
+  })
+
+  const blocked = evaluateEgressAllowlist('https://example.com', allowed)
+  const gatewayAllowed = evaluateEgressAllowlist('http://127.0.0.1:3000/api/v1/gateway/v1/chat/completions', allowed)
+
+  if (!blocked.allowed && gatewayAllowed.allowed) {
+    pass('Egress allowlist — example.com tiltva, gateway engedélyezve')
+  } else {
+    fail('Egress allowlist', JSON.stringify({ blocked, gatewayAllowed }))
+  }
+
+  let enforceFailed = false
+  try {
+    await assertEgressDenyByDefault(
+      {
+        HARNESS_EGRESS_ENFORCE: 'true',
+        HARNESS_EGRESS_PROBE_URL: 'https://example.com',
+        MODEL_GATEWAY_URL: 'http://127.0.0.1:3000/api/v1/gateway/v1',
+        PLATFORM_API_URL: 'http://127.0.0.1:3000',
+      },
+      async () => new Response(null, { status: 200 }),
+    )
+  } catch (error) {
+    if (error instanceof EgressPolicyViolation) enforceFailed = true
+    else throw error
+  }
+
+  if (enforceFailed) {
+    pass('Egress enforce — elérhető probe URL megbuktatja a harness indulást')
+  } else {
+    fail('Egress enforce', 'nem dobott EgressPolicyViolation-t szivárgás esetén')
+  }
+}
+
+/** 19. Dispatch timeout watchdog — beragadt lock visszavonása */
+async function scenario18_dispatchTimeout(operatorId: string, agentId: string) {
+  console.log('\n[19] Dispatch timeout watchdog')
+
+  const previousTimeout = process.env.HARNESS_DISPATCH_TIMEOUT_MS
+  process.env.HARNESS_DISPATCH_TIMEOUT_MS = '1000'
+
+  const lockToken = randomUUID()
+  const staleLockedAt = new Date(Date.now() - 5000)
+  const ticket = await repositories.tickets.create({
+    type: 'interaction',
+    title: 'Acceptance: dispatch timeout',
+    state: 'in_progress',
+    assigneeType: 'agent',
+    assigneeId: agentId,
+    agentId,
+    payload: { question: 'timeout test' },
+    sourceDocumentId: null,
+    executeAfter: null,
+    dueBy: null,
+    createdById: operatorId,
+    lockToken,
+    lockedAt: staleLockedAt,
+  })
+
+  try {
+    const reclaimed = await services.dispatcher.reclaimStaleDispatches()
+    const entry = reclaimed.find((r) => r.ticketId === ticket.id)
+    const updated = await repositories.tickets.findById(ticket.id)
+
+    if (entry?.status === 'reclaimed' && updated?.state === 'ready' && !updated.lockToken) {
+      pass('Stale in_progress ticket visszakerült ready-be', ticket.id.slice(0, 8))
+    } else {
+      fail('Dispatch timeout reclaim', JSON.stringify({ entry, state: updated?.state, lock: updated?.lockToken }))
+    }
+
+    const audit = await prisma.auditLog.findFirst({
+      where: { action: 'dispatch.timeout', targetId: ticket.id },
+      orderBy: { seq: 'desc' },
+    })
+    if (audit) pass('Audit: dispatch.timeout')
+    else fail('Audit dispatch.timeout', 'hiányzik')
+  } finally {
+    process.env.HARNESS_DISPATCH_TIMEOUT_MS = previousTimeout
+    await prisma.ticket.delete({ where: { id: ticket.id } })
+  }
+}
+
+/** 20. Docker-local harness launcher — env szerződés (Epik 5) */
+async function scenario19_dockerLocalLauncher() {
+  console.log('\n[20] Docker-local harness launcher')
+
+  const { buildHarnessDockerArgs } = await import('./harness-docker-shared')
+  const ticketId = randomUUID()
+  const args = buildHarnessDockerArgs({
+    ticketId,
+    agentId: randomUUID(),
+    lockToken: randomUUID(),
+    agentVersion: 2,
+    harnessMode: 'goose',
+    callbackToken: 'acceptance-callback',
+    extraEnv: { HARNESS_AGENT_API_KEY: 'cp_sk_acceptance' },
+  })
+
+  const envPairs = args.filter((_, index, arr) => arr[index - 1] === '-e')
+  const hasGoose = envPairs.some((pair) => pair === 'HARNESS_MODE=goose')
+  const hasGateway = envPairs.some((pair) => pair.includes('/api/v1/gateway/v1'))
+  const hasTicket = envPairs.some((pair) => pair === `TICKET_ID=${ticketId}`)
+  const hasAgentVersion = envPairs.some((pair) => pair === 'AGENT_VERSION=2')
+
+  if (hasGoose && hasGateway && hasTicket && hasAgentVersion && args[0] === 'run') {
+    pass('Docker harness env — goose + gateway + ticket paraméterek')
+  } else {
+    fail('Docker harness env', JSON.stringify({ envPairs: envPairs.slice(0, 8) }))
+  }
+}
+
+/** 22. Dispatcher → docker-local harness teljes path (Epik 5) */
+async function scenario22_dispatcherDockerPath(operatorId: string, agentId: string) {
+  console.log('\n[22] Dispatcher docker-local teljes path')
+
+  if (process.env.HARNESS_DISPATCHER_E2E !== '1') {
+    skip('Dispatcher docker-local path', 'HARNESS_DISPATCHER_E2E=1 nincs beállítva')
+    return
+  }
+
+  const { dockerImageExists, isPlatformReachable, platformBaseUrl } = await import('./harness-docker-shared')
+
+  const image = process.env.HARNESS_DOCKER_IMAGE ?? 'wiki-harness:local'
+  const platformUrl = platformBaseUrl()
+
+  if (!(await dockerImageExists(image))) {
+    skip('Dispatcher docker-local path', `image ${image} hiányzik`)
+    return
+  }
+  if (!(await isPlatformReachable(platformUrl))) {
+    skip('Dispatcher docker-local path', `platform nem elérhető: ${platformUrl}`)
+    return
+  }
+  if (!process.env.HARNESS_CALLBACK_TOKEN?.trim()) {
+    skip('Dispatcher docker-local path', 'HARNESS_CALLBACK_TOKEN hiányzik')
+    return
+  }
+
+  const previousMode = process.env.HARNESS_LAUNCHER_MODE
+  process.env.HARNESS_LAUNCHER_MODE = 'docker-local'
+
+  let ticketId: string | null = null
+  try {
+    const ticket = await services.wiki.createQuestionTicket({
+      agentId,
+      question: SAMPLE_WIKI_QUESTION,
+      createdById: operatorId,
+    })
+    ticketId = ticket.id
+
+    const dispatch = await services.dispatcher.dispatchTicket(ticketId)
+    if (dispatch.status !== 'started') {
+      fail('Dispatcher docker-local indítás', `status=${dispatch.status}`)
+      return
+    }
+    pass('Dispatcher docker-local indítás', ticketId.slice(0, 8))
+
+    const deadline = Date.now() + 120_000
+    let answered = false
+    while (Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 2000))
+      const current = await repositories.tickets.findById(ticketId)
+      const payload = current?.payload as { answer?: string } | null
+      if (payload?.answer?.trim() && !current?.lockToken) {
+        answered = true
+        break
+      }
+    }
+
+    const final = await repositories.tickets.findById(ticketId)
+    const payload = final?.payload as { answer?: string } | null
+    const modelCalls = await prisma.modelCall.count({ where: { ticketId } })
+    const toolCalls = await prisma.toolCall.count({ where: { ticketId } })
+
+    if (answered && payload?.answer?.trim() && modelCalls > 0 && toolCalls > 0) {
+      pass(
+        'Dispatcher → harness callback → válasz',
+        `state=${final?.state} model=${modelCalls} tool=${toolCalls}`,
+      )
+    } else {
+      fail(
+        'Dispatcher docker-local teljes path',
+        JSON.stringify({
+          answered,
+          state: final?.state,
+          lock: final?.lockToken,
+          modelCalls,
+          toolCalls,
+          answer: payload?.answer?.slice(0, 40),
+        }),
+      )
+    }
+  } catch (e) {
+    fail('Dispatcher docker-local path', e instanceof Error ? e.message : String(e))
+  } finally {
+    if (previousMode === undefined) delete process.env.HARNESS_LAUNCHER_MODE
+    else process.env.HARNESS_LAUNCHER_MODE = previousMode
+    if (ticketId) {
+      await prisma.ticket.delete({ where: { id: ticketId } }).catch(() => undefined)
+    }
+  }
+}
+
+/** 23. Cloud Run Job launcher — env szerződés + :run API payload (Epik 5) */
+async function scenario23_cloudRunJobLauncher() {
+  console.log('\n[23] Cloud Run Job launcher')
+
+  const { buildHarnessContainerEnv } = await import('../src/domain/dispatcher/harness-run-env')
+  const ticketId = randomUUID()
+  const env = buildHarnessContainerEnv(
+    {
+      ticketId,
+      agentId: randomUUID(),
+      lockToken: randomUUID(),
+      agentVersion: 1,
+      question: SAMPLE_WIKI_QUESTION,
+    },
+    {
+      callbackUrl: 'https://platform.example.com',
+      callbackToken: 'secret',
+      platformApiUrl: 'https://platform.example.com',
+      harnessMode: 'goose',
+      egressEnforce: true,
+      stubBrokerFallback: true,
+    },
+  )
+
+  const names = new Set(env.map((entry) => entry.name))
+  if (
+    names.has('TICKET_ID') &&
+    names.has('MODEL_GATEWAY_URL') &&
+    names.has('HARNESS_EGRESS_ENFORCE') &&
+    names.has('HARNESS_QUESTION')
+  ) {
+    pass('Cloud Run harness env — gateway + egress + question')
+  } else {
+    fail('Cloud Run harness env', [...names].join(','))
+  }
+
+  let capturedBody: unknown
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input, init) => {
+    const url = String(input)
+    if (url.includes(':run')) {
+      capturedBody = JSON.parse(String(init?.body))
+      return new Response(JSON.stringify({ name: 'projects/p/locations/r/jobs/j/executions/e1' }), {
+        status: 200,
+      })
+    }
+    if (url.includes('metadata.google.internal')) {
+      return new Response(JSON.stringify({ access_token: 'test-token' }), { status: 200 })
+    }
+    return originalFetch(input, init)
+  }
+
+  const previous = {
+    project: process.env.HARNESS_CLOUD_RUN_PROJECT_ID,
+    location: process.env.HARNESS_CLOUD_RUN_LOCATION,
+    job: process.env.HARNESS_CLOUD_RUN_JOB_NAME,
+    platform: process.env.PLATFORM_API_URL,
+    callback: process.env.HARNESS_CALLBACK_TOKEN,
+  }
+
+  try {
+    process.env.HARNESS_CLOUD_RUN_PROJECT_ID = 'test-project'
+    process.env.HARNESS_CLOUD_RUN_LOCATION = 'europe-west1'
+    process.env.HARNESS_CLOUD_RUN_JOB_NAME = 'wiki-harness'
+    process.env.PLATFORM_API_URL = 'https://platform.example.com'
+    process.env.HARNESS_CALLBACK_TOKEN = 'secret'
+
+    const { CloudRunJobHarnessLauncher, cloudRunConfigFromEnv } = await import(
+      '../src/domain/dispatcher/cloud-run-job-launcher'
+    )
+    const launcher = new CloudRunJobHarnessLauncher(cloudRunConfigFromEnv())
+    const result = await launcher.launch({
+      ticketId,
+      agentId: randomUUID(),
+      lockToken: randomUUID(),
+      question: SAMPLE_WIKI_QUESTION,
+    })
+
+    const body = capturedBody as {
+      overrides?: { containerOverrides?: Array<{ env?: Array<{ name: string }> }> }
+    }
+    const overrideEnv = body?.overrides?.containerOverrides?.[0]?.env ?? []
+    const overrideNames = new Set(overrideEnv.map((entry) => entry.name))
+
+    if (result.executionName && overrideNames.has('HARNESS_QUESTION') && overrideNames.has('MODEL_GATEWAY_URL')) {
+      pass('Cloud Run Job :run override env', result.executionName.slice(-24))
+    } else {
+      fail('Cloud Run Job launcher', JSON.stringify({ result, overrideNames: [...overrideNames] }))
+    }
+  } catch (e) {
+    fail('Cloud Run Job launcher', e instanceof Error ? e.message : String(e))
+  } finally {
+    globalThis.fetch = originalFetch
+    process.env.HARNESS_CLOUD_RUN_PROJECT_ID = previous.project
+    process.env.HARNESS_CLOUD_RUN_LOCATION = previous.location
+    process.env.HARNESS_CLOUD_RUN_JOB_NAME = previous.job
+    process.env.PLATFORM_API_URL = previous.platform
+    process.env.HARNESS_CALLBACK_TOKEN = previous.callback
+  }
+}
+
+/** 21. Goose Docker E2E — opcionális, HARNESS_DOCKER_E2E=1 + image + platform */
+async function scenario20_dockerGooseE2E() {
+  console.log('\n[21] Goose Docker E2E (opcionális)')
+
+  if (process.env.HARNESS_DOCKER_E2E !== '1') {
+    skip('Goose Docker E2E', 'HARNESS_DOCKER_E2E=1 nincs beállítva')
+    return
+  }
+
+  const {
+    buildHarnessDockerArgs,
+    dockerImageExists,
+    isPlatformReachable,
+    platformBaseUrl,
+    readSeedApiKey,
+    runDocker,
+  } = await import('./harness-docker-shared')
+
+  const image = process.env.HARNESS_DOCKER_IMAGE ?? 'wiki-harness:local'
+  const platformUrl = platformBaseUrl()
+
+  if (!(await dockerImageExists(image))) {
+    skip('Goose Docker E2E', `image ${image} hiányzik`)
+    return
+  }
+  if (!(await isPlatformReachable(platformUrl))) {
+    skip('Goose Docker E2E', `platform nem elérhető: ${platformUrl}`)
+    return
+  }
+
+  const operator = await getUser('operator')
+  const agent = await getWikiAgent()
+  const ticketId = randomUUID()
+  const lockToken = randomUUID()
+  const agentApiKey = await readSeedApiKey()
+
+  await prisma.ticket.create({
+    data: {
+      id: ticketId,
+      type: 'interaction',
+      title: 'Acceptance: docker goose E2E',
+      state: 'in_progress',
+      assigneeType: 'agent',
+      assigneeId: agent.id,
+      agentId: agent.id,
+      payload: { question: SAMPLE_WIKI_QUESTION, agentVersion: agent.currentVersion },
+      lockToken,
+      lockedAt: new Date(),
+      createdById: operator.id,
+    },
+  })
+
+  try {
+    const exitCode = await runDocker(
+      buildHarnessDockerArgs({
+        ticketId,
+        agentId: agent.id,
+        lockToken,
+        agentVersion: agent.currentVersion,
+        question: SAMPLE_WIKI_QUESTION,
+        harnessMode: 'goose',
+        extraEnv: { HARNESS_AGENT_API_KEY: agentApiKey },
+      }),
+    )
+
+    const ticket = await prisma.ticket.findUnique({ where: { id: ticketId } })
+    const payload = ticket?.payload as { answer?: string } | null
+    const modelCalls = await prisma.modelCall.count({ where: { ticketId } })
+    const toolCalls = await prisma.toolCall.count({ where: { ticketId } })
+
+    if (
+      exitCode === 0 &&
+      !ticket?.lockToken &&
+      modelCalls > 0 &&
+      toolCalls > 0 &&
+      payload?.answer?.trim()
+    ) {
+      pass('Goose Docker E2E — gateway + broker + board_write', `model=${modelCalls} tool=${toolCalls}`)
+    } else {
+      fail(
+        'Goose Docker E2E',
+        JSON.stringify({ exitCode, lock: ticket?.lockToken, modelCalls, toolCalls, answer: payload?.answer }),
+      )
+    }
+  } finally {
+    await prisma.ticket.delete({ where: { id: ticketId } }).catch(() => undefined)
+  }
+}
+
+/** 15. Dispatch NOTIFY — ready ticket pg_notify */
+async function scenario14_dispatchNotify(operatorId: string, agentId: string) {
+  console.log('\n[15] Dispatch NOTIFY')
+
+  const connectionString = process.env.DIRECT_URL ?? process.env.DATABASE_URL
+  if (!connectionString) {
+    skip('Dispatch NOTIFY', 'nincs DATABASE_URL')
+    return
+  }
+
+  const { Client } = await import('pg')
+  const client = new Client({ connectionString })
+  await client.connect()
+  await client.query(`LISTEN ${DISPATCH_NOTIFY_CHANNEL}`)
+
+  const notified = new Promise<string>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('NOTIFY timeout')), 5000)
+    client.on('notification', (msg) => {
+      if (msg.channel === DISPATCH_NOTIFY_CHANNEL && msg.payload) {
+        clearTimeout(timer)
+        resolve(msg.payload)
+      }
+    })
+  })
+
+  const ticket = await repositories.tickets.create({
+    type: 'interaction',
+    title: 'Acceptance: dispatch notify',
+    state: 'ready',
+    assigneeType: 'agent',
+    assigneeId: agentId,
+    agentId,
+    payload: { question: 'notify test' },
+    sourceDocumentId: null,
+    executeAfter: null,
+    dueBy: null,
+    createdById: operatorId,
+  })
+
+  try {
+    const payload = await notified
+    if (payload === ticket.id) pass('pg_notify dispatch_ticket_ready a ticket létrehozásakor')
+    else fail('Dispatch NOTIFY payload', `expected ${ticket.id}, got ${payload}`)
+  } catch (e) {
+    fail('Dispatch NOTIFY', e instanceof Error ? e.message : String(e))
+  } finally {
+    await client.end()
+    await prisma.ticket.delete({ where: { id: ticket.id } })
+  }
+}
+
 async function main() {
   console.log('=== Fázis 1–2 Acceptance (spec §14 + governance) ===\n')
+
+  ensureOAuthStubForAcceptance()
 
   const operator = await getUser('operator')
   const approver = await getUser('approver')
@@ -943,6 +1906,20 @@ async function main() {
   await scenario8_writeGateNegative(operator.id, agent.id)
   await scenario9_iam()
   await scenario10_sandboxAppRegistry(operator.id, agent.id)
+  await scenario11_harnessCompletion(operator.id, agent.id)
+  await scenario12_harnessEntrypoint()
+  await scenario13_gooseCommandBuilder()
+  await scenario14_dispatchNotify(operator.id, agent.id)
+  await scenario15_gatewayOpenAI(agent.id)
+  await scenario16_gooseHarnessConfig()
+  await scenario17_mcpBridge(agent.id, agent.currentVersion)
+  await scenario18_dispatchTimeout(operator.id, agent.id)
+  await scenarioN4_egressGuard()
+  await scenarioN1_viewerCannotApprove(operator.id, agent.id)
+  await scenario19_dockerLocalLauncher()
+  await scenario20_dockerGooseE2E()
+  await scenario22_dispatcherDockerPath(operator.id, agent.id)
+  await scenario23_cloudRunJobLauncher()
   await scenarioAgentApi(agent.id)
 
   const passed = results.filter((r) => r.ok && !r.skipped).length

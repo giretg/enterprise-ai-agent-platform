@@ -68,9 +68,119 @@ HARNESS_LAUNCHER_MODE=cloud-run-job
 HARNESS_CLOUD_RUN_PROJECT_ID=your-gcp-project
 HARNESS_CLOUD_RUN_LOCATION=europe-west1
 HARNESS_CLOUD_RUN_JOB_NAME=wiki-harness
+PLATFORM_API_URL=https://your-platform.example.com
+HARNESS_CALLBACK_URL=https://your-platform.example.com
+HARNESS_CALLBACK_TOKEN=shared-callback-secret
+HARNESS_EGRESS_ENFORCE=true
+```
+
+### GCP Cloud Run Job deploy + smoke
+
+```bash
+cp infra/gcp/harness-job.env.example infra/gcp/harness-job.env
+# szerkeszd: GCP_PROJECT_ID, PLATFORM_API_URL, VPC_CONNECTOR, stb.
+npm run harness:cloud-run-deploy
+
+# Dispatcher + platform után:
+HARNESS_LAUNCHER_MODE=cloud-run-job npm run dispatcher:worker
+npm run harness:cloud-run-smoke
+```
+
+**VPC egress (S4):** a deploy script `--vpc-connector` + `--vpc-egress=all-traffic` flaget ad át. A deny-by-default igazolásához a connector subnetjén firewall szabály kell: csak a platform/Gateway/Broker célok engedélyezettek, minden más outbound tiltva. A harness induláskor `HARNESS_EGRESS_ENFORCE=true` runtime probe-ot is futtat (`example.com` elérhetetlenség = N4).
+
+Lokális Goose E2E GCP nélkül (dispatcher → Docker harness → callback):
+
+```bash
+HARNESS_LAUNCHER_MODE=docker-local
+HARNESS_MODE=goose
+HARNESS_CALLBACK_TOKEN=shared-callback-secret   # .env.local-ben is
+HARNESS_CALLBACK_URL=http://host.docker.internal:3000
+docker build -f Dockerfile.harness -t wiki-harness:local .
+npm run dev
+npm run dispatcher:worker
 ```
 
 A Cloud Run Job konténer `TICKET_ID`, `AGENT_ID` és `DISPATCH_LOCK_TOKEN` env változókat kap. GCP-n a launcher a default service account metadata tokenjét használja; lokális smoke-hoz `HARNESS_CLOUD_RUN_BEARER_TOKEN` adható meg.
+
+A harness job a futás végén a platform callback endpointját hívja, hogy a dispatcher lock ne maradjon beragadva:
+
+```bash
+HARNESS_CALLBACK_URL=https://your-platform.example.com
+HARNESS_CALLBACK_TOKEN=shared-callback-secret
+```
+
+Minimális harness image proof:
+
+```bash
+docker build -f Dockerfile.harness -t wiki-harness:local .
+```
+
+Alapértelmezésben a harness csak a completion szerződést bizonyítja. Goose mód:
+
+```bash
+HARNESS_MODE=goose
+HARNESS_RECIPE_PATH=/recipes/wiki-answer.yaml
+```
+
+A `Dockerfile.harness` a Goose CLI-t és a `harness/recipes/wiki-answer.yaml` recipe-t tartalmazza (§6).
+
+### S2/S3 spike — Gateway + MCP bridge
+
+A Goose harness a két átjárón keresztül kommunikál:
+
+```bash
+# OpenAI-kompatibilis belső gateway (Goose OPENAI_BASE_URL)
+MODEL_GATEWAY_URL=http://127.0.0.1:3000/api/v1/gateway/v1
+# Platform REST — az MCP stdio bridge a Tool Broker felé proxy-z
+PLATFORM_API_URL=http://127.0.0.1:3000
+HARNESS_AGENT_API_KEY=<seed .seed-demo-api-key>
+HARNESS_MODE=goose
+```
+
+ChatGPT OAuth stub (acceptance / lokális dev):
+
+```bash
+CHATGPT_OAUTH_PROVIDER_URL=stub
+CHATGPT_OAUTH_PROVIDER_KEY=stub
+# vagy külön HTTP stub: npm run s2:stub
+```
+
+A harness entrypoint `prepareGooseHarnessEnv()`-vel ephemeral Goose configot ír: developer extension kikapcsolva, `platform_broker` stdio bridge a `kb_search` + `board_write` eszközökhöz.
+
+S4 egress + timeout:
+
+```bash
+# Harness indulás előtti külső URL probe (GCP-n VPC-vel együtt)
+HARNESS_EGRESS_ENFORCE=true
+npm run harness:egress-probe
+
+# Beragadt dispatch lock watchdog (dispatcher worker-ben is fut)
+HARNESS_DISPATCH_TIMEOUT_MS=1800000
+
+# Docker completion smoke (platform dev szerver kell host.docker.internal:3000)
+docker build -f Dockerfile.harness -t wiki-harness:local .
+npm run harness:docker-smoke
+
+# Teljes Goose run a két átjárón keresztül (Gateway + Tool Broker)
+# Stub provider mellett a harness stub agent loop-ot is futtat (HARNESS_STUB_BROKER_FALLBACK=1).
+npm run harness:docker-goose-smoke
+```
+
+## Dispatcher worker
+
+Eseményvezérelt indítás Postgres `LISTEN/NOTIFY`-val + 30 mp-es cron safety net:
+
+```bash
+npm run dispatcher:worker
+```
+
+A `ready` ticket létrehozásakor / `rejected → ready` átmenetkor a repo `pg_notify('dispatch_ticket_ready', ticketId)` hívást küld.
+
+Később ugyanebből az entrypointból indítható explicit Goose parancs is:
+
+```bash
+HARNESS_COMMAND_JSON='["goose","run","--no-session","--recipe","/recipes/wiki-answer.yaml"]'
+```
 
 ## Deploy
 

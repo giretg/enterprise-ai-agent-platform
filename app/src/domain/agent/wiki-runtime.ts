@@ -74,6 +74,7 @@ export class WikiAgentRuntime {
       maxTokens?: number
     }
     const agentVersion = agentDetails.agent.currentVersion
+    const recipe = agentDetails.recipe
 
     return this.tickets.create({
       type: 'interaction',
@@ -87,6 +88,8 @@ export class WikiAgentRuntime {
         agentVersion,
         model: modelConfig.model,
         memoryVersion: agentDetails.memoryVersion,
+        recipeName: recipe?.name ?? null,
+        recipeVersion: recipe?.version ?? null,
       },
       sourceDocumentId: null,
       executeAfter: null,
@@ -186,6 +189,8 @@ ${question}`,
             agentVersion,
             model: modelConfig.model,
             memoryVersion: agentDetails.memoryVersion,
+            recipeName: agentDetails.recipe?.name ?? null,
+            recipeVersion: agentDetails.recipe?.version ?? null,
           },
           state: parsed.confidence === 'high' ? 'done' : 'awaiting_human',
         },

@@ -173,3 +173,11 @@ export const toolInvokeSchema = z.discriminatedUnion('tool', [
     }),
   }),
 ])
+
+export const harnessCompletionSchema = z.object({
+  lockToken: z.string().uuid(),
+  status: z.enum(['succeeded', 'failed']),
+  jobId: z.string().trim().min(1).max(300).optional(),
+  executionName: z.string().trim().min(1).max(500).optional(),
+  error: z.string().trim().max(1000).optional(),
+})

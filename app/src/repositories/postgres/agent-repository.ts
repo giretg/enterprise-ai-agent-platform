@@ -61,6 +61,30 @@ export class PostgresAgentRepository implements AgentRepository {
     }
   }
 
+  async findVersionSnapshot(agentId: string, version: number) {
+    const agentVersion = await prisma.agentVersion.findUnique({
+      where: { agentId_version: { agentId, version } },
+      include: {
+        recipeVersion: { include: { recipe: true } },
+        memoryVersion: true,
+      },
+    })
+    if (!agentVersion) return null
+
+    return {
+      agentVersion: agentVersion.version,
+      memoryVersion: agentVersion.memoryVersion?.version ?? null,
+      model: agentVersion.modelConfigSnapshot,
+      recipe: agentVersion.recipeVersion
+        ? {
+            name: agentVersion.recipeVersion.recipe.name,
+            version: agentVersion.recipeVersion.version,
+            status: agentVersion.recipeVersion.status,
+          }
+        : null,
+    }
+  }
+
   async create(input: {
     name: string
     roleDescription: string

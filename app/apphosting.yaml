@@ -28,3 +28,7 @@ env:
     availability:
       - BUILD
       - RUNTIME
+  - variable: HARNESS_CALLBACK_TOKEN
+    secret: HARNESS_CALLBACK_TOKEN
+    availability:
+      - RUNTIME
