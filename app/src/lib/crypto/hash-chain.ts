@@ -34,9 +34,13 @@ export function computeDiffHash(content: string): string {
   return createHash('sha256').update(content, 'utf8').digest('hex')
 }
 
+export function hashOpaqueToken(rawToken: string): string {
+  return createHash('sha256').update(rawToken, 'hex').digest('hex')
+}
+
 export function generateTokenPair(): { rawToken: string; tokenHash: string } {
   const rawToken = randomBytes(32).toString('hex')
-  const tokenHash = createHash('sha256').update(rawToken, 'hex').digest('hex')
+  const tokenHash = hashOpaqueToken(rawToken)
   return { rawToken, tokenHash }
 }
 

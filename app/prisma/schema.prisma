@@ -15,6 +15,18 @@ enum UserRole {
   viewer
 }
 
+enum UserStatus {
+  pending
+  active
+  suspended
+}
+
+enum InvitationStatus {
+  pending
+  redeemed
+  expired
+}
+
 enum AgentStatus {
   draft
   active
@@ -52,6 +64,49 @@ enum AccessMode {
   use
 }
 
+enum ConnectorType {
+  knowledge_base
+  board
+}
+
+enum ConnectorScope {
+  global
+  single
+}
+
+enum ConnectorAccessMode {
+  read
+  write
+}
+
+enum ToolCallStatus {
+  ok
+  denied
+  error
+}
+
+enum ModelCallStatus {
+  ok
+  error
+  rate_limited
+}
+
+enum RecipeTicketType {
+  interaction
+  training
+}
+
+enum RecipeScope {
+  global
+  single
+}
+
+enum RecipeVersionStatus {
+  proposed
+  active
+  retired
+}
+
 enum TicketType {
   interaction
   training
@@ -59,7 +114,7 @@ enum TicketType {
 
 enum TicketState {
   backlog
-  in_review
+  ready
   approved
   in_progress
   awaiting_human
@@ -86,18 +141,38 @@ enum AuditActorType {
 }
 
 model User {
-  id              String   @id @default(uuid()) @db.Uuid
-  externalAuthId  String   @unique @map("external_auth_id")
+  id              String     @id @default(uuid()) @db.Uuid
+  externalAuthId  String     @unique @map("external_auth_id")
   email           String
   name            String
-  role            UserRole @default(viewer)
-  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+  role            UserRole   @default(viewer)
+  status          UserStatus @default(active) @map("status")
+  tenantId        String?    @map("tenant_id") @db.Uuid
+  createdAt       DateTime   @default(now()) @map("created_at") @db.Timestamptz
 
   approvedMemoryVersions MemoryVersion[] @relation("MemoryApprovedBy")
+  approvedRecipeVersions RecipeVersion[] @relation("RecipeApprovedBy")
   createdTickets         Ticket[]        @relation("TicketCreatedBy")
   uploadedDocuments      Document[]      @relation("DocumentUploadedBy")
+  createdInvitations     Invitation[]    @relation("InvitationCreatedBy")
 
   @@map("users")
+}
+
+model Invitation {
+  id          String           @id @default(uuid()) @db.Uuid
+  email       String
+  role        UserRole
+  tokenHash   String           @unique @map("token_hash")
+  status      InvitationStatus @default(pending)
+  expiresAt   DateTime         @map("expires_at") @db.Timestamptz
+  redeemedAt  DateTime?        @map("redeemed_at") @db.Timestamptz
+  createdById String           @map("created_by") @db.Uuid
+  createdAt   DateTime         @default(now()) @map("created_at") @db.Timestamptz
+
+  createdBy User @relation("InvitationCreatedBy", fields: [createdById], references: [id])
+
+  @@map("invitations")
 }
 
 model Agent {
@@ -117,6 +192,9 @@ model Agent {
   agentResources AgentResource[]
   tickets      Ticket[]
   modelCalls   ModelCall[]
+  agentConnectors AgentConnector[]
+  capabilities    Capability[]
+  toolCalls        ToolCall[]
   writeGateTokens WriteGateToken[]
   evals           Eval[]
 
@@ -130,13 +208,44 @@ model AgentVersion {
   systemPromptSnapshot String   @map("system_prompt_snapshot")
   modelConfigSnapshot  Json     @map("model_config_snapshot")
   memoryVersionId      String   @map("memory_version_id") @db.Uuid
+  recipeVersionId      String?  @map("recipe_version_id") @db.Uuid
   createdAt            DateTime @default(now()) @map("created_at") @db.Timestamptz
 
-  agent         Agent         @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  memoryVersion MemoryVersion @relation(fields: [memoryVersionId], references: [id])
+  agent         Agent          @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  memoryVersion MemoryVersion  @relation(fields: [memoryVersionId], references: [id])
+  recipeVersion RecipeVersion? @relation(fields: [recipeVersionId], references: [id])
 
   @@unique([agentId, version])
   @@map("agent_versions")
+}
+
+model Recipe {
+  id         String           @id @default(uuid()) @db.Uuid
+  name       String
+  ticketType RecipeTicketType @map("ticket_type")
+  scope      RecipeScope      @default(single)
+  createdAt  DateTime         @default(now()) @map("created_at") @db.Timestamptz
+
+  versions RecipeVersion[]
+
+  @@map("recipes")
+}
+
+model RecipeVersion {
+  id           String              @id @default(uuid()) @db.Uuid
+  recipeId     String              @map("recipe_id") @db.Uuid
+  version      Int
+  content      Json
+  status       RecipeVersionStatus @default(proposed)
+  approvedById String?             @map("approved_by") @db.Uuid
+  createdAt    DateTime            @default(now()) @map("created_at") @db.Timestamptz
+
+  recipe        Recipe         @relation(fields: [recipeId], references: [id], onDelete: Cascade)
+  approvedBy    User?          @relation("RecipeApprovedBy", fields: [approvedById], references: [id])
+  agentVersions AgentVersion[]
+
+  @@unique([recipeId, version])
+  @@map("recipe_versions")
 }
 
 model AgentApiKey {
@@ -212,16 +321,61 @@ model AgentResource {
   @@map("agent_resources")
 }
 
+model Connector {
+  id          String         @id @default(uuid()) @db.Uuid
+  type        ConnectorType
+  name        String
+  scope       ConnectorScope
+  secretAlias String?        @map("secret_alias")
+  version     Int            @default(1)
+  config      Json           @default("{}")
+  tenantId    String?        @map("tenant_id") @db.Uuid
+  createdAt   DateTime       @default(now()) @map("created_at") @db.Timestamptz
+
+  agentConnectors AgentConnector[]
+  toolCalls       ToolCall[]
+  documents       Document[]
+
+  @@unique([type, name])
+  @@map("connectors")
+}
+
+model AgentConnector {
+  agentId     String              @map("agent_id") @db.Uuid
+  connectorId String              @map("connector_id") @db.Uuid
+  accessMode  ConnectorAccessMode @map("access_mode")
+
+  agent     Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  connector Connector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+
+  @@id([agentId, connectorId])
+  @@map("agent_connectors")
+}
+
+model Capability {
+  agentId   String  @map("agent_id") @db.Uuid
+  toolName  String  @map("tool_name")
+  allowed   Boolean @default(false)
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@id([agentId, toolName])
+  @@map("capabilities")
+}
+
 model Document {
   id            String         @id @default(uuid()) @db.Uuid
   filename      String
   storageRef    String         @map("storage_ref")
   extractedText String?        @map("extracted_text")
   status        DocumentStatus @default(uploaded)
+  connectorId   String?        @map("connector_id") @db.Uuid
   uploadedById  String         @map("uploaded_by") @db.Uuid
   createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz
 
-  uploadedBy User     @relation("DocumentUploadedBy", fields: [uploadedById], references: [id])
+  uploadedBy User       @relation("DocumentUploadedBy", fields: [uploadedById], references: [id])
+  connector  Connector? @relation(fields: [connectorId], references: [id])
   tickets    Ticket[]
 
   @@map("documents")
@@ -239,6 +393,8 @@ model Ticket {
   sourceDocumentId String?       @map("source_document_id") @db.Uuid
   executeAfter     DateTime?     @map("execute_after") @db.Timestamptz
   dueBy            DateTime?     @map("due_by") @db.Timestamptz
+  lockToken        String?       @map("lock_token")
+  lockedAt         DateTime?     @map("locked_at") @db.Timestamptz
   createdById      String        @map("created_by") @db.Uuid
   createdAt        DateTime      @default(now()) @map("created_at") @db.Timestamptz
   updatedAt        DateTime      @updatedAt @map("updated_at") @db.Timestamptz
@@ -247,9 +403,29 @@ model Ticket {
   sourceDocument Document? @relation(fields: [sourceDocumentId], references: [id])
   createdBy      User      @relation("TicketCreatedBy", fields: [createdById], references: [id])
   modelCalls     ModelCall[]
+  toolCalls      ToolCall[]
   writeGateTokens WriteGateToken[]
+  transitions    TicketTransition[]
+  trainingTicket  TrainingTicket?
 
   @@map("tickets")
+}
+
+model TicketTransition {
+  id           String         @id @default(uuid()) @db.Uuid
+  ticketId     String         @map("ticket_id") @db.Uuid
+  fromState    TicketState    @map("from_state")
+  toState      TicketState    @map("to_state")
+  actorType    AuditActorType @map("actor_type")
+  actorId      String?        @map("actor_id") @db.Uuid
+  agentVersion Int?           @map("agent_version")
+  note         String?
+  ts           DateTime       @default(now()) @db.Timestamptz
+
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId, ts])
+  @@map("ticket_transitions")
 }
 
 model AuditLog {
@@ -282,12 +458,34 @@ model ModelCall {
   promptTokens     Int      @map("prompt_tokens")
   completionTokens Int      @map("completion_tokens")
   costEstimate     Decimal  @map("cost_estimate") @db.Decimal(12, 6)
+  latencyMs        Int             @default(0) @map("latency_ms")
+  status           ModelCallStatus @default(ok)
   createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz
 
   agent  Agent   @relation(fields: [agentId], references: [id])
   ticket Ticket? @relation(fields: [ticketId], references: [id])
 
   @@map("model_calls")
+}
+
+model ToolCall {
+  id             String         @id @default(uuid()) @db.Uuid
+  agentId        String         @map("agent_id") @db.Uuid
+  ticketId       String?        @map("ticket_id") @db.Uuid
+  connectorId    String?        @map("connector_id") @db.Uuid
+  toolName       String         @map("tool_name")
+  status         ToolCallStatus
+  argsMeta       Json           @default("{}") @map("args_meta")
+  resultMeta     Json?          @map("result_meta")
+  latencyMs      Int            @map("latency_ms")
+  policyDecision String?        @map("policy_decision")
+  createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz
+
+  agent     Agent      @relation(fields: [agentId], references: [id])
+  ticket    Ticket?    @relation(fields: [ticketId], references: [id])
+  connector Connector? @relation(fields: [connectorId], references: [id])
+
+  @@map("tool_calls")
 }
 
 // ── Fázis 2: Write-gate token ──────────────────────────────────────────────
@@ -317,6 +515,20 @@ model WriteGateToken {
   targetMemory   Memory @relation(fields: [targetMemoryId], references: [id], onDelete: Cascade)
 
   @@map("write_gate_tokens")
+}
+
+// ── §4.4: tanítási ticket first-class metaadata (a write-gate köti) ─────────
+
+model TrainingTicket {
+  ticketId            String  @id @map("ticket_id") @db.Uuid
+  proposedDiff        Json    @map("proposed_diff")
+  writeGateTokenRef   String? @map("write_gate_token_ref")
+  evalResult          Json?   @map("eval_result")
+  targetMemoryVersion Int     @map("target_memory_version")
+
+  ticket Ticket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@map("training_tickets")
 }
 
 // ── Fázis 2: Eval-kapu ────────────────────────────────────────────────────

@@ -45,7 +45,7 @@ export function AppShell({
   return (
     <div className="min-h-screen text-ink">
       <div className="border-b border-honey/25 bg-honey/8 px-4 py-2 text-center text-[11px] font-medium uppercase tracking-[0.18em] text-honey">
-        Fázis 1 · Postgres + Gemini · {clerkEnabled ? 'Clerk auth' : 'dev auth'}
+        MVP v1 · Postgres + ChatGPT OAuth · {clerkEnabled ? 'Clerk auth' : 'dev auth'}
       </div>
       <header className="sticky top-0 z-20 border-b border-line bg-night/80 backdrop-blur-xl">
         <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-5 py-3.5">

@@ -40,6 +40,7 @@ export class ClerkAuthProvider implements AuthProvider {
       email: user.email,
       name: user.name,
       role: user.role,
+      status: user.status,
     }
   }
 

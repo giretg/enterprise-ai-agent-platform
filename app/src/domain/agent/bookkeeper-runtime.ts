@@ -104,7 +104,7 @@ ${document.extractedText}`,
       const ticket = await this.tickets.create({
         type: 'interaction',
         title: `Számla: ${parsed.supplier} — ${parsed.invoiceNumber}`,
-        state: 'in_review',
+        state: 'in_progress',
         assigneeType: 'human',
         assigneeId: null,
         agentId,

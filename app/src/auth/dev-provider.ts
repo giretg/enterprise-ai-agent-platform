@@ -30,6 +30,7 @@ export class DevAuthProvider implements AuthProvider {
       email: user.email,
       name: user.name,
       role: user.role,
+      status: user.status,
     }
   }
 

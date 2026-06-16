@@ -69,15 +69,15 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
           <button
             type="button"
             disabled={pending}
-            onClick={() => act('in_review')}
+            onClick={() => act('ready')}
             className="rounded-full bg-honey/20 px-4 py-2 text-sm font-semibold text-honey disabled:opacity-50"
           >
-            Újra review
+            Újra ready
           </button>
         )}
       </div>
       <p className="mt-3 text-xs text-ink-faint">
-        Jóváhagyás után a szerver automatikusan: approved → in_progress → done
+        Jóváhagyás után a szerver automatikusan: approved → done
       </p>
     </Card>
   )
@@ -87,6 +87,10 @@ export function TicketMeta({ ticket }: { ticket: TicketView }) {
   const payload = ticket.payload as Record<string, unknown> | null
   const proposal = payload?.proposal as Record<string, unknown> | undefined
   const diff = payload?.diff as Record<string, unknown> | undefined
+  const answer = typeof payload?.answer === 'string' ? payload.answer : null
+  const rationale = typeof payload?.rationale === 'string' ? payload.rationale : null
+  const confidence = typeof payload?.confidence === 'string' ? payload.confidence : null
+  const sources = Array.isArray(payload?.sources) ? payload.sources : []
 
   return (
     <>
@@ -100,9 +104,59 @@ export function TicketMeta({ ticket }: { ticket: TicketView }) {
 
       {proposal && <ProposalCard proposal={proposal} className="mt-6" />}
 
+      {answer && (
+        <Card title="Wiki-válasz" className="mt-6">
+          <p className="text-base leading-relaxed text-ink">{answer}</p>
+          {rationale && <p className="mt-4 text-sm leading-relaxed text-ink-soft">{rationale}</p>}
+          <div className="mt-4 flex flex-wrap gap-2">
+            {confidence && <Badge tone={confidence === 'high' ? 'success' : 'warning'}>{confidence}</Badge>}
+            {sources.map((source, index) => (
+              <Badge key={index} tone="neutral">
+                {typeof source === 'object' && source !== null
+                  ? `${'docId' in source ? String(source.docId) : 'source'} · ${
+                      'sectionRef' in source ? String(source.sectionRef) : index + 1
+                    }`
+                  : String(source)}
+              </Badge>
+            ))}
+          </div>
+        </Card>
+      )}
+
       {diff && (
         <Card title="Tanítási diff" className="mt-6">
           <pre className="overflow-x-auto text-xs text-ink-soft">{JSON.stringify(diff, null, 2)}</pre>
+        </Card>
+      )}
+
+      {(payload?.agentVersion != null || payload?.memoryVersion != null || payload?.model != null) && (
+        <Card title="Agent anatómia (reprodukálhatóság)" className="mt-6">
+          <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-3">
+            {payload.agentVersion != null && (
+              <>
+                <dt className="text-ink-faint">Agent verzió</dt>
+                <dd className="col-span-1 font-mono text-ink sm:col-span-2">
+                  v{String(payload.agentVersion as string | number)}
+                </dd>
+              </>
+            )}
+            {payload.memoryVersion != null && (
+              <>
+                <dt className="text-ink-faint">Memória verzió</dt>
+                <dd className="col-span-1 font-mono text-ink sm:col-span-2">
+                  v{String(payload.memoryVersion as string | number)}
+                </dd>
+              </>
+            )}
+            {payload.model != null && (
+              <>
+                <dt className="text-ink-faint">Modell</dt>
+                <dd className="col-span-1 font-mono text-ink sm:col-span-2">
+                  {String(payload.model as string)}
+                </dd>
+              </>
+            )}
+          </dl>
         </Card>
       )}
 

@@ -36,6 +36,13 @@ export class TrainingService {
     const currentContent = agent.memory.currentVersion?.content ?? ''
     const diff = computeDiff(currentContent, params.proposedContent)
 
+    // §4.4: a write-gate token a következő (cél) memória-verzióra köt majd.
+    const maxVersionRow = await prisma.memoryVersion.aggregate({
+      where: { memoryId: agent.memoryId },
+      _max: { version: true },
+    })
+    const targetMemoryVersion = (maxVersionRow._max.version ?? 0) + 1
+
     const ticket = await this.tickets.create({
       type: 'training',
       title: `Tanítás: ${agent.name}`,
@@ -50,10 +57,27 @@ export class TrainingService {
       createdById: params.createdById,
     })
 
+    // §4.4: first-class training_tickets sor — a proposed diff és a cél-verzió
+    // a ticket payloadtól függetlenül, lekérdezhető formában.
+    await prisma.trainingTicket.create({
+      data: {
+        ticketId: ticket.id,
+        proposedDiff: diff,
+        targetMemoryVersion,
+        writeGateTokenRef: null,
+        evalResult: undefined,
+      },
+    })
+
     // Az állapotgépen át vezetjük a jóváhagyási kapuig — minden lépés auditált (4.1).
     await this.ticketService.transition({
       ticketId: ticket.id,
-      toState: 'in_review',
+      toState: 'ready',
+      actor: { type: 'system' },
+    })
+    await this.ticketService.transition({
+      ticketId: ticket.id,
+      toState: 'in_progress',
       actor: { type: 'system' },
     })
     return this.ticketService.transition({
@@ -92,6 +116,12 @@ export class TrainingService {
         proposedContent: payload.proposedContent,
         agentVersion: agent.currentVersion,
         trigger: 'pre_training_approval',
+      })
+
+      // §4.4: az eval eredménye a training_tickets soron is rögzül (akár blokkol, akár nem).
+      await prisma.trainingTicket.updateMany({
+        where: { ticketId },
+        data: { evalResult: evalRun.details ?? { passed: evalRun.passed, score: evalRun.score } },
       })
 
       if (!evalRun.passed && !opts.overrideEval) {
@@ -142,6 +172,12 @@ export class TrainingService {
     await this.writeGate.consume({
       tokenId: gateToken.id,
       actualProposedContent: payload.proposedContent,
+    })
+
+    // §4.4: a kiállított token referenciája a training_tickets soron (nyers token sosem tárolt).
+    await prisma.trainingTicket.updateMany({
+      where: { ticketId },
+      data: { writeGateTokenRef: gateToken.id },
     })
 
     // 4. Memória-írás — csak sikeres gate-consume után

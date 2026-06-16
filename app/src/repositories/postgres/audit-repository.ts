@@ -79,4 +79,40 @@ export class PostgresModelCallRepository implements ModelCallRepository {
       { tokens: 0, cost: 0 },
     )
   }
+
+  async getUsageForAgentSince(agentId: string, since: Date) {
+    const rows = await prisma.modelCall.findMany({
+      where: { agentId, createdAt: { gte: since } },
+      select: {
+        promptTokens: true,
+        completionTokens: true,
+      },
+    })
+
+    return rows.reduce(
+      (acc, row) => ({
+        calls: acc.calls + 1,
+        tokens: acc.tokens + row.promptTokens + row.completionTokens,
+      }),
+      { calls: 0, tokens: 0 },
+    )
+  }
+
+  async getUsageForTicket(ticketId: string) {
+    const rows = await prisma.modelCall.findMany({
+      where: { ticketId },
+      select: {
+        promptTokens: true,
+        completionTokens: true,
+      },
+    })
+
+    return rows.reduce(
+      (acc, row) => ({
+        calls: acc.calls + 1,
+        tokens: acc.tokens + row.promptTokens + row.completionTokens,
+      }),
+      { calls: 0, tokens: 0 },
+    )
+  }
 }

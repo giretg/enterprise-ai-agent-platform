@@ -1,4 +1,4 @@
-import type { UserRole } from '@prisma/client'
+import type { UserRole, UserStatus } from '@prisma/client'
 
 export type AuthUser = {
   id: string
@@ -6,6 +6,7 @@ export type AuthUser = {
   email: string
   name: string
   role: UserRole
+  status: UserStatus
 }
 
 export interface AuthProvider {
@@ -26,7 +27,15 @@ export function hasMinimumRole(userRole: UserRole, required: UserRole | UserRole
   return requiredRoles.some((role) => userRank >= ROLE_RANK[role])
 }
 
+/** Kill-switch: felfüggesztett fiók nem léphet be (§10). */
+export function assertActive(user: AuthUser): void {
+  if (user.status === 'suspended') {
+    throw new Error('Account suspended')
+  }
+}
+
 export function assertRole(user: AuthUser, required: UserRole | UserRole[]): void {
+  assertActive(user)
   if (!hasMinimumRole(user.role, required)) {
     throw new Error('Insufficient permissions')
   }

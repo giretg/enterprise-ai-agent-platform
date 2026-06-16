@@ -4,17 +4,18 @@ import type { AuditRepository, TicketRepository, TransitionActor } from '@/repos
 type TransitionRule = {
   from: TicketState
   to: TicketState
-  allowed: 'system' | 'agent' | 'approver' | 'operator' | 'admin'
+  allowed: 'system' | 'agent' | 'approver' | 'operator' | 'admin' | 'system_or_operator'
 }
 
 const TRANSITIONS: TransitionRule[] = [
-  { from: 'backlog', to: 'in_review', allowed: 'system' },
-  { from: 'in_review', to: 'awaiting_human', allowed: 'system' },
+  { from: 'backlog', to: 'ready', allowed: 'system_or_operator' },
+  { from: 'ready', to: 'in_progress', allowed: 'system' },
+  { from: 'in_progress', to: 'awaiting_human', allowed: 'system' },
   { from: 'awaiting_human', to: 'approved', allowed: 'approver' },
   { from: 'awaiting_human', to: 'rejected', allowed: 'approver' },
-  { from: 'approved', to: 'in_progress', allowed: 'system' },
+  { from: 'approved', to: 'done', allowed: 'system' },
   { from: 'in_progress', to: 'done', allowed: 'system' },
-  { from: 'rejected', to: 'in_review', allowed: 'operator' },
+  { from: 'rejected', to: 'ready', allowed: 'operator' },
 ]
 
 function actorMatchesRule(actor: TransitionActor, allowed: TransitionRule['allowed']): boolean {
@@ -29,6 +30,9 @@ function actorMatchesRule(actor: TransitionActor, allowed: TransitionRule['allow
       actor.type === 'human' &&
       (actor.role === 'operator' || actor.role === 'approver' || actor.role === 'admin')
     )
+  }
+  if (allowed === 'system_or_operator') {
+    return actor.type === 'system' || actorMatchesRule(actor, 'operator')
   }
   return false
 }
@@ -55,7 +59,29 @@ export class TicketService {
     const ticket = await this.tickets.findById(params.ticketId)
     if (!ticket) throw new Error('Ticket not found')
 
+    const actorType =
+      params.actor.type === 'human' ? 'human' : params.actor.type === 'agent' ? 'agent' : 'system'
+    const actorId =
+      params.actor.type === 'human'
+        ? params.actor.userId
+        : params.actor.type === 'agent'
+          ? params.actor.agentId
+          : null
+
     if (!this.canTransition(ticket.state, params.toState, params.actor)) {
+      await this.audit.append({
+        actorType,
+        actorId,
+        agentVersion: params.agentVersion ?? null,
+        action: 'ticket.transition.denied',
+        targetType: 'ticket',
+        targetId: ticket.id,
+        modelUsed: null,
+        inputRef: ticket.state,
+        outputRef: params.toState,
+        policyDecision: 'denied',
+        metadata: params.note ? { note: params.note } : null,
+      })
       throw new Error(`Transition not allowed: ${ticket.state} → ${params.toState}`)
     }
 
@@ -69,19 +95,19 @@ export class TicketService {
       payload,
     })
 
+    await this.tickets.recordTransition({
+      ticketId: ticket.id,
+      fromState: ticket.state,
+      toState: params.toState,
+      actorType,
+      actorId,
+      agentVersion: params.agentVersion ?? null,
+      note: params.note ?? null,
+    })
+
     await this.audit.append({
-      actorType:
-        params.actor.type === 'human'
-          ? 'human'
-          : params.actor.type === 'agent'
-            ? 'agent'
-            : 'system',
-      actorId:
-        params.actor.type === 'human'
-          ? params.actor.userId
-          : params.actor.type === 'agent'
-            ? params.actor.agentId
-            : null,
+      actorType,
+      actorId,
       agentVersion: params.agentVersion ?? null,
       action: 'ticket.transition',
       targetType: 'ticket',

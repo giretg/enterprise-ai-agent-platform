@@ -1,6 +1,6 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
-import { getAgent } from '@/app/actions/platform'
+import { getAgent, getAgentGovernance } from '@/app/actions/platform'
 import { Badge, Card } from '@/components/ui/shell'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { personaFor, humanStatus } from '@/lib/agent-persona'
@@ -11,10 +11,14 @@ export default async function AgentDetailPage({
   params: Promise<{ agentId: string }>
 }) {
   const { agentId } = await params
-  const res = await getAgent({ id: agentId })
+  const [res, govRes] = await Promise.all([
+    getAgent({ id: agentId }),
+    getAgentGovernance({ agentId }),
+  ])
   if (!res.success) notFound()
 
-  const { agent, memoryContent, memoryVersion, resources, apiKeyPreview } = res.data
+  const { agent, memoryContent, memoryVersion, recipe, resources, apiKeyPreview } = res.data
+  const governance = govRes.success ? govRes.data : null
   const modelConfig = agent.modelConfig as Record<string, unknown>
   const persona = personaFor(agent.name)
   const mood = humanStatus(agent.status)
@@ -61,6 +65,18 @@ export default async function AgentDetailPage({
         <Card title={`Memória (v${memoryVersion ?? '?'})`}>
           <pre className="whitespace-pre-wrap text-sm text-ink-soft">{memoryContent ?? '(üres)'}</pre>
         </Card>
+        <Card title="Recipe">
+          {recipe ? (
+            <div className="space-y-1 text-sm">
+              <p className="font-medium">{recipe.name}</p>
+              <p className="text-ink-faint">
+                {recipe.ticketType} · v{recipe.version} · {recipe.status}
+              </p>
+            </div>
+          ) : (
+            <p className="text-sm text-ink-faint">Nincs recipe kötve ehhez a verzióhoz.</p>
+          )}
+        </Card>
         <Card title="Erőforrások">
           <ul className="space-y-2 text-sm">
             {resources.map((r) => (
@@ -74,6 +90,49 @@ export default async function AgentDetailPage({
           </ul>
         </Card>
       </div>
+
+      {governance && (
+        <div className="grid gap-6 lg:grid-cols-2">
+          <Card title="Eszközjogok (capabilities)">
+            {governance.capabilities.length === 0 ? (
+              <p className="text-sm text-ink-faint">Nincs meghatározott eszközjog.</p>
+            ) : (
+              <ul className="space-y-2 text-sm">
+                {governance.capabilities.map((cap) => (
+                  <li key={cap.toolName} className="flex items-center justify-between atelier-soft p-3">
+                    <span className="font-mono font-medium text-ink">{cap.toolName}</span>
+                    <Badge tone={cap.allowed ? 'success' : 'danger'}>
+                      {cap.allowed ? 'engedélyezett' : 'tiltott'}
+                    </Badge>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
+          <Card title="Connectorok">
+            {governance.connectors.length === 0 ? (
+              <p className="text-sm text-ink-faint">Nincs connector hozzárendelve.</p>
+            ) : (
+              <ul className="space-y-2 text-sm">
+                {governance.connectors.map(({ connector, accessMode }) => (
+                  <li key={connector.id} className="atelier-soft p-3">
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium text-ink">{connector.name}</span>
+                      <Badge tone={accessMode === 'write' ? 'warning' : 'neutral'}>
+                        {accessMode}
+                      </Badge>
+                    </div>
+                    <p className="mt-1 text-xs text-ink-faint">
+                      {connector.type} · {connector.scope}
+                      {connector.secretAlias && ` · secret: ${connector.secretAlias}`}
+                    </p>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
+        </div>
+      )}
 
       <Card title="Tanítás">
         <p className="text-sm text-ink-soft">

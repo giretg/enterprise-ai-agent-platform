@@ -30,10 +30,25 @@ export class PostgresAgentRepository implements AgentRepository {
 
     if (!agent) return null
 
+    // A reprodukálhatósághoz (§5.3): az aktuális agent-verzióhoz fagyasztott recipe.
+    const currentAgentVersion = await prisma.agentVersion.findUnique({
+      where: { agentId_version: { agentId: agent.id, version: agent.currentVersion } },
+      include: { recipeVersion: { include: { recipe: true } } },
+    })
+    const recipeVersion = currentAgentVersion?.recipeVersion ?? null
+
     return {
       agent,
       memoryContent: agent.memory.currentVersion?.content ?? null,
       memoryVersion: agent.memory.currentVersion?.version ?? null,
+      recipe: recipeVersion
+        ? {
+            name: recipeVersion.recipe.name,
+            ticketType: recipeVersion.recipe.ticketType,
+            version: recipeVersion.version,
+            status: recipeVersion.status,
+          }
+        : null,
       resources: agent.agentResources.map((ar) => ({
         id: ar.resource.id,
         name: ar.resource.name,
@@ -99,7 +114,7 @@ export class PostgresAgentRepository implements AgentRepository {
       data: {
         agentId: agent.id,
         keyHash: await bcrypt.hash(rawKey, 10),
-        scopes: ['ticket:read', 'ticket:create'],
+        scopes: ['ticket:read', 'ticket:create', 'tool:invoke'],
         status: 'active',
       },
     })
@@ -137,13 +152,20 @@ export class PostgresDocumentRepository implements DocumentRepository {
     return prisma.document.findUnique({ where: { id } })
   }
 
+  async findByConnectorId(connectorId: string): Promise<Document[]> {
+    return prisma.document.findMany({
+      where: { connectorId },
+      orderBy: { createdAt: 'desc' },
+    })
+  }
+
   async create(data: Omit<Document, 'id' | 'createdAt'>): Promise<Document> {
     return prisma.document.create({ data })
   }
 
   async update(
     id: string,
-    data: Partial<Pick<Document, 'status' | 'extractedText'>>,
+    data: Partial<Pick<Document, 'status' | 'extractedText' | 'connectorId'>>,
   ): Promise<Document> {
     return prisma.document.update({ where: { id }, data })
   }

@@ -1,6 +1,6 @@
 export const TICKET_STATE_LABELS: Record<string, string> = {
   backlog: 'Backlog',
-  in_review: 'Review alatt',
+  ready: 'Ready',
   awaiting_human: 'Emberi jóváhagyás',
   approved: 'Jóváhagyva',
   in_progress: 'Feldolgozás',
@@ -13,7 +13,7 @@ export const TICKET_STATE_TONE: Record<
   'neutral' | 'success' | 'warning' | 'danger'
 > = {
   backlog: 'neutral',
-  in_review: 'warning',
+  ready: 'warning',
   awaiting_human: 'warning',
   approved: 'success',
   in_progress: 'neutral',

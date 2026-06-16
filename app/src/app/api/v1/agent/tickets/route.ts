@@ -52,7 +52,7 @@ export async function POST(request: Request) {
     const ticket = await repositories.tickets.create({
       type: 'interaction',
       title: parsed.data.title,
-      state: 'in_review',
+      state: 'in_progress',
       assigneeType: 'human',
       assigneeId: null,
       agentId: auth.agentId,

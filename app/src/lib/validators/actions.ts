@@ -4,7 +4,7 @@ export const ticketFilterSchema = z.object({
   state: z
     .enum([
       'backlog',
-      'in_review',
+      'ready',
       'approved',
       'in_progress',
       'awaiting_human',
@@ -22,7 +22,7 @@ export const transitionTicketSchema = z.object({
   id: z.string().uuid(),
   toState: z.enum([
     'backlog',
-    'in_review',
+    'ready',
     'approved',
     'in_progress',
     'awaiting_human',
@@ -35,6 +35,16 @@ export const transitionTicketSchema = z.object({
 export const processDocumentSchema = z.object({
   documentId: z.string().uuid(),
   agentId: z.string().uuid(),
+})
+
+export const processDocumentForWikiSchema = z.object({
+  documentId: z.string().uuid(),
+  agentId: z.string().uuid(),
+})
+
+export const askWikiSchema = z.object({
+  agentId: z.string().uuid(),
+  question: z.string().trim().min(1).max(2000),
 })
 
 export const createTrainingSchema = z.object({
@@ -75,6 +85,28 @@ export const agentIdSchema = z.object({
   id: z.string().uuid(),
 })
 
+const userRoleSchema = z.enum(['admin', 'approver', 'operator', 'viewer'])
+
+export const inviteUserSchema = z.object({
+  email: z.string().trim().email(),
+  role: userRoleSchema,
+})
+
+export const redeemInvitationSchema = z.object({
+  token: z.string().trim().min(1),
+  name: z.string().trim().min(1).optional(),
+})
+
+export const changeUserRoleSchema = z.object({
+  targetUserId: z.string().uuid(),
+  newRole: userRoleSchema,
+})
+
+export const setUserStatusSchema = z.object({
+  targetUserId: z.string().uuid(),
+  status: z.enum(['active', 'suspended', 'pending']),
+})
+
 export const costSummarySchema = z.object({
   range: z.enum(['today', '7d', '30d', 'all']).optional(),
 })
@@ -97,3 +129,39 @@ export const createInteractionTicketSchema = z.object({
   payload: z.record(z.string(), z.unknown()),
   sourceDocumentId: z.string().uuid().optional(),
 })
+
+const ticketStateSchema = z.enum([
+  'backlog',
+  'ready',
+  'approved',
+  'in_progress',
+  'awaiting_human',
+  'done',
+  'rejected',
+])
+
+export const toolInvokeSchema = z.discriminatedUnion('tool', [
+  z.object({
+    tool: z.literal('kb_search'),
+    ticketId: z.string().uuid().optional(),
+    args: z.object({
+      query: z.string().min(1),
+      k: z.number().int().min(1).max(10).optional(),
+    }),
+  }),
+  z.object({
+    tool: z.literal('board_write'),
+    ticketId: z.string().uuid().optional(),
+    args: z.object({
+      ticketId: z.string().uuid(),
+      patch: z
+        .object({
+          state: ticketStateSchema.optional(),
+          payload: z.record(z.string(), z.unknown()).optional(),
+        })
+        .refine((patch) => patch.state || patch.payload, {
+          message: 'board_write patch must include state or payload',
+        }),
+    }),
+  }),
+])

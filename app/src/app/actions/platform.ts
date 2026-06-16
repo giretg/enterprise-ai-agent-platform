@@ -19,7 +19,7 @@ function resolveUploadTarget(filename: string): { storageRef: string; absolutePa
   }
   return { storageRef: path.join('uploads', safeName), absolutePath }
 }
-import { requireRole } from '@/auth'
+import { getCurrentUser, requireRole } from '@/auth'
 import { services } from '@/domain'
 import { repositories } from '@/repositories/postgres'
 import { fail, ok, type ActionResult } from '@/lib/result'
@@ -31,11 +31,17 @@ import {
   costSummarySchema,
   createAgentSchema,
   createTrainingSchema,
+  askWikiSchema,
   processDocumentSchema,
+  processDocumentForWikiSchema,
   rollbackMemorySchema,
   ticketFilterSchema,
   ticketIdSchema,
   transitionTicketSchema,
+  inviteUserSchema,
+  redeemInvitationSchema,
+  changeUserRoleSchema,
+  setUserStatusSchema,
 } from '@/lib/validators/actions'
 
 export async function listTickets(input?: { filter?: unknown }) {
@@ -61,6 +67,17 @@ export async function getTicket(input: { id: string }) {
   }
 }
 
+export async function getTicketTransitions(input: { id: string }) {
+  try {
+    await requireRole('viewer')
+    const { id } = ticketIdSchema.parse(input)
+    const transitions = await repositories.tickets.findTransitions(id)
+    return ok(transitions)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to get ticket transitions')
+  }
+}
+
 export async function transitionTicket(input: {
   id: string
   toState: string
@@ -78,17 +95,12 @@ export async function transitionTicket(input: {
     })
 
     if (parsed.toState === 'approved') {
-      const approved = await services.tickets.transition({
-        ticketId: parsed.id,
-        toState: 'in_progress',
-        actor: { type: 'system' },
-      })
       const done = await services.tickets.transition({
         ticketId: parsed.id,
         toState: 'done',
         actor: { type: 'system' },
       })
-      return ok(done ?? approved ?? ticket)
+      return ok(done ?? ticket)
     }
 
     return ok(ticket)
@@ -115,6 +127,20 @@ export async function getAgent(input: { id: string }) {
     return ok(detail)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to get agent')
+  }
+}
+
+export async function getAgentGovernance(input: { agentId: string }) {
+  try {
+    await requireRole('viewer')
+    const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
+    const [capabilities, connectors] = await Promise.all([
+      repositories.toolBroker.findCapabilitiesForAgent(agentId),
+      repositories.toolBroker.findConnectorsForAgent(agentId),
+    ])
+    return ok({ capabilities, connectors })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to get agent governance')
   }
 }
 
@@ -185,6 +211,7 @@ export async function uploadDocument(formData: FormData) {
       storageRef,
       extractedText,
       status: 'uploaded',
+      connectorId: null,
       uploadedById: user.id,
     })
 
@@ -206,6 +233,79 @@ export async function processDocument(input: { documentId: string; agentId: stri
     return ok(result)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Processing failed')
+  }
+}
+
+export async function processDocumentForWiki(input: { documentId: string; agentId: string }) {
+  try {
+    const user = await requireRole('operator')
+    const parsed = processDocumentForWikiSchema.parse(input)
+
+    const document = await repositories.documents.findById(parsed.documentId)
+    if (!document) return fail('Document not found')
+
+    const kbConnector = await repositories.toolBroker.findConnectorForAgent(
+      parsed.agentId,
+      'knowledge_base',
+      'read',
+    )
+    if (!kbConnector) return fail('Agent has no knowledge_base connector')
+
+    const updated = await repositories.documents.update(parsed.documentId, {
+      connectorId: kbConnector.id,
+      status: 'processed',
+    })
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: null,
+      action: 'tool.call',
+      targetType: 'document',
+      targetId: parsed.documentId,
+      modelUsed: null,
+      inputRef: parsed.agentId,
+      outputRef: kbConnector.id,
+      policyDecision: 'allowed',
+      metadata: { filename: document.filename, connectorId: kbConnector.id },
+    })
+
+    return ok(updated)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to process document for wiki')
+  }
+}
+
+export async function listDocumentsForAgent(input: { agentId: string }) {
+  try {
+    await requireRole('operator')
+    const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
+
+    const kbConnector = await repositories.toolBroker.findConnectorForAgent(
+      agentId,
+      'knowledge_base',
+      'read',
+    )
+    if (!kbConnector) return ok([])
+
+    const documents = await repositories.documents.findByConnectorId(kbConnector.id)
+    return ok(documents)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to list documents')
+  }
+}
+
+export async function askWiki(input: { agentId: string; question: string }) {
+  try {
+    const user = await requireRole('operator')
+    const parsed = askWikiSchema.parse(input)
+    const result = await services.wiki.askWiki({
+      ...parsed,
+      createdById: user.id,
+    })
+    return ok(result)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Wiki question failed')
   }
 }
 
@@ -237,6 +337,90 @@ export async function approveTraining(input: { ticketId: string; overrideEval?: 
     return ok(result)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to approve training')
+  }
+}
+
+// ── IAM / RBAC (Epik 2) ────────────────────────────────────────────────────
+
+export async function listUsers() {
+  try {
+    await requireRole('admin')
+    const users = await services.iam.listUsers()
+    return ok(users)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to list users')
+  }
+}
+
+export async function listInvitations() {
+  try {
+    await requireRole('admin')
+    const invitations = await services.iam.listInvitations()
+    return ok(invitations)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to list invitations')
+  }
+}
+
+export async function inviteUser(input: { email: string; role: string }) {
+  try {
+    const user = await requireRole('admin')
+    const parsed = inviteUserSchema.parse(input)
+    const result = await services.iam.inviteUser({
+      email: parsed.email,
+      role: parsed.role,
+      createdById: user.id,
+    })
+    // A nyers token CSAK most adható vissza.
+    return ok({ invitationId: result.invitation.id, token: result.rawToken })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to invite user')
+  }
+}
+
+export async function redeemInvitation(input: { token: string; name?: string }) {
+  try {
+    const current = await getCurrentUser()
+    if (!current) return fail('Unauthorized')
+    const parsed = redeemInvitationSchema.parse(input)
+    const user = await services.iam.redeemInvitation({
+      token: parsed.token,
+      externalAuthId: current.externalAuthId,
+      name: parsed.name ?? current.name,
+    })
+    return ok({ userId: user.id, role: user.role })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to redeem invitation')
+  }
+}
+
+export async function changeUserRole(input: { targetUserId: string; newRole: string }) {
+  try {
+    const actor = await requireRole('admin')
+    const parsed = changeUserRoleSchema.parse(input)
+    const updated = await services.iam.changeRole({
+      targetUserId: parsed.targetUserId,
+      newRole: parsed.newRole,
+      actorId: actor.id,
+    })
+    return ok({ userId: updated.id, role: updated.role })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to change role')
+  }
+}
+
+export async function setUserStatus(input: { targetUserId: string; status: string }) {
+  try {
+    const actor = await requireRole('admin')
+    const parsed = setUserStatusSchema.parse(input)
+    const updated = await services.iam.setStatus({
+      targetUserId: parsed.targetUserId,
+      status: parsed.status,
+      actorId: actor.id,
+    })
+    return ok({ userId: updated.id, status: updated.status })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to change user status')
   }
 }
 
@@ -361,12 +545,14 @@ export async function exportAuditSiem(input?: { since?: string }) {
 export async function getDashboardStats() {
   try {
     await requireRole('viewer')
-    const [agents, tickets, cost] = await Promise.all([
+    const since = new Date(new Date().setHours(0, 0, 0, 0))
+    const [agents, tickets, cost, tools] = await Promise.all([
       repositories.agents.findMany(),
       repositories.tickets.findMany({
-        state: ['backlog', 'in_review', 'approved', 'in_progress', 'awaiting_human'],
+        state: ['backlog', 'ready', 'approved', 'in_progress', 'awaiting_human'],
       }),
-      repositories.modelCalls.getCostSummary(new Date(new Date().setHours(0, 0, 0, 0))),
+      repositories.modelCalls.getCostSummary(since),
+      repositories.toolBroker.getToolSummary(since),
     ])
 
     return ok({
@@ -374,6 +560,9 @@ export async function getDashboardStats() {
       openTickets: tickets.length,
       tokensToday: cost.tokens,
       costTodayEur: cost.cost,
+      toolCallsToday: tools.calls,
+      toolDeniedToday: tools.denied,
+      toolErrorsToday: tools.errors,
     })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to get dashboard stats')

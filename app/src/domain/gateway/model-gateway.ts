@@ -1,6 +1,25 @@
-import { GoogleGenAI } from '@google/genai'
-import { Prisma } from '@prisma/client'
+import { Prisma, type ModelCallStatus } from '@prisma/client'
 import type { AuditRepository, ModelCallRepository } from '@/repositories/interfaces'
+
+export type GatewayGuardrail = {
+  /** Ticketenkénti modellhívás-plafon (5.4) — túllépve a Gateway nem hív. */
+  maxCallsPerTicket: number
+}
+
+export class GatewayBudgetError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'GatewayBudgetError'
+  }
+}
+
+function classifyError(error: unknown): ModelCallStatus {
+  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase()
+  if (message.includes('429') || message.includes('rate') || message.includes('quota')) {
+    return 'rate_limited'
+  }
+  return 'error'
+}
 
 export type ModelConfig = {
   provider: string
@@ -14,27 +33,70 @@ export type GatewayMessage = {
   content: string
 }
 
-const MAX_RETRIES = 3
-const RETRY_DELAY_MS = 2000
-
-// Rough EUR estimates per 1M tokens (dev placeholder)
-const COST_PER_MILLION: Record<string, { input: number; output: number }> = {
-  'gemini-2.5-flash-lite': { input: 0.08, output: 0.3 },
-  'gemini-2.5-flash': { input: 0.15, output: 0.6 },
-  'gemini-2.5-pro': { input: 1.25, output: 5.0 },
+export type ModelProviderResult = {
+  content: string
+  usage?: { promptTokens?: number; completionTokens?: number }
+  latencyMs: number
 }
 
-function estimateCost(model: string, promptTokens: number, completionTokens: number): number {
-  const rates = COST_PER_MILLION[model] ?? { input: 0.2, output: 0.8 }
-  return (
-    (promptTokens / 1_000_000) * rates.input + (completionTokens / 1_000_000) * rates.output
-  )
+export interface ModelProvider {
+  readonly name: string
+  chat(input: {
+    agentId: string
+    ticketId?: string
+    messages: GatewayMessage[]
+    modelConfig: ModelConfig
+  }): Promise<ModelProviderResult>
+}
+
+export class ChatGptOAuthProvider implements ModelProvider {
+  readonly name = 'chatgpt-oauth'
+
+  async chat(input: {
+    agentId: string
+    ticketId?: string
+    messages: GatewayMessage[]
+    modelConfig: ModelConfig
+  }): Promise<ModelProviderResult> {
+    const providerUrl = process.env.CHATGPT_OAUTH_PROVIDER_URL
+    const internalKey = process.env.CHATGPT_OAUTH_PROVIDER_KEY
+    if (!providerUrl || !internalKey) {
+      throw new Error('ChatGPT OAuth provider is not configured yet (S2 spike pending)')
+    }
+
+    const started = Date.now()
+    const response = await fetch(providerUrl, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${internalKey}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(input),
+    })
+
+    if (!response.ok) {
+      throw new Error(`ChatGPT OAuth provider failed: ${response.status}`)
+    }
+
+    const data = (await response.json()) as {
+      content?: string
+      usage?: { promptTokens?: number; completionTokens?: number }
+    }
+
+    return {
+      content: data.content ?? '',
+      usage: data.usage,
+      latencyMs: Date.now() - started,
+    }
+  }
 }
 
 export class ModelGateway {
   constructor(
     private audit: AuditRepository,
     private modelCalls: ModelCallRepository,
+    private provider: ModelProvider = new ChatGptOAuthProvider(),
+    private guardrail: GatewayGuardrail = { maxCallsPerTicket: 20 },
   ) {}
 
   async call(params: {
@@ -44,37 +106,60 @@ export class ModelGateway {
     modelConfig: ModelConfig
     retryCount?: number
   }): Promise<{ content: string; usage: { promptTokens: number; completionTokens: number } }> {
-    const apiKey = process.env.GEMINI_API_KEY
-    if (!apiKey) {
-      throw new Error('GEMINI_API_KEY is not configured')
+    if (params.modelConfig.provider !== this.provider.name) {
+      throw new Error(`Unsupported model provider: ${params.modelConfig.provider}`)
     }
 
-    const retryCount = params.retryCount ?? 0
-    const model = params.modelConfig.model || 'gemini-2.5-flash-lite'
+    const model = params.modelConfig.model || 'chatgpt-oauth-default'
     const prompt = params.messages.map((m) => `${m.role.toUpperCase()}: ${m.content}`).join('\n\n')
 
+    // Guardrail (5.4): ticketenkénti hívás-keret — túllépve a Gateway nem hív.
+    if (params.ticketId) {
+      const usage = await this.modelCalls.getUsageForTicket(params.ticketId)
+      if (usage.calls >= this.guardrail.maxCallsPerTicket) {
+        await this.audit.append({
+          actorType: 'agent',
+          actorId: params.agentId,
+          agentVersion: null,
+          action: 'model.call.budget_blocked',
+          targetType: 'ticket',
+          targetId: params.ticketId,
+          modelUsed: model,
+          inputRef: `calls:${usage.calls}`,
+          outputRef: `cap:${this.guardrail.maxCallsPerTicket}`,
+          policyDecision: 'budget_blocked',
+          metadata: usage,
+        })
+        throw new GatewayBudgetError(
+          `Gateway guardrail: ticket ${params.ticketId} reached ${this.guardrail.maxCallsPerTicket} model calls`,
+        )
+      }
+    }
+
+    const started = Date.now()
     try {
-      const genAI = new GoogleGenAI({ apiKey })
-      const result = await genAI.models.generateContent({
-        model,
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      const result = await this.provider.chat({
+        agentId: params.agentId,
+        ticketId: params.ticketId,
+        messages: params.messages,
+        modelConfig: { ...params.modelConfig, model },
       })
 
-      const content = result.text ?? ''
-      const usageMetadata = result.usageMetadata
-      const promptTokens = usageMetadata?.promptTokenCount ?? Math.ceil(prompt.length / 4)
-      const completionTokens =
-        usageMetadata?.candidatesTokenCount ?? Math.ceil(content.length / 4)
-      const costEstimate = estimateCost(model, promptTokens, completionTokens)
+      const content = result.content
+      const promptTokens = result.usage?.promptTokens ?? Math.ceil(prompt.length / 4)
+      const completionTokens = result.usage?.completionTokens ?? Math.ceil(content.length / 4)
+      const costEstimate = 0
 
       await this.modelCalls.create({
         agentId: params.agentId,
         ticketId: params.ticketId ?? null,
-        provider: params.modelConfig.provider || 'google',
+        provider: this.provider.name,
         model,
         promptTokens,
         completionTokens,
         costEstimate: new Prisma.Decimal(costEstimate),
+        latencyMs: result.latencyMs,
+        status: 'ok',
       })
 
       await this.audit.append({
@@ -88,25 +173,42 @@ export class ModelGateway {
         inputRef: `tokens:${promptTokens}`,
         outputRef: `tokens:${completionTokens}`,
         policyDecision: 'allowed',
-        metadata: { costEstimate },
+        metadata: { costEstimate, latencyMs: result.latencyMs, status: 'ok' },
       })
 
       return { content, usage: { promptTokens, completionTokens } }
     } catch (error: unknown) {
-      const err = error as { status?: number; error?: { code?: number; status?: string } }
-      const code = err?.status ?? err?.error?.code
-      const status = err?.error?.status
-      const retryable =
-        code === 429 ||
-        code === 503 ||
-        status === 'RESOURCE_EXHAUSTED' ||
-        status === 'UNAVAILABLE'
-      if (retryable && retryCount < MAX_RETRIES) {
-        await new Promise((resolve) =>
-          setTimeout(resolve, RETRY_DELAY_MS * (retryCount + 1)),
-        )
-        return this.call({ ...params, retryCount: retryCount + 1 })
-      }
+      const status = classifyError(error)
+      const latencyMs = Date.now() - started
+      const message = error instanceof Error ? error.message : String(error)
+
+      // Hibás/rate-limited hívás is naplózódik (§4.7 status enum).
+      await this.modelCalls.create({
+        agentId: params.agentId,
+        ticketId: params.ticketId ?? null,
+        provider: this.provider.name,
+        model,
+        promptTokens: 0,
+        completionTokens: 0,
+        costEstimate: new Prisma.Decimal(0),
+        latencyMs,
+        status,
+      })
+
+      await this.audit.append({
+        actorType: 'agent',
+        actorId: params.agentId,
+        agentVersion: null,
+        action: 'model.call',
+        targetType: 'ticket',
+        targetId: params.ticketId ?? null,
+        modelUsed: model,
+        inputRef: 'error',
+        outputRef: status,
+        policyDecision: status,
+        metadata: { latencyMs, status, error: message },
+      })
+
       throw error
     }
   }

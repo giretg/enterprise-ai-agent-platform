@@ -10,10 +10,10 @@ import { TICKET_STATE_LABELS } from '@/lib/ticket-labels'
 
 const COLUMNS = [
   { key: 'backlog', label: TICKET_STATE_LABELS.backlog, accent: 'border-ink-faint/30' },
-  { key: 'in_review', label: TICKET_STATE_LABELS.in_review, accent: 'border-honey/40' },
+  { key: 'ready', label: TICKET_STATE_LABELS.ready, accent: 'border-honey/40' },
+  { key: 'in_progress', label: TICKET_STATE_LABELS.in_progress, accent: 'border-sky/40' },
   { key: 'awaiting_human', label: TICKET_STATE_LABELS.awaiting_human, accent: 'border-coral/40' },
   { key: 'approved', label: TICKET_STATE_LABELS.approved, accent: 'border-sage/40' },
-  { key: 'in_progress', label: TICKET_STATE_LABELS.in_progress, accent: 'border-sky/40' },
   { key: 'done', label: TICKET_STATE_LABELS.done, accent: 'border-sage/60' },
   { key: 'rejected', label: TICKET_STATE_LABELS.rejected, accent: 'border-coral/60' },
 ] as const

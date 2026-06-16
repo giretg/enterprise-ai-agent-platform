@@ -6,17 +6,144 @@ import bcrypt from 'bcryptjs'
 
 const prisma = new PrismaClient()
 
-const BOOKKEEPER_PROMPT = `Te a Ostoros-Novaj Agrár Kft. könyvelő asszisztense vagy.
-Feladatod beszállítói számlák feldolgozása: mezők kinyerése, főkönyvi szám és költséghely javaslata.
-Soha ne könyvelj automatikusan — mindig hozz létre jóváhagyási tickettet.
-A memóriában szereplő szabályokat kötelezően alkalmazd.`
+const WIKI_AGENT_PROMPT = `Te az Excellence Pay belső tudás-asszisztense vagy.
+Kizárólag a jóváhagyott belső tudásbázisra támaszkodva válaszolj.
+Magyarul, tömören válaszolj, és minden lényegi állításhoz adj forráshivatkozást.
+Ha nincs elég forrás, mondd ki, hogy nincs elég forrás.`
 
-const INITIAL_MEMORY = `Szállítói szabályok:
-- AgroParts Kft.: alapértelmezett főkönyvi szám 5120 (karbantartási költség), kivéve ha a számla tartalma egyértelműen input anyag.
-- Vetőmag Kft.: 5111, költséghely MG-001.
-- ÁFA kulcsok: 27% (általános), 5% (mezőgazdasági input).`
+const INITIAL_MEMORY = `Excellence Pay belső tudásbázis - kezdő tartalom:
+- Az MVP célja architektúra-teljes walking skeleton létrehozása.
+- Az első lakó agent egy belső wiki-agent.
+- A modellforrás kizárólag ChatGPT OAuth lehet.
+- Minden modellhívás a Model Gatewayen, minden eszközhívás a Tool Brokeren keresztül történik.`
 
 const KEY_FILE = path.join(process.cwd(), '.seed-demo-api-key')
+
+async function ensureToolBrokerSeed(agentId: string) {
+  const knowledgeBase = await prisma.connector.upsert({
+    where: {
+      type_name: {
+        type: 'knowledge_base',
+        name: 'Excellence Pay belső tudásbázis',
+      },
+    },
+    create: {
+      type: 'knowledge_base',
+      name: 'Excellence Pay belső tudásbázis',
+      scope: 'global',
+      secretAlias: null,
+      version: 1,
+      config: { memoryBacked: true },
+    },
+    update: {
+      config: { memoryBacked: true },
+    },
+  })
+
+  const board = await prisma.connector.upsert({
+    where: {
+      type_name: {
+        type: 'board',
+        name: 'Control Plane Board',
+      },
+    },
+    create: {
+      type: 'board',
+      name: 'Control Plane Board',
+      scope: 'global',
+      secretAlias: 'secret://control-plane-board/service-token',
+      version: 1,
+      config: { ticketStateMachine: true },
+    },
+    update: {
+      config: { ticketStateMachine: true },
+    },
+  })
+
+  await prisma.agentConnector.upsert({
+    where: { agentId_connectorId: { agentId, connectorId: knowledgeBase.id } },
+    create: { agentId, connectorId: knowledgeBase.id, accessMode: 'read' },
+    update: { accessMode: 'read' },
+  })
+
+  await prisma.agentConnector.upsert({
+    where: { agentId_connectorId: { agentId, connectorId: board.id } },
+    create: { agentId, connectorId: board.id, accessMode: 'write' },
+    update: { accessMode: 'write' },
+  })
+
+  await prisma.capability.upsert({
+    where: { agentId_toolName: { agentId, toolName: 'kb_search' } },
+    create: { agentId, toolName: 'kb_search', allowed: true },
+    update: { allowed: true },
+  })
+
+  await prisma.capability.upsert({
+    where: { agentId_toolName: { agentId, toolName: 'board_write' } },
+    create: { agentId, toolName: 'board_write', allowed: true },
+    update: { allowed: true },
+  })
+}
+
+const WIKI_RECIPE_CONTENT = {
+  name: 'wiki-answer',
+  version: 1,
+  ticket_type: 'interaction',
+  description: 'Belső tudásbázisból citált, magyar nyelvű választ ad.',
+  parameters: ['ticket_id', 'agent_version'],
+  instructions: [
+    'Olvasd be a kérdést a ticket payloadból.',
+    'Keress a tudásbázisban a kb_search eszközzel (max 6 találat).',
+    'KIZÁRÓLAG a megtalált forrásokra támaszkodva válaszolj, magyarul, tömören.',
+    'MINDEN állítás mellé tedd a forráshivatkozást (docId + szakasz).',
+    'Ha a források nem fedik le a kérdést, mondd ki: "nincs elég forrás", és NE találj ki tényt.',
+    'Írd vissza az eredményt a board_write eszközzel: { answer, sources[], rationale }.',
+    'Ha a válasz kifelé menő vagy bizonytalan, a ticketet hagyd awaiting_human állapotban.',
+  ],
+  tools: ['kb_search', 'board_write'],
+  output_schema: {
+    answer: 'string',
+    sources: '[{ docId: string, sectionRef: string }]',
+    rationale: 'string',
+    confidence: 'enum[high, medium, low]',
+  },
+}
+
+// wiki-answer recipe (§6) — aktív v1, az agent aktuális verziójához kötve (reprodukálhatóság).
+async function ensureWikiRecipe(agentId: string, approverId: string) {
+  let recipe = await prisma.recipe.findFirst({ where: { name: 'wiki-answer' } })
+  if (!recipe) {
+    recipe = await prisma.recipe.create({
+      data: {
+        name: 'wiki-answer',
+        ticketType: 'interaction',
+        scope: 'single',
+        versions: {
+          create: {
+            version: 1,
+            content: WIKI_RECIPE_CONTENT,
+            status: 'active',
+            approvedById: approverId,
+          },
+        },
+      },
+    })
+  }
+
+  const activeVersion = await prisma.recipeVersion.findFirst({
+    where: { recipeId: recipe.id, status: 'active' },
+    orderBy: { version: 'desc' },
+  })
+  if (!activeVersion) return
+
+  const agent = await prisma.agent.findUnique({ where: { id: agentId } })
+  if (!agent) return
+
+  await prisma.agentVersion.updateMany({
+    where: { agentId, version: agent.currentVersion, recipeVersionId: null },
+    data: { recipeVersionId: activeVersion.id },
+  })
+}
 
 // Friss demó API-kulcs az agentnek + lokális fájlba írás (acceptance + kézi teszt).
 async function ensureDemoApiKey(agentId: string) {
@@ -25,7 +152,7 @@ async function ensureDemoApiKey(agentId: string) {
     data: {
       agentId,
       keyHash: await bcrypt.hash(rawKey, 10),
-      scopes: ['ticket:read', 'ticket:create'],
+      scopes: ['ticket:read', 'ticket:create', 'tool:invoke'],
       status: 'active',
     },
   })
@@ -71,9 +198,11 @@ async function main() {
   void approver
   void operator
 
-  const existingAgent = await prisma.agent.findFirst({ where: { name: 'Könyvelő Agent' } })
+  const existingAgent = await prisma.agent.findFirst({ where: { name: 'Wiki Agent' } })
   if (existingAgent) {
-    console.log('Seed already applied (Könyvelő Agent exists) — demó API-kulcs frissítése')
+    console.log('Seed already applied (Wiki Agent exists) — demó API-kulcs frissítése')
+    await ensureToolBrokerSeed(existingAgent.id)
+    await ensureWikiRecipe(existingAgent.id, admin.id)
     await ensureDemoApiKey(existingAgent.id)
     return
   }
@@ -97,17 +226,17 @@ async function main() {
   })
 
   const modelConfig = {
-    provider: 'google',
-    model: 'gemini-2.5-flash-lite',
+    provider: 'chatgpt-oauth',
+    model: 'chatgpt-oauth-default',
     temperature: 0.2,
     maxTokens: 4096,
   }
 
   const agent = await prisma.agent.create({
     data: {
-      name: 'Könyvelő Agent',
-      roleDescription: 'Beszállítói számlák feldolgozása és könyvelési javaslat',
-      systemPrompt: BOOKKEEPER_PROMPT,
+      name: 'Wiki Agent',
+      roleDescription: 'Belső tudásbázisból citált válaszadás',
+      systemPrompt: WIKI_AGENT_PROMPT,
       modelConfig,
       status: 'active',
       currentVersion: 1,
@@ -119,7 +248,7 @@ async function main() {
     data: {
       agentId: agent.id,
       version: 1,
-      systemPromptSnapshot: BOOKKEEPER_PROMPT,
+      systemPromptSnapshot: WIKI_AGENT_PROMPT,
       modelConfigSnapshot: modelConfig,
       memoryVersionId: memoryVersion.id,
     },
@@ -128,10 +257,10 @@ async function main() {
   const policy = await prisma.resource.create({
     data: {
       type: 'policy',
-      name: 'Számlajóváhagyási szabályzat',
+      name: 'Excellence Pay belső tudásbázis',
       scope: 'global',
       version: 1,
-      dataRef: 'policies/invoice-approval-v1.md',
+      dataRef: 'knowledge/excellence-pay-internal-v1.md',
     },
   })
 
@@ -139,10 +268,12 @@ async function main() {
     data: { agentId: agent.id, resourceId: policy.id, accessMode: 'read' },
   })
 
+  await ensureToolBrokerSeed(agent.id)
+  await ensureWikiRecipe(agent.id, admin.id)
   await ensureDemoApiKey(agent.id)
 
   console.log('Seed complete')
-  console.log('  Könyvelő Agent:', agent.id)
+  console.log('  Wiki Agent:', agent.id)
 }
 
 main()

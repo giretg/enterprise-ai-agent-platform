@@ -6,8 +6,8 @@ import { createAgent } from '@/app/actions/platform'
 import { Card } from '@/components/ui/shell'
 
 const DEFAULT_MODEL = {
-  provider: 'gemini',
-  model: 'gemini-2.5-flash-lite',
+  provider: 'chatgpt-oauth',
+  model: 'chatgpt-oauth-default',
   temperature: 0.2,
   maxTokens: 4096,
 }
@@ -53,7 +53,7 @@ export function CreateAgentForm() {
             name="name"
             required
             className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm"
-            placeholder="Könyvelő agent"
+            placeholder="Wiki agent"
           />
         </label>
         <label className="block text-sm">
@@ -62,7 +62,7 @@ export function CreateAgentForm() {
             name="roleDescription"
             required
             className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm"
-            placeholder="Számlák feldolgozása és javaslatok"
+            placeholder="Belső tudásbázisból citált válaszadás"
           />
         </label>
         <label className="block text-sm">
@@ -72,7 +72,7 @@ export function CreateAgentForm() {
             required
             rows={6}
             className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm"
-            placeholder="Te egy könyvelő asszisztens vagy..."
+            placeholder="Te az Excellence Pay belső tudás-asszisztense vagy..."
           />
         </label>
         <label className="block text-sm">

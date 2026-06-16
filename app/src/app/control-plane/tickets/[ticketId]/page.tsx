@@ -1,6 +1,7 @@
 import { notFound } from 'next/navigation'
 import { getTicket } from '@/app/actions/platform'
 import { TicketActions, TicketMeta } from '@/components/tickets/ticket-detail'
+import { TicketHistory } from '@/components/tickets/ticket-history'
 
 export default async function TicketDetailPage({
   params,
@@ -17,6 +18,7 @@ export default async function TicketDetailPage({
     <div className="space-y-6">
       <TicketMeta ticket={ticket} />
       <TicketActions ticket={ticket} />
+      <TicketHistory ticketId={ticket.id} />
     </div>
   )
 }
