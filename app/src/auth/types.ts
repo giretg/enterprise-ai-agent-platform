@@ -7,6 +7,7 @@ export type AuthUser = {
   name: string
   role: UserRole
   status: UserStatus
+  tenantId: string | null
 }
 
 export interface AuthProvider {

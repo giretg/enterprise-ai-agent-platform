@@ -4,6 +4,7 @@ import { getAgent, getAgentGovernance } from '@/app/actions/platform'
 import { Badge, Card } from '@/components/ui/shell'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { personaFor, humanStatus } from '@/lib/agent-persona'
+import { sandboxKindForAgent, sandboxLabelForKind } from '@/lib/agent-kind'
 
 export default async function AgentDetailPage({
   params,
@@ -22,6 +23,7 @@ export default async function AgentDetailPage({
   const modelConfig = agent.modelConfig as Record<string, unknown>
   const persona = personaFor(agent.name)
   const mood = humanStatus(agent.status)
+  const sandboxKind = sandboxKindForAgent(agent)
 
   return (
     <div className="space-y-6">
@@ -52,6 +54,17 @@ export default async function AgentDetailPage({
         </div>
         <div className="estate-rule my-4" />
         <p className="text-sm leading-relaxed text-ink-soft">{persona.trait}</p>
+        <div className="mt-4 flex flex-wrap gap-3">
+          <Link
+            href={`/sandbox/${agent.id}`}
+            className="rounded-full bg-sage px-5 py-2.5 text-sm font-semibold text-card shadow-[0_10px_24px_-12px_rgba(93,138,79,0.7)] transition-transform hover:-translate-y-0.5"
+          >
+            Sandbox megnyitása
+          </Link>
+          <Badge tone={sandboxKind === 'generic' ? 'neutral' : 'success'}>
+            {sandboxLabelForKind(sandboxKind)}
+          </Badge>
+        </div>
       </Card>
 
       <div className="grid gap-6 lg:grid-cols-2">

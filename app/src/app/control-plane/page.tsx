@@ -146,8 +146,8 @@ export default async function DashboardPage() {
         <Card title="Nézzünk körül együtt" className="lg:col-span-2">
           <ol className="space-y-2.5 text-sm text-ink-soft">
             {[
-              { href: '/sandbox', label: 'Présház → adj a csapatnak egy számlát' },
-              { href: '/control-plane/board', label: 'Tábla → nézd át és hagyd jóvá a javaslatot' },
+              { href: '/sandbox', label: 'Wiki Sandbox → tölts fel tudást és kérdezz rá' },
+              { href: '/control-plane/board', label: 'Tábla → nézd át és hagyd jóvá a választ' },
               { href: '/control-plane/audit', label: 'Audit → minden lépés visszakövethető' },
               { href: '/control-plane/training', label: 'Tanítás → finomítsd a munkatársaid' },
             ].map((step, i) => (

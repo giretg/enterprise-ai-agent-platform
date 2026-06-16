@@ -8,6 +8,7 @@ const navItems = [
   { href: '/control-plane/board', label: 'Board' },
   { href: '/control-plane/agents', label: 'Agents' },
   { href: '/control-plane/training', label: 'Tanítás' },
+  { href: '/control-plane/iam', label: 'IAM' },
   { href: '/control-plane/audit', label: 'Audit' },
 ]
 

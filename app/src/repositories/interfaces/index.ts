@@ -11,6 +11,8 @@ import type {
   RecipeScope,
   RecipeTicketType,
   RecipeVersion,
+  SandboxApp,
+  SandboxAppVersion,
   ToolCall,
   Ticket,
   TicketState,
@@ -119,6 +121,30 @@ export interface RecipeRepository {
   addVersion(recipeId: string, content: Prisma.JsonValue): Promise<RecipeVersion>
   approveVersion(versionId: string, approverId: string): Promise<RecipeVersion>
   getActiveVersion(recipeId: string): Promise<RecipeVersion | null>
+}
+
+export type SandboxAppWithLatestVersion = SandboxApp & {
+  versions: SandboxAppVersion[]
+}
+
+export interface SandboxAppRepository {
+  findByIdWithLatestVersion(appId: string): Promise<SandboxAppWithLatestVersion | null>
+  findLatestByTicketId(ticketId: string): Promise<SandboxAppWithLatestVersion | null>
+  createFromTicket(input: {
+    name: string
+    htmlContent: string
+    htmlHash: string
+    sourceTicketId: string
+    createdBy: string
+    tenantId: string | null
+  }): Promise<SandboxAppWithLatestVersion>
+  addVersion(input: {
+    appId: string
+    htmlContent: string
+    htmlHash: string
+    sourceTicketId: string
+    createdBy: string
+  }): Promise<SandboxAppWithLatestVersion>
 }
 
 export type TransitionActor =

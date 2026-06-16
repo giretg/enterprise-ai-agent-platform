@@ -3,15 +3,15 @@
 import { usePathname } from 'next/navigation'
 import { AppShell } from '@/components/ui/shell'
 
-const navItems = [{ href: '/sandbox', label: 'Munkatér', exact: true }]
+const navItems = [{ href: '/sandbox', label: 'Sandboxok' }]
 
 export default function SandboxLayout({ children }: { children: React.ReactNode }) {
   const pathname = usePathname()
 
   return (
     <AppShell
-      appName="A Présház"
-      appSubtitle="Sandbox · Könyvelő munkatér"
+      appName="Agent Sandbox"
+      appSubtitle="Sandbox · Agent munkaterek"
       navItems={navItems}
       accentColor="teal"
       pathname={pathname}

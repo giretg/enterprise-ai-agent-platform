@@ -1,15 +1,15 @@
 # Enterprise AI Agent Platform
 
-Kontrollált Enterprise AI Agent Platform — Fázis 1 (Next.js + Postgres).
+Kontrollált Enterprise AI Agent Platform — MVP walking skeleton (Next.js + Postgres).
 
 - **Control Plane** — governance, board, ticketek, audit, agent registry
-- **Sandbox** — könyvelő agent munkatér, számlafeldolgozás
+- **Sandbox** — wiki-agent tudásbázis, citált válaszok, A0 HTML riport preview/export
 
 ## Dokumentáció
 
-- [`AI-Agent-Platform-Fazis1-Spec.md`](AI-Agent-Platform-Fazis1-Spec.md) — Fázis 1 fejlesztői spec
+- [`AI-Agent-Platform-MVP-Dev-Spec-Roadmap-v1.0.md`](AI-Agent-Platform-MVP-Dev-Spec-Roadmap-v1.0.md) — MVP fejlesztési spec és roadmap
 - [`AI-Agent-Platform-Koncepcio.md`](AI-Agent-Platform-Koncepcio.md) — teljes koncepció
-- [`AI-Agent-Platform-MVP-Terv.md`](AI-Agent-Platform-MVP-Terv.md) — MVP fejlesztési terv
+- [`AI-Agent-Platform-MVP-Terv-v1.0.md`](AI-Agent-Platform-MVP-Terv-v1.0.md) — MVP terv
 
 ## Futtatás
 
@@ -41,7 +41,8 @@ npm run deploy
 - Next.js 16 (App Router) + React 19 + TypeScript
 - Postgres (Prisma) — Neon
 - Clerk auth + RBAC
-- Gemini Model Gateway
+- ChatGPT OAuth Model Gateway adapter
+- Dispatcher harness launcher: lokális wiki runtime vagy Cloud Run Job
 
 ## Struktúra
 

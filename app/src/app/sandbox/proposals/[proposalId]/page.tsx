@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
-import { getTicket } from '@/app/actions/platform'
+import { getSandboxReportForTicket, getTicket } from '@/app/actions/platform'
+import { SandboxReportPanel } from '@/components/tickets/sandbox-report-panel'
 import { ProposalCard } from '@/components/tickets/proposal-card'
 import { Badge, Card } from '@/components/ui/shell'
 import { TICKET_STATE_LABELS, TICKET_STATE_TONE } from '@/lib/ticket-labels'
@@ -19,6 +20,8 @@ export default async function ProposalDetailPage({
   const proposal = payload.proposal as Record<string, unknown> | undefined
   const answer = typeof payload.answer === 'string' ? payload.answer : null
   const sources = Array.isArray(payload.sources) ? payload.sources : []
+  const sandboxReportRes = answer ? await getSandboxReportForTicket({ ticketId: ticket.id }) : null
+  const sandboxReport = sandboxReportRes?.success ? sandboxReportRes.data : null
 
   return (
     <div className="space-y-6">
@@ -56,6 +59,8 @@ export default async function ProposalDetailPage({
       {typeof payload.reasoning === 'string' && (
         <p className="text-sm leading-relaxed text-ink-soft">{payload.reasoning}</p>
       )}
+
+      {answer && <SandboxReportPanel ticketId={ticket.id} initialReport={sandboxReport} />}
 
       <Link
         href={`/control-plane/tickets/${ticket.id}`}

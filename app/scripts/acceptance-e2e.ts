@@ -5,6 +5,7 @@
 import { readFile } from 'fs/promises'
 import { config } from 'dotenv'
 import { resolve } from 'path'
+import { randomUUID } from 'crypto'
 
 config({ path: resolve(process.cwd(), '.env.local') })
 config({ path: resolve(process.cwd(), '.env') })
@@ -65,18 +66,21 @@ async function scenario1_e2e(operatorId: string, approverId: string, agentId: st
 
   let ticketId: string
   try {
-    const { ticketId: id, answer } = await services.wiki.askWiki({
+    const ticket = await services.wiki.createQuestionTicket({
       agentId,
       question: SAMPLE_WIKI_QUESTION,
       createdById: operatorId,
     })
-    ticketId = id
+    ticketId = ticket.id
+    const dispatch = await services.dispatcher.dispatchTicket(ticketId)
+    const answered = await repositories.tickets.findById(ticketId)
+    const payload = answered?.payload as { confidence?: string }
     pass(
-      'askWiki + ChatGPT OAuth válasz',
-      `ticket=${ticketId.slice(0, 8)}… confidence=${answer.confidence}`,
+      'ready ticket + dispatcher + ChatGPT OAuth válasz',
+      `ticket=${ticketId.slice(0, 8)}… dispatch=${dispatch.status} confidence=${payload?.confidence ?? 'n/a'}`,
     )
   } catch (e) {
-    fail('askWiki + ChatGPT OAuth válasz', e instanceof Error ? e.message : String(e))
+    fail('ready ticket + dispatcher + ChatGPT OAuth válasz', e instanceof Error ? e.message : String(e))
     return null
   }
 
@@ -784,6 +788,7 @@ async function scenario9_iam() {
           name: adminA.name,
           role: 'admin',
           status: 'suspended',
+          tenantId: adminA.tenantId,
         },
         'viewer',
       )
@@ -817,6 +822,100 @@ async function scenario9_iam() {
   }
 }
 
+/** 11. CR-MVP-001 — A0 sandbox app registry preview/export + tenant deny */
+async function scenario10_sandboxAppRegistry(operatorId: string, agentId: string) {
+  console.log('\n[11] Sandbox App Registry v0 (A0 riport preview/export)')
+
+  const tenantA = randomUUID()
+  const tenantB = randomUUID()
+  const ticket = await repositories.tickets.create({
+    type: 'interaction',
+    title: 'Acceptance: A0 sandbox riport',
+    state: 'done',
+    assigneeType: 'agent',
+    assigneeId: agentId,
+    agentId,
+    payload: {
+      question: 'Mi az MVP célja?',
+      answer: 'Az MVP célja egy architektúra-teljes walking skeleton.',
+      rationale: 'A válasz a seedelt tudásbázis rövid leírására támaszkodik.',
+      confidence: 'high',
+      sources: [{ docId: 'acceptance:kts', sectionRef: 'mvp-goal' }],
+      agentVersion: 1,
+      model: 'chatgpt-oauth-test',
+    },
+    sourceDocumentId: null,
+    executeAfter: null,
+    dueBy: null,
+    createdById: operatorId,
+  })
+
+  try {
+    const app = await services.sandboxApps.createOrVersionWikiReport(ticket.id, {
+      userId: operatorId,
+      tenantId: tenantA,
+    })
+
+    if (app.version === 1 && app.htmlHash.length === 64) {
+      pass('A0 riport app létrejött hash-sel', `app=${app.id.slice(0, 8)}…`)
+    } else {
+      fail('A0 riport app létrehozás', `version=${app.version} hash=${app.htmlHash}`)
+    }
+
+    const v2 = await services.sandboxApps.createOrVersionWikiReport(ticket.id, {
+      userId: operatorId,
+      tenantId: tenantA,
+    })
+    if (v2.id === app.id && v2.version === 2) pass('A0 riport új verzió ugyanarra az appra')
+    else fail('A0 riport verziózás', `id=${v2.id} version=${v2.version}`)
+
+    const preview = await services.sandboxApps.getRenderableApp(app.id, {
+      userId: operatorId,
+      tenantId: tenantA,
+    }, 'sandbox_app.preview')
+    const exported = await services.sandboxApps.getRenderableApp(app.id, {
+      userId: operatorId,
+      tenantId: tenantA,
+    }, 'sandbox_app.export')
+    if (
+      preview.version.htmlContent.includes('A0 sandbox riport') &&
+      exported.version.htmlHash === v2.htmlHash
+    ) {
+      pass('Preview/export renderelhető és hash egyezik')
+    } else {
+      fail('Preview/export render', 'hiányzó HTML vagy hash eltérés')
+    }
+
+    try {
+      await services.sandboxApps.getRenderableApp(app.id, {
+        userId: operatorId,
+        tenantId: tenantB,
+      }, 'sandbox_app.preview')
+      fail('Sandbox app cross-tenant deny', 'tenant B elérte tenant A appját')
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      if (msg.includes('access denied')) pass('Sandbox app cross-tenant deny auditált')
+      else fail('Sandbox app cross-tenant deny', msg)
+    }
+
+    const createAudit = await repositories.audit.findMany({ action: 'sandbox_app.create', limit: 5 })
+    const versionAudit = await repositories.audit.findMany({ action: 'sandbox_app.version', limit: 5 })
+    const denyAudit = await repositories.audit.findMany({ action: 'sandbox_app.access_denied', limit: 5 })
+    if (createAudit.length && versionAudit.length && denyAudit.length) {
+      pass('Audit: sandbox_app.create/version/access_denied')
+    } else {
+      fail(
+        'Sandbox app audit',
+        `create=${createAudit.length} version=${versionAudit.length} deny=${denyAudit.length}`,
+      )
+    }
+  } finally {
+    await prisma.sandboxAppVersion.deleteMany({ where: { sourceTicketId: ticket.id } })
+    await prisma.sandboxApp.deleteMany({ where: { name: { startsWith: 'Wiki-riport: Acceptance' } } })
+    await prisma.ticket.delete({ where: { id: ticket.id } })
+  }
+}
+
 async function main() {
   console.log('=== Fázis 1–2 Acceptance (spec §14 + governance) ===\n')
 
@@ -843,6 +942,7 @@ async function main() {
   await scenario7_governance(operator.id, approver.id, agent.id)
   await scenario8_writeGateNegative(operator.id, agent.id)
   await scenario9_iam()
+  await scenario10_sandboxAppRegistry(operator.id, agent.id)
   await scenarioAgentApi(agent.id)
 
   const passed = results.filter((r) => r.ok && !r.skipped).length

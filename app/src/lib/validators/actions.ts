@@ -18,6 +18,14 @@ export const ticketIdSchema = z.object({
   id: z.string().uuid(),
 })
 
+export const sandboxAppIdSchema = z.object({
+  appId: z.string().uuid(),
+})
+
+export const createSandboxReportSchema = z.object({
+  ticketId: z.string().uuid(),
+})
+
 export const transitionTicketSchema = z.object({
   id: z.string().uuid(),
   toState: z.enum([

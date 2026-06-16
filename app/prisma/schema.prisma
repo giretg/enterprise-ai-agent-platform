@@ -140,6 +140,15 @@ enum AuditActorType {
   system
 }
 
+enum SandboxAppLevel {
+  A0
+}
+
+enum SandboxAppStatus {
+  active
+  retired
+}
+
 model User {
   id              String     @id @default(uuid()) @db.Uuid
   externalAuthId  String     @unique @map("external_auth_id")
@@ -407,6 +416,7 @@ model Ticket {
   writeGateTokens WriteGateToken[]
   transitions    TicketTransition[]
   trainingTicket  TrainingTicket?
+  sandboxAppVersions SandboxAppVersion[]
 
   @@map("tickets")
 }
@@ -486,6 +496,40 @@ model ToolCall {
   connector Connector? @relation(fields: [connectorId], references: [id])
 
   @@map("tool_calls")
+}
+
+// ── CR-MVP-001: A0 sandbox app registry ────────────────────────────────────
+
+model SandboxApp {
+  id        String           @id @default(uuid()) @db.Uuid
+  name      String
+  level     SandboxAppLevel  @default(A0)
+  status    SandboxAppStatus @default(active)
+  tenantId  String?          @map("tenant_id") @db.Uuid
+  createdBy String           @map("created_by") @db.Uuid
+  createdAt DateTime         @default(now()) @map("created_at") @db.Timestamptz
+
+  versions SandboxAppVersion[]
+
+  @@map("sandbox_apps")
+}
+
+model SandboxAppVersion {
+  id             String   @id @default(uuid()) @db.Uuid
+  appId          String   @map("app_id") @db.Uuid
+  version        Int
+  htmlContent    String   @map("html_content")
+  htmlHash       String   @map("html_hash")
+  sourceTicketId String   @map("source_ticket_id") @db.Uuid
+  createdBy      String   @map("created_by") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  app          SandboxApp @relation(fields: [appId], references: [id], onDelete: Cascade)
+  sourceTicket Ticket     @relation(fields: [sourceTicketId], references: [id])
+
+  @@unique([appId, version])
+  @@index([sourceTicketId])
+  @@map("sandbox_app_versions")
 }
 
 // ── Fázis 2: Write-gate token ──────────────────────────────────────────────

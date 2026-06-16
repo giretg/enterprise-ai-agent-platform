@@ -31,6 +31,7 @@ export class DevAuthProvider implements AuthProvider {
       name: user.name,
       role: user.role,
       status: user.status,
+      tenantId: user.tenantId,
     }
   }
 

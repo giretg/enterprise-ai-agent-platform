@@ -29,6 +29,7 @@ import {
   createEvalSchema,
   runEvalSchema,
   costSummarySchema,
+  createSandboxReportSchema,
   createAgentSchema,
   createTrainingSchema,
   askWikiSchema,
@@ -299,13 +300,58 @@ export async function askWiki(input: { agentId: string; question: string }) {
   try {
     const user = await requireRole('operator')
     const parsed = askWikiSchema.parse(input)
-    const result = await services.wiki.askWiki({
+    const ticket = await services.wiki.createQuestionTicket({
       ...parsed,
       createdById: user.id,
     })
-    return ok(result)
+    const dispatch = await services.dispatcher.dispatchTicket(ticket.id)
+    const updated = await repositories.tickets.findById(ticket.id)
+    const payload =
+      typeof updated?.payload === 'object' && updated.payload !== null && !Array.isArray(updated.payload)
+        ? (updated.payload as Record<string, unknown>)
+        : {}
+
+    return ok({
+      ticketId: ticket.id,
+      answer: {
+        answer: typeof payload.answer === 'string' ? payload.answer : '',
+        sources: Array.isArray(payload.sources) ? payload.sources : [],
+        rationale: typeof payload.rationale === 'string' ? payload.rationale : '',
+        confidence: typeof payload.confidence === 'string' ? payload.confidence : 'medium',
+      },
+      ticket: updated,
+      dispatch,
+    })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Wiki question failed')
+  }
+}
+
+export async function createSandboxReport(input: { ticketId: string }) {
+  try {
+    const user = await requireRole('operator')
+    const parsed = createSandboxReportSchema.parse(input)
+    const app = await services.sandboxApps.createOrVersionWikiReport(parsed.ticketId, {
+      userId: user.id,
+      tenantId: user.tenantId,
+    })
+    return ok(app)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to create sandbox report')
+  }
+}
+
+export async function getSandboxReportForTicket(input: { ticketId: string }) {
+  try {
+    const user = await requireRole('viewer')
+    const parsed = createSandboxReportSchema.parse(input)
+    const app = await services.sandboxApps.getLatestForTicket(parsed.ticketId, {
+      userId: user.id,
+      tenantId: user.tenantId,
+    })
+    return ok(app)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to get sandbox report')
   }
 }
 

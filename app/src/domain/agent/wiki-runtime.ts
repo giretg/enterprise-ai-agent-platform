@@ -48,6 +48,19 @@ export class WikiAgentRuntime {
   ) {}
 
   async askWiki(params: { agentId: string; question: string; createdById: string }) {
+    const ticket = await this.createQuestionTicket(params)
+    const agentDetails = await this.agents.findByIdWithDetails(params.agentId)
+    if (!agentDetails) throw new Error('Agent not found')
+    await this.ticketService.transition({
+      ticketId: ticket.id,
+      toState: 'in_progress',
+      actor: { type: 'system' },
+      agentVersion: agentDetails.agent.currentVersion,
+    })
+    return this.processTicket({ ticketId: ticket.id, agentId: params.agentId })
+  }
+
+  async createQuestionTicket(params: { agentId: string; question: string; createdById: string }) {
     const question = params.question.trim()
     if (!question) throw new Error('Question is required')
 
@@ -62,7 +75,7 @@ export class WikiAgentRuntime {
     }
     const agentVersion = agentDetails.agent.currentVersion
 
-    const ticket = await this.tickets.create({
+    return this.tickets.create({
       type: 'interaction',
       title: `Wiki kérdés: ${question.slice(0, 80)}`,
       state: 'ready',
@@ -80,13 +93,31 @@ export class WikiAgentRuntime {
       dueBy: null,
       createdById: params.createdById,
     })
+  }
 
-    await this.ticketService.transition({
-      ticketId: ticket.id,
-      toState: 'in_progress',
-      actor: { type: 'system' },
-      agentVersion,
-    })
+  async processTicket(params: { ticketId: string; agentId: string }) {
+    const ticket = await this.tickets.findById(params.ticketId)
+    if (!ticket) throw new Error('Ticket not found')
+    if (ticket.agentId !== params.agentId) throw new Error('Ticket not assigned to this agent')
+    if (ticket.type !== 'interaction') throw new Error('Wiki runtime only handles interaction tickets')
+
+    const payload =
+      typeof ticket.payload === 'object' && ticket.payload !== null && !Array.isArray(ticket.payload)
+        ? (ticket.payload as Record<string, unknown>)
+        : {}
+    const question = typeof payload.question === 'string' ? payload.question.trim() : ''
+    if (!question) throw new Error('Ticket payload is missing question')
+
+    const agentDetails = await this.agents.findByIdWithDetails(params.agentId)
+    if (!agentDetails) throw new Error('Agent not found')
+
+    const modelConfig = agentDetails.agent.modelConfig as {
+      provider: string
+      model: string
+      temperature?: number
+      maxTokens?: number
+    }
+    const agentVersion = agentDetails.agent.currentVersion
 
     const search = await this.toolBroker.invoke({
       agentId: params.agentId,

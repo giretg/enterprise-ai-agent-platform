@@ -7,9 +7,11 @@ import { AuditChainService } from '@/domain/audit/audit-chain-service'
 import { WriteGateService } from '@/domain/writegate/write-gate-service'
 import { EvalService } from '@/domain/eval/eval-service'
 import { DispatcherService, type HarnessLauncher } from '@/domain/dispatcher/dispatcher-service'
+import { CloudRunJobHarnessLauncher, cloudRunConfigFromEnv } from '@/domain/dispatcher/cloud-run-job-launcher'
 import { AllowlistAuthorizer, ToolBrokerService } from '@/domain/tool-broker/tool-broker-service'
 import { RecipeService } from '@/domain/recipe/recipe-service'
 import { IamService } from '@/domain/iam/iam-service'
+import { SandboxAppService } from '@/domain/sandbox/sandbox-app-service'
 import { repositories } from '@/repositories/postgres'
 
 const ticketService = new TicketService(repositories.tickets, repositories.audit)
@@ -49,16 +51,35 @@ const wikiRuntime = new WikiAgentRuntime(
 const auditChainService = new AuditChainService(repositories.audit)
 const recipeService = new RecipeService(repositories.recipes, repositories.audit)
 const iamService = new IamService(repositories.audit)
-const pendingHarnessLauncher: HarnessLauncher = {
-  async launch() {
-    throw new Error('Harness launcher is not configured yet (S1-S4 spike pending)')
+const sandboxAppService = new SandboxAppService(
+  repositories.sandboxApps,
+  repositories.tickets,
+  repositories.audit,
+)
+const localWikiHarnessLauncher: HarnessLauncher = {
+  mode: 'local-wiki',
+  async launch(input) {
+    await wikiRuntime.processTicket({
+      ticketId: input.ticketId,
+      agentId: input.agentId,
+    })
+    await repositories.tickets.releaseDispatchLock(input.ticketId, input.lockToken)
+    return { jobId: `local-wiki-${input.ticketId}` }
   },
 }
+
+function createHarnessLauncher(): HarnessLauncher {
+  const mode = process.env.HARNESS_LAUNCHER_MODE ?? 'local-wiki'
+  if (mode === 'local-wiki') return localWikiHarnessLauncher
+  if (mode === 'cloud-run-job') return new CloudRunJobHarnessLauncher(cloudRunConfigFromEnv())
+  throw new Error(`Unsupported HARNESS_LAUNCHER_MODE: ${mode}`)
+}
+
 const dispatcherService = new DispatcherService(
   repositories.tickets,
   repositories.audit,
   repositories.modelCalls,
-  pendingHarnessLauncher,
+  createHarnessLauncher(),
 )
 
 export const services = {
@@ -74,4 +95,5 @@ export const services = {
   toolBroker: toolBrokerService,
   recipes: recipeService,
   iam: iamService,
+  sandboxApps: sandboxAppService,
 }
