@@ -1,0 +1,31 @@
+# Firebase App Hosting — root config for GitHub-connected builds
+# Keep this in sync with app/apphosting.yaml while the backend builds from repo root.
+# Secrets: npx -y firebase-tools@latest apphosting:secrets:set SECRET_NAME
+# Grant:   npx -y firebase-tools@latest apphosting:secrets:grantaccess
+
+runConfig:
+  cpu: 1
+  memoryMiB: 512
+  minInstances: 0
+  maxInstances: 10
+  concurrency: 80
+
+env:
+  - variable: DATABASE_URL
+    secret: DATABASE_URL
+    availability:
+      - BUILD
+      - RUNTIME
+  - variable: DIRECT_URL
+    secret: DIRECT_URL
+    availability:
+      - BUILD
+  - variable: GEMINI_API_KEY
+    secret: GEMINI_API_KEY
+  - variable: CLERK_SECRET_KEY
+    secret: CLERK_SECRET_KEY
+  - variable: NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+    secret: NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
+    availability:
+      - BUILD
+      - RUNTIME
