@@ -790,7 +790,7 @@ A fejlesztés akkor kész, ha:
 
 ## 15. Megvalósítási státusz a jelenlegi kódbázis alapján
 
-**Frissítve:** 2026-06-16 (session 12)
+**Frissítve:** 2026-06-16 (session 14)
 **Állapotjelölés:** `Kész` = működő kód + build zöld; `Részben kész` = van alap, de nem teljesíti még a spec minden kipróbálhatósági kritériumát; `Hátra van` = érdemi implementáció hiányzik.
 
 ### 15.1 Elkészült / részben elkészült elemek
@@ -820,7 +820,9 @@ A fejlesztés akkor kész, ha:
 | Seed / alapértelmezett agent | Kész alap | A seed most `Wiki Agent`-et hoz létre `chatgpt-oauth` modellkonfiggal és belső tudásbázis kezdőmemóriával. |
 | Training / write-gate | **Kész (2026-06-15)** | Training ticket, diff, write-gate issue/consume (aláírt, egyszer használatos, diffhez kötött), memória verzió promóció, rollback és eval-kapu működik. First-class `training_tickets` tábla (§4.4) bekerült: `proposed_diff`, `write_gate_token_ref` (a kiállított token referenciája — nyers token sosem tárolt), `eval_result` és `target_memory_version`. A `TrainingService.createTrainingTicket` írja a sort a cél-verzióval; az `approveTraining` rögzíti a token-ref-et és az eval-eredményt. Az **S5/N3 negatív tesztek** (replay/kétszeres consume tiltva, lejárt token tiltva + `expired` státusz, hamisított aláírás tiltva) az acceptance e2e-ben zöldek. |
 | Eval alap | Részben kész | Egyszerű eval definíció és futtatás van. Wiki-agentre szabott S6 eval plan még nincs. |
-| Build / lint állapot | Kész | `npm run lint`, `npm run build` és `npm run test:acceptance` zöld az `app/` könyvtárban (acceptance: **76 sikeres**, 2 kihagyva opcionális docker E2E, 0 sikertelen — 2026-06-16 session 12). |
+| Governance & mérés dashboard (Epik 8, §11) | **Kész (2026-06-16, session 13)** | `/control-plane/governance` oldal range-szelektorral (ma/7nap/30nap/összes): aggregált KPI-k a **két átjáróról** (Gateway-hívás + átlag latency + hiba/rate-limit státusz-bontás; Tool Broker hívás/tiltás/hiba), token/költség, kontroll-metrikák (átmenetek actor szerint, jóváhagyva/elutasítva, **emberi lépés-arány** és **visszadobási arány**), **audit-lánc integritás** (`verifyChain`) és sandbox-app események (create/version/preview/export/access_denied). **Ticketenkénti lebontás** táblázat (Gateway-hívás, tool-hívás, token, átlag latency, költség, ügyre linkelve). Új repo-aggregációk: `modelCalls.getGovernanceSummary` + `getPerTicketBreakdown`, `toolBroker.getToolCallCountsByTicket`, `tickets.getTransitionStats`, `audit.getActionCounts` (Prisma `groupBy`). `getGovernanceReport` server action (`viewer` szerep). Acceptance `scenario24_governanceReport` valós adaton zöld. |
+| Mérési riport (§9.1/7, Epik 8) | **Kész (2026-06-16, session 14)** | Írott, exportálható **mérési riport** egy valódi futás adataiból (§9.1/7 elfogadási kritérium). Újrahasználható `buildMeasurementReport` + `renderMeasurementMarkdown` (`src/domain/governance/measurement-report.ts`) a négy dimenzióra: **válaszminőség** (citáció-arány a ticket-payload `sources`-ből + confidence-eloszlás), **átfutás** (átlag Gateway-latency + ügy-átfutás create→last update átlag/medián), **visszadobási arány** + emberi lépés-arány, **költség/ticket** — a §11 governance-aggregációkra építve, audit-lánc integritással. CLI generátor (`npm run report:measurement [-- --range=… --out=…]`, Markdown fájlba ír) és UI-letöltés a governance oldalról (`GET /control-plane/governance/report`, `viewer` szerep, attachment). Acceptance `scenario25_measurementReport` valós adaton zöld; a CLI lokálisan `app/reports/measurement-report.md`-be generál (gitignore-olt kimenet). |
+| Build / lint állapot | Kész | `npm run lint`, `npm run build` és `npm run test:acceptance` zöld az `app/` könyvtárban (acceptance: **86 sikeres**, 2 kihagyva opcionális docker E2E, 0 sikertelen — 2026-06-16 session 14). |
 
 ### 15.2 Hátralévő feladatok epik szerint
 
@@ -833,7 +835,7 @@ A fejlesztés akkor kész, ha:
 | Epik 5 — Harness (Goose) + Dispatcher | Részben kész | Hálózati szintű VPC firewall deny-by-default proof + valódi Goose E2E stub nélkül. *(… **Cloud Run Job éles smoke ZÖLD** `enterprise-ai-demo`/App Hosting-on — execution succeeded, Gateway+Broker átjáró + callback bizonyítva; Cloud Build amd64 + callback dupla-útvonal + operation-státusz fix; deploy/smoke + launcher refaktor + scenario23 kész 2026-06-16 session 12; docker-local path session 11; N4 acceptance zöld.)* |
 | Epik 6 — Tanítás / memória | Részben kész | Hátra: retrieval-napló dedikált nézete; rollback UI finomítás. *(Spec szerinti `training_tickets` modell, write-gate token-ref külön kezelése és a token lejárat/újrajátszás/aláírás-hamisítás negatív tesztek kész 2026-06-15.)* |
 | Epik 7 — Sandbox use case (wiki) + App Registry stretch **[CR-MVP-001]** | Részben kész | Valódi ChatGPT OAuth + Cloud Run Job teljes Goose E2E; GCS absztrakció `uploadDocument`-hez. *(Wiki E2E stub OAuth-tal zöld; dokumentumfeltöltés, App Registry v0, lokális dispatcher path, **async askWiki + polling UI** kész 2026-06-16 session 11.)* |
-| Epik 8 — Governance és mérés | Részben kész | Tool Broker dashboard + rövid mérési riport. *(**N4 egress automate zöld 2026-06-16**; N1/N3 zöld; N2 részben.)* |
+| Epik 8 — Governance és mérés | **Lényegében kész** | Hátra: N2 (nem engedélyezett tool-hívás negatív teszt automatizálása). *(**Governance & mérés dashboard `/control-plane/governance` kész session 13**; **írott mérési riport (9.1/7) kész session 14** — `buildMeasurementReport` + CLI `report:measurement` + governance-oldali letöltés, scenario25 zöld. **N4 egress automate zöld**; N1/N3 zöld.)* |
 
 ### 15.3 Következő javasolt fejlesztési sorrend
 
@@ -842,7 +844,7 @@ A fejlesztés akkor kész, ha:
 3. **Tool Broker hardening:** Secret Manager injektálás; connector secret alias igazolása.
 4. **Negatív tesztek:** N1/N3/N4 zöld; N2 részben; éles egress probe Docker/GCP-n (`npm run harness:egress-probe`).
 5. **Deploy hardening [CR-MVP-001]:** App Registry preview külön cookieless origin.
-6. **Governance mérés:** Tool Broker dashboard + rövid mérési riport (Epik 8).
+6. ~~**Governance mérés:** Tool Broker dashboard + rövid **írott** mérési riport (9.1/7)~~ ✅ `/control-plane/governance` dashboard (session 13) + írott mérési riport `npm run report:measurement` / governance-oldali letöltés (session 14) kész. Hátra Epik 8-ból: N2 negatív teszt automatizálása.
 7. **Epik 3:** `roleInstruction` / `behaviorProfile` külön verziózás az agent registry-ben.
 
 ---

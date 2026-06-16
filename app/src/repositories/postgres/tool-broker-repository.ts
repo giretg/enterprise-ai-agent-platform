@@ -87,4 +87,21 @@ export class PostgresToolBrokerRepository implements ToolBrokerRepository {
       { calls: 0, denied: 0, errors: 0 },
     )
   }
+
+  async getToolCallCountsByTicket(since?: Date): Promise<Record<string, number>> {
+    const grouped = await prisma.toolCall.groupBy({
+      by: ['ticketId'],
+      where: {
+        ticketId: { not: null },
+        ...(since ? { createdAt: { gte: since } } : {}),
+      },
+      _count: { _all: true },
+    })
+
+    const counts: Record<string, number> = {}
+    for (const row of grouped) {
+      if (row.ticketId) counts[row.ticketId] = row._count._all
+    }
+    return counts
+  }
 }

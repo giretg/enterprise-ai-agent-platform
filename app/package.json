@@ -19,6 +19,7 @@
     "harness:cloud-run-deploy": "bash infra/gcp/deploy-harness-job.sh",
     "harness:cloud-run-smoke": "tsx scripts/harness-cloud-run-smoke.ts",
     "dispatcher:worker": "tsx scripts/dispatcher-worker.ts",
+    "report:measurement": "tsx scripts/measurement-report.ts",
     "s2:stub": "tsx scripts/chatgpt-oauth-stub.ts",
     "test:acceptance": "tsx scripts/acceptance-e2e.ts",
     "postinstall": "prisma generate"

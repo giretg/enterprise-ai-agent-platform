@@ -27,6 +27,10 @@ import { POST as gatewayChatCompletions } from '../src/app/api/v1/gateway/v1/cha
 import { DISPATCH_NOTIFY_CHANNEL } from '../src/lib/dispatch-notify'
 import { prisma } from '../src/lib/db'
 import { repositories } from '../src/repositories/postgres'
+import {
+  buildMeasurementReport,
+  renderMeasurementMarkdown,
+} from '../src/domain/governance/measurement-report'
 import { assertRole } from '../src/auth/types'
 
 const SAMPLE_WIKI_QUESTION =
@@ -1737,6 +1741,136 @@ async function scenario23_cloudRunJobLauncher() {
   }
 }
 
+/** 24. Governance / mérés riport aggregáció (Epik 8, §11) */
+async function scenario24_governanceReport() {
+  console.log('\n[24] Governance riport aggregáció (Epik 8, §11)')
+
+  const model = await repositories.modelCalls.getGovernanceSummary()
+  if (model.calls > 0) {
+    pass('Gateway summary', `${model.calls} hívás, átlag ${model.avgLatencyMs}ms, €${model.cost.toFixed(4)}`)
+  } else {
+    fail('Gateway summary', 'nincs model_call az aggregátumban')
+  }
+  if (model.okCalls + model.errorCalls + model.rateLimitedCalls === model.calls) {
+    pass('Gateway státusz-bontás konzisztens', `ok=${model.okCalls} err=${model.errorCalls} rl=${model.rateLimitedCalls}`)
+  } else {
+    fail('Gateway státusz-bontás', 'a státuszok összege nem egyezik a hívásszámmal')
+  }
+
+  const tools = await repositories.toolBroker.getToolSummary()
+  const toolByTicket = await repositories.toolBroker.getToolCallCountsByTicket()
+  const toolByTicketTotal = Object.values(toolByTicket).reduce((a, b) => a + b, 0)
+  if (tools.calls > 0 && toolByTicketTotal <= tools.calls) {
+    pass('Tool Broker per-ticket bontás', `${toolByTicketTotal}/${tools.calls} ticketezett hívás`)
+  } else if (tools.calls === 0) {
+    fail('Tool Broker summary', 'nincs tool_call az aggregátumban')
+  } else {
+    fail('Tool Broker per-ticket bontás', `ticketezett (${toolByTicketTotal}) > összes (${tools.calls})`)
+  }
+
+  const breakdown = await repositories.modelCalls.getPerTicketBreakdown(undefined, 25)
+  if (breakdown.length > 0 && breakdown.every((b) => b.calls > 0 && b.tokens >= 0)) {
+    pass('Ticketenkénti Gateway-lebontás', `${breakdown.length} ügy`)
+  } else {
+    fail('Ticketenkénti Gateway-lebontás', 'üres vagy inkonzisztens')
+  }
+
+  const transitions = await repositories.tickets.getTransitionStats()
+  const actorSum =
+    transitions.byActor.human + transitions.byActor.agent + transitions.byActor.system
+  if (transitions.total > 0 && actorSum === transitions.total) {
+    pass('Átmenet-statisztika actor szerint', `${transitions.total} átmenet, ${transitions.toApproved} jóváhagyva / ${transitions.toRejected} elutasítva`)
+  } else {
+    fail('Átmenet-statisztika', `actor-összeg (${actorSum}) != total (${transitions.total})`)
+  }
+
+  const sandboxCounts = await repositories.audit.getActionCounts({
+    actions: ['sandbox_app.create', 'sandbox_app.preview', 'sandbox_app.access_denied'],
+  })
+  if (
+    typeof sandboxCounts['sandbox_app.create'] === 'number' &&
+    typeof sandboxCounts['sandbox_app.access_denied'] === 'number'
+  ) {
+    pass('Audit action-count (sandbox)', `create=${sandboxCounts['sandbox_app.create']} denied=${sandboxCounts['sandbox_app.access_denied']}`)
+  } else {
+    fail('Audit action-count', 'hiányzó kulcs a kért action-halmazból')
+  }
+}
+
+/** 25. Mérési riport generálás (§9.1/7, Epik 8) */
+async function scenario25_measurementReport() {
+  console.log('\n[25] Mérési riport (§9.1/7)')
+
+  const report = await buildMeasurementReport(
+    {
+      tickets: repositories.tickets,
+      modelCalls: repositories.modelCalls,
+      toolBroker: repositories.toolBroker,
+      audit: repositories.audit,
+      auditChain: services.auditChain,
+    },
+    'all',
+  )
+
+  // Citáció-arány a megválaszolt ügyekből, 0..1 között és konzisztens a számlálóval.
+  if (
+    report.quality.citationRate >= 0 &&
+    report.quality.citationRate <= 1 &&
+    report.quality.cited <= report.quality.answered
+  ) {
+    pass(
+      'Válaszminőség — citáció-arány',
+      `${report.quality.cited}/${report.quality.answered} citált (${(report.quality.citationRate * 100).toFixed(1)}%)`,
+    )
+  } else {
+    fail('Válaszminőség — citáció-arány', `cited=${report.quality.cited} answered=${report.quality.answered}`)
+  }
+
+  // Visszadobási arány konzisztens a jóváhagyott/elutasított döntésekkel.
+  const decisions = report.control.approved + report.control.rejected
+  if (
+    report.control.rejectionRate >= 0 &&
+    report.control.rejectionRate <= 1 &&
+    (decisions === 0 || Math.abs(report.control.rejectionRate - report.control.rejected / decisions) < 1e-9)
+  ) {
+    pass('Kontroll — visszadobási arány', `${report.control.rejected}/${decisions} elutasítva`)
+  } else {
+    fail('Kontroll — visszadobási arány', `rate=${report.control.rejectionRate} decisions=${decisions}`)
+  }
+
+  // Költség/ticket: ha van ticketezett hívás, legyen nemnegatív szám.
+  if (
+    report.cost.ticketedTickets === 0 ||
+    (report.cost.avgCostPerTicket !== null && report.cost.avgCostPerTicket >= 0)
+  ) {
+    pass(
+      'Költség — átlag/ticket',
+      report.cost.avgCostPerTicket === null
+        ? 'nincs ticketezett hívás'
+        : `€${report.cost.avgCostPerTicket.toFixed(4)} / ${report.cost.ticketedTickets} ügy`,
+    )
+  } else {
+    fail('Költség — átlag/ticket', `avg=${report.cost.avgCostPerTicket}`)
+  }
+
+  // A Markdown renderelő minden §11 dimenziót és az audit-lánc állapotot tartalmazza.
+  const md = renderMeasurementMarkdown(report)
+  const requiredSections = [
+    '# Mérési riport',
+    'Válaszminőség',
+    'átfutás',
+    'Kontroll',
+    'Költség',
+    'Audit-lánc integritás',
+  ]
+  const missing = requiredSections.filter((s) => !md.includes(s))
+  if (missing.length === 0 && md.length > 200) {
+    pass('Markdown riport — minden dimenzió jelen', `${md.length} karakter`)
+  } else {
+    fail('Markdown riport', `hiányzó szekciók: ${missing.join(', ') || 'túl rövid'}`)
+  }
+}
+
 /** 21. Goose Docker E2E — opcionális, HARNESS_DOCKER_E2E=1 + image + platform */
 async function scenario20_dockerGooseE2E() {
   console.log('\n[21] Goose Docker E2E (opcionális)')
@@ -1920,6 +2054,8 @@ async function main() {
   await scenario20_dockerGooseE2E()
   await scenario22_dispatcherDockerPath(operator.id, agent.id)
   await scenario23_cloudRunJobLauncher()
+  await scenario24_governanceReport()
+  await scenario25_measurementReport()
   await scenarioAgentApi(agent.id)
 
   const passed = results.filter((r) => r.ok && !r.skipped).length

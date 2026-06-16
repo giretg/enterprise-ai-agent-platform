@@ -107,4 +107,26 @@ export class PostgresTicketRepository implements TicketRepository {
       orderBy: { ts: 'asc' },
     })
   }
+
+  async getTransitionStats(since?: Date) {
+    const rows = await prisma.ticketTransition.findMany({
+      where: since ? { ts: { gte: since } } : undefined,
+      select: { toState: true, actorType: true },
+    })
+
+    const stats = {
+      total: rows.length,
+      byActor: { human: 0, agent: 0, system: 0 },
+      toApproved: 0,
+      toRejected: 0,
+      toDone: 0,
+    }
+    for (const row of rows) {
+      stats.byActor[row.actorType] += 1
+      if (row.toState === 'approved') stats.toApproved += 1
+      else if (row.toState === 'rejected') stats.toRejected += 1
+      else if (row.toState === 'done') stats.toDone += 1
+    }
+    return stats
+  }
 }

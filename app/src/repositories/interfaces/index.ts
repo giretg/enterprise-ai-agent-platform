@@ -46,6 +46,16 @@ export interface TicketRepository {
   completeDispatchLock(id: string, lockToken: string): Promise<Ticket | null>
   recordTransition(data: Omit<TicketTransition, 'id' | 'ts'>): Promise<TicketTransition>
   findTransitions(ticketId: string): Promise<TicketTransition[]>
+  /** Transition statistics for the governance dashboard (§11: kontroll — jóváhagyott vs. automatikus lépések, visszadobási arány). */
+  getTransitionStats(since?: Date): Promise<TransitionStats>
+}
+
+export type TransitionStats = {
+  total: number
+  byActor: { human: number; agent: number; system: number }
+  toApproved: number
+  toRejected: number
+  toDone: number
 }
 
 export interface AgentRepository {
@@ -93,6 +103,26 @@ export interface AuditRepository {
   append(data: Omit<AuditLog, 'id' | 'seq' | 'createdAt' | 'hash' | 'prevHash'>): Promise<AuditLog>
   findMany(filter?: { action?: string; limit?: number }): Promise<AuditLog[]>
   findAll(): Promise<AuditLog[]>
+  /** Counts of audit events grouped by `action`, optionally narrowed to a set / time window (§11 governance). */
+  getActionCounts(filter?: { actions?: string[]; since?: Date }): Promise<Record<string, number>>
+}
+
+export type ModelCallGovernanceSummary = {
+  calls: number
+  tokens: number
+  cost: number
+  avgLatencyMs: number
+  okCalls: number
+  errorCalls: number
+  rateLimitedCalls: number
+}
+
+export type ModelCallTicketBreakdown = {
+  ticketId: string
+  calls: number
+  tokens: number
+  cost: number
+  avgLatencyMs: number
 }
 
 export interface ModelCallRepository {
@@ -100,6 +130,10 @@ export interface ModelCallRepository {
   getCostSummary(since?: Date): Promise<{ tokens: number; cost: number }>
   getUsageForAgentSince(agentId: string, since: Date): Promise<{ calls: number; tokens: number }>
   getUsageForTicket(ticketId: string): Promise<{ calls: number; tokens: number }>
+  /** Aggregate Gateway metrics for the governance dashboard (§11: hatékonyság + költség). */
+  getGovernanceSummary(since?: Date): Promise<ModelCallGovernanceSummary>
+  /** Per-ticket Gateway usage breakdown, most recent first. */
+  getPerTicketBreakdown(since?: Date, limit?: number): Promise<ModelCallTicketBreakdown[]>
 }
 
 export interface ToolBrokerRepository {
@@ -116,6 +150,8 @@ export interface ToolBrokerRepository {
   ): Promise<{ id: string; filename: string; extractedText: string | null }[]>
   createToolCall(data: Omit<ToolCall, 'id' | 'createdAt'>): Promise<ToolCall>
   getToolSummary(since?: Date): Promise<{ calls: number; denied: number; errors: number }>
+  /** Tool-call counts keyed by ticket id for the governance per-ticket breakdown (§11). */
+  getToolCallCountsByTicket(since?: Date): Promise<Record<string, number>>
 }
 
 export type RecipeWithVersions = Recipe & { versions: RecipeVersion[] }

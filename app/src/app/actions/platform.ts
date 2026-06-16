@@ -657,3 +657,67 @@ export async function getDashboardStats() {
     return fail(e instanceof Error ? e.message : 'Failed to get dashboard stats')
   }
 }
+
+const SANDBOX_AUDIT_ACTIONS = [
+  'sandbox_app.create',
+  'sandbox_app.version',
+  'sandbox_app.preview',
+  'sandbox_app.export',
+  'sandbox_app.access_denied',
+] as const
+
+/**
+ * Aggregated governance / observability report (Epik 8, §11).
+ * Combines Gateway + Tool Broker metrics, control-plane transition stats,
+ * audit-chain integrity and sandbox-app events for the chosen time range.
+ */
+export async function getGovernanceReport(input?: { range?: unknown }) {
+  try {
+    await requireRole('viewer')
+    const { range } = costSummarySchema.parse({ range: input?.range })
+    const since = rangeToSince(range)
+
+    const [model, tools, transitions, sandboxCounts, chain, breakdown, toolByTicket, tickets] =
+      await Promise.all([
+        repositories.modelCalls.getGovernanceSummary(since),
+        repositories.toolBroker.getToolSummary(since),
+        repositories.tickets.getTransitionStats(since),
+        repositories.audit.getActionCounts({ actions: [...SANDBOX_AUDIT_ACTIONS], since }),
+        services.auditChain.verifyChain(),
+        repositories.modelCalls.getPerTicketBreakdown(since, 25),
+        repositories.toolBroker.getToolCallCountsByTicket(since),
+        repositories.tickets.findMany(),
+      ])
+
+    const titleById = new Map(tickets.map((t) => [t.id, t.title]))
+    const perTicket = breakdown.map((b) => ({
+      ...b,
+      title: titleById.get(b.ticketId) ?? '(ismeretlen ügy)',
+      toolCalls: toolByTicket[b.ticketId] ?? 0,
+    }))
+
+    const decisions = transitions.toApproved + transitions.toRejected
+    const rejectionRate = decisions > 0 ? transitions.toRejected / decisions : 0
+    const humanShare =
+      transitions.total > 0 ? transitions.byActor.human / transitions.total : 0
+
+    return ok({
+      range: range ?? 'today',
+      model,
+      tools,
+      transitions,
+      control: { decisions, rejectionRate, humanShare },
+      sandbox: {
+        created: sandboxCounts['sandbox_app.create'] ?? 0,
+        versions: sandboxCounts['sandbox_app.version'] ?? 0,
+        previews: sandboxCounts['sandbox_app.preview'] ?? 0,
+        exports: sandboxCounts['sandbox_app.export'] ?? 0,
+        accessDenied: sandboxCounts['sandbox_app.access_denied'] ?? 0,
+      },
+      chain,
+      perTicket,
+    })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to build governance report')
+  }
+}
