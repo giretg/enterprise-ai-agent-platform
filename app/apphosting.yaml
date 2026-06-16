@@ -23,10 +23,6 @@ env:
     secret: GEMINI_API_KEY
   - variable: CLERK_SECRET_KEY
     secret: CLERK_SECRET_KEY
-  - variable: CLERK_WEBHOOK_SIGNING_SECRET
-    secret: CLERK_WEBHOOK_SIGNING_SECRET
-  - variable: WRITE_GATE_SECRET
-    secret: WRITE_GATE_SECRET
   - variable: NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
     secret: NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY
     availability:
