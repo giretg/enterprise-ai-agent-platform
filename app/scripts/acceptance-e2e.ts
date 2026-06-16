@@ -1130,6 +1130,84 @@ async function scenarioN1_viewerCannotApprove(operatorId: string, agentId: strin
   }
 }
 
+/** N2. Agent nem engedélyezett toolt hív — Tool Broker blokk + tool.call.denied audit */
+async function scenarioN2_unauthorizedTool(operatorId: string, agentId: string, agentVersion: number) {
+  console.log('\n[N2] Nem engedélyezett tool-hívás tiltás')
+
+  // Deny-by-default: a board_write capability-sort teljesen eltávolítjuk
+  // (nem csak allowed=false — ez a "soha nem engedélyezett" eset), majd visszaállítjuk.
+  const snapshot = await prisma.capability.findUnique({
+    where: { agentId_toolName: { agentId, toolName: 'board_write' } },
+  })
+
+  const ticket = await repositories.tickets.create({
+    type: 'interaction',
+    title: 'Acceptance: N2 unauthorized tool',
+    state: 'in_progress',
+    assigneeType: 'agent',
+    assigneeId: agentId,
+    agentId,
+    payload: { question: 'Nem engedélyezett board_write próbája' },
+    sourceDocumentId: null,
+    executeAfter: null,
+    dueBy: null,
+    createdById: operatorId,
+  })
+
+  try {
+    await prisma.capability.deleteMany({ where: { agentId, toolName: 'board_write' } })
+
+    const denied = await services.toolBroker.invoke({
+      agentId,
+      agentVersion,
+      ticketId: ticket.id,
+      tool: 'board_write',
+      args: {
+        ticketId: ticket.id,
+        patch: {
+          payload: { answer: 'Ez nem írhat, mert nincs capability.', sources: ['n2:probe'] },
+          state: 'awaiting_human',
+        },
+      },
+    })
+
+    if (denied.denied && denied.reason === 'capability_not_allowed') {
+      pass('Tool Broker blokk — capability hiányában elutasít', denied.reason)
+    } else {
+      fail('Tool Broker blokk', denied.denied ? `reason=${denied.reason}` : 'a tiltott tool lefutott')
+    }
+
+    // A tool nem futott le: a ticket állapota/payloadja változatlan (in_progress, nincs answer).
+    const unchanged = await repositories.tickets.findById(ticket.id)
+    const payload = (unchanged?.payload ?? {}) as Record<string, unknown>
+    if (unchanged?.state === 'in_progress' && !('answer' in payload)) {
+      pass('A tiltott tool nem írt — ticket változatlan')
+    } else {
+      fail('Tiltott tool mellékhatás', `state=${unchanged?.state} hasAnswer=${'answer' in payload}`)
+    }
+
+    const deniedAudit = await repositories.audit.findMany({ action: 'tool.call.denied', limit: 20 })
+    const hasDeny = deniedAudit.some(
+      (row) =>
+        row.targetId === ticket.id &&
+        row.actorType === 'agent' &&
+        row.actorId === agentId &&
+        row.policyDecision === 'capability_not_allowed',
+    )
+    if (hasDeny) pass('Audit: tool.call.denied nem engedélyezett toolnál')
+    else fail('N2 deny audit', `target=${ticket.id} actor=${agentId}`)
+  } finally {
+    if (snapshot) {
+      await prisma.capability.upsert({
+        where: { agentId_toolName: { agentId, toolName: 'board_write' } },
+        update: { allowed: snapshot.allowed },
+        create: { agentId, toolName: 'board_write', allowed: snapshot.allowed },
+      })
+    }
+    await prisma.ticket.delete({ where: { id: ticket.id } })
+  }
+}
+
 /** 13. Harness entrypoint — Cloud Run konténer belépési szerződés */
 async function scenario12_harnessEntrypoint() {
   console.log('\n[13] Harness entrypoint (callback-only + command failure)')
@@ -2050,6 +2128,7 @@ async function main() {
   await scenario18_dispatchTimeout(operator.id, agent.id)
   await scenarioN4_egressGuard()
   await scenarioN1_viewerCannotApprove(operator.id, agent.id)
+  await scenarioN2_unauthorizedTool(operator.id, agent.id, agent.currentVersion)
   await scenario19_dockerLocalLauncher()
   await scenario20_dockerGooseE2E()
   await scenario22_dispatcherDockerPath(operator.id, agent.id)
