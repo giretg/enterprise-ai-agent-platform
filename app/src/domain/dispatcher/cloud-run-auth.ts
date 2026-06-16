@@ -43,6 +43,20 @@ export async function fetchCloudRunExecutionStatus(
     throw new Error(`Cloud Run execution fetch failed: ${response.status} ${body.slice(0, 300)}`)
   }
 
+  // A jobs:run egy long-running Operationt ad vissza (projects/…/operations/…),
+  // ami a job futás befejezésekor lesz done. Ilyenkor az operation állapotát
+  // értelmezzük, nem az Execution conditions-t.
+  if (executionName.includes('/operations/')) {
+    const op = (await response.json()) as {
+      done?: boolean
+      error?: { message?: string }
+      response?: { name?: string }
+    }
+    if (op.error) return { status: 'failed', detail: op.error.message }
+    if (op.done) return { status: 'succeeded' }
+    return { status: 'running' }
+  }
+
   const data = (await response.json()) as {
     conditions?: Array<{ type?: string; state?: string; message?: string }>
     completionStatus?: string

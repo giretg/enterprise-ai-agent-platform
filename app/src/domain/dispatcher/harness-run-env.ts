@@ -29,22 +29,6 @@ function pushEnv(
   if (value?.trim()) env.push({ name, value: value.trim() })
 }
 
-export function resolveHarnessCallbackUrl(
-  callbackUrl: string | undefined,
-  platformApiUrl: string | undefined,
-  ticketId: string,
-): string | undefined {
-  const raw = callbackUrl?.trim()
-  if (raw) {
-    if (raw.includes('{ticketId}')) return raw.replaceAll('{ticketId}', encodeURIComponent(ticketId))
-    return `${raw.replace(/\/$/, '')}/api/v1/harness/tickets/${encodeURIComponent(ticketId)}/complete`
-  }
-  if (platformApiUrl?.trim()) {
-    return `${platformApiUrl.replace(/\/$/, '')}/api/v1/harness/tickets/${encodeURIComponent(ticketId)}/complete`
-  }
-  return undefined
-}
-
 export function resolveModelGatewayUrl(
   modelGatewayUrl: string | undefined,
   platformApiUrl: string | undefined,
@@ -60,7 +44,10 @@ export function buildHarnessContainerEnv(
   config: HarnessRunEnvConfig,
 ): Array<{ name: string; value: string }> {
   const platformApiUrl = config.platformApiUrl?.trim()
-  const callbackUrl = resolveHarnessCallbackUrl(config.callbackUrl, platformApiUrl, input.ticketId)
+  // A konténer completionEndpoint-ja maga fűzi rá az útvonalat (base URL vagy
+  // {ticketId} sablon alapján), ezért ITT a base-t adjuk át — különben dupla
+  // útvonal képződne (…/complete/api/v1/harness/…/complete → 404).
+  const callbackUrl = config.callbackUrl?.trim() || platformApiUrl
   const modelGatewayUrl = resolveModelGatewayUrl(config.modelGatewayUrl, platformApiUrl)
   const harnessMode = config.harnessMode?.trim() || 'goose'
   const recipePath = config.recipePath?.trim() || '/recipes/wiki-answer.yaml'
