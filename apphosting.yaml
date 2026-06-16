@@ -33,3 +33,7 @@ env:
     secret: HARNESS_CALLBACK_TOKEN
     availability:
       - RUNTIME
+  - variable: CHATGPT_OAUTH_STUB
+    value: "true"
+    availability:
+      - RUNTIME

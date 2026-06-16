@@ -30,12 +30,22 @@ source "$ENV_FILE"
 IMAGE_TAG="${IMAGE_TAG:-$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || date +%Y%m%d%H%M)}"
 IMAGE="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}/${HARNESS_JOB_NAME}:${IMAGE_TAG}"
 
-echo "[deploy] building harness image: $IMAGE"
-docker build -f "$ROOT_DIR/Dockerfile.harness" -t "$IMAGE" "$ROOT_DIR"
-
-echo "[deploy] pushing image"
-gcloud auth configure-docker "${GCP_REGION}-docker.pkg.dev" --quiet
-docker push "$IMAGE"
+echo "[deploy] building harness image via Cloud Build (native linux/amd64): $IMAGE"
+# Cloud Run linux/amd64-et futtat. Apple Siliconon a lokális `docker build` arm64-et
+# gyártana (buildx nélkül a --platform sem segít), amitől a konténer kimenet nélkül
+# elszáll ("Application failed to start"). Cloud Build natívan amd64-en épít.
+BUILD_CONFIG="$(mktemp)"
+cat > "$BUILD_CONFIG" <<YAML
+steps:
+- name: gcr.io/cloud-builders/docker
+  args: ['build','--platform=linux/amd64','-f','Dockerfile.harness','-t','$IMAGE','.']
+images: ['$IMAGE']
+options:
+  machineType: E2_HIGHCPU_8
+timeout: 1200s
+YAML
+gcloud builds submit "$ROOT_DIR" --project="$GCP_PROJECT_ID" --config="$BUILD_CONFIG"
+rm -f "$BUILD_CONFIG"
 
 DEPLOY_ARGS=(
   run jobs deploy "$HARNESS_JOB_NAME"
