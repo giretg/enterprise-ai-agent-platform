@@ -2,13 +2,20 @@
 
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { useState, useTransition, type DragEvent } from 'react'
-import type { Ticket } from '@prisma/client'
+import { useMemo, useState, useTransition, type DragEvent } from 'react'
+import type { Agent } from '@prisma/client'
 import { transitionTicket } from '@/app/actions/platform'
 import { Badge, Card } from '@/components/ui/shell'
+import { personaFor } from '@/lib/agent-persona'
 import { TICKET_STATE_LABELS } from '@/lib/ticket-labels'
+import {
+  getAssigneeFilterKey,
+  matchesAssigneeFilter,
+  type EnrichedBoardTicket,
+} from '@/lib/ticket-display'
 
 const COLUMN_VISIBLE_LIMIT = 10
+const COLUMN_WIDTH_CLASS = 'w-[280px] max-w-[280px]'
 
 const COLUMNS = [
   { key: 'backlog', label: TICKET_STATE_LABELS.backlog, accent: 'border-ink-faint/30' },
@@ -22,9 +29,46 @@ const COLUMNS = [
 
 type ColumnKey = (typeof COLUMNS)[number]['key']
 
+type AssigneeFilterOption = {
+  key: string
+  label: string
+}
+
+function buildAssigneeFilterOptions(
+  tickets: EnrichedBoardTicket[],
+  agents: Agent[],
+): AssigneeFilterOption[] {
+  const options: AssigneeFilterOption[] = [
+    { key: 'all', label: 'Mind' },
+    { key: 'unassigned', label: 'Nincs hozzárendelve' },
+  ]
+  const seen = new Set<string>()
+
+  for (const agent of agents.filter((a) => a.status === 'active')) {
+    const key = `agent:${agent.id}`
+    if (seen.has(key)) continue
+    seen.add(key)
+    options.push({ key, label: personaFor(agent.name).nickname })
+  }
+
+  for (const ticket of tickets) {
+    const key = getAssigneeFilterKey(ticket)
+    if (key === 'unassigned' || seen.has(key)) continue
+    seen.add(key)
+
+    if (key.startsWith('human:')) {
+      options.push({ key, label: ticket.assignee.label })
+    } else if (key.startsWith('agent:') && !options.some((o) => o.key === key)) {
+      options.push({ key, label: ticket.assignee.label })
+    }
+  }
+
+  return options
+}
+
 type KanbanColumnProps = {
   col: (typeof COLUMNS)[number]
-  tickets: Ticket[]
+  tickets: EnrichedBoardTicket[]
   isTarget: boolean
   isExpanded: boolean
   draggingId: string | null
@@ -55,7 +99,7 @@ function KanbanColumn({
 
   return (
     <div
-      className={`min-w-[240px] flex-shrink-0 rounded-xl border-t-2 ${col.accent} pt-3 transition-colors ${
+      className={`${COLUMN_WIDTH_CLASS} shrink-0 rounded-xl border-t-2 ${col.accent} pt-3 transition-colors ${
         isTarget ? 'bg-coral/5 ring-1 ring-coral/30' : ''
       }`}
       onDragOver={onDragOver}
@@ -87,10 +131,20 @@ function KanbanColumn({
               draggingId === ticket.id ? 'opacity-40' : ''
             }`}
           >
-            <Link href={`/control-plane/tickets/${ticket.id}`} draggable={false}>
+            <Link href={`/control-plane/tickets/${ticket.id}`} draggable={false} className="block min-w-0">
               <Card className="!p-4 transition hover:border-coral/40">
-                <p className="text-sm font-medium">{ticket.title}</p>
-                <p className="mt-1 text-xs text-ink-faint">{ticket.type}</p>
+                <p className="break-words text-sm font-medium">{ticket.title}</p>
+                <p className="mt-1 text-xs text-ink-faint">
+                  {ticket.type === 'training' ? 'Tanítás' : 'Interakció'}
+                </p>
+                <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                  <span className="break-words text-xs text-ink-soft">{ticket.assignee.label}</span>
+                  {ticket.assignee.type === 'agent' && <Badge tone="neutral">AI</Badge>}
+                  {ticket.assignee.type === 'human' && <Badge tone="warning">Ember</Badge>}
+                </div>
+                <p className="mt-1.5 break-words text-xs text-ink-faint">
+                  Létrehozta: {ticket.creator.label}
+                </p>
               </Card>
             </Link>
           </div>
@@ -110,13 +164,30 @@ function KanbanColumn({
   )
 }
 
-export function KanbanBoard({ tickets }: { tickets: Ticket[] }) {
+export function KanbanBoard({
+  tickets,
+  agents,
+}: {
+  tickets: EnrichedBoardTicket[]
+  agents: Agent[]
+}) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [dropTarget, setDropTarget] = useState<ColumnKey | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const [expandedColumns, setExpandedColumns] = useState<Set<ColumnKey>>(new Set())
+  const [assigneeFilter, setAssigneeFilter] = useState('all')
+
+  const filterOptions = useMemo(
+    () => buildAssigneeFilterOptions(tickets, agents),
+    [tickets, agents],
+  )
+
+  const filteredTickets = useMemo(
+    () => tickets.filter((ticket) => matchesAssigneeFilter(ticket, assigneeFilter)),
+    [tickets, assigneeFilter],
+  )
 
   const handleDrop = (ticketId: string, toState: ColumnKey) => {
     const ticket = tickets.find((t) => t.id === ticketId)
@@ -135,6 +206,27 @@ export function KanbanBoard({ tickets }: { tickets: Ticket[] }) {
 
   return (
     <div className="space-y-4">
+      <div className="flex flex-wrap items-center gap-3">
+        <label htmlFor="assignee-filter" className="text-sm font-medium text-ink-soft">
+          Hozzárendelve
+        </label>
+        <select
+          id="assignee-filter"
+          value={assigneeFilter}
+          onChange={(e) => setAssigneeFilter(e.target.value)}
+          className="rounded-lg border border-line bg-night-2 px-3 py-2 text-sm text-ink"
+        >
+          {filterOptions.map((option) => (
+            <option key={option.key} value={option.key}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+        {assigneeFilter !== 'all' && (
+          <span className="text-xs text-ink-faint">{filteredTickets.length} feladat</span>
+        )}
+      </div>
+
       {message && (
         <p className="rounded-lg border border-coral/30 bg-coral/10 px-4 py-2 text-sm text-coral">
           {message}
@@ -143,7 +235,7 @@ export function KanbanBoard({ tickets }: { tickets: Ticket[] }) {
 
       <div className={`flex gap-4 overflow-x-auto pb-4 ${pending ? 'opacity-70' : ''}`}>
         {COLUMNS.map((col) => {
-          const colTickets = tickets.filter((t) => t.state === col.key)
+          const colTickets = filteredTickets.filter((t) => t.state === col.key)
           const isTarget = dropTarget === col.key
 
           return (

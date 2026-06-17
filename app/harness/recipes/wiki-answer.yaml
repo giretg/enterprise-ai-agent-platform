@@ -46,3 +46,6 @@ extensions:
     available_tools:
       - kb_search
       - board_write
+      - ticket_create
+      - agent_ask
+      - agent_catalog

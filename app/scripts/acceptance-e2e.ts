@@ -26,6 +26,7 @@ import {
 import { POST as gatewayChatCompletions } from '../src/app/api/v1/gateway/v1/chat/completions/route'
 import { DISPATCH_NOTIFY_CHANNEL } from '../src/lib/dispatch-notify'
 import { prisma } from '../src/lib/db'
+import { PLATFORM_TICKET_SOURCE_ENV } from '../src/lib/ticket-source'
 import { repositories } from '../src/repositories/postgres'
 import {
   buildMeasurementReport,
@@ -493,9 +494,71 @@ async function scenarioAgentApi(agentId: string) {
   }
 }
 
-/** 7. Tool Broker — kb_search, board_write, deny audit */
+async function ensureAcceptanceHelperAgent(operatorId: string, wikiAgentId: string) {
+  const existing = await prisma.agent.findFirst({ where: { name: 'Acceptance Helper Agent' } })
+  if (existing) {
+    for (const toolName of ['kb_search', 'board_write', 'ticket_create', 'agent_ask']) {
+      await prisma.capability.upsert({
+        where: { agentId_toolName: { agentId: existing.id, toolName } },
+        create: { agentId: existing.id, toolName, allowed: true },
+        update: { allowed: true },
+      })
+    }
+    return existing
+  }
+
+  const created = await repositories.agents.create({
+    name: 'Acceptance Helper Agent',
+    roleInstruction: 'Acceptance helper — delegated questions only.',
+    behaviorProfile: 'Tömör, tényalapú válasz.',
+    modelConfig: {
+      provider: 'chatgpt-oauth',
+      model: 'chatgpt-oauth-default',
+      temperature: 0.2,
+      maxTokens: 1024,
+    },
+    createdById: operatorId,
+  })
+  const helper = created.agent
+
+  const wikiConnectors = await prisma.agentConnector.findMany({ where: { agentId: wikiAgentId } })
+  for (const row of wikiConnectors) {
+    await prisma.agentConnector.upsert({
+      where: { agentId_connectorId: { agentId: helper.id, connectorId: row.connectorId } },
+      create: {
+        agentId: helper.id,
+        connectorId: row.connectorId,
+        accessMode: row.accessMode,
+      },
+      update: { accessMode: row.accessMode },
+    })
+  }
+
+  for (const toolName of ['kb_search', 'board_write', 'ticket_create', 'agent_ask']) {
+    await prisma.capability.upsert({
+      where: { agentId_toolName: { agentId: helper.id, toolName } },
+      create: { agentId: helper.id, toolName, allowed: true },
+      update: { allowed: true },
+    })
+  }
+
+  return helper
+}
+
+/** 7. Tool Broker — kb_search, board_write, ticket_create, agent_ask, deny audit */
 async function scenario7_toolBroker(operatorId: string, agentId: string, agentVersion: number) {
-  console.log('\n[7] Tool Broker (kb_search, board_write, deny)')
+  console.log('\n[7] Tool Broker (kb_search, board_write, ticket_create, agent_ask, deny)')
+
+  await prisma.capability.upsert({
+    where: { agentId_toolName: { agentId, toolName: 'ticket_create' } },
+    create: { agentId, toolName: 'ticket_create', allowed: true },
+    update: { allowed: true },
+  })
+  await prisma.capability.upsert({
+    where: { agentId_toolName: { agentId, toolName: 'agent_ask' } },
+    create: { agentId, toolName: 'agent_ask', allowed: true },
+    update: { allowed: true },
+  })
 
   const search = await services.toolBroker.invoke({
     agentId,
@@ -545,6 +608,146 @@ async function scenario7_toolBroker(operatorId: string, agentId: string, agentVe
     pass('board_write payload + állapot frissítés')
   } else {
     fail('board_write', write.denied ? write.reason : 'nem awaiting_human lett')
+  }
+
+  const humanTicket = await services.toolBroker.invoke({
+    agentId,
+    agentVersion,
+    tool: 'ticket_create',
+    args: {
+      title: 'Acceptance: emberi review ticket',
+      payload: { reason: 'acceptance human escalation' },
+      assigneeType: 'human',
+    },
+  })
+
+  if (
+    !humanTicket.denied &&
+    'assigneeType' in humanTicket.result &&
+    humanTicket.result.state === 'awaiting_human' &&
+    humanTicket.result.assigneeType === 'human'
+  ) {
+    pass('ticket_create human → awaiting_human', humanTicket.result.ticketId)
+  } else {
+    fail(
+      'ticket_create human',
+      humanTicket.denied ? humanTicket.reason : JSON.stringify(humanTicket.result),
+    )
+  }
+
+  const delegateTicket = await services.toolBroker.invoke({
+    agentId,
+    agentVersion,
+    ticketId: ticket.id,
+    tool: 'ticket_create',
+    args: {
+      title: 'Acceptance: agent delegálás',
+      payload: { question: 'Delegált feladat az acceptance-ből' },
+      assigneeType: 'agent',
+      assigneeId: agentId,
+    },
+  })
+
+  if (
+    !delegateTicket.denied &&
+    'assigneeType' in delegateTicket.result &&
+    delegateTicket.result.state === 'ready' &&
+    delegateTicket.result.assigneeType === 'agent'
+  ) {
+    pass('ticket_create agent → ready', delegateTicket.result.ticketId)
+  } else {
+    fail(
+      'ticket_create agent',
+      delegateTicket.denied ? delegateTicket.reason : JSON.stringify(delegateTicket.result),
+    )
+  }
+
+  const helper = await ensureAcceptanceHelperAgent(operatorId, agentId)
+  const ask = await services.toolBroker.invoke({
+    agentId,
+    agentVersion,
+    ticketId: ticket.id,
+    tool: 'agent_ask',
+    args: {
+      targetAgentId: helper.id,
+      question: 'Mi az MVP célja a delegálás tesztben?',
+    },
+  })
+
+  if (ask.denied || !('ticketId' in ask.result)) {
+    fail('agent_ask', ask.denied ? ask.reason : JSON.stringify(ask.result))
+  } else {
+    pass('agent_ask delegálás ticket', ask.result.ticketId)
+
+    const delegationWrite = await services.toolBroker.invoke({
+      agentId: helper.id,
+      agentVersion: helper.currentVersion,
+      ticketId: ask.result.ticketId,
+      tool: 'board_write',
+      args: {
+        ticketId: ask.result.ticketId,
+        patch: {
+          payload: {
+            answer: 'Delegált válasz: walking skeleton.',
+            sources: [{ docId: 'acceptance', sectionRef: 'delegation' }],
+          },
+          state: 'done',
+        },
+      },
+    })
+
+    const returned = await repositories.tickets.findById(ask.result.ticketId)
+    const returnedPayload =
+      returned &&
+      typeof returned.payload === 'object' &&
+      returned.payload !== null &&
+      !Array.isArray(returned.payload)
+        ? (returned.payload as Record<string, unknown>)
+        : null
+
+    if (
+      !delegationWrite.denied &&
+      returned?.state === 'ready' &&
+      returned.assigneeId === agentId &&
+      returned.agentId === agentId &&
+      returnedPayload?.delegationReturned === true &&
+      returnedPayload?.answer === 'Delegált válasz: walking skeleton.'
+    ) {
+      pass('agent_ask — válasz után ticket vissza a kérdezőnek', returned.id)
+    } else {
+      fail(
+        'agent_ask return',
+        JSON.stringify({
+          write: delegationWrite.denied ? delegationWrite.reason : delegationWrite.result,
+          ticket: returned,
+        }),
+      )
+    }
+
+    const parent = await repositories.tickets.findById(ticket.id)
+    const parentPayload =
+      parent &&
+      typeof parent.payload === 'object' &&
+      parent.payload !== null &&
+      !Array.isArray(parent.payload)
+        ? (parent.payload as Record<string, unknown>)
+        : null
+    const delegatedAnswers = Array.isArray(parentPayload?.delegatedAnswers)
+      ? parentPayload.delegatedAnswers
+      : []
+
+    if (
+      delegatedAnswers.some(
+        (entry) =>
+          typeof entry === 'object' &&
+          entry !== null &&
+          (entry as { answer?: string }).answer === 'Delegált válasz: walking skeleton.',
+      )
+    ) {
+      pass('agent_ask — parent ticket delegatedAnswers frissítve')
+    } else {
+      fail('agent_ask parent merge', JSON.stringify(parentPayload?.delegatedAnswers ?? null))
+    }
   }
 
   await prisma.capability.update({
@@ -1544,8 +1747,13 @@ async function scenario17_mcpBridge(agentId: string, agentVersion: number) {
   )
 
   const tools = (listed.result as { tools?: Array<{ name: string }> } | undefined)?.tools ?? []
-  if (tools.some((tool) => tool.name === 'kb_search') && tools.some((tool) => tool.name === 'board_write')) {
-    pass('MCP bridge tools/list — kb_search + board_write')
+  if (
+    tools.some((tool) => tool.name === 'kb_search') &&
+    tools.some((tool) => tool.name === 'board_write') &&
+    tools.some((tool) => tool.name === 'ticket_create') &&
+    tools.some((tool) => tool.name === 'agent_ask')
+  ) {
+    pass('MCP bridge tools/list — kb_search + board_write + ticket_create + agent_ask')
   } else {
     fail('MCP bridge tools/list', JSON.stringify(listed))
   }
@@ -2482,6 +2690,7 @@ async function scenario20_dockerGooseE2E() {
       lockToken,
       lockedAt: new Date(),
       createdById: operator.id,
+      source: 'test',
     },
   })
 
@@ -2573,79 +2782,187 @@ async function scenario14_dispatchNotify(operatorId: string, agentId: string) {
   }
 }
 
-async function main() {
-  console.log('=== Fázis 1–2 Acceptance (spec §14 + governance) ===\n')
+/** Per-user connector (F2) — Gmail grant + broker */
+async function scenarioPerUserConnector(operatorId: string, agentId: string, agentVersion: number) {
+  console.log('\n[PUC] Per-user Gmail connector (F2)')
 
-  ensureOAuthStubForAcceptance()
+  process.env.GMAIL_OAUTH_STUB = 'true'
+  process.env.GMAIL_API_STUB = 'true'
 
-  const operator = await getUser('operator')
-  const approver = await getUser('approver')
-  const agent = await getWikiAgent()
-
-  console.log(`Agent: ${agent.name} (${agent.id.slice(0, 8)}…)`)
-  console.log(`Operator: ${operator.name}, Approver: ${approver.name}`)
-
-  await resetSameDayBudget(agent.id)
-
-  const memoryVersionBeforeTraining = (
-    await repositories.agents.findByIdWithDetails(agent.id)
-  )?.memoryVersion ?? 1
-
-  const ticketId = await scenario1_e2e(operator.id, approver.id, agent.id)
-  await scenario2_rejection(operator.id, approver.id, agent.id)
-  const memoryAfterTraining = await scenario3_training(operator.id, approver.id, agent.id)
-  if (memoryAfterTraining && memoryAfterTraining > 1) {
-    await scenario4_rollback(approver.id, agent.id, memoryVersionBeforeTraining)
-  }
-  await scenario5_forbiddenTransition(operator.id, agent.id)
-  await scenario6_reproducibility(ticketId, agent.id)
-  await scenario7_toolBroker(operator.id, agent.id, agent.currentVersion)
-  await scenario7_governance(operator.id, approver.id, agent.id)
-  await scenario8_writeGateNegative(operator.id, agent.id)
-  await scenario9_iam()
-  await scenario10_sandboxAppRegistry(operator.id, agent.id)
-  await scenario11_harnessCompletion(operator.id, agent.id)
-  await scenario12_harnessEntrypoint()
-  await scenario13_gooseCommandBuilder()
-  await scenario14_dispatchNotify(operator.id, agent.id)
-  await scenario15_gatewayOpenAI(agent.id)
-  await scenario16_gooseHarnessConfig()
-  await scenario17_mcpBridge(agent.id, agent.currentVersion)
-  await scenario18_dispatchTimeout(operator.id, agent.id)
-  await scenarioN4_egressGuard()
-  await scenarioN1_viewerCannotApprove(operator.id, agent.id)
-  await scenarioN2_unauthorizedTool(operator.id, agent.id, agent.currentVersion)
-  await scenario19_dockerLocalLauncher()
-  await scenario20_dockerGooseE2E()
-  await scenario22_dispatcherDockerPath(operator.id, agent.id)
-  await scenario23_cloudRunJobLauncher()
-  await scenario24_governanceReport()
-  await scenario25_measurementReport()
-  await scenario26_roleBehaviorVersioning(approver.id)
-  await scenario27_crMvp002(approver.id, operator.id, agent.id)
-  await scenario28_crMvp003(operator.id, agent.id)
-  await scenarioN6_capabilityEscalationDenied(agent.id)
-  await scenarioN7_conversationWriteGateDenied(agent.id)
-  await scenarioN8_gdprErasureVerifyChain(operator.id, agent.id)
-  await scenarioAgentApi(agent.id)
-
-  const passed = results.filter((r) => r.ok && !r.skipped).length
-  const skipped = results.filter((r) => r.skipped).length
-  const failed = results.filter((r) => !r.ok).length
-
-  console.log('\n=== Összesítés ===')
-  console.log(`  ${passed} sikeres, ${skipped} kihagyva, ${failed} sikertelen / ${results.length} összesen`)
-
-  if (failed > 0) {
-    console.log('\nSikertelen tesztek:')
-    results.filter((r) => !r.ok).forEach((r) => console.log(`  - ${r.name}: ${r.detail}`))
-    process.exit(1)
+  const gmailConnector = await prisma.connector.findFirst({ where: { type: 'gmail' } })
+  if (!gmailConnector) {
+    fail('PUC gmail connector', 'run db:seed')
+    return
   }
 
-  if (skipped > 0) {
-    console.log('\n◌ Acceptance smoke zöld, de S2-függő forgatókönyv még nincs lefuttatva.')
+  const deniedNoActing = await services.toolBroker.invoke({
+    agentId,
+    agentVersion,
+    tool: 'gmail_search',
+    args: { query: 'MVP' },
+  })
+  if (deniedNoActing.denied && deniedNoActing.reason === 'acting_user_required') {
+    pass('G1 — gmail hívás acting_user nélkül DENY')
   } else {
-    console.log('\n✅ Minden acceptance forgatókönyv sikeres.')
+    fail('G1 acting_user_required', JSON.stringify(deniedNoActing))
+  }
+
+  const { createOAuthState } = await import('../src/lib/crypto/oauth-state')
+  const { state } = createOAuthState({
+    userId: operatorId,
+    connectorId: gmailConnector.id,
+    tenantId: null,
+  })
+  await services.connectorGrants.completeOAuthCallback({
+    code: 'stub-code',
+    state,
+    connector: gmailConnector,
+    actorId: operatorId,
+  })
+
+  const grantAudit = await prisma.auditLog.findFirst({
+    where: { action: 'connector.grant.create', targetType: 'connector_grant' },
+    orderBy: { createdAt: 'desc' },
+  })
+  if (grantAudit) pass('Grant létrehozás audit connector.grant.create')
+  else fail('Grant create audit', 'missing')
+
+  const search = await services.toolBroker.invoke({
+    agentId,
+    agentVersion,
+    tool: 'gmail_search',
+    args: { query: 'MVP', maxResults: 5 },
+    actingUserId: operatorId,
+  })
+  if (!search.denied && 'messages' in (search.result as { messages?: unknown[] })) {
+    pass('Gmail search acting user granttel')
+  } else {
+    fail('Gmail search', JSON.stringify(search))
+  }
+
+  const sendDenied = await services.toolBroker.invoke({
+    agentId,
+    agentVersion,
+    tool: 'gmail_send',
+    args: { draftId: 'stub-draft-1' },
+    actingUserId: operatorId,
+  })
+  if (sendDenied.denied && sendDenied.reason === 'human_approval_required') {
+    pass('gmail_send emberi jóváhagyás nélkül DENY')
+  } else {
+    fail('gmail_send approval gate', JSON.stringify(sendDenied))
+  }
+
+  const grant = await prisma.connectorGrant.findFirst({
+    where: { userId: operatorId, connectorId: gmailConnector.id, status: 'active' },
+  })
+  if (!grant) {
+    fail('PUC revoke setup', 'no active grant')
+    return
+  }
+
+  await services.connectorGrants.revokeGrant({
+    grantId: grant.id,
+    actorId: operatorId,
+    actorType: 'human',
+  })
+
+  const afterRevoke = await services.toolBroker.invoke({
+    agentId,
+    agentVersion,
+    tool: 'gmail_search',
+    args: { query: 'MVP' },
+    actingUserId: operatorId,
+  })
+  if (afterRevoke.denied && afterRevoke.reason === 'connector_grant_missing') {
+    pass('G4 — visszavont grant után DENY')
+  } else {
+    fail('G4 revoked grant', JSON.stringify(afterRevoke))
+  }
+}
+
+async function main() {
+  process.env[PLATFORM_TICKET_SOURCE_ENV] = 'test'
+
+  try {
+    console.log('=== Fázis 1–2 Acceptance (spec §14 + governance) ===\n')
+
+    ensureOAuthStubForAcceptance()
+
+    const operator = await getUser('operator')
+    const approver = await getUser('approver')
+    const agent = await getWikiAgent()
+
+    console.log(`Agent: ${agent.name} (${agent.id.slice(0, 8)}…)`)
+    console.log(`Operator: ${operator.name}, Approver: ${approver.name}`)
+
+    await resetSameDayBudget(agent.id)
+
+    const memoryVersionBeforeTraining = (
+      await repositories.agents.findByIdWithDetails(agent.id)
+    )?.memoryVersion ?? 1
+
+    const ticketId = await scenario1_e2e(operator.id, approver.id, agent.id)
+    await scenario2_rejection(operator.id, approver.id, agent.id)
+    const memoryAfterTraining = await scenario3_training(operator.id, approver.id, agent.id)
+    if (memoryAfterTraining && memoryAfterTraining > 1) {
+      await scenario4_rollback(approver.id, agent.id, memoryVersionBeforeTraining)
+    }
+    await scenario5_forbiddenTransition(operator.id, agent.id)
+    await scenario6_reproducibility(ticketId, agent.id)
+    await scenario7_toolBroker(operator.id, agent.id, agent.currentVersion)
+    await scenario7_governance(operator.id, approver.id, agent.id)
+    await scenario8_writeGateNegative(operator.id, agent.id)
+    await scenario9_iam()
+    await scenario10_sandboxAppRegistry(operator.id, agent.id)
+    await scenario11_harnessCompletion(operator.id, agent.id)
+    await scenario12_harnessEntrypoint()
+    await scenario13_gooseCommandBuilder()
+    await scenario14_dispatchNotify(operator.id, agent.id)
+    await scenario15_gatewayOpenAI(agent.id)
+    await scenario16_gooseHarnessConfig()
+    await scenario17_mcpBridge(agent.id, agent.currentVersion)
+    await scenario18_dispatchTimeout(operator.id, agent.id)
+    await scenarioN4_egressGuard()
+    await scenarioN1_viewerCannotApprove(operator.id, agent.id)
+    await scenarioN2_unauthorizedTool(operator.id, agent.id, agent.currentVersion)
+    await scenario19_dockerLocalLauncher()
+    await scenario20_dockerGooseE2E()
+    await scenario22_dispatcherDockerPath(operator.id, agent.id)
+    await scenario23_cloudRunJobLauncher()
+    await scenario24_governanceReport()
+    await scenario25_measurementReport()
+    await scenario26_roleBehaviorVersioning(approver.id)
+    await scenario27_crMvp002(approver.id, operator.id, agent.id)
+    await scenario28_crMvp003(operator.id, agent.id)
+    await scenarioN6_capabilityEscalationDenied(agent.id)
+    await scenarioN7_conversationWriteGateDenied(agent.id)
+    await scenarioN8_gdprErasureVerifyChain(operator.id, agent.id)
+    await scenarioPerUserConnector(operator.id, agent.id, agent.currentVersion)
+    await scenarioAgentApi(agent.id)
+
+    const passed = results.filter((r) => r.ok && !r.skipped).length
+    const skipped = results.filter((r) => r.skipped).length
+    const failed = results.filter((r) => !r.ok).length
+
+    console.log('\n=== Összesítés ===')
+    console.log(`  ${passed} sikeres, ${skipped} kihagyva, ${failed} sikertelen / ${results.length} összesen`)
+
+    if (failed > 0) {
+      console.log('\nSikertelen tesztek:')
+      results.filter((r) => !r.ok).forEach((r) => console.log(`  - ${r.name}: ${r.detail}`))
+      process.exit(1)
+    }
+
+    if (skipped > 0) {
+      console.log('\n◌ Acceptance smoke zöld, de S2-függő forgatókönyv még nincs lefuttatva.')
+    } else {
+      console.log('\n✅ Minden acceptance forgatókönyv sikeres.')
+    }
+  } finally {
+    const { count } = await prisma.ticket.deleteMany({ where: { source: 'test' } })
+    if (count > 0) console.log(`\nTeszt ticket cleanup: ${count} törölve`)
+    delete process.env[PLATFORM_TICKET_SOURCE_ENV]
   }
 }
 

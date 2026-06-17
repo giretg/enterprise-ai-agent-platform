@@ -15,6 +15,7 @@ import {
   dockerLocalConfigFromEnv,
 } from '@/domain/dispatcher/docker-local-harness-launcher'
 import { AllowlistAuthorizer, ToolBrokerService } from '@/domain/tool-broker/tool-broker-service'
+import { ConnectorGrantService } from '@/domain/connector-grant/connector-grant-service'
 import { RecipeService } from '@/domain/recipe/recipe-service'
 import { ConversationService } from '@/domain/conversation/conversation-service'
 import { PlaybookService } from '@/domain/playbook/playbook-service'
@@ -43,7 +44,12 @@ const conversationService = new ConversationService(
   repositories.audit,
   playbookService,
 )
-const toolAuthorizer = new AllowlistAuthorizer(repositories.toolBroker, repositories.agents)
+const connectorGrantService = new ConnectorGrantService(repositories.connectorGrants, repositories.audit)
+const toolAuthorizer = new AllowlistAuthorizer(
+  repositories.toolBroker,
+  repositories.agents,
+  repositories.connectorGrants,
+)
 const modelGateway = new ModelGateway(repositories.audit, repositories.modelCalls)
 const bookkeeperRuntime = new BookkeeperAgentRuntime(
   repositories.agents,
@@ -71,13 +77,17 @@ const toolBrokerService = new ToolBrokerService(
   repositories.audit,
   ticketService,
   toolAuthorizer,
+  connectorGrantService,
 )
+const iamService = new IamService(repositories.audit, connectorGrantService)
 const agentChatRuntime = new AgentChatRuntime(
   repositories.agents,
   repositories.documents,
   repositories.tickets,
   modelGateway,
   conversationService,
+  toolBrokerService,
+  repositories.toolBroker,
 )
 const wikiRuntime = new WikiAgentRuntime(
   repositories.agents,
@@ -90,7 +100,6 @@ const wikiRuntime = new WikiAgentRuntime(
 )
 const auditChainService = new AuditChainService(repositories.audit)
 const recipeService = new RecipeService(repositories.recipes, repositories.audit)
-const iamService = new IamService(repositories.audit)
 const sandboxAppService = new SandboxAppService(
   repositories.sandboxApps,
   repositories.tickets,
@@ -140,5 +149,6 @@ export const services = {
   conversations: conversationService,
   iam: iamService,
   sandboxApps: sandboxAppService,
+  connectorGrants: connectorGrantService,
   selfEvolutionGuard,
 }

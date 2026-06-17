@@ -66,6 +66,7 @@ async function main() {
       lockToken,
       lockedAt: new Date(),
       createdById: operator.id,
+      source: 'test',
     },
   })
 

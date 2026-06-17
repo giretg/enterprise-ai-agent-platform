@@ -18,7 +18,10 @@ const INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1000 // 7 nap
  * frissíti és auditálja; a Clerk-szinkron a Fázis 2 hardening tárgya (cserepont).
  */
 export class IamService {
-  constructor(private audit: AuditRepository) {}
+  constructor(
+    private audit: AuditRepository,
+    private connectorGrants?: import('@/domain/connector-grant/connector-grant-service').ConnectorGrantService,
+  ) {}
 
   async inviteUser(params: { email: string; role: UserRole; createdById: string }) {
     const { rawToken, tokenHash } = generateTokenPair()
@@ -155,6 +158,10 @@ export class IamService {
       where: { id: target.id },
       data: { status: params.status },
     })
+
+    if (params.status === 'suspended' && this.connectorGrants) {
+      await this.connectorGrants.revokeAllForUser(target.id, params.actorId)
+    }
 
     await this.audit.append({
       actorType: 'human',

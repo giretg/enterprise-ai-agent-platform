@@ -1,6 +1,7 @@
 import type { Prisma, Ticket, TicketTransition } from '@prisma/client'
 import { notifyTicketReady } from '@/lib/dispatch-notify'
 import { prisma } from '@/lib/db'
+import { resolveTicketSource } from '@/lib/ticket-source'
 import type { TicketFilter, TicketRepository } from '../interfaces'
 
 export class PostgresTicketRepository implements TicketRepository {
@@ -11,6 +12,11 @@ export class PostgresTicketRepository implements TicketRepository {
     }
     if (filter?.type) where.type = filter.type
     if (filter?.agentId) where.agentId = filter.agentId
+    if (filter?.source) {
+      where.source = Array.isArray(filter.source) ? { in: filter.source } : filter.source
+    } else if (filter?.excludeTest) {
+      where.source = { not: 'test' }
+    }
 
     return prisma.ticket.findMany({
       where,
@@ -26,6 +32,7 @@ export class PostgresTicketRepository implements TicketRepository {
     return prisma.ticket.findMany({
       where: {
         state: 'ready',
+        source: { not: 'test' },
         lockToken: null,
         OR: [{ executeAfter: null }, { executeAfter: { lte: now } }],
         agentId: { not: null },
@@ -39,6 +46,7 @@ export class PostgresTicketRepository implements TicketRepository {
     return prisma.ticket.findMany({
       where: {
         state: 'in_progress',
+        source: { not: 'test' },
         lockToken: { not: null },
         lockedAt: { lte: cutoff },
       },
@@ -50,11 +58,23 @@ export class PostgresTicketRepository implements TicketRepository {
   async create(
     data: Omit<
       Ticket,
-      'id' | 'createdAt' | 'updatedAt' | 'lockToken' | 'lockedAt' | 'playbookRef' | 'conversationId'
+      | 'id'
+      | 'createdAt'
+      | 'updatedAt'
+      | 'lockToken'
+      | 'lockedAt'
+      | 'playbookRef'
+      | 'conversationId'
+      | 'source'
     > &
-      Partial<Pick<Ticket, 'lockToken' | 'lockedAt' | 'playbookRef' | 'conversationId'>>,
+      Partial<Pick<Ticket, 'lockToken' | 'lockedAt' | 'playbookRef' | 'conversationId' | 'source'>>,
   ): Promise<Ticket> {
-    const ticket = await prisma.ticket.create({ data: data as Prisma.TicketUncheckedCreateInput })
+    const ticket = await prisma.ticket.create({
+      data: {
+        ...data,
+        source: resolveTicketSource(data.source),
+      } as Prisma.TicketUncheckedCreateInput,
+    })
     if (ticket.state === 'ready') await notifyTicketReady(ticket.id)
     return ticket
   }
@@ -68,6 +88,7 @@ export class PostgresTicketRepository implements TicketRepository {
         | 'payload'
         | 'assigneeType'
         | 'assigneeId'
+        | 'agentId'
         | 'lockToken'
         | 'lockedAt'
         | 'playbookRef'

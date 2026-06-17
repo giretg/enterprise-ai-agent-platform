@@ -219,10 +219,16 @@ const ticketStateSchema = z.enum([
   'rejected',
 ])
 
+const toolInvokeBaseSchema = {
+  ticketId: z.string().uuid().optional(),
+  conversationId: z.string().uuid().optional(),
+  actingUserId: z.string().uuid().optional(),
+}
+
 export const toolInvokeSchema = z.discriminatedUnion('tool', [
   z.object({
     tool: z.literal('kb_search'),
-    ticketId: z.string().uuid().optional(),
+    ...toolInvokeBaseSchema,
     args: z.object({
       query: z.string().min(1),
       k: z.number().int().min(1).max(10).optional(),
@@ -230,7 +236,7 @@ export const toolInvokeSchema = z.discriminatedUnion('tool', [
   }),
   z.object({
     tool: z.literal('board_write'),
-    ticketId: z.string().uuid().optional(),
+    ...toolInvokeBaseSchema,
     args: z.object({
       ticketId: z.string().uuid(),
       patch: z
@@ -243,7 +249,99 @@ export const toolInvokeSchema = z.discriminatedUnion('tool', [
         }),
     }),
   }),
+  z.object({
+    tool: z.literal('ticket_create'),
+    ...toolInvokeBaseSchema,
+    args: z
+      .object({
+        title: z.string().min(1).max(200),
+        payload: z.record(z.string(), z.unknown()),
+        assigneeType: z.enum(['human', 'agent']),
+        assigneeId: z.string().uuid().optional(),
+        sourceDocumentId: z.string().uuid().optional(),
+      })
+      .refine((args) => args.assigneeType !== 'agent' || args.assigneeId, {
+        message: 'assigneeId is required when assigneeType is agent',
+      }),
+  }),
+  z.object({
+    tool: z.literal('agent_ask'),
+    ...toolInvokeBaseSchema,
+    args: z.object({
+      targetAgentId: z.string().uuid(),
+      question: z.string().min(1).max(4000),
+      context: z.record(z.string(), z.unknown()).optional(),
+    }),
+  }),
+  z.object({
+    tool: z.literal('agent_resolve'),
+    ...toolInvokeBaseSchema,
+    args: z.object({
+      query: z.string().min(1).max(200),
+      limit: z.number().int().min(1).max(10).optional(),
+    }),
+  }),
+  z.object({
+    tool: z.literal('agent_catalog'),
+    ...toolInvokeBaseSchema,
+    args: z.object({
+      query: z.string().max(200).optional(),
+      agentId: z.string().uuid().optional(),
+      limit: z.number().int().min(1).max(25).optional(),
+    }),
+  }),
+  z.object({
+    tool: z.literal('gmail_search'),
+    ...toolInvokeBaseSchema,
+    args: z.object({
+      query: z.string().min(1).max(500),
+      maxResults: z.number().int().min(1).max(25).optional(),
+    }),
+  }),
+  z.object({
+    tool: z.literal('gmail_get_message'),
+    ...toolInvokeBaseSchema,
+    args: z.object({ id: z.string().min(1).max(200) }),
+  }),
+  z.object({
+    tool: z.literal('gmail_create_draft'),
+    ...toolInvokeBaseSchema,
+    args: z.object({
+      to: z.string().email(),
+      subject: z.string().min(1).max(500),
+      body: z.string().min(1).max(20000),
+      threadId: z.string().optional(),
+    }),
+  }),
+  z.object({
+    tool: z.literal('gmail_send'),
+    ...toolInvokeBaseSchema,
+    args: z
+      .object({
+        draftId: z.string().optional(),
+        to: z.string().email().optional(),
+        subject: z.string().optional(),
+        body: z.string().optional(),
+        approvalTicketId: z.string().uuid().optional(),
+      })
+      .refine((a) => a.draftId || (a.to && a.subject && a.body), {
+        message: 'gmail_send requires draftId or to/subject/body',
+      }),
+  }),
 ])
+
+export const connectorGrantIdSchema = z.object({
+  grantId: z.string().uuid(),
+})
+
+export const connectorIdSchema = z.object({
+  connectorId: z.string().uuid(),
+})
+
+export const approveGmailSendSchema = z.object({
+  ticketId: z.string().uuid(),
+  draftId: z.string().min(1),
+})
 
 export const harnessCompletionSchema = z.object({
   lockToken: z.string().uuid(),

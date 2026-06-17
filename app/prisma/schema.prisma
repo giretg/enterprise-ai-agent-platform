@@ -78,6 +78,19 @@ enum AccessMode {
 enum ConnectorType {
   knowledge_base
   board
+  gmail
+}
+
+enum ConnectorAuthMode {
+  service
+  user_delegated
+  agent_owned
+}
+
+enum ConnectorGrantStatus {
+  active
+  revoked
+  expired
 }
 
 enum ConnectorScope {
@@ -131,6 +144,12 @@ enum TicketState {
   awaiting_human
   done
   rejected
+}
+
+enum TicketSource {
+  user
+  test
+  system
 }
 
 enum AssigneeType {
@@ -187,6 +206,7 @@ model User {
   createdTickets         Ticket[]        @relation("TicketCreatedBy")
   uploadedDocuments      Document[]      @relation("DocumentUploadedBy")
   createdInvitations     Invitation[]    @relation("InvitationCreatedBy")
+  connectorGrants        ConnectorGrant[]
 
   @@map("users")
 }
@@ -392,22 +412,45 @@ model AgentResource {
 }
 
 model Connector {
-  id          String         @id @default(uuid()) @db.Uuid
+  id          String            @id @default(uuid()) @db.Uuid
   type        ConnectorType
   name        String
+  authMode    ConnectorAuthMode @default(service) @map("auth_mode")
   scope       ConnectorScope
-  secretAlias String?        @map("secret_alias")
-  version     Int            @default(1)
-  config      Json           @default("{}")
-  tenantId    String?        @map("tenant_id") @db.Uuid
-  createdAt   DateTime       @default(now()) @map("created_at") @db.Timestamptz
+  secretAlias String?           @map("secret_alias")
+  version     Int               @default(1)
+  config      Json              @default("{}")
+  tenantId    String?           @map("tenant_id") @db.Uuid
+  createdAt   DateTime          @default(now()) @map("created_at") @db.Timestamptz
 
   agentConnectors AgentConnector[]
   toolCalls       ToolCall[]
   documents       Document[]
+  grants          ConnectorGrant[]
 
   @@unique([type, name])
   @@map("connectors")
+}
+
+model ConnectorGrant {
+  id              String               @id @default(uuid()) @db.Uuid
+  tenantId        String?              @map("tenant_id") @db.Uuid
+  connectorId     String               @map("connector_id") @db.Uuid
+  userId          String               @map("user_id") @db.Uuid
+  status          ConnectorGrantStatus @default(active)
+  scopes          Json                 @default("[]")
+  tokenRef        String               @map("token_ref")
+  accountLabel    String?              @map("account_label")
+  grantedAt       DateTime             @default(now()) @map("granted_at") @db.Timestamptz
+  expiresAt       DateTime?            @map("expires_at") @db.Timestamptz
+  lastRefreshedAt DateTime?            @map("last_refreshed_at") @db.Timestamptz
+  revokedAt       DateTime?            @map("revoked_at") @db.Timestamptz
+
+  connector Connector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, connectorId, userId])
+  @@map("connector_grants")
 }
 
 model AgentConnector {
@@ -506,6 +549,7 @@ model Ticket {
   lockedAt         DateTime?     @map("locked_at") @db.Timestamptz
   playbookRef      String?       @map("playbook_ref")
   conversationId   String?       @map("conversation_id") @db.Uuid
+  source           TicketSource  @default(user)
   createdById      String        @map("created_by") @db.Uuid
   createdAt        DateTime      @default(now()) @map("created_at") @db.Timestamptz
   updatedAt        DateTime      @updatedAt @map("updated_at") @db.Timestamptz
@@ -522,6 +566,7 @@ model Ticket {
   sandboxAppVersions SandboxAppVersion[]
   linkedMessages Message[]
 
+  @@index([source, state])
   @@map("tickets")
 }
 

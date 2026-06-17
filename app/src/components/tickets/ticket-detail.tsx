@@ -6,6 +6,11 @@ import { transitionTicket } from '@/app/actions/platform'
 import { ProposalCard } from '@/components/tickets/proposal-card'
 import { Badge, Card } from '@/components/ui/shell'
 import { TICKET_STATE_LABELS, TICKET_STATE_TONE } from '@/lib/ticket-labels'
+import { extractTaskDescription, formatTicketDateTime } from '@/lib/ticket-display'
+
+function extractTaskDescriptionFromPayload(payload: Record<string, unknown> | null): string | null {
+  return extractTaskDescription(payload)
+}
 
 type TicketView = {
   id: string
@@ -14,6 +19,21 @@ type TicketView = {
   state: string
   payload: unknown
   sourceDocumentId: string | null
+  createdAt: string | Date
+  updatedAt: string | Date
+  assigneeType?: string | null
+  assigneeId?: string | null
+  agentId?: string | null
+  taskDescription?: string | null
+  assignee?: {
+    type: string | null
+    label: string
+    detail: string | null
+  }
+  creator?: {
+    id: string
+    label: string
+  }
   reproduction?: {
     agentVersion: number
     memoryVersion: number | null
@@ -148,6 +168,8 @@ export function TicketMeta({ ticket, isAdmin = false }: { ticket: TicketView; is
     ? payload.followUpNotes.filter((note): note is string => typeof note === 'string' && note.trim().length > 0)
     : []
   const transitionNote = typeof payload?.transitionNote === 'string' ? payload.transitionNote : null
+  const assignee = ticket.assignee
+  const taskDescription = ticket.taskDescription ?? extractTaskDescriptionFromPayload(payload)
 
   return (
     <>
@@ -158,6 +180,40 @@ export function TicketMeta({ ticket, isAdmin = false }: { ticket: TicketView; is
         </Badge>
         <Badge tone="neutral">{ticket.type === 'training' ? 'Tanítás' : 'Interakció'}</Badge>
       </div>
+
+      <Card title="Metaadatok" className="mt-4">
+        <dl className="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
+          {ticket.creator && (
+            <>
+              <dt className="text-ink-faint">Létrehozta</dt>
+              <dd className="text-ink">{ticket.creator.label}</dd>
+            </>
+          )}
+          <dt className="text-ink-faint">Létrehozva</dt>
+          <dd className="text-ink">{formatTicketDateTime(ticket.createdAt)}</dd>
+          <dt className="text-ink-faint">Utolsó módosítás</dt>
+          <dd className="text-ink">{formatTicketDateTime(ticket.updatedAt)}</dd>
+        </dl>
+      </Card>
+
+      <Card title="Hozzárendelve" className="mt-6">
+        <div className="flex flex-wrap items-baseline gap-2">
+          <span className="text-lg font-semibold text-ink">
+            {assignee?.label ?? 'Nincs hozzárendelve'}
+          </span>
+          {assignee?.type === 'agent' && <Badge tone="neutral">AI agent</Badge>}
+          {assignee?.type === 'human' && <Badge tone="warning">Ember</Badge>}
+        </div>
+        {assignee?.detail && (
+          <p className="mt-2 text-sm leading-relaxed text-ink-soft">{assignee.detail}</p>
+        )}
+      </Card>
+
+      {taskDescription && (
+        <Card title="Feladat" className="mt-6">
+          <p className="text-base leading-relaxed text-ink whitespace-pre-wrap">{taskDescription}</p>
+        </Card>
+      )}
 
       {proposal && <ProposalCard proposal={proposal} className="mt-6" />}
 

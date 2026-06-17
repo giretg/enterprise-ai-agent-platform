@@ -12,6 +12,8 @@ export type McpJsonRpcResponse = {
   error?: { code: number; message: string; data?: unknown }
 }
 
+const GMAIL_TOOLS = ['gmail_search', 'gmail_get_message', 'gmail_create_draft', 'gmail_send'] as const
+
 export const PLATFORM_BROKER_TOOLS = [
   {
     name: 'kb_search',
@@ -43,6 +45,113 @@ export const PLATFORM_BROKER_TOOLS = [
       required: ['ticketId', 'patch'],
     },
   },
+  {
+    name: 'ticket_create',
+    description:
+      'Create a new interaction ticket on the board. Use assigneeType human for human review (awaiting_human), or agent to delegate work (ready for dispatch).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string', description: 'Short ticket title' },
+        payload: { type: 'object', description: 'Ticket payload (question, context, etc.)' },
+        assigneeType: {
+          type: 'string',
+          enum: ['human', 'agent'],
+          description: 'human = awaiting_human review; agent = dispatch to assigneeId',
+        },
+        assigneeId: {
+          type: 'string',
+          description: 'Target agent UUID (required when assigneeType is agent)',
+        },
+        sourceDocumentId: { type: 'string', description: 'Optional source document UUID' },
+      },
+      required: ['title', 'payload', 'assigneeType'],
+    },
+  },
+  {
+    name: 'agent_ask',
+    description:
+      'Ask another agent a question via a delegation ticket. The target agent answers; the ticket returns to you (ready) with the answer in payload.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        targetAgentId: { type: 'string', description: 'Agent UUID to answer the question' },
+        question: { type: 'string', description: 'Question for the target agent' },
+        context: { type: 'object', description: 'Optional extra context for the delegate' },
+      },
+      required: ['targetAgentId', 'question'],
+    },
+  },
+  {
+    name: 'agent_resolve',
+    description: 'Find AI agents by nickname or name (e.g. Bori → Könyvelő Agent).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Nickname, name, or keyword' },
+        limit: { type: 'number', description: 'Max results (default 5)' },
+      },
+      required: ['query'],
+    },
+  },
+  {
+    name: 'agent_catalog',
+    description:
+      'List or look up AI agents with full profile: role instruction, behavior, model, tools, connectors, resources, recipe.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Optional search by nickname, name, or keyword' },
+        agentId: { type: 'string', description: 'Optional specific agent UUID' },
+        limit: { type: 'number', description: 'Max results (default 25 or 5 when searching)' },
+      },
+    },
+  },
+  ...GMAIL_TOOLS.map((name) => ({
+    name,
+    description:
+      name === 'gmail_search'
+        ? 'Search the acting user Gmail mailbox (requires connected account).'
+        : name === 'gmail_get_message'
+          ? 'Fetch a Gmail message by id for the acting user.'
+          : name === 'gmail_create_draft'
+            ? 'Create a Gmail draft (does not send).'
+            : 'Send Gmail — requires human approval on an approved ticket.',
+    inputSchema:
+      name === 'gmail_search'
+        ? {
+            type: 'object',
+            properties: {
+              query: { type: 'string' },
+              maxResults: { type: 'number' },
+            },
+            required: ['query'],
+          }
+        : name === 'gmail_get_message'
+          ? {
+              type: 'object',
+              properties: { id: { type: 'string' } },
+              required: ['id'],
+            }
+          : name === 'gmail_create_draft'
+            ? {
+                type: 'object',
+                properties: {
+                  to: { type: 'string' },
+                  subject: { type: 'string' },
+                  body: { type: 'string' },
+                  threadId: { type: 'string' },
+                },
+                required: ['to', 'subject', 'body'],
+              }
+            : {
+                type: 'object',
+                properties: {
+                  draftId: { type: 'string' },
+                  approvalTicketId: { type: 'string' },
+                },
+              },
+  })),
 ] as const
 
 export type PlatformToolInvoker = (
@@ -165,14 +274,67 @@ export async function invokePlatformToolViaHttp(
             k: typeof args.k === 'number' ? args.k : undefined,
           },
         }
-      : {
-          tool: 'board_write',
-          ticketId: String(args.ticketId ?? ticketId ?? ''),
-          args: {
+      : tool.startsWith('gmail_')
+        ? {
+            tool,
+            ticketId,
+            actingUserId: env.ACTING_USER_ID?.trim() || undefined,
+            conversationId: env.CONVERSATION_ID?.trim() || undefined,
+            args,
+          }
+        : tool === 'ticket_create'
+        ? {
+            tool: 'ticket_create',
+            ticketId,
+            args: {
+              title: String(args.title ?? ''),
+              payload: (args.payload as Record<string, unknown>) ?? {},
+              assigneeType: String(args.assigneeType ?? 'human'),
+              assigneeId: typeof args.assigneeId === 'string' ? args.assigneeId : undefined,
+              sourceDocumentId:
+                typeof args.sourceDocumentId === 'string' ? args.sourceDocumentId : undefined,
+            },
+          }
+        : tool === 'agent_ask'
+          ? {
+              tool: 'agent_ask',
+              ticketId,
+              args: {
+                targetAgentId: String(args.targetAgentId ?? ''),
+                question: String(args.question ?? ''),
+                context:
+                  args.context && typeof args.context === 'object' && !Array.isArray(args.context)
+                    ? (args.context as Record<string, unknown>)
+                    : undefined,
+              },
+            }
+          : tool === 'agent_resolve'
+            ? {
+                tool: 'agent_resolve',
+                ticketId,
+                args: {
+                  query: String(args.query ?? ''),
+                  limit: typeof args.limit === 'number' ? args.limit : undefined,
+                },
+              }
+            : tool === 'agent_catalog'
+              ? {
+                  tool: 'agent_catalog',
+                  ticketId,
+                  args: {
+                    query: typeof args.query === 'string' ? args.query : undefined,
+                    agentId: typeof args.agentId === 'string' ? args.agentId : undefined,
+                    limit: typeof args.limit === 'number' ? args.limit : undefined,
+                  },
+                }
+              : {
+            tool: 'board_write',
             ticketId: String(args.ticketId ?? ticketId ?? ''),
-            patch: (args.patch as Record<string, unknown>) ?? {},
-          },
-        }
+            args: {
+              ticketId: String(args.ticketId ?? ticketId ?? ''),
+              patch: (args.patch as Record<string, unknown>) ?? {},
+            },
+          }
 
   const response = await fetch(`${platformApiUrl}/api/v1/agent/tools`, {
     method: 'POST',

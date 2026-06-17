@@ -147,7 +147,10 @@ export class WikiAgentRuntime {
       throw new Error(`kb_search denied: ${search.reason}`)
     }
 
-    const hits = 'hits' in search.result ? search.result.hits : []
+    const hits =
+      !search.denied && 'hits' in search.result && Array.isArray(search.result.hits)
+        ? search.result.hits
+        : []
     const sourceContext = formatHitsForPrompt(hits)
     const answerInstruction =
       hits.length === 0
@@ -306,7 +309,10 @@ export class WikiAgentRuntime {
       throw new Error(`kb_search denied: ${search.reason}`)
     }
 
-    const hits = 'hits' in search.result ? search.result.hits : []
+    const hits =
+      !search.denied && 'hits' in search.result && Array.isArray(search.result.hits)
+        ? search.result.hits
+        : []
     const sourceContext = formatHitsForPrompt(hits)
     const answerInstruction =
       hits.length === 0

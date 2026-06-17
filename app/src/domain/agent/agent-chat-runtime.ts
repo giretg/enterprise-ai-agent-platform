@@ -1,7 +1,10 @@
-import type { AgentRepository, DocumentRepository, TicketRepository } from '@/repositories/interfaces'
+import type { AgentRepository, DocumentRepository, TicketRepository, ToolBrokerRepository } from '@/repositories/interfaces'
 import { composeSystemPrompt } from '@/lib/agent-prompt'
+import { formatOrgRoster } from '@/lib/agent-org-roster'
 import type { ModelGateway } from '../gateway/model-gateway'
 import type { ConversationService } from '../conversation/conversation-service'
+import type { ToolBrokerService } from '../tool-broker/tool-broker-service'
+import { listAllowedChatTools, runAgentChatWithTools } from './chat-tool-loop'
 
 const IMAGE_EXT = /\.(jpg|jpeg|png|gif|webp)$/i
 const IMAGE_MARKER = /^(\[image:([^\]]+)\])([\s\S]*)$/
@@ -80,6 +83,8 @@ export class AgentChatRuntime {
     private tickets: TicketRepository,
     private gateway: ModelGateway,
     private conversations: ConversationService,
+    private toolBroker: ToolBrokerService,
+    private toolCaps: ToolBrokerRepository,
   ) {}
 
   async sendMessage(params: {
@@ -127,7 +132,7 @@ export class AgentChatRuntime {
     })
 
     const history = await this.conversations.getConversation(conversationId, params.tenantId ?? null)
-    const gatewayMessages = this.buildGatewayMessages(
+    const gatewayMessages = await this.buildGatewayMessages(
       agentDetails,
       history.messages,
       attachmentBlock,
@@ -140,12 +145,31 @@ export class AgentChatRuntime {
       maxTokens?: number
     }
 
-    const { content: reply } = await this.gateway.call({
-      agentId: params.agentId,
-      conversationId,
-      messages: gatewayMessages,
-      modelConfig,
-    })
+    const allowedChatTools = await listAllowedChatTools(this.toolCaps, params.agentId)
+    const reply =
+      allowedChatTools.length > 0
+        ? (
+            await runAgentChatWithTools({
+              gateway: this.gateway,
+              toolBroker: this.toolBroker,
+              toolCaps: this.toolCaps,
+              agentId: params.agentId,
+              agentVersion: agentDetails.agent.currentVersion,
+              conversationId,
+              actingUserId: params.createdById,
+              messages: gatewayMessages,
+              modelConfig,
+              allowedTools: allowedChatTools,
+            })
+          ).content
+        : (
+            await this.gateway.call({
+              agentId: params.agentId,
+              conversationId,
+              messages: gatewayMessages,
+              modelConfig,
+            })
+          ).content
 
     const agentMessage = await this.conversations.appendMessage({
       conversationId,
@@ -289,11 +313,14 @@ export class AgentChatRuntime {
     return docs.filter((doc): doc is NonNullable<(typeof docs)[number]> => Boolean(doc))
   }
 
-  private buildGatewayMessages(
+  private async buildGatewayMessages(
     agentDetails: NonNullable<Awaited<ReturnType<AgentRepository['findByIdWithDetails']>>>,
     historyMessages: Array<{ role: string; content: string | null; contentDeletedAt: Date | null }>,
     latestAttachmentBlock: string,
   ) {
+    const allAgents = await this.agents.findMany()
+    const orgRoster = formatOrgRoster(allAgents)
+
     const messages: Array<{ role: 'user' | 'system'; content: string }> = [
       { role: 'system', content: composeSystemPrompt(agentDetails.agent) },
     ]
@@ -305,10 +332,12 @@ export class AgentChatRuntime {
       })
     }
 
+    messages.push({ role: 'system', content: orgRoster })
+
     messages.push({
       role: 'system',
       content:
-        'Ez egy közvetlen beszélgetés a felhasználóval. Válaszolj természetes, segítőkész hangnemben magyarul. Ha csatolmány érkezett, hivatkozz rá a válaszodban.',
+        'Ez egy közvetlen beszélgetés a felhasználóval. Válaszolj természetes, segítőkész hangnemben magyarul. Ha csatolmány érkezett, hivatkozz rá a válaszodban. Ticket vagy más agent feladat kérésénél használd a platform eszközöket — ne állítsd, hogy megcsináltad, ha nem hívtál eszközt.',
     })
 
     const visible = historyMessages.filter((m) => m.content && !m.contentDeletedAt)

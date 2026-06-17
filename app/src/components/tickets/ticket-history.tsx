@@ -1,6 +1,7 @@
 import { getTicketTransitions } from '@/app/actions/platform'
 import { Badge, Card } from '@/components/ui/shell'
 import { TICKET_STATE_LABELS, TICKET_STATE_TONE } from '@/lib/ticket-labels'
+import { formatTicketDateTime } from '@/lib/ticket-display'
 
 const ACTOR_LABELS: Record<string, string> = {
   human: 'Ember',
@@ -18,25 +19,28 @@ export async function TicketHistory({ ticketId }: { ticketId: string }) {
 
   return (
     <Card title="Állapot-előzmények">
-      <ol className="space-y-3">
+      <ol className="space-y-4">
         {res.data.map((transition) => (
-          <li key={transition.id} className="flex flex-wrap items-center gap-2 text-sm">
-            <Badge tone={TICKET_STATE_TONE[transition.fromState] ?? 'neutral'}>
-              {stateLabel(transition.fromState)}
-            </Badge>
-            <span className="text-ink-faint">→</span>
-            <Badge tone={TICKET_STATE_TONE[transition.toState] ?? 'neutral'}>
-              {stateLabel(transition.toState)}
-            </Badge>
-            <span className="text-ink-soft">
+          <li key={transition.id} className="border-b border-line pb-4 last:border-0 last:pb-0">
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <Badge tone={TICKET_STATE_TONE[transition.fromState] ?? 'neutral'}>
+                {stateLabel(transition.fromState)}
+              </Badge>
+              <span className="text-ink-faint">→</span>
+              <Badge tone={TICKET_STATE_TONE[transition.toState] ?? 'neutral'}>
+                {stateLabel(transition.toState)}
+              </Badge>
+            </div>
+            <p className="mt-1.5 text-xs text-ink-soft">
+              <time dateTime={new Date(transition.ts).toISOString()}>
+                {formatTicketDateTime(transition.ts)}
+              </time>
+              {' · '}
               {ACTOR_LABELS[transition.actorType] ?? transition.actorType}
               {transition.agentVersion != null ? ` · v${transition.agentVersion}` : ''}
-            </span>
-            <span className="ml-auto text-xs text-ink-faint">
-              {new Date(transition.ts).toLocaleString('hu-HU')}
-            </span>
+            </p>
             {transition.note && (
-              <p className="w-full text-xs italic text-ink-soft">„{transition.note}”</p>
+              <p className="mt-1 text-xs italic text-ink-soft">„{transition.note}”</p>
             )}
           </li>
         ))}

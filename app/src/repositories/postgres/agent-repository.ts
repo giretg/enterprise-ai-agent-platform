@@ -162,6 +162,25 @@ export class PostgresAgentRepository implements AgentRepository {
       },
     })
 
+    const board = await prisma.connector.findFirst({
+      where: { type: 'board', name: 'Control Plane Board' },
+    })
+    if (board) {
+      await prisma.agentConnector.upsert({
+        where: { agentId_connectorId: { agentId: agent.id, connectorId: board.id } },
+        create: { agentId: agent.id, connectorId: board.id, accessMode: 'write' },
+        update: { accessMode: 'write' },
+      })
+    }
+
+    for (const toolName of ['ticket_create', 'agent_ask', 'agent_resolve', 'agent_catalog']) {
+      await prisma.capability.upsert({
+        where: { agentId_toolName: { agentId: agent.id, toolName } },
+        create: { agentId: agent.id, toolName, allowed: true },
+        update: { allowed: true },
+      })
+    }
+
     return { agent, apiKey: rawKey }
   }
 

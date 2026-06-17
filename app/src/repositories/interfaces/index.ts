@@ -20,6 +20,7 @@ import type {
   PlaybookVersion,
   ToolCall,
   Ticket,
+  TicketSource,
   TicketState,
   TicketTransition,
   UserRole,
@@ -29,6 +30,9 @@ export type TicketFilter = {
   state?: TicketState | TicketState[]
   type?: Ticket['type']
   agentId?: string
+  source?: TicketSource | TicketSource[]
+  /** Board / dashboard: user + system ticketek, teszt kizárva. */
+  excludeTest?: boolean
 }
 
 export interface TicketRepository {
@@ -39,9 +43,16 @@ export interface TicketRepository {
   create(
     data: Omit<
       Ticket,
-      'id' | 'createdAt' | 'updatedAt' | 'lockToken' | 'lockedAt' | 'playbookRef' | 'conversationId'
+      | 'id'
+      | 'createdAt'
+      | 'updatedAt'
+      | 'lockToken'
+      | 'lockedAt'
+      | 'playbookRef'
+      | 'conversationId'
+      | 'source'
     > &
-      Partial<Pick<Ticket, 'lockToken' | 'lockedAt' | 'playbookRef' | 'conversationId'>>,
+      Partial<Pick<Ticket, 'lockToken' | 'lockedAt' | 'playbookRef' | 'conversationId' | 'source'>>,
   ): Promise<Ticket>
   update(
     id: string,
@@ -52,6 +63,7 @@ export interface TicketRepository {
         | 'payload'
         | 'assigneeType'
         | 'assigneeId'
+        | 'agentId'
         | 'lockToken'
         | 'lockedAt'
         | 'playbookRef'
@@ -302,6 +314,40 @@ export interface SandboxAppRepository {
     sourceTicketId: string
     createdBy: string
   }): Promise<SandboxAppWithLatestVersion>
+}
+
+export interface ConnectorGrantRepository {
+  findActiveGrant(params: {
+    tenantId: string | null
+    connectorId: string
+    userId: string
+  }): Promise<import('@prisma/client').ConnectorGrant | null>
+  findByUser(
+    userId: string,
+    tenantId?: string | null,
+  ): Promise<
+    Array<
+      import('@prisma/client').ConnectorGrant & {
+        connector: { id: string; name: string; type: string }
+      }
+    >
+  >
+  create(data: {
+    tenantId: string | null
+    connectorId: string
+    userId: string
+    scopes: import('@prisma/client').Prisma.JsonValue
+    tokenRef: string
+    accountLabel?: string | null
+    expiresAt?: Date | null
+  }): Promise<import('@prisma/client').ConnectorGrant>
+  updateStatus(
+    id: string,
+    status: import('@prisma/client').ConnectorGrantStatus,
+    extra?: { revokedAt?: Date; lastRefreshedAt?: Date; expiresAt?: Date | null },
+  ): Promise<import('@prisma/client').ConnectorGrant>
+  revokeAllForUser(userId: string): Promise<number>
+  findById(id: string): Promise<import('@prisma/client').ConnectorGrant | null>
 }
 
 export type TransitionActor =

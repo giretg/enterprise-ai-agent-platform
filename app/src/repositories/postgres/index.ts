@@ -7,6 +7,8 @@ import { PostgresSandboxAppRepository } from './sandbox-app-repository'
 import { PostgresTicketRepository } from './ticket-repository'
 import { PostgresToolBrokerRepository } from './tool-broker-repository'
 
+import { PostgresConnectorGrantRepository } from './connector-grant-repository'
+
 export const repositories = {
   tickets: new PostgresTicketRepository(),
   agents: new PostgresAgentRepository(),
@@ -18,4 +20,5 @@ export const repositories = {
   playbooks: new PostgresPlaybookRepository(),
   sandboxApps: new PostgresSandboxAppRepository(),
   conversations: new PostgresConversationRepository(),
+  connectorGrants: new PostgresConnectorGrantRepository(),
 }

@@ -80,6 +80,9 @@ export async function prepareGooseHarnessEnv(env: GooseHarnessEnv): Promise<Goos
     '    available_tools:',
     '      - kb_search',
     '      - board_write',
+    '      - ticket_create',
+    '      - agent_ask',
+    '      - agent_catalog',
     '',
   ].join('\n')
 
@@ -110,6 +113,6 @@ export function gooseConfigPreview(input: GooseConfigInput) {
     platformApiUrl: input.platformApiUrl,
     bridgeScript: input.bridgeScriptPath ?? 'scripts/platform-mcp-bridge.ts',
     developerExtensionEnabled: false,
-    platformBrokerTools: ['kb_search', 'board_write'],
+    platformBrokerTools: ['kb_search', 'board_write', 'ticket_create', 'agent_ask', 'agent_catalog'],
   }
 }

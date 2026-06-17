@@ -8,6 +8,8 @@ import { hasMinimumRole } from '@/auth/types'
 import { services } from '@/domain'
 import { repositories } from '@/repositories/postgres'
 import { isClerkEnabled } from '@/lib/clerk-config'
+import { prisma } from '@/lib/db'
+import { buildTicketDisplayExtras, enrichTicketsForBoard } from '@/lib/ticket-display'
 import { fail, ok, type ActionResult } from '@/lib/result'
 import {
   agentIdSchema,
@@ -69,6 +71,46 @@ export async function listTickets(input?: { filter?: unknown }) {
   }
 }
 
+export async function listBoardTickets() {
+  try {
+    await requireRole('viewer')
+    const tickets = await repositories.tickets.findMany({ excludeTest: true })
+
+    const agentIds = new Set<string>()
+    const userIds = new Set<string>()
+    for (const ticket of tickets) {
+      userIds.add(ticket.createdById)
+      if (ticket.assigneeType === 'agent' && ticket.assigneeId) agentIds.add(ticket.assigneeId)
+      if (ticket.assigneeType === 'human' && ticket.assigneeId) userIds.add(ticket.assigneeId)
+      if (ticket.agentId) agentIds.add(ticket.agentId)
+    }
+
+    const [agents, users] = await Promise.all([
+      agentIds.size > 0
+        ? prisma.agent.findMany({
+            where: { id: { in: [...agentIds] } },
+            select: { id: true, name: true },
+          })
+        : Promise.resolve([]),
+      userIds.size > 0
+        ? prisma.user.findMany({
+            where: { id: { in: [...userIds] } },
+            select: { id: true, name: true },
+          })
+        : Promise.resolve([]),
+    ])
+
+    const enriched = enrichTicketsForBoard(tickets, {
+      agents: new Map(agents.map((agent) => [agent.id, agent.name])),
+      users: new Map(users.map((user) => [user.id, user.name])),
+    })
+
+    return ok(enriched)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to list board tickets')
+  }
+}
+
 export async function getTicket(input: { id: string }) {
   try {
     await requireRole('viewer')
@@ -94,7 +136,38 @@ export async function getTicket(input: { id: string }) {
       reproduction = await repositories.agents.findVersionSnapshot(ticket.agentId, payloadAgentVersion)
     }
 
-    return ok({ ...ticket, reproduction })
+    const assigneeAgent =
+      ticket.assigneeType === 'agent' && ticket.assigneeId
+        ? await repositories.agents.findById(ticket.assigneeId)
+        : null
+    const responsibleAgent = ticket.agentId
+      ? await repositories.agents.findById(ticket.agentId)
+      : null
+    const [assigneeUser, creator] = await Promise.all([
+      ticket.assigneeType === 'human' && ticket.assigneeId
+        ? prisma.user.findUnique({ where: { id: ticket.assigneeId }, select: { name: true } })
+        : Promise.resolve(null),
+      prisma.user.findUnique({ where: { id: ticket.createdById }, select: { name: true } }),
+    ])
+
+    const display = buildTicketDisplayExtras(ticket, {
+      assigneeAgentName: assigneeAgent?.name ?? null,
+      assigneeUserName: assigneeUser?.name ?? null,
+      responsibleAgentName:
+        responsibleAgent && responsibleAgent.id !== ticket.assigneeId
+          ? responsibleAgent.name
+          : assigneeAgent?.name ?? responsibleAgent?.name ?? null,
+    })
+
+    return ok({
+      ...ticket,
+      reproduction,
+      ...display,
+      creator: {
+        id: ticket.createdById,
+        label: creator?.name ?? 'Ismeretlen',
+      },
+    })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to get ticket')
   }
@@ -933,6 +1006,7 @@ export async function getDashboardStats() {
       repositories.agents.findMany(),
       repositories.tickets.findMany({
         state: ['backlog', 'ready', 'approved', 'in_progress', 'awaiting_human'],
+        excludeTest: true,
       }),
       repositories.modelCalls.getCostSummary(since),
       repositories.toolBroker.getToolSummary(since),

@@ -22,6 +22,94 @@ const INITIAL_MEMORY = `Excellence Pay belső tudásbázis - kezdő tartalom:
 
 const KEY_FILE = path.join(process.cwd(), '.seed-demo-api-key')
 
+const BOOKKEEPER_ROLE_INSTRUCTION = `Te a csapat könyvelő AI agentje vagy (a csapat Bori-nak hív).
+Feladatod könyvelési ellenőrzések, számlák és tételek feldolgozása ticketekből.`
+
+const BOOKKEEPER_BEHAVIOR_PROFILE = `Magyarul, pontosan és tételesen dolgozol. A board ticketjeiből érkező feladatokat feldolgozod.`
+
+async function ensureBookkeeperAgent(adminId: string) {
+  const existing = await prisma.agent.findFirst({ where: { name: 'Könyvelő Agent' } })
+  if (existing) {
+    await ensureToolBrokerSeed(existing.id)
+    return existing
+  }
+
+  const memory = await prisma.memory.create({ data: {} })
+  const memoryVersion = await prisma.memoryVersion.create({
+    data: {
+      memoryId: memory.id,
+      version: 1,
+      content: 'Könyvelő agent — könyvelési ellenőrzések és számla-feldolgozás.',
+      status: 'active',
+      source: 'seed',
+      approvedById: adminId,
+    },
+  })
+  await prisma.memory.update({
+    where: { id: memory.id },
+    data: { currentVersionId: memoryVersion.id },
+  })
+
+  const modelConfig = {
+    provider: 'gemini',
+    model: 'gemini-2.0-flash',
+    temperature: 0.2,
+    maxTokens: 4096,
+  }
+
+  const agent = await prisma.agent.create({
+    data: {
+      name: 'Könyvelő Agent',
+      roleInstruction: BOOKKEEPER_ROLE_INSTRUCTION,
+      behaviorProfile: BOOKKEEPER_BEHAVIOR_PROFILE,
+      modelConfig,
+      status: 'active',
+      role: 'worker',
+      currentVersion: 1,
+      currentRoleInstructionVersion: 1,
+      currentBehaviorProfileVersion: 1,
+      memoryId: memory.id,
+    },
+  })
+
+  await prisma.agentVersion.create({
+    data: {
+      agentId: agent.id,
+      version: 1,
+      roleInstructionSnapshot: BOOKKEEPER_ROLE_INSTRUCTION,
+      behaviorProfileSnapshot: BOOKKEEPER_BEHAVIOR_PROFILE,
+      roleInstructionVersion: 1,
+      behaviorProfileVersion: 1,
+      modelConfigSnapshot: modelConfig,
+      memoryVersionId: memoryVersion.id,
+    },
+  })
+
+  await ensureToolBrokerSeed(agent.id)
+  return agent
+}
+
+async function ensureChatToolsForAgent(agentId: string) {
+  const board = await prisma.connector.findFirst({
+    where: { type: 'board', name: 'Control Plane Board' },
+  })
+  if (board) {
+    await prisma.agentConnector.upsert({
+      where: { agentId_connectorId: { agentId, connectorId: board.id } },
+      create: { agentId, connectorId: board.id, accessMode: 'write' },
+      update: { accessMode: 'write' },
+    })
+  }
+
+  for (const toolName of ['ticket_create', 'agent_ask', 'agent_resolve', 'agent_catalog']) {
+    await prisma.capability.upsert({
+      where: { agentId_toolName: { agentId, toolName } },
+      create: { agentId, toolName, allowed: true },
+      update: { allowed: true },
+    })
+  }
+}
+
 async function ensureToolBrokerSeed(agentId: string) {
   const knowledgeBase = await prisma.connector.upsert({
     where: {
@@ -86,6 +174,78 @@ async function ensureToolBrokerSeed(agentId: string) {
     create: { agentId, toolName: 'board_write', allowed: true },
     update: { allowed: true },
   })
+
+  await prisma.capability.upsert({
+    where: { agentId_toolName: { agentId, toolName: 'ticket_create' } },
+    create: { agentId, toolName: 'ticket_create', allowed: true },
+    update: { allowed: true },
+  })
+
+  await prisma.capability.upsert({
+    where: { agentId_toolName: { agentId, toolName: 'agent_ask' } },
+    create: { agentId, toolName: 'agent_ask', allowed: true },
+    update: { allowed: true },
+  })
+
+  await prisma.capability.upsert({
+    where: { agentId_toolName: { agentId, toolName: 'agent_resolve' } },
+    create: { agentId, toolName: 'agent_resolve', allowed: true },
+    update: { allowed: true },
+  })
+
+  await prisma.capability.upsert({
+    where: { agentId_toolName: { agentId, toolName: 'agent_catalog' } },
+    create: { agentId, toolName: 'agent_catalog', allowed: true },
+    update: { allowed: true },
+  })
+
+  const gmail = await prisma.connector.upsert({
+    where: {
+      type_name: {
+        type: 'gmail',
+        name: 'Gmail (felhasználói)',
+      },
+    },
+    create: {
+      type: 'gmail',
+      name: 'Gmail (felhasználói)',
+      authMode: 'user_delegated',
+      scope: 'single',
+      secretAlias: 'secret://gmail/oauth-client',
+      version: 1,
+      config: {
+        provider: 'google',
+        oauth: {
+          scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+          clientId: process.env.GMAIL_OAUTH_CLIENT_ID ?? 'stub-client-id',
+        },
+      },
+    },
+    update: {
+      authMode: 'user_delegated',
+      config: {
+        provider: 'google',
+        oauth: {
+          scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+          clientId: process.env.GMAIL_OAUTH_CLIENT_ID ?? 'stub-client-id',
+        },
+      },
+    },
+  })
+
+  await prisma.agentConnector.upsert({
+    where: { agentId_connectorId: { agentId, connectorId: gmail.id } },
+    create: { agentId, connectorId: gmail.id, accessMode: 'write' },
+    update: { accessMode: 'write' },
+  })
+
+  for (const toolName of ['gmail_search', 'gmail_get_message', 'gmail_create_draft', 'gmail_send']) {
+    await prisma.capability.upsert({
+      where: { agentId_toolName: { agentId, toolName } },
+      create: { agentId, toolName, allowed: true },
+      update: { allowed: true },
+    })
+  }
 }
 
 const WIKI_PLAYBOOK_SPEC = [
@@ -257,6 +417,11 @@ async function main() {
   if (existingAgent) {
     console.log('Seed already applied (Wiki Agent exists) — demó API-kulcs frissítése')
     await ensureToolBrokerSeed(existingAgent.id)
+    await ensureBookkeeperAgent(admin.id)
+    const allAgents = await prisma.agent.findMany({ select: { id: true } })
+    for (const row of allAgents) {
+      await ensureChatToolsForAgent(row.id)
+    }
     await ensureWikiRecipe(existingAgent.id, admin.id)
     await ensureWikiPlaybook(admin.id)
     await ensureDemoApiKey(existingAgent.id)
@@ -331,6 +496,7 @@ async function main() {
   })
 
   await ensureToolBrokerSeed(agent.id)
+  await ensureBookkeeperAgent(admin.id)
   await ensureWikiRecipe(agent.id, admin.id)
   await ensureWikiPlaybook(admin.id)
   await ensureDemoApiKey(agent.id)

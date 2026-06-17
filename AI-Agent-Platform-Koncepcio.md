@@ -1,7 +1,7 @@
 # Kontrollált Enterprise AI Agent Platform — Koncepció
 
 **Készítette:** Excellence Pay KFT (Enterprise AI tanácsadás)
-**Verzió:** 0.10 — v0.9 döntései + alapvető interakciós-modell átkeretezés: **a beszélgetés az ember↔agent alapinterakció, a Kanban-board opcionális koordinációs/áttekinthetőségi réteg** (nem univerzális kötelező interfész); a governance forrása a kontrollált runtime, nem a ticket; a kötelező jóváhagyási kapu leválik a ticketről; új session-kezelési réteg (4.14)
+**Verzió:** 0.11 — v0.10 + **per-user (delegált) connector-hozzáférés** (4.12.1): a connector-modell kiegészül egy kredenciál-tulajdonlási dimenzióval (`auth_mode`), és egy új, felhasználóhoz kötött felhatalmazás-entitással (`connector_grants`), hogy egy belépett felhasználó a saját fiókját (pl. Gmail) köthesse be az agentnek — általánosítva minden jövőbeli per-user OAuth-forrásra
 **Dátum:** 2026-06-17
 **Státusz:** Döntések lezárva — fejlesztés folyamatban; a v0.8 → v0.9 változások az MVP-spec pontosítását igénylik (lásd a changelog per-item fejlesztői hatásait)
 
@@ -24,6 +24,8 @@
 > **Döntés dátuma:** 2026-06-17. **Érintett MVP-spec szakaszok:** Agent Registry séma, write-gate / tanítási pipeline, Playbook-entitás és ticket-állapotgép — ezeket a fenti 1–3 fejlesztői hatások szerint kell pontosítani.
 
 > **Változásnapló (v0.9 → v0.10):** alapvető interakciós-modell pontosítás — **a beszélgetés az ember↔agent alapinterakció, a Kanban-board pedig opcionális koordinációs/áttekinthetőségi réteg, nem univerzális kötelező interfész.** Korábban (4.2) a ticket volt „az egyetlen, naplózott interakciós felület"; ezt **felülírjuk**: a governance forrása nem a ticket, hanem a **kontrollált runtime** (minden modell- és eszközhívás a Model Gateway-en és a Tool Brokeren át, naplózva, verziózott agenttel) — ez **ticket nélkül is** teljes. Három, egymással összefüggő következmény: (1) **4.2 átkeretezve** — beszélgetés-elsődleges, a board opcionális; ticket csak **határátlépéskor** keletkezik (idő / delegálás / jóváhagyás); (2) **a kötelező jóváhagyási kapu (🔒6) leválik a ticketről**, és a control plane-ben, a művelet **kritikussági szintje** (L0–L3, 5.6) alapján kényszerül ki — akár chatben kérték a feladatot —, a ticket legfeljebb a kapu *felülete*, nem a kikényszerítője; (3) **ÚJ 4.14 — Beszélgetés- és session-kezelés**: a beszélgetésszál a ticket és az agent mellett harmadik first-class, control plane-birtokolt entitás (tárolás, retenció, GDPR-törlés, tenant-izoláció, kontextus-rehydration), élesen elválasztva az agent verziózott memóriájától (4.6). **Tenant-modell pontosítás (8.8):** az izoláció határa az **agent** — két tenant nem osztozik agenteken; új ügyfél teljesen különálló agentekkel, beállításokkal és beszélgetésekkel költözik be. **Érintett szakaszok:** 4.2, 4.10 (hatókör), 4.14 (új), 8.5, 8.8. **Döntés dátuma:** 2026-06-17.
+
+> **Változásnapló (v0.10 → v0.11):** **ÚJ 4.12.1 — Per-user (delegált) connector-hozzáférés.** A 4.12 connector eddig egy közös, rendszerszintű kredenciálra volt tervezve (egy connector → egy `secret_alias`) — ez jó egy ERP- vagy banki service-account-kulcshoz, de **nem fejezi ki azt az esetet, amikor a kredenciál az éppen belépett emberhez tartozik, és az agent az ő nevében (on-behalf-of) jár el** (pl. a felhasználó saját Gmailje). A 4.12.1 bevezet egy **kredenciál-tulajdonlási dimenziót** (`auth_mode`: `service` | `user_delegated` | `agent_owned`) és egy új, **felhasználóhoz kötött felhatalmazás-entitást** (`connector_grants`), amely OAuth-on keresztül, szerveroldalon tárolja az adott felhasználó refresh tokenjét (alias mögött, sosem promptban — 4.9.2). Futásidőben a Tool Broker a kredenciált **`(acting_user, connector)` függvényeként** oldja fel; az engedély **kétrétegű**: az agentnek van-e capability-je a connectorra (8.2) **és** az acting usernek van-e érvényes grantje. **Fejlesztői hatás:** (1) a `connectors` sémára kerüljön `auth_mode` mező (most-migráció elkerülése); (2) új `connector_grants` tábla `(tenant, user, connector)` kulccsal + Secret Manager token-ref; (3) a Tool Broker `authorize()`/secret-injektálás vegye paraméterül az **acting user**-t (a 4.14 session hordozza); (4) autonóm (scheduled / proaktív / agent→agent) futásnál a per-user grant csak **explicit, tárolt, visszavonható „run-as" felhatalmazással** használható, sosem implicit. A token-vault az `Authorizer`/connector-interfész mögött **cserepont** (4.13): self-hostolt „connected accounts" réteggel kiváltható, de az absztrakció a miénk marad. **Érintett szakaszok:** 4.9.1 (erőforrás-típus), 4.12 (connector), 4.14 (acting user a sessionben), 8.2 (capability), 8.8 (tenant-izoláció). **Döntés dátuma:** 2026-06-17.
 
 > A fejezetek elején **"Közérthetően"** dobozok segítenek azoknak, akik nem járatosak az AI-agentek világában: ezek egyszerű nyelven, hasonlatokkal mondják el, miről szól az adott rész. Az alábbi fogalomtár a leggyakoribb szakszavakat magyarázza.
 
@@ -1022,6 +1024,59 @@ Az integráció nem melléktéma, hanem a megvalósuló üzleti érték egyik f�
 - **Protokoll-absztrakció:** REST, SOAP, üzenetsor (Kafka/MQ), fájl (S3/SFTP), DB — a konkrét protokoll a connector mögött van elrejtve, az agent egységes interfészt lát. Így a háttérrendszer cseréje nem írja át az agentet (a Model Gateway, 4.7, mintájára).
 
 **Üzleti következmény:** a connector-könyvtár **újrahasznosítható IP**. Az első ügyfélnél megépített integrációk (pl. egy gyakori könyvelő rendszer, e-mail, dokumentumtár) a következő ügyfeleknél már készen vannak — ez alakítja a professional services munkát ismételhető eszközzé, és csökkenti a következő bevezetés idejét és kockázatát.
+
+#### 4.12.1 Per-user (delegált) connector-hozzáférés — az agent a felhasználó nevében jár el
+
+> **Közérthetően:** Eddig a connectorhoz tartozó "belépőkártya" (kulcs) a *rendszerhez* tartozott — egy közös kulcs, amit minden jogosult AI-munkatárs használ (pl. a céges könyvelőszoftver API-kulcsa). De van egy másik eset: amikor a kredenciál nem a rendszerhez, hanem **egy konkrét emberhez** tartozik — például amikor egy felhasználó a **saját Gmail-fiókját** akarja bekötni, hogy az agent az **ő nevében** olvasson/írjon levelet. Ilyenkor nem egy közös céges kulcs kell, hanem az, hogy minden felhasználó **maga, egyszer engedélyezze a saját fiókját** (OAuth-os "belépés Google-fiókkal"), és onnantól az agent — ha az adott emberrel dolgozik — az ő hozzáférésével járjon el. Ez a fejezet ezt írja le úgy, hogy hosszú távon, sokféle ilyen forrásra (nem csak Gmail) menedzselhető maradjon.
+
+**A probléma a jelenlegi modellben.** A 4.12 connector + 4.9.2 secret-modell egy connectorhoz **egyetlen** kredenciált rendel (`secret_alias`). Ez helyes a `service`-jellegű kredenciálra (ERP-kulcs, banki API, közös service account). De a per-user esetnél a kredenciál **dimenziója más**: `(felhasználó × connector)`-hoz tartozik, és az agentnek **az adott felhasználó nevében** kell eljárnia. Ezt az `egy connector → egy secret` séma nem tudja kifejezni.
+
+**Megoldás: kredenciál-tulajdonlási dimenzió (`auth_mode`) a connectoron.** A connector típusa kiegészül azzal, hogy *kihez tartozik a hozzá tartozó kredenciál*:
+
+| `auth_mode` | Kihez tartozik a kredenciál | Tárolás | Példa |
+|---|---|---|---|
+| `service` (a mai modell) | a connectorhoz — egy közös titok | 1 `secret_alias` (4.9.2) | ERP-kulcs, banki/PSP API, közös fiók |
+| `user_delegated` (**ÚJ**) | az **éppen belépett felhasználóhoz** | per-felhasználó grant + token-ref (lásd lent) | **Gmail**, személyes Calendar/Drive, Slack-user, M365 |
+| `agent_owned` | egy konkrét agent dedikált service accountja | privát `secret_alias` | csak-egy-agent fiók |
+
+A `user_delegated` ág az új és az, ami **általánosít**: nem Gmail-specifikus. Microsoft 365, Slack, Notion, személyes Drive később mind ugyanide csatlakozik — **a per-user OAuth-brókert egyszer építjük meg, a provider csak konfiguráció** (OAuth-client + kért scope-ok). Ez pontosan a 4.12 "integrálj egyszer, használd sokszor" elv kiterjesztése a felhasználói felhatalmazásokra.
+
+**Új entitás: `connector_grants` ("connected accounts" minta).** A connector továbbra is a *definíció* (melyik rendszer, OAuth-client config, kért scope-ok) — control plane, tenant-szintű. A `connector_grants` a *konkrét felhasználói felhatalmazás*:
+
+```
+connector_grant = tenant_id
+                + connector_id        (melyik rendszer, pl. "gmail")
+                + user_id             (KI adta a hozzáférést — az ő fiókja)
+                + status              (active | revoked | expired)
+                + scopes              (amit ténylegesen engedélyezett)
+                + token_ref           (Secret Manager refresh-token referencia,
+                                       tenant/user/connector kulcson — sosem promptban/logban)
+                + granted_at / expires_at / revoked_at
+```
+
+A nyers token **sosem** a connectoron, sosem promptban/memóriában/logban — pontosan a 4.9.2 elv, csak most `(user, connector)` kulcson injektálva.
+
+**Engedélyezési folyamat (felhasználói aktus, nem agent-aktus).** A belépett user a control plane-ben végigmegy a szolgáltató consent-képernyőjén (a callback a platformra jön), a platform a refresh tokent **szerveroldalon, titkosítva** eltárolja, és létrejön egy `connector_grant` az ő `user_id`-jával. Ez ugyanaz a token-filozófia, mint a 4.4.2 admin-onboarding és a 4.6.1 write-gate: aláírt, auditált, visszavonható. **A felhasználó csak a saját fiókját kötheti be — nincs "általános Gmail-hozzáférés" az agentnek.**
+
+**Futásidejű feloldás (kétrétegű engedély).** Az agent egy session/beszélgetés kontextusában fut, amely a 4.14 szerint **hordozza az acting user identitását**. Egy `user_delegated` connector hívásakor a Tool Broker:
+
+1. ellenőrzi, hogy az **agentnek** van-e capability-je erre a connectorra (8.2, `agent_connectors`/`capabilities`) — *"az agent használhat-e Gmailt egyáltalán"*;
+2. ellenőrzi, hogy az **acting usernek** van-e érvényes (`active`) grantje — *"kinek a Gmailjét"*;
+3. feloldja a kredenciált `(acting_user, connector)` alapján, szerveroldalon **frissíti** az access tokent, és **injektálja** az MCP-hívásba. Az agent csak az aliast látja; a broker választja ki a helyes user tokenjét.
+
+Mindkét rétegnek teljesülnie kell — ez tisztán szétválasztja az *agent-jogot* a *felhasználói felhatalmazástól*.
+
+**Kritikus döntési pont: ki az "acting user" autonóm futásnál?** Interaktív beszélgetésnél triviális: az acting user a beszélgető ember. De scheduled task, proaktív monitor (4.11) vagy orchestrator→worker delegálás (4.5.1) esetén **nincs élő felhasználó** — per-user Gmail-tokennél ez érzékeny (az agent a postafiókban járna a user távollétében). **Szabály:** autonóm futásnál a per-user grant **kizárólag explicit, tárolt, a felhasználótól előre kapott "run-as" felhatalmazással** használható (a scheduled taskra / Playbookra kötve), auditáltan és visszavonhatóan — **sosem implicit öröklés**. Ezt a megkülönböztetést a 4.10 / 4.11 futtatási útvonalán kódszinten ki kell kényszeríteni.
+
+**Governance-illeszkedés (a meglévő elvekkel):**
+
+- **Secret-elv (4.9.2):** változatlan — token sosem promptban/runtime-ban/logban, csak `args_meta`; csak a kulcs `(user, connector)` lett.
+- **Audit (8.5):** minden tool-call logolja az agent-verziót **+ acting usert + a használt grantet**; a grant életciklusa (engedélyezés, frissítés, visszavonás, lejárat) önálló auditesemény.
+- **Kill-switch / visszavonás (4.9.4):** a felhasználó maga visszavonhatja a saját grantjét; az admin is; token-rotáció. Finomszemcsés: nem az agentet állítod le, csak egy user-grantet.
+- **Offboarding / GDPR (4.4.2, 4.14):** `suspended` felhasználó → grantjei automatikusan `revoked`, a tokenek törölve. A grant személyes adat — retenció és törlés rá is vonatkozik.
+- **Tenant-izoláció (8.8):** a grantek tenant-scope-osak; két tenant sosem osztozik granten; az izoláció határa továbbra is az agent.
+
+**Build vs. adopt (a 4.13 elv szerint).** A per-user OAuth token-menedzsment (sok provider, refresh, titkosítás, rotáció, visszavonás) pont az a biztonságkritikus "vízvezeték-szerelés", ahol az **adopt-path hamarabb indokolt lehet, mint a governance-rétegnél**. Ezért a token-vault az `Authorizer`/connector-interfész mögé kerül (cserepont): kiváltható egy self-hostolt "connected accounts" réteggel, miközben a `connector_grants` séma, a kétrétegű `authorize()` és az acting-user-feloldás **a mi kódunk és absztrakciónk marad**.
 
 ### 4.13 Build vs. Adopt — saját megoldás alapból, opcionális adopt-path később
 
