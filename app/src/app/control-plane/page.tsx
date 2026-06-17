@@ -1,8 +1,7 @@
 import Link from 'next/link'
 import { getDashboardStats, listAgents, listTickets } from '@/app/actions/platform'
 import { Badge, Card } from '@/components/ui/shell'
-import { AgentAvatar } from '@/components/agents/agent-avatar'
-import { personaFor, humanStatus } from '@/lib/agent-persona'
+import { DashboardAgentCard } from '@/components/agents/dashboard-agent-card'
 import { TICKET_STATE_LABELS, TICKET_STATE_TONE } from '@/lib/ticket-labels'
 
 function greeting() {
@@ -89,25 +88,9 @@ export default async function DashboardPage() {
         </div>
 
         <div className="grid gap-4 md:grid-cols-3">
-          {agents.slice(0, 3).map((agent) => {
-            const p = personaFor(agent.name)
-            const mood = humanStatus(agent.status)
-            return (
-              <Link key={agent.id} href={`/control-plane/agents/${agent.id}`}>
-                <Card className="h-full transition-transform duration-200 hover:-translate-y-1">
-                  <div className="flex items-center gap-4">
-                    <AgentAvatar name={agent.name} status={agent.status} size="md" />
-                    <div className="min-w-0">
-                      <p className="font-display text-xl font-semibold leading-tight">{p.nickname}</p>
-                      <p className="truncate text-xs text-ink-faint">{agent.name}</p>
-                      <p className="mt-1 text-xs font-medium text-sage">{mood.label}</p>
-                    </div>
-                  </div>
-                  <p className="mt-4 text-sm italic leading-relaxed text-ink-soft">“{p.greeting}”</p>
-                </Card>
-              </Link>
-            )
-          })}
+          {agents.slice(0, 3).map((agent) => (
+            <DashboardAgentCard key={agent.id} agent={agent} />
+          ))}
           {agents.length === 0 && (
             <Card className="md:col-span-3">
               <p className="text-sm text-ink-faint">
