@@ -1383,6 +1383,16 @@ async function scenario15_gatewayOpenAI(agentId: string) {
 
   ensureOAuthStubForAcceptance()
 
+  // Provider-agnosztikus: nem hardcode-olunk modellt, a route az agent
+  // modelConfig.model-jét használja, így a teszt a ténylegesen konfigurált
+  // providert gyakorolja (stub / élő chatgpt-oauth / lokális ollama-gemma).
+  const agentRecord = await prisma.agent.findUnique({
+    where: { id: agentId },
+    select: { modelConfig: true },
+  })
+  const agentModel = (agentRecord?.modelConfig ?? {}) as { provider?: string; model?: string }
+  const providerName = agentModel.provider ?? 'chatgpt-oauth'
+
   const ticket = await repositories.tickets.create({
     type: 'interaction',
     title: 'Acceptance: gateway API',
@@ -1406,8 +1416,8 @@ async function scenario15_gatewayOpenAI(agentId: string) {
           'content-type': 'application/json',
           'x-ticket-id': ticket.id,
         },
+        // `model` szándékosan kihagyva → a route az agent modelConfig.model-jét veszi.
         body: JSON.stringify({
-          model: 'chatgpt-oauth-default',
           messages: [{ role: 'user', content: SAMPLE_WIKI_QUESTION }],
         }),
       }),
@@ -1416,6 +1426,7 @@ async function scenario15_gatewayOpenAI(agentId: string) {
     const body = (await response.json()) as {
       choices?: Array<{ message?: { content?: string } }>
       usage?: { prompt_tokens?: number }
+      error?: { message?: string }
     }
 
     if (
@@ -1423,7 +1434,19 @@ async function scenario15_gatewayOpenAI(agentId: string) {
       body.choices?.[0]?.message?.content &&
       body.choices[0].message.content.trim().length > 0
     ) {
-      pass('Gateway /v1/chat/completions OpenAI formátum', `tokens=${body.usage?.prompt_tokens ?? 'n/a'}`)
+      pass(
+        'Gateway /v1/chat/completions OpenAI formátum',
+        `provider=${providerName} tokens=${body.usage?.prompt_tokens ?? 'n/a'}`,
+      )
+    } else if (response.status === 502) {
+      // A Gateway-plumbing (auth, scope, ticket, validáció, naplózás) lefutott, de a
+      // konfigurált modell-backend nem elérhető (pl. lokális Ollama nem fut, vagy az élő
+      // ChatGPT OAuth token lejárt). Ez nem a Gateway hibája → skip, hogy a suite
+      // provider-független maradjon. A determinisztikus CI-path továbbra is a stub (200).
+      skip(
+        'Gateway OpenAI API',
+        `provider=${providerName} backend nem elérhető: ${body.error?.message?.slice(0, 120) ?? 'upstream hiba'}`,
+      )
     } else {
       fail('Gateway OpenAI API', `status=${response.status} body=${JSON.stringify(body).slice(0, 200)}`)
     }
