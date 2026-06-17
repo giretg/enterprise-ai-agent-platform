@@ -3,8 +3,9 @@
 import { useRouter } from 'next/navigation'
 import { useState, useTransition } from 'react'
 import { updateAgentModelConfig } from '@/app/actions/platform'
+import { ModelSelectField } from '@/components/agents/model-select-field'
 import { Card } from '@/components/ui/shell'
-import { MODEL_PROVIDERS, providerOption } from '@/lib/model-providers'
+import { MODEL_PROVIDERS, normalizeModelForProvider, providerOption } from '@/lib/model-providers'
 
 // Admin agentenként módosíthatja a modell-konfigot (provider/model/temperature/
 // maxTokens). Minden mentés új agent-verziót fagyaszt be (reprodukálhatóság).
@@ -42,7 +43,7 @@ export function UpdateModelConfigForm({
               agentId,
               modelConfig: {
                 provider,
-                model: model.trim() || selected.defaultModel,
+                model: normalizeModelForProvider(provider, model),
                 ...(Number.isFinite(temperature) ? { temperature } : {}),
                 ...(Number.isFinite(maxTokens) && maxTokens > 0 ? { maxTokens } : {}),
               },
@@ -64,10 +65,7 @@ export function UpdateModelConfigForm({
               onChange={(e) => {
                 const next = providerOption(e.target.value)
                 setProvider(next.value)
-                // Provider-váltáskor a sentinel/másik provider modelljéről a megfelelőre.
-                if (model === providerOption(provider).defaultModel || !model.trim()) {
-                  setModel(next.defaultModel)
-                }
+                setModel(normalizeModelForProvider(next.value, model))
               }}
               className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm"
             >
@@ -80,12 +78,7 @@ export function UpdateModelConfigForm({
           </label>
           <label className="block text-sm">
             <span className="text-ink-soft">Modell</span>
-            <input
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm"
-              placeholder={selected.defaultModel}
-            />
+            <ModelSelectField provider={provider} model={model} onModelChange={setModel} />
           </label>
           <label className="block text-sm">
             <span className="text-ink-soft">Temperature</span>

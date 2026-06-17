@@ -4,7 +4,8 @@ import { useRouter } from 'next/navigation'
 import { useState, useTransition } from 'react'
 import { createAgent } from '@/app/actions/platform'
 import { Card } from '@/components/ui/shell'
-import { MODEL_PROVIDERS as PROVIDERS } from '@/lib/model-providers'
+import { ModelSelectField } from '@/components/agents/model-select-field'
+import { MODEL_PROVIDERS as PROVIDERS, normalizeModelForProvider } from '@/lib/model-providers'
 
 const DEFAULT_MODEL = {
   provider: 'chatgpt-oauth',
@@ -40,7 +41,7 @@ export function CreateAgentForm() {
               modelConfig: {
                 ...DEFAULT_MODEL,
                 provider,
-                model: model.trim() || selectedProvider.defaultModel,
+                model: normalizeModelForProvider(provider, model),
                 temperature: Number(fd.get('temperature') ?? DEFAULT_MODEL.temperature),
               },
             })
@@ -103,7 +104,7 @@ export function CreateAgentForm() {
               onChange={(e) => {
                 const next = PROVIDERS.find((p) => p.value === e.target.value) ?? PROVIDERS[0]
                 setProvider(next.value)
-                setModel(next.defaultModel)
+                setModel(normalizeModelForProvider(next.value, model))
               }}
               className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm"
             >
@@ -116,12 +117,10 @@ export function CreateAgentForm() {
           </label>
           <label className="block text-sm">
             <span className="text-ink-soft">Modell</span>
-            <input
-              name="model"
-              value={model}
-              onChange={(e) => setModel(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm"
-              placeholder={selectedProvider.defaultModel}
+            <ModelSelectField
+              provider={provider}
+              model={model}
+              onModelChange={setModel}
             />
           </label>
         </div>

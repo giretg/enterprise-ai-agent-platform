@@ -1,6 +1,6 @@
 import type { AgentRole } from '@prisma/client'
 import type { SelfEvolutionProfile } from '@/lib/self-evolution-profile'
-import { providerOption } from '@/lib/model-providers'
+import { modelLabel, providerOption } from '@/lib/model-providers'
 
 const SCOPE_LABELS: Record<SelfEvolutionProfile['scope'][number], string> = {
   memory: 'emlékek',
@@ -50,7 +50,7 @@ export function modelConfigSummary(modelConfig: Record<string, unknown>) {
   const model = String(modelConfig.model ?? '')
   const option = providerOption(provider)
   const parts = [option.label]
-  if (model && model !== option.defaultModel) parts.push(model)
+  if (model) parts.push(modelLabel(provider, model))
   if (typeof modelConfig.temperature === 'number') {
     parts.push(`kreativitás: ${modelConfig.temperature}`)
   }

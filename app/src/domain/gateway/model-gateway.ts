@@ -1,6 +1,7 @@
 import { Prisma, type ModelCallStatus } from '@prisma/client'
 import type { AuditRepository, ModelCallRepository } from '@/repositories/interfaces'
 import { callChatGptOAuth } from './chatgpt-oauth-bridge'
+import { GeminiProvider } from './gemini-provider'
 import { createTokenStoreFromEnv, ensureFreshTokens } from './oauth-token-store'
 
 export type GatewayGuardrail = {
@@ -282,6 +283,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
 export function createDefaultProviders(): Map<string, ModelProvider> {
   const providers: ModelProvider[] = [
     new ChatGptOAuthProvider(),
+    new GeminiProvider(),
     // Helyi Gemma Ollama-n keresztül (OpenAI-kompatibilis /v1).
     new OpenAiCompatibleProvider('ollama', 'OLLAMA_BASE_URL', 'http://localhost:11434/v1', 'OLLAMA_API_KEY'),
   ]
