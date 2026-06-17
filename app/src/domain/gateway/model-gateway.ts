@@ -179,11 +179,87 @@ export class ChatGptOAuthProvider implements ModelProvider {
   }
 }
 
+/**
+ * OpenAI-kompatibilis provider helyi/önálló modellekhez (pl. Ollama-n futó
+ * Gemma, vagy llama.cpp `llama-server`). A `modelConfig.provider` ezt választja
+ * (pl. `ollama`); a `modelConfig.model` a backend modell-azonosítója
+ * (pl. `gemma-local`). A base URL env-ből jön (default Ollama: localhost:11434).
+ */
+export class OpenAiCompatibleProvider implements ModelProvider {
+  constructor(
+    readonly name: string,
+    private baseUrlEnvVar: string,
+    private defaultBaseUrl?: string,
+    private apiKeyEnvVar?: string,
+  ) {}
+
+  async chat(input: {
+    agentId: string
+    ticketId?: string
+    messages: GatewayMessage[]
+    modelConfig: ModelConfig
+  }): Promise<ModelProviderResult> {
+    const baseUrl = (process.env[this.baseUrlEnvVar] || this.defaultBaseUrl)?.replace(/\/+$/, '')
+    if (!baseUrl) {
+      throw new Error(`${this.name} provider base URL not configured (${this.baseUrlEnvVar})`)
+    }
+    const apiKey = this.apiKeyEnvVar ? process.env[this.apiKeyEnvVar] : undefined
+
+    const started = Date.now()
+    const response = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
+      },
+      body: JSON.stringify({
+        model: input.modelConfig.model,
+        messages: input.messages.map((m) => ({ role: m.role, content: m.content })),
+        temperature: input.modelConfig.temperature,
+        max_tokens: input.modelConfig.maxTokens,
+        stream: false,
+      }),
+    })
+
+    if (!response.ok) {
+      throw new Error(`${this.name} provider failed: ${response.status} ${(await response.text()).slice(0, 200)}`)
+    }
+
+    const data = (await response.json()) as {
+      choices?: Array<{ message?: { content?: string } }>
+      usage?: { prompt_tokens?: number; completion_tokens?: number }
+      model?: string
+    }
+    const content = data.choices?.[0]?.message?.content ?? ''
+    if (!content.trim()) throw new Error(`${this.name} provider returned empty content`)
+
+    return {
+      content,
+      usage: {
+        promptTokens: data.usage?.prompt_tokens,
+        completionTokens: data.usage?.completion_tokens,
+      },
+      latencyMs: Date.now() - started,
+      model: data.model,
+    }
+  }
+}
+
+/** A Gateway által ismert providerek (modelConfig.provider → implementáció). */
+export function createDefaultProviders(): Map<string, ModelProvider> {
+  const providers: ModelProvider[] = [
+    new ChatGptOAuthProvider(),
+    // Helyi Gemma Ollama-n keresztül (OpenAI-kompatibilis /v1).
+    new OpenAiCompatibleProvider('ollama', 'OLLAMA_BASE_URL', 'http://localhost:11434/v1', 'OLLAMA_API_KEY'),
+  ]
+  return new Map(providers.map((p) => [p.name, p]))
+}
+
 export class ModelGateway {
   constructor(
     private audit: AuditRepository,
     private modelCalls: ModelCallRepository,
-    private provider: ModelProvider = new ChatGptOAuthProvider(),
+    private providers: Map<string, ModelProvider> = createDefaultProviders(),
     private guardrail: GatewayGuardrail = { maxCallsPerTicket: 20 },
   ) {}
 
@@ -194,8 +270,11 @@ export class ModelGateway {
     modelConfig: ModelConfig
     retryCount?: number
   }): Promise<{ content: string; usage: { promptTokens: number; completionTokens: number } }> {
-    if (params.modelConfig.provider !== this.provider.name) {
-      throw new Error(`Unsupported model provider: ${params.modelConfig.provider}`)
+    const provider = this.providers.get(params.modelConfig.provider)
+    if (!provider) {
+      throw new Error(
+        `Unsupported model provider: ${params.modelConfig.provider} (ismert: ${[...this.providers.keys()].join(', ')})`,
+      )
     }
 
     const model = params.modelConfig.model || 'chatgpt-oauth-default'
@@ -226,7 +305,7 @@ export class ModelGateway {
 
     const started = Date.now()
     try {
-      const result = await this.provider.chat({
+      const result = await provider.chat({
         agentId: params.agentId,
         ticketId: params.ticketId,
         messages: params.messages,
@@ -244,7 +323,7 @@ export class ModelGateway {
       await this.modelCalls.create({
         agentId: params.agentId,
         ticketId: params.ticketId ?? null,
-        provider: this.provider.name,
+        provider: provider.name,
         model: usedModel,
         promptTokens,
         completionTokens,
@@ -277,7 +356,7 @@ export class ModelGateway {
       await this.modelCalls.create({
         agentId: params.agentId,
         ticketId: params.ticketId ?? null,
-        provider: this.provider.name,
+        provider: provider.name,
         model,
         promptTokens: 0,
         completionTokens: 0,

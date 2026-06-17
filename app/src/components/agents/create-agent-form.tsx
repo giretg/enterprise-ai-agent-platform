@@ -12,12 +12,31 @@ const DEFAULT_MODEL = {
   maxTokens: 4096,
 }
 
+// A választható modellforrások (modelConfig.provider) és alapértelmezett modelljük.
+const PROVIDERS: Array<{ value: string; label: string; defaultModel: string; hint: string }> = [
+  {
+    value: 'chatgpt-oauth',
+    label: 'ChatGPT OAuth (felhő)',
+    defaultModel: 'chatgpt-oauth-default',
+    hint: 'A Model Gateway szerveroldali ChatGPT OAuth mediációja (gpt-5.5).',
+  },
+  {
+    value: 'ollama',
+    label: 'Helyi Gemma (Ollama)',
+    defaultModel: 'gemma-local',
+    hint: 'Helyben futó modell az Ollama OpenAI-kompatibilis API-ján (OLLAMA_BASE_URL).',
+  },
+]
+
 export function CreateAgentForm() {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
   const [apiKey, setApiKey] = useState<string | null>(null)
   const [createdAgentId, setCreatedAgentId] = useState<string | null>(null)
+  const [provider, setProvider] = useState(PROVIDERS[0].value)
+  const [model, setModel] = useState(PROVIDERS[0].defaultModel)
+  const selectedProvider = PROVIDERS.find((p) => p.value === provider) ?? PROVIDERS[0]
 
   return (
     <Card title="Új agent">
@@ -34,6 +53,8 @@ export function CreateAgentForm() {
               behaviorProfile: String(fd.get('behaviorProfile')),
               modelConfig: {
                 ...DEFAULT_MODEL,
+                provider,
+                model: model.trim() || selectedProvider.defaultModel,
                 temperature: Number(fd.get('temperature') ?? DEFAULT_MODEL.temperature),
               },
             })
@@ -76,6 +97,38 @@ export function CreateAgentForm() {
             placeholder="Magyarul, tömören válaszolj, minden állításhoz adj forráshivatkozást..."
           />
         </label>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <label className="block text-sm">
+            <span className="text-ink-soft">Modellforrás (provider)</span>
+            <select
+              name="provider"
+              value={provider}
+              onChange={(e) => {
+                const next = PROVIDERS.find((p) => p.value === e.target.value) ?? PROVIDERS[0]
+                setProvider(next.value)
+                setModel(next.defaultModel)
+              }}
+              className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm"
+            >
+              {PROVIDERS.map((p) => (
+                <option key={p.value} value={p.value}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="block text-sm">
+            <span className="text-ink-soft">Modell</span>
+            <input
+              name="model"
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm"
+              placeholder={selectedProvider.defaultModel}
+            />
+          </label>
+        </div>
+        <p className="text-xs text-ink-soft">{selectedProvider.hint}</p>
         <label className="block text-sm">
           <span className="text-ink-soft">Temperature</span>
           <input
