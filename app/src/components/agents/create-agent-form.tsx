@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation'
 import { useState, useTransition } from 'react'
 import { createAgent } from '@/app/actions/platform'
 import { Card } from '@/components/ui/shell'
+import { MODEL_PROVIDERS as PROVIDERS } from '@/lib/model-providers'
 
 const DEFAULT_MODEL = {
   provider: 'chatgpt-oauth',
@@ -11,22 +12,6 @@ const DEFAULT_MODEL = {
   temperature: 0.2,
   maxTokens: 4096,
 }
-
-// A választható modellforrások (modelConfig.provider) és alapértelmezett modelljük.
-const PROVIDERS: Array<{ value: string; label: string; defaultModel: string; hint: string }> = [
-  {
-    value: 'chatgpt-oauth',
-    label: 'ChatGPT OAuth (felhő)',
-    defaultModel: 'chatgpt-oauth-default',
-    hint: 'A Model Gateway szerveroldali ChatGPT OAuth mediációja (gpt-5.5).',
-  },
-  {
-    value: 'ollama',
-    label: 'Helyi Gemma (Ollama)',
-    defaultModel: 'gemma-local',
-    hint: 'Helyben futó modell az Ollama OpenAI-kompatibilis API-ján (OLLAMA_BASE_URL).',
-  },
-]
 
 export function CreateAgentForm() {
   const router = useRouter()

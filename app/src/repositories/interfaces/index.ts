@@ -107,6 +107,15 @@ export interface AgentRepository {
     roleChanged: boolean
     behaviorChanged: boolean
   }>
+  /**
+   * Frissíti az agent modell-konfigurációját (provider/model/temperature/maxTokens).
+   * Új `agent_versions` snapshotot fagyaszt (a szerep/viselkedés/memória/recipe
+   * öröklődik), és lépteti az agent `currentVersion`-jét — a reprodukálhatóságért.
+   */
+  updateModelConfig(input: {
+    agentId: string
+    modelConfig: Agent['modelConfig']
+  }): Promise<{ agentVersion: number }>
   authenticateApiKey(rawKey: string): Promise<{ agentId: string; scopes: string[] } | null>
 }
 

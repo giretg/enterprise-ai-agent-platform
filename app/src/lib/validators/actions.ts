@@ -141,6 +141,16 @@ export const updateAgentInstructionSchema = z
     message: 'Legalább a szerep-instrukciót vagy a viselkedés-profilt meg kell adni',
   })
 
+export const updateAgentModelConfigSchema = z.object({
+  agentId: z.string().uuid(),
+  modelConfig: z.object({
+    provider: z.string().min(1),
+    model: z.string().min(1),
+    temperature: z.number().min(0).max(2).optional(),
+    maxTokens: z.number().int().positive().optional(),
+  }),
+})
+
 export const createInteractionTicketSchema = z.object({
   agentId: z.string().uuid(),
   title: z.string().min(1),

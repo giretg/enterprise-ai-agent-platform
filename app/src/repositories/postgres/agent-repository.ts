@@ -218,6 +218,45 @@ export class PostgresAgentRepository implements AgentRepository {
     }
   }
 
+  async updateModelConfig(input: { agentId: string; modelConfig: Agent['modelConfig'] }) {
+    const agent = await prisma.agent.findUnique({ where: { id: input.agentId } })
+    if (!agent) throw new Error('Agent not found')
+
+    // Új snapshot örökli az aktuális szerep/viselkedés al-verziókat, memória- és
+    // recipe-kötést; csak a modell-konfig változik (reprodukálhatóság).
+    const currentVersion = await prisma.agentVersion.findUnique({
+      where: { agentId_version: { agentId: agent.id, version: agent.currentVersion } },
+    })
+    if (!currentVersion) throw new Error('Current agent version snapshot missing')
+
+    const nextAgentVersion = agent.currentVersion + 1
+
+    await prisma.$transaction([
+      prisma.agentVersion.create({
+        data: {
+          agentId: agent.id,
+          version: nextAgentVersion,
+          roleInstructionSnapshot: agent.roleInstruction,
+          behaviorProfileSnapshot: agent.behaviorProfile,
+          roleInstructionVersion: agent.currentRoleInstructionVersion,
+          behaviorProfileVersion: agent.currentBehaviorProfileVersion,
+          modelConfigSnapshot: input.modelConfig as Prisma.InputJsonValue,
+          memoryVersionId: currentVersion.memoryVersionId,
+          recipeVersionId: currentVersion.recipeVersionId,
+        },
+      }),
+      prisma.agent.update({
+        where: { id: agent.id },
+        data: {
+          modelConfig: input.modelConfig as Prisma.InputJsonValue,
+          currentVersion: nextAgentVersion,
+        },
+      }),
+    ])
+
+    return { agentVersion: nextAgentVersion }
+  }
+
   async authenticateApiKey(rawKey: string) {
     if (!rawKey.startsWith('cp_sk_')) return null
 

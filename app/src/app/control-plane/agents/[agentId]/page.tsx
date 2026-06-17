@@ -4,6 +4,7 @@ import { getAgent, getAgentGovernance } from '@/app/actions/platform'
 import { Badge, Card } from '@/components/ui/shell'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { UpdateInstructionForm } from '@/components/agents/update-instruction-form'
+import { UpdateModelConfigForm } from '@/components/agents/update-model-config-form'
 import { personaFor, humanStatus } from '@/lib/agent-persona'
 import { sandboxKindForAgent, sandboxLabelForKind } from '@/lib/agent-kind'
 
@@ -157,6 +158,17 @@ export default async function AgentDetailPage({
         behaviorProfile={agent.behaviorProfile}
         roleVersion={agent.currentRoleInstructionVersion}
         behaviorVersion={agent.currentBehaviorProfileVersion}
+      />
+
+      <UpdateModelConfigForm
+        agentId={agent.id}
+        current={{
+          provider: String(modelConfig.provider ?? 'chatgpt-oauth'),
+          model: String(modelConfig.model ?? ''),
+          temperature:
+            typeof modelConfig.temperature === 'number' ? modelConfig.temperature : undefined,
+          maxTokens: typeof modelConfig.maxTokens === 'number' ? modelConfig.maxTokens : undefined,
+        }}
       />
 
       <Card title="Tanítás">

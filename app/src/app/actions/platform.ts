@@ -32,6 +32,7 @@ import {
   createSandboxReportSchema,
   createAgentSchema,
   updateAgentInstructionSchema,
+  updateAgentModelConfigSchema,
   createTrainingSchema,
   askWikiSchema,
   processDocumentSchema,
@@ -240,6 +241,35 @@ export async function updateAgentInstruction(input: {
     return ok(result)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to update agent instruction')
+  }
+}
+
+export async function updateAgentModelConfig(input: {
+  agentId: string
+  modelConfig: { provider: string; model: string; temperature?: number; maxTokens?: number }
+}) {
+  try {
+    const user = await requireRole('admin')
+    const parsed = updateAgentModelConfigSchema.parse(input)
+    const result = await repositories.agents.updateModelConfig(parsed)
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: result.agentVersion,
+      action: 'agent.version',
+      targetType: 'agent',
+      targetId: parsed.agentId,
+      modelUsed: parsed.modelConfig.model,
+      inputRef: null,
+      outputRef: `v${result.agentVersion}`,
+      policyDecision: 'allowed',
+      metadata: { changed: ['modelConfig'], modelConfig: parsed.modelConfig },
+    })
+
+    return ok(result)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update agent model config')
   }
 }
 
