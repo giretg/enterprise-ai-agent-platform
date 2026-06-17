@@ -19,9 +19,11 @@ function resolveUploadTarget(filename: string): { storageRef: string; absolutePa
   }
   return { storageRef: path.join('uploads', safeName), absolutePath }
 }
+import { clerkClient } from '@clerk/nextjs/server'
 import { getCurrentUser, requireRole } from '@/auth'
 import { services } from '@/domain'
 import { repositories } from '@/repositories/postgres'
+import { isClerkEnabled } from '@/lib/clerk-config'
 import { fail, ok, type ActionResult } from '@/lib/result'
 import {
   agentIdSchema,
@@ -523,15 +525,36 @@ export async function listInvitations() {
 
 export async function inviteUser(input: { email: string; role: string }) {
   try {
-    const user = await requireRole('admin')
+    const actor = await requireRole('admin')
     const parsed = inviteUserSchema.parse(input)
+    const email = parsed.email.trim().toLowerCase()
+
+    // Clerk-natív gating: regisztrálni csak meghívóval lehet (Dashboard → Restrictions:
+    // "sign-ups restricted to invitations"). A Clerk-meghívó hordozza a szerepkört a
+    // publicMetadata-ban; a `user.created` webhook ebből állítja be — nincs külön beváltó lépés.
+    let clerkInvited = false
+    if (isClerkEnabled()) {
+      const appUrl = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, '')
+      const client = await clerkClient()
+      await client.invitations.createInvitation({
+        emailAddress: email,
+        publicMetadata: { role: parsed.role },
+        notify: true,
+        ignoreExisting: true,
+        ...(appUrl ? { redirectUrl: `${appUrl}/sign-up` } : {}),
+      })
+      clerkInvited = true
+    }
+
+    // In-app napló + token-alapú beváltás (spec-tesztelt domain folyamat, dev/fallback útvonal).
     const result = await services.iam.inviteUser({
-      email: parsed.email,
+      email,
       role: parsed.role,
-      createdById: user.id,
+      createdById: actor.id,
     })
-    // A nyers token CSAK most adható vissza.
-    return ok({ invitationId: result.invitation.id, token: result.rawToken })
+    // A nyers token CSAK most adható vissza. Clerk-módban e-mail ment ki, a token csak
+    // belső fallback — a UI ennek megfelelően jelzi, hogy nem kell kézzel megosztani.
+    return ok({ invitationId: result.invitation.id, token: result.rawToken, clerkInvited })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to invite user')
   }

@@ -60,6 +60,7 @@ export function IamAdminPanel({
   const [role, setRole] = useState<UserRole>('operator')
   const [message, setMessage] = useState<string | null>(null)
   const [issuedToken, setIssuedToken] = useState<string | null>(null)
+  const [clerkInvited, setClerkInvited] = useState(false)
 
   const pendingInvitations = useMemo(
     () => invitations.filter((invitation) => invitation.status === 'pending').length,
@@ -130,7 +131,12 @@ export function IamAdminPanel({
                   const result = await inviteUser({ email, role })
                   if (result.success) {
                     setEmail('')
-                    setMessage('Meghívó létrehozva.')
+                    setClerkInvited(result.data.clerkInvited)
+                    setMessage(
+                      result.data.clerkInvited
+                        ? 'Meghívó e-mail kiküldve (Clerk).'
+                        : 'Meghívó létrehozva.',
+                    )
                     setIssuedToken(result.data.token)
                     router.refresh()
                   } else {
@@ -146,7 +152,12 @@ export function IamAdminPanel({
           {issuedToken && (
             <div className="mt-4 rounded-lg border border-honey/35 bg-honey/10 p-3">
               <p className="text-xs font-semibold uppercase tracking-[0.12em] text-honey">
-                Egyszer látható token
+                {clerkInvited ? 'Belső token (fallback)' : 'Egyszer látható token'}
+              </p>
+              <p className="mt-1 text-xs text-ink-faint">
+                {clerkInvited
+                  ? 'A meghívott e-mailben kap Clerk-linket — a regisztrációkor a szerepkör automatikusan beáll. Ezt a tokent nem kell kézzel megosztani; csak belső/dev fallback.'
+                  : 'Oszd meg ezt a tokent a meghívottal a beváltó oldalhoz.'}
               </p>
               <code className="mt-2 block break-all rounded bg-night-2 p-2 font-mono text-xs text-ink-soft">
                 {issuedToken}

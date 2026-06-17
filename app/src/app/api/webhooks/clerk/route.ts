@@ -42,6 +42,15 @@ export async function POST(req: NextRequest) {
       create: user,
       update: { email: user.email, name: user.name, role: user.role },
     })
+
+    if (evt.type === 'user.created') {
+      // Clerk-meghívóval érkezett regisztráció: a megfelelő in-app meghívót beváltottra
+      // állítjuk, hogy a Meghívók lista a valóságot tükrözze (nincs külön token-beváltás).
+      await prisma.invitation.updateMany({
+        where: { email: user.email.toLowerCase(), status: 'pending' },
+        data: { status: 'redeemed', redeemedAt: new Date() },
+      })
+    }
   }
 
   if (evt.type === 'user.deleted') {
