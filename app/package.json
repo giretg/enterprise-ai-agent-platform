@@ -23,6 +23,7 @@
     "s2:stub": "tsx scripts/chatgpt-oauth-stub.ts",
     "s2:provider": "tsx scripts/chatgpt-oauth-provider.ts",
     "s2:live-smoke": "tsx scripts/s2-live-smoke.ts",
+    "s2:secret-setup": "bash infra/gcp/setup-chatgpt-oauth-secret.sh",
     "test:acceptance": "tsx scripts/acceptance-e2e.ts",
     "postinstall": "prisma generate"
   },

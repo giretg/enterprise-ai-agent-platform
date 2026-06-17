@@ -18,46 +18,19 @@
  *   → { content, usage: { promptTokens, completionTokens } }
  */
 import { createServer } from 'node:http'
-import { readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import {
-  callChatGptOAuth,
-  isAccessTokenExpired,
-  refreshAccessToken,
-  type ChatGptOAuthTokens,
-} from '../src/domain/gateway/chatgpt-oauth-bridge'
+import { callChatGptOAuth } from '../src/domain/gateway/chatgpt-oauth-bridge'
+import { FileTokenStore, ensureFreshTokens } from '../src/domain/gateway/oauth-token-store'
 import type { GatewayMessage } from '../src/domain/gateway/model-gateway'
 
 const PORT = Number.parseInt(process.env.CHATGPT_OAUTH_PROVIDER_PORT ?? '3101', 10)
 const EXPECTED_KEY = process.env.CHATGPT_OAUTH_PROVIDER_KEY ?? 'dev-internal-key'
 const AUTH_FILE = process.env.CODEX_AUTH_FILE ?? join(homedir(), '.codex', 'auth.json')
 
-type AuthFile = {
-  tokens: { access_token: string; refresh_token: string; account_id: string; id_token?: string }
-  last_refresh?: string
-}
-
-function loadAuth(): AuthFile {
-  return JSON.parse(readFileSync(AUTH_FILE, 'utf8')) as AuthFile
-}
-
-/** Lejárat előtt frissít és visszaírja az auth.json-t; visszaadja a használandó tokeneket. */
-async function getFreshTokens(): Promise<ChatGptOAuthTokens> {
-  const auth = loadAuth()
-  if (!isAccessTokenExpired(auth.tokens.access_token)) {
-    return { accessToken: auth.tokens.access_token, accountId: auth.tokens.account_id }
-  }
-  console.log('[s2-provider] access token lejárt — frissítés refresh_token-nel…')
-  const refreshed = await refreshAccessToken(auth.tokens.refresh_token)
-  auth.tokens.access_token = refreshed.accessToken
-  auth.tokens.refresh_token = refreshed.refreshToken
-  if (refreshed.idToken) auth.tokens.id_token = refreshed.idToken
-  auth.last_refresh = new Date().toISOString()
-  writeFileSync(AUTH_FILE, JSON.stringify(auth, null, 2), { mode: 0o600 })
-  console.log('[s2-provider] token frissítve, auth.json visszaírva')
-  return { accessToken: auth.tokens.access_token, accountId: auth.tokens.account_id }
-}
+// Ugyanazt a token-tárolót használja, mint a beágyazott provider (DRY): betölt,
+// lejáratkor frissít + write-back.
+const tokenStore = new FileTokenStore(AUTH_FILE)
 
 const server = createServer(async (req, res) => {
   if (req.method !== 'POST') {
@@ -79,7 +52,7 @@ const server = createServer(async (req, res) => {
       modelConfig?: { model?: string }
     }
 
-    const tokens = await getFreshTokens()
+    const tokens = await ensureFreshTokens(tokenStore)
     const result = await callChatGptOAuth({
       tokens,
       messages: body.messages ?? [],

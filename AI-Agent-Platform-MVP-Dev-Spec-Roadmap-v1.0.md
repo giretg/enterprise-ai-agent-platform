@@ -790,7 +790,7 @@ A fejlesztés akkor kész, ha:
 
 ## 15. Megvalósítási státusz a jelenlegi kódbázis alapján
 
-**Frissítve:** 2026-06-16 (session 16)
+**Frissítve:** 2026-06-17 (session 17)
 **Állapotjelölés:** `Kész` = működő kód + build zöld; `Részben kész` = van alap, de nem teljesíti még a spec minden kipróbálhatósági kritériumát; `Hátra van` = érdemi implementáció hiányzik.
 
 ### 15.1 Elkészült / részben elkészült elemek
@@ -842,7 +842,7 @@ A fejlesztés akkor kész, ha:
 ### 15.3 Következő javasolt fejlesztési sorrend
 
 1. **Éles GCP proof:** ~~`npm run harness:cloud-run-smoke` valódi projekten~~ ✅ ZÖLD (2026-06-16, `enterprise-ai-demo`). Hátra: **hálózati szintű** VPC connector + Cloud NAT + firewall deny-by-default (most app-szintű egress guard); production dispatcher launch-auth (App Hosting SA `run.developer` a jobon); valódi ChatGPT OAuth provider bekötésekor `CHATGPT_OAUTH_STUB` visszavétele.
-2. ~~**S2 éles OAuth:** valódi ChatGPT OAuth provider~~ ✅ ÉLES ZÖLD (session 16) — sidecar + `~/.codex/auth.json`, Responses backend, `npm run s2:live-smoke`. Hátra: ToS-jóváhagyás éles üzem előtt; heti kvóta/budget cap validáció valós terhelésen.
+2. ~~**S2 éles OAuth:** valódi ChatGPT OAuth provider~~ ✅ ÉLES ZÖLD lokálisan (session 16) — sidecar + `~/.codex/auth.json`, Responses backend, `npm run s2:live-smoke`. **Éles deploy path kész (session 16):** beágyazott in-process mediáció az App Hosting Gateway-ben (`CHATGPT_OAUTH_EMBEDDED`), tokenek **Secret Managerből** (`CHATGPT_OAUTH_TOKEN_SECRET`) **write-back refresh**szel (`oauth-token-store.ts`, metadata-token + REST minta); beágyazott módban lokálisan is verifikálva (`gpt-5.5`). **Aktiválás (NEM automatikus deploy után):** `npm run s2:secret-setup` (token feltöltés + IAM accessor/versionAdder), `apphosting.yaml` flip (stub ki / embedded be), **ToS-jóváhagyás**, deploy. Hátra: heti kvóta/budget cap valós terhelésen; refresh-token elhalásra re-login runbook.
 3. **Tool Broker hardening:** Secret Manager injektálás; connector secret alias igazolása.
 4. ~~**Negatív tesztek:** N1–N4 acceptance-ben~~ ✅ N1–N4 mind zöld (session 14). Hátra: éles egress probe Docker/GCP-n (`npm run harness:egress-probe`) valódi konténer ellen.
 5. **Deploy hardening [CR-MVP-001]:** App Registry preview külön cookieless origin.

@@ -32,7 +32,26 @@ env:
     secret: HARNESS_CALLBACK_TOKEN
     availability:
       - RUNTIME
+  # --- ChatGPT OAuth Model Gateway ---
+  # JELENLEG: stub (valódi OAuth nélkül). A valódi, beágyazott mediációhoz (S2):
+  #   1) töltsd fel a ~/.codex/auth.json tartalmát Secret Managerbe:
+  #        npm run s2:secret-setup   (app/infra/gcp/setup-chatgpt-oauth-secret.sh)
+  #   2) kommenteld KI a CHATGPT_OAUTH_STUB blokkot, és kommenteld BE az alábbi kettőt
+  #   3) ToS-jóváhagyás után deploy.
   - variable: CHATGPT_OAUTH_STUB
     value: "true"
     availability:
       - RUNTIME
+  # - variable: CHATGPT_OAUTH_EMBEDDED
+  #   value: "true"
+  #   availability:
+  #     - RUNTIME
+  # - variable: CHATGPT_OAUTH_TOKEN_SECRET
+  #   # A secret RESOURCE neve (nem a payload): projects/<PROJECT_NUMBER>/secrets/CHATGPT_OAUTH_TOKENS
+  #   value: "projects/REPLACE_PROJECT/secrets/CHATGPT_OAUTH_TOKENS"
+  #   availability:
+  #     - RUNTIME
+  # - variable: CHATGPT_OAUTH_MODEL
+  #   value: "gpt-5.5"
+  #   availability:
+  #     - RUNTIME

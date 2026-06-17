@@ -1,5 +1,7 @@
 import { Prisma, type ModelCallStatus } from '@prisma/client'
 import type { AuditRepository, ModelCallRepository } from '@/repositories/interfaces'
+import { callChatGptOAuth } from './chatgpt-oauth-bridge'
+import { createTokenStoreFromEnv, ensureFreshTokens } from './oauth-token-store'
 
 export type GatewayGuardrail = {
   /** Ticketenkénti modellhívás-plafon (5.4) — túllépve a Gateway nem hív. */
@@ -122,6 +124,26 @@ export class ChatGptOAuthProvider implements ModelProvider {
 
     if (isStubProviderConfigured(providerUrl)) {
       return stubWikiAnswer(input.messages)
+    }
+
+    // Beágyazott (in-process) mediáció: a tokent Secret Managerből / fájlból
+    // töltjük, lejáratkor frissítünk + write-back, és közvetlenül a ChatGPT
+    // Responses backendet hívjuk. A token nem hagyja el a szerver-runtime-ot.
+    const tokenStore = createTokenStoreFromEnv()
+    if (tokenStore) {
+      const started = Date.now()
+      const tokens = await ensureFreshTokens(tokenStore)
+      const result = await callChatGptOAuth({
+        tokens,
+        messages: input.messages,
+        model: input.modelConfig.model,
+      })
+      return {
+        content: result.content,
+        usage: result.usage,
+        latencyMs: Date.now() - started,
+        model: result.model,
+      }
     }
 
     if (!providerUrl || !internalKey) {
