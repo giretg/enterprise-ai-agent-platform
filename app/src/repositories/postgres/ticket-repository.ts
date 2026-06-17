@@ -48,8 +48,11 @@ export class PostgresTicketRepository implements TicketRepository {
   }
 
   async create(
-    data: Omit<Ticket, 'id' | 'createdAt' | 'updatedAt' | 'lockToken' | 'lockedAt'> &
-      Partial<Pick<Ticket, 'lockToken' | 'lockedAt'>>,
+    data: Omit<
+      Ticket,
+      'id' | 'createdAt' | 'updatedAt' | 'lockToken' | 'lockedAt' | 'playbookRef' | 'conversationId'
+    > &
+      Partial<Pick<Ticket, 'lockToken' | 'lockedAt' | 'playbookRef' | 'conversationId'>>,
   ): Promise<Ticket> {
     const ticket = await prisma.ticket.create({ data: data as Prisma.TicketUncheckedCreateInput })
     if (ticket.state === 'ready') await notifyTicketReady(ticket.id)
@@ -59,7 +62,17 @@ export class PostgresTicketRepository implements TicketRepository {
   async update(
     id: string,
     data: Partial<
-      Pick<Ticket, 'state' | 'payload' | 'assigneeType' | 'assigneeId' | 'lockToken' | 'lockedAt'>
+      Pick<
+        Ticket,
+        | 'state'
+        | 'payload'
+        | 'assigneeType'
+        | 'assigneeId'
+        | 'lockToken'
+        | 'lockedAt'
+        | 'playbookRef'
+        | 'conversationId'
+      >
     >,
   ): Promise<Ticket> {
     const ticket = await prisma.ticket.update({

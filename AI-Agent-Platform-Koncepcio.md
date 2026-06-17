@@ -1,9 +1,9 @@
 # Kontrollált Enterprise AI Agent Platform — Koncepció
 
 **Készítette:** Excellence Pay KFT (Enterprise AI tanácsadás)
-**Verzió:** 0.8 — döntések lezárva: multi-tenant architektúra, modellstratégia (OpenAI előfizetés + Gemini API), pilot use case (belső tudás-asszisztens / llm-wiki), elhalasztott komponensek (sensitivity router, policy engine, memory substrate/retrieval, saját model hosting), Sandbox App Container / App Registry réteg
-**Dátum:** 2026-06-15
-**Státusz:** Döntések lezárva — MVP-tervezésre és fejlesztésindításra kész
+**Verzió:** 0.10 — v0.9 döntései + alapvető interakciós-modell átkeretezés: **a beszélgetés az ember↔agent alapinterakció, a Kanban-board opcionális koordinációs/áttekinthetőségi réteg** (nem univerzális kötelező interfész); a governance forrása a kontrollált runtime, nem a ticket; a kötelező jóváhagyási kapu leválik a ticketről; új session-kezelési réteg (4.14)
+**Dátum:** 2026-06-17
+**Státusz:** Döntések lezárva — fejlesztés folyamatban; a v0.8 → v0.9 változások az MVP-spec pontosítását igénylik (lásd a changelog per-item fejlesztői hatásait)
 
 > **Változásnapló (v0.3 → v0.4):** a `marveen-osszehasonlitas-es-tanulsagok.md` elemzés alapján beépítve a [github.com/Szotasz/marveen](https://github.com/Szotasz/marveen) projekt kilenc átvehető mintája — a *mechanizmust* átvéve, az *automatizmust* a governance-kapuink alá hajtva. Érintett fejezetek: 4.5 (szerep/viselkedés szétválasztás), 4.6 (hibrid memória-retrieval + reflexió mint tanítási-ticket feeder), 4.8.3 és 4.8.6 (progressive disclosure + recipe-katalógus), 4.10.5 (delegálási státusz-réteg), 4.11 (scheduler-robusztusság + proaktív monitor), 5.3.3 (spec-vezérelt szállítás), 11.5 (proaktív monitor use case).
 
@@ -14,6 +14,16 @@
 > **Változásnapló (v0.5 → v0.6):** az 5. fejezet (Execution / Sandbox Plane) kibővítve azzal a koncepcióval, hogy a munkatér nem csak megjeleníti az agentek munkáját, hanem **agent-által fejleszthető alkalmazásplatform** — egy Canvas-szerű, de valódi, perzisztens appokat futtató felület, ahol az AI igény szerint épít és karbantart belső alkalmazásokat (pl. CRM, ha a cégnek nincs). A keret kulcsa a **scratchpad-pozicionálás**: a sandbox hivatalosan AI-munkafelület, nem a cég éles infrastruktúrája — a kockázat az ismert, vállalható „Excel-szintű" kockázat (Excel-analógia), nem éles rendszer SLA. Az enterprise-megfelelést **governance-by-construction** (beépített alapelvek + elfogadási kapu), **scratchpad-szintű mentés/verziózás** (git-szerű projekt, test→live promóció, kód-vs-adat snapshot) és **graduation/kiszervezés** (egy gombos export a cég saját rendszerébe) adja, GDPR-feldolgozói caveattel. Új/átírt alfejezetek: 5.4 (kettős sík + Canvas-keret + „szabadság a kerítésen belül"), 5.5 (scratchpad-pozicionálás, Excel-felelősséghatár, GDPR-caveat), 5.6 (governance-by-construction: állandó system prompt + elfogadási kapu + kritikussági szintezés L0–L3) és 5.6.1 (a két audit-szint összekapcsolása auditori nézőpontból: kerítés-audit a control plane-ben + sandbox-belső audit, a graduation mint audit-érési trigger), 5.7 (verziózás, mentés, test→live promóció), 5.8 (graduation/kiszervezés + a sandbox-vízió). A 6. fejezet adat-/kontrollhatára frissítve a scratchpad-kerettel.
 
 > **Változásnapló (v0.7 → v0.8):** az 5. fejezet önálló **Sandbox App Container / App Registry** réteggel bővült (5.9). Ez explicitté teszi, hogyan lesz az agent-fejleszthető sandboxból tényleges, nyilvántartott, preview-olható, verziózott és exportálható alkalmazásréteg. A Goose Apps / MCP Apps mintájából a mechanizmust vesszük át (AI által létrehozott, elkülönített mini-app, iframe/sandbox preview, letölthető artefakt), de enterprise környezetben saját registry, policy, audit, export és graduation-kapuk alá tesszük. Az MVP-ben ebből csak egy nagyon vékony, levágható stretch-szelet javasolt: A0 single-file HTML riportnézet + preview + download/export, nem teljes többfájlos app-platform.
+
+> **Változásnapló (v0.8 → v0.9):** három, egymással összefüggő architekturális pontosítás épült be — **konfigurálható agent-szerepek**, **per-agent önfejlesztési profil** és **Playbook-elsődleges végrehajtás**. Mivel a fejlesztés már folyamatban van, minden ponthoz külön jelöljük a **fejlesztői hatást** (ezek alapján kell az MVP-spec dokumentumot is pontosítani):
+>
+> 1. **ÚJ 4.5.1 — Konfigurálható agent-szerepek (nincs beégetett „fő-agent").** Az agent-szerep konfigurálható erőforrás, nem hardcode-olt típus; az „orchestrator" egy *opcionális*, *tool-less* (Tool Broker capability és rendszerbe-író jog nélküli), kizárólag delegáló szerep, amely Playbookra hivatkozva indít folyamatot. **Fejlesztői hatás:** az Agent Registry (4.5) sémájában a szerep ne legyen fix enumerált típus; kell egy „orchestrator" szerep-sablon eszközjogok nélkül, amelynek egyetlen kimenő művelete a ticket-nyitás (4.2). Ha a jelenlegi implementáció beégetett mester-agentet feltételez, azt konfigurálható szerep-rekordra kell cserélni.
+> 2. **ÚJ 4.6.4 — Önfejlesztési profil (kapu-erősség tárcsa, nem be/ki kapcsoló).** A 4.6.1 write-gate minden agentre érvényes marad, de a kapu *erőssége* per-agent konfigurálható (scope, jóváhagyási mód, hatókör-limit); a verziózás + rollback + audit és a szerveroldali, egyszer használatos write-token **sosem kapcsolható ki**. **Kemény padló:** agent önmódosítással **soha nem bővítheti** a saját jogosultságait / eszköz-hozzáférését. **Fejlesztői hatás:** kell egy `self_evolution_profile` konfig-objektum az agent-rekordon (4.5); a tanítási/write-gate pipeline-nak (4.6.1) a profil szerint kell jóváhagyási útvonalat választania; a jogosultság-bővítést **kódszinten tiltani** kell az önfejlesztési útvonalon (capability/RBAC változás csak külön admin-aktus lehet, sosem self-service).
+> 3. **MÓDOSÍTVA 4.10 + 4.10.2, ÚJ 4.10.6 — Playbook-elsődleges végrehajtás.** A korábbi „choreográfia-elsődleges" megfogalmazás **felülírva**: a többlépéses folyamat forrás-igazsága egy **hozzárendelhető, verziózott Playbook-dokumentum**, nem az agentek implicit (memóriában élő) tudása. A Playbook folyamat-/tickettípushoz rendelhető, a résztvevők ugyanazt a verziót használják, az orchestrator csak *hivatkozik* rá, a flow-t pedig **determinisztikusan a ticket-állapotgép lépteti** (a Playbookból fordított átmenetek/kapuk szerint), nem LLM. **Fejlesztői hatás:** a Playbook legyen önálló, verziózott, **gépiesen olvasható** dokumentum-entitás (deklaratív struktúra, nem csak prompt-szöveg); folyamatindításkor a Playbook-verziót **rögzíteni (pin) kell az audit-logba**; a kötelező jóváhagyási kapuk az **állapotgép-konfigurációból** jöjjenek (Playbook→állapotgép fordítás), ne az agent promptjából. A choreográfia megmarad mint *átadási mechanika*, de már a Playbook vezérli.
+>
+> **Döntés dátuma:** 2026-06-17. **Érintett MVP-spec szakaszok:** Agent Registry séma, write-gate / tanítási pipeline, Playbook-entitás és ticket-állapotgép — ezeket a fenti 1–3 fejlesztői hatások szerint kell pontosítani.
+
+> **Változásnapló (v0.9 → v0.10):** alapvető interakciós-modell pontosítás — **a beszélgetés az ember↔agent alapinterakció, a Kanban-board pedig opcionális koordinációs/áttekinthetőségi réteg, nem univerzális kötelező interfész.** Korábban (4.2) a ticket volt „az egyetlen, naplózott interakciós felület"; ezt **felülírjuk**: a governance forrása nem a ticket, hanem a **kontrollált runtime** (minden modell- és eszközhívás a Model Gateway-en és a Tool Brokeren át, naplózva, verziózott agenttel) — ez **ticket nélkül is** teljes. Három, egymással összefüggő következmény: (1) **4.2 átkeretezve** — beszélgetés-elsődleges, a board opcionális; ticket csak **határátlépéskor** keletkezik (idő / delegálás / jóváhagyás); (2) **a kötelező jóváhagyási kapu (🔒6) leválik a ticketről**, és a control plane-ben, a művelet **kritikussági szintje** (L0–L3, 5.6) alapján kényszerül ki — akár chatben kérték a feladatot —, a ticket legfeljebb a kapu *felülete*, nem a kikényszerítője; (3) **ÚJ 4.14 — Beszélgetés- és session-kezelés**: a beszélgetésszál a ticket és az agent mellett harmadik first-class, control plane-birtokolt entitás (tárolás, retenció, GDPR-törlés, tenant-izoláció, kontextus-rehydration), élesen elválasztva az agent verziózott memóriájától (4.6). **Tenant-modell pontosítás (8.8):** az izoláció határa az **agent** — két tenant nem osztozik agenteken; új ügyfél teljesen különálló agentekkel, beállításokkal és beszélgetésekkel költözik be. **Érintett szakaszok:** 4.2, 4.10 (hatókör), 4.14 (új), 8.5, 8.8. **Döntés dátuma:** 2026-06-17.
 
 > A fejezetek elején **"Közérthetően"** dobozok segítenek azoknak, akik nem járatosak az AI-agentek világában: ezek egyszerű nyelven, hasonlatokkal mondják el, miről szól az adott rész. Az alábbi fogalomtár a leggyakoribb szakszavakat magyarázza.
 
@@ -87,7 +97,7 @@ Egy tipikus folyamat így néz ki:
 7. Jóváhagyás után történik meg a tényleges rendszerbe írás vagy lezárás.
 8. Minden esemény auditnaplóba kerül: agent-verzió, modell, eszközhívás, döntés, jóváhagyó, időpont, költség.
 
-Ez a ticket-alapú működés azért fontos, mert az üzleti vezető számára így az AI nem egy láthatatlan háttérfolyamat, hanem **felügyelhető munkaáramlás**.
+A fenti egy *kockázatos, jóváhagyás-igényes* folyamat példája, ahol a ticket indokolt. A legtöbb hétköznapi ember↔agent interakció ezzel szemben egyszerűbb: a felhasználó beszél az agenttel, az pedig azonnal végrehajt — ticket nélkül, de továbbra is auditált környezetben (4.2, 4.14). Az üzleti vezető számára a kulcs nem az, hogy minden ticket legyen, hanem hogy az AI ne legyen **láthatatlan háttérfolyamat**: ezt az **audit-log + activity feed** garantálja (minden interakció megjelenik), a ticket / Kanban pedig opcionális koordinációs réteg az összetartozó, delegált vagy ütemezett munkára.
 
 ### 0.6 Mit kap az ügyfél?
 
@@ -156,7 +166,7 @@ MVP-re akkor alkalmas a koncepció, ha a dokumentum a következőket már explic
 A koncepció lényege egy **AI agent platform, amely szétválasztja a *kormányzást* (governance) és a *végrehajtást* (execution)**. Ez a szétválasztás technikailag **három komponensben** valósul meg:
 
 1. **Control Plane — "AI Governance & Orchestration Hub"** (1. alkalmazás)
-   Egy szigorúan kontrollált, általunk szállított és karbantartott alkalmazás, amely a Kanban-board / ticket modellen keresztül vezérli az AI agentek és emberek munkáját. Itt történik minden hozzáférés-kezelés, jogosultságkezelés, naplózás, audit, agent-életciklus-menedzsment, tanítás és többszintű jóváhagyás; itt él a **Model Gateway** (modellhívások) és a **Tool Broker** (eszköz-/MCP-hívások) is. Ez a platform a vállalat **megbízhatósági és megfelelőségi (compliance) garanciája**: nem módosítható kontrollálatlanul, minden agent-interakció és tanulási esemény auditálható.
+   Egy szigorúan kontrollált, általunk szállított és karbantartott alkalmazás, amely az AI agentek és emberek munkáját **a kontrollált runtime-on keresztül vezérli és naplózza** (minden modell- és eszközhívás a Model Gateway-en, illetve a Tool Brokeren át). Itt történik minden hozzáférés-kezelés, jogosultságkezelés, naplózás, audit, agent-életciklus-menedzsment, **beszélgetés- / session-kezelés** (4.14), tanítás és többszintű jóváhagyás; itt él a **Model Gateway** (modellhívások) és a **Tool Broker** (eszköz-/MCP-hívások) is. A **Kanban-board / ticket modell ennek egy opcionális koordinációs rétege** (4.2) — az alapinterakció a beszélgetés, nem a ticket. Ez a platform a vállalat **megbízhatósági és megfelelőségi (compliance) garanciája**: nem módosítható kontrollálatlanul, minden agent-interakció és tanulási esemény auditálható.
 
 2. **Execution / Sandbox Plane — "Agent Workspace"** (2. alkalmazás)
    Egy ügyfélre szabott, szabadon továbbfejleszthető környezet (UI + adat), amelyben az 1. alkalmazásban definiált agentek munkája megjelenik: dashboardok, adatbázisok, feltöltött dokumentumok és a cég saját, agentekkel is fejleszthető kódbázisa. Ezt az ügyfél, az agentek és mi is fejleszthetjük — itt jön létre a tényleges, testreszabott üzleti érték.
@@ -433,16 +443,26 @@ Mindkét folyamatban közös: **a Goose csak a két átjárón keresztül kommun
 
 A vállalat **enterprise-szintű elvárásainak garantálása**: minden agent-interakció naplózott, minden tanítás auditált, minden hozzáférés menedzselt. Ez az alkalmazás a megbízhatóság horgonypontja, ezért **csak szigorúan kontrollált körülmények között — általunk, a szállítóként — módosítható**.
 
-### 4.2 Ticket-modell (a board mint univerzális interfész)
+### 4.2 Interakciós modell: beszélgetés-elsődleges, a board opcionális koordinációs réteg
 
-> **Közérthetően:** A "ticket" egy feladatkártya — olyan, mint egy Trello- vagy Jira-kártya. Minden munka, akár emberé, akár AI-é, ilyen kártyaként jelenik meg egy közös táblán. Ez azért jó, mert így minden feladat egy helyen látható, követhető és naplózható — nincs "láthatatlan" AI-tevékenység.
+> **Közérthetően:** Az ember és az AI-munkatárs **alapból beszélget** — kérsz valamit, az agent végrehajtja. Ehhez **nem kell feladatkártyát (tickettet) nyitni**. A Kanban-board hasznos, de **opcionális**: arra jó, hogy összetartozó feladatokat együtt láss, hogy az AI-munkatársak egymásnak adjanak át munkát, vagy hogy egy később / ismétlődően elvégzendő feladat eredménye látható helyre kerüljön. A biztonság és az auditálhatóság **nem a kártyától** van, hanem attól, hogy minden művelet kontrollált, naplózott és verziózott — ez ticket nélkül is igaz.
 
-Minden munka — emberé és agenté egyaránt — **ticketként** jelenik meg a Kanban-boardon. A ticket az egyetlen, naplózott interakciós felület. Két alapvető tickettípus:
+**Alapelv (v0.10-ben átkeretezve): a governance forrása a kontrollált runtime, nem a ticket.** Korábban a ticket volt „az egyetlen, naplózott interakciós felület"; ezt felülírjuk. Az audit, a verziózás, a capability-kapuk és a jóváhagyás a **futtatás** tulajdonságai (minden modellhívás a Model Gateway-en, minden eszközhívás a Tool Brokeren át, naplózva, verziózott agenttel — 3.2, 4.7, 4.8.4, 8.5) — ezek **ticket nélkül is** teljesülnek. Ebből következően:
 
-- **Interakciós (munka-) ticket:** az agent végrehajt egy feladatot, de **nem módosíthatja önmagát** belőle. Tisztán "olvasd a kontextust → cselekedj → naplózz" minta.
-- **Tanítási ticket (speciális):** kizárólag ez frissítheti az agent memóriáját / tudását. Külön típus, külön jóváhagyási lánccal és külön naplóval.
+- **Ember ↔ agent: a beszélgetés az alapinterakció.** A felhasználó közvetlenül beszél egy agenttel (vagy az orchestratorral, 4.5.1), az agent pedig végrehajt — a saját, konfigurált korlátai között (milyen eszközt használhat, mihez kell engedély). Ehhez **nincs szükség ticketre**; a beszélgetés és a végrehajtás auditált környezetben zajlik (4.14, 8.5). Ember és AI a boardot **teljesen mellőzve** is együtt dolgozhat.
+- **Agent ↔ agent: a ticket a természetes (de nem kötelező) átadási mechanizmus.** Ha agentek egymásnak adnak át munkát, a legegyszerűbb és legjobban megfigyelhető forma, hogy **egymásnak ticketet nyitnak** — így látható, hol tart egy feladat (delegálási státusz, 4.10.5). Itt a tartós, visszakereshető nyom miatt a ticket az ajánlott alapértelmezés (nincs ember a hurokban, aki fejben tartaná a kontextust).
+- **Ticket akkor keletkezik, ha a munka határt lép át.** Három tipikus eset: **idő** (később / ismétlődően elvégzendő feladat — pl. „csináld meg naponta, és az eredményről nyiss ticketet"), **átadás** (másik agentnek vagy embernek), **jóváhagyás / visszajelzés** (az agent elkészült és emberi elfogadásra vagy visszajelzésre vár → ticketet nyit az embernek). Ha egyik sem áll fenn → beszélgetés + azonnali végrehajtás, ticket nélkül.
 
-A ticketek **szerveroldali állapotgépen** mozognak (pl. `Backlog → In Review → Approved → In Progress → Awaiting Human → Done`). Az engedélyezett állapotátmeneteket és tickettípusokat az **admin felület** konfigurálja — nem az agent dönti el, hová léphet egy ticket.
+**A kötelező jóváhagyási kapu nem a ticketben él (kritikus).** Mivel a ticket opcionális, a kötelező human-in-the-loop kapu (🔒6, 4.10) **nem maradhat a ticket-állapotgépben**, különben egy direkt beszélgetésben megkerülhető lenne. A kapu **kikényszerítése a control plane-ben** történik, a művelet **kritikussági szintje** alapján (L0–L3, 5.6): alacsony kockázatú lépés (read-only, scratchpad — L0–L1) szabadon, csak naplózással fut; magas kockázatú, rendszerbe-író vagy szabályozási hatású lépés (L2–L3) **automatikusan jóváhagyási kapura eszkalál**, akkor is, ha a feladatot chatben kérték. A jóváhagyás **felülete** lehet inline a beszélgetésben **vagy** ticket — de a kapu **maga nem opcionális**, és nem az agent dönti el, hogy elsül-e.
+
+**A board mint opcionális koordinációs / áttekinthetőségi réteg.** A Kanban-board továbbra is értékes — de mint *opció*, amely az áttekinthetőséget javítja (összetartozó feladatok csoportos kezelése, agent↔agent átadás, ütemezett munka eredménye), nem mint kötelező áthaladási pont. A teljes láthatóságot (ami az enterprise vevőnek számít) nem a board kötelezővé tétele adja, hanem az **audit-log + activity feed** (8.5, 4.14): minden interakció és végrehajtás automatikusan, kártya nélkül is megjelenik egy idővonalon. *(A többlépéses, Playbook-vezérelt folyamatokra a 4.10 továbbra is érvényes — ott a ticket-choreográfia az átadási mechanika.)*
+
+Két alapvető tickettípus marad érvényben:
+
+- **Interakciós (munka-) ticket:** az agent végrehajt egy feladatot, de **nem módosíthatja önmagát** belőle. Tisztán „olvasd a kontextust → cselekedj → naplózz" minta.
+- **Tanítási ticket (speciális):** kizárólag ez frissítheti az agent memóriáját / tudását. Külön típus, külön jóváhagyási lánccal és külön naplóval (4.6).
+
+A ticketek **szerveroldali állapotgépen** mozognak (pl. `Backlog → In Review → Approved → In Progress → Awaiting Human → Done`). Az engedélyezett állapotátmeneteket és tickettípusokat az **admin felület** (4.3) konfigurálja — nem az agent dönti el, hová léphet egy ticket.
 
 ### 4.3 Admin felület — paraméterezés
 
@@ -511,6 +531,20 @@ Egy AI munkatárs létrehozása itt történik. Egy agent rekord tartalmazza:
 **Az instrukció két rétege — szerep vs. viselkedés (marveen-minta).** Az agent-instrukciót érdemes két, külön verziózott részre bontani (a marveen `CLAUDE.md` / `SOUL.md` szétválasztásának higiéniai mintájára): (1) **szerep-instrukció** — *mi a feladata és hogyan végzi* (a tényleges munkavégzés leírása); (2) **viselkedés-profil** — *milyen hangnemben, milyen kommunikációs és formázási szabályokkal* dolgozik (pl. tényközpontú, tömör, magyar nyelv, citálási kötelezettség). Enterprise-ban a "személyiség" másodlagos, de a szétválasztás akkor is hasznos: a viselkedés-profil **megosztott, újrahasznosítható erőforrásként** (4.9.1) köthető több agentre (egységes céges hangnem és output-szabvány), miközben a szerep-instrukció agent-egyedi marad. Mindkettő külön verziózott és a write-gate (4.6.1) hatálya alá esik — vagyis a hangnem/output-szabvány módosítása is jóváhagyott, auditált változás, nem ad-hoc prompt-átírás.
 
 Az életciklus: **Létrehozás → Konfiguráció → Teszt/Eval → Élesítés → Monitorozás → Nyugdíjazás.** Minden agent **verziózott**: bármely lezárt ticketre visszakereshető, melyik agent-verzió, milyen modellel, milyen memóriaállapottal dolgozott (reprodukálhatóság).
+
+#### 4.5.1 Konfigurálható agent-szerepek — nincs beégetett „fő-agent" (orchestrator mint szerep)
+
+> **Közérthetően:** Nem építünk be egyetlen, kitüntetett „fő AI-munkatársat", aki kivételezett jogokkal bír. Helyette a Control Plane-ben **szabadon konfigurálható**, hogy egy adott AI-munkatárs milyen szerepet kap: van, amelyik a felhasználóval beszélget és feladatot oszt szét, és van, amelyik a tényleges munkát végzi. Ez nem kódba égetett megkülönböztetés, hanem konfiguráció — te döntöd el agentenként.
+
+Az agent-szerep **konfigurálható erőforrás, nem hardcode-olt típus.** A platform szándékosan **nem ismer egyetlen, privilegizált „mester-agentet"**; helyette az Agent Registryben bármilyen szerep létrehozható és a capability-kből összeállítható (eszközjogok, modell-konfiguráció, **önfejlesztési profil** — 4.6.4, jóváhagyási/tanítási szerep). Így a „ki mit tehet" nem beégetett tulajdonság, hanem ellenőrizhető, verziózott beállítás.
+
+Egy gyakori, de **opcionális** szerep az **orchestrator (felhasználó-néző, delegáló agent):**
+
+- **Tool-less by design.** Az orchestrator szerephez alapból **nincs Tool Broker capability** és **nincs rendszerbe-író jog** — két dolgot tehet: a Model Gateway-en (4.7) beszél a felhasználóval, és tiketet nyit worker-agenteknek (4.2). Mivel a beszélgetési felület a legnagyobb prompt-injection-felület (0.7, 8.2), a közvetlen eszköz-hozzáférés hiánya itt **szándékos blast-radius-csökkentés**: a beszélgetésen érkező támadás nem tud közvetlenül műveletté válni.
+- **Csak delegál, nem mikromenedzsel.** Az orchestrator nem írja le a teljes folyamatot a „fejében"; egy többlépéses feladatot egy **Playbookra hivatkozva** indít el („végezd el ezt a feladatot az X Playbook alapján" — 4.10.6), a lépések léptetése pedig az állapotgépé, nem az orchestratoré.
+- **Maga is verziózott, auditált agent.** Az orchestrator szerep ugyanúgy az Agent Registry (4.5), a write-gate (4.6.1) és az önfejlesztési profil (4.6.4) hatálya alá esik — **nincs kivételezett, kapu nélküli státusza.**
+
+Mivel a szerep konfiguráció, ügyfelenként (multi-tenant, 8.8) külön orchestrator-instance hozható létre saját, verziózott viselkedés-profillal (4.5).
 
 ### 4.6 Tanítás és memória — jóváhagyott tudásfrissítés
 
@@ -583,6 +617,21 @@ A marveen automatikus öntanulása (auto-skill generálás triggerekre — 5+ es
 | Auditnyom | nincs | minden javaslat és döntés naplózott |
 
 Ez egyúttal a demó tanítási ciklusát (MVP-terv 3., 6. lépés) teszi élővé: a korrekció nem külső kézi beavatkozás, hanem az agent saját, reflexióból született javaslata, ami a kapun megy át.
+
+#### 4.6.4 Önfejlesztési profil — per-agent konfigurálható kapu-erősség (tárcsa, nem kapcsoló)
+
+> **Közérthetően:** Nem minden AI-munkatársnak kell ugyanolyan szigorúan tanulnia. Van, amelyiknél minden tudásfrissítést embernek kell jóváhagynia, és van, amelyik (alacsony kockázatú, belső feladatnál) gyorsabban, könnyített kapuval tanulhat. Ezt **agentenként beállíthatod** a Control Plane-ben. A lényeg: a jóváhagyási folyamat (a „kapu") **mindig ott van** az útban — csak az *erőssége* állítható, sosem kapcsolható ki teljesen. Ezért nincs olyan, hogy „teljesen szabad, ellenőrizetlen önfejlesztés".
+
+A 4.6.1 write-gate **minden agentre érvényes**, de a *kapu erőssége* **per-agent konfigurálható erőforrás** — ez az „önfejlesztési profil" (`self_evolution_profile`). Ez teszi lehetővé, hogy a rendszerben együtt éljenek szigorúan felügyelt és szabadabban tanuló agentek, **anélkül, hogy bármelyik megkerülné a kontrollált csővezetéket.** A profil gombjai:
+
+- **Scope (mit módosíthat magán):** csak memória / + viselkedés-profil (4.5) / + szerep-instrukció. A tágabb scope erősebb kaput indokol.
+- **Jóváhagyási mód:** ember kötelező / magasabb jogú szerep elég / csak eval-kapu (4.6) / eval után automatikus promóció. Ez a tárcsa „lazább" vége — de még itt is **fut az eval és a verziózás**.
+- **Hatókör-limit:** mekkora diff, milyen salience-ű / tömegű tudás érinthető egy ciklusban.
+- **Mindig fix, nem kapcsolható:** verziózás + rollback + teljes audit (4.6.1), valamint a platform kezében maradó, aláírt, egyszer használatos write-token.
+
+**Kemény padló (sosem konfigurálható ki):** egy agent **önmódosítással soha nem bővítheti a saját jogosultságait vagy eszköz-hozzáférését** (Tool Broker capability, RBAC, scoped kulcsok). Az önfejlesztés **tudáshoz és viselkedéshez** nyúlhat, **hatáskörhöz nem** — a jogosultság-bővítés kizárólag emberi adminisztratív aktus a Control Plane-ben. Ez zárja ki a privilege-escalation-t (OWASP LLM06, Excessive Agency — 0.7), és ez különbözteti meg a „könnyített tanulást" a „kontrollálatlan önfejlesztéstől": a tudás tárcsázható, a hatáskör nem.
+
+A reflexiós feeder (4.6.3) ezzel a profillal együtt működik: a reflexió **javaslatot** generál, az önfejlesztési profil pedig megmondja, **milyen kapun** megy át a javaslat az adott agentnél. Így ugyanaz a mechanizmus szolgál ki egy szigorúan őrzött könyvelő agentet és egy szabadabban tanuló belső asszisztenst — eltérő profillal, azonos write-gate-tel.
 
 ### 4.7 Model Gateway — modellabsztrakció
 
@@ -800,7 +849,9 @@ Az erőforrások **létrehozhatók, verziózhatók, rotálhatók (kulcs), vissza
 
 > **Közérthetően:** A "workflow" (munkafolyamat) azt jelenti, hogy egy nagyobb feladat több lépésből áll, amelyeket gyakran több AI-munkatárs vagy ember végez egymás után — pl. az egyik feldolgozza a számlát, a másik ellenőrzi, egy ember pedig jóváhagyja. A cégnek azért fontos, hogy ez a folyamat **áttekinthető, módosítható és ellenőrizhető** legyen: lássák, mi hogyan zajlik, könnyen tudjanak rajta változtatni, és egy auditnak is meg tudják mutatni. A kérdés, amit itt megválaszolunk: kell-e ehhez külön, bonyolult szoftvereszköz? A válasz, hogy nem — és az alábbiakban megmutatjuk, mit javaslunk helyette.
 
-**Alapdöntés: nem kell külön workflow-motor.** A ticket *maga* a folyamat alaprétege: minden munka, átadás és jóváhagyás ticketként jelenik meg. Az agent-átadás egyszerűen úgy működik, hogy az agent **utolsó lépése egy új ticket** létrehozása a következő agent/szerep számára. Ezt **choreográfiának** hívjuk (minden agent ismeri a saját következő lépését), és v1-re ez a helyes, egyszerű választás.
+**Alapdöntés (v0.9-ben pontosítva, v0.10-ben hatókörrel szűkítve): nem kell nehéz workflow-motor, de a folyamat forrás-igazsága egy explicit, hozzárendelhető Playbook-dokumentum.** Ez a fejezet a **többlépéses, több szereplős folyamatokra** vonatkozik — itt a ticket-choreográfia az átadás alaprétege: minden átadás és kötelező jóváhagyás ticketként jelenik meg. **(Az ember↔agent egyszerű, egylépéses interakció ezzel szemben beszélgetés-elsődleges és ticket-mentes — 4.2; a board ott opcionális.)** A többlépéses folyamatot azonban **nem az egyes agentek „fejében" (memóriájában) szétszórva** írjuk le, hanem egy **hozzárendelhető, verziózott Playbook-dokumentumban** (4.10.2, 4.10.6) — ez a folyamat egyetlen forrás-igazsága. Az agent-átadás technikai mechanikája továbbra is **choreográfia** (az agent utolsó lépése egy új ticket a következő szerepnek), de **a flow-t a Playbook írja le és az állapotgép lépteti**, nem az egyes agentek implicit tudása.
+
+> **Megjegyzés a v0.8 → v0.9 változáshoz:** ez a döntés **felülírja** a korábbi „choreográfia-elsődleges, a Playbook csak ráfeszített térkép" megfogalmazást. Mostantól **Playbook-elsődleges** a modell: a Playbook a vezérlő (forrás-igazság + a kötelező kapuk forrása), a choreográfia pedig az átadás mechanikája alatta. A fejlesztői következményeket lásd a 4.10.6-ban és a v0.8 → v0.9 changelogban.
 
 #### 4.10.1 A tiszta choreográfia korlátja (governance-kockázat)
 
@@ -813,7 +864,7 @@ Mivel a termék fő ígérete az **átláthatóság**, ezt nem hagyhatjuk implic
 
 #### 4.10.2 Kötelező elem — könnyű, deklaratív Playbook
 
-A **Playbook kötelező erőforrás-típus** (nem motor, csak *leírás*): egy folyamat = melyik **tickettípust** melyik **agent-szerep** kezeli, milyen **elágazásokkal / jóváhagyási pontokkal**. Verziózott és auditált → bármely lefutásra megmondható, **melyik folyamat-verzió** futott. Ez governance-nézetet ad anélkül, hogy nehéz orchestration-réteget hoznánk be.
+A **Playbook kötelező erőforrás-típus** (nem motor, hanem *önálló, hozzárendelhető dokumentum*): egy folyamat = melyik **tickettípust** melyik **agent-szerep** kezeli, milyen **elágazásokkal / jóváhagyási pontokkal**. Verziózott és auditált → bármely lefutásra megmondható, **melyik folyamat-verzió** futott. A Playbook **feladathoz / folyamattípushoz rendelhető** (pl. „könyvelési egyeztetés → `playbook:konyveles-recon@v3`"), és egy folyamat indításakor **a résztvevő összes szereplő ugyanazt a Playbook-verziót használja** — az orchestrator (4.5.1) legfeljebb *hivatkozik* rá (4.10.6), nem írja újra. Ez governance-nézetet ad anélkül, hogy nehéz orchestration-réteget hoznánk be.
 
 **Miért kötelező, és nem opcionális:** a termék fő ígérete az átláthatóság (4.10.1). Ha a teljes folyamat csak az egyes agentek memóriájában él implicit módon, akkor egy auditor *"mi a teljes folyamat, ki hagy jóvá hol?"* kérdésére nincs egyetlen tiszta forrás. A Playbook pont ezt a hiányt zárja be, ezért **minden többlépéses folyamatnál kötelező** — ez a governance-sztori egyik tartópillére, nem nice-to-have.
 
@@ -855,6 +906,20 @@ A tiszta choreográfia (4.10) korlátja (4.10.1), hogy a *futásidejű* átadás
 - **Marveen-eltérés (kontroll):** a marveen `tmux send-keys`-szel közvetlenül egy másik agent munkamenetébe írja az üzenetet — ez nálunk **nem** megengedett (közvetlen, kontrollálatlan beavatkozás). Az átadás kizárólag a ticket-mechanizmuson és a Tool Brokeren át történik, naplózva.
 
 Ez kis ráfordítású kiegészítés, amely a choreográfia egyszerűségét megtartja, de orvosolja a fő hátrányát — anélkül, hogy a Playbook (4.10.2) explicit folyamat-leírását vagy a szerveroldali kapukat kiváltaná.
+
+#### 4.10.6 Playbook-elsődleges végrehajtás — hozzárendelés, hivatkozás, determinisztikus léptetés
+
+> **Közérthetően:** Ha elindul egy összetett folyamat (pl. egy könyvelési egyeztetés, ami több AI-munkatársat érint), a rendszer fog egy konkrét „forgatókönyvet" (Playbook), és **mindenki azt követi**. A felhasználó-néző agent csak annyit mond, hogy „csináld meg ezt a feladatot az X forgatókönyv szerint" — a lépések sorrendjét és a jóváhagyási pontokat nem ő találja ki menet közben, hanem a forgatókönyv adja, és a rendszer kényszeríti ki.
+
+A Playbook-elsődleges modell (4.10 Alapdöntés) három konkrét mechanizmusból áll:
+
+1. **Hozzárendelés.** A Playbook **önálló, verziózott dokumentum-erőforrás**, amely folyamattípushoz / tickettípushoz rendelhető. Egy folyamat indításakor a rendszer **rögzíti (pin), melyik Playbook-verzió** van érvényben — ez a lefutás teljes ideje alatt fix (nem cserélődik menet közben), és bekerül az audit-logba (reprodukálhatóság, 4.5).
+2. **Hivatkozás, nem újraírás.** Az orchestrator (4.5.1) vagy a folyamatot indító szereplő **nem a teljes flow-t adja át** a workereknek, hanem egy **Playbook-hivatkozást** a tiketben („végezd el az X feladatot a `playbook:...@vN` alapján"). A folyamatban részt vevő **összes** agent ugyanarra a hivatkozott verzióra dolgozik — ez számolja fel a 4.10.1 „a flow sehol nincs explicit leírva" kockázatát.
+3. **Determinisztikus léptetés + szerveroldali kikényszerítés.** A flow-t **nem egy LLM lépteti**, hanem a control plane **ticket-állapotgépe**, a Playbookból **lefordított** átmenetek és kötelező kapuk szerint (4.10.4 „közös forrás" elve). A Playbook szövegként az agent promptjában csak *puha* iránymutatás; a **kötelező jóváhagyási kapuk fizikailag az állapotgépben** kényszerülnek ki, függetlenül attól, mit dönt egy agent. Így egy injection-nel megfertőzött agent sem tudja megkerülni a folyamat kapuit.
+
+**Miért fontos (token + audit):** mivel a léptetés determinisztikus, a routing-döntésekhez **nem kell LLM-hívás** — ez olcsó és kiszámítható (token-ökonómia, 4.11), és nincs központi LLM-bottleneck/SPOF. Az audit-log pedig a *tényleges* lefutást a *hozzárendelt Playbook-verzióhoz* tudja mérni (szándékolt vs. tényleges folyamat, 4.10.3).
+
+> **Fejlesztői megjegyzés (MVP, fejlesztés folyamatban):** ehhez a Playbooknak **gépiesen olvashatónak** (deklaratív: tickettípus → szerep → átmenet → kapu struktúra) kell lennie, hogy az állapotgép-konfigurációra fordítható legyen — **nem elég szabad szöveges leírás**. Konkrét teendők: (a) Playbook = önálló, verziózott entitás a Control Plane-ben; (b) folyamatindításkor Playbook-verzió pin az audit-logba; (c) Playbook→ticket-állapotgép fordító, amely a kötelező kapukat szerveroldalon kényszeríti ki; (d) a tiket hordozza a `playbook_ref`-et. Lásd a 12. fejezet MVP-checklistjét és a külön MVP-spec dokumentumot, amelyet e változás szerint kell pontosítani.
 
 ### 4.11 Agent-indítás: eseményvezérelt dispatch (token-takarékos végrehajtási modell)
 
@@ -982,6 +1047,30 @@ A két központi átjáró (Model Gateway, 4.7; Tool Broker, 4.8.4), az Agent Re
 | Model Gateway (4.7) | vékony saját adapter | LiteLLM / Portkey | sok provider + összetett költség-routing |
 
 **Üzleti olvasat:** mivel a célügyfeleink jellemzően **nem bankok**, a fenti jobb oldali oszlop nagy valószínűséggel **kihasználatlan opció marad** — a saját, lean megoldások adják a teljes terméket. Az adopt-path értéke nem az, hogy be fogjuk vezetni, hanem hogy a **banki upgrade-path (8.7) felé nyitva tartja az utat** anélkül, hogy az MVP-be felesleges súlyt vagy külső függőséget tennénk. A cserepontok miatt a "ha mégis kell" eset nem jelent újraírást — de a kiindulás és az alapértelmezés mindig a saját megoldás.
+
+### 4.14 Beszélgetés- és session-kezelés
+
+> **Közérthetően:** Mivel az alapinterakció a beszélgetés (4.2), gondoskodni kell arról, hogy ezek a beszélgetések **el legyenek mentve, visszakereshetők és kezelhetők** legyenek — ki látta, meddig őrizzük, mikor törölhető. Fontos: amit egy beszélgetésben mondasz, **nem írja át magától** az AI-munkatárs tartós tudását — ahhoz külön, jóváhagyott tanítás kell.
+
+A beszélgetés a ticket és az agent mellett **harmadik first-class, control plane-birtokolt entitás**. Mivel a beszélgetés lett az alapinterakció (4.2), a session-kezelés nem implementációs részlet, hanem koncepcionális elem.
+
+**Beszélgetés ≠ Goose-session (kulcsmegkülönböztetés).** A Goose-féle futtatási session (4.8) **efemer végrehajtási egység** — egy feladat lefutása, állapotmentes, futás után eldobódik. Az **ember↔agent beszélgetés ezzel szemben tartós szál**, amely sok harness-futáson átível. A kettőt nem szabad összemosni: a beszélgetésszál a maradandó, auditált rekord; a Goose-session csak az, ami egy adott körben végrehajt. Ezért a beszélgetés tárolása a **control plane-be** tartozik — nem a sandboxba és nem a harnessbe (ami minden futás után eldobja magát).
+
+**Mit tárolunk.** A beszélgetésszál minden fordulójához: az üzenet tartalma, a fordulót kezelő **agent-verzió** és **modell** (reprodukálhatóság, 4.5), a kapcsolódó **audit-események** referenciája, és az esetleg a beszélgetésből **született ticket** visszahivatkozása (ha egy chatből delegálás / ütemezés lett, a ticket a forrás-beszélgetésre mutat).
+
+**Beszélgetés-memória ≠ agent-memória (a tanítási kapu védelme).** A beszélgetés folyó kontextusa **nem módosíthatja csendben** az agent tartós tudását — ez megkerülné a write-gate-et (4.6.1). A beszélgetés-előzmény **scratch-kontextus**; ha valamit be akarsz tanítani belőle az agentbe, az **tanítási ticket + jóváhagyás** (4.6). Ez ugyanaz az elhatárolás, mint a 4.6 marveen-megkülönböztetése: a memóriát „külső beszélgetés / prompt" nem írhatja át.
+
+**Kontextus-összeállítás (rehydration).** Mivel a harness állapotmentes, a beszélgetés folytonosságát minden futás elején a control plane store-jából **vissza kell tölteni** a kontextusba. Itt el kell dönteni, *mely korábbi fordulók + mely memória + mely dokumentumok* töltődnek be — a teljes előzmény visszatöltése drága és felesleges. Ez közvetlenül a token-ökonómia (4.11) és a progressive disclosure (4.8.3) kérdése.
+
+**Megőrzés, hozzáférés, törlés.** A beszélgetés a legnagyobb PII-felület (0.7), ezért:
+
+- **Tenant-izoláció:** a beszélgetések tenantonként teljesen elkülönülten tárolódnak; mivel az agentek sem oszthatók meg tenantok között (8.8), a beszélgetés-tér is per-tenant zárt.
+- **Hozzáférés:** ki olvashat vissza egy régi szálat — RBAC szerint (4.4), a Fázis 3 erőforrás-szintű láthatósággal finomítva.
+- **Retenció + GDPR-törlés:** konfigurálható megőrzési idő és törlési jog. Az audit-immutabilitással való feszültséget a 8.5 szerint oldjuk fel: az **immutábilis audit-metaadat** (megtörtént, hash) elválik a **törölhető tartalom-payloadtól** (üzenetszöveg) — a törlés a tartalmat viszi, az auditcsontváz és a hash-lánc sértetlen marad.
+
+**Kapcsolat az activity feeddel.** A 4.2-ben említett **activity feed gyakorlatilag ennek a session-store-nak az olvasónézete** — nem külön rendszer. A board (opcionális, követett munka) és a feed (mindig-megy, minden interakció) ugyanarra az auditált alaprétegre épül.
+
+> **Fejlesztői megjegyzés (MVP):** a beszélgetésszál önálló, verziózott entitás a Control Plane-ben (`conversation` / `session` rekord), `tenant_id`-vel, fordulónkénti `agent_version` + `model` rögzítéssel, audit-event és opcionális `ticket_ref` linkkel; a tartalom-payload és az audit-metaadat **külön törölhetőséggel**. A kontextus-rehydration egy explicit „context assembly" lépés a dispatch (4.11) előtt.
 
 ---
 
@@ -1280,6 +1369,8 @@ Az enterprise/banki audit nem éri be "van egy log tábla"-szinttel. Javaslat:
 - **append-only**, **hash-láncolt** (tamper-evident) naplózás,
 - **SIEM-export** (a vállalat saját biztonsági monitorozásába),
 - naplóséma: ki/mi (agent-verzió), mit, mikor, milyen modellel, milyen input/output, milyen policy-döntés.
+- **ticket-független lefedettség [v0.10]:** az audit **nem a ticketre épül** — a ticket nélküli **beszélgetéseket és azonnali végrehajtásokat is** naplózza (4.2, 4.14); ez táplálja az **activity feedet** (a board opcionális, az idővonal mindig megy).
+- **GDPR-kompatibilis retenció [v0.10]:** a törölhetőség (erasure) és az audit-immutabilitás feszültségét úgy oldjuk fel, hogy szétválik az **immutábilis audit-metaadat** (esemény, hash, ki / mikor — marad) és a **törölhető tartalom-payload** (üzenetszöveg — 4.14); a törlés a tartalmat viszi, az auditcsontváz és a hash-lánc sértetlen marad.
 
 MVP-szinten nem kell teljes, külső WORM-tárolós auditarchitektúra, de már az első valódi pilotban legyen meg a minimális, később bővíthető séma: immutable audit event ID, actor, agent-version, ticket-id, tool/model call, policy decision, input/output referencia, timestamp, hash-previous. Így az audit nem csak "logolás", hanem későbbi compliance-bizonyíték alapja.
 
@@ -1309,6 +1400,7 @@ Telepítési mátrix az ügyfél típusa szerint (a célszegmens szerint a **fel
 ### 8.8 Amire még érdemes gondolni
 
 - **Multi-tenancy [DÖNTVE]:** az alapértelmezett deployment **by-design multi-tenant** (megosztott control plane, logikai izoláció tenant-szinten) — ez elegendő az ügyfélkör nagy részének. Szabályozott ügyfél (bank, erősen auditált PSP) dedikált példányt kaphat (8.7 upgrade-path); ezt az üzleti igény, nem az alapértelmezés dönti el. Ezért az architektúra elejétől multi-tenant elsőként tervezett, tenant-izolációval a control plane-ben (adatszegregáció, API-kulcs scope, audit-szétválasztás).
+  - **Az izoláció határa az agent [v0.10]:** két tenant **nem osztozik agenteken** — minden agent egyetlen tenanthez tartozik. Új ügyfél teljesen különállóan költözik be: **saját agentek, saját beállítások, saját Playbookok, saját erőforrások** — és ebből következően a **beszélgetések / sessionök is tenantonként teljesen elkülönülten tárolódnak** (4.14). Nincs tenantok közötti megosztott agent vagy közös beszélgetés-tér; a „megosztott control plane" csak az infrastruktúrára és a governance-kódra vonatkozik, az **adatokra és az agentekre nem**.
 - **Idempotencia és konkurrencia:** mi történik, ha két agent ugyanarra a ticketre mozdul? Kell ticket-lock / optimista konkurenciakezelés.
 - **"Kill switch" / emergency stop:** egy agent vagy az összes agent azonnali leállítása (incidens esetén).
 - **Human override mindenhol:** bármely automatizált lépés emberi felülbírálhatósága, és ennek naplózása.

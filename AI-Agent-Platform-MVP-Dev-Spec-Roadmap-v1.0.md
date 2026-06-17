@@ -1,12 +1,12 @@
 # Kontrollált Enterprise AI Agent Platform — MVP fejlesztési specifikáció és roadmap (walking skeleton)
 
 **Készítette:** Excellence Pay KFT (Enterprise AI tanácsadás)
-**Verzió:** 1.0 + CR-MVP-001 — fejlesztői átadási csomag
-**Dátum:** 2026-06-15; CR-MVP-001 hozzáadva: 2026-06-16
+**Verzió:** 1.0 + CR-MVP-001 + CR-MVP-002 + CR-MVP-003 — fejlesztői átadási csomag
+**Dátum:** 2026-06-15; CR-MVP-001 hozzáadva: 2026-06-16; CR-MVP-002 + CR-MVP-003: 2026-06-17
 **Forrásdokumentum:** `AI-Agent-Platform-MVP-Terv-v1.0.md` (architektúra-teljes MVP / walking skeleton)
-**Háttér:** `AI-Agent-Platform-Koncepcio.md` (v0.8)
+**Háttér:** `AI-Agent-Platform-Koncepcio.md` (v0.10)
 **Olvasó:** a fejlesztő(k). Direkt, technikai. Feltételezi az MVP-terv ismeretét.
-**Státusz:** kivitelezésre kész — a nyitott döntések (D1, D3, D4, D6) ebben a dokumentumban default-javaslattal **lezárva** (lásd 1. fejezet). A CR-MVP-001 új, levágható stretch elem; nem része az eredeti core MVP acceptance gate-nek.
+**Státusz:** kivitelezésre kész — a nyitott döntések (D1, D3, D4, D6) ebben a dokumentumban default-javaslattal **lezárva** (lásd 1. fejezet). A CR-MVP-001 új, levágható stretch elem; nem része az eredeti core MVP acceptance gate-nek. A **CR-MVP-002** (2026-06-17) a koncepció v0.8 → v0.9 változásait vezeti át — konfigurálható szerepek, per-agent önfejlesztési profil, Playbook-elsődleges végrehajtás; részletek a 0.1 CR-logban, a D8 döntésben és az 5.12 szakaszban. A **CR-MVP-003** (2026-06-17) a koncepció v0.9 → v0.10 interakciós-modell átkeretezését vezeti át — **beszélgetés-elsődleges interakció, a board opcionális koordinációs réteg, a kötelező jóváhagyási kapu leválik a ticketről, és új beszélgetés-/session-réteg**; részletek a 0.1 CR-logban, a D9 döntésben és az 5.13 szakaszban. **Scope:** az MVP-be csak olcsó séma-horgok és invariánsok kerülnek; a teljes multi-agent / orchestrator-flow, a BPMN-szerű Playbook és a kritikussági-szintezett (L0–L3) jóváhagyási kapu **Fázis 2**.
 
 ---
 
@@ -25,6 +25,8 @@ Ez a fejezet fejlesztői olvasatra külön jelöli, ha az eredeti v1.0 MVP scope
 | CR | Dátum | Új elem | MVP-hatás | Fejlesztői státusz |
 |---|---|---|---|---|
 | **CR-MVP-001** | 2026-06-16 | Sandbox App Container / App Registry v0 | A wiki-riport A0 single-file HTML preview/export formája. Stretch / demo-bónusz; nem blokkolja a core MVP-t. | Csak akkor implementálandó, ha S1-S4/S2 zöld és a core wiki E2E nem csúszik. |
+| **CR-MVP-002** | 2026-06-17 | Koncepció v0.9: (a) konfigurálható agent-szerepek (nincs beégetett „fő-agent", orchestrator = tool-less szerep); (b) per-agent önfejlesztési profil (write-gate kapu-erősség tárcsa); (c) Playbook-elsődleges végrehajtás (hozzárendelhető, verziózott, állapotgépre fordított Playbook) | **MVP:** olcsó séma-horgok + invariánsok (`self_evolution_profile`, `agents.role`, `playbooks`/`playbook_versions`, `tickets.playbook_ref`, „önmódosítás nem bővít jogosultságot" invariáns). **Fázis 2:** teljes orchestrator-flow + BPMN-szerű Playbook. | **Kész (2026-06-17, session 18):** MVP-horgok implementálva + acceptance zöld — scenario [27], **N6**. Részletek: 15.1. Teljes orchestrator-flow + BPMN-szerű Playbook = Fázis 2 (D8). |
+| **CR-MVP-003** | 2026-06-17 | Koncepció v0.10: **beszélgetés-elsődleges interakciós modell** — a board opcionális koordinációs réteg (nem univerzális kötelező interfész); a governance forrása a kontrollált runtime, nem a ticket; a kötelező jóváhagyási kapu **leválik a ticketről** (kritikussági szint vezérli); új **beszélgetés-/session-réteg**; tenant-izoláció határa az agent | **MVP:** olcsó séma-horgok + invariánsok (`conversations`/`messages` tábla tenant-scope-pal és content/metadata szétválasztással; `askWiki` beszélgetés-elsődleges; „a kötelező kapu nem a ticket meglététől függ" invariáns; audit-lefedettség ticket nélkül is). **Fázis 2:** teljes beszélgetés-UI több agenttel, kritikussági-szintezett (L0–L3) kapu, activity feed. | **Kész (2026-06-17, session 18):** MVP-horgok implementálva + acceptance zöld — scenario [28], **N7**, **N8**; scenario [1] átállítva beszélgetés-elsődleges flow-ra. Részletek: 15.1. Teljes beszélgetés-UI + L0–L3 kapu = Fázis 2 (D9). |
 
 ---
 
@@ -41,6 +43,8 @@ A v1.0 terv 10. fejezetének nyitott döntései ebben a specben az alábbi defau
 | D5 | Reflexió-feeder (4.6.3) | **Következő iteráció** (nem MVP) | A write-gate demó enélkül is teljes |
 | D6 | Csapat / időkeret | **2 fejlesztő, ~9–10 hét** (1 senior full-stack + 1 platform/infra) | A terv 11. ütemezése erre van kalibrálva |
 | D7 | Sandbox App Container / App Registry **[CR-MVP-001]** | **Stretch / demo-bónusz** | A0 single-file HTML riportnézet + preview + `.html` export akkor fér bele, ha S1-S4/S2 nem csúszik; A1-A3 app-platform, adatmodell-generálás, deployment és graduation Fázis 2 |
+| D8 | Koncepció v0.9 átvezetés **[CR-MVP-002]** | **MVP: séma-horgok + invariánsok; teljes flow = Fázis 2** | A walking skeletonban 1 agent fut, nincs multi-agent flow — ezért most csak a nem-ütköző horgokat építjük: konfigurálható `agents.role` (+ tool-less orchestrator séma), `self_evolution_profile`, `playbooks`/`playbook_versions` + `tickets.playbook_ref`, és a „önmódosítás nem bővít jogosultságot" kemény invariáns (N6). A tényleges orchestrator-agent és a többlépéses, BPMN-szerű Playbook-vezérlés Fázis 2. Indok: a kódbázis közel kész — a cél, hogy ne égessen be a v0.9-cel ütköző feltevést (egyetlen privilegizált agent, csak promptból vezérelt flow). |
+| D9 | Koncepció v0.10 átvezetés **[CR-MVP-003]** | **MVP: beszélgetés-séma + kapu-leválasztási invariáns; teljes beszélgetés-UI és L0–L3 kapu = Fázis 2** | A walking skeleton wiki-flow-ja ne égesse be a „minden kérdés = ticket" feltevést. MVP-horgok: (1) `conversations`/`messages` tábla (tenant-scope, content/metadata szétválasztás a GDPR-törléshez — 4.10); (2) `askWiki` beszélgetés-elsődleges: a kérdés egy **conversation/message**, ticket csak határátlépéskor (jóváhagyásra küldés / delegálás / ütemezés) keletkezik (5.10, 5.13); (3) kemény invariáns: a kötelező jóváhagyási kapu **szerveroldali és nem a ticket meglététől függ** (write-gate token, Tool Broker `authorize()`, transition-szabályok — ezek ticket nélkül is élnek), bizonyíték N7; (4) audit + `verifyChain` ticket nélküli beszélgetésre/végrehajtásra is teljes, GDPR-törlés után is ép (N8). A kritikussági-szintezett (L0–L3) automatikus eszkaláció, a teljes multi-agent beszélgetés-UI és az activity feed **Fázis 2**. Indok: a kódbázis közel kész — a beszélgetés-szubsztrát és a kapu-leválasztás olcsó horog most, de drága utólag. |
 
 **Csapat-szereposztás (javaslat a roadmaphoz):**
 
@@ -187,6 +191,8 @@ current_role_instruction_version (int)     -- "mit csinál"
 current_behavior_profile_version (int)      -- "hogyan" (magyar, tömör, citálás-kötelező)
 model_config (jsonb)                        -- { provider:"chatgpt-oauth", model, temperature, max_tokens }
 current_memory_version (int)
+role (enum: worker | orchestrator, default worker)   -- [CR-MVP-002] konfigurálható szerep; NINCS beégetett „fő-agent". orchestrator = tool-less, csak delegál (teljes flow Fázis 2)
+self_evolution_profile (jsonb, nullable)    -- [CR-MVP-002] { scope:[memory|behavior|role], approval_mode: human|higher_role|eval_only|auto_after_eval, diff_limit } — a write-gate (5.8) kapu-erőssége. A verziózás+rollback+audit és a szerveroldali, egyszer használatos token MINDIG kötelező, nem kapcsolható ki. NULL = legszigorúbb (human).
 tenant_id, created_at
 ```
 
@@ -264,6 +270,8 @@ created_by, created_at, updated_at
 id, ticket_id (fk), from_state, to_state, actor_type, actor_id, note (nullable), ts
 ```
 
+> **[CR-MVP-003] A ticket nem kötelező belépőpont.** A ticket akkor keletkezik, ha a munka **határt lép át** (idő = `execute_after`/ütemezés; átadás = másik agent/ember; jóváhagyás/visszajelzés). Az egyszerű ember↔agent interakció ettől független: beszélgetés (4.10) + azonnali végrehajtás, ticket nélkül — a governance (audit, capability, write-gate) akkor is teljes (koncepció 4.2). Ha egy beszélgetésből ticket lesz, a `conversation_id`-re visszahivatkozik (4.10). A **kötelező jóváhagyási kapu nem a ticket-állapotgép meglététől függ** (5.13, N7).
+
 ### 4.6 Connector / capability
 
 **`connectors`** *(first-class erőforrás)*
@@ -283,11 +291,14 @@ agent_id (fk), connector_id (fk), access_mode (enum: read | write)   -- pk(agent
 agent_id (fk), tool_name (text), allowed (bool)                      -- pk(agent_id, tool_name)
 ```
 
+> **[CR-MVP-002] Invariáns (kemény padló):** a `capabilities` és `agent_connectors` sorokat **kizárólag admin-aktus** írhatja az Agent Registryn (5.3) keresztül. Az önfejlesztési / tanítási útvonal (5.8) **soha** nem módosíthatja — egy agent önmódosítással **nem** bővítheti a saját jogosultságait / eszköz-hozzáférését (OWASP LLM06, Excessive Agency). Kötelező negatív teszt: **N6** (9.2).
+
 ### 4.7 Naplók
 
 **`model_calls`** *(Model Gateway napló)*
 ```
-id, ticket_id (fk, nullable), agent_id (fk), agent_version (int)
+id, ticket_id (fk, nullable), conversation_id (fk conversations, nullable)   -- [CR-MVP-003] ticket nélküli beszélgetésben ezen attribútálódik
+agent_id (fk), agent_version (int)
 model (text), prompt_tokens (int, nullable), completion_tokens (int, nullable)
 cost_estimate (numeric, nullable)        -- flat-rate kvóta → becsült/aggregált
 latency_ms (int), status (enum: ok | error | rate_limited)
@@ -297,7 +308,8 @@ created_at
 
 **`tool_calls`** *(Tool Broker napló)*
 ```
-id, ticket_id (fk, nullable), agent_id (fk), agent_version (int)
+id, ticket_id (fk, nullable), conversation_id (fk conversations, nullable)   -- [CR-MVP-003]
+agent_id (fk), agent_version (int)
 tool (text), args_meta (jsonb)           -- argumentum-metaadat, NEM nyers secret
 result_meta (jsonb), authorized (bool), denied_reason (text, nullable)
 latency_ms (int), created_at
@@ -351,6 +363,62 @@ ts (timestamptz)
 ```
 
 > **Hash-lánc szabály:** az audit-írás **kizárólag** egy dedikált `AuditService.append()`-en megy át, amely tranzakcióban olvassa az utolsó `hash`-t, kiszámítja az újat, és beilleszt. Az `audit_log` táblára `UPDATE`/`DELETE` az alkalmazás-szerepkörnek **megvonva** (csak `INSERT`/`SELECT`). A láncot egy `verifyChain()` segédfüggvény ellenőrzi (a demó és a tesztek használják).
+
+> **[CR-MVP-003] GDPR-kompatibilis retenció (content/metadata szétválasztás).** Az `audit_log` **immutábilis metaadat** — esemény, hash, actor, ts —, ez **nem törölhető** (tamper-evidence). A törölhető **tartalom** (pl. a beszélgetés üzenetszövege) **nem** az `audit_log`-ban él, hanem a `messages.content_ref` mögött (4.10), külön törölhetőséggel. Így a GDPR-törlés a tartalmat viszi, az auditcsontváz és a hash-lánc **ép marad** (`verifyChain` zöld). Bizonyíték: **N8** (9.2). Szabály: nyers üzenet-/PII-tartalom **soha** nem kerül az `audit_log.payload`-ba (csak referencia/hash).
+
+### 4.8b Ticket-független végrehajtás-napló (jegyzet)
+
+> **[CR-MVP-003]** Mivel a beszélgetés-elsődleges interakció ticket nélkül is fut, a `model_calls` (4.7) és `tool_calls` (4.7) `ticket_id`-je **nullable** (már az is) — ezekhez a `conversation_id` (4.10) köthető, így a ticket nélküli végrehajtás is teljesen attribútálható és auditálható.
+
+### 4.9 Playbook — a folyamat forrás-igazsága [CR-MVP-002]
+
+> A koncepció v0.9 **Playbook-elsődleges** döntése (koncepció 4.10/4.10.6). MVP-ben **séma + 1 triviális, 1-szereplős wiki-Playbook**; a többlépéses, multi-agent vezérlés Fázis 2 (D8). A Playbook **nem** a recipe (6.) és **nem** az audit-forrás — a forrás-igazság a szándékolt flow, a tényleges flow az audit-logból jön.
+
+**`playbooks`** + **`playbook_versions`** *(önálló, verziózott, hozzárendelhető dokumentum)*
+```
+playbooks:         id, name, process_type (text), tenant_id, created_at
+playbook_versions: id, playbook_id (fk), version (int)
+                   spec (jsonb)        -- GÉPIESEN OLVASHATÓ: [{ ticket_type, role, transitions, required_gates }]
+                   status (enum: proposed | active | retired)
+                   approved_by (fk users, nullable), created_at
+```
+
+A `tickets` tábla (4.5) **[CR-MVP-002]** kiegészül:
+```
+playbook_ref (text, nullable)     -- "playbook:<name>@vN" — folyamatindításkor PIN-elve, a lefutás alatt FIX; auditba kerül
+```
+
+**Elv (kötelező):** a kötelező jóváhagyási kapuk a `playbook_versions.spec`-ből **fordulnak** a ticket-állapotgép (5.1) konfigurációjába — a Playbook szövege az agent promptjában csak *puha* iránymutatás, a **kemény kapu szerveroldali** (egyezik a koncepció 4.10.4/4.10.6-tal). A flow-t a **determinisztikus állapotgép** lépteti, **nem LLM**. Folyamatindításkor a `playbook_ref` az audit-logba kerül (`process.start`), és a PIN-elt verzió a lefutás végéig nem cserélődik (reprodukálhatóság).
+
+### 4.10 Beszélgetés / session [CR-MVP-003]
+
+> A koncepció v0.10 **beszélgetés-elsődleges** döntése (koncepció 4.2/4.14). A beszélgetésszál a ticket és az agent mellett **harmadik first-class, control plane-birtokolt entitás** — **nem** azonos a Goose futtatási sessionnel (az efemer; ez tartós és sok futáson átível). MVP-ben séma + a wiki-flow erre kötése; a teljes többszálú beszélgetés-UI Fázis 2 (D9).
+
+**`conversations`** *(tartós szál; tenant-scoped)*
+```
+id, tenant_id (uuid)              -- [CR-MVP-003] per-tenant zárt; nincs tenantok közti megosztás (10., koncepció 8.8)
+agent_id (fk)                     -- melyik agenttel folyik (MVP: a wiki-agent)
+title (text, nullable), created_by (fk users), status (enum: active | archived)
+created_at, updated_at, last_message_at
+```
+
+**`messages`** *(fordulónkénti rekord; a tartalom külön törölhető)*
+```
+id, conversation_id (fk conversations), seq (int)        -- sorrend a szálon belül
+role (enum: user | agent | system)
+agent_version (int, nullable), model (text, nullable)    -- reprodukálhatóság (4.5); melyik verzió/modell kezelte a fordulót
+content_ref (text, nullable)      -- a TÖRÖLHETŐ payload (szöveg/PII) — GCS/DB-blob, NEM az audit_logban (4.8 GDPR-szabály)
+content_deleted_at (timestamptz, nullable)   -- GDPR-erasure: a tartalom törölve, a rekord-csontváz + audit marad
+ticket_ref (fk tickets, nullable) -- ha ebből a fordulóból ticket lett (delegálás/jóváhagyás/ütemezés)
+created_at
+```
+
+**Elvek (kötelező):**
+
+- **Beszélgetés-memória ≠ agent-memória.** A `messages` előzmény **scratch-kontextus**; **soha** nem írja az agent tartós tudását (`memory_versions`, 4.4). Tudás-beemelés kizárólag a write-gate-en (5.8) át, tanítási ticketként — egyébként a koncepció 4.6/4.14 elhatárolása sérülne.
+- **Kontextus-rehydration.** Mivel a harness állapotmentes, dispatch (5.7) előtt egy explicit *context assembly* lépés tölti vissza a releváns korábbi fordulókat + memóriát + dokumentumokat (nem a teljes előzményt — token-ökonómia, koncepció 4.8.3/4.11).
+- **Tenant-izoláció.** A `conversations`/`messages` mindig `tenant_id`-scope-olt; mivel az agentek sem oszthatók meg tenantok között (10., koncepció 8.8), a beszélgetés-tér is per-tenant zárt.
+- **GDPR-erasure.** A tartalom törlése a `content_ref`-et üríti és `content_deleted_at`-et állít; a `messages` rekord-csontváz és az `audit_log` (4.8) **marad** — `verifyChain` zöld (N8).
 
 ---
 
@@ -530,11 +598,19 @@ rollbackMemory({ agentId, toVersion }) -> { memoryVersion } [approver+]   -- cur
 **API:**
 ```
 uploadDocument({ file }) -> Document                        [operator+]
-askWiki({ agentId, question }) -> { ticketId }              [operator+]   -- interakciós ticket + ready
-getAnswer({ ticketId }) -> { answer, sources[], rationale, state }   [viewer+]
+askWiki({ agentId, question, conversationId? })             [operator+]
+  -> { conversationId, messageId, answer, sources[], rationale }
+     -- [CR-MVP-003] BESZÉLGETÉS-ELSŐDLEGES: a kérdés egy conversation/message (4.10),
+        nem automatikusan ticket. Új szál, ha conversationId nincs megadva.
+promoteToTicket({ conversationId, type, reason })           [operator+]
+  -> { ticketId }    -- [CR-MVP-003] határátlépéskor: jóváhagyásra küldés / delegálás / ütemezés
+getConversation({ conversationId }) -> { messages[], state }   [viewer+]
 generateReport({ agentId, templateId }) -> { ticketId }    [operator+]   -- 1 előre definiált riport-sablon
 ```
-**Kipróbálható, ha:** a felhasználó végigvisz egy kérdés→válasz→(opcionális tanítás)→jóváhagyás folyamatot, és minden a boardon/auditban látszik.
+
+> **[CR-MVP-003] Beszélgetés-elsődleges wiki-flow.** Az alap kérdés→citált válasz interakció **ticket nélkül** fut (a wiki-retrieval read-only, alacsony kockázat — koncepció L0–L1). Ticket akkor keletkezik, ha a felhasználó **jóváhagyásra/megőrzésre** küldi az eredményt, vagy delegál/ütemez (`promoteToTicket`). A régi „minden kérdés = ticket" viselkedés visszafelé kompatibilis úton elérhető, de **nem** az alapértelmezés.
+
+**Kipróbálható, ha:** a felhasználó végigvisz egy **beszélgetés**-alapú kérdés→citált válasz folyamatot **ticket nélkül**, és az minden lépése (model/tool-hívás) a `conversation_id`-n keresztül auditban látszik; külön, ha az eredményt jóváhagyásra küldi, abból ticket lesz, ami a `conversation_id`-re visszahivatkozik; mindkét út a boardon/auditban / activity-nézetben követhető.
 
 #### 5.10.1 Sandbox App Container / App Registry — stretch / demo-bónusz [CR-MVP-001]
 
@@ -585,15 +661,88 @@ memory.update | memory.rollback | memory.write_denied
 agent.create | agent.version | agent.key_rotate | agent.suspend
 recipe.create | recipe.version | recipe.approve
 dispatch.start | dispatch.budget_blocked
+agent.self_evolution_profile_change | training.capability_escalation_denied   -- [CR-MVP-002]
+playbook.create | playbook.version | playbook.approve | process.start   -- [CR-MVP-002] (process.start payload: playbook_ref pin)
+conversation.create | message.append | message.content_deleted | conversation.promote_to_ticket   -- [CR-MVP-003] (tartalom NEM a payloadban, csak ref/hash; ticketless interakció is auditált)
 sandbox_app.create | sandbox_app.version | sandbox_app.preview | sandbox_app.export | sandbox_app.access_denied   -- [CR-MVP-001]
 ```
 **Kipróbálható, ha:** a demó végén egy adott eredményhez megmutatható a **teljes láncolat**: input → agent-/memória-/recipe-verzió → modell- és eszközhívások → jóváhagyó; és a `verifyChain()` zöld.
+
+### 5.12 Konfigurálható szerepek, önfejlesztési profil és Playbook-elsődleges végrehajtás [CR-MVP-002]
+
+A koncepció v0.8 → v0.9 három pontjának fejlesztői átvezetése. **Scope-fegyelem (D8):** a walking skeletonban egyetlen wiki-agent fut, ezért most a **nem-ütköző séma-horgokat és invariánsokat** építjük; a teljes multi-agent orchestrator-flow Fázis 2. A három horog olcsó, de a közel kész kódbázist megóvja a v0.9-cel ütköző feltevésektől.
+
+#### 5.12.1 Konfigurálható agent-szerepek — nincs beégetett „fő-agent"
+
+**Felelősség:** az agent-szerep konfiguráció, nem hardcode. Az `agents.role` (4.2) `worker | orchestrator`; a kód **nem** feltételezhet egyetlen privilegizált agentet.
+
+- **MVP:** a wiki-agent `worker`. Kötelező: a registry/runtime ne égessen be „mester-agentet", és az `orchestrator` enum-érték + a **tool-less szabály** sémaszinten létezzen (orchestratornak nincs `capabilities` write-sora; egyetlen kimenő művelete a ticket-nyitás — 5.1).
+- **Fázis 2:** tényleges orchestrator-agent, amely Playbookra hivatkozva delegál (koncepció 4.5.1), felhasználó-néző beszélgetési belépőpontként.
+
+**Kipróbálható, ha:** létrehozható `orchestrator` szerepű agent, amelynek **nincs** eszközjoga; a rendszer sehol nem hivatkozik kódba-égetett „fő-agentre".
+
+#### 5.12.2 Önfejlesztési profil — write-gate kapu-erősség per agent
+
+**Felelősség:** az `agents.self_evolution_profile` (4.2) a write-gate (5.8) jóváhagyási útvonalát **agentenként** állítja. Az `approveTraining` a profil `approval_mode`-ja szerint választ kaput; a `scope`/`diff_limit` korlátozza, mit és mennyit érinthet egy ciklus.
+
+- **Mindig kötelező (nem kapcsolható ki):** verziózás + rollback + audit (5.8) és a szerveroldali, egyszer használatos write-gate token.
+- **Kemény padló:** az önfejlesztési / tanítási útvonal **soha** nem ír `capabilities` / `agent_connectors` sort (4.6 invariáns, N6).
+
+**API-delta:**
+```
+getAgent(...) -> AgentDetail                                  -- kiegészül a self_evolution_profile-lal
+updateAgentSelfEvolutionProfile({ agentId, profile }) -> Agent     [admin]
+```
+
+**Kipróbálható, ha:** `approval_mode='human'` agentnél a diff emberi jóváhagyás nélkül **nem** promótál; `eval_only`-nál fut az eval és a verziózás; egyik módban sem lehet a profillal jogosultságot bővíteni.
+
+#### 5.12.3 Playbook-elsődleges végrehajtás
+
+**Felelősség:** a többlépéses folyamat forrás-igazsága a `playbooks` / `playbook_versions` (4.9) dokumentum; a `tickets.playbook_ref` PIN-eli a verziót; a kötelező kapuk a `spec`-ből fordulnak az állapotgépbe (5.1).
+
+- **MVP:** Playbook-entitás + `playbook_ref` mező + **1 triviális, 1-szereplős** wiki-Playbook seed; a folyamatindítás PIN-eli és auditálja a verziót (`process.start`). A flow-t továbbra is a determinisztikus állapotgép lépteti — **nem LLM**.
+- **Fázis 2:** több szerep, elágazás, BPMN-szerű spec; orchestrator-vezérelt indítás.
+
+**Kipróbálható, ha:** egy folyamat indításakor a `playbook_ref` az auditba kerül; a kötelező kapu az **állapotgépből** (nem az agent promptjából) kényszerül ki; a PIN-elt Playbook-verzió a lefutás alatt fix.
+
+### 5.13 Beszélgetés-/session-kezelés és a jóváhagyási kapu leválasztása [CR-MVP-003]
+
+A koncepció v0.9 → v0.10 interakciós-modell átkeretezésének fejlesztői átvezetése. **Scope-fegyelem (D9):** a walking skeletonban a beszélgetés-szubsztrátot és a kapu-leválasztási invariánst építjük be; a teljes többszálú beszélgetés-UI, a kritikussági-szintezett (L0–L3) automatikus eszkaláció és az activity feed Fázis 2.
+
+#### 5.13.1 Beszélgetés / session store
+
+**Felelősség:** a `conversations`/`messages` (4.10) mint control plane-birtokolt, tenant-scoped, verzió-attribútált tartós szál; a tartalom (`content_ref`) külön törölhető a metaadattól. A dispatch (5.7) előtti **context assembly** a releváns előzményt + memóriát tölti vissza (nem a teljeset).
+
+**API:**
+```
+createConversation({ agentId, title? }) -> { conversationId }   [operator+]
+appendMessage({ conversationId, role, content, agentVersion?, model? }) -> { messageId }   -- belső; auditol
+getConversation({ conversationId }) -> { messages[], state }    [viewer+, tenant-scope kötelező]
+deleteMessageContent({ messageId }) -> { ok }                    [admin]   -- GDPR-erasure: content_ref ürítés + content_deleted_at; audit-csontváz marad
+```
+
+- **Beszélgetés-memória ≠ agent-memória:** az `appendMessage` **soha** nem ír `memory_versions`-t; tudás-beemelés csak write-gate-en (5.8) át.
+- **Tenant-izoláció:** minden olvasás `tenant_id`-scope-pal; cross-tenant hozzáférés szerveroldali elutasítás + audit.
+
+**Kipróbálható, ha:** egy beszélgetés végigfut és visszaolvasható; egy üzenet tartalmának törlése után a rekord-csontváz és a `verifyChain` ép (N8); más tenant nem éri el a szálat.
+
+#### 5.13.2 A kötelező jóváhagyási kapu nem a ticketben él (invariáns)
+
+**Felelősség:** a kötelező human-in-the-loop / write kapu **szerveroldalon, a ticket meglététől függetlenül** kényszerül ki. A walking skeletonban ezt a meglévő, már szerveroldali kapuk adják:
+
+- **rendszerbe-írás / memória-frissítés:** kizárólag a write-gate token (5.8) — beszélgetésből kért „tanuld meg" sem ír token nélkül (N3);
+- **eszközhívás:** Tool Broker `authorize()` deny-by-default (5.5) — beszélgetésből kért jogosulatlan tool is blokk (N2);
+- **ticket-átmenet (ha van ticket):** állapotgép-szabály (5.1).
+
+**Invariáns [CR-MVP-003]:** egy magas kockázatú művelet **nem** válik megkerülhetővé azáltal, hogy direkt beszélgetésben (ticket nélkül) kérik — a kaput nem az „van-e kártya", hanem a szerveroldali policy dönti el. **Fázis 2:** a művelet **kritikussági szintje** (L0–L3, koncepció 5.6) automatikusan eszkalál jóváhagyási kapura; a jóváhagyás felülete inline a beszélgetésben **vagy** ticket. Kötelező negatív teszt: **N7** (9.2).
+
+**Kipróbálható, ha:** egy beszélgetésben kért rendszerbe-író / memória-módosító lépés write-gate token / `authorize()` nélkül **nem** hajtódik végre, és a kísérlet auditba kerül — pontosan úgy, mintha ticketből kérték volna.
 
 ---
 
 ## 6. A Goose-recipe formátuma (MVP)
 
-A recipe a **tickettípus szintű „hogyan végezd"** utasítás hordozója (agent-privát) — **nem** a folyamat-flow (azt a ticket-állapotgép kényszeríti ki). Verziózott, agenthez köthető, a `recipe_versions` táblában tárolt. Javasolt YAML-séma:
+A recipe a **tickettípus szintű „hogyan végezd"** utasítás hordozója (agent-privát) — **nem** a folyamat-flow (azt a ticket-állapotgép kényszeríti ki). **[CR-MVP-002]** A *folyamat-flow* forrás-igazsága a **Playbook** (4.9), amely az állapotgépre fordul: a recipe a „hogyan", a Playbook a „milyen sorrendben, ki hagyja jóvá". A kettő nem keverendő. Verziózott, agenthez köthető, a `recipe_versions` táblában tárolt. Javasolt YAML-séma:
 
 ```yaml
 name: wiki-answer
@@ -715,12 +864,15 @@ A walking skeleton akkor kész, ha **valódi adaton, stabilan** teljesül:
 | N3 | Külső „tanuld meg, hogy…" prompt | **Nem** ír memóriát (write-gate token nélkül nincs írás) |
 | N4 | Goose-konténer közvetlen internet/rendszer-elérés kísérlete | Egress blokk; a kísérlet nem jut ki |
 | N5 *(D7 / CR-MVP-001 stretch esetén)* | Tenant A appId-vel lekéri vagy exportálja tenant B sandbox appját | Szerver elutasít + `sandbox_app.access_denied` audit |
+| N6 *(CR-MVP-002)* | Agent önmódosítással (tanítási úton) megpróbálja bővíteni a saját `capabilities` / connector-jogát | Az írás **blokk**; a jogosultság nem változik; `training.capability_escalation_denied` audit |
+| N7 *(CR-MVP-003)* | Direkt **beszélgetésben** (ticket nélkül) kért rendszerbe-író / memória-módosító művelet | A kapu **ugyanúgy elsül**, mint ticketből: write-gate token / `authorize()` nélkül **nem** hajtódik végre; a kísérlet auditba kerül — a ticket hiánya nem megkerülési út (5.13.2) |
+| N8 *(CR-MVP-003)* | GDPR-erasure: egy beszélgetés-üzenet tartalmának törlése | A `content_ref` ürül + `content_deleted_at`; a `messages` rekord-csontváz és az `audit_log` **marad**, `verifyChain()` **zöld** (4.8/4.10 content/metadata szétválasztás) |
 
-N1-N4 a core MVP kötelező negatív tesztje. N5 akkor kötelező, ha a D7 App Registry stretch leszállításra kerül.
+N1-N4 a core MVP kötelező negatív tesztje. N5 akkor kötelező, ha a D7 App Registry stretch leszállításra kerül. **N6 kötelező, ha a `self_evolution_profile` (CR-MVP-002) MVP-be kerül** — ez az önfejlesztés „kemény padló" invariánsának bizonyítéka (4.6). **N7 és N8 kötelező, ha a beszélgetés-réteg (CR-MVP-003) MVP-be kerül** — N7 a kapu-leválasztás invariánsának bizonyítéka (5.13.2), N8 a GDPR-kompatibilis, tamper-evidence-t megőrző törlésé (4.8/4.10).
 
 ### 9.3 End-to-end demó-forgatókönyv
 
-A v1.0 terv 4. fejezetének 11 lépése a demó-script alapja: belépés (IAM) → agent létrehozása → tudásfeltöltés → kérdés (ticket) → dispatch + `goose run` → citált válasz → jóváhagyás → tanítás (write-gate) → rollback → audit-láncolat → negatív tesztek.
+A v1.0 terv 4. fejezetének 11 lépése a demó-script alapja: belépés (IAM) → agent létrehozása → tudásfeltöltés → kérdés (**beszélgetés, ticket nélkül** — [CR-MVP-003]) → dispatch + `goose run` → citált válasz → **eredmény jóváhagyásra küldése = ticket** (`promoteToTicket`) → tanítás (write-gate) → rollback → audit-láncolat (a ticketless beszélgetés is benne) → negatív tesztek (N1–N4, és ha a beszélgetés-réteg bekerül: N7–N8).
 
 **Stretch demó, ha D7 / CR-MVP-001 belefér:** a generált wiki-riport önálló A0 sandbox appként is megnyílik preview-ban, majd `.html` exportként letölthető.
 
@@ -790,15 +942,15 @@ A fejlesztés akkor kész, ha:
 
 ## 15. Megvalósítási státusz a jelenlegi kódbázis alapján
 
-**Frissítve:** 2026-06-17 (session 17)
+**Frissítve:** 2026-06-17 (session 18)
 **Állapotjelölés:** `Kész` = működő kód + build zöld; `Részben kész` = van alap, de nem teljesíti még a spec minden kipróbálhatósági kritériumát; `Hátra van` = érdemi implementáció hiányzik.
 
 ### 15.1 Elkészült / részben elkészült elemek
 
 | Terület | Státusz | Megjegyzés |
 |---|---:|---|
-| Next.js App Router control plane + sandbox alap | Részben kész | Board, agent lista/részlet, audit oldal, training oldal és sandbox útvonalak léteznek. A sandbox wiki `askWiki` flow működik sync (`local-wiki`) és async (`docker-local`/`cloud-run-job`) harness módban is — az utóbbi polling UI-val vár a harness callbackre. |
-| Prisma/Postgres repository alap | Részben kész | Repository interfészek és Postgres implementációk vannak. A séma közel van a 4. fejezet táblájához: `users.status/tenant_id`, `invitations`, `ticket_transitions`, `recipes` + `recipe_versions`, valamint a spec szerinti külön `training_tickets` tábla is bekerült (2026-06-15). |
+| Next.js App Router control plane + sandbox alap | Részben kész | Board, agent lista/részlet, audit oldal, training oldal és sandbox útvonalak léteznek. A sandbox wiki **`askWiki` beszélgetés-elsődleges** (CR-MVP-003): kérdés→válasz ticket nélkül, `promoteToTicket` határátlépéskor. A harness async path (`docker-local`/`cloud-run-job`) továbbra is ticket-alapú dispatch-et használ (`createQuestionTicket` + dispatcher). |
+| Prisma/Postgres repository alap | Részben kész | Repository interfészek és Postgres implementációk vannak. A séma közel van a 4. fejezet táblájához: `users.status/tenant_id`, `invitations`, `ticket_transitions`, `recipes` + `recipe_versions`, `training_tickets`, **`conversations`/`messages`** (CR-MVP-003), **`playbooks`/`playbook_versions`** + `agents.role`/`self_evolution_profile` (CR-MVP-002). |
 | Recipe-katalógus (`recipes` + `recipe_versions`) | **Kész (2026-06-15)** | First-class `recipes` + `recipe_versions` tábla (§4.3) verziózással, `status` (proposed/active/retired) és jóváhagyóval. `RecipeService` (create/propose/approve/getActive) — a jóváhagyás aktiválja az új verziót és **retire-eli a korábbi aktívat**, governance auditeseményekkel (`recipe.create`/`recipe.version`/`recipe.approve`, §6). `AgentVersion.recipe_version_id` link a reprodukálhatósághoz (§5.3). A seed felveszi a §6 `wiki-answer` recipe-t (aktív v1) és bekötu a Wiki Agent v1-éhez; az agent detail oldal „Recipe" kártyán mutatja. Verifikálva DB ellen. |
 | Schema — IAM prep (Epik 2) | **Kész (2026-06-15)** | `users.status` (enum: pending/active/suspended), `users.tenant_id` mező és `Invitation` modell / `invitations` tábla bekerült a Prisma sémába. |
 | Schema — document→connector link | **Kész (2026-06-15)** | `documents.connector_id` FK bekerült; `DocumentRepository.findByConnectorId` és `update(...connectorId)` megvalósítva. |
@@ -824,7 +976,9 @@ A fejlesztés akkor kész, ha:
 | Governance & mérés dashboard (Epik 8, §11) | **Kész (2026-06-16, session 13)** | `/control-plane/governance` oldal range-szelektorral (ma/7nap/30nap/összes): aggregált KPI-k a **két átjáróról** (Gateway-hívás + átlag latency + hiba/rate-limit státusz-bontás; Tool Broker hívás/tiltás/hiba), token/költség, kontroll-metrikák (átmenetek actor szerint, jóváhagyva/elutasítva, **emberi lépés-arány** és **visszadobási arány**), **audit-lánc integritás** (`verifyChain`) és sandbox-app események (create/version/preview/export/access_denied). **Ticketenkénti lebontás** táblázat (Gateway-hívás, tool-hívás, token, átlag latency, költség, ügyre linkelve). Új repo-aggregációk: `modelCalls.getGovernanceSummary` + `getPerTicketBreakdown`, `toolBroker.getToolCallCountsByTicket`, `tickets.getTransitionStats`, `audit.getActionCounts` (Prisma `groupBy`). `getGovernanceReport` server action (`viewer` szerep). Acceptance `scenario24_governanceReport` valós adaton zöld. |
 | Mérési riport (§9.1/7, Epik 8) | **Kész (2026-06-16, session 14)** | Írott, exportálható **mérési riport** egy valódi futás adataiból (§9.1/7 elfogadási kritérium). Újrahasználható `buildMeasurementReport` + `renderMeasurementMarkdown` (`src/domain/governance/measurement-report.ts`) a négy dimenzióra: **válaszminőség** (citáció-arány a ticket-payload `sources`-ből + confidence-eloszlás), **átfutás** (átlag Gateway-latency + ügy-átfutás create→last update átlag/medián), **visszadobási arány** + emberi lépés-arány, **költség/ticket** — a §11 governance-aggregációkra építve, audit-lánc integritással. CLI generátor (`npm run report:measurement [-- --range=… --out=…]`, Markdown fájlba ír) és UI-letöltés a governance oldalról (`GET /control-plane/governance/report`, `viewer` szerep, attachment). Acceptance `scenario25_measurementReport` valós adaton zöld; a CLI lokálisan `app/reports/measurement-report.md`-be generál (gitignore-olt kimenet). |
 | Negatív tesztek N1–N4 (governance-bizonyítékok, §9.2) | **Kész (2026-06-16, session 14)** | Mind a négy kötelező negatív teszt automatizálva és zöld: **N1** viewer nem hagyhat jóvá (`ticket.transition.denied`), **N2** agent nem engedélyezett toolt hív → Tool Broker **deny-by-default** (a capability-sor hiányában `capability_not_allowed`), a tool nem fut le, `tool.call.denied` audit (új `scenarioN2_unauthorizedTool`), **N3** write-gate token nélkül nincs memóriaírás, **N4** harness egress deny-by-default. |
-| Build / lint állapot | Kész | `npm run lint`, `npm run build` és `npm run test:acceptance` zöld az `app/` könyvtárban (acceptance: **96 sikeres**, 2 kihagyva opcionális docker E2E, 0 sikertelen — 2026-06-16 session 15). **Idempotencia-fix (session 15):** a suite a futás elején nullázza a seed-agent aznapi `model_calls` telemetriáját, így a dispatcher per-agent **napi** hívás-kerete (`maxCallsPerDay=100`) nem merül ki több azonos napi futáskor (korábban `budget_blocked` → a wiki-flow ticket `ready`-ben ragadt); a 96 zöld így determinisztikus. Az append-only audit-láncot nem érinti. **Provider-agnosztikus [16] (session 17):** a Gateway OpenAI API (S2) teszt már nem hardcode-ol `chatgpt-oauth-default` modellt — a route az agent `modelConfig.model`-jét veszi, így a teszt a ténylegesen konfigurált providert gyakorolja (stub / élő chatgpt-oauth / lokális `ollama`-`gemma-local`). Ha a modell-backend nem elérhető (502 upstream), a teszt **skip** (a Gateway-plumbing így is igazolt), nem hard-fail. Lokális Gemma-módban zöld (`provider=ollama`). |
+| **CR-MVP-002 — konfigurálható szerepek, önfejlesztési profil, Playbook [D8]** | **Kész (2026-06-17, session 18)** | **`agents.role`** (`worker`/`orchestrator`) + orchestrator tool-less tiltás (`AllowlistAuthorizer` + `orchestrator_tool_less`). **`agents.self_evolution_profile`** + `updateAgentSelfEvolutionProfile` server action + UI (`update-self-evolution-profile-form`) + per-agent write-gate kapu-választás (`requiresHumanApproval`/`requiresEvalGate`). **`playbooks`/`playbook_versions`** + `PlaybookService` + `tickets.playbook_ref` PIN + `process.start` audit + wiki-interaction seed; Playbook gate az állapotgépen (`TicketService` + spec). **`SelfEvolutionGuard`** + **N6** (`training.capability_escalation_denied`). Audit: `agent.self_evolution_profile_change`, `playbook.create/version/approve`, `process.start`, `training.capability_escalation_denied`. Acceptance **scenario [27]** + **N6** zöld. *Hátra (Fázis 2):* tényleges orchestrator-agent delegálás, BPMN-szerű Playbook, több szerep. |
+| **CR-MVP-003 — beszélgetés-elsődleges interakció [D9]** | **Kész (2026-06-17, session 18)** | **`conversations`/`messages`** séma (tenant-scope, `content_ref`/`content_deleted_at` GDPR szétválasztás). **`ConversationService`** + `PostgresConversationRepository`: create, append, get, `deleteMessageContent`, `promoteToTicket`. **`askWiki` beszélgetés-elsődleges** — ticket nélkül fut; `conversation_id` a `model_calls`/`tool_calls`/audit-on. Server actions: `promoteToTicket`, `getConversation`, `deleteMessageContent`. Sandbox UI: válasz inline + „Jóváhagyásra küldés (ticket)" gomb. Kapu-leválasztás: **`attemptUngatedMemoryWrite`** + **N7** (`memory.write_denied` ticket nélkül is). **N8** GDPR-erasure + `verifyChain` zöld. Audit: `conversation.create`, `message.append`, `message.content_deleted`, `conversation.promote_to_ticket`. Acceptance **scenario [1]** átállítva, **scenario [28]**, **N7**, **N8** zöld. *Hátra (Fázis 2):* teljes multi-agent beszélgetés-UI, L0–L3 kritikussági kapu, activity feed, harness conversation-alapú dispatch. |
+| Build / lint állapot | Kész | `npm run lint`, `npm run build` és `npm run test:acceptance` zöld az `app/` könyvtárban (acceptance: **117 sikeres**, 2 kihagyva opcionális docker E2E, 0 sikertelen — 2026-06-17 session 18). **Idempotencia-fix (session 15):** a suite a futás elején nullázza a seed-agent aznapi `model_calls` telemetriáját. Az append-only audit-láncot nem érinti. |
 
 ### 15.2 Hátralévő feladatok epik szerint
 
@@ -836,8 +990,10 @@ A fejlesztés akkor kész, ha:
 | Epik 4 — Tool Broker + connector | Részben kész | Valódi Goose image MCP E2E; Secret Manager injektálás igazolása. *(Connector UI + kbSearch kiterjesztés kész 2026-06-15; **stdio MCP bridge + Goose platform_broker extension kész 2026-06-16**.)* |
 | Epik 5 — Harness (Goose) + Dispatcher | Részben kész | Hálózati szintű VPC firewall deny-by-default proof + valódi Goose E2E stub nélkül. *(… **Cloud Run Job éles smoke ZÖLD** `enterprise-ai-demo`/App Hosting-on — execution succeeded, Gateway+Broker átjáró + callback bizonyítva; Cloud Build amd64 + callback dupla-útvonal + operation-státusz fix; deploy/smoke + launcher refaktor + scenario23 kész 2026-06-16 session 12; docker-local path session 11; N4 acceptance zöld.)* |
 | Epik 6 — Tanítás / memória | Részben kész | Hátra: retrieval-napló dedikált nézete; rollback UI finomítás. *(Spec szerinti `training_tickets` modell, write-gate token-ref külön kezelése és a token lejárat/újrajátszás/aláírás-hamisítás negatív tesztek kész 2026-06-15.)* |
-| Epik 7 — Sandbox use case (wiki) + App Registry stretch **[CR-MVP-001]** | Részben kész | Valódi ChatGPT OAuth + Cloud Run Job teljes Goose E2E; GCS absztrakció `uploadDocument`-hez. *(Wiki E2E stub OAuth-tal zöld; dokumentumfeltöltés, App Registry v0, lokális dispatcher path, **async askWiki + polling UI** kész 2026-06-16 session 11.)* |
-| Epik 8 — Governance és mérés | **Kész** | *(**Governance & mérés dashboard `/control-plane/governance` kész session 13**; **írott mérési riport (9.1/7) kész session 14** — `buildMeasurementReport` + CLI `report:measurement` + governance-oldali letöltés, scenario25 zöld. **N1–N4 negatív tesztek mind zöld session 14** — N2 `scenarioN2_unauthorizedTool` deny-by-default + `tool.call.denied`.)* |
+| Epik 7 — Sandbox use case (wiki) + App Registry stretch **[CR-MVP-001]** | Részben kész | Valódi ChatGPT OAuth + Cloud Run Job teljes Goose E2E; GCS absztrakció `uploadDocument`-hez. *(Wiki E2E stub OAuth-tal zöld; dokumentumfeltöltés, App Registry v0, lokális dispatcher path kész 2026-06-16 session 11; **CR-MVP-003 beszélgetés-elsődleges sandbox UI + promoteToTicket kész session 18** — scenario [1] átállítva.)* |
+| Epik 8 — Governance és mérés | **Kész** | *(**Governance & mérés dashboard `/control-plane/governance` kész session 13**; **írott mérési riport (9.1/7) kész session 14** — `buildMeasurementReport` + CLI `report:measurement` + governance-oldali letöltés, scenario25 zöld. **N1–N4 negatív tesztek mind zöld session 14** — N2 `scenarioN2_unauthorizedTool` deny-by-default + `tool.call.denied`; **N6/N7/N8 zöld session 18** — CR-MVP-002/003 invariáns-bizonyítékok.)* |
+| **CR-MVP-002 — koncepció v0.9 átvezetés** | **Kész (MVP-horgok)** | MVP-horgok leszállítva session 18-ben (lásd 15.1). *Hátra (Fázis 2):* teljes orchestrator-flow + BPMN-szerű Playbook (D8). |
+| **CR-MVP-003 — koncepció v0.10 átvezetés** | **Kész (MVP-horgok)** | MVP-horgok leszállítva session 18-ben (lásd 15.1). *Hátra (Fázis 2):* teljes beszélgetés-UI, L0–L3 kritikussági kapu, activity feed, harness conversation-dispatch (D9). |
 
 ### 15.3 Következő javasolt fejlesztési sorrend
 
@@ -848,7 +1004,8 @@ A fejlesztés akkor kész, ha:
 5. **Deploy hardening [CR-MVP-001]:** App Registry preview külön cookieless origin.
 6. ~~**Governance mérés:** Tool Broker dashboard + rövid **írott** mérési riport (9.1/7)~~ ✅ `/control-plane/governance` dashboard (session 13) + írott mérési riport `npm run report:measurement` / governance-oldali letöltés (session 14) kész. N1–N4 negatív tesztek mind zöld (session 14) — **Epik 8 lezárva**.
 7. ~~**Epik 3:** `roleInstruction` / `behaviorProfile` külön verziózás az agent registry-ben.~~ ✅ Kész (session 15) — külön mező + al-verzió + `updateInstruction` + `agent.version` audit + UI; scenario26 zöld. **Epik 3 lezárva (session 16): az S2 valódi ChatGPT OAuth mediáció éles E2E zöld** (`npm run s2:live-smoke`).
+8. ~~**CR-MVP-002 + CR-MVP-003 MVP-horgok:** konfigurálható szerepek + önfejlesztési profil + Playbook séma; beszélgetés-elsődleges `askWiki` + `promoteToTicket` + kapu-leválasztás.~~ ✅ Kész (session 18) — scenario [27]/[28], **N6**/**N7**/**N8** zöld; acceptance **117** sikeres. *Hátra (Fázis 2):* orchestrator-flow, BPMN Playbook, teljes beszélgetés-UI, L0–L3 kapu.
 
 ---
 
-*Forrásalap: `AI-Agent-Platform-MVP-Terv-v1.0.md` (2026-06-15) és `AI-Agent-Platform-Koncepcio.md` v0.8 (forrásellenőrzés: 2026-06-14; App Registry kiegészítés / CR-MVP-001: 2026-06-16). A modellstratégia eldöntve (D2: kizárólag ChatGPT OAuth); az OAuth-mediáció és kvótakezelés az S2 spike-on validálandó. A D1/D3/D4/D6 döntések ebben a specben default-javaslattal lezárva; D7 / CR-MVP-001 stretch, csúszás esetén levágható — üzleti változás esetén az érintett fejezet újranyitandó.*
+*Forrásalap: `AI-Agent-Platform-MVP-Terv-v1.0.md` (2026-06-15) és `AI-Agent-Platform-Koncepcio.md` v0.10 (forrásellenőrzés: 2026-06-14; App Registry kiegészítés / CR-MVP-001: 2026-06-16; koncepció v0.9 átvezetés / CR-MVP-002: 2026-06-17; koncepció v0.10 átvezetés / CR-MVP-003: 2026-06-17). A modellstratégia eldöntve (D2: kizárólag ChatGPT OAuth); az OAuth-mediáció és kvótakezelés az S2 spike-on validálandó. A D1/D3/D4/D6 döntések ebben a specben default-javaslattal lezárva; D7 / CR-MVP-001 stretch, csúszás esetén levágható. A **CR-MVP-002** (konfigurálható szerepek, önfejlesztési profil, Playbook-elsődleges végrehajtás) MVP-be séma-horgokkal + invariánsokkal kerül, a teljes orchestrator/Playbook-flow Fázis 2 (D8). A **CR-MVP-003** (beszélgetés-elsődleges interakció, board mint opcionális réteg, jóváhagyási kapu leválasztása a ticketről, beszélgetés-/session-réteg, tenant-izoláció határa az agent) MVP-be beszélgetés-sémával + kapu-leválasztási invariánssal kerül, a kritikussági-szintezett kapu és a teljes beszélgetés-UI Fázis 2 (D9) — üzleti változás esetén az érintett fejezet újranyitandó.*

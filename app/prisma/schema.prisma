@@ -33,6 +33,17 @@ enum AgentStatus {
   retired
 }
 
+enum AgentRole {
+  worker
+  orchestrator
+}
+
+enum PlaybookVersionStatus {
+  proposed
+  active
+  retired
+}
+
 enum ApiKeyStatus {
   active
   revoked
@@ -149,6 +160,17 @@ enum SandboxAppStatus {
   retired
 }
 
+enum ConversationStatus {
+  active
+  archived
+}
+
+enum MessageRole {
+  user
+  agent
+  system
+}
+
 model User {
   id              String     @id @default(uuid()) @db.Uuid
   externalAuthId  String     @unique @map("external_auth_id")
@@ -161,6 +183,7 @@ model User {
 
   approvedMemoryVersions MemoryVersion[] @relation("MemoryApprovedBy")
   approvedRecipeVersions RecipeVersion[] @relation("RecipeApprovedBy")
+  approvedPlaybookVersions PlaybookVersion[] @relation("PlaybookApprovedBy")
   createdTickets         Ticket[]        @relation("TicketCreatedBy")
   uploadedDocuments      Document[]      @relation("DocumentUploadedBy")
   createdInvitations     Invitation[]    @relation("InvitationCreatedBy")
@@ -196,6 +219,8 @@ model Agent {
   currentVersion  Int         @default(1) @map("current_version")
   currentRoleInstructionVersion Int @default(1) @map("current_role_instruction_version")
   currentBehaviorProfileVersion Int @default(1) @map("current_behavior_profile_version")
+  role            AgentRole   @default(worker)
+  selfEvolutionProfile Json?  @map("self_evolution_profile")
   memoryId        String      @unique @map("memory_id") @db.Uuid
   createdAt       DateTime    @default(now()) @map("created_at") @db.Timestamptz
 
@@ -263,6 +288,34 @@ model RecipeVersion {
 
   @@unique([recipeId, version])
   @@map("recipe_versions")
+}
+
+model Playbook {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String
+  processType String   @map("process_type")
+  tenantId    String?  @map("tenant_id") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  versions PlaybookVersion[]
+
+  @@map("playbooks")
+}
+
+model PlaybookVersion {
+  id           String                @id @default(uuid()) @db.Uuid
+  playbookId   String                @map("playbook_id") @db.Uuid
+  version      Int
+  spec         Json
+  status       PlaybookVersionStatus @default(proposed)
+  approvedById String?               @map("approved_by") @db.Uuid
+  createdAt    DateTime              @default(now()) @map("created_at") @db.Timestamptz
+
+  playbook   Playbook @relation(fields: [playbookId], references: [id], onDelete: Cascade)
+  approvedBy User?    @relation("PlaybookApprovedBy", fields: [approvedById], references: [id])
+
+  @@unique([playbookId, version])
+  @@map("playbook_versions")
 }
 
 model AgentApiKey {
@@ -398,6 +451,45 @@ model Document {
   @@map("documents")
 }
 
+model Conversation {
+  id            String             @id @default(uuid()) @db.Uuid
+  tenantId      String?            @map("tenant_id") @db.Uuid
+  agentId       String             @map("agent_id") @db.Uuid
+  title         String?
+  status        ConversationStatus @default(active)
+  createdById   String             @map("created_by") @db.Uuid
+  createdAt     DateTime           @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime           @updatedAt @map("updated_at") @db.Timestamptz
+  lastMessageAt DateTime           @default(now()) @map("last_message_at") @db.Timestamptz
+
+  messages   Message[]
+  tickets    Ticket[]
+  modelCalls ModelCall[]
+  toolCalls  ToolCall[]
+
+  @@map("conversations")
+}
+
+model Message {
+  id               String      @id @default(uuid()) @db.Uuid
+  conversationId   String      @map("conversation_id") @db.Uuid
+  seq              Int
+  role             MessageRole
+  agentVersion     Int?        @map("agent_version")
+  model            String?
+  contentRef       String?     @map("content_ref")
+  contentDeletedAt DateTime?   @map("content_deleted_at") @db.Timestamptz
+  ticketRefId      String?     @map("ticket_ref") @db.Uuid
+  createdAt        DateTime    @default(now()) @map("created_at") @db.Timestamptz
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  ticketRef    Ticket?      @relation(fields: [ticketRefId], references: [id])
+
+  @@unique([conversationId, seq])
+  @@index([conversationId, createdAt])
+  @@map("messages")
+}
+
 model Ticket {
   id               String        @id @default(uuid()) @db.Uuid
   type             TicketType
@@ -412,12 +504,15 @@ model Ticket {
   dueBy            DateTime?     @map("due_by") @db.Timestamptz
   lockToken        String?       @map("lock_token")
   lockedAt         DateTime?     @map("locked_at") @db.Timestamptz
+  playbookRef      String?       @map("playbook_ref")
+  conversationId   String?       @map("conversation_id") @db.Uuid
   createdById      String        @map("created_by") @db.Uuid
   createdAt        DateTime      @default(now()) @map("created_at") @db.Timestamptz
   updatedAt        DateTime      @updatedAt @map("updated_at") @db.Timestamptz
 
   agent          Agent?    @relation(fields: [agentId], references: [id])
   sourceDocument Document? @relation(fields: [sourceDocumentId], references: [id])
+  conversation   Conversation? @relation(fields: [conversationId], references: [id])
   createdBy      User      @relation("TicketCreatedBy", fields: [createdById], references: [id])
   modelCalls     ModelCall[]
   toolCalls      ToolCall[]
@@ -425,6 +520,7 @@ model Ticket {
   transitions    TicketTransition[]
   trainingTicket  TrainingTicket?
   sandboxAppVersions SandboxAppVersion[]
+  linkedMessages Message[]
 
   @@map("tickets")
 }
@@ -471,6 +567,7 @@ model ModelCall {
   id               String   @id @default(uuid()) @db.Uuid
   agentId          String   @map("agent_id") @db.Uuid
   ticketId         String?  @map("ticket_id") @db.Uuid
+  conversationId   String?  @map("conversation_id") @db.Uuid
   provider         String
   model            String
   promptTokens     Int      @map("prompt_tokens")
@@ -480,8 +577,9 @@ model ModelCall {
   status           ModelCallStatus @default(ok)
   createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz
 
-  agent  Agent   @relation(fields: [agentId], references: [id])
-  ticket Ticket? @relation(fields: [ticketId], references: [id])
+  agent        Agent         @relation(fields: [agentId], references: [id])
+  ticket       Ticket?       @relation(fields: [ticketId], references: [id])
+  conversation Conversation? @relation(fields: [conversationId], references: [id])
 
   @@map("model_calls")
 }
@@ -490,6 +588,7 @@ model ToolCall {
   id             String         @id @default(uuid()) @db.Uuid
   agentId        String         @map("agent_id") @db.Uuid
   ticketId       String?        @map("ticket_id") @db.Uuid
+  conversationId String?        @map("conversation_id") @db.Uuid
   connectorId    String?        @map("connector_id") @db.Uuid
   toolName       String         @map("tool_name")
   status         ToolCallStatus
@@ -499,9 +598,10 @@ model ToolCall {
   policyDecision String?        @map("policy_decision")
   createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz
 
-  agent     Agent      @relation(fields: [agentId], references: [id])
-  ticket    Ticket?    @relation(fields: [ticketId], references: [id])
-  connector Connector? @relation(fields: [connectorId], references: [id])
+  agent        Agent         @relation(fields: [agentId], references: [id])
+  ticket       Ticket?       @relation(fields: [ticketId], references: [id])
+  conversation Conversation? @relation(fields: [conversationId], references: [id])
+  connector    Connector?    @relation(fields: [connectorId], references: [id])
 
   @@map("tool_calls")
 }

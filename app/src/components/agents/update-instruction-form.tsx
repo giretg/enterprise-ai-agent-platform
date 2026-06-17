@@ -26,7 +26,7 @@ export function UpdateInstructionForm({
   const [done, setDone] = useState<string | null>(null)
 
   return (
-    <Card title="Instrukció frissítése (admin)">
+    <Card title="Munkakör és munkastílus szerkesztése">
       <form
         className="space-y-4"
         onSubmit={(e) => {
@@ -60,7 +60,7 @@ export function UpdateInstructionForm({
         }}
       >
         <label className="block text-sm">
-          <span className="text-ink-soft">Szerep-instrukció (jelenleg v{roleVersion})</span>
+          <span className="text-ink-soft">Munkaköri leírás (jelenleg v{roleVersion})</span>
           <textarea
             name="roleInstruction"
             defaultValue={roleInstruction}
@@ -69,7 +69,7 @@ export function UpdateInstructionForm({
           />
         </label>
         <label className="block text-sm">
-          <span className="text-ink-soft">Viselkedés-profil (jelenleg v{behaviorVersion})</span>
+          <span className="text-ink-soft">Munkastílus (jelenleg v{behaviorVersion})</span>
           <textarea
             name="behaviorProfile"
             defaultValue={behaviorProfile}

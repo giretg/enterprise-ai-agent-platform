@@ -2,6 +2,7 @@ import type { Agent, Document, Prisma } from '@prisma/client'
 import bcrypt from 'bcryptjs'
 import { randomBytes } from 'crypto'
 import { prisma } from '@/lib/db'
+import { selfEvolutionProfileSchema } from '@/lib/self-evolution-profile'
 import type { AgentRepository, DocumentRepository } from '../interfaces'
 
 export class PostgresAgentRepository implements AgentRepository {
@@ -94,6 +95,8 @@ export class PostgresAgentRepository implements AgentRepository {
     roleInstruction: string
     behaviorProfile: string
     modelConfig: Agent['modelConfig']
+    role?: Agent['role']
+    selfEvolutionProfile?: Agent['selfEvolutionProfile']
     initialMemory?: string
     createdById: string
   }) {
@@ -115,6 +118,11 @@ export class PostgresAgentRepository implements AgentRepository {
       data: { currentVersionId: memoryVersion.id },
     })
 
+    const agentRole = input.role ?? 'worker'
+    const selfEvolutionProfile = input.selfEvolutionProfile
+      ? (selfEvolutionProfileSchema.parse(input.selfEvolutionProfile) as Prisma.InputJsonValue)
+      : undefined
+
     const agent = await prisma.agent.create({
       data: {
         name: input.name,
@@ -122,6 +130,8 @@ export class PostgresAgentRepository implements AgentRepository {
         behaviorProfile: input.behaviorProfile,
         modelConfig: input.modelConfig as Prisma.InputJsonValue,
         status: 'active',
+        role: agentRole,
+        selfEvolutionProfile,
         currentVersion: 1,
         currentRoleInstructionVersion: 1,
         currentBehaviorProfileVersion: 1,
@@ -255,6 +265,46 @@ export class PostgresAgentRepository implements AgentRepository {
     ])
 
     return { agentVersion: nextAgentVersion }
+  }
+
+  async updateSelfEvolutionProfile(input: {
+    agentId: string
+    profile: Agent['selfEvolutionProfile']
+  }) {
+    const parsed = selfEvolutionProfileSchema.parse(input.profile)
+    return prisma.agent.update({
+      where: { id: input.agentId },
+      data: { selfEvolutionProfile: parsed as Prisma.InputJsonValue },
+    })
+  }
+
+  async delete(agentId: string) {
+    const agent = await prisma.agent.findUnique({ where: { id: agentId } })
+    if (!agent) throw new Error('Agent not found')
+
+    const memoryId = agent.memoryId
+
+    await prisma.$transaction(async (tx) => {
+      await tx.ticket.updateMany({
+        where: { agentId },
+        data: { agentId: null },
+      })
+      await tx.ticket.updateMany({
+        where: { assigneeType: 'agent', assigneeId: agentId },
+        data: { assigneeType: null, assigneeId: null },
+      })
+      await tx.toolCall.deleteMany({ where: { agentId } })
+      await tx.modelCall.deleteMany({ where: { agentId } })
+      await tx.agent.delete({ where: { id: agentId } })
+      await tx.memory.update({
+        where: { id: memoryId },
+        data: { currentVersionId: null },
+      })
+      await tx.memoryVersion.deleteMany({ where: { memoryId } })
+      await tx.memory.delete({ where: { id: memoryId } })
+    })
+
+    return { id: agent.id, name: agent.name }
   }
 
   async authenticateApiKey(rawKey: string) {

@@ -107,6 +107,24 @@
 }
 .animate-rise { animation: rise 0.6s cubic-bezier(0.22, 1, 0.36, 1) both; }
 
+@keyframes chat-typing {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.35; }
+  30% { transform: translateY(-4px); opacity: 1; }
+}
+
+.chat-typing-dot {
+  display: inline-block;
+  height: 0.5rem;
+  width: 0.5rem;
+  border-radius: 9999px;
+  background: var(--color-ink-faint);
+  animation: chat-typing 1.2s ease-in-out infinite;
+}
+
+.chat-typing-dot--2 { animation-delay: 0.15s; }
+.chat-typing-dot--3 { animation-delay: 0.3s; }
+
 @media (prefers-reduced-motion: reduce) {
   .animate-breathe, .animate-soul, .animate-rise { animation: none !important; }
+  .chat-typing-dot { animation: none; opacity: 0.6; }
 }

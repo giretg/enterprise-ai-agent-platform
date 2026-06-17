@@ -88,6 +88,20 @@ async function ensureToolBrokerSeed(agentId: string) {
   })
 }
 
+const WIKI_PLAYBOOK_SPEC = [
+  {
+    ticket_type: 'interaction',
+    role: 'worker',
+    required_gates: [
+      {
+        gate: 'human_approval',
+        blocks: [{ from: 'in_progress', to: 'done' }],
+        unless_payload: { field: 'confidence', equals: 'high' },
+      },
+    ],
+  },
+]
+
 const WIKI_RECIPE_CONTENT = {
   name: 'wiki-answer',
   version: 1,
@@ -110,6 +124,44 @@ const WIKI_RECIPE_CONTENT = {
     rationale: 'string',
     confidence: 'enum[high, medium, low]',
   },
+}
+
+async function ensureWikiPlaybook(approverId: string) {
+  let playbook = await prisma.playbook.findFirst({ where: { name: 'wiki-interaction' } })
+  if (!playbook) {
+    playbook = await prisma.playbook.create({
+      data: {
+        name: 'wiki-interaction',
+        processType: 'wiki_qa',
+        versions: {
+          create: {
+            version: 1,
+            spec: WIKI_PLAYBOOK_SPEC,
+            status: 'active',
+            approvedById: approverId,
+          },
+        },
+      },
+    })
+  }
+
+  const activeVersion = await prisma.playbookVersion.findFirst({
+    where: { playbookId: playbook.id, status: 'active' },
+    orderBy: { version: 'desc' },
+  })
+  if (!activeVersion) {
+    const version = await prisma.playbookVersion.create({
+      data: {
+        playbookId: playbook.id,
+        version: 1,
+        spec: WIKI_PLAYBOOK_SPEC,
+        status: 'active',
+        approvedById: approverId,
+      },
+    })
+    return version
+  }
+  return activeVersion
 }
 
 // wiki-answer recipe (§6) — aktív v1, az agent aktuális verziójához kötve (reprodukálhatóság).
@@ -206,6 +258,7 @@ async function main() {
     console.log('Seed already applied (Wiki Agent exists) — demó API-kulcs frissítése')
     await ensureToolBrokerSeed(existingAgent.id)
     await ensureWikiRecipe(existingAgent.id, admin.id)
+    await ensureWikiPlaybook(admin.id)
     await ensureDemoApiKey(existingAgent.id)
     return
   }
@@ -242,6 +295,7 @@ async function main() {
       behaviorProfile: WIKI_BEHAVIOR_PROFILE,
       modelConfig,
       status: 'active',
+      role: 'worker',
       currentVersion: 1,
       currentRoleInstructionVersion: 1,
       currentBehaviorProfileVersion: 1,
@@ -278,6 +332,7 @@ async function main() {
 
   await ensureToolBrokerSeed(agent.id)
   await ensureWikiRecipe(agent.id, admin.id)
+  await ensureWikiPlaybook(admin.id)
   await ensureDemoApiKey(agent.id)
 
   console.log('Seed complete')

@@ -1,0 +1,724 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Enterprise AI Agent Platform — Architektúra</title>
+<style>
+  :root{
+    --bg:#0e1117; --panel:#161b24; --panel2:#1c232f; --line:#2a3340;
+    --ink:#e8edf4; --muted:#9aa7b8; --faint:#6b7889;
+    --ui:#7aa2f7; --api:#bb9af7; --dom:#7dcfa6; --repo:#e0af68; --infra:#f7768e;
+    --ext:#56c2d6; --accent:#ffb454;
+    --chip:#222b38;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{
+    margin:0; background:radial-gradient(1200px 600px at 70% -10%,#1a2230 0,var(--bg) 60%);
+    color:var(--ink); font:14px/1.55 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    -webkit-font-smoothing:antialiased; padding-bottom:80px;
+  }
+  a{color:var(--ui);text-decoration:none}
+  .wrap{max-width:1280px;margin:0 auto;padding:0 28px}
+  header.top{
+    padding:46px 0 26px;border-bottom:1px solid var(--line);margin-bottom:34px;
+    background:linear-gradient(180deg,rgba(122,162,247,.06),transparent);
+  }
+  .kicker{letter-spacing:.22em;text-transform:uppercase;color:var(--accent);font-size:11px;font-weight:700}
+  h1{margin:.35em 0 .25em;font-size:34px;letter-spacing:-.5px;font-weight:800}
+  .sub{color:var(--muted);max-width:760px;font-size:15px}
+  .stackline{display:flex;flex-wrap:wrap;gap:8px;margin-top:18px}
+  .tech{background:var(--chip);border:1px solid var(--line);border-radius:999px;padding:5px 12px;font-size:12px;color:var(--muted)}
+  .tech b{color:var(--ink);font-weight:600}
+
+  h2.section{font-size:13px;letter-spacing:.16em;text-transform:uppercase;color:var(--faint);
+    margin:48px 0 16px;font-weight:700;display:flex;align-items:center;gap:12px}
+  h2.section::after{content:"";flex:1;height:1px;background:var(--line)}
+
+  /* layered diagram */
+  .layer{
+    border:1px solid var(--line);border-radius:14px;margin:14px 0;background:var(--panel);
+    overflow:hidden;box-shadow:0 1px 0 rgba(255,255,255,.02) inset;
+  }
+  .layer-head{display:flex;align-items:center;gap:12px;padding:13px 18px;border-bottom:1px solid var(--line);
+    background:var(--panel2)}
+  .dot{width:11px;height:11px;border-radius:3px;flex:none}
+  .layer-head h3{margin:0;font-size:15px;font-weight:700}
+  .layer-head .tag{margin-left:auto;color:var(--faint);font-size:11px;letter-spacing:.06em;text-transform:uppercase}
+  .grid{display:grid;gap:12px;padding:16px;grid-template-columns:repeat(auto-fill,minmax(225px,1fr))}
+
+  .card{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:13px 14px;
+    transition:.15s border-color,.15s transform}
+  .card:hover{border-color:var(--cardc,#3a4658);transform:translateY(-2px)}
+  .card h4{margin:0 0 5px;font-size:13.5px;font-weight:700;display:flex;align-items:center;gap:7px}
+  .card .path{font-family:ui-monospace,"SF Mono",Menlo,monospace;font-size:11px;color:var(--faint);
+    word-break:break-all;margin-bottom:7px}
+  .card p{margin:0;color:var(--muted);font-size:12.5px}
+  .card .fns{margin:8px 0 0;padding:0;list-style:none;display:flex;flex-wrap:wrap;gap:5px}
+  .card .fns li{background:#1a212c;border:1px solid var(--line);border-radius:5px;padding:2px 7px;font-size:11px;color:var(--muted)}
+  .badge{font-size:10px;font-weight:700;padding:2px 7px;border-radius:5px;letter-spacing:.04em}
+
+  .b-ui{background:rgba(122,162,247,.16);color:var(--ui)}
+  .b-api{background:rgba(187,154,247,.16);color:var(--api)}
+  .b-dom{background:rgba(125,207,166,.16);color:var(--dom)}
+  .b-repo{background:rgba(224,175,104,.16);color:var(--repo)}
+  .b-infra{background:rgba(247,118,142,.16);color:var(--infra)}
+  .b-ext{background:rgba(86,194,214,.16);color:var(--ext)}
+
+  /* flow */
+  .flow{counter-reset:step;display:grid;gap:10px;margin-top:6px}
+  .step{display:grid;grid-template-columns:34px 1fr;gap:14px;align-items:start;
+    background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+  .step .n{counter-increment:step;width:30px;height:30px;border-radius:8px;background:var(--panel2);
+    border:1px solid var(--line);display:flex;align-items:center;justify-content:center;font-weight:800;color:var(--accent)}
+  .step .n::before{content:counter(step)}
+  .step h4{margin:0 0 3px;font-size:13.5px}
+  .step p{margin:0;color:var(--muted);font-size:12.5px}
+  .step code{background:#11161f;border:1px solid var(--line);border-radius:4px;padding:1px 6px;
+    font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:var(--ui)}
+
+  .twocol{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:860px){.twocol{grid-template-columns:1fr}}
+
+  .legend{display:flex;flex-wrap:wrap;gap:16px;margin:8px 0 0}
+  .legend span{display:flex;align-items:center;gap:7px;color:var(--muted);font-size:12px}
+  .legend i{width:12px;height:12px;border-radius:3px;display:inline-block}
+
+  .note{background:linear-gradient(180deg,rgba(255,180,84,.07),transparent);border:1px solid var(--line);
+    border-left:3px solid var(--accent);border-radius:8px;padding:12px 16px;color:var(--muted);font-size:12.5px;margin-top:10px}
+  .note b{color:var(--ink)}
+
+  table.models{width:100%;border-collapse:collapse;margin-top:8px;font-size:12.5px}
+  table.models th,table.models td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line)}
+  table.models th{color:var(--faint);font-weight:600;font-size:11px;letter-spacing:.08em;text-transform:uppercase}
+  table.models td:first-child{font-family:ui-monospace,Menlo,monospace;color:var(--repo);white-space:nowrap}
+  table.models tr:hover td{background:rgba(255,255,255,.02)}
+
+  footer{margin-top:54px;padding-top:20px;border-top:1px solid var(--line);color:var(--faint);font-size:12px}
+  .arrowcol{display:flex;align-items:center;justify-content:center;color:var(--faint);margin:-4px 0;font-size:18px}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <div class="kicker">Excellence AI · Rendszerarchitektúra</div>
+    <h1>Enterprise AI Agent Platform</h1>
+    <p class="sub">Kontrollált, auditálható vállalati AI-ügynök platform. A <b>Control Plane</b> kormányoz (governance, ticketek, IAM, audit, agent-registry), a <b>Dispatcher</b> izolált <b>Harness</b> runtime-okban futtatja az ügynököket, minden modell- és eszközhívás a platform <b>Gateway</b> és <b>Tool-Broker</b> kapuin keresztül, hash-láncos audittal megy.</p>
+    <div class="stackline">
+      <span class="tech"><b>Next.js 16</b> App Router</span>
+      <span class="tech"><b>React 19</b> + TypeScript</span>
+      <span class="tech"><b>Postgres</b> · Prisma (Neon)</span>
+      <span class="tech"><b>Clerk</b> auth + RBAC</span>
+      <span class="tech">Multi-provider <b>Model Gateway</b></span>
+      <span class="tech"><b>Cloud Run Job</b> / Docker harness</span>
+      <span class="tech"><b>Firebase</b> App Hosting</span>
+    </div>
+    <div class="legend" style="margin-top:20px">
+      <span><i style="background:var(--ui)"></i>Prezentáció / UI</span>
+      <span><i style="background:var(--api)"></i>API · Server Actions</span>
+      <span><i style="background:var(--dom)"></i>Domain (üzleti logika)</span>
+      <span><i style="background:var(--repo)"></i>Repository · Adat</span>
+      <span><i style="background:var(--infra)"></i>Harness runtime</span>
+      <span><i style="background:var(--ext)"></i>Külső szolgáltatás</span>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+
+  <!-- ============ LAYERED STACK ============ -->
+  <h2 class="section">Réteges architektúra</h2>
+
+  <!-- UI -->
+  <div class="layer">
+    <div class="layer-head"><span class="dot" style="background:var(--ui)"></span>
+      <h3>1 · Prezentációs réteg — Next.js App Router</h3><span class="tag">app/src/app · components</span></div>
+    <div class="grid" style="--cardc:var(--ui)">
+      <div class="card"><h4>Control Plane <span class="badge b-ui">UI</span></h4>
+        <div class="path">app/control-plane/*</div>
+        <p>Operátori felület. Governance, Kanban board, ticket-részletek, agent-registry, IAM, audit-napló, training.</p>
+        <ul class="fns"><li>governance</li><li>board</li><li>tickets/[id]</li><li>agents/[id]</li><li>iam</li><li>audit</li><li>training</li></ul></div>
+      <div class="card"><h4>Sandbox <span class="badge b-ui">UI</span></h4>
+        <div class="path">app/sandbox/*</div>
+        <p>Wiki-agent tudásbázis, citált válaszok, javaslatok (proposals), A0 HTML-riport preview/export.</p>
+        <ul class="fns"><li>[agentId]</li><li>proposals</li></ul></div>
+      <div class="card"><h4>Auth oldalak <span class="badge b-ui">UI</span></h4>
+        <div class="path">app/sign-in · sign-up</div>
+        <p>Clerk-alapú bejelentkezés / regisztráció, IAM-meghívó beváltás (redeem).</p>
+        <ul class="fns"><li>[[...sign-in]]</li><li>iam/redeem</li></ul></div>
+      <div class="card"><h4>UI komponensek <span class="badge b-ui">UI</span></h4>
+        <div class="path">components/{ui,tickets,agents,iam,sandbox,auth}</div>
+        <p>Megosztott React komponensek: design-system primitívek, ticket-nézetek, agent-szerkesztő, IAM admin panel.</p></div>
+    </div>
+  </div>
+  <div class="arrowcol">▼ &nbsp; Server Actions &amp; fetch &nbsp; ▼</div>
+
+  <!-- API -->
+  <div class="layer">
+    <div class="layer-head"><span class="dot" style="background:var(--api)"></span>
+      <h3>2 · API &amp; integrációs réteg</h3><span class="tag">server actions · route handlers</span></div>
+    <div class="grid" style="--cardc:var(--api)">
+      <div class="card"><h4>Platform Server Actions <span class="badge b-api">RSC</span></h4>
+        <div class="path">app/actions/platform.ts</div>
+        <p>A UI elsődleges belépési pontja a domainhez: ticket-műveletek, agent-CRUD, IAM, governance lekérdezések.</p></div>
+      <div class="card"><h4>Agent API <span class="badge b-api">REST</span></h4>
+        <div class="path">api/v1/agent/{tickets,tools}</div>
+        <p>A futó harness ezen keresztül kér ticket-kontextust és hív platform-eszközöket (KB-keresés, write-gate).</p>
+        <ul class="fns"><li>tickets</li><li>tickets/[id]</li><li>tools</li></ul></div>
+      <div class="card"><h4>Model Gateway API <span class="badge b-api">REST</span></h4>
+        <div class="path">api/v1/gateway/v1/chat/completions</div>
+        <p>OpenAI-kompatibilis végpont — minden LLM-hívás itt megy át, ticketenkénti plafonnal és audittal.</p></div>
+      <div class="card"><h4>Harness callback <span class="badge b-api">REST</span></h4>
+        <div class="path">api/v1/harness/tickets/[id]/complete</div>
+        <p>A harness a futás végén ide jelenti vissza az eredményt (callback-token védve).</p></div>
+      <div class="card"><h4>Sandbox app API <span class="badge b-api">REST</span></h4>
+        <div class="path">api/sandbox-apps/[appId]/{preview,export}</div>
+        <p>Generált A0 HTML-riportok renderelése és exportja.</p></div>
+      <div class="card"><h4>Clerk webhook <span class="badge b-api">HOOK</span></h4>
+        <div class="path">api/webhooks/clerk</div>
+        <p>Felhasználói életciklus-események szinkronizálása (user.created/updated) a platform User modelljébe.</p></div>
+    </div>
+  </div>
+  <div class="arrowcol">▼ &nbsp; hív &nbsp; ▼</div>
+
+  <!-- DOMAIN -->
+  <div class="layer">
+    <div class="layer-head"><span class="dot" style="background:var(--dom)"></span>
+      <h3>3 · Domain réteg — üzleti logika (service-ek)</h3><span class="tag">app/src/domain</span></div>
+    <div class="grid" style="--cardc:var(--dom)">
+      <div class="card"><h4>Ticket <span class="badge b-dom">core</span></h4>
+        <div class="path">domain/ticket/ticket-service.ts</div>
+        <p>Ticket-életciklus és állapotgép (state machine), átmenetek, hozzárendelés (assignee).</p></div>
+      <div class="card"><h4>Dispatcher <span class="badge b-dom">orchestr.</span></h4>
+        <div class="path">domain/dispatcher/*</div>
+        <p>Ready ticketek batch-elése, napi budget-kapu, harness indítása lock-tokennel — lokál Docker vagy Cloud Run Job.</p>
+        <ul class="fns"><li>dispatcher-service</li><li>cloud-run-job-launcher</li><li>docker-local-harness</li><li>cloud-run-auth</li></ul></div>
+      <div class="card"><h4>Model Gateway <span class="badge b-dom">LLM</span></h4>
+        <div class="path">domain/gateway/*</div>
+        <p>Multi-provider modellközvetítő, ticketenkénti hívásplafon, ChatGPT OAuth bridge + token-store, stub fallback.</p>
+        <ul class="fns"><li>model-gateway</li><li>chatgpt-oauth-bridge</li><li>oauth-token-store</li><li>stub-openai</li></ul></div>
+      <div class="card"><h4>Tool Broker <span class="badge b-dom">tools</span></h4>
+        <div class="path">domain/tool-broker/tool-broker-service.ts</div>
+        <p>Engedélyezett eszközök közvetítése: KB-keresés (citált), konnektorok, hozzáférési módok, ToolCall audit.</p></div>
+      <div class="card"><h4>Write Gate <span class="badge b-dom">guard</span></h4>
+        <div class="path">domain/writegate/write-gate-service.ts</div>
+        <p>Kontrollált írás: write-gate token kibocsátás/beváltás — ügynök csak engedélyezett, lejáró tokennel ír.</p></div>
+      <div class="card"><h4>Agent runtime-ok <span class="badge b-dom">agent</span></h4>
+        <div class="path">domain/agent/*</div>
+        <p>Agent-specifikus runtime logika: wiki-agent (tudásbázis), bookkeeper (könyvelő) viselkedésprofilok.</p>
+        <ul class="fns"><li>wiki-runtime</li><li>bookkeeper-runtime</li></ul></div>
+      <div class="card"><h4>IAM <span class="badge b-dom">access</span></h4>
+        <div class="path">domain/iam/iam-service.ts</div>
+        <p>Szerepek (RBAC), meghívók, felhasználói státusz — Clerk-kel integrálva.</p></div>
+      <div class="card"><h4>Audit chain <span class="badge b-dom">trust</span></h4>
+        <div class="path">domain/audit/audit-chain-service.ts</div>
+        <p>Hash-láncolt, manipulációbiztos audit-napló minden érdemi művelethez (tamper-evident).</p></div>
+      <div class="card"><h4>Recipe <span class="badge b-dom">config</span></h4>
+        <div class="path">domain/recipe/recipe-service.ts</div>
+        <p>Verziózott ügynök-receptek (recipe): role-instruction + behavior-profile, jóváhagyási folyamattal.</p></div>
+      <div class="card"><h4>Training <span class="badge b-dom">learn</span></h4>
+        <div class="path">domain/training/training-service.ts</div>
+        <p>Training ticketek — emberi visszajelzésből tanuló javítási hurok.</p></div>
+      <div class="card"><h4>Eval <span class="badge b-dom">QA</span></h4>
+        <div class="path">domain/eval/eval-service.ts</div>
+        <p>Kiértékelési futtatások (eval runs) — minőség mérése, regresszió-figyelés.</p></div>
+      <div class="card"><h4>Governance <span class="badge b-dom">metrics</span></h4>
+        <div class="path">domain/governance/measurement-report.ts</div>
+        <p>Mérési riportok, működési mutatók aggregálása a Control Plane számára.</p></div>
+      <div class="card"><h4>Sandbox app <span class="badge b-dom">render</span></h4>
+        <div class="path">domain/sandbox/sandbox-app-service.ts</div>
+        <p>Generált sandbox-alkalmazások és A0 HTML-riportok verziózott kezelése.</p></div>
+    </div>
+    <div class="note" style="margin:0 16px 16px"><b>Auth absztrakció:</b> a <code style="font-family:monospace">app/src/auth</code> réteg (<b>AuthProvider</b>) leválasztja a domaint a konkrét identitásszolgáltatóról — <b>clerk-provider</b> (prod), <b>dev-provider</b> (helyi), <b>agent-api-key</b> (gép-géphez).</div>
+  </div>
+  <div class="arrowcol">▼ &nbsp; perzisztál interfészeken át &nbsp; ▼</div>
+
+  <!-- REPO -->
+  <div class="layer">
+    <div class="layer-head"><span class="dot" style="background:var(--repo)"></span>
+      <h3>4 · Repository réteg — adat-hozzáférés</h3><span class="tag">repositories/interfaces ⟶ postgres</span></div>
+    <div class="grid" style="--cardc:var(--repo)">
+      <div class="card"><h4>Interfészek <span class="badge b-repo">port</span></h4>
+        <div class="path">repositories/interfaces/index.ts</div>
+        <p>A domain csak ezekre az absztrakt portokra hivatkozik — a Postgres-implementáció cserélhető (ports &amp; adapters).</p></div>
+      <div class="card"><h4>Postgres adapterek <span class="badge b-repo">adapter</span></h4>
+        <div class="path">repositories/postgres/*</div>
+        <p>Prisma-alapú konkrét implementációk minden aggregátumra.</p>
+        <ul class="fns"><li>agent</li><li>audit</li><li>recipe</li><li>ticket</li><li>tool-broker</li><li>sandbox-app</li></ul></div>
+    </div>
+  </div>
+
+  <!-- ============ HARNESS RUNTIME ============ -->
+  <h2 class="section">Ügynök futtatókörnyezet — Harness</h2>
+  <div class="layer">
+    <div class="layer-head"><span class="dot" style="background:var(--infra)"></span>
+      <h3>Izolált agent runtime (Goose-alapú)</h3><span class="tag">app/src/harness · Dockerfile.harness</span></div>
+    <div class="grid" style="--cardc:var(--infra)">
+      <div class="card"><h4>Job entrypoint <span class="badge b-infra">boot</span></h4>
+        <div class="path">harness/job-entrypoint.ts</div>
+        <p>A Cloud Run Job / Docker konténer belépési pontja — felveszi a ticketet, lefuttatja az agent-loopot, callbackel.</p></div>
+      <div class="card"><h4>Agent loop <span class="badge b-infra">run</span></h4>
+        <div class="path">harness/stub-harness-agent-loop.ts</div>
+        <p>A vezérlési hurok: gondolkodás → eszközhívás → modellhívás → eredmény, lépésenként a platform kapuin át.</p></div>
+      <div class="card"><h4>Platform MCP bridge <span class="badge b-infra">MCP</span></h4>
+        <div class="path">harness/platform-mcp-bridge.ts</div>
+        <p>MCP-híd: az ügynök eszközei a platform <code style="font-family:monospace">/api/v1/agent/tools</code> és Gateway végpontjaira képződnek le.</p></div>
+      <div class="card"><h4>Egress guard <span class="badge b-infra">net</span></h4>
+        <div class="path">harness/egress-guard.ts</div>
+        <p>Hálózati kimenet-korlátozás — az ügynök csak az engedélyezett platform-végpontokat éri el (no rogue egress).</p></div>
+      <div class="card"><h4>Goose konfiguráció <span class="badge b-infra">cfg</span></h4>
+        <div class="path">harness/goose-config.ts · goose-command.ts</div>
+        <p>A Goose agent-runtime parancs és konfiguráció összeállítása ticketenként.</p></div>
+    </div>
+    <div class="note" style="margin:0 16px 16px"><b>Két futtatási mód:</b> a Dispatcher választja — <b>docker-local-harness-launcher</b> fejlesztéshez/lokál wiki runtime, vagy <b>cloud-run-job-launcher</b> élesben (GCP Cloud Run Job, amd64 image, Secret Manager titkokkal, IAM-hitelesített callback).</div>
+  </div>
+
+  <!-- ============ END-TO-END FLOW ============ -->
+  <h2 class="section">Végpontok közti adatfolyam — egy ticket élete</h2>
+  <div class="flow">
+    <div class="step"><div class="n"></div><div><h4>Ticket létrejön</h4><p>Operátor a <code>Control Plane</code> boardon vagy egy API-kliens ticketet hoz létre. A <code>TicketService</code> felveszi az állapotgépbe, az <code>AuditChain</code> hash-elt bejegyzést ír.</p></div></div>
+    <div class="step"><div class="n"></div><div><h4>Dispatcher kiválaszt</h4><p>A <code>DispatcherService</code> batch-eli a <code>findReadyForDispatch</code> ticketeket, ellenőrzi a napi <b>budget</b>-et (maxCalls/maxTokens), és lock-tokent ad ki.</p></div></div>
+    <div class="step"><div class="n"></div><div><h4>Harness indul</h4><p>A választott launcher (<code>docker-local</code> vagy <code>cloud-run-job</code>) elindítja a konténert a ticketId + lockToken + agentVersion környezeti változókkal.</p></div></div>
+    <div class="step"><div class="n"></div><div><h4>Agent-loop fut</h4><p>A harness behúzza a ticket-kontextust (<code>/api/v1/agent/tickets/[id]</code>), majd lépésenként gondolkodik. Az <b>egress-guard</b> csak a platform-végpontokat engedi.</p></div></div>
+    <div class="step"><div class="n"></div><div><h4>Eszközhívás a Tool-Brokeren át</h4><p>KB-keresés / konnektor: <code>/api/v1/agent/tools</code> → <code>ToolBrokerService</code>. Csak engedélyezett eszközök, citált találatok, minden hívás <b>ToolCall</b>-ként auditálva.</p></div></div>
+    <div class="step"><div class="n"></div><div><h4>Modellhívás a Gatewayen át</h4><p><code>/api/v1/gateway/v1/chat/completions</code> → <code>ModelGateway</code>. Provider-választás (ChatGPT OAuth / Gemini / helyi Gemma), ticket-plafon, <b>ModelCall</b> audit.</p></div></div>
+    <div class="step"><div class="n"></div><div><h4>Kontrollált írás (Write Gate)</h4><p>Ha az ügynök írni akar, <b>write-gate tokent</b> kell beváltania — lejáró, hatókörös engedély, így nincs ellenőrizetlen mutáció.</p></div></div>
+    <div class="step"><div class="n"></div><div><h4>Visszajelentés &amp; lezárás</h4><p>A harness a <code>/api/v1/harness/tickets/[id]/complete</code> callbackre küldi az eredményt (callback-token védve). A ticket állapota frissül, az audit-lánc lezárul, az eredmény (pl. A0 HTML-riport) a Sandboxban megtekinthető.</p></div></div>
+  </div>
+
+  <!-- ============ DATA MODEL ============ -->
+  <h2 class="section">Adatmodell — Postgres (Prisma)</h2>
+  <div class="twocol">
+    <div class="layer"><div class="layer-head"><span class="dot" style="background:var(--repo)"></span><h3>Identitás &amp; hozzáférés</h3></div>
+      <table class="models">
+        <tr><th>Modell</th><th>Szerep</th></tr>
+        <tr><td>User</td><td>Felhasználó (Clerk-szinkron), szerep, státusz</td></tr>
+        <tr><td>Invitation</td><td>IAM-meghívók, redeem folyamat</td></tr>
+        <tr><td>AgentApiKey</td><td>Gép-géphez (M2M) hozzáférési kulcsok</td></tr>
+        <tr><td>Capability</td><td>Engedélyezett képességek katalógusa</td></tr>
+      </table></div>
+    <div class="layer"><div class="layer-head"><span class="dot" style="background:var(--repo)"></span><h3>Ügynökök &amp; konfiguráció</h3></div>
+      <table class="models">
+        <tr><th>Modell</th><th>Szerep</th></tr>
+        <tr><td>Agent · AgentVersion</td><td>Ügynök-registry, verziózott definíció</td></tr>
+        <tr><td>Recipe · RecipeVersion</td><td>Role-instruction + behavior-profile</td></tr>
+        <tr><td>Memory · MemoryVersion</td><td>Verziózott ügynök-memória / tudásbázis</td></tr>
+        <tr><td>Resource · Connector</td><td>Erőforrások, konnektorok + hozzáférési mód</td></tr>
+      </table></div>
+  </div>
+  <div class="twocol">
+    <div class="layer"><div class="layer-head"><span class="dot" style="background:var(--repo)"></span><h3>Végrehajtás &amp; munka</h3></div>
+      <table class="models">
+        <tr><th>Modell</th><th>Szerep</th></tr>
+        <tr><td>Ticket · TicketTransition</td><td>Munkaelem és állapotgép-átmenetek</td></tr>
+        <tr><td>ModelCall</td><td>Minden LLM-hívás (Gateway) auditrekordja</td></tr>
+        <tr><td>ToolCall</td><td>Minden eszközhívás (Tool-Broker) rekordja</td></tr>
+        <tr><td>WriteGateToken</td><td>Kontrollált íráshoz kibocsátott tokenek</td></tr>
+      </table></div>
+    <div class="layer"><div class="layer-head"><span class="dot" style="background:var(--repo)"></span><h3>Bizalom, kimenet &amp; minőség</h3></div>
+      <table class="models">
+        <tr><th>Modell</th><th>Szerep</th></tr>
+        <tr><td>AuditLog</td><td>Hash-láncolt, tamper-evident audit</td></tr>
+        <tr><td>Document</td><td>Tudásbázis-dokumentumok, státusz</td></tr>
+        <tr><td>SandboxApp · Version</td><td>Generált A0 HTML-riportok / appok</td></tr>
+        <tr><td>TrainingTicket · Eval · EvalRun</td><td>Tanulási hurok és kiértékelés</td></tr>
+      </table></div>
+  </div>
+
+  <!-- ============ EXTERNAL ============ -->
+  <h2 class="section">Külső szolgáltatások &amp; futtatókörnyezet</h2>
+  <div class="grid" style="--cardc:var(--ext)">
+    <div class="card"><h4>Clerk <span class="badge b-ext">auth</span></h4><p>Identitás, bejelentkezés, RBAC. Webhookon szinkronizál a User modellbe.</p></div>
+    <div class="card"><h4>ChatGPT OAuth Gateway <span class="badge b-ext">LLM</span></h4><p>Codex Responses backend (gpt-5.5) OAuth-mediációval; bridge / sidecar / embedded mód.</p></div>
+    <div class="card"><h4>Google Gemini <span class="badge b-ext">LLM</span></h4><p>GEMINI_API_KEY-alapú provider a Model Gatewayen keresztül.</p></div>
+    <div class="card"><h4>Helyi Gemma · Ollama <span class="badge b-ext">LLM</span></h4><p>Per-agent választható helyi modell (gemma-local, :11434) — adatszuverén futtatás.</p></div>
+    <div class="card"><h4>GCP Cloud Run Job <span class="badge b-ext">compute</span></h4><p>Éles harness-futtatás izolált, amd64 konténerben, IAM-hitelesített callbackkel.</p></div>
+    <div class="card"><h4>Secret Manager <span class="badge b-ext">secrets</span></h4><p>DB-URL, Clerk-, Gemini-kulcsok, callback-token — futásidőben injektálva.</p></div>
+    <div class="card"><h4>Neon Postgres <span class="badge b-ext">data</span></h4><p>Menedzselt Postgres (pooled DATABASE_URL + DIRECT_URL migrációhoz).</p></div>
+    <div class="card"><h4>Firebase App Hosting <span class="badge b-ext">deploy</span></h4><p>A Next.js alkalmazás hosztolása GitHub-kapcsolt buildekből (apphosting.yaml).</p></div>
+  </div>
+
+  <div class="note">
+    <b>Tervezési elvek.</b> ① <b>Kontroll mindenek felett</b> — minden modell- és eszközhívás platform-kapun (Gateway / Tool-Broker) megy át, budgettel és audittal. ② <b>Tamper-evident audit</b> — hash-láncolt AuditLog. ③ <b>Izoláció</b> — az ügynök saját konténerében fut, egress-guarddal, write-gate tokennel. ④ <b>Ports &amp; adapters</b> — a domain absztrakt repository- és auth-portokra épül, a Postgres/Clerk implementáció cserélhető. ⑤ <b>Verziózottság</b> — agent, recipe, memory és sandbox-app mind verziózott, jóváhagyási folyamattal.
+  </div>
+
+  <!-- ============ MERMAID: RENDSZERARCHITEKTÚRA ============ -->
+  <h2 class="section">Mermaid — rendszerarchitektúra áttekintés</h2>
+  <div class="layer">
+    <div class="layer-head"><span class="dot" style="background:var(--ui)"></span>
+      <h3>Rétegek &amp; modulkapcsolatok</h3><span class="tag">flowchart TD</span></div>
+    <div style="padding:20px;overflow-x:auto">
+      <pre class="mermaid">
+%%{init:{"theme":"base","themeVariables":{"primaryColor":"#1c232f","primaryTextColor":"#e8edf4","primaryBorderColor":"#2a3340","lineColor":"#4a5568","secondaryColor":"#161b24","tertiaryColor":"#0e1117","edgeLabelBackground":"#161b24","clusterBkg":"#161b24","titleColor":"#e8edf4","nodeBorder":"#2a3340","mainBkg":"#1c232f"}}}%%
+flowchart TD
+  subgraph EXT["☁️  Külső szolgáltatások"]
+    direction LR
+    CLERK["🔐 Clerk\nAuth / RBAC"]
+    NEON["🐘 Neon\nPostgres"]
+    GPT["🤖 ChatGPT\nOAuth / gpt-5.5"]
+    GEM["💎 Gemini\nAPI"]
+    OLLAMA["🦙 Ollama\nGemma (local)"]
+    FIREBASE["🔥 Firebase\nApp Hosting"]
+    CR["☁️ Cloud Run\nJob (amd64)"]
+    SM["🔑 Secret\nManager"]
+  end
+
+  subgraph UI["🖥️  Prezentációs réteg — Next.js App Router"]
+    direction LR
+    CP["Control Plane\nboard · agents · tickets\niam · audit · governance · training"]
+    SB["Sandbox\n[agentId] · proposals\nA0 preview / export"]
+    AUTHP["Auth\nsign-in · sign-up\niam/redeem"]
+  end
+
+  subgraph API["⚡  API & integrációs réteg"]
+    direction LR
+    ACT["Server Actions\nplatform.ts"]
+    AAPI["Agent API\n/v1/agent/tickets\n/v1/agent/tools"]
+    GW_API["Gateway API\n/v1/gateway/v1/chat/completions"]
+    HCB["Harness Callback\n/v1/harness/tickets/id/complete"]
+    SBAPI["Sandbox API\n/sandbox-apps/id/preview\n/sandbox-apps/id/export"]
+    CWEB["Clerk Webhook\n/webhooks/clerk"]
+  end
+
+  subgraph DOM["🧠  Domain réteg — üzleti logika"]
+    direction TB
+    TKT["TicketService\nállapotgép · átmenetek"]
+    DISP["DispatcherService\nbatch · budget · lock-token"]
+    GW["ModelGateway\nmulti-provider · plafon\nchatgpt-oauth-bridge"]
+    TB["ToolBrokerService\nKB-keresés · konnektorok\nToolCall audit"]
+    WG["WriteGateService\ntoken kibocsátás\nlejáró engedély"]
+    IAM["IamService\nszerepek · meghívók"]
+    AUDIT["AuditChainService\nhash-lánc\ntamper-evident"]
+    REC["RecipeService\nrole-instruction\nbehavior-profile"]
+    TRAIN["TrainingService\nvisszajelzési hurok"]
+    EVAL["EvalService\neval runs · minőség"]
+    GOV["Governance\nmérési riportok"]
+    SBOX["SandboxAppService\nA0 riportok"]
+    AGRT["Agent Runtimes\nwiki-runtime\nbookkeeper-runtime"]
+  end
+
+  subgraph REPO["🗄️  Repository réteg"]
+    direction LR
+    IFACE["Interfaces\n(portok)"]
+    PG["Postgres Adapterek\nagent · audit · recipe\nticket · tool-broker · sandbox"]
+  end
+
+  subgraph HARNESS["⚙️  Harness Runtime (izolált konténer)"]
+    direction LR
+    ENT["job-entrypoint"]
+    LOOP["agent-loop"]
+    MCP["platform-mcp-bridge"]
+    EGR["egress-guard"]
+  end
+
+  subgraph AUTH_ABS["🔓  Auth absztrakció"]
+    direction LR
+    AUTHPROV["AuthProvider\nclerk-provider\ndev-provider\nagent-api-key"]
+  end
+
+  %% UI → API
+  CP -->|"server actions"| ACT
+  SB -->|"fetch"| SBAPI
+  AUTHP -->|"session"| CLERK
+
+  %% API → Domain
+  ACT --> TKT & IAM & GOV & REC & SBOX
+  AAPI --> TKT & TB
+  GW_API --> GW
+  HCB --> TKT
+  CWEB -->|"user sync"| IAM
+  SBAPI --> SBOX
+
+  %% Domain internal
+  TKT --> AUDIT
+  DISP --> TKT & AUDIT
+  GW --> AUDIT
+  TB --> AUDIT
+  WG --> AUDIT
+  IAM --> AUDIT
+
+  %% Domain → Repo
+  TKT & DISP & GW & TB & IAM & REC & TRAIN & EVAL & SBOX --> IFACE
+  IFACE --> PG
+
+  %% Dispatcher → Harness launchers
+  DISP -->|"docker local"| HARNESS
+  DISP -->|"cloud run job"| CR
+
+  %% Harness internal flow
+  ENT --> LOOP --> MCP
+  MCP --> EGR
+  EGR -->|"only platform endpoints"| AAPI
+  EGR -->|"LLM calls"| GW_API
+
+  %% Auth
+  AUTH_ABS --> DOM
+  CLERK --> AUTH_ABS
+
+  %% Repo → DB
+  PG --> NEON
+
+  %% Gateway → LLM providers
+  GW --> GPT & GEM & OLLAMA
+
+  %% Infra
+  FIREBASE -->|"hosts"| UI
+  SM -->|"secrets inject"| HARNESS & CR
+
+  classDef uicls fill:#1a2440,stroke:#7aa2f7,color:#e8edf4
+  classDef apicls fill:#1f1a33,stroke:#bb9af7,color:#e8edf4
+  classDef domcls fill:#172a25,stroke:#7dcfa6,color:#e8edf4
+  classDef repocls fill:#2a2118,stroke:#e0af68,color:#e8edf4
+  classDef infracls fill:#2a1820,stroke:#f7768e,color:#e8edf4
+  classDef extcls fill:#172326,stroke:#56c2d6,color:#e8edf4
+  classDef authcls fill:#1f2430,stroke:#ffb454,color:#e8edf4
+
+  class CP,SB,AUTHP uicls
+  class ACT,AAPI,GW_API,HCB,SBAPI,CWEB apicls
+  class TKT,DISP,GW,TB,WG,IAM,AUDIT,REC,TRAIN,EVAL,GOV,SBOX,AGRT domcls
+  class IFACE,PG repocls
+  class ENT,LOOP,MCP,EGR infracls
+  class CLERK,NEON,GPT,GEM,OLLAMA,FIREBASE,CR,SM extcls
+  class AUTHPROV authcls
+      </pre>
+    </div>
+  </div>
+
+  <!-- ============ MERMAID: SEQUENCE ============ -->
+  <h2 class="section">Mermaid — ticket életciklus (szekvencia)</h2>
+  <div class="layer">
+    <div class="layer-head"><span class="dot" style="background:var(--api)"></span>
+      <h3>Egy ticket élete — E2E szekvencia</h3><span class="tag">sequenceDiagram</span></div>
+    <div style="padding:20px;overflow-x:auto">
+      <pre class="mermaid">
+%%{init:{"theme":"base","themeVariables":{"primaryColor":"#1c232f","primaryTextColor":"#e8edf4","primaryBorderColor":"#2a3340","lineColor":"#4a5568","secondaryColor":"#161b24","tertiaryColor":"#0e1117","activationBkgColor":"#222b38","activationBorderColor":"#7aa2f7","noteBkgColor":"#161b24","noteTextColor":"#9aa7b8","noteBorderColor":"#2a3340"}}}%%
+sequenceDiagram
+  autonumber
+  actor OP as Operátor
+  participant CP as Control Plane UI
+  participant ACT as Server Actions
+  participant TKT as TicketService
+  participant AUD as AuditChain
+  participant DISP as Dispatcher
+  participant DOCK as Docker / Cloud Run Job
+  participant HRN as Harness (agent-loop)
+  participant MCP as MCP Bridge
+  participant TBROK as ToolBroker
+  participant GW as ModelGateway
+  participant LLM as LLM Provider
+  participant WGS as WriteGate
+  participant HCB as Harness Callback API
+
+  OP->>CP: Ticket létrehozása (kérdés / feladat)
+  CP->>ACT: createTicket()
+  ACT->>TKT: create(payload)
+  TKT->>AUD: auditLog(TICKET_CREATED, hash)
+  TKT-->>ACT: ticket { id, state: READY }
+  ACT-->>CP: ticket megjelenik a boardon
+
+  Note over DISP: Batch-loop (cron / trigger)
+  DISP->>TKT: findReadyForDispatch()
+  TKT-->>DISP: [ticket]
+  DISP->>DISP: budget check (calls/tokens/nap)
+  DISP->>TKT: lockTicket(lockToken)
+  DISP->>AUD: auditLog(DISPATCH_START)
+
+  alt docker local
+    DISP->>DOCK: docker run --env ticketId lockToken agentVersion
+  else Cloud Run Job
+    DISP->>DOCK: jobs.run(ticketId, lockToken, agentVersion)
+  end
+
+  DOCK->>HRN: job-entrypoint boot
+  HRN->>MCP: fetch ticket context
+  MCP->>ACT: GET /api/v1/agent/tickets/{id}
+  ACT-->>MCP: ticket + recipe + memory
+
+  loop agent lépések
+    HRN->>MCP: tool_call(kb_search, args)
+    MCP->>TBROK: kbSearch(query)
+    TBROK->>AUD: auditLog(TOOL_CALL)
+    TBROK-->>MCP: [{snippet, sourceRef, citáció}]
+    MCP-->>HRN: tool result
+
+    HRN->>MCP: chat/completions(messages)
+    MCP->>GW: POST /api/v1/gateway/v1/chat/completions
+    GW->>GW: ticket plafon ellenőrzés
+    GW->>LLM: request (ChatGPT / Gemini / Ollama)
+    LLM-->>GW: completion
+    GW->>AUD: auditLog(MODEL_CALL, tokens)
+    GW-->>MCP: completion
+    MCP-->>HRN: assistant message
+
+    opt kontrollált írás szükséges
+      HRN->>MCP: write_gate_request()
+      MCP->>WGS: issueToken(scope, ttl)
+      WGS->>AUD: auditLog(WRITE_GATE_ISSUED)
+      WGS-->>HRN: writeGateToken
+      HRN->>MCP: commit_write(token, payload)
+      MCP->>WGS: redeemToken(token)
+      WGS->>AUD: auditLog(WRITE_GATE_REDEEMED)
+    end
+  end
+
+  HRN->>HCB: POST /api/v1/harness/tickets/{id}/complete (callback-token)
+  HCB->>TKT: completeTicket(result)
+  TKT->>AUD: auditLog(TICKET_COMPLETE, hash)
+  TKT-->>HCB: ok
+
+  Note over CP: Operátor látja a kész ticketet
+  OP->>CP: riport megtekintése (Sandbox)
+      </pre>
+    </div>
+  </div>
+
+  <!-- ============ MERMAID: ADATMODELL ER ============ -->
+  <h2 class="section">Mermaid — adatmodell kapcsolatok (ER)</h2>
+  <div class="layer">
+    <div class="layer-head"><span class="dot" style="background:var(--repo)"></span>
+      <h3>Prisma séma — entitáskapcsolatok</h3><span class="tag">erDiagram</span></div>
+    <div style="padding:20px;overflow-x:auto">
+      <pre class="mermaid">
+%%{init:{"theme":"base","themeVariables":{"primaryColor":"#1c232f","primaryTextColor":"#e8edf4","primaryBorderColor":"#e0af68","lineColor":"#4a5568","secondaryColor":"#161b24","tertiaryColor":"#0e1117","edgeLabelBackground":"#161b24"}}}%%
+erDiagram
+  User {
+    string id PK
+    UserRole role
+    UserStatus status
+  }
+  Invitation {
+    string id PK
+    InvitationStatus status
+    string invitedEmail
+  }
+  Agent {
+    string id PK
+    AgentStatus status
+    string name
+  }
+  AgentVersion {
+    int version PK
+    string agentId FK
+    string modelProvider
+    string modelId
+    float temperature
+  }
+  Recipe {
+    string id PK
+    string agentId FK
+    RecipeScope scope
+  }
+  RecipeVersion {
+    int version PK
+    string recipeId FK
+    string roleInstruction
+    RecipeVersionStatus status
+  }
+  Memory {
+    string id PK
+    string agentId FK
+  }
+  MemoryVersion {
+    int version PK
+    string memoryId FK
+    MemoryVersionStatus status
+  }
+  Ticket {
+    string id PK
+    TicketType type
+    TicketState state
+    string agentId FK
+    string lockToken
+  }
+  TicketTransition {
+    string id PK
+    string ticketId FK
+    TicketState fromState
+    TicketState toState
+  }
+  ModelCall {
+    string id PK
+    string ticketId FK
+    ModelCallStatus status
+    int promptTokens
+    int completionTokens
+  }
+  ToolCall {
+    string id PK
+    string ticketId FK
+    ToolCallStatus status
+    string toolName
+  }
+  WriteGateToken {
+    string id PK
+    string ticketId FK
+    WriteGateTokenStatus status
+    DateTime expiresAt
+  }
+  AuditLog {
+    string id PK
+    string hash
+    string prevHash
+    AuditActorType actorType
+  }
+  SandboxApp {
+    string id PK
+    string agentId FK
+    SandboxAppLevel level
+    SandboxAppStatus status
+  }
+  Connector {
+    string id PK
+    ConnectorType type
+    ConnectorScope scope
+    ConnectorAccessMode accessMode
+  }
+  Eval {
+    string id PK
+    string agentId FK
+  }
+  EvalRun {
+    string id PK
+    string evalId FK
+    EvalStatus status
+  }
+  TrainingTicket {
+    string id PK
+    string agentId FK
+  }
+
+  User ||--o{ Invitation : "küld"
+  Agent ||--o{ AgentVersion : "verziózott"
+  Agent ||--o{ Recipe : "receptje"
+  Recipe ||--o{ RecipeVersion : "verziózott"
+  Agent ||--o{ Memory : "memóriája"
+  Memory ||--o{ MemoryVersion : "verziózott"
+  Agent ||--o{ Ticket : "végrehajt"
+  Ticket ||--o{ TicketTransition : "átmenetek"
+  Ticket ||--o{ ModelCall : "LLM-hívások"
+  Ticket ||--o{ ToolCall : "eszközhívások"
+  Ticket ||--o{ WriteGateToken : "write-tokenek"
+  Agent ||--o{ SandboxApp : "generál"
+  Agent ||--o{ Connector : "csatlakozik"
+  Agent ||--o{ Eval : "kiértékelés"
+  Eval ||--o{ EvalRun : "futtatások"
+  Agent ||--o{ TrainingTicket : "tanul"
+      </pre>
+    </div>
+  </div>
+
+  <footer>
+    Enterprise AI Agent Platform · architektúra-áttekintés — generálva a forráskód (<code style="font-family:monospace">app/src</code>, <code style="font-family:monospace">prisma/schema.prisma</code>, <code style="font-family:monospace">apphosting.yaml</code>) alapján · 2026-06-17
+  </footer>
+</main>
+<script type="module">
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  mermaid.initialize({
+    startOnLoad: true,
+    securityLevel: 'loose',
+    fontFamily: 'ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif',
+  });
+</script>
+</body>
+</html>

@@ -266,6 +266,7 @@ export class ModelGateway {
   async call(params: {
     agentId: string
     ticketId?: string
+    conversationId?: string
     messages: GatewayMessage[]
     modelConfig: ModelConfig
     retryCount?: number
@@ -323,6 +324,7 @@ export class ModelGateway {
       await this.modelCalls.create({
         agentId: params.agentId,
         ticketId: params.ticketId ?? null,
+        conversationId: params.conversationId ?? null,
         provider: provider.name,
         model: usedModel,
         promptTokens,
@@ -332,13 +334,16 @@ export class ModelGateway {
         status: 'ok',
       })
 
+      const targetType = params.ticketId ? 'ticket' : params.conversationId ? 'conversation' : 'agent'
+      const targetId = params.ticketId ?? params.conversationId ?? params.agentId
+
       await this.audit.append({
         actorType: 'agent',
         actorId: params.agentId,
         agentVersion: null,
         action: 'model.call',
-        targetType: 'ticket',
-        targetId: params.ticketId ?? null,
+        targetType,
+        targetId,
         modelUsed: usedModel,
         inputRef: `tokens:${promptTokens}`,
         outputRef: `tokens:${completionTokens}`,
@@ -356,6 +361,7 @@ export class ModelGateway {
       await this.modelCalls.create({
         agentId: params.agentId,
         ticketId: params.ticketId ?? null,
+        conversationId: params.conversationId ?? null,
         provider: provider.name,
         model,
         promptTokens: 0,
@@ -365,13 +371,16 @@ export class ModelGateway {
         status,
       })
 
+      const targetType = params.ticketId ? 'ticket' : params.conversationId ? 'conversation' : 'agent'
+      const targetId = params.ticketId ?? params.conversationId ?? params.agentId
+
       await this.audit.append({
         actorType: 'agent',
         actorId: params.agentId,
         agentVersion: null,
         action: 'model.call',
-        targetType: 'ticket',
-        targetId: params.ticketId ?? null,
+        targetType,
+        targetId,
         modelUsed: model,
         inputRef: 'error',
         outputRef: status,

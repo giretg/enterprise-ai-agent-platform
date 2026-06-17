@@ -22,13 +22,36 @@ type TicketView = {
   } | null
 }
 
+const REJECTABLE_STATES = new Set(['ready', 'in_progress', 'awaiting_human', 'done'])
+
+function hasWikiAnswer(payload: unknown): boolean {
+  return (
+    typeof payload === 'object' &&
+    payload !== null &&
+    'answer' in payload &&
+    typeof (payload as { answer?: unknown }).answer === 'string'
+  )
+}
+
 export function TicketActions({ ticket }: { ticket: TicketView }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
   const [note, setNote] = useState('')
 
+  const isTrainingTicket = ticket.type === 'training'
+  const canApprove = ticket.state === 'awaiting_human'
+  const canReject = REJECTABLE_STATES.has(ticket.state)
+  const canRerun = ticket.state === 'rejected'
+  const hasActions = canApprove || canReject || canRerun
+  const isWikiFollowUp = hasWikiAnswer(ticket.payload)
+
   const act = (toState: string) => {
+    if (toState === 'rejected' && isWikiFollowUp && !note.trim()) {
+      setError('Pontosító kérdés vagy indoklás megadása kötelező a visszadobáshoz.')
+      return
+    }
+
     setError(null)
     startTransition(async () => {
       const res = await transitionTicket({ id: ticket.id, toState, note: note || undefined })
@@ -36,8 +59,20 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
         setError(res.error)
         return
       }
+      setNote('')
       router.refresh()
     })
+  }
+
+  if (!hasActions) {
+    return (
+      <Card title="Műveletek">
+        <p className="text-sm text-ink-soft">
+          Jelenleg nincs elvégezhető művelet ezen az állapoton ({TICKET_STATE_LABELS[ticket.state] ?? ticket.state}
+          ).
+        </p>
+      </Card>
+    )
   }
 
   return (
@@ -45,51 +80,63 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
       {error && <p className="mb-3 text-sm text-coral">{error}</p>}
       <textarea
         className="mb-3 w-full rounded-lg border border-line bg-night-2 p-3 text-sm text-ink"
-        placeholder="Indoklás (opcionális)"
+        placeholder={
+          isWikiFollowUp && canReject
+            ? 'Pontosító kérdés vagy indoklás (visszadobáshoz kötelező)'
+            : 'Indoklás vagy pontosító kérdés (opcionális)'
+        }
         value={note}
         onChange={(e) => setNote(e.target.value)}
-        rows={2}
+        rows={3}
       />
       <div className="flex flex-wrap gap-2">
-        {ticket.state === 'awaiting_human' && (
-          <>
-            <button
-              type="button"
-              disabled={pending}
-              onClick={() => act('approved')}
-              className="rounded-full bg-sage/20 px-4 py-2 text-sm font-semibold text-sage hover:bg-sage/30 disabled:opacity-50"
-            >
-              Jóváhagyás
-            </button>
-            <button
-              type="button"
-              disabled={pending}
-              onClick={() => act('rejected')}
-              className="rounded-full bg-coral/20 px-4 py-2 text-sm font-semibold text-coral hover:bg-coral/30 disabled:opacity-50"
-            >
-              Visszadobás
-            </button>
-          </>
+        {canApprove && (
+          <button
+            type="button"
+            disabled={pending}
+            onClick={() => act('approved')}
+            className="rounded-full bg-sage/20 px-4 py-2 text-sm font-semibold text-sage hover:bg-sage/30 disabled:opacity-50"
+          >
+            {isTrainingTicket ? 'Tanítás jóváhagyása (write-gate)' : 'Jóváhagyás'}
+          </button>
         )}
-        {ticket.state === 'rejected' && (
+        {canReject && (
+          <button
+            type="button"
+            disabled={pending}
+            onClick={() => act('rejected')}
+            className="rounded-full bg-coral/20 px-4 py-2 text-sm font-semibold text-coral hover:bg-coral/30 disabled:opacity-50"
+          >
+            Visszadobás
+          </button>
+        )}
+        {canRerun && (
           <button
             type="button"
             disabled={pending}
             onClick={() => act('ready')}
             className="rounded-full bg-honey/20 px-4 py-2 text-sm font-semibold text-honey disabled:opacity-50"
           >
-            Újra ready
+            Újra feldolgozás
           </button>
         )}
       </div>
       <p className="mt-3 text-xs text-ink-faint">
-        Jóváhagyás után a szerver automatikusan: approved → done
+        {canApprove &&
+          isTrainingTicket &&
+          'Tanítási ticket: a jóváhagyás write-gate-en keresztül frissíti az agent memóriáját, majd done állapotba zár. '}
+        {canApprove &&
+          !isTrainingTicket &&
+          'Jóváhagyás után a szerver automatikusan: approved → done. '}
+        {canReject &&
+          'Visszadobás után az «Újra feldolgozás» gombbal indíthatod újra az agentet — a pontosító kérdés bekerül a kontextusba. '}
+        {canRerun && 'Újra feldolgozás után a ticket ready állapotba kerül, és a dispatcher újraindítja az agentet.'}
       </p>
     </Card>
   )
 }
 
-export function TicketMeta({ ticket }: { ticket: TicketView }) {
+export function TicketMeta({ ticket, isAdmin = false }: { ticket: TicketView; isAdmin?: boolean }) {
   const payload = ticket.payload as Record<string, unknown> | null
   const proposal = payload?.proposal as Record<string, unknown> | undefined
   const diff = payload?.diff as Record<string, unknown> | undefined
@@ -97,6 +144,10 @@ export function TicketMeta({ ticket }: { ticket: TicketView }) {
   const rationale = typeof payload?.rationale === 'string' ? payload.rationale : null
   const confidence = typeof payload?.confidence === 'string' ? payload.confidence : null
   const sources = Array.isArray(payload?.sources) ? payload.sources : []
+  const followUpNotes = Array.isArray(payload?.followUpNotes)
+    ? payload.followUpNotes.filter((note): note is string => typeof note === 'string' && note.trim().length > 0)
+    : []
+  const transitionNote = typeof payload?.transitionNote === 'string' ? payload.transitionNote : null
 
   return (
     <>
@@ -109,6 +160,19 @@ export function TicketMeta({ ticket }: { ticket: TicketView }) {
       </div>
 
       {proposal && <ProposalCard proposal={proposal} className="mt-6" />}
+
+      {followUpNotes.length > 0 && (
+        <Card title="Pontosító kérések" className="mt-6">
+          <ol className="list-decimal space-y-2 pl-5 text-sm leading-relaxed text-ink-soft">
+            {followUpNotes.map((note, index) => (
+              <li key={index}>{note}</li>
+            ))}
+          </ol>
+          {transitionNote && transitionNote !== followUpNotes.at(-1) && (
+            <p className="mt-3 text-xs text-ink-faint">Legutóbbi indoklás: {transitionNote}</p>
+          )}
+        </Card>
+      )}
 
       {answer && (
         <Card title="Wiki-válasz" className="mt-6">
@@ -180,12 +244,14 @@ export function TicketMeta({ ticket }: { ticket: TicketView }) {
         </Card>
       )}
 
-      <Card title="Payload (debug)" className="mt-6">
-        <details>
-          <summary className="cursor-pointer text-xs text-ink-faint">Raw JSON megjelenítése</summary>
-          <pre className="mt-3 overflow-x-auto text-xs text-ink-soft">{JSON.stringify(payload, null, 2)}</pre>
-        </details>
-      </Card>
+      {isAdmin && (
+        <Card title="Payload (debug)" className="mt-6">
+          <details>
+            <summary className="cursor-pointer text-xs text-ink-faint">Raw JSON megjelenítése</summary>
+            <pre className="mt-3 overflow-x-auto text-xs text-ink-soft">{JSON.stringify(payload, null, 2)}</pre>
+          </details>
+        </Card>
+      )}
     </>
   )
 }

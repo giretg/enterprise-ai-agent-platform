@@ -4,7 +4,10 @@ import type {
   Connector,
   ConnectorAccessMode,
   ConnectorType,
+  Conversation,
   Document,
+  Message,
+  MessageRole,
   ModelCall,
   Prisma,
   Recipe,
@@ -13,6 +16,8 @@ import type {
   RecipeVersion,
   SandboxApp,
   SandboxAppVersion,
+  Playbook,
+  PlaybookVersion,
   ToolCall,
   Ticket,
   TicketState,
@@ -32,13 +37,26 @@ export interface TicketRepository {
   findStaleInProgressDispatches(cutoff: Date, limit: number): Promise<Ticket[]>
   findById(id: string): Promise<Ticket | null>
   create(
-    data: Omit<Ticket, 'id' | 'createdAt' | 'updatedAt' | 'lockToken' | 'lockedAt'> &
-      Partial<Pick<Ticket, 'lockToken' | 'lockedAt'>>,
+    data: Omit<
+      Ticket,
+      'id' | 'createdAt' | 'updatedAt' | 'lockToken' | 'lockedAt' | 'playbookRef' | 'conversationId'
+    > &
+      Partial<Pick<Ticket, 'lockToken' | 'lockedAt' | 'playbookRef' | 'conversationId'>>,
   ): Promise<Ticket>
   update(
     id: string,
     data: Partial<
-      Pick<Ticket, 'state' | 'payload' | 'assigneeType' | 'assigneeId' | 'lockToken' | 'lockedAt'>
+      Pick<
+        Ticket,
+        | 'state'
+        | 'payload'
+        | 'assigneeType'
+        | 'assigneeId'
+        | 'lockToken'
+        | 'lockedAt'
+        | 'playbookRef'
+        | 'conversationId'
+      >
     >,
   ): Promise<Ticket>
   acquireDispatchLock(id: string, lockToken: string, now: Date): Promise<Ticket | null>
@@ -87,6 +105,8 @@ export interface AgentRepository {
     roleInstruction: string
     behaviorProfile: string
     modelConfig: Agent['modelConfig']
+    role?: Agent['role']
+    selfEvolutionProfile?: Agent['selfEvolutionProfile']
     initialMemory?: string
     createdById: string
   }): Promise<{ agent: Agent; apiKey: string }>
@@ -116,6 +136,11 @@ export interface AgentRepository {
     agentId: string
     modelConfig: Agent['modelConfig']
   }): Promise<{ agentVersion: number }>
+  updateSelfEvolutionProfile(input: {
+    agentId: string
+    profile: Agent['selfEvolutionProfile']
+  }): Promise<Agent>
+  delete(agentId: string): Promise<{ id: string; name: string }>
   authenticateApiKey(rawKey: string): Promise<{ agentId: string; scopes: string[] } | null>
 }
 
@@ -198,6 +223,61 @@ export interface RecipeRepository {
   addVersion(recipeId: string, content: Prisma.JsonValue): Promise<RecipeVersion>
   approveVersion(versionId: string, approverId: string): Promise<RecipeVersion>
   getActiveVersion(recipeId: string): Promise<RecipeVersion | null>
+}
+
+export type PlaybookWithVersions = Playbook & { versions: PlaybookVersion[] }
+
+export interface PlaybookRepository {
+  list(): Promise<PlaybookWithVersions[]>
+  findByName(name: string): Promise<PlaybookWithVersions | null>
+  findVersionByNameAndVersion(
+    name: string,
+    version: number,
+  ): Promise<(PlaybookVersion & { playbook: Playbook }) | null>
+  createPlaybook(input: {
+    name: string
+    processType: string
+    tenantId?: string | null
+    spec: Prisma.JsonValue
+  }): Promise<{ playbook: Playbook; version: PlaybookVersion }>
+  approveVersion(versionId: string, approverId: string): Promise<PlaybookVersion>
+  getActiveVersion(playbookId: string): Promise<PlaybookVersion | null>
+  getActiveVersionByName(name: string): Promise<(PlaybookVersion & { playbook: Playbook }) | null>
+}
+
+export interface ConversationRepository {
+  create(data: {
+    tenantId: string | null
+    agentId: string
+    title?: string | null
+    createdById: string
+  }): Promise<Conversation>
+  findById(id: string): Promise<Conversation | null>
+  findByIdForTenant(id: string, tenantId: string | null): Promise<Conversation | null>
+  findManyForAgentUser(params: {
+    agentId: string
+    createdById: string
+    tenantId?: string | null
+    limit?: number
+  }): Promise<
+    Array<
+      Conversation & {
+        previewText: string | null
+      }
+    >
+  >
+  appendMessage(data: {
+    conversationId: string
+    role: MessageRole
+    content: string
+    agentVersion?: number | null
+    model?: string | null
+    ticketRefId?: string | null
+  }): Promise<Message>
+  findMessages(conversationId: string): Promise<Array<Message & { content: string | null }>>
+  findMessageById(id: string): Promise<Message | null>
+  deleteMessageContent(messageId: string): Promise<Message>
+  linkMessageToTicket(messageId: string, ticketId: string): Promise<Message>
 }
 
 export type SandboxAppWithLatestVersion = SandboxApp & {

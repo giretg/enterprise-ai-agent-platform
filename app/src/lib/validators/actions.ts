@@ -53,6 +53,47 @@ export const processDocumentForWikiSchema = z.object({
 export const askWikiSchema = z.object({
   agentId: z.string().uuid(),
   question: z.string().trim().min(1).max(2000),
+  conversationId: z.string().uuid().optional(),
+})
+
+export const sendAgentMessageSchema = z.object({
+  agentId: z.string().uuid(),
+  content: z.string().trim().max(8000).default(''),
+  conversationId: z.string().uuid().optional(),
+  attachmentDocumentIds: z.array(z.string().uuid()).max(8).optional(),
+}).refine((v) => v.content.length > 0 || (v.attachmentDocumentIds?.length ?? 0) > 0, {
+  message: 'Az üzenet vagy legalább egy csatolmány kötelező',
+})
+
+export const createAgentTaskTicketSchema = z.object({
+  agentId: z.string().uuid(),
+  content: z.string().trim().max(8000).default(''),
+  conversationId: z.string().uuid().optional(),
+  attachmentDocumentIds: z.array(z.string().uuid()).max(8).optional(),
+}).refine((v) => v.content.length > 0 || (v.attachmentDocumentIds?.length ?? 0) > 0, {
+  message: 'A feladat leírása vagy legalább egy csatolmány kötelező',
+})
+
+export const loadAgentChatSchema = z.object({
+  conversationId: z.string().uuid(),
+  agentId: z.string().uuid(),
+})
+
+export const listAgentChatSessionsSchema = z.object({
+  agentId: z.string().uuid(),
+})
+
+export const conversationIdSchema = z.object({
+  conversationId: z.string().uuid(),
+})
+
+export const promoteToTicketSchema = z.object({
+  conversationId: z.string().uuid(),
+  reason: z.string().trim().min(1).max(500).optional(),
+})
+
+export const messageIdSchema = z.object({
+  messageId: z.string().uuid(),
 })
 
 export const createTrainingSchema = z.object({
@@ -123,11 +164,21 @@ export const createAgentSchema = z.object({
   name: z.string().min(1),
   roleInstruction: z.string().min(1),
   behaviorProfile: z.string().min(1),
+  role: z.enum(['worker', 'orchestrator']).optional(),
   modelConfig: z.object({
     provider: z.string().min(1),
     model: z.string().min(1),
     temperature: z.number().min(0).max(2).optional(),
     maxTokens: z.number().int().positive().optional(),
+  }),
+})
+
+export const updateAgentSelfEvolutionProfileSchema = z.object({
+  agentId: z.string().uuid(),
+  profile: z.object({
+    scope: z.array(z.enum(['memory', 'behavior', 'role'])).min(1),
+    approval_mode: z.enum(['human', 'higher_role', 'eval_only', 'auto_after_eval']),
+    diff_limit: z.number().int().positive().optional(),
   }),
 })
 

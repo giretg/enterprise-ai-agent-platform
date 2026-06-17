@@ -36,6 +36,7 @@ export function CreateAgentForm() {
               name: String(fd.get('name')),
               roleInstruction: String(fd.get('roleInstruction')),
               behaviorProfile: String(fd.get('behaviorProfile')),
+              role: (fd.get('role') === 'orchestrator' ? 'orchestrator' : 'worker'),
               modelConfig: {
                 ...DEFAULT_MODEL,
                 provider,
@@ -61,6 +62,17 @@ export function CreateAgentForm() {
             className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm"
             placeholder="Wiki agent"
           />
+        </label>
+        <label className="block text-sm">
+          <span className="text-ink-soft">Registry szerep</span>
+          <select
+            name="role"
+            defaultValue="worker"
+            className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm"
+          >
+            <option value="worker">worker</option>
+            <option value="orchestrator">orchestrator (tool-less)</option>
+          </select>
         </label>
         <label className="block text-sm">
           <span className="text-ink-soft">Szerep-instrukció („mit csinál”)</span>

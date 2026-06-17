@@ -1,8 +1,10 @@
 import { ModelGateway } from '@/domain/gateway/model-gateway'
 import { BookkeeperAgentRuntime } from '@/domain/agent/bookkeeper-runtime'
+import { AgentChatRuntime } from '@/domain/agent/agent-chat-runtime'
 import { WikiAgentRuntime } from '@/domain/agent/wiki-runtime'
 import { TicketService } from '@/domain/ticket/ticket-service'
 import { TrainingService } from '@/domain/training/training-service'
+import { SelfEvolutionGuard } from '@/domain/training/self-evolution-guard'
 import { AuditChainService } from '@/domain/audit/audit-chain-service'
 import { WriteGateService } from '@/domain/writegate/write-gate-service'
 import { EvalService } from '@/domain/eval/eval-service'
@@ -14,12 +16,34 @@ import {
 } from '@/domain/dispatcher/docker-local-harness-launcher'
 import { AllowlistAuthorizer, ToolBrokerService } from '@/domain/tool-broker/tool-broker-service'
 import { RecipeService } from '@/domain/recipe/recipe-service'
+import { ConversationService } from '@/domain/conversation/conversation-service'
+import { PlaybookService } from '@/domain/playbook/playbook-service'
 import { IamService } from '@/domain/iam/iam-service'
 import { SandboxAppService } from '@/domain/sandbox/sandbox-app-service'
 import { repositories } from '@/repositories/postgres'
 
-const ticketService = new TicketService(repositories.tickets, repositories.audit)
-const toolAuthorizer = new AllowlistAuthorizer(repositories.toolBroker)
+const playbookService = new PlaybookService(repositories.playbooks, repositories.audit)
+
+async function resolveAgentRole(agentId: string | null): Promise<'worker' | 'orchestrator'> {
+  if (!agentId) return 'worker'
+  const agent = await repositories.agents.findById(agentId)
+  return agent?.role === 'orchestrator' ? 'orchestrator' : 'worker'
+}
+
+const ticketService = new TicketService(
+  repositories.tickets,
+  repositories.audit,
+  playbookService,
+  resolveAgentRole,
+)
+
+const conversationService = new ConversationService(
+  repositories.conversations,
+  repositories.tickets,
+  repositories.audit,
+  playbookService,
+)
+const toolAuthorizer = new AllowlistAuthorizer(repositories.toolBroker, repositories.agents)
 const modelGateway = new ModelGateway(repositories.audit, repositories.modelCalls)
 const bookkeeperRuntime = new BookkeeperAgentRuntime(
   repositories.agents,
@@ -30,12 +54,15 @@ const bookkeeperRuntime = new BookkeeperAgentRuntime(
 )
 const writeGateService = new WriteGateService()
 const evalService = new EvalService()
+const selfEvolutionGuard = new SelfEvolutionGuard(repositories.audit)
 const trainingService = new TrainingService(
   repositories.tickets,
   repositories.audit,
   ticketService,
   writeGateService,
   evalService,
+  repositories.agents,
+  selfEvolutionGuard,
 )
 const toolBrokerService = new ToolBrokerService(
   repositories.agents,
@@ -45,12 +72,21 @@ const toolBrokerService = new ToolBrokerService(
   ticketService,
   toolAuthorizer,
 )
+const agentChatRuntime = new AgentChatRuntime(
+  repositories.agents,
+  repositories.documents,
+  repositories.tickets,
+  modelGateway,
+  conversationService,
+)
 const wikiRuntime = new WikiAgentRuntime(
   repositories.agents,
   repositories.tickets,
   modelGateway,
   ticketService,
   toolBrokerService,
+  playbookService,
+  conversationService,
 )
 const auditChainService = new AuditChainService(repositories.audit)
 const recipeService = new RecipeService(repositories.recipes, repositories.audit)
@@ -90,6 +126,7 @@ const dispatcherService = new DispatcherService(
 export const services = {
   tickets: ticketService,
   gateway: modelGateway,
+  agentChat: agentChatRuntime,
   wiki: wikiRuntime,
   bookkeeper: bookkeeperRuntime,
   training: trainingService,
@@ -99,6 +136,9 @@ export const services = {
   dispatcher: dispatcherService,
   toolBroker: toolBrokerService,
   recipes: recipeService,
+  playbooks: playbookService,
+  conversations: conversationService,
   iam: iamService,
   sandboxApps: sandboxAppService,
+  selfEvolutionGuard,
 }

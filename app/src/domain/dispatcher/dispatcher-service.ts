@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto'
 import type { Prisma, Ticket } from '@prisma/client'
 import type { AuditRepository, ModelCallRepository, TicketRepository } from '@/repositories/interfaces'
+import { wikiSearchQuery } from '@/lib/wiki-ticket-payload'
 
 export type DispatchBudget = {
   maxCallsPerDay: number
@@ -238,7 +239,10 @@ export class DispatcherService {
         : {}
     const agentVersion =
       typeof payload.agentVersion === 'number' ? payload.agentVersion : undefined
-    const question = typeof payload.question === 'string' ? payload.question.trim() : undefined
+    const question =
+      typeof payload.question === 'string' && payload.question.trim()
+        ? wikiSearchQuery(payload)
+        : undefined
 
     let job: { jobId: string; executionName?: string }
     try {

@@ -99,15 +99,10 @@ async function main() {
       fail('Üres válasz a modelltől')
     }
 
-    const ticket = result.ticket
-    if (ticket?.state === 'awaiting_human' || ticket?.state === 'done') {
-      pass('Ticket állapot', ticket.state)
-    } else {
-      fail(`Ticket állapot — várt awaiting_human/done, kapott: ${ticket?.state}`)
-    }
+    pass('Beszélgetés-elsődleges flow', result.conversationId.slice(0, 8))
 
     const calls = await prisma.modelCall.findMany({
-      where: { ticketId: result.ticketId },
+      where: { conversationId: result.conversationId },
       orderBy: { createdAt: 'desc' },
     })
     const real = calls.find((c) => c.promptTokens > 0 && c.completionTokens > 0)
@@ -121,11 +116,13 @@ async function main() {
     }
 
     const audit = await repositories.audit.findMany({ limit: 30 })
-    const modelCallAudit = audit.find((e) => e.action === 'model.call' && e.targetId === result.ticketId)
+    const modelCallAudit = audit.find(
+      (e) => e.action === 'model.call' && e.targetId === result.conversationId,
+    )
     if (modelCallAudit) {
-      pass('Audit: model.call rögzítve', `model=${modelCallAudit.modelUsed}`)
+      pass('Audit: model.call rögzítve (conversation)', `model=${modelCallAudit.modelUsed}`)
     } else {
-      fail('Nincs model.call audit a tickethez')
+      fail('Nincs model.call audit a beszélgetéshez')
     }
 
     const integrity = await services.auditChain.verifyChain()

@@ -105,7 +105,7 @@ function actor(role: UserRole, userId: string) {
   return { type: 'human' as const, userId, role }
 }
 
-/** 1. Wiki path smoke: kérdés → retrieval → LLM → board_write → jóváhagyás/done → audit */
+/** 1. Wiki path smoke: kérdés → retrieval → LLM → jóváhagyás/done → audit (CR-MVP-003: beszélgetés-elsődleges) */
 async function scenario1_e2e(operatorId: string, approverId: string, agentId: string) {
   console.log('\n[1] Wiki kérdés flow smoke')
 
@@ -118,29 +118,65 @@ async function scenario1_e2e(operatorId: string, approverId: string, agentId: st
 
   let ticketId: string
   try {
-    const ticket = await services.wiki.createQuestionTicket({
+    const wikiResult = await services.wiki.askWiki({
       agentId,
       question: SAMPLE_WIKI_QUESTION,
       createdById: operatorId,
     })
+
+    const ticketsBeforePromote = await prisma.ticket.count({
+      where: { conversationId: wikiResult.conversationId },
+    })
+    if (ticketsBeforePromote === 0) {
+      pass('askWiki — beszélgetés ticket nélkül', wikiResult.conversationId.slice(0, 8))
+    } else {
+      fail('askWiki ticket nélkül', `ticket count=${ticketsBeforePromote}`)
+    }
+
+    if (wikiResult.answer.answer.trim().length > 0) {
+      pass(
+        'ChatGPT OAuth válasz (beszélgetésben)',
+        `confidence=${wikiResult.answer.confidence}${usingStub ? ' (stub)' : ''}`,
+      )
+    } else {
+      fail('ChatGPT OAuth válasz', 'üres answer')
+      return null
+    }
+
+    const agentRow = await prisma.agent.findUnique({ where: { id: agentId } })
+    const agentDetail = await repositories.agents.findByIdWithDetails(agentId)
+    const modelConfig = agentRow?.modelConfig as { model?: string } | undefined
+
+    const ticket = await services.conversations.promoteToTicket({
+      conversationId: wikiResult.conversationId,
+      createdById: operatorId,
+      reason: 'approval',
+      answerPayload: {
+        question: SAMPLE_WIKI_QUESTION,
+        answer: wikiResult.answer.answer,
+        sources: wikiResult.answer.sources,
+        rationale: wikiResult.answer.rationale,
+        confidence: wikiResult.answer.confidence,
+        agentVersion: agentRow?.currentVersion ?? 1,
+        model: modelConfig?.model ?? 'chatgpt-oauth-default',
+        memoryVersion: agentDetail?.memoryVersion ?? null,
+        recipeName: agentDetail?.recipe?.name ?? null,
+        recipeVersion: agentDetail?.recipe?.version ?? null,
+      },
+      agentMessageId: wikiResult.messageId,
+    })
     ticketId = ticket.id
-    const dispatch = await services.dispatcher.dispatchTicket(ticketId)
-    const answered = await repositories.tickets.findById(ticketId)
-    const payload = answered?.payload as { confidence?: string }
-    pass(
-      'ready ticket + dispatcher + ChatGPT OAuth válasz',
-      `ticket=${ticketId.slice(0, 8)}… dispatch=${dispatch.status} confidence=${payload?.confidence ?? 'n/a'}${usingStub ? ' (stub)' : ''}`,
-    )
+    pass('promoteToTicket — határátlépéskor ticket', ticketId.slice(0, 8))
   } catch (e) {
-    fail('ready ticket + dispatcher + ChatGPT OAuth válasz', e instanceof Error ? e.message : String(e))
+    fail('Wiki beszélgetés flow', e instanceof Error ? e.message : String(e))
     return null
   }
 
   const answered = await repositories.tickets.findById(ticketId)
-  if (answered?.state === 'awaiting_human' || answered?.state === 'done') {
+  if (answered?.state === 'awaiting_human') {
     pass('Ticket válaszolt állapotban', answered.state)
   } else {
-    fail('Ticket állapot', `várt: awaiting_human/done, kapott: ${answered?.state}`)
+    fail('Ticket állapot', `várt: awaiting_human, kapott: ${answered?.state}`)
   }
 
   if (answered?.state === 'awaiting_human') {
@@ -160,8 +196,6 @@ async function scenario1_e2e(operatorId: string, approverId: string, agentId: st
       fail('Jóváhagyás lánc', e instanceof Error ? e.message : String(e))
       return ticketId
     }
-  } else {
-    pass('Magas bizalmú válasz automatikusan done')
   }
 
   const done = await repositories.tickets.findById(ticketId)
@@ -175,20 +209,26 @@ async function scenario1_e2e(operatorId: string, approverId: string, agentId: st
   const hasTransition = audit.some((e) => e.action === 'ticket.transition' && e.targetId === ticketId)
   const hasModelCall = audit.some((e) => e.action === 'model.call')
   const hasToolCall = audit.some((e) => e.action === 'tool.call')
-  if (hasTransition && hasModelCall && hasToolCall) {
-    pass('Audit log: ticket.transition + model.call + tool.call')
+  const hasPromote = audit.some(
+    (e) => e.action === 'conversation.promote_to_ticket' && e.outputRef === ticketId,
+  )
+  if (hasTransition && hasModelCall && hasToolCall && hasPromote) {
+    pass('Audit log: ticket.transition + model.call + tool.call + promote')
   } else {
-    fail('Audit log', `transition=${hasTransition} model.call=${hasModelCall} tool.call=${hasToolCall}`)
+    fail(
+      'Audit log',
+      `transition=${hasTransition} model.call=${hasModelCall} tool.call=${hasToolCall} promote=${hasPromote}`,
+    )
   }
 
   const modelCalls = await prisma.modelCall.findMany({
-    where: { ticketId },
+    where: { conversationId: answered?.conversationId ?? undefined },
     take: 1,
   })
   if (modelCalls.length > 0 && modelCalls[0].promptTokens > 0) {
-    pass('model_calls token naplózás', `${modelCalls[0].promptTokens}+${modelCalls[0].completionTokens} token`)
+    pass('model_calls conversation_id naplózás', `${modelCalls[0].promptTokens}+${modelCalls[0].completionTokens} token`)
   } else {
-    fail('model_calls', 'nincs token rekord')
+    fail('model_calls conversation', 'nincs token rekord conversation_id-vel')
   }
 
   return ticketId
@@ -2125,6 +2165,274 @@ async function scenario26_roleBehaviorVersioning(createdById: string) {
   }
 }
 
+const CR_MVP002_ORCHESTRATOR_AGENT = 'Acceptance Orchestrator (CR-MVP-002)'
+
+async function cleanupCrMvp002TestAgents() {
+  const agents = await prisma.agent.findMany({
+    where: { name: { in: [CR_MVP002_ORCHESTRATOR_AGENT] } },
+    select: { id: true, memoryId: true },
+  })
+  for (const agent of agents) {
+    await prisma.toolCall.deleteMany({ where: { agentId: agent.id } })
+    await prisma.modelCall.deleteMany({ where: { agentId: agent.id } })
+    await prisma.agent.delete({ where: { id: agent.id } })
+    await prisma.memoryVersion.deleteMany({ where: { memoryId: agent.memoryId } })
+    await prisma.memory.delete({ where: { id: agent.memoryId } })
+  }
+}
+
+async function scenario27_crMvp002(createdById: string, operatorId: string, agentId: string) {
+  console.log('\n[27] CR-MVP-002 séma-horgok (szerep, playbook, önfejlesztési profil)')
+
+  await cleanupCrMvp002TestAgents()
+
+  try {
+    const { agent: orchestrator } = await repositories.agents.create({
+      name: CR_MVP002_ORCHESTRATOR_AGENT,
+      roleInstruction: 'Delegáló orchestrator — tool-less.',
+      behaviorProfile: 'Magyarul, tömören.',
+      role: 'orchestrator',
+      modelConfig: { provider: 'chatgpt-oauth', model: 'stub', temperature: 0.2 },
+      createdById,
+    })
+
+    const caps = await repositories.toolBroker.findCapabilitiesForAgent(orchestrator.id)
+    if (caps.length === 0) {
+      pass('Orchestrator — nincs capability sor (tool-less)')
+    } else {
+      fail('Orchestrator capabilities', JSON.stringify(caps))
+    }
+
+    const denied = await services.toolBroker.invoke({
+      agentId: orchestrator.id,
+      agentVersion: orchestrator.currentVersion,
+      ticketId: undefined,
+      tool: 'kb_search',
+      args: { query: 'probe', k: 1 },
+    })
+    if (denied.denied && denied.reason === 'orchestrator_tool_less') {
+      pass('Orchestrator — kb_search tool-less tiltás')
+    } else {
+      fail('Orchestrator tool deny', denied.denied ? denied.reason : 'tool lefutott')
+    }
+
+    const ticket = await services.wiki.createQuestionTicket({
+      agentId,
+      question: 'CR-MVP-002 playbook pin teszt',
+      createdById: operatorId,
+    })
+    if (ticket.playbookRef?.startsWith('playbook:wiki-interaction@v')) {
+      pass('Wiki ticket — playbook_ref PIN-elve')
+    } else {
+      fail('playbook_ref', ticket.playbookRef ?? 'null')
+    }
+
+    const processAudit = await repositories.audit.findMany({ action: 'process.start', limit: 10 })
+    const hasStart = processAudit.some(
+      (row) => row.targetId === ticket.id && row.outputRef === ticket.playbookRef,
+    )
+    if (hasStart) pass('Audit — process.start playbook_ref-fel')
+    else fail('process.start audit', ticket.id)
+
+    const lowConfidenceTicket = await repositories.tickets.create({
+      type: 'interaction',
+      title: 'Playbook gate probe',
+      state: 'in_progress',
+      assigneeType: 'agent',
+      assigneeId: agentId,
+      agentId,
+      playbookRef: ticket.playbookRef,
+      payload: { question: 'probe', confidence: 'medium' },
+      sourceDocumentId: null,
+      executeAfter: null,
+      dueBy: null,
+      createdById: operatorId,
+    })
+    let gateBlocked = false
+    try {
+      await services.tickets.transition({
+        ticketId: lowConfidenceTicket.id,
+        toState: 'done',
+        actor: { type: 'system' },
+      })
+    } catch {
+      gateBlocked = true
+    }
+    if (gateBlocked) pass('Playbook gate — in_progress→done blokkolva (confidence≠high)')
+    else fail('Playbook gate', 'átment tiltás nélkül')
+
+    const updatedProfile = await repositories.agents.updateSelfEvolutionProfile({
+      agentId,
+      profile: { scope: ['memory'], approval_mode: 'human', diff_limit: 500 },
+    })
+    if (updatedProfile.selfEvolutionProfile) {
+      pass('Self-evolution profil — mentve az agentre')
+    } else {
+      fail('Self-evolution profil', 'null')
+    }
+
+    let humanBlocked = false
+    try {
+      const training = await services.training.createTrainingTicket({
+        agentId,
+        proposedContent: 'CR-MVP-002 human gate probe',
+        source: 'acceptance',
+        createdById: operatorId,
+      })
+      await services.training.promoteMemoryWithoutHumanApproval(training.id)
+    } catch (e) {
+      if (e instanceof Error && e.message === 'human_approval_required') humanBlocked = true
+    }
+    if (humanBlocked) pass('Human approval_mode — emberi jóváhagyás nélkül nem promótál')
+    else fail('Human gate', 'promote engedélyezett')
+
+    await prisma.ticket.deleteMany({
+      where: { id: { in: [ticket.id, lowConfidenceTicket.id] } },
+    })
+  } finally {
+    await cleanupCrMvp002TestAgents()
+  }
+}
+
+/** N7. Beszélgetésből (ticket nélkül) kért memóriaírás — write-gate kötelező */
+async function scenarioN7_conversationWriteGateDenied(agentId: string) {
+  console.log('\n[N7] Write-gate beszélgetésből (CR-MVP-003)')
+
+  const conv = await services.conversations.createConversation({
+    agentId,
+    createdById: (await getUser('operator')).id,
+  })
+
+  const denied = await services.training.attemptUngatedMemoryWrite({
+    agentId,
+    proposedContent: 'N7 — tanuld meg ezt beszélgetésből',
+    conversationId: conv.id,
+  })
+
+  if (!denied.allowed && denied.reason === 'write_gate_required') {
+    pass('Beszélgetésből — ungated memóriaírás elutasítva')
+  } else {
+    fail('N7 deny', JSON.stringify(denied))
+  }
+
+  const audit = await repositories.audit.findMany({ action: 'memory.write_denied', limit: 10 })
+  const hasAudit = audit.some(
+    (row) => row.targetId === conv.id && row.policyDecision === 'write_gate_required',
+  )
+  if (hasAudit) pass('Audit — memory.write_denied (conversation target)')
+  else fail('N7 audit', conv.id)
+
+  await prisma.message.deleteMany({ where: { conversationId: conv.id } })
+  await prisma.conversation.delete({ where: { id: conv.id } })
+}
+
+/** N8. GDPR-erasure — verifyChain zöld marad */
+async function scenarioN8_gdprErasureVerifyChain(operatorId: string, agentId: string) {
+  console.log('\n[N8] GDPR message erasure (CR-MVP-003)')
+
+  const conv = await services.conversations.createConversation({
+    agentId,
+    createdById: operatorId,
+  })
+  const msg = await services.conversations.appendMessage({
+    conversationId: conv.id,
+    role: 'user',
+    content: 'PII: teszt@example.com — törölendő tartalom',
+    actorType: 'human',
+    actorId: operatorId,
+  })
+
+  const chainBefore = await services.auditChain.verifyChain()
+  if (chainBefore.ok) pass('verifyChain — erasure előtt zöld')
+  else fail('verifyChain before', chainBefore.firstBreakSeq ?? 'invalid')
+
+  await services.conversations.deleteMessageContent({
+    messageId: msg.id,
+    actorId: operatorId,
+  })
+
+  const updated = await prisma.message.findUnique({ where: { id: msg.id } })
+  if (!updated?.contentRef && updated?.contentDeletedAt) {
+    pass('content_ref ürítve + content_deleted_at beállítva')
+  } else {
+    fail('GDPR erasure', JSON.stringify({ contentRef: updated?.contentRef, deleted: updated?.contentDeletedAt }))
+  }
+
+  const chainAfter = await services.auditChain.verifyChain()
+  if (chainAfter.ok) pass('verifyChain — erasure után zöld')
+  else fail('verifyChain after', chainAfter.firstBreakSeq ?? 'invalid')
+
+  const audit = await repositories.audit.findMany({ action: 'message.content_deleted', limit: 5 })
+  if (audit.some((row) => row.inputRef === msg.id)) pass('Audit — message.content_deleted')
+  else fail('N8 audit', msg.id)
+
+  await prisma.message.deleteMany({ where: { conversationId: conv.id } })
+  await prisma.conversation.delete({ where: { id: conv.id } })
+}
+
+async function scenario28_crMvp003(operatorId: string, agentId: string) {
+  console.log('\n[28] CR-MVP-003 beszélgetés-séma + kapu-leválasztás')
+
+  const wikiResult = await services.wiki.askWiki({
+    agentId,
+    question: 'CR-MVP-003 conversation probe',
+    createdById: operatorId,
+  })
+
+  const convModelCalls = await prisma.modelCall.count({
+    where: { conversationId: wikiResult.conversationId, ticketId: null },
+  })
+  if (convModelCalls > 0) pass('model_calls — conversation_id ticket nélkül')
+  else fail('conversation model_calls', String(convModelCalls))
+
+  const convToolCalls = await prisma.toolCall.count({
+    where: { conversationId: wikiResult.conversationId, ticketId: null },
+  })
+  if (convToolCalls > 0) pass('tool_calls — conversation_id ticket nélkül')
+  else fail('conversation tool_calls', String(convToolCalls))
+
+  const { messages } = await services.conversations.getConversation(wikiResult.conversationId)
+  if (messages.length >= 2) pass('Beszélgetés — user + agent üzenet')
+  else fail('message count', String(messages.length))
+
+  await prisma.message.deleteMany({ where: { conversationId: wikiResult.conversationId } })
+  await prisma.conversation.delete({ where: { id: wikiResult.conversationId } })
+}
+
+/** N6. Önfejlesztési útvonal nem bővíthet capability-t */
+async function scenarioN6_capabilityEscalationDenied(agentId: string) {
+  console.log('\n[N6] Capability escalation tiltás (CR-MVP-002)')
+
+  const before = await prisma.capability.count({ where: { agentId } })
+
+  const denied = await services.training.attemptCapabilityEscalation({
+    agentId,
+    toolName: 'sandbox_app.create',
+    ticketId: undefined,
+  })
+
+  const after = await prisma.capability.count({ where: { agentId } })
+
+  if (!denied.allowed && denied.reason === 'capability_escalation_denied') {
+    pass('Tanítási útvonal — capability escalation elutasítva')
+  } else {
+    fail('N6 deny', JSON.stringify(denied))
+  }
+
+  if (before === after) pass('Capabilities száma változatlan')
+  else fail('Capabilities módosult', `before=${before} after=${after}`)
+
+  const audit = await repositories.audit.findMany({
+    action: 'training.capability_escalation_denied',
+    limit: 10,
+  })
+  const hasAudit = audit.some(
+    (row) => row.targetId === agentId && row.inputRef === 'sandbox_app.create',
+  )
+  if (hasAudit) pass('Audit — training.capability_escalation_denied')
+  else fail('N6 audit', agentId)
+}
+
 /** 21. Goose Docker E2E — opcionális, HARNESS_DOCKER_E2E=1 + image + platform */
 async function scenario20_dockerGooseE2E() {
   console.log('\n[21] Goose Docker E2E (opcionális)')
@@ -2314,6 +2622,11 @@ async function main() {
   await scenario24_governanceReport()
   await scenario25_measurementReport()
   await scenario26_roleBehaviorVersioning(approver.id)
+  await scenario27_crMvp002(approver.id, operator.id, agent.id)
+  await scenario28_crMvp003(operator.id, agent.id)
+  await scenarioN6_capabilityEscalationDenied(agent.id)
+  await scenarioN7_conversationWriteGateDenied(agent.id)
+  await scenarioN8_gdprErasureVerifyChain(operator.id, agent.id)
   await scenarioAgentApi(agent.id)
 
   const passed = results.filter((r) => r.ok && !r.skipped).length

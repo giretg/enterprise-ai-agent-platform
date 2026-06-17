@@ -1,12 +1,15 @@
 import Link from 'next/link'
 import { listAgents } from '@/app/actions/platform'
-import { Badge, Card } from '@/components/ui/shell'
-import { AgentAvatar } from '@/components/agents/agent-avatar'
-import { personaFor, humanStatus } from '@/lib/agent-persona'
+import { getCurrentUser } from '@/auth'
+import { hasMinimumRole } from '@/auth/types'
+import { AgentRegistryCard } from '@/components/agents/agent-registry-card'
+import { Card } from '@/components/ui/shell'
 
 export default async function AgentRegistryPage() {
-  const res = await listAgents()
+  const [res, user] = await Promise.all([listAgents(), getCurrentUser()])
   const agents = res.success ? res.data : []
+  const canDelete = user ? hasMinimumRole(user.role, 'admin') : false
+  const canCreate = canDelete
 
   return (
     <div className="space-y-8">
@@ -21,53 +24,20 @@ export default async function AgentRegistryPage() {
             rájuk, és ismerd meg őket közelebbről.
           </p>
         </div>
-        <Link
-          href="/control-plane/agents/new"
-          className="rounded-full bg-coral px-5 py-2.5 text-sm font-semibold text-card shadow-[0_10px_24px_-12px_rgba(178,58,85,0.7)] transition-transform hover:-translate-y-0.5"
-        >
-          + Új munkatárs
-        </Link>
+        {canCreate && (
+          <Link
+            href="/control-plane/agents/new"
+            className="rounded-full bg-coral px-5 py-2.5 text-sm font-semibold text-card shadow-[0_10px_24px_-12px_rgba(178,58,85,0.7)] transition-transform hover:-translate-y-0.5"
+          >
+            + Új munkatárs
+          </Link>
+        )}
       </div>
 
       <div className="grid gap-5 md:grid-cols-2">
-        {agents.map((agent) => {
-          const p = personaFor(agent.name)
-          const mood = humanStatus(agent.status)
-          return (
-            <Link key={agent.id} href={`/control-plane/agents/${agent.id}`}>
-              <Card className="h-full transition-transform duration-200 hover:-translate-y-1">
-                <div className="flex items-start gap-4">
-                  <AgentAvatar name={agent.name} status={agent.status} size="lg" />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <h2 className="font-display text-2xl font-semibold leading-none">{p.nickname}</h2>
-                      <span className="text-lg" aria-hidden>
-                        {p.emoji}
-                      </span>
-                    </div>
-                    <p className="mt-1 text-sm text-ink-faint">{agent.name}</p>
-                    <p className="mt-1 text-xs font-medium text-sage">{mood.label}</p>
-                  </div>
-                  <Badge tone={agent.status === 'active' ? 'success' : 'neutral'}>
-                    {agent.status === 'active' ? 'aktív' : 'pihen'}
-                  </Badge>
-                </div>
-
-                <p className="mt-4 text-sm leading-relaxed text-ink-soft">{p.trait}</p>
-
-                <div className="estate-rule my-4" />
-
-                <div className="flex items-center justify-between text-xs text-ink-faint">
-                  <span>{agent.roleInstruction}</span>
-                  <span className="font-mono">
-                    v{agent.currentVersion} ·{' '}
-                    {(agent.modelConfig as { model?: string }).model ?? '—'}
-                  </span>
-                </div>
-              </Card>
-            </Link>
-          )
-        })}
+        {agents.map((agent) => (
+          <AgentRegistryCard key={agent.id} agent={agent} canDelete={canDelete} />
+        ))}
         {agents.length === 0 && (
           <Card className="md:col-span-2">
             <p className="text-sm text-ink-faint">

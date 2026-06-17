@@ -27,7 +27,7 @@ export function UpdateModelConfigForm({
     provider === current.provider && model.trim() === current.model
 
   return (
-    <Card title="Modell konfig frissítése (admin)">
+    <Card title="Gondolkodási motor beállítása">
       <form
         className="space-y-4"
         onSubmit={(e) => {

@@ -21,6 +21,7 @@ function resolveUploadTarget(filename: string): { storageRef: string; absolutePa
 }
 import { clerkClient } from '@clerk/nextjs/server'
 import { getCurrentUser, requireRole } from '@/auth'
+import { hasMinimumRole } from '@/auth/types'
 import { services } from '@/domain'
 import { repositories } from '@/repositories/postgres'
 import { isClerkEnabled } from '@/lib/clerk-config'
@@ -35,8 +36,16 @@ import {
   createAgentSchema,
   updateAgentInstructionSchema,
   updateAgentModelConfigSchema,
+  updateAgentSelfEvolutionProfileSchema,
   createTrainingSchema,
   askWikiSchema,
+  sendAgentMessageSchema,
+  createAgentTaskTicketSchema,
+  loadAgentChatSchema,
+  listAgentChatSessionsSchema,
+  conversationIdSchema,
+  promoteToTicketSchema,
+  messageIdSchema,
   processDocumentSchema,
   processDocumentForWikiSchema,
   rollbackMemorySchema,
@@ -111,6 +120,21 @@ export async function transitionTicket(input: {
     const user = await requireRole(['viewer', 'operator', 'approver', 'admin'])
     const parsed = transitionTicketSchema.parse(input)
 
+    const existing = await repositories.tickets.findById(parsed.id)
+    if (!existing) return fail('Ticket not found')
+
+    if (
+      existing.type === 'training' &&
+      (parsed.toState === 'approved' || parsed.toState === 'done') &&
+      existing.state === 'awaiting_human'
+    ) {
+      if (!hasMinimumRole(user.role, 'approver')) {
+        return fail('Tanítás jóváhagyása approver jogosultságot igényel')
+      }
+      const result = await services.training.approveTraining(parsed.id, user.id)
+      return ok(result)
+    }
+
     const ticket = await services.tickets.transition({
       ticketId: parsed.id,
       toState: parsed.toState,
@@ -172,6 +196,7 @@ export async function createAgent(input: {
   name: string
   roleInstruction: string
   behaviorProfile: string
+  role?: 'worker' | 'orchestrator'
   modelConfig: {
     provider: string
     model: string
@@ -198,7 +223,7 @@ export async function createAgent(input: {
       inputRef: null,
       outputRef: result.agent.name,
       policyDecision: 'allowed',
-      metadata: null,
+      metadata: { role: result.agent.role },
     })
 
     return ok(result)
@@ -275,6 +300,65 @@ export async function updateAgentModelConfig(input: {
   }
 }
 
+export async function updateAgentSelfEvolutionProfile(input: {
+  agentId: string
+  profile: {
+    scope: Array<'memory' | 'behavior' | 'role'>
+    approval_mode: 'human' | 'higher_role' | 'eval_only' | 'auto_after_eval'
+    diff_limit?: number
+  }
+}) {
+  try {
+    const user = await requireRole('admin')
+    const parsed = updateAgentSelfEvolutionProfileSchema.parse(input)
+    const agent = await repositories.agents.updateSelfEvolutionProfile(parsed)
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: agent.currentVersion,
+      action: 'agent.self_evolution_profile_change',
+      targetType: 'agent',
+      targetId: parsed.agentId,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: parsed.profile.approval_mode,
+      policyDecision: 'allowed',
+      metadata: parsed.profile,
+    })
+
+    return ok(agent)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update self-evolution profile')
+  }
+}
+
+export async function deleteAgent(input: { id: string }) {
+  try {
+    const user = await requireRole('admin')
+    const { id } = agentIdSchema.parse(input)
+    const deleted = await repositories.agents.delete(id)
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: null,
+      action: 'agent.delete',
+      targetType: 'agent',
+      targetId: deleted.id,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: deleted.name,
+      policyDecision: 'allowed',
+      metadata: { name: deleted.name },
+    })
+
+    return ok(deleted)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to delete agent')
+  }
+}
+
 export async function uploadDocument(formData: FormData) {
   try {
     const user = await requireRole('operator')
@@ -289,7 +373,12 @@ export async function uploadDocument(formData: FormData) {
       filename = 'paste.txt'
     } else if (file instanceof File) {
       filename = safeUploadFilename(file.name)
-      extractedText = await file.text()
+      if (file.type.startsWith('image/')) {
+        const buffer = Buffer.from(await file.arrayBuffer())
+        extractedText = `[image:${file.type}]${buffer.toString('base64')}`
+      } else {
+        extractedText = await file.text()
+      }
     } else {
       return fail('No file or text provided')
     }
@@ -400,45 +489,157 @@ function readWikiPayload(payload: unknown) {
   }
 }
 
-export async function askWiki(input: { agentId: string; question: string }) {
+export async function askWiki(input: { agentId: string; question: string; conversationId?: string }) {
   try {
     const user = await requireRole('operator')
     const parsed = askWikiSchema.parse(input)
-    const ticket = await services.wiki.createQuestionTicket({
+    const result = await services.wiki.askWiki({
       ...parsed,
       createdById: user.id,
+      tenantId: user.tenantId,
     })
 
-    const { getHarnessLauncherMode, isAsyncHarnessLauncher } = await import('@/lib/harness-launcher-mode')
-    const launcherMode = getHarnessLauncherMode()
-    const asyncHarness = isAsyncHarnessLauncher(launcherMode)
-
-    // Ready ticket + pg_notify; a worker is felveszi, de dev-ben askWiki is indíthat.
-    const dispatch = await services.dispatcher.dispatchTicket(ticket.id)
-    const updated = await repositories.tickets.findById(ticket.id)
-    const wikiAnswer = readWikiPayload(updated?.payload)
-
-    if (asyncHarness && !wikiAnswer.answer.trim()) {
-      return ok({
-        ticketId: ticket.id,
-        pending: true,
-        launcherMode,
-        answer: null,
-        ticket: updated,
-        dispatch,
-      })
-    }
-
     return ok({
-      ticketId: ticket.id,
+      conversationId: result.conversationId,
+      messageId: result.messageId,
+      answer: {
+        answer: result.answer.answer,
+        sources: result.answer.sources,
+        rationale: result.answer.rationale,
+        confidence: result.answer.confidence,
+      },
       pending: false,
-      launcherMode,
-      answer: wikiAnswer,
-      ticket: updated,
-      dispatch,
     })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Wiki question failed')
+  }
+}
+
+export async function promoteToTicket(input: { conversationId: string; reason?: string }) {
+  try {
+    const user = await requireRole('operator')
+    const parsed = promoteToTicketSchema.parse(input)
+    const { conversation, messages } = await services.conversations.getConversation(
+      parsed.conversationId,
+      user.tenantId,
+    )
+
+    const lastAgent = [...messages].reverse().find((m) => m.role === 'agent' && m.content)
+    if (!lastAgent?.content) return fail('No agent answer to promote')
+
+    let answerPayload: Record<string, unknown>
+    try {
+      answerPayload = JSON.parse(lastAgent.content) as Record<string, unknown>
+    } catch {
+      return fail('Invalid agent message payload')
+    }
+
+    const ticket = await services.conversations.promoteToTicket({
+      conversationId: parsed.conversationId,
+      createdById: user.id,
+      reason: parsed.reason ?? 'approval',
+      answerPayload,
+      agentMessageId: lastAgent.id,
+    })
+
+    return ok({ ticketId: ticket.id, ticket })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Promote to ticket failed')
+  }
+}
+
+export async function getConversation(input: { conversationId: string }) {
+  try {
+    const user = await requireRole('viewer')
+    const { conversationId } = conversationIdSchema.parse(input)
+    const data = await services.conversations.getConversation(conversationId, user.tenantId)
+    return ok(data)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to get conversation')
+  }
+}
+
+export async function sendAgentMessage(input: {
+  agentId: string
+  content: string
+  conversationId?: string
+  attachmentDocumentIds?: string[]
+}) {
+  try {
+    const user = await requireRole('operator')
+    const parsed = sendAgentMessageSchema.parse(input)
+    const result = await services.agentChat.sendMessage({
+      ...parsed,
+      createdById: user.id,
+      tenantId: user.tenantId,
+    })
+    return ok(result)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Agent message failed')
+  }
+}
+
+export async function createAgentTaskTicket(input: {
+  agentId: string
+  content: string
+  conversationId?: string
+  attachmentDocumentIds?: string[]
+}) {
+  try {
+    const user = await requireRole('operator')
+    const parsed = createAgentTaskTicketSchema.parse(input)
+    const ticket = await services.agentChat.createTaskTicket({
+      ...parsed,
+      createdById: user.id,
+      tenantId: user.tenantId,
+    })
+    return ok({ ticketId: ticket.id, ticket })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Task ticket creation failed')
+  }
+}
+
+export async function loadAgentChatMessages(input: { conversationId: string; agentId: string }) {
+  try {
+    const user = await requireRole('viewer')
+    const { conversationId, agentId } = loadAgentChatSchema.parse(input)
+    const messages = await services.agentChat.getConversationMessages(
+      conversationId,
+      user.tenantId,
+      agentId,
+    )
+    return ok({ conversationId, messages })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to load chat messages')
+  }
+}
+
+export async function listAgentChatSessions(input: { agentId: string }) {
+  try {
+    const user = await requireRole('viewer')
+    const { agentId } = listAgentChatSessionsSchema.parse(input)
+    const sessions = await services.agentChat.listSessions({
+      agentId,
+      createdById: user.id,
+      tenantId: user.tenantId,
+    })
+    return ok({ sessions })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to list chat sessions')
+  }
+}
+
+export async function deleteMessageContent(input: { messageId: string }) {
+  try {
+    const user = await requireRole('admin')
+    const { messageId } = messageIdSchema.parse(input)
+    const updated = await services.conversations.deleteMessageContent({
+      messageId,
+      actorId: user.id,
+    })
+    return ok(updated)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to delete message content')
   }
 }
 

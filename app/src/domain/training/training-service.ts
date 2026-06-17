@@ -1,8 +1,14 @@
 import { prisma } from '@/lib/db'
-import type { AuditRepository, TicketRepository } from '@/repositories/interfaces'
+import {
+  requiresEvalGate,
+  requiresHumanApproval,
+  resolveSelfEvolutionProfile,
+} from '@/lib/self-evolution-profile'
+import type { AgentRepository, AuditRepository, TicketRepository } from '@/repositories/interfaces'
 import type { TicketService } from '../ticket/ticket-service'
 import type { WriteGateService } from '../writegate/write-gate-service'
 import type { EvalService } from '../eval/eval-service'
+import type { SelfEvolutionGuard } from './self-evolution-guard'
 
 function computeDiff(before: string, after: string) {
   return {
@@ -19,7 +25,42 @@ export class TrainingService {
     private ticketService: TicketService,
     private writeGate: WriteGateService,
     private evalService: EvalService,
+    private agents: AgentRepository,
+    private selfEvolutionGuard: SelfEvolutionGuard,
   ) {}
+
+  /** N6 / §4.6: önfejlesztési útvonal soha nem bővíthet capability-t. */
+  async attemptCapabilityEscalation(params: {
+    agentId: string
+    toolName: string
+    ticketId?: string | null
+    connectorId?: string | null
+  }) {
+    return this.selfEvolutionGuard.denyCapabilityEscalation({
+      agentId: params.agentId,
+      toolName: params.toolName,
+      actorType: 'agent',
+      actorId: params.agentId,
+      ticketId: params.ticketId ?? null,
+      connectorId: params.connectorId ?? null,
+    })
+  }
+
+  async promoteMemoryWithoutHumanApproval(ticketId: string) {
+    const ticket = await this.tickets.findById(ticketId)
+    if (!ticket || ticket.type !== 'training') throw new Error('Training ticket not found')
+    if (!ticket.agentId) throw new Error('Training ticket has no agent')
+
+    const agent = await prisma.agent.findUnique({ where: { id: ticket.agentId } })
+    if (!agent) throw new Error('Agent not found')
+
+    const profile = resolveSelfEvolutionProfile(agent.selfEvolutionProfile)
+    if (requiresHumanApproval(profile)) {
+      throw new Error('human_approval_required')
+    }
+
+    throw new Error('auto_promote_not_implemented_for_profile')
+  }
 
   async createTrainingTicket(params: {
     agentId: string
@@ -32,6 +73,11 @@ export class TrainingService {
       include: { memory: { include: { currentVersion: true } } },
     })
     if (!agent) throw new Error('Agent not found')
+
+    const profile = resolveSelfEvolutionProfile(agent.selfEvolutionProfile)
+    if (!profile.scope.includes('memory')) {
+      throw new Error('self_evolution_scope_excludes_memory')
+    }
 
     const currentContent = agent.memory.currentVersion?.content ?? ''
     const diff = computeDiff(currentContent, params.proposedContent)
@@ -87,6 +133,32 @@ export class TrainingService {
     })
   }
 
+  /** N7 / §5.13.2: ticket nélküli beszélgetésből sem írhat memóriát write-gate nélkül. */
+  async attemptUngatedMemoryWrite(params: {
+    agentId: string
+    proposedContent: string
+    conversationId?: string | null
+  }) {
+    await this.audit.append({
+      actorType: 'agent',
+      actorId: params.agentId,
+      agentVersion: null,
+      action: 'memory.write_denied',
+      targetType: params.conversationId ? 'conversation' : 'agent',
+      targetId: params.conversationId ?? params.agentId,
+      modelUsed: null,
+      inputRef: 'ungated_memory_write',
+      outputRef: 'write_gate_required',
+      policyDecision: 'write_gate_required',
+      metadata: {
+        conversationId: params.conversationId ?? null,
+        contentLength: params.proposedContent.length,
+      },
+    })
+
+    return { allowed: false as const, reason: 'write_gate_required' }
+  }
+
   async approveTraining(
     ticketId: string,
     approverId: string,
@@ -107,10 +179,19 @@ export class TrainingService {
     })
     if (!agent) throw new Error('Agent not found')
 
+    const profile = resolveSelfEvolutionProfile(agent.selfEvolutionProfile)
+    if (requiresHumanApproval(profile) && approver.role === 'operator') {
+      throw new Error('higher_role_approval_required')
+    }
+
     // 1. Eval-kapu: pre_training_approval (ha van aktív eval az agenthez)
     let evalRun = null
     const activeEval = await this.evalService.findActiveForAgent(agent.id)
-    if (activeEval) {
+    if (activeEval || requiresEvalGate(profile)) {
+      if (!activeEval && requiresEvalGate(profile)) {
+        throw new Error('eval_required_but_missing')
+      }
+      if (activeEval) {
       evalRun = await this.evalService.run({
         evalId: activeEval.id,
         proposedContent: payload.proposedContent,
@@ -157,6 +238,7 @@ export class TrainingService {
           policyDecision: `eval_override:score=${evalRun.score.toFixed(2)}`,
           metadata: evalRun.details,
         })
+      }
       }
     }
 
@@ -219,6 +301,11 @@ export class TrainingService {
       toState: 'approved',
       actor: { type: 'human', userId: approverId, role: approver.role },
       agentVersion: agent.currentVersion,
+    })
+    await this.ticketService.transition({
+      ticketId,
+      toState: 'done',
+      actor: { type: 'system' },
     })
 
     await this.audit.append({

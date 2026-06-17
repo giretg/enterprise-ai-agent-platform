@@ -15,7 +15,10 @@ export default async function TrainingPage({
     queryAgentId && agents.some((a) => a.id === queryAgentId) ? queryAgentId : agents[0]?.id
 
   const trainingTickets = allTickets.filter(
-    (t) => t.type === 'training' && (!selectedAgentId || t.agentId === selectedAgentId),
+    (t) =>
+      t.type === 'training' &&
+      t.state === 'awaiting_human' &&
+      (!selectedAgentId || t.agentId === selectedAgentId),
   )
 
   let currentVersion = 1

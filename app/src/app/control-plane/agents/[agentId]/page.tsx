@@ -1,12 +1,53 @@
 import Link from 'next/link'
+import type { ReactNode } from 'react'
 import { notFound } from 'next/navigation'
 import { getAgent, getAgentGovernance } from '@/app/actions/platform'
+import { getCurrentUser } from '@/auth'
+import { hasMinimumRole } from '@/auth/types'
 import { Badge, Card } from '@/components/ui/shell'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
+import { AgentChatButton } from '@/components/agents/agent-chat-panel'
 import { UpdateInstructionForm } from '@/components/agents/update-instruction-form'
 import { UpdateModelConfigForm } from '@/components/agents/update-model-config-form'
+import { UpdateSelfEvolutionProfileForm } from '@/components/agents/update-self-evolution-profile-form'
+import { resolveSelfEvolutionProfile } from '@/lib/self-evolution-profile'
+import {
+  agentRoleLabel,
+  connectorAccessLabel,
+  modelConfigSummary,
+  recipeStatusLabel,
+  resourceTypeLabel,
+  selfEvolutionSummary,
+} from '@/lib/agent-profile-labels'
 import { personaFor, humanStatus } from '@/lib/agent-persona'
 import { sandboxKindForAgent, sandboxLabelForKind } from '@/lib/agent-kind'
+
+function ProfileSection({
+  title,
+  subtitle,
+  children,
+}: {
+  title: string
+  subtitle?: string
+  children: ReactNode
+}) {
+  return (
+    <Card>
+      <div className="mb-3">
+        <h2 className="font-display text-xl font-semibold text-ink">{title}</h2>
+        {subtitle && <p className="mt-1 text-sm text-ink-faint">{subtitle}</p>}
+      </div>
+      {children}
+    </Card>
+  )
+}
+
+function ProseBlock({ text, empty }: { text: string | null | undefined; empty: string }) {
+  if (!text?.trim()) {
+    return <p className="text-sm italic text-ink-faint">{empty}</p>
+  }
+  return <p className="whitespace-pre-wrap text-sm leading-relaxed text-ink-soft">{text}</p>
+}
 
 export default async function AgentDetailPage({
   params,
@@ -14,18 +55,22 @@ export default async function AgentDetailPage({
   params: Promise<{ agentId: string }>
 }) {
   const { agentId } = await params
-  const [res, govRes] = await Promise.all([
+  const [res, govRes, user] = await Promise.all([
     getAgent({ id: agentId }),
     getAgentGovernance({ agentId }),
+    getCurrentUser(),
   ])
   if (!res.success) notFound()
 
+  const isAdmin = user ? hasMinimumRole(user.role, 'admin') : false
   const { agent, memoryContent, memoryVersion, recipe, resources, apiKeyPreview } = res.data
   const governance = govRes.success ? govRes.data : null
   const modelConfig = agent.modelConfig as Record<string, unknown>
   const persona = personaFor(agent.name)
   const mood = humanStatus(agent.status)
   const sandboxKind = sandboxKindForAgent(agent)
+  const evolutionProfile = resolveSelfEvolutionProfile(agent.selfEvolutionProfile)
+  const roleInfo = agentRoleLabel(agent.role)
 
   return (
     <div className="space-y-6">
@@ -36,7 +81,6 @@ export default async function AgentDetailPage({
         ← Vissza a csapathoz
       </Link>
 
-      {/* Persona header — meet the coworker */}
       <Card className="animate-rise">
         <div className="flex flex-wrap items-center gap-5">
           <AgentAvatar name={agent.name} status={agent.status} size="lg" />
@@ -51,137 +95,214 @@ export default async function AgentDetailPage({
               <Badge tone={agent.status === 'active' ? 'success' : 'neutral'}>{mood.label}</Badge>
             </div>
             <p className="mt-2 text-sm text-ink-faint">{agent.name}</p>
-            <p className="mt-2 max-w-2xl text-base italic text-ink-soft">“{persona.greeting}”</p>
+            <p className="mt-2 max-w-2xl text-base italic text-ink-soft">"{persona.greeting}"</p>
           </div>
         </div>
         <div className="estate-rule my-4" />
         <p className="text-sm leading-relaxed text-ink-soft">{persona.trait}</p>
-        <div className="mt-4 flex flex-wrap gap-3">
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <AgentChatButton agent={{ id: agent.id, name: agent.name, status: agent.status }} />
           <Link
             href={`/sandbox/${agent.id}`}
-            className="rounded-full bg-sage px-5 py-2.5 text-sm font-semibold text-card shadow-[0_10px_24px_-12px_rgba(93,138,79,0.7)] transition-transform hover:-translate-y-0.5"
+            className="rounded-full border border-line bg-card px-5 py-2.5 text-sm font-semibold text-ink-soft transition-colors hover:border-sage/50 hover:text-sage"
           >
-            Sandbox megnyitása
+            Sandbox munkatér
           </Link>
           <Badge tone={sandboxKind === 'generic' ? 'neutral' : 'success'}>
             {sandboxLabelForKind(sandboxKind)}
           </Badge>
+          <span className="text-sm text-ink-faint">
+            {roleInfo.title} — {roleInfo.description}
+          </span>
         </div>
       </Card>
 
       <div className="grid gap-6 lg:grid-cols-2">
-        <Card title={`Szerep-instrukció (v${agent.currentRoleInstructionVersion}) — „mit csinál”`}>
-          <pre className="whitespace-pre-wrap text-sm text-ink-soft">{agent.roleInstruction}</pre>
-        </Card>
-        <Card title={`Viselkedés-profil (v${agent.currentBehaviorProfileVersion}) — „hogyan”`}>
-          <pre className="whitespace-pre-wrap text-sm text-ink-soft">{agent.behaviorProfile}</pre>
-        </Card>
-        <Card title="Modell konfig">
-          <pre className="text-sm text-ink-soft">{JSON.stringify(modelConfig, null, 2)}</pre>
-          <p className="mt-3 text-xs text-ink-faint">API kulcs: {apiKeyPreview ?? '—'}</p>
-        </Card>
-        <Card title={`Memória (v${memoryVersion ?? '?'})`}>
-          <pre className="whitespace-pre-wrap text-sm text-ink-soft">{memoryContent ?? '(üres)'}</pre>
-        </Card>
-        <Card title="Recipe">
-          {recipe ? (
-            <div className="space-y-1 text-sm">
-              <p className="font-medium">{recipe.name}</p>
-              <p className="text-ink-faint">
-                {recipe.ticketType} · v{recipe.version} · {recipe.status}
-              </p>
-            </div>
-          ) : (
-            <p className="text-sm text-ink-faint">Nincs recipe kötve ehhez a verzióhoz.</p>
-          )}
-        </Card>
-        <Card title="Erőforrások">
-          <ul className="space-y-2 text-sm">
-            {resources.map((r) => (
-              <li key={r.id} className="atelier-soft p-3">
-                <span className="font-medium">{r.name}</span>
-                <span className="ml-2 text-ink-faint">
-                  {r.type} · {r.scope} · v{r.version}
-                </span>
-              </li>
-            ))}
-          </ul>
+        <ProfileSection title="Munkaköri leírás" subtitle="Mit csinál a csapatban">
+          <ProseBlock
+            text={agent.roleInstruction}
+            empty="Még nincs leírva, miben segít."
+          />
+        </ProfileSection>
+
+        <ProfileSection title="Munkastílus" subtitle="Hogyan dolgozik">
+          <ProseBlock
+            text={agent.behaviorProfile}
+            empty="Még nincs leírva, hogyan kommunikál és dolgozik."
+          />
+        </ProfileSection>
+
+        <ProfileSection
+          title="Amit eddig megtanult"
+          subtitle={
+            memoryVersion != null
+              ? `${memoryVersion}. frissítés — ezt használja a mindennapi munkában`
+              : 'Tanulási emlékek'
+          }
+        >
+          <ProseBlock text={memoryContent} empty="Még nincs rögzített tapasztalat." />
+        </ProfileSection>
+
+        <Card>
+          <h2 className="font-display text-xl font-semibold text-ink">Fejlődés</h2>
+          <p className="mt-2 text-sm leading-relaxed text-ink-soft">
+            Itt tudod finomítani, mit tanult eddig, és visszaállítani korábbi állapotokat, ha
+            szükséges.
+          </p>
+          <Link
+            href={`/control-plane/training?agentId=${agent.id}`}
+            className="mt-4 inline-block rounded-full bg-sky/20 px-4 py-2 text-sm font-semibold text-sky"
+          >
+            Tanítás megnyitása →
+          </Link>
         </Card>
       </div>
 
-      {governance && (
-        <div className="grid gap-6 lg:grid-cols-2">
-          <Card title="Eszközjogok (capabilities)">
-            {governance.capabilities.length === 0 ? (
-              <p className="text-sm text-ink-faint">Nincs meghatározott eszközjog.</p>
-            ) : (
-              <ul className="space-y-2 text-sm">
-                {governance.capabilities.map((cap) => (
-                  <li key={cap.toolName} className="flex items-center justify-between atelier-soft p-3">
-                    <span className="font-mono font-medium text-ink">{cap.toolName}</span>
-                    <Badge tone={cap.allowed ? 'success' : 'danger'}>
-                      {cap.allowed ? 'engedélyezett' : 'tiltott'}
-                    </Badge>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Card>
-          <Card title="Connectorok">
-            {governance.connectors.length === 0 ? (
-              <p className="text-sm text-ink-faint">Nincs connector hozzárendelve.</p>
-            ) : (
-              <ul className="space-y-2 text-sm">
-                {governance.connectors.map(({ connector, accessMode }) => (
-                  <li key={connector.id} className="atelier-soft p-3">
-                    <div className="flex items-center justify-between">
-                      <span className="font-medium text-ink">{connector.name}</span>
-                      <Badge tone={accessMode === 'write' ? 'warning' : 'neutral'}>
-                        {accessMode}
-                      </Badge>
-                    </div>
-                    <p className="mt-1 text-xs text-ink-faint">
-                      {connector.type} · {connector.scope}
-                      {connector.secretAlias && ` · secret: ${connector.secretAlias}`}
+      {isAdmin && (
+        <>
+          <div>
+            <p className="mb-4 text-sm font-medium uppercase tracking-[0.18em] text-coral">
+              Admin beállítások
+            </p>
+            <div className="grid gap-6 lg:grid-cols-2">
+              <Card title="Gondolkodási motor">
+                <p className="text-sm text-ink-soft">{modelConfigSummary(modelConfig)}</p>
+                {apiKeyPreview && (
+                  <p className="mt-3 text-xs text-ink-faint">API kulcs: {apiKeyPreview}</p>
+                )}
+              </Card>
+
+              <Card title="Szerep a rendszerben">
+                <p className="font-medium text-ink">{roleInfo.title}</p>
+                <p className="mt-1 text-sm text-ink-soft">{roleInfo.description}</p>
+                <p className="mt-2 text-xs text-ink-faint">
+                  Munkakör v{agent.currentRoleInstructionVersion} · Munkastílus v
+                  {agent.currentBehaviorProfileVersion} · Agent v{agent.currentVersion}
+                </p>
+              </Card>
+
+              <Card title="Munkafolyamat-sablon">
+                {recipe ? (
+                  <div className="space-y-1 text-sm">
+                    <p className="font-medium text-ink">{recipe.name}</p>
+                    <p className="text-ink-soft">
+                      {recipe.ticketType === 'training' ? 'tanítási' : 'interakciós'} folyamat ·
+                      v{recipe.version} · {recipeStatusLabel(recipe.status)}
                     </p>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </Card>
-        </div>
+                  </div>
+                ) : (
+                  <p className="text-sm text-ink-faint">
+                    Nincs munkafolyamat-sablon ehhez a verzióhoz.
+                  </p>
+                )}
+              </Card>
+
+              <Card title="Hozzárendelt források">
+                {resources.length === 0 ? (
+                  <p className="text-sm text-ink-faint">Nincs hozzárendelt forrás.</p>
+                ) : (
+                  <ul className="space-y-2 text-sm">
+                    {resources.map((r) => (
+                      <li key={r.id} className="atelier-soft p-3">
+                        <span className="font-medium text-ink">{r.name}</span>
+                        <span className="ml-2 text-ink-faint">
+                          {resourceTypeLabel(r.type)} · {r.scope} · v{r.version}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </Card>
+
+              <Card title="Önfejlesztés szabályai">
+                <p className="text-sm leading-relaxed text-ink-soft">
+                  {selfEvolutionSummary(evolutionProfile)}
+                </p>
+              </Card>
+            </div>
+          </div>
+
+          {governance && (
+            <div className="grid gap-6 lg:grid-cols-2">
+              <Card title="Engedélyezett eszközök">
+                {governance.capabilities.length === 0 ? (
+                  <p className="text-sm text-ink-faint">Nincs meghatározott eszközjog.</p>
+                ) : (
+                  <ul className="space-y-2 text-sm">
+                    {governance.capabilities.map((cap) => (
+                      <li
+                        key={cap.toolName}
+                        className="flex items-center justify-between atelier-soft p-3"
+                      >
+                        <span className="font-medium text-ink">{cap.toolName}</span>
+                        <Badge tone={cap.allowed ? 'success' : 'danger'}>
+                          {cap.allowed ? 'engedélyezett' : 'tiltott'}
+                        </Badge>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </Card>
+              <Card title="Külső kapcsolatok">
+                {governance.connectors.length === 0 ? (
+                  <p className="text-sm text-ink-faint">Nincs külső kapcsolat hozzárendelve.</p>
+                ) : (
+                  <ul className="space-y-2 text-sm">
+                    {governance.connectors.map(({ connector, accessMode }) => (
+                      <li key={connector.id} className="atelier-soft p-3">
+                        <div className="flex items-center justify-between">
+                          <span className="font-medium text-ink">{connector.name}</span>
+                          <Badge tone={accessMode === 'write' ? 'warning' : 'neutral'}>
+                            {connectorAccessLabel(accessMode)}
+                          </Badge>
+                        </div>
+                        <p className="mt-1 text-xs text-ink-faint">
+                          {connector.type} · {connector.scope}
+                          {connector.secretAlias && ` · ${connector.secretAlias}`}
+                        </p>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </Card>
+            </div>
+          )}
+
+          <div>
+            <p className="mb-4 text-sm font-medium uppercase tracking-[0.18em] text-coral">
+              Szerkesztés
+            </p>
+            <div className="space-y-6">
+              <UpdateInstructionForm
+                agentId={agent.id}
+                roleInstruction={agent.roleInstruction}
+                behaviorProfile={agent.behaviorProfile}
+                roleVersion={agent.currentRoleInstructionVersion}
+                behaviorVersion={agent.currentBehaviorProfileVersion}
+              />
+
+              <UpdateModelConfigForm
+                agentId={agent.id}
+                current={{
+                  provider: String(modelConfig.provider ?? 'chatgpt-oauth'),
+                  model: String(modelConfig.model ?? ''),
+                  temperature:
+                    typeof modelConfig.temperature === 'number'
+                      ? modelConfig.temperature
+                      : undefined,
+                  maxTokens:
+                    typeof modelConfig.maxTokens === 'number' ? modelConfig.maxTokens : undefined,
+                }}
+              />
+
+              <UpdateSelfEvolutionProfileForm
+                agentId={agent.id}
+                currentProfile={agent.selfEvolutionProfile}
+              />
+            </div>
+          </div>
+        </>
       )}
-
-      <UpdateInstructionForm
-        agentId={agent.id}
-        roleInstruction={agent.roleInstruction}
-        behaviorProfile={agent.behaviorProfile}
-        roleVersion={agent.currentRoleInstructionVersion}
-        behaviorVersion={agent.currentBehaviorProfileVersion}
-      />
-
-      <UpdateModelConfigForm
-        agentId={agent.id}
-        current={{
-          provider: String(modelConfig.provider ?? 'chatgpt-oauth'),
-          model: String(modelConfig.model ?? ''),
-          temperature:
-            typeof modelConfig.temperature === 'number' ? modelConfig.temperature : undefined,
-          maxTokens: typeof modelConfig.maxTokens === 'number' ? modelConfig.maxTokens : undefined,
-        }}
-      />
-
-      <Card title="Tanítás">
-        <p className="text-sm text-ink-soft">
-          Memória-verziózás és rollback a dedikált Tanítás képernyőn (C7).
-        </p>
-        <Link
-          href={`/control-plane/training?agentId=${agent.id}`}
-          className="mt-3 inline-block rounded-full bg-sky/20 px-4 py-2 text-sm font-semibold text-sky"
-        >
-          Tanítás megnyitása →
-        </Link>
-      </Card>
     </div>
   )
 }

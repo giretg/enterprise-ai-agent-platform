@@ -49,6 +49,7 @@ export type ToolBrokerInvokeInput =
       agentId: string
       agentVersion: number
       ticketId?: string
+      conversationId?: string
       tool: 'kb_search'
       args: KbSearchArgs
     }
@@ -56,6 +57,7 @@ export type ToolBrokerInvokeInput =
       agentId: string
       agentVersion: number
       ticketId?: string
+      conversationId?: string
       tool: 'board_write'
       args: BoardWriteArgs
     }
@@ -96,6 +98,17 @@ function normalizeText(value: string): string {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]+/gu, ' ')
+}
+
+// Magyar ragoz\u00e1s \u00e1thidal\u00e1sa: a tokeneket egy r\u00f6vid sz\u00f3t\u0151re v\u00e1gjuk, \u00edgy a
+// k\u00e9rd\u00e9sbeli ragozott alak (pl. "gatewayeken", "m\u0171veleteinek") egyezik a
+// dokumentumbeli alapalakkal ("gateway", "m\u0171velet"). Nyers r\u00e9szstring helyett
+// prefix-bucket egyez\u00e9st haszn\u00e1lunk, ami a recallt jav\u00edtja keyword keres\u00e9sn\u00e9l.
+const STEM_LENGTH = 4
+
+function stemToken(token: string): string {
+  return token.length <= STEM_LENGTH ? token : token.slice(0, STEM_LENGTH)
 }
 
 function snippet(value: string): string {
@@ -108,11 +121,13 @@ function argsMeta(input: ToolBrokerInvokeInput): Record<string, unknown> {
       queryLength: input.args.query.length,
       k: input.args.k ?? 5,
       ticketId: input.ticketId ?? null,
+      conversationId: input.conversationId ?? null,
     }
   }
 
   return {
     ticketId: input.args.ticketId,
+    conversationId: input.conversationId ?? null,
     requestedState: input.args.patch.state ?? null,
     payloadKeys: input.args.patch.payload ? Object.keys(input.args.patch.payload).sort() : [],
   }
@@ -141,9 +156,17 @@ export interface Authorizer {
 }
 
 export class AllowlistAuthorizer implements Authorizer {
-  constructor(private tools: ToolBrokerRepository) {}
+  constructor(
+    private tools: ToolBrokerRepository,
+    private agents: AgentRepository,
+  ) {}
 
   async authorize(input: { agentId: string; tool: ToolName }): Promise<AuthorizationResult> {
+    const agent = await this.agents.findById(input.agentId)
+    if (agent?.role === 'orchestrator') {
+      return { allowed: false, reason: 'orchestrator_tool_less' }
+    }
+
     const capability = await this.tools.findCapability(input.agentId, input.tool)
     if (!capability?.allowed) {
       return { allowed: false, reason: 'capability_not_allowed' }
@@ -252,10 +275,15 @@ export class ToolBrokerService {
     const detail = await this.agents.findByIdWithDetails(agentId)
     if (!detail) throw new Error('Agent not found')
 
-    const terms = normalizeText(args.query)
-      .split(/\s+/)
-      .map((term) => term.trim())
-      .filter((term) => term.length >= 3)
+    const termStems = [
+      ...new Set(
+        normalizeText(args.query)
+          .split(/\s+/)
+          .map((term) => term.trim())
+          .filter((term) => term.length >= 3)
+          .map(stemToken),
+      ),
+    ]
 
     const k = args.k ?? 5
 
@@ -272,8 +300,13 @@ export class ToolBrokerService {
         .map((chunk) => chunk.trim())
         .filter(Boolean)
         .map((chunk) => {
-          const normalized = normalizeText(chunk)
-          const score = terms.reduce((sum, term) => sum + (normalized.includes(term) ? 1 : 0), 0)
+          const chunkStems = new Set(
+            normalizeText(chunk)
+              .split(/\s+/)
+              .filter(Boolean)
+              .map(stemToken),
+          )
+          const score = termStems.reduce((sum, stem) => sum + (chunkStems.has(stem) ? 1 : 0), 0)
           return { chunk, score, docId, sourceRef, memoryVersion }
         })
         .filter((item) => item.score > 0)
@@ -379,6 +412,7 @@ export class ToolBrokerService {
     await this.tools.createToolCall({
       agentId: params.input.agentId,
       ticketId: params.ticketId,
+      conversationId: params.input.conversationId ?? null,
       connectorId: params.connectorId,
       toolName: params.input.tool,
       status: params.status,
@@ -388,13 +422,16 @@ export class ToolBrokerService {
       policyDecision: params.policyDecision,
     })
 
+    const targetType = params.ticketId ? 'ticket' : params.input.conversationId ? 'conversation' : 'tool'
+    const targetId = params.ticketId ?? params.input.conversationId ?? params.connectorId
+
     await this.audit.append({
       actorType: 'agent',
       actorId: params.input.agentId,
       agentVersion: params.input.agentVersion,
       action: params.status === 'denied' ? 'tool.call.denied' : 'tool.call',
-      targetType: 'tool',
-      targetId: params.connectorId ?? params.ticketId,
+      targetType,
+      targetId,
       modelUsed: null,
       inputRef: params.input.tool,
       outputRef: params.status,

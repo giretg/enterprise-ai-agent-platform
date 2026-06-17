@@ -8,6 +8,7 @@ import {
   listDocumentsForAgent,
   processDocument,
   processDocumentForWiki,
+  promoteToTicket,
   uploadDocument,
 } from '@/app/actions/platform'
 import { Card } from '@/components/ui/shell'
@@ -87,6 +88,12 @@ function WikiSandbox({ agent }: { agent: AgentSummary }) {
   const [uploadPending, startUpload] = useTransition()
   const [question, setQuestion] = useState(SAMPLE_QUESTION)
   const [message, setMessage] = useState<string | null>(null)
+  const [lastAnswer, setLastAnswer] = useState<{
+    conversationId: string
+    answer: string
+    confidence: string
+  } | null>(null)
+  const [promotePending, setPromotePending] = useState(false)
   const [uploadMessage, setUploadMessage] = useState<string | null>(null)
   const [kbDocs, setKbDocs] = useState<KbDocument[]>([])
   const [textInput, setTextInput] = useState('')
@@ -144,6 +151,7 @@ function WikiSandbox({ agent }: { agent: AgentSummary }) {
 
   const runFlow = () => {
     setMessage(null)
+    setLastAnswer(null)
     startTransition(async () => {
       const answerRes = await askWiki({
         agentId: agent.id,
@@ -155,17 +163,32 @@ function WikiSandbox({ agent }: { agent: AgentSummary }) {
       }
 
       const data = answerRes.data as {
-        ticketId: string
-        pending?: boolean
+        conversationId: string
+        answer: { answer: string; confidence: string }
       }
 
-      if (data.pending) {
-        setMessage('A kérdés feldolgozás alatt — a válasz hamarosan megjelenik a ticketen.')
-      } else {
-        setMessage(`Ticket létrejött: ${data.ticketId}`)
-      }
-      router.push(`/sandbox/proposals/${data.ticketId}`)
+      setLastAnswer({
+        conversationId: data.conversationId,
+        answer: data.answer.answer,
+        confidence: data.answer.confidence,
+      })
+      setMessage('Válasz kész — ticket nélkül, beszélgetésben.')
     })
+  }
+
+  const sendForApproval = () => {
+    if (!lastAnswer) return
+    setPromotePending(true)
+    promoteToTicket({ conversationId: lastAnswer.conversationId, reason: 'approval' })
+      .then((res) => {
+        if (!res.success) {
+          setMessage(res.error)
+          return
+        }
+        const ticketId = (res.data as { ticketId: string }).ticketId
+        router.push(`/sandbox/proposals/${ticketId}`)
+      })
+      .finally(() => setPromotePending(false))
   }
 
   return (
@@ -173,7 +196,7 @@ function WikiSandbox({ agent }: { agent: AgentSummary }) {
       <SandboxHeader
         eyebrow="Wiki sandbox"
         title={`${agent.name} tudásbázis`}
-        description="Tölts fel dokumentumokat ehhez az agenthez, majd kérdezz rájuk. Az agent citált választ ír vissza ticketként."
+        description="Tölts fel dokumentumokat ehhez az agenthez, majd kérdezz rájuk. A válasz beszélgetésben jön — ticket csak jóváhagyásra küldéskor."
       />
 
       <Card title="Tudásbázis feltöltés">
@@ -241,12 +264,27 @@ function WikiSandbox({ agent }: { agent: AgentSummary }) {
           {pending ? 'Válasz készül...' : 'Kérdés indítása'}
         </button>
         {message && <p className="mt-3 text-sm text-ink-soft">{message}</p>}
+        {lastAnswer && (
+          <div className="mt-4 space-y-3 rounded-xl border border-line bg-night-2 p-4">
+            <p className="text-xs font-medium uppercase tracking-widest text-ink-faint">Agent válasz</p>
+            <p className="text-sm leading-relaxed text-ink">{lastAnswer.answer}</p>
+            <p className="text-xs text-ink-soft">Bizalom: {lastAnswer.confidence}</p>
+            <button
+              type="button"
+              disabled={promotePending}
+              onClick={sendForApproval}
+              className="rounded-full bg-coral/20 px-5 py-2.5 text-sm font-semibold text-coral hover:bg-coral/30 disabled:opacity-50"
+            >
+              {promotePending ? 'Küldés...' : 'Jóváhagyásra küldés (ticket)'}
+            </button>
+          </div>
+        )}
       </Card>
 
       <Card title="Board">
         <p className="text-sm text-ink-soft">
-          A válasz ticketként jön létre. Magas bizalomnál automatikusan lezárul, egyébként emberi
-          jóváhagyásra kerül.
+          Az alap kérdés→válasz beszélgetésben fut ticket nélkül. Ha jóváhagyásra küldöd, abból ticket
+          keletkezik a boardon.
         </p>
         <Link href="/control-plane/board" className="mt-3 inline-block text-sm text-coral hover:underline">
           Board megnyitása

@@ -2,11 +2,13 @@
 
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { useState, useTransition } from 'react'
+import { useState, useTransition, type DragEvent } from 'react'
 import type { Ticket } from '@prisma/client'
 import { transitionTicket } from '@/app/actions/platform'
 import { Badge, Card } from '@/components/ui/shell'
 import { TICKET_STATE_LABELS } from '@/lib/ticket-labels'
+
+const COLUMN_VISIBLE_LIMIT = 10
 
 const COLUMNS = [
   { key: 'backlog', label: TICKET_STATE_LABELS.backlog, accent: 'border-ink-faint/30' },
@@ -20,12 +22,101 @@ const COLUMNS = [
 
 type ColumnKey = (typeof COLUMNS)[number]['key']
 
+type KanbanColumnProps = {
+  col: (typeof COLUMNS)[number]
+  tickets: Ticket[]
+  isTarget: boolean
+  isExpanded: boolean
+  draggingId: string | null
+  onToggleExpand: () => void
+  onDragOver: (e: DragEvent) => void
+  onDragLeave: () => void
+  onDrop: (e: DragEvent) => void
+  onDragStart: (ticketId: string) => void
+  onDragEnd: () => void
+}
+
+function KanbanColumn({
+  col,
+  tickets,
+  isTarget,
+  isExpanded,
+  draggingId,
+  onToggleExpand,
+  onDragOver,
+  onDragLeave,
+  onDrop,
+  onDragStart,
+  onDragEnd,
+}: KanbanColumnProps) {
+  const hasOverflow = tickets.length > COLUMN_VISIBLE_LIMIT
+  const visibleTickets = isExpanded ? tickets : tickets.slice(0, COLUMN_VISIBLE_LIMIT)
+  const hiddenCount = tickets.length - COLUMN_VISIBLE_LIMIT
+
+  return (
+    <div
+      className={`min-w-[240px] flex-shrink-0 rounded-xl border-t-2 ${col.accent} pt-3 transition-colors ${
+        isTarget ? 'bg-coral/5 ring-1 ring-coral/30' : ''
+      }`}
+      onDragOver={onDragOver}
+      onDragLeave={onDragLeave}
+      onDrop={onDrop}
+    >
+      <div className="mb-3 flex items-center justify-between px-1">
+        <h2 className="text-sm font-semibold text-ink-soft">{col.label}</h2>
+        <Badge>{tickets.length}</Badge>
+      </div>
+
+      <div
+        className={`space-y-3 px-1 ${
+          isExpanded && hasOverflow
+            ? 'max-h-[min(70vh,640px)] overflow-y-auto overscroll-y-contain pr-1'
+            : ''
+        }`}
+      >
+        {visibleTickets.map((ticket) => (
+          <div
+            key={ticket.id}
+            draggable
+            onDragStart={(e) => {
+              e.dataTransfer.setData('text/ticket-id', ticket.id)
+              onDragStart(ticket.id)
+            }}
+            onDragEnd={onDragEnd}
+            className={`cursor-grab active:cursor-grabbing ${
+              draggingId === ticket.id ? 'opacity-40' : ''
+            }`}
+          >
+            <Link href={`/control-plane/tickets/${ticket.id}`} draggable={false}>
+              <Card className="!p-4 transition hover:border-coral/40">
+                <p className="text-sm font-medium">{ticket.title}</p>
+                <p className="mt-1 text-xs text-ink-faint">{ticket.type}</p>
+              </Card>
+            </Link>
+          </div>
+        ))}
+      </div>
+
+      {hasOverflow && (
+        <button
+          type="button"
+          onClick={onToggleExpand}
+          className="mt-3 w-full rounded-lg border border-line px-3 py-2 text-xs font-medium text-ink-soft transition hover:border-coral/30 hover:bg-coral/5 hover:text-ink"
+        >
+          {isExpanded ? 'Kevesebb mutatása' : `${hiddenCount} további feladat`}
+        </button>
+      )}
+    </div>
+  )
+}
+
 export function KanbanBoard({ tickets }: { tickets: Ticket[] }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [dropTarget, setDropTarget] = useState<ColumnKey | null>(null)
   const [message, setMessage] = useState<string | null>(null)
+  const [expandedColumns, setExpandedColumns] = useState<Set<ColumnKey>>(new Set())
 
   const handleDrop = (ticketId: string, toState: ColumnKey) => {
     const ticket = tickets.find((t) => t.id === ticketId)
@@ -56,11 +147,21 @@ export function KanbanBoard({ tickets }: { tickets: Ticket[] }) {
           const isTarget = dropTarget === col.key
 
           return (
-            <div
+            <KanbanColumn
               key={col.key}
-              className={`min-w-[240px] flex-shrink-0 rounded-xl border-t-2 ${col.accent} pt-3 transition-colors ${
-                isTarget ? 'bg-coral/5 ring-1 ring-coral/30' : ''
-              }`}
+              col={col}
+              tickets={colTickets}
+              isTarget={isTarget}
+              isExpanded={expandedColumns.has(col.key)}
+              draggingId={draggingId}
+              onToggleExpand={() => {
+                setExpandedColumns((prev) => {
+                  const next = new Set(prev)
+                  if (next.has(col.key)) next.delete(col.key)
+                  else next.add(col.key)
+                  return next
+                })
+              }}
               onDragOver={(e) => {
                 e.preventDefault()
                 setDropTarget(col.key)
@@ -72,35 +173,9 @@ export function KanbanBoard({ tickets }: { tickets: Ticket[] }) {
                 const ticketId = e.dataTransfer.getData('text/ticket-id')
                 if (ticketId) handleDrop(ticketId, col.key)
               }}
-            >
-              <div className="mb-3 flex items-center justify-between px-1">
-                <h2 className="text-sm font-semibold text-ink-soft">{col.label}</h2>
-                <Badge>{colTickets.length}</Badge>
-              </div>
-              <div className="space-y-3 px-1">
-                {colTickets.map((ticket) => (
-                  <div
-                    key={ticket.id}
-                    draggable
-                    onDragStart={(e) => {
-                      e.dataTransfer.setData('text/ticket-id', ticket.id)
-                      setDraggingId(ticket.id)
-                    }}
-                    onDragEnd={() => setDraggingId(null)}
-                    className={`cursor-grab active:cursor-grabbing ${
-                      draggingId === ticket.id ? 'opacity-40' : ''
-                    }`}
-                  >
-                    <Link href={`/control-plane/tickets/${ticket.id}`} draggable={false}>
-                      <Card className="!p-4 transition hover:border-coral/40">
-                        <p className="text-sm font-medium">{ticket.title}</p>
-                        <p className="mt-1 text-xs text-ink-faint">{ticket.type}</p>
-                      </Card>
-                    </Link>
-                  </div>
-                ))}
-              </div>
-            </div>
+              onDragStart={setDraggingId}
+              onDragEnd={() => setDraggingId(null)}
+            />
           )
         })}
       </div>
