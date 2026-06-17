@@ -2,23 +2,6 @@
 
 import { mkdir, writeFile } from 'fs/promises'
 import path from 'path'
-
-function safeUploadFilename(name: string): string {
-  const base = path.basename(name).replace(/[^\w.\-() ]+/g, '_')
-  if (!base || base === '.' || base === '..') return 'upload.txt'
-  return base.slice(0, 200)
-}
-
-function resolveUploadTarget(filename: string): { storageRef: string; absolutePath: string } {
-  const uploadDir = path.resolve(process.cwd(), 'uploads')
-  const safeName = `${Date.now()}-${safeUploadFilename(filename)}`
-  const absolutePath = path.resolve(uploadDir, safeName)
-  const uploadRoot = uploadDir.endsWith(path.sep) ? uploadDir : `${uploadDir}${path.sep}`
-  if (!absolutePath.startsWith(uploadRoot)) {
-    throw new Error('Invalid upload path')
-  }
-  return { storageRef: path.join('uploads', safeName), absolutePath }
-}
 import { clerkClient } from '@clerk/nextjs/server'
 import { getCurrentUser, requireRole } from '@/auth'
 import { hasMinimumRole } from '@/auth/types'
@@ -57,6 +40,23 @@ import {
   changeUserRoleSchema,
   setUserStatusSchema,
 } from '@/lib/validators/actions'
+
+function safeUploadFilename(name: string): string {
+  const base = path.basename(name).replace(/[^\w.\-() ]+/g, '_')
+  if (!base || base === '.' || base === '..') return 'upload.txt'
+  return base.slice(0, 200)
+}
+
+function resolveUploadTarget(filename: string): { storageRef: string; absolutePath: string } {
+  const uploadDir = path.resolve(process.cwd(), 'uploads')
+  const safeName = `${Date.now()}-${safeUploadFilename(filename)}`
+  const absolutePath = path.resolve(uploadDir, safeName)
+  const uploadRoot = uploadDir.endsWith(path.sep) ? uploadDir : `${uploadDir}${path.sep}`
+  if (!absolutePath.startsWith(uploadRoot)) {
+    throw new Error('Invalid upload path')
+  }
+  return { storageRef: path.join('uploads', safeName), absolutePath }
+}
 
 export async function listTickets(input?: { filter?: unknown }) {
   try {

@@ -33,7 +33,20 @@ env:
     secret: HARNESS_CALLBACK_TOKEN
     availability:
       - RUNTIME
-  - variable: CHATGPT_OAUTH_STUB
+  - variable: NEXT_SERVER_ACTIONS_ENCRYPTION_KEY
+    secret: NEXT_SERVER_ACTIONS_ENCRYPTION_KEY
+    availability:
+      - BUILD
+      - RUNTIME
+  - variable: CHATGPT_OAUTH_EMBEDDED
     value: "true"
+    availability:
+      - RUNTIME
+  - variable: CHATGPT_OAUTH_TOKEN_SECRET
+    value: "projects/346824017066/secrets/CHATGPT_OAUTH_TOKENS"
+    availability:
+      - RUNTIME
+  - variable: CHATGPT_OAUTH_MODEL
+    value: "gpt-5.5"
     availability:
       - RUNTIME

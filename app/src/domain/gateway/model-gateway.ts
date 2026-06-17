@@ -57,7 +57,40 @@ export interface ModelProvider {
   }): Promise<ModelProviderResult>
 }
 
+function isDirectAgentChat(messages: GatewayMessage[]): boolean {
+  return messages.some(
+    (m) =>
+      m.role === 'system' &&
+      m.content.includes('Ez egy közvetlen beszélgetés a felhasználóval'),
+  )
+}
+
+function stubDirectChatAnswer(messages: GatewayMessage[]): ModelProviderResult {
+  const lastUser =
+    [...messages].reverse().find((m) => m.role === 'user')?.content?.trim() ?? ''
+  const lower = lastUser.toLowerCase()
+
+  let content =
+    'Szia! Közvetlen beszélgetésben vagyunk — kérdezz nyugodtan, segítek magyarul.'
+  if (lower.includes('feladat') || lower.includes('mit csinál')) {
+    content =
+      'A rendszerinstrukcióm alapján dolgozom: a szerepköröm és viselkedési profilom határozza meg, miben segíthetek. Mondd, mire van szükséged most.'
+  } else if (lower.includes('szia') || lower.includes('hello') || lower === 'hi') {
+    content = 'Szia! Örülök, hogy írsz — miben segíthetek?'
+  }
+
+  return {
+    content,
+    usage: { promptTokens: 40, completionTokens: Math.ceil(content.length / 4) },
+    latencyMs: 1,
+  }
+}
+
 function stubWikiAnswer(messages: GatewayMessage[]): ModelProviderResult {
+  if (isDirectAgentChat(messages)) {
+    return stubDirectChatAnswer(messages)
+  }
+
   const combined = messages.map((m) => m.content).join('\n')
   const lower = combined.toLowerCase()
 
