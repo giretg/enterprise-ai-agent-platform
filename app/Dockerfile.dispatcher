@@ -1,0 +1,23 @@
+# Production dispatcher image — nem-LLM worker (§5.7) Cloud Run service-ként.
+# A harness image-dzsel ellentétben itt NINCS Goose: ez csak a work-queue worker,
+# ami a Ready ticketeknél elindítja a wiki-harness Cloud Run Jobot.
+FROM node:20-slim
+
+WORKDIR /app
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends openssl ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+COPY package.json package-lock.json ./
+COPY prisma ./prisma
+RUN npm ci
+
+COPY . .
+
+ENV NODE_ENV=production
+ENV PORT=8080
+EXPOSE 8080
+
+# A worker LISTEN/NOTIFY + cron alapon fut és a $PORT-on health-et szolgál.
+CMD ["npm", "run", "dispatcher:worker"]

@@ -11,7 +11,7 @@ import {
   approveGmailSendSchema,
   authorizeTicketRunAsSchema,
   connectorGrantIdSchema,
-  connectorIdSchema,
+  startConnectorOAuthSchema,
 } from '@/lib/validators/actions'
 import {
   buildRunAsAuthorization,
@@ -33,9 +33,12 @@ export async function listConnectorGrants() {
 
 export async function listUserDelegatedConnectors() {
   try {
-    await requireRole('viewer')
+    const user = await requireRole('viewer')
     const connectors = await prisma.connector.findMany({
-      where: { authMode: 'user_delegated' },
+      where: {
+        authMode: 'user_delegated',
+        OR: [{ tenantId: null }, ...(user.tenantId ? [{ tenantId: user.tenantId }] : [])],
+      },
       orderBy: { name: 'asc' },
     })
     return ok(connectors)
@@ -44,14 +47,15 @@ export async function listUserDelegatedConnectors() {
   }
 }
 
-export async function startConnectorOAuth(input: { connectorId: string }) {
+export async function startConnectorOAuth(input: { connectorId: string; scopes?: string[] }) {
   try {
     const user = await getCurrentUser()
     if (!user) return fail('Not authenticated')
-    const { connectorId } = connectorIdSchema.parse(input)
+    const { connectorId, scopes } = startConnectorOAuthSchema.parse(input)
     const connector = await prisma.connector.findUnique({ where: { id: connectorId } })
     if (!connector) return fail('Connector not found')
     if (connector.authMode !== 'user_delegated') return fail('Connector is not user_delegated')
+    if (connector.tenantId && connector.tenantId !== user.tenantId) return fail('Connector not found')
 
     if (process.env.GMAIL_OAUTH_STUB === 'true') {
       const { createOAuthState } = await import('@/lib/crypto/oauth-state')
@@ -59,6 +63,7 @@ export async function startConnectorOAuth(input: { connectorId: string }) {
         userId: user.id,
         connectorId: connector.id,
         tenantId: user.tenantId,
+        requestedScopes: scopes,
       })
       await services.connectorGrants.completeOAuthCallback({
         code: 'stub-auth-code',
@@ -73,6 +78,7 @@ export async function startConnectorOAuth(input: { connectorId: string }) {
       connector,
       userId: user.id,
       tenantId: user.tenantId,
+      requestedScopes: scopes,
     })
     return ok({ url })
   } catch (e) {
@@ -90,11 +96,19 @@ export async function revokeConnectorGrant(input: { grantId: string }) {
     if (grant.userId !== user.id && user.role !== 'admin') {
       return fail('Forbidden')
     }
+    if (
+      user.role === 'admin' &&
+      user.tenantId &&
+      grant.userId !== user.id &&
+      grant.tenantId !== user.tenantId
+    ) {
+      return fail('Forbidden')
+    }
 
     await services.connectorGrants.revokeGrant({
       grantId,
       actorId: user.id,
-      actorType: user.role === 'admin' && grant.userId !== user.id ? 'human' : 'human',
+      actorType: 'human',
     })
     return ok({ revoked: true })
   } catch (e) {

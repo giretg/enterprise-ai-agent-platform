@@ -7,6 +7,7 @@ import {
   type ConnectorGrantTokens,
 } from './grant-token-vault'
 import { createOAuthState, pkceChallenge, verifyOAuthState } from '@/lib/crypto/oauth-state'
+import { GMAIL_SCOPES, normalizeGmailScope } from './gmail-scopes'
 
 export type ConnectorOAuthConfig = {
   provider?: string
@@ -28,7 +29,7 @@ function readOAuthConfig(connector: Connector): Required<ConnectorOAuthConfig>['
     provider,
     authUrl: oauth.authUrl ?? 'https://accounts.google.com/o/oauth2/v2/auth',
     tokenUrl: oauth.tokenUrl ?? 'https://oauth2.googleapis.com/token',
-    scopes: oauth.scopes ?? ['https://www.googleapis.com/auth/gmail.readonly'],
+    scopes: (oauth.scopes ?? [GMAIL_SCOPES.readonly]).map(normalizeGmailScope),
     clientId: oauth.clientId ?? process.env.GMAIL_OAUTH_CLIENT_ID ?? '',
     clientIdRef: oauth.clientIdRef,
     redirectUri:
@@ -36,6 +37,20 @@ function readOAuthConfig(connector: Connector): Required<ConnectorOAuthConfig>['
       process.env.GMAIL_OAUTH_REDIRECT_URI ??
       `${process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'}/api/connectors/oauth/callback`,
   }
+}
+
+function resolveRequestedScopes(connector: Connector, requestedScopes?: string[]): string[] {
+  const oauth = readOAuthConfig(connector)
+  const configuredScopes = oauth.scopes!.map(normalizeGmailScope)
+  const requested = requestedScopes?.map(normalizeGmailScope)
+  if (!requested || requested.length === 0) return configuredScopes
+
+  const configured = new Set(configuredScopes)
+  const unsupported = requested.filter((scope) => !configured.has(scope))
+  if (unsupported.length > 0) {
+    throw new Error(`OAuth scope not configured for connector: ${unsupported.join(', ')}`)
+  }
+  return [...new Set(requested)]
 }
 
 function resolveClientSecret(connector: Connector): string {
@@ -52,18 +67,21 @@ async function exchangeCodeForTokens(params: {
   connector: Connector
   code: string
   codeVerifier: string
+  requestedScopes?: string[]
 }): Promise<ConnectorGrantTokens> {
+  const oauth = readOAuthConfig(params.connector)
+  const fallbackScopes = resolveRequestedScopes(params.connector, params.requestedScopes)
+
   if (process.env.GMAIL_OAUTH_STUB === 'true') {
     return {
       accessToken: `stub-access-${Date.now()}`,
       refreshToken: `stub-refresh-${Date.now()}`,
       expiresAt: new Date(Date.now() + 3600_000).toISOString(),
       accountEmail: 'stub-user@example.com',
-      scopes: readOAuthConfig(params.connector).scopes,
+      scopes: fallbackScopes,
     }
   }
 
-  const oauth = readOAuthConfig(params.connector)
   const clientSecret = resolveClientSecret(params.connector)
   const body = new URLSearchParams({
     code: params.code,
@@ -102,6 +120,8 @@ async function exchangeCodeForTokens(params: {
     }
   }
 
+  const scopes = data.scope ? data.scope.split(' ') : (fallbackScopes ?? [GMAIL_SCOPES.readonly])
+
   return {
     accessToken: data.access_token,
     refreshToken: data.refresh_token ?? '',
@@ -109,7 +129,7 @@ async function exchangeCodeForTokens(params: {
       ? new Date(Date.now() + data.expires_in * 1000).toISOString()
       : null,
     accountEmail,
-    scopes: data.scope?.split(' ') ?? oauth.scopes,
+    scopes: scopes.map(normalizeGmailScope),
   }
 }
 
@@ -165,22 +185,28 @@ export class ConnectorGrantService {
     connector: Connector
     userId: string
     tenantId: string | null
+    requestedScopes?: string[]
   }): { url: string; state: string } {
     if (params.connector.authMode !== 'user_delegated') {
       throw new Error('connector is not user_delegated')
     }
+    if (params.connector.tenantId && params.connector.tenantId !== params.tenantId) {
+      throw new Error('connector tenant mismatch')
+    }
     const oauth = readOAuthConfig(params.connector)
+    const scopes = resolveRequestedScopes(params.connector, params.requestedScopes)
     const { state, codeVerifier } = createOAuthState({
       userId: params.userId,
       connectorId: params.connector.id,
       tenantId: params.tenantId,
+      requestedScopes: scopes,
     })
 
     const url = new URL(oauth.authUrl!)
     url.searchParams.set('client_id', oauth.clientId!)
     url.searchParams.set('redirect_uri', oauth.redirectUri!)
     url.searchParams.set('response_type', 'code')
-    url.searchParams.set('scope', oauth.scopes!.join(' '))
+    url.searchParams.set('scope', scopes.join(' '))
     url.searchParams.set('access_type', 'offline')
     url.searchParams.set('prompt', 'consent')
     url.searchParams.set('state', state)
@@ -197,9 +223,15 @@ export class ConnectorGrantService {
     connector: Connector
     actorId: string
   }) {
+    if (params.connector.authMode !== 'user_delegated') {
+      throw new Error('connector is not user_delegated')
+    }
     const statePayload = verifyOAuthState(params.state)
     if (statePayload.connectorId !== params.connector.id) {
       throw new Error('oauth_state: connector mismatch')
+    }
+    if (params.connector.tenantId && params.connector.tenantId !== statePayload.tenantId) {
+      throw new Error('oauth_state: connector tenant mismatch')
     }
     if (statePayload.userId !== params.actorId) {
       throw new Error('oauth_state: user mismatch')
@@ -209,6 +241,7 @@ export class ConnectorGrantService {
       connector: params.connector,
       code: params.code,
       codeVerifier: statePayload.codeVerifier,
+      requestedScopes: statePayload.requestedScopes,
     })
 
     const tokenRef = buildGrantTokenRef({
@@ -298,6 +331,28 @@ export class ConnectorGrantService {
     }
   }
 
+  async markGrantExpired(params: {
+    grantId: string
+    connectorId: string
+    actingUserId: string
+    metadata?: Prisma.JsonValue
+  }) {
+    await this.grants.updateStatus(params.grantId, 'expired')
+    await this.audit.append({
+      actorType: 'system',
+      actorId: null,
+      agentVersion: null,
+      action: 'connector.grant.expire',
+      targetType: 'connector_grant',
+      targetId: params.grantId,
+      modelUsed: null,
+      inputRef: params.connectorId,
+      outputRef: params.actingUserId,
+      policyDecision: 'expired',
+      metadata: params.metadata ?? null,
+    })
+  }
+
   async resolveAccessToken(params: {
     connector: Connector
     grantId: string
@@ -329,19 +384,11 @@ export class ConnectorGrantService {
           metadata: { expires_at: tokens.expiresAt } as Prisma.JsonValue,
         })
       } catch {
-        await this.grants.updateStatus(params.grantId, 'expired')
-        await this.audit.append({
-          actorType: 'system',
-          actorId: null,
-          agentVersion: null,
-          action: 'connector.grant.expire',
-          targetType: 'connector_grant',
-          targetId: params.grantId,
-          modelUsed: null,
-          inputRef: params.connector.id,
-          outputRef: params.actingUserId,
-          policyDecision: 'expired',
-          metadata: null,
+        await this.markGrantExpired({
+          grantId: params.grantId,
+          connectorId: params.connector.id,
+          actingUserId: params.actingUserId,
+          metadata: { reason: 'refresh_failed' } as Prisma.JsonValue,
         })
         throw new Error('grant_token_expired')
       }

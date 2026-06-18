@@ -790,60 +790,62 @@ A fejlesztés akkor kész, ha:
 
 ## 15. Megvalósítási státusz a jelenlegi kódbázis alapján
 
-**Frissítve:** 2026-06-15 (session 2)
+**Frissítve:** 2026-06-18
 **Állapotjelölés:** `Kész` = működő kód + build zöld; `Részben kész` = van alap, de nem teljesíti még a spec minden kipróbálhatósági kritériumát; `Hátra van` = érdemi implementáció hiányzik.
+
+> **Fontos:** az alábbi táblázat felülírja a 2026-06-15/16-es session-jegyzeteket. A walking skeleton nagy része megvan; a nyitott MVP-lezárás főleg **production hardening** (dispatcher üzem, hálózati egress) és **governance dokumentumok** (S6 eval plan, demo script).
+
+### 15.0 Spike-ok
+
+| Spike | Státusz | Megjegyzés |
+|---|---:|---|
+| **S1** Goose + Cloud Run Job | **Kész** | `wiki-harness` Job, Cloud Build amd64, éles smoke zöld (`harness:cloud-run-smoke`). |
+| **S2** ChatGPT OAuth mediáció | **Kész** | Beágyazott provider: `CHATGPT_OAUTH_EMBEDDED` + `CHATGPT_OAUTH_TOKEN_SECRET` (App Hosting). `chatgpt-oauth-bridge.ts` → Codex Responses API; token refresh + SM write-back. Sidecar (`s2:provider`) és `s2:live-smoke` is van. **Gemini** külön providerként bekötve (`GEMINI_API_KEY`) — D2 feletti cserepont, agentenként választható. |
+| **S3** Tool Broker MCP | **Kész** | `platform-mcp-bridge`, Goose config, acceptance [17–18]. |
+| **S4** Egress + dev-extension | Részben kész | App-szintű guard + N4 acceptance zöld. **Hálózati** deny-by-default prod Job-on még nincs (`HARNESS_EGRESS_ENFORCE=false`). |
+| **S5** Write-gate | **Kész** | Token issue/consume, N3 negatív tesztek zöldek. |
+| **S6** Retrieval minőség | Hátra van | Eval plan dokumentum + kérdéskészlet hiányzik. |
 
 ### 15.1 Elkészült / részben elkészült elemek
 
 | Terület | Státusz | Megjegyzés |
 |---|---:|---|
-| Next.js App Router control plane + sandbox alap | Részben kész | Board, agent lista/részlet, audit oldal, training oldal és sandbox útvonalak léteznek. A sandbox még nem a teljes wiki `askWiki` E2E flow. |
-| Prisma/Postgres repository alap | Részben kész | Repository interfészek és Postgres implementációk vannak. A séma közel van a 4. fejezet táblájához: `users.status/tenant_id`, `invitations`, `ticket_transitions`, `recipes` + `recipe_versions`, valamint a spec szerinti külön `training_tickets` tábla is bekerült (2026-06-15). |
-| Recipe-katalógus (`recipes` + `recipe_versions`) | **Kész (2026-06-15)** | First-class `recipes` + `recipe_versions` tábla (§4.3) verziózással, `status` (proposed/active/retired) és jóváhagyóval. `RecipeService` (create/propose/approve/getActive) — a jóváhagyás aktiválja az új verziót és **retire-eli a korábbi aktívat**, governance auditeseményekkel (`recipe.create`/`recipe.version`/`recipe.approve`, §6). `AgentVersion.recipe_version_id` link a reprodukálhatósághoz (§5.3). A seed felveszi a §6 `wiki-answer` recipe-t (aktív v1) és bekötu a Wiki Agent v1-éhez; az agent detail oldal „Recipe" kártyán mutatja. Verifikálva DB ellen. |
-| Schema — IAM prep (Epik 2) | **Kész (2026-06-15)** | `users.status` (enum: pending/active/suspended), `users.tenant_id` mező és `Invitation` modell / `invitations` tábla bekerült a Prisma sémába. |
-| Schema — document→connector link | **Kész (2026-06-15)** | `documents.connector_id` FK bekerült; `DocumentRepository.findByConnectorId` és `update(...connectorId)` megvalósítva. |
-| Ticket-állapotgép | Részben kész | A kód át lett állítva a v1.0 állapotokra: `backlog → ready → in_progress → awaiting_human → approved/rejected → done`, illetve `rejected → ready`. Tiltott átmenet `ticket.transition.denied` auditot ír. |
-| Ticket transition history (`ticket_transitions`) | **Kész (2026-06-15)** | First-class `ticket_transitions` tábla (§4.5): `from_state`, `to_state`, `actor_type`, `actor_id`, `agent_version`, `note`, `ts`. A `TicketService.transition` minden **sikeres** átmenetnél sort ír (tiltott átmenet csak auditba kerül, állapot nem változik). `recordTransition`/`findTransitions` repo-metódus, `getTicketTransitions` server action és „Állapot-előzmények" idővonal a ticket detail oldalon. Verifikálva DB ellen. |
-| Ticket detail — Agent anatómia kártya | **Kész (2026-06-15)** | `TicketMeta` komponens mostantól megjeleníti az `agentVersion`, `memoryVersion` és `model` mezőket a ticket payload-jából. |
-| Dispatcher előfeltételek | Részben kész | Bekerült `tickets.lock_token`, `tickets.locked_at`, ready-ticket keresés, idempotens lock, lock release, per-agent napi call/token budget ellenőrzési pont, `dispatch.start` és `dispatch.budget_blocked` audit. A valódi worker és Cloud Run Job indítás még nincs kész. |
-| Append-only hash-láncolt audit | Részben kész | Van `AuditRepository.append()`, advisory lock, hash-számítás, `verifyChain()` és audit nézet. DB-szintű `UPDATE/DELETE` jogosultságmegvonás még nincs igazolva. |
-| IAM/RBAC | **Kész (2026-06-16)** | Clerk/dev `AuthProvider`, 4 szerepkör és szerveroldali `requireRole()`. Új `IamService` (§5.2, §10): admin-meghívás lejáró, egyszer beváltható, **hashelt** tokennel (nyers token CSAK egyszer); `redeemInvitation` aktív userré váltja; `changeRole`/`setStatus`. **Lock-out védelem**: utolsó aktív admin nem demotálható és nem függeszthető fel; admin a saját szerepét nem írhatja át / magát nem függesztheti fel. **Kill-switch**: felfüggesztett fiók a `requireRole`/`assertActive` ágon elutasítva. Server actions (`inviteUser`/`redeemInvitation`/`changeUserRole`/`setUserStatus`/`listUsers`/`listInvitations`) + Zod sémák. Minden hozzáférési esemény auditba (`access.invite`/`redeem`/`role_change`/`suspend`). Acceptance e2e [10] (invite→redeem, replay/lejárt invitation, lock-out, self-protection, kill-switch) zöld. *Hátra:* admin IAM UI; Clerk-szerep szinkron (Fázis 2 cserepont). |
-| Agent Registry alap | Részben kész | Agent, agent version, memória és API-kulcs alap létezik. A recipe-verzióhoz kötés bekerült (`agent_versions.recipe_version_id`, 2026-06-15). A szerep-instrukció / viselkedés-profil külön verziózása még nincs kész. |
-| Agent detail — Eszközjogok és Connectorok kártyák | **Kész (2026-06-15)** | Az agent részlet oldal mostantól „Eszközjogok" (capabilities) és „Connectorok" kártyákat mutat, amelyek az agent governance állapotát tükrözik. `getAgentGovernance` server action hozzáadva. |
-| Model Gateway provider-absztrakció | Részben kész | A Gemini-függőség ki lett vezetve az appból. A `ModelGateway` most csak `chatgpt-oauth` providert fogad, és belső `CHATGPT_OAUTH_PROVIDER_URL` / `CHATGPT_OAUTH_PROVIDER_KEY` adapteren át hív. A valódi ChatGPT OAuth mediáció az S2 spike feladata. |
-| Model Gateway — latency/status + guardrail | **Kész (2026-06-15)** | `model_calls` kapott `latency_ms` + `status` (enum: ok/error/rate_limited) mezőt (§4.7). A Gateway minden hívásra latency-t és státuszt naplóz; a hibás/rate-limited hívás is `model_calls` rekordot + auditot kap. Ticketenkénti hívás-keret guardrail (`maxCallsPerTicket`, §5.4) túllépve `GatewayBudgetError` + `model.call.budget_blocked` audit. `getUsageForTicket` repo-metódus hozzáadva. Verifikálva stub providerrel. |
-| Tool Broker alap | Részben kész | Bekerült a `connectors`, `agent_connectors`, `capabilities`, `tool_calls` adatmodell, `AllowlistAuthorizer`, `kb_search`, `board_write`, agent API route és pozitív/negatív acceptance smoke. A valódi MCP-proxy/Goose extension útvonal és Secret Manager injektálás még nincs kész. |
-| Tool Broker — repository metódusok | **Kész (2026-06-15)** | `ToolBrokerRepository` új metódusai: `findCapabilitiesForAgent`, `findConnectorsForAgent`, `findDocumentsForConnector`. |
-| Tool Broker — kbSearch kiterjesztés | **Kész (2026-06-15)** | `ToolBrokerService.kbSearch` mostantól az agent KB-connectorához kapcsolt dokumentumokat is átkutatja a memória-tartalom mellett. |
-| Sandbox — dokumentumfeltöltés és KB-linking | **Kész (2026-06-15)** | `/sandbox` oldal kapott dokumentumfeltöltés szekciót (fájl + szöveges beillesztés), KB-dokumentum listát és linking flow-t. Server actions: `processDocumentForWiki`, `listDocumentsForAgent`. |
-| Sandbox App Registry v0 | Hátra van | Új MVP-vékony scope (2026-06-16): A0 single-file HTML app registry, preview iframe, verziózás, `.html` export + hash, audit (`sandbox_app.*`). Nem része a jelenlegi kódnak. |
-| Seed / alapértelmezett agent | Kész alap | A seed most `Wiki Agent`-et hoz létre `chatgpt-oauth` modellkonfiggal és belső tudásbázis kezdőmemóriával. |
-| Training / write-gate | **Kész (2026-06-15)** | Training ticket, diff, write-gate issue/consume (aláírt, egyszer használatos, diffhez kötött), memória verzió promóció, rollback és eval-kapu működik. First-class `training_tickets` tábla (§4.4) bekerült: `proposed_diff`, `write_gate_token_ref` (a kiállított token referenciája — nyers token sosem tárolt), `eval_result` és `target_memory_version`. A `TrainingService.createTrainingTicket` írja a sort a cél-verzióval; az `approveTraining` rögzíti a token-ref-et és az eval-eredményt. Az **S5/N3 negatív tesztek** (replay/kétszeres consume tiltva, lejárt token tiltva + `expired` státusz, hamisított aláírás tiltva) az acceptance e2e-ben zöldek. |
-| Eval alap | Részben kész | Egyszerű eval definíció és futtatás van. Wiki-agentre szabott S6 eval plan még nincs. |
-| Build / lint állapot | Kész | `npm run lint` és `npm run build` zöld az `app/` könyvtárban. |
+| Next.js control plane + sandbox | **Kész** | Board, wiki sandbox, beszélgetés-elsődleges flow (CR-MVP-003), agent chat, governance oldal. |
+| Prisma/Postgres + séma | **Kész** | Spec §4 entitások nagy része; conversations, scheduled tasks, file workspace a spec feletti bővítések. |
+| Recipe-katalógus | **Kész** | §6 `wiki-answer`, governance audit, agent snapshot link. |
+| Ticket-állapotgép + transitions | **Kész** | Szerveroldali validáció, tiltott átmenet audit, UI idővonal. |
+| Dispatcher + harness | **Production dispatcher kész + deployolva** | `dispatcher-worker.ts` (`LISTEN/NOTIFY` + cron + health-szerver), `Dockerfile.dispatcher`, `deploy-dispatcher-service.sh`. **Élesben fut:** `wiki-dispatcher` Cloud Run service (`enterprise-ai-demo`, europe-west4, `minScale=1`, `cpu-throttling=false`), dedikált runtime SA `run.jobs.runWithOverrides`-szal. Igazolt lánc: `ready→in_progress` (NOTIFY 0s) → `dispatch.start` → harness goose valódi Gateway model-hívások → budget cap. **Admin kill-switch + cron-intervallum** runtime állítható a `/control-plane/system` oldalról (`platform_settings` tábla, élesben tesztelve). **Nyitott (harness/S6, nem dispatcher):** a `wiki-answer` recipe nem konvergál a Gateway 20-hívásos guardrailje alatt. |
+| Append-only audit | Részben kész | `verifyChain()` + UI; Postgres `UPDATE/DELETE` tiltás nincs igazolva. |
+| IAM/RBAC | **Kész** | Meghívás/redeem UI (`/control-plane/iam`), lock-out, kill-switch, acceptance zöld. |
+| Agent Registry | **Kész** | Szerep/viselkedés külön verzió, recipe snapshot, governance kártyák. |
+| Model Gateway | **Kész (S2)** | `chatgpt-oauth` beágyazott OAuth + `gemini` + `ollama` provider; guardrail, latency/status napló. |
+| Tool Broker | **Kész** | MCP bridge, kb_search, board_write, per-user connector (F2) acceptance-ben. |
+| Sandbox App Registry A0 | **Kész** | Preview iframe, verzió, export + hash, audit. |
+| Training / write-gate | **Kész** | §5.8 protokoll, negatív tesztek. |
+| Governance / mérés | Részben kész | Mérési riport Markdown export; **hátra:** S6 eval plan, 9.3 demo script. |
+| Build / lint | **Kész** | `npm run lint` + `npm run build` zöld. |
 
 ### 15.2 Hátralévő feladatok epik szerint
 
 | Epik | Státusz | Hátralévő munka |
 |---|---:|---|
-| Epik 1 — Control Plane mag | Részben kész | Admin tickettípus/átmenet CRUD; tiltott átmenet negatív teszt automatizálása. *(Agent anatómia kártya kész 2026-06-15; `ticket_transitions` részletes transition history + UI kész 2026-06-15.)* |
-| Epik 2 — IAM / RBAC | Részben kész | Hátra: admin IAM UI (meghívás-küldés/redeem képernyő); agent scope-ok további szigorítása; Clerk-szerep szinkron. *(Admin meghívás+redeem flow, utolsó admin lock-out védelem, self-protection, suspended kill-switch, hozzáférési audit és negatív tesztek kész 2026-06-16.)* |
-| Epik 3 — Agent Registry + Model Gateway | Részben kész | `roleInstruction` és `behaviorProfile` külön mező/verzió; S2 valódi ChatGPT OAuth mediáció. *(latency/status mezők a `model_calls` táblában és per-ticket gateway guardrail kész 2026-06-15; recipe-katalógus + `agent_versions.recipe_version_id` snapshot kész 2026-06-15.)* |
-| Epik 4 — Tool Broker + connector | Részben kész | Valódi MCP-proxy adapter; Goose extension bekötés; Secret Manager injektálás igazolása. *(Connector/capability admin UI kész 2026-06-15; repository metódusok és kbSearch kiterjesztés kész 2026-06-15.)* |
-| Epik 5 — Harness (Goose) + Dispatcher | Részben kész | S1-S4 spike; Goose image/recipe; Cloud Run Job indítás; dispatcher futtató processz `LISTEN/NOTIFY` + cron safety net; job completion/timeout lock release; egress deny és developer-extension lezárás igazolása. |
-| Epik 6 — Tanítás / memória | Részben kész | Hátra: retrieval-napló dedikált nézete; rollback UI finomítás. *(Spec szerinti `training_tickets` modell, write-gate token-ref külön kezelése és a token lejárat/újrajátszás/aláírás-hamisítás negatív tesztek kész 2026-06-15.)* |
-| Epik 7 — Sandbox use case (wiki) + App Registry v0 | Részben kész | `askWiki` ticket létrehozás és `getAnswer` citált válasz UI; jóváhagyásra küldés flow; 1 riport-sablon; GCS/GCS-helyettes absztrakció `uploadDocument`-hez; régi bookkeeper runtime kiváltása wiki runtime-mal; A0 sandbox app registry + preview + export. *(Dokumentumfeltöltés, KB-linking UI és `processDocumentForWiki` server action kész 2026-06-15; App Registry v0 új scope 2026-06-16.)* |
-| Epik 8 — Governance és mérés | Részben kész | Költség/dashboard alap van, de hiányzik a Tool Broker mérés, ticketenkénti bontás, bizonytalan eset eszkalációs policy, N1-N4 negatív tesztek teljes automatizálása és rövid mérési riport. |
+| Epik 1 — Control Plane | Részben kész | `adminUpsertTicketType` CRUD. |
+| Epik 2 — IAM | **Kész** | Clerk webhook szinkron finomítás (Fázis 2). |
+| Epik 3 — Registry + Gateway | **Kész** | S2 lezárva; Gemini cserepont dokumentálva. |
+| Epik 4 — Tool Broker | **Kész** | Prod connector secret rotáció üzemeltetése. |
+| Epik 5 — Harness + Dispatcher | Részben kész | **Production dispatcher deployolva és igazolva** (Cloud Run service + runtime SA, end-to-end audit-nyom). **Következő kritikus:** harness/recipe konvergencia a 20-hívásos guardrail alatt (S6) + hálózati S4 egress (VPC/NAT/firewall). |
+| Epik 6 — Tanítás | **Kész** | Retrieval-napló UI finomítás opcionális. |
+| Epik 7 — Sandbox + App Registry | Részben kész | `generateReport` API (§5.10) hiányzik; egyébként kész. |
+| Epik 8 — Governance | Részben kész | S6 eval plan; 9.3 demo script; §13 checklist végigpipálása. |
 
 ### 15.3 Következő javasolt fejlesztési sorrend
 
-1. **S1-S4 spike előkészítése:** Goose recipe + Cloud Run Job proof, majd Model Gateway és a most elkészült Tool Broker útvonal rákötése.
-2. **Wiki sandbox E2E:** `askWiki` ticket létrehozás `ready` állapotban, dispatcher indítás, citált válasz visszaírása.
-3. **Sandbox App Registry v0:** `sandbox_apps` / `sandbox_app_versions`, preview iframe, `.html` export + audit.
-4. **Tool Broker hardening:** MCP-proxy adapter, Secret Manager injektálás, connector/capability admin UI.
-5. **Agent anatómia reprodukálhatóság:** agent-/memória-/recipe-verzió megjelenítése lezárt ticketen.
-6. **Negatív tesztek:** N1 és a Tool Broker capability deny részben adott (`ticket.transition.denied`, `tool.call.denied`); N3-N4 a Goose/egress spike után automatizálható.
+1. ~~**Production dispatcher**~~ — **KÉSZ (2026-06-18).** `wiki-dispatcher` Cloud Run service él (`min-instances=1`, always-on CPU), dedikált runtime SA `run.jobs.runWithOverrides`-szal; a teljes lánc audit-nyommal igazolva. Lásd `app/infra/gcp/CLOUD-RUN-DISPATCHER-SETUP.md` §6.
+2. **Hálózati S4 egress** — VPC connector + NAT + firewall; Job-on `HARNESS_EGRESS_ENFORCE=true`.
+3. **MVP lezárás (Epik 8)** — S6 eval plan, 9.3 kattintható demo script, §13 DoD checklist.
+4. **Epik 1 maradék** — admin tickettípus/átmenet CRUD.
+5. **Üzemeltetés** — OAuth token rotáció runbook, harness image CI, audit DB jogosultságok.
 
 ---
 
-*Forrásalap: `AI-Agent-Platform-MVP-Terv-v1.0.md` (2026-06-15) és `AI-Agent-Platform-Koncepcio.md` v0.8 (forrásellenőrzés: 2026-06-14; App Registry kiegészítés: 2026-06-16). A modellstratégia eldöntve (D2: kizárólag ChatGPT OAuth); az OAuth-mediáció és kvótakezelés az S2 spike-on validálandó. A D1/D3/D4/D6/D7 döntések ebben a specben default-javaslattal lezárva — üzleti változás esetén az érintett fejezet újranyitandó.*
+*Forrásalap: `AI-Agent-Platform-MVP-Terv-v1.0.md` (2026-06-15). **S2 (ChatGPT OAuth) 2026-06-18-án lezárva** beágyazott Secret Manager mediációval; a Gemini provider a D2 MVP-n túli, agent-szintű cserepont. A D1/D3/D4/D6/D7 döntések változatlanok.*

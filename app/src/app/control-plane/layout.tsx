@@ -7,10 +7,12 @@ const navItems = [
   { href: '/control-plane', label: 'Dashboard', exact: true },
   { href: '/control-plane/board', label: 'Board' },
   { href: '/control-plane/agents', label: 'Agents' },
+  { href: '/control-plane/scheduled-tasks', label: 'Ütemezés' },
   { href: '/control-plane/training', label: 'Tanítás' },
   { href: '/control-plane/connectors', label: 'Fiókok' },
   { href: '/control-plane/iam', label: 'IAM' },
   { href: '/control-plane/governance', label: 'Governance' },
+  { href: '/control-plane/system', label: 'Rendszer' },
   { href: '/control-plane/audit', label: 'Audit' },
 ]
 

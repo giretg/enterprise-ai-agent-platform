@@ -18,6 +18,10 @@ export const ticketIdSchema = z.object({
   id: z.string().uuid(),
 })
 
+export const scheduledTaskIdSchema = z.object({
+  id: z.string().uuid(),
+})
+
 export const sandboxAppIdSchema = z.object({
   appId: z.string().uuid(),
 })
@@ -77,6 +81,18 @@ export const createAgentTaskTicketSchema = z.object({
   authorizeRunAs: z.boolean().optional(),
 }).refine((v) => v.content.length > 0 || (v.attachmentDocumentIds?.length ?? 0) > 0, {
   message: 'A feladat leírása vagy legalább egy csatolmány kötelező',
+})
+
+export const createScheduledAgentTaskSchema = z.object({
+  agentId: z.string().uuid(),
+  title: z.string().trim().min(1).max(160),
+  content: z.string().trim().min(1).max(8000),
+  conversationId: z.string().uuid().optional(),
+  attachmentDocumentIds: z.array(z.string().uuid()).max(8).optional(),
+  nextRunAt: z.string().datetime(),
+  recurrence: z.enum(['none', 'daily', 'weekly', 'monthly']).optional(),
+  maxRuns: z.number().int().min(1).max(365).nullable().optional(),
+  authorizeRunAs: z.boolean().optional(),
 })
 
 export const loadAgentChatSchema = z.object({
@@ -229,6 +245,8 @@ const toolInvokeBaseSchema = {
   conversationId: z.string().uuid().optional(),
   actingUserId: z.string().uuid().optional(),
 }
+
+const xlsxCellValueSchema = z.union([z.string(), z.number(), z.boolean(), z.null()])
 
 export const toolInvokeSchema = z.discriminatedUnion('tool', [
   z.object({
@@ -411,7 +429,7 @@ export const toolInvokeSchema = z.discriminatedUnion('tool', [
       changes: z.array(
         z.object({
           cell: z.string().min(1).max(20),
-          value: z.union([z.string(), z.number(), z.boolean(), z.null()]),
+          value: xlsxCellValueSchema,
         }),
       ).min(1).max(500),
     }),
@@ -422,7 +440,7 @@ export const toolInvokeSchema = z.discriminatedUnion('tool', [
     args: z.object({
       path: z.string().min(1).max(500),
       sheet: z.string().max(200).optional(),
-      rows: z.array(z.record(z.string(), z.unknown())).min(1).max(1000),
+      rows: z.array(z.record(z.string(), xlsxCellValueSchema)).min(1).max(1000),
     }),
   }),
   z.object({
@@ -450,6 +468,19 @@ export const connectorIdSchema = z.object({
   connectorId: z.string().uuid(),
 })
 
+const gmailOAuthScopeSchema = z.enum([
+  'https://mail.google.com/',
+  'https://www.googleapis.com/auth/gmail.readonly',
+  'https://www.googleapis.com/auth/gmail.compose',
+  'https://www.googleapis.com/auth/gmail.modify',
+  'https://www.googleapis.com/auth/gmail.send',
+])
+
+export const startConnectorOAuthSchema = z.object({
+  connectorId: z.string().uuid(),
+  scopes: z.array(gmailOAuthScopeSchema).min(1).max(3).optional(),
+})
+
 export const approveGmailSendSchema = z.object({
   ticketId: z.string().uuid(),
   draftId: z.string().min(1),
@@ -466,3 +497,13 @@ export const harnessCompletionSchema = z.object({
   executionName: z.string().trim().min(1).max(500).optional(),
   error: z.string().trim().max(1000).optional(),
 })
+
+export const setDispatcherControlsSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    // UI másodpercben küldi; a service ms-ban tárol és klampol (5s–600s).
+    pollIntervalSeconds: z.number().int().min(5).max(600).optional(),
+  })
+  .refine((v) => v.enabled !== undefined || v.pollIntervalSeconds !== undefined, {
+    message: 'Legalább egy mezőt meg kell adni',
+  })

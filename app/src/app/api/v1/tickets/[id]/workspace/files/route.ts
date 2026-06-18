@@ -21,6 +21,7 @@ async function resolveTicket(ticketId: string) {
 
 // GET /api/v1/tickets/[id]/workspace/files
 // ?path=filename → stream file as download
+// ?path=filename&signed=1 → pre-signed download URL (15 min)
 // (no path) → list workspace files
 export async function GET(
   request: Request,
@@ -35,12 +36,21 @@ export async function GET(
 
   const url = new URL(request.url)
   const filePath = url.searchParams.get('path')
+  const signed = url.searchParams.get('signed') === '1'
 
   const storage = getStorage()
   const tenantId = user.tenantId ?? 'global'
 
   try {
     if (filePath) {
+      if (signed) {
+        const signedUrl = await storage.getSignedDownloadUrl(tenantId, ticketId, filePath)
+        return NextResponse.json({
+          success: true,
+          data: { url: signedUrl.url, expiresAt: signedUrl.expiresAt.toISOString() },
+        })
+      }
+
       const result = await storage.streamToClient(tenantId, ticketId, filePath)
       if (!result) return jsonError('File not found', 404)
       const filename = filePath.split('/').pop() ?? filePath
@@ -98,7 +108,10 @@ export async function POST(
     await storage.write(tenantId, ticketId, filePath, buf)
     return NextResponse.json({ success: true, data: { path: filePath, bytesWritten: buf.length } })
   } catch (e) {
-    if (e instanceof FileEditorError) return jsonError(e.message, 400)
+    if (e instanceof FileEditorError) {
+      const status = e.code === 'WORKSPACE_TOO_LARGE' ? 413 : 400
+      return jsonError(e.message, status)
+    }
     return jsonError(e instanceof Error ? e.message : 'Upload failed', 500)
   }
 }

@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { authenticateAgentRequest, requireAgentScope } from '@/auth/agent-api-key'
 import { services } from '@/domain'
 import { buildStubOpenAiCompletion } from '@/domain/gateway/stub-openai-completion'
+import { relayTextToolCall } from '@/domain/gateway/text-tool-relay'
 import { repositories } from '@/repositories/postgres'
 import { openAiChatCompletionSchema } from '@/lib/validators/gateway'
 
@@ -107,6 +108,26 @@ export async function POST(request: Request) {
         maxTokens: parsed.data.max_tokens ?? modelConfig.maxTokens,
       },
     })
+
+    // Szöveges tool-hívás relay (S6): a valódi ChatGPT-OAuth backend sima
+    // szöveget ad vissza, a goose viszont natív `tool_calls`-ra vár. Ha a modell
+    // a recipe szerinti `{"tool":…,"args":{…}}` JSON-t írta, natív tool_calls
+    // completionná alakítjuk, hogy a goose lefuttassa az MCP eszközt
+    // (kb_search → board_write). Egyébként sima szöveg = végső agent-válasz.
+    if (parsed.data.tools?.length) {
+      const relayed = relayTextToolCall({
+        content: result.content,
+        tools: parsed.data.tools,
+        model: modelName,
+        usage: result.usage,
+      })
+      if (relayed) {
+        return NextResponse.json({
+          ...relayed,
+          agent_version: agentVersion ?? agent.currentVersion,
+        })
+      }
+    }
 
     const completionId = `gw_${crypto.randomUUID()}`
     return NextResponse.json({

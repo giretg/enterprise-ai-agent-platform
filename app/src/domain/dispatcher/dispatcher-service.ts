@@ -28,6 +28,8 @@ export class DispatcherService {
     private modelCalls: ModelCallRepository,
     private resolveLauncher: HarnessLauncher | (() => HarnessLauncher),
     private budget: DispatchBudget = { maxCallsPerDay: 100, maxTokensPerDay: 100_000 },
+    /** Globális kill-switch (§5.7). Ha hiányzik, a dispatch mindig engedélyezett. */
+    private isDispatchEnabled: () => Promise<boolean> = async () => true,
   ) {}
 
   private get launcher(): HarnessLauncher {
@@ -35,9 +37,14 @@ export class DispatcherService {
   }
 
   async dispatchReadyBatch(limit = 10, now = new Date()) {
-    const readyTickets = await this.tickets.findReadyForDispatch(now, limit)
-    const results: Array<{ ticketId: string; status: 'started' | 'skipped' | 'budget_blocked' }> = []
+    const results: Array<{ ticketId: string; status: 'started' | 'skipped' | 'budget_blocked' | 'paused' }> = []
 
+    // Kill-switch: kikapcsolva egyetlen agentet sem indítunk; a ticketek `ready`-ben várnak.
+    if (!(await this.isDispatchEnabled())) {
+      return [{ ticketId: '*', status: 'paused' as const }]
+    }
+
+    const readyTickets = await this.tickets.findReadyForDispatch(now, limit)
     for (const ticket of readyTickets) {
       results.push(await this.dispatchReadyTicket(ticket, now))
     }
@@ -46,6 +53,7 @@ export class DispatcherService {
   }
 
   async dispatchTicket(ticketId: string, now = new Date()) {
+    if (!(await this.isDispatchEnabled())) return { ticketId, status: 'paused' as const }
     const ticket = await this.tickets.findById(ticketId)
     if (!ticket) return { ticketId, status: 'skipped' as const }
     if (ticket.state !== 'ready') return { ticketId, status: 'skipped' as const }

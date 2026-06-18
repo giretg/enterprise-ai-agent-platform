@@ -100,6 +100,38 @@ export class SecretManagerGrantTokenStore implements ConnectorGrantTokenStore {
     return getCloudRunAccessToken(process.env.SECRET_MANAGER_ACCESS_TOKEN)
   }
 
+  private parseSecretResource(): { parent: string; secretId: string } {
+    const match = this.secretResource.match(/^(.+\/secrets)\/([^/]+)$/)
+    if (!match) {
+      throw new Error(
+        'Secret Manager grant resource must look like projects/<project>/secrets/<secret-id>',
+      )
+    }
+    return { parent: match[1], secretId: match[2] }
+  }
+
+  private async createSecretIfMissing(token: string): Promise<void> {
+    const { parent, secretId } = this.parseSecretResource()
+    const res = await fetch(
+      `https://secretmanager.googleapis.com/v1/${parent}?secretId=${encodeURIComponent(secretId)}`,
+      {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({ replication: { automatic: {} } }),
+      },
+    )
+    if (res.ok || res.status === 409) return
+    throw new Error(`Secret Manager create failed: ${res.status} ${(await res.text()).slice(0, 200)}`)
+  }
+
+  private async addVersion(token: string, payload: string): Promise<Response> {
+    return fetch(`https://secretmanager.googleapis.com/v1/${this.secretResource}:addVersion`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ payload: { data: payload } }),
+    })
+  }
+
   async load(): Promise<ConnectorGrantTokens> {
     const token = await this.accessToken()
     const res = await fetch(
@@ -107,7 +139,7 @@ export class SecretManagerGrantTokenStore implements ConnectorGrantTokenStore {
       { headers: { authorization: `Bearer ${token}` } },
     )
     if (!res.ok) {
-      throw new Error(`Secret Manager access failed: ${res.status}`)
+      throw new Error(`Secret Manager access failed: ${res.status} ${(await res.text()).slice(0, 200)}`)
     }
     const data = (await res.json()) as { payload?: { data?: string } }
     if (!data.payload?.data) throw new Error('Secret Manager version payload empty')
@@ -117,26 +149,44 @@ export class SecretManagerGrantTokenStore implements ConnectorGrantTokenStore {
   async save(tokens: ConnectorGrantTokens): Promise<void> {
     const token = await this.accessToken()
     const payload = Buffer.from(JSON.stringify(toFileShape(tokens)), 'utf8').toString('base64')
-    const res = await fetch(
-      `https://secretmanager.googleapis.com/v1/${this.secretResource}:addVersion`,
-      {
-        method: 'POST',
-        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-        body: JSON.stringify({ payload: { data: payload } }),
-      },
-    )
+    let res = await this.addVersion(token, payload)
+    if (res.status === 404) {
+      await this.createSecretIfMissing(token)
+      res = await this.addVersion(token, payload)
+    }
     if (!res.ok) {
-      throw new Error(`Secret Manager addVersion failed: ${res.status}`)
+      throw new Error(`Secret Manager addVersion failed: ${res.status} ${(await res.text()).slice(0, 200)}`)
     }
   }
 
   async delete(): Promise<void> {
     const token = await this.accessToken()
-    await fetch(`https://secretmanager.googleapis.com/v1/${this.secretResource}:destroy`, {
-      method: 'POST',
-      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
-      body: JSON.stringify({}),
-    }).catch(() => {})
+    const versionsRes = await fetch(
+      `https://secretmanager.googleapis.com/v1/${this.secretResource}/versions`,
+      { headers: { authorization: `Bearer ${token}` } },
+    ).catch(() => null)
+    if (!versionsRes || versionsRes.status === 404) return
+    if (!versionsRes.ok) {
+      throw new Error(
+        `Secret Manager list versions failed: ${versionsRes.status} ${(await versionsRes.text()).slice(0, 200)}`,
+      )
+    }
+
+    const data = (await versionsRes.json()) as {
+      versions?: Array<{ name?: string; state?: string }>
+    }
+    const versions = data.versions ?? []
+    await Promise.all(
+      versions
+        .filter((version) => version.name && version.state !== 'DESTROYED')
+        .map((version) =>
+          fetch(`https://secretmanager.googleapis.com/v1/${version.name}:destroy`, {
+            method: 'POST',
+            headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+            body: JSON.stringify({}),
+          }).catch(() => null),
+        ),
+    )
   }
 }
 

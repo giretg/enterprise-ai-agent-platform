@@ -201,3 +201,12 @@ npm run deploy   # repó gyökeréből
 ```bash
 npm run test:acceptance
 ```
+
+## File editor E2E (Playwright, W7)
+
+Clerk nélkül (dev auth), stub storage:
+
+```bash
+FILE_EDITOR_STUB=true npm run test:e2e
+# első futás: PLAYWRIGHT_BROWSERS_PATH=./.playwright-browsers npx playwright install chromium
+```

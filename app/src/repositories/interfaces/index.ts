@@ -16,6 +16,10 @@ import type {
   RecipeVersion,
   SandboxApp,
   SandboxAppVersion,
+  ScheduledTask,
+  ScheduledTaskKind,
+  ScheduledTaskRecurrence,
+  ScheduledTaskStatus,
   Playbook,
   PlaybookVersion,
   ToolCall,
@@ -78,6 +82,45 @@ export interface TicketRepository {
   findTransitions(ticketId: string): Promise<TicketTransition[]>
   /** Transition statistics for the governance dashboard (§11: kontroll — jóváhagyott vs. automatikus lépések, visszadobási arány). */
   getTransitionStats(since?: Date): Promise<TransitionStats>
+}
+
+export interface ScheduledTaskRepository {
+  findMany(filter?: {
+    tenantId?: string | null
+    agentId?: string
+    limit?: number
+  }): Promise<ScheduledTask[]>
+  findDue(now: Date, limit: number): Promise<ScheduledTask[]>
+  create(data: {
+    tenantId: string | null
+    kind?: ScheduledTaskKind
+    title: string
+    agentId: string
+    createdById: string
+    payload: Prisma.InputJsonValue
+    runAsUserId?: string | null
+    runAsAuthorizedAt?: Date | null
+    runAsAuthorizedById?: string | null
+    nextRunAt: Date
+    recurrence?: ScheduledTaskRecurrence
+    maxRuns?: number | null
+  }): Promise<ScheduledTask>
+  claimDue(id: string, now: Date): Promise<ScheduledTask | null>
+  markMaterialized(
+    id: string,
+    ticketId: string,
+    data: {
+      status: ScheduledTaskStatus
+      runCount: number
+      lastRunAt: Date
+      materializedAt: Date
+      nextRunAt: Date
+    },
+  ): Promise<ScheduledTask | null>
+  revoke(id: string): Promise<ScheduledTask>
+  findById(id: string): Promise<ScheduledTask | null>
+  findStaleMaterializing(cutoff: Date, limit: number): Promise<ScheduledTask[]>
+  reclaimMaterializing(id: string): Promise<ScheduledTask | null>
 }
 
 export type TransitionStats = {
@@ -164,6 +207,11 @@ export interface DocumentRepository {
     id: string,
     data: Partial<Pick<Document, 'status' | 'extractedText' | 'connectorId'>>,
   ): Promise<Document>
+}
+
+export interface PlatformSettingsRepository {
+  get(key: string): Promise<unknown | null>
+  set(key: string, value: Prisma.InputJsonValue, updatedById?: string | null): Promise<void>
 }
 
 export interface AuditRepository {

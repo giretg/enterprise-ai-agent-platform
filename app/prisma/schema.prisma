@@ -153,6 +153,25 @@ enum TicketSource {
   system
 }
 
+enum ScheduledTaskStatus {
+  active
+  materializing
+  materialized
+  revoked
+}
+
+enum ScheduledTaskKind {
+  agent_task
+  wiki_question
+}
+
+enum ScheduledTaskRecurrence {
+  none
+  daily
+  weekly
+  monthly
+}
+
 enum AssigneeType {
   human
   agent
@@ -192,22 +211,25 @@ enum MessageRole {
 }
 
 model User {
-  id              String     @id @default(uuid()) @db.Uuid
-  externalAuthId  String     @unique @map("external_auth_id")
-  email           String
-  name            String
-  role            UserRole   @default(viewer)
-  status          UserStatus @default(active) @map("status")
-  tenantId        String?    @map("tenant_id") @db.Uuid
-  createdAt       DateTime   @default(now()) @map("created_at") @db.Timestamptz
+  id             String     @id @default(uuid()) @db.Uuid
+  externalAuthId String     @unique @map("external_auth_id")
+  email          String
+  name           String
+  role           UserRole   @default(viewer)
+  status         UserStatus @default(active) @map("status")
+  tenantId       String?    @map("tenant_id") @db.Uuid
+  createdAt      DateTime   @default(now()) @map("created_at") @db.Timestamptz
 
-  approvedMemoryVersions MemoryVersion[] @relation("MemoryApprovedBy")
-  approvedRecipeVersions RecipeVersion[] @relation("RecipeApprovedBy")
-  approvedPlaybookVersions PlaybookVersion[] @relation("PlaybookApprovedBy")
-  createdTickets         Ticket[]        @relation("TicketCreatedBy")
-  uploadedDocuments      Document[]      @relation("DocumentUploadedBy")
-  createdInvitations     Invitation[]    @relation("InvitationCreatedBy")
-  connectorGrants        ConnectorGrant[]
+  approvedMemoryVersions        MemoryVersion[]   @relation("MemoryApprovedBy")
+  approvedRecipeVersions        RecipeVersion[]   @relation("RecipeApprovedBy")
+  approvedPlaybookVersions      PlaybookVersion[] @relation("PlaybookApprovedBy")
+  createdTickets                Ticket[]          @relation("TicketCreatedBy")
+  uploadedDocuments             Document[]        @relation("DocumentUploadedBy")
+  createdInvitations            Invitation[]      @relation("InvitationCreatedBy")
+  connectorGrants               ConnectorGrant[]
+  scheduledTasksCreated         ScheduledTask[]   @relation("ScheduledTaskCreatedBy")
+  scheduledTasksRunAs           ScheduledTask[]   @relation("ScheduledTaskRunAsUser")
+  scheduledTasksRunAsAuthorized ScheduledTask[]   @relation("ScheduledTaskRunAsAuthorizedBy")
 
   @@map("users")
 }
@@ -229,33 +251,34 @@ model Invitation {
 }
 
 model Agent {
-  id              String      @id @default(uuid()) @db.Uuid
-  name            String
+  id                            String      @id @default(uuid()) @db.Uuid
+  name                          String
   // Szerep-instrukció ("mit csinál") és viselkedés-profil ("hogyan") külön
   // verziózva (§4.2/§5.3) — egymástól függetlenül frissíthető és visszakereshető.
-  roleInstruction String      @map("role_instruction")
-  behaviorProfile String      @map("behavior_profile")
-  modelConfig     Json        @map("model_config")
-  status          AgentStatus @default(draft)
-  currentVersion  Int         @default(1) @map("current_version")
-  currentRoleInstructionVersion Int @default(1) @map("current_role_instruction_version")
-  currentBehaviorProfileVersion Int @default(1) @map("current_behavior_profile_version")
-  role            AgentRole   @default(worker)
-  selfEvolutionProfile Json?  @map("self_evolution_profile")
-  memoryId        String      @unique @map("memory_id") @db.Uuid
-  createdAt       DateTime    @default(now()) @map("created_at") @db.Timestamptz
+  roleInstruction               String      @map("role_instruction")
+  behaviorProfile               String      @map("behavior_profile")
+  modelConfig                   Json        @map("model_config")
+  status                        AgentStatus @default(draft)
+  currentVersion                Int         @default(1) @map("current_version")
+  currentRoleInstructionVersion Int         @default(1) @map("current_role_instruction_version")
+  currentBehaviorProfileVersion Int         @default(1) @map("current_behavior_profile_version")
+  role                          AgentRole   @default(worker)
+  selfEvolutionProfile          Json?       @map("self_evolution_profile")
+  memoryId                      String      @unique @map("memory_id") @db.Uuid
+  createdAt                     DateTime    @default(now()) @map("created_at") @db.Timestamptz
 
-  memory       Memory          @relation(fields: [memoryId], references: [id])
-  versions     AgentVersion[]
-  apiKeys      AgentApiKey[]
-  agentResources AgentResource[]
-  tickets      Ticket[]
-  modelCalls   ModelCall[]
+  memory          Memory           @relation(fields: [memoryId], references: [id])
+  versions        AgentVersion[]
+  apiKeys         AgentApiKey[]
+  agentResources  AgentResource[]
+  tickets         Ticket[]
+  modelCalls      ModelCall[]
   agentConnectors AgentConnector[]
   capabilities    Capability[]
-  toolCalls        ToolCall[]
+  toolCalls       ToolCall[]
   writeGateTokens WriteGateToken[]
   evals           Eval[]
+  scheduledTasks  ScheduledTask[]
 
   @@map("agents")
 }
@@ -357,9 +380,9 @@ model Memory {
   id               String  @id @default(uuid()) @db.Uuid
   currentVersionId String? @map("current_version_id") @db.Uuid
 
-  agent          Agent?
-  versions       MemoryVersion[] @relation("MemoryVersions")
-  currentVersion MemoryVersion?  @relation("MemoryCurrentVersion", fields: [currentVersionId], references: [id])
+  agent           Agent?
+  versions        MemoryVersion[]  @relation("MemoryVersions")
+  currentVersion  MemoryVersion?   @relation("MemoryCurrentVersion", fields: [currentVersionId], references: [id])
   writeGateTokens WriteGateToken[]
 
   @@map("memories")
@@ -376,11 +399,11 @@ model MemoryVersion {
   approvedById     String?             @map("approved_by") @db.Uuid
   createdAt        DateTime            @default(now()) @map("created_at") @db.Timestamptz
 
-  memory         Memory         @relation("MemoryVersions", fields: [memoryId], references: [id], onDelete: Cascade)
-  approvedBy     User?          @relation("MemoryApprovedBy", fields: [approvedById], references: [id])
-  agentVersions  AgentVersion[]
-  currentForMemory Memory[]     @relation("MemoryCurrentVersion")
-  evalRuns       EvalRun[]
+  memory           Memory         @relation("MemoryVersions", fields: [memoryId], references: [id], onDelete: Cascade)
+  approvedBy       User?          @relation("MemoryApprovedBy", fields: [approvedById], references: [id])
+  agentVersions    AgentVersion[]
+  currentForMemory Memory[]       @relation("MemoryCurrentVersion")
+  evalRuns         EvalRun[]
 
   @@unique([memoryId, version])
   @@map("memory_versions")
@@ -440,7 +463,7 @@ model ConnectorGrant {
   userId          String               @map("user_id") @db.Uuid
   status          ConnectorGrantStatus @default(active)
   scopes          Json                 @default("[]")
-  tokenRef        String               @map("token_ref")
+  tokenRef        String               @unique @map("token_ref")
   accountLabel    String?              @map("account_label")
   grantedAt       DateTime             @default(now()) @map("granted_at") @db.Timestamptz
   expiresAt       DateTime?            @map("expires_at") @db.Timestamptz
@@ -467,9 +490,9 @@ model AgentConnector {
 }
 
 model Capability {
-  agentId   String  @map("agent_id") @db.Uuid
-  toolName  String  @map("tool_name")
-  allowed   Boolean @default(false)
+  agentId   String   @map("agent_id") @db.Uuid
+  toolName  String   @map("tool_name")
+  allowed   Boolean  @default(false)
   createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
 
   agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
@@ -555,20 +578,53 @@ model Ticket {
   createdAt        DateTime      @default(now()) @map("created_at") @db.Timestamptz
   updatedAt        DateTime      @updatedAt @map("updated_at") @db.Timestamptz
 
-  agent          Agent?    @relation(fields: [agentId], references: [id])
-  sourceDocument Document? @relation(fields: [sourceDocumentId], references: [id])
-  conversation   Conversation? @relation(fields: [conversationId], references: [id])
-  createdBy      User      @relation("TicketCreatedBy", fields: [createdById], references: [id])
-  modelCalls     ModelCall[]
-  toolCalls      ToolCall[]
-  writeGateTokens WriteGateToken[]
-  transitions    TicketTransition[]
-  trainingTicket  TrainingTicket?
-  sandboxAppVersions SandboxAppVersion[]
-  linkedMessages Message[]
+  agent                         Agent?              @relation(fields: [agentId], references: [id])
+  sourceDocument                Document?           @relation(fields: [sourceDocumentId], references: [id])
+  conversation                  Conversation?       @relation(fields: [conversationId], references: [id])
+  createdBy                     User                @relation("TicketCreatedBy", fields: [createdById], references: [id])
+  modelCalls                    ModelCall[]
+  toolCalls                     ToolCall[]
+  writeGateTokens               WriteGateToken[]
+  transitions                   TicketTransition[]
+  trainingTicket                TrainingTicket?
+  sandboxAppVersions            SandboxAppVersion[]
+  linkedMessages                Message[]
+  scheduledTaskMaterializations ScheduledTask[]
 
   @@index([source, state])
   @@map("tickets")
+}
+
+model ScheduledTask {
+  id                   String                  @id @default(uuid()) @db.Uuid
+  tenantId             String?                 @map("tenant_id") @db.Uuid
+  kind                 ScheduledTaskKind       @default(agent_task)
+  status               ScheduledTaskStatus     @default(active)
+  recurrence           ScheduledTaskRecurrence @default(none)
+  maxRuns              Int?                    @map("max_runs")
+  runCount             Int                     @default(0) @map("run_count")
+  title                String
+  agentId              String                  @map("agent_id") @db.Uuid
+  createdById          String                  @map("created_by") @db.Uuid
+  payload              Json                    @default("{}")
+  runAsUserId          String?                 @map("run_as_user_id") @db.Uuid
+  runAsAuthorizedAt    DateTime?               @map("run_as_authorized_at") @db.Timestamptz
+  runAsAuthorizedById  String?                 @map("run_as_authorized_by") @db.Uuid
+  nextRunAt            DateTime                @map("next_run_at") @db.Timestamptz
+  lastRunAt            DateTime?               @map("last_run_at") @db.Timestamptz
+  materializedTicketId String?                 @map("materialized_ticket_id") @db.Uuid
+  materializedAt       DateTime?               @map("materialized_at") @db.Timestamptz
+  createdAt            DateTime                @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt            DateTime                @updatedAt @map("updated_at") @db.Timestamptz
+
+  agent              Agent   @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  createdBy          User    @relation("ScheduledTaskCreatedBy", fields: [createdById], references: [id])
+  runAsUser          User?   @relation("ScheduledTaskRunAsUser", fields: [runAsUserId], references: [id])
+  runAsAuthorizedBy  User?   @relation("ScheduledTaskRunAsAuthorizedBy", fields: [runAsAuthorizedById], references: [id])
+  materializedTicket Ticket? @relation(fields: [materializedTicketId], references: [id])
+
+  @@index([status, nextRunAt])
+  @@map("scheduled_tasks")
 }
 
 model TicketTransition {
@@ -610,18 +666,18 @@ model AuditLog {
 }
 
 model ModelCall {
-  id               String   @id @default(uuid()) @db.Uuid
-  agentId          String   @map("agent_id") @db.Uuid
-  ticketId         String?  @map("ticket_id") @db.Uuid
-  conversationId   String?  @map("conversation_id") @db.Uuid
+  id               String          @id @default(uuid()) @db.Uuid
+  agentId          String          @map("agent_id") @db.Uuid
+  ticketId         String?         @map("ticket_id") @db.Uuid
+  conversationId   String?         @map("conversation_id") @db.Uuid
   provider         String
   model            String
-  promptTokens     Int      @map("prompt_tokens")
-  completionTokens Int      @map("completion_tokens")
-  costEstimate     Decimal  @map("cost_estimate") @db.Decimal(12, 6)
+  promptTokens     Int             @map("prompt_tokens")
+  completionTokens Int             @map("completion_tokens")
+  costEstimate     Decimal         @map("cost_estimate") @db.Decimal(12, 6)
   latencyMs        Int             @default(0) @map("latency_ms")
   status           ModelCallStatus @default(ok)
-  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz
+  createdAt        DateTime        @default(now()) @map("created_at") @db.Timestamptz
 
   agent        Agent         @relation(fields: [agentId], references: [id])
   ticket       Ticket?       @relation(fields: [ticketId], references: [id])
@@ -770,4 +826,15 @@ model EvalRun {
   memoryVersion MemoryVersion? @relation(fields: [memoryVersionId], references: [id])
 
   @@map("eval_runs")
+}
+
+/// Globális, runtime-állítható platform-beállítások (kulcs-érték). Pl. a dispatcher
+/// kill-switch és poll-intervallum, amit a felhős worker minden ciklusban újraolvas.
+model PlatformSetting {
+  key         String   @id
+  value       Json
+  updatedById String?  @map("updated_by_id") @db.Uuid
+  updatedAt   DateTime @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("platform_settings")
 }

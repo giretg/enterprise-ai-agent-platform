@@ -1,8 +1,12 @@
 import { randomBytes } from 'crypto'
 import { writeFile } from 'fs/promises'
 import path from 'path'
+import { config } from 'dotenv'
 import { PrismaClient } from '@prisma/client'
 import bcrypt from 'bcryptjs'
+
+config({ path: path.join(process.cwd(), '.env.local') })
+config({ path: path.join(process.cwd(), '.env') })
 
 const prisma = new PrismaClient()
 
@@ -216,7 +220,7 @@ async function ensureToolBrokerSeed(agentId: string) {
       config: {
         provider: 'google',
         oauth: {
-          scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+          scopes: ['https://www.googleapis.com/auth/gmail.modify'],
           clientId: process.env.GMAIL_OAUTH_CLIENT_ID ?? 'stub-client-id',
         },
       },
@@ -226,7 +230,7 @@ async function ensureToolBrokerSeed(agentId: string) {
       config: {
         provider: 'google',
         oauth: {
-          scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+          scopes: ['https://www.googleapis.com/auth/gmail.modify'],
           clientId: process.env.GMAIL_OAUTH_CLIENT_ID ?? 'stub-client-id',
         },
       },
@@ -240,6 +244,61 @@ async function ensureToolBrokerSeed(agentId: string) {
   })
 
   for (const toolName of ['gmail_search', 'gmail_get_message', 'gmail_create_draft', 'gmail_send']) {
+    await prisma.capability.upsert({
+      where: { agentId_toolName: { agentId, toolName } },
+      create: { agentId, toolName, allowed: true },
+      update: { allowed: true },
+    })
+  }
+
+  const workspace = await prisma.connector.upsert({
+    where: {
+      type_name: {
+        type: 'workspace',
+        name: 'Agent Workspace',
+      },
+    },
+    create: {
+      type: 'workspace',
+      name: 'Agent Workspace',
+      authMode: 'agent_owned',
+      scope: 'global',
+      secretAlias: 'platform/gcs-service-account',
+      version: 1,
+      config: {
+        bucket: process.env.WORKSPACE_BUCKET ?? 'platform-workspace-prod',
+        retentionDays: 30,
+      },
+    },
+    update: {
+      authMode: 'agent_owned',
+      config: {
+        bucket: process.env.WORKSPACE_BUCKET ?? 'platform-workspace-prod',
+        retentionDays: 30,
+      },
+    },
+  })
+
+  await prisma.agentConnector.upsert({
+    where: { agentId_connectorId: { agentId, connectorId: workspace.id } },
+    create: { agentId, connectorId: workspace.id, accessMode: 'write' },
+    update: { accessMode: 'write' },
+  })
+
+  for (const toolName of [
+    'file_read',
+    'file_write',
+    'file_edit',
+    'file_list',
+    'file_glob',
+    'file_search',
+    'file_delete',
+    'xlsx_read_sheet',
+    'xlsx_write_cells',
+    'xlsx_append_rows',
+    'docx_read',
+    'pdf_read',
+  ]) {
     await prisma.capability.upsert({
       where: { agentId_toolName: { agentId, toolName } },
       create: { agentId, toolName, allowed: true },

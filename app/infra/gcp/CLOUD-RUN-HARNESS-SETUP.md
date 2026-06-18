@@ -73,14 +73,27 @@ Majd **mindkét** `apphosting.yaml`-ba (repo root + `app/`) bekerült RUNTIME se
     availability: [RUNTIME]
 ```
 
-### 3.4 Gateway stub bekapcsolása az App Hostingon
-A valódi ChatGPT OAuth provider „S2 spike pending" → a Gateway 502-t ad. A stub kapcsoló:
+### 3.4 ChatGPT OAuth — beágyazott mediáció (S2 kész, 2026-06-18)
+
+A korai plumbing-proof ideiglenesen `CHATGPT_OAUTH_STUB=true`-t használt. **Jelenlegi éles állapot:** beágyazott (in-process) mediáció Secret Manager tokenekkel — sidecar URL **nem** kell.
+
 ```yaml
-  - variable: CHATGPT_OAUTH_STUB
+  - variable: CHATGPT_OAUTH_EMBEDDED
     value: "true"
     availability: [RUNTIME]
+  - variable: CHATGPT_OAUTH_TOKEN_SECRET
+    value: "projects/346824017066/secrets/CHATGPT_OAUTH_TOKENS"
+    availability: [RUNTIME]
+  - variable: CHATGPT_OAUTH_MODEL
+    value: "gpt-5.5"
+    availability: [RUNTIME]
+  - variable: GEMINI_API_KEY
+    secret: GEMINI_API_KEY
 ```
-Ezzel a Gateway `stubWikiAnswer`-t ad valódi OAuth nélkül — ez kell a plumbing-proofhoz.
+
+Token feltöltés: `npm run s2:secret-setup` (`~/.codex/auth.json` → Secret Manager, runtime SA accessor + version-adder). A harness a platform Gateway-jén (`/api/v1/gateway/v1`) keresztül ugyanezt a beágyazott utat használja — külön stub a Jobon nem kell.
+
+**Megjegyzés:** a korai proof naplója még stubot említ; az `apphosting.yaml` már nem tartalmaz `CHATGPT_OAUTH_STUB`-ot.
 
 ### 3.5 Konfig fájl + deploy
 `app/infra/gcp/harness-job.env` (gitignore-olt, titok!) kitöltve a fenti értékekkel, `HARNESS_EGRESS_ENFORCE=false`-szal (app-szintű egress — lásd 5.1), majd:
@@ -135,16 +148,23 @@ Production-höz **hálózati** deny-by-default kell:
 - Buktató: a platform `*.hosted.app` **publikus** URL — a hostname-alapú engedélyezés nehéz, IP-tartományt kell kezelni, vagy belső (VPC-n belüli) platform-elérést bevezetni.
 - Ha kész, a Jobon `HARNESS_EGRESS_ENFORCE=true` visszakapcsolható (az induló `assertEgressDenyByDefault` ekkor a hálózati zárást ellenőrzi az `example.com` próbával).
 
-### 5.2 Production dispatcher launch-auth
-A smoke-ot **lokálisan** futtattuk, `gcloud auth print-access-token`-nel. Production-ben valami felhőben futó dispatchernek kell indítania a Jobot:
-- Ha az App Hosting backend (vagy egy dedikált Cloud Run service / worker) indítja → annak a **service accountjának** `roles/run.developer` (illetve `run.jobs.runWithOverrides`) jog kell a Jobon.
-- A launcher metadata-token fallbackja (`cloud-run-auth.ts`) GCP-n belül működik; off-GCP-hez explicit bearer token kell.
+### 5.2 Production dispatcher launch-auth — **MEGOLDVA (kód+infra), lásd `CLOUD-RUN-DISPATCHER-SETUP.md`**
+A smoke-ot **lokálisan** futtattuk, `gcloud auth print-access-token`-nel. Production-ben egy felhőben futó dispatcher indítja a Jobot:
+- Dedikált Cloud Run **service** (`wiki-dispatcher`, `min-instances=1`, always-on CPU) a `dispatcher-worker`-ből — deploy: `npm run dispatcher:cloud-run-deploy`.
+- A service **runtime SA-jának** `roles/run.developer` (azaz `run.jobs.runWithOverrides`) jog kell a `wiki-harness` Jobon — a binding parancsát a deploy szkript kiírja.
+- A launcher metadata-token fallbackja (`cloud-run-auth.ts`) GCP-n belül a runtime SA tokenjét használja; off-GCP-hez explicit bearer token kell.
 
 ### 5.3 Titokkezelés a Jobon
 A callback tokent **futásidőben** a launcher injektálja `containerOverrides`-szal — a Job definíciójában nincs plain env-ben (jó). Production-ben érdemes a Jobra is **Secret Manager** referenciát kötni (`--set-secrets`), ne csak override-on át jöjjön. A token **rotációját** is tervezni kell (App Hosting secret új verzió + Job újraindítás).
 
-### 5.4 Stub visszavétele (S2 valódi OAuth)
-A `CHATGPT_OAUTH_STUB=true` **csak a proofhoz** kell. A valódi ChatGPT OAuth provider bekötésekor (S2 spike) ezt **vissza kell venni** az `apphosting.yaml`-ból, különben éles forgalom is stub választ kapna.
+### 5.4 OAuth token rotáció (S2 kész)
+
+A beágyazott provider a `CHATGPT_OAUTH_TOKENS` secretet olvassa; lejáratkor refresh + **write-back** (`SecretManagerTokenStore.addVersion`). Üzemeltetés:
+- Refresh token lejárata / fiók visszavonása → újra `npm run s2:secret-setup` (`codex login` után).
+- A runtime SA-nak `secretAccessor` **és** `secretVersionAdder` kell a secretre.
+- A `CHATGPT_OAUTH_STUB` csak lokális acceptance/dev-hez maradt (`.env` / automatikus stub); élesben **ne** állítsd be.
+
+**Gemini (D2 feletti cserepont):** a `GEMINI_API_KEY` App Hosting secretként be van kötve; agentenként `modelConfig.provider: "gemini"`. A Wiki Agent továbbra is `chatgpt-oauth`.
 
 ### 5.5 Image build pipeline
 - A Cloud Build manuális (`npm run harness:cloud-run-deploy`). Production-höz érdemes CI-be (GitHub Actions / Cloud Build trigger) kötni, verziózott image tagekkel és **immutábilis** digest-deployjal.

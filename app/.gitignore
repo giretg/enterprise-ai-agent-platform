@@ -12,6 +12,12 @@
 
 # testing
 /coverage
+/test-results
+/playwright-report
+/playwright/.cache
+/e2e/.fixture.json
+/e2e/e2e-upload.txt
+/.playwright-browsers
 
 # next.js
 /.next/
@@ -36,6 +42,7 @@ yarn-error.log*
 
 # GCP harness job config (contains secrets) — keep only the .example
 infra/gcp/harness-job.env
+infra/gcp/dispatcher-service.env
 
 # vercel
 .vercel
@@ -46,6 +53,7 @@ next-env.d.ts
 
 /uploads
 .seed-demo-api-key
+/.connector-grants
 
 # Generated measurement reports (§9.1/7 — npm run report:measurement)
 /reports

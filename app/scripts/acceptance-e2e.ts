@@ -2,8 +2,9 @@
  * MVP v1 acceptance — walking skeleton smoke checks
  * Futtatás: npm run test:acceptance (app/)
  */
+import { existsSync } from 'node:fs'
 import { readFile, mkdtemp, rm } from 'fs/promises'
-import { tmpdir } from 'os'
+import { homedir, tmpdir } from 'node:os'
 import { config } from 'dotenv'
 import { join, resolve } from 'path'
 import { randomUUID } from 'crypto'
@@ -29,6 +30,8 @@ import { prisma } from '../src/lib/db'
 import { buildRunAsAuthorization, isRunAsAuthorized, readRunAsUserId } from '../src/lib/run-as-payload'
 import { PLATFORM_TICKET_SOURCE_ENV } from '../src/lib/ticket-source'
 import { repositories } from '../src/repositories/postgres'
+import { WorkspaceStorage } from '../src/domain/file-editor/workspace-storage'
+import { createGrantTokenStore } from '../src/domain/connector-grant/grant-token-vault'
 import {
   buildMeasurementReport,
   renderMeasurementMarkdown,
@@ -38,7 +41,16 @@ import { assertRole } from '../src/auth/types'
 const SAMPLE_WIKI_QUESTION =
   'Mi az MVP célja, és milyen átjárókon kell átmennie az agent műveleteinek?'
 
+function isEmbeddedOAuthConfigured(): boolean {
+  if (process.env.CHATGPT_OAUTH_TOKEN_SECRET?.trim()) return true
+  if (process.env.CHATGPT_OAUTH_EMBEDDED !== 'true') return false
+  const authFile =
+    process.env.CODEX_AUTH_FILE?.trim() || join(homedir(), '.codex', 'auth.json')
+  return existsSync(authFile)
+}
+
 function ensureOAuthStubForAcceptance() {
+  if (isEmbeddedOAuthConfigured()) return
   const url = process.env.CHATGPT_OAUTH_PROVIDER_URL?.trim()
   const key = process.env.CHATGPT_OAUTH_PROVIDER_KEY?.trim()
   if (!url || !key) {
@@ -48,9 +60,19 @@ function ensureOAuthStubForAcceptance() {
 }
 
 function isOAuthConfiguredForAcceptance() {
+  if (isEmbeddedOAuthConfigured()) return true
   const url = process.env.CHATGPT_OAUTH_PROVIDER_URL?.trim()
   const key = process.env.CHATGPT_OAUTH_PROVIDER_KEY?.trim()
   return Boolean(url && key)
+}
+
+function oauthAcceptanceMode(): 'embedded' | 'sidecar' | 'stub' | 'none' {
+  if (process.env.CHATGPT_OAUTH_TOKEN_SECRET?.trim()) return 'embedded'
+  if (process.env.CHATGPT_OAUTH_EMBEDDED === 'true' && isEmbeddedOAuthConfigured()) return 'embedded'
+  const url = process.env.CHATGPT_OAUTH_PROVIDER_URL?.trim()
+  if (url && url !== 'stub' && !url.startsWith('stub://')) return 'sidecar'
+  if (url === 'stub' || url?.startsWith('stub://')) return 'stub'
+  return 'none'
 }
 
 type Result = { name: string; ok: boolean; skipped?: boolean; detail?: string }
@@ -112,11 +134,15 @@ async function scenario1_e2e(operatorId: string, approverId: string, agentId: st
   console.log('\n[1] Wiki kérdés flow smoke')
 
   if (!isOAuthConfiguredForAcceptance()) {
-    skip('Wiki kérdés flow', 'ChatGPT OAuth provider nincs beállítva (S2 spike pending)')
+    skip(
+      'Wiki kérdés flow',
+      'nincs OAuth (stub/sidecar/embedded) — állítsd be a CHATGPT_OAUTH_* env-et vagy a ~/.codex/auth.json-t',
+    )
     return null
   }
 
-  const usingStub = process.env.CHATGPT_OAUTH_PROVIDER_URL === 'stub'
+  const oauthMode = oauthAcceptanceMode()
+  const usingStub = oauthMode === 'stub'
 
   let ticketId: string
   try {
@@ -138,7 +164,7 @@ async function scenario1_e2e(operatorId: string, approverId: string, agentId: st
     if (wikiResult.answer.answer.trim().length > 0) {
       pass(
         'ChatGPT OAuth válasz (beszélgetésben)',
-        `confidence=${wikiResult.answer.confidence}${usingStub ? ' (stub)' : ''}`,
+        `confidence=${wikiResult.answer.confidence}${usingStub ? ' (stub)' : oauthMode === 'embedded' ? ' (embedded OAuth)' : ''}`,
       )
     } else {
       fail('ChatGPT OAuth válasz', 'üres answer')
@@ -1567,7 +1593,7 @@ async function scenario13_gooseCommandBuilder() {
     'run',
     '--no-session',
     '--max-turns',
-    '25',
+    '12',
     '--provider',
     'openai',
     '--model',
@@ -1752,9 +1778,11 @@ async function scenario17_mcpBridge(agentId: string, agentVersion: number) {
     tools.some((tool) => tool.name === 'kb_search') &&
     tools.some((tool) => tool.name === 'board_write') &&
     tools.some((tool) => tool.name === 'ticket_create') &&
-    tools.some((tool) => tool.name === 'agent_ask')
+    tools.some((tool) => tool.name === 'agent_ask') &&
+    tools.some((tool) => tool.name === 'file_read') &&
+    tools.some((tool) => tool.name === 'file_edit')
   ) {
-    pass('MCP bridge tools/list — kb_search + board_write + ticket_create + agent_ask')
+    pass('MCP bridge tools/list — kb_search + board_write + ticket_create + agent_ask + file_read + file_edit')
   } else {
     fail('MCP bridge tools/list', JSON.stringify(listed))
   }
@@ -2518,6 +2546,169 @@ async function scenario27_crMvp002(createdById: string, operatorId: string, agen
 
     await prisma.ticket.delete({ where: { id: scheduledTicket.id } })
 
+    const scheduledTask = await services.scheduledTasks.createOneShotAgentTask({
+      tenantId: null,
+      agentId,
+      title: 'Scheduled task resource run-as teszt',
+      content: 'CR-MVP-002 scheduled task resource materializálás',
+      createdById: operatorId,
+      nextRunAt: new Date(Date.now() - 1_000),
+      authorizeRunAs: true,
+    })
+    const materialized = await services.scheduledTasks.materializeDue(new Date(), 10)
+    const scheduledTaskResult = materialized.find(
+      (item) => item.scheduledTaskId === scheduledTask.id,
+    )
+    const materializedTicket =
+      scheduledTaskResult?.status === 'materialized'
+        ? await repositories.tickets.findById(scheduledTaskResult.ticketId)
+        : null
+    const materializedPayload =
+      materializedTicket &&
+      typeof materializedTicket.payload === 'object' &&
+      materializedTicket.payload !== null &&
+      !Array.isArray(materializedTicket.payload)
+        ? (materializedTicket.payload as Record<string, unknown>)
+        : null
+
+    if (
+      scheduledTaskResult?.status === 'materialized' &&
+      materializedTicket?.source === 'system' &&
+      materializedPayload?.scheduledTaskId === scheduledTask.id &&
+      isRunAsAuthorized(materializedPayload) &&
+      readRunAsUserId(materializedPayload) === operatorId
+    ) {
+      pass('Scheduled task erőforrás — explicit run-as materializált ticketre')
+    } else {
+      fail(
+        'Scheduled task erőforrás run-as',
+        JSON.stringify({ scheduledTaskResult, materializedPayload }),
+      )
+    }
+
+    await prisma.scheduledTask.delete({ where: { id: scheduledTask.id } })
+    if (materializedTicket) await prisma.ticket.delete({ where: { id: materializedTicket.id } })
+
+    const recurringTask = await services.scheduledTasks.createAgentTask({
+      tenantId: null,
+      agentId,
+      title: 'Recurring scheduled task teszt',
+      content: 'CR-MVP-002 recurring scheduled task materializálás',
+      createdById: operatorId,
+      nextRunAt: new Date(Date.now() - 1_000),
+      recurrence: 'daily',
+      maxRuns: 2,
+      authorizeRunAs: true,
+    })
+    const recurringFirstBatch = await services.scheduledTasks.materializeDue(new Date(), 10)
+    const recurringFirst = recurringFirstBatch.find(
+      (item) => item.scheduledTaskId === recurringTask.id,
+    )
+    const recurringAfterFirst = await prisma.scheduledTask.findUnique({
+      where: { id: recurringTask.id },
+    })
+    const recurringSecondBatch =
+      recurringAfterFirst && recurringFirst?.status === 'materialized'
+        ? await services.scheduledTasks.materializeDue(
+            new Date(recurringAfterFirst.nextRunAt.getTime() + 1_000),
+            10,
+          )
+        : []
+    const recurringSecond = recurringSecondBatch.find(
+      (item) => item.scheduledTaskId === recurringTask.id,
+    )
+    const recurringAfterSecond = await prisma.scheduledTask.findUnique({
+      where: { id: recurringTask.id },
+    })
+
+    if (
+      recurringFirst?.status === 'materialized' &&
+      recurringAfterFirst?.status === 'active' &&
+      recurringAfterFirst.runCount === 1 &&
+      recurringAfterFirst.nextRunAt > new Date() &&
+      recurringSecond?.status === 'materialized' &&
+      recurringAfterSecond?.status === 'materialized' &&
+      recurringAfterSecond.runCount === 2
+    ) {
+      pass('Scheduled task erőforrás — recurring materializálás és maxRuns lezárás')
+    } else {
+      fail(
+        'Scheduled task recurring',
+        JSON.stringify({
+          recurringFirst,
+          recurringAfterFirst,
+          recurringSecond,
+          recurringAfterSecond,
+        }),
+      )
+    }
+
+    await prisma.scheduledTask.delete({ where: { id: recurringTask.id } })
+    if (recurringFirst?.status === 'materialized') {
+      await prisma.ticket.delete({ where: { id: recurringFirst.ticketId } })
+    }
+    if (recurringSecond?.status === 'materialized') {
+      await prisma.ticket.delete({ where: { id: recurringSecond.ticketId } })
+    }
+
+    const { addRecurrence } = await import('../src/domain/scheduled-task/scheduled-task-service')
+    const jan31 = new Date('2026-01-31T12:00:00Z')
+    const febFromJan31 = addRecurrence(jan31, 'monthly')
+    const marFromJan31 = febFromJan31 ? addRecurrence(febFromJan31, 'monthly') : null
+    if (
+      febFromJan31?.getUTCFullYear() === 2026 &&
+      febFromJan31.getUTCMonth() === 1 &&
+      febFromJan31.getUTCDate() === 28 &&
+      marFromJan31?.getUTCMonth() === 2 &&
+      marFromJan31.getUTCDate() === 28
+    ) {
+      pass('Scheduled task — monthly edge case (jan 31 → feb 28 → mar 28)')
+    } else {
+      fail(
+        'Scheduled task monthly edge case',
+        JSON.stringify({
+          febFromJan31: febFromJan31?.toISOString(),
+          marFromJan31: marFromJan31?.toISOString(),
+        }),
+      )
+    }
+
+    const staleMaterializingTask = await services.scheduledTasks.createOneShotAgentTask({
+      tenantId: null,
+      agentId,
+      title: 'Stale materializing reclaim teszt',
+      content: 'materializing reclaim',
+      createdById: operatorId,
+      nextRunAt: new Date(Date.now() + 3600_000),
+      authorizeRunAs: false,
+    })
+    await prisma.scheduledTask.update({
+      where: { id: staleMaterializingTask.id },
+      data: {
+        status: 'materializing',
+        updatedAt: new Date(Date.now() - 600_000),
+      },
+    })
+    const reclaimedMaterializing = await services.scheduledTasks.reclaimStaleMaterializations(
+      300_000,
+      10,
+    )
+    const reclaimedRow = reclaimedMaterializing.find(
+      (row) => row.scheduledTaskId === staleMaterializingTask.id,
+    )
+    const reclaimedTask = await prisma.scheduledTask.findUnique({
+      where: { id: staleMaterializingTask.id },
+    })
+    if (reclaimedRow?.status === 'reclaimed' && reclaimedTask?.status === 'active') {
+      pass('Scheduled task — stale materializing reclaim')
+    } else {
+      fail(
+        'Scheduled task stale materializing reclaim',
+        JSON.stringify({ reclaimedRow, reclaimedTask }),
+      )
+    }
+    await prisma.scheduledTask.delete({ where: { id: staleMaterializingTask.id } })
+
     const lowConfidenceTicket = await repositories.tickets.create({
       type: 'interaction',
       title: 'Playbook gate probe',
@@ -2859,13 +3050,13 @@ async function scenario14_dispatchNotify(operatorId: string, agentId: string) {
 }
 
 /** Per-user connector (F2) — Gmail grant + broker */
-async function setupGmailGrant(userId: string, connectorId: string) {
+async function setupGmailGrant(userId: string, connectorId: string, tenantId: string | null = null) {
   const { createOAuthState } = await import('../src/lib/crypto/oauth-state')
   const connector = await prisma.connector.findUniqueOrThrow({ where: { id: connectorId } })
   const { state } = createOAuthState({
     userId,
     connectorId,
-    tenantId: null,
+    tenantId,
   })
   await services.connectorGrants.completeOAuthCallback({
     code: 'stub-code',
@@ -2886,6 +3077,479 @@ function payloadContainsTokenLeak(value: unknown): boolean {
   )
 }
 
+const FILE_EDITOR_TOOLS = [
+  'file_read',
+  'file_write',
+  'file_edit',
+  'file_list',
+  'file_glob',
+  'file_search',
+  'file_delete',
+  'xlsx_read_sheet',
+  'xlsx_write_cells',
+  'xlsx_append_rows',
+  'docx_read',
+  'pdf_read',
+] as const
+
+async function ensureWorkspaceForAgent(agentId: string) {
+  const workspace = await prisma.connector.upsert({
+    where: {
+      type_name: {
+        type: 'workspace',
+        name: 'Agent Workspace',
+      },
+    },
+    create: {
+      type: 'workspace',
+      name: 'Agent Workspace',
+      authMode: 'agent_owned',
+      scope: 'global',
+      secretAlias: 'platform/gcs-service-account',
+      version: 1,
+      config: {
+        bucket: process.env.WORKSPACE_BUCKET ?? 'platform-workspace-prod',
+        retentionDays: 30,
+      },
+    },
+    update: {
+      authMode: 'agent_owned',
+      config: {
+        bucket: process.env.WORKSPACE_BUCKET ?? 'platform-workspace-prod',
+        retentionDays: 30,
+      },
+    },
+  })
+
+  await prisma.agentConnector.upsert({
+    where: { agentId_connectorId: { agentId, connectorId: workspace.id } },
+    create: { agentId, connectorId: workspace.id, accessMode: 'write' },
+    update: { accessMode: 'write' },
+  })
+
+  for (const toolName of FILE_EDITOR_TOOLS) {
+    await prisma.capability.upsert({
+      where: { agentId_toolName: { agentId, toolName } },
+      create: { agentId, toolName, allowed: true },
+      update: { allowed: true },
+    })
+  }
+
+  return workspace
+}
+
+async function createTestXlsxBuffer(): Promise<Buffer> {
+  const mod = await import('exceljs')
+  const Workbook = mod.default?.Workbook ?? mod.Workbook
+  const workbook = new Workbook()
+  const sheet = workbook.addWorksheet('Sheet1')
+  sheet.addRow(['Name', 'Amount'])
+  sheet.addRow(['Test', 100])
+  const buf = await workbook.xlsx.writeBuffer()
+  return Buffer.from(buf as ArrayBuffer)
+}
+
+function isToolError(e: unknown, codeOrFragment: string): boolean {
+  const msg = e instanceof Error ? e.message : String(e)
+  return msg.includes(codeOrFragment)
+}
+
+async function scenarioFileEditor(operatorId: string, agentId: string, agentVersion: number) {
+  console.log('\n[F3] Agent File Editor')
+
+  process.env.FILE_EDITOR_STUB = 'true'
+  await ensureWorkspaceForAgent(agentId)
+  const storage = new WorkspaceStorage(process.env.WORKSPACE_BUCKET ?? 'platform-workspace-prod')
+
+  const ticket = await repositories.tickets.create({
+    type: 'interaction',
+    title: 'Acceptance: file editor',
+    state: 'in_progress',
+    assigneeType: 'agent',
+    assigneeId: agentId,
+    agentId,
+    payload: { task: 'file editor smoke' },
+    sourceDocumentId: null,
+    executeAfter: null,
+    dueBy: null,
+    createdById: operatorId,
+  })
+
+  const otherTicket = await repositories.tickets.create({
+    type: 'interaction',
+    title: 'Acceptance: file editor isolation',
+    state: 'in_progress',
+    assigneeType: 'agent',
+    assigneeId: agentId,
+    agentId,
+    payload: { task: 'isolation probe' },
+    sourceDocumentId: null,
+    executeAfter: null,
+    dueBy: null,
+    createdById: operatorId,
+  })
+
+  // W7 — UI/API feltöltés szimuláció (POST /workspace/files ugyanazt a storage.write-t hívja)
+  await storage.write(
+    'global',
+    ticket.id,
+    'uploads/ui-upload.txt',
+    Buffer.from('Uploaded via UI/API\nSecond line'),
+  )
+  const uiUploadRead = await services.toolBroker.invoke({
+    agentId,
+    agentVersion,
+    ticketId: ticket.id,
+    tool: 'file_read',
+    args: { path: 'uploads/ui-upload.txt' },
+  })
+  if (
+    !uiUploadRead.denied &&
+    'content' in uiUploadRead.result &&
+    uiUploadRead.result.content.includes('Uploaded via UI/API')
+  ) {
+    pass('W7 — UI/API feltöltés után az agent file_read-del eléri a fájlt')
+  } else {
+    fail('W7 UI upload → file_read', uiUploadRead.denied ? uiUploadRead.reason : JSON.stringify(uiUploadRead.result))
+  }
+
+  const write = await services.toolBroker.invoke({
+    agentId,
+    agentVersion,
+    ticketId: ticket.id,
+    tool: 'file_write',
+    args: { path: 'notes/hello.txt', content: 'Hello World\nLine two' },
+  })
+  if (!write.denied && 'bytesWritten' in write.result && write.result.path === 'notes/hello.txt') {
+    pass('file_write — fájl létrehozva a workspace-ben')
+  } else {
+    fail('file_write', write.denied ? write.reason : JSON.stringify(write.result))
+  }
+
+  const read = await services.toolBroker.invoke({
+    agentId,
+    agentVersion,
+    ticketId: ticket.id,
+    tool: 'file_read',
+    args: { path: 'notes/hello.txt' },
+  })
+  if (
+    !read.denied &&
+    'content' in read.result &&
+    read.result.content.includes('Hello World') &&
+    read.result.totalLines === 2
+  ) {
+    pass('file_read — tartalom visszaolvasva sor-számozással')
+  } else {
+    fail('file_read', read.denied ? read.reason : JSON.stringify(read.result))
+  }
+
+  const edit = await services.toolBroker.invoke({
+    agentId,
+    agentVersion,
+    ticketId: ticket.id,
+    tool: 'file_edit',
+    args: { path: 'notes/hello.txt', old_string: 'Hello World', new_string: 'Hi World' },
+  })
+  if (!edit.denied && 'replacements' in edit.result && edit.result.replacements === 1) {
+    pass('file_edit — pontos string csere')
+  } else {
+    fail('file_edit', edit.denied ? edit.reason : JSON.stringify(edit.result))
+  }
+
+  const list = await services.toolBroker.invoke({
+    agentId,
+    agentVersion,
+    ticketId: ticket.id,
+    tool: 'file_list',
+    args: { path: 'notes' },
+  })
+  if (!list.denied) {
+    const listResult = list.result as { entries: Array<{ path: string; type: string }> }
+    if (listResult.entries.some((e) => e.path === 'notes/hello.txt' && e.type === 'file')) {
+      pass('file_list — a módosított fájl listázva')
+    } else {
+      fail('file_list', JSON.stringify(listResult))
+    }
+  } else {
+    fail('file_list', list.reason)
+  }
+
+  const glob = await services.toolBroker.invoke({
+    agentId,
+    agentVersion,
+    ticketId: ticket.id,
+    tool: 'file_glob',
+    args: { pattern: '**/*.txt' },
+  })
+  if (!glob.denied && 'paths' in glob.result && glob.result.paths.includes('notes/hello.txt')) {
+    pass('file_glob — txt fájlok megtalálva')
+  } else {
+    fail('file_glob', glob.denied ? glob.reason : JSON.stringify(glob.result))
+  }
+
+  const search = await services.toolBroker.invoke({
+    agentId,
+    agentVersion,
+    ticketId: ticket.id,
+    tool: 'file_search',
+    args: { pattern: 'Hi World', path: 'notes' },
+  })
+  if (!search.denied) {
+    const searchResult = search.result as { matches: Array<{ path: string }> }
+    if (searchResult.matches.some((m) => m.path === 'notes/hello.txt')) {
+      pass('file_search — regex találat a workspace-ben')
+    } else {
+      fail('file_search', JSON.stringify(searchResult))
+    }
+  } else {
+    fail('file_search', search.reason)
+  }
+
+  try {
+    await services.toolBroker.invoke({
+      agentId,
+      agentVersion,
+      ticketId: ticket.id,
+      tool: 'file_read',
+      args: { path: '../secret.txt' },
+    })
+    fail('PATH_TRAVERSAL', 'a ../ útvonal nem lett elutasítva')
+  } catch (e) {
+    if (isToolError(e, 'PATH_TRAVERSAL') || isToolError(e, 'Path traversal')) {
+      pass('PATH_TRAVERSAL — ../ elutasítva')
+    } else {
+      fail('PATH_TRAVERSAL', e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  try {
+    await services.toolBroker.invoke({
+      agentId,
+      agentVersion,
+      ticketId: otherTicket.id,
+      tool: 'file_read',
+      args: { path: 'notes/hello.txt' },
+    })
+    fail('ticket isolation', 'más ticket workspace-éből olvasott')
+  } catch (e) {
+    if (isToolError(e, 'FILE_NOT_FOUND') || isToolError(e, 'File not found')) {
+      pass('Ticket izoláció — más ticket workspace üres')
+    } else {
+      fail('ticket isolation', e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  await services.toolBroker.invoke({
+    agentId,
+    agentVersion,
+    ticketId: ticket.id,
+    tool: 'file_write',
+    args: { path: 'dup.txt', content: 'repeat\nrepeat\nend' },
+  })
+  try {
+    await services.toolBroker.invoke({
+      agentId,
+      agentVersion,
+      ticketId: ticket.id,
+      tool: 'file_edit',
+      args: { path: 'dup.txt', old_string: 'repeat', new_string: 'once' },
+    })
+    fail('AMBIGUOUS_MATCH', 'kétértelmű csere nem lett elutasítva')
+  } catch (e) {
+    if (isToolError(e, 'AMBIGUOUS_MATCH') || isToolError(e, 'appears 2 times')) {
+      pass('file_edit — AMBIGUOUS_MATCH kétértelmű csere esetén')
+    } else {
+      fail('AMBIGUOUS_MATCH', e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const xlsxBuf = await createTestXlsxBuffer()
+  await storage.write('global', ticket.id, 'data/sample.xlsx', xlsxBuf)
+
+  const xlsxRead = await services.toolBroker.invoke({
+    agentId,
+    agentVersion,
+    ticketId: ticket.id,
+    tool: 'xlsx_read_sheet',
+    args: { path: 'data/sample.xlsx' },
+  })
+  if (!xlsxRead.denied) {
+    const xlsxResult = xlsxRead.result as { rows: Array<Record<string, string | number | boolean | null>> }
+    if (xlsxResult.rows.some((r) => r.Name === 'Test' && r.Amount === 100)) {
+      pass('xlsx_read_sheet — sorok JSON-ként')
+    } else {
+      fail('xlsx_read_sheet', JSON.stringify(xlsxResult))
+    }
+  } else {
+    fail('xlsx_read_sheet', xlsxRead.reason)
+  }
+
+  const xlsxWrite = await services.toolBroker.invoke({
+    agentId,
+    agentVersion,
+    ticketId: ticket.id,
+    tool: 'xlsx_write_cells',
+    args: {
+      path: 'data/sample.xlsx',
+      changes: [{ cell: 'B2', value: 200 }],
+    },
+  })
+  if (!xlsxWrite.denied && 'cellsUpdated' in xlsxWrite.result && xlsxWrite.result.cellsUpdated === 1) {
+    pass('xlsx_write_cells — cella frissítve')
+  } else {
+    fail('xlsx_write_cells', xlsxWrite.denied ? xlsxWrite.reason : JSON.stringify(xlsxWrite.result))
+  }
+
+  const xlsxVerify = await services.toolBroker.invoke({
+    agentId,
+    agentVersion,
+    ticketId: ticket.id,
+    tool: 'xlsx_read_sheet',
+    args: { path: 'data/sample.xlsx' },
+  })
+  if (!xlsxVerify.denied) {
+    const verifyResult = xlsxVerify.result as { rows: Array<Record<string, string | number | boolean | null>> }
+    if (verifyResult.rows.some((r) => r.Amount === 200)) {
+      pass('xlsx round-trip — a módosított érték visszaolvasva')
+    } else {
+      fail('xlsx round-trip', JSON.stringify(verifyResult))
+    }
+  } else {
+    fail('xlsx round-trip', xlsxVerify.reason)
+  }
+
+  const xlsxAppend = await services.toolBroker.invoke({
+    agentId,
+    agentVersion,
+    ticketId: ticket.id,
+    tool: 'xlsx_append_rows',
+    args: {
+      path: 'data/sample.xlsx',
+      rows: [{ Name: 'Added', Amount: 300 }],
+    },
+  })
+  if (
+    !xlsxAppend.denied &&
+    'rowsAppended' in xlsxAppend.result &&
+    xlsxAppend.result.rowsAppended === 1
+  ) {
+    pass('xlsx_append_rows — sor hozzáadva')
+  } else {
+    fail('xlsx_append_rows', xlsxAppend.denied ? xlsxAppend.reason : JSON.stringify(xlsxAppend.result))
+  }
+
+  const fixturesDir = resolve(process.cwd(), 'scripts/fixtures/file-editor')
+  const docxBuf = await readFile(join(fixturesDir, 'sample.docx'))
+  const pdfBuf = await readFile(join(fixturesDir, 'sample.pdf'))
+  await storage.write('global', ticket.id, 'docs/sample.docx', docxBuf)
+  await storage.write('global', ticket.id, 'docs/sample.pdf', pdfBuf)
+
+  const docxRead = await services.toolBroker.invoke({
+    agentId,
+    agentVersion,
+    ticketId: ticket.id,
+    tool: 'docx_read',
+    args: { path: 'docs/sample.docx' },
+  })
+  if (!docxRead.denied) {
+    const docxResult = docxRead.result as { text: string }
+    if (docxResult.text.includes('Hello Docx')) {
+      pass('docx_read — szöveg kinyerve a mintafájlból')
+    } else {
+      fail('docx_read', JSON.stringify(docxResult))
+    }
+  } else {
+    fail('docx_read', docxRead.reason)
+  }
+
+  const pdfRead = await services.toolBroker.invoke({
+    agentId,
+    agentVersion,
+    ticketId: ticket.id,
+    tool: 'pdf_read',
+    args: { path: 'docs/sample.pdf' },
+  })
+  if (!pdfRead.denied) {
+    const pdfResult = pdfRead.result as { text: string; numPages: number }
+    const normalized = pdfResult.text.replace(/\s+/g, ' ').trim()
+    if (
+      /dummy/i.test(normalized) &&
+      /pdf/i.test(normalized) &&
+      /file/i.test(normalized) &&
+      pdfResult.numPages >= 1
+    ) {
+      pass('pdf_read — szöveg kinyerve a mintafájlból')
+    } else {
+      fail('pdf_read', JSON.stringify(pdfResult))
+    }
+  } else {
+    fail('pdf_read', pdfRead.reason)
+  }
+
+  const fileDelete = await services.toolBroker.invoke({
+    agentId,
+    agentVersion,
+    ticketId: ticket.id,
+    tool: 'file_delete',
+    args: { path: 'dup.txt' },
+  })
+  if (!fileDelete.denied && 'deleted' in fileDelete.result && fileDelete.result.deleted) {
+    pass('file_delete — fájl törölve a workspace-ből')
+  } else {
+    fail('file_delete', fileDelete.denied ? fileDelete.reason : JSON.stringify(fileDelete.result))
+  }
+
+  const signedUrl = await storage.getSignedDownloadUrl('global', ticket.id, 'notes/hello.txt')
+  if (signedUrl.url.includes('notes%2Fhello.txt') || signedUrl.url.includes('notes/hello.txt')) {
+    pass('Pre-signed letöltés — URL generálva (stub/API)')
+  } else {
+    fail('Pre-signed letöltés', JSON.stringify(signedUrl))
+  }
+
+  try {
+    process.env.WORKSPACE_MAX_BYTES = '1024'
+    await storage.write('global', ticket.id, 'quota-a.bin', Buffer.alloc(512))
+    await storage.write('global', ticket.id, 'quota-b.bin', Buffer.alloc(600))
+    fail('WORKSPACE_TOO_LARGE', '500 MB workspace limit nem lett érvényesítve')
+  } catch (e) {
+    if (isToolError(e, 'WORKSPACE_TOO_LARGE') || isToolError(e, '500 MB')) {
+      pass('WORKSPACE_TOO_LARGE — workspace kvóta érvényesítve')
+    } else {
+      fail('WORKSPACE_TOO_LARGE', e instanceof Error ? e.message : String(e))
+    }
+  } finally {
+    delete process.env.WORKSPACE_MAX_BYTES
+  }
+
+  try {
+    const oversized = Buffer.alloc(50 * 1024 * 1024 + 1)
+    await storage.write('global', ticket.id, 'huge.bin', oversized)
+    fail('FILE_TOO_LARGE', '51 MB írás nem lett elutasítva')
+  } catch (e) {
+    if (isToolError(e, 'FILE_TOO_LARGE') || isToolError(e, '50 MB')) {
+      pass('FILE_TOO_LARGE — 50 MB feletti írás elutasítva')
+    } else {
+      fail('FILE_TOO_LARGE', e instanceof Error ? e.message : String(e))
+    }
+  }
+
+  const fileAudit = await prisma.auditLog.findFirst({
+    where: { action: 'tool.call', inputRef: 'file_write', targetId: ticket.id },
+    orderBy: { createdAt: 'desc' },
+  })
+  if (fileAudit && !payloadContainsTokenLeak(fileAudit.metadata)) {
+    const meta = fileAudit.metadata as { argsMeta?: { contentLength?: number }; resultMeta?: unknown }
+    if (meta.argsMeta?.contentLength && meta.argsMeta.contentLength > 0) {
+      pass('Audit — file_write metaadat (path + méret, tartalom nélkül)')
+    } else {
+      fail('file_write audit meta', JSON.stringify(fileAudit.metadata))
+    }
+  } else {
+    fail('file_write audit', fileAudit ? 'tartalom szivárgás gyanú' : 'hiányzó audit bejegyzés')
+  }
+}
+
 async function scenarioPerUserConnector(operatorId: string, agentId: string, agentVersion: number) {
   console.log('\n[PUC] Per-user Gmail connector (F2)')
 
@@ -2896,6 +3560,22 @@ async function scenarioPerUserConnector(operatorId: string, agentId: string, age
   if (!gmailConnector) {
     fail('PUC gmail connector', 'run db:seed')
     return
+  }
+
+  try {
+    services.connectorGrants.buildAuthorizationUrl({
+      connector: gmailConnector,
+      userId: operatorId,
+      tenantId: null,
+      requestedScopes: ['https://www.googleapis.com/auth/gmail.send'],
+    })
+    fail('OAuth scope allowlist', 'nem konfigurált gmail.send scope engedélyezve lett')
+  } catch (e) {
+    if (e instanceof Error && e.message.includes('OAuth scope not configured')) {
+      pass('OAuth scope allowlist — nem konfigurált scope elutasítva')
+    } else {
+      fail('OAuth scope allowlist', e instanceof Error ? e.message : String(e))
+    }
   }
 
   const approver = await getUser('approver')
@@ -2961,6 +3641,115 @@ async function scenarioPerUserConnector(operatorId: string, agentId: string, age
     fail('Gmail search', JSON.stringify(search))
   }
 
+  const tenantUser = await prisma.user.create({
+    data: {
+      externalAuthId: `acceptance-puc-tenant-${randomUUID()}`,
+      email: `acceptance-puc-tenant-${Date.now()}@example.com`,
+      name: 'Acceptance PUC tenant user',
+      role: 'operator',
+      status: 'active',
+      tenantId: randomUUID(),
+    },
+  })
+  try {
+    await setupGmailGrant(tenantUser.id, gmailConnector.id, tenantUser.tenantId)
+    const tenantSearch = await services.toolBroker.invoke({
+      agentId,
+      agentVersion,
+      tool: 'gmail_search',
+      args: { query: 'MVP', maxResults: 1 },
+      actingUserId: tenantUser.id,
+    })
+    if (!tenantSearch.denied && 'messages' in (tenantSearch.result as { messages?: unknown[] })) {
+      pass('Tenant-scope grant — acting user tenant alapján feloldva')
+    } else {
+      fail('Tenant-scope grant', JSON.stringify(tenantSearch))
+    }
+
+    const ownTenantConnector = await prisma.connector.create({
+      data: {
+        type: 'gmail',
+        name: `Acceptance PUC own tenant ${randomUUID()}`,
+        authMode: 'user_delegated',
+        scope: 'single',
+        tenantId: tenantUser.tenantId,
+        secretAlias: 'secret://gmail/oauth-client',
+        config: {
+          provider: 'google',
+          oauth: {
+            scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+            clientId: 'stub-client-id',
+          },
+        },
+      },
+    })
+    const otherTenantConnector = await prisma.connector.create({
+      data: {
+        type: 'gmail',
+        name: `Acceptance PUC other tenant ${randomUUID()}`,
+        authMode: 'user_delegated',
+        scope: 'single',
+        tenantId: randomUUID(),
+        secretAlias: 'secret://gmail/oauth-client',
+        config: {
+          provider: 'google',
+          oauth: {
+            scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+            clientId: 'stub-client-id',
+          },
+        },
+      },
+    })
+    const previousDevAuth = {
+      id: process.env.DEV_AUTH_USER_ID,
+      email: process.env.DEV_AUTH_EMAIL,
+      name: process.env.DEV_AUTH_NAME,
+      role: process.env.DEV_AUTH_ROLE,
+    }
+    try {
+      process.env.DEV_AUTH_USER_ID = tenantUser.externalAuthId
+      process.env.DEV_AUTH_EMAIL = tenantUser.email
+      process.env.DEV_AUTH_NAME = tenantUser.name
+      process.env.DEV_AUTH_ROLE = tenantUser.role
+      const { listUserDelegatedConnectors } = await import('../src/app/actions/connector-grants')
+      const listed = await listUserDelegatedConnectors()
+      if (listed.success) {
+        const ids = new Set(listed.data.map((connector) => connector.id))
+        if (
+          ids.has(gmailConnector.id) &&
+          ids.has(ownTenantConnector.id) &&
+          !ids.has(otherTenantConnector.id)
+        ) {
+          pass('Connector lista — tenant-metaadat izoláció')
+        } else {
+          fail(
+            'Connector lista tenant izoláció',
+            JSON.stringify({
+              hasGlobal: ids.has(gmailConnector.id),
+              hasOwn: ids.has(ownTenantConnector.id),
+              hasOther: ids.has(otherTenantConnector.id),
+            }),
+          )
+        }
+      } else {
+        fail('Connector lista tenant izoláció', listed.error)
+      }
+    } finally {
+      if (previousDevAuth.id === undefined) delete process.env.DEV_AUTH_USER_ID
+      else process.env.DEV_AUTH_USER_ID = previousDevAuth.id
+      if (previousDevAuth.email === undefined) delete process.env.DEV_AUTH_EMAIL
+      else process.env.DEV_AUTH_EMAIL = previousDevAuth.email
+      if (previousDevAuth.name === undefined) delete process.env.DEV_AUTH_NAME
+      else process.env.DEV_AUTH_NAME = previousDevAuth.name
+      if (previousDevAuth.role === undefined) delete process.env.DEV_AUTH_ROLE
+      else process.env.DEV_AUTH_ROLE = previousDevAuth.role
+      await prisma.connector.delete({ where: { id: ownTenantConnector.id } }).catch(() => {})
+      await prisma.connector.delete({ where: { id: otherTenantConnector.id } }).catch(() => {})
+    }
+  } finally {
+    await prisma.user.delete({ where: { id: tenantUser.id } }).catch(() => {})
+  }
+
   const recentToolCalls = await prisma.toolCall.findMany({
     where: { agentId, toolName: { startsWith: 'gmail_' } },
     orderBy: { createdAt: 'desc' },
@@ -2978,6 +3767,82 @@ async function scenarioPerUserConnector(operatorId: string, agentId: string, age
   if (!tokenLeaked) pass('G3 — token nem szivárog auditban / tool call meta-ban')
   else fail('G3 token leak', 'stub-access vagy Bearer token található')
 
+  const providerAuthGrant = await prisma.connectorGrant.findFirst({
+    where: { userId: operatorId, connectorId: gmailConnector.id, status: 'active', tenantId: null },
+  })
+  if (providerAuthGrant) {
+    const store = createGrantTokenStore(providerAuthGrant.tokenRef)
+    await store.save({
+      accessToken: 'provider-revoked-access',
+      refreshToken: 'provider-revoked-refresh',
+      expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+      accountEmail: 'stub-user@example.com',
+      scopes: ['https://www.googleapis.com/auth/gmail.readonly'],
+    })
+    const originalFetch = globalThis.fetch
+    process.env.GMAIL_API_STUB = 'false'
+    globalThis.fetch = (async () => new Response('revoked', { status: 401 })) as typeof fetch
+    try {
+      const expired = await services.toolBroker.invoke({
+        agentId,
+        agentVersion,
+        tool: 'gmail_search',
+        args: { query: 'MVP', maxResults: 1 },
+        actingUserId: operatorId,
+      })
+      if (expired.denied && expired.reason === 'connector_grant_expired') {
+        pass('G4 — provider 401/403 után grant expire + DENY')
+      } else {
+        fail('G4 provider auth expire', JSON.stringify(expired))
+      }
+    } finally {
+      globalThis.fetch = originalFetch
+      process.env.GMAIL_API_STUB = 'true'
+    }
+    const expireAudit = await prisma.auditLog.findFirst({
+      where: { action: 'connector.grant.expire', targetId: providerAuthGrant.id },
+      orderBy: { createdAt: 'desc' },
+    })
+    if (expireAudit) pass('G4 — provider auth expire audit connector.grant.expire')
+    else fail('G4 provider auth expire audit', 'missing')
+
+    await setupGmailGrant(operatorId, gmailConnector.id)
+  } else {
+    fail('G4 provider auth expire setup', 'active null-tenant grant missing')
+  }
+
+  const activeGrant = await prisma.connectorGrant.findFirst({
+    where: { userId: operatorId, connectorId: gmailConnector.id, status: 'active', tenantId: null },
+  })
+  if (activeGrant) {
+    await prisma.connectorGrant.update({
+      where: { id: activeGrant.id },
+      data: { scopes: ['https://www.googleapis.com/auth/gmail.readonly'] },
+    })
+    const draftDeniedByScope = await services.toolBroker.invoke({
+      agentId,
+      agentVersion,
+      tool: 'gmail_create_draft',
+      args: {
+        to: 'recipient@example.com',
+        subject: 'PUC readonly denial',
+        body: 'Ezt readonly granttel nem szabad létrehozni.',
+      },
+      actingUserId: operatorId,
+    })
+    if (draftDeniedByScope.denied && draftDeniedByScope.reason === 'gmail_scope_not_granted') {
+      pass('Gmail scope mapping — readonly grant tiltja a draftot')
+    } else {
+      fail('Gmail scope mapping readonly', JSON.stringify(draftDeniedByScope))
+    }
+    await prisma.connectorGrant.update({
+      where: { id: activeGrant.id },
+      data: { scopes: ['https://www.googleapis.com/auth/gmail.modify'] },
+    })
+  } else {
+    fail('Gmail scope mapping setup', 'active null-tenant grant missing')
+  }
+
   const draft = await services.toolBroker.invoke({
     agentId,
     agentVersion,
@@ -2993,6 +3858,26 @@ async function scenarioPerUserConnector(operatorId: string, agentId: string, age
     !draft.denied && draft.result && typeof draft.result === 'object' && 'draftId' in draft.result
       ? String((draft.result as { draftId: string }).draftId)
       : null
+
+  const sendDeniedByScope = await services.toolBroker.invoke({
+    agentId,
+    agentVersion,
+    tool: 'gmail_send',
+    args: { draftId: draftId ?? 'stub-draft-1' },
+    actingUserId: operatorId,
+  })
+  if (sendDeniedByScope.denied && sendDeniedByScope.reason === 'gmail_scope_not_granted') {
+    pass('gmail_send — compose/modify scope önmagában nem elég küldéshez')
+  } else {
+    fail('gmail_send send-scope gate', JSON.stringify(sendDeniedByScope))
+  }
+
+  if (activeGrant) {
+    await prisma.connectorGrant.update({
+      where: { id: activeGrant.id },
+      data: { scopes: ['https://www.googleapis.com/auth/gmail.send'] },
+    })
+  }
 
   const sendDenied = await services.toolBroker.invoke({
     agentId,
@@ -3053,6 +3938,13 @@ async function scenarioPerUserConnector(operatorId: string, agentId: string, age
     fail('gmail_send approve E2E', 'draft létrehozás sikertelen')
   }
 
+  if (activeGrant) {
+    await prisma.connectorGrant.update({
+      where: { id: activeGrant.id },
+      data: { scopes: ['https://www.googleapis.com/auth/gmail.readonly'] },
+    })
+  }
+
   const runTicket = await prisma.ticket.create({
     data: {
       type: 'interaction',
@@ -3093,6 +3985,26 @@ async function scenarioPerUserConnector(operatorId: string, agentId: string, age
     pass('F2-E — ticket melletti acting_user spoof DENY')
   } else {
     fail('F2-E ticket acting_user spoof deny', JSON.stringify(deniedSpoofedTicketRunAs))
+  }
+
+  const deniedTicketConversationInheritance = await services.toolBroker.invoke({
+    agentId,
+    agentVersion,
+    tool: 'gmail_search',
+    args: { query: 'MVP' },
+    ticketId: runTicket.id,
+    conversationId: conversation.id,
+  })
+  if (
+    deniedTicketConversationInheritance.denied &&
+    deniedTicketConversationInheritance.reason === 'acting_user_required'
+  ) {
+    pass('F2-E — ticket nem örököl implicit conversation usert')
+  } else {
+    fail(
+      'F2-E ticket conversation inheritance deny',
+      JSON.stringify(deniedTicketConversationInheritance),
+    )
   }
 
   await prisma.ticket.update({
@@ -3138,6 +4050,41 @@ async function scenarioPerUserConnector(operatorId: string, agentId: string, age
       JSON.stringify({ dispatch: runAsDispatch, launchedActingUserId }),
     )
   }
+
+  const scheduledGmailTask = await services.scheduledTasks.createOneShotAgentTask({
+    tenantId: null,
+    agentId,
+    title: 'PUC scheduled gmail run-as',
+    content: 'F2-E scheduled task gmail search',
+    createdById: operatorId,
+    nextRunAt: new Date(Date.now() - 1_000),
+    authorizeRunAs: true,
+  })
+  const scheduledGmailBatch = await services.scheduledTasks.materializeDue(new Date(), 10)
+  const scheduledGmailMaterialized = scheduledGmailBatch.find(
+    (item) => item.scheduledTaskId === scheduledGmailTask.id,
+  )
+  if (scheduledGmailMaterialized?.status === 'materialized' && scheduledGmailMaterialized.ticketId) {
+    const scheduledGmailSearch = await services.toolBroker.invoke({
+      agentId,
+      agentVersion,
+      tool: 'gmail_search',
+      args: { query: 'MVP', maxResults: 1 },
+      ticketId: scheduledGmailMaterialized.ticketId,
+    })
+    if (
+      !scheduledGmailSearch.denied &&
+      'messages' in (scheduledGmailSearch.result as { messages?: unknown[] })
+    ) {
+      pass('F2-E — scheduled task materializált ticket gmail search OK')
+    } else {
+      fail('F2-E scheduled task gmail search', JSON.stringify(scheduledGmailSearch))
+    }
+    await prisma.ticket.delete({ where: { id: scheduledGmailMaterialized.ticketId } })
+  } else {
+    fail('F2-E scheduled task materialize gmail', JSON.stringify(scheduledGmailMaterialized))
+  }
+  await prisma.scheduledTask.delete({ where: { id: scheduledGmailTask.id } })
 
   await prisma.ticket.delete({ where: { id: runTicket.id } })
 
@@ -3289,6 +4236,7 @@ async function main() {
     await scenarioN6_capabilityEscalationDenied(agent.id)
     await scenarioN7_conversationWriteGateDenied(agent.id)
     await scenarioN8_gdprErasureVerifyChain(operator.id, agent.id)
+    await scenarioFileEditor(operator.id, agent.id, agent.currentVersion)
     await scenarioPerUserConnector(operator.id, agent.id, agent.currentVersion)
     await scenarioAgentApi(agent.id)
 
@@ -3306,7 +4254,7 @@ async function main() {
     }
 
     if (skipped > 0) {
-      console.log('\n◌ Acceptance smoke zöld, de S2-függő forgatókönyv még nincs lefuttatva.')
+      console.log('\n◌ Acceptance smoke zöld, de egyes opcionális forgatókönyvek ki lettek hagyva (lásd fent).')
     } else {
       console.log('\n✅ Minden acceptance forgatókönyv sikeres.')
     }

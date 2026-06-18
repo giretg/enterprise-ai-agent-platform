@@ -107,7 +107,7 @@ export async function prepareGooseHarnessEnv(env: GooseHarnessEnv): Promise<Goos
     GOOSE_PROVIDER: 'openai',
     GOOSE_MODEL: env.GOOSE_MODEL ?? 'chatgpt-oauth-default',
     GOOSE_MODE: env.GOOSE_MODE ?? 'auto',
-    GOOSE_MAX_TURNS: env.HARNESS_MAX_TURNS ?? env.GOOSE_MAX_TURNS ?? '25',
+    GOOSE_MAX_TURNS: env.HARNESS_MAX_TURNS ?? env.GOOSE_MAX_TURNS ?? '12',
     OPENAI_API_KEY: agentApiKey,
     OPENAI_HOST: openAiHost,
     OPENAI_BASE_PATH: openAiBasePath,

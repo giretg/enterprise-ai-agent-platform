@@ -1,3 +1,4 @@
+import type { CellValue } from 'exceljs'
 import { FileEditorError } from '../workspace-storage'
 
 export type XlsxRow = Record<string, string | number | boolean | null>
@@ -8,15 +9,25 @@ export type XlsxCellChange = {
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function importExceljs(): Promise<any> {
+async function loadWorkbook(): Promise<any> {
+  let mod: typeof import('exceljs')
   try {
-    return await import('exceljs')
+    mod = await import('exceljs')
   } catch {
     throw new FileEditorError(
       'BINARY_ADAPTER_UNAVAILABLE',
       'exceljs is not installed. Run: npm install exceljs',
     )
   }
+  const moduleExports = mod as unknown as {
+    default?: { Workbook?: new () => unknown }
+    Workbook?: new () => unknown
+  }
+  const Workbook = moduleExports.default?.Workbook ?? moduleExports.Workbook
+  if (!Workbook) {
+    throw new FileEditorError('BINARY_ADAPTER_UNAVAILABLE', 'exceljs Workbook export missing')
+  }
+  return new Workbook()
 }
 
 export async function xlsxReadSheet(
@@ -24,8 +35,7 @@ export async function xlsxReadSheet(
   sheetName?: string,
   maxRows = 500,
 ): Promise<{ sheet: string; headers: string[]; rows: XlsxRow[] }> {
-  const ExcelJS = await importExceljs()
-  const workbook = new ExcelJS.Workbook()
+  const workbook = await loadWorkbook()
   await workbook.xlsx.load(buffer)
 
   const worksheet = sheetName
@@ -39,7 +49,7 @@ export async function xlsxReadSheet(
   const headers: string[] = []
   const rows: XlsxRow[] = []
 
-  worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+  worksheet.eachRow({ includeEmpty: false }, (row: { values: unknown[] }, rowNumber: number) => {
     const values = (row.values as unknown[]).slice(1)
     if (rowNumber === 1) {
       headers.push(...values.map((v) => String(v ?? '')))
@@ -66,8 +76,7 @@ export async function xlsxWriteCells(
   changes: XlsxCellChange[],
   sheetName?: string,
 ): Promise<Buffer> {
-  const ExcelJS = await importExceljs()
-  const workbook = new ExcelJS.Workbook()
+  const workbook = await loadWorkbook()
   await workbook.xlsx.load(buffer)
 
   const worksheet = sheetName
@@ -79,7 +88,7 @@ export async function xlsxWriteCells(
   }
 
   for (const { cell, value } of changes) {
-    worksheet.getCell(cell).value = value as ExcelJS.CellValue
+    worksheet.getCell(cell).value = value as CellValue
   }
 
   const buf = await workbook.xlsx.writeBuffer()
@@ -91,8 +100,7 @@ export async function xlsxAppendRows(
   newRows: XlsxRow[],
   sheetName?: string,
 ): Promise<Buffer> {
-  const ExcelJS = await importExceljs()
-  const workbook = new ExcelJS.Workbook()
+  const workbook = await loadWorkbook()
   await workbook.xlsx.load(buffer)
 
   const worksheet = sheetName

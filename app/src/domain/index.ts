@@ -9,6 +9,7 @@ import { AuditChainService } from '@/domain/audit/audit-chain-service'
 import { WriteGateService } from '@/domain/writegate/write-gate-service'
 import { EvalService } from '@/domain/eval/eval-service'
 import { DispatcherService, type HarnessLauncher } from '@/domain/dispatcher/dispatcher-service'
+import { PlatformSettingsService } from '@/domain/platform-settings/platform-settings-service'
 import { CloudRunJobHarnessLauncher, cloudRunConfigFromEnv } from '@/domain/dispatcher/cloud-run-job-launcher'
 import {
   DockerLocalHarnessLauncher,
@@ -18,11 +19,13 @@ import { AllowlistAuthorizer, ToolBrokerService } from '@/domain/tool-broker/too
 import { ConnectorGrantService } from '@/domain/connector-grant/connector-grant-service'
 import { WorkspaceStorage } from '@/domain/file-editor/workspace-storage'
 import { FileEditorService } from '@/domain/file-editor/file-editor-service'
+import { WorkspaceLifecycleService } from '@/domain/file-editor/workspace-lifecycle-service'
 import { RecipeService } from '@/domain/recipe/recipe-service'
 import { ConversationService } from '@/domain/conversation/conversation-service'
 import { PlaybookService } from '@/domain/playbook/playbook-service'
 import { IamService } from '@/domain/iam/iam-service'
 import { SandboxAppService } from '@/domain/sandbox/sandbox-app-service'
+import { ScheduledTaskService } from '@/domain/scheduled-task/scheduled-task-service'
 import { repositories } from '@/repositories/postgres'
 
 const playbookService = new PlaybookService(repositories.playbooks, repositories.audit)
@@ -47,10 +50,13 @@ const conversationService = new ConversationService(
   playbookService,
 )
 const connectorGrantService = new ConnectorGrantService(repositories.connectorGrants, repositories.audit)
-const workspaceStorage = new WorkspaceStorage(
-  process.env.WORKSPACE_BUCKET ?? 'platform-workspace-prod',
-)
+const workspaceBucket = process.env.WORKSPACE_BUCKET ?? 'platform-workspace-prod'
+const workspaceStorage = new WorkspaceStorage(workspaceBucket)
 const fileEditorService = new FileEditorService(workspaceStorage)
+const workspaceLifecycleService = new WorkspaceLifecycleService(
+  repositories.connectors,
+  (bucket) => new WorkspaceStorage(bucket),
+)
 const toolAuthorizer = new AllowlistAuthorizer(
   repositories.toolBroker,
   repositories.agents,
@@ -112,6 +118,11 @@ const sandboxAppService = new SandboxAppService(
   repositories.tickets,
   repositories.audit,
 )
+const scheduledTaskService = new ScheduledTaskService(
+  repositories.scheduledTasks,
+  repositories.tickets,
+  repositories.audit,
+)
 const localWikiHarnessLauncher: HarnessLauncher = {
   mode: 'local-wiki',
   async launch(input) {
@@ -132,14 +143,22 @@ function createHarnessLauncher(): HarnessLauncher {
   throw new Error(`Unsupported HARNESS_LAUNCHER_MODE: ${mode}`)
 }
 
+const platformSettingsService = new PlatformSettingsService(
+  repositories.platformSettings,
+  repositories.audit,
+)
+
 const dispatcherService = new DispatcherService(
   repositories.tickets,
   repositories.audit,
   repositories.modelCalls,
   () => createHarnessLauncher(),
+  undefined,
+  () => platformSettingsService.isDispatchEnabled(),
 )
 
 export const services = {
+  platformSettings: platformSettingsService,
   tickets: ticketService,
   gateway: modelGateway,
   agentChat: agentChatRuntime,
@@ -156,6 +175,8 @@ export const services = {
   conversations: conversationService,
   iam: iamService,
   sandboxApps: sandboxAppService,
+  scheduledTasks: scheduledTaskService,
   connectorGrants: connectorGrantService,
+  workspaceLifecycle: workspaceLifecycleService,
   selfEvolutionGuard,
 }

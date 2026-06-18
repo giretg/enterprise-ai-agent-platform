@@ -26,11 +26,13 @@ import {
   askWikiSchema,
   sendAgentMessageSchema,
   createAgentTaskTicketSchema,
+  createScheduledAgentTaskSchema,
   loadAgentChatSchema,
   listAgentChatSessionsSchema,
   conversationIdSchema,
   promoteToTicketSchema,
   messageIdSchema,
+  scheduledTaskIdSchema,
   processDocumentSchema,
   processDocumentForWikiSchema,
   rollbackMemorySchema,
@@ -41,6 +43,7 @@ import {
   redeemInvitationSchema,
   changeUserRoleSchema,
   setUserStatusSchema,
+  setDispatcherControlsSchema,
 } from '@/lib/validators/actions'
 
 function safeUploadFilename(name: string): string {
@@ -108,6 +111,34 @@ export async function listBoardTickets() {
     return ok(enriched)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list board tickets')
+  }
+}
+
+export async function listScheduledTasks() {
+  try {
+    const user = await requireRole('operator')
+    const tasks = await services.scheduledTasks.list({
+      tenantId: user.tenantId,
+      limit: 100,
+    })
+    return ok(tasks)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to list scheduled tasks')
+  }
+}
+
+export async function revokeScheduledTask(input: { id: string }) {
+  try {
+    const user = await requireRole('operator')
+    const { id } = scheduledTaskIdSchema.parse(input)
+    const task = await services.scheduledTasks.revoke({
+      scheduledTaskId: id,
+      actorId: user.id,
+      tenantId: user.tenantId,
+    })
+    return ok(task)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to revoke scheduled task')
   }
 }
 
@@ -667,6 +698,39 @@ export async function createAgentTaskTicket(input: {
   }
 }
 
+export async function createScheduledAgentTask(input: {
+  agentId: string
+  title: string
+  content: string
+  conversationId?: string
+  attachmentDocumentIds?: string[]
+  nextRunAt: string
+  recurrence?: 'none' | 'daily' | 'weekly' | 'monthly'
+  maxRuns?: number | null
+  authorizeRunAs?: boolean
+}) {
+  try {
+    const user = await requireRole('operator')
+    const parsed = createScheduledAgentTaskSchema.parse(input)
+    const scheduledTask = await services.scheduledTasks.createAgentTask({
+      agentId: parsed.agentId,
+      title: parsed.title,
+      content: parsed.content,
+      conversationId: parsed.conversationId,
+      attachmentDocumentIds: parsed.attachmentDocumentIds,
+      nextRunAt: new Date(parsed.nextRunAt),
+      recurrence: parsed.recurrence,
+      maxRuns: parsed.maxRuns,
+      authorizeRunAs: parsed.authorizeRunAs,
+      createdById: user.id,
+      tenantId: user.tenantId,
+    })
+    return ok({ scheduledTaskId: scheduledTask.id, scheduledTask })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Scheduled task creation failed')
+  }
+}
+
 export async function loadAgentChatMessages(input: { conversationId: string; agentId: string }) {
   try {
     const user = await requireRole('viewer')
@@ -1021,6 +1085,48 @@ export async function exportAuditSiem(input?: { since?: string }) {
   }
 }
 
+export async function listWorkspaceTenants() {
+  try {
+    await requireRole('admin')
+    const rows = await prisma.user.findMany({
+      where: { tenantId: { not: null } },
+      select: { tenantId: true },
+      distinct: ['tenantId'],
+    })
+    const tenantIds = rows.map((row) => row.tenantId).filter((id): id is string => Boolean(id))
+    return ok({ tenantIds, includesGlobalFallback: true })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to list tenants')
+  }
+}
+
+/** GDPR / tenant offboarding — azonnali workspace törlés (§5.3). */
+export async function purgeTenantWorkspaces(tenantId: string) {
+  try {
+    const actor = await requireRole('admin')
+    const normalized = tenantId.trim()
+    if (!normalized) return fail('Tenant ID is required')
+
+    const deleted = await services.workspaceLifecycle.purgeTenantWorkspaces(normalized)
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: actor.id,
+      agentVersion: null,
+      action: 'workspace.tenant.purge',
+      targetType: 'tenant',
+      targetId: normalized === 'global' ? null : normalized,
+      modelUsed: null,
+      inputRef: normalized,
+      outputRef: String(deleted),
+      policyDecision: 'allowed',
+      metadata: { deletedObjects: deleted, tenantId: normalized },
+    })
+    return ok({ deletedObjects: deleted })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Workspace purge failed')
+  }
+}
+
 export async function getDashboardStats() {
   try {
     await requireRole('viewer')
@@ -1110,5 +1216,36 @@ export async function getGovernanceReport(input?: { range?: unknown }) {
     })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to build governance report')
+  }
+}
+
+export async function getDispatcherControls() {
+  try {
+    await requireRole('operator')
+    const controls = await services.platformSettings.getDispatcherControls()
+    return ok(controls)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to read dispatcher controls')
+  }
+}
+
+export async function setDispatcherControls(input: {
+  enabled?: boolean
+  pollIntervalSeconds?: number
+}) {
+  try {
+    const actor = await requireRole('admin')
+    const parsed = setDispatcherControlsSchema.parse(input)
+    const controls = await services.platformSettings.setDispatcherControls(
+      {
+        enabled: parsed.enabled,
+        pollIntervalMs:
+          parsed.pollIntervalSeconds !== undefined ? parsed.pollIntervalSeconds * 1000 : undefined,
+      },
+      actor.id,
+    )
+    return ok(controls)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update dispatcher controls')
   }
 }

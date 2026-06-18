@@ -22,7 +22,7 @@ export function buildGooseCommandJson(env: GooseCommandEnv): string | null {
     'run',
     '--no-session',
     '--max-turns',
-    env.HARNESS_MAX_TURNS ?? '25',
+    env.HARNESS_MAX_TURNS ?? '12',
     '--provider',
     provider,
     '--model',

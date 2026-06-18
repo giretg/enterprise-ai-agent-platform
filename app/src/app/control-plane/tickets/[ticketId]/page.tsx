@@ -3,6 +3,7 @@ import { getTicket } from '@/app/actions/platform'
 import { getCurrentUser } from '@/auth'
 import { hasMinimumRole } from '@/auth/types'
 import { TicketActions, TicketMeta, TicketRunAsAuthorization } from '@/components/tickets/ticket-detail'
+import { TicketFilesPanel } from '@/components/tickets/ticket-files-panel'
 import { TicketHistory } from '@/components/tickets/ticket-history'
 
 export default async function TicketDetailPage({
@@ -22,6 +23,7 @@ export default async function TicketDetailPage({
     <div className="space-y-6">
       <TicketMeta ticket={ticket} isAdmin={isAdmin} />
       <TicketRunAsAuthorization ticket={ticket} canManageRunAs={canManageRunAs} />
+      <TicketFilesPanel ticketId={ticket.id} ticketState={ticket.state} />
       <TicketActions ticket={ticket} />
       <TicketHistory ticketId={ticket.id} />
     </div>

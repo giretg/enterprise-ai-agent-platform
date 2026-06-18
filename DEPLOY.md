@@ -32,6 +32,8 @@ npx -y firebase-tools@latest apphosting:secrets:set WRITE_GATE_SECRET
 
 A backend hozzáférést kap automatikusan az `apphosting.yaml`-ban felsorolt secret-ekhez.
 
+**Agent workspace (file editor):** a `WORKSPACE_BUCKET` és `GCS_SERVICE_ACCOUNT_EMAIL` plain env-ként szerepelnek az `apphosting.yaml`-ban (nem secret). GCS bucket + IAM: `app/infra/gcp/WORKSPACE-GCS-SETUP.md`.
+
 ## 2. DB migráció (Neon)
 
 A deploy **előtt** futtasd lokálisan a séma szinkront, audit backfill-et és seed-et a Neon direct URL-lel:

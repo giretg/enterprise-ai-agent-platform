@@ -17,6 +17,35 @@ const policyBadge = (decision: string | null) => {
   )
 }
 
+const FILE_TOOL_PREFIXES = ['file_', 'xlsx_', 'docx_', 'pdf_'] as const
+
+function isFileToolAction(action: string, inputRef: string | null): boolean {
+  if (action !== 'tool.call' && action !== 'tool.call.denied') return false
+  if (!inputRef) return false
+  return FILE_TOOL_PREFIXES.some((prefix) => inputRef.startsWith(prefix))
+}
+
+function fileToolDetail(metadata: unknown): string | null {
+  if (!metadata || typeof metadata !== 'object') return null
+  const meta = metadata as {
+    argsMeta?: { path?: string; pattern?: string }
+    resultMeta?: { bytesWritten?: number; cellsUpdated?: number; rowsAppended?: number }
+  }
+  const parts: string[] = []
+  if (meta.argsMeta?.path) parts.push(`path: ${meta.argsMeta.path}`)
+  if (meta.argsMeta?.pattern) parts.push(`pattern: ${meta.argsMeta.pattern}`)
+  if (typeof meta.resultMeta?.bytesWritten === 'number') {
+    parts.push(`${meta.resultMeta.bytesWritten} B`)
+  }
+  if (typeof meta.resultMeta?.cellsUpdated === 'number') {
+    parts.push(`${meta.resultMeta.cellsUpdated} cell`)
+  }
+  if (typeof meta.resultMeta?.rowsAppended === 'number') {
+    parts.push(`${meta.resultMeta.rowsAppended} sor`)
+  }
+  return parts.length > 0 ? parts.join(' · ') : null
+}
+
 export default async function AuditLogPage() {
   const res = await listAuditLog({ limit: 100 })
   const entries = res.success ? res.data : []
@@ -42,48 +71,58 @@ export default async function AuditLogPage() {
                 <th className="pb-2 pr-4 text-xs">Actor</th>
                 <th className="pb-2 pr-4 text-xs">Action</th>
                 <th className="pb-2 pr-4 text-xs">Target</th>
+                <th className="pb-2 pr-4 text-xs">Fájl / meta</th>
                 <th className="pb-2 pr-4 text-xs">Policy</th>
                 <th className="pb-2 text-xs">Hash</th>
               </tr>
             </thead>
             <tbody>
-              {entries.map((entry) => (
-                <tr key={entry.id} className="border-b border-line/50 hover:bg-card/50">
-                  <td className="py-2 pr-4 font-mono text-[11px] text-ink-soft">
-                    {new Date(entry.createdAt).toLocaleString('hu-HU')}
-                  </td>
-                  <td className="py-2 pr-4">
-                    <span className="text-xs">{entry.actorType}</span>
-                    {entry.actorId && (
-                      <span className="ml-1 font-mono text-[10px] text-ink-faint">
-                        {entry.actorId.slice(0, 8)}
-                      </span>
-                    )}
-                  </td>
-                  <td className="py-2 pr-4 font-mono text-xs">{entry.action}</td>
-                  <td className="py-2 pr-4 text-xs text-ink-soft">
-                    {entry.targetType}
-                    {entry.targetId && (
-                      <span className="ml-1 font-mono text-[10px] text-ink-faint">
-                        {entry.targetId.slice(0, 8)}
-                      </span>
-                    )}
-                  </td>
-                  <td className="py-2 pr-4">{policyBadge(entry.policyDecision)}</td>
-                  <td className="py-2">
-                    {entry.hash ? (
-                      <span
-                        className="cursor-default font-mono text-[10px] text-ink-faint"
-                        title={entry.hash}
-                      >
-                        {entry.hash.slice(0, 12)}…
-                      </span>
-                    ) : (
-                      <span className="text-[10px] text-coral/60">—</span>
-                    )}
-                  </td>
-                </tr>
-              ))}
+              {entries.map((entry) => {
+                const detail =
+                  isFileToolAction(entry.action, entry.inputRef) ? fileToolDetail(entry.metadata) : null
+                return (
+                  <tr key={entry.id} className="border-b border-line/50 hover:bg-card/50">
+                    <td className="py-2 pr-4 font-mono text-[11px] text-ink-soft">
+                      {new Date(entry.createdAt).toLocaleString('hu-HU')}
+                    </td>
+                    <td className="py-2 pr-4">
+                      <span className="text-xs">{entry.actorType}</span>
+                      {entry.actorId && (
+                        <span className="ml-1 font-mono text-[10px] text-ink-faint">
+                          {entry.actorId.slice(0, 8)}
+                        </span>
+                      )}
+                    </td>
+                    <td className="py-2 pr-4 font-mono text-xs">
+                      {entry.inputRef && isFileToolAction(entry.action, entry.inputRef)
+                        ? entry.inputRef
+                        : entry.action}
+                    </td>
+                    <td className="py-2 pr-4 text-xs text-ink-soft">
+                      {entry.targetType}
+                      {entry.targetId && (
+                        <span className="ml-1 font-mono text-[10px] text-ink-faint">
+                          {entry.targetId.slice(0, 8)}
+                        </span>
+                      )}
+                    </td>
+                    <td className="py-2 pr-4 text-xs text-ink-soft">{detail ?? '—'}</td>
+                    <td className="py-2 pr-4">{policyBadge(entry.policyDecision)}</td>
+                    <td className="py-2">
+                      {entry.hash ? (
+                        <span
+                          className="cursor-default font-mono text-[10px] text-ink-faint"
+                          title={entry.hash}
+                        >
+                          {entry.hash.slice(0, 12)}…
+                        </span>
+                      ) : (
+                        <span className="text-[10px] text-coral/60">—</span>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
             </tbody>
           </table>
           {entries.length === 0 && (

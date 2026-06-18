@@ -9,6 +9,23 @@ export type GatewayGuardrail = {
   maxCallsPerTicket: number
 }
 
+/**
+ * A per-ticket guardrail alapértéke. A goose harness `--max-turns` (alap 12) a
+ * tényleges konvergencia-szabályozó; ez a plafon a FÖLÖTT ül biztonsági hálóként,
+ * hogy egy elszabaduló agent-loop ne fogyassza a teljes napi budget capet
+ * (100 hívás/agent/nap, ld. DispatcherService). Env-ből felülírható.
+ */
+export const DEFAULT_MAX_CALLS_PER_TICKET = 30
+
+/** A guardrailt env-ből olvassa (`GATEWAY_MAX_CALLS_PER_TICKET`), különben az alapérték. */
+export function guardrailFromEnv(env: NodeJS.ProcessEnv = process.env): GatewayGuardrail {
+  const raw = env.GATEWAY_MAX_CALLS_PER_TICKET?.trim()
+  const parsed = raw ? Number.parseInt(raw, 10) : NaN
+  const maxCallsPerTicket =
+    Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_MAX_CALLS_PER_TICKET
+  return { maxCallsPerTicket }
+}
+
 export class GatewayBudgetError extends Error {
   constructor(message: string) {
     super(message)
@@ -181,7 +198,9 @@ export class ChatGptOAuthProvider implements ModelProvider {
     }
 
     if (!providerUrl || !internalKey) {
-      throw new Error('ChatGPT OAuth provider is not configured yet (S2 spike pending)')
+      throw new Error(
+        'ChatGPT OAuth provider is not configured (állítsd be CHATGPT_OAUTH_TOKEN_SECRET / CHATGPT_OAUTH_EMBEDDED, vagy CHATGPT_OAUTH_PROVIDER_URL+KEY)',
+      )
     }
 
     const started = Date.now()
@@ -295,7 +314,7 @@ export class ModelGateway {
     private audit: AuditRepository,
     private modelCalls: ModelCallRepository,
     private providers: Map<string, ModelProvider> = createDefaultProviders(),
-    private guardrail: GatewayGuardrail = { maxCallsPerTicket: 20 },
+    private guardrail: GatewayGuardrail = guardrailFromEnv(),
   ) {}
 
   async call(params: {

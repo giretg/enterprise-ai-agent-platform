@@ -1,10 +1,16 @@
-import { listInvitations, listUsers } from '@/app/actions/platform'
+import { listInvitations, listUsers, listWorkspaceTenants } from '@/app/actions/platform'
 import { IamAdminPanel } from '@/components/iam/iam-admin-panel'
+import { WorkspaceOffboardingPanel } from '@/components/iam/workspace-offboarding-panel'
 
 export default async function IamPage() {
-  const [usersRes, invitationsRes] = await Promise.all([listUsers(), listInvitations()])
+  const [usersRes, invitationsRes, tenantsRes] = await Promise.all([
+    listUsers(),
+    listInvitations(),
+    listWorkspaceTenants(),
+  ])
   const users = usersRes.success ? usersRes.data : []
   const invitations = invitationsRes.success ? invitationsRes.data : []
+  const tenantIds = tenantsRes.success ? tenantsRes.data.tenantIds : []
   const error =
     !usersRes.success ? usersRes.error : !invitationsRes.success ? invitationsRes.error : null
 
@@ -25,7 +31,10 @@ export default async function IamPage() {
           {error}
         </div>
       ) : (
-        <IamAdminPanel users={users} invitations={invitations} />
+        <>
+          <IamAdminPanel users={users} invitations={invitations} />
+          <WorkspaceOffboardingPanel tenantIds={tenantIds} />
+        </>
       )}
     </div>
   )

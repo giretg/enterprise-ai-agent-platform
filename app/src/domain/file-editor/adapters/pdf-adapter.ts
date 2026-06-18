@@ -26,6 +26,16 @@ export async function pdfRead(
 ): Promise<{ text: string; numPages: number; pagesRead: string }> {
   const pdfParse = await importPdfParse()
 
+  if (!pageRange) {
+    const result = await pdfParse.default(buffer)
+    const numPages = result.numpages as number
+    return {
+      text: (result.text as string).trim(),
+      numPages,
+      pagesRead: `1-${numPages}`,
+    }
+  }
+
   let currentPage = 0
   const range = parsePageRange(pageRange)
 

@@ -18,7 +18,8 @@ import {
 } from '@/lib/agent-catalog'
 import { readDelegationPayload, shouldCompleteDelegation } from '@/lib/delegation-payload'
 import { isRunAsAuthorized, readRunAsUserId, RUN_AS_AUTHORIZED_AT, RUN_AS_AUTHORIZED_BY } from '@/lib/run-as-payload'
-import { GmailApiClient } from '@/domain/connector-grant/gmail-api-client'
+import { GmailApiAuthError, GmailApiClient } from '@/domain/connector-grant/gmail-api-client'
+import { gmailToolAllowedByScopes } from '@/domain/connector-grant/gmail-scopes'
 import type { ConnectorGrantService } from '@/domain/connector-grant/connector-grant-service'
 import type { FileEditorService } from '@/domain/file-editor/file-editor-service'
 import {
@@ -44,6 +45,7 @@ import type {
   ToolBrokerRepository,
 } from '@/repositories/interfaces'
 import type { TicketService } from '@/domain/ticket/ticket-service'
+import type { XlsxRow } from '@/domain/file-editor/adapters/xlsx-adapter'
 
 export type KbSearchArgs = {
   query: string
@@ -167,7 +169,7 @@ export type XlsxWriteCellsArgs = {
   sheet?: string
   changes: Array<{ cell: string; value: string | number | boolean | null }>
 }
-export type XlsxAppendRowsArgs = { path: string; sheet?: string; rows: Array<Record<string, unknown>> }
+export type XlsxAppendRowsArgs = { path: string; sheet?: string; rows: XlsxRow[] }
 export type DocxReadArgs = { path: string }
 export type PdfReadArgs = { path: string; page_range?: string }
 
@@ -491,6 +493,7 @@ export interface Authorizer {
   authorize(input: {
     agentId: string
     tool: ToolName
+    args?: Record<string, unknown>
     actingUserId?: string | null
     tenantId?: string | null
   }): Promise<AuthorizationResult>
@@ -513,6 +516,7 @@ export class AllowlistAuthorizer implements Authorizer {
   async authorize(input: {
     agentId: string
     tool: ToolName
+    args?: Record<string, unknown>
     actingUserId?: string | null
     tenantId?: string | null
   }): Promise<AuthorizationResult> {
@@ -561,6 +565,17 @@ export class AllowlistAuthorizer implements Authorizer {
         return { allowed: false, reason: 'connector_grant_missing', connector }
       }
 
+      if (
+        connector.type === 'gmail' &&
+        !gmailToolAllowedByScopes({
+          tool: input.tool as Extract<ToolName, `gmail_${string}`>,
+          args: input.args,
+          scopes: grant.scopes,
+        })
+      ) {
+        return { allowed: false, reason: 'gmail_scope_not_granted', connector }
+      }
+
       return { allowed: true, connector, grant, actingUserId: input.actingUserId }
     }
 
@@ -584,11 +599,14 @@ export class ToolBrokerService {
     const startedAt = Date.now()
     const ticketId = input.tool === 'board_write' ? input.args.ticketId : input.ticketId ?? null
     const actingUserId = await this.resolveActingUserId(input)
+    const actingTenantId = actingUserId ? await this.resolveActingTenantId(actingUserId) : null
 
     const authorization = await this.authorizer.authorize({
       agentId: input.agentId,
       tool: input.tool,
+      args: input.args as Record<string, unknown>,
       actingUserId,
+      tenantId: actingTenantId,
     })
 
     if (!authorization.allowed) {
@@ -654,6 +672,29 @@ export class ToolBrokerService {
     } catch (e) {
       const latencyMs = Date.now() - startedAt
       const message = e instanceof Error ? e.message : 'tool_call_failed'
+      if (
+        e instanceof GmailApiAuthError &&
+        authorization.connector.authMode === 'user_delegated' &&
+        authorization.grant &&
+        actingUserId
+      ) {
+        await this.grantService.markGrantExpired({
+          grantId: authorization.grant.id,
+          connectorId: authorization.connector.id,
+          actingUserId,
+          metadata: { reason: 'provider_auth_error', status: e.status } as Prisma.JsonValue,
+        })
+        return this.recordDenied(
+          input,
+          ticketId,
+          authorization.connector.id,
+          'connector_grant_expired',
+          startedAt,
+          actingUserId,
+          authorization.grant.id,
+        )
+      }
+
       await this.recordCall({
         input,
         ticketId,
@@ -699,7 +740,10 @@ export class ToolBrokerService {
     if (input.tool === 'gmail_create_draft') {
       return gmail.createDraft(input.args)
     }
-    return gmail.send(input.args)
+    if (input.tool === 'gmail_send') {
+      return gmail.send(input.args)
+    }
+    throw new Error(`Unknown delegated tool: ${input.tool}`)
   }
 
   private async executeFileTool(
@@ -720,7 +764,7 @@ export class ToolBrokerService {
       if (input.tool === 'file_delete') return this.fileEditor.deleteFile(tenantId, ticketId, input.args)
       if (input.tool === 'xlsx_read_sheet') return this.fileEditor.xlsxReadSheet(tenantId, ticketId, input.args)
       if (input.tool === 'xlsx_write_cells') return this.fileEditor.xlsxWriteCells(tenantId, ticketId, input.args as { path: string; sheet?: string; changes: Array<{ cell: string; value: string | number | boolean | null }> })
-      if (input.tool === 'xlsx_append_rows') return this.fileEditor.xlsxAppendRows(tenantId, ticketId, input.args as { path: string; sheet?: string; rows: Array<Record<string, unknown>> })
+      if (input.tool === 'xlsx_append_rows') return this.fileEditor.xlsxAppendRows(tenantId, ticketId, input.args)
       if (input.tool === 'docx_read') return this.fileEditor.docxRead(tenantId, ticketId, input.args)
       if (input.tool === 'pdf_read') return this.fileEditor.pdfRead(tenantId, ticketId, input.args)
     } catch (e) {
@@ -750,13 +794,6 @@ export class ToolBrokerService {
   }
 
   private async resolveActingUserId(input: ToolBrokerInvokeInput): Promise<string | null> {
-    if (input.conversationId) {
-      const conversation = await prisma.conversation.findUnique({
-        where: { id: input.conversationId },
-      })
-      if (conversation) return conversation.createdById
-    }
-
     if (input.ticketId) {
       const ticket = await this.tickets.findById(input.ticketId)
       if (ticket) {
@@ -768,9 +805,24 @@ export class ToolBrokerService {
       }
     }
 
+    if (input.conversationId) {
+      const conversation = await prisma.conversation.findUnique({
+        where: { id: input.conversationId },
+      })
+      if (conversation) return conversation.createdById
+    }
+
     if (input.actingUserId) return input.actingUserId
 
     return null
+  }
+
+  private async resolveActingTenantId(actingUserId: string): Promise<string | null> {
+    const user = await prisma.user.findUnique({
+      where: { id: actingUserId },
+      select: { tenantId: true },
+    })
+    return user?.tenantId ?? null
   }
 
   private async checkGmailSendApproval(
@@ -1205,10 +1257,15 @@ export class ToolBrokerService {
     actingUserId?: string | null
     grantId?: string | null
   }) {
+    const sanitizedArgsMeta = {
+      ...argsMeta(params.input),
+      acting_user_id: params.actingUserId ?? params.input.actingUserId ?? null,
+      grant_id: params.grantId ?? null,
+    }
     const metadata = {
       tool: params.input.tool,
       status: params.status,
-      argsMeta: argsMeta(params.input),
+      argsMeta: sanitizedArgsMeta,
       resultMeta: params.resultMeta,
       acting_user_id: params.actingUserId ?? params.input.actingUserId ?? null,
       grant_id: params.grantId ?? null,
@@ -1221,7 +1278,7 @@ export class ToolBrokerService {
       connectorId: params.connectorId,
       toolName: params.input.tool,
       status: params.status,
-      argsMeta: metadata.argsMeta as Prisma.JsonValue,
+      argsMeta: sanitizedArgsMeta as Prisma.JsonValue,
       resultMeta: params.resultMeta as Prisma.JsonValue,
       latencyMs: params.latencyMs,
       policyDecision: params.policyDecision,

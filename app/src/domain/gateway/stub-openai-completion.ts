@@ -102,6 +102,7 @@ export function buildStubOpenAiCompletion(input: {
       body: toolCallCompletion(input.model, boardWriteTool, {
         ticketId,
         patch: {
+          state: 'done',
           payload: {
             answer:
               'Az MVP célja egy architektúra-teljes walking skeleton; minden modellhívás a Model Gatewayen, minden eszközhívás a Tool Brokeren keresztül történik.',

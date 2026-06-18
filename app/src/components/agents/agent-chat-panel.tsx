@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState, useTransition } from 'react'
 import { createPortal } from 'react-dom'
 import {
   createAgentTaskTicket,
+  createScheduledAgentTask,
   listAgentChatSessions,
   loadAgentChatMessages,
   sendAgentMessage,
@@ -34,6 +35,8 @@ type ChatMessage = {
   }>
   createdAt: string
 }
+
+type ScheduledTaskRecurrence = 'none' | 'daily' | 'weekly' | 'monthly'
 
 function isImageFile(file: File): boolean {
   return file.type.startsWith('image/')
@@ -132,6 +135,8 @@ export function AgentChatPanel({
   const [statusMessage, setStatusMessage] = useState<string | null>(null)
   const [lastTicketId, setLastTicketId] = useState<string | null>(null)
   const [ticketExecuteAfter, setTicketExecuteAfter] = useState('')
+  const [ticketRecurrence, setTicketRecurrence] = useState<ScheduledTaskRecurrence>('none')
+  const [ticketMaxRuns, setTicketMaxRuns] = useState('')
   const [ticketAuthorizeRunAs, setTicketAuthorizeRunAs] = useState(false)
   const [isAgentTyping, setIsAgentTyping] = useState(false)
   const [sessions, setSessions] = useState<ChatSession[]>([])
@@ -245,6 +250,8 @@ export function AgentChatPanel({
   const resetComposer = () => {
     setInput('')
     setTicketExecuteAfter('')
+    setTicketRecurrence('none')
+    setTicketMaxRuns('')
     setTicketAuthorizeRunAs(false)
     pendingAttachments.forEach((a) => {
       if (a.previewUrl) URL.revokeObjectURL(a.previewUrl)
@@ -369,18 +376,47 @@ export function AgentChatPanel({
     const executeAfterIso = ticketExecuteAfter
       ? new Date(ticketExecuteAfter).toISOString()
       : undefined
+    const maxRuns = ticketMaxRuns ? Number(ticketMaxRuns) : null
+    const titleSource = text || localAttachments[0]?.file.name || 'Feladat'
 
     startTicketTransition(async () => {
       setStatusMessage(null)
       setLastTicketId(null)
       try {
         const documentIds = localAttachments.length > 0 ? await uploadAttachments(localAttachments) : []
+        if (executeAfterIso) {
+          const scheduledContent =
+            text ||
+            `Csatolmányok: ${localAttachments.map((attachment) => attachment.file.name).join(', ')}`
+          const res = await createScheduledAgentTask({
+            agentId: agent.id,
+            title: `Feladat: ${titleSource.slice(0, 80)}`,
+            content: scheduledContent,
+            conversationId: conversationId ?? undefined,
+            attachmentDocumentIds: documentIds,
+            nextRunAt: executeAfterIso,
+            recurrence: ticketRecurrence,
+            maxRuns: ticketRecurrence === 'none' ? null : maxRuns,
+            authorizeRunAs: ticketAuthorizeRunAs,
+          })
+          if (!res.success) {
+            setStatusMessage(res.error)
+            return
+          }
+          resetComposer()
+          setStatusMessage(
+            ticketRecurrence === 'none'
+              ? 'Ütemezett task létrehozva — a worker a megadott időpontban ticketet készít belőle.'
+              : 'Ismétlődő ütemezett task létrehozva.',
+          )
+          return
+        }
+
         const res = await createAgentTaskTicket({
           agentId: agent.id,
           content: text,
           conversationId: conversationId ?? undefined,
           attachmentDocumentIds: documentIds,
-          executeAfter: executeAfterIso,
           authorizeRunAs: ticketAuthorizeRunAs,
         })
         if (!res.success) {
@@ -555,6 +591,38 @@ export function AgentChatPanel({
                 className="min-w-0 flex-1 rounded-lg border border-line bg-night-2 px-2 py-1.5 text-xs text-ink"
               />
             </label>
+            {ticketExecuteAfter && (
+              <>
+                <label className="flex items-center gap-2">
+                  <span className="shrink-0">Ismétlés</span>
+                  <select
+                    value={ticketRecurrence}
+                    onChange={(e) => setTicketRecurrence(e.target.value as ScheduledTaskRecurrence)}
+                    disabled={pending || ticketPending || isAgentTyping}
+                    className="rounded-lg border border-line bg-night-2 px-2 py-1.5 text-xs text-ink"
+                  >
+                    <option value="none">nincs</option>
+                    <option value="daily">naponta</option>
+                    <option value="weekly">hetente</option>
+                    <option value="monthly">havonta</option>
+                  </select>
+                </label>
+                {ticketRecurrence !== 'none' && (
+                  <label className="flex items-center gap-2">
+                    <span className="shrink-0">Max</span>
+                    <input
+                      type="number"
+                      min={1}
+                      max={365}
+                      value={ticketMaxRuns}
+                      onChange={(e) => setTicketMaxRuns(e.target.value)}
+                      disabled={pending || ticketPending || isAgentTyping}
+                      className="w-20 rounded-lg border border-line bg-night-2 px-2 py-1.5 text-xs text-ink"
+                    />
+                  </label>
+                )}
+              </>
+            )}
             <label className="flex items-center gap-2 rounded-lg border border-line bg-night-2 px-2 py-1.5">
               <input
                 type="checkbox"
@@ -602,10 +670,10 @@ export function AgentChatPanel({
               type="button"
               onClick={handleCreateTicket}
               disabled={!canSubmit}
-              title="Ticket létrehozása a Kanban táblán"
+              title={ticketExecuteAfter ? 'Ütemezett task létrehozása' : 'Ticket létrehozása a Kanban táblán'}
               className="shrink-0 rounded-xl border border-line px-3 py-2.5 text-xs font-semibold text-ink-soft transition-colors hover:border-honey/50 hover:bg-honey/10 hover:text-honey disabled:opacity-40"
             >
-              {ticketPending ? '…' : 'Ticket'}
+              {ticketPending ? '…' : ticketExecuteAfter ? 'Ütemezés' : 'Ticket'}
             </button>
 
             <button
