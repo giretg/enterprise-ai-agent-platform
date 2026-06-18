@@ -1,5 +1,7 @@
+'use client'
+
 import Link from 'next/link'
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import { ShellAuth } from '@/components/auth/shell-auth'
 import { isClerkUiEnabled } from '@/lib/clerk-config'
 
@@ -41,6 +43,7 @@ export function AppShell({
   }
 
   const clerkEnabled = isClerkUiEnabled()
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
 
   return (
     <div className="min-h-screen text-ink">
@@ -48,33 +51,84 @@ export function AppShell({
         MVP v1 · Postgres + ChatGPT OAuth · {clerkEnabled ? 'Clerk auth' : 'dev auth'}
       </div>
       <header className="sticky top-0 z-20 border-b border-line bg-night/80 backdrop-blur-xl">
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-4 px-5 py-3.5">
-          <div className="flex items-center gap-3">
-            <div
-              className="animate-breathe flex h-11 w-11 items-center justify-center rounded-2xl text-xl"
-              style={{
-                background: markGradient,
-                boxShadow:
-                  'inset 0 2px 5px rgba(255,255,255,0.4), 0 10px 22px -10px rgba(178,58,85,0.5)',
-              }}
-            >
-              {mark}
+        <div className="mx-auto max-w-7xl px-4 py-3.5 sm:px-5">
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex min-w-0 items-center gap-3">
+              <div
+                className="animate-breathe flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl text-xl"
+                style={{
+                  background: markGradient,
+                  boxShadow:
+                    'inset 0 2px 5px rgba(255,255,255,0.4), 0 10px 22px -10px rgba(178,58,85,0.5)',
+                }}
+              >
+                {mark}
+              </div>
+              <div className="min-w-0">
+                <p className="truncate font-display text-[1.2rem] font-semibold leading-none tracking-tight sm:text-[1.35rem]">
+                  {appName}
+                </p>
+                <p className="mt-1 hidden text-[11px] uppercase tracking-[0.16em] text-ink-faint sm:block">
+                  {appSubtitle}
+                </p>
+              </div>
             </div>
-            <div>
-              <p className="font-display text-[1.35rem] font-semibold leading-none tracking-tight">
-                {appName}
-              </p>
-              <p className="mt-1 text-[11px] uppercase tracking-[0.16em] text-ink-faint">
-                {appSubtitle}
-              </p>
+
+            <nav aria-label="Fő navigáció" className="hidden items-center gap-1 lg:flex">
+              {navItems.map((item) => {
+                const active = isActive(item.href, item.exact)
+                return (
+                  <Link key={item.href} href={item.href} className={linkClass(active)}>
+                    {item.label}
+                    {active && (
+                      <span className="absolute -bottom-px left-1/2 h-0.5 w-5 -translate-x-1/2 rounded-full bg-coral" />
+                    )}
+                  </Link>
+                )
+              })}
+            </nav>
+
+            <div className="flex shrink-0 items-center gap-2">
+              <ShellAuth clerkEnabled={clerkEnabled} />
+              <Link
+                href={switchLink.href}
+                className="hidden rounded-full border border-line bg-card px-3 py-2 text-xs font-semibold text-ink-soft transition-colors hover:border-coral/45 hover:text-coral-deep sm:inline-flex sm:px-4"
+              >
+                {switchLink.label}
+              </Link>
+              <button
+                type="button"
+                aria-label={mobileMenuOpen ? 'Menü bezárása' : 'Menü megnyitása'}
+                aria-expanded={mobileMenuOpen}
+                aria-controls="mobile-main-navigation"
+                onClick={() => setMobileMenuOpen((open) => !open)}
+                className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-line bg-card text-ink-soft transition-colors hover:border-coral/45 hover:text-coral-deep lg:hidden"
+              >
+                <span className="flex w-4 flex-col gap-1">
+                  <span className="h-0.5 rounded-full bg-current" />
+                  <span className="h-0.5 rounded-full bg-current" />
+                  <span className="h-0.5 rounded-full bg-current" />
+                </span>
+              </button>
             </div>
           </div>
 
-          <nav className="hidden items-center gap-1 lg:flex">
+          <nav
+            id="mobile-main-navigation"
+            aria-label="Mobil fő navigáció"
+            className={`-mx-4 mt-3 border-t border-line/70 px-4 pt-3 lg:hidden ${
+              mobileMenuOpen ? 'grid gap-1' : 'hidden'
+            }`}
+          >
             {navItems.map((item) => {
               const active = isActive(item.href, item.exact)
               return (
-                <Link key={item.href} href={item.href} className={linkClass(active)}>
+                <Link
+                  key={item.href}
+                  href={item.href}
+                  onClick={() => setMobileMenuOpen(false)}
+                  className={`${linkClass(active)} block`}
+                >
                   {item.label}
                   {active && (
                     <span className="absolute -bottom-px left-1/2 h-0.5 w-5 -translate-x-1/2 rounded-full bg-coral" />
@@ -82,17 +136,14 @@ export function AppShell({
                 </Link>
               )
             })}
-          </nav>
-
-          <div className="flex shrink-0 items-center gap-2">
-            <ShellAuth clerkEnabled={clerkEnabled} />
             <Link
               href={switchLink.href}
-              className="rounded-full border border-line bg-card px-4 py-2 text-xs font-semibold text-ink-soft transition-colors hover:border-coral/45 hover:text-coral-deep"
+              onClick={() => setMobileMenuOpen(false)}
+              className="mt-1 rounded-full border border-line bg-card px-4 py-2 text-sm font-semibold text-ink-soft transition-colors hover:border-coral/45 hover:text-coral-deep"
             >
               {switchLink.label}
             </Link>
-          </div>
+          </nav>
         </div>
       </header>
       <main className="mx-auto max-w-7xl px-5 py-9">{children}</main>
