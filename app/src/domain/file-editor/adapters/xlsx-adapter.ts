@@ -38,12 +38,10 @@ export async function xlsxReadSheet(
 
   const headers: string[] = []
   const rows: XlsxRow[] = []
-  let headerRow: unknown[] = []
 
   worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
     const values = (row.values as unknown[]).slice(1)
     if (rowNumber === 1) {
-      headerRow = values
       headers.push(...values.map((v) => String(v ?? '')))
     } else if (rows.length < maxRows) {
       const obj: XlsxRow = {}

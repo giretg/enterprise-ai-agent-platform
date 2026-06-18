@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useRef, useState, useTransition } from 'react'
+import { useCallback, useEffect, useRef, useState, useTransition } from 'react'
 
 type WorkspaceFile = { path: string }
 
@@ -20,7 +20,7 @@ export function TicketFilesPanel({ ticketId, ticketState }: TicketFilesPanelProp
   const listUrl = `/api/v1/tickets/${ticketId}/workspace/files`
   const isReadOnly = ['done', 'rejected'].includes(ticketState)
 
-  async function loadFiles() {
+  const loadFiles = useCallback(async () => {
     setLoading(true)
     setError(null)
     try {
@@ -33,11 +33,15 @@ export function TicketFilesPanel({ ticketId, ticketState }: TicketFilesPanelProp
     } finally {
       setLoading(false)
     }
-  }
+  }, [listUrl])
 
   useEffect(() => {
-    void loadFiles()
-  }, [ticketId])
+    const timeout = window.setTimeout(() => {
+      void loadFiles()
+    }, 0)
+
+    return () => window.clearTimeout(timeout)
+  }, [loadFiles])
 
   function handleDownload(path: string) {
     const url = `${listUrl}?path=${encodeURIComponent(path)}`
