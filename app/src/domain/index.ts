@@ -16,6 +16,8 @@ import {
 } from '@/domain/dispatcher/docker-local-harness-launcher'
 import { AllowlistAuthorizer, ToolBrokerService } from '@/domain/tool-broker/tool-broker-service'
 import { ConnectorGrantService } from '@/domain/connector-grant/connector-grant-service'
+import { WorkspaceStorage } from '@/domain/file-editor/workspace-storage'
+import { FileEditorService } from '@/domain/file-editor/file-editor-service'
 import { RecipeService } from '@/domain/recipe/recipe-service'
 import { ConversationService } from '@/domain/conversation/conversation-service'
 import { PlaybookService } from '@/domain/playbook/playbook-service'
@@ -45,6 +47,10 @@ const conversationService = new ConversationService(
   playbookService,
 )
 const connectorGrantService = new ConnectorGrantService(repositories.connectorGrants, repositories.audit)
+const workspaceStorage = new WorkspaceStorage(
+  process.env.WORKSPACE_BUCKET ?? 'platform-workspace-prod',
+)
+const fileEditorService = new FileEditorService(workspaceStorage)
 const toolAuthorizer = new AllowlistAuthorizer(
   repositories.toolBroker,
   repositories.agents,
@@ -78,6 +84,7 @@ const toolBrokerService = new ToolBrokerService(
   ticketService,
   toolAuthorizer,
   connectorGrantService,
+  fileEditorService,
 )
 const iamService = new IamService(repositories.audit, connectorGrantService)
 const agentChatRuntime = new AgentChatRuntime(

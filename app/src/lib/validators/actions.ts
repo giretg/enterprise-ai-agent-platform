@@ -333,6 +333,113 @@ export const toolInvokeSchema = z.discriminatedUnion('tool', [
         message: 'gmail_send requires draftId or to/subject/body',
       }),
   }),
+  z.object({
+    tool: z.literal('file_read'),
+    ...toolInvokeBaseSchema,
+    args: z.object({
+      path: z.string().min(1).max(500),
+      offset: z.number().int().min(1).optional(),
+      limit: z.number().int().min(1).max(5000).optional(),
+    }),
+  }),
+  z.object({
+    tool: z.literal('file_write'),
+    ...toolInvokeBaseSchema,
+    args: z.object({
+      path: z.string().min(1).max(500),
+      content: z.string().max(52_428_800),
+    }),
+  }),
+  z.object({
+    tool: z.literal('file_edit'),
+    ...toolInvokeBaseSchema,
+    args: z.object({
+      path: z.string().min(1).max(500),
+      old_string: z.string().min(1),
+      new_string: z.string(),
+      replace_all: z.boolean().optional(),
+    }),
+  }),
+  z.object({
+    tool: z.literal('file_list'),
+    ...toolInvokeBaseSchema,
+    args: z.object({
+      path: z.string().max(500).optional(),
+      recursive: z.boolean().optional(),
+    }),
+  }),
+  z.object({
+    tool: z.literal('file_glob'),
+    ...toolInvokeBaseSchema,
+    args: z.object({
+      pattern: z.string().min(1).max(500),
+    }),
+  }),
+  z.object({
+    tool: z.literal('file_search'),
+    ...toolInvokeBaseSchema,
+    args: z.object({
+      pattern: z.string().min(1).max(500),
+      path: z.string().max(500).optional(),
+      glob: z.string().max(500).optional(),
+      ignore_case: z.boolean().optional(),
+      max_results: z.number().int().min(1).max(1000).optional(),
+    }),
+  }),
+  z.object({
+    tool: z.literal('file_delete'),
+    ...toolInvokeBaseSchema,
+    args: z.object({
+      path: z.string().min(1).max(500),
+    }),
+  }),
+  z.object({
+    tool: z.literal('xlsx_read_sheet'),
+    ...toolInvokeBaseSchema,
+    args: z.object({
+      path: z.string().min(1).max(500),
+      sheet: z.string().max(200).optional(),
+      max_rows: z.number().int().min(1).max(5000).optional(),
+    }),
+  }),
+  z.object({
+    tool: z.literal('xlsx_write_cells'),
+    ...toolInvokeBaseSchema,
+    args: z.object({
+      path: z.string().min(1).max(500),
+      sheet: z.string().max(200).optional(),
+      changes: z.array(
+        z.object({
+          cell: z.string().min(1).max(20),
+          value: z.union([z.string(), z.number(), z.boolean(), z.null()]),
+        }),
+      ).min(1).max(500),
+    }),
+  }),
+  z.object({
+    tool: z.literal('xlsx_append_rows'),
+    ...toolInvokeBaseSchema,
+    args: z.object({
+      path: z.string().min(1).max(500),
+      sheet: z.string().max(200).optional(),
+      rows: z.array(z.record(z.string(), z.unknown())).min(1).max(1000),
+    }),
+  }),
+  z.object({
+    tool: z.literal('docx_read'),
+    ...toolInvokeBaseSchema,
+    args: z.object({
+      path: z.string().min(1).max(500),
+    }),
+  }),
+  z.object({
+    tool: z.literal('pdf_read'),
+    ...toolInvokeBaseSchema,
+    args: z.object({
+      path: z.string().min(1).max(500),
+      page_range: z.string().max(20).optional(),
+    }),
+  }),
 ])
 
 export const connectorGrantIdSchema = z.object({

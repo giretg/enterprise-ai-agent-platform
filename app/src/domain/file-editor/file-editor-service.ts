@@ -1,0 +1,339 @@
+import { FileEditorError, WorkspaceStorage } from './workspace-storage'
+import { xlsxReadSheet, xlsxWriteCells, xlsxAppendRows } from './adapters/xlsx-adapter'
+import { docxRead } from './adapters/docx-adapter'
+import { pdfRead } from './adapters/pdf-adapter'
+import type { XlsxRow, XlsxCellChange } from './adapters/xlsx-adapter'
+
+const MAX_SEARCH_RESULTS = 1000
+
+function resolveSafePath(userPath: string): string {
+  const normalized = userPath.replace(/\\/g, '/').replace(/\/+/g, '/')
+  const parts = normalized.split('/').filter(Boolean)
+  const resolved: string[] = []
+  for (const part of parts) {
+    if (part === '..') {
+      throw new FileEditorError('PATH_TRAVERSAL', `Path traversal detected: ${userPath}`)
+    }
+    if (part !== '.') resolved.push(part)
+  }
+  if (!resolved.length) throw new FileEditorError('INVALID_PATH', `Path is empty or invalid: ${userPath}`)
+  return resolved.join('/')
+}
+
+function globToRegex(pattern: string): RegExp {
+  const escaped = pattern
+    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*\*/g, '\x00')
+    .replace(/\*/g, '[^/]*')
+    .replace(/\x00/g, '.*')
+    .replace(/\?/g, '[^/]')
+  return new RegExp(`^${escaped}$`)
+}
+
+function addLineNumbers(text: string): string {
+  return text
+    .split('\n')
+    .map((line, i) => `${String(i + 1).padStart(6)}\t${line}`)
+    .join('\n')
+}
+
+export type FileReadResult = {
+  path: string
+  totalLines: number
+  content: string
+}
+
+export type FileWriteResult = {
+  path: string
+  bytesWritten: number
+}
+
+export type FileEditResult = {
+  path: string
+  replacements: number
+}
+
+export type FileListEntry = {
+  path: string
+  type: 'file' | 'dir'
+}
+
+export type FileListResult = {
+  path: string
+  entries: FileListEntry[]
+}
+
+export type FileGlobResult = {
+  paths: string[]
+}
+
+export type FileSearchMatch = {
+  path: string
+  lineNumber: number
+  line: string
+}
+
+export type FileSearchResult = {
+  matches: FileSearchMatch[]
+  truncated: boolean
+}
+
+export type FileDeleteResult = {
+  deleted: boolean
+  path: string
+}
+
+export type XlsxReadSheetResult = {
+  sheet: string
+  headers: string[]
+  rows: XlsxRow[]
+  rowCount: number
+}
+
+export type XlsxWriteCellsResult = {
+  path: string
+  cellsUpdated: number
+}
+
+export type XlsxAppendRowsResult = {
+  path: string
+  rowsAppended: number
+}
+
+export type DocxReadResult = {
+  text: string
+  messages: string[]
+}
+
+export type PdfReadResult = {
+  text: string
+  numPages: number
+  pagesRead: string
+}
+
+export class FileEditorService {
+  constructor(private readonly storage: WorkspaceStorage) {}
+
+  async readFile(
+    tenantId: string,
+    ticketId: string,
+    args: { path: string; offset?: number; limit?: number },
+  ): Promise<FileReadResult> {
+    const safePath = resolveSafePath(args.path)
+    const buf = await this.storage.read(tenantId, ticketId, safePath)
+    if (!buf) throw new FileEditorError('FILE_NOT_FOUND', `File not found: ${safePath}`)
+
+    const text = buf.toString('utf8')
+    const lines = text.split('\n')
+    const totalLines = lines.length
+    const offset = Math.max(0, (args.offset ?? 1) - 1)
+    const limit = args.limit ?? 2000
+    const sliced = lines.slice(offset, offset + limit)
+
+    const numbered = sliced.map((line, i) => `${String(offset + i + 1).padStart(6)}\t${line}`).join('\n')
+
+    return { path: safePath, totalLines, content: numbered }
+  }
+
+  async writeFile(
+    tenantId: string,
+    ticketId: string,
+    args: { path: string; content: string },
+  ): Promise<FileWriteResult> {
+    const safePath = resolveSafePath(args.path)
+    const buf = Buffer.from(args.content, 'utf8')
+    await this.storage.write(tenantId, ticketId, safePath, buf)
+    return { path: safePath, bytesWritten: buf.length }
+  }
+
+  async editFile(
+    tenantId: string,
+    ticketId: string,
+    args: { path: string; old_string: string; new_string: string; replace_all?: boolean },
+  ): Promise<FileEditResult> {
+    const safePath = resolveSafePath(args.path)
+    const buf = await this.storage.read(tenantId, ticketId, safePath)
+    if (!buf) throw new FileEditorError('FILE_NOT_FOUND', `File not found: ${safePath}`)
+
+    const text = buf.toString('utf8')
+
+    let count = 0
+    let idx = 0
+    while ((idx = text.indexOf(args.old_string, idx)) !== -1) {
+      count++
+      idx += args.old_string.length
+    }
+
+    if (count === 0) {
+      throw new FileEditorError('STRING_NOT_FOUND', `old_string not found in: ${safePath}`)
+    }
+    if (count > 1 && !args.replace_all) {
+      throw new FileEditorError(
+        'AMBIGUOUS_MATCH',
+        `old_string appears ${count} times in ${safePath}; set replace_all: true for bulk replace`,
+      )
+    }
+
+    const updated = args.replace_all
+      ? text.split(args.old_string).join(args.new_string)
+      : text.replace(args.old_string, args.new_string)
+
+    await this.storage.write(tenantId, ticketId, safePath, Buffer.from(updated, 'utf8'))
+    return { path: safePath, replacements: args.replace_all ? count : 1 }
+  }
+
+  async listFiles(
+    tenantId: string,
+    ticketId: string,
+    args: { path?: string; recursive?: boolean },
+  ): Promise<FileListResult> {
+    const requestedPath = args.path ? resolveSafePath(args.path) : undefined
+    const all = await this.storage.list(tenantId, ticketId, requestedPath)
+
+    if (args.recursive) {
+      return {
+        path: requestedPath ?? '',
+        entries: all.map((p) => ({ path: p, type: 'file' as const })),
+      }
+    }
+
+    const prefix = requestedPath ? `${requestedPath}/` : ''
+    const seen = new Set<string>()
+    const entries: FileListEntry[] = []
+
+    for (const fullPath of all) {
+      const relative = fullPath.startsWith(prefix) ? fullPath.slice(prefix.length) : fullPath
+      const parts = relative.split('/')
+      const name = parts[0]
+      if (!name || seen.has(name)) continue
+      seen.add(name)
+      entries.push({
+        path: prefix + name,
+        type: parts.length > 1 ? 'dir' : 'file',
+      })
+    }
+
+    return { path: requestedPath ?? '', entries }
+  }
+
+  async globFiles(
+    tenantId: string,
+    ticketId: string,
+    args: { pattern: string },
+  ): Promise<FileGlobResult> {
+    const all = await this.storage.list(tenantId, ticketId)
+    const regex = globToRegex(args.pattern)
+    return { paths: all.filter((p) => regex.test(p)) }
+  }
+
+  async searchFiles(
+    tenantId: string,
+    ticketId: string,
+    args: {
+      pattern: string
+      path?: string
+      glob?: string
+      ignore_case?: boolean
+      max_results?: number
+    },
+  ): Promise<FileSearchResult> {
+    const searchPath = args.path ? resolveSafePath(args.path) : undefined
+    const all = await this.storage.list(tenantId, ticketId, searchPath)
+
+    const files = args.glob ? all.filter((p) => globToRegex(args.glob!).test(p)) : all
+    const regex = new RegExp(args.pattern, args.ignore_case ? 'i' : '')
+    const maxResults = Math.min(args.max_results ?? 100, MAX_SEARCH_RESULTS)
+    const matches: FileSearchMatch[] = []
+    let truncated = false
+
+    outer: for (const filePath of files) {
+      const buf = await this.storage.read(tenantId, ticketId, filePath)
+      if (!buf) continue
+      const lines = buf.toString('utf8').split('\n')
+      for (let i = 0; i < lines.length; i++) {
+        if (regex.test(lines[i])) {
+          matches.push({ path: filePath, lineNumber: i + 1, line: lines[i] })
+          if (matches.length >= maxResults) {
+            truncated = true
+            break outer
+          }
+        }
+      }
+    }
+
+    return { matches, truncated }
+  }
+
+  async deleteFile(
+    tenantId: string,
+    ticketId: string,
+    args: { path: string },
+  ): Promise<FileDeleteResult> {
+    const safePath = resolveSafePath(args.path)
+    await this.storage.delete(tenantId, ticketId, safePath)
+    return { deleted: true, path: safePath }
+  }
+
+  async xlsxReadSheet(
+    tenantId: string,
+    ticketId: string,
+    args: { path: string; sheet?: string; max_rows?: number },
+  ): Promise<XlsxReadSheetResult> {
+    const safePath = resolveSafePath(args.path)
+    const buf = await this.storage.read(tenantId, ticketId, safePath)
+    if (!buf) throw new FileEditorError('FILE_NOT_FOUND', `File not found: ${safePath}`)
+    const result = await xlsxReadSheet(buf, args.sheet, args.max_rows ?? 500)
+    return { ...result, rowCount: result.rows.length }
+  }
+
+  async xlsxWriteCells(
+    tenantId: string,
+    ticketId: string,
+    args: { path: string; sheet?: string; changes: XlsxCellChange[] },
+  ): Promise<XlsxWriteCellsResult> {
+    const safePath = resolveSafePath(args.path)
+    const buf = await this.storage.read(tenantId, ticketId, safePath)
+    if (!buf) throw new FileEditorError('FILE_NOT_FOUND', `File not found: ${safePath}`)
+    const updated = await xlsxWriteCells(buf, args.changes, args.sheet)
+    await this.storage.write(tenantId, ticketId, safePath, updated)
+    return { path: safePath, cellsUpdated: args.changes.length }
+  }
+
+  async xlsxAppendRows(
+    tenantId: string,
+    ticketId: string,
+    args: { path: string; sheet?: string; rows: XlsxRow[] },
+  ): Promise<XlsxAppendRowsResult> {
+    const safePath = resolveSafePath(args.path)
+    const buf = await this.storage.read(tenantId, ticketId, safePath)
+    if (!buf) throw new FileEditorError('FILE_NOT_FOUND', `File not found: ${safePath}`)
+    const updated = await xlsxAppendRows(buf, args.rows, args.sheet)
+    await this.storage.write(tenantId, ticketId, safePath, updated)
+    return { path: safePath, rowsAppended: args.rows.length }
+  }
+
+  async docxRead(
+    tenantId: string,
+    ticketId: string,
+    args: { path: string },
+  ): Promise<DocxReadResult> {
+    const safePath = resolveSafePath(args.path)
+    const buf = await this.storage.read(tenantId, ticketId, safePath)
+    if (!buf) throw new FileEditorError('FILE_NOT_FOUND', `File not found: ${safePath}`)
+    return docxRead(buf)
+  }
+
+  async pdfRead(
+    tenantId: string,
+    ticketId: string,
+    args: { path: string; page_range?: string },
+  ): Promise<PdfReadResult> {
+    const safePath = resolveSafePath(args.path)
+    const buf = await this.storage.read(tenantId, ticketId, safePath)
+    if (!buf) throw new FileEditorError('FILE_NOT_FOUND', `File not found: ${safePath}`)
+    return pdfRead(buf, args.page_range)
+  }
+}
+
+export { FileEditorError } from './workspace-storage'
+export { addLineNumbers }

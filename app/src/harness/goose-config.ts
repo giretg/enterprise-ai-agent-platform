@@ -83,6 +83,18 @@ export async function prepareGooseHarnessEnv(env: GooseHarnessEnv): Promise<Goos
     '      - ticket_create',
     '      - agent_ask',
     '      - agent_catalog',
+    '      - file_read',
+    '      - file_write',
+    '      - file_edit',
+    '      - file_list',
+    '      - file_glob',
+    '      - file_search',
+    '      - file_delete',
+    '      - xlsx_read_sheet',
+    '      - xlsx_write_cells',
+    '      - xlsx_append_rows',
+    '      - docx_read',
+    '      - pdf_read',
     '',
   ].join('\n')
 
@@ -113,6 +125,6 @@ export function gooseConfigPreview(input: GooseConfigInput) {
     platformApiUrl: input.platformApiUrl,
     bridgeScript: input.bridgeScriptPath ?? 'scripts/platform-mcp-bridge.ts',
     developerExtensionEnabled: false,
-    platformBrokerTools: ['kb_search', 'board_write', 'ticket_create', 'agent_ask', 'agent_catalog'],
+    platformBrokerTools: ['kb_search', 'board_write', 'ticket_create', 'agent_ask', 'agent_catalog', 'file_read', 'file_write', 'file_edit', 'file_list', 'file_glob', 'file_search', 'file_delete', 'xlsx_read_sheet', 'xlsx_write_cells', 'xlsx_append_rows', 'docx_read', 'pdf_read'],
   }
 }

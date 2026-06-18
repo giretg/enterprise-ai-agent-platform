@@ -79,6 +79,7 @@ enum ConnectorType {
   knowledge_base
   board
   gmail
+  workspace
 }
 
 enum ConnectorAuthMode {

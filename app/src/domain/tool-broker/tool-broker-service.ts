@@ -20,6 +20,22 @@ import { readDelegationPayload, shouldCompleteDelegation } from '@/lib/delegatio
 import { isRunAsAuthorized, readRunAsUserId, RUN_AS_AUTHORIZED_AT, RUN_AS_AUTHORIZED_BY } from '@/lib/run-as-payload'
 import { GmailApiClient } from '@/domain/connector-grant/gmail-api-client'
 import type { ConnectorGrantService } from '@/domain/connector-grant/connector-grant-service'
+import type { FileEditorService } from '@/domain/file-editor/file-editor-service'
+import {
+  FileEditorError,
+  type FileReadResult,
+  type FileWriteResult,
+  type FileEditResult,
+  type FileListResult,
+  type FileGlobResult,
+  type FileSearchResult,
+  type FileDeleteResult,
+  type XlsxReadSheetResult,
+  type XlsxWriteCellsResult,
+  type XlsxAppendRowsResult,
+  type DocxReadResult,
+  type PdfReadResult,
+} from '@/domain/file-editor/file-editor-service'
 import type {
   AgentRepository,
   AuditRepository,
@@ -138,6 +154,23 @@ export type GmailGetMessageResult = Record<string, string>
 export type GmailCreateDraftResult = { draftId: string }
 export type GmailSendResult = { messageId: string }
 
+export type FileReadArgs = { path: string; offset?: number; limit?: number }
+export type FileWriteArgs = { path: string; content: string }
+export type FileEditArgs = { path: string; old_string: string; new_string: string; replace_all?: boolean }
+export type FileListArgs = { path?: string; recursive?: boolean }
+export type FileGlobArgs = { pattern: string }
+export type FileSearchArgs = { pattern: string; path?: string; glob?: string; ignore_case?: boolean; max_results?: number }
+export type FileDeleteArgs = { path: string }
+export type XlsxReadSheetArgs = { path: string; sheet?: string; max_rows?: number }
+export type XlsxWriteCellsArgs = {
+  path: string
+  sheet?: string
+  changes: Array<{ cell: string; value: string | number | boolean | null }>
+}
+export type XlsxAppendRowsArgs = { path: string; sheet?: string; rows: Array<Record<string, unknown>> }
+export type DocxReadArgs = { path: string }
+export type PdfReadArgs = { path: string; page_range?: string }
+
 type ToolInvokeBase = {
   agentId: string
   agentVersion: number
@@ -157,6 +190,18 @@ export type ToolBrokerInvokeInput =
   | (ToolInvokeBase & { tool: 'gmail_get_message'; args: GmailGetMessageArgs })
   | (ToolInvokeBase & { tool: 'gmail_create_draft'; args: GmailCreateDraftArgs })
   | (ToolInvokeBase & { tool: 'gmail_send'; args: GmailSendArgs })
+  | (ToolInvokeBase & { tool: 'file_read'; args: FileReadArgs })
+  | (ToolInvokeBase & { tool: 'file_write'; args: FileWriteArgs })
+  | (ToolInvokeBase & { tool: 'file_edit'; args: FileEditArgs })
+  | (ToolInvokeBase & { tool: 'file_list'; args: FileListArgs })
+  | (ToolInvokeBase & { tool: 'file_glob'; args: FileGlobArgs })
+  | (ToolInvokeBase & { tool: 'file_search'; args: FileSearchArgs })
+  | (ToolInvokeBase & { tool: 'file_delete'; args: FileDeleteArgs })
+  | (ToolInvokeBase & { tool: 'xlsx_read_sheet'; args: XlsxReadSheetArgs })
+  | (ToolInvokeBase & { tool: 'xlsx_write_cells'; args: XlsxWriteCellsArgs })
+  | (ToolInvokeBase & { tool: 'xlsx_append_rows'; args: XlsxAppendRowsArgs })
+  | (ToolInvokeBase & { tool: 'docx_read'; args: DocxReadArgs })
+  | (ToolInvokeBase & { tool: 'pdf_read'; args: PdfReadArgs })
 
 export type ToolBrokerInvokeResult =
   | {
@@ -177,6 +222,18 @@ export type ToolBrokerInvokeResult =
         | GmailGetMessageResult
         | GmailCreateDraftResult
         | GmailSendResult
+        | FileReadResult
+        | FileWriteResult
+        | FileEditResult
+        | FileListResult
+        | FileGlobResult
+        | FileSearchResult
+        | FileDeleteResult
+        | XlsxReadSheetResult
+        | XlsxWriteCellsResult
+        | XlsxAppendRowsResult
+        | DocxReadResult
+        | PdfReadResult
       resultMeta: Record<string, unknown>
       latencyMs: number
     }
@@ -201,6 +258,18 @@ const TOOL_REQUIREMENTS: Record<
   gmail_get_message: { connectorType: 'gmail', accessMode: 'read' },
   gmail_create_draft: { connectorType: 'gmail', accessMode: 'write' },
   gmail_send: { connectorType: 'gmail', accessMode: 'write' },
+  file_read: { connectorType: 'workspace', accessMode: 'read' },
+  file_write: { connectorType: 'workspace', accessMode: 'write' },
+  file_edit: { connectorType: 'workspace', accessMode: 'write' },
+  file_list: { connectorType: 'workspace', accessMode: 'read' },
+  file_glob: { connectorType: 'workspace', accessMode: 'read' },
+  file_search: { connectorType: 'workspace', accessMode: 'read' },
+  file_delete: { connectorType: 'workspace', accessMode: 'write' },
+  xlsx_read_sheet: { connectorType: 'workspace', accessMode: 'read' },
+  xlsx_write_cells: { connectorType: 'workspace', accessMode: 'write' },
+  xlsx_append_rows: { connectorType: 'workspace', accessMode: 'write' },
+  docx_read: { connectorType: 'workspace', accessMode: 'read' },
+  pdf_read: { connectorType: 'workspace', accessMode: 'read' },
 }
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -303,6 +372,19 @@ function argsMeta(input: ToolBrokerInvokeInput): Record<string, unknown> {
     }
   }
 
+  if (input.tool === 'file_read') return { ...base, path: input.args.path, offset: input.args.offset ?? 1, limit: input.args.limit ?? 2000 }
+  if (input.tool === 'file_write') return { ...base, path: input.args.path, contentLength: input.args.content.length }
+  if (input.tool === 'file_edit') return { ...base, path: input.args.path, oldStringLength: input.args.old_string.length, replaceAll: input.args.replace_all ?? false }
+  if (input.tool === 'file_list') return { ...base, path: input.args.path ?? '', recursive: input.args.recursive ?? false }
+  if (input.tool === 'file_glob') return { ...base, pattern: input.args.pattern }
+  if (input.tool === 'file_search') return { ...base, pattern: input.args.pattern, path: input.args.path ?? '', glob: input.args.glob ?? null, maxResults: input.args.max_results ?? 100 }
+  if (input.tool === 'file_delete') return { ...base, path: input.args.path }
+  if (input.tool === 'xlsx_read_sheet') return { ...base, path: input.args.path, sheet: input.args.sheet ?? null, maxRows: input.args.max_rows ?? 500 }
+  if (input.tool === 'xlsx_write_cells') return { ...base, path: input.args.path, sheet: input.args.sheet ?? null, cellCount: input.args.changes.length }
+  if (input.tool === 'xlsx_append_rows') return { ...base, path: input.args.path, sheet: input.args.sheet ?? null, rowCount: input.args.rows.length }
+  if (input.tool === 'docx_read') return { ...base, path: input.args.path }
+  if (input.tool === 'pdf_read') return { ...base, path: input.args.path, pageRange: input.args.page_range ?? null }
+
   return {
     ...base,
     ticketId: input.args.ticketId,
@@ -322,7 +404,19 @@ function resultMeta(
     | GmailSearchResult
     | GmailGetMessageResult
     | GmailCreateDraftResult
-    | GmailSendResult,
+    | GmailSendResult
+    | FileReadResult
+    | FileWriteResult
+    | FileEditResult
+    | FileListResult
+    | FileGlobResult
+    | FileSearchResult
+    | FileDeleteResult
+    | XlsxReadSheetResult
+    | XlsxWriteCellsResult
+    | XlsxAppendRowsResult
+    | DocxReadResult
+    | PdfReadResult,
 ): Record<string, unknown> {
   if ('hits' in result && Array.isArray(result.hits)) {
     return {
@@ -367,6 +461,19 @@ function resultMeta(
       requesterAgentId: 'requesterAgentId' in result ? result.requesterAgentId : undefined,
     }
   }
+
+  if ('totalLines' in result) return { path: result.path, totalLines: result.totalLines }
+  if ('bytesWritten' in result) return { path: result.path, bytesWritten: result.bytesWritten }
+  if ('replacements' in result) return { path: result.path, replacements: result.replacements }
+  if ('entries' in result) return { path: result.path, count: result.entries.length }
+  if ('paths' in result) return { count: result.paths.length }
+  if ('matches' in result) return { count: result.matches.length, truncated: result.truncated }
+  if ('deleted' in result) return { path: result.path, deleted: result.deleted }
+  if ('rowCount' in result && 'headers' in result) return { sheet: result.sheet, rowCount: result.rowCount, headerCount: result.headers.length }
+  if ('cellsUpdated' in result) return { path: result.path, cellsUpdated: result.cellsUpdated }
+  if ('rowsAppended' in result) return { path: result.path, rowsAppended: result.rowsAppended }
+  if ('numPages' in result) return { numPages: result.numPages, pagesRead: result.pagesRead, textLength: result.text.length }
+  if ('text' in result && 'messages' in result) return { textLength: result.text.length, messages: result.messages.length }
 
   return {}
 }
@@ -470,6 +577,7 @@ export class ToolBrokerService {
     private ticketService: TicketService,
     private authorizer: Authorizer,
     private grantService: ConnectorGrantService,
+    private fileEditor: FileEditorService,
   ) {}
 
   async invoke(input: ToolBrokerInvokeInput): Promise<ToolBrokerInvokeResult> {
@@ -574,6 +682,10 @@ export class ToolBrokerService {
     if (input.tool === 'agent_resolve') return this.agentResolve(input.args)
     if (input.tool === 'agent_catalog') return this.agentCatalog(input.args)
 
+    if (input.tool.startsWith('file_') || ['xlsx_read_sheet', 'xlsx_write_cells', 'xlsx_append_rows', 'docx_read', 'pdf_read'].includes(input.tool)) {
+      return this.executeFileTool(input, authorization.connector)
+    }
+
     const accessToken = await this.resolveDelegatedAccessToken(input, authorization)
     const gmail = new GmailApiClient(accessToken)
 
@@ -588,6 +700,36 @@ export class ToolBrokerService {
       return gmail.createDraft(input.args)
     }
     return gmail.send(input.args)
+  }
+
+  private async executeFileTool(
+    input: ToolBrokerInvokeInput,
+    connector: Connector,
+  ) {
+    if (!input.ticketId) throw new Error('file tools require a ticketId')
+    const tenantId = connector.tenantId ?? 'global'
+    const ticketId = input.ticketId
+
+    try {
+      if (input.tool === 'file_read') return this.fileEditor.readFile(tenantId, ticketId, input.args)
+      if (input.tool === 'file_write') return this.fileEditor.writeFile(tenantId, ticketId, input.args)
+      if (input.tool === 'file_edit') return this.fileEditor.editFile(tenantId, ticketId, input.args)
+      if (input.tool === 'file_list') return this.fileEditor.listFiles(tenantId, ticketId, input.args)
+      if (input.tool === 'file_glob') return this.fileEditor.globFiles(tenantId, ticketId, input.args)
+      if (input.tool === 'file_search') return this.fileEditor.searchFiles(tenantId, ticketId, input.args)
+      if (input.tool === 'file_delete') return this.fileEditor.deleteFile(tenantId, ticketId, input.args)
+      if (input.tool === 'xlsx_read_sheet') return this.fileEditor.xlsxReadSheet(tenantId, ticketId, input.args)
+      if (input.tool === 'xlsx_write_cells') return this.fileEditor.xlsxWriteCells(tenantId, ticketId, input.args as { path: string; sheet?: string; changes: Array<{ cell: string; value: string | number | boolean | null }> })
+      if (input.tool === 'xlsx_append_rows') return this.fileEditor.xlsxAppendRows(tenantId, ticketId, input.args as { path: string; sheet?: string; rows: Array<Record<string, unknown>> })
+      if (input.tool === 'docx_read') return this.fileEditor.docxRead(tenantId, ticketId, input.args)
+      if (input.tool === 'pdf_read') return this.fileEditor.pdfRead(tenantId, ticketId, input.args)
+    } catch (e) {
+      if (e instanceof FileEditorError) {
+        throw new Error(`${e.code}: ${e.message}`)
+      }
+      throw e
+    }
+    throw new Error(`Unknown file tool: ${input.tool}`)
   }
 
   private async resolveDelegatedAccessToken(

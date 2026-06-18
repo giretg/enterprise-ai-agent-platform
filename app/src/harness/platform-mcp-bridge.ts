@@ -14,6 +14,24 @@ export type McpJsonRpcResponse = {
 
 const GMAIL_TOOLS = ['gmail_search', 'gmail_get_message', 'gmail_create_draft', 'gmail_send'] as const
 
+const FILE_TOOLS = [
+  'file_read',
+  'file_write',
+  'file_edit',
+  'file_list',
+  'file_glob',
+  'file_search',
+  'file_delete',
+] as const
+
+const BINARY_TOOLS = [
+  'xlsx_read_sheet',
+  'xlsx_write_cells',
+  'xlsx_append_rows',
+  'docx_read',
+  'pdf_read',
+] as const
+
 export const PLATFORM_BROKER_TOOLS = [
   {
     name: 'kb_search',
@@ -152,6 +170,169 @@ export const PLATFORM_BROKER_TOOLS = [
                 },
               },
   })),
+  {
+    name: 'file_read',
+    description: 'Read a file from the ticket workspace. Returns content with line numbers. Use offset + limit for large files.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Relative path within workspace, e.g. "data/report.csv"' },
+        offset: { type: 'number', description: 'Start from this line number (1-based, default 1)' },
+        limit: { type: 'number', description: 'Max lines to return (default 2000)' },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'file_write',
+    description: 'Write (overwrite or create) a file in the ticket workspace. For edits to existing files prefer file_edit.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Relative path within workspace' },
+        content: { type: 'string', description: 'Full file content to write' },
+      },
+      required: ['path', 'content'],
+    },
+  },
+  {
+    name: 'file_edit',
+    description: 'Replace an exact string in a file. old_string must be unique — provide surrounding context if needed. Fails if old_string not found or ambiguous (use replace_all: true for bulk replace).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string' },
+        old_string: { type: 'string', description: 'Exact text to find and replace' },
+        new_string: { type: 'string', description: 'Replacement text' },
+        replace_all: { type: 'boolean', description: 'Replace every occurrence (default false)' },
+      },
+      required: ['path', 'old_string', 'new_string'],
+    },
+  },
+  {
+    name: 'file_list',
+    description: 'List files and directories in a workspace path.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Directory path (default: workspace root)' },
+        recursive: { type: 'boolean', description: 'List recursively (default false)' },
+      },
+    },
+  },
+  {
+    name: 'file_glob',
+    description: 'Find files matching a glob pattern in the workspace. Returns matching paths sorted by last modified.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pattern: { type: 'string', description: 'Glob pattern, e.g. "**/*.csv" or "reports/*.xlsx"' },
+      },
+      required: ['pattern'],
+    },
+  },
+  {
+    name: 'file_search',
+    description: 'Search file contents using a regex pattern. Returns matching lines with file path and line number.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pattern: { type: 'string', description: 'Regex pattern to search for' },
+        path: { type: 'string', description: 'Directory or file to search in (default: workspace root)' },
+        glob: { type: 'string', description: 'Limit to files matching this glob, e.g. "*.csv"' },
+        ignore_case: { type: 'boolean', description: 'Case-insensitive search (default false)' },
+        max_results: { type: 'number', description: 'Max matching lines to return (default 100)' },
+      },
+      required: ['pattern'],
+    },
+  },
+  {
+    name: 'file_delete',
+    description: 'Delete a file from the workspace. Irreversible — use with care.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string' },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'xlsx_read_sheet',
+    description: 'Read an Excel worksheet as a JSON array of row objects. Headers from the first row become object keys.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string' },
+        sheet: { type: 'string', description: 'Sheet name (default: first sheet)' },
+        max_rows: { type: 'number', description: 'Max rows to return (default 500)' },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'xlsx_write_cells',
+    description: 'Update individual cells in an Excel file. Cell addresses use A1 notation.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string' },
+        sheet: { type: 'string' },
+        changes: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              cell: { type: 'string', description: 'e.g. "B3"' },
+              value: { description: 'string | number | boolean | null' },
+            },
+            required: ['cell', 'value'],
+          },
+        },
+      },
+      required: ['path', 'changes'],
+    },
+  },
+  {
+    name: 'xlsx_append_rows',
+    description: 'Append rows to an Excel worksheet.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string' },
+        sheet: { type: 'string' },
+        rows: {
+          type: 'array',
+          items: { type: 'object' },
+          description: 'Array of row objects matching the header columns',
+        },
+      },
+      required: ['path', 'rows'],
+    },
+  },
+  {
+    name: 'docx_read',
+    description: 'Extract text content from a Word document (.docx).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string' },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'pdf_read',
+    description: 'Extract text content from a PDF file.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string' },
+        page_range: { type: 'string', description: 'e.g. "1-5" or "3" (default: all)' },
+      },
+      required: ['path'],
+    },
+  },
 ] as const
 
 export type PlatformToolInvoker = (
@@ -274,14 +455,16 @@ export async function invokePlatformToolViaHttp(
             k: typeof args.k === 'number' ? args.k : undefined,
           },
         }
-      : tool.startsWith('gmail_')
-        ? {
-            tool,
-            ticketId,
-            actingUserId: env.ACTING_USER_ID?.trim() || undefined,
-            conversationId: env.CONVERSATION_ID?.trim() || undefined,
-            args,
-          }
+      : tool.startsWith('file_') || (FILE_TOOLS as readonly string[]).includes(tool) || (BINARY_TOOLS as readonly string[]).includes(tool)
+        ? { tool, ticketId, args }
+        : tool.startsWith('gmail_')
+          ? {
+              tool,
+              ticketId,
+              actingUserId: env.ACTING_USER_ID?.trim() || undefined,
+              conversationId: env.CONVERSATION_ID?.trim() || undefined,
+              args,
+            }
         : tool === 'ticket_create'
         ? {
             tool: 'ticket_create',
