@@ -549,19 +549,6 @@ export async function listDocumentsForAgent(input: { agentId: string }) {
   }
 }
 
-function readWikiPayload(payload: unknown) {
-  const record =
-    typeof payload === 'object' && payload !== null && !Array.isArray(payload)
-      ? (payload as Record<string, unknown>)
-      : {}
-  return {
-    answer: typeof record.answer === 'string' ? record.answer : '',
-    sources: Array.isArray(record.sources) ? record.sources : [],
-    rationale: typeof record.rationale === 'string' ? record.rationale : '',
-    confidence: typeof record.confidence === 'string' ? record.confidence : 'medium',
-  }
-}
-
 export async function askWiki(input: { agentId: string; question: string; conversationId?: string }) {
   try {
     const user = await requireRole('operator')
@@ -592,7 +579,7 @@ export async function promoteToTicket(input: { conversationId: string; reason?: 
   try {
     const user = await requireRole('operator')
     const parsed = promoteToTicketSchema.parse(input)
-    const { conversation, messages } = await services.conversations.getConversation(
+    const { messages } = await services.conversations.getConversation(
       parsed.conversationId,
       user.tenantId,
     )
@@ -657,12 +644,20 @@ export async function createAgentTaskTicket(input: {
   content: string
   conversationId?: string
   attachmentDocumentIds?: string[]
+  executeAfter?: string
+  authorizeRunAs?: boolean
 }) {
   try {
     const user = await requireRole('operator')
     const parsed = createAgentTaskTicketSchema.parse(input)
+    const executeAfter = parsed.executeAfter ? new Date(parsed.executeAfter) : null
     const ticket = await services.agentChat.createTaskTicket({
-      ...parsed,
+      agentId: parsed.agentId,
+      content: parsed.content,
+      conversationId: parsed.conversationId,
+      attachmentDocumentIds: parsed.attachmentDocumentIds,
+      executeAfter,
+      authorizeRunAs: parsed.authorizeRunAs,
       createdById: user.id,
       tenantId: user.tenantId,
     })
@@ -854,6 +849,34 @@ export async function changeUserRole(input: { targetUserId: string; newRole: str
   try {
     const actor = await requireRole('admin')
     const parsed = changeUserRoleSchema.parse(input)
+
+    if (parsed.targetUserId === actor.id) {
+      return fail('lockout: admin cannot change own role')
+    }
+
+    const target = await prisma.user.findUnique({
+      where: { id: parsed.targetUserId },
+      select: { externalAuthId: true, role: true, status: true },
+    })
+    if (!target) return fail('user: not found')
+
+    if (target.role === 'admin' && parsed.newRole !== 'admin' && target.status === 'active') {
+      const otherActiveAdmins = await prisma.user.count({
+        where: { role: 'admin', status: 'active', id: { not: parsed.targetUserId } },
+      })
+      if (otherActiveAdmins === 0) {
+        return fail('lockout: last active admin cannot be removed')
+      }
+    }
+
+    if (isClerkEnabled()) {
+      const client = await clerkClient()
+      const clerkUser = await client.users.getUser(target.externalAuthId)
+      await client.users.updateUser(target.externalAuthId, {
+        publicMetadata: { ...clerkUser.publicMetadata, role: parsed.newRole },
+      })
+    }
+
     const updated = await services.iam.changeRole({
       targetUserId: parsed.targetUserId,
       newRole: parsed.newRole,

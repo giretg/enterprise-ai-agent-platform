@@ -17,6 +17,7 @@ import {
   type AgentCatalogEntry,
 } from '@/lib/agent-catalog'
 import { readDelegationPayload, shouldCompleteDelegation } from '@/lib/delegation-payload'
+import { isRunAsAuthorized, readRunAsUserId, RUN_AS_AUTHORIZED_AT, RUN_AS_AUTHORIZED_BY } from '@/lib/run-as-payload'
 import { GmailApiClient } from '@/domain/connector-grant/gmail-api-client'
 import type { ConnectorGrantService } from '@/domain/connector-grant/connector-grant-service'
 import type {
@@ -607,8 +608,6 @@ export class ToolBrokerService {
   }
 
   private async resolveActingUserId(input: ToolBrokerInvokeInput): Promise<string | null> {
-    if (input.actingUserId) return input.actingUserId
-
     if (input.conversationId) {
       const conversation = await prisma.conversation.findUnique({
         where: { id: input.conversationId },
@@ -620,12 +619,14 @@ export class ToolBrokerService {
       const ticket = await this.tickets.findById(input.ticketId)
       if (ticket) {
         const payload = isRecord(ticket.payload) ? ticket.payload : null
-        if (payload && typeof payload.runAsUserId === 'string' && payload.runAsUserId.trim()) {
-          return payload.runAsUserId
+        if (isRunAsAuthorized(payload)) {
+          return readRunAsUserId(payload)
         }
-        return ticket.createdById
+        return null
       }
     }
+
+    if (input.actingUserId) return input.actingUserId
 
     return null
   }
@@ -726,7 +727,7 @@ export class ToolBrokerService {
     const ticket = await this.tickets.findById(input.args.ticketId)
     if (!ticket) throw new Error('Ticket not found')
 
-    let mergedPayload: Record<string, unknown> = isRecord(ticket.payload) ? { ...ticket.payload } : {}
+    const mergedPayload: Record<string, unknown> = isRecord(ticket.payload) ? { ...ticket.payload } : {}
     if (input.args.patch.payload) {
       Object.assign(mergedPayload, input.args.patch.payload)
     }
@@ -876,7 +877,16 @@ export class ToolBrokerService {
     }
     if (input.ticketId) payload.parentTicketId = input.ticketId
     if (input.conversationId) payload.conversationId = input.conversationId
-    if (input.actingUserId) payload.runAsUserId = input.actingUserId
+
+    if (input.ticketId) {
+      const parent = await this.tickets.findById(input.ticketId)
+      const parentPayload = isRecord(parent?.payload) ? parent.payload : null
+      if (isRunAsAuthorized(parentPayload)) {
+        payload.runAsUserId = readRunAsUserId(parentPayload)
+        payload[RUN_AS_AUTHORIZED_AT] = parentPayload![RUN_AS_AUTHORIZED_AT]
+        payload[RUN_AS_AUTHORIZED_BY] = parentPayload![RUN_AS_AUTHORIZED_BY]
+      }
+    }
 
     const initialState: TicketState = args.assigneeType === 'agent' ? 'ready' : 'in_progress'
 

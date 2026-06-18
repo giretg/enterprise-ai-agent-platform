@@ -3,6 +3,7 @@ export type HarnessRunParams = {
   agentId: string
   lockToken: string
   agentVersion?: number
+  actingUserId?: string
   question?: string
 }
 
@@ -68,6 +69,7 @@ export function buildHarnessContainerEnv(
     env.push({ name: 'HARNESS_QUESTION', value: input.question.trim() })
   }
 
+  pushEnv(env, 'ACTING_USER_ID', input.actingUserId)
   pushEnv(env, 'HARNESS_CALLBACK_URL', callbackUrl)
   pushEnv(env, 'HARNESS_CALLBACK_TOKEN', config.callbackToken)
   pushEnv(env, 'HARNESS_COMMAND_JSON', config.commandJson)

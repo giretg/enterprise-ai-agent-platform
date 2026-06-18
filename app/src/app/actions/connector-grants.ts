@@ -1,14 +1,24 @@
 'use server'
 
+import type { Prisma } from '@prisma/client'
 import { getCurrentUser, requireRole } from '@/auth'
+import { hasMinimumRole } from '@/auth/types'
 import { services } from '@/domain'
 import { prisma } from '@/lib/db'
+import { repositories } from '@/repositories/postgres'
 import { fail, ok } from '@/lib/result'
 import {
   approveGmailSendSchema,
+  authorizeTicketRunAsSchema,
   connectorGrantIdSchema,
   connectorIdSchema,
 } from '@/lib/validators/actions'
+import {
+  buildRunAsAuthorization,
+  isRunAsAuthorized,
+  readRunAsAuthorizedBy,
+  removeRunAsAuthorization,
+} from '@/lib/run-as-payload'
 
 export async function listConnectorGrants() {
   try {
@@ -121,5 +131,92 @@ export async function approveGmailSend(input: { ticketId: string; draftId: strin
     return ok({ ticketId: ticket.id, draftId: parsed.draftId })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to approve send')
+  }
+}
+
+export async function authorizeTicketRunAs(input: { ticketId: string }) {
+  try {
+    const user = await requireRole('operator')
+    const { ticketId } = authorizeTicketRunAsSchema.parse(input)
+
+    const ticket = await prisma.ticket.findUnique({ where: { id: ticketId } })
+    if (!ticket) return fail('Ticket not found')
+    if (ticket.assigneeType !== 'agent') return fail('Run-as can only be authorized for agent tickets')
+    if (!['backlog', 'ready', 'in_progress'].includes(ticket.state)) {
+      return fail('Run-as can only be authorized before the ticket is closed')
+    }
+
+    const payload =
+      typeof ticket.payload === 'object' && ticket.payload !== null && !Array.isArray(ticket.payload)
+        ? { ...(ticket.payload as Record<string, unknown>) }
+        : {}
+    if (isRunAsAuthorized(payload)) return fail('Run-as is already authorized for this ticket')
+
+    const runAs = buildRunAsAuthorization({ userId: user.id })
+    await prisma.ticket.update({
+      where: { id: ticket.id },
+      data: { payload: { ...payload, ...runAs } as Prisma.InputJsonValue },
+    })
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: null,
+      action: 'ticket.runas.authorize',
+      targetType: 'ticket',
+      targetId: ticket.id,
+      modelUsed: null,
+      inputRef: ticket.agentId ?? null,
+      outputRef: user.id,
+      policyDecision: 'authorized',
+      metadata: { runAsUserId: user.id } as Prisma.JsonValue,
+    })
+
+    return ok({ ticketId: ticket.id, runAsUserId: user.id })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to authorize run-as')
+  }
+}
+
+export async function revokeTicketRunAs(input: { ticketId: string }) {
+  try {
+    const user = await requireRole('operator')
+    const { ticketId } = authorizeTicketRunAsSchema.parse(input)
+
+    const ticket = await prisma.ticket.findUnique({ where: { id: ticketId } })
+    if (!ticket) return fail('Ticket not found')
+
+    const payload =
+      typeof ticket.payload === 'object' && ticket.payload !== null && !Array.isArray(ticket.payload)
+        ? { ...(ticket.payload as Record<string, unknown>) }
+        : {}
+    if (!isRunAsAuthorized(payload)) return fail('Run-as is not authorized for this ticket')
+    const authorizedBy = readRunAsAuthorizedBy(payload)
+    if (authorizedBy !== user.id && !hasMinimumRole(user.role, 'admin')) {
+      return fail('Only the authorizing user or an admin can revoke this run-as grant')
+    }
+
+    await prisma.ticket.update({
+      where: { id: ticket.id },
+      data: { payload: removeRunAsAuthorization(payload) as Prisma.InputJsonValue },
+    })
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: null,
+      action: 'ticket.runas.revoke',
+      targetType: 'ticket',
+      targetId: ticket.id,
+      modelUsed: null,
+      inputRef: ticket.agentId ?? null,
+      outputRef: user.id,
+      policyDecision: 'revoked',
+      metadata: { revokedBy: user.id } as Prisma.JsonValue,
+    })
+
+    return ok({ ticketId: ticket.id })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to revoke run-as')
   }
 }

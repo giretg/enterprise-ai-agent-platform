@@ -21,14 +21,13 @@ export function ConnectorsPanel() {
   const [pending, startTransition] = useTransition()
   const [grants, setGrants] = useState<GrantRow[]>([])
   const [connectors, setConnectors] = useState<Connector[]>([])
-  const [error, setError] = useState<string | null>(null)
-  const [message, setMessage] = useState<string | null>(null)
-
-  useEffect(() => {
-    if (searchParams.get('connected') === '1') setMessage('Fiók sikeresen összekötve.')
+  const [error, setError] = useState<string | null>(() => {
     const err = searchParams.get('error')
-    if (err) setError(decodeURIComponent(err))
-  }, [searchParams])
+    return err ? decodeURIComponent(err) : null
+  })
+  const [message, setMessage] = useState<string | null>(() =>
+    searchParams.get('connected') === '1' ? 'Fiók sikeresen összekötve.' : null,
+  )
 
   useEffect(() => {
     startTransition(async () => {

@@ -11,7 +11,7 @@ import { randomUUID } from 'crypto'
 config({ path: resolve(process.cwd(), '.env.local') })
 config({ path: resolve(process.cwd(), '.env') })
 
-import type { UserRole } from '@prisma/client'
+import type { Prisma, UserRole } from '@prisma/client'
 import { services } from '../src/domain'
 import { runHarnessEntrypoint } from '../src/harness/job-entrypoint'
 import { buildGooseCommandJson } from '../src/harness/goose-command'
@@ -26,6 +26,7 @@ import {
 import { POST as gatewayChatCompletions } from '../src/app/api/v1/gateway/v1/chat/completions/route'
 import { DISPATCH_NOTIFY_CHANNEL } from '../src/lib/dispatch-notify'
 import { prisma } from '../src/lib/db'
+import { buildRunAsAuthorization, isRunAsAuthorized, readRunAsUserId } from '../src/lib/run-as-payload'
 import { PLATFORM_TICKET_SOURCE_ENV } from '../src/lib/ticket-source'
 import { repositories } from '../src/repositories/postgres'
 import {
@@ -1855,6 +1856,7 @@ async function scenario18_dispatchTimeout(operatorId: string, agentId: string) {
     assigneeId: agentId,
     agentId,
     payload: { question: 'timeout test' },
+    source: 'user',
     sourceDocumentId: null,
     executeAfter: null,
     dueBy: null,
@@ -2019,6 +2021,7 @@ async function scenario23_cloudRunJobLauncher() {
       agentId: randomUUID(),
       lockToken: randomUUID(),
       agentVersion: 1,
+      actingUserId: randomUUID(),
       question: SAMPLE_WIKI_QUESTION,
     },
     {
@@ -2036,9 +2039,10 @@ async function scenario23_cloudRunJobLauncher() {
     names.has('TICKET_ID') &&
     names.has('MODEL_GATEWAY_URL') &&
     names.has('HARNESS_EGRESS_ENFORCE') &&
+    names.has('ACTING_USER_ID') &&
     names.has('HARNESS_QUESTION')
   ) {
-    pass('Cloud Run harness env — gateway + egress + question')
+    pass('Cloud Run harness env — gateway + egress + run-as + question')
   } else {
     fail('Cloud Run harness env', [...names].join(','))
   }
@@ -2405,10 +2409,12 @@ async function scenario27_crMvp002(createdById: string, operatorId: string, agen
     })
 
     const caps = await repositories.toolBroker.findCapabilitiesForAgent(orchestrator.id)
-    if (caps.length === 0) {
-      pass('Orchestrator — nincs capability sor (tool-less)')
+    const allowedTools = caps.filter((cap) => cap.allowed).map((cap) => cap.toolName).sort()
+    const expectedTools = ['agent_ask', 'agent_catalog', 'agent_resolve', 'ticket_create']
+    if (JSON.stringify(allowedTools) === JSON.stringify(expectedTools)) {
+      pass('Orchestrator — csak delegációs capability-k engedélyezettek')
     } else {
-      fail('Orchestrator capabilities', JSON.stringify(caps))
+      fail('Orchestrator capabilities', JSON.stringify(allowedTools))
     }
 
     const denied = await services.toolBroker.invoke({
@@ -2441,6 +2447,76 @@ async function scenario27_crMvp002(createdById: string, operatorId: string, agen
     )
     if (hasStart) pass('Audit — process.start playbook_ref-fel')
     else fail('process.start audit', ticket.id)
+
+    const { DispatcherService } = await import('../src/domain/dispatcher/dispatcher-service')
+    const executeAfter = new Date(Date.now() + 60_000)
+    const scheduledTicket = await services.wiki.createQuestionTicket({
+      agentId,
+      question: 'CR-MVP-002 scheduled run-as playbook teszt',
+      createdById: operatorId,
+      executeAfter,
+      authorizeRunAs: true,
+    })
+    const scheduledPayload =
+      typeof scheduledTicket.payload === 'object' &&
+      scheduledTicket.payload !== null &&
+      !Array.isArray(scheduledTicket.payload)
+        ? (scheduledTicket.payload as Record<string, unknown>)
+        : null
+
+    if (
+      scheduledTicket.executeAfter?.getTime() === executeAfter.getTime() &&
+      scheduledTicket.playbookRef?.startsWith('playbook:wiki-interaction@v') &&
+      isRunAsAuthorized(scheduledPayload) &&
+      readRunAsUserId(scheduledPayload) === operatorId
+    ) {
+      pass('Scheduled playbook ticket — explicit run-as payload')
+    } else {
+      fail(
+        'Scheduled playbook run-as payload',
+        JSON.stringify({
+          executeAfter: scheduledTicket.executeAfter,
+          playbookRef: scheduledTicket.playbookRef,
+          payload: scheduledPayload,
+        }),
+      )
+    }
+
+    let scheduledLaunchActingUserId: string | undefined
+    const scheduledDispatcher = new DispatcherService(
+      repositories.tickets,
+      repositories.audit,
+      repositories.modelCalls,
+      {
+        mode: 'acceptance-scheduled-run-as',
+        async launch(input) {
+          scheduledLaunchActingUserId = input.actingUserId
+          return { jobId: `acceptance-scheduled-${input.ticketId}` }
+        },
+      },
+    )
+    const beforeSchedule = await scheduledDispatcher.dispatchTicket(
+      scheduledTicket.id,
+      new Date(executeAfter.getTime() - 1_000),
+    )
+    const afterSchedule = await scheduledDispatcher.dispatchTicket(
+      scheduledTicket.id,
+      new Date(executeAfter.getTime() + 1_000),
+    )
+    if (
+      beforeSchedule.status === 'skipped' &&
+      afterSchedule.status === 'started' &&
+      scheduledLaunchActingUserId === operatorId
+    ) {
+      pass('Scheduled dispatcher — run-as csak due után továbbítva')
+    } else {
+      fail(
+        'Scheduled dispatcher run-as',
+        JSON.stringify({ beforeSchedule, afterSchedule, scheduledLaunchActingUserId }),
+      )
+    }
+
+    await prisma.ticket.delete({ where: { id: scheduledTicket.id } })
 
     const lowConfidenceTicket = await repositories.tickets.create({
       type: 'interaction',
@@ -2783,6 +2859,33 @@ async function scenario14_dispatchNotify(operatorId: string, agentId: string) {
 }
 
 /** Per-user connector (F2) — Gmail grant + broker */
+async function setupGmailGrant(userId: string, connectorId: string) {
+  const { createOAuthState } = await import('../src/lib/crypto/oauth-state')
+  const connector = await prisma.connector.findUniqueOrThrow({ where: { id: connectorId } })
+  const { state } = createOAuthState({
+    userId,
+    connectorId,
+    tenantId: null,
+  })
+  await services.connectorGrants.completeOAuthCallback({
+    code: 'stub-code',
+    state,
+    connector,
+    actorId: userId,
+  })
+}
+
+function payloadContainsTokenLeak(value: unknown): boolean {
+  const text = JSON.stringify(value)
+  return (
+    /stub-access-/i.test(text) ||
+    /stub-refresh-/i.test(text) ||
+    /Bearer\s+[\w.-]+/i.test(text) ||
+    /"accessToken"/i.test(text) ||
+    /"refreshToken"/i.test(text)
+  )
+}
+
 async function scenarioPerUserConnector(operatorId: string, agentId: string, agentVersion: number) {
   console.log('\n[PUC] Per-user Gmail connector (F2)')
 
@@ -2792,6 +2895,13 @@ async function scenarioPerUserConnector(operatorId: string, agentId: string, age
   const gmailConnector = await prisma.connector.findFirst({ where: { type: 'gmail' } })
   if (!gmailConnector) {
     fail('PUC gmail connector', 'run db:seed')
+    return
+  }
+
+  const approver = await getUser('approver')
+  const admin = await prisma.user.findUnique({ where: { externalAuthId: 'seed-admin' } })
+  if (!admin) {
+    fail('PUC admin seed', 'seed-admin missing')
     return
   }
 
@@ -2807,18 +2917,7 @@ async function scenarioPerUserConnector(operatorId: string, agentId: string, age
     fail('G1 acting_user_required', JSON.stringify(deniedNoActing))
   }
 
-  const { createOAuthState } = await import('../src/lib/crypto/oauth-state')
-  const { state } = createOAuthState({
-    userId: operatorId,
-    connectorId: gmailConnector.id,
-    tenantId: null,
-  })
-  await services.connectorGrants.completeOAuthCallback({
-    code: 'stub-code',
-    state,
-    connector: gmailConnector,
-    actorId: operatorId,
-  })
+  await setupGmailGrant(operatorId, gmailConnector.id)
 
   const grantAudit = await prisma.auditLog.findFirst({
     where: { action: 'connector.grant.create', targetType: 'connector_grant' },
@@ -2826,6 +2925,28 @@ async function scenarioPerUserConnector(operatorId: string, agentId: string, age
   })
   if (grantAudit) pass('Grant létrehozás audit connector.grant.create')
   else fail('Grant create audit', 'missing')
+
+  const conversation = await prisma.conversation.create({
+    data: {
+      agentId,
+      createdById: operatorId,
+      title: 'PUC G2 session',
+    },
+  })
+
+  const g2Spoofed = await services.toolBroker.invoke({
+    agentId,
+    agentVersion,
+    tool: 'gmail_search',
+    args: { query: 'MVP', maxResults: 5 },
+    conversationId: conversation.id,
+    actingUserId: approver.id,
+  })
+  if (!g2Spoofed.denied && 'messages' in (g2Spoofed.result as { messages?: unknown[] })) {
+    pass('G2 — session user grantje érvényes, spoofed acting_user figyelmen kívül hagyva')
+  } else {
+    fail('G2 acting user spoof', JSON.stringify(g2Spoofed))
+  }
 
   const search = await services.toolBroker.invoke({
     agentId,
@@ -2840,11 +2961,44 @@ async function scenarioPerUserConnector(operatorId: string, agentId: string, age
     fail('Gmail search', JSON.stringify(search))
   }
 
+  const recentToolCalls = await prisma.toolCall.findMany({
+    where: { agentId, toolName: { startsWith: 'gmail_' } },
+    orderBy: { createdAt: 'desc' },
+    take: 5,
+  })
+  const recentAudits = await prisma.auditLog.findMany({
+    where: { action: { in: ['tool.call', 'tool.call.denied'] }, inputRef: { startsWith: 'gmail_' } },
+    orderBy: { createdAt: 'desc' },
+    take: 5,
+  })
+  const tokenLeaked =
+    recentToolCalls.some(
+      (row) => payloadContainsTokenLeak(row.argsMeta) || payloadContainsTokenLeak(row.resultMeta),
+    ) || recentAudits.some((row) => payloadContainsTokenLeak(row.metadata))
+  if (!tokenLeaked) pass('G3 — token nem szivárog auditban / tool call meta-ban')
+  else fail('G3 token leak', 'stub-access vagy Bearer token található')
+
+  const draft = await services.toolBroker.invoke({
+    agentId,
+    agentVersion,
+    tool: 'gmail_create_draft',
+    args: {
+      to: 'recipient@example.com',
+      subject: 'PUC acceptance',
+      body: 'Stub piszkozat',
+    },
+    actingUserId: operatorId,
+  })
+  const draftId =
+    !draft.denied && draft.result && typeof draft.result === 'object' && 'draftId' in draft.result
+      ? String((draft.result as { draftId: string }).draftId)
+      : null
+
   const sendDenied = await services.toolBroker.invoke({
     agentId,
     agentVersion,
     tool: 'gmail_send',
-    args: { draftId: 'stub-draft-1' },
+    args: { draftId: draftId ?? 'stub-draft-1' },
     actingUserId: operatorId,
   })
   if (sendDenied.denied && sendDenied.reason === 'human_approval_required') {
@@ -2853,11 +3007,171 @@ async function scenarioPerUserConnector(operatorId: string, agentId: string, age
     fail('gmail_send approval gate', JSON.stringify(sendDenied))
   }
 
+  if (draftId) {
+    const approvalTicket = await prisma.ticket.create({
+      data: {
+        type: 'interaction',
+        title: 'Gmail küldés jóváhagyás (PUC)',
+        state: 'awaiting_human',
+        assigneeType: 'human',
+        agentId,
+        payload: { gmailDraftId: draftId, source: 'gmail_send_approval' },
+        createdById: operatorId,
+        executeAfter: null,
+        dueBy: null,
+      },
+    })
+
+    await services.tickets.transition({
+      ticketId: approvalTicket.id,
+      toState: 'approved',
+      actor: { type: 'human', userId: approver.id, role: 'approver' },
+      note: `Gmail küldés jóváhagyva: ${draftId}`,
+    })
+    await prisma.ticket.update({
+      where: { id: approvalTicket.id },
+      data: {
+        payload: { gmailDraftId: draftId, gmailSendApproved: draftId, approvedBy: approver.id },
+      },
+    })
+
+    const sent = await services.toolBroker.invoke({
+      agentId,
+      agentVersion,
+      tool: 'gmail_send',
+      args: { draftId, approvalTicketId: approvalTicket.id },
+      actingUserId: operatorId,
+    })
+    if (!sent.denied && sent.result && typeof sent.result === 'object' && 'messageId' in sent.result) {
+      pass('gmail_send approve → küldés E2E')
+    } else {
+      fail('gmail_send approve E2E', JSON.stringify(sent))
+    }
+
+    await prisma.ticket.delete({ where: { id: approvalTicket.id } })
+  } else {
+    fail('gmail_send approve E2E', 'draft létrehozás sikertelen')
+  }
+
+  const runTicket = await prisma.ticket.create({
+    data: {
+      type: 'interaction',
+      title: 'PUC run-as teszt',
+      state: 'ready',
+      assigneeType: 'agent',
+      assigneeId: agentId,
+      agentId,
+      payload: { runAsUserId: operatorId },
+      createdById: admin.id,
+      executeAfter: null,
+      dueBy: null,
+    },
+  })
+
+  const deniedImplicitRunAs = await services.toolBroker.invoke({
+    agentId,
+    agentVersion,
+    tool: 'gmail_search',
+    args: { query: 'MVP' },
+    ticketId: runTicket.id,
+  })
+  if (deniedImplicitRunAs.denied && deniedImplicitRunAs.reason === 'acting_user_required') {
+    pass('F2-E — implicit run-as nélkül DENY')
+  } else {
+    fail('F2-E implicit run-as deny', JSON.stringify(deniedImplicitRunAs))
+  }
+
+  const deniedSpoofedTicketRunAs = await services.toolBroker.invoke({
+    agentId,
+    agentVersion,
+    tool: 'gmail_search',
+    args: { query: 'MVP' },
+    ticketId: runTicket.id,
+    actingUserId: operatorId,
+  })
+  if (deniedSpoofedTicketRunAs.denied && deniedSpoofedTicketRunAs.reason === 'acting_user_required') {
+    pass('F2-E — ticket melletti acting_user spoof DENY')
+  } else {
+    fail('F2-E ticket acting_user spoof deny', JSON.stringify(deniedSpoofedTicketRunAs))
+  }
+
+  await prisma.ticket.update({
+    where: { id: runTicket.id },
+    data: {
+      payload: buildRunAsAuthorization({ userId: operatorId }) as Prisma.InputJsonValue,
+    },
+  })
+
+  const withRunAs = await services.toolBroker.invoke({
+    agentId,
+    agentVersion,
+    tool: 'gmail_search',
+    args: { query: 'MVP', maxResults: 3 },
+    ticketId: runTicket.id,
+  })
+  if (!withRunAs.denied && 'messages' in (withRunAs.result as { messages?: unknown[] })) {
+    pass('F2-E — explicit run-as felhatalmazással gmail search OK')
+  } else {
+    fail('F2-E explicit run-as', JSON.stringify(withRunAs))
+  }
+
+  const { DispatcherService } = await import('../src/domain/dispatcher/dispatcher-service')
+  let launchedActingUserId: string | undefined
+  const runAsDispatcher = new DispatcherService(
+    repositories.tickets,
+    repositories.audit,
+    repositories.modelCalls,
+    {
+      mode: 'acceptance-run-as',
+      async launch(input) {
+        launchedActingUserId = input.actingUserId
+        return { jobId: `acceptance-run-as-${input.ticketId}` }
+      },
+    },
+  )
+  const runAsDispatch = await runAsDispatcher.dispatchTicket(runTicket.id)
+  if (runAsDispatch.status === 'started' && launchedActingUserId === operatorId) {
+    pass('F2-E — dispatcher továbbadja az explicit run-as usert')
+  } else {
+    fail(
+      'F2-E dispatcher run-as propagation',
+      JSON.stringify({ dispatch: runAsDispatch, launchedActingUserId }),
+    )
+  }
+
+  await prisma.ticket.delete({ where: { id: runTicket.id } })
+
+  const tenantA = randomUUID()
+  const tenantB = randomUUID()
+  const { createOAuthState } = await import('../src/lib/crypto/oauth-state')
+  const { state: tenantState } = createOAuthState({
+    userId: operatorId,
+    connectorId: gmailConnector.id,
+    tenantId: tenantA,
+  })
+  await services.connectorGrants.completeOAuthCallback({
+    code: 'stub-tenant-code',
+    state: tenantState,
+    connector: gmailConnector,
+    actorId: operatorId,
+  })
+
+  const crossTenantGrant = await repositories.connectorGrants.findActiveGrant({
+    tenantId: tenantB,
+    connectorId: gmailConnector.id,
+    userId: operatorId,
+  })
+  if (!crossTenantGrant) {
+    pass('G7 — más tenant grantje nem érhető el')
+  } else {
+    fail('G7 tenant isolation', 'tenantB grant található tenantA grant mellett')
+  }
+
   const grant = await prisma.connectorGrant.findFirst({
-    where: { userId: operatorId, connectorId: gmailConnector.id, status: 'active' },
+    where: { userId: operatorId, connectorId: gmailConnector.id, status: 'active', tenantId: null },
   })
   if (!grant) {
-    fail('PUC revoke setup', 'no active grant')
+    fail('PUC revoke setup', 'no active null-tenant grant')
     return
   }
 
@@ -2879,6 +3193,43 @@ async function scenarioPerUserConnector(operatorId: string, agentId: string, age
   } else {
     fail('G4 revoked grant', JSON.stringify(afterRevoke))
   }
+
+  await setupGmailGrant(operatorId, gmailConnector.id)
+
+  try {
+    await services.iam.setStatus({
+      targetUserId: operatorId,
+      status: 'suspended',
+      actorId: admin.id,
+    })
+
+    const suspendedGrants = await prisma.connectorGrant.count({
+      where: { userId: operatorId, connectorId: gmailConnector.id, status: 'revoked' },
+    })
+    if (suspendedGrants > 0) pass('G5 — offboarding grant revoke')
+    else fail('G5 grant revoke on suspend', `${suspendedGrants} revoked`)
+
+    const deniedSuspended = await services.toolBroker.invoke({
+      agentId,
+      agentVersion,
+      tool: 'gmail_search',
+      args: { query: 'MVP' },
+      actingUserId: operatorId,
+    })
+    if (deniedSuspended.denied && deniedSuspended.reason === 'acting_user_suspended') {
+      pass('G5 — suspended user grant használata DENY')
+    } else {
+      fail('G5 suspended deny', JSON.stringify(deniedSuspended))
+    }
+  } finally {
+    await services.iam.setStatus({
+      targetUserId: operatorId,
+      status: 'active',
+      actorId: admin.id,
+    })
+  }
+
+  await prisma.conversation.delete({ where: { id: conversation.id } })
 }
 
 async function main() {

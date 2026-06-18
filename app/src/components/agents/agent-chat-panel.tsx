@@ -131,6 +131,8 @@ export function AgentChatPanel({
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([])
   const [statusMessage, setStatusMessage] = useState<string | null>(null)
   const [lastTicketId, setLastTicketId] = useState<string | null>(null)
+  const [ticketExecuteAfter, setTicketExecuteAfter] = useState('')
+  const [ticketAuthorizeRunAs, setTicketAuthorizeRunAs] = useState(false)
   const [isAgentTyping, setIsAgentTyping] = useState(false)
   const [sessions, setSessions] = useState<ChatSession[]>([])
   const [sessionsLoading, setSessionsLoading] = useState(false)
@@ -143,7 +145,8 @@ export function AgentChatPanel({
   const [mounted, setMounted] = useState(false)
 
   useEffect(() => {
-    setMounted(true)
+    const timer = window.setTimeout(() => setMounted(true), 0)
+    return () => window.clearTimeout(timer)
   }, [])
 
   useEffect(() => {
@@ -173,7 +176,8 @@ export function AgentChatPanel({
 
   useEffect(() => {
     if (!open) return
-    void refreshSessions()
+    const timer = window.setTimeout(() => void refreshSessions(), 0)
+    return () => window.clearTimeout(timer)
   }, [open, refreshSessions])
 
   const startNewSession = useCallback(() => {
@@ -240,6 +244,8 @@ export function AgentChatPanel({
 
   const resetComposer = () => {
     setInput('')
+    setTicketExecuteAfter('')
+    setTicketAuthorizeRunAs(false)
     pendingAttachments.forEach((a) => {
       if (a.previewUrl) URL.revokeObjectURL(a.previewUrl)
     })
@@ -360,6 +366,9 @@ export function AgentChatPanel({
     if (!canSubmit) return
     const text = input.trim()
     const localAttachments = [...pendingAttachments]
+    const executeAfterIso = ticketExecuteAfter
+      ? new Date(ticketExecuteAfter).toISOString()
+      : undefined
 
     startTicketTransition(async () => {
       setStatusMessage(null)
@@ -371,6 +380,8 @@ export function AgentChatPanel({
           content: text,
           conversationId: conversationId ?? undefined,
           attachmentDocumentIds: documentIds,
+          executeAfter: executeAfterIso,
+          authorizeRunAs: ticketAuthorizeRunAs,
         })
         if (!res.success) {
           setStatusMessage(res.error)
@@ -532,6 +543,29 @@ export function AgentChatPanel({
               ))}
             </div>
           )}
+
+          <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-ink-soft">
+            <label className="flex min-w-[13rem] flex-1 items-center gap-2">
+              <span className="shrink-0">Ütemezés</span>
+              <input
+                type="datetime-local"
+                value={ticketExecuteAfter}
+                onChange={(e) => setTicketExecuteAfter(e.target.value)}
+                disabled={pending || ticketPending || isAgentTyping}
+                className="min-w-0 flex-1 rounded-lg border border-line bg-night-2 px-2 py-1.5 text-xs text-ink"
+              />
+            </label>
+            <label className="flex items-center gap-2 rounded-lg border border-line bg-night-2 px-2 py-1.5">
+              <input
+                type="checkbox"
+                checked={ticketAuthorizeRunAs}
+                onChange={(e) => setTicketAuthorizeRunAs(e.target.checked)}
+                disabled={pending || ticketPending || isAgentTyping}
+                className="h-3.5 w-3.5 accent-coral"
+              />
+              <span>Run-as</span>
+            </label>
+          </div>
 
           <div className="flex items-end gap-2 rounded-2xl border border-line bg-card p-2 shadow-sm focus-within:border-coral/40 focus-within:ring-2 focus-within:ring-coral/15">
             <input

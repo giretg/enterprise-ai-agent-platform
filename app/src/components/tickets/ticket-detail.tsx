@@ -3,10 +3,12 @@
 import { useRouter } from 'next/navigation'
 import { useState, useTransition } from 'react'
 import { transitionTicket } from '@/app/actions/platform'
+import { authorizeTicketRunAs, revokeTicketRunAs } from '@/app/actions/connector-grants'
 import { ProposalCard } from '@/components/tickets/proposal-card'
 import { Badge, Card } from '@/components/ui/shell'
 import { TICKET_STATE_LABELS, TICKET_STATE_TONE } from '@/lib/ticket-labels'
 import { extractTaskDescription, formatTicketDateTime } from '@/lib/ticket-display'
+import { isRunAsAuthorized } from '@/lib/run-as-payload'
 
 function extractTaskDescriptionFromPayload(payload: Record<string, unknown> | null): string | null {
   return extractTaskDescription(payload)
@@ -50,6 +52,103 @@ function hasWikiAnswer(payload: unknown): boolean {
     payload !== null &&
     'answer' in payload &&
     typeof (payload as { answer?: unknown }).answer === 'string'
+  )
+}
+
+function hasRunAsAuthorization(payload: Record<string, unknown> | null): boolean {
+  return isRunAsAuthorized(payload)
+}
+
+export function TicketRunAsAuthorization({
+  ticket,
+  canManageRunAs = false,
+}: {
+  ticket: TicketView
+  canManageRunAs?: boolean
+}) {
+  const router = useRouter()
+  const [pending, startTransition] = useTransition()
+  const [error, setError] = useState<string | null>(null)
+  const [message, setMessage] = useState<string | null>(null)
+
+  const payload =
+    typeof ticket.payload === 'object' && ticket.payload !== null && !Array.isArray(ticket.payload)
+      ? (ticket.payload as Record<string, unknown>)
+      : null
+  const authorized = hasRunAsAuthorization(payload)
+  const canAuthorize =
+    canManageRunAs &&
+    ticket.assigneeType === 'agent' &&
+    ['backlog', 'ready', 'in_progress'].includes(ticket.state) &&
+    !authorized
+
+  if (!canAuthorize && !authorized) return null
+
+  const authorize = () => {
+    setError(null)
+    setMessage(null)
+    startTransition(async () => {
+      const res = await authorizeTicketRunAs({ ticketId: ticket.id })
+      if (!res.success) {
+        setError(res.error)
+        return
+      }
+      setMessage('Run-as felhatalmazás rögzítve — az agent a te fiókoddal járhat el autonóm futásnál.')
+      router.refresh()
+    })
+  }
+
+  const revoke = () => {
+    setError(null)
+    setMessage(null)
+    startTransition(async () => {
+      const res = await revokeTicketRunAs({ ticketId: ticket.id })
+      if (!res.success) {
+        setError(res.error)
+        return
+      }
+      setMessage('Run-as felhatalmazás visszavonva.')
+      router.refresh()
+    })
+  }
+
+  return (
+    <Card title="Run-as felhatalmazás">
+      {error && <p className="mb-3 text-sm text-coral">{error}</p>}
+      {message && <p className="mb-3 text-sm text-sage">{message}</p>}
+      {authorized ? (
+        <>
+          <p className="mb-3 text-sm text-ink-soft">
+            Autonóm futáshoz engedélyezve: a per-user connectorok a te fiókoddal futnak ezen a ticketen.
+          </p>
+          {canManageRunAs && (
+            <button
+              type="button"
+              disabled={pending}
+              onClick={revoke}
+              className="rounded-full bg-coral/20 px-4 py-2 text-sm font-semibold text-coral hover:bg-coral/30 disabled:opacity-50"
+            >
+              Run-as visszavonása
+            </button>
+          )}
+        </>
+      ) : (
+        <>
+          <p className="mb-3 text-sm text-ink-soft">
+            Ha az agent autonóm futáskor (pl. ütemezett feladat) a te Gmail-fiókodat használja, itt adhatod meg
+            előre a felhatalmazást. Implicit öröklés nélkül — csak explicit, visszavonható engedély.
+          </p>
+          <button
+            type="button"
+            disabled={pending}
+            onClick={authorize}
+            className="rounded-full bg-sky/20 px-4 py-2 text-sm font-semibold text-sky hover:bg-sky/30 disabled:opacity-50"
+          >
+            Run-as engedélyezése
+          </button>
+        </>
+      )}
+    </Card>
   )
 }
 

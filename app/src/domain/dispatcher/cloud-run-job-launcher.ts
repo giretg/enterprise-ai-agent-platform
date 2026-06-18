@@ -58,6 +58,7 @@ export class CloudRunJobHarnessLauncher implements HarnessLauncher {
     agentId: string
     lockToken: string
     agentVersion?: number
+    actingUserId?: string
     question?: string
   }): Promise<{ jobId: string; executionName?: string }> {
     const token = await getCloudRunAccessToken(this.config.bearerToken)

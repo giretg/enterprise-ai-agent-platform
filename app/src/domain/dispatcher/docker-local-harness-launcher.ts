@@ -59,6 +59,7 @@ export class DockerLocalHarnessLauncher implements HarnessLauncher {
     agentId: string
     lockToken: string
     agentVersion?: number
+    actingUserId?: string
     question?: string
   }): Promise<{ jobId: string; executionName?: string }> {
     const agentApiKey = await resolveAgentApiKey(this.config)

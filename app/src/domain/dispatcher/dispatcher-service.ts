@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto'
 import type { Prisma, Ticket } from '@prisma/client'
 import type { AuditRepository, ModelCallRepository, TicketRepository } from '@/repositories/interfaces'
+import { isRunAsAuthorized, readRunAsUserId } from '@/lib/run-as-payload'
 import { wikiSearchQuery } from '@/lib/wiki-ticket-payload'
 
 export type DispatchBudget = {
@@ -15,6 +16,7 @@ export type HarnessLauncher = {
     agentId: string
     lockToken: string
     agentVersion?: number
+    actingUserId?: string
     question?: string
   }): Promise<{ jobId: string; executionName?: string }>
 }
@@ -243,6 +245,7 @@ export class DispatcherService {
       typeof payload.question === 'string' && payload.question.trim()
         ? wikiSearchQuery(payload)
         : undefined
+    const actingUserId = isRunAsAuthorized(payload) ? (readRunAsUserId(payload) ?? undefined) : undefined
 
     let job: { jobId: string; executionName?: string }
     try {
@@ -251,6 +254,7 @@ export class DispatcherService {
         agentId: ticket.agentId,
         lockToken,
         agentVersion,
+        actingUserId,
         question,
       })
     } catch (error) {
@@ -301,6 +305,7 @@ export class DispatcherService {
         lockToken,
         launcherMode: this.launcher.mode,
         executionName: job.executionName ?? null,
+        actingUserId: actingUserId ?? null,
       },
     })
     return { ticketId: ticket.id, status: 'started' }

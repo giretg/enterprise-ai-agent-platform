@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import type { AgentRepository, TicketRepository } from '@/repositories/interfaces'
 import { composeSystemPrompt } from '@/lib/agent-prompt'
+import { buildRunAsAuthorization } from '@/lib/run-as-payload'
 import { readWikiTicketPayload, wikiSearchQuery, wikiUserPrompt } from '@/lib/wiki-ticket-payload'
 import type { ModelGateway } from '../gateway/model-gateway'
 import type { ToolBrokerService } from '../tool-broker/tool-broker-service'
@@ -220,7 +221,13 @@ export class WikiAgentRuntime {
     return this.processTicket({ ticketId: ticket.id, agentId: params.agentId })
   }
 
-  async createQuestionTicket(params: { agentId: string; question: string; createdById: string }) {
+  async createQuestionTicket(params: {
+    agentId: string
+    question: string
+    createdById: string
+    executeAfter?: Date | null
+    authorizeRunAs?: boolean
+  }) {
     const question = params.question.trim()
     if (!question) throw new Error('Question is required')
 
@@ -237,6 +244,9 @@ export class WikiAgentRuntime {
     const recipe = agentDetails.recipe
     const playbookRef =
       (await this.playbooks.getActiveRefByName('wiki-interaction')) ?? null
+    const runAsPayload = params.authorizeRunAs
+      ? buildRunAsAuthorization({ userId: params.createdById })
+      : {}
 
     const ticket = await this.tickets.create({
       type: 'interaction',
@@ -254,9 +264,11 @@ export class WikiAgentRuntime {
         recipeName: recipe?.name ?? null,
         recipeVersion: recipe?.version ?? null,
         playbookRef,
+        scheduledRun: params.executeAfter ? true : undefined,
+        ...runAsPayload,
       },
       sourceDocumentId: null,
-      executeAfter: null,
+      executeAfter: params.executeAfter ?? null,
       dueBy: null,
       createdById: params.createdById,
     })

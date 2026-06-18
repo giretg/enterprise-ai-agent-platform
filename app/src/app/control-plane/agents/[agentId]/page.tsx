@@ -95,7 +95,7 @@ export default async function AgentDetailPage({
               <Badge tone={agent.status === 'active' ? 'success' : 'neutral'}>{mood.label}</Badge>
             </div>
             <p className="mt-2 text-sm text-ink-faint">{agent.name}</p>
-            <p className="mt-2 max-w-2xl text-base italic text-ink-soft">"{persona.greeting}"</p>
+            <p className="mt-2 max-w-2xl text-base italic text-ink-soft">&quot;{persona.greeting}&quot;</p>
           </div>
         </div>
         <div className="estate-rule my-4" />

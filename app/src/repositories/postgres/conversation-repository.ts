@@ -1,4 +1,4 @@
-import type { Conversation, Message, MessageRole, Prisma } from '@prisma/client'
+import type { Conversation, Message, MessageRole } from '@prisma/client'
 import { prisma } from '@/lib/db'
 import type { ConversationRepository } from '../interfaces'
 

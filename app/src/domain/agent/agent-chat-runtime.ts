@@ -1,6 +1,7 @@
 import type { AgentRepository, DocumentRepository, TicketRepository, ToolBrokerRepository } from '@/repositories/interfaces'
 import { composeSystemPrompt } from '@/lib/agent-prompt'
 import { formatOrgRoster } from '@/lib/agent-org-roster'
+import { buildRunAsAuthorization } from '@/lib/run-as-payload'
 import type { ModelGateway } from '../gateway/model-gateway'
 import type { ConversationService } from '../conversation/conversation-service'
 import type { ToolBrokerService } from '../tool-broker/tool-broker-service'
@@ -195,6 +196,8 @@ export class AgentChatRuntime {
     tenantId?: string | null
     conversationId?: string | null
     attachmentDocumentIds?: string[]
+    executeAfter?: Date | null
+    authorizeRunAs?: boolean
   }) {
     const text = params.content.trim()
     const attachmentIds = params.attachmentDocumentIds ?? []
@@ -212,6 +215,9 @@ export class AgentChatRuntime {
     }
 
     const titleSource = text || attachmentDocs[0]?.filename || 'Feladat'
+    const runAsPayload = params.authorizeRunAs
+      ? buildRunAsAuthorization({ userId: params.createdById })
+      : {}
     const ticket = await this.tickets.create({
       type: 'interaction',
       title: `Feladat: ${titleSource.slice(0, 80)}`,
@@ -228,9 +234,11 @@ export class AgentChatRuntime {
         agentVersion: agentDetails.agent.currentVersion,
         model: modelConfig.model,
         memoryVersion: agentDetails.memoryVersion,
+        scheduledRun: params.executeAfter ? true : undefined,
+        ...runAsPayload,
       },
       sourceDocumentId: attachmentIds[0] ?? null,
-      executeAfter: null,
+      executeAfter: params.executeAfter ?? null,
       dueBy: null,
       createdById: params.createdById,
     })

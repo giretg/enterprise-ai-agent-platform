@@ -70,6 +70,11 @@ export const createAgentTaskTicketSchema = z.object({
   content: z.string().trim().max(8000).default(''),
   conversationId: z.string().uuid().optional(),
   attachmentDocumentIds: z.array(z.string().uuid()).max(8).optional(),
+  executeAfter: z
+    .string()
+    .datetime()
+    .optional(),
+  authorizeRunAs: z.boolean().optional(),
 }).refine((v) => v.content.length > 0 || (v.attachmentDocumentIds?.length ?? 0) > 0, {
   message: 'A feladat leírása vagy legalább egy csatolmány kötelező',
 })
@@ -341,6 +346,10 @@ export const connectorIdSchema = z.object({
 export const approveGmailSendSchema = z.object({
   ticketId: z.string().uuid(),
   draftId: z.string().min(1),
+})
+
+export const authorizeTicketRunAsSchema = z.object({
+  ticketId: z.string().uuid(),
 })
 
 export const harnessCompletionSchema = z.object({

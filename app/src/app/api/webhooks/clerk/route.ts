@@ -3,12 +3,12 @@ import type { UserRole } from '@prisma/client'
 import type { NextRequest } from 'next/server'
 import { prisma } from '@/lib/db'
 
-function mapClerkRole(metadata: unknown): UserRole {
+function readClerkRole(metadata: unknown): UserRole | null {
   const role = (metadata as { role?: string } | undefined)?.role
   if (role === 'admin' || role === 'approver' || role === 'operator' || role === 'viewer') {
     return role
   }
-  return 'viewer'
+  return null
 }
 
 function userFromEvent(data: {
@@ -22,7 +22,7 @@ function userFromEvent(data: {
   const email = data.email_addresses[0]?.email_address ?? 'unknown@local'
   const name =
     [data.first_name, data.last_name].filter(Boolean).join(' ') || data.username || email
-  const role = mapClerkRole(data.public_metadata)
+  const role = readClerkRole(data.public_metadata)
   return { externalAuthId: data.id, email, name, role }
 }
 
@@ -39,8 +39,10 @@ export async function POST(req: NextRequest) {
     const user = userFromEvent(evt.data)
     await prisma.user.upsert({
       where: { externalAuthId: user.externalAuthId },
-      create: user,
-      update: { email: user.email, name: user.name, role: user.role },
+      create: { ...user, role: user.role ?? 'viewer' },
+      update: user.role
+        ? { email: user.email, name: user.name, role: user.role }
+        : { email: user.email, name: user.name },
     })
 
     if (evt.type === 'user.created') {

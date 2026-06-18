@@ -4,12 +4,12 @@ import { prisma } from '@/lib/db'
 import type { AuthProvider, AuthUser } from './types'
 import { assertRole } from './types'
 
-function mapClerkRole(metadata: unknown): UserRole {
+function readClerkRole(metadata: unknown): UserRole | null {
   const role = (metadata as { role?: string } | undefined)?.role
   if (role === 'admin' || role === 'approver' || role === 'operator' || role === 'viewer') {
     return role
   }
-  return 'viewer'
+  return null
 }
 
 export class ClerkAuthProvider implements AuthProvider {
@@ -26,12 +26,13 @@ export class ClerkAuthProvider implements AuthProvider {
       [clerkUser.firstName, clerkUser.lastName].filter(Boolean).join(' ') ||
       clerkUser.username ||
       email
-    const role = mapClerkRole(clerkUser.publicMetadata)
+    const clerkRole = readClerkRole(clerkUser.publicMetadata)
+    const role = clerkRole ?? 'viewer'
 
     const user = await prisma.user.upsert({
       where: { externalAuthId },
       create: { externalAuthId, email, name, role },
-      update: { email, name, role },
+      update: clerkRole ? { email, name, role: clerkRole } : { email, name },
     })
 
     return {
