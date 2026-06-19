@@ -1,0 +1,32 @@
+{
+  "ceremony_type": "key_transfer",
+  "title": "Kulcskomponens-átadás harmadik félnek — Thales payShield 10K",
+  "source": "Keymanagement requirements v8.docx §6.x Transferring cryptographic keys (App. 11–14)",
+  "pci_references": ["PCI DSS 3.7.3 (biztonságos kulcs-elosztás)", "PCI DSS 3.6.1", "PCI DSS 3.7.6 (dual control / split knowledge)", "PCI PIN Req 18", "PCI PIN Req 29"],
+  "roles_required": {
+    "key_custodian": 3,
+    "security_officer": 1
+  },
+  "preflight": [
+    "A kulcs-átadást a releváns üzletág senior managere kérte, a Security Officer szervezi.",
+    "Min. 3 különböző key custodian (komponensenként egy) + 1 security officer jelen.",
+    "A harmadik fél 3 key custodianja kijelölve; adataik (név, szerep, telefon, e-mail, postacím, komponens-ID) biztonságosan, írásban megérkeztek és telefonon egyeztetve (App. 11).",
+    "Három KÜLÖNBÖZŐ futárszolgálat elérhető (komponensenként más).",
+    "Serializált tamper-evident borítékok rendelkezésre állnak.",
+    "A művelet a secure operation roomban zajlik."
+  ],
+  "steps": [
+    {"n": 1, "desc": "Harmadik fél custodian-adatok rögzítése és egyeztetése (App. 11)", "command": "(dokumentáció)", "expected": "3 third-party custodian adat egyeztetve és visszaigazolva", "capture": ["tp_custodian_ids"]},
+    {"n": 2, "desc": "Komponens-másolatok készítése (csak custodianok férnek hozzá; App. 12)", "command": "DC", "expected": "Mindhárom komponensről másolat; primary+copy újra-borítékolva serializáltan", "capture": ["copy_envelope_serials"]},
+    {"n": 3, "desc": "Minden komponens külön serializált tamper-evident borítékba", "command": "(csomagolás)", "expected": "3 boríték, 3 sorszám rögzítve", "capture": ["envelope_serials"]},
+    {"n": 4, "desc": "Boríték-sorszámok előzetes közlése a counterparttal (külön csatornán)", "command": "(kommunikáció)", "expected": "Mindhárom counterpart megkapta a saját boríték-sorszámot", "capture": []},
+    {"n": 5, "desc": "Komponensek feladása 3 különböző futárral + Sent key component dokumentum (App. 13)", "command": "(feladás)", "expected": "3 komponens feladva külön futárral; feladás dokumentálva", "capture": ["courier_refs"]},
+    {"n": 6, "desc": "Átvételi visszaigazolás fogadása a third party custodianoktól (App. 14)", "command": "(visszaigazolás)", "expected": "Mindhárom megerősítő űrlap visszaérkezett és a Security Officerhez továbbítva", "capture": ["confirmation_refs"]}
+  ],
+  "closeout": [
+    "Mindhárom komponens átadása visszaigazolva (delivery confirmation, App. 14).",
+    "Boríték-sorszámok a feladott és visszaigazolt dokumentumokon egyeznek.",
+    "Esetleges sérülés / eltérés esetén incidens nyitva (compromise-gyanú).",
+    "Security Officer és custodianok aláírása."
+  ]
+}

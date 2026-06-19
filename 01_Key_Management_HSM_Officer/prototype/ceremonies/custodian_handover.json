@@ -1,0 +1,28 @@
+{
+  "ceremony_type": "custodian_handover",
+  "title": "Key custodian átadás-átvétel (handover / takeover)",
+  "source": "Hand-Take-over.docx; Keymanagement requirements v8.docx §5.x, App. 8",
+  "pci_references": ["PCI DSS 3.7.8 (kulcs-custodian nyilatkozat és felelősség)", "PCI DSS 3.7.6 (dual control)", "PCI PIN Req 28", "PCI PIN Req 29"],
+  "roles_required": {
+    "handover_custodian": 1,
+    "takeover_custodian": 1,
+    "security_officer": 1
+  },
+  "preflight": [
+    "Az átadó (handover) és az átvevő (takeover) custodian személye azonosítva, érvényes/új kinevezéssel.",
+    "A Security Officer jelen van és levezeti az eseményt.",
+    "Az átadandó tételek (komponens-borítékok, smartcardok) listázva, sorszámmal.",
+    "Az átvevő custodian megismerte a felelősségeit (Requirements §5/6/7)."
+  ],
+  "steps": [
+    {"n": 1, "desc": "Átadandó tételek leltár-ellenőrzése (sorszám vs. inventory)", "command": "(safe check)", "expected": "Minden tétel sértetlen, sorszámok egyeznek a leltárral", "capture": ["item_serials"]},
+    {"n": 2, "desc": "Tételek átadása az átvevő custodiannak", "command": "(átadás)", "expected": "Minden tétel fizikailag átadva és átvéve", "capture": ["item_count"]},
+    {"n": 3, "desc": "Átvevő custodian nyilatkozat aláírása (szerep elfogadása, App. 8)", "command": "(nyilatkozat)", "expected": "Takeover custodian aláírta a felelősség-elfogadó nyilatkozatot", "capture": []},
+    {"n": 4, "desc": "Régi custodian kinevezésének visszavonása", "command": "(revocation)", "expected": "A handover custodian kijelölése visszavonva és dokumentálva", "capture": ["revoked_name"]}
+  ],
+  "closeout": [
+    "Az átadás-átvételi jegyzőkönyv kitöltve (jelenlévők, helyszín, tételek).",
+    "Az átvevő custodian felvéve a Key custodian listára; a régi eltávolítva (emberi jóváhagyással).",
+    "Handover party, takeover party és Security Officer aláírása."
+  ]
+}

@@ -1,0 +1,147 @@
+{
+  "ceremony_type": "key_rotation",
+  "title": "Kulcsrotáció / -csere (ZMK/ZPK) — Thales payShield 10K",
+  "started_at": "2026-06-18T15:25:47+00:00",
+  "pci_references": [
+    "PCI DSS 3.7.4 (kulcscsere a kriptoperiódus végén)",
+    "PCI DSS 3.6.1",
+    "PCI DSS 3.7.6 (dual control / split knowledge)",
+    "PCI PIN Req 18",
+    "PCI PIN Req 29"
+  ],
+  "participants": [
+    {
+      "name": "Aliyev R.",
+      "role": "key_custodian",
+      "employee_id": "E1000"
+    },
+    {
+      "name": "Karimova D.",
+      "role": "key_custodian",
+      "employee_id": "E1001"
+    },
+    {
+      "name": "Yusupov B.",
+      "role": "authorization_officer",
+      "employee_id": "E1002"
+    },
+    {
+      "name": "Rashidov S.",
+      "role": "security_officer",
+      "employee_id": "E1003"
+    }
+  ],
+  "preflight": [
+    {
+      "item": "A csere oka és a lecserélendő kulcs azonosítva (kriptoperiódus lejárt / gyanú / scheme-kérés).",
+      "confirmed": true
+    },
+    {
+      "item": "Min. 2 különböző key custodian + 1 AO + 1 security officer jelen, érvényes kinevezéssel.",
+      "confirmed": true
+    },
+    {
+      "item": "Separation of duties: senki nem tölt be ütköző szerepet.",
+      "confirmed": true
+    },
+    {
+      "item": "A művelet a secure operation roomban zajlik; HSM hardened és commissioned állapotban.",
+      "confirmed": true
+    },
+    {
+      "item": "Egy kulcs = egy cél elv betartva: az új kulcs kizárólag a régi céljára készül.",
+      "confirmed": true
+    },
+    {
+      "item": "Elegendő üres smartcard + serializált tamper-evident boríték rendelkezésre áll.",
+      "confirmed": true
+    }
+  ],
+  "steps": [
+    {
+      "n": 1,
+      "desc": "Eszköz- és LMK-állapot ellenőrzése",
+      "command": "VR / VK",
+      "operator": "Aliyev R.",
+      "result": "Eszköz genuine; LMK Live; állapot rendben",
+      "captured": {
+        "serial_number": "val_serial_number"
+      },
+      "timestamp": "2026-06-18T15:25:47+00:00"
+    },
+    {
+      "n": 2,
+      "desc": "A lecserélendő kulcs azonosítása a leltárból (Ref.Num, KCV)",
+      "command": "(leltár)",
+      "operator": "Aliyev R.",
+      "result": "A régi kulcs Ref.Num és KCV egyezik a leltárral",
+      "captured": {
+        "old_key_ref": "val_old_key_ref",
+        "old_key_kcv": "val_old_key_kcv"
+      },
+      "timestamp": "2026-06-18T15:25:47+00:00"
+    },
+    {
+      "n": 3,
+      "desc": "Új kulcs generálása az LMK alatt (a régi céljára)",
+      "command": "GC / GK",
+      "operator": "Aliyev R.",
+      "result": "Új kulcs generálva; KCV megjelenik",
+      "captured": {
+        "new_key_kcv": "val_new_key_kcv",
+        "key_type": "val_key_type"
+      },
+      "timestamp": "2026-06-18T15:25:47+00:00"
+    },
+    {
+      "n": 4,
+      "desc": "Kettős kontrollú komponens-rögzítés smartcardra (custodianonként)",
+      "command": "FC / export",
+      "operator": "Aliyev R.",
+      "result": "Komponensek külön kártyákon, custodianok saját PIN-nel",
+      "captured": {},
+      "timestamp": "2026-06-18T15:25:47+00:00"
+    },
+    {
+      "n": 5,
+      "desc": "Új kulcs aktiválása / élesítése a célrendszer felé",
+      "command": "(host import / aktiválás)",
+      "operator": "Aliyev R.",
+      "result": "Az új kulcs a régi helyére lép; tranzakció-teszt OK",
+      "captured": {
+        "new_key_ref": "val_new_key_ref"
+      },
+      "timestamp": "2026-06-18T15:25:47+00:00"
+    },
+    {
+      "n": 6,
+      "desc": "A régi kulcs visszavonása / törlése a HSM-ből (lásd decommission)",
+      "command": "DK",
+      "operator": "Aliyev R.",
+      "result": "Régi kulcs törölve / visszavonva, dokumentálva",
+      "captured": {},
+      "timestamp": "2026-06-18T15:25:47+00:00"
+    }
+  ],
+  "closeout": [
+    {
+      "item": "Az új kulcs komponensei serializált tamper-evident borítékba, sorszám rögzítve.",
+      "confirmed": true
+    },
+    {
+      "item": "A régi kulcs komponensei dekomissziós eljárásra kijelölve (külön ceremónia).",
+      "confirmed": true
+    },
+    {
+      "item": "Leltár-frissítési javaslat: régi kulcs lezárva, új kulcs felvéve (KCV, dátum).",
+      "confirmed": true
+    },
+    {
+      "item": "Security Officer és custodianok aláírása.",
+      "confirmed": true
+    }
+  ],
+  "warnings": [],
+  "completed_at": "2026-06-18T15:25:47+00:00",
+  "aborted": false
+}

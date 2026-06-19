@@ -1,0 +1,31 @@
+{
+  "participants": [
+    {"name": "Aliyev R.", "role": "key_custodian", "employee_id": "EMP-1021"},
+    {"name": "Karimova D.", "role": "key_custodian", "employee_id": "EMP-1044"},
+    {"name": "Yusupov B.", "role": "authorization_officer", "employee_id": "EMP-2003"},
+    {"name": "G. Giret", "role": "security_officer", "employee_id": "EMP-0007"}
+  ],
+  "preflight_answers": {
+    "Min. 2 különböző key custodian + 1 AO + 1 security officer jelen (érvényes kinevezéssel).": "i",
+    "Separation of duties: senki nem tölt be ütköző szerepet.": "i",
+    "Secure room access napló kitöltve.": "i",
+    "HSM secure state-be kapcsolva a két fizikai kulccsal.": "i",
+    "Elegendő üres smartcard + tamper-evident boríték rendelkezésre áll.": "i"
+  },
+  "steps": [
+    {"n": 1, "operator": "G. Giret", "result": "Base release 3.1a; Serial A3453266741E egyezik", "serial_number": "A3453266741E", "base_release": "3.1a"},
+    {"n": 2, "operator": "Aliyev R.", "result": "Format complete", "card_user_id": "LMKA1"},
+    {"n": 3, "operator": "Aliyev R.", "result": "Device write complete, check: 3333 94", "component_kcv": "3333 94"},
+    {"n": 4, "operator": "Yusupov B.", "result": "Copy complete"},
+    {"n": 5, "operator": "Karimova D.", "result": "Format complete"},
+    {"n": 6, "operator": "Karimova D.", "result": "Device write complete, check: 3333 94", "component_kcv": "3333 94"},
+    {"n": 7, "operator": "Yusupov B.", "result": "Copy complete"},
+    {"n": 8, "operator": "G. Giret", "result": "LMK status: Live; KCV 0441 62", "lmk_id": "00", "lmk_kcv": "0441 62"},
+    {"n": 9, "operator": "G. Giret", "result": "LO sikeres"}
+  ],
+  "closeout_answers": {
+    "Minden LMK-komponens és AO-kártya tamper-evident borítékba, sorszám rögzítve.": "i",
+    "Eszköz-sorozatszám, dátum, helyszín rögzítve.": "i",
+    "Security Officer(ek) és custodianok aláírása.": "i"
+  }
+}

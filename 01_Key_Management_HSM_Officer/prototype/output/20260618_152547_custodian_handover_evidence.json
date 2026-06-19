@@ -1,0 +1,107 @@
+{
+  "ceremony_type": "custodian_handover",
+  "title": "Key custodian átadás-átvétel (handover / takeover)",
+  "started_at": "2026-06-18T15:25:47+00:00",
+  "pci_references": [
+    "PCI DSS 3.7.8 (kulcs-custodian szerep és felelősség)",
+    "PCI DSS 3.7.9 (custodian nyilatkozat)",
+    "PCI DSS 3.7.6 (dual control)",
+    "PCI PIN Req 29"
+  ],
+  "participants": [
+    {
+      "name": "Aliyev R.",
+      "role": "handover_custodian",
+      "employee_id": "E1000"
+    },
+    {
+      "name": "Karimova D.",
+      "role": "takeover_custodian",
+      "employee_id": "E1001"
+    },
+    {
+      "name": "Yusupov B.",
+      "role": "security_officer",
+      "employee_id": "E1002"
+    }
+  ],
+  "preflight": [
+    {
+      "item": "Az átadó (handover) és az átvevő (takeover) custodian személye azonosítva, érvényes/új kinevezéssel.",
+      "confirmed": true
+    },
+    {
+      "item": "A Security Officer jelen van és levezeti az eseményt.",
+      "confirmed": true
+    },
+    {
+      "item": "Az átadandó tételek (komponens-borítékok, smartcardok) listázva, sorszámmal.",
+      "confirmed": true
+    },
+    {
+      "item": "Az átvevő custodian megismerte a felelősségeit (Requirements §5/6/7).",
+      "confirmed": true
+    }
+  ],
+  "steps": [
+    {
+      "n": 1,
+      "desc": "Átadandó tételek leltár-ellenőrzése (sorszám vs. inventory)",
+      "command": "(safe check)",
+      "operator": "Aliyev R.",
+      "result": "Minden tétel sértetlen, sorszámok egyeznek a leltárral",
+      "captured": {
+        "item_serials": "val_item_serials"
+      },
+      "timestamp": "2026-06-18T15:25:47+00:00"
+    },
+    {
+      "n": 2,
+      "desc": "Tételek átadása az átvevő custodiannak",
+      "command": "(átadás)",
+      "operator": "Aliyev R.",
+      "result": "Minden tétel fizikailag átadva és átvéve",
+      "captured": {
+        "item_count": "val_item_count"
+      },
+      "timestamp": "2026-06-18T15:25:47+00:00"
+    },
+    {
+      "n": 3,
+      "desc": "Átvevő custodian nyilatkozat aláírása (szerep elfogadása, App. 8)",
+      "command": "(nyilatkozat)",
+      "operator": "Aliyev R.",
+      "result": "Takeover custodian aláírta a felelősség-elfogadó nyilatkozatot",
+      "captured": {},
+      "timestamp": "2026-06-18T15:25:47+00:00"
+    },
+    {
+      "n": 4,
+      "desc": "Régi custodian kinevezésének visszavonása",
+      "command": "(revocation)",
+      "operator": "Aliyev R.",
+      "result": "A handover custodian kijelölése visszavonva és dokumentálva",
+      "captured": {
+        "revoked_name": "val_revoked_name"
+      },
+      "timestamp": "2026-06-18T15:25:47+00:00"
+    }
+  ],
+  "closeout": [
+    {
+      "item": "Az átadás-átvételi jegyzőkönyv kitöltve (jelenlévők, helyszín, tételek).",
+      "confirmed": true
+    },
+    {
+      "item": "Az átvevő custodian felvéve a Key custodian listára; a régi eltávolítva (emberi jóváhagyással).",
+      "confirmed": true
+    },
+    {
+      "item": "Handover party, takeover party és Security Officer aláírása.",
+      "confirmed": true
+    }
+  ],
+  "warnings": [],
+  "completed_at": "2026-06-18T15:25:47+00:00",
+  "aborted": false
+}

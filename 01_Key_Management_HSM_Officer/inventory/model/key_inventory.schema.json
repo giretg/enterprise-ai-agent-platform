@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ipoteka.local/pci/key_inventory.schema.json",
+  "title": "Ipoteka kulcs-leltár adatmodell",
+  "description": "Strukturált, géppel olvasható kriptográfiai kulcs-leltár az 1. AI agenthez. SOHA nem tartalmaz titkos kulcsanyagot — kizárólag azonosítókat, KCV-t és metaadatot (PCI DSS 3.6.x/3.7.x, PIN 18/19/28/29).",
+  "type": "object",
+  "required": ["meta", "keys"],
+  "additionalProperties": false,
+  "properties": {
+    "meta": {
+      "type": "object",
+      "required": ["version", "generated", "owner"],
+      "additionalProperties": true,
+      "properties": {
+        "version": {"type": "string"},
+        "generated": {"type": "string", "description": "ISO dátum"},
+        "owner": {"type": "string", "description": "felelős egység"},
+        "source": {"type": "string"},
+        "note": {"type": "string"}
+      }
+    },
+    "keys": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/key"}
+    }
+  },
+  "$defs": {
+    "key": {
+      "type": "object",
+      "required": ["ref_num", "key_name", "category", "key_type", "algorithm", "single_purpose", "status"],
+      "additionalProperties": false,
+      "description": "Egy kulcs-rekord. Tilos bármilyen titkos mező (key_value, component, secret, pin) — a séma additionalProperties:false miatt elutasítja.",
+      "properties": {
+        "ref_num": {"type": "string", "description": "egyedi azonosító, pl. 'K0'"},
+        "key_name": {"type": "string"},
+        "category": {"type": "string", "enum": ["key_management", "h2h_interface", "device", "application"]},
+        "key_type": {"type": "string", "description": "LMK | ZMK | ZCMK | ZPK | KEK | AWK | TMK | BDK | PIN_session | RSA_keypair | egyéb"},
+        "algorithm": {"type": "string", "enum": ["3DES", "AES", "RSA", "ECC", "egyéb"]},
+        "key_strength_bits": {"type": ["integer", "null"], "description": "effektív kulcs-erősség bitben (pl. 3DES 2-key = 112)"},
+        "kcv": {"type": ["string", "null"], "description": "Key Check Value / check digits — NEM titok, azonosításra. Pl. '0441 62'"},
+        "single_purpose": {"type": "string", "description": "a kulcs egyetlen célja (PIN Req 19)"},
+        "transport_key_ref": {"type": ["string", "null"], "description": "a szülő/transport kulcs ref_num-ja — ez építi a hierarchiát"},
+        "creation_date": {"type": ["string", "null"], "description": "ISO dátum vagy null"},
+        "cryptoperiod": {"type": ["string", "null"], "description": "ISO 8601 időtartam (pl. 'P6M') vagy 'n.a.' / szöveg"},
+        "expiry_date": {"type": ["string", "null"], "description": "konkrét lejárat ISO dátum, ha van"},
+        "storage_locations": {"type": "array", "items": {"type": "string"}},
+        "cde_scope": {"type": "boolean", "description": "CDE-n belüli-e"},
+        "crypto_inventory_ref": {"type": ["string", "null"], "description": "kapcsolat a kripto-leltárhoz, pl. 'CIR-005'"},
+        "custodians": {
+          "type": "array",
+          "description": "hozzárendelt key custodianok (SoD-hez); titkot nem tárol",
+          "items": {
+            "type": "object",
+            "required": ["name", "role"],
+            "additionalProperties": false,
+            "properties": {
+              "name": {"type": "string"},
+              "role": {"type": "string", "enum": ["key_custodian", "backup_key_custodian", "authorization_officer", "security_officer"]},
+              "component_id": {"type": ["string", "null"], "description": "melyik komponenst birtokolja"}
+            }
+          }
+        },
+        "status": {"type": "string", "enum": ["active", "pending", "retired", "compromised", "decommissioned"]},
+        "lifecycle": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "életciklus-események a ceremóniákhoz kötve (evidence-hivatkozással)",
+          "properties": {
+            "created_by_ceremony": {"type": ["string", "null"]},
+            "created_evidence_ref": {"type": ["string", "null"]},
+            "last_rotation_date": {"type": ["string", "null"]},
+            "last_rotation_evidence_ref": {"type": ["string", "null"]},
+            "decommission_date": {"type": ["string", "null"]},
+            "decommission_evidence_ref": {"type": ["string", "null"]}
+          }
+        },
+        "notes": {"type": "string"}
+      }
+    }
+  }
+}

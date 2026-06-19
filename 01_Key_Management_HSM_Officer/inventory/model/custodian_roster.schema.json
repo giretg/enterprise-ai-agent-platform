@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://ipoteka.local/pci/custodian_roster.schema.json",
+  "title": "Key custodian roster",
+  "type": "object",
+  "required": ["meta", "people"],
+  "additionalProperties": false,
+  "properties": {
+    "meta": {"type": "object", "required": ["version", "generated", "owner"], "additionalProperties": true},
+    "people": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "roles"],
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string"},
+          "department": {"type": "string"},
+          "roles": {
+            "type": "array",
+            "items": {"type": "string", "enum": ["key_custodian", "deputy_key_custodian", "authorization_officer", "security_officer", "hsm_operator"]}
+          },
+          "custodian_index": {"type": ["integer", "null"]},
+          "ao_index": {"type": ["integer", "null"]},
+          "note": {"type": "string"}
+        }
+      }
+    }
+  }
+}
