@@ -397,8 +397,8 @@ export class AgentChatRuntime {
     if (kbSearch.enabled) {
       const answerInstruction =
         kbSearch.hits.length === 0
-          ? 'A kb_search nem adott találatot. Mondd ki, ha nincs elég forrás — ne találj ki tényt.'
-          : 'Kizárólag az alábbi tudásbázis-találatokra támaszkodj tényállításokhoz. Minden lényegi állításhoz adj forráshivatkozást.'
+          ? 'A tudásbázis (kb_search) nem adott találatot erre a kérdésre. Ez NEM jelenti, hogy nincs válasz: email/postafiók kérdésnél gmail_search, fájl/munkaterület kérdésnél file_* eszköz — ha engedélyezve van. Csak akkor mondd, hogy nincs elég forrás, ha a releváns eszközök sem adnak adatot.'
+          : 'A belső tudásbázis tényállításaihoz kizárólag az alábbi kb_search találatokra támaszkodj. Minden lényegi állításhoz adj forráshivatkozást.'
       messages.push({
         role: 'system',
         content: `${answerInstruction}\n\nTudásbázis találatok (kb_search):\n${formatKbHitsForPrompt(kbSearch.hits)}`,
@@ -410,7 +410,7 @@ export class AgentChatRuntime {
     messages.push({
       role: 'system',
       content:
-        'Ez egy közvetlen beszélgetés a felhasználóval. Válaszolj természetes, segítőkész hangnemben magyarul. Ha csatolmány érkezett, hivatkozz rá a válaszodban. Ticket vagy más agent feladat kérésénél használd a platform eszközöket — ne állítsd, hogy megcsináltad, ha nem hívtál eszközt.',
+        'Ez egy közvetlen beszélgetés a felhasználóval. Válaszolj természetes, segítőkész hangnemben magyarul. Ha csatolmány érkezett, hivatkozz rá a válaszodban. Email, fájl, ticket vagy más agent feladat kérésénél használd a platform eszközöket — ne állítsd, hogy megcsináltad vagy nincs adat, ha nem hívtál eszközt.',
     })
 
     const visible = historyMessages.filter((m) => m.content && !m.contentDeletedAt)

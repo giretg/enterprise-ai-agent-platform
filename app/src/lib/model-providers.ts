@@ -54,6 +54,15 @@ export const GEMINI_TEXT_MODELS: ModelOption[] = [
   },
 ]
 
+/** Helyi Ollama modellek — az `id` megegyezik az `ollama list` névvel. */
+export const OLLAMA_TEXT_MODELS: ModelOption[] = [
+  {
+    id: 'gemma-local',
+    label: 'Gemma 4 E4B (unsloth Q4_K_M)',
+    description: 'Goose-ből importált unsloth/gemma-4-E4B-it-GGUF — szöveg-only, Ollama alias: gemma-local',
+  },
+]
+
 export const MODEL_PROVIDERS: ModelProviderOption[] = [
   {
     value: 'chatgpt-oauth',
@@ -72,7 +81,8 @@ export const MODEL_PROVIDERS: ModelProviderOption[] = [
     value: 'ollama',
     label: 'Helyi Gemma (Ollama)',
     defaultModel: 'gemma-local',
-    hint: 'Helyben futó modell az Ollama OpenAI-kompatibilis API-ján (OLLAMA_BASE_URL).',
+    hint: 'Ollama fut (ollama serve / Ollama app). Modell: gemma-local (Goose GGUF import). OLLAMA_BASE_URL opcionális.',
+    models: OLLAMA_TEXT_MODELS,
   },
 ]
 

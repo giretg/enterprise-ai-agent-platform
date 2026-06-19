@@ -90,11 +90,49 @@ function parseMessageListItem(raw: Record<string, unknown>): GmailMessageSummary
   }
 }
 
+const RFC2047_ENCODED_WORD_MAX = 75
+
+function rfc2047Base64Word(text: string): string {
+  return `=?UTF-8?B?${Buffer.from(text, 'utf8').toString('base64')}?=`
+}
+
+/** RFC 2047 encoded-word — UTF-8 karakterhatáron darabol, nem a base64 stringen belül. */
+function encodeMimeHeaderValue(value: string): string {
+  if (!/[^\x20-\x7E]/.test(value)) return value
+
+  const single = rfc2047Base64Word(value)
+  if (single.length <= RFC2047_ENCODED_WORD_MAX) return single
+
+  const words: string[] = []
+  let remaining = value
+
+  while (remaining.length > 0) {
+    let chunk = remaining
+    let word = rfc2047Base64Word(chunk)
+
+    while (word.length > RFC2047_ENCODED_WORD_MAX && chunk.length > 0) {
+      chunk = chunk.slice(0, -1)
+      word = rfc2047Base64Word(chunk)
+    }
+
+    if (chunk.length === 0) {
+      throw new Error('encodeMimeHeaderValue: unable to encode header segment')
+    }
+
+    words.push(word)
+    remaining = remaining.slice(chunk.length)
+  }
+
+  return words.join('\r\n ')
+}
+
 function buildRawMessage(params: { to: string; subject: string; body: string }): string {
   const lines = [
     `To: ${params.to}`,
-    `Subject: ${params.subject}`,
+    `Subject: ${encodeMimeHeaderValue(params.subject)}`,
+    'MIME-Version: 1.0',
     'Content-Type: text/plain; charset=utf-8',
+    'Content-Transfer-Encoding: 8bit',
     '',
     params.body,
   ]
