@@ -36,6 +36,10 @@ import { repositories } from '@/repositories/postgres'
 import { resolveTicketProcessRoute } from '@/lib/ticket-process-route'
 
 const playbookService = new PlaybookService(repositories.playbooks, repositories.audit)
+const platformSettingsService = new PlatformSettingsService(
+  repositories.platformSettings,
+  repositories.audit,
+)
 
 async function resolveAgentRole(agentId: string | null): Promise<'worker' | 'orchestrator'> {
   if (!agentId) return 'worker'
@@ -48,6 +52,7 @@ const ticketService = new TicketService(
   repositories.audit,
   playbookService,
   resolveAgentRole,
+  (type) => platformSettingsService.getTicketTypeConfig(type),
 )
 
 const conversationService = new ConversationService(
@@ -176,11 +181,6 @@ function createHarnessLauncher(): HarnessLauncher {
   if (mode === 'cloud-run-job') return new CloudRunJobHarnessLauncher(cloudRunConfigFromEnv())
   throw new Error(`Unsupported HARNESS_LAUNCHER_MODE: ${mode}`)
 }
-
-const platformSettingsService = new PlatformSettingsService(
-  repositories.platformSettings,
-  repositories.audit,
-)
 
 const dispatcherService = new DispatcherService(
   repositories.tickets,

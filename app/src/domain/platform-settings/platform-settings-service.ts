@@ -17,8 +17,16 @@ import {
   type DatabaseSyncResult,
 } from '@/lib/database-sync'
 import type { AuditRepository, PlatformSettingsRepository } from '@/repositories/interfaces'
+import {
+  defaultTicketTypeConfig,
+  normalizeTicketTypeConfigs,
+  type TicketTransitionConfigRule,
+  type TicketTypeConfig,
+} from '@/domain/ticket/ticket-type-config'
+import type { TicketType } from '@prisma/client'
 
 export const DISPATCHER_CONTROLS_KEY = 'dispatcher.controls'
+export const TICKET_TYPE_CONFIGS_KEY = 'ticket.type_configs'
 
 export const POLL_INTERVAL_MIN_MS = 5_000
 export const POLL_INTERVAL_MAX_MS = 600_000
@@ -157,6 +165,65 @@ export class PlatformSettingsService {
       outputRef: null,
       policyDecision: next.enabled ? 'enabled' : 'paused',
       metadata: { enabled: next.enabled, pollIntervalMs: next.pollIntervalMs },
+    })
+
+    return next
+  }
+
+  async getTicketTypeConfigs(): Promise<TicketTypeConfig[]> {
+    const raw = await this.settings.get(TICKET_TYPE_CONFIGS_KEY)
+    return normalizeTicketTypeConfigs(raw)
+  }
+
+  async getTicketTypeConfig(type: TicketType): Promise<TicketTypeConfig> {
+    const configs = await this.getTicketTypeConfigs()
+    return configs.find((config) => config.type === type) ?? defaultTicketTypeConfig(type)
+  }
+
+  async upsertTicketTypeConfig(
+    input: { type: TicketType; allowedTransitions: TicketTransitionConfigRule[] },
+    actorId: string,
+  ): Promise<TicketTypeConfig[]> {
+    const current = await this.getTicketTypeConfigs()
+    const updatedAt = new Date().toISOString()
+    const next = current.map((config) =>
+      config.type === input.type
+        ? {
+            type: input.type,
+            allowedTransitions: input.allowedTransitions,
+            updatedById: actorId,
+            updatedAt,
+          }
+        : config,
+    )
+
+    await this.settings.set(
+      TICKET_TYPE_CONFIGS_KEY,
+      Object.fromEntries(
+        next.map((config) => [
+          config.type,
+          {
+            allowedTransitions: config.allowedTransitions,
+            updatedById: config.updatedById,
+            updatedAt: config.updatedAt,
+          },
+        ]),
+      ),
+      actorId,
+    )
+
+    await this.audit.append({
+      actorType: 'human',
+      actorId,
+      agentVersion: null,
+      action: 'ticket_type.upsert',
+      targetType: 'ticket_type',
+      targetId: null,
+      modelUsed: null,
+      inputRef: input.type,
+      outputRef: String(input.allowedTransitions.length),
+      policyDecision: 'allowed',
+      metadata: { type: input.type, allowedTransitions: input.allowedTransitions },
     })
 
     return next

@@ -1,14 +1,16 @@
 import { getCurrentUser } from '@/auth'
 import { hasMinimumRole } from '@/auth/types'
-import { getDatabaseMode, getDispatcherControls } from '@/app/actions/platform'
+import { getDatabaseMode, getDispatcherControls, getTicketTypeConfigs } from '@/app/actions/platform'
 import { DatabaseControlPanel } from './database-control-panel'
 import { DispatcherControlPanel } from './dispatcher-control-panel'
+import { TicketTypeConfigPanel } from './ticket-type-config-panel'
 
 export default async function SystemPage() {
-  const [user, controlsRes, dbModeRes] = await Promise.all([
+  const [user, controlsRes, dbModeRes, ticketTypesRes] = await Promise.all([
     getCurrentUser(),
     getDispatcherControls(),
     getDatabaseMode(),
+    getTicketTypeConfigs(),
   ])
   const canEdit = user ? hasMinimumRole(user.role, 'admin') : false
 
@@ -38,6 +40,14 @@ export default async function SystemPage() {
         </div>
       ) : (
         <DispatcherControlPanel initial={controlsRes.data} canEdit={canEdit} />
+      )}
+
+      {!ticketTypesRes.success ? (
+        <div className="rounded-lg border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
+          {ticketTypesRes.error}
+        </div>
+      ) : (
+        <TicketTypeConfigPanel initial={ticketTypesRes.data} canEdit={canEdit} />
       )}
     </div>
   )

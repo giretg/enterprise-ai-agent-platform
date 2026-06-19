@@ -648,6 +648,68 @@ A v1.0 terv 7. fejezete kibontva belépő/kilépő kritériummal. **Az S1–S4 i
 
 > **Javaslat:** S1–S4 egy idődobozolt (1 hetes) integrációs spike-ként az Epik 5 előtt. S5 az Epik 6-tal, S6 az Epik 7-tel párhuzamosan.
 
+### 7.1 S6 eval plan — wiki-agent retrieval és válaszminőség
+
+**Cél:** bizonyítani, hogy a wiki-agent kis, kontrollált tudásbázison megbízhatóan megtalálja a releváns forrást, citált választ ad, és nem talál ki választ, ha nincs lefedettség. Az S6 nem általános RAG-benchmark: az MVP-hez szükséges, auditálható, kis tudásbázisos működést méri.
+
+**Tesztkészlet:** minimum 15 kérdés, négy csoportban. A seedelt/demo tudásbázisban minden pozitív kérdéshez legyen előre megadott `expectedDocId`, `expectedSectionRef`, rövid `goldAnswer`, és elfogadható alternatív kulcsszavak listája.
+
+| Csoport | Darab | Cél | Példakérdés |
+|---|---:|---|---|
+| Direkt ténykérdés | 6 | Egyértelmű szakasz visszakeresése és tömör válasz | „Mi az MVP fő célja?" |
+| Többlépéses / összekötő kérdés | 4 | Két kapcsolódó szakasz összefoglalása citációval | „Milyen átjárókon kell átmennie egy agent műveletnek, és miért?" |
+| Fájlnév- és dokumentum-orientált kérdés | 3 | `kb_search` megtalálja a dokumentumot fájlnév, cím vagy tartalmi kulcsszó alapján | „Miről szól a Project_description_users.md dokumentum?" |
+| Negatív / nincs forrás | 2 | Bizonytalan vagy nem lefedett kérdésnél ne hallucináljon | „Milyen SLA-t ígér az éles banki deployment?" |
+
+**Konkrét induló kérdéskészlet (v0):**
+
+1. Mi az MVP fő célja?
+2. Miben különbözik a walking skeleton a régi kattintható mockuptól?
+3. Melyik modellforrás az MVP hivatalos útja?
+4. Milyen két átjárón kell átmennie az agent műveleteinek?
+5. Miért kötelező a write-gate token a tanuláshoz?
+6. Mikor kell emberi jóváhagyásra küldeni egy választ?
+7. Mi történik, ha egy viewer próbál jóváhagyni?
+8. Milyen audit bizonyíték kell egy lezárt tickethez?
+9. Mit bizonyít az App Registry v0 az MVP-ben?
+10. Mi a különbség a service connector és a per-user Gmail grant között?
+11. Mire használhatóak a ticket workspace file toolok?
+12. Miről szól a Project_description_users.md dokumentum?
+13. Milyen fájleszközöket lát az agent az MCP bridge-en keresztül?
+14. Van-e az MVP-ben banki on-prem / Keycloak deployment?
+15. Ígér-e a specifikáció production-grade hibrid retrievalt az MVP-re?
+
+**Elfogadási küszöbök:**
+
+| Metrika | Küszöb | Mérési mód |
+|---|---:|---|
+| Retrieval `hit@3` pozitív kérdéseken | >= 90% | Az `expectedDocId` vagy `expectedSectionRef` a top 3 találatban van. |
+| Retrieval `hit@1` direkt ténykérdéseken | >= 75% | Direkt kérdésnél az első találat a várt szakasz. |
+| Citációs lefedettség | >= 95% | Minden nem-negatív válaszban legalább egy valós `sources[]` elem van. |
+| Válaszhelyesség | >= 80% | Manuális 0/1 értékelés a `goldAnswer` alapján; részpont nincs az MVP-ben. |
+| Negatív kérdések kezelése | 100% | A válasz jelzi, hogy nincs elég forrás, és nem ad kitalált tényt. |
+| Forráshűség | 0 kritikus hiba | Nincs olyan állítás, amely ellentmond a citált forrásnak. |
+| Futási korlát | <= 20 Gateway hívás / kérdés | A guardrail alatt konvergál; különben recipe vagy tool-loop javítandó. |
+
+**Retrieval-stratégia összevetés:**
+
+1. `full_injection`: kis tudásbázis teljes kontextusba adva.
+2. `kb_search_keyword`: Tool Broker `kb_search` kulcsszavas kereséssel, `k=3`.
+3. Opcionális kontroll: `kb_search_keyword`, `k=6`, ha `k=3` alatt gyenge a `hit@3`.
+
+Az MVP alapértelmezett stratégia az, amelyik teljesíti a küszöböket kevesebb tokennel és stabilabban. Ha mindkettő teljesít, `kb_search_keyword k=3` a preferált út, mert jobban bizonyítja a Brokerelt retrievalt. Ha egyik sem teljesít, S6 nem zöld: a recipe/prompt, chunkolás vagy egyszerű scoring javítandó, hibrid retrieval bevezetése csak külön scope-döntéssel.
+
+**Dokumentált tesztek és futtatás:**
+
+| Teszt | Parancs | Mit igazol |
+|---|---|---|
+| Determinisztikus filename/tartalom retrieval | `cd app && npx tsx scripts/kb-search-retrieval.test.ts` | A `kb_search` scoring kezeli a fájlnév-alapú és ékezetes magyar találatokat. |
+| Tool-call relay parser | `cd app && npm run test:gateway-relay` | A ChatGPT OAuth szöveges tool-hívásai strukturált `kb_search` hívássá alakíthatók. |
+| Teljes acceptance, benne wiki/chat/file/Gmail smoke | `cd app && npm run test:acceptance` | A retrieval, citált válasz, conversation log, file tool és per-user connector kapuk auditáltan működnek. |
+| Mérési riport | `cd app && npm run report:measurement` | A demó-futás minőségi, átfutási és költség adatai exportálhatók. |
+
+**S6 kimeneti artefaktum:** egy rövid Markdown jegyzőkönyv a demó dátumával, tudásbázis-verzióval, agent-/recipe-verzióval, futtatott kérdéskészlettel, táblázatos eredményekkel (`hit@1`, `hit@3`, citáció, helyesség, negatív kezelés), és a választott retrieval-stratégia indoklásával. A jegyzőkönyv linkeljen a releváns audit/model/tool call rekordokra vagy tartalmazza azok azonosítóit.
+
 ---
 
 ## 8. Epik → sprint roadmap
@@ -722,7 +784,62 @@ A walking skeleton akkor kész, ha **valódi adaton, stabilan** teljesül:
 
 ### 9.3 End-to-end demó-forgatókönyv
 
-A v1.0 terv 4. fejezetének 11 lépése a demó-script alapja, kiegészítve az App Registry v0-val: belépés (IAM) → agent létrehozása → tudásfeltöltés → kérdés (ticket) → dispatch + `goose run` → citált válasz → jóváhagyás → tanítás (write-gate) → rollback → **A0 sandbox app létrehozás/preview/export** → audit-láncolat → 4 negatív teszt.
+A demó célja nem egy wiki-kérdés megválaszolása önmagában, hanem annak bemutatása, hogy a platform ma már egy kontrollált agent-munkakörnyezet: sima beszélgetős agent-chat, ticket board, agent tudástárak, brokerelt toolok, Excel/fájl workspace, per-user connector előkészítés/Gmail, agent-to-agent delegálás, App Registry, governance és mérés együtt látható. A **core MVP acceptance** továbbra is a wiki-agent + Gateway + Tool Broker + human approval + write-gate + audit út; az Excel/file tool, Gmail, agent-to-agent és általános tudástár-kezelési részek **bővített demó-szakaszok**, külön feature-scope-ként jelölve.
+
+**Előkészítés:**
+
+1. Lokális demóhoz: `cd app && npm install && npm run db:push && npm run db:seed && npm run dev`.
+2. Acceptance bizonyítékhoz: `cd app && npm run test:acceptance`.
+3. Retrieval bizonyítékhoz: `cd app && npx tsx scripts/kb-search-retrieval.test.ts`.
+4. Demó URL: lokálisan `http://localhost:3000`, éles hosted appnál az App Hosting URL.
+5. Szerepek: legalább egy `operator` és egy `approver` seed user; Gmail szakaszhoz teszt user grant vagy stubolt S7 környezet.
+
+**Kattintható demómenet:**
+
+| # | Képernyő / kattintás | Teendő | Elvárt bizonyíték |
+|---|---|---|---|
+| 1 | `/control-plane` | Mutasd meg a dashboardot: nyitott ügyek, aktív agentek, token/költség napi összesítő. | A rendszer nem mockup: DB-ből jövő agent/ticket/metrika látszik. |
+| 2 | `/control-plane/agents` → bármely worker agent | Nyisd meg az agent részleteit. | Látszik a szerep, viselkedésprofil, agent-verzió, modellkonfig, recipe kapcsolat és tudástár panel. |
+| 3 | Agent részlet → tudástár panel | Tölts fel `.md`, `.pdf`, `.docx`, `.csv` vagy `.xlsx` fájlt az agent saját tudástárába. | A dokumentum az adott agent knowledge base-éhez kötődik; a feltöltött szöveg később `kb_search`-ben használható. |
+| 4 | Tudástár megosztás *(bővített scope)* | Oszd meg az egyik agent tudástárát egy másik agenttel, majd vond vissza vagy mutasd a jogosultságot. | A tudás nem globális: agenthez kötött connector és explicit megosztás látszik. |
+| 5 | Agent részlet → `Chat` gomb | Tegyél fel egy egyszerű kérdést ticket nélkül: „Mi az MVP célja?" vagy „Foglalod össze a feltöltött fájlt?" | A chat ticket nélkül indul; létrejön conversation/message/model/tool log. |
+| 6 | Chat ablak → fájlcsatolás *(bővített scope)* | Csatolj egy Excel fájlt, majd kérd: „Elemezd az Excel fő sorait és emeld ki a kiugró összegeket." | Az agent `xlsx_read_sheet` / file tool eredményre támaszkodik; nem kell ticketet nyitni a sima elemzéshez. |
+| 7 | Chat ablak → Gmail kérés *(bővített/F2 scope)* | Ha van grant: „Nézd át a mai olvasatlan Gmailjeimet, és foglald össze a teendőket." | `gmail_search` / `gmail_get_message` csak acting user granttel fut; grant hiányában az agent a fiók csatlakoztatását kéri. |
+| 8 | Chat ablak → agent-to-agent kérés *(bővített scope)* | Kérd meg az agentet: „Kérdezd meg a Wiki Agentet is erről, és vond össze a választ." | `agent_ask` delegálás jön létre; a másik agent válasza visszakerül az eredeti beszélgetésbe vagy ticketbe. |
+| 9 | Chat ablak → `Ticket létrehozása` / approval-promote | Promotálj ticketet abból a válaszból, ahol döntés, jóváhagyás vagy tartós nyom kell. | A határátlépés auditált: `conversation.promote_to_ticket`, a ticket `awaiting_human`. |
+| 10 | `/control-plane/board` → új ticket | Nyisd meg a ticketet. | Látszik a kérdés, a citált válasz, a `sources[]`, rationale, agent-/recipe-/memory-verzió. |
+| 11 | Ticket oldal → `Fájlok` panel *(bővített scope)* | Tölts fel egy kis `.txt`, `.md` vagy `.xlsx` fájlt a ticket workspace-ébe. | A fájl ticket workspace-ben jelenik meg; letölthető; az agent `file_read` / `xlsx_read_sheet`-tel eléri. |
+| 12 | Agent/tool bizonyíték | Acceptance-ben vagy auditban mutasd: `file_read`, `file_write`, `file_edit`, `file_search`, `xlsx_read_sheet` saját ticket workspace-en belül. | File/Excel tool hívások tartalom nélkül, path + méret metaadattal auditáltak; más ticket workspace nem olvasható. |
+| 13 | Ticket oldal → approver transition | Approverrel hagyd jóvá, majd zárd le a választ. | `approved` → `done`; auditban szerepel a humán döntés. |
+| 14 | `/control-plane/training` | Hozz létre vagy mutass egy tanítási javaslatot a tudásbázis frissítésére. | Write-gate tokennel megy az írás; token replay/lejárat negatív tesztben tiltott. |
+| 15 | Training / memória verzió | Mutasd meg a memória verzióváltást és rollbacket. | Új verzió és rollback esemény auditált, a régi verzió visszakereshető. |
+| 16 | `/sandbox` | Tölts fel vagy válassz tudásanyagot, kérdezz rá a wiki sandboxban. | Ugyanaz a core képesség felhasználói sandbox felületen is kipróbálható. |
+| 17 | `/sandbox` vagy sandbox proposal oldal | Hozz létre / nyiss meg egy A0 sandbox appot. | Preview iframe megnyílik, verziózott app látszik, `.html` export hash-sel letölthető. |
+| 18 | `/control-plane/connectors` *(bővített/F2 scope)* | Mutasd meg a Gmail connector/grant állapotot, scope-profilt és visszavonhatóságot. | Kétrétegű engedély látszik: agent capability + user grant; acting user nélkül DENY. |
+| 19 | Gmail demó *(ha grant elérhető)* | Keress Gmailben `gmail_search`-sel, majd draft/send kaput mutass. | Search csak user-granttel fut; send human approval nélkül DENY, jóváhagyással OK. |
+| 20 | `/control-plane/audit` | Szűrj a demó conversationre/ticketre és a tool eseményekre. | Model Gateway, Tool Broker, file/Excel/Gmail/agent_ask, transition és write-gate események visszakereshetők. |
+| 21 | `/control-plane/governance` → report | Nyisd meg/exportáld a mérési riportot. | Minőség, átfutás, token/költség és sandbox app metrikák egy riportban. |
+| 22 | `/control-plane/system` | Mutasd meg a dispatcher/kill-switch/admin konfigurációt. | Látszik, hogy a futtatás nem ad hoc: dispatcher, budget/kill switch és ticket type config kontrollálható. |
+
+**Kötelező negatív demóblokk:**
+
+| # | Lépés | Elvárt eredmény |
+|---|---|---|
+| N1 | Viewer próbál ticketet jóváhagyni | Szerver DENY + audit. |
+| N2 | Agent nem engedélyezett toolt hív | Tool Broker DENY + audit. |
+| N3 | Chatben vagy dokumentumban „tanuld meg ezt gate nélkül" prompt | Nincs memóriaírás write-gate token nélkül. |
+| N4 | Harness közvetlen külső hívást próbál | Egress guard blokkolja; prod hálózati enforcement külön S4 hardening. |
+| N5 | File tool `../` path traversal | `PATH_TRAVERSAL` / DENY; nincs workspace-kilépés. |
+| N6 | Gmail tool acting user vagy grant nélkül | DENY; token nem oldódik fel. |
+| N7 | Másik agent privát tudástárának olvasása megosztás nélkül | DENY vagy nincs találat; a tudástár-hozzáférés explicit connector linkhez kötött. |
+
+**Demó sikerfeltétele:**
+
+- A chat-first út legalább egy sima conversationnel végigfut ticket nélkül, és látszik, mikor kell ticketre promotálni.
+- A core ticket út kézi DB-módosítás nélkül végigfut jóváhagyott, lezárt ticketig.
+- Az Excel/file, Gmail és agent-to-agent lépések élő vagy stub/F2 demóként világosan jelölve vannak; egyik sem mossa össze a core MVP acceptance-szel.
+- A végén van legalább egy visszakereshető conversation és egy lezárt ticket, amelyből látszik: agentVersion, recipeVersion, memoryVersion, model/tool call log, human approval, audit chain.
+- Az S6 kérdéskészletből legalább a direkt ténykérdések demó közben is átfutnak, és a 7.1 küszöbök szerint kiértékelhetők.
 
 ---
 
@@ -781,8 +898,8 @@ A fejlesztés akkor kész, ha:
 
 ## 14. Következő dokumentumok (a spec után)
 
-- **Eval plan** — teszt-kérdéskészlet + elfogadási küszöbök a wiki-agentre (S6 kibontva).
-- **Demo script** — a 9.3 forgatókönyv 3–5 perces, kattintható változata.
+- **S6 eval jegyzőkönyv** — a 7.1 szerinti tényleges futtatási eredmény, kérdésenkénti `hit@1` / `hit@3`, citáció, helyesség, negatív kezelés és választott retrieval-stratégia.
+- **Demó runbook / felvételi jegyzet** — a 9.3 kattintható forgatókönyv konkrét dátummal, környezettel, seed/adatverzióval és ismert eltérésekkel.
 - **Fázis 2 spec** — governance/biztonsági keménység (write-gate-en túli hardening, observability, deny-by-default humán kapu), ha az MVP kilépési kritériuma teljesült.
 - **Per-user connector feature-spec** — `AI-Agent-Platform-Feature-Spec-PerUser-Connector.md`: a `user_delegated` connectorok (Gmail-first) OAuth-flow-ja, `connector_grants` token-vault, Tool Broker runtime-feloldás, acting-user, elfogadási kritériumok és roadmap-illesztés. A séma-kampók (`connectors.auth_mode`, `connector_grants` tábla, `ToolBroker.invoke(..., actingUserId?)`) **már ebben a specben** bekerültek, hogy a feature migráció nélkül illeszthető legyen.
 
@@ -790,39 +907,41 @@ A fejlesztés akkor kész, ha:
 
 ## 15. Megvalósítási státusz a jelenlegi kódbázis alapján
 
-**Frissítve:** 2026-06-18
+**Frissítve:** 2026-06-19
 **Állapotjelölés:** `Kész` = működő kód + build zöld; `Részben kész` = van alap, de nem teljesíti még a spec minden kipróbálhatósági kritériumát; `Hátra van` = érdemi implementáció hiányzik.
 
-> **Fontos:** az alábbi táblázat felülírja a 2026-06-15/16-es session-jegyzeteket. A walking skeleton nagy része megvan; a nyitott MVP-lezárás főleg **production hardening** (dispatcher üzem, hálózati egress) és **governance dokumentumok** (S6 eval plan, demo script).
+> **Fontos:** az alábbi táblázat felülírja a 2026-06-15/16-es session-jegyzeteket. A walking skeleton nagy része megvan; a nyitott MVP-lezárás főleg **production hardening** (hálózati egress) és **governance bizonyítás** (S6 tényleges futtatási jegyzőkönyv, 9.3 demó lefuttatása).
+>
+> **Scope-frissítés (2026-06-19):** a kódbázis tartalmaz több MVP-feletti cserepontot is. Ezeket a 15.4 szakasz külön listázza. Nem törlendők, de **nem számítanak bele az MVP Definition of Done-ba**, és új fejlesztésük előtt külön scope-döntés kell.
 
 ### 15.0 Spike-ok
 
 | Spike | Státusz | Megjegyzés |
 |---|---:|---|
 | **S1** Goose + Cloud Run Job | **Kész** | `wiki-harness` Job, Cloud Build amd64, éles smoke zöld (`harness:cloud-run-smoke`). |
-| **S2** ChatGPT OAuth mediáció | **Kész** | Beágyazott provider: `CHATGPT_OAUTH_EMBEDDED` + `CHATGPT_OAUTH_TOKEN_SECRET` (App Hosting). `chatgpt-oauth-bridge.ts` → Codex Responses API; token refresh + SM write-back. Sidecar (`s2:provider`) és `s2:live-smoke` is van. **Gemini** külön providerként bekötve (`GEMINI_API_KEY`) — D2 feletti cserepont, agentenként választható. |
+| **S2** ChatGPT OAuth mediáció | **Kész** | Beágyazott provider: `CHATGPT_OAUTH_EMBEDDED` + `CHATGPT_OAUTH_TOKEN_SECRET` (App Hosting). `chatgpt-oauth-bridge.ts` → Codex Responses API; token refresh + SM write-back. Sidecar (`s2:provider`) és `s2:live-smoke` is van. A kódbázisban lévő további provider-adapterek MVP-feletti cserepontok (lásd 15.4); az MVP-demó hivatalos útja ChatGPT OAuth. |
 | **S3** Tool Broker MCP | **Kész** | `platform-mcp-bridge`, Goose config, acceptance [17–18]. |
 | **S4** Egress + dev-extension | Részben kész | App-szintű guard + N4 acceptance zöld. **Hálózati** deny-by-default prod Job-on még nincs (`HARNESS_EGRESS_ENFORCE=false`). |
 | **S5** Write-gate | **Kész** | Token issue/consume, N3 negatív tesztek zöldek. |
-| **S6** Retrieval minőség | Hátra van | Eval plan dokumentum + kérdéskészlet hiányzik. |
+| **S6** Retrieval minőség | Dokumentálva, futtatási jegyzőkönyv hátra | Eval plan, kérdéskészlet, küszöbök és determinisztikus retrieval-teszt a 7.1-ben. Következő: tényleges dataset-futtatás és jegyzőkönyv. |
 
 ### 15.1 Elkészült / részben elkészült elemek
 
 | Terület | Státusz | Megjegyzés |
 |---|---:|---|
 | Next.js control plane + sandbox | **Kész** | Board, wiki sandbox, beszélgetés-elsődleges flow (CR-MVP-003), agent chat, governance oldal. |
-| Prisma/Postgres + séma | **Kész** | Spec §4 entitások nagy része; conversations, scheduled tasks, file workspace a spec feletti bővítések. |
+| Prisma/Postgres + séma | **Kész** | Spec §4 entitások nagy része; conversations, scheduled tasks, file workspace a spec feletti bővítések (lásd 15.4). |
 | Recipe-katalógus | **Kész** | §6 `wiki-answer`, governance audit, agent snapshot link. |
 | Ticket-állapotgép + transitions | **Kész** | Szerveroldali validáció, tiltott átmenet audit, UI idővonal. |
 | Dispatcher + harness | **Production dispatcher kész + deployolva** | `dispatcher-worker.ts` (`LISTEN/NOTIFY` + cron + health-szerver), `Dockerfile.dispatcher`, `deploy-dispatcher-service.sh`. **Élesben fut:** `wiki-dispatcher` Cloud Run service (`enterprise-ai-demo`, europe-west4, `minScale=1`, `cpu-throttling=false`), dedikált runtime SA `run.jobs.runWithOverrides`-szal. Igazolt lánc: `ready→in_progress` (NOTIFY 0s) → `dispatch.start` → harness goose valódi Gateway model-hívások → budget cap. **Admin kill-switch + cron-intervallum** runtime állítható a `/control-plane/system` oldalról (`platform_settings` tábla, élesben tesztelve). **Nyitott (harness/S6, nem dispatcher):** a `wiki-answer` recipe nem konvergál a Gateway 20-hívásos guardrailje alatt. |
 | Append-only audit | Részben kész | `verifyChain()` + UI; Postgres `UPDATE/DELETE` tiltás nincs igazolva. |
 | IAM/RBAC | **Kész** | Meghívás/redeem UI (`/control-plane/iam`), lock-out, kill-switch, acceptance zöld. |
 | Agent Registry | **Kész** | Szerep/viselkedés külön verzió, recipe snapshot, governance kártyák. |
-| Model Gateway | **Kész (S2)** | `chatgpt-oauth` beágyazott OAuth + `gemini` + `ollama` provider; guardrail, latency/status napló. |
-| Tool Broker | **Kész** | MCP bridge, kb_search, board_write, per-user connector (F2) acceptance-ben. |
+| Model Gateway | **Kész (S2)** | `chatgpt-oauth` beágyazott OAuth, guardrail, latency/status napló. `gemini` és `ollama` csak MVP-feletti provider-cserepontként kezelendő. |
+| Tool Broker | **Kész** | MCP bridge, kb_search, board_write. A per-user connector / Gmail ág Fázis 2 scope (lásd 15.4). |
 | Sandbox App Registry A0 | **Kész** | Preview iframe, verzió, export + hash, audit. |
 | Training / write-gate | **Kész** | §5.8 protokoll, negatív tesztek. |
-| Governance / mérés | Részben kész | Mérési riport Markdown export; **hátra:** S6 eval plan, 9.3 demo script. |
+| Governance / mérés | Részben kész | Mérési riport Markdown export; S6 eval plan és 9.3 demo script dokumentálva; **hátra:** futtatási jegyzőkönyv + demó lefuttatása. |
 | Build / lint | **Kész** | `npm run lint` + `npm run build` zöld. |
 
 ### 15.2 Hátralévő feladatok epik szerint
@@ -831,21 +950,34 @@ A fejlesztés akkor kész, ha:
 |---|---:|---|
 | Epik 1 — Control Plane | Részben kész | `adminUpsertTicketType` CRUD. |
 | Epik 2 — IAM | **Kész** | Clerk webhook szinkron finomítás (Fázis 2). |
-| Epik 3 — Registry + Gateway | **Kész** | S2 lezárva; Gemini cserepont dokumentálva. |
+| Epik 3 — Registry + Gateway | **Kész** | S2 lezárva; nem-ChatGPT provider-adapterek MVP-feletti cserepontként dokumentálva. |
 | Epik 4 — Tool Broker | **Kész** | Prod connector secret rotáció üzemeltetése. |
 | Epik 5 — Harness + Dispatcher | Részben kész | **Production dispatcher deployolva és igazolva** (Cloud Run service + runtime SA, end-to-end audit-nyom). **Következő kritikus:** harness/recipe konvergencia a 20-hívásos guardrail alatt (S6) + hálózati S4 egress (VPC/NAT/firewall). |
 | Epik 6 — Tanítás | **Kész** | Retrieval-napló UI finomítás opcionális. |
 | Epik 7 — Sandbox + App Registry | Részben kész | `generateReport` API (§5.10) hiányzik; egyébként kész. |
-| Epik 8 — Governance | Részben kész | S6 eval plan; 9.3 demo script; §13 checklist végigpipálása. |
+| Epik 8 — Governance | Részben kész | S6 futtatási jegyzőkönyv; 9.3 demó lefuttatása; §13 checklist végigpipálása. |
 
 ### 15.3 Következő javasolt fejlesztési sorrend
 
 1. ~~**Production dispatcher**~~ — **KÉSZ (2026-06-18).** `wiki-dispatcher` Cloud Run service él (`min-instances=1`, always-on CPU), dedikált runtime SA `run.jobs.runWithOverrides`-szal; a teljes lánc audit-nyommal igazolva. Lásd `app/infra/gcp/CLOUD-RUN-DISPATCHER-SETUP.md` §6.
 2. **Hálózati S4 egress** — VPC connector + NAT + firewall; Job-on `HARNESS_EGRESS_ENFORCE=true`.
-3. **MVP lezárás (Epik 8)** — S6 eval plan, 9.3 kattintható demo script, §13 DoD checklist.
+3. **MVP lezárás (Epik 8)** — S6 futtatási jegyzőkönyv, 9.3 kattintható demo végigfuttatása, §13 DoD checklist.
 4. **Epik 1 maradék** — admin tickettípus/átmenet CRUD.
 5. **Üzemeltetés** — OAuth token rotáció runbook, harness image CI, audit DB jogosultságok.
 
+### 15.4 MVP-feletti, de már jelen lévő képességek
+
+Ezek a képességek a jelenlegi repóban részben vagy egészben léteznek, de **nem növelik az MVP scope-ját**. A fejlesztés során nem ezek mélyítése az alapértelmezett következő lépés; ha ilyen irányba kell menni, külön döntés szükséges.
+
+| Képesség | Kódbázisban látható állapot | Scope-döntés |
+|---|---|---|
+| **Gemini / Ollama provider** | Model Gateway adapterek és konfigurációs útvonalak megjelentek. | MVP-feletti modell-cserepont. Az MVP acceptance és demó továbbra is `chatgpt-oauth` providerrel fut. |
+| **Per-user connector / Gmail** | `connector_grants`, Gmail OAuth/token-vault runtime, S7 smoke és kapcsolódó UI/API elemek vannak. | Fázis 2 feature a külön per-user connector spec alapján. Az MVP Tool Broker követelménye: `kb_search` + `board_write`, service-módú connectorral. |
+| **File editor / workspace tools** | Külön feature-spec, domain adapterek, workspace storage és Playwright E2E vannak. | Külön feature-scope. Nem része a core wiki-agent MVP lezárásának. |
+| **Scheduled / recurring task felület** | `scheduled-task` domain, UI és recurrence logika megjelent. | Fázis 2 / későbbi proaktív monitor irány. Az MVP-ben csak az `execute_after` mező és az azonnali dispatcher indítás kötelező. |
+
+**MVP-lezárási prioritás változatlan:** S4 hálózati egress igazolás, S6 futtatási jegyzőkönyv, 9.3 demó végigfuttatása, §13 DoD checklist, majd az Epik 1 admin tickettípus/átmenet CRUD maradéka.
+
 ---
 
-*Forrásalap: `AI-Agent-Platform-MVP-Terv-v1.0.md` (2026-06-15). **S2 (ChatGPT OAuth) 2026-06-18-án lezárva** beágyazott Secret Manager mediációval; a Gemini provider a D2 MVP-n túli, agent-szintű cserepont. A D1/D3/D4/D6/D7 döntések változatlanok.*
+*Forrásalap: `AI-Agent-Platform-MVP-Terv-v1.0.md` (2026-06-15, scope-frissítés: 2026-06-19). **S2 (ChatGPT OAuth) 2026-06-18-án lezárva** beágyazott Secret Manager mediációval. A Gemini/Ollama provider, a per-user Gmail connector, a file editor és a scheduled task ág MVP-feletti cserepontként / külön feature-scope-ként kezelendő. A D1/D3/D4/D6/D7 döntések változatlanok.*

@@ -53,6 +53,7 @@ import {
   rollbackMemorySchema,
   ticketFilterSchema,
   ticketIdSchema,
+  ticketTypeConfigSchema,
   transitionTicketSchema,
   createBoardTicketSchema,
   inviteUserSchema,
@@ -1699,6 +1700,36 @@ export async function getDispatcherControls() {
     return ok(controls)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to read dispatcher controls')
+  }
+}
+
+export async function getTicketTypeConfigs() {
+  try {
+    await ensureActiveDatabaseMode()
+    await requireRole('operator')
+    const configs = await services.platformSettings.getTicketTypeConfigs()
+    return ok(configs)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to read ticket type configs')
+  }
+}
+
+export async function adminUpsertTicketType(input: {
+  type: 'interaction' | 'training'
+  allowedTransitions: Array<{
+    from: 'backlog' | 'ready' | 'approved' | 'in_progress' | 'awaiting_human' | 'done' | 'rejected'
+    to: 'backlog' | 'ready' | 'approved' | 'in_progress' | 'awaiting_human' | 'done' | 'rejected'
+    allowed: 'system' | 'agent' | 'approver' | 'operator' | 'admin' | 'system_or_operator'
+  }>
+}) {
+  try {
+    await ensureActiveDatabaseMode()
+    const actor = await requireRole('admin')
+    const parsed = ticketTypeConfigSchema.parse(input)
+    const configs = await services.platformSettings.upsertTicketTypeConfig(parsed, actor.id)
+    return ok(configs)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update ticket type config')
   }
 }
 

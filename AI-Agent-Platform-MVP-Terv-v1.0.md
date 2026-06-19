@@ -7,6 +7,7 @@
 **Státusz:** Fejlesztési specifikáció alapja — kivitelezésre
 **Felváltja:** `AI-Agent-Platform-MVP-Terv.md` (v0.1, kattintható mockup terv — elavult, mert a koncepció v0.1-re épült, és a számla-agentet vette első use case-nek)
 **Frissítés (2026-06-15):** modellstratégia **eldöntve** — az MVP **kizárólag ChatGPT OAuth-bekötést** használ (előfizetés, „Sign in with ChatGPT" / Codex-provider), **más modellforrás nincs** (sem külön OpenAI API, sem Gemini API). A korábbi D2 nyitott döntés ezzel lezárva (lásd 3.4 és 10.).
+**Frissítés (2026-06-19):** a fejlesztés során néhány Fázis 2 / MVP-feletti cserepont már bekerült a kódbázisba. Ezek **nem bővítik az MVP elfogadási scope-ját**: opcionális, kikapcsolható vagy külön feature-spechez tartozó képességek, amelyeket a 1.5 szakasz külön elhatárol.
 
 ---
 
@@ -68,6 +69,19 @@ A komponensenkénti minimum a 3. fejezetben részletes; összefoglalva valódi (
 - **Proaktív monitor (4.11.7), recurring ütemezés (4.11.6):** a dispatcher `execute_after` predikátuma előkészíti, de a monitor-feature a következő iteráció.
 
 > **A scope-határ a legfontosabb fegyelmező eszköz.** A walking skeletonnál a kísértés az, hogy egy-egy komponenst „rendesen" építsünk meg. Az MVP-ben minden komponens a **legszűkebb működő formában** készül; a mélységet a use case-ek élesedése hajtja, nem az MVP.
+
+### 1.5 Már meglévő, de MVP-feletti elemek elhatárolása
+
+A jelenlegi kódbázisban több olyan képesség is van, amely a későbbi termékirányhoz hasznos, de **nem része az MVP elfogadási feltételeinek**. Ezeket nem kell visszabontani, de a további fejlesztésnél külön scope-ként kell kezelni:
+
+| Terület | Jelenlegi helyzet | MVP-scope értelmezés |
+|---|---|---|
+| **Gemini / Ollama modelladapterek** | A Model Gateway mögött cserepontként megjelentek. | Az MVP hivatalos modellforrása továbbra is **ChatGPT OAuth**. Más provider csak kísérleti / Fázis 2 adapter; a wiki-agent MVP-demója nem támaszkodhat rá. |
+| **Per-user delegated connector / Gmail** | A séma- és runtime-ág, token-vault és S7 smoke részben elkészült. | Fázis 2 feature a `AI-Agent-Platform-Feature-Spec-PerUser-Connector.md` alapján. Az MVP-ben a Tool Broker `actingUserId` paramétere csak előkészítő cserepont. |
+| **File editor / workspace file tools** | Külön feature-spec és E2E teszt tartozik hozzá. | Nem core MVP-követelmény; külön feature-scope. Az MVP csak a wiki tudásfeltöltéshez és citált válaszhoz szükséges dokumentumkezelést várja el. |
+| **Scheduled / recurring tasks** | A `scheduled_tasks` domain és UI irány megjelent. | Az MVP-ben az `execute_after` mező és a dispatcher ready-predikátuma előkészítés. Recurring/proaktív monitor nem MVP acceptance. |
+
+**Szabály:** ha egy új munka ezek valamelyikét mélyítené, azt Fázis 2 / külön feature feladatként kell kezelni, és az MVP-lezárási sorrend elé csak külön döntéssel kerülhet.
 
 ---
 
@@ -336,4 +350,3 @@ Ez a terv közvetlenül a következőkbe bomlik:
 ---
 
 *Forrásalap: `AI-Agent-Platform-Koncepcio.md` v0.7 (forrásellenőrzés: 2026-06-14). A modellstratégia eldöntve (D2: kizárólag ChatGPT OAuth); az ehhez kötődő OAuth-mediáció és kvótakezelés az S2 spike-on validálandó. Az elhalasztott komponensek (koncepció 10.B) éles ügyfélanyag előtt újra validálandók.*
-, A

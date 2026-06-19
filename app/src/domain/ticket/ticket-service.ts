@@ -2,28 +2,13 @@ import type { Prisma, TicketState } from '@prisma/client'
 import type { AuditRepository, TicketRepository, TransitionActor } from '@/repositories/interfaces'
 import { appendWikiFollowUpNote, clearWikiAnswerFields } from '@/lib/wiki-ticket-payload'
 import type { PlaybookService } from '../playbook/playbook-service'
+import {
+  DEFAULT_TICKET_TRANSITIONS,
+  type TicketTransitionConfigRule,
+  type TicketTypeConfig,
+} from './ticket-type-config'
 
-type TransitionRule = {
-  from: TicketState
-  to: TicketState
-  allowed: 'system' | 'agent' | 'approver' | 'operator' | 'admin' | 'system_or_operator'
-}
-
-const TRANSITIONS: TransitionRule[] = [
-  { from: 'backlog', to: 'ready', allowed: 'system_or_operator' },
-  { from: 'ready', to: 'in_progress', allowed: 'system' },
-  { from: 'ready', to: 'rejected', allowed: 'operator' },
-  { from: 'in_progress', to: 'awaiting_human', allowed: 'system' },
-  { from: 'in_progress', to: 'done', allowed: 'system' },
-  { from: 'in_progress', to: 'rejected', allowed: 'operator' },
-  { from: 'awaiting_human', to: 'approved', allowed: 'approver' },
-  { from: 'awaiting_human', to: 'rejected', allowed: 'operator' },
-  { from: 'approved', to: 'done', allowed: 'system' },
-  { from: 'done', to: 'rejected', allowed: 'operator' },
-  { from: 'rejected', to: 'ready', allowed: 'operator' },
-]
-
-function actorMatchesRule(actor: TransitionActor, allowed: TransitionRule['allowed']): boolean {
+function actorMatchesRule(actor: TransitionActor, allowed: TicketTransitionConfigRule['allowed']): boolean {
   if (allowed === 'system') return actor.type === 'system' || actor.type === 'agent'
   if (allowed === 'agent') return actor.type === 'agent' || actor.type === 'system'
   if (allowed === 'admin') return actor.type === 'human' && actor.role === 'admin'
@@ -48,12 +33,28 @@ export class TicketService {
     private audit: AuditRepository,
     private playbooks?: PlaybookService,
     private resolveAgentRole?: (agentId: string | null) => Promise<'worker' | 'orchestrator'>,
+    private resolveTicketTypeConfig?: (type: TicketTypeConfig['type']) => Promise<TicketTypeConfig>,
   ) {}
 
   canTransition(from: TicketState, to: TicketState, actor: TransitionActor): boolean {
-    const rule = TRANSITIONS.find((t) => t.from === from && t.to === to)
+    return this.canTransitionWithRules(DEFAULT_TICKET_TRANSITIONS, from, to, actor)
+  }
+
+  private canTransitionWithRules(
+    rules: TicketTransitionConfigRule[],
+    from: TicketState,
+    to: TicketState,
+    actor: TransitionActor,
+  ): boolean {
+    const rule = rules.find((t) => t.from === from && t.to === to)
     if (!rule) return false
     return actorMatchesRule(actor, rule.allowed)
+  }
+
+  private async getTransitionRules(ticketType: TicketTypeConfig['type']): Promise<TicketTransitionConfigRule[]> {
+    if (!this.resolveTicketTypeConfig) return DEFAULT_TICKET_TRANSITIONS
+    const config = await this.resolveTicketTypeConfig(ticketType)
+    return config.allowedTransitions
   }
 
   async transition(params: {
@@ -75,7 +76,9 @@ export class TicketService {
           ? params.actor.agentId
           : null
 
-    if (!this.canTransition(ticket.state, params.toState, params.actor)) {
+    const transitionRules = await this.getTransitionRules(ticket.type)
+
+    if (!this.canTransitionWithRules(transitionRules, ticket.state, params.toState, params.actor)) {
       await this.audit.append({
         actorType,
         actorId,

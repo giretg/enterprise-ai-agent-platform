@@ -44,6 +44,60 @@ export const transitionTicketSchema = z.object({
   note: z.string().optional(),
 })
 
+export const ticketTransitionAllowedActorSchema = z.enum([
+  'system',
+  'agent',
+  'approver',
+  'operator',
+  'admin',
+  'system_or_operator',
+])
+
+export const ticketTypeConfigSchema = z
+  .object({
+    type: z.enum(['interaction', 'training']),
+    allowedTransitions: z
+      .array(
+        z.object({
+          from: z.enum([
+            'backlog',
+            'ready',
+            'approved',
+            'in_progress',
+            'awaiting_human',
+            'done',
+            'rejected',
+          ]),
+          to: z.enum([
+            'backlog',
+            'ready',
+            'approved',
+            'in_progress',
+            'awaiting_human',
+            'done',
+            'rejected',
+          ]),
+          allowed: ticketTransitionAllowedActorSchema,
+        }),
+      )
+      .min(1)
+      .max(40),
+  })
+  .superRefine((value, ctx) => {
+    const seen = new Set<string>()
+    for (const [index, rule] of value.allowedTransitions.entries()) {
+      const key = `${rule.from}:${rule.to}`
+      if (seen.has(key)) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['allowedTransitions', index],
+          message: 'Duplicate transition rule',
+        })
+      }
+      seen.add(key)
+    }
+  })
+
 export const createBoardTicketSchema = z
   .object({
     title: z.string().trim().min(1).max(200),
