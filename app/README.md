@@ -38,6 +38,8 @@ Nyisd meg: http://localhost:3000/control-plane
 
 > **Fontos:** mindkét URL-hez legyen `?sslmode=require`. A pooled URL `-pooler` hostnevet használ.
 
+**Teszt adatbázis (opcionális):** Neon branch → `DATABASE_URL_TEST` + `DIRECT_URL_TEST`. Váltás: `/control-plane/system`. Séma/seed: `npm run db:push:test`, `npm run db:seed:test`.
+
 A repó gyökeréből ugyanez: `npm run dev`, `npm run build`, stb.
 
 ## Architektúra

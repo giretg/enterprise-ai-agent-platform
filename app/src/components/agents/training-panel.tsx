@@ -66,7 +66,12 @@ export function TrainingPanel({
                 return
               }
               const training = ticketsRes.data.find(
-                (t) => t.agentId === agentId && t.type === 'training' && t.state === 'awaiting_human',
+                (t) =>
+                  t.agentId === agentId &&
+                  t.type === 'training' &&
+                  t.state === 'awaiting_human' &&
+                  // A KB-dokumentum jóváhagyás külön útvonalon megy (KB panel), kihagyjuk.
+                  (t.payload as { kind?: string } | null)?.kind !== 'kb_document',
               )
               if (!training) {
                 setMessage('Nincs awaiting_human training ticket')

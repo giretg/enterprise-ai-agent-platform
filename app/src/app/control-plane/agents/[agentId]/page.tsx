@@ -65,6 +65,7 @@ export default async function AgentDetailPage({
 
   const isAdmin = user ? hasMinimumRole(user.role, 'admin') : false
   const canManageKb = user ? hasMinimumRole(user.role, 'operator') : false
+  const canApproveKb = user ? hasMinimumRole(user.role, 'approver') : false
   const { agent, memoryContent, memoryVersion, recipe, resources, apiKeyPreview } = res.data
   const governance = govRes.success ? govRes.data : null
   const modelConfig = agent.modelConfig as Record<string, unknown>
@@ -166,6 +167,7 @@ export default async function AgentDetailPage({
               agentName={agent.name}
               isOrchestrator={agent.role === 'orchestrator'}
               canUpload={canManageKb}
+              canApprove={canApproveKb}
             />
           </div>
         )}

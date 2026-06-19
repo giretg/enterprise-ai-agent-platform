@@ -54,6 +54,20 @@ export const processDocumentForWikiSchema = z.object({
   agentId: z.string().uuid(),
 })
 
+export const requestKbDocumentSchema = z.object({
+  documentId: z.string().uuid(),
+  agentId: z.string().uuid(),
+})
+
+export const kbTicketSchema = z.object({
+  ticketId: z.string().uuid(),
+})
+
+export const shareKnowledgeBaseSchema = z.object({
+  agentId: z.string().uuid(),
+  targetAgentId: z.string().uuid(),
+})
+
 export const askWikiSchema = z.object({
   agentId: z.string().uuid(),
   question: z.string().trim().min(1).max(2000),
@@ -507,3 +521,11 @@ export const setDispatcherControlsSchema = z
   .refine((v) => v.enabled !== undefined || v.pollIntervalSeconds !== undefined, {
     message: 'Legalább egy mezőt meg kell adni',
   })
+
+export const setDatabaseModeSchema = z.object({
+  mode: z.enum(['production', 'test']),
+})
+
+export const syncTestDatabaseSchema = z.object({
+  confirm: z.literal(true),
+})

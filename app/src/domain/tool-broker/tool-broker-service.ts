@@ -891,8 +891,17 @@ export class ToolBrokerService {
       detail.memoryVersion,
     )
 
-    const documents = await this.tools.findDocumentsForConnector(connector.id)
-    const docChunks: ScoredChunk[] = documents.flatMap((doc) =>
+    // §4.9.1: egy agent több (akár megosztott) KB connectorhoz is köthető —
+    // a retrieval az agenthez kötött ÖSSZES knowledge_base connector dokumentumait
+    // uniózza, nem csak az authorizált egyét.
+    const linkedKbConnectorIds = (await this.tools.findConnectorsForAgent(agentId))
+      .filter((link) => link.connector.type === 'knowledge_base')
+      .map((link) => link.connector.id)
+    const connectorIds = linkedKbConnectorIds.length > 0 ? linkedKbConnectorIds : [connector.id]
+    const documentLists = await Promise.all(
+      connectorIds.map((id) => this.tools.findDocumentsForConnector(id)),
+    )
+    const docChunks: ScoredChunk[] = documentLists.flat().flatMap((doc) =>
       scoreChunks(
         doc.extractedText ?? '',
         `doc:${doc.id}`,

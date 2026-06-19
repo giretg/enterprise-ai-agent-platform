@@ -2,40 +2,65 @@
 
 import { useCallback, useEffect, useState, useTransition } from 'react'
 import {
+  approveKbDocument,
+  getKnowledgeBaseSharing,
+  listAgents,
   listDocumentsForAgent,
-  processDocumentForWiki,
+  listKbDocumentRequests,
+  rejectKbDocument,
+  requestKbDocument,
+  shareKnowledgeBaseWithAgent,
   uploadDocument,
 } from '@/app/actions/platform'
 import { Card } from '@/components/ui/shell'
 
 type KbDocument = { id: string; filename: string; status: string; createdAt: Date | string }
+type PendingDoc = { ticketId: string; documentId: string; filename: string; createdAt: Date | string }
+type AgentOption = { id: string; name: string; role: string }
+type SharedAgent = { id: string; name: string }
 
 export function AgentKnowledgeBasePanel({
   agentId,
   agentName,
   isOrchestrator,
   canUpload,
+  canApprove,
 }: {
   agentId: string
   agentName: string
   isOrchestrator: boolean
   canUpload: boolean
+  canApprove: boolean
 }) {
   const [uploadPending, startUpload] = useTransition()
+  const [actionPending, startAction] = useTransition()
   const [uploadMessage, setUploadMessage] = useState<string | null>(null)
   const [kbDocs, setKbDocs] = useState<KbDocument[]>([])
+  const [pendingDocs, setPendingDocs] = useState<PendingDoc[]>([])
+  const [sharedWith, setSharedWith] = useState<SharedAgent[]>([])
+  const [agentOptions, setAgentOptions] = useState<AgentOption[]>([])
+  const [shareTargetId, setShareTargetId] = useState('')
   const [textInput, setTextInput] = useState('')
   const [loading, setLoading] = useState(true)
 
   const refreshDocs = useCallback(() => {
     if (isOrchestrator) {
       setKbDocs([])
+      setPendingDocs([])
       setLoading(false)
       return
     }
     setLoading(true)
-    listDocumentsForAgent({ agentId }).then((res) => {
-      if (res.success) setKbDocs(res.data as KbDocument[])
+    Promise.all([
+      listDocumentsForAgent({ agentId }),
+      listKbDocumentRequests({ agentId }),
+      getKnowledgeBaseSharing({ agentId }),
+    ]).then(([docsRes, pendingRes, shareRes]) => {
+      if (docsRes.success) setKbDocs(docsRes.data as KbDocument[])
+      if (pendingRes.success) setPendingDocs(pendingRes.data as PendingDoc[])
+      if (shareRes.success) {
+        setSharedWith((shareRes.data as { usedByAgents: SharedAgent[] }).usedByAgents)
+      }
       setLoading(false)
     })
   }, [agentId, isOrchestrator])
@@ -46,6 +71,13 @@ export function AgentKnowledgeBasePanel({
     }, 0)
     return () => window.clearTimeout(timeout)
   }, [refreshDocs])
+
+  useEffect(() => {
+    if (isOrchestrator || !canUpload) return
+    listAgents().then((res) => {
+      if (res.success) setAgentOptions(res.data as AgentOption[])
+    })
+  }, [isOrchestrator, canUpload])
 
   const handleUpload = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
@@ -73,19 +105,47 @@ export function AgentKnowledgeBasePanel({
         return
       }
 
-      const processRes = await processDocumentForWiki({
+      const requestRes = await requestKbDocument({
         documentId: (uploadRes.data as { id: string }).id,
         agentId,
       })
-      if (!processRes.success) {
-        setUploadMessage(processRes.error)
+      if (!requestRes.success) {
+        setUploadMessage(requestRes.error)
         return
       }
 
-      setUploadMessage(`Hozzáadva a tudásbázishoz: ${file?.name ?? 'szöveg'}`)
+      setUploadMessage(`Feltöltve — jóváhagyásra vár: ${file?.name ?? 'szöveg'}`)
       setTextInput('')
       if (fileInput) fileInput.value = ''
       refreshDocs()
+    })
+  }
+
+  const handleApprove = (ticketId: string) => {
+    startAction(async () => {
+      const res = await approveKbDocument({ ticketId })
+      setUploadMessage(res.success ? 'Jóváhagyva — bekerült a tudásbázisba.' : res.error)
+      if (res.success) refreshDocs()
+    })
+  }
+
+  const handleReject = (ticketId: string) => {
+    startAction(async () => {
+      const res = await rejectKbDocument({ ticketId })
+      setUploadMessage(res.success ? 'Elutasítva.' : res.error)
+      if (res.success) refreshDocs()
+    })
+  }
+
+  const handleShare = () => {
+    if (!shareTargetId) return
+    startAction(async () => {
+      const res = await shareKnowledgeBaseWithAgent({ agentId, targetAgentId: shareTargetId })
+      setUploadMessage(res.success ? 'Megosztva a kiválasztott agenttel.' : res.error)
+      if (res.success) {
+        setShareTargetId('')
+        refreshDocs()
+      }
     })
   }
 
@@ -100,12 +160,17 @@ export function AgentKnowledgeBasePanel({
     )
   }
 
+  const shareableAgents = agentOptions.filter(
+    (a) => a.id !== agentId && a.role !== 'orchestrator' && !sharedWith.some((s) => s.id === a.id),
+  )
+
   return (
     <Card title="Tudásbázis">
       <p className="mb-4 text-sm leading-relaxed text-ink-soft">
         A feltöltött szövegek a(z) <span className="font-medium text-ink">{agentName}</span> agent
-        saját tudásbázisába kerülnek. A <code className="rounded bg-night-2 px-1 py-0.5 text-xs">kb_search</code>{' '}
-        eszközzel keresi őket válaszadáskor.
+        saját tudásbázisába kerülnek, <span className="font-medium text-ink">jóváhagyás után</span>. A{' '}
+        <code className="rounded bg-night-2 px-1 py-0.5 text-xs">kb_search</code> eszközzel keresi
+        őket válaszadáskor.
       </p>
 
       {canUpload ? (
@@ -135,7 +200,7 @@ export function AgentKnowledgeBasePanel({
             disabled={uploadPending}
             className="rounded-full bg-honey/20 px-5 py-2.5 text-sm font-semibold text-honey hover:bg-honey/30 disabled:opacity-50"
           >
-            {uploadPending ? 'Feltöltés...' : '+ Hozzáadás a tudásbázishoz'}
+            {uploadPending ? 'Feltöltés...' : '+ Beküldés jóváhagyásra'}
           </button>
           {uploadMessage && <p className="text-sm text-ink-soft">{uploadMessage}</p>}
         </form>
@@ -145,6 +210,51 @@ export function AgentKnowledgeBasePanel({
         </p>
       )}
 
+      {pendingDocs.length > 0 && (
+        <div className="mt-4 border-t border-line pt-4">
+          <p className="mb-2 text-xs font-medium uppercase tracking-widest text-ink-faint">
+            Jóváhagyásra vár ({pendingDocs.length})
+          </p>
+          <ul className="space-y-2">
+            {pendingDocs.map((doc) => (
+              <li
+                key={doc.ticketId}
+                className="flex items-center justify-between gap-2 text-sm text-ink-soft"
+              >
+                <span className="flex items-center gap-2 truncate">
+                  <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-honey" />
+                  <span className="truncate" title={doc.filename}>
+                    {doc.filename}
+                  </span>
+                </span>
+                {canApprove ? (
+                  <span className="flex shrink-0 gap-2">
+                    <button
+                      type="button"
+                      disabled={actionPending}
+                      onClick={() => handleApprove(doc.ticketId)}
+                      className="rounded-full bg-sage/20 px-3 py-1 text-xs font-semibold text-sage hover:bg-sage/30 disabled:opacity-50"
+                    >
+                      Jóváhagyás
+                    </button>
+                    <button
+                      type="button"
+                      disabled={actionPending}
+                      onClick={() => handleReject(doc.ticketId)}
+                      className="rounded-full bg-coral/20 px-3 py-1 text-xs font-semibold text-coral hover:bg-coral/30 disabled:opacity-50"
+                    >
+                      Elutasítás
+                    </button>
+                  </span>
+                ) : (
+                  <span className="shrink-0 text-xs text-ink-faint">approver hagyja jóvá</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       <div className="mt-4 border-t border-line pt-4">
         <p className="mb-2 text-xs font-medium uppercase tracking-widest text-ink-faint">
           Dokumentumok ({loading ? '…' : kbDocs.length})
@@ -152,7 +262,9 @@ export function AgentKnowledgeBasePanel({
         {loading ? (
           <p className="text-sm text-ink-faint">Betöltés...</p>
         ) : kbDocs.length === 0 ? (
-          <p className="text-sm text-ink-faint">Még nincs dokumentum ebben a tudásbázisban.</p>
+          <p className="text-sm text-ink-faint">
+            Még nincs jóváhagyott dokumentum ebben a tudásbázisban.
+          </p>
         ) : (
           <ul className="space-y-1">
             {kbDocs.map((doc) => (
@@ -166,6 +278,41 @@ export function AgentKnowledgeBasePanel({
           </ul>
         )}
       </div>
+
+      {canUpload && (
+        <div className="mt-4 border-t border-line pt-4">
+          <p className="mb-2 text-xs font-medium uppercase tracking-widest text-ink-faint">
+            Megosztás{sharedWith.length > 1 ? ` (${sharedWith.length} agent használja)` : ''}
+          </p>
+          {sharedWith.length > 1 && (
+            <p className="mb-2 text-xs text-ink-faint">
+              Használja: {sharedWith.map((s) => s.name).join(', ')}
+            </p>
+          )}
+          <div className="flex gap-2">
+            <select
+              value={shareTargetId}
+              onChange={(e) => setShareTargetId(e.target.value)}
+              className="flex-1 rounded-xl border border-line bg-night-2 p-2 text-sm text-ink focus:border-coral/50 focus:outline-none"
+            >
+              <option value="">Másik agent kiválasztása…</option>
+              {shareableAgents.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              disabled={actionPending || !shareTargetId}
+              onClick={handleShare}
+              className="rounded-full bg-night-2 px-4 py-2 text-sm font-semibold text-ink-soft hover:text-ink disabled:opacity-50"
+            >
+              Megosztás
+            </button>
+          </div>
+        </div>
+      )}
     </Card>
   )
 }

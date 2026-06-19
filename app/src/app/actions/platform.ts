@@ -8,7 +8,7 @@ import { hasMinimumRole } from '@/auth/types'
 import { services } from '@/domain'
 import { repositories } from '@/repositories/postgres'
 import { isClerkEnabled } from '@/lib/clerk-config'
-import { prisma } from '@/lib/db'
+import { prisma, ensureActiveDatabaseMode } from '@/lib/db'
 import { ensureAgentKnowledgeBase } from '@/lib/agent-knowledge-base'
 import { buildTicketDisplayExtras, enrichTicketsForBoard } from '@/lib/ticket-display'
 import { fail, ok, type ActionResult } from '@/lib/result'
@@ -36,6 +36,9 @@ import {
   scheduledTaskIdSchema,
   processDocumentSchema,
   processDocumentForWikiSchema,
+  requestKbDocumentSchema,
+  kbTicketSchema,
+  shareKnowledgeBaseSchema,
   rollbackMemorySchema,
   ticketFilterSchema,
   ticketIdSchema,
@@ -45,6 +48,8 @@ import {
   changeUserRoleSchema,
   setUserStatusSchema,
   setDispatcherControlsSchema,
+  setDatabaseModeSchema,
+  syncTestDatabaseSchema,
 } from '@/lib/validators/actions'
 
 function safeUploadFilename(name: string): string {
@@ -579,19 +584,162 @@ export async function listDocumentsForAgent(input: { agentId: string }) {
     if (!agent) return fail('Agent not found')
     if (agent.role === 'orchestrator') return ok([])
 
-    const kbConnector =
-      (await ensureAgentKnowledgeBase(agent)) ??
-      (await repositories.toolBroker.findConnectorForAgent(
-        agentId,
-        'knowledge_base',
-        'read',
-      ))
+    // Olvasó action — nem provisionál: a KB connector az agent-create / seed
+    // úton jön létre (ensureAgentKnowledgeBase), itt csak lekérdezzük.
+    const kbConnector = await repositories.toolBroker.findConnectorForAgent(
+      agentId,
+      'knowledge_base',
+      'read',
+    )
     if (!kbConnector) return ok([])
 
     const documents = await repositories.documents.findByConnectorId(kbConnector.id)
     return ok(documents)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list documents')
+  }
+}
+
+// ── KB-dokumentum jóváhagyási kapu (§9.3 / §4.6) ───────────────────────────
+
+/** Feltöltött dokumentumhoz jóváhagyási (tanítási) ticketet nyit — még nem kereshető. */
+export async function requestKbDocument(input: { documentId: string; agentId: string }) {
+  try {
+    const user = await requireRole('operator')
+    const parsed = requestKbDocumentSchema.parse(input)
+    const ticket = await services.knowledgeBase.requestDocument({
+      agentId: parsed.agentId,
+      documentId: parsed.documentId,
+      createdById: user.id,
+    })
+    return ok(ticket)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to request KB document')
+  }
+}
+
+/** Jóváhagyás után a dokumentum bekerül a KB-be és kereshetővé válik. */
+export async function approveKbDocument(input: { ticketId: string }) {
+  try {
+    const user = await requireRole('approver')
+    const parsed = kbTicketSchema.parse(input)
+    const document = await services.knowledgeBase.approveDocument({
+      ticketId: parsed.ticketId,
+      approverId: user.id,
+      approverRole: user.role,
+    })
+    return ok(document)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to approve KB document')
+  }
+}
+
+export async function rejectKbDocument(input: { ticketId: string }) {
+  try {
+    const user = await requireRole('approver')
+    const parsed = kbTicketSchema.parse(input)
+    const result = await services.knowledgeBase.rejectDocument({
+      ticketId: parsed.ticketId,
+      approverId: user.id,
+      approverRole: user.role,
+    })
+    return ok(result)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to reject KB document')
+  }
+}
+
+export async function listKbDocumentRequests(input: { agentId: string }) {
+  try {
+    await requireRole('operator')
+    const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
+    const pending = await services.knowledgeBase.listPendingDocuments(agentId)
+    return ok(pending)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to list KB requests')
+  }
+}
+
+// ── KB megosztás (§4.9.1 / §4.12: megosztható, many-to-many erőforrás) ──────
+
+/** Az agent KB connectorának megosztása egy másik (worker) agenttel. */
+export async function shareKnowledgeBaseWithAgent(input: { agentId: string; targetAgentId: string }) {
+  try {
+    const user = await requireRole('operator')
+    const parsed = shareKnowledgeBaseSchema.parse(input)
+    if (parsed.agentId === parsed.targetAgentId) {
+      return fail('Source and target agents are the same')
+    }
+
+    const target = await repositories.agents.findById(parsed.targetAgentId)
+    if (!target) return fail('Target agent not found')
+    if (target.role === 'orchestrator') {
+      return fail('Orchestrator agents do not use a knowledge base')
+    }
+
+    const kbConnector = await repositories.toolBroker.findConnectorForAgent(
+      parsed.agentId,
+      'knowledge_base',
+      'read',
+    )
+    if (!kbConnector) return fail('Source agent has no knowledge_base connector')
+
+    await prisma.agentConnector.upsert({
+      where: {
+        agentId_connectorId: { agentId: parsed.targetAgentId, connectorId: kbConnector.id },
+      },
+      create: { agentId: parsed.targetAgentId, connectorId: kbConnector.id, accessMode: 'read' },
+      update: {},
+    })
+    await prisma.capability.upsert({
+      where: { agentId_toolName: { agentId: parsed.targetAgentId, toolName: 'kb_search' } },
+      create: { agentId: parsed.targetAgentId, toolName: 'kb_search', allowed: true },
+      update: { allowed: true },
+    })
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: null,
+      action: 'kb.shared',
+      targetType: 'connector',
+      targetId: kbConnector.id,
+      modelUsed: null,
+      inputRef: parsed.agentId,
+      outputRef: parsed.targetAgentId,
+      policyDecision: 'kb_shared',
+      metadata: null,
+    })
+
+    return ok({ shared: true })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to share knowledge base')
+  }
+}
+
+/** A KB connector megosztási állapota: mely agentek használják. */
+export async function getKnowledgeBaseSharing(input: { agentId: string }) {
+  try {
+    await requireRole('operator')
+    const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
+
+    const kbConnector = await repositories.toolBroker.findConnectorForAgent(
+      agentId,
+      'knowledge_base',
+      'read',
+    )
+    if (!kbConnector) return ok({ connectorId: null, usedByAgents: [] })
+
+    const links = await prisma.agentConnector.findMany({
+      where: { connectorId: kbConnector.id },
+      include: { agent: { select: { id: true, name: true } } },
+    })
+    return ok({
+      connectorId: kbConnector.id,
+      usedByAgents: links.map((l) => ({ id: l.agent.id, name: l.agent.name })),
+    })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to get KB sharing')
   }
 }
 
@@ -1236,6 +1384,7 @@ export async function getGovernanceReport(input?: { range?: unknown }) {
 
 export async function getDispatcherControls() {
   try {
+    await ensureActiveDatabaseMode()
     await requireRole('operator')
     const controls = await services.platformSettings.getDispatcherControls()
     return ok(controls)
@@ -1249,6 +1398,7 @@ export async function setDispatcherControls(input: {
   pollIntervalSeconds?: number
 }) {
   try {
+    await ensureActiveDatabaseMode()
     const actor = await requireRole('admin')
     const parsed = setDispatcherControlsSchema.parse(input)
     const controls = await services.platformSettings.setDispatcherControls(
@@ -1262,5 +1412,44 @@ export async function setDispatcherControls(input: {
     return ok(controls)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to update dispatcher controls')
+  }
+}
+
+export async function getDatabaseMode() {
+  try {
+    await ensureActiveDatabaseMode()
+    await requireRole('operator')
+    const [info, syncStatus] = await Promise.all([
+      services.platformSettings.getDatabaseMode(),
+      services.platformSettings.getDatabaseSyncStatus(),
+    ])
+    return ok({ ...info, syncStatus })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to read database mode')
+  }
+}
+
+export async function setDatabaseMode(input: { mode: 'production' | 'test' }) {
+  try {
+    await ensureActiveDatabaseMode()
+    const actor = await requireRole('admin')
+    const parsed = setDatabaseModeSchema.parse(input)
+    const info = await services.platformSettings.setDatabaseMode(parsed.mode, actor.id)
+    return ok(info)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update database mode')
+  }
+}
+
+export async function syncTestDatabaseFromProduction(input: { confirm: true }) {
+  try {
+    await ensureActiveDatabaseMode()
+    const actor = await requireRole('admin')
+    syncTestDatabaseSchema.parse(input)
+    const result = await services.platformSettings.syncTestDatabaseFromProduction(actor.id)
+    const syncStatus = await services.platformSettings.getDatabaseSyncStatus()
+    return ok({ result, syncStatus })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to sync test database')
   }
 }

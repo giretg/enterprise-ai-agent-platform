@@ -17,6 +17,8 @@ config({ path: resolve(process.cwd(), '.env.local') })
 config({ path: resolve(process.cwd(), '.env') })
 
 import { services } from '../src/domain'
+import { ensureActiveDatabaseMode } from '../src/lib/db'
+import { getActiveDatabaseMode } from '../src/lib/database-mode'
 import { DISPATCH_NOTIFY_CHANNEL } from '../src/lib/dispatch-notify'
 
 const POLL_INTERVAL_MS = Number(process.env.DISPATCHER_POLL_INTERVAL_MS ?? 30_000)
@@ -54,6 +56,7 @@ async function runDispatchCycle(ticketId?: string) {
   if (dispatchInFlight) return
   dispatchInFlight = true
   try {
+    await ensureActiveDatabaseMode()
     const reclaimed = await services.dispatcher.reclaimStaleDispatches()
     if (reclaimed.some((r) => r.status === 'reclaimed')) {
       console.log(
@@ -107,12 +110,21 @@ async function runDispatchCycle(ticketId?: string) {
 }
 
 async function main() {
-  const connectionString = process.env.DIRECT_URL ?? process.env.DATABASE_URL
+  await ensureActiveDatabaseMode()
+  const mode = getActiveDatabaseMode()
+  const connectionString =
+    mode === 'test'
+      ? (process.env.DIRECT_URL_TEST ?? process.env.DATABASE_URL_TEST)
+      : (process.env.DIRECT_URL ?? process.env.DATABASE_URL)
   if (!connectionString) {
-    throw new Error('Missing DIRECT_URL or DATABASE_URL for dispatcher worker')
+    throw new Error(
+      mode === 'test'
+        ? 'Missing DIRECT_URL_TEST or DATABASE_URL_TEST for dispatcher worker (test mode)'
+        : 'Missing DIRECT_URL or DATABASE_URL for dispatcher worker',
+    )
   }
 
-  console.log(`[dispatcher] starting worker (poll=${POLL_INTERVAL_MS}ms, batch=${BATCH_LIMIT})`)
+  console.log(`[dispatcher] starting worker (db=${mode}, poll=${POLL_INTERVAL_MS}ms, batch=${BATCH_LIMIT})`)
 
   // A health-szervert azonnal elindítjuk, hogy a Cloud Run startup-probe
   // ne timeoutoljon az első (DB-t igénylő) ciklus alatt.
@@ -140,9 +152,16 @@ async function main() {
   // Cron safety net: self-rescheduling loop, ami minden körben friss intervallumot és
   // kill-switch állapotot olvas a DB-ből (admin felület → újra-deploy nélkül hat).
   let lastEnabled: boolean | null = null
+  let lastDbMode: ReturnType<typeof getActiveDatabaseMode> | null = null
   const scheduleNext = async () => {
     let intervalMs = POLL_INTERVAL_MS
     try {
+      await ensureActiveDatabaseMode()
+      const dbMode = getActiveDatabaseMode()
+      if (dbMode !== lastDbMode) {
+        console.log(`[dispatcher] database mode: ${dbMode}`)
+        lastDbMode = dbMode
+      }
       const controls = await services.platformSettings.getDispatcherControls()
       intervalMs = controls.pollIntervalMs
       if (controls.enabled !== lastEnabled) {

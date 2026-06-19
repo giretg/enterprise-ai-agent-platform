@@ -19,6 +19,8 @@ export async function ensureAgentKnowledgeBase(
 ): Promise<Connector | null> {
   if (agent.role === 'orchestrator') return null
 
+  // Egy meglévő KB-kötés (akár a régi megosztott connector) elsőbbséget élvez,
+  // így a megosztott modell (many-to-many, §4.9.1) megmarad.
   const existingLink = await db.agentConnector.findFirst({
     where: {
       agentId: agent.id,
@@ -28,8 +30,13 @@ export async function ensureAgentKnowledgeBase(
   })
   if (existingLink) return existingLink.connector
 
-  const connector = await db.connector.create({
-    data: {
+  // Determinisztikus név + upsert: párhuzamos hívásnál (agent-create, seed,
+  // dokumentum-feldolgozás) sem dob unique-constraint hibát.
+  const connector = await db.connector.upsert({
+    where: {
+      type_name: { type: 'knowledge_base', name: knowledgeBaseConnectorName(agent.id) },
+    },
+    create: {
       type: 'knowledge_base',
       name: knowledgeBaseConnectorName(agent.id),
       scope: 'single',
@@ -39,14 +46,17 @@ export async function ensureAgentKnowledgeBase(
         memoryBacked: true,
       },
     },
+    update: {},
   })
 
-  await db.agentConnector.create({
-    data: {
+  await db.agentConnector.upsert({
+    where: { agentId_connectorId: { agentId: agent.id, connectorId: connector.id } },
+    create: {
       agentId: agent.id,
       connectorId: connector.id,
       accessMode: 'read',
     },
+    update: {},
   })
 
   await db.capability.upsert({

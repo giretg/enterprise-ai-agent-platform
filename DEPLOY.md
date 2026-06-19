@@ -17,6 +17,14 @@ Minden titkos env változót Cloud Secret Manager-ben tárolunk:
 # Neon
 npx -y firebase-tools@latest apphosting:secrets:set DATABASE_URL
 npx -y firebase-tools@latest apphosting:secrets:set DIRECT_URL
+npx -y firebase-tools@latest apphosting:secrets:set DATABASE_URL_TEST
+npx -y firebase-tools@latest apphosting:secrets:set DIRECT_URL_TEST
+
+# Neon branch restore (gyors éles→teszt szinkron — opcionális)
+npx -y firebase-tools@latest apphosting:secrets:set NEON_API_KEY
+npx -y firebase-tools@latest apphosting:secrets:set NEON_PROJECT_ID
+npx -y firebase-tools@latest apphosting:secrets:set NEON_PRODUCTION_BRANCH_ID
+npx -y firebase-tools@latest apphosting:secrets:set NEON_TEST_BRANCH_ID
 
 # Gemini
 npx -y firebase-tools@latest apphosting:secrets:set GEMINI_API_KEY
@@ -44,6 +52,22 @@ npm run db:push          # Fázis 2 táblák: write_gate_tokens, evals, eval_run
 npm run db:backfill-audit # Fázis 1 audit sorok hash-lánc kitöltése
 npm run db:seed          # Könyvelő Agent + demo felhasználók
 ```
+
+### Teszt adatbázis (Neon branch)
+
+Az éles és teszt adat elkülönítéséhez hozz létre egy **Neon branch**-et (Neon Console → Branches → Create branch). A branch saját pooled + direct connection stringjei kerülnek a `DATABASE_URL_TEST` / `DIRECT_URL_TEST` secret-ekbe.
+
+Teszt branch séma + seed (lokálisan, `.env.local`-ban a teszt URL-ekkel):
+
+```bash
+cd app
+npm run db:push:test
+npm run db:seed:test
+```
+
+Runtime váltás: **Control Plane → Rendszer → Adatbázis környezet**. A beállítás az éles branch `platform_settings` táblájában tárolódik; az alkalmazás adatai (ticketek, agentek, audit) a kiválasztott branch-en futnak. A dispatcher worker és más instance-ok ~15 mp-en belül követik a váltást.
+
+**Teszt frissítése élesből:** ugyanitt a „Teszt frissítése éles adatokkal” gomb. Ha be vannak állítva a Neon API env-ek (`NEON_API_KEY`, `NEON_PROJECT_ID`, `NEON_*_BRANCH_ID`), branch restore (~1 mp); különben PostgreSQL tábla-másolás (fallback).
 
 ## 3. Deploy
 

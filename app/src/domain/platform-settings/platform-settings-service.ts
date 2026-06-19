@@ -1,3 +1,21 @@
+import {
+  buildDatabaseModeInfo,
+  DATABASE_MODE_KEY,
+  DATABASE_SYNC_KEY,
+  isTestDatabaseConfigured,
+  serializeDatabaseModeState,
+  setActiveDatabaseMode,
+  type DatabaseMode,
+  type DatabaseModeInfo,
+  type DatabaseModeState,
+  type DatabaseSyncStatus,
+  parseDatabaseModeState,
+} from '@/lib/database-mode'
+import {
+  describeSyncMethod,
+  syncProductionDatabaseToTest,
+  type DatabaseSyncResult,
+} from '@/lib/database-sync'
 import type { AuditRepository, PlatformSettingsRepository } from '@/repositories/interfaces'
 
 export const DISPATCHER_CONTROLS_KEY = 'dispatcher.controls'
@@ -18,6 +36,49 @@ const DEFAULT_CONTROLS: DispatcherControls = {
   pollIntervalMs: DEFAULT_POLL_INTERVAL_MS,
   updatedById: null,
   updatedAt: null,
+}
+
+const DEFAULT_SYNC_STATUS: DatabaseSyncStatus = {
+  status: 'idle',
+  method: null,
+  startedAt: null,
+  completedAt: null,
+  startedById: null,
+  error: null,
+  tableCount: null,
+  rowCount: null,
+  durationMs: null,
+}
+
+const SYNC_STALE_MS = 30 * 60 * 1000
+
+function parseSyncStatus(raw: unknown): DatabaseSyncStatus {
+  if (!raw || typeof raw !== 'object') return { ...DEFAULT_SYNC_STATUS }
+  const value = raw as Partial<DatabaseSyncStatus>
+  return {
+    status:
+      value.status === 'running' ||
+      value.status === 'succeeded' ||
+      value.status === 'failed' ||
+      value.status === 'idle'
+        ? value.status
+        : 'idle',
+    method: value.method === 'neon_restore' || value.method === 'pg_copy' ? value.method : null,
+    startedAt: typeof value.startedAt === 'string' ? value.startedAt : null,
+    completedAt: typeof value.completedAt === 'string' ? value.completedAt : null,
+    startedById: typeof value.startedById === 'string' ? value.startedById : null,
+    error: typeof value.error === 'string' ? value.error : null,
+    tableCount: typeof value.tableCount === 'number' ? value.tableCount : null,
+    rowCount: typeof value.rowCount === 'number' ? value.rowCount : null,
+    durationMs: typeof value.durationMs === 'number' ? value.durationMs : null,
+  }
+}
+
+function isSyncRunning(status: DatabaseSyncStatus): boolean {
+  if (status.status !== 'running' || !status.startedAt) return false
+  const started = Date.parse(status.startedAt)
+  if (!Number.isFinite(started)) return false
+  return Date.now() - started < SYNC_STALE_MS
 }
 
 function clampInterval(ms: number): number {
@@ -99,5 +160,141 @@ export class PlatformSettingsService {
     })
 
     return next
+  }
+
+  async getDatabaseMode(): Promise<DatabaseModeInfo> {
+    const raw = await this.settings.get(DATABASE_MODE_KEY)
+    return buildDatabaseModeInfo(parseDatabaseModeState(raw))
+  }
+
+  async setDatabaseMode(mode: DatabaseMode, actorId: string): Promise<DatabaseModeInfo> {
+    if (mode === 'test' && !isTestDatabaseConfigured()) {
+      throw new Error('A teszt adatbázis nincs konfigurálva (DATABASE_URL_TEST hiányzik)')
+    }
+
+    const current = parseDatabaseModeState(await this.settings.get(DATABASE_MODE_KEY))
+    const next: DatabaseModeState = serializeDatabaseModeState({
+      mode,
+      updatedById: actorId,
+      updatedAt: new Date().toISOString(),
+    })
+
+    await this.settings.set(
+      DATABASE_MODE_KEY,
+      {
+        mode: next.mode,
+        updatedById: next.updatedById,
+        updatedAt: next.updatedAt,
+      },
+      actorId,
+    )
+
+    setActiveDatabaseMode(next.mode)
+
+    await this.audit.append({
+      actorType: 'human',
+      actorId,
+      agentVersion: null,
+      action: 'database.mode_changed',
+      targetType: 'platform_setting',
+      targetId: null,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: null,
+      policyDecision: next.mode,
+      metadata: { previousMode: current.mode, mode: next.mode },
+    })
+
+    return buildDatabaseModeInfo(next)
+  }
+
+  async getDatabaseSyncStatus(): Promise<DatabaseSyncStatus> {
+    const raw = await this.settings.get(DATABASE_SYNC_KEY)
+    const status = parseSyncStatus(raw)
+    if (status.status === 'running' && !isSyncRunning(status)) {
+      return { ...status, status: 'failed', error: status.error ?? 'A szinkron időtúllépés miatt megszakadt' }
+    }
+    return status
+  }
+
+  private async writeSyncStatus(status: DatabaseSyncStatus): Promise<void> {
+    await this.settings.set(DATABASE_SYNC_KEY, status)
+  }
+
+  async syncTestDatabaseFromProduction(actorId: string): Promise<DatabaseSyncResult> {
+    if (!isTestDatabaseConfigured()) {
+      throw new Error('A teszt adatbázis nincs konfigurálva (DATABASE_URL_TEST hiányzik)')
+    }
+
+    const current = await this.getDatabaseSyncStatus()
+    if (isSyncRunning(current)) {
+      throw new Error('Már fut egy szinkron — várj a befejezésre')
+    }
+
+    const runningStatus: DatabaseSyncStatus = {
+      status: 'running',
+      method: null,
+      startedAt: new Date().toISOString(),
+      completedAt: null,
+      startedById: actorId,
+      error: null,
+      tableCount: null,
+      rowCount: null,
+      durationMs: null,
+    }
+    await this.writeSyncStatus(runningStatus)
+
+    try {
+      const result = await syncProductionDatabaseToTest()
+      const completed: DatabaseSyncStatus = {
+        status: 'succeeded',
+        method: result.method,
+        startedAt: runningStatus.startedAt,
+        completedAt: new Date().toISOString(),
+        startedById: actorId,
+        error: null,
+        tableCount: result.tableCount,
+        rowCount: result.rowCount,
+        durationMs: result.durationMs,
+      }
+      await this.writeSyncStatus(completed)
+
+      await this.audit.append({
+        actorType: 'human',
+        actorId,
+        agentVersion: null,
+        action: 'database.test_synced_from_production',
+        targetType: 'platform_setting',
+        targetId: null,
+        modelUsed: null,
+        inputRef: null,
+        outputRef: null,
+        policyDecision: result.method,
+        metadata: {
+          method: result.method,
+          methodLabel: describeSyncMethod(result.method),
+          tableCount: result.tableCount,
+          rowCount: result.rowCount,
+          durationMs: result.durationMs,
+          operationId: result.operationId ?? null,
+        },
+      })
+
+      return result
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Ismeretlen hiba'
+      await this.writeSyncStatus({
+        status: 'failed',
+        method: null,
+        startedAt: runningStatus.startedAt,
+        completedAt: new Date().toISOString(),
+        startedById: actorId,
+        error: message,
+        tableCount: null,
+        rowCount: null,
+        durationMs: null,
+      })
+      throw error
+    }
   }
 }

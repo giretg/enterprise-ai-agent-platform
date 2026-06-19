@@ -168,6 +168,16 @@ export class TrainingService {
     if (!ticket || ticket.type !== 'training') throw new Error('Training ticket not found')
     if (ticket.state !== 'awaiting_human') throw new Error('Ticket not awaiting approval')
 
+    // KB-dokumentum tanítási ticket: külön útvonalon (KnowledgeBaseService) megy,
+    // nem a memória-write-gate-en — ne kezeljük memória-jóváhagyásként.
+    const payloadKind =
+      typeof ticket.payload === 'object' && ticket.payload !== null && !Array.isArray(ticket.payload)
+        ? (ticket.payload as Record<string, unknown>).kind
+        : undefined
+    if (payloadKind === 'kb_document') {
+      throw new Error('Use the knowledge base approval flow for KB document tickets')
+    }
+
     const approver = await prisma.user.findUnique({ where: { id: approverId } })
     if (!approver) throw new Error('Approver not found')
 

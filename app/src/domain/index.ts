@@ -26,6 +26,7 @@ import { PlaybookService } from '@/domain/playbook/playbook-service'
 import { IamService } from '@/domain/iam/iam-service'
 import { SandboxAppService } from '@/domain/sandbox/sandbox-app-service'
 import { ScheduledTaskService } from '@/domain/scheduled-task/scheduled-task-service'
+import { KnowledgeBaseService } from '@/domain/knowledge-base/knowledge-base-service'
 import { repositories } from '@/repositories/postgres'
 
 const playbookService = new PlaybookService(repositories.playbooks, repositories.audit)
@@ -91,6 +92,13 @@ const toolBrokerService = new ToolBrokerService(
   toolAuthorizer,
   connectorGrantService,
   fileEditorService,
+)
+const knowledgeBaseService = new KnowledgeBaseService(
+  repositories.tickets,
+  repositories.documents,
+  repositories.agents,
+  repositories.audit,
+  ticketService,
 )
 const iamService = new IamService(repositories.audit, connectorGrantService)
 const agentChatRuntime = new AgentChatRuntime(
@@ -165,6 +173,7 @@ export const services = {
   wiki: wikiRuntime,
   bookkeeper: bookkeeperRuntime,
   training: trainingService,
+  knowledgeBase: knowledgeBaseService,
   auditChain: auditChainService,
   writeGate: writeGateService,
   eval: evalService,
