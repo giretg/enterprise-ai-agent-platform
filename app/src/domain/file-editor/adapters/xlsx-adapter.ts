@@ -71,6 +71,43 @@ export async function xlsxReadSheet(
   return { sheet: worksheet.name, headers, rows }
 }
 
+/**
+ * A teljes munkafüzet szöveges kivonata a tudásbázis-indexeléshez: minden
+ * munkalapot bejár, és a `kb_search` chunkolójához igazodó formátumot ad
+ * (munkalaponként blokk, üres sorral elválasztva). A fejléc külön sorban,
+ * a sorok tab-tagolt értékekkel szerepelnek.
+ */
+export async function xlsxExtractText(buffer: Buffer, maxRowsPerSheet = 1000): Promise<string> {
+  const workbook = await loadWorkbook()
+  await workbook.xlsx.load(buffer)
+
+  const blocks: string[] = []
+  const worksheets = workbook.worksheets as Array<{
+    name: string
+    eachRow: (
+      opts: { includeEmpty: boolean },
+      cb: (row: { values: unknown[] }, rowNumber: number) => void,
+    ) => void
+  }>
+
+  for (const worksheet of worksheets) {
+    const headers: string[] = []
+    const dataRows: string[] = []
+    worksheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
+      const values = (row.values as unknown[]).slice(1).map((v) => (v == null ? '' : String(v)))
+      if (rowNumber === 1) {
+        headers.push(...values)
+      } else if (dataRows.length < maxRowsPerSheet) {
+        dataRows.push(values.join('\t'))
+      }
+    })
+    if (headers.length === 0 && dataRows.length === 0) continue
+    blocks.push([`# ${worksheet.name}`, headers.join('\t'), ...dataRows].join('\n'))
+  }
+
+  return blocks.join('\n\n')
+}
+
 export async function xlsxWriteCells(
   buffer: Buffer,
   changes: XlsxCellChange[],

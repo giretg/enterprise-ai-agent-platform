@@ -10,6 +10,9 @@ import { repositories } from '@/repositories/postgres'
 import { isClerkEnabled } from '@/lib/clerk-config'
 import { prisma, ensureActiveDatabaseMode } from '@/lib/db'
 import { ensureAgentKnowledgeBase } from '@/lib/agent-knowledge-base'
+import { xlsxExtractText } from '@/domain/file-editor/adapters/xlsx-adapter'
+import { docxRead } from '@/domain/file-editor/adapters/docx-adapter'
+import { pdfRead } from '@/domain/file-editor/adapters/pdf-adapter'
 import { buildTicketDisplayExtras, enrichTicketsForBoard } from '@/lib/ticket-display'
 import { fail, ok, type ActionResult } from '@/lib/result'
 import {
@@ -483,9 +486,18 @@ export async function uploadDocument(formData: FormData) {
       filename = 'paste.txt'
     } else if (file instanceof File) {
       filename = safeUploadFilename(file.name)
+      const ext = filename.slice(filename.lastIndexOf('.')).toLowerCase()
       if (file.type.startsWith('image/')) {
         const buffer = Buffer.from(await file.arrayBuffer())
         extractedText = `[image:${file.type}]${buffer.toString('base64')}`
+      } else if (ext === '.xlsx' || ext === '.xlsm') {
+        // Bináris formátum: a nyers szöveg olvashatatlan, ezért az adapterrel
+        // nyerünk ki kereshető szöveget (különben a kb_search nem talál benne).
+        extractedText = await xlsxExtractText(Buffer.from(await file.arrayBuffer()))
+      } else if (ext === '.docx') {
+        extractedText = (await docxRead(Buffer.from(await file.arrayBuffer()))).text
+      } else if (ext === '.pdf') {
+        extractedText = (await pdfRead(Buffer.from(await file.arrayBuffer()))).text
       } else {
         extractedText = await file.text()
       }

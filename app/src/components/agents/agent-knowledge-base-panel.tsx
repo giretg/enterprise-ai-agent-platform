@@ -176,10 +176,10 @@ export function AgentKnowledgeBasePanel({
       {canUpload ? (
         <form onSubmit={handleUpload} className="space-y-3">
           <div>
-            <label className="mb-1 block text-xs font-medium text-ink-soft">Fájl (.txt, .md, .csv)</label>
+            <label className="mb-1 block text-xs font-medium text-ink-soft">Fájl (.txt, .md, .csv, .xlsx, .docx, .pdf)</label>
             <input
               type="file"
-              accept=".txt,.md,.csv"
+              accept=".txt,.md,.csv,.json,.xlsx,.xlsm,.docx,.pdf"
               className="w-full text-sm text-ink-soft file:mr-3 file:rounded-full file:border-0 file:bg-sage/20 file:px-4 file:py-1.5 file:text-xs file:font-semibold file:text-sage"
             />
           </div>
