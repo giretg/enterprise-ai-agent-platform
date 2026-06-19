@@ -115,11 +115,60 @@ export async function listBoardAssignees() {
   }
 }
 
+async function runAgentTicketDispatch(
+  ticketId: string,
+  agentId: string,
+): Promise<{ warning?: string; error?: string }> {
+  const launcherMode = process.env.HARNESS_LAUNCHER_MODE ?? 'local-wiki'
+  if (launcherMode !== 'local-wiki') {
+    return {
+      warning:
+        'Ticket létrejött (ready). Docker/Cloud Run módban a feldolgozáshoz futtasd: npm run dispatcher:worker',
+    }
+  }
+
+  try {
+    const dispatchResult = await services.dispatcher.dispatchTicket(ticketId)
+    if (dispatchResult.status === 'budget_blocked') {
+      const since = new Date()
+      since.setHours(0, 0, 0, 0)
+      const usage = await repositories.modelCalls.getUsageForAgentSince(agentId, since)
+      const budget = dispatchBudgetFromEnv()
+      return {
+        warning:
+          `Ticket létrejött (ready), de a napi keret betelt: ${usage.tokens.toLocaleString('hu-HU')}/${budget.maxTokensPerDay.toLocaleString('hu-HU')} token, ${usage.calls}/${budget.maxCallsPerDay} hívás. ` +
+          'Emeld a DISPATCH_MAX_TOKENS_PER_DAY értékét, vagy várd meg a holnapi resetet.',
+      }
+    }
+    if (dispatchResult.status === 'paused') {
+      return {
+        warning:
+          'Ticket létrejött (ready), de a dispatcher ki van kapcsolva — System → Dispatcher panelen kapcsold be.',
+      }
+    }
+    if (dispatchResult.status === 'skipped') {
+      return {
+        warning:
+          'Ticket létrejött (ready), de a feldolgozás most nem indult el — frissíts, vagy indítsd a dispatcher workert.',
+      }
+    }
+    return {}
+  } catch (error) {
+    return {
+      error:
+        error instanceof Error
+          ? `Ticket létrejött, de a feldolgozás elbukott: ${error.message}`
+          : 'Ticket létrejött, de a feldolgozás elbukott',
+    }
+  }
+}
+
 export async function createBoardTicket(input: {
   title: string
   description?: string
   assigneeType: 'human' | 'agent'
   assigneeId: string
+  deferDispatch?: boolean
 }) {
   try {
     const user = await requireRole('operator')
@@ -163,34 +212,10 @@ export async function createBoardTicket(input: {
       })
 
       let warning: string | undefined
-      const launcherMode = process.env.HARNESS_LAUNCHER_MODE ?? 'local-wiki'
-      if (launcherMode === 'local-wiki') {
-        try {
-          const dispatchResult = await services.dispatcher.dispatchTicket(ticket.id)
-          if (dispatchResult.status === 'budget_blocked') {
-            const since = new Date()
-            since.setHours(0, 0, 0, 0)
-            const usage = await repositories.modelCalls.getUsageForAgentSince(parsed.assigneeId, since)
-            const budget = dispatchBudgetFromEnv()
-            warning =
-              `Ticket létrejött (ready), de a napi keret betelt: ${usage.tokens.toLocaleString('hu-HU')}/${budget.maxTokensPerDay.toLocaleString('hu-HU')} token, ${usage.calls}/${budget.maxCallsPerDay} hívás. ` +
-              'Emeld a DISPATCH_MAX_TOKENS_PER_DAY értékét, vagy várd meg a holnapi resetet.'
-          } else if (dispatchResult.status === 'paused') {
-            warning =
-              'Ticket létrejött (ready), de a dispatcher ki van kapcsolva — System → Dispatcher panelen kapcsold be.'
-          } else if (dispatchResult.status === 'skipped') {
-            warning = 'Ticket létrejött (ready), de a feldolgozás most nem indult el — frissíts, vagy indítsd a dispatcher workert.'
-          }
-        } catch (error) {
-          return fail(
-            error instanceof Error
-              ? `Ticket létrejött, de a feldolgozás elbukott: ${error.message}`
-              : 'Ticket létrejött, de a feldolgozás elbukott',
-          )
-        }
-      } else {
-        warning =
-          'Ticket létrejött (ready). Docker/Cloud Run módban a feldolgozáshoz futtasd: npm run dispatcher:worker'
+      if (!parsed.deferDispatch) {
+        const dispatchOutcome = await runAgentTicketDispatch(ticket.id, parsed.assigneeId)
+        if (dispatchOutcome.error) return fail(dispatchOutcome.error)
+        warning = dispatchOutcome.warning
       }
 
       const updated = await repositories.tickets.findById(ticket.id)
@@ -221,6 +246,27 @@ export async function createBoardTicket(input: {
     return ok({ ticket })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to create board ticket')
+  }
+}
+
+export async function dispatchBoardTicket(input: { ticketId: string }) {
+  try {
+    await requireRole('operator')
+    const { id: ticketId } = ticketIdSchema.parse(input)
+    const ticket = await repositories.tickets.findById(ticketId)
+    if (!ticket) return fail('Ticket not found')
+    if (ticket.assigneeType !== 'agent' || !ticket.assigneeId) {
+      return fail('Ticket is not assigned to an agent')
+    }
+    if (ticket.state !== 'ready') return fail('Ticket is not in ready state')
+
+    const dispatchOutcome = await runAgentTicketDispatch(ticketId, ticket.assigneeId)
+    if (dispatchOutcome.error) return fail(dispatchOutcome.error)
+
+    const updated = await repositories.tickets.findById(ticketId)
+    return ok({ ticket: updated ?? ticket, warning: dispatchOutcome.warning })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to dispatch board ticket')
   }
 }
 

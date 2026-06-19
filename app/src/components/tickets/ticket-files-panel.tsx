@@ -1,7 +1,12 @@
 'use client'
 
-import { useCallback, useEffect, useRef, useState, useTransition } from 'react'
+import { useCallback, useEffect, useState, useTransition } from 'react'
+import { TicketWorkspaceFileDropzone } from '@/components/tickets/ticket-workspace-file-dropzone'
 import { Card } from '@/components/ui/shell'
+import {
+  ticketWorkspaceFilesUrl,
+  uploadTicketWorkspaceFile,
+} from '@/lib/ticket-workspace-files-client'
 
 type WorkspaceFile = { path: string }
 
@@ -16,10 +21,8 @@ export function TicketFilesPanel({ ticketId, ticketState }: TicketFilesPanelProp
   const [error, setError] = useState<string | null>(null)
   const [uploading, startUpload] = useTransition()
   const [uploadError, setUploadError] = useState<string | null>(null)
-  const [dragActive, setDragActive] = useState(false)
-  const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const listUrl = `/api/v1/tickets/${ticketId}/workspace/files`
+  const listUrl = ticketWorkspaceFilesUrl(ticketId)
   const isReadOnly = ['done', 'rejected', 'approved'].includes(ticketState)
 
   const loadFiles = useCallback(async () => {
@@ -70,77 +73,23 @@ export function TicketFilesPanel({ ticketId, ticketState }: TicketFilesPanelProp
   function uploadFile(file: File) {
     setUploadError(null)
     startUpload(async () => {
-      const form = new FormData()
-      form.append('file', file)
       try {
-        const res = await fetch(listUrl, { method: 'POST', body: form })
-        const json = (await res.json()) as { success: boolean; error?: string }
-        if (!json.success) throw new Error(json.error ?? 'Feltöltés sikertelen')
+        await uploadTicketWorkspaceFile(ticketId, file)
         await loadFiles()
       } catch (err) {
         setUploadError(err instanceof Error ? err.message : 'Feltöltés sikertelen')
-      } finally {
-        if (fileInputRef.current) fileInputRef.current.value = ''
       }
     })
-  }
-
-  function handleUploadClick() {
-    fileInputRef.current?.click()
-  }
-
-  function handleFileChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const file = e.target.files?.[0]
-    if (!file) return
-    uploadFile(file)
-  }
-
-  function handleDragOver(e: React.DragEvent) {
-    e.preventDefault()
-    if (!isReadOnly) setDragActive(true)
-  }
-
-  function handleDragLeave(e: React.DragEvent) {
-    e.preventDefault()
-    setDragActive(false)
-  }
-
-  function handleDrop(e: React.DragEvent) {
-    e.preventDefault()
-    setDragActive(false)
-    if (isReadOnly) return
-    const file = e.dataTransfer.files?.[0]
-    if (file) uploadFile(file)
   }
 
   return (
     <Card title="Fájlok">
       {!isReadOnly && (
-        <div
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-          className={`mb-3 rounded-xl border border-dashed px-4 py-6 text-center transition-colors ${
-            dragActive ? 'border-sky bg-sky/10' : 'border-line bg-card/30'
-          }`}
-        >
-          <p className="text-sm text-ink-soft">
-            Húzd ide a fájlt, vagy{' '}
-            <button
-              type="button"
-              onClick={handleUploadClick}
-              disabled={uploading}
-              className="font-semibold text-sky hover:underline disabled:opacity-50"
-            >
-              {uploading ? 'Feltöltés...' : 'válassz fájlt'}
-            </button>
-          </p>
-          <input
-            ref={fileInputRef}
-            type="file"
-            className="hidden"
-            onChange={handleFileChange}
-            disabled={uploading}
+        <div className="mb-3">
+          <TicketWorkspaceFileDropzone
+            disabled={isReadOnly}
+            uploading={uploading}
+            onFileSelected={uploadFile}
           />
         </div>
       )}

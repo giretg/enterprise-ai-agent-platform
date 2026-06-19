@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { authenticateAgentRequest, requireAgentScope } from '@/auth/agent-api-key'
 import { services } from '@/domain'
 import { repositories } from '@/repositories/postgres'
+import { resolveTicketProcessRoute } from '@/lib/ticket-process-route'
 
 function jsonError(message: string, status: number) {
   return NextResponse.json({ success: false, error: message }, { status })
@@ -41,9 +42,13 @@ export async function POST(
   }
 
   try {
-    const result = await services.wiki.processTicket({ ticketId, agentId })
+    const route = resolveTicketProcessRoute(ticket.payload)
+    const result =
+      route === 'general'
+        ? await services.generalTask.processTicket({ ticketId, agentId })
+        : await services.wiki.processTicket({ ticketId, agentId })
     return NextResponse.json({ success: true, data: result })
   } catch (e) {
-    return jsonError(e instanceof Error ? e.message : 'Wiki ticket process failed', 500)
+    return jsonError(e instanceof Error ? e.message : 'Ticket process failed', 500)
   }
 }

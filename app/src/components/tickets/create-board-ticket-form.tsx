@@ -3,13 +3,24 @@
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useMemo, useState, useTransition } from 'react'
-import { createBoardTicket } from '@/app/actions/platform'
+import { createBoardTicket, dispatchBoardTicket } from '@/app/actions/platform'
+import { TicketWorkspaceFileDropzone } from '@/components/tickets/ticket-workspace-file-dropzone'
 import { Badge, Card } from '@/components/ui/shell'
 import { personaFor } from '@/lib/agent-persona'
+import { uploadTicketWorkspaceFiles } from '@/lib/ticket-workspace-files-client'
 
 type AssigneeOptions = {
   agents: { id: string; name: string }[]
   users: { id: string; name: string; role: string }[]
+}
+
+type PendingFile = {
+  id: string
+  file: File
+}
+
+function makePendingFile(file: File): PendingFile {
+  return { id: `${file.name}-${file.size}-${file.lastModified}`, file }
 }
 
 export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: AssigneeOptions }) {
@@ -20,6 +31,7 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
   const [description, setDescription] = useState('')
   const [assigneeType, setAssigneeType] = useState<'agent' | 'human'>('agent')
   const [assigneeId, setAssigneeId] = useState('')
+  const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([])
   const [message, setMessage] = useState<string | null>(null)
   const [lastTicketId, setLastTicketId] = useState<string | null>(null)
 
@@ -43,6 +55,19 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
     setDescription('')
     setAssigneeType('agent')
     setAssigneeId('')
+    setPendingFiles([])
+  }
+
+  const addPendingFile = (file: File) => {
+    setPendingFiles((prev) => {
+      const next = makePendingFile(file)
+      if (prev.some((item) => item.id === next.id)) return prev
+      return [...prev, next]
+    })
+  }
+
+  const removePendingFile = (id: string) => {
+    setPendingFiles((prev) => prev.filter((item) => item.id !== id))
   }
 
   const handleSubmit = () => {
@@ -56,28 +81,72 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
       return
     }
 
+    const localFiles = pendingFiles.map((item) => item.file)
+    const shouldDeferDispatch = assigneeType === 'agent' && localFiles.length > 0
+
     startTransition(async () => {
       setMessage(null)
       setLastTicketId(null)
-      const res = await createBoardTicket({
-        title: trimmedTitle,
-        description: description.trim() || undefined,
-        assigneeType,
-        assigneeId,
-      })
-      if (!res.success) {
-        setMessage(res.error)
-        return
+      try {
+        const res = await createBoardTicket({
+          title: trimmedTitle,
+          description: description.trim() || undefined,
+          assigneeType,
+          assigneeId,
+          deferDispatch: shouldDeferDispatch,
+        })
+        if (!res.success) {
+          setMessage(res.error)
+          return
+        }
+
+        const ticketId = res.data.ticket.id
+
+        if (localFiles.length > 0) {
+          try {
+            await uploadTicketWorkspaceFiles(ticketId, localFiles)
+          } catch (err) {
+            setMessage(
+              err instanceof Error
+                ? `Ticket létrejött, de a fájlok feltöltése sikertelen: ${err.message}`
+                : 'Ticket létrejött, de a fájlok feltöltése sikertelen',
+            )
+            setLastTicketId(ticketId)
+            router.refresh()
+            return
+          }
+        }
+
+        let dispatchWarning =
+          'warning' in res.data && typeof res.data.warning === 'string' ? res.data.warning : null
+
+        if (shouldDeferDispatch) {
+          const dispatchRes = await dispatchBoardTicket({ ticketId })
+          if (!dispatchRes.success) {
+            setMessage(
+              dispatchRes.error ??
+                'Ticket és fájlok létrejöttek, de a feldolgozás nem indult el.',
+            )
+            setLastTicketId(ticketId)
+            router.refresh()
+            return
+          }
+          dispatchWarning =
+            'warning' in dispatchRes.data && typeof dispatchRes.data.warning === 'string'
+              ? dispatchRes.data.warning
+              : null
+        }
+
+        resetForm()
+        setOpen(false)
+        setLastTicketId(ticketId)
+        if (dispatchWarning) {
+          setMessage(dispatchWarning)
+        }
+        router.refresh()
+      } catch (err) {
+        setMessage(err instanceof Error ? err.message : 'Ticket létrehozása sikertelen')
       }
-      resetForm()
-      setOpen(false)
-      setLastTicketId(res.data.ticket.id)
-      const dispatchWarning =
-        'warning' in res.data && typeof res.data.warning === 'string' ? res.data.warning : null
-      if (dispatchWarning) {
-        setMessage(dispatchWarning)
-      }
-      router.refresh()
     })
   }
 
@@ -139,6 +208,44 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
             placeholder="Részletek, kontextus, elvárások…"
             className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm text-ink"
           />
+        </div>
+
+        <div>
+          <p className="text-sm font-medium text-ink-soft">
+            Fájlok <span className="font-normal text-ink-faint">(opcionális)</span>
+          </p>
+          <p className="mt-1 text-xs text-ink-faint">
+            A csatolt fájlok a ticket workspace-ébe kerülnek — az agent a feldolgozás során
+            eléri őket (file_list, file_read, xlsx_read_sheet, stb.).
+          </p>
+          <div className="mt-2">
+            <TicketWorkspaceFileDropzone
+              disabled={pending}
+              uploading={pending}
+              onFileSelected={addPendingFile}
+            />
+          </div>
+          {pendingFiles.length > 0 ? (
+            <ul className="mt-3 divide-y divide-line rounded-lg border border-line">
+              {pendingFiles.map((item) => (
+                <li key={item.id} className="flex items-center justify-between gap-3 px-3 py-2">
+                  <span className="truncate text-sm text-ink" title={item.file.name}>
+                    {item.file.name}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={pending}
+                    onClick={() => removePendingFile(item.id)}
+                    className="shrink-0 text-sm text-coral hover:underline disabled:opacity-50"
+                  >
+                    Eltávolítás
+                  </button>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-2 text-sm text-ink-faint">Még nincs csatolt fájl.</p>
+          )}
         </div>
 
         <div className="flex flex-wrap gap-4">
@@ -207,11 +314,15 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
           <p className="text-xs text-ink-faint">
             AI-hoz rendelve a ticket feldolgozásra kerül (local dev: azonnal; production: dispatcher
             worker). Ha csak a cím van megadva leírás nélkül, a cím lesz a feladat szövege.
+            {pendingFiles.length > 0
+              ? ' Csatolt fájl esetén előbb feltöltjük a workspace-be, utána indul a feldolgozás.'
+              : ''}
           </p>
         )}
         {assigneeType === 'human' && assigneeId && (
           <p className="text-xs text-ink-faint">
             A ticket az <Badge tone="warning">awaiting_human</Badge> oszlopba kerül — emberi döntésre vár.
+            {pendingFiles.length > 0 ? ' A csatolt fájlok a ticket workspace-ében lesznek elérhetők.' : ''}
           </p>
         )}
 
@@ -242,6 +353,7 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
             onClick={() => {
               setOpen(false)
               setMessage(null)
+              setPendingFiles([])
             }}
             className="rounded-lg border border-line px-4 py-2 text-sm text-ink-soft transition hover:bg-night-2"
           >

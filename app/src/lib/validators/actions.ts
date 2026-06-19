@@ -50,6 +50,8 @@ export const createBoardTicketSchema = z
     description: z.string().trim().max(4000).optional(),
     assigneeType: z.enum(['human', 'agent']),
     assigneeId: z.string().uuid(),
+    /** Ha true, a ticket ready marad, de a dispatcher nem indul — pl. workspace fájl feltöltés után. */
+    deferDispatch: z.boolean().optional(),
   })
   .refine((args) => args.assigneeType !== 'agent' || args.assigneeId, {
     message: 'assigneeId is required when assigneeType is agent',

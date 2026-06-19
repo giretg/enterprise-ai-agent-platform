@@ -3,11 +3,15 @@ import type { AgentRepository, TicketRepository } from '@/repositories/interface
 import { composeSystemPrompt } from '@/lib/agent-prompt'
 import { buildRunAsAuthorization } from '@/lib/run-as-payload'
 import { readWikiTicketPayload, wikiSearchQuery, wikiUserPrompt } from '@/lib/wiki-ticket-payload'
+import { formatHitsForPrompt, type KbHit } from '@/lib/kb-format'
 import type { ModelGateway } from '../gateway/model-gateway'
 import type { ToolBrokerService } from '../tool-broker/tool-broker-service'
 import type { PlaybookService } from '../playbook/playbook-service'
 import type { ConversationService } from '../conversation/conversation-service'
 import { TicketService } from '../ticket/ticket-service'
+
+// Re-export so callers don't need to import from kb-format separately.
+export type { KbHit }
 
 const wikiAnswerSchema = z.object({
   answer: z.string().trim().min(1),
@@ -37,16 +41,22 @@ function extractJsonObject(content: string): unknown {
   return JSON.parse(jsonMatch[0])
 }
 
-function formatHitsForPrompt(
-  hits: Array<{ docId: string; snippet: string; sourceRef: string; memoryVersion: number | null }>,
-): string {
-  if (hits.length === 0) return '(nincs találat)'
-  return hits
-    .map(
-      (hit, index) =>
-        `[${index + 1}] docId=${hit.docId}; sourceRef=${hit.sourceRef}; memoryVersion=${hit.memoryVersion ?? 'unknown'}\n${hit.snippet}`,
-    )
-    .join('\n\n')
+type AgentDetails = NonNullable<Awaited<ReturnType<AgentRepository['findByIdWithDetails']>>>
+
+type ModelConfig = {
+  provider: string
+  model: string
+  temperature?: number
+  maxTokens?: number
+}
+
+type InferenceContext =
+  | { conversationId: string; ticketId?: never }
+  | { ticketId: string; conversationId?: never }
+
+type InferenceResult = {
+  answer: WikiAnswer
+  hits: KbHit[]
 }
 
 export class WikiAgentRuntime {
@@ -120,68 +130,19 @@ export class WikiAgentRuntime {
     const agentDetails = await this.agents.findByIdWithDetails(params.agentId)
     if (!agentDetails) throw new Error('Agent not found')
 
-    const modelConfig = agentDetails.agent.modelConfig as {
-      provider: string
-      model: string
-      temperature?: number
-      maxTokens?: number
-    }
+    const modelConfig = agentDetails.agent.modelConfig as ModelConfig
     const agentVersion = agentDetails.agent.currentVersion
+    const payload = this.buildPayload(params.question, agentDetails, modelConfig)
 
-    const payload = {
-      question: params.question,
-      agentVersion,
-      model: modelConfig.model,
-      memoryVersion: agentDetails.memoryVersion,
-      recipeName: agentDetails.recipe?.name ?? null,
-      recipeVersion: agentDetails.recipe?.version ?? null,
-    }
-
-    const search = await this.toolBroker.invoke({
+    const { answer, hits } = await this.runWikiInference({
       agentId: params.agentId,
-      agentVersion,
-      conversationId: params.conversationId,
-      tool: 'kb_search',
-      args: { query: wikiSearchQuery(payload), k: 6 },
-    })
-    if (search.denied) {
-      throw new Error(`kb_search denied: ${search.reason}`)
-    }
-
-    const hits =
-      !search.denied && 'hits' in search.result && Array.isArray(search.result.hits)
-        ? search.result.hits
-        : []
-    const sourceContext = formatHitsForPrompt(hits)
-    const answerInstruction =
-      hits.length === 0
-        ? 'Nincs elég forrás. Ezt mondd ki, és ne találj ki tényt.'
-        : 'Kizárólag a megadott forrásrészletekre támaszkodj.'
-
-    const { content } = await this.gateway.call({
-      agentId: params.agentId,
-      conversationId: params.conversationId,
-      messages: [
-        { role: 'system', content: composeSystemPrompt(agentDetails.agent) },
-        {
-          role: 'system',
-          content: `${answerInstruction}\n\nForrásrészletek:\n${sourceContext}`,
-        },
-        {
-          role: 'user',
-          content: wikiUserPrompt(payload),
-        },
-      ],
+      agentDetails,
       modelConfig,
+      agentVersion,
+      payload,
+      context: { conversationId: params.conversationId },
     })
 
-    const parsed = wikiAnswerSchema.parse(extractJsonObject(content))
-    const sources =
-      parsed.sources.length > 0
-        ? parsed.sources
-        : hits.map((hit) => ({ docId: hit.docId, sectionRef: hit.sourceRef }))
-
-    const answer: WikiAnswer = { ...parsed, sources }
     const agentMessage = await this.conversations.appendMessage({
       conversationId: params.conversationId,
       role: 'agent',
@@ -234,12 +195,7 @@ export class WikiAgentRuntime {
     const agentDetails = await this.agents.findByIdWithDetails(params.agentId)
     if (!agentDetails) throw new Error('Agent not found')
 
-    const modelConfig = agentDetails.agent.modelConfig as {
-      provider: string
-      model: string
-      temperature?: number
-      maxTokens?: number
-    }
+    const modelConfig = agentDetails.agent.modelConfig as ModelConfig
     const agentVersion = agentDetails.agent.currentVersion
     const recipe = agentDetails.recipe
     const playbookRef =
@@ -291,68 +247,28 @@ export class WikiAgentRuntime {
     if (ticket.agentId !== params.agentId) throw new Error('Ticket not assigned to this agent')
     if (ticket.type !== 'interaction') throw new Error('Wiki runtime only handles interaction tickets')
 
-    const payload =
+    const rawPayload =
       typeof ticket.payload === 'object' && ticket.payload !== null && !Array.isArray(ticket.payload)
         ? (ticket.payload as Record<string, unknown>)
         : {}
-    const { question } = readWikiTicketPayload(payload)
+    const { question } = readWikiTicketPayload(rawPayload)
     if (!question) throw new Error('Ticket payload is missing question')
-    const searchQuery = wikiSearchQuery(payload)
 
     const agentDetails = await this.agents.findByIdWithDetails(params.agentId)
     if (!agentDetails) throw new Error('Agent not found')
 
-    const modelConfig = agentDetails.agent.modelConfig as {
-      provider: string
-      model: string
-      temperature?: number
-      maxTokens?: number
-    }
+    const modelConfig = agentDetails.agent.modelConfig as ModelConfig
     const agentVersion = agentDetails.agent.currentVersion
+    const payload = this.buildPayload(question, agentDetails, modelConfig)
 
-    const search = await this.toolBroker.invoke({
+    const { answer, hits } = await this.runWikiInference({
       agentId: params.agentId,
-      agentVersion,
-      ticketId: ticket.id,
-      tool: 'kb_search',
-      args: { query: searchQuery, k: 6 },
-    })
-    if (search.denied) {
-      throw new Error(`kb_search denied: ${search.reason}`)
-    }
-
-    const hits =
-      !search.denied && 'hits' in search.result && Array.isArray(search.result.hits)
-        ? search.result.hits
-        : []
-    const sourceContext = formatHitsForPrompt(hits)
-    const answerInstruction =
-      hits.length === 0
-        ? 'Nincs elég forrás. Ezt mondd ki, és ne találj ki tényt.'
-        : 'Kizárólag a megadott forrásrészletekre támaszkodj.'
-
-    const { content } = await this.gateway.call({
-      agentId: params.agentId,
-      ticketId: ticket.id,
-      messages: [
-        { role: 'system', content: composeSystemPrompt(agentDetails.agent) },
-        {
-          role: 'system',
-          content: `${answerInstruction}\n\nForrásrészletek:\n${sourceContext}`,
-        },
-        {
-          role: 'user',
-          content: wikiUserPrompt(payload),
-        },
-      ],
+      agentDetails,
       modelConfig,
+      agentVersion,
+      payload,
+      context: { ticketId: ticket.id },
     })
-
-    const parsed = wikiAnswerSchema.parse(extractJsonObject(content))
-    const sources =
-      parsed.sources.length > 0
-        ? parsed.sources
-        : hits.map((hit) => ({ docId: hit.docId, sectionRef: hit.sourceRef }))
 
     const write = await this.toolBroker.invoke({
       agentId: params.agentId,
@@ -363,10 +279,10 @@ export class WikiAgentRuntime {
         ticketId: ticket.id,
         patch: {
           payload: {
-            answer: parsed.answer,
-            sources,
-            rationale: parsed.rationale,
-            confidence: parsed.confidence,
+            answer: answer.answer,
+            sources: answer.sources,
+            rationale: answer.rationale,
+            confidence: answer.confidence,
             retrievedSources: hits,
             agentVersion,
             model: modelConfig.model,
@@ -374,7 +290,7 @@ export class WikiAgentRuntime {
             recipeName: agentDetails.recipe?.name ?? null,
             recipeVersion: agentDetails.recipe?.version ?? null,
           },
-          state: parsed.confidence === 'high' ? 'done' : 'awaiting_human',
+          state: answer.confidence === 'high' ? 'done' : 'awaiting_human',
         },
       },
     })
@@ -385,11 +301,78 @@ export class WikiAgentRuntime {
     const updated = await this.tickets.findById(ticket.id)
     return {
       ticketId: ticket.id,
-      answer: {
-        ...parsed,
-        sources,
-      } satisfies WikiAnswer,
+      answer: answer satisfies WikiAnswer,
       ticket: updated,
     }
+  }
+
+  private buildPayload(
+    question: string,
+    agentDetails: AgentDetails,
+    modelConfig: ModelConfig,
+  ): Record<string, unknown> {
+    return {
+      question,
+      agentVersion: agentDetails.agent.currentVersion,
+      model: modelConfig.model,
+      memoryVersion: agentDetails.memoryVersion,
+      recipeName: agentDetails.recipe?.name ?? null,
+      recipeVersion: agentDetails.recipe?.version ?? null,
+    }
+  }
+
+  private async runWikiInference(params: {
+    agentId: string
+    agentDetails: AgentDetails
+    modelConfig: ModelConfig
+    agentVersion: number
+    payload: Record<string, unknown>
+    context: InferenceContext
+  }): Promise<InferenceResult> {
+    const search = await this.toolBroker.invoke({
+      agentId: params.agentId,
+      agentVersion: params.agentVersion,
+      ...params.context,
+      tool: 'kb_search',
+      args: { query: wikiSearchQuery(params.payload), k: 6 },
+    })
+    if (search.denied) {
+      throw new Error(`kb_search denied: ${search.reason}`)
+    }
+
+    const hits: KbHit[] =
+      !search.denied && 'hits' in search.result && Array.isArray(search.result.hits)
+        ? search.result.hits
+        : []
+
+    const answerInstruction =
+      hits.length === 0
+        ? 'Nincs elég forrás. Ezt mondd ki, és ne találj ki tényt.'
+        : 'Kizárólag a megadott forrásrészletekre támaszkodj.'
+
+    const { content } = await this.gateway.call({
+      agentId: params.agentId,
+      ...params.context,
+      messages: [
+        { role: 'system', content: composeSystemPrompt(params.agentDetails.agent) },
+        {
+          role: 'system',
+          content: `${answerInstruction}\n\nForrásrészletek:\n${formatHitsForPrompt(hits)}`,
+        },
+        {
+          role: 'user',
+          content: wikiUserPrompt(params.payload),
+        },
+      ],
+      modelConfig: params.modelConfig,
+    })
+
+    const parsed = wikiAnswerSchema.parse(extractJsonObject(content))
+    const sources =
+      parsed.sources.length > 0
+        ? parsed.sources
+        : hits.map((hit) => ({ docId: hit.docId, sectionRef: hit.sourceRef }))
+
+    return { answer: { ...parsed, sources }, hits }
   }
 }

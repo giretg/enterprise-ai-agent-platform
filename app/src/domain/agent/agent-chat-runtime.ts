@@ -2,37 +2,21 @@ import type { AgentRepository, DocumentRepository, TicketRepository, ToolBrokerR
 import { composeSystemPrompt } from '@/lib/agent-prompt'
 import { formatOrgRoster } from '@/lib/agent-org-roster'
 import { buildRunAsAuthorization } from '@/lib/run-as-payload'
+import { formatHitsForPrompt, type KbHit } from '@/lib/kb-format'
 import type { ModelGateway } from '../gateway/model-gateway'
 import type { ConversationService } from '../conversation/conversation-service'
 import type { ToolBrokerService } from '../tool-broker/tool-broker-service'
-import { listAllowedChatTools, runAgentChatWithTools } from './chat-tool-loop'
+import { listAllowedChatTools, runAgentToolLoop } from './chat-tool-loop'
 
 const IMAGE_EXT = /\.(jpg|jpeg|png|gif|webp)$/i
 const IMAGE_MARKER = /^(\[image:([^\]]+)\])([\s\S]*)$/
-
-type KbSearchHit = {
-  docId: string
-  snippet: string
-  sourceRef: string
-  memoryVersion: number | null
-}
-
-function formatKbHitsForPrompt(hits: KbSearchHit[]): string {
-  if (hits.length === 0) return '(nincs találat)'
-  return hits
-    .map(
-      (hit, index) =>
-        `[${index + 1}] docId=${hit.docId}; sourceRef=${hit.sourceRef}; memoryVersion=${hit.memoryVersion ?? 'unknown'}\n${hit.snippet}`,
-    )
-    .join('\n\n')
-}
 
 function isImageDocument(doc: { filename: string; extractedText: string | null }): boolean {
   if (IMAGE_EXT.test(doc.filename)) return true
   return Boolean(doc.extractedText?.startsWith('[image:'))
 }
 
-function formatAttachmentBlock(
+export function formatAttachmentBlock(
   docs: Array<{ id: string; filename: string; extractedText: string | null }>,
 ): string {
   if (docs.length === 0) return ''
@@ -175,13 +159,14 @@ export class AgentChatRuntime {
     const reply =
       allowedChatTools.length > 0
         ? (
-            await runAgentChatWithTools({
+            await runAgentToolLoop({
               gateway: this.gateway,
               toolBroker: this.toolBroker,
               toolCaps: this.toolCaps,
               agentId: params.agentId,
               agentVersion: agentDetails.agent.currentVersion,
-              conversationId,
+              context: { conversationId },
+              mode: 'chat',
               actingUserId: params.createdById,
               messages: gatewayMessages,
               modelConfig,
@@ -352,7 +337,7 @@ export class AgentChatRuntime {
     conversationId: string
     actingUserId: string
     query: string
-  }): Promise<{ enabled: boolean; hits: KbSearchHit[] }> {
+  }): Promise<{ enabled: boolean; hits: KbHit[] }> {
     const capability = await this.toolCaps.findCapability(params.agentId, 'kb_search')
     if (!capability?.allowed || !params.query.trim()) {
       return { enabled: false, hits: [] }
@@ -371,14 +356,14 @@ export class AgentChatRuntime {
       return { enabled: true, hits: [] }
     }
 
-    return { enabled: true, hits: search.result.hits as KbSearchHit[] }
+    return { enabled: true, hits: search.result.hits as KbHit[] }
   }
 
   private async buildGatewayMessages(
     agentDetails: NonNullable<Awaited<ReturnType<AgentRepository['findByIdWithDetails']>>>,
     historyMessages: Array<{ role: string; content: string | null; contentDeletedAt: Date | null }>,
     latestAttachmentBlock: string,
-    kbSearch: { enabled: boolean; hits: KbSearchHit[] },
+    kbSearch: { enabled: boolean; hits: KbHit[] },
   ) {
     const allAgents = await this.agents.findMany()
     const orgRoster = formatOrgRoster(allAgents)
@@ -401,7 +386,7 @@ export class AgentChatRuntime {
           : 'A belső tudásbázis tényállításaihoz kizárólag az alábbi kb_search találatokra támaszkodj. Minden lényegi állításhoz adj forráshivatkozást.'
       messages.push({
         role: 'system',
-        content: `${answerInstruction}\n\nTudásbázis találatok (kb_search):\n${formatKbHitsForPrompt(kbSearch.hits)}`,
+        content: `${answerInstruction}\n\nTudásbázis találatok (kb_search):\n${formatHitsForPrompt(kbSearch.hits)}`,
       })
     }
 

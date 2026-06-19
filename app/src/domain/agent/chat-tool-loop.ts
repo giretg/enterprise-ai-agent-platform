@@ -31,6 +31,17 @@ export const CHAT_PLATFORM_TOOLS = [
 
 export type ChatPlatformToolName = (typeof CHAT_PLATFORM_TOOLS)[number]
 
+/**
+ * Kontextus-agnosztikus tool loop kontextus: vagy egy chat beszélgetés
+ * (`conversationId`), vagy egy aszinkron feladat-ticket (`ticketId`).
+ * A két ág kölcsönösen kizáró — egyszerre csak az egyik adható meg.
+ */
+export type ToolLoopContext =
+  | { conversationId: string; ticketId?: never }
+  | { ticketId: string; conversationId?: never }
+
+export type ToolLoopMode = 'chat' | 'task'
+
 const TOOL_INSTRUCTION = `
 Platform eszközök — ha külső adatra (email, fájl, más agent) vagy ticketre van szükség, NE találj ki tényt, hívd az eszközt.
 - Eszközhíváskor válaszolj KIZÁRÓLAG egy JSON objektummal, semmi más szöveg nélkül:
@@ -125,15 +136,15 @@ function buildToolInvoke(
   base: {
     agentId: string
     agentVersion: number
-    conversationId: string
-    actingUserId: string
+    context: ToolLoopContext
+    actingUserId?: string
   },
 ): ToolBrokerInvokeInput {
   const common = {
     agentId: base.agentId,
     agentVersion: base.agentVersion,
-    conversationId: base.conversationId,
-    actingUserId: base.actingUserId,
+    ...base.context,
+    ...(base.actingUserId ? { actingUserId: base.actingUserId } : {}),
   }
 
   switch (tool) {
@@ -353,23 +364,35 @@ function buildToolInvoke(
   }
 }
 
-export async function runAgentChatWithTools(params: {
+/**
+ * Egységes, kontextus-agnosztikus agent tool loop. Chat (`conversationId`) és
+ * feladat-ticket (`ticketId`) kontextusban egyaránt fut — a képességek
+ * azonosak, csak a kontextus (és a board_write utómunka a hívónál) tér el.
+ */
+export async function runAgentToolLoop(params: {
   gateway: ModelGateway
   toolBroker: ToolBrokerService
   toolCaps: ToolBrokerRepository
   agentId: string
   agentVersion: number
-  conversationId: string
-  actingUserId: string
+  context: ToolLoopContext
+  mode: ToolLoopMode
+  /** Chatben a beszélgető felhasználó; taskban a broker oldja fel a ticket run-as payloadjából. */
+  actingUserId?: string
   messages: GatewayMessage[]
   modelConfig: ModelConfig
   allowedTools: ChatPlatformToolName[]
   maxTurns?: number
 }): Promise<{ content: string; toolCallCount: number }> {
   const maxTurns = params.maxTurns ?? 10
+  const modeNote =
+    params.mode === 'task'
+      ? 'Ez egy aszinkron feladat — a végeredményed visszakerül a ticketbe. Dolgozz végig minden szükséges eszközhívást, majd add meg a kész választ természetes magyar szövegként (NE JSON).'
+      : 'Ez egy közvetlen beszélgetés — a végén természetes magyar szöveggel válaszolj a felhasználónak (NE JSON).'
   const messages: GatewayMessage[] = [
     ...params.messages,
     { role: 'system', content: TOOL_INSTRUCTION },
+    { role: 'system', content: modeNote },
     {
       role: 'system',
       content: `A számodra engedélyezett eszközök: ${params.allowedTools.join(', ')}`,
@@ -381,7 +404,7 @@ export async function runAgentChatWithTools(params: {
   for (let turn = 0; turn < maxTurns; turn++) {
     const { content } = await params.gateway.call({
       agentId: params.agentId,
-      conversationId: params.conversationId,
+      ...params.context,
       messages,
       modelConfig: params.modelConfig,
     })
@@ -413,7 +436,7 @@ export async function runAgentChatWithTools(params: {
       const invokeInput = buildToolInvoke(toolCall.tool, toolCall.args, {
         agentId: params.agentId,
         agentVersion: params.agentVersion,
-        conversationId: params.conversationId,
+        context: params.context,
         actingUserId: params.actingUserId,
       })
 
@@ -448,7 +471,7 @@ export async function runAgentChatWithTools(params: {
 
   const { content: finalContent } = await params.gateway.call({
     agentId: params.agentId,
-    conversationId: params.conversationId,
+    ...params.context,
     messages,
     modelConfig: params.modelConfig,
   })

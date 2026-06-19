@@ -1,6 +1,7 @@
 import { ModelGateway } from '@/domain/gateway/model-gateway'
 import { BookkeeperAgentRuntime } from '@/domain/agent/bookkeeper-runtime'
 import { AgentChatRuntime } from '@/domain/agent/agent-chat-runtime'
+import { GeneralTaskRuntime } from '@/domain/agent/general-task-runtime'
 import { WikiAgentRuntime } from '@/domain/agent/wiki-runtime'
 import { TicketService } from '@/domain/ticket/ticket-service'
 import { TrainingService } from '@/domain/training/training-service'
@@ -32,6 +33,7 @@ import { SandboxAppService } from '@/domain/sandbox/sandbox-app-service'
 import { ScheduledTaskService } from '@/domain/scheduled-task/scheduled-task-service'
 import { KnowledgeBaseService } from '@/domain/knowledge-base/knowledge-base-service'
 import { repositories } from '@/repositories/postgres'
+import { resolveTicketProcessRoute } from '@/lib/ticket-process-route'
 
 const playbookService = new PlaybookService(repositories.playbooks, repositories.audit)
 
@@ -123,6 +125,14 @@ const wikiRuntime = new WikiAgentRuntime(
   playbookService,
   conversationService,
 )
+const generalTaskRuntime = new GeneralTaskRuntime(
+  repositories.agents,
+  repositories.documents,
+  repositories.tickets,
+  modelGateway,
+  toolBrokerService,
+  repositories.toolBroker,
+)
 toolBrokerService.setDelegationProcessor(async ({ ticketId, targetAgentId }) => {
   await wikiRuntime.processTicket({ ticketId, agentId: targetAgentId })
 })
@@ -141,10 +151,19 @@ const scheduledTaskService = new ScheduledTaskService(
 const localWikiHarnessLauncher: HarnessLauncher = {
   mode: 'local-wiki',
   async launch(input) {
-    await wikiRuntime.processTicket({
-      ticketId: input.ticketId,
-      agentId: input.agentId,
-    })
+    const ticket = await repositories.tickets.findById(input.ticketId)
+    const route = resolveTicketProcessRoute(ticket?.payload)
+    if (route === 'general') {
+      await generalTaskRuntime.processTicket({
+        ticketId: input.ticketId,
+        agentId: input.agentId,
+      })
+    } else {
+      await wikiRuntime.processTicket({
+        ticketId: input.ticketId,
+        agentId: input.agentId,
+      })
+    }
     await repositories.tickets.releaseDispatchLock(input.ticketId, input.lockToken)
     return { jobId: `local-wiki-${input.ticketId}` }
   },
@@ -179,6 +198,7 @@ export const services = {
   gateway: modelGateway,
   agentChat: agentChatRuntime,
   wiki: wikiRuntime,
+  generalTask: generalTaskRuntime,
   bookkeeper: bookkeeperRuntime,
   training: trainingService,
   knowledgeBase: knowledgeBaseService,
