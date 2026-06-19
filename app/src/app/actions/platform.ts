@@ -9,6 +9,7 @@ import { services } from '@/domain'
 import { repositories } from '@/repositories/postgres'
 import { isClerkEnabled } from '@/lib/clerk-config'
 import { prisma } from '@/lib/db'
+import { ensureAgentKnowledgeBase } from '@/lib/agent-knowledge-base'
 import { buildTicketDisplayExtras, enrichTicketsForBoard } from '@/lib/ticket-display'
 import { fail, ok, type ActionResult } from '@/lib/result'
 import {
@@ -529,11 +530,19 @@ export async function processDocumentForWiki(input: { documentId: string; agentI
     const document = await repositories.documents.findById(parsed.documentId)
     if (!document) return fail('Document not found')
 
-    const kbConnector = await repositories.toolBroker.findConnectorForAgent(
-      parsed.agentId,
-      'knowledge_base',
-      'read',
-    )
+    const agent = await repositories.agents.findById(parsed.agentId)
+    if (!agent) return fail('Agent not found')
+    if (agent.role === 'orchestrator') {
+      return fail('Orchestrator agents do not use a knowledge base')
+    }
+
+    const kbConnector =
+      (await ensureAgentKnowledgeBase(agent)) ??
+      (await repositories.toolBroker.findConnectorForAgent(
+        parsed.agentId,
+        'knowledge_base',
+        'read',
+      ))
     if (!kbConnector) return fail('Agent has no knowledge_base connector')
 
     const updated = await repositories.documents.update(parsed.documentId, {
@@ -566,11 +575,17 @@ export async function listDocumentsForAgent(input: { agentId: string }) {
     await requireRole('operator')
     const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
 
-    const kbConnector = await repositories.toolBroker.findConnectorForAgent(
-      agentId,
-      'knowledge_base',
-      'read',
-    )
+    const agent = await repositories.agents.findById(agentId)
+    if (!agent) return fail('Agent not found')
+    if (agent.role === 'orchestrator') return ok([])
+
+    const kbConnector =
+      (await ensureAgentKnowledgeBase(agent)) ??
+      (await repositories.toolBroker.findConnectorForAgent(
+        agentId,
+        'knowledge_base',
+        'read',
+      ))
     if (!kbConnector) return ok([])
 
     const documents = await repositories.documents.findByConnectorId(kbConnector.id)

@@ -4,6 +4,7 @@ import path from 'path'
 import { config } from 'dotenv'
 import { PrismaClient } from '@prisma/client'
 import bcrypt from 'bcryptjs'
+import { ensureAgentKnowledgeBase } from '../src/lib/agent-knowledge-base'
 
 config({ path: path.join(process.cwd(), '.env.local') })
 config({ path: path.join(process.cwd(), '.env') })
@@ -115,25 +116,8 @@ async function ensureChatToolsForAgent(agentId: string) {
 }
 
 async function ensureToolBrokerSeed(agentId: string) {
-  const knowledgeBase = await prisma.connector.upsert({
-    where: {
-      type_name: {
-        type: 'knowledge_base',
-        name: 'Excellence Pay belső tudásbázis',
-      },
-    },
-    create: {
-      type: 'knowledge_base',
-      name: 'Excellence Pay belső tudásbázis',
-      scope: 'global',
-      secretAlias: null,
-      version: 1,
-      config: { memoryBacked: true },
-    },
-    update: {
-      config: { memoryBacked: true },
-    },
-  })
+  const agent = await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })
+  await ensureAgentKnowledgeBase(agent, prisma)
 
   const board = await prisma.connector.upsert({
     where: {
@@ -156,21 +140,9 @@ async function ensureToolBrokerSeed(agentId: string) {
   })
 
   await prisma.agentConnector.upsert({
-    where: { agentId_connectorId: { agentId, connectorId: knowledgeBase.id } },
-    create: { agentId, connectorId: knowledgeBase.id, accessMode: 'read' },
-    update: { accessMode: 'read' },
-  })
-
-  await prisma.agentConnector.upsert({
     where: { agentId_connectorId: { agentId, connectorId: board.id } },
     create: { agentId, connectorId: board.id, accessMode: 'write' },
     update: { accessMode: 'write' },
-  })
-
-  await prisma.capability.upsert({
-    where: { agentId_toolName: { agentId, toolName: 'kb_search' } },
-    create: { agentId, toolName: 'kb_search', allowed: true },
-    update: { allowed: true },
   })
 
   await prisma.capability.upsert({

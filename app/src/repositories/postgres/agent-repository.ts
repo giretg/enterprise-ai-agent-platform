@@ -2,6 +2,7 @@ import type { Agent, Document, Prisma } from '@prisma/client'
 import bcrypt from 'bcryptjs'
 import { randomBytes } from 'crypto'
 import { prisma } from '@/lib/db'
+import { ensureAgentKnowledgeBase } from '@/lib/agent-knowledge-base'
 import { selfEvolutionProfileSchema } from '@/lib/self-evolution-profile'
 import type { AgentRepository, DocumentRepository } from '../interfaces'
 
@@ -180,6 +181,8 @@ export class PostgresAgentRepository implements AgentRepository {
         update: { allowed: true },
       })
     }
+
+    await ensureAgentKnowledgeBase(agent)
 
     return { agent, apiKey: rawKey }
   }

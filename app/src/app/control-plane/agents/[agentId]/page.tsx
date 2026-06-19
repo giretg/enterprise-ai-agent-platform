@@ -10,6 +10,7 @@ import { AgentChatButton } from '@/components/agents/agent-chat-panel'
 import { UpdateInstructionForm } from '@/components/agents/update-instruction-form'
 import { UpdateModelConfigForm } from '@/components/agents/update-model-config-form'
 import { UpdateSelfEvolutionProfileForm } from '@/components/agents/update-self-evolution-profile-form'
+import { AgentKnowledgeBasePanel } from '@/components/agents/agent-knowledge-base-panel'
 import { resolveSelfEvolutionProfile } from '@/lib/self-evolution-profile'
 import {
   agentRoleLabel,
@@ -63,6 +64,7 @@ export default async function AgentDetailPage({
   if (!res.success) notFound()
 
   const isAdmin = user ? hasMinimumRole(user.role, 'admin') : false
+  const canManageKb = user ? hasMinimumRole(user.role, 'operator') : false
   const { agent, memoryContent, memoryVersion, recipe, resources, apiKeyPreview } = res.data
   const governance = govRes.success ? govRes.data : null
   const modelConfig = agent.modelConfig as Record<string, unknown>
@@ -156,6 +158,17 @@ export default async function AgentDetailPage({
             Tanítás megnyitása →
           </Link>
         </Card>
+
+        {canManageKb && (
+          <div className="lg:col-span-2">
+            <AgentKnowledgeBasePanel
+              agentId={agent.id}
+              agentName={agent.name}
+              isOrchestrator={agent.role === 'orchestrator'}
+              canUpload={canManageKb}
+            />
+          </div>
+        )}
       </div>
 
       {isAdmin && (
