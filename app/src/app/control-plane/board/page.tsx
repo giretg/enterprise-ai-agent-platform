@@ -1,10 +1,21 @@
-import { listAgents, listBoardTickets } from '@/app/actions/platform'
+import { getCurrentUser } from '@/auth'
+import { hasMinimumRole } from '@/auth/types'
+import { listAgents, listBoardAssignees, listBoardTickets } from '@/app/actions/platform'
 import { KanbanBoard } from '@/components/tickets/kanban-board'
 
 export default async function BoardPage() {
-  const [ticketsRes, agentsRes] = await Promise.all([listBoardTickets(), listAgents()])
+  const user = await getCurrentUser()
+  const canCreate = user ? hasMinimumRole(user.role, 'operator') : false
+
+  const [ticketsRes, agentsRes, assigneesRes] = await Promise.all([
+    listBoardTickets(),
+    listAgents(),
+    canCreate ? listBoardAssignees() : Promise.resolve(null),
+  ])
   const tickets = ticketsRes.success ? ticketsRes.data : []
   const agents = agentsRes.success ? agentsRes.data : []
+  const assigneeOptions =
+    assigneesRes && assigneesRes.success ? assigneesRes.data : undefined
   const loadError = !ticketsRes.success ? ticketsRes.error : null
 
   return (
@@ -13,6 +24,7 @@ export default async function BoardPage() {
         <h1 className="font-display text-3xl font-semibold">Kanban Board</h1>
         <p className="mt-1 text-ink-soft">
           Húzd a kártyát oszlopok között — a szerver validálja az átmenetet
+          {canCreate ? ', vagy nyiss új ticketet hozzárendeléssel' : ''}
         </p>
       </div>
 
@@ -22,7 +34,12 @@ export default async function BoardPage() {
         </p>
       )}
 
-      <KanbanBoard tickets={tickets} agents={agents} />
+      <KanbanBoard
+        tickets={tickets}
+        agents={agents}
+        canCreate={canCreate}
+        assigneeOptions={assigneeOptions}
+      />
     </div>
   )
 }

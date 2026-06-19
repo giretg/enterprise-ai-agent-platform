@@ -44,6 +44,17 @@ export const transitionTicketSchema = z.object({
   note: z.string().optional(),
 })
 
+export const createBoardTicketSchema = z
+  .object({
+    title: z.string().trim().min(1).max(200),
+    description: z.string().trim().max(4000).optional(),
+    assigneeType: z.enum(['human', 'agent']),
+    assigneeId: z.string().uuid(),
+  })
+  .refine((args) => args.assigneeType !== 'agent' || args.assigneeId, {
+    message: 'assigneeId is required when assigneeType is agent',
+  })
+
 export const processDocumentSchema = z.object({
   documentId: z.string().uuid(),
   agentId: z.string().uuid(),

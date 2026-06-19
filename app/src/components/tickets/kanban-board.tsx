@@ -1,8 +1,17 @@
 'use client'
 
+import { CreateBoardTicketForm } from '@/components/tickets/create-board-ticket-form'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { useMemo, useState, useTransition, type DragEvent } from 'react'
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useTransition,
+  type DragEvent,
+  type ReactNode,
+} from 'react'
 import type { Agent } from '@prisma/client'
 import { transitionTicket } from '@/app/actions/platform'
 import { Badge, Card } from '@/components/ui/shell'
@@ -164,12 +173,81 @@ function KanbanColumn({
   )
 }
 
+function SyncedHorizontalScroll({
+  children,
+  className,
+}: {
+  children: ReactNode
+  className?: string
+}) {
+  const mainRef = useRef<HTMLDivElement>(null)
+  const topRef = useRef<HTMLDivElement>(null)
+  const spacerRef = useRef<HTMLDivElement>(null)
+  const [hasOverflow, setHasOverflow] = useState(false)
+
+  useEffect(() => {
+    const main = mainRef.current
+    const top = topRef.current
+    const spacer = spacerRef.current
+    if (!main || !top || !spacer) return
+
+    let syncing = false
+
+    const updateSpacer = () => {
+      spacer.style.width = `${main.scrollWidth}px`
+      setHasOverflow(main.scrollWidth > main.clientWidth + 1)
+    }
+
+    const syncScroll = (source: HTMLDivElement, target: HTMLDivElement) => {
+      if (syncing || source.scrollLeft === target.scrollLeft) return
+      syncing = true
+      target.scrollLeft = source.scrollLeft
+      syncing = false
+    }
+
+    const onMainScroll = () => syncScroll(main, top)
+    const onTopScroll = () => syncScroll(top, main)
+
+    updateSpacer()
+    main.addEventListener('scroll', onMainScroll, { passive: true })
+    top.addEventListener('scroll', onTopScroll, { passive: true })
+
+    const observer = new ResizeObserver(updateSpacer)
+    observer.observe(main)
+
+    return () => {
+      main.removeEventListener('scroll', onMainScroll)
+      top.removeEventListener('scroll', onTopScroll)
+      observer.disconnect()
+    }
+  }, [children])
+
+  return (
+    <div>
+      <div
+        ref={topRef}
+        className={`overflow-x-auto overflow-y-hidden ${hasOverflow ? 'mb-1' : 'h-0 overflow-hidden'}`}
+        aria-hidden
+      >
+        <div ref={spacerRef} className="h-px" />
+      </div>
+      <div ref={mainRef} className={className}>
+        {children}
+      </div>
+    </div>
+  )
+}
+
 export function KanbanBoard({
   tickets,
   agents,
+  canCreate = false,
+  assigneeOptions,
 }: {
   tickets: EnrichedBoardTicket[]
   agents: Agent[]
+  canCreate?: boolean
+  assigneeOptions?: { agents: { id: string; name: string }[]; users: { id: string; name: string; role: string }[] }
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
@@ -206,6 +284,8 @@ export function KanbanBoard({
 
   return (
     <div className="space-y-4">
+      {canCreate && assigneeOptions && <CreateBoardTicketForm assigneeOptions={assigneeOptions} />}
+
       <div className="flex flex-wrap items-center gap-3">
         <label htmlFor="assignee-filter" className="text-sm font-medium text-ink-soft">
           Hozzárendelve
@@ -233,7 +313,7 @@ export function KanbanBoard({
         </p>
       )}
 
-      <div className={`flex gap-4 overflow-x-auto pb-4 ${pending ? 'opacity-70' : ''}`}>
+      <SyncedHorizontalScroll className={`flex gap-4 overflow-x-auto pb-4 ${pending ? 'opacity-70' : ''}`}>
         {COLUMNS.map((col) => {
           const colTickets = filteredTickets.filter((t) => t.state === col.key)
           const isTarget = dropTarget === col.key
@@ -270,7 +350,7 @@ export function KanbanBoard({
             />
           )
         })}
-      </div>
+      </SyncedHorizontalScroll>
     </div>
   )
 }

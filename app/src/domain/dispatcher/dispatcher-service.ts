@@ -15,6 +15,32 @@ export type DispatchBudget = {
   maxTokensPerDay: number
 }
 
+export const DEFAULT_DISPATCH_BUDGET: DispatchBudget = {
+  maxCallsPerDay: 100,
+  maxTokensPerDay: 100_000,
+}
+
+export function dispatchBudgetFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): DispatchBudget {
+  const maxCallsPerDay = Number(
+    env.DISPATCH_MAX_CALLS_PER_DAY ?? DEFAULT_DISPATCH_BUDGET.maxCallsPerDay,
+  )
+  const maxTokensPerDay = Number(
+    env.DISPATCH_MAX_TOKENS_PER_DAY ?? DEFAULT_DISPATCH_BUDGET.maxTokensPerDay,
+  )
+  return {
+    maxCallsPerDay:
+      Number.isFinite(maxCallsPerDay) && maxCallsPerDay > 0
+        ? Math.round(maxCallsPerDay)
+        : DEFAULT_DISPATCH_BUDGET.maxCallsPerDay,
+    maxTokensPerDay:
+      Number.isFinite(maxTokensPerDay) && maxTokensPerDay > 0
+        ? Math.round(maxTokensPerDay)
+        : DEFAULT_DISPATCH_BUDGET.maxTokensPerDay,
+  }
+}
+
 export type HarnessLauncher = {
   readonly mode: string
   launch(input: {
@@ -34,7 +60,7 @@ export class DispatcherService {
     private audit: AuditRepository,
     private modelCalls: ModelCallRepository,
     private resolveLauncher: HarnessLauncher | (() => HarnessLauncher),
-    private budget: DispatchBudget = { maxCallsPerDay: 100, maxTokensPerDay: 100_000 },
+    private budget: DispatchBudget = DEFAULT_DISPATCH_BUDGET,
     /** Globális kill-switch (§5.7). Ha hiányzik, a dispatch mindig engedélyezett. */
     private isDispatchEnabled: () => Promise<boolean> = async () => true,
     private agents?: AgentRepository,
@@ -275,10 +301,8 @@ export class DispatcherService {
         : {}
     const agentVersion =
       typeof payload.agentVersion === 'number' ? payload.agentVersion : undefined
-    const question =
-      typeof payload.question === 'string' && payload.question.trim()
-        ? wikiSearchQuery(payload)
-        : undefined
+    const searchQuery = wikiSearchQuery(payload).trim()
+    const question = searchQuery || undefined
     const actingUserId = isRunAsAuthorized(payload) ? (readRunAsUserId(payload) ?? undefined) : undefined
 
     const gooseModel = await this.resolveHarnessGooseModel(ticket.agentId, agentVersion)

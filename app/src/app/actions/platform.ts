@@ -1,11 +1,13 @@
 'use server'
 
+import type { Prisma } from '@prisma/client'
 import { mkdir, unlink, writeFile } from 'fs/promises'
 import path from 'path'
 import { clerkClient } from '@clerk/nextjs/server'
 import { getCurrentUser, requireRole } from '@/auth'
 import { hasMinimumRole } from '@/auth/types'
 import { services } from '@/domain'
+import { dispatchBudgetFromEnv } from '@/domain/dispatcher/dispatcher-service'
 import { repositories } from '@/repositories/postgres'
 import { isClerkEnabled } from '@/lib/clerk-config'
 import { prisma, ensureActiveDatabaseMode } from '@/lib/db'
@@ -52,6 +54,7 @@ import {
   ticketFilterSchema,
   ticketIdSchema,
   transitionTicketSchema,
+  createBoardTicketSchema,
   inviteUserSchema,
   redeemInvitationSchema,
   changeUserRoleSchema,
@@ -86,6 +89,138 @@ export async function listTickets(input?: { filter?: unknown }) {
     return ok(tickets)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list tickets')
+  }
+}
+
+export async function listBoardAssignees() {
+  try {
+    await requireRole('operator')
+    const [agents, users] = await Promise.all([
+      repositories.agents.findMany(),
+      prisma.user.findMany({
+        where: { status: 'active' },
+        select: { id: true, name: true, role: true },
+        orderBy: { name: 'asc' },
+      }),
+    ])
+
+    return ok({
+      agents: agents
+        .filter((agent) => agent.status === 'active')
+        .map((agent) => ({ id: agent.id, name: agent.name })),
+      users,
+    })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to list board assignees')
+  }
+}
+
+export async function createBoardTicket(input: {
+  title: string
+  description?: string
+  assigneeType: 'human' | 'agent'
+  assigneeId: string
+}) {
+  try {
+    const user = await requireRole('operator')
+    const parsed = createBoardTicketSchema.parse(input)
+
+    const promptText = parsed.description?.trim() || parsed.title.trim()
+
+    if (parsed.assigneeType === 'agent') {
+      const agentDetails = await repositories.agents.findByIdWithDetails(parsed.assigneeId)
+      if (!agentDetails) return fail('Agent not found')
+      if (agentDetails.agent.status !== 'active') return fail('Agent is not active')
+
+      const modelConfig = agentDetails.agent.modelConfig as {
+        provider: string
+        model: string
+        temperature?: number
+        maxTokens?: number
+      }
+
+      const payload: Record<string, unknown> = {
+        question: promptText,
+        task: promptText,
+        source: 'board',
+        agentVersion: agentDetails.agent.currentVersion,
+        model: modelConfig.model,
+        memoryVersion: agentDetails.memoryVersion,
+      }
+
+      const ticket = await repositories.tickets.create({
+        type: 'interaction',
+        title: parsed.title,
+        state: 'ready',
+        assigneeType: 'agent',
+        assigneeId: parsed.assigneeId,
+        agentId: parsed.assigneeId,
+        payload: payload as Prisma.JsonValue,
+        sourceDocumentId: null,
+        executeAfter: null,
+        dueBy: null,
+        createdById: user.id,
+      })
+
+      let warning: string | undefined
+      const launcherMode = process.env.HARNESS_LAUNCHER_MODE ?? 'local-wiki'
+      if (launcherMode === 'local-wiki') {
+        try {
+          const dispatchResult = await services.dispatcher.dispatchTicket(ticket.id)
+          if (dispatchResult.status === 'budget_blocked') {
+            const since = new Date()
+            since.setHours(0, 0, 0, 0)
+            const usage = await repositories.modelCalls.getUsageForAgentSince(parsed.assigneeId, since)
+            const budget = dispatchBudgetFromEnv()
+            warning =
+              `Ticket létrejött (ready), de a napi keret betelt: ${usage.tokens.toLocaleString('hu-HU')}/${budget.maxTokensPerDay.toLocaleString('hu-HU')} token, ${usage.calls}/${budget.maxCallsPerDay} hívás. ` +
+              'Emeld a DISPATCH_MAX_TOKENS_PER_DAY értékét, vagy várd meg a holnapi resetet.'
+          } else if (dispatchResult.status === 'paused') {
+            warning =
+              'Ticket létrejött (ready), de a dispatcher ki van kapcsolva — System → Dispatcher panelen kapcsold be.'
+          } else if (dispatchResult.status === 'skipped') {
+            warning = 'Ticket létrejött (ready), de a feldolgozás most nem indult el — frissíts, vagy indítsd a dispatcher workert.'
+          }
+        } catch (error) {
+          return fail(
+            error instanceof Error
+              ? `Ticket létrejött, de a feldolgozás elbukott: ${error.message}`
+              : 'Ticket létrejött, de a feldolgozás elbukott',
+          )
+        }
+      } else {
+        warning =
+          'Ticket létrejött (ready). Docker/Cloud Run módban a feldolgozáshoz futtasd: npm run dispatcher:worker'
+      }
+
+      const updated = await repositories.tickets.findById(ticket.id)
+      return ok({ ticket: updated ?? ticket, warning })
+    }
+
+    const payload: Record<string, unknown> = { source: 'board' }
+    if (parsed.description) payload.task = parsed.description
+
+    const assignee = await prisma.user.findUnique({ where: { id: parsed.assigneeId } })
+    if (!assignee) return fail('User not found')
+    if (assignee.status !== 'active') return fail('User is not active')
+
+    const ticket = await repositories.tickets.create({
+      type: 'interaction',
+      title: parsed.title,
+      state: 'awaiting_human',
+      assigneeType: 'human',
+      assigneeId: parsed.assigneeId,
+      agentId: null,
+      payload: payload as Prisma.JsonValue,
+      sourceDocumentId: null,
+      executeAfter: null,
+      dueBy: null,
+      createdById: user.id,
+    })
+
+    return ok({ ticket })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to create board ticket')
   }
 }
 

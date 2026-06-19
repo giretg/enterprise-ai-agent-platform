@@ -8,7 +8,11 @@ import { SelfEvolutionGuard } from '@/domain/training/self-evolution-guard'
 import { AuditChainService } from '@/domain/audit/audit-chain-service'
 import { WriteGateService } from '@/domain/writegate/write-gate-service'
 import { EvalService } from '@/domain/eval/eval-service'
-import { DispatcherService, type HarnessLauncher } from '@/domain/dispatcher/dispatcher-service'
+import {
+  DispatcherService,
+  dispatchBudgetFromEnv,
+  type HarnessLauncher,
+} from '@/domain/dispatcher/dispatcher-service'
 import { PlatformSettingsService } from '@/domain/platform-settings/platform-settings-service'
 import { CloudRunJobHarnessLauncher, cloudRunConfigFromEnv } from '@/domain/dispatcher/cloud-run-job-launcher'
 import {
@@ -164,7 +168,7 @@ const dispatcherService = new DispatcherService(
   repositories.audit,
   repositories.modelCalls,
   () => createHarnessLauncher(),
-  undefined,
+  dispatchBudgetFromEnv(),
   () => platformSettingsService.isDispatchEnabled(),
   repositories.agents,
 )

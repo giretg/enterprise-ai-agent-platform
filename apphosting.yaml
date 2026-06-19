@@ -60,6 +60,24 @@ env:
     value: "gpt-5.5"
     availability:
       - RUNTIME
+  # --- Gmail per-user connector (OAuth) ---
+  - variable: NEXT_PUBLIC_APP_URL
+    value: "https://enterprise-ai-agent-platform--enterprise-ai-demo.europe-west4.hosted.app"
+    availability:
+      - BUILD
+      - RUNTIME
+  - variable: GMAIL_OAUTH_CLIENT_ID
+    value: "346824017066-ioi488qcq2q7srm9isd4qmepdi75aj69.apps.googleusercontent.com"
+    availability:
+      - RUNTIME
+  - variable: GMAIL_OAUTH_CLIENT_SECRET
+    secret: GMAIL_OAUTH_CLIENT_SECRET
+    availability:
+      - RUNTIME
+  - variable: GMAIL_OAUTH_REDIRECT_URI
+    value: "https://enterprise-ai-agent-platform--enterprise-ai-demo.europe-west4.hosted.app/api/connectors/oauth/callback"
+    availability:
+      - RUNTIME
   # --- Agent workspace storage (file editor, GCS) ---
   - variable: WORKSPACE_BUCKET
     value: "platform-workspace-prod"

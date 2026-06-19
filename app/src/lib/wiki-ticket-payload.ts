@@ -1,5 +1,14 @@
+/** Feladat szöveg ticket payloadból — board `task`, chat `question`, stb. */
+export function readTicketPromptText(payload: Record<string, unknown>): string {
+  for (const key of ['question', 'task', 'description'] as const) {
+    const value = payload[key]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+  return ''
+}
+
 export function readWikiTicketPayload(payload: Record<string, unknown>) {
-  const question = typeof payload.question === 'string' ? payload.question.trim() : ''
+  const question = readTicketPromptText(payload)
   const followUpNotes = Array.isArray(payload.followUpNotes)
     ? payload.followUpNotes.filter((note): note is string => typeof note === 'string' && note.trim().length > 0)
     : []
