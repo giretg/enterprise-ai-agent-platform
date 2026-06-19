@@ -29,22 +29,6 @@ env:
     availability:
       - BUILD
       - RUNTIME
-  - variable: NEON_API_KEY
-    secret: NEON_API_KEY
-    availability:
-      - RUNTIME
-  - variable: NEON_PROJECT_ID
-    secret: NEON_PROJECT_ID
-    availability:
-      - RUNTIME
-  - variable: NEON_PRODUCTION_BRANCH_ID
-    secret: NEON_PRODUCTION_BRANCH_ID
-    availability:
-      - RUNTIME
-  - variable: NEON_TEST_BRANCH_ID
-    secret: NEON_TEST_BRANCH_ID
-    availability:
-      - RUNTIME
   - variable: GEMINI_API_KEY
     secret: GEMINI_API_KEY
   - variable: CLERK_SECRET_KEY

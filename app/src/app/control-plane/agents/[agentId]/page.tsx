@@ -5,6 +5,7 @@ import { getAgent, getAgentGovernance } from '@/app/actions/platform'
 import { getCurrentUser } from '@/auth'
 import { hasMinimumRole } from '@/auth/types'
 import { Badge, Card } from '@/components/ui/shell'
+import { ExpandableContent } from '@/components/ui/expandable-content'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { AgentChatButton } from '@/components/agents/agent-chat-panel'
 import { UpdateInstructionForm } from '@/components/agents/update-instruction-form'
@@ -122,17 +123,21 @@ export default async function AgentDetailPage({
 
       <div className="grid gap-6 lg:grid-cols-2">
         <ProfileSection title="Munkaköri leírás" subtitle="Mit csinál a csapatban">
-          <ProseBlock
-            text={agent.roleInstruction}
-            empty="Még nincs leírva, miben segít."
-          />
+          <ExpandableContent>
+            <ProseBlock
+              text={agent.roleInstruction}
+              empty="Még nincs leírva, miben segít."
+            />
+          </ExpandableContent>
         </ProfileSection>
 
         <ProfileSection title="Munkastílus" subtitle="Hogyan dolgozik">
-          <ProseBlock
-            text={agent.behaviorProfile}
-            empty="Még nincs leírva, hogyan kommunikál és dolgozik."
-          />
+          <ExpandableContent>
+            <ProseBlock
+              text={agent.behaviorProfile}
+              empty="Még nincs leírva, hogyan kommunikál és dolgozik."
+            />
+          </ExpandableContent>
         </ProfileSection>
 
         <ProfileSection
@@ -143,7 +148,9 @@ export default async function AgentDetailPage({
               : 'Tanulási emlékek'
           }
         >
-          <ProseBlock text={memoryContent} empty="Még nincs rögzített tapasztalat." />
+          <ExpandableContent>
+            <ProseBlock text={memoryContent} empty="Még nincs rögzített tapasztalat." />
+          </ExpandableContent>
         </ProfileSection>
 
         <Card>
@@ -243,19 +250,21 @@ export default async function AgentDetailPage({
                 {governance.capabilities.length === 0 ? (
                   <p className="text-sm text-ink-faint">Nincs meghatározott eszközjog.</p>
                 ) : (
-                  <ul className="space-y-2 text-sm">
-                    {governance.capabilities.map((cap) => (
-                      <li
-                        key={cap.toolName}
-                        className="flex items-center justify-between atelier-soft p-3"
-                      >
-                        <span className="font-medium text-ink">{cap.toolName}</span>
-                        <Badge tone={cap.allowed ? 'success' : 'danger'}>
-                          {cap.allowed ? 'engedélyezett' : 'tiltott'}
-                        </Badge>
-                      </li>
-                    ))}
-                  </ul>
+                  <ExpandableContent>
+                    <ul className="space-y-2 text-sm">
+                      {governance.capabilities.map((cap) => (
+                        <li
+                          key={cap.toolName}
+                          className="flex items-center justify-between atelier-soft p-3"
+                        >
+                          <span className="font-medium text-ink">{cap.toolName}</span>
+                          <Badge tone={cap.allowed ? 'success' : 'danger'}>
+                            {cap.allowed ? 'engedélyezett' : 'tiltott'}
+                          </Badge>
+                        </li>
+                      ))}
+                    </ul>
+                  </ExpandableContent>
                 )}
               </Card>
               <Card title="Külső kapcsolatok">
