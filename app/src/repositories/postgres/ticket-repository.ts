@@ -36,6 +36,13 @@ export class PostgresTicketRepository implements TicketRepository {
         lockToken: null,
         OR: [{ executeAfter: null }, { executeAfter: { lte: now } }],
         agentId: { not: null },
+        // Kész delegálások ne kerüljenek újra feldolgozásra (legacy ready állapot).
+        NOT: {
+          payload: {
+            path: ['delegationReturned'],
+            equals: true,
+          },
+        },
       },
       orderBy: { updatedAt: 'asc' },
       take: limit,

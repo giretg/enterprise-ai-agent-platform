@@ -111,6 +111,50 @@ export function buildTicketDisplayExtras(
 export type TicketCreatorDisplay = {
   id: string
   label: string
+  type?: 'agent' | 'human'
+}
+
+/** Agent által létrehozott ticketeknél a payload tartalmazza a valódi létrehozót. */
+export function extractCreatorAgentId(payload: unknown): string | null {
+  const record = readTicketPayload(payload)
+  if (!record) return null
+
+  for (const key of ['createdByAgentId', 'requesterAgentId'] as const) {
+    const value = record[key]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+  }
+
+  return null
+}
+
+export function formatTicketCreator(input: {
+  createdById: string
+  payload: unknown
+  agentNames: Map<string, string>
+  userNames: Map<string, string>
+}): TicketCreatorDisplay {
+  const creatorAgentId = extractCreatorAgentId(input.payload)
+  if (creatorAgentId) {
+    const agentName = input.agentNames.get(creatorAgentId)
+    if (agentName) {
+      return {
+        id: creatorAgentId,
+        label: personaFor(agentName).nickname,
+        type: 'agent',
+      }
+    }
+    return {
+      id: creatorAgentId,
+      label: 'AI agent',
+      type: 'agent',
+    }
+  }
+
+  return {
+    id: input.createdById,
+    label: input.userNames.get(input.createdById) ?? 'Ismeretlen',
+    type: 'human',
+  }
 }
 
 export type EnrichedBoardTicket = Pick<
@@ -189,10 +233,12 @@ export function enrichTicketsForBoard(
       updatedAt: ticket.updatedAt,
       createdById: ticket.createdById,
       ...display,
-      creator: {
-        id: ticket.createdById,
-        label: names.users.get(ticket.createdById) ?? 'Ismeretlen',
-      },
+      creator: formatTicketCreator({
+        createdById: ticket.createdById,
+        payload: ticket.payload,
+        agentNames: names.agents,
+        userNames: names.users,
+      }),
     }
   })
 }

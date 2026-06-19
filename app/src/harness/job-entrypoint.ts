@@ -3,6 +3,7 @@ import { assertEgressDenyByDefault } from './egress-guard'
 import { resolveHarnessCommandJson } from './goose-command'
 import { prepareGooseHarnessEnv } from './goose-config'
 import { runStubHarnessAgentLoop, shouldRunStubHarnessAgentLoop } from './stub-harness-agent-loop'
+import { runWikiTicketProcessViaPlatform, shouldRunWikiTicketProcess } from './wiki-ticket-process'
 
 export type HarnessRunStatus = 'succeeded' | 'failed'
 
@@ -149,16 +150,22 @@ export async function runHarnessEntrypoint(
     ...deps,
   }
   const ctx = readContext(env)
-  const runtimeEnv = await prepareGooseHarnessEnv(env)
+  const wikiMode = shouldRunWikiTicketProcess(env)
+  const runtimeEnv = wikiMode ? env : await prepareGooseHarnessEnv(env)
 
   let status: HarnessRunStatus = 'succeeded'
   let error: string | null = null
   try {
     await assertEgressDenyByDefault(runtimeEnv, resolvedDeps.fetch)
-    await runConfiguredCommand(ctx, runtimeEnv, resolvedDeps)
-    if (shouldRunStubHarnessAgentLoop(runtimeEnv)) {
-      resolvedDeps.log.log('Running stub harness agent loop (Gateway tool_calls + MCP bridge fallback).')
-      await runStubHarnessAgentLoop(runtimeEnv, resolvedDeps.fetch)
+    if (wikiMode) {
+      resolvedDeps.log.log('Running wiki ticket process via platform API (provider-agnostic).')
+      await runWikiTicketProcessViaPlatform(runtimeEnv, resolvedDeps.fetch)
+    } else {
+      await runConfiguredCommand(ctx, runtimeEnv, resolvedDeps)
+      if (shouldRunStubHarnessAgentLoop(runtimeEnv)) {
+        resolvedDeps.log.log('Running stub harness agent loop (Gateway tool_calls + MCP bridge fallback).')
+        await runStubHarnessAgentLoop(runtimeEnv, resolvedDeps.fetch)
+      }
     }
   } catch (e) {
     status = 'failed'

@@ -3,6 +3,7 @@ import { authenticateAgentRequest, requireAgentScope } from '@/auth/agent-api-ke
 import { services } from '@/domain'
 import { buildStubOpenAiCompletion } from '@/domain/gateway/stub-openai-completion'
 import { relayTextToolCall } from '@/domain/gateway/text-tool-relay'
+import { resolveGatewayRequestModel } from '@/lib/harness-model-config'
 import { repositories } from '@/repositories/postgres'
 import { openAiChatCompletionSchema } from '@/lib/validators/gateway'
 
@@ -71,7 +72,7 @@ export async function POST(request: Request) {
     return jsonError('At least one message is required', 400)
   }
 
-  const modelName = parsed.data.model ?? modelConfig.model
+  const modelName = resolveGatewayRequestModel(parsed.data.model, modelConfig.model)
 
   if (isStubProviderConfigured() && parsed.data.tools?.length) {
     const stubCompletion = buildStubOpenAiCompletion({

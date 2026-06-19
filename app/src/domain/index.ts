@@ -119,6 +119,9 @@ const wikiRuntime = new WikiAgentRuntime(
   playbookService,
   conversationService,
 )
+toolBrokerService.setDelegationProcessor(async ({ ticketId, targetAgentId }) => {
+  await wikiRuntime.processTicket({ ticketId, agentId: targetAgentId })
+})
 const auditChainService = new AuditChainService(repositories.audit)
 const recipeService = new RecipeService(repositories.recipes, repositories.audit)
 const sandboxAppService = new SandboxAppService(
@@ -163,6 +166,7 @@ const dispatcherService = new DispatcherService(
   () => createHarnessLauncher(),
   undefined,
   () => platformSettingsService.isDispatchEnabled(),
+  repositories.agents,
 )
 
 export const services = {

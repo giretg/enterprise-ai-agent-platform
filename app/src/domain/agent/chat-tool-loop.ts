@@ -27,7 +27,7 @@ Elérhető eszközök:
 3. ticket_create — args: { "title": "...", "payload": { "task": "..." }, "assigneeType": "human"|"agent", "assigneeId": "uuid ha agent" }
    - Másik AI agent feladata: assigneeType "agent" + assigneeId a cél agent UUID-ja.
    - Emberi review: assigneeType "human".
-4. agent_ask — args: { "targetAgentId": "uuid", "question": "...", "context": {} } — kérdés delegálása másik agentnek (ticket + válasz visszaadás).
+4. agent_ask — args: { "targetAgentId": "uuid", "question": "...", "context": {} } — kérdés delegálása MÁSIK agentnek (NE a saját agentId-dre). A tool eredménye tartalmazza a completed és answer mezőket; CSAK completed:true esetén idézd a választ.
 `
 
 function isChatPlatformTool(name: string): name is ChatPlatformToolName {
@@ -222,7 +222,7 @@ export async function runAgentChatWithTools(params: {
   messages.push({
     role: 'system',
     content:
-      'Fogalmazd meg a felhasználónak magyarul, mit csináltál (ticket létrehozás, delegálás). Ne használj JSON tool blokkot.',
+      'Fogalmazd meg a felhasználónak magyarul. agent_ask esetén: ha completed:true és van answer, azt fogalmazd át (ne találj ki extra tényt). Ha completed:false vagy nincs answer, mondd el hogy a delegálás nem sikerült — NE állítsd, hogy megérkezett a válasz. Ne használj JSON tool blokkot.',
   })
 
   const { content: finalContent } = await params.gateway.call({

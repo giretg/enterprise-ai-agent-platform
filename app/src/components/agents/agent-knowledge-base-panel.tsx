@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState, useTransition } from 'react'
 import {
   approveKbDocument,
+  deleteKbDocument,
   getKnowledgeBaseSharing,
   listAgents,
   listDocumentsForAgent,
@@ -10,6 +11,7 @@ import {
   rejectKbDocument,
   requestKbDocument,
   shareKnowledgeBaseWithAgent,
+  unshareKnowledgeBaseFromAgent,
   uploadDocument,
 } from '@/app/actions/platform'
 import { Card } from '@/components/ui/shell'
@@ -59,7 +61,7 @@ export function AgentKnowledgeBasePanel({
       if (docsRes.success) setKbDocs(docsRes.data as KbDocument[])
       if (pendingRes.success) setPendingDocs(pendingRes.data as PendingDoc[])
       if (shareRes.success) {
-        setSharedWith((shareRes.data as { usedByAgents: SharedAgent[] }).usedByAgents)
+        setSharedWith((shareRes.data as { sharedWithAgents: SharedAgent[] }).sharedWithAgents)
       }
       setLoading(false)
     })
@@ -146,6 +148,23 @@ export function AgentKnowledgeBasePanel({
         setShareTargetId('')
         refreshDocs()
       }
+    })
+  }
+
+  const handleUnshare = (targetAgentId: string) => {
+    startAction(async () => {
+      const res = await unshareKnowledgeBaseFromAgent({ agentId, targetAgentId })
+      setUploadMessage(res.success ? 'Megosztás visszavonva.' : res.error)
+      if (res.success) refreshDocs()
+    })
+  }
+
+  const handleDelete = (documentId: string, filename: string) => {
+    if (!window.confirm(`Biztosan törlöd: ${filename}?`)) return
+    startAction(async () => {
+      const res = await deleteKbDocument({ agentId, documentId })
+      setUploadMessage(res.success ? 'Dokumentum törölve.' : res.error)
+      if (res.success) refreshDocs()
     })
   }
 
@@ -268,11 +287,23 @@ export function AgentKnowledgeBasePanel({
         ) : (
           <ul className="space-y-1">
             {kbDocs.map((doc) => (
-              <li key={doc.id} className="flex items-center gap-2 text-sm text-ink-soft">
-                <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-sage" />
-                <span className="truncate" title={doc.filename}>
-                  {doc.filename}
+              <li key={doc.id} className="flex items-center justify-between gap-2 text-sm text-ink-soft">
+                <span className="flex min-w-0 items-center gap-2">
+                  <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-sage" />
+                  <span className="truncate" title={doc.filename}>
+                    {doc.filename}
+                  </span>
                 </span>
+                {canUpload && (
+                  <button
+                    type="button"
+                    disabled={actionPending}
+                    onClick={() => handleDelete(doc.id, doc.filename)}
+                    className="shrink-0 rounded-full bg-coral/20 px-3 py-1 text-xs font-semibold text-coral hover:bg-coral/30 disabled:opacity-50"
+                  >
+                    Törlés
+                  </button>
+                )}
               </li>
             ))}
           </ul>
@@ -282,12 +313,29 @@ export function AgentKnowledgeBasePanel({
       {canUpload && (
         <div className="mt-4 border-t border-line pt-4">
           <p className="mb-2 text-xs font-medium uppercase tracking-widest text-ink-faint">
-            Megosztás{sharedWith.length > 1 ? ` (${sharedWith.length} agent használja)` : ''}
+            Megosztás{sharedWith.length > 0 ? ` (${sharedWith.length} agent)` : ''}
           </p>
-          {sharedWith.length > 1 && (
-            <p className="mb-2 text-xs text-ink-faint">
-              Használja: {sharedWith.map((s) => s.name).join(', ')}
-            </p>
+          {sharedWith.length > 0 && (
+            <ul className="mb-3 space-y-1">
+              {sharedWith.map((s) => (
+                <li
+                  key={s.id}
+                  className="flex items-center justify-between gap-2 text-xs text-ink-faint"
+                >
+                  <span className="truncate" title={s.name}>
+                    {s.name}
+                  </span>
+                  <button
+                    type="button"
+                    disabled={actionPending}
+                    onClick={() => handleUnshare(s.id)}
+                    className="shrink-0 rounded-full bg-night-2 px-3 py-1 text-xs font-semibold text-coral hover:bg-coral/20 disabled:opacity-50"
+                  >
+                    Visszavonás
+                  </button>
+                </li>
+              ))}
+            </ul>
           )}
           <div className="flex gap-2">
             <select

@@ -56,9 +56,11 @@ export async function prepareGooseHarnessEnv(env: GooseHarnessEnv): Promise<Goos
   const configDir = path.join(gooseRoot, 'config')
   await mkdir(configDir, { recursive: true })
 
+  const gooseModel = env.GOOSE_MODEL?.trim() || 'chatgpt-oauth-default'
+
   const configYaml = [
     'GOOSE_PROVIDER: openai',
-    'GOOSE_MODEL: chatgpt-oauth-default',
+    `GOOSE_MODEL: ${gooseModel}`,
     'GOOSE_MODE: auto',
     'extensions:',
     '  developer:',
@@ -105,7 +107,7 @@ export async function prepareGooseHarnessEnv(env: GooseHarnessEnv): Promise<Goos
     GOOSE_PATH_ROOT: gooseRoot,
     GOOSE_DISABLE_KEYRING: env.GOOSE_DISABLE_KEYRING ?? '1',
     GOOSE_PROVIDER: 'openai',
-    GOOSE_MODEL: env.GOOSE_MODEL ?? 'chatgpt-oauth-default',
+    GOOSE_MODEL: gooseModel,
     GOOSE_MODE: env.GOOSE_MODE ?? 'auto',
     GOOSE_MAX_TURNS: env.HARNESS_MAX_TURNS ?? env.GOOSE_MAX_TURNS ?? '12',
     OPENAI_API_KEY: agentApiKey,

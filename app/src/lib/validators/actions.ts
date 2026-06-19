@@ -68,6 +68,11 @@ export const shareKnowledgeBaseSchema = z.object({
   targetAgentId: z.string().uuid(),
 })
 
+export const deleteKbDocumentSchema = z.object({
+  agentId: z.string().uuid(),
+  documentId: z.string().uuid(),
+})
+
 export const askWikiSchema = z.object({
   agentId: z.string().uuid(),
   question: z.string().trim().min(1).max(2000),

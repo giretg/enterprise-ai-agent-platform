@@ -1,6 +1,6 @@
 'use server'
 
-import { mkdir, writeFile } from 'fs/promises'
+import { mkdir, unlink, writeFile } from 'fs/promises'
 import path from 'path'
 import { clerkClient } from '@clerk/nextjs/server'
 import { getCurrentUser, requireRole } from '@/auth'
@@ -13,7 +13,12 @@ import { ensureAgentKnowledgeBase } from '@/lib/agent-knowledge-base'
 import { xlsxExtractText } from '@/domain/file-editor/adapters/xlsx-adapter'
 import { docxRead } from '@/domain/file-editor/adapters/docx-adapter'
 import { pdfRead } from '@/domain/file-editor/adapters/pdf-adapter'
-import { buildTicketDisplayExtras, enrichTicketsForBoard } from '@/lib/ticket-display'
+import {
+  buildTicketDisplayExtras,
+  enrichTicketsForBoard,
+  extractCreatorAgentId,
+  formatTicketCreator,
+} from '@/lib/ticket-display'
 import { fail, ok, type ActionResult } from '@/lib/result'
 import {
   agentIdSchema,
@@ -42,6 +47,7 @@ import {
   requestKbDocumentSchema,
   kbTicketSchema,
   shareKnowledgeBaseSchema,
+  deleteKbDocumentSchema,
   rollbackMemorySchema,
   ticketFilterSchema,
   ticketIdSchema,
@@ -95,6 +101,8 @@ export async function listBoardTickets() {
       if (ticket.assigneeType === 'agent' && ticket.assigneeId) agentIds.add(ticket.assigneeId)
       if (ticket.assigneeType === 'human' && ticket.assigneeId) userIds.add(ticket.assigneeId)
       if (ticket.agentId) agentIds.add(ticket.agentId)
+      const creatorAgentId = extractCreatorAgentId(ticket.payload)
+      if (creatorAgentId) agentIds.add(creatorAgentId)
     }
 
     const [agents, users] = await Promise.all([
@@ -183,11 +191,15 @@ export async function getTicket(input: { id: string }) {
     const responsibleAgent = ticket.agentId
       ? await repositories.agents.findById(ticket.agentId)
       : null
-    const [assigneeUser, creator] = await Promise.all([
+    const creatorAgentId = extractCreatorAgentId(ticket.payload)
+    const [assigneeUser, creatorUser, creatorAgent] = await Promise.all([
       ticket.assigneeType === 'human' && ticket.assigneeId
         ? prisma.user.findUnique({ where: { id: ticket.assigneeId }, select: { name: true } })
         : Promise.resolve(null),
       prisma.user.findUnique({ where: { id: ticket.createdById }, select: { name: true } }),
+      creatorAgentId
+        ? repositories.agents.findById(creatorAgentId)
+        : Promise.resolve(null),
     ])
 
     const display = buildTicketDisplayExtras(ticket, {
@@ -199,14 +211,19 @@ export async function getTicket(input: { id: string }) {
           : assigneeAgent?.name ?? responsibleAgent?.name ?? null,
     })
 
+    const agentNames = new Map<string, string>()
+    if (creatorAgent) agentNames.set(creatorAgent.id, creatorAgent.name)
+
     return ok({
       ...ticket,
       reproduction,
       ...display,
-      creator: {
-        id: ticket.createdById,
-        label: creator?.name ?? 'Ismeretlen',
-      },
+      creator: formatTicketCreator({
+        createdById: ticket.createdById,
+        payload: ticket.payload,
+        agentNames,
+        userNames: new Map([[ticket.createdById, creatorUser?.name ?? 'Ismeretlen']]),
+      }),
     })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to get ticket')
@@ -553,13 +570,7 @@ export async function processDocumentForWiki(input: { documentId: string; agentI
       return fail('Orchestrator agents do not use a knowledge base')
     }
 
-    const kbConnector =
-      (await ensureAgentKnowledgeBase(agent)) ??
-      (await repositories.toolBroker.findConnectorForAgent(
-        parsed.agentId,
-        'knowledge_base',
-        'read',
-      ))
+    const kbConnector = await ensureAgentKnowledgeBase(agent)
     if (!kbConnector) return fail('Agent has no knowledge_base connector')
 
     const updated = await repositories.documents.update(parsed.documentId, {
@@ -596,13 +607,7 @@ export async function listDocumentsForAgent(input: { agentId: string }) {
     if (!agent) return fail('Agent not found')
     if (agent.role === 'orchestrator') return ok([])
 
-    // Olvasó action — nem provisionál: a KB connector az agent-create / seed
-    // úton jön létre (ensureAgentKnowledgeBase), itt csak lekérdezzük.
-    const kbConnector = await repositories.toolBroker.findConnectorForAgent(
-      agentId,
-      'knowledge_base',
-      'read',
-    )
+    const kbConnector = await ensureAgentKnowledgeBase(agent)
     if (!kbConnector) return ok([])
 
     const documents = await repositories.documents.findByConnectorId(kbConnector.id)
@@ -683,17 +688,19 @@ export async function shareKnowledgeBaseWithAgent(input: { agentId: string; targ
       return fail('Source and target agents are the same')
     }
 
+    const source = await repositories.agents.findById(parsed.agentId)
+    if (!source) return fail('Source agent not found')
+    if (source.role === 'orchestrator') {
+      return fail('Orchestrator agents do not use a knowledge base')
+    }
+
     const target = await repositories.agents.findById(parsed.targetAgentId)
     if (!target) return fail('Target agent not found')
     if (target.role === 'orchestrator') {
       return fail('Orchestrator agents do not use a knowledge base')
     }
 
-    const kbConnector = await repositories.toolBroker.findConnectorForAgent(
-      parsed.agentId,
-      'knowledge_base',
-      'read',
-    )
+    const kbConnector = await ensureAgentKnowledgeBase(source)
     if (!kbConnector) return fail('Source agent has no knowledge_base connector')
 
     await prisma.agentConnector.upsert({
@@ -729,29 +736,138 @@ export async function shareKnowledgeBaseWithAgent(input: { agentId: string; targ
   }
 }
 
-/** A KB connector megosztási állapota: mely agentek használják. */
+/** Megosztás visszavonása: a célagent elveszti a forrás KB-jéhez való hozzáférést. */
+export async function unshareKnowledgeBaseFromAgent(input: {
+  agentId: string
+  targetAgentId: string
+}) {
+  try {
+    const user = await requireRole('operator')
+    const parsed = shareKnowledgeBaseSchema.parse(input)
+    if (parsed.agentId === parsed.targetAgentId) {
+      return fail('Cannot revoke the owner agent from its own knowledge base')
+    }
+
+    const source = await repositories.agents.findById(parsed.agentId)
+    if (!source) return fail('Source agent not found')
+    if (source.role === 'orchestrator') {
+      return fail('Orchestrator agents do not use a knowledge base')
+    }
+
+    const kbConnector = await ensureAgentKnowledgeBase(source)
+    if (!kbConnector) return fail('Source agent has no knowledge_base connector')
+
+    const link = await prisma.agentConnector.findUnique({
+      where: {
+        agentId_connectorId: { agentId: parsed.targetAgentId, connectorId: kbConnector.id },
+      },
+    })
+    if (!link) return fail('Target agent does not have access to this knowledge base')
+
+    await prisma.agentConnector.delete({
+      where: {
+        agentId_connectorId: { agentId: parsed.targetAgentId, connectorId: kbConnector.id },
+      },
+    })
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: null,
+      action: 'kb.unshared',
+      targetType: 'connector',
+      targetId: kbConnector.id,
+      modelUsed: null,
+      inputRef: parsed.agentId,
+      outputRef: parsed.targetAgentId,
+      policyDecision: 'kb_unshared',
+      metadata: null,
+    })
+
+    return ok({ unshared: true })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to unshare knowledge base')
+  }
+}
+
+/** A KB connector megosztási állapota: mely más agentek használják (a tulajdonos nélkül). */
 export async function getKnowledgeBaseSharing(input: { agentId: string }) {
   try {
     await requireRole('operator')
     const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
 
-    const kbConnector = await repositories.toolBroker.findConnectorForAgent(
-      agentId,
-      'knowledge_base',
-      'read',
-    )
-    if (!kbConnector) return ok({ connectorId: null, usedByAgents: [] })
+    const agent = await repositories.agents.findById(agentId)
+    if (!agent) return fail('Agent not found')
+    if (agent.role === 'orchestrator') {
+      return ok({ connectorId: null, sharedWithAgents: [] })
+    }
+
+    const kbConnector = await ensureAgentKnowledgeBase(agent)
+    if (!kbConnector) return ok({ connectorId: null, sharedWithAgents: [] })
 
     const links = await prisma.agentConnector.findMany({
       where: { connectorId: kbConnector.id },
       include: { agent: { select: { id: true, name: true } } },
+      orderBy: { agent: { name: 'asc' } },
     })
     return ok({
       connectorId: kbConnector.id,
-      usedByAgents: links.map((l) => ({ id: l.agent.id, name: l.agent.name })),
+      sharedWithAgents: links
+        .filter((l) => l.agent.id !== agentId)
+        .map((l) => ({ id: l.agent.id, name: l.agent.name })),
     })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to get KB sharing')
+  }
+}
+
+/** Jóváhagyott KB-dokumentum törlése az agent saját tudásbázisából. */
+export async function deleteKbDocument(input: { agentId: string; documentId: string }) {
+  try {
+    const user = await requireRole('operator')
+    const parsed = deleteKbDocumentSchema.parse(input)
+
+    const agent = await repositories.agents.findById(parsed.agentId)
+    if (!agent) return fail('Agent not found')
+    if (agent.role === 'orchestrator') {
+      return fail('Orchestrator agents do not use a knowledge base')
+    }
+
+    const kbConnector = await ensureAgentKnowledgeBase(agent)
+    if (!kbConnector) return fail('Agent has no knowledge_base connector')
+
+    const document = await repositories.documents.findById(parsed.documentId)
+    if (!document) return fail('Document not found')
+    if (document.connectorId !== kbConnector.id) {
+      return fail('Document does not belong to this agent knowledge base')
+    }
+
+    const absolutePath = path.resolve(process.cwd(), document.storageRef)
+    const uploadRoot = path.resolve(process.cwd(), 'uploads')
+    const uploadRootPrefix = uploadRoot.endsWith(path.sep) ? uploadRoot : `${uploadRoot}${path.sep}`
+    if (absolutePath.startsWith(uploadRootPrefix)) {
+      await unlink(absolutePath).catch(() => undefined)
+    }
+
+    await repositories.documents.delete(parsed.documentId)
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: null,
+      action: 'kb.document.deleted',
+      targetType: 'document',
+      targetId: parsed.documentId,
+      modelUsed: null,
+      inputRef: parsed.agentId,
+      outputRef: kbConnector.id,
+      policyDecision: 'kb_document_deleted',
+      metadata: { filename: document.filename },
+    })
+
+    return ok({ deleted: true })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to delete KB document')
   }
 }
 

@@ -19,7 +19,7 @@ COPY . .
 COPY harness/recipes /recipes
 
 ENV NODE_ENV=production
-ENV HARNESS_MODE=goose
+ENV HARNESS_MODE=wiki
 ENV HARNESS_RECIPE_PATH=/recipes/wiki-answer.yaml
 
 CMD ["npm", "run", "harness:run"]

@@ -1,6 +1,12 @@
 import { randomUUID } from 'crypto'
 import type { Prisma, Ticket } from '@prisma/client'
-import type { AuditRepository, ModelCallRepository, TicketRepository } from '@/repositories/interfaces'
+import type {
+  AgentRepository,
+  AuditRepository,
+  ModelCallRepository,
+  TicketRepository,
+} from '@/repositories/interfaces'
+import { parseAgentModelConfig } from '@/lib/harness-model-config'
 import { isRunAsAuthorized, readRunAsUserId } from '@/lib/run-as-payload'
 import { wikiSearchQuery } from '@/lib/wiki-ticket-payload'
 
@@ -18,6 +24,7 @@ export type HarnessLauncher = {
     agentVersion?: number
     actingUserId?: string
     question?: string
+    gooseModel?: string
   }): Promise<{ jobId: string; executionName?: string }>
 }
 
@@ -30,7 +37,26 @@ export class DispatcherService {
     private budget: DispatchBudget = { maxCallsPerDay: 100, maxTokensPerDay: 100_000 },
     /** Globális kill-switch (§5.7). Ha hiányzik, a dispatch mindig engedélyezett. */
     private isDispatchEnabled: () => Promise<boolean> = async () => true,
+    private agents?: AgentRepository,
   ) {}
+
+  private async resolveHarnessGooseModel(
+    agentId: string,
+    agentVersion?: number,
+  ): Promise<string | undefined> {
+    if (!this.agents) return undefined
+
+    if (agentVersion != null) {
+      const snapshot = await this.agents.findVersionSnapshot(agentId, agentVersion)
+      if (snapshot?.model) {
+        return parseAgentModelConfig(snapshot.model).model
+      }
+    }
+
+    const agent = await this.agents.findById(agentId)
+    if (!agent) return undefined
+    return parseAgentModelConfig(agent.modelConfig).model
+  }
 
   private get launcher(): HarnessLauncher {
     return typeof this.resolveLauncher === 'function' ? this.resolveLauncher() : this.resolveLauncher
@@ -255,6 +281,8 @@ export class DispatcherService {
         : undefined
     const actingUserId = isRunAsAuthorized(payload) ? (readRunAsUserId(payload) ?? undefined) : undefined
 
+    const gooseModel = await this.resolveHarnessGooseModel(ticket.agentId, agentVersion)
+
     let job: { jobId: string; executionName?: string }
     try {
       job = await this.launcher.launch({
@@ -264,6 +292,7 @@ export class DispatcherService {
         agentVersion,
         actingUserId,
         question,
+        gooseModel,
       })
     } catch (error) {
       await this.tickets.releaseDispatchLock(ticket.id, lockToken)

@@ -89,7 +89,7 @@ export const PLATFORM_BROKER_TOOLS = [
   {
     name: 'agent_ask',
     description:
-      'Ask another agent a question via a delegation ticket. The target agent answers; the ticket returns to you (ready) with the answer in payload.',
+      'Ask another agent a question via a delegation ticket. The target agent answers; the delegation ticket closes (done) with the answer in payload.',
     inputSchema: {
       type: 'object',
       properties: {

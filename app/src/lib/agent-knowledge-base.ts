@@ -9,9 +9,30 @@ export function knowledgeBaseDisplayName(agentName: string): string {
   return `${agentName} tudásbázis`
 }
 
+/** Az agent saját (kb:{agentId}) tudásbázis-connectora — megosztott linkeket nem ad vissza. */
+export async function findOwnedKnowledgeBaseConnector(
+  agent: Pick<Agent, 'id' | 'role'>,
+  db: PrismaClient = prisma,
+): Promise<Connector | null> {
+  if (agent.role === 'orchestrator') return null
+
+  const link = await db.agentConnector.findFirst({
+    where: {
+      agentId: agent.id,
+      connector: { type: 'knowledge_base', name: knowledgeBaseConnectorName(agent.id) },
+    },
+    include: { connector: true },
+  })
+  return link?.connector ?? null
+}
+
 /**
  * Ensures a worker agent has a dedicated knowledge_base connector and kb_search capability.
  * Orchestrators are skipped — they remain tool-less by design.
+ *
+ * Mindig a saját kb:{agentId} connectort hozza létre / adja vissza. A régi, közös
+ * (pl. „Excellence Pay belső tudásbázis”) linkek megmaradhatnak kb_search unióhoz,
+ * de feltöltés / listázás / megosztás kizárólag a saját connectoron történik.
  */
 export async function ensureAgentKnowledgeBase(
   agent: Pick<Agent, 'id' | 'name' | 'role'>,
@@ -19,16 +40,8 @@ export async function ensureAgentKnowledgeBase(
 ): Promise<Connector | null> {
   if (agent.role === 'orchestrator') return null
 
-  // Egy meglévő KB-kötés (akár a régi megosztott connector) elsőbbséget élvez,
-  // így a megosztott modell (many-to-many, §4.9.1) megmarad.
-  const existingLink = await db.agentConnector.findFirst({
-    where: {
-      agentId: agent.id,
-      connector: { type: 'knowledge_base' },
-    },
-    include: { connector: true },
-  })
-  if (existingLink) return existingLink.connector
+  const owned = await findOwnedKnowledgeBaseConnector(agent, db)
+  if (owned) return owned
 
   // Determinisztikus név + upsert: párhuzamos hívásnál (agent-create, seed,
   // dokumentum-feldolgozás) sem dob unique-constraint hibát.

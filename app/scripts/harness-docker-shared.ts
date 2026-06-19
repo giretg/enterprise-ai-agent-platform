@@ -12,7 +12,7 @@ export type HarnessDockerRunParams = {
   lockToken: string
   agentVersion?: number
   question?: string
-  harnessMode: 'callback-only' | 'goose'
+  harnessMode: 'callback-only' | 'goose' | 'wiki'
   platformHost?: string
   platformPort?: string
   callbackToken?: string

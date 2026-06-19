@@ -58,7 +58,7 @@ DEPLOY_ARGS=(
   --task-timeout="${TASK_TIMEOUT:-30m}"
   --cpu="${JOB_CPU:-1}"
   --memory="${JOB_MEMORY:-1Gi}"
-  --set-env-vars="HARNESS_MODE=${HARNESS_MODE:-goose}"
+  --set-env-vars="HARNESS_MODE=${HARNESS_MODE:-wiki}"
   --set-env-vars="HARNESS_RECIPE_PATH=${HARNESS_RECIPE_PATH:-/recipes/wiki-answer.yaml}"
   --set-env-vars="PLATFORM_API_URL=${PLATFORM_API_URL}"
   --set-env-vars="MODEL_GATEWAY_URL=${MODEL_API_URL:-${PLATFORM_API_URL}/api/v1/gateway/v1}"

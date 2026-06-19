@@ -80,8 +80,7 @@ export class CloudRunJobHarnessLauncher implements HarnessLauncher {
       harnessAgentApiKey: this.config.harnessAgentApiKey,
       egressEnforce: this.config.egressEnforce,
       stubBrokerFallback:
-        this.config.stubBrokerFallback ??
-        (this.config.harnessMode === 'goose' || !this.config.harnessMode),
+        this.config.stubBrokerFallback ?? this.config.harnessMode === 'goose',
     })
 
     const response = await fetch(`${endpoint}:run`, {

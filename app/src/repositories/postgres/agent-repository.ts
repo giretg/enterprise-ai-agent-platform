@@ -376,4 +376,8 @@ export class PostgresDocumentRepository implements DocumentRepository {
   ): Promise<Document> {
     return prisma.document.update({ where: { id }, data })
   }
+
+  async delete(id: string): Promise<void> {
+    await prisma.document.delete({ where: { id } })
+  }
 }

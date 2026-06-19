@@ -2,8 +2,6 @@ version: "1.0.0"
 title: "wiki-answer"
 description: "Belső tudásbázisból citált, magyar nyelvű választ ad."
 settings:
-  goose_provider: openai
-  goose_model: chatgpt-oauth-default
   max_turns: 12
 instructions: |
   Te az Excellence Pay belső tudás-asszisztense vagy. Dolgozz a LEHETŐ

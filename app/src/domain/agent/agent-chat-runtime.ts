@@ -10,6 +10,23 @@ import { listAllowedChatTools, runAgentChatWithTools } from './chat-tool-loop'
 const IMAGE_EXT = /\.(jpg|jpeg|png|gif|webp)$/i
 const IMAGE_MARKER = /^(\[image:([^\]]+)\])([\s\S]*)$/
 
+type KbSearchHit = {
+  docId: string
+  snippet: string
+  sourceRef: string
+  memoryVersion: number | null
+}
+
+function formatKbHitsForPrompt(hits: KbSearchHit[]): string {
+  if (hits.length === 0) return '(nincs találat)'
+  return hits
+    .map(
+      (hit, index) =>
+        `[${index + 1}] docId=${hit.docId}; sourceRef=${hit.sourceRef}; memoryVersion=${hit.memoryVersion ?? 'unknown'}\n${hit.snippet}`,
+    )
+    .join('\n\n')
+}
+
 function isImageDocument(doc: { filename: string; extractedText: string | null }): boolean {
   if (IMAGE_EXT.test(doc.filename)) return true
   return Boolean(doc.extractedText?.startsWith('[image:'))
@@ -133,10 +150,18 @@ export class AgentChatRuntime {
     })
 
     const history = await this.conversations.getConversation(conversationId, params.tenantId ?? null)
+    const kbSearch = await this.fetchKbSearchContext({
+      agentId: params.agentId,
+      agentVersion: agentDetails.agent.currentVersion,
+      conversationId,
+      actingUserId: params.createdById,
+      query: text,
+    })
     const gatewayMessages = await this.buildGatewayMessages(
       agentDetails,
       history.messages,
       attachmentBlock,
+      kbSearch,
     )
 
     const modelConfig = agentDetails.agent.modelConfig as {
@@ -321,10 +346,39 @@ export class AgentChatRuntime {
     return docs.filter((doc): doc is NonNullable<(typeof docs)[number]> => Boolean(doc))
   }
 
+  private async fetchKbSearchContext(params: {
+    agentId: string
+    agentVersion: number
+    conversationId: string
+    actingUserId: string
+    query: string
+  }): Promise<{ enabled: boolean; hits: KbSearchHit[] }> {
+    const capability = await this.toolCaps.findCapability(params.agentId, 'kb_search')
+    if (!capability?.allowed || !params.query.trim()) {
+      return { enabled: false, hits: [] }
+    }
+
+    const search = await this.toolBroker.invoke({
+      agentId: params.agentId,
+      agentVersion: params.agentVersion,
+      conversationId: params.conversationId,
+      actingUserId: params.actingUserId,
+      tool: 'kb_search',
+      args: { query: params.query.trim(), k: 6 },
+    })
+
+    if (search.denied || !('hits' in search.result) || !Array.isArray(search.result.hits)) {
+      return { enabled: true, hits: [] }
+    }
+
+    return { enabled: true, hits: search.result.hits as KbSearchHit[] }
+  }
+
   private async buildGatewayMessages(
     agentDetails: NonNullable<Awaited<ReturnType<AgentRepository['findByIdWithDetails']>>>,
     historyMessages: Array<{ role: string; content: string | null; contentDeletedAt: Date | null }>,
     latestAttachmentBlock: string,
+    kbSearch: { enabled: boolean; hits: KbSearchHit[] },
   ) {
     const allAgents = await this.agents.findMany()
     const orgRoster = formatOrgRoster(allAgents)
@@ -337,6 +391,17 @@ export class AgentChatRuntime {
       messages.push({
         role: 'system',
         content: `Memória (aktív verzió):\n${agentDetails.memoryContent.trim()}`,
+      })
+    }
+
+    if (kbSearch.enabled) {
+      const answerInstruction =
+        kbSearch.hits.length === 0
+          ? 'A kb_search nem adott találatot. Mondd ki, ha nincs elég forrás — ne találj ki tényt.'
+          : 'Kizárólag az alábbi tudásbázis-találatokra támaszkodj tényállításokhoz. Minden lényegi állításhoz adj forráshivatkozást.'
+      messages.push({
+        role: 'system',
+        content: `${answerInstruction}\n\nTudásbázis találatok (kb_search):\n${formatKbHitsForPrompt(kbSearch.hits)}`,
       })
     }
 

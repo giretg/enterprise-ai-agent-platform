@@ -41,7 +41,7 @@ export function dockerLocalConfigFromEnv(): DockerLocalHarnessConfig {
     platformPort: process.env.HARNESS_DOCKER_PLATFORM_PORT ?? '3000',
     callbackToken: requireConfigValue('HARNESS_CALLBACK_TOKEN', process.env.HARNESS_CALLBACK_TOKEN),
     callbackUrl: process.env.HARNESS_CALLBACK_URL,
-    harnessMode: process.env.HARNESS_MODE ?? 'goose',
+    harnessMode: process.env.HARNESS_MODE ?? 'wiki',
     recipePath: process.env.HARNESS_RECIPE_PATH ?? '/recipes/wiki-answer.yaml',
     agentApiKey: process.env.HARNESS_AGENT_API_KEY,
     egressEnforce: process.env.HARNESS_EGRESS_ENFORCE === 'true',
@@ -61,6 +61,7 @@ export class DockerLocalHarnessLauncher implements HarnessLauncher {
     agentVersion?: number
     actingUserId?: string
     question?: string
+    gooseModel?: string
   }): Promise<{ jobId: string; executionName?: string }> {
     const agentApiKey = await resolveAgentApiKey(this.config)
     const platformUrl = `http://${this.config.platformHost}:${this.config.platformPort}`

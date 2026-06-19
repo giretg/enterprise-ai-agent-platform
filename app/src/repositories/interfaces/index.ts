@@ -207,6 +207,7 @@ export interface DocumentRepository {
     id: string,
     data: Partial<Pick<Document, 'status' | 'extractedText' | 'connectorId'>>,
   ): Promise<Document>
+  delete(id: string): Promise<void>
 }
 
 export interface PlatformSettingsRepository {

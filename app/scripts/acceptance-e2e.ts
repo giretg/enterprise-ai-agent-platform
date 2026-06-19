@@ -734,13 +734,13 @@ async function scenario7_toolBroker(operatorId: string, agentId: string, agentVe
 
     if (
       !delegationWrite.denied &&
-      returned?.state === 'ready' &&
+      returned?.state === 'done' &&
       returned.assigneeId === agentId &&
       returned.agentId === agentId &&
       returnedPayload?.delegationReturned === true &&
       returnedPayload?.answer === 'Delegált válasz: walking skeleton.'
     ) {
-      pass('agent_ask — válasz után ticket vissza a kérdezőnek', returned.id)
+      pass('agent_ask — válasz után delegálás ticket lezárva (done)', returned.id)
     } else {
       fail(
         'agent_ask return',
@@ -1614,6 +1614,22 @@ async function scenario13_gooseCommandBuilder() {
     fail('Goose command builder', JSON.stringify(args))
   }
 
+  const geminiBuilt = buildGooseCommandJson({
+    HARNESS_MODE: 'goose',
+    TICKET_ID: ticketId,
+    AGENT_VERSION: '3',
+    HARNESS_RECIPE_PATH: '/recipes/wiki-answer.yaml',
+    HARNESS_QUESTION: question,
+    GOOSE_MODEL: 'gemini-2.5-flash',
+  })
+  const geminiArgs = JSON.parse(geminiBuilt!) as string[]
+  const modelFlagIndex = geminiArgs.indexOf('--model')
+  if (geminiArgs[modelFlagIndex + 1] === 'gemini-2.5-flash') {
+    pass('Goose command builder — GOOSE_MODEL env átadás')
+  } else {
+    fail('Goose command GOOSE_MODEL', JSON.stringify(geminiArgs))
+  }
+
   const entry = await runHarnessEntrypoint(
     {
       TICKET_ID: ticketId,
@@ -1639,6 +1655,38 @@ async function scenario13_gooseCommandBuilder() {
 
   if (entry.status === 'succeeded') pass('Harness entrypoint HARNESS_MODE=goose success path')
   else fail('Harness entrypoint goose mode', entry.status)
+
+  const wikiEntry = await runHarnessEntrypoint(
+    {
+      TICKET_ID: ticketId,
+      AGENT_ID: randomUUID(),
+      DISPATCH_LOCK_TOKEN: randomUUID(),
+      HARNESS_CALLBACK_URL: 'https://platform.example.test',
+      HARNESS_CALLBACK_TOKEN: 'callback-secret',
+      HARNESS_MODE: 'wiki',
+      PLATFORM_API_URL: 'https://platform.example.test',
+      HARNESS_AGENT_API_KEY: 'cp_sk_acceptance',
+    },
+    {
+      fetch: async (input, init) => {
+        const url = String(input)
+        if (url.includes('/process')) {
+          return new Response(JSON.stringify({ success: true, data: { ticketId } }), { status: 200 })
+        }
+        if (url.includes('/complete')) {
+          return new Response(JSON.stringify({ success: true }), { status: 200 })
+        }
+        return new Response('not found', { status: 404 })
+      },
+      spawnCommand: async () => {
+        throw new Error('goose should not run in wiki mode')
+      },
+      log: { log() {}, error() {} },
+    },
+  )
+
+  if (wikiEntry.status === 'succeeded') pass('Harness entrypoint HARNESS_MODE=wiki success path')
+  else fail('Harness entrypoint wiki mode', wikiEntry.status)
 }
 
 /** 16. OpenAI-kompatibilis Gateway API — agent kulcs + ModelGateway */
@@ -2073,6 +2121,22 @@ async function scenario23_cloudRunJobLauncher() {
     pass('Cloud Run harness env — gateway + egress + run-as + question')
   } else {
     fail('Cloud Run harness env', [...names].join(','))
+  }
+
+  const envWithModel = buildHarnessContainerEnv(
+    {
+      ticketId,
+      agentId: randomUUID(),
+      lockToken: randomUUID(),
+      gooseModel: 'gemini-2.5-flash',
+    },
+    { platformApiUrl: 'https://platform.example.com' },
+  )
+  const gooseModel = envWithModel.find((entry) => entry.name === 'GOOSE_MODEL')?.value
+  if (gooseModel === 'gemini-2.5-flash') {
+    pass('Cloud Run harness env — GOOSE_MODEL az agent snapshotból')
+  } else {
+    fail('Cloud Run harness GOOSE_MODEL', gooseModel ?? 'missing')
   }
 
   let capturedBody: unknown

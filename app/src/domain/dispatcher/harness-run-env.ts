@@ -5,6 +5,8 @@ export type HarnessRunParams = {
   agentVersion?: number
   actingUserId?: string
   question?: string
+  /** Az agent snapshot / aktuális modelConfig.model — Goose GOOSE_MODEL env. */
+  gooseModel?: string
 }
 
 export type HarnessRunEnvConfig = {
@@ -50,7 +52,7 @@ export function buildHarnessContainerEnv(
   // útvonal képződne (…/complete/api/v1/harness/…/complete → 404).
   const callbackUrl = config.callbackUrl?.trim() || platformApiUrl
   const modelGatewayUrl = resolveModelGatewayUrl(config.modelGatewayUrl, platformApiUrl)
-  const harnessMode = config.harnessMode?.trim() || 'goose'
+  const harnessMode = config.harnessMode?.trim() || 'wiki'
   const recipePath = config.recipePath?.trim() || '/recipes/wiki-answer.yaml'
 
   const env: Array<{ name: string; value: string }> = [
@@ -69,6 +71,7 @@ export function buildHarnessContainerEnv(
     env.push({ name: 'HARNESS_QUESTION', value: input.question.trim() })
   }
 
+  pushEnv(env, 'GOOSE_MODEL', input.gooseModel)
   pushEnv(env, 'ACTING_USER_ID', input.actingUserId)
   pushEnv(env, 'HARNESS_CALLBACK_URL', callbackUrl)
   pushEnv(env, 'HARNESS_CALLBACK_TOKEN', config.callbackToken)

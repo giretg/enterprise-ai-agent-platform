@@ -105,7 +105,24 @@ export type AgentAskResult = {
   state: TicketState
   targetAgentId: string
   requesterAgentId: string
+  /** Chat-kontextusban (conversationId) szinkron delegálás után kitöltve. */
+  completed?: boolean
+  answer?: string
+  sources?: unknown
+  rationale?: string
+  confidence?: string
+  answeredByAgentId?: string
+  error?: string
 }
+
+export type DelegationProcessInput = {
+  ticketId: string
+  targetAgentId: string
+  requesterAgentId: string
+  actingUserId?: string
+}
+
+export type DelegationProcessor = (input: DelegationProcessInput) => Promise<void>
 
 export type AgentResolveArgs = {
   query: string
@@ -295,6 +312,40 @@ function stemToken(token: string): string {
   return token.length <= STEM_LENGTH ? token : token.slice(0, STEM_LENGTH)
 }
 
+function queryTermStems(query: string): string[] {
+  return [
+    ...new Set(
+      normalizeText(query)
+        .split(/\s+/)
+        .map((term) => term.trim())
+        .filter((term) => term.length >= 3)
+        .map(stemToken),
+    ),
+  ]
+}
+
+function stemsFromText(text: string): string[] {
+  return [
+    ...new Set(
+      normalizeText(text)
+        .split(/\s+/)
+        .filter(Boolean)
+        .filter((term) => term.length >= 3)
+        .map(stemToken),
+    ),
+  ]
+}
+
+function filenameSearchText(filename: string): string {
+  return filename.replace(/[._-]+/g, ' ')
+}
+
+function documentSearchCorpus(filename: string, extractedText: string | null): string {
+  const header = filenameSearchText(filename)
+  const body = extractedText?.trim() ?? ''
+  return body ? `${header}\n\n${body}` : header
+}
+
 function snippet(value: string): string {
   return value.length > 280 ? `${value.slice(0, 277)}...` : value
 }
@@ -453,14 +504,17 @@ function resultMeta(
   }
 
   if ('ok' in result && 'ticketId' in result && 'state' in result) {
+    const ask = result as AgentAskResult
     return {
-      ok: result.ok,
-      ticketId: result.ticketId,
-      state: result.state,
+      ok: ask.ok,
+      ticketId: ask.ticketId,
+      state: ask.state,
       assigneeType: 'assigneeType' in result ? result.assigneeType : undefined,
       assigneeId: 'assigneeId' in result ? result.assigneeId : undefined,
-      targetAgentId: 'targetAgentId' in result ? result.targetAgentId : undefined,
-      requesterAgentId: 'requesterAgentId' in result ? result.requesterAgentId : undefined,
+      targetAgentId: ask.targetAgentId,
+      requesterAgentId: ask.requesterAgentId,
+      completed: ask.completed ?? false,
+      hasAnswer: typeof ask.answer === 'string' && ask.answer.length > 0,
     }
   }
 
@@ -584,6 +638,8 @@ export class AllowlistAuthorizer implements Authorizer {
 }
 
 export class ToolBrokerService {
+  private delegationProcessor: DelegationProcessor | null = null
+
   constructor(
     private agents: AgentRepository,
     private tickets: TicketRepository,
@@ -594,6 +650,11 @@ export class ToolBrokerService {
     private grantService: ConnectorGrantService,
     private fileEditor: FileEditorService,
   ) {}
+
+  /** Chat agent_ask: szinkron feldolgozás (pl. WikiAgentRuntime.processTicket). */
+  setDelegationProcessor(processor: DelegationProcessor | null): void {
+    this.delegationProcessor = processor
+  }
 
   async invoke(input: ToolBrokerInvokeInput): Promise<ToolBrokerInvokeResult> {
     const startedAt = Date.now()
@@ -847,15 +908,7 @@ export class ToolBrokerService {
     const detail = await this.agents.findByIdWithDetails(agentId)
     if (!detail) throw new Error('Agent not found')
 
-    const termStems = [
-      ...new Set(
-        normalizeText(args.query)
-          .split(/\s+/)
-          .map((term) => term.trim())
-          .filter((term) => term.length >= 3)
-          .map(stemToken),
-      ),
-    ]
+    const termStems = queryTermStems(args.query)
 
     const k = args.k ?? 5
 
@@ -866,7 +919,9 @@ export class ToolBrokerService {
       docId: string,
       sourceRef: string,
       memoryVersion: number | null,
+      extraStems: Iterable<string> = [],
     ): ScoredChunk[] {
+      const extraStemSet = new Set(extraStems)
       return text
         .split(/\n{2,}|\n(?=-\s+)/)
         .map((chunk) => chunk.trim())
@@ -878,6 +933,7 @@ export class ToolBrokerService {
               .filter(Boolean)
               .map(stemToken),
           )
+          for (const stem of extraStemSet) chunkStems.add(stem)
           const score = termStems.reduce((sum, stem) => sum + (chunkStems.has(stem) ? 1 : 0), 0)
           return { chunk, score, docId, sourceRef, memoryVersion }
         })
@@ -901,18 +957,51 @@ export class ToolBrokerService {
     const documentLists = await Promise.all(
       connectorIds.map((id) => this.tools.findDocumentsForConnector(id)),
     )
-    const docChunks: ScoredChunk[] = documentLists.flat().flatMap((doc) =>
+    const flatDocs = documentLists.flat()
+    const docChunks: ScoredChunk[] = flatDocs.flatMap((doc) =>
       scoreChunks(
-        doc.extractedText ?? '',
+        documentSearchCorpus(doc.filename, doc.extractedText),
         `doc:${doc.id}`,
         `doc:${doc.id}:${doc.filename}`,
         null,
+        stemsFromText(filenameSearchText(doc.filename)),
       ),
     )
 
-    const all = [...memoryChunks, ...docChunks]
+    let all = [...memoryChunks, ...docChunks]
       .sort((a, b) => b.score - a.score)
       .slice(0, k)
+
+    // Ha nincs egyező chunk, próbáljuk a teljes korpuszban (fájlnév + törzs) —
+    // pl. fájlnév-alapú kérdés vagy egyetlen kulcsszó (posnavigátor) a szövegben.
+    if (all.length === 0 && flatDocs.length > 0) {
+      const fallback = flatDocs
+        .map((doc) => {
+          const corpus = normalizeText(documentSearchCorpus(doc.filename, doc.extractedText))
+          const filenameScore = stemsFromText(filenameSearchText(doc.filename)).filter((stem) =>
+            termStems.includes(stem),
+          ).length
+          const contentScore = termStems.filter((stem) => corpus.includes(stem)).length
+          return { doc, score: Math.max(filenameScore, contentScore) }
+        })
+        .filter((item) => item.score > 0)
+        .sort((a, b) => b.score - a.score)
+        .slice(0, k)
+
+      all = fallback.map(({ doc }) => {
+        const body = doc.extractedText?.trim()
+        const chunk = body
+          ? body.split(/\n{2,}|\n(?=-\s+)/).map((part) => part.trim()).find(Boolean) ?? body
+          : `[${doc.filename}]`
+        return {
+          chunk,
+          score: 1,
+          docId: `doc:${doc.id}`,
+          sourceRef: `doc:${doc.id}:${doc.filename}`,
+          memoryVersion: null,
+        } satisfies ScoredChunk
+      })
+    }
 
     return {
       hits: all.map((item) => ({
@@ -982,7 +1071,7 @@ export class ToolBrokerService {
 
     const fromState = ticket.state
     const updated = await this.tickets.update(ticket.id, {
-      state: 'ready',
+      state: 'done',
       assigneeType: 'agent',
       assigneeId: requesterId,
       agentId: requesterId,
@@ -994,11 +1083,11 @@ export class ToolBrokerService {
     await this.tickets.recordTransition({
       ticketId: ticket.id,
       fromState,
-      toState: 'ready',
+      toState: 'done',
       actorType: 'system',
       actorId: null,
       agentVersion: null,
-      note: `delegation returned to requester ${requesterId}`,
+      note: `delegation completed; answer returned to requester ${requesterId}`,
     })
 
     await this.audit.append({
@@ -1010,7 +1099,7 @@ export class ToolBrokerService {
       targetId: ticket.id,
       modelUsed: null,
       inputRef: requesterId,
-      outputRef: 'ready',
+      outputRef: 'done',
       policyDecision: 'allowed',
       metadata: {
         answeredByAgentId: input.agentId,
@@ -1131,6 +1220,10 @@ export class ToolBrokerService {
     const question = input.args.question.trim()
     if (!question) throw new Error('Question is required')
 
+    if (input.args.targetAgentId === input.agentId) {
+      throw new Error('Cannot delegate to the same agent — choose a different targetAgentId')
+    }
+
     const target = await this.agents.findById(input.args.targetAgentId)
     if (!target) throw new Error('Target agent not found')
     if (target.role === 'orchestrator') {
@@ -1163,12 +1256,63 @@ export class ToolBrokerService {
       createdById: await systemUserId(),
     })
 
-    return {
+    const base: AgentAskResult = {
       ok: true,
       ticketId: ticket.id,
       state: ticket.state,
       targetAgentId: input.args.targetAgentId,
       requesterAgentId: input.agentId,
+    }
+
+    // Chat flow: szinkron delegálás — ne térjen vissza, amíg a célagent meg nem válaszolt.
+    if (!this.delegationProcessor || !input.conversationId) {
+      return base
+    }
+
+    try {
+      await this.delegationProcessor({
+        ticketId: ticket.id,
+        targetAgentId: input.args.targetAgentId,
+        requesterAgentId: input.agentId,
+        actingUserId: input.actingUserId,
+      })
+    } catch (error) {
+      return {
+        ...base,
+        completed: false,
+        error: error instanceof Error ? error.message : 'delegation_failed',
+      }
+    }
+
+    const finished = await this.tickets.findById(ticket.id)
+    if (!finished) {
+      return { ...base, completed: false, error: 'delegation_ticket_missing' }
+    }
+
+    const finishedPayload = isRecord(finished.payload) ? finished.payload : {}
+    if (finishedPayload.delegationReturned !== true || typeof finishedPayload.answer !== 'string') {
+      return {
+        ...base,
+        state: finished.state,
+        completed: false,
+        error: 'delegation_not_completed',
+      }
+    }
+
+    return {
+      ...base,
+      state: finished.state,
+      completed: true,
+      answer: finishedPayload.answer,
+      sources: finishedPayload.sources,
+      rationale:
+        typeof finishedPayload.rationale === 'string' ? finishedPayload.rationale : undefined,
+      confidence:
+        typeof finishedPayload.confidence === 'string' ? finishedPayload.confidence : undefined,
+      answeredByAgentId:
+        typeof finishedPayload.answeredByAgentId === 'string'
+          ? finishedPayload.answeredByAgentId
+          : input.args.targetAgentId,
     }
   }
 
