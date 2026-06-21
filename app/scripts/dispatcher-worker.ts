@@ -77,6 +77,16 @@ async function runDispatchCycle(ticketId?: string) {
       console.log(`[dispatcher] materialized ${materializedCount} scheduled task(s)`)
     }
 
+    // Proaktív monitor: nem-LLM söprés (1. lépcső). A drága LLM csak küszöböt átlépő
+    // jelnél, az eszkalált ticketen át indul (a meglévő dispatch-budget alatt).
+    await services.monitors.reclaimStaleLocks()
+    const sweeps = await services.monitors.sweepDue(new Date(), BATCH_LIMIT)
+    const escalated = sweeps.filter((s) => s.outcome === 'escalated').length
+    if (escalated > 0) {
+      const opened = sweeps.reduce((sum, s) => sum + s.openedTicketIds.length, 0)
+      console.log(`[dispatcher] monitor: ${escalated} escalated sweep(s), ${opened} ticket(s) opened`)
+    }
+
     const workspacePurge = await services.workspaceLifecycle.purgeExpiredWorkspaces(BATCH_LIMIT)
     if (workspacePurge.purgedTickets > 0) {
       console.log(

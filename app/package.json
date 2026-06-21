@@ -31,6 +31,7 @@
     "s2:secret-setup": "bash infra/gcp/setup-chatgpt-oauth-secret.sh",
     "s7:live-smoke": "tsx scripts/s7-live-smoke.ts",
     "test:gateway-relay": "tsx scripts/text-tool-relay.test.ts",
+    "test:monitor": "tsx scripts/monitor-engine.test.ts",
     "test:tool-loop": "tsx scripts/agent-tool-loop.test.ts",
     "test:kb-gate": "DATABASE_URL=postgresql://kbtest:kbtest@127.0.0.1:5432/kbtest tsx scripts/knowledge-base-gate.test.ts",
     "test:acceptance": "tsx scripts/acceptance-e2e.ts",

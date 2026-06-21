@@ -5,35 +5,44 @@
 **Dátum:** 2026-06-21
 **Forrásdokumentumok:** `AI-Agent-Platform-Koncepcio.md` (§4.11.4, §4.11.6, §4.11.7, §8.6, §11.5), `AI-Agent-Platform-MVP-Dev-Spec-Roadmap-v1.0.md` (v1.0, §5.7 dispatcher, §15.4 scheduled tasks), `AI-Agent-Platform-Feature-Spec-PerUser-Connector.md` (v1.0)
 **Olvasó:** fejlesztő(k). Feltételezi a Ticket-állapotgép, a `DispatcherService`, a `ScheduledTask` runtime, a Tool Broker + Model Gateway és az append-only audit ismeretét.
-**Státusz:** **Tervezés — Fázis 2 (a teljes megoldás első önálló feature-e).** Nincs implementálva; ez a dokumentum a dev-ready specifikáció. Az „Implementációs állapot” szekció jelenleg minden tételt `Hátra van`-ként jelöl.
+**Státusz:** **Fázis 2 — fejlesztés alatt.** A **PM-A kész** (adatmodell + kétlépcsős söprés-motor + deadline-collector vertikális szelet + worker-bekötés + unit-tesztek); a PM-B…PM-E hátra van. Az „Implementációs állapot” szekció naprakész.
 
 ---
 
 ## Implementációs állapot (2026-06-21)
 
-**Összefoglaló:** A feature **nincs implementálva**. A spec a meglévő infrastruktúrára épít: `ScheduledTask` (recurrence-motor, `next_run_at`, lock), `DispatcherService` (claim + budget cap + audit), Ticket-állapotgép (`source = system`, `execute_after`, `due_by`, `lock_token`), append-only `AuditLog`, `PlatformSetting` (runtime kill-switch / intervallum). A monitor ezeket **nem duplikálja**, hanem kiterjeszti.
+**Összefoglaló:** A **PM-A elkészült**: a teljes adatmodell (`MonitorDefinition` / `MonitorRun` / `MonitorSignal`), a determinisztikus, kétlépcsős söprés-motor (`MonitorService`), egy működő **deadline-collector** (board `due_by` jelek, nem-LLM), a szűrő-DSL kiértékelő (`evaluateFilter`), a dedup/cooldown + catch-up + `@@unique` dupla-fire védelem, és a dispatcher-worker bekötés. A motor a meglévő infrastruktúrára épül: a 2. lépcső eszkalált ticketje a Ticket-állapotgépen (`source = system`, `type = monitor_alert`) megy tovább, és `escalateAgentId` esetén a meglévő `DispatcherService` veszi fel. Build + lint + tsc zöld, unit-tesztek zöldek (`npm run test:monitor`).
 
 ### Fázisok
 
 | Fázis | Leírás | Állapot |
 |---|---|---|
-| **PM-A** | Adatmodell + determinisztikus söprés-motor (nem-LLM, 1. lépcső) | Hátra van |
-| **PM-B** | Signal collectorok (board, scheduled-deadline, connector-darabszám) | Hátra van |
-| **PM-C** | Szűrő-/küszöb-kiértékelő + eszkaláció ticketté (2. lépcső) | Hátra van |
-| **PM-D** | Dedup / catch-up / dupla-fire védelem + költségkorlát | Hátra van |
-| **PM-E** | Control Plane UI (monitor-definíció + futásnapló) + értesítési csatorna | Hátra van |
+| **PM-A** | Adatmodell + determinisztikus söprés-motor (nem-LLM, 1. lépcső) + deadline-collector + dedup/catch-up/dupla-fire + worker | ✅ Kész |
+| **PM-B** | További collectorok (board-backlog, connector-darabszám a Tool Brokeren át) | Hátra van |
+| **PM-C** | LLM-eszkaláció (`escalateAgentId`) end-to-end igazolás + dispatch-budget cap bekötés | Részben (váz kész, ticket→dispatcher automatikus; budget cap finomítás hátra) |
+| **PM-D** | Globális kill-switch + intervallum a `PlatformSetting`-ben + jitter/concurrency hangolás | Részben (lock/catch-up/jitter kész; kill-switch `PlatformSetting` hátra) |
+| **PM-E** | Control Plane UI (lista + szerkesztő + dry-run + futásnapló) + értesítési csatorna | Hátra van |
 
-### Érintett fájlok (tervezett)
+### Elkészült fájlok (PM-A)
 
-- `app/prisma/schema.prisma` — `MonitorDefinition`, `MonitorRun`, `MonitorSignal`, új enumok; `Ticket.source` reuse (`system`)
-- `app/src/domain/monitor/monitor-service.ts` — söprés-orkesztráció (1. és 2. lépcső)
-- `app/src/domain/monitor/collectors/` — `board-collector.ts`, `deadline-collector.ts`, `connector-count-collector.ts`
-- `app/src/domain/monitor/filter-eval.ts` — küszöb-/szűrő-DSL determinisztikus kiértékelő
-- `app/src/domain/monitor/monitor-sweep-worker.ts` — a dispatcher worker mellé szerelt nem-LLM söprő ütemező
-- `app/src/repositories/postgres/monitor-repository.ts` + interfész
-- `app/src/app/control-plane/monitors/` — lista + szerkesztő + futásnapló UI
-- `app/src/app/actions/monitor.ts` — server action-ök (CRUD, manuális próba-futás)
+- `app/prisma/schema.prisma` — `MonitorDefinition`, `MonitorRun`, `MonitorSignal`, `MonitorKind/Status/RunOutcome/CatchupPolicy` enumok, `TicketType.monitor_alert`
+- `app/src/domain/monitor/monitor-service.ts` — `MonitorService` (sweepDue, runSweep, computeNextSweepAt, reclaimStaleLocks)
+- `app/src/domain/monitor/filter-eval.ts` — determinisztikus szűrő-DSL kiértékelő
+- `app/src/domain/monitor/collectors/types.ts`, `collectors/deadline-collector.ts`
+- `app/src/repositories/postgres/monitor-repository.ts` + `interfaces/index.ts` (`MonitorRepository`)
+- `app/src/repositories/postgres/index.ts`, `app/src/domain/index.ts` — bekötés (`services.monitors`)
+- `app/scripts/dispatcher-worker.ts` — söprés-tick a dispatch-ciklusban
+- `app/scripts/monitor-engine.test.ts` + `package.json` `test:monitor`
+- `app/prisma/seed.ts` — minta `deadline` monitor
+- `app/src/domain/ticket/ticket-type-config.ts`, `system/ticket-type-config-panel.tsx`, `lib/validators/actions.ts`, `actions/platform.ts` — `monitor_alert` típus átvezetés
+
+### Hátralévő fájlok (PM-B…PM-E)
+
+- `app/src/domain/monitor/collectors/board-collector.ts`, `connector-count-collector.ts`
+- `app/src/app/control-plane/monitors/` — lista + szerkesztő + dry-run + futásnapló UI
+- `app/src/app/actions/monitor.ts` — server action-ök (CRUD, dry-run)
 - `app/src/lib/notify/` — értesítési csatorna adapter (e-mail/chat, opcionális)
+- `PlatformSettingsService` — `monitor.kill_switch` / `monitor.sweep_interval_sec` / `monitor.max_concurrent`
 
 ---
 

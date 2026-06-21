@@ -18,6 +18,7 @@ type TicketType = TicketTypeConfig['type']
 const TYPE_LABELS: Record<TicketType, string> = {
   interaction: 'Interakció',
   training: 'Tanítás',
+  monitor_alert: 'Monitor-riasztás',
 }
 
 const ACTOR_LABELS: Record<TransitionAllowedActor, string> = {
