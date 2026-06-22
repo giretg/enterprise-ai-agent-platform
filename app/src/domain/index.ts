@@ -31,6 +31,8 @@ import { PlaybookService } from '@/domain/playbook/playbook-service'
 import { IamService } from '@/domain/iam/iam-service'
 import { SandboxAppService } from '@/domain/sandbox/sandbox-app-service'
 import { ScheduledTaskService } from '@/domain/scheduled-task/scheduled-task-service'
+import { MonitorService } from '@/domain/monitor/monitor-service'
+import { DeadlineCollector } from '@/domain/monitor/collectors/deadline-collector'
 import { KnowledgeBaseService } from '@/domain/knowledge-base/knowledge-base-service'
 import { repositories } from '@/repositories/postgres'
 import { resolveTicketProcessRoute } from '@/lib/ticket-process-route'
@@ -153,6 +155,12 @@ const scheduledTaskService = new ScheduledTaskService(
   repositories.tickets,
   repositories.audit,
 )
+const monitorService = new MonitorService(
+  repositories.monitors,
+  repositories.tickets,
+  repositories.audit,
+  [new DeadlineCollector(repositories.monitors)],
+)
 const localWikiHarnessLauncher: HarnessLauncher = {
   mode: 'local-wiki',
   async launch(input) {
@@ -213,6 +221,7 @@ export const services = {
   iam: iamService,
   sandboxApps: sandboxAppService,
   scheduledTasks: scheduledTaskService,
+  monitors: monitorService,
   connectorGrants: connectorGrantService,
   workspaceLifecycle: workspaceLifecycleService,
   selfEvolutionGuard,

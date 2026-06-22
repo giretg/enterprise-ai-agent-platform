@@ -135,6 +135,7 @@ enum RecipeVersionStatus {
 enum TicketType {
   interaction
   training
+  monitor_alert
 }
 
 enum TicketState {
@@ -170,6 +171,32 @@ enum ScheduledTaskRecurrence {
   daily
   weekly
   monthly
+}
+
+enum MonitorKind {
+  board_backlog
+  deadline
+  connector_count
+  composite
+}
+
+enum MonitorStatus {
+  active
+  paused
+  revoked
+}
+
+enum MonitorRunOutcome {
+  quiet
+  escalated
+  suppressed
+  skipped
+  error
+}
+
+enum MonitorCatchupPolicy {
+  run_late
+  skip
 }
 
 enum AssigneeType {
@@ -230,6 +257,7 @@ model User {
   scheduledTasksCreated         ScheduledTask[]   @relation("ScheduledTaskCreatedBy")
   scheduledTasksRunAs           ScheduledTask[]   @relation("ScheduledTaskRunAsUser")
   scheduledTasksRunAsAuthorized ScheduledTask[]   @relation("ScheduledTaskRunAsAuthorizedBy")
+  monitorDefinitionsCreated     MonitorDefinition[] @relation("MonitorDefinitionCreatedBy")
 
   @@map("users")
 }
@@ -279,6 +307,7 @@ model Agent {
   writeGateTokens WriteGateToken[]
   evals           Eval[]
   scheduledTasks  ScheduledTask[]
+  monitorDefinitions MonitorDefinition[]
 
   @@map("agents")
 }
@@ -625,6 +654,103 @@ model ScheduledTask {
 
   @@index([status, nextRunAt])
   @@map("scheduled_tasks")
+}
+
+/// Proaktív monitor-definíció (Feature-spec — Proactive Monitor §3.2).
+/// Determinisztikus, ütemezett figyelő-szabály: mit figyel, milyen küszöbbel,
+/// milyen frekvenciával, és mit tesz találatkor. A drága LLM csak a 2. lépcsőben
+/// (eszkaláció) indul — a söprés maga nulla LLM-token.
+model MonitorDefinition {
+  id               String               @id @default(uuid()) @db.Uuid
+  tenantId         String               @map("tenant_id") @db.Uuid
+  kind             MonitorKind
+  status           MonitorStatus        @default(active)
+  version          Int                  @default(1)
+  title            String
+  description      String?
+
+  // Ütemezés (§4.11.6) — UTC-ben tárolva
+  intervalSeconds  Int                  @map("interval_seconds")
+  nextSweepAt      DateTime             @map("next_sweep_at") @db.Timestamptz
+  lastSweepAt      DateTime?            @map("last_sweep_at") @db.Timestamptz
+  activeWindowCron String?              @map("active_window_cron")
+  catchupPolicy    MonitorCatchupPolicy @default(run_late) @map("catchup_policy")
+  catchupWindowSec Int                  @default(900) @map("catchup_window_sec")
+
+  // 1. lépcső — determinisztikus collector + szűrő konfiguráció
+  collectorConfig  Json                 @default("{}") @map("collector_config")
+  filterConfig     Json                 @default("{}") @map("filter_config")
+
+  // Riasztás-fáradtság elleni kontroll
+  cooldownSeconds  Int                  @default(86400) @map("cooldown_seconds")
+  dedupKeyTemplate String?              @map("dedup_key_template")
+
+  // 2. lépcső — eszkalációs akció
+  openTicketType   TicketType           @default(monitor_alert) @map("open_ticket_type")
+  escalateAgentId  String?              @map("escalate_agent_id") @db.Uuid
+  perRunBudgetUsd  Decimal?             @map("per_run_budget_usd") @db.Decimal(10, 4)
+  notifyChannel    String?              @map("notify_channel")
+
+  // Lock (dupla-fire védelem — §4.11.7)
+  lockToken        String?              @map("lock_token")
+  lockedAt         DateTime?            @map("locked_at") @db.Timestamptz
+
+  createdById      String               @map("created_by") @db.Uuid
+  createdAt        DateTime             @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt        DateTime             @updatedAt @map("updated_at") @db.Timestamptz
+
+  escalateAgent    Agent?               @relation(fields: [escalateAgentId], references: [id])
+  createdBy        User                 @relation("MonitorDefinitionCreatedBy", fields: [createdById], references: [id])
+  runs             MonitorRun[]
+  signals          MonitorSignal[]
+
+  @@index([status, nextSweepAt])
+  @@index([tenantId, status])
+  @@map("monitor_definitions")
+}
+
+/// Egy söprés-végrehajtás auditmagja (§3.3). A @@unique([monitorId, scheduledFor])
+/// a §4.11.7 „dupla-fires védelem" adatbázis-szintű garanciája.
+model MonitorRun {
+  id              String            @id @default(uuid()) @db.Uuid
+  monitorId       String            @map("monitor_id") @db.Uuid
+  outcome         MonitorRunOutcome
+  startedAt       DateTime          @default(now()) @map("started_at") @db.Timestamptz
+  finishedAt      DateTime?         @map("finished_at") @db.Timestamptz
+  scheduledFor    DateTime          @map("scheduled_for") @db.Timestamptz
+  signalCount     Int               @default(0) @map("signal_count")
+  matchedCount    Int               @default(0) @map("matched_count")
+  suppressedCount Int               @default(0) @map("suppressed_count")
+  openedTicketIds String[]          @map("opened_ticket_ids") @db.Uuid
+  llmInvoked      Boolean           @default(false) @map("llm_invoked")
+  costUsd         Decimal?          @map("cost_usd") @db.Decimal(10, 4)
+  error           String?
+
+  monitor         MonitorDefinition @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+
+  @@unique([monitorId, scheduledFor])
+  @@index([monitorId, startedAt])
+  @@map("monitor_runs")
+}
+
+/// Cooldown / dedup nyilvántartás (§3.4): ugyanaz a jel ne nyisson ismételt
+/// tickettet a cooldown ablakon belül (riasztás-fáradtság elleni kontroll).
+model MonitorSignal {
+  id                String            @id @default(uuid()) @db.Uuid
+  monitorId         String            @map("monitor_id") @db.Uuid
+  dedupKey          String            @map("dedup_key")
+  firstSeenAt       DateTime          @default(now()) @map("first_seen_at") @db.Timestamptz
+  lastSeenAt        DateTime          @default(now()) @map("last_seen_at") @db.Timestamptz
+  lastEscalatedAt   DateTime?         @map("last_escalated_at") @db.Timestamptz
+  escalatedTicketId String?           @map("escalated_ticket_id") @db.Uuid
+  severity          Int               @default(0)
+  payload           Json              @default("{}")
+
+  monitor           MonitorDefinition @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+
+  @@unique([monitorId, dedupKey])
+  @@index([monitorId, lastEscalatedAt])
+  @@map("monitor_signals")
 }
 
 model TicketTransition {

@@ -31,7 +31,7 @@ export const TICKET_STATES: TicketState[] = [
   'rejected',
 ]
 
-export const TICKET_TYPES: TicketType[] = ['interaction', 'training']
+export const TICKET_TYPES: TicketType[] = ['interaction', 'training', 'monitor_alert']
 
 export const TRANSITION_ALLOWED_ACTORS: TransitionAllowedActor[] = [
   'system',

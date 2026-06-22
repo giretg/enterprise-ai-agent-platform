@@ -1715,7 +1715,7 @@ export async function getTicketTypeConfigs() {
 }
 
 export async function adminUpsertTicketType(input: {
-  type: 'interaction' | 'training'
+  type: 'interaction' | 'training' | 'monitor_alert'
   allowedTransitions: Array<{
     from: 'backlog' | 'ready' | 'approved' | 'in_progress' | 'awaiting_human' | 'done' | 'rejected'
     to: 'backlog' | 'ready' | 'approved' | 'in_progress' | 'awaiting_human' | 'done' | 'rejected'

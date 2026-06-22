@@ -55,7 +55,7 @@ export const ticketTransitionAllowedActorSchema = z.enum([
 
 export const ticketTypeConfigSchema = z
   .object({
-    type: z.enum(['interaction', 'training']),
+    type: z.enum(['interaction', 'training', 'monitor_alert']),
     allowedTransitions: z
       .array(
         z.object({

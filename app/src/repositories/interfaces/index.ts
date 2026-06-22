@@ -9,6 +9,13 @@ import type {
   Message,
   MessageRole,
   ModelCall,
+  MonitorCatchupPolicy,
+  MonitorDefinition,
+  MonitorKind,
+  MonitorRun,
+  MonitorRunOutcome,
+  MonitorSignal,
+  MonitorStatus,
   Prisma,
   Recipe,
   RecipeScope,
@@ -121,6 +128,79 @@ export interface ScheduledTaskRepository {
   findById(id: string): Promise<ScheduledTask | null>
   findStaleMaterializing(cutoff: Date, limit: number): Promise<ScheduledTask[]>
   reclaimMaterializing(id: string): Promise<ScheduledTask | null>
+}
+
+export type CreateMonitorInput = {
+  tenantId: string
+  kind: MonitorKind
+  title: string
+  description?: string | null
+  intervalSeconds: number
+  nextSweepAt: Date
+  catchupPolicy?: MonitorCatchupPolicy
+  catchupWindowSec?: number
+  collectorConfig?: Prisma.InputJsonValue
+  filterConfig?: Prisma.InputJsonValue
+  cooldownSeconds?: number
+  dedupKeyTemplate?: string | null
+  openTicketType?: Ticket['type']
+  escalateAgentId?: string | null
+  perRunBudgetUsd?: number | null
+  notifyChannel?: string | null
+  createdById: string
+}
+
+export type UpcomingTicketDeadline = {
+  ticketId: string
+  title: string
+  dueBy: Date
+  state: TicketState
+}
+
+export type MonitorSignalUpsert = {
+  severity: number
+  payload: Prisma.InputJsonValue
+  now: Date
+}
+
+export type MonitorRunUpdate = {
+  outcome: MonitorRunOutcome
+  finishedAt: Date
+  signalCount: number
+  matchedCount: number
+  suppressedCount: number
+  openedTicketIds: string[]
+  llmInvoked: boolean
+  costUsd?: number | null
+  error?: string | null
+}
+
+export interface MonitorRepository {
+  findMany(filter?: { tenantId?: string; status?: MonitorStatus; limit?: number }): Promise<
+    MonitorDefinition[]
+  >
+  findById(id: string): Promise<MonitorDefinition | null>
+  findDue(now: Date, limit: number): Promise<MonitorDefinition[]>
+  create(data: CreateMonitorInput): Promise<MonitorDefinition>
+  revoke(id: string): Promise<MonitorDefinition>
+  /** Lock-alapú claim (dupla-fire védelem §4.11.7): csak ha aktív, esedékes és nincs lockolva. */
+  claim(id: string, lockToken: string, now: Date): Promise<MonitorDefinition | null>
+  /** Lock felszabadítása + következő söprés időpont beállítása. */
+  release(id: string, lockToken: string, data: { nextSweepAt: Date; lastSweepAt: Date }): Promise<void>
+  /** Idempotens run-létrehozás; ha a (monitorId, scheduledFor) páros már fut(ott), null. */
+  createRun(monitorId: string, scheduledFor: Date): Promise<MonitorRun | null>
+  updateRun(id: string, data: MonitorRunUpdate): Promise<MonitorRun>
+  /** Cooldown / dedup nyilvántartás upsert. */
+  upsertSignal(monitorId: string, dedupKey: string, data: MonitorSignalUpsert): Promise<MonitorSignal>
+  markSignalEscalated(id: string, ticketId: string, now: Date): Promise<void>
+  findStaleLocked(cutoff: Date, limit: number): Promise<MonitorDefinition[]>
+  releaseLock(id: string): Promise<void>
+  /** Collector-támogatás: a board azon ticketei, amelyek due_by-ja az ablakon belül esedékes. */
+  collectUpcomingTicketDeadlines(
+    now: Date,
+    withinSeconds: number,
+    limit: number,
+  ): Promise<UpcomingTicketDeadline[]>
 }
 
 export type TransitionStats = {

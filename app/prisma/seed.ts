@@ -850,6 +850,34 @@ async function main() {
   void approver
   void operator
 
+  // Minta proaktív monitor (Feature-spec — Proactive Monitor, PM-A DoD).
+  // LLM-mentes deadline-figyelő: a 24 órán belül esedékes, le nem zárt due_by
+  // ticketekre nyit monitor_alert tickettet a boardon. escalateAgentId=null →
+  // nulla token; a 2. lépcső csak ticket-nyitás.
+  const DEMO_TENANT_ID = '00000000-0000-4000-a000-000000000001'
+  const existingMonitor = await prisma.monitorDefinition.findFirst({
+    where: { title: 'Határidő-figyelő (24h)' },
+  })
+  if (!existingMonitor) {
+    await prisma.monitorDefinition.create({
+      data: {
+        tenantId: DEMO_TENANT_ID,
+        kind: 'deadline',
+        title: 'Határidő-figyelő (24h)',
+        description: 'Közelgő (24h-n belüli), le nem zárt határidős ticketek figyelése.',
+        intervalSeconds: 3600,
+        nextSweepAt: new Date(),
+        collectorConfig: { windowHours: 24 },
+        filterConfig: { field: 'severity', cmp: '>=', value: 50 },
+        cooldownSeconds: 86_400,
+        dedupKeyTemplate: 'deadline:{ticketId}',
+        openTicketType: 'monitor_alert',
+        createdById: admin.id,
+      },
+    })
+    console.log('Seed: minta deadline-monitor létrehozva')
+  }
+
   const existingAgent = await prisma.agent.findFirst({ where: { name: 'Wiki Agent' } })
   if (existingAgent) {
     console.log('Seed already applied (Wiki Agent exists) — demó API-kulcs frissítése')
