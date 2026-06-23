@@ -14,6 +14,10 @@ import {
 import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { ChatMarkdown, TypingIndicator } from '@/components/chat/chat-markdown'
 import { AgentChatSessionSidebar, type ChatSession } from '@/components/chat/chat-session-sidebar'
+import {
+  ConversationFilesPanel,
+  type ConversationFilesPanelHandle,
+} from '@/components/chat/conversation-files-panel'
 import { personaFor } from '@/lib/agent-persona'
 
 type PendingAttachment = {
@@ -147,6 +151,7 @@ export function AgentChatPanel({
   const scrollRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  const filesRef = useRef<ConversationFilesPanelHandle>(null)
   const [mounted, setMounted] = useState(false)
 
   useEffect(() => {
@@ -365,6 +370,7 @@ export function AgentChatPanel({
         setStatusMessage(e instanceof Error ? e.message : 'Küldés sikertelen')
       } finally {
         setIsAgentTyping(false)
+        filesRef.current?.refresh()
       }
     })
   }
@@ -529,6 +535,13 @@ export function AgentChatPanel({
                 </div>
               )}
             </div>
+
+            {conversationId && (
+              <ConversationFilesPanel
+                conversationId={conversationId}
+                panelRef={filesRef}
+              />
+            )}
 
             <div className="shrink-0 border-t border-line bg-night/40 px-4 py-3 sm:px-5 sm:py-4">
               {statusMessage && (

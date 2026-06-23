@@ -32,6 +32,12 @@ env:
       - RUNTIME
   - variable: GEMINI_API_KEY
     secret: GEMINI_API_KEY
+  - variable: OPENROUTER_API_KEY
+    secret: OPENROUTER_API_KEY
+  - variable: OPENROUTER_BASE_URL
+    value: "https://openrouter.ai/api/v1"
+  - variable: OPENROUTER_APP_TITLE
+    value: "Enterprise AI Agent Platform"
   - variable: CLERK_SECRET_KEY
     secret: CLERK_SECRET_KEY
   - variable: NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY

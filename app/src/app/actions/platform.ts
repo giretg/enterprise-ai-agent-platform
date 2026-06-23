@@ -12,6 +12,7 @@ import { repositories } from '@/repositories/postgres'
 import { isClerkEnabled } from '@/lib/clerk-config'
 import { prisma, ensureActiveDatabaseMode } from '@/lib/db'
 import { ensureAgentKnowledgeBase } from '@/lib/agent-knowledge-base'
+import { getReportTemplate, listReportTemplates } from '@/domain/report/report-templates'
 import { xlsxExtractText } from '@/domain/file-editor/adapters/xlsx-adapter'
 import { docxRead } from '@/domain/file-editor/adapters/docx-adapter'
 import { pdfRead } from '@/domain/file-editor/adapters/pdf-adapter'
@@ -35,6 +36,7 @@ import {
   updateAgentSelfEvolutionProfileSchema,
   createTrainingSchema,
   askWikiSchema,
+  generateReportSchema,
   sendAgentMessageSchema,
   createAgentTaskTicketSchema,
   createScheduledAgentTaskSchema,
@@ -55,6 +57,7 @@ import {
   ticketIdSchema,
   ticketTypeConfigSchema,
   transitionTicketSchema,
+  modelPolicyEntrySchema,
   createBoardTicketSchema,
   inviteUserSchema,
   redeemInvitationSchema,
@@ -519,6 +522,10 @@ export async function createAgent(input: {
   try {
     const user = await requireRole('admin')
     const parsed = createAgentSchema.parse(input)
+    await services.platformSettings.assertModelAllowed(
+      parsed.modelConfig.provider,
+      parsed.modelConfig.model,
+    )
     const result = await repositories.agents.create({
       ...parsed,
       createdById: user.id,
@@ -590,6 +597,10 @@ export async function updateAgentModelConfig(input: {
   try {
     const user = await requireRole('admin')
     const parsed = updateAgentModelConfigSchema.parse(input)
+    await services.platformSettings.assertModelAllowed(
+      parsed.modelConfig.provider,
+      parsed.modelConfig.model,
+    )
     const result = await repositories.agents.updateModelConfig(parsed)
 
     await repositories.audit.append({
@@ -1076,6 +1087,40 @@ export async function askWiki(input: { agentId: string; question: string; conver
     })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Wiki question failed')
+  }
+}
+
+export async function listReportTemplatesAction() {
+  try {
+    await requireRole('viewer')
+    return ok(
+      listReportTemplates().map((t) => ({
+        id: t.id,
+        name: t.name,
+        description: t.description,
+      })),
+    )
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to list report templates')
+  }
+}
+
+export async function generateReport(input: { agentId: string; templateId: string }) {
+  try {
+    const user = await requireRole('operator')
+    const parsed = generateReportSchema.parse(input)
+    const template = getReportTemplate(parsed.templateId)
+    if (!template) return fail('Unknown report template')
+
+    const ticket = await services.wiki.generateReport({
+      agentId: parsed.agentId,
+      template,
+      createdById: user.id,
+    })
+
+    return ok({ ticketId: ticket.id })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to generate report')
   }
 }
 
@@ -1711,6 +1756,35 @@ export async function getTicketTypeConfigs() {
     return ok(configs)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to read ticket type configs')
+  }
+}
+
+export async function getModelPolicy() {
+  try {
+    await ensureActiveDatabaseMode()
+    await requireRole('operator')
+    const policy = await services.platformSettings.getModelPolicy()
+    return ok(policy)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to read model policy')
+  }
+}
+
+export async function adminUpsertModelPolicyEntry(input: {
+  provider: string
+  model: string
+  enabled: boolean
+  label?: string
+  description?: string
+}) {
+  try {
+    await ensureActiveDatabaseMode()
+    const actor = await requireRole('admin')
+    const parsed = modelPolicyEntrySchema.parse(input)
+    const policy = await services.platformSettings.upsertModelPolicyEntry(parsed, actor.id)
+    return ok(policy)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update model policy')
   }
 }
 

@@ -5,7 +5,11 @@ import { useState, useTransition } from 'react'
 import { createAgent } from '@/app/actions/platform'
 import { Card } from '@/components/ui/shell'
 import { ModelSelectField } from '@/components/agents/model-select-field'
-import { MODEL_PROVIDERS as PROVIDERS, normalizeModelForProvider } from '@/lib/model-providers'
+import {
+  MODEL_PROVIDERS,
+  normalizeModelForProvider,
+  type ModelProviderOption,
+} from '@/lib/model-providers'
 
 const DEFAULT_MODEL = {
   provider: 'chatgpt-oauth',
@@ -14,15 +18,20 @@ const DEFAULT_MODEL = {
   maxTokens: 4096,
 }
 
-export function CreateAgentForm() {
+export function CreateAgentForm({
+  providers = MODEL_PROVIDERS,
+}: {
+  providers?: ModelProviderOption[]
+}) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
   const [apiKey, setApiKey] = useState<string | null>(null)
   const [createdAgentId, setCreatedAgentId] = useState<string | null>(null)
-  const [provider, setProvider] = useState(PROVIDERS[0].value)
-  const [model, setModel] = useState(PROVIDERS[0].defaultModel)
-  const selectedProvider = PROVIDERS.find((p) => p.value === provider) ?? PROVIDERS[0]
+  const safeProviders = providers.length > 0 ? providers : MODEL_PROVIDERS
+  const [provider, setProvider] = useState(safeProviders[0].value)
+  const [model, setModel] = useState(safeProviders[0].defaultModel)
+  const selectedProvider = safeProviders.find((p) => p.value === provider) ?? safeProviders[0]
 
   return (
     <Card title="Új agent">
@@ -41,7 +50,7 @@ export function CreateAgentForm() {
               modelConfig: {
                 ...DEFAULT_MODEL,
                 provider,
-                model: normalizeModelForProvider(provider, model),
+                model: normalizeModelForProvider(provider, model, safeProviders),
                 temperature: Number(fd.get('temperature') ?? DEFAULT_MODEL.temperature),
               },
             })
@@ -102,13 +111,13 @@ export function CreateAgentForm() {
               name="provider"
               value={provider}
               onChange={(e) => {
-                const next = PROVIDERS.find((p) => p.value === e.target.value) ?? PROVIDERS[0]
+                const next = safeProviders.find((p) => p.value === e.target.value) ?? safeProviders[0]
                 setProvider(next.value)
-                setModel(normalizeModelForProvider(next.value, model))
+                setModel(normalizeModelForProvider(next.value, model, safeProviders))
               }}
               className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm"
             >
-              {PROVIDERS.map((p) => (
+              {safeProviders.map((p) => (
                 <option key={p.value} value={p.value}>
                   {p.label}
                 </option>
@@ -121,6 +130,7 @@ export function CreateAgentForm() {
               provider={provider}
               model={model}
               onModelChange={setModel}
+              providers={safeProviders}
             />
           </label>
         </div>

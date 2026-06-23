@@ -1,14 +1,16 @@
 import { z } from 'zod'
-import type { AgentRepository, TicketRepository } from '@/repositories/interfaces'
+import type { AgentRepository, TicketRepository, ToolBrokerRepository } from '@/repositories/interfaces'
 import { composeSystemPrompt } from '@/lib/agent-prompt'
 import { buildRunAsAuthorization } from '@/lib/run-as-payload'
 import { readWikiTicketPayload, wikiSearchQuery, wikiUserPrompt } from '@/lib/wiki-ticket-payload'
 import { formatHitsForPrompt, type KbHit } from '@/lib/kb-format'
-import type { ModelGateway } from '../gateway/model-gateway'
+import type { GatewayMessage, ModelGateway } from '../gateway/model-gateway'
 import type { ToolBrokerService } from '../tool-broker/tool-broker-service'
 import type { PlaybookService } from '../playbook/playbook-service'
 import type { ConversationService } from '../conversation/conversation-service'
 import { TicketService } from '../ticket/ticket-service'
+import type { ReportTemplate } from '../report/report-templates'
+import { listAllowedChatTools, runAgentToolLoop, type ChatPlatformToolName } from './chat-tool-loop'
 
 // Re-export so callers don't need to import from kb-format separately.
 export type { KbHit }
@@ -66,6 +68,7 @@ export class WikiAgentRuntime {
     private gateway: ModelGateway,
     private ticketService: TicketService,
     private toolBroker: ToolBrokerService,
+    private toolCaps: ToolBrokerRepository,
     private playbooks: PlaybookService,
     private conversations: ConversationService,
   ) {}
@@ -132,6 +135,37 @@ export class WikiAgentRuntime {
 
     const modelConfig = agentDetails.agent.modelConfig as ModelConfig
     const agentVersion = agentDetails.agent.currentVersion
+
+    const allowedTools = await listAllowedChatTools(this.toolCaps, params.agentId)
+    if (allowedTools.length > 0) {
+      const { content } = await this.runWikiChatToolLoop({
+        agentId: params.agentId,
+        agentDetails,
+        modelConfig,
+        agentVersion,
+        question: params.question,
+        conversationId: params.conversationId,
+        allowedTools,
+      })
+
+      const agentMessage = await this.conversations.appendMessage({
+        conversationId: params.conversationId,
+        role: 'agent',
+        content,
+        agentVersion,
+        model: modelConfig.model,
+        actorType: 'agent',
+        actorId: params.agentId,
+      })
+
+      return {
+        conversationId: params.conversationId,
+        agentMessageId: agentMessage.id,
+        answer: { answer: content, sources: [], rationale: '', confidence: 'high' as const },
+        hits: [] as KbHit[],
+      }
+    }
+
     const payload = this.buildPayload(params.question, agentDetails, modelConfig)
 
     const { answer, hits } = await this.runWikiInference({
@@ -188,6 +222,8 @@ export class WikiAgentRuntime {
     createdById: string
     executeAfter?: Date | null
     authorizeRunAs?: boolean
+    title?: string
+    extraPayload?: Record<string, unknown>
   }) {
     const question = params.question.trim()
     if (!question) throw new Error('Question is required')
@@ -206,7 +242,7 @@ export class WikiAgentRuntime {
 
     const ticket = await this.tickets.create({
       type: 'interaction',
-      title: `Wiki kérdés: ${question.slice(0, 80)}`,
+      title: params.title ?? `Wiki kérdés: ${question.slice(0, 80)}`,
       state: 'ready',
       assigneeType: 'agent',
       assigneeId: params.agentId,
@@ -222,6 +258,7 @@ export class WikiAgentRuntime {
         playbookRef,
         scheduledRun: params.executeAfter ? true : undefined,
         ...runAsPayload,
+        ...params.extraPayload,
       },
       sourceDocumentId: null,
       executeAfter: params.executeAfter ?? null,
@@ -239,6 +276,30 @@ export class WikiAgentRuntime {
     }
 
     return ticket
+  }
+
+  /**
+   * §5.10 generateReport — előre definiált sablonból riport-ticketet hoz létre.
+   * A ticket `ready` állapotban indul; a dispatcher a wiki-runtime-mal dolgozza
+   * fel (kb_search → Model Gateway → board_write), így a riport a tudásbázisból,
+   * citáltan, a két átjárón át, auditáltan készül.
+   */
+  async generateReport(params: {
+    agentId: string
+    template: ReportTemplate
+    createdById: string
+  }) {
+    return this.createQuestionTicket({
+      agentId: params.agentId,
+      question: params.template.prompt,
+      createdById: params.createdById,
+      title: `Riport: ${params.template.name}`,
+      extraPayload: {
+        source: 'wiki',
+        reportTemplateId: params.template.id,
+        reportTemplateName: params.template.name,
+      },
+    })
   }
 
   async processTicket(params: { ticketId: string; agentId: string }) {
@@ -319,6 +380,102 @@ export class WikiAgentRuntime {
       recipeName: agentDetails.recipe?.name ?? null,
       recipeVersion: agentDetails.recipe?.version ?? null,
     }
+  }
+
+  private async runWikiChatToolLoop(params: {
+    agentId: string
+    agentDetails: AgentDetails
+    modelConfig: ModelConfig
+    agentVersion: number
+    question: string
+    conversationId: string
+    allowedTools: ChatPlatformToolName[]
+  }): Promise<{ content: string }> {
+    const search = await this.toolBroker.invoke({
+      agentId: params.agentId,
+      agentVersion: params.agentVersion,
+      conversationId: params.conversationId,
+      tool: 'kb_search',
+      args: { query: params.question, k: 6 },
+    })
+    const hits: KbHit[] =
+      !search.denied && 'hits' in search.result && Array.isArray(search.result.hits)
+        ? (search.result.hits as KbHit[])
+        : []
+
+    const docHits = hits.filter((h) => h.memoryVersion === null)
+    const memHits = hits.filter((h) => h.memoryVersion !== null)
+
+    const answerInstruction =
+      hits.length === 0
+        ? 'A tudásbázis nem adott találatot erre a kérdésre. Fájl vagy egyéb adat kérésnél használd az elérhető platform eszközöket. Fontos: a tudásbázis dokumentumai NEM érhetők el file_read/file_glob eszközökkel — azok csak a munkaterület saját fájljait látják.'
+        : memHits.length > 0
+          ? 'Az alábbi tudásbázis-forrásokra támaszkodj. A fájltartalmak az előzmény-üzenetekben már szerepelnek — ne olvasd be újra őket.'
+          : 'A fájltartalmak az előzmény-üzenetekben már szerepelnek — ne olvasd be újra őket.'
+
+    const { messages: histMessages } = await this.conversations.getConversation(
+      params.conversationId,
+      null,
+    )
+
+    const messages: GatewayMessage[] = [
+      { role: 'system', content: composeSystemPrompt(params.agentDetails.agent) },
+    ]
+
+    if (memHits.length > 0) {
+      messages.push({
+        role: 'system',
+        content: `${answerInstruction}\n\nMemória-forrásrészletek:\n${formatHitsForPrompt(memHits)}`,
+      })
+    } else {
+      messages.push({ role: 'system', content: answerInstruction })
+    }
+
+    // KB dokumentum-találatokat fake file_read tool call + result páronként illesztjük be.
+    // Így a modell azt hiszi, már elvégezte a file_read-et — és nem próbálja újra.
+    for (const hit of docHits) {
+      const filename = hit.sourceRef.match(/:([^:]+)$/)?.[1] ?? hit.docId
+      const fakeCallId = `call_kb${hit.docId.replace(/[^a-z0-9]/gi, '').slice(0, 20)}`
+      messages.push({
+        role: 'assistant',
+        toolCalls: [{ id: fakeCallId, name: 'file_read', input: { path: filename } }],
+      })
+      messages.push({
+        role: 'tool',
+        toolCallId: fakeCallId,
+        toolName: 'file_read',
+        content: hit.snippet,
+      })
+    }
+
+    for (const msg of histMessages.filter((m) => m.content && !m.contentDeletedAt)) {
+      if (msg.role === 'user') {
+        messages.push({ role: 'user', content: msg.content! })
+      } else if (msg.role === 'agent') {
+        try {
+          const parsed = JSON.parse(msg.content!) as { answer?: string }
+          messages.push({
+            role: 'user',
+            content: `[Korábbi agent válasz]\n${parsed.answer ?? msg.content!}`,
+          })
+        } catch {
+          messages.push({ role: 'user', content: `[Korábbi agent válasz]\n${msg.content!}` })
+        }
+      }
+    }
+
+    return runAgentToolLoop({
+      gateway: this.gateway,
+      toolBroker: this.toolBroker,
+      toolCaps: this.toolCaps,
+      agentId: params.agentId,
+      agentVersion: params.agentVersion,
+      context: { conversationId: params.conversationId },
+      mode: 'chat',
+      messages,
+      modelConfig: params.modelConfig,
+      allowedTools: params.allowedTools,
+    })
   }
 
   private async runWikiInference(params: {

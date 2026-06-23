@@ -3,6 +3,7 @@ import type { UserRole } from '@prisma/client'
 import { prisma } from '@/lib/db'
 import type { AuthProvider, AuthUser } from './types'
 import { assertRole } from './types'
+import { syncClerkUser } from './clerk-user-sync'
 
 function readClerkRole(metadata: unknown): UserRole | null {
   const role = (metadata as { role?: string } | undefined)?.role
@@ -27,12 +28,11 @@ export class ClerkAuthProvider implements AuthProvider {
       clerkUser.username ||
       email
     const clerkRole = readClerkRole(clerkUser.publicMetadata)
-    const role = clerkRole ?? 'viewer'
-
-    const user = await prisma.user.upsert({
-      where: { externalAuthId },
-      create: { externalAuthId, email, name, role },
-      update: clerkRole ? { email, name, role: clerkRole } : { email, name },
+    const user = await syncClerkUser(prisma, {
+      externalAuthId,
+      email,
+      name,
+      role: clerkRole,
     })
 
     return {

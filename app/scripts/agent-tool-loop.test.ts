@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict'
 import { runAgentToolLoop } from '../src/domain/agent/chat-tool-loop'
 import { resolveTicketProcessRoute } from '../src/lib/ticket-process-route'
-import type { ModelGateway, ModelConfig } from '../src/domain/gateway/model-gateway'
+import type { ModelGateway, ModelConfig, GatewayToolCall } from '../src/domain/gateway/model-gateway'
 import type {
   ToolBrokerService,
   ToolBrokerInvokeInput,
@@ -38,14 +38,20 @@ type GatewayCallArgs = {
   modelConfig: ModelConfig
 }
 
-function fakeGateway(responses: string[], record: GatewayCallArgs[]): ModelGateway {
+type FakeResponse = { content?: string; toolCalls?: GatewayToolCall[] }
+
+function fakeGateway(responses: FakeResponse[], record: GatewayCallArgs[]): ModelGateway {
   let i = 0
   return {
     call: async (args: GatewayCallArgs) => {
       record.push(args)
-      const content = responses[Math.min(i, responses.length - 1)]
+      const r = responses[Math.min(i, responses.length - 1)]
       i++
-      return { content, usage: { promptTokens: 1, completionTokens: 1 } }
+      return {
+        content: r.content ?? '',
+        ...(r.toolCalls?.length ? { toolCalls: r.toolCalls } : {}),
+        usage: { promptTokens: 1, completionTokens: 1 },
+      }
     },
   } as unknown as ModelGateway
 }
@@ -74,7 +80,10 @@ async function main() {
     const brokerCalls: ToolBrokerInvokeInput[] = []
     const result = await runAgentToolLoop({
       gateway: fakeGateway(
-        ['{"tool":"file_read","args":{"path":"a.txt"}}', 'Kész a feladat.'],
+        [
+          { toolCalls: [{ id: 'c1', name: 'file_read', input: { path: 'a.txt' } }] },
+          { content: 'Kész a feladat.' },
+        ],
         gwCalls,
       ),
       toolBroker: fakeToolBroker(brokerCalls),
@@ -103,7 +112,7 @@ async function main() {
     const gwCalls: GatewayCallArgs[] = []
     const brokerCalls: ToolBrokerInvokeInput[] = []
     const result = await runAgentToolLoop({
-      gateway: fakeGateway(['Szia, miben segíthetek?'], gwCalls),
+      gateway: fakeGateway([{ content: 'Szia, miben segíthetek?' }], gwCalls),
       toolBroker: fakeToolBroker(brokerCalls),
       toolCaps: fakeToolCaps,
       agentId: 'agent-1',
@@ -127,7 +136,13 @@ async function main() {
     const gwCalls: GatewayCallArgs[] = []
     const brokerCalls: ToolBrokerInvokeInput[] = []
     await runAgentToolLoop({
-      gateway: fakeGateway(['{"tool":"gmail_search","args":{"query":"is:unread"}}', 'Megvan.'], gwCalls),
+      gateway: fakeGateway(
+        [
+          { toolCalls: [{ id: 'c1', name: 'gmail_search', input: { query: 'is:unread' } }] },
+          { content: 'Megvan.' },
+        ],
+        gwCalls,
+      ),
       toolBroker: fakeToolBroker(brokerCalls),
       toolCaps: fakeToolCaps,
       agentId: 'agent-1',
@@ -143,6 +158,35 @@ async function main() {
     assert.equal(brokerCalls.length, 1)
     assert.equal(brokerCalls[0].conversationId, 'conv-1')
     assert.equal(brokerCalls[0].actingUserId, 'user-1')
+  })
+
+  await check('vékony fallback: beágyazott {"tool":...} JSON tool_calls nélkül is hív', async () => {
+    const gwCalls: GatewayCallArgs[] = []
+    const brokerCalls: ToolBrokerInvokeInput[] = []
+    const result = await runAgentToolLoop({
+      gateway: fakeGateway(
+        [
+          // natív toolCalls NINCS — csak szövegbe ágyazott JSON
+          { content: '{"tool":"file_read","args":{"path":"b.txt"}}' },
+          { content: 'Kész.' },
+        ],
+        gwCalls,
+      ),
+      toolBroker: fakeToolBroker(brokerCalls),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { ticketId: 'ticket-2' },
+      mode: 'task',
+      messages: [{ role: 'user', content: 'olvasd be b.txt' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: ['file_read'],
+    })
+
+    assert.equal(result.content, 'Kész.')
+    assert.equal(result.toolCallCount, 1)
+    assert.equal(brokerCalls.length, 1)
+    assert.equal(brokerCalls[0].tool, 'file_read')
   })
 
   await check('routing: hiányzó / üres / wiki source → wiki', () => {

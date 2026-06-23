@@ -24,7 +24,20 @@ export class FileEditorError extends Error {
 }
 
 type StubEntry = { content: Buffer; updatedAt: Date }
-const stubStore = new Map<string, StubEntry>()
+
+// A stub store memóriában él (FILE_EDITOR_STUB=true, dev). Next dev alatt a
+// server action-ök (app-rsc) és az API route handler-ek (app-route) KÜLÖN
+// modulpéldányt kapnak ugyanabban a folyamatban, így modulszintű Map-pel két
+// külön tár jönne létre: az agent által írt fájlt (server action) a letöltő
+// panel (route) nem látná. Ezért a Map-et a folyamatszintű globalThis-en
+// osztjuk meg — egyetlen tár minden runtime-rétegnek (prisma-szerű singleton).
+const globalStub = globalThis as typeof globalThis & {
+  __workspaceStubStore__?: Map<string, StubEntry>
+}
+const stubStore: Map<string, StubEntry> = (globalStub.__workspaceStubStore__ ??= new Map<
+  string,
+  StubEntry
+>())
 
 function stubKey(tenantId: string, ticketId: string, filePath: string): string {
   return `${tenantId}/${ticketId}/${filePath}`
@@ -298,13 +311,18 @@ export class WorkspaceStorage {
     tenantId: string,
     ticketId: string,
     filePath: string,
-    expiresInSeconds = SIGNED_URL_TTL_SECONDS,
+    opts: { expiresInSeconds?: number; stubDownloadPath?: string } = {},
   ): Promise<{ url: string; expiresAt: Date }> {
+    const expiresInSeconds = opts.expiresInSeconds ?? SIGNED_URL_TTL_SECONDS
     const expiresAt = new Date(Date.now() + expiresInSeconds * 1000)
 
     if (this.isStub()) {
+      // Stubban nincs GCS — a kliens a saját route stream-ágát hívja. A hívó
+      // route adja meg a saját letöltési útját (ticket vagy conversation),
+      // különben tévútra (más erőforrásra) mutatna a link.
+      const base = opts.stubDownloadPath ?? `/api/v1/tickets/${ticketId}/workspace/files`
       return {
-        url: `/api/v1/tickets/${ticketId}/workspace/files?path=${encodeURIComponent(filePath)}`,
+        url: `${base}?path=${encodeURIComponent(filePath)}`,
         expiresAt,
       }
     }

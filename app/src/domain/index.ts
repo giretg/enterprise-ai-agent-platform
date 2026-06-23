@@ -33,6 +33,8 @@ import { SandboxAppService } from '@/domain/sandbox/sandbox-app-service'
 import { ScheduledTaskService } from '@/domain/scheduled-task/scheduled-task-service'
 import { MonitorService } from '@/domain/monitor/monitor-service'
 import { DeadlineCollector } from '@/domain/monitor/collectors/deadline-collector'
+import { BoardBacklogCollector } from '@/domain/monitor/collectors/board-collector'
+import { ConnectorCountCollector } from '@/domain/monitor/collectors/connector-count-collector'
 import { KnowledgeBaseService } from '@/domain/knowledge-base/knowledge-base-service'
 import { repositories } from '@/repositories/postgres'
 import { resolveTicketProcessRoute } from '@/lib/ticket-process-route'
@@ -122,6 +124,7 @@ const agentChatRuntime = new AgentChatRuntime(
   conversationService,
   toolBrokerService,
   repositories.toolBroker,
+  workspaceStorage,
 )
 const wikiRuntime = new WikiAgentRuntime(
   repositories.agents,
@@ -129,6 +132,7 @@ const wikiRuntime = new WikiAgentRuntime(
   modelGateway,
   ticketService,
   toolBrokerService,
+  repositories.toolBroker,
   playbookService,
   conversationService,
 )
@@ -159,7 +163,11 @@ const monitorService = new MonitorService(
   repositories.monitors,
   repositories.tickets,
   repositories.audit,
-  [new DeadlineCollector(repositories.monitors)],
+  [
+    new DeadlineCollector(repositories.monitors),
+    new BoardBacklogCollector(repositories.monitors),
+    new ConnectorCountCollector(),
+  ],
 )
 const localWikiHarnessLauncher: HarnessLauncher = {
   mode: 'local-wiki',

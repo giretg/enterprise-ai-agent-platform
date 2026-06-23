@@ -52,13 +52,43 @@ export type ModelConfig = {
   maxTokens?: number
 }
 
-export type GatewayMessage = {
-  role: 'user' | 'system'
-  content: string
+/** Egy natív tool definíció, amit a providernek átadunk (function calling). */
+export type ToolDefinition = {
+  name: string
+  description: string
+  /** JSON Schema objektum a tool bemenetéhez. */
+  inputSchema: Record<string, unknown>
+}
+
+/** A modell által kért natív eszközhívás (protokoll-szintű, nem szövegbe ágyazott). */
+export type GatewayToolCall = {
+  id: string
+  name: string
+  input: Record<string, unknown>
+}
+
+/**
+ * Gateway üzenet — diszkriminált unió, hogy a natív tool use protokoll-szinten
+ * elférjen a szöveg mellett:
+ * - `assistant`: a modell válasza, opcionális szöveggel ÉS/VAGY tool hívásokkal,
+ * - `tool`: egy korábbi tool hívás eredménye (a `toolCallId` köti a híváshoz).
+ */
+export type GatewayMessage =
+  | { role: 'system'; content: string }
+  | { role: 'user'; content: string }
+  | { role: 'assistant'; content?: string; toolCalls?: GatewayToolCall[] }
+  | { role: 'tool'; toolCallId: string; toolName: string; content: string }
+
+/** Egy üzenet szöveges reprezentációja (token-becsléshez / prompt-építéshez). */
+export function messageText(m: GatewayMessage): string {
+  if (m.role === 'assistant') return m.content ?? ''
+  return m.content
 }
 
 export type ModelProviderResult = {
   content: string
+  /** Natív tool hívások, ha a modell eszközt kért (szöveg helyett/mellett). */
+  toolCalls?: GatewayToolCall[]
   usage?: { promptTokens?: number; completionTokens?: number }
   latencyMs: number
   /** A provider által ténylegesen használt modell (pl. a feloldott `gpt-5.5`). */
@@ -72,7 +102,121 @@ export interface ModelProvider {
     ticketId?: string
     messages: GatewayMessage[]
     modelConfig: ModelConfig
+    /** Natív tool use definíciók — ha megadva, a provider function callingot kér. */
+    tools?: ToolDefinition[]
   }): Promise<ModelProviderResult>
+}
+
+type OpenAiCompatibleContentPart = {
+  type?: string
+  text?: string
+}
+
+type OpenAiToolCall = {
+  id?: string
+  type?: string
+  function?: { name?: string; arguments?: string }
+}
+
+type OpenAiCompatibleChoice = {
+  message?: {
+    content?: string | OpenAiCompatibleContentPart[] | null
+    reasoning?: string | null
+    tool_calls?: OpenAiToolCall[] | null
+  }
+  text?: string | null
+  finish_reason?: string | null
+}
+
+type OpenAiCompatibleResponse = {
+  choices?: OpenAiCompatibleChoice[]
+  usage?: { prompt_tokens?: number; completion_tokens?: number }
+  model?: string
+}
+
+function normalizeOpenAiCompatibleContentPart(part: OpenAiCompatibleContentPart): string {
+  if (typeof part.text === 'string') return part.text
+  return ''
+}
+
+export function extractOpenAiCompatibleContent(data: OpenAiCompatibleResponse): string {
+  const choice = data.choices?.[0]
+  const message = choice?.message
+  const content = message?.content
+
+  if (typeof content === 'string' && content.trim()) return content
+
+  if (Array.isArray(content)) {
+    const text = content.map(normalizeOpenAiCompatibleContentPart).join('')
+    if (text.trim()) return text
+  }
+
+  if (typeof message?.reasoning === 'string' && message.reasoning.trim()) {
+    return message.reasoning
+  }
+
+  if (typeof choice?.text === 'string' && choice.text.trim()) return choice.text
+
+  return ''
+}
+
+/** Az OpenAI-kompatibilis `tool_calls` tömböt `GatewayToolCall[]`-ra fordítja. */
+export function extractOpenAiToolCalls(data: OpenAiCompatibleResponse): GatewayToolCall[] {
+  const rawCalls = data.choices?.[0]?.message?.tool_calls
+  if (!Array.isArray(rawCalls)) return []
+  const calls: GatewayToolCall[] = []
+  for (const [index, call] of rawCalls.entries()) {
+    const name = call.function?.name
+    if (typeof name !== 'string' || !name) continue
+    let input: Record<string, unknown> = {}
+    const rawArgs = call.function?.arguments
+    if (typeof rawArgs === 'string' && rawArgs.trim()) {
+      try {
+        const parsed = JSON.parse(rawArgs)
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          input = parsed as Record<string, unknown>
+        }
+      } catch {
+        // hibás argument JSON → üres input; a tool oldal validál tovább
+      }
+    }
+    calls.push({ id: call.id || `call_${index}`, name, input })
+  }
+  return calls
+}
+
+type OpenAiRequestMessage = {
+  role: 'system' | 'user' | 'assistant' | 'tool'
+  content: string | null
+  tool_call_id?: string
+  tool_calls?: Array<{
+    id: string
+    type: 'function'
+    function: { name: string; arguments: string }
+  }>
+}
+
+/** Egy `GatewayMessage`-t OpenAI chat/completions üzenet-alakra fordít. */
+function toOpenAiMessage(m: GatewayMessage): OpenAiRequestMessage {
+  if (m.role === 'assistant') {
+    return {
+      role: 'assistant',
+      content: m.content ?? null,
+      ...(m.toolCalls?.length
+        ? {
+            tool_calls: m.toolCalls.map((c) => ({
+              id: c.id,
+              type: 'function' as const,
+              function: { name: c.name, arguments: JSON.stringify(c.input ?? {}) },
+            })),
+          }
+        : {}),
+    }
+  }
+  if (m.role === 'tool') {
+    return { role: 'tool', tool_call_id: m.toolCallId, content: m.content }
+  }
+  return { role: m.role, content: m.content }
 }
 
 function isDirectAgentChat(messages: GatewayMessage[]): boolean {
@@ -109,7 +253,7 @@ function stubWikiAnswer(messages: GatewayMessage[]): ModelProviderResult {
     return stubDirectChatAnswer(messages)
   }
 
-  const combined = messages.map((m) => m.content).join('\n')
+  const combined = messages.map(messageText).join('\n')
   const lower = combined.toLowerCase()
 
   const hasKbHits =
@@ -145,7 +289,7 @@ function stubWikiAnswer(messages: GatewayMessage[]): ModelProviderResult {
     confidence: 'high',
   })
 
-  const promptLength = messages.map((m) => m.content).join('\n').length
+  const promptLength = messages.map(messageText).join('\n').length
   return {
     content,
     usage: {
@@ -169,6 +313,7 @@ export class ChatGptOAuthProvider implements ModelProvider {
     ticketId?: string
     messages: GatewayMessage[]
     modelConfig: ModelConfig
+    tools?: ToolDefinition[]
   }): Promise<ModelProviderResult> {
     const providerUrl = process.env.CHATGPT_OAUTH_PROVIDER_URL
     const internalKey = process.env.CHATGPT_OAUTH_PROVIDER_KEY
@@ -188,9 +333,11 @@ export class ChatGptOAuthProvider implements ModelProvider {
         tokens,
         messages: input.messages,
         model: input.modelConfig.model,
+        tools: input.tools,
       })
       return {
         content: result.content,
+        toolCalls: result.toolCalls,
         usage: result.usage,
         latencyMs: Date.now() - started,
         model: result.model,
@@ -219,12 +366,14 @@ export class ChatGptOAuthProvider implements ModelProvider {
 
     const data = (await response.json()) as {
       content?: string
+      toolCalls?: GatewayToolCall[]
       usage?: { promptTokens?: number; completionTokens?: number }
       model?: string
     }
 
     return {
       content: data.content ?? '',
+      toolCalls: data.toolCalls,
       usage: data.usage,
       latencyMs: Date.now() - started,
       model: data.model,
@@ -244,6 +393,11 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     private baseUrlEnvVar: string,
     private defaultBaseUrl?: string,
     private apiKeyEnvVar?: string,
+    private options: {
+      apiKeyRequired?: boolean
+      extraHeaders?: () => Record<string, string>
+      extraBody?: () => Record<string, unknown>
+    } = {},
   ) {}
 
   async chat(input: {
@@ -251,12 +405,16 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     ticketId?: string
     messages: GatewayMessage[]
     modelConfig: ModelConfig
+    tools?: ToolDefinition[]
   }): Promise<ModelProviderResult> {
     const baseUrl = (process.env[this.baseUrlEnvVar] || this.defaultBaseUrl)?.replace(/\/+$/, '')
     if (!baseUrl) {
       throw new Error(`${this.name} provider base URL not configured (${this.baseUrlEnvVar})`)
     }
     const apiKey = this.apiKeyEnvVar ? process.env[this.apiKeyEnvVar] : undefined
+    if (this.options.apiKeyRequired && !apiKey?.trim()) {
+      throw new Error(`${this.name} provider API key not configured (${this.apiKeyEnvVar})`)
+    }
 
     const started = Date.now()
     const response = await fetch(`${baseUrl}/chat/completions`, {
@@ -264,13 +422,24 @@ export class OpenAiCompatibleProvider implements ModelProvider {
       headers: {
         'content-type': 'application/json',
         ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
+        ...this.options.extraHeaders?.(),
       },
       body: JSON.stringify({
         model: input.modelConfig.model,
-        messages: input.messages.map((m) => ({ role: m.role, content: m.content })),
+        messages: input.messages.map(toOpenAiMessage),
         temperature: input.modelConfig.temperature,
         max_tokens: input.modelConfig.maxTokens,
         stream: false,
+        ...(input.tools?.length
+          ? {
+              tools: input.tools.map((t) => ({
+                type: 'function',
+                function: { name: t.name, description: t.description, parameters: t.inputSchema },
+              })),
+              tool_choice: 'auto',
+            }
+          : {}),
+        ...this.options.extraBody?.(),
       }),
     })
 
@@ -278,16 +447,22 @@ export class OpenAiCompatibleProvider implements ModelProvider {
       throw new Error(`${this.name} provider failed: ${response.status} ${(await response.text()).slice(0, 200)}`)
     }
 
-    const data = (await response.json()) as {
-      choices?: Array<{ message?: { content?: string } }>
-      usage?: { prompt_tokens?: number; completion_tokens?: number }
-      model?: string
+    const data = (await response.json()) as OpenAiCompatibleResponse
+    const content = extractOpenAiCompatibleContent(data)
+    const toolCalls = extractOpenAiToolCalls(data)
+
+    // Tool-only válasznál a content üres — csak akkor hiba, ha sem szöveg, sem
+    // tool hívás nem jött vissza.
+    if (!content.trim() && toolCalls.length === 0) {
+      const finishReason = data.choices?.[0]?.finish_reason
+      throw new Error(
+        `${this.name} provider returned empty content${finishReason ? ` (finish_reason=${finishReason})` : ''}`,
+      )
     }
-    const content = data.choices?.[0]?.message?.content ?? ''
-    if (!content.trim()) throw new Error(`${this.name} provider returned empty content`)
 
     return {
       content,
+      ...(toolCalls.length ? { toolCalls } : {}),
       usage: {
         promptTokens: data.usage?.prompt_tokens,
         completionTokens: data.usage?.completion_tokens,
@@ -305,6 +480,24 @@ export function createDefaultProviders(): Map<string, ModelProvider> {
     new GeminiProvider(),
     // Helyi Gemma Ollama-n keresztül (OpenAI-kompatibilis /v1).
     new OpenAiCompatibleProvider('ollama', 'OLLAMA_BASE_URL', 'http://localhost:11434/v1', 'OLLAMA_API_KEY'),
+    new OpenAiCompatibleProvider(
+      'openrouter',
+      'OPENROUTER_BASE_URL',
+      'https://openrouter.ai/api/v1',
+      'OPENROUTER_API_KEY',
+      {
+        apiKeyRequired: true,
+        extraHeaders: () => ({
+          ...(process.env.OPENROUTER_HTTP_REFERER
+            ? { 'HTTP-Referer': process.env.OPENROUTER_HTTP_REFERER }
+            : {}),
+          ...(process.env.OPENROUTER_APP_TITLE
+            ? { 'X-OpenRouter-Title': process.env.OPENROUTER_APP_TITLE }
+            : {}),
+        }),
+        extraBody: () => ({ reasoning: { exclude: true } }),
+      },
+    ),
   ]
   return new Map(providers.map((p) => [p.name, p]))
 }
@@ -323,8 +516,14 @@ export class ModelGateway {
     conversationId?: string
     messages: GatewayMessage[]
     modelConfig: ModelConfig
+    /** Natív tool use definíciók — átadva a provider function callingot kér. */
+    tools?: ToolDefinition[]
     retryCount?: number
-  }): Promise<{ content: string; usage: { promptTokens: number; completionTokens: number } }> {
+  }): Promise<{
+    content: string
+    toolCalls?: GatewayToolCall[]
+    usage: { promptTokens: number; completionTokens: number }
+  }> {
     const provider = this.providers.get(params.modelConfig.provider)
     if (!provider) {
       throw new Error(
@@ -333,7 +532,9 @@ export class ModelGateway {
     }
 
     const model = params.modelConfig.model || 'chatgpt-oauth-default'
-    const prompt = params.messages.map((m) => `${m.role.toUpperCase()}: ${m.content}`).join('\n\n')
+    const prompt = params.messages
+      .map((m) => `${m.role.toUpperCase()}: ${messageText(m)}`)
+      .join('\n\n')
 
     // Guardrail (5.4): ticketenkénti hívás-keret — túllépve a Gateway nem hív.
     if (params.ticketId && isUuid(params.ticketId)) {
@@ -365,6 +566,7 @@ export class ModelGateway {
         ticketId: params.ticketId,
         messages: params.messages,
         modelConfig: { ...params.modelConfig, model },
+        tools: params.tools,
       })
 
       const content = result.content
@@ -405,7 +607,11 @@ export class ModelGateway {
         metadata: { costEstimate, latencyMs: result.latencyMs, status: 'ok' },
       })
 
-      return { content, usage: { promptTokens, completionTokens } }
+      return {
+        content,
+        ...(result.toolCalls?.length ? { toolCalls: result.toolCalls } : {}),
+        usage: { promptTokens, completionTokens },
+      }
     } catch (error: unknown) {
       const status = classifyError(error)
       const latencyMs = Date.now() - started

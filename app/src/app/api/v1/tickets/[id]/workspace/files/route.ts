@@ -44,7 +44,9 @@ export async function GET(
   try {
     if (filePath) {
       if (signed) {
-        const signedUrl = await storage.getSignedDownloadUrl(tenantId, ticketId, filePath)
+        const signedUrl = await storage.getSignedDownloadUrl(tenantId, ticketId, filePath, {
+          stubDownloadPath: `/api/v1/tickets/${ticketId}/workspace/files`,
+        })
         return NextResponse.json({
           success: true,
           data: { url: signedUrl.url, expiresAt: signedUrl.expiresAt.toISOString() },

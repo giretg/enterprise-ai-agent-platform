@@ -80,6 +80,9 @@ A jelenlegi kódbázisban több olyan képesség is van, amely a későbbi term�
 | **Per-user delegated connector / Gmail** | A séma- és runtime-ág, token-vault és S7 smoke részben elkészült. | Fázis 2 feature a `AI-Agent-Platform-Feature-Spec-PerUser-Connector.md` alapján. Az MVP-ben a Tool Broker `actingUserId` paramétere csak előkészítő cserepont. |
 | **File editor / workspace file tools** | Külön feature-spec és E2E teszt tartozik hozzá. | Nem core MVP-követelmény; külön feature-scope. Az MVP csak a wiki tudásfeltöltéshez és citált válaszhoz szükséges dokumentumkezelést várja el. |
 | **Scheduled / recurring tasks** | A `scheduled_tasks` domain és UI irány megjelent. | Az MVP-ben az `execute_after` mező és a dispatcher ready-predikátuma előkészítés. Recurring/proaktív monitor nem MVP acceptance. |
+| **Általános / több-agentes runtime** | A wiki-runtime mellett bookkeeper- és általános (general task) runtime is van; a nem-wiki ticketeket egységes general task runtime futtatja, agent-org/persona/katalógus prezentációval. | Az MVP első „lakó" agentje továbbra is **kizárólag a wiki-agent**; a többi runtime MVP-feletti cserepont. A két átjáró + audit elve rájuk is érvényes, de nem core acceptance. |
+| **Chat-first / conversation flow** | Ticket nélküli beszélgetős réteg (conversation/message modell, agent-chat UI, promote-to-ticket). | Bővített scope. A core MVP a tickethez kötött, citált Q&A út; a chat-first runtime külön CR / Fázis 2. |
+| **Playbook absztrakció** | A recipe mellett külön Playbook réteg jelent meg. | MVP-feletti absztrakció. Az MVP mérvadó kontraktusa a recipe-formátum; a Playbook viszonya külön CR-ben tisztázandó. |
 
 **Szabály:** ha egy új munka ezek valamelyikét mélyítené, azt Fázis 2 / külön feature feladatként kell kezelni, és az MVP-lezárási sorrend elé csak külön döntéssel kerülhet.
 

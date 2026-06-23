@@ -1,7 +1,7 @@
 import Link from 'next/link'
 import type { ReactNode } from 'react'
 import { notFound } from 'next/navigation'
-import { getAgent, getAgentGovernance } from '@/app/actions/platform'
+import { getAgent, getAgentGovernance, getModelPolicy } from '@/app/actions/platform'
 import { getCurrentUser } from '@/auth'
 import { hasMinimumRole } from '@/auth/types'
 import { Badge, Card } from '@/components/ui/shell'
@@ -23,6 +23,7 @@ import {
 } from '@/lib/agent-profile-labels'
 import { personaFor, humanStatus } from '@/lib/agent-persona'
 import { sandboxKindForAgent, sandboxLabelForKind } from '@/lib/agent-kind'
+import { enabledModelProviders } from '@/lib/model-policy'
 
 function ProfileSection({
   title,
@@ -57,9 +58,10 @@ export default async function AgentDetailPage({
   params: Promise<{ agentId: string }>
 }) {
   const { agentId } = await params
-  const [res, govRes, user] = await Promise.all([
+  const [res, govRes, policyRes, user] = await Promise.all([
     getAgent({ id: agentId }),
     getAgentGovernance({ agentId }),
+    getModelPolicy(),
     getCurrentUser(),
   ])
   if (!res.success) notFound()
@@ -75,6 +77,7 @@ export default async function AgentDetailPage({
   const sandboxKind = sandboxKindForAgent(agent)
   const evolutionProfile = resolveSelfEvolutionProfile(agent.selfEvolutionProfile)
   const roleInfo = agentRoleLabel(agent.role)
+  const modelProviders = policyRes.success ? enabledModelProviders(policyRes.data) : []
 
   return (
     <div className="space-y-6">
@@ -307,6 +310,7 @@ export default async function AgentDetailPage({
 
               <UpdateModelConfigForm
                 agentId={agent.id}
+                providers={modelProviders}
                 current={{
                   provider: String(modelConfig.provider ?? 'chatgpt-oauth'),
                   model: String(modelConfig.model ?? ''),

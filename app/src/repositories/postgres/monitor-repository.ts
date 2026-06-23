@@ -5,6 +5,8 @@ import type {
   MonitorRepository,
   MonitorRunUpdate,
   MonitorSignalUpsert,
+  StaleBacklogTicket,
+  UpdateMonitorInput,
   UpcomingTicketDeadline,
 } from '../interfaces'
 
@@ -63,6 +65,27 @@ export class PostgresMonitorRepository implements MonitorRepository {
           data.perRunBudgetUsd != null ? new Prisma.Decimal(data.perRunBudgetUsd) : null,
         notifyChannel: data.notifyChannel ?? null,
         createdById: data.createdById,
+      },
+    })
+  }
+
+  async update(id: string, data: UpdateMonitorInput): Promise<MonitorDefinition> {
+    return prisma.monitorDefinition.update({
+      where: { id },
+      data: {
+        ...(data.title !== undefined ? { title: data.title } : {}),
+        ...(data.description !== undefined ? { description: data.description } : {}),
+        ...(data.status !== undefined ? { status: data.status } : {}),
+        ...(data.intervalSeconds !== undefined ? { intervalSeconds: data.intervalSeconds } : {}),
+        ...(data.collectorConfig !== undefined ? { collectorConfig: data.collectorConfig } : {}),
+        ...(data.filterConfig !== undefined ? { filterConfig: data.filterConfig } : {}),
+        ...(data.cooldownSeconds !== undefined ? { cooldownSeconds: data.cooldownSeconds } : {}),
+        ...(data.dedupKeyTemplate !== undefined ? { dedupKeyTemplate: data.dedupKeyTemplate } : {}),
+        ...(data.escalateAgentId !== undefined ? { escalateAgentId: data.escalateAgentId } : {}),
+        ...(data.perRunBudgetUsd !== undefined
+          ? { perRunBudgetUsd: data.perRunBudgetUsd != null ? new Prisma.Decimal(data.perRunBudgetUsd) : null }
+          : {}),
+        ...(data.notifyChannel !== undefined ? { notifyChannel: data.notifyChannel } : {}),
       },
     })
   }
@@ -161,6 +184,43 @@ export class PostgresMonitorRepository implements MonitorRepository {
     await prisma.monitorDefinition.updateMany({
       where: { id, lockToken: { not: null } },
       data: { lockToken: null, lockedAt: null },
+    })
+  }
+
+  async collectStaleBacklogTickets(updatedBefore: Date, limit: number): Promise<StaleBacklogTicket[]> {
+    const STALE_STATES = ['awaiting_human', 'ready'] as const
+    const rows = await prisma.ticket.findMany({
+      where: {
+        state: { in: [...STALE_STATES] },
+        updatedAt: { lte: updatedBefore },
+        source: { not: 'test' },
+      },
+      orderBy: { updatedAt: 'asc' },
+      take: limit,
+      select: { id: true, title: true, state: true, updatedAt: true, dueBy: true },
+    })
+    return rows.map((row) => ({
+      ticketId: row.id,
+      title: row.title,
+      state: row.state,
+      updatedAt: row.updatedAt,
+      dueBy: row.dueBy,
+    }))
+  }
+
+  async findRuns(monitorId: string, limit: number): Promise<MonitorRun[]> {
+    return prisma.monitorRun.findMany({
+      where: { monitorId },
+      orderBy: { startedAt: 'desc' },
+      take: limit,
+    })
+  }
+
+  async findSignalsByMonitor(monitorId: string, limit: number): Promise<MonitorSignal[]> {
+    return prisma.monitorSignal.findMany({
+      where: { monitorId },
+      orderBy: { lastSeenAt: 'desc' },
+      take: limit,
     })
   }
 

@@ -15,6 +15,14 @@ export type ModelProviderOption = {
   models?: ModelOption[]
 }
 
+export const CHATGPT_OAUTH_MODELS: ModelOption[] = [
+  {
+    id: 'chatgpt-oauth-default',
+    label: 'ChatGPT OAuth default',
+    description: 'A szerveroldali ChatGPT OAuth adapter alapértelmezett modellje.',
+  },
+]
+
 /** Szöveges generálásra ajánlott Gemini modellek (ai.google.dev, 2026-06). */
 export const GEMINI_TEXT_MODELS: ModelOption[] = [
   {
@@ -63,12 +71,22 @@ export const OLLAMA_TEXT_MODELS: ModelOption[] = [
   },
 ]
 
+/** OpenRouteren keresztül kísérletezésre felvehető modellek. Egyedi slug adminból adható hozzá. */
+export const OPENROUTER_TEXT_MODELS: ModelOption[] = [
+  {
+    id: '~openai/gpt-latest',
+    label: 'OpenAI GPT latest',
+    description: 'OpenRouter latest alias — gyors kísérleti baseline.',
+  },
+]
+
 export const MODEL_PROVIDERS: ModelProviderOption[] = [
   {
     value: 'chatgpt-oauth',
     label: 'ChatGPT OAuth (felhő)',
     defaultModel: 'chatgpt-oauth-default',
     hint: 'A Model Gateway szerveroldali ChatGPT OAuth mediációja (gpt-5.5).',
+    models: CHATGPT_OAUTH_MODELS,
   },
   {
     value: 'gemini',
@@ -84,14 +102,27 @@ export const MODEL_PROVIDERS: ModelProviderOption[] = [
     hint: 'Ollama fut (ollama serve / Ollama app). Modell: gemma-local (Goose GGUF import). OLLAMA_BASE_URL opcionális.',
     models: OLLAMA_TEXT_MODELS,
   },
+  {
+    value: 'openrouter',
+    label: 'OpenRouter (kísérleti)',
+    defaultModel: '~openai/gpt-latest',
+    hint: 'OpenAI-kompatibilis OpenRouter API (OPENROUTER_API_KEY). Modellek csak admin allowlist után választhatók agenthez.',
+    models: OPENROUTER_TEXT_MODELS,
+  },
 ]
 
-export function providerOption(value: string): ModelProviderOption {
-  return MODEL_PROVIDERS.find((p) => p.value === value) ?? MODEL_PROVIDERS[0]
+export function providerOption(
+  value: string,
+  providers: ModelProviderOption[] = MODEL_PROVIDERS,
+): ModelProviderOption {
+  return providers.find((p) => p.value === value) ?? MODEL_PROVIDERS.find((p) => p.value === value) ?? providers[0] ?? MODEL_PROVIDERS[0]
 }
 
-export function providerModelOptions(value: string): ModelOption[] {
-  return providerOption(value).models ?? []
+export function providerModelOptions(
+  value: string,
+  providers: ModelProviderOption[] = MODEL_PROVIDERS,
+): ModelOption[] {
+  return providerOption(value, providers).models ?? []
 }
 
 export function modelLabel(provider: string, modelId: string): string {
@@ -99,11 +130,15 @@ export function modelLabel(provider: string, modelId: string): string {
   return found?.label ?? modelId
 }
 
-export function normalizeModelForProvider(provider: string, model: string): string {
-  const option = providerOption(provider)
+export function normalizeModelForProvider(
+  provider: string,
+  model: string,
+  providers: ModelProviderOption[] = MODEL_PROVIDERS,
+): string {
+  const option = providerOption(provider, providers)
   const trimmed = model.trim()
   if (!trimmed) return option.defaultModel
-  const known = providerModelOptions(provider)
+  const known = providerModelOptions(provider, providers)
   if (known.length === 0) return trimmed
   return known.some((m) => m.id === trimmed) ? trimmed : option.defaultModel
 }

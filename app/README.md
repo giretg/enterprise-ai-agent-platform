@@ -10,6 +10,7 @@ Next.js App Router alkalmazás valódi Postgres adattal, Clerk/dev auth-val és 
 - Node.js 20+
 - **Neon Postgres** projekt ([neon.tech](https://neon.tech))
 - Opcionális: `CHATGPT_OAUTH_PROVIDER_URL` és `CHATGPT_OAUTH_PROVIDER_KEY` valódi S2 LLM-mediációhoz
+- Opcionális: `OPENROUTER_API_KEY` kísérleti többmodell-eléréshez; modelleket admin engedélyez a Rendszer oldalon
 - Opcionális: `HARNESS_LAUNCHER_MODE=cloud-run-job` + Cloud Run Job env a S1 harness spike-hoz
 - Opcionális: Clerk kulcsok emberi auth-hoz
 

@@ -157,6 +157,28 @@ export type UpcomingTicketDeadline = {
   state: TicketState
 }
 
+export type StaleBacklogTicket = {
+  ticketId: string
+  title: string
+  state: TicketState
+  updatedAt: Date
+  dueBy: Date | null
+}
+
+export type UpdateMonitorInput = Partial<{
+  title: string
+  description: string | null
+  status: MonitorStatus
+  intervalSeconds: number
+  collectorConfig: Prisma.InputJsonValue
+  filterConfig: Prisma.InputJsonValue
+  cooldownSeconds: number
+  dedupKeyTemplate: string | null
+  escalateAgentId: string | null
+  perRunBudgetUsd: number | null
+  notifyChannel: string | null
+}>
+
 export type MonitorSignalUpsert = {
   severity: number
   payload: Prisma.InputJsonValue
@@ -182,6 +204,7 @@ export interface MonitorRepository {
   findById(id: string): Promise<MonitorDefinition | null>
   findDue(now: Date, limit: number): Promise<MonitorDefinition[]>
   create(data: CreateMonitorInput): Promise<MonitorDefinition>
+  update(id: string, data: UpdateMonitorInput): Promise<MonitorDefinition>
   revoke(id: string): Promise<MonitorDefinition>
   /** Lock-alapú claim (dupla-fire védelem §4.11.7): csak ha aktív, esedékes és nincs lockolva. */
   claim(id: string, lockToken: string, now: Date): Promise<MonitorDefinition | null>
@@ -201,6 +224,12 @@ export interface MonitorRepository {
     withinSeconds: number,
     limit: number,
   ): Promise<UpcomingTicketDeadline[]>
+  /** Collector-támogatás: elakadt (awaiting_human / ready) ticketek. */
+  collectStaleBacklogTickets(updatedBefore: Date, limit: number): Promise<StaleBacklogTicket[]>
+  /** Futásnapló lekérdezés. */
+  findRuns(monitorId: string, limit: number): Promise<MonitorRun[]>
+  /** Cooldown / dedup jelek lekérdezése egy monitorra. */
+  findSignalsByMonitor(monitorId: string, limit: number): Promise<MonitorSignal[]>
 }
 
 export type TransitionStats = {

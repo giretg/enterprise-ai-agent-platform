@@ -98,6 +98,16 @@ export const ticketTypeConfigSchema = z
     }
   })
 
+const modelProviderSchema = z.enum(['chatgpt-oauth', 'gemini', 'ollama', 'openrouter'])
+
+export const modelPolicyEntrySchema = z.object({
+  provider: modelProviderSchema,
+  model: z.string().trim().min(1).max(200),
+  enabled: z.boolean(),
+  label: z.string().trim().max(120).optional(),
+  description: z.string().trim().max(280).optional(),
+})
+
 export const createBoardTicketSchema = z
   .object({
     title: z.string().trim().min(1).max(200),
@@ -144,6 +154,11 @@ export const askWikiSchema = z.object({
   agentId: z.string().uuid(),
   question: z.string().trim().min(1).max(2000),
   conversationId: z.string().uuid().optional(),
+})
+
+export const generateReportSchema = z.object({
+  agentId: z.string().uuid(),
+  templateId: z.string().trim().min(1).max(64),
 })
 
 export const sendAgentMessageSchema = z.object({
@@ -273,7 +288,7 @@ export const createAgentSchema = z.object({
   behaviorProfile: z.string().min(1),
   role: z.enum(['worker', 'orchestrator']).optional(),
   modelConfig: z.object({
-    provider: z.string().min(1),
+    provider: modelProviderSchema,
     model: z.string().min(1),
     temperature: z.number().min(0).max(2).optional(),
     maxTokens: z.number().int().positive().optional(),
@@ -302,7 +317,7 @@ export const updateAgentInstructionSchema = z
 export const updateAgentModelConfigSchema = z.object({
   agentId: z.string().uuid(),
   modelConfig: z.object({
-    provider: z.string().min(1),
+    provider: modelProviderSchema,
     model: z.string().min(1),
     temperature: z.number().min(0).max(2).optional(),
     maxTokens: z.number().int().positive().optional(),
@@ -333,6 +348,41 @@ const toolInvokeBaseSchema = {
 }
 
 const xlsxCellValueSchema = z.union([z.string(), z.number(), z.boolean(), z.null()])
+
+const borderStyleSchema = z.enum(['thin', 'medium', 'thick'])
+
+const cellStyleSchema = z.object({
+  font: z
+    .object({
+      bold: z.boolean().optional(),
+      italic: z.boolean().optional(),
+      size: z.number().min(1).max(409).optional(),
+      color: z.string().regex(/^#?[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/).optional(),
+      name: z.string().max(64).optional(),
+    })
+    .optional(),
+  fill: z
+    .object({
+      color: z.string().regex(/^#?[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$/).optional(),
+    })
+    .optional(),
+  alignment: z
+    .object({
+      horizontal: z.enum(['left', 'center', 'right']).optional(),
+      vertical: z.enum(['top', 'middle', 'bottom']).optional(),
+      wrapText: z.boolean().optional(),
+    })
+    .optional(),
+  border: z
+    .object({
+      top: borderStyleSchema.optional(),
+      bottom: borderStyleSchema.optional(),
+      left: borderStyleSchema.optional(),
+      right: borderStyleSchema.optional(),
+    })
+    .optional(),
+  numFmt: z.string().max(200).optional(),
+})
 
 export const toolInvokeSchema = z.discriminatedUnion('tool', [
   z.object({
@@ -512,12 +562,72 @@ export const toolInvokeSchema = z.discriminatedUnion('tool', [
     args: z.object({
       path: z.string().min(1).max(500),
       sheet: z.string().max(200).optional(),
-      changes: z.array(
-        z.object({
-          cell: z.string().min(1).max(20),
-          value: xlsxCellValueSchema,
-        }),
-      ).min(1).max(500),
+      changes: z
+        .array(
+          z
+            .object({
+              cell: z.string().min(1).max(20),
+              value: xlsxCellValueSchema.optional(),
+              formula: z.string().max(2000).optional(),
+              style: cellStyleSchema.optional(),
+              numFmt: z.string().max(200).optional(),
+            })
+            .refine((c) => !(c.value !== undefined && c.formula !== undefined), {
+              message: 'cell change cannot set both value and formula',
+            }),
+        )
+        .min(1)
+        .max(500),
+    }),
+  }),
+  z.object({
+    tool: z.literal('xlsx_format_range'),
+    ...toolInvokeBaseSchema,
+    args: z.object({
+      path: z.string().min(1).max(500),
+      sheet: z.string().max(200).optional(),
+      range: z.string().min(3).max(40),
+      style: cellStyleSchema,
+    }),
+  }),
+  z.object({
+    tool: z.literal('xlsx_layout'),
+    ...toolInvokeBaseSchema,
+    args: z.object({
+      path: z.string().min(1).max(500),
+      sheet: z.string().max(200).optional(),
+      mergeCells: z.array(z.string().min(3).max(40)).max(200).optional(),
+      columnWidths: z
+        .array(z.object({ column: z.string().min(1).max(3), width: z.number().min(0).max(255) }))
+        .max(256)
+        .optional(),
+      rowHeights: z
+        .array(z.object({ row: z.number().int().min(1), height: z.number().min(0).max(409) }))
+        .max(1000)
+        .optional(),
+      freeze: z
+        .object({
+          rows: z.number().int().min(0).max(1000).optional(),
+          columns: z.number().int().min(0).max(256).optional(),
+        })
+        .optional(),
+      autoFilter: z.string().min(3).max(40).optional(),
+    }),
+  }),
+  z.object({
+    tool: z.literal('xlsx_create'),
+    ...toolInvokeBaseSchema,
+    args: z.object({
+      path: z.string().min(1).max(500),
+      sheets: z
+        .array(
+          z.object({
+            name: z.string().min(1).max(31),
+            rows: z.array(z.array(xlsxCellValueSchema)).max(10000).optional(),
+          }),
+        )
+        .min(1)
+        .max(64),
     }),
   }),
   z.object({
@@ -600,4 +710,52 @@ export const setDatabaseModeSchema = z.object({
 
 export const syncTestDatabaseSchema = z.object({
   confirm: z.literal(true),
+})
+
+export const setMonitorControlsSchema = z
+  .object({
+    killSwitch: z.boolean().optional(),
+    sweepIntervalSec: z.number().int().min(10).max(3600).optional(),
+    maxConcurrent: z.number().int().min(1).max(20).optional(),
+  })
+  .refine(
+    (v) =>
+      v.killSwitch !== undefined || v.sweepIntervalSec !== undefined || v.maxConcurrent !== undefined,
+    { message: 'Legalább egy mezőt meg kell adni' },
+  )
+
+export const createMonitorSchema = z.object({
+  kind: z.enum(['board_backlog', 'deadline', 'connector_count', 'composite']),
+  title: z.string().trim().min(1).max(200),
+  description: z.string().trim().max(1000).optional(),
+  intervalSeconds: z.number().int().min(60).max(86400),
+  collectorConfig: z.record(z.string(), z.unknown()).optional(),
+  filterConfig: z.record(z.string(), z.unknown()).optional(),
+  cooldownSeconds: z.number().int().min(0).max(604800).optional(),
+  dedupKeyTemplate: z.string().trim().max(200).optional(),
+  escalateAgentId: z.string().uuid().nullable().optional(),
+  perRunBudgetUsd: z.number().min(0).max(100).nullable().optional(),
+  notifyChannel: z.string().trim().max(200).nullable().optional(),
+})
+
+export const updateMonitorSchema = z.object({
+  id: z.string().uuid(),
+  title: z.string().trim().min(1).max(200).optional(),
+  description: z.string().trim().max(1000).nullable().optional(),
+  intervalSeconds: z.number().int().min(60).max(86400).optional(),
+  collectorConfig: z.record(z.string(), z.unknown()).optional(),
+  filterConfig: z.record(z.string(), z.unknown()).optional(),
+  cooldownSeconds: z.number().int().min(0).max(604800).optional(),
+  dedupKeyTemplate: z.string().trim().max(200).nullable().optional(),
+  escalateAgentId: z.string().uuid().nullable().optional(),
+  perRunBudgetUsd: z.number().min(0).max(100).nullable().optional(),
+  notifyChannel: z.string().trim().max(200).nullable().optional(),
+})
+
+export const monitorIdSchema = z.object({
+  id: z.string().uuid(),
+})
+
+export const monitorDryRunSchema = z.object({
+  id: z.string().uuid(),
 })

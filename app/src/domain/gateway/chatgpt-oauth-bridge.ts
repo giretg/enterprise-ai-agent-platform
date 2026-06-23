@@ -11,7 +11,7 @@
  * ChatGPT-fiókkal nem támogatottak.
  */
 import { randomUUID } from 'node:crypto'
-import type { GatewayMessage } from './model-gateway'
+import type { GatewayMessage, GatewayToolCall, ToolDefinition } from './model-gateway'
 
 /** A Codex CLI hivatalos OAuth kliens-azonosítója (refresh flow-hoz). */
 export const CODEX_OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
@@ -26,15 +26,33 @@ export function resolveModel(requested: string | undefined): string {
   return requested
 }
 
-type ResponsesInputItem = {
+type ResponsesMessageItem = {
   type: 'message'
   role: 'user' | 'assistant' | 'developer'
   content: Array<{ type: 'input_text'; text: string }>
 }
+type ResponsesFunctionCallItem = {
+  type: 'function_call'
+  call_id: string
+  name: string
+  arguments: string
+}
+type ResponsesFunctionCallOutputItem = {
+  type: 'function_call_output'
+  call_id: string
+  output: string
+}
+type ResponsesInputItem =
+  | ResponsesMessageItem
+  | ResponsesFunctionCallItem
+  | ResponsesFunctionCallOutputItem
 
 /**
  * A Gateway üzenet-listáját Responses API alakra hozza: a `system` üzenetek a
- * top-level `instructions`-be mennek, a többi `input` message-ként.
+ * top-level `instructions`-be mennek, a többi `input` itemmé. A natív tool use
+ * üzeneteket dedikált item-típusokra fordítja:
+ * - `assistant.toolCalls` → `function_call` itemek,
+ * - `tool` eredmény → `function_call_output` item.
  */
 export function toResponsesRequest(messages: GatewayMessage[]): {
   instructions: string
@@ -44,20 +62,48 @@ export function toResponsesRequest(messages: GatewayMessage[]): {
     .filter((m) => m.role === 'system')
     .map((m) => m.content)
     .join('\n\n')
-  const input: ResponsesInputItem[] = messages
-    .filter((m) => m.role !== 'system')
-    .map((m) => ({
-      type: 'message',
-      role: 'user',
-      content: [{ type: 'input_text', text: m.content }],
-    }))
-  // Ha minden üzenet system volt, az utolsót felhasználói inputként is átadjuk,
-  // hogy a modell biztosan kapjon választ-igénylő turn-t.
-  if (input.length === 0 && messages.length > 0) {
+
+  const input: ResponsesInputItem[] = []
+  for (const m of messages) {
+    if (m.role === 'system') continue
+    if (m.role === 'tool') {
+      input.push({ type: 'function_call_output', call_id: m.toolCallId, output: m.content })
+      continue
+    }
+    if (m.role === 'assistant') {
+      if (m.content?.trim()) {
+        input.push({
+          type: 'message',
+          role: 'assistant',
+          content: [{ type: 'input_text', text: m.content }],
+        })
+      }
+      for (const call of m.toolCalls ?? []) {
+        input.push({
+          type: 'function_call',
+          call_id: call.id,
+          name: call.name,
+          arguments: JSON.stringify(call.input ?? {}),
+        })
+      }
+      continue
+    }
+    // user
     input.push({
       type: 'message',
       role: 'user',
-      content: [{ type: 'input_text', text: messages[messages.length - 1].content }],
+      content: [{ type: 'input_text', text: m.content }],
+    })
+  }
+
+  // Ha minden üzenet system volt, az utolsót felhasználói inputként is átadjuk,
+  // hogy a modell biztosan kapjon választ-igénylő turn-t.
+  if (input.length === 0 && messages.length > 0) {
+    const last = messages[messages.length - 1]
+    input.push({
+      type: 'message',
+      role: 'user',
+      content: [{ type: 'input_text', text: last.role === 'system' ? last.content : '' }],
     })
   }
   return { instructions, input }
@@ -70,6 +116,7 @@ export type ChatGptOAuthTokens = {
 
 export type BridgeResult = {
   content: string
+  toolCalls?: GatewayToolCall[]
   usage: { promptTokens: number; completionTokens: number }
   model: string
 }
@@ -130,6 +177,7 @@ export async function callChatGptOAuth(input: {
   tokens: ChatGptOAuthTokens
   messages: GatewayMessage[]
   model: string
+  tools?: ToolDefinition[]
   reasoningEffort?: 'low' | 'medium' | 'high'
 }): Promise<BridgeResult> {
   const model = resolveModel(input.model)
@@ -153,6 +201,17 @@ export async function callChatGptOAuth(input: {
       stream: true,
       store: false,
       reasoning: { effort: input.reasoningEffort ?? 'low' },
+      ...(input.tools?.length
+        ? {
+            tools: input.tools.map((t) => ({
+              type: 'function',
+              name: t.name,
+              description: t.description,
+              parameters: t.inputSchema,
+            })),
+            tool_choice: 'auto',
+          }
+        : {}),
     }),
   })
 
@@ -165,6 +224,7 @@ export async function callChatGptOAuth(input: {
   let content = ''
   let promptTokens = 0
   let completionTokens = 0
+  const toolCalls: GatewayToolCall[] = []
   for (const line of raw.split('\n')) {
     if (!line.startsWith('data:')) continue
     const payload = line.slice(5).trim()
@@ -172,6 +232,7 @@ export async function callChatGptOAuth(input: {
     let evt: {
       type?: string
       delta?: string
+      item?: { type?: string; name?: string; arguments?: string; call_id?: string; id?: string }
       response?: { usage?: { input_tokens?: number; output_tokens?: number } }
     }
     try {
@@ -182,15 +243,44 @@ export async function callChatGptOAuth(input: {
     if (evt.type === 'response.output_text.delta' && typeof evt.delta === 'string') {
       content += evt.delta
     }
+    // A modell egy kész tool hívása: function_call output item.
+    if (evt.type === 'response.output_item.done' && evt.item?.type === 'function_call') {
+      const name = evt.item.name
+      if (typeof name === 'string' && name) {
+        let parsed: Record<string, unknown> = {}
+        if (typeof evt.item.arguments === 'string' && evt.item.arguments.trim()) {
+          try {
+            const obj = JSON.parse(evt.item.arguments)
+            if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
+              parsed = obj as Record<string, unknown>
+            }
+          } catch {
+            // hibás argument JSON → üres input
+          }
+        }
+        toolCalls.push({
+          id: evt.item.call_id || evt.item.id || `call_${toolCalls.length}`,
+          name,
+          input: parsed,
+        })
+      }
+    }
     if (evt.type === 'response.completed' && evt.response?.usage) {
       promptTokens = evt.response.usage.input_tokens ?? 0
       completionTokens = evt.response.usage.output_tokens ?? 0
     }
   }
 
-  if (!content.trim()) {
+  // Tool-only válasznál a content üres — csak akkor hiba, ha sem szöveg, sem
+  // tool hívás nem jött vissza.
+  if (!content.trim() && toolCalls.length === 0) {
     throw new Error('ChatGPT OAuth backend returned empty content')
   }
 
-  return { content, usage: { promptTokens, completionTokens }, model }
+  return {
+    content,
+    ...(toolCalls.length ? { toolCalls } : {}),
+    usage: { promptTokens, completionTokens },
+    model,
+  }
 }

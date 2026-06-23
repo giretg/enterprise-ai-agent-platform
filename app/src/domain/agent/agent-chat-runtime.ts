@@ -6,6 +6,7 @@ import { formatHitsForPrompt, type KbHit } from '@/lib/kb-format'
 import type { ModelGateway } from '../gateway/model-gateway'
 import type { ConversationService } from '../conversation/conversation-service'
 import type { ToolBrokerService } from '../tool-broker/tool-broker-service'
+import type { WorkspaceStorage } from '../file-editor/workspace-storage'
 import { listAllowedChatTools, runAgentToolLoop } from './chat-tool-loop'
 
 const IMAGE_EXT = /\.(jpg|jpeg|png|gif|webp)$/i
@@ -87,6 +88,7 @@ export class AgentChatRuntime {
     private conversations: ConversationService,
     private toolBroker: ToolBrokerService,
     private toolCaps: ToolBrokerRepository,
+    private workspaceStorage: WorkspaceStorage,
   ) {}
 
   async sendMessage(params: {
@@ -125,6 +127,18 @@ export class AgentChatRuntime {
     const attachmentBlock = formatAttachmentBlock(attachmentDocs)
     const userFacingText = text || '(csatolmányok)'
 
+    // A fájlokat a beszélgetés munkaterületére tükrözzük, hogy az agent
+    // fájl-eszközei a pontos néven, teljes tartalommal elérjék őket (a prompt
+    // szöveges/KB blokk csonkolt és nem géppel olvasható). Sorrend számít: a
+    // chat-csatolmányok elsőbbséget élveznek az azonos nevű tudásbázis-fájllal
+    // szemben, és a korábbi körök / agent által írt fájlokat nem írjuk felül.
+    const tenantKey = params.tenantId ?? 'global'
+    const presentFiles = new Set(await this.listWorkspaceFiles(tenantKey, conversationId))
+    await this.materializeDocumentsToWorkspace(tenantKey, conversationId, attachmentDocs, presentFiles)
+    const knowledgeDocs = await this.loadAgentKnowledgeDocuments(params.agentId)
+    await this.materializeDocumentsToWorkspace(tenantKey, conversationId, knowledgeDocs, presentFiles)
+    const workspaceFiles = await this.listWorkspaceFiles(tenantKey, conversationId)
+
     await this.conversations.appendMessage({
       conversationId,
       role: 'user',
@@ -146,6 +160,7 @@ export class AgentChatRuntime {
       history.messages,
       attachmentBlock,
       kbSearch,
+      workspaceFiles,
     )
 
     const modelConfig = agentDetails.agent.modelConfig as {
@@ -331,6 +346,81 @@ export class AgentChatRuntime {
     return docs.filter((doc): doc is NonNullable<(typeof docs)[number]> => Boolean(doc))
   }
 
+  /**
+   * Dokumentumokat (chat-csatolmány vagy az agent tudásbázisa) a beszélgetés
+   * munkaterületére ír, hogy az agent fájl-eszközei (file_read, xlsx_read_sheet,
+   * ...) elérjék őket. A `documents.extractedText` tárolja a tartalmat: kép →
+   * base64 dekódolva az eredeti bájtok; bináris office/pdf → a kinyert szöveg
+   * `<név>.txt`-ként (az eredeti bináris nincs eltárolva); szöveges formátum
+   * (json/csv/txt/md) → a tartalom az eredeti néven.
+   *
+   * A `skipExisting` halmazban szereplő (vagy oda ezalatt felvett) célútakat
+   * kihagyja, így a korábbi körök fájljait és a chat-csatolmányokat nem írja
+   * felül a tudásbázisból, és körönként nem másol feleslegesen újra.
+   */
+  private async materializeDocumentsToWorkspace(
+    tenantId: string,
+    conversationId: string,
+    docs: Array<{ filename: string; extractedText: string | null }>,
+    skipExisting: Set<string>,
+  ): Promise<void> {
+    const MAX_BYTES = 5 * 1024 * 1024
+    for (const doc of docs) {
+      const text = doc.extractedText
+      if (!text) continue
+
+      let targetPath = doc.filename
+      let bytes: Buffer
+
+      const imageMatch = text.match(IMAGE_MARKER)
+      if (imageMatch?.[2] && imageMatch[3]) {
+        bytes = Buffer.from(imageMatch[3], 'base64')
+      } else {
+        if (/\.(xlsx|xlsm|docx|pdf)$/i.test(doc.filename)) {
+          // Az eltárolt szöveg a kinyert tartalom, nem az eredeti bináris —
+          // .txt-ként tesszük elérhetővé, hogy az olvasás ne sérült fájlt kapjon.
+          targetPath = `${doc.filename}.txt`
+        }
+        bytes = Buffer.from(text, 'utf8')
+      }
+
+      if (skipExisting.has(targetPath) || bytes.length > MAX_BYTES) continue
+
+      try {
+        await this.workspaceStorage.write(tenantId, conversationId, targetPath, bytes)
+        skipExisting.add(targetPath)
+      } catch {
+        // Egy fájl kiírási hibája ne akassza meg a beszélgetést.
+      }
+    }
+  }
+
+  /** Az agenthez kötött tudásbázis-connectorok feldolgozott dokumentumai. */
+  private async loadAgentKnowledgeDocuments(
+    agentId: string,
+  ): Promise<Array<{ id: string; filename: string; extractedText: string | null }>> {
+    try {
+      const links = await this.toolCaps.findConnectorsForAgent(agentId)
+      const kbConnectorIds = links
+        .filter((link) => link.connector.type === 'knowledge_base')
+        .map((link) => link.connector.id)
+      const lists = await Promise.all(
+        kbConnectorIds.map((id) => this.toolCaps.findDocumentsForConnector(id)),
+      )
+      return lists.flat()
+    } catch {
+      return []
+    }
+  }
+
+  private async listWorkspaceFiles(tenantId: string, conversationId: string): Promise<string[]> {
+    try {
+      return await this.workspaceStorage.list(tenantId, conversationId)
+    } catch {
+      return []
+    }
+  }
+
   private async fetchKbSearchContext(params: {
     agentId: string
     agentVersion: number
@@ -364,6 +454,7 @@ export class AgentChatRuntime {
     historyMessages: Array<{ role: string; content: string | null; contentDeletedAt: Date | null }>,
     latestAttachmentBlock: string,
     kbSearch: { enabled: boolean; hits: KbHit[] },
+    workspaceFiles: string[],
   ) {
     const allAgents = await this.agents.findMany()
     const orgRoster = formatOrgRoster(allAgents)
@@ -397,6 +488,26 @@ export class AgentChatRuntime {
       content:
         'Ez egy közvetlen beszélgetés a felhasználóval. Válaszolj természetes, segítőkész hangnemben magyarul. Ha csatolmány érkezett, hivatkozz rá a válaszodban. Email, fájl, ticket vagy más agent feladat kérésénél használd a platform eszközöket — ne állítsd, hogy megcsináltad vagy nincs adat, ha nem hívtál eszközt.',
     })
+
+    // A munkaterületen ténylegesen elérhető fájlok pontos listája. Ez a forrás
+    // igazsága — a fájlnevekre ezekkel a pontos utakkal hivatkozz, NE találgass
+    // tudásbázisból vett elérési utat.
+    if (workspaceFiles.length > 0) {
+      messages.push({
+        role: 'system',
+        content:
+          `A beszélgetés munkaterületén jelenleg elérhető fájlok (pontos elérési utak):\n` +
+          workspaceFiles.map((p) => `- ${p}`).join('\n') +
+          `\n\nEzeket a file_read / xlsx_read_sheet / file_search stb. eszközökkel éred el a fenti pontos néven. ` +
+          `Ha a kért adat egy itt felsorolt fájlban van, onnan dolgozz. Új fájlt (pl. Excel) az xlsx_create / file_write eszközzel hozz létre — a felhasználó a chat „Workspace fájlok" panelről tölti le.`,
+      })
+    } else {
+      messages.push({
+        role: 'system',
+        content:
+          'A beszélgetés munkaterülete jelenleg üres (nincs feltöltött fájl). Ha a felhasználó létező fájlra hivatkozik, kérd meg, hogy csatolja (📎). Új fájlt (pl. Excel) az xlsx_create / file_write eszközzel hozhatsz létre — a felhasználó a „Workspace fájlok" panelről tölti le.',
+      })
+    }
 
     const visible = historyMessages.filter((m) => m.content && !m.contentDeletedAt)
     for (let i = 0; i < visible.length; i++) {

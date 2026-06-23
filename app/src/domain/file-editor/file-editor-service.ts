@@ -1,8 +1,21 @@
 import { FileEditorError, WorkspaceStorage } from './workspace-storage'
-import { xlsxReadSheet, xlsxWriteCells, xlsxAppendRows } from './adapters/xlsx-adapter'
+import {
+  xlsxReadSheet,
+  xlsxWriteCells,
+  xlsxAppendRows,
+  xlsxFormatRange,
+  xlsxApplyLayout,
+  xlsxCreate,
+} from './adapters/xlsx-adapter'
 import { docxRead } from './adapters/docx-adapter'
-import { pdfRead } from './adapters/pdf-adapter'
-import type { XlsxRow, XlsxCellChange } from './adapters/xlsx-adapter'
+import { pdfRead, pdfCreateFromTable } from './adapters/pdf-adapter'
+import type {
+  XlsxRow,
+  XlsxCellChange,
+  CellStyle,
+  XlsxLayout,
+  XlsxSheetSpec,
+} from './adapters/xlsx-adapter'
 
 const MAX_SEARCH_RESULTS = 1000
 
@@ -18,6 +31,18 @@ function resolveSafePath(userPath: string): string {
   }
   if (!resolved.length) throw new FileEditorError('INVALID_PATH', `Path is empty or invalid: ${userPath}`)
   return resolved.join('/')
+}
+
+/**
+ * Könyvtár-műveletekhez (list/search): a gyökeret jelölő bemenetek
+ * (`""`, `"."`, `"./"`, `"/"`) `undefined`-ra normalizálódnak (= teljes
+ * munkaterület), nem dobnak hibát. Egyébként resolveSafePath szabályai.
+ */
+function resolveDirPath(userPath?: string): string | undefined {
+  if (!userPath) return undefined
+  const trimmed = userPath.trim()
+  if (trimmed === '' || trimmed === '.' || trimmed === './' || trimmed === '/') return undefined
+  return resolveSafePath(trimmed)
 }
 
 function globToRegex(pattern: string): RegExp {
@@ -100,6 +125,21 @@ export type XlsxAppendRowsResult = {
   rowsAppended: number
 }
 
+export type XlsxFormatRangeResult = {
+  path: string
+  range: string
+}
+
+export type XlsxLayoutResult = {
+  path: string
+  operations: number
+}
+
+export type XlsxCreateResult = {
+  path: string
+  sheets: number
+}
+
 export type DocxReadResult = {
   text: string
   messages: string[]
@@ -109,6 +149,12 @@ export type PdfReadResult = {
   text: string
   numPages: number
   pagesRead: string
+}
+
+export type PdfCreateResult = {
+  path: string
+  bytesWritten: number
+  rows: number
 }
 
 export class FileEditorService {
@@ -187,7 +233,7 @@ export class FileEditorService {
     ticketId: string,
     args: { path?: string; recursive?: boolean },
   ): Promise<FileListResult> {
-    const requestedPath = args.path ? resolveSafePath(args.path) : undefined
+    const requestedPath = resolveDirPath(args.path)
     const all = await this.storage.list(tenantId, ticketId, requestedPath)
 
     if (args.recursive) {
@@ -237,7 +283,7 @@ export class FileEditorService {
       max_results?: number
     },
   ): Promise<FileSearchResult> {
-    const searchPath = args.path ? resolveSafePath(args.path) : undefined
+    const searchPath = resolveDirPath(args.path)
     const all = await this.storage.list(tenantId, ticketId, searchPath)
 
     const files = args.glob ? all.filter((p) => globToRegex(args.glob!).test(p)) : all
@@ -286,14 +332,31 @@ export class FileEditorService {
     return { ...result, rowCount: result.rows.length }
   }
 
+  /**
+   * XLSX írásműveletekhez: beolvassa a meglévő munkafüzetet, vagy ha hiányzik
+   * (ill. 0 bájtos / sérült, pl. egy korábbi file_write után), egy üres
+   * munkafüzetet inicializál a kért (vagy alapértelmezett) munkalappal. Így az
+   * agent „létrehozás nélkül is írhat" — nem kell külön xlsx_create-et hívnia,
+   * és nem akad el FILE_NOT_FOUND hibán.
+   */
+  private async readOrInitXlsx(
+    tenantId: string,
+    ticketId: string,
+    safePath: string,
+    sheet?: string,
+  ): Promise<Buffer> {
+    const buf = await this.storage.read(tenantId, ticketId, safePath)
+    if (buf && buf.length > 0) return buf
+    return xlsxCreate([{ name: sheet ?? 'Sheet1' }])
+  }
+
   async xlsxWriteCells(
     tenantId: string,
     ticketId: string,
     args: { path: string; sheet?: string; changes: XlsxCellChange[] },
   ): Promise<XlsxWriteCellsResult> {
     const safePath = resolveSafePath(args.path)
-    const buf = await this.storage.read(tenantId, ticketId, safePath)
-    if (!buf) throw new FileEditorError('FILE_NOT_FOUND', `File not found: ${safePath}`)
+    const buf = await this.readOrInitXlsx(tenantId, ticketId, safePath, args.sheet)
     const updated = await xlsxWriteCells(buf, args.changes, args.sheet)
     await this.storage.write(tenantId, ticketId, safePath, updated)
     return { path: safePath, cellsUpdated: args.changes.length }
@@ -305,11 +368,59 @@ export class FileEditorService {
     args: { path: string; sheet?: string; rows: XlsxRow[] },
   ): Promise<XlsxAppendRowsResult> {
     const safePath = resolveSafePath(args.path)
-    const buf = await this.storage.read(tenantId, ticketId, safePath)
-    if (!buf) throw new FileEditorError('FILE_NOT_FOUND', `File not found: ${safePath}`)
+    const buf = await this.readOrInitXlsx(tenantId, ticketId, safePath, args.sheet)
     const updated = await xlsxAppendRows(buf, args.rows, args.sheet)
     await this.storage.write(tenantId, ticketId, safePath, updated)
     return { path: safePath, rowsAppended: args.rows.length }
+  }
+
+  async xlsxFormatRange(
+    tenantId: string,
+    ticketId: string,
+    args: { path: string; sheet?: string; range: string; style: CellStyle },
+  ): Promise<XlsxFormatRangeResult> {
+    const safePath = resolveSafePath(args.path)
+    const buf = await this.readOrInitXlsx(tenantId, ticketId, safePath, args.sheet)
+    const updated = await xlsxFormatRange(buf, args.range, args.style, args.sheet)
+    await this.storage.write(tenantId, ticketId, safePath, updated)
+    return { path: safePath, range: args.range }
+  }
+
+  async xlsxLayout(
+    tenantId: string,
+    ticketId: string,
+    args: { path: string; sheet?: string } & XlsxLayout,
+  ): Promise<XlsxLayoutResult> {
+    const safePath = resolveSafePath(args.path)
+    const buf = await this.readOrInitXlsx(tenantId, ticketId, safePath, args.sheet)
+    const { mergeCells, columnWidths, rowHeights, freeze, autoFilter } = args
+    const layout: XlsxLayout = { mergeCells, columnWidths, rowHeights, freeze, autoFilter }
+    const updated = await xlsxApplyLayout(buf, layout, args.sheet)
+    await this.storage.write(tenantId, ticketId, safePath, updated)
+    const operations =
+      (layout.mergeCells?.length ?? 0) +
+      (layout.columnWidths?.length ?? 0) +
+      (layout.rowHeights?.length ?? 0) +
+      (layout.freeze ? 1 : 0) +
+      (layout.autoFilter ? 1 : 0)
+    return { path: safePath, operations }
+  }
+
+  async xlsxCreate(
+    tenantId: string,
+    ticketId: string,
+    args: { path: string; sheets: XlsxSheetSpec[] },
+  ): Promise<XlsxCreateResult> {
+    const safePath = resolveSafePath(args.path)
+    const existing = await this.storage.read(tenantId, ticketId, safePath)
+    // Csak valódi (nem 0 bájtos) fájlnál tiltjuk a felülírást — egy korábbi
+    // hibás file_write 0 bájtos csonkját felül lehet írni.
+    if (existing && existing.length > 0) {
+      throw new FileEditorError('FILE_ALREADY_EXISTS', `File already exists: ${safePath}`)
+    }
+    const buf = await xlsxCreate(args.sheets)
+    await this.storage.write(tenantId, ticketId, safePath, buf)
+    return { path: safePath, sheets: args.sheets.length }
   }
 
   async docxRead(
@@ -332,6 +443,51 @@ export class FileEditorService {
     const buf = await this.storage.read(tenantId, ticketId, safePath)
     if (!buf) throw new FileEditorError('FILE_NOT_FOUND', `File not found: ${safePath}`)
     return pdfRead(buf, args.page_range)
+  }
+
+  /**
+   * Táblázatos PDF létrehozása. Forrás vagy egy meglévő XLSX (`source_xlsx`),
+   * vagy közvetlenül megadott `headers` + `rows`. Ezzel az agent valódi .pdf-et
+   * tud előállítani (pl. „csinálj PDF-et az Excelből"), nem csak HTML/MD-t.
+   */
+  async pdfCreate(
+    tenantId: string,
+    ticketId: string,
+    args: {
+      path: string
+      source_xlsx?: string
+      sheet?: string
+      title?: string
+      headers?: string[]
+      rows?: Array<Array<string | number | boolean | null>>
+    },
+  ): Promise<PdfCreateResult> {
+    let safePath = resolveSafePath(args.path)
+    if (!/\.pdf$/i.test(safePath)) safePath = `${safePath}.pdf`
+
+    let headers: string[]
+    let rows: Array<Array<string | number | boolean | null>>
+
+    if (args.source_xlsx) {
+      const srcPath = resolveSafePath(args.source_xlsx)
+      const srcBuf = await this.storage.read(tenantId, ticketId, srcPath)
+      if (!srcBuf) throw new FileEditorError('FILE_NOT_FOUND', `Source file not found: ${srcPath}`)
+      const sheet = await xlsxReadSheet(srcBuf, args.sheet)
+      headers = sheet.headers
+      rows = sheet.rows.map((r) => headers.map((h) => r[h] ?? ''))
+    } else if (args.rows && args.rows.length > 0) {
+      headers = args.headers ?? []
+      rows = args.rows
+    } else {
+      throw new FileEditorError(
+        'INVALID_ARGS',
+        'pdf_create requires either source_xlsx or non-empty rows',
+      )
+    }
+
+    const buf = await pdfCreateFromTable({ title: args.title, headers, rows })
+    await this.storage.write(tenantId, ticketId, safePath, buf)
+    return { path: safePath, bytesWritten: buf.length, rows: rows.length }
   }
 }
 

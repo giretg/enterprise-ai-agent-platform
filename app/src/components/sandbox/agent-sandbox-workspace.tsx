@@ -5,7 +5,9 @@ import { useRouter } from 'next/navigation'
 import { useEffect, useState, useTransition } from 'react'
 import {
   askWiki,
+  generateReport,
   listDocumentsForAgent,
+  listReportTemplatesAction,
   processDocument,
   processDocumentForWiki,
   promoteToTicket,
@@ -24,6 +26,8 @@ Bruttó összeg: 152400
 Tétel: irodai szolgáltatás`
 
 type KbDocument = { id: string; filename: string; status: string; createdAt: Date | string }
+
+type ReportTemplateOption = { id: string; name: string; description: string }
 
 type AgentSummary = {
   id: string
@@ -97,10 +101,43 @@ function WikiSandbox({ agent }: { agent: AgentSummary }) {
   const [uploadMessage, setUploadMessage] = useState<string | null>(null)
   const [kbDocs, setKbDocs] = useState<KbDocument[]>([])
   const [textInput, setTextInput] = useState('')
+  const [reportTemplates, setReportTemplates] = useState<ReportTemplateOption[]>([])
+  const [selectedTemplate, setSelectedTemplate] = useState('')
+  const [reportPending, setReportPending] = useState(false)
+  const [reportMessage, setReportMessage] = useState<string | null>(null)
+  const [reportTicketId, setReportTicketId] = useState<string | null>(null)
 
   useEffect(() => {
     refreshDocs(agent.id)
   }, [agent.id])
+
+  useEffect(() => {
+    listReportTemplatesAction().then((res) => {
+      if (res.success) {
+        const templates = res.data as ReportTemplateOption[]
+        setReportTemplates(templates)
+        setSelectedTemplate((prev) => prev || templates[0]?.id || '')
+      }
+    })
+  }, [])
+
+  const generateReportFlow = () => {
+    if (!selectedTemplate) return
+    setReportMessage(null)
+    setReportTicketId(null)
+    setReportPending(true)
+    generateReport({ agentId: agent.id, templateId: selectedTemplate })
+      .then((res) => {
+        if (!res.success) {
+          setReportMessage(res.error)
+          return
+        }
+        const ticketId = (res.data as { ticketId: string }).ticketId
+        setReportTicketId(ticketId)
+        setReportMessage('Riport-ticket létrehozva — a dispatcher a tudásbázisból generálja.')
+      })
+      .finally(() => setReportPending(false))
+  }
 
   function refreshDocs(id: string) {
     listDocumentsForAgent({ agentId: id }).then((res) => {
@@ -279,6 +316,49 @@ function WikiSandbox({ agent }: { agent: AgentSummary }) {
             </button>
           </div>
         )}
+      </Card>
+
+      <Card title="Riport generálása">
+        <p className="mb-3 text-sm text-ink-soft">
+          Előre definiált sablonból riport-ticket készül. Az agent a tudásbázisból (kb_search), a két
+          átjárón át, citáltan állítja elő — a riport a boardon és az auditban jelenik meg.
+        </p>
+        <div className="space-y-3">
+          <select
+            className="w-full rounded-xl border border-line bg-night-2 p-3 text-sm text-ink focus:border-coral/50 focus:outline-none"
+            value={selectedTemplate}
+            onChange={(e) => setSelectedTemplate(e.target.value)}
+          >
+            {reportTemplates.length === 0 && <option value="">Nincs elérhető sablon</option>}
+            {reportTemplates.map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name}
+              </option>
+            ))}
+          </select>
+          {selectedTemplate && (
+            <p className="text-xs text-ink-faint">
+              {reportTemplates.find((t) => t.id === selectedTemplate)?.description}
+            </p>
+          )}
+          <button
+            type="button"
+            disabled={reportPending || !selectedTemplate}
+            onClick={generateReportFlow}
+            className="rounded-full bg-honey/20 px-5 py-2.5 text-sm font-semibold text-honey hover:bg-honey/30 disabled:opacity-50"
+          >
+            {reportPending ? 'Riport indítása...' : 'Riport generálása'}
+          </button>
+          {reportMessage && <p className="text-sm text-ink-soft">{reportMessage}</p>}
+          {reportTicketId && (
+            <Link
+              href={`/sandbox/proposals/${reportTicketId}`}
+              className="inline-block text-sm text-coral hover:underline"
+            >
+              Riport-ticket megnyitása →
+            </Link>
+          )}
+        </div>
       </Card>
 
       <Card title="Board">

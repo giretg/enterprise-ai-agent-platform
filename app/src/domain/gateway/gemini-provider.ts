@@ -1,5 +1,12 @@
 import { GoogleGenAI } from '@google/genai'
-import type { GatewayMessage, ModelConfig, ModelProvider, ModelProviderResult } from './model-gateway'
+import type {
+  GatewayMessage,
+  GatewayToolCall,
+  ModelConfig,
+  ModelProvider,
+  ModelProviderResult,
+  ToolDefinition,
+} from './model-gateway'
 
 function isGeminiStubConfigured(): boolean {
   return process.env.GEMINI_STUB === 'true'
@@ -26,6 +33,12 @@ function stubGeminiAnswer(messages: GatewayMessage[]): ModelProviderResult {
   }
 }
 
+type GeminiPart =
+  | { text: string }
+  | { functionCall: { name: string; args: Record<string, unknown> } }
+  | { functionResponse: { name: string; response: Record<string, unknown> } }
+type GeminiContent = { role: 'user' | 'model'; parts: GeminiPart[] }
+
 function buildGeminiRequest(messages: GatewayMessage[]) {
   const systemInstruction = messages
     .filter((m) => m.role === 'system')
@@ -33,12 +46,28 @@ function buildGeminiRequest(messages: GatewayMessage[]) {
     .filter(Boolean)
     .join('\n\n')
 
-  const contents = messages
-    .filter((m) => m.role === 'user')
-    .map((m) => ({
-      role: 'user' as const,
-      parts: [{ text: m.content }],
-    }))
+  const contents: GeminiContent[] = []
+  for (const m of messages) {
+    if (m.role === 'system') continue
+    if (m.role === 'user') {
+      contents.push({ role: 'user', parts: [{ text: m.content }] })
+      continue
+    }
+    if (m.role === 'assistant') {
+      const parts: GeminiPart[] = []
+      if (m.content?.trim()) parts.push({ text: m.content })
+      for (const call of m.toolCalls ?? []) {
+        parts.push({ functionCall: { name: call.name, args: call.input ?? {} } })
+      }
+      if (parts.length) contents.push({ role: 'model', parts })
+      continue
+    }
+    // tool eredmény → functionResponse part (Gemini user-szerepként várja)
+    contents.push({
+      role: 'user',
+      parts: [{ functionResponse: { name: m.toolName, response: { result: m.content } } }],
+    })
+  }
 
   return {
     systemInstruction: systemInstruction || undefined,
@@ -66,6 +95,7 @@ export class GeminiProvider implements ModelProvider {
     ticketId?: string
     messages: GatewayMessage[]
     modelConfig: ModelConfig
+    tools?: ToolDefinition[]
   }): Promise<ModelProviderResult> {
     if (isGeminiStubConfigured()) {
       return stubGeminiAnswer(input.messages)
@@ -82,16 +112,38 @@ export class GeminiProvider implements ModelProvider {
         ...(systemInstruction ? { systemInstruction } : {}),
         ...(input.modelConfig.temperature != null ? { temperature: input.modelConfig.temperature } : {}),
         ...(input.modelConfig.maxTokens != null ? { maxOutputTokens: input.modelConfig.maxTokens } : {}),
+        ...(input.tools?.length
+          ? {
+              tools: [
+                {
+                  functionDeclarations: input.tools.map((t) => ({
+                    name: t.name,
+                    description: t.description,
+                    parameters: t.inputSchema,
+                  })),
+                },
+              ],
+            }
+          : {}),
       },
     })
 
+    const toolCalls: GatewayToolCall[] = (response.functionCalls ?? []).map((fc, index) => ({
+      id: fc.id || `call_${index}`,
+      name: fc.name ?? '',
+      input: (fc.args as Record<string, unknown> | undefined) ?? {},
+    }))
+
     const content = response.text?.trim() ?? ''
-    if (!content) {
+    // Tool-only válasznál a content üres — csak akkor hiba, ha sem szöveg, sem
+    // tool hívás nem jött vissza.
+    if (!content && toolCalls.length === 0) {
       throw new Error('Gemini provider returned empty content')
     }
 
     return {
       content,
+      ...(toolCalls.length ? { toolCalls } : {}),
       usage: {
         promptTokens: response.usageMetadata?.promptTokenCount,
         completionTokens: response.usageMetadata?.candidatesTokenCount,

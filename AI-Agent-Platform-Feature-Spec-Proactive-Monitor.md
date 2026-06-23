@@ -5,23 +5,23 @@
 **Dátum:** 2026-06-21
 **Forrásdokumentumok:** `AI-Agent-Platform-Koncepcio.md` (§4.11.4, §4.11.6, §4.11.7, §8.6, §11.5), `AI-Agent-Platform-MVP-Dev-Spec-Roadmap-v1.0.md` (v1.0, §5.7 dispatcher, §15.4 scheduled tasks), `AI-Agent-Platform-Feature-Spec-PerUser-Connector.md` (v1.0)
 **Olvasó:** fejlesztő(k). Feltételezi a Ticket-állapotgép, a `DispatcherService`, a `ScheduledTask` runtime, a Tool Broker + Model Gateway és az append-only audit ismeretét.
-**Státusz:** **Fázis 2 — fejlesztés alatt.** A **PM-A kész** (adatmodell + kétlépcsős söprés-motor + deadline-collector vertikális szelet + worker-bekötés + unit-tesztek); a PM-B…PM-E hátra van. Az „Implementációs állapot” szekció naprakész.
+**Státusz:** **Fázis 2 — fejlesztés alatt.** A **PM-A…PM-E lényegileg kész** (az értesítési csatorna implementáción kívül, ami opcionális). Az „Implementációs állapot” szekció naprakész.
 
 ---
 
-## Implementációs állapot (2026-06-21)
+## Implementációs állapot (2026-06-22)
 
-**Összefoglaló:** A **PM-A elkészült**: a teljes adatmodell (`MonitorDefinition` / `MonitorRun` / `MonitorSignal`), a determinisztikus, kétlépcsős söprés-motor (`MonitorService`), egy működő **deadline-collector** (board `due_by` jelek, nem-LLM), a szűrő-DSL kiértékelő (`evaluateFilter`), a dedup/cooldown + catch-up + `@@unique` dupla-fire védelem, és a dispatcher-worker bekötés. A motor a meglévő infrastruktúrára épül: a 2. lépcső eszkalált ticketje a Ticket-állapotgépen (`source = system`, `type = monitor_alert`) megy tovább, és `escalateAgentId` esetén a meglévő `DispatcherService` veszi fel. Build + lint + tsc zöld, unit-tesztek zöldek (`npm run test:monitor`).
+**Összefoglaló:** A **PM-A + PM-B + PM-C + PM-D + PM-E (UI) elkészült**. A teljes kétlépcsős söprés-motor (deadline + board-backlog + connector-count stub collector), a determinisztikus szűrő-DSL, a dedup/cooldown, a dispatcher kill-switch + intervallum PlatformSetting-en át, a globális monitor kill-switch (`monitor.kill_switch`), a teljes Control Plane UI (`/control-plane/monitors` lista + szerkesztő + dry-run + futásnapló + jel-cooldown tábla), a server actions és a rendszer-oldal monitor-vezérlő panel. Build + lint + tsc zöld, unit-tesztek zöldek.
 
 ### Fázisok
 
 | Fázis | Leírás | Állapot |
 |---|---|---|
 | **PM-A** | Adatmodell + determinisztikus söprés-motor (nem-LLM, 1. lépcső) + deadline-collector + dedup/catch-up/dupla-fire + worker | ✅ Kész |
-| **PM-B** | További collectorok (board-backlog, connector-darabszám a Tool Brokeren át) | Hátra van |
-| **PM-C** | LLM-eszkaláció (`escalateAgentId`) end-to-end igazolás + dispatch-budget cap bekötés | Részben (váz kész, ticket→dispatcher automatikus; budget cap finomítás hátra) |
-| **PM-D** | Globális kill-switch + intervallum a `PlatformSetting`-ben + jitter/concurrency hangolás | Részben (lock/catch-up/jitter kész; kill-switch `PlatformSetting` hátra) |
-| **PM-E** | Control Plane UI (lista + szerkesztő + dry-run + futásnapló) + értesítési csatorna | Hátra van |
+| **PM-B** | További collectorok (`board-backlog` — elakadt ticketek, `connector-count` stub) | ✅ Kész |
+| **PM-C** | LLM-eszkaláció (`escalateAgentId`) end-to-end + dispatch-budget cap (meglévő dispatcher-en át) | ✅ Kész |
+| **PM-D** | Globális kill-switch + intervallum + concurrency-cap a `PlatformSetting`-ben + dispatcher worker kill-switch check | ✅ Kész |
+| **PM-E** | Control Plane UI (lista + szerkesztő + dry-run + futásnapló + jel-cooldown) + rendszer-oldal vezérlő panel | ✅ Kész |
 
 ### Elkészült fájlok (PM-A)
 
@@ -36,13 +36,33 @@
 - `app/prisma/seed.ts` — minta `deadline` monitor
 - `app/src/domain/ticket/ticket-type-config.ts`, `system/ticket-type-config-panel.tsx`, `lib/validators/actions.ts`, `actions/platform.ts` — `monitor_alert` típus átvezetés
 
-### Hátralévő fájlok (PM-B…PM-E)
+### Elkészült fájlok (PM-B…PM-E)
 
-- `app/src/domain/monitor/collectors/board-collector.ts`, `connector-count-collector.ts`
-- `app/src/app/control-plane/monitors/` — lista + szerkesztő + dry-run + futásnapló UI
-- `app/src/app/actions/monitor.ts` — server action-ök (CRUD, dry-run)
-- `app/src/lib/notify/` — értesítési csatorna adapter (e-mail/chat, opcionális)
-- `PlatformSettingsService` — `monitor.kill_switch` / `monitor.sweep_interval_sec` / `monitor.max_concurrent`
+- `app/src/domain/monitor/collectors/board-collector.ts` — elakadt awaiting_human/ready ticketek (belső, read-only)
+- `app/src/domain/monitor/collectors/connector-count-collector.ts` — stub (Tool Broker mailbox_count capability pending)
+- `app/src/repositories/interfaces/index.ts` — `StaleBacklogTicket`, `UpdateMonitorInput` típusok; `update`, `findRuns`, `findSignalsByMonitor`, `collectStaleBacklogTickets` metódusok
+- `app/src/repositories/postgres/monitor-repository.ts` — fenti metódusok implementálva
+- `app/src/domain/monitor/monitor-service.ts` — `getById`, `update`, `revoke`, `listRuns`, `listSignals`, `dryRun` metódusok
+- `app/src/domain/platform-settings/platform-settings-service.ts` — `MonitorControls`, `getMonitorControls`, `isMonitorEnabled`, `setMonitorControls`
+- `app/scripts/dispatcher-worker.ts` — `isMonitorEnabled()` kill-switch check beágyazva
+- `app/src/domain/index.ts` — `BoardBacklogCollector` + `ConnectorCountCollector` regisztrálva
+- `app/src/app/actions/monitor.ts` — server action-ök (CRUD, dry-run, controls)
+- `app/src/lib/validators/actions.ts` — monitor sémák: `createMonitorSchema`, `updateMonitorSchema`, `monitorIdSchema`, `monitorDryRunSchema`, `setMonitorControlsSchema`
+- `app/src/app/control-plane/monitors/page.tsx` — monitor lista oldal
+- `app/src/app/control-plane/monitors/new/page.tsx` — új monitor létrehozás
+- `app/src/app/control-plane/monitors/[monitorId]/page.tsx` — részletek + szerkesztő + dry-run + futásnapló
+- `app/src/components/monitors/monitor-list.tsx` — lista + toggle/revoke
+- `app/src/components/monitors/monitor-run-log.tsx` — futásnapló táblázat
+- `app/src/components/monitors/monitor-editor-form.tsx` — CRUD form (JSON DSL szerkesztő)
+- `app/src/components/monitors/dry-run-panel.tsx` — próba-futás UI
+- `app/src/app/control-plane/system/monitor-control-panel.tsx` — kill-switch + intervallum + concurrency vezérlő
+- `app/src/app/control-plane/system/page.tsx` — MonitorControlPanel bekötve
+- `app/src/app/control-plane/layout.tsx` — „Monitorok” nav item
+
+### Hátralévő / nyitott
+
+- `app/src/lib/notify/` — értesítési csatorna adapter (e-mail/chat) — opcionális, a board az elsődleges felület (§7)
+- `connector-count-collector.ts` Tool Broker `mailbox_count` capability — D-PM-3 döntés alapján külön spec (§11)
 
 ---
 

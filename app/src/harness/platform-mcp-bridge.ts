@@ -27,10 +27,55 @@ const FILE_TOOLS = [
 const BINARY_TOOLS = [
   'xlsx_read_sheet',
   'xlsx_write_cells',
+  'xlsx_format_range',
+  'xlsx_layout',
+  'xlsx_create',
   'xlsx_append_rows',
   'docx_read',
   'pdf_read',
 ] as const
+
+/** Közös cella-stílus JSON-séma a formázó toolokhoz (CellStyle, §2). */
+const CELL_STYLE_SCHEMA = {
+  type: 'object',
+  description: 'Cell formatting. Colors accept RGB ("1F4E78") or ARGB ("FF1F4E78") hex.',
+  properties: {
+    font: {
+      type: 'object',
+      properties: {
+        bold: { type: 'boolean' },
+        italic: { type: 'boolean' },
+        size: { type: 'number' },
+        color: { type: 'string', description: 'RGB or ARGB hex, e.g. "FFFFFFFF"' },
+        name: { type: 'string', description: 'Font family, e.g. "Calibri"' },
+      },
+    },
+    fill: {
+      type: 'object',
+      properties: {
+        color: { type: 'string', description: 'Solid background, RGB or ARGB hex' },
+      },
+    },
+    alignment: {
+      type: 'object',
+      properties: {
+        horizontal: { type: 'string', enum: ['left', 'center', 'right'] },
+        vertical: { type: 'string', enum: ['top', 'middle', 'bottom'] },
+        wrapText: { type: 'boolean' },
+      },
+    },
+    border: {
+      type: 'object',
+      properties: {
+        top: { type: 'string', enum: ['thin', 'medium', 'thick'] },
+        bottom: { type: 'string', enum: ['thin', 'medium', 'thick'] },
+        left: { type: 'string', enum: ['thin', 'medium', 'thick'] },
+        right: { type: 'string', enum: ['thin', 'medium', 'thick'] },
+      },
+    },
+    numFmt: { type: 'string', description: 'Excel number format, e.g. "#,##0.00", "0.0%"' },
+  },
+} as const
 
 export const PLATFORM_BROKER_TOOLS = [
   {
@@ -272,7 +317,8 @@ export const PLATFORM_BROKER_TOOLS = [
   },
   {
     name: 'xlsx_write_cells',
-    description: 'Update individual cells in an Excel file. Cell addresses use A1 notation.',
+    description:
+      'Update individual cells in an Excel file with value and/or formula and/or formatting. Cell addresses use A1 notation. style is merged onto the existing cell style. Use formula (without "=") for SUM etc. — note the computed value is only filled in when the file is opened in Excel/LibreOffice.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -284,13 +330,106 @@ export const PLATFORM_BROKER_TOOLS = [
             type: 'object',
             properties: {
               cell: { type: 'string', description: 'e.g. "B3"' },
-              value: { description: 'string | number | boolean | null' },
+              value: { description: 'string | number | boolean | null (mutually exclusive with formula)' },
+              formula: { type: 'string', description: 'e.g. "SUM(B2:B10)" — without leading "="' },
+              style: CELL_STYLE_SCHEMA,
+              numFmt: { type: 'string', description: 'Shortcut for style.numFmt, e.g. "# ##0 Ft"' },
             },
-            required: ['cell', 'value'],
+            required: ['cell'],
           },
         },
       },
       required: ['path', 'changes'],
+    },
+  },
+  {
+    name: 'xlsx_format_range',
+    description:
+      'Apply one CellStyle to every cell in an A1 rectangle range (e.g. "A1:E1" to style a header row).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string' },
+        sheet: { type: 'string' },
+        range: { type: 'string', description: 'A1 range, e.g. "A1:E1" or "A1:A100"' },
+        style: CELL_STYLE_SCHEMA,
+      },
+      required: ['path', 'range', 'style'],
+    },
+  },
+  {
+    name: 'xlsx_layout',
+    description:
+      'Structural operations on a worksheet: merge cells, column widths, row heights, freeze panes, autofilter. All fields optional; combine several in one call.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string' },
+        sheet: { type: 'string' },
+        mergeCells: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'A1 ranges to merge, e.g. ["A1:D1", "A2:A5"]',
+        },
+        columnWidths: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              column: { type: 'string', description: 'Column letter, e.g. "A"' },
+              width: { type: 'number' },
+            },
+            required: ['column', 'width'],
+          },
+        },
+        rowHeights: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              row: { type: 'number', description: '1-based row number' },
+              height: { type: 'number' },
+            },
+            required: ['row', 'height'],
+          },
+        },
+        freeze: {
+          type: 'object',
+          properties: {
+            rows: { type: 'number', description: 'Rows to freeze from the top, e.g. 1 for header' },
+            columns: { type: 'number', description: 'Columns to freeze from the left' },
+          },
+        },
+        autoFilter: { type: 'string', description: 'A1 range for the filter header, e.g. "A1:E1"' },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'xlsx_create',
+    description:
+      'Create a new empty Excel workbook with named worksheet(s) and optional initial 2D data rows. Fails with FILE_ALREADY_EXISTS if the path exists.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Relative path, e.g. "reports/q2.xlsx"' },
+        sheets: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string', description: 'Worksheet name (max 31 chars)' },
+              rows: {
+                type: 'array',
+                items: { type: 'array', items: {} },
+                description: '2D array of rows (first row typically the header)',
+              },
+            },
+            required: ['name'],
+          },
+        },
+      },
+      required: ['path', 'sheets'],
     },
   },
   {

@@ -1,8 +1,9 @@
-import type { Prisma, MonitorDefinition, MonitorRunOutcome } from '@prisma/client'
+import type { Prisma, MonitorDefinition, MonitorRun, MonitorRunOutcome, MonitorSignal } from '@prisma/client'
 import type {
   AuditRepository,
   MonitorRepository,
   TicketRepository,
+  UpdateMonitorInput,
 } from '@/repositories/interfaces'
 import { randomUUID } from 'crypto'
 import type { MonitorCollector, MonitorSignalDraft } from './collectors/types'
@@ -76,6 +77,71 @@ export class MonitorService {
 
   async list(filter?: { tenantId?: string }) {
     return this.monitors.findMany(filter)
+  }
+
+  async getById(id: string): Promise<MonitorDefinition | null> {
+    return this.monitors.findById(id)
+  }
+
+  async update(id: string, data: UpdateMonitorInput): Promise<MonitorDefinition> {
+    return this.monitors.update(id, data)
+  }
+
+  async revoke(id: string): Promise<MonitorDefinition> {
+    return this.monitors.revoke(id)
+  }
+
+  async listRuns(monitorId: string, limit = 20): Promise<MonitorRun[]> {
+    return this.monitors.findRuns(monitorId, limit)
+  }
+
+  async listSignals(monitorId: string, limit = 50): Promise<MonitorSignal[]> {
+    return this.monitors.findSignalsByMonitor(monitorId, limit)
+  }
+
+  /**
+   * Dry-run (PM-E §9): lefuttatja az 1. lépcsőt, szűrőt és cooldown-ellenőrzést, de
+   * nem nyit ticketet, nem hív LLM-et, nem ír adatbázisba. Az eredmény a szerkesztő
+   * hangolásához mutatja meg, mi lenne eszkalálva / elnyomva.
+   */
+  async dryRun(monitorId: string, now = new Date()) {
+    const monitor = await this.monitors.findById(monitorId)
+    if (!monitor) throw new Error('Monitor not found')
+
+    const collector = this.collectors.get(monitor.kind)
+    const signals = collector
+      ? await collector.collect({
+          tenantId: monitor.tenantId,
+          config: jsonObject(monitor.collectorConfig),
+          now,
+        })
+      : []
+
+    const results = await Promise.all(
+      signals.map(async (signal) => {
+        const filterResult = evaluateFilter(monitor.filterConfig, signal, now)
+        let cooldownStatus: 'would_escalate' | 'suppressed' | 'new' = 'new'
+        if (filterResult.matched) {
+          const dedupKey = renderDedupKey(monitor, signal)
+          const existing = await this.monitors
+            .findSignalsByMonitor(monitorId, 200)
+            .then((all) => all.find((s) => s.dedupKey === dedupKey))
+          if (existing?.lastEscalatedAt) {
+            const age = now.getTime() - existing.lastEscalatedAt.getTime()
+            cooldownStatus = age < monitor.cooldownSeconds * 1000 ? 'suppressed' : 'would_escalate'
+          } else {
+            cooldownStatus = 'would_escalate'
+          }
+        }
+        return { signal, filterResult, cooldownStatus }
+      }),
+    )
+
+    const wouldEscalate = results.filter((r) => r.cooldownStatus === 'would_escalate').length
+    const suppressed = results.filter((r) => r.cooldownStatus === 'suppressed').length
+    const filtered = results.filter((r) => !r.filterResult.matched).length
+
+    return { signals: results, summary: { total: signals.length, wouldEscalate, suppressed, filtered } }
   }
 
   /** Nem-LLM söprés: minden esedékes monitor lockolása + futtatása (a worker hívja). */

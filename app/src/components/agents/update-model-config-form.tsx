@@ -5,16 +5,23 @@ import { useState, useTransition } from 'react'
 import { updateAgentModelConfig } from '@/app/actions/platform'
 import { ModelSelectField } from '@/components/agents/model-select-field'
 import { Card } from '@/components/ui/shell'
-import { MODEL_PROVIDERS, normalizeModelForProvider, providerOption } from '@/lib/model-providers'
+import {
+  MODEL_PROVIDERS,
+  normalizeModelForProvider,
+  providerOption,
+  type ModelProviderOption,
+} from '@/lib/model-providers'
 
 // Admin agentenként módosíthatja a modell-konfigot (provider/model/temperature/
 // maxTokens). Minden mentés új agent-verziót fagyaszt be (reprodukálhatóság).
 export function UpdateModelConfigForm({
   agentId,
   current,
+  providers = MODEL_PROVIDERS,
 }: {
   agentId: string
   current: { provider: string; model: string; temperature?: number; maxTokens?: number }
+  providers?: ModelProviderOption[]
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
@@ -22,8 +29,19 @@ export function UpdateModelConfigForm({
   const [done, setDone] = useState<string | null>(null)
   const [provider, setProvider] = useState(current.provider)
   const [model, setModel] = useState(current.model)
+  const safeProviders = providers.length > 0 ? providers : MODEL_PROVIDERS
+  const providerOptions = safeProviders.some((p) => p.value === current.provider)
+    ? safeProviders
+    : [
+        ...safeProviders,
+        {
+          ...providerOption(current.provider),
+          defaultModel: current.model,
+          models: [{ id: current.model, label: `${current.model} (jelenlegi)` }],
+        },
+      ]
 
-  const selected = providerOption(provider)
+  const selected = providerOption(provider, providerOptions)
   const unchanged =
     provider === current.provider && model.trim() === current.model
 
@@ -43,7 +61,7 @@ export function UpdateModelConfigForm({
               agentId,
               modelConfig: {
                 provider,
-                model: normalizeModelForProvider(provider, model),
+                model: normalizeModelForProvider(provider, model, providerOptions),
                 ...(Number.isFinite(temperature) ? { temperature } : {}),
                 ...(Number.isFinite(maxTokens) && maxTokens > 0 ? { maxTokens } : {}),
               },
@@ -63,13 +81,13 @@ export function UpdateModelConfigForm({
             <select
               value={provider}
               onChange={(e) => {
-                const next = providerOption(e.target.value)
+                const next = providerOption(e.target.value, providerOptions)
                 setProvider(next.value)
-                setModel(normalizeModelForProvider(next.value, model))
+                setModel(normalizeModelForProvider(next.value, model, providerOptions))
               }}
               className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm"
             >
-              {MODEL_PROVIDERS.map((p) => (
+              {providerOptions.map((p) => (
                 <option key={p.value} value={p.value}>
                   {p.label}
                 </option>
@@ -78,7 +96,12 @@ export function UpdateModelConfigForm({
           </label>
           <label className="block text-sm">
             <span className="text-ink-soft">Modell</span>
-            <ModelSelectField provider={provider} model={model} onModelChange={setModel} />
+            <ModelSelectField
+              provider={provider}
+              model={model}
+              onModelChange={setModel}
+              providers={providerOptions}
+            />
           </label>
           <label className="block text-sm">
             <span className="text-ink-soft">Temperature</span>

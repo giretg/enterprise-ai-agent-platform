@@ -1,7 +1,12 @@
 import Link from 'next/link'
+import { getModelPolicy } from '@/app/actions/platform'
 import { CreateAgentForm } from '@/components/agents/create-agent-form'
+import { enabledModelProviders } from '@/lib/model-policy'
 
-export default function NewAgentPage() {
+export default async function NewAgentPage() {
+  const policyRes = await getModelPolicy()
+  const providers = policyRes.success ? enabledModelProviders(policyRes.data) : []
+
   return (
     <div className="space-y-6">
       <div>
@@ -13,7 +18,15 @@ export default function NewAgentPage() {
       </div>
 
       <div className="max-w-2xl">
-        <CreateAgentForm />
+        {policyRes.success && providers.length > 0 ? (
+          <CreateAgentForm providers={providers} />
+        ) : (
+          <div className="rounded-lg border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
+            {policyRes.success
+              ? 'Nincs agenthez engedélyezett modell. A Rendszer oldalon engedélyezz legalább egyet.'
+              : policyRes.error}
+          </div>
+        )}
       </div>
     </div>
   )

@@ -34,6 +34,9 @@ import {
   type XlsxReadSheetResult,
   type XlsxWriteCellsResult,
   type XlsxAppendRowsResult,
+  type XlsxFormatRangeResult,
+  type XlsxLayoutResult,
+  type XlsxCreateResult,
   type DocxReadResult,
   type PdfReadResult,
 } from '@/domain/file-editor/file-editor-service'
@@ -45,7 +48,12 @@ import type {
   ToolBrokerRepository,
 } from '@/repositories/interfaces'
 import type { TicketService } from '@/domain/ticket/ticket-service'
-import type { XlsxRow } from '@/domain/file-editor/adapters/xlsx-adapter'
+import type {
+  XlsxRow,
+  XlsxCellChange,
+  CellStyle,
+  XlsxSheetSpec,
+} from '@/domain/file-editor/adapters/xlsx-adapter'
 
 export type KbSearchArgs = {
   query: string
@@ -184,11 +192,38 @@ export type XlsxReadSheetArgs = { path: string; sheet?: string; max_rows?: numbe
 export type XlsxWriteCellsArgs = {
   path: string
   sheet?: string
-  changes: Array<{ cell: string; value: string | number | boolean | null }>
+  changes: XlsxCellChange[]
+}
+export type XlsxFormatRangeArgs = {
+  path: string
+  sheet?: string
+  range: string
+  style: CellStyle
+}
+export type XlsxLayoutArgs = {
+  path: string
+  sheet?: string
+  mergeCells?: string[]
+  columnWidths?: Array<{ column: string; width: number }>
+  rowHeights?: Array<{ row: number; height: number }>
+  freeze?: { rows?: number; columns?: number }
+  autoFilter?: string
+}
+export type XlsxCreateArgs = {
+  path: string
+  sheets: XlsxSheetSpec[]
 }
 export type XlsxAppendRowsArgs = { path: string; sheet?: string; rows: XlsxRow[] }
 export type DocxReadArgs = { path: string }
 export type PdfReadArgs = { path: string; page_range?: string }
+export type PdfCreateArgs = {
+  path: string
+  source_xlsx?: string
+  sheet?: string
+  title?: string
+  headers?: string[]
+  rows?: Array<Array<string | number | boolean | null>>
+}
 
 type ToolInvokeBase = {
   agentId: string
@@ -218,9 +253,13 @@ export type ToolBrokerInvokeInput =
   | (ToolInvokeBase & { tool: 'file_delete'; args: FileDeleteArgs })
   | (ToolInvokeBase & { tool: 'xlsx_read_sheet'; args: XlsxReadSheetArgs })
   | (ToolInvokeBase & { tool: 'xlsx_write_cells'; args: XlsxWriteCellsArgs })
+  | (ToolInvokeBase & { tool: 'xlsx_format_range'; args: XlsxFormatRangeArgs })
+  | (ToolInvokeBase & { tool: 'xlsx_layout'; args: XlsxLayoutArgs })
+  | (ToolInvokeBase & { tool: 'xlsx_create'; args: XlsxCreateArgs })
   | (ToolInvokeBase & { tool: 'xlsx_append_rows'; args: XlsxAppendRowsArgs })
   | (ToolInvokeBase & { tool: 'docx_read'; args: DocxReadArgs })
   | (ToolInvokeBase & { tool: 'pdf_read'; args: PdfReadArgs })
+  | (ToolInvokeBase & { tool: 'pdf_create'; args: PdfCreateArgs })
 
 export type ToolBrokerInvokeResult =
   | {
@@ -251,6 +290,9 @@ export type ToolBrokerInvokeResult =
         | XlsxReadSheetResult
         | XlsxWriteCellsResult
         | XlsxAppendRowsResult
+        | XlsxFormatRangeResult
+        | XlsxLayoutResult
+        | XlsxCreateResult
         | DocxReadResult
         | PdfReadResult
       resultMeta: Record<string, unknown>
@@ -286,9 +328,13 @@ const TOOL_REQUIREMENTS: Record<
   file_delete: { connectorType: 'workspace', accessMode: 'write' },
   xlsx_read_sheet: { connectorType: 'workspace', accessMode: 'read' },
   xlsx_write_cells: { connectorType: 'workspace', accessMode: 'write' },
+  xlsx_format_range: { connectorType: 'workspace', accessMode: 'write' },
+  xlsx_layout: { connectorType: 'workspace', accessMode: 'write' },
+  xlsx_create: { connectorType: 'workspace', accessMode: 'write' },
   xlsx_append_rows: { connectorType: 'workspace', accessMode: 'write' },
   docx_read: { connectorType: 'workspace', accessMode: 'read' },
   pdf_read: { connectorType: 'workspace', accessMode: 'read' },
+  pdf_create: { connectorType: 'workspace', accessMode: 'write' },
 }
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -347,7 +393,7 @@ function documentSearchCorpus(filename: string, extractedText: string | null): s
 }
 
 function snippet(value: string): string {
-  return value.length > 280 ? `${value.slice(0, 277)}...` : value
+  return value.length > 2000 ? `${value.slice(0, 1997)}...` : value
 }
 
 function argsMeta(input: ToolBrokerInvokeInput): Record<string, unknown> {
@@ -434,9 +480,24 @@ function argsMeta(input: ToolBrokerInvokeInput): Record<string, unknown> {
   if (input.tool === 'file_delete') return { ...base, path: input.args.path }
   if (input.tool === 'xlsx_read_sheet') return { ...base, path: input.args.path, sheet: input.args.sheet ?? null, maxRows: input.args.max_rows ?? 500 }
   if (input.tool === 'xlsx_write_cells') return { ...base, path: input.args.path, sheet: input.args.sheet ?? null, cellCount: input.args.changes.length }
+  if (input.tool === 'xlsx_format_range') return { ...base, path: input.args.path, sheet: input.args.sheet ?? null, range: input.args.range }
+  if (input.tool === 'xlsx_layout') {
+    return {
+      ...base,
+      path: input.args.path,
+      sheet: input.args.sheet ?? null,
+      mergeCount: input.args.mergeCells?.length ?? 0,
+      columnWidthCount: input.args.columnWidths?.length ?? 0,
+      rowHeightCount: input.args.rowHeights?.length ?? 0,
+      freeze: Boolean(input.args.freeze),
+      autoFilter: Boolean(input.args.autoFilter),
+    }
+  }
+  if (input.tool === 'xlsx_create') return { ...base, path: input.args.path, sheetCount: input.args.sheets.length }
   if (input.tool === 'xlsx_append_rows') return { ...base, path: input.args.path, sheet: input.args.sheet ?? null, rowCount: input.args.rows.length }
   if (input.tool === 'docx_read') return { ...base, path: input.args.path }
   if (input.tool === 'pdf_read') return { ...base, path: input.args.path, pageRange: input.args.page_range ?? null }
+  if (input.tool === 'pdf_create') return { ...base, path: input.args.path, sourceXlsx: input.args.source_xlsx ?? null, rowCount: input.args.rows?.length ?? null }
 
   return {
     ...base,
@@ -468,6 +529,9 @@ function resultMeta(
     | XlsxReadSheetResult
     | XlsxWriteCellsResult
     | XlsxAppendRowsResult
+    | XlsxFormatRangeResult
+    | XlsxLayoutResult
+    | XlsxCreateResult
     | DocxReadResult
     | PdfReadResult,
 ): Record<string, unknown> {
@@ -528,6 +592,9 @@ function resultMeta(
   if ('rowCount' in result && 'headers' in result) return { sheet: result.sheet, rowCount: result.rowCount, headerCount: result.headers.length }
   if ('cellsUpdated' in result) return { path: result.path, cellsUpdated: result.cellsUpdated }
   if ('rowsAppended' in result) return { path: result.path, rowsAppended: result.rowsAppended }
+  if ('range' in result) return { path: result.path, range: result.range }
+  if ('operations' in result) return { path: result.path, operations: result.operations }
+  if ('sheets' in result) return { path: result.path, sheets: result.sheets }
   if ('numPages' in result) return { numPages: result.numPages, pagesRead: result.pagesRead, textLength: result.text.length }
   if ('text' in result && 'messages' in result) return { textLength: result.text.length, messages: result.messages.length }
 
@@ -708,7 +775,7 @@ export class ToolBrokerService {
     }
 
     try {
-      const result = await this.executeTool(input, authorization)
+      const result = await this.executeTool(input, authorization, actingTenantId)
       const latencyMs = Date.now() - startedAt
       const meta = resultMeta(result)
 
@@ -774,6 +841,7 @@ export class ToolBrokerService {
   private async executeTool(
     input: ToolBrokerInvokeInput,
     authorization: Extract<AuthorizationResult, { allowed: true }>,
+    actingTenantId: string | null,
   ) {
     if (input.tool === 'kb_search') {
       return this.kbSearch(input.agentId, input.args, authorization.connector)
@@ -784,8 +852,8 @@ export class ToolBrokerService {
     if (input.tool === 'agent_resolve') return this.agentResolve(input.args)
     if (input.tool === 'agent_catalog') return this.agentCatalog(input.args)
 
-    if (input.tool.startsWith('file_') || ['xlsx_read_sheet', 'xlsx_write_cells', 'xlsx_append_rows', 'docx_read', 'pdf_read'].includes(input.tool)) {
-      return this.executeFileTool(input, authorization.connector)
+    if (input.tool.startsWith('file_') || input.tool.startsWith('xlsx_') || input.tool.startsWith('pdf_') || input.tool === 'docx_read') {
+      return this.executeFileTool(input, authorization.connector, actingTenantId)
     }
 
     const accessToken = await this.resolveDelegatedAccessToken(input, authorization)
@@ -810,24 +878,34 @@ export class ToolBrokerService {
   private async executeFileTool(
     input: ToolBrokerInvokeInput,
     connector: Connector,
+    actingTenantId: string | null,
   ) {
-    if (!input.ticketId) throw new Error('file tools require a ticketId')
-    const tenantId = connector.tenantId ?? 'global'
-    const ticketId = input.ticketId
+    const workspaceId = input.ticketId ?? input.conversationId
+    if (!workspaceId) throw new Error('file tools require a ticketId or conversationId')
+    // A munkaterület tenant-kulcsa a cselekvő felhasználó tenantja kell legyen,
+    // hogy egyezzen a feltöltési úttal (route + chat-bridge user.tenantId-t
+    // használ). A globális workspace connector tenantId-je null, ezért korábban
+    // a feltöltött fájlokat más kulcson kereste az agent. Fallback a connector
+    // tenantra, majd 'global'-ra.
+    const tenantId = actingTenantId ?? connector.tenantId ?? 'global'
 
     try {
-      if (input.tool === 'file_read') return this.fileEditor.readFile(tenantId, ticketId, input.args)
-      if (input.tool === 'file_write') return this.fileEditor.writeFile(tenantId, ticketId, input.args)
-      if (input.tool === 'file_edit') return this.fileEditor.editFile(tenantId, ticketId, input.args)
-      if (input.tool === 'file_list') return this.fileEditor.listFiles(tenantId, ticketId, input.args)
-      if (input.tool === 'file_glob') return this.fileEditor.globFiles(tenantId, ticketId, input.args)
-      if (input.tool === 'file_search') return this.fileEditor.searchFiles(tenantId, ticketId, input.args)
-      if (input.tool === 'file_delete') return this.fileEditor.deleteFile(tenantId, ticketId, input.args)
-      if (input.tool === 'xlsx_read_sheet') return this.fileEditor.xlsxReadSheet(tenantId, ticketId, input.args)
-      if (input.tool === 'xlsx_write_cells') return this.fileEditor.xlsxWriteCells(tenantId, ticketId, input.args as { path: string; sheet?: string; changes: Array<{ cell: string; value: string | number | boolean | null }> })
-      if (input.tool === 'xlsx_append_rows') return this.fileEditor.xlsxAppendRows(tenantId, ticketId, input.args)
-      if (input.tool === 'docx_read') return this.fileEditor.docxRead(tenantId, ticketId, input.args)
-      if (input.tool === 'pdf_read') return this.fileEditor.pdfRead(tenantId, ticketId, input.args)
+      if (input.tool === 'file_read') return this.fileEditor.readFile(tenantId, workspaceId, input.args)
+      if (input.tool === 'file_write') return this.fileEditor.writeFile(tenantId, workspaceId, input.args)
+      if (input.tool === 'file_edit') return this.fileEditor.editFile(tenantId, workspaceId, input.args)
+      if (input.tool === 'file_list') return this.fileEditor.listFiles(tenantId, workspaceId, input.args)
+      if (input.tool === 'file_glob') return this.fileEditor.globFiles(tenantId, workspaceId, input.args)
+      if (input.tool === 'file_search') return this.fileEditor.searchFiles(tenantId, workspaceId, input.args)
+      if (input.tool === 'file_delete') return this.fileEditor.deleteFile(tenantId, workspaceId, input.args)
+      if (input.tool === 'xlsx_read_sheet') return this.fileEditor.xlsxReadSheet(tenantId, workspaceId, input.args)
+      if (input.tool === 'xlsx_write_cells') return this.fileEditor.xlsxWriteCells(tenantId, workspaceId, input.args)
+      if (input.tool === 'xlsx_format_range') return this.fileEditor.xlsxFormatRange(tenantId, workspaceId, input.args)
+      if (input.tool === 'xlsx_layout') return this.fileEditor.xlsxLayout(tenantId, workspaceId, input.args)
+      if (input.tool === 'xlsx_create') return this.fileEditor.xlsxCreate(tenantId, workspaceId, input.args)
+      if (input.tool === 'xlsx_append_rows') return this.fileEditor.xlsxAppendRows(tenantId, workspaceId, input.args)
+      if (input.tool === 'docx_read') return this.fileEditor.docxRead(tenantId, workspaceId, input.args)
+      if (input.tool === 'pdf_read') return this.fileEditor.pdfRead(tenantId, workspaceId, input.args)
+      if (input.tool === 'pdf_create') return this.fileEditor.pdfCreate(tenantId, workspaceId, input.args)
     } catch (e) {
       if (e instanceof FileEditorError) {
         throw new Error(`${e.code}: ${e.message}`)
@@ -1155,11 +1233,19 @@ export class ToolBrokerService {
   ): Promise<TicketCreateResult> {
     const { args } = input
 
+    // A modell néha nem-UUID értéket ad (pl. fájlnevet) UUID mezőkbe — ezt a
+    // Prisma nyers „Error creating UUID" hibával dobná. Tisztán kezeljük.
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
     if (args.assigneeType === 'agent') {
       if (!args.assigneeId) throw new Error('assigneeId is required when assigneeType is agent')
+      if (!UUID_RE.test(args.assigneeId)) {
+        throw new Error(`assigneeId must be an agent UUID, got "${args.assigneeId}"`)
+      }
       const assignee = await this.agents.findById(args.assigneeId)
       if (!assignee) throw new Error('Assignee agent not found')
     }
+    const safeSourceDocumentId =
+      args.sourceDocumentId && UUID_RE.test(args.sourceDocumentId) ? args.sourceDocumentId : null
 
     const workerAgentId = args.assigneeType === 'agent' ? args.assigneeId! : input.agentId
     const payload: Record<string, unknown> = {
@@ -1190,7 +1276,7 @@ export class ToolBrokerService {
       assigneeId: args.assigneeType === 'agent' ? args.assigneeId! : null,
       agentId: workerAgentId,
       payload: payload as Prisma.JsonValue,
-      sourceDocumentId: args.sourceDocumentId ?? null,
+      sourceDocumentId: safeSourceDocumentId,
       executeAfter: null,
       dueBy: null,
       createdById: await systemUserId(),

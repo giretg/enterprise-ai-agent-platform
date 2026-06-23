@@ -23,10 +23,20 @@ import {
   type TicketTransitionConfigRule,
   type TicketTypeConfig,
 } from '@/domain/ticket/ticket-type-config'
-import type { TicketType } from '@prisma/client'
+import {
+  MODEL_POLICY_KEY,
+  assertModelAllowed,
+  normalizeModelPolicy,
+  serializeModelPolicy,
+  upsertModelPolicyEntry,
+  type ModelPolicy,
+  type ModelPolicyInput,
+} from '@/lib/model-policy'
+import type { Prisma, TicketType } from '@prisma/client'
 
 export const DISPATCHER_CONTROLS_KEY = 'dispatcher.controls'
 export const TICKET_TYPE_CONFIGS_KEY = 'ticket.type_configs'
+export const MONITOR_CONTROLS_KEY = 'monitor.controls'
 
 export const POLL_INTERVAL_MIN_MS = 5_000
 export const POLL_INTERVAL_MAX_MS = 600_000
@@ -42,6 +52,22 @@ export type DispatcherControls = {
 const DEFAULT_CONTROLS: DispatcherControls = {
   enabled: true,
   pollIntervalMs: DEFAULT_POLL_INTERVAL_MS,
+  updatedById: null,
+  updatedAt: null,
+}
+
+export type MonitorControls = {
+  killSwitch: boolean
+  sweepIntervalSec: number
+  maxConcurrent: number
+  updatedById: string | null
+  updatedAt: string | null
+}
+
+const DEFAULT_MONITOR_CONTROLS: MonitorControls = {
+  killSwitch: false,
+  sweepIntervalSec: 60,
+  maxConcurrent: 5,
   updatedById: null,
   updatedAt: null,
 }
@@ -224,6 +250,112 @@ export class PlatformSettingsService {
       outputRef: String(input.allowedTransitions.length),
       policyDecision: 'allowed',
       metadata: { type: input.type, allowedTransitions: input.allowedTransitions },
+    })
+
+    return next
+  }
+
+  async getModelPolicy(): Promise<ModelPolicy> {
+    const raw = await this.settings.get(MODEL_POLICY_KEY)
+    return normalizeModelPolicy(raw)
+  }
+
+  async assertModelAllowed(provider: string, model: string): Promise<void> {
+    const policy = await this.getModelPolicy()
+    assertModelAllowed(policy, provider, model)
+  }
+
+  async upsertModelPolicyEntry(input: ModelPolicyInput, actorId: string): Promise<ModelPolicy> {
+    const current = await this.getModelPolicy()
+    const next = upsertModelPolicyEntry(current, input, actorId)
+
+    await this.settings.set(MODEL_POLICY_KEY, serializeModelPolicy(next), actorId)
+
+    await this.audit.append({
+      actorType: 'human',
+      actorId,
+      agentVersion: null,
+      action: 'model_policy.upsert',
+      targetType: 'model_policy',
+      targetId: null,
+      modelUsed: `${input.provider}/${input.model}`,
+      inputRef: input.provider,
+      outputRef: input.enabled ? 'enabled' : 'disabled',
+      policyDecision: 'allowed',
+      metadata: {
+        provider: input.provider,
+        model: input.model,
+        enabled: input.enabled,
+        ...(input.label ? { label: input.label } : {}),
+        ...(input.description ? { description: input.description } : {}),
+      },
+    })
+
+    return next
+  }
+
+  async getMonitorControls(): Promise<MonitorControls> {
+    const raw = (await this.settings.get(MONITOR_CONTROLS_KEY)) as Partial<MonitorControls> | null
+    if (!raw || typeof raw !== 'object') return { ...DEFAULT_MONITOR_CONTROLS }
+    return {
+      killSwitch: typeof raw.killSwitch === 'boolean' ? raw.killSwitch : DEFAULT_MONITOR_CONTROLS.killSwitch,
+      sweepIntervalSec:
+        typeof raw.sweepIntervalSec === 'number' && raw.sweepIntervalSec >= 10
+          ? raw.sweepIntervalSec
+          : DEFAULT_MONITOR_CONTROLS.sweepIntervalSec,
+      maxConcurrent:
+        typeof raw.maxConcurrent === 'number' && raw.maxConcurrent >= 1
+          ? raw.maxConcurrent
+          : DEFAULT_MONITOR_CONTROLS.maxConcurrent,
+      updatedById: typeof raw.updatedById === 'string' ? raw.updatedById : null,
+      updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : null,
+    }
+  }
+
+  async isMonitorEnabled(): Promise<boolean> {
+    const controls = await this.getMonitorControls()
+    return !controls.killSwitch
+  }
+
+  async setMonitorControls(
+    input: { killSwitch?: boolean; sweepIntervalSec?: number; maxConcurrent?: number },
+    actorId: string,
+  ): Promise<MonitorControls> {
+    const current = await this.getMonitorControls()
+    const next: MonitorControls = {
+      killSwitch: input.killSwitch ?? current.killSwitch,
+      sweepIntervalSec:
+        input.sweepIntervalSec !== undefined
+          ? Math.max(10, Math.min(3600, input.sweepIntervalSec))
+          : current.sweepIntervalSec,
+      maxConcurrent:
+        input.maxConcurrent !== undefined
+          ? Math.max(1, Math.min(20, input.maxConcurrent))
+          : current.maxConcurrent,
+      updatedById: actorId,
+      updatedAt: new Date().toISOString(),
+    }
+
+    await this.settings.set(MONITOR_CONTROLS_KEY, next as unknown as Prisma.InputJsonObject, actorId)
+
+    await this.audit.append({
+      actorType: 'human',
+      actorId,
+      agentVersion: null,
+      action: current.killSwitch !== next.killSwitch
+        ? next.killSwitch ? 'monitor.paused' : 'monitor.resumed'
+        : 'monitor.config_changed',
+      targetType: 'platform_setting',
+      targetId: null,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: null,
+      policyDecision: next.killSwitch ? 'paused' : 'enabled',
+      metadata: {
+        killSwitch: next.killSwitch,
+        sweepIntervalSec: next.sweepIntervalSec,
+        maxConcurrent: next.maxConcurrent,
+      },
     })
 
     return next

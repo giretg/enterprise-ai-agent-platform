@@ -8,6 +8,7 @@ const navItems = [
   { href: '/control-plane/board', label: 'Board' },
   { href: '/control-plane/agents', label: 'Agents' },
   { href: '/control-plane/scheduled-tasks', label: 'Ütemezés' },
+  { href: '/control-plane/monitors', label: 'Monitorok' },
   { href: '/control-plane/training', label: 'Tanítás' },
   { href: '/control-plane/connectors', label: 'Fiókok' },
   { href: '/control-plane/iam', label: 'IAM' },
@@ -22,7 +23,7 @@ export default function ControlPlaneLayout({ children }: { children: React.React
   return (
     <AppShell
       appName="A Pince"
-      appSubtitle="Control Plane · Ostoros-Novaj"
+      appSubtitle="Control Plane · OSTOROSBOR"
       navItems={navItems}
       accentColor="slate"
       pathname={pathname}

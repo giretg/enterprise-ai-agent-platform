@@ -146,11 +146,15 @@ ai-agent-platform/
 
 > A `packages/domain` keret-független (nem importál Next.js-t), hogy a control plane és a háttérszolgáltatások közösen használják.
 
+> **Megvalósítási eltérés (2026-06-19, kód-audit):** a fenti monorepo csak **javaslat** volt; a tényleges kódbázis egyetlen Next.js **monolit** az `app/` alatt. A domain/repository rétegek `app/src/domain` és `app/src/repositories` alatt élnek (nem külön `packages/`), a háttérszolgáltatások pedig scriptként/route-ként futnak: dispatcher = `app/scripts/dispatcher-worker.ts` (+ `Dockerfile.dispatcher`), Tool Broker MCP-bridge = `app/scripts/platform-mcp-bridge.ts`, Model Gateway = `app/src/domain/gateway/*` + `app/src/app/api/v1/gateway/...` route. Funkcionálisan egyenértékű a tervezett réteg-szeparációval (a `*Repository`/`ModelProvider`/`Authorizer` absztrakciók megvannak), de a `services/` és `packages/` mappák **nem léteznek** — új fejlesztő az `app/src` alatt keresse a komponenseket.
+
 ---
 
 ## 4. Adatmodell (Postgres, részletes)
 
 A v1.0 terv 3.12 entitásai kibontva. A mezők indikatívak; a migrációban finomítandók, de a kulcsmezők és kapcsolatok kötelezőek. Minden `id` UUID (pk), minden időbélyeg `timestamptz`, tárolás UTC.
+
+> **Forrás-igazság (2026-06-19, kód-audit):** az alábbi adatmodell az **MVP-magot** írja le; a tényleges, mérvadó séma a `app/prisma/schema.prisma`. A séma a §4-en **túl** több entitást is tartalmaz, amelyek MVP-feletti / bővített képességekhez tartoznak (lásd §15.4): `Playbook`/`PlaybookVersion` (Recipe melletti absztrakció), `Resource`/`AgentResource` (per-agent tudástár + megosztás), `Conversation`/`Message` (chat-first flow), `ScheduledTask` (ütemezés), `Eval`/`EvalRun` (eval backend), `PlatformSetting` (runtime kill-switch/cron config), valamint a `WriteGateToken` önálló modellként (a §4.4 csak referenciaként említette) és a `ConnectorGrant` (per-user delegált connector, Fázis 2). Ezek létezése **nem** bővíti az MVP acceptance-t; a §4 a minimális magot rögzíti, a részletekért a séma a hiteles forrás.
 
 ### 4.1 IAM / RBAC
 
@@ -544,6 +548,8 @@ generateReport({ agentId, templateId }) -> { ticketId }    [operator+]   -- 1 el
 ```
 **Kipróbálható, ha:** a felhasználó végigvisz egy kérdés→válasz→(opcionális tanítás)→jóváhagyás folyamatot, és minden a boardon/auditban látszik.
 
+> **Kiegészítés (2026-06-19, kód-audit) — chat-first conversation runtime (CR-MVP-003, bővített scope):** a kódbázis a fenti állapotmentes Q&A út **mellett** egy ticket nélküli, beszélgetős réteget is tartalmaz: `Conversation`/`Message` modellek, `conversation-service.ts`, `agent-chat-panel` + chat sidebar UI, `agent-chat-runtime.ts` + `chat-tool-loop.ts`, és egy OpenAI-kompatibilis gateway chat completions végpont. A chat ugyanúgy a két átjárón (Model Gateway + Tool Broker) megy, conversation/message/model/tool logot ír, és van **promote-to-ticket** határátlépés (`conversation.promote_to_ticket` audit), amikor döntés/jóváhagyás/tartós nyom kell. Ez **bővített scope**, nem a core MVP §5.10 acceptance része; a 9.3 demó 5–9. lépése hivatkozik rá. A teljes komponens-spec (API-k, conversation állapotgép) Fázis 2 / külön CR.
+
 #### 5.10.1 Sandbox App Container / App Registry — MVP-vékony szelet
 
 **Válasz a scope-kérdésre:** igen, ebből tehető valami nagyon alap az MVP-be, de csak **A0 single-file app** szinten. Ez nem teljes Goose-szerű app-platform és nem graduation-ready export, hanem egy bizonyító szelet: az AI vagy az operator létrehoz egy különálló sandbox mini-appot, a felhasználó preview-ban megnyitja, majd `.html` fájlként letölti.
@@ -630,6 +636,8 @@ output_schema:
 ```
 
 **Governance:** a recipe módosítása ugyanúgy jóváhagyás-köteles és auditesemény, mint a memória (a megosztott recipe sok agent viselkedését érintheti). MVP-ben egy agenthez kötött, de a verziózás/jóváhagyás kész.
+
+> **Megjegyzés (2026-06-19, kód-audit) — Recipe vs. Playbook:** a kódbázisban a `Recipe`/`RecipeVersion` mellett egy külön `Playbook`/`PlaybookVersion` absztrakció is megjelent (`playbook-service.ts`, `playbook-spec.ts`). **Az MVP mérvadó kontraktusa továbbra is az itt leírt recipe-formátum** (tickettípus-szintű „hogyan végezd", verziózott, jóváhagyás-köteles). A Playbook réteg MVP-feletti cserepont (lásd §15.4); a két fogalom végleges viszonyát (a Playbook a Recipe fölötti újrahasznosítható réteg-e vagy önálló koncepció) egy külön CR tisztázza, mielőtt éles ügyfélnél támaszkodnánk rá.
 
 ---
 
@@ -913,6 +921,8 @@ A fejlesztés akkor kész, ha:
 > **Fontos:** az alábbi táblázat felülírja a 2026-06-15/16-es session-jegyzeteket. A walking skeleton nagy része megvan; a nyitott MVP-lezárás főleg **production hardening** (hálózati egress) és **governance bizonyítás** (S6 tényleges futtatási jegyzőkönyv, 9.3 demó lefuttatása).
 >
 > **Scope-frissítés (2026-06-19):** a kódbázis tartalmaz több MVP-feletti cserepontot is. Ezeket a 15.4 szakasz külön listázza. Nem törlendők, de **nem számítanak bele az MVP Definition of Done-ba**, és új fejlesztésük előtt külön scope-döntés kell.
+>
+> **Kód-audit korrekció (2026-06-19, második pass):** egy kód-tényállapot ellenőrzés alapján a következők pontosítva lettek: (1) az **Epik 1 admin tickettípus/átmenet CRUD elkészült** (korábban hátralévőként szerepelt) — lásd §15.2; (2) a §15.4 kibővült a kódban talált, eddig nem dokumentált MVP-feletti elemekkel (**általános/több-agentes runtime, agent-org/persona, Playbook absztrakció, per-agent tudástár+megosztás, chat-first conversation flow**); (3) a §3.2 topológia, a §4 adatmodell, a §5.10 (chat-first) és a §6 (Recipe vs. Playbook) megjelölve, hol tér el a kód a spec eredeti szövegétől. Az **MVP core acceptance és a DoD változatlan**.
 
 ### 15.0 Spike-ok
 
@@ -948,22 +958,26 @@ A fejlesztés akkor kész, ha:
 
 | Epik | Státusz | Hátralévő munka |
 |---|---:|---|
-| Epik 1 — Control Plane | Részben kész | `adminUpsertTicketType` CRUD. |
+| Epik 1 — Control Plane | **Kész** | `adminUpsertTicketType` CRUD **implementálva** (`platform.ts` server action + `getTicketTypeConfigs` + `platformSettings.upsertTicketTypeConfig` + `ticket-type-config-panel.tsx` UI a `/control-plane/system` oldalon). |
 | Epik 2 — IAM | **Kész** | Clerk webhook szinkron finomítás (Fázis 2). |
 | Epik 3 — Registry + Gateway | **Kész** | S2 lezárva; nem-ChatGPT provider-adapterek MVP-feletti cserepontként dokumentálva. |
 | Epik 4 — Tool Broker | **Kész** | Prod connector secret rotáció üzemeltetése. |
 | Epik 5 — Harness + Dispatcher | Részben kész | **Production dispatcher deployolva és igazolva** (Cloud Run service + runtime SA, end-to-end audit-nyom). **Következő kritikus:** harness/recipe konvergencia a 20-hívásos guardrail alatt (S6) + hálózati S4 egress (VPC/NAT/firewall). |
 | Epik 6 — Tanítás | **Kész** | Retrieval-napló UI finomítás opcionális. |
-| Epik 7 — Sandbox + App Registry | Részben kész | `generateReport` API (§5.10) hiányzik; egyébként kész. |
-| Epik 8 — Governance | Részben kész | S6 futtatási jegyzőkönyv; 9.3 demó lefuttatása; §13 checklist végigpipálása. |
+| Epik 7 — Sandbox + App Registry | **Kész** | `generateReport` API (§5.10) **implementálva**: előre definiált riport-sablon katalógus (`src/domain/report/report-templates.ts`), `services.wiki.generateReport` (interakciós `ready` ticket a wiki-runtime-on át → kb_search → Gateway → board_write), `generateReport` + `listReportTemplatesAction` server action, és wiki sandbox UI riport-kártya. |
+| Epik 8 — Governance | Részben kész | S6 futtatási jegyzőkönyv; 9.3 demó lefuttatása; §13 checklist végigpipálása. Eval **backend** kész (`Eval`/`EvalRun` modell, `createEval`/`runEval`/`listEvals` action, `approval_mode: eval_only \| auto_after_eval`), de **dedikált manuális értékelő UI-oldal** még nincs (csak az audit oldalról hivatkozott). |
 
 ### 15.3 Következő javasolt fejlesztési sorrend
 
 1. ~~**Production dispatcher**~~ — **KÉSZ (2026-06-18).** `wiki-dispatcher` Cloud Run service él (`min-instances=1`, always-on CPU), dedikált runtime SA `run.jobs.runWithOverrides`-szal; a teljes lánc audit-nyommal igazolva. Lásd `app/infra/gcp/CLOUD-RUN-DISPATCHER-SETUP.md` §6.
 2. **Hálózati S4 egress** — VPC connector + NAT + firewall; Job-on `HARNESS_EGRESS_ENFORCE=true`.
 3. **MVP lezárás (Epik 8)** — S6 futtatási jegyzőkönyv, 9.3 kattintható demo végigfuttatása, §13 DoD checklist.
-4. **Epik 1 maradék** — admin tickettípus/átmenet CRUD.
-5. **Üzemeltetés** — OAuth token rotáció runbook, harness image CI, audit DB jogosultságok.
+4. ~~**`generateReport` API (§5.10)**~~ — **KÉSZ.** Előre definiált riport-sablon katalógus + wiki-runtime-on át a tudásbázisból generált riport-ticket; server action + sandbox UI; build/lint zöld.
+5. **Eval értékelő UI** — a meglévő eval backend (`Eval`/`EvalRun`) fölé egy minimális manuális értékelő oldal (Epik 8).
+6. **Audit DB-szintű védelem** — `audit_log` táblára `UPDATE`/`DELETE` megvonás az alkalmazás-szerepkörnek (jelenleg csak app-szintű `AuditService.append()`).
+7. **Üzemeltetés** — OAuth token rotáció runbook, harness image CI, audit DB jogosultságok.
+
+> **Megjegyzés (2026-06-19, kód-audit):** az Epik 1 admin tickettípus/átmenet CRUD a korábbi listával ellentétben **már elkészült** (lásd §15.2), ezért lekerült a következő lépések közül.
 
 ### 15.4 MVP-feletti, de már jelen lévő képességek
 
@@ -975,6 +989,11 @@ Ezek a képességek a jelenlegi repóban részben vagy egészben léteznek, de *
 | **Per-user connector / Gmail** | `connector_grants`, Gmail OAuth/token-vault runtime, S7 smoke és kapcsolódó UI/API elemek vannak. | Fázis 2 feature a külön per-user connector spec alapján. Az MVP Tool Broker követelménye: `kb_search` + `board_write`, service-módú connectorral. |
 | **File editor / workspace tools** | Külön feature-spec, domain adapterek, workspace storage és Playwright E2E vannak. | Külön feature-scope. Nem része a core wiki-agent MVP lezárásának. |
 | **Scheduled / recurring task felület** | `scheduled-task` domain, UI és recurrence logika megjelent. | Fázis 2 / későbbi proaktív monitor irány. Az MVP-ben csak az `execute_after` mező és az azonnali dispatcher indítás kötelező. |
+| **Általános / több-agentes runtime** | A wiki-runtime mellett `bookkeeper-runtime`, `general-task-runtime`, `agent-chat-runtime` és `chat-tool-loop` is van; az `agent-kind.ts` `wiki \| bookkeeper \| generic` típusokra routol, a nem-wiki ticketeket egységes general task runtime futtatja. | MVP-feletti cserepont. A v1.0 terv az MVP-t **wiki-agentre** szűkíti; a többi runtime létezik, de **nem része a core MVP acceptance-nek**. A két átjáró + audit elve rájuk is érvényes. |
+| **Agent-„org" / persona / katalógus** | `agent-org-roster.ts`, `agent-persona.ts`, `agent-catalog.ts`, `dashboard-agent-card` — a UI agent-csapatot (nickname, persona) prezentál. | MVP-feletti prezentációs réteg. Az MVP-modell egyetlen verziózott wiki-agent; a roster/persona nem MVP-követelmény. |
+| **Playbook absztrakció** | A `Recipe`/`RecipeVersion` mellett külön `Playbook`/`PlaybookVersion` modell + `playbook-service.ts` + `playbook-spec.ts`. | MVP-feletti absztrakció. A §6 recipe-formátum a mérvadó MVP-kontraktus; a Playbook réteg viszonyát a §6 megjegyzése tisztázza. |
+| **Per-agent tudástár + megosztás** | `Resource`/`AgentResource` modellek, `agent-knowledge-base.ts`, `agent-knowledge-base-panel`, agentek közti tudástár-megosztás (`platform.ts`). | Bővített scope (a 9.3 demó 3–4. lépése). Az MVP core követelménye egyetlen wiki KB connector; a per-agent tudástár + megosztás MVP-feletti. |
+| **Chat-first / conversation flow** | `Conversation`/`Message` modellek, `conversation-service.ts`, `agent-chat-panel`, chat sidebar, OpenAI-kompatibilis gateway chat completions endpoint (CR-MVP-003). | Bővített scope (9.3 demó 5–9. lépés). A core MVP §5.10 állapotmentes Q&A útja a mérvadó; a chat-first runtime komponens-specje a §5.10 kiegészítésében. |
 
 **MVP-lezárási prioritás változatlan:** S4 hálózati egress igazolás, S6 futtatási jegyzőkönyv, 9.3 demó végigfuttatása, §13 DoD checklist, majd az Epik 1 admin tickettípus/átmenet CRUD maradéka.
 

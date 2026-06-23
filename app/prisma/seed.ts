@@ -267,9 +267,13 @@ async function ensureToolBrokerSeed(agentId: string) {
     'file_delete',
     'xlsx_read_sheet',
     'xlsx_write_cells',
+    'xlsx_format_range',
+    'xlsx_layout',
+    'xlsx_create',
     'xlsx_append_rows',
     'docx_read',
     'pdf_read',
+    'pdf_create',
   ]) {
     await prisma.capability.upsert({
       where: { agentId_toolName: { agentId, toolName } },
@@ -667,6 +671,9 @@ async function ensureHSMOfficerAgent(adminId: string) {
   for (const toolName of [
     'xlsx_read_sheet',
     'xlsx_write_cells',
+    'xlsx_format_range',
+    'xlsx_layout',
+    'xlsx_create',
     'xlsx_append_rows',
     'docx_read',
     'pdf_read',

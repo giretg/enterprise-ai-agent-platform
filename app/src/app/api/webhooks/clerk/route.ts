@@ -2,6 +2,7 @@ import { verifyWebhook } from '@clerk/nextjs/webhooks'
 import type { UserRole } from '@prisma/client'
 import type { NextRequest } from 'next/server'
 import { prisma } from '@/lib/db'
+import { syncClerkUser } from '@/auth/clerk-user-sync'
 
 function readClerkRole(metadata: unknown): UserRole | null {
   const role = (metadata as { role?: string } | undefined)?.role
@@ -37,13 +38,7 @@ export async function POST(req: NextRequest) {
 
   if (evt.type === 'user.created' || evt.type === 'user.updated') {
     const user = userFromEvent(evt.data)
-    await prisma.user.upsert({
-      where: { externalAuthId: user.externalAuthId },
-      create: { ...user, role: user.role ?? 'viewer' },
-      update: user.role
-        ? { email: user.email, name: user.name, role: user.role }
-        : { email: user.email, name: user.name },
-    })
+    await syncClerkUser(prisma, user)
 
     if (evt.type === 'user.created') {
       // Clerk-meghívóval érkezett regisztráció: a megfelelő in-app meghívót beváltottra
