@@ -295,6 +295,37 @@ export const createAgentSchema = z.object({
   }),
 })
 
+export const createHttpApiConnectorSchema = z
+  .object({
+    agentId: z.string().uuid(),
+    name: z.string().trim().min(1).max(120),
+    baseUrl: z.string().trim().url().max(500),
+    authScheme: z.enum(['header', 'bearer']),
+    authHeader: z.string().trim().max(120).optional(),
+    apiKey: z.string().trim().min(1).max(4000),
+    description: z.string().trim().max(50000).optional(),
+    accessMode: z.enum(['read', 'write']).default('write'),
+    restrictToEndpoints: z.boolean().default(false),
+    endpoints: z
+      .array(
+        z.object({
+          method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']),
+          path: z.string().trim().min(1).max(500),
+          description: z.string().trim().max(500).optional(),
+        }),
+      )
+      .max(100)
+      .optional(),
+  })
+  .refine((v) => v.authScheme !== 'header' || (v.authHeader && v.authHeader.length > 0), {
+    message: 'A fejléc-séma kötelezővé teszi a fejléc nevét (pl. X-Api-Key)',
+    path: ['authHeader'],
+  })
+  .refine((v) => !v.restrictToEndpoints || (v.endpoints && v.endpoints.length > 0), {
+    message: 'Az endpoint-korlátozáshoz legalább egy endpoint szükséges',
+    path: ['endpoints'],
+  })
+
 export const updateAgentSelfEvolutionProfileSchema = z.object({
   agentId: z.string().uuid(),
   profile: z.object({
@@ -486,6 +517,24 @@ export const toolInvokeSchema = z.discriminatedUnion('tool', [
       .refine((a) => a.draftId || (a.to && a.subject && a.body), {
         message: 'gmail_send requires draftId or to/subject/body',
       }),
+  }),
+  z.object({
+    tool: z.literal('http_api_get'),
+    ...toolInvokeBaseSchema,
+    args: z.object({
+      path: z.string().min(1).max(1000),
+      query: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
+    }),
+  }),
+  z.object({
+    tool: z.literal('http_api_request'),
+    ...toolInvokeBaseSchema,
+    args: z.object({
+      method: z.enum(['POST', 'PUT', 'PATCH', 'DELETE']),
+      path: z.string().min(1).max(1000),
+      query: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
+      body: z.unknown().optional(),
+    }),
   }),
   z.object({
     tool: z.literal('file_read'),

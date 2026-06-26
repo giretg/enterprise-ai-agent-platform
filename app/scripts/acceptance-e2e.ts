@@ -631,7 +631,7 @@ async function scenario7_toolBroker(operatorId: string, agentId: string, agentVe
     },
   })
 
-  if (!write.denied && 'ok' in write.result && write.result.state === 'awaiting_human') {
+  if (!write.denied && 'state' in write.result && write.result.state === 'awaiting_human') {
     pass('board_write payload + állapot frissítés')
   } else {
     fail('board_write', write.denied ? write.reason : 'nem awaiting_human lett')

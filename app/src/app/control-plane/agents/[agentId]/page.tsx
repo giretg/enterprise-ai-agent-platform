@@ -11,6 +11,7 @@ import { AgentChatButton } from '@/components/agents/agent-chat-panel'
 import { UpdateInstructionForm } from '@/components/agents/update-instruction-form'
 import { UpdateModelConfigForm } from '@/components/agents/update-model-config-form'
 import { UpdateSelfEvolutionProfileForm } from '@/components/agents/update-self-evolution-profile-form'
+import { AddApiConnectorForm } from '@/components/agents/add-api-connector-form'
 import { AgentKnowledgeBasePanel } from '@/components/agents/agent-knowledge-base-panel'
 import { resolveSelfEvolutionProfile } from '@/lib/self-evolution-profile'
 import {
@@ -327,6 +328,8 @@ export default async function AgentDetailPage({
                 agentId={agent.id}
                 currentProfile={agent.selfEvolutionProfile}
               />
+
+              <AddApiConnectorForm agentId={agent.id} />
             </div>
           </div>
         </>

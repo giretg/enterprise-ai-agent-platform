@@ -281,6 +281,61 @@ async function ensureToolBrokerSeed(agentId: string) {
       update: { allowed: true },
     })
   }
+
+  // ── Provider CRM (POSnavigator) — generikus http_api connector ──────────────
+  const providerCrmConfig = {
+    baseUrl: process.env.PROVIDER_CRM_BASE_URL ?? 'https://posnavigator.eu/api/v1',
+    auth: { scheme: 'header', header: 'X-Api-Key' },
+    description:
+      'POSnavigator fizetési szolgáltató mini-CRM. Bankok (fizetési szolgáltatók) CRM-adatai: ' +
+      'kapcsolattartók, megállapodások, szerződések, eseménynapló. Minden :bankId/:contactId/:agreementId/:contractId ' +
+      'egy 24 hex karakteres MongoDB ObjectId. CRM státuszok: NEW, CONTACTED, MEETING_SCHEDULED, NEGOTIATING, ACTIVE, ON_HOLD, CLOSED_LOST.',
+    endpoints: [
+      { method: 'GET', path: '/banks', description: 'Banklista CRM összefoglalóval (crm_status, kapcsolat/megállapodás/szerződés számok)' },
+      { method: 'GET', path: '/banks/:bankId/crm', description: 'Teljes CRM nézet: bank, contacts, agreements, contracts, utolsó 200 esemény' },
+      { method: 'PATCH', path: '/banks/:bankId/crm', description: 'Bank CRM mezők részleges frissítése: crm_status, crm_summary (max 4000), crm_next_action_at (ISO 8601 vagy null)' },
+      { method: 'POST', path: '/banks/:bankId/contacts', description: 'Új kapcsolat: name kötelező, email VAGY phone legalább egy; opc. role_title, is_primary, notes' },
+      { method: 'PATCH', path: '/banks/:bankId/contacts/:contactId', description: 'Kapcsolat módosítása (részleges)' },
+      { method: 'DELETE', path: '/banks/:bankId/contacts/:contactId', description: 'Kapcsolat törlése' },
+      { method: 'POST', path: '/banks/:bankId/agreements', description: 'Megállapodás: agreement_type (LEAD_GENERATING|MARKETING|OTHER), title, status (DRAFT|ACTIVE|PAUSED|ENDED)' },
+      { method: 'PATCH', path: '/banks/:bankId/agreements/:agreementId', description: 'Megállapodás módosítása' },
+      { method: 'DELETE', path: '/banks/:bankId/agreements/:agreementId', description: 'Megállapodás törlése' },
+      { method: 'POST', path: '/banks/:bankId/contracts', description: 'Szerződés: title, status (DRAFT|SENT|SIGNED|ACTIVE|EXPIRED|TERMINATED); opc. contract_number (bankon belül egyedi)' },
+      { method: 'PATCH', path: '/banks/:bankId/contracts/:contractId', description: 'Szerződés módosítása' },
+      { method: 'DELETE', path: '/banks/:bankId/contracts/:contractId', description: 'Szerződés törlése' },
+      { method: 'POST', path: '/banks/:bankId/events', description: 'Esemény hozzáfűzése (append-only): event_type, summary, actor_type (USER|API|SYSTEM); opc. actor_id, payload' },
+    ],
+    restrictToEndpoints: true,
+  }
+
+  const providerCrm = await prisma.connector.upsert({
+    where: { type_name: { type: 'http_api', name: 'Provider CRM (POSnavigator)' } },
+    create: {
+      type: 'http_api',
+      name: 'Provider CRM (POSnavigator)',
+      authMode: 'service',
+      scope: 'global',
+      // Az API-kulcs a környezeti változóból oldódik fel — nyers kulcs SOHA nem a DB-ben.
+      secretAlias: 'env:PROVIDER_CRM_API_KEY',
+      version: 1,
+      config: providerCrmConfig,
+    },
+    update: { config: providerCrmConfig, secretAlias: 'env:PROVIDER_CRM_API_KEY' },
+  })
+
+  await prisma.agentConnector.upsert({
+    where: { agentId_connectorId: { agentId, connectorId: providerCrm.id } },
+    create: { agentId, connectorId: providerCrm.id, accessMode: 'write' },
+    update: { accessMode: 'write' },
+  })
+
+  for (const toolName of ['http_api_get', 'http_api_request']) {
+    await prisma.capability.upsert({
+      where: { agentId_toolName: { agentId, toolName } },
+      create: { agentId, toolName, allowed: true },
+      update: { allowed: true },
+    })
+  }
 }
 
 // ── Key Management / HSM Officer Asszisztens ─────────────────────────────────

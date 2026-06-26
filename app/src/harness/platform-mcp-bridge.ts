@@ -472,6 +472,34 @@ export const PLATFORM_BROKER_TOOLS = [
       required: ['path'],
     },
   },
+  {
+    name: 'http_api_get',
+    description:
+      'Read (GET) from the external REST API connector assigned to this agent. path is relative to the connector base URL (e.g. "/banks" or "/banks/{id}/crm"). The API key is injected by the platform.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Path relative to the connector base URL' },
+        query: { type: 'object', description: 'Query parameters (scalar values)' },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'http_api_request',
+    description:
+      'Write (POST/PUT/PATCH/DELETE) to the external REST API connector assigned to this agent. Only call for operations that change state. The API key is injected by the platform.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        method: { type: 'string', enum: ['POST', 'PUT', 'PATCH', 'DELETE'] },
+        path: { type: 'string', description: 'Path relative to the connector base URL' },
+        query: { type: 'object', description: 'Query parameters (scalar values)' },
+        body: { type: 'object', description: 'JSON request body' },
+      },
+      required: ['method', 'path'],
+    },
+  },
 ] as const
 
 export type PlatformToolInvoker = (
@@ -594,6 +622,8 @@ export async function invokePlatformToolViaHttp(
             k: typeof args.k === 'number' ? args.k : undefined,
           },
         }
+      : tool.startsWith('http_api_')
+        ? { tool, ticketId, args }
       : tool.startsWith('file_') || (FILE_TOOLS as readonly string[]).includes(tool) || (BINARY_TOOLS as readonly string[]).includes(tool)
         ? { tool, ticketId, args }
         : tool.startsWith('gmail_')

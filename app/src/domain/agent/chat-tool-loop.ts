@@ -21,6 +21,8 @@ export const CHAT_PLATFORM_TOOLS = [
   'gmail_get_message',
   'gmail_create_draft',
   'gmail_send',
+  'http_api_get',
+  'http_api_request',
   'file_read',
   'file_write',
   'file_edit',
@@ -137,6 +139,27 @@ const TOOL_SCHEMAS: Record<ChatPlatformToolName, ToolSchema> = {
   gmail_send: {
     description: 'Gmail küldés — jóváhagyott ticket mellett (draftId vagy közvetlen mezők).',
     inputSchema: objectSchema({ draftId: STR, to: STR, subject: STR, body: STR, approvalTicketId: STR }),
+  },
+  http_api_get: {
+    description:
+      'Olvasó (GET) hívás a hozzád rendelt külső REST API-n. A `path` a connector baseUrl-jéhez relatív (pl. "/banks" vagy "/banks/{id}/crm"). A query paramétereket a `query` objektumban add meg. Az elérhető endpointokat a rendszerüzenet sorolja fel.',
+    inputSchema: objectSchema(
+      { path: STR, query: { type: 'object', additionalProperties: true } },
+      ['path'],
+    ),
+  },
+  http_api_request: {
+    description:
+      'Író (POST/PUT/PATCH/DELETE) hívás a hozzád rendelt külső REST API-n. A `path` a connector baseUrl-jéhez relatív; a kérés törzsét a `body` objektumban add meg. Csak akkor hívd, ha a művelet tényleges állapotváltozást igényel.',
+    inputSchema: objectSchema(
+      {
+        method: { type: 'string', enum: ['POST', 'PUT', 'PATCH', 'DELETE'] },
+        path: STR,
+        query: { type: 'object', additionalProperties: true },
+        body: { type: 'object', additionalProperties: true },
+      },
+      ['method', 'path'],
+    ),
   },
   file_read: {
     description: 'Munkaterület fájl beolvasása (opcionális offset/limit sorokkal).',
@@ -301,8 +324,68 @@ function extractToolCall(content: string): { tool: string; args: Record<string, 
   return null
 }
 
+// Néhány modell (pl. qwen3 OpenRouteren át) nem strukturált tool_calls-t ad,
+// hanem az OpenAI „delta" drótformátumot írja a szövegbe:
+//   [{"id":"call_..","type":"function","function":{"name":"x"},"index":0}]
+//   [{"function":{"arguments":"{\""},"index":0}][{"function":{"arguments":"a\":1}"},"index":0}]
+// Ezt index szerint újraépítjük: a name az első nem-üres name, az arguments a
+// töredékek sorrendi összefűzése, majd JSON.parse. Így a leakelő hívás mégis lefut.
+const OPENAI_DELTA_RUN_RE = /(?:\[\s*\{[^[\]]*"index"\s*:\s*\d+[^[\]]*\}\s*\])+/
+
+type OpenAiDelta = {
+  index?: number
+  function?: { name?: string; arguments?: string }
+}
+
+export function recoverOpenAiToolCallsFromText(
+  content: string,
+): Array<{ tool: string; args: Record<string, unknown> }> {
+  const run = content.match(OPENAI_DELTA_RUN_RE)?.[0]
+  if (!run) return []
+
+  let deltas: OpenAiDelta[]
+  try {
+    // [a][b] → [a,b]: a konkatenált delta-tömböket egyetlen tömbbé olvasztjuk.
+    deltas = JSON.parse(run.replace(/\]\s*\[/g, ',')) as OpenAiDelta[]
+  } catch {
+    return []
+  }
+  if (!Array.isArray(deltas)) return []
+
+  const byIndex = new Map<number, { name: string; args: string }>()
+  for (const delta of deltas) {
+    if (!delta || typeof delta !== 'object') continue
+    const index = typeof delta.index === 'number' ? delta.index : 0
+    const acc = byIndex.get(index) ?? { name: '', args: '' }
+    const name = delta.function?.name
+    if (typeof name === 'string' && name) acc.name = name
+    const args = delta.function?.arguments
+    if (typeof args === 'string') acc.args += args
+    byIndex.set(index, acc)
+  }
+
+  const calls: Array<{ tool: string; args: Record<string, unknown> }> = []
+  for (const { name, args } of byIndex.values()) {
+    if (!name) continue
+    let parsedArgs: Record<string, unknown> = {}
+    if (args.trim()) {
+      try {
+        const parsed = JSON.parse(args)
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          parsedArgs = parsed as Record<string, unknown>
+        }
+      } catch {
+        // hibás argument JSON → üres input; a tool oldal validál tovább
+      }
+    }
+    calls.push({ tool: name, args: parsedArgs })
+  }
+  return calls
+}
+
 function stripToolArtifacts(content: string): string {
   return content
+    .replace(OPENAI_DELTA_RUN_RE, '')
     .replace(/```(?:json)?\s*\{[\s\S]*?\}\s*```/gi, '')
     .replace(/\{[\s\S]*"tool"\s*:\s*"[^"]+"[\s\S]*\}/g, '')
     .trim()
@@ -326,6 +409,21 @@ function recordArg(args: Record<string, unknown>, key: string): Record<string, u
     return value as Record<string, unknown>
   }
   return undefined
+}
+
+/** http_api query: csak skalár (string/number/boolean) értékek mennek tovább. */
+function httpQueryArg(value: unknown): Record<string, string | number | boolean> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const out: Record<string, string | number | boolean> = {}
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') out[k] = v
+  }
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
+function httpMethodArg(value: unknown): 'POST' | 'PUT' | 'PATCH' | 'DELETE' {
+  const m = typeof value === 'string' ? value.toUpperCase() : ''
+  return m === 'PUT' || m === 'PATCH' || m === 'DELETE' ? m : 'POST'
 }
 
 function buildToolInvoke(
@@ -430,6 +528,28 @@ function buildToolInvoke(
           subject: typeof args.subject === 'string' ? args.subject : undefined,
           body: typeof args.body === 'string' ? args.body : undefined,
           approvalTicketId: typeof args.approvalTicketId === 'string' ? args.approvalTicketId : undefined,
+        },
+      }
+
+    case 'http_api_get':
+      return {
+        ...common,
+        tool: 'http_api_get',
+        args: {
+          path: strArg(args, 'path'),
+          query: httpQueryArg(args.query),
+        },
+      }
+
+    case 'http_api_request':
+      return {
+        ...common,
+        tool: 'http_api_request',
+        args: {
+          method: httpMethodArg(args.method),
+          path: strArg(args, 'path'),
+          query: httpQueryArg(args.query),
+          body: args.body,
         },
       }
 
@@ -659,6 +779,13 @@ export async function runAgentToolLoop(params: {
     },
   ]
 
+  // Ha http_api eszköz engedélyezett, a hozzárendelt connector(ek)
+  // endpoint-katalógusát a modell elé tesszük — így tudja, mit hívhat.
+  if (params.allowedTools.some((t) => t === 'http_api_get' || t === 'http_api_request')) {
+    const spec = await describeHttpApiConnectors(params.toolCaps, params.agentId)
+    if (spec) messages.push({ role: 'system', content: spec })
+  }
+
   let toolCallCount = 0
   const tools = toToolDefinitions(params.allowedTools)
 
@@ -672,8 +799,19 @@ export async function runAgentToolLoop(params: {
     })
 
     // Natív tool hívások; ha nincs, a vékony fallback megpróbálja a beágyazott
-    // {"tool":...} JSON-t kimenteni (gyenge modellek kedvéért).
+    // {"tool":...} JSON-t vagy az OpenAI tool-call drótformátumot kimenteni
+    // (gyenge modellek — pl. qwen3 OpenRouteren — kedvéért).
     let calls: GatewayToolCall[] = toolCalls ?? []
+    if (calls.length === 0) {
+      const recovered = recoverOpenAiToolCallsFromText(content)
+      if (recovered.length > 0) {
+        calls = recovered.map((c, i) => ({
+          id: `recovered_${turn}_${i}`,
+          name: c.tool,
+          input: c.args,
+        }))
+      }
+    }
     if (calls.length === 0) {
       const fallback = extractToolCall(content)
       if (fallback) {
@@ -763,6 +901,43 @@ export async function runAgentToolLoop(params: {
     content: stripToolArtifacts(finalContent) || finalContent.trim(),
     toolCallCount,
   }
+}
+
+/**
+ * A http_api connector(ek) emberi nyelvű leírása a modellnek: baseUrl,
+ * leírás és endpoint-katalógus. Titkot (API-kulcs) SOHA nem tartalmaz.
+ */
+async function describeHttpApiConnectors(
+  toolCaps: ToolBrokerRepository,
+  agentId: string,
+): Promise<string | null> {
+  const links = await toolCaps.findConnectorsForAgent(agentId)
+  const apis = links.filter((l) => l.connector.type === 'http_api')
+  if (apis.length === 0) return null
+
+  const blocks = apis.map(({ connector }) => {
+    const config = (connector.config ?? {}) as {
+      baseUrl?: string
+      description?: string
+      endpoints?: Array<{ method?: string; path?: string; description?: string }>
+    }
+    const lines = [`### ${connector.name}`]
+    if (config.baseUrl) lines.push(`Base URL: ${config.baseUrl}`)
+    if (config.description) lines.push(config.description)
+    if (Array.isArray(config.endpoints) && config.endpoints.length > 0) {
+      lines.push('Endpointok:')
+      for (const e of config.endpoints) {
+        const desc = e.description ? ` — ${e.description}` : ''
+        lines.push(`- ${e.method ?? 'GET'} ${e.path ?? ''}${desc}`)
+      }
+    }
+    return lines.join('\n')
+  })
+
+  return [
+    'A hozzád rendelt külső REST API(k) — olvasáshoz http_api_get, íráshoz http_api_request eszközt hívj. A path a Base URL-hez relatív; az API-kulcsot a rendszer injektálja, neked nem kell megadnod.',
+    ...blocks,
+  ].join('\n\n')
 }
 
 export async function listAllowedChatTools(

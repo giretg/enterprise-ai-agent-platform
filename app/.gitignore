@@ -54,6 +54,7 @@ next-env.d.ts
 /uploads
 .seed-demo-api-key
 /.connector-grants
+/.connector-secrets
 
 # Generated measurement reports (§9.1/7 — npm run report:measurement)
 /reports

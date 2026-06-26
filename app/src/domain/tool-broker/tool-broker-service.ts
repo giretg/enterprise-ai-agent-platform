@@ -20,6 +20,11 @@ import { readDelegationPayload, shouldCompleteDelegation } from '@/lib/delegatio
 import { isRunAsAuthorized, readRunAsUserId, RUN_AS_AUTHORIZED_AT, RUN_AS_AUTHORIZED_BY } from '@/lib/run-as-payload'
 import { GmailApiAuthError, GmailApiClient } from '@/domain/connector-grant/gmail-api-client'
 import { gmailToolAllowedByScopes } from '@/domain/connector-grant/gmail-scopes'
+import {
+  HttpApiClient,
+  parseHttpApiConfig,
+  resolveConnectorApiKey,
+} from '@/domain/connector/http-api-client'
 import type { ConnectorGrantService } from '@/domain/connector-grant/connector-grant-service'
 import type { FileEditorService } from '@/domain/file-editor/file-editor-service'
 import {
@@ -176,6 +181,16 @@ export type GmailSendArgs = {
   approvalTicketId?: string
 }
 
+export type HttpApiQuery = Record<string, string | number | boolean>
+export type HttpApiGetArgs = { path: string; query?: HttpApiQuery }
+export type HttpApiRequestArgs = {
+  method: 'POST' | 'PUT' | 'PATCH' | 'DELETE'
+  path: string
+  query?: HttpApiQuery
+  body?: unknown
+}
+export type HttpApiCallResult = { status: number; ok: boolean; body: unknown }
+
 export type GmailSearchResult = { messages: Array<Record<string, string>> }
 export type GmailGetMessageResult = Record<string, string>
 export type GmailCreateDraftResult = { draftId: string }
@@ -244,6 +259,8 @@ export type ToolBrokerInvokeInput =
   | (ToolInvokeBase & { tool: 'gmail_get_message'; args: GmailGetMessageArgs })
   | (ToolInvokeBase & { tool: 'gmail_create_draft'; args: GmailCreateDraftArgs })
   | (ToolInvokeBase & { tool: 'gmail_send'; args: GmailSendArgs })
+  | (ToolInvokeBase & { tool: 'http_api_get'; args: HttpApiGetArgs })
+  | (ToolInvokeBase & { tool: 'http_api_request'; args: HttpApiRequestArgs })
   | (ToolInvokeBase & { tool: 'file_read'; args: FileReadArgs })
   | (ToolInvokeBase & { tool: 'file_write'; args: FileWriteArgs })
   | (ToolInvokeBase & { tool: 'file_edit'; args: FileEditArgs })
@@ -280,6 +297,7 @@ export type ToolBrokerInvokeResult =
         | GmailGetMessageResult
         | GmailCreateDraftResult
         | GmailSendResult
+        | HttpApiCallResult
         | FileReadResult
         | FileWriteResult
         | FileEditResult
@@ -319,6 +337,8 @@ const TOOL_REQUIREMENTS: Record<
   gmail_get_message: { connectorType: 'gmail', accessMode: 'read' },
   gmail_create_draft: { connectorType: 'gmail', accessMode: 'write' },
   gmail_send: { connectorType: 'gmail', accessMode: 'write' },
+  http_api_get: { connectorType: 'http_api', accessMode: 'read' },
+  http_api_request: { connectorType: 'http_api', accessMode: 'write' },
   file_read: { connectorType: 'workspace', accessMode: 'read' },
   file_write: { connectorType: 'workspace', accessMode: 'write' },
   file_edit: { connectorType: 'workspace', accessMode: 'write' },
@@ -471,6 +491,20 @@ function argsMeta(input: ToolBrokerInvokeInput): Record<string, unknown> {
     }
   }
 
+  if (input.tool === 'http_api_get') {
+    return { ...base, method: 'GET', path: input.args.path, queryKeys: Object.keys(input.args.query ?? {}).sort() }
+  }
+
+  if (input.tool === 'http_api_request') {
+    return {
+      ...base,
+      method: input.args.method,
+      path: input.args.path,
+      queryKeys: Object.keys(input.args.query ?? {}).sort(),
+      hasBody: input.args.body !== undefined,
+    }
+  }
+
   if (input.tool === 'file_read') return { ...base, path: input.args.path, offset: input.args.offset ?? 1, limit: input.args.limit ?? 2000 }
   if (input.tool === 'file_write') return { ...base, path: input.args.path, contentLength: input.args.content.length }
   if (input.tool === 'file_edit') return { ...base, path: input.args.path, oldStringLength: input.args.old_string.length, replaceAll: input.args.replace_all ?? false }
@@ -519,6 +553,7 @@ function resultMeta(
     | GmailGetMessageResult
     | GmailCreateDraftResult
     | GmailSendResult
+    | HttpApiCallResult
     | FileReadResult
     | FileWriteResult
     | FileEditResult
@@ -535,6 +570,10 @@ function resultMeta(
     | DocxReadResult
     | PdfReadResult,
 ): Record<string, unknown> {
+  if ('status' in result && 'ok' in result && 'body' in result) {
+    return { status: result.status, ok: result.ok }
+  }
+
   if ('hits' in result && Array.isArray(result.hits)) {
     return {
       hitCount: result.hits.length,
@@ -852,6 +891,10 @@ export class ToolBrokerService {
     if (input.tool === 'agent_resolve') return this.agentResolve(input.args)
     if (input.tool === 'agent_catalog') return this.agentCatalog(input.args)
 
+    if (input.tool === 'http_api_get' || input.tool === 'http_api_request') {
+      return this.executeHttpApiTool(input, authorization.connector)
+    }
+
     if (input.tool.startsWith('file_') || input.tool.startsWith('xlsx_') || input.tool.startsWith('pdf_') || input.tool === 'docx_read') {
       return this.executeFileTool(input, authorization.connector, actingTenantId)
     }
@@ -873,6 +916,25 @@ export class ToolBrokerService {
       return gmail.send(input.args)
     }
     throw new Error(`Unknown delegated tool: ${input.tool}`)
+  }
+
+  private async executeHttpApiTool(
+    input: Extract<ToolBrokerInvokeInput, { tool: 'http_api_get' | 'http_api_request' }>,
+    connector: Connector,
+  ): Promise<HttpApiCallResult> {
+    const config = parseHttpApiConfig(connector.config)
+    const apiKey = await resolveConnectorApiKey(connector.secretAlias)
+    const client = new HttpApiClient(config, apiKey)
+
+    if (input.tool === 'http_api_get') {
+      return client.request({ method: 'GET', path: input.args.path, query: input.args.query })
+    }
+    return client.request({
+      method: input.args.method,
+      path: input.args.path,
+      query: input.args.query,
+      body: input.args.body,
+    })
   }
 
   private async executeFileTool(

@@ -80,6 +80,7 @@ enum ConnectorType {
   board
   gmail
   workspace
+  http_api
 }
 
 enum ConnectorAuthMode {

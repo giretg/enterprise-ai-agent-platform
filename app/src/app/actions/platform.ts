@@ -34,6 +34,7 @@ import {
   updateAgentInstructionSchema,
   updateAgentModelConfigSchema,
   updateAgentSelfEvolutionProfileSchema,
+  createHttpApiConnectorSchema,
   createTrainingSchema,
   askWikiSchema,
   generateReportSchema,
@@ -504,6 +505,106 @@ export async function getAgentGovernance(input: { agentId: string }) {
     return ok({ capabilities, connectors })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to get agent governance')
+  }
+}
+
+export async function createHttpApiConnectorForAgent(input: {
+  agentId: string
+  name: string
+  baseUrl: string
+  authScheme: 'header' | 'bearer'
+  authHeader?: string
+  apiKey: string
+  description?: string
+  accessMode?: 'read' | 'write'
+  restrictToEndpoints?: boolean
+  endpoints?: Array<{ method: string; path: string; description?: string }>
+}) {
+  try {
+    const user = await requireRole('admin')
+    const parsed = createHttpApiConnectorSchema.parse(input)
+
+    const agent = await repositories.agents.findById(parsed.agentId)
+    if (!agent) return fail('Agent not found')
+
+    const existing = await prisma.connector.findUnique({
+      where: { type_name: { type: 'http_api', name: parsed.name } },
+    })
+    if (existing) return fail(`Már létezik „${parsed.name}" nevű API-kapcsolat — adj egyedi nevet.`)
+
+    const config = {
+      baseUrl: parsed.baseUrl.replace(/\/+$/, ''),
+      auth:
+        parsed.authScheme === 'header'
+          ? { scheme: 'header', header: parsed.authHeader! }
+          : { scheme: 'bearer' },
+      ...(parsed.description ? { description: parsed.description } : {}),
+      ...(parsed.endpoints && parsed.endpoints.length > 0 ? { endpoints: parsed.endpoints } : {}),
+      restrictToEndpoints: parsed.restrictToEndpoints,
+    }
+
+    // 1. Connector létrehozása secret nélkül; 2. a pasted kulcs a secret-store
+    //    mögé kerül (NEM a DB-be); 3. az alias secret-ref:<id>-re frissül.
+    const connector = await prisma.connector.create({
+      data: {
+        type: 'http_api',
+        name: parsed.name,
+        authMode: 'service',
+        scope: 'global',
+        config: config as Prisma.InputJsonValue,
+        secretAlias: null,
+        tenantId: user.tenantId ?? null,
+      },
+    })
+
+    const { saveConnectorApiKey, buildConnectorSecretRef } = await import(
+      '@/domain/connector/connector-secret-store'
+    )
+    await saveConnectorApiKey(connector.id, parsed.apiKey)
+    await prisma.connector.update({
+      where: { id: connector.id },
+      data: { secretAlias: buildConnectorSecretRef(connector.id) },
+    })
+
+    // Agent ↔ connector kötés + a két http_api capability engedélyezése.
+    await prisma.agentConnector.upsert({
+      where: { agentId_connectorId: { agentId: parsed.agentId, connectorId: connector.id } },
+      create: { agentId: parsed.agentId, connectorId: connector.id, accessMode: parsed.accessMode },
+      update: { accessMode: parsed.accessMode },
+    })
+
+    const tools =
+      parsed.accessMode === 'read' ? ['http_api_get'] : ['http_api_get', 'http_api_request']
+    for (const toolName of tools) {
+      await prisma.capability.upsert({
+        where: { agentId_toolName: { agentId: parsed.agentId, toolName } },
+        create: { agentId: parsed.agentId, toolName, allowed: true },
+        update: { allowed: true },
+      })
+    }
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: agent.currentVersion,
+      action: 'connector.create',
+      targetType: 'connector',
+      targetId: connector.id,
+      modelUsed: null,
+      inputRef: parsed.agentId,
+      outputRef: parsed.name,
+      policyDecision: 'allowed',
+      metadata: {
+        type: 'http_api',
+        baseUrl: config.baseUrl,
+        accessMode: parsed.accessMode,
+        endpointCount: parsed.endpoints?.length ?? 0,
+      },
+    })
+
+    return ok({ connectorId: connector.id, name: connector.name })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to create API connector')
   }
 }
 

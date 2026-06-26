@@ -7,7 +7,7 @@
  * tisztán igazolható.
  */
 import assert from 'node:assert/strict'
-import { runAgentToolLoop } from '../src/domain/agent/chat-tool-loop'
+import { runAgentToolLoop, recoverOpenAiToolCallsFromText } from '../src/domain/agent/chat-tool-loop'
 import { resolveTicketProcessRoute } from '../src/lib/ticket-process-route'
 import type { ModelGateway, ModelConfig, GatewayToolCall } from '../src/domain/gateway/model-gateway'
 import type {
@@ -203,6 +203,37 @@ async function main() {
     assert.equal(resolveTicketProcessRoute({ source: 'agent_tool' }), 'general')
     assert.equal(resolveTicketProcessRoute({ source: 'agent_ask' }), 'general')
     assert.equal(resolveTicketProcessRoute({ source: 'delegation' }), 'general')
+  })
+
+  await check('OpenAI delta-leak kimentése: töredékelt arguments összeáll', () => {
+    // A valós qwen3/OpenRouter leak (conversation 1a6c23ac) pontos alakja.
+    const leak =
+      '[{"id":"call_8ac786bc2aff4cceb0ab88","type":"function","function":{"name":"http_api_get"},"index":0}]' +
+      '[{"id":"","type":"function","function":{"arguments":"{\\""},"index":0}]' +
+      '[{"id":"","type":"function","function":{"arguments":"path\\": \\"/banks/6"},"index":0}]' +
+      '[{"id":"","type":"function","function":{"arguments":"742eee"},"index":0}]' +
+      '[{"id":"","type":"function","function":{"arguments":"8b89"},"index":0}]' +
+      '[{"id":"","type":"function","function":{"arguments":"ccc2f8"},"index":0}]' +
+      '[{"id":"","type":"function","function":{"arguments":"deae2f1"},"index":0}]' +
+      '[{"id":"","type":"function","function":{"arguments":"/crm\\"}"},"index":0}]'
+    const calls = recoverOpenAiToolCallsFromText(leak)
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].tool, 'http_api_get')
+    assert.deepEqual(calls[0].args, { path: '/banks/6742eee8b89ccc2f8deae2f1/crm' })
+  })
+
+  await check('OpenAI delta-leak: több párhuzamos tool index külön hívás', () => {
+    const leak =
+      '[{"id":"a","type":"function","function":{"name":"xlsx_create","arguments":"{\\"path\\":\\"r.xlsx\\"}"},"index":0}]' +
+      '[{"id":"b","type":"function","function":{"name":"http_api_get","arguments":"{\\"path\\":\\"/banks\\"}"},"index":1}]'
+    const calls = recoverOpenAiToolCallsFromText(leak)
+    assert.equal(calls.length, 2)
+    assert.equal(calls[0].tool, 'xlsx_create')
+    assert.deepEqual(calls[1].args, { path: '/banks' })
+  })
+
+  await check('Sima szöveg nem ad hamis kimentést', () => {
+    assert.equal(recoverOpenAiToolCallsFromText('Kész az Excel fájl, itt a tartalma.').length, 0)
   })
 
   if (failures > 0) {
