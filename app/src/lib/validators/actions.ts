@@ -73,6 +73,16 @@ export const activateSandboxAppVersionSchema = z.object({
   reason: z.string().max(500).optional(),
 })
 
+export const archiveSandboxAppSchema = z.object({
+  appId: z.string().uuid(),
+})
+
+export const listAuditLogSchema = z.object({
+  limit: z.number().int().positive().max(500).optional(),
+  targetType: z.string().max(64).optional(),
+  targetId: z.string().max(128).optional(),
+})
+
 export const transitionTicketSchema = z.object({
   id: z.string().uuid(),
   toState: z.enum([

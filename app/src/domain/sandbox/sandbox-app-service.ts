@@ -422,6 +422,7 @@ export class SandboxAppService {
         activeVersion: app.activeVersion?.version,
         contentHash: app.activeVersion?.contentHash,
         createdByLabel: app.createdByType === 'agent' ? 'agent' : 'user',
+        createdFromTicketId: app.createdFromTicketId ?? undefined,
         updatedAt: app.updatedAt.toISOString(),
       })),
       nextCursor,
@@ -511,13 +512,22 @@ export class SandboxAppService {
     appId: string,
     actor: Actor,
     action: 'sandbox_app.preview' | 'sandbox_app.export',
+    version?: number,
   ) {
     const af = resolveActorFields(actor)
     const app = await this.ensureReadable(
       await this.sandboxApps.findByIdWithLatestVersion(appId),
       actor,
     )
-    const latest = app.versions[0]
+
+    let latest: import('@prisma/client').SandboxAppVersion | undefined
+    if (version !== undefined) {
+      const found = await this.sandboxApps.getVersion(appId, version)
+      if (!found) throw new SandboxAppError('APP_VERSION_NOT_FOUND', `Version ${version} not found`)
+      latest = found
+    } else {
+      latest = app.versions[0]
+    }
     if (!latest) throw new SandboxAppError('APP_VERSION_NOT_FOUND', 'Sandbox app has no versions')
 
     const htmlContent = await this.artifacts.get(latest.artifactRef)
@@ -537,6 +547,29 @@ export class SandboxAppService {
     })
 
     return { app, version: { ...latest, htmlContent, htmlHash: latest.contentHash } }
+  }
+
+  async archiveSandboxApp(
+    input: { appId: string; reason?: string },
+    actor: Actor,
+  ): Promise<{ appId: string; status: 'archived' }> {
+    await this.ensureReadable(await this.sandboxApps.findById(input.appId), actor)
+    await this.sandboxApps.archive(input.appId)
+    const af = resolveActorFields(actor)
+    await this.audit.append({
+      actorType: af.actorType,
+      actorId: af.actorId,
+      agentVersion: null,
+      action: 'sandbox_app.archive',
+      targetType: 'sandbox_app',
+      targetId: input.appId,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: null,
+      policyDecision: 'allowed',
+      metadata: { level: 'A0', ...(input.reason ? { reason: input.reason } : {}) },
+    })
+    return { appId: input.appId, status: 'archived' }
   }
 
   /** Tool Broker `sandbox_app.export` — artifact metaadat visszaadása letöltési refként. */

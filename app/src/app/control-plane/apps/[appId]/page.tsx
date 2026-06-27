@@ -3,6 +3,8 @@ import { notFound } from 'next/navigation'
 import { getSandboxApp } from '@/app/actions/platform'
 import { Badge, Card } from '@/components/ui/shell'
 import { SandboxAppVersionPanel } from '@/components/sandbox/sandbox-app-version-panel'
+import { ArchiveSandboxAppButton } from '@/components/sandbox/archive-sandbox-app-button'
+import { AddSandboxAppVersionToggle } from '@/components/sandbox/add-sandbox-app-version-toggle'
 
 function statusTone(s: string): 'success' | 'neutral' | 'warning' | 'danger' {
   if (s === 'active') return 'success'
@@ -43,10 +45,11 @@ export default async function AppDetailPage({
               <p className="mt-1 text-sm text-ink-soft">{app.description}</p>
             )}
           </div>
-          <div className="flex flex-wrap gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Badge tone={statusTone(app.status)}>{app.status}</Badge>
             <Badge tone="neutral">A0 · single_html</Badge>
             <Badge tone="neutral">{app.criticality}</Badge>
+            {app.status !== 'archived' && <ArchiveSandboxAppButton appId={app.appId} />}
           </div>
         </div>
       </div>
@@ -120,6 +123,11 @@ export default async function AppDetailPage({
         </dl>
       </Card>
 
+      {/* Manuális verzió hozzáadása */}
+      {app.status !== 'archived' && (
+        <AddSandboxAppVersionToggle appId={app.appId} />
+      )}
+
       {/* Verziók + Preview (kliens komponens) */}
       {versions.length === 0 ? (
         <Card>
@@ -133,6 +141,19 @@ export default async function AppDetailPage({
           versions={versions}
         />
       )}
+
+      {/* Audit link (§7.2) */}
+      <Card title="Audit">
+        <p className="mb-3 text-sm text-ink-soft">
+          Az app összes auditált eseménye — create, version, activate, preview, export, access_denied.
+        </p>
+        <Link
+          href={`/control-plane/audit?targetType=sandbox_app&targetId=${app.appId}`}
+          className="inline-flex items-center gap-1.5 rounded-full border border-line px-4 py-1.5 text-xs font-semibold text-ink-soft hover:border-coral/40 hover:text-coral"
+        >
+          Audit eseményeinek megtekintése →
+        </Link>
+      </Card>
     </div>
   )
 }

@@ -12,16 +12,20 @@ function safeDownloadName(name: string): string {
 }
 
 export async function GET(
-  _request: Request,
+  request: Request,
   { params }: { params: Promise<{ appId: string }> },
 ) {
   try {
     const user = await requireRole('viewer')
     const parsed = sandboxAppIdSchema.parse(await params)
-    const { app, version } = await services.sandboxApps.getRenderableApp(parsed.appId, {
-      userId: user.id,
-      tenantId: user.tenantId,
-    }, 'sandbox_app.export')
+    const versionParam = new URL(request.url).searchParams.get('version')
+    const versionNumber = versionParam ? parseInt(versionParam, 10) : undefined
+    const { app, version } = await services.sandboxApps.getRenderableApp(
+      parsed.appId,
+      { userId: user.id, tenantId: user.tenantId },
+      'sandbox_app.export',
+      Number.isFinite(versionNumber) ? versionNumber : undefined,
+    )
 
     return new NextResponse(version.htmlContent, {
       headers: {

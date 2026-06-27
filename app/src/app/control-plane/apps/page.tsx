@@ -59,6 +59,7 @@ export default async function AppRegistryPage() {
                 <th className="px-4 py-3 text-left font-semibold text-ink-soft">Státusz</th>
                 <th className="px-4 py-3 text-left font-semibold text-ink-soft">Verzió</th>
                 <th className="px-4 py-3 text-left font-semibold text-ink-soft">Létrehozó</th>
+                <th className="px-4 py-3 text-left font-semibold text-ink-soft">Eredet</th>
                 <th className="px-4 py-3 text-left font-semibold text-ink-soft">Hash</th>
                 <th className="px-4 py-3 text-left font-semibold text-ink-soft">Frissítve</th>
               </tr>
@@ -89,6 +90,18 @@ export default async function AppRegistryPage() {
                     <Badge tone={app.createdByLabel === 'agent' ? 'warning' : 'neutral'}>
                       {app.createdByLabel}
                     </Badge>
+                  </td>
+                  <td className="px-4 py-3">
+                    {app.createdFromTicketId ? (
+                      <Link
+                        href={`/control-plane/tickets/${app.createdFromTicketId}`}
+                        className="font-mono text-[11px] text-ink-faint hover:text-coral"
+                      >
+                        #{app.createdFromTicketId.slice(0, 8)}
+                      </Link>
+                    ) : (
+                      <span className="text-xs text-ink-faint">—</span>
+                    )}
                   </td>
                   <td className="px-4 py-3 font-mono text-xs text-ink-faint">
                     {app.contentHash ? app.contentHash.slice(0, 12) : '—'}

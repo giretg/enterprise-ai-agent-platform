@@ -202,6 +202,14 @@ class FakeSandboxApps implements SandboxAppRepository {
     }
   }
 
+  async archive(appId: string): Promise<SandboxApp> {
+    const app = this.apps.get(appId)
+    if (!app) throw new Error(`App not found: ${appId}`)
+    ;(app as { status: string; archivedAt: Date | null }).status = 'archived'
+    ;(app as { archivedAt: Date | null }).archivedAt = new Date()
+    return app
+  }
+
   async getVersion(appId: string, version: number): Promise<SandboxAppVersion | null> {
     return this.versions.find((v) => v.appId === appId && v.version === version) ?? null
   }

@@ -340,7 +340,12 @@ export interface PlatformSettingsRepository {
 
 export interface AuditRepository {
   append(data: Omit<AuditLog, 'id' | 'seq' | 'createdAt' | 'hash' | 'prevHash'>): Promise<AuditLog>
-  findMany(filter?: { action?: string; limit?: number }): Promise<AuditLog[]>
+  findMany(filter?: {
+    action?: string
+    targetType?: string
+    targetId?: string
+    limit?: number
+  }): Promise<AuditLog[]>
   findAll(): Promise<AuditLog[]>
   /** Counts of audit events grouped by `action`, optionally narrowed to a set / time window (§11 governance). */
   getActionCounts(filter?: { actions?: string[]; since?: Date }): Promise<Record<string, number>>
@@ -524,6 +529,8 @@ export interface SandboxAppRepository {
   addVersion(input: AddSandboxAppVersionInput): Promise<SandboxAppVersion>
   /** Aktív verzió átállítása: app.activeVersionId + verzió-státuszok (active/superseded). */
   setActiveVersion(params: { appId: string; versionId: string }): Promise<void>
+  /** App archiválása (status = 'archived', archivedAt = now). */
+  archive(appId: string): Promise<SandboxApp>
   getVersion(appId: string, version: number): Promise<SandboxAppVersion | null>
   getVersionById(versionId: string): Promise<SandboxAppVersion | null>
   listVersions(appId: string): Promise<SandboxAppVersion[]>

@@ -38,6 +38,8 @@ import {
   getSandboxAppSchema,
   sandboxAppPreviewUrlSchema,
   activateSandboxAppVersionSchema,
+  archiveSandboxAppSchema,
+  listAuditLogSchema,
   createAgentSchema,
   updateAgentInstructionSchema,
   updateAgentModelConfigSchema,
@@ -1748,13 +1750,34 @@ export async function rollbackMemory(input: { agentId: string; toVersion: number
   }
 }
 
-export async function listAuditLog(input?: { limit?: number }) {
+export async function listAuditLog(input?: z.infer<typeof listAuditLogSchema>) {
   try {
     await requireRole('approver')
-    const entries = await repositories.audit.findMany({ limit: input?.limit ?? 100 })
+    const parsed = input ? listAuditLogSchema.parse(input) : {}
+    const entries = await repositories.audit.findMany({
+      limit: parsed.limit ?? 100,
+      targetType: parsed.targetType,
+      targetId: parsed.targetId,
+    })
     return ok(entries)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list audit log')
+  }
+}
+
+export async function archiveSandboxApp(input: z.infer<typeof archiveSandboxAppSchema>) {
+  try {
+    await requireRole('operator')
+    const parsed = archiveSandboxAppSchema.parse(input)
+    const user = await getCurrentUser()
+    if (!user) throw new Error('Not authenticated')
+    const result = await services.sandboxApps.archiveSandboxApp(parsed, {
+      userId: user.id,
+      tenantId: user.tenantId,
+    })
+    return ok(result)
+  } catch (e) {
+    return sandboxAppFail(e, 'Failed to archive sandbox app')
   }
 }
 

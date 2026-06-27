@@ -114,6 +114,13 @@ export class PostgresSandboxAppRepository implements SandboxAppRepository {
     ])
   }
 
+  async archive(appId: string): Promise<SandboxApp> {
+    return prisma.sandboxApp.update({
+      where: { id: appId },
+      data: { status: 'archived', archivedAt: new Date() },
+    })
+  }
+
   async getVersion(appId: string, version: number): Promise<SandboxAppVersion | null> {
     return prisma.sandboxAppVersion.findUnique({
       where: { appId_version: { appId, version } },

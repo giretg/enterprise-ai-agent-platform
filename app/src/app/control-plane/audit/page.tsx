@@ -1,3 +1,4 @@
+import Link from 'next/link'
 import { listAuditLog } from '@/app/actions/platform'
 import { Badge, Card } from '@/components/ui/shell'
 import { AuditChainPanel } from './audit-chain-panel'
@@ -46,8 +47,14 @@ function fileToolDetail(metadata: unknown): string | null {
   return parts.length > 0 ? parts.join(' · ') : null
 }
 
-export default async function AuditLogPage() {
-  const res = await listAuditLog({ limit: 100 })
+export default async function AuditLogPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ targetType?: string; targetId?: string }>
+}) {
+  const { targetType, targetId } = await searchParams
+  const isFiltered = Boolean(targetType || targetId)
+  const res = await listAuditLog({ limit: 200, targetType, targetId })
   const entries = res.success ? res.data : []
 
   return (
@@ -57,10 +64,27 @@ export default async function AuditLogPage() {
           <h1 className="font-display text-3xl font-semibold">Audit log</h1>
           <p className="mt-1 text-ink-soft">Append-only, hash-láncolt</p>
         </div>
-        <Badge tone="success">Hash-lánc: aktív</Badge>
+        <div className="flex items-center gap-3">
+          {isFiltered && (
+            <div className="flex items-center gap-2 rounded-full border border-honey/30 bg-honey/10 px-3 py-1 text-xs text-honey">
+              <span>
+                Szűrés: {targetType ?? ''}
+                {targetId ? ` · ${targetId.slice(0, 8)}…` : ''}
+              </span>
+              <Link
+                href="/control-plane/audit"
+                className="font-bold hover:text-honey/70"
+                title="Szűrő törlése"
+              >
+                ✕
+              </Link>
+            </div>
+          )}
+          <Badge tone="success">Hash-lánc: aktív</Badge>
+        </div>
       </div>
 
-      <AuditChainPanel />
+      {!isFiltered && <AuditChainPanel />}
 
       <Card>
         <div className="overflow-x-auto">
