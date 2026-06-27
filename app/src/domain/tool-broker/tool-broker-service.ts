@@ -197,6 +197,39 @@ export type GmailGetMessageResult = Record<string, string>
 export type GmailCreateDraftResult = { draftId: string }
 export type GmailSendResult = { messageId: string }
 
+// ── Sandbox App Registry tool args (Feature-spec §5) ─────────────────────────
+export type SandboxAppCreateArgs = {
+  name: string
+  description?: string
+  criticality?: 'L0' | 'L1'
+  createdFromTicketId?: string
+}
+export type SandboxAppUpdateArtifactArgs = {
+  appId: string
+  html: string
+  changeSummary: string
+  activate?: boolean
+}
+export type SandboxAppPreviewArgs = {
+  appId: string
+  version?: number
+}
+export type SandboxAppExportArgs = {
+  appId: string
+  version?: number
+}
+
+type SandboxAppCreateResult = { appId: string; status: 'draft' }
+type SandboxAppUpdateArtifactResult = {
+  versionId: string
+  version: number
+  contentHash: string
+  status: 'draft' | 'active'
+  validationResult: { status?: string; warnings?: string[] }
+}
+type SandboxAppPreviewResult = { previewUrl: string; contentHash: string; expiresAt: string }
+type SandboxAppExportResult = { filename: string; contentRef: string; contentHash: string; sizeBytes: number }
+
 export type FileReadArgs = { path: string; offset?: number; limit?: number }
 export type FileWriteArgs = { path: string; content: string }
 export type FileEditArgs = { path: string; old_string: string; new_string: string; replace_all?: boolean }
@@ -278,6 +311,10 @@ export type ToolBrokerInvokeInput =
   | (ToolInvokeBase & { tool: 'docx_read'; args: DocxReadArgs })
   | (ToolInvokeBase & { tool: 'pdf_read'; args: PdfReadArgs })
   | (ToolInvokeBase & { tool: 'pdf_create'; args: PdfCreateArgs })
+  | (ToolInvokeBase & { tool: 'sandbox_app.create'; args: SandboxAppCreateArgs })
+  | (ToolInvokeBase & { tool: 'sandbox_app.update_artifact'; args: SandboxAppUpdateArtifactArgs })
+  | (ToolInvokeBase & { tool: 'sandbox_app.preview'; args: SandboxAppPreviewArgs })
+  | (ToolInvokeBase & { tool: 'sandbox_app.export'; args: SandboxAppExportArgs })
 
 export type ToolBrokerInvokeResult =
   | {
@@ -314,6 +351,10 @@ export type ToolBrokerInvokeResult =
         | XlsxCreateResult
         | DocxReadResult
         | PdfReadResult
+        | SandboxAppCreateResult
+        | SandboxAppUpdateArtifactResult
+        | SandboxAppPreviewResult
+        | SandboxAppExportResult
       resultMeta: Record<string, unknown>
       latencyMs: number
     }
@@ -356,6 +397,10 @@ const TOOL_REQUIREMENTS: Record<
   docx_read: { connectorType: 'workspace', accessMode: 'read' },
   pdf_read: { connectorType: 'workspace', accessMode: 'read' },
   pdf_create: { connectorType: 'workspace', accessMode: 'write' },
+  'sandbox_app.create': { connectorType: 'board', accessMode: 'write' },
+  'sandbox_app.update_artifact': { connectorType: 'board', accessMode: 'write' },
+  'sandbox_app.preview': { connectorType: 'board', accessMode: 'read' },
+  'sandbox_app.export': { connectorType: 'board', accessMode: 'read' },
 }
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -533,6 +578,10 @@ function argsMeta(input: ToolBrokerInvokeInput): Record<string, unknown> {
   if (input.tool === 'docx_read') return { ...base, path: input.args.path }
   if (input.tool === 'pdf_read') return { ...base, path: input.args.path, pageRange: input.args.page_range ?? null }
   if (input.tool === 'pdf_create') return { ...base, path: input.args.path, sourceXlsx: input.args.source_xlsx ?? null, rowCount: input.args.rows?.length ?? null }
+  if (input.tool === 'sandbox_app.create') return { ...base, name: input.args.name, criticality: input.args.criticality ?? 'L1' }
+  if (input.tool === 'sandbox_app.update_artifact') return { ...base, appId: input.args.appId, htmlLength: input.args.html.length, activate: input.args.activate ?? false }
+  if (input.tool === 'sandbox_app.preview') return { ...base, appId: input.args.appId, version: input.args.version ?? null }
+  if (input.tool === 'sandbox_app.export') return { ...base, appId: input.args.appId, version: input.args.version ?? null }
 
   return {
     ...base,
@@ -569,7 +618,11 @@ function resultMeta(
     | XlsxLayoutResult
     | XlsxCreateResult
     | DocxReadResult
-    | PdfReadResult,
+    | PdfReadResult
+    | SandboxAppCreateResult
+    | SandboxAppUpdateArtifactResult
+    | SandboxAppPreviewResult
+    | SandboxAppExportResult,
 ): Record<string, unknown> {
   if ('status' in result && 'ok' in result && 'body' in result) {
     return { status: result.status, ok: result.ok }
@@ -637,6 +690,11 @@ function resultMeta(
   if ('sheets' in result) return { path: result.path, sheets: result.sheets }
   if ('numPages' in result) return { numPages: result.numPages, pagesRead: result.pagesRead, textLength: result.text.length }
   if ('text' in result && 'messages' in result) return { textLength: result.text.length, messages: result.messages.length }
+
+  if ('previewUrl' in result) return { previewUrl: result.previewUrl, contentHash: result.contentHash }
+  if ('filename' in result && 'contentRef' in result) return { filename: result.filename, contentHash: result.contentHash, sizeBytes: result.sizeBytes }
+  if ('appId' in result && 'status' in result && !('ticketId' in result)) return { appId: result.appId, status: result.status }
+  if ('versionId' in result) return { versionId: result.versionId, version: result.version, status: result.status }
 
   return {}
 }
@@ -768,6 +826,7 @@ export class ToolBrokerService {
     private authorizer: Authorizer,
     private grantService: ConnectorGrantService,
     private fileEditor: FileEditorService,
+    private sandboxApps: import('@/domain/sandbox/sandbox-app-service').SandboxAppService,
   ) {}
 
   /** Chat agent_ask: szinkron feldolgozás (pl. WikiAgentRuntime.processTicket). */
@@ -912,6 +971,10 @@ export class ToolBrokerService {
       return this.executeFileTool(input, authorization.connector, actingTenantId)
     }
 
+    if (input.tool.startsWith('sandbox_app.')) {
+      return this.executeSandboxAppTool(input, actingTenantId)
+    }
+
     const accessToken = await this.resolveDelegatedAccessToken(input, authorization)
     const gmail = new GmailApiClient(accessToken)
 
@@ -988,6 +1051,66 @@ export class ToolBrokerService {
       throw e
     }
     throw new Error(`Unknown file tool: ${input.tool}`)
+  }
+
+  private async executeSandboxAppTool(
+    input: ToolBrokerInvokeInput,
+    actingTenantId: string | null,
+  ): Promise<SandboxAppCreateResult | SandboxAppUpdateArtifactResult | SandboxAppPreviewResult | SandboxAppExportResult> {
+    const actor = { agentId: input.agentId, tenantId: actingTenantId }
+
+    if (input.tool === 'sandbox_app.create') {
+      const a = input.args as SandboxAppCreateArgs
+      return this.sandboxApps.createSandboxApp(
+        {
+          name: a.name,
+          description: a.description,
+          criticality: a.criticality ?? 'L1',
+          createdFromTicketId: a.createdFromTicketId ?? input.ticketId,
+        },
+        actor,
+      )
+    }
+
+    if (input.tool === 'sandbox_app.update_artifact') {
+      const a = input.args as SandboxAppUpdateArtifactArgs
+      const result = await this.sandboxApps.upsertSandboxAppVersion(
+        {
+          appId: a.appId,
+          html: a.html,
+          changeSummary: a.changeSummary,
+          activate: a.activate ?? true,
+          sourceTicketId: input.ticketId,
+        },
+        actor,
+      )
+      const { validationResult, ...safe } = result
+      return {
+        ...safe,
+        validationResult: {
+          status: (validationResult as { status?: string }).status,
+          warnings: (validationResult as { warnings?: string[] }).warnings ?? [],
+        },
+      }
+    }
+
+    if (input.tool === 'sandbox_app.preview') {
+      const a = input.args as SandboxAppPreviewArgs
+      return this.sandboxApps.getSandboxAppPreviewUrl(
+        { appId: a.appId, version: a.version },
+        actor,
+      )
+    }
+
+    if (input.tool === 'sandbox_app.export') {
+      const a = input.args as SandboxAppExportArgs
+      return this.sandboxApps.exportSandboxApp(
+        { appId: a.appId, version: a.version },
+        actor,
+      )
+    }
+
+    throw new Error(`Unknown sandbox_app tool: ${(input as { tool: string }).tool}`)
   }
 
   private async resolveDelegatedAccessToken(

@@ -99,6 +99,14 @@ const trainingService = new TrainingService(
   repositories.agents,
   selfEvolutionGuard,
 )
+const sandboxAppBucket = process.env.SANDBOX_APP_BUCKET ?? 'platform-sandbox-apps-prod'
+const sandboxAppService = new SandboxAppService(
+  repositories.sandboxApps,
+  repositories.tickets,
+  repositories.conversations,
+  repositories.audit,
+  new GcsArtifactStore(sandboxAppBucket),
+)
 const toolBrokerService = new ToolBrokerService(
   repositories.agents,
   repositories.tickets,
@@ -108,6 +116,7 @@ const toolBrokerService = new ToolBrokerService(
   toolAuthorizer,
   connectorGrantService,
   fileEditorService,
+  sandboxAppService,
 )
 const knowledgeBaseService = new KnowledgeBaseService(
   repositories.tickets,
@@ -150,14 +159,6 @@ toolBrokerService.setDelegationProcessor(async ({ ticketId, targetAgentId }) => 
 })
 const auditChainService = new AuditChainService(repositories.audit)
 const recipeService = new RecipeService(repositories.recipes, repositories.audit)
-const sandboxAppBucket = process.env.SANDBOX_APP_BUCKET ?? 'platform-sandbox-apps-prod'
-const sandboxAppService = new SandboxAppService(
-  repositories.sandboxApps,
-  repositories.tickets,
-  repositories.conversations,
-  repositories.audit,
-  new GcsArtifactStore(sandboxAppBucket),
-)
 const scheduledTaskService = new ScheduledTaskService(
   repositories.scheduledTasks,
   repositories.tickets,

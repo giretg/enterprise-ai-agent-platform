@@ -7,6 +7,7 @@ const navItems = [
   { href: '/control-plane', label: 'Dashboard', exact: true },
   { href: '/control-plane/board', label: 'Board' },
   { href: '/control-plane/agents', label: 'Agents' },
+  { href: '/control-plane/apps', label: 'App Registry' },
   { href: '/control-plane/scheduled-tasks', label: 'Ütemezés' },
   { href: '/control-plane/monitors', label: 'Monitorok' },
   { href: '/control-plane/training', label: 'Tanítás' },

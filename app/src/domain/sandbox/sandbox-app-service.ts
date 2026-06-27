@@ -21,10 +21,9 @@ function buildPreviewUrl(token: string): string {
   return `${origin}${PREVIEW_ROUTE_PATH}?t=${encodeURIComponent(token)}`
 }
 
-type Actor = {
-  userId: string
-  tenantId: string | null
-}
+type Actor =
+  | { userId: string; agentId?: undefined; tenantId: string | null }
+  | { agentId: string; userId?: undefined; tenantId: string | null }
 
 type SandboxAppView = {
   id: string
@@ -167,6 +166,25 @@ function auditablePolicy(policy: SandboxAppPolicy): {
   return { level: policy.level, network: policy.network, connectors: policy.connectors }
 }
 
+function resolveActorFields(actor: Actor) {
+  if (actor.agentId) {
+    return {
+      actorType: 'agent' as const,
+      actorId: actor.agentId,
+      createdByType: 'agent' as const,
+      createdByUserId: null as string | null,
+      createdByAgentId: actor.agentId,
+    }
+  }
+  return {
+    actorType: 'human' as const,
+    actorId: actor.userId!,
+    createdByType: 'user' as const,
+    createdByUserId: actor.userId!,
+    createdByAgentId: null as string | null,
+  }
+}
+
 export class SandboxAppService {
   constructor(
     private sandboxApps: SandboxAppRepository,
@@ -216,6 +234,7 @@ export class SandboxAppService {
     }
 
     const policy = validateAndNormalizeA0Policy(input.policy)
+    const af = resolveActorFields(actor)
 
     const app = await this.sandboxApps.create({
       tenantId: actor.tenantId,
@@ -223,8 +242,9 @@ export class SandboxAppService {
       name: input.name,
       description: input.description ?? null,
       criticality,
-      createdByType: 'user',
-      createdByUserId: actor.userId,
+      createdByType: af.createdByType,
+      createdByUserId: af.createdByUserId,
+      createdByAgentId: af.createdByAgentId,
       createdFromTicketId: input.createdFromTicketId ?? null,
       createdFromConversationId: input.createdFromConversationId ?? null,
       policy: policy as unknown as Prisma.InputJsonValue,
@@ -232,8 +252,8 @@ export class SandboxAppService {
     })
 
     await this.audit.append({
-      actorType: 'human',
-      actorId: actor.userId,
+      actorType: af.actorType,
+      actorId: af.actorId,
       agentVersion: null,
       action: 'sandbox_app.create',
       targetType: 'sandbox_app',
@@ -278,10 +298,12 @@ export class SandboxAppService {
     const sizeBytes = assertArtifactSize(html, policy.maxArtifactSizeBytes)
     const validationResult = lintHtml(html)
 
+    const af = resolveActorFields(actor)
+
     if (validationResult.status === 'failed') {
       await this.audit.append({
-        actorType: 'human',
-        actorId: actor.userId,
+        actorType: af.actorType,
+        actorId: af.actorId,
         agentVersion: null,
         action: 'sandbox_app.validation_failed',
         targetType: 'sandbox_app',
@@ -305,8 +327,9 @@ export class SandboxAppService {
       changeSummary: input.changeSummary,
       artifactSizeBytes: sizeBytes,
       contentHash,
-      createdByType: 'user',
-      createdByUserId: actor.userId,
+      createdByType: af.createdByType,
+      createdByUserId: af.createdByUserId,
+      createdByAgentId: af.createdByAgentId,
       createdFromRunId: input.createdFromRunId ?? null,
       sourceTicketId: input.sourceTicketId ?? null,
       validationResult: validationResult as unknown as Prisma.InputJsonValue,
@@ -327,8 +350,8 @@ export class SandboxAppService {
     }
 
     await this.audit.append({
-      actorType: 'human',
-      actorId: actor.userId,
+      actorType: af.actorType,
+      actorId: af.actorId,
       agentVersion: null,
       action: 'sandbox_app.version.create',
       targetType: 'sandbox_app',
@@ -489,6 +512,7 @@ export class SandboxAppService {
     actor: Actor,
     action: 'sandbox_app.preview' | 'sandbox_app.export',
   ) {
+    const af = resolveActorFields(actor)
     const app = await this.ensureReadable(
       await this.sandboxApps.findByIdWithLatestVersion(appId),
       actor,
@@ -499,8 +523,8 @@ export class SandboxAppService {
     const htmlContent = await this.artifacts.get(latest.artifactRef)
 
     await this.audit.append({
-      actorType: 'human',
-      actorId: actor.userId,
+      actorType: af.actorType,
+      actorId: af.actorId,
       agentVersion: null,
       action,
       targetType: 'sandbox_app',
@@ -513,6 +537,43 @@ export class SandboxAppService {
     })
 
     return { app, version: { ...latest, htmlContent, htmlHash: latest.contentHash } }
+  }
+
+  /** Tool Broker `sandbox_app.export` — artifact metaadat visszaadása letöltési refként. */
+  async exportSandboxApp(
+    input: { appId: string; version?: number },
+    actor: Actor,
+  ): Promise<{ filename: string; contentRef: string; contentHash: string; sizeBytes: number }> {
+    const af = resolveActorFields(actor)
+    const app = await this.ensureReadable(await this.sandboxApps.findById(input.appId), actor)
+    const ver = await this.resolvePreviewVersion(app.id, app.activeVersionId, input.version)
+
+    await this.audit.append({
+      actorType: af.actorType,
+      actorId: af.actorId,
+      agentVersion: null,
+      action: 'sandbox_app.export',
+      targetType: 'sandbox_app',
+      targetId: app.id,
+      modelUsed: null,
+      inputRef: ver.sourceTicketId,
+      outputRef: ver.contentHash,
+      policyDecision: 'allowed',
+      metadata: { version: ver.version, level: app.level },
+    })
+
+    const filename = `${app.name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 80) || 'sandbox-app'}-v${ver.version}.html`
+
+    return {
+      filename,
+      contentRef: ver.artifactRef,
+      contentHash: ver.contentHash,
+      sizeBytes: ver.artifactSizeBytes,
+    }
   }
 
   // ── Preview izoláció (Feature-spec §4.5, §6.1) ────────────────────────────
@@ -538,9 +599,10 @@ export class SandboxAppService {
       expiresAt,
     })
 
+    const af = resolveActorFields(actor)
     await this.audit.append({
-      actorType: 'human',
-      actorId: actor.userId,
+      actorType: af.actorType,
+      actorId: af.actorId,
       agentVersion: null,
       action: 'sandbox_app.preview',
       targetType: 'sandbox_app',
@@ -621,9 +683,10 @@ export class SandboxAppService {
     version: number,
     reason: string | null,
   ) {
+    const af = resolveActorFields(actor)
     await this.audit.append({
-      actorType: 'human',
-      actorId: actor.userId,
+      actorType: af.actorType,
+      actorId: af.actorId,
       agentVersion: null,
       action: 'sandbox_app.version.activate',
       targetType: 'sandbox_app',
@@ -650,9 +713,10 @@ export class SandboxAppService {
     }
     if (app.tenantId === actor.tenantId) return app
 
+    const af = resolveActorFields(actor)
     await this.audit.append({
-      actorType: 'human',
-      actorId: actor.userId,
+      actorType: af.actorType,
+      actorId: af.actorId,
       agentVersion: null,
       action: 'sandbox_app.access_denied',
       targetType: 'sandbox_app',
