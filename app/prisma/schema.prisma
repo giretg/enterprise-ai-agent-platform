@@ -220,11 +220,43 @@ enum AuditActorType {
 
 enum SandboxAppLevel {
   A0
+  A1
+  A2
+  A3
+}
+
+enum SandboxAppType {
+  single_html
+  static_bundle
+  sandbox_data_app
+  integrated_app
 }
 
 enum SandboxAppStatus {
+  draft
   active
-  retired
+  archived
+  blocked
+}
+
+enum SandboxAppVersionStatus {
+  draft
+  active
+  superseded
+  blocked
+}
+
+enum SandboxAppCriticality {
+  L0
+  L1
+  L2
+  L3
+}
+
+enum SandboxCreatedByType {
+  user
+  agent
+  system
 }
 
 enum ConversationStatus {
@@ -589,6 +621,7 @@ model Message {
 
 model Ticket {
   id               String        @id @default(uuid()) @db.Uuid
+  tenantId         String?       @map("tenant_id") @db.Uuid
   type             TicketType
   title            String
   state            TicketState   @default(backlog)
@@ -622,6 +655,7 @@ model Ticket {
   scheduledTaskMaterializations ScheduledTask[]
 
   @@index([source, state])
+  @@index([tenantId, state])
   @@map("tickets")
 }
 
@@ -838,33 +872,69 @@ model ToolCall {
 // ── CR-MVP-001: A0 sandbox app registry ────────────────────────────────────
 
 model SandboxApp {
-  id        String           @id @default(uuid()) @db.Uuid
-  name      String
-  level     SandboxAppLevel  @default(A0)
-  status    SandboxAppStatus @default(active)
-  tenantId  String?          @map("tenant_id") @db.Uuid
-  createdBy String           @map("created_by") @db.Uuid
-  createdAt DateTime         @default(now()) @map("created_at") @db.Timestamptz
+  id          String                @id @default(uuid()) @db.Uuid
+  tenantId    String?               @map("tenant_id") @db.Uuid
+  sandboxId   String?               @map("sandbox_id") @db.Uuid
+
+  name        String
+  description String?
+  level       SandboxAppLevel       @default(A0)
+  type        SandboxAppType        @default(single_html)
+  status      SandboxAppStatus      @default(draft)
+  criticality SandboxAppCriticality @default(L1)
+
+  activeVersionId String? @map("active_version_id") @db.Uuid
+
+  createdByType            SandboxCreatedByType @map("created_by_type")
+  createdByUserId          String?              @map("created_by_user_id") @db.Uuid
+  createdByAgentId         String?              @map("created_by_agent_id") @db.Uuid
+  createdFromTicketId      String?              @map("created_from_ticket_id") @db.Uuid
+  createdFromConversationId String?             @map("created_from_conversation_id") @db.Uuid
+
+  policy Json @default("{}")
+  tags   Json @default("[]")
+
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt  DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+  archivedAt DateTime? @map("archived_at") @db.Timestamptz
 
   versions SandboxAppVersion[]
 
+  @@index([tenantId, status])
+  @@index([tenantId, sandboxId])
+  @@index([tenantId, createdFromTicketId])
   @@map("sandbox_apps")
 }
 
 model SandboxAppVersion {
-  id             String   @id @default(uuid()) @db.Uuid
-  appId          String   @map("app_id") @db.Uuid
-  version        Int
-  htmlContent    String   @map("html_content")
-  htmlHash       String   @map("html_hash")
-  sourceTicketId String   @map("source_ticket_id") @db.Uuid
-  createdBy      String   @map("created_by") @db.Uuid
-  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+  id       String                  @id @default(uuid()) @db.Uuid
+  tenantId String?                 @map("tenant_id") @db.Uuid
+  appId    String                  @map("app_id") @db.Uuid
+
+  version       Int
+  status        SandboxAppVersionStatus @default(draft)
+  changeSummary String                  @map("change_summary")
+
+  artifactRef      String @map("artifact_ref")
+  artifactSizeBytes Int   @map("artifact_size_bytes")
+  contentHash      String @map("content_hash")
+  mimeType         String @default("text/html; charset=utf-8") @map("mime_type")
+
+  createdByType    SandboxCreatedByType @map("created_by_type")
+  createdByUserId  String?              @map("created_by_user_id") @db.Uuid
+  createdByAgentId String?              @map("created_by_agent_id") @db.Uuid
+  createdFromRunId String?              @map("created_from_run_id") @db.Uuid
+  sourceTicketId   String?              @map("source_ticket_id") @db.Uuid
+
+  validationResult Json @default("{}") @map("validation_result")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
 
   app          SandboxApp @relation(fields: [appId], references: [id], onDelete: Cascade)
-  sourceTicket Ticket     @relation(fields: [sourceTicketId], references: [id])
+  sourceTicket Ticket?    @relation(fields: [sourceTicketId], references: [id])
 
   @@unique([appId, version])
+  @@unique([tenantId, appId, contentHash])
   @@index([sourceTicketId])
   @@map("sandbox_app_versions")
 }

@@ -30,6 +30,7 @@ import { ConversationService } from '@/domain/conversation/conversation-service'
 import { PlaybookService } from '@/domain/playbook/playbook-service'
 import { IamService } from '@/domain/iam/iam-service'
 import { SandboxAppService } from '@/domain/sandbox/sandbox-app-service'
+import { GcsArtifactStore } from '@/domain/sandbox/artifact-store'
 import { ScheduledTaskService } from '@/domain/scheduled-task/scheduled-task-service'
 import { MonitorService } from '@/domain/monitor/monitor-service'
 import { DeadlineCollector } from '@/domain/monitor/collectors/deadline-collector'
@@ -149,10 +150,13 @@ toolBrokerService.setDelegationProcessor(async ({ ticketId, targetAgentId }) => 
 })
 const auditChainService = new AuditChainService(repositories.audit)
 const recipeService = new RecipeService(repositories.recipes, repositories.audit)
+const sandboxAppBucket = process.env.SANDBOX_APP_BUCKET ?? 'platform-sandbox-apps-prod'
 const sandboxAppService = new SandboxAppService(
   repositories.sandboxApps,
   repositories.tickets,
+  repositories.conversations,
   repositories.audit,
+  new GcsArtifactStore(sandboxAppBucket),
 )
 const scheduledTaskService = new ScheduledTaskService(
   repositories.scheduledTasks,

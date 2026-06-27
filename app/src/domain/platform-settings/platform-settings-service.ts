@@ -317,6 +317,22 @@ export class PlatformSettingsService {
     return !controls.killSwitch
   }
 
+  async auditMonitorSweepSkipped(reason: string, metadata: Record<string, unknown> = {}): Promise<void> {
+    await this.audit.append({
+      actorType: 'system',
+      actorId: null,
+      agentVersion: null,
+      action: 'monitor.sweep.skipped',
+      targetType: 'monitor',
+      targetId: null,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: null,
+      policyDecision: reason,
+      metadata: metadata as Prisma.JsonValue,
+    })
+  }
+
   async setMonitorControls(
     input: { killSwitch?: boolean; sweepIntervalSec?: number; maxConcurrent?: number },
     actorId: string,

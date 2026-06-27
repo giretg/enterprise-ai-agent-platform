@@ -1237,7 +1237,7 @@ async function scenario10_sandboxAppRegistry(operatorId: string, agentId: string
     }
 
     const createAudit = await repositories.audit.findMany({ action: 'sandbox_app.create', limit: 5 })
-    const versionAudit = await repositories.audit.findMany({ action: 'sandbox_app.version', limit: 5 })
+    const versionAudit = await repositories.audit.findMany({ action: 'sandbox_app.version.create', limit: 5 })
     const denyAudit = await repositories.audit.findMany({ action: 'sandbox_app.access_denied', limit: 5 })
     if (createAudit.length && versionAudit.length && denyAudit.length) {
       pass('Audit: sandbox_app.create/version/access_denied')
@@ -1668,7 +1668,7 @@ async function scenario13_gooseCommandBuilder() {
       HARNESS_AGENT_API_KEY: 'cp_sk_acceptance',
     },
     {
-      fetch: async (input, init) => {
+      fetch: async (input) => {
         const url = String(input)
         if (url.includes('/process')) {
           return new Response(JSON.stringify({ success: true, data: { ticketId } }), { status: 200 })

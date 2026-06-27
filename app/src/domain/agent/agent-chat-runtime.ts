@@ -244,6 +244,7 @@ export class AgentChatRuntime {
       ? buildRunAsAuthorization({ userId: params.createdById })
       : {}
     const ticket = await this.tickets.create({
+      tenantId: params.tenantId ?? null,
       type: 'interaction',
       title: `Feladat: ${titleSource.slice(0, 80)}`,
       state: 'ready',

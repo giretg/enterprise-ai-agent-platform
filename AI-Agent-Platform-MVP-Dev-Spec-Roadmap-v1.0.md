@@ -965,7 +965,7 @@ A fejlesztés akkor kész, ha:
 | Epik 5 — Harness + Dispatcher | Részben kész | **Production dispatcher deployolva és igazolva** (Cloud Run service + runtime SA, end-to-end audit-nyom). **Következő kritikus:** harness/recipe konvergencia a 20-hívásos guardrail alatt (S6) + hálózati S4 egress (VPC/NAT/firewall). |
 | Epik 6 — Tanítás | **Kész** | Retrieval-napló UI finomítás opcionális. |
 | Epik 7 — Sandbox + App Registry | **Kész** | `generateReport` API (§5.10) **implementálva**: előre definiált riport-sablon katalógus (`src/domain/report/report-templates.ts`), `services.wiki.generateReport` (interakciós `ready` ticket a wiki-runtime-on át → kb_search → Gateway → board_write), `generateReport` + `listReportTemplatesAction` server action, és wiki sandbox UI riport-kártya. |
-| Epik 8 — Governance | Részben kész | S6 futtatási jegyzőkönyv; 9.3 demó lefuttatása; §13 checklist végigpipálása. Eval **backend** kész (`Eval`/`EvalRun` modell, `createEval`/`runEval`/`listEvals` action, `approval_mode: eval_only \| auto_after_eval`), de **dedikált manuális értékelő UI-oldal** még nincs (csak az audit oldalról hivatkozott). |
+| Epik 8 — Governance | Részben kész | S6 futtatási jegyzőkönyv; 9.3 demó lefuttatása; §13 checklist végigpipálása. Eval **backend** kész (`Eval`/`EvalRun` modell, `createEval`/`runEval`/`listEvals` action, `approval_mode: eval_only \| auto_after_eval`), és a dedikált manuális értékelő UI-oldal elkészült a `/control-plane/governance/evals` útvonalon. |
 
 ### 15.3 Következő javasolt fejlesztési sorrend
 

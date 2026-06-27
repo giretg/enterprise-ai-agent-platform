@@ -187,20 +187,26 @@ export class PostgresMonitorRepository implements MonitorRepository {
     })
   }
 
-  async collectStaleBacklogTickets(updatedBefore: Date, limit: number): Promise<StaleBacklogTicket[]> {
+  async collectStaleBacklogTickets(
+    tenantId: string,
+    updatedBefore: Date,
+    limit: number,
+  ): Promise<StaleBacklogTicket[]> {
     const STALE_STATES = ['awaiting_human', 'ready'] as const
     const rows = await prisma.ticket.findMany({
       where: {
+        tenantId,
         state: { in: [...STALE_STATES] },
         updatedAt: { lte: updatedBefore },
         source: { not: 'test' },
       },
       orderBy: { updatedAt: 'asc' },
       take: limit,
-      select: { id: true, title: true, state: true, updatedAt: true, dueBy: true },
+      select: { id: true, tenantId: true, title: true, state: true, updatedAt: true, dueBy: true },
     })
     return rows.map((row) => ({
       ticketId: row.id,
+      tenantId: row.tenantId,
       title: row.title,
       state: row.state,
       updatedAt: row.updatedAt,
@@ -225,6 +231,7 @@ export class PostgresMonitorRepository implements MonitorRepository {
   }
 
   async collectUpcomingTicketDeadlines(
+    tenantId: string,
     now: Date,
     withinSeconds: number,
     limit: number,
@@ -232,16 +239,19 @@ export class PostgresMonitorRepository implements MonitorRepository {
     const horizon = new Date(now.getTime() + withinSeconds * 1000)
     const rows = await prisma.ticket.findMany({
       where: {
+        tenantId,
         dueBy: { not: null, lte: horizon },
         state: { notIn: [...TERMINAL_STATES] },
         source: { not: 'test' },
       },
       orderBy: { dueBy: 'asc' },
       take: limit,
-      select: { id: true, title: true, dueBy: true, state: true },
+      select: { id: true, tenantId: true, title: true, dueBy: true, state: true },
     })
     return rows.flatMap((row) =>
-      row.dueBy ? [{ ticketId: row.id, title: row.title, dueBy: row.dueBy, state: row.state }] : [],
+      row.dueBy
+        ? [{ ticketId: row.id, tenantId: row.tenantId, title: row.title, dueBy: row.dueBy, state: row.state }]
+        : [],
     )
   }
 }

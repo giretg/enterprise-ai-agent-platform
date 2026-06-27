@@ -147,6 +147,7 @@ export class ConversationService {
       (await this.playbooks.getActiveRefByName('wiki-interaction')) ?? null
 
     const ticket = await this.tickets.create({
+      tenantId: conversation.tenantId,
       type: 'interaction',
       title: `Wiki jóváhagyás: ${question.slice(0, 80)}`,
       state: 'awaiting_human',

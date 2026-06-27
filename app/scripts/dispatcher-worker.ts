@@ -25,6 +25,7 @@ const POLL_INTERVAL_MS = Number(process.env.DISPATCHER_POLL_INTERVAL_MS ?? 30_00
 const BATCH_LIMIT = Number(process.env.DISPATCHER_BATCH_LIMIT ?? 10)
 
 let dispatchInFlight = false
+let lastMonitorSweepAt = 0
 
 const health = {
   startedAt: new Date().toISOString(),
@@ -79,10 +80,20 @@ async function runDispatchCycle(ticketId?: string) {
 
     // Proaktív monitor: nem-LLM söprés (1. lépcső). A drága LLM csak küszöböt átlépő
     // jelnél, az eszkalált ticketen át indul (a meglévő dispatch-budget alatt).
-    const monitorEnabled = await services.platformSettings.isMonitorEnabled()
-    if (monitorEnabled) {
+    const monitorControls = await services.platformSettings.getMonitorControls()
+    const monitorDue = Date.now() - lastMonitorSweepAt >= monitorControls.sweepIntervalSec * 1000
+    if (monitorControls.killSwitch) {
+      await services.platformSettings.auditMonitorSweepSkipped('kill_switch', {
+        sweepIntervalSec: monitorControls.sweepIntervalSec,
+        maxConcurrent: monitorControls.maxConcurrent,
+      })
+    } else if (monitorDue) {
+      lastMonitorSweepAt = Date.now()
       await services.monitors.reclaimStaleLocks()
-      const sweeps = await services.monitors.sweepDue(new Date(), BATCH_LIMIT)
+      const sweeps = await services.monitors.sweepDue(
+        new Date(),
+        Math.min(BATCH_LIMIT, monitorControls.maxConcurrent),
+      )
       const escalated = sweeps.filter((s) => s.outcome === 'escalated').length
       if (escalated > 0) {
         const opened = sweeps.reduce((sum, s) => sum + s.openedTicketIds.length, 0)

@@ -275,6 +275,7 @@ export class ScheduledTaskService {
       }
 
       const ticket = await this.tickets.create({
+        tenantId: claimed.tenantId,
         type: 'interaction',
         title: claimed.title,
         state: 'ready',

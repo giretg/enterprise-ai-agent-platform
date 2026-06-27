@@ -16,10 +16,7 @@ function num(value: unknown, fallback: number): number {
  * konfigurált ablakon belül esedékes és még nincs lezárva (done/rejected). Nulla
  * LLM-token. A `severity` a hátralévő időből származik (közelebbi határidő → magasabb).
  *
- * Megjegyzés a tenant-izolációhoz: a jelenlegi sémában a `tickets` táblának nincs
- * `tenant_id` oszlopa (egy-tenantos board). A monitor `tenantId`-ja a definíció
- * tulajdonosát és a jövőbeli ticket-particionálást azonosítja; a ticket-szintű
- * tenant-szűrés a `Ticket.tenantId` bevezetésével lép életbe (PM-B follow-up).
+ * Tenant-izolált: csak a monitor tenantjához tartozó ticketeket olvassa.
  */
 export class DeadlineCollector implements MonitorCollector {
   readonly kind = 'deadline' as const
@@ -30,6 +27,7 @@ export class DeadlineCollector implements MonitorCollector {
     const windowHours = num(ctx.config.windowHours, DEFAULT_WINDOW_HOURS)
     const withinSeconds = Math.max(0, windowHours) * 3600
     const rows = await this.monitors.collectUpcomingTicketDeadlines(
+      ctx.tenantId,
       ctx.now,
       withinSeconds,
       MAX_SIGNALS,
@@ -47,6 +45,7 @@ export class DeadlineCollector implements MonitorCollector {
         dueBy: row.dueBy,
         payload: {
           ticketId: row.ticketId,
+          tenantId: row.tenantId,
           ticketTitle: row.title,
           state: row.state,
           dueBy: row.dueBy.toISOString(),

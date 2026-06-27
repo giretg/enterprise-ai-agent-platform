@@ -8,6 +8,7 @@ import type {
   Ticket,
   TicketState,
   ToolCallStatus,
+  UserStatus,
 } from '@prisma/client'
 import { prisma } from '@/lib/db'
 import { personaFor } from '@/lib/agent-persona'
@@ -666,11 +667,23 @@ const ORCHESTRATOR_DELEGATION_TOOLS: ToolName[] = [
   'agent_catalog',
 ]
 
+/**
+ * Az acting-user státusz-feloldása. Cserepont a determinisztikus teszteléshez
+ * (G5 — suspended user), alapból a Postgres `users` táblát kérdezi.
+ */
+export type ActingUserLookup = (
+  userId: string,
+) => Promise<{ status: UserStatus } | null>
+
+const prismaActingUserLookup: ActingUserLookup = async (userId) =>
+  prisma.user.findUnique({ where: { id: userId }, select: { status: true } })
+
 export class AllowlistAuthorizer implements Authorizer {
   constructor(
     private tools: ToolBrokerRepository,
     private agents: AgentRepository,
     private grants: ConnectorGrantRepository,
+    private lookupActingUser: ActingUserLookup = prismaActingUserLookup,
   ) {}
 
   async authorize(input: {
@@ -711,7 +724,7 @@ export class AllowlistAuthorizer implements Authorizer {
         return { allowed: false, reason: 'acting_user_required', connector }
       }
 
-      const user = await prisma.user.findUnique({ where: { id: input.actingUserId } })
+      const user = await this.lookupActingUser(input.actingUserId)
       if (!user || user.status === 'suspended') {
         return { allowed: false, reason: 'acting_user_suspended', connector }
       }
@@ -1318,8 +1331,8 @@ export class ToolBrokerService {
     if (input.ticketId) payload.parentTicketId = input.ticketId
     if (input.conversationId) payload.conversationId = input.conversationId
 
-    if (input.ticketId) {
-      const parent = await this.tickets.findById(input.ticketId)
+    const parent = input.ticketId ? await this.tickets.findById(input.ticketId) : null
+    if (parent) {
       const parentPayload = isRecord(parent?.payload) ? parent.payload : null
       if (isRunAsAuthorized(parentPayload)) {
         payload.runAsUserId = readRunAsUserId(parentPayload)
@@ -1331,6 +1344,7 @@ export class ToolBrokerService {
     const initialState: TicketState = args.assigneeType === 'agent' ? 'ready' : 'in_progress'
 
     let ticket = await this.tickets.create({
+      tenantId: parent?.tenantId ?? null,
       type: 'interaction',
       title: args.title,
       state: initialState,
@@ -1391,6 +1405,7 @@ export class ToolBrokerService {
     }
 
     const ticket = await this.tickets.create({
+      tenantId: input.ticketId ? (await this.tickets.findById(input.ticketId))?.tenantId ?? null : null,
       type: 'interaction',
       title: `Delegálás: ${question.slice(0, 80)}`,
       state: 'ready',

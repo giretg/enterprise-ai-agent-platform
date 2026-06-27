@@ -1,5 +1,6 @@
 'use server'
 
+import { z } from 'zod'
 import type { Prisma } from '@prisma/client'
 import { mkdir, unlink, writeFile } from 'fs/promises'
 import path from 'path'
@@ -7,6 +8,7 @@ import { clerkClient } from '@clerk/nextjs/server'
 import { getCurrentUser, requireRole } from '@/auth'
 import { hasMinimumRole } from '@/auth/types'
 import { services } from '@/domain'
+import { SandboxAppError } from '@/domain/sandbox/errors'
 import { dispatchBudgetFromEnv } from '@/domain/dispatcher/dispatcher-service'
 import { repositories } from '@/repositories/postgres'
 import { isClerkEnabled } from '@/lib/clerk-config'
@@ -30,6 +32,12 @@ import {
   runEvalSchema,
   costSummarySchema,
   createSandboxReportSchema,
+  createSandboxAppSchema,
+  upsertSandboxAppVersionSchema,
+  listSandboxAppsSchema,
+  getSandboxAppSchema,
+  sandboxAppPreviewUrlSchema,
+  activateSandboxAppVersionSchema,
   createAgentSchema,
   updateAgentInstructionSchema,
   updateAgentModelConfigSchema,
@@ -203,6 +211,7 @@ export async function createBoardTicket(input: {
       }
 
       const ticket = await repositories.tickets.create({
+        tenantId: user.tenantId,
         type: 'interaction',
         title: parsed.title,
         state: 'ready',
@@ -235,6 +244,7 @@ export async function createBoardTicket(input: {
     if (assignee.status !== 'active') return fail('User is not active')
 
     const ticket = await repositories.tickets.create({
+      tenantId: user.tenantId,
       type: 'interaction',
       title: parsed.title,
       state: 'awaiting_human',
@@ -1422,6 +1432,100 @@ export async function getSandboxReportForTicket(input: { ticketId: string }) {
   }
 }
 
+// ── App Registry általános API (Feature-spec — App Registry §4) ─────────────
+
+/** A SandboxAppError kódját a hibaüzenet elé fűzi, hogy az UI/teszt megkülönböztesse. */
+function sandboxAppFail(e: unknown, fallback: string) {
+  if (e instanceof SandboxAppError) return fail(`${e.code}: ${e.message}`)
+  return fail(e instanceof Error ? e.message : fallback)
+}
+
+export async function createSandboxApp(input: z.infer<typeof createSandboxAppSchema>) {
+  try {
+    const user = await requireRole('operator')
+    const parsed = createSandboxAppSchema.parse(input)
+    const result = await services.sandboxApps.createSandboxApp(parsed, {
+      userId: user.id,
+      tenantId: user.tenantId,
+    })
+    return ok(result)
+  } catch (e) {
+    return sandboxAppFail(e, 'Failed to create sandbox app')
+  }
+}
+
+export async function upsertSandboxAppVersion(input: z.infer<typeof upsertSandboxAppVersionSchema>) {
+  try {
+    const user = await requireRole('operator')
+    const parsed = upsertSandboxAppVersionSchema.parse(input)
+    const result = await services.sandboxApps.upsertSandboxAppVersion(parsed, {
+      userId: user.id,
+      tenantId: user.tenantId,
+    })
+    return ok(result)
+  } catch (e) {
+    return sandboxAppFail(e, 'Failed to create sandbox app version')
+  }
+}
+
+export async function activateSandboxAppVersion(
+  input: z.infer<typeof activateSandboxAppVersionSchema>,
+) {
+  try {
+    const user = await requireRole('operator')
+    const parsed = activateSandboxAppVersionSchema.parse(input)
+    const result = await services.sandboxApps.activateSandboxAppVersion(parsed, {
+      userId: user.id,
+      tenantId: user.tenantId,
+    })
+    return ok(result)
+  } catch (e) {
+    return sandboxAppFail(e, 'Failed to activate sandbox app version')
+  }
+}
+
+export async function listSandboxApps(input: z.infer<typeof listSandboxAppsSchema>) {
+  try {
+    const user = await requireRole('viewer')
+    const parsed = listSandboxAppsSchema.parse(input)
+    const result = await services.sandboxApps.listSandboxApps(parsed, {
+      userId: user.id,
+      tenantId: user.tenantId,
+    })
+    return ok(result)
+  } catch (e) {
+    return sandboxAppFail(e, 'Failed to list sandbox apps')
+  }
+}
+
+export async function getSandboxApp(input: z.infer<typeof getSandboxAppSchema>) {
+  try {
+    const user = await requireRole('viewer')
+    const parsed = getSandboxAppSchema.parse(input)
+    const result = await services.sandboxApps.getSandboxApp(parsed, {
+      userId: user.id,
+      tenantId: user.tenantId,
+    })
+    return ok(result)
+  } catch (e) {
+    return sandboxAppFail(e, 'Failed to get sandbox app')
+  }
+}
+
+export async function getSandboxAppPreviewUrl(input: z.infer<typeof sandboxAppPreviewUrlSchema>) {
+  try {
+    const user = await requireRole('viewer')
+    const parsed = sandboxAppPreviewUrlSchema.parse(input)
+    const result = await services.sandboxApps.getSandboxAppPreviewUrl(parsed, {
+      userId: user.id,
+      tenantId: user.tenantId,
+    })
+    return ok(result)
+  } catch (e) {
+    return sandboxAppFail(e, 'Failed to create sandbox app preview URL')
+  }
+}
+
 export async function createTrainingTicket(input: {
   agentId: string
   proposedContent: string
@@ -1776,7 +1880,7 @@ export async function getDashboardStats() {
 
 const SANDBOX_AUDIT_ACTIONS = [
   'sandbox_app.create',
-  'sandbox_app.version',
+  'sandbox_app.version.create',
   'sandbox_app.preview',
   'sandbox_app.export',
   'sandbox_app.access_denied',
@@ -1825,7 +1929,7 @@ export async function getGovernanceReport(input?: { range?: unknown }) {
       control: { decisions, rejectionRate, humanShare },
       sandbox: {
         created: sandboxCounts['sandbox_app.create'] ?? 0,
-        versions: sandboxCounts['sandbox_app.version'] ?? 0,
+        versions: sandboxCounts['sandbox_app.version.create'] ?? 0,
         previews: sandboxCounts['sandbox_app.preview'] ?? 0,
         exports: sandboxCounts['sandbox_app.export'] ?? 0,
         accessDenied: sandboxCounts['sandbox_app.access_denied'] ?? 0,

@@ -5,7 +5,29 @@
 **Dátum:** 2026-06-17
 **Forrásdokumentumok:** `AI-Agent-Platform-Koncepcio.md` (v0.11, 4.12.1), `AI-Agent-Platform-MVP-Dev-Spec-Roadmap-v1.0.md` (4.6, 5.5, 5.11, 14)
 **Olvasó:** a fejlesztő(k). Feltételezi a koncepció 4.12.1 és az MVP-spec ismeretét.
-**Státusz:** tervezet — a feature **Fázis 2** (MVP-n túli), de a séma-kampók már az MVP-specben benne vannak (lásd 3.).
+**Státusz:** **Fázis 2 — fejlesztés alatt, lényegileg kész.** Az F2-A…F2-E végpontok implementálva (lásd „Implementációs állapot”); az S7 live-smoke (`npm run s7:live-smoke`) az éles validáció.
+
+---
+
+## Implementációs állapot (2026-06-27)
+
+**Összefoglaló:** Az **F2-A…F2-E elkészült**. A `connectors.auth_mode = user_delegated` ág, a `connector_grants` repo + Secret Manager-alapú token-vault (refresh + cache-elt access), az OAuth authorization-code + PKCE flow (consent → szerveroldali callback), a Tool Broker kétrétegű `authorize()` (agent-capability **és** user-grant) + acting-user feloldás + szerveroldali token-injektálás, a `gmail.*` tool-ok (`search`/`get_message`/`create_draft`/`send`) a human-in-the-loop küldés-kapuval, valamint a Control Plane UI (`/control-plane/connectors` — fiók-összekötés, scope-profil választás, grant-lista + visszavonás) mind a kódban van. A run-as (autonóm) felhatalmazás kampói (`run-as-payload`) szintén jelen vannak.
+
+| Lépés | Leírás | Állapot |
+|---|---|---|
+| **F2-A** | `connector_grants` repo + `auth_mode` használat + grant CRUD + Control Plane UI a fiók-összekötéshez + grant-audit | ✅ Kész |
+| **F2-B** | OAuth authorization-code + PKCE, szerveroldali callback, Secret Manager token-vault, token-refresh | ✅ Kész |
+| **F2-C** | Broker `invoke(..., actingUserId)` feloldás, kétrétegű `authorize`, secret-injektálás | ✅ Kész |
+| **F2-D** | Gmail thin REST-adapter (`gmail-api-client`): `search`/`get_message`/`create_draft`/`send`; human-kapu a küldésre | ✅ Kész |
+| **F2-E** | Acting-user (session) + autonóm run-as kampók; deny implicit öröklésnél | ✅ Kész |
+
+**Governance teszt-lefedettség (2026-06-27):** `scripts/per-user-connector.test.ts` (`npm run test:per-user-connector`) — determinisztikus, DB/hálózat nélküli unit-tesztek a kétrétegű authorize-ra, a §10.1 funkcionális elfogadásra (capability + grant feloldás), a §10.2 kötelező negatív tesztekre (**G1** acting_user nélkül → DENY; **G2** csak a session-user grantje oldódik fel; **G4** visszavont/lejárt grant → DENY néma fallback nélkül; **G5** suspended user → DENY) és a scope-alapú least-privilege kapura (§7.1 mátrix). A `G3` (token nem szivároghat promptba) architekturálisan kizárt (a token a Broker mögött, az agent csak aliast lát), a `gmail_send` human-jóváhagyás (10.1.6) a `ToolBrokerService.invoke` `checkGmailSendApproval` kapuján fut. A teszt zöld, `tsc --noEmit` + `eslint` tiszta.
+
+> A tesztelhetőséghez az `AllowlistAuthorizer` a közvetlen `prisma.user` hívás helyett egy injektálható `ActingUserLookup` cserepontot kapott (alapból Postgres-háttér), így az acting-user szabály (G5) DB nélkül igazolható; éles viselkedés változatlan.
+
+**Hátralévő / nyitott:**
+- **S7 live-smoke** valódi teszt-Google-fiókkal (`npm run s7:live-smoke`) — a végső end-to-end igazolás (token sehol nem szivárog, visszavonás után DENY).
+- További `user_delegated` providerek (M365, Slack) — konfigurációként, kódbővítés nélkül (§16 vezérelv).
 
 ---
 

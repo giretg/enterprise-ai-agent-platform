@@ -1,7 +1,7 @@
 'use client'
 
-import { useState, useTransition } from 'react'
-import { createSandboxReport } from '@/app/actions/platform'
+import { useEffect, useState, useTransition } from 'react'
+import { createSandboxReport, getSandboxAppPreviewUrl } from '@/app/actions/platform'
 import { Badge, Card } from '@/components/ui/shell'
 
 type SandboxReport = {
@@ -21,8 +21,25 @@ export function SandboxReportPanel({
   initialReport: SandboxReport | null
 }) {
   const [report, setReport] = useState<SandboxReport | null>(initialReport)
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
+
+  // Rövid életű, aláírt preview URL-t kérünk (cookieless, izolált origin — §6.1).
+  useEffect(() => {
+    if (!report) return
+    let cancelled = false
+    const appId = report.id
+    void (async () => {
+      const res = await getSandboxAppPreviewUrl({ appId })
+      if (cancelled) return
+      if (res.success) setPreviewUrl(res.data.previewUrl)
+      else setError(res.error)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [report])
 
   const createReport = () => {
     setError(null)
@@ -47,6 +64,7 @@ export function SandboxReportPanel({
             <div className="mt-2 flex flex-wrap gap-2">
               <Badge tone="success">v{report.version}</Badge>
               <Badge tone="neutral">sha256 {report.htmlHash.slice(0, 12)}</Badge>
+              <Badge tone="neutral">sandbox preview · nincs hálózat / nincs platform API</Badge>
             </div>
           )}
         </div>
@@ -65,18 +83,26 @@ export function SandboxReportPanel({
       {report && (
         <div className="mt-4 space-y-3">
           <div className="overflow-hidden rounded-lg border border-line bg-white">
-            <iframe
-              title={report.name}
-              src={`/api/sandbox-apps/${report.id}/preview`}
-              sandbox=""
-              className="h-[420px] w-full bg-white"
-            />
+            {previewUrl ? (
+              <iframe
+                title={report.name}
+                src={previewUrl}
+                sandbox="allow-scripts"
+                referrerPolicy="no-referrer"
+                className="h-[420px] w-full bg-white"
+              />
+            ) : (
+              <div className="flex h-[420px] w-full items-center justify-center text-sm text-ink-soft">
+                Preview betöltése…
+              </div>
+            )}
           </div>
           <div className="flex flex-wrap gap-2">
             <a
-              href={`/api/sandbox-apps/${report.id}/preview`}
+              href={previewUrl ?? '#'}
               target="_blank"
               rel="noreferrer"
+              aria-disabled={!previewUrl}
               className="rounded-full border border-line px-4 py-2 text-sm font-semibold text-ink-soft hover:border-coral/45 hover:text-coral"
             >
               Preview megnyitása

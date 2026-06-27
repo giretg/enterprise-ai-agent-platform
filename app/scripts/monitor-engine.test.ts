@@ -9,9 +9,12 @@ import assert from 'node:assert/strict'
 import type { MonitorDefinition } from '@prisma/client'
 import { evaluateFilter } from '../src/domain/monitor/filter-eval'
 import { computeNextSweepAt } from '../src/domain/monitor/monitor-service'
+import { BoardBacklogCollector } from '../src/domain/monitor/collectors/board-collector'
+import { DeadlineCollector } from '../src/domain/monitor/collectors/deadline-collector'
 import type { MonitorSignalDraft } from '../src/domain/monitor/collectors/types'
 
 let failures = 0
+const asyncChecks: Promise<void>[] = []
 function check(name: string, fn: () => void) {
   try {
     fn()
@@ -20,6 +23,19 @@ function check(name: string, fn: () => void) {
     failures++
     console.log(`  ❌ ${name}: ${e instanceof Error ? e.message : e}`)
   }
+}
+
+function checkAsync(name: string, fn: () => Promise<void>) {
+  asyncChecks.push(
+    fn()
+      .then(() => {
+        console.log(`  ✅ ${name}`)
+      })
+      .catch((e) => {
+        failures++
+        console.log(`  ❌ ${name}: ${e instanceof Error ? e.message : e}`)
+      }),
+  )
 }
 
 function signal(overrides: Partial<MonitorSignalDraft> = {}): MonitorSignalDraft {
@@ -85,6 +101,55 @@ check('hoursUntilDue származtatott mező', () => {
   assert.equal(evaluateFilter(filter, signal({ dueBy: later }), NOW).matched, false)
 })
 
+console.log('=== monitor collector tenant-izoláció teszt ===')
+
+checkAsync('deadline collector tenantId-t ad át a repositorynak', async () => {
+  let seenTenantId: string | null = null
+  const collector = new DeadlineCollector({
+    async collectUpcomingTicketDeadlines(tenantId: string) {
+      seenTenantId = tenantId
+      return [
+        {
+          ticketId: 'ticket-a',
+          tenantId,
+          title: 'A tenant határidő',
+          dueBy: new Date(NOW.getTime() + 2 * 3_600_000),
+          state: 'ready',
+        },
+      ]
+    },
+  } as never)
+
+  const signals = await collector.collect({ tenantId: 'tenant-a', config: { windowHours: 24 }, now: NOW })
+  assert.equal(seenTenantId, 'tenant-a')
+  assert.equal(signals.length, 1)
+  assert.equal(signals[0].payload.tenantId, 'tenant-a')
+})
+
+checkAsync('board-backlog collector tenantId-t ad át a repositorynak', async () => {
+  let seenTenantId: string | null = null
+  const collector = new BoardBacklogCollector({
+    async collectStaleBacklogTickets(tenantId: string) {
+      seenTenantId = tenantId
+      return [
+        {
+          ticketId: 'ticket-b',
+          tenantId,
+          title: 'B tenant ticket',
+          state: 'awaiting_human',
+          updatedAt: new Date(NOW.getTime() - 8 * 3_600_000),
+          dueBy: null,
+        },
+      ]
+    },
+  } as never)
+
+  const signals = await collector.collect({ tenantId: 'tenant-b', config: { staleHours: 4 }, now: NOW })
+  assert.equal(seenTenantId, 'tenant-b')
+  assert.equal(signals.length, 1)
+  assert.equal(signals[0].payload.tenantId, 'tenant-b')
+})
+
 console.log('=== monitor computeNextSweepAt teszt ===')
 
 function monitor(overrides: Partial<MonitorDefinition> = {}): MonitorDefinition {
@@ -137,5 +202,7 @@ check('skip catch-up: rég esedékes → jövőbeli slot, nem most', () => {
   assert.ok(next.getTime() >= NOW.getTime())
 })
 
-console.log(failures === 0 ? '\n✅ minden monitor unit-teszt zöld' : `\n❌ ${failures} teszt bukott`)
-process.exit(failures === 0 ? 0 : 1)
+Promise.all(asyncChecks).then(() => {
+  console.log(failures === 0 ? '\n✅ minden monitor unit-teszt zöld' : `\n❌ ${failures} teszt bukott`)
+  process.exit(failures === 0 ? 0 : 1)
+})

@@ -30,6 +30,49 @@ export const createSandboxReportSchema = z.object({
   ticketId: z.string().uuid(),
 })
 
+// ── App Registry általános API (Feature-spec — App Registry §4) ─────────────
+
+export const createSandboxAppSchema = z.object({
+  name: z.string().trim().min(3).max(80),
+  description: z.string().max(1000).optional(),
+  sandboxId: z.string().uuid().optional(),
+  criticality: z.enum(['L0', 'L1']).optional(),
+  createdFromTicketId: z.string().uuid().optional(),
+  createdFromConversationId: z.string().uuid().optional(),
+  tags: z.array(z.string().max(64)).max(32).optional(),
+})
+
+export const upsertSandboxAppVersionSchema = z.object({
+  appId: z.string().uuid(),
+  html: z.string().min(1),
+  changeSummary: z.string().trim().min(1).max(1000),
+  activate: z.boolean().optional(),
+  createdFromRunId: z.string().uuid().optional(),
+})
+
+export const listSandboxAppsSchema = z.object({
+  sandboxId: z.string().uuid().optional(),
+  status: z.enum(['draft', 'active', 'archived', 'blocked']).optional(),
+  search: z.string().max(200).optional(),
+  limit: z.number().int().positive().max(200).optional(),
+  cursor: z.string().uuid().optional(),
+})
+
+export const getSandboxAppSchema = z.object({
+  appId: z.string().uuid(),
+})
+
+export const sandboxAppPreviewUrlSchema = z.object({
+  appId: z.string().uuid(),
+  version: z.number().int().positive().optional(),
+})
+
+export const activateSandboxAppVersionSchema = z.object({
+  appId: z.string().uuid(),
+  version: z.number().int().positive(),
+  reason: z.string().max(500).optional(),
+})
+
 export const transitionTicketSchema = z.object({
   id: z.string().uuid(),
   toState: z.enum([

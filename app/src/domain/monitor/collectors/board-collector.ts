@@ -14,7 +14,8 @@ function num(value: unknown, fallback: number): number {
  *
  * Azokat a ticketeket gyűjti, amelyek `awaiting_human` vagy `ready` állapotban vannak
  * és `updatedAt`-juk több mint `staleHours` órával régebbi — azaz elakadtak. Nulla
- * LLM-token. A `severity` az életkorból számított (régebbi → magasabb).
+ * LLM-token. Tenant-izolált: csak a monitor tenantjához tartozó ticketeket látja.
+ * A `severity` az életkorból számított (régebbi → magasabb).
  */
 export class BoardBacklogCollector implements MonitorCollector {
   readonly kind = 'board_backlog' as const
@@ -26,7 +27,7 @@ export class BoardBacklogCollector implements MonitorCollector {
     const staleAfterMs = Math.max(0, staleHours) * 3_600_000
     const cutoff = new Date(ctx.now.getTime() - staleAfterMs)
 
-    const rows = await this.monitors.collectStaleBacklogTickets(cutoff, MAX_SIGNALS)
+    const rows = await this.monitors.collectStaleBacklogTickets(ctx.tenantId, cutoff, MAX_SIGNALS)
 
     return rows.map((row) => {
       const ageHours = (ctx.now.getTime() - row.updatedAt.getTime()) / 3_600_000
@@ -40,6 +41,7 @@ export class BoardBacklogCollector implements MonitorCollector {
         dueBy: row.dueBy,
         payload: {
           ticketId: row.ticketId,
+          tenantId: row.tenantId,
           ticketTitle: row.title,
           state: row.state,
           updatedAt: row.updatedAt.toISOString(),

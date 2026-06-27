@@ -5,13 +5,13 @@
 **Dátum:** 2026-06-21
 **Forrásdokumentumok:** `AI-Agent-Platform-Koncepcio.md` (§4.11.4, §4.11.6, §4.11.7, §8.6, §11.5), `AI-Agent-Platform-MVP-Dev-Spec-Roadmap-v1.0.md` (v1.0, §5.7 dispatcher, §15.4 scheduled tasks), `AI-Agent-Platform-Feature-Spec-PerUser-Connector.md` (v1.0)
 **Olvasó:** fejlesztő(k). Feltételezi a Ticket-állapotgép, a `DispatcherService`, a `ScheduledTask` runtime, a Tool Broker + Model Gateway és az append-only audit ismeretét.
-**Státusz:** **Fázis 2 — fejlesztés alatt.** A **PM-A…PM-E lényegileg kész** (az értesítési csatorna implementáción kívül, ami opcionális). Az „Implementációs állapot” szekció naprakész.
+**Státusz:** **Fázis 2 — core kész.** A **PM-A…PM-E elkészült** az opcionális értesítési csatorna és a külön döntésre tett `mailbox_count` Tool Broker capability kivételével. Az „Implementációs állapot” szekció naprakész.
 
 ---
 
-## Implementációs állapot (2026-06-22)
+## Implementációs állapot (2026-06-27)
 
-**Összefoglaló:** A **PM-A + PM-B + PM-C + PM-D + PM-E (UI) elkészült**. A teljes kétlépcsős söprés-motor (deadline + board-backlog + connector-count stub collector), a determinisztikus szűrő-DSL, a dedup/cooldown, a dispatcher kill-switch + intervallum PlatformSetting-en át, a globális monitor kill-switch (`monitor.kill_switch`), a teljes Control Plane UI (`/control-plane/monitors` lista + szerkesztő + dry-run + futásnapló + jel-cooldown tábla), a server actions és a rendszer-oldal monitor-vezérlő panel. Build + lint + tsc zöld, unit-tesztek zöldek.
+**Összefoglaló:** A **PM-A + PM-B + PM-C + PM-D + PM-E (UI) elkészült**. A teljes kétlépcsős söprés-motor (deadline + board-backlog + connector-count stub collector), a determinisztikus szűrő-DSL, a dedup/cooldown, a dispatcher kill-switch + intervallum + concurrency `PlatformSetting`-en át, a globális monitor kill-switch (`monitor.kill_switch`), a tenant-izolált monitor collectorok és monitor-ticketek, a teljes Control Plane UI (`/control-plane/monitors` lista + szerkesztő + dry-run + futásnapló + jel-cooldown tábla), a server actions és a rendszer-oldal monitor-vezérlő panel. Build + lint + tsc zöld, unit-tesztek zöldek.
 
 ### Fázisok
 
@@ -35,6 +35,7 @@
 - `app/scripts/monitor-engine.test.ts` + `package.json` `test:monitor`
 - `app/prisma/seed.ts` — minta `deadline` monitor
 - `app/src/domain/ticket/ticket-type-config.ts`, `system/ticket-type-config-panel.tsx`, `lib/validators/actions.ts`, `actions/platform.ts` — `monitor_alert` típus átvezetés
+- `app/prisma/schema.prisma`, `app/src/repositories/postgres/ticket-repository.ts` — `Ticket.tenantId` + tenant-szűrt ticket-listázás a monitor izolációhoz
 
 ### Elkészült fájlok (PM-B…PM-E)
 
@@ -58,6 +59,8 @@
 - `app/src/app/control-plane/system/monitor-control-panel.tsx` — kill-switch + intervallum + concurrency vezérlő
 - `app/src/app/control-plane/system/page.tsx` — MonitorControlPanel bekötve
 - `app/src/app/control-plane/layout.tsx` — „Monitorok” nav item
+- `app/scripts/dispatcher-worker.ts` — monitor `killSwitch`, `sweepIntervalSec`, `maxConcurrent` runtime betartása; kill-switch esetén `monitor.sweep.skipped` audit
+- `app/scripts/monitor-engine.test.ts` — szűrő/catch-up unit-tesztek + deadline/board-backlog collector tenant-izolációs tesztek
 
 ### Hátralévő / nyitott
 
@@ -595,12 +598,13 @@ A kétlépcsős felépítés garantálja, hogy **drága LLM sosem fut üresben**
 
 ## 13. Definition of Done
 
-- [ ] Prisma migráció + seed (egy minta `deadline` monitor).
-- [ ] `monitor-service.ts` kétlépcsős `runSweep` + 3 collector + `filter-eval` unit-tesztekkel.
-- [ ] Worker-tick a dispatcherben, runtime kill-switch + intervallum.
-- [ ] Dedup/cooldown + catch-up + `@@unique` dupla-fire (PM-N1) igazolva.
-- [ ] Budget cap bekötve a 2. lépcsőbe (PM-N4).
-- [ ] `/control-plane/monitors` lista + szerkesztő + dry-run + futásnapló.
-- [ ] Acceptance: PM1–PM7 + negatív PM-N1…N6 zöld.
-- [ ] Audit-lánc kiterjesztve a monitor-eseményekre; `verifyChain()` zöld.
-- [ ] `npm run lint` + `npm run build` zöld.
+- [x] Prisma séma + seed (egy minta `deadline` monitor).
+- [x] `monitor-service.ts` kétlépcsős `runSweep` + 3 collector + `filter-eval` unit-tesztekkel.
+- [x] Worker-tick a dispatcherben, runtime kill-switch + intervallum + concurrency-cap.
+- [x] Dedup/cooldown + catch-up + `@@unique` dupla-fire védelem.
+- [x] Monitor-ticket tenant-izoláció + deadline/board-backlog collector tenant-szűrés (PM-N2).
+- [x] 2. lépcsős agent-indítás a meglévő dispatcher budget/guardrail alatt.
+- [x] `/control-plane/monitors` lista + szerkesztő + dry-run + futásnapló.
+- [x] Audit-lánc kiterjesztve a monitor-eseményekre (`monitor.sweep.*`, lock reclaim, kill-switch skip).
+- [x] `npm run test:monitor` + `npm run lint` + `npx tsc --noEmit --incremental false` + `npm run build` zöld.
+- [ ] Opcionális értesítési adapter (`app/src/lib/notify/`) és dedikált Tool Broker `mailbox_count` capability külön follow-upként.

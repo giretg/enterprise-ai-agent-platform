@@ -283,6 +283,7 @@ export class MonitorService {
   ): Promise<string> {
     const hasAgent = Boolean(monitor.escalateAgentId)
     const ticket = await this.tickets.create({
+      tenantId: monitor.tenantId,
       type: monitor.openTicketType,
       title: signal.title,
       state: hasAgent ? 'ready' : 'backlog',
@@ -291,6 +292,7 @@ export class MonitorService {
       agentId: monitor.escalateAgentId ?? null,
       payload: {
         ...signal.payload,
+        tenantId: monitor.tenantId,
         monitorId: monitor.id,
         monitorKind: monitor.kind,
         source: 'monitor',

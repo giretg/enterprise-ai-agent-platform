@@ -220,6 +220,7 @@ export class WikiAgentRuntime {
     agentId: string
     question: string
     createdById: string
+    tenantId?: string | null
     executeAfter?: Date | null
     authorizeRunAs?: boolean
     title?: string
@@ -241,6 +242,7 @@ export class WikiAgentRuntime {
       : {}
 
     const ticket = await this.tickets.create({
+      tenantId: params.tenantId ?? null,
       type: 'interaction',
       title: params.title ?? `Wiki kérdés: ${question.slice(0, 80)}`,
       state: 'ready',

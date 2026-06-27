@@ -34,8 +34,10 @@
     "test:monitor": "tsx scripts/monitor-engine.test.ts",
     "test:tool-loop": "tsx scripts/agent-tool-loop.test.ts",
     "test:http-api": "tsx scripts/http-api-connector.test.ts",
+    "test:per-user-connector": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/per-user-connector.test.ts",
     "test:kb-gate": "DATABASE_URL=postgresql://kbtest:kbtest@127.0.0.1:5432/kbtest tsx scripts/knowledge-base-gate.test.ts",
     "test:acceptance": "tsx scripts/acceptance-e2e.ts",
+    "test:sandbox-app": "SANDBOX_APP_STUB=true tsx scripts/sandbox-app-registry.test.ts",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "postinstall": "prisma generate"

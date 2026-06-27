@@ -7,6 +7,7 @@ import type { TicketFilter, TicketRepository } from '../interfaces'
 export class PostgresTicketRepository implements TicketRepository {
   async findMany(filter?: TicketFilter): Promise<Ticket[]> {
     const where: Prisma.TicketWhereInput = {}
+    if (filter && 'tenantId' in filter) where.tenantId = filter.tenantId
     if (filter?.state) {
       where.state = Array.isArray(filter.state) ? { in: filter.state } : filter.state
     }
@@ -68,13 +69,16 @@ export class PostgresTicketRepository implements TicketRepository {
       | 'id'
       | 'createdAt'
       | 'updatedAt'
+      | 'tenantId'
       | 'lockToken'
       | 'lockedAt'
       | 'playbookRef'
       | 'conversationId'
       | 'source'
     > &
-      Partial<Pick<Ticket, 'lockToken' | 'lockedAt' | 'playbookRef' | 'conversationId' | 'source'>>,
+      Partial<
+        Pick<Ticket, 'tenantId' | 'lockToken' | 'lockedAt' | 'playbookRef' | 'conversationId' | 'source'>
+      >,
   ): Promise<Ticket> {
     const ticket = await prisma.ticket.create({
       data: {

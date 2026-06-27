@@ -72,7 +72,7 @@ function resolvePrismaClient(): PrismaClient {
 }
 
 export const prisma: PrismaClient = new Proxy({} as PrismaClient, {
-  get(_target, prop, receiver) {
+  get(_target, prop) {
     void ensureActiveDatabaseMode()
     const client = resolvePrismaClient()
     const value = Reflect.get(client, prop, client)

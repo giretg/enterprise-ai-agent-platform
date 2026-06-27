@@ -22,7 +22,10 @@ import type {
   RecipeTicketType,
   RecipeVersion,
   SandboxApp,
+  SandboxAppCriticality,
+  SandboxAppStatus,
   SandboxAppVersion,
+  SandboxCreatedByType,
   ScheduledTask,
   ScheduledTaskKind,
   ScheduledTaskRecurrence,
@@ -38,6 +41,7 @@ import type {
 } from '@prisma/client'
 
 export type TicketFilter = {
+  tenantId?: string | null
   state?: TicketState | TicketState[]
   type?: Ticket['type']
   agentId?: string
@@ -57,13 +61,16 @@ export interface TicketRepository {
       | 'id'
       | 'createdAt'
       | 'updatedAt'
+      | 'tenantId'
       | 'lockToken'
       | 'lockedAt'
       | 'playbookRef'
       | 'conversationId'
       | 'source'
     > &
-      Partial<Pick<Ticket, 'lockToken' | 'lockedAt' | 'playbookRef' | 'conversationId' | 'source'>>,
+      Partial<
+        Pick<Ticket, 'tenantId' | 'lockToken' | 'lockedAt' | 'playbookRef' | 'conversationId' | 'source'>
+      >,
   ): Promise<Ticket>
   update(
     id: string,
@@ -152,6 +159,7 @@ export type CreateMonitorInput = {
 
 export type UpcomingTicketDeadline = {
   ticketId: string
+  tenantId: string | null
   title: string
   dueBy: Date
   state: TicketState
@@ -159,6 +167,7 @@ export type UpcomingTicketDeadline = {
 
 export type StaleBacklogTicket = {
   ticketId: string
+  tenantId: string | null
   title: string
   state: TicketState
   updatedAt: Date
@@ -220,12 +229,17 @@ export interface MonitorRepository {
   releaseLock(id: string): Promise<void>
   /** Collector-támogatás: a board azon ticketei, amelyek due_by-ja az ablakon belül esedékes. */
   collectUpcomingTicketDeadlines(
+    tenantId: string,
     now: Date,
     withinSeconds: number,
     limit: number,
   ): Promise<UpcomingTicketDeadline[]>
   /** Collector-támogatás: elakadt (awaiting_human / ready) ticketek. */
-  collectStaleBacklogTickets(updatedBefore: Date, limit: number): Promise<StaleBacklogTicket[]>
+  collectStaleBacklogTickets(
+    tenantId: string,
+    updatedBefore: Date,
+    limit: number,
+  ): Promise<StaleBacklogTicket[]>
   /** Futásnapló lekérdezés. */
   findRuns(monitorId: string, limit: number): Promise<MonitorRun[]>
   /** Cooldown / dedup jelek lekérdezése egy monitorra. */
@@ -454,24 +468,66 @@ export type SandboxAppWithLatestVersion = SandboxApp & {
   versions: SandboxAppVersion[]
 }
 
+export type SandboxAppListItem = SandboxApp & {
+  activeVersion: SandboxAppVersion | null
+}
+
+export type CreateSandboxAppInput = {
+  tenantId: string | null
+  sandboxId?: string | null
+  name: string
+  description?: string | null
+  criticality: SandboxAppCriticality
+  createdByType: SandboxCreatedByType
+  createdByUserId?: string | null
+  createdByAgentId?: string | null
+  createdFromTicketId?: string | null
+  createdFromConversationId?: string | null
+  policy: Prisma.InputJsonValue
+  tags?: string[]
+}
+
+export type AddSandboxAppVersionInput = {
+  appId: string
+  tenantId: string | null
+  changeSummary: string
+  artifactSizeBytes: number
+  contentHash: string
+  mimeType?: string
+  createdByType: SandboxCreatedByType
+  createdByUserId?: string | null
+  createdByAgentId?: string | null
+  createdFromRunId?: string | null
+  sourceTicketId?: string | null
+  validationResult: Prisma.InputJsonValue
+}
+
+export type SandboxAppListFilter = {
+  tenantId: string | null
+  sandboxId?: string | null
+  status?: SandboxAppStatus
+  search?: string
+  limit?: number
+  cursor?: string
+}
+
 export interface SandboxAppRepository {
   findByIdWithLatestVersion(appId: string): Promise<SandboxAppWithLatestVersion | null>
   findLatestByTicketId(ticketId: string): Promise<SandboxAppWithLatestVersion | null>
-  createFromTicket(input: {
-    name: string
-    htmlContent: string
-    htmlHash: string
-    sourceTicketId: string
-    createdBy: string
-    tenantId: string | null
-  }): Promise<SandboxAppWithLatestVersion>
-  addVersion(input: {
-    appId: string
-    htmlContent: string
-    htmlHash: string
-    sourceTicketId: string
-    createdBy: string
-  }): Promise<SandboxAppWithLatestVersion>
+  findById(appId: string): Promise<SandboxApp | null>
+  create(input: CreateSandboxAppInput): Promise<SandboxApp>
+  /**
+   * Új immutable verzió tranzakciós verziószám-kiosztással. A visszaadott
+   * `artifactRef` a kiosztott verzió object-path-e — a hívó ide tölti fel az
+   * artefaktot (a path determinisztikus: lásd artifactObjectPath).
+   */
+  addVersion(input: AddSandboxAppVersionInput): Promise<SandboxAppVersion>
+  /** Aktív verzió átállítása: app.activeVersionId + verzió-státuszok (active/superseded). */
+  setActiveVersion(params: { appId: string; versionId: string }): Promise<void>
+  getVersion(appId: string, version: number): Promise<SandboxAppVersion | null>
+  getVersionById(versionId: string): Promise<SandboxAppVersion | null>
+  listVersions(appId: string): Promise<SandboxAppVersion[]>
+  list(filter: SandboxAppListFilter): Promise<{ items: SandboxAppListItem[]; nextCursor?: string }>
 }
 
 export interface ConnectorGrantRepository {
