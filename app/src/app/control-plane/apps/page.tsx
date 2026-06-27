@@ -1,6 +1,7 @@
 import Link from 'next/link'
 import { listSandboxApps } from '@/app/actions/platform'
 import { Badge, Card } from '@/components/ui/shell'
+import { CreateSandboxAppToggle } from '@/components/sandbox/create-sandbox-app-toggle'
 
 function statusTone(status: string): 'neutral' | 'success' | 'warning' | 'danger' {
   if (status === 'active') return 'success'
@@ -26,6 +27,7 @@ export default async function AppRegistryPage() {
             export, rollback — platform session és hálózat nélkül.
           </p>
         </div>
+        <CreateSandboxAppToggle />
       </div>
 
       {!res.success && (
@@ -37,12 +39,13 @@ export default async function AppRegistryPage() {
       {apps.length === 0 && res.success && (
         <Card>
           <p className="text-sm text-ink-faint">
-            Még nincs app ebben a tenantban. Az agent a{' '}
+            Még nincs app ebben a tenantban. Kézzel az{' '}
+            <strong>App létrehozása</strong> gombbal, az agent a{' '}
             <code className="rounded bg-night-2 px-1.5 py-0.5 font-mono text-xs">
               sandbox_app.create
             </code>{' '}
-            tool-lal hozhat létre egyet, vagy a ticket részletező oldalán a{' '}
-            <strong>Riport létrehozása</strong> gombbal.
+            tool-lal, vagy a ticket részletező oldalán a{' '}
+            <strong>Riport létrehozása</strong> gombbal hozhatsz létre egyet.
           </p>
         </Card>
       )}
