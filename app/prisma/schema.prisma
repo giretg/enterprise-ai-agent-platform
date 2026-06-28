@@ -443,6 +443,43 @@ enum PlaybookVersionV2Status {
   retired
 }
 
+// --- Fázis 2 Playbook process runtime (Feature-spec — Playbook §4.1) ---------
+
+enum ProcessActorType {
+  user
+  agent
+  system
+}
+
+enum ProcessStatus {
+  created
+  running
+  awaiting_human
+  blocked
+  completed
+  failed
+  cancelled
+}
+
+enum ProcessStepStatus {
+  pending
+  ready
+  in_progress
+  awaiting_gate
+  completed
+  skipped
+  failed
+}
+
+enum DelegationStatus {
+  pending
+  delivered
+  accepted
+  done
+  failed
+  cancelled
+}
+
 model PlaybookV2 {
   id                        String           @id @default(uuid()) @db.Uuid
   tenantId                  String?          @map("tenant_id") @db.Uuid
@@ -459,6 +496,7 @@ model PlaybookV2 {
 
   versions    PlaybookVersionV2[]
   assignments PlaybookAssignment[]
+  processes   ProcessInstance[]
 
   @@unique([tenantId, key])
   @@map("playbooks_v2")
@@ -484,6 +522,7 @@ model PlaybookVersionV2 {
 
   playbook    PlaybookV2           @relation(fields: [playbookId], references: [id], onDelete: Cascade)
   assignments PlaybookAssignment[]
+  processes   ProcessInstance[]
 
   @@unique([playbookId, version])
   @@unique([tenantId, playbookId, contentHash])
@@ -507,6 +546,89 @@ model PlaybookAssignment {
 
   @@index([tenantId, assignmentType, assignmentKey])
   @@map("playbook_assignments")
+}
+
+// --- Fázis 2 Playbook process runtime (Feature-spec — Playbook §4.5–4.7) -----
+
+model ProcessInstance {
+  id                   String           @id @default(uuid()) @db.Uuid
+  tenantId             String?          @map("tenant_id") @db.Uuid
+  processType          String           @map("process_type")
+  status               ProcessStatus    @default(created)
+  playbookId           String           @map("playbook_id") @db.Uuid
+  playbookVersionId    String           @map("playbook_version_id") @db.Uuid
+  playbookRef          String           @map("playbook_ref")
+  playbookContentHash  String           @map("playbook_content_hash")
+  startedByType        ProcessActorType @map("started_by_type")
+  startedByUserId      String?          @map("started_by_user_id") @db.Uuid
+  startedByAgentId     String?          @map("started_by_agent_id") @db.Uuid
+  conversationId       String?          @map("conversation_id") @db.Uuid
+  rootTicketId         String?          @map("root_ticket_id") @db.Uuid
+  inputPayload         Json             @default("{}") @map("input_payload")
+  outputPayload        Json             @default("{}") @map("output_payload")
+  startedAt            DateTime         @default(now()) @map("started_at") @db.Timestamptz
+  completedAt          DateTime?        @map("completed_at") @db.Timestamptz
+  failedAt             DateTime?        @map("failed_at") @db.Timestamptz
+
+  playbook        PlaybookV2            @relation(fields: [playbookId], references: [id])
+  playbookVersion PlaybookVersionV2     @relation(fields: [playbookVersionId], references: [id])
+  steps           ProcessStepInstance[]
+  delegations     DelegationEdge[]
+
+  @@index([tenantId, status])
+  @@index([tenantId, processType])
+  @@map("process_instances")
+}
+
+model ProcessStepInstance {
+  id                String            @id @default(uuid()) @db.Uuid
+  tenantId          String?           @map("tenant_id") @db.Uuid
+  processInstanceId String            @map("process_instance_id") @db.Uuid
+  stepId            String            @map("step_id")
+  stepName          String            @map("step_name")
+  status            ProcessStepStatus @default(pending)
+  assignedRole      String            @map("assigned_role")
+  assignedAgentId   String?           @map("assigned_agent_id") @db.Uuid
+  assignedUserId    String?           @map("assigned_user_id") @db.Uuid
+  ticketId          String?           @map("ticket_id") @db.Uuid
+  startedAt         DateTime?         @map("started_at") @db.Timestamptz
+  completedAt       DateTime?         @map("completed_at") @db.Timestamptz
+  failedAt          DateTime?         @map("failed_at") @db.Timestamptz
+  resultPayload     Json              @default("{}") @map("result_payload")
+
+  process ProcessInstance @relation(fields: [processInstanceId], references: [id], onDelete: Cascade)
+
+  @@unique([processInstanceId, stepId])
+  @@index([tenantId, status])
+  @@map("process_step_instances")
+}
+
+model DelegationEdge {
+  id                String           @id @default(uuid()) @db.Uuid
+  tenantId          String?          @map("tenant_id") @db.Uuid
+  processInstanceId String           @map("process_instance_id") @db.Uuid
+  fromStepId        String           @map("from_step_id")
+  toStepId          String           @map("to_step_id")
+  fromTicketId      String?          @map("from_ticket_id") @db.Uuid
+  toTicketId        String?          @map("to_ticket_id") @db.Uuid
+  fromActorType     ProcessActorType @map("from_actor_type")
+  fromAgentId       String?          @map("from_agent_id") @db.Uuid
+  fromUserId        String?          @map("from_user_id") @db.Uuid
+  toActorType       ProcessActorType @map("to_actor_type")
+  toAgentId         String?          @map("to_agent_id") @db.Uuid
+  toUserId          String?          @map("to_user_id") @db.Uuid
+  status            DelegationStatus @default(pending)
+  createdAt         DateTime         @default(now()) @map("created_at") @db.Timestamptz
+  deliveredAt       DateTime?        @map("delivered_at") @db.Timestamptz
+  acceptedAt        DateTime?        @map("accepted_at") @db.Timestamptz
+  doneAt            DateTime?        @map("done_at") @db.Timestamptz
+  failedAt          DateTime?        @map("failed_at") @db.Timestamptz
+  metadata          Json             @default("{}")
+
+  process ProcessInstance @relation(fields: [processInstanceId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, processInstanceId])
+  @@map("delegation_edges")
 }
 
 model AgentApiKey {
@@ -719,7 +841,11 @@ model Ticket {
   dueBy            DateTime?     @map("due_by") @db.Timestamptz
   lockToken        String?       @map("lock_token")
   lockedAt         DateTime?     @map("locked_at") @db.Timestamptz
-  playbookRef      String?       @map("playbook_ref")
+  playbookRef       String?      @map("playbook_ref")
+  processInstanceId String?      @map("process_instance_id") @db.Uuid
+  playbookVersionId String?      @map("playbook_version_id") @db.Uuid
+  playbookStepId    String?      @map("playbook_step_id")
+  requiredGateId    String?      @map("required_gate_id")
   conversationId   String?       @map("conversation_id") @db.Uuid
   source           TicketSource  @default(user)
   createdById      String        @map("created_by") @db.Uuid

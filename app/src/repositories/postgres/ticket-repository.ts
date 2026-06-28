@@ -75,9 +75,25 @@ export class PostgresTicketRepository implements TicketRepository {
       | 'playbookRef'
       | 'conversationId'
       | 'source'
+      | 'processInstanceId'
+      | 'playbookVersionId'
+      | 'playbookStepId'
+      | 'requiredGateId'
     > &
       Partial<
-        Pick<Ticket, 'tenantId' | 'lockToken' | 'lockedAt' | 'playbookRef' | 'conversationId' | 'source'>
+        Pick<
+          Ticket,
+          | 'tenantId'
+          | 'lockToken'
+          | 'lockedAt'
+          | 'playbookRef'
+          | 'conversationId'
+          | 'source'
+          | 'processInstanceId'
+          | 'playbookVersionId'
+          | 'playbookStepId'
+          | 'requiredGateId'
+        >
       >,
   ): Promise<Ticket> {
     const ticket = await prisma.ticket.create({
@@ -104,6 +120,10 @@ export class PostgresTicketRepository implements TicketRepository {
         | 'lockedAt'
         | 'playbookRef'
         | 'conversationId'
+        | 'processInstanceId'
+        | 'playbookVersionId'
+        | 'playbookStepId'
+        | 'requiredGateId'
       >
     >,
   ): Promise<Ticket> {

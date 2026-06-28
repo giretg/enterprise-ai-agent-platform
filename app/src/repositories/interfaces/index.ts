@@ -37,6 +37,13 @@ import type {
   PlaybookVersionV2,
   PlaybookVersionV2Status,
   PlaybookAssignment,
+  ProcessInstance,
+  ProcessStatus,
+  ProcessStepInstance,
+  ProcessStepStatus,
+  DelegationEdge,
+  DelegationStatus,
+  ProcessActorType,
   ToolCall,
   Ticket,
   TicketSource,
@@ -72,9 +79,25 @@ export interface TicketRepository {
       | 'playbookRef'
       | 'conversationId'
       | 'source'
+      | 'processInstanceId'
+      | 'playbookVersionId'
+      | 'playbookStepId'
+      | 'requiredGateId'
     > &
       Partial<
-        Pick<Ticket, 'tenantId' | 'lockToken' | 'lockedAt' | 'playbookRef' | 'conversationId' | 'source'>
+        Pick<
+          Ticket,
+          | 'tenantId'
+          | 'lockToken'
+          | 'lockedAt'
+          | 'playbookRef'
+          | 'conversationId'
+          | 'source'
+          | 'processInstanceId'
+          | 'playbookVersionId'
+          | 'playbookStepId'
+          | 'requiredGateId'
+        >
       >,
   ): Promise<Ticket>
   update(
@@ -91,6 +114,10 @@ export interface TicketRepository {
         | 'lockedAt'
         | 'playbookRef'
         | 'conversationId'
+        | 'processInstanceId'
+        | 'playbookVersionId'
+        | 'playbookStepId'
+        | 'requiredGateId'
       >
     >,
   ): Promise<Ticket>
@@ -525,6 +552,104 @@ export interface PlaybookV2Repository {
     assignmentType: string,
     assignmentKey: string,
   ): Promise<PlaybookAssignment | null>
+}
+
+// --- Fázis 2 Playbook process runtime (Feature-spec — Playbook §4.5–4.7, §8.2) ---
+
+export type CreateProcessInstanceInput = {
+  tenantId: string | null
+  processType: string
+  playbookId: string
+  playbookVersionId: string
+  playbookRef: string
+  playbookContentHash: string
+  startedByType: ProcessActorType
+  startedByUserId?: string | null
+  startedByAgentId?: string | null
+  conversationId?: string | null
+  inputPayload: Prisma.InputJsonValue
+}
+
+export type CreateProcessStepInput = {
+  tenantId: string | null
+  processInstanceId: string
+  stepId: string
+  stepName: string
+  status?: ProcessStepStatus
+  assignedRole: string
+  assignedAgentId?: string | null
+  assignedUserId?: string | null
+  ticketId?: string | null
+}
+
+export type CreateDelegationEdgeInput = {
+  tenantId: string | null
+  processInstanceId: string
+  fromStepId: string
+  toStepId: string
+  fromTicketId?: string | null
+  toTicketId?: string | null
+  fromActorType: ProcessActorType
+  fromAgentId?: string | null
+  fromUserId?: string | null
+  toActorType: ProcessActorType
+  toAgentId?: string | null
+  toUserId?: string | null
+  metadata?: Prisma.InputJsonValue
+}
+
+export type ProcessInstanceDetail = ProcessInstance & {
+  steps: ProcessStepInstance[]
+  delegations: DelegationEdge[]
+}
+
+export interface ProcessRepository {
+  createProcess(input: CreateProcessInstanceInput): Promise<ProcessInstance>
+  findProcess(tenantId: string | null, id: string): Promise<ProcessInstance | null>
+  findProcessDetail(tenantId: string | null, id: string): Promise<ProcessInstanceDetail | null>
+  listProcesses(tenantId: string | null): Promise<ProcessInstance[]>
+  updateProcess(
+    id: string,
+    data: Partial<{
+      status: ProcessStatus
+      rootTicketId: string | null
+      outputPayload: Prisma.InputJsonValue
+      completedAt: Date | null
+      failedAt: Date | null
+    }>,
+  ): Promise<ProcessInstance>
+
+  createStep(input: CreateProcessStepInput): Promise<ProcessStepInstance>
+  findStep(processInstanceId: string, stepId: string): Promise<ProcessStepInstance | null>
+  findStepByTicket(tenantId: string | null, ticketId: string): Promise<ProcessStepInstance | null>
+  listSteps(processInstanceId: string): Promise<ProcessStepInstance[]>
+  updateStep(
+    id: string,
+    data: Partial<{
+      status: ProcessStepStatus
+      ticketId: string | null
+      assignedAgentId: string | null
+      assignedUserId: string | null
+      startedAt: Date | null
+      completedAt: Date | null
+      failedAt: Date | null
+      resultPayload: Prisma.InputJsonValue
+    }>,
+  ): Promise<ProcessStepInstance>
+
+  createDelegation(input: CreateDelegationEdgeInput): Promise<DelegationEdge>
+  listDelegations(processInstanceId: string): Promise<DelegationEdge[]>
+  updateDelegation(
+    id: string,
+    data: Partial<{
+      status: DelegationStatus
+      toTicketId: string | null
+      deliveredAt: Date | null
+      acceptedAt: Date | null
+      doneAt: Date | null
+      failedAt: Date | null
+    }>,
+  ): Promise<DelegationEdge>
 }
 
 export interface ConversationRepository {

@@ -29,6 +29,8 @@ import { RecipeService } from '@/domain/recipe/recipe-service'
 import { ConversationService } from '@/domain/conversation/conversation-service'
 import { PlaybookService } from '@/domain/playbook/playbook-service'
 import { PlaybookV2Service } from '@/domain/playbook/playbook-v2-service'
+import { ProcessService } from '@/domain/playbook/process-service'
+import { TicketStateMachine } from '@/domain/playbook/ticket-state-machine'
 import { IamService } from '@/domain/iam/iam-service'
 import { SandboxAppService } from '@/domain/sandbox/sandbox-app-service'
 import { GcsArtifactStore } from '@/domain/sandbox/artifact-store'
@@ -43,6 +45,19 @@ import { resolveTicketProcessRoute } from '@/lib/ticket-process-route'
 
 const playbookService = new PlaybookService(repositories.playbooks, repositories.audit)
 const playbookV2Service = new PlaybookV2Service(repositories.playbooksV2, repositories.audit)
+const processService = new ProcessService(
+  repositories.processes,
+  repositories.playbooksV2,
+  repositories.tickets,
+  repositories.audit,
+)
+const ticketStateMachine = new TicketStateMachine(
+  repositories.tickets,
+  repositories.playbooksV2,
+  repositories.processes,
+  repositories.audit,
+  processService,
+)
 const platformSettingsService = new PlatformSettingsService(
   repositories.platformSettings,
   repositories.audit,
@@ -233,6 +248,8 @@ export const services = {
   recipes: recipeService,
   playbooks: playbookService,
   playbooksV2: playbookV2Service,
+  processes: processService,
+  ticketStateMachine,
   conversations: conversationService,
   iam: iamService,
   sandboxApps: sandboxAppService,

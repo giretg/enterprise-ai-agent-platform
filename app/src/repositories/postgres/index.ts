@@ -4,6 +4,7 @@ import { PostgresConversationRepository } from './conversation-repository'
 import { PostgresRecipeRepository } from './recipe-repository'
 import { PostgresPlaybookRepository } from './playbook-repository'
 import { PostgresPlaybookV2Repository } from './playbook-v2-repository'
+import { PostgresProcessRepository } from './process-repository'
 import { PostgresSandboxAppRepository } from './sandbox-app-repository'
 import { PostgresScheduledTaskRepository } from './scheduled-task-repository'
 import { PostgresTicketRepository } from './ticket-repository'
@@ -24,6 +25,7 @@ export const repositories = {
   recipes: new PostgresRecipeRepository(),
   playbooks: new PostgresPlaybookRepository(),
   playbooksV2: new PostgresPlaybookV2Repository(),
+  processes: new PostgresProcessRepository(),
   sandboxApps: new PostgresSandboxAppRepository(),
   scheduledTasks: new PostgresScheduledTaskRepository(),
   conversations: new PostgresConversationRepository(),

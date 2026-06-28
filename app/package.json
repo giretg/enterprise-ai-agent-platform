@@ -35,6 +35,7 @@
     "test:playbook-v2": "tsx scripts/playbook-v2-core.test.ts",
     "test:playbook-v2-registry": "tsx scripts/playbook-v2-registry.test.ts",
     "test:playbook-v2-runtime": "tsx scripts/playbook-v2-runtime.test.ts",
+    "test:playbook-v2-process": "tsx scripts/playbook-v2-process.test.ts",
     "test:tool-loop": "tsx scripts/agent-tool-loop.test.ts",
     "test:http-api": "tsx scripts/http-api-connector.test.ts",
     "test:per-user-connector": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/per-user-connector.test.ts",
