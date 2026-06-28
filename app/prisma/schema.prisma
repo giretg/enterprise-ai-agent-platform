@@ -424,6 +424,91 @@ model PlaybookVersion {
   @@map("playbook_versions")
 }
 
+// --- Fázis 2 Playbook (Feature-spec — Playbook §4) ---------------------------
+// Új, párhuzamos V2 réteg az objektum-alapú, verziózott Playbook-folyamatokhoz.
+// A meglévő MVP `playbooks` / `playbook_versions` táblákat NEM érinti.
+
+enum PlaybookV2Status {
+  draft
+  published
+  archived
+  blocked
+}
+
+enum PlaybookVersionV2Status {
+  draft
+  pending_approval
+  published
+  rejected
+  retired
+}
+
+model PlaybookV2 {
+  id                        String           @id @default(uuid()) @db.Uuid
+  tenantId                  String?          @map("tenant_id") @db.Uuid
+  key                       String
+  name                      String
+  description               String?
+  processType               String           @map("process_type")
+  status                    PlaybookV2Status @default(draft)
+  currentPublishedVersionId String?          @map("current_published_version_id") @db.Uuid
+  ownerUserId               String?          @map("owner_user_id") @db.Uuid
+  createdAt                 DateTime         @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt                 DateTime         @updatedAt @map("updated_at") @db.Timestamptz
+  archivedAt                DateTime?        @map("archived_at") @db.Timestamptz
+
+  versions    PlaybookVersionV2[]
+  assignments PlaybookAssignment[]
+
+  @@unique([tenantId, key])
+  @@map("playbooks_v2")
+}
+
+model PlaybookVersionV2 {
+  id               String                  @id @default(uuid()) @db.Uuid
+  tenantId         String?                 @map("tenant_id") @db.Uuid
+  playbookId       String                  @map("playbook_id") @db.Uuid
+  version          Int
+  status           PlaybookVersionV2Status @default(draft)
+  spec             Json
+  compiledSpec     Json?                   @map("compiled_spec")
+  validationResult Json                    @default("{}") @map("validation_result")
+  changeSummary    String                  @map("change_summary")
+  contentHash      String                  @map("content_hash")
+  createdById      String                  @map("created_by_user_id") @db.Uuid
+  approvedById     String?                 @map("approved_by_user_id") @db.Uuid
+  approvedAt       DateTime?               @map("approved_at") @db.Timestamptz
+  publishedAt      DateTime?               @map("published_at") @db.Timestamptz
+  retiredAt        DateTime?               @map("retired_at") @db.Timestamptz
+  createdAt        DateTime                @default(now()) @map("created_at") @db.Timestamptz
+
+  playbook    PlaybookV2           @relation(fields: [playbookId], references: [id], onDelete: Cascade)
+  assignments PlaybookAssignment[]
+
+  @@unique([playbookId, version])
+  @@unique([tenantId, playbookId, contentHash])
+  @@map("playbook_versions_v2")
+}
+
+model PlaybookAssignment {
+  id                String    @id @default(uuid()) @db.Uuid
+  tenantId          String?   @map("tenant_id") @db.Uuid
+  playbookId        String    @map("playbook_id") @db.Uuid
+  playbookVersionId String    @map("playbook_version_id") @db.Uuid
+  assignmentType    String    @map("assignment_type")
+  assignmentKey     String    @map("assignment_key")
+  isDefault         Boolean   @default(false) @map("is_default")
+  createdById       String    @map("created_by_user_id") @db.Uuid
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  revokedAt         DateTime? @map("revoked_at") @db.Timestamptz
+
+  playbook        PlaybookV2        @relation(fields: [playbookId], references: [id], onDelete: Cascade)
+  playbookVersion PlaybookVersionV2 @relation(fields: [playbookVersionId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, assignmentType, assignmentKey])
+  @@map("playbook_assignments")
+}
+
 model AgentApiKey {
   id         String       @id @default(uuid()) @db.Uuid
   agentId    String       @map("agent_id") @db.Uuid

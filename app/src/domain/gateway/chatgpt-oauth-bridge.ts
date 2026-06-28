@@ -169,6 +169,93 @@ export async function refreshAccessToken(refreshToken: string): Promise<{
 }
 
 /**
+ * Stub választ szavak szerint streameli — a valódi provider nélküli
+ * fejlesztői módban is látható a token-by-token megjelenés.
+ */
+export async function* stubChatStream(content: string): AsyncGenerator<string, void, unknown> {
+  const words = content.split(' ')
+  for (let i = 0; i < words.length; i++) {
+    yield i === 0 ? words[i] : ` ${words[i]}`
+    await new Promise<void>((r) => setTimeout(r, 30))
+  }
+}
+
+/**
+ * Streaming variáns: a ChatGPT Responses backend SSE streamjét olvassa
+ * inkrementálisan és `response.output_text.delta` eseményenként yield-el.
+ */
+export async function* callChatGptOAuthStream(input: {
+  tokens: ChatGptOAuthTokens
+  messages: GatewayMessage[]
+  model: string
+  reasoningEffort?: 'low' | 'medium' | 'high'
+}): AsyncGenerator<string, void, unknown> {
+  const model = resolveModel(input.model)
+  const { instructions, input: responsesInput } = toResponsesRequest(input.messages)
+
+  const res = await fetch(RESPONSES_URL, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${input.tokens.accessToken}`,
+      'chatgpt-account-id': input.tokens.accountId,
+      'content-type': 'application/json',
+      accept: 'text/event-stream',
+      'openai-beta': 'responses=experimental',
+      originator: 'codex_cli_rs',
+      session_id: randomUUID(),
+    },
+    body: JSON.stringify({
+      model,
+      instructions,
+      input: responsesInput,
+      stream: true,
+      store: false,
+      reasoning: { effort: input.reasoningEffort ?? 'low' },
+    }),
+  })
+
+  if (!res.ok) {
+    const body = (await res.text()).slice(0, 400)
+    throw new Error(`ChatGPT OAuth backend failed: ${res.status} ${body}`)
+  }
+
+  if (!res.body) throw new Error('ChatGPT OAuth backend returned no body')
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+
+      for (const line of lines) {
+        if (!line.startsWith('data:')) continue
+        const payload = line.slice(5).trim()
+        if (!payload || payload === '[DONE]') continue
+        let evt: { type?: string; delta?: string }
+        try {
+          evt = JSON.parse(payload) as typeof evt
+        } catch {
+          continue
+        }
+        if (evt.type === 'response.output_text.delta' && typeof evt.delta === 'string' && evt.delta) {
+          yield evt.delta
+        }
+        if (evt.type === 'response.completed') return
+      }
+    }
+  } finally {
+    reader.releaseLock()
+  }
+}
+
+/**
  * Egy modellhívás a ChatGPT Responses backenden át. SSE streamet olvas, a
  * `response.output_text.delta` darabokat összefűzi, a `response.completed`
  * eseményből veszi a token-használatot.

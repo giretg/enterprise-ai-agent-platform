@@ -236,6 +236,34 @@ class FakeSandboxApps implements SandboxAppRepository {
       }))
     return { items }
   }
+
+  async getRegistryMetrics(tenantId: string | null) {
+    const apps = [...this.apps.values()].filter((a) => a.tenantId === tenantId)
+    const appIds = apps.map((a) => a.id)
+    const appsByStatus: Record<string, number> = {}
+    let agent = 0
+    let user = 0
+    for (const a of apps) {
+      appsByStatus[a.status] = (appsByStatus[a.status] ?? 0) + 1
+      if (a.createdByType === 'agent') agent += 1
+      else user += 1
+    }
+    const versions = this.versions.filter((v) => appIds.includes(v.appId))
+    const versionsTotal = versions.length
+    const avgSize =
+      versionsTotal > 0
+        ? versions.reduce((s, v) => s + v.artifactSizeBytes, 0) / versionsTotal
+        : 0
+    return {
+      appsTotal: apps.length,
+      appsByStatus,
+      appsByCreator: { agent, user },
+      versionsTotal,
+      avgVersionsPerApp: apps.length > 0 ? versionsTotal / apps.length : 0,
+      avgArtifactSizeBytes: Math.round(avgSize),
+      appIds,
+    }
+  }
 }
 
 // ---- Fixture ----------------------------------------------------------------
@@ -470,6 +498,54 @@ async function main() {
       service.servePreviewByToken(forged),
       (e) => e instanceof SandboxAppError && e.code === 'APP_NOT_FOUND_OR_FORBIDDEN',
     )
+  })
+
+  // ── §8.3: observability metrikák ───────────────────────────────────────────
+  await test('§8.3 — getRegistryMetrics tenant-scoped: app/verzió/creator + eseményszámok', async () => {
+    const { service } = buildService()
+
+    // tenant-A: 2 app, az egyikhez 2 verzió; egy preview; egy validációs hiba.
+    const a1 = await service.createSandboxApp({ name: 'App-A1', criticality: 'L1' }, ACTOR_A)
+    await service.upsertSandboxAppVersion(
+      { appId: a1.appId, html: GOOD_HTML, changeSummary: 'v1', activate: true },
+      ACTOR_A,
+    )
+    await service.upsertSandboxAppVersion(
+      { appId: a1.appId, html: GOOD_HTML.replace('Helló', 'Szia'), changeSummary: 'v2', activate: true },
+      ACTOR_A,
+    )
+    const a2 = await service.createSandboxApp({ name: 'App-A2', criticality: 'L1' }, ACTOR_A)
+    await service.upsertSandboxAppVersion(
+      { appId: a2.appId, html: GOOD_HTML, changeSummary: 'v1', activate: true },
+      ACTOR_A,
+    )
+    await service.getSandboxAppPreviewUrl({ appId: a1.appId, version: 1 }, ACTOR_A)
+    await assert.rejects(
+      service.upsertSandboxAppVersion(
+        { appId: a2.appId, html: '<object data="x"></object>', changeSummary: 'bad' },
+        ACTOR_A,
+      ),
+    )
+
+    // tenant-B: külön app — nem szivároghat A metrikáiba; cross-tenant deny A appjára.
+    await service.createSandboxApp({ name: 'App-B1', criticality: 'L1' }, ACTOR_B)
+    await assert.rejects(service.getSandboxApp({ appId: a1.appId }, ACTOR_B))
+
+    const m = await service.getRegistryMetrics(ACTOR_A)
+    assert.equal(m.appsTotal, 2, 'csak tenant-A appok')
+    assert.equal(m.versionsTotal, 3)
+    assert.equal(m.appsByCreator.user, 2)
+    assert.equal(m.appsByCreator.agent, 0)
+    assert.equal(m.avgVersionsPerApp, 1.5)
+    assert.ok(m.avgArtifactSizeBytes > 0)
+    assert.equal(m.events.preview, 1)
+    assert.equal(m.events.validationFailed, 1)
+    assert.equal(m.events.accessDenied, 1, 'cross-tenant deny A appjára számít')
+
+    const mb = await service.getRegistryMetrics(ACTOR_B)
+    assert.equal(mb.appsTotal, 1)
+    assert.equal(mb.versionsTotal, 0)
+    assert.equal(mb.events.preview, 0)
   })
 
   if (failures > 0) {

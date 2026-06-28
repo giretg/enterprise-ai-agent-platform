@@ -28,6 +28,7 @@ import { WorkspaceLifecycleService } from '@/domain/file-editor/workspace-lifecy
 import { RecipeService } from '@/domain/recipe/recipe-service'
 import { ConversationService } from '@/domain/conversation/conversation-service'
 import { PlaybookService } from '@/domain/playbook/playbook-service'
+import { PlaybookV2Service } from '@/domain/playbook/playbook-v2-service'
 import { IamService } from '@/domain/iam/iam-service'
 import { SandboxAppService } from '@/domain/sandbox/sandbox-app-service'
 import { GcsArtifactStore } from '@/domain/sandbox/artifact-store'
@@ -41,6 +42,7 @@ import { repositories } from '@/repositories/postgres'
 import { resolveTicketProcessRoute } from '@/lib/ticket-process-route'
 
 const playbookService = new PlaybookService(repositories.playbooks, repositories.audit)
+const playbookV2Service = new PlaybookV2Service(repositories.playbooksV2, repositories.audit)
 const platformSettingsService = new PlatformSettingsService(
   repositories.platformSettings,
   repositories.audit,
@@ -230,6 +232,7 @@ export const services = {
   toolBroker: toolBrokerService,
   recipes: recipeService,
   playbooks: playbookService,
+  playbooksV2: playbookV2Service,
   conversations: conversationService,
   iam: iamService,
   sandboxApps: sandboxAppService,

@@ -2,13 +2,12 @@
 
 import Link from 'next/link'
 import { useCallback, useEffect, useRef, useState, useTransition } from 'react'
-import { createPortal } from 'react-dom'
+import { createPortal, flushSync } from 'react-dom'
 import {
   createAgentTaskTicket,
   createScheduledAgentTask,
   listAgentChatSessions,
   loadAgentChatMessages,
-  sendAgentMessage,
   uploadDocument,
 } from '@/app/actions/platform'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
@@ -289,10 +288,11 @@ export function AgentChatPanel({
     if (!canSubmit) return
     const text = input.trim()
     const localAttachments = [...pendingAttachments]
-    const optimisticId = `optimistic-user-${Date.now()}`
+    const optimisticUserId = `optimistic-user-${Date.now()}`
+    const optimisticAgentId = `optimistic-agent-${Date.now()}`
 
-    const optimisticMessage: ChatMessage = {
-      id: optimisticId,
+    const optimisticUserMessage: ChatMessage = {
+      id: optimisticUserId,
       role: 'user',
       text: text || '(csatolmányok)',
       attachments: localAttachments.map((a) => ({
@@ -304,75 +304,94 @@ export function AgentChatPanel({
       createdAt: new Date().toISOString(),
     }
 
-    setMessages((prev) => [...prev, optimisticMessage])
+    const optimisticAgentMessage: ChatMessage = {
+      id: optimisticAgentId,
+      role: 'agent',
+      text: '',
+      attachments: [],
+      createdAt: new Date().toISOString(),
+    }
+
+    setMessages((prev) => [...prev, optimisticUserMessage, optimisticAgentMessage])
     resetComposer()
     setStatusMessage(null)
     setLastTicketId(null)
     setIsAgentTyping(true)
 
-    startTransition(async () => {
+    void (async () => {
       try {
         const documentIds = localAttachments.length > 0 ? await uploadAttachments(localAttachments) : []
-        const res = await sendAgentMessage({
-          agentId: agent.id,
-          content: text,
-          conversationId: conversationId ?? undefined,
-          attachmentDocumentIds: documentIds,
+
+        const response = await fetch('/api/v1/agent-chat/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            agentId: agent.id,
+            content: text,
+            conversationId: conversationId ?? undefined,
+            attachmentDocumentIds: documentIds,
+          }),
         })
 
-        if (!res.success) {
-          setMessages((prev) => prev.filter((m) => m.id !== optimisticId))
-          setStatusMessage(res.error)
+        if (!response.ok || !response.body) {
+          setMessages((prev) => prev.filter((m) => m.id !== optimisticUserId && m.id !== optimisticAgentId))
+          setStatusMessage(`Küldés sikertelen (${response.status})`)
           return
         }
 
-        setConversationId(res.data.conversationId)
+        const reader = response.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
 
-        const loaded = await loadAgentChatMessages({
-          conversationId: res.data.conversationId,
-          agentId: agent.id,
-        })
-        if (loaded.success) {
-          setMessages(
-            loaded.data.messages.map((m) => ({
-              ...m,
-              createdAt: new Date(m.createdAt).toISOString(),
-            })),
-          )
-        } else {
-          setMessages((prev) => [
-            ...prev.filter((m) => m.id !== optimisticId),
-            {
-              id: `user-${res.data.conversationId}-${Date.now()}`,
-              role: 'user',
-              text: text || '(csatolmányok)',
-              attachments: localAttachments.map((a, i) => ({
-                documentId: documentIds[i] ?? a.id,
-                filename: a.file.name,
-                kind: a.kind,
-                previewDataUrl: a.previewUrl,
-              })),
-              createdAt: new Date().toISOString(),
-            },
-            {
-              id: res.data.messageId,
-              role: 'agent',
-              text: res.data.reply,
-              attachments: [],
-              createdAt: new Date().toISOString(),
-            },
-          ])
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split('\n')
+          buffer = lines.pop() ?? ''
+
+          for (const line of lines) {
+            const trimmed = line.trim()
+            if (!trimmed.startsWith('data: ')) continue
+            const raw = trimmed.slice(6)
+            let event: { type: string; chunk?: string; conversationId?: string; messageId?: string; message?: string }
+            try {
+              event = JSON.parse(raw) as typeof event
+            } catch {
+              continue
+            }
+
+            if (event.type === 'token' && typeof event.chunk === 'string') {
+              flushSync(() => {
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === optimisticAgentId ? { ...m, text: m.text + event.chunk! } : m,
+                  ),
+                )
+              })
+            } else if (event.type === 'done' && event.conversationId && event.messageId) {
+              setConversationId(event.conversationId)
+              setMessages((prev) =>
+                prev.map((m) =>
+                  m.id === optimisticAgentId ? { ...m, id: event.messageId! } : m,
+                ),
+              )
+              startTransition(() => { void refreshSessions() })
+            } else if (event.type === 'error') {
+              setMessages((prev) => prev.filter((m) => m.id !== optimisticUserId && m.id !== optimisticAgentId))
+              setStatusMessage(event.message ?? 'Küldés sikertelen')
+            }
+          }
         }
-
-        void refreshSessions()
       } catch (e) {
-        setMessages((prev) => prev.filter((m) => m.id !== optimisticId))
+        setMessages((prev) => prev.filter((m) => m.id !== optimisticUserId && m.id !== optimisticAgentId))
         setStatusMessage(e instanceof Error ? e.message : 'Küldés sikertelen')
       } finally {
         setIsAgentTyping(false)
         filesRef.current?.refresh()
       }
-    })
+    })()
   }
 
   const handleCreateTicket = () => {
@@ -531,7 +550,9 @@ export function AgentChatPanel({
                   {messages.map((message) => (
                     <MessageBubble key={message.id} message={message} />
                   ))}
-                  {isAgentTyping && <TypingIndicator agentName={persona.nickname} />}
+                  {isAgentTyping && !messages[messages.length - 1]?.text && (
+                    <TypingIndicator agentName={persona.nickname} />
+                  )}
                 </div>
               )}
             </div>

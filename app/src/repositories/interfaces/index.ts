@@ -32,6 +32,11 @@ import type {
   ScheduledTaskStatus,
   Playbook,
   PlaybookVersion,
+  PlaybookV2,
+  PlaybookV2Status,
+  PlaybookVersionV2,
+  PlaybookVersionV2Status,
+  PlaybookAssignment,
   ToolCall,
   Ticket,
   TicketSource,
@@ -434,6 +439,94 @@ export interface PlaybookRepository {
   getActiveVersionByName(name: string): Promise<(PlaybookVersion & { playbook: Playbook }) | null>
 }
 
+// --- Fázis 2 Playbook V2 (Feature-spec — Playbook §4, §8.1) ------------------
+
+export type PlaybookV2WithVersions = PlaybookV2 & { versions: PlaybookVersionV2[] }
+
+export type CreatePlaybookV2Input = {
+  tenantId: string | null
+  key: string
+  name: string
+  description?: string | null
+  processType: string
+  ownerUserId?: string | null
+}
+
+export type CreatePlaybookVersionV2Input = {
+  tenantId: string | null
+  playbookId: string
+  version: number
+  spec: Prisma.InputJsonValue
+  changeSummary: string
+  contentHash: string
+  validationResult: Prisma.InputJsonValue
+  createdById: string
+}
+
+export type CreatePlaybookAssignmentInput = {
+  tenantId: string | null
+  playbookId: string
+  playbookVersionId: string
+  assignmentType: string
+  assignmentKey: string
+  isDefault: boolean
+  createdById: string
+}
+
+export interface PlaybookV2Repository {
+  createPlaybook(input: CreatePlaybookV2Input): Promise<PlaybookV2>
+  findPlaybook(tenantId: string | null, id: string): Promise<PlaybookV2 | null>
+  findPlaybookByKey(tenantId: string | null, key: string): Promise<PlaybookV2 | null>
+  listPlaybooks(tenantId: string | null): Promise<PlaybookV2WithVersions[]>
+  updatePlaybook(
+    id: string,
+    data: Partial<{
+      status: PlaybookV2Status
+      currentPublishedVersionId: string | null
+      archivedAt: Date | null
+    }>,
+  ): Promise<PlaybookV2>
+
+  createVersion(input: CreatePlaybookVersionV2Input): Promise<PlaybookVersionV2>
+  findVersion(tenantId: string | null, id: string): Promise<PlaybookVersionV2 | null>
+  findVersionByContentHash(
+    tenantId: string | null,
+    playbookId: string,
+    contentHash: string,
+  ): Promise<PlaybookVersionV2 | null>
+  listVersions(playbookId: string): Promise<PlaybookVersionV2[]>
+  nextVersionNumber(playbookId: string): Promise<number>
+  updateVersion(
+    id: string,
+    data: Partial<{
+      status: PlaybookVersionV2Status
+      validationResult: Prisma.InputJsonValue
+      compiledSpec: Prisma.InputJsonValue
+      approvedById: string | null
+      approvedAt: Date | null
+      publishedAt: Date | null
+      retiredAt: Date | null
+    }>,
+  ): Promise<PlaybookVersionV2>
+
+  /** Tranzakció: a korábbi published verziót retire-eli, az újat published-re állítja,
+   *  és a playbook current_published_version_id + status mezőit frissíti (§4.3 immutable). */
+  publishVersion(input: {
+    versionId: string
+    playbookId: string
+    approverId: string
+    compiledSpec: Prisma.InputJsonValue
+  }): Promise<PlaybookVersionV2>
+
+  /** Tranzakció: ha isDefault, a (tenant, type, key) párra létező aktív default-ot revoke-olja. */
+  createAssignment(input: CreatePlaybookAssignmentInput): Promise<PlaybookAssignment>
+  findDefaultAssignment(
+    tenantId: string | null,
+    assignmentType: string,
+    assignmentKey: string,
+  ): Promise<PlaybookAssignment | null>
+}
+
 export interface ConversationRepository {
   create(data: {
     tenantId: string | null
@@ -475,6 +568,23 @@ export type SandboxAppWithLatestVersion = SandboxApp & {
 
 export type SandboxAppListItem = SandboxApp & {
   activeVersion: SandboxAppVersion | null
+}
+
+/**
+ * App Registry observability metrikák (§8.3) — tenant-scoped aggregáció a
+ * registry-táblákból. Az audit-eredetű eseményszámokat (preview/export/…) a
+ * service teszi hozzá; itt csak a táblákból determinisztikusan számolható
+ * mutatók szerepelnek. `appIds` a tenant összes app-azonosítója, hogy a service
+ * a tenant-globális audit-eseményeket app-azonosító alapján szűrhesse.
+ */
+export type SandboxAppRegistryMetrics = {
+  appsTotal: number
+  appsByStatus: Record<string, number>
+  appsByCreator: { agent: number; user: number }
+  versionsTotal: number
+  avgVersionsPerApp: number
+  avgArtifactSizeBytes: number
+  appIds: string[]
 }
 
 export type CreateSandboxAppInput = {
@@ -535,6 +645,8 @@ export interface SandboxAppRepository {
   getVersionById(versionId: string): Promise<SandboxAppVersion | null>
   listVersions(appId: string): Promise<SandboxAppVersion[]>
   list(filter: SandboxAppListFilter): Promise<{ items: SandboxAppListItem[]; nextCursor?: string }>
+  /** Tenant-scoped registry metrikák a táblákból (§8.3). */
+  getRegistryMetrics(tenantId: string | null): Promise<SandboxAppRegistryMetrics>
 }
 
 export interface ConnectorGrantRepository {

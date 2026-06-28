@@ -13,6 +13,7 @@ import { UpdateModelConfigForm } from '@/components/agents/update-model-config-f
 import { UpdateSelfEvolutionProfileForm } from '@/components/agents/update-self-evolution-profile-form'
 import { AddApiConnectorForm } from '@/components/agents/add-api-connector-form'
 import { AgentKnowledgeBasePanel } from '@/components/agents/agent-knowledge-base-panel'
+import { AgentCapabilitiesPanel } from '@/components/agents/agent-capabilities-panel'
 import { resolveSelfEvolutionProfile } from '@/lib/self-evolution-profile'
 import {
   agentRoleLabel,
@@ -330,6 +331,13 @@ export default async function AgentDetailPage({
               />
 
               <AddApiConnectorForm agentId={agent.id} />
+
+              {governance && (
+                <AgentCapabilitiesPanel
+                  agentId={agent.id}
+                  currentCapabilities={governance.capabilities}
+                />
+              )}
             </div>
           </div>
         </>

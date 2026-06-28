@@ -1,6 +1,6 @@
 import { Prisma, type ModelCallStatus } from '@prisma/client'
 import type { AuditRepository, ModelCallRepository } from '@/repositories/interfaces'
-import { callChatGptOAuth } from './chatgpt-oauth-bridge'
+import { callChatGptOAuth, callChatGptOAuthStream, stubChatStream } from './chatgpt-oauth-bridge'
 import { GeminiProvider } from './gemini-provider'
 import { createTokenStoreFromEnv, ensureFreshTokens } from './oauth-token-store'
 
@@ -105,6 +105,12 @@ export interface ModelProvider {
     /** Natív tool use definíciók — ha megadva, a provider function callingot kér. */
     tools?: ToolDefinition[]
   }): Promise<ModelProviderResult>
+  chatStream?(input: {
+    agentId: string
+    ticketId?: string
+    messages: GatewayMessage[]
+    modelConfig: ModelConfig
+  }): AsyncGenerator<string, void, unknown>
 }
 
 type OpenAiCompatibleContentPart = {
@@ -379,6 +385,37 @@ export class ChatGptOAuthProvider implements ModelProvider {
       model: data.model,
     }
   }
+
+  async *chatStream(input: {
+    agentId: string
+    ticketId?: string
+    messages: GatewayMessage[]
+    modelConfig: ModelConfig
+  }): AsyncGenerator<string, void, unknown> {
+    const providerUrl = process.env.CHATGPT_OAUTH_PROVIDER_URL
+
+    if (isStubProviderConfigured(providerUrl)) {
+      const result = stubWikiAnswer(input.messages)
+      yield* stubChatStream(result.content)
+      return
+    }
+
+    const tokenStore = createTokenStoreFromEnv()
+    if (tokenStore) {
+      const tokens = await ensureFreshTokens(tokenStore)
+      yield* callChatGptOAuthStream({
+        tokens,
+        messages: input.messages,
+        model: input.modelConfig.model,
+      })
+      return
+    }
+
+    // External sidecar doesn't expose a streaming endpoint — fall back to
+    // single-chunk via chat() so at least the SSE infrastructure still works.
+    const result = await this.chat({ ...input, tools: undefined })
+    yield result.content
+  }
 }
 
 /**
@@ -469,6 +506,78 @@ export class OpenAiCompatibleProvider implements ModelProvider {
       },
       latencyMs: Date.now() - started,
       model: data.model,
+    }
+  }
+
+  async *chatStream(input: {
+    agentId: string
+    ticketId?: string
+    messages: GatewayMessage[]
+    modelConfig: ModelConfig
+  }): AsyncGenerator<string, void, unknown> {
+    const baseUrl = (process.env[this.baseUrlEnvVar] || this.defaultBaseUrl)?.replace(/\/+$/, '')
+    if (!baseUrl) {
+      throw new Error(`${this.name} provider base URL not configured (${this.baseUrlEnvVar})`)
+    }
+    const apiKey = this.apiKeyEnvVar ? process.env[this.apiKeyEnvVar] : undefined
+    if (this.options.apiKeyRequired && !apiKey?.trim()) {
+      throw new Error(`${this.name} provider API key not configured (${this.apiKeyEnvVar})`)
+    }
+
+    const response = await fetch(`${baseUrl}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(apiKey ? { authorization: `Bearer ${apiKey}` } : {}),
+        ...this.options.extraHeaders?.(),
+      },
+      body: JSON.stringify({
+        model: input.modelConfig.model,
+        messages: input.messages.map(toOpenAiMessage),
+        temperature: input.modelConfig.temperature,
+        max_tokens: input.modelConfig.maxTokens,
+        stream: true,
+        ...this.options.extraBody?.(),
+      }),
+    })
+
+    if (!response.ok) {
+      throw new Error(`${this.name} provider failed: ${response.status} ${(await response.text()).slice(0, 200)}`)
+    }
+
+    if (!response.body) {
+      throw new Error(`${this.name} provider returned no body`)
+    }
+
+    const reader = response.body.getReader()
+    const decoder = new TextDecoder()
+    let buffer = ''
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+
+        for (const line of lines) {
+          const trimmed = line.trim()
+          if (!trimmed.startsWith('data: ')) continue
+          const data = trimmed.slice(6)
+          if (data === '[DONE]') return
+          try {
+            const parsed = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string } }> }
+            const chunk = parsed.choices?.[0]?.delta?.content
+            if (typeof chunk === 'string' && chunk) yield chunk
+          } catch {
+            // ignore malformed SSE JSON lines
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock()
     }
   }
 }
@@ -646,6 +755,206 @@ export class ModelGateway {
         outputRef: status,
         policyDecision: status,
         metadata: { latencyMs, status, error: message },
+      })
+
+      throw error
+    }
+  }
+
+  async *callStream(params: {
+    agentId: string
+    ticketId?: string
+    conversationId?: string
+    messages: GatewayMessage[]
+    modelConfig: ModelConfig
+  }): AsyncGenerator<string, void, unknown> {
+    const provider = this.providers.get(params.modelConfig.provider)
+    if (!provider) {
+      throw new Error(
+        `Unsupported model provider: ${params.modelConfig.provider} (ismert: ${[...this.providers.keys()].join(', ')})`,
+      )
+    }
+
+    const model = params.modelConfig.model || 'chatgpt-oauth-default'
+    const prompt = params.messages
+      .map((m) => `${m.role.toUpperCase()}: ${messageText(m)}`)
+      .join('\n\n')
+
+    if (params.ticketId && isUuid(params.ticketId)) {
+      const usage = await this.modelCalls.getUsageForTicket(params.ticketId)
+      if (usage.calls >= this.guardrail.maxCallsPerTicket) {
+        await this.audit.append({
+          actorType: 'agent',
+          actorId: params.agentId,
+          agentVersion: null,
+          action: 'model.call.budget_blocked',
+          targetType: 'ticket',
+          targetId: params.ticketId,
+          modelUsed: model,
+          inputRef: `calls:${usage.calls}`,
+          outputRef: `cap:${this.guardrail.maxCallsPerTicket}`,
+          policyDecision: 'budget_blocked',
+          metadata: usage,
+        })
+        throw new GatewayBudgetError(
+          `Gateway guardrail: ticket ${params.ticketId} reached ${this.guardrail.maxCallsPerTicket} model calls`,
+        )
+      }
+    }
+
+    const started = Date.now()
+    let content = ''
+
+    if (!provider.chatStream) {
+      // Fallback: call non-streaming and yield the full content as one chunk.
+      try {
+        const result = await provider.chat({
+          agentId: params.agentId,
+          ticketId: params.ticketId,
+          messages: params.messages,
+          modelConfig: { ...params.modelConfig, model },
+        })
+        content = result.content
+        const promptTokens = result.usage?.promptTokens ?? Math.ceil(prompt.length / 4)
+        const completionTokens = result.usage?.completionTokens ?? Math.ceil(content.length / 4)
+        const targetType = params.ticketId ? 'ticket' : params.conversationId ? 'conversation' : 'agent'
+        const targetId = params.ticketId ?? params.conversationId ?? params.agentId
+        await this.modelCalls.create({
+          agentId: params.agentId,
+          ticketId: params.ticketId ?? null,
+          conversationId: params.conversationId ?? null,
+          provider: provider.name,
+          model: result.model || model,
+          promptTokens,
+          completionTokens,
+          costEstimate: new Prisma.Decimal(0),
+          latencyMs: result.latencyMs,
+          status: 'ok',
+        })
+        await this.audit.append({
+          actorType: 'agent',
+          actorId: params.agentId,
+          agentVersion: null,
+          action: 'model.call',
+          targetType,
+          targetId,
+          modelUsed: result.model || model,
+          inputRef: `tokens:${promptTokens}`,
+          outputRef: `tokens:${completionTokens}`,
+          policyDecision: 'allowed',
+          metadata: { costEstimate: 0, latencyMs: result.latencyMs, status: 'ok' },
+        })
+        yield content
+      } catch (error: unknown) {
+        const status = classifyError(error)
+        const latencyMs = Date.now() - started
+        const errorMessage = error instanceof Error ? error.message : String(error)
+        const targetType = params.ticketId ? 'ticket' : params.conversationId ? 'conversation' : 'agent'
+        const targetId = params.ticketId ?? params.conversationId ?? params.agentId
+        await this.modelCalls.create({
+          agentId: params.agentId,
+          ticketId: params.ticketId ?? null,
+          conversationId: params.conversationId ?? null,
+          provider: provider.name,
+          model,
+          promptTokens: 0,
+          completionTokens: 0,
+          costEstimate: new Prisma.Decimal(0),
+          latencyMs,
+          status,
+        })
+        await this.audit.append({
+          actorType: 'agent',
+          actorId: params.agentId,
+          agentVersion: null,
+          action: 'model.call',
+          targetType,
+          targetId,
+          modelUsed: model,
+          inputRef: 'error',
+          outputRef: status,
+          policyDecision: status,
+          metadata: { latencyMs, status, error: errorMessage },
+        })
+        throw error
+      }
+      return
+    }
+
+    try {
+      for await (const chunk of provider.chatStream({
+        agentId: params.agentId,
+        ticketId: params.ticketId,
+        messages: params.messages,
+        modelConfig: { ...params.modelConfig, model },
+      })) {
+        content += chunk
+        yield chunk
+      }
+
+      const promptTokens = Math.ceil(prompt.length / 4)
+      const completionTokens = Math.ceil(content.length / 4)
+      const targetType = params.ticketId ? 'ticket' : params.conversationId ? 'conversation' : 'agent'
+      const targetId = params.ticketId ?? params.conversationId ?? params.agentId
+
+      await this.modelCalls.create({
+        agentId: params.agentId,
+        ticketId: params.ticketId ?? null,
+        conversationId: params.conversationId ?? null,
+        provider: provider.name,
+        model,
+        promptTokens,
+        completionTokens,
+        costEstimate: new Prisma.Decimal(0),
+        latencyMs: Date.now() - started,
+        status: 'ok',
+      })
+
+      await this.audit.append({
+        actorType: 'agent',
+        actorId: params.agentId,
+        agentVersion: null,
+        action: 'model.call',
+        targetType,
+        targetId,
+        modelUsed: model,
+        inputRef: `tokens:${promptTokens}`,
+        outputRef: `tokens:${completionTokens}`,
+        policyDecision: 'allowed',
+        metadata: { costEstimate: 0, latencyMs: Date.now() - started, status: 'ok' },
+      })
+    } catch (error: unknown) {
+      const status = classifyError(error)
+      const latencyMs = Date.now() - started
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      const targetType = params.ticketId ? 'ticket' : params.conversationId ? 'conversation' : 'agent'
+      const targetId = params.ticketId ?? params.conversationId ?? params.agentId
+
+      await this.modelCalls.create({
+        agentId: params.agentId,
+        ticketId: params.ticketId ?? null,
+        conversationId: params.conversationId ?? null,
+        provider: provider.name,
+        model,
+        promptTokens: 0,
+        completionTokens: 0,
+        costEstimate: new Prisma.Decimal(0),
+        latencyMs,
+        status,
+      })
+
+      await this.audit.append({
+        actorType: 'agent',
+        actorId: params.agentId,
+        agentVersion: null,
+        action: 'model.call',
+        targetType,
+        targetId,
+        modelUsed: model,
+        inputRef: 'error',
+        outputRef: status,
+        policyDecision: status,
+        metadata: { latencyMs, status, error: errorMessage },
       })
 
       throw error

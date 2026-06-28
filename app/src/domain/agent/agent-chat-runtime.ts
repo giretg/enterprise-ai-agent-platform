@@ -12,6 +12,16 @@ import { listAllowedChatTools, runAgentToolLoop } from './chat-tool-loop'
 const IMAGE_EXT = /\.(jpg|jpeg|png|gif|webp)$/i
 const IMAGE_MARKER = /^(\[image:([^\]]+)\])([\s\S]*)$/
 
+/**
+ * Egy kész szöveget streamelhető darabokra bont (a szóközöket a darabhoz
+ * tartva), hogy szimulált token-by-token megjelenítést adjon a tool-os ágon,
+ * ahol a modellhívás nem streamelhető élőben.
+ */
+function chunkForStreaming(text: string): string[] {
+  if (!text) return []
+  return text.match(/\S+\s*/g) ?? [text]
+}
+
 function isImageDocument(doc: { filename: string; extractedText: string | null }): boolean {
   if (IMAGE_EXT.test(doc.filename)) return true
   return Boolean(doc.extractedText?.startsWith('[image:'))
@@ -212,6 +222,152 @@ export class AgentChatRuntime {
       messageId: agentMessage.id,
       reply: reply.trim(),
     }
+  }
+
+  async *sendMessageStream(params: {
+    agentId: string
+    content: string
+    createdById: string
+    tenantId?: string | null
+    conversationId?: string
+    attachmentDocumentIds?: string[]
+  }): AsyncGenerator<
+    | { type: 'token'; chunk: string }
+    | { type: 'done'; conversationId: string; messageId: string }
+    | { type: 'error'; message: string },
+    void,
+    unknown
+  > {
+    const text = params.content.trim()
+    const attachmentIds = params.attachmentDocumentIds ?? []
+    if (!text && attachmentIds.length === 0) {
+      yield { type: 'error', message: 'Message is required' }
+      return
+    }
+
+    const agentDetails = await this.agents.findByIdWithDetails(params.agentId)
+    if (!agentDetails) {
+      yield { type: 'error', message: 'Agent not found' }
+      return
+    }
+
+    let conversationId = params.conversationId
+    if (conversationId) {
+      const existing = await this.conversations.getConversation(conversationId, params.tenantId ?? null)
+      if (existing.conversation.agentId !== params.agentId) {
+        yield { type: 'error', message: 'Conversation agent mismatch' }
+        return
+      }
+    } else {
+      const title = (text || 'Új beszélgetés').slice(0, 80)
+      const created = await this.conversations.createConversation({
+        agentId: params.agentId,
+        createdById: params.createdById,
+        tenantId: params.tenantId ?? null,
+        title,
+      })
+      conversationId = created.id
+    }
+
+    const attachmentDocs = await this.loadDocuments(attachmentIds)
+    const attachmentBlock = formatAttachmentBlock(attachmentDocs)
+    const userFacingText = text || '(csatolmányok)'
+
+    const tenantKey = params.tenantId ?? 'global'
+    const presentFiles = new Set(await this.listWorkspaceFiles(tenantKey, conversationId))
+    await this.materializeDocumentsToWorkspace(tenantKey, conversationId, attachmentDocs, presentFiles)
+    const knowledgeDocs = await this.loadAgentKnowledgeDocuments(params.agentId)
+    await this.materializeDocumentsToWorkspace(tenantKey, conversationId, knowledgeDocs, presentFiles)
+    const workspaceFiles = await this.listWorkspaceFiles(tenantKey, conversationId)
+
+    await this.conversations.appendMessage({
+      conversationId,
+      role: 'user',
+      content: encodeStoredMessage(userFacingText, attachmentIds),
+      actorType: 'human',
+      actorId: params.createdById,
+    })
+
+    const history = await this.conversations.getConversation(conversationId, params.tenantId ?? null)
+    const kbSearch = await this.fetchKbSearchContext({
+      agentId: params.agentId,
+      agentVersion: agentDetails.agent.currentVersion,
+      conversationId,
+      actingUserId: params.createdById,
+      query: text,
+    })
+    const gatewayMessages = await this.buildGatewayMessages(
+      agentDetails,
+      history.messages,
+      attachmentBlock,
+      kbSearch,
+      workspaceFiles,
+    )
+
+    const modelConfig = agentDetails.agent.modelConfig as {
+      provider: string
+      model: string
+      temperature?: number
+      maxTokens?: number
+    }
+
+    const allowedChatTools = await listAllowedChatTools(this.toolCaps, params.agentId)
+
+    let reply: string
+    if (allowedChatTools.length > 0) {
+      // A tool loop nem streamelhető élőben (a gyenge modellek a tool-hívást
+      // szövegként szivárogtatják, amit nem mutathatunk a usernek). Lefuttatjuk
+      // szinkronban, majd a kész választ szavanként, szimulált streamingként
+      // adjuk ki — így a tool-os agenteknél is folyamatosan jelenik meg a szöveg.
+      const result = await runAgentToolLoop({
+        gateway: this.gateway,
+        toolBroker: this.toolBroker,
+        toolCaps: this.toolCaps,
+        agentId: params.agentId,
+        agentVersion: agentDetails.agent.currentVersion,
+        context: { conversationId },
+        mode: 'chat',
+        actingUserId: params.createdById,
+        messages: gatewayMessages,
+        modelConfig,
+        allowedTools: allowedChatTools,
+      })
+      reply = result.content
+      for (const chunk of chunkForStreaming(reply)) {
+        yield { type: 'token', chunk }
+        await new Promise<void>((r) => setTimeout(r, 12))
+      }
+    } else {
+      // No tools — stream token by token.
+      let accumulated = ''
+      try {
+        for await (const chunk of this.gateway.callStream({
+          agentId: params.agentId,
+          conversationId,
+          messages: gatewayMessages,
+          modelConfig,
+        })) {
+          accumulated += chunk
+          yield { type: 'token', chunk }
+        }
+      } catch (err) {
+        yield { type: 'error', message: err instanceof Error ? err.message : 'Model call failed' }
+        return
+      }
+      reply = accumulated
+    }
+
+    const agentMessage = await this.conversations.appendMessage({
+      conversationId,
+      role: 'agent',
+      content: reply.trim(),
+      agentVersion: agentDetails.agent.currentVersion,
+      model: modelConfig.model,
+      actorType: 'agent',
+      actorId: params.agentId,
+    })
+
+    yield { type: 'done', conversationId, messageId: agentMessage.id }
   }
 
   async createTaskTicket(params: {

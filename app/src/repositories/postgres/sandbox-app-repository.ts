@@ -6,6 +6,7 @@ import type {
   CreateSandboxAppInput,
   SandboxAppListFilter,
   SandboxAppListItem,
+  SandboxAppRegistryMetrics,
   SandboxAppRepository,
   SandboxAppWithLatestVersion,
 } from '../interfaces'
@@ -175,5 +176,40 @@ export class PostgresSandboxAppRepository implements SandboxAppRepository {
     })
 
     return { items, nextCursor: hasMore ? page[page.length - 1]?.id : undefined }
+  }
+
+  async getRegistryMetrics(tenantId: string | null): Promise<SandboxAppRegistryMetrics> {
+    const apps = await prisma.sandboxApp.findMany({
+      where: { tenantId },
+      select: { id: true, status: true, createdByType: true },
+    })
+
+    const appsByStatus: Record<string, number> = {}
+    let agent = 0
+    let user = 0
+    for (const a of apps) {
+      appsByStatus[a.status] = (appsByStatus[a.status] ?? 0) + 1
+      if (a.createdByType === 'agent') agent += 1
+      else user += 1
+    }
+
+    const versionAgg = await prisma.sandboxAppVersion.aggregate({
+      where: { tenantId },
+      _count: { _all: true },
+      _avg: { artifactSizeBytes: true },
+    })
+
+    const appsTotal = apps.length
+    const versionsTotal = versionAgg._count._all
+
+    return {
+      appsTotal,
+      appsByStatus,
+      appsByCreator: { agent, user },
+      versionsTotal,
+      avgVersionsPerApp: appsTotal > 0 ? versionsTotal / appsTotal : 0,
+      avgArtifactSizeBytes: Math.round(versionAgg._avg.artifactSizeBytes ?? 0),
+      appIds: apps.map((a) => a.id),
+    }
   }
 }

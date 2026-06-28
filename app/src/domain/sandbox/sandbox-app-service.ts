@@ -453,6 +453,39 @@ export class SandboxAppService {
     }
   }
 
+  /**
+   * App Registry observability metrikák (§8.3). A táblákból számolható mutatókat
+   * a repository adja tenant-scoped módon; az audit-eredetű eseményszámokat itt
+   * fűzzük hozzá. Az AuditLog tenant-globális, ezért a tenant app-azonosítóira
+   * szűrünk (targetId), így az eseményszámok is tenant-scoped-ok maradnak.
+   */
+  async getRegistryMetrics(actor: Actor) {
+    const m = await this.sandboxApps.getRegistryMetrics(actor.tenantId)
+    const appIds = new Set(m.appIds)
+
+    const countEvents = async (action: string) => {
+      const rows = await this.audit.findMany({ action })
+      return rows.filter((r) => r.targetId != null && appIds.has(r.targetId)).length
+    }
+
+    const [preview, exportCount, validationFailed, accessDenied] = await Promise.all([
+      countEvents('sandbox_app.preview'),
+      countEvents('sandbox_app.export'),
+      countEvents('sandbox_app.validation_failed'),
+      countEvents('sandbox_app.access_denied'),
+    ])
+
+    return {
+      appsTotal: m.appsTotal,
+      appsByStatus: m.appsByStatus,
+      appsByCreator: m.appsByCreator,
+      versionsTotal: m.versionsTotal,
+      avgVersionsPerApp: m.avgVersionsPerApp,
+      avgArtifactSizeBytes: m.avgArtifactSizeBytes,
+      events: { preview, export: exportCount, validationFailed, accessDenied },
+    }
+  }
+
   // ── Wiki-riport convenience wrapper (CR-MVP-001 kompatibilitás) ────────────
 
   async createOrVersionWikiReport(ticketId: string, actor: Actor): Promise<SandboxAppView> {

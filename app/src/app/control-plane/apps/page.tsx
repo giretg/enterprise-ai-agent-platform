@@ -1,5 +1,5 @@
 import Link from 'next/link'
-import { listSandboxApps } from '@/app/actions/platform'
+import { listSandboxApps, getSandboxAppRegistryMetrics } from '@/app/actions/platform'
 import { Badge, Card } from '@/components/ui/shell'
 import { CreateSandboxAppToggle } from '@/components/sandbox/create-sandbox-app-toggle'
 
@@ -10,9 +10,23 @@ function statusTone(status: string): 'neutral' | 'success' | 'warning' | 'danger
   return 'warning'
 }
 
+function Metric({ label, value, hint }: { label: string; value: string; hint?: string }) {
+  return (
+    <div className="rounded-lg border border-line px-4 py-3">
+      <dt className="text-xs font-semibold uppercase tracking-wide text-ink-faint">{label}</dt>
+      <dd className="mt-1 font-display text-2xl font-semibold tabular-nums">{value}</dd>
+      {hint && <p className="mt-0.5 text-xs text-ink-faint">{hint}</p>}
+    </div>
+  )
+}
+
 export default async function AppRegistryPage() {
-  const res = await listSandboxApps({})
+  const [res, metricsRes] = await Promise.all([
+    listSandboxApps({}),
+    getSandboxAppRegistryMetrics(),
+  ])
   const apps = res.success ? res.data.apps : []
+  const metrics = metricsRes.success ? metricsRes.data : null
 
   return (
     <div className="space-y-6">
@@ -29,6 +43,36 @@ export default async function AppRegistryPage() {
         </div>
         <CreateSandboxAppToggle />
       </div>
+
+      {/* Observability metrikák (§8.3) */}
+      {metrics && metrics.appsTotal > 0 && (
+        <Card title="Metrikák">
+          <dl className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+            <Metric
+              label="Appok"
+              value={String(metrics.appsTotal)}
+              hint={`${metrics.appsByCreator.agent} agent · ${metrics.appsByCreator.user} ember`}
+            />
+            <Metric
+              label="Verziók"
+              value={String(metrics.versionsTotal)}
+              hint={`átlag ${metrics.avgVersionsPerApp.toFixed(1)} / app`}
+            />
+            <Metric
+              label="Átlag méret"
+              value={`${(metrics.avgArtifactSizeBytes / 1024).toFixed(1)} KB`}
+            />
+            <Metric label="Aktív" value={String(metrics.appsByStatus.active ?? 0)} />
+            <Metric label="Preview" value={String(metrics.events.preview)} />
+            <Metric label="Export" value={String(metrics.events.export)} />
+            <Metric
+              label="Validációs hiba"
+              value={String(metrics.events.validationFailed)}
+            />
+            <Metric label="Access denied" value={String(metrics.events.accessDenied)} />
+          </dl>
+        </Card>
+      )}
 
       {!res.success && (
         <p className="rounded-lg border border-coral/30 bg-coral/10 px-4 py-2 text-sm text-coral">

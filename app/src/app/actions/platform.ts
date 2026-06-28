@@ -1514,6 +1514,19 @@ export async function getSandboxApp(input: z.infer<typeof getSandboxAppSchema>) 
   }
 }
 
+export async function getSandboxAppRegistryMetrics() {
+  try {
+    const user = await requireRole('viewer')
+    const result = await services.sandboxApps.getRegistryMetrics({
+      userId: user.id,
+      tenantId: user.tenantId,
+    })
+    return ok(result)
+  } catch (e) {
+    return sandboxAppFail(e, 'Failed to load app registry metrics')
+  }
+}
+
 export async function getSandboxAppPreviewUrl(input: z.infer<typeof sandboxAppPreviewUrlSchema>) {
   try {
     const user = await requireRole('viewer')
@@ -2093,5 +2106,76 @@ export async function syncTestDatabaseFromProduction(input: { confirm: true }) {
     return ok({ result, syncStatus })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to sync test database')
+  }
+}
+
+const WORKSPACE_TOOLS = [
+  'file_read', 'file_write', 'file_edit', 'file_list', 'file_glob',
+  'file_search', 'file_delete',
+  'xlsx_read_sheet', 'xlsx_write_cells', 'xlsx_append_rows',
+  'xlsx_create', 'xlsx_format_range', 'xlsx_layout',
+  'docx_read', 'pdf_read', 'pdf_create',
+] as const
+
+export async function updateAgentCapabilities(input: {
+  agentId: string
+  enabledTools: string[]
+}) {
+  try {
+    const user = await requireRole('admin')
+    const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
+
+    const agent = await repositories.agents.findById(agentId)
+    if (!agent) return fail('Agent not found')
+
+    const enabledSet = new Set(input.enabledTools)
+    const needsWorkspace = WORKSPACE_TOOLS.some((t) => enabledSet.has(t))
+
+    if (needsWorkspace) {
+      const workspaceConnector = await prisma.connector.findFirst({
+        where: { type: 'workspace' },
+      })
+      if (!workspaceConnector) return fail('Workspace connector nem található a rendszerben.')
+
+      await prisma.agentConnector.upsert({
+        where: {
+          agentId_connectorId: { agentId, connectorId: workspaceConnector.id },
+        },
+        create: { agentId, connectorId: workspaceConnector.id, accessMode: 'write' },
+        update: { accessMode: 'write' },
+      })
+    }
+
+    const allTools: string[] = [...new Set([...input.enabledTools])]
+    await Promise.all(
+      allTools.map((toolName) =>
+        prisma.capability.upsert({
+          where: { agentId_toolName: { agentId, toolName } },
+          create: { agentId, toolName, allowed: true },
+          update: { allowed: true },
+        }),
+      ),
+    )
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: agent.currentVersion,
+      action: 'capability.update',
+      targetType: 'tool',
+      targetId: agentId,
+      modelUsed: null,
+      inputRef: input.enabledTools.join(','),
+      outputRef: 'updated',
+      policyDecision: 'allowed',
+      metadata: {
+        enabledTools: input.enabledTools,
+        workspaceLinked: needsWorkspace,
+      } as Prisma.JsonValue,
+    })
+
+    return ok({ updatedCount: allTools.length, workspaceLinked: needsWorkspace })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update capabilities')
   }
 }
