@@ -861,3 +861,73 @@ export const monitorIdSchema = z.object({
 export const monitorDryRunSchema = z.object({
   id: z.string().uuid(),
 })
+
+// --- Fázis 2 Playbook process runtime (Feature-spec — Playbook §8.2, §8.3) ---
+
+const playbookTicketStateSchema = z.enum([
+  'backlog',
+  'ready',
+  'approved',
+  'in_progress',
+  'awaiting_human',
+  'done',
+  'rejected',
+])
+
+export const startProcessSchema = z.object({
+  processType: z.string().trim().min(1).max(120),
+  playbookVersionId: z.string().uuid().optional(),
+  inputPayload: z.record(z.string(), z.unknown()).optional(),
+})
+
+export const processIdSchema = z.object({
+  id: z.string().uuid(),
+})
+
+export const cancelProcessSchema = z.object({
+  id: z.string().uuid(),
+  reason: z.string().trim().min(1).max(500),
+})
+
+export const transitionProcessTicketSchema = z.object({
+  ticketId: z.string().uuid(),
+  toState: playbookTicketStateSchema,
+  note: z.string().trim().max(1000).optional(),
+  outputPayload: z.record(z.string(), z.unknown()).optional(),
+  approvalEvidence: z.record(z.string(), z.unknown()).optional(),
+})
+
+// --- Fázis 2 Playbook Registry admin (Feature-spec — Playbook §8.1, §9.1) ----
+
+export const createPlaybookV2Schema = z.object({
+  key: z.string().trim().min(1).max(120).regex(/^[a-z0-9][a-z0-9-]*$/, 'Csak kisbetű, szám és kötőjel.'),
+  name: z.string().trim().min(1).max(200),
+  description: z.string().trim().max(2000).optional(),
+  processType: z.string().trim().min(1).max(120),
+})
+
+export const playbookV2IdSchema = z.object({
+  id: z.string().uuid(),
+})
+
+export const createPlaybookVersionV2Schema = z.object({
+  playbookId: z.string().uuid(),
+  spec: z.unknown(),
+  changeSummary: z.string().trim().min(1).max(500),
+})
+
+export const playbookVersionV2IdSchema = z.object({
+  playbookVersionId: z.string().uuid(),
+})
+
+export const rejectPlaybookVersionV2Schema = z.object({
+  playbookVersionId: z.string().uuid(),
+  reason: z.string().trim().min(1).max(500),
+})
+
+export const assignPlaybookV2Schema = z.object({
+  playbookVersionId: z.string().uuid(),
+  assignmentType: z.enum(['process_type', 'ticket_type', 'agent_role']),
+  assignmentKey: z.string().trim().min(1).max(120),
+  isDefault: z.boolean(),
+})

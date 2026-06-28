@@ -8,6 +8,8 @@ const navItems = [
   { href: '/control-plane/board', label: 'Board' },
   { href: '/control-plane/agents', label: 'Agents' },
   { href: '/control-plane/apps', label: 'App Registry' },
+  { href: '/control-plane/playbooks', label: 'Playbookok' },
+  { href: '/control-plane/processes', label: 'Folyamatok' },
   { href: '/control-plane/scheduled-tasks', label: 'Ütemezés' },
   { href: '/control-plane/monitors', label: 'Monitorok' },
   { href: '/control-plane/training', label: 'Tanítás' },
