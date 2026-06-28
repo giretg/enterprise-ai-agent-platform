@@ -84,6 +84,7 @@ export async function POST(request: Request) {
     if (stubCompletion) {
       await services.gateway.call({
         agentId: auth.agentId,
+        agentVersion: agentVersion ?? agent.currentVersion,
         ticketId,
         messages,
         modelConfig: {
@@ -100,6 +101,7 @@ export async function POST(request: Request) {
   try {
     const result = await services.gateway.call({
       agentId: auth.agentId,
+      agentVersion: agentVersion ?? agent.currentVersion,
       ticketId,
       messages,
       modelConfig: {

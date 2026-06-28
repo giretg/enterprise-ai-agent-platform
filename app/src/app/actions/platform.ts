@@ -2364,3 +2364,118 @@ export async function updateAgentCapabilities(input: {
     return fail(e instanceof Error ? e.message : 'Failed to update capabilities')
   }
 }
+
+// ── Model Gateway: Routing policies (Fázis 2-A) ──────────────────────────────
+
+export async function listModelRoutingPolicies() {
+  try {
+    await requireRole('operator')
+    const policies = await repositories.modelRoutingPolicies.list()
+    return ok(policies)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to list routing policies')
+  }
+}
+
+export async function createModelRoutingPolicy(input: {
+  scope: 'global' | 'agent' | 'ticket_type'
+  scopeRef?: string
+  model: string
+  provider: string
+  priority?: number
+  tenantId?: string
+}) {
+  try {
+    await requireRole('admin')
+    const policy = await repositories.modelRoutingPolicies.create({
+      tenantId: input.tenantId ?? null,
+      scope: input.scope,
+      scopeRef: input.scopeRef ?? null,
+      model: input.model.trim(),
+      provider: input.provider.trim(),
+      priority: input.priority ?? 100,
+      conditions: null,
+    })
+    return ok(policy)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to create routing policy')
+  }
+}
+
+export async function deleteModelRoutingPolicy(input: { id: string }) {
+  try {
+    await requireRole('admin')
+    await repositories.modelRoutingPolicies.delete(input.id)
+    return ok({ deleted: true })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to delete routing policy')
+  }
+}
+
+// ── Model Gateway: Budgets (Fázis 2-A) ──────────────────────────────────────
+
+export async function listModelBudgets() {
+  try {
+    await requireRole('operator')
+    const budgets = await repositories.modelBudgets.list()
+    return ok(budgets)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to list model budgets')
+  }
+}
+
+export async function createModelBudget(input: {
+  scope: 'tenant' | 'agent' | 'ticket_type'
+  scopeRef?: string
+  period: 'day' | 'week' | 'month'
+  callLimit?: number
+  tokenLimit?: number
+  softThreshold?: number
+  hardCap?: boolean
+  tenantId?: string
+}) {
+  try {
+    await requireRole('admin')
+    const budget = await repositories.modelBudgets.create({
+      tenantId: input.tenantId ?? null,
+      scope: input.scope,
+      scopeRef: input.scopeRef ?? null,
+      period: input.period,
+      callLimit: input.callLimit ?? null,
+      tokenLimit: input.tokenLimit ?? null,
+      softThreshold: input.softThreshold != null ? new (await import('@prisma/client')).Prisma.Decimal(input.softThreshold) : null,
+      hardCap: input.hardCap ?? true,
+    })
+    return ok(budget)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to create model budget')
+  }
+}
+
+export async function deleteModelBudget(input: { id: string }) {
+  try {
+    await requireRole('admin')
+    await repositories.modelBudgets.delete(input.id)
+    return ok({ deleted: true })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to delete model budget')
+  }
+}
+
+// ── Model Gateway: Observability summary ────────────────────────────────────
+
+export async function getModelCallsSummary(input?: { sinceHours?: number }) {
+  try {
+    await requireRole('operator')
+    const since = input?.sinceHours
+      ? new Date(Date.now() - input.sinceHours * 60 * 60 * 1000)
+      : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
+    const [summary, breakdown] = await Promise.all([
+      repositories.modelCalls.getGovernanceSummary(since),
+      repositories.modelCalls.getPerTicketBreakdown(since, 20),
+    ])
+    return ok({ summary, breakdown, sinceHours: input?.sinceHours ?? 168 })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to load model calls summary')
+  }
+}

@@ -3,26 +3,42 @@ import { hasMinimumRole } from '@/auth/types'
 import {
   getDatabaseMode,
   getDispatcherControls,
+  getModelCallsSummary,
   getModelPolicy,
   getTicketTypeConfigs,
+  listModelBudgets,
+  listModelRoutingPolicies,
 } from '@/app/actions/platform'
 import { getMonitorControls } from '@/app/actions/monitor'
 import { DatabaseControlPanel } from './database-control-panel'
 import { DispatcherControlPanel } from './dispatcher-control-panel'
+import { ModelGatewayPanel } from './model-gateway-panel'
 import { ModelPolicyPanel } from './model-policy-panel'
 import { TicketTypeConfigPanel } from './ticket-type-config-panel'
 import { MonitorControlPanel } from './monitor-control-panel'
 
 export default async function SystemPage() {
-  const [user, controlsRes, dbModeRes, ticketTypesRes, modelPolicyRes, monitorControlsRes] =
-    await Promise.all([
-      getCurrentUser(),
-      getDispatcherControls(),
-      getDatabaseMode(),
-      getTicketTypeConfigs(),
-      getModelPolicy(),
-      getMonitorControls(),
-    ])
+  const [
+    user,
+    controlsRes,
+    dbModeRes,
+    ticketTypesRes,
+    modelPolicyRes,
+    monitorControlsRes,
+    gatewayStatsRes,
+    routingPoliciesRes,
+    budgetsRes,
+  ] = await Promise.all([
+    getCurrentUser(),
+    getDispatcherControls(),
+    getDatabaseMode(),
+    getTicketTypeConfigs(),
+    getModelPolicy(),
+    getMonitorControls(),
+    getModelCallsSummary(),
+    listModelRoutingPolicies(),
+    listModelBudgets(),
+  ])
   const canEdit = user ? hasMinimumRole(user.role, 'admin') : false
 
   return (
@@ -75,6 +91,15 @@ export default async function SystemPage() {
         </div>
       ) : (
         <ModelPolicyPanel initial={modelPolicyRes.data} canEdit={canEdit} />
+      )}
+
+      {gatewayStatsRes.success && (
+        <ModelGatewayPanel
+          stats={gatewayStatsRes.data}
+          routingPolicies={routingPoliciesRes.success ? routingPoliciesRes.data : []}
+          budgets={budgetsRes.success ? budgetsRes.data : []}
+          canEdit={canEdit}
+        />
       )}
     </div>
   )

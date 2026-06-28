@@ -1,6 +1,15 @@
-import type { AuditLog, ModelCall, Prisma } from '@prisma/client'
+import { Prisma } from '@prisma/client'
+import type { AuditLog, ModelBudget, ModelCall, ModelRoutingPolicy } from '@prisma/client'
 import { prisma } from '@/lib/db'
-import type { AuditRepository, ModelCallRepository } from '../interfaces'
+import type {
+  AuditRepository,
+  ModelBudgetRepository,
+  ModelBudgetScope,
+  ModelCallRepository,
+  ModelBudgetPeriod,
+  ModelRoutingPolicyRepository,
+  ModelRoutingScope,
+} from '../interfaces'
 import { computeAuditHash, GENESIS_HASH } from '@/lib/crypto/hash-chain'
 import { chainHasGaps, reconcileAuditChain } from '@/lib/crypto/audit-backfill'
 
@@ -146,6 +155,27 @@ export class PostgresModelCallRepository implements ModelCallRepository {
     )
   }
 
+  async getUsageForAgent(agentId: string, period: ModelBudgetPeriod) {
+    const now = new Date()
+    const since = new Date(now)
+    if (period === 'day') since.setDate(now.getDate() - 1)
+    else if (period === 'week') since.setDate(now.getDate() - 7)
+    else since.setMonth(now.getMonth() - 1)
+
+    const rows = await prisma.modelCall.findMany({
+      where: { agentId, createdAt: { gte: since } },
+      select: { promptTokens: true, completionTokens: true },
+    })
+
+    return rows.reduce(
+      (acc, row) => ({
+        calls: acc.calls + 1,
+        tokens: acc.tokens + row.promptTokens + row.completionTokens,
+      }),
+      { calls: 0, tokens: 0 },
+    )
+  }
+
   async getGovernanceSummary(since?: Date) {
     const rows = await prisma.modelCall.findMany({
       where: since ? { createdAt: { gte: since } } : undefined,
@@ -231,5 +261,134 @@ export class PostgresModelCallRepository implements ModelCallRepository {
         cost: e.cost,
         avgLatencyMs: e.calls > 0 ? Math.round(e.latencyTotal / e.calls) : 0,
       }))
+  }
+}
+
+export class PostgresModelRoutingPolicyRepository implements ModelRoutingPolicyRepository {
+  async list(filter?: { tenantId?: string; scope?: ModelRoutingScope }): Promise<ModelRoutingPolicy[]> {
+    return prisma.modelRoutingPolicy.findMany({
+      where: {
+        ...(filter?.tenantId !== undefined ? { tenantId: filter.tenantId } : {}),
+        ...(filter?.scope ? { scope: filter.scope } : {}),
+      },
+      orderBy: { priority: 'asc' },
+    })
+  }
+
+  async findById(id: string): Promise<ModelRoutingPolicy | null> {
+    return prisma.modelRoutingPolicy.findUnique({ where: { id } })
+  }
+
+  async create(data: Omit<ModelRoutingPolicy, 'id' | 'createdAt' | 'updatedAt'>): Promise<ModelRoutingPolicy> {
+    return prisma.modelRoutingPolicy.create({
+      data: { ...data, conditions: data.conditions ?? Prisma.JsonNull },
+    })
+  }
+
+  async update(id: string, data: Partial<Omit<ModelRoutingPolicy, 'id' | 'createdAt' | 'updatedAt'>>): Promise<ModelRoutingPolicy> {
+    const { conditions, ...rest } = data
+    return prisma.modelRoutingPolicy.update({
+      where: { id },
+      data: {
+        ...rest,
+        ...(conditions !== undefined ? { conditions: conditions ?? Prisma.JsonNull } : {}),
+      },
+    })
+  }
+
+  async delete(id: string): Promise<void> {
+    await prisma.modelRoutingPolicy.delete({ where: { id } })
+  }
+
+  async findForRouting(filter: { tenantId?: string; agentId?: string; ticketType?: string }): Promise<ModelRoutingPolicy[]> {
+    const scopeRefs: string[] = []
+    const scopes: ModelRoutingScope[] = ['global']
+    if (filter.agentId) {
+      scopeRefs.push(filter.agentId)
+      scopes.push('agent')
+    }
+    if (filter.ticketType) {
+      scopeRefs.push(filter.ticketType)
+      scopes.push('ticket_type')
+    }
+
+    return prisma.modelRoutingPolicy.findMany({
+      where: {
+        AND: [
+          { scope: { in: scopes } },
+          {
+            OR: [
+              { scope: 'global' },
+              { scopeRef: { in: scopeRefs } },
+            ],
+          },
+          ...(filter.tenantId !== undefined
+            ? [{ OR: [{ tenantId: null }, { tenantId: filter.tenantId }] }]
+            : []),
+        ],
+      },
+      orderBy: { priority: 'asc' },
+    })
+  }
+}
+
+export class PostgresModelBudgetRepository implements ModelBudgetRepository {
+  async list(filter?: { tenantId?: string; scope?: ModelBudgetScope }): Promise<ModelBudget[]> {
+    return prisma.modelBudget.findMany({
+      where: {
+        ...(filter?.tenantId !== undefined ? { tenantId: filter.tenantId } : {}),
+        ...(filter?.scope ? { scope: filter.scope } : {}),
+      },
+    })
+  }
+
+  async findById(id: string): Promise<ModelBudget | null> {
+    return prisma.modelBudget.findUnique({ where: { id } })
+  }
+
+  async create(data: Omit<ModelBudget, 'id' | 'createdAt' | 'updatedAt'>): Promise<ModelBudget> {
+    return prisma.modelBudget.create({ data })
+  }
+
+  async update(id: string, data: Partial<Omit<ModelBudget, 'id' | 'createdAt' | 'updatedAt'>>): Promise<ModelBudget> {
+    return prisma.modelBudget.update({ where: { id }, data })
+  }
+
+  async delete(id: string): Promise<void> {
+    await prisma.modelBudget.delete({ where: { id } })
+  }
+
+  async findApplicable(filter: { tenantId?: string; agentId?: string; ticketType?: string }): Promise<ModelBudget[]> {
+    const scopes: ModelBudgetScope[] = ['tenant']
+    const scopeRefs: string[] = []
+    if (filter.agentId) {
+      scopes.push('agent')
+      scopeRefs.push(filter.agentId)
+    }
+    if (filter.ticketType) {
+      scopes.push('ticket_type')
+      scopeRefs.push(filter.ticketType)
+    }
+
+    const rows = await prisma.modelBudget.findMany({
+      where: {
+        AND: [
+          { scope: { in: scopes } },
+          {
+            OR: [
+              { scope: 'tenant' },
+              { scopeRef: { in: scopeRefs } },
+            ],
+          },
+          ...(filter.tenantId !== undefined
+            ? [{ OR: [{ tenantId: null }, { tenantId: filter.tenantId }] }]
+            : []),
+        ],
+      },
+    })
+
+    // Most-specific first: ticket_type > agent > tenant
+    const scopeOrder: Record<ModelBudgetScope, number> = { ticket_type: 0, agent: 1, tenant: 2 }
+    return rows.sort((a, b) => scopeOrder[a.scope] - scopeOrder[b.scope])
   }
 }

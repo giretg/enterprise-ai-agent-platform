@@ -1040,6 +1040,7 @@ model AuditLog {
 model ModelCall {
   id               String          @id @default(uuid()) @db.Uuid
   agentId          String          @map("agent_id") @db.Uuid
+  agentVersion     Int?            @map("agent_version")
   ticketId         String?         @map("ticket_id") @db.Uuid
   conversationId   String?         @map("conversation_id") @db.Uuid
   provider         String
@@ -1056,6 +1057,65 @@ model ModelCall {
   conversation Conversation? @relation(fields: [conversationId], references: [id])
 
   @@map("model_calls")
+}
+
+// ── Fázis 2: Model Gateway routing + budget ─────────────────────────────────
+
+enum ModelRoutingScope {
+  global
+  agent
+  ticket_type
+
+  @@map("model_routing_scope")
+}
+
+enum ModelBudgetScope {
+  tenant
+  agent
+  ticket_type
+
+  @@map("model_budget_scope")
+}
+
+enum ModelBudgetPeriod {
+  day
+  week
+  month
+
+  @@map("model_budget_period")
+}
+
+model ModelRoutingPolicy {
+  id        String             @id @default(uuid()) @db.Uuid
+  tenantId  String?            @map("tenant_id") @db.Uuid
+  scope     ModelRoutingScope  @default(global)
+  scopeRef  String?            @map("scope_ref")
+  model     String
+  provider  String
+  priority  Int                @default(100)
+  conditions Json?
+  createdAt DateTime           @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime           @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@index([tenantId, scope, priority])
+  @@map("model_routing_policies")
+}
+
+model ModelBudget {
+  id             String           @id @default(uuid()) @db.Uuid
+  tenantId       String?          @map("tenant_id") @db.Uuid
+  scope          ModelBudgetScope @default(tenant)
+  scopeRef       String?          @map("scope_ref")
+  period         ModelBudgetPeriod @default(week)
+  callLimit      Int?             @map("call_limit")
+  tokenLimit     Int?             @map("token_limit")
+  softThreshold  Decimal?         @map("soft_threshold") @db.Decimal(12, 6)
+  hardCap        Boolean          @default(true) @map("hard_cap")
+  createdAt      DateTime         @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt      DateTime         @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@index([tenantId, scope])
+  @@map("model_budgets")
 }
 
 model ToolCall {

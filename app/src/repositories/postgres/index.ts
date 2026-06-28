@@ -1,5 +1,10 @@
 import { PostgresAgentRepository, PostgresDocumentRepository } from './agent-repository'
-import { PostgresAuditRepository, PostgresModelCallRepository } from './audit-repository'
+import {
+  PostgresAuditRepository,
+  PostgresModelBudgetRepository,
+  PostgresModelCallRepository,
+  PostgresModelRoutingPolicyRepository,
+} from './audit-repository'
 import { PostgresConversationRepository } from './conversation-repository'
 import { PostgresRecipeRepository } from './recipe-repository'
 import { PostgresPlaybookRepository } from './playbook-repository'
@@ -21,6 +26,8 @@ export const repositories = {
   documents: new PostgresDocumentRepository(),
   audit: new PostgresAuditRepository(),
   modelCalls: new PostgresModelCallRepository(),
+  modelRoutingPolicies: new PostgresModelRoutingPolicyRepository(),
+  modelBudgets: new PostgresModelBudgetRepository(),
   toolBroker: new PostgresToolBrokerRepository(),
   recipes: new PostgresRecipeRepository(),
   playbooks: new PostgresPlaybookRepository(),

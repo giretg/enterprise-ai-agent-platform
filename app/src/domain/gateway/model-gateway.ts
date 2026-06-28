@@ -3,6 +3,13 @@ import type { AuditRepository, ModelCallRepository } from '@/repositories/interf
 import { callChatGptOAuth, callChatGptOAuthStream, stubChatStream } from './chatgpt-oauth-bridge'
 import { GeminiProvider } from './gemini-provider'
 import { createTokenStoreFromEnv, ensureFreshTokens } from './oauth-token-store'
+import {
+  classifyPrompt,
+  DEFAULT_SENSITIVITY_POLICY,
+  type SensitivityPolicy,
+} from './sensitivity-router'
+import type { RoutingEngine } from './routing-engine'
+import type { BudgetEngine } from './budget-engine'
 
 export type GatewayGuardrail = {
   /** Ticketenkénti modellhívás-plafon (5.4) — túllépve a Gateway nem hív. */
@@ -611,49 +618,121 @@ export function createDefaultProviders(): Map<string, ModelProvider> {
   return new Map(providers.map((p) => [p.name, p]))
 }
 
+/** Maximum retry attempts for transient errors (5xx / network). */
+const MAX_RETRIES = 2
+
+async function withRetry<T>(fn: () => Promise<T>): Promise<T> {
+  let lastError: unknown
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      return await fn()
+    } catch (error: unknown) {
+      lastError = error
+      const status = classifyError(error)
+      // Only retry on transient errors, not rate-limit or budget denials.
+      if (status !== 'error') throw error
+      if (attempt < MAX_RETRIES) {
+        await new Promise((r) => setTimeout(r, 200 * 2 ** attempt))
+      }
+    }
+  }
+  throw lastError
+}
+
 export class ModelGateway {
   constructor(
     private audit: AuditRepository,
     private modelCalls: ModelCallRepository,
     private providers: Map<string, ModelProvider> = createDefaultProviders(),
     private guardrail: GatewayGuardrail = guardrailFromEnv(),
+    private routingEngine?: RoutingEngine,
+    private budgetEngine?: BudgetEngine,
+    private sensitivityPolicy: SensitivityPolicy = DEFAULT_SENSITIVITY_POLICY,
   ) {}
 
   async call(params: {
     agentId: string
+    agentVersion?: number
+    tenantId?: string
     ticketId?: string
     conversationId?: string
+    ticketType?: string
     messages: GatewayMessage[]
     modelConfig: ModelConfig
     /** Natív tool use definíciók — átadva a provider function callingot kér. */
     tools?: ToolDefinition[]
-    retryCount?: number
   }): Promise<{
     content: string
     toolCalls?: GatewayToolCall[]
     usage: { promptTokens: number; completionTokens: number }
   }> {
-    const provider = this.providers.get(params.modelConfig.provider)
-    if (!provider) {
-      throw new Error(
-        `Unsupported model provider: ${params.modelConfig.provider} (ismert: ${[...this.providers.keys()].join(', ')})`,
+    const agentVersion = params.agentVersion ?? null
+
+    // ── Step 2: Sensitivity pre-flight (Fázis 2-B) ─────────────────────────
+    const sensitivity = classifyPrompt(params.messages)
+    if (sensitivity.level === 'forbidden') {
+      const targetType = params.ticketId ? 'ticket' : params.conversationId ? 'conversation' : 'agent'
+      const targetId = params.ticketId ?? params.conversationId ?? params.agentId
+      await this.audit.append({
+        actorType: 'agent',
+        actorId: params.agentId,
+        agentVersion,
+        action: 'model.call.denied',
+        targetType,
+        targetId,
+        modelUsed: params.modelConfig.model,
+        inputRef: `sensitivity:${sensitivity.matchedCategory}`,
+        outputRef: 'blocked',
+        policyDecision: 'sensitivity_block',
+        metadata: { reason: 'sensitivity_block', category: sensitivity.matchedCategory },
+      })
+      throw new GatewayBudgetError(
+        `Gateway sensitivity block: forbidden content detected (${sensitivity.matchedCategory})`,
       )
     }
 
-    const model = params.modelConfig.model || 'chatgpt-oauth-default'
+    // ── Step 3: Routing (Fázis 2-A) ────────────────────────────────────────
+    let resolvedConfig = { ...params.modelConfig }
+    if (this.routingEngine) {
+      const decision = await this.routingEngine.resolve({
+        agentId: params.agentId,
+        tenantId: params.tenantId,
+        ticketType: params.ticketType,
+        agentModelConfig: params.modelConfig,
+      })
+      resolvedConfig = { ...resolvedConfig, provider: decision.provider, model: decision.model }
+    }
+
+    // Sensitivity override: force local model for sensitive prompts
+    if (sensitivity.level === 'sensitive' && this.sensitivityPolicy.enforceLocalForSensitive) {
+      resolvedConfig = {
+        ...resolvedConfig,
+        provider: this.sensitivityPolicy.localProvider,
+        model: this.sensitivityPolicy.localModel,
+      }
+    }
+
+    const provider = this.providers.get(resolvedConfig.provider)
+    if (!provider) {
+      throw new Error(
+        `Unsupported model provider: ${resolvedConfig.provider} (ismert: ${[...this.providers.keys()].join(', ')})`,
+      )
+    }
+
+    const model = resolvedConfig.model || 'chatgpt-oauth-default'
     const prompt = params.messages
       .map((m) => `${m.role.toUpperCase()}: ${messageText(m)}`)
       .join('\n\n')
 
-    // Guardrail (5.4): ticketenkénti hívás-keret — túllépve a Gateway nem hív.
+    // ── Step 4a: Ticket-level guardrail (MVP) ───────────────────────────────
     if (params.ticketId && isUuid(params.ticketId)) {
       const usage = await this.modelCalls.getUsageForTicket(params.ticketId)
       if (usage.calls >= this.guardrail.maxCallsPerTicket) {
         await this.audit.append({
           actorType: 'agent',
           actorId: params.agentId,
-          agentVersion: null,
-          action: 'model.call.budget_blocked',
+          agentVersion,
+          action: 'model.call.denied',
           targetType: 'ticket',
           targetId: params.ticketId,
           modelUsed: model,
@@ -668,26 +747,55 @@ export class ModelGateway {
       }
     }
 
+    // ── Step 4b: Budget engine gate (Fázis 2-A) ─────────────────────────────
+    if (this.budgetEngine) {
+      const budgetCheck = await this.budgetEngine.check({
+        tenantId: params.tenantId,
+        agentId: params.agentId,
+        ticketType: params.ticketType,
+      })
+      if (!budgetCheck.allowed) {
+        const targetType = params.ticketId ? 'ticket' : params.conversationId ? 'conversation' : 'agent'
+        const targetId = params.ticketId ?? params.conversationId ?? params.agentId
+        await this.audit.append({
+          actorType: 'agent',
+          actorId: params.agentId,
+          agentVersion,
+          action: 'model.call.denied',
+          targetType,
+          targetId,
+          modelUsed: model,
+          inputRef: 'budget_check',
+          outputRef: 'denied',
+          policyDecision: 'budget_blocked',
+          metadata: { reason: budgetCheck.reason },
+        })
+        throw new GatewayBudgetError(`Gateway budget gate: ${budgetCheck.reason}`)
+      }
+    }
+
+    // ── Steps 5-9: Secret injection, provider call, output guard, logging ────
     const started = Date.now()
     try {
-      const result = await provider.chat({
-        agentId: params.agentId,
-        ticketId: params.ticketId,
-        messages: params.messages,
-        modelConfig: { ...params.modelConfig, model },
-        tools: params.tools,
-      })
+      const result = await withRetry(() =>
+        provider.chat({
+          agentId: params.agentId,
+          ticketId: params.ticketId,
+          messages: params.messages,
+          modelConfig: { ...resolvedConfig, model },
+          tools: params.tools,
+        }),
+      )
 
       const content = result.content
       const promptTokens = result.usage?.promptTokens ?? Math.ceil(prompt.length / 4)
       const completionTokens = result.usage?.completionTokens ?? Math.ceil(content.length / 4)
       const costEstimate = 0
-      // A ténylegesen használt modellt naplózzuk (a provider feloldhatja a
-      // sentinel modell-azonosítót, pl. `chatgpt-oauth-default` → `gpt-5.5`).
       const usedModel = result.model || model
 
       await this.modelCalls.create({
         agentId: params.agentId,
+        agentVersion,
         ticketId: params.ticketId ?? null,
         conversationId: params.conversationId ?? null,
         provider: provider.name,
@@ -705,7 +813,7 @@ export class ModelGateway {
       await this.audit.append({
         actorType: 'agent',
         actorId: params.agentId,
-        agentVersion: null,
+        agentVersion,
         action: 'model.call',
         targetType,
         targetId,
@@ -713,7 +821,12 @@ export class ModelGateway {
         inputRef: `tokens:${promptTokens}`,
         outputRef: `tokens:${completionTokens}`,
         policyDecision: 'allowed',
-        metadata: { costEstimate, latencyMs: result.latencyMs, status: 'ok' },
+        metadata: {
+          costEstimate,
+          latencyMs: result.latencyMs,
+          status: 'ok',
+          sensitivity: sensitivity.level,
+        },
       })
 
       return {
@@ -722,13 +835,14 @@ export class ModelGateway {
         usage: { promptTokens, completionTokens },
       }
     } catch (error: unknown) {
+      if (error instanceof GatewayBudgetError) throw error
       const status = classifyError(error)
       const latencyMs = Date.now() - started
       const message = error instanceof Error ? error.message : String(error)
 
-      // Hibás/rate-limited hívás is naplózódik (§4.7 status enum).
       await this.modelCalls.create({
         agentId: params.agentId,
+        agentVersion,
         ticketId: params.ticketId ?? null,
         conversationId: params.conversationId ?? null,
         provider: provider.name,
@@ -746,7 +860,7 @@ export class ModelGateway {
       await this.audit.append({
         actorType: 'agent',
         actorId: params.agentId,
-        agentVersion: null,
+        agentVersion,
         action: 'model.call',
         targetType,
         targetId,
@@ -763,19 +877,67 @@ export class ModelGateway {
 
   async *callStream(params: {
     agentId: string
+    agentVersion?: number
+    tenantId?: string
     ticketId?: string
     conversationId?: string
+    ticketType?: string
     messages: GatewayMessage[]
     modelConfig: ModelConfig
   }): AsyncGenerator<string, void, unknown> {
-    const provider = this.providers.get(params.modelConfig.provider)
-    if (!provider) {
-      throw new Error(
-        `Unsupported model provider: ${params.modelConfig.provider} (ismert: ${[...this.providers.keys()].join(', ')})`,
+    const agentVersion = params.agentVersion ?? null
+
+    // Sensitivity pre-flight (Fázis 2-B)
+    const sensitivity = classifyPrompt(params.messages)
+    if (sensitivity.level === 'forbidden') {
+      const targetType = params.ticketId ? 'ticket' : params.conversationId ? 'conversation' : 'agent'
+      const targetId = params.ticketId ?? params.conversationId ?? params.agentId
+      await this.audit.append({
+        actorType: 'agent',
+        actorId: params.agentId,
+        agentVersion,
+        action: 'model.call.denied',
+        targetType,
+        targetId,
+        modelUsed: params.modelConfig.model,
+        inputRef: `sensitivity:${sensitivity.matchedCategory}`,
+        outputRef: 'blocked',
+        policyDecision: 'sensitivity_block',
+        metadata: { reason: 'sensitivity_block', category: sensitivity.matchedCategory },
+      })
+      throw new GatewayBudgetError(
+        `Gateway sensitivity block: forbidden content detected (${sensitivity.matchedCategory})`,
       )
     }
 
-    const model = params.modelConfig.model || 'chatgpt-oauth-default'
+    // Routing engine (Fázis 2-A)
+    let resolvedConfig = { ...params.modelConfig }
+    if (this.routingEngine) {
+      const decision = await this.routingEngine.resolve({
+        agentId: params.agentId,
+        tenantId: params.tenantId,
+        ticketType: params.ticketType,
+        agentModelConfig: params.modelConfig,
+      })
+      resolvedConfig = { ...resolvedConfig, provider: decision.provider, model: decision.model }
+    }
+
+    if (sensitivity.level === 'sensitive' && this.sensitivityPolicy.enforceLocalForSensitive) {
+      resolvedConfig = {
+        ...resolvedConfig,
+        provider: this.sensitivityPolicy.localProvider,
+        model: this.sensitivityPolicy.localModel,
+      }
+    }
+
+    const provider = this.providers.get(resolvedConfig.provider)
+    if (!provider) {
+      throw new Error(
+        `Unsupported model provider: ${resolvedConfig.provider} (ismert: ${[...this.providers.keys()].join(', ')})`,
+      )
+    }
+
+    const model = resolvedConfig.model || 'chatgpt-oauth-default'
     const prompt = params.messages
       .map((m) => `${m.role.toUpperCase()}: ${messageText(m)}`)
       .join('\n\n')
@@ -786,8 +948,8 @@ export class ModelGateway {
         await this.audit.append({
           actorType: 'agent',
           actorId: params.agentId,
-          agentVersion: null,
-          action: 'model.call.budget_blocked',
+          agentVersion,
+          action: 'model.call.denied',
           targetType: 'ticket',
           targetId: params.ticketId,
           modelUsed: model,
@@ -802,18 +964,46 @@ export class ModelGateway {
       }
     }
 
+    if (this.budgetEngine) {
+      const budgetCheck = await this.budgetEngine.check({
+        tenantId: params.tenantId,
+        agentId: params.agentId,
+        ticketType: params.ticketType,
+      })
+      if (!budgetCheck.allowed) {
+        const targetType = params.ticketId ? 'ticket' : params.conversationId ? 'conversation' : 'agent'
+        const targetId = params.ticketId ?? params.conversationId ?? params.agentId
+        await this.audit.append({
+          actorType: 'agent',
+          actorId: params.agentId,
+          agentVersion,
+          action: 'model.call.denied',
+          targetType,
+          targetId,
+          modelUsed: model,
+          inputRef: 'budget_check',
+          outputRef: 'denied',
+          policyDecision: 'budget_blocked',
+          metadata: { reason: budgetCheck.reason },
+        })
+        throw new GatewayBudgetError(`Gateway budget gate: ${budgetCheck.reason}`)
+      }
+    }
+
     const started = Date.now()
     let content = ''
 
     if (!provider.chatStream) {
       // Fallback: call non-streaming and yield the full content as one chunk.
       try {
-        const result = await provider.chat({
-          agentId: params.agentId,
-          ticketId: params.ticketId,
-          messages: params.messages,
-          modelConfig: { ...params.modelConfig, model },
-        })
+        const result = await withRetry(() =>
+          provider.chat({
+            agentId: params.agentId,
+            ticketId: params.ticketId,
+            messages: params.messages,
+            modelConfig: { ...resolvedConfig, model },
+          }),
+        )
         content = result.content
         const promptTokens = result.usage?.promptTokens ?? Math.ceil(prompt.length / 4)
         const completionTokens = result.usage?.completionTokens ?? Math.ceil(content.length / 4)
@@ -821,6 +1011,7 @@ export class ModelGateway {
         const targetId = params.ticketId ?? params.conversationId ?? params.agentId
         await this.modelCalls.create({
           agentId: params.agentId,
+          agentVersion,
           ticketId: params.ticketId ?? null,
           conversationId: params.conversationId ?? null,
           provider: provider.name,
@@ -834,7 +1025,7 @@ export class ModelGateway {
         await this.audit.append({
           actorType: 'agent',
           actorId: params.agentId,
-          agentVersion: null,
+          agentVersion,
           action: 'model.call',
           targetType,
           targetId,
@@ -842,10 +1033,11 @@ export class ModelGateway {
           inputRef: `tokens:${promptTokens}`,
           outputRef: `tokens:${completionTokens}`,
           policyDecision: 'allowed',
-          metadata: { costEstimate: 0, latencyMs: result.latencyMs, status: 'ok' },
+          metadata: { costEstimate: 0, latencyMs: result.latencyMs, status: 'ok', sensitivity: sensitivity.level },
         })
         yield content
       } catch (error: unknown) {
+        if (error instanceof GatewayBudgetError) throw error
         const status = classifyError(error)
         const latencyMs = Date.now() - started
         const errorMessage = error instanceof Error ? error.message : String(error)
@@ -853,6 +1045,7 @@ export class ModelGateway {
         const targetId = params.ticketId ?? params.conversationId ?? params.agentId
         await this.modelCalls.create({
           agentId: params.agentId,
+          agentVersion,
           ticketId: params.ticketId ?? null,
           conversationId: params.conversationId ?? null,
           provider: provider.name,
@@ -866,7 +1059,7 @@ export class ModelGateway {
         await this.audit.append({
           actorType: 'agent',
           actorId: params.agentId,
-          agentVersion: null,
+          agentVersion,
           action: 'model.call',
           targetType,
           targetId,
@@ -886,7 +1079,7 @@ export class ModelGateway {
         agentId: params.agentId,
         ticketId: params.ticketId,
         messages: params.messages,
-        modelConfig: { ...params.modelConfig, model },
+        modelConfig: { ...resolvedConfig, model },
       })) {
         content += chunk
         yield chunk
@@ -899,6 +1092,7 @@ export class ModelGateway {
 
       await this.modelCalls.create({
         agentId: params.agentId,
+        agentVersion,
         ticketId: params.ticketId ?? null,
         conversationId: params.conversationId ?? null,
         provider: provider.name,
@@ -913,7 +1107,7 @@ export class ModelGateway {
       await this.audit.append({
         actorType: 'agent',
         actorId: params.agentId,
-        agentVersion: null,
+        agentVersion,
         action: 'model.call',
         targetType,
         targetId,
@@ -921,9 +1115,10 @@ export class ModelGateway {
         inputRef: `tokens:${promptTokens}`,
         outputRef: `tokens:${completionTokens}`,
         policyDecision: 'allowed',
-        metadata: { costEstimate: 0, latencyMs: Date.now() - started, status: 'ok' },
+        metadata: { costEstimate: 0, latencyMs: Date.now() - started, status: 'ok', sensitivity: sensitivity.level },
       })
     } catch (error: unknown) {
+      if (error instanceof GatewayBudgetError) throw error
       const status = classifyError(error)
       const latencyMs = Date.now() - started
       const errorMessage = error instanceof Error ? error.message : String(error)
@@ -932,6 +1127,7 @@ export class ModelGateway {
 
       await this.modelCalls.create({
         agentId: params.agentId,
+        agentVersion,
         ticketId: params.ticketId ?? null,
         conversationId: params.conversationId ?? null,
         provider: provider.name,
@@ -946,7 +1142,7 @@ export class ModelGateway {
       await this.audit.append({
         actorType: 'agent',
         actorId: params.agentId,
-        agentVersion: null,
+        agentVersion,
         action: 'model.call',
         targetType,
         targetId,

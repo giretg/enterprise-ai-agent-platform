@@ -1,4 +1,6 @@
 import { ModelGateway } from '@/domain/gateway/model-gateway'
+import { RoutingEngine } from '@/domain/gateway/routing-engine'
+import { BudgetEngine } from '@/domain/gateway/budget-engine'
 import { BookkeeperAgentRuntime } from '@/domain/agent/bookkeeper-runtime'
 import { AgentChatRuntime } from '@/domain/agent/agent-chat-runtime'
 import { GeneralTaskRuntime } from '@/domain/agent/general-task-runtime'
@@ -96,7 +98,16 @@ const toolAuthorizer = new AllowlistAuthorizer(
   repositories.agents,
   repositories.connectorGrants,
 )
-const modelGateway = new ModelGateway(repositories.audit, repositories.modelCalls)
+const routingEngine = new RoutingEngine(repositories.modelRoutingPolicies)
+const budgetEngine = new BudgetEngine(repositories.modelBudgets, repositories.modelCalls)
+const modelGateway = new ModelGateway(
+  repositories.audit,
+  repositories.modelCalls,
+  undefined,
+  undefined,
+  routingEngine,
+  budgetEngine,
+)
 const bookkeeperRuntime = new BookkeeperAgentRuntime(
   repositories.agents,
   repositories.documents,

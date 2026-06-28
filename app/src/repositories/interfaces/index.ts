@@ -8,7 +8,12 @@ import type {
   Document,
   Message,
   MessageRole,
+  ModelBudget,
+  ModelBudgetPeriod,
+  ModelBudgetScope,
   ModelCall,
+  ModelRoutingPolicy,
+  ModelRoutingScope,
   MonitorCatchupPolicy,
   MonitorDefinition,
   MonitorKind,
@@ -407,11 +412,38 @@ export interface ModelCallRepository {
   getCostSummary(since?: Date): Promise<{ tokens: number; cost: number }>
   getUsageForAgentSince(agentId: string, since: Date): Promise<{ calls: number; tokens: number }>
   getUsageForTicket(ticketId: string): Promise<{ calls: number; tokens: number }>
+  getUsageForAgent(agentId: string, period: ModelBudgetPeriod): Promise<{ calls: number; tokens: number }>
   /** Aggregate Gateway metrics for the governance dashboard (§11: hatékonyság + költség). */
   getGovernanceSummary(since?: Date): Promise<ModelCallGovernanceSummary>
   /** Per-ticket Gateway usage breakdown, most recent first. */
   getPerTicketBreakdown(since?: Date, limit?: number): Promise<ModelCallTicketBreakdown[]>
 }
+
+// ── Fázis 2: Model Gateway routing + budget ──────────────────────────────────
+
+export interface ModelRoutingPolicyRepository {
+  list(filter?: { tenantId?: string; scope?: ModelRoutingScope }): Promise<ModelRoutingPolicy[]>
+  findById(id: string): Promise<ModelRoutingPolicy | null>
+  create(
+    data: Omit<ModelRoutingPolicy, 'id' | 'createdAt' | 'updatedAt'>,
+  ): Promise<ModelRoutingPolicy>
+  update(id: string, data: Partial<Omit<ModelRoutingPolicy, 'id' | 'createdAt' | 'updatedAt'>>): Promise<ModelRoutingPolicy>
+  delete(id: string): Promise<void>
+  /** Ordered by priority ASC — first match wins in routing chain. */
+  findForRouting(filter: { tenantId?: string; agentId?: string; ticketType?: string }): Promise<ModelRoutingPolicy[]>
+}
+
+export interface ModelBudgetRepository {
+  list(filter?: { tenantId?: string; scope?: ModelBudgetScope }): Promise<ModelBudget[]>
+  findById(id: string): Promise<ModelBudget | null>
+  create(data: Omit<ModelBudget, 'id' | 'createdAt' | 'updatedAt'>): Promise<ModelBudget>
+  update(id: string, data: Partial<Omit<ModelBudget, 'id' | 'createdAt' | 'updatedAt'>>): Promise<ModelBudget>
+  delete(id: string): Promise<void>
+  /** Find all applicable budgets for a given call context, from most-specific to least-specific. */
+  findApplicable(filter: { tenantId?: string; agentId?: string; ticketType?: string }): Promise<ModelBudget[]>
+}
+
+export { ModelBudgetPeriod, ModelBudgetScope, ModelRoutingScope }
 
 export interface ToolBrokerRepository {
   findCapability(agentId: string, toolName: string): Promise<{ allowed: boolean } | null>
