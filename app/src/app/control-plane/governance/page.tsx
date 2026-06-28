@@ -204,6 +204,38 @@ export default async function GovernancePage({
             </Card>
           </div>
 
+          {/* Playbook governance — §F2-E */}
+          <Card title="Playbook governance (§F2-E)">
+            <div className="grid gap-4 sm:grid-cols-3">
+              <div className="atelier-soft p-4">
+                <p className="font-display text-[2rem] leading-none text-ink">
+                  {report.playbookGovernance.processCount}
+                </p>
+                <p className="mt-1.5 text-sm text-ink-faint">Elindított folyamat</p>
+              </div>
+              <div className="atelier-soft p-4">
+                <p
+                  className={`font-display text-[2rem] leading-none ${
+                    report.playbookGovernance.deniedTransitions > 0 ? 'text-coral-deep' : 'text-ink'
+                  }`}
+                >
+                  {report.playbookGovernance.deniedTransitions}
+                </p>
+                <p className="mt-1.5 text-sm text-ink-faint">Megtagadott átmenet</p>
+                <p className="mt-1 text-xs text-ink-faint">gate bypass + tiltott transition</p>
+              </div>
+              <div className="atelier-soft p-4">
+                <p className="font-display text-[2rem] leading-none text-ink">
+                  {report.playbookGovernance.avgGateLatencyMs === null
+                    ? '—'
+                    : `${Math.round(report.playbookGovernance.avgGateLatencyMs)} ms`}
+                </p>
+                <p className="mt-1.5 text-sm text-ink-faint">Átlagos gate-késleltetés</p>
+                <p className="mt-1 text-xs text-ink-faint">step indítás → jóváhagyás</p>
+              </div>
+            </div>
+          </Card>
+
           {/* Ticketenkénti lebontás */}
           <Card title="Ticketenkénti lebontás">
             <div className="overflow-x-auto">

@@ -208,20 +208,7 @@ export async function assignPlaybookV2(input: unknown) {
 export async function listStartablePlaybooks() {
   try {
     const user = await requireRole('operator')
-    const playbooks = await services.playbooksV2.listPlaybooks(tenantOf(user))
-    const startable = playbooks
-      .filter((p) => p.status === 'published' && p.currentPublishedVersionId)
-      .map((p) => {
-        const published = p.versions.find((v) => v.id === p.currentPublishedVersionId)
-        return {
-          playbookId: p.id,
-          name: p.name,
-          processType: p.processType,
-          publishedVersionId: p.currentPublishedVersionId!,
-          version: published?.version ?? null,
-        }
-      })
-    return ok(startable)
+    return ok(await services.playbooksV2.listStartablePlaybooks(tenantOf(user)))
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Nem sikerült betölteni az indítható Playbookokat')
   }

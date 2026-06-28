@@ -57,6 +57,7 @@ export type TicketFilter = {
   state?: TicketState | TicketState[]
   type?: Ticket['type']
   agentId?: string
+  processInstanceId?: string
   source?: TicketSource | TicketSource[]
   /** Board / dashboard: user + system ticketek, teszt kizárva. */
   excludeTest?: boolean
@@ -416,6 +417,12 @@ export interface ToolBrokerRepository {
   findCapability(agentId: string, toolName: string): Promise<{ allowed: boolean } | null>
   findConnectorForAgent(
     agentId: string,
+    type: ConnectorType,
+    accessMode: ConnectorAccessMode,
+  ): Promise<Connector | null>
+  findConnectorForAgentById(
+    agentId: string,
+    connectorId: string,
     type: ConnectorType,
     accessMode: ConnectorAccessMode,
   ): Promise<Connector | null>

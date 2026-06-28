@@ -15,6 +15,7 @@ import { isClerkEnabled } from '@/lib/clerk-config'
 import { prisma, ensureActiveDatabaseMode } from '@/lib/db'
 import { ensureAgentKnowledgeBase } from '@/lib/agent-knowledge-base'
 import { getReportTemplate, listReportTemplates } from '@/domain/report/report-templates'
+import { computePlaybookGovernance } from '@/domain/governance/measurement-report'
 import { xlsxExtractText } from '@/domain/file-editor/adapters/xlsx-adapter'
 import { docxRead } from '@/domain/file-editor/adapters/docx-adapter'
 import { pdfRead } from '@/domain/file-editor/adapters/pdf-adapter'
@@ -45,6 +46,7 @@ import {
   updateAgentModelConfigSchema,
   updateAgentSelfEvolutionProfileSchema,
   createHttpApiConnectorSchema,
+  updateHttpApiConnectorSchema,
   createTrainingSchema,
   askWikiSchema,
   generateReportSchema,
@@ -520,6 +522,84 @@ export async function getAgentGovernance(input: { agentId: string }) {
   }
 }
 
+function httpApiConnectorConfig(input: {
+  baseUrl: string
+  authScheme: 'header' | 'bearer'
+  authHeader?: string
+  description?: string
+  authProfiles?: Record<
+    string,
+    {
+      secretAlias: string
+      auth?: { scheme: 'bearer' } | { scheme: 'header'; header: string }
+    }
+  >
+  defaultAuthProfile?: string
+  requestHeaders?: Record<string, string>
+  writeHeaders?: Record<string, string>
+  restrictToEndpoints?: boolean
+  endpoints?: Array<{
+    method: string
+    path: string
+    description?: string
+    idempotent?: boolean
+    profile?: string
+  }>
+}) {
+  return {
+    baseUrl: input.baseUrl.replace(/\/+$/, ''),
+    auth:
+      input.authScheme === 'header'
+        ? { scheme: 'header', header: input.authHeader! }
+        : { scheme: 'bearer' },
+    ...(input.description ? { description: input.description } : {}),
+    ...(input.authProfiles && Object.keys(input.authProfiles).length > 0
+      ? { authProfiles: input.authProfiles }
+      : {}),
+    ...(input.defaultAuthProfile ? { defaultAuthProfile: input.defaultAuthProfile } : {}),
+    ...(input.requestHeaders && Object.keys(input.requestHeaders).length > 0
+      ? { requestHeaders: input.requestHeaders }
+      : {}),
+    ...(input.writeHeaders && Object.keys(input.writeHeaders).length > 0
+      ? { writeHeaders: input.writeHeaders }
+      : {}),
+    ...(input.endpoints && input.endpoints.length > 0 ? { endpoints: input.endpoints } : {}),
+    restrictToEndpoints: input.restrictToEndpoints,
+  }
+}
+
+async function syncHttpApiCapabilities(agentId: string, connectorId: string, accessMode: 'read' | 'write') {
+  await prisma.capability.upsert({
+    where: { agentId_toolName: { agentId, toolName: 'http_api_get' } },
+    create: { agentId, toolName: 'http_api_get', allowed: true },
+    update: { allowed: true },
+  })
+
+  if (accessMode === 'write') {
+    await prisma.capability.upsert({
+      where: { agentId_toolName: { agentId, toolName: 'http_api_request' } },
+      create: { agentId, toolName: 'http_api_request', allowed: true },
+      update: { allowed: true },
+    })
+    return
+  }
+
+  const writeConnectorCount = await prisma.agentConnector.count({
+    where: {
+      agentId,
+      connectorId: { not: connectorId },
+      accessMode: 'write',
+      connector: { type: 'http_api' },
+    },
+  })
+  if (writeConnectorCount === 0) {
+    await prisma.capability.updateMany({
+      where: { agentId, toolName: 'http_api_request' },
+      data: { allowed: false },
+    })
+  }
+}
+
 export async function createHttpApiConnectorForAgent(input: {
   agentId: string
   name: string
@@ -528,9 +608,25 @@ export async function createHttpApiConnectorForAgent(input: {
   authHeader?: string
   apiKey: string
   description?: string
+  authProfiles?: Record<
+    string,
+    {
+      secretAlias: string
+      auth?: { scheme: 'bearer' } | { scheme: 'header'; header: string }
+    }
+  >
+  defaultAuthProfile?: string
+  requestHeaders?: Record<string, string>
+  writeHeaders?: Record<string, string>
   accessMode?: 'read' | 'write'
   restrictToEndpoints?: boolean
-  endpoints?: Array<{ method: string; path: string; description?: string }>
+  endpoints?: Array<{
+    method: string
+    path: string
+    description?: string
+    idempotent?: boolean
+    profile?: string
+  }>
 }) {
   try {
     const user = await requireRole('admin')
@@ -544,16 +640,7 @@ export async function createHttpApiConnectorForAgent(input: {
     })
     if (existing) return fail(`Már létezik „${parsed.name}" nevű API-kapcsolat — adj egyedi nevet.`)
 
-    const config = {
-      baseUrl: parsed.baseUrl.replace(/\/+$/, ''),
-      auth:
-        parsed.authScheme === 'header'
-          ? { scheme: 'header', header: parsed.authHeader! }
-          : { scheme: 'bearer' },
-      ...(parsed.description ? { description: parsed.description } : {}),
-      ...(parsed.endpoints && parsed.endpoints.length > 0 ? { endpoints: parsed.endpoints } : {}),
-      restrictToEndpoints: parsed.restrictToEndpoints,
-    }
+    const config = httpApiConnectorConfig(parsed)
 
     // 1. Connector létrehozása secret nélkül; 2. a pasted kulcs a secret-store
     //    mögé kerül (NEM a DB-be); 3. az alias secret-ref:<id>-re frissül.
@@ -585,15 +672,7 @@ export async function createHttpApiConnectorForAgent(input: {
       update: { accessMode: parsed.accessMode },
     })
 
-    const tools =
-      parsed.accessMode === 'read' ? ['http_api_get'] : ['http_api_get', 'http_api_request']
-    for (const toolName of tools) {
-      await prisma.capability.upsert({
-        where: { agentId_toolName: { agentId: parsed.agentId, toolName } },
-        create: { agentId: parsed.agentId, toolName, allowed: true },
-        update: { allowed: true },
-      })
-    }
+    await syncHttpApiCapabilities(parsed.agentId, connector.id, parsed.accessMode)
 
     await repositories.audit.append({
       actorType: 'human',
@@ -617,6 +696,110 @@ export async function createHttpApiConnectorForAgent(input: {
     return ok({ connectorId: connector.id, name: connector.name })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to create API connector')
+  }
+}
+
+export async function updateHttpApiConnectorForAgent(input: {
+  agentId: string
+  connectorId: string
+  name: string
+  baseUrl: string
+  authScheme: 'header' | 'bearer'
+  authHeader?: string
+  apiKey?: string
+  description?: string
+  authProfiles?: Record<
+    string,
+    {
+      secretAlias: string
+      auth?: { scheme: 'bearer' } | { scheme: 'header'; header: string }
+    }
+  >
+  defaultAuthProfile?: string
+  requestHeaders?: Record<string, string>
+  writeHeaders?: Record<string, string>
+  accessMode?: 'read' | 'write'
+  restrictToEndpoints?: boolean
+  endpoints?: Array<{
+    method: string
+    path: string
+    description?: string
+    idempotent?: boolean
+    profile?: string
+  }>
+}) {
+  try {
+    const user = await requireRole('admin')
+    const parsed = updateHttpApiConnectorSchema.parse(input)
+
+    const agent = await repositories.agents.findById(parsed.agentId)
+    if (!agent) return fail('Agent not found')
+
+    const link = await prisma.agentConnector.findUnique({
+      where: {
+        agentId_connectorId: { agentId: parsed.agentId, connectorId: parsed.connectorId },
+      },
+      include: { connector: true },
+    })
+    if (!link) return fail('API-kapcsolat nincs ehhez az agenthez rendelve.')
+    if (link.connector.type !== 'http_api') return fail('Csak API-kapcsolat szerkeszthető itt.')
+
+    const existing = await prisma.connector.findUnique({
+      where: { type_name: { type: 'http_api', name: parsed.name } },
+    })
+    if (existing && existing.id !== parsed.connectorId) {
+      return fail(`Már létezik „${parsed.name}" nevű API-kapcsolat — adj egyedi nevet.`)
+    }
+
+    const config = httpApiConnectorConfig(parsed)
+    if (parsed.apiKey) {
+      const { saveConnectorApiKey } = await import('@/domain/connector/connector-secret-store')
+      await saveConnectorApiKey(parsed.connectorId, parsed.apiKey)
+    }
+    const { buildConnectorSecretRef } = await import('@/domain/connector/connector-secret-store')
+
+    const connector = await prisma.connector.update({
+      where: { id: parsed.connectorId },
+      data: {
+        name: parsed.name,
+        config: config as Prisma.InputJsonValue,
+        secretAlias: link.connector.secretAlias ?? buildConnectorSecretRef(parsed.connectorId),
+        version: { increment: 1 },
+      },
+    })
+
+    await prisma.agentConnector.update({
+      where: {
+        agentId_connectorId: { agentId: parsed.agentId, connectorId: parsed.connectorId },
+      },
+      data: { accessMode: parsed.accessMode },
+    })
+
+    await syncHttpApiCapabilities(parsed.agentId, parsed.connectorId, parsed.accessMode)
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: agent.currentVersion,
+      action: 'connector.update',
+      targetType: 'connector',
+      targetId: connector.id,
+      modelUsed: null,
+      inputRef: parsed.agentId,
+      outputRef: parsed.name,
+      policyDecision: 'allowed',
+      metadata: {
+        type: 'http_api',
+        baseUrl: config.baseUrl,
+        accessMode: parsed.accessMode,
+        endpointCount: parsed.endpoints?.length ?? 0,
+        apiKeyRotated: Boolean(parsed.apiKey),
+      },
+    })
+
+    return ok({ connectorId: connector.id, name: connector.name })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update API connector')
   }
 }
 
@@ -1933,7 +2116,7 @@ export async function getGovernanceReport(input?: { range?: unknown }) {
     const { range } = costSummarySchema.parse({ range: input?.range })
     const since = rangeToSince(range)
 
-    const [model, tools, transitions, sandboxCounts, chain, breakdown, toolByTicket, tickets] =
+    const [model, tools, transitions, sandboxCounts, chain, breakdown, toolByTicket, tickets, playbookGovernance] =
       await Promise.all([
         repositories.modelCalls.getGovernanceSummary(since),
         repositories.toolBroker.getToolSummary(since),
@@ -1943,6 +2126,7 @@ export async function getGovernanceReport(input?: { range?: unknown }) {
         repositories.modelCalls.getPerTicketBreakdown(since, 25),
         repositories.toolBroker.getToolCallCountsByTicket(since),
         repositories.tickets.findMany(),
+        computePlaybookGovernance({ audit: repositories.audit }, since ?? null),
       ])
 
     const titleById = new Map(tickets.map((t) => [t.id, t.title]))
@@ -1971,6 +2155,7 @@ export async function getGovernanceReport(input?: { range?: unknown }) {
         accessDenied: sandboxCounts['sandbox_app.access_denied'] ?? 0,
       },
       chain,
+      playbookGovernance,
       perTicket,
     })
   } catch (e) {

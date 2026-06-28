@@ -26,7 +26,7 @@ export type DelegationView = {
 
 export type IntendedFlow = {
   entryStepId: string
-  steps: Array<{ stepId: string; ticketType: string; assignedRole: string }>
+  steps: Array<{ stepId: string; stepName: string; ticketType: string; assignedRole: string }>
   routes: Array<{ fromStepId: string; toStepId: string | null; gateId: string | null }>
   gates: Array<{
     gateId: string
@@ -36,6 +36,36 @@ export type IntendedFlow = {
     evidenceRequired: boolean
     blocking: boolean
   }>
+}
+
+export type ActualFlow = {
+  actualEdges: Array<{
+    fromStepId: string
+    toStepId: string
+    fromActorType: string
+    inIntended: boolean
+  }>
+  executedSteps: Array<{
+    stepId: string
+    status: string
+    inIntended: boolean
+  }>
+  deviations: Array<{
+    type: 'UNEXPECTED_EDGE' | 'UNEXPECTED_STEP'
+    detail: string
+  }>
+  reproducible: boolean
+}
+
+export type GateTicketView = {
+  ticketId: string
+  stepId: string
+  gateId: string
+  state: string
+  requiredActorRole: string | null
+  criticality: string | null
+  evidenceRequired: boolean
+  blocking: boolean
 }
 
 export type ProcessDetailData = {
@@ -52,6 +82,8 @@ export type ProcessDetailData = {
   }
   steps: ProcessStepView[]
   delegations: DelegationView[]
+  gateTickets: GateTicketView[]
+  actualFlow: ActualFlow | null
   intended: IntendedFlow | null
 }
 
@@ -83,31 +115,36 @@ export function ProcessDetailView({ data, canAct }: { data: ProcessDetailData; c
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [message, setMessage] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null)
-  const [evidence, setEvidence] = useState('')
+  const [evidenceByTicket, setEvidenceByTicket] = useState<Record<string, string>>({})
 
-  const gateByStep = new Map((data.intended?.gates ?? []).map((g) => [g.stepId, g]))
-
-  // §9.2 eltérés-jelölés: a delegacios él (from→to) szerepel-e a szándékolt routingban.
-  const intendedEdges = new Set(
-    (data.intended?.routes ?? [])
-      .filter((r) => r.toStepId)
-      .map((r) => `${r.fromStepId}→${r.toStepId}`),
+  const gatesByStep = new Map<string, IntendedFlow['gates']>()
+  for (const gate of data.intended?.gates ?? []) {
+    gatesByStep.set(gate.stepId, [...(gatesByStep.get(gate.stepId) ?? []), gate])
+  }
+  const gateTicketByStep = new Map(
+    data.gateTickets.map((t) => [`${t.stepId}:${t.gateId}`, t]),
   )
 
-  function doTransition(ticketId: string, toState: string, withEvidence: boolean) {
+  const actualEdgeByKey = new Map(
+    (data.actualFlow?.actualEdges ?? []).map((e) => [`${e.fromStepId}→${e.toStepId}`, e]),
+  )
+  const actualStepById = new Map((data.actualFlow?.executedSteps ?? []).map((s) => [s.stepId, s]))
+
+  function doTransition(ticketId: string, toState: string, evidenceRequired: boolean) {
     setMessage(null)
+    const evidence = evidenceByTicket[ticketId]?.trim() ?? ''
     let approvalEvidence: Record<string, unknown> | undefined
-    if (withEvidence) {
-      if (!evidence.trim()) {
+    if (evidenceRequired || evidence) {
+      if (evidenceRequired && !evidence) {
         setMessage({ tone: 'err', text: 'A kapu jóváhagyásához bizonyíték szükséges.' })
         return
       }
-      approvalEvidence = { note: evidence.trim() }
+      if (evidence) approvalEvidence = { note: evidence }
     }
     startTransition(async () => {
       const res = await transitionProcessTicket({ ticketId, toState, approvalEvidence })
       if (res.success) {
-        setEvidence('')
+        setEvidenceByTicket((prev) => ({ ...prev, [ticketId]: '' }))
         setMessage({ tone: 'ok', text: `Átmenet végrehajtva: → ${toState}` })
         router.refresh()
       } else {
@@ -173,9 +210,7 @@ export function ProcessDetailView({ data, canAct }: { data: ProcessDetailData; c
         <h2 className="mb-4 font-display text-lg font-semibold">Lépések</h2>
         <ol className="space-y-3">
           {data.steps.map((s) => {
-            const gate = gateByStep.get(s.stepId)
-            const showGateApproval =
-              canAct && gate?.blocking && s.status !== 'completed' && !isClosed
+            const gates = gatesByStep.get(s.stepId) ?? []
             return (
               <li key={s.id} className="rounded-lg border border-ink/10 p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -187,52 +222,32 @@ export function ProcessDetailView({ data, canAct }: { data: ProcessDetailData; c
                 </div>
                 <p className="mt-1 text-xs text-ink-soft">
                   Szerep: {s.assignedRole}
-                  {gate ? (
+                  {gates.length > 0 ? (
                     <>
-                      {' · '}Kötelező kapu: <span className="font-mono">{gate.gateId}</span>
-                      {gate.criticality ? ` (${gate.criticality})` : ''}
-                      {gate.evidenceRequired ? ' · bizonyíték kötelező' : ''}
+                      {' · '}Kapuk:{' '}
+                      {gates.map((gate, idx) => (
+                        <span key={gate.gateId}>
+                          {idx > 0 ? ', ' : ''}
+                          <span className="font-mono">{gate.gateId}</span>
+                          {gate.criticality ? ` (${gate.criticality})` : ''}
+                          {gate.evidenceRequired ? ' · bizonyíték kötelező' : ''}
+                        </span>
+                      ))}
                     </>
                   ) : null}
                 </p>
 
-                {showGateApproval && (
-                  <div className="mt-3 rounded-lg bg-honey/5 p-3">
-                    <p className="text-xs text-ink-soft">
-                      Kötelező emberi kapu. A jóváhagyáshoz{' '}
-                      {gate?.requiredActorRole ? (
-                        <>
-                          <span className="font-mono">{gate.requiredActorRole}</span> szerep és{' '}
-                        </>
-                      ) : null}
-                      bizonyíték szükséges. Az agent nem kerülheti meg.
-                    </p>
-                    {gate?.evidenceRequired && (
-                      <input
-                        value={evidence}
-                        onChange={(e) => setEvidence(e.target.value)}
-                        placeholder="Jóváhagyási bizonyíték / megjegyzés"
-                        className="mt-2 w-full rounded-lg border border-ink/15 bg-transparent px-3 py-1.5 text-sm"
-                      />
-                    )}
-                    <div className="mt-2 flex gap-2">
-                      <button
-                        onClick={() => s.ticketId && doTransition(s.ticketId, 'approved', true)}
-                        disabled={pending || !s.ticketId}
-                        className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
-                      >
-                        Jóváhagyás
-                      </button>
-                      <button
-                        onClick={() => s.ticketId && doTransition(s.ticketId, 'rejected', false)}
-                        disabled={pending || !s.ticketId}
-                        className="rounded-lg border border-ink/20 px-3 py-1.5 text-sm disabled:opacity-50"
-                      >
-                        Elutasítás
-                      </button>
-                    </div>
-                  </div>
-                )}
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {gates.map((gate) => {
+                    const gateTicket = gateTicketByStep.get(`${s.stepId}:${gate.gateId}`)
+                    if (gateTicket?.state !== 'awaiting_human') return null
+                    return (
+                      <Pill key={gate.gateId} tone="bg-honey/15 text-honey">
+                        kapu jóváhagyásra vár: {gate.gateId}
+                      </Pill>
+                    )
+                  })}
+                </div>
               </li>
             )
           })}
@@ -240,12 +255,52 @@ export function ProcessDetailView({ data, canAct }: { data: ProcessDetailData; c
         </ol>
       </section>
 
+      <section className="atelier-card p-5">
+        <h2 className="mb-4 font-display text-lg font-semibold">Kapuk</h2>
+        <ul className="space-y-3">
+          {data.gateTickets.map((gate) => {
+            const canApprove = canAct && gate.blocking && gate.state === 'awaiting_human' && !isClosed
+            return (
+              <li key={gate.ticketId} className="rounded-lg border border-ink/10 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <span className="font-mono text-xs">{gate.gateId}</span>
+                    <span className="ml-2 text-sm text-ink-soft">step: {gate.stepId}</span>
+                  </div>
+                  <Pill tone={gate.state === 'awaiting_human' ? 'bg-honey/15 text-honey' : 'bg-sage/15 text-sage'}>
+                    {gate.state}
+                  </Pill>
+                </div>
+                <p className="mt-1 text-xs text-ink-soft">
+                  {gate.requiredActorRole ? `Szerep: ${gate.requiredActorRole}` : 'Nincs külön szerep-kötés'}
+                  {gate.criticality ? ` · ${gate.criticality}` : ''}
+                  {gate.evidenceRequired ? ' · bizonyíték kötelező' : ''}
+                </p>
+                {canApprove && (
+                  <GateApprovalPanel
+                    gate={gate}
+                    pending={pending}
+                    evidence={evidenceByTicket[gate.ticketId] ?? ''}
+                    onEvidenceChange={(value) =>
+                      setEvidenceByTicket((prev) => ({ ...prev, [gate.ticketId]: value }))
+                    }
+                    onTransition={doTransition}
+                  />
+                )}
+              </li>
+            )
+          })}
+          {data.gateTickets.length === 0 && <li className="text-sm text-ink-soft">Nincs nyitott kapu.</li>}
+        </ul>
+      </section>
+
       {/* Delegacios élek */}
       <section className="atelier-card p-5">
         <h2 className="mb-4 font-display text-lg font-semibold">Delegáció</h2>
         <ul className="space-y-2 text-sm">
           {data.delegations.map((d) => {
-            const deviates = !intendedEdges.has(`${d.fromStepId}→${d.toStepId}`)
+            const actualEdge = actualEdgeByKey.get(`${d.fromStepId}→${d.toStepId}`)
+            const deviates = actualEdge ? !actualEdge.inIntended : false
             return (
               <li key={d.id} className="flex flex-wrap items-center gap-2">
                 <span className="font-mono text-xs">
@@ -265,7 +320,20 @@ export function ProcessDetailView({ data, canAct }: { data: ProcessDetailData; c
       {/* Szándékolt vs. tényleges flow (§9.2) */}
       {data.intended && (
         <section className="atelier-card p-5">
-          <h2 className="mb-4 font-display text-lg font-semibold">Szándékolt vs. tényleges</h2>
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+            <h2 className="font-display text-lg font-semibold">Szándékolt vs. tényleges</h2>
+            {data.actualFlow && (
+              <Pill
+                tone={
+                  data.actualFlow.reproducible
+                    ? 'bg-sage/15 text-sage'
+                    : 'bg-coral/15 text-coral'
+                }
+              >
+                {data.actualFlow.reproducible ? 'reprodukálható' : 'eltérés'}
+              </Pill>
+            )}
+          </div>
           <div className="grid gap-4 md:grid-cols-2">
             <div>
               <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-soft">
@@ -275,7 +343,10 @@ export function ProcessDetailView({ data, canAct }: { data: ProcessDetailData; c
                 {data.intended.steps.map((st) => (
                   <li key={st.stepId} className="font-mono text-xs">
                     {st.stepId === data.intended!.entryStepId ? '▶ ' : '· '}
-                    {st.stepId} <span className="text-ink-soft">({st.assignedRole})</span>
+                    {st.stepName}{' '}
+                    <span className="text-ink-soft">
+                      ({st.stepId}, {st.assignedRole})
+                    </span>
                   </li>
                 ))}
               </ol>
@@ -291,14 +362,77 @@ export function ProcessDetailView({ data, canAct }: { data: ProcessDetailData; c
                     <span className="text-ink-soft">
                       ({s.status})
                     </span>
+                    {actualStepById.get(s.stepId)?.inIntended === false && (
+                      <span className="ml-2 text-coral">eltérés</span>
+                    )}
                   </li>
                 ))}
                 {data.steps.length === 0 && <li className="text-ink-soft">—</li>}
               </ol>
             </div>
           </div>
+          {data.actualFlow && data.actualFlow.deviations.length > 0 && (
+            <div className="mt-4 rounded-lg border border-coral/20 bg-coral/5 p-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-coral">Eltérések</p>
+              <ul className="mt-2 space-y-1 text-xs text-ink-soft">
+                {data.actualFlow.deviations.map((d, idx) => (
+                  <li key={`${d.type}-${idx}`}>{d.detail}</li>
+                ))}
+              </ul>
+            </div>
+          )}
         </section>
       )}
+    </div>
+  )
+}
+
+function GateApprovalPanel({
+  gate,
+  pending,
+  evidence,
+  onEvidenceChange,
+  onTransition,
+}: {
+  gate: GateTicketView
+  pending: boolean
+  evidence: string
+  onEvidenceChange: (value: string) => void
+  onTransition: (ticketId: string, toState: string, evidenceRequired: boolean) => void
+}) {
+  return (
+    <div className="mt-3 bg-honey/5 p-3">
+      <p className="text-xs text-ink-soft">
+        Kötelező emberi kapu.
+        {gate.requiredActorRole ? (
+          <>
+            {' '}Szükséges szerep: <span className="font-mono">{gate.requiredActorRole}</span>.
+          </>
+        ) : null}
+        {gate.evidenceRequired ? ' Bizonyíték szükséges.' : ''}
+      </p>
+      <input
+        value={evidence}
+        onChange={(e) => onEvidenceChange(e.target.value)}
+        placeholder={gate.evidenceRequired ? 'Jóváhagyási bizonyíték' : 'Megjegyzés'}
+        className="mt-2 w-full rounded-lg border border-ink/15 bg-transparent px-3 py-1.5 text-sm"
+      />
+      <div className="mt-2 flex gap-2">
+        <button
+          onClick={() => onTransition(gate.ticketId, 'approved', gate.evidenceRequired)}
+          disabled={pending}
+          className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+        >
+          Jóváhagyás
+        </button>
+        <button
+          onClick={() => onTransition(gate.ticketId, 'rejected', false)}
+          disabled={pending}
+          className="rounded-lg border border-ink/20 px-3 py-1.5 text-sm disabled:opacity-50"
+        >
+          Elutasítás
+        </button>
+      </div>
     </div>
   )
 }

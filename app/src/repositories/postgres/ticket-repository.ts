@@ -13,6 +13,7 @@ export class PostgresTicketRepository implements TicketRepository {
     }
     if (filter?.type) where.type = filter.type
     if (filter?.agentId) where.agentId = filter.agentId
+    if (filter?.processInstanceId) where.processInstanceId = filter.processInstanceId
     if (filter?.source) {
       where.source = Array.isArray(filter.source) ? { in: filter.source } : filter.source
     } else if (filter?.excludeTest) {

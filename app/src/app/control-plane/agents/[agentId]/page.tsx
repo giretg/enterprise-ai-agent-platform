@@ -12,12 +12,12 @@ import { UpdateInstructionForm } from '@/components/agents/update-instruction-fo
 import { UpdateModelConfigForm } from '@/components/agents/update-model-config-form'
 import { UpdateSelfEvolutionProfileForm } from '@/components/agents/update-self-evolution-profile-form'
 import { AddApiConnectorForm } from '@/components/agents/add-api-connector-form'
+import { ApiConnectorList } from '@/components/agents/api-connector-list'
 import { AgentKnowledgeBasePanel } from '@/components/agents/agent-knowledge-base-panel'
 import { AgentCapabilitiesPanel } from '@/components/agents/agent-capabilities-panel'
 import { resolveSelfEvolutionProfile } from '@/lib/self-evolution-profile'
 import {
   agentRoleLabel,
-  connectorAccessLabel,
   modelConfigSummary,
   recipeStatusLabel,
   resourceTypeLabel,
@@ -273,26 +273,7 @@ export default async function AgentDetailPage({
                 )}
               </Card>
               <Card title="Külső kapcsolatok">
-                {governance.connectors.length === 0 ? (
-                  <p className="text-sm text-ink-faint">Nincs külső kapcsolat hozzárendelve.</p>
-                ) : (
-                  <ul className="space-y-2 text-sm">
-                    {governance.connectors.map(({ connector, accessMode }) => (
-                      <li key={connector.id} className="atelier-soft p-3">
-                        <div className="flex items-center justify-between">
-                          <span className="font-medium text-ink">{connector.name}</span>
-                          <Badge tone={accessMode === 'write' ? 'warning' : 'neutral'}>
-                            {connectorAccessLabel(accessMode)}
-                          </Badge>
-                        </div>
-                        <p className="mt-1 text-xs text-ink-faint">
-                          {connector.type} · {connector.scope}
-                          {connector.secretAlias && ` · ${connector.secretAlias}`}
-                        </p>
-                      </li>
-                    ))}
-                  </ul>
-                )}
+                <ApiConnectorList agentId={agent.id} connectors={governance.connectors} />
               </Card>
             </div>
           )}

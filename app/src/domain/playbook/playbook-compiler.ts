@@ -22,6 +22,7 @@ export type CompiledTransition = {
 
 export type CompiledTicketRule = {
   stepId: string
+  stepName: string
   ticketType: string
   assignedRole: string
   allowedTransitions: CompiledTransition[]
@@ -67,30 +68,39 @@ export class PlaybookCompiler {
 
     const ticketRules: CompiledTicketRule[] = spec.steps.map((step) => ({
       stepId: step.id,
+      stepName: step.name,
       ticketType: step.ticketType,
       assignedRole: step.assignedRole,
       allowedTransitions: this.compileTransitions(step, roleByKey),
     }))
 
     const gates: CompiledGate[] = []
+    const addCompiledGate = (gateId: string, stepId: string) => {
+      const gate = gateById.get(gateId)
+      if (!gate) return
+      if (gates.some((g) => g.gateId === gate.id && g.stepId === stepId)) return
+      gates.push({
+        gateId: gate.id,
+        stepId,
+        type: gate.type,
+        blocking: gate.blocking,
+        // A blocking gate az emberi jóváhagyási átmenetet zárja (awaiting_human → approved)
+        blocksTransition: gate.blocking
+          ? { fromState: 'awaiting_human', toState: 'approved' }
+          : undefined,
+        requiredActorRole: gate.requiredActorRole,
+        approvalMode: gate.approvalMode ?? 'single',
+        criticality: gate.criticality,
+        evidenceRequired: gate.evidenceRequired ?? false,
+      })
+    }
+
     for (const step of spec.steps) {
       for (const gateId of step.requiredGateIds ?? []) {
-        const gate = gateById.get(gateId)
-        if (!gate) continue
-        gates.push({
-          gateId: gate.id,
-          stepId: step.id,
-          type: gate.type,
-          blocking: gate.blocking,
-          // A blocking gate az emberi jóváhagyási átmenetet zárja (awaiting_human → approved)
-          blocksTransition: gate.blocking
-            ? { fromState: 'awaiting_human', toState: 'approved' }
-            : undefined,
-          requiredActorRole: gate.requiredActorRole,
-          approvalMode: gate.approvalMode ?? 'single',
-          criticality: gate.criticality,
-          evidenceRequired: gate.evidenceRequired ?? false,
-        })
+        addCompiledGate(gateId, step.id)
+      }
+      for (const rule of step.onComplete ?? []) {
+        if (rule.gateId) addCompiledGate(rule.gateId, step.id)
       }
     }
 

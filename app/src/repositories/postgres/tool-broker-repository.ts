@@ -37,6 +37,25 @@ export class PostgresToolBrokerRepository implements ToolBrokerRepository {
     return agentConnector?.connector ?? null
   }
 
+  async findConnectorForAgentById(
+    agentId: string,
+    connectorId: string,
+    type: ConnectorType,
+    accessMode: ConnectorAccessMode,
+  ): Promise<Connector | null> {
+    const agentConnector = await prisma.agentConnector.findFirst({
+      where: {
+        agentId,
+        connectorId,
+        accessMode: { in: connectorAccessModes(accessMode) },
+        connector: { type },
+      },
+      include: { connector: true },
+    })
+
+    return agentConnector?.connector ?? null
+  }
+
   async findCapabilitiesForAgent(
     agentId: string,
   ): Promise<{ toolName: string; allowed: boolean }[]> {

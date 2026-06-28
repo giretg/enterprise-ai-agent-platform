@@ -16,6 +16,7 @@ import {
   cancelProcessSchema,
   transitionProcessTicketSchema,
 } from '@/lib/validators/actions'
+import { reconstructActualFlow } from '@/lib/playbook-v2/runtime'
 import type { CompiledSpec } from '@/domain/playbook/playbook-compiler'
 import {
   ProcessServiceError,
@@ -74,10 +75,30 @@ export async function getProcessDetail(input: unknown) {
     const parsed = processIdSchema.parse(input)
     const tenantId = tenantOf(user)
     const detail = await services.processes.getProcess(tenantId, parsed.id)
+    const tickets = await repositories.tickets.findMany({
+      tenantId,
+      processInstanceId: detail.id,
+    })
 
     // A PIN-elt verzió compiled spec-je a szándékolt flow-hoz (§9.2 intended vs actual).
     const version = await repositories.playbooksV2.findVersion(tenantId, detail.playbookVersionId)
     const compiled = (version?.compiledSpec ?? null) as CompiledSpec | null
+    const gateById = new Map((compiled?.gates ?? []).map((g) => [g.gateId, g]))
+    const actualFlow = compiled
+      ? reconstructActualFlow(
+          detail.steps.map((s) => ({
+            stepId: s.stepId,
+            status: s.status,
+            assignedRole: s.assignedRole,
+          })),
+          detail.delegations.map((d) => ({
+            fromStepId: d.fromStepId,
+            toStepId: d.toStepId,
+            fromActorType: d.fromActorType,
+          })),
+          compiled,
+        )
+      : null
 
     return ok({
       process: {
@@ -111,12 +132,29 @@ export async function getProcessDetail(input: unknown) {
         createdAt: d.createdAt.toISOString(),
         doneAt: d.doneAt?.toISOString() ?? null,
       })),
+      gateTickets: tickets
+        .filter((t) => t.requiredGateId && t.playbookStepId)
+        .map((t) => {
+          const gate = gateById.get(t.requiredGateId!)
+          return {
+            ticketId: t.id,
+            stepId: t.playbookStepId!,
+            gateId: t.requiredGateId!,
+            state: t.state,
+            requiredActorRole: gate?.requiredActorRole ?? null,
+            criticality: gate?.criticality ?? null,
+            evidenceRequired: gate?.evidenceRequired ?? false,
+            blocking: gate?.blocking ?? true,
+          }
+        }),
+      actualFlow,
       // §9.2 szándékolt flow: a compiled spec lépés-sorrendje és routing-élei.
       intended: compiled
         ? {
             entryStepId: compiled.entryStepId,
             steps: compiled.ticketRules.map((r) => ({
               stepId: r.stepId,
+              stepName: r.stepName,
               ticketType: r.ticketType,
               assignedRole: r.assignedRole,
             })),

@@ -12,6 +12,11 @@ import { listAllowedChatTools, runAgentToolLoop } from './chat-tool-loop'
 const IMAGE_EXT = /\.(jpg|jpeg|png|gif|webp)$/i
 const IMAGE_MARKER = /^(\[image:([^\]]+)\])([\s\S]*)$/
 
+function safeToolResultName(value: string): string {
+  const cleaned = value.replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '')
+  return cleaned.slice(0, 80) || 'tool-result'
+}
+
 /**
  * Egy kész szöveget streamelhető darabokra bont (a szóközöket a darabhoz
  * tartva), hogy szimulált token-by-token megjelenítést adjon a tool-os ágon,
@@ -196,6 +201,8 @@ export class AgentChatRuntime {
               messages: gatewayMessages,
               modelConfig,
               allowedTools: allowedChatTools,
+              archiveLargeToolResult: (input) =>
+                this.archiveLargeToolResult(tenantKey, conversationId, input),
             })
           ).content
         : (
@@ -331,6 +338,8 @@ export class AgentChatRuntime {
         messages: gatewayMessages,
         modelConfig,
         allowedTools: allowedChatTools,
+        archiveLargeToolResult: (input) =>
+          this.archiveLargeToolResult(tenantKey, conversationId, input),
       })
       reply = result.content
       for (const chunk of chunkForStreaming(reply)) {
@@ -575,6 +584,25 @@ export class AgentChatRuntime {
       return await this.workspaceStorage.list(tenantId, conversationId)
     } catch {
       return []
+    }
+  }
+
+  private async archiveLargeToolResult(
+    tenantId: string,
+    conversationId: string,
+    input: { toolName: string; callId: string; turn: number; content: string },
+  ): Promise<{ path: string; bytes: number } | null> {
+    const bytes = Buffer.from(input.content, 'utf8')
+    const path = [
+      '.tool-results',
+      `${String(input.turn + 1).padStart(2, '0')}-${safeToolResultName(input.toolName)}-${safeToolResultName(input.callId)}.json`,
+    ].join('/')
+
+    try {
+      await this.workspaceStorage.write(tenantId, conversationId, path, bytes)
+      return { path, bytes: bytes.length }
+    } catch {
+      return null
     }
   }
 

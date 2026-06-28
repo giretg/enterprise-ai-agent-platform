@@ -73,6 +73,20 @@ const BOOL = { type: 'boolean' } as const
 const CELL_VALUE = { type: ['string', 'number', 'boolean', 'null'] } as const
 
 type ToolSchema = { description: string; inputSchema: Record<string, unknown> }
+type LargeToolResultArchive = { path: string; bytes: number }
+type LargeToolResultArchiveInput = {
+  toolName: string
+  callId: string
+  turn: number
+  content: string
+  context: ToolLoopContext
+}
+
+const TOOL_RESULT_READ = 'tool_result_read'
+const TOOL_RESULT_INLINE_LIMIT = 12_000
+const TOOL_RESULT_PREVIEW_CHARS = 10_000
+const TOOL_RESULT_READ_DEFAULT_LIMIT = 12_000
+const TOOL_RESULT_READ_MAX_LIMIT = 40_000
 
 function objectSchema(
   properties: Record<string, unknown>,
@@ -142,17 +156,18 @@ const TOOL_SCHEMAS: Record<ChatPlatformToolName, ToolSchema> = {
   },
   http_api_get: {
     description:
-      'Olvasó (GET) hívás a hozzád rendelt külső REST API-n. A `path` a connector baseUrl-jéhez relatív (pl. "/banks" vagy "/banks/{id}/crm"). A query paramétereket a `query` objektumban add meg. Az elérhető endpointokat a rendszerüzenet sorolja fel.',
+      'Olvasó (GET) hívás a hozzád rendelt külső REST API-n. A `connectorId` értékét a rendszerüzenetben látod. A `path` a connector baseUrl-jéhez relatív (pl. "/banks" vagy "/banks/{id}/crm"). A query paramétereket a `query` objektumban add meg.',
     inputSchema: objectSchema(
-      { path: STR, query: { type: 'object', additionalProperties: true } },
+      { connectorId: STR, path: STR, query: { type: 'object', additionalProperties: true } },
       ['path'],
     ),
   },
   http_api_request: {
     description:
-      'Író (POST/PUT/PATCH/DELETE) hívás a hozzád rendelt külső REST API-n. A `path` a connector baseUrl-jéhez relatív; a kérés törzsét a `body` objektumban add meg. Csak akkor hívd, ha a művelet tényleges állapotváltozást igényel.',
+      'Író (POST/PUT/PATCH/DELETE) hívás a hozzád rendelt külső REST API-n. A `connectorId` értékét a rendszerüzenetben látod. A `path` a connector baseUrl-jéhez relatív; a kérés törzsét a `body` objektumban add meg. Csak akkor hívd, ha a művelet tényleges állapotváltozást igényel.',
     inputSchema: objectSchema(
       {
+        connectorId: STR,
         method: { type: 'string', enum: ['POST', 'PUT', 'PATCH', 'DELETE'] },
         path: STR,
         query: { type: 'object', additionalProperties: true },
@@ -291,6 +306,13 @@ const TOOL_SCHEMAS: Record<ChatPlatformToolName, ToolSchema> = {
   },
 }
 
+const TOOL_RESULT_READ_DEFINITION: ToolDefinition = {
+  name: TOOL_RESULT_READ,
+  description:
+    'Korábban elmentett nagy tool-eredmény részletének visszaolvasása. Csak a rendszer által megadott path értékkel használd; offset karakter-alapú, limit karakterben értendő.',
+  inputSchema: objectSchema({ path: STR, offset: NUM, limit: NUM }, ['path']),
+}
+
 function toToolDefinitions(allowed: ChatPlatformToolName[]): ToolDefinition[] {
   return allowed.map((name) => ({ name, ...TOOL_SCHEMAS[name] }))
 }
@@ -331,6 +353,37 @@ function extractToolCall(content: string): { tool: string; args: Record<string, 
 // Ezt index szerint újraépítjük: a name az első nem-üres name, az arguments a
 // töredékek sorrendi összefűzése, majd JSON.parse. Így a leakelő hívás mégis lefut.
 const OPENAI_DELTA_RUN_RE = /(?:\[\s*\{[^[\]]*"index"\s*:\s*\d+[^[\]]*\}\s*\])+/
+
+// Néhány modell (pl. Nous-Hermes, Qwen3, Mistral OpenRouteren) a Hermes tool
+// protokollt használja: <tool_call>{"name":"...","arguments":{...}}</tool_call>
+// Ez sem natív tool_calls, sem {"tool":...} JSON — külön kimentjük.
+const HERMES_TOOL_CALL_RE = /<tool_call>([\s\S]*?)<\/tool_call>/gi
+
+type HermesCall = { name?: unknown; arguments?: unknown }
+
+export function recoverHermesToolCallsFromText(
+  content: string,
+): Array<{ tool: string; args: Record<string, unknown> }> {
+  const calls: Array<{ tool: string; args: Record<string, unknown> }> = []
+  const re = new RegExp(HERMES_TOOL_CALL_RE.source, 'gi')
+  let match: RegExpExecArray | null
+  while ((match = re.exec(content)) !== null) {
+    try {
+      const parsed = JSON.parse(match[1].trim()) as HermesCall
+      if (typeof parsed.name !== 'string' || !parsed.name) continue
+      const args =
+        parsed.arguments &&
+        typeof parsed.arguments === 'object' &&
+        !Array.isArray(parsed.arguments)
+          ? (parsed.arguments as Record<string, unknown>)
+          : {}
+      calls.push({ tool: parsed.name, args })
+    } catch {
+      // unparseable block — ignore
+    }
+  }
+  return calls
+}
 
 type OpenAiDelta = {
   index?: number
@@ -386,6 +439,7 @@ export function recoverOpenAiToolCallsFromText(
 function stripToolArtifacts(content: string): string {
   return content
     .replace(OPENAI_DELTA_RUN_RE, '')
+    .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
     .replace(/```(?:json)?\s*\{[\s\S]*?\}\s*```/gi, '')
     .replace(/\{[\s\S]*"tool"\s*:\s*"[^"]+"[\s\S]*\}/g, '')
     .trim()
@@ -401,6 +455,10 @@ function numArg(args: Record<string, unknown>, key: string): number | undefined 
 
 function boolArg(args: Record<string, unknown>, key: string): boolean | undefined {
   return typeof args[key] === 'boolean' ? args[key] : undefined
+}
+
+function clamp(n: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, Math.floor(n)))
 }
 
 function recordArg(args: Record<string, unknown>, key: string): Record<string, unknown> | undefined {
@@ -536,6 +594,7 @@ function buildToolInvoke(
         ...common,
         tool: 'http_api_get',
         args: {
+          connectorId: typeof args.connectorId === 'string' ? args.connectorId : undefined,
           path: strArg(args, 'path'),
           query: httpQueryArg(args.query),
         },
@@ -546,6 +605,7 @@ function buildToolInvoke(
         ...common,
         tool: 'http_api_request',
         args: {
+          connectorId: typeof args.connectorId === 'string' ? args.connectorId : undefined,
           method: httpMethodArg(args.method),
           path: strArg(args, 'path'),
           query: httpQueryArg(args.query),
@@ -759,8 +819,9 @@ export async function runAgentToolLoop(params: {
   modelConfig: ModelConfig
   allowedTools: ChatPlatformToolName[]
   maxTurns?: number
+  archiveLargeToolResult?: (input: LargeToolResultArchiveInput) => Promise<LargeToolResultArchive | null>
 }): Promise<{ content: string; toolCallCount: number }> {
-  const maxTurns = params.maxTurns ?? 10
+  const maxTurns = params.maxTurns ?? 20
   const modeNote =
     params.mode === 'task'
       ? 'Ez egy aszinkron feladat — a végeredményed visszakerül a ticketbe. Dolgozz végig minden szükséges eszközhívást, majd add meg a kész választ természetes magyar szövegként (NE JSON).'
@@ -787,7 +848,11 @@ export async function runAgentToolLoop(params: {
   }
 
   let toolCallCount = 0
-  const tools = toToolDefinitions(params.allowedTools)
+  const archivedToolResults = new Map<string, { content: string; bytes: number; toolName: string }>()
+  const tools = [
+    ...toToolDefinitions(params.allowedTools),
+    ...(params.archiveLargeToolResult ? [TOOL_RESULT_READ_DEFINITION] : []),
+  ]
 
   for (let turn = 0; turn < maxTurns; turn++) {
     const { content, toolCalls } = await params.gateway.call({
@@ -799,14 +864,24 @@ export async function runAgentToolLoop(params: {
     })
 
     // Natív tool hívások; ha nincs, a vékony fallback megpróbálja a beágyazott
-    // {"tool":...} JSON-t vagy az OpenAI tool-call drótformátumot kimenteni
-    // (gyenge modellek — pl. qwen3 OpenRouteren — kedvéért).
+    // {"tool":...} JSON-t, az OpenAI delta- vagy a Hermes <tool_call> formátumot
+    // kimenteni (gyenge/speciális modellek — pl. qwen3, Nous-Hermes — kedvéért).
     let calls: GatewayToolCall[] = toolCalls ?? []
     if (calls.length === 0) {
       const recovered = recoverOpenAiToolCallsFromText(content)
       if (recovered.length > 0) {
         calls = recovered.map((c, i) => ({
           id: `recovered_${turn}_${i}`,
+          name: c.tool,
+          input: c.args,
+        }))
+      }
+    }
+    if (calls.length === 0) {
+      const hermes = recoverHermesToolCallsFromText(content)
+      if (hermes.length > 0) {
+        calls = hermes.map((c, i) => ({
+          id: `hermes_${turn}_${i}`,
           name: c.tool,
           input: c.args,
         }))
@@ -843,6 +918,38 @@ export async function runAgentToolLoop(params: {
     })
 
     for (const call of calls) {
+      if (call.name === TOOL_RESULT_READ) {
+        const path = typeof call.input.path === 'string' ? call.input.path : ''
+        const archived = archivedToolResults.get(path)
+        const offset = clamp(numArg(call.input, 'offset') ?? 0, 0, archived?.content.length ?? 0)
+        const limit = clamp(
+          numArg(call.input, 'limit') ?? TOOL_RESULT_READ_DEFAULT_LIMIT,
+          1,
+          TOOL_RESULT_READ_MAX_LIMIT,
+        )
+        const content = archived?.content ?? ''
+        const chunk = content.slice(offset, offset + limit)
+        const nextOffset = offset + chunk.length < content.length ? offset + chunk.length : null
+        messages.push({
+          role: 'tool',
+          toolCallId: call.id,
+          toolName: call.name,
+          content: archived
+            ? JSON.stringify({
+                path,
+                toolName: archived.toolName,
+                offset,
+                limit,
+                returnedChars: chunk.length,
+                totalChars: content.length,
+                nextOffset,
+                content: chunk,
+              })
+            : `HIBA: nincs ilyen elmentett tool-eredmény ebben a futásban: ${path}`,
+        })
+        continue
+      }
+
       if (!isChatPlatformTool(call.name) || !params.allowedTools.includes(call.name)) {
         messages.push({
           role: 'tool',
@@ -864,13 +971,48 @@ export async function runAgentToolLoop(params: {
         const result = await params.toolBroker.invoke(invokeInput)
         toolCallCount += 1
 
+        const rawContent = result.denied
+          ? `ELUTASÍTVA: ${result.reason}`
+          : JSON.stringify(result.result)
+        let toolContent = rawContent
+        if (rawContent.length > TOOL_RESULT_INLINE_LIMIT) {
+          const archive = params.archiveLargeToolResult
+            ? await params.archiveLargeToolResult({
+                toolName: call.name,
+                callId: call.id,
+                turn,
+                content: rawContent,
+                context: params.context,
+              })
+            : null
+
+          if (archive) {
+            archivedToolResults.set(archive.path, {
+              content: rawContent,
+              bytes: archive.bytes,
+              toolName: call.name,
+            })
+            const preview = rawContent.slice(0, TOOL_RESULT_PREVIEW_CHARS)
+            toolContent = [
+              `[Nagy tool-eredmény] A teljes eredmény elmentve: ${archive.path}`,
+              `Méret: ${rawContent.length} karakter, ${archive.bytes} bájt. Az alábbi csak előnézet.`,
+              `Ha a felhasználó teljes listát, pontos számítást vagy részletes elemzést kért, olvasd tovább a tool_result_read eszközzel: path="${archive.path}", offset=${preview.length}.`,
+              '--- előnézet ---',
+              preview,
+              '--- előnézet vége ---',
+            ].join('\n')
+          } else {
+            toolContent =
+              rawContent.slice(0, TOOL_RESULT_INLINE_LIMIT) +
+              `\n...[csonkítva — az eredmény ${rawContent.length} kar, limit ${TOOL_RESULT_INLINE_LIMIT}; teljes archívum nem készült]`
+          }
+        }
+
         messages.push({
           role: 'tool',
           toolCallId: call.id,
           toolName: call.name,
-          content: result.denied
-            ? `ELUTASÍTVA: ${result.reason}`
-            : JSON.stringify(result.result),
+          content: toolContent,
         })
       } catch (e) {
         const message = e instanceof Error ? e.message : 'tool_call_failed'
@@ -887,7 +1029,7 @@ export async function runAgentToolLoop(params: {
   messages.push({
     role: 'system',
     content:
-      'Fogalmazd meg a felhasználónak magyarul. agent_ask: completed:true + answer → fogalmazd át; completed:false → mondd el hogy nem sikerült. Gmail/file eszköz: csak a tool eredményére támaszkodj, ne találj ki adatot. connector_grant_missing esetén jelezd hogy csatlakoztasd a fiókot. Ne használj JSON tool blokkot.',
+      'Fogalmazd meg a felhasználónak magyarul. agent_ask: completed:true + answer → fogalmazd át; completed:false → mondd el hogy nem sikerült. Gmail/file eszköz: csak a tool eredményére támaszkodj, ne találj ki adatot. connector_grant_missing esetén jelezd hogy csatlakoztasd a fiókot. Ne használj JSON tool blokkot. FONTOS: ha valamelyik feladatot (pl. Excel létrehozása) NEM hajtottad végre (mert elfogytak a körök vagy nem hívtad meg az eszközt), NE állítsd hogy kész — mondd el őszintén, hogy mi maradt el és miért.',
   })
 
   const { content: finalContent } = await params.gateway.call({
@@ -915,13 +1057,15 @@ async function describeHttpApiConnectors(
   const apis = links.filter((l) => l.connector.type === 'http_api')
   if (apis.length === 0) return null
 
-  const blocks = apis.map(({ connector }) => {
+  const blocks = apis.map(({ connector, accessMode }) => {
     const config = (connector.config ?? {}) as {
       baseUrl?: string
       description?: string
       endpoints?: Array<{ method?: string; path?: string; description?: string }>
     }
     const lines = [`### ${connector.name}`]
+    lines.push(`connectorId: ${connector.id}`)
+    lines.push(`Hozzáférés: ${accessMode === 'write' ? 'olvasás + írás' : 'csak olvasás'}`)
     if (config.baseUrl) lines.push(`Base URL: ${config.baseUrl}`)
     if (config.description) lines.push(config.description)
     if (Array.isArray(config.endpoints) && config.endpoints.length > 0) {
@@ -935,7 +1079,7 @@ async function describeHttpApiConnectors(
   })
 
   return [
-    'A hozzád rendelt külső REST API(k) — olvasáshoz http_api_get, íráshoz http_api_request eszközt hívj. A path a Base URL-hez relatív; az API-kulcsot a rendszer injektálja, neked nem kell megadnod.',
+    'A hozzád rendelt külső REST API(k) — olvasáshoz http_api_get, íráshoz http_api_request eszközt hívj. Ha több API-kapcsolat van, add meg a megfelelő connectorId-t. A path a Base URL-hez relatív; az API-kulcsot és a konfigurált fejléceket a rendszer injektálja, neked nem kell megadnod.',
     ...blocks,
   ].join('\n\n')
 }

@@ -20,11 +20,27 @@ export type HttpApiEndpoint = {
   method: string
   path: string
   description?: string
+  profile?: string
+  idempotent?: boolean
+  headers?: Record<string, string>
+}
+
+export type HttpApiAuthProfile = {
+  secretAlias: string
+  auth?: HttpApiAuthConfig
 }
 
 export type HttpApiConfig = {
   baseUrl: string
   auth: HttpApiAuthConfig
+  /** Több auth-profil egy connectoron belül, pl. readonly/write kulcsok. */
+  authProfiles?: Record<string, HttpApiAuthProfile>
+  /** Endpoint profile hiányában ez a profil használatos. */
+  defaultAuthProfile?: string
+  /** Minden hívásra injektált, sablonozható fejlécek. */
+  requestHeaders?: Record<string, string>
+  /** Csak író hívásokra injektált, sablonozható fejlécek. */
+  writeHeaders?: Record<string, string>
   /** Emberi nyelvű API-leírás — a modell elé kerül a tool loopban. */
   description?: string
   /** Ismert endpointok (dokumentáció + opcionális allowlist). */
@@ -76,13 +92,25 @@ export function parseHttpApiConfig(raw: unknown): HttpApiConfig {
           method: String(e.method ?? '').toUpperCase(),
           path: String(e.path ?? ''),
           description: typeof e.description === 'string' ? e.description : undefined,
+          profile: typeof e.profile === 'string' && e.profile.trim() ? e.profile.trim() : undefined,
+          idempotent: e.idempotent === true,
+          headers: parseHeaderTemplates(e.headers, 'endpoint.headers'),
         }))
         .filter((e) => e.method && e.path)
     : undefined
 
+  const authProfiles = parseAuthProfiles(raw.authProfiles)
+
   return {
     baseUrl: baseUrl.replace(/\/+$/, ''),
     auth,
+    ...(authProfiles ? { authProfiles } : {}),
+    defaultAuthProfile:
+      typeof raw.defaultAuthProfile === 'string' && raw.defaultAuthProfile.trim()
+        ? raw.defaultAuthProfile.trim()
+        : undefined,
+    requestHeaders: parseHeaderTemplates(raw.requestHeaders, 'requestHeaders'),
+    writeHeaders: parseHeaderTemplates(raw.writeHeaders, 'writeHeaders'),
     description: typeof raw.description === 'string' ? raw.description : undefined,
     endpoints,
     restrictToEndpoints: raw.restrictToEndpoints === true,
@@ -91,6 +119,60 @@ export function parseHttpApiConfig(raw: unknown): HttpApiConfig {
         ? raw.maxResponseChars
         : DEFAULT_MAX_RESPONSE_CHARS,
   }
+}
+
+function parseAuthProfiles(raw: unknown): Record<string, HttpApiAuthProfile> | undefined {
+  if (raw === undefined) return undefined
+  if (!isRecord(raw)) throw new Error('http_api config.authProfiles must be an object')
+
+  const profiles: Record<string, HttpApiAuthProfile> = {}
+  for (const [name, value] of Object.entries(raw)) {
+    if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
+      throw new Error(`http_api auth profile has invalid name: ${name}`)
+    }
+    if (!isRecord(value)) throw new Error(`http_api auth profile must be an object: ${name}`)
+    if (typeof value.secretAlias !== 'string' || !value.secretAlias.trim()) {
+      throw new Error(`http_api auth profile has no secretAlias: ${name}`)
+    }
+
+    let auth: HttpApiAuthConfig | undefined
+    if (value.auth !== undefined) {
+      if (!isRecord(value.auth)) throw new Error(`http_api auth profile auth must be an object: ${name}`)
+      if (value.auth.scheme === 'bearer') auth = { scheme: 'bearer' }
+      else if (value.auth.scheme === 'header') {
+        if (typeof value.auth.header !== 'string' || !value.auth.header.trim()) {
+          throw new Error(`http_api auth profile header is required: ${name}`)
+        }
+        auth = { scheme: 'header', header: value.auth.header.trim() }
+      } else {
+        throw new Error(`http_api auth profile scheme must be "header" or "bearer": ${name}`)
+      }
+    }
+
+    profiles[name] = { secretAlias: value.secretAlias.trim(), ...(auth ? { auth } : {}) }
+  }
+
+  return Object.keys(profiles).length > 0 ? profiles : undefined
+}
+
+function parseHeaderTemplates(raw: unknown, field: string): Record<string, string> | undefined {
+  if (raw === undefined) return undefined
+  if (!isRecord(raw)) throw new Error(`http_api config.${field} must be an object`)
+
+  const headers: Record<string, string> = {}
+  for (const [name, template] of Object.entries(raw)) {
+    if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name)) {
+      throw new Error(`http_api config.${field} has invalid header name: ${name}`)
+    }
+    if (name.toLowerCase() === 'authorization') {
+      throw new Error(`http_api config.${field} must not override Authorization`)
+    }
+    if (typeof template !== 'string') {
+      throw new Error(`http_api config.${field}.${name} must be a string`)
+    }
+    headers[name] = template
+  }
+  return Object.keys(headers).length > 0 ? headers : undefined
 }
 
 /**
@@ -144,6 +226,7 @@ export type HttpApiRequestParams = {
   path: string
   query?: Record<string, string | number | boolean>
   body?: unknown
+  context?: HttpApiTemplateContext
 }
 
 export type HttpApiResponse = {
@@ -162,6 +245,22 @@ export class HttpApiError extends Error {
   }
 }
 
+export type HttpApiTemplateContext = {
+  agent: { id: string; version?: number }
+  connector: { id: string; name: string }
+  actingUser?: { id: string; email: string; tenantId: string | null } | null
+  tenant?: { id: string } | null
+  call: { id: string; idempotencyKey: string }
+  now: { iso: string }
+}
+
+export type HttpApiCredentials =
+  | string
+  | {
+      defaultApiKey?: string
+      resolveProfileApiKey?: (profile: string, secretAlias: string) => Promise<string>
+    }
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -172,29 +271,40 @@ function sleep(ms: number): Promise<void> {
  * elfelejti — nem tárol, nem frissít, nem szerez kredenciált.
  */
 export class HttpApiClient {
+  private defaultApiKey?: string
+  private resolveProfileApiKey?: (profile: string, secretAlias: string) => Promise<string>
+
   constructor(
     private config: HttpApiConfig,
-    private apiKey: string,
-  ) {}
-
-  private isStub(): boolean {
-    return process.env.HTTP_API_STUB === 'true' || this.apiKey.startsWith('stub-')
+    credentials: HttpApiCredentials,
+  ) {
+    if (typeof credentials === 'string') {
+      this.defaultApiKey = credentials
+    } else {
+      this.defaultApiKey = credentials.defaultApiKey
+      this.resolveProfileApiKey = credentials.resolveProfileApiKey
+    }
   }
 
-  private assertAllowed(method: string, path: string): void {
+  private isStub(): boolean {
+    return process.env.HTTP_API_STUB === 'true' || Boolean(this.defaultApiKey?.startsWith('stub-'))
+  }
+
+  private selectEndpoint(method: string, path: string): HttpApiEndpoint | undefined {
     if (/:\/\//.test(path)) {
       // SSRF-védelem: a path nem írhatja felül a connector hostját.
       throw new HttpApiError('path must be relative to the connector baseUrl', 'invalid_path')
     }
+    const normalized = path.split('?')[0]
+    const endpoint = (this.config.endpoints ?? []).find(
+      (e) => e.method === method && pathMatches(e.path, normalized),
+    )
     if (this.config.restrictToEndpoints) {
-      const normalized = path.split('?')[0]
-      const allowed = (this.config.endpoints ?? []).some(
-        (e) => e.method === method && pathMatches(e.path, normalized),
-      )
-      if (!allowed) {
+      if (!endpoint) {
         throw new HttpApiError(`endpoint not allowed: ${method} ${path}`, 'endpoint_not_allowed')
       }
     }
+    return endpoint
   }
 
   private buildUrl(path: string, query?: HttpApiRequestParams['query']): URL {
@@ -208,11 +318,38 @@ export class HttpApiClient {
     return url
   }
 
-  private authHeaders(): Record<string, string> {
-    if (this.config.auth.scheme === 'bearer') {
-      return { authorization: `Bearer ${this.apiKey}` }
+  private async authHeaders(endpoint?: HttpApiEndpoint): Promise<Record<string, string>> {
+    const profileName = endpoint?.profile ?? this.config.defaultAuthProfile
+    if (profileName) {
+      const profile = this.config.authProfiles?.[profileName]
+      if (!profile) throw new HttpApiError(`auth profile not found: ${profileName}`, 'auth_profile_not_found')
+      const key = this.resolveProfileApiKey
+        ? await this.resolveProfileApiKey(profileName, profile.secretAlias)
+        : await resolveConnectorApiKey(profile.secretAlias)
+      return buildAuthHeaders(profile.auth ?? this.config.auth, key)
     }
-    return { [this.config.auth.header]: this.apiKey }
+
+    if (!this.defaultApiKey) {
+      throw new HttpApiError('http_api connector has no default API key', 'missing_api_key')
+    }
+    return buildAuthHeaders(this.config.auth, this.defaultApiKey)
+  }
+
+  private buildTemplateHeaders(
+    method: string,
+    endpoint: HttpApiEndpoint | undefined,
+    context: HttpApiTemplateContext | undefined,
+  ): Record<string, string> {
+    const headers: Record<string, string> = {}
+    applyHeaderTemplates(headers, this.config.requestHeaders, context)
+    if (!READ_METHODS.has(method)) applyHeaderTemplates(headers, this.config.writeHeaders, context)
+    applyHeaderTemplates(headers, endpoint?.headers, context)
+
+    if (endpoint?.idempotent && !READ_METHODS.has(method) && !hasHeader(headers, 'idempotency-key')) {
+      if (!context) throw new HttpApiError('idempotent endpoint requires call context', 'missing_context')
+      headers['Idempotency-Key'] = context.call.idempotencyKey
+    }
+    return headers
   }
 
   async request(params: HttpApiRequestParams): Promise<HttpApiResponse> {
@@ -220,7 +357,7 @@ export class HttpApiClient {
     if (!READ_METHODS.has(method) && !WRITE_METHODS.has(method)) {
       throw new HttpApiError(`unsupported HTTP method: ${method}`, 'invalid_method')
     }
-    this.assertAllowed(method, params.path)
+    const endpoint = this.selectEndpoint(method, params.path)
 
     if (this.isStub()) {
       return {
@@ -236,7 +373,8 @@ export class HttpApiClient {
       method,
       headers: {
         accept: 'application/json',
-        ...this.authHeaders(),
+        ...this.buildTemplateHeaders(method, endpoint, params.context),
+        ...(await this.authHeaders(endpoint)),
         ...(hasBody ? { 'content-type': 'application/json' } : {}),
       },
       ...(hasBody ? { body: JSON.stringify(params.body) } : {}),
@@ -273,6 +411,54 @@ export class HttpApiClient {
     }
     throw new HttpApiError('request failed before response', 'network_error')
   }
+}
+
+function buildAuthHeaders(auth: HttpApiAuthConfig, apiKey: string): Record<string, string> {
+  if (auth.scheme === 'bearer') return { authorization: `Bearer ${apiKey}` }
+  return { [auth.header]: apiKey }
+}
+
+function hasHeader(headers: Record<string, string>, lowerName: string): boolean {
+  return Object.keys(headers).some((name) => name.toLowerCase() === lowerName)
+}
+
+function applyHeaderTemplates(
+  target: Record<string, string>,
+  templates: Record<string, string> | undefined,
+  context: HttpApiTemplateContext | undefined,
+): void {
+  if (!templates) return
+  if (!context) throw new HttpApiError('header templates require call context', 'missing_context')
+  for (const [name, template] of Object.entries(templates)) {
+    target[name] = renderTemplate(template, context)
+  }
+}
+
+function renderTemplate(template: string, context: HttpApiTemplateContext): string {
+  return template.replace(/{{\s*([a-zA-Z0-9_.-]+)\s*}}/g, (_match, key: string) => {
+    const value = templateValue(key, context)
+    if (value === undefined || value === null) {
+      throw new HttpApiError(`template variable not available: ${key}`, 'template_variable_missing')
+    }
+    return String(value)
+  })
+}
+
+function templateValue(key: string, context: HttpApiTemplateContext): string | number | null | undefined {
+  const values: Record<string, string | number | null | undefined> = {
+    'agent.id': context.agent.id,
+    'agent.version': context.agent.version,
+    'connector.id': context.connector.id,
+    'connector.name': context.connector.name,
+    'actingUser.id': context.actingUser?.id,
+    'actingUser.email': context.actingUser?.email,
+    'actingUser.tenantId': context.actingUser?.tenantId,
+    'tenant.id': context.tenant?.id,
+    'call.id': context.call.id,
+    'call.idempotencyKey': context.call.idempotencyKey,
+    'now.iso': context.now.iso,
+  }
+  return values[key]
 }
 
 /** Egyszerű path-egyezés `:param` placeholderekkel (pl. /banks/:bankId/crm). */

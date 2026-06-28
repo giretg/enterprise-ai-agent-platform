@@ -348,27 +348,59 @@ export const createAgentSchema = z.object({
   }),
 })
 
+const httpApiEndpointSchema = z.object({
+  method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']),
+  path: z.string().trim().min(1).max(500),
+  description: z.string().trim().max(500).optional(),
+  idempotent: z.boolean().optional(),
+  profile: z.string().trim().max(80).optional(),
+})
+
+const httpApiAuthProfileSchema = z.object({
+  secretAlias: z.string().trim().min(1).max(500),
+  auth: z
+    .discriminatedUnion('scheme', [
+      z.object({ scheme: z.literal('bearer') }),
+      z.object({
+        scheme: z.literal('header'),
+        header: z.string().trim().min(1).max(120),
+      }),
+    ])
+    .optional(),
+})
+
+const httpApiConnectorFields = {
+  name: z.string().trim().min(1).max(120),
+  baseUrl: z.string().trim().url().max(500),
+  authScheme: z.enum(['header', 'bearer']),
+  authHeader: z.string().trim().max(120).optional(),
+  description: z.string().trim().max(50000).optional(),
+  authProfiles: z
+    .record(z.string().regex(/^[a-zA-Z0-9_-]+$/), httpApiAuthProfileSchema)
+    .optional(),
+  defaultAuthProfile: z.string().trim().max(80).optional(),
+  requestHeaders: z.record(z.string(), z.string()).optional(),
+  writeHeaders: z.record(z.string(), z.string()).optional(),
+  accessMode: z.enum(['read', 'write']).default('write'),
+  restrictToEndpoints: z.boolean().default(false),
+  endpoints: z.array(httpApiEndpointSchema).max(100).optional(),
+}
+
+function hasKnownHttpApiProfiles(v: {
+  authProfiles?: Record<string, unknown>
+  defaultAuthProfile?: string
+  endpoints?: Array<{ profile?: string }>
+}) {
+  const profileNames = new Set(Object.keys(v.authProfiles ?? {}))
+  if (v.defaultAuthProfile && !profileNames.has(v.defaultAuthProfile)) return false
+  return !(v.endpoints ?? []).some((endpoint) => endpoint.profile && !profileNames.has(endpoint.profile))
+}
+
 export const createHttpApiConnectorSchema = z
   .object({
     agentId: z.string().uuid(),
-    name: z.string().trim().min(1).max(120),
-    baseUrl: z.string().trim().url().max(500),
-    authScheme: z.enum(['header', 'bearer']),
-    authHeader: z.string().trim().max(120).optional(),
+    ...httpApiConnectorFields,
     apiKey: z.string().trim().min(1).max(4000),
-    description: z.string().trim().max(50000).optional(),
-    accessMode: z.enum(['read', 'write']).default('write'),
-    restrictToEndpoints: z.boolean().default(false),
-    endpoints: z
-      .array(
-        z.object({
-          method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']),
-          path: z.string().trim().min(1).max(500),
-          description: z.string().trim().max(500).optional(),
-        }),
-      )
-      .max(100)
-      .optional(),
   })
   .refine((v) => v.authScheme !== 'header' || (v.authHeader && v.authHeader.length > 0), {
     message: 'A fejléc-séma kötelezővé teszi a fejléc nevét (pl. X-Api-Key)',
@@ -377,6 +409,30 @@ export const createHttpApiConnectorSchema = z
   .refine((v) => !v.restrictToEndpoints || (v.endpoints && v.endpoints.length > 0), {
     message: 'Az endpoint-korlátozáshoz legalább egy endpoint szükséges',
     path: ['endpoints'],
+  })
+  .refine(hasKnownHttpApiProfiles, {
+    message: 'Az endpoint/default auth profil csak a megadott authProfiles kulcsaira hivatkozhat',
+    path: ['authProfiles'],
+  })
+
+export const updateHttpApiConnectorSchema = z
+  .object({
+    agentId: z.string().uuid(),
+    connectorId: z.string().uuid(),
+    ...httpApiConnectorFields,
+    apiKey: z.string().trim().min(1).max(4000).optional(),
+  })
+  .refine((v) => v.authScheme !== 'header' || (v.authHeader && v.authHeader.length > 0), {
+    message: 'A fejléc-séma kötelezővé teszi a fejléc nevét (pl. X-Api-Key)',
+    path: ['authHeader'],
+  })
+  .refine((v) => !v.restrictToEndpoints || (v.endpoints && v.endpoints.length > 0), {
+    message: 'Az endpoint-korlátozáshoz legalább egy endpoint szükséges',
+    path: ['endpoints'],
+  })
+  .refine(hasKnownHttpApiProfiles, {
+    message: 'Az endpoint/default auth profil csak a megadott authProfiles kulcsaira hivatkozhat',
+    path: ['authProfiles'],
   })
 
 export const updateAgentSelfEvolutionProfileSchema = z.object({
@@ -575,6 +631,7 @@ export const toolInvokeSchema = z.discriminatedUnion('tool', [
     tool: z.literal('http_api_get'),
     ...toolInvokeBaseSchema,
     args: z.object({
+      connectorId: z.string().uuid().optional(),
       path: z.string().min(1).max(1000),
       query: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
     }),
@@ -583,6 +640,7 @@ export const toolInvokeSchema = z.discriminatedUnion('tool', [
     tool: z.literal('http_api_request'),
     ...toolInvokeBaseSchema,
     args: z.object({
+      connectorId: z.string().uuid().optional(),
       method: z.enum(['POST', 'PUT', 'PATCH', 'DELETE']),
       path: z.string().min(1).max(1000),
       query: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),

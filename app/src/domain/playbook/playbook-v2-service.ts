@@ -387,6 +387,39 @@ export class PlaybookV2Service {
     return this.repo.listPlaybooks(tenantId)
   }
 
+  async listStartablePlaybooks(tenantId: string | null) {
+    const playbooks = await this.repo.listPlaybooks(tenantId)
+    const startable: Array<{
+      playbookId: string
+      name: string
+      processType: string
+      publishedVersionId: string
+      version: number
+    }> = []
+
+    for (const playbook of playbooks) {
+      const assignment = await this.repo.findDefaultAssignment(
+        tenantId,
+        'process_type',
+        playbook.processType,
+      )
+      if (!assignment || assignment.playbookId !== playbook.id) continue
+
+      const version = playbook.versions.find((v) => v.id === assignment.playbookVersionId)
+      if (!version || version.status !== 'published') continue
+
+      startable.push({
+        playbookId: playbook.id,
+        name: playbook.name,
+        processType: playbook.processType,
+        publishedVersionId: version.id,
+        version: version.version,
+      })
+    }
+
+    return startable
+  }
+
   async getPlaybook(tenantId: string | null, playbookId: string) {
     const playbook = await this.requirePlaybook(tenantId, playbookId)
     const versions = await this.repo.listVersions(playbook.id)

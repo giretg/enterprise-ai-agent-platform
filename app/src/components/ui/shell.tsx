@@ -5,6 +5,12 @@ import { useState, type ReactNode } from 'react'
 import { ShellAuth } from '@/components/auth/shell-auth'
 import { isClerkUiEnabled } from '@/lib/clerk-config'
 
+export type NavLeaf = { href: string; label: string; exact?: boolean }
+export type NavGroup = { label: string; children: NavLeaf[] }
+export type NavEntry = NavLeaf | NavGroup
+
+const isGroup = (entry: NavEntry): entry is NavGroup => 'children' in entry
+
 const linkClass = (active: boolean) =>
   `relative rounded-full px-4 py-1.5 text-sm font-medium tracking-wide transition-all duration-200 ${
     active
@@ -23,7 +29,7 @@ export function AppShell({
 }: {
   appName: string
   appSubtitle: string
-  navItems: { href: string; label: string; exact?: boolean }[]
+  navItems: NavEntry[]
   accentColor: 'slate' | 'teal'
   children: ReactNode
   switchLink: { href: string; label: string }
@@ -41,9 +47,12 @@ export function AppShell({
     if (exact) return pathname === href
     return pathname.startsWith(href)
   }
+  const isGroupActive = (group: NavGroup) =>
+    group.children.some((child) => isActive(child.href, child.exact))
 
   const clerkEnabled = isClerkUiEnabled()
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
+  const [openGroup, setOpenGroup] = useState<string | null>(null)
 
   return (
     <div className="min-h-screen text-ink">
@@ -76,6 +85,70 @@ export function AppShell({
 
             <nav aria-label="Fő navigáció" className="hidden items-center gap-1 lg:flex">
               {navItems.map((item) => {
+                if (isGroup(item)) {
+                  const active = isGroupActive(item)
+                  const open = openGroup === item.label
+                  return (
+                    <div key={item.label} className="relative">
+                      <button
+                        type="button"
+                        aria-haspopup="menu"
+                        aria-expanded={open}
+                        onClick={() => setOpenGroup((cur) => (cur === item.label ? null : item.label))}
+                        className={`${linkClass(active)} inline-flex items-center gap-1`}
+                      >
+                        {item.label}
+                        <svg
+                          aria-hidden
+                          viewBox="0 0 12 12"
+                          className={`h-2.5 w-2.5 transition-transform duration-200 ${open ? 'rotate-180' : ''}`}
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.6"
+                        >
+                          <path d="M2.5 4.5 6 8l3.5-3.5" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                        {active && (
+                          <span className="absolute -bottom-px left-1/2 h-0.5 w-5 -translate-x-1/2 rounded-full bg-coral" />
+                        )}
+                      </button>
+                      {open && (
+                        <>
+                          <button
+                            type="button"
+                            aria-hidden
+                            tabIndex={-1}
+                            onClick={() => setOpenGroup(null)}
+                            className="fixed inset-0 z-30 cursor-default"
+                          />
+                          <div
+                            role="menu"
+                            className="absolute right-0 top-full z-40 mt-2 min-w-[12rem] rounded-2xl border border-line bg-night/95 p-1.5 shadow-xl backdrop-blur-xl"
+                          >
+                            {item.children.map((child) => {
+                              const childActive = isActive(child.href, child.exact)
+                              return (
+                                <Link
+                                  key={child.href}
+                                  href={child.href}
+                                  role="menuitem"
+                                  onClick={() => setOpenGroup(null)}
+                                  className={`block rounded-xl px-3 py-2 text-sm font-medium tracking-wide transition-colors ${
+                                    childActive
+                                      ? 'bg-coral/10 text-coral-deep'
+                                      : 'text-ink-soft hover:bg-coral/8 hover:text-ink'
+                                  }`}
+                                >
+                                  {child.label}
+                                </Link>
+                              )
+                            })}
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )
+                }
                 const active = isActive(item.href, item.exact)
                 return (
                   <Link key={item.href} href={item.href} className={linkClass(active)}>
@@ -121,6 +194,31 @@ export function AppShell({
             }`}
           >
             {navItems.map((item) => {
+              if (isGroup(item)) {
+                return (
+                  <div key={item.label} className="mt-2 first:mt-0">
+                    <p className="px-4 pb-1 pt-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-ink-faint">
+                      {item.label}
+                    </p>
+                    {item.children.map((child) => {
+                      const childActive = isActive(child.href, child.exact)
+                      return (
+                        <Link
+                          key={child.href}
+                          href={child.href}
+                          onClick={() => setMobileMenuOpen(false)}
+                          className={`${linkClass(childActive)} block`}
+                        >
+                          {child.label}
+                          {childActive && (
+                            <span className="absolute -bottom-px left-1/2 h-0.5 w-5 -translate-x-1/2 rounded-full bg-coral" />
+                          )}
+                        </Link>
+                      )
+                    })}
+                  </div>
+                )
+              }
               const active = isActive(item.href, item.exact)
               return (
                 <Link

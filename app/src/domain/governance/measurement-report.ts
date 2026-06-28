@@ -45,6 +45,12 @@ export type MeasurementReport = {
   gatewayStatus: { ok: number; error: number; rateLimited: number }
   tools: { calls: number; denied: number; errors: number }
   chain: VerifyResult
+  /** §F2-E — Playbook-specifikus governance metrikák. */
+  playbookGovernance: {
+    processCount: number
+    deniedTransitions: number
+    avgGateLatencyMs: number | null
+  }
   perTicket: Array<{
     ticketId: string
     title: string
@@ -88,6 +94,61 @@ function median(values: number[]): number | null {
   return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid]
 }
 
+export type PlaybookGovernance = {
+  processCount: number
+  deniedTransitions: number
+  avgGateLatencyMs: number | null
+}
+
+/**
+ * §F2-E — Playbook-specifikus governance metrikák auditból: elindított folyamatok
+ * száma, megtagadott átmenetek (gate bypass + tiltott transition) és az átlagos
+ * gate-késleltetés (process.step.create → gate.approve ugyanazon process+step párnál).
+ * Közös forrás a markdown riportnak és az élő dashboardnak, hogy ne térjenek el.
+ */
+export async function computePlaybookGovernance(
+  deps: Pick<MeasurementReportDeps, 'audit'>,
+  since: Date | null,
+): Promise<PlaybookGovernance> {
+  const sinceArg = since ?? undefined
+  const [actionCounts, gateApproveEvents, stepCreateEvents] = await Promise.all([
+    deps.audit.getActionCounts({
+      actions: ['process.start', 'gate.bypass_denied', 'ticket.transition.denied'],
+      since: sinceArg,
+    }),
+    deps.audit.findMany({ action: 'gate.approve' }),
+    deps.audit.findMany({ action: 'process.step.create' }),
+  ])
+
+  const stepCreateByKey = new Map<string, Date>()
+  for (const ev of stepCreateEvents) {
+    if (since && ev.createdAt < since) continue
+    const meta = asRecord(ev.metadata)
+    stepCreateByKey.set(`${meta.process_instance_id}:${meta.step_id}`, ev.createdAt)
+  }
+  const gateLatencies: number[] = []
+  for (const ev of gateApproveEvents) {
+    if (since && ev.createdAt < since) continue
+    const meta = asRecord(ev.metadata)
+    const stepStart = stepCreateByKey.get(`${meta.process_instance_id}:${meta.step_id}`)
+    if (stepStart) {
+      const latencyMs = ev.createdAt.getTime() - stepStart.getTime()
+      if (latencyMs >= 0) gateLatencies.push(latencyMs)
+    }
+  }
+  const avgGateLatencyMs =
+    gateLatencies.length > 0
+      ? gateLatencies.reduce((a, b) => a + b, 0) / gateLatencies.length
+      : null
+
+  return {
+    processCount: actionCounts['process.start'] ?? 0,
+    deniedTransitions:
+      (actionCounts['gate.bypass_denied'] ?? 0) + (actionCounts['ticket.transition.denied'] ?? 0),
+    avgGateLatencyMs,
+  }
+}
+
 /**
  * Builds the §9.1/7 measurement report from a real run's data: answer quality
  * (citation rate + confidence), throughput (latency + cycle time), rejection
@@ -102,7 +163,7 @@ export async function buildMeasurementReport(
   const since = rangeToSince(range, now)
   const sinceArg = since ?? undefined
 
-  const [model, tools, transitions, chain, breakdown, toolByTicket, allTickets] = await Promise.all([
+  const [model, tools, transitions, chain, breakdown, toolByTicket, allTickets, playbookGovernance] = await Promise.all([
     deps.modelCalls.getGovernanceSummary(sinceArg),
     deps.toolBroker.getToolSummary(sinceArg),
     deps.tickets.getTransitionStats(sinceArg),
@@ -110,6 +171,7 @@ export async function buildMeasurementReport(
     deps.modelCalls.getPerTicketBreakdown(sinceArg, 1000),
     deps.toolBroker.getToolCallCountsByTicket(sinceArg),
     deps.tickets.findMany(),
+    computePlaybookGovernance(deps, since),
   ])
 
   // Answer quality + cycle time from answered tickets in range.
@@ -174,6 +236,7 @@ export async function buildMeasurementReport(
     gatewayStatus: { ok: model.okCalls, error: model.errorCalls, rateLimited: model.rateLimitedCalls },
     tools: { calls: tools.calls, denied: tools.denied, errors: tools.errors },
     chain,
+    playbookGovernance,
     perTicket: breakdown.slice(0, 25).map((b) => ({
       ticketId: b.ticketId,
       title: titleById.get(b.ticketId) ?? '(ismeretlen ügy)',
@@ -269,6 +332,14 @@ export function renderMeasurementMarkdown(report: MeasurementReport): string {
   lines.push('')
   lines.push(`- Becsült token: **${cost.tokens}**, becsült költség: **${eur(cost.totalCost)}**`)
   lines.push(`- Ticketezett ügyek: **${cost.ticketedTickets}**, átlag költség/ticket: **${cost.avgCostPerTicket === null ? '—' : eur(cost.avgCostPerTicket)}**`)
+  lines.push('')
+
+  lines.push('## Playbook governance (§F2-E)')
+  lines.push('')
+  const pg = report.playbookGovernance
+  lines.push(`- Elindított folyamatok: **${pg.processCount}**`)
+  lines.push(`- Tiltott átmenetek (gate.bypass_denied + ticket.transition.denied): **${pg.deniedTransitions}**`)
+  lines.push(`- Átlagos kapu-várakozás: **${pg.avgGateLatencyMs === null ? '—' : `${pg.avgGateLatencyMs.toFixed(0)} ms`}**`)
   lines.push('')
 
   if (report.perTicket.length > 0) {

@@ -87,6 +87,12 @@ export function evaluateTicketTransition(
   const transition = rule.allowedTransitions.find(
     (t) => t.fromState === input.fromState && t.toState === input.toState,
   )
+  // Routing-kapuknál a jóváhagyási ticket a befejezett stephez tartozik, de nem
+  // része az adott step normál agent-állapotláncának. Ha a blocking gate már
+  // átengedte az emberi jóváhagyót, ez a gate-ticket átmenet engedélyezett.
+  if (!transition && blockingGate && input.actor.type === 'user') {
+    return { allowed: true, gate: blockingGate, requiresOutputContract: false }
+  }
   if (!transition) {
     return {
       allowed: false,
@@ -280,4 +286,92 @@ function readPath(obj: Record<string, unknown>, path: string): unknown {
     current = (current as Record<string, unknown>)[part]
   }
   return current
+}
+
+// --- §13 / P12 actual flow rekonstrukció ------------------------------------
+
+export type ActualFlowEdge = {
+  fromStepId: string
+  toStepId: string
+  fromActorType: string
+  /** Szerepel-e a szándékolt compiled_spec routingban (P12 összehasonlítás). */
+  inIntended: boolean
+}
+
+export type ActualFlowStep = {
+  stepId: string
+  status: string
+  /** Szerepel-e a szándékolt compiled_spec ticketRules-ban. */
+  inIntended: boolean
+}
+
+export type ActualFlowDeviation = {
+  type: 'UNEXPECTED_EDGE' | 'UNEXPECTED_STEP'
+  detail: string
+}
+
+export type ActualFlowResult = {
+  actualEdges: ActualFlowEdge[]
+  executedSteps: ActualFlowStep[]
+  deviations: ActualFlowDeviation[]
+  /** True ha az összes él és step a szándékolt compiled_spec-ben van (auditból reprodukálható, P12). */
+  reproducible: boolean
+}
+
+/**
+ * §13 / P12 — a ténylegesen lefutott folyamatot (delegation_edge-ek + step-státuszok)
+ * összehasonlítja a pin-elt compiled_spec szándékolt routingával.
+ *
+ * A hívónak a pin-elt `compiled_spec`-et kell átadni (NEM a draftot), hogy a
+ * historikus összehasonlítás a futás pillanatában érvényes Playbookkal történjen.
+ */
+export function reconstructActualFlow(
+  steps: Array<{ stepId: string; status: string; assignedRole?: string }>,
+  delegations: Array<{ fromStepId: string; toStepId: string; fromActorType: string }>,
+  compiled: CompiledSpec,
+): ActualFlowResult {
+  const intendedRoutes = new Set(
+    compiled.routingRules
+      .filter((r) => r.toStepId)
+      .map((r) => `${r.fromStepId}→${r.toStepId}`),
+  )
+  const intendedStepIds = new Set(compiled.ticketRules.map((r) => r.stepId))
+
+  const actualEdges: ActualFlowEdge[] = delegations.map((d) => ({
+    fromStepId: d.fromStepId,
+    toStepId: d.toStepId,
+    fromActorType: d.fromActorType,
+    inIntended: intendedRoutes.has(`${d.fromStepId}→${d.toStepId}`),
+  }))
+
+  const executedSteps: ActualFlowStep[] = steps.map((s) => ({
+    stepId: s.stepId,
+    status: s.status,
+    inIntended: intendedStepIds.has(s.stepId),
+  }))
+
+  const deviations: ActualFlowDeviation[] = []
+  for (const edge of actualEdges) {
+    if (!edge.inIntended) {
+      deviations.push({
+        type: 'UNEXPECTED_EDGE',
+        detail: `Nem tervezett átmenet: ${edge.fromStepId} → ${edge.toStepId} (${edge.fromActorType})`,
+      })
+    }
+  }
+  for (const step of executedSteps) {
+    if (!step.inIntended) {
+      deviations.push({
+        type: 'UNEXPECTED_STEP',
+        detail: `Nem tervezett lépés futott: ${step.stepId}`,
+      })
+    }
+  }
+
+  return {
+    actualEdges,
+    executedSteps,
+    deviations,
+    reproducible: deviations.length === 0,
+  }
 }

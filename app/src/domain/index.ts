@@ -170,6 +170,7 @@ const generalTaskRuntime = new GeneralTaskRuntime(
   modelGateway,
   toolBrokerService,
   repositories.toolBroker,
+  workspaceStorage,
 )
 toolBrokerService.setDelegationProcessor(async ({ ticketId, targetAgentId }) => {
   await wikiRuntime.processTicket({ ticketId, agentId: targetAgentId })

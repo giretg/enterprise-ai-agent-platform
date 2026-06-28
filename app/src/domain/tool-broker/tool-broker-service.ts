@@ -10,6 +10,7 @@ import type {
   ToolCallStatus,
   UserStatus,
 } from '@prisma/client'
+import { randomUUID } from 'node:crypto'
 import { prisma } from '@/lib/db'
 import { personaFor } from '@/lib/agent-persona'
 import {
@@ -183,8 +184,9 @@ export type GmailSendArgs = {
 }
 
 export type HttpApiQuery = Record<string, string | number | boolean>
-export type HttpApiGetArgs = { path: string; query?: HttpApiQuery }
+export type HttpApiGetArgs = { connectorId?: string; path: string; query?: HttpApiQuery }
 export type HttpApiRequestArgs = {
+  connectorId?: string
   method: 'POST' | 'PUT' | 'PATCH' | 'DELETE'
   path: string
   query?: HttpApiQuery
@@ -538,12 +540,19 @@ function argsMeta(input: ToolBrokerInvokeInput): Record<string, unknown> {
   }
 
   if (input.tool === 'http_api_get') {
-    return { ...base, method: 'GET', path: input.args.path, queryKeys: Object.keys(input.args.query ?? {}).sort() }
+    return {
+      ...base,
+      connectorId: input.args.connectorId ?? null,
+      method: 'GET',
+      path: input.args.path,
+      queryKeys: Object.keys(input.args.query ?? {}).sort(),
+    }
   }
 
   if (input.tool === 'http_api_request') {
     return {
       ...base,
+      connectorId: input.args.connectorId ?? null,
       method: input.args.method,
       path: input.args.path,
       queryKeys: Object.keys(input.args.query ?? {}).sort(),
@@ -765,15 +774,29 @@ export class AllowlistAuthorizer implements Authorizer {
     }
 
     const requirement = TOOL_REQUIREMENTS[input.tool]
-    const connector = await this.tools.findConnectorForAgent(
-      input.agentId,
-      requirement.connectorType,
-      requirement.accessMode,
-    )
+    const requestedConnectorId =
+      (input.tool === 'http_api_get' || input.tool === 'http_api_request') &&
+      typeof input.args?.connectorId === 'string'
+        ? input.args.connectorId
+        : null
+    const connector = requestedConnectorId
+      ? await this.tools.findConnectorForAgentById(
+          input.agentId,
+          requestedConnectorId,
+          requirement.connectorType,
+          requirement.accessMode,
+        )
+      : await this.tools.findConnectorForAgent(
+          input.agentId,
+          requirement.connectorType,
+          requirement.accessMode,
+        )
     if (!connector) {
       return {
         allowed: false,
-        reason: `missing_${requirement.connectorType}_connector_${requirement.accessMode}`,
+        reason: requestedConnectorId
+          ? `missing_${requirement.connectorType}_connector_${requirement.accessMode}_${requestedConnectorId}`
+          : `missing_${requirement.connectorType}_connector_${requirement.accessMode}`,
       }
     }
 
@@ -886,7 +909,7 @@ export class ToolBrokerService {
     }
 
     try {
-      const result = await this.executeTool(input, authorization, actingTenantId)
+      const result = await this.executeTool(input, authorization, actingTenantId, actingUserId)
       const latencyMs = Date.now() - startedAt
       const meta = resultMeta(result)
 
@@ -953,6 +976,7 @@ export class ToolBrokerService {
     input: ToolBrokerInvokeInput,
     authorization: Extract<AuthorizationResult, { allowed: true }>,
     actingTenantId: string | null,
+    actingUserId: string | null,
   ) {
     if (input.tool === 'kb_search') {
       return this.kbSearch(input.agentId, input.args, authorization.connector)
@@ -964,7 +988,7 @@ export class ToolBrokerService {
     if (input.tool === 'agent_catalog') return this.agentCatalog(input.args)
 
     if (input.tool === 'http_api_get' || input.tool === 'http_api_request') {
-      return this.executeHttpApiTool(input, authorization.connector)
+      return this.executeHttpApiTool(input, authorization.connector, actingTenantId, actingUserId)
     }
 
     if (input.tool.startsWith('file_') || input.tool.startsWith('xlsx_') || input.tool.startsWith('pdf_') || input.tool === 'docx_read') {
@@ -997,19 +1021,47 @@ export class ToolBrokerService {
   private async executeHttpApiTool(
     input: Extract<ToolBrokerInvokeInput, { tool: 'http_api_get' | 'http_api_request' }>,
     connector: Connector,
+    actingTenantId: string | null,
+    actingUserId: string | null,
   ): Promise<HttpApiCallResult> {
     const config = parseHttpApiConfig(connector.config)
-    const apiKey = await resolveConnectorApiKey(connector.secretAlias)
-    const client = new HttpApiClient(config, apiKey)
+    const defaultApiKey = connector.secretAlias
+      ? await resolveConnectorApiKey(connector.secretAlias)
+      : undefined
+    const client = new HttpApiClient(config, {
+      defaultApiKey,
+      resolveProfileApiKey: (_profile, secretAlias) => resolveConnectorApiKey(secretAlias),
+    })
+    const callId = randomUUID()
+    const actingUser = actingUserId
+      ? await prisma.user.findUnique({
+          where: { id: actingUserId },
+          select: { id: true, email: true, tenantId: true },
+        })
+      : null
+    const context = {
+      agent: { id: input.agentId, version: input.agentVersion },
+      connector: { id: connector.id, name: connector.name },
+      actingUser,
+      tenant: actingTenantId ? { id: actingTenantId } : null,
+      call: { id: callId, idempotencyKey: callId },
+      now: { iso: new Date().toISOString() },
+    }
 
     if (input.tool === 'http_api_get') {
-      return client.request({ method: 'GET', path: input.args.path, query: input.args.query })
+      return client.request({
+        method: 'GET',
+        path: input.args.path,
+        query: input.args.query,
+        context,
+      })
     }
     return client.request({
       method: input.args.method,
       path: input.args.path,
       query: input.args.query,
       body: input.args.body,
+      context,
     })
   }
 

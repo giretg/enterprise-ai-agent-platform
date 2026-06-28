@@ -600,6 +600,59 @@ async function main() {
     assert.ok(a1After?.revokedAt, 'a régi default nincs revoke-olva')
   })
 
+  await test('startable — csak aktív process_type default published verzió indítható', async () => {
+    const repo = new FakePlaybookV2Repository()
+    const svc = new PlaybookV2Service(repo, new FakeAuditRepository())
+    const pb = await svc.createPlaybook({
+      tenantId: TENANT,
+      key: 'invoice-processing',
+      name: 'Invoice',
+      processType: 'invoice_processing',
+      actorUserId: AUTHOR,
+    })
+    const { version: v1 } = await svc.createPlaybookVersion({
+      tenantId: TENANT,
+      playbookId: pb.id,
+      spec: validSpec(),
+      changeSummary: 'init',
+      actorUserId: AUTHOR,
+    })
+    await svc.submitForApproval({ tenantId: TENANT, playbookVersionId: v1.id, actorUserId: AUTHOR })
+    await svc.publishPlaybookVersion({ tenantId: TENANT, playbookVersionId: v1.id, approverUserId: APPROVER })
+
+    assert.deepEqual(await svc.listStartablePlaybooks(TENANT), [])
+
+    await svc.assignPlaybook({
+      tenantId: TENANT,
+      playbookVersionId: v1.id,
+      assignmentType: 'process_type',
+      assignmentKey: 'invoice_processing',
+      isDefault: true,
+      actorUserId: AUTHOR,
+    })
+    assert.deepEqual(await svc.listStartablePlaybooks(TENANT), [
+      {
+        playbookId: pb.id,
+        name: 'Invoice',
+        processType: 'invoice_processing',
+        publishedVersionId: v1.id,
+        version: 1,
+      },
+    ])
+
+    const { version: v2 } = await svc.createPlaybookVersion({
+      tenantId: TENANT,
+      playbookId: pb.id,
+      spec: validSpec({ name: 'v2' }),
+      changeSummary: 'v2',
+      actorUserId: AUTHOR,
+    })
+    await svc.submitForApproval({ tenantId: TENANT, playbookVersionId: v2.id, actorUserId: AUTHOR })
+    await svc.publishPlaybookVersion({ tenantId: TENANT, playbookVersionId: v2.id, approverUserId: APPROVER })
+
+    assert.deepEqual(await svc.listStartablePlaybooks(TENANT), [])
+  })
+
   await test('§10.2/§15 — a teljes spec SOHA nem kerül auditba', async () => {
     const repo = new FakePlaybookV2Repository()
     const audit = new FakeAuditRepository()

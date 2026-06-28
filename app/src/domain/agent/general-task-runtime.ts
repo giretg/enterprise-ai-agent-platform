@@ -10,6 +10,7 @@ import { readTicketPromptText } from '@/lib/wiki-ticket-payload'
 import { formatHitsForPrompt, type KbHit } from '@/lib/kb-format'
 import type { ModelGateway, ModelConfig } from '../gateway/model-gateway'
 import type { ToolBrokerService } from '../tool-broker/tool-broker-service'
+import type { WorkspaceStorage } from '../file-editor/workspace-storage'
 import { formatAttachmentBlock } from './agent-chat-runtime'
 import { listAllowedChatTools, runAgentToolLoop } from './chat-tool-loop'
 
@@ -21,6 +22,11 @@ function readAttachmentIds(payload: Record<string, unknown>): string[] {
   const ids = payload.attachmentDocumentIds
   if (!Array.isArray(ids)) return []
   return ids.filter((id): id is string => typeof id === 'string')
+}
+
+function safeToolResultName(value: string): string {
+  const cleaned = value.replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '')
+  return cleaned.slice(0, 80) || 'tool-result'
 }
 
 /**
@@ -37,6 +43,7 @@ export class GeneralTaskRuntime {
     private gateway: ModelGateway,
     private toolBroker: ToolBrokerService,
     private toolCaps: ToolBrokerRepository,
+    private workspaceStorage: WorkspaceStorage,
   ) {}
 
   async processTicket(params: { ticketId: string; agentId: string }) {
@@ -87,6 +94,8 @@ export class GeneralTaskRuntime {
       messages,
       modelConfig,
       allowedTools,
+      archiveLargeToolResult: (input) =>
+        this.archiveLargeToolResult(ticket.tenantId ?? 'global', ticket.id, input),
     })
 
     const write = await this.toolBroker.invoke({
@@ -124,6 +133,25 @@ export class GeneralTaskRuntime {
   private async loadDocuments(ids: string[]) {
     const docs = await Promise.all(ids.map((id) => this.documents.findById(id)))
     return docs.filter((doc): doc is NonNullable<(typeof docs)[number]> => Boolean(doc))
+  }
+
+  private async archiveLargeToolResult(
+    tenantId: string,
+    ticketId: string,
+    input: { toolName: string; callId: string; turn: number; content: string },
+  ): Promise<{ path: string; bytes: number } | null> {
+    const bytes = Buffer.from(input.content, 'utf8')
+    const path = [
+      '.tool-results',
+      `${String(input.turn + 1).padStart(2, '0')}-${safeToolResultName(input.toolName)}-${safeToolResultName(input.callId)}.json`,
+    ].join('/')
+
+    try {
+      await this.workspaceStorage.write(tenantId, ticketId, path, bytes)
+      return { path, bytes: bytes.length }
+    } catch {
+      return null
+    }
   }
 
   private async fetchKbSearchContext(params: {

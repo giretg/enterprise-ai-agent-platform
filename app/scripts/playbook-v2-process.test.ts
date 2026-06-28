@@ -45,6 +45,10 @@ import {
   TicketStateMachine,
   TicketTransitionDenied,
 } from '../src/domain/playbook/ticket-state-machine'
+import { reconstructActualFlow } from '../src/lib/playbook-v2/runtime'
+import type { CompiledSpec } from '../src/domain/playbook/playbook-compiler'
+import { AuditChainService } from '../src/domain/audit/audit-chain-service'
+import { computeAuditHash, GENESIS_HASH } from '../src/lib/crypto/hash-chain'
 
 let failures = 0
 async function test(name: string, fn: () => void | Promise<void>) {
@@ -85,6 +89,42 @@ class FakeAuditRepository implements AuditRepository {
   byAction(action: string) {
     return this.entries.filter((e) => e.action === action)
   }
+}
+
+/** AuditRepository-implementáció helyes hash-lánccal — verifyChain teszthez. */
+class VerifyableAuditRepository implements AuditRepository {
+  entries: AuditLog[] = []
+  private prevHash = GENESIS_HASH
+
+  async append(data: Omit<AuditLog, 'id' | 'seq' | 'createdAt' | 'hash' | 'prevHash'>) {
+    const seq = BigInt(this.entries.length + 1)
+    const createdAt = new Date()
+    const hash = computeAuditHash({
+      seq,
+      prevHash: this.prevHash,
+      actorType: data.actorType,
+      actorId: data.actorId,
+      action: data.action,
+      targetType: data.targetType,
+      targetId: data.targetId,
+      createdAt,
+    })
+    const row = {
+      ...data,
+      id: randomUUID(),
+      seq,
+      createdAt,
+      hash,
+      prevHash: this.prevHash,
+    } as unknown as AuditLog
+    this.prevHash = hash
+    this.entries.push(row)
+    return row
+  }
+  async findMany() { return this.entries }
+  async findAll() { return this.entries }
+  async getActionCounts() { return {} }
+  byAction(action: string) { return this.entries.filter((e) => e.action === action) }
 }
 
 class FakePlaybookV2Repository implements PlaybookV2Repository {
@@ -505,9 +545,12 @@ async function main() {
 
     const entryTicket = ctx.ticketRepo.tickets.find((t) => t.id === proc.rootTicketId)!
     assert.equal(entryTicket.state, 'ready')
+    assert.equal(entryTicket.title, 'Számlaadatok kinyerése')
     assert.equal(entryTicket.assigneeType, 'agent')
     assert.equal(entryTicket.playbookStepId, 'extract')
     assert.equal(entryTicket.playbookVersionId, ctx.versionId)
+    const entryStep = ctx.procRepo.steps.find((s) => s.stepId === 'extract')!
+    assert.equal(entryStep.stepName, 'Számlaadatok kinyerése')
   })
 
   await test('P5 — agent befejezi a belépő stepet → emberi step + ticket + delegacio (delivered)', async () => {
@@ -537,6 +580,7 @@ async function main() {
     // Következő (emberi) ticket létrejött, PIN-elt verzióval és kapuval.
     const approvalTicket = ctx.ticketRepo.tickets.find((t) => t.playbookStepId === 'approval')!
     assert.ok(approvalTicket, 'nincs approval ticket')
+    assert.equal(approvalTicket.title, 'Könyvelési jóváhagyás')
     assert.equal(approvalTicket.state, 'awaiting_human')
     assert.equal(approvalTicket.assigneeType, 'human')
     assert.equal(approvalTicket.requiredGateId, 'approve_posting')
@@ -548,6 +592,89 @@ async function main() {
     assert.equal(delegation.status, 'delivered')
     assert.equal(ctx.audit.byAction('process.step.create').length, 2) // entry + approval
     assert.equal(ctx.audit.byAction('delegation.create').length, 1)
+  })
+
+  await test('P5b — onComplete gate jóváhagyás után determinisztikusan nyitja a következő stepet', async () => {
+    const ctx = await setupPublished(
+      demoSpec({
+        steps: [
+          {
+            id: 'extract',
+            name: 'Számlaadatok kinyerése',
+            ticketType: 'invoice_extract',
+            assignedRole: 'extractor',
+            allowedStates: ['ready', 'in_progress', 'done'],
+            onComplete: [
+              { condition: 'default', gateId: 'low_confidence_review', nextStepId: 'approval' },
+            ],
+          },
+          {
+            id: 'approval',
+            name: 'Könyvelési jóváhagyás',
+            ticketType: 'human_approval',
+            assignedRole: 'approver',
+            allowedStates: ['awaiting_human', 'approved'],
+          },
+        ],
+        gates: [
+          {
+            id: 'low_confidence_review',
+            type: 'manual_review',
+            requiredActorRole: 'approver',
+            blocking: true,
+            criticality: 'L1',
+            evidenceRequired: true,
+          },
+        ],
+        transitions: [{ fromStepId: 'extract', toStepId: 'approval', trigger: 'step.completed' }],
+      }),
+    )
+    const proc = await ctx.processService.startProcess({
+      tenantId: TENANT,
+      processType: 'invoice_processing',
+      inputPayload: {},
+      startedBy: { type: 'agent', id: AGENT },
+    })
+    const entry = ctx.ticketRepo.tickets.find((t) => t.id === proc.rootTicketId)!
+
+    await ctx.stateMachine.transitionTicket({
+      tenantId: TENANT,
+      ticketId: entry.id,
+      toState: 'in_progress',
+      actor: { type: 'agent', id: AGENT },
+    })
+    await ctx.stateMachine.transitionTicket({
+      tenantId: TENANT,
+      ticketId: entry.id,
+      toState: 'done',
+      actor: { type: 'agent', id: AGENT },
+      outputPayload: { decision: 'needs_review' },
+    })
+
+    const waitingProc = await ctx.processService.getProcess(TENANT, proc.id)
+    assert.equal(waitingProc.status, 'awaiting_human')
+    const gateTicket = ctx.ticketRepo.tickets.find((t) => t.requiredGateId === 'low_confidence_review')!
+    assert.ok(gateTicket, 'nincs routing gate ticket')
+    assert.equal(gateTicket.playbookStepId, 'extract')
+    assert.equal(gateTicket.state, 'awaiting_human')
+    assert.equal(ctx.procRepo.steps.find((s) => s.stepId === 'extract')?.status, 'awaiting_gate')
+
+    await ctx.stateMachine.transitionTicket({
+      tenantId: TENANT,
+      ticketId: gateTicket.id,
+      toState: 'approved',
+      actor: { type: 'user', id: APPROVER_USER, roles: ['approver'] },
+      approvalEvidence: { note: 'ellenőrizve' },
+    })
+
+    const approvalTicket = ctx.ticketRepo.tickets.find((t) => t.playbookStepId === 'approval')!
+    assert.ok(approvalTicket, 'a kapu után nem jött létre a következő step ticketje')
+    assert.equal(approvalTicket.state, 'awaiting_human')
+    assert.equal(approvalTicket.playbookVersionId, ctx.versionId)
+    const runningProc = await ctx.processService.getProcess(TENANT, proc.id)
+    assert.equal(runningProc.status, 'running')
+    assert.equal(ctx.procRepo.steps.find((s) => s.stepId === 'extract')?.status, 'completed')
+    assert.equal(ctx.procRepo.delegations.find((d) => d.toStepId === 'approval')?.status, 'delivered')
   })
 
   await test('P6 — agent NEM lépheti át a blocking emberi kaput (gate.bypass_denied)', async () => {
@@ -723,6 +850,103 @@ async function main() {
       startedBy: { type: 'user', id: AUTHOR },
     })
     await assert.rejects(() => ctx.processService.getProcess(randomUUID(), proc.id))
+  })
+
+  // --- P12 — actual flow rekonstrukció auditból ----------------------------
+
+  await test('P12 — teljes flow rekonstruálható delegation_edge-ekből, nincs eltérés', async () => {
+    const ctx = await setupPublished(demoSpec())
+    const proc = await ctx.processService.startProcess({
+      tenantId: TENANT,
+      processType: 'invoice_processing',
+      inputPayload: {},
+      startedBy: { type: 'agent', id: AGENT },
+    })
+    const entry = ctx.ticketRepo.tickets.find((t) => t.id === proc.rootTicketId)!
+    await ctx.stateMachine.transitionTicket({ tenantId: TENANT, ticketId: entry.id, toState: 'in_progress', actor: { type: 'agent', id: AGENT } })
+    await ctx.stateMachine.transitionTicket({ tenantId: TENANT, ticketId: entry.id, toState: 'done', actor: { type: 'agent', id: AGENT }, outputPayload: { decision: 'post' } })
+    const approvalTicket = ctx.ticketRepo.tickets.find((t) => t.playbookStepId === 'approval')!
+    await ctx.stateMachine.transitionTicket({
+      tenantId: TENANT,
+      ticketId: approvalTicket.id,
+      toState: 'approved',
+      actor: { type: 'user', id: APPROVER_USER, roles: ['approver'] },
+      approvalEvidence: { signature: 'sig-p12' },
+    })
+
+    const detail = await ctx.procRepo.findProcessDetail(TENANT, proc.id)
+    if (!detail) throw new Error('nincs process detail')
+
+    const publishedVersion = ctx.pbRepo.versions.find((v) => v.id === proc.playbookVersionId)!
+    const compiled = publishedVersion.compiledSpec as unknown as CompiledSpec
+
+    const flow = reconstructActualFlow(detail.steps, detail.delegations, compiled)
+
+    // Összes él szándékolt
+    assert.equal(flow.deviations.length, 0, 'eltérések: ' + JSON.stringify(flow.deviations))
+    assert.equal(flow.reproducible, true)
+
+    // Pontosan egy él: extract → approval
+    assert.equal(flow.actualEdges.length, 1)
+    assert.equal(flow.actualEdges[0].fromStepId, 'extract')
+    assert.equal(flow.actualEdges[0].toStepId, 'approval')
+    assert.equal(flow.actualEdges[0].inIntended, true)
+
+    // Mindkét step szándékolt
+    assert.equal(flow.executedSteps.length, 2)
+    assert.ok(flow.executedSteps.every((s) => s.inIntended))
+  })
+
+  await test('P12 — nem tervezett él UNEXPECTED_EDGE eltérésként jelenik meg', async () => {
+    // Minimális in-memory setup: kézzel gyártott delegation és compiled spec
+    const spec = demoSpec()
+    const parsed = (await import('../src/lib/playbook-v2/spec')).parsePlaybookSpecV2(spec)
+    const { PlaybookCompiler } = await import('../src/domain/playbook/playbook-compiler')
+    const compiled = new PlaybookCompiler().compile(parsed, {})
+
+    const steps = [
+      { stepId: 'extract', status: 'completed', assignedRole: 'extractor' },
+    ]
+    const delegations = [
+      { fromStepId: 'extract', toStepId: 'nonexistent_step', fromActorType: 'agent' },
+    ]
+
+    const flow = reconstructActualFlow(steps, delegations, compiled)
+    assert.equal(flow.reproducible, false)
+    assert.ok(flow.deviations.length >= 1)
+    assert.equal(flow.deviations[0].type, 'UNEXPECTED_EDGE')
+    assert.ok(flow.deviations[0].detail.includes('nonexistent_step'))
+  })
+
+  // --- verifyChain — Playbook audit események lánca ------------------------
+
+  await test('verifyChain — Playbook audit események hash-lánca ép', async () => {
+    const audit = new VerifyableAuditRepository()
+    const playbookId = randomUUID()
+    const processId = randomUUID()
+
+    // Playbook életciklus események
+    await audit.append({ actorType: 'human', actorId: AUTHOR, action: 'playbook.create', targetType: 'playbook_v2', targetId: playbookId, agentVersion: null, modelUsed: null, inputRef: null, outputRef: null, policyDecision: null, metadata: {} })
+    await audit.append({ actorType: 'human', actorId: APPROVER_USER, action: 'playbook.version.publish', targetType: 'playbook_version_v2', targetId: randomUUID(), agentVersion: null, modelUsed: null, inputRef: null, outputRef: null, policyDecision: 'published', metadata: { playbook_id: playbookId } })
+    // Process futás események
+    await audit.append({ actorType: 'agent', actorId: AGENT, action: 'process.start', targetType: 'process_instance', targetId: processId, agentVersion: null, modelUsed: null, inputRef: null, outputRef: null, policyDecision: 'started', metadata: { process_type: 'invoice_processing' } })
+    await audit.append({ actorType: 'agent', actorId: AGENT, action: 'gate.bypass_denied', targetType: 'ticket', targetId: randomUUID(), agentVersion: null, modelUsed: null, inputRef: null, outputRef: null, policyDecision: 'denied', metadata: { process_instance_id: processId, gate_id: 'approve_posting' } })
+    await audit.append({ actorType: 'human', actorId: APPROVER_USER, action: 'gate.approve', targetType: 'ticket', targetId: randomUUID(), agentVersion: null, modelUsed: null, inputRef: null, outputRef: null, policyDecision: 'approved', metadata: { process_instance_id: processId, gate_id: 'approve_posting' } })
+    await audit.append({ actorType: 'system', actorId: null, action: 'process.complete', targetType: 'process_instance', targetId: processId, agentVersion: null, modelUsed: null, inputRef: null, outputRef: null, policyDecision: 'completed', metadata: { process_instance_id: processId } })
+
+    const chainService = new AuditChainService(audit as unknown as AuditRepository)
+    const result = await chainService.verifyChain()
+
+    assert.equal(result.ok, true, 'audit-lánc törött: ' + JSON.stringify(result))
+    assert.equal(result.checked, 6)
+
+    // Playbook-specifikus esemény-lánc teljessége
+    const actions = audit.entries.map((e) => e.action)
+    assert.ok(actions.includes('playbook.version.publish'), 'publish esemény hiányzik a láncból')
+    assert.ok(actions.includes('process.start'), 'process.start hiányzik a láncból')
+    assert.ok(actions.includes('gate.bypass_denied'), 'gate.bypass_denied hiányzik a láncból')
+    assert.ok(actions.includes('gate.approve'), 'gate.approve hiányzik a láncból')
+    assert.ok(actions.includes('process.complete'), 'process.complete hiányzik a láncból')
   })
 
   console.log(`\n${failures === 0 ? '✅ Mind zöld' : `❌ ${failures} bukott teszt`}`)

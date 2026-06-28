@@ -142,6 +142,7 @@ export class ProcessService {
     tenantId: string | null
     processInstanceId: string
     completedStepId: string
+    completedGateId?: string | null
     actor: ProcessActor
     resultPayload?: Record<string, unknown>
   }): Promise<ProcessAdvanceResult> {
@@ -172,7 +173,9 @@ export class ProcessService {
     // Az ebbe a stepbe vezető delegacios él(ek) lezárása (done).
     await this.closeIncomingDelegations(process.id, input.completedStepId)
 
-    const decision = evaluateAdvance(compiled, input.completedStepId, input.resultPayload ?? {})
+    const decision = input.completedGateId
+      ? this.evaluateGateAdvance(compiled, input.completedStepId, input.completedGateId)
+      : evaluateAdvance(compiled, input.completedStepId, input.resultPayload ?? {})
 
     if (decision.kind === 'complete') {
       await this.processes.updateProcess(process.id, {
@@ -234,6 +237,9 @@ export class ProcessService {
     }
 
     // decision.kind === 'next_step'
+    if (process.status !== 'running') {
+      await this.processes.updateProcess(process.id, { status: 'running' })
+    }
     const nextTicket = await this.createStepWithTicket(
       input.tenantId,
       process,
@@ -243,6 +249,18 @@ export class ProcessService {
       { fromStepId: input.completedStepId, fromTicketId: completedStep?.ticketId ?? null },
     )
     return { kind: 'next_step', stepId: decision.toStepId, ticketId: nextTicket.id }
+  }
+
+  private evaluateGateAdvance(
+    compiled: CompiledSpec,
+    completedStepId: string,
+    completedGateId: string,
+  ): Exclude<ReturnType<typeof evaluateAdvance>, { kind: 'await_gate' }> {
+    const gateRule = compiled.routingRules.find(
+      (r) => r.fromStepId === completedStepId && r.gateId === completedGateId,
+    )
+    if (!gateRule?.toStepId) return { kind: 'complete' }
+    return { kind: 'next_step', toStepId: gateRule.toStepId, rule: gateRule }
   }
 
   // --- §8.2 cancelProcess ----------------------------------------------------
@@ -303,13 +321,15 @@ export class ProcessService {
       throw new ProcessServiceError('COMPILED_SPEC_MISSING', `Nincs compiled szabály a(z) '${stepId}' stephez.`)
     }
     const isHuman = this.isHumanStep(rule)
-    const requiredGateId = compiled.gates.find((g) => g.stepId === stepId && g.blocking)?.gateId ?? null
+    const requiredGateId = isHuman
+      ? compiled.gates.find((g) => g.stepId === stepId && g.blocking)?.gateId ?? null
+      : null
 
     const step = await this.processes.createStep({
       tenantId,
       processInstanceId: process.id,
       stepId: rule.stepId,
-      stepName: rule.stepId,
+      stepName: rule.stepName,
       status: 'ready',
       assignedRole: rule.assignedRole,
     })
@@ -319,7 +339,7 @@ export class ProcessService {
     const ticket = await this.tickets.create({
       tenantId,
       type: 'interaction',
-      title: rule.stepId,
+      title: rule.stepName,
       state: ticketState,
       assigneeType: isHuman ? 'human' : 'agent',
       assigneeId: null,

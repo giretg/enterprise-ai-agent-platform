@@ -199,6 +199,7 @@ check('compile: ticketRules minden stephez, allowedTransitions agent/human actor
   assert.equal(compiled.ticketRules.length, 2)
 
   const extract = compiled.ticketRules.find((r) => r.stepId === 'extract_invoice')!
+  assert.equal(extract.stepName, 'Szamlaadatok kinyerese')
   // agent role → agent+system actor
   assert.deepEqual(extract.allowedTransitions[0].allowedActorTypes, ['agent', 'system'])
   // done felé output contract kötelező
@@ -206,6 +207,7 @@ check('compile: ticketRules minden stephez, allowedTransitions agent/human actor
   assert.equal(toDone.requiresOutputContract, true)
 
   const approval = compiled.ticketRules.find((r) => r.stepId === 'approval')!
+  assert.equal(approval.stepName, 'Konyvelesi jovahagyas')
   // human role → user actor
   assert.deepEqual(approval.allowedTransitions[0].allowedActorTypes, ['user'])
 })

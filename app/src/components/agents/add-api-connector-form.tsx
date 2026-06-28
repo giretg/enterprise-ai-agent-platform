@@ -5,10 +5,73 @@ import { useState, useTransition } from 'react'
 import { createHttpApiConnectorForAgent } from '@/app/actions/platform'
 import { Card } from '@/components/ui/shell'
 
-type EndpointRow = { method: string; path: string; description: string }
+type EndpointRow = { method: string; path: string; description: string; idempotent: boolean; profile: string }
+type AuthProfiles = Record<
+  string,
+  {
+    secretAlias: string
+    auth?: { scheme: 'bearer' } | { scheme: 'header'; header: string }
+  }
+>
 
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const
 const INPUT = 'mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm'
+
+function parseHeaderJson(label: string, value: string): Record<string, string> | undefined {
+  if (!value.trim()) return undefined
+  const parsed = JSON.parse(value) as unknown
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error(`${label}: JSON objektumot adj meg.`)
+  }
+  const headers: Record<string, string> = {}
+  for (const [key, template] of Object.entries(parsed)) {
+    if (typeof template !== 'string') throw new Error(`${label}: minden fejléc értéke szöveg legyen.`)
+    headers[key] = template
+  }
+  return headers
+}
+
+function parseAuthProfilesJson(value: string): AuthProfiles | undefined {
+  if (!value.trim()) return undefined
+  const parsed = JSON.parse(value) as unknown
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('Auth profilok: JSON objektumot adj meg.')
+  }
+  const profiles: AuthProfiles = {}
+  for (const [name, rawProfile] of Object.entries(parsed)) {
+    if (!/^[a-zA-Z0-9_-]+$/.test(name)) {
+      throw new Error(`Auth profilok: érvénytelen profilnév: ${name}`)
+    }
+    if (typeof rawProfile !== 'object' || rawProfile === null || Array.isArray(rawProfile)) {
+      throw new Error(`Auth profilok: a(z) ${name} profil objektum legyen.`)
+    }
+    const profile = rawProfile as Record<string, unknown>
+    if (typeof profile.secretAlias !== 'string' || !profile.secretAlias.trim()) {
+      throw new Error(`Auth profilok: a(z) ${name} profilhoz secretAlias szükséges.`)
+    }
+    let auth: AuthProfiles[string]['auth']
+    if (profile.auth !== undefined) {
+      if (typeof profile.auth !== 'object' || profile.auth === null || Array.isArray(profile.auth)) {
+        throw new Error(`Auth profilok: a(z) ${name}.auth objektum legyen.`)
+      }
+      const authRaw = profile.auth as Record<string, unknown>
+      if (authRaw.scheme === 'bearer') auth = { scheme: 'bearer' }
+      else if (authRaw.scheme === 'header') {
+        if (typeof authRaw.header !== 'string' || !authRaw.header.trim()) {
+          throw new Error(`Auth profilok: a(z) ${name}.auth.header kötelező.`)
+        }
+        auth = { scheme: 'header', header: authRaw.header.trim() }
+      } else {
+        throw new Error(`Auth profilok: a(z) ${name}.auth.scheme bearer vagy header legyen.`)
+      }
+    }
+    profiles[name] = {
+      secretAlias: profile.secretAlias.trim(),
+      ...(auth ? { auth } : {}),
+    }
+  }
+  return Object.keys(profiles).length > 0 ? profiles : undefined
+}
 
 // Admin egy külső REST API-t köt egy agenthez: connector (http_api) létrehozása,
 // a kulcs a secret-store mögé kerül (NEM a DB-be), és a két http_api capability
@@ -26,9 +89,13 @@ export function AddApiConnectorForm({ agentId }: { agentId: string }) {
   const [apiKey, setApiKey] = useState('')
   const [accessMode, setAccessMode] = useState<'read' | 'write'>('write')
   const [description, setDescription] = useState('')
+  const [authProfilesText, setAuthProfilesText] = useState('')
+  const [defaultAuthProfile, setDefaultAuthProfile] = useState('')
+  const [requestHeadersText, setRequestHeadersText] = useState('')
+  const [writeHeadersText, setWriteHeadersText] = useState('')
   const [restrictToEndpoints, setRestrictToEndpoints] = useState(false)
   const [endpoints, setEndpoints] = useState<EndpointRow[]>([
-    { method: 'GET', path: '', description: '' },
+    { method: 'GET', path: '', description: '', idempotent: false, profile: '' },
   ])
 
   function updateEndpoint(index: number, patch: Partial<EndpointRow>) {
@@ -40,13 +107,31 @@ export function AddApiConnectorForm({ agentId }: { agentId: string }) {
       setError(null)
       setDone(null)
       const cleanedEndpoints = endpoints
-        .map((e) => ({ ...e, path: e.path.trim(), description: e.description.trim() }))
+        .map((e) => ({
+          ...e,
+          path: e.path.trim(),
+          description: e.description.trim(),
+          profile: e.profile.trim(),
+        }))
         .filter((e) => e.path.length > 0)
         .map((e) => ({
           method: e.method as EndpointRow['method'],
           path: e.path,
           ...(e.description ? { description: e.description } : {}),
+          ...(e.idempotent ? { idempotent: true } : {}),
+          ...(e.profile ? { profile: e.profile } : {}),
         }))
+      let requestHeaders: Record<string, string> | undefined
+      let writeHeaders: Record<string, string> | undefined
+      let authProfiles: AuthProfiles | undefined
+      try {
+        authProfiles = parseAuthProfilesJson(authProfilesText)
+        requestHeaders = parseHeaderJson('Minden hívás fejlécei', requestHeadersText)
+        writeHeaders = parseHeaderJson('Író hívások fejlécei', writeHeadersText)
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Hibás fejléc JSON.')
+        return
+      }
 
       const res = await createHttpApiConnectorForAgent({
         agentId,
@@ -56,6 +141,10 @@ export function AddApiConnectorForm({ agentId }: { agentId: string }) {
         ...(authScheme === 'header' ? { authHeader: authHeader.trim() } : {}),
         apiKey: apiKey.trim(),
         ...(description.trim() ? { description: description.trim() } : {}),
+        ...(authProfiles ? { authProfiles } : {}),
+        ...(defaultAuthProfile.trim() ? { defaultAuthProfile: defaultAuthProfile.trim() } : {}),
+        ...(requestHeaders ? { requestHeaders } : {}),
+        ...(writeHeaders ? { writeHeaders } : {}),
         accessMode,
         restrictToEndpoints,
         ...(cleanedEndpoints.length > 0 ? { endpoints: cleanedEndpoints } : {}),
@@ -67,7 +156,11 @@ export function AddApiConnectorForm({ agentId }: { agentId: string }) {
         setBaseUrl('')
         setApiKey('')
         setDescription('')
-        setEndpoints([{ method: 'GET', path: '', description: '' }])
+        setAuthProfilesText('')
+        setDefaultAuthProfile('')
+        setRequestHeadersText('')
+        setWriteHeadersText('')
+        setEndpoints([{ method: 'GET', path: '', description: '', idempotent: false, profile: '' }])
         setRestrictToEndpoints(false)
         router.refresh()
       } else {
@@ -166,13 +259,61 @@ export function AddApiConnectorForm({ agentId }: { agentId: string }) {
           />
         </label>
 
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <label className="block text-sm">
+            <span className="text-ink-soft">Auth profilok</span>
+            <textarea
+              value={authProfilesText}
+              onChange={(e) => setAuthProfilesText(e.target.value)}
+              rows={4}
+              placeholder={'{"delegated":{"secretAlias":"env:CRM_DELEGATED_API_KEY"}}'}
+              className={INPUT}
+            />
+          </label>
+          <label className="block text-sm">
+            <span className="text-ink-soft">Alap auth profil</span>
+            <input
+              value={defaultAuthProfile}
+              onChange={(e) => setDefaultAuthProfile(e.target.value)}
+              placeholder="service"
+              className={INPUT}
+            />
+          </label>
+        </div>
+
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <label className="block text-sm">
+            <span className="text-ink-soft">Minden hívás fejlécei</span>
+            <textarea
+              value={requestHeadersText}
+              onChange={(e) => setRequestHeadersText(e.target.value)}
+              rows={4}
+              placeholder={'{"X-Agent-Id":"{{agent.id}}","X-Acting-User":"{{actingUser.email}}","X-Connector-Call-Id":"{{call.id}}"}'}
+              className={INPUT}
+            />
+          </label>
+          <label className="block text-sm">
+            <span className="text-ink-soft">Író hívások fejlécei</span>
+            <textarea
+              value={writeHeadersText}
+              onChange={(e) => setWriteHeadersText(e.target.value)}
+              rows={4}
+              placeholder={'{"Idempotency-Key":"{{call.idempotencyKey}}"}'}
+              className={INPUT}
+            />
+          </label>
+        </div>
+
         <div className="space-y-2">
           <div className="flex items-center justify-between">
             <span className="text-sm text-ink-soft">Endpointok (a modell ezeket látja)</span>
             <button
               type="button"
               onClick={() =>
-                setEndpoints((prev) => [...prev, { method: 'GET', path: '', description: '' }])
+                setEndpoints((prev) => [
+                  ...prev,
+                  { method: 'GET', path: '', description: '', idempotent: false, profile: '' },
+                ])
               }
               className="rounded-lg border border-line px-2 py-1 text-xs text-ink-soft hover:bg-night-2"
             >
@@ -196,19 +337,33 @@ export function AddApiConnectorForm({ agentId }: { agentId: string }) {
                 value={row.path}
                 onChange={(e) => updateEndpoint(index, { path: e.target.value })}
                 placeholder="/banks/:bankId/crm"
-                className="col-span-9 rounded-lg border border-line bg-night-2 px-3 py-2 text-sm sm:col-span-4"
+                className="col-span-9 rounded-lg border border-line bg-night-2 px-3 py-2 text-sm sm:col-span-3"
               />
               <input
                 value={row.description}
                 onChange={(e) => updateEndpoint(index, { description: e.target.value })}
                 placeholder="Mit csinál (opcionális)"
-                className="col-span-10 rounded-lg border border-line bg-night-2 px-3 py-2 text-sm sm:col-span-5"
+                className="col-span-6 rounded-lg border border-line bg-night-2 px-3 py-2 text-sm sm:col-span-3"
               />
+              <input
+                value={row.profile}
+                onChange={(e) => updateEndpoint(index, { profile: e.target.value })}
+                placeholder="Profil"
+                className="col-span-4 rounded-lg border border-line bg-night-2 px-3 py-2 text-sm sm:col-span-2"
+              />
+              <label className="col-span-1 flex items-center justify-center rounded-lg border border-line bg-night-2 text-xs text-ink-soft sm:col-span-1">
+                <input
+                  type="checkbox"
+                  checked={row.idempotent}
+                  onChange={(e) => updateEndpoint(index, { idempotent: e.target.checked })}
+                  aria-label="Idempotens írás"
+                />
+              </label>
               <button
                 type="button"
                 onClick={() => setEndpoints((prev) => prev.filter((_, i) => i !== index))}
                 disabled={endpoints.length === 1}
-                className="col-span-2 rounded-lg border border-line text-sm text-ink-faint hover:bg-night-2 disabled:opacity-40 sm:col-span-1"
+                className="col-span-1 rounded-lg border border-line text-sm text-ink-faint hover:bg-night-2 disabled:opacity-40 sm:col-span-1"
                 aria-label="Sor törlése"
               >
                 ✕

@@ -147,6 +147,105 @@ async function main() {
     }
   })
 
+  await test('valódi fetch: sablonozott fejléceket és idempotencia kulcsot injektál', async () => {
+    const calls: Array<{ url: string; init: RequestInit }> = []
+    const fakeFetch: typeof fetch = async (input, init) => {
+      calls.push({ url: String(input), init: init ?? {} })
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = fakeFetch
+    try {
+      const config = parseHttpApiConfig({
+        baseUrl: 'https://crm.example/api/connector/v1',
+        auth: { scheme: 'bearer' },
+        requestHeaders: {
+          'X-Agent-Id': '{{agent.id}}',
+          'X-Acting-User': '{{actingUser.email}}',
+          'X-Connector-Call-Id': '{{call.id}}',
+        },
+        endpoints: [{ method: 'POST', path: '/tasks', idempotent: true }],
+        restrictToEndpoints: true,
+      })
+      const client = new HttpApiClient(config, 'crm_key')
+      await client.request({
+        method: 'POST',
+        path: '/tasks',
+        body: { title: 'Teszt' },
+        context: {
+          agent: { id: 'ostoros-crm-testpilot', version: 3 },
+          connector: { id: 'connector-1', name: 'Ostoros CRM' },
+          actingUser: {
+            id: 'user-1',
+            email: 'ertekesito@ostorosbor.hu',
+            tenantId: 'tenant-1',
+          },
+          tenant: { id: 'tenant-1' },
+          call: { id: 'call-001', idempotencyKey: 'idem-001' },
+          now: { iso: '2026-06-28T00:00:00.000Z' },
+        },
+      })
+      const headers = calls[0].init.headers as Record<string, string>
+      assert.equal(headers.authorization, 'Bearer crm_key')
+      assert.equal(headers['X-Agent-Id'], 'ostoros-crm-testpilot')
+      assert.equal(headers['X-Acting-User'], 'ertekesito@ostorosbor.hu')
+      assert.equal(headers['X-Connector-Call-Id'], 'call-001')
+      assert.equal(headers['Idempotency-Key'], 'idem-001')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await test('valódi fetch: endpoint auth profil külön secretet használ', async () => {
+    process.env.CRM_DELEGATED_TEST_KEY = 'delegated-secret'
+    const calls: RequestInit[] = []
+    const fakeFetch: typeof fetch = async (_input, init) => {
+      calls.push(init ?? {})
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = fakeFetch
+    try {
+      const config = parseHttpApiConfig({
+        baseUrl: 'https://crm.example/api/connector/v1',
+        auth: { scheme: 'bearer' },
+        authProfiles: {
+          delegated: { secretAlias: 'env:CRM_DELEGATED_TEST_KEY' },
+        },
+        endpoints: [{ method: 'POST', path: '/interactions', profile: 'delegated' }],
+        restrictToEndpoints: true,
+      })
+      const client = new HttpApiClient(config, {
+        defaultApiKey: 'service-secret',
+        resolveProfileApiKey: (_profile, secretAlias) => resolveConnectorApiKey(secretAlias),
+      })
+      await client.request({
+        method: 'POST',
+        path: '/interactions',
+        body: { summary: 'Teszt' },
+        context: {
+          agent: { id: 'agent-1' },
+          connector: { id: 'connector-1', name: 'CRM' },
+          actingUser: null,
+          tenant: null,
+          call: { id: 'call-002', idempotencyKey: 'idem-002' },
+          now: { iso: '2026-06-28T00:00:00.000Z' },
+        },
+      })
+      const headers = calls[0].headers as Record<string, string>
+      assert.equal(headers.authorization, 'Bearer delegated-secret')
+    } finally {
+      globalThis.fetch = originalFetch
+      delete process.env.CRM_DELEGATED_TEST_KEY
+    }
+  })
+
   if (failures > 0) {
     console.error(`\n${failures} teszt elbukott.`)
     process.exit(1)

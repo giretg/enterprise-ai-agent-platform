@@ -70,7 +70,26 @@ function fakeToolBroker(record: ToolBrokerInvokeInput[]): ToolBrokerService {
   } as unknown as ToolBrokerService
 }
 
-const fakeToolCaps = {} as unknown as ToolBrokerRepository
+function fakeToolBrokerResult(
+  record: ToolBrokerInvokeInput[],
+  result: Record<string, unknown>,
+): ToolBrokerService {
+  return {
+    invoke: async (input: ToolBrokerInvokeInput): Promise<ToolBrokerInvokeResult> => {
+      record.push(input)
+      return {
+        denied: false,
+        result,
+        resultMeta: {},
+        latencyMs: 1,
+      } as unknown as ToolBrokerInvokeResult
+    },
+  } as unknown as ToolBrokerService
+}
+
+const fakeToolCaps = {
+  findConnectorsForAgent: async () => [],
+} as unknown as ToolBrokerRepository
 
 async function main() {
   console.log('=== agent tool loop + routing teszt ===')
@@ -187,6 +206,50 @@ async function main() {
     assert.equal(result.toolCallCount, 1)
     assert.equal(brokerCalls.length, 1)
     assert.equal(brokerCalls[0].tool, 'file_read')
+  })
+
+  await check('nagy tool eredmény: teljes tartalom archiválva, kontextusban csak előnézet', async () => {
+    const gwCalls: GatewayCallArgs[] = []
+    const brokerCalls: ToolBrokerInvokeInput[] = []
+    const largeRows = Array.from({ length: 400 }, (_, i) => ({
+      id: i + 1,
+      name: `Ügyfél ${i + 1}`,
+      revenue: (i + 1) * 1000,
+      note: 'hosszú crm sor '.repeat(8),
+    }))
+    const archived: Array<{ path: string; content: string }> = []
+
+    const result = await runAgentToolLoop({
+      gateway: fakeGateway(
+        [
+          { toolCalls: [{ id: 'crm-call', name: 'http_api_get', input: { path: '/customers' } }] },
+          { content: 'A teljes CRM eredményt feldolgoztam.' },
+        ],
+        gwCalls,
+      ),
+      toolBroker: fakeToolBrokerResult(brokerCalls, { customers: largeRows }),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-1' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'milyen ügyfelek vannak?' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: ['http_api_get'],
+      archiveLargeToolResult: async ({ content }) => {
+        archived.push({ path: '.tool-results/01-http_api_get-crm-call.json', content })
+        return { path: '.tool-results/01-http_api_get-crm-call.json', bytes: Buffer.byteLength(content) }
+      },
+    })
+
+    assert.equal(result.content, 'A teljes CRM eredményt feldolgoztam.')
+    assert.equal(archived.length, 1)
+    assert.match(archived[0].content, /Ügyfél 400/)
+    const toolMessage = gwCalls[1].messages.find((m) => m.role === 'tool')
+    assert.ok(toolMessage)
+    assert.match(toolMessage.content, /A teljes eredmény elmentve/)
+    assert.match(toolMessage.content, /tool_result_read/)
+    assert.ok(!toolMessage.content.includes('Ügyfél 400'))
   })
 
   await check('routing: hiányzó / üres / wiki source → wiki', () => {

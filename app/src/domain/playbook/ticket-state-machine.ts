@@ -222,13 +222,18 @@ export class TicketStateMachine {
         tenantId: input.tenantId,
         processInstanceId: ticket.processInstanceId,
         completedStepId: ticket.playbookStepId,
+        completedGateId:
+          ticket.requiredGateId && fromState === 'awaiting_human' && input.toState === 'approved'
+            ? ticket.requiredGateId
+            : null,
         actor: { type: input.actor.type, id: input.actor.id ?? null },
         resultPayload,
       })
-      if (step && step.status !== 'completed') {
+      const freshStep = step ? await this.processes.findStepByTicket(input.tenantId, ticket.id) : null
+      if (freshStep && freshStep.status !== 'completed' && freshStep.status !== 'awaiting_gate') {
         // advance() lezárja a stepet; ha eltérő ticket-step párosítás miatt nem találta,
         // itt biztosítjuk a step completed-állapotát.
-        await this.processes.updateStep(step.id, { status: 'completed', completedAt: new Date() })
+        await this.processes.updateStep(freshStep.id, { status: 'completed', completedAt: new Date() })
       }
     }
 
