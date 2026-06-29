@@ -5,6 +5,10 @@ import { config } from 'dotenv'
 import { PrismaClient } from '@prisma/client'
 import bcrypt from 'bcryptjs'
 import { ensureAgentKnowledgeBase } from '../src/lib/agent-knowledge-base'
+import {
+  PROVISIONING_ASSISTANT_TEMPLATE,
+  PROVISIONING_DRAFT_CAPABILITIES,
+} from '../src/domain/provisioning/provisioning-assistant'
 
 config({ path: path.join(process.cwd(), '.env.local') })
 config({ path: path.join(process.cwd(), '.env') })
@@ -92,6 +96,82 @@ async function ensureBookkeeperAgent(adminId: string) {
 
   await ensureToolBrokerSeed(agent.id)
   return agent
+}
+
+/**
+ * F2-P-F: a provisioning-asszisztens agent szerep-sablonja az Agent Registryben
+ * (Feature-spec — Provisioning-Assistant §6.1). Erősen korlátozott `worker`: az
+ * EGYETLEN író felülete a `provisioning.draft.*` capability-osztály (deny-by-default),
+ * nincs eszközjoga, connectorja, secretje. Aktiválás/hozzárendelés sosem agent-aktus.
+ */
+async function ensureProvisioningAssistantAgent(adminId: string) {
+  const t = PROVISIONING_ASSISTANT_TEMPLATE
+  const existing = await prisma.agent.findFirst({ where: { name: t.name } })
+  if (existing) {
+    await ensureProvisioningAssistantCapabilities(existing.id)
+    return existing
+  }
+
+  const memory = await prisma.memory.create({ data: {} })
+  const memoryVersion = await prisma.memoryVersion.create({
+    data: {
+      memoryId: memory.id,
+      version: 1,
+      content:
+        'Provisioning Assistant — API-doksiból draft connector-deskriptort generál (propose, not apply).',
+      status: 'active',
+      source: 'seed',
+      approvedById: adminId,
+    },
+  })
+  await prisma.memory.update({
+    where: { id: memory.id },
+    data: { currentVersionId: memoryVersion.id },
+  })
+
+  const modelConfig = { ...t.modelConfig }
+
+  const agent = await prisma.agent.create({
+    data: {
+      name: t.name,
+      roleInstruction: t.roleInstruction,
+      behaviorProfile: t.behaviorProfile,
+      modelConfig,
+      status: 'active',
+      role: t.role,
+      currentVersion: 1,
+      currentRoleInstructionVersion: 1,
+      currentBehaviorProfileVersion: 1,
+      memoryId: memory.id,
+    },
+  })
+
+  await prisma.agentVersion.create({
+    data: {
+      agentId: agent.id,
+      version: 1,
+      roleInstructionSnapshot: t.roleInstruction,
+      behaviorProfileSnapshot: t.behaviorProfile,
+      roleInstructionVersion: 1,
+      behaviorProfileVersion: 1,
+      modelConfigSnapshot: modelConfig,
+      memoryVersionId: memoryVersion.id,
+    },
+  })
+
+  await ensureProvisioningAssistantCapabilities(agent.id)
+  return agent
+}
+
+/** A `provisioning.draft.*` capability-seed (deny-by-default → itt kifejezetten allowed). */
+async function ensureProvisioningAssistantCapabilities(agentId: string) {
+  for (const toolName of PROVISIONING_DRAFT_CAPABILITIES) {
+    await prisma.capability.upsert({
+      where: { agentId_toolName: { agentId, toolName } },
+      create: { agentId, toolName, allowed: true },
+      update: { allowed: true },
+    })
+  }
 }
 
 async function ensureChatToolsForAgent(agentId: string) {
@@ -946,8 +1026,12 @@ async function main() {
     await ensureToolBrokerSeed(existingAgent.id)
     await ensureBookkeeperAgent(admin.id)
     await ensureHSMOfficerAgent(admin.id)
+    const provisioningAssistant = await ensureProvisioningAssistantAgent(admin.id)
     const allAgents = await prisma.agent.findMany({ select: { id: true } })
     for (const row of allAgents) {
+      // A provisioning-asszisztens least-privilege: NEM kap chat/board eszközjogot (§6.1),
+      // csak a provisioning.draft.* capability-osztályt.
+      if (row.id === provisioningAssistant.id) continue
       await ensureChatToolsForAgent(row.id)
     }
     await ensureWikiRecipe(existingAgent.id, admin.id)
@@ -1026,6 +1110,7 @@ async function main() {
   await ensureToolBrokerSeed(agent.id)
   await ensureBookkeeperAgent(admin.id)
   await ensureHSMOfficerAgent(admin.id)
+  await ensureProvisioningAssistantAgent(admin.id)
   await ensureWikiRecipe(agent.id, admin.id)
   await ensureWikiPlaybook(admin.id)
   await ensureDemoApiKey(agent.id)

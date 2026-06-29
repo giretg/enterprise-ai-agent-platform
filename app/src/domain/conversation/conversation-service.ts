@@ -1,16 +1,30 @@
-import type { AuditActorType, Ticket } from '@prisma/client'
-import type { AuditRepository, ConversationRepository, TicketRepository } from '@/repositories/interfaces'
+import type {
+  AuditActorType,
+  Conversation,
+  MessageCriticality,
+  MessageRole,
+  Ticket,
+} from '@prisma/client'
+import type {
+  AuditRepository,
+  ConversationRepository,
+  TicketRepository,
+} from '@/repositories/interfaces'
 import type { PlaybookService } from '../playbook/playbook-service'
 
 export type ConversationMessageView = {
   id: string
   seq: number
   role: string
+  actingUserId: string | null
   content: string | null
+  contentHash: string | null
   agentVersion: number | null
   model: string | null
   contentDeletedAt: Date | null
   ticketRefId: string | null
+  auditEventRef: string | null
+  criticality: string | null
   createdAt: Date
 }
 
@@ -22,17 +36,60 @@ export class ConversationService {
     private playbooks: PlaybookService,
   ) {}
 
+  private async findConversationScoped(params: {
+    conversationId: string
+    tenantId?: string | null
+    actorId?: string | null
+  }): Promise<Conversation | null> {
+    if (params.tenantId === undefined) {
+      return this.conversations.findById(params.conversationId)
+    }
+
+    const conversation = await this.conversations.findByIdForTenant(
+      params.conversationId,
+      params.tenantId,
+    )
+    if (conversation) return conversation
+
+    const existing = await this.conversations.findById(params.conversationId)
+    if (existing) {
+      await this.audit.append({
+        actorType: params.actorId ? 'human' : 'system',
+        actorId: params.actorId ?? null,
+        agentVersion: null,
+        action: 'access.denied',
+        targetType: 'conversation',
+        targetId: params.conversationId,
+        modelUsed: null,
+        inputRef: null,
+        outputRef: null,
+        policyDecision: 'denied',
+        metadata: {
+          reason: 'cross_tenant',
+          tenantId: params.tenantId,
+          conversationTenantId: existing.tenantId,
+        },
+      })
+    }
+
+    return null
+  }
+
   async createConversation(params: {
     agentId: string
     createdById: string
     tenantId?: string | null
     title?: string | null
+    retentionPolicyId?: string | null
+    legalHold?: boolean
   }) {
     const conversation = await this.conversations.create({
       tenantId: params.tenantId ?? null,
       agentId: params.agentId,
       title: params.title ?? null,
       createdById: params.createdById,
+      retentionPolicyId: params.retentionPolicyId ?? null,
+      legalHold: params.legalHold ?? false,
     })
 
     await this.audit.append({
@@ -44,9 +101,17 @@ export class ConversationService {
       targetId: conversation.id,
       modelUsed: null,
       inputRef: params.agentId,
-      outputRef: conversation.title ?? null,
+      outputRef: conversation.id,
       policyDecision: 'allowed',
-      metadata: { tenantId: params.tenantId ?? null },
+      metadata: {
+        conversationId: conversation.id,
+        tenantId: params.tenantId ?? null,
+        agentId: params.agentId,
+        createdBy: params.createdById,
+        retentionPolicyId: conversation.retentionPolicyId,
+        retainUntil: conversation.retainUntil?.toISOString() ?? null,
+        legalHold: conversation.legalHold,
+      },
     })
 
     return conversation
@@ -54,22 +119,36 @@ export class ConversationService {
 
   async appendMessage(params: {
     conversationId: string
-    role: 'user' | 'agent' | 'system'
+    role: MessageRole
     content: string
+    tenantId?: string | null
+    actingUserId?: string | null
     agentVersion?: number | null
     model?: string | null
+    criticality?: MessageCriticality | null
     actorType?: AuditActorType
     actorId?: string | null
   }) {
+    if (params.tenantId !== undefined) {
+      const conversation = await this.findConversationScoped({
+        conversationId: params.conversationId,
+        tenantId: params.tenantId,
+        actorId: params.actorId ?? null,
+      })
+      if (!conversation) throw new Error('Conversation not found')
+    }
+
     const message = await this.conversations.appendMessage({
       conversationId: params.conversationId,
       role: params.role,
       content: params.content,
+      actingUserId: params.actingUserId ?? null,
       agentVersion: params.agentVersion ?? null,
       model: params.model ?? null,
+      criticality: params.criticality ?? null,
     })
 
-    await this.audit.append({
+    const auditEvent = await this.audit.append({
       actorType: params.actorType ?? 'system',
       actorId: params.actorId ?? null,
       agentVersion: params.agentVersion ?? null,
@@ -80,22 +159,58 @@ export class ConversationService {
       inputRef: message.id,
       outputRef: `seq:${message.seq}`,
       policyDecision: 'allowed',
-      metadata: { role: params.role, messageId: message.id },
+      metadata: {
+        messageId: message.id,
+        conversationId: params.conversationId,
+        seq: message.seq,
+        role: params.role,
+        actingUserId: message.actingUserId,
+        agentVersion: message.agentVersion,
+        model: message.model,
+        contentHash: message.contentHash,
+        criticality: message.criticality,
+      },
     })
 
-    return message
+    return this.conversations.setMessageAuditEventRef(message.id, auditEvent.id)
   }
 
-  async getConversation(conversationId: string, tenantId?: string | null) {
-    const conversation = tenantId
-      ? await this.conversations.findByIdForTenant(conversationId, tenantId)
-      : await this.conversations.findById(conversationId)
+  async getConversation(
+    conversationId: string,
+    tenantId?: string | null,
+    options?: { limit?: number; beforeSeq?: number; actorId?: string | null },
+  ) {
+    const conversation = await this.findConversationScoped({
+      conversationId,
+      tenantId,
+      actorId: options?.actorId ?? null,
+    })
     if (!conversation) throw new Error('Conversation not found')
 
-    const messages = await this.conversations.findMessages(conversationId)
+    const messages = await this.conversations.findMessages(conversationId, {
+      limit: options?.limit,
+      beforeSeq: options?.beforeSeq,
+    })
     return {
       conversation,
       messages: messages satisfies ConversationMessageView[],
+    }
+  }
+
+  async listConversations(params: {
+    tenantId?: string | null
+    agentId?: string
+    status?: Conversation['status']
+    mine?: boolean
+    createdById?: string
+    limit?: number
+    cursor?: Date
+  }) {
+    const conversations = await this.conversations.list(params)
+    const last = conversations[conversations.length - 1]
+    return {
+      conversations,
+      nextCursor: last ? last.lastMessageAt : null,
     }
   }
 
@@ -108,8 +223,16 @@ export class ConversationService {
     return this.conversations.findManyForAgentUser(params)
   }
 
-  async deleteMessageContent(params: { messageId: string; actorId: string }) {
-    const existing = await this.conversations.findMessageById(params.messageId)
+  async deleteMessageContent(params: {
+    messageId: string
+    actorId: string
+    tenantId?: string | null
+    reason?: string | null
+  }) {
+    const existing =
+      params.tenantId === undefined
+        ? await this.conversations.findMessageById(params.messageId)
+        : await this.conversations.findMessageByIdForTenant(params.messageId, params.tenantId)
     if (!existing) throw new Error('Message not found')
 
     const updated = await this.conversations.deleteMessageContent(params.messageId)
@@ -125,30 +248,140 @@ export class ConversationService {
       inputRef: existing.id,
       outputRef: `seq:${existing.seq}`,
       policyDecision: 'allowed',
-      metadata: { messageId: existing.id },
+      metadata: {
+        messageId: existing.id,
+        conversationId: existing.conversationId,
+        seq: existing.seq,
+        contentHash: existing.contentHash,
+        reason: params.reason ?? null,
+      },
     })
 
     return updated
+  }
+
+  async archiveConversation(params: {
+    conversationId: string
+    actorId: string
+    tenantId?: string | null
+  }) {
+    const conversation = await this.findConversationScoped({
+      conversationId: params.conversationId,
+      tenantId: params.tenantId,
+      actorId: params.actorId,
+    })
+    if (!conversation) throw new Error('Conversation not found')
+
+    const archived = await this.conversations.archive(conversation.id)
+    await this.audit.append({
+      actorType: 'human',
+      actorId: params.actorId,
+      agentVersion: null,
+      action: 'conversation.archive',
+      targetType: 'conversation',
+      targetId: conversation.id,
+      modelUsed: null,
+      inputRef: conversation.id,
+      outputRef: archived.status,
+      policyDecision: 'allowed',
+      metadata: { conversationId: conversation.id, by: params.actorId },
+    })
+
+    return archived
+  }
+
+  async deleteConversationContent(params: {
+    conversationId: string
+    actorId: string
+    tenantId?: string | null
+    reason?: string | null
+  }) {
+    const conversation = await this.findConversationScoped({
+      conversationId: params.conversationId,
+      tenantId: params.tenantId,
+      actorId: params.actorId,
+    })
+    if (!conversation) throw new Error('Conversation not found')
+
+    const deletedMessages = await this.conversations.deleteConversationContent(conversation.id)
+    for (const message of deletedMessages) {
+      await this.audit.append({
+        actorType: 'human',
+        actorId: params.actorId,
+        agentVersion: message.agentVersion,
+        action: 'message.content_deleted',
+        targetType: 'conversation',
+        targetId: conversation.id,
+        modelUsed: null,
+        inputRef: message.id,
+        outputRef: `seq:${message.seq}`,
+        policyDecision: 'allowed',
+        metadata: {
+          messageId: message.id,
+          conversationId: conversation.id,
+          seq: message.seq,
+          contentHash: message.contentHash,
+          reason: params.reason ?? null,
+        },
+      })
+    }
+
+    await this.audit.append({
+      actorType: 'human',
+      actorId: params.actorId,
+      agentVersion: null,
+      action: 'conversation.content_deleted',
+      targetType: 'conversation',
+      targetId: conversation.id,
+      modelUsed: null,
+      inputRef: conversation.id,
+      outputRef: String(deletedMessages.length),
+      policyDecision: 'allowed',
+      metadata: {
+        conversationId: conversation.id,
+        deletedCount: deletedMessages.length,
+        reason: params.reason ?? null,
+        by: params.actorId,
+      },
+    })
+
+    return { deletedCount: deletedMessages.length }
   }
 
   async promoteToTicket(params: {
     conversationId: string
     createdById: string
     reason?: string
+    tenantId?: string | null
+    type?: Ticket['type']
     answerPayload: Record<string, unknown>
+    fromMessageId?: string | null
     agentMessageId?: string | null
   }): Promise<Ticket> {
-    const conversation = await this.conversations.findById(params.conversationId)
+    const conversation = await this.findConversationScoped({
+      conversationId: params.conversationId,
+      tenantId: params.tenantId,
+      actorId: params.createdById,
+    })
     if (!conversation) throw new Error('Conversation not found')
 
+    const sourceMessageId = params.fromMessageId ?? params.agentMessageId ?? null
+    if (sourceMessageId) {
+      const sourceMessage = await this.conversations.findMessageById(sourceMessageId)
+      if (!sourceMessage || sourceMessage.conversationId !== conversation.id) {
+        throw new Error('Source message not found')
+      }
+    }
+
     const question =
-      typeof params.answerPayload.question === 'string' ? params.answerPayload.question : 'Wiki válasz'
-    const playbookRef =
-      (await this.playbooks.getActiveRefByName('wiki-interaction')) ?? null
+      typeof params.answerPayload.question === 'string'
+        ? params.answerPayload.question
+        : 'Wiki válasz'
+    const playbookRef = (await this.playbooks.getActiveRefByName('wiki-interaction')) ?? null
 
     const ticket = await this.tickets.create({
       tenantId: conversation.tenantId,
-      type: 'interaction',
+      type: params.type ?? 'interaction',
       title: `Wiki jóváhagyás: ${question.slice(0, 80)}`,
       state: 'awaiting_human',
       assigneeType: 'human',
@@ -167,8 +400,8 @@ export class ConversationService {
       createdById: params.createdById,
     })
 
-    if (params.agentMessageId) {
-      await this.conversations.linkMessageToTicket(params.agentMessageId, ticket.id)
+    if (sourceMessageId) {
+      await this.conversations.linkMessageToTicket(sourceMessageId, ticket.id)
     }
 
     if (playbookRef) {
@@ -191,9 +424,38 @@ export class ConversationService {
       inputRef: params.reason ?? 'approval',
       outputRef: ticket.id,
       policyDecision: 'allowed',
-      metadata: { ticketId: ticket.id },
+      metadata: {
+        conversationId: conversation.id,
+        fromMessageId: sourceMessageId,
+        ticketId: ticket.id,
+        type: ticket.type,
+        by: params.createdById,
+      },
     })
 
     return ticket
+  }
+
+  async retentionSweep(params?: { now?: Date; actorId?: string | null; limit?: number }) {
+    const result = await this.conversations.retentionSweep(params?.now ?? new Date(), params?.limit)
+    await this.audit.append({
+      actorType: 'system',
+      actorId: params?.actorId ?? null,
+      agentVersion: null,
+      action: 'retention.sweep',
+      targetType: 'conversation',
+      targetId: null,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: String(result.deletedCount),
+      policyDecision: 'allowed',
+      metadata: {
+        sweptCount: result.sweptCount,
+        deletedCount: result.deletedCount,
+        conversationIds: result.conversationIds,
+      },
+    })
+
+    return result
   }
 }

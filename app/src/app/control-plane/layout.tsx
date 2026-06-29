@@ -22,6 +22,7 @@ const navItems: NavEntry[] = [
     label: 'Adminisztráció',
     children: [
       { href: '/control-plane/connectors', label: 'Fiókok' },
+      { href: '/control-plane/provisioning', label: 'Provisioning' },
       { href: '/control-plane/iam', label: 'IAM' },
       { href: '/control-plane/governance', label: 'Governance' },
       { href: '/control-plane/system', label: 'Rendszer' },

@@ -82,6 +82,7 @@ export class RoutingEngine {
     conditions: unknown,
     _ctx: RoutingContext,
   ): boolean {
+    void _ctx
     // Null conditions = unconditional match
     if (!conditions || typeof conditions !== 'object') return true
     // Structured conditions matching could be extended here.

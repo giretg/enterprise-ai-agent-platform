@@ -1,6 +1,16 @@
-import type { Conversation, Message, MessageRole } from '@prisma/client'
+import { createHash } from 'crypto'
+import { Prisma } from '@prisma/client'
+import type {
+  Conversation,
+  Message,
+  MessageCriticality,
+  MessageRole,
+  RetentionPolicy,
+} from '@prisma/client'
 import { prisma } from '@/lib/db'
 import type { ConversationRepository } from '../interfaces'
+
+const MAX_APPEND_RETRIES = 3
 
 function encodeContent(content: string): string {
   return `inline:${content}`
@@ -22,20 +32,76 @@ function decodePreviewText(content: string): string {
   return content
 }
 
+function hashContent(content: string): string {
+  return `sha256:${createHash('sha256').update(content, 'utf8').digest('hex')}`
+}
+
+function addDays(date: Date, days: number): Date {
+  return new Date(date.getTime() + days * 24 * 60 * 60 * 1000)
+}
+
+function clampLimit(limit: number | undefined, fallback = 50): number {
+  return Math.max(1, Math.min(limit ?? fallback, 100))
+}
+
+function isUniqueCollision(error: unknown): boolean {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002'
+}
+
 export class PostgresConversationRepository implements ConversationRepository {
+  private async resolveRetentionPolicy(
+    tx: Prisma.TransactionClient,
+    params: {
+      tenantId: string | null
+      agentId: string
+      retentionPolicyId?: string | null
+    },
+  ): Promise<RetentionPolicy | null> {
+    if (params.retentionPolicyId) {
+      return tx.retentionPolicy.findFirst({
+        where: { id: params.retentionPolicyId, tenantId: params.tenantId },
+      })
+    }
+
+    const agentPolicy = await tx.retentionPolicy.findFirst({
+      where: {
+        tenantId: params.tenantId,
+        appliesTo: 'agent',
+        agentId: params.agentId,
+      },
+      orderBy: { createdAt: 'asc' },
+    })
+    if (agentPolicy) return agentPolicy
+
+    return tx.retentionPolicy.findFirst({
+      where: { tenantId: params.tenantId, appliesTo: 'all' },
+      orderBy: { createdAt: 'asc' },
+    })
+  }
+
   async create(data: {
     tenantId: string | null
     agentId: string
     title?: string | null
     createdById: string
+    retentionPolicyId?: string | null
+    legalHold?: boolean
   }): Promise<Conversation> {
-    return prisma.conversation.create({
-      data: {
-        tenantId: data.tenantId,
-        agentId: data.agentId,
-        title: data.title ?? null,
-        createdById: data.createdById,
-      },
+    return prisma.$transaction(async (tx) => {
+      const now = new Date()
+      const policy = await this.resolveRetentionPolicy(tx, data)
+      return tx.conversation.create({
+        data: {
+          tenantId: data.tenantId,
+          agentId: data.agentId,
+          title: data.title ?? null,
+          createdById: data.createdById,
+          retentionPolicyId: policy?.id ?? data.retentionPolicyId ?? null,
+          retainUntil: policy ? addDays(now, policy.ttlDays) : null,
+          legalHold: data.legalHold ?? false,
+          lastMessageAt: now,
+        },
+      })
     })
   }
 
@@ -46,8 +112,30 @@ export class PostgresConversationRepository implements ConversationRepository {
   async findByIdForTenant(id: string, tenantId: string | null): Promise<Conversation | null> {
     const row = await prisma.conversation.findUnique({ where: { id } })
     if (!row) return null
-    if (tenantId && row.tenantId && row.tenantId !== tenantId) return null
+    if (row.tenantId !== tenantId) return null
     return row
+  }
+
+  async list(params: {
+    tenantId?: string | null
+    agentId?: string
+    status?: Conversation['status']
+    mine?: boolean
+    createdById?: string
+    limit?: number
+    cursor?: Date
+  }): Promise<Conversation[]> {
+    return prisma.conversation.findMany({
+      where: {
+        ...(params.tenantId !== undefined ? { tenantId: params.tenantId } : {}),
+        ...(params.agentId ? { agentId: params.agentId } : {}),
+        ...(params.status ? { status: params.status } : {}),
+        ...(params.mine && params.createdById ? { createdById: params.createdById } : {}),
+        ...(params.cursor ? { lastMessageAt: { lt: params.cursor } } : {}),
+      },
+      orderBy: { lastMessageAt: 'desc' },
+      take: clampLimit(params.limit),
+    })
   }
 
   async findManyForAgentUser(params: {
@@ -61,10 +149,10 @@ export class PostgresConversationRepository implements ConversationRepository {
         agentId: params.agentId,
         createdById: params.createdById,
         status: 'active',
-        tenantId: params.tenantId ?? null,
+        ...(params.tenantId !== undefined ? { tenantId: params.tenantId } : {}),
       },
       orderBy: { lastMessageAt: 'desc' },
-      take: params.limit ?? 50,
+      take: clampLimit(params.limit),
       include: {
         messages: {
           where: { role: 'user', contentDeletedAt: null },
@@ -88,45 +176,93 @@ export class PostgresConversationRepository implements ConversationRepository {
     conversationId: string
     role: MessageRole
     content: string
+    actingUserId?: string | null
     agentVersion?: number | null
     model?: string | null
     ticketRefId?: string | null
+    criticality?: MessageCriticality | null
   }): Promise<Message> {
-    return prisma.$transaction(async (tx) => {
-      const last = await tx.message.findFirst({
-        where: { conversationId: data.conversationId },
-        orderBy: { seq: 'desc' },
-        select: { seq: true },
-      })
-      const seq = (last?.seq ?? 0) + 1
+    for (let attempt = 0; attempt < MAX_APPEND_RETRIES; attempt += 1) {
+      try {
+        return await prisma.$transaction(async (tx) => {
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${data.conversationId}))`
 
-      const message = await tx.message.create({
-        data: {
-          conversationId: data.conversationId,
-          seq,
-          role: data.role,
-          agentVersion: data.agentVersion ?? null,
-          model: data.model ?? null,
-          contentRef: encodeContent(data.content),
-          ticketRefId: data.ticketRefId ?? null,
-        },
-      })
+          const conversation = await tx.conversation.findUnique({
+            where: { id: data.conversationId },
+            select: {
+              id: true,
+              status: true,
+              tenantId: true,
+              agentId: true,
+              retentionPolicyId: true,
+            },
+          })
+          if (!conversation) throw new Error('conversation_not_found')
+          if (conversation.status === 'archived') throw new Error('conversation_archived')
 
-      await tx.conversation.update({
-        where: { id: data.conversationId },
-        data: { lastMessageAt: new Date() },
-      })
+          const last = await tx.message.findFirst({
+            where: { conversationId: data.conversationId },
+            orderBy: { seq: 'desc' },
+            select: { seq: true },
+          })
+          const seq = (last?.seq ?? 0) + 1
+          const now = new Date()
+          const policy = await this.resolveRetentionPolicy(tx, {
+            tenantId: conversation.tenantId,
+            agentId: conversation.agentId,
+            retentionPolicyId: conversation.retentionPolicyId,
+          })
 
-      return message
-    })
+          const message = await tx.message.create({
+            data: {
+              conversationId: data.conversationId,
+              seq,
+              role: data.role,
+              actingUserId: data.actingUserId ?? null,
+              agentVersion: data.agentVersion ?? null,
+              model: data.model ?? null,
+              contentRef: encodeContent(data.content),
+              contentHash: hashContent(data.content),
+              ticketRefId: data.ticketRefId ?? null,
+              criticality: data.criticality ?? null,
+              createdAt: now,
+            },
+          })
+
+          await tx.conversation.update({
+            where: { id: data.conversationId },
+            data: {
+              lastMessageAt: now,
+              retainUntil: policy ? addDays(now, policy.ttlDays) : null,
+            },
+          })
+
+          return message
+        })
+      } catch (error) {
+        if (isUniqueCollision(error) && attempt < MAX_APPEND_RETRIES - 1) continue
+        throw error
+      }
+    }
+
+    throw new Error('message_append_retry_exhausted')
   }
 
-  async findMessages(conversationId: string): Promise<Array<Message & { content: string | null }>> {
+  async findMessages(
+    conversationId: string,
+    options?: { limit?: number; beforeSeq?: number },
+  ): Promise<Array<Message & { content: string | null }>> {
+    const limit = options?.limit ? clampLimit(options.limit) : undefined
     const rows = await prisma.message.findMany({
-      where: { conversationId },
-      orderBy: { seq: 'asc' },
+      where: {
+        conversationId,
+        ...(options?.beforeSeq ? { seq: { lt: options.beforeSeq } } : {}),
+      },
+      orderBy: limit ? { seq: 'desc' } : { seq: 'asc' },
+      ...(limit ? { take: limit } : {}),
     })
-    return rows.map((row) => ({
+    const orderedRows = limit ? [...rows].reverse() : rows
+    return orderedRows.map((row) => ({
       ...row,
       content: row.contentDeletedAt ? null : decodeContent(row.contentRef),
     }))
@@ -134,6 +270,19 @@ export class PostgresConversationRepository implements ConversationRepository {
 
   async findMessageById(id: string): Promise<Message | null> {
     return prisma.message.findUnique({ where: { id } })
+  }
+
+  async findMessageByIdForTenant(id: string, tenantId: string | null): Promise<Message | null> {
+    return prisma.message.findFirst({
+      where: { id, conversation: { tenantId } },
+    })
+  }
+
+  async archive(id: string): Promise<Conversation> {
+    return prisma.conversation.update({
+      where: { id },
+      data: { status: 'archived' },
+    })
   }
 
   async deleteMessageContent(messageId: string): Promise<Message> {
@@ -146,12 +295,95 @@ export class PostgresConversationRepository implements ConversationRepository {
     })
   }
 
+  async deleteConversationContent(conversationId: string): Promise<Message[]> {
+    return prisma.$transaction(async (tx) => {
+      const messages = await tx.message.findMany({
+        where: {
+          conversationId,
+          contentDeletedAt: null,
+          contentRef: { not: null },
+        },
+        orderBy: { seq: 'asc' },
+      })
+      if (messages.length === 0) return []
+
+      const now = new Date()
+      await tx.message.updateMany({
+        where: { id: { in: messages.map((message) => message.id) } },
+        data: { contentRef: null, contentDeletedAt: now },
+      })
+
+      return tx.message.findMany({
+        where: { id: { in: messages.map((message) => message.id) } },
+        orderBy: { seq: 'asc' },
+      })
+    })
+  }
+
   async linkMessageToTicket(messageId: string, ticketId: string): Promise<Message> {
     return prisma.message.update({
       where: { id: messageId },
       data: { ticketRefId: ticketId },
     })
   }
+
+  async setMessageAuditEventRef(messageId: string, auditEventRef: string): Promise<Message> {
+    return prisma.message.update({
+      where: { id: messageId },
+      data: { auditEventRef },
+    })
+  }
+
+  async findRetentionPolicy(id: string): Promise<RetentionPolicy | null> {
+    return prisma.retentionPolicy.findUnique({ where: { id } })
+  }
+
+  async retentionSweep(
+    now: Date,
+    limit?: number,
+  ): Promise<{
+    sweptCount: number
+    deletedCount: number
+    conversationIds: string[]
+  }> {
+    return prisma.$transaction(async (tx) => {
+      const conversations = await tx.conversation.findMany({
+        where: {
+          legalHold: false,
+          retainUntil: { lte: now },
+          messages: {
+            some: {
+              contentDeletedAt: null,
+              contentRef: { not: null },
+            },
+          },
+        },
+        orderBy: { retainUntil: 'asc' },
+        take: clampLimit(limit),
+        select: { id: true },
+      })
+
+      if (conversations.length === 0) {
+        return { sweptCount: 0, deletedCount: 0, conversationIds: [] }
+      }
+
+      const conversationIds = conversations.map((conversation) => conversation.id)
+      const result = await tx.message.updateMany({
+        where: {
+          conversationId: { in: conversationIds },
+          contentDeletedAt: null,
+          contentRef: { not: null },
+        },
+        data: { contentRef: null, contentDeletedAt: now },
+      })
+
+      return {
+        sweptCount: conversations.length,
+        deletedCount: result.count,
+        conversationIds,
+      }
+    })
+  }
 }
 
-export { decodeContent, encodeContent }
+export { decodeContent, encodeContent, hashContent }

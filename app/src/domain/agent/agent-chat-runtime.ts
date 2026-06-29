@@ -1,10 +1,17 @@
-import type { AgentRepository, DocumentRepository, TicketRepository, ToolBrokerRepository } from '@/repositories/interfaces'
+import type {
+  AgentRepository,
+  AuditRepository,
+  DocumentRepository,
+  TicketRepository,
+  ToolBrokerRepository,
+} from '@/repositories/interfaces'
 import { composeSystemPrompt } from '@/lib/agent-prompt'
 import { formatOrgRoster } from '@/lib/agent-org-roster'
 import { buildRunAsAuthorization } from '@/lib/run-as-payload'
 import { formatHitsForPrompt, type KbHit } from '@/lib/kb-format'
 import type { ModelGateway } from '../gateway/model-gateway'
 import type { ConversationService } from '../conversation/conversation-service'
+import { assembleContext, type ContextAssemblyMessage } from '../conversation/context-assembly'
 import type { ToolBrokerService } from '../tool-broker/tool-broker-service'
 import type { WorkspaceStorage } from '../file-editor/workspace-storage'
 import { listAllowedChatTools, runAgentToolLoop } from './chat-tool-loop'
@@ -58,7 +65,7 @@ export type ChatAttachmentView = {
 
 export type ChatMessageView = {
   id: string
-  role: 'user' | 'agent' | 'system'
+  role: 'user' | 'agent' | 'system' | 'tool'
   text: string
   attachments: ChatAttachmentView[]
   createdAt: Date
@@ -104,6 +111,7 @@ export class AgentChatRuntime {
     private toolBroker: ToolBrokerService,
     private toolCaps: ToolBrokerRepository,
     private workspaceStorage: WorkspaceStorage,
+    private audit: AuditRepository,
   ) {}
 
   async sendMessage(params: {
@@ -158,11 +166,11 @@ export class AgentChatRuntime {
       conversationId,
       role: 'user',
       content: encodeStoredMessage(userFacingText, attachmentIds),
+      actingUserId: params.createdById,
       actorType: 'human',
       actorId: params.createdById,
     })
 
-    const history = await this.conversations.getConversation(conversationId, params.tenantId ?? null)
     const kbSearch = await this.fetchKbSearchContext({
       agentId: params.agentId,
       agentVersion: agentDetails.agent.currentVersion,
@@ -170,54 +178,69 @@ export class AgentChatRuntime {
       actingUserId: params.createdById,
       query: text,
     })
-    const gatewayMessages = await this.buildGatewayMessages(
-      agentDetails,
-      history.messages,
-      attachmentBlock,
-      kbSearch,
-      workspaceFiles,
-    )
-
+    const history = await this.conversations.getConversation(conversationId, params.tenantId ?? null)
     const modelConfig = agentDetails.agent.modelConfig as {
       provider: string
       model: string
       temperature?: number
       maxTokens?: number
     }
+    const assembledContext = await assembleContext({
+      audit: this.audit,
+      conversationId,
+      agentId: params.agentId,
+      agentVersion: agentDetails.agent.currentVersion,
+      actingUserId: params.createdById,
+      messages: history.messages,
+      memoryVersion: agentDetails.memoryVersion,
+      memoryContent: agentDetails.memoryContent,
+      documentAliases: this.contextDocumentAliases(attachmentDocs, workspaceFiles, kbSearch.hits),
+    })
+    const gatewayMessages = await this.buildGatewayMessages(
+      agentDetails,
+      assembledContext.messages,
+      attachmentBlock,
+      kbSearch,
+      workspaceFiles,
+    )
 
     const allowedChatTools = await listAllowedChatTools(this.toolCaps, params.agentId)
-    const reply =
-      allowedChatTools.length > 0
-        ? (
-            await runAgentToolLoop({
-              gateway: this.gateway,
-              toolBroker: this.toolBroker,
-              toolCaps: this.toolCaps,
-              agentId: params.agentId,
-              agentVersion: agentDetails.agent.currentVersion,
-              context: { conversationId },
-              mode: 'chat',
-              actingUserId: params.createdById,
-              messages: gatewayMessages,
-              modelConfig,
-              allowedTools: allowedChatTools,
-              archiveLargeToolResult: (input) =>
-                this.archiveLargeToolResult(tenantKey, conversationId, input),
-            })
-          ).content
-        : (
-            await this.gateway.call({
-              agentId: params.agentId,
-              conversationId,
-              messages: gatewayMessages,
-              modelConfig,
-            })
-          ).content
+    let reply: string
+    if (allowedChatTools.length > 0) {
+      reply = (
+        await runAgentToolLoop({
+          gateway: this.gateway,
+          toolBroker: this.toolBroker,
+          toolCaps: this.toolCaps,
+          agentId: params.agentId,
+          agentVersion: agentDetails.agent.currentVersion,
+          context: { conversationId },
+          mode: 'chat',
+          actingUserId: params.createdById,
+          messages: gatewayMessages,
+          modelConfig,
+          allowedTools: allowedChatTools,
+          archiveLargeToolResult: (input) =>
+            this.archiveLargeToolResult(tenantKey, conversationId, input),
+        })
+      ).content
+    } else {
+      const gatewayInput = {
+        agentId: params.agentId,
+        agentVersion: agentDetails.agent.currentVersion,
+        conversationId,
+        actingUserId: params.createdById,
+        messages: gatewayMessages,
+        modelConfig,
+      }
+      reply = (await this.gateway.call(gatewayInput)).content
+    }
 
     const agentMessage = await this.conversations.appendMessage({
       conversationId,
       role: 'agent',
       content: reply.trim(),
+      actingUserId: params.createdById,
       agentVersion: agentDetails.agent.currentVersion,
       model: modelConfig.model,
       actorType: 'agent',
@@ -291,11 +314,11 @@ export class AgentChatRuntime {
       conversationId,
       role: 'user',
       content: encodeStoredMessage(userFacingText, attachmentIds),
+      actingUserId: params.createdById,
       actorType: 'human',
       actorId: params.createdById,
     })
 
-    const history = await this.conversations.getConversation(conversationId, params.tenantId ?? null)
     const kbSearch = await this.fetchKbSearchContext({
       agentId: params.agentId,
       agentVersion: agentDetails.agent.currentVersion,
@@ -303,20 +326,31 @@ export class AgentChatRuntime {
       actingUserId: params.createdById,
       query: text,
     })
-    const gatewayMessages = await this.buildGatewayMessages(
-      agentDetails,
-      history.messages,
-      attachmentBlock,
-      kbSearch,
-      workspaceFiles,
-    )
-
+    const history = await this.conversations.getConversation(conversationId, params.tenantId ?? null)
     const modelConfig = agentDetails.agent.modelConfig as {
       provider: string
       model: string
       temperature?: number
       maxTokens?: number
     }
+    const assembledContext = await assembleContext({
+      audit: this.audit,
+      conversationId,
+      agentId: params.agentId,
+      agentVersion: agentDetails.agent.currentVersion,
+      actingUserId: params.createdById,
+      messages: history.messages,
+      memoryVersion: agentDetails.memoryVersion,
+      memoryContent: agentDetails.memoryContent,
+      documentAliases: this.contextDocumentAliases(attachmentDocs, workspaceFiles, kbSearch.hits),
+    })
+    const gatewayMessages = await this.buildGatewayMessages(
+      agentDetails,
+      assembledContext.messages,
+      attachmentBlock,
+      kbSearch,
+      workspaceFiles,
+    )
 
     const allowedChatTools = await listAllowedChatTools(this.toolCaps, params.agentId)
 
@@ -350,12 +384,15 @@ export class AgentChatRuntime {
       // No tools — stream token by token.
       let accumulated = ''
       try {
-        for await (const chunk of this.gateway.callStream({
+        const gatewayInput = {
           agentId: params.agentId,
+          agentVersion: agentDetails.agent.currentVersion,
           conversationId,
+          actingUserId: params.createdById,
           messages: gatewayMessages,
           modelConfig,
-        })) {
+        }
+        for await (const chunk of this.gateway.callStream(gatewayInput)) {
           accumulated += chunk
           yield { type: 'token', chunk }
         }
@@ -370,6 +407,7 @@ export class AgentChatRuntime {
       conversationId,
       role: 'agent',
       content: reply.trim(),
+      actingUserId: params.createdById,
       agentVersion: agentDetails.agent.currentVersion,
       model: modelConfig.model,
       actorType: 'agent',
@@ -606,6 +644,18 @@ export class AgentChatRuntime {
     }
   }
 
+  private contextDocumentAliases(
+    attachmentDocs: Array<{ id: string; filename: string }>,
+    workspaceFiles: string[],
+    hits: KbHit[],
+  ): string[] {
+    return [
+      ...attachmentDocs.map((doc) => doc.filename || doc.id),
+      ...workspaceFiles,
+      ...hits.map((hit) => hit.sourceRef || hit.docId),
+    ]
+  }
+
   private async fetchKbSearchContext(params: {
     agentId: string
     agentVersion: number
@@ -636,7 +686,7 @@ export class AgentChatRuntime {
 
   private async buildGatewayMessages(
     agentDetails: NonNullable<Awaited<ReturnType<AgentRepository['findByIdWithDetails']>>>,
-    historyMessages: Array<{ role: string; content: string | null; contentDeletedAt: Date | null }>,
+    historyMessages: ContextAssemblyMessage[],
     latestAttachmentBlock: string,
     kbSearch: { enabled: boolean; hits: KbHit[] },
     workspaceFiles: string[],

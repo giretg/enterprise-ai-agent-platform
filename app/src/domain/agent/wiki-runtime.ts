@@ -1,5 +1,10 @@
 import { z } from 'zod'
-import type { AgentRepository, TicketRepository, ToolBrokerRepository } from '@/repositories/interfaces'
+import type {
+  AgentRepository,
+  AuditRepository,
+  TicketRepository,
+  ToolBrokerRepository,
+} from '@/repositories/interfaces'
 import { composeSystemPrompt } from '@/lib/agent-prompt'
 import { buildRunAsAuthorization } from '@/lib/run-as-payload'
 import { readWikiTicketPayload, wikiSearchQuery, wikiUserPrompt } from '@/lib/wiki-ticket-payload'
@@ -8,6 +13,7 @@ import type { GatewayMessage, ModelGateway } from '../gateway/model-gateway'
 import type { ToolBrokerService } from '../tool-broker/tool-broker-service'
 import type { PlaybookService } from '../playbook/playbook-service'
 import type { ConversationService } from '../conversation/conversation-service'
+import { assembleContext, type ContextAssemblyMessage } from '../conversation/context-assembly'
 import { TicketService } from '../ticket/ticket-service'
 import type { ReportTemplate } from '../report/report-templates'
 import { listAllowedChatTools, runAgentToolLoop, type ChatPlatformToolName } from './chat-tool-loop'
@@ -53,8 +59,8 @@ type ModelConfig = {
 }
 
 type InferenceContext =
-  | { conversationId: string; ticketId?: never }
-  | { ticketId: string; conversationId?: never }
+  | { conversationId: string; ticketId?: never; actingUserId?: string }
+  | { ticketId: string; conversationId?: never; actingUserId?: never }
 
 type InferenceResult = {
   answer: WikiAnswer
@@ -71,6 +77,7 @@ export class WikiAgentRuntime {
     private toolCaps: ToolBrokerRepository,
     private playbooks: PlaybookService,
     private conversations: ConversationService,
+    private audit: AuditRepository,
   ) {}
 
   /**
@@ -109,6 +116,7 @@ export class WikiAgentRuntime {
       conversationId,
       role: 'user',
       content: question,
+      actingUserId: params.createdById,
       actorType: 'human',
       actorId: params.createdById,
     })
@@ -117,6 +125,8 @@ export class WikiAgentRuntime {
       conversationId,
       agentId: params.agentId,
       question,
+      actingUserId: params.createdById,
+      tenantId: params.tenantId ?? null,
     })
 
     return {
@@ -129,7 +139,13 @@ export class WikiAgentRuntime {
     }
   }
 
-  async processConversation(params: { conversationId: string; agentId: string; question: string }) {
+  async processConversation(params: {
+    conversationId: string
+    agentId: string
+    question: string
+    actingUserId?: string
+    tenantId?: string | null
+  }) {
     const agentDetails = await this.agents.findByIdWithDetails(params.agentId)
     if (!agentDetails) throw new Error('Agent not found')
 
@@ -145,6 +161,8 @@ export class WikiAgentRuntime {
         agentVersion,
         question: params.question,
         conversationId: params.conversationId,
+        actingUserId: params.actingUserId,
+        tenantId: params.tenantId,
         allowedTools,
       })
 
@@ -152,6 +170,7 @@ export class WikiAgentRuntime {
         conversationId: params.conversationId,
         role: 'agent',
         content,
+        actingUserId: params.actingUserId ?? null,
         agentVersion,
         model: modelConfig.model,
         actorType: 'agent',
@@ -174,7 +193,8 @@ export class WikiAgentRuntime {
       modelConfig,
       agentVersion,
       payload,
-      context: { conversationId: params.conversationId },
+      context: { conversationId: params.conversationId, actingUserId: params.actingUserId },
+      tenantId: params.tenantId,
     })
 
     const agentMessage = await this.conversations.appendMessage({
@@ -188,6 +208,7 @@ export class WikiAgentRuntime {
         retrievedSources: hits,
         ...payload,
       }),
+      actingUserId: params.actingUserId ?? null,
       agentVersion,
       model: modelConfig.model,
       actorType: 'agent',
@@ -392,11 +413,14 @@ export class WikiAgentRuntime {
     question: string
     conversationId: string
     allowedTools: ChatPlatformToolName[]
+    actingUserId?: string
+    tenantId?: string | null
   }): Promise<{ content: string }> {
     const search = await this.toolBroker.invoke({
       agentId: params.agentId,
       agentVersion: params.agentVersion,
       conversationId: params.conversationId,
+      actingUserId: params.actingUserId,
       tool: 'kb_search',
       args: { query: params.question, k: 6 },
     })
@@ -417,8 +441,19 @@ export class WikiAgentRuntime {
 
     const { messages: histMessages } = await this.conversations.getConversation(
       params.conversationId,
-      null,
+      params.tenantId,
     )
+    const assembledContext = await assembleContext({
+      audit: this.audit,
+      conversationId: params.conversationId,
+      agentId: params.agentId,
+      agentVersion: params.agentVersion,
+      actingUserId: params.actingUserId,
+      messages: histMessages,
+      memoryVersion: params.agentDetails.memoryVersion,
+      memoryContent: params.agentDetails.memoryContent,
+      documentAliases: this.documentAliasesFromHits(hits),
+    })
 
     const messages: GatewayMessage[] = [
       { role: 'system', content: composeSystemPrompt(params.agentDetails.agent) },
@@ -450,7 +485,7 @@ export class WikiAgentRuntime {
       })
     }
 
-    for (const msg of histMessages.filter((m) => m.content && !m.contentDeletedAt)) {
+    for (const msg of assembledContext.messages) {
       if (msg.role === 'user') {
         messages.push({ role: 'user', content: msg.content! })
       } else if (msg.role === 'agent') {
@@ -474,6 +509,7 @@ export class WikiAgentRuntime {
       agentVersion: params.agentVersion,
       context: { conversationId: params.conversationId },
       mode: 'chat',
+      actingUserId: params.actingUserId,
       messages,
       modelConfig: params.modelConfig,
       allowedTools: params.allowedTools,
@@ -487,6 +523,7 @@ export class WikiAgentRuntime {
     agentVersion: number
     payload: Record<string, unknown>
     context: InferenceContext
+    tenantId?: string | null
   }): Promise<InferenceResult> {
     const search = await this.toolBroker.invoke({
       agentId: params.agentId,
@@ -509,8 +546,22 @@ export class WikiAgentRuntime {
         ? 'Nincs elég forrás. Ezt mondd ki, és ne találj ki tényt.'
         : 'Kizárólag a megadott forrásrészletekre támaszkodj.'
 
+    const contextMessages =
+      params.context.conversationId
+        ? await this.assembleWikiInferenceMessages({
+            conversationId: params.context.conversationId,
+            agentId: params.agentId,
+            agentVersion: params.agentVersion,
+            actingUserId: params.context.actingUserId,
+            tenantId: params.tenantId,
+            agentDetails: params.agentDetails,
+            hits,
+          })
+        : []
+
     const { content } = await this.gateway.call({
       agentId: params.agentId,
+      agentVersion: params.agentVersion,
       ...params.context,
       messages: [
         { role: 'system', content: composeSystemPrompt(params.agentDetails.agent) },
@@ -518,6 +569,7 @@ export class WikiAgentRuntime {
           role: 'system',
           content: `${answerInstruction}\n\nForrásrészletek:\n${formatHitsForPrompt(hits)}`,
         },
+        ...contextMessages,
         {
           role: 'user',
           content: wikiUserPrompt(params.payload),
@@ -533,5 +585,59 @@ export class WikiAgentRuntime {
         : hits.map((hit) => ({ docId: hit.docId, sectionRef: hit.sourceRef }))
 
     return { answer: { ...parsed, sources }, hits }
+  }
+
+  private async assembleWikiInferenceMessages(params: {
+    conversationId: string
+    agentId: string
+    agentVersion: number
+    actingUserId?: string
+    tenantId?: string | null
+    agentDetails: AgentDetails
+    hits: KbHit[]
+  }): Promise<GatewayMessage[]> {
+    const { messages } = await this.conversations.getConversation(
+      params.conversationId,
+      params.tenantId,
+    )
+    const assembledContext = await assembleContext({
+      audit: this.audit,
+      conversationId: params.conversationId,
+      agentId: params.agentId,
+      agentVersion: params.agentVersion,
+      actingUserId: params.actingUserId,
+      messages,
+      memoryVersion: params.agentDetails.memoryVersion,
+      memoryContent: params.agentDetails.memoryContent,
+      documentAliases: this.documentAliasesFromHits(params.hits),
+    })
+
+    return this.toWikiHistoryMessages(assembledContext.messages)
+  }
+
+  private toWikiHistoryMessages(messages: ContextAssemblyMessage[]): GatewayMessage[] {
+    const result: GatewayMessage[] = []
+    const latestUserSeq = [...messages].reverse().find((message) => message.role === 'user')?.seq
+    for (const msg of messages) {
+      if (msg.seq === latestUserSeq || !msg.content) continue
+      if (msg.role === 'user') {
+        result.push({ role: 'user', content: msg.content })
+      } else if (msg.role === 'agent') {
+        try {
+          const parsed = JSON.parse(msg.content) as { answer?: string }
+          result.push({
+            role: 'user',
+            content: `[Korábbi agent válasz]\n${parsed.answer ?? msg.content}`,
+          })
+        } catch {
+          result.push({ role: 'user', content: `[Korábbi agent válasz]\n${msg.content}` })
+        }
+      }
+    }
+    return result
+  }
+
+  private documentAliasesFromHits(hits: KbHit[]): string[] {
+    return hits.map((hit) => hit.sourceRef || hit.docId)
   }
 }

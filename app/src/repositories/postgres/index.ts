@@ -17,6 +17,7 @@ import { PostgresToolBrokerRepository } from './tool-broker-repository'
 
 import { PostgresConnectorGrantRepository } from './connector-grant-repository'
 import { PostgresConnectorRepository } from './connector-repository'
+import { PostgresConnectorDraftRepository } from './connector-draft-repository'
 import { PostgresMonitorRepository } from './monitor-repository'
 import { PostgresPlatformSettingsRepository } from './platform-settings-repository'
 
@@ -38,6 +39,7 @@ export const repositories = {
   conversations: new PostgresConversationRepository(),
   connectorGrants: new PostgresConnectorGrantRepository(),
   connectors: new PostgresConnectorRepository(),
+  connectorDrafts: new PostgresConnectorDraftRepository(),
   monitors: new PostgresMonitorRepository(),
   platformSettings: new PostgresPlatformSettingsRepository(),
 }

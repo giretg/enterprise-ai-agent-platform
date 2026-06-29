@@ -3,10 +3,15 @@ import type {
   AuditLog,
   Connector,
   ConnectorAccessMode,
+  ConnectorDraft,
+  ConnectorDraftReviewStatus,
+  ConnectorDraftSourceType,
+  ConnectorLifecycleState,
   ConnectorType,
   Conversation,
   Document,
   Message,
+  MessageCriticality,
   MessageRole,
   ModelBudget,
   ModelBudgetPeriod,
@@ -54,6 +59,7 @@ import type {
   TicketSource,
   TicketState,
   TicketTransition,
+  RetentionPolicy,
   UserRole,
 } from '@prisma/client'
 
@@ -697,9 +703,20 @@ export interface ConversationRepository {
     agentId: string
     title?: string | null
     createdById: string
+    retentionPolicyId?: string | null
+    legalHold?: boolean
   }): Promise<Conversation>
   findById(id: string): Promise<Conversation | null>
   findByIdForTenant(id: string, tenantId: string | null): Promise<Conversation | null>
+  list(params: {
+    tenantId?: string | null
+    agentId?: string
+    status?: Conversation['status']
+    mine?: boolean
+    createdById?: string
+    limit?: number
+    cursor?: Date
+  }): Promise<Conversation[]>
   findManyForAgentUser(params: {
     agentId: string
     createdById: string
@@ -716,14 +733,32 @@ export interface ConversationRepository {
     conversationId: string
     role: MessageRole
     content: string
+    actingUserId?: string | null
     agentVersion?: number | null
     model?: string | null
     ticketRefId?: string | null
+    criticality?: MessageCriticality | null
   }): Promise<Message>
-  findMessages(conversationId: string): Promise<Array<Message & { content: string | null }>>
+  findMessages(
+    conversationId: string,
+    options?: { limit?: number; beforeSeq?: number },
+  ): Promise<Array<Message & { content: string | null }>>
   findMessageById(id: string): Promise<Message | null>
+  findMessageByIdForTenant(id: string, tenantId: string | null): Promise<Message | null>
+  archive(id: string): Promise<Conversation>
   deleteMessageContent(messageId: string): Promise<Message>
+  deleteConversationContent(conversationId: string): Promise<Message[]>
   linkMessageToTicket(messageId: string, ticketId: string): Promise<Message>
+  setMessageAuditEventRef(messageId: string, auditEventRef: string): Promise<Message>
+  findRetentionPolicy(id: string): Promise<RetentionPolicy | null>
+  retentionSweep(
+    now: Date,
+    limit?: number,
+  ): Promise<{
+    sweptCount: number
+    deletedCount: number
+    conversationIds: string[]
+  }>
 }
 
 export type SandboxAppWithLatestVersion = SandboxApp & {
@@ -846,6 +881,69 @@ export interface ConnectorGrantRepository {
   revokeAllForUser(userId: string): Promise<number>
   findById(id: string): Promise<import('@prisma/client').ConnectorGrant | null>
 }
+
+// ── Provisioning Assistant (Connector Onboarding) ───────────────────────────
+
+export type ConnectorDraftWithConnector = ConnectorDraft & {
+  connector: Connector
+}
+
+export interface CreateConnectorDraftInput {
+  tenantId: string | null
+  name: string
+  sourceType: ConnectorDraftSourceType
+  sourceRef: string | null
+  sourceHash: string
+  config: Prisma.InputJsonValue
+  secretAliasSuggested: string | null
+  generatedByAgentId: string | null
+  generatedByAgentVersion: number | null
+  generatedFromConversationId: string | null
+}
+
+/**
+ * A provisioning draft-réteg repository-ja. KEMÉNY PADLÓ (CR-MVP-002, §6.2):
+ * ezen az úton csak a `connectors (lifecycle_state IN draft,validated)` + a
+ * `connector_drafts` sorok érhetők el íróan; capabilities / agent_connectors /
+ * RBAC / Secret Manager SOSEM. Az `activate`/`assign` külön (emberi) metódus.
+ */
+export interface ConnectorDraftRepository {
+  /** Tranzakciósan létrehoz egy `lifecycle_state=draft` connectort + draft-sort. */
+  createDraft(input: CreateConnectorDraftInput): Promise<ConnectorDraftWithConnector>
+  findById(draftId: string): Promise<ConnectorDraftWithConnector | null>
+  findByConnectorId(connectorId: string): Promise<ConnectorDraftWithConnector | null>
+  list(tenantId: string | null): Promise<ConnectorDraftWithConnector[]>
+  /** Validációs eredmény mentése (a config-ot NEM módosítja). */
+  setValidationResult(draftId: string, result: Prisma.InputJsonValue): Promise<ConnectorDraft>
+  setReview(params: {
+    draftId: string
+    reviewStatus: ConnectorDraftReviewStatus
+    reviewedById: string
+  }): Promise<ConnectorDraft>
+  setSandboxTestResult(draftId: string, ok: boolean): Promise<ConnectorDraft>
+  /**
+   * Aktiválás: a draft connectort `active`-ra állítja + a beinjektált secret
+   * aliasát rögzíti + dual-control approver. CSAK emberi admin-API hívja (§8.5).
+   * A `connectors.lifecycle_state draft|validated → active` átmenet KIZÁRÓLAG itt.
+   */
+  activate(params: {
+    draftId: string
+    secretAlias: string
+    secondApproverId: string | null
+  }): Promise<Connector>
+  /** Connector → agent hozzárendelés (agent_connectors). CSAK emberi admin (§8.6). */
+  assignToAgent(params: {
+    connectorId: string
+    agentId: string
+    accessMode: ConnectorAccessMode
+  }): Promise<void>
+  /** Meglévő (aktivált) connector-katalógus metaadata, secret nélkül (§9 catalog.read). */
+  listActiveCatalog(
+    tenantId: string | null,
+  ): Promise<Array<{ id: string; type: ConnectorType; name: string }>>
+}
+
+export type { ConnectorLifecycleState }
 
 export type TransitionActor =
   | { type: 'human'; userId: string; role: UserRole }

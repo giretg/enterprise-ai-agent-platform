@@ -105,6 +105,38 @@ enum ConnectorAccessMode {
   write
 }
 
+// ── Fázis 2: Provisioning Assistant (Connector Onboarding) ──────────────────
+// A connector életciklus-állapota. DEFAULT `active`, hogy a meglévő (MVP) sorok
+// viselkedése változatlan maradjon; a draft-connector `draft|validated`
+// állapotban a Tool Brokerben SOHA nem oldódik fel (runtime DENY).
+// (Feature-spec — Provisioning-Assistant §4.1.)
+enum ConnectorLifecycleState {
+  draft
+  validated
+  active
+  archived
+  blocked
+
+  @@map("connector_lifecycle_state")
+}
+
+enum ConnectorDraftSourceType {
+  api_doc
+  openapi
+  manual
+
+  @@map("connector_draft_source_type")
+}
+
+enum ConnectorDraftReviewStatus {
+  pending
+  changes_requested
+  approved
+  rejected
+
+  @@map("connector_draft_review_status")
+}
+
 enum ToolCallStatus {
   ok
   denied
@@ -268,6 +300,19 @@ enum MessageRole {
   user
   agent
   system
+  tool
+}
+
+enum MessageCriticality {
+  L0
+  L1
+  L2
+  L3
+}
+
+enum RetentionPolicyAppliesTo {
+  all
+  agent
 }
 
 model User {
@@ -280,17 +325,19 @@ model User {
   tenantId       String?    @map("tenant_id") @db.Uuid
   createdAt      DateTime   @default(now()) @map("created_at") @db.Timestamptz
 
-  approvedMemoryVersions        MemoryVersion[]   @relation("MemoryApprovedBy")
-  approvedRecipeVersions        RecipeVersion[]   @relation("RecipeApprovedBy")
-  approvedPlaybookVersions      PlaybookVersion[] @relation("PlaybookApprovedBy")
-  createdTickets                Ticket[]          @relation("TicketCreatedBy")
-  uploadedDocuments             Document[]        @relation("DocumentUploadedBy")
-  createdInvitations            Invitation[]      @relation("InvitationCreatedBy")
+  approvedMemoryVersions        MemoryVersion[]     @relation("MemoryApprovedBy")
+  approvedRecipeVersions        RecipeVersion[]     @relation("RecipeApprovedBy")
+  approvedPlaybookVersions      PlaybookVersion[]   @relation("PlaybookApprovedBy")
+  createdTickets                Ticket[]            @relation("TicketCreatedBy")
+  uploadedDocuments             Document[]          @relation("DocumentUploadedBy")
+  createdInvitations            Invitation[]        @relation("InvitationCreatedBy")
   connectorGrants               ConnectorGrant[]
-  scheduledTasksCreated         ScheduledTask[]   @relation("ScheduledTaskCreatedBy")
-  scheduledTasksRunAs           ScheduledTask[]   @relation("ScheduledTaskRunAsUser")
-  scheduledTasksRunAsAuthorized ScheduledTask[]   @relation("ScheduledTaskRunAsAuthorizedBy")
+  scheduledTasksCreated         ScheduledTask[]     @relation("ScheduledTaskCreatedBy")
+  scheduledTasksRunAs           ScheduledTask[]     @relation("ScheduledTaskRunAsUser")
+  scheduledTasksRunAsAuthorized ScheduledTask[]     @relation("ScheduledTaskRunAsAuthorizedBy")
   monitorDefinitionsCreated     MonitorDefinition[] @relation("MonitorDefinitionCreatedBy")
+  conversationsCreated          Conversation[]      @relation("ConversationCreatedBy")
+  messagesActing                Message[]           @relation("MessageActingUser")
 
   @@map("users")
 }
@@ -328,19 +375,21 @@ model Agent {
   memoryId                      String      @unique @map("memory_id") @db.Uuid
   createdAt                     DateTime    @default(now()) @map("created_at") @db.Timestamptz
 
-  memory          Memory           @relation(fields: [memoryId], references: [id])
-  versions        AgentVersion[]
-  apiKeys         AgentApiKey[]
-  agentResources  AgentResource[]
-  tickets         Ticket[]
-  modelCalls      ModelCall[]
-  agentConnectors AgentConnector[]
-  capabilities    Capability[]
-  toolCalls       ToolCall[]
-  writeGateTokens WriteGateToken[]
-  evals           Eval[]
-  scheduledTasks  ScheduledTask[]
+  memory             Memory              @relation(fields: [memoryId], references: [id])
+  versions           AgentVersion[]
+  apiKeys            AgentApiKey[]
+  agentResources     AgentResource[]
+  tickets            Ticket[]
+  modelCalls         ModelCall[]
+  agentConnectors    AgentConnector[]
+  capabilities       Capability[]
+  toolCalls          ToolCall[]
+  writeGateTokens    WriteGateToken[]
+  evals              Eval[]
+  scheduledTasks     ScheduledTask[]
   monitorDefinitions MonitorDefinition[]
+  conversations      Conversation[]
+  retentionPolicies  RetentionPolicy[]
 
   @@map("agents")
 }
@@ -551,24 +600,24 @@ model PlaybookAssignment {
 // --- Fázis 2 Playbook process runtime (Feature-spec — Playbook §4.5–4.7) -----
 
 model ProcessInstance {
-  id                   String           @id @default(uuid()) @db.Uuid
-  tenantId             String?          @map("tenant_id") @db.Uuid
-  processType          String           @map("process_type")
-  status               ProcessStatus    @default(created)
-  playbookId           String           @map("playbook_id") @db.Uuid
-  playbookVersionId    String           @map("playbook_version_id") @db.Uuid
-  playbookRef          String           @map("playbook_ref")
-  playbookContentHash  String           @map("playbook_content_hash")
-  startedByType        ProcessActorType @map("started_by_type")
-  startedByUserId      String?          @map("started_by_user_id") @db.Uuid
-  startedByAgentId     String?          @map("started_by_agent_id") @db.Uuid
-  conversationId       String?          @map("conversation_id") @db.Uuid
-  rootTicketId         String?          @map("root_ticket_id") @db.Uuid
-  inputPayload         Json             @default("{}") @map("input_payload")
-  outputPayload        Json             @default("{}") @map("output_payload")
-  startedAt            DateTime         @default(now()) @map("started_at") @db.Timestamptz
-  completedAt          DateTime?        @map("completed_at") @db.Timestamptz
-  failedAt             DateTime?        @map("failed_at") @db.Timestamptz
+  id                  String           @id @default(uuid()) @db.Uuid
+  tenantId            String?          @map("tenant_id") @db.Uuid
+  processType         String           @map("process_type")
+  status              ProcessStatus    @default(created)
+  playbookId          String           @map("playbook_id") @db.Uuid
+  playbookVersionId   String           @map("playbook_version_id") @db.Uuid
+  playbookRef         String           @map("playbook_ref")
+  playbookContentHash String           @map("playbook_content_hash")
+  startedByType       ProcessActorType @map("started_by_type")
+  startedByUserId     String?          @map("started_by_user_id") @db.Uuid
+  startedByAgentId    String?          @map("started_by_agent_id") @db.Uuid
+  conversationId      String?          @map("conversation_id") @db.Uuid
+  rootTicketId        String?          @map("root_ticket_id") @db.Uuid
+  inputPayload        Json             @default("{}") @map("input_payload")
+  outputPayload       Json             @default("{}") @map("output_payload")
+  startedAt           DateTime         @default(now()) @map("started_at") @db.Timestamptz
+  completedAt         DateTime?        @map("completed_at") @db.Timestamptz
+  failedAt            DateTime?        @map("failed_at") @db.Timestamptz
 
   playbook        PlaybookV2            @relation(fields: [playbookId], references: [id])
   playbookVersion PlaybookVersionV2     @relation(fields: [playbookVersionId], references: [id])
@@ -705,24 +754,53 @@ model AgentResource {
 }
 
 model Connector {
-  id          String            @id @default(uuid()) @db.Uuid
-  type        ConnectorType
-  name        String
-  authMode    ConnectorAuthMode @default(service) @map("auth_mode")
-  scope       ConnectorScope
-  secretAlias String?           @map("secret_alias")
-  version     Int               @default(1)
-  config      Json              @default("{}")
-  tenantId    String?           @map("tenant_id") @db.Uuid
-  createdAt   DateTime          @default(now()) @map("created_at") @db.Timestamptz
+  id             String                  @id @default(uuid()) @db.Uuid
+  type           ConnectorType
+  name           String
+  authMode       ConnectorAuthMode       @default(service) @map("auth_mode")
+  scope          ConnectorScope
+  secretAlias    String?                 @map("secret_alias")
+  version        Int                     @default(1)
+  config         Json                    @default("{}")
+  lifecycleState ConnectorLifecycleState @default(active) @map("lifecycle_state")
+  tenantId       String?                 @map("tenant_id") @db.Uuid
+  createdAt      DateTime                @default(now()) @map("created_at") @db.Timestamptz
 
   agentConnectors AgentConnector[]
   toolCalls       ToolCall[]
   documents       Document[]
   grants          ConnectorGrant[]
+  draft           ConnectorDraft?
 
   @@unique([type, name])
   @@map("connectors")
+}
+
+// A draft eredetét, forrását és validációs eredményét külön tartjuk, hogy a
+// `connectors` tábla tiszta maradjon (Feature-spec — Provisioning-Assistant §4.2).
+// A forrásdokumentum TARTALMA sosem kerül ide — csak a `sourceHash` + storage-ref.
+model ConnectorDraft {
+  id                          String                     @id @default(uuid()) @db.Uuid
+  tenantId                    String?                    @map("tenant_id") @db.Uuid
+  connectorId                 String                     @unique @map("connector_id") @db.Uuid
+  sourceType                  ConnectorDraftSourceType   @map("source_type")
+  sourceRef                   String?                    @map("source_ref")
+  sourceHash                  String                     @map("source_hash")
+  generatedByAgentId          String?                    @map("generated_by_agent_id") @db.Uuid
+  generatedByAgentVersion     Int?                       @map("generated_by_agent_version")
+  generatedFromConversationId String?                    @map("generated_from_conversation_id") @db.Uuid
+  validationResult            Json?                      @map("validation_result")
+  reviewStatus                ConnectorDraftReviewStatus @default(pending) @map("review_status")
+  reviewedById                String?                    @map("reviewed_by") @db.Uuid
+  secondApproverId            String?                    @map("second_approver_id") @db.Uuid
+  sandboxTestOk               Boolean?                   @map("sandbox_test_ok")
+  createdAt                   DateTime                   @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt                   DateTime                   @updatedAt @map("updated_at") @db.Timestamptz
+
+  connector Connector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, connectorId])
+  @@map("connector_drafts")
 }
 
 model ConnectorGrant {
@@ -788,69 +866,103 @@ model Document {
 }
 
 model Conversation {
-  id            String             @id @default(uuid()) @db.Uuid
-  tenantId      String?            @map("tenant_id") @db.Uuid
-  agentId       String             @map("agent_id") @db.Uuid
-  title         String?
-  status        ConversationStatus @default(active)
-  createdById   String             @map("created_by") @db.Uuid
-  createdAt     DateTime           @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt     DateTime           @updatedAt @map("updated_at") @db.Timestamptz
-  lastMessageAt DateTime           @default(now()) @map("last_message_at") @db.Timestamptz
+  id                String             @id @default(uuid()) @db.Uuid
+  tenantId          String?            @map("tenant_id") @db.Uuid
+  agentId           String             @map("agent_id") @db.Uuid
+  title             String?
+  status            ConversationStatus @default(active)
+  createdById       String             @map("created_by") @db.Uuid
+  retentionPolicyId String?            @map("retention_policy_id") @db.Uuid
+  retainUntil       DateTime?          @map("retain_until") @db.Timestamptz
+  legalHold         Boolean            @default(false) @map("legal_hold")
+  createdAt         DateTime           @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime           @updatedAt @map("updated_at") @db.Timestamptz
+  lastMessageAt     DateTime           @default(now()) @map("last_message_at") @db.Timestamptz
 
-  messages   Message[]
-  tickets    Ticket[]
-  modelCalls ModelCall[]
-  toolCalls  ToolCall[]
+  agent           Agent            @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  createdBy       User             @relation("ConversationCreatedBy", fields: [createdById], references: [id])
+  retentionPolicy RetentionPolicy? @relation(fields: [retentionPolicyId], references: [id])
+  messages        Message[]
+  tickets         Ticket[]
+  modelCalls      ModelCall[]
+  toolCalls       ToolCall[]
 
+  @@index([tenantId, agentId, lastMessageAt])
+  @@index([tenantId, createdById])
+  @@index([retainUntil, legalHold])
   @@map("conversations")
 }
 
 model Message {
-  id               String      @id @default(uuid()) @db.Uuid
-  conversationId   String      @map("conversation_id") @db.Uuid
+  id               String              @id @default(uuid()) @db.Uuid
+  conversationId   String              @map("conversation_id") @db.Uuid
   seq              Int
   role             MessageRole
-  agentVersion     Int?        @map("agent_version")
+  actingUserId     String?             @map("acting_user_id") @db.Uuid
+  agentVersion     Int?                @map("agent_version")
   model            String?
-  contentRef       String?     @map("content_ref")
-  contentDeletedAt DateTime?   @map("content_deleted_at") @db.Timestamptz
-  ticketRefId      String?     @map("ticket_ref") @db.Uuid
-  createdAt        DateTime    @default(now()) @map("created_at") @db.Timestamptz
+  contentRef       String?             @map("content_ref")
+  contentHash      String?             @map("content_hash")
+  contentDeletedAt DateTime?           @map("content_deleted_at") @db.Timestamptz
+  ticketRefId      String?             @map("ticket_ref") @db.Uuid
+  auditEventRef    String?             @map("audit_event_ref")
+  criticality      MessageCriticality?
+  createdAt        DateTime            @default(now()) @map("created_at") @db.Timestamptz
 
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  actingUser   User?        @relation("MessageActingUser", fields: [actingUserId], references: [id])
   ticketRef    Ticket?      @relation(fields: [ticketRefId], references: [id])
 
   @@unique([conversationId, seq])
   @@index([conversationId, createdAt])
+  @@index([contentDeletedAt])
   @@map("messages")
 }
 
+model RetentionPolicy {
+  id        String                   @id @default(uuid()) @db.Uuid
+  tenantId  String?                  @map("tenant_id") @db.Uuid
+  name      String
+  ttlDays   Int                      @map("ttl_days")
+  appliesTo RetentionPolicyAppliesTo @default(all) @map("applies_to")
+  agentId   String?                  @map("agent_id") @db.Uuid
+  createdAt DateTime                 @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime                 @updatedAt @map("updated_at") @db.Timestamptz
+
+  agent         Agent?         @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  conversations Conversation[]
+
+  @@unique([tenantId, name])
+  @@index([tenantId, appliesTo])
+  @@index([tenantId, agentId])
+  @@map("retention_policies")
+}
+
 model Ticket {
-  id               String        @id @default(uuid()) @db.Uuid
-  tenantId         String?       @map("tenant_id") @db.Uuid
-  type             TicketType
-  title            String
-  state            TicketState   @default(backlog)
-  assigneeType     AssigneeType? @map("assignee_type")
-  assigneeId       String?       @map("assignee_id") @db.Uuid
-  agentId          String?       @map("agent_id") @db.Uuid
-  payload          Json          @default("{}")
-  sourceDocumentId String?       @map("source_document_id") @db.Uuid
-  executeAfter     DateTime?     @map("execute_after") @db.Timestamptz
-  dueBy            DateTime?     @map("due_by") @db.Timestamptz
-  lockToken        String?       @map("lock_token")
-  lockedAt         DateTime?     @map("locked_at") @db.Timestamptz
-  playbookRef       String?      @map("playbook_ref")
-  processInstanceId String?      @map("process_instance_id") @db.Uuid
-  playbookVersionId String?      @map("playbook_version_id") @db.Uuid
-  playbookStepId    String?      @map("playbook_step_id")
-  requiredGateId    String?      @map("required_gate_id")
-  conversationId   String?       @map("conversation_id") @db.Uuid
-  source           TicketSource  @default(user)
-  createdById      String        @map("created_by") @db.Uuid
-  createdAt        DateTime      @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt        DateTime      @updatedAt @map("updated_at") @db.Timestamptz
+  id                String        @id @default(uuid()) @db.Uuid
+  tenantId          String?       @map("tenant_id") @db.Uuid
+  type              TicketType
+  title             String
+  state             TicketState   @default(backlog)
+  assigneeType      AssigneeType? @map("assignee_type")
+  assigneeId        String?       @map("assignee_id") @db.Uuid
+  agentId           String?       @map("agent_id") @db.Uuid
+  payload           Json          @default("{}")
+  sourceDocumentId  String?       @map("source_document_id") @db.Uuid
+  executeAfter      DateTime?     @map("execute_after") @db.Timestamptz
+  dueBy             DateTime?     @map("due_by") @db.Timestamptz
+  lockToken         String?       @map("lock_token")
+  lockedAt          DateTime?     @map("locked_at") @db.Timestamptz
+  playbookRef       String?       @map("playbook_ref")
+  processInstanceId String?       @map("process_instance_id") @db.Uuid
+  playbookVersionId String?       @map("playbook_version_id") @db.Uuid
+  playbookStepId    String?       @map("playbook_step_id")
+  requiredGateId    String?       @map("required_gate_id")
+  conversationId    String?       @map("conversation_id") @db.Uuid
+  source            TicketSource  @default(user)
+  createdById       String        @map("created_by") @db.Uuid
+  createdAt         DateTime      @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime      @updatedAt @map("updated_at") @db.Timestamptz
 
   agent                         Agent?              @relation(fields: [agentId], references: [id])
   sourceDocument                Document?           @relation(fields: [sourceDocumentId], references: [id])
@@ -907,13 +1019,13 @@ model ScheduledTask {
 /// milyen frekvenciával, és mit tesz találatkor. A drága LLM csak a 2. lépcsőben
 /// (eszkaláció) indul — a söprés maga nulla LLM-token.
 model MonitorDefinition {
-  id               String               @id @default(uuid()) @db.Uuid
-  tenantId         String               @map("tenant_id") @db.Uuid
-  kind             MonitorKind
-  status           MonitorStatus        @default(active)
-  version          Int                  @default(1)
-  title            String
-  description      String?
+  id          String        @id @default(uuid()) @db.Uuid
+  tenantId    String        @map("tenant_id") @db.Uuid
+  kind        MonitorKind
+  status      MonitorStatus @default(active)
+  version     Int           @default(1)
+  title       String
+  description String?
 
   // Ütemezés (§4.11.6) — UTC-ben tárolva
   intervalSeconds  Int                  @map("interval_seconds")
@@ -924,31 +1036,31 @@ model MonitorDefinition {
   catchupWindowSec Int                  @default(900) @map("catchup_window_sec")
 
   // 1. lépcső — determinisztikus collector + szűrő konfiguráció
-  collectorConfig  Json                 @default("{}") @map("collector_config")
-  filterConfig     Json                 @default("{}") @map("filter_config")
+  collectorConfig Json @default("{}") @map("collector_config")
+  filterConfig    Json @default("{}") @map("filter_config")
 
   // Riasztás-fáradtság elleni kontroll
-  cooldownSeconds  Int                  @default(86400) @map("cooldown_seconds")
-  dedupKeyTemplate String?              @map("dedup_key_template")
+  cooldownSeconds  Int     @default(86400) @map("cooldown_seconds")
+  dedupKeyTemplate String? @map("dedup_key_template")
 
   // 2. lépcső — eszkalációs akció
-  openTicketType   TicketType           @default(monitor_alert) @map("open_ticket_type")
-  escalateAgentId  String?              @map("escalate_agent_id") @db.Uuid
-  perRunBudgetUsd  Decimal?             @map("per_run_budget_usd") @db.Decimal(10, 4)
-  notifyChannel    String?              @map("notify_channel")
+  openTicketType  TicketType @default(monitor_alert) @map("open_ticket_type")
+  escalateAgentId String?    @map("escalate_agent_id") @db.Uuid
+  perRunBudgetUsd Decimal?   @map("per_run_budget_usd") @db.Decimal(10, 4)
+  notifyChannel   String?    @map("notify_channel")
 
   // Lock (dupla-fire védelem — §4.11.7)
-  lockToken        String?              @map("lock_token")
-  lockedAt         DateTime?            @map("locked_at") @db.Timestamptz
+  lockToken String?   @map("lock_token")
+  lockedAt  DateTime? @map("locked_at") @db.Timestamptz
 
-  createdById      String               @map("created_by") @db.Uuid
-  createdAt        DateTime             @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt        DateTime             @updatedAt @map("updated_at") @db.Timestamptz
+  createdById String   @map("created_by") @db.Uuid
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz
 
-  escalateAgent    Agent?               @relation(fields: [escalateAgentId], references: [id])
-  createdBy        User                 @relation("MonitorDefinitionCreatedBy", fields: [createdById], references: [id])
-  runs             MonitorRun[]
-  signals          MonitorSignal[]
+  escalateAgent Agent?          @relation(fields: [escalateAgentId], references: [id])
+  createdBy     User            @relation("MonitorDefinitionCreatedBy", fields: [createdById], references: [id])
+  runs          MonitorRun[]
+  signals       MonitorSignal[]
 
   @@index([status, nextSweepAt])
   @@index([tenantId, status])
@@ -972,7 +1084,7 @@ model MonitorRun {
   costUsd         Decimal?          @map("cost_usd") @db.Decimal(10, 4)
   error           String?
 
-  monitor         MonitorDefinition @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+  monitor MonitorDefinition @relation(fields: [monitorId], references: [id], onDelete: Cascade)
 
   @@unique([monitorId, scheduledFor])
   @@index([monitorId, startedAt])
@@ -982,17 +1094,17 @@ model MonitorRun {
 /// Cooldown / dedup nyilvántartás (§3.4): ugyanaz a jel ne nyisson ismételt
 /// tickettet a cooldown ablakon belül (riasztás-fáradtság elleni kontroll).
 model MonitorSignal {
-  id                String            @id @default(uuid()) @db.Uuid
-  monitorId         String            @map("monitor_id") @db.Uuid
-  dedupKey          String            @map("dedup_key")
-  firstSeenAt       DateTime          @default(now()) @map("first_seen_at") @db.Timestamptz
-  lastSeenAt        DateTime          @default(now()) @map("last_seen_at") @db.Timestamptz
-  lastEscalatedAt   DateTime?         @map("last_escalated_at") @db.Timestamptz
-  escalatedTicketId String?           @map("escalated_ticket_id") @db.Uuid
-  severity          Int               @default(0)
-  payload           Json              @default("{}")
+  id                String    @id @default(uuid()) @db.Uuid
+  monitorId         String    @map("monitor_id") @db.Uuid
+  dedupKey          String    @map("dedup_key")
+  firstSeenAt       DateTime  @default(now()) @map("first_seen_at") @db.Timestamptz
+  lastSeenAt        DateTime  @default(now()) @map("last_seen_at") @db.Timestamptz
+  lastEscalatedAt   DateTime? @map("last_escalated_at") @db.Timestamptz
+  escalatedTicketId String?   @map("escalated_ticket_id") @db.Uuid
+  severity          Int       @default(0)
+  payload           Json      @default("{}")
 
-  monitor           MonitorDefinition @relation(fields: [monitorId], references: [id], onDelete: Cascade)
+  monitor MonitorDefinition @relation(fields: [monitorId], references: [id], onDelete: Cascade)
 
   @@unique([monitorId, dedupKey])
   @@index([monitorId, lastEscalatedAt])
@@ -1086,33 +1198,33 @@ enum ModelBudgetPeriod {
 }
 
 model ModelRoutingPolicy {
-  id        String             @id @default(uuid()) @db.Uuid
-  tenantId  String?            @map("tenant_id") @db.Uuid
-  scope     ModelRoutingScope  @default(global)
-  scopeRef  String?            @map("scope_ref")
-  model     String
-  provider  String
-  priority  Int                @default(100)
+  id         String            @id @default(uuid()) @db.Uuid
+  tenantId   String?           @map("tenant_id") @db.Uuid
+  scope      ModelRoutingScope @default(global)
+  scopeRef   String?           @map("scope_ref")
+  model      String
+  provider   String
+  priority   Int               @default(100)
   conditions Json?
-  createdAt DateTime           @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt DateTime           @updatedAt @map("updated_at") @db.Timestamptz
+  createdAt  DateTime          @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt  DateTime          @updatedAt @map("updated_at") @db.Timestamptz
 
   @@index([tenantId, scope, priority])
   @@map("model_routing_policies")
 }
 
 model ModelBudget {
-  id             String           @id @default(uuid()) @db.Uuid
-  tenantId       String?          @map("tenant_id") @db.Uuid
-  scope          ModelBudgetScope @default(tenant)
-  scopeRef       String?          @map("scope_ref")
-  period         ModelBudgetPeriod @default(week)
-  callLimit      Int?             @map("call_limit")
-  tokenLimit     Int?             @map("token_limit")
-  softThreshold  Decimal?         @map("soft_threshold") @db.Decimal(12, 6)
-  hardCap        Boolean          @default(true) @map("hard_cap")
-  createdAt      DateTime         @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt      DateTime         @updatedAt @map("updated_at") @db.Timestamptz
+  id            String            @id @default(uuid()) @db.Uuid
+  tenantId      String?           @map("tenant_id") @db.Uuid
+  scope         ModelBudgetScope  @default(tenant)
+  scopeRef      String?           @map("scope_ref")
+  period        ModelBudgetPeriod @default(week)
+  callLimit     Int?              @map("call_limit")
+  tokenLimit    Int?              @map("token_limit")
+  softThreshold Decimal?          @map("soft_threshold") @db.Decimal(12, 6)
+  hardCap       Boolean           @default(true) @map("hard_cap")
+  createdAt     DateTime          @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime          @updatedAt @map("updated_at") @db.Timestamptz
 
   @@index([tenantId, scope])
   @@map("model_budgets")
@@ -1143,9 +1255,9 @@ model ToolCall {
 // ── CR-MVP-001: A0 sandbox app registry ────────────────────────────────────
 
 model SandboxApp {
-  id          String                @id @default(uuid()) @db.Uuid
-  tenantId    String?               @map("tenant_id") @db.Uuid
-  sandboxId   String?               @map("sandbox_id") @db.Uuid
+  id        String  @id @default(uuid()) @db.Uuid
+  tenantId  String? @map("tenant_id") @db.Uuid
+  sandboxId String? @map("sandbox_id") @db.Uuid
 
   name        String
   description String?
@@ -1156,11 +1268,11 @@ model SandboxApp {
 
   activeVersionId String? @map("active_version_id") @db.Uuid
 
-  createdByType            SandboxCreatedByType @map("created_by_type")
-  createdByUserId          String?              @map("created_by_user_id") @db.Uuid
-  createdByAgentId         String?              @map("created_by_agent_id") @db.Uuid
-  createdFromTicketId      String?              @map("created_from_ticket_id") @db.Uuid
-  createdFromConversationId String?             @map("created_from_conversation_id") @db.Uuid
+  createdByType             SandboxCreatedByType @map("created_by_type")
+  createdByUserId           String?              @map("created_by_user_id") @db.Uuid
+  createdByAgentId          String?              @map("created_by_agent_id") @db.Uuid
+  createdFromTicketId       String?              @map("created_from_ticket_id") @db.Uuid
+  createdFromConversationId String?              @map("created_from_conversation_id") @db.Uuid
 
   policy Json @default("{}")
   tags   Json @default("[]")
@@ -1178,18 +1290,18 @@ model SandboxApp {
 }
 
 model SandboxAppVersion {
-  id       String                  @id @default(uuid()) @db.Uuid
-  tenantId String?                 @map("tenant_id") @db.Uuid
-  appId    String                  @map("app_id") @db.Uuid
+  id       String  @id @default(uuid()) @db.Uuid
+  tenantId String? @map("tenant_id") @db.Uuid
+  appId    String  @map("app_id") @db.Uuid
 
   version       Int
   status        SandboxAppVersionStatus @default(draft)
   changeSummary String                  @map("change_summary")
 
-  artifactRef      String @map("artifact_ref")
-  artifactSizeBytes Int   @map("artifact_size_bytes")
-  contentHash      String @map("content_hash")
-  mimeType         String @default("text/html; charset=utf-8") @map("mime_type")
+  artifactRef       String @map("artifact_ref")
+  artifactSizeBytes Int    @map("artifact_size_bytes")
+  contentHash       String @map("content_hash")
+  mimeType          String @default("text/html; charset=utf-8") @map("mime_type")
 
   createdByType    SandboxCreatedByType @map("created_by_type")
   createdByUserId  String?              @map("created_by_user_id") @db.Uuid

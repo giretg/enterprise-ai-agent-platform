@@ -98,6 +98,42 @@ function resolveUploadTarget(filename: string): { storageRef: string; absolutePa
   return { storageRef: path.join('uploads', safeName), absolutePath }
 }
 
+const imageFilenamePattern = /\.(jpg|jpeg|png|gif|webp)$/i
+const imageDataMarkerPattern = /^(\[image:([^\]]+)\])([\s\S]*)$/
+
+function parseStoredChatMessage(content: string): { text: string; attachmentIds: string[] } {
+  try {
+    const parsed = JSON.parse(content) as { text?: string; attachmentIds?: string[] }
+    if (typeof parsed.text === 'string') {
+      return {
+        text: parsed.text,
+        attachmentIds: Array.isArray(parsed.attachmentIds)
+          ? parsed.attachmentIds.filter((id): id is string => typeof id === 'string')
+          : [],
+      }
+    }
+  } catch {
+    // Legacy messages are stored as plain text.
+  }
+  return { text: content, attachmentIds: [] }
+}
+
+function decodeInlineConversationContent(contentRef: string | null | undefined): string | null {
+  if (!contentRef) return null
+  if (contentRef.startsWith('inline:')) return contentRef.slice('inline:'.length)
+  return contentRef
+}
+
+function decodeConversationPreview(content: string): string {
+  try {
+    const parsed = JSON.parse(content) as { text?: string }
+    if (typeof parsed.text === 'string') return parsed.text
+  } catch {
+    // Legacy messages are stored as plain text.
+  }
+  return content
+}
+
 export async function listTickets(input?: { filter?: unknown }) {
   try {
     await requireRole('viewer')
@@ -1549,25 +1585,103 @@ export async function loadAgentChatMessages(input: { conversationId: string; age
   try {
     const user = await requireRole('viewer')
     const { conversationId, agentId } = loadAgentChatSchema.parse(input)
-    const messages = await services.agentChat.getConversationMessages(
+    const { conversation, messages } = await services.conversations.getConversation(
       conversationId,
       user.tenantId,
-      agentId,
     )
-    return ok({ conversationId, messages })
+    if (conversation.agentId !== agentId) return fail('Conversation agent mismatch')
+
+    const views = []
+    for (const message of messages) {
+      const contentDeletedAt = message.contentDeletedAt
+        ? message.contentDeletedAt.toISOString()
+        : null
+      const parsed = message.content && !message.contentDeletedAt
+        ? parseStoredChatMessage(message.content)
+        : { text: '', attachmentIds: [] }
+      const attachments = []
+
+      for (const documentId of parsed.attachmentIds) {
+        const doc = await prisma.document.findUnique({
+          where: { id: documentId },
+          select: { id: true, filename: true, extractedText: true },
+        })
+        if (!doc) continue
+        const kind: 'image' | 'text' = imageFilenamePattern.test(doc.filename) || doc.extractedText?.startsWith('[image:')
+          ? 'image'
+          : 'text'
+        const imageMatch = kind === 'image' && doc.extractedText
+          ? doc.extractedText.match(imageDataMarkerPattern)
+          : null
+        attachments.push({
+          documentId: doc.id,
+          filename: doc.filename,
+          kind,
+          previewDataUrl: imageMatch?.[2] && imageMatch[3]
+            ? `data:${imageMatch[2]};base64,${imageMatch[3]}`
+            : null,
+        })
+      }
+
+      views.push({
+        id: message.id,
+        role: message.role,
+        text: parsed.text,
+        attachments,
+        createdAt: message.createdAt.toISOString(),
+        contentDeletedAt,
+        ticketRefId: message.ticketRefId,
+      })
+    }
+
+    return ok({
+      conversationId,
+      conversation: {
+        id: conversation.id,
+        status: conversation.status,
+        title: conversation.title,
+        lastMessageAt: conversation.lastMessageAt.toISOString(),
+      },
+      messages: views,
+    })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to load chat messages')
   }
 }
 
-export async function listAgentChatSessions(input: { agentId: string }) {
+export async function listAgentChatSessions(input: { agentId: string; status?: 'active' | 'archived' | 'all' }) {
   try {
     const user = await requireRole('viewer')
-    const { agentId } = listAgentChatSessionsSchema.parse(input)
-    const sessions = await services.agentChat.listSessions({
-      agentId,
-      createdById: user.id,
-      tenantId: user.tenantId,
+    const { agentId, status = 'active' } = listAgentChatSessionsSchema.parse(input)
+    const rows = await prisma.conversation.findMany({
+      where: {
+        agentId,
+        createdById: user.id,
+        tenantId: user.tenantId,
+        ...(status === 'all' ? {} : { status }),
+      },
+      orderBy: { lastMessageAt: 'desc' },
+      take: 50,
+      include: {
+        messages: {
+          where: { role: 'user', contentDeletedAt: null },
+          orderBy: { seq: 'asc' },
+          take: 1,
+          select: { contentRef: true },
+        },
+      },
+    })
+    const sessions = rows.map(({ messages, ...conversation }) => {
+      const raw = decodeInlineConversationContent(messages[0]?.contentRef)
+      const preview = raw ? decodeConversationPreview(raw).slice(0, 120) : null
+      return {
+        id: conversation.id,
+        title: conversation.title?.trim() || preview?.slice(0, 60) || 'Beszélgetés',
+        preview,
+        lastMessageAt: conversation.lastMessageAt.toISOString(),
+        createdAt: conversation.createdAt.toISOString(),
+        status: conversation.status,
+      }
     })
     return ok({ sessions })
   } catch (e) {
@@ -1582,6 +1696,8 @@ export async function deleteMessageContent(input: { messageId: string }) {
     const updated = await services.conversations.deleteMessageContent({
       messageId,
       actorId: user.id,
+      tenantId: user.tenantId,
+      reason: 'ui-message-delete',
     })
     return ok(updated)
   } catch (e) {

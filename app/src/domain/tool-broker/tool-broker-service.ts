@@ -825,6 +825,12 @@ export class AllowlistAuthorizer implements Authorizer {
       }
     }
 
+    // Provisioning §4.1 / P3 / PN5: egy draft (lifecycle_state != active) connector
+    // a Tool Brokerben SOHA nem oldódik fel — egy fél kész draft nem futtatható élesben.
+    if (connector.lifecycleState !== 'active') {
+      return { allowed: false, reason: 'connector_not_active', connector }
+    }
+
     if (connector.authMode === 'user_delegated') {
       if (!input.actingUserId) {
         return { allowed: false, reason: 'acting_user_required', connector }

@@ -42,6 +42,12 @@ import { DeadlineCollector } from '@/domain/monitor/collectors/deadline-collecto
 import { BoardBacklogCollector } from '@/domain/monitor/collectors/board-collector'
 import { ConnectorCountCollector } from '@/domain/monitor/collectors/connector-count-collector'
 import { KnowledgeBaseService } from '@/domain/knowledge-base/knowledge-base-service'
+import { ProvisioningService } from '@/domain/provisioning/provisioning-service'
+import { HttpSandboxConnectionTester } from '@/domain/provisioning/sandbox-connection-tester'
+import {
+  ProvisioningAssistant,
+  PROVISIONING_DRAFT_CAPABILITIES,
+} from '@/domain/provisioning/provisioning-assistant'
 import {
   AuditOnlyMonitorNotifier,
   RoutingMonitorNotifier,
@@ -159,6 +165,48 @@ const knowledgeBaseService = new KnowledgeBaseService(
   ticketService,
 )
 const iamService = new IamService(repositories.audit, connectorGrantService)
+
+// Provisioning Assistant (§7.2/§14.2): a tenant egress-allowlist és a banki preset
+// a meglévő deny-by-default egress-policy kiterjesztése; jelenleg env-vezérelt
+// (PROVISIONING_EGRESS_ALLOWLIST = vesszővel tagolt host-lista, PROVISIONING_BANK_PRESET).
+const provisioningEgressAllowlist = (process.env.PROVISIONING_EGRESS_ALLOWLIST ?? '')
+  .split(',')
+  .map((h) => h.trim().toLowerCase())
+  .filter(Boolean)
+const provisioningBankPreset = process.env.PROVISIONING_BANK_PRESET === 'true'
+// F2-P-D sandbox connection-test (§8.4): valódi, szűk jogú read-only próbahívás
+// egress deny-by-default + SSRF-őrrel. A non-prod token feloldása env-vezérelt és
+// alias-szűkített (PROVISIONING_SANDBOX_TOKEN_<ALIAS-UPPER-SNAKE>); alapból tokenless.
+const provisioningSandboxTester = new HttpSandboxConnectionTester({
+  resolveEgressAllowlist: async () => provisioningEgressAllowlist,
+  resolveBankPreset: async () => provisioningBankPreset,
+  resolveSandboxToken: async ({ secretAlias }) => {
+    if (!secretAlias) return null
+    const envKey =
+      'PROVISIONING_SANDBOX_TOKEN_' + secretAlias.toUpperCase().replace(/[^A-Z0-9]+/g, '_')
+    return process.env[envKey] ?? null
+  },
+})
+const provisioningService = new ProvisioningService({
+  drafts: repositories.connectorDrafts,
+  audit: repositories.audit,
+  resolveEgressAllowlist: async () => provisioningEgressAllowlist,
+  resolveBankPreset: async () => provisioningBankPreset,
+  sandboxTester: provisioningSandboxTester,
+  // F2-P-F: az agent-aktor draft-jogai deny-by-default a Capability táblából (§6.1/§9).
+  resolveAgentCapabilities: async (agentId) => {
+    const checks = await Promise.all(
+      PROVISIONING_DRAFT_CAPABILITIES.map(async (cap) => ({
+        cap,
+        allowed: (await repositories.toolBroker.findCapability(agentId, cap))?.allowed === true,
+      })),
+    )
+    return checks.filter((c) => c.allowed).map((c) => c.cap)
+  },
+})
+// F2-P-F: a provisioning-asszisztens agent doksi→draft-config parsing magja (§7.1).
+// A modell kimenete CSAK adat; a determinisztikus validátor a tényleges kapu (§3).
+const provisioningAssistant = new ProvisioningAssistant({ model: modelGateway })
 const agentChatRuntime = new AgentChatRuntime(
   repositories.agents,
   repositories.documents,
@@ -168,6 +216,7 @@ const agentChatRuntime = new AgentChatRuntime(
   toolBrokerService,
   repositories.toolBroker,
   workspaceStorage,
+  repositories.audit,
 )
 const wikiRuntime = new WikiAgentRuntime(
   repositories.agents,
@@ -178,6 +227,7 @@ const wikiRuntime = new WikiAgentRuntime(
   repositories.toolBroker,
   playbookService,
   conversationService,
+  repositories.audit,
 )
 const generalTaskRuntime = new GeneralTaskRuntime(
   repositories.agents,
@@ -275,6 +325,8 @@ export const services = {
   ticketStateMachine,
   conversations: conversationService,
   iam: iamService,
+  provisioning: provisioningService,
+  provisioningAssistant,
   sandboxApps: sandboxAppService,
   scheduledTasks: scheduledTaskService,
   monitors: monitorService,

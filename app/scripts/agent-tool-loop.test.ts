@@ -8,6 +8,7 @@
  */
 import assert from 'node:assert/strict'
 import { runAgentToolLoop, recoverOpenAiToolCallsFromText } from '../src/domain/agent/chat-tool-loop'
+import { assembleContext } from '../src/domain/conversation/context-assembly'
 import { resolveTicketProcessRoute } from '../src/lib/ticket-process-route'
 import type { ModelGateway, ModelConfig, GatewayToolCall } from '../src/domain/gateway/model-gateway'
 import type {
@@ -15,7 +16,7 @@ import type {
   ToolBrokerInvokeInput,
   ToolBrokerInvokeResult,
 } from '../src/domain/tool-broker/tool-broker-service'
-import type { ToolBrokerRepository } from '../src/repositories/interfaces'
+import type { AuditRepository, ToolBrokerRepository } from '../src/repositories/interfaces'
 
 let failures = 0
 function check(name: string, fn: () => void | Promise<void>) {
@@ -91,8 +92,82 @@ const fakeToolCaps = {
   findConnectorsForAgent: async () => [],
 } as unknown as ToolBrokerRepository
 
+function fakeAudit(record: Array<Record<string, unknown>>): AuditRepository {
+  return {
+    append: async (data) => {
+      record.push(data as unknown as Record<string, unknown>)
+      return {
+        id: `audit-${record.length}`,
+        seq: record.length,
+        createdAt: new Date(),
+        hash: `hash-${record.length}`,
+        prevHash: record.length === 1 ? 'genesis' : `hash-${record.length - 1}`,
+        ...data,
+      } as never
+    },
+    findMany: async () => [],
+    findAll: async () => [],
+    getActionCounts: async () => ({}),
+  }
+}
+
 async function main() {
   console.log('=== agent tool loop + routing teszt ===')
+
+  await check('context assembly: törölt tartalom kimarad, budget determinisztikusan vág és audit nem tartalmaz contentet', async () => {
+    const auditEvents: Array<Record<string, unknown>> = []
+    const assembled = await assembleContext({
+      audit: fakeAudit(auditEvents),
+      conversationId: 'conv-ctx',
+      agentId: 'agent-1',
+      agentVersion: 7,
+      actingUserId: 'user-1',
+      memoryVersion: 3,
+      documentAliases: ['kb:source-b', 'kb:source-a', 'kb:source-a'],
+      budgetTokens: 20,
+      recencyWindowMessages: 10,
+      messages: [
+        {
+          id: 'm1',
+          seq: 1,
+          role: 'user',
+          content: 'old secret content',
+          contentDeletedAt: null,
+        },
+        {
+          id: 'm2',
+          seq: 2,
+          role: 'agent',
+          content: null,
+          contentDeletedAt: new Date('2026-01-01T00:00:00Z'),
+        },
+        {
+          id: 'm3',
+          seq: 3,
+          role: 'user',
+          content: 'x'.repeat(200),
+          contentDeletedAt: null,
+        },
+        {
+          id: 'm4',
+          seq: 4,
+          role: 'user',
+          content: 'latest',
+          contentDeletedAt: null,
+        },
+      ],
+    })
+
+    assert.deepEqual(assembled.messageSeqs, [4])
+    assert.deepEqual(assembled.skippedDeletedSeqs, [2])
+    assert.deepEqual(assembled.droppedSeqs, [1, 3])
+    assert.deepEqual(assembled.documentAliases, ['kb:source-a', 'kb:source-b'])
+    assert.equal(auditEvents[0].action, 'context.assembled')
+    assert.equal(auditEvents[1].action, 'context.truncated')
+    assert.ok(!JSON.stringify(auditEvents).includes('old secret content'))
+    assert.ok(!JSON.stringify(auditEvents).includes('latest'))
+    assert.ok(!JSON.stringify(auditEvents).includes('xxxxxxxx'))
+  })
 
   await check('task mód: ticketId kontextus megy a gateway-nek és a brokernek', async () => {
     const gwCalls: GatewayCallArgs[] = []
