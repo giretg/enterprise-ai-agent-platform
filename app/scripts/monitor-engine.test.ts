@@ -6,12 +6,18 @@
  * business-hours, AND/OR) és a következő-söprés számítást (catch-up + jitter).
  */
 import assert from 'node:assert/strict'
-import type { MonitorDefinition } from '@prisma/client'
+import type { AuditLog, MonitorDefinition, MonitorRun, MonitorSignal, Prisma, Ticket } from '@prisma/client'
 import { evaluateFilter } from '../src/domain/monitor/filter-eval'
-import { computeNextSweepAt } from '../src/domain/monitor/monitor-service'
+import { computeNextSweepAt, MonitorService } from '../src/domain/monitor/monitor-service'
 import { BoardBacklogCollector } from '../src/domain/monitor/collectors/board-collector'
 import { DeadlineCollector } from '../src/domain/monitor/collectors/deadline-collector'
-import type { MonitorSignalDraft } from '../src/domain/monitor/collectors/types'
+import { ConnectorCountCollector } from '../src/domain/monitor/collectors/connector-count-collector'
+import type { MonitorCollector, MonitorSignalDraft } from '../src/domain/monitor/collectors/types'
+import type { AgentRepository, AuditRepository, MonitorRepository, TicketRepository } from '../src/repositories/interfaces'
+import type { MonitorNotifier, MonitorNotificationInput } from '../src/lib/notify/monitor-notifier'
+import { RoutingMonitorNotifier } from '../src/lib/notify/monitor-notifier'
+import { WebhookChatNotifier } from '../src/lib/notify/webhook-chat-notifier'
+import type { ToolBrokerInvokeInput } from '../src/domain/tool-broker/tool-broker-service'
 
 let failures = 0
 const asyncChecks: Promise<void>[] = []
@@ -200,6 +206,256 @@ check('skip catch-up: rég esedékes → jövőbeli slot, nem most', () => {
   const longAgo = new Date(NOW.getTime() - 10 * 3_600_000)
   const next = computeNextSweepAt(monitor({ nextSweepAt: longAgo, catchupPolicy: 'skip' }), NOW)
   assert.ok(next.getTime() >= NOW.getTime())
+})
+
+console.log('=== connector-count Tool Broker teszt ===')
+
+checkAsync('connector-count collector mailbox_count capability-n át ad jelet', async () => {
+  const calls: ToolBrokerInvokeInput[] = []
+  const collector = new ConnectorCountCollector(
+    {
+      async invoke(input) {
+        calls.push(input)
+        return {
+          denied: false,
+          result: { count: 12, query: 'is:unread' },
+          resultMeta: { count: 12 },
+          latencyMs: 1,
+        }
+      },
+    },
+    {
+      async findById() {
+        return { id: 'agent-mailbox', currentVersion: 7 }
+      },
+    } as unknown as AgentRepository,
+  )
+
+  const signals = await collector.collect({
+    tenantId: 'tenant-a',
+    now: NOW,
+    monitor: monitor({ kind: 'connector_count', escalateAgentId: 'agent-mailbox' }),
+    config: {
+      threshold: 5,
+      query: 'is:unread',
+      actingUserId: 'user-a',
+      connectorId: '11111111-1111-1111-1111-111111111111',
+    },
+  })
+
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].tool, 'mailbox_count')
+  assert.equal(calls[0].agentVersion, 7)
+  assert.equal(calls[0].actingUserId, 'user-a')
+  assert.equal(signals.length, 1)
+  assert.equal(signals[0].payload.count, 12)
+  assert.equal(signals[0].payload.threshold, 5)
+  assert.equal(signals[0].dedupKeyParts.agentId, 'agent-mailbox')
+})
+
+console.log('=== monitor notification adapter teszt ===')
+
+checkAsync('eszkalált jel notifyChannel esetén értesítést és auditot kap', async () => {
+  const escalatedSignal = signal({
+    dedupKeyParts: { ticketId: 'source-ticket-1' },
+    severity: 91,
+    title: 'Kritikus határidő',
+    dueBy: new Date(NOW.getTime() + 3_600_000),
+    payload: { ticketId: 'source-ticket-1' },
+  })
+  const definition = monitor({
+    id: 'monitor-notify',
+    notifyChannel: 'email:ops@example.com',
+    filterConfig: { field: 'severity', cmp: '>=', value: 80 },
+    dedupKeyTemplate: 'deadline:{ticketId}',
+  })
+  const run: MonitorRun = {
+    id: 'run-notify',
+    monitorId: definition.id,
+    outcome: 'quiet',
+    startedAt: NOW,
+    finishedAt: null,
+    scheduledFor: definition.nextSweepAt,
+    signalCount: 0,
+    matchedCount: 0,
+    suppressedCount: 0,
+    openedTicketIds: [],
+    llmInvoked: false,
+    costUsd: null,
+    error: null,
+  }
+  const storedSignal: MonitorSignal = {
+    id: 'signal-notify',
+    monitorId: definition.id,
+    dedupKey: 'deadline:source-ticket-1',
+    firstSeenAt: NOW,
+    lastSeenAt: NOW,
+    lastEscalatedAt: null,
+    escalatedTicketId: null,
+    severity: escalatedSignal.severity,
+    payload: escalatedSignal.payload as Prisma.JsonObject,
+  }
+  const createdTickets: Array<Partial<Ticket>> = []
+  const auditEvents: Array<Omit<AuditLog, 'id' | 'seq' | 'createdAt' | 'hash' | 'prevHash'>> = []
+  const notifications: MonitorNotificationInput[] = []
+
+  const monitorRepo = {
+    async findDue() {
+      return [definition]
+    },
+    async claim() {
+      return definition
+    },
+    async createRun() {
+      return run
+    },
+    async upsertSignal() {
+      return storedSignal
+    },
+    async markSignalEscalated(_id: string, ticketId: string, now: Date) {
+      storedSignal.lastEscalatedAt = now
+      storedSignal.escalatedTicketId = ticketId
+    },
+    async updateRun(_id: string, data: Partial<MonitorRun>) {
+      Object.assign(run, data)
+      return run
+    },
+    async release() {},
+  } as unknown as MonitorRepository
+
+  const ticketRepo = {
+    async create(data: Partial<Ticket>) {
+      const ticket = { ...data, id: 'ticket-notify', createdAt: NOW, updatedAt: NOW } as Ticket
+      createdTickets.push(ticket)
+      return ticket
+    },
+  } as unknown as TicketRepository
+
+  const auditRepo = {
+    async append(data: Omit<AuditLog, 'id' | 'seq' | 'createdAt' | 'hash' | 'prevHash'>) {
+      auditEvents.push(data)
+      return {
+        ...data,
+        id: `audit-${auditEvents.length}`,
+        seq: BigInt(auditEvents.length),
+        createdAt: NOW,
+        hash: 'h',
+        prevHash: null,
+      } as AuditLog
+    },
+  } as unknown as AuditRepository
+
+  const collector: MonitorCollector = {
+    kind: 'deadline',
+    async collect() {
+      return [escalatedSignal]
+    },
+  }
+
+  const notifier: MonitorNotifier = {
+    async send(input) {
+      notifications.push(input)
+      return { provider: 'email', messageId: 'msg-1' }
+    },
+  }
+
+  const service = new MonitorService(monitorRepo, ticketRepo, auditRepo, [collector], notifier)
+  const result = await service.sweepDue(NOW, 1)
+
+  assert.equal(result[0].outcome, 'escalated')
+  assert.equal(notifications.length, 1)
+  assert.equal(notifications[0].channel, 'email:ops@example.com')
+  assert.equal(notifications[0].dedupKey, 'deadline:source-ticket-1')
+  assert.equal(auditEvents.some((e) => e.action === 'monitor.notify.sent'), true)
+  const ticketPayload = createdTickets[0].payload as Record<string, unknown>
+  assert.equal(ticketPayload.monitorRunId, 'run-notify')
+  assert.equal(ticketPayload.dedupKey, 'deadline:source-ticket-1')
+})
+
+console.log('=== valós értesítő adapter (webhook chat + routing) teszt ===')
+
+function notificationInput(
+  overrides: Partial<MonitorNotificationInput> = {},
+): MonitorNotificationInput {
+  return {
+    channel: 'chat:ops',
+    tenantId: 'tenant-1',
+    monitorId: 'mon-1',
+    monitorTitle: 'Határidő-figyelő',
+    monitorKind: 'deadline',
+    monitorRunId: 'run-1',
+    dedupKey: 'deadline:t1',
+    ticketId: 'ticket-1',
+    signalTitle: 'Közelgő határidő',
+    severity: 80,
+    dueBy: new Date('2026-06-22T09:00:00.000Z'),
+    payload: {},
+    createdAt: NOW,
+    ...overrides,
+  }
+}
+
+checkAsync('webhook chat notifier allowlistolt env URL-re POST-ol + board-linket ad', async () => {
+  const calls: Array<{ url: string; body: unknown }> = []
+  const fetchFn = (async (url: string | URL | Request, init?: RequestInit) => {
+    calls.push({ url: String(url), body: JSON.parse(String(init?.body ?? '{}')) })
+    return new Response(null, { status: 200 })
+  }) as unknown as typeof fetch
+  const notifier = new WebhookChatNotifier({
+    env: {
+      MONITOR_NOTIFY_WEBHOOK_OPS: 'https://chat.example.com/hook/abc',
+      NEXT_PUBLIC_APP_URL: 'https://platform.example.com/',
+    },
+    fetchFn,
+  })
+
+  const result = await notifier.send(notificationInput())
+
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].url, 'https://chat.example.com/hook/abc')
+  const body = calls[0].body as { text: string }
+  assert.match(body.text, /Határidő-figyelő/)
+  assert.match(body.text, /https:\/\/platform\.example\.com\/control-plane\/board/)
+  assert.match(body.text, /#ticket-1/)
+  assert.equal(result.provider, 'chat')
+})
+
+checkAsync('webhook chat notifier hibát dob be nem kötött csatorna-kulcsra', async () => {
+  const notifier = new WebhookChatNotifier({ env: {} })
+  await assert.rejects(() => notifier.send(notificationInput({ channel: 'chat:unknown' })), /not configured/)
+})
+
+checkAsync('webhook chat notifier elutasítja a nem-https webhook URL-t', async () => {
+  const notifier = new WebhookChatNotifier({
+    env: { MONITOR_NOTIFY_WEBHOOK_OPS: 'http://insecure.example.com/hook' },
+  })
+  await assert.rejects(() => notifier.send(notificationInput()), /https/)
+})
+
+checkAsync('routing notifier a chat:-et a webhookra, az email:-t a fallbackre küldi', async () => {
+  const chatCalls: MonitorNotificationInput[] = []
+  const fallbackCalls: MonitorNotificationInput[] = []
+  const chat: MonitorNotifier = {
+    async send(input) {
+      chatCalls.push(input)
+      return { provider: 'chat', messageId: 'chat-1' }
+    },
+  }
+  const fallback: MonitorNotifier = {
+    async send(input) {
+      fallbackCalls.push(input)
+      return { provider: 'audit-only', messageId: 'audit-1' }
+    },
+  }
+  const routing = new RoutingMonitorNotifier({ chat }, fallback)
+
+  const chatResult = await routing.send(notificationInput({ channel: 'chat:ops' }))
+  const emailResult = await routing.send(notificationInput({ channel: 'email:ops@example.com' }))
+
+  assert.equal(chatCalls.length, 1)
+  assert.equal(chatResult.provider, 'chat')
+  assert.equal(fallbackCalls.length, 1)
+  assert.equal(emailResult.provider, 'audit-only')
 })
 
 Promise.all(asyncChecks).then(() => {

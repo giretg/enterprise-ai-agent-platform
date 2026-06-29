@@ -18,7 +18,12 @@ const ABBREVIATED_SCOPES: Record<string, string> = {
   'gmail.metadata': GMAIL_SCOPES.metadata,
 }
 
-type GmailTool = 'gmail_search' | 'gmail_get_message' | 'gmail_create_draft' | 'gmail_send'
+type GmailTool =
+  | 'gmail_search'
+  | 'gmail_get_message'
+  | 'gmail_create_draft'
+  | 'gmail_send'
+  | 'mailbox_count'
 
 export function normalizeGmailScope(scope: string): string {
   const trimmed = scope.trim()
@@ -45,7 +50,7 @@ export function gmailToolAllowedByScopes(params: {
   const scopes = parseGmailScopes(params.scopes)
   if (scopes.length === 0) return false
 
-  if (params.tool === 'gmail_search' || params.tool === 'gmail_get_message') {
+  if (params.tool === 'gmail_search' || params.tool === 'gmail_get_message' || params.tool === 'mailbox_count') {
     return hasAnyScope(scopes, [GMAIL_SCOPES.full, GMAIL_SCOPES.modify, GMAIL_SCOPES.readonly])
   }
 

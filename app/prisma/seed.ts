@@ -215,7 +215,7 @@ async function ensureToolBrokerSeed(agentId: string) {
     update: { accessMode: 'write' },
   })
 
-  for (const toolName of ['gmail_search', 'gmail_get_message', 'gmail_create_draft', 'gmail_send']) {
+  for (const toolName of ['gmail_search', 'gmail_get_message', 'mailbox_count', 'gmail_create_draft', 'gmail_send']) {
     await prisma.capability.upsert({
       where: { agentId_toolName: { agentId, toolName } },
       create: { agentId, toolName, allowed: true },

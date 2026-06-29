@@ -603,6 +603,16 @@ export const toolInvokeSchema = z.discriminatedUnion('tool', [
     args: z.object({ id: z.string().min(1).max(200) }),
   }),
   z.object({
+    tool: z.literal('mailbox_count'),
+    ...toolInvokeBaseSchema,
+    args: z.object({
+      connectorId: z.string().uuid().optional(),
+      query: z.string().max(500).optional(),
+      labelIds: z.array(z.string().min(1).max(120)).max(10).optional(),
+      includeSpamTrash: z.boolean().optional(),
+    }),
+  }),
+  z.object({
     tool: z.literal('gmail_create_draft'),
     ...toolInvokeBaseSchema,
     args: z.object({

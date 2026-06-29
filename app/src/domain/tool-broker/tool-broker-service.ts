@@ -169,6 +169,12 @@ export type AgentCatalogResult = {
 
 export type GmailSearchArgs = { query: string; maxResults?: number }
 export type GmailGetMessageArgs = { id: string }
+export type MailboxCountArgs = {
+  connectorId?: string
+  query?: string
+  labelIds?: string[]
+  includeSpamTrash?: boolean
+}
 export type GmailCreateDraftArgs = {
   to: string
   subject: string
@@ -196,6 +202,7 @@ export type HttpApiCallResult = { status: number; ok: boolean; body: unknown }
 
 export type GmailSearchResult = { messages: Array<Record<string, string>> }
 export type GmailGetMessageResult = Record<string, string>
+export type MailboxCountResult = { count: number; query: string }
 export type GmailCreateDraftResult = { draftId: string }
 export type GmailSendResult = { messageId: string }
 
@@ -293,6 +300,7 @@ export type ToolBrokerInvokeInput =
   | (ToolInvokeBase & { tool: 'agent_catalog'; args: AgentCatalogArgs })
   | (ToolInvokeBase & { tool: 'gmail_search'; args: GmailSearchArgs })
   | (ToolInvokeBase & { tool: 'gmail_get_message'; args: GmailGetMessageArgs })
+  | (ToolInvokeBase & { tool: 'mailbox_count'; args: MailboxCountArgs })
   | (ToolInvokeBase & { tool: 'gmail_create_draft'; args: GmailCreateDraftArgs })
   | (ToolInvokeBase & { tool: 'gmail_send'; args: GmailSendArgs })
   | (ToolInvokeBase & { tool: 'http_api_get'; args: HttpApiGetArgs })
@@ -335,6 +343,7 @@ export type ToolBrokerInvokeResult =
         | AgentCatalogResult
         | GmailSearchResult
         | GmailGetMessageResult
+        | MailboxCountResult
         | GmailCreateDraftResult
         | GmailSendResult
         | HttpApiCallResult
@@ -379,6 +388,7 @@ const TOOL_REQUIREMENTS: Record<
   agent_catalog: { connectorType: 'board', accessMode: 'read' },
   gmail_search: { connectorType: 'gmail', accessMode: 'read' },
   gmail_get_message: { connectorType: 'gmail', accessMode: 'read' },
+  mailbox_count: { connectorType: 'gmail', accessMode: 'read' },
   gmail_create_draft: { connectorType: 'gmail', accessMode: 'write' },
   gmail_send: { connectorType: 'gmail', accessMode: 'write' },
   http_api_get: { connectorType: 'http_api', accessMode: 'read' },
@@ -521,6 +531,16 @@ function argsMeta(input: ToolBrokerInvokeInput): Record<string, unknown> {
     return { ...base, messageId: input.args.id }
   }
 
+  if (input.tool === 'mailbox_count') {
+    return {
+      ...base,
+      connectorId: input.args.connectorId ?? null,
+      queryLength: input.args.query?.length ?? 0,
+      labelIds: input.args.labelIds ?? [],
+      includeSpamTrash: input.args.includeSpamTrash ?? false,
+    }
+  }
+
   if (input.tool === 'gmail_create_draft') {
     return {
       ...base,
@@ -610,6 +630,7 @@ function resultMeta(
     | AgentCatalogResult
     | GmailSearchResult
     | GmailGetMessageResult
+    | MailboxCountResult
     | GmailCreateDraftResult
     | GmailSendResult
     | HttpApiCallResult
@@ -646,6 +667,10 @@ function resultMeta(
 
   if ('messages' in result && Array.isArray(result.messages)) {
     return { messageCount: result.messages.length }
+  }
+
+  if ('count' in result && 'query' in result) {
+    return { count: result.count, queryLength: result.query.length }
   }
 
   if ('agents' in result && Array.isArray(result.agents)) {
@@ -775,7 +800,7 @@ export class AllowlistAuthorizer implements Authorizer {
 
     const requirement = TOOL_REQUIREMENTS[input.tool]
     const requestedConnectorId =
-      (input.tool === 'http_api_get' || input.tool === 'http_api_request') &&
+      (input.tool === 'http_api_get' || input.tool === 'http_api_request' || input.tool === 'mailbox_count') &&
       typeof input.args?.connectorId === 'string'
         ? input.args.connectorId
         : null
@@ -822,7 +847,7 @@ export class AllowlistAuthorizer implements Authorizer {
       if (
         connector.type === 'gmail' &&
         !gmailToolAllowedByScopes({
-          tool: input.tool as Extract<ToolName, `gmail_${string}`>,
+          tool: input.tool as Extract<ToolName, `gmail_${string}` | 'mailbox_count'>,
           args: input.args,
           scopes: grant.scopes,
         })
@@ -1008,6 +1033,15 @@ export class ToolBrokerService {
     }
     if (input.tool === 'gmail_get_message') {
       return gmail.getMessage(input.args)
+    }
+    if (input.tool === 'mailbox_count') {
+      const query = input.args.query ?? ''
+      const res = await gmail.count({
+        query,
+        labelIds: input.args.labelIds,
+        includeSpamTrash: input.args.includeSpamTrash,
+      })
+      return { count: res.count, query }
     }
     if (input.tool === 'gmail_create_draft') {
       return gmail.createDraft(input.args)

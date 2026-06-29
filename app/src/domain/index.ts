@@ -42,6 +42,11 @@ import { DeadlineCollector } from '@/domain/monitor/collectors/deadline-collecto
 import { BoardBacklogCollector } from '@/domain/monitor/collectors/board-collector'
 import { ConnectorCountCollector } from '@/domain/monitor/collectors/connector-count-collector'
 import { KnowledgeBaseService } from '@/domain/knowledge-base/knowledge-base-service'
+import {
+  AuditOnlyMonitorNotifier,
+  RoutingMonitorNotifier,
+} from '@/lib/notify/monitor-notifier'
+import { WebhookChatNotifier } from '@/lib/notify/webhook-chat-notifier'
 import { repositories } from '@/repositories/postgres'
 import { resolveTicketProcessRoute } from '@/lib/ticket-process-route'
 
@@ -200,8 +205,14 @@ const monitorService = new MonitorService(
   [
     new DeadlineCollector(repositories.monitors),
     new BoardBacklogCollector(repositories.monitors),
-    new ConnectorCountCollector(),
+    new ConnectorCountCollector(toolBrokerService, repositories.agents),
   ],
+  // §7 értesítés: `chat:<kulcs>` → allowlistolt webhook (Slack/Teams/Google Chat);
+  // minden más csatorna a biztonságos audit-only adapterre esik vissza.
+  new RoutingMonitorNotifier(
+    { chat: new WebhookChatNotifier() },
+    new AuditOnlyMonitorNotifier(),
+  ),
 )
 const localWikiHarnessLauncher: HarnessLauncher = {
   mode: 'local-wiki',

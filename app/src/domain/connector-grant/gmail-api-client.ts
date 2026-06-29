@@ -175,6 +175,31 @@ export class GmailApiClient {
     return { messages }
   }
 
+  async count(params: { query: string; labelIds?: string[]; includeSpamTrash?: boolean }): Promise<{ count: number }> {
+    if (this.isStub()) {
+      const q = params.query.toLowerCase()
+      const count = STUB_MESSAGES.filter(
+        (m) => m.subject.toLowerCase().includes(q) || m.snippet.toLowerCase().includes(q) || !q,
+      ).length
+      return { count }
+    }
+
+    const listUrl = new URL('https://gmail.googleapis.com/gmail/v1/users/me/messages')
+    listUrl.searchParams.set('q', params.query)
+    listUrl.searchParams.set('maxResults', '1')
+    if (params.includeSpamTrash) listUrl.searchParams.set('includeSpamTrash', 'true')
+    for (const labelId of params.labelIds ?? []) {
+      listUrl.searchParams.append('labelIds', labelId)
+    }
+
+    const listRes = await fetchWithBackoff('gmail.count', listUrl, {
+      headers: { authorization: `Bearer ${this.accessToken}` },
+    })
+    if (!listRes.ok) throw gmailApiError('gmail.count', listRes.status)
+    const listData = (await listRes.json()) as { resultSizeEstimate?: number; messages?: Array<{ id: string }> }
+    return { count: listData.resultSizeEstimate ?? listData.messages?.length ?? 0 }
+  }
+
   private async getMessageSummary(id: string): Promise<GmailMessageSummary> {
     const url = new URL(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(id)}`)
     url.searchParams.set('format', 'metadata')

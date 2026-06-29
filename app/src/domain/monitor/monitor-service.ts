@@ -8,6 +8,10 @@ import type {
 import { randomUUID } from 'crypto'
 import type { MonitorCollector, MonitorSignalDraft } from './collectors/types'
 import { evaluateFilter } from './filter-eval'
+import {
+  AuditOnlyMonitorNotifier,
+  type MonitorNotifier,
+} from '@/lib/notify/monitor-notifier'
 
 export type SweepResult = {
   monitorId: string
@@ -71,6 +75,7 @@ export class MonitorService {
     private tickets: TicketRepository,
     private audit: AuditRepository,
     collectors: MonitorCollector[] = [],
+    private notifier: MonitorNotifier = new AuditOnlyMonitorNotifier(),
   ) {
     this.collectors = new Map(collectors.map((c) => [c.kind, c]))
   }
@@ -114,6 +119,7 @@ export class MonitorService {
           tenantId: monitor.tenantId,
           config: jsonObject(monitor.collectorConfig),
           now,
+          monitor,
         })
       : []
 
@@ -205,7 +211,12 @@ export class MonitorService {
       // ---- 1. LÉPCSŐ (nulla LLM-token) ----
       const collector = this.collectors.get(monitor.kind)
       const signals = collector
-        ? await collector.collect({ tenantId: monitor.tenantId, config: jsonObject(monitor.collectorConfig), now })
+        ? await collector.collect({
+            tenantId: monitor.tenantId,
+            config: jsonObject(monitor.collectorConfig),
+            now,
+            monitor,
+          })
         : []
       signalCount = signals.length
 
@@ -232,9 +243,10 @@ export class MonitorService {
           }
 
           // ---- 2. LÉPCSŐ — eszkaláció ticketté ----
-          const ticketId = await this.openTicket(monitor, signal)
+          const ticketId = await this.openTicket(monitor, signal, run.id, dedupKey)
           openedTicketIds.push(ticketId)
           await this.monitors.markSignalEscalated(sig.id, ticketId, now)
+          await this.notifyEscalation(monitor, signal, run.id, dedupKey, ticketId, now)
         }
         outcome = openedTicketIds.length > 0 ? 'escalated' : 'suppressed'
       }
@@ -280,6 +292,8 @@ export class MonitorService {
   private async openTicket(
     monitor: MonitorDefinition,
     signal: MonitorSignalDraft,
+    monitorRunId: string,
+    dedupKey: string,
   ): Promise<string> {
     const hasAgent = Boolean(monitor.escalateAgentId)
     const ticket = await this.tickets.create({
@@ -294,7 +308,9 @@ export class MonitorService {
         ...signal.payload,
         tenantId: monitor.tenantId,
         monitorId: monitor.id,
+        monitorRunId,
         monitorKind: monitor.kind,
+        dedupKey,
         source: 'monitor',
       } as Prisma.JsonObject,
       sourceDocumentId: null,
@@ -304,6 +320,85 @@ export class MonitorService {
       source: 'system',
     })
     return ticket.id
+  }
+
+  private async notifyEscalation(
+    monitor: MonitorDefinition,
+    signal: MonitorSignalDraft,
+    monitorRunId: string,
+    dedupKey: string,
+    ticketId: string,
+    now: Date,
+  ): Promise<void> {
+    if (!monitor.notifyChannel) return
+
+    try {
+      const result = await this.notifier.send({
+        channel: monitor.notifyChannel,
+        tenantId: monitor.tenantId,
+        monitorId: monitor.id,
+        monitorTitle: monitor.title,
+        monitorKind: monitor.kind,
+        monitorRunId,
+        dedupKey,
+        ticketId,
+        signalTitle: signal.title,
+        severity: signal.severity,
+        dueBy: signal.dueBy ?? null,
+        payload: signal.payload,
+        createdAt: now,
+      })
+      await this.auditNotification(monitor, 'monitor.notify.sent', ticketId, {
+        ...this.notificationMetadata(monitor, signal, monitorRunId, dedupKey, ticketId),
+        provider: result.provider,
+        messageId: result.messageId ?? null,
+      })
+    } catch (error) {
+      await this.auditNotification(monitor, 'monitor.notify.failed', ticketId, {
+        ...this.notificationMetadata(monitor, signal, monitorRunId, dedupKey, ticketId),
+        error: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+
+  private notificationMetadata(
+    monitor: MonitorDefinition,
+    signal: MonitorSignalDraft,
+    monitorRunId: string,
+    dedupKey: string,
+    ticketId: string,
+  ): Record<string, unknown> {
+    return {
+      tenantId: monitor.tenantId,
+      monitorRunId,
+      dedupKey,
+      ticketId,
+      notifyChannel: monitor.notifyChannel,
+      signalTitle: signal.title,
+      severity: signal.severity,
+      dueBy: signal.dueBy?.toISOString() ?? null,
+    }
+  }
+
+  private async auditNotification(
+    monitor: MonitorDefinition,
+    action: string,
+    ticketId: string,
+    metadata: Record<string, unknown>,
+  ): Promise<void> {
+    await this.audit.append({
+      actorType: 'system',
+      actorId: null,
+      agentVersion: null,
+      action,
+      targetType: 'monitor',
+      targetId: monitor.id,
+      modelUsed: null,
+      inputRef: monitor.notifyChannel,
+      outputRef: ticketId,
+      policyDecision: action.endsWith('.sent') ? 'sent' : 'failed',
+      metadata: metadata as Prisma.JsonValue,
+    })
   }
 
   private async auditSweep(

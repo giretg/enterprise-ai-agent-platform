@@ -254,9 +254,14 @@ export function MonitorEditorForm({
             type="text"
             value={form.notifyChannel}
             onChange={(e) => set('notifyChannel', e.target.value)}
-            placeholder="pl. email:ops@example.com"
+            placeholder="pl. chat:ops vagy email:ops@example.com"
             className="w-full rounded-lg border border-line bg-panel px-3 py-2 text-sm text-ink"
           />
+          <p className="mt-1 text-xs text-slate-400">
+            <code>chat:&lt;kulcs&gt;</code> → szerveroldali allowlistolt webhook (Slack/Teams/Google Chat,{' '}
+            <code>MONITOR_NOTIFY_WEBHOOK_&lt;KULCS&gt;</code> env). Más csatorna csak auditba kerül. Az
+            értesítés best-effort figyelemfelhívás a board-ticketre.
+          </p>
         </div>
       </div>
 

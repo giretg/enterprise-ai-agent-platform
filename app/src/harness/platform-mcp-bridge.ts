@@ -12,7 +12,7 @@ export type McpJsonRpcResponse = {
   error?: { code: number; message: string; data?: unknown }
 }
 
-const GMAIL_TOOLS = ['gmail_search', 'gmail_get_message', 'gmail_create_draft', 'gmail_send'] as const
+const GMAIL_TOOLS = ['gmail_search', 'gmail_get_message', 'mailbox_count', 'gmail_create_draft', 'gmail_send'] as const
 
 const FILE_TOOLS = [
   'file_read',
@@ -177,6 +177,8 @@ export const PLATFORM_BROKER_TOOLS = [
         ? 'Search the acting user Gmail mailbox (requires connected account).'
         : name === 'gmail_get_message'
           ? 'Fetch a Gmail message by id for the acting user.'
+          : name === 'mailbox_count'
+            ? 'Count matching Gmail messages without fetching message bodies.'
           : name === 'gmail_create_draft'
             ? 'Create a Gmail draft (does not send).'
             : 'Send Gmail — requires human approval on an approved ticket.',
@@ -196,6 +198,16 @@ export const PLATFORM_BROKER_TOOLS = [
               properties: { id: { type: 'string' } },
               required: ['id'],
             }
+          : name === 'mailbox_count'
+            ? {
+                type: 'object',
+                properties: {
+                  connectorId: { type: 'string', description: 'Optional Gmail connector UUID' },
+                  query: { type: 'string', description: 'Gmail search query, e.g. "is:unread newer_than:1d"' },
+                  labelIds: { type: 'array', items: { type: 'string' } },
+                  includeSpamTrash: { type: 'boolean' },
+                },
+              }
           : name === 'gmail_create_draft'
             ? {
                 type: 'object',
@@ -626,7 +638,7 @@ export async function invokePlatformToolViaHttp(
         ? { tool, ticketId, args }
       : tool.startsWith('file_') || (FILE_TOOLS as readonly string[]).includes(tool) || (BINARY_TOOLS as readonly string[]).includes(tool)
         ? { tool, ticketId, args }
-        : tool.startsWith('gmail_')
+        : tool.startsWith('gmail_') || tool === 'mailbox_count'
           ? {
               tool,
               ticketId,

@@ -1,4 +1,4 @@
-import type { MonitorKind } from '@prisma/client'
+import type { MonitorDefinition, MonitorKind } from '@prisma/client'
 
 /**
  * Egy collector által kibocsátott nyers jel (Feature-spec — Proactive Monitor §5.1).
@@ -22,6 +22,7 @@ export type CollectorContext = {
   tenantId: string
   config: Record<string, unknown>
   now: Date
+  monitor?: MonitorDefinition
 }
 
 /**

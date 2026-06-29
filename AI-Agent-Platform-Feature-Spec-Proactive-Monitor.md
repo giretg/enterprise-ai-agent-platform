@@ -5,13 +5,13 @@
 **Dátum:** 2026-06-21
 **Forrásdokumentumok:** `AI-Agent-Platform-Koncepcio.md` (§4.11.4, §4.11.6, §4.11.7, §8.6, §11.5), `AI-Agent-Platform-MVP-Dev-Spec-Roadmap-v1.0.md` (v1.0, §5.7 dispatcher, §15.4 scheduled tasks), `AI-Agent-Platform-Feature-Spec-PerUser-Connector.md` (v1.0)
 **Olvasó:** fejlesztő(k). Feltételezi a Ticket-állapotgép, a `DispatcherService`, a `ScheduledTask` runtime, a Tool Broker + Model Gateway és az append-only audit ismeretét.
-**Státusz:** **Fázis 2 — core kész.** A **PM-A…PM-E elkészült** az opcionális értesítési csatorna és a külön döntésre tett `mailbox_count` Tool Broker capability kivételével. Az „Implementációs állapot” szekció naprakész.
+**Státusz:** **Fázis 2 — kész.** A **PM-A…PM-H elkészült** (a valós értesítő adapterrel együtt). Az „Implementációs állapot” szekció naprakész.
 
 ---
 
-## Implementációs állapot (2026-06-27)
+## Implementációs állapot (2026-06-29)
 
-**Összefoglaló:** A **PM-A + PM-B + PM-C + PM-D + PM-E (UI) elkészült**. A teljes kétlépcsős söprés-motor (deadline + board-backlog + connector-count stub collector), a determinisztikus szűrő-DSL, a dedup/cooldown, a dispatcher kill-switch + intervallum + concurrency `PlatformSetting`-en át, a globális monitor kill-switch (`monitor.kill_switch`), a tenant-izolált monitor collectorok és monitor-ticketek, a teljes Control Plane UI (`/control-plane/monitors` lista + szerkesztő + dry-run + futásnapló + jel-cooldown tábla), a server actions és a rendszer-oldal monitor-vezérlő panel. Build + lint + tsc zöld, unit-tesztek zöldek.
+**Összefoglaló:** A **PM-A + PM-B + PM-C + PM-D + PM-E (UI) + PM-F (értesítési adapter alap) + PM-G (`mailbox_count` Tool Broker capability) elkészült**. A teljes kétlépcsős söprés-motor (deadline + board-backlog + connector-count Tool Broker collector), a determinisztikus szűrő-DSL, a dedup/cooldown, a dispatcher kill-switch + intervallum + concurrency `PlatformSetting`-en át, a globális monitor kill-switch (`monitor.kill_switch`), a tenant-izolált monitor collectorok és monitor-ticketek, a teljes Control Plane UI (`/control-plane/monitors` lista + szerkesztő + dry-run + futásnapló + jel-cooldown tábla), a server actions, a rendszer-oldal monitor-vezérlő panel, az auditált, alapértelmezésben audit-only értesítési adapter és a Gmail-alapú read-only postafiók-darabszám capability. `npm run test:monitor` + lint + tsc zöld.
 
 ### Fázisok
 
@@ -22,6 +22,9 @@
 | **PM-C** | LLM-eszkaláció (`escalateAgentId`) end-to-end + dispatch-budget cap (meglévő dispatcher-en át) | ✅ Kész |
 | **PM-D** | Globális kill-switch + intervallum + concurrency-cap a `PlatformSetting`-ben + dispatcher worker kill-switch check | ✅ Kész |
 | **PM-E** | Control Plane UI (lista + szerkesztő + dry-run + futásnapló + jel-cooldown) + rendszer-oldal vezérlő panel | ✅ Kész |
+| **PM-F** | Opcionális értesítési adapter interfész + audit-only referencia + `monitor.notify.sent/failed` audit | ✅ Kész |
+| **PM-G** | Dedikált read-only Tool Broker `mailbox_count` capability + `connector_count` collector bekötés | ✅ Kész |
+| **PM-H** | Valós értesítő adapter (allowlistolt chat-webhook) + provider-routing a `notify` interfész mögé | ✅ Kész |
 
 ### Elkészült fájlok (PM-A)
 
@@ -40,7 +43,7 @@
 ### Elkészült fájlok (PM-B…PM-E)
 
 - `app/src/domain/monitor/collectors/board-collector.ts` — elakadt awaiting_human/ready ticketek (belső, read-only)
-- `app/src/domain/monitor/collectors/connector-count-collector.ts` — stub (Tool Broker mailbox_count capability pending)
+- `app/src/domain/monitor/collectors/connector-count-collector.ts` — Tool Broker `mailbox_count` capability-n át működő postafiók-darabszám collector
 - `app/src/repositories/interfaces/index.ts` — `StaleBacklogTicket`, `UpdateMonitorInput` típusok; `update`, `findRuns`, `findSignalsByMonitor`, `collectStaleBacklogTickets` metódusok
 - `app/src/repositories/postgres/monitor-repository.ts` — fenti metódusok implementálva
 - `app/src/domain/monitor/monitor-service.ts` — `getById`, `update`, `revoke`, `listRuns`, `listSignals`, `dryRun` metódusok
@@ -61,11 +64,27 @@
 - `app/src/app/control-plane/layout.tsx` — „Monitorok” nav item
 - `app/scripts/dispatcher-worker.ts` — monitor `killSwitch`, `sweepIntervalSec`, `maxConcurrent` runtime betartása; kill-switch esetén `monitor.sweep.skipped` audit
 - `app/scripts/monitor-engine.test.ts` — szűrő/catch-up unit-tesztek + deadline/board-backlog collector tenant-izolációs tesztek
+- `app/src/lib/notify/monitor-notifier.ts` — értesítési adapter interfész + audit-only referencia implementáció
+- `app/src/domain/monitor/monitor-service.ts` — `notifyChannel` eszkaláció utáni bekötés, `monitor.notify.sent/failed` audit, `monitorRunId` + `dedupKey` provenance a ticket payloadban
+- `app/scripts/monitor-engine.test.ts` — értesítési adapter unit-teszt
+- `app/src/domain/tool-broker/tool-broker-service.ts` — `mailbox_count` capability, policy + audit + Gmail végrehajtás
+- `app/src/domain/connector-grant/gmail-api-client.ts`, `gmail-scopes.ts` — Gmail darabszám lekérdezés + read-only scope ellenőrzés
+- `app/src/harness/platform-mcp-bridge.ts`, `app/src/lib/validators/actions.ts`, `app/prisma/seed.ts` — `mailbox_count` tool schema, MCP-lista és seed capability
+- `app/scripts/monitor-engine.test.ts` — `connector_count` collector Tool Broker unit-teszt
+
+### Elkészült fájlok (PM-H — valós értesítő adapter)
+
+- `app/src/lib/notify/monitor-notifier.ts` — `providerFromChannel` + `targetFromChannel` export, `RoutingMonitorNotifier` (csatorna-provider szerinti útválasztás, audit-only fallback)
+- `app/src/lib/notify/webhook-chat-notifier.ts` — valós chat-értesítő (Slack/Teams/Google Chat incoming-webhook `{text}` JSON POST). A webhook URL **allowlistolt env-ből** (`MONITOR_NOTIFY_WEBHOOK_<KULCS>`) jön, nem a channel-stringből (SSRF-védelem, deny-by-default egress); csak `https`; board-ticket link a `NEXT_PUBLIC_APP_URL`-ből; best-effort timeout
+- `app/src/domain/index.ts` — `RoutingMonitorNotifier({ chat: WebhookChatNotifier }, AuditOnlyMonitorNotifier)` bekötve a `MonitorService`-be
+- `app/src/components/monitors/monitor-editor-form.tsx` — `chat:<kulcs>` formátum súgó az értesítési csatorna mezőnél
+- `app/scripts/monitor-engine.test.ts` — webhook chat (env-allowlist POST + board-link, be nem kötött kulcs hibázik, nem-https tiltott) + routing (chat→webhook, email→fallback) unit-tesztek
+
+> **Governance megjegyzés:** a Tool Broker `gmail_send` capability **emberi jóváhagyást** követel (`approved` ticket + `gmailSendApproved` egyezés), ezért autonóm monitor-értesítésre szándékosan nem alkalmas. Az értesítés ezért külön, platform-szintű, allowlistolt webhook-csatornán megy (best-effort, board-ra mutató figyelemfelhívás — §7), az agent-akciók jóváhagyási kapuja érintetlen marad.
 
 ### Hátralévő / nyitott
 
-- `app/src/lib/notify/` — értesítési csatorna adapter (e-mail/chat) — opcionális, a board az elsődleges felület (§7)
-- `connector-count-collector.ts` Tool Broker `mailbox_count` capability — D-PM-3 döntés alapján külön spec (§11)
+- Nincs ismert blokk. (Opcionális jövőbeli bővítés: SMTP e-mail adapter `nodemailer`-rel a `MonitorNotifier` interfész mögé, ha a chat-webhook mellé közvetlen e-mail is kell.)
 
 ---
 
@@ -607,4 +626,5 @@ A kétlépcsős felépítés garantálja, hogy **drága LLM sosem fut üresben**
 - [x] `/control-plane/monitors` lista + szerkesztő + dry-run + futásnapló.
 - [x] Audit-lánc kiterjesztve a monitor-eseményekre (`monitor.sweep.*`, lock reclaim, kill-switch skip).
 - [x] `npm run test:monitor` + `npm run lint` + `npx tsc --noEmit --incremental false` + `npm run build` zöld.
-- [ ] Opcionális értesítési adapter (`app/src/lib/notify/`) és dedikált Tool Broker `mailbox_count` capability külön follow-upként.
+- [x] Opcionális értesítési adapter (`app/src/lib/notify/`) audit-only referencia + valós allowlistolt chat-webhook implementációval és provider-routinggal.
+- [x] Dedikált Tool Broker `mailbox_count` capability és `connector_count` collector bekötés.
