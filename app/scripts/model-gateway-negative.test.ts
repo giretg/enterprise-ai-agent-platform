@@ -17,12 +17,12 @@ import {
   DEFAULT_MAX_CALLS_PER_TICKET,
   ModelGateway,
   GatewayBudgetError,
+  type ModelProvider,
 } from '../src/domain/gateway/model-gateway'
 import { classifyPrompt } from '../src/domain/gateway/sensitivity-router'
 import { computeAuditHash } from '../src/lib/crypto/hash-chain'
 import type { AuditRepository, ModelCallRepository } from '../src/repositories/interfaces'
 import type { AuditLog, ModelCall } from '@prisma/client'
-import { Prisma } from '@prisma/client'
 
 let failures = 0
 function check(name: string, fn: () => void | Promise<void>) {
@@ -41,7 +41,7 @@ function makeAuditRepo(): { repo: AuditRepository; events: AuditLog[] } {
     async append(data) {
       const row = {
         id: crypto.randomUUID(),
-        seq: events.length + 1,
+        seq: BigInt(events.length + 1),
         prevHash: 'prev',
         hash: 'hash',
         createdAt: new Date(),
@@ -124,7 +124,7 @@ async function main() {
     const { repo: auditRepo, events } = makeAuditRepo()
     const { repo: modelCallRepo, created } = makeModelCallRepo(5)
     const providerCallCount = { n: 0 }
-    const providers = new Map([
+    const providers = new Map<string, ModelProvider>([
       [
         'chatgpt-oauth',
         {
@@ -137,7 +137,7 @@ async function main() {
       ],
     ])
 
-    const gw = new ModelGateway(auditRepo, modelCallRepo, providers as any, { maxCallsPerTicket: 5 })
+    const gw = new ModelGateway(auditRepo, modelCallRepo, providers, { maxCallsPerTicket: 5 })
 
     let threw = false
     try {
@@ -164,19 +164,19 @@ async function main() {
     const { repo: auditRepo, events } = makeAuditRepo()
     const { repo: modelCallRepo } = makeModelCallRepo(0)
 
-    const providers = new Map([
+    const providers = new Map<string, ModelProvider>([
       [
         'stub',
         {
           name: 'stub',
-          async chat(_input: any) {
+          async chat() {
             return { content: 'stub válasz', usage: { promptTokens: 10, completionTokens: 5 }, latencyMs: 1 }
           },
         },
       ],
     ])
 
-    const gw = new ModelGateway(auditRepo, modelCallRepo, providers as any, { maxCallsPerTicket: 30 })
+    const gw = new ModelGateway(auditRepo, modelCallRepo, providers, { maxCallsPerTicket: 30 })
     await gw.call({
       agentId: TEST_AGENT_ID,
       agentVersion: 1,
@@ -198,7 +198,7 @@ async function main() {
       targetType: callEvent!.targetType,
       targetId: callEvent!.targetId,
       createdAt: callEvent!.createdAt,
-    })
+    } as Parameters<typeof computeAuditHash>[0])
     assert.ok(hash.length > 0, 'Hash üres')
 
     // Nyers tartalom nem jelenik meg az audit payloadban
@@ -250,13 +250,13 @@ async function main() {
 
     const externalCalls = { n: 0 }
     const localCalls = { n: 0 }
-    const providers = new Map([
+    const providers = new Map<string, ModelProvider>([
       ['chatgpt-oauth', { name: 'chatgpt-oauth', async chat() { externalCalls.n++; return { content: 'külső', latencyMs: 1 } } }],
       ['ollama', { name: 'ollama', async chat() { localCalls.n++; return { content: 'lokális', latencyMs: 1 } } }],
     ])
 
     const gw = new ModelGateway(
-      auditRepo, modelCallRepo, providers as any, { maxCallsPerTicket: 30 },
+      auditRepo, modelCallRepo, providers, { maxCallsPerTicket: 30 },
       undefined, undefined,
       { enforceLocalForSensitive: true, localProvider: 'ollama', localModel: 'gemma-local' },
     )
@@ -277,11 +277,11 @@ async function main() {
     const { repo: modelCallRepo } = makeModelCallRepo(0)
 
     const providerCalls = { n: 0 }
-    const providers = new Map([
+    const providers = new Map<string, ModelProvider>([
       ['chatgpt-oauth', { name: 'chatgpt-oauth', async chat() { providerCalls.n++; return { content: 'nem kellene', latencyMs: 1 } } }],
     ])
 
-    const gw = new ModelGateway(auditRepo, modelCallRepo, providers as any, { maxCallsPerTicket: 30 })
+    const gw = new ModelGateway(auditRepo, modelCallRepo, providers, { maxCallsPerTicket: 30 })
 
     let threw = false
     try {
@@ -324,13 +324,13 @@ async function main() {
     const { repo: modelCallRepo } = makeModelCallRepo(0)
 
     const externalCalls = { n: 0 }
-    const providers = new Map([
+    const providers = new Map<string, ModelProvider>([
       ['chatgpt-oauth', { name: 'chatgpt-oauth', async chat() { externalCalls.n++; return { content: 'külső válasz', latencyMs: 1 } } }],
     ])
 
     // Admin kikapcsolta az enforceLocalForSensitive-t
     const gw = new ModelGateway(
-      auditRepo, modelCallRepo, providers as any, { maxCallsPerTicket: 30 },
+      auditRepo, modelCallRepo, providers, { maxCallsPerTicket: 30 },
       undefined, undefined,
       { enforceLocalForSensitive: false, localProvider: 'ollama', localModel: 'gemma-local' },
     )

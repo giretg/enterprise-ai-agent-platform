@@ -25,7 +25,9 @@ export type GatewayGuardrail = {
 export const DEFAULT_MAX_CALLS_PER_TICKET = 30
 
 /** A guardrailt env-ből olvassa (`GATEWAY_MAX_CALLS_PER_TICKET`), különben az alapérték. */
-export function guardrailFromEnv(env: NodeJS.ProcessEnv = process.env): GatewayGuardrail {
+export function guardrailFromEnv(
+  env: Record<string, string | undefined> = process.env,
+): GatewayGuardrail {
   const raw = env.GATEWAY_MAX_CALLS_PER_TICKET?.trim()
   const parsed = raw ? Number.parseInt(raw, 10) : NaN
   const maxCallsPerTicket =
