@@ -9,6 +9,7 @@ import {
   PROVISIONING_ASSISTANT_TEMPLATE,
   PROVISIONING_DRAFT_CAPABILITIES,
 } from '../src/domain/provisioning/provisioning-assistant'
+import { ensureSystemRoleTemplates } from '../src/repositories/postgres/role-template-repository'
 
 config({ path: path.join(process.cwd(), '.env.local') })
 config({ path: path.join(process.cwd(), '.env') })
@@ -646,6 +647,7 @@ async function ensureHSMOfficerAgent(adminId: string) {
     console.log('  HSM Officer Agent already exists — skipping')
     await ensureToolBrokerSeed(existing.id)
     await ensureChatToolsForAgent(existing.id)
+    await ensureWebSearchSeed(existing.id)
     return existing
   }
 
@@ -823,8 +825,75 @@ async function ensureHSMOfficerAgent(adminId: string) {
     })
   }
 
+  await ensureWebSearchSeed(agent.id)
+
   console.log('  HSM Officer Agent:', agent.id)
   return agent
+}
+
+/**
+ * F2-WS-A: kontrollált webes keresés — platform-managed `agent_owned` connector
+ * banking_strict preset-tel (Feature-spec — WebSearchTool §3.1-§3.2, D-WS-2/D-WS-4).
+ * Csak hivatalos/szabályozói/scheme domainek allowlistelve; `allowGeneralWeb=false`,
+ * `logRawQuery=false` (csak hash kerül auditba). Orchestrator SOHA nem kaphat
+ * capability sort — ezt csak worker agentekhez kötjük.
+ */
+const WEB_SEARCH_DEMO_TENANT_ID = '00000000-0000-4000-a000-000000000001'
+
+async function ensureWebSearchSeed(agentId: string) {
+  const config = {
+    provider: 'stub',
+    allowedDomains: [
+      '*.gov.hu',
+      '*.mnb.hu',
+      'mnb.hu',
+      '*.europa.eu',
+      '*.visa.com',
+      '*.mastercard.com',
+      'docs.stripe.com',
+    ],
+    deniedDomains: ['pastebin.com', '*.onion'],
+    defaultLocale: 'hu-HU',
+    defaultRegion: 'HU',
+    defaultMaxResults: 5,
+    hardMaxResults: 10,
+    maxQueryLength: 500,
+    maxQueriesPerTicket: 10,
+    maxQueriesPerAgentDay: 100,
+    allowGeneralWeb: false,
+    safeSearch: 'strict',
+    logRawQuery: false,
+    retentionDays: 90,
+    requireHumanApprovalForSensitiveQuery: false,
+  }
+
+  const connector = await prisma.connector.upsert({
+    where: { type_name: { type: 'web_search', name: 'Controlled Web Search (banking_strict)' } },
+    create: {
+      type: 'web_search',
+      name: 'Controlled Web Search (banking_strict)',
+      authMode: 'agent_owned',
+      scope: 'global',
+      tenantId: WEB_SEARCH_DEMO_TENANT_ID,
+      secretAlias: 'platform/web-search-provider-key',
+      version: 1,
+      config,
+      lifecycleState: 'active',
+    },
+    update: { config },
+  })
+
+  await prisma.agentConnector.upsert({
+    where: { agentId_connectorId: { agentId, connectorId: connector.id } },
+    create: { agentId, connectorId: connector.id, accessMode: 'read' },
+    update: { accessMode: 'read' },
+  })
+
+  await prisma.capability.upsert({
+    where: { agentId_toolName: { agentId, toolName: 'web_search' } },
+    create: { agentId, toolName: 'web_search', allowed: true },
+    update: { allowed: true },
+  })
 }
 
 const WIKI_PLAYBOOK_SPEC = [
@@ -955,6 +1024,9 @@ async function ensureDemoApiKey(agentId: string) {
 }
 
 async function main() {
+  // §3.5: a két beépített rendszer-szintű szerep-sablon (worker | orchestrator).
+  await ensureSystemRoleTemplates(prisma)
+
   const admin = await prisma.user.upsert({
     where: { externalAuthId: 'seed-admin' },
     create: {

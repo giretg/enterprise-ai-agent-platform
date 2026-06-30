@@ -18,6 +18,7 @@ import type {
 import {
   AllowlistAuthorizer,
   type ActingUserLookup,
+  type RoleTemplateLookup,
 } from '../src/domain/tool-broker/tool-broker-service'
 import type {
   AgentRepository,
@@ -50,6 +51,7 @@ function gmailConnector(overrides: Partial<Connector> = {}): Connector {
     type: 'gmail' as ConnectorType,
     name: 'Gmail (user delegált)',
     authMode: 'user_delegated',
+    lifecycleState: 'active',
     scope: 'global',
     secretAlias: 'gmail-oauth-client',
     version: 1,
@@ -102,7 +104,8 @@ function buildAuthorizer(opts: FakeOpts = {}) {
   const tools = {
     findCapability: async () =>
       capabilityAllowed ? { allowed: true } : { allowed: false },
-    findConnectorForAgent: async () => connector,
+    findConnectorForAgent: async () =>
+      connector ? { connector, agentSecretAlias: null } : null,
   } as unknown as ToolBrokerRepository
 
   const agents = {
@@ -120,7 +123,20 @@ function buildAuthorizer(opts: FakeOpts = {}) {
   const lookupActingUser: ActingUserLookup = async () =>
     userStatus === 'missing' ? null : { status: userStatus }
 
-  const authorizer = new AllowlistAuthorizer(tools, agents, grants, lookupActingUser)
+  // §3.5: a szerep-sablon a tool-less invariáns adat-forrása. Determinisztikus
+  // stub a kanonikus rendszer-sablonokkal (orchestrator = tool-less), hogy a teszt
+  // hermetikus maradjon (ne a valós `role_templates` táblát kérdezze).
+  const lookupRoleTemplate: RoleTemplateLookup = async (key) => ({
+    toolAccessAllowed: key !== 'orchestrator',
+  })
+
+  const authorizer = new AllowlistAuthorizer(
+    tools,
+    agents,
+    grants,
+    lookupActingUser,
+    lookupRoleTemplate,
+  )
   return { authorizer, grantQueries }
 }
 

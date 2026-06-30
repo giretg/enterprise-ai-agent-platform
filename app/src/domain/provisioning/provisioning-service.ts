@@ -234,7 +234,8 @@ export class ProvisioningService {
   async activateConnector(
     input: {
       draftId: string
-      secretAlias: string
+      secretAlias?: string
+      apiKey?: string
       approverId?: string
       criticality?: Criticality
       reason?: string
@@ -245,7 +246,7 @@ export class ProvisioningService {
     const draft = await this.loadDraftForTenant(input.draftId, actor)
 
     // Előfeltételek (§8.5, P5): approved review + nem-failed validáció + sikeres
-    // sandbox-teszt + létező secret-alias.
+    // sandbox-teszt + (secretAlias VAGY apiKey).
     if (draft.reviewStatus !== 'approved') {
       throw new ProvisioningError('DRAFT_NOT_APPROVED', 'review_status must be approved')
     }
@@ -259,8 +260,30 @@ export class ProvisioningService {
     if (draft.sandboxTestOk !== true) {
       throw new ProvisioningError('SANDBOX_TEST_FAILED', 'sandbox connection-test must pass first')
     }
-    if (!input.secretAlias?.trim()) {
-      throw new ProvisioningError('SECRET_ALIAS_MISSING', 'secretAlias is required')
+    if (!input.secretAlias?.trim() && !input.apiKey?.trim()) {
+      throw new ProvisioningError(
+        'SECRET_ALIAS_MISSING',
+        'secretAlias or apiKey is required',
+      )
+    }
+
+    // Ha az admin API-kulcsot ad meg, elmentjük a Secret Store-ba és secret-ref-et kapunk.
+    // Ha csak secretAlias-t ad meg, azt változatlanul eltároljuk (env / Secret Manager pointer).
+    let resolvedAlias: string
+    if (input.apiKey?.trim()) {
+      const { saveConnectorApiKey, buildConnectorSecretRef } = await import(
+        '@/domain/connector/connector-secret-store'
+      )
+      await saveConnectorApiKey(draft.connectorId, input.apiKey.trim())
+      resolvedAlias = buildConnectorSecretRef(draft.connectorId)
+    } else {
+      resolvedAlias = input.secretAlias!.trim()
+      if (!isResolvableSecretAlias(resolvedAlias)) {
+        throw new ProvisioningError(
+          'SECRET_ALIAS_MISSING',
+          'secretAlias must be env:NAME, secret-manager:projects/.../secrets/<id>, or secret-ref:<id>; provide apiKey to create a managed secret-ref',
+        )
+      }
     }
 
     // Kétszintű emberi kapu (§7.3, §14/4): banki preset → minden aktiválás dual-control;
@@ -287,7 +310,7 @@ export class ProvisioningService {
 
     const connector = await this.deps.drafts.activate({
       draftId: draft.id,
-      secretAlias: input.secretAlias.trim(),
+      secretAlias: resolvedAlias,
       secondApproverId: dualControlRequired ? input.approverId ?? null : null,
     })
 
@@ -306,21 +329,36 @@ export class ProvisioningService {
   // ── §8.6 assignConnectorToAgent (EMBERI admin-aktus — agent NEM hívhatja) ──
 
   async assignConnectorToAgent(
-    input: { connectorId: string; agentId: string; accessMode: ConnectorAccessMode },
+    input: { connectorId: string; agentId: string; accessMode: ConnectorAccessMode; apiKey?: string },
     actor: ProvisioningActor,
   ): Promise<{ agentId: string; connectorId: string }> {
     this.requireHumanAdmin(actor, 'assignConnectorToAgent')
+
+    // Ha per-agent API-kulcsot adtak meg, elmentjük a Secret Store-ba és az
+    // agentConnector.secretAlias-ba a secret-ref-et írjuk. Ez agent_owned módban
+    // minden agent a saját kulcsát használja a megosztott connector-kulcs helyett.
+    let agentSecretAlias: string | null = null
+    if (input.apiKey?.trim()) {
+      const { saveConnectorApiKey, buildConnectorSecretRef } = await import(
+        '@/domain/connector/connector-secret-store'
+      )
+      const scopedId = `${input.agentId}_ac_${input.connectorId}`
+      await saveConnectorApiKey(scopedId, input.apiKey.trim())
+      agentSecretAlias = buildConnectorSecretRef(scopedId)
+    }
 
     await this.deps.drafts.assignToAgent({
       connectorId: input.connectorId,
       agentId: input.agentId,
       accessMode: input.accessMode,
+      secretAlias: agentSecretAlias,
     })
 
     await this.appendAudit(actor, 'provisioning.connector.assign', input.connectorId, {
       connector_id: input.connectorId,
       agent_id: input.agentId,
       access_mode: input.accessMode,
+      agent_owned_key: agentSecretAlias !== null,
       policyDecision: 'allowed',
     })
 
@@ -450,6 +488,14 @@ export class ProvisioningService {
 
 function normalizeSourceHash(value: string): string {
   return value.startsWith('sha256:') ? value : `sha256:${value}`
+}
+
+function isResolvableSecretAlias(value: string): boolean {
+  return (
+    /^env:[A-Za-z_][A-Za-z0-9_]*$/.test(value) ||
+    value.startsWith('secret-manager:projects/') ||
+    value.startsWith('secret-ref:')
+  )
 }
 
 function configToJson(config: ConnectorConfig): Prisma.InputJsonValue {

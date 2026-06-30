@@ -31,11 +31,38 @@ export default async function ProcessesPage() {
         <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">Playbook</p>
         <h1 className="mt-2 font-display text-3xl font-semibold">Folyamatok</h1>
         <p className="mt-1 max-w-2xl text-ink-soft">
-          Playbook-vezérelt, több szereplős folyamatok. A kötelező kapukat a szerveroldali
-          állapotgép kényszeríti ki — az agent nem kerülheti meg, és a futás végig a pin-elt
-          Playbook-verzión megy.
+          Itt indíthatók és követhetők azok a munkák, amelyek egy jóváhagyott Playbook szerint futnak.
+          Egy folyamat mindig egy konkrét feladat végigvitele: látszik, hol tart, ki következik benne,
+          és melyik szabályrendszer alapján kell haladni.
         </p>
       </div>
+
+      <section className="atelier-card p-5">
+        <h2 className="font-display text-lg font-semibold">Mire való és hogyan használd?</h2>
+        <div className="mt-3 grid gap-4 text-sm leading-6 text-ink-soft md:grid-cols-3">
+          <div>
+            <h3 className="font-semibold text-ink">1. Válassz Playbookot</h3>
+            <p className="mt-1">
+              Új folyamatot csak publikált Playbookból lehet indítani. Ez biztosítja, hogy mindenki
+              ugyanazokat a lépéseket és jóváhagyási pontokat kövesse.
+            </p>
+          </div>
+          <div>
+            <h3 className="font-semibold text-ink">2. Indítsd el a munkát</h3>
+            <p className="mt-1">
+              Az indítás után a rendszer létrehozza a folyamatot, és rögzíti, melyik Playbook-verzió
+              alapján kell végigvinni.
+            </p>
+          </div>
+          <div>
+            <h3 className="font-semibold text-ink">3. Kövesd az állapotát</h3>
+            <p className="mt-1">
+              Az aktív és lezárt folyamatok listájában látod, mi fut, mi vár emberi döntésre, és mi zárult
+              le. Így nem kell külön kérdezgetni, hol akadt el a munka.
+            </p>
+          </div>
+        </div>
+      </section>
 
       {canStart && (
         <section className="atelier-card p-5">

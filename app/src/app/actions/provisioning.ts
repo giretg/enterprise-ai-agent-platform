@@ -5,10 +5,12 @@ import { requireRole } from '@/auth'
 import type { AuthUser } from '@/auth/types'
 import { services } from '@/domain'
 import { repositories } from '@/repositories/postgres'
+import { prisma } from '@/lib/db'
 import { fail, ok } from '@/lib/result'
 import { ProvisioningError } from '@/domain/provisioning/errors'
 import type { ProvisioningActor } from '@/domain/provisioning/provisioning-service'
 import { PROVISIONING_ASSISTANT_TEMPLATE } from '@/domain/provisioning/provisioning-assistant'
+import { inspectPromptSensitivity } from '@/domain/gateway/sensitivity-router'
 
 /**
  * Server actions a Provisioning Assistant (Connector Onboarding) admin-felülethez
@@ -66,6 +68,7 @@ const draftIdSchema = z.object({ draftId: z.string().min(1) })
 const draftFromDocSchema = z.object({
   docText: z.string().min(1),
   providerHint: z.string().optional(),
+  sensitivityReviewAccepted: z.boolean().optional(),
 })
 
 const reviewSchema = z.object({
@@ -76,7 +79,8 @@ const reviewSchema = z.object({
 
 const activateSchema = z.object({
   draftId: z.string().min(1),
-  secretAlias: z.string().min(1),
+  secretAlias: z.string().optional(),
+  apiKey: z.string().optional(),
   approverId: z.string().optional(),
   criticality: z.enum(['L1', 'L2', 'L3']).optional(),
   reason: z.string().optional(),
@@ -86,7 +90,44 @@ const assignSchema = z.object({
   connectorId: z.string().min(1),
   agentId: z.string().min(1),
   accessMode: z.enum(['read', 'write']),
+  apiKey: z.string().optional(),
 })
+
+async function syncAssignedConnectorCapabilities(
+  agentId: string,
+  connectorId: string,
+  accessMode: 'read' | 'write',
+) {
+  await prisma.capability.upsert({
+    where: { agentId_toolName: { agentId, toolName: 'http_api_get' } },
+    create: { agentId, toolName: 'http_api_get', allowed: true },
+    update: { allowed: true },
+  })
+
+  if (accessMode === 'write') {
+    await prisma.capability.upsert({
+      where: { agentId_toolName: { agentId, toolName: 'http_api_request' } },
+      create: { agentId, toolName: 'http_api_request', allowed: true },
+      update: { allowed: true },
+    })
+    return
+  }
+
+  const writeConnectorCount = await prisma.agentConnector.count({
+    where: {
+      agentId,
+      connectorId: { not: connectorId },
+      accessMode: 'write',
+      connector: { type: 'http_api', lifecycleState: 'active' },
+    },
+  })
+  if (writeConnectorCount === 0) {
+    await prisma.capability.updateMany({
+      where: { agentId, toolName: 'http_api_request' },
+      data: { allowed: false },
+    })
+  }
+}
 
 export async function listProvisioningDrafts() {
   try {
@@ -108,6 +149,21 @@ export async function listConnectorCatalog() {
   }
 }
 
+export async function listProvisioningAssignableAgents() {
+  try {
+    await requireRole('viewer')
+    const agents = await repositories.agents.findMany()
+    return ok(
+      agents
+        .filter((agent) => agent.status === 'active')
+        .map((agent) => ({ id: agent.id, name: agent.name }))
+        .sort((a, b) => a.name.localeCompare(b.name, 'hu')),
+    )
+  } catch (e) {
+    return toFail(e, 'Nem sikerült betölteni az agenteket')
+  }
+}
+
 /**
  * F2-P-F: doksi → draft-config jelölt. A provisioning-asszisztens agent a doksit
  * ADATKÉNT dolgozza fel és egy ConnectorConfig-jelöltet ad vissza (propose-not-apply).
@@ -118,9 +174,9 @@ export async function listConnectorCatalog() {
 export async function draftConfigFromApiDoc(input: unknown) {
   try {
     const user = await requireRole('admin')
-    const { docText, providerHint } = draftFromDocSchema.parse(input)
+    const { docText, providerHint, sensitivityReviewAccepted } = draftFromDocSchema.parse(input)
 
-    // A seedelt provisioning-asszisztens agent (audit-attribúció + modell-config forrása).
+    // A seedelt provisioning-asszisztens agent — audit-attribúció + a Registry modelConfig-je.
     const agents = await repositories.agents.findMany()
     const assistant = agents.find((a) => a.name === PROVISIONING_ASSISTANT_TEMPLATE.name)
     if (!assistant) {
@@ -129,17 +185,44 @@ export async function draftConfigFromApiDoc(input: unknown) {
       )
     }
 
+    const messages = services.provisioningAssistant.buildDraftingMessages({
+      docText,
+      providerHint,
+    })
+    const sensitivity = inspectPromptSensitivity(messages)
+    const forbiddenFindings = sensitivity.findings.filter((f) => f.level === 'forbidden')
+    if (forbiddenFindings.length > 0 && !sensitivityReviewAccepted) {
+      return ok({
+        requiresSensitivityReview: true,
+        sensitivity: {
+          level: sensitivity.level,
+          matchedCategory: sensitivity.matchedCategory,
+          findings: forbiddenFindings,
+        },
+      })
+    }
+
     const result = await services.provisioningAssistant.draftConfigFromDoc({
       agentId: assistant.id,
       agentVersion: assistant.currentVersion,
+      agentModelConfig: assistant.modelConfig,
       tenantId: user.tenantId,
       docText,
       providerHint,
+      ...(forbiddenFindings.length > 0
+        ? {
+            sensitivityOverride: {
+              reviewedByUserId: user.id,
+              allowedForbiddenCategories: [...new Set(forbiddenFindings.map((f) => f.category))],
+              reason: 'Provisioning API documentation sensitivity review accepted by admin',
+            },
+          }
+        : {}),
     })
     if (!result.ok) {
       return fail(`${result.error}: ${result.detail}`)
     }
-    return ok({ config: result.config })
+    return ok({ config: result.config, requiresSensitivityReview: false })
   } catch (e) {
     return toFail(e, 'Nem sikerült legenerálni a configot a doksiból')
   }
@@ -193,7 +276,17 @@ export async function activateConnector(input: unknown) {
   try {
     const user = await requireRole('admin')
     const parsed = activateSchema.parse(input)
-    const res = await services.provisioning.activateConnector(parsed, actorOf(user))
+    const res = await services.provisioning.activateConnector(
+      {
+        draftId: parsed.draftId,
+        secretAlias: parsed.secretAlias,
+        apiKey: parsed.apiKey,
+        approverId: parsed.approverId,
+        criticality: parsed.criticality,
+        reason: parsed.reason,
+      },
+      actorOf(user),
+    )
     return ok(res)
   } catch (e) {
     return toFail(e, 'Nem sikerült aktiválni a connectort')
@@ -204,7 +297,31 @@ export async function assignConnectorToAgent(input: unknown) {
   try {
     const user = await requireRole('admin')
     const parsed = assignSchema.parse(input)
-    const res = await services.provisioning.assignConnectorToAgent(parsed, actorOf(user))
+    const [agent, connector] = await Promise.all([
+      repositories.agents.findById(parsed.agentId),
+      prisma.connector.findFirst({
+        where: {
+          id: parsed.connectorId,
+          tenantId: user.tenantId,
+          lifecycleState: 'active',
+        },
+      }),
+    ])
+    if (!agent) return fail('Agent not found')
+    if (!connector) return fail('Csak aktivált, tenanton belüli kapcsolat rendelhető agenthez.')
+
+    const res = await services.provisioning.assignConnectorToAgent(
+      {
+        connectorId: parsed.connectorId,
+        agentId: parsed.agentId,
+        accessMode: parsed.accessMode,
+        apiKey: parsed.apiKey,
+      },
+      actorOf(user),
+    )
+    if (connector.type === 'http_api') {
+      await syncAssignedConnectorCapabilities(parsed.agentId, parsed.connectorId, parsed.accessMode)
+    }
     return ok(res)
   } catch (e) {
     return toFail(e, 'Nem sikerült hozzárendelni a connectort')

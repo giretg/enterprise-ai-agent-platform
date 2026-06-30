@@ -258,6 +258,29 @@ export class DispatcherService {
       return { ticketId: ticket.id, status: 'skipped' }
     }
 
+    // I1 (§8): kizárólag `active` agent dispatchelhető. A draft/suspended/retired
+    // agentre érkező dispatch-kísérletet auditáljuk és kihagyjuk — így egy menet
+    // közben felfüggesztett/nyugdíjazott agent halasztott ticketje sem fut le.
+    if (this.agents) {
+      const agent = await this.agents.findById(ticket.agentId)
+      if (!agent || agent.status !== 'active') {
+        await this.audit.append({
+          actorType: 'system',
+          actorId: null,
+          agentVersion: null,
+          action: 'agent.dispatch_denied_inactive',
+          targetType: 'agent',
+          targetId: ticket.agentId,
+          modelUsed: null,
+          inputRef: ticket.id,
+          outputRef: agent?.status ?? 'missing',
+          policyDecision: 'denied',
+          metadata: { ticketId: ticket.id, status: agent?.status ?? 'missing' },
+        })
+        return { ticketId: ticket.id, status: 'skipped' }
+      }
+    }
+
     const since = new Date(now)
     since.setHours(0, 0, 0, 0)
     const usage = await this.modelCalls.getUsageForAgentSince(ticket.agentId, since)

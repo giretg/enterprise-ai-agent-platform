@@ -24,7 +24,7 @@ export class PostgresToolBrokerRepository implements ToolBrokerRepository {
     agentId: string,
     type: ConnectorType,
     accessMode: ConnectorAccessMode,
-  ): Promise<Connector | null> {
+  ): Promise<{ connector: Connector; agentSecretAlias: string | null } | null> {
     const agentConnector = await prisma.agentConnector.findFirst({
       where: {
         agentId,
@@ -33,8 +33,8 @@ export class PostgresToolBrokerRepository implements ToolBrokerRepository {
       },
       include: { connector: true },
     })
-
-    return agentConnector?.connector ?? null
+    if (!agentConnector) return null
+    return { connector: agentConnector.connector, agentSecretAlias: agentConnector.secretAlias ?? null }
   }
 
   async findConnectorForAgentById(
@@ -42,7 +42,7 @@ export class PostgresToolBrokerRepository implements ToolBrokerRepository {
     connectorId: string,
     type: ConnectorType,
     accessMode: ConnectorAccessMode,
-  ): Promise<Connector | null> {
+  ): Promise<{ connector: Connector; agentSecretAlias: string | null } | null> {
     const agentConnector = await prisma.agentConnector.findFirst({
       where: {
         agentId,
@@ -52,8 +52,8 @@ export class PostgresToolBrokerRepository implements ToolBrokerRepository {
       },
       include: { connector: true },
     })
-
-    return agentConnector?.connector ?? null
+    if (!agentConnector) return null
+    return { connector: agentConnector.connector, agentSecretAlias: agentConnector.secretAlias ?? null }
   }
 
   async findCapabilitiesForAgent(
@@ -68,13 +68,13 @@ export class PostgresToolBrokerRepository implements ToolBrokerRepository {
 
   async findConnectorsForAgent(
     agentId: string,
-  ): Promise<{ connector: Connector; accessMode: ConnectorAccessMode }[]> {
+  ): Promise<{ connector: Connector; accessMode: ConnectorAccessMode; agentSecretAlias: string | null }[]> {
     const rows = await prisma.agentConnector.findMany({
       where: { agentId },
       include: { connector: true },
       orderBy: { connector: { name: 'asc' } },
     })
-    return rows.map((r) => ({ connector: r.connector, accessMode: r.accessMode }))
+    return rows.map((r) => ({ connector: r.connector, accessMode: r.accessMode, agentSecretAlias: r.secretAlias ?? null }))
   }
 
   async findDocumentsForConnector(
@@ -122,5 +122,33 @@ export class PostgresToolBrokerRepository implements ToolBrokerRepository {
       if (row.ticketId) counts[row.ticketId] = row._count._all
     }
     return counts
+  }
+
+  async countToolCallsForTicket(ticketId: string, toolName: string): Promise<number> {
+    return prisma.toolCall.count({
+      where: { ticketId, toolName, status: 'ok' },
+    })
+  }
+
+  async countToolCallsForAgentSince(agentId: string, toolName: string, since: Date): Promise<number> {
+    return prisma.toolCall.count({
+      where: { agentId, toolName, status: 'ok', createdAt: { gte: since } },
+    })
+  }
+
+  async listToolCallsByName(
+    toolName: string,
+    filter?: { agentId?: string; since?: Date },
+    limit = 100,
+  ): Promise<ToolCall[]> {
+    return prisma.toolCall.findMany({
+      where: {
+        toolName,
+        ...(filter?.agentId ? { agentId: filter.agentId } : {}),
+        ...(filter?.since ? { createdAt: { gte: filter.since } } : {}),
+      },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+    })
   }
 }

@@ -64,18 +64,27 @@ function hostOf(url: string): string | null {
   }
 }
 
+function substituteProbePath(path: string): string {
+  const placeholder =
+    process.env.PROVISIONING_SANDBOX_PROBE_ID?.trim() || '507f1f77bcf86cd799439011'
+  return path
+    .replace(/\{[^}]+\}/g, placeholder)
+    .replace(/:[a-zA-Z][a-zA-Z0-9_]*/g, placeholder)
+}
+
 /**
- * A próbahívás célja: az első OLVASÓ (GET, path-paraméter nélküli) tool, különben a
- * `baseUrl` gyökere. Path-paramétert ({id}) tartalmazó toolt szándékosan kihagyunk —
- * nincs valódi azonosítónk, és nem akarunk találgatott erőforrást lekérni.
+ * A próbahívás célja: az első OLVASÓ (GET) tool, path-paraméterek sandbox placeholderrel
+ * helyettesítve; különben a `baseUrl` gyökere.
  */
 function pickProbeUrl(config: ConnectorConfig): string {
   const readTool: ProposedTool | undefined = config.proposedTools.find(
-    (t) => t.method === 'GET' && t.access === 'read' && !/[{}]/.test(t.path),
+    (t) => t.method === 'GET' && t.access === 'read',
   )
   if (readTool) {
     const base = config.baseUrl.replace(/\/+$/, '')
-    const path = readTool.path.startsWith('/') ? readTool.path : `/${readTool.path}`
+    const path = substituteProbePath(
+      readTool.path.startsWith('/') ? readTool.path : `/${readTool.path}`,
+    )
     return `${base}${path}`
   }
   return config.baseUrl
@@ -169,6 +178,12 @@ export class HttpSandboxConnectionTester implements SandboxConnectionTester {
       // manual redirect: a 3xx (vagy opaqueredirect) nem elfogadott siker.
       if (res.type === 'opaqueredirect' || (res.status >= 300 && res.status < 400)) {
         return { ok: false, statusCode: res.status, detail: 'redirect_blocked' }
+      }
+      // 401 = "reachable_auth_required": a szerver elért, az endpoint létezik,
+      // az auth a secret-alias rendszeren keresztül kerül bekonfigurálásra
+      // (az aktiválás és az agent-hozzárendelés lépéseiben).
+      if (res.status === 401) {
+        return { ok: true, statusCode: 401, detail: 'reachable_auth_required' }
       }
       const ok = res.status >= 200 && res.status < 300
       return {

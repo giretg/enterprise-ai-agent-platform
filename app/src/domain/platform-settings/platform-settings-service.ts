@@ -33,6 +33,7 @@ import {
   type ModelPolicyInput,
 } from '@/lib/model-policy'
 import type { Prisma, TicketType } from '@prisma/client'
+import { WEB_SEARCH_CONTROLS_KEY } from '@/domain/web-search/web-search-types'
 
 export const DISPATCHER_CONTROLS_KEY = 'dispatcher.controls'
 export const TICKET_TYPE_CONFIGS_KEY = 'ticket.type_configs'
@@ -68,6 +69,18 @@ const DEFAULT_MONITOR_CONTROLS: MonitorControls = {
   killSwitch: false,
   sweepIntervalSec: 60,
   maxConcurrent: 5,
+  updatedById: null,
+  updatedAt: null,
+}
+
+export type WebSearchControls = {
+  killSwitch: boolean
+  updatedById: string | null
+  updatedAt: string | null
+}
+
+const DEFAULT_WEB_SEARCH_CONTROLS: WebSearchControls = {
+  killSwitch: false,
   updatedById: null,
   updatedAt: null,
 }
@@ -372,6 +385,54 @@ export class PlatformSettingsService {
         sweepIntervalSec: next.sweepIntervalSec,
         maxConcurrent: next.maxConcurrent,
       },
+    })
+
+    return next
+  }
+
+  async getWebSearchControls(): Promise<WebSearchControls> {
+    const raw = (await this.settings.get(WEB_SEARCH_CONTROLS_KEY)) as Partial<WebSearchControls> | null
+    if (!raw || typeof raw !== 'object') return { ...DEFAULT_WEB_SEARCH_CONTROLS }
+    return {
+      killSwitch: typeof raw.killSwitch === 'boolean' ? raw.killSwitch : DEFAULT_WEB_SEARCH_CONTROLS.killSwitch,
+      updatedById: typeof raw.updatedById === 'string' ? raw.updatedById : null,
+      updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : null,
+    }
+  }
+
+  /** Csak a Tool Broker enforcementhoz kell — olcsó, nem auditál (WS13). */
+  async isWebSearchEnabled(): Promise<boolean> {
+    const controls = await this.getWebSearchControls()
+    return !controls.killSwitch
+  }
+
+  async setWebSearchControls(input: { killSwitch: boolean }, actorId: string): Promise<WebSearchControls> {
+    const current = await this.getWebSearchControls()
+    const next: WebSearchControls = {
+      killSwitch: input.killSwitch,
+      updatedById: actorId,
+      updatedAt: new Date().toISOString(),
+    }
+
+    await this.settings.set(WEB_SEARCH_CONTROLS_KEY, next as unknown as Prisma.InputJsonObject, actorId)
+
+    await this.audit.append({
+      actorType: 'human',
+      actorId,
+      agentVersion: null,
+      action:
+        current.killSwitch !== next.killSwitch
+          ? next.killSwitch
+            ? 'web_search.paused'
+            : 'web_search.resumed'
+          : 'web_search.config_changed',
+      targetType: 'platform_setting',
+      targetId: null,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: null,
+      policyDecision: next.killSwitch ? 'paused' : 'enabled',
+      metadata: { killSwitch: next.killSwitch },
     })
 
     return next

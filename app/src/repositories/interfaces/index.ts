@@ -331,7 +331,20 @@ export interface AgentRepository {
     selfEvolutionProfile?: Agent['selfEvolutionProfile']
     initialMemory?: string
     createdById: string
+    status?: Agent['status']
   }): Promise<{ agent: Agent; apiKey: string }>
+  /** Életciklus-átmenetek (§4) — állapotgép-invariánsokat kényszerítenek ki. */
+  activate(agentId: string): Promise<{ agent: Agent; agentVersion: number }>
+  suspend(agentId: string, reason: string): Promise<Agent>
+  resume(agentId: string): Promise<Agent>
+  retire(agentId: string): Promise<Agent>
+  /** Megosztott viselkedés-profil-frissítés befogadása (§3.4 kaszkád, I7). */
+  acceptBehaviorProfileUpdate(input: {
+    agentId: string
+    profileId: string
+    profileVersion: number
+    profileBody: string
+  }): Promise<{ agentVersion: number; behaviorProfileVersion: number }>
   /**
    * Frissíti a szerep-instrukciót és/vagy a viselkedés-profilt (§5.3). Csak a
    * ténylegesen változó összetevő al-verzióját lépteti, új `agent_versions`
@@ -362,6 +375,8 @@ export interface AgentRepository {
     agentId: string
     profile: Agent['selfEvolutionProfile']
   }): Promise<Agent>
+  rotateApiKey(agentId: string): Promise<{ keyId: string; apiKey: string; scopes: string[] }>
+  revokeApiKey(keyId: string): Promise<{ keyId: string; agentId: string }>
   delete(agentId: string): Promise<{ id: string; name: string }>
   authenticateApiKey(rawKey: string): Promise<{ agentId: string; scopes: string[] } | null>
 }
@@ -457,15 +472,15 @@ export interface ToolBrokerRepository {
     agentId: string,
     type: ConnectorType,
     accessMode: ConnectorAccessMode,
-  ): Promise<Connector | null>
+  ): Promise<{ connector: Connector; agentSecretAlias: string | null } | null>
   findConnectorForAgentById(
     agentId: string,
     connectorId: string,
     type: ConnectorType,
     accessMode: ConnectorAccessMode,
-  ): Promise<Connector | null>
+  ): Promise<{ connector: Connector; agentSecretAlias: string | null } | null>
   findCapabilitiesForAgent(agentId: string): Promise<{ toolName: string; allowed: boolean }[]>
-  findConnectorsForAgent(agentId: string): Promise<{ connector: Connector; accessMode: ConnectorAccessMode }[]>
+  findConnectorsForAgent(agentId: string): Promise<{ connector: Connector; accessMode: ConnectorAccessMode; agentSecretAlias: string | null }[]>
   findDocumentsForConnector(
     connectorId: string,
   ): Promise<{ id: string; filename: string; extractedText: string | null }[]>
@@ -473,6 +488,16 @@ export interface ToolBrokerRepository {
   getToolSummary(since?: Date): Promise<{ calls: number; denied: number; errors: number }>
   /** Tool-call counts keyed by ticket id for the governance per-ticket breakdown (§11). */
   getToolCallCountsByTicket(since?: Date): Promise<Record<string, number>>
+  /** Web Search rate-limit (maxQueriesPerTicket) — Feature-spec WebSearchTool §5.4. */
+  countToolCallsForTicket(ticketId: string, toolName: string): Promise<number>
+  /** Web Search rate-limit (maxQueriesPerAgentDay) — Feature-spec WebSearchTool §5.4. */
+  countToolCallsForAgentSince(agentId: string, toolName: string, since: Date): Promise<number>
+  /** Governance/agent-card nézethez — Feature-spec WebSearchTool §7.1/§7.3. */
+  listToolCallsByName(
+    toolName: string,
+    filter?: { agentId?: string; since?: Date },
+    limit?: number,
+  ): Promise<ToolCall[]>
 }
 
 export type RecipeWithVersions = Recipe & { versions: RecipeVersion[] }
@@ -936,6 +961,7 @@ export interface ConnectorDraftRepository {
     connectorId: string
     agentId: string
     accessMode: ConnectorAccessMode
+    secretAlias?: string | null
   }): Promise<void>
   /** Meglévő (aktivált) connector-katalógus metaadata, secret nélkül (§9 catalog.read). */
   listActiveCatalog(

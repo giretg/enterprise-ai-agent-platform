@@ -1,4 +1,5 @@
 import type {
+  AgentRole,
   AssigneeType,
   Connector,
   ConnectorAccessMode,
@@ -10,7 +11,7 @@ import type {
   ToolCallStatus,
   UserStatus,
 } from '@prisma/client'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { prisma } from '@/lib/db'
 import { personaFor } from '@/lib/agent-persona'
 import {
@@ -61,6 +62,15 @@ import type {
   CellStyle,
   XlsxSheetSpec,
 } from '@/domain/file-editor/adapters/xlsx-adapter'
+import type { WebSearchPolicyService } from '@/domain/web-search/web-search-policy-service'
+import type { WebSearchService } from '@/domain/web-search/web-search-service'
+import {
+  WEB_SEARCH_CONTROLS_KEY,
+  parseWebSearchConfig,
+  type WebSearchArgs,
+  type WebSearchEffectiveQuery,
+  type WebSearchResult,
+} from '@/domain/web-search/web-search-types'
 
 export type KbSearchArgs = {
   query: string
@@ -325,6 +335,7 @@ export type ToolBrokerInvokeInput =
   | (ToolInvokeBase & { tool: 'sandbox_app.update_artifact'; args: SandboxAppUpdateArtifactArgs })
   | (ToolInvokeBase & { tool: 'sandbox_app.preview'; args: SandboxAppPreviewArgs })
   | (ToolInvokeBase & { tool: 'sandbox_app.export'; args: SandboxAppExportArgs })
+  | (ToolInvokeBase & { tool: 'web_search'; args: WebSearchArgs })
 
 export type ToolBrokerInvokeResult =
   | {
@@ -366,6 +377,7 @@ export type ToolBrokerInvokeResult =
         | SandboxAppUpdateArtifactResult
         | SandboxAppPreviewResult
         | SandboxAppExportResult
+        | WebSearchResult
       resultMeta: Record<string, unknown>
       latencyMs: number
     }
@@ -373,7 +385,7 @@ export type ToolBrokerInvokeResult =
 type ToolName = ToolBrokerInvokeInput['tool']
 
 type AuthorizationResult =
-  | { allowed: true; connector: Connector; grant?: ConnectorGrant; actingUserId?: string }
+  | { allowed: true; connector: Connector; grant?: ConnectorGrant; actingUserId?: string; agentSecretAlias?: string | null }
   | { allowed: false; reason: string; connector?: Connector }
 
 const TOOL_REQUIREMENTS: Record<
@@ -413,6 +425,7 @@ const TOOL_REQUIREMENTS: Record<
   'sandbox_app.update_artifact': { connectorType: 'board', accessMode: 'write' },
   'sandbox_app.preview': { connectorType: 'board', accessMode: 'read' },
   'sandbox_app.export': { connectorType: 'board', accessMode: 'read' },
+  web_search: { connectorType: 'web_search', accessMode: 'read' },
 }
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -474,7 +487,10 @@ function snippet(value: string): string {
   return value.length > 2000 ? `${value.slice(0, 1997)}...` : value
 }
 
-function argsMeta(input: ToolBrokerInvokeInput): Record<string, unknown> {
+function argsMeta(
+  input: ToolBrokerInvokeInput,
+  webSearchEffective?: WebSearchEffectiveQuery,
+): Record<string, unknown> {
   const base = {
     ticketId: input.ticketId ?? null,
     conversationId: input.conversationId ?? null,
@@ -611,6 +627,23 @@ function argsMeta(input: ToolBrokerInvokeInput): Record<string, unknown> {
   if (input.tool === 'sandbox_app.update_artifact') return { ...base, appId: input.args.appId, htmlLength: input.args.html.length, activate: input.args.activate ?? false }
   if (input.tool === 'sandbox_app.preview') return { ...base, appId: input.args.appId, version: input.args.version ?? null }
   if (input.tool === 'sandbox_app.export') return { ...base, appId: input.args.appId, version: input.args.version ?? null }
+  if (input.tool === 'web_search') {
+    // I-WS-10/WS10: a nyers query SOSEM kerül auditba — csak hossz + hash. A
+    // hash-t a policy.authorize() már kiszámolta (webSearchEffective.queryHash);
+    // itt csak fallback, ha valamiért nem állt rendelkezésre (sosem fordulhat
+    // elő egy 'ok' hívásnál, de defenzív).
+    return {
+      ...base,
+      queryLength: input.args.query.length,
+      queryHash:
+        webSearchEffective?.queryHash ??
+        createHash('sha256').update(input.args.query).digest('hex').slice(0, 16),
+      domainsRequested: input.args.domains ?? [],
+      recencyDays: input.args.recencyDays ?? null,
+      maxResultsRequested: input.args.maxResults ?? null,
+      hasPurpose: Boolean(input.args.purpose),
+    }
+  }
 
   return {
     ...base,
@@ -618,6 +651,17 @@ function argsMeta(input: ToolBrokerInvokeInput): Record<string, unknown> {
     requestedState: input.args.patch.state ?? null,
     payloadKeys: input.args.patch.payload ? Object.keys(input.args.patch.payload).sort() : [],
   }
+}
+
+function isWebSearchResult(value: unknown): value is WebSearchResult {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'queryMeta' in value &&
+    'warnings' in value &&
+    'results' in value &&
+    Array.isArray((value as { results: unknown }).results)
+  )
 }
 
 function resultMeta(
@@ -652,8 +696,21 @@ function resultMeta(
     | SandboxAppCreateResult
     | SandboxAppUpdateArtifactResult
     | SandboxAppPreviewResult
-    | SandboxAppExportResult,
+    | SandboxAppExportResult
+    | WebSearchResult,
 ): Record<string, unknown> {
+  // 'in' nem szűri ki a Record<string, string> alakú eredménytípusokat (pl.
+  // GmailGetMessageResult), ezért explicit type predicate kell a biztos narrowinghoz.
+  if (isWebSearchResult(result)) {
+    return {
+      provider: result.queryMeta.provider,
+      resultCount: result.queryMeta.resultCount,
+      domainsEffective: result.queryMeta.domainsEffective,
+      recencyDays: result.queryMeta.recencyDays ?? null,
+      resultDomains: [...new Set(result.results.map((r) => r.domain))],
+      warningCodes: result.warnings.map((w) => w.code),
+    }
+  }
   if ('status' in result && 'ok' in result && 'body' in result) {
     return { status: result.status, ok: result.ok }
   }
@@ -752,12 +809,7 @@ export interface Authorizer {
   }): Promise<AuthorizationResult>
 }
 
-const ORCHESTRATOR_DELEGATION_TOOLS: ToolName[] = [
-  'ticket_create',
-  'agent_ask',
-  'agent_resolve',
-  'agent_catalog',
-]
+const ORCHESTRATOR_DELEGATION_TOOLS: ToolName[] = ['ticket_create']
 
 /**
  * Az acting-user státusz-feloldása. Cserepont a determinisztikus teszteléshez
@@ -766,6 +818,39 @@ const ORCHESTRATOR_DELEGATION_TOOLS: ToolName[] = [
 export type ActingUserLookup = (
   userId: string,
 ) => Promise<{ status: UserStatus } | null>
+
+/**
+ * A szerep-sablon (§3.5) tool-less invariánsának feloldása. Cserepont a
+ * teszteléshez; alapból a `role_templates` táblát kérdezi (tenant-saját > rendszer).
+ * Ha nincs sablon (pl. nem seedelt DB), a hívó a beégetett alapértelmezésre esik
+ * vissza — orchestrator akkor is tool-less (sosem fail-open).
+ */
+export type RoleTemplateLookup = (
+  key: AgentRole,
+  tenantId: string | null,
+) => Promise<{ toolAccessAllowed: boolean } | null>
+
+const prismaRoleTemplateLookup: RoleTemplateLookup = async (key, tenantId) => {
+  const templates = await prisma.roleTemplate.findMany({
+    where: { key, OR: [{ tenantId }, { tenantId: null }] },
+    select: { tenantId: true, toolAccessAllowed: true },
+  })
+  const tpl =
+    templates.find((t) => t.tenantId === tenantId) ?? templates.find((t) => t.tenantId === null)
+  return tpl ? { toolAccessAllowed: tpl.toolAccessAllowed } : null
+}
+
+/**
+ * web_search kill-switch (Feature-spec — WebSearchTool §7.2, WS13). Cserepont a
+ * teszteléshez; alapból a `platform_settings` táblát kérdezi.
+ */
+export type WebSearchEnabledLookup = () => Promise<boolean>
+
+const prismaWebSearchEnabledLookup: WebSearchEnabledLookup = async () => {
+  const row = await prisma.platformSetting.findUnique({ where: { key: WEB_SEARCH_CONTROLS_KEY } })
+  const value = row?.value as { killSwitch?: boolean } | null
+  return value?.killSwitch !== true
+}
 
 const prismaActingUserLookup: ActingUserLookup = async (userId) =>
   prisma.user.findUnique({ where: { id: userId }, select: { status: true } })
@@ -776,6 +861,7 @@ export class AllowlistAuthorizer implements Authorizer {
     private agents: AgentRepository,
     private grants: ConnectorGrantRepository,
     private lookupActingUser: ActingUserLookup = prismaActingUserLookup,
+    private lookupRoleTemplate: RoleTemplateLookup = prismaRoleTemplateLookup,
   ) {}
 
   async authorize(input: {
@@ -786,16 +872,30 @@ export class AllowlistAuthorizer implements Authorizer {
     tenantId?: string | null
   }): Promise<AuthorizationResult> {
     const agent = await this.agents.findById(input.agentId)
-    if (
-      agent?.role === 'orchestrator' &&
-      !ORCHESTRATOR_DELEGATION_TOOLS.includes(input.tool)
-    ) {
-      return { allowed: false, reason: 'orchestrator_tool_less' }
+    let skipCapabilityCheck = false
+    if (agent) {
+      // §6: a Tool Broker ELSŐKÉNT a szerep-sablon `tool_access_allowed` mezőjét
+      // nézi (adat-vezérelt, nem beégetett típus-elágazás). Ha nincs sablon (nem
+      // seedelt DB), a beégetett alapértelmezésre esünk vissza — orchestrator akkor
+      // is tool-less (defense-in-depth, sosem fail-open).
+      const template = await this.lookupRoleTemplate(agent.role, input.tenantId ?? null)
+      const toolAccessAllowed = template ? template.toolAccessAllowed : agent.role !== 'orchestrator'
+      if (!toolAccessAllowed) {
+        if (ORCHESTRATOR_DELEGATION_TOOLS.includes(input.tool)) {
+          // Az orchestratornak nincs Tool Broker capability-sora (§3.5/I4), de
+          // az egyetlen engedélyezett outbound művelete a ticket-nyitás.
+          skipCapabilityCheck = true
+        } else {
+          return { allowed: false, reason: 'orchestrator_tool_less' }
+        }
+      }
     }
 
-    const capability = await this.tools.findCapability(input.agentId, input.tool)
-    if (!capability?.allowed) {
-      return { allowed: false, reason: 'capability_not_allowed' }
+    if (!skipCapabilityCheck) {
+      const capability = await this.tools.findCapability(input.agentId, input.tool)
+      if (!capability?.allowed) {
+        return { allowed: false, reason: 'capability_not_allowed' }
+      }
     }
 
     const requirement = TOOL_REQUIREMENTS[input.tool]
@@ -804,7 +904,7 @@ export class AllowlistAuthorizer implements Authorizer {
       typeof input.args?.connectorId === 'string'
         ? input.args.connectorId
         : null
-    const connector = requestedConnectorId
+    const link = requestedConnectorId
       ? await this.tools.findConnectorForAgentById(
           input.agentId,
           requestedConnectorId,
@@ -816,7 +916,7 @@ export class AllowlistAuthorizer implements Authorizer {
           requirement.connectorType,
           requirement.accessMode,
         )
-    if (!connector) {
+    if (!link) {
       return {
         allowed: false,
         reason: requestedConnectorId
@@ -824,6 +924,7 @@ export class AllowlistAuthorizer implements Authorizer {
           : `missing_${requirement.connectorType}_connector_${requirement.accessMode}`,
       }
     }
+    const { connector, agentSecretAlias } = link
 
     // Provisioning §4.1 / P3 / PN5: egy draft (lifecycle_state != active) connector
     // a Tool Brokerben SOHA nem oldódik fel — egy fél kész draft nem futtatható élesben.
@@ -861,10 +962,10 @@ export class AllowlistAuthorizer implements Authorizer {
         return { allowed: false, reason: 'gmail_scope_not_granted', connector }
       }
 
-      return { allowed: true, connector, grant, actingUserId: input.actingUserId }
+      return { allowed: true, connector, grant, actingUserId: input.actingUserId, agentSecretAlias }
     }
 
-    return { allowed: true, connector }
+    return { allowed: true, connector, agentSecretAlias }
   }
 }
 
@@ -881,6 +982,9 @@ export class ToolBrokerService {
     private grantService: ConnectorGrantService,
     private fileEditor: FileEditorService,
     private sandboxApps: import('@/domain/sandbox/sandbox-app-service').SandboxAppService,
+    private webSearch: WebSearchService,
+    private webSearchPolicy: WebSearchPolicyService,
+    private isWebSearchEnabled: WebSearchEnabledLookup = prismaWebSearchEnabledLookup,
   ) {}
 
   /** Chat agent_ask: szinkron feldolgozás (pl. WikiAgentRuntime.processTicket). */
@@ -939,8 +1043,45 @@ export class ToolBrokerService {
       }
     }
 
+    let webSearchEffective: WebSearchEffectiveQuery | undefined
+    if (input.tool === 'web_search') {
+      const config = parseWebSearchConfig(authorization.connector.config)
+      const [enabled, ticketQueryCount, agentDayQueryCount] = await Promise.all([
+        this.isWebSearchEnabled(),
+        ticketId ? this.tools.countToolCallsForTicket(ticketId, 'web_search') : Promise.resolve(0),
+        this.tools.countToolCallsForAgentSince(
+          input.agentId,
+          'web_search',
+          new Date(Date.now() - 24 * 60 * 60 * 1000),
+        ),
+      ])
+      const decision = this.webSearchPolicy.authorize(input.args, config, {
+        enabled,
+        ticketQueryCount,
+        agentDayQueryCount,
+      })
+      if (!decision.allowed) {
+        return this.recordDenied(
+          input,
+          ticketId,
+          authorization.connector.id,
+          decision.reason,
+          startedAt,
+          actingUserId,
+          authorization.grant?.id ?? null,
+        )
+      }
+      webSearchEffective = decision.effective
+    }
+
     try {
-      const result = await this.executeTool(input, authorization, actingTenantId, actingUserId)
+      const result = await this.executeTool(
+        input,
+        authorization,
+        actingTenantId,
+        actingUserId,
+        webSearchEffective,
+      )
       const latencyMs = Date.now() - startedAt
       const meta = resultMeta(result)
 
@@ -954,6 +1095,7 @@ export class ToolBrokerService {
         resultMeta: meta,
         actingUserId,
         grantId: authorization.grant?.id ?? null,
+        webSearchEffective,
       })
 
       return {
@@ -1008,6 +1150,7 @@ export class ToolBrokerService {
     authorization: Extract<AuthorizationResult, { allowed: true }>,
     actingTenantId: string | null,
     actingUserId: string | null,
+    webSearchEffective?: WebSearchEffectiveQuery,
   ) {
     if (input.tool === 'kb_search') {
       return this.kbSearch(input.agentId, input.args, authorization.connector)
@@ -1018,8 +1161,20 @@ export class ToolBrokerService {
     if (input.tool === 'agent_resolve') return this.agentResolve(input.args)
     if (input.tool === 'agent_catalog') return this.agentCatalog(input.args)
 
+    if (input.tool === 'web_search') {
+      const config = parseWebSearchConfig(authorization.connector.config)
+      // agent_owned módban az agentConnector.secretAlias az irányadó (per-agent
+      // kulcs); egyébként a connector szintű megosztott kulcs (lásd http_api minta).
+      const effectiveAlias =
+        authorization.connector.authMode === 'agent_owned' && authorization.agentSecretAlias
+          ? authorization.agentSecretAlias
+          : authorization.connector.secretAlias
+      const { result } = await this.webSearch.search(webSearchEffective!, config, effectiveAlias)
+      return result
+    }
+
     if (input.tool === 'http_api_get' || input.tool === 'http_api_request') {
-      return this.executeHttpApiTool(input, authorization.connector, actingTenantId, actingUserId)
+      return this.executeHttpApiTool(input, authorization.connector, actingTenantId, actingUserId, authorization.agentSecretAlias)
     }
 
     if (input.tool.startsWith('file_') || input.tool.startsWith('xlsx_') || input.tool.startsWith('pdf_') || input.tool === 'docx_read') {
@@ -1063,10 +1218,17 @@ export class ToolBrokerService {
     connector: Connector,
     actingTenantId: string | null,
     actingUserId: string | null,
+    agentSecretAlias?: string | null,
   ): Promise<HttpApiCallResult> {
     const config = parseHttpApiConfig(connector.config)
-    const defaultApiKey = connector.secretAlias
-      ? await resolveConnectorApiKey(connector.secretAlias)
+    // agent_owned módban az agentConnector.secretAlias az irányadó (per-agent kulcs);
+    // egyébként a connector szintű megosztott kulcs kerül felhasználásra.
+    const effectiveAlias =
+      connector.authMode === 'agent_owned' && agentSecretAlias
+        ? agentSecretAlias
+        : connector.secretAlias
+    const defaultApiKey = effectiveAlias
+      ? await resolveConnectorApiKey(effectiveAlias)
       : undefined
     const client = new HttpApiClient(config, {
       defaultApiKey,
@@ -1787,9 +1949,10 @@ export class ToolBrokerService {
     resultMeta: Record<string, unknown>
     actingUserId?: string | null
     grantId?: string | null
+    webSearchEffective?: WebSearchEffectiveQuery
   }) {
     const sanitizedArgsMeta = {
-      ...argsMeta(params.input),
+      ...argsMeta(params.input, params.webSearchEffective),
       acting_user_id: params.actingUserId ?? params.input.actingUserId ?? null,
       grant_id: params.grantId ?? null,
     }

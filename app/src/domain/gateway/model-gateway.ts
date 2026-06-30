@@ -61,6 +61,12 @@ export type ModelConfig = {
   maxTokens?: number
 }
 
+export type SensitivityOverride = {
+  reviewedByUserId: string
+  allowedForbiddenCategories: string[]
+  reason: string
+}
+
 /** Egy natív tool definíció, amit a providernek átadunk (function calling). */
 export type ToolDefinition = {
   name: string
@@ -663,6 +669,8 @@ export class ModelGateway {
     modelConfig: ModelConfig
     /** Natív tool use definíciók — átadva a provider function callingot kér. */
     tools?: ToolDefinition[]
+    /** Explicit human review for narrowly scoped, audited sensitivity overrides. */
+    sensitivityOverride?: SensitivityOverride
   }): Promise<{
     content: string
     toolCalls?: GatewayToolCall[]
@@ -672,7 +680,11 @@ export class ModelGateway {
 
     // ── Step 2: Sensitivity pre-flight (Fázis 2-B) ─────────────────────────
     const sensitivity = classifyPrompt(params.messages)
-    if (sensitivity.level === 'forbidden') {
+    const sensitivityOverrideAllowed =
+      sensitivity.level === 'forbidden' &&
+      !!sensitivity.matchedCategory &&
+      params.sensitivityOverride?.allowedForbiddenCategories.includes(sensitivity.matchedCategory)
+    if (sensitivity.level === 'forbidden' && !sensitivityOverrideAllowed) {
       const targetType = params.ticketId ? 'ticket' : params.conversationId ? 'conversation' : 'agent'
       const targetId = params.ticketId ?? params.conversationId ?? params.agentId
       await this.audit.append({
@@ -691,6 +703,26 @@ export class ModelGateway {
       throw new GatewayBudgetError(
         `Gateway sensitivity block: forbidden content detected (${sensitivity.matchedCategory})`,
       )
+    }
+    if (sensitivityOverrideAllowed) {
+      const targetType = params.ticketId ? 'ticket' : params.conversationId ? 'conversation' : 'agent'
+      const targetId = params.ticketId ?? params.conversationId ?? params.agentId
+      await this.audit.append({
+        actorType: 'human',
+        actorId: params.sensitivityOverride!.reviewedByUserId,
+        agentVersion,
+        action: 'model.call.sensitivity_override',
+        targetType,
+        targetId,
+        modelUsed: params.modelConfig.model,
+        inputRef: `sensitivity:${sensitivity.matchedCategory}`,
+        outputRef: 'allowed_by_human_review',
+        policyDecision: 'human_review_override',
+        metadata: {
+          reason: params.sensitivityOverride!.reason,
+          category: sensitivity.matchedCategory,
+        },
+      })
     }
 
     // ── Step 3: Routing (Fázis 2-A) ────────────────────────────────────────
@@ -886,12 +918,17 @@ export class ModelGateway {
     ticketType?: string
     messages: GatewayMessage[]
     modelConfig: ModelConfig
+    sensitivityOverride?: SensitivityOverride
   }): AsyncGenerator<string, void, unknown> {
     const agentVersion = params.agentVersion ?? null
 
     // Sensitivity pre-flight (Fázis 2-B)
     const sensitivity = classifyPrompt(params.messages)
-    if (sensitivity.level === 'forbidden') {
+    const sensitivityOverrideAllowed =
+      sensitivity.level === 'forbidden' &&
+      !!sensitivity.matchedCategory &&
+      params.sensitivityOverride?.allowedForbiddenCategories.includes(sensitivity.matchedCategory)
+    if (sensitivity.level === 'forbidden' && !sensitivityOverrideAllowed) {
       const targetType = params.ticketId ? 'ticket' : params.conversationId ? 'conversation' : 'agent'
       const targetId = params.ticketId ?? params.conversationId ?? params.agentId
       await this.audit.append({
@@ -910,6 +947,26 @@ export class ModelGateway {
       throw new GatewayBudgetError(
         `Gateway sensitivity block: forbidden content detected (${sensitivity.matchedCategory})`,
       )
+    }
+    if (sensitivityOverrideAllowed) {
+      const targetType = params.ticketId ? 'ticket' : params.conversationId ? 'conversation' : 'agent'
+      const targetId = params.ticketId ?? params.conversationId ?? params.agentId
+      await this.audit.append({
+        actorType: 'human',
+        actorId: params.sensitivityOverride!.reviewedByUserId,
+        agentVersion,
+        action: 'model.call.sensitivity_override',
+        targetType,
+        targetId,
+        modelUsed: params.modelConfig.model,
+        inputRef: `sensitivity:${sensitivity.matchedCategory}`,
+        outputRef: 'allowed_by_human_review',
+        policyDecision: 'human_review_override',
+        metadata: {
+          reason: params.sensitivityOverride!.reason,
+          category: sensitivity.matchedCategory,
+        },
+      })
     }
 
     // Routing engine (Fázis 2-A)

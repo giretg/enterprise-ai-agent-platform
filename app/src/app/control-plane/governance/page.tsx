@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import { getGovernanceReport } from '@/app/actions/platform'
+import { getWebSearchGovernanceSummary } from '@/app/actions/web-search'
 import { Badge, Card } from '@/components/ui/shell'
 
 type Range = 'today' | '7d' | '30d' | 'all'
@@ -24,8 +25,12 @@ export default async function GovernancePage({
   const range: Range =
     rawRange === '7d' || rawRange === '30d' || rawRange === 'all' ? rawRange : 'today'
 
-  const res = await getGovernanceReport({ range })
+  const [res, webSearchRes] = await Promise.all([
+    getGovernanceReport({ range }),
+    getWebSearchGovernanceSummary({ sinceDays: 30 }),
+  ])
   const report = res.success ? res.data : null
+  const webSearch = webSearchRes.success ? webSearchRes.data : null
 
   return (
     <div className="space-y-6">
@@ -235,6 +240,63 @@ export default async function GovernancePage({
               </div>
             </div>
           </Card>
+
+          {/* Web Search Tool bontás — Feature-spec WebSearchTool §7.3, utolsó 30 nap */}
+          {webSearch && webSearch.totalCalls > 0 && (
+            <Card title="Web Search Tool (utolsó 30 nap)">
+              <div className="grid gap-4 sm:grid-cols-4">
+                <div className="atelier-soft p-4">
+                  <p className="font-display text-[2rem] leading-none text-ink">{webSearch.totalCalls}</p>
+                  <p className="mt-1.5 text-sm text-ink-faint">Keresés</p>
+                  <p className="mt-1 text-xs text-ink-faint">
+                    {webSearch.okCalls} sikeres · {webSearch.errorCalls} hiba
+                  </p>
+                </div>
+                <div className="atelier-soft p-4">
+                  <p
+                    className={`font-display text-[2rem] leading-none ${
+                      webSearch.deniedCalls > 0 ? 'text-coral-deep' : 'text-ink'
+                    }`}
+                  >
+                    {pct(webSearch.deniedRate)}
+                  </p>
+                  <p className="mt-1.5 text-sm text-ink-faint">Tiltási arány</p>
+                  <p className="mt-1 text-xs text-ink-faint">{webSearch.deniedCalls} tiltva</p>
+                </div>
+                <div className="atelier-soft p-4">
+                  <p className="font-display text-[2rem] leading-none text-ink">{webSearch.avgLatencyMs} ms</p>
+                  <p className="mt-1.5 text-sm text-ink-faint">Átlag késleltetés</p>
+                </div>
+                <div className="atelier-soft p-4">
+                  <p className="mb-1 text-xs text-ink-faint">Top tiltási okok</p>
+                  {webSearch.topDenyReasons.length === 0 ? (
+                    <p className="text-xs italic text-ink-faint">Nincs tiltás</p>
+                  ) : (
+                    <ul className="space-y-0.5 text-xs">
+                      {webSearch.topDenyReasons.map((r) => (
+                        <li key={r.reason} className="flex justify-between gap-2">
+                          <span className="text-ink-soft">{r.reason}</span>
+                          <span className="font-mono">{r.count}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </div>
+              {webSearch.topResultDomains.length > 0 && (
+                <div className="mt-4">
+                  <p className="mb-1.5 text-xs text-ink-faint">Top találati domainek</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {webSearch.topResultDomains.map((d) => (
+                      <Badge key={d.domain} tone="neutral">
+                        {d.domain} ({d.count})
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </Card>
+          )}
 
           {/* Ticketenkénti lebontás */}
           <Card title="Ticketenkénti lebontás">

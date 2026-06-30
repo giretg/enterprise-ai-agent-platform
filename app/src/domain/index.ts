@@ -23,6 +23,10 @@ import {
   dockerLocalConfigFromEnv,
 } from '@/domain/dispatcher/docker-local-harness-launcher'
 import { AllowlistAuthorizer, ToolBrokerService } from '@/domain/tool-broker/tool-broker-service'
+import { WebSearchPolicyService } from '@/domain/web-search/web-search-policy-service'
+import { WebSearchService } from '@/domain/web-search/web-search-service'
+import { HttpSearchProviderAdapter, StubSearchProviderAdapter } from '@/domain/web-search/search-provider-adapter'
+import type { WebSearchAdapterResolver } from '@/domain/web-search/web-search-types'
 import { ConnectorGrantService } from '@/domain/connector-grant/connector-grant-service'
 import { WorkspaceStorage } from '@/domain/file-editor/workspace-storage'
 import { FileEditorService } from '@/domain/file-editor/file-editor-service'
@@ -54,6 +58,7 @@ import {
 } from '@/lib/notify/monitor-notifier'
 import { WebhookChatNotifier } from '@/lib/notify/webhook-chat-notifier'
 import { repositories } from '@/repositories/postgres'
+import { resolveConnectorApiKey } from '@/domain/connector/http-api-client'
 import { resolveTicketProcessRoute } from '@/lib/ticket-process-route'
 
 const playbookService = new PlaybookService(repositories.playbooks, repositories.audit)
@@ -146,6 +151,23 @@ const sandboxAppService = new SandboxAppService(
   repositories.audit,
   new GcsArtifactStore(sandboxAppBucket),
 )
+// Web Search Tool (Feature-spec — WebSearchTool §8.3, D-WS-7): a provider
+// CONNECTOR-onként (tenant policy `config.provider`) cserélhető, nem egy
+// folyamat-globális env-állapot. Élő provider csak akkor, ha a connector
+// 'custom_search_api'-t kér ÉS WEB_SEARCH_PROVIDER_API_URL konfigurált;
+// egyébként determinisztikus dev/acceptance stub (nincs kimenő hívás).
+const webSearchProviderApiUrl = process.env.WEB_SEARCH_PROVIDER_API_URL?.trim()
+const webSearchAdapterResolver: WebSearchAdapterResolver = async (config, secretAlias) => {
+  if (config.provider !== 'custom_search_api' || !webSearchProviderApiUrl) {
+    return new StubSearchProviderAdapter()
+  }
+  const apiKey = secretAlias
+    ? await resolveConnectorApiKey(secretAlias).catch(() => process.env.WEB_SEARCH_PROVIDER_API_KEY?.trim())
+    : process.env.WEB_SEARCH_PROVIDER_API_KEY?.trim()
+  return new HttpSearchProviderAdapter({ apiUrl: webSearchProviderApiUrl, apiKey })
+}
+const webSearchPolicyService = new WebSearchPolicyService()
+const webSearchService = new WebSearchService(webSearchAdapterResolver, webSearchPolicyService)
 const toolBrokerService = new ToolBrokerService(
   repositories.agents,
   repositories.tickets,
@@ -156,6 +178,9 @@ const toolBrokerService = new ToolBrokerService(
   connectorGrantService,
   fileEditorService,
   sandboxAppService,
+  webSearchService,
+  webSearchPolicyService,
+  () => platformSettingsService.isWebSearchEnabled(),
 )
 const knowledgeBaseService = new KnowledgeBaseService(
   repositories.tickets,
@@ -174,18 +199,37 @@ const provisioningEgressAllowlist = (process.env.PROVISIONING_EGRESS_ALLOWLIST ?
   .map((h) => h.trim().toLowerCase())
   .filter(Boolean)
 const provisioningBankPreset = process.env.PROVISIONING_BANK_PRESET === 'true'
+
+async function resolveProvisioningSandboxToken(secretAlias: string | null): Promise<string | null> {
+  if (!secretAlias?.trim()) {
+    return process.env.PROVIDER_CRM_API_KEY?.trim() ?? null
+  }
+  const alias = secretAlias.trim()
+  const prefixed =
+    'PROVISIONING_SANDBOX_TOKEN_' + alias.toUpperCase().replace(/[^A-Z0-9]+/g, '_')
+  if (process.env[prefixed]?.trim()) return process.env[prefixed]!.trim()
+  if (process.env.PROVIDER_CRM_API_KEY?.trim()) return process.env.PROVIDER_CRM_API_KEY!.trim()
+  try {
+    if (
+      alias.startsWith('env:') ||
+      alias.startsWith('secret-ref:') ||
+      alias.startsWith('secret-manager:')
+    ) {
+      return await resolveConnectorApiKey(alias)
+    }
+    return await resolveConnectorApiKey(`env:${alias}`)
+  } catch {
+    return null
+  }
+}
+
 // F2-P-D sandbox connection-test (§8.4): valódi, szűk jogú read-only próbahívás
 // egress deny-by-default + SSRF-őrrel. A non-prod token feloldása env-vezérelt és
 // alias-szűkített (PROVISIONING_SANDBOX_TOKEN_<ALIAS-UPPER-SNAKE>); alapból tokenless.
 const provisioningSandboxTester = new HttpSandboxConnectionTester({
   resolveEgressAllowlist: async () => provisioningEgressAllowlist,
   resolveBankPreset: async () => provisioningBankPreset,
-  resolveSandboxToken: async ({ secretAlias }) => {
-    if (!secretAlias) return null
-    const envKey =
-      'PROVISIONING_SANDBOX_TOKEN_' + secretAlias.toUpperCase().replace(/[^A-Z0-9]+/g, '_')
-    return process.env[envKey] ?? null
-  },
+  resolveSandboxToken: async ({ secretAlias }) => resolveProvisioningSandboxToken(secretAlias),
 })
 const provisioningService = new ProvisioningService({
   drafts: repositories.connectorDrafts,
@@ -333,4 +377,6 @@ export const services = {
   connectorGrants: connectorGrantService,
   workspaceLifecycle: workspaceLifecycleService,
   selfEvolutionGuard,
+  webSearch: webSearchService,
+  webSearchPolicy: webSearchPolicyService,
 }

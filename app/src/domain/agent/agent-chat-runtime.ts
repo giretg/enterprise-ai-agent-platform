@@ -14,7 +14,7 @@ import type { ConversationService } from '../conversation/conversation-service'
 import { assembleContext, type ContextAssemblyMessage } from '../conversation/context-assembly'
 import type { ToolBrokerService } from '../tool-broker/tool-broker-service'
 import type { WorkspaceStorage } from '../file-editor/workspace-storage'
-import { listAllowedChatTools, runAgentToolLoop } from './chat-tool-loop'
+import { listAllowedChatTools, runAgentToolLoop, type ToolLoopActivityEvent } from './chat-tool-loop'
 
 const IMAGE_EXT = /\.(jpg|jpeg|png|gif|webp)$/i
 const IMAGE_MARKER = /^(\[image:([^\]]+)\])([\s\S]*)$/
@@ -262,6 +262,7 @@ export class AgentChatRuntime {
     conversationId?: string
     attachmentDocumentIds?: string[]
   }): AsyncGenerator<
+    | { type: 'activity'; activity: ToolLoopActivityEvent }
     | { type: 'token'; chunk: string }
     | { type: 'done'; conversationId: string; messageId: string }
     | { type: 'error'; message: string },
@@ -360,7 +361,19 @@ export class AgentChatRuntime {
       // szövegként szivárogtatják, amit nem mutathatunk a usernek). Lefuttatjuk
       // szinkronban, majd a kész választ szavanként, szimulált streamingként
       // adjuk ki — így a tool-os agenteknél is folyamatosan jelenik meg a szöveg.
-      const result = await runAgentToolLoop({
+      const activityQueue: ToolLoopActivityEvent[] = []
+      let wakeActivity: (() => void) | null = null
+      const pushActivity = (activity: ToolLoopActivityEvent) => {
+        activityQueue.push(activity)
+        wakeActivity?.()
+        wakeActivity = null
+      }
+      const waitForActivity = () =>
+        new Promise<null>((resolve) => {
+          wakeActivity = () => resolve(null)
+        })
+
+      const resultPromise = runAgentToolLoop({
         gateway: this.gateway,
         toolBroker: this.toolBroker,
         toolCaps: this.toolCaps,
@@ -374,8 +387,33 @@ export class AgentChatRuntime {
         allowedTools: allowedChatTools,
         archiveLargeToolResult: (input) =>
           this.archiveLargeToolResult(tenantKey, conversationId, input),
-      })
-      reply = result.content
+        onActivity: pushActivity,
+      }).then(
+        (result) => ({ ok: true as const, result }),
+        (error: unknown) => ({ ok: false as const, error }),
+      )
+
+      let result: Awaited<typeof resultPromise> | null = null
+      while (!result) {
+        while (activityQueue.length > 0) {
+          const activity = activityQueue.shift()
+          if (activity) yield { type: 'activity', activity }
+        }
+        result = await Promise.race([resultPromise, waitForActivity()])
+      }
+      while (activityQueue.length > 0) {
+        const activity = activityQueue.shift()
+        if (activity) yield { type: 'activity', activity }
+      }
+
+      if (!result.ok) {
+        yield {
+          type: 'error',
+          message: result.error instanceof Error ? result.error.message : 'Tool loop failed',
+        }
+        return
+      }
+      reply = result.result.content
       for (const chunk of chunkForStreaming(reply)) {
         yield { type: 'token', chunk }
         await new Promise<void>((r) => setTimeout(r, 12))

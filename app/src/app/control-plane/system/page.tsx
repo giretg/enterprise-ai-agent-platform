@@ -10,12 +10,14 @@ import {
   listModelRoutingPolicies,
 } from '@/app/actions/platform'
 import { getMonitorControls } from '@/app/actions/monitor'
+import { getWebSearchControls } from '@/app/actions/web-search'
 import { DatabaseControlPanel } from './database-control-panel'
 import { DispatcherControlPanel } from './dispatcher-control-panel'
 import { ModelGatewayPanel } from './model-gateway-panel'
 import { ModelPolicyPanel } from './model-policy-panel'
 import { TicketTypeConfigPanel } from './ticket-type-config-panel'
 import { MonitorControlPanel } from './monitor-control-panel'
+import { WebSearchControlPanel } from './web-search-control-panel'
 
 export default async function SystemPage() {
   const [
@@ -25,6 +27,7 @@ export default async function SystemPage() {
     ticketTypesRes,
     modelPolicyRes,
     monitorControlsRes,
+    webSearchControlsRes,
     gatewayStatsRes,
     routingPoliciesRes,
     budgetsRes,
@@ -35,6 +38,7 @@ export default async function SystemPage() {
     getTicketTypeConfigs(),
     getModelPolicy(),
     getMonitorControls(),
+    getWebSearchControls(),
     getModelCallsSummary(),
     listModelRoutingPolicies(),
     listModelBudgets(),
@@ -75,6 +79,14 @@ export default async function SystemPage() {
         </div>
       ) : (
         <MonitorControlPanel initial={monitorControlsRes.data} canEdit={canEdit} />
+      )}
+
+      {!webSearchControlsRes.success ? (
+        <div className="rounded-lg border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
+          {webSearchControlsRes.error}
+        </div>
+      ) : (
+        <WebSearchControlPanel initial={webSearchControlsRes.data} canEdit={canEdit} />
       )}
 
       {!ticketTypesRes.success ? (

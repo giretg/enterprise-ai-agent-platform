@@ -14,10 +14,38 @@ export default async function PlaybooksPage() {
         <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">Playbook</p>
         <h1 className="mt-2 font-display text-3xl font-semibold">Playbookok</h1>
         <p className="mt-1 max-w-2xl text-ink-soft">
-          Verziózott, gépiesen olvasható folyamatleírások. A published verzió immutable és pin-elhető;
-          a kötelező kapuk forrása. A draft validálható, jóváhagyásra küldhető, majd approver publikálja.
+          A Playbook egy közös, jóváhagyott folyamatleírás: megmondja, hogy egy adott munkát ki indít,
+          milyen lépéseken kell végigvinni, mikor kell emberi jóváhagyás, és mikor tekinthető késznek.
+          Úgy érdemes rá gondolni, mint a csapat ellenőrzőlistájára, amit az AI agentek és az emberek
+          ugyanabból a forrásból követnek.
         </p>
       </div>
+      <section className="atelier-card p-5">
+        <h2 className="font-display text-lg font-semibold">Mire való és hogyan használd?</h2>
+        <div className="mt-3 grid gap-4 text-sm leading-6 text-ink-soft md:grid-cols-3">
+          <div>
+            <h3 className="font-semibold text-ink">1. Készíts egy vázlatot</h3>
+            <p className="mt-1">
+              A <span className="font-medium text-ink">Létrehozás</span> gombbal hozz létre egy új Playbookot,
+              majd írd le benne a folyamat lépéseit egyszerű, ellenőrizhető szabályokkal.
+            </p>
+          </div>
+          <div>
+            <h3 className="font-semibold text-ink">2. Ellenőriztesd és publikáld</h3>
+            <p className="mt-1">
+              A vázlat még módosítható. Publikálás előtt ellenőrizni kell, hogy a lépések, felelősök és
+              jóváhagyási pontok egyértelműek-e.
+            </p>
+          </div>
+          <div>
+            <h3 className="font-semibold text-ink">3. Használd folyamatindításkor</h3>
+            <p className="mt-1">
+              A publikált verzió rögzül: ha egy ügy vagy ticket ezzel indul el, később is visszakereshető,
+              pontosan melyik szabályrendszer szerint kellett dolgozni.
+            </p>
+          </div>
+        </div>
+      </section>
       {!res.success && (
         <p className="rounded-lg border border-coral/30 bg-coral/10 px-4 py-2 text-sm text-coral">
           Nem sikerült betölteni: {res.error}

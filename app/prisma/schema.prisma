@@ -30,12 +30,33 @@ enum InvitationStatus {
 enum AgentStatus {
   draft
   active
+  suspended
   retired
 }
 
 enum AgentRole {
   worker
   orchestrator
+}
+
+/// Konfigurálható szerep-sablon (Feature-spec §3.5) — a szerep ADAT-konfiguráció,
+/// nem beégetett típus. A `tool_access_allowed` runtime-invariánst a Tool Broker
+/// `authorize()` elsőként nézi (§6); orchestrator = FALSE (tool-less by design).
+/// `tenant_id = NULL` → rendszer-szintű beépített sablon (worker | orchestrator).
+model RoleTemplate {
+  id                   String    @id @default(uuid()) @db.Uuid
+  tenantId             String?   @map("tenant_id") @db.Uuid
+  key                  AgentRole
+  displayName          String    @map("display_name")
+  toolAccessAllowed    Boolean   @map("tool_access_allowed")
+  // worker: tetszőleges capability (["*"]); orchestrator: kizárólag ["ticket:create"].
+  allowedOutbound      Json      @map("allowed_outbound")
+  // Az orchestrator is a write-gate alatt áll (nincs kivételezett státusz).
+  selfEvolutionAllowed Boolean   @map("self_evolution_allowed")
+  createdAt            DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  @@unique([tenantId, key])
+  @@map("role_templates")
 }
 
 enum PlaybookVersionStatus {
@@ -81,6 +102,7 @@ enum ConnectorType {
   gmail
   workspace
   http_api
+  web_search
 }
 
 enum ConnectorAuthMode {
@@ -370,12 +392,20 @@ model Agent {
   currentVersion                Int         @default(1) @map("current_version")
   currentRoleInstructionVersion Int         @default(1) @map("current_role_instruction_version")
   currentBehaviorProfileVersion Int         @default(1) @map("current_behavior_profile_version")
+  // Fázis 2 (§3.4): opcionális hivatkozás egy MEGOSZTOTT viselkedés-profilra. Ha
+  // be van állítva, a `current_behavior_profile_version` a profil pinnelt al-verziója,
+  // és a `behavior_profile` szöveg az elfogadott profil-al-verzió másolata (kaszkád).
+  currentBehaviorProfileId      String?     @map("current_behavior_profile_id") @db.Uuid
   role                          AgentRole   @default(worker)
   selfEvolutionProfile          Json?       @map("self_evolution_profile")
   memoryId                      String      @unique @map("memory_id") @db.Uuid
   createdAt                     DateTime    @default(now()) @map("created_at") @db.Timestamptz
+  // Fázis 2 életciklus (§4): a nyugdíjazás/felfüggesztés audithoz és reprodukálhatósághoz megőrzött.
+  retiredAt                     DateTime?   @map("retired_at") @db.Timestamptz
+  suspendedReason               String?     @map("suspended_reason")
 
   memory             Memory              @relation(fields: [memoryId], references: [id])
+  behaviorProfileRef BehaviorProfile?    @relation(fields: [currentBehaviorProfileId], references: [id])
   versions           AgentVersion[]
   apiKeys            AgentApiKey[]
   agentResources     AgentResource[]
@@ -391,7 +421,38 @@ model Agent {
   conversations      Conversation[]
   retentionPolicies  RetentionPolicy[]
 
+  @@index([currentBehaviorProfileId])
   @@map("agents")
+}
+
+/// Megosztott, újrahasznosítható viselkedés-profil ("hogyan") — több agent hivatkozhatja
+/// (egységes céges hangnem/nyelv/formázás/citálás). Feature-spec §3.4.
+model BehaviorProfile {
+  id             String   @id @default(uuid()) @db.Uuid
+  tenantId       String?  @map("tenant_id") @db.Uuid
+  name           String
+  currentVersion Int      @default(1) @map("current_version")
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  versions BehaviorProfileVersion[]
+  agents   Agent[]
+
+  @@map("behavior_profiles")
+}
+
+model BehaviorProfileVersion {
+  id           String   @id @default(uuid()) @db.Uuid
+  profileId    String   @map("profile_id") @db.Uuid
+  version      Int
+  body         String
+  // A write-gate alá esik (§4.6.1) — a jóváhagyó admin.
+  approvedById String?  @map("approved_by") @db.Uuid
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  profile BehaviorProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
+
+  @@unique([profileId, version])
+  @@map("behavior_profile_versions")
 }
 
 model AgentVersion {
@@ -406,6 +467,8 @@ model AgentVersion {
   modelConfigSnapshot     Json     @map("model_config_snapshot")
   memoryVersionId         String   @map("memory_version_id") @db.Uuid
   recipeVersionId         String?  @map("recipe_version_id") @db.Uuid
+  // A futáskor érvényes önfejlesztési kapu-profil befagyasztása (spec 3.2) — audithoz.
+  selfEvolutionSnapshot   Json?    @map("self_evolution_snapshot")
   createdAt               DateTime @default(now()) @map("created_at") @db.Timestamptz
 
   agent         Agent          @relation(fields: [agentId], references: [id], onDelete: Cascade)
@@ -687,6 +750,7 @@ model AgentApiKey {
   scopes     Json
   status     ApiKeyStatus @default(active)
   createdAt  DateTime     @default(now()) @map("created_at") @db.Timestamptz
+  rotatedAt  DateTime?    @map("rotated_at") @db.Timestamptz
   lastUsedAt DateTime?    @map("last_used_at") @db.Timestamptz
 
   agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
@@ -828,6 +892,7 @@ model AgentConnector {
   agentId     String              @map("agent_id") @db.Uuid
   connectorId String              @map("connector_id") @db.Uuid
   accessMode  ConnectorAccessMode @map("access_mode")
+  secretAlias String?             @map("secret_alias")
 
   agent     Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
   connector Connector @relation(fields: [connectorId], references: [id], onDelete: Cascade)

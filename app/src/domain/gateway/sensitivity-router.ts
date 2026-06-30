@@ -19,6 +19,18 @@ export type SensitivityDecision = {
   matchedCategory?: string
 }
 
+export type SensitivityFinding = {
+  level: SensitivityLevel
+  category: string
+  line: number
+  column: number
+  snippet: string
+}
+
+export type SensitivityInspection = SensitivityDecision & {
+  findings: SensitivityFinding[]
+}
+
 // ── Pattern registry ────────────────────────────────────────────────────────
 
 /** PAN / card number: 13-19 digit sequence, with optional separators. */
@@ -37,9 +49,23 @@ const ADOSZAM_RE = /\b[0-9]{8}-[1-5]-[0-9]{2}\b/
 /** IBAN — ISO 13616, basic structural match. */
 const IBAN_RE = /\b[A-Z]{2}[0-9]{2}[A-Z0-9]{4}[0-9]{7}(?:[A-Z0-9]{0,16})?\b/
 
-/** Password / secret patterns (common env-var–style keys followed by a value). */
-const SECRET_KEY_RE =
-  /(?:password|secret|api[_-]?key|token|auth[_-]?key|private[_-]?key)\s*[:=]\s*\S+/i
+/** Private-key material is never safe to send to external providers. */
+const PRIVATE_KEY_BLOCK_RE = /-----BEGIN [A-Z ]*PRIVATE KEY-----/i
+
+/**
+ * Password / secret assignments. Matching the key is not enough: API docs often
+ * contain headers like `X-Api-Key: your_api_key_here`, which are examples rather
+ * than secrets. We extract the value and assess whether it looks like real
+ * material before blocking.
+ */
+const SECRET_ASSIGNMENT_RE =
+  /(?:password|secret|api[_-]?key|token|auth[_-]?key|private[_-]?key)\s*[:=]\s*["'`]?([^\s"'`,;]+)/gi
+
+const PLACEHOLDER_SECRET_RE =
+  /^(?:<[^>]+>|\{[^}]+\}|\[[^\]]+\]|(?:your|example|sample|demo|dummy|test|fake|placeholder|replace|changeme|change_me|todo|xxx|xxxx|redacted|masked|here|api[_-]?key|token|secret|password|key|value)(?:[_-](?:your|example|sample|demo|dummy|test|fake|placeholder|replace|changeme|change_me|todo|xxx|xxxx|redacted|masked|here|api[_-]?key|token|secret|password|key|value))*)$/i
+
+const COMMON_SECRET_VALUE_RE =
+  /^(?:sk-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,}|xox[baprs]-[A-Za-z0-9-]{20,}|AKIA[0-9A-Z]{16}|ASIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/
 
 /** Email address (basic RFC-5322 local@domain). */
 const EMAIL_RE = /\b[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}\b/
@@ -51,7 +77,6 @@ const FORBIDDEN_PATTERNS: Array<{ re: RegExp; category: string }> = [
   { re: PAN_RE, category: 'pan' },
   { re: CARD_BROAD_RE, category: 'card_broad' },
   { re: IBAN_RE, category: 'iban' },
-  { re: SECRET_KEY_RE, category: 'secret_key' },
 ]
 
 const SENSITIVE_PATTERNS: Array<{ re: RegExp; category: string }> = [
@@ -69,24 +94,143 @@ function extractText(messages: Array<{ role: string; content?: string | null }>)
     .join('\n')
 }
 
+function positionOf(text: string, index: number): { line: number; column: number } {
+  const before = text.slice(0, Math.max(0, index))
+  const lines = before.split('\n')
+  return { line: lines.length, column: lines[lines.length - 1].length + 1 }
+}
+
+function lineSnippet(text: string, index: number): string {
+  const start = text.lastIndexOf('\n', Math.max(0, index - 1)) + 1
+  const next = text.indexOf('\n', index)
+  const end = next === -1 ? text.length : next
+  const line = text.slice(start, end).trim()
+  return maskSecretAssignments(line).slice(0, 180)
+}
+
+function maskSecretAssignments(text: string): string {
+  SECRET_ASSIGNMENT_RE.lastIndex = 0
+  return text.replace(SECRET_ASSIGNMENT_RE, (full, value: string) =>
+    full.replace(value, maskSecretValue(value)),
+  )
+}
+
+function maskSecretValue(value: string): string {
+  const normalized = normalizeSecretValue(value)
+  if (normalized.length <= 8) return '***'
+  return `${normalized.slice(0, 3)}…${normalized.slice(-3)}`
+}
+
+function normalizeSecretValue(value: string): string {
+  return value.trim().replace(/^[<[{("'`]+|[>\])}."'`,;:]+$/g, '')
+}
+
+function isPlaceholderSecretValue(value: string): boolean {
+  const normalized = normalizeSecretValue(value)
+  if (!normalized) return true
+  if (PLACEHOLDER_SECRET_RE.test(normalized)) return true
+
+  const lower = normalized.toLowerCase()
+  return (
+    lower.includes('your_') ||
+    lower.includes('_here') ||
+    lower.includes('example') ||
+    lower.includes('placeholder') ||
+    lower.includes('redacted')
+  )
+}
+
+function hasHighEntropyShape(value: string): boolean {
+  const normalized = normalizeSecretValue(value)
+  if (COMMON_SECRET_VALUE_RE.test(normalized)) return true
+  if (normalized.length < 16) return false
+
+  const hasLower = /[a-z]/.test(normalized)
+  const hasUpper = /[A-Z]/.test(normalized)
+  const hasDigit = /[0-9]/.test(normalized)
+  const hasSymbol = /[^A-Za-z0-9]/.test(normalized)
+  const classes = [hasLower, hasUpper, hasDigit, hasSymbol].filter(Boolean).length
+
+  return classes >= 3 && !/(.)\1{5,}/.test(normalized)
+}
+
+function findingOf(
+  text: string,
+  index: number,
+  level: SensitivityLevel,
+  category: string,
+): SensitivityFinding {
+  return {
+    level,
+    category,
+    ...positionOf(text, index),
+    snippet: lineSnippet(text, index),
+  }
+}
+
+function detectSecretKeyFindings(text: string): SensitivityFinding[] {
+  SECRET_ASSIGNMENT_RE.lastIndex = 0
+  const findings: SensitivityFinding[] = []
+
+  const privateKey = PRIVATE_KEY_BLOCK_RE.exec(text)
+  if (privateKey?.index != null) {
+    findings.push(findingOf(text, privateKey.index, 'forbidden', 'secret_key'))
+  }
+
+  for (const match of text.matchAll(SECRET_ASSIGNMENT_RE)) {
+    const value = match[1] ?? ''
+    if (isPlaceholderSecretValue(value)) continue
+    if (hasHighEntropyShape(value)) {
+      findings.push(findingOf(text, match.index ?? 0, 'forbidden', 'secret_key'))
+    }
+  }
+
+  return findings
+}
+
+function detectPatternFindings(
+  text: string,
+  level: SensitivityLevel,
+  patterns: Array<{ re: RegExp; category: string }>,
+): SensitivityFinding[] {
+  const findings: SensitivityFinding[] = []
+  for (const { re, category } of patterns) {
+    const match = re.exec(text)
+    if (match?.index != null) {
+      findings.push(findingOf(text, match.index, level, category))
+    }
+  }
+  return findings
+}
+
+function strongestLevel(findings: SensitivityFinding[]): SensitivityLevel {
+  if (findings.some((f) => f.level === 'forbidden')) return 'forbidden'
+  if (findings.some((f) => f.level === 'sensitive')) return 'sensitive'
+  return 'clean'
+}
+
+export function inspectPromptSensitivity(
+  messages: Array<{ role: string; content?: string | null }>,
+): SensitivityInspection {
+  const text = extractText(messages)
+  const findings = [
+    ...detectSecretKeyFindings(text),
+    ...detectPatternFindings(text, 'forbidden', FORBIDDEN_PATTERNS),
+    ...detectPatternFindings(text, 'sensitive', SENSITIVE_PATTERNS),
+  ]
+  const level = strongestLevel(findings)
+  return {
+    level,
+    matchedCategory: findings.find((f) => f.level === level)?.category,
+    findings,
+  }
+}
+
 export function classifyPrompt(
   messages: Array<{ role: string; content?: string | null }>,
 ): SensitivityDecision {
-  const text = extractText(messages)
-
-  for (const { re, category } of FORBIDDEN_PATTERNS) {
-    if (re.test(text)) {
-      return { level: 'forbidden', matchedCategory: category }
-    }
-  }
-
-  for (const { re, category } of SENSITIVE_PATTERNS) {
-    if (re.test(text)) {
-      return { level: 'sensitive', matchedCategory: category }
-    }
-  }
-
-  return { level: 'clean' }
+  const { level, matchedCategory } = inspectPromptSensitivity(messages)
+  return { level, matchedCategory }
 }
 
 // ── Policy enforcement ───────────────────────────────────────────────────────

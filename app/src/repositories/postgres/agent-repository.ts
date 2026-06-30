@@ -4,7 +4,14 @@ import { randomBytes } from 'crypto'
 import { prisma } from '@/lib/db'
 import { ensureAgentKnowledgeBase } from '@/lib/agent-knowledge-base'
 import { selfEvolutionProfileSchema } from '@/lib/self-evolution-profile'
+import { assertTransition, isPhysicallyDeletable } from '@/lib/agent-lifecycle'
 import type { AgentRepository, DocumentRepository } from '../interfaces'
+
+function serviceAccountScopesForRole(role: Agent['role']): string[] {
+  return role === 'orchestrator'
+    ? ['ticket:create']
+    : ['ticket:read', 'ticket:create', 'tool:invoke']
+}
 
 export class PostgresAgentRepository implements AgentRepository {
   async findMany(): Promise<Agent[]> {
@@ -27,6 +34,7 @@ export class PostgresAgentRepository implements AgentRepository {
         },
         agentResources: { include: { resource: true } },
         apiKeys: { where: { status: 'active' }, take: 1 },
+        behaviorProfileRef: { select: { id: true, name: true, currentVersion: true } },
       },
     })
 
@@ -60,6 +68,17 @@ export class PostgresAgentRepository implements AgentRepository {
         accessMode: ar.accessMode,
       })),
       apiKeyPreview: agent.apiKeys[0] ? 'cp_sk_•••••••• (scoped)' : null,
+      // §3.4 kaszkád: ha az agent megosztott viselkedés-profilra hivatkozik, felhozzuk
+      // a profil aktuális al-verzióját, hogy a detail-oldal jelezni tudja, ha az agent
+      // pinnelt verziója elavult, és felkínálja a befogadást (acceptBehaviorProfileUpdate).
+      behaviorProfileLink: agent.behaviorProfileRef
+        ? {
+            id: agent.behaviorProfileRef.id,
+            name: agent.behaviorProfileRef.name,
+            currentVersion: agent.behaviorProfileRef.currentVersion,
+            pinnedVersion: agent.currentBehaviorProfileVersion,
+          }
+        : null,
     }
   }
 
@@ -100,6 +119,7 @@ export class PostgresAgentRepository implements AgentRepository {
     selfEvolutionProfile?: Agent['selfEvolutionProfile']
     initialMemory?: string
     createdById: string
+    status?: Agent['status']
   }) {
     const memory = await prisma.memory.create({ data: {} })
 
@@ -124,13 +144,14 @@ export class PostgresAgentRepository implements AgentRepository {
       ? (selfEvolutionProfileSchema.parse(input.selfEvolutionProfile) as Prisma.InputJsonValue)
       : undefined
 
+    const status = input.status ?? 'active'
     const agent = await prisma.agent.create({
       data: {
         name: input.name,
         roleInstruction: input.roleInstruction,
         behaviorProfile: input.behaviorProfile,
         modelConfig: input.modelConfig as Prisma.InputJsonValue,
-        status: 'active',
+        status,
         role: agentRole,
         selfEvolutionProfile,
         currentVersion: 1,
@@ -140,25 +161,31 @@ export class PostgresAgentRepository implements AgentRepository {
       },
     })
 
-    await prisma.agentVersion.create({
-      data: {
-        agentId: agent.id,
-        version: 1,
-        roleInstructionSnapshot: input.roleInstruction,
-        behaviorProfileSnapshot: input.behaviorProfile,
-        roleInstructionVersion: 1,
-        behaviorProfileVersion: 1,
-        modelConfigSnapshot: input.modelConfig as Prisma.InputJsonValue,
-        memoryVersionId: memoryVersion.id,
-      },
-    })
+    // §4/I2: a `draft` agentnek MÉG nincs reprodukálhatósági snapshotja — azt az
+    // `activate` fagyasztja be. Aktívan létrehozott (walking-skeleton) agentnek
+    // viszont azonnal kell egy v1 snapshot.
+    if (status !== 'draft') {
+      await prisma.agentVersion.create({
+        data: {
+          agentId: agent.id,
+          version: 1,
+          roleInstructionSnapshot: input.roleInstruction,
+          behaviorProfileSnapshot: input.behaviorProfile,
+          roleInstructionVersion: 1,
+          behaviorProfileVersion: 1,
+          modelConfigSnapshot: input.modelConfig as Prisma.InputJsonValue,
+          memoryVersionId: memoryVersion.id,
+          selfEvolutionSnapshot: selfEvolutionProfile,
+        },
+      })
+    }
 
     const rawKey = `cp_sk_${randomBytes(16).toString('hex')}`
     await prisma.agentApiKey.create({
       data: {
         agentId: agent.id,
         keyHash: await bcrypt.hash(rawKey, 10),
-        scopes: ['ticket:read', 'ticket:create', 'tool:invoke'],
+        scopes: serviceAccountScopesForRole(agentRole),
         status: 'active',
       },
     })
@@ -174,12 +201,14 @@ export class PostgresAgentRepository implements AgentRepository {
       })
     }
 
-    for (const toolName of ['ticket_create', 'agent_ask', 'agent_resolve', 'agent_catalog']) {
-      await prisma.capability.upsert({
-        where: { agentId_toolName: { agentId: agent.id, toolName } },
-        create: { agentId: agent.id, toolName, allowed: true },
-        update: { allowed: true },
-      })
+    if (agentRole === 'worker') {
+      for (const toolName of ['ticket_create', 'agent_ask', 'agent_resolve', 'agent_catalog']) {
+        await prisma.capability.upsert({
+          where: { agentId_toolName: { agentId: agent.id, toolName } },
+          create: { agentId: agent.id, toolName, allowed: true },
+          update: { allowed: true },
+        })
+      }
     }
 
     await ensureAgentKnowledgeBase(agent)
@@ -300,9 +329,182 @@ export class PostgresAgentRepository implements AgentRepository {
     })
   }
 
+  async rotateApiKey(agentId: string) {
+    const agent = await prisma.agent.findUnique({ where: { id: agentId } })
+    if (!agent) throw new Error('Agent not found')
+
+    const rawKey = `cp_sk_${randomBytes(16).toString('hex')}`
+    const scopes = serviceAccountScopesForRole(agent.role)
+    const now = new Date()
+
+    const created = await prisma.$transaction(async (tx) => {
+      await tx.agentApiKey.updateMany({
+        where: { agentId, status: 'active' },
+        data: { status: 'revoked', rotatedAt: now },
+      })
+      return tx.agentApiKey.create({
+        data: {
+          agentId,
+          keyHash: await bcrypt.hash(rawKey, 10),
+          scopes,
+          status: 'active',
+          rotatedAt: now,
+        },
+      })
+    })
+
+    return { keyId: created.id, apiKey: rawKey, scopes }
+  }
+
+  async revokeApiKey(keyId: string) {
+    const existing = await prisma.agentApiKey.findUnique({ where: { id: keyId } })
+    if (!existing) throw new Error('Agent API key not found')
+
+    const revoked = await prisma.agentApiKey.update({
+      where: { id: keyId },
+      data: { status: 'revoked', rotatedAt: new Date() },
+    })
+
+    return { keyId: revoked.id, agentId: revoked.agentId }
+  }
+
+  /**
+   * Megosztott viselkedés-profil frissítésének BEFOGADÁSA (§3.4 kaszkád, I7).
+   * Explicit admin-művelet: a hivatkozó agent élő viselkedését a profil adott
+   * al-verziójára állítja, ÉS új `agent_versions` snapshotot fagyaszt — így a
+   * megosztott profil módosítása sem okoz csendes driftet a hivatkozókon.
+   */
+  async acceptBehaviorProfileUpdate(input: {
+    agentId: string
+    profileId: string
+    profileVersion: number
+    profileBody: string
+  }) {
+    const agent = await prisma.agent.findUnique({ where: { id: input.agentId } })
+    if (!agent) throw new Error('Agent not found')
+
+    const currentVersion = await prisma.agentVersion.findUnique({
+      where: { agentId_version: { agentId: agent.id, version: agent.currentVersion } },
+    })
+    if (!currentVersion) throw new Error('Current agent version snapshot missing')
+
+    const nextAgentVersion = agent.currentVersion + 1
+
+    await prisma.$transaction([
+      prisma.agentVersion.create({
+        data: {
+          agentId: agent.id,
+          version: nextAgentVersion,
+          roleInstructionSnapshot: agent.roleInstruction,
+          behaviorProfileSnapshot: input.profileBody,
+          roleInstructionVersion: agent.currentRoleInstructionVersion,
+          behaviorProfileVersion: input.profileVersion,
+          modelConfigSnapshot: currentVersion.modelConfigSnapshot as Prisma.InputJsonValue,
+          memoryVersionId: currentVersion.memoryVersionId,
+          recipeVersionId: currentVersion.recipeVersionId,
+          selfEvolutionSnapshot: (agent.selfEvolutionProfile ?? undefined) as Prisma.InputJsonValue | undefined,
+        },
+      }),
+      prisma.agent.update({
+        where: { id: agent.id },
+        data: {
+          behaviorProfile: input.profileBody,
+          currentBehaviorProfileId: input.profileId,
+          currentBehaviorProfileVersion: input.profileVersion,
+          currentVersion: nextAgentVersion,
+        },
+      }),
+    ])
+
+    return { agentVersion: nextAgentVersion, behaviorProfileVersion: input.profileVersion }
+  }
+
+  /**
+   * draft → active (§4): befagyasztja az első reprodukálhatósági snapshotot
+   * (szerep + viselkedés + modell + memória + önfejlesztési profil), és aktívvá
+   * teszi az agentet. Csak `draft`-ból hívható (állapotgép-invariáns).
+   */
+  async activate(agentId: string) {
+    const agent = await prisma.agent.findUnique({ where: { id: agentId } })
+    if (!agent) throw new Error('Agent not found')
+    assertTransition(agent.status, 'active')
+
+    const memory = await prisma.memory.findUnique({ where: { id: agent.memoryId } })
+    if (!memory?.currentVersionId) throw new Error('Agent memory version missing')
+
+    const existing = await prisma.agentVersion.findFirst({
+      where: { agentId: agent.id },
+      orderBy: { version: 'desc' },
+    })
+    const version = existing ? existing.version + 1 : agent.currentVersion
+
+    await prisma.$transaction([
+      prisma.agentVersion.create({
+        data: {
+          agentId: agent.id,
+          version,
+          roleInstructionSnapshot: agent.roleInstruction,
+          behaviorProfileSnapshot: agent.behaviorProfile,
+          roleInstructionVersion: agent.currentRoleInstructionVersion,
+          behaviorProfileVersion: agent.currentBehaviorProfileVersion,
+          modelConfigSnapshot: agent.modelConfig as Prisma.InputJsonValue,
+          memoryVersionId: memory.currentVersionId,
+          selfEvolutionSnapshot: (agent.selfEvolutionProfile ?? undefined) as Prisma.InputJsonValue | undefined,
+        },
+      }),
+      prisma.agent.update({
+        where: { id: agent.id },
+        data: { status: 'active', currentVersion: version },
+      }),
+    ])
+
+    return { agent: await prisma.agent.findUniqueOrThrow({ where: { id: agent.id } }), agentVersion: version }
+  }
+
+  /** active → suspended (§4): új dispatch tiltott, a meglévő futások kifutnak. */
+  async suspend(agentId: string, reason: string) {
+    const agent = await prisma.agent.findUnique({ where: { id: agentId } })
+    if (!agent) throw new Error('Agent not found')
+    assertTransition(agent.status, 'suspended')
+    return prisma.agent.update({
+      where: { id: agentId },
+      data: { status: 'suspended', suspendedReason: reason },
+    })
+  }
+
+  /** suspended → active (§4): nincs új snapshot, ha a konfiguráció nem változott. */
+  async resume(agentId: string) {
+    const agent = await prisma.agent.findUnique({ where: { id: agentId } })
+    if (!agent) throw new Error('Agent not found')
+    assertTransition(agent.status, 'active')
+    return prisma.agent.update({
+      where: { id: agentId },
+      data: { status: 'active', suspendedReason: null },
+    })
+  }
+
+  /** active|suspended → retired (§4): terminális; a verziólánc megőrződik. */
+  async retire(agentId: string) {
+    const agent = await prisma.agent.findUnique({ where: { id: agentId } })
+    if (!agent) throw new Error('Agent not found')
+    assertTransition(agent.status, 'retired')
+    return prisma.agent.update({
+      where: { id: agentId },
+      data: { status: 'retired', retiredAt: new Date() },
+    })
+  }
+
   async delete(agentId: string) {
     const agent = await prisma.agent.findUnique({ where: { id: agentId } })
     if (!agent) throw new Error('Agent not found')
+
+    // I3: aktivált/felfüggesztett/nyugdíjazott agent fizikailag NEM törölhető —
+    // a múltbeli munkák attribútálhatósága megőrzendő; csak `retire` engedett.
+    if (!isPhysicallyDeletable(agent.status)) {
+      throw new Error(
+        `Aktivált agent nem törölhető (status=${agent.status}); csak nyugdíjazható (retire).`,
+      )
+    }
 
     const memoryId = agent.memoryId
 

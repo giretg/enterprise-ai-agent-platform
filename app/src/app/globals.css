@@ -11,6 +11,8 @@
   --color-night-2: #f1e8d6;    /* recessed cream (inputs, wells) */
   --color-card: #fffdf8;       /* primary card — warm white */
   --color-card-2: #fbf4e6;     /* secondary card / hover cream */
+  --color-paper: #fffdf8;      /* alias — input / form surfaces */
+  --color-wash: #eef4ec;       /* recessed well tint */
   --color-line: #e8dcc4;       /* hairline border, warm sand */
 
   /* ── Ink: deep wine-brown reading colour ─────────────────────── */

@@ -1,13 +1,13 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState, useTransition } from 'react'
+import { type ChangeEvent, useCallback, useEffect, useMemo, useState, useTransition } from 'react'
 import { Badge, Card } from '@/components/ui/shell'
 import {
   activateConnector,
   assignConnectorToAgent,
   createConnectorDraft,
   draftConfigFromApiDoc,
-  listConnectorCatalog,
+  listProvisioningAssignableAgents,
   listProvisioningDrafts,
   reviewConnectorDraft,
   testConnectorDraft,
@@ -53,6 +53,27 @@ type DraftRow = {
   sourceHash: string
   createdAt: string | Date
 }
+type AgentOption = {
+  id: string
+  name: string
+}
+type SensitivityFinding = {
+  level: 'clean' | 'sensitive' | 'forbidden'
+  category: string
+  line: number
+  column: number
+  snippet: string
+}
+type DraftConfigFromDocData =
+  | { config: DraftConfig; requiresSensitivityReview: false }
+  | {
+      requiresSensitivityReview: true
+      sensitivity: {
+        level: 'forbidden'
+        matchedCategory?: string
+        findings: SensitivityFinding[]
+      }
+    }
 
 const EXAMPLE_CONFIG = JSON.stringify(
   {
@@ -76,6 +97,26 @@ const EXAMPLE_CONFIG = JSON.stringify(
   2,
 )
 
+const API_DOC_FILE_EXTENSIONS = [
+  '.json',
+  '.yaml',
+  '.yml',
+  '.md',
+  '.markdown',
+  '.txt',
+  '.html',
+  '.htm',
+  '.xml',
+  '.wsdl',
+  '.raml',
+  '.apib',
+  '.graphql',
+  '.gql',
+  '.har',
+] as const
+const API_DOC_FILE_ACCEPT = API_DOC_FILE_EXTENSIONS.join(',')
+const MAX_API_DOC_FILE_BYTES = 2 * 1024 * 1024
+
 function statusTone(s?: CheckStatus): 'neutral' | 'success' | 'warning' | 'danger' {
   if (s === 'passed') return 'success'
   if (s === 'warned') return 'warning'
@@ -96,7 +137,7 @@ function lifecycleTone(s: string): 'neutral' | 'success' | 'warning' | 'danger' 
 
 export function ProvisioningPanel() {
   const [drafts, setDrafts] = useState<DraftRow[]>([])
-  const [catalog, setCatalog] = useState<Array<{ id: string; type: string; name: string }>>([])
+  const [agents, setAgents] = useState<AgentOption[]>([])
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [loadedOnce, setLoadedOnce] = useState(false)
@@ -109,14 +150,16 @@ export function ProvisioningPanel() {
 
   // F2-P-F: doksi → config-jelölt generálás állapota
   const [docText, setDocText] = useState('')
+  const [docSourceRef, setDocSourceRef] = useState<string | null>(null)
+  const [sensitivityFindings, setSensitivityFindings] = useState<SensitivityFinding[]>([])
   const [generating, setGenerating] = useState(false)
 
   const reload = useCallback(() => {
     startTransition(async () => {
-      const [d, c] = await Promise.all([listProvisioningDrafts(), listConnectorCatalog()])
+      const [d, a] = await Promise.all([listProvisioningDrafts(), listProvisioningAssignableAgents()])
       if (d.success) setDrafts(d.data as DraftRow[])
       else setError(d.error)
-      if (c.success) setCatalog(c.data)
+      if (a.success) setAgents(a.data)
       setLoadedOnce(true)
     })
   }, [])
@@ -142,7 +185,7 @@ export function ProvisioningPanel() {
     [reload],
   )
 
-  const onGenerate = useCallback(() => {
+  const onGenerate = useCallback((sensitivityReviewAccepted = false) => {
     setError(null)
     setNotice(null)
     setGenerating(true)
@@ -150,10 +193,21 @@ export function ProvisioningPanel() {
       const res = await draftConfigFromApiDoc({
         docText,
         providerHint: name.trim() || undefined,
+        sensitivityReviewAccepted,
       })
       setGenerating(false)
       if (res.success) {
-        setConfigText(JSON.stringify(res.data.config, null, 2))
+        const data = res.data as DraftConfigFromDocData
+        if (data.requiresSensitivityReview) {
+          setSensitivityFindings(data.sensitivity.findings)
+          setNotice(null)
+          return
+        }
+        setSensitivityFindings([])
+        setConfigText(JSON.stringify(data.config, null, 2))
+        if (!name.trim() && data.config?.provider) {
+          setName(data.config.provider)
+        }
         setNotice(
           'Config-jelölt generálva. Nézd át, majd hozd létre a draftot — a validátor a létrehozás után dönt.',
         )
@@ -162,6 +216,55 @@ export function ProvisioningPanel() {
       }
     })
   }, [docText, name])
+
+  const onApiDocFileChange = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file) return
+
+    setError(null)
+    setNotice(null)
+
+    const normalizedName = file.name.toLowerCase()
+    const supported = API_DOC_FILE_EXTENSIONS.some((ext) => normalizedName.endsWith(ext))
+    if (!supported) {
+      setDocSourceRef(null)
+      setError(
+        `Nem támogatott API-doksi fájltípus. Támogatott: ${API_DOC_FILE_EXTENSIONS.join(', ')}`,
+      )
+      e.target.value = ''
+      return
+    }
+    if (file.size > MAX_API_DOC_FILE_BYTES) {
+      setDocSourceRef(null)
+      setError('A fájl túl nagy. Legfeljebb 2 MB-os API-dokumentáció tölthető be.')
+      e.target.value = ''
+      return
+    }
+
+    try {
+      const text = await file.text()
+      if (!text.trim()) {
+        setDocSourceRef(null)
+        setError('A kiválasztott fájl üres.')
+        e.target.value = ''
+        return
+      }
+      setDocText(text)
+      setDocSourceRef(file.name)
+      setSensitivityFindings([])
+      if (/(openapi|swagger)/.test(normalizedName)) {
+        setSourceType('openapi')
+      } else {
+        setSourceType('api_doc')
+      }
+      setNotice(`${file.name} betöltve. A tartalom a generálási mezőbe került.`)
+    } catch {
+      setDocSourceRef(null)
+      setError('Nem sikerült beolvasni a fájlt.')
+    } finally {
+      e.target.value = ''
+    }
+  }, [])
 
   const onCreate = useCallback(() => {
     let parsed: unknown
@@ -176,11 +279,23 @@ export function ProvisioningPanel() {
         createConnectorDraft({
           name,
           sourceType,
+          sourceRef: docSourceRef ?? undefined,
+          sourceContent: docText.trim() || undefined,
           generatedConfig: parsed,
         }),
       'Draft létrehozva.',
     )
-  }, [configText, name, sourceType, run])
+  }, [configText, docSourceRef, docText, name, sourceType, run])
+
+  const openDrafts = drafts.filter((d) => d.lifecycleState !== 'active')
+  const activatedDrafts = drafts.filter((d) => d.lifecycleState === 'active')
+  const createDisabledReason = pending
+    ? 'Folyamatban lévő művelet miatt várakozik.'
+    : !name.trim()
+      ? 'Adj nevet a draft connectornak.'
+      : !configText.trim()
+        ? 'Előbb generálj vagy adj meg config-deskriptort.'
+        : null
 
   return (
     <div className="space-y-6">
@@ -233,20 +348,79 @@ export function ProvisioningPanel() {
             Generálás API-doksiból (provisioning-asszisztens)
           </span>
           <p className="mb-2 text-xs text-ink-soft">
-            Illeszd be az API-dokumentációt — az asszisztens <strong>adatként</strong> dolgozza
-            fel (nem utasításként), és config-jelöltet ad vissza. Ez még <em>nem</em> draft: a
-            jelölt a lenti JSON-mezőbe kerül, te nézed át és hozod létre.
+            Illeszd be vagy töltsd fel az API-dokumentációt — az asszisztens{' '}
+            <strong>adatként</strong> dolgozza fel (nem utasításként), és config-jelöltet ad
+            vissza. Ez még <em>nem</em> draft: a jelölt a lenti JSON-mezőbe kerül, te nézed át és
+            hozod létre.
           </p>
+          <div className="mb-2 flex flex-col gap-1 text-xs text-ink-soft sm:flex-row sm:items-center sm:justify-between">
+            <label className="inline-flex w-fit cursor-pointer items-center rounded-md border border-ink/15 bg-paper px-3 py-1.5 font-semibold text-ink hover:border-sage/50">
+              <span>API-doksi fájl feltöltése</span>
+              <input
+                type="file"
+                accept={API_DOC_FILE_ACCEPT}
+                onChange={onApiDocFileChange}
+                className="sr-only"
+              />
+            </label>
+            <span>
+              Támogatott: OpenAPI/Swagger JSON vagy YAML, Postman, RAML, API Blueprint, GraphQL,
+              WSDL/XML, HAR, Markdown/HTML/TXT.
+            </span>
+          </div>
           <textarea
             className="h-32 w-full rounded-md border border-ink/15 bg-paper px-3 py-2 font-mono text-xs"
             value={docText}
-            onChange={(e) => setDocText(e.target.value)}
+            onChange={(e) => {
+              setDocText(e.target.value)
+              setDocSourceRef(null)
+              setSensitivityFindings([])
+            }}
             placeholder="Pl. 'Acme CRM API. Base URL: https://api.acme-crm.example. GET /v1/contacts — list contacts (scope: contacts.read)…'"
           />
+          {docSourceRef ? (
+            <p className="mt-1 text-xs text-ink-soft">Betöltött fájl: {docSourceRef}</p>
+          ) : null}
+          {sensitivityFindings.length > 0 ? (
+            <div className="mt-2 rounded-md border border-honey/40 bg-honey/10 p-3 text-xs text-ink">
+              <p className="font-semibold text-honey">
+                A Gateway kockázatos mintát talált a dokumentumban.
+              </p>
+              <p className="mt-1 text-ink-soft">
+                Ellenőrizd, hogy ezek valódi secret/érzékeny adatok-e. A részletek maszkolva
+                jelennek meg; jóváhagyás esetén a döntés auditálva lesz.
+              </p>
+              <div className="mt-2 space-y-1">
+                {sensitivityFindings.map((finding, index) => (
+                  <div
+                    key={`${finding.category}-${finding.line}-${finding.column}-${index}`}
+                    className="rounded border border-honey/30 bg-paper px-2 py-1"
+                  >
+                    <span className="font-semibold">{finding.category}</span>
+                    <span className="text-ink-soft">
+                      {' '}
+                      - {finding.line}. sor, {finding.column}. oszlop
+                    </span>
+                    <code className="mt-1 block break-all font-mono text-[11px] text-ink-soft">
+                      {finding.snippet}
+                    </code>
+                  </div>
+                ))}
+              </div>
+              <button
+                type="button"
+                disabled={pending || generating}
+                onClick={() => onGenerate(true)}
+                className="mt-2 rounded-md border border-honey/50 bg-paper px-3 py-1.5 font-semibold text-honey disabled:opacity-50"
+              >
+                Átnéztem, nem tartalmaz valódi secretet
+              </button>
+            </div>
+          ) : null}
           <button
             type="button"
             disabled={pending || generating || !docText.trim()}
-            onClick={onGenerate}
+            onClick={() => onGenerate(false)}
             className="mt-2 rounded-md border border-sage/40 bg-sage/10 px-3 py-1.5 text-xs font-semibold text-sage disabled:opacity-50"
           >
             {generating ? 'Generálás…' : 'Config-jelölt generálása'}
@@ -276,26 +450,49 @@ export function ProvisioningPanel() {
         </p>
         <button
           type="button"
-          disabled={pending || !name.trim() || !configText.trim()}
+          disabled={!!createDisabledReason}
           onClick={onCreate}
-          className="mt-3 rounded-md bg-ink px-4 py-2 text-sm font-semibold text-paper disabled:opacity-50"
+          className="mt-3 rounded-md bg-ink px-4 py-2 text-sm font-semibold text-card disabled:opacity-50"
         >
           Draft létrehozása
         </button>
+        {createDisabledReason ? (
+          <p className="mt-2 text-xs text-ink-soft">{createDisabledReason}</p>
+        ) : null}
       </Card>
 
-      <Card title={`Draftok (${drafts.length})`}>
+      <Card title={`Draftok (${openDrafts.length})`}>
         {!loadedOnce ? (
           <p className="text-sm text-ink-soft">Betöltés…</p>
-        ) : drafts.length === 0 ? (
+        ) : openDrafts.length === 0 ? (
           <p className="text-sm text-ink-soft">Még nincs draft connector.</p>
         ) : (
           <div className="space-y-3">
-            {drafts.map((d) => (
+            {openDrafts.map((d) => (
               <DraftCard
                 key={d.draftId}
                 draft={d}
-                agents={catalog}
+                agents={agents}
+                pending={pending}
+                run={run}
+              />
+            ))}
+          </div>
+        )}
+      </Card>
+
+      <Card title={`Aktivált provisioning-kapcsolatok (${activatedDrafts.length})`}>
+        {!loadedOnce ? (
+          <p className="text-sm text-ink-soft">Betöltés…</p>
+        ) : activatedDrafts.length === 0 ? (
+          <p className="text-sm text-ink-soft">Nincs provisioningből aktivált kapcsolat.</p>
+        ) : (
+          <div className="space-y-3">
+            {activatedDrafts.map((d) => (
+              <DraftCard
+                key={d.draftId}
+                draft={d}
+                agents={agents}
                 pending={pending}
                 run={run}
               />
@@ -309,20 +506,23 @@ export function ProvisioningPanel() {
 
 function DraftCard({
   draft,
+  agents,
   pending,
   run,
 }: {
   draft: DraftRow
-  agents: Array<{ id: string; type: string; name: string }>
+  agents: AgentOption[]
   pending: boolean
   run: (fn: () => Promise<{ success: boolean; error?: string }>, okMsg: string) => void
 }) {
   const [open, setOpen] = useState(false)
   const [secretAlias, setSecretAlias] = useState(draft.secretAliasSuggested ?? '')
+  const [apiKey, setApiKey] = useState('')
   const [approverId, setApproverId] = useState('')
   const [criticality, setCriticality] = useState<'L1' | 'L2' | 'L3'>('L1')
   const [agentId, setAgentId] = useState('')
   const [accessMode, setAccessMode] = useState<'read' | 'write'>('read')
+  const [agentApiKey, setAgentApiKey] = useState('')
 
   const v = draft.validationResult
   const cfg = draft.config
@@ -330,6 +530,7 @@ function DraftCard({
     () => (cfg?.proposedTools ?? []).filter((t) => t.access === 'write'),
     [cfg],
   )
+  const selectedAgent = agents.find((agent) => agent.id === agentId)
 
   return (
     <div className="rounded-lg border border-ink/12 bg-paper">
@@ -511,7 +712,24 @@ function DraftCard({
               type="button"
               disabled={pending}
               onClick={() =>
-                run(() => testConnectorDraft({ draftId: draft.draftId }), 'Sandbox-teszt lefutott.')
+                run(async () => {
+                  const res = await testConnectorDraft({ draftId: draft.draftId })
+                  if (!res.success) return { success: false, error: res.error ?? 'Sandbox-teszt sikertelen' }
+                  const body = res.data as { ok?: boolean; detail?: string; statusCode?: number }
+                  if (!body.ok) {
+                    const extra = [
+                      body.detail,
+                      body.statusCode != null ? `HTTP ${body.statusCode}` : null,
+                    ]
+                      .filter(Boolean)
+                      .join(' · ')
+                    return {
+                      success: false,
+                      error: `Sandbox-teszt sikertelen${extra ? `: ${extra}` : ''}`,
+                    }
+                  }
+                  return { success: true }
+                }, 'Sandbox-teszt sikeres.')
               }
               className="rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold disabled:opacity-50"
             >
@@ -523,14 +741,27 @@ function DraftCard({
           {draft.lifecycleState !== 'active' ? (
             <div className="rounded-md border border-ink/12 bg-wash/40 p-3">
               <h4 className="mb-2 font-semibold">Aktiválás (emberi admin-aktus)</h4>
-              <div className="grid gap-2 sm:grid-cols-3">
+              <div className="grid gap-2 sm:grid-cols-2">
                 <label className="text-xs">
-                  <span className="mb-1 block text-ink-soft">Secret-alias</span>
+                  <span className="mb-1 block text-ink-soft">API kulcs</span>
                   <input
+                    type="password"
                     className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                    placeholder="Kulcs megadása → auto secret-ref"
+                  />
+                </label>
+                <label className="text-xs">
+                  <span className="mb-1 block text-ink-soft">
+                    Secret-alias{apiKey.trim() ? ' (felülírva, ha kulcsot adsz meg)' : ''}
+                  </span>
+                  <input
+                    className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5 disabled:opacity-40"
                     value={secretAlias}
                     onChange={(e) => setSecretAlias(e.target.value)}
                     placeholder="acme-crm-service-key"
+                    disabled={!!apiKey.trim()}
                   />
                 </label>
                 <label className="text-xs">
@@ -557,20 +788,22 @@ function DraftCard({
               </div>
               <button
                 type="button"
-                disabled={pending || !secretAlias.trim()}
+                disabled={pending || (!apiKey.trim() && !secretAlias.trim())}
                 onClick={() =>
                   run(
                     () =>
                       activateConnector({
                         draftId: draft.draftId,
-                        secretAlias,
+                        ...(apiKey.trim()
+                          ? { apiKey: apiKey.trim() }
+                          : { secretAlias: secretAlias.trim() }),
                         criticality,
                         approverId: approverId.trim() || undefined,
                       }),
                     'Connector aktiválva.',
                   )
                 }
-                className="mt-2 rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-paper disabled:opacity-50"
+                className="mt-2 rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
               >
                 Aktiválás
               </button>
@@ -580,13 +813,19 @@ function DraftCard({
               <h4 className="mb-2 font-semibold">Hozzárendelés agenthez (emberi admin-aktus)</h4>
               <div className="grid gap-2 sm:grid-cols-2">
                 <label className="text-xs">
-                  <span className="mb-1 block text-ink-soft">Agent-id</span>
-                  <input
+                  <span className="mb-1 block text-ink-soft">Agent</span>
+                  <select
                     className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
                     value={agentId}
                     onChange={(e) => setAgentId(e.target.value)}
-                    placeholder="agent-id"
-                  />
+                  >
+                    <option value="">Válassz agentet…</option>
+                    {agents.map((agent) => (
+                      <option key={agent.id} value={agent.id}>
+                        {agent.name}
+                      </option>
+                    ))}
+                  </select>
                 </label>
                 <label className="text-xs">
                   <span className="mb-1 block text-ink-soft">Hozzáférés</span>
@@ -599,6 +838,21 @@ function DraftCard({
                     <option value="write">write</option>
                   </select>
                 </label>
+                <label className="text-xs sm:col-span-2">
+                  <span className="mb-1 block text-ink-soft">
+                    Per-agent API kulcs{' '}
+                    <span className="font-normal text-ink-soft/70">
+                      (agent_owned — elhagyható, ha a connector megosztott kulcsát használod)
+                    </span>
+                  </span>
+                  <input
+                    type="password"
+                    className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
+                    value={agentApiKey}
+                    onChange={(e) => setAgentApiKey(e.target.value)}
+                    placeholder="Kulcs megadása → ez az agent saját kulcsát kapja"
+                  />
+                </label>
               </div>
               <button
                 type="button"
@@ -610,11 +864,12 @@ function DraftCard({
                         connectorId: draft.connectorId,
                         agentId,
                         accessMode,
+                        ...(agentApiKey.trim() ? { apiKey: agentApiKey.trim() } : {}),
                       }),
-                    'Hozzárendelve.',
+                    selectedAgent ? `Hozzárendelve: ${selectedAgent.name}.` : 'Hozzárendelve.',
                   )
                 }
-                className="mt-2 rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-paper disabled:opacity-50"
+                className="mt-2 rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
               >
                 Hozzárendelés
               </button>

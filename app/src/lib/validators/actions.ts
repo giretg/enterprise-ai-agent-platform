@@ -310,6 +310,15 @@ export const agentIdSchema = z.object({
   id: z.string().uuid(),
 })
 
+export const agentApiKeyIdSchema = z.object({
+  keyId: z.string().uuid(),
+})
+
+export const suspendAgentSchema = z.object({
+  agentId: z.string().uuid(),
+  reason: z.string().trim().min(1, 'Indok kötelező a felfüggesztéshez'),
+})
+
 const userRoleSchema = z.enum(['admin', 'approver', 'operator', 'viewer'])
 
 export const inviteUserSchema = z.object({
@@ -443,6 +452,26 @@ export const updateAgentSelfEvolutionProfileSchema = z.object({
     approval_mode: z.enum(['human', 'higher_role', 'eval_only', 'auto_after_eval']),
     diff_limit: z.number().int().positive().optional(),
   }),
+})
+
+export const createBehaviorProfileSchema = z.object({
+  name: z.string().trim().min(1, 'Név kötelező'),
+  body: z.string().trim().min(1, 'A viselkedés-profil törzse kötelező'),
+})
+
+export const updateBehaviorProfileSchema = z.object({
+  profileId: z.string().uuid(),
+  body: z.string().trim().min(1, 'A viselkedés-profil törzse kötelező'),
+})
+
+export const acceptBehaviorProfileUpdateSchema = z.object({
+  agentId: z.string().uuid(),
+  profileId: z.string().uuid(),
+  profileVersion: z.number().int().positive(),
+})
+
+export const behaviorProfileIdSchema = z.object({
+  profileId: z.string().uuid(),
 })
 
 export const updateAgentInstructionSchema = z
@@ -825,6 +854,20 @@ export const toolInvokeSchema = z.discriminatedUnion('tool', [
       page_range: z.string().max(20).optional(),
     }),
   }),
+  z.object({
+    tool: z.literal('web_search'),
+    ...toolInvokeBaseSchema,
+    args: z.object({
+      query: z.string().min(1).max(2000),
+      domains: z.array(z.string().min(1).max(255)).max(20).optional(),
+      recencyDays: z.number().int().min(1).max(365).optional(),
+      locale: z.string().min(2).max(20).optional(),
+      // A felső határ csak input-sanity; a tényleges effektív cap a tenant
+      // policy hardMaxResults mezőjéből jön (WS14/WN12 — nincs 400, hanem clamp).
+      maxResults: z.number().int().min(1).max(1000).optional(),
+      purpose: z.string().max(200).optional(),
+    }),
+  }),
 ])
 
 export const connectorGrantIdSchema = z.object({
@@ -894,6 +937,10 @@ export const setMonitorControlsSchema = z
       v.killSwitch !== undefined || v.sweepIntervalSec !== undefined || v.maxConcurrent !== undefined,
     { message: 'Legalább egy mezőt meg kell adni' },
   )
+
+export const setWebSearchControlsSchema = z.object({
+  killSwitch: z.boolean(),
+})
 
 export const createMonitorSchema = z.object({
   kind: z.enum(['board_backlog', 'deadline', 'connector_count', 'composite']),

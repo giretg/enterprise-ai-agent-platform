@@ -2,6 +2,7 @@ import Link from 'next/link'
 import type { ReactNode } from 'react'
 import { notFound } from 'next/navigation'
 import { getAgent, getAgentGovernance, getModelPolicy } from '@/app/actions/platform'
+import { listConnectorCatalog } from '@/app/actions/provisioning'
 import { getCurrentUser } from '@/auth'
 import { hasMinimumRole } from '@/auth/types'
 import { Badge, Card } from '@/components/ui/shell'
@@ -12,9 +13,13 @@ import { UpdateInstructionForm } from '@/components/agents/update-instruction-fo
 import { UpdateModelConfigForm } from '@/components/agents/update-model-config-form'
 import { UpdateSelfEvolutionProfileForm } from '@/components/agents/update-self-evolution-profile-form'
 import { AddApiConnectorForm } from '@/components/agents/add-api-connector-form'
+import { AssignExistingConnectorForm } from '@/components/agents/assign-existing-connector-form'
 import { ApiConnectorList } from '@/components/agents/api-connector-list'
 import { AgentKnowledgeBasePanel } from '@/components/agents/agent-knowledge-base-panel'
 import { AgentCapabilitiesPanel } from '@/components/agents/agent-capabilities-panel'
+import { WebSearchPolicyCard } from '@/components/agents/web-search-policy-card'
+import { AgentLifecycleControls } from '@/components/agents/agent-lifecycle-controls'
+import { BehaviorProfileUpdateCard } from '@/components/agents/behavior-profile-update-card'
 import { resolveSelfEvolutionProfile } from '@/lib/self-evolution-profile'
 import {
   agentRoleLabel,
@@ -60,10 +65,11 @@ export default async function AgentDetailPage({
   params: Promise<{ agentId: string }>
 }) {
   const { agentId } = await params
-  const [res, govRes, policyRes, user] = await Promise.all([
+  const [res, govRes, policyRes, catalogRes, user] = await Promise.all([
     getAgent({ id: agentId }),
     getAgentGovernance({ agentId }),
     getModelPolicy(),
+    listConnectorCatalog(),
     getCurrentUser(),
   ])
   if (!res.success) notFound()
@@ -71,8 +77,17 @@ export default async function AgentDetailPage({
   const isAdmin = user ? hasMinimumRole(user.role, 'admin') : false
   const canManageKb = user ? hasMinimumRole(user.role, 'operator') : false
   const canApproveKb = user ? hasMinimumRole(user.role, 'approver') : false
-  const { agent, memoryContent, memoryVersion, recipe, resources, apiKeyPreview } = res.data
+  const { agent, memoryContent, memoryVersion, recipe, resources, apiKeyPreview, behaviorProfileLink } =
+    res.data
   const governance = govRes.success ? govRes.data : null
+  const assignedConnectorIds = new Set(
+    governance?.connectors.map((item) => item.connector.id) ?? [],
+  )
+  const assignableConnectors = catalogRes.success
+    ? catalogRes.data.filter(
+        (connector) => connector.type === 'http_api' && !assignedConnectorIds.has(connector.id),
+      )
+    : []
   const modelConfig = agent.modelConfig as Record<string, unknown>
   const persona = personaFor(agent.name)
   const mood = humanStatus(agent.status)
@@ -246,6 +261,22 @@ export default async function AgentDetailPage({
                   {selfEvolutionSummary(evolutionProfile)}
                 </p>
               </Card>
+
+              <Card title="Életciklus">
+                <p className="mb-3 text-sm leading-relaxed text-ink-soft">
+                  Aktiválás befagyaszt egy reprodukálhatósági verziót; felfüggesztve/nyugdíjazva
+                  az agent nem kap új feladatot, a múltbeli munkák visszakereshetők maradnak.
+                </p>
+                <AgentLifecycleControls
+                  agentId={agent.id}
+                  status={agent.status}
+                  suspendedReason={agent.suspendedReason}
+                />
+              </Card>
+
+              {behaviorProfileLink && (
+                <BehaviorProfileUpdateCard agentId={agent.id} link={behaviorProfileLink} />
+              )}
             </div>
           </div>
 
@@ -276,6 +307,10 @@ export default async function AgentDetailPage({
                 <ApiConnectorList agentId={agent.id} connectors={governance.connectors} />
               </Card>
             </div>
+          )}
+
+          {governance && (
+            <WebSearchPolicyCard agentId={agent.id} connectors={governance.connectors} />
           )}
 
           <div>
@@ -312,6 +347,11 @@ export default async function AgentDetailPage({
               />
 
               <AddApiConnectorForm agentId={agent.id} />
+
+              <AssignExistingConnectorForm
+                agentId={agent.id}
+                connectors={assignableConnectors}
+              />
 
               {governance && (
                 <AgentCapabilitiesPanel

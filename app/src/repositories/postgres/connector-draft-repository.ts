@@ -126,6 +126,7 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
     connectorId: string
     agentId: string
     accessMode: ConnectorAccessMode
+    secretAlias?: string | null
   }): Promise<void> {
     await prisma.agentConnector.upsert({
       where: { agentId_connectorId: { agentId: params.agentId, connectorId: params.connectorId } },
@@ -133,8 +134,12 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
         agentId: params.agentId,
         connectorId: params.connectorId,
         accessMode: params.accessMode,
+        ...(params.secretAlias ? { secretAlias: params.secretAlias } : {}),
       },
-      update: { accessMode: params.accessMode },
+      update: {
+        accessMode: params.accessMode,
+        ...(params.secretAlias ? { secretAlias: params.secretAlias } : {}),
+      },
     })
   }
 

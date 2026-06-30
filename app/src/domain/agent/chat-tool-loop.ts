@@ -81,6 +81,14 @@ type LargeToolResultArchiveInput = {
   content: string
   context: ToolLoopContext
 }
+export type ToolLoopActivityEvent = {
+  id: string
+  kind: 'reasoning' | 'tool'
+  title: string
+  detail?: string
+  status: 'running' | 'done' | 'error' | 'skipped'
+  archivePath?: string
+}
 
 const TOOL_RESULT_READ = 'tool_result_read'
 const TOOL_RESULT_INLINE_LIMIT = 12_000
@@ -469,6 +477,73 @@ function recordArg(args: Record<string, unknown>, key: string): Record<string, u
   return undefined
 }
 
+function shortText(value: string, max = 90): string {
+  const clean = value.replace(/\s+/g, ' ').trim()
+  return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean
+}
+
+function describeToolCall(tool: string, args: Record<string, unknown>): string | undefined {
+  const path = typeof args.path === 'string' ? args.path : undefined
+  switch (tool) {
+    case 'gmail_search':
+      return typeof args.query === 'string' ? `query: ${shortText(args.query)}` : undefined
+    case 'gmail_get_message':
+      return typeof args.id === 'string' ? `messageId: ${shortText(args.id, 48)}` : undefined
+    case 'gmail_create_draft':
+      return typeof args.to === 'string' ? `piszkozat: ${shortText(args.to, 64)}` : undefined
+    case 'gmail_send':
+      return typeof args.to === 'string' ? `címzett: ${shortText(args.to, 64)}` : undefined
+    case 'http_api_get':
+      return typeof args.path === 'string' ? `GET ${shortText(args.path, 80)}` : undefined
+    case 'http_api_request':
+      return typeof args.path === 'string'
+        ? `${httpMethodArg(args.method)} ${shortText(args.path, 80)}`
+        : undefined
+    case 'agent_ask':
+      return typeof args.question === 'string' ? shortText(args.question) : undefined
+    case 'ticket_create':
+      return typeof args.title === 'string' ? shortText(args.title) : undefined
+    case 'file_read':
+    case 'file_write':
+    case 'file_edit':
+    case 'file_delete':
+    case 'xlsx_read_sheet':
+    case 'xlsx_write_cells':
+    case 'xlsx_append_rows':
+    case 'xlsx_create':
+    case 'xlsx_format_range':
+    case 'xlsx_layout':
+    case 'docx_read':
+    case 'pdf_read':
+    case 'pdf_create':
+      return path ? shortText(path, 90) : undefined
+    case 'file_list':
+      return path ? shortText(path, 90) : 'workspace'
+    case 'file_glob':
+      return typeof args.pattern === 'string' ? shortText(args.pattern, 90) : undefined
+    case 'file_search':
+      return typeof args.pattern === 'string' ? `minta: ${shortText(args.pattern, 80)}` : undefined
+    case 'agent_catalog':
+    case 'agent_resolve':
+      return typeof args.query === 'string' ? shortText(args.query, 80) : undefined
+    default:
+      return undefined
+  }
+}
+
+function describeToolResult(result: unknown): string {
+  if (!result || typeof result !== 'object') return 'eredmény megérkezett'
+  const record = result as Record<string, unknown>
+  if (typeof record.path === 'string') return `fájl: ${shortText(record.path, 90)}`
+  if (Array.isArray(record.files)) return `${record.files.length} fájl`
+  if (Array.isArray(record.hits)) return `${record.hits.length} találat`
+  if (Array.isArray(record.messages)) return `${record.messages.length} üzenet`
+  if (Array.isArray(record.rows)) return `${record.rows.length} sor`
+  if (typeof record.count === 'number') return `${record.count} elem`
+  if (typeof record.ticketId === 'string') return `ticket: ${shortText(record.ticketId, 48)}`
+  return 'eredmény megérkezett'
+}
+
 /** http_api query: csak skalár (string/number/boolean) értékek mennek tovább. */
 function httpQueryArg(value: unknown): Record<string, string | number | boolean> | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
@@ -820,6 +895,7 @@ export async function runAgentToolLoop(params: {
   allowedTools: ChatPlatformToolName[]
   maxTurns?: number
   archiveLargeToolResult?: (input: LargeToolResultArchiveInput) => Promise<LargeToolResultArchive | null>
+  onActivity?: (event: ToolLoopActivityEvent) => void | Promise<void>
 }): Promise<{ content: string; toolCallCount: number }> {
   const maxTurns = params.maxTurns ?? 20
   const modeNote =
@@ -853,14 +929,29 @@ export async function runAgentToolLoop(params: {
     ...toToolDefinitions(params.allowedTools),
     ...(params.archiveLargeToolResult ? [TOOL_RESULT_READ_DEFINITION] : []),
   ]
+  const emitActivity = async (event: ToolLoopActivityEvent) => {
+    await params.onActivity?.(event)
+  }
 
   for (let turn = 0; turn < maxTurns; turn++) {
+    await emitActivity({
+      id: `reasoning-${turn}`,
+      kind: 'reasoning',
+      title: turn === 0 ? 'Kontekstus feldolgozása' : 'Tool eredmények kiértékelése',
+      status: 'running',
+    })
     const { content, toolCalls } = await params.gateway.call({
       agentId: params.agentId,
       ...params.context,
       messages,
       modelConfig: params.modelConfig,
       ...(tools.length ? { tools } : {}),
+    })
+    await emitActivity({
+      id: `reasoning-${turn}`,
+      kind: 'reasoning',
+      title: turn === 0 ? 'Kontekstus feldolgozása' : 'Tool eredmények kiértékelése',
+      status: 'done',
     })
 
     // Natív tool hívások; ha nincs, a vékony fallback megpróbálja a beágyazott
@@ -920,6 +1011,13 @@ export async function runAgentToolLoop(params: {
     for (const call of calls) {
       if (call.name === TOOL_RESULT_READ) {
         const path = typeof call.input.path === 'string' ? call.input.path : ''
+        await emitActivity({
+          id: `tool-${call.id}`,
+          kind: 'tool',
+          title: 'tool_result_read',
+          detail: path ? shortText(path, 90) : undefined,
+          status: 'running',
+        })
         const archived = archivedToolResults.get(path)
         const offset = clamp(numArg(call.input, 'offset') ?? 0, 0, archived?.content.length ?? 0)
         const limit = clamp(
@@ -947,10 +1045,25 @@ export async function runAgentToolLoop(params: {
               })
             : `HIBA: nincs ilyen elmentett tool-eredmény ebben a futásban: ${path}`,
         })
+        await emitActivity({
+          id: `tool-${call.id}`,
+          kind: 'tool',
+          title: 'tool_result_read',
+          detail: archived ? `${chunk.length} karakter visszaolvasva` : 'archívum nem található',
+          status: archived ? 'done' : 'error',
+          archivePath: path || undefined,
+        })
         continue
       }
 
       if (!isChatPlatformTool(call.name) || !params.allowedTools.includes(call.name)) {
+        await emitActivity({
+          id: `tool-${call.id}`,
+          kind: 'tool',
+          title: call.name,
+          detail: 'nem engedélyezett eszköz',
+          status: 'skipped',
+        })
         messages.push({
           role: 'tool',
           toolCallId: call.id,
@@ -961,6 +1074,13 @@ export async function runAgentToolLoop(params: {
       }
 
       try {
+        await emitActivity({
+          id: `tool-${call.id}`,
+          kind: 'tool',
+          title: call.name,
+          detail: describeToolCall(call.name, call.input),
+          status: 'running',
+        })
         const invokeInput = buildToolInvoke(call.name, call.input, {
           agentId: params.agentId,
           agentVersion: params.agentVersion,
@@ -974,6 +1094,13 @@ export async function runAgentToolLoop(params: {
         const rawContent = result.denied
           ? `ELUTASÍTVA: ${result.reason}`
           : JSON.stringify(result.result)
+        await emitActivity({
+          id: `tool-${call.id}`,
+          kind: 'tool',
+          title: call.name,
+          detail: result.denied ? result.reason : describeToolResult(result.result),
+          status: result.denied ? 'skipped' : 'done',
+        })
         let toolContent = rawContent
         if (rawContent.length > TOOL_RESULT_INLINE_LIMIT) {
           const archive = params.archiveLargeToolResult
@@ -991,6 +1118,14 @@ export async function runAgentToolLoop(params: {
               content: rawContent,
               bytes: archive.bytes,
               toolName: call.name,
+            })
+            await emitActivity({
+              id: `tool-${call.id}`,
+              kind: 'tool',
+              title: call.name,
+              detail: `nagy eredmény archiválva (${archive.bytes} bájt)`,
+              status: 'done',
+              archivePath: archive.path,
             })
             const preview = rawContent.slice(0, TOOL_RESULT_PREVIEW_CHARS)
             toolContent = [
@@ -1016,6 +1151,13 @@ export async function runAgentToolLoop(params: {
         })
       } catch (e) {
         const message = e instanceof Error ? e.message : 'tool_call_failed'
+        await emitActivity({
+          id: `tool-${call.id}`,
+          kind: 'tool',
+          title: call.name,
+          detail: message,
+          status: 'error',
+        })
         messages.push({
           role: 'tool',
           toolCallId: call.id,
@@ -1061,17 +1203,22 @@ async function describeHttpApiConnectors(
     const config = (connector.config ?? {}) as {
       baseUrl?: string
       description?: string
-      endpoints?: Array<{ method?: string; path?: string; description?: string }>
+      endpoints?: Array<{ method?: string; path?: string; description?: string; name?: string }>
+      proposedTools?: Array<{ method?: string; path?: string; description?: string; name?: string }>
     }
+    const endpoints = Array.isArray(config.endpoints) && config.endpoints.length > 0
+      ? config.endpoints
+      : config.proposedTools
     const lines = [`### ${connector.name}`]
     lines.push(`connectorId: ${connector.id}`)
     lines.push(`Hozzáférés: ${accessMode === 'write' ? 'olvasás + írás' : 'csak olvasás'}`)
     if (config.baseUrl) lines.push(`Base URL: ${config.baseUrl}`)
     if (config.description) lines.push(config.description)
-    if (Array.isArray(config.endpoints) && config.endpoints.length > 0) {
+    if (Array.isArray(endpoints) && endpoints.length > 0) {
       lines.push('Endpointok:')
-      for (const e of config.endpoints) {
-        const desc = e.description ? ` — ${e.description}` : ''
+      for (const e of endpoints) {
+        const endpointDescription = e.description ?? e.name
+        const desc = endpointDescription ? ` — ${endpointDescription}` : ''
         lines.push(`- ${e.method ?? 'GET'} ${e.path ?? ''}${desc}`)
       }
     }

@@ -41,6 +41,7 @@ import {
   PROVISIONING_DRAFT_CAPABILITIES,
   PROVISIONING_FORBIDDEN_TOOLS,
   extractJsonObject,
+  resolveProvisioningModelConfig,
   type ConfigDraftingModel,
 } from '../src/domain/provisioning/provisioning-assistant'
 
@@ -227,7 +228,7 @@ function cleanConfig() {
     baseUrl: 'https://api.acme-crm.example',
     egressHosts: ['api.acme-crm.example'],
     authMode: 'service',
-    auth: { type: 'api_key_header', headerName: 'X-Api-Key', secretAliasSuggested: 'acme-crm-service-key' },
+    auth: { type: 'api_key_header', headerName: 'X-Api-Key', secretAliasSuggested: 'env:ACME_CRM_SERVICE_KEY' },
     scopesSuggested: ['contacts.read', 'deals.read'],
     rateLimit: { rps: 5, burst: 10 },
     proposedTools: [
@@ -289,7 +290,7 @@ async function run() {
     const draft = drafts.drafts.get(res.draftId)!
     assert.ok(draft.sourceHash.startsWith('sha256:'))
     assert.equal(draft.connector.lifecycleState, 'draft')
-    assert.equal(draft.connector.secretAlias, 'acme-crm-service-key')
+    assert.equal(draft.connector.secretAlias, 'env:ACME_CRM_SERVICE_KEY')
     assert.equal(audit.byAction('provisioning.draft.create').length, 1)
   })
 
@@ -353,7 +354,7 @@ async function run() {
     const { svc, audit } = makeService()
     const created = await draftToActivatable(svc)
     const res = await svc.activateConnector(
-      { draftId: created.draftId, secretAlias: 'acme-crm-service-key' },
+      { draftId: created.draftId, secretAlias: 'env:ACME_CRM_SERVICE_KEY' },
       adminActor,
     )
     assert.equal(res.lifecycleState, 'active')
@@ -387,11 +388,11 @@ async function run() {
     const created = await draftToActivatable(svc)
     // approver nélkül → DUAL_CONTROL_REQUIRED
     await expectError('DUAL_CONTROL_REQUIRED', () =>
-      svc.activateConnector({ draftId: created.draftId, secretAlias: 'k' }, adminActor),
+      svc.activateConnector({ draftId: created.draftId, secretAlias: 'env:K' }, adminActor),
     )
     // második, eltérő approverrel → siker
     const res = await svc.activateConnector(
-      { draftId: created.draftId, secretAlias: 'k', approverId: 'user-admin-2' },
+      { draftId: created.draftId, secretAlias: 'env:K', approverId: 'user-admin-2' },
       adminActor,
     )
     assert.equal(res.lifecycleState, 'active')
@@ -401,7 +402,7 @@ async function run() {
   await test('P7: assignConnectorToAgent emberi admin + provisioning.connector.assign', async () => {
     const { svc, audit, drafts } = makeService()
     const created = await draftToActivatable(svc)
-    await svc.activateConnector({ draftId: created.draftId, secretAlias: 'k' }, adminActor)
+    await svc.activateConnector({ draftId: created.draftId, secretAlias: 'env:K' }, adminActor)
     const res = await svc.assignConnectorToAgent(
       { connectorId: created.connectorId, agentId: 'agent-x', accessMode: 'read' },
       adminActor,
@@ -423,7 +424,7 @@ async function run() {
     await svc.reviewConnectorDraft({ draftId: created.draftId, decision: 'approve' }, adminActor)
     await svc.testConnectorDraft({ draftId: created.draftId }, adminActor)
     await svc.activateConnector(
-      { draftId: created.draftId, secretAlias: 'acme-crm-service-key' },
+      { draftId: created.draftId, secretAlias: 'env:ACME_CRM_SERVICE_KEY' },
       adminActor,
     )
     const blob = JSON.stringify(audit.events, (_k, v) =>
@@ -455,7 +456,7 @@ async function run() {
     await svc.reviewConnectorDraft({ draftId: created.draftId, decision: 'approve' }, adminActor)
     await svc.testConnectorDraft({ draftId: created.draftId }, adminActor)
     await expectError('DRAFT_VALIDATION_FAILED', () =>
-      svc.activateConnector({ draftId: created.draftId, secretAlias: 'k' }, adminActor),
+      svc.activateConnector({ draftId: created.draftId, secretAlias: 'env:K' }, adminActor),
     )
   })
 
@@ -464,7 +465,7 @@ async function run() {
     const { svc, audit } = makeService()
     const created = await draftToActivatable(svc)
     await expectError('PROVISIONING_FORBIDDEN', () =>
-      svc.activateConnector({ draftId: created.draftId, secretAlias: 'k' }, agentActor),
+      svc.activateConnector({ draftId: created.draftId, secretAlias: 'env:K' }, agentActor),
     )
     assert.ok(audit.byAction('provisioning.access_denied').length >= 1)
   })
@@ -492,7 +493,7 @@ async function run() {
       tenantId: TENANT,
     }
     await expectError('PROVISIONING_FORBIDDEN', () =>
-      svc.activateConnector({ draftId: created.draftId, secretAlias: 'k' }, operator),
+      svc.activateConnector({ draftId: created.draftId, secretAlias: 'env:K' }, operator),
     )
   })
 
@@ -508,7 +509,7 @@ async function run() {
     const t = await svc.testConnectorDraft({ draftId: created.draftId }, adminActor)
     assert.equal(t.ok, false)
     await expectError('SANDBOX_TEST_FAILED', () =>
-      svc.activateConnector({ draftId: created.draftId, secretAlias: 'k' }, adminActor),
+      svc.activateConnector({ draftId: created.draftId, secretAlias: 'env:K' }, adminActor),
     )
     assert.equal(drafts.drafts.get(created.draftId)!.connector.lifecycleState, 'draft')
   })
@@ -519,7 +520,7 @@ async function run() {
     const created = await draftToActivatable(svc) // reviewer = user-admin
     await expectError('APPROVAL_SAME_ACTOR', () =>
       svc.activateConnector(
-        { draftId: created.draftId, secretAlias: 'k', approverId: 'user-admin' },
+        { draftId: created.draftId, secretAlias: 'env:K', approverId: 'user-admin' },
         adminActor,
       ),
     )
@@ -550,7 +551,7 @@ async function run() {
     const created = await draftToActivatable(svc)
     await expectError('DUAL_CONTROL_REQUIRED', () =>
       svc.activateConnector(
-        { draftId: created.draftId, secretAlias: 'k', criticality: 'L2' },
+        { draftId: created.draftId, secretAlias: 'env:K', criticality: 'L2' },
         adminActor,
       ),
     )
@@ -560,7 +561,7 @@ async function run() {
     const { svc } = makeService({ bankPreset: false })
     const created = await draftToActivatable(svc)
     const res = await svc.activateConnector(
-      { draftId: created.draftId, secretAlias: 'k', criticality: 'L1' },
+      { draftId: created.draftId, secretAlias: 'env:K', criticality: 'L1' },
       adminActor,
     )
     assert.equal(res.lifecycleState, 'active')
@@ -614,6 +615,26 @@ async function run() {
     }
     return { fn, calls }
   }
+
+  await test('SBX: GET tool path-paraméterrel → placeholder ID a próba URL-ben', async () => {
+    const { fn, calls } = recordingFetch({ status: 200 })
+    const tester = new HttpSandboxConnectionTester({
+      resolveEgressAllowlist: async () => ALLOWLIST,
+      fetchImpl: fn,
+    })
+    const r = await tester.test({
+      config: {
+        ...cleanConfig(),
+        proposedTools: [
+          { name: 'get_bank', method: 'GET', path: '/banks/{bankId}', access: 'read' },
+        ],
+      } as unknown as ConnectorConfig,
+      secretAlias: null,
+      tenantId: TENANT,
+    })
+    assert.equal(r.ok, true)
+    assert.ok(calls[0].url.includes('/banks/507f1f77bcf86cd799439011'))
+  })
 
   await test('SBX: allowlistolt host, GET 200 → ok=reachable, csak GET hívódik', async () => {
     const { fn, calls } = recordingFetch({ status: 200 })
@@ -709,12 +730,12 @@ async function run() {
     const tester = new HttpSandboxConnectionTester({
       resolveEgressAllowlist: async () => ALLOWLIST,
       resolveSandboxToken: async ({ secretAlias }) =>
-        secretAlias === 'acme-crm-service-key' ? SECRET : null,
+        secretAlias === 'env:ACME_CRM_SERVICE_KEY' ? SECRET : null,
       fetchImpl: fn,
     })
     const r = await tester.test({
       config: cleanConfig() as unknown as ConnectorConfig,
-      secretAlias: 'acme-crm-service-key',
+      secretAlias: 'env:ACME_CRM_SERVICE_KEY',
       tenantId: TENANT,
     })
     assert.equal(r.ok, true)
@@ -768,15 +789,45 @@ async function run() {
   // ── F2-P-F: provisioning-asszisztens agent (capability-gate + doksi→config) ──
 
   /** Fix tartalmat visszaadó modell — a doksi-parsing determinisztikus tesztjéhez. */
-  function fixedModel(content: string): ConfigDraftingModel & { lastMessages?: unknown } {
-    const m: ConfigDraftingModel & { lastMessages?: unknown } = {
+  function fixedModel(content: string): ConfigDraftingModel & {
+    lastMessages?: unknown
+    lastModelConfig?: unknown
+  } {
+    const m: ConfigDraftingModel & { lastMessages?: unknown; lastModelConfig?: unknown } = {
       async call(params) {
         m.lastMessages = params.messages
+        m.lastModelConfig = params.modelConfig
         return { content }
       },
     }
     return m
   }
+
+  await test('F2-P-F: draftConfigFromDoc az agent Registry modelConfig-jét használja', async () => {
+    const model = fixedModel(JSON.stringify(cleanConfig()))
+    const assistant = new ProvisioningAssistant({ model })
+    await assistant.draftConfigFromDoc({
+      agentId: 'agent-prov',
+      agentModelConfig: {
+        provider: 'openrouter',
+        model: 'qwen/qwen3-235b-a22b-instruct-2507',
+        temperature: 0,
+        maxTokens: 4096,
+      },
+      docText: 'Acme CRM API doc',
+    })
+    assert.deepEqual(model.lastModelConfig, {
+      provider: 'openrouter',
+      model: 'qwen/qwen3-235b-a22b-instruct-2507',
+      temperature: 0,
+      maxTokens: 4096,
+    })
+  })
+
+  await test('resolveProvisioningModelConfig: ismeretlen provider → sablon fallback', () => {
+    const cfg = resolveProvisioningModelConfig({ provider: 'openai', model: 'gpt-5.5' })
+    assert.equal(cfg.provider, 'chatgpt-oauth')
+  })
 
   // Capability-gate: agent CSAK a megadott provisioning.draft.* capability-vel hozhat draftot.
   await test('F2-P-F: agent capability NÉLKÜL → createConnectorDraft FORBIDDEN + access_denied', async () => {
@@ -818,7 +869,7 @@ async function run() {
       svc.reviewConnectorDraft({ draftId: created.draftId, decision: 'approve' }, agentActor),
     )
     await expectError('PROVISIONING_FORBIDDEN', () =>
-      svc.activateConnector({ draftId: created.draftId, secretAlias: 'k' }, agentActor),
+      svc.activateConnector({ draftId: created.draftId, secretAlias: 'env:K' }, agentActor),
     )
   })
 
@@ -849,8 +900,8 @@ async function run() {
     // A draft secretAlias mezője a JAVASOLT alias NEVE, mögötte nincs érték (a secretet
     // később admin injektálja külön aktusban). A config sosem tárol nyers tokent.
     const stored = drafts.drafts.get(created.draftId)!
-    assert.equal(stored.connector.secretAlias, 'acme-crm-service-key')
-    assert.equal(created.config.auth.secretAliasSuggested, 'acme-crm-service-key')
+    assert.equal(stored.connector.secretAlias, 'env:ACME_CRM_SERVICE_KEY')
+    assert.equal(created.config.auth.secretAliasSuggested, 'env:ACME_CRM_SERVICE_KEY')
     // Az auditban sem alias-érték, sem secret nem szerepel — csak hash + referencia (P8).
     const blob = JSON.stringify(audit.events, (_k, v) =>
       typeof v === 'bigint' ? v.toString() : v,
@@ -932,7 +983,7 @@ async function run() {
       assert.equal(validationResult.checks.forbiddenPatterns, 'failed')
       // agent semmilyen úton nem aktivál (emberi-only + failed validáció)
       await expectError('PROVISIONING_FORBIDDEN', () =>
-        svc.activateConnector({ draftId: created.draftId, secretAlias: 'k' }, agentActor),
+        svc.activateConnector({ draftId: created.draftId, secretAlias: 'env:K' }, agentActor),
       )
     }
   })

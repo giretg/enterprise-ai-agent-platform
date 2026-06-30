@@ -81,12 +81,25 @@ export function parseHttpApiConfig(raw: unknown): HttpApiConfig {
       throw new Error('http_api config.auth.header is required for scheme "header"')
     }
     auth = { scheme: 'header', header: authRaw.header.trim() }
+  } else if (authRaw.type === 'bearer_token') {
+    auth = { scheme: 'bearer' }
+  } else if (authRaw.type === 'api_key_header') {
+    const header = typeof authRaw.headerName === 'string' ? authRaw.headerName.trim() : ''
+    if (!header) {
+      throw new Error('http_api config.auth.headerName is required for type "api_key_header"')
+    }
+    auth = { scheme: 'header', header }
   } else {
     throw new Error('http_api config.auth.scheme must be "header" or "bearer"')
   }
 
-  const endpoints = Array.isArray(raw.endpoints)
+  const endpointSource = Array.isArray(raw.endpoints)
     ? raw.endpoints
+    : Array.isArray(raw.proposedTools)
+      ? raw.proposedTools
+      : undefined
+  const endpoints = Array.isArray(endpointSource)
+    ? endpointSource
         .filter(isRecord)
         .map((e) => ({
           method: String(e.method ?? '').toUpperCase(),

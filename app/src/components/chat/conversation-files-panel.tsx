@@ -18,8 +18,12 @@ export function ConversationFilesPanel({ conversationId, panelRef }: Props) {
   const [files, setFiles] = useState<WorkspaceFile[]>([])
   const [loading, setLoading] = useState(false)
   const [open, setOpen] = useState(false)
+  const [technicalOpen, setTechnicalOpen] = useState(false)
 
   const listUrl = conversationWorkspaceFilesUrl(conversationId)
+
+  const visibleFiles = files.filter((file) => !file.path.startsWith('.tool-results/'))
+  const technicalFiles = files.filter((file) => file.path.startsWith('.tool-results/'))
 
   const loadFiles = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true)
@@ -29,7 +33,7 @@ export function ConversationFilesPanel({ conversationId, panelRef }: Props) {
       const json = (await res.json()) as { success: boolean; data?: { files: string[] } }
       const next = (json.data?.files ?? []).map((path) => ({ path }))
       setFiles(next)
-      if (next.length > 0) setOpen(true)
+      if (next.some((file) => !file.path.startsWith('.tool-results/'))) setOpen(true)
     } finally {
       if (!quiet) setLoading(false)
     }
@@ -48,7 +52,7 @@ export function ConversationFilesPanel({ conversationId, panelRef }: Props) {
         if (!json || controller.signal.aborted) return
         const next = (json.data?.files ?? []).map((path) => ({ path }))
         setFiles(next)
-        if (next.length > 0) setOpen(true)
+        if (next.some((file) => !file.path.startsWith('.tool-results/'))) setOpen(true)
       })
       .catch((err: unknown) => {
         if (!controller.signal.aborted) console.error('Failed to load conversation files', err)
@@ -86,9 +90,9 @@ export function ConversationFilesPanel({ conversationId, panelRef }: Props) {
       >
         <span>
           Workspace fájlok
-          {files.length > 0 && (
+          {visibleFiles.length > 0 && (
             <span className="ml-1.5 rounded-full bg-sage/20 px-1.5 py-0.5 text-[10px] font-semibold text-sage-deep">
-              {files.length}
+              {visibleFiles.length}
             </span>
           )}
         </span>
@@ -97,11 +101,11 @@ export function ConversationFilesPanel({ conversationId, panelRef }: Props) {
 
       {open && (
         <div className="px-4 pb-3">
-          {files.length === 0 ? (
+          {visibleFiles.length === 0 ? (
             <p className="text-xs text-ink-faint">Nincs fájl a workspace-ben.</p>
           ) : (
             <ul className="divide-y divide-line">
-              {files.map((f) => (
+              {visibleFiles.map((f) => (
                 <li key={f.path} className="flex items-center justify-between py-1.5">
                   <span className="truncate text-xs text-ink" title={f.path}>
                     {f.path}
@@ -116,6 +120,36 @@ export function ConversationFilesPanel({ conversationId, panelRef }: Props) {
                 </li>
               ))}
             </ul>
+          )}
+          {technicalFiles.length > 0 && (
+            <div className="mt-2 border-t border-line pt-2">
+              <button
+                type="button"
+                onClick={() => setTechnicalOpen((v) => !v)}
+                className="flex w-full items-center justify-between text-[11px] font-medium text-ink-faint hover:text-ink-soft"
+              >
+                <span>Technikai tool-archívum ({technicalFiles.length})</span>
+                <span>{technicalOpen ? '▲' : '▼'}</span>
+              </button>
+              {technicalOpen && (
+                <ul className="mt-1.5 divide-y divide-line">
+                  {technicalFiles.map((f) => (
+                    <li key={f.path} className="flex items-center justify-between py-1.5">
+                      <span className="truncate text-[11px] text-ink-faint" title={f.path}>
+                        {f.path}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => void handleDownload(f.path)}
+                        className="ml-2 shrink-0 text-[11px] font-medium text-sky hover:underline"
+                      >
+                        Letöltés
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           )}
         </div>
       )}

@@ -1,4 +1,5 @@
 import { PostgresAgentRepository, PostgresDocumentRepository } from './agent-repository'
+import { PostgresBehaviorProfileRepository } from './behavior-profile-repository'
 import {
   PostgresAuditRepository,
   PostgresModelBudgetRepository,
@@ -20,10 +21,13 @@ import { PostgresConnectorRepository } from './connector-repository'
 import { PostgresConnectorDraftRepository } from './connector-draft-repository'
 import { PostgresMonitorRepository } from './monitor-repository'
 import { PostgresPlatformSettingsRepository } from './platform-settings-repository'
+import { PostgresRoleTemplateRepository } from './role-template-repository'
 
 export const repositories = {
   tickets: new PostgresTicketRepository(),
   agents: new PostgresAgentRepository(),
+  behaviorProfiles: new PostgresBehaviorProfileRepository(),
+  roleTemplates: new PostgresRoleTemplateRepository(),
   documents: new PostgresDocumentRepository(),
   audit: new PostgresAuditRepository(),
   modelCalls: new PostgresModelCallRepository(),

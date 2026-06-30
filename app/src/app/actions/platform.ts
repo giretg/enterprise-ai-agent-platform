@@ -42,6 +42,12 @@ import {
   archiveSandboxAppSchema,
   listAuditLogSchema,
   createAgentSchema,
+  agentApiKeyIdSchema,
+  suspendAgentSchema,
+  createBehaviorProfileSchema,
+  updateBehaviorProfileSchema,
+  acceptBehaviorProfileUpdateSchema,
+  behaviorProfileIdSchema,
   updateAgentInstructionSchema,
   updateAgentModelConfigSchema,
   updateAgentSelfEvolutionProfileSchema,
@@ -985,6 +991,296 @@ export async function updateAgentSelfEvolutionProfile(input: {
     return ok(agent)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to update self-evolution profile')
+  }
+}
+
+export async function rotateAgentApiKey(input: { agentId: string }) {
+  try {
+    const user = await requireRole('admin')
+    const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
+    const result = await repositories.agents.rotateApiKey(agentId)
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: null,
+      action: 'agent.api_key_rotated',
+      targetType: 'agent',
+      targetId: agentId,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: result.keyId,
+      policyDecision: 'allowed',
+      metadata: { scopes: result.scopes },
+    })
+
+    return ok(result)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to rotate agent API key')
+  }
+}
+
+export async function revokeAgentApiKey(input: { keyId: string }) {
+  try {
+    const user = await requireRole('admin')
+    const { keyId } = agentApiKeyIdSchema.parse(input)
+    const result = await repositories.agents.revokeApiKey(keyId)
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: null,
+      action: 'agent.api_key_revoked',
+      targetType: 'agent_api_key',
+      targetId: keyId,
+      modelUsed: null,
+      inputRef: result.agentId,
+      outputRef: 'revoked',
+      policyDecision: 'allowed',
+      metadata: { agentId: result.agentId },
+    })
+
+    return ok(result)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to revoke agent API key')
+  }
+}
+
+// ── Megosztott viselkedés-profil (§3.4) ──────────────────────────────────────
+
+export async function listBehaviorProfiles() {
+  try {
+    await requireRole('admin')
+    const profiles = await repositories.behaviorProfiles.findMany()
+    return ok(profiles)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to list behavior profiles')
+  }
+}
+
+export async function getBehaviorProfile(input: { profileId: string }) {
+  try {
+    await requireRole('admin')
+    const { profileId } = behaviorProfileIdSchema.parse(input)
+    const [profile, referrers] = await Promise.all([
+      repositories.behaviorProfiles.findByIdWithVersions(profileId),
+      repositories.behaviorProfiles.listReferrers(profileId),
+    ])
+    if (!profile) return fail('Behavior profile not found')
+    return ok({ profile, referrers })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to load behavior profile')
+  }
+}
+
+export async function createBehaviorProfile(input: { name: string; body: string }) {
+  try {
+    const user = await requireRole('admin')
+    const parsed = createBehaviorProfileSchema.parse(input)
+    const profile = await repositories.behaviorProfiles.create({
+      name: parsed.name,
+      body: parsed.body,
+      tenantId: user.tenantId,
+      approvedById: user.id,
+    })
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: null,
+      action: 'behavior_profile.created',
+      targetType: 'behavior_profile',
+      targetId: profile.id,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: profile.name,
+      policyDecision: 'allowed',
+      metadata: { name: profile.name },
+    })
+
+    return ok(profile)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to create behavior profile')
+  }
+}
+
+export async function updateBehaviorProfile(input: { profileId: string; body: string }) {
+  try {
+    const user = await requireRole('admin')
+    const parsed = updateBehaviorProfileSchema.parse(input)
+    // I7: új al-verzió, de a hivatkozó agentek élő viselkedése NEM változik —
+    // ahhoz külön `acceptBehaviorProfileUpdate` kell.
+    const result = await repositories.behaviorProfiles.update({
+      profileId: parsed.profileId,
+      body: parsed.body,
+      approvedById: user.id,
+    })
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: null,
+      action: 'agent.behavior_profile_updated',
+      targetType: 'behavior_profile',
+      targetId: parsed.profileId,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: `v${result.version}`,
+      policyDecision: 'allowed',
+      metadata: { version: result.version },
+    })
+
+    return ok(result)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update behavior profile')
+  }
+}
+
+export async function acceptBehaviorProfileUpdate(input: {
+  agentId: string
+  profileId: string
+  profileVersion: number
+}) {
+  try {
+    const user = await requireRole('admin')
+    const parsed = acceptBehaviorProfileUpdateSchema.parse(input)
+    const body = await repositories.behaviorProfiles.getVersionBody(
+      parsed.profileId,
+      parsed.profileVersion,
+    )
+    if (body === null) return fail('Behavior profile version not found')
+
+    const result = await repositories.agents.acceptBehaviorProfileUpdate({
+      agentId: parsed.agentId,
+      profileId: parsed.profileId,
+      profileVersion: parsed.profileVersion,
+      profileBody: body,
+    })
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: result.agentVersion,
+      action: 'agent.behavior_profile_update_accepted',
+      targetType: 'agent',
+      targetId: parsed.agentId,
+      modelUsed: null,
+      inputRef: parsed.profileId,
+      outputRef: `v${result.agentVersion}`,
+      policyDecision: 'allowed',
+      metadata: {
+        profileId: parsed.profileId,
+        behaviorProfileVersion: result.behaviorProfileVersion,
+      },
+    })
+
+    return ok(result)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to accept behavior profile update')
+  }
+}
+
+export async function activateAgent(input: { agentId: string }) {
+  try {
+    const user = await requireRole('admin')
+    const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
+    const result = await repositories.agents.activate(agentId)
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: result.agentVersion,
+      action: 'agent.activated',
+      targetType: 'agent',
+      targetId: agentId,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: `v${result.agentVersion}`,
+      policyDecision: 'allowed',
+      metadata: { snapshotVersion: result.agentVersion },
+    })
+
+    return ok(result)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to activate agent')
+  }
+}
+
+export async function suspendAgent(input: { agentId: string; reason: string }) {
+  try {
+    const user = await requireRole('admin')
+    const parsed = suspendAgentSchema.parse(input)
+    const agent = await repositories.agents.suspend(parsed.agentId, parsed.reason)
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: agent.currentVersion,
+      action: 'agent.suspended',
+      targetType: 'agent',
+      targetId: parsed.agentId,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: 'suspended',
+      policyDecision: 'allowed',
+      metadata: { reason: parsed.reason },
+    })
+
+    return ok(agent)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to suspend agent')
+  }
+}
+
+export async function resumeAgent(input: { agentId: string }) {
+  try {
+    const user = await requireRole('admin')
+    const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
+    const agent = await repositories.agents.resume(agentId)
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: agent.currentVersion,
+      action: 'agent.resumed',
+      targetType: 'agent',
+      targetId: agentId,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: 'active',
+      policyDecision: 'allowed',
+      metadata: {},
+    })
+
+    return ok(agent)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to resume agent')
+  }
+}
+
+export async function retireAgent(input: { agentId: string }) {
+  try {
+    const user = await requireRole('admin')
+    const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
+    const agent = await repositories.agents.retire(agentId)
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: agent.currentVersion,
+      action: 'agent.retired',
+      targetType: 'agent',
+      targetId: agentId,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: 'retired',
+      policyDecision: 'allowed',
+      metadata: { retiredAt: agent.retiredAt?.toISOString() ?? null },
+    })
+
+    return ok(agent)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to retire agent')
   }
 }
 

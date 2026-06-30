@@ -45,9 +45,26 @@ type ChatMessage = {
   createdAt: string
   contentDeletedAt?: string | null
   ticketRefId?: string | null
+  activities?: AgentActivity[]
+  activitiesCollapsed?: boolean
 }
 
 type ScheduledTaskRecurrence = 'none' | 'daily' | 'weekly' | 'monthly'
+
+type AgentActivity = {
+  id: string
+  kind: 'reasoning' | 'tool'
+  title: string
+  detail?: string
+  status: 'running' | 'done' | 'error' | 'skipped'
+  archivePath?: string
+}
+
+type AgentChatStreamEvent =
+  | { type: 'activity'; activity: AgentActivity }
+  | { type: 'token'; chunk: string }
+  | { type: 'done'; conversationId: string; messageId: string }
+  | { type: 'error'; message?: string }
 
 function isImageFile(file: File): boolean {
   return file.type.startsWith('image/')
@@ -73,6 +90,98 @@ async function uploadAttachments(files: PendingAttachment[]): Promise<string[]> 
     ids.push(res.data.id)
   }
   return ids
+}
+
+function activityStatusLabel(status: AgentActivity['status']): string {
+  switch (status) {
+    case 'running':
+      return 'fut'
+    case 'done':
+      return 'kész'
+    case 'skipped':
+      return 'kihagyva'
+    case 'error':
+      return 'hiba'
+  }
+}
+
+function activityDotClass(status: AgentActivity['status']): string {
+  switch (status) {
+    case 'running':
+      return 'bg-sky'
+    case 'done':
+      return 'bg-sage'
+    case 'skipped':
+      return 'bg-honey'
+    case 'error':
+      return 'bg-coral'
+  }
+}
+
+function upsertActivity(activities: AgentActivity[] | undefined, next: AgentActivity): AgentActivity[] {
+  const current = activities ?? []
+  const index = current.findIndex((activity) => activity.id === next.id)
+  if (index < 0) return [...current, next]
+  return current.map((activity, i) => (i === index ? { ...activity, ...next } : activity))
+}
+
+function AgentActivityPanel({
+  activities,
+  collapsed,
+}: {
+  activities: AgentActivity[]
+  collapsed: boolean
+}) {
+  const running = activities.find((activity) => activity.status === 'running')
+  const hasError = activities.some((activity) => activity.status === 'error')
+  const summary = running
+    ? `${running.title} fut`
+    : hasError
+      ? 'Műveletek hibával'
+      : 'Műveletek kész'
+
+  return (
+    <details
+      open={!collapsed}
+      className="mb-3 rounded-lg border border-line bg-night-2/70 px-3 py-2 text-xs text-ink-soft"
+    >
+      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 font-medium text-ink">
+        <span className="min-w-0 truncate">
+          Agent aktivitás
+          <span className="ml-2 font-normal text-ink-faint">{summary}</span>
+        </span>
+        <span className="shrink-0 rounded-full bg-card px-1.5 py-0.5 text-[10px] font-semibold text-ink-faint">
+          {activities.length}
+        </span>
+      </summary>
+      <div className="mt-2 space-y-1.5">
+        {activities.map((activity) => (
+          <div key={activity.id} className="flex min-w-0 items-start gap-2">
+            <span
+              className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${activityDotClass(activity.status)} ${
+                activity.status === 'running' ? 'animate-pulse' : ''
+              }`}
+              aria-hidden
+            />
+            <div className="min-w-0 flex-1">
+              <div className="flex min-w-0 items-baseline gap-2">
+                <span className="truncate font-medium text-ink">{activity.title}</span>
+                <span className="shrink-0 text-[10px] uppercase tracking-wide text-ink-faint">
+                  {activityStatusLabel(activity.status)}
+                </span>
+              </div>
+              {(activity.detail || activity.archivePath) && (
+                <p className="truncate text-[11px] text-ink-faint" title={activity.archivePath ?? activity.detail}>
+                  {activity.detail}
+                  {activity.archivePath ? ` · ${activity.archivePath}` : ''}
+                </p>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    </details>
+  )
 }
 
 function MessageBubble({
@@ -103,14 +212,23 @@ function MessageBubble({
             <span className="h-2 w-10 rounded-full bg-line" aria-hidden />
             <span>Tartalom törölve</span>
           </div>
-        ) : message.text && (
-          isUser ? (
-            <div className="text-sm [&_a]:text-card [&_a]:underline [&_strong]:text-card">
-              <ChatMarkdown content={message.text} variant="user" />
-            </div>
-          ) : (
-            <ChatMarkdown content={message.text} variant="agent" />
-          )
+        ) : (
+          <>
+            {!isUser && message.activities && message.activities.length > 0 && (
+              <AgentActivityPanel
+                activities={message.activities}
+                collapsed={message.activitiesCollapsed ?? false}
+              />
+            )}
+            {message.text &&
+              (isUser ? (
+                <div className="text-sm [&_a]:text-card [&_a]:underline [&_strong]:text-card">
+                  <ChatMarkdown content={message.text} variant="user" />
+                </div>
+              ) : (
+                <ChatMarkdown content={message.text} variant="agent" />
+              ))}
+          </>
         )}
         {!isDeleted && message.attachments.length > 0 && (
           <div
@@ -415,6 +533,8 @@ export function AgentChatPanel({
       text: '',
       attachments: [],
       createdAt: new Date().toISOString(),
+      activities: [],
+      activitiesCollapsed: false,
     }
 
     setMessages((prev) => [...prev, optimisticUserMessage, optimisticAgentMessage])
@@ -460,14 +580,28 @@ export function AgentChatPanel({
             const trimmed = line.trim()
             if (!trimmed.startsWith('data: ')) continue
             const raw = trimmed.slice(6)
-            let event: { type: string; chunk?: string; conversationId?: string; messageId?: string; message?: string }
+            let event: AgentChatStreamEvent
             try {
-              event = JSON.parse(raw) as typeof event
+              event = JSON.parse(raw) as AgentChatStreamEvent
             } catch {
               continue
             }
 
-            if (event.type === 'token' && typeof event.chunk === 'string') {
+            if (event.type === 'activity') {
+              flushSync(() => {
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === optimisticAgentId
+                      ? {
+                          ...m,
+                          activities: upsertActivity(m.activities, event.activity),
+                          activitiesCollapsed: false,
+                        }
+                      : m,
+                  ),
+                )
+              })
+            } else if (event.type === 'token' && typeof event.chunk === 'string') {
               flushSync(() => {
                 setMessages((prev) =>
                   prev.map((m) =>
@@ -480,7 +614,9 @@ export function AgentChatPanel({
               setConversationStatus('active')
               setMessages((prev) =>
                 prev.map((m) =>
-                  m.id === optimisticAgentId ? { ...m, id: event.messageId! } : m,
+                  m.id === optimisticAgentId
+                    ? { ...m, id: event.messageId!, activitiesCollapsed: true }
+                    : m,
                 ),
               )
               startTransition(() => { void refreshSessions() })
@@ -691,7 +827,9 @@ export function AgentChatPanel({
                       onDeleteContent={handleDeleteMessageContent}
                     />
                   ))}
-                  {isAgentTyping && !messages[messages.length - 1]?.text && (
+                  {isAgentTyping &&
+                    !messages[messages.length - 1]?.text &&
+                    !(messages[messages.length - 1]?.activities?.length) && (
                     <TypingIndicator agentName={persona.nickname} />
                   )}
                 </div>

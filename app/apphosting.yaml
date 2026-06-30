@@ -94,3 +94,12 @@ env:
     value: "platform-workspace@enterprise-ai-demo.iam.gserviceaccount.com"
     availability:
       - RUNTIME
+  # --- Provisioning Assistant (connector onboarding) ---
+  - variable: PROVISIONING_EGRESS_ALLOWLIST
+    value: "posnavigator.eu"
+    availability:
+      - RUNTIME
+  - variable: PROVIDER_CRM_API_KEY
+    secret: PROVIDER_CRM_API_KEY
+    availability:
+      - RUNTIME

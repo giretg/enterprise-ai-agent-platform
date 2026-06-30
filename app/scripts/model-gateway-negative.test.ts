@@ -19,7 +19,10 @@ import {
   GatewayBudgetError,
   type ModelProvider,
 } from '../src/domain/gateway/model-gateway'
-import { classifyPrompt } from '../src/domain/gateway/sensitivity-router'
+import {
+  classifyPrompt,
+  inspectPromptSensitivity,
+} from '../src/domain/gateway/sensitivity-router'
 import { computeAuditHash } from '../src/lib/crypto/hash-chain'
 import type { AuditRepository, ModelCallRepository } from '../src/repositories/interfaces'
 import type { AuditLog, ModelCall } from '@prisma/client'
@@ -237,6 +240,41 @@ async function main() {
     assert.equal(decision.level, 'sensitive', `Elvárt: sensitive, kapott: ${decision.level}`)
   })
 
+  await check('MG-N5: API-doksi placeholder kulcs → clean', () => {
+    const decision = classifyPrompt([
+      {
+        role: 'user',
+        content: [
+          '# Blog API',
+          'Minden kéréshez szükséges az `X-Api-Key` fejléc:',
+          '```http',
+          'X-Api-Key: pn_your_api_key_here',
+          '```',
+        ].join('\n'),
+      },
+    ])
+    assert.equal(decision.level, 'clean', `Elvárt: clean, kapott: ${decision.level}`)
+  })
+
+  await check('MG-N5: valószerű API-kulcs érték → forbidden', () => {
+    const decision = classifyPrompt([
+      { role: 'user', content: 'X-Api-Key: pn_live_A7f9K2mQ8zR4tY6uP0sD3vN1wX5cB8' },
+    ])
+    assert.equal(decision.level, 'forbidden', `Elvárt: forbidden, kapott: ${decision.level}`)
+    assert.equal(decision.matchedCategory, 'secret_key')
+  })
+
+  await check('MG-N5: sensitivity inspection maszkolt találatot ad', () => {
+    const inspection = inspectPromptSensitivity([
+      { role: 'user', content: 'X-Api-Key: pn_live_A7f9K2mQ8zR4tY6uP0sD3vN1wX5cB8' },
+    ])
+    assert.equal(inspection.level, 'forbidden')
+    assert.equal(inspection.findings.length, 1)
+    assert.equal(inspection.findings[0].category, 'secret_key')
+    assert.ok(!inspection.findings[0].snippet.includes('pn_live_A7f9K2mQ8zR4tY6uP0sD3vN1wX5cB8'))
+    assert.ok(inspection.findings[0].snippet.includes('pn_…cB8'))
+  })
+
   await check('MG-N5: közönséges prompt → clean', () => {
     const decision = classifyPrompt([
       { role: 'user', content: 'Mennyi az üzleti részleg heti bevétele?' },
@@ -300,6 +338,36 @@ async function main() {
     const deniedEvent = events.find((e) => e.action === 'model.call.denied')
     assert.ok(deniedEvent, 'model.call.denied audit esemény nem keletkezett')
     assert.equal(deniedEvent?.policyDecision, 'sensitivity_block', `policyDecision: ${deniedEvent?.policyDecision}`)
+  })
+
+  await check('MG-N5: forbidden prompt admin-review override → audit + provider hívás', async () => {
+    const { repo: auditRepo, events } = makeAuditRepo()
+    const { repo: modelCallRepo } = makeModelCallRepo(0)
+
+    const providerCalls = { n: 0 }
+    const providers = new Map<string, ModelProvider>([
+      ['chatgpt-oauth', { name: 'chatgpt-oauth', async chat() { providerCalls.n++; return { content: 'ok', latencyMs: 1 } } }],
+    ])
+
+    const gw = new ModelGateway(auditRepo, modelCallRepo, providers, { maxCallsPerTicket: 30 })
+    const result = await gw.call({
+      agentId: TEST_AGENT_ID,
+      messages: [{ role: 'user', content: 'X-Api-Key: pn_live_A7f9K2mQ8zR4tY6uP0sD3vN1wX5cB8' }],
+      modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+      sensitivityOverride: {
+        reviewedByUserId: 'admin-1',
+        allowedForbiddenCategories: ['secret_key'],
+        reason: 'admin confirmed documentation sample',
+      },
+    })
+
+    assert.equal(result.content, 'ok')
+    assert.equal(providerCalls.n, 1)
+    const overrideEvent = events.find((e) => e.action === 'model.call.sensitivity_override')
+    assert.ok(overrideEvent, 'sensitivity override audit esemény nem keletkezett')
+    assert.equal(overrideEvent?.actorType, 'human')
+    assert.equal(overrideEvent?.actorId, 'admin-1')
+    assert.equal(overrideEvent?.policyDecision, 'human_review_override')
   })
 
   // ── MG-N6: Sensitivity döntés nem felülírható promptból ─────────────────
