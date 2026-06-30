@@ -1117,6 +1117,7 @@ export class ToolBrokerService {
           grantId: authorization.grant.id,
           connectorId: authorization.connector.id,
           actingUserId,
+          tenantId: actingTenantId ?? authorization.connector.tenantId ?? null,
           metadata: { reason: 'provider_auth_error', status: e.status } as Prisma.JsonValue,
         })
         return this.recordDenied(
@@ -1381,6 +1382,7 @@ export class ToolBrokerService {
       grantId: authorization.grant.id,
       tokenRef: authorization.grant.tokenRef,
       actingUserId,
+      tenantId: (await this.resolveActingTenantId(actingUserId)) ?? authorization.connector.tenantId ?? null,
     })
   }
 

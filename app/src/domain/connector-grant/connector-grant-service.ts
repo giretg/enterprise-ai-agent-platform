@@ -1,4 +1,4 @@
-import type { Connector, Prisma } from '@prisma/client'
+import type { Connector, ConnectorGrant, Prisma } from '@prisma/client'
 import type { AuditRepository, ConnectorGrantRepository } from '@/repositories/interfaces'
 import {
   buildGrantTokenRef,
@@ -53,6 +53,23 @@ function resolveRequestedScopes(connector: Connector, requestedScopes?: string[]
   return [...new Set(requested)]
 }
 
+function resolveGrantedScopes(params: {
+  connector: Connector
+  requestedScopes?: string[]
+  responseScope?: string
+}): string[] {
+  const expectedScopes = resolveRequestedScopes(params.connector, params.requestedScopes)
+  if (!params.responseScope) return expectedScopes
+
+  const grantedScopes = [...new Set(params.responseScope.split(' ').map(normalizeGmailScope).filter(Boolean))]
+  const expected = new Set(expectedScopes)
+  const unexpected = grantedScopes.filter((scope) => !expected.has(scope))
+  if (unexpected.length > 0) {
+    throw new Error(`OAuth provider returned unrequested scope: ${unexpected.join(', ')}`)
+  }
+  return grantedScopes
+}
+
 function resolveClientSecret(connector: Connector): string {
   if (process.env.GMAIL_OAUTH_STUB === 'true') return 'stub-client-secret'
   const alias = connector.secretAlias
@@ -99,11 +116,13 @@ async function exchangeCodeForTokens(params: {
   })
   if (!res.ok) throw new Error(`OAuth token exchange failed: ${res.status}`)
   const data = (await res.json()) as {
-    access_token: string
+    access_token?: string
     refresh_token?: string
     expires_in?: number
     scope?: string
   }
+  if (!data.access_token) throw new Error('OAuth token exchange missing access_token')
+  if (!data.refresh_token) throw new Error('OAuth token exchange missing refresh_token')
 
   let accountEmail: string | undefined
   if (process.env.GMAIL_OAUTH_STUB !== 'true') {
@@ -120,16 +139,20 @@ async function exchangeCodeForTokens(params: {
     }
   }
 
-  const scopes = data.scope ? data.scope.split(' ') : (fallbackScopes ?? [GMAIL_SCOPES.readonly])
+  const scopes = resolveGrantedScopes({
+    connector: params.connector,
+    requestedScopes: params.requestedScopes,
+    responseScope: data.scope,
+  })
 
   return {
     accessToken: data.access_token,
-    refreshToken: data.refresh_token ?? '',
+    refreshToken: data.refresh_token,
     expiresAt: data.expires_in
       ? new Date(Date.now() + data.expires_in * 1000).toISOString()
       : null,
     accountEmail,
-    scopes: scopes.map(normalizeGmailScope),
+    scopes,
   }
 }
 
@@ -161,7 +184,8 @@ async function refreshGrantTokens(
     body,
   })
   if (!res.ok) throw new Error(`OAuth refresh failed: ${res.status}`)
-  const data = (await res.json()) as { access_token: string; expires_in?: number; refresh_token?: string }
+  const data = (await res.json()) as { access_token?: string; expires_in?: number; refresh_token?: string }
+  if (!data.access_token) throw new Error('OAuth refresh missing access_token')
 
   return {
     accessToken: data.access_token,
@@ -180,6 +204,34 @@ export class ConnectorGrantService {
     private grants: ConnectorGrantRepository,
     private audit: AuditRepository,
   ) {}
+
+  private async loadGrantForAccess(params: {
+    grantId: string
+    expectedUserId?: string
+    expectedTenantId?: string | null
+    expectedConnectorId?: string
+    expectedTokenRef?: string
+    requireActive?: boolean
+  }): Promise<ConnectorGrant> {
+    const grant = await this.grants.findById(params.grantId)
+    if (!grant) throw new Error('grant not found')
+    if (params.requireActive && grant.status !== 'active') {
+      throw new Error('connector_grant_not_active')
+    }
+    if (params.expectedUserId !== undefined && grant.userId !== params.expectedUserId) {
+      throw new Error('connector_grant_forbidden')
+    }
+    if (params.expectedTenantId !== undefined && grant.tenantId !== params.expectedTenantId) {
+      throw new Error('connector_grant_forbidden')
+    }
+    if (params.expectedConnectorId !== undefined && grant.connectorId !== params.expectedConnectorId) {
+      throw new Error('connector_grant_forbidden')
+    }
+    if (params.expectedTokenRef !== undefined && grant.tokenRef !== params.expectedTokenRef) {
+      throw new Error('connector_grant_forbidden')
+    }
+    return grant
+  }
 
   buildAuthorizationUrl(params: {
     connector: Connector
@@ -283,9 +335,18 @@ export class ConnectorGrantService {
     return grant
   }
 
-  async revokeGrant(params: { grantId: string; actorId: string; actorType: 'human' | 'system' }) {
-    const grant = await this.grants.findById(params.grantId)
-    if (!grant) throw new Error('grant not found')
+  async revokeGrant(params: {
+    grantId: string
+    actorId: string
+    actorType: 'human' | 'system'
+    expectedUserId?: string
+    expectedTenantId?: string | null
+  }) {
+    const grant = await this.loadGrantForAccess({
+      grantId: params.grantId,
+      expectedUserId: params.expectedUserId,
+      expectedTenantId: params.expectedTenantId,
+    })
 
     const store = createGrantTokenStore(grant.tokenRef)
     await store.delete().catch(() => {})
@@ -335,8 +396,15 @@ export class ConnectorGrantService {
     grantId: string
     connectorId: string
     actingUserId: string
+    tenantId?: string | null
     metadata?: Prisma.JsonValue
   }) {
+    await this.loadGrantForAccess({
+      grantId: params.grantId,
+      expectedUserId: params.actingUserId,
+      expectedTenantId: params.tenantId,
+      expectedConnectorId: params.connectorId,
+    })
     await this.grants.updateStatus(params.grantId, 'expired')
     await this.audit.append({
       actorType: 'system',
@@ -358,7 +426,16 @@ export class ConnectorGrantService {
     grantId: string
     tokenRef: string
     actingUserId: string
+    tenantId: string | null
   }): Promise<string> {
+    await this.loadGrantForAccess({
+      grantId: params.grantId,
+      expectedUserId: params.actingUserId,
+      expectedTenantId: params.tenantId,
+      expectedConnectorId: params.connector.id,
+      expectedTokenRef: params.tokenRef,
+      requireActive: true,
+    })
     const store = createGrantTokenStore(params.tokenRef)
     let tokens = await store.load()
 
@@ -388,6 +465,7 @@ export class ConnectorGrantService {
           grantId: params.grantId,
           connectorId: params.connector.id,
           actingUserId: params.actingUserId,
+          tenantId: params.tenantId,
           metadata: { reason: 'refresh_failed' } as Prisma.JsonValue,
         })
         throw new Error('grant_token_expired')

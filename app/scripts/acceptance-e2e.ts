@@ -4190,6 +4190,8 @@ async function scenarioPerUserConnector(operatorId: string, agentId: string, age
     grantId: grant.id,
     actorId: operatorId,
     actorType: 'human',
+    expectedUserId: operatorId,
+    expectedTenantId: null,
   })
 
   const afterRevoke = await services.toolBroker.invoke({

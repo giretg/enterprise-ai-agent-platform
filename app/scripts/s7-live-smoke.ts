@@ -145,6 +145,8 @@ async function main() {
           grantId: existing.id,
           actorId: operator.id,
           actorType: 'human',
+          expectedUserId: operator.id,
+          expectedTenantId: operator.tenantId,
         })
       }
 
@@ -240,6 +242,8 @@ async function main() {
         grantId,
         actorId: operator.id,
         actorType: 'human',
+        expectedUserId: operator.id,
+        expectedTenantId: operator.tenantId,
       })
       pass('Grant revoke')
 

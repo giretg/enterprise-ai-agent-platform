@@ -109,6 +109,11 @@ export async function revokeConnectorGrant(input: { grantId: string }) {
       grantId,
       actorId: user.id,
       actorType: 'human',
+      expectedUserId: grant.userId === user.id ? user.id : undefined,
+      expectedTenantId:
+        user.role === 'admin' && grant.userId !== user.id
+          ? (user.tenantId ?? undefined)
+          : user.tenantId,
     })
     return ok({ revoked: true })
   } catch (e) {

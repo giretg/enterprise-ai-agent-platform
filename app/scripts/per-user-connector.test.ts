@@ -8,6 +8,9 @@
  * Authorizer csak engedélyt ad, nyers tokent sosem lát (G3 → architekturálisan kizárt).
  */
 import assert from 'node:assert/strict'
+import { mkdtemp } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import type {
   Agent,
   Connector,
@@ -15,6 +18,8 @@ import type {
   ConnectorType,
   UserStatus,
 } from '@prisma/client'
+import { ConnectorGrantService } from '../src/domain/connector-grant/connector-grant-service'
+import { createGrantTokenStore } from '../src/domain/connector-grant/grant-token-vault'
 import {
   AllowlistAuthorizer,
   type ActingUserLookup,
@@ -22,6 +27,7 @@ import {
 } from '../src/domain/tool-broker/tool-broker-service'
 import type {
   AgentRepository,
+  AuditRepository,
   ConnectorGrantRepository,
   ToolBrokerRepository,
 } from '../src/repositories/interfaces'
@@ -138,6 +144,32 @@ function buildAuthorizer(opts: FakeOpts = {}) {
     lookupRoleTemplate,
   )
   return { authorizer, grantQueries }
+}
+
+function buildGrantService(initialGrant: ConnectorGrant = grant()) {
+  let currentGrant: ConnectorGrant | null = initialGrant
+  const auditEvents: unknown[] = []
+  const grants = {
+    findById: async (id: string) => (currentGrant?.id === id ? currentGrant : null),
+    updateStatus: async (id: string, status: ConnectorGrant['status'], extra?: Partial<ConnectorGrant>) => {
+      assert.equal(currentGrant?.id, id)
+      currentGrant = { ...currentGrant, status, ...extra } as ConnectorGrant
+      return currentGrant
+    },
+    findActiveGrant: async () => (currentGrant?.status === 'active' ? currentGrant : null),
+    findByUser: async () => [],
+    create: async () => {
+      throw new Error('not needed')
+    },
+    revokeAllForUser: async () => 0,
+  } as unknown as ConnectorGrantRepository
+  const audit = {
+    append: async (event: unknown) => {
+      auditEvents.push(event)
+      return event
+    },
+  } as unknown as AuditRepository
+  return { service: new ConnectorGrantService(grants, audit), auditEvents }
 }
 
 // ---- §10.1 Funkcionális elfogadás ------------------------------------------
@@ -310,6 +342,67 @@ await test('orchestrator agent nem kap Gmail tool-t (tool-less) → DENY', async
   })
   assert.equal(result.allowed, false)
   if (!result.allowed) assert.equal(result.reason, 'orchestrator_tool_less')
+})
+
+// ---- Grant token vault / service-invariáns ---------------------------------
+
+console.log('=== connector grant service: token ownership invariant ===')
+
+const grantTokenDir = await mkdtemp(join(tmpdir(), 'connector-grant-test-'))
+process.env.CONNECTOR_GRANT_TOKEN_DIR = grantTokenDir
+
+await test('resolveAccessToken csak egyező user+tenant+connector+tokenRef mellett ad ki tokent', async () => {
+  const activeGrant = grant({
+    expiresAt: new Date(Date.now() + 3600_000),
+  })
+  const { service } = buildGrantService(activeGrant)
+  await createGrantTokenStore(activeGrant.tokenRef).save({
+    accessToken: 'access-for-user-y',
+    refreshToken: 'refresh-for-user-y',
+    expiresAt: activeGrant.expiresAt?.toISOString() ?? null,
+    scopes: [GMAIL_SCOPES.readonly],
+  })
+
+  const accessToken = await service.resolveAccessToken({
+    connector: gmailConnector(),
+    grantId: activeGrant.id,
+    tokenRef: activeGrant.tokenRef,
+    actingUserId: activeGrant.userId,
+    tenantId: activeGrant.tenantId,
+  })
+  assert.equal(accessToken, 'access-for-user-y')
+})
+
+await test('resolveAccessToken idegen acting_user esetén DENY, tokenkiadás nélkül', async () => {
+  const activeGrant = grant()
+  const { service } = buildGrantService(activeGrant)
+  await assert.rejects(
+    () =>
+      service.resolveAccessToken({
+        connector: gmailConnector(),
+        grantId: activeGrant.id,
+        tokenRef: activeGrant.tokenRef,
+        actingUserId: 'user-X',
+        tenantId: activeGrant.tenantId,
+      }),
+    /connector_grant_forbidden/,
+  )
+})
+
+await test('resolveAccessToken tokenRef-csere esetén DENY', async () => {
+  const activeGrant = grant()
+  const { service } = buildGrantService(activeGrant)
+  await assert.rejects(
+    () =>
+      service.resolveAccessToken({
+        connector: gmailConnector(),
+        grantId: activeGrant.id,
+        tokenRef: 'tenant/tenant-A/user/user-X/connector/conn-gmail',
+        actingUserId: activeGrant.userId,
+        tenantId: activeGrant.tenantId,
+      }),
+    /connector_grant_forbidden/,
+  )
 })
 
 // ---- gmail-scopes tiszta logika (§7.1 mátrix) ------------------------------
