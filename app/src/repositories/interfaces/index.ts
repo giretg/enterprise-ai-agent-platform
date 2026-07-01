@@ -403,14 +403,36 @@ export interface PlatformSettingsRepository {
 }
 
 export interface AuditRepository {
-  append(data: Omit<AuditLog, 'id' | 'seq' | 'createdAt' | 'hash' | 'prevHash'>): Promise<AuditLog>
+  /**
+   * tenantId/ticketId/conversationId opcionálisak: ha a hívó nem adja meg őket explicit,
+   * az append() a targetType/targetId-ból vagy a metadata ismert kulcsaiból származtatja
+   * őket (lásd src/lib/audit/attribution.ts) — a ~150 meglévő hívási hely emiatt nem
+   * változik.
+   */
+  append(
+    data: Omit<
+      AuditLog,
+      'id' | 'seq' | 'createdAt' | 'hash' | 'prevHash' | 'tenantId' | 'ticketId' | 'conversationId'
+    > & {
+      tenantId?: string | null
+      ticketId?: string | null
+      conversationId?: string | null
+    },
+  ): Promise<AuditLog>
   findMany(filter?: {
     action?: string | string[]
+    actorType?: AuditLog['actorType']
+    actorId?: string
     targetType?: string
     targetId?: string
+    tenantId?: string
+    ticketId?: string
+    conversationId?: string
+    since?: Date
     limit?: number
   }): Promise<AuditLog[]>
-  findAll(): Promise<AuditLog[]>
+  /** Teljes lánc vagy egy [fromSeq..toSeq] szegmens, seq szerint rendezve (§6.3 részleges verifikáció). */
+  findAll(range?: { fromSeq?: bigint; toSeq?: bigint }): Promise<AuditLog[]>
   /** Counts of audit events grouped by `action`, optionally narrowed to a set / time window (§11 governance). */
   getActionCounts(filter?: { actions?: string[]; since?: Date }): Promise<Record<string, number>>
 }

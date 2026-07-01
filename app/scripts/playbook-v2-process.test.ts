@@ -65,7 +65,16 @@ async function test(name: string, fn: () => void | Promise<void>) {
 
 class FakeAuditRepository implements AuditRepository {
   entries: AuditLog[] = []
-  async append(data: Omit<AuditLog, 'id' | 'seq' | 'createdAt' | 'hash' | 'prevHash'>) {
+  async append(
+    data: Omit<
+      AuditLog,
+      'id' | 'seq' | 'createdAt' | 'hash' | 'prevHash' | 'tenantId' | 'ticketId' | 'conversationId'
+    > & {
+      tenantId?: string | null
+      ticketId?: string | null
+      conversationId?: string | null
+    },
+  ) {
     const row = {
       ...data,
       id: randomUUID(),
@@ -96,7 +105,16 @@ class VerifyableAuditRepository implements AuditRepository {
   entries: AuditLog[] = []
   private prevHash = GENESIS_HASH
 
-  async append(data: Omit<AuditLog, 'id' | 'seq' | 'createdAt' | 'hash' | 'prevHash'>) {
+  async append(
+    data: Omit<
+      AuditLog,
+      'id' | 'seq' | 'createdAt' | 'hash' | 'prevHash' | 'tenantId' | 'ticketId' | 'conversationId'
+    > & {
+      tenantId?: string | null
+      ticketId?: string | null
+      conversationId?: string | null
+    },
+  ) {
     const seq = BigInt(this.entries.length + 1)
     const createdAt = new Date()
     const hash = computeAuditHash({

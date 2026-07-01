@@ -11,42 +11,60 @@ import type {
   ModelRoutingScope,
 } from '../interfaces'
 import { computeAuditHash, GENESIS_HASH } from '@/lib/crypto/hash-chain'
-import { chainHasGaps, reconcileAuditChain } from '@/lib/crypto/audit-backfill'
+import { assertAuditMetadataSafe } from '@/lib/audit/payload-guard'
+import { assertAuditActionRegistered } from '@/lib/audit/event-catalog'
+import { deriveAuditAttribution } from '@/lib/audit/attribution'
 
 const AUDIT_CHAIN_LOCK_KEY = 424242
 
 export class PostgresAuditRepository implements AuditRepository {
+  /**
+   * Egyetlen belépési pont az audit_log-ba (spec-invariáns #1). A hash-t INSERT ELŐTT
+   * számítjuk (nextval a seq-sequence-ről az advisory lock alatt), így a sor egy darab
+   * atomi INSERT-tel jön létre — nincs utólagos UPDATE. Ez teszi lehetővé a DB-szintű
+   * append-only kényszert (BEFORE UPDATE/DELETE trigger, lásd migrations/), mert az
+   * alkalmazás-kódnak soha nem kell UPDATE-elnie ezt a táblát.
+   */
   async append(
-    data: Omit<AuditLog, 'id' | 'seq' | 'createdAt' | 'hash' | 'prevHash'>,
+    data: Omit<
+      AuditLog,
+      'id' | 'seq' | 'createdAt' | 'hash' | 'prevHash' | 'tenantId' | 'ticketId' | 'conversationId'
+    > & {
+      tenantId?: string | null
+      ticketId?: string | null
+      conversationId?: string | null
+    },
   ): Promise<AuditLog> {
+    assertAuditActionRegistered(data.action)
+    assertAuditMetadataSafe(data.metadata)
+
     return prisma.$transaction(
       async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(${AUDIT_CHAIN_LOCK_KEY})`
 
-        let prevHash = GENESIS_HASH
-        if (await chainHasGaps(tx)) {
-          prevHash = await reconcileAuditChain(tx)
-        } else {
-          const last = await tx.auditLog.findFirst({ orderBy: { seq: 'desc' } })
-          prevHash = last?.hash ?? GENESIS_HASH
-        }
-
-        const row = await tx.auditLog.create({
-          data: { ...data, prevHash, hash: '' } as Prisma.AuditLogCreateInput,
-        })
+        const [{ nextval: seq }] = await tx.$queryRaw<{ nextval: bigint }[]>`
+          SELECT nextval('audit_log_seq_seq') AS nextval
+        `
+        const last = await tx.auditLog.findFirst({ orderBy: { seq: 'desc' } })
+        const prevHash = last?.hash ?? GENESIS_HASH
+        const createdAt = new Date()
 
         const hash = computeAuditHash({
-          seq: row.seq,
+          seq,
           prevHash,
-          actorType: row.actorType,
-          actorId: row.actorId,
-          action: row.action,
-          targetType: row.targetType,
-          targetId: row.targetId,
-          createdAt: row.createdAt,
+          actorType: data.actorType,
+          actorId: data.actorId,
+          action: data.action,
+          targetType: data.targetType,
+          targetId: data.targetId,
+          createdAt,
         })
 
-        return tx.auditLog.update({ where: { id: row.id }, data: { hash } })
+        const attribution = deriveAuditAttribution(data)
+
+        return tx.auditLog.create({
+          data: { ...data, ...attribution, seq, prevHash, hash, createdAt } as Prisma.AuditLogCreateInput,
+        })
       },
       { timeout: 60_000 },
     )
@@ -54,8 +72,14 @@ export class PostgresAuditRepository implements AuditRepository {
 
   async findMany(filter?: {
     action?: string | string[]
+    actorType?: AuditLog['actorType']
+    actorId?: string
     targetType?: string
     targetId?: string
+    tenantId?: string
+    ticketId?: string
+    conversationId?: string
+    since?: Date
     limit?: number
   }): Promise<AuditLog[]> {
     return prisma.auditLog.findMany({
@@ -63,16 +87,29 @@ export class PostgresAuditRepository implements AuditRepository {
         ...(filter?.action
           ? { action: Array.isArray(filter.action) ? { in: filter.action } : filter.action }
           : {}),
+        ...(filter?.actorType ? { actorType: filter.actorType } : {}),
+        ...(filter?.actorId ? { actorId: filter.actorId } : {}),
         ...(filter?.targetType ? { targetType: filter.targetType } : {}),
         ...(filter?.targetId ? { targetId: filter.targetId } : {}),
+        ...(filter?.tenantId ? { tenantId: filter.tenantId } : {}),
+        ...(filter?.ticketId ? { ticketId: filter.ticketId } : {}),
+        ...(filter?.conversationId ? { conversationId: filter.conversationId } : {}),
+        ...(filter?.since ? { createdAt: { gte: filter.since } } : {}),
       },
       orderBy: { seq: 'desc' },
       take: filter?.limit ?? 100,
     })
   }
 
-  async findAll(): Promise<AuditLog[]> {
-    return prisma.auditLog.findMany({ orderBy: { seq: 'asc' } })
+  async findAll(range?: { fromSeq?: bigint; toSeq?: bigint }): Promise<AuditLog[]> {
+    const seqFilter: Prisma.BigIntFilter = {}
+    if (range?.fromSeq !== undefined) seqFilter.gte = range.fromSeq
+    if (range?.toSeq !== undefined) seqFilter.lte = range.toSeq
+
+    return prisma.auditLog.findMany({
+      where: Object.keys(seqFilter).length > 0 ? { seq: seqFilter } : undefined,
+      orderBy: { seq: 'asc' },
+    })
   }
 
   async getActionCounts(filter?: {

@@ -15,7 +15,17 @@ import { services } from '../src/domain'
 async function main() {
   console.log('=== Audit hash-lánc backfill ===\n')
 
-  const head = await reconcileAuditChain()
+  // A backfill táblatulajdonosként fut, ezért az append-only trigger (lásd
+  // scripts/apply-audit-append-only-trigger.ts) letiltása/visszakapcsolása szükséges
+  // a reconcileAuditChain() UPDATE-jeihez — ez az EGYETLEN helyen engedett kivétel,
+  // egy kézzel futtatott, egyszeri admin-eszköz, nem az alkalmazás futásidejű útja.
+  await prisma.$executeRawUnsafe('ALTER TABLE audit_log DISABLE TRIGGER audit_log_append_only')
+  let head: string
+  try {
+    head = await reconcileAuditChain()
+  } finally {
+    await prisma.$executeRawUnsafe('ALTER TABLE audit_log ENABLE TRIGGER audit_log_append_only')
+  }
   console.log(`  ✓ Lánc összehangolva — head: ${head.slice(0, 16)}…`)
 
   const verify = await services.auditChain.verifyChain()

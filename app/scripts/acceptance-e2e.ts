@@ -523,6 +523,119 @@ async function scenarioAgentApi(agentId: string) {
   }
 }
 
+/**
+ * Audit Log & Observability — DB-szintű append-only kényszer + konkurrencia (spec §9:
+ * "append-only enforce", "concurrency"). A content-guard és event-catalog logikát
+ * a stub-DB-s scripts/audit-log.test.ts fedi; ez a szcenárió a valódi Postgres
+ * trigger-t és az egyidejű append()-eket teszteli élő DB-n.
+ */
+async function scenarioAuditLogHardening() {
+  console.log('\n[AL] Audit Log & Observability — append-only + concurrency (§9)')
+
+  try {
+    await repositories.audit.append({
+      actorType: 'system',
+      actorId: null,
+      agentVersion: null,
+      action: 'made.up.unregistered.action',
+      targetType: 'acceptance_probe',
+      targetId: null,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: null,
+      policyDecision: null,
+      metadata: null,
+    })
+    fail('Ismeretlen action típus elutasítva', 'nem dobott hibát')
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    if (msg.includes('Unregistered audit action')) pass('Ismeretlen action típus elutasítva')
+    else fail('Ismeretlen action típus elutasítva', msg)
+  }
+
+  try {
+    await repositories.audit.append({
+      actorType: 'system',
+      actorId: null,
+      agentVersion: null,
+      action: 'database.mode_changed',
+      targetType: 'acceptance_probe',
+      targetId: null,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: null,
+      policyDecision: null,
+      metadata: { secret: 'this-should-never-be-written' },
+    })
+    fail('Nyers content/secret payload elutasítva', 'nem dobott hibát')
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    if (msg.includes('Unsafe audit payload')) pass('Nyers content/secret payload elutasítva')
+    else fail('Nyers content/secret payload elutasítva', msg)
+  }
+
+  const probe = await repositories.audit.append({
+    actorType: 'system',
+    actorId: null,
+    agentVersion: null,
+    action: 'database.mode_changed',
+    targetType: 'acceptance_probe',
+    targetId: null,
+    modelUsed: null,
+    inputRef: null,
+    outputRef: null,
+    policyDecision: null,
+    metadata: { note: 'append-only enforce probe' },
+  })
+
+  try {
+    await prisma.$executeRaw`UPDATE audit_log SET hash = 'tampered' WHERE id = ${probe.id}::uuid`
+    fail('DB-szintű append-only — UPDATE tiltva', 'az UPDATE lefutott (trigger nem érvényesül!)')
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    if (msg.includes('append-only')) pass('DB-szintű append-only — UPDATE tiltva')
+    else fail('DB-szintű append-only — UPDATE tiltva', msg)
+  }
+
+  try {
+    await prisma.$executeRaw`DELETE FROM audit_log WHERE id = ${probe.id}::uuid`
+    fail('DB-szintű append-only — DELETE tiltva', 'a DELETE lefutott (trigger nem érvényesül!)')
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    if (msg.includes('append-only')) pass('DB-szintű append-only — DELETE tiltva')
+    else fail('DB-szintű append-only — DELETE tiltva', msg)
+  }
+
+  const before = await services.auditChain.verifyChain()
+  const CONCURRENT_APPENDS = 12
+  await Promise.all(
+    Array.from({ length: CONCURRENT_APPENDS }, (_, i) =>
+      repositories.audit.append({
+        actorType: 'system',
+        actorId: null,
+        agentVersion: null,
+        action: 'database.mode_changed',
+        targetType: 'acceptance_probe',
+        targetId: null,
+        modelUsed: null,
+        inputRef: null,
+        outputRef: null,
+        policyDecision: null,
+        metadata: { note: `concurrent append ${i}` },
+      }),
+    ),
+  )
+  const after = await services.auditChain.verifyChain()
+  if (before.ok && after.ok && after.checked === before.checked + CONCURRENT_APPENDS + 1) {
+    pass('Konkurrens append()-ek egyenes láncot adnak', `+${CONCURRENT_APPENDS + 1} sor, verifyChain zöld`)
+  } else {
+    fail(
+      'Konkurrens append()-ek egyenes láncot adnak',
+      `before=${JSON.stringify(before, (_k, v) => (typeof v === 'bigint' ? v.toString() : v))} after=${JSON.stringify(after, (_k, v) => (typeof v === 'bigint' ? v.toString() : v))}`,
+    )
+  }
+}
+
 async function ensureAcceptanceHelperAgent(operatorId: string, wikiAgentId: string) {
   const existing = await prisma.agent.findFirst({ where: { name: 'Acceptance Helper Agent' } })
   if (existing) {
@@ -4519,6 +4632,7 @@ async function main() {
     await scenarioFileEditor(operator.id, agent.id, agent.currentVersion)
     await scenarioPerUserConnector(operator.id, agent.id, agent.currentVersion)
     await scenarioAgentApi(agent.id)
+    await scenarioAuditLogHardening()
 
     const passed = results.filter((r) => r.ok && !r.skipped).length
     const skipped = results.filter((r) => r.skipped).length

@@ -1274,7 +1274,13 @@ model AuditLog {
   hash           String?
   metadata       Json?
   createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz
+  tenantId       String?        @map("tenant_id") @db.Uuid
+  ticketId       String?        @map("ticket_id") @db.Uuid
+  conversationId String?        @map("conversation_id") @db.Uuid
 
+  @@index([tenantId, createdAt])
+  @@index([ticketId])
+  @@index([conversationId])
   @@map("audit_log")
 }
 

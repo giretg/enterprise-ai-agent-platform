@@ -9,11 +9,19 @@ export type VerifyResult =
 export class AuditChainService {
   constructor(private audit: AuditRepository) {}
 
-  async verifyChain(): Promise<VerifyResult> {
-    const rows = await this.audit.findAll()
+  /**
+   * Teljes lánc (paraméter nélkül) vagy egy [fromSeq..toSeq] szegmens verifikációja
+   * (spec §6.2/§6.3 — checkpoint-alapú részleges ellenőrzés). Szegmens esetén a lánc
+   * belső konzisztenciáját nézzük: a szegmens első sorának SAJÁT tárolt `prevHash`-ét
+   * anchor-nak fogadjuk el (azt egy korábbi teljes/anchor-ellenőrzés már igazolta).
+   */
+  async verifyChain(fromSeq?: bigint, toSeq?: bigint): Promise<VerifyResult> {
+    const rows = await this.audit.findAll(
+      fromSeq !== undefined || toSeq !== undefined ? { fromSeq, toSeq } : undefined,
+    )
     if (rows.length === 0) return { ok: true, checked: 0 }
 
-    let prevHash = GENESIS_HASH
+    let prevHash = fromSeq !== undefined ? (rows[0].prevHash ?? GENESIS_HASH) : GENESIS_HASH
 
     for (const row of rows) {
       if (!row.hash) {

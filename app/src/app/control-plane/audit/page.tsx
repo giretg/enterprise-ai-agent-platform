@@ -50,12 +50,44 @@ function fileToolDetail(metadata: unknown): string | null {
 export default async function AuditLogPage({
   searchParams,
 }: {
-  searchParams: Promise<{ targetType?: string; targetId?: string }>
+  searchParams: Promise<{
+    action?: string
+    actorType?: 'human' | 'agent' | 'system'
+    actorId?: string
+    targetType?: string
+    targetId?: string
+    ticketId?: string
+    conversationId?: string
+    since?: string
+  }>
 }) {
-  const { targetType, targetId } = await searchParams
-  const isFiltered = Boolean(targetType || targetId)
-  const res = await listAuditLog({ limit: 200, targetType, targetId })
+  const { action, actorType, actorId, targetType, targetId, ticketId, conversationId, since } =
+    await searchParams
+  const isFiltered = Boolean(
+    action || actorType || actorId || targetType || targetId || ticketId || conversationId || since,
+  )
+  const res = await listAuditLog({
+    limit: 200,
+    action,
+    actorType,
+    actorId,
+    targetType,
+    targetId,
+    ticketId,
+    conversationId,
+    since: since ? new Date(since) : undefined,
+  })
   const entries = res.success ? res.data : []
+  const filterParts = [
+    action ? `action=${action}` : null,
+    actorType ? `actor=${actorType}` : null,
+    actorId ? `actorId=${actorId.slice(0, 8)}…` : null,
+    targetType ? `target=${targetType}` : null,
+    targetId ? `targetId=${targetId.slice(0, 8)}…` : null,
+    ticketId ? `ticket=${ticketId.slice(0, 8)}…` : null,
+    conversationId ? `conversation=${conversationId.slice(0, 8)}…` : null,
+    since ? `since=${since.slice(0, 10)}` : null,
+  ].filter((part): part is string => part !== null)
 
   return (
     <div className="space-y-6">
@@ -67,10 +99,7 @@ export default async function AuditLogPage({
         <div className="flex items-center gap-3">
           {isFiltered && (
             <div className="flex items-center gap-2 rounded-full border border-honey/30 bg-honey/10 px-3 py-1 text-xs text-honey">
-              <span>
-                Szűrés: {targetType ?? ''}
-                {targetId ? ` · ${targetId.slice(0, 8)}…` : ''}
-              </span>
+              <span>Szűrés: {filterParts.join(' · ')}</span>
               <Link
                 href="/control-plane/audit"
                 className="font-bold hover:text-honey/70"
@@ -87,6 +116,69 @@ export default async function AuditLogPage({
       {!isFiltered && <AuditChainPanel />}
 
       <Card>
+        <form className="mb-4 flex flex-wrap items-end gap-3 text-xs" action="/control-plane/audit">
+          <label className="flex flex-col gap-1">
+            <span className="text-ink-faint">Action</span>
+            <input
+              name="action"
+              defaultValue={action ?? ''}
+              placeholder="pl. ticket.transition"
+              className="rounded border border-line bg-transparent px-2 py-1 font-mono text-[11px]"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-ink-faint">Actor típus</span>
+            <select
+              name="actorType"
+              defaultValue={actorType ?? ''}
+              className="rounded border border-line bg-transparent px-2 py-1"
+            >
+              <option value="">bármely</option>
+              <option value="human">human</option>
+              <option value="agent">agent</option>
+              <option value="system">system</option>
+            </select>
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-ink-faint">Actor ID</span>
+            <input
+              name="actorId"
+              defaultValue={actorId ?? ''}
+              className="rounded border border-line bg-transparent px-2 py-1 font-mono text-[11px]"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-ink-faint">Ticket ID</span>
+            <input
+              name="ticketId"
+              defaultValue={ticketId ?? ''}
+              className="rounded border border-line bg-transparent px-2 py-1 font-mono text-[11px]"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-ink-faint">Conversation ID</span>
+            <input
+              name="conversationId"
+              defaultValue={conversationId ?? ''}
+              className="rounded border border-line bg-transparent px-2 py-1 font-mono text-[11px]"
+            />
+          </label>
+          <label className="flex flex-col gap-1">
+            <span className="text-ink-faint">Ettől</span>
+            <input
+              type="date"
+              name="since"
+              defaultValue={since?.slice(0, 10) ?? ''}
+              className="rounded border border-line bg-transparent px-2 py-1"
+            />
+          </label>
+          <button
+            type="submit"
+            className="rounded bg-honey/15 px-3 py-1.5 font-medium text-honey hover:bg-honey/25"
+          >
+            Szűrés
+          </button>
+        </form>
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
             <thead>

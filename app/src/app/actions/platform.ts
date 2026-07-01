@@ -2475,8 +2475,14 @@ export async function listAuditLog(input?: z.infer<typeof listAuditLogSchema>) {
     const parsed = input ? listAuditLogSchema.parse(input) : {}
     const entries = await repositories.audit.findMany({
       limit: parsed.limit ?? 100,
+      action: parsed.action,
+      actorType: parsed.actorType,
+      actorId: parsed.actorId,
       targetType: parsed.targetType,
       targetId: parsed.targetId,
+      ticketId: parsed.ticketId,
+      conversationId: parsed.conversationId,
+      since: parsed.since,
     })
     return ok(entries)
   } catch (e) {

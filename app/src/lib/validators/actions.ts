@@ -79,8 +79,14 @@ export const archiveSandboxAppSchema = z.object({
 
 export const listAuditLogSchema = z.object({
   limit: z.number().int().positive().max(500).optional(),
+  action: z.union([z.string().max(128), z.array(z.string().max(128)).max(50)]).optional(),
+  actorType: z.enum(['human', 'agent', 'system']).optional(),
+  actorId: z.string().uuid().optional(),
   targetType: z.string().max(64).optional(),
   targetId: z.string().max(128).optional(),
+  ticketId: z.string().uuid().optional(),
+  conversationId: z.string().uuid().optional(),
+  since: z.coerce.date().optional(),
 })
 
 export const transitionTicketSchema = z.object({
