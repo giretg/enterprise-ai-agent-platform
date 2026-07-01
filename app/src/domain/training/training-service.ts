@@ -180,6 +180,7 @@ export class TrainingService {
 
     const approver = await prisma.user.findUnique({ where: { id: approverId } })
     if (!approver) throw new Error('Approver not found')
+    if (!approver.role) throw new Error('Approver has no role assigned')
 
     const payload = ticket.payload as { proposedContent: string; source?: string }
 

@@ -1,6 +1,6 @@
 import type { UserRole } from '@prisma/client'
 import { prisma } from '@/lib/db'
-import type { AuthProvider, AuthUser } from './types'
+import type { AuthProvider, AuthUser, ActiveAuthUser } from './types'
 import { assertRole } from './types'
 
 function devRole(): UserRole {
@@ -18,10 +18,13 @@ export class DevAuthProvider implements AuthProvider {
     const name = process.env.DEV_AUTH_NAME ?? 'Dev Operator'
     const role = devRole()
 
+    // Dev-bypass: nincs valódi hitelesítés, ezért a `status`-t is szinkronban
+    // tartjuk az env-konfigurált szereppel — a pending-by-default (N-IAM-3) itt
+    // nem alkalmazandó, mert ez a mód eleve nem valódi onboarding-út.
     const user = await prisma.user.upsert({
       where: { externalAuthId },
-      create: { externalAuthId, email, name, role },
-      update: { email, name, role },
+      create: { externalAuthId, email, name, role, status: 'active', activatedAt: new Date() },
+      update: { email, name, role, status: 'active' },
     })
 
     return {
@@ -35,7 +38,7 @@ export class DevAuthProvider implements AuthProvider {
     }
   }
 
-  async requireRole(minimum: UserRole | UserRole[]): Promise<AuthUser> {
+  async requireRole(minimum: UserRole | UserRole[]): Promise<ActiveAuthUser> {
     const user = await this.getCurrentUser()
     if (!user) throw new Error('Unauthorized')
     assertRole(user, minimum)

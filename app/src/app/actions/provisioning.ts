@@ -2,7 +2,7 @@
 
 import { z } from 'zod'
 import { requireRole } from '@/auth'
-import type { AuthUser } from '@/auth/types'
+import type { ActiveAuthUser } from '@/auth/types'
 import { services } from '@/domain'
 import { repositories } from '@/repositories/postgres'
 import { prisma } from '@/lib/db'
@@ -19,7 +19,7 @@ import { inspectPromptSensitivity } from '@/domain/gateway/sensitivity-router'
  * ProvisioningService is kikényszeríti (CR-MVP-002).
  */
 
-function actorOf(user: AuthUser): ProvisioningActor {
+function actorOf(user: ActiveAuthUser): ProvisioningActor {
   return { type: 'user', userId: user.id, role: user.role, tenantId: user.tenantId }
 }
 

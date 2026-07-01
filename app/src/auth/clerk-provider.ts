@@ -1,9 +1,9 @@
 import { auth, currentUser } from '@clerk/nextjs/server'
 import type { UserRole } from '@prisma/client'
 import { prisma } from '@/lib/db'
-import type { AuthProvider, AuthUser } from './types'
+import type { AuthProvider, AuthUser, ActiveAuthUser } from './types'
 import { assertRole } from './types'
-import { syncClerkUser } from './clerk-user-sync'
+import { syncClerkUser, DomainNotAllowedError } from './clerk-user-sync'
 
 function readClerkRole(metadata: unknown): UserRole | null {
   const role = (metadata as { role?: string } | undefined)?.role
@@ -28,12 +28,20 @@ export class ClerkAuthProvider implements AuthProvider {
       clerkUser.username ||
       email
     const clerkRole = readClerkRole(clerkUser.publicMetadata)
-    const user = await syncClerkUser(prisma, {
-      externalAuthId,
-      email,
-      name,
-      role: clerkRole,
-    })
+    let user
+    try {
+      user = await syncClerkUser(prisma, {
+        externalAuthId,
+        email,
+        name,
+        role: clerkRole,
+      })
+    } catch (err) {
+      // §7/B: domain-allowlist elutasítás ⇒ nincs belső fiók, a hívó úgy kezeli,
+      // mintha nem lenne bejelentkezve (nem szivárog "van fiók, de tiltva" infó).
+      if (err instanceof DomainNotAllowedError) return null
+      throw err
+    }
 
     return {
       id: user.id,
@@ -46,7 +54,7 @@ export class ClerkAuthProvider implements AuthProvider {
     }
   }
 
-  async requireRole(minimum: UserRole | UserRole[]): Promise<AuthUser> {
+  async requireRole(minimum: UserRole | UserRole[]): Promise<ActiveAuthUser> {
     const { userId } = await auth()
     if (!userId) throw new Error('Unauthorized')
 

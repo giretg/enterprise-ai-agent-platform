@@ -189,7 +189,13 @@ const knowledgeBaseService = new KnowledgeBaseService(
   repositories.audit,
   ticketService,
 )
-const iamService = new IamService(repositories.audit, connectorGrantService)
+const iamService = new IamService(
+  repositories.users,
+  repositories.invitations,
+  repositories.rolePermissions,
+  repositories.audit,
+  connectorGrantService,
+)
 
 // Provisioning Assistant (§7.2/§14.2): a tenant egress-allowlist és a banki preset
 // a meglévő deny-by-default egress-policy kiterjesztése; jelenleg env-vezérelt

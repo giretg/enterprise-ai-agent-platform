@@ -22,8 +22,16 @@ import { PostgresConnectorDraftRepository } from './connector-draft-repository'
 import { PostgresMonitorRepository } from './monitor-repository'
 import { PostgresPlatformSettingsRepository } from './platform-settings-repository'
 import { PostgresRoleTemplateRepository } from './role-template-repository'
+import {
+  PostgresUserRepository,
+  PostgresInvitationRepository,
+  PostgresRolePermissionRepository,
+} from './iam-repository'
 
 export const repositories = {
+  users: new PostgresUserRepository(),
+  invitations: new PostgresInvitationRepository(),
+  rolePermissions: new PostgresRolePermissionRepository(),
   tickets: new PostgresTicketRepository(),
   agents: new PostgresAgentRepository(),
   behaviorProfiles: new PostgresBehaviorProfileRepository(),

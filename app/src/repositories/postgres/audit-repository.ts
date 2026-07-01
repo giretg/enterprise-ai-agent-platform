@@ -53,14 +53,16 @@ export class PostgresAuditRepository implements AuditRepository {
   }
 
   async findMany(filter?: {
-    action?: string
+    action?: string | string[]
     targetType?: string
     targetId?: string
     limit?: number
   }): Promise<AuditLog[]> {
     return prisma.auditLog.findMany({
       where: {
-        ...(filter?.action ? { action: filter.action } : {}),
+        ...(filter?.action
+          ? { action: Array.isArray(filter.action) ? { in: filter.action } : filter.action }
+          : {}),
         ...(filter?.targetType ? { targetType: filter.targetType } : {}),
         ...(filter?.targetId ? { targetId: filter.targetId } : {}),
       },

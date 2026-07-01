@@ -60,7 +60,12 @@ import type {
   TicketState,
   TicketTransition,
   RetentionPolicy,
+  User,
   UserRole,
+  UserStatus,
+  Invitation,
+  InvitationStatus,
+  RolePermission,
 } from '@prisma/client'
 
 export type TicketFilter = {
@@ -400,7 +405,7 @@ export interface PlatformSettingsRepository {
 export interface AuditRepository {
   append(data: Omit<AuditLog, 'id' | 'seq' | 'createdAt' | 'hash' | 'prevHash'>): Promise<AuditLog>
   findMany(filter?: {
-    action?: string
+    action?: string | string[]
     targetType?: string
     targetId?: string
     limit?: number
@@ -975,3 +980,77 @@ export type TransitionActor =
   | { type: 'human'; userId: string; role: UserRole }
   | { type: 'agent'; agentId: string }
   | { type: 'system' }
+
+// ── IAM / RBAC (Feature-spec IAM-RBAC §3) ───────────────────────────────────
+
+export interface UserRepository {
+  findById(id: string): Promise<User | null>
+  findByExternalAuthId(externalAuthId: string): Promise<User | null>
+  findMany(filter?: { tenantId?: string | null; status?: UserStatus; role?: UserRole }): Promise<User[]>
+  countActiveAdmins(tenantId: string | null, excludeUserId?: string): Promise<number>
+  create(data: {
+    externalAuthId: string
+    email: string
+    name: string
+    role?: UserRole | null
+    status?: UserStatus
+    tenantId?: string | null
+  }): Promise<User>
+  update(
+    id: string,
+    data: Partial<{
+      role: UserRole | null
+      status: UserStatus
+      tenantId: string | null
+      invitedById: string | null
+      activatedAt: Date | null
+      suspendedAt: Date | null
+      suspendedById: string | null
+      suspendedReason: string | null
+      lastLoginAt: Date | null
+      email: string
+      name: string
+    }>,
+  ): Promise<User>
+  upsertByExternalAuthId(params: {
+    externalAuthId: string
+    create: {
+      email: string
+      name: string
+      role?: UserRole | null
+      status?: UserStatus
+      tenantId?: string | null
+    }
+    update: Partial<{
+      role: UserRole | null
+      status: UserStatus
+      activatedAt: Date
+      invitedById: string | null
+      tenantId: string | null
+    }>
+  }): Promise<User>
+}
+
+export interface InvitationRepository {
+  findById(id: string): Promise<Invitation | null>
+  findByTokenHash(tokenHash: string): Promise<Invitation | null>
+  findMany(filter?: { tenantId?: string | null; status?: InvitationStatus }): Promise<Invitation[]>
+  create(data: {
+    tenantId: string | null
+    email: string
+    role: UserRole
+    tokenHash: string
+    expiresAt: Date
+    createdById: string
+  }): Promise<Invitation>
+  update(
+    id: string,
+    data: Partial<{ status: InvitationStatus; redeemedAt: Date; revokedAt: Date }>,
+  ): Promise<Invitation>
+}
+
+export interface RolePermissionRepository {
+  findAll(): Promise<RolePermission[]>
+  findByKey(permissionKey: string): Promise<RolePermission | null>
+  upsert(permissionKey: string, minRole: UserRole, description?: string | null): Promise<RolePermission>
+}

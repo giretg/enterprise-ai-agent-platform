@@ -40,6 +40,7 @@
     "test:tool-loop": "tsx scripts/agent-tool-loop.test.ts",
     "test:conversation-session": "tsx scripts/conversation-session.test.ts",
     "test:agent-registry": "tsx scripts/agent-registry-lifecycle.test.ts",
+    "test:iam-policy": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/iam-policy.test.ts",
     "test:behavior-profile": "tsx scripts/behavior-profile-cascade.test.ts",
     "test:role-template": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/role-template-enforcement.test.ts",
     "test:web-search": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/web-search-tool.test.ts",

@@ -1,12 +1,13 @@
 'use server'
 
 import { z } from 'zod'
-import type { Prisma } from '@prisma/client'
+import type { Prisma, UserRole } from '@prisma/client'
 import { mkdir, unlink, writeFile } from 'fs/promises'
 import path from 'path'
 import { clerkClient } from '@clerk/nextjs/server'
 import { getCurrentUser, requireRole } from '@/auth'
 import { hasMinimumRole } from '@/auth/types'
+import { requirePermission } from '@/auth/permission'
 import { services } from '@/domain'
 import { SandboxAppError } from '@/domain/sandbox/errors'
 import { dispatchBudgetFromEnv } from '@/domain/dispatcher/dispatcher-service'
@@ -80,8 +81,12 @@ import {
   createBoardTicketSchema,
   inviteUserSchema,
   redeemInvitationSchema,
+  revokeInvitationSchema,
+  approveUserSchema,
   changeUserRoleSchema,
-  setUserStatusSchema,
+  suspendUserSchema,
+  reactivateUserSchema,
+  updateRolePermissionSchema,
   setDispatcherControlsSchema,
   setDatabaseModeSchema,
   syncTestDatabaseSchema,
@@ -157,7 +162,9 @@ export async function listBoardAssignees() {
     const [agents, users] = await Promise.all([
       repositories.agents.findMany(),
       prisma.user.findMany({
-        where: { status: 'active' },
+        // `role: { not: null }` a deny-by-default invariáns tükre (N-IAM-3): egy
+        // aktív, de role nélküli sor (elméletileg nem fordulhat elő) sem legyen kijelölhető.
+        where: { status: 'active', role: { not: null } },
         select: { id: true, name: true, role: true },
         orderBy: { name: 'asc' },
       }),
@@ -167,7 +174,7 @@ export async function listBoardAssignees() {
       agents: agents
         .filter((agent) => agent.status === 'active')
         .map((agent) => ({ id: agent.id, name: agent.name })),
-      users,
+      users: users.filter((u): u is typeof u & { role: UserRole } => u.role !== null),
     })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list board assignees')
@@ -2167,12 +2174,23 @@ export async function approveTraining(input: { ticketId: string; overrideEval?: 
   }
 }
 
-// ── IAM / RBAC (Epik 2) ────────────────────────────────────────────────────
+// ── IAM / RBAC (Epik 2 + Feature-spec IAM-RBAC) ─────────────────────────────
+
+/** GET /me (§6) — a saját profil; `pending`/role=NULL esetén a hívó a "várj jóváhagyásra" nézetet rendereli. */
+export async function getMe() {
+  try {
+    const user = await getCurrentUser()
+    if (!user) return fail('Unauthorized')
+    return ok(user)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to load current user')
+  }
+}
 
 export async function listUsers() {
   try {
-    await requireRole('admin')
-    const users = await services.iam.listUsers()
+    const actor = await requirePermission('user.read')
+    const users = await services.iam.listUsers(actor.tenantId)
     return ok(users)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list users')
@@ -2181,8 +2199,8 @@ export async function listUsers() {
 
 export async function listInvitations() {
   try {
-    await requireRole('admin')
-    const invitations = await services.iam.listInvitations()
+    const actor = await requirePermission('user.read')
+    const invitations = await services.iam.listInvitations(actor.tenantId)
     return ok(invitations)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list invitations')
@@ -2191,7 +2209,7 @@ export async function listInvitations() {
 
 export async function inviteUser(input: { email: string; role: string }) {
   try {
-    const actor = await requireRole('admin')
+    const actor = await requirePermission('user.invite')
     const parsed = inviteUserSchema.parse(input)
     const email = parsed.email.trim().toLowerCase()
 
@@ -2217,12 +2235,28 @@ export async function inviteUser(input: { email: string; role: string }) {
       email,
       role: parsed.role,
       createdById: actor.id,
+      tenantId: actor.tenantId,
     })
     // A nyers token CSAK most adható vissza. Clerk-módban e-mail ment ki, a token csak
     // belső fallback — a UI ennek megfelelően jelzi, hogy nem kell kézzel megosztani.
     return ok({ invitationId: result.invitation.id, token: result.rawToken, clerkInvited })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to invite user')
+  }
+}
+
+export async function revokeInvitation(input: { invitationId: string }) {
+  try {
+    const actor = await requirePermission('user.invite.revoke')
+    const parsed = revokeInvitationSchema.parse(input)
+    const updated = await services.iam.revokeInvitation({
+      invitationId: parsed.invitationId,
+      actorId: actor.id,
+      actorTenantId: actor.tenantId,
+    })
+    return ok({ invitationId: updated.id, status: updated.status })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to revoke invitation')
   }
 }
 
@@ -2233,6 +2267,7 @@ export async function redeemInvitation(input: { token: string; name?: string }) 
     const parsed = redeemInvitationSchema.parse(input)
     const user = await services.iam.redeemInvitation({
       token: parsed.token,
+      email: current.email,
       externalAuthId: current.externalAuthId,
       name: parsed.name ?? current.name,
     })
@@ -2242,61 +2277,137 @@ export async function redeemInvitation(input: { token: string; name?: string }) 
   }
 }
 
+/** §7/B: önregisztrált (pending, role=NULL) fiók jóváhagyása szerepkör-kiosztással. */
+export async function approveUser(input: { targetUserId: string; role: string }) {
+  try {
+    const actor = await requirePermission('user.approve')
+    const parsed = approveUserSchema.parse(input)
+    const updated = await services.iam.approveUser({
+      targetUserId: parsed.targetUserId,
+      role: parsed.role,
+      actorId: actor.id,
+      actorTenantId: actor.tenantId,
+    })
+    return ok({ userId: updated.id, role: updated.role, status: updated.status })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to approve user')
+  }
+}
+
 export async function changeUserRole(input: { targetUserId: string; newRole: string }) {
   try {
-    const actor = await requireRole('admin')
+    const actor = await requirePermission('user.role.write')
     const parsed = changeUserRoleSchema.parse(input)
 
-    if (parsed.targetUserId === actor.id) {
-      return fail('lockout: admin cannot change own role')
-    }
-
-    const target = await prisma.user.findUnique({
-      where: { id: parsed.targetUserId },
-      select: { externalAuthId: true, role: true, status: true },
-    })
-    if (!target) return fail('user: not found')
-
-    if (target.role === 'admin' && parsed.newRole !== 'admin' && target.status === 'active') {
-      const otherActiveAdmins = await prisma.user.count({
-        where: { role: 'admin', status: 'active', id: { not: parsed.targetUserId } },
-      })
-      if (otherActiveAdmins === 0) {
-        return fail('lockout: last active admin cannot be removed')
-      }
-    }
-
-    if (isClerkEnabled()) {
-      const client = await clerkClient()
-      const clerkUser = await client.users.getUser(target.externalAuthId)
-      await client.users.updateUser(target.externalAuthId, {
-        publicMetadata: { ...clerkUser.publicMetadata, role: parsed.newRole },
-      })
-    }
-
+    // A DB a jog forrása (N-IAM-1): a self-edit/lock-out/tenant-izoláció döntést a
+    // service hozza meg ELŐSZÖR — a Clerk-metadata csak ezután, sikeres döntés után
+    // szinkronizál, különben egy elutasított (pl. lock-out) demóció mégis bekerülhetne
+    // a Clerk publicMetadata-ba, és a következő bejelentkezéskor visszaszivárogna a DB-be.
     const updated = await services.iam.changeRole({
       targetUserId: parsed.targetUserId,
       newRole: parsed.newRole,
       actorId: actor.id,
+      actorTenantId: actor.tenantId,
     })
+
+    if (isClerkEnabled()) {
+      const target = await repositories.users.findById(parsed.targetUserId)
+      if (target) {
+        const client = await clerkClient()
+        const clerkUser = await client.users.getUser(target.externalAuthId)
+        await client.users.updateUser(target.externalAuthId, {
+          publicMetadata: { ...clerkUser.publicMetadata, role: parsed.newRole },
+        })
+      }
+    }
+
     return ok({ userId: updated.id, role: updated.role })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to change role')
   }
 }
 
-export async function setUserStatus(input: { targetUserId: string; status: string }) {
+export async function suspendUser(input: { targetUserId: string; reason: string }) {
   try {
-    const actor = await requireRole('admin')
-    const parsed = setUserStatusSchema.parse(input)
-    const updated = await services.iam.setStatus({
+    const actor = await requirePermission('user.suspend')
+    const parsed = suspendUserSchema.parse(input)
+    const updated = await services.iam.suspendUser({
       targetUserId: parsed.targetUserId,
-      status: parsed.status,
+      reason: parsed.reason,
       actorId: actor.id,
+      actorTenantId: actor.tenantId,
     })
     return ok({ userId: updated.id, status: updated.status })
   } catch (e) {
-    return fail(e instanceof Error ? e.message : 'Failed to change user status')
+    return fail(e instanceof Error ? e.message : 'Failed to suspend user')
+  }
+}
+
+export async function reactivateUser(input: { targetUserId: string }) {
+  try {
+    const actor = await requirePermission('user.suspend')
+    const parsed = reactivateUserSchema.parse(input)
+    const updated = await services.iam.reactivateUser({
+      targetUserId: parsed.targetUserId,
+      actorId: actor.id,
+      actorTenantId: actor.tenantId,
+    })
+    return ok({ userId: updated.id, status: updated.status })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to reactivate user')
+  }
+}
+
+/** GET/PATCH /permissions (§6) — a deklaratív permission-mátrix. */
+export async function getPermissionMatrix() {
+  try {
+    await requirePermission('user.permission.write')
+    const matrix = await services.iam.getPermissionMatrix()
+    return ok(matrix)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to load permission matrix')
+  }
+}
+
+export async function updateRolePermission(input: { permissionKey: string; minRole: string }) {
+  try {
+    const actor = await requirePermission('user.permission.write')
+    const parsed = updateRolePermissionSchema.parse(input)
+    const updated = await services.iam.updatePermission({
+      permissionKey: parsed.permissionKey,
+      minRole: parsed.minRole,
+      actorId: actor.id,
+    })
+    return ok(updated)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update permission')
+  }
+}
+
+const ACCESS_AUDIT_ACTIONS = [
+  'user.invite.issue',
+  'user.invite.redeem',
+  'user.invite.revoke',
+  'user.selfregister',
+  'user.role.assign',
+  'user.role.change',
+  'user.suspend',
+  'user.reactivate',
+  'user.permission.update',
+  'user.authz.deny',
+]
+
+/** GET /audit/access (§6) — kizárólag a hozzáférési audit-eseménytípusok (§8.5). */
+export async function getAccessAuditLog(input?: { limit?: number }) {
+  try {
+    await requirePermission('audit.read')
+    const entries = await repositories.audit.findMany({
+      action: ACCESS_AUDIT_ACTIONS,
+      limit: input?.limit ?? 200,
+    })
+    return ok(entries)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to load access audit log')
   }
 }
 

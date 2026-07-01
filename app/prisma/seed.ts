@@ -10,6 +10,7 @@ import {
   PROVISIONING_DRAFT_CAPABILITIES,
 } from '../src/domain/provisioning/provisioning-assistant'
 import { ensureSystemRoleTemplates } from '../src/repositories/postgres/role-template-repository'
+import { ensureDefaultRolePermissions } from '../src/repositories/postgres/iam-repository'
 
 config({ path: path.join(process.cwd(), '.env.local') })
 config({ path: path.join(process.cwd(), '.env') })
@@ -1027,6 +1028,11 @@ async function main() {
   // §3.5: a két beépített rendszer-szintű szerep-sablon (worker | orchestrator).
   await ensureSystemRoleTemplates(prisma)
 
+  // IAM/RBAC §3.3: deklaratív permission-mátrix — deny-by-default a hiányzó kulcsra.
+  await ensureDefaultRolePermissions()
+
+  // A `status` alapértéke pending (deny-by-default, IAM/RBAC spec N-IAM-2/3) —
+  // a bootstrap-felhasználókat explicit `active`-ra állítjuk, különben senki nem tudna belépni.
   const admin = await prisma.user.upsert({
     where: { externalAuthId: 'seed-admin' },
     create: {
@@ -1034,6 +1040,8 @@ async function main() {
       email: 'admin@excellence.ai',
       name: 'Platform Admin',
       role: 'admin',
+      status: 'active',
+      activatedAt: new Date(),
     },
     update: {},
   })
@@ -1045,6 +1053,8 @@ async function main() {
       email: 'approver@excellence.ai',
       name: 'Kovács Anna',
       role: 'approver',
+      status: 'active',
+      activatedAt: new Date(),
     },
     update: {},
   })
@@ -1056,6 +1066,8 @@ async function main() {
       email: 'operator@excellence.ai',
       name: 'Nagy Péter',
       role: 'operator',
+      status: 'active',
+      activatedAt: new Date(),
     },
     update: {},
   })

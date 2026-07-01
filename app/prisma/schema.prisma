@@ -25,6 +25,19 @@ enum InvitationStatus {
   pending
   redeemed
   expired
+  revoked
+}
+
+enum ResourceGrantType {
+  agent
+  playbook
+  ticket_type
+}
+
+enum ResourceAccessLevel {
+  view
+  operate
+  approve
 }
 
 enum AgentStatus {
@@ -338,15 +351,26 @@ enum RetentionPolicyAppliesTo {
 }
 
 model User {
-  id             String     @id @default(uuid()) @db.Uuid
-  externalAuthId String     @unique @map("external_auth_id")
-  email          String
-  name           String
-  role           UserRole   @default(viewer)
-  status         UserStatus @default(active) @map("status")
-  tenantId       String?    @map("tenant_id") @db.Uuid
-  createdAt      DateTime   @default(now()) @map("created_at") @db.Timestamptz
+  id              String     @id @default(uuid()) @db.Uuid
+  externalAuthId  String     @unique @map("external_auth_id")
+  email           String
+  name            String
+  role            UserRole?
+  status          UserStatus @default(pending) @map("status")
+  tenantId        String?    @map("tenant_id") @db.Uuid
+  invitedById     String?    @map("invited_by") @db.Uuid
+  activatedAt     DateTime?  @map("activated_at") @db.Timestamptz
+  suspendedAt     DateTime?  @map("suspended_at") @db.Timestamptz
+  suspendedById   String?    @map("suspended_by") @db.Uuid
+  suspendedReason String?    @map("suspended_reason")
+  lastLoginAt     DateTime?  @map("last_login_at") @db.Timestamptz
+  createdAt       DateTime   @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime   @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
+  invitedBy                     User?               @relation("UserInvitedBy", fields: [invitedById], references: [id])
+  invitedUsers                  User[]              @relation("UserInvitedBy")
+  suspendedBy                   User?               @relation("UserSuspendedBy", fields: [suspendedById], references: [id])
+  suspendedUsers                User[]              @relation("UserSuspendedBy")
   approvedMemoryVersions        MemoryVersion[]     @relation("MemoryApprovedBy")
   approvedRecipeVersions        RecipeVersion[]     @relation("RecipeApprovedBy")
   approvedPlaybookVersions      PlaybookVersion[]   @relation("PlaybookApprovedBy")
@@ -360,24 +384,64 @@ model User {
   monitorDefinitionsCreated     MonitorDefinition[] @relation("MonitorDefinitionCreatedBy")
   conversationsCreated          Conversation[]      @relation("ConversationCreatedBy")
   messagesActing                Message[]           @relation("MessageActingUser")
+  resourceGrantsReceived        ResourceGrant[]     @relation("ResourceGrantUser")
+  resourceGrantsIssued          ResourceGrant[]     @relation("ResourceGrantGrantedBy")
 
+  @@index([tenantId, status])
+  @@index([tenantId, role])
   @@map("users")
 }
 
 model Invitation {
   id          String           @id @default(uuid()) @db.Uuid
+  tenantId    String?          @map("tenant_id") @db.Uuid
   email       String
   role        UserRole
   tokenHash   String           @unique @map("token_hash")
   status      InvitationStatus @default(pending)
   expiresAt   DateTime         @map("expires_at") @db.Timestamptz
   redeemedAt  DateTime?        @map("redeemed_at") @db.Timestamptz
+  revokedAt   DateTime?        @map("revoked_at") @db.Timestamptz
   createdById String           @map("created_by") @db.Uuid
   createdAt   DateTime         @default(now()) @map("created_at") @db.Timestamptz
 
   createdBy User @relation("InvitationCreatedBy", fields: [createdById], references: [id])
 
+  @@index([tenantId, status])
   @@map("invitations")
+}
+
+/**
+ * Deklaratív permission-mátrix (Feature-spec IAM/RBAC §3.3): permission_key → minimális szerep.
+ */
+model RolePermission {
+  id            String   @id @default(uuid()) @db.Uuid
+  permissionKey String   @unique @map("permission_key")
+  minRole       UserRole @map("min_role")
+  description   String?
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("role_permissions")
+}
+
+/**
+ * Fázis 3 erőforrás-szintű humán láthatóság horga (§3.4) — a Fázis 1-2-ben nincs kikényszerítve.
+ */
+model ResourceGrant {
+  id           String              @id @default(uuid()) @db.Uuid
+  tenantId     String?             @map("tenant_id") @db.Uuid
+  userId       String              @map("user_id") @db.Uuid
+  resourceType ResourceGrantType   @map("resource_type")
+  resourceId   String              @map("resource_id") @db.Uuid
+  accessLevel  ResourceAccessLevel @map("access_level")
+  grantedById  String              @map("granted_by") @db.Uuid
+  grantedAt    DateTime            @default(now()) @map("granted_at") @db.Timestamptz
+
+  user      User @relation("ResourceGrantUser", fields: [userId], references: [id])
+  grantedBy User @relation("ResourceGrantGrantedBy", fields: [grantedById], references: [id])
+
+  @@index([tenantId, userId])
+  @@map("resource_grants")
 }
 
 model Agent {

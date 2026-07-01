@@ -331,14 +331,32 @@ export const redeemInvitationSchema = z.object({
   name: z.string().trim().min(1).optional(),
 })
 
+export const revokeInvitationSchema = z.object({
+  invitationId: z.string().uuid(),
+})
+
+export const approveUserSchema = z.object({
+  targetUserId: z.string().uuid(),
+  role: userRoleSchema,
+})
+
 export const changeUserRoleSchema = z.object({
   targetUserId: z.string().uuid(),
   newRole: userRoleSchema,
 })
 
-export const setUserStatusSchema = z.object({
+export const suspendUserSchema = z.object({
   targetUserId: z.string().uuid(),
-  status: z.enum(['active', 'suspended', 'pending']),
+  reason: z.string().trim().min(1, 'Indok kötelező a felfüggesztéshez'),
+})
+
+export const reactivateUserSchema = z.object({
+  targetUserId: z.string().uuid(),
+})
+
+export const updateRolePermissionSchema = z.object({
+  permissionKey: z.string().trim().min(1),
+  minRole: userRoleSchema,
 })
 
 export const costSummarySchema = z.object({

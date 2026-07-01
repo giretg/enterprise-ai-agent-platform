@@ -1,5 +1,7 @@
 import Link from 'next/link'
+import { redirect } from 'next/navigation'
 import { getDashboardStats, listAgents, listTickets } from '@/app/actions/platform'
+import { getCurrentUser } from '@/auth'
 import { Badge, Card } from '@/components/ui/shell'
 import { DashboardAgentCard } from '@/components/agents/dashboard-agent-card'
 import { TICKET_STATE_LABELS, TICKET_STATE_TONE } from '@/lib/ticket-labels'
@@ -12,6 +14,11 @@ function greeting() {
 }
 
 export default async function DashboardPage() {
+  const me = await getCurrentUser()
+  if (me && (me.status !== 'active' || !me.role)) {
+    redirect('/control-plane/pending')
+  }
+
   const [statsRes, agentsRes, ticketsRes] = await Promise.all([
     getDashboardStats(),
     listAgents(),

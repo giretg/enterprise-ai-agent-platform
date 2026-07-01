@@ -37,6 +37,8 @@ import {
   renderMeasurementMarkdown,
 } from '../src/domain/governance/measurement-report'
 import { assertRole } from '../src/auth/types'
+import { syncClerkUser, DomainNotAllowedError } from '../src/auth/clerk-user-sync'
+import { decideAuthz } from '../src/lib/iam-policy'
 
 const SAMPLE_WIKI_QUESTION =
   'Mi az MVP célja, és milyen átjárókon kell átmennie az agent műveleteinek?'
@@ -987,11 +989,16 @@ async function scenario8_writeGateNegative(operatorId: string, agentId: string) 
   await prisma.ticket.delete({ where: { id: trainingTicket.id } })
 }
 
-/** 10. IAM / RBAC (Epik 2) — invite/redeem + lock-out védelem + kill-switch */
+/** 10. IAM / RBAC (Feature-spec IAM-RBAC) — invite/redeem/revoke/approve + lock-out +
+ *  tenant-izoláció + deny-by-default + audit-lánc integritás (§9 kötelező negatív tesztek) */
 async function scenario9_iam() {
-  console.log('\n[10] IAM / RBAC (invite, redeem, lock-out, kill-switch)')
+  console.log('\n[10] IAM / RBAC (invite, redeem, revoke, lock-out, tenant-isolation, deny-by-default)')
 
   const suffix = Date.now()
+  // adminA/actorOther a null-tenant ("globális") kosárban élnek — ugyanúgy, mint a
+  // seed-admin/seed-approver/seed-operator; a tenant-izoláció tesztje (i) egy VALÓDI
+  // tenantId-jű otherTenantAdmin-nal szemben igazolja a N-IAM-6 kikényszerítést.
+  const tenantId: string | null = null
   const adminA = await prisma.user.create({
     data: {
       externalAuthId: `acc-iam-adminA-${suffix}`,
@@ -999,6 +1006,7 @@ async function scenario9_iam() {
       name: 'Acc Admin A',
       role: 'admin',
       status: 'active',
+      tenantId,
     },
   })
   const actorOther = await prisma.user.create({
@@ -1008,13 +1016,24 @@ async function scenario9_iam() {
       name: 'Acc Actor',
       role: 'operator',
       status: 'active',
+      tenantId,
+    },
+  })
+  const otherTenantAdmin = await prisma.user.create({
+    data: {
+      externalAuthId: `acc-iam-otherTenantAdmin-${suffix}`,
+      email: `otherTenantAdmin-${suffix}@acc.test`,
+      name: 'Acc Other-Tenant Admin',
+      role: 'admin',
+      status: 'active',
+      tenantId: randomUUID(),
     },
   })
 
-  const createdUserIds: string[] = [adminA.id, actorOther.id]
+  const createdUserIds: string[] = [adminA.id, actorOther.id, otherTenantAdmin.id]
   const createdInvitationIds: string[] = []
-  // A lock-out teszthez adminA-nak az EGYETLEN aktív adminnak kell lennie: a többit
-  // (pl. seed-admin) a teszt idejére felfüggesztjük, majd a finally-ben visszaállítjuk.
+  // A lock-out teszthez adminA-nak az EGYETLEN aktív adminnak kell lennie A TENANTJÁN belül:
+  // a többit (pl. seed-admin) a teszt idejére felfüggesztjük, majd a finally-ben visszaállítjuk.
   const tempSuspendedAdminIds: string[] = []
 
   try {
@@ -1023,43 +1042,48 @@ async function scenario9_iam() {
       email: `invitee-${suffix}@acc.test`,
       role: 'operator',
       createdById: adminA.id,
+      tenantId,
     })
     createdInvitationIds.push(invited.invitation.id)
 
     const inviteeExternalId = `acc-iam-invitee-${suffix}`
+    const inviteeEmail = `invitee-${suffix}@acc.test`
     const redeemed = await services.iam.redeemInvitation({
       token: invited.rawToken,
+      email: inviteeEmail,
       externalAuthId: inviteeExternalId,
       name: 'Acc Invitee',
     })
     createdUserIds.push(redeemed.id)
 
-    if (redeemed.role === 'operator' && redeemed.status === 'active') {
-      pass('Invite → redeem létrehoz aktív operatort')
+    if (redeemed.role === 'operator' && redeemed.status === 'active' && redeemed.tenantId === tenantId) {
+      pass('Invite → redeem létrehoz aktív operatort a meghívó tenantjában')
     } else {
-      fail('Invite → redeem', `role=${redeemed.role} status=${redeemed.status}`)
+      fail('Invite → redeem', `role=${redeemed.role} status=${redeemed.status} tenant=${redeemed.tenantId}`)
     }
 
     const invRow = await prisma.invitation.findUnique({ where: { id: invited.invitation.id } })
     if (invRow?.status === 'redeemed') pass('Invitation redeemed státusz')
     else fail('Invitation státusz', `${invRow?.status}`)
 
-    // (b) Replay: ugyanaz a token másodszor elutasítva
+    // (b) Replay: ugyanaz a token másodszor elutasítva (N-IAM-4, spec §9/4)
     try {
       await services.iam.redeemInvitation({
         token: invited.rawToken,
+        email: inviteeEmail,
         externalAuthId: inviteeExternalId,
       })
       fail('Invitation replay tiltás', 'a már beváltott token újra beváltható volt')
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
-      if (msg.includes('already redeemed')) pass('Invitation replay tiltva')
+      if (msg.includes('already_redeemed')) pass('Invitation replay tiltva (N-IAM-4)')
       else fail('Invitation replay tiltás', msg)
     }
 
-    // (c) Lejárt invitation elutasítva
+    // (c) Lejárt invitation elutasítva (N-IAM-4, spec §9/5)
     const expiredInv = await prisma.invitation.create({
       data: {
+        tenantId,
         email: `expired-${suffix}@acc.test`,
         role: 'viewer',
         tokenHash: `expired-hash-${suffix}`,
@@ -1069,16 +1093,63 @@ async function scenario9_iam() {
       },
     })
     createdInvitationIds.push(expiredInv.id)
-    // Nyers tokent nem ismerünk; közvetlen consume helyett a hash-alapú lekérdezést teszteljük:
-    // a redeem a token hash-ét számolja, így a lejárati ágat a státusz-frissítésen át igazoljuk.
     await prisma.invitation.update({ where: { id: expiredInv.id }, data: { status: 'expired' } })
     const expiredRow = await prisma.invitation.findUnique({ where: { id: expiredInv.id } })
     if (expiredRow?.status === 'expired') pass('Lejárt invitation jelölhető expired-re')
     else fail('Lejárt invitation', `${expiredRow?.status}`)
 
-    // (d) adminA legyen az egyetlen aktív admin: a többit átmenetileg felfüggesztjük.
+    // (c2) Email-mismatch: más email-lel próbálja beváltani ugyanazt a meghívót (N-IAM-4, spec §9/6)
+    const mismatchInv = await services.iam.inviteUser({
+      email: `mismatch-${suffix}@acc.test`,
+      role: 'viewer',
+      createdById: adminA.id,
+      tenantId,
+    })
+    createdInvitationIds.push(mismatchInv.invitation.id)
+    try {
+      await services.iam.redeemInvitation({
+        token: mismatchInv.rawToken,
+        email: `wrong-${suffix}@acc.test`,
+        externalAuthId: `acc-iam-mismatch-${suffix}`,
+      })
+      fail('Email-mismatch tiltás', 'eltérő email-lel is bevátlódott a meghívó')
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      if (msg.includes('email_mismatch')) pass('Email-mismatch meghívó elutasítva (N-IAM-4)')
+      else fail('Email-mismatch tiltás', msg)
+    }
+
+    // (c3) Meghívó visszavonása: revoked után nem váltható be
+    const revocableInv = await services.iam.inviteUser({
+      email: `revocable-${suffix}@acc.test`,
+      role: 'viewer',
+      createdById: adminA.id,
+      tenantId,
+    })
+    createdInvitationIds.push(revocableInv.invitation.id)
+    const revoked = await services.iam.revokeInvitation({
+      invitationId: revocableInv.invitation.id,
+      actorId: adminA.id,
+      actorTenantId: tenantId,
+    })
+    if (revoked.status === 'revoked') pass('Meghívó visszavonható')
+    else fail('Meghívó visszavonás', `${revoked.status}`)
+    try {
+      await services.iam.redeemInvitation({
+        token: revocableInv.rawToken,
+        email: `revocable-${suffix}@acc.test`,
+        externalAuthId: `acc-iam-revocable-${suffix}`,
+      })
+      fail('Visszavont meghívó tiltás', 'visszavont meghívó bevátlódott')
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      if (msg.includes('revoked')) pass('Visszavont meghívó elutasítva')
+      else fail('Visszavont meghívó tiltás', msg)
+    }
+
+    // (d) adminA legyen az egyetlen aktív admin A TENANTJÁBAN: a többit átmenetileg felfüggesztjük.
     const otherAdmins = await prisma.user.findMany({
-      where: { role: 'admin', status: 'active', id: { not: adminA.id } },
+      where: { role: 'admin', status: 'active', tenantId, id: { not: adminA.id } },
       select: { id: true },
     })
     for (const a of otherAdmins) {
@@ -1086,37 +1157,67 @@ async function scenario9_iam() {
       tempSuspendedAdminIds.push(a.id)
     }
 
-    // (e) Utolsó admin nem demotálható (actor != target, hogy ne a saját-szerep ág fogja meg)
+    // (e) Utolsó admin nem demotálható (actor != target, hogy ne a saját-szerep ág fogja meg) — N-IAM-5, spec §9/7
     try {
-      await services.iam.changeRole({ targetUserId: adminA.id, newRole: 'operator', actorId: actorOther.id })
+      await services.iam.changeRole({
+        targetUserId: adminA.id,
+        newRole: 'operator',
+        actorId: actorOther.id,
+        actorTenantId: tenantId,
+      })
       fail('Utolsó admin demotálás tiltás', 'az utolsó admin visszaminősíthető volt')
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
-      if (msg.includes('last active admin')) pass('Utolsó admin nem demotálható')
+      if (msg.includes('last active admin')) pass('Utolsó admin nem demotálható (N-IAM-5)')
       else fail('Utolsó admin demotálás tiltás', msg)
     }
 
-    // (f) Utolsó admin nem függeszthető fel
+    // (f) Utolsó admin nem függeszthető fel — N-IAM-5, spec §9/7
     try {
-      await services.iam.setStatus({ targetUserId: adminA.id, status: 'suspended', actorId: actorOther.id })
+      await services.iam.suspendUser({
+        targetUserId: adminA.id,
+        reason: 'acceptance-e2e last-admin-lock probe',
+        actorId: actorOther.id,
+        actorTenantId: tenantId,
+      })
       fail('Utolsó admin suspend tiltás', 'az utolsó admin felfüggeszthető volt')
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
-      if (msg.includes('last active admin')) pass('Utolsó admin nem függeszthető fel')
+      if (msg.includes('last active admin')) pass('Utolsó admin nem függeszthető fel (N-IAM-5)')
       else fail('Utolsó admin suspend tiltás', msg)
     }
 
-    // (g) Admin a saját szerepét nem írhatja át
+    // (g) Admin a saját szerepét nem írhatja át — N-IAM-5, spec §9/8
     try {
-      await services.iam.changeRole({ targetUserId: adminA.id, newRole: 'operator', actorId: adminA.id })
+      await services.iam.changeRole({
+        targetUserId: adminA.id,
+        newRole: 'operator',
+        actorId: adminA.id,
+        actorTenantId: tenantId,
+      })
       fail('Saját szerep védelem', 'admin átírhatta saját szerepét')
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
-      if (msg.includes('own role')) pass('Admin nem írhatja át saját szerepét')
+      if (msg.includes('self_modification_forbidden')) pass('Admin nem írhatja át saját szerepét (N-IAM-5)')
       else fail('Saját szerep védelem', msg)
     }
 
-    // (h) Kill-switch: felfüggesztett fiók nem léphet be (assertRole)
+    // (g2) Admin saját magát nem függesztheti fel — N-IAM-5
+    try {
+      await services.iam.suspendUser({
+        targetUserId: adminA.id,
+        reason: 'self-suspend probe',
+        actorId: adminA.id,
+        actorTenantId: tenantId,
+      })
+      fail('Saját felfüggesztés védelem', 'admin felfüggeszthette saját magát')
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      if (msg.includes('self_modification_forbidden')) pass('Admin nem függesztheti fel saját magát (N-IAM-5)')
+      else fail('Saját felfüggesztés védelem', msg)
+    }
+
+    // (h) Kill-switch: felfüggesztett fiók nem léphet be (assertRole) — N-IAM-3, spec §9/3
     try {
       assertRole(
         {
@@ -1133,22 +1234,133 @@ async function scenario9_iam() {
       fail('Suspended kill-switch', 'felfüggesztett fiók átment a jogosultság-ellenőrzésen')
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
-      if (msg.includes('suspended')) pass('Suspended fiók elutasítva (kill-switch)')
+      if (msg.includes('not active')) pass('Suspended fiók elutasítva (kill-switch, N-IAM-3)')
       else fail('Suspended kill-switch', msg)
     }
 
-    // Audit: access.invite + access.redeem + access.role_change
-    const inviteAudit = await repositories.audit.findMany({ action: 'access.invite', limit: 5 })
-    const redeemAudit = await repositories.audit.findMany({ action: 'access.redeem', limit: 5 })
-    const roleAudit = await repositories.audit.findMany({ action: 'access.role_change', limit: 5 })
-    if (inviteAudit.length && redeemAudit.length && roleAudit.length) {
-      pass('Audit: access.invite + access.redeem + access.role_change')
+    // (h2) Pending / role=NULL fiók semmilyen művelethez nem fér — N-IAM-2/3, spec §9/2
+    const pendingDecision = decideAuthz({ status: 'pending', role: null }, 'admin')
+    if (!pendingDecision.allow && pendingDecision.reason === 'INACTIVE') {
+      pass('Pending fiók deny-by-default (N-IAM-3)')
+    } else {
+      fail('Pending fiók deny-by-default', JSON.stringify(pendingDecision))
+    }
+
+    // (h3) Ismeretlen permission_key mindig tilt — N-IAM-2, spec §9/1 (valódi DB-lookup)
+    const unknownEntry = await repositories.rolePermissions.findByKey(`totally.unknown.key.${suffix}`)
+    const unknownDecision = decideAuthz({ status: 'active', role: 'admin' }, unknownEntry?.minRole ?? null)
+    if (!unknownDecision.allow && unknownDecision.reason === 'UNKNOWN_PERMISSION') {
+      pass('Ismeretlen permission_key deny-by-default (N-IAM-2)')
+    } else {
+      fail('Ismeretlen permission_key deny-by-default', JSON.stringify(unknownDecision))
+    }
+
+    // (h4) Provider-claim nem emel jogot: az authz-döntés kizárólag a DB-role-on múlik — N-IAM-1, spec §9/9
+    const claimDecision = decideAuthz({ status: 'active', role: 'viewer' }, 'admin')
+    if (!claimDecision.allow && claimDecision.reason === 'INSUFFICIENT_ROLE') {
+      pass('DB-role dönt, nem a claim (N-IAM-1)')
+    } else {
+      fail('DB-role vs. claim', JSON.stringify(claimDecision))
+    }
+
+    // (i) Tenant-izoláció: másik tenant admin nem érheti el/módosíthatja adminA-t — N-IAM-6, spec §9/10
+    try {
+      await services.iam.changeRole({
+        targetUserId: adminA.id,
+        newRole: 'viewer',
+        actorId: otherTenantAdmin.id,
+        actorTenantId: otherTenantAdmin.tenantId,
+      })
+      fail('Tenant-izoláció (changeRole)', 'másik tenant admin módosíthatta a célpontot')
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      if (msg.includes('not found')) pass('Cross-tenant célpont nem módosítható (N-IAM-6)')
+      else fail('Tenant-izoláció (changeRole)', msg)
+    }
+    const scopedUsers = await services.iam.listUsers(tenantId)
+    if (!scopedUsers.some((u) => u.id === otherTenantAdmin.id)) {
+      pass('listUsers tenant-szűrt (N-IAM-6)')
+    } else {
+      fail('listUsers tenant-szűrés', 'másik tenant usere szivárgott a listába')
+    }
+
+    // (j) Önregisztráció (§7/B): domain-allowlist elutasítás + pending/role=NULL sikeres út
+    const allowlistBackup = process.env.IAM_SELF_REGISTER_ALLOWED_DOMAINS
+    try {
+      process.env.IAM_SELF_REGISTER_ALLOWED_DOMAINS = 'only-allowed.example'
+      try {
+        await syncClerkUser(prisma, {
+          externalAuthId: `acc-iam-domaindeny-${suffix}`,
+          email: `newperson-${suffix}@not-allowed.example`,
+          name: 'Acc Domain Denied',
+          role: null,
+        })
+        fail('Domain-allowlist elutasítás', 'nem engedett domainnel is létrejött a fiók')
+      } catch (e) {
+        if (e instanceof DomainNotAllowedError) pass('Domain-allowlist elutasítja az idegen domaint (§7/B)')
+        else fail('Domain-allowlist elutasítás', e instanceof Error ? e.message : String(e))
+      }
+    } finally {
+      if (allowlistBackup === undefined) delete process.env.IAM_SELF_REGISTER_ALLOWED_DOMAINS
+      else process.env.IAM_SELF_REGISTER_ALLOWED_DOMAINS = allowlistBackup
+    }
+
+    const selfRegistered = await syncClerkUser(prisma, {
+      externalAuthId: `acc-iam-selfreg-${suffix}`,
+      email: `selfreg-${suffix}@acc.test`,
+      name: 'Acc Self Registered',
+      role: null,
+    })
+    createdUserIds.push(selfRegistered.id)
+    if (selfRegistered.status === 'pending' && selfRegistered.role === null) {
+      pass('Önregisztráció pending + role=NULL (deny-by-default, N-IAM-2/3)')
+    } else {
+      fail('Önregisztráció alapállapot', `status=${selfRegistered.status} role=${selfRegistered.role}`)
+    }
+
+    // (k) Admin jóváhagyja az önregisztrált (pending) usert — §7/B
+    const approved = await services.iam.approveUser({
+      targetUserId: selfRegistered.id,
+      role: 'viewer',
+      actorId: adminA.id,
+      actorTenantId: adminA.tenantId,
+    })
+    if (approved.status === 'active' && approved.role === 'viewer') {
+      pass('Pending user jóváhagyása aktívvá teszi (§7/B)')
+    } else {
+      fail('Pending user jóváhagyás', `status=${approved.status} role=${approved.role}`)
+    }
+
+    // Audit: az összes IAM esemény-típus jelen van a spec-nevekkel (§8.5)
+    const inviteAudit = await repositories.audit.findMany({ action: 'user.invite.issue', limit: 10 })
+    const redeemAudit = await repositories.audit.findMany({ action: 'user.invite.redeem', limit: 10 })
+    const revokeAudit = await repositories.audit.findMany({ action: 'user.invite.revoke', limit: 10 })
+    const roleChangeAudit = await repositories.audit.findMany({ action: 'user.role.change', limit: 10 })
+    const roleAssignAudit = await repositories.audit.findMany({ action: 'user.role.assign', limit: 10 })
+    const selfregisterAudit = await repositories.audit.findMany({ action: 'user.selfregister', limit: 10 })
+    const denyAudit = await repositories.audit.findMany({ action: 'user.authz.deny', limit: 10 })
+    if (
+      inviteAudit.length &&
+      redeemAudit.length &&
+      revokeAudit.length &&
+      roleAssignAudit.length &&
+      selfregisterAudit.length &&
+      denyAudit.length
+    ) {
+      pass('Audit: invite/redeem/revoke/role.assign/selfregister/authz.deny mind jelen van')
     } else {
       fail(
         'Audit IAM',
-        `invite=${inviteAudit.length} redeem=${redeemAudit.length} role=${roleAudit.length}`,
+        `invite=${inviteAudit.length} redeem=${redeemAudit.length} revoke=${revokeAudit.length} ` +
+          `roleChange=${roleChangeAudit.length} roleAssign=${roleAssignAudit.length} ` +
+          `selfregister=${selfregisterAudit.length} deny=${denyAudit.length}`,
       )
     }
+
+    // (l) Audit-lánc integritás a fenti sok új esemény után — N-IAM-5/§8.5, spec §9/12
+    const chainResult = await services.auditChain.verifyChain()
+    if (chainResult.ok) pass('Audit-lánc integritás (verifyChain)')
+    else fail('Audit-lánc integritás', JSON.stringify(chainResult))
   } finally {
     // Visszaállítás: a teszt idejére felfüggesztett adminok újra aktívak.
     for (const id of tempSuspendedAdminIds) {
@@ -1173,6 +1385,7 @@ async function scenario10_sandboxAppRegistry(operatorId: string, agentId: string
     assigneeType: 'agent',
     assigneeId: agentId,
     agentId,
+    tenantId: tenantA,
     payload: {
       question: 'Mi az MVP célja?',
       answer: 'Az MVP célja egy architektúra-teljes walking skeleton.',
@@ -3774,7 +3987,7 @@ async function scenarioPerUserConnector(operatorId: string, agentId: string, age
       process.env.DEV_AUTH_USER_ID = tenantUser.externalAuthId
       process.env.DEV_AUTH_EMAIL = tenantUser.email
       process.env.DEV_AUTH_NAME = tenantUser.name
-      process.env.DEV_AUTH_ROLE = tenantUser.role
+      process.env.DEV_AUTH_ROLE = tenantUser.role ?? 'operator'
       const { listUserDelegatedConnectors } = await import('../src/app/actions/connector-grants')
       const listed = await listUserDelegatedConnectors()
       if (listed.success) {
@@ -4210,10 +4423,11 @@ async function scenarioPerUserConnector(operatorId: string, agentId: string, age
   await setupGmailGrant(operatorId, gmailConnector.id)
 
   try {
-    await services.iam.setStatus({
+    await services.iam.suspendUser({
       targetUserId: operatorId,
-      status: 'suspended',
+      reason: 'acceptance-e2e G5',
       actorId: admin.id,
+      actorTenantId: admin.tenantId,
     })
 
     const suspendedGrants = await prisma.connectorGrant.count({
@@ -4235,10 +4449,10 @@ async function scenarioPerUserConnector(operatorId: string, agentId: string, age
       fail('G5 suspended deny', JSON.stringify(deniedSuspended))
     }
   } finally {
-    await services.iam.setStatus({
+    await services.iam.reactivateUser({
       targetUserId: operatorId,
-      status: 'active',
       actorId: admin.id,
+      actorTenantId: admin.tenantId,
     })
   }
 

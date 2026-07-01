@@ -2,7 +2,7 @@ import { verifyWebhook } from '@clerk/nextjs/webhooks'
 import type { UserRole } from '@prisma/client'
 import type { NextRequest } from 'next/server'
 import { prisma } from '@/lib/db'
-import { syncClerkUser } from '@/auth/clerk-user-sync'
+import { syncClerkUser, DomainNotAllowedError } from '@/auth/clerk-user-sync'
 
 function readClerkRole(metadata: unknown): UserRole | null {
   const role = (metadata as { role?: string } | undefined)?.role
@@ -38,7 +38,16 @@ export async function POST(req: NextRequest) {
 
   if (evt.type === 'user.created' || evt.type === 'user.updated') {
     const user = userFromEvent(evt.data)
-    await syncClerkUser(prisma, user)
+    try {
+      await syncClerkUser(prisma, user)
+    } catch (err) {
+      if (err instanceof DomainNotAllowedError) {
+        // §7/B: az elutasítás + audit már megtörtént syncClerkUser-ben; a webhook
+        // nem retry-oltatja Clerk-kel (200 OK), csak nincs mit tovább szinkronizálni.
+        return new Response('OK', { status: 200 })
+      }
+      throw err
+    }
 
     if (evt.type === 'user.created') {
       // Clerk-meghívóval érkezett regisztráció: a megfelelő in-app meghívót beváltottra
