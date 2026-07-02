@@ -13,6 +13,7 @@ import type {
   AuditLog,
   Connector,
   ConnectorAccessMode,
+  ConnectorAuthMode,
   ConnectorDraftReviewStatus,
   ConnectorType,
   Prisma,
@@ -114,7 +115,7 @@ class FakeDraftRepo implements ConnectorDraftRepository {
       id: connectorId,
       type: 'http_api' as ConnectorType,
       name: input.name,
-      authMode: 'service',
+      authMode: input.authMode,
       scope: 'single',
       secretAlias: input.secretAliasSuggested,
       version: 1,
@@ -174,11 +175,21 @@ class FakeDraftRepo implements ConnectorDraftRepository {
     d.sandboxTestOk = ok
     return d
   }
-  async activate(params: { draftId: string; secretAlias: string; secondApproverId: string | null }) {
+  async activate(params: {
+    draftId: string
+    secretAlias: string
+    authMode: ConnectorAuthMode
+    secondApproverId: string | null
+    config?: Prisma.InputJsonValue
+  }) {
     const d = this.drafts.get(params.draftId)!
     d.secondApproverId = params.secondApproverId
     d.connector.lifecycleState = 'active'
     d.connector.secretAlias = params.secretAlias
+    d.connector.authMode = params.authMode
+    if (params.config !== undefined) {
+      d.connector.config = params.config as Prisma.JsonValue
+    }
     return d.connector
   }
   async assignToAgent(params: {
@@ -187,6 +198,59 @@ class FakeDraftRepo implements ConnectorDraftRepository {
     accessMode: ConnectorAccessMode
   }) {
     this.agentConnectors.push(params)
+  }
+  async unassignFromAgent(params: { connectorId: string; agentId: string }) {
+    const before = this.agentConnectors.length
+    this.agentConnectors = this.agentConnectors.filter(
+      (ac) => ac.connectorId !== params.connectorId || ac.agentId !== params.agentId,
+    )
+    return { removed: this.agentConnectors.length < before }
+  }
+  async updateDraftConfig(params: {
+    draftId: string
+    config: Prisma.InputJsonValue
+    authMode: ConnectorAuthMode
+    sourceHash: string
+    secretAliasSuggested: string | null
+  }) {
+    const d = this.drafts.get(params.draftId)!
+    d.connector.config = params.config as Prisma.JsonValue
+    d.connector.authMode = params.authMode
+    d.connector.secretAlias = params.secretAliasSuggested
+    d.connector.lifecycleState = 'draft'
+    d.sourceHash = params.sourceHash
+    d.validationResult = null
+    d.reviewStatus = 'pending'
+    d.reviewedById = null
+    d.secondApproverId = null
+    d.sandboxTestOk = null
+    return d
+  }
+  async reopen(params: { draftId: string }) {
+    const d = this.drafts.get(params.draftId)!
+    d.validationResult = null
+    d.reviewStatus = 'pending'
+    d.reviewedById = null
+    d.secondApproverId = null
+    d.sandboxTestOk = null
+    d.connector.lifecycleState = 'draft'
+    return d.connector
+  }
+  async decommission(params: { draftId: string }) {
+    const d = this.drafts.get(params.draftId)!
+    const affectedAgentIds = [
+      ...new Set(
+        this.agentConnectors.filter((ac) => ac.connectorId === d.connectorId).map((ac) => ac.agentId),
+      ),
+    ]
+    this.agentConnectors = this.agentConnectors.filter((ac) => ac.connectorId !== d.connectorId)
+    d.connector.lifecycleState = 'archived'
+    return { connectorId: d.connectorId, affectedAgentIds }
+  }
+  async deleteDraft(params: { draftId: string }) {
+    const d = this.drafts.get(params.draftId)!
+    this.agentConnectors = this.agentConnectors.filter((ac) => ac.connectorId !== d.connectorId)
+    this.drafts.delete(params.draftId)
   }
   async listActiveCatalog(tenantId: string | null) {
     return [...this.drafts.values()]
@@ -332,6 +396,30 @@ async function run() {
     assert.notEqual(drafts.drafts.get(created.draftId)!.connector.lifecycleState, 'active')
   })
 
+  await test('user_delegated draft authMode átkerül a connector metaadatba', async () => {
+    const { svc, drafts } = makeService()
+    const created = await svc.createConnectorDraft(
+      {
+        name: 'Google Search Console',
+        sourceType: 'manual',
+        generatedConfig: {
+          ...cleanConfig(),
+          provider: 'google_search_console',
+          authMode: 'user_delegated',
+          auth: {
+            type: 'oauth2',
+            tokenUrl: 'https://oauth2.googleapis.com/token',
+            clientId: 'google-client-id',
+            scope: 'https://www.googleapis.com/auth/webmasters.readonly',
+            secretAliasSuggested: 'google_search_console_oauth2',
+          },
+        },
+      },
+      adminActor,
+    )
+    assert.equal(drafts.drafts.get(created.draftId)!.connector.authMode, 'user_delegated')
+  })
+
   // P4: admin review jóváhagy/módosítást kér; auditált
   await test('P4: reviewConnectorDraft changes_requested + approve auditált', async () => {
     const { svc, audit } = makeService()
@@ -382,6 +470,106 @@ async function run() {
     )
   })
 
+  // oauth2 client_id: nem-titkos, a configba megy — a discovery nem tudja kitalálni,
+  // ezért az admin adja meg aktiváláskor (config.auth.clientId).
+  function oauth2ServiceConfig() {
+    return {
+      ...cleanConfig(),
+      authMode: 'service',
+      auth: { type: 'oauth2', tokenUrl: 'https://api.acme-crm.example/oauth/token', scope: 'contacts.read' },
+    }
+  }
+  async function oauth2Activatable(svc: ProvisioningService) {
+    const created = await svc.createConnectorDraft(
+      { name: 'Acme OAuth', sourceType: 'api_doc', sourceContent: 'API docs...', generatedConfig: oauth2ServiceConfig() },
+      adminActor,
+    )
+    await svc.validateConnectorDraft({ draftId: created.draftId }, adminActor)
+    await svc.reviewConnectorDraft({ draftId: created.draftId, decision: 'approve' }, adminActor)
+    await svc.testConnectorDraft({ draftId: created.draftId }, adminActor)
+    return created
+  }
+
+  await test('oauth2 service: aktiválás clientId nélkül → OAUTH_CLIENT_ID_MISSING (fail-fast)', async () => {
+    const { svc } = makeService()
+    const created = await oauth2Activatable(svc)
+    await expectError('OAUTH_CLIENT_ID_MISSING', () =>
+      svc.activateConnector({ draftId: created.draftId, secretAlias: 'env:ACME_OAUTH_SECRET' }, adminActor),
+    )
+  })
+
+  await test('oauth2 service: clientId megadva → active + config.auth.clientId perzisztálva', async () => {
+    const { svc, drafts } = makeService()
+    const created = await oauth2Activatable(svc)
+    const res = await svc.activateConnector(
+      { draftId: created.draftId, secretAlias: 'env:ACME_OAUTH_SECRET', clientId: '  acme-client-123  ' },
+      adminActor,
+    )
+    assert.equal(res.lifecycleState, 'active')
+    const stored = drafts.drafts.get(created.draftId)!.connector.config as {
+      auth: { clientId?: string; type?: string }
+    }
+    assert.equal(stored.auth.clientId, 'acme-client-123')
+    // a modellezetlen mezők (type, tokenUrl) nem vesznek el
+    assert.equal(stored.auth.type, 'oauth2')
+  })
+
+  await test('non-oauth2 (api_key): clientId nélkül is aktiválható (nincs fail-fast)', async () => {
+    const { svc } = makeService()
+    const created = await draftToActivatable(svc)
+    const res = await svc.activateConnector(
+      { draftId: created.draftId, secretAlias: 'env:ACME_CRM_SERVICE_KEY' },
+      adminActor,
+    )
+    assert.equal(res.lifecycleState, 'active')
+  })
+
+  // Gyökér-fix (a): a delegált oauth2 draftot aktiváláskor a runtime-alakra normalizáljuk
+  // (auth.scheme=bearer + oauth blokk), különben a http-api-kliens SERVICE oauth2-ként
+  // értelmezné és a per-user Bearer-injekció kimaradna → minden tool-hívás elhasalna.
+  await test('oauth2 delegated: aktiváláskor runtime-alakra normalizálódik (auth.scheme=bearer + oauth blokk)', async () => {
+    const { svc, drafts } = makeService()
+    const created = await svc.createConnectorDraft(
+      {
+        name: 'Google Search Console',
+        sourceType: 'api_doc',
+        sourceContent: 'API docs...',
+        generatedConfig: {
+          ...cleanConfig(),
+          provider: 'google_search_console',
+          authMode: 'user_delegated',
+          scopesSuggested: ['https://www.googleapis.com/auth/webmasters.readonly'],
+          auth: {
+            type: 'oauth2',
+            authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+            tokenUrl: 'https://oauth2.googleapis.com/token',
+            clientId: 'seed-client-id',
+          },
+        },
+      },
+      adminActor,
+    )
+    await svc.validateConnectorDraft({ draftId: created.draftId }, adminActor)
+    await svc.reviewConnectorDraft({ draftId: created.draftId, decision: 'approve' }, adminActor)
+    await svc.testConnectorDraft({ draftId: created.draftId }, adminActor)
+    const res = await svc.activateConnector(
+      { draftId: created.draftId, secretAlias: 'env:GSC_CLIENT_SECRET' },
+      adminActor,
+    )
+    assert.equal(res.lifecycleState, 'active')
+    const stored = drafts.drafts.get(created.draftId)!.connector.config as {
+      auth: { scheme?: string; type?: string }
+      oauth?: { authUrl?: string; tokenUrl?: string; clientId?: string; scopes?: string[] }
+    }
+    // runtime-alak: auth.scheme=bearer (NEM oauth2 client_credentials)
+    assert.equal(stored.auth.scheme, 'bearer')
+    assert.equal(stored.auth.type, undefined)
+    assert.equal(stored.oauth?.authUrl, 'https://accounts.google.com/o/oauth2/v2/auth')
+    assert.equal(stored.oauth?.tokenUrl, 'https://oauth2.googleapis.com/token')
+    assert.equal(stored.oauth?.clientId, 'seed-client-id')
+    assert.deepEqual(stored.oauth?.scopes, ['https://www.googleapis.com/auth/webmasters.readonly'])
+  })
+
   // P6: banki preset → második, eltérő admin kell (dual-control)
   await test('P6: bank preset → dual-control kötelező + második admin', async () => {
     const { svc } = makeService({ bankPreset: true })
@@ -410,6 +598,23 @@ async function run() {
     assert.equal(res.connectorId, created.connectorId)
     assert.equal(drafts.agentConnectors.length, 1)
     assert.equal(audit.byAction('provisioning.connector.assign').length, 1)
+  })
+
+  await test('P7b: unassignConnectorFromAgent emberi admin + provisioning.connector.unassign', async () => {
+    const { svc, audit, drafts } = makeService()
+    const created = await draftToActivatable(svc)
+    await svc.activateConnector({ draftId: created.draftId, secretAlias: 'env:K' }, adminActor)
+    await svc.assignConnectorToAgent(
+      { connectorId: created.connectorId, agentId: 'agent-x', accessMode: 'read' },
+      adminActor,
+    )
+    const res = await svc.unassignConnectorFromAgent(
+      { connectorId: created.connectorId, agentId: 'agent-x', reason: 'teszt' },
+      adminActor,
+    )
+    assert.equal(res.removed, true)
+    assert.equal(drafts.agentConnectors.length, 0)
+    assert.equal(audit.byAction('provisioning.connector.unassign').length, 1)
   })
 
   // P8: a forrásdoksi tartalma és secret nem kerül auditba
@@ -479,6 +684,18 @@ async function run() {
       ),
     )
     // jogosultság nem változott
+    assert.equal(drafts.agentConnectors.length, 0)
+    assert.ok(audit.byAction('provisioning.access_denied').length >= 1)
+  })
+
+  await test('PN3c: agent unassignConnectorFromAgent → PROVISIONING_FORBIDDEN', async () => {
+    const { svc, audit, drafts } = makeService()
+    await expectError('PROVISIONING_FORBIDDEN', () =>
+      svc.unassignConnectorFromAgent(
+        { connectorId: 'conn-x', agentId: 'agent-x', reason: 'nope' },
+        agentActor,
+      ),
+    )
     assert.equal(drafts.agentConnectors.length, 0)
     assert.ok(audit.byAction('provisioning.access_denied').length >= 1)
   })
@@ -602,6 +819,70 @@ async function run() {
     })
     const r = validateDraftConfig(cfg, { egressAllowlist: [...ALLOWLIST, '169.254.169.254'] })
     assert.equal(r.checks.forbiddenPatterns, 'failed')
+  })
+
+  // oauthCompleteness authMode-tudatos (draft-validator §6): a service és a delegált út
+  // MÁS mezőket követel, ezért a validátor is másképp bírálja.
+  await test('Validátor: service oauth2 tokenUrl nélkül → oauthCompleteness failed', () => {
+    const cfg = normalizeConnectorConfig({
+      ...cleanConfig(),
+      authMode: 'service',
+      auth: { type: 'oauth2', clientId: 'x', secretAliasSuggested: 'env:ACME_OAUTH' },
+    })
+    const r = validateDraftConfig(cfg, { egressAllowlist: ALLOWLIST })
+    assert.equal(r.checks.oauthCompleteness, 'failed')
+    assert.equal(r.status, 'failed')
+    assert.ok(r.errors.includes('oauth2_missing_token_url'))
+  })
+
+  await test('Validátor: service oauth2 abszolút tokenUrl-lel → oauthCompleteness passed', () => {
+    const cfg = normalizeConnectorConfig({
+      ...cleanConfig(),
+      authMode: 'service',
+      auth: { type: 'oauth2', tokenUrl: 'https://api.acme-crm.example/oauth/token', clientId: 'x' },
+    })
+    const r = validateDraftConfig(cfg, { egressAllowlist: ALLOWLIST })
+    assert.equal(r.checks.oauthCompleteness, 'passed')
+  })
+
+  await test('Validátor: user_delegated oauth2 Google-providernél tokenUrl nélkül is passed (grant-service defaultol)', () => {
+    const cfg = normalizeConnectorConfig({
+      ...cleanConfig(),
+      provider: 'google_search_console',
+      authMode: 'user_delegated',
+      auth: { type: 'oauth2', clientId: 'x', secretAliasSuggested: 'google_oauth2' },
+    })
+    const r = validateDraftConfig(cfg, { egressAllowlist: ALLOWLIST })
+    assert.equal(r.checks.oauthCompleteness, 'passed')
+  })
+
+  await test('Validátor: user_delegated oauth2 nem-Google providernél endpoint nélkül → failed', () => {
+    const cfg = normalizeConnectorConfig({
+      ...cleanConfig(),
+      provider: 'acme-crm',
+      authMode: 'user_delegated',
+      auth: { type: 'oauth2', clientId: 'x', secretAliasSuggested: 'env:ACME_OAUTH' },
+    })
+    const r = validateDraftConfig(cfg, { egressAllowlist: ALLOWLIST })
+    assert.equal(r.checks.oauthCompleteness, 'failed')
+    assert.equal(r.status, 'failed')
+    assert.ok(r.errors.includes('oauth2_delegated_missing_endpoints'))
+  })
+
+  await test('Validátor: user_delegated oauth2 nem-Google providernél authUrl+tokenUrl-lel → passed', () => {
+    const cfg = normalizeConnectorConfig({
+      ...cleanConfig(),
+      provider: 'acme-crm',
+      authMode: 'user_delegated',
+      auth: {
+        type: 'oauth2',
+        authUrl: 'https://auth.acme-crm.example/authorize',
+        tokenUrl: 'https://api.acme-crm.example/oauth/token',
+        clientId: 'x',
+      },
+    })
+    const r = validateDraftConfig(cfg, { egressAllowlist: ALLOWLIST })
+    assert.equal(r.checks.oauthCompleteness, 'passed')
   })
 
   // ── F2-P-D: HttpSandboxConnectionTester (valódi próbahívás, SSRF/egress-őr) ──
@@ -1002,6 +1283,185 @@ async function run() {
     const r = await assistant.draftConfigFromDoc({ agentId: 'agent-prov', docText: 'doc' })
     assert.equal(r.ok, false)
     if (!r.ok) assert.equal(r.detail, 'schema mismatch')
+  })
+
+  // ── Javítás + megszüntetés (edit / reopen / decommission / delete) ─────────
+
+  await test('EDIT: updateDraftConfig resetteli a gate-et (validation/review/sandbox)', async () => {
+    const { svc, drafts } = makeService()
+    const created = await draftToActivatable(svc)
+    // draftToActivatable után: validált + approved + sandbox ok
+    const before = drafts.drafts.get(created.draftId)!
+    assert.equal(before.reviewStatus, 'approved')
+    assert.equal(before.sandboxTestOk, true)
+
+    const edited = cleanConfig()
+    edited.scopesSuggested = ['contacts.read']
+    const res = await svc.updateConnectorDraftConfig(
+      { draftId: created.draftId, generatedConfig: edited },
+      adminActor,
+    )
+    assert.equal(res.lifecycleState, 'draft')
+    const after = drafts.drafts.get(created.draftId)!
+    assert.equal(after.validationResult, null)
+    assert.equal(after.reviewStatus, 'pending')
+    assert.equal(after.sandboxTestOk, null)
+    assert.equal(after.connector.lifecycleState, 'draft')
+  })
+
+  await test('EDIT: agent-aktor SOHA nem szerkeszthet draft-configot (kemény padló)', async () => {
+    const { svc, audit } = makeService({ agentCapabilities: ['provisioning.draft.create'] })
+    const created = await svc.createConnectorDraft(
+      { name: 'Acme CRM', sourceType: 'api_doc', sourceContent: 'x', generatedConfig: cleanConfig() },
+      agentActor,
+    )
+    await expectError('PROVISIONING_FORBIDDEN', () =>
+      svc.updateConnectorDraftConfig({ draftId: created.draftId, generatedConfig: cleanConfig() }, agentActor),
+    )
+    assert.ok(audit.byAction('provisioning.access_denied').length > 0)
+  })
+
+  await test('EDIT: aktív connector configját NEM lehet közvetlenül szerkeszteni', async () => {
+    const { svc } = makeService()
+    const created = await draftToActivatable(svc)
+    await svc.activateConnector(
+      { draftId: created.draftId, secretAlias: 'env:ACME_CRM_SERVICE_KEY' },
+      adminActor,
+    )
+    await expectError('DRAFT_NOT_EDITABLE', () =>
+      svc.updateConnectorDraftConfig({ draftId: created.draftId, generatedConfig: cleanConfig() }, adminActor),
+    )
+  })
+
+  await test('REOPEN: aktív → draft, gate reset + audit', async () => {
+    const { svc, drafts, audit } = makeService()
+    const created = await draftToActivatable(svc)
+    await svc.activateConnector(
+      { draftId: created.draftId, secretAlias: 'env:ACME_CRM_SERVICE_KEY' },
+      adminActor,
+    )
+    const res = await svc.reopenConnector({ draftId: created.draftId }, adminActor)
+    assert.equal(res.lifecycleState, 'draft')
+    const after = drafts.drafts.get(created.draftId)!
+    assert.equal(after.connector.lifecycleState, 'draft')
+    assert.equal(after.reviewStatus, 'pending')
+    assert.equal(after.sandboxTestOk, null)
+    assert.equal(audit.byAction('provisioning.connector.reopen').length, 1)
+  })
+
+  await test('REOPEN: nem-aktív connectorra → CONNECTOR_NOT_ACTIVE', async () => {
+    const { svc } = makeService()
+    const created = await draftToActivatable(svc)
+    await expectError('CONNECTOR_NOT_ACTIVE', () =>
+      svc.reopenConnector({ draftId: created.draftId }, adminActor),
+    )
+  })
+
+  await test('REOPEN: agent-aktor SOHA (kemény padló)', async () => {
+    const { svc } = makeService()
+    const created = await draftToActivatable(svc)
+    await svc.activateConnector(
+      { draftId: created.draftId, secretAlias: 'env:ACME_CRM_SERVICE_KEY' },
+      adminActor,
+    )
+    await expectError('PROVISIONING_FORBIDDEN', () =>
+      svc.reopenConnector({ draftId: created.draftId }, agentActor),
+    )
+  })
+
+  await test('DECOMMISSION: agent-kötések levétele + archived + affectedAgentIds + audit', async () => {
+    const { svc, drafts, audit } = makeService()
+    const created = await draftToActivatable(svc)
+    await svc.activateConnector(
+      { draftId: created.draftId, secretAlias: 'env:ACME_CRM_SERVICE_KEY' },
+      adminActor,
+    )
+    await svc.assignConnectorToAgent(
+      { connectorId: created.connectorId, agentId: 'agent-x', accessMode: 'read' },
+      adminActor,
+    )
+    const res = await svc.decommissionConnector(
+      { draftId: created.draftId, reason: 'lecserélt szolgáltató' },
+      adminActor,
+    )
+    assert.equal(res.lifecycleState, 'archived')
+    assert.deepEqual(res.affectedAgentIds, ['agent-x'])
+    assert.equal(drafts.drafts.get(created.draftId)!.connector.lifecycleState, 'archived')
+    assert.equal(drafts.agentConnectors.filter((ac) => ac.connectorId === created.connectorId).length, 0)
+    const ev = audit.byAction('provisioning.connector.decommission')
+    assert.equal(ev.length, 1)
+    // Az indok auditba kerül, secret SOHA.
+    assert.equal((ev[0].metadata as Record<string, unknown>).reason, 'lecserélt szolgáltató')
+  })
+
+  await test('DECOMMISSION: bank-preset → dual-control kötelező', async () => {
+    const { svc } = makeService({ bankPreset: true })
+    const created = await draftToActivatable(svc)
+    await svc.activateConnector(
+      { draftId: created.draftId, secretAlias: 'env:ACME_CRM_SERVICE_KEY', approverId: 'user-2', criticality: 'L1' },
+      adminActor,
+    )
+    await expectError('DUAL_CONTROL_REQUIRED', () =>
+      svc.decommissionConnector({ draftId: created.draftId }, adminActor),
+    )
+  })
+
+  await test('DECOMMISSION: L2 + approver === aktor → APPROVAL_SAME_ACTOR', async () => {
+    const { svc } = makeService()
+    const created = await draftToActivatable(svc)
+    await svc.activateConnector(
+      { draftId: created.draftId, secretAlias: 'env:ACME_CRM_SERVICE_KEY', approverId: 'user-2', criticality: 'L2' },
+      adminActor,
+    )
+    await expectError('APPROVAL_SAME_ACTOR', () =>
+      svc.decommissionConnector(
+        { draftId: created.draftId, criticality: 'L2', approverId: 'user-admin' },
+        adminActor,
+      ),
+    )
+  })
+
+  await test('DECOMMISSION: agent-aktor SOHA (kemény padló)', async () => {
+    const { svc } = makeService()
+    const created = await draftToActivatable(svc)
+    await svc.activateConnector(
+      { draftId: created.draftId, secretAlias: 'env:ACME_CRM_SERVICE_KEY' },
+      adminActor,
+    )
+    await expectError('PROVISIONING_FORBIDDEN', () =>
+      svc.decommissionConnector({ draftId: created.draftId }, agentActor),
+    )
+  })
+
+  await test('DELETE: sosem aktivált draft hard-delete + audit', async () => {
+    const { svc, drafts, audit } = makeService()
+    const created = await svc.createConnectorDraft(
+      { name: 'Acme CRM', sourceType: 'api_doc', sourceContent: 'x', generatedConfig: cleanConfig() },
+      adminActor,
+    )
+    await svc.deleteConnectorDraft({ draftId: created.draftId, reason: 'elrontott draft' }, adminActor)
+    assert.equal(drafts.drafts.get(created.draftId), undefined)
+    assert.equal(audit.byAction('provisioning.draft.delete').length, 1)
+  })
+
+  await test('DELETE: aktivált connectort NEM lehet hard-delete-elni → DRAFT_ALREADY_ACTIVATED', async () => {
+    const { svc } = makeService()
+    const created = await draftToActivatable(svc)
+    await svc.activateConnector(
+      { draftId: created.draftId, secretAlias: 'env:ACME_CRM_SERVICE_KEY' },
+      adminActor,
+    )
+    await expectError('DRAFT_ALREADY_ACTIVATED', () =>
+      svc.deleteConnectorDraft({ draftId: created.draftId }, adminActor),
+    )
+  })
+
+  await test('DELETE: agent-aktor SOHA (kemény padló)', async () => {
+    const { svc } = makeService()
+    const created = await draftToActivatable(svc)
+    await expectError('PROVISIONING_FORBIDDEN', () =>
+      svc.deleteConnectorDraft({ draftId: created.draftId }, agentActor),
+    )
   })
 
   console.log('')

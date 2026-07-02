@@ -1,11 +1,12 @@
 import type {
   Connector,
   ConnectorAccessMode,
+  ConnectorAuthMode,
   ConnectorDraft,
   ConnectorDraftReviewStatus,
   ConnectorType,
-  Prisma,
 } from '@prisma/client'
+import { Prisma } from '@prisma/client'
 import { prisma } from '@/lib/db'
 import type {
   ConnectorDraftRepository,
@@ -27,7 +28,7 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
         data: {
           type: 'http_api',
           name: input.name,
-          authMode: 'service',
+          authMode: input.authMode,
           scope: 'single',
           secretAlias: input.secretAliasSuggested,
           config: input.config,
@@ -108,7 +109,9 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
   async activate(params: {
     draftId: string
     secretAlias: string
+    authMode: ConnectorAuthMode
     secondApproverId: string | null
+    config?: Prisma.InputJsonValue
   }): Promise<Connector> {
     return prisma.$transaction(async (tx) => {
       const draft = await tx.connectorDraft.update({
@@ -117,7 +120,12 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
       })
       return tx.connector.update({
         where: { id: draft.connectorId },
-        data: { lifecycleState: 'active', secretAlias: params.secretAlias },
+        data: {
+          lifecycleState: 'active',
+          secretAlias: params.secretAlias,
+          authMode: params.authMode,
+          ...(params.config !== undefined ? { config: params.config } : {}),
+        },
       })
     })
   }
@@ -140,6 +148,145 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
         accessMode: params.accessMode,
         ...(params.secretAlias ? { secretAlias: params.secretAlias } : {}),
       },
+    })
+  }
+
+  async unassignFromAgent(params: {
+    connectorId: string
+    agentId: string
+  }): Promise<{ removed: boolean }> {
+    const result = await prisma.agentConnector.deleteMany({
+      where: { agentId: params.agentId, connectorId: params.connectorId },
+    })
+    return { removed: result.count > 0 }
+  }
+
+  async updateDraftConfig(params: {
+    draftId: string
+    config: Prisma.InputJsonValue
+    authMode: ConnectorAuthMode
+    sourceHash: string
+    secretAliasSuggested: string | null
+  }): Promise<ConnectorDraftWithConnector> {
+    return prisma.$transaction(async (tx) => {
+      const draft = await tx.connectorDraft.findUnique({
+        where: { id: params.draftId },
+        include: { connector: true },
+      })
+      if (!draft) throw new Error('draft not found')
+      // Kemény padló: csak még NEM aktivált connector configja írható itt felül.
+      if (draft.connector.lifecycleState !== 'draft' && draft.connector.lifecycleState !== 'validated') {
+        throw new Error('only draft/validated connector config is editable')
+      }
+
+      await tx.connector.update({
+        where: { id: draft.connectorId },
+        data: {
+          config: params.config,
+          authMode: params.authMode,
+          secretAlias: params.secretAliasSuggested,
+          lifecycleState: 'draft',
+        },
+      })
+      // A config megváltozott → a gate resetelődik, hogy újra végigfusson.
+      return tx.connectorDraft.update({
+        where: { id: params.draftId },
+        data: {
+          sourceHash: params.sourceHash,
+          validationResult: Prisma.DbNull,
+          reviewStatus: 'pending',
+          reviewedById: null,
+          secondApproverId: null,
+          sandboxTestOk: null,
+        },
+        include: { connector: true },
+      })
+    })
+  }
+
+  async reopen(params: { draftId: string }): Promise<Connector> {
+    return prisma.$transaction(async (tx) => {
+      const draft = await tx.connectorDraft.findUnique({
+        where: { id: params.draftId },
+        include: { connector: true },
+      })
+      if (!draft) throw new Error('draft not found')
+      if (draft.connector.lifecycleState !== 'active') {
+        throw new Error('only an active connector can be reopened')
+      }
+      // A gate resetelése — a javított config újra végigmegy a valid→review→sandbox úton.
+      await tx.connectorDraft.update({
+        where: { id: params.draftId },
+        data: {
+          validationResult: Prisma.DbNull,
+          reviewStatus: 'pending',
+          reviewedById: null,
+          secondApproverId: null,
+          sandboxTestOk: null,
+        },
+      })
+      // Offline: a Tool Broker `lifecycle_state != active` esetén tilt. Az agent-kötéseket
+      // és capability-ket szándékosan MEGTARTJUK — újraaktiváláskor a wiring visszaáll.
+      return tx.connector.update({
+        where: { id: draft.connectorId },
+        data: { lifecycleState: 'draft' },
+      })
+    })
+  }
+
+  async decommission(params: {
+    draftId: string
+  }): Promise<{ connectorId: string; affectedAgentIds: string[] }> {
+    return prisma.$transaction(async (tx) => {
+      const draft = await tx.connectorDraft.findUnique({
+        where: { id: params.draftId },
+        include: { connector: true },
+      })
+      if (!draft) throw new Error('draft not found')
+      if (draft.connector.lifecycleState !== 'active') {
+        throw new Error('only an active connector can be decommissioned')
+      }
+      const connectorId = draft.connectorId
+
+      // 1) Érintett agentek — a capability-synchez (a hívó action recomputeolja).
+      const links = await tx.agentConnector.findMany({
+        where: { connectorId },
+        select: { agentId: true },
+      })
+      const affectedAgentIds = [...new Set(links.map((l) => l.agentId))]
+
+      // 2) Agent-kötések levétele.
+      await tx.agentConnector.deleteMany({ where: { connectorId } })
+
+      // 3) Aktív user-grantek auditált visszavonása (revoked).
+      await tx.connectorGrant.updateMany({
+        where: { connectorId, status: 'active' },
+        data: { status: 'revoked', revokedAt: new Date() },
+      })
+
+      // 4) Lifecycle → archived (nem hard-delete; az előzmény és az audit-lánc megmarad).
+      await tx.connector.update({
+        where: { id: connectorId },
+        data: { lifecycleState: 'archived' },
+      })
+
+      return { connectorId, affectedAgentIds }
+    })
+  }
+
+  async deleteDraft(params: { draftId: string }): Promise<void> {
+    await prisma.$transaction(async (tx) => {
+      const draft = await tx.connectorDraft.findUnique({
+        where: { id: params.draftId },
+        include: { connector: true },
+      })
+      if (!draft) throw new Error('draft not found')
+      // Csak SOSEM aktivált draft törölhető véglegesen (aktív connectorra archiválás jár).
+      if (draft.connector.lifecycleState !== 'draft' && draft.connector.lifecycleState !== 'validated') {
+        throw new Error('only a never-activated draft can be hard-deleted')
+      }
+      // A connector-sor törlése kaszkádban viszi a draftot, agent_connectors/grantek sorait.
+      await tx.connector.delete({ where: { id: draft.connectorId } })
     })
   }
 

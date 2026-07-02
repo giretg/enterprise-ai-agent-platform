@@ -3,6 +3,8 @@
 import { useRouter } from 'next/navigation'
 import { useState, useTransition } from 'react'
 import { updateHttpApiConnectorForAgent } from '@/app/actions/platform'
+import { unassignConnectorFromAgent } from '@/app/actions/provisioning'
+import { startConnectorOAuth } from '@/app/actions/connector-grants'
 import { Badge } from '@/components/ui/shell'
 import { connectorAccessLabel } from '@/lib/agent-profile-labels'
 
@@ -97,7 +99,16 @@ function parseAuthProfilesJson(value: string): AuthProfiles | undefined {
 function readInitialConfig(config: unknown) {
   const raw = isRecord(config) ? config : {}
   const auth = isRecord(raw.auth) ? raw.auth : {}
-  const authScheme: 'header' | 'bearer' = auth.scheme === 'bearer' ? 'bearer' : 'header'
+  const oauth = isRecord(raw.oauth) ? raw.oauth : {}
+  // Auto-consent (user-delegált) connector jele: a config.oauth.authUrl.
+  const isDelegated = typeof oauth.authUrl === 'string' && oauth.authUrl.trim().length > 0
+  const authScheme: 'header' | 'bearer' | 'oauth2' | 'oauth2_delegated' = isDelegated
+    ? 'oauth2_delegated'
+    : auth.scheme === 'oauth2'
+      ? 'oauth2'
+      : auth.scheme === 'bearer'
+        ? 'bearer'
+        : 'header'
   const endpoints = Array.isArray(raw.endpoints)
     ? raw.endpoints
         .filter(isRecord)
@@ -119,6 +130,29 @@ function readInitialConfig(config: unknown) {
     authScheme,
     authHeader:
       authScheme === 'header' && typeof auth.header === 'string' ? auth.header : 'X-Api-Key',
+    tokenUrl: isDelegated
+      ? typeof oauth.tokenUrl === 'string'
+        ? oauth.tokenUrl
+        : ''
+      : authScheme === 'oauth2' && typeof auth.tokenUrl === 'string'
+        ? auth.tokenUrl
+        : '',
+    clientId: isDelegated
+      ? typeof oauth.clientId === 'string'
+        ? oauth.clientId
+        : ''
+      : authScheme === 'oauth2' && typeof auth.clientId === 'string'
+        ? auth.clientId
+        : '',
+    scope: isDelegated
+      ? Array.isArray(oauth.scopes)
+        ? oauth.scopes.filter((s): s is string => typeof s === 'string').join(' ')
+        : ''
+      : authScheme === 'oauth2' && typeof auth.scope === 'string'
+        ? auth.scope
+        : '',
+    authUrl: isDelegated && typeof oauth.authUrl === 'string' ? oauth.authUrl : '',
+    userInfoUrl: isDelegated && typeof oauth.userInfoUrl === 'string' ? oauth.userInfoUrl : '',
     description: typeof raw.description === 'string' ? raw.description : '',
     authProfilesText: objectJson(raw.authProfiles),
     defaultAuthProfile: typeof raw.defaultAuthProfile === 'string' ? raw.defaultAuthProfile : '',
@@ -151,9 +185,18 @@ function EditApiConnectorForm({
 
   const [name, setName] = useState(item.connector.name)
   const [baseUrl, setBaseUrl] = useState(initial.baseUrl)
-  const [authScheme, setAuthScheme] = useState<'header' | 'bearer'>(initial.authScheme)
+  const [authScheme, setAuthScheme] = useState<'header' | 'bearer' | 'oauth2' | 'oauth2_delegated'>(
+    initial.authScheme,
+  )
   const [authHeader, setAuthHeader] = useState(initial.authHeader)
   const [apiKey, setApiKey] = useState('')
+  const [tokenUrl, setTokenUrl] = useState(initial.tokenUrl)
+  const [clientId, setClientId] = useState(initial.clientId)
+  const [scope, setScope] = useState(initial.scope)
+  const [authUrl, setAuthUrl] = useState(initial.authUrl)
+  const [userInfoUrl, setUserInfoUrl] = useState(initial.userInfoUrl)
+  const [clientSecret, setClientSecret] = useState('')
+  const [refreshToken, setRefreshToken] = useState('')
   const [accessMode, setAccessMode] = useState<'read' | 'write'>(item.accessMode)
   const [description, setDescription] = useState(initial.description)
   const [authProfilesText, setAuthProfilesText] = useState(initial.authProfilesText)
@@ -167,62 +210,113 @@ function EditApiConnectorForm({
     setEndpoints((prev) => prev.map((row, i) => (i === index ? { ...row, ...patch } : row)))
   }
 
+  // A mentés újrahasználható: a sima „Frissítés" és az „Auto-consent kezdeményezése"
+  // is ezt hívja (utóbbi mentés után indítja a consent-flow-t). Fejléc-JSON hibánál
+  // null-t ad vissza (a hibát már beállította).
+  async function performUpdate(): Promise<{ ok: boolean; name?: string } | null> {
+    setError(null)
+    setDone(null)
+    const cleanedEndpoints = endpoints
+      .map((endpoint) => ({
+        ...endpoint,
+        path: endpoint.path.trim(),
+        description: endpoint.description.trim(),
+        profile: endpoint.profile.trim(),
+      }))
+      .filter((endpoint) => endpoint.path.length > 0)
+      .map((endpoint) => ({
+        method: endpoint.method,
+        path: endpoint.path,
+        ...(endpoint.description ? { description: endpoint.description } : {}),
+        ...(endpoint.idempotent ? { idempotent: true } : {}),
+        ...(endpoint.profile ? { profile: endpoint.profile } : {}),
+      }))
+    let requestHeaders: Record<string, string> | undefined
+    let writeHeaders: Record<string, string> | undefined
+    let authProfiles: AuthProfiles | undefined
+    try {
+      authProfiles = parseAuthProfilesJson(authProfilesText)
+      requestHeaders = parseHeaderJson('Minden hívás fejlécei', requestHeadersText)
+      writeHeaders = parseHeaderJson('Író hívások fejlécei', writeHeadersText)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Hibás fejléc JSON.')
+      return null
+    }
+
+    const res = await updateHttpApiConnectorForAgent({
+      agentId,
+      connectorId: item.connector.id,
+      name: name.trim(),
+      baseUrl: baseUrl.trim(),
+      authScheme,
+      ...(authScheme === 'header' ? { authHeader: authHeader.trim() } : {}),
+      ...(authScheme === 'oauth2'
+        ? {
+            tokenUrl: tokenUrl.trim(),
+            clientId: clientId.trim(),
+            ...(scope.trim() ? { scope: scope.trim() } : {}),
+            ...(clientSecret.trim() ? { clientSecret: clientSecret.trim() } : {}),
+            ...(refreshToken.trim() ? { refreshToken: refreshToken.trim() } : {}),
+          }
+        : authScheme === 'oauth2_delegated'
+          ? {
+              authUrl: authUrl.trim(),
+              tokenUrl: tokenUrl.trim(),
+              clientId: clientId.trim(),
+              scope: scope.trim(),
+              ...(clientSecret.trim() ? { clientSecret: clientSecret.trim() } : {}),
+              ...(userInfoUrl.trim() ? { userInfoUrl: userInfoUrl.trim() } : {}),
+            }
+          : apiKey.trim()
+            ? { apiKey: apiKey.trim() }
+            : {}),
+      ...(description.trim() ? { description: description.trim() } : {}),
+      ...(authProfiles ? { authProfiles } : {}),
+      ...(defaultAuthProfile.trim() ? { defaultAuthProfile: defaultAuthProfile.trim() } : {}),
+      ...(requestHeaders ? { requestHeaders } : {}),
+      ...(writeHeaders ? { writeHeaders } : {}),
+      accessMode,
+      restrictToEndpoints,
+      ...(cleanedEndpoints.length > 0 ? { endpoints: cleanedEndpoints } : {}),
+    })
+
+    if (res.success) return { ok: true, name: res.data.name }
+    setError(res.error)
+    return { ok: false }
+  }
+
   function submit() {
     startTransition(async () => {
-      setError(null)
-      setDone(null)
-      const cleanedEndpoints = endpoints
-        .map((endpoint) => ({
-          ...endpoint,
-          path: endpoint.path.trim(),
-          description: endpoint.description.trim(),
-          profile: endpoint.profile.trim(),
-        }))
-        .filter((endpoint) => endpoint.path.length > 0)
-        .map((endpoint) => ({
-          method: endpoint.method,
-          path: endpoint.path,
-          ...(endpoint.description ? { description: endpoint.description } : {}),
-          ...(endpoint.idempotent ? { idempotent: true } : {}),
-          ...(endpoint.profile ? { profile: endpoint.profile } : {}),
-        }))
-      let requestHeaders: Record<string, string> | undefined
-      let writeHeaders: Record<string, string> | undefined
-      let authProfiles: AuthProfiles | undefined
-      try {
-        authProfiles = parseAuthProfilesJson(authProfilesText)
-        requestHeaders = parseHeaderJson('Minden hívás fejlécei', requestHeadersText)
-        writeHeaders = parseHeaderJson('Író hívások fejlécei', writeHeadersText)
-      } catch (e) {
-        setError(e instanceof Error ? e.message : 'Hibás fejléc JSON.')
+      const res = await performUpdate()
+      if (res?.ok) {
+        setDone(`„${res.name}" frissítve.`)
+        setApiKey('')
+        setClientSecret('')
+        setRefreshToken('')
+        router.refresh()
+        onSaved()
+      }
+    })
+  }
+
+  // Mentés → azonnal indítja az OAuth consent-flow-t. A connector a mentéssel
+  // user_delegated lesz (config.oauth + plain client_secret a store-ban), így a
+  // startConnectorOAuth build-eli a consent URL-t és átirányít.
+  function initiateConsent() {
+    startTransition(async () => {
+      const saved = await performUpdate()
+      if (!saved?.ok) return
+      const res = await startConnectorOAuth({ connectorId: item.connector.id })
+      if (!res.success) {
+        setError(res.error)
         return
       }
-
-      const res = await updateHttpApiConnectorForAgent({
-        agentId,
-        connectorId: item.connector.id,
-        name: name.trim(),
-        baseUrl: baseUrl.trim(),
-        authScheme,
-        ...(authScheme === 'header' ? { authHeader: authHeader.trim() } : {}),
-        ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
-        ...(description.trim() ? { description: description.trim() } : {}),
-        ...(authProfiles ? { authProfiles } : {}),
-        ...(defaultAuthProfile.trim() ? { defaultAuthProfile: defaultAuthProfile.trim() } : {}),
-        ...(requestHeaders ? { requestHeaders } : {}),
-        ...(writeHeaders ? { writeHeaders } : {}),
-        accessMode,
-        restrictToEndpoints,
-        ...(cleanedEndpoints.length > 0 ? { endpoints: cleanedEndpoints } : {}),
-      })
-
-      if (res.success) {
-        setDone(`„${res.data.name}" frissítve.`)
-        setApiKey('')
+      if ('stub' in res.data && res.data.stub) {
+        setDone('Fiók összekötve (stub).')
         router.refresh()
         onSaved()
       } else {
-        setError(res.error)
+        window.location.href = res.data.url
       }
     })
   }
@@ -235,6 +329,14 @@ function EditApiConnectorForm({
         submit()
       }}
     >
+      {authScheme === 'oauth2_delegated' && (
+        <p className="rounded-lg border border-sage/30 bg-sage/10 px-3 py-2 text-xs text-sage">
+          Automatikus hozzájárulás: mentés után az „Auto-consent kezdeményezése&rdquo; gombbal
+          egy kattintással engedélyezhető (nincs kézi refresh token). A redirect URI a platform közös
+          callbackje: <code>/api/connectors/oauth/callback</code> — ezt vedd fel az OAuth-app
+          engedélyezett redirect URI-jai közé.
+        </p>
+      )}
       <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
         <label className="block text-sm">
           <span className="text-ink-soft">Név</span>
@@ -253,11 +355,15 @@ function EditApiConnectorForm({
           <span className="text-ink-soft">Hitelesítés módja</span>
           <select
             value={authScheme}
-            onChange={(e) => setAuthScheme(e.target.value as 'header' | 'bearer')}
+            onChange={(e) =>
+              setAuthScheme(e.target.value as 'header' | 'bearer' | 'oauth2' | 'oauth2_delegated')
+            }
             className={INPUT}
           >
             <option value="header">Egyedi fejléc</option>
             <option value="bearer">Bearer token</option>
+            <option value="oauth2">OAuth2 (kézi refresh_token grant)</option>
+            <option value="oauth2_delegated">OAuth2 – automatikus hozzájárulás (user-delegált)</option>
           </select>
         </label>
         {authScheme === 'header' && (
@@ -271,17 +377,88 @@ function EditApiConnectorForm({
             />
           </label>
         )}
-        <label className="block text-sm">
-          <span className="text-ink-soft">Új API kulcs</span>
-          <input
-            type="password"
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder="Üresen hagyva marad a jelenlegi"
-            autoComplete="off"
-            className={INPUT}
-          />
-        </label>
+        {authScheme !== 'oauth2' && authScheme !== 'oauth2_delegated' && (
+          <label className="block text-sm">
+            <span className="text-ink-soft">Új API kulcs</span>
+            <input
+              type="password"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder="Üresen hagyva marad a jelenlegi"
+              autoComplete="off"
+              className={INPUT}
+            />
+          </label>
+        )}
+        {(authScheme === 'oauth2' || authScheme === 'oauth2_delegated') && (
+          <>
+            {authScheme === 'oauth2_delegated' && (
+              <label className="block text-sm">
+                <span className="text-ink-soft">Authorization URL (consent)</span>
+                <input
+                  value={authUrl}
+                  onChange={(e) => setAuthUrl(e.target.value)}
+                  placeholder="https://accounts.google.com/o/oauth2/v2/auth"
+                  className={INPUT}
+                />
+              </label>
+            )}
+            <label className="block text-sm">
+              <span className="text-ink-soft">Token URL</span>
+              <input
+                value={tokenUrl}
+                onChange={(e) => setTokenUrl(e.target.value)}
+                placeholder="https://oauth2.googleapis.com/token"
+                className={INPUT}
+              />
+            </label>
+            <label className="block text-sm">
+              <span className="text-ink-soft">Client ID</span>
+              <input value={clientId} onChange={(e) => setClientId(e.target.value)} className={INPUT} />
+            </label>
+            <label className="block text-sm">
+              <span className="text-ink-soft">
+                Scope {authScheme === 'oauth2_delegated' ? '(kötelező)' : '(opcionális)'}
+              </span>
+              <input value={scope} onChange={(e) => setScope(e.target.value)} className={INPUT} />
+            </label>
+            <label className="block text-sm">
+              <span className="text-ink-soft">Új client secret</span>
+              <input
+                type="password"
+                value={clientSecret}
+                onChange={(e) => setClientSecret(e.target.value)}
+                placeholder="Üresen hagyva marad a jelenlegi"
+                autoComplete="off"
+                className={INPUT}
+              />
+            </label>
+            {authScheme === 'oauth2' && (
+              <label className="block text-sm">
+                <span className="text-ink-soft">Új refresh token</span>
+                <input
+                  type="password"
+                  value={refreshToken}
+                  onChange={(e) => setRefreshToken(e.target.value)}
+                  placeholder="Üresen hagyva marad a jelenlegi"
+                  autoComplete="off"
+                  className={INPUT}
+                />
+              </label>
+            )}
+            {authScheme === 'oauth2_delegated' && (
+              <label className="block text-sm">
+                <span className="text-ink-soft">Userinfo URL (opcionális, fiók-címkéhez)</span>
+                <input
+                  value={userInfoUrl}
+                  onChange={(e) => setUserInfoUrl(e.target.value)}
+                  placeholder="https://www.googleapis.com/oauth2/v2/userinfo"
+                  className={INPUT}
+                />
+              </label>
+            )}
+          </>
+        )}
         <label className="block text-sm">
           <span className="text-ink-soft">Hozzáférés</span>
           <select
@@ -429,11 +606,38 @@ function EditApiConnectorForm({
       <div className="flex flex-wrap gap-2">
         <button
           type="submit"
-          disabled={pending || !name.trim() || !baseUrl.trim()}
+          disabled={
+            pending ||
+            !name.trim() ||
+            !baseUrl.trim() ||
+            (authScheme === 'oauth2' && (!tokenUrl.trim() || !clientId.trim())) ||
+            (authScheme === 'oauth2' &&
+              Boolean(clientSecret.trim()) !== Boolean(refreshToken.trim())) ||
+            (authScheme === 'oauth2_delegated' &&
+              (!authUrl.trim() || !tokenUrl.trim() || !clientId.trim() || !scope.trim()))
+          }
           className="rounded-full bg-coral/20 px-5 py-2 text-sm font-semibold text-coral disabled:opacity-50"
         >
           {pending ? 'Mentés...' : 'Frissítés'}
         </button>
+        {authScheme === 'oauth2_delegated' && (
+          <button
+            type="button"
+            onClick={initiateConsent}
+            disabled={
+              pending ||
+              !name.trim() ||
+              !baseUrl.trim() ||
+              !authUrl.trim() ||
+              !tokenUrl.trim() ||
+              !clientId.trim() ||
+              !scope.trim()
+            }
+            className="rounded-full bg-sage/20 px-5 py-2 text-sm font-semibold text-sage disabled:opacity-50"
+          >
+            {pending ? 'Folyamatban...' : 'Auto-consent kezdeményezése'}
+          </button>
+        )}
         <button
           type="button"
           onClick={onCancel}
@@ -453,17 +657,45 @@ export function ApiConnectorList({
   agentId: string
   connectors: ConnectorItem[]
 }) {
+  const router = useRouter()
+  const [pending, startTransition] = useTransition()
   const [editingId, setEditingId] = useState<string | null>(null)
+  const [confirmingId, setConfirmingId] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [done, setDone] = useState<string | null>(null)
 
   if (connectors.length === 0) {
     return <p className="text-sm text-ink-faint">Nincs külső kapcsolat hozzárendelve.</p>
   }
 
+  function unassign(item: ConnectorItem) {
+    startTransition(async () => {
+      setError(null)
+      setDone(null)
+      const res = await unassignConnectorFromAgent({
+        agentId,
+        connectorId: item.connector.id,
+        reason: 'Agent detail admin UI',
+      })
+      if (res.success) {
+        setDone(`„${item.connector.name}" leválasztva az agentről.`)
+        setConfirmingId(null)
+        setEditingId(null)
+        router.refresh()
+      } else {
+        setError(res.error ?? 'Nem sikerült leválasztani a kapcsolatot.')
+      }
+    })
+  }
+
   return (
     <ul className="space-y-2 text-sm">
+      {error && <li className="text-sm text-coral">{error}</li>}
+      {done && <li className="text-sm text-sage">{done}</li>}
       {connectors.map((item) => {
         const editable = item.connector.type === 'http_api'
         const editing = editingId === item.connector.id
+        const confirming = confirmingId === item.connector.id
 
         return (
           <li key={item.connector.id} className="atelier-soft p-3">
@@ -482,12 +714,34 @@ export function ApiConnectorList({
                     {editing ? 'Bezárás' : 'Szerkesztés'}
                   </button>
                 )}
+                <button
+                  type="button"
+                  onClick={() => setConfirmingId(confirming ? null : item.connector.id)}
+                  className="rounded-full border border-coral/40 px-3 py-1 text-xs font-semibold text-coral hover:bg-coral/10"
+                >
+                  {confirming ? 'Mégse' : 'Leválasztás'}
+                </button>
               </div>
             </div>
             <p className="mt-1 break-all text-xs text-ink-faint">
               {item.connector.type} · {item.connector.scope}
               {item.connector.secretAlias && ` · ${item.connector.secretAlias}`}
             </p>
+            {confirming && (
+              <div className="mt-3 rounded-lg border border-coral/30 bg-coral/10 p-3">
+                <p className="text-xs text-ink-soft">
+                  A kapcsolat az agentről lekerül, de maga a connector és az audit előzmény megmarad.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => unassign(item)}
+                  disabled={pending}
+                  className="mt-3 rounded-full bg-coral/20 px-4 py-1.5 text-xs font-semibold text-coral disabled:opacity-50"
+                >
+                  {pending ? 'Leválasztás...' : 'Auditált leválasztás'}
+                </button>
+              </div>
+            )}
             {editing && (
               <EditApiConnectorForm
                 agentId={agentId}

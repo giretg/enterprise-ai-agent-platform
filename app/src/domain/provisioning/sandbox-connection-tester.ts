@@ -173,11 +173,13 @@ export class HttpSandboxConnectionTester implements SandboxConnectionTester {
       if (res.type === 'opaqueredirect' || (res.status >= 300 && res.status < 400)) {
         return { ok: false, statusCode: res.status, detail: 'redirect_blocked' }
       }
-      // 401 = "reachable_auth_required": a szerver elért, az endpoint létezik,
+      // 401/403 = "reachable_auth_required": a szerver elért, az endpoint létezik,
       // az auth a secret-alias rendszeren keresztül kerül bekonfigurálásra
-      // (az aktiválás és az agent-hozzárendelés lépéseiben).
-      if (res.status === 401) {
-        return { ok: true, statusCode: 401, detail: 'reachable_auth_required' }
+      // (az aktiválás és az agent-hozzárendelés lépéseiben). A 403-at is idesoroljuk,
+      // mert több vendor (pl. Google API-k) hitelesítés hiányában 401 helyett 403-at ad
+      // vissza — token nélküli próbahívásnál ez ugyanaz a "elért, hitelesítés kell" jel.
+      if (res.status === 401 || res.status === 403) {
+        return { ok: true, statusCode: res.status, detail: 'reachable_auth_required' }
       }
       const ok = res.status >= 200 && res.status < 300
       return {

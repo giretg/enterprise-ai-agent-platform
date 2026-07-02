@@ -406,8 +406,19 @@ const httpApiAuthProfileSchema = z.object({
 const httpApiConnectorFields = {
   name: z.string().trim().min(1).max(120),
   baseUrl: z.string().trim().url().max(500),
-  authScheme: z.enum(['header', 'bearer']),
+  authScheme: z.enum(['header', 'bearer', 'oauth2', 'oauth2_delegated']),
   authHeader: z.string().trim().max(120).optional(),
+  /** oauth2 / oauth2_delegated séma: token-refresh végpont + kliens-azonosító (nem titok). */
+  tokenUrl: z.string().trim().url().max(500).optional(),
+  clientId: z.string().trim().max(300).optional(),
+  scope: z.string().trim().max(500).optional(),
+  /** oauth2_delegated séma: authorization-code consent végpont (nem titok). */
+  authUrl: z.string().trim().url().max(500).optional(),
+  /** oauth2_delegated séma: opcionális userinfo/whoami végpont a fiók-címkéhez (nem titok). */
+  userInfoUrl: z.string().trim().url().max(500).optional(),
+  /** oauth2 séma: a refresh_token grant titkai — a secret-store mögé, sosem a configba kerülnek. */
+  clientSecret: z.string().trim().max(4000).optional(),
+  refreshToken: z.string().trim().max(4000).optional(),
   description: z.string().trim().max(50000).optional(),
   authProfiles: z
     .record(z.string().regex(/^[a-zA-Z0-9_-]+$/), httpApiAuthProfileSchema)
@@ -430,15 +441,46 @@ function hasKnownHttpApiProfiles(v: {
   return !(v.endpoints ?? []).some((endpoint) => endpoint.profile && !profileNames.has(endpoint.profile))
 }
 
+function oauth2FieldsPresent(v: { authScheme: string; tokenUrl?: string; clientId?: string }) {
+  if (v.authScheme !== 'oauth2' && v.authScheme !== 'oauth2_delegated') return true
+  return Boolean(v.tokenUrl) && Boolean(v.clientId)
+}
+
+/** oauth2_delegated (auto-consent): a consent-flow-hoz authUrl + scope is kell. */
+function delegatedOAuthFieldsPresent(v: { authScheme: string; authUrl?: string; scope?: string }) {
+  if (v.authScheme !== 'oauth2_delegated') return true
+  return Boolean(v.authUrl) && Boolean(v.scope)
+}
+
 export const createHttpApiConnectorSchema = z
   .object({
     agentId: z.string().uuid(),
     ...httpApiConnectorFields,
-    apiKey: z.string().trim().min(1).max(4000),
+    apiKey: z.string().trim().max(4000).optional(),
   })
   .refine((v) => v.authScheme !== 'header' || (v.authHeader && v.authHeader.length > 0), {
     message: 'A fejléc-séma kötelezővé teszi a fejléc nevét (pl. X-Api-Key)',
     path: ['authHeader'],
+  })
+  .refine(oauth2FieldsPresent, {
+    message: 'Az oauth2 séma kötelezővé teszi a tokenUrl-t és a clientId-t',
+    path: ['tokenUrl'],
+  })
+  .refine(delegatedOAuthFieldsPresent, {
+    message: 'Az automatikus consent (oauth2_delegated) kötelezővé teszi az authUrl-t és a scope-ot',
+    path: ['authUrl'],
+  })
+  .refine((v) => v.authScheme !== 'oauth2' || (Boolean(v.clientSecret) && Boolean(v.refreshToken)), {
+    message: 'Az oauth2 séma első beállításkor kötelezővé teszi a client secret-et és a refresh tokent',
+    path: ['clientSecret'],
+  })
+  .refine((v) => v.authScheme !== 'oauth2_delegated' || Boolean(v.clientSecret), {
+    message: 'Az automatikus consent kötelezővé teszi a client secret-et (a refresh tokent a felhasználó hozzájárulása adja)',
+    path: ['clientSecret'],
+  })
+  .refine((v) => v.authScheme === 'oauth2' || v.authScheme === 'oauth2_delegated' || Boolean(v.apiKey), {
+    message: 'API kulcs kötelező (kivéve oauth2 sémánál)',
+    path: ['apiKey'],
   })
   .refine((v) => !v.restrictToEndpoints || (v.endpoints && v.endpoints.length > 0), {
     message: 'Az endpoint-korlátozáshoz legalább egy endpoint szükséges',
@@ -459,6 +501,18 @@ export const updateHttpApiConnectorSchema = z
   .refine((v) => v.authScheme !== 'header' || (v.authHeader && v.authHeader.length > 0), {
     message: 'A fejléc-séma kötelezővé teszi a fejléc nevét (pl. X-Api-Key)',
     path: ['authHeader'],
+  })
+  .refine(oauth2FieldsPresent, {
+    message: 'Az oauth2 séma kötelezővé teszi a tokenUrl-t és a clientId-t',
+    path: ['tokenUrl'],
+  })
+  .refine(delegatedOAuthFieldsPresent, {
+    message: 'Az automatikus consent (oauth2_delegated) kötelezővé teszi az authUrl-t és a scope-ot',
+    path: ['authUrl'],
+  })
+  .refine((v) => v.authScheme === 'oauth2_delegated' || Boolean(v.clientSecret) === Boolean(v.refreshToken), {
+    message: 'A client secret és a refresh token csak együtt frissíthető (rotáláshoz mindkettő kell)',
+    path: ['refreshToken'],
   })
   .refine((v) => !v.restrictToEndpoints || (v.endpoints && v.endpoints.length > 0), {
     message: 'Az endpoint-korlátozáshoz legalább egy endpoint szükséges',

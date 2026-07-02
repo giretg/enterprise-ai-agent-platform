@@ -43,7 +43,7 @@ const TOOL_GROUPS: ToolGroup[] = [
   },
   {
     label: 'Webes kutatás',
-    tools: ['web_search'],
+    tools: ['web_search', 'web_research_request'],
   },
 ]
 

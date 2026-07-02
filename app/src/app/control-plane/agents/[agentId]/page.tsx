@@ -7,6 +7,7 @@ import { getCurrentUser } from '@/auth'
 import { hasMinimumRole } from '@/auth/types'
 import { Badge, Card } from '@/components/ui/shell'
 import { ExpandableContent } from '@/components/ui/expandable-content'
+import { Collapsible } from '@/components/ui/collapsible'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { AgentChatButton } from '@/components/agents/agent-chat-panel'
 import { UpdateInstructionForm } from '@/components/agents/update-instruction-form'
@@ -346,12 +347,30 @@ export default async function AgentDetailPage({
                 currentProfile={agent.selfEvolutionProfile}
               />
 
-              <AddApiConnectorForm agentId={agent.id} />
-
-              <AssignExistingConnectorForm
-                agentId={agent.id}
-                connectors={assignableConnectors}
-              />
+              <Card title="Külső kapcsolatok kezelése">
+                <p className="mb-4 text-xs text-ink-faint">
+                  Új REST API bekötése vagy egy meglévő kapcsolat hozzárendelése. Nyisd ki a kívánt
+                  szekciót.
+                </p>
+                <div className="space-y-3">
+                  <Collapsible
+                    title="Új API-kapcsolat hozzáadása"
+                    subtitle="Külső REST API bekötése új connectorként"
+                  >
+                    <AddApiConnectorForm agentId={agent.id} bare />
+                  </Collapsible>
+                  <Collapsible
+                    title="Meglévő kapcsolat hozzárendelése"
+                    subtitle="Már aktivált provisioning-kapcsolat csatolása"
+                  >
+                    <AssignExistingConnectorForm
+                      agentId={agent.id}
+                      connectors={assignableConnectors}
+                      bare
+                    />
+                  </Collapsible>
+                </div>
+              </Card>
 
               {governance && (
                 <AgentCapabilitiesPanel

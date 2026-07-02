@@ -12,9 +12,13 @@ export type ProvisioningErrorCode =
   | 'DRAFT_NOT_APPROVED'
   | 'SANDBOX_TEST_FAILED'
   | 'SECRET_ALIAS_MISSING'
+  | 'OAUTH_CLIENT_ID_MISSING' // service-oauth2: hiányzik a config.auth.clientId
   | 'APPROVAL_SAME_ACTOR' // dual-control: reviewer === approver
   | 'DUAL_CONTROL_REQUIRED'
   | 'CONNECTOR_NOT_DRAFT'
+  | 'DRAFT_NOT_EDITABLE' // javítás: csak draft/validated config szerkeszthető
+  | 'CONNECTOR_NOT_ACTIVE' // reopen/decommission: csak aktív connectorra
+  | 'DRAFT_ALREADY_ACTIVATED' // hard-delete: csak sosem aktivált draftra
 
 export class ProvisioningError extends Error {
   constructor(

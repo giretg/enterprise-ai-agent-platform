@@ -16,9 +16,11 @@ const INPUT = 'mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 te
 export function AssignExistingConnectorForm({
   agentId,
   connectors,
+  bare = false,
 }: {
   agentId: string
   connectors: ConnectorOption[]
+  bare?: boolean
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
@@ -55,15 +57,14 @@ export function AssignExistingConnectorForm({
     })
   }
 
-  return (
-    <Card title="Meglévő kapcsolat hozzárendelése">
-      <form
-        className="space-y-4"
-        onSubmit={(e) => {
-          e.preventDefault()
-          submit()
-        }}
-      >
+  const form = (
+    <form
+      className="space-y-4"
+      onSubmit={(e) => {
+        e.preventDefault()
+        submit()
+      }}
+    >
         {connectors.length === 0 ? (
           <p className="text-sm text-ink-faint">Nincs aktivált provisioning-kapcsolat.</p>
         ) : (
@@ -121,6 +122,8 @@ export function AssignExistingConnectorForm({
           </>
         )}
       </form>
-    </Card>
   )
+
+  if (bare) return form
+  return <Card title="Meglévő kapcsolat hozzárendelése">{form}</Card>
 }

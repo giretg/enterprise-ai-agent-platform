@@ -19,6 +19,7 @@ import { PostgresToolBrokerRepository } from './tool-broker-repository'
 import { PostgresConnectorGrantRepository } from './connector-grant-repository'
 import { PostgresConnectorRepository } from './connector-repository'
 import { PostgresConnectorDraftRepository } from './connector-draft-repository'
+import { PostgresConnectorTemplateRepository } from './connector-template-repository'
 import { PostgresMonitorRepository } from './monitor-repository'
 import { PostgresPlatformSettingsRepository } from './platform-settings-repository'
 import { PostgresRoleTemplateRepository } from './role-template-repository'
@@ -52,6 +53,7 @@ export const repositories = {
   connectorGrants: new PostgresConnectorGrantRepository(),
   connectors: new PostgresConnectorRepository(),
   connectorDrafts: new PostgresConnectorDraftRepository(),
+  connectorTemplates: new PostgresConnectorTemplateRepository(),
   monitors: new PostgresMonitorRepository(),
   platformSettings: new PostgresPlatformSettingsRepository(),
 }

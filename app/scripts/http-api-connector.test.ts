@@ -246,6 +246,95 @@ async function main() {
     }
   })
 
+  await test('parseHttpApiConfig elfogadja az oauth2 sémát (tokenUrl+clientId)', () => {
+    const c = parseHttpApiConfig({
+      baseUrl: 'https://x.io',
+      auth: { type: 'oauth2', tokenUrl: 'https://oauth2.example/token', clientId: 'abc' },
+    })
+    assert.deepEqual(c.auth, { scheme: 'oauth2', tokenUrl: 'https://oauth2.example/token', clientId: 'abc' })
+  })
+
+  await test('parseHttpApiConfig elutasítja az oauth2-t tokenUrl nélkül', () => {
+    assert.throws(() =>
+      parseHttpApiConfig({ baseUrl: 'https://x.io', auth: { type: 'oauth2', clientId: 'abc' } }),
+    )
+  })
+
+  await test('parseHttpApiConfig elfogadja a basic sémát', () => {
+    const c = parseHttpApiConfig({ baseUrl: 'https://x.io', auth: { type: 'basic' } })
+    assert.deepEqual(c.auth, { scheme: 'basic' })
+  })
+
+  await test('valódi fetch: basic séma Authorization: Basic fejlécet küld', async () => {
+    const calls: RequestInit[] = []
+    const fakeFetch: typeof fetch = async (_input, init) => {
+      calls.push(init ?? {})
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = fakeFetch
+    try {
+      const config = parseHttpApiConfig({ baseUrl: 'https://x.io', auth: { scheme: 'basic' } })
+      const client = new HttpApiClient(config, 'dXNlcjpwYXNz')
+      await client.request({ method: 'GET', path: '/ping' })
+      const headers = calls[0].headers as Record<string, string>
+      assert.equal(headers.authorization, 'Basic dXNlcjpwYXNz')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await test('valódi fetch: oauth2 séma refresh_token grant-tal access tokent szerez, cache-el', async () => {
+    let tokenCalls = 0
+    const apiCalls: RequestInit[] = []
+    const fakeFetch: typeof fetch = async (input, init) => {
+      if (String(input) === 'https://oauth2.example/token') {
+        tokenCalls += 1
+        return new Response(JSON.stringify({ access_token: `tok-${tokenCalls}`, expires_in: 3600 }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      apiCalls.push(init ?? {})
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = fakeFetch
+    try {
+      const config = parseHttpApiConfig({
+        baseUrl: 'https://x.io',
+        auth: { scheme: 'oauth2', tokenUrl: 'https://oauth2.example/token', clientId: 'client-abc' },
+      })
+      const credentials = JSON.stringify({ clientSecret: 'shh', refreshToken: 'rt-1' })
+      const client = new HttpApiClient(config, credentials)
+      await client.request({ method: 'GET', path: '/a' })
+      await client.request({ method: 'GET', path: '/b' })
+      assert.equal(tokenCalls, 1, 'a második hívás a cache-elt tokent használja, nincs újra-refresh')
+      assert.equal((apiCalls[0].headers as Record<string, string>).authorization, 'Bearer tok-1')
+      assert.equal((apiCalls[1].headers as Record<string, string>).authorization, 'Bearer tok-1')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await test('oauth2: hibás JSON secret esetén tiszta hiba, nem nyers stringet küld tokenként', async () => {
+    const config = parseHttpApiConfig({
+      baseUrl: 'https://x.io',
+      auth: { scheme: 'oauth2', tokenUrl: 'https://oauth2.example/token', clientId: 'client-abc' },
+    })
+    const client = new HttpApiClient(config, 'not-json-at-all')
+    await assert.rejects(
+      client.request({ method: 'GET', path: '/a' }),
+      (e: unknown) => e instanceof HttpApiError && e.code === 'oauth2_credentials_invalid',
+    )
+  })
+
   if (failures > 0) {
     console.error(`\n${failures} teszt elbukott.`)
     process.exit(1)

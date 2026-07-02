@@ -16,6 +16,7 @@ import {
 } from '../src/domain/agents/web-egress-role'
 import { ensureSystemRoleTemplates } from '../src/repositories/postgres/role-template-repository'
 import { ensureDefaultRolePermissions } from '../src/repositories/postgres/iam-repository'
+import { BUILTIN_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/builtin-templates'
 
 config({ path: path.join(process.cwd(), '.env.local') })
 config({ path: path.join(process.cwd(), '.env') })
@@ -177,6 +178,42 @@ async function ensureProvisioningAssistantCapabilities(agentId: string) {
       where: { agentId_toolName: { agentId, toolName } },
       create: { agentId, toolName, allowed: true },
       update: { allowed: true },
+    })
+  }
+}
+
+async function ensureBuiltinConnectorTemplates() {
+  for (const descriptor of BUILTIN_CONNECTOR_TEMPLATES) {
+    const existing = await prisma.connectorTemplate.findFirst({
+      where: { key: descriptor.key, version: 1, tenantId: null, origin: 'builtin' },
+    })
+    if (!existing) {
+      await prisma.connectorTemplate.create({
+        data: {
+          key: descriptor.key,
+          version: 1,
+          origin: 'builtin',
+          displayName: descriptor.displayName,
+          description: descriptor.description ?? null,
+          tenantId: null,
+          descriptor,
+          status: 'active',
+        },
+      })
+      continue
+    }
+    await prisma.connectorTemplate.update({
+      where: { id: existing.id },
+      data: {
+        key: descriptor.key,
+        version: 1,
+        origin: 'builtin',
+        displayName: descriptor.displayName,
+        description: descriptor.description ?? null,
+        tenantId: null,
+        descriptor,
+        status: 'active',
+      },
     })
   }
 }
@@ -1205,6 +1242,7 @@ async function main() {
     await ensureWikiRecipe(existingAgent.id, admin.id)
     await ensureWikiPlaybook(admin.id)
     await ensureDemoApiKey(existingAgent.id)
+    await ensureBuiltinConnectorTemplates()
     return
   }
 
@@ -1283,6 +1321,7 @@ async function main() {
   await ensureWikiRecipe(agent.id, admin.id)
   await ensureWikiPlaybook(admin.id)
   await ensureDemoApiKey(agent.id)
+  await ensureBuiltinConnectorTemplates()
 
   console.log('Seed complete')
   console.log('  Wiki Agent:', agent.id)

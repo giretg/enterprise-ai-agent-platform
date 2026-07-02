@@ -201,6 +201,7 @@ const toolBrokerService = new ToolBrokerService(
   webSearchService,
   webSearchPolicyService,
   () => platformSettingsService.isWebSearchEnabled(),
+  () => platformSettingsService.isWebFetchEnabled(),
 )
 const knowledgeBaseService = new KnowledgeBaseService(
   repositories.tickets,

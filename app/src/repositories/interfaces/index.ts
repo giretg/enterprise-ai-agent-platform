@@ -3,10 +3,14 @@ import type {
   AuditLog,
   Connector,
   ConnectorAccessMode,
+  ConnectorAuthMode,
   ConnectorDraft,
   ConnectorDraftReviewStatus,
   ConnectorDraftSourceType,
   ConnectorLifecycleState,
+  ConnectorTemplate,
+  ConnectorTemplateOrigin,
+  ConnectorTemplateStatus,
   ConnectorType,
   Conversation,
   Document,
@@ -946,6 +950,7 @@ export type ConnectorDraftWithConnector = ConnectorDraft & {
 export interface CreateConnectorDraftInput {
   tenantId: string | null
   name: string
+  authMode: ConnectorAuthMode
   sourceType: ConnectorDraftSourceType
   sourceRef: string | null
   sourceHash: string
@@ -954,6 +959,27 @@ export interface CreateConnectorDraftInput {
   generatedByAgentId: string | null
   generatedByAgentVersion: number | null
   generatedFromConversationId: string | null
+}
+
+export type NewTemplateVersion = {
+  key: string
+  version: number
+  origin: ConnectorTemplateOrigin
+  displayName: string
+  description?: string | null
+  tenantId: string | null
+  descriptor: Prisma.InputJsonValue
+  status?: ConnectorTemplateStatus
+  createdById?: string | null
+}
+
+export interface ConnectorTemplateRepository {
+  listVisible(scope: { tenantId: string | null }): Promise<ConnectorTemplate[]>
+  findLatestByKey(key: string, tenantId: string | null): Promise<ConnectorTemplate | null>
+  findByIdVersion(id: string): Promise<ConnectorTemplate | null>
+  createVersion(input: NewTemplateVersion): Promise<ConnectorTemplate>
+  deprecate(id: string): Promise<void>
+  upsertBuiltin(input: NewTemplateVersion): Promise<ConnectorTemplate>
 }
 
 /**
@@ -984,7 +1010,10 @@ export interface ConnectorDraftRepository {
   activate(params: {
     draftId: string
     secretAlias: string
+    authMode: ConnectorAuthMode
     secondApproverId: string | null
+    /** Opcionális config-frissítés aktiváláskor (pl. nem-titkos oauth2 clientId). */
+    config?: import('@prisma/client').Prisma.InputJsonValue
   }): Promise<Connector>
   /** Connector → agent hozzárendelés (agent_connectors). CSAK emberi admin (§8.6). */
   assignToAgent(params: {
@@ -993,6 +1022,41 @@ export interface ConnectorDraftRepository {
     accessMode: ConnectorAccessMode
     secretAlias?: string | null
   }): Promise<void>
+  /** Connector → agent hozzárendelés visszavonása (agent_connectors). CSAK emberi admin (§8.6). */
+  unassignFromAgent(params: { connectorId: string; agentId: string }): Promise<{ removed: boolean }>
+  /**
+   * Draft/validated connector config-jának javító szerkesztése (CSAK emberi admin).
+   * A gate-et resetteli: validationResult=null, reviewStatus=pending, sandboxTestOk=null —
+   * hogy a módosított config újra végigmenjen a valid→review→sandbox kapun. Az aktív
+   * connectort NEM érinti (a hívó service `lifecycle_state IN draft,validated`-re kapuz).
+   */
+  updateDraftConfig(params: {
+    draftId: string
+    config: import('@prisma/client').Prisma.InputJsonValue
+    authMode: ConnectorAuthMode
+    sourceHash: string
+    secretAliasSuggested: string | null
+  }): Promise<ConnectorDraftWithConnector>
+  /**
+   * Aktív connector visszanyitása draftba (CSAK emberi admin). A connector offline lesz
+   * (Tool Broker `lifecycle_state != active` → deny), a gate resetelődik (review=pending,
+   * sandbox=null, validation=null), így a javított config újra átmegy a teljes kapun.
+   * Az agent-hozzárendeléseket és capability-ket NEM bontja — újraaktiváláskor a wiring áll.
+   */
+  reopen(params: { draftId: string }): Promise<Connector>
+  /**
+   * Aktív connector auditált megszüntetése (CSAK emberi admin): agent-kötések levétele,
+   * aktív user-grantek visszavonása (revoked), majd lifecycle_state=archived. Nem hard-delete —
+   * a connector-sor és az audit-előzmény megmarad. A secret-ref törlését a service intézi.
+   * Visszaadja az érintett agentId-ket, hogy a hívó capability-syncet futtathasson.
+   */
+  decommission(params: { draftId: string }): Promise<{ connectorId: string; affectedAgentIds: string[] }>
+  /**
+   * SOSEM aktivált draft (lifecycle_state IN draft,validated) végleges hard-delete-je
+   * (CSAK emberi admin) — a botched draftok takarításához. A connector-sor törlése
+   * kaszkádban viszi a draft-sort, agent_connectors/grantek sorait. Aktív connectorra tilos.
+   */
+  deleteDraft(params: { draftId: string }): Promise<void>
   /** Meglévő (aktivált) connector-katalógus metaadata, secret nélkül (§9 catalog.read). */
   listActiveCatalog(
     tenantId: string | null,

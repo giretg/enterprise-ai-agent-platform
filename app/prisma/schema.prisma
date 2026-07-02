@@ -159,8 +159,24 @@ enum ConnectorDraftSourceType {
   api_doc
   openapi
   manual
+  template
 
   @@map("connector_draft_source_type")
+}
+
+enum ConnectorTemplateOrigin {
+  builtin
+  custom
+
+  @@map("connector_template_origin")
+}
+
+enum ConnectorTemplateStatus {
+  active
+  deprecated
+  archived
+
+  @@map("connector_template_status")
 }
 
 enum ConnectorDraftReviewStatus {
@@ -905,6 +921,25 @@ model Connector {
 
   @@unique([type, name])
   @@map("connectors")
+}
+
+model ConnectorTemplate {
+  id          String                  @id @default(uuid()) @db.Uuid
+  key         String
+  version     Int                     @default(1)
+  origin      ConnectorTemplateOrigin @default(custom)
+  displayName String                  @map("display_name")
+  description String?
+  tenantId    String?                 @map("tenant_id") @db.Uuid
+  descriptor  Json
+  status      ConnectorTemplateStatus @default(active)
+  createdById String?                 @map("created_by") @db.Uuid
+  createdAt   DateTime                @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime                @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@unique([key, version, tenantId])
+  @@index([origin, status])
+  @@map("connector_templates")
 }
 
 // A draft eredetét, forrását és validációs eredményét külön tartjuk, hogy a

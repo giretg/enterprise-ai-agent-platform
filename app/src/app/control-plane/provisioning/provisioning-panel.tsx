@@ -6,15 +6,20 @@ import {
   activateConnector,
   assignConnectorToAgent,
   createConnectorDraft,
+  decommissionConnector,
+  deleteConnectorDraft,
   discoverConnectorFromName,
   draftConfigFromApiDoc,
   extendEgressAllowlist,
   listProvisioningAssignableAgents,
   listProvisioningDrafts,
+  reopenConnector,
   reviewConnectorDraft,
   testConnectorDraft,
+  updateConnectorDraftConfig,
   validateConnectorDraft,
 } from '@/app/actions/provisioning'
+import { startConnectorOAuth } from '@/app/actions/connector-grants'
 
 // A listProvisioningDrafts visszaadott alakja (provisioning-service.listDrafts).
 type CheckStatus = 'passed' | 'warned' | 'failed'
@@ -43,6 +48,12 @@ type DraftConfig = {
   rateLimit?: { rps: number; burst: number }
   proposedTools: ProposedTool[]
 } | null
+type HttpApiConfigView = {
+  baseUrl?: string
+  authScheme?: string
+  isDelegated: boolean
+  endpoints: Array<{ method: string; path: string }>
+} | null
 type DraftRow = {
   draftId: string
   connectorId: string
@@ -52,7 +63,10 @@ type DraftRow = {
   validationResult: ValidationResult | null
   sandboxTestOk: boolean | null
   secretAliasSuggested: string | null
+  connectorType: string
+  authMode: string
   config: DraftConfig
+  httpApiView: HttpApiConfigView
   sourceType: string
   sourceHash: string
   createdAt: string | Date
@@ -97,6 +111,11 @@ type DiscoverData =
       requiresSensitivityReview: true
       sensitivity: { level: 'forbidden'; matchedCategory?: string; findings: SensitivityFinding[] }
     }
+
+type CreateStep = 'basics' | 'source' | 'review'
+type SourceMethod = 'discover' | 'document' | 'manual'
+type DraftManageStep = 'inspect' | 'validate' | 'review' | 'sandbox' | 'activate'
+type ActiveManageStep = 'inspect' | 'assign' | 'revoke'
 
 const EXAMPLE_CONFIG = JSON.stringify(
   {
@@ -170,6 +189,8 @@ export function ProvisioningPanel() {
   const [name, setName] = useState('')
   const [sourceType, setSourceType] = useState<'api_doc' | 'openapi' | 'manual'>('api_doc')
   const [configText, setConfigText] = useState('')
+  const [createStep, setCreateStep] = useState<CreateStep>('basics')
+  const [sourceMethod, setSourceMethod] = useState<SourceMethod>('discover')
 
   // F2-P-F: doksi → config-jelölt generálás állapota
   const [docText, setDocText] = useState('')
@@ -239,6 +260,7 @@ export function ProvisioningPanel() {
         setNotice(
           'Config-jelölt generálva. Nézd át, majd hozd létre a draftot — a validátor a létrehozás után dönt.',
         )
+        setCreateStep('review')
       } else {
         setError(res.error)
       }
@@ -270,6 +292,7 @@ export function ProvisioningPanel() {
         setNotice(
           'Felfedezés kész — config-jelölt a lenti JSON-mezőbe került. Nézd át; a validátor a draft létrehozása után dönt. Új egress-host esetén az aktiválás előtt allowlist-bővítés kell.',
         )
+        setCreateStep('review')
       } else {
         setError(res.error)
       }
@@ -348,6 +371,15 @@ export function ProvisioningPanel() {
 
   const openDrafts = drafts.filter((d) => d.lifecycleState !== 'active')
   const activatedDrafts = drafts.filter((d) => d.lifecycleState === 'active')
+  const stepOrder: CreateStep[] = ['basics', 'source', 'review']
+  const activeStepIndex = stepOrder.indexOf(createStep)
+  const canEnterSource = name.trim().length > 0
+  const canEnterReview = canEnterSource && configText.trim().length > 0
+  const setWizardStep = (step: CreateStep) => {
+    if (step === 'source' && !canEnterSource) return
+    if (step === 'review' && !canEnterReview) return
+    setCreateStep(step)
+  }
   const createDisabledReason = pending
     ? 'Folyamatban lévő művelet miatt várakozik.'
     : !name.trim()
@@ -379,200 +411,341 @@ export function ProvisioningPanel() {
       ) : null}
 
       <Card title="Új draft connector">
-        <div className="grid gap-3 sm:grid-cols-2">
-          <label className="text-sm">
-            <span className="mb-1 block text-ink-soft">Név</span>
-            <input
-              className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Acme CRM"
-            />
-          </label>
-          <label className="text-sm">
-            <span className="mb-1 block text-ink-soft">Forrás típusa</span>
-            <select
-              className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2"
-              value={sourceType}
-              onChange={(e) => setSourceType(e.target.value as typeof sourceType)}
-            >
-              <option value="api_doc">api_doc</option>
-              <option value="openapi">openapi</option>
-              <option value="manual">manual</option>
-            </select>
-          </label>
-        </div>
-        <div className="mt-3 rounded-md border border-sage/25 bg-sage/5 p-3">
-          <span className="mb-1 block text-sm font-semibold">
-            Kapcsolat felfedezése névből (web-egress role)
-          </span>
-          <p className="mb-2 text-xs text-ink-soft">
-            Add meg a kapcsolat nevét — a web-egress role agent a weben megkeresi és{' '}
-            <strong>adatként</strong> letölti a spec dokumentációját (csak <em>official/vendor_doc</em>{' '}
-            forrás), és config-jelöltet ad. A letöltött tartalom sosem utasítás; a jelölt a lenti
-            JSON-mezőbe kerül. Alapból kikapcsolt funkció (flag mögött).
-          </p>
-          <label className="mb-2 block text-xs">
-            <span className="mb-1 block text-ink-soft">Ismert doksi-domain (opcionális, ajánlott)</span>
-            <input
-              className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2"
-              value={knownDomain}
-              onChange={(e) => setKnownDomain(e.target.value)}
-              placeholder="developers.google.com"
-            />
-          </label>
-          <button
-            type="button"
-            disabled={pending || discovering || !name.trim()}
-            onClick={() => onDiscover(false)}
-            className="rounded-md border border-sage/40 bg-sage/10 px-3 py-1.5 text-xs font-semibold text-sage disabled:opacity-50"
-          >
-            {discovering ? 'Felfedezés…' : 'Felfedezés'}
-          </button>
-          {!name.trim() ? (
-            <p className="mt-1 text-xs text-ink-soft">Adj nevet a fenti mezőben a felfedezéshez.</p>
-          ) : null}
-          {discoverySources.length > 0 ? (
-            <div className="mt-2 space-y-1">
-              <p className="text-xs font-semibold text-ink-soft">Források (provenance):</p>
-              {discoverySources.map((s) => (
-                <div
-                  key={s.urlHash}
-                  className="flex items-center gap-2 rounded border border-ink/12 bg-paper px-2 py-1 text-[11px]"
-                >
-                  <span
-                    className={
-                      s.sourceType === 'official'
-                        ? 'rounded bg-sage/15 px-1.5 py-0.5 font-semibold text-sage'
-                        : 'rounded bg-sky/15 px-1.5 py-0.5 font-semibold text-sky'
-                    }
+        <div className="grid gap-5 lg:grid-cols-[15rem_1fr]">
+          <ol className="space-y-2">
+            {[
+              { id: 'basics' as const, label: 'Alapadatok', hint: name.trim() || 'Connector neve' },
+              {
+                id: 'source' as const,
+                label: 'Forrás',
+                hint:
+                  sourceMethod === 'discover'
+                    ? 'Webes felfedezés'
+                    : sourceMethod === 'document'
+                      ? 'API-dokumentáció'
+                      : 'Kézi JSON',
+              },
+              {
+                id: 'review' as const,
+                label: 'Ellenőrzés',
+                hint: configText.trim() ? 'Config-jelölt kész' : 'Config-jelölt kell',
+              },
+            ].map((step, index) => {
+              const active = createStep === step.id
+              const complete =
+                (step.id === 'basics' && canEnterSource) ||
+                (step.id === 'source' && canEnterReview) ||
+                (step.id === 'review' && !createDisabledReason)
+              const locked =
+                (step.id === 'source' && !canEnterSource) || (step.id === 'review' && !canEnterReview)
+              return (
+                <li key={step.id}>
+                  <button
+                    type="button"
+                    disabled={locked}
+                    onClick={() => setWizardStep(step.id)}
+                    className={`flex w-full items-start gap-3 rounded-md border px-3 py-3 text-left transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                      active
+                        ? 'border-coral/45 bg-coral/8'
+                        : complete
+                          ? 'border-sage/35 bg-sage/8'
+                          : 'border-ink/12 bg-paper hover:border-coral/25'
+                    }`}
                   >
-                    {s.sourceType}
-                  </span>
-                  <span className="font-mono text-ink">{s.host}</span>
-                  <span className="text-ink-soft">{s.bytes} B</span>
-                </div>
-              ))}
-            </div>
-          ) : null}
-        </div>
-
-        <div className="mt-3 rounded-md border border-ink/12 bg-wash/40 p-3">
-          <span className="mb-1 block text-sm font-semibold">
-            Generálás API-doksiból (provisioning-asszisztens)
-          </span>
-          <p className="mb-2 text-xs text-ink-soft">
-            Illeszd be vagy töltsd fel az API-dokumentációt — az asszisztens{' '}
-            <strong>adatként</strong> dolgozza fel (nem utasításként), és config-jelöltet ad
-            vissza. Ez még <em>nem</em> draft: a jelölt a lenti JSON-mezőbe kerül, te nézed át és
-            hozod létre.
-          </p>
-          <div className="mb-2 flex flex-col gap-1 text-xs text-ink-soft sm:flex-row sm:items-center sm:justify-between">
-            <label className="inline-flex w-fit cursor-pointer items-center rounded-md border border-ink/15 bg-paper px-3 py-1.5 font-semibold text-ink hover:border-sage/50">
-              <span>API-doksi fájl feltöltése</span>
-              <input
-                type="file"
-                accept={API_DOC_FILE_ACCEPT}
-                onChange={onApiDocFileChange}
-                className="sr-only"
-              />
-            </label>
-            <span>
-              Támogatott: OpenAPI/Swagger JSON vagy YAML, Postman, RAML, API Blueprint, GraphQL,
-              WSDL/XML, HAR, Markdown/HTML/TXT.
-            </span>
-          </div>
-          <textarea
-            className="h-32 w-full rounded-md border border-ink/15 bg-paper px-3 py-2 font-mono text-xs"
-            value={docText}
-            onChange={(e) => {
-              setDocText(e.target.value)
-              setDocSourceRef(null)
-              setSensitivityFindings([])
-            }}
-            placeholder="Pl. 'Acme CRM API. Base URL: https://api.acme-crm.example. GET /v1/contacts — list contacts (scope: contacts.read)…'"
-          />
-          {docSourceRef ? (
-            <p className="mt-1 text-xs text-ink-soft">Betöltött fájl: {docSourceRef}</p>
-          ) : null}
-          {sensitivityFindings.length > 0 ? (
-            <div className="mt-2 rounded-md border border-honey/40 bg-honey/10 p-3 text-xs text-ink">
-              <p className="font-semibold text-honey">
-                A Gateway kockázatos mintát talált a dokumentumban.
-              </p>
-              <p className="mt-1 text-ink-soft">
-                Ellenőrizd, hogy ezek valódi secret/érzékeny adatok-e. A részletek maszkolva
-                jelennek meg; jóváhagyás esetén a döntés auditálva lesz.
-              </p>
-              <div className="mt-2 space-y-1">
-                {sensitivityFindings.map((finding, index) => (
-                  <div
-                    key={`${finding.category}-${finding.line}-${finding.column}-${index}`}
-                    className="rounded border border-honey/30 bg-paper px-2 py-1"
-                  >
-                    <span className="font-semibold">{finding.category}</span>
-                    <span className="text-ink-soft">
-                      {' '}
-                      - {finding.line}. sor, {finding.column}. oszlop
+                    <span
+                      className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
+                        complete ? 'bg-sage text-card' : active ? 'bg-coral text-card' : 'bg-night-2 text-ink-soft'
+                      }`}
+                    >
+                      {complete ? '✓' : index + 1}
                     </span>
-                    <code className="mt-1 block break-all font-mono text-[11px] text-ink-soft">
-                      {finding.snippet}
-                    </code>
-                  </div>
-                ))}
+                    <span className="min-w-0">
+                      <span className="block text-sm font-semibold">{step.label}</span>
+                      <span className="block truncate text-xs text-ink-soft">{step.hint}</span>
+                    </span>
+                  </button>
+                </li>
+              )
+            })}
+          </ol>
+
+          <div className="min-w-0 rounded-md border border-ink/12 bg-wash/35 p-4">
+            {createStep === 'basics' ? (
+              <div className="space-y-4">
+                <div>
+                  <h3 className="text-base font-semibold">1. Nevezd el a kapcsolatot</h3>
+                  <p className="mt-1 text-xs text-ink-soft">
+                    Ez alapján készül a draft azonosítható, admin által ellenőrizhető connectorrá.
+                  </p>
+                </div>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="text-sm">
+                    <span className="mb-1 block text-ink-soft">Név</span>
+                    <input
+                      className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      placeholder="Acme CRM"
+                    />
+                  </label>
+                  <label className="text-sm">
+                    <span className="mb-1 block text-ink-soft">Forrás típusa</span>
+                    <select
+                      className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2"
+                      value={sourceType}
+                      onChange={(e) => setSourceType(e.target.value as typeof sourceType)}
+                    >
+                      <option value="api_doc">api_doc</option>
+                      <option value="openapi">openapi</option>
+                      <option value="manual">manual</option>
+                    </select>
+                  </label>
+                </div>
               </div>
+            ) : null}
+
+            {createStep === 'source' ? (
+              <div className="space-y-4">
+                <div>
+                  <h3 className="text-base font-semibold">2. Válassz forrást</h3>
+                  <p className="mt-1 text-xs text-ink-soft">
+                    A folyamat egy config-jelöltig visz. A draftot csak a következő lépésben hozod létre.
+                  </p>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-3">
+                  {[
+                    { id: 'discover' as const, label: 'Felfedezés', hint: 'Név és domain alapján' },
+                    { id: 'document' as const, label: 'API-doksi', hint: 'Feltöltés vagy beillesztés' },
+                    { id: 'manual' as const, label: 'Kézi JSON', hint: 'Saját deszkriptor' },
+                  ].map((method) => (
+                    <button
+                      key={method.id}
+                      type="button"
+                      onClick={() => {
+                        setSourceMethod(method.id)
+                        if (method.id === 'manual') setSourceType('manual')
+                        if (method.id !== 'manual' && sourceType === 'manual') setSourceType('api_doc')
+                      }}
+                      className={`rounded-md border px-3 py-3 text-left ${
+                        sourceMethod === method.id
+                          ? 'border-coral/45 bg-coral/8'
+                          : 'border-ink/12 bg-paper hover:border-coral/25'
+                      }`}
+                    >
+                      <span className="block text-sm font-semibold">{method.label}</span>
+                      <span className="mt-1 block text-xs text-ink-soft">{method.hint}</span>
+                    </button>
+                  ))}
+                </div>
+
+                {sourceMethod === 'discover' ? (
+                  <div className="rounded-md border border-sage/25 bg-sage/5 p-3">
+                    <span className="mb-1 block text-sm font-semibold">
+                      Kapcsolat felfedezése névből (web-egress role)
+                    </span>
+                    <p className="mb-2 text-xs text-ink-soft">
+                      Add meg a kapcsolat nevét; a web-egress role agent csak official/vendor_doc
+                      forrásból készít config-jelöltet.
+                    </p>
+                    <label className="mb-2 block text-xs">
+                      <span className="mb-1 block text-ink-soft">
+                        Ismert doksi-domain (opcionális, ajánlott)
+                      </span>
+                      <input
+                        className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2"
+                        value={knownDomain}
+                        onChange={(e) => setKnownDomain(e.target.value)}
+                        placeholder="developers.google.com"
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      disabled={pending || discovering || !name.trim()}
+                      onClick={() => onDiscover(false)}
+                      className="rounded-md border border-sage/40 bg-sage/10 px-3 py-1.5 text-xs font-semibold text-sage disabled:opacity-50"
+                    >
+                      {discovering ? 'Felfedezés…' : 'Felfedezés'}
+                    </button>
+                    {discoverySources.length > 0 ? (
+                      <div className="mt-2 space-y-1">
+                        <p className="text-xs font-semibold text-ink-soft">Források (provenance):</p>
+                        {discoverySources.map((s) => (
+                          <div
+                            key={s.urlHash}
+                            className="flex items-center gap-2 rounded border border-ink/12 bg-paper px-2 py-1 text-[11px]"
+                          >
+                            <span
+                              className={
+                                s.sourceType === 'official'
+                                  ? 'rounded bg-sage/15 px-1.5 py-0.5 font-semibold text-sage'
+                                  : 'rounded bg-sky/15 px-1.5 py-0.5 font-semibold text-sky'
+                              }
+                            >
+                              {s.sourceType}
+                            </span>
+                            <span className="font-mono text-ink">{s.host}</span>
+                            <span className="text-ink-soft">{s.bytes} B</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                {sourceMethod === 'document' ? (
+                  <div className="rounded-md border border-ink/12 bg-paper p-3">
+                    <span className="mb-1 block text-sm font-semibold">
+                      Generálás API-doksiból (provisioning-asszisztens)
+                    </span>
+                    <div className="mb-2 flex flex-col gap-1 text-xs text-ink-soft sm:flex-row sm:items-center sm:justify-between">
+                      <label className="inline-flex w-fit cursor-pointer items-center rounded-md border border-ink/15 bg-paper px-3 py-1.5 font-semibold text-ink hover:border-sage/50">
+                        <span>API-doksi fájl feltöltése</span>
+                        <input
+                          type="file"
+                          accept={API_DOC_FILE_ACCEPT}
+                          onChange={onApiDocFileChange}
+                          className="sr-only"
+                        />
+                      </label>
+                      <span>OpenAPI, Postman, RAML, GraphQL, WSDL/XML, HAR, Markdown/HTML/TXT.</span>
+                    </div>
+                    <textarea
+                      className="h-40 w-full rounded-md border border-ink/15 bg-paper px-3 py-2 font-mono text-xs"
+                      value={docText}
+                      onChange={(e) => {
+                        setDocText(e.target.value)
+                        setDocSourceRef(null)
+                        setSensitivityFindings([])
+                      }}
+                      placeholder="Pl. 'Acme CRM API. Base URL: https://api.acme-crm.example. GET /v1/contacts...'"
+                    />
+                    {docSourceRef ? (
+                      <p className="mt-1 text-xs text-ink-soft">Betöltött fájl: {docSourceRef}</p>
+                    ) : null}
+                    {sensitivityFindings.length > 0 ? (
+                      <div className="mt-2 rounded-md border border-honey/40 bg-honey/10 p-3 text-xs text-ink">
+                        <p className="font-semibold text-honey">
+                          A Gateway kockázatos mintát talált a dokumentumban.
+                        </p>
+                        <div className="mt-2 space-y-1">
+                          {sensitivityFindings.map((finding, index) => (
+                            <div
+                              key={`${finding.category}-${finding.line}-${finding.column}-${index}`}
+                              className="rounded border border-honey/30 bg-paper px-2 py-1"
+                            >
+                              <span className="font-semibold">{finding.category}</span>
+                              <span className="text-ink-soft">
+                                {' '}
+                                - {finding.line}. sor, {finding.column}. oszlop
+                              </span>
+                              <code className="mt-1 block break-all font-mono text-[11px] text-ink-soft">
+                                {finding.snippet}
+                              </code>
+                            </div>
+                          ))}
+                        </div>
+                        <button
+                          type="button"
+                          disabled={pending || generating}
+                          onClick={() => onGenerate(true)}
+                          className="mt-2 rounded-md border border-honey/50 bg-paper px-3 py-1.5 font-semibold text-honey disabled:opacity-50"
+                        >
+                          Átnéztem, nem tartalmaz valódi secretet
+                        </button>
+                      </div>
+                    ) : null}
+                    <button
+                      type="button"
+                      disabled={pending || generating || !docText.trim()}
+                      onClick={() => onGenerate(false)}
+                      className="mt-2 rounded-md border border-sage/40 bg-sage/10 px-3 py-1.5 text-xs font-semibold text-sage disabled:opacity-50"
+                    >
+                      {generating ? 'Generálás…' : 'Config-jelölt generálása'}
+                    </button>
+                  </div>
+                ) : null}
+
+                {sourceMethod === 'manual' ? (
+                  <div className="rounded-md border border-ink/12 bg-paper p-3">
+                    <span className="mb-1 block text-sm font-semibold">Kézi config-deszkriptor</span>
+                    <p className="mb-2 text-xs text-ink-soft">
+                      Illeszd be a JSON-t, vagy töltsd be a példát, majd lépj tovább ellenőrzésre.
+                    </p>
+                    <button
+                      type="button"
+                      className="rounded-md border border-sage/40 bg-sage/10 px-3 py-1.5 text-xs font-semibold text-sage"
+                      onClick={() => setConfigText(EXAMPLE_CONFIG)}
+                    >
+                      Példa betöltése
+                    </button>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
+            {createStep === 'review' ? (
+              <div className="space-y-3">
+                <div>
+                  <h3 className="text-base font-semibold">3. Ellenőrzés és létrehozás</h3>
+                  <p className="mt-1 text-xs text-ink-soft">
+                    A secret SOSEM kerül ide, csak a Secret Managerbe szánt alias neve javasolt.
+                  </p>
+                </div>
+                <label className="block text-sm">
+                  <span className="mb-1 flex items-center justify-between text-ink-soft">
+                    <span>Generált config-deskriptor (JSON, §4.3)</span>
+                    <button
+                      type="button"
+                      className="text-xs font-semibold text-sage hover:underline"
+                      onClick={() => setConfigText(EXAMPLE_CONFIG)}
+                    >
+                      Példa betöltése
+                    </button>
+                  </span>
+                  <textarea
+                    className="h-72 w-full rounded-md border border-ink/15 bg-paper px-3 py-2 font-mono text-xs"
+                    value={configText}
+                    onChange={(e) => setConfigText(e.target.value)}
+                    placeholder={EXAMPLE_CONFIG}
+                  />
+                </label>
+                {createDisabledReason ? (
+                  <p className="text-xs text-ink-soft">{createDisabledReason}</p>
+                ) : null}
+              </div>
+            ) : null}
+
+            <div className="mt-5 flex flex-col gap-2 border-t border-ink/10 pt-4 sm:flex-row sm:items-center sm:justify-between">
               <button
                 type="button"
-                disabled={pending || generating}
-                onClick={() => onGenerate(true)}
-                className="mt-2 rounded-md border border-honey/50 bg-paper px-3 py-1.5 font-semibold text-honey disabled:opacity-50"
+                disabled={activeStepIndex === 0}
+                onClick={() => setCreateStep(stepOrder[Math.max(0, activeStepIndex - 1)])}
+                className="rounded-md border border-ink/20 px-3 py-2 text-sm font-semibold disabled:opacity-50"
               >
-                Átnéztem, nem tartalmaz valódi secretet
+                Vissza
               </button>
+              {createStep === 'review' ? (
+                <button
+                  type="button"
+                  disabled={!!createDisabledReason}
+                  onClick={onCreate}
+                  className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-card disabled:opacity-50"
+                >
+                  Draft létrehozása
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  disabled={createStep === 'basics' ? !canEnterSource : !canEnterReview}
+                  onClick={() => setCreateStep(stepOrder[Math.min(stepOrder.length - 1, activeStepIndex + 1)])}
+                  className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-card disabled:opacity-50"
+                >
+                  Tovább
+                </button>
+              )}
             </div>
-          ) : null}
-          <button
-            type="button"
-            disabled={pending || generating || !docText.trim()}
-            onClick={() => onGenerate(false)}
-            className="mt-2 rounded-md border border-sage/40 bg-sage/10 px-3 py-1.5 text-xs font-semibold text-sage disabled:opacity-50"
-          >
-            {generating ? 'Generálás…' : 'Config-jelölt generálása'}
-          </button>
+          </div>
         </div>
-
-        <label className="mt-3 block text-sm">
-          <span className="mb-1 flex items-center justify-between text-ink-soft">
-            <span>Generált config-deskriptor (JSON, §4.3)</span>
-            <button
-              type="button"
-              className="text-xs font-semibold text-sage hover:underline"
-              onClick={() => setConfigText(EXAMPLE_CONFIG)}
-            >
-              Példa betöltése
-            </button>
-          </span>
-          <textarea
-            className="h-56 w-full rounded-md border border-ink/15 bg-paper px-3 py-2 font-mono text-xs"
-            value={configText}
-            onChange={(e) => setConfigText(e.target.value)}
-            placeholder={EXAMPLE_CONFIG}
-          />
-        </label>
-        <p className="mt-1 text-xs text-ink-soft">
-          A secret SOSEM kerül ide — csak a Secret Managerbe szánt alias <em>neve</em> javasolt.
-        </p>
-        <button
-          type="button"
-          disabled={!!createDisabledReason}
-          onClick={onCreate}
-          className="mt-3 rounded-md bg-ink px-4 py-2 text-sm font-semibold text-card disabled:opacity-50"
-        >
-          Draft létrehozása
-        </button>
-        {createDisabledReason ? (
-          <p className="mt-2 text-xs text-ink-soft">{createDisabledReason}</p>
-        ) : null}
       </Card>
 
       <Card title={`Draftok (${openDrafts.length})`}>
@@ -632,19 +805,140 @@ function DraftCard({
   const [open, setOpen] = useState(false)
   const [secretAlias, setSecretAlias] = useState(draft.secretAliasSuggested ?? '')
   const [apiKey, setApiKey] = useState('')
+  const [clientId, setClientId] = useState('')
   const [approverId, setApproverId] = useState('')
   const [criticality, setCriticality] = useState<'L1' | 'L2' | 'L3'>('L1')
   const [agentId, setAgentId] = useState('')
   const [accessMode, setAccessMode] = useState<'read' | 'write'>('read')
   const [agentApiKey, setAgentApiKey] = useState('')
+  const [draftStep, setDraftStep] = useState<DraftManageStep>('inspect')
+  const [activeStep, setActiveStep] = useState<ActiveManageStep>('inspect')
+  // Javítás: draft-config inline szerkesztése (a gate resetelődik mentéskor).
+  const [editingConfig, setEditingConfig] = useState(false)
+  const [configDraft, setConfigDraft] = useState('')
+  // Takarítás / megszüntetés megerősítése.
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [decommReason, setDecommReason] = useState('')
+  const [decommApprover, setDecommApprover] = useState('')
+  const [decommCriticality, setDecommCriticality] = useState<'L1' | 'L2' | 'L3'>('L1')
+  const [confirmDecomm, setConfirmDecomm] = useState(false)
 
   const v = draft.validationResult
   const cfg = draft.config
+  const isActive = draft.lifecycleState === 'active'
+  const isUserDelegated = draft.authMode === 'user_delegated' || cfg?.authMode === 'user_delegated' || draft.httpApiView?.isDelegated === true
+  // oauth2 (service VAGY delegált) → nem-titkos client_id-t kell megadni (config.auth.clientId).
+  const isOauth2 =
+    isUserDelegated ||
+    draft.httpApiView?.authScheme === 'oauth2' ||
+    cfg?.auth?.type === 'oauth2'
   const writeTools = useMemo(
     () => (cfg?.proposedTools ?? []).filter((t) => t.access === 'write'),
     [cfg],
   )
   const selectedAgent = agents.find((agent) => agent.id === agentId)
+  const validationReady = !!v && v.status !== 'failed'
+  const reviewApproved = draft.reviewStatus === 'approved'
+  const sandboxReady = draft.sandboxTestOk === true
+  const activationReady = reviewApproved && validationReady && sandboxReady
+  const draftSteps: Array<{ id: DraftManageStep; label: string; hint: string; done: boolean }> = [
+    { id: 'inspect', label: 'Áttekintés', hint: 'Config és toolok', done: !!cfg || !!draft.httpApiView },
+    { id: 'validate', label: 'Validáció', hint: v ? v.status : 'Még nem futott', done: validationReady },
+    { id: 'review', label: 'Review', hint: draft.reviewStatus, done: reviewApproved },
+    {
+      id: 'sandbox',
+      label: 'Sandbox',
+      hint: draft.sandboxTestOk === true ? 'ok' : draft.sandboxTestOk === false ? 'fail' : 'Még nem futott',
+      done: sandboxReady,
+    },
+    {
+      id: 'activate',
+      label: 'Aktiválás',
+      hint: activationReady ? 'Készen áll' : 'Előfeltételek kellenek',
+      done: isActive,
+    },
+  ]
+  const activeSteps: Array<{ id: ActiveManageStep; label: string; hint: string; done: boolean }> = [
+    { id: 'inspect', label: 'Állapot', hint: 'Aktív connector', done: true },
+    { id: 'assign', label: 'Hozzárendelés', hint: 'Agent jog', done: false },
+    { id: 'revoke', label: 'Megszüntetés', hint: 'Leszerelés + archiválás', done: false },
+  ]
+  const visibleSteps = isActive ? activeSteps : draftSteps
+  const selectedStep = isActive ? activeStep : draftStep
+  const setSelectedStep = (step: DraftManageStep | ActiveManageStep) => {
+    if (isActive) setActiveStep(step as ActiveManageStep)
+    else setDraftStep(step as DraftManageStep)
+  }
+  const startConfigEdit = () => {
+    if (!cfg) return
+    setConfigDraft(JSON.stringify(cfg, null, 2))
+    setEditingConfig(true)
+  }
+  const saveConfigEdit = () => {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(configDraft)
+    } catch {
+      run(async () => ({ success: false, error: 'A config nem érvényes JSON.' }), '')
+      return
+    }
+    run(async () => {
+      const res = await updateConnectorDraftConfig({
+        draftId: draft.draftId,
+        generatedConfig: parsed,
+      })
+      if (!res.success) return res
+      setEditingConfig(false)
+      setDraftStep('validate')
+      return res
+    }, 'Config frissítve — a validáció/review/sandbox resetelve, futtasd újra a kaput.')
+  }
+  const configEditor = !isActive && cfg ? (
+    <div className="rounded-md border border-ink/12 bg-wash/40 p-3">
+      <div className="flex items-center justify-between">
+        <h4 className="font-semibold">Config szerkesztése</h4>
+        {!editingConfig ? (
+          <button
+            type="button"
+            className="text-xs font-semibold text-sage hover:underline"
+            onClick={startConfigEdit}
+          >
+            Szerkesztés
+          </button>
+        ) : null}
+      </div>
+      {editingConfig ? (
+        <div className="mt-2 space-y-2">
+          <p className="text-xs text-honey">
+            A mentés resetteli a kaput: a validáció, a review és a sandbox-teszt is újra
+            lefut majd, mielőtt a connector aktiválható lenne.
+          </p>
+          <textarea
+            className="h-64 w-full rounded-md border border-ink/15 bg-paper px-3 py-2 font-mono text-xs"
+            value={configDraft}
+            onChange={(e) => setConfigDraft(e.target.value)}
+          />
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              disabled={pending}
+              onClick={saveConfigEdit}
+              className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
+            >
+              Config mentése
+            </button>
+            <button
+              type="button"
+              onClick={() => setEditingConfig(false)}
+              className="rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold"
+            >
+              Mégse
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  ) : null
 
   return (
     <div className="rounded-lg border border-ink/12 bg-paper">
@@ -657,7 +951,11 @@ function DraftCard({
           {open ? '▾' : '▸'} {draft.name}
         </button>
         <Badge tone={lifecycleTone(draft.lifecycleState)}>{draft.lifecycleState}</Badge>
-        <Badge tone={reviewTone(draft.reviewStatus)}>review: {draft.reviewStatus}</Badge>
+        {isActive ? (
+          <Badge tone="success">review: lezárt</Badge>
+        ) : (
+          <Badge tone={reviewTone(draft.reviewStatus)}>review: {draft.reviewStatus}</Badge>
+        )}
         {v ? <Badge tone={statusTone(v.status)}>validation: {v.status}</Badge> : (
           <Badge tone="neutral">validation: —</Badge>
         )}
@@ -668,6 +966,47 @@ function DraftCard({
 
       {open ? (
         <div className="space-y-4 border-t border-ink/10 px-4 py-4 text-sm">
+          <div className="grid gap-4 lg:grid-cols-[14rem_1fr]">
+            <ol className="space-y-2">
+              {visibleSteps.map((step, index) => {
+                const active = selectedStep === step.id
+                return (
+                  <li key={step.id}>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedStep(step.id)}
+                      className={`flex w-full items-start gap-3 rounded-md border px-3 py-3 text-left transition ${
+                        active
+                          ? 'border-coral/45 bg-coral/8'
+                          : step.done
+                            ? 'border-sage/35 bg-sage/8'
+                            : 'border-ink/12 bg-paper hover:border-coral/25'
+                      }`}
+                    >
+                      <span
+                        className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-semibold ${
+                          step.done
+                            ? 'bg-sage text-card'
+                            : active
+                              ? 'bg-coral text-card'
+                              : 'bg-night-2 text-ink-soft'
+                        }`}
+                      >
+                        {step.done ? '✓' : index + 1}
+                      </span>
+                      <span className="min-w-0">
+                        <span className="block text-sm font-semibold">{step.label}</span>
+                        <span className="block truncate text-xs text-ink-soft">{step.hint}</span>
+                      </span>
+                    </button>
+                  </li>
+                )
+              })}
+            </ol>
+
+            <div className="min-w-0 space-y-4 rounded-md border border-ink/12 bg-wash/35 p-4">
+          {selectedStep === 'inspect' ? (
+            <>
           {/* Diff-nézet — a generált deskriptor (§4.3) */}
           {cfg ? (
             <div className="grid gap-4 md:grid-cols-2">
@@ -700,6 +1039,39 @@ function DraftCard({
                   )}
                 </div>
               </div>
+            </div>
+          ) : draft.httpApiView ? (
+            // Fallback: a config nem provisioning-ConnectorConfig alakú (pl. az
+            // „API-kapcsolat" szerkesztőn átírt http_api config). Secret-mentes read-only nézet.
+            <div className="rounded-md bg-honey/5 p-3 text-xs">
+              <p className="mb-2 text-ink-soft">
+                Ez a kapcsolat az „API-kapcsolat&rdquo; szerkesztőn keresztül lett beállítva
+                (http_api futásidejű config).
+                {draft.httpApiView.isDelegated
+                  ? ' Automatikus hozzájárulású (user-delegált) OAuth.'
+                  : ''}
+              </p>
+              {draft.httpApiView.baseUrl ? (
+                <p>
+                  <span className="text-ink-soft">Base URL:</span>{' '}
+                  <code>{draft.httpApiView.baseUrl}</code>
+                </p>
+              ) : null}
+              {draft.httpApiView.authScheme ? (
+                <p>
+                  <span className="text-ink-soft">Auth:</span> {draft.authMode} ·{' '}
+                  {draft.httpApiView.isDelegated ? 'oauth2 (auto-consent)' : draft.httpApiView.authScheme}
+                </p>
+              ) : null}
+              {draft.httpApiView.endpoints.length > 0 ? (
+                <ul className="mt-1 font-mono">
+                  {draft.httpApiView.endpoints.map((e) => (
+                    <li key={`${e.method} ${e.path}`}>
+                      {e.method} {e.path}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
             </div>
           ) : (
             <p className="text-coral">A tárolt config nem értelmezhető.</p>
@@ -738,6 +1110,88 @@ function DraftCard({
             </div>
           ) : null}
 
+          <p className="text-xs text-ink-soft">
+            forrás: {draft.sourceType} · hash: <code>{draft.sourceHash}</code>
+          </p>
+
+          {/* Javítás: aktív connector visszanyitása draftba szerkesztéshez (auditált). */}
+          {isActive ? (
+            <div className="rounded-md border border-ink/12 bg-wash/40 p-3">
+              <h4 className="mb-1 font-semibold">Szerkesztés / javítás</h4>
+              <p className="mb-2 text-xs text-ink-soft">
+                Aktív connector configját nem lehet élesben átírni. A javításhoz nyisd vissza
+                draftba: a connector offline lesz (a Tool Broker nem oldja fel), majd a módosítás
+                után újra végig kell menni a valid→review→sandbox→aktiválás kapun. Az
+                agent-hozzárendelések megmaradnak, és újraaktiváláskor visszaállnak.
+              </p>
+              <button
+                type="button"
+                disabled={pending}
+                onClick={() =>
+                  run(
+                    () => reopenConnector({ draftId: draft.draftId }),
+                    'Connector visszanyitva draftba — szerkeszd, majd aktiváld újra.',
+                  )
+                }
+                className="rounded-md border border-honey/50 bg-honey/10 px-3 py-1.5 text-xs font-semibold text-honey disabled:opacity-50"
+              >
+                Szerkesztés (visszanyitás draftba)
+              </button>
+            </div>
+          ) : null}
+
+          {/* Javítás: draft/validated config inline szerkesztése (a gate resetelődik). */}
+          {configEditor}
+
+          {/* Takarítás: sosem aktivált draft hard-delete-je (auditált). */}
+          {!isActive &&
+          (draft.lifecycleState === 'draft' || draft.lifecycleState === 'validated') ? (
+            <div className="rounded-md border border-coral/30 bg-coral/5 p-3">
+              <h4 className="mb-1 font-semibold text-coral">Draft törlése</h4>
+              <p className="mb-2 text-xs text-ink-soft">
+                Végleges hard-delete — csak sosem aktivált draftra. Az elrontott draft connector és
+                a draft-sor véglegesen törlődik (a törlés ténye auditba kerül).
+              </p>
+              {!confirmDelete ? (
+                <button
+                  type="button"
+                  className="rounded-md border border-coral/40 bg-coral/10 px-3 py-1.5 text-xs font-semibold text-coral"
+                  onClick={() => setConfirmDelete(true)}
+                >
+                  Draft törlése
+                </button>
+              ) : (
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-semibold text-coral">Biztos? Ez nem visszavonható.</span>
+                  <button
+                    type="button"
+                    disabled={pending}
+                    onClick={() =>
+                      run(
+                        () => deleteConnectorDraft({ draftId: draft.draftId }),
+                        'Draft törölve.',
+                      )
+                    }
+                    className="rounded-md bg-coral px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
+                  >
+                    Igen, töröld
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmDelete(false)}
+                    className="rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold"
+                  >
+                    Mégse
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : null}
+            </>
+          ) : null}
+
+          {!isActive && selectedStep === 'validate' ? (
+            <>
           {/* Validációs eredmény */}
           {v ? (
             <div>
@@ -762,6 +1216,23 @@ function DraftCard({
                     <li key={i}>{w}</li>
                   ))}
                 </ul>
+              ) : null}
+              {v.warnings.length > 0 && cfg ? (
+                <div className="mt-3 rounded border border-honey/40 bg-honey/5 p-2">
+                  <p className="text-xs text-ink-soft">
+                    A warningok egy része a draft configban javítható. A módosítás után a kapuk
+                    újraindulnak, így az új configot újra kell validálni.
+                  </p>
+                  {!editingConfig ? (
+                    <button
+                      type="button"
+                      className="mt-2 rounded-md border border-honey/50 bg-paper px-3 py-1.5 text-xs font-semibold text-honey"
+                      onClick={startConfigEdit}
+                    >
+                      Config szerkesztése
+                    </button>
+                  ) : null}
+                </div>
               ) : null}
               {(v.checks.egressAllowlist === 'warned' || v.checks.egressAllowlist === 'failed') &&
               (v.unknownHosts?.length ?? 0) > 0 ? (
@@ -792,106 +1263,173 @@ function DraftCard({
                 </div>
               ) : null}
             </div>
+          ) : (
+            <div>
+              <h4 className="mb-1 font-semibold">Determinisztikus validáció</h4>
+              <p className="text-xs text-ink-soft">
+                A draft még nincs validálva. Futtasd le a validátort, mielőtt review vagy aktiválás
+                következne.
+              </p>
+            </div>
+          )}
+          {configEditor}
+            </>
           ) : null}
 
-          <p className="text-xs text-ink-soft">
-            forrás: {draft.sourceType} · hash: <code>{draft.sourceHash}</code>
-          </p>
+          {!isActive && selectedStep === 'validate' ? (
+            <div className="flex flex-wrap gap-2 border-t border-ink/10 pt-3">
+              <button
+                type="button"
+                disabled={pending}
+                onClick={() =>
+                  run(() => validateConnectorDraft({ draftId: draft.draftId }), 'Validáció lefutott.')
+                }
+                className="rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold disabled:opacity-50"
+              >
+                Validálás
+              </button>
+            </div>
+          ) : null}
 
-          {/* Akciók */}
-          <div className="flex flex-wrap gap-2 border-t border-ink/10 pt-3">
-            <button
-              type="button"
-              disabled={pending}
-              onClick={() =>
-                run(() => validateConnectorDraft({ draftId: draft.draftId }), 'Validáció lefutott.')
-              }
-              className="rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold disabled:opacity-50"
-            >
-              Validálás
-            </button>
-            <button
-              type="button"
-              disabled={pending}
-              onClick={() =>
-                run(
-                  () => reviewConnectorDraft({ draftId: draft.draftId, decision: 'approve' }),
-                  'Jóváhagyva.',
-                )
-              }
-              className="rounded-md border border-sage/40 bg-sage/10 px-3 py-1.5 text-xs font-semibold text-sage disabled:opacity-50"
-            >
-              Jóváhagyás
-            </button>
-            <button
-              type="button"
-              disabled={pending}
-              onClick={() =>
-                run(
-                  () =>
-                    reviewConnectorDraft({ draftId: draft.draftId, decision: 'changes_requested' }),
-                  'Módosítás kérve.',
-                )
-              }
-              className="rounded-md border border-honey/40 bg-honey/10 px-3 py-1.5 text-xs font-semibold text-honey disabled:opacity-50"
-            >
-              Módosítás kérése
-            </button>
-            <button
-              type="button"
-              disabled={pending}
-              onClick={() =>
-                run(
-                  () => reviewConnectorDraft({ draftId: draft.draftId, decision: 'reject' }),
-                  'Elutasítva.',
-                )
-              }
-              className="rounded-md border border-coral/40 bg-coral/10 px-3 py-1.5 text-xs font-semibold text-coral disabled:opacity-50"
-            >
-              Elutasítás
-            </button>
-            <button
-              type="button"
-              disabled={pending}
-              onClick={() =>
-                run(async () => {
-                  const res = await testConnectorDraft({ draftId: draft.draftId })
-                  if (!res.success) return { success: false, error: res.error ?? 'Sandbox-teszt sikertelen' }
-                  const body = res.data as { ok?: boolean; detail?: string; statusCode?: number }
-                  if (!body.ok) {
-                    const extra = [
-                      body.detail,
-                      body.statusCode != null ? `HTTP ${body.statusCode}` : null,
-                    ]
-                      .filter(Boolean)
-                      .join(' · ')
-                    return {
-                      success: false,
-                      error: `Sandbox-teszt sikertelen${extra ? `: ${extra}` : ''}`,
-                    }
+          {!isActive && selectedStep === 'review' ? (
+            <div className="space-y-3 border-t border-ink/10 pt-3">
+              <div>
+                <h4 className="font-semibold">Review döntés</h4>
+                <p className="mt-1 text-xs text-ink-soft">
+                  Ez csak draft állapotban értelmezett kapu. Aktív connectornál visszavonás vagy
+                  új verzió kell, nem utólagos review-átírás.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  disabled={pending}
+                  onClick={() =>
+                    run(
+                      () => reviewConnectorDraft({ draftId: draft.draftId, decision: 'approve' }),
+                      'Jóváhagyva.',
+                    )
                   }
-                  return { success: true }
-                }, 'Sandbox-teszt sikeres.')
-              }
-              className="rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold disabled:opacity-50"
-            >
-              Sandbox-teszt
-            </button>
-          </div>
+                  className="rounded-md border border-sage/40 bg-sage/10 px-3 py-1.5 text-xs font-semibold text-sage disabled:opacity-50"
+                >
+                  Jóváhagyás
+                </button>
+                <button
+                  type="button"
+                  disabled={pending}
+                  onClick={() =>
+                    run(
+                      () =>
+                        reviewConnectorDraft({ draftId: draft.draftId, decision: 'changes_requested' }),
+                      'Módosítás kérve.',
+                    )
+                  }
+                  className="rounded-md border border-honey/40 bg-honey/10 px-3 py-1.5 text-xs font-semibold text-honey disabled:opacity-50"
+                >
+                  Módosítás kérése
+                </button>
+                <button
+                  type="button"
+                  disabled={pending}
+                  onClick={() =>
+                    run(
+                      () => reviewConnectorDraft({ draftId: draft.draftId, decision: 'reject' }),
+                      'Elutasítva.',
+                    )
+                  }
+                  className="rounded-md border border-coral/40 bg-coral/10 px-3 py-1.5 text-xs font-semibold text-coral disabled:opacity-50"
+                >
+                  Elutasítás
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          {!isActive && selectedStep === 'sandbox' ? (
+            <div className="space-y-3 border-t border-ink/10 pt-3">
+              <div>
+                <h4 className="font-semibold">Sandbox kapcsolat-teszt</h4>
+                <p className="mt-1 text-xs text-ink-soft">
+                  Szűk jogú, nem éles próbahívás. Sikeres teszt nélkül az aktiválás blokkolva marad.
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={pending}
+                onClick={() =>
+                  run(async () => {
+                    const res = await testConnectorDraft({ draftId: draft.draftId })
+                    if (!res.success) return { success: false, error: res.error ?? 'Sandbox-teszt sikertelen' }
+                    const body = res.data as { ok?: boolean; detail?: string; statusCode?: number }
+                    if (!body.ok) {
+                      const extra = [
+                        body.detail,
+                        body.statusCode != null ? `HTTP ${body.statusCode}` : null,
+                      ]
+                        .filter(Boolean)
+                        .join(' · ')
+                      return {
+                        success: false,
+                        error: `Sandbox-teszt sikertelen${extra ? `: ${extra}` : ''}`,
+                      }
+                    }
+                    return { success: true }
+                  }, 'Sandbox-teszt sikeres.')
+                }
+                className="rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold disabled:opacity-50"
+              >
+                Sandbox-teszt
+              </button>
+            </div>
+          ) : null}
+
+          {isActive && selectedStep === 'inspect' && draft.connectorType === 'http_api' && isUserDelegated ? (
+            <div className="flex flex-wrap gap-2 border-t border-ink/10 pt-3">
+              <button
+                type="button"
+                disabled={pending}
+                onClick={() =>
+                  run(async () => {
+                    const res = await startConnectorOAuth({ connectorId: draft.connectorId })
+                    if (!res.success) return { success: false, error: res.error }
+                    if (!('stub' in res.data && res.data.stub)) {
+                      window.location.href = res.data.url
+                    }
+                    return { success: true }
+                  }, 'Consent-flow elindítva.')
+                }
+                className="rounded-md border border-sage/40 bg-sage/10 px-3 py-1.5 text-xs font-semibold text-sage disabled:opacity-50"
+              >
+                Auto-consent kezdeményezése
+              </button>
+            </div>
+          ) : null}
 
           {/* Aktiválás — emberi admin-aktus */}
-          {draft.lifecycleState !== 'active' ? (
+          {!isActive && selectedStep === 'activate' ? (
             <div className="rounded-md border border-ink/12 bg-wash/40 p-3">
               <h4 className="mb-2 font-semibold">Aktiválás (emberi admin-aktus)</h4>
+              {!activationReady ? (
+                <p className="mb-3 text-xs text-honey">
+                  Az aktiválás feltétele: approved review, nem-failed validáció és sikeres
+                  sandbox-teszt.
+                </p>
+              ) : null}
               <div className="grid gap-2 sm:grid-cols-2">
                 <label className="text-xs">
-                  <span className="mb-1 block text-ink-soft">API kulcs</span>
+                  <span className="mb-1 block text-ink-soft">
+                    {isUserDelegated ? 'OAuth client secret' : 'API kulcs'}
+                  </span>
                   <input
                     type="password"
                     className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
                     value={apiKey}
                     onChange={(e) => setApiKey(e.target.value)}
-                    placeholder="Kulcs megadása → auto secret-ref"
+                    placeholder={
+                      isUserDelegated
+                        ? 'Client secret megadása → secret-ref'
+                        : 'Kulcs megadása → auto secret-ref'
+                    }
                   />
                 </label>
                 <label className="text-xs">
@@ -906,6 +1444,19 @@ function DraftCard({
                     disabled={!!apiKey.trim()}
                   />
                 </label>
+                {isOauth2 ? (
+                  <label className="text-xs sm:col-span-2">
+                    <span className="mb-1 block text-ink-soft">
+                      OAuth client ID (nem titok → config)
+                    </span>
+                    <input
+                      className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
+                      value={clientId}
+                      onChange={(e) => setClientId(e.target.value)}
+                      placeholder="a szolgáltatónál regisztrált OAuth-app client_id-ja"
+                    />
+                  </label>
+                ) : null}
                 <label className="text-xs">
                   <span className="mb-1 block text-ink-soft">Kritikusság</span>
                   <select
@@ -928,29 +1479,64 @@ function DraftCard({
                   />
                 </label>
               </div>
-              <button
-                type="button"
-                disabled={pending || (!apiKey.trim() && !secretAlias.trim())}
-                onClick={() =>
-                  run(
-                    () =>
-                      activateConnector({
-                        draftId: draft.draftId,
-                        ...(apiKey.trim()
-                          ? { apiKey: apiKey.trim() }
-                          : { secretAlias: secretAlias.trim() }),
-                        criticality,
-                        approverId: approverId.trim() || undefined,
-                      }),
-                    'Connector aktiválva.',
-                  )
-                }
-                className="mt-2 rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
-              >
-                Aktiválás
-              </button>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  disabled={pending || !activationReady || (!apiKey.trim() && !secretAlias.trim())}
+                  onClick={() =>
+                    run(
+                      () =>
+                        activateConnector({
+                          draftId: draft.draftId,
+                          ...(apiKey.trim()
+                            ? { apiKey: apiKey.trim() }
+                            : { secretAlias: secretAlias.trim() }),
+                          ...(isOauth2 && clientId.trim() ? { clientId: clientId.trim() } : {}),
+                          criticality,
+                          approverId: approverId.trim() || undefined,
+                        }),
+                      'Connector aktiválva.',
+                    )
+                  }
+                  className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
+                >
+                  Aktiválás
+                </button>
+                {isUserDelegated ? (
+                  <button
+                    type="button"
+                    disabled={pending || !activationReady || (!apiKey.trim() && !secretAlias.trim())}
+                    onClick={() =>
+                      run(async () => {
+                        const activated = await activateConnector({
+                          draftId: draft.draftId,
+                          ...(apiKey.trim()
+                            ? { apiKey: apiKey.trim() }
+                            : { secretAlias: secretAlias.trim() }),
+                          ...(isOauth2 && clientId.trim() ? { clientId: clientId.trim() } : {}),
+                          criticality,
+                          approverId: approverId.trim() || undefined,
+                        })
+                        if (!activated.success) return { success: false, error: activated.error }
+
+                        const consent = await startConnectorOAuth({ connectorId: draft.connectorId })
+                        if (!consent.success) return { success: false, error: consent.error }
+                        if (!('stub' in consent.data && consent.data.stub)) {
+                          window.location.href = consent.data.url
+                        }
+                        return { success: true }
+                      }, 'Connector aktiválva, consent-flow elindítva.')
+                    }
+                    className="rounded-md border border-sage/40 bg-sage/10 px-3 py-1.5 text-xs font-semibold text-sage disabled:opacity-50"
+                  >
+                    Aktiválás és auto-consent indítása
+                  </button>
+                ) : null}
+              </div>
             </div>
-          ) : (
+          ) : null}
+
+          {isActive && selectedStep === 'assign' ? (
             <div className="rounded-md border border-ink/12 bg-wash/40 p-3">
               <h4 className="mb-2 font-semibold">Hozzárendelés agenthez (emberi admin-aktus)</h4>
               <div className="grid gap-2 sm:grid-cols-2">
@@ -1016,7 +1602,96 @@ function DraftCard({
                 Hozzárendelés
               </button>
             </div>
-          )}
+          ) : null}
+
+          {isActive && selectedStep === 'revoke' ? (
+            <div className="rounded-md border border-coral/30 bg-coral/5 p-3">
+              <h4 className="mb-2 font-semibold text-coral">Megszüntetés (auditált leszerelés)</h4>
+              <p className="text-xs text-ink-soft">
+                Nem hard-delete: az agent-hozzárendelések levétele, az érintett agentek http_api
+                capability-jeinek újraszámítása, az aktív user-grantek visszavonása és a
+                menedzselt secret-ref törlése után a connector <code>archived</code> állapotba kerül
+                — a connector-sor és az audit-előzmény megmarad. A művelet visszafordíthatatlan
+                (újra kellene aktiválni). Bank-preset / L2–L3 esetén második jóváhagyó kell.
+              </p>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                <label className="text-xs sm:col-span-2">
+                  <span className="mb-1 block text-ink-soft">Indok (auditba kerül)</span>
+                  <input
+                    className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
+                    value={decommReason}
+                    onChange={(e) => setDecommReason(e.target.value)}
+                    placeholder="Pl. félrekonfigurált egress-host, lecserélt szolgáltató"
+                  />
+                </label>
+                <label className="text-xs">
+                  <span className="mb-1 block text-ink-soft">Kritikusság</span>
+                  <select
+                    className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
+                    value={decommCriticality}
+                    onChange={(e) => setDecommCriticality(e.target.value as typeof decommCriticality)}
+                  >
+                    <option value="L1">L1</option>
+                    <option value="L2">L2 (dual-control)</option>
+                    <option value="L3">L3 (dual-control)</option>
+                  </select>
+                </label>
+                <label className="text-xs">
+                  <span className="mb-1 block text-ink-soft">2. jóváhagyó (≠ te)</span>
+                  <input
+                    className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
+                    value={decommApprover}
+                    onChange={(e) => setDecommApprover(e.target.value)}
+                    placeholder="user-id (dual-control esetén)"
+                  />
+                </label>
+              </div>
+              {!confirmDecomm ? (
+                <button
+                  type="button"
+                  className="mt-3 rounded-md border border-coral/40 bg-coral/10 px-3 py-1.5 text-xs font-semibold text-coral"
+                  onClick={() => setConfirmDecomm(true)}
+                >
+                  Megszüntetés
+                </button>
+              ) : (
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-semibold text-coral">
+                    Biztos? A connector leszerelődik és archiválódik.
+                  </span>
+                  <button
+                    type="button"
+                    disabled={pending}
+                    onClick={() =>
+                      run(async () => {
+                        const res = await decommissionConnector({
+                          draftId: draft.draftId,
+                          criticality: decommCriticality,
+                          approverId: decommApprover.trim() || undefined,
+                          reason: decommReason.trim() || undefined,
+                        })
+                        if (!res.success) return res
+                        setConfirmDecomm(false)
+                        return res
+                      }, 'Connector megszüntetve (archived).')
+                    }
+                    className="rounded-md bg-coral px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
+                  >
+                    Igen, szüntesd meg
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setConfirmDecomm(false)}
+                    className="rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold"
+                  >
+                    Mégse
+                  </button>
+                </div>
+              )}
+            </div>
+          ) : null}
+            </div>
+          </div>
         </div>
       ) : null}
     </div>
