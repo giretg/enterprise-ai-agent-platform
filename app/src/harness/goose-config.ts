@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { access } from 'node:fs/promises'
 import path from 'node:path'
+import { PLATFORM_BROKER_TOOLS } from '@/harness/platform-mcp-bridge'
 
 export type GooseHarnessEnv = Record<string, string | undefined>
 
@@ -20,6 +21,12 @@ function requireValue(env: GooseHarnessEnv, name: string): string {
 
 function resolveBridgeScript(env: GooseHarnessEnv): string {
   return env.HARNESS_MCP_BRIDGE_SCRIPT?.trim() || path.join(process.cwd(), 'scripts/platform-mcp-bridge.ts')
+}
+
+const PLATFORM_BROKER_TOOL_NAMES = PLATFORM_BROKER_TOOLS.map((tool) => tool.name)
+
+function yamlList(values: string[]): string[] {
+  return values.map((value) => `      - ${value}`)
 }
 
 async function resolveBridgeCommand(env: GooseHarnessEnv): Promise<{ cmd: string; args: string[] }> {
@@ -80,26 +87,7 @@ export async function prepareGooseHarnessEnv(env: GooseHarnessEnv): Promise<Goos
     '      - PLATFORM_API_URL',
     '      - HARNESS_AGENT_API_KEY',
     '    available_tools:',
-    '      - kb_search',
-    '      - board_write',
-    '      - ticket_create',
-    '      - agent_ask',
-    '      - agent_catalog',
-    '      - file_read',
-    '      - file_write',
-    '      - file_edit',
-    '      - file_list',
-    '      - file_glob',
-    '      - file_search',
-    '      - file_delete',
-    '      - xlsx_read_sheet',
-    '      - xlsx_write_cells',
-    '      - xlsx_format_range',
-    '      - xlsx_layout',
-    '      - xlsx_create',
-    '      - xlsx_append_rows',
-    '      - docx_read',
-    '      - pdf_read',
+    ...yamlList(PLATFORM_BROKER_TOOL_NAMES),
     '',
   ].join('\n')
 
@@ -130,6 +118,6 @@ export function gooseConfigPreview(input: GooseConfigInput) {
     platformApiUrl: input.platformApiUrl,
     bridgeScript: input.bridgeScriptPath ?? 'scripts/platform-mcp-bridge.ts',
     developerExtensionEnabled: false,
-    platformBrokerTools: ['kb_search', 'board_write', 'ticket_create', 'agent_ask', 'agent_catalog', 'file_read', 'file_write', 'file_edit', 'file_list', 'file_glob', 'file_search', 'file_delete', 'xlsx_read_sheet', 'xlsx_write_cells', 'xlsx_format_range', 'xlsx_layout', 'xlsx_create', 'xlsx_append_rows', 'docx_read', 'pdf_read'],
+    platformBrokerTools: PLATFORM_BROKER_TOOL_NAMES,
   }
 }

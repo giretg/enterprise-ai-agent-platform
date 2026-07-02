@@ -15,7 +15,13 @@ import {
 } from '../src/domain/tool-broker/tool-broker-service'
 import { WebSearchPolicyService, domainMatchesPattern } from '../src/domain/web-search/web-search-policy-service'
 import { WebSearchService, classifySourceType } from '../src/domain/web-search/web-search-service'
-import { StubSearchProviderAdapter } from '../src/domain/web-search/search-provider-adapter'
+import {
+  HttpSearchProviderAdapter,
+  StubSearchProviderAdapter,
+  braveLocaleParams,
+  mapRecencyDaysToBraveFreshness,
+  parseBraveSearchResponse,
+} from '../src/domain/web-search/search-provider-adapter'
 import { DEFAULT_WEB_SEARCH_CONFIG, parseWebSearchConfig, type WebSearchConnectorConfig } from '../src/domain/web-search/web-search-types'
 import type {
   AgentRepository,
@@ -351,6 +357,87 @@ async function main() {
     assert.equal(classifySourceType('notgov.hu'), 'unknown')
   })
 
+  console.log('\n=== Brave adapter — freshness + válasz parse ===')
+  await test('braveLocaleParams HU esetén nem küld country-t (Brave nem támogatja)', () => {
+    assert.deepEqual(braveLocaleParams('hu-HU', 'HU'), { search_lang: 'hu' })
+  })
+  await test('braveLocaleParams DE esetén country=DE', () => {
+    assert.deepEqual(braveLocaleParams('de-DE', 'DE'), { search_lang: 'de', country: 'DE' })
+  })
+  await test('mapRecencyDaysToBraveFreshness Brave kódokat ad, nem „Nd” formátumot', () => {
+    assert.equal(mapRecencyDaysToBraveFreshness(1), 'pd')
+    assert.equal(mapRecencyDaysToBraveFreshness(3), 'pw')
+    assert.equal(mapRecencyDaysToBraveFreshness(14), 'pm')
+    assert.equal(mapRecencyDaysToBraveFreshness(90), 'py')
+    assert.equal(mapRecencyDaysToBraveFreshness(0), undefined)
+  })
+  await test('parseBraveSearchResponse a web.results mezőt olvassa', () => {
+    const items = parseBraveSearchResponse({
+      web: {
+        results: [
+          {
+            title: 'Telex főcím',
+            url: 'https://telex.hu/fohir',
+            description: 'A nap vezető híre',
+            page_age: '2026-07-02T05:00:00',
+          },
+        ],
+      },
+    })
+    assert.equal(items.length, 1)
+    assert.equal(items[0].title, 'Telex főcím')
+    assert.equal(items[0].snippet, 'A nap vezető híre')
+    assert.equal(items[0].publishedAt, '2026-07-02T05:00:00')
+  })
+  await test('parseBraveSearchResponse fallback top-level results mezőre', () => {
+    const items = parseBraveSearchResponse({
+      results: [{ title: 'x', url: 'https://example.com', description: 'y' }],
+    })
+    assert.equal(items.length, 1)
+  })
+  await test('HttpSearchProviderAdapter Brave: freshness=pd és Cache-Control header', async () => {
+    const originalFetch = globalThis.fetch
+    let capturedUrl = ''
+    let capturedHeaders: HeadersInit | undefined
+    globalThis.fetch = async (input, init) => {
+      capturedUrl = String(input)
+      capturedHeaders = init?.headers
+      return new Response(
+        JSON.stringify({
+          web: {
+            results: [{ title: 'hír', url: 'https://telex.hu/a', description: 'snippet' }],
+          },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      )
+    }
+    try {
+      const adapter = new HttpSearchProviderAdapter({
+        apiUrl: 'https://api.search.brave.com/res/v1/web/search',
+        apiKey: 'test-key',
+      })
+      const res = await adapter.search({
+        query: 'telex.hu vezető hír ma',
+        domains: [],
+        recencyDays: 1,
+        locale: 'hu-HU',
+        region: 'HU',
+        maxResults: 5,
+        safeSearch: 'strict',
+      })
+      assert.equal(res.items.length, 1)
+      assert.ok(capturedUrl.includes('freshness=pd'), `url: ${capturedUrl}`)
+      assert.ok(capturedUrl.includes('search_lang=hu'), `url: ${capturedUrl}`)
+      assert.ok(!capturedUrl.includes('country='), `url: ${capturedUrl}`)
+      assert.ok(!capturedUrl.includes('ui_lang='), `url: ${capturedUrl}`)
+      const headers = capturedHeaders as Record<string, string>
+      assert.equal(headers['Cache-Control'], 'no-cache')
+      assert.equal(headers['X-Subscription-Token'], 'test-key')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
   console.log('\n=== Adapter resolver — provider CONNECTOR-onként, nem globális env-állapot ===')
   await test('resolveAdapter megkapja a connector configot és a secretAlias-t', async () => {
     const calls: Array<{ provider: string; secretAlias: string | null }> = []
@@ -378,6 +465,14 @@ async function main() {
     assert.equal(parsed.allowGeneralWeb, false)
     assert.equal(parsed.logRawQuery, false)
     assert.deepEqual(parsed.allowedDomains, [])
+  })
+  await test('parseWebSearchConfig megőrzi a custom provider API URL-t', () => {
+    const parsed = parseWebSearchConfig({
+      provider: 'custom_search_api',
+      providerApiUrl: ' https://api.bing.microsoft.com/v7.0/search ',
+    })
+    assert.equal(parsed.provider, 'custom_search_api')
+    assert.equal(parsed.providerApiUrl, 'https://api.bing.microsoft.com/v7.0/search')
   })
 
   if (failures > 0) {

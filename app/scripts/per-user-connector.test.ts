@@ -92,6 +92,7 @@ type FakeOpts = {
   grant?: ConnectorGrant | null | ((query: GrantQuery) => ConnectorGrant | null)
   userStatus?: UserStatus | 'missing'
   agentRole?: Agent['role']
+  agentTenantId?: string | null
 }
 
 type GrantQuery = { tenantId: string | null; connectorId: string; userId: string }
@@ -103,6 +104,7 @@ function buildAuthorizer(opts: FakeOpts = {}) {
     grant: activeGrant = grant(),
     userStatus = 'active',
     agentRole = 'worker',
+    agentTenantId = 'tenant-A',
   } = opts
 
   const grantQueries: GrantQuery[] = []
@@ -115,7 +117,7 @@ function buildAuthorizer(opts: FakeOpts = {}) {
   } as unknown as ToolBrokerRepository
 
   const agents = {
-    findById: async () => ({ id: 'agent-1', role: agentRole }) as Agent,
+    findById: async () => ({ id: 'agent-1', role: agentRole, tenantId: agentTenantId }) as Agent,
   } as unknown as AgentRepository
 
   const grants = {
@@ -220,7 +222,7 @@ await test('10.1.3b — capability van, de grant nincs → DENY (connector_grant
   if (!result.allowed) assert.equal(result.reason, 'connector_grant_missing')
 })
 
-await test('10.1.7 — másik tenantból nincs grant-fallback → DENY', async () => {
+await test('10.1.7 — másik tenantból nincs grant-fallback → DENY (tenant_isolation)', async () => {
   const tenantAGrant = grant({ tenantId: 'tenant-A' })
   const { authorizer, grantQueries } = buildAuthorizer({
     connector: gmailConnector({ tenantId: 'tenant-B' }),
@@ -233,9 +235,23 @@ await test('10.1.7 — másik tenantból nincs grant-fallback → DENY', async (
     tenantId: 'tenant-B',
   })
   assert.equal(result.allowed, false)
-  if (!result.allowed) assert.equal(result.reason, 'connector_grant_missing')
-  assert.equal(grantQueries.length, 1)
-  assert.equal(grantQueries[0]?.tenantId, 'tenant-B')
+  if (!result.allowed) assert.equal(result.reason, 'tenant_isolation')
+  assert.equal(grantQueries.length, 0)
+})
+
+await test('TB-2 — tenant A agentje tenant B connectorát nem használhatja még hibás linkkel sem', async () => {
+  const { authorizer, grantQueries } = buildAuthorizer({
+    agentTenantId: 'tenant-A',
+    connector: gmailConnector({ tenantId: 'tenant-B' }),
+  })
+  const result = await authorizer.authorize({
+    agentId: 'agent-1',
+    tool: 'gmail_search',
+    actingUserId: 'user-Y',
+  })
+  assert.equal(result.allowed, false)
+  if (!result.allowed) assert.equal(result.reason, 'tenant_isolation')
+  assert.equal(grantQueries.length, 0)
 })
 
 // ---- §10.2 Kötelező negatív tesztek ----------------------------------------

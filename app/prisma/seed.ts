@@ -9,6 +9,11 @@ import {
   PROVISIONING_ASSISTANT_TEMPLATE,
   PROVISIONING_DRAFT_CAPABILITIES,
 } from '../src/domain/provisioning/provisioning-assistant'
+import {
+  WEB_EGRESS_ROLE_TEMPLATE,
+  WEB_EGRESS_TOOL_CAPABILITIES,
+  PROVISIONING_DISCOVER_CAPABILITIES,
+} from '../src/domain/agents/web-egress-role'
 import { ensureSystemRoleTemplates } from '../src/repositories/postgres/role-template-repository'
 import { ensureDefaultRolePermissions } from '../src/repositories/postgres/iam-repository'
 
@@ -168,6 +173,86 @@ async function ensureProvisioningAssistantAgent(adminId: string) {
 /** A `provisioning.draft.*` capability-seed (deny-by-default → itt kifejezetten allowed). */
 async function ensureProvisioningAssistantCapabilities(agentId: string) {
   for (const toolName of PROVISIONING_DRAFT_CAPABILITIES) {
+    await prisma.capability.upsert({
+      where: { agentId_toolName: { agentId, toolName } },
+      create: { agentId, toolName, allowed: true },
+      update: { allowed: true },
+    })
+  }
+}
+
+/**
+ * Web-egress role agent (WebFetch-Egress §8.1, §17/8). Capability-izolált `worker`: a
+ * `web_fetch` platform-tool KIZÁRÓLAG neki adható (§7.4) + `web_search` + `provisioning.discover.*`.
+ * Nincs eszközjoga kárt tenni (nincs activate/assign/secret/mutáló business-tool). A funkció
+ * ALAPBÓL KI van kapcsolva (`web_fetch.enabled` / `web_discovery` flag false); az agent léte
+ * önmagában semmit nem tesz elérhetővé — a discoverConfigFromName flag off esetén leáll.
+ */
+async function ensureWebEgressRoleAgent(adminId: string) {
+  const t = WEB_EGRESS_ROLE_TEMPLATE
+  const existing = await prisma.agent.findFirst({ where: { name: t.name } })
+  if (existing) {
+    await ensureWebEgressRoleCapabilities(existing.id)
+    await ensureWebSearchSeed(existing.id)
+    return existing
+  }
+
+  const memory = await prisma.memory.create({ data: {} })
+  const memoryVersion = await prisma.memoryVersion.create({
+    data: {
+      memoryId: memory.id,
+      version: 1,
+      content: 'Web-Egress Worker — capability-izolált agent; megbízhatatlan webtartalmat ADATKÉNT dolgoz fel.',
+      status: 'active',
+      source: 'seed',
+      approvedById: adminId,
+    },
+  })
+  await prisma.memory.update({ where: { id: memory.id }, data: { currentVersionId: memoryVersion.id } })
+
+  const modelConfig = { ...t.modelConfig }
+  const agent = await prisma.agent.create({
+    data: {
+      name: t.name,
+      roleInstruction: t.roleInstruction,
+      behaviorProfile: t.behaviorProfile,
+      modelConfig,
+      status: 'active',
+      role: t.role,
+      currentVersion: 1,
+      currentRoleInstructionVersion: 1,
+      currentBehaviorProfileVersion: 1,
+      memoryId: memory.id,
+    },
+  })
+  await prisma.agentVersion.create({
+    data: {
+      agentId: agent.id,
+      version: 1,
+      roleInstructionSnapshot: t.roleInstruction,
+      behaviorProfileSnapshot: t.behaviorProfile,
+      roleInstructionVersion: 1,
+      behaviorProfileVersion: 1,
+      modelConfigSnapshot: modelConfig,
+      memoryVersionId: memoryVersion.id,
+    },
+  })
+
+  await ensureWebEgressRoleCapabilities(agent.id)
+  // A web_search felület a meglévő „Controlled Web Search" connectoron át (broker + rate-limit).
+  await ensureWebSearchSeed(agent.id)
+  return agent
+}
+
+/**
+ * A web-egress role capability-seed (deny-by-default → itt kifejezetten allowed):
+ * `web_search`, `web_fetch` (a §7.4 kapu ezt olvassa) + `provisioning.discover.*`.
+ * A `web_fetch` NEM connector-backed broker-tool — csak Capability-sor, amit a felfedező
+ * hurok wrappere ellenőriz. A `web_search` connector-hozzárendelést az ensureWebSearchSeed adja.
+ */
+async function ensureWebEgressRoleCapabilities(agentId: string) {
+  const caps: string[] = [...WEB_EGRESS_TOOL_CAPABILITIES, ...PROVISIONING_DISCOVER_CAPABILITIES]
+  for (const toolName of caps) {
     await prisma.capability.upsert({
       where: { agentId_toolName: { agentId, toolName } },
       create: { agentId, toolName, allowed: true },
@@ -839,8 +924,6 @@ async function ensureHSMOfficerAgent(adminId: string) {
  * `logRawQuery=false` (csak hash kerül auditba). Orchestrator SOHA nem kaphat
  * capability sort — ezt csak worker agentekhez kötjük.
  */
-const WEB_SEARCH_DEMO_TENANT_ID = '00000000-0000-4000-a000-000000000001'
-
 async function ensureWebSearchSeed(agentId: string) {
   const config = {
     provider: 'stub',
@@ -875,13 +958,13 @@ async function ensureWebSearchSeed(agentId: string) {
       name: 'Controlled Web Search (banking_strict)',
       authMode: 'agent_owned',
       scope: 'global',
-      tenantId: WEB_SEARCH_DEMO_TENANT_ID,
+      tenantId: null,
       secretAlias: 'platform/web-search-provider-key',
       version: 1,
       config,
       lifecycleState: 'active',
     },
-    update: { config },
+    update: { config, tenantId: null },
   })
 
   await prisma.agentConnector.upsert({
@@ -1111,11 +1194,12 @@ async function main() {
     await ensureBookkeeperAgent(admin.id)
     await ensureHSMOfficerAgent(admin.id)
     const provisioningAssistant = await ensureProvisioningAssistantAgent(admin.id)
+    const webEgressAgent = await ensureWebEgressRoleAgent(admin.id)
     const allAgents = await prisma.agent.findMany({ select: { id: true } })
     for (const row of allAgents) {
-      // A provisioning-asszisztens least-privilege: NEM kap chat/board eszközjogot (§6.1),
-      // csak a provisioning.draft.* capability-osztályt.
-      if (row.id === provisioningAssistant.id) continue
+      // A provisioning-asszisztens és a web-egress role least-privilege: NEM kapnak
+      // chat/board eszközjogot (§6.1/§8.1), csak a szűk capability-osztályukat.
+      if (row.id === provisioningAssistant.id || row.id === webEgressAgent.id) continue
       await ensureChatToolsForAgent(row.id)
     }
     await ensureWikiRecipe(existingAgent.id, admin.id)
@@ -1195,6 +1279,7 @@ async function main() {
   await ensureBookkeeperAgent(admin.id)
   await ensureHSMOfficerAgent(admin.id)
   await ensureProvisioningAssistantAgent(admin.id)
+  await ensureWebEgressRoleAgent(admin.id)
   await ensureWikiRecipe(agent.id, admin.id)
   await ensureWikiPlaybook(admin.id)
   await ensureDemoApiKey(agent.id)

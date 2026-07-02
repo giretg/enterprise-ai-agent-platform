@@ -18,10 +18,10 @@
 | Fázis | Leírás | Állapot |
 |---|---|---|
 | **WS-A** | `web_search` Tool Broker kontraktus + policy modell | ✅ Implementálva |
-| **WS-B** | Search provider adapter + egress proxy + audit | ✅ Implementálva (determinisztikus stub alapból; cserélhető HTTP adapter env-gated, élő smoke teszt provider-kulcs nélkül nem futtatható) |
+| **WS-B** | Search provider adapter + egress proxy + audit | ✅ Implementálva (determinisztikus stub alapból; `custom_search_api` connector URL + secret-ref kulccsal, `managed_search` platform-konfigurációval futtatható; élő smoke teszt provider-kulcs nélkül nem futtatható) |
 | **WS-C** | Query-safety, PII guard, allowlist/denylist, rate/budget, kill-switch | ✅ Implementálva |
 | **WS-D** | Opcionális `web_fetch` / oldalolvasás sanitizálással | ⬜ Fázis 2.1 (szándékosan nem ebben a körben) |
-| **WS-E** | Control Plane UI: agent capability kártya, kill-switch panel, governance bontás | ✅ Implementálva (a tenant allowlist/denylist szerkesztése a connector configon át történik, nincs külön CRUD admin-form) |
+| **WS-E** | Control Plane UI: agent capability kártya, kill-switch + web policy panel, governance bontás | ✅ Implementálva |
 | **WS-F** | Acceptance + negatív tesztek | ✅ Implementálva (`app/scripts/web-search-tool.test.ts` — WS1–WS15, WN1–WN12 policy/authorize szinten, DB nélkül) |
 
 ### Implementált komponensek
@@ -30,13 +30,14 @@
 - `app/src/domain/tool-broker/tool-broker-service.ts` — `web_search` ág: capability/connector/policy authorize lánc, audit meta (sosem nyers query, csak hash), kill-switch enforcement.
 - `app/prisma/schema.prisma` + `app/prisma/seed.ts` — `ConnectorType.web_search`, banking_strict preset seed a HSM Officer Agentnek.
 - `app/src/harness/platform-mcp-bridge.ts` — `web_search` MCP-tool regisztráció és routing.
+- `app/src/domain/agent/chat-tool-loop.ts` — `web_search` elérhető az agent chat / general task tool loopban is, ha az agent capability-je engedi.
 - `app/src/domain/platform-settings/platform-settings-service.ts` — `web_search.enabled` kill-switch (WS13).
-- Control Plane UI — agent detail web-search policy kártya, System oldal kill-switch panel, Governance dashboard web_search bontás.
+- Control Plane UI — agent detail `Eszközjogok szerkesztése` panelen `web_search` kapcsoló, agent detail web-search policy kártya, System oldal kill-switch + web policy szerkesztő panel, Governance dashboard web_search bontás.
 
 ### Ismert egyszerűsítések / hátralévő munka
 
 - Élő (nem-stub) provider smoke teszt nem futott — nincs konfigurált kereső API-kulcs ebben a környezetben.
-- Nincs külön tenant web-policy admin UI az allowlist/denylist szerkesztésére — a connector `config` JSON-on át módosítható (provisioning/connector-admin mintával konzisztens).
+- A System oldali web policy editor `custom_search_api` módban tud új API-kulcsot felvenni vagy rotálni; a nyers kulcs nem kerül DB-be, csak `secret-ref:<connectorId>` alias marad a connectoron. `managed_search` továbbra is platformoldali provider-konfigurációt (`WEB_SEARCH_MANAGED_API_URL/KEY`, fallbackként `WEB_SEARCH_PROVIDER_API_URL/KEY`) használ.
 - A rate-limit `count()`-alapú, nem atomi (TOCTOU-kockázat nagyon nagy egyidejű terhelésnél) — elfogadható kockázat MVP-ben, Fázis 2.1+ téma.
 - `web_fetch` (§6) nincs implementálva — szándékosan, a spec §1.3 előfeltétele szerint csak `web_search` stabilizálása után.
 
@@ -63,7 +64,7 @@ Meghatározza, hogyan kapnak az agentek **kontrollált webes keresési képessé
 ### 1.1 In scope (Fázis 2)
 
 1. **`web_search` MCP-tool** a Tool Brokeren át.
-2. **Agent capability modell:** `web_search` explicit, agent-verzióhoz kötött jogosultság; deny-by-default.
+2. **Agent capability modell:** `web_search` explicit, agent-verzióhoz kötött jogosultság; deny-by-default. Az agent chat / general task tool loop ugyanebből a capability + connector állapotból építi az engedélyezett tool-listát, tehát a Control Plane chatben is meg kell kapnia a `web_search` tool definitiont, nem csak a harness/MCP útvonalon.
 3. **Tenant web policy:** engedélyezett domain minták, tiltott domain minták, max találat, max query / nap, max költség, retention.
 4. **Search provider adapter:** a tényleges kereső API-t a Tool Broker hívja, szerveroldali credential-injektálással.
 5. **Egress proxy:** a Tool Broker / search adapter az egyetlen komponens, amely a kereső providerhez kimehet.
@@ -184,7 +185,8 @@ VALUES (
 
 ```ts
 type WebSearchConnectorConfig = {
-  provider: "managed_search" | "custom_search_api";
+  provider: "stub" | "managed_search" | "custom_search_api";
+  providerApiUrl?: string;       // custom_search_api esetén tenant-szintű HTTP endpoint
   allowedDomains: string[];      // pl. ["*.gov.hu", "*.mnb.hu", "docs.stripe.com"]
   deniedDomains: string[];       // pl. ["pastebin.com", "*.onion", "*.example-risk"]
   defaultLocale: string;         // pl. "hu-HU"
@@ -533,16 +535,31 @@ Az agent governance kártyán jelenjen meg:
 - domain szűkítés;
 - utolsó 10 web search hívás státusza.
 
+Az agent admin szerkesztőfelületén az `Eszközjogok szerkesztése` panel külön `Webes kutatás` csoportban tartalmazza a `web_search` capability kapcsolóját. A kapcsoló **agentenként** állítható:
+
+- bekapcsoláskor a Control Plane szerveroldalon `allowed = true` capability-t ír, és automatikusan linkeli az aktív `web_search` connectort `read` módban;
+- kikapcsoláskor a capability `allowed = false` értékre vált, a korábbi audit- és connector-konfiguráció megőrzése mellett;
+- orchestrator role-template esetén a kapcsoló nem adhat új `web_search` jogosultságot, és a szerveroldali mentés is tiltja ezt az állapotot;
+- a capability-kapcsoló csak a tool-jogot állítja, a tenant web policyt (allowlist/denylist, limitek, provider preset) továbbra is a Web Search policy / connector config kezeli.
+
 ### 7.2 Tenant web policy oldal
 
-Admin felület:
+Admin felület a Control Plane `System / Web Search Tool` paneljén:
 
-- provider kiválasztás / secret alias státusz;
-- allowlist / denylist szerkesztés;
-- preset választás: `banking_strict`, `consulting_research`, `dev_open`;
-- rate-limit és retention;
-- raw query logging kapcsoló;
-- kill-switch: `web_search.enabled = false`.
+- provider kiválasztás (`stub | custom_search_api | managed_search`) és rövid magyarázat:
+  - `stub`: determinisztikus tesztprovider, nincs valódi webes keresés;
+  - `custom_search_api`: tenant által megadott Bing Search-kompatibilis HTTP endpoint, opcionális API-kulccsal;
+  - `managed_search`: platform által kezelt keresőcsatorna, tenant API-kulcs nélkül, platform env/secret konfigurációból;
+- `custom_search_api` esetén provider API URL és API-kulcs mező; a kulcs mentése/rotációja secret-store-ba történik, DB-ben csak `secret-ref:<connectorId>` alias marad;
+- secret alias státusz megjelenítése, nyers secret visszaolvasása nélkül;
+- allowlist / denylist szerkesztés soronkénti domain-listával (`allowedDomains`, `deniedDomains`);
+- `allowGeneralWeb` kapcsoló;
+- safe-search, locale/region, max találat, hard cap, query hossz, ticket/agent napi limitek és retention szerkesztése;
+- raw query logging és sensitive-query jóváhagyási kapcsoló;
+- kill-switch: `web_search.enabled = false`;
+- mentéskor a Control Plane az aktív `web_search` connector `config` JSON-ját és szükség esetén `secretAlias` mezőjét frissíti, majd `web_search.config_changed` audit-eseményt ír (`apiKeyRotated` flaggel, nyers kulcs nélkül).
+
+**Határ:** a policy editor csak a web search provider API-kulcsát rotálja. Általános Secret Manager adminisztrációt, kulcsvisszaolvasást és provider-specifikus auth sémákat továbbra sem ad.
 
 ### 7.3 Audit / governance dashboard
 
@@ -722,7 +739,7 @@ Szükséges metódusok:
 ### WS-E — UI és governance
 
 - Agent detail capability kártya.
-- Tenant web policy admin UI.
+- Tenant web policy admin UI a System oldalon (provider, allowlist/denylist, limitek, retention, kill-switch).
 - Governance dashboard web_search bontás.
 
 **Elfogadás:** admin tudja tiltani/engedélyezni, audit UI visszakereshető.

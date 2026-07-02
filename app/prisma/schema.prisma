@@ -446,6 +446,7 @@ model ResourceGrant {
 
 model Agent {
   id                            String      @id @default(uuid()) @db.Uuid
+  tenantId                      String?     @map("tenant_id") @db.Uuid
   name                          String
   // Szerep-instrukció ("mit csinál") és viselkedés-profil ("hogyan") külön
   // verziózva (§4.2/§5.3) — egymástól függetlenül frissíthető és visszakereshető.
@@ -485,6 +486,8 @@ model Agent {
   conversations      Conversation[]
   retentionPolicies  RetentionPolicy[]
 
+  @@index([tenantId, status])
+  @@index([tenantId, role])
   @@index([currentBehaviorProfileId])
   @@map("agents")
 }

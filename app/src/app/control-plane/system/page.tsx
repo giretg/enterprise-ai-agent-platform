@@ -10,7 +10,11 @@ import {
   listModelRoutingPolicies,
 } from '@/app/actions/platform'
 import { getMonitorControls } from '@/app/actions/monitor'
-import { getWebSearchControls } from '@/app/actions/web-search'
+import {
+  getWebFetchControls,
+  getWebSearchControls,
+  getWebSearchPolicy,
+} from '@/app/actions/web-search'
 import { DatabaseControlPanel } from './database-control-panel'
 import { DispatcherControlPanel } from './dispatcher-control-panel'
 import { ModelGatewayPanel } from './model-gateway-panel'
@@ -18,6 +22,7 @@ import { ModelPolicyPanel } from './model-policy-panel'
 import { TicketTypeConfigPanel } from './ticket-type-config-panel'
 import { MonitorControlPanel } from './monitor-control-panel'
 import { WebSearchControlPanel } from './web-search-control-panel'
+import { WebFetchControlPanel } from './web-fetch-control-panel'
 
 export default async function SystemPage() {
   const [
@@ -28,6 +33,8 @@ export default async function SystemPage() {
     modelPolicyRes,
     monitorControlsRes,
     webSearchControlsRes,
+    webSearchPolicyRes,
+    webFetchControlsRes,
     gatewayStatsRes,
     routingPoliciesRes,
     budgetsRes,
@@ -39,6 +46,8 @@ export default async function SystemPage() {
     getModelPolicy(),
     getMonitorControls(),
     getWebSearchControls(),
+    getWebSearchPolicy(),
+    getWebFetchControls(),
     getModelCallsSummary(),
     listModelRoutingPolicies(),
     listModelBudgets(),
@@ -86,7 +95,20 @@ export default async function SystemPage() {
           {webSearchControlsRes.error}
         </div>
       ) : (
-        <WebSearchControlPanel initial={webSearchControlsRes.data} canEdit={canEdit} />
+        <WebSearchControlPanel
+          initial={webSearchControlsRes.data}
+          policy={webSearchPolicyRes.success ? webSearchPolicyRes.data : null}
+          policyError={!webSearchPolicyRes.success ? webSearchPolicyRes.error : null}
+          canEdit={canEdit}
+        />
+      )}
+
+      {!webFetchControlsRes.success ? (
+        <div className="rounded-lg border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
+          {webFetchControlsRes.error}
+        </div>
+      ) : (
+        <WebFetchControlPanel initial={webFetchControlsRes.data} canEdit={canEdit} />
       )}
 
       {!ticketTypesRes.success ? (

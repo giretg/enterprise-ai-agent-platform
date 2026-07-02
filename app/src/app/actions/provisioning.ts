@@ -10,6 +10,7 @@ import { fail, ok } from '@/lib/result'
 import { ProvisioningError } from '@/domain/provisioning/errors'
 import type { ProvisioningActor } from '@/domain/provisioning/provisioning-service'
 import { PROVISIONING_ASSISTANT_TEMPLATE } from '@/domain/provisioning/provisioning-assistant'
+import { WEB_EGRESS_ROLE_TEMPLATE } from '@/domain/agents/web-egress-role'
 import { inspectPromptSensitivity } from '@/domain/gateway/sensitivity-router'
 
 /**
@@ -69,6 +70,18 @@ const draftFromDocSchema = z.object({
   docText: z.string().min(1),
   providerHint: z.string().optional(),
   sensitivityReviewAccepted: z.boolean().optional(),
+})
+
+const discoverSchema = z.object({
+  connectorName: z.string().min(1).max(120),
+  knownDomain: z.string().max(253).optional(),
+  sensitivityReviewAccepted: z.boolean().optional(),
+})
+
+const extendEgressSchema = z.object({
+  host: z.string().min(1).max(253),
+  sourceType: z.enum(['official', 'vendor_doc']).optional(),
+  draftId: z.string().optional(),
 })
 
 const reviewSchema = z.object({
@@ -225,6 +238,132 @@ export async function draftConfigFromApiDoc(input: unknown) {
     return ok({ config: result.config, requiresSensitivityReview: false })
   } catch (e) {
     return toFail(e, 'Nem sikerült legenerálni a configot a doksiból')
+  }
+}
+
+/**
+ * Kapcsolat felfedezése névből (WebFetch-Egress §5, §12.1). Admin-only. A web-egress role
+ * agent a weben megkeresi és letölti a spec doksiját, és ebből ConnectorConfig-jelöltet ad
+ * vissza (propose-not-apply). NEM hoz létre draftot — az admin a visszaadott configot
+ * átnézi és a meglévő createConnectorDraft-tal rakja le. A tényleges kapu a determinisztikus
+ * validátor + emberi aktiválás (§3, §4). A felfedezés flag alapból KI (`web_discovery`).
+ */
+export async function discoverConnectorFromName(input: unknown) {
+  try {
+    const user = await requireRole('admin')
+    const { connectorName, knownDomain, sensitivityReviewAccepted } = discoverSchema.parse(input)
+
+    // A seedelt web-egress role agent — audit-attribúció + a Registry modelConfig-je + a
+    // web.fetch/discover capability-k hordozója. Ha nincs, a felfedezés nem elérhető.
+    const agents = await repositories.agents.findMany()
+    const egressAgent = agents.find((a) => a.name === WEB_EGRESS_ROLE_TEMPLATE.name)
+    if (!egressAgent) {
+      return fail(
+        'A web-egress role agent nincs seedelve. Futtasd: npm run db:seed (a felfedezés flag mögött).',
+      )
+    }
+
+    // Érzékenységi kapu a connector-névre (mint a docText-re a kézi úton).
+    const sensitivity = inspectPromptSensitivity([{ role: 'user', content: connectorName }])
+    const forbiddenFindings = sensitivity.findings.filter((f) => f.level === 'forbidden')
+    if (forbiddenFindings.length > 0 && !sensitivityReviewAccepted) {
+      return ok({
+        requiresSensitivityReview: true,
+        sensitivity: {
+          level: sensitivity.level,
+          matchedCategory: sensitivity.matchedCategory,
+          findings: forbiddenFindings,
+        },
+      })
+    }
+
+    const result = await services.provisioningAssistant.discoverConfigFromName({
+      connectorName,
+      knownDomain: knownDomain ?? null,
+      egressRoleAgentId: egressAgent.id,
+      egressRoleAgentVersion: egressAgent.currentVersion,
+      agentModelConfig: egressAgent.modelConfig,
+      tenantId: user.tenantId,
+      ...(forbiddenFindings.length > 0
+        ? {
+            sensitivityOverride: {
+              reviewedByUserId: user.id,
+              allowedForbiddenCategories: [...new Set(forbiddenFindings.map((f) => f.category))],
+              reason: 'Provisioning web-discovery sensitivity review accepted by admin',
+            },
+          }
+        : {}),
+    })
+    // §11.1/§11.2 felfedezés-kimenet audit — actor = web-egress role agent, hash-only (§11.3).
+    if (!result.ok) {
+      await repositories.audit.append({
+        actorType: 'agent',
+        actorId: egressAgent.id,
+        agentVersion: egressAgent.currentVersion,
+        action: 'provisioning.discover.blocked',
+        targetType: 'provisioning_discovery',
+        targetId: null,
+        modelUsed: null,
+        inputRef: null,
+        outputRef: null,
+        policyDecision: 'blocked',
+        metadata: { reason: result.error },
+      })
+      return fail(`${result.error}: ${result.detail}`)
+    }
+    await repositories.audit.append({
+      actorType: 'agent',
+      actorId: egressAgent.id,
+      agentVersion: egressAgent.currentVersion,
+      action: 'provisioning.discover.draft',
+      targetType: 'provisioning_discovery',
+      targetId: null,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: null,
+      policyDecision: 'allowed',
+      metadata: {
+        queryHash: result.provenance.queryHash,
+        sources: result.provenance.sources.map((s) => ({
+          urlHash: s.urlHash,
+          contentHash: s.contentHash,
+          host: s.host,
+          sourceType: s.sourceType,
+        })),
+      },
+    })
+    return ok({ config: result.config, provenance: result.provenance, requiresSensitivityReview: false })
+  } catch (e) {
+    return toFail(e, 'Nem sikerült felfedezni a kapcsolatot')
+  }
+}
+
+/**
+ * Új egress-host hozzáadása a tenant allowlistjéhez (WebFetch-Egress §9, §12.2). Admin-only,
+ * KÜLÖN auditált aktus (`connector.egress_allowlist.extend`) — a felfedezés a hostot csak
+ * JAVASOLJA (validátor `warned`), az admin explicit adja hozzá, és csak utána aktiválhat.
+ * SSRF-tiltott hostot a service elutasít (defense-in-depth).
+ */
+export async function extendEgressAllowlist(input: unknown) {
+  try {
+    const user = await requireRole('admin')
+    const { host, sourceType, draftId } = extendEgressSchema.parse(input)
+    const res = await services.platformSettings.extendEgressAllowlist(
+      user.tenantId ?? null,
+      host,
+      user.id,
+      { sourceType, draftId },
+    )
+    if (!res.ok) {
+      return fail(
+        res.reason === 'forbidden_host'
+          ? 'A host tiltott (privát IP / localhost / metadata / exfil-sink) — nem adható az allowlisthez.'
+          : 'Érvénytelen host.',
+      )
+    }
+    return ok({ added: res.added, host: res.host, hosts: res.hosts })
+  } catch (e) {
+    return toFail(e, 'Nem sikerült bővíteni az egress-allowlistet')
   }
 }
 

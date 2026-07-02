@@ -475,7 +475,7 @@ export const updateAgentSelfEvolutionProfileSchema = z.object({
     scope: z.array(z.enum(['memory', 'behavior', 'role'])).min(1),
     approval_mode: z.enum(['human', 'higher_role', 'eval_only', 'auto_after_eval']),
     diff_limit: z.number().int().positive().optional(),
-  }),
+  }).strict(),
 })
 
 export const createBehaviorProfileSchema = z.object({
@@ -964,6 +964,55 @@ export const setMonitorControlsSchema = z
 
 export const setWebSearchControlsSchema = z.object({
   killSwitch: z.boolean(),
+})
+
+/** Web Fetch (WS-D) platform-tool vezérlés (WebFetch-Egress §14). Legalább az egyik mező. */
+export const setWebFetchControlsSchema = z
+  .object({
+    enabled: z.boolean().optional(),
+    discoveryEnabled: z.boolean().optional(),
+  })
+  .refine((v) => v.enabled !== undefined || v.discoveryEnabled !== undefined, {
+    message: 'enabled vagy discoveryEnabled megadása kötelező',
+  })
+
+const optionalHttpUrlSchema = z
+  .string()
+  .trim()
+  .max(1000)
+  .optional()
+  .transform((value) => value?.trim() || undefined)
+  .refine((value) => !value || /^https?:\/\//i.test(value), {
+    message: 'Az API URL-nek http(s) címmel kell kezdődnie',
+  })
+
+export const updateWebSearchPolicySchema = z.object({
+  connectorId: z.string().uuid(),
+  provider: z.enum(['stub', 'custom_search_api', 'managed_search']),
+  providerApiUrl: optionalHttpUrlSchema,
+  apiKey: z
+    .string()
+    .trim()
+    .max(4000)
+    .optional()
+    .transform((value) => value?.trim() || undefined),
+  allowedDomains: z.array(z.string().trim().min(1).max(255)).max(200),
+  deniedDomains: z.array(z.string().trim().min(1).max(255)).max(200),
+  allowGeneralWeb: z.boolean(),
+  defaultLocale: z.string().trim().min(2).max(20),
+  defaultRegion: z.string().trim().min(2).max(20),
+  defaultMaxResults: z.number().int().min(1).max(50),
+  hardMaxResults: z.number().int().min(1).max(100),
+  maxQueryLength: z.number().int().min(50).max(2000),
+  maxQueriesPerTicket: z.number().int().min(1).max(1000),
+  maxQueriesPerAgentDay: z.number().int().min(1).max(10000),
+  safeSearch: z.enum(['strict', 'moderate']),
+  logRawQuery: z.boolean(),
+  retentionDays: z.number().int().min(1).max(3650),
+  requireHumanApprovalForSensitiveQuery: z.boolean(),
+}).refine((value) => value.hardMaxResults >= value.defaultMaxResults, {
+  path: ['hardMaxResults'],
+  message: 'A hard cap nem lehet kisebb az alapértelmezett max találatszámnál',
 })
 
 export const createMonitorSchema = z.object({

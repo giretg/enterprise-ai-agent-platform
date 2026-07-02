@@ -34,6 +34,8 @@ import {
 } from '@/lib/model-policy'
 import type { Prisma, TicketType } from '@prisma/client'
 import { WEB_SEARCH_CONTROLS_KEY } from '@/domain/web-search/web-search-types'
+import { WEB_FETCH_CONTROLS_KEY } from '@/domain/web-fetch/web-fetch-types'
+import { matchForbiddenHost } from '@/domain/net/egress-guard'
 
 export const DISPATCHER_CONTROLS_KEY = 'dispatcher.controls'
 export const TICKET_TYPE_CONFIGS_KEY = 'ticket.type_configs'
@@ -83,6 +85,64 @@ const DEFAULT_WEB_SEARCH_CONTROLS: WebSearchControls = {
   killSwitch: false,
   updatedById: null,
   updatedAt: null,
+}
+
+/**
+ * Web Fetch (WS-D) platform-tool vezérlés (Feature-spec — WebFetch-Egress §14).
+ * KÉT, egymástól független, ALAPBÓL KIKAPCSOLT flag: a `web_fetch` globális kill-switch
+ * és a felfedezés funkció. Bekapcsolatlanul a mai viselkedés bit-azonos (§1.3).
+ */
+export type WebFetchControls = {
+  /** `web_fetch.enabled` — a platform-tool globális kill-switch, default false. */
+  enabled: boolean
+  /** `provisioning.web_discovery.enabled` — a felfedezés funkció, default false. */
+  discoveryEnabled: boolean
+  updatedById: string | null
+  updatedAt: string | null
+}
+
+const DEFAULT_WEB_FETCH_CONTROLS: WebFetchControls = {
+  enabled: false,
+  discoveryEnabled: false,
+  updatedById: null,
+  updatedAt: null,
+}
+
+/**
+ * Futásidőben bővíthető egress-allowlist (Feature-spec — WebFetch-Egress §9, §11.1, §12.2).
+ * A determinisztikus validátor `warned`/`failed`-je egy vadonatúj API-hostra a NORMÁL
+ * eset a felfedezésnél; az admin explicit, auditált aktussal (`connector.egress_allowlist.extend`)
+ * adja hozzá a hostot — nem az asszisztens. A tár tenant-bucketelt; a `__global__` bucket a
+ * tenant-független (env feletti) hostoké. Az env `PROVISIONING_EGRESS_ALLOWLIST` ehhez MERGE-elődik.
+ */
+export const PROVISIONING_EGRESS_ALLOWLIST_KEY = 'provisioning.egress_allowlist'
+const EGRESS_GLOBAL_BUCKET = '__global__'
+type EgressAllowlistStore = Record<string, string[]>
+
+/**
+ * Host-normalizálás az allowlist-bővítéshez: URL → hostname; port/path levágva; kisbetűs.
+ * A determinisztikus validátor a `ConnectorConfig.egressHosts` HOSTNAME-jeivel hasonlít, ezért
+ * itt is hostname-t tárolunk. Érvénytelen/üres → null.
+ */
+function normalizeEgressHost(input: string): string | null {
+  const trimmed = input.trim().toLowerCase()
+  if (!trimmed) return null
+  let host = trimmed
+  if (/^[a-z][a-z0-9+.-]*:\/\//.test(host)) {
+    try {
+      host = new URL(host).hostname.toLowerCase()
+    } catch {
+      return null
+    }
+  } else {
+    host = host.split('/')[0]!.split('@').pop()!.split(':')[0]!
+  }
+  // Valódi hostname-struktúra: 1..253 karakter, pont-tagolt labelek, minden label
+  // alfanumerikussal kezdődik/végződik (nincs üres label, vezető/záró pont, szóköz).
+  const HOSTNAME_RE =
+    /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/
+  if (!host || !HOSTNAME_RE.test(host)) return null
+  return host
 }
 
 const DEFAULT_SYNC_STATUS: DatabaseSyncStatus = {
@@ -433,6 +493,144 @@ export class PlatformSettingsService {
       outputRef: null,
       policyDecision: next.killSwitch ? 'paused' : 'enabled',
       metadata: { killSwitch: next.killSwitch },
+    })
+
+    return next
+  }
+
+  async getWebFetchControls(): Promise<WebFetchControls> {
+    const raw = (await this.settings.get(WEB_FETCH_CONTROLS_KEY)) as Partial<WebFetchControls> | null
+    if (!raw || typeof raw !== 'object') return { ...DEFAULT_WEB_FETCH_CONTROLS }
+    return {
+      enabled: typeof raw.enabled === 'boolean' ? raw.enabled : DEFAULT_WEB_FETCH_CONTROLS.enabled,
+      discoveryEnabled:
+        typeof raw.discoveryEnabled === 'boolean'
+          ? raw.discoveryEnabled
+          : DEFAULT_WEB_FETCH_CONTROLS.discoveryEnabled,
+      updatedById: typeof raw.updatedById === 'string' ? raw.updatedById : null,
+      updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : null,
+    }
+  }
+
+  /** Csak a web_fetch enforcementhoz kell — olcsó, nem auditál (§7.2/1). */
+  async isWebFetchEnabled(): Promise<boolean> {
+    const controls = await this.getWebFetchControls()
+    return controls.enabled
+  }
+
+  /** A felfedezés feature-flag (§14, `provisioning.web_discovery.enabled`). */
+  async isWebDiscoveryEnabled(): Promise<boolean> {
+    const controls = await this.getWebFetchControls()
+    return controls.discoveryEnabled
+  }
+
+  /**
+   * A tenant futásidőben bővített egress-allowlistje (§9). A `__global__` bucket + a tenant
+   * saját hostjai; kisbetűsítve, deduplikálva. Az env-listával a wiring MERGE-eli (domain/index).
+   * Olcsó, nem auditál (a validátor / a fetch-őr olvassa).
+   */
+  async getEgressAllowlist(tenantId: string | null): Promise<string[]> {
+    const raw = (await this.settings.get(PROVISIONING_EGRESS_ALLOWLIST_KEY)) as EgressAllowlistStore | null
+    if (!raw || typeof raw !== 'object') return []
+    const pick = (k: string): string[] => (Array.isArray(raw[k]) ? raw[k] : [])
+    return [
+      ...new Set(
+        [...pick(EGRESS_GLOBAL_BUCKET), ...(tenantId ? pick(tenantId) : [])]
+          .filter((h): h is string => typeof h === 'string')
+          .map((h) => h.toLowerCase()),
+      ),
+    ]
+  }
+
+  /**
+   * Új egress-host hozzáadása a tenant allowlistjéhez (§9, §12.2) — KÜLÖN, auditált admin-aktus
+   * (`connector.egress_allowlist.extend`, §11.1), sosem az asszisztens teszi. SSRF-tiltott hostot
+   * (nyers IP, localhost, metadata, exfil-sink) NEM enged hozzáadni (defense-in-depth az egress-guard
+   * host-mintáival). Idempotens: már meglévő host `added:false`.
+   */
+  async extendEgressAllowlist(
+    tenantId: string | null,
+    host: string,
+    actorId: string,
+    provenance?: { sourceType?: 'official' | 'vendor_doc'; draftId?: string },
+  ): Promise<
+    | { ok: false; reason: 'invalid_host' | 'forbidden_host' }
+    | { ok: true; added: boolean; host: string; hosts: string[] }
+  > {
+    const normalized = normalizeEgressHost(host)
+    if (!normalized) return { ok: false, reason: 'invalid_host' }
+    if (matchForbiddenHost(normalized)) return { ok: false, reason: 'forbidden_host' }
+
+    const bucket = tenantId ?? EGRESS_GLOBAL_BUCKET
+    const raw = (await this.settings.get(PROVISIONING_EGRESS_ALLOWLIST_KEY)) as EgressAllowlistStore | null
+    const store: EgressAllowlistStore = raw && typeof raw === 'object' ? { ...raw } : {}
+    const current = (Array.isArray(store[bucket]) ? store[bucket] : [])
+      .filter((h): h is string => typeof h === 'string')
+      .map((h) => h.toLowerCase())
+    if (current.includes(normalized)) {
+      return { ok: true, added: false, host: normalized, hosts: current }
+    }
+    const next = [...current, normalized].sort()
+    store[bucket] = next
+    await this.settings.set(
+      PROVISIONING_EGRESS_ALLOWLIST_KEY,
+      store as unknown as Prisma.InputJsonObject,
+      actorId,
+    )
+
+    await this.audit.append({
+      actorType: 'human',
+      actorId,
+      agentVersion: null,
+      action: 'connector.egress_allowlist.extend',
+      targetType: 'connector',
+      targetId: provenance?.draftId ?? null,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: null,
+      policyDecision: 'allowed',
+      metadata: {
+        host: normalized,
+        tenantId: tenantId ?? null,
+        sourceType: provenance?.sourceType ?? null,
+        draftId: provenance?.draftId ?? null,
+      },
+    })
+
+    return { ok: true, added: true, host: normalized, hosts: next }
+  }
+
+  async setWebFetchControls(
+    input: { enabled?: boolean; discoveryEnabled?: boolean },
+    actorId: string,
+  ): Promise<WebFetchControls> {
+    const current = await this.getWebFetchControls()
+    const next: WebFetchControls = {
+      enabled: input.enabled ?? current.enabled,
+      discoveryEnabled: input.discoveryEnabled ?? current.discoveryEnabled,
+      updatedById: actorId,
+      updatedAt: new Date().toISOString(),
+    }
+
+    await this.settings.set(WEB_FETCH_CONTROLS_KEY, next as unknown as Prisma.InputJsonObject, actorId)
+
+    await this.audit.append({
+      actorType: 'human',
+      actorId,
+      agentVersion: null,
+      action:
+        current.enabled !== next.enabled
+          ? next.enabled
+            ? 'web_fetch.resumed'
+            : 'web_fetch.paused'
+          : 'web_fetch.config_changed',
+      targetType: 'platform_setting',
+      targetId: null,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: null,
+      policyDecision: next.enabled ? 'enabled' : 'paused',
+      metadata: { enabled: next.enabled, discoveryEnabled: next.discoveryEnabled },
     })
 
     return next

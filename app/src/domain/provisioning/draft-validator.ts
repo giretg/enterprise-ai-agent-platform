@@ -24,6 +24,13 @@ export type ValidationResult = {
   }
   warnings: string[]
   errors: string[]
+  /**
+   * A tenant egress-allowliston MÉG NEM szereplő cél-hostok (§9). First-class kimenet,
+   * hogy a felfedezés UX-e „Egress-host hozzáadása" akciót ajánlhasson (ma csak üzenetben
+   * volt). Egy vadonatúj API hostja definíció szerint itt jelenik meg — ez a NORMÁL eset,
+   * nem hiba: a `warned` (nem-banki) állapotot az admin explicit, auditált aktussal oldja fel.
+   */
+  unknownHosts: string[]
 }
 
 export type ValidatorOptions = {
@@ -174,6 +181,7 @@ export function validateDraftConfig(
     checks: { egressAllowlist, scopeMinimization, forbiddenPatterns, secretInline, writeToolsFlagged },
     warnings,
     errors,
+    unknownHosts: unknownHosts.sort(),
   }
 }
 

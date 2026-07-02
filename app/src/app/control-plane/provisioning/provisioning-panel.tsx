@@ -6,7 +6,9 @@ import {
   activateConnector,
   assignConnectorToAgent,
   createConnectorDraft,
+  discoverConnectorFromName,
   draftConfigFromApiDoc,
+  extendEgressAllowlist,
   listProvisioningAssignableAgents,
   listProvisioningDrafts,
   reviewConnectorDraft,
@@ -21,6 +23,8 @@ type ValidationResult = {
   checks: Record<string, CheckStatus>
   warnings: string[]
   errors: string[]
+  /** §9: az allowlisten még nem szereplő egress-hostok — inline bővítés-akcióhoz. */
+  unknownHosts?: string[]
 }
 type ProposedTool = {
   name: string
@@ -73,6 +77,25 @@ type DraftConfigFromDocData =
         matchedCategory?: string
         findings: SensitivityFinding[]
       }
+    }
+
+type DiscoverySource = {
+  urlHash: string
+  host: string
+  sourceType: 'official' | 'vendor_doc'
+  contentHash: string
+  bytes: number
+  fetchedAt: string
+}
+type DiscoverData =
+  | {
+      requiresSensitivityReview: false
+      config: DraftConfig
+      provenance: { queryHash: string; sources: DiscoverySource[] }
+    }
+  | {
+      requiresSensitivityReview: true
+      sensitivity: { level: 'forbidden'; matchedCategory?: string; findings: SensitivityFinding[] }
     }
 
 const EXAMPLE_CONFIG = JSON.stringify(
@@ -154,6 +177,11 @@ export function ProvisioningPanel() {
   const [sensitivityFindings, setSensitivityFindings] = useState<SensitivityFinding[]>([])
   const [generating, setGenerating] = useState(false)
 
+  // Kapcsolat felfedezése névből (WebFetch-Egress §12.2)
+  const [knownDomain, setKnownDomain] = useState('')
+  const [discovering, setDiscovering] = useState(false)
+  const [discoverySources, setDiscoverySources] = useState<DiscoverySource[]>([])
+
   const reload = useCallback(() => {
     startTransition(async () => {
       const [d, a] = await Promise.all([listProvisioningDrafts(), listProvisioningAssignableAgents()])
@@ -216,6 +244,37 @@ export function ProvisioningPanel() {
       }
     })
   }, [docText, name])
+
+  const onDiscover = useCallback((sensitivityReviewAccepted = false) => {
+    setError(null)
+    setNotice(null)
+    setDiscovering(true)
+    startTransition(async () => {
+      const res = await discoverConnectorFromName({
+        connectorName: name.trim(),
+        knownDomain: knownDomain.trim() || undefined,
+        sensitivityReviewAccepted,
+      })
+      setDiscovering(false)
+      if (res.success) {
+        const data = res.data as DiscoverData
+        if (data.requiresSensitivityReview) {
+          setSensitivityFindings(data.sensitivity.findings)
+          return
+        }
+        setSensitivityFindings([])
+        setDiscoverySources(data.provenance.sources)
+        setConfigText(JSON.stringify(data.config, null, 2))
+        setSourceType('api_doc')
+        if (data.config?.provider && !name.trim()) setName(data.config.provider)
+        setNotice(
+          'Felfedezés kész — config-jelölt a lenti JSON-mezőbe került. Nézd át; a validátor a draft létrehozása után dönt. Új egress-host esetén az aktiválás előtt allowlist-bővítés kell.',
+        )
+      } else {
+        setError(res.error)
+      }
+    })
+  }, [name, knownDomain])
 
   const onApiDocFileChange = useCallback(async (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -343,6 +402,61 @@ export function ProvisioningPanel() {
             </select>
           </label>
         </div>
+        <div className="mt-3 rounded-md border border-sage/25 bg-sage/5 p-3">
+          <span className="mb-1 block text-sm font-semibold">
+            Kapcsolat felfedezése névből (web-egress role)
+          </span>
+          <p className="mb-2 text-xs text-ink-soft">
+            Add meg a kapcsolat nevét — a web-egress role agent a weben megkeresi és{' '}
+            <strong>adatként</strong> letölti a spec dokumentációját (csak <em>official/vendor_doc</em>{' '}
+            forrás), és config-jelöltet ad. A letöltött tartalom sosem utasítás; a jelölt a lenti
+            JSON-mezőbe kerül. Alapból kikapcsolt funkció (flag mögött).
+          </p>
+          <label className="mb-2 block text-xs">
+            <span className="mb-1 block text-ink-soft">Ismert doksi-domain (opcionális, ajánlott)</span>
+            <input
+              className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2"
+              value={knownDomain}
+              onChange={(e) => setKnownDomain(e.target.value)}
+              placeholder="developers.google.com"
+            />
+          </label>
+          <button
+            type="button"
+            disabled={pending || discovering || !name.trim()}
+            onClick={() => onDiscover(false)}
+            className="rounded-md border border-sage/40 bg-sage/10 px-3 py-1.5 text-xs font-semibold text-sage disabled:opacity-50"
+          >
+            {discovering ? 'Felfedezés…' : 'Felfedezés'}
+          </button>
+          {!name.trim() ? (
+            <p className="mt-1 text-xs text-ink-soft">Adj nevet a fenti mezőben a felfedezéshez.</p>
+          ) : null}
+          {discoverySources.length > 0 ? (
+            <div className="mt-2 space-y-1">
+              <p className="text-xs font-semibold text-ink-soft">Források (provenance):</p>
+              {discoverySources.map((s) => (
+                <div
+                  key={s.urlHash}
+                  className="flex items-center gap-2 rounded border border-ink/12 bg-paper px-2 py-1 text-[11px]"
+                >
+                  <span
+                    className={
+                      s.sourceType === 'official'
+                        ? 'rounded bg-sage/15 px-1.5 py-0.5 font-semibold text-sage'
+                        : 'rounded bg-sky/15 px-1.5 py-0.5 font-semibold text-sky'
+                    }
+                  >
+                    {s.sourceType}
+                  </span>
+                  <span className="font-mono text-ink">{s.host}</span>
+                  <span className="text-ink-soft">{s.bytes} B</span>
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+
         <div className="mt-3 rounded-md border border-ink/12 bg-wash/40 p-3">
           <span className="mb-1 block text-sm font-semibold">
             Generálás API-doksiból (provisioning-asszisztens)
@@ -648,6 +762,34 @@ function DraftCard({
                     <li key={i}>{w}</li>
                   ))}
                 </ul>
+              ) : null}
+              {(v.checks.egressAllowlist === 'warned' || v.checks.egressAllowlist === 'failed') &&
+              (v.unknownHosts?.length ?? 0) > 0 ? (
+                <div className="mt-2 rounded border border-honey/40 bg-honey/5 p-2">
+                  <p className="text-xs text-ink-soft">
+                    Új egress-host(ok) — aktiválás előtt add hozzá az allowlisthez (§9, auditált
+                    admin-aktus):
+                  </p>
+                  <div className="mt-1 flex flex-wrap gap-2">
+                    {v.unknownHosts!.map((h) => (
+                      <button
+                        key={h}
+                        type="button"
+                        disabled={pending}
+                        className="rounded border border-ink/20 bg-paper px-2 py-1 font-mono text-xs hover:bg-honey/20 disabled:opacity-50"
+                        onClick={() =>
+                          run(async () => {
+                            const ext = await extendEgressAllowlist({ host: h, draftId: draft.draftId })
+                            if (!ext.success) return ext
+                            return validateConnectorDraft({ draftId: draft.draftId })
+                          }, `Egress-host hozzáadva az allowlisthez: ${h} — újravalidálva.`)
+                        }
+                      >
+                        + {h}
+                      </button>
+                    ))}
+                  </div>
+                </div>
               ) : null}
             </div>
           ) : null}

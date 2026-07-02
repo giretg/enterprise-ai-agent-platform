@@ -56,6 +56,11 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'provisioning.draft.review',
   'provisioning.draft.validate',
   'access_draft',
+  // Provisioning Web-Discovery (WebFetch-Egress §11.1)
+  'provisioning.discover.search',
+  'provisioning.discover.draft',
+  'provisioning.discover.blocked',
+  'connector.egress_allowlist.extend',
 
   // ConversationSession
   'context.assembled',
@@ -167,6 +172,13 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'web_search.config_changed',
   'web_search.paused',
   'web_search.resumed',
+
+  // Web Fetch (WS-D) platform-tool (WebFetch-Egress §11.1)
+  'web_fetch.request',
+  'web_fetch.blocked',
+  'web_fetch.config_changed',
+  'web_fetch.paused',
+  'web_fetch.resumed',
 
   // Platform / DB mode
   'database.mode_changed',

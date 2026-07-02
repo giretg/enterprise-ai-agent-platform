@@ -12,7 +12,7 @@ export const selfEvolutionProfileSchema = z.object({
   scope: z.array(selfEvolutionScopeSchema).min(1).default(['memory']),
   approval_mode: selfEvolutionApprovalModeSchema.default('human'),
   diff_limit: z.number().int().positive().optional(),
-})
+}).strict()
 
 export type SelfEvolutionProfile = z.infer<typeof selfEvolutionProfileSchema>
 

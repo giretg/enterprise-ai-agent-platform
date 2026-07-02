@@ -33,6 +33,7 @@ const BINARY_TOOLS = [
   'xlsx_append_rows',
   'docx_read',
   'pdf_read',
+  'pdf_create',
 ] as const
 
 /** Közös cella-stílus JSON-séma a formázó toolokhoz (CellStyle, §2). */
@@ -485,6 +486,77 @@ export const PLATFORM_BROKER_TOOLS = [
     },
   },
   {
+    name: 'pdf_create',
+    description: 'Create a PDF artifact in the ticket workspace from tabular rows or an XLSX sheet.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string' },
+        source_xlsx: { type: 'string' },
+        sheet: { type: 'string' },
+        title: { type: 'string' },
+        headers: { type: 'array', items: { type: 'string' } },
+        rows: {
+          type: 'array',
+          items: { type: 'array', items: {} },
+        },
+      },
+      required: ['path'],
+    },
+  },
+  {
+    name: 'sandbox_app.create',
+    description: 'Create a draft sandbox app record. The artifact must be uploaded separately.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string' },
+        description: { type: 'string' },
+        criticality: { type: 'string', enum: ['L0', 'L1'] },
+        createdFromTicketId: { type: 'string' },
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'sandbox_app.update_artifact',
+    description: 'Upload or replace a sandbox app single-HTML artifact through the Tool Broker.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        appId: { type: 'string' },
+        html: { type: 'string' },
+        changeSummary: { type: 'string' },
+        activate: { type: 'boolean' },
+      },
+      required: ['appId', 'html', 'changeSummary'],
+    },
+  },
+  {
+    name: 'sandbox_app.preview',
+    description: 'Create a short-lived preview URL for a sandbox app version.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        appId: { type: 'string' },
+        version: { type: 'number' },
+      },
+      required: ['appId'],
+    },
+  },
+  {
+    name: 'sandbox_app.export',
+    description: 'Export a sandbox app version as a downloadable HTML artifact.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        appId: { type: 'string' },
+        version: { type: 'number' },
+      },
+      required: ['appId'],
+    },
+  },
+  {
     name: 'http_api_get',
     description:
       'Read (GET) from the external REST API connector assigned to this agent. path is relative to the connector base URL (e.g. "/banks" or "/banks/{id}/crm"). The API key is injected by the platform.',
@@ -648,97 +720,107 @@ export async function invokePlatformToolViaHttp(
     throw new Error('Missing PLATFORM_API_URL or HARNESS_AGENT_API_KEY')
   }
 
-  const body =
-    tool === 'kb_search'
-      ? {
-          tool: 'kb_search',
-          ticketId,
-          args: {
-            query: String(args.query ?? ''),
-            k: typeof args.k === 'number' ? args.k : undefined,
-          },
-        }
-      : tool.startsWith('http_api_')
-        ? { tool, ticketId, args }
-      : tool.startsWith('file_') || (FILE_TOOLS as readonly string[]).includes(tool) || (BINARY_TOOLS as readonly string[]).includes(tool)
-        ? { tool, ticketId, args }
-        : tool.startsWith('gmail_') || tool === 'mailbox_count'
-          ? {
-              tool,
-              ticketId,
-              actingUserId: env.ACTING_USER_ID?.trim() || undefined,
-              conversationId: env.CONVERSATION_ID?.trim() || undefined,
-              args,
-            }
-        : tool === 'ticket_create'
-        ? {
-            tool: 'ticket_create',
-            ticketId,
-            args: {
-              title: String(args.title ?? ''),
-              payload: (args.payload as Record<string, unknown>) ?? {},
-              assigneeType: String(args.assigneeType ?? 'human'),
-              assigneeId: typeof args.assigneeId === 'string' ? args.assigneeId : undefined,
-              sourceDocumentId:
-                typeof args.sourceDocumentId === 'string' ? args.sourceDocumentId : undefined,
-            },
-          }
-        : tool === 'agent_ask'
-          ? {
-              tool: 'agent_ask',
-              ticketId,
-              args: {
-                targetAgentId: String(args.targetAgentId ?? ''),
-                question: String(args.question ?? ''),
-                context:
-                  args.context && typeof args.context === 'object' && !Array.isArray(args.context)
-                    ? (args.context as Record<string, unknown>)
-                    : undefined,
-              },
-            }
-          : tool === 'agent_resolve'
-            ? {
-                tool: 'agent_resolve',
-                ticketId,
-                args: {
-                  query: String(args.query ?? ''),
-                  limit: typeof args.limit === 'number' ? args.limit : undefined,
-                },
-              }
-            : tool === 'agent_catalog'
-              ? {
-                  tool: 'agent_catalog',
-                  ticketId,
-                  args: {
-                    query: typeof args.query === 'string' ? args.query : undefined,
-                    agentId: typeof args.agentId === 'string' ? args.agentId : undefined,
-                    limit: typeof args.limit === 'number' ? args.limit : undefined,
-                  },
-                }
-              : tool === 'web_search'
-                ? {
-                    tool: 'web_search',
-                    ticketId,
-                    conversationId: env.CONVERSATION_ID?.trim() || undefined,
-                    args: {
-                      query: String(args.query ?? ''),
-                      domains: Array.isArray(args.domains)
-                        ? args.domains.filter((d): d is string => typeof d === 'string')
-                        : undefined,
-                      recencyDays: typeof args.recencyDays === 'number' ? args.recencyDays : undefined,
-                      locale: typeof args.locale === 'string' ? args.locale : undefined,
-                      maxResults: typeof args.maxResults === 'number' ? args.maxResults : undefined,
-                      purpose: typeof args.purpose === 'string' ? args.purpose : undefined,
-                    },
-                  }
-              : {
-            tool: 'board_write',
-            ticketId: String(args.ticketId ?? ticketId ?? ''),
-            args: {
-              ticketId: String(args.ticketId ?? ticketId ?? ''),
-              patch: (args.patch as Record<string, unknown>) ?? {},
-            },
-          }
+  let body: Record<string, unknown> | null = null
+  if (tool === 'kb_search') {
+    body = {
+      tool: 'kb_search',
+      ticketId,
+      args: {
+        query: String(args.query ?? ''),
+        k: typeof args.k === 'number' ? args.k : undefined,
+      },
+    }
+  } else if (
+    tool.startsWith('http_api_') ||
+    tool.startsWith('file_') ||
+    (FILE_TOOLS as readonly string[]).includes(tool) ||
+    (BINARY_TOOLS as readonly string[]).includes(tool) ||
+    tool.startsWith('sandbox_app.')
+  ) {
+    body = { tool, ticketId, args }
+  } else if (tool.startsWith('gmail_') || tool === 'mailbox_count') {
+    body = {
+      tool,
+      ticketId,
+      actingUserId: env.ACTING_USER_ID?.trim() || undefined,
+      conversationId: env.CONVERSATION_ID?.trim() || undefined,
+      args,
+    }
+  } else if (tool === 'ticket_create') {
+    body = {
+      tool: 'ticket_create',
+      ticketId,
+      args: {
+        title: String(args.title ?? ''),
+        payload: (args.payload as Record<string, unknown>) ?? {},
+        assigneeType: String(args.assigneeType ?? 'human'),
+        assigneeId: typeof args.assigneeId === 'string' ? args.assigneeId : undefined,
+        sourceDocumentId:
+          typeof args.sourceDocumentId === 'string' ? args.sourceDocumentId : undefined,
+      },
+    }
+  } else if (tool === 'agent_ask') {
+    body = {
+      tool: 'agent_ask',
+      ticketId,
+      args: {
+        targetAgentId: String(args.targetAgentId ?? ''),
+        question: String(args.question ?? ''),
+        context:
+          args.context && typeof args.context === 'object' && !Array.isArray(args.context)
+            ? (args.context as Record<string, unknown>)
+            : undefined,
+      },
+    }
+  } else if (tool === 'agent_resolve') {
+    body = {
+      tool: 'agent_resolve',
+      ticketId,
+      args: {
+        query: String(args.query ?? ''),
+        limit: typeof args.limit === 'number' ? args.limit : undefined,
+      },
+    }
+  } else if (tool === 'agent_catalog') {
+    body = {
+      tool: 'agent_catalog',
+      ticketId,
+      args: {
+        query: typeof args.query === 'string' ? args.query : undefined,
+        agentId: typeof args.agentId === 'string' ? args.agentId : undefined,
+        limit: typeof args.limit === 'number' ? args.limit : undefined,
+      },
+    }
+  } else if (tool === 'web_search') {
+    body = {
+      tool: 'web_search',
+      ticketId,
+      conversationId: env.CONVERSATION_ID?.trim() || undefined,
+      args: {
+        query: String(args.query ?? ''),
+        domains: Array.isArray(args.domains)
+          ? args.domains.filter((d): d is string => typeof d === 'string')
+          : undefined,
+        recencyDays: typeof args.recencyDays === 'number' ? args.recencyDays : undefined,
+        locale: typeof args.locale === 'string' ? args.locale : undefined,
+        maxResults: typeof args.maxResults === 'number' ? args.maxResults : undefined,
+        purpose: typeof args.purpose === 'string' ? args.purpose : undefined,
+      },
+    }
+  } else if (tool === 'board_write') {
+    body = {
+      tool: 'board_write',
+      ticketId: String(args.ticketId ?? ticketId ?? ''),
+      args: {
+        ticketId: String(args.ticketId ?? ticketId ?? ''),
+        patch: (args.patch as Record<string, unknown>) ?? {},
+      },
+    }
+  }
+
+  if (!body) {
+    throw new Error(`Unsupported platform broker tool: ${tool}`)
+  }
 
   const response = await fetch(`${platformApiUrl}/api/v1/agent/tools`, {
     method: 'POST',

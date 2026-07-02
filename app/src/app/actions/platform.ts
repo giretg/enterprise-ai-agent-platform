@@ -158,9 +158,9 @@ export async function listTickets(input?: { filter?: unknown }) {
 
 export async function listBoardAssignees() {
   try {
-    await requireRole('operator')
+    const user = await requireRole('operator')
     const [agents, users] = await Promise.all([
-      repositories.agents.findMany(),
+      repositories.agents.findMany({ tenantId: user.tenantId }),
       prisma.user.findMany({
         // `role: { not: null }` a deny-by-default invariáns tükre (N-IAM-3): egy
         // aktív, de role nélküli sor (elméletileg nem fordulhat elő) sem legyen kijelölhető.
@@ -243,7 +243,7 @@ export async function createBoardTicket(input: {
     const promptText = parsed.description?.trim() || parsed.title.trim()
 
     if (parsed.assigneeType === 'agent') {
-      const agentDetails = await repositories.agents.findByIdWithDetails(parsed.assigneeId)
+      const agentDetails = await repositories.agents.findByIdWithDetails(parsed.assigneeId, user.tenantId)
       if (!agentDetails) return fail('Agent not found')
       if (agentDetails.agent.status !== 'active') return fail('Agent is not active')
 
@@ -538,8 +538,8 @@ export async function transitionTicket(input: {
 
 export async function listAgents() {
   try {
-    await requireRole('viewer')
-    return ok(await repositories.agents.findMany())
+    const user = await requireRole('viewer')
+    return ok(await repositories.agents.findMany({ tenantId: user.tenantId }))
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list agents')
   }
@@ -547,9 +547,9 @@ export async function listAgents() {
 
 export async function getAgent(input: { id: string }) {
   try {
-    await requireRole('viewer')
+    const user = await requireRole('viewer')
     const { id } = agentIdSchema.parse(input)
-    const detail = await repositories.agents.findByIdWithDetails(id)
+    const detail = await repositories.agents.findByIdWithDetails(id, user.tenantId)
     if (!detail) return fail('Agent not found')
     return ok(detail)
   } catch (e) {
@@ -559,8 +559,10 @@ export async function getAgent(input: { id: string }) {
 
 export async function getAgentGovernance(input: { agentId: string }) {
   try {
-    await requireRole('viewer')
+    const user = await requireRole('viewer')
     const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
+    const agent = await repositories.agents.findById(agentId, user.tenantId)
+    if (!agent) return fail('Agent not found')
     const [capabilities, connectors] = await Promise.all([
       repositories.toolBroker.findCapabilitiesForAgent(agentId),
       repositories.toolBroker.findConnectorsForAgent(agentId),
@@ -681,8 +683,11 @@ export async function createHttpApiConnectorForAgent(input: {
     const user = await requireRole('admin')
     const parsed = createHttpApiConnectorSchema.parse(input)
 
-    const agent = await repositories.agents.findById(parsed.agentId)
+    const agent = await repositories.agents.findById(parsed.agentId, user.tenantId)
     if (!agent) return fail('Agent not found')
+    if (agent.role === 'orchestrator') {
+      return fail('Orchestrator agent nem kaphat HTTP API connectort vagy Tool Broker capability-t.')
+    }
 
     const existing = await prisma.connector.findUnique({
       where: { type_name: { type: 'http_api', name: parsed.name } },
@@ -781,8 +786,11 @@ export async function updateHttpApiConnectorForAgent(input: {
     const user = await requireRole('admin')
     const parsed = updateHttpApiConnectorSchema.parse(input)
 
-    const agent = await repositories.agents.findById(parsed.agentId)
+    const agent = await repositories.agents.findById(parsed.agentId, user.tenantId)
     if (!agent) return fail('Agent not found')
+    if (agent.role === 'orchestrator') {
+      return fail('Orchestrator agent nem kaphat HTTP API connectort vagy Tool Broker capability-t.')
+    }
 
     const link = await prisma.agentConnector.findUnique({
       where: {
@@ -874,12 +882,14 @@ export async function createAgent(input: {
     const result = await repositories.agents.create({
       ...parsed,
       createdById: user.id,
+      tenantId: user.tenantId,
+      status: 'draft',
     })
 
     await repositories.audit.append({
       actorType: 'human',
       actorId: user.id,
-      agentVersion: 1,
+      agentVersion: null,
       action: 'agent.create',
       targetType: 'agent',
       targetId: result.agent.id,
@@ -887,7 +897,7 @@ export async function createAgent(input: {
       inputRef: null,
       outputRef: result.agent.name,
       policyDecision: 'allowed',
-      metadata: { role: result.agent.role },
+      metadata: { role: result.agent.role, status: result.agent.status },
     })
 
     return ok(result)
@@ -904,6 +914,8 @@ export async function updateAgentInstruction(input: {
   try {
     const user = await requireRole('admin')
     const parsed = updateAgentInstructionSchema.parse(input)
+    const agent = await repositories.agents.findById(parsed.agentId, user.tenantId)
+    if (!agent) return fail('Agent not found')
     const result = await repositories.agents.updateInstruction(parsed)
 
     const changed = [
@@ -942,6 +954,8 @@ export async function updateAgentModelConfig(input: {
   try {
     const user = await requireRole('admin')
     const parsed = updateAgentModelConfigSchema.parse(input)
+    const agent = await repositories.agents.findById(parsed.agentId, user.tenantId)
+    if (!agent) return fail('Agent not found')
     await services.platformSettings.assertModelAllowed(
       parsed.modelConfig.provider,
       parsed.modelConfig.model,
@@ -978,7 +992,34 @@ export async function updateAgentSelfEvolutionProfile(input: {
 }) {
   try {
     const user = await requireRole('admin')
-    const parsed = updateAgentSelfEvolutionProfileSchema.parse(input)
+    const parsedResult = updateAgentSelfEvolutionProfileSchema.safeParse(input)
+    if (!parsedResult.success) {
+      const idResult = agentIdSchema.safeParse({ id: input.agentId })
+      if (idResult.success) {
+        await repositories.audit.append({
+          actorType: 'human',
+          actorId: user.id,
+          agentVersion: null,
+          action: 'training.capability_escalation_denied',
+          targetType: 'agent',
+          targetId: idResult.data.id,
+          modelUsed: null,
+          inputRef: 'self_evolution_profile',
+          outputRef: 'denied',
+          policyDecision: 'capability_escalation_denied',
+          metadata: {
+            issues: parsedResult.error.issues.map((issue) => ({
+              path: issue.path.join('.'),
+              message: issue.message,
+            })),
+          } as Prisma.JsonValue,
+        })
+      }
+      return fail('Invalid self-evolution profile')
+    }
+    const parsed = parsedResult.data
+    const existing = await repositories.agents.findById(parsed.agentId, user.tenantId)
+    if (!existing) return fail('Agent not found')
     const agent = await repositories.agents.updateSelfEvolutionProfile(parsed)
 
     await repositories.audit.append({
@@ -1005,6 +1046,8 @@ export async function rotateAgentApiKey(input: { agentId: string }) {
   try {
     const user = await requireRole('admin')
     const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
+    const agent = await repositories.agents.findById(agentId, user.tenantId)
+    if (!agent) return fail('Agent not found')
     const result = await repositories.agents.rotateApiKey(agentId)
 
     await repositories.audit.append({
@@ -1031,6 +1074,11 @@ export async function revokeAgentApiKey(input: { keyId: string }) {
   try {
     const user = await requireRole('admin')
     const { keyId } = agentApiKeyIdSchema.parse(input)
+    const key = await prisma.agentApiKey.findUnique({
+      where: { id: keyId },
+      include: { agent: { select: { tenantId: true } } },
+    })
+    if (!key || key.agent.tenantId !== user.tenantId) return fail('Agent API key not found')
     const result = await repositories.agents.revokeApiKey(keyId)
 
     await repositories.audit.append({
@@ -1057,8 +1105,8 @@ export async function revokeAgentApiKey(input: { keyId: string }) {
 
 export async function listBehaviorProfiles() {
   try {
-    await requireRole('admin')
-    const profiles = await repositories.behaviorProfiles.findMany()
+    const user = await requireRole('admin')
+    const profiles = await repositories.behaviorProfiles.findMany(user.tenantId)
     return ok(profiles)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list behavior profiles')
@@ -1067,11 +1115,11 @@ export async function listBehaviorProfiles() {
 
 export async function getBehaviorProfile(input: { profileId: string }) {
   try {
-    await requireRole('admin')
+    const user = await requireRole('admin')
     const { profileId } = behaviorProfileIdSchema.parse(input)
     const [profile, referrers] = await Promise.all([
-      repositories.behaviorProfiles.findByIdWithVersions(profileId),
-      repositories.behaviorProfiles.listReferrers(profileId),
+      repositories.behaviorProfiles.findByIdWithVersions(profileId, user.tenantId),
+      repositories.behaviorProfiles.listReferrers(profileId, user.tenantId),
     ])
     if (!profile) return fail('Behavior profile not found')
     return ok({ profile, referrers })
@@ -1121,6 +1169,7 @@ export async function updateBehaviorProfile(input: { profileId: string; body: st
       profileId: parsed.profileId,
       body: parsed.body,
       approvedById: user.id,
+      tenantId: user.tenantId,
     })
 
     await repositories.audit.append({
@@ -1154,8 +1203,15 @@ export async function acceptBehaviorProfileUpdate(input: {
     const body = await repositories.behaviorProfiles.getVersionBody(
       parsed.profileId,
       parsed.profileVersion,
+      user.tenantId,
     )
     if (body === null) return fail('Behavior profile version not found')
+
+    const agent = await repositories.agents.findById(parsed.agentId, user.tenantId)
+    if (!agent) return fail('Agent not found')
+    if (agent.currentBehaviorProfileId !== parsed.profileId) {
+      return fail('Behavior profile is not linked to this agent')
+    }
 
     const result = await repositories.agents.acceptBehaviorProfileUpdate({
       agentId: parsed.agentId,
@@ -1191,6 +1247,8 @@ export async function activateAgent(input: { agentId: string }) {
   try {
     const user = await requireRole('admin')
     const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
+    const agent = await repositories.agents.findById(agentId, user.tenantId)
+    if (!agent) return fail('Agent not found')
     const result = await repositories.agents.activate(agentId)
 
     await repositories.audit.append({
@@ -1217,6 +1275,8 @@ export async function suspendAgent(input: { agentId: string; reason: string }) {
   try {
     const user = await requireRole('admin')
     const parsed = suspendAgentSchema.parse(input)
+    const existing = await repositories.agents.findById(parsed.agentId, user.tenantId)
+    if (!existing) return fail('Agent not found')
     const agent = await repositories.agents.suspend(parsed.agentId, parsed.reason)
 
     await repositories.audit.append({
@@ -1243,6 +1303,8 @@ export async function resumeAgent(input: { agentId: string }) {
   try {
     const user = await requireRole('admin')
     const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
+    const existing = await repositories.agents.findById(agentId, user.tenantId)
+    if (!existing) return fail('Agent not found')
     const agent = await repositories.agents.resume(agentId)
 
     await repositories.audit.append({
@@ -1269,6 +1331,8 @@ export async function retireAgent(input: { agentId: string }) {
   try {
     const user = await requireRole('admin')
     const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
+    const existing = await repositories.agents.findById(agentId, user.tenantId)
+    if (!existing) return fail('Agent not found')
     const agent = await repositories.agents.retire(agentId)
 
     await repositories.audit.append({
@@ -1295,6 +1359,8 @@ export async function deleteAgent(input: { id: string }) {
   try {
     const user = await requireRole('admin')
     const { id } = agentIdSchema.parse(input)
+    const existing = await repositories.agents.findById(id, user.tenantId)
+    if (!existing) return fail('Agent not found')
     const deleted = await repositories.agents.delete(id)
 
     await repositories.audit.append({
@@ -2831,6 +2897,23 @@ const WORKSPACE_TOOLS = [
   'docx_read', 'pdf_read', 'pdf_create',
 ] as const
 
+const CONFIGURABLE_AGENT_TOOLS = [
+  ...WORKSPACE_TOOLS,
+  'gmail_search',
+  'gmail_get_message',
+  'gmail_create_draft',
+  'gmail_send',
+  'agent_catalog',
+  'agent_resolve',
+  'agent_ask',
+  'ticket_create',
+  'http_api_get',
+  'http_api_request',
+  'web_search',
+] as const
+
+const CONFIGURABLE_AGENT_TOOL_SET = new Set<string>(CONFIGURABLE_AGENT_TOOLS)
+
 export async function updateAgentCapabilities(input: {
   agentId: string
   enabledTools: string[]
@@ -2839,15 +2922,36 @@ export async function updateAgentCapabilities(input: {
     const user = await requireRole('admin')
     const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
 
-    const agent = await repositories.agents.findById(agentId)
+    const agent = await repositories.agents.findById(agentId, user.tenantId)
     if (!agent) return fail('Agent not found')
 
-    const enabledSet = new Set(input.enabledTools)
+    const allTools = [...new Set(input.enabledTools)].filter((toolName) =>
+      CONFIGURABLE_AGENT_TOOL_SET.has(toolName),
+    )
+    const enabledSet = new Set(allTools)
     const needsWorkspace = WORKSPACE_TOOLS.some((t) => enabledSet.has(t))
+    const needsWebSearch = enabledSet.has('web_search')
+
+    if (agent.role === 'orchestrator' && allTools.length > 0) {
+      await repositories.audit.append({
+        actorType: 'human',
+        actorId: user.id,
+        agentVersion: agent.currentVersion,
+        action: 'tool.authorize_denied_orchestrator',
+        targetType: 'agent',
+        targetId: agentId,
+        modelUsed: null,
+        inputRef: allTools.join(','),
+        outputRef: 'denied',
+        policyDecision: 'denied',
+        metadata: { requestedTools: allTools } as Prisma.JsonValue,
+      })
+      return fail('Orchestrator agent nem kaphat Tool Broker capability-t.')
+    }
 
     if (needsWorkspace) {
       const workspaceConnector = await prisma.connector.findFirst({
-        where: { type: 'workspace' },
+        where: { type: 'workspace', OR: [{ tenantId: user.tenantId }, { tenantId: null }] },
       })
       if (!workspaceConnector) return fail('Workspace connector nem található a rendszerben.')
 
@@ -2860,16 +2964,43 @@ export async function updateAgentCapabilities(input: {
       })
     }
 
-    const allTools: string[] = [...new Set([...input.enabledTools])]
-    await Promise.all(
-      allTools.map((toolName) =>
+    if (needsWebSearch) {
+      const webSearchConnector = await prisma.connector.findFirst({
+        where: {
+          type: 'web_search',
+          lifecycleState: 'active',
+          OR: [{ tenantId: user.tenantId }, { tenantId: null }],
+        },
+        orderBy: { createdAt: 'asc' },
+      })
+      if (!webSearchConnector) return fail('Aktív Web Search connector nem található a rendszerben.')
+
+      await prisma.agentConnector.upsert({
+        where: {
+          agentId_connectorId: { agentId, connectorId: webSearchConnector.id },
+        },
+        create: { agentId, connectorId: webSearchConnector.id, accessMode: 'read' },
+        update: { accessMode: 'read' },
+      })
+    }
+
+    const disabledTools = CONFIGURABLE_AGENT_TOOLS.filter((toolName) => !enabledSet.has(toolName))
+
+    await Promise.all([
+      ...allTools.map((toolName) =>
         prisma.capability.upsert({
           where: { agentId_toolName: { agentId, toolName } },
           create: { agentId, toolName, allowed: true },
           update: { allowed: true },
         }),
       ),
-    )
+      disabledTools.length
+        ? prisma.capability.updateMany({
+            where: { agentId, toolName: { in: [...disabledTools] } },
+            data: { allowed: false },
+          })
+        : Promise.resolve({ count: 0 }),
+    ])
 
     await repositories.audit.append({
       actorType: 'human',
@@ -2879,16 +3010,22 @@ export async function updateAgentCapabilities(input: {
       targetType: 'tool',
       targetId: agentId,
       modelUsed: null,
-      inputRef: input.enabledTools.join(','),
+      inputRef: allTools.join(','),
       outputRef: 'updated',
       policyDecision: 'allowed',
       metadata: {
-        enabledTools: input.enabledTools,
+        enabledTools: allTools,
+        disabledTools,
         workspaceLinked: needsWorkspace,
+        webSearchLinked: needsWebSearch,
       } as Prisma.JsonValue,
     })
 
-    return ok({ updatedCount: allTools.length, workspaceLinked: needsWorkspace })
+    return ok({
+      updatedCount: allTools.length,
+      workspaceLinked: needsWorkspace,
+      webSearchLinked: needsWebSearch,
+    })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to update capabilities')
   }

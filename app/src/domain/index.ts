@@ -26,7 +26,9 @@ import { AllowlistAuthorizer, ToolBrokerService } from '@/domain/tool-broker/too
 import { WebSearchPolicyService } from '@/domain/web-search/web-search-policy-service'
 import { WebSearchService } from '@/domain/web-search/web-search-service'
 import { HttpSearchProviderAdapter, StubSearchProviderAdapter } from '@/domain/web-search/search-provider-adapter'
-import type { WebSearchAdapterResolver } from '@/domain/web-search/web-search-types'
+import type { WebSearchAdapterResolver, WebSearchResult } from '@/domain/web-search/web-search-types'
+import { WebFetchService, toWebFetchAuditMeta } from '@/domain/web-fetch/web-fetch-service'
+import { resolveWebFetchLimitsFromEnv } from '@/domain/web-fetch/web-fetch-types'
 import { ConnectorGrantService } from '@/domain/connector-grant/connector-grant-service'
 import { WorkspaceStorage } from '@/domain/file-editor/workspace-storage'
 import { FileEditorService } from '@/domain/file-editor/file-editor-service'
@@ -60,6 +62,9 @@ import { WebhookChatNotifier } from '@/lib/notify/webhook-chat-notifier'
 import { repositories } from '@/repositories/postgres'
 import { resolveConnectorApiKey } from '@/domain/connector/http-api-client'
 import { resolveTicketProcessRoute } from '@/lib/ticket-process-route'
+import { prisma } from '@/lib/db'
+import { createHash } from 'node:crypto'
+import { lookup } from 'node:dns/promises'
 
 const playbookService = new PlaybookService(repositories.playbooks, repositories.audit)
 const playbookV2Service = new PlaybookV2Service(repositories.playbooksV2, repositories.audit)
@@ -152,19 +157,34 @@ const sandboxAppService = new SandboxAppService(
   new GcsArtifactStore(sandboxAppBucket),
 )
 // Web Search Tool (Feature-spec — WebSearchTool §8.3, D-WS-7): a provider
-// CONNECTOR-onként (tenant policy `config.provider`) cserélhető, nem egy
-// folyamat-globális env-állapot. Élő provider csak akkor, ha a connector
-// 'custom_search_api'-t kér ÉS WEB_SEARCH_PROVIDER_API_URL konfigurált;
-// egyébként determinisztikus dev/acceptance stub (nincs kimenő hívás).
+// CONNECTOR-onként (tenant policy `config.provider`) cserélhető. A custom
+// provider tenant-config URL-t és connector secretet használhat; a managed
+// provider platform oldali env-konfigurációból él. Ha egyik live út sem
+// konfigurált, determinisztikus dev/acceptance stub fut (nincs kimenő hívás).
 const webSearchProviderApiUrl = process.env.WEB_SEARCH_PROVIDER_API_URL?.trim()
+const webSearchManagedApiUrl =
+  process.env.WEB_SEARCH_MANAGED_API_URL?.trim() || webSearchProviderApiUrl
 const webSearchAdapterResolver: WebSearchAdapterResolver = async (config, secretAlias) => {
-  if (config.provider !== 'custom_search_api' || !webSearchProviderApiUrl) {
-    return new StubSearchProviderAdapter()
+  if (config.provider === 'custom_search_api') {
+    const apiUrl = config.providerApiUrl?.trim() || webSearchProviderApiUrl
+    if (!apiUrl) return new StubSearchProviderAdapter()
+    const apiKey = secretAlias
+      ? await resolveConnectorApiKey(secretAlias).catch(() => process.env.WEB_SEARCH_PROVIDER_API_KEY?.trim())
+      : process.env.WEB_SEARCH_PROVIDER_API_KEY?.trim()
+    return new HttpSearchProviderAdapter({ apiUrl, apiKey, providerName: 'custom_search_api' })
   }
-  const apiKey = secretAlias
-    ? await resolveConnectorApiKey(secretAlias).catch(() => process.env.WEB_SEARCH_PROVIDER_API_KEY?.trim())
-    : process.env.WEB_SEARCH_PROVIDER_API_KEY?.trim()
-  return new HttpSearchProviderAdapter({ apiUrl: webSearchProviderApiUrl, apiKey })
+  if (config.provider === 'managed_search' && webSearchManagedApiUrl) {
+    const apiKey =
+      process.env.WEB_SEARCH_MANAGED_API_KEY?.trim() ||
+      process.env.WEB_SEARCH_PROVIDER_API_KEY?.trim()
+    return new HttpSearchProviderAdapter({
+      apiUrl: webSearchManagedApiUrl,
+      apiKey,
+      providerName: 'managed_search',
+      providerType: webSearchManagedApiUrl.includes('brave') ? 'brave' : 'bing',
+    })
+  }
+  return new StubSearchProviderAdapter()
 }
 const webSearchPolicyService = new WebSearchPolicyService()
 const webSearchService = new WebSearchService(webSearchAdapterResolver, webSearchPolicyService)
@@ -206,6 +226,15 @@ const provisioningEgressAllowlist = (process.env.PROVISIONING_EGRESS_ALLOWLIST ?
   .filter(Boolean)
 const provisioningBankPreset = process.env.PROVISIONING_BANK_PRESET === 'true'
 
+// A tényleges egress-allowlist a fetch/validáció/sandbox pillanatában (§9): a statikus env-lista
+// MERGE-elve a futásidőben, auditált admin-aktussal bővített PlatformSetting-hostokkal
+// (`connector.egress_allowlist.extend`). Deny-by-default marad: csak ami vagy env-ben, vagy
+// az admin által explicit hozzáadott.
+async function resolveEgressAllowlist(tenantId: string | null): Promise<string[]> {
+  const persisted = await platformSettingsService.getEgressAllowlist(tenantId)
+  return [...new Set([...provisioningEgressAllowlist, ...persisted])]
+}
+
 async function resolveProvisioningSandboxToken(secretAlias: string | null): Promise<string | null> {
   if (!secretAlias?.trim()) {
     return process.env.PROVIDER_CRM_API_KEY?.trim() ?? null
@@ -233,14 +262,14 @@ async function resolveProvisioningSandboxToken(secretAlias: string | null): Prom
 // egress deny-by-default + SSRF-őrrel. A non-prod token feloldása env-vezérelt és
 // alias-szűkített (PROVISIONING_SANDBOX_TOKEN_<ALIAS-UPPER-SNAKE>); alapból tokenless.
 const provisioningSandboxTester = new HttpSandboxConnectionTester({
-  resolveEgressAllowlist: async () => provisioningEgressAllowlist,
+  resolveEgressAllowlist: (tenantId) => resolveEgressAllowlist(tenantId),
   resolveBankPreset: async () => provisioningBankPreset,
   resolveSandboxToken: async ({ secretAlias }) => resolveProvisioningSandboxToken(secretAlias),
 })
 const provisioningService = new ProvisioningService({
   drafts: repositories.connectorDrafts,
   audit: repositories.audit,
-  resolveEgressAllowlist: async () => provisioningEgressAllowlist,
+  resolveEgressAllowlist: (tenantId) => resolveEgressAllowlist(tenantId),
   resolveBankPreset: async () => provisioningBankPreset,
   sandboxTester: provisioningSandboxTester,
   // F2-P-F: az agent-aktor draft-jogai deny-by-default a Capability táblából (§6.1/§9).
@@ -254,9 +283,135 @@ const provisioningService = new ProvisioningService({
     return checks.filter((c) => c.allowed).map((c) => c.cap)
   },
 })
+// Web Fetch (WS-D) platform-tool (WebFetch-Egress §7): deny-by-default, defense-in-depth.
+// A DNS-feloldó a rebinding-ellenőrzést (§7.2/4) köti be; a limitek env-vezéreltek (§14).
+const webFetchService = new WebFetchService({
+  resolveHostIps: async (host) => {
+    const addrs = await lookup(host, { all: true })
+    return addrs.map((a) => a.address)
+  },
+  limits: resolveWebFetchLimitsFromEnv(),
+})
+const webFetchBudgetMax = {
+  perDiscovery: Number(process.env.WEB_FETCH_MAX_PER_DISCOVERY) > 0 ? Number(process.env.WEB_FETCH_MAX_PER_DISCOVERY) : 2,
+  perAgentDay: Number(process.env.WEB_FETCH_MAX_PER_AGENT_DAY) > 0 ? Number(process.env.WEB_FETCH_MAX_PER_AGENT_DAY) : 50,
+}
+function sha256Prefix(value: string): string {
+  return createHash('sha256').update(value).digest('hex').slice(0, 16)
+}
+
 // F2-P-F: a provisioning-asszisztens agent doksi→draft-config parsing magja (§7.1).
 // A modell kimenete CSAK adat; a determinisztikus validátor a tényleges kapu (§3).
-const provisioningAssistant = new ProvisioningAssistant({ model: modelGateway })
+// A felfedező hurok (§8.3) web-egress runnerei a Tool Broker capability-gate-jén át futnak:
+//  - web_search a meglévő broker-tool mögött (connector + rate-limit + audit);
+//  - web_fetch a WebFetchService-en át, csak web-egress role capabilityvel (§7.4), hash-only audittal.
+const provisioningAssistant = new ProvisioningAssistant({
+  model: modelGateway,
+  discovery: {
+    isDiscoveryEnabled: () => platformSettingsService.isWebDiscoveryEnabled(),
+    resolveEgressAllowlist: (tenantId) => resolveEgressAllowlist(tenantId),
+    maxFetchesPerDiscovery: webFetchBudgetMax.perDiscovery,
+    runWebSearch: async ({ query, domains, agentId }) => {
+      const agent = await repositories.agents.findById(agentId)
+      if (!agent) return []
+      const res = await toolBrokerService.invoke({
+        agentId,
+        agentVersion: agent.currentVersion,
+        tool: 'web_search',
+        args: { query, ...(domains ? { domains } : {}) },
+      })
+      const results = res.denied ? [] : (res.result as WebSearchResult).results
+      // §11.1 provisioning.discover.search — actor = web-egress role agent (§11.2).
+      // Hash-only: nyers query SOSEM kerül auditba (§11.3), csak queryHash + darabszám +
+      // forrás-osztály hisztogram.
+      const sourceHistogram: Record<string, number> = {}
+      for (const r of results) sourceHistogram[r.sourceType] = (sourceHistogram[r.sourceType] ?? 0) + 1
+      await repositories.audit.append({
+        actorType: 'agent',
+        actorId: agentId,
+        agentVersion: agent.currentVersion,
+        action: 'provisioning.discover.search',
+        targetType: 'provisioning_discovery',
+        targetId: null,
+        modelUsed: null,
+        inputRef: null,
+        outputRef: null,
+        policyDecision: res.denied ? 'denied' : 'allowed',
+        metadata: { queryHash: sha256Prefix(query), resultCount: results.length, sourceHistogram },
+      })
+      return results
+    },
+    runWebFetch: async ({ url, sourceType, allowedSourceUrls, allowlistHosts, agentId, fetchIndex }) => {
+      // §7.4 kapu: a web_fetch KIZÁRÓLAG web-egress role capabilityvel hívható.
+      const cap = await repositories.toolBroker.findCapability(agentId, 'web_fetch')
+      const agent = await repositories.agents.findById(agentId)
+      if (cap?.allowed !== true) {
+        await repositories.audit.append({
+          actorType: 'agent',
+          actorId: agentId,
+          agentVersion: agent?.currentVersion ?? null,
+          action: 'web_fetch.blocked',
+          targetType: 'web_fetch',
+          targetId: null,
+          modelUsed: null,
+          inputRef: null,
+          outputRef: null,
+          policyDecision: 'denied',
+          metadata: { reason: 'TOOL_NOT_AUTHORIZED' },
+        })
+        return { ok: false, reason: 'fetch_failed', detail: 'not_authorized' }
+      }
+
+      const enabled = await platformSettingsService.isWebFetchEnabled()
+      const since = new Date(Date.now() - 24 * 60 * 60 * 1000)
+      const perAgentDayUsed = await prisma.auditLog
+        .count({ where: { action: 'web_fetch.request', actorId: agentId, createdAt: { gte: since } } })
+        .catch(() => 0)
+
+      const result = await webFetchService.fetch({
+        url,
+        sourceType,
+        allowedSourceUrls,
+        allowlistHosts,
+        enabled,
+        budget: {
+          perDiscoveryUsed: fetchIndex,
+          perDiscoveryMax: webFetchBudgetMax.perDiscovery,
+          perAgentDayUsed,
+          perAgentDayMax: webFetchBudgetMax.perAgentDay,
+        },
+      })
+
+      // §11.3 hash-only audit: nyers URL/tartalom SOSEM kerül a naplóba (WF-N10).
+      const meta = toWebFetchAuditMeta({
+        urlHash: sha256Prefix(url),
+        host: (() => {
+          try {
+            return new URL(url).hostname
+          } catch {
+            return 'unknown'
+          }
+        })(),
+        sourceType,
+        result,
+      })
+      await repositories.audit.append({
+        actorType: 'agent',
+        actorId: agentId,
+        agentVersion: agent?.currentVersion ?? null,
+        action: result.ok ? 'web_fetch.request' : 'web_fetch.blocked',
+        targetType: 'web_fetch',
+        targetId: null,
+        modelUsed: null,
+        inputRef: null,
+        outputRef: null,
+        policyDecision: result.ok ? 'allowed' : 'blocked',
+        metadata: meta as unknown as import('@prisma/client').Prisma.JsonValue,
+      })
+      return result
+    },
+  },
+})
 const agentChatRuntime = new AgentChatRuntime(
   repositories.agents,
   repositories.documents,
@@ -385,4 +540,5 @@ export const services = {
   selfEvolutionGuard,
   webSearch: webSearchService,
   webSearchPolicy: webSearchPolicyService,
+  webFetch: webFetchService,
 }

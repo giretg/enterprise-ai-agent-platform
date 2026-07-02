@@ -23,6 +23,7 @@ import {
   type ProposedTool,
 } from './connector-config'
 import { validateDraftConfig } from './draft-validator'
+import { isForbiddenHost } from '@/domain/net/egress-guard'
 import type { SandboxConnectionTester } from './provisioning-service'
 
 type FetchLike = (url: string, init: RequestInit) => Promise<Response>
@@ -47,15 +48,8 @@ export interface HttpSandboxConnectionTesterDeps {
   timeoutMs?: number
 }
 
-// SSRF-őr: ugyanaz a tiltott host-osztály, mint a determinisztikus validátorban
-// (felhő-metaadat, localhost-osztály, nyers IP). A hívás pillanatában is védünk.
-const FORBIDDEN_HOST_PATTERNS: RegExp[] = [
-  /^\d{1,3}(\.\d{1,3}){3}$/, // nyers IPv4
-  /^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])$/i,
-  /(169\.254\.169\.254|metadata\.google\.internal)/i, // felhő-metaadat
-  /(webhook\.site|requestbin|ngrok\.io|burpcollaborator)/i, // ismert exfil-sink
-]
-
+// SSRF-őr: a tiltott host-osztály (felhő-metaadat, localhost-osztály, nyers IP,
+// exfil-sink) a közös `egress-guard` modulból jön — egy helyen a védelem (§7.1).
 function hostOf(url: string): string | null {
   try {
     return new URL(url).host.toLowerCase()
@@ -146,8 +140,8 @@ export class HttpSandboxConnectionTester implements SandboxConnectionTester {
       return { ok: false, detail: 'egress_not_allowlisted' }
     }
 
-    // (3) SSRF-őr a feloldott hoston.
-    if (FORBIDDEN_HOST_PATTERNS.some((p) => p.test(probeHost))) {
+    // (3) SSRF-őr a feloldott hoston (közös egress-guard host-minták).
+    if (isForbiddenHost(probeHost)) {
       return { ok: false, detail: 'forbidden_host' }
     }
 

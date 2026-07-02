@@ -872,13 +872,18 @@ export class AllowlistAuthorizer implements Authorizer {
     tenantId?: string | null
   }): Promise<AuthorizationResult> {
     const agent = await this.agents.findById(input.agentId)
+    const effectiveTenantId = input.tenantId ?? agent?.tenantId ?? null
+    if (agent?.tenantId && input.tenantId && agent.tenantId !== input.tenantId) {
+      return { allowed: false, reason: 'tenant_isolation' }
+    }
+
     let skipCapabilityCheck = false
     if (agent) {
       // §6: a Tool Broker ELSŐKÉNT a szerep-sablon `tool_access_allowed` mezőjét
       // nézi (adat-vezérelt, nem beégetett típus-elágazás). Ha nincs sablon (nem
       // seedelt DB), a beégetett alapértelmezésre esünk vissza — orchestrator akkor
       // is tool-less (defense-in-depth, sosem fail-open).
-      const template = await this.lookupRoleTemplate(agent.role, input.tenantId ?? null)
+      const template = await this.lookupRoleTemplate(agent.role, effectiveTenantId)
       const toolAccessAllowed = template ? template.toolAccessAllowed : agent.role !== 'orchestrator'
       if (!toolAccessAllowed) {
         if (ORCHESTRATOR_DELEGATION_TOOLS.includes(input.tool)) {
@@ -910,11 +915,13 @@ export class AllowlistAuthorizer implements Authorizer {
           requestedConnectorId,
           requirement.connectorType,
           requirement.accessMode,
+          effectiveTenantId,
         )
       : await this.tools.findConnectorForAgent(
           input.agentId,
           requirement.connectorType,
           requirement.accessMode,
+          effectiveTenantId,
         )
     if (!link) {
       return {
@@ -925,6 +932,10 @@ export class AllowlistAuthorizer implements Authorizer {
       }
     }
     const { connector, agentSecretAlias } = link
+
+    if (connector.tenantId !== null && connector.tenantId !== effectiveTenantId) {
+      return { allowed: false, reason: 'tenant_isolation', connector }
+    }
 
     // Provisioning §4.1 / P3 / PN5: egy draft (lifecycle_state != active) connector
     // a Tool Brokerben SOHA nem oldódik fel — egy fél kész draft nem futtatható élesben.
@@ -943,7 +954,7 @@ export class AllowlistAuthorizer implements Authorizer {
       }
 
       const grant = await this.grants.findActiveGrant({
-        tenantId: input.tenantId ?? connector.tenantId ?? null,
+        tenantId: connector.tenantId ?? effectiveTenantId,
         connectorId: connector.id,
         userId: input.actingUserId,
       })
@@ -1387,8 +1398,9 @@ export class ToolBrokerService {
   }
 
   private async resolveActingUserId(input: ToolBrokerInvokeInput): Promise<string | null> {
-    if (input.ticketId) {
-      const ticket = await this.tickets.findById(input.ticketId)
+    const effectiveTicketId = input.tool === 'board_write' ? input.args.ticketId : input.ticketId
+    if (effectiveTicketId) {
+      const ticket = await this.tickets.findById(effectiveTicketId)
       if (ticket) {
         const payload = isRecord(ticket.payload) ? ticket.payload : null
         if (isRunAsAuthorized(payload)) {
@@ -1953,14 +1965,21 @@ export class ToolBrokerService {
     grantId?: string | null
     webSearchEffective?: WebSearchEffectiveQuery
   }) {
+    const requirement = TOOL_REQUIREMENTS[params.input.tool]
     const sanitizedArgsMeta = {
       ...argsMeta(params.input, params.webSearchEffective),
       acting_user_id: params.actingUserId ?? params.input.actingUserId ?? null,
       grant_id: params.grantId ?? null,
+      connector_id: params.connectorId,
+      connector_type: requirement.connectorType,
+      access_mode: requirement.accessMode,
     }
     const metadata = {
       tool: params.input.tool,
       status: params.status,
+      connector_id: params.connectorId,
+      connector_type: requirement.connectorType,
+      access_mode: requirement.accessMode,
       argsMeta: sanitizedArgsMeta,
       resultMeta: params.resultMeta,
       acting_user_id: params.actingUserId ?? params.input.actingUserId ?? null,

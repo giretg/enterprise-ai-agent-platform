@@ -357,6 +357,7 @@ export default async function AgentDetailPage({
                 <AgentCapabilitiesPanel
                   agentId={agent.id}
                   currentCapabilities={governance.capabilities}
+                  isOrchestrator={agent.role === 'orchestrator'}
                 />
               )}
             </div>

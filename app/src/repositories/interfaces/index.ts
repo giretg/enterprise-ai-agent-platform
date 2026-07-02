@@ -304,9 +304,9 @@ export type TransitionStats = {
 }
 
 export interface AgentRepository {
-  findMany(): Promise<Agent[]>
-  findById(id: string): Promise<Agent | null>
-  findByIdWithDetails(id: string): Promise<{
+  findMany(filter?: { tenantId?: string | null }): Promise<Agent[]>
+  findById(id: string, tenantId?: string | null): Promise<Agent | null>
+  findByIdWithDetails(id: string, tenantId?: string | null): Promise<{
     agent: Agent
     memoryContent: string | null
     memoryVersion: number | null
@@ -336,6 +336,7 @@ export interface AgentRepository {
     selfEvolutionProfile?: Agent['selfEvolutionProfile']
     initialMemory?: string
     createdById: string
+    tenantId?: string | null
     status?: Agent['status']
   }): Promise<{ agent: Agent; apiKey: string }>
   /** Életciklus-átmenetek (§4) — állapotgép-invariánsokat kényszerítenek ki. */
@@ -499,12 +500,14 @@ export interface ToolBrokerRepository {
     agentId: string,
     type: ConnectorType,
     accessMode: ConnectorAccessMode,
+    tenantId?: string | null,
   ): Promise<{ connector: Connector; agentSecretAlias: string | null } | null>
   findConnectorForAgentById(
     agentId: string,
     connectorId: string,
     type: ConnectorType,
     accessMode: ConnectorAccessMode,
+    tenantId?: string | null,
   ): Promise<{ connector: Connector; agentSecretAlias: string | null } | null>
   findCapabilitiesForAgent(agentId: string): Promise<{ toolName: string; allowed: boolean }[]>
   findConnectorsForAgent(agentId: string): Promise<{ connector: Connector; accessMode: ConnectorAccessMode; agentSecretAlias: string | null }[]>

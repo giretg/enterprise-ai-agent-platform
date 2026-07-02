@@ -7,7 +7,11 @@
  * tisztán igazolható.
  */
 import assert from 'node:assert/strict'
-import { runAgentToolLoop, recoverOpenAiToolCallsFromText } from '../src/domain/agent/chat-tool-loop'
+import {
+  listAllowedChatTools,
+  runAgentToolLoop,
+  recoverOpenAiToolCallsFromText,
+} from '../src/domain/agent/chat-tool-loop'
 import { assembleContext } from '../src/domain/conversation/context-assembly'
 import { resolveTicketProcessRoute } from '../src/lib/ticket-process-route'
 import type { ModelGateway, ModelConfig, GatewayToolCall } from '../src/domain/gateway/model-gateway'
@@ -252,6 +256,73 @@ async function main() {
     assert.equal(brokerCalls.length, 1)
     assert.equal(brokerCalls[0].conversationId, 'conv-1')
     assert.equal(brokerCalls[0].actingUserId, 'user-1')
+  })
+
+  await check('chat mód: web_search engedélyezett capability esetén hívható', async () => {
+    const gwCalls: GatewayCallArgs[] = []
+    const brokerCalls: ToolBrokerInvokeInput[] = []
+    const caps = {
+      findCapabilitiesForAgent: async () => [
+        { toolName: 'web_search', allowed: true },
+        { toolName: 'kb_search', allowed: true },
+      ],
+      findConnectorsForAgent: async () => [],
+    } as unknown as ToolBrokerRepository
+    const allowed = await listAllowedChatTools(caps, 'agent-1')
+
+    assert.deepEqual(allowed, ['web_search'])
+
+    await runAgentToolLoop({
+      gateway: fakeGateway(
+        [
+          {
+            toolCalls: [
+              {
+                id: 'web-1',
+                name: 'web_search',
+                input: {
+                  query: 'telex.hu vezető hír',
+                  domains: ['telex.hu'],
+                  maxResults: 3,
+                  purpose: 'current_news_check',
+                },
+              },
+            ],
+          },
+          { content: 'A webes találat alapján összefoglaltam.' },
+        ],
+        gwCalls,
+      ),
+      toolBroker: fakeToolBrokerResult(brokerCalls, {
+        results: [],
+        queryMeta: { provider: 'stub', resultCount: 0, domainsEffective: ['telex.hu'] },
+        warnings: [],
+      }),
+      toolCaps: caps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-web' },
+      mode: 'chat',
+      actingUserId: 'user-1',
+      messages: [{ role: 'user', content: 'nézz utána a neten' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: allowed,
+    })
+
+    assert.equal(brokerCalls.length, 1)
+    assert.equal(brokerCalls[0].tool, 'web_search')
+    assert.equal(brokerCalls[0].conversationId, 'conv-web')
+    assert.equal(brokerCalls[0].actingUserId, 'user-1')
+    if (brokerCalls[0].tool === 'web_search') {
+      assert.deepEqual(brokerCalls[0].args, {
+        query: 'telex.hu vezető hír',
+        domains: ['telex.hu'],
+        recencyDays: undefined,
+        locale: undefined,
+        maxResults: 3,
+        purpose: 'current_news_check',
+      })
+    }
   })
 
   await check('vékony fallback: beágyazott {"tool":...} JSON tool_calls nélkül is hív', async () => {

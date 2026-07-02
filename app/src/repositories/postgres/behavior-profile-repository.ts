@@ -24,8 +24,13 @@ export class PostgresBehaviorProfileRepository {
   }
 
   /** Új al-verziót fagyaszt; NEM frissíti a hivatkozó agenteket (I7). */
-  async update(input: { profileId: string; body: string; approvedById: string }) {
-    const profile = await prisma.behaviorProfile.findUnique({ where: { id: input.profileId } })
+  async update(input: { profileId: string; body: string; approvedById: string; tenantId?: string | null }) {
+    const profile = await prisma.behaviorProfile.findFirst({
+      where: {
+        id: input.profileId,
+        ...(input.tenantId !== undefined ? { tenantId: input.tenantId } : {}),
+      },
+    })
     if (!profile) throw new Error('Behavior profile not found')
 
     const nextVersion = profile.currentVersion + 1
@@ -62,25 +67,35 @@ export class PostgresBehaviorProfileRepository {
     }))
   }
 
-  async findByIdWithVersions(profileId: string) {
-    return prisma.behaviorProfile.findUnique({
-      where: { id: profileId },
+  async findByIdWithVersions(profileId: string, tenantId?: string | null) {
+    return prisma.behaviorProfile.findFirst({
+      where: {
+        id: profileId,
+        ...(tenantId !== undefined ? { tenantId } : {}),
+      },
       include: { versions: { orderBy: { version: 'desc' } } },
     })
   }
 
-  async getVersionBody(profileId: string, version: number): Promise<string | null> {
-    const row = await prisma.behaviorProfileVersion.findUnique({
-      where: { profileId_version: { profileId, version } },
+  async getVersionBody(profileId: string, version: number, tenantId?: string | null): Promise<string | null> {
+    const row = await prisma.behaviorProfileVersion.findFirst({
+      where: {
+        profileId,
+        version,
+        ...(tenantId !== undefined ? { profile: { tenantId } } : {}),
+      },
       select: { body: true },
     })
     return row?.body ?? null
   }
 
   /** A profilt hivatkozó agentek és a rájuk pinnelt al-verzió (kaszkád-felderítés). */
-  async listReferrers(profileId: string) {
+  async listReferrers(profileId: string, tenantId?: string | null) {
     const agents = await prisma.agent.findMany({
-      where: { currentBehaviorProfileId: profileId },
+      where: {
+        currentBehaviorProfileId: profileId,
+        ...(tenantId !== undefined ? { tenantId } : {}),
+      },
       select: { id: true, name: true, currentBehaviorProfileVersion: true, status: true },
     })
     return agents.map((a) => ({

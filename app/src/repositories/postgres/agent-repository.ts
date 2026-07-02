@@ -7,6 +7,10 @@ import { selfEvolutionProfileSchema } from '@/lib/self-evolution-profile'
 import { assertTransition, isPhysicallyDeletable } from '@/lib/agent-lifecycle'
 import type { AgentRepository, DocumentRepository } from '../interfaces'
 
+function agentVisibilityWhere(id: string, tenantId?: string | null): Prisma.AgentWhereInput {
+  return tenantId === undefined ? { id } : { id, tenantId }
+}
+
 function serviceAccountScopesForRole(role: Agent['role']): string[] {
   return role === 'orchestrator'
     ? ['ticket:create']
@@ -14,17 +18,20 @@ function serviceAccountScopesForRole(role: Agent['role']): string[] {
 }
 
 export class PostgresAgentRepository implements AgentRepository {
-  async findMany(): Promise<Agent[]> {
-    return prisma.agent.findMany({ orderBy: { createdAt: 'desc' } })
+  async findMany(filter?: { tenantId?: string | null }): Promise<Agent[]> {
+    return prisma.agent.findMany({
+      where: filter?.tenantId !== undefined ? { tenantId: filter.tenantId } : undefined,
+      orderBy: { createdAt: 'desc' },
+    })
   }
 
-  async findById(id: string): Promise<Agent | null> {
-    return prisma.agent.findUnique({ where: { id } })
+  async findById(id: string, tenantId?: string | null): Promise<Agent | null> {
+    return prisma.agent.findFirst({ where: agentVisibilityWhere(id, tenantId) })
   }
 
-  async findByIdWithDetails(id: string) {
-    const agent = await prisma.agent.findUnique({
-      where: { id },
+  async findByIdWithDetails(id: string, tenantId?: string | null) {
+    const agent = await prisma.agent.findFirst({
+      where: agentVisibilityWhere(id, tenantId),
       include: {
         memory: {
           include: {
@@ -119,6 +126,7 @@ export class PostgresAgentRepository implements AgentRepository {
     selfEvolutionProfile?: Agent['selfEvolutionProfile']
     initialMemory?: string
     createdById: string
+    tenantId?: string | null
     status?: Agent['status']
   }) {
     const memory = await prisma.memory.create({ data: {} })
@@ -148,6 +156,7 @@ export class PostgresAgentRepository implements AgentRepository {
     const agent = await prisma.agent.create({
       data: {
         name: input.name,
+        tenantId: input.tenantId ?? null,
         roleInstruction: input.roleInstruction,
         behaviorProfile: input.behaviorProfile,
         modelConfig: input.modelConfig as Prisma.InputJsonValue,
@@ -256,6 +265,7 @@ export class PostgresAgentRepository implements AgentRepository {
           modelConfigSnapshot: currentVersion.modelConfigSnapshot as Prisma.InputJsonValue,
           memoryVersionId: currentVersion.memoryVersionId,
           recipeVersionId: currentVersion.recipeVersionId,
+          selfEvolutionSnapshot: (agent.selfEvolutionProfile ?? undefined) as Prisma.InputJsonValue | undefined,
         },
       }),
       prisma.agent.update({
@@ -304,6 +314,7 @@ export class PostgresAgentRepository implements AgentRepository {
           modelConfigSnapshot: input.modelConfig as Prisma.InputJsonValue,
           memoryVersionId: currentVersion.memoryVersionId,
           recipeVersionId: currentVersion.recipeVersionId,
+          selfEvolutionSnapshot: (agent.selfEvolutionProfile ?? undefined) as Prisma.InputJsonValue | undefined,
         },
       }),
       prisma.agent.update({

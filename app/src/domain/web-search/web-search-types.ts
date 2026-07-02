@@ -8,6 +8,7 @@ export const WEB_SEARCH_CONTROLS_KEY = 'web_search.controls'
 
 export type WebSearchConnectorConfig = {
   provider: 'managed_search' | 'custom_search_api' | 'stub'
+  providerApiUrl?: string
   allowedDomains: string[]
   deniedDomains: string[]
   defaultLocale: string
@@ -26,6 +27,7 @@ export type WebSearchConnectorConfig = {
 
 export const DEFAULT_WEB_SEARCH_CONFIG: WebSearchConnectorConfig = {
   provider: 'stub',
+  providerApiUrl: undefined,
   allowedDomains: [],
   deniedDomains: [],
   defaultLocale: 'hu-HU',
@@ -52,6 +54,9 @@ export function parseWebSearchConfig(raw: unknown): WebSearchConnectorConfig {
   return {
     provider:
       v.provider === 'custom_search_api' || v.provider === 'managed_search' ? v.provider : 'stub',
+    providerApiUrl: typeof v.providerApiUrl === 'string' && v.providerApiUrl.trim()
+      ? v.providerApiUrl.trim()
+      : undefined,
     allowedDomains: asStringArray(v.allowedDomains),
     deniedDomains: asStringArray(v.deniedDomains),
     defaultLocale: typeof v.defaultLocale === 'string' ? v.defaultLocale : DEFAULT_WEB_SEARCH_CONFIG.defaultLocale,

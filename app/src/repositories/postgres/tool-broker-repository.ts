@@ -12,6 +12,14 @@ function connectorAccessModes(required: ConnectorAccessMode): ConnectorAccessMod
   return required === 'read' ? ['read', 'write'] : ['write']
 }
 
+function connectorTenantScope(tenantId?: string | null) {
+  return tenantId === undefined
+    ? {}
+    : tenantId
+      ? { OR: [{ tenantId }, { tenantId: null }] }
+      : { tenantId: null }
+}
+
 export class PostgresToolBrokerRepository implements ToolBrokerRepository {
   async findCapability(agentId: string, toolName: string): Promise<{ allowed: boolean } | null> {
     return prisma.capability.findUnique({
@@ -24,12 +32,13 @@ export class PostgresToolBrokerRepository implements ToolBrokerRepository {
     agentId: string,
     type: ConnectorType,
     accessMode: ConnectorAccessMode,
+    tenantId?: string | null,
   ): Promise<{ connector: Connector; agentSecretAlias: string | null } | null> {
     const agentConnector = await prisma.agentConnector.findFirst({
       where: {
         agentId,
         accessMode: { in: connectorAccessModes(accessMode) },
-        connector: { type },
+        connector: { type, ...connectorTenantScope(tenantId) },
       },
       include: { connector: true },
     })
@@ -42,13 +51,14 @@ export class PostgresToolBrokerRepository implements ToolBrokerRepository {
     connectorId: string,
     type: ConnectorType,
     accessMode: ConnectorAccessMode,
+    tenantId?: string | null,
   ): Promise<{ connector: Connector; agentSecretAlias: string | null } | null> {
     const agentConnector = await prisma.agentConnector.findFirst({
       where: {
         agentId,
         connectorId,
         accessMode: { in: connectorAccessModes(accessMode) },
-        connector: { type },
+        connector: { type, ...connectorTenantScope(tenantId) },
       },
       include: { connector: true },
     })

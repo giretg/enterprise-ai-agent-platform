@@ -14,11 +14,14 @@
  * a modell semmit nem aktivál, nem ad jogot. Egy mérgezett doksi legrosszabb esetben egy
  * draftot eredményez, amit ember validál és a validátor `failed`-del elkaszál (PN1, S-P1).
  */
+import { createHash } from 'node:crypto'
 import type {
   GatewayMessage,
   ModelConfig,
   SensitivityOverride,
 } from '@/domain/gateway/model-gateway'
+import type { WebSearchResultItem } from '@/domain/web-search/web-search-types'
+import type { WebFetchResult, WebFetchSourceType } from '@/domain/web-fetch/web-fetch-types'
 import {
   normalizeConnectorConfig,
   ConnectorConfigParseError,
@@ -147,6 +150,70 @@ export interface ProvisioningAssistantDeps {
   model: ConfigDraftingModel
   /** Teszt/szolgáltatás felülírás — élesben az agent Registry modelConfig-je él. */
   modelConfig?: ModelConfig
+  /** A felfedező hurok (§8.3) web-egress runnerei; élesben a Tool Brokert csomagolják. */
+  discovery?: DiscoveryDeps
+}
+
+/** A felfedezés forrás-osztályai — csak ezekre engedünk fetch-et (§5/4). */
+const TRUSTED_SOURCE_TYPES: ReadonlySet<string> = new Set<WebFetchSourceType>(['official', 'vendor_doc'])
+
+/**
+ * A web-egress felület determinisztikus runnerei (§8.3). Élesben a Tool Broker
+ * capability-gate-jén át futnak (web-egress role agent aktorral); tesztben fakes.
+ */
+export interface DiscoveryDeps {
+  /** Egy web_search hívás; a policy-szűrt találatokat adja vissza (sourceType-tal). */
+  runWebSearch: (input: {
+    query: string
+    domains?: string[]
+    agentId: string
+  }) => Promise<WebSearchResultItem[]>
+  /** Egy web_fetch hívás a Broker/service mögött (kill-switch, egress-guard, budget benne). */
+  runWebFetch: (input: {
+    url: string
+    sourceType: WebFetchSourceType
+    allowedSourceUrls: string[]
+    allowlistHosts: string[]
+    agentId: string
+    fetchIndex: number
+  }) => Promise<WebFetchResult>
+  /** A felfedezés feature-flag (§14, `provisioning.web_discovery.enabled`). */
+  isDiscoveryEnabled: () => Promise<boolean>
+  /** A tenant egress-allowlistja (a fetch-hostok bővítik, de a search-osztály is engedhet). */
+  resolveEgressAllowlist: (tenantId: string | null) => Promise<string[]>
+  /** Max fetch/felfedezés (§7.2/11, WEB_FETCH_MAX_PER_DISCOVERY, alap 2). */
+  maxFetchesPerDiscovery?: number
+}
+
+/** A felfedezés provenance-blokkja (§6.1) — a draft `config.provenance.discovery`-jébe kerül. */
+export type DiscoveryProvenance = {
+  queryHash: string
+  sources: Array<{
+    urlHash: string
+    host: string
+    sourceType: WebFetchSourceType
+    contentHash: string
+    bytes: number
+    fetchedAt: string
+  }>
+  egressRoleAgentId: string
+  egressRoleAgentVersion?: number
+}
+
+export type DiscoverConfigResult =
+  | { ok: true; config: ConnectorConfig; provenance: DiscoveryProvenance }
+  | {
+      ok: false
+      error: 'NO_TRUSTED_SOURCE' | 'FETCH_FAILED' | 'PARSE_FAILED' | 'DISCOVERY_DISABLED'
+      detail: string
+    }
+
+function hashPrefix(content: string): string {
+  return createHash('sha256').update(content).digest('hex').slice(0, 16)
+}
+
+function registrableHost(host: string): string {
+  return host.toLowerCase()
 }
 
 export class ProvisioningAssistant {
@@ -226,6 +293,137 @@ export class ProvisioningAssistant {
       throw e
     }
   }
+
+  /**
+   * A felfedező hurok (§5, §8.3) — connector-név → web_search → forrás-szűrés →
+   * web_fetch → `draftConfigFromDoc`. DETERMINISZTIKUS KERET, az LLM csak a végén: a
+   * search-lekérdezés, a forrás-rangsorolás/szűrés és a fetch-kiválasztás mind kódban van;
+   * a modell egyetlen szerepe a letöltött tartalom → ConnectorConfig kinyerés.
+   *
+   * A letöltött tartalom mindig UNTRUSTED DATA; a web-egress role határon CSAK tipizált,
+   * validált érték (`ConnectorConfig`) lép ki (§3.2). NEM hoz létre draftot (propose) —
+   * a hívó az admin review után a meglévő `createConnectorDraft`-tal rakja le.
+   */
+  async discoverConfigFromName(input: {
+    connectorName: string
+    knownDomain?: string | null
+    egressRoleAgentId: string
+    egressRoleAgentVersion?: number
+    agentModelConfig?: unknown
+    tenantId?: string | null
+    conversationId?: string | null
+    sensitivityOverride?: SensitivityOverride
+  }): Promise<DiscoverConfigResult> {
+    const discovery = this.deps.discovery
+    if (!discovery) {
+      return { ok: false, error: 'DISCOVERY_DISABLED', detail: 'discovery not configured' }
+    }
+    if (!(await discovery.isDiscoveryEnabled())) {
+      return { ok: false, error: 'DISCOVERY_DISABLED', detail: 'web_discovery flag off' }
+    }
+    const name = input.connectorName?.trim()
+    if (!name) {
+      return { ok: false, error: 'PARSE_FAILED', detail: 'empty connector name' }
+    }
+
+    // (1) Determinisztikus search-lekérdezés. Ha van ismert doksi-domain, szűkíti a keresést.
+    const knownDomain = input.knownDomain?.trim() || undefined
+    const query = `${name} API documentation REST reference`
+    const searchResults = await discovery.runWebSearch({
+      query,
+      domains: knownDomain ? [knownDomain] : undefined,
+      agentId: input.egressRoleAgentId,
+    })
+    const queryHash = hashPrefix(query)
+
+    // (2) Determinisztikus forrás-szűrés: csak official/vendor_doc; official > vendor_doc.
+    //     news/blog/unknown ELDOBVA (§5/4).
+    const trusted = searchResults
+      .filter((r) => TRUSTED_SOURCE_TYPES.has(r.sourceType))
+      .sort((a, b) => sourceRank(a.sourceType) - sourceRank(b.sourceType))
+    if (trusted.length === 0) {
+      return { ok: false, error: 'NO_TRUSTED_SOURCE', detail: 'no official/vendor_doc source found' }
+    }
+
+    // (3) Fetch a legjobb 1..N jelöltre (alap N=2). A fetch csak a beszélgetésbeli
+    //     (search-találat) URL-t tölti le; a megengedett hostok a trusted találatoké +
+    //     a tenant egress-allowlistje.
+    const maxFetches = discovery.maxFetchesPerDiscovery ?? 2
+    const candidates = trusted.slice(0, maxFetches)
+    const allowedSourceUrls = trusted.map((r) => r.url)
+    const envAllowlist = await discovery.resolveEgressAllowlist(input.tenantId ?? null)
+    const allowlistHosts = [
+      ...new Set([...candidates.map((r) => registrableHost(r.domain)), ...envAllowlist.map((h) => h.toLowerCase())]),
+    ]
+
+    const sources: DiscoveryProvenance['sources'] = []
+    const docParts: string[] = []
+    let anyBlocked = false
+    for (let i = 0; i < candidates.length; i++) {
+      const cand = candidates[i]
+      const result = await discovery.runWebFetch({
+        url: cand.url,
+        sourceType: cand.sourceType as WebFetchSourceType,
+        allowedSourceUrls,
+        allowlistHosts,
+        agentId: input.egressRoleAgentId,
+        fetchIndex: i,
+      })
+      if (!result.ok) {
+        anyBlocked = true
+        continue
+      }
+      sources.push({
+        urlHash: result.urlHash,
+        host: result.host,
+        sourceType: (result.sourceType ?? cand.sourceType) as WebFetchSourceType,
+        contentHash: result.contentHash,
+        bytes: result.bytes,
+        fetchedAt: new Date().toISOString(),
+      })
+      docParts.push(result.text)
+    }
+
+    if (docParts.length === 0) {
+      return {
+        ok: false,
+        error: 'FETCH_FAILED',
+        detail: anyBlocked ? 'all candidate fetches blocked/failed' : 'no content fetched',
+      }
+    }
+
+    // (4) A letöltött tartalom = UNTRUSTED DATA → `draftConfigFromDoc` (marker-izoláció).
+    const docText = docParts.join('\n\n---\n\n')
+    const draft = await this.draftConfigFromDoc({
+      agentId: input.egressRoleAgentId,
+      agentVersion: input.egressRoleAgentVersion,
+      agentModelConfig: input.agentModelConfig,
+      tenantId: input.tenantId,
+      conversationId: input.conversationId,
+      docText,
+      providerHint: name,
+      sensitivityOverride: input.sensitivityOverride,
+    })
+    if (!draft.ok) {
+      return { ok: false, error: 'PARSE_FAILED', detail: draft.detail }
+    }
+
+    return {
+      ok: true,
+      config: draft.config,
+      provenance: {
+        queryHash,
+        sources,
+        egressRoleAgentId: input.egressRoleAgentId,
+        egressRoleAgentVersion: input.egressRoleAgentVersion,
+      },
+    }
+  }
+}
+
+/** Forrás-rangsor: official (0) előbb, mint vendor_doc (1). */
+function sourceRank(sourceType: string): number {
+  return sourceType === 'official' ? 0 : 1
 }
 
 /**

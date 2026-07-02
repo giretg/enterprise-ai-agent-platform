@@ -41,14 +41,20 @@ const TOOL_GROUPS: ToolGroup[] = [
     label: 'HTTP API',
     tools: ['http_api_get', 'http_api_request'],
   },
+  {
+    label: 'Webes kutatás',
+    tools: ['web_search'],
+  },
 ]
 
 export function AgentCapabilitiesPanel({
   agentId,
   currentCapabilities,
+  isOrchestrator,
 }: {
   agentId: string
   currentCapabilities: Array<{ toolName: string; allowed: boolean }>
+  isOrchestrator: boolean
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
@@ -61,6 +67,7 @@ export function AgentCapabilitiesPanel({
   const [enabled, setEnabled] = useState<Set<string>>(initialEnabled)
 
   function toggle(tool: string) {
+    if (isOrchestrator && tool === 'web_search' && !enabled.has(tool)) return
     setEnabled((prev) => {
       const next = new Set(prev)
       if (next.has(tool)) next.delete(tool)
@@ -71,9 +78,12 @@ export function AgentCapabilitiesPanel({
   }
 
   function toggleGroup(tools: string[], allOn: boolean) {
+    const selectableTools = tools.filter(
+      (tool) => !(isOrchestrator && tool === 'web_search' && !enabled.has(tool)),
+    )
     setEnabled((prev) => {
       const next = new Set(prev)
-      for (const t of tools) {
+      for (const t of selectableTools) {
         if (allOn) next.delete(t)
         else next.add(t)
       }
@@ -91,8 +101,12 @@ export function AgentCapabilitiesPanel({
         enabledTools: [...enabled],
       })
       if (res.success) {
-        const msg = res.data.workspaceLinked
-          ? `${res.data.updatedCount} eszköz engedélyezve — Workspace connector automatikusan linkelve.`
+        const linked = [
+          res.data.workspaceLinked ? 'Workspace connector' : null,
+          res.data.webSearchLinked ? 'Web Search connector' : null,
+        ].filter(Boolean)
+        const msg = linked.length
+          ? `${res.data.updatedCount} eszköz engedélyezve — ${linked.join(', ')} automatikusan linkelve.`
           : `${res.data.updatedCount} eszköz engedélyezve.`
         setDone(msg)
         router.refresh()
@@ -141,12 +155,17 @@ export function AgentCapabilitiesPanel({
                 {group.tools.map((tool) => (
                   <label
                     key={tool}
-                    className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-night-2"
+                    className={`flex items-center gap-2 rounded-lg px-2 py-1.5 ${
+                      isOrchestrator && tool === 'web_search' && !enabled.has(tool)
+                        ? 'cursor-not-allowed opacity-50'
+                        : 'cursor-pointer hover:bg-night-2'
+                    }`}
                   >
                     <input
                       type="checkbox"
                       checked={enabled.has(tool)}
                       onChange={() => toggle(tool)}
+                      disabled={isOrchestrator && tool === 'web_search' && !enabled.has(tool)}
                       className="accent-sage"
                     />
                     <span className="font-mono text-xs text-ink-soft">{tool}</span>

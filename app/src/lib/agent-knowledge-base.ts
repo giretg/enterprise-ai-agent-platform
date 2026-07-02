@@ -35,7 +35,7 @@ export async function findOwnedKnowledgeBaseConnector(
  * de feltöltés / listázás / megosztás kizárólag a saját connectoron történik.
  */
 export async function ensureAgentKnowledgeBase(
-  agent: Pick<Agent, 'id' | 'name' | 'role'>,
+  agent: Pick<Agent, 'id' | 'name' | 'role'> & Partial<Pick<Agent, 'tenantId'>>,
   db: PrismaClient = prisma,
 ): Promise<Connector | null> {
   if (agent.role === 'orchestrator') return null
@@ -53,6 +53,7 @@ export async function ensureAgentKnowledgeBase(
       type: 'knowledge_base',
       name: knowledgeBaseConnectorName(agent.id),
       scope: 'single',
+      tenantId: agent.tenantId ?? null,
       config: {
         agentId: agent.id,
         displayName: knowledgeBaseDisplayName(agent.name),
