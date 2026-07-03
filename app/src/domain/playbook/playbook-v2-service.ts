@@ -167,6 +167,84 @@ export class PlaybookV2Service {
     return { version, validation }
   }
 
+  // --- §8.1 updateDraftPlaybookVersion (in-place draft szerkesztés) ----------
+
+  /**
+   * Egy DRAFT verzió tartalmának helyben szerkesztése. A published/pending/rejected
+   * verzió immutable (§4.3) — csak `status === 'draft'` esetén engedett. Zod-alak
+   * kötelező, szemantikai hibás draft tárolható (mint createnál). A content-hash
+   * újraszámol; ha az új tartalom egy MÁSIK verzióval egyezik, DUPLICATE_CONTENT.
+   */
+  async updateDraftPlaybookVersion(input: {
+    tenantId: string | null
+    playbookVersionId: string
+    spec: unknown
+    changeSummary: string
+    actorUserId: string
+    validationContext?: TenantValidationContext
+  }): Promise<{ version: PlaybookVersionV2; validation: ValidationResult }> {
+    const { playbook, version } = await this.requireVersion(input.tenantId, input.playbookVersionId)
+    if (version.status !== 'draft') {
+      throw new PlaybookV2Error(
+        'INVALID_STATE',
+        `Csak draft verzió szerkeszthető helyben (jelenleg: ${version.status}). Publikált verzióhoz új verziót kell létrehozni.`,
+      )
+    }
+
+    const parsed = safeParsePlaybookSpecV2(input.spec)
+    if (!parsed.success) {
+      throw new PlaybookV2Error('SCHEMA_INVALID', 'A spec nem felel meg a sémának.', {
+        issues: parsed.error.issues.map((i) => ({
+          path: i.path.join('.') || '(root)',
+          message: i.message,
+        })),
+      })
+    }
+    const spec = parsed.data
+
+    const contentHash = computePlaybookContentHash(spec)
+    if (contentHash !== version.contentHash) {
+      const duplicate = await this.repo.findVersionByContentHash(
+        input.tenantId,
+        playbook.id,
+        contentHash,
+      )
+      if (duplicate && duplicate.id !== version.id) {
+        throw new PlaybookV2Error(
+          'DUPLICATE_CONTENT',
+          `Azonos tartalmú verzió már létezik (v${duplicate.version}).`,
+          { existingVersionId: duplicate.id, version: duplicate.version },
+        )
+      }
+    }
+
+    const validation = this.validator.validateSpec(spec, input.validationContext ?? {})
+    const updated = await this.repo.updateVersion(version.id, {
+      spec: spec as unknown as Prisma.InputJsonValue,
+      changeSummary: input.changeSummary,
+      contentHash,
+      validationResult: validation as unknown as Prisma.InputJsonValue,
+    })
+
+    await this.append(input.tenantId, { type: 'human', id: input.actorUserId }, {
+      action: 'playbook.version.update',
+      targetType: 'playbook_version',
+      targetId: version.id,
+      inputRef: formatPlaybookRefV2(playbook.key, version.version),
+      outputRef: contentHash,
+      policyDecision: validation.valid ? 'valid' : 'invalid',
+      metadata: {
+        playbookVersionId: version.id,
+        contentHash,
+        playbookRef: formatPlaybookRefV2(playbook.key, version.version),
+        errorCount: validation.errors.length,
+        warningCount: validation.warnings.length,
+      },
+    })
+
+    return { version: updated, validation }
+  }
+
   // --- §8.1 validatePlaybookVersion -----------------------------------------
 
   async validatePlaybookVersion(input: {
@@ -424,6 +502,30 @@ export class PlaybookV2Service {
     const playbook = await this.requirePlaybook(tenantId, playbookId)
     const versions = await this.repo.listVersions(playbook.id)
     return { playbook, versions }
+  }
+
+  async updatePlaybookMeta(input: {
+    tenantId: string | null
+    playbookId: string
+    name: string
+    description: string | null
+    actorUserId: string
+  }): Promise<PlaybookV2> {
+    const playbook = await this.requirePlaybook(input.tenantId, input.playbookId)
+    const updated = await this.repo.updatePlaybook(playbook.id, {
+      name: input.name,
+      description: input.description,
+    })
+    await this.append(updated.tenantId, { type: 'human', id: input.actorUserId }, {
+      action: 'playbook.update_meta',
+      targetType: 'playbook',
+      targetId: updated.id,
+      inputRef: updated.key,
+      outputRef: null,
+      policyDecision: 'updated',
+      metadata: { name: input.name },
+    })
+    return updated
   }
 
   // --- Belső segédek ---------------------------------------------------------

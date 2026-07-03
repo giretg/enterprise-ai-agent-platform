@@ -15,14 +15,14 @@ export function AgentRegistryCard({
   agent: Agent
   canDelete: boolean
 }) {
-  const p = personaFor(agent.name)
+  const p = personaFor(agent.name, agent)
   const mood = humanStatus(agent.status)
 
   return (
     <Card className="h-full transition-transform duration-200 hover:-translate-y-1">
       <div className="flex items-start gap-4">
         <Link href={`/control-plane/agents/${agent.id}`} className="flex min-w-0 flex-1 items-start gap-4">
-          <AgentAvatar name={agent.name} status={agent.status} size="lg" />
+          <AgentAvatar name={agent.name} status={agent.status} size="lg" avatarUrl={agent.avatarUrl} />
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <h2 className="font-display text-2xl font-semibold leading-none">{p.nickname}</h2>
@@ -51,7 +51,15 @@ export function AgentRegistryCard({
           <p className="line-clamp-2 text-xs text-ink-faint">{agent.roleInstruction}</p>
         </Link>
         <AgentChatButton
-          agent={{ id: agent.id, name: agent.name, status: agent.status }}
+          agent={{
+            id: agent.id,
+            name: agent.name,
+            status: agent.status,
+            avatarUrl: agent.avatarUrl,
+            personaNickname: agent.personaNickname,
+            personaGreeting: agent.personaGreeting,
+            personaTrait: agent.personaTrait,
+          }}
           compact
         />
       </div>

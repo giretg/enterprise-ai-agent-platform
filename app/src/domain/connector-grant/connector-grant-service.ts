@@ -7,7 +7,7 @@ import {
   type ConnectorGrantTokens,
 } from './grant-token-vault'
 import { createOAuthState, pkceChallenge, verifyOAuthState } from '@/lib/crypto/oauth-state'
-import { GMAIL_SCOPES, normalizeGmailScope } from './gmail-scopes'
+import { normalizeGmailScope } from './gmail-scopes'
 
 export type ConnectorOAuthConfig = {
   provider?: string
@@ -41,48 +41,15 @@ export type ConnectorOAuthConfig = {
   }
 }
 
-/**
- * A Google/Gmail providerhez Google-defaultokat és Gmail-scope normalizálást
- * használunk; minden más providernél a config.oauth kötelező és a scope-okat
- * érintetlenül hagyjuk (nem Gmail-abbreviáljuk).
- */
-function looksLikeGoogle(value: string | undefined): boolean {
-  const normalized = (value ?? '').toLowerCase().replace(/[\s_-]+/g, '')
-  return (
-    normalized === 'gmail' ||
-    normalized === 'google' ||
-    normalized.startsWith('google') ||
-    normalized.includes('googleapis.com') ||
-    normalized.includes('accounts.google.com') ||
-    normalized.includes('oauth2.googleapis.com')
-  )
-}
-
-function isGoogleProvider(connector: Connector, config: ConnectorOAuthConfig): boolean {
-  const oauth = config.oauth ?? {}
-  const auth = config.auth ?? {}
-  return (
-    connector.type === 'gmail' ||
-    looksLikeGoogle(config.provider) ||
-    looksLikeGoogle(config.baseUrl) ||
-    looksLikeGoogle(auth.tokenUrl) ||
-    looksLikeGoogle(oauth.authUrl) ||
-    looksLikeGoogle(oauth.tokenUrl) ||
-    (config.egressHosts ?? []).some(looksLikeGoogle)
-  )
-}
-
 function scopeNormalizerFor(connector: Connector): (scope: string) => string {
   const config = (connector.config ?? {}) as ConnectorOAuthConfig
   const transform = config.oauth?.scopeTransform ?? config.auth?.scopeTransform
   if (transform === 'gmailAlias') return normalizeGmailScope
-  if (transform === 'none') return (scope: string) => scope.trim()
-  return isGoogleProvider(connector, config) ? normalizeGmailScope : (scope: string) => scope.trim()
+  return (scope: string) => scope.trim()
 }
 
 type ResolvedOAuthConfig = {
   provider: string
-  isGoogle: boolean
   authUrl: string
   tokenUrl: string
   scopes: string[]
@@ -116,26 +83,24 @@ function readOAuthConfig(connector: Connector): ResolvedOAuthConfig {
   const oauth = config.oauth ?? {}
   const auth = config.auth ?? {}
   const provider = config.provider ?? connector.type
-  const isGoogle = isGoogleProvider(connector, config)
   const normalize = scopeNormalizerFor(connector)
 
-  const authUrl = oauth.authUrl ?? auth.authUrl ?? (isGoogle ? 'https://accounts.google.com/o/oauth2/v2/auth' : undefined)
-  const tokenUrl = oauth.tokenUrl ?? auth.tokenUrl ?? (isGoogle ? 'https://oauth2.googleapis.com/token' : undefined)
+  const authUrl = oauth.authUrl ?? auth.authUrl
+  const tokenUrl = oauth.tokenUrl ?? auth.tokenUrl
   if (!authUrl) throw new Error('connector oauth config missing authUrl')
   if (!tokenUrl) throw new Error('connector oauth config missing tokenUrl')
 
-  const clientId = oauth.clientId ?? auth.clientId ?? (isGoogle ? (process.env.GMAIL_OAUTH_CLIENT_ID ?? '') : '')
+  const clientId = oauth.clientId ?? auth.clientId ?? ''
   if (!clientId) throw new Error('connector oauth config missing clientId')
   const authScopes = auth.scope?.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean)
   const configuredScopes = oauth.scopes ?? authScopes ?? config.scopesSuggested ?? []
-  const scopes = configuredScopes.length > 0 ? configuredScopes : connector.type === 'gmail' ? [GMAIL_SCOPES.readonly] : []
+  const scopes = configuredScopes.length > 0 ? configuredScopes : []
   if (scopes.length === 0) {
     throw new Error('connector oauth config missing scopes')
   }
 
   return {
     provider,
-    isGoogle,
     authUrl,
     tokenUrl,
     scopes: scopes.map(normalize),
@@ -143,11 +108,10 @@ function readOAuthConfig(connector: Connector): ResolvedOAuthConfig {
     clientIdRef: oauth.clientIdRef,
     redirectUri:
       oauth.redirectUri ??
-      (isGoogle ? process.env.GMAIL_OAUTH_REDIRECT_URI : undefined) ??
       `${process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'}/api/connectors/oauth/callback`,
-    userInfoUrl: oauth.userInfoUrl ?? auth.userInfoUrl ?? (isGoogle ? 'https://www.googleapis.com/oauth2/v2/userinfo' : undefined),
+    userInfoUrl: oauth.userInfoUrl ?? auth.userInfoUrl,
     accountEmailField: oauth.accountEmailField ?? auth.accountEmailField ?? 'email',
-    offlineParams: oauth.offlineParams ?? auth.offlineParams ?? (isGoogle ? { access_type: 'offline' } : {}),
+    offlineParams: oauth.offlineParams ?? auth.offlineParams ?? {},
   }
 }
 

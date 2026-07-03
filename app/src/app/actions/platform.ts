@@ -51,6 +51,8 @@ import {
   behaviorProfileIdSchema,
   updateAgentInstructionSchema,
   updateAgentModelConfigSchema,
+  updateAgentPersonaSchema,
+  updateAgentAvatarSchema,
   updateAgentSelfEvolutionProfileSchema,
   createHttpApiConnectorSchema,
   updateHttpApiConnectorSchema,
@@ -1046,6 +1048,85 @@ export async function updateAgentInstruction(input: {
     return ok(result)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to update agent instruction')
+  }
+}
+
+export async function updateAgentPersona(input: {
+  agentId: string
+  personaNickname?: string
+  personaGreeting?: string
+  personaTrait?: string
+}) {
+  try {
+    const user = await requireRole('admin')
+    const parsed = updateAgentPersonaSchema.parse(input)
+    const agent = await repositories.agents.findById(parsed.agentId, user.tenantId)
+    if (!agent) return fail('Agent not found')
+
+    const updated = await repositories.agents.updatePersona({
+      agentId: parsed.agentId,
+      ...(parsed.personaNickname !== undefined ? { personaNickname: parsed.personaNickname } : {}),
+      ...(parsed.personaGreeting !== undefined ? { personaGreeting: parsed.personaGreeting } : {}),
+      ...(parsed.personaTrait !== undefined ? { personaTrait: parsed.personaTrait } : {}),
+    })
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: agent.currentVersion,
+      action: 'agent.persona',
+      targetType: 'agent',
+      targetId: parsed.agentId,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: null,
+      policyDecision: 'allowed',
+      metadata: {
+        changed: [
+          parsed.personaNickname !== undefined ? 'personaNickname' : null,
+          parsed.personaGreeting !== undefined ? 'personaGreeting' : null,
+          parsed.personaTrait !== undefined ? 'personaTrait' : null,
+        ].filter(Boolean),
+      },
+    })
+
+    return ok({
+      personaNickname: updated.personaNickname,
+      personaGreeting: updated.personaGreeting,
+      personaTrait: updated.personaTrait,
+    })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update agent persona')
+  }
+}
+
+export async function updateAgentAvatar(input: { agentId: string; avatarUrl: string }) {
+  try {
+    const user = await requireRole('admin')
+    const parsed = updateAgentAvatarSchema.parse(input)
+    const agent = await repositories.agents.findById(parsed.agentId, user.tenantId)
+    if (!agent) return fail('Agent not found')
+
+    const nextAvatar = parsed.avatarUrl === '' ? null : parsed.avatarUrl
+    await repositories.agents.updateAvatar({ agentId: parsed.agentId, avatarUrl: nextAvatar })
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: agent.currentVersion,
+      action: 'agent.avatar',
+      targetType: 'agent',
+      targetId: parsed.agentId,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: null,
+      policyDecision: 'allowed',
+      metadata: { removed: nextAvatar === null },
+    })
+
+    return ok({ avatarUrl: nextAvatar })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update agent avatar')
   }
 }
 

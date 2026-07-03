@@ -379,3 +379,5 @@ Az F1–F4 a **strukturális** rész (a BRD igazi célja: a bug-osztály és a t
 3. **Backfill hatóköre:** csak `active` `http_api` connectorok, vagy `draft/validated` is? Javaslat: minden nem-`archived`.
 4. **`scopeTransform` bővíthetőség:** enum (`none`/`gmailAlias`) elég-e, vagy kell provider-független deklaratív mapping? Javaslat: enum most, később mapping ha új provider igényli.
 5. **Secret-mezők több auth-method esetén:** ha a példány auth-methodot vált a wizardben, a már bevitt secret-alias sorsa. Javaslat: auth-method-váltás a secret-mezőket üríti.
+
+done

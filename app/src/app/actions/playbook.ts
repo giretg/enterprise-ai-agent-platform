@@ -13,6 +13,8 @@ import {
   createPlaybookV2Schema,
   playbookV2IdSchema,
   createPlaybookVersionV2Schema,
+  updatePlaybookVersionV2Schema,
+  updatePlaybookMetaSchema,
   playbookVersionV2IdSchema,
   rejectPlaybookVersionV2Schema,
   assignPlaybookV2Schema,
@@ -100,6 +102,24 @@ export async function createPlaybookV2(input: unknown) {
   }
 }
 
+export async function updatePlaybookMetaV2(input: unknown) {
+  try {
+    const user = await requireRole('admin')
+    const parsed = updatePlaybookMetaSchema.parse(input)
+    await services.playbooksV2.updatePlaybookMeta({
+      tenantId: tenantOf(user),
+      playbookId: parsed.playbookId,
+      name: parsed.name,
+      description: parsed.description ?? null,
+      actorUserId: user.id,
+    })
+    return ok(null)
+  } catch (e) {
+    if (e instanceof PlaybookV2Error) return fail(e.message)
+    return fail(e instanceof Error ? e.message : 'Nem sikerült frissíteni a Playbookot')
+  }
+}
+
 export async function createPlaybookVersionV2(input: unknown) {
   try {
     const user = await requireRole('admin')
@@ -117,6 +137,26 @@ export async function createPlaybookVersionV2(input: unknown) {
       return fail(`${e.message}${e.details ? ` — ${JSON.stringify(e.details)}` : ''}`)
     }
     return fail(e instanceof Error ? e.message : 'Nem sikerült létrehozni a verziót')
+  }
+}
+
+export async function updatePlaybookVersionV2(input: unknown) {
+  try {
+    const user = await requireRole('admin')
+    const parsed = updatePlaybookVersionV2Schema.parse(input)
+    const { version, validation } = await services.playbooksV2.updateDraftPlaybookVersion({
+      tenantId: tenantOf(user),
+      playbookVersionId: parsed.playbookVersionId,
+      spec: parsed.spec,
+      changeSummary: parsed.changeSummary,
+      actorUserId: user.id,
+    })
+    return ok({ versionId: version.id, version: version.version, validation })
+  } catch (e) {
+    if (e instanceof PlaybookV2Error) {
+      return fail(`${e.message}${e.details ? ` — ${JSON.stringify(e.details)}` : ''}`)
+    }
+    return fail(e instanceof Error ? e.message : 'Nem sikerült frissíteni a verziót')
   }
 }
 

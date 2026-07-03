@@ -381,6 +381,23 @@ export interface AgentRepository {
     agentId: string
     modelConfig: Agent['modelConfig']
   }): Promise<{ agentVersion: number }>
+  /**
+   * Frissíti az agent emberi arcát (megjelenített név / üdvözlő mondat /
+   * jellemvonás). Nem verziózott, a reprodukálhatóságot nem érinti — csak a
+   * megjelenített persona. Üres string törli az override-ot (a névből számított
+   * alapértelmezésre esik vissza).
+   */
+  updatePersona(input: {
+    agentId: string
+    personaNickname?: string | null
+    personaGreeting?: string | null
+    personaTrait?: string | null
+  }): Promise<Agent>
+  /**
+   * Beállítja vagy törli (null) az agent feltöltött avatár-képét (data URL vagy
+   * külső URL). Nem verziózott — csak a megjelenített arc.
+   */
+  updateAvatar(input: { agentId: string; avatarUrl: string | null }): Promise<Agent>
   updateSelfEvolutionProfile(input: {
     agentId: string
     profile: Agent['selfEvolutionProfile']
@@ -612,6 +629,8 @@ export interface PlaybookV2Repository {
   updatePlaybook(
     id: string,
     data: Partial<{
+      name: string
+      description: string | null
       status: PlaybookV2Status
       currentPublishedVersionId: string | null
       archivedAt: Date | null
@@ -631,6 +650,9 @@ export interface PlaybookV2Repository {
     id: string,
     data: Partial<{
       status: PlaybookVersionV2Status
+      spec: Prisma.InputJsonValue
+      changeSummary: string
+      contentHash: string
       validationResult: Prisma.InputJsonValue
       compiledSpec: Prisma.InputJsonValue
       approvedById: string | null

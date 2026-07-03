@@ -468,6 +468,14 @@ model Agent {
   // verziózva (§4.2/§5.3) — egymástól függetlenül frissíthető és visszakereshető.
   roleInstruction               String      @map("role_instruction")
   behaviorProfile               String      @map("behavior_profile")
+  // Emberi arc (agent-persona.ts): admin által szerkeszthető megjelenített név,
+  // üdvözlő mondat és jellemvonás. Ha null, a névből számított meleg
+  // alapértelmezés jelenik meg. `avatarUrl` opcionális feltöltött portré
+  // (data URL vagy külső URL); ha null, a gradiens+emoji arc látszik.
+  personaNickname               String?     @map("persona_nickname")
+  personaGreeting               String?     @map("persona_greeting")
+  personaTrait                  String?     @map("persona_trait")
+  avatarUrl                     String?     @map("avatar_url")
   modelConfig                   Json        @map("model_config")
   status                        AgentStatus @default(draft)
   currentVersion                Int         @default(1) @map("current_version")

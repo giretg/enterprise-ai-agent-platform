@@ -64,26 +64,6 @@ function worst(...statuses: CheckStatus[]): CheckStatus {
 }
 
 /**
- * Google/Gmail-provider heurisztika a delegált oauth2-teljesség ellenőrzéshez.
- * Tükrözi a ConnectorGrantService `looksLikeGoogle`/`isGoogleProvider` logikáját
- * (ott defaultolnak az authUrl/tokenUrl endpointok), de a draft `ConnectorConfig`
- * alakra (provider/baseUrl/egressHosts/auth.*Url), nem a futásidejű Connectorra.
- */
-function isLikelyGoogleProvider(config: ConnectorConfig): boolean {
-  const candidates = [
-    config.provider,
-    config.baseUrl,
-    config.auth.authUrl,
-    config.auth.tokenUrl,
-    ...config.egressHosts,
-  ]
-  return candidates.some((value) => {
-    const n = (value ?? '').toLowerCase().replace(/[\s_-]+/g, '')
-    return n.includes('google') || n.includes('googleapis.com') || n.includes('gmail')
-  })
-}
-
-/**
  * Lefuttatja a teljes determinisztikus validációt. A hívó (provisioning-service)
  * a `status === 'failed'` esetén blokkolja az aktiválást (P5, PN1).
  */
@@ -177,24 +157,21 @@ export function validateDraftConfig(
   //      hívás elhasal. A `clientId`-t az aktiválás külön kapuja kényszeríti ki (fail-fast).
   //
   //    • user_delegated oauth2: a per-user Bearer-tokent a ConnectorGrantService szerzi a
-  //      consent-flow-ban (authUrl/tokenUrl/scopes). Google-providernél ezek defaultolnak
-  //      (accounts.google.com / oauth2.googleapis.com), ezért Google-nál nem követeljük meg;
-  //      minden más providernél viszont explicit authUrl+tokenUrl kell, különben a grant
-  //      indítása hasalna el. A `clientId` itt is aktiváláskor jön (auth.clientId / activate-
-  //      param / Google-env), ezért itt nem duplikáljuk. Az aktiválás a delegált draftot
-  //      `auth.scheme=bearer` + `oauth` blokk runtime-alakra normalizálja (provisioning-service).
+  //      consent-flow-ban (authUrl/tokenUrl/scopes). Ezek provider-névtől függetlenül
+  //      explicit config-mezők: a sablon-materializer tölti őket, futásidőben nincs
+  //      Google- vagy hostnév-tippelés. A `clientId` itt is aktiváláskor jön
+  //      (auth.clientId / activate-param), ezért itt nem duplikáljuk. Az aktiválás a
+  //      delegált draftot `auth.scheme=bearer` + `oauth` blokk runtime-alakra normalizálja.
   let oauthCompleteness: CheckStatus = 'passed'
   if (config.auth.type === 'oauth2') {
     const tokenUrl = typeof config.auth.tokenUrl === 'string' ? config.auth.tokenUrl.trim() : ''
     const tokenUrlOk = /^https?:\/\//i.test(tokenUrl)
     if (config.authMode === 'user_delegated') {
-      if (!isLikelyGoogleProvider(config)) {
-        const authUrl = typeof config.auth.authUrl === 'string' ? config.auth.authUrl.trim() : ''
-        const authUrlOk = /^https?:\/\//i.test(authUrl)
-        if (!authUrlOk || !tokenUrlOk) {
-          oauthCompleteness = 'failed'
-          errors.push('oauth2_delegated_missing_endpoints')
-        }
+      const authUrl = typeof config.auth.authUrl === 'string' ? config.auth.authUrl.trim() : ''
+      const authUrlOk = /^https?:\/\//i.test(authUrl)
+      if (!authUrlOk || !tokenUrlOk) {
+        oauthCompleteness = 'failed'
+        errors.push('oauth2_delegated_missing_endpoints')
       }
     } else if (!tokenUrlOk) {
       oauthCompleteness = 'failed'

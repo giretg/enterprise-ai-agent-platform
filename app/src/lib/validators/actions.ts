@@ -562,6 +562,40 @@ export const updateAgentInstructionSchema = z
     message: 'Legalább a szerep-instrukciót vagy a viselkedés-profilt meg kell adni',
   })
 
+export const updateAgentPersonaSchema = z
+  .object({
+    agentId: z.string().uuid(),
+    personaNickname: z.string().max(80).optional(),
+    personaGreeting: z.string().max(280).optional(),
+    personaTrait: z.string().max(280).optional(),
+  })
+  .refine(
+    (v) =>
+      v.personaNickname !== undefined ||
+      v.personaGreeting !== undefined ||
+      v.personaTrait !== undefined,
+    {
+      message: 'Legalább a nevet, az üdvözlő mondatot vagy a jellemvonást meg kell adni',
+    },
+  )
+
+// Avatár: data URL (feltöltött, downscale-elt kép) vagy külső http(s) URL, vagy
+// üres string a törléshez. A ~700 000 karakteres felső korlát bőven elég egy
+// 256px-es webp/jpeg data URL-nek, de véd a DB-t elárasztó túl nagy blobbtól.
+export const updateAgentAvatarSchema = z.object({
+  agentId: z.string().uuid(),
+  avatarUrl: z
+    .string()
+    .max(700_000)
+    .refine(
+      (v) =>
+        v === '' ||
+        /^data:image\/(png|jpeg|jpg|webp|gif);base64,/.test(v) ||
+        /^https?:\/\//.test(v),
+      { message: 'Az avatár csak feltöltött kép vagy http(s) URL lehet' },
+    ),
+})
+
 export const updateAgentModelConfigSchema = z.object({
   agentId: z.string().uuid(),
   modelConfig: z.object({
@@ -1153,8 +1187,20 @@ export const playbookV2IdSchema = z.object({
   id: z.string().uuid(),
 })
 
+export const updatePlaybookMetaSchema = z.object({
+  playbookId: z.string().uuid(),
+  name: z.string().trim().min(1).max(200),
+  description: z.string().trim().max(2000).nullable().optional(),
+})
+
 export const createPlaybookVersionV2Schema = z.object({
   playbookId: z.string().uuid(),
+  spec: z.unknown(),
+  changeSummary: z.string().trim().min(1).max(500),
+})
+
+export const updatePlaybookVersionV2Schema = z.object({
+  playbookVersionId: z.string().uuid(),
   spec: z.unknown(),
   changeSummary: z.string().trim().min(1).max(500),
 })

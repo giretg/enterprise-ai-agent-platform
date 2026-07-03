@@ -41,6 +41,8 @@ export class PostgresPlaybookV2Repository implements PlaybookV2Repository {
   async updatePlaybook(
     id: string,
     data: Partial<{
+      name: string
+      description: string | null
       status: PlaybookV2['status']
       currentPublishedVersionId: string | null
       archivedAt: Date | null
@@ -96,6 +98,9 @@ export class PostgresPlaybookV2Repository implements PlaybookV2Repository {
     id: string,
     data: Partial<{
       status: PlaybookVersionV2['status']
+      spec: Prisma.InputJsonValue
+      changeSummary: string
+      contentHash: string
       validationResult: Prisma.InputJsonValue
       compiledSpec: Prisma.InputJsonValue
       approvedById: string | null

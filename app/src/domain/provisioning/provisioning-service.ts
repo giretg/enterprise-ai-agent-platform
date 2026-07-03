@@ -328,11 +328,17 @@ export class ProvisioningService {
     // értelmezné, kikerülve a user-delegált per-user Bearer-injekciót → minden
     // tool-hívás elhasal. Ezért aktiváláskor átírjuk a futásidejű alakra:
     //   auth: { scheme: 'bearer' }  (a per-user grant access token megy ki Bearerként)
-    //   oauth: { authUrl?, tokenUrl?, clientId?, scopes }  (a consent-flow paraméterei;
-    //          a ConnectorGrantService olvassa; Google-providernél az endpointok defaultolnak)
+    //   oauth: { authUrl?, tokenUrl?, clientId?, scopes, userInfoUrl?, offlineParams?, ... }
+    //          (a consent-flow paraméterei; a ConnectorGrantService olvassa)
     if (config.authMode === 'user_delegated' && config.auth.type === 'oauth2') {
       const authUrl = typeof config.auth.authUrl === 'string' ? config.auth.authUrl.trim() : ''
       const tokenUrl = typeof config.auth.tokenUrl === 'string' ? config.auth.tokenUrl.trim() : ''
+      const userInfoUrl =
+        typeof config.auth.userInfoUrl === 'string' ? config.auth.userInfoUrl.trim() : ''
+      const accountEmailField =
+        typeof config.auth.accountEmailField === 'string' && config.auth.accountEmailField.trim()
+          ? config.auth.accountEmailField.trim()
+          : undefined
       const effectiveClientId = trimmedClientId || existingClientId
       const scopes =
         config.scopesSuggested.length > 0
@@ -346,6 +352,10 @@ export class ProvisioningService {
         ...(tokenUrl ? { tokenUrl } : {}),
         ...(effectiveClientId ? { clientId: effectiveClientId } : {}),
         scopes,
+        ...(userInfoUrl ? { userInfoUrl } : {}),
+        ...(accountEmailField ? { accountEmailField } : {}),
+        ...(config.auth.offlineParams ? { offlineParams: config.auth.offlineParams } : {}),
+        ...(config.auth.scopeTransform ? { scopeTransform: config.auth.scopeTransform } : {}),
       }
       configMutated = true
     }
@@ -655,6 +665,7 @@ export class ProvisioningService {
     return rows.map((d) => ({
       draftId: d.id,
       connectorId: d.connectorId,
+      tenantId: d.tenantId,
       name: d.connector.name,
       lifecycleState: d.connector.lifecycleState,
       reviewStatus: d.reviewStatus,

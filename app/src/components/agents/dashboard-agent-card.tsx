@@ -8,13 +8,13 @@ import { AgentChatButton } from '@/components/agents/agent-chat-panel'
 import { personaFor, humanStatus } from '@/lib/agent-persona'
 
 export function DashboardAgentCard({ agent }: { agent: Agent }) {
-  const p = personaFor(agent.name)
+  const p = personaFor(agent.name, agent)
   const mood = humanStatus(agent.status)
 
   return (
     <Card className="h-full transition-transform duration-200 hover:-translate-y-1">
       <Link href={`/control-plane/agents/${agent.id}`} className="flex items-center gap-4">
-        <AgentAvatar name={agent.name} status={agent.status} size="md" />
+        <AgentAvatar name={agent.name} status={agent.status} size="md" avatarUrl={agent.avatarUrl} />
         <div className="min-w-0">
           <p className="font-display text-xl font-semibold leading-tight">{p.nickname}</p>
           <p className="truncate text-xs text-ink-faint">{agent.name}</p>
@@ -26,7 +26,15 @@ export function DashboardAgentCard({ agent }: { agent: Agent }) {
           <p className="text-sm italic leading-relaxed text-ink-soft">“{p.greeting}”</p>
         </Link>
         <AgentChatButton
-          agent={{ id: agent.id, name: agent.name, status: agent.status }}
+          agent={{
+            id: agent.id,
+            name: agent.name,
+            status: agent.status,
+            avatarUrl: agent.avatarUrl,
+            personaNickname: agent.personaNickname,
+            personaGreeting: agent.personaGreeting,
+            personaTrait: agent.personaTrait,
+          }}
           compact
         />
       </div>

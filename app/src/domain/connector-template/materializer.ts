@@ -48,7 +48,7 @@ export function materializeConnectorConfig(
   const base: ConnectorConfig = {
     provider: descriptor.key,
     baseUrl: interpolate(descriptor.baseUrl, chosen.instanceValues),
-    egressHosts: [...descriptor.egressHosts],
+    egressHosts: descriptor.egressHosts.map((host) => interpolate(host, chosen.instanceValues)),
     authMode: authModeFor(authMethod),
     auth: authFor(authMethod, selectedScopes),
     scopesSuggested: selectedScopes,
@@ -77,6 +77,59 @@ export function materializeConnectorConfig(
   return normalized
 }
 
+export function selfCheckTemplateDescriptor(
+  descriptor: TemplateDescriptor,
+  sample?: Partial<MaterializeConnectorInput> & { secretAliases?: Record<string, string> },
+): ConnectorConfig {
+  const authMethodKind =
+    sample?.authMethodKind ?? descriptor.authMethods[0]?.kind
+  if (!authMethodKind) {
+    throw new ConnectorTemplateMaterializationError('template must define at least one auth method')
+  }
+
+  const instanceValues: Record<string, string> = {}
+  const secretAliases: Record<string, string> = {}
+  for (const field of descriptor.instanceFields) {
+    if (field.type === 'secret') {
+      secretAliases[field.name] =
+        sample?.secretAliases?.[field.name] ??
+        field.secretAliasHint ??
+        `secret-ref:connector-template-self-check/${descriptor.key}/${field.name}`
+      continue
+    }
+    instanceValues[field.name] =
+      sample?.instanceValues?.[field.name] ??
+      sampleValueForField(field, descriptor.key)
+  }
+
+  return materializeConnectorConfig(
+    descriptor,
+    {
+      authMethodKind,
+      instanceValues,
+      selectedScopes: sample?.selectedScopes,
+      selectedEndpoints: sample?.selectedEndpoints,
+    },
+    secretAliases,
+    {
+      templateKey: descriptor.key,
+      templateVersion: 1,
+      templateOrigin: 'custom',
+      materializedAt: '2026-07-02T00:00:00.000Z',
+    },
+  )
+}
+
+function sampleValueForField(field: InstanceFieldDescriptor, key: string): string {
+  if (field.enumValues?.[0]) return field.enumValues[0]
+  if (field.validation?.format === 'url') return `https://api.${key}.example`
+  if (field.validation?.format === 'host') return `api.${key}.example`
+  if (field.validation?.format === 'hostList') return `api.${key}.example`
+  if (field.name.toLowerCase().includes('clientid')) return `${key}-client-id`
+  if (field.name.toLowerCase().includes('host')) return `api.${key}.example`
+  return `${key}-${field.name}`
+}
+
 function authModeFor(method: AuthMethodDescriptor): ConnectorConfig['authMode'] {
   if (method.kind === 'user_delegated_oauth2') return 'user_delegated'
   return 'service'
@@ -102,6 +155,14 @@ function authFor(method: AuthMethodDescriptor, scopes: string[]): ConnectorConfi
 }
 
 function chooseScopes(descriptor: TemplateDescriptor, selected?: string[]): string[] {
+  if (descriptor.scopeCatalog.length === 0) {
+    if (selected && selected.length > 0) {
+      throw new ConnectorTemplateMaterializationError(
+        `template does not define selectable scopes: ${descriptor.key}`,
+      )
+    }
+    return []
+  }
   const allowed = new Set(descriptor.scopeCatalog.map((s) => s.value))
   const defaults = descriptor.scopeCatalog.filter((s) => s.default).map((s) => s.value)
   const requested = selected && selected.length > 0 ? selected : defaults

@@ -1025,7 +1025,7 @@ export async function runAgentToolLoop(params: {
     await emitActivity({
       id: `reasoning-${turn}`,
       kind: 'reasoning',
-      title: turn === 0 ? 'Kontekstus feldolgozása' : 'Tool eredmények kiértékelése',
+      title: turn === 0 ? 'Üzenet feldolgozása' : 'Tool eredmények kiértékelése',
       status: 'running',
     })
     const { content, toolCalls } = await params.gateway.call({
@@ -1038,7 +1038,7 @@ export async function runAgentToolLoop(params: {
     await emitActivity({
       id: `reasoning-${turn}`,
       kind: 'reasoning',
-      title: turn === 0 ? 'Kontekstus feldolgozása' : 'Tool eredmények kiértékelése',
+      title: turn === 0 ? 'Üzenet feldolgozása' : 'Tool eredmények kiértékelése',
       status: 'done',
     })
 

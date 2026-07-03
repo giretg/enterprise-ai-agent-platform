@@ -458,10 +458,21 @@ await test('buildAuthorizationUrl: hiányzó config.oauth (nem-Google) → érth
   )
 })
 
-await test('buildAuthorizationUrl: Google/Gmail connector megtartja az access_type=offline-t', () => {
+await test('buildAuthorizationUrl: Google/Gmail connector explicit configból kap access_type=offline-t', () => {
   const { service } = buildGrantService()
   const { url } = service.buildAuthorizationUrl({
-    connector: gmailConnector({ config: { oauth: { clientId: 'gmail-client', scopes: ['gmail.readonly'] } } as unknown as Connector['config'] }),
+    connector: gmailConnector({
+      config: {
+        oauth: {
+          authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+          tokenUrl: 'https://oauth2.googleapis.com/token',
+          clientId: 'gmail-client',
+          scopes: ['gmail.readonly'],
+          offlineParams: { access_type: 'offline' },
+          scopeTransform: 'gmailAlias',
+        },
+      } as unknown as Connector['config'],
+    }),
     userId: 'user-Y',
     tenantId: 'tenant-A',
   })
@@ -471,7 +482,7 @@ await test('buildAuthorizationUrl: Google/Gmail connector megtartja az access_ty
   assert.equal(parsed.searchParams.get('scope'), GMAIL_SCOPES.readonly)
 })
 
-await test('buildAuthorizationUrl: Google provisioning descriptor auth mezőiből is épít consent URL-t', () => {
+await test('buildAuthorizationUrl: Google provisioning descriptor explicit auth mezőiből épít consent URL-t', () => {
   const { service } = buildGrantService()
   const { url } = service.buildAuthorizationUrl({
     connector: httpApiDelegatedConnector({
@@ -479,9 +490,11 @@ await test('buildAuthorizationUrl: Google provisioning descriptor auth mezőibő
         provider: 'google_search_console',
         auth: {
           type: 'oauth2',
+          authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
           tokenUrl: 'https://oauth2.googleapis.com/token',
           clientId: 'search-console-client',
           scope: 'https://www.googleapis.com/auth/webmasters.readonly',
+          offlineParams: { access_type: 'offline' },
         },
       } as unknown as Connector['config'],
     }),
@@ -495,28 +508,29 @@ await test('buildAuthorizationUrl: Google provisioning descriptor auth mezőibő
   assert.equal(parsed.searchParams.get('access_type'), 'offline')
 })
 
-await test('buildAuthorizationUrl: Google API host alapján is defaultolja az authUrl-t', () => {
+await test('buildAuthorizationUrl: Google API host alapján sem defaultolja az authUrl-t', () => {
   const { service } = buildGrantService()
-  const { url } = service.buildAuthorizationUrl({
-    connector: httpApiDelegatedConnector({
-      config: {
-        provider: 'search-console',
-        baseUrl: 'https://searchconsole.googleapis.com/webmasters/v3',
-        egressHosts: ['searchconsole.googleapis.com'],
-        auth: {
-          type: 'oauth2',
-          tokenUrl: 'https://oauth2.googleapis.com/token',
-          clientId: 'search-console-client',
-          scope: 'https://www.googleapis.com/auth/webmasters.readonly',
-        },
-      } as unknown as Connector['config'],
-    }),
-    userId: 'user-Y',
-    tenantId: 'tenant-A',
-  })
-  const parsed = new URL(url)
-  assert.equal(`${parsed.origin}${parsed.pathname}`, 'https://accounts.google.com/o/oauth2/v2/auth')
-  assert.equal(parsed.searchParams.get('access_type'), 'offline')
+  assert.throws(
+    () =>
+      service.buildAuthorizationUrl({
+        connector: httpApiDelegatedConnector({
+          config: {
+            provider: 'search-console',
+            baseUrl: 'https://searchconsole.googleapis.com/webmasters/v3',
+            egressHosts: ['searchconsole.googleapis.com'],
+            auth: {
+              type: 'oauth2',
+              tokenUrl: 'https://oauth2.googleapis.com/token',
+              clientId: 'search-console-client',
+              scope: 'https://www.googleapis.com/auth/webmasters.readonly',
+            },
+          } as unknown as Connector['config'],
+        }),
+        userId: 'user-Y',
+        tenantId: 'tenant-A',
+      }),
+    /missing authUrl/,
+  )
 })
 
 await test('buildAuthorizationUrl: Search Console üres scopesSuggested mellett nem talál ki scope-ot', () => {
@@ -532,6 +546,7 @@ await test('buildAuthorizationUrl: Search Console üres scopesSuggested mellett 
             authMode: 'user_delegated',
             auth: {
               type: 'oauth2',
+              authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
               tokenUrl: 'https://oauth2.googleapis.com/token',
               clientId: 'search-console-client',
             },

@@ -42,9 +42,31 @@ const FALLBACK_GRADIENTS: [string, string][] = [
   ['#d98a5b', '#8c2840'],
 ]
 
+/** Admin-editable persona overrides stored on the agent. Empty/nullish values
+ *  fall back to the computed persona so nobody is left faceless. */
+export type PersonaOverrides = {
+  personaNickname?: string | null
+  personaGreeting?: string | null
+  personaTrait?: string | null
+}
+
 /** Deterministic persona for any agent — known ones are hand-written,
- *  the rest get a warm fallback so nobody is left faceless. */
-export function personaFor(name: string): AgentPersona {
+ *  the rest get a warm fallback so nobody is left faceless. Optional
+ *  `overrides` (e.g. admin-edited name/greeting/trait) win when non-empty. */
+export function personaFor(name: string, overrides?: PersonaOverrides): AgentPersona {
+  const base = basePersonaFor(name)
+  const nickname = overrides?.personaNickname?.trim()
+  const greeting = overrides?.personaGreeting?.trim()
+  const trait = overrides?.personaTrait?.trim()
+  return {
+    ...base,
+    ...(nickname ? { nickname } : {}),
+    ...(greeting ? { greeting } : {}),
+    ...(trait ? { trait } : {}),
+  }
+}
+
+function basePersonaFor(name: string): AgentPersona {
   if (PERSONAS[name]) return PERSONAS[name]
 
   const seed = [...name].reduce((acc, ch) => acc + ch.charCodeAt(0), 0)

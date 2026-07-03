@@ -34,8 +34,8 @@ export const connectorAuthSchema = z.object({
   secretAliasSuggested: z.string().optional(),
   /**
    * `type: 'oauth2'` + `authMode: 'user_delegated'` esetén az OAuth authorization
-   * (consent) végpont. Nem titok. Google-providernél elhagyható (a
-   * ConnectorGrantService defaultolja); nem-Google delegáltnál kötelező.
+   * (consent) végpont. Nem titok. Sablon-alapú connectornál explicit provider-
+   * metaadatként kerül ide; futásidőben nincs provider-név alapú default.
    */
   authUrl: z.string().url().optional(),
   /** `type: 'oauth2'` esetén kötelező a token-refresh végponthoz (nem titok). */

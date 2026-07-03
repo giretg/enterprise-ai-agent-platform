@@ -5,18 +5,22 @@ import { Badge, Card } from '@/components/ui/shell'
 import {
   activateConnector,
   assignConnectorToAgent,
+  createConnectorFromTemplateAction,
   createConnectorDraft,
+  deprecateConnectorTemplateAction,
   decommissionConnector,
   deleteConnectorDraft,
   discoverConnectorFromName,
   draftConfigFromApiDoc,
   extendEgressAllowlist,
+  listConnectorTemplatesAction,
   listProvisioningAssignableAgents,
   listProvisioningDrafts,
   reopenConnector,
   reviewConnectorDraft,
   testConnectorDraft,
   updateConnectorDraftConfig,
+  upsertConnectorTemplateAction,
   validateConnectorDraft,
 } from '@/app/actions/provisioning'
 import { startConnectorOAuth } from '@/app/actions/connector-grants'
@@ -47,6 +51,15 @@ type DraftConfig = {
   scopesSuggested: string[]
   rateLimit?: { rps: number; burst: number }
   proposedTools: ProposedTool[]
+  provenance?: {
+    sourceHash?: string
+    extractedAt?: string
+    templateId?: string
+    templateKey?: string
+    templateVersion?: number
+    templateOrigin?: 'builtin' | 'custom'
+    materializedAt?: string
+  }
 } | null
 type HttpApiConfigView = {
   baseUrl?: string
@@ -57,6 +70,7 @@ type HttpApiConfigView = {
 type DraftRow = {
   draftId: string
   connectorId: string
+  tenantId: string | null
   name: string
   lifecycleState: string
   reviewStatus: string
@@ -113,9 +127,47 @@ type DiscoverData =
     }
 
 type CreateStep = 'basics' | 'source' | 'review'
-type SourceMethod = 'discover' | 'document' | 'manual'
+type SourceMethod = 'discover' | 'document' | 'manual' | 'template'
 type DraftManageStep = 'inspect' | 'validate' | 'review' | 'sandbox' | 'activate'
 type ActiveManageStep = 'inspect' | 'assign' | 'revoke'
+
+type TemplateDescriptor = {
+  key: string
+  displayName: string
+  description?: string
+  authMethods: Array<{ kind: 'api_key' | 'bearer' | 'basic' | 'service_oauth2' | 'user_delegated_oauth2' }>
+  instanceFields: Array<{
+    name: string
+    label: string
+    type: 'string' | 'secret' | 'scopeSelection' | 'endpointSelection' | 'enum'
+    required?: boolean
+    secretAliasHint?: string
+    enumValues?: string[]
+  }>
+  scopeCatalog: Array<{ value: string; label: string; description?: string; default?: boolean }>
+  endpoints: Array<{ name: string; method: string; path: string; access: 'read' | 'write'; description?: string; default?: boolean }>
+}
+type ConnectorTemplateRow = {
+  id: string
+  key: string
+  version: number
+  origin: 'builtin' | 'custom'
+  displayName: string
+  description: string | null
+  tenantId: string | null
+  status: 'active' | 'deprecated' | 'archived'
+  descriptor: TemplateDescriptor
+}
+
+function templateLineKey(input: {
+  key?: string
+  origin?: 'builtin' | 'custom'
+  tenantId?: string | null
+}): string | null {
+  if (!input.key) return null
+  const origin = input.origin ?? 'builtin'
+  return `${origin}:${input.tenantId ?? 'global'}:${input.key}`
+}
 
 const EXAMPLE_CONFIG = JSON.stringify(
   {
@@ -133,6 +185,40 @@ const EXAMPLE_CONFIG = JSON.stringify(
     proposedTools: [
       { name: 'acme_crm.search_contacts', method: 'GET', path: '/v1/contacts', access: 'read' },
       { name: 'acme_crm.get_deal', method: 'GET', path: '/v1/deals/{id}', access: 'read' },
+    ],
+  },
+  null,
+  2,
+)
+
+const EXAMPLE_TEMPLATE_DESCRIPTOR = JSON.stringify(
+  {
+    key: 'custom-crm',
+    displayName: 'Custom CRM',
+    description: 'Tenant-scope-olt HTTP API sablon API-kulcsos hitelesítéssel.',
+    baseUrl: 'https://api.custom-crm.example',
+    egressHosts: ['api.custom-crm.example'],
+    authMethods: [{ kind: 'api_key', header: 'X-Api-Key' }],
+    scopeCatalog: [],
+    endpoints: [
+      {
+        name: 'list_customers',
+        method: 'GET',
+        path: '/v1/customers',
+        access: 'read',
+        description: 'List customer records.',
+        default: true,
+      },
+    ],
+    instanceFields: [
+      {
+        name: 'apiToken',
+        label: 'API token secret alias',
+        type: 'secret',
+        required: true,
+        secretAliasHint: 'custom-crm-api-token',
+        target: 'auth.secretAliasSuggested',
+      },
     ],
   },
   null,
@@ -180,6 +266,7 @@ function lifecycleTone(s: string): 'neutral' | 'success' | 'warning' | 'danger' 
 export function ProvisioningPanel() {
   const [drafts, setDrafts] = useState<DraftRow[]>([])
   const [agents, setAgents] = useState<AgentOption[]>([])
+  const [templates, setTemplates] = useState<ConnectorTemplateRow[]>([])
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [loadedOnce, setLoadedOnce] = useState(false)
@@ -187,7 +274,7 @@ export function ProvisioningPanel() {
 
   // Create-form állapot
   const [name, setName] = useState('')
-  const [sourceType, setSourceType] = useState<'api_doc' | 'openapi' | 'manual'>('api_doc')
+  const [sourceType, setSourceType] = useState<'api_doc' | 'openapi' | 'manual' | 'template'>('api_doc')
   const [configText, setConfigText] = useState('')
   const [createStep, setCreateStep] = useState<CreateStep>('basics')
   const [sourceMethod, setSourceMethod] = useState<SourceMethod>('discover')
@@ -203,15 +290,51 @@ export function ProvisioningPanel() {
   const [discovering, setDiscovering] = useState(false)
   const [discoverySources, setDiscoverySources] = useState<DiscoverySource[]>([])
 
+  // Connector sablon-katalógus
+  const [selectedTemplateId, setSelectedTemplateId] = useState('')
+  const [templateAuthMethod, setTemplateAuthMethod] =
+    useState<TemplateDescriptor['authMethods'][number]['kind']>('api_key')
+  const [templateValues, setTemplateValues] = useState<Record<string, string>>({})
+  const [templateSecretAliases, setTemplateSecretAliases] = useState<Record<string, string>>({})
+  const [selectedScopes, setSelectedScopes] = useState<string[]>([])
+  const [selectedEndpoints, setSelectedEndpoints] = useState<string[]>([])
+  const [templateEditorText, setTemplateEditorText] = useState(EXAMPLE_TEMPLATE_DESCRIPTOR)
+  const [templateTenantScoped, setTemplateTenantScoped] = useState(true)
+
+  const applyTemplateSelection = useCallback((template: ConnectorTemplateRow) => {
+    const descriptor = template.descriptor
+    setSelectedTemplateId(template.id)
+    setTemplateAuthMethod(descriptor.authMethods[0]?.kind ?? 'api_key')
+    setSelectedScopes(descriptor.scopeCatalog.filter((s) => s.default).map((s) => s.value))
+    setSelectedEndpoints(descriptor.endpoints.filter((e) => e.default !== false).map((e) => e.name))
+    setTemplateValues({})
+    setTemplateSecretAliases(
+      Object.fromEntries(
+        descriptor.instanceFields
+          .filter((field) => field.type === 'secret' && field.secretAliasHint)
+          .map((field) => [field.name, field.secretAliasHint ?? '']),
+      ),
+    )
+  }, [])
+
   const reload = useCallback(() => {
     startTransition(async () => {
-      const [d, a] = await Promise.all([listProvisioningDrafts(), listProvisioningAssignableAgents()])
+      const [d, a, t] = await Promise.all([
+        listProvisioningDrafts(),
+        listProvisioningAssignableAgents(),
+        listConnectorTemplatesAction(),
+      ])
       if (d.success) setDrafts(d.data as DraftRow[])
       else setError(d.error)
       if (a.success) setAgents(a.data)
+      if (t.success) {
+        const rows = t.data as ConnectorTemplateRow[]
+        setTemplates(rows)
+        if (!selectedTemplateId && rows[0]) applyTemplateSelection(rows[0])
+      }
       setLoadedOnce(true)
     })
-  }, [])
+  }, [applyTemplateSelection, selectedTemplateId])
 
   useEffect(() => {
     reload()
@@ -348,7 +471,54 @@ export function ProvisioningPanel() {
     }
   }, [])
 
+  const openDrafts = drafts.filter((d) => d.lifecycleState !== 'active')
+  const activatedDrafts = drafts.filter((d) => d.lifecycleState === 'active')
+  const latestTemplateVersions = useMemo(() => {
+    const versions: Record<string, number> = {}
+    for (const template of templates) {
+      const key = templateLineKey(template)
+      if (!key) continue
+      versions[key] = Math.max(versions[key] ?? 0, template.version)
+    }
+    return versions
+  }, [templates])
+  const selectedTemplate = templates.find((t) => t.id === selectedTemplateId) ?? templates[0]
+  const selectedTemplateDescriptor = selectedTemplate?.descriptor
+  const effectiveTemplateAuthMethod =
+    selectedTemplateDescriptor?.authMethods.find((m) => m.kind === templateAuthMethod)?.kind ??
+    selectedTemplateDescriptor?.authMethods[0]?.kind ??
+    templateAuthMethod
+  const templateRequiredFields = selectedTemplateDescriptor?.instanceFields.filter((f) => f.required !== false) ?? []
+  const templateReady =
+    sourceMethod === 'template' &&
+    !!selectedTemplate &&
+    !!name.trim() &&
+    templateRequiredFields.every((field) => {
+      const source = field.type === 'secret' ? templateSecretAliases : templateValues
+      return !!source[field.name]?.trim()
+    })
+
   const onCreate = useCallback(() => {
+    if (sourceMethod === 'template') {
+      if (!selectedTemplate) {
+        setError('Válassz connector-sablont.')
+        return
+      }
+      run(
+        () =>
+          createConnectorFromTemplateAction({
+            templateId: selectedTemplate.id,
+            name,
+            authMethodKind: effectiveTemplateAuthMethod,
+            instanceValues: templateValues,
+            secretAliases: templateSecretAliases,
+            selectedScopes,
+            selectedEndpoints,
+          }),
+        'Sablonból draft connector létrehozva.',
+      )
+      return
+    }
     let parsed: unknown
     try {
       parsed = JSON.parse(configText)
@@ -367,14 +537,26 @@ export function ProvisioningPanel() {
         }),
       'Draft létrehozva.',
     )
-  }, [configText, docSourceRef, docText, name, sourceType, run])
+  }, [
+    configText,
+    docSourceRef,
+    docText,
+    effectiveTemplateAuthMethod,
+    name,
+    run,
+    selectedEndpoints,
+    selectedScopes,
+    selectedTemplate,
+    sourceMethod,
+    sourceType,
+    templateSecretAliases,
+    templateValues,
+  ])
 
-  const openDrafts = drafts.filter((d) => d.lifecycleState !== 'active')
-  const activatedDrafts = drafts.filter((d) => d.lifecycleState === 'active')
   const stepOrder: CreateStep[] = ['basics', 'source', 'review']
   const activeStepIndex = stepOrder.indexOf(createStep)
   const canEnterSource = name.trim().length > 0
-  const canEnterReview = canEnterSource && configText.trim().length > 0
+  const canEnterReview = canEnterSource && (sourceMethod === 'template' ? templateReady : configText.trim().length > 0)
   const setWizardStep = (step: CreateStep) => {
     if (step === 'source' && !canEnterSource) return
     if (step === 'review' && !canEnterReview) return
@@ -384,7 +566,11 @@ export function ProvisioningPanel() {
     ? 'Folyamatban lévő művelet miatt várakozik.'
     : !name.trim()
       ? 'Adj nevet a draft connectornak.'
-      : !configText.trim()
+      : sourceMethod === 'template' && !selectedTemplate
+        ? 'Válassz connector-sablont.'
+      : sourceMethod === 'template' && !templateReady
+        ? 'Töltsd ki a sablon kötelező mezőit.'
+      : sourceMethod !== 'template' && !configText.trim()
         ? 'Előbb generálj vagy adj meg config-deskriptort.'
         : null
 
@@ -419,7 +605,9 @@ export function ProvisioningPanel() {
                 id: 'source' as const,
                 label: 'Forrás',
                 hint:
-                  sourceMethod === 'discover'
+                  sourceMethod === 'template'
+                    ? 'Sablon-katalógus'
+                    : sourceMethod === 'discover'
                     ? 'Webes felfedezés'
                     : sourceMethod === 'document'
                       ? 'API-dokumentáció'
@@ -498,6 +686,7 @@ export function ProvisioningPanel() {
                       <option value="api_doc">api_doc</option>
                       <option value="openapi">openapi</option>
                       <option value="manual">manual</option>
+                      <option value="template">template</option>
                     </select>
                   </label>
                 </div>
@@ -512,8 +701,9 @@ export function ProvisioningPanel() {
                     A folyamat egy config-jelöltig visz. A draftot csak a következő lépésben hozod létre.
                   </p>
                 </div>
-                <div className="grid gap-2 sm:grid-cols-3">
+                <div className="grid gap-2 sm:grid-cols-4">
                   {[
+                    { id: 'template' as const, label: 'Sablon', hint: 'Katalógusból' },
                     { id: 'discover' as const, label: 'Felfedezés', hint: 'Név és domain alapján' },
                     { id: 'document' as const, label: 'API-doksi', hint: 'Feltöltés vagy beillesztés' },
                     { id: 'manual' as const, label: 'Kézi JSON', hint: 'Saját deszkriptor' },
@@ -523,8 +713,9 @@ export function ProvisioningPanel() {
                       type="button"
                       onClick={() => {
                         setSourceMethod(method.id)
+                        if (method.id === 'template') setSourceType('template')
                         if (method.id === 'manual') setSourceType('manual')
-                        if (method.id !== 'manual' && sourceType === 'manual') setSourceType('api_doc')
+                        if (method.id !== 'manual' && method.id !== 'template' && sourceType !== 'api_doc') setSourceType('api_doc')
                       }}
                       className={`rounded-md border px-3 py-3 text-left ${
                         sourceMethod === method.id
@@ -537,6 +728,191 @@ export function ProvisioningPanel() {
                     </button>
                   ))}
                 </div>
+
+                {sourceMethod === 'template' ? (
+                  <div className="space-y-3 rounded-md border border-sage/25 bg-sage/5 p-3">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+                      <div>
+                        <span className="block text-sm font-semibold">Connector sablon-katalógus</span>
+                        <p className="mt-1 text-xs text-ink-soft">
+                          A sablon provider-metaadatból és instance-mezőkből önhordó draft configot készít.
+                        </p>
+                      </div>
+                      <Badge tone="neutral">{templates.length} sablon</Badge>
+                    </div>
+
+                    {templates.length === 0 ? (
+                      <p className="text-xs text-ink-soft">Nincs elérhető connector-sablon.</p>
+                    ) : (
+                      <>
+                        <label className="block text-xs">
+                          <span className="mb-1 block text-ink-soft">Sablon</span>
+                          <select
+                            className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2"
+                            value={selectedTemplate?.id ?? ''}
+                            onChange={(e) => {
+                              const template = templates.find((t) => t.id === e.target.value)
+                              if (template) applyTemplateSelection(template)
+                            }}
+                          >
+                            {templates.map((template) => (
+                              <option key={template.id} value={template.id}>
+                                {template.displayName} v{template.version} ({template.origin})
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+
+                        {selectedTemplateDescriptor ? (
+                          <div className="space-y-3">
+                            {selectedTemplate.description ? (
+                              <p className="text-xs text-ink-soft">{selectedTemplate.description}</p>
+                            ) : null}
+
+                            <div>
+                              <span className="mb-1 block text-xs font-semibold text-ink-soft">Auth method</span>
+                              <div className="flex flex-wrap gap-2">
+                                {selectedTemplateDescriptor.authMethods.map((method) => (
+                                  <label
+                                    key={method.kind}
+                                    className={`inline-flex items-center gap-2 rounded-md border px-3 py-2 text-xs font-semibold ${
+                                      effectiveTemplateAuthMethod === method.kind
+                                        ? 'border-coral/45 bg-coral/8'
+                                        : 'border-ink/12 bg-paper'
+                                    }`}
+                                  >
+                                    <input
+                                      type="radio"
+                                      checked={effectiveTemplateAuthMethod === method.kind}
+                                      onChange={() => setTemplateAuthMethod(method.kind)}
+                                    />
+                                    {method.kind}
+                                  </label>
+                                ))}
+                              </div>
+                            </div>
+
+                            {selectedTemplateDescriptor.instanceFields.length > 0 ? (
+                              <div className="grid gap-3 sm:grid-cols-2">
+                                {selectedTemplateDescriptor.instanceFields.map((field) => {
+                                  const value =
+                                    field.type === 'secret'
+                                      ? templateSecretAliases[field.name] ?? ''
+                                      : templateValues[field.name] ?? ''
+                                  return (
+                                    <label key={field.name} className="text-xs">
+                                      <span className="mb-1 block text-ink-soft">
+                                        {field.label}
+                                        {field.required === false ? ' (opcionális)' : ''}
+                                      </span>
+                                      {field.type === 'enum' && field.enumValues ? (
+                                        <select
+                                          className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2"
+                                          value={value}
+                                          onChange={(e) =>
+                                            setTemplateValues((prev) => ({ ...prev, [field.name]: e.target.value }))
+                                          }
+                                        >
+                                          <option value="">Válassz…</option>
+                                          {field.enumValues.map((option) => (
+                                            <option key={option} value={option}>
+                                              {option}
+                                            </option>
+                                          ))}
+                                        </select>
+                                      ) : (
+                                        <input
+                                          className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2"
+                                          value={value}
+                                          onChange={(e) => {
+                                            const setter =
+                                              field.type === 'secret'
+                                                ? setTemplateSecretAliases
+                                                : setTemplateValues
+                                            setter((prev) => ({ ...prev, [field.name]: e.target.value }))
+                                          }}
+                                          placeholder={
+                                            field.type === 'secret'
+                                              ? field.secretAliasHint ?? 'secret-alias'
+                                              : field.name
+                                          }
+                                        />
+                                      )}
+                                    </label>
+                                  )
+                                })}
+                              </div>
+                            ) : null}
+
+                            {selectedTemplateDescriptor.scopeCatalog.length > 0 ? (
+                              <div>
+                                <span className="mb-1 block text-xs font-semibold text-ink-soft">Scope-ok</span>
+                                <div className="grid gap-2 sm:grid-cols-2">
+                                  {selectedTemplateDescriptor.scopeCatalog.map((scope) => (
+                                    <label
+                                      key={scope.value}
+                                      className="rounded-md border border-ink/12 bg-paper px-3 py-2 text-xs"
+                                    >
+                                      <span className="flex items-center gap-2 font-semibold">
+                                        <input
+                                          type="checkbox"
+                                          checked={selectedScopes.includes(scope.value)}
+                                          onChange={(e) =>
+                                            setSelectedScopes((prev) =>
+                                              e.target.checked
+                                                ? [...new Set([...prev, scope.value])]
+                                                : prev.filter((s) => s !== scope.value),
+                                            )
+                                          }
+                                        />
+                                        {scope.label}
+                                      </span>
+                                      <span className="mt-1 block font-mono text-[11px] text-ink-soft">
+                                        {scope.value}
+                                      </span>
+                                    </label>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : null}
+
+                            {selectedTemplateDescriptor.endpoints.length > 0 ? (
+                              <div>
+                                <span className="mb-1 block text-xs font-semibold text-ink-soft">Endpointok</span>
+                                <div className="grid gap-2 sm:grid-cols-2">
+                                  {selectedTemplateDescriptor.endpoints.map((endpoint) => (
+                                    <label
+                                      key={endpoint.name}
+                                      className="rounded-md border border-ink/12 bg-paper px-3 py-2 text-xs"
+                                    >
+                                      <span className="flex items-center gap-2 font-semibold">
+                                        <input
+                                          type="checkbox"
+                                          checked={selectedEndpoints.includes(endpoint.name)}
+                                          onChange={(e) =>
+                                            setSelectedEndpoints((prev) =>
+                                              e.target.checked
+                                                ? [...new Set([...prev, endpoint.name])]
+                                                : prev.filter((name) => name !== endpoint.name),
+                                            )
+                                          }
+                                        />
+                                        {endpoint.name}
+                                      </span>
+                                      <span className="mt-1 block font-mono text-[11px] text-ink-soft">
+                                        {endpoint.method} {endpoint.path}
+                                      </span>
+                                    </label>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </>
+                    )}
+                  </div>
+                ) : null}
 
                 {sourceMethod === 'discover' ? (
                   <div className="rounded-md border border-sage/25 bg-sage/5 p-3">
@@ -691,24 +1067,63 @@ export function ProvisioningPanel() {
                     A secret SOSEM kerül ide, csak a Secret Managerbe szánt alias neve javasolt.
                   </p>
                 </div>
-                <label className="block text-sm">
-                  <span className="mb-1 flex items-center justify-between text-ink-soft">
-                    <span>Generált config-deskriptor (JSON, §4.3)</span>
-                    <button
-                      type="button"
-                      className="text-xs font-semibold text-sage hover:underline"
-                      onClick={() => setConfigText(EXAMPLE_CONFIG)}
-                    >
-                      Példa betöltése
-                    </button>
-                  </span>
-                  <textarea
-                    className="h-72 w-full rounded-md border border-ink/15 bg-paper px-3 py-2 font-mono text-xs"
-                    value={configText}
-                    onChange={(e) => setConfigText(e.target.value)}
-                    placeholder={EXAMPLE_CONFIG}
-                  />
-                </label>
+                {sourceMethod === 'template' && selectedTemplateDescriptor ? (
+                  <div className="rounded-md border border-ink/12 bg-paper p-3 text-xs">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-semibold">{selectedTemplate?.displayName}</span>
+                      <Badge tone="neutral">v{selectedTemplate?.version}</Badge>
+                      <Badge tone={selectedTemplate?.origin === 'builtin' ? 'success' : 'warning'}>
+                        {selectedTemplate?.origin}
+                      </Badge>
+                      <Badge tone="neutral">{effectiveTemplateAuthMethod}</Badge>
+                    </div>
+                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                      <div>
+                        <h4 className="font-semibold">Mezők</h4>
+                        <ul className="mt-1 space-y-1">
+                          {selectedTemplateDescriptor.instanceFields.map((field) => (
+                            <li key={field.name} className="flex justify-between gap-2">
+                              <span className="text-ink-soft">{field.label}</span>
+                              <code className="truncate">
+                                {field.type === 'secret'
+                                  ? templateSecretAliases[field.name] || '—'
+                                  : templateValues[field.name] || '—'}
+                              </code>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                      <div>
+                        <h4 className="font-semibold">Kiválasztás</h4>
+                        <p className="mt-1 text-ink-soft">
+                          Scope: {selectedScopes.length || 0} · endpoint: {selectedEndpoints.length || 0}
+                        </p>
+                        <p className="mt-1 text-ink-soft">
+                          A materializer szerveroldalon validálja a mezőket, majd ugyanazt a draft-kaput hívja.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <label className="block text-sm">
+                    <span className="mb-1 flex items-center justify-between text-ink-soft">
+                      <span>Generált config-deskriptor (JSON, §4.3)</span>
+                      <button
+                        type="button"
+                        className="text-xs font-semibold text-sage hover:underline"
+                        onClick={() => setConfigText(EXAMPLE_CONFIG)}
+                      >
+                        Példa betöltése
+                      </button>
+                    </span>
+                    <textarea
+                      className="h-72 w-full rounded-md border border-ink/15 bg-paper px-3 py-2 font-mono text-xs"
+                      value={configText}
+                      onChange={(e) => setConfigText(e.target.value)}
+                      placeholder={EXAMPLE_CONFIG}
+                    />
+                  </label>
+                )}
                 {createDisabledReason ? (
                   <p className="text-xs text-ink-soft">{createDisabledReason}</p>
                 ) : null}
@@ -748,6 +1163,120 @@ export function ProvisioningPanel() {
         </div>
       </Card>
 
+      <Card title="Custom connector-sablonok">
+        <div className="grid gap-4 lg:grid-cols-[1fr_24rem]">
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h3 className="text-base font-semibold">Sablon descriptor</h3>
+                <p className="mt-1 text-xs text-ink-soft">
+                  Mentéskor új verzió jön létre, és lefut a materializer self-check.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="rounded-md border border-sage/40 bg-sage/10 px-3 py-1.5 text-xs font-semibold text-sage"
+                onClick={() => setTemplateEditorText(EXAMPLE_TEMPLATE_DESCRIPTOR)}
+              >
+                Példa betöltése
+              </button>
+            </div>
+            <textarea
+              className="h-80 w-full rounded-md border border-ink/15 bg-paper px-3 py-2 font-mono text-xs"
+              value={templateEditorText}
+              onChange={(e) => setTemplateEditorText(e.target.value)}
+            />
+            <div className="flex flex-wrap items-center gap-3">
+              <label className="inline-flex items-center gap-2 text-xs font-semibold text-ink-soft">
+                <input
+                  type="checkbox"
+                  checked={templateTenantScoped}
+                  onChange={(e) => setTemplateTenantScoped(e.target.checked)}
+                />
+                Tenant-scope
+              </label>
+              <button
+                type="button"
+                disabled={pending || !templateEditorText.trim()}
+                onClick={() => {
+                  let descriptor: unknown
+                  try {
+                    descriptor = JSON.parse(templateEditorText)
+                  } catch {
+                    setError('A sablon descriptor nem érvényes JSON.')
+                    return
+                  }
+                  run(
+                    () =>
+                      upsertConnectorTemplateAction({
+                        descriptor,
+                        tenantScoped: templateTenantScoped,
+                      }),
+                    'Connector-sablon mentve új verzióként.',
+                  )
+                }}
+                className="rounded-md bg-ink px-4 py-2 text-xs font-semibold text-card disabled:opacity-50"
+              >
+                Sablon mentése
+              </button>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <h3 className="text-base font-semibold">Elérhető sablonok</h3>
+            {templates.length === 0 ? (
+              <p className="text-sm text-ink-soft">Nincs elérhető sablon.</p>
+            ) : (
+              templates.map((template) => (
+                <div key={template.id} className="rounded-md border border-ink/12 bg-paper p-3 text-xs">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-semibold">{template.displayName}</span>
+                    <Badge tone="neutral">v{template.version}</Badge>
+                    <Badge tone={template.origin === 'builtin' ? 'success' : 'warning'}>
+                      {template.origin}
+                    </Badge>
+                    <Badge tone={template.status === 'active' ? 'success' : 'warning'}>
+                      {template.status}
+                    </Badge>
+                  </div>
+                  <p className="mt-1 font-mono text-[11px] text-ink-soft">{template.key}</p>
+                  {template.description ? (
+                    <p className="mt-1 text-ink-soft">{template.description}</p>
+                  ) : null}
+                  <div className="mt-2 flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      className="rounded-md border border-ink/20 px-2 py-1 font-semibold"
+                      onClick={() => {
+                        setTemplateEditorText(JSON.stringify(template.descriptor, null, 2))
+                        setTemplateTenantScoped(template.tenantId !== null)
+                      }}
+                    >
+                      Betöltés
+                    </button>
+                    {template.origin === 'custom' && template.status === 'active' ? (
+                      <button
+                        type="button"
+                        disabled={pending}
+                        className="rounded-md border border-honey/40 bg-honey/10 px-2 py-1 font-semibold text-honey disabled:opacity-50"
+                        onClick={() =>
+                          run(
+                            () => deprecateConnectorTemplateAction({ templateId: template.id }),
+                            'Connector-sablon deprecated állapotba került.',
+                          )
+                        }
+                      >
+                        Deprecate
+                      </button>
+                    ) : null}
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      </Card>
+
       <Card title={`Draftok (${openDrafts.length})`}>
         {!loadedOnce ? (
           <p className="text-sm text-ink-soft">Betöltés…</p>
@@ -760,6 +1289,7 @@ export function ProvisioningPanel() {
                 key={d.draftId}
                 draft={d}
                 agents={agents}
+                latestTemplateVersions={latestTemplateVersions}
                 pending={pending}
                 run={run}
               />
@@ -780,6 +1310,7 @@ export function ProvisioningPanel() {
                 key={d.draftId}
                 draft={d}
                 agents={agents}
+                latestTemplateVersions={latestTemplateVersions}
                 pending={pending}
                 run={run}
               />
@@ -794,11 +1325,13 @@ export function ProvisioningPanel() {
 function DraftCard({
   draft,
   agents,
+  latestTemplateVersions,
   pending,
   run,
 }: {
   draft: DraftRow
   agents: AgentOption[]
+  latestTemplateVersions: Record<string, number>
   pending: boolean
   run: (fn: () => Promise<{ success: boolean; error?: string }>, okMsg: string) => void
 }) {
@@ -825,6 +1358,19 @@ function DraftCard({
 
   const v = draft.validationResult
   const cfg = draft.config
+  const provenance = cfg?.provenance
+  const templateVersionKey = templateLineKey({
+    key: provenance?.templateKey,
+    origin: provenance?.templateOrigin,
+    tenantId: provenance?.templateOrigin === 'custom' ? draft.tenantId : null,
+  })
+  const latestTemplateVersion = templateVersionKey
+    ? latestTemplateVersions[templateVersionKey]
+    : undefined
+  const templateOutdated =
+    typeof provenance?.templateVersion === 'number' &&
+    typeof latestTemplateVersion === 'number' &&
+    latestTemplateVersion > provenance.templateVersion
   const isActive = draft.lifecycleState === 'active'
   const isUserDelegated = draft.authMode === 'user_delegated' || cfg?.authMode === 'user_delegated' || draft.httpApiView?.isDelegated === true
   // oauth2 (service VAGY delegált) → nem-titkos client_id-t kell megadni (config.auth.clientId).
@@ -962,6 +1508,11 @@ function DraftCard({
         {draft.sandboxTestOk === true ? <Badge tone="success">sandbox: ok</Badge> : null}
         {draft.sandboxTestOk === false ? <Badge tone="danger">sandbox: fail</Badge> : null}
         {writeTools.length > 0 ? <Badge tone="warning">{writeTools.length} write-tool</Badge> : null}
+        {provenance?.templateKey ? (
+          <Badge tone={templateOutdated ? 'warning' : 'neutral'}>
+            {provenance.templateKey} v{provenance.templateVersion ?? '?'}
+          </Badge>
+        ) : null}
       </div>
 
       {open ? (
@@ -1113,6 +1664,28 @@ function DraftCard({
           <p className="text-xs text-ink-soft">
             forrás: {draft.sourceType} · hash: <code>{draft.sourceHash}</code>
           </p>
+
+          {provenance?.templateKey ? (
+            <div className="rounded-md border border-ink/12 bg-paper p-3 text-xs">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="font-semibold">Sablon provenance</span>
+                <Badge tone={provenance.templateOrigin === 'builtin' ? 'success' : 'warning'}>
+                  {provenance.templateOrigin ?? 'template'}
+                </Badge>
+                <Badge tone="neutral">v{provenance.templateVersion ?? '?'}</Badge>
+                {templateOutdated ? (
+                  <Badge tone="warning">újabb: v{latestTemplateVersion}</Badge>
+                ) : null}
+              </div>
+              <p className="mt-2 font-mono text-[11px] text-ink-soft">
+                {provenance.templateKey}
+                {provenance.templateId ? ` · ${provenance.templateId}` : ''}
+              </p>
+              {provenance.materializedAt ? (
+                <p className="mt-1 text-ink-soft">Materializálva: {provenance.materializedAt}</p>
+              ) : null}
+            </div>
+          ) : null}
 
           {/* Javítás: aktív connector visszanyitása draftba szerkesztéshez (auditált). */}
           {isActive ? (

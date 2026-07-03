@@ -543,6 +543,10 @@ async function run() {
             type: 'oauth2',
             authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
             tokenUrl: 'https://oauth2.googleapis.com/token',
+            userInfoUrl: 'https://www.googleapis.com/oauth2/v2/userinfo',
+            accountEmailField: 'email',
+            offlineParams: { access_type: 'offline' },
+            scopeTransform: 'gmailAlias',
             clientId: 'seed-client-id',
           },
         },
@@ -559,13 +563,26 @@ async function run() {
     assert.equal(res.lifecycleState, 'active')
     const stored = drafts.drafts.get(created.draftId)!.connector.config as {
       auth: { scheme?: string; type?: string }
-      oauth?: { authUrl?: string; tokenUrl?: string; clientId?: string; scopes?: string[] }
+      oauth?: {
+        authUrl?: string
+        tokenUrl?: string
+        userInfoUrl?: string
+        accountEmailField?: string
+        offlineParams?: Record<string, string>
+        scopeTransform?: string
+        clientId?: string
+        scopes?: string[]
+      }
     }
     // runtime-alak: auth.scheme=bearer (NEM oauth2 client_credentials)
     assert.equal(stored.auth.scheme, 'bearer')
     assert.equal(stored.auth.type, undefined)
     assert.equal(stored.oauth?.authUrl, 'https://accounts.google.com/o/oauth2/v2/auth')
     assert.equal(stored.oauth?.tokenUrl, 'https://oauth2.googleapis.com/token')
+    assert.equal(stored.oauth?.userInfoUrl, 'https://www.googleapis.com/oauth2/v2/userinfo')
+    assert.equal(stored.oauth?.accountEmailField, 'email')
+    assert.deepEqual(stored.oauth?.offlineParams, { access_type: 'offline' })
+    assert.equal(stored.oauth?.scopeTransform, 'gmailAlias')
     assert.equal(stored.oauth?.clientId, 'seed-client-id')
     assert.deepEqual(stored.oauth?.scopes, ['https://www.googleapis.com/auth/webmasters.readonly'])
   })
@@ -845,7 +862,7 @@ async function run() {
     assert.equal(r.checks.oauthCompleteness, 'passed')
   })
 
-  await test('Validátor: user_delegated oauth2 Google-providernél tokenUrl nélkül is passed (grant-service defaultol)', () => {
+  await test('Validátor: user_delegated oauth2 Google-providernél is explicit endpoint kell', () => {
     const cfg = normalizeConnectorConfig({
       ...cleanConfig(),
       provider: 'google_search_console',
@@ -853,7 +870,9 @@ async function run() {
       auth: { type: 'oauth2', clientId: 'x', secretAliasSuggested: 'google_oauth2' },
     })
     const r = validateDraftConfig(cfg, { egressAllowlist: ALLOWLIST })
-    assert.equal(r.checks.oauthCompleteness, 'passed')
+    assert.equal(r.checks.oauthCompleteness, 'failed')
+    assert.equal(r.status, 'failed')
+    assert.ok(r.errors.includes('oauth2_delegated_missing_endpoints'))
   })
 
   await test('Validátor: user_delegated oauth2 nem-Google providernél endpoint nélkül → failed', () => {

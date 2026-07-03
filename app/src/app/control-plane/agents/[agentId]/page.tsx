@@ -11,6 +11,8 @@ import { Collapsible } from '@/components/ui/collapsible'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { AgentChatButton } from '@/components/agents/agent-chat-panel'
 import { UpdateInstructionForm } from '@/components/agents/update-instruction-form'
+import { UpdatePersonaForm } from '@/components/agents/update-persona-form'
+import { AgentAvatarUpload } from '@/components/agents/agent-avatar-upload'
 import { UpdateModelConfigForm } from '@/components/agents/update-model-config-form'
 import { UpdateSelfEvolutionProfileForm } from '@/components/agents/update-self-evolution-profile-form'
 import { AddApiConnectorForm } from '@/components/agents/add-api-connector-form'
@@ -90,7 +92,8 @@ export default async function AgentDetailPage({
       )
     : []
   const modelConfig = agent.modelConfig as Record<string, unknown>
-  const persona = personaFor(agent.name)
+  const persona = personaFor(agent.name, agent)
+  const defaultPersona = personaFor(agent.name)
   const mood = humanStatus(agent.status)
   const sandboxKind = sandboxKindForAgent(agent)
   const evolutionProfile = resolveSelfEvolutionProfile(agent.selfEvolutionProfile)
@@ -108,7 +111,7 @@ export default async function AgentDetailPage({
 
       <Card className="animate-rise">
         <div className="flex flex-wrap items-center gap-5">
-          <AgentAvatar name={agent.name} status={agent.status} size="lg" />
+          <AgentAvatar name={agent.name} status={agent.status} size="lg" avatarUrl={agent.avatarUrl} />
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-3">
               <h1 className="font-display text-[2.2rem] font-semibold leading-none">
@@ -126,7 +129,17 @@ export default async function AgentDetailPage({
         <div className="estate-rule my-4" />
         <p className="text-sm leading-relaxed text-ink-soft">{persona.trait}</p>
         <div className="mt-4 flex flex-wrap items-center gap-3">
-          <AgentChatButton agent={{ id: agent.id, name: agent.name, status: agent.status }} />
+          <AgentChatButton
+            agent={{
+              id: agent.id,
+              name: agent.name,
+              status: agent.status,
+              avatarUrl: agent.avatarUrl,
+              personaNickname: agent.personaNickname,
+              personaGreeting: agent.personaGreeting,
+              personaTrait: agent.personaTrait,
+            }}
+          />
           <Link
             href={`/sandbox/${agent.id}`}
             className="rounded-full border border-line bg-card px-5 py-2.5 text-sm font-semibold text-ink-soft transition-colors hover:border-sage/50 hover:text-sage"
@@ -325,6 +338,23 @@ export default async function AgentDetailPage({
                 behaviorProfile={agent.behaviorProfile}
                 roleVersion={agent.currentRoleInstructionVersion}
                 behaviorVersion={agent.currentBehaviorProfileVersion}
+              />
+
+              <AgentAvatarUpload
+                agentId={agent.id}
+                name={agent.name}
+                status={agent.status}
+                avatarUrl={agent.avatarUrl}
+              />
+
+              <UpdatePersonaForm
+                agentId={agent.id}
+                storedNickname={agent.personaNickname}
+                storedGreeting={agent.personaGreeting}
+                storedTrait={agent.personaTrait}
+                defaultNickname={defaultPersona.nickname}
+                defaultGreeting={defaultPersona.greeting}
+                defaultTrait={defaultPersona.trait}
               />
 
               <UpdateModelConfigForm

@@ -2,6 +2,7 @@
 
 import { z } from 'zod'
 import { requireRole } from '@/auth'
+import { requirePermission } from '@/auth/permission'
 import type { ActiveAuthUser } from '@/auth/types'
 import { services } from '@/domain'
 import { repositories } from '@/repositories/postgres'
@@ -11,8 +12,14 @@ import { ProvisioningError } from '@/domain/provisioning/errors'
 import type { ProvisioningActor } from '@/domain/provisioning/provisioning-service'
 import { PROVISIONING_ASSISTANT_TEMPLATE } from '@/domain/provisioning/provisioning-assistant'
 import { connectorConfigSchema } from '@/domain/provisioning/connector-config'
-import { materializeConnectorConfig } from '@/domain/connector-template/materializer'
-import { parseTemplateDescriptor } from '@/domain/connector-template/template-descriptor'
+import {
+  materializeConnectorConfig,
+  selfCheckTemplateDescriptor,
+} from '@/domain/connector-template/materializer'
+import {
+  parseTemplateDescriptor,
+  templateDescriptorSchema,
+} from '@/domain/connector-template/template-descriptor'
 import { WEB_EGRESS_ROLE_TEMPLATE } from '@/domain/agents/web-egress-role'
 import { inspectPromptSensitivity } from '@/domain/gateway/sensitivity-router'
 
@@ -55,6 +62,27 @@ const createFromTemplateSchema = z.object({
   secretAliases: z.record(z.string(), z.string()).default({}),
   selectedScopes: z.array(z.string()).optional(),
   selectedEndpoints: z.array(z.string()).optional(),
+})
+
+const templateSelfCheckSchema = z.object({
+  authMethodKind: z
+    .enum(['api_key', 'bearer', 'basic', 'service_oauth2', 'user_delegated_oauth2'])
+    .optional(),
+  instanceValues: z.record(z.string(), z.string()).optional(),
+  secretAliases: z.record(z.string(), z.string()).optional(),
+  selectedScopes: z.array(z.string()).optional(),
+  selectedEndpoints: z.array(z.string()).optional(),
+})
+
+const upsertConnectorTemplateSchema = z.object({
+  descriptor: templateDescriptorSchema,
+  description: z.string().max(1000).optional(),
+  tenantScoped: z.boolean().optional(),
+  selfCheck: templateSelfCheckSchema.optional(),
+})
+
+const deprecateConnectorTemplateSchema = z.object({
+  templateId: z.string().min(1),
 })
 
 const draftIdSchema = z.object({ draftId: z.string().min(1) })
@@ -517,6 +545,108 @@ export async function createConnectorFromTemplateAction(input: unknown) {
     return ok(res)
   } catch (e) {
     return toFail(e, 'Nem sikerült sablonból connectort létrehozni')
+  }
+}
+
+export async function upsertConnectorTemplateAction(input: unknown) {
+  try {
+    const user = await requirePermission('connector_template:manage')
+    const parsed = upsertConnectorTemplateSchema.parse(input)
+    const descriptor = parseTemplateDescriptor(parsed.descriptor)
+
+    selfCheckTemplateDescriptor(descriptor, parsed.selfCheck)
+
+    if (parsed.tenantScoped === false && user.tenantId) {
+      return fail('Globális connector-sablont csak platform-szintű admin kontextusból lehet létrehozni.')
+    }
+
+    const tenantId = parsed.tenantScoped === false ? null : user.tenantId
+    const latest = await repositories.connectorTemplates.findLatestByKey(descriptor.key, tenantId ?? null)
+    if (latest?.origin === 'builtin') {
+      return fail('Builtin connector-sablon nem írható felül. Klónozd másik kulccsal.')
+    }
+    const version = latest ? latest.version + 1 : 1
+    const template = await repositories.connectorTemplates.createVersion({
+      key: descriptor.key,
+      version,
+      origin: 'custom',
+      displayName: descriptor.displayName,
+      description: parsed.description ?? descriptor.description ?? null,
+      tenantId,
+      descriptor,
+      status: 'active',
+      createdById: user.id,
+    })
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: null,
+      action: 'connector.template.create',
+      targetType: 'connector_template',
+      targetId: template.id,
+      modelUsed: null,
+      inputRef: descriptor.key,
+      outputRef: `${descriptor.key}@${version}`,
+      policyDecision: 'allowed',
+      metadata: {
+        tenant_id: user.tenantId,
+        templateKey: descriptor.key,
+        templateVersion: version,
+        origin: 'custom',
+      },
+    })
+
+    return ok({
+      id: template.id,
+      key: template.key,
+      version: template.version,
+      origin: template.origin,
+      displayName: template.displayName,
+      description: template.description,
+      tenantId: template.tenantId,
+      status: template.status,
+      descriptor: parseTemplateDescriptor(template.descriptor),
+    })
+  } catch (e) {
+    return toFail(e, 'Nem sikerült menteni a connector-sablont')
+  }
+}
+
+export async function deprecateConnectorTemplateAction(input: unknown) {
+  try {
+    const user = await requirePermission('connector_template:manage')
+    const parsed = deprecateConnectorTemplateSchema.parse(input)
+    const template = await repositories.connectorTemplates.findByIdVersion(parsed.templateId)
+    if (!template || (template.tenantId !== null && template.tenantId !== user.tenantId)) {
+      return fail('Connector template not found')
+    }
+    if (template.origin === 'builtin') {
+      return fail('Builtin connector-sablon nem deprecálható ezen a felületen.')
+    }
+
+    await repositories.connectorTemplates.deprecate(template.id)
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: null,
+      action: 'connector.template.deprecate',
+      targetType: 'connector_template',
+      targetId: template.id,
+      modelUsed: null,
+      inputRef: template.key,
+      outputRef: `${template.key}@${template.version}`,
+      policyDecision: 'allowed',
+      metadata: {
+        tenant_id: user.tenantId,
+        templateKey: template.key,
+        templateVersion: template.version,
+      },
+    })
+
+    return ok({ id: template.id, status: 'deprecated' })
+  } catch (e) {
+    return toFail(e, 'Nem sikerült deprecálni a connector-sablont')
   }
 }
 
