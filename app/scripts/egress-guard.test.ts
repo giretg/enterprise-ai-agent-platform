@@ -30,6 +30,8 @@ async function main() {
   await test('EG-1 raw IPv4 host → forbidden', () => {
     assert.equal(matchForbiddenHost('10.0.0.5'), 'raw_ip_host')
     assert.equal(isForbiddenHost('192.168.1.1'), true)
+    assert.equal(matchForbiddenHost('[2001:db8::1]'), 'raw_ip_host')
+    assert.equal(matchForbiddenHost('[2606:4700:4700::1111]'), 'raw_ip_host')
   })
 
   await test('EG-2 localhost / metadata / exfil sink → forbidden', () => {
@@ -46,7 +48,23 @@ async function main() {
 
   console.log('\n=== Privát/reserved IP tartományok ===')
   await test('EG-4 private/reserved IPv4 ranges', () => {
-    for (const ip of ['10.1.2.3', '172.16.0.1', '172.31.255.255', '192.168.0.1', '127.0.0.1', '169.254.1.1', '0.0.0.0', '100.64.0.1']) {
+    for (const ip of [
+      '10.1.2.3',
+      '172.16.0.1',
+      '172.31.255.255',
+      '192.168.0.1',
+      '127.0.0.1',
+      '169.254.1.1',
+      '0.0.0.0',
+      '100.64.0.1',
+      '192.0.0.8',
+      '192.0.2.10',
+      '198.18.0.1',
+      '198.51.100.10',
+      '203.0.113.10',
+      '224.0.0.1',
+      '255.255.255.255',
+    ]) {
       assert.equal(isPrivateOrReservedIp(ip), true, `${ip} should be private/reserved`)
     }
   })
@@ -59,10 +77,18 @@ async function main() {
 
   await test('EG-6 IPv6 loopback/ULA/link-local + mapped IPv4', () => {
     assert.equal(isPrivateOrReservedIp('::1'), true)
+    assert.equal(isPrivateOrReservedIp('::'), true)
     assert.equal(isPrivateOrReservedIp('fc00::1'), true)
     assert.equal(isPrivateOrReservedIp('fe80::1'), true)
     assert.equal(isPrivateOrReservedIp('::ffff:169.254.169.254'), true)
+    assert.equal(isPrivateOrReservedIp('::ffff:a9fe:a9fe'), true)
+    assert.equal(isPrivateOrReservedIp('[::ffff:a9fe:a9fe]'), true)
+    assert.equal(isPrivateOrReservedIp('64:ff9b::a9fe:a9fe'), true)
+    assert.equal(isPrivateOrReservedIp('100::1'), true)
+    assert.equal(isPrivateOrReservedIp('2001:db8::1'), true)
+    assert.equal(isPrivateOrReservedIp('ff02::1'), true)
     assert.equal(isPrivateOrReservedIp('2606:4700:4700::1111'), false)
+    assert.equal(isPrivateOrReservedIp('64:ff9b::808:808'), false)
   })
 
   console.log('\n=== guardEgressUrl teljes lánc ===')
@@ -99,6 +125,17 @@ async function main() {
       url: 'https://docs.stripe.com/api',
       allowlistHosts: ALLOW,
       resolveHostIps: async () => ['169.254.169.254'],
+    })
+    assert.equal(r.ok, false)
+    assert.equal(!r.ok && r.reason, 'ssrf_blocked')
+    assert.equal(!r.ok && r.detail, 'resolved_private_ip')
+  })
+
+  await test('EG-11b DNS-rebinding: allowlisted host → IPv6-mapped metadata IP → ssrf_blocked', async () => {
+    const r = await guardEgressUrl({
+      url: 'https://docs.stripe.com/api',
+      allowlistHosts: ALLOW,
+      resolveHostIps: async () => ['::ffff:a9fe:a9fe'],
     })
     assert.equal(r.ok, false)
     assert.equal(!r.ok && r.reason, 'ssrf_blocked')

@@ -119,6 +119,15 @@ async function main() {
     assert.equal(calls.length, 0)
   })
 
+  await test('WF-N1c SSRF: allowlistolt host, de IPv6-mapped metadata IP-re old fel → nincs hívás', async () => {
+    const { impl, calls } = makeFetch([{ contentType: 'text/html', body: 'x' }])
+    const svc = new WebFetchService({ fetchImpl: impl, resolveHostIps: async () => ['::ffff:a9fe:a9fe'] })
+    const r = await svc.fetch(baseReq())
+    assert.equal(r.ok, false)
+    assert.equal(!r.ok && r.reason, 'ssrf_blocked')
+    assert.equal(calls.length, 0)
+  })
+
   await test('WF-N1b SSRF: nyers-IP / metadata host → ssrf_blocked', async () => {
     const { impl } = makeFetch([{ contentType: 'text/html', body: 'x' }])
     const svc = new WebFetchService({ fetchImpl: impl })
