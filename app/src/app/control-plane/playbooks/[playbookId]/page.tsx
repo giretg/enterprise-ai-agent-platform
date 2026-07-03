@@ -25,6 +25,7 @@ export default async function PlaybookDetailPage({
     id: res.data.playbook.id,
     key: res.data.playbook.key,
     name: res.data.playbook.name,
+    description: res.data.playbook.description ?? null,
     processType: res.data.playbook.processType,
     status: res.data.playbook.status,
   }
@@ -34,6 +35,7 @@ export default async function PlaybookDetailPage({
     status: v.status,
     changeSummary: v.changeSummary,
     contentHash: v.contentHash,
+    spec: v.spec,
     validationResult: v.validationResult,
     publishedAt: v.publishedAt,
     createdAt: v.createdAt,

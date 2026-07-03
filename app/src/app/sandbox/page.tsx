@@ -24,13 +24,13 @@ export default async function SandboxIndexPage() {
 
       <div className="grid gap-5 md:grid-cols-2">
         {agents.map((agent) => {
-          const persona = personaFor(agent.name)
+          const persona = personaFor(agent.name, agent)
           const kind = sandboxKindForAgent(agent)
           return (
             <Link key={agent.id} href={`/sandbox/${agent.id}`}>
               <Card className="h-full transition-transform duration-200 hover:-translate-y-1">
                 <div className="flex items-start gap-4">
-                  <AgentAvatar name={agent.name} status={agent.status} size="lg" />
+                  <AgentAvatar name={agent.name} status={agent.status} size="lg" avatarUrl={agent.avatarUrl} />
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <h2 className="font-display text-2xl font-semibold leading-none">

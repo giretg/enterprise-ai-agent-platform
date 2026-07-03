@@ -43,6 +43,10 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
 
   // Connectors / Provisioning
   'connector.create',
+  'connector.materialize',
+  'connector.template.clone',
+  'connector.template.create',
+  'connector.template.deprecate',
   'connector.grant.create',
   'connector.grant.expire',
   'connector.grant.refresh',
@@ -51,7 +55,12 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'provisioning.access_denied',
   'provisioning.connector.activate',
   'provisioning.connector.assign',
+  'provisioning.connector.unassign',
+  'provisioning.connector.reopen',
+  'provisioning.connector.decommission',
   'provisioning.draft.create',
+  'provisioning.draft.update',
+  'provisioning.draft.delete',
   'provisioning.draft.reject',
   'provisioning.draft.review',
   'provisioning.draft.validate',
@@ -131,10 +140,12 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'playbook.approve',
   'playbook.assignment.create',
   'playbook.create',
+  'playbook.update_meta',
   'playbook.version.create',
   'playbook.version.publish',
   'playbook.version.reject',
   'playbook.version.submit',
+  'playbook.version.update',
   'playbook.version.validate',
   'process.cancel',
   'process.complete',
@@ -179,6 +190,11 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'web_fetch.config_changed',
   'web_fetch.paused',
   'web_fetch.resumed',
+
+  // Agent-agnostic Web Research delegation
+  'agent.web_research.requested',
+  'agent.web_research.completed',
+  'agent.web_research.blocked',
 
   // Platform / DB mode
   'database.mode_changed',

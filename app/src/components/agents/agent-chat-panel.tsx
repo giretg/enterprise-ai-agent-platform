@@ -285,16 +285,26 @@ function MessageBubble({
   )
 }
 
+export type ChatAgent = {
+  id: string
+  name: string
+  status?: string
+  avatarUrl?: string | null
+  personaNickname?: string | null
+  personaGreeting?: string | null
+  personaTrait?: string | null
+}
+
 export function AgentChatPanel({
   agent,
   open,
   onClose,
 }: {
-  agent: { id: string; name: string; status?: string }
+  agent: ChatAgent
   open: boolean
   onClose: () => void
 }) {
-  const persona = personaFor(agent.name)
+  const persona = personaFor(agent.name, agent)
   const [input, setInput] = useState('')
   const [conversationId, setConversationId] = useState<string | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
@@ -732,7 +742,7 @@ export function AgentChatPanel({
           >
             Előzmények
           </button>
-          <AgentAvatar name={agent.name} status={agent.status} size="sm" />
+          <AgentAvatar name={agent.name} status={agent.status} size="sm" avatarUrl={agent.avatarUrl} />
           <div className="min-w-0 flex-1">
             <h2 id="agent-chat-title" className="truncate font-display text-lg font-semibold">
               {persona.nickname}
@@ -1021,7 +1031,7 @@ export function AgentChatButton({
   className = '',
   compact = false,
 }: {
-  agent: { id: string; name: string; status?: string }
+  agent: ChatAgent
   className?: string
   compact?: boolean
 }) {

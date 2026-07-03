@@ -360,6 +360,206 @@ await test('orchestrator agent nem kap Gmail tool-t (tool-less) → DENY', async
   if (!result.allowed) assert.equal(result.reason, 'orchestrator_tool_less')
 })
 
+// ---- Generikus http_api delegált (auto-consent, nem-Gmail) -----------------
+
+console.log('=== generikus http_api delegált (auto-consent) ===')
+
+function httpApiDelegatedConnector(overrides: Partial<Connector> = {}): Connector {
+  return {
+    id: 'conn-crm',
+    type: 'http_api' as ConnectorType,
+    name: 'Provider CRM (delegált)',
+    authMode: 'user_delegated',
+    lifecycleState: 'active',
+    scope: 'global',
+    secretAlias: 'secret-ref:conn-crm',
+    version: 1,
+    config: {
+      baseUrl: 'https://crm.example.com/api',
+      auth: { scheme: 'bearer' },
+      oauth: {
+        authUrl: 'https://crm.example.com/oauth/authorize',
+        tokenUrl: 'https://crm.example.com/oauth/token',
+        clientId: 'crm-client-id',
+        scopes: ['crm.read', 'crm.write'],
+      },
+    },
+    tenantId: 'tenant-A',
+    createdAt: new Date('2026-06-01T00:00:00.000Z'),
+    ...overrides,
+  } as Connector
+}
+
+await test('http_api delegált: capability + active grant → allowed, nincs Gmail scope-kapu', async () => {
+  const { authorizer } = buildAuthorizer({
+    connector: httpApiDelegatedConnector(),
+    grant: grant({ connectorId: 'conn-crm', scopes: ['crm.read'] }),
+  })
+  const result = await authorizer.authorize({
+    agentId: 'agent-1',
+    tool: 'http_api_get',
+    args: { path: '/customers' },
+    actingUserId: 'user-Y',
+    tenantId: 'tenant-A',
+  })
+  assert.equal(result.allowed, true)
+  if (result.allowed) {
+    assert.equal(result.connector?.id, 'conn-crm')
+    assert.equal(result.grant?.id, 'grant-1')
+    assert.equal(result.actingUserId, 'user-Y')
+  }
+})
+
+await test('http_api delegált: acting_user nélkül (autonóm) → DENY (acting_user_required)', async () => {
+  const { authorizer, grantQueries } = buildAuthorizer({
+    connector: httpApiDelegatedConnector(),
+    grant: grant({ connectorId: 'conn-crm' }),
+  })
+  const result = await authorizer.authorize({
+    agentId: 'agent-1',
+    tool: 'http_api_get',
+    args: { path: '/customers' },
+    actingUserId: null,
+  })
+  assert.equal(result.allowed, false)
+  if (!result.allowed) assert.equal(result.reason, 'acting_user_required')
+  assert.equal(grantQueries.length, 0)
+})
+
+await test('buildAuthorizationUrl: generikus provider a config.oauth-ot használja (nincs Google-default, nincs access_type)', () => {
+  const { service } = buildGrantService()
+  const { url } = service.buildAuthorizationUrl({
+    connector: httpApiDelegatedConnector(),
+    userId: 'user-Y',
+    tenantId: 'tenant-A',
+  })
+  const parsed = new URL(url)
+  assert.equal(`${parsed.origin}${parsed.pathname}`, 'https://crm.example.com/oauth/authorize')
+  assert.equal(parsed.searchParams.get('client_id'), 'crm-client-id')
+  // a generikus scope-ok érintetlenek maradnak (nincs Gmail-abbreviálás)
+  assert.equal(parsed.searchParams.get('scope'), 'crm.read crm.write')
+  // access_type=offline Google-specifikus — más providernél nem kerül bele
+  assert.equal(parsed.searchParams.get('access_type'), null)
+  assert.equal(parsed.searchParams.get('code_challenge_method'), 'S256')
+  assert.equal(parsed.searchParams.get('prompt'), 'consent')
+  assert.ok(parsed.searchParams.get('redirect_uri')?.endsWith('/api/connectors/oauth/callback'))
+})
+
+await test('buildAuthorizationUrl: hiányzó config.oauth (nem-Google) → érthető hiba', () => {
+  const { service } = buildGrantService()
+  assert.throws(
+    () =>
+      service.buildAuthorizationUrl({
+        connector: httpApiDelegatedConnector({ config: { baseUrl: 'https://crm.example.com/api', auth: { scheme: 'bearer' } } as unknown as Connector['config'] }),
+        userId: 'user-Y',
+        tenantId: 'tenant-A',
+      }),
+    /missing authUrl/,
+  )
+})
+
+await test('buildAuthorizationUrl: Google/Gmail connector explicit configból kap access_type=offline-t', () => {
+  const { service } = buildGrantService()
+  const { url } = service.buildAuthorizationUrl({
+    connector: gmailConnector({
+      config: {
+        oauth: {
+          authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+          tokenUrl: 'https://oauth2.googleapis.com/token',
+          clientId: 'gmail-client',
+          scopes: ['gmail.readonly'],
+          offlineParams: { access_type: 'offline' },
+          scopeTransform: 'gmailAlias',
+        },
+      } as unknown as Connector['config'],
+    }),
+    userId: 'user-Y',
+    tenantId: 'tenant-A',
+  })
+  const parsed = new URL(url)
+  assert.equal(parsed.searchParams.get('access_type'), 'offline')
+  // a Gmail scope-alias teljes URL-re normalizálódik
+  assert.equal(parsed.searchParams.get('scope'), GMAIL_SCOPES.readonly)
+})
+
+await test('buildAuthorizationUrl: Google provisioning descriptor explicit auth mezőiből épít consent URL-t', () => {
+  const { service } = buildGrantService()
+  const { url } = service.buildAuthorizationUrl({
+    connector: httpApiDelegatedConnector({
+      config: {
+        provider: 'google_search_console',
+        auth: {
+          type: 'oauth2',
+          authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+          tokenUrl: 'https://oauth2.googleapis.com/token',
+          clientId: 'search-console-client',
+          scope: 'https://www.googleapis.com/auth/webmasters.readonly',
+          offlineParams: { access_type: 'offline' },
+        },
+      } as unknown as Connector['config'],
+    }),
+    userId: 'user-Y',
+    tenantId: 'tenant-A',
+  })
+  const parsed = new URL(url)
+  assert.equal(`${parsed.origin}${parsed.pathname}`, 'https://accounts.google.com/o/oauth2/v2/auth')
+  assert.equal(parsed.searchParams.get('client_id'), 'search-console-client')
+  assert.equal(parsed.searchParams.get('scope'), 'https://www.googleapis.com/auth/webmasters.readonly')
+  assert.equal(parsed.searchParams.get('access_type'), 'offline')
+})
+
+await test('buildAuthorizationUrl: Google API host alapján sem defaultolja az authUrl-t', () => {
+  const { service } = buildGrantService()
+  assert.throws(
+    () =>
+      service.buildAuthorizationUrl({
+        connector: httpApiDelegatedConnector({
+          config: {
+            provider: 'search-console',
+            baseUrl: 'https://searchconsole.googleapis.com/webmasters/v3',
+            egressHosts: ['searchconsole.googleapis.com'],
+            auth: {
+              type: 'oauth2',
+              tokenUrl: 'https://oauth2.googleapis.com/token',
+              clientId: 'search-console-client',
+              scope: 'https://www.googleapis.com/auth/webmasters.readonly',
+            },
+          } as unknown as Connector['config'],
+        }),
+        userId: 'user-Y',
+        tenantId: 'tenant-A',
+      }),
+    /missing authUrl/,
+  )
+})
+
+await test('buildAuthorizationUrl: Search Console üres scopesSuggested mellett nem talál ki scope-ot', () => {
+  const { service } = buildGrantService()
+  assert.throws(
+    () =>
+      service.buildAuthorizationUrl({
+        connector: httpApiDelegatedConnector({
+          config: {
+            provider: 'search-console',
+            baseUrl: 'https://searchconsole.googleapis.com/webmasters/v3',
+            egressHosts: ['searchconsole.googleapis.com'],
+            authMode: 'user_delegated',
+            auth: {
+              type: 'oauth2',
+              authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+              tokenUrl: 'https://oauth2.googleapis.com/token',
+              clientId: 'search-console-client',
+            },
+            scopesSuggested: [],
+          } as unknown as Connector['config'],
+        }),
+        userId: 'user-Y',
+        tenantId: 'tenant-A',
+      }),
+    /missing scopes/,
+  )
+})
+
 // ---- Grant token vault / service-invariáns ---------------------------------
 
 console.log('=== connector grant service: token ownership invariant ===')

@@ -496,6 +496,58 @@ async function main() {
     assert.equal(v1After?.status, 'retired')
   })
 
+  await test('draft in-place szerkesztés — spec/hash/summary frissül, published immutable', async () => {
+    const repo = new FakePlaybookV2Repository()
+    const svc = new PlaybookV2Service(repo, new FakeAuditRepository())
+    const pb = await svc.createPlaybook({
+      tenantId: TENANT,
+      key: 'edit-flow',
+      name: 'x',
+      processType: 'edit_flow',
+      actorUserId: AUTHOR,
+    })
+    const { version: v1 } = await svc.createPlaybookVersion({
+      tenantId: TENANT,
+      playbookId: pb.id,
+      spec: validSpec(),
+      changeSummary: 'init',
+      actorUserId: AUTHOR,
+    })
+    const originalHash = v1.contentHash
+
+    // Draft helyben szerkeszthető: új tartalom → új hash, ugyanaz a verziószám.
+    const { version: edited } = await svc.updateDraftPlaybookVersion({
+      tenantId: TENANT,
+      playbookVersionId: v1.id,
+      spec: validSpec({ name: 'Átnevezve' }),
+      changeSummary: 'rename draft',
+      actorUserId: AUTHOR,
+    })
+    assert.equal(edited.id, v1.id)
+    assert.equal(edited.version, v1.version)
+    assert.equal(edited.changeSummary, 'rename draft')
+    assert.notEqual(edited.contentHash, originalHash)
+
+    // Published verzió NEM szerkeszthető helyben → INVALID_STATE.
+    await svc.submitForApproval({ tenantId: TENANT, playbookVersionId: v1.id, actorUserId: AUTHOR })
+    await svc.publishPlaybookVersion({
+      tenantId: TENANT,
+      playbookVersionId: v1.id,
+      approverUserId: APPROVER,
+    })
+    await assert.rejects(
+      () =>
+        svc.updateDraftPlaybookVersion({
+          tenantId: TENANT,
+          playbookVersionId: v1.id,
+          spec: validSpec({ name: 'Megint' }),
+          changeSummary: 'nem szabad',
+          actorUserId: AUTHOR,
+        }),
+      (e: unknown) => e instanceof PlaybookV2Error && e.code === 'INVALID_STATE',
+    )
+  })
+
   await test('P10 — tenant-izoláció: másik tenant verziója NOT_FOUND_OR_FORBIDDEN', async () => {
     const repo = new FakePlaybookV2Repository()
     const svc = new PlaybookV2Service(repo, new FakeAuditRepository())

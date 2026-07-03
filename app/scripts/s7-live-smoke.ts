@@ -82,8 +82,17 @@ async function main() {
         config: {
           provider: 'google',
           oauth: {
+            authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+            tokenUrl: 'https://oauth2.googleapis.com/token',
+            userInfoUrl: 'https://www.googleapis.com/oauth2/v2/userinfo',
+            accountEmailField: 'email',
             scopes: [GMAIL_SCOPES.readonly],
             clientId: process.env.GMAIL_OAUTH_CLIENT_ID,
+            ...(process.env.GMAIL_OAUTH_REDIRECT_URI
+              ? { redirectUri: process.env.GMAIL_OAUTH_REDIRECT_URI }
+              : {}),
+            offlineParams: { access_type: 'offline' },
+            scopeTransform: 'gmailAlias',
           },
         },
         secretAlias: 'secret://gmail/oauth-client',

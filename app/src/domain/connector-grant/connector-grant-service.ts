@@ -7,10 +7,24 @@ import {
   type ConnectorGrantTokens,
 } from './grant-token-vault'
 import { createOAuthState, pkceChallenge, verifyOAuthState } from '@/lib/crypto/oauth-state'
-import { GMAIL_SCOPES, normalizeGmailScope } from './gmail-scopes'
+import { normalizeGmailScope } from './gmail-scopes'
 
 export type ConnectorOAuthConfig = {
   provider?: string
+  baseUrl?: string
+  egressHosts?: string[]
+  auth?: {
+    type?: string
+    authUrl?: string
+    tokenUrl?: string
+    clientId?: string
+    scope?: string
+    userInfoUrl?: string
+    accountEmailField?: string
+    offlineParams?: Record<string, string>
+    scopeTransform?: 'none' | 'gmailAlias'
+  }
+  scopesSuggested?: string[]
   oauth?: {
     authUrl?: string
     tokenUrl?: string
@@ -18,31 +32,94 @@ export type ConnectorOAuthConfig = {
     clientId?: string
     clientIdRef?: string
     redirectUri?: string
+    /** Opcionális userinfo/whoami végpont a fiók-címkéhez (provider-független). */
+    userInfoUrl?: string
+    /** A userinfo JSON melyik mezője a fiók-címke (default: 'email'). */
+    accountEmailField?: string
+    offlineParams?: Record<string, string>
+    scopeTransform?: 'none' | 'gmailAlias'
   }
 }
 
-function readOAuthConfig(connector: Connector): Required<ConnectorOAuthConfig>['oauth'] & { provider: string } {
+function scopeNormalizerFor(connector: Connector): (scope: string) => string {
+  const config = (connector.config ?? {}) as ConnectorOAuthConfig
+  const transform = config.oauth?.scopeTransform ?? config.auth?.scopeTransform
+  if (transform === 'gmailAlias') return normalizeGmailScope
+  return (scope: string) => scope.trim()
+}
+
+type ResolvedOAuthConfig = {
+  provider: string
+  authUrl: string
+  tokenUrl: string
+  scopes: string[]
+  clientId: string
+  clientIdRef?: string
+  redirectUri: string
+  userInfoUrl?: string
+  accountEmailField: string
+  offlineParams: Record<string, string>
+}
+
+async function oauthErrorDetail(res: Response): Promise<string> {
+  const fallback = `HTTP ${res.status}`
+  try {
+    const contentType = res.headers.get('content-type') ?? ''
+    if (contentType.includes('application/json')) {
+      const body = (await res.json()) as { error?: unknown; error_description?: unknown }
+      const error = typeof body.error === 'string' ? body.error : null
+      const description = typeof body.error_description === 'string' ? body.error_description : null
+      return [fallback, error, description].filter(Boolean).join(' · ')
+    }
+    const text = (await res.text()).trim()
+    return text ? `${fallback} · ${text.slice(0, 300)}` : fallback
+  } catch {
+    return fallback
+  }
+}
+
+function readOAuthConfig(connector: Connector): ResolvedOAuthConfig {
   const config = (connector.config ?? {}) as ConnectorOAuthConfig
   const oauth = config.oauth ?? {}
+  const auth = config.auth ?? {}
   const provider = config.provider ?? connector.type
+  const normalize = scopeNormalizerFor(connector)
+
+  const authUrl = oauth.authUrl ?? auth.authUrl
+  const tokenUrl = oauth.tokenUrl ?? auth.tokenUrl
+  if (!authUrl) throw new Error('connector oauth config missing authUrl')
+  if (!tokenUrl) throw new Error('connector oauth config missing tokenUrl')
+
+  const clientId = oauth.clientId ?? auth.clientId ?? ''
+  if (!clientId) throw new Error('connector oauth config missing clientId')
+  const authScopes = auth.scope?.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean)
+  const configuredScopes = oauth.scopes ?? authScopes ?? config.scopesSuggested ?? []
+  const scopes = configuredScopes.length > 0 ? configuredScopes : []
+  if (scopes.length === 0) {
+    throw new Error('connector oauth config missing scopes')
+  }
+
   return {
     provider,
-    authUrl: oauth.authUrl ?? 'https://accounts.google.com/o/oauth2/v2/auth',
-    tokenUrl: oauth.tokenUrl ?? 'https://oauth2.googleapis.com/token',
-    scopes: (oauth.scopes ?? [GMAIL_SCOPES.readonly]).map(normalizeGmailScope),
-    clientId: oauth.clientId ?? process.env.GMAIL_OAUTH_CLIENT_ID ?? '',
+    authUrl,
+    tokenUrl,
+    scopes: scopes.map(normalize),
+    clientId,
     clientIdRef: oauth.clientIdRef,
     redirectUri:
       oauth.redirectUri ??
-      process.env.GMAIL_OAUTH_REDIRECT_URI ??
       `${process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'}/api/connectors/oauth/callback`,
+    userInfoUrl: oauth.userInfoUrl ?? auth.userInfoUrl,
+    accountEmailField: oauth.accountEmailField ?? auth.accountEmailField ?? 'email',
+    offlineParams: oauth.offlineParams ?? auth.offlineParams ?? {},
   }
 }
 
 function resolveRequestedScopes(connector: Connector, requestedScopes?: string[]): string[] {
+  const normalize = scopeNormalizerFor(connector)
   const oauth = readOAuthConfig(connector)
-  const configuredScopes = oauth.scopes!.map(normalizeGmailScope)
-  const requested = requestedScopes?.map(normalizeGmailScope)
+  const configuredScopes = oauth.scopes.map(normalize)
+  const requested = requestedScopes?.map(normalize)
   if (!requested || requested.length === 0) return configuredScopes
 
   const configured = new Set(configuredScopes)
@@ -61,7 +138,8 @@ function resolveGrantedScopes(params: {
   const expectedScopes = resolveRequestedScopes(params.connector, params.requestedScopes)
   if (!params.responseScope) return expectedScopes
 
-  const grantedScopes = [...new Set(params.responseScope.split(' ').map(normalizeGmailScope).filter(Boolean))]
+  const normalize = scopeNormalizerFor(params.connector)
+  const grantedScopes = [...new Set(params.responseScope.split(' ').map(normalize).filter(Boolean))]
   const expected = new Set(expectedScopes)
   const unexpected = grantedScopes.filter((scope) => !expected.has(scope))
   if (unexpected.length > 0) {
@@ -70,10 +148,20 @@ function resolveGrantedScopes(params: {
   return grantedScopes
 }
 
-function resolveClientSecret(connector: Connector): string {
+async function resolveClientSecret(connector: Connector): Promise<string> {
   if (process.env.GMAIL_OAUTH_STUB === 'true') return 'stub-client-secret'
   const alias = connector.secretAlias
   if (!alias) throw new Error('connector missing client secret alias')
+
+  // A generikus (nem-Google) delegált connectoroknál a client_secret a connector
+  // secret-store-ja mögött áll (buildConnectorSecretRef / saveConnectorApiKey),
+  // nem env-változóban. A Google/Gmail út marad az env-alapú felbontáson.
+  const { isConnectorSecretRef } = await import('@/domain/connector/connector-secret-store')
+  if (isConnectorSecretRef(alias)) {
+    const { resolveConnectorApiKey } = await import('@/domain/connector/http-api-client')
+    return resolveConnectorApiKey(alias)
+  }
+
   const envKey = alias.replace(/^secret:\/\//, '').replace(/\//g, '_').toUpperCase()
   const fromEnv = process.env[envKey] ?? process.env.GMAIL_OAUTH_CLIENT_SECRET
   if (!fromEnv) throw new Error(`Missing OAuth client secret for ${alias}`)
@@ -99,22 +187,22 @@ async function exchangeCodeForTokens(params: {
     }
   }
 
-  const clientSecret = resolveClientSecret(params.connector)
+  const clientSecret = await resolveClientSecret(params.connector)
   const body = new URLSearchParams({
     code: params.code,
-    client_id: oauth.clientId!,
+    client_id: oauth.clientId,
     client_secret: clientSecret,
-    redirect_uri: oauth.redirectUri!,
+    redirect_uri: oauth.redirectUri,
     grant_type: 'authorization_code',
     code_verifier: params.codeVerifier,
   })
 
-  const res = await fetch(oauth.tokenUrl!, {
+  const res = await fetch(oauth.tokenUrl, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body,
   })
-  if (!res.ok) throw new Error(`OAuth token exchange failed: ${res.status}`)
+  if (!res.ok) throw new Error(`OAuth token exchange failed: ${await oauthErrorDetail(res)}`)
   const data = (await res.json()) as {
     access_token?: string
     refresh_token?: string
@@ -122,17 +210,26 @@ async function exchangeCodeForTokens(params: {
     scope?: string
   }
   if (!data.access_token) throw new Error('OAuth token exchange missing access_token')
-  if (!data.refresh_token) throw new Error('OAuth token exchange missing refresh_token')
+  // A grant-vault (és az aszinkron agent-hozzáférés) refresh_tokent igényel; ha a
+  // provider nem adott, a hozzájárulás offline hozzáférés nélkül készült.
+  if (!data.refresh_token) {
+    throw new Error(
+      'OAuth token exchange missing refresh_token — engedélyezd az offline hozzáférést (pl. offline_access scope / consent prompt) a providernél',
+    )
+  }
 
+  // Fiók-címke: opcionális userinfo/whoami végpontról (provider-független); ha
+  // nincs konfigurálva vagy hibázik, a címke egyszerűen üres marad.
   let accountEmail: string | undefined
-  if (process.env.GMAIL_OAUTH_STUB !== 'true') {
+  if (oauth.userInfoUrl) {
     try {
-      const profileRes = await fetch('https://www.googleapis.com/oauth2/v2/userinfo', {
+      const profileRes = await fetch(oauth.userInfoUrl, {
         headers: { authorization: `Bearer ${data.access_token}` },
       })
       if (profileRes.ok) {
-        const profile = (await profileRes.json()) as { email?: string }
-        accountEmail = profile.email
+        const profile = (await profileRes.json()) as Record<string, unknown>
+        const raw = profile[oauth.accountEmailField]
+        if (typeof raw === 'string' && raw.trim()) accountEmail = raw.trim()
       }
     } catch {
       /* optional */
@@ -170,15 +267,15 @@ async function refreshGrantTokens(
   }
 
   const oauth = readOAuthConfig(connector)
-  const clientSecret = resolveClientSecret(connector)
+  const clientSecret = await resolveClientSecret(connector)
   const body = new URLSearchParams({
     refresh_token: current.refreshToken,
-    client_id: oauth.clientId!,
+    client_id: oauth.clientId,
     client_secret: clientSecret,
     grant_type: 'refresh_token',
   })
 
-  const res = await fetch(oauth.tokenUrl!, {
+  const res = await fetch(oauth.tokenUrl, {
     method: 'POST',
     headers: { 'content-type': 'application/x-www-form-urlencoded' },
     body,
@@ -254,12 +351,14 @@ export class ConnectorGrantService {
       requestedScopes: scopes,
     })
 
-    const url = new URL(oauth.authUrl!)
-    url.searchParams.set('client_id', oauth.clientId!)
-    url.searchParams.set('redirect_uri', oauth.redirectUri!)
+    const url = new URL(oauth.authUrl)
+    url.searchParams.set('client_id', oauth.clientId)
+    url.searchParams.set('redirect_uri', oauth.redirectUri)
     url.searchParams.set('response_type', 'code')
     url.searchParams.set('scope', scopes.join(' '))
-    url.searchParams.set('access_type', 'offline')
+    for (const [key, value] of Object.entries(oauth.offlineParams)) {
+      url.searchParams.set(key, value)
+    }
     url.searchParams.set('prompt', 'consent')
     url.searchParams.set('state', state)
     url.searchParams.set('code_challenge', pkceChallenge(codeVerifier))

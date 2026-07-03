@@ -72,7 +72,7 @@ export class ProvisioningService {
   async createConnectorDraft(
     input: {
       name: string
-      sourceType: 'api_doc' | 'openapi' | 'manual'
+      sourceType: 'api_doc' | 'openapi' | 'manual' | 'template'
       sourceRef?: string | null
       /** A forrásdokumentum nyers tartalma — CSAK a hash számításához, NEM tároljuk/auditáljuk. */
       sourceContent?: string
@@ -113,6 +113,7 @@ export class ProvisioningService {
     const draft = await this.deps.drafts.createDraft({
       tenantId: actor.tenantId,
       name: input.name.trim(),
+      authMode: config.authMode,
       sourceType: input.sourceType,
       sourceRef: input.sourceRef ?? null,
       sourceHash,
@@ -236,6 +237,7 @@ export class ProvisioningService {
       draftId: string
       secretAlias?: string
       apiKey?: string
+      clientId?: string
       approverId?: string
       criticality?: Criticality
       reason?: string
@@ -244,6 +246,7 @@ export class ProvisioningService {
   ): Promise<{ connectorId: string; lifecycleState: 'active' }> {
     const user = this.requireHumanAdmin(actor, 'activateConnector')
     const draft = await this.loadDraftForTenant(input.draftId, actor)
+    const config = parseStoredConfig(draft.connector.config)
 
     // Előfeltételek (§8.5, P5): approved review + nem-failed validáció + sikeres
     // sandbox-teszt + (secretAlias VAGY apiKey).
@@ -286,6 +289,79 @@ export class ProvisioningService {
       }
     }
 
+    // OAuth2 client_id (nem titok, ezért NEM a Secret Store-ba, hanem a configba
+    // → config.auth.clientId). A service-oauth2 runtime (http-api-client) és a
+    // delegált grant-flow is innen olvassa. A client_id-t a szolgáltatónál
+    // regisztrált OAuth-app adja — a discovery ezt nem tudja kitalálni.
+    const trimmedClientId = input.clientId?.trim()
+    const existingClientId =
+      typeof config.auth.clientId === 'string' ? config.auth.clientId.trim() : ''
+    // Service-módú oauth2-nél a client_id kötelező és nincs env-fallback → fail-fast
+    // aktiváláskor, hogy ne az első token-refresh csússzon el (§oauth2).
+    if (
+      config.authMode !== 'user_delegated' &&
+      config.auth.type === 'oauth2' &&
+      !trimmedClientId &&
+      !existingClientId
+    ) {
+      throw new ProvisioningError(
+        'OAUTH_CLIENT_ID_MISSING',
+        'oauth2 connector requires config.auth.clientId (from the provider OAuth app registration)',
+      )
+    }
+    // A nyers configra mergeljük (nem a parse-oltra) — így a séma által nem
+    // modellezett kulcsokat (pl. delegált `oauth` blokk) nem tüntetjük el.
+    let nextConfig: Prisma.InputJsonValue | undefined
+    const rawConfig = { ...((draft.connector.config as Record<string, unknown> | null) ?? {}) }
+    let configMutated = false
+
+    if (trimmedClientId && trimmedClientId !== existingClientId) {
+      const rawAuth = { ...((rawConfig.auth as Record<string, unknown> | undefined) ?? {}) }
+      rawAuth.clientId = trimmedClientId
+      rawConfig.auth = rawAuth
+      configMutated = true
+    }
+
+    // Delegált oauth2 → runtime-alak normalizálása (mint a manuális „API-kapcsolat"
+    // form, platform.ts buildHttpApiConfig). A provisioning-draft `auth.type=oauth2`
+    // alakot a runtime http-api-kliens SERVICE oauth2-ként (client_credentials)
+    // értelmezné, kikerülve a user-delegált per-user Bearer-injekciót → minden
+    // tool-hívás elhasal. Ezért aktiváláskor átírjuk a futásidejű alakra:
+    //   auth: { scheme: 'bearer' }  (a per-user grant access token megy ki Bearerként)
+    //   oauth: { authUrl?, tokenUrl?, clientId?, scopes, userInfoUrl?, offlineParams?, ... }
+    //          (a consent-flow paraméterei; a ConnectorGrantService olvassa)
+    if (config.authMode === 'user_delegated' && config.auth.type === 'oauth2') {
+      const authUrl = typeof config.auth.authUrl === 'string' ? config.auth.authUrl.trim() : ''
+      const tokenUrl = typeof config.auth.tokenUrl === 'string' ? config.auth.tokenUrl.trim() : ''
+      const userInfoUrl =
+        typeof config.auth.userInfoUrl === 'string' ? config.auth.userInfoUrl.trim() : ''
+      const accountEmailField =
+        typeof config.auth.accountEmailField === 'string' && config.auth.accountEmailField.trim()
+          ? config.auth.accountEmailField.trim()
+          : undefined
+      const effectiveClientId = trimmedClientId || existingClientId
+      const scopes =
+        config.scopesSuggested.length > 0
+          ? config.scopesSuggested
+          : typeof config.auth.scope === 'string'
+            ? config.auth.scope.split(/\s+/).filter(Boolean)
+            : []
+      rawConfig.auth = { scheme: 'bearer' }
+      rawConfig.oauth = {
+        ...(authUrl ? { authUrl } : {}),
+        ...(tokenUrl ? { tokenUrl } : {}),
+        ...(effectiveClientId ? { clientId: effectiveClientId } : {}),
+        scopes,
+        ...(userInfoUrl ? { userInfoUrl } : {}),
+        ...(accountEmailField ? { accountEmailField } : {}),
+        ...(config.auth.offlineParams ? { offlineParams: config.auth.offlineParams } : {}),
+        ...(config.auth.scopeTransform ? { scopeTransform: config.auth.scopeTransform } : {}),
+      }
+      configMutated = true
+    }
+
+    if (configMutated) nextConfig = rawConfig as Prisma.InputJsonValue
+
     // Kétszintű emberi kapu (§7.3, §14/4): banki preset → minden aktiválás dual-control;
     // egyébként L2–L3 dual-control, L1 egy admin.
     const criticality = input.criticality ?? 'L1'
@@ -311,7 +387,9 @@ export class ProvisioningService {
     const connector = await this.deps.drafts.activate({
       draftId: draft.id,
       secretAlias: resolvedAlias,
+      authMode: config.authMode,
       secondApproverId: dualControlRequired ? input.approverId ?? null : null,
+      ...(nextConfig ? { config: nextConfig } : {}),
     })
 
     await this.appendAudit(actor, 'provisioning.connector.activate', connector.id, {
@@ -365,6 +443,215 @@ export class ProvisioningService {
     return { agentId: input.agentId, connectorId: input.connectorId }
   }
 
+  async unassignConnectorFromAgent(
+    input: { connectorId: string; agentId: string; reason?: string },
+    actor: ProvisioningActor,
+  ): Promise<{ agentId: string; connectorId: string; removed: boolean }> {
+    this.requireHumanAdmin(actor, 'unassignConnectorFromAgent')
+
+    const res = await this.deps.drafts.unassignFromAgent({
+      connectorId: input.connectorId,
+      agentId: input.agentId,
+    })
+
+    await this.appendAudit(actor, 'provisioning.connector.unassign', input.connectorId, {
+      connector_id: input.connectorId,
+      agent_id: input.agentId,
+      removed: res.removed,
+      ...(input.reason?.trim() ? { reason: input.reason.trim() } : {}),
+      policyDecision: 'allowed',
+    })
+
+    return { agentId: input.agentId, connectorId: input.connectorId, removed: res.removed }
+  }
+
+  // ── Javítás: draft-config szerkesztése (EMBERI admin) ─────────────────────
+
+  /**
+   * Egy még NEM aktivált (draft/validated) connector config-jának javító szerkesztése.
+   * A módosítás resetteli a gate-et (validationResult/review/sandbox), így a javított
+   * config újra végigmegy a valid→review→sandbox→aktiválás úton. A secret SOSEM része a
+   * confignak — csak a javasolt alias. Agent-aktor tiltott (CR-MVP-002).
+   */
+  async updateConnectorDraftConfig(
+    input: { draftId: string; generatedConfig: unknown },
+    actor: ProvisioningActor,
+  ): Promise<{ draftId: string; lifecycleState: 'draft'; config: ConnectorConfig }> {
+    this.requireHumanAdmin(actor, 'updateConnectorDraftConfig')
+    const draft = await this.loadDraftForTenant(input.draftId, actor)
+
+    if (draft.connector.lifecycleState !== 'draft' && draft.connector.lifecycleState !== 'validated') {
+      throw new ProvisioningError(
+        'DRAFT_NOT_EDITABLE',
+        'only a draft/validated connector config is editable; reopen an active connector first',
+      )
+    }
+
+    let config: ConnectorConfig
+    try {
+      config = normalizeConnectorConfig(input.generatedConfig)
+    } catch (e) {
+      if (e instanceof ConnectorConfigParseError) {
+        throw new ProvisioningError('PROVISIONING_INVALID_INPUT', e.message, e.issues)
+      }
+      throw e
+    }
+
+    const sourceHash = config.provenance?.sourceHash
+      ? normalizeSourceHash(config.provenance.sourceHash)
+      : sha256Hex(JSON.stringify(config))
+
+    await this.deps.drafts.updateDraftConfig({
+      draftId: draft.id,
+      config: configToJson(config),
+      authMode: config.authMode,
+      sourceHash,
+      secretAliasSuggested: config.auth.secretAliasSuggested ?? null,
+    })
+
+    await this.appendAudit(actor, 'provisioning.draft.update', draft.connectorId, {
+      draft_id: draft.id,
+      connector_id: draft.connectorId,
+      source_hash: sourceHash,
+      gate_reset: true,
+      policyDecision: 'allowed',
+    })
+
+    return { draftId: draft.id, lifecycleState: 'draft', config }
+  }
+
+  // ── Javítás: aktív connector visszanyitása draftba (EMBERI admin) ──────────
+
+  /**
+   * Aktív connector visszanyitása draftba, hogy javítható legyen. A connector offline lesz
+   * (Tool Broker deny), a gate resetelődik. A javítás után újra végig kell menni a kapun.
+   */
+  async reopenConnector(
+    input: { draftId: string },
+    actor: ProvisioningActor,
+  ): Promise<{ connectorId: string; lifecycleState: 'draft' }> {
+    this.requireHumanAdmin(actor, 'reopenConnector')
+    const draft = await this.loadDraftForTenant(input.draftId, actor)
+
+    if (draft.connector.lifecycleState !== 'active') {
+      throw new ProvisioningError('CONNECTOR_NOT_ACTIVE', 'only an active connector can be reopened')
+    }
+
+    const connector = await this.deps.drafts.reopen({ draftId: draft.id })
+
+    await this.appendAudit(actor, 'provisioning.connector.reopen', connector.id, {
+      draft_id: draft.id,
+      connector_id: connector.id,
+      policyDecision: 'allowed',
+    })
+
+    return { connectorId: connector.id, lifecycleState: 'draft' }
+  }
+
+  // ── Megszüntetés: aktív connector auditált leszerelése (EMBERI admin) ──────
+
+  /**
+   * Aktív connector auditált megszüntetése: agent-kötések levétele, aktív user-grantek
+   * visszavonása, secret-ref törlés, lifecycle_state=archived (nem hard-delete). Dual-control
+   * bank-preset / L2–L3 esetén (szimmetrikus az aktiválással). A capability-syncet a hívó
+   * action intézi az `affectedAgentIds` alapján (a kemény padló miatt a service a
+   * capabilities táblát nem írja).
+   */
+  async decommissionConnector(
+    input: { draftId: string; criticality?: Criticality; approverId?: string; reason?: string },
+    actor: ProvisioningActor,
+  ): Promise<{ connectorId: string; lifecycleState: 'archived'; affectedAgentIds: string[] }> {
+    const user = this.requireHumanAdmin(actor, 'decommissionConnector')
+    const draft = await this.loadDraftForTenant(input.draftId, actor)
+
+    if (draft.connector.lifecycleState !== 'active') {
+      throw new ProvisioningError(
+        'CONNECTOR_NOT_ACTIVE',
+        'only an active connector can be decommissioned',
+      )
+    }
+
+    // Kétszemes kapu (szimmetrikus az aktiválással): bank-preset → mindig; egyébként L2–L3.
+    const criticality = input.criticality ?? 'L1'
+    const bankPreset = await this.deps.resolveBankPreset(actor.tenantId)
+    const dualControlRequired = bankPreset || criticality === 'L2' || criticality === 'L3'
+    if (dualControlRequired) {
+      if (!input.approverId) {
+        throw new ProvisioningError(
+          'DUAL_CONTROL_REQUIRED',
+          'second approver required to decommission (bank preset / L2–L3)',
+          { criticality, bankPreset },
+        )
+      }
+      if (input.approverId === user.userId) {
+        throw new ProvisioningError(
+          'APPROVAL_SAME_ACTOR',
+          'second approver must differ from the decommissioning admin (four-eyes)',
+        )
+      }
+    }
+
+    const secretAlias = draft.connector.secretAlias
+    const { connectorId, affectedAgentIds } = await this.deps.drafts.decommission({
+      draftId: draft.id,
+    })
+
+    // A menedzselt secret-ref best-effort törlése (a leszerelt connector titka ne maradjon).
+    if (secretAlias) {
+      const { isConnectorSecretRef, deleteConnectorApiKey } = await import(
+        '@/domain/connector/connector-secret-store'
+      )
+      if (isConnectorSecretRef(secretAlias)) {
+        await deleteConnectorApiKey(connectorId).catch(() => {})
+      }
+    }
+
+    await this.appendAudit(actor, 'provisioning.connector.decommission', connectorId, {
+      draft_id: draft.id,
+      connector_id: connectorId,
+      criticality,
+      approver_id: dualControlRequired ? input.approverId : null,
+      revoked_agent_links: affectedAgentIds.length,
+      reason: input.reason ?? null,
+      policyDecision: 'allowed',
+    })
+
+    return { connectorId, lifecycleState: 'archived', affectedAgentIds }
+  }
+
+  // ── Takarítás: sosem aktivált draft hard-delete-je (EMBERI admin) ──────────
+
+  /**
+   * SOSEM aktivált draft (draft/validated) végleges törlése — botched draftok takarításához.
+   * Aktív connectorra tilos (arra `decommissionConnector` jár).
+   */
+  async deleteConnectorDraft(
+    input: { draftId: string; reason?: string },
+    actor: ProvisioningActor,
+  ): Promise<{ draftId: string }> {
+    this.requireHumanAdmin(actor, 'deleteConnectorDraft')
+    const draft = await this.loadDraftForTenant(input.draftId, actor)
+
+    if (draft.connector.lifecycleState !== 'draft' && draft.connector.lifecycleState !== 'validated') {
+      throw new ProvisioningError(
+        'DRAFT_ALREADY_ACTIVATED',
+        'only a never-activated draft can be hard-deleted; decommission an active connector instead',
+      )
+    }
+
+    const connectorId = draft.connectorId
+    await this.deps.drafts.deleteDraft({ draftId: draft.id })
+
+    await this.appendAudit(actor, 'provisioning.draft.delete', connectorId, {
+      draft_id: draft.id,
+      connector_id: connectorId,
+      reason: input.reason ?? null,
+      policyDecision: 'allowed',
+    })
+
+    return { draftId: draft.id }
+  }
+
   // ── §9 catalog.read (meglévő connector-metaadat, secret nélkül) ───────────
 
   async listCatalog(
@@ -378,14 +665,20 @@ export class ProvisioningService {
     return rows.map((d) => ({
       draftId: d.id,
       connectorId: d.connectorId,
+      tenantId: d.tenantId,
       name: d.connector.name,
       lifecycleState: d.connector.lifecycleState,
       reviewStatus: d.reviewStatus,
       validationResult: d.validationResult as ValidationResult | null,
       sandboxTestOk: d.sandboxTestOk,
       secretAliasSuggested: d.connector.secretAlias,
+      connectorType: d.connector.type,
+      authMode: d.connector.authMode,
       // A diff-nézethez: a generált deskriptor (§4.3). A secret SOSEM része — csak alias-név.
       config: safeParseStoredConfig(d.connector.config),
+      // Fallback nézet, ha a config nem provisioning-ConnectorConfig alakú (pl. az
+      // API-szerkesztőn átírt http_api config). Secret-mentes.
+      httpApiView: safeHttpApiView(d.connector.config),
       sourceType: d.sourceType,
       sourceHash: d.sourceHash,
       createdAt: d.createdAt,
@@ -520,4 +813,36 @@ function safeParseStoredConfig(raw: unknown): ConnectorConfig | null {
   } catch {
     return null
   }
+}
+
+export type HttpApiConfigView = {
+  baseUrl?: string
+  authScheme?: string
+  /** Auto-consent (user-delegált) jel: a config.oauth.authUrl jelenléte. */
+  isDelegated: boolean
+  endpoints: Array<{ method: string; path: string }>
+}
+
+/**
+ * A http_api futásidejű config (baseUrl/auth/endpoints/oauth) biztonságos, secret-mentes
+ * olvasata a provisioning diff-nézet fallbackjéhez — amikor a config NEM a provisioning
+ * ConnectorConfig alakú (pl. az „API-kapcsolat" szerkesztőn keresztül lett átírva).
+ */
+function safeHttpApiView(raw: unknown): HttpApiConfigView | null {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null
+  const cfg = raw as Record<string, unknown>
+  const baseUrl = typeof cfg.baseUrl === 'string' ? cfg.baseUrl : undefined
+  const auth = typeof cfg.auth === 'object' && cfg.auth !== null ? (cfg.auth as Record<string, unknown>) : {}
+  const oauth =
+    typeof cfg.oauth === 'object' && cfg.oauth !== null ? (cfg.oauth as Record<string, unknown>) : {}
+  const authScheme = typeof auth.scheme === 'string' ? auth.scheme : undefined
+  const isDelegated = typeof oauth.authUrl === 'string' && oauth.authUrl.trim().length > 0
+  const endpoints = Array.isArray(cfg.endpoints)
+    ? cfg.endpoints
+        .filter((e): e is Record<string, unknown> => typeof e === 'object' && e !== null && !Array.isArray(e))
+        .map((e) => ({ method: String(e.method ?? ''), path: String(e.path ?? '') }))
+        .filter((e) => e.method && e.path)
+    : []
+  if (!baseUrl && !authScheme && endpoints.length === 0) return null
+  return { baseUrl, authScheme, isDelegated, endpoints }
 }

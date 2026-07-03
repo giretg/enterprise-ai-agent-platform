@@ -2,6 +2,7 @@
 
 import { z } from 'zod'
 import { requireRole } from '@/auth'
+import { requirePermission } from '@/auth/permission'
 import type { ActiveAuthUser } from '@/auth/types'
 import { services } from '@/domain'
 import { repositories } from '@/repositories/postgres'
@@ -10,6 +11,15 @@ import { fail, ok } from '@/lib/result'
 import { ProvisioningError } from '@/domain/provisioning/errors'
 import type { ProvisioningActor } from '@/domain/provisioning/provisioning-service'
 import { PROVISIONING_ASSISTANT_TEMPLATE } from '@/domain/provisioning/provisioning-assistant'
+import { connectorConfigSchema } from '@/domain/provisioning/connector-config'
+import {
+  materializeConnectorConfig,
+  selfCheckTemplateDescriptor,
+} from '@/domain/connector-template/materializer'
+import {
+  parseTemplateDescriptor,
+  templateDescriptorSchema,
+} from '@/domain/connector-template/template-descriptor'
 import { WEB_EGRESS_ROLE_TEMPLATE } from '@/domain/agents/web-egress-role'
 import { inspectPromptSensitivity } from '@/domain/gateway/sensitivity-router'
 
@@ -30,38 +40,49 @@ function toFail(e: unknown, fallback: string) {
   return fail(e instanceof Error ? e.message : fallback)
 }
 
-const proposedToolSchema = z.object({
-  name: z.string().min(1),
-  method: z.enum(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']),
-  path: z.string().min(1),
-  access: z.enum(['read', 'write']),
-  description: z.string().optional(),
-})
-
-const connectorConfigSchema = z.object({
-  provider: z.string().min(1),
-  baseUrl: z.string().url(),
-  egressHosts: z.array(z.string().min(1)).min(1),
-  authMode: z.enum(['service', 'user_delegated', 'agent_owned']),
-  auth: z.object({
-    type: z.enum(['api_key_header', 'bearer_token', 'basic', 'oauth2']),
-    headerName: z.string().optional(),
-    secretAliasSuggested: z.string().optional(),
-  }),
-  scopesSuggested: z.array(z.string()).default([]),
-  rateLimit: z.object({ rps: z.number().nonnegative(), burst: z.number().nonnegative() }).optional(),
-  proposedTools: z.array(proposedToolSchema).default([]),
-  provenance: z
-    .object({ sourceHash: z.string().optional(), extractedAt: z.string().optional() })
-    .optional(),
-})
+// A draft-config sémáját a domain-rétegből vesszük át (connector-config.ts), hogy az
+// action- és a domain-réteg SOHA ne csússzon szét. Korábban itt egy szűkített másolat
+// élt, amely a Zod strip-elése miatt NÉMÁN eldobta az `auth.tokenUrl` / `auth.clientId`
+// / `auth.scope` mezőket — így ezeket draft-szerkesztéskor nem lehetett menteni, és az
+// oauth2 connector futásidőben "tokenUrl must be an absolute http(s) URL"-lel bukott.
 
 const createDraftSchema = z.object({
   name: z.string().min(1),
-  sourceType: z.enum(['api_doc', 'openapi', 'manual']),
+  sourceType: z.enum(['api_doc', 'openapi', 'manual', 'template']),
   sourceRef: z.string().optional(),
   sourceContent: z.string().optional(),
   generatedConfig: connectorConfigSchema,
+})
+
+const createFromTemplateSchema = z.object({
+  templateId: z.string().min(1),
+  name: z.string().min(1),
+  authMethodKind: z.enum(['api_key', 'bearer', 'basic', 'service_oauth2', 'user_delegated_oauth2']),
+  instanceValues: z.record(z.string(), z.string()).default({}),
+  secretAliases: z.record(z.string(), z.string()).default({}),
+  selectedScopes: z.array(z.string()).optional(),
+  selectedEndpoints: z.array(z.string()).optional(),
+})
+
+const templateSelfCheckSchema = z.object({
+  authMethodKind: z
+    .enum(['api_key', 'bearer', 'basic', 'service_oauth2', 'user_delegated_oauth2'])
+    .optional(),
+  instanceValues: z.record(z.string(), z.string()).optional(),
+  secretAliases: z.record(z.string(), z.string()).optional(),
+  selectedScopes: z.array(z.string()).optional(),
+  selectedEndpoints: z.array(z.string()).optional(),
+})
+
+const upsertConnectorTemplateSchema = z.object({
+  descriptor: templateDescriptorSchema,
+  description: z.string().max(1000).optional(),
+  tenantScoped: z.boolean().optional(),
+  selfCheck: templateSelfCheckSchema.optional(),
+})
+
+const deprecateConnectorTemplateSchema = z.object({
+  templateId: z.string().min(1),
 })
 
 const draftIdSchema = z.object({ draftId: z.string().min(1) })
@@ -94,6 +115,8 @@ const activateSchema = z.object({
   draftId: z.string().min(1),
   secretAlias: z.string().optional(),
   apiKey: z.string().optional(),
+  /** oauth2 / oauth2_delegated: nem-titkos OAuth client_id → config.auth.clientId. */
+  clientId: z.string().trim().max(300).optional(),
   approverId: z.string().optional(),
   criticality: z.enum(['L1', 'L2', 'L3']).optional(),
   reason: z.string().optional(),
@@ -104,6 +127,12 @@ const assignSchema = z.object({
   agentId: z.string().min(1),
   accessMode: z.enum(['read', 'write']),
   apiKey: z.string().optional(),
+})
+
+const unassignSchema = z.object({
+  connectorId: z.string().min(1),
+  agentId: z.string().min(1),
+  reason: z.string().max(500).optional(),
 })
 
 async function syncAssignedConnectorCapabilities(
@@ -141,6 +170,58 @@ async function syncAssignedConnectorCapabilities(
     })
   }
 }
+
+/**
+ * Egy connector megszüntetése/leszerelése után az érintett agentek http_api capability-jeit
+ * újraszámoljuk: ha egy agentnek nem maradt AKTÍV http_api connectora → http_api_get letiltva;
+ * ha nem maradt write hozzáférésű aktív http_api connectora → http_api_request letiltva.
+ * A megszüntetés ekkor már levette az agent_connectors kötést, ezért a count tükrözi a valóságot.
+ */
+async function syncConnectorRemovalCapabilities(agentIds: string[]) {
+  for (const agentId of agentIds) {
+    const [anyActive, writeActive] = await Promise.all([
+      prisma.agentConnector.count({
+        where: { agentId, connector: { type: 'http_api', lifecycleState: 'active' } },
+      }),
+      prisma.agentConnector.count({
+        where: {
+          agentId,
+          accessMode: 'write',
+          connector: { type: 'http_api', lifecycleState: 'active' },
+        },
+      }),
+    ])
+    if (anyActive === 0) {
+      await prisma.capability.updateMany({
+        where: { agentId, toolName: 'http_api_get' },
+        data: { allowed: false },
+      })
+    }
+    if (writeActive === 0) {
+      await prisma.capability.updateMany({
+        where: { agentId, toolName: 'http_api_request' },
+        data: { allowed: false },
+      })
+    }
+  }
+}
+
+const updateDraftConfigSchema = z.object({
+  draftId: z.string().min(1),
+  generatedConfig: connectorConfigSchema,
+})
+
+const decommissionSchema = z.object({
+  draftId: z.string().min(1),
+  criticality: z.enum(['L1', 'L2', 'L3']).optional(),
+  approverId: z.string().optional(),
+  reason: z.string().max(500).optional(),
+})
+
+const deleteDraftSchema = z.object({
+  draftId: z.string().min(1),
+  reason: z.string().max(500).optional(),
+})
 
 export async function listProvisioningDrafts() {
   try {
@@ -378,6 +459,197 @@ export async function createConnectorDraft(input: unknown) {
   }
 }
 
+export async function listConnectorTemplatesAction() {
+  try {
+    const user = await requireRole('viewer')
+    const templates = await repositories.connectorTemplates.listVisible({
+      tenantId: user.tenantId ?? null,
+    })
+    return ok(
+      templates.map((template) => ({
+        id: template.id,
+        key: template.key,
+        version: template.version,
+        origin: template.origin,
+        displayName: template.displayName,
+        description: template.description,
+        tenantId: template.tenantId,
+        status: template.status,
+        descriptor: parseTemplateDescriptor(template.descriptor),
+      })),
+    )
+  } catch (e) {
+    return toFail(e, 'Nem sikerült lekérni a connector-sablonokat')
+  }
+}
+
+export async function createConnectorFromTemplateAction(input: unknown) {
+  try {
+    const user = await requireRole('admin')
+    const parsed = createFromTemplateSchema.parse(input)
+    const template = await repositories.connectorTemplates.findByIdVersion(parsed.templateId)
+    if (!template || (template.tenantId !== null && template.tenantId !== user.tenantId)) {
+      return fail('Connector template not found')
+    }
+    if (template.status !== 'active') {
+      return fail('Csak aktív connector-sablonból hozható létre draft.')
+    }
+
+    const descriptor = parseTemplateDescriptor(template.descriptor)
+    const config = materializeConnectorConfig(
+      descriptor,
+      {
+        authMethodKind: parsed.authMethodKind,
+        instanceValues: parsed.instanceValues,
+        selectedScopes: parsed.selectedScopes,
+        selectedEndpoints: parsed.selectedEndpoints,
+      },
+      parsed.secretAliases,
+      {
+        templateId: template.id,
+        templateKey: template.key,
+        templateVersion: template.version,
+        templateOrigin: template.origin,
+      },
+    )
+
+    const res = await services.provisioning.createConnectorDraft(
+      {
+        name: parsed.name,
+        sourceType: 'template',
+        sourceRef: `${template.key}@${template.version}`,
+        sourceContent: JSON.stringify(template.descriptor),
+        generatedConfig: config,
+      },
+      actorOf(user),
+    )
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: null,
+      action: 'connector.materialize',
+      targetType: 'connector',
+      targetId: res.connectorId,
+      modelUsed: null,
+      inputRef: template.id,
+      outputRef: res.draftId,
+      policyDecision: 'allowed',
+      metadata: {
+        templateKey: template.key,
+        templateVersion: template.version,
+        templateOrigin: template.origin,
+      },
+    })
+
+    return ok(res)
+  } catch (e) {
+    return toFail(e, 'Nem sikerült sablonból connectort létrehozni')
+  }
+}
+
+export async function upsertConnectorTemplateAction(input: unknown) {
+  try {
+    const user = await requirePermission('connector_template:manage')
+    const parsed = upsertConnectorTemplateSchema.parse(input)
+    const descriptor = parseTemplateDescriptor(parsed.descriptor)
+
+    selfCheckTemplateDescriptor(descriptor, parsed.selfCheck)
+
+    if (parsed.tenantScoped === false && user.tenantId) {
+      return fail('Globális connector-sablont csak platform-szintű admin kontextusból lehet létrehozni.')
+    }
+
+    const tenantId = parsed.tenantScoped === false ? null : user.tenantId
+    const latest = await repositories.connectorTemplates.findLatestByKey(descriptor.key, tenantId ?? null)
+    if (latest?.origin === 'builtin') {
+      return fail('Builtin connector-sablon nem írható felül. Klónozd másik kulccsal.')
+    }
+    const version = latest ? latest.version + 1 : 1
+    const template = await repositories.connectorTemplates.createVersion({
+      key: descriptor.key,
+      version,
+      origin: 'custom',
+      displayName: descriptor.displayName,
+      description: parsed.description ?? descriptor.description ?? null,
+      tenantId,
+      descriptor,
+      status: 'active',
+      createdById: user.id,
+    })
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: null,
+      action: 'connector.template.create',
+      targetType: 'connector_template',
+      targetId: template.id,
+      modelUsed: null,
+      inputRef: descriptor.key,
+      outputRef: `${descriptor.key}@${version}`,
+      policyDecision: 'allowed',
+      metadata: {
+        tenant_id: user.tenantId,
+        templateKey: descriptor.key,
+        templateVersion: version,
+        origin: 'custom',
+      },
+    })
+
+    return ok({
+      id: template.id,
+      key: template.key,
+      version: template.version,
+      origin: template.origin,
+      displayName: template.displayName,
+      description: template.description,
+      tenantId: template.tenantId,
+      status: template.status,
+      descriptor: parseTemplateDescriptor(template.descriptor),
+    })
+  } catch (e) {
+    return toFail(e, 'Nem sikerült menteni a connector-sablont')
+  }
+}
+
+export async function deprecateConnectorTemplateAction(input: unknown) {
+  try {
+    const user = await requirePermission('connector_template:manage')
+    const parsed = deprecateConnectorTemplateSchema.parse(input)
+    const template = await repositories.connectorTemplates.findByIdVersion(parsed.templateId)
+    if (!template || (template.tenantId !== null && template.tenantId !== user.tenantId)) {
+      return fail('Connector template not found')
+    }
+    if (template.origin === 'builtin') {
+      return fail('Builtin connector-sablon nem deprecálható ezen a felületen.')
+    }
+
+    await repositories.connectorTemplates.deprecate(template.id)
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: null,
+      action: 'connector.template.deprecate',
+      targetType: 'connector_template',
+      targetId: template.id,
+      modelUsed: null,
+      inputRef: template.key,
+      outputRef: `${template.key}@${template.version}`,
+      policyDecision: 'allowed',
+      metadata: {
+        tenant_id: user.tenantId,
+        templateKey: template.key,
+        templateVersion: template.version,
+      },
+    })
+
+    return ok({ id: template.id, status: 'deprecated' })
+  } catch (e) {
+    return toFail(e, 'Nem sikerült deprecálni a connector-sablont')
+  }
+}
+
 export async function validateConnectorDraft(input: unknown) {
   try {
     const user = await requireRole('viewer')
@@ -420,6 +692,7 @@ export async function activateConnector(input: unknown) {
         draftId: parsed.draftId,
         secretAlias: parsed.secretAlias,
         apiKey: parsed.apiKey,
+        clientId: parsed.clientId,
         approverId: parsed.approverId,
         criticality: parsed.criticality,
         reason: parsed.reason,
@@ -437,7 +710,7 @@ export async function assignConnectorToAgent(input: unknown) {
     const user = await requireRole('admin')
     const parsed = assignSchema.parse(input)
     const [agent, connector] = await Promise.all([
-      repositories.agents.findById(parsed.agentId),
+      repositories.agents.findById(parsed.agentId, user.tenantId),
       prisma.connector.findFirst({
         where: {
           id: parsed.connectorId,
@@ -464,5 +737,104 @@ export async function assignConnectorToAgent(input: unknown) {
     return ok(res)
   } catch (e) {
     return toFail(e, 'Nem sikerült hozzárendelni a connectort')
+  }
+}
+
+export async function unassignConnectorFromAgent(input: unknown) {
+  try {
+    const user = await requireRole('admin')
+    const parsed = unassignSchema.parse(input)
+    const [agent, connector] = await Promise.all([
+      repositories.agents.findById(parsed.agentId, user.tenantId),
+      prisma.connector.findFirst({
+        where: {
+          id: parsed.connectorId,
+          tenantId: user.tenantId,
+          lifecycleState: 'active',
+        },
+      }),
+    ])
+    if (!agent) return fail('Agent not found')
+    if (!connector) return fail('Csak aktivált, tenanton belüli kapcsolat választható le agentről.')
+
+    const res = await services.provisioning.unassignConnectorFromAgent(
+      {
+        connectorId: parsed.connectorId,
+        agentId: parsed.agentId,
+        reason: parsed.reason,
+      },
+      actorOf(user),
+    )
+    if (connector.type === 'http_api') {
+      await syncConnectorRemovalCapabilities([parsed.agentId])
+    }
+    return ok(res)
+  } catch (e) {
+    return toFail(e, 'Nem sikerült leválasztani a connectort')
+  }
+}
+
+/**
+ * Draft/validated connector config-jának javító szerkesztése (admin-only). A módosítás
+ * resetteli a gate-et (validáció/review/sandbox), így a javított config újra végigmegy a
+ * teljes kapun. Aktív connectorra előbb `reopenConnector` kell.
+ */
+export async function updateConnectorDraftConfig(input: unknown) {
+  try {
+    const user = await requireRole('admin')
+    const parsed = updateDraftConfigSchema.parse(input)
+    const res = await services.provisioning.updateConnectorDraftConfig(parsed, actorOf(user))
+    return ok(res)
+  } catch (e) {
+    return toFail(e, 'Nem sikerült frissíteni a draft configját')
+  }
+}
+
+/**
+ * Aktív connector visszanyitása draftba, hogy javítható legyen (admin-only). A connector
+ * offline lesz (Tool Broker deny), a gate resetelődik; a javítás után újra kell aktiválni.
+ */
+export async function reopenConnector(input: unknown) {
+  try {
+    const user = await requireRole('admin')
+    const parsed = draftIdSchema.parse(input)
+    const res = await services.provisioning.reopenConnector(parsed, actorOf(user))
+    return ok(res)
+  } catch (e) {
+    return toFail(e, 'Nem sikerült visszanyitni a connectort')
+  }
+}
+
+/**
+ * Aktív connector auditált megszüntetése (admin-only): agent-kötések levétele, user-grantek
+ * visszavonása, secret-ref törlés, lifecycle=archived. Dual-control bank-preset / L2–L3 esetén.
+ * A megszüntetés után az érintett agentek http_api capability-jeit újraszámoljuk.
+ */
+export async function decommissionConnector(input: unknown) {
+  try {
+    const user = await requireRole('admin')
+    const parsed = decommissionSchema.parse(input)
+    const res = await services.provisioning.decommissionConnector(parsed, actorOf(user))
+    if (res.affectedAgentIds.length > 0) {
+      await syncConnectorRemovalCapabilities(res.affectedAgentIds)
+    }
+    return ok(res)
+  } catch (e) {
+    return toFail(e, 'Nem sikerült megszüntetni a connectort')
+  }
+}
+
+/**
+ * SOSEM aktivált draft végleges törlése (admin-only) — botched draftok takarításához.
+ * Aktív connectorra tilos (arra `decommissionConnector` jár).
+ */
+export async function deleteConnectorDraft(input: unknown) {
+  try {
+    const user = await requireRole('admin')
+    const parsed = deleteDraftSchema.parse(input)
+    const res = await services.provisioning.deleteConnectorDraft(parsed, actorOf(user))
+    return ok(res)
+  } catch (e) {
+    return toFail(e, 'Nem sikerült törölni a draftot')
   }
 }

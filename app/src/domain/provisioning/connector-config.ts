@@ -32,6 +32,26 @@ export const connectorAuthSchema = z.object({
   headerName: z.string().optional(),
   /** A secret SOSEM kerül ide — csak a Secret Managerbe szánt alias NEVE javasolt. */
   secretAliasSuggested: z.string().optional(),
+  /**
+   * `type: 'oauth2'` + `authMode: 'user_delegated'` esetén az OAuth authorization
+   * (consent) végpont. Nem titok. Sablon-alapú connectornál explicit provider-
+   * metaadatként kerül ide; futásidőben nincs provider-név alapú default.
+   */
+  authUrl: z.string().url().optional(),
+  /** `type: 'oauth2'` esetén kötelező a token-refresh végponthoz (nem titok). */
+  tokenUrl: z.string().url().optional(),
+  /** `type: 'oauth2'` esetén kötelező a token-refresh végponthoz (nem titok). */
+  clientId: z.string().optional(),
+  /** `type: 'oauth2'` esetén opcionális OAuth2 scope-lista. */
+  scope: z.string().optional(),
+  /** Opcionális userinfo/whoami végpont a delegált grant fiók-címkéjéhez. */
+  userInfoUrl: z.string().url().optional(),
+  /** A userinfo JSON melyik mezője a fiók-címke. */
+  accountEmailField: z.string().optional(),
+  /** OAuth authorization URL-be írandó extra paraméterek, pl. Google access_type=offline. */
+  offlineParams: z.record(z.string(), z.string()).optional(),
+  /** Deklarált scope-normalizálás; provider-tippelést vált ki a consent úton. */
+  scopeTransform: z.enum(['none', 'gmailAlias']).optional(),
 })
 export type ConnectorAuth = z.infer<typeof connectorAuthSchema>
 
@@ -47,7 +67,15 @@ export const connectorConfigSchema = z.object({
     .optional(),
   proposedTools: z.array(proposedToolSchema).default([]),
   provenance: z
-    .object({ sourceHash: z.string().optional(), extractedAt: z.string().optional() })
+    .object({
+      sourceHash: z.string().optional(),
+      extractedAt: z.string().optional(),
+      templateId: z.string().optional(),
+      templateKey: z.string().optional(),
+      templateVersion: z.number().int().positive().optional(),
+      templateOrigin: z.enum(['builtin', 'custom']).optional(),
+      materializedAt: z.string().optional(),
+    })
     .optional(),
 })
 export type ConnectorConfig = z.infer<typeof connectorConfigSchema>

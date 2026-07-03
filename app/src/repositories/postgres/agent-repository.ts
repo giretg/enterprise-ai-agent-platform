@@ -329,6 +329,48 @@ export class PostgresAgentRepository implements AgentRepository {
     return { agentVersion: nextAgentVersion }
   }
 
+  async updatePersona(input: {
+    agentId: string
+    personaNickname?: string | null
+    personaGreeting?: string | null
+    personaTrait?: string | null
+  }) {
+    const agent = await prisma.agent.findUnique({ where: { id: input.agentId } })
+    if (!agent) throw new Error('Agent not found')
+
+    const normalize = (value: string | null | undefined) => {
+      if (value === undefined) return undefined
+      if (value === null) return null
+      const trimmed = value.trim()
+      return trimmed.length > 0 ? trimmed : null
+    }
+
+    return prisma.agent.update({
+      where: { id: input.agentId },
+      data: {
+        ...(input.personaNickname !== undefined
+          ? { personaNickname: normalize(input.personaNickname) }
+          : {}),
+        ...(input.personaGreeting !== undefined
+          ? { personaGreeting: normalize(input.personaGreeting) }
+          : {}),
+        ...(input.personaTrait !== undefined
+          ? { personaTrait: normalize(input.personaTrait) }
+          : {}),
+      },
+    })
+  }
+
+  async updateAvatar(input: { agentId: string; avatarUrl: string | null }) {
+    const agent = await prisma.agent.findUnique({ where: { id: input.agentId } })
+    if (!agent) throw new Error('Agent not found')
+
+    return prisma.agent.update({
+      where: { id: input.agentId },
+      data: { avatarUrl: input.avatarUrl },
+    })
+  }
+
   async updateSelfEvolutionProfile(input: {
     agentId: string
     profile: Agent['selfEvolutionProfile']

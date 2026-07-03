@@ -159,8 +159,24 @@ enum ConnectorDraftSourceType {
   api_doc
   openapi
   manual
+  template
 
   @@map("connector_draft_source_type")
+}
+
+enum ConnectorTemplateOrigin {
+  builtin
+  custom
+
+  @@map("connector_template_origin")
+}
+
+enum ConnectorTemplateStatus {
+  active
+  deprecated
+  archived
+
+  @@map("connector_template_status")
 }
 
 enum ConnectorDraftReviewStatus {
@@ -452,6 +468,14 @@ model Agent {
   // verziózva (§4.2/§5.3) — egymástól függetlenül frissíthető és visszakereshető.
   roleInstruction               String      @map("role_instruction")
   behaviorProfile               String      @map("behavior_profile")
+  // Emberi arc (agent-persona.ts): admin által szerkeszthető megjelenített név,
+  // üdvözlő mondat és jellemvonás. Ha null, a névből számított meleg
+  // alapértelmezés jelenik meg. `avatarUrl` opcionális feltöltött portré
+  // (data URL vagy külső URL); ha null, a gradiens+emoji arc látszik.
+  personaNickname               String?     @map("persona_nickname")
+  personaGreeting               String?     @map("persona_greeting")
+  personaTrait                  String?     @map("persona_trait")
+  avatarUrl                     String?     @map("avatar_url")
   modelConfig                   Json        @map("model_config")
   status                        AgentStatus @default(draft)
   currentVersion                Int         @default(1) @map("current_version")
@@ -905,6 +929,25 @@ model Connector {
 
   @@unique([type, name])
   @@map("connectors")
+}
+
+model ConnectorTemplate {
+  id          String                  @id @default(uuid()) @db.Uuid
+  key         String
+  version     Int                     @default(1)
+  origin      ConnectorTemplateOrigin @default(custom)
+  displayName String                  @map("display_name")
+  description String?
+  tenantId    String?                 @map("tenant_id") @db.Uuid
+  descriptor  Json
+  status      ConnectorTemplateStatus @default(active)
+  createdById String?                 @map("created_by") @db.Uuid
+  createdAt   DateTime                @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime                @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@unique([key, version, tenantId])
+  @@index([origin, status])
+  @@map("connector_templates")
 }
 
 // A draft eredetét, forrását és validációs eredményét külön tartjuk, hogy a

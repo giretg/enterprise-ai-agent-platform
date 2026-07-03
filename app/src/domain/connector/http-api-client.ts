@@ -10,11 +10,24 @@
  * eszközzel hív; az endpoint-katalógus (config.endpoints + config.description)
  * a tool loopban kerül a modell elé.
  */
+import { createHash } from 'node:crypto'
 import { getCloudRunAccessToken } from '@/domain/dispatcher/cloud-run-auth'
 
 export type HttpApiAuthConfig =
   | { scheme: 'header'; header: string }
   | { scheme: 'bearer' }
+  | { scheme: 'basic' }
+  | {
+      scheme: 'oauth2'
+      tokenUrl: string
+      clientId: string
+      scope?: string
+      authUrl?: string
+      userInfoUrl?: string
+      accountEmailField?: string
+      offlineParams?: Record<string, string>
+      scopeTransform?: 'none' | 'gmailAlias'
+    }
 
 export type HttpApiEndpoint = {
   method: string
@@ -81,6 +94,40 @@ export function parseHttpApiConfig(raw: unknown): HttpApiConfig {
       throw new Error('http_api config.auth.header is required for scheme "header"')
     }
     auth = { scheme: 'header', header: authRaw.header.trim() }
+  } else if (authRaw.scheme === 'basic' || authRaw.type === 'basic') {
+    auth = { scheme: 'basic' }
+  } else if (authRaw.scheme === 'oauth2' || authRaw.type === 'oauth2') {
+    const tokenUrl = typeof authRaw.tokenUrl === 'string' ? authRaw.tokenUrl.trim() : ''
+    if (!/^https?:\/\//i.test(tokenUrl)) {
+      throw new Error('http_api config.auth.tokenUrl must be an absolute http(s) URL for scheme "oauth2"')
+    }
+    const clientId = typeof authRaw.clientId === 'string' ? authRaw.clientId.trim() : ''
+    if (!clientId) {
+      throw new Error('http_api config.auth.clientId is required for scheme "oauth2"')
+    }
+    const scope = typeof authRaw.scope === 'string' && authRaw.scope.trim() ? authRaw.scope.trim() : undefined
+    const authUrl = parseOptionalAbsoluteUrl(authRaw.authUrl, 'auth.authUrl')
+    const userInfoUrl = parseOptionalAbsoluteUrl(authRaw.userInfoUrl, 'auth.userInfoUrl')
+    const accountEmailField =
+      typeof authRaw.accountEmailField === 'string' && authRaw.accountEmailField.trim()
+        ? authRaw.accountEmailField.trim()
+        : undefined
+    const offlineParams = parseStringRecord(authRaw.offlineParams, 'auth.offlineParams')
+    const scopeTransform =
+      authRaw.scopeTransform === 'gmailAlias' || authRaw.scopeTransform === 'none'
+        ? authRaw.scopeTransform
+        : undefined
+    auth = {
+      scheme: 'oauth2',
+      tokenUrl,
+      clientId,
+      ...(scope ? { scope } : {}),
+      ...(authUrl ? { authUrl } : {}),
+      ...(userInfoUrl ? { userInfoUrl } : {}),
+      ...(accountEmailField ? { accountEmailField } : {}),
+      ...(offlineParams ? { offlineParams } : {}),
+      ...(scopeTransform ? { scopeTransform } : {}),
+    }
   } else if (authRaw.type === 'bearer_token') {
     auth = { scheme: 'bearer' }
   } else if (authRaw.type === 'api_key_header') {
@@ -90,7 +137,7 @@ export function parseHttpApiConfig(raw: unknown): HttpApiConfig {
     }
     auth = { scheme: 'header', header }
   } else {
-    throw new Error('http_api config.auth.scheme must be "header" or "bearer"')
+    throw new Error('http_api config.auth.scheme must be "header", "bearer", "basic" or "oauth2"')
   }
 
   const endpointSource = Array.isArray(raw.endpoints)
@@ -132,6 +179,28 @@ export function parseHttpApiConfig(raw: unknown): HttpApiConfig {
         ? raw.maxResponseChars
         : DEFAULT_MAX_RESPONSE_CHARS,
   }
+}
+
+function parseOptionalAbsoluteUrl(raw: unknown, field: string): string | undefined {
+  if (raw === undefined || raw === null || raw === '') return undefined
+  if (typeof raw !== 'string' || !/^https?:\/\//i.test(raw.trim())) {
+    throw new Error(`http_api config.${field} must be an absolute http(s) URL`)
+  }
+  return raw.trim()
+}
+
+function parseStringRecord(raw: unknown, field: string): Record<string, string> | undefined {
+  if (raw === undefined) return undefined
+  if (!isRecord(raw)) throw new Error(`http_api config.${field} must be an object`)
+  const out: Record<string, string> = {}
+  for (const [key, value] of Object.entries(raw)) {
+    if (!key.trim()) throw new Error(`http_api config.${field} has empty key`)
+    if (typeof value !== 'string') {
+      throw new Error(`http_api config.${field}.${key} must be a string`)
+    }
+    out[key] = value
+  }
+  return Object.keys(out).length > 0 ? out : undefined
 }
 
 function parseAuthProfiles(raw: unknown): Record<string, HttpApiAuthProfile> | undefined {
@@ -426,8 +495,102 @@ export class HttpApiClient {
   }
 }
 
-function buildAuthHeaders(auth: HttpApiAuthConfig, apiKey: string): Record<string, string> {
+type OAuth2Credentials = { clientSecret: string; refreshToken: string }
+
+/**
+ * Az oauth2 séma esetén a connector secretAlias-a mögött NEM egy nyers kulcs,
+ * hanem egy JSON blob áll: `{"clientSecret":"...","refreshToken":"..."}`
+ * (a client_id nem titok, az a configban van). Rossz alakzat → tiszta hiba,
+ * SOSEM próbáljuk a nyers stringet access tokenként felhasználni.
+ */
+function parseOAuth2Credentials(raw: string): OAuth2Credentials {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    parsed = undefined
+  }
+  if (
+    !isRecord(parsed) ||
+    typeof parsed.clientSecret !== 'string' ||
+    !parsed.clientSecret.trim() ||
+    typeof parsed.refreshToken !== 'string' ||
+    !parsed.refreshToken.trim()
+  ) {
+    throw new HttpApiError(
+      'oauth2 secret must be a JSON string {"clientSecret","refreshToken"}',
+      'oauth2_credentials_invalid',
+    )
+  }
+  return { clientSecret: parsed.clientSecret.trim(), refreshToken: parsed.refreshToken.trim() }
+}
+
+type CachedOAuth2Token = { accessToken: string; expiresAt: number }
+/** Folyamaton belüli access-token cache — SOSEM perzisztált, SOSEM naplózott. */
+const oauth2TokenCache = new Map<string, CachedOAuth2Token>()
+const OAUTH2_EXPIRY_SKEW_MS = 60_000
+
+function oauth2CacheKey(auth: Extract<HttpApiAuthConfig, { scheme: 'oauth2' }>, refreshToken: string): string {
+  return createHash('sha256').update(`${auth.tokenUrl}::${auth.clientId}::${refreshToken}`).digest('hex')
+}
+
+/**
+ * OAuth2 refresh_token grant (RFC 6749 §6) — access token beszerzése/frissítése
+ * a tárolt refresh_token-ből. Lejárat előtt a cache-elt tokent adja vissza;
+ * a client_secret/refresh_token SOSEM kerül hibaüzenetbe vagy naplóba.
+ */
+async function resolveOAuth2AccessToken(
+  auth: Extract<HttpApiAuthConfig, { scheme: 'oauth2' }>,
+  credentialsJson: string,
+): Promise<string> {
+  const { clientSecret, refreshToken } = parseOAuth2Credentials(credentialsJson)
+  const cacheKey = oauth2CacheKey(auth, refreshToken)
+  const cached = oauth2TokenCache.get(cacheKey)
+  if (cached && cached.expiresAt - OAUTH2_EXPIRY_SKEW_MS > Date.now()) {
+    return cached.accessToken
+  }
+
+  const body = new URLSearchParams({
+    grant_type: 'refresh_token',
+    refresh_token: refreshToken,
+    client_id: auth.clientId,
+    client_secret: clientSecret,
+    ...(auth.scope ? { scope: auth.scope } : {}),
+  })
+  const res = await fetch(auth.tokenUrl, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body: body.toString(),
+  })
+  if (!res.ok) {
+    // Az OAuth-szerver error/error_description mezői NEM titkosak (RFC 6749 §5.2) —
+    // ezek a diagnózishoz kellenek; a client_secret/refresh_token SOSEM kerül ide.
+    let reason = `status ${res.status}`
+    try {
+      const errBody = (await res.json()) as { error?: string; error_description?: string }
+      if (errBody.error) reason = `${errBody.error}${errBody.error_description ? `: ${errBody.error_description}` : ''}`
+    } catch {
+      // nem JSON válasz — marad a status kód
+    }
+    throw new HttpApiError(`oauth2 token refresh failed (${reason})`, 'oauth2_refresh_failed')
+  }
+  const data = (await res.json()) as { access_token?: string; expires_in?: number }
+  if (!data.access_token) {
+    throw new HttpApiError('oauth2 token endpoint returned no access_token', 'oauth2_refresh_failed')
+  }
+  const expiresInMs =
+    (typeof data.expires_in === 'number' && data.expires_in > 0 ? data.expires_in : 3600) * 1000
+  oauth2TokenCache.set(cacheKey, { accessToken: data.access_token, expiresAt: Date.now() + expiresInMs })
+  return data.access_token
+}
+
+async function buildAuthHeaders(auth: HttpApiAuthConfig, apiKey: string): Promise<Record<string, string>> {
   if (auth.scheme === 'bearer') return { authorization: `Bearer ${apiKey}` }
+  if (auth.scheme === 'basic') return { authorization: `Basic ${apiKey}` }
+  if (auth.scheme === 'oauth2') {
+    const accessToken = await resolveOAuth2AccessToken(auth, apiKey)
+    return { authorization: `Bearer ${accessToken}` }
+  }
   return { [auth.header]: apiKey }
 }
 

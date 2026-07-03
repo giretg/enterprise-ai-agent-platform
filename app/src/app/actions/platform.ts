@@ -51,6 +51,8 @@ import {
   behaviorProfileIdSchema,
   updateAgentInstructionSchema,
   updateAgentModelConfigSchema,
+  updateAgentPersonaSchema,
+  updateAgentAvatarSchema,
   updateAgentSelfEvolutionProfileSchema,
   createHttpApiConnectorSchema,
   updateHttpApiConnectorSchema,
@@ -573,10 +575,21 @@ export async function getAgentGovernance(input: { agentId: string }) {
   }
 }
 
+/** Szóköz/vessző-elválasztott scope-listát tömbbé bont (OAuth2 authorization request). */
+function parseOAuthScopes(scope: string | undefined): string[] {
+  if (!scope) return []
+  return [...new Set(scope.split(/[\s,]+/).map((s) => s.trim()).filter(Boolean))]
+}
+
 function httpApiConnectorConfig(input: {
   baseUrl: string
-  authScheme: 'header' | 'bearer'
+  authScheme: 'header' | 'bearer' | 'oauth2' | 'oauth2_delegated'
   authHeader?: string
+  tokenUrl?: string
+  clientId?: string
+  scope?: string
+  authUrl?: string
+  userInfoUrl?: string
   description?: string
   authProfiles?: Record<
     string,
@@ -599,10 +612,31 @@ function httpApiConnectorConfig(input: {
 }) {
   return {
     baseUrl: input.baseUrl.replace(/\/+$/, ''),
+    // oauth2_delegated: a runtime a per-user grant access tokent injektálja
+    // Bearerként, ezért a client-oldali séma egyszerű bearer; a consent-flow
+    // paramétereit a config.oauth blokk tartja (ConnectorGrantService olvassa).
     auth:
       input.authScheme === 'header'
         ? { scheme: 'header', header: input.authHeader! }
-        : { scheme: 'bearer' },
+        : input.authScheme === 'oauth2'
+          ? {
+              scheme: 'oauth2',
+              tokenUrl: input.tokenUrl!,
+              clientId: input.clientId!,
+              ...(input.scope ? { scope: input.scope } : {}),
+            }
+          : { scheme: 'bearer' },
+    ...(input.authScheme === 'oauth2_delegated'
+      ? {
+          oauth: {
+            authUrl: input.authUrl!,
+            tokenUrl: input.tokenUrl!,
+            clientId: input.clientId!,
+            scopes: parseOAuthScopes(input.scope),
+            ...(input.userInfoUrl ? { userInfoUrl: input.userInfoUrl } : {}),
+          },
+        }
+      : {}),
     ...(input.description ? { description: input.description } : {}),
     ...(input.authProfiles && Object.keys(input.authProfiles).length > 0
       ? { authProfiles: input.authProfiles }
@@ -655,9 +689,16 @@ export async function createHttpApiConnectorForAgent(input: {
   agentId: string
   name: string
   baseUrl: string
-  authScheme: 'header' | 'bearer'
+  authScheme: 'header' | 'bearer' | 'oauth2' | 'oauth2_delegated'
   authHeader?: string
-  apiKey: string
+  tokenUrl?: string
+  clientId?: string
+  scope?: string
+  authUrl?: string
+  userInfoUrl?: string
+  apiKey?: string
+  clientSecret?: string
+  refreshToken?: string
   description?: string
   authProfiles?: Record<
     string,
@@ -698,11 +739,14 @@ export async function createHttpApiConnectorForAgent(input: {
 
     // 1. Connector létrehozása secret nélkül; 2. a pasted kulcs a secret-store
     //    mögé kerül (NEM a DB-be); 3. az alias secret-ref:<id>-re frissül.
+    // oauth2_delegated: a connector user_delegated — a felhasználó adja a
+    // hozzájárulást (authorization-code consent), az agent az ő tokenjével jár el.
+    const isDelegated = parsed.authScheme === 'oauth2_delegated'
     const connector = await prisma.connector.create({
       data: {
         type: 'http_api',
         name: parsed.name,
-        authMode: 'service',
+        authMode: isDelegated ? 'user_delegated' : 'service',
         scope: 'global',
         config: config as Prisma.InputJsonValue,
         secretAlias: null,
@@ -713,7 +757,18 @@ export async function createHttpApiConnectorForAgent(input: {
     const { saveConnectorApiKey, buildConnectorSecretRef } = await import(
       '@/domain/connector/connector-secret-store'
     )
-    await saveConnectorApiKey(connector.id, parsed.apiKey)
+    // oauth2 sémánál a secret-store mögé NEM a nyers kulcs, hanem a refresh_token
+    // grant-hoz szükséges JSON blob kerül: {"clientSecret","refreshToken"} — a
+    // http_api runtime (§oauth2) ezt olvassa vissza a connector secretAlias-ából.
+    // oauth2_delegated esetén csak a client_secret kerül a store mögé (a consent
+    // token-cseréhez); a refresh_token per-user a grant-vaultba kerül a callbacknél.
+    const secretPayload =
+      parsed.authScheme === 'oauth2'
+        ? JSON.stringify({ clientSecret: parsed.clientSecret, refreshToken: parsed.refreshToken })
+        : isDelegated
+          ? parsed.clientSecret!
+          : parsed.apiKey!
+    await saveConnectorApiKey(connector.id, secretPayload)
     await prisma.connector.update({
       where: { id: connector.id },
       data: { secretAlias: buildConnectorSecretRef(connector.id) },
@@ -758,9 +813,16 @@ export async function updateHttpApiConnectorForAgent(input: {
   connectorId: string
   name: string
   baseUrl: string
-  authScheme: 'header' | 'bearer'
+  authScheme: 'header' | 'bearer' | 'oauth2' | 'oauth2_delegated'
   authHeader?: string
+  tokenUrl?: string
+  clientId?: string
+  scope?: string
+  authUrl?: string
+  userInfoUrl?: string
   apiKey?: string
+  clientSecret?: string
+  refreshToken?: string
   description?: string
   authProfiles?: Record<
     string,
@@ -801,6 +863,15 @@ export async function updateHttpApiConnectorForAgent(input: {
     if (!link) return fail('API-kapcsolat nincs ehhez az agenthez rendelve.')
     if (link.connector.type !== 'http_api') return fail('Csak API-kapcsolat szerkeszthető itt.')
 
+    // Egy már user_delegated (auto-consent) connectort nem szabad némán service
+    // módra visszaállítani egy generikus szerkesztéssel — az eltörné a per-user
+    // grant-feloldást és eldobná a config.oauth blokkot.
+    if (link.connector.authMode === 'user_delegated' && parsed.authScheme !== 'oauth2_delegated') {
+      return fail(
+        'Ez egy automatikus-hozzájárulású (user-delegált) kapcsolat — a hitelesítést az „Összekötött fiókok" oldalon kezeld, vagy válaszd az „OAuth2 – automatikus hozzájárulás" módot.',
+      )
+    }
+
     const existing = await prisma.connector.findUnique({
       where: { type_name: { type: 'http_api', name: parsed.name } },
     })
@@ -808,10 +879,42 @@ export async function updateHttpApiConnectorForAgent(input: {
       return fail(`Már létezik „${parsed.name}" nevű API-kapcsolat — adj egyedi nevet.`)
     }
 
+    const isDelegated = parsed.authScheme === 'oauth2_delegated'
+    const wasDelegated = link.connector.authMode === 'user_delegated'
     const config = httpApiConnectorConfig(parsed)
-    if (parsed.apiKey) {
+
+    // oauth2_delegated átállásnál a store mögé PLAIN client_secret kell (a consent
+    // token-cseréhez). Ha nincs új secret megadva és a connector eddig NEM volt
+    // delegált, a régi {clientSecret,refreshToken} blobból kinyerjük a client_secretet,
+    // hogy az admin ne kényszerüljön újra beírni a már tárolt titkot.
+    let delegatedSecret = parsed.clientSecret
+    if (isDelegated && !delegatedSecret && !wasDelegated && link.connector.secretAlias) {
+      const { resolveConnectorApiKey } = await import('@/domain/connector/http-api-client')
+      try {
+        const existing = await resolveConnectorApiKey(link.connector.secretAlias)
+        const blob = JSON.parse(existing) as { clientSecret?: unknown }
+        if (typeof blob.clientSecret === 'string' && blob.clientSecret.trim()) {
+          delegatedSecret = blob.clientSecret.trim()
+        }
+      } catch {
+        /* nem JSON-blob (pl. már plain) — hagyjuk a meglévőt */
+      }
+    }
+
+    // oauth2 rotáláshoz mindkét titok kell (a séma ezt kikényszeríti); a JSON blob
+    // formátum megegyezik a create-tel, hogy a http_api runtime egységesen olvassa.
+    // oauth2_delegated: csak a client_secret kerül a store mögé (plain).
+    const rotatedSecret =
+      parsed.authScheme === 'oauth2' && parsed.clientSecret && parsed.refreshToken
+        ? JSON.stringify({ clientSecret: parsed.clientSecret, refreshToken: parsed.refreshToken })
+        : isDelegated
+          ? delegatedSecret
+          : parsed.authScheme !== 'oauth2'
+            ? parsed.apiKey
+            : undefined
+    if (rotatedSecret) {
       const { saveConnectorApiKey } = await import('@/domain/connector/connector-secret-store')
-      await saveConnectorApiKey(parsed.connectorId, parsed.apiKey)
+      await saveConnectorApiKey(parsed.connectorId, rotatedSecret)
     }
     const { buildConnectorSecretRef } = await import('@/domain/connector/connector-secret-store')
 
@@ -819,6 +922,7 @@ export async function updateHttpApiConnectorForAgent(input: {
       where: { id: parsed.connectorId },
       data: {
         name: parsed.name,
+        authMode: isDelegated ? 'user_delegated' : 'service',
         config: config as Prisma.InputJsonValue,
         secretAlias: link.connector.secretAlias ?? buildConnectorSecretRef(parsed.connectorId),
         version: { increment: 1 },
@@ -850,7 +954,7 @@ export async function updateHttpApiConnectorForAgent(input: {
         baseUrl: config.baseUrl,
         accessMode: parsed.accessMode,
         endpointCount: parsed.endpoints?.length ?? 0,
-        apiKeyRotated: Boolean(parsed.apiKey),
+        apiKeyRotated: Boolean(rotatedSecret),
       },
     })
 
@@ -944,6 +1048,85 @@ export async function updateAgentInstruction(input: {
     return ok(result)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to update agent instruction')
+  }
+}
+
+export async function updateAgentPersona(input: {
+  agentId: string
+  personaNickname?: string
+  personaGreeting?: string
+  personaTrait?: string
+}) {
+  try {
+    const user = await requireRole('admin')
+    const parsed = updateAgentPersonaSchema.parse(input)
+    const agent = await repositories.agents.findById(parsed.agentId, user.tenantId)
+    if (!agent) return fail('Agent not found')
+
+    const updated = await repositories.agents.updatePersona({
+      agentId: parsed.agentId,
+      ...(parsed.personaNickname !== undefined ? { personaNickname: parsed.personaNickname } : {}),
+      ...(parsed.personaGreeting !== undefined ? { personaGreeting: parsed.personaGreeting } : {}),
+      ...(parsed.personaTrait !== undefined ? { personaTrait: parsed.personaTrait } : {}),
+    })
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: agent.currentVersion,
+      action: 'agent.persona',
+      targetType: 'agent',
+      targetId: parsed.agentId,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: null,
+      policyDecision: 'allowed',
+      metadata: {
+        changed: [
+          parsed.personaNickname !== undefined ? 'personaNickname' : null,
+          parsed.personaGreeting !== undefined ? 'personaGreeting' : null,
+          parsed.personaTrait !== undefined ? 'personaTrait' : null,
+        ].filter(Boolean),
+      },
+    })
+
+    return ok({
+      personaNickname: updated.personaNickname,
+      personaGreeting: updated.personaGreeting,
+      personaTrait: updated.personaTrait,
+    })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update agent persona')
+  }
+}
+
+export async function updateAgentAvatar(input: { agentId: string; avatarUrl: string }) {
+  try {
+    const user = await requireRole('admin')
+    const parsed = updateAgentAvatarSchema.parse(input)
+    const agent = await repositories.agents.findById(parsed.agentId, user.tenantId)
+    if (!agent) return fail('Agent not found')
+
+    const nextAvatar = parsed.avatarUrl === '' ? null : parsed.avatarUrl
+    await repositories.agents.updateAvatar({ agentId: parsed.agentId, avatarUrl: nextAvatar })
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: agent.currentVersion,
+      action: 'agent.avatar',
+      targetType: 'agent',
+      targetId: parsed.agentId,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: null,
+      policyDecision: 'allowed',
+      metadata: { removed: nextAvatar === null },
+    })
+
+    return ok({ avatarUrl: nextAvatar })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update agent avatar')
   }
 }
 

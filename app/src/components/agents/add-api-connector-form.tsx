@@ -76,7 +76,7 @@ function parseAuthProfilesJson(value: string): AuthProfiles | undefined {
 // Admin egy külső REST API-t köt egy agenthez: connector (http_api) létrehozása,
 // a kulcs a secret-store mögé kerül (NEM a DB-be), és a két http_api capability
 // engedélyezése. A megadott endpointok + leírás a modell elé kerülnek híváskor.
-export function AddApiConnectorForm({ agentId }: { agentId: string }) {
+export function AddApiConnectorForm({ agentId, bare = false }: { agentId: string; bare?: boolean }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
@@ -84,9 +84,18 @@ export function AddApiConnectorForm({ agentId }: { agentId: string }) {
 
   const [name, setName] = useState('')
   const [baseUrl, setBaseUrl] = useState('')
-  const [authScheme, setAuthScheme] = useState<'header' | 'bearer'>('header')
+  const [authScheme, setAuthScheme] = useState<'header' | 'bearer' | 'oauth2' | 'oauth2_delegated'>(
+    'header',
+  )
   const [authHeader, setAuthHeader] = useState('X-Api-Key')
   const [apiKey, setApiKey] = useState('')
+  const [tokenUrl, setTokenUrl] = useState('')
+  const [clientId, setClientId] = useState('')
+  const [scope, setScope] = useState('')
+  const [authUrl, setAuthUrl] = useState('')
+  const [userInfoUrl, setUserInfoUrl] = useState('')
+  const [clientSecret, setClientSecret] = useState('')
+  const [refreshToken, setRefreshToken] = useState('')
   const [accessMode, setAccessMode] = useState<'read' | 'write'>('write')
   const [description, setDescription] = useState('')
   const [authProfilesText, setAuthProfilesText] = useState('')
@@ -139,7 +148,24 @@ export function AddApiConnectorForm({ agentId }: { agentId: string }) {
         baseUrl: baseUrl.trim(),
         authScheme,
         ...(authScheme === 'header' ? { authHeader: authHeader.trim() } : {}),
-        apiKey: apiKey.trim(),
+        ...(authScheme === 'oauth2'
+          ? {
+              tokenUrl: tokenUrl.trim(),
+              clientId: clientId.trim(),
+              ...(scope.trim() ? { scope: scope.trim() } : {}),
+              clientSecret: clientSecret.trim(),
+              refreshToken: refreshToken.trim(),
+            }
+          : authScheme === 'oauth2_delegated'
+            ? {
+                authUrl: authUrl.trim(),
+                tokenUrl: tokenUrl.trim(),
+                clientId: clientId.trim(),
+                scope: scope.trim(),
+                clientSecret: clientSecret.trim(),
+                ...(userInfoUrl.trim() ? { userInfoUrl: userInfoUrl.trim() } : {}),
+              }
+            : { apiKey: apiKey.trim() }),
         ...(description.trim() ? { description: description.trim() } : {}),
         ...(authProfiles ? { authProfiles } : {}),
         ...(defaultAuthProfile.trim() ? { defaultAuthProfile: defaultAuthProfile.trim() } : {}),
@@ -155,6 +181,13 @@ export function AddApiConnectorForm({ agentId }: { agentId: string }) {
         setName('')
         setBaseUrl('')
         setApiKey('')
+        setTokenUrl('')
+        setClientId('')
+        setScope('')
+        setAuthUrl('')
+        setUserInfoUrl('')
+        setClientSecret('')
+        setRefreshToken('')
         setDescription('')
         setAuthProfilesText('')
         setDefaultAuthProfile('')
@@ -169,15 +202,14 @@ export function AddApiConnectorForm({ agentId }: { agentId: string }) {
     })
   }
 
-  return (
-    <Card title="Új API-kapcsolat hozzáadása">
-      <form
-        className="space-y-4"
-        onSubmit={(e) => {
-          e.preventDefault()
-          submit()
-        }}
-      >
+  const form = (
+    <form
+      className="space-y-4"
+      onSubmit={(e) => {
+        e.preventDefault()
+        submit()
+      }}
+    >
         <p className="text-xs text-ink-faint">
           Egy külső REST API bekötése. Az API-kulcs titkosítva, a control plane secret-tárolójában
           tárolódik — soha nem kerül az adatbázisba, promptba vagy logba.
@@ -206,11 +238,15 @@ export function AddApiConnectorForm({ agentId }: { agentId: string }) {
             <span className="text-ink-soft">Hitelesítés módja</span>
             <select
               value={authScheme}
-              onChange={(e) => setAuthScheme(e.target.value as 'header' | 'bearer')}
+              onChange={(e) =>
+                setAuthScheme(e.target.value as 'header' | 'bearer' | 'oauth2' | 'oauth2_delegated')
+              }
               className={INPUT}
             >
               <option value="header">Egyedi fejléc (pl. X-Api-Key)</option>
               <option value="bearer">Bearer token (Authorization)</option>
+              <option value="oauth2">OAuth2 (kézi refresh_token grant)</option>
+              <option value="oauth2_delegated">OAuth2 – automatikus hozzájárulás (user-delegált)</option>
             </select>
           </label>
           {authScheme === 'header' && (
@@ -224,17 +260,95 @@ export function AddApiConnectorForm({ agentId }: { agentId: string }) {
               />
             </label>
           )}
-          <label className="block text-sm">
-            <span className="text-ink-soft">API kulcs</span>
-            <input
-              type="password"
-              value={apiKey}
-              onChange={(e) => setApiKey(e.target.value)}
-              placeholder="pn_..."
-              autoComplete="off"
-              className={INPUT}
-            />
-          </label>
+          {authScheme !== 'oauth2' && authScheme !== 'oauth2_delegated' && (
+            <label className="block text-sm">
+              <span className="text-ink-soft">API kulcs</span>
+              <input
+                type="password"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder="pn_..."
+                autoComplete="off"
+                className={INPUT}
+              />
+            </label>
+          )}
+          {(authScheme === 'oauth2' || authScheme === 'oauth2_delegated') && (
+            <>
+              {authScheme === 'oauth2_delegated' && (
+                <label className="block text-sm">
+                  <span className="text-ink-soft">Authorization URL (consent)</span>
+                  <input
+                    value={authUrl}
+                    onChange={(e) => setAuthUrl(e.target.value)}
+                    placeholder="https://accounts.google.com/o/oauth2/v2/auth"
+                    className={INPUT}
+                  />
+                </label>
+              )}
+              <label className="block text-sm">
+                <span className="text-ink-soft">Token URL</span>
+                <input
+                  value={tokenUrl}
+                  onChange={(e) => setTokenUrl(e.target.value)}
+                  placeholder="https://oauth2.googleapis.com/token"
+                  className={INPUT}
+                />
+              </label>
+              <label className="block text-sm">
+                <span className="text-ink-soft">Client ID</span>
+                <input
+                  value={clientId}
+                  onChange={(e) => setClientId(e.target.value)}
+                  className={INPUT}
+                />
+              </label>
+              <label className="block text-sm">
+                <span className="text-ink-soft">
+                  Scope {authScheme === 'oauth2_delegated' ? '(kötelező)' : '(opcionális)'}
+                </span>
+                <input
+                  value={scope}
+                  onChange={(e) => setScope(e.target.value)}
+                  placeholder="https://www.googleapis.com/auth/webmasters.readonly"
+                  className={INPUT}
+                />
+              </label>
+              <label className="block text-sm">
+                <span className="text-ink-soft">Client secret</span>
+                <input
+                  type="password"
+                  value={clientSecret}
+                  onChange={(e) => setClientSecret(e.target.value)}
+                  autoComplete="off"
+                  className={INPUT}
+                />
+              </label>
+              {authScheme === 'oauth2' && (
+                <label className="block text-sm">
+                  <span className="text-ink-soft">Refresh token</span>
+                  <input
+                    type="password"
+                    value={refreshToken}
+                    onChange={(e) => setRefreshToken(e.target.value)}
+                    autoComplete="off"
+                    className={INPUT}
+                  />
+                </label>
+              )}
+              {authScheme === 'oauth2_delegated' && (
+                <label className="block text-sm">
+                  <span className="text-ink-soft">Userinfo URL (opcionális, fiók-címkéhez)</span>
+                  <input
+                    value={userInfoUrl}
+                    onChange={(e) => setUserInfoUrl(e.target.value)}
+                    placeholder="https://www.googleapis.com/oauth2/v2/userinfo"
+                    className={INPUT}
+                  />
+                </label>
+              )}
+            </>
+          )}
           <label className="block text-sm">
             <span className="text-ink-soft">Hozzáférés</span>
             <select
@@ -247,6 +361,16 @@ export function AddApiConnectorForm({ agentId }: { agentId: string }) {
             </select>
           </label>
         </div>
+
+        {authScheme === 'oauth2_delegated' && (
+          <p className="rounded-lg border border-sage/30 bg-sage/10 px-3 py-2 text-xs text-sage">
+            Automatikus hozzájárulás: a felhasználók az „Összekötött fiókok&rdquo; oldalon egy kattintással
+            adnak engedélyt (authorization-code consent) — nincs kézi OAuth Playground, nem kell
+            refresh tokent beilleszteni. A redirect URI a platform közös callbackje:{' '}
+            <code>/api/connectors/oauth/callback</code> — ezt vedd fel az OAuth-app engedélyezett
+            redirect URI-jai közé.
+          </p>
+        )}
 
         <label className="block text-sm">
           <span className="text-ink-soft">API leírás (a modell elé kerül)</span>
@@ -389,12 +513,27 @@ export function AddApiConnectorForm({ agentId }: { agentId: string }) {
 
         <button
           type="submit"
-          disabled={pending || !name.trim() || !baseUrl.trim() || !apiKey.trim()}
+          disabled={
+            pending ||
+            !name.trim() ||
+            !baseUrl.trim() ||
+            (authScheme === 'oauth2'
+              ? !tokenUrl.trim() || !clientId.trim() || !clientSecret.trim() || !refreshToken.trim()
+              : authScheme === 'oauth2_delegated'
+                ? !authUrl.trim() ||
+                  !tokenUrl.trim() ||
+                  !clientId.trim() ||
+                  !scope.trim() ||
+                  !clientSecret.trim()
+                : !apiKey.trim())
+          }
           className="rounded-full bg-coral/20 px-5 py-2 text-sm font-semibold text-coral disabled:opacity-50"
         >
           {pending ? 'Mentés...' : 'API-kapcsolat hozzáadása'}
         </button>
       </form>
-    </Card>
   )
+
+  if (bare) return form
+  return <Card title="Új API-kapcsolat hozzáadása">{form}</Card>
 }

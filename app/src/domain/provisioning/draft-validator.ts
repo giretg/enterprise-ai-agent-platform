@@ -9,6 +9,11 @@
  * csak a validáció kimenetét (checks/warnings/errors). A nyers találati értékek
  * a `warnings`/`errors` üzenetekbe rövidített/sanitizált formában mehetnek.
  */
+import {
+  FORBIDDEN_HOST_PATTERNS,
+  FORBIDDEN_PATH_PATTERNS,
+  SECRET_LIKE_PATTERNS,
+} from '@/domain/net/untrusted-patterns'
 import { WRITE_METHODS, type ConnectorConfig, type HttpMethod } from './connector-config'
 
 export type CheckStatus = 'passed' | 'warned' | 'failed'
@@ -21,6 +26,7 @@ export type ValidationResult = {
     forbiddenPatterns: CheckStatus
     secretInline: CheckStatus
     writeToolsFlagged: CheckStatus
+    oauthCompleteness: CheckStatus
   }
   warnings: string[]
   errors: string[]
@@ -42,30 +48,6 @@ export type ValidatorOptions = {
    */
   bankPreset?: boolean
 }
-
-// Exfiltráció-szerű / gyanús minták a baseUrl-ben, host-okban és tool-path-okban.
-// (§7.2 — tiltott minták.) Determinisztikus, bővíthető lista.
-const FORBIDDEN_HOST_PATTERNS: { name: string; pattern: RegExp }[] = [
-  { name: 'raw_ip_host', pattern: /^\d{1,3}(\.\d{1,3}){3}$/ },
-  { name: 'localhost_host', pattern: /^(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])$/i },
-  // Felhő-metaadat endpoint (SSRF kanári).
-  { name: 'metadata_host', pattern: /(169\.254\.169\.254|metadata\.google\.internal)/i },
-  { name: 'known_exfil_sink', pattern: /(webhook\.site|requestbin|ngrok\.io|burpcollaborator)/i },
-]
-
-const FORBIDDEN_PATH_PATTERNS: { name: string; pattern: RegExp }[] = [
-  { name: 'data_uri_path', pattern: /^data:/i },
-  { name: 'file_uri_path', pattern: /^file:/i },
-]
-
-// Nyers secret/token gyanús minták a config-ban (§7.2 — inline-secret tiltás).
-const SECRET_LIKE_PATTERNS: { name: string; pattern: RegExp }[] = [
-  { name: 'bearer_literal', pattern: /\bbearer\s+[A-Za-z0-9._\-]{12,}/i },
-  { name: 'aws_access_key', pattern: /\bAKIA[0-9A-Z]{16}\b/ },
-  { name: 'private_key_block', pattern: /-----BEGIN [A-Z ]*PRIVATE KEY-----/ },
-  { name: 'long_hex_token', pattern: /\b[0-9a-f]{40,}\b/i },
-  { name: 'jwt_like', pattern: /\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\b/ },
-]
 
 function hostOf(url: string): string | null {
   try {
@@ -168,17 +150,54 @@ export function validateDraftConfig(
     warnings.push('no_scopes_declared_for_tools')
   }
 
+  // 6) OAuth2-teljesség — authMode-tudatos, mert a két futásidejű út MÁS mezőket követel:
+  //
+  //    • service / agent_owned oauth2: a http-api-kliens client_credentials token-refresht
+  //      végez az abszolút `auth.tokenUrl`-ról (nincs provider-default) → e nélkül minden
+  //      hívás elhasal. A `clientId`-t az aktiválás külön kapuja kényszeríti ki (fail-fast).
+  //
+  //    • user_delegated oauth2: a per-user Bearer-tokent a ConnectorGrantService szerzi a
+  //      consent-flow-ban (authUrl/tokenUrl/scopes). Ezek provider-névtől függetlenül
+  //      explicit config-mezők: a sablon-materializer tölti őket, futásidőben nincs
+  //      Google- vagy hostnév-tippelés. A `clientId` itt is aktiváláskor jön
+  //      (auth.clientId / activate-param), ezért itt nem duplikáljuk. Az aktiválás a
+  //      delegált draftot `auth.scheme=bearer` + `oauth` blokk runtime-alakra normalizálja.
+  let oauthCompleteness: CheckStatus = 'passed'
+  if (config.auth.type === 'oauth2') {
+    const tokenUrl = typeof config.auth.tokenUrl === 'string' ? config.auth.tokenUrl.trim() : ''
+    const tokenUrlOk = /^https?:\/\//i.test(tokenUrl)
+    if (config.authMode === 'user_delegated') {
+      const authUrl = typeof config.auth.authUrl === 'string' ? config.auth.authUrl.trim() : ''
+      const authUrlOk = /^https?:\/\//i.test(authUrl)
+      if (!authUrlOk || !tokenUrlOk) {
+        oauthCompleteness = 'failed'
+        errors.push('oauth2_delegated_missing_endpoints')
+      }
+    } else if (!tokenUrlOk) {
+      oauthCompleteness = 'failed'
+      errors.push('oauth2_missing_token_url')
+    }
+  }
+
   const status = worst(
     egressAllowlist,
     forbiddenPatterns,
     secretInline,
     writeToolsFlagged,
     scopeMinimization,
+    oauthCompleteness,
   )
 
   return {
     status,
-    checks: { egressAllowlist, scopeMinimization, forbiddenPatterns, secretInline, writeToolsFlagged },
+    checks: {
+      egressAllowlist,
+      scopeMinimization,
+      forbiddenPatterns,
+      secretInline,
+      writeToolsFlagged,
+      oauthCompleteness,
+    },
     warnings,
     errors,
     unknownHosts: unknownHosts.sort(),

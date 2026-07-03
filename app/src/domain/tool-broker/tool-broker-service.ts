@@ -71,6 +71,14 @@ import {
   type WebSearchEffectiveQuery,
   type WebSearchResult,
 } from '@/domain/web-search/web-search-types'
+import { KnownUrlRegistry } from '@/domain/web-research/known-url-registry'
+import { validateWebResearchResult } from '@/domain/web-research/web-research-validator'
+import type {
+  WebResearchRequestArgs,
+  WebResearchRequestResult,
+  WebResearchResult,
+  WebResearchSourceType,
+} from '@/domain/web-research/web-research-types'
 
 export type KbSearchArgs = {
   query: string
@@ -139,6 +147,9 @@ export type AgentAskResult = {
   answeredByAgentId?: string
   error?: string
 }
+
+export type WebResearchArgs = WebResearchRequestArgs
+export type WebResearchDelegationResult = WebResearchRequestResult
 
 export type DelegationProcessInput = {
   ticketId: string
@@ -336,6 +347,7 @@ export type ToolBrokerInvokeInput =
   | (ToolInvokeBase & { tool: 'sandbox_app.preview'; args: SandboxAppPreviewArgs })
   | (ToolInvokeBase & { tool: 'sandbox_app.export'; args: SandboxAppExportArgs })
   | (ToolInvokeBase & { tool: 'web_search'; args: WebSearchArgs })
+  | (ToolInvokeBase & { tool: 'web_research_request'; args: WebResearchArgs })
 
 export type ToolBrokerInvokeResult =
   | {
@@ -378,6 +390,7 @@ export type ToolBrokerInvokeResult =
         | SandboxAppPreviewResult
         | SandboxAppExportResult
         | WebSearchResult
+        | WebResearchDelegationResult
       resultMeta: Record<string, unknown>
       latencyMs: number
     }
@@ -385,13 +398,13 @@ export type ToolBrokerInvokeResult =
 type ToolName = ToolBrokerInvokeInput['tool']
 
 type AuthorizationResult =
-  | { allowed: true; connector: Connector; grant?: ConnectorGrant; actingUserId?: string; agentSecretAlias?: string | null }
+  | { allowed: true; connector?: Connector; grant?: ConnectorGrant; actingUserId?: string; agentSecretAlias?: string | null }
   | { allowed: false; reason: string; connector?: Connector }
 
-const TOOL_REQUIREMENTS: Record<
+const TOOL_REQUIREMENTS: Partial<Record<
   ToolName,
   { connectorType: ConnectorType; accessMode: ConnectorAccessMode }
-> = {
+>> = {
   kb_search: { connectorType: 'knowledge_base', accessMode: 'read' },
   board_write: { connectorType: 'board', accessMode: 'write' },
   ticket_create: { connectorType: 'board', accessMode: 'write' },
@@ -644,6 +657,15 @@ function argsMeta(
       hasPurpose: Boolean(input.args.purpose),
     }
   }
+  if (input.tool === 'web_research_request') {
+    return {
+      ...base,
+      objectiveHash: createHash('sha256').update(input.args.objective).digest('hex').slice(0, 16),
+      allowedSourceTypes: input.args.allowedSourceTypes ?? [],
+      knownDomain: input.args.knownDomain ?? null,
+      maxSources: input.args.maxSources ?? null,
+    }
+  }
 
   return {
     ...base,
@@ -697,7 +719,8 @@ function resultMeta(
     | SandboxAppUpdateArtifactResult
     | SandboxAppPreviewResult
     | SandboxAppExportResult
-    | WebSearchResult,
+    | WebSearchResult
+    | WebResearchDelegationResult,
 ): Record<string, unknown> {
   // 'in' nem szűri ki a Record<string, string> alakú eredménytípusokat (pl.
   // GmailGetMessageResult), ezért explicit type predicate kell a biztos narrowinghoz.
@@ -713,6 +736,18 @@ function resultMeta(
   }
   if ('status' in result && 'ok' in result && 'body' in result) {
     return { status: result.status, ok: result.ok }
+  }
+
+  if ('ok' in result && !('ticketId' in result) && (('result' in result) || ('error' in result))) {
+    const research = result as WebResearchDelegationResult
+    if (!research.ok) return { ok: false, error: research.error }
+    return {
+      ok: true,
+      factCount: research.result.facts.length,
+      sourceCount: research.result.sources.length,
+      overallConfidence: research.result.overallConfidence,
+      unverified: research.result.unverified,
+    }
   }
 
   if ('hits' in result && Array.isArray(result.hits)) {
@@ -809,7 +844,7 @@ export interface Authorizer {
   }): Promise<AuthorizationResult>
 }
 
-const ORCHESTRATOR_DELEGATION_TOOLS: ToolName[] = ['ticket_create']
+const ORCHESTRATOR_DELEGATION_TOOLS: ToolName[] = ['ticket_create', 'web_research_request']
 
 /**
  * Az acting-user státusz-feloldása. Cserepont a determinisztikus teszteléshez
@@ -845,11 +880,26 @@ const prismaRoleTemplateLookup: RoleTemplateLookup = async (key, tenantId) => {
  * teszteléshez; alapból a `platform_settings` táblát kérdezi.
  */
 export type WebSearchEnabledLookup = () => Promise<boolean>
+export type WebFetchEnabledLookup = () => Promise<boolean>
+export type WebResearchDelegationEnabledLookup = () => Promise<boolean>
 
 const prismaWebSearchEnabledLookup: WebSearchEnabledLookup = async () => {
   const row = await prisma.platformSetting.findUnique({ where: { key: WEB_SEARCH_CONTROLS_KEY } })
   const value = row?.value as { killSwitch?: boolean } | null
   return value?.killSwitch !== true
+}
+
+const prismaWebFetchEnabledLookup: WebFetchEnabledLookup = async () => {
+  const row = await prisma.platformSetting.findUnique({ where: { key: 'web_fetch.controls' } })
+  const value = row?.value as { enabled?: boolean } | null
+  return value?.enabled === true
+}
+
+const prismaWebResearchDelegationEnabledLookup: WebResearchDelegationEnabledLookup = async () => {
+  const row = await prisma.platformSetting.findUnique({ where: { key: 'web_egress.delegation.enabled' } })
+  if (typeof row?.value === 'boolean') return row.value
+  const value = row?.value as { enabled?: boolean } | null
+  return value?.enabled === true
 }
 
 const prismaActingUserLookup: ActingUserLookup = async (userId) =>
@@ -903,7 +953,14 @@ export class AllowlistAuthorizer implements Authorizer {
       }
     }
 
+    if (input.tool === 'web_research_request') {
+      return { allowed: true }
+    }
+
     const requirement = TOOL_REQUIREMENTS[input.tool]
+    if (!requirement) {
+      return { allowed: false, reason: 'tool_not_configured' }
+    }
     const requestedConnectorId =
       (input.tool === 'http_api_get' || input.tool === 'http_api_request' || input.tool === 'mailbox_count') &&
       typeof input.args?.connectorId === 'string'
@@ -996,6 +1053,8 @@ export class ToolBrokerService {
     private webSearch: WebSearchService,
     private webSearchPolicy: WebSearchPolicyService,
     private isWebSearchEnabled: WebSearchEnabledLookup = prismaWebSearchEnabledLookup,
+    private isWebFetchEnabled: WebFetchEnabledLookup = prismaWebFetchEnabledLookup,
+    private isWebResearchDelegationEnabled: WebResearchDelegationEnabledLookup = prismaWebResearchDelegationEnabledLookup,
   ) {}
 
   /** Chat agent_ask: szinkron feldolgozás (pl. WikiAgentRuntime.processTicket). */
@@ -1027,7 +1086,7 @@ export class ToolBrokerService {
         return this.recordDenied(
           input,
           ticketId,
-          authorization.connector.id,
+          authorization.connector?.id ?? null,
           'human_approval_required',
           startedAt,
           actingUserId,
@@ -1039,13 +1098,13 @@ export class ToolBrokerService {
     if (input.tool === 'board_write') {
       const ticket = await this.tickets.findById(input.args.ticketId)
       if (!ticket) {
-        return this.recordDenied(input, ticketId, authorization.connector.id, 'ticket_not_found', startedAt, actingUserId, authorization.grant?.id ?? null)
+        return this.recordDenied(input, ticketId, authorization.connector?.id ?? null, 'ticket_not_found', startedAt, actingUserId, authorization.grant?.id ?? null)
       }
       if (ticket.agentId !== input.agentId) {
         return this.recordDenied(
           input,
           ticketId,
-          authorization.connector.id,
+          authorization.connector?.id ?? null,
           'ticket_not_accessible_for_agent',
           startedAt,
           actingUserId,
@@ -1056,6 +1115,7 @@ export class ToolBrokerService {
 
     let webSearchEffective: WebSearchEffectiveQuery | undefined
     if (input.tool === 'web_search') {
+      if (!authorization.connector) throw new Error('web_search requires connector authorization')
       const config = parseWebSearchConfig(authorization.connector.config)
       const [enabled, ticketQueryCount, agentDayQueryCount] = await Promise.all([
         this.isWebSearchEnabled(),
@@ -1075,7 +1135,7 @@ export class ToolBrokerService {
         return this.recordDenied(
           input,
           ticketId,
-          authorization.connector.id,
+          authorization.connector?.id ?? null,
           decision.reason,
           startedAt,
           actingUserId,
@@ -1099,7 +1159,7 @@ export class ToolBrokerService {
       await this.recordCall({
         input,
         ticketId,
-        connectorId: authorization.connector.id,
+        connectorId: authorization.connector?.id ?? null,
         status: 'ok',
         latencyMs,
         policyDecision: 'allowed',
@@ -1120,7 +1180,7 @@ export class ToolBrokerService {
       const message = e instanceof Error ? e.message : 'tool_call_failed'
       if (
         e instanceof GmailApiAuthError &&
-        authorization.connector.authMode === 'user_delegated' &&
+        authorization.connector?.authMode === 'user_delegated' &&
         authorization.grant &&
         actingUserId
       ) {
@@ -1134,7 +1194,7 @@ export class ToolBrokerService {
         return this.recordDenied(
           input,
           ticketId,
-          authorization.connector.id,
+          authorization.connector?.id ?? null,
           'connector_grant_expired',
           startedAt,
           actingUserId,
@@ -1145,7 +1205,7 @@ export class ToolBrokerService {
       await this.recordCall({
         input,
         ticketId,
-        connectorId: authorization.connector.id,
+        connectorId: authorization.connector?.id ?? null,
         status: 'error',
         latencyMs,
         policyDecision: 'error',
@@ -1165,15 +1225,18 @@ export class ToolBrokerService {
     webSearchEffective?: WebSearchEffectiveQuery,
   ) {
     if (input.tool === 'kb_search') {
+      if (!authorization.connector) throw new Error('kb_search requires connector authorization')
       return this.kbSearch(input.agentId, input.args, authorization.connector)
     }
     if (input.tool === 'board_write') return this.boardWrite(input)
     if (input.tool === 'ticket_create') return this.ticketCreate(input)
     if (input.tool === 'agent_ask') return this.agentAsk(input)
+    if (input.tool === 'web_research_request') return this.webResearchRequest(input)
     if (input.tool === 'agent_resolve') return this.agentResolve(input.args)
     if (input.tool === 'agent_catalog') return this.agentCatalog(input.args)
 
     if (input.tool === 'web_search') {
+      if (!authorization.connector) throw new Error('web_search requires connector authorization')
       const config = parseWebSearchConfig(authorization.connector.config)
       // agent_owned módban az agentConnector.secretAlias az irányadó (per-agent
       // kulcs); egyébként a connector szintű megosztott kulcs (lásd http_api minta).
@@ -1186,10 +1249,26 @@ export class ToolBrokerService {
     }
 
     if (input.tool === 'http_api_get' || input.tool === 'http_api_request') {
-      return this.executeHttpApiTool(input, authorization.connector, actingTenantId, actingUserId, authorization.agentSecretAlias)
+      if (!authorization.connector) throw new Error(`${input.tool} requires connector authorization`)
+      // user_delegated http_api (auto-consent oauth2): a per-user grant access
+      // tokenjét injektáljuk Bearerként — NEM a connector secretAlias-át (az a
+      // client_secret, sosem mehet ki bearerként).
+      const delegatedAccessToken =
+        authorization.connector.authMode === 'user_delegated'
+          ? await this.resolveDelegatedAccessToken(input, authorization)
+          : undefined
+      return this.executeHttpApiTool(
+        input,
+        authorization.connector,
+        actingTenantId,
+        actingUserId,
+        authorization.agentSecretAlias,
+        delegatedAccessToken,
+      )
     }
 
     if (input.tool.startsWith('file_') || input.tool.startsWith('xlsx_') || input.tool.startsWith('pdf_') || input.tool === 'docx_read') {
+      if (!authorization.connector) throw new Error(`${input.tool} requires connector authorization`)
       return this.executeFileTool(input, authorization.connector, actingTenantId)
     }
 
@@ -1231,17 +1310,23 @@ export class ToolBrokerService {
     actingTenantId: string | null,
     actingUserId: string | null,
     agentSecretAlias?: string | null,
+    delegatedAccessToken?: string,
   ): Promise<HttpApiCallResult> {
     const config = parseHttpApiConfig(connector.config)
+    // user_delegated (auto-consent oauth2): a per-user grant access token megy ki
+    // Bearerként (config.auth = bearer). A connector secretAlias ilyenkor a
+    // client_secret-et rejti, ezt SOHA nem oldjuk fel apiKey-ként.
     // agent_owned módban az agentConnector.secretAlias az irányadó (per-agent kulcs);
     // egyébként a connector szintű megosztott kulcs kerül felhasználásra.
     const effectiveAlias =
       connector.authMode === 'agent_owned' && agentSecretAlias
         ? agentSecretAlias
         : connector.secretAlias
-    const defaultApiKey = effectiveAlias
-      ? await resolveConnectorApiKey(effectiveAlias)
-      : undefined
+    const defaultApiKey = delegatedAccessToken
+      ? delegatedAccessToken
+      : effectiveAlias
+        ? await resolveConnectorApiKey(effectiveAlias)
+        : undefined
     const client = new HttpApiClient(config, {
       defaultApiKey,
       resolveProfileApiKey: (_profile, secretAlias) => resolveConnectorApiKey(secretAlias),
@@ -1383,6 +1468,7 @@ export class ToolBrokerService {
     input: ToolBrokerInvokeInput,
     authorization: Extract<AuthorizationResult, { allowed: true }>,
   ): Promise<string> {
+    if (!authorization.connector) throw new Error('delegated_access_token_requires_connector')
     if (authorization.connector.authMode !== 'user_delegated' || !authorization.grant) {
       throw new Error('delegated_access_token_requires_grant')
     }
@@ -1870,6 +1956,233 @@ export class ToolBrokerService {
     }
   }
 
+  private async webResearchRequest(
+    input: Extract<ToolBrokerInvokeInput, { tool: 'web_research_request' }>,
+  ): Promise<WebResearchDelegationResult> {
+    const objective = input.args.objective.trim()
+    if (!objective) throw new Error('objective is required')
+
+    const requester = await this.agents.findById(input.agentId)
+    const requesterVersion = requester?.currentVersion ?? input.agentVersion
+    const objectiveHash = createHash('sha256').update(objective).digest('hex').slice(0, 16)
+
+    if (!(await this.isWebResearchDelegationEnabled())) {
+      await this.auditWebResearchBlocked(input.agentId, requesterVersion, 'delegation_disabled', { objectiveHash })
+      return { ok: false, error: 'delegation_disabled' }
+    }
+    if (!(await this.isWebFetchEnabled())) {
+      await this.auditWebResearchBlocked(input.agentId, requesterVersion, 'web_fetch_disabled', { objectiveHash })
+      return { ok: false, error: 'web_fetch_disabled' }
+    }
+
+    const maxPerRequesterDay =
+      Number(process.env.WEB_RESEARCH_MAX_PER_REQUESTER_DAY) > 0
+        ? Number(process.env.WEB_RESEARCH_MAX_PER_REQUESTER_DAY)
+        : 20
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000)
+    const requesterDayUsed = await prisma.auditLog
+      .count({
+        where: {
+          action: 'agent.web_research.requested',
+          actorId: input.agentId,
+          createdAt: { gte: since },
+        },
+      })
+      .catch(() => 0)
+    if (requesterDayUsed >= maxPerRequesterDay) {
+      await this.auditWebResearchBlocked(input.agentId, requesterVersion, 'requester_daily_limit', { objectiveHash })
+      return { ok: false, error: 'requester_daily_limit' }
+    }
+
+    const egressAgent = await this.resolveWebEgressAgent(requester?.tenantId ?? null)
+    if (!egressAgent) {
+      await this.auditWebResearchBlocked(input.agentId, requesterVersion, 'web_egress_agent_missing', { objectiveHash })
+      return { ok: false, error: 'web_egress_agent_missing' }
+    }
+
+    const allowedSourceTypes = this.resolveResearchSourceTypes(input.args.allowedSourceTypes)
+    await this.audit.append({
+      actorType: 'agent',
+      actorId: input.agentId,
+      agentVersion: requesterVersion,
+      action: 'agent.web_research.requested',
+      targetType: 'web_research',
+      targetId: null,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: null,
+      policyDecision: 'allowed',
+      metadata: {
+        requesterAgentId: input.agentId,
+        egressRoleAgentId: egressAgent.id,
+        objectiveHash,
+        contractVersion: 'web_research/v1',
+        allowedSourceTypes,
+      } as Prisma.JsonValue,
+    })
+
+    const maxSources = Math.max(
+      1,
+      Math.min(
+        Number(input.args.maxSources) > 0 ? Math.floor(Number(input.args.maxSources)) : 4,
+        Number(process.env.WEB_RESEARCH_MAX_SOURCES) > 0 ? Number(process.env.WEB_RESEARCH_MAX_SOURCES) : 8,
+      ),
+    )
+    const query = input.args.knownDomain ? `${objective} site:${input.args.knownDomain}` : objective
+    const search = await this.invoke({
+      agentId: egressAgent.id,
+      agentVersion: egressAgent.currentVersion,
+      tool: 'web_search',
+      args: { query, maxResults: maxSources * 2, purpose: 'web_research_request' },
+      ...(input.conversationId ? { conversationId: input.conversationId } : {}),
+      ...(input.ticketId ? { ticketId: input.ticketId } : {}),
+      ...(input.actingUserId ? { actingUserId: input.actingUserId } : {}),
+    })
+    if (search.denied) {
+      await this.auditWebResearchBlocked(egressAgent.id, egressAgent.currentVersion, 'NO_TRUSTED_SOURCE', {
+        requesterAgentId: input.agentId,
+        reason: search.reason,
+        objectiveHash,
+      })
+      return { ok: false, error: 'NO_TRUSTED_SOURCE' }
+    }
+
+    const registry = new KnownUrlRegistry()
+    const searchResult = search.result as WebSearchResult
+    const usable = searchResult.results
+      .filter((r) => this.isResearchSourceType(r.sourceType) && allowedSourceTypes.includes(r.sourceType))
+      .slice(0, maxSources)
+    if (usable.length === 0) {
+      await this.auditWebResearchBlocked(egressAgent.id, egressAgent.currentVersion, 'NO_TRUSTED_SOURCE', {
+        requesterAgentId: input.agentId,
+        objectiveHash,
+      })
+      return { ok: false, error: 'NO_TRUSTED_SOURCE' }
+    }
+
+    const fetchedAt = new Date().toISOString()
+    const sources = usable.map((source) => {
+      registry.add(source.url, source.sourceType)
+      const statementSeed = `${source.title}\n${source.snippet}`
+      return {
+        urlHash: createHash('sha256').update(source.url).digest('hex').slice(0, 16),
+        host: source.domain.toLowerCase(),
+        sourceType: source.sourceType as WebResearchSourceType,
+        contentHash: createHash('sha256').update(statementSeed).digest('hex').slice(0, 16),
+        fetchedAt,
+      }
+    })
+    const facts = usable.map((source, index) => ({
+      statement: `${source.title}: ${source.snippet}`.replace(/\s+/g, ' ').trim().slice(0, 1000),
+      sourceIndices: [index],
+      confidence: source.sourceType === 'official' || source.sourceType === 'vendor_doc' ? 'medium' as const : 'low' as const,
+    }))
+    const hasUnverified = sources.some((source) => source.sourceType === 'news' || source.sourceType === 'blog')
+    const candidate: WebResearchResult = {
+      objectiveEcho: objective.slice(0, 500),
+      facts,
+      sources,
+      overallConfidence: hasUnverified ? 'medium' : 'medium',
+      unverified: hasUnverified,
+      provenance: {
+        egressRoleAgentId: egressAgent.id,
+        egressRoleAgentVersion: egressAgent.currentVersion,
+        requesterAgentId: input.agentId,
+        queryHash: objectiveHash,
+        contractVersion: 'web_research/v1',
+      },
+    }
+
+    const validation = validateWebResearchResult(candidate, {
+      knownHosts: registry.hosts(),
+      maxFacts: Number(process.env.WEB_RESEARCH_MAX_FACTS) > 0 ? Number(process.env.WEB_RESEARCH_MAX_FACTS) : 20,
+      maxSources,
+    })
+    if (validation.status === 'failed') {
+      await this.auditWebResearchBlocked(egressAgent.id, egressAgent.currentVersion, 'RESEARCH_VALIDATION_FAILED', {
+        requesterAgentId: input.agentId,
+        objectiveHash,
+        errors: validation.errors,
+      })
+      return { ok: false, error: 'RESEARCH_VALIDATION_FAILED' }
+    }
+
+    const sourceHistogram: Record<string, number> = {}
+    for (const source of validation.result.sources) {
+      sourceHistogram[source.sourceType] = (sourceHistogram[source.sourceType] ?? 0) + 1
+    }
+    await this.audit.append({
+      actorType: 'agent',
+      actorId: egressAgent.id,
+      agentVersion: egressAgent.currentVersion,
+      action: 'agent.web_research.completed',
+      targetType: 'web_research',
+      targetId: null,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: null,
+      policyDecision: validation.status === 'warned' ? 'warned' : 'allowed',
+      metadata: {
+        requesterAgentId: input.agentId,
+        sourceCount: validation.result.sources.length,
+        factCount: validation.result.facts.length,
+        sourceHistogram,
+        overallConfidence: validation.result.overallConfidence,
+        unverified: validation.result.unverified,
+        contractVersion: 'web_research/v1',
+      } as Prisma.JsonValue,
+    })
+
+    return { ok: true, result: validation.result }
+  }
+
+  private async resolveWebEgressAgent(tenantId: string | null) {
+    const candidates = await this.agents.findMany({ tenantId })
+    for (const agent of candidates.filter((a) => a.status === 'active')) {
+      const [searchCap, fetchCap] = await Promise.all([
+        this.tools.findCapability(agent.id, 'web_search'),
+        this.tools.findCapability(agent.id, 'web_fetch'),
+      ])
+      if (searchCap?.allowed && fetchCap?.allowed) return agent
+    }
+    return null
+  }
+
+  private resolveResearchSourceTypes(requested?: WebResearchSourceType[]): WebResearchSourceType[] {
+    const bankPreset = process.env.PROVISIONING_BANK_PRESET === 'true'
+    const policy: WebResearchSourceType[] = bankPreset
+      ? ['official', 'vendor_doc']
+      : ['official', 'vendor_doc', 'news', 'blog']
+    if (!requested || requested.length === 0) return policy
+    const requestedSet = new Set(requested)
+    return policy.filter((sourceType) => requestedSet.has(sourceType))
+  }
+
+  private isResearchSourceType(value: string): value is WebResearchSourceType {
+    return value === 'official' || value === 'vendor_doc' || value === 'news' || value === 'blog'
+  }
+
+  private async auditWebResearchBlocked(
+    actorId: string,
+    agentVersion: number | null,
+    reason: string,
+    metadata: Record<string, unknown>,
+  ): Promise<void> {
+    await this.audit.append({
+      actorType: 'agent',
+      actorId,
+      agentVersion,
+      action: 'agent.web_research.blocked',
+      targetType: 'web_research',
+      targetId: null,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: null,
+      policyDecision: 'blocked',
+      metadata: { reason, ...metadata } as Prisma.JsonValue,
+    })
+  }
+
   private async agentResolve(args: AgentResolveArgs): Promise<AgentResolveResult> {
     const query = normalizeText(args.query.trim())
     if (!query) throw new Error('Query is required')
@@ -1966,20 +2279,22 @@ export class ToolBrokerService {
     webSearchEffective?: WebSearchEffectiveQuery
   }) {
     const requirement = TOOL_REQUIREMENTS[params.input.tool]
+    const connectorType = requirement?.connectorType ?? null
+    const accessMode = requirement?.accessMode ?? null
     const sanitizedArgsMeta = {
       ...argsMeta(params.input, params.webSearchEffective),
       acting_user_id: params.actingUserId ?? params.input.actingUserId ?? null,
       grant_id: params.grantId ?? null,
       connector_id: params.connectorId,
-      connector_type: requirement.connectorType,
-      access_mode: requirement.accessMode,
+      connector_type: connectorType,
+      access_mode: accessMode,
     }
     const metadata = {
       tool: params.input.tool,
       status: params.status,
       connector_id: params.connectorId,
-      connector_type: requirement.connectorType,
-      access_mode: requirement.accessMode,
+      connector_type: connectorType,
+      access_mode: accessMode,
       argsMeta: sanitizedArgsMeta,
       resultMeta: params.resultMeta,
       acting_user_id: params.actingUserId ?? params.input.actingUserId ?? null,

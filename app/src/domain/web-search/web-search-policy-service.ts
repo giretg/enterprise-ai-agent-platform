@@ -66,21 +66,24 @@ export class WebSearchPolicyService {
       return { domains: [], deniedDomainsMatched, reason: 'domain_denied' }
     }
 
-    // A domains paraméter csak SZŰKÍTHETI a tenant allowlistet, nem bővítheti (§4.1).
-    if (config.allowedDomains.length > 0) {
-      if (requestedList.length === 0) {
-        return { domains: [...config.allowedDomains], deniedDomainsMatched: [] }
-      }
-      const narrowed = requestedList.filter((d) => matchesAny(d, config.allowedDomains))
+    // A domains paraméter csak SZŰKÍTHETI a tenant allowlistet, nem bővítheti (§4.1)
+    // — kivéve, ha a connector allowGeneralWeb-je engedélyezi a teljes webet, ekkor
+    // az allowlist mellett bármely kért domain is megengedett.
+    if (requestedList.length > 0) {
+      const narrowed = requestedList.filter((d) => config.allowGeneralWeb || matchesAny(d, config.allowedDomains))
       if (narrowed.length === 0) {
         return { domains: [], deniedDomainsMatched: [], reason: 'domain_not_allowed' }
       }
       return { domains: narrowed, deniedDomainsMatched: [] }
     }
 
-    // Nincs explicit allowlist.
+    // Nincs kért domain: allowGeneralWeb elsőbbséget élvez (korlátlan keresés),
+    // különben az allowlist a hatályos domain-kör, ha van ilyen.
     if (config.allowGeneralWeb) {
-      return { domains: requestedList, deniedDomainsMatched: [] }
+      return { domains: [], deniedDomainsMatched: [] }
+    }
+    if (config.allowedDomains.length > 0) {
+      return { domains: [...config.allowedDomains], deniedDomainsMatched: [] }
     }
 
     // Banki/PSP preset: nincs allowlist és nincs general web → nincs kereshető domain.
