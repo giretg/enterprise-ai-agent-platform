@@ -2017,6 +2017,33 @@ function DraftCard({
                     disabled={!!apiKey.trim()}
                   />
                 </label>
+                {isUserDelegated ? (
+                  <div className="text-xs sm:col-span-2">
+                    <span className="mb-1 block text-ink-soft">
+                      Authorized redirect URI{' '}
+                      <span className="text-ink/50">(add hozzá az OAuth-app beállításaihoz)</span>
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <code className="flex-1 rounded-md border border-ink/15 bg-wash px-2 py-1.5 font-mono text-xs select-all">
+                        {(typeof window !== 'undefined'
+                          ? window.location.origin
+                          : process.env.NEXT_PUBLIC_APP_URL ?? '')}
+                        /api/connectors/oauth/callback
+                      </code>
+                      <button
+                        type="button"
+                        className="shrink-0 rounded-md border border-ink/15 px-2 py-1.5 text-xs hover:bg-ink/5"
+                        onClick={() =>
+                          void navigator.clipboard.writeText(
+                            `${typeof window !== 'undefined' ? window.location.origin : process.env.NEXT_PUBLIC_APP_URL ?? ''}/api/connectors/oauth/callback`,
+                          )
+                        }
+                      >
+                        Másolás
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
                 {isOauth2 ? (
                   <label className="text-xs sm:col-span-2">
                     <span className="mb-1 block text-ink-soft">
