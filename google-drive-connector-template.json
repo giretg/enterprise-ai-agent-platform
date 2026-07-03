@@ -1,0 +1,135 @@
+{
+  "key": "google-drive",
+  "displayName": "Google Drive",
+  "description": "Google Drive REST API v3 connector delegált felhasználói OAuth hozzáféréssel. Fájlok és mappák listázása, metaadat-olvasás, feltöltés, szerkesztés és törlés.",
+  "baseUrl": "https://www.googleapis.com",
+  "egressHosts": [
+    "www.googleapis.com",
+    "accounts.google.com",
+    "oauth2.googleapis.com"
+  ],
+  "authMethods": [
+    {
+      "kind": "user_delegated_oauth2",
+      "authUrl": "https://accounts.google.com/o/oauth2/v2/auth",
+      "tokenUrl": "https://oauth2.googleapis.com/token",
+      "userInfoUrl": "https://www.googleapis.com/oauth2/v2/userinfo",
+      "accountEmailField": "email",
+      "offlineParams": { "access_type": "offline" },
+      "scopeTransform": "none"
+    }
+  ],
+  "scopeCatalog": [
+    {
+      "value": "https://www.googleapis.com/auth/drive.readonly",
+      "label": "Drive read-only",
+      "description": "Olvasási hozzáférés az összes Drive fájlhoz és metaadathoz.",
+      "default": true
+    },
+    {
+      "value": "https://www.googleapis.com/auth/drive.metadata.readonly",
+      "label": "Metaadat read-only",
+      "description": "Csak fájl-metaadatok olvasása (név, méret, mimeType) — tartalom nélkül.",
+      "default": false
+    },
+    {
+      "value": "https://www.googleapis.com/auth/drive.file",
+      "label": "Drive file access",
+      "description": "Hozzáférés csak az alkalmazás által létrehozott vagy megnyitott fájlokhoz (legszűkebb írási scope).",
+      "default": false
+    },
+    {
+      "value": "https://www.googleapis.com/auth/drive",
+      "label": "Drive teljes hozzáférés",
+      "description": "Teljes olvasási/írási hozzáférés minden Drive fájlhoz. Csak ha szükséges.",
+      "default": false
+    }
+  ],
+  "endpoints": [
+    {
+      "name": "about",
+      "method": "GET",
+      "path": "/drive/v3/about",
+      "access": "read",
+      "description": "Csatlakoztatott felhasználó Drive-adatai és tárhely-kvóta.",
+      "default": true
+    },
+    {
+      "name": "list_files",
+      "method": "GET",
+      "path": "/drive/v3/files",
+      "access": "read",
+      "description": "Fájlok és mappák listázása a felhasználó Drive-ján (query, pageSize, orderBy paraméterekkel).",
+      "default": true
+    },
+    {
+      "name": "get_file",
+      "method": "GET",
+      "path": "/drive/v3/files/{fileId}",
+      "access": "read",
+      "description": "Egy Drive fájl vagy mappa metaadatának lekérése fájlazonosító alapján.",
+      "default": true
+    },
+    {
+      "name": "list_permissions",
+      "method": "GET",
+      "path": "/drive/v3/files/{fileId}/permissions",
+      "access": "read",
+      "description": "Egy fájl vagy mappa megosztási jogosultságainak listázása.",
+      "default": false
+    },
+    {
+      "name": "create_file",
+      "method": "POST",
+      "path": "/drive/v3/files",
+      "access": "write",
+      "description": "Új fájl vagy mappa létrehozása Drive-on (csak metaadat; tartalom multipart feltöltéssel).",
+      "default": false
+    },
+    {
+      "name": "update_file",
+      "method": "PATCH",
+      "path": "/drive/v3/files/{fileId}",
+      "access": "write",
+      "description": "Meglévő Drive fájl metaadatának módosítása.",
+      "default": false
+    },
+    {
+      "name": "copy_file",
+      "method": "POST",
+      "path": "/drive/v3/files/{fileId}/copy",
+      "access": "write",
+      "description": "Drive fájl másolatának létrehozása.",
+      "default": false
+    },
+    {
+      "name": "delete_file",
+      "method": "DELETE",
+      "path": "/drive/v3/files/{fileId}",
+      "access": "write",
+      "description": "Fájl végleges törlése a Drive-ról (megkerüli a kukát).",
+      "default": false
+    }
+  ],
+  "instanceFields": [
+    {
+      "name": "clientId",
+      "label": "OAuth client ID",
+      "type": "string",
+      "required": true,
+      "target": "auth.clientId"
+    },
+    {
+      "name": "clientSecret",
+      "label": "OAuth client secret",
+      "type": "secret",
+      "required": true,
+      "secretAliasHint": "google-drive-oauth-client-secret",
+      "target": "auth.secretAliasSuggested"
+    }
+  ],
+  "rateLimit": {
+    "rps": 10,
+    "burst": 20
+  }
+}

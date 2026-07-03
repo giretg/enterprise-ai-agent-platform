@@ -165,7 +165,7 @@ export class PostgresMonitorRepository implements MonitorRepository {
     })
   }
 
-  async markSignalEscalated(id: string, ticketId: string, now: Date): Promise<void> {
+  async markSignalEscalated(id: string, ticketId: string | null, now: Date): Promise<void> {
     await prisma.monitorSignal.update({
       where: { id },
       data: { lastEscalatedAt: now, escalatedTicketId: ticketId },

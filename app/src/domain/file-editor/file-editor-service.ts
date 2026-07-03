@@ -9,6 +9,8 @@ import {
 } from './adapters/xlsx-adapter'
 import { docxRead } from './adapters/docx-adapter'
 import { pdfRead, pdfCreateFromTable } from './adapters/pdf-adapter'
+import { pptxCreate } from './adapters/pptx-adapter'
+import type { PptxSlideSpec } from './adapters/pptx-adapter'
 import type {
   XlsxRow,
   XlsxCellChange,
@@ -155,6 +157,18 @@ export type PdfCreateResult = {
   path: string
   bytesWritten: number
   rows: number
+}
+
+export type PptxCreateResult = {
+  path: string
+  bytesWritten: number
+  slides: number
+}
+
+export type HtmlCreateResult = {
+  path: string
+  bytesWritten: number
+  wrapped: boolean
 }
 
 export class FileEditorService {
@@ -489,6 +503,86 @@ export class FileEditorService {
     await this.storage.write(tenantId, ticketId, safePath, buf)
     return { path: safePath, bytesWritten: buf.length, rows: rows.length }
   }
+
+  /**
+   * PPTX prezentáció létrehozása diaspecifikációkból. Az eredmény valódi,
+   * letölthető .pptx (16:9). Ezzel az agent bemutatót tud készíteni (pl.
+   * „csinálj egy prezentációt a Q3 eredményekről"), nem csak PDF-et vagy HTML-t.
+   */
+  async pptxCreate(
+    tenantId: string,
+    ticketId: string,
+    args: {
+      path: string
+      title?: string
+      author?: string
+      subject?: string
+      slides: PptxSlideSpec[]
+    },
+  ): Promise<PptxCreateResult> {
+    let safePath = resolveSafePath(args.path)
+    if (!/\.pptx$/i.test(safePath)) safePath = `${safePath}.pptx`
+
+    if (!Array.isArray(args.slides) || args.slides.length === 0) {
+      throw new FileEditorError('INVALID_ARGS', 'pptx_create requires at least one slide')
+    }
+
+    const buf = await pptxCreate({
+      title: args.title,
+      author: args.author,
+      subject: args.subject,
+      slides: args.slides,
+    })
+    await this.storage.write(tenantId, ticketId, safePath, buf)
+    return { path: safePath, bytesWritten: buf.length, slides: args.slides.length }
+  }
+
+  /**
+   * HTML fájl létrehozása a munkaterületen. A `.html` kiterjesztést garantálja.
+   * Ha a `html` nem teljes dokumentum (nincs <!doctype/<html), egy minimális,
+   * érvényes HTML5 vázba csomagolja (charset + viewport + title). Ez különbözteti
+   * meg a nyers file_write-tól: az agent adhat csak törzs-töredéket is.
+   * Megjegyzés: ez sima munkaterületi fájl — NEM izolált, futtatható sandbox app.
+   */
+  async createHtml(
+    tenantId: string,
+    ticketId: string,
+    args: { path: string; html: string; title?: string },
+  ): Promise<HtmlCreateResult> {
+    let safePath = resolveSafePath(args.path)
+    if (!/\.html?$/i.test(safePath)) safePath = `${safePath}.html`
+
+    const isFullDoc = /<!doctype\s+html|<html[\s>]/i.test(args.html)
+    const wrapped = !isFullDoc
+    const document = wrapped ? wrapHtmlDocument(args.html, args.title) : args.html
+
+    const buf = Buffer.from(document, 'utf8')
+    await this.storage.write(tenantId, ticketId, safePath, buf)
+    return { path: safePath, bytesWritten: buf.length, wrapped }
+  }
+}
+
+function escapeHtmlText(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+}
+
+function wrapHtmlDocument(bodyHtml: string, title?: string): string {
+  const safeTitle = escapeHtmlText(title?.trim() || 'Dokumentum')
+  return `<!doctype html>
+<html lang="hu">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${safeTitle}</title>
+</head>
+<body>
+${bodyHtml}
+</body>
+</html>
+`
 }
 
 export { FileEditorError } from './workspace-storage'

@@ -37,6 +37,7 @@ export type PlaybookV2ErrorCode =
   | 'INVALID_STATE'
   | 'FOUR_EYES_REQUIRED'
   | 'VERSION_NOT_PUBLISHED'
+  | 'ASSIGNMENT_TYPE_DEPRECATED'
 
 export class PlaybookV2Error extends Error {
   constructor(
@@ -423,6 +424,12 @@ export class PlaybookV2Service {
     isDefault: boolean
     actorUserId: string
   }): Promise<PlaybookAssignment> {
+    if (input.assignmentType === 'agent_role') {
+      throw new PlaybookV2Error(
+        'ASSIGNMENT_TYPE_DEPRECATED',
+        'Az agent_role roster le van építve; szerep→agent kötést Folyamaton kell rögzíteni.',
+      )
+    }
     const { playbook, version } = await this.requireVersion(input.tenantId, input.playbookVersionId)
     if (version.status !== 'published') {
       throw new PlaybookV2Error(

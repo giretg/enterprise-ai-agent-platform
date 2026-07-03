@@ -8,12 +8,18 @@
 import assert from 'node:assert/strict'
 import type { AuditLog, MonitorDefinition, MonitorRun, MonitorSignal, Prisma, Ticket } from '@prisma/client'
 import { evaluateFilter } from '../src/domain/monitor/filter-eval'
-import { computeNextSweepAt, MonitorService } from '../src/domain/monitor/monitor-service'
+import { computeNextSweepAt, MonitorService, resolveMonitorCronInputPayload } from '../src/domain/monitor/monitor-service'
 import { BoardBacklogCollector } from '../src/domain/monitor/collectors/board-collector'
 import { DeadlineCollector } from '../src/domain/monitor/collectors/deadline-collector'
 import { ConnectorCountCollector } from '../src/domain/monitor/collectors/connector-count-collector'
 import type { MonitorCollector, MonitorSignalDraft } from '../src/domain/monitor/collectors/types'
-import type { AgentRepository, AuditRepository, MonitorRepository, TicketRepository } from '../src/repositories/interfaces'
+import type {
+  AgentRepository,
+  AuditRepository,
+  MonitorRepository,
+  ProcessDefinitionRepository,
+  TicketRepository,
+} from '../src/repositories/interfaces'
 import type { MonitorNotifier, MonitorNotificationInput } from '../src/lib/notify/monitor-notifier'
 import { RoutingMonitorNotifier } from '../src/lib/notify/monitor-notifier'
 import { WebhookChatNotifier } from '../src/lib/notify/webhook-chat-notifier'
@@ -370,6 +376,178 @@ checkAsync('eszkalált jel notifyChannel esetén értesítést és auditot kap',
   const ticketPayload = createdTickets[0].payload as Record<string, unknown>
   assert.equal(ticketPayload.monitorRunId, 'run-notify')
   assert.equal(ticketPayload.dedupKey, 'deadline:source-ticket-1')
+})
+
+check('monitor_cron contextMap felold monitor/signal/payload mezőket', () => {
+  const payload = resolveMonitorCronInputPayload(
+    {
+      contextMap: {
+        ceg: 'payload.company',
+        severity: 'signal.severity',
+        ticketId: 'ticketId',
+        runId: 'monitorRunId',
+        dedup: 'dedupKey',
+        ts: 'now()',
+      },
+    },
+    {
+      monitor: monitor({ id: 'monitor-process' }),
+      signal: signal({
+        dedupKeyParts: { ticketId: 'ticket-42' },
+        severity: 88,
+        payload: { company: 'Acme Kft' },
+      }),
+      monitorRunId: 'run-process',
+      dedupKey: 'deadline:ticket-42',
+      now: NOW,
+    },
+  )
+
+  assert.deepEqual(payload, {
+    ceg: 'Acme Kft',
+    severity: 88,
+    ticketId: 'ticket-42',
+    runId: 'run-process',
+    dedup: 'deadline:ticket-42',
+    ts: NOW.toISOString(),
+  })
+})
+
+checkAsync('monitor_cron trigger matched jelből Futást indít, legacy ticket nélkül', async () => {
+  const escalatedSignal = signal({
+    dedupKeyParts: { ticketId: 'source-ticket-2' },
+    severity: 92,
+    title: 'Folyamat-trigger jel',
+    payload: { company: 'Globex Zrt', ticketId: 'source-ticket-2' },
+  })
+  const definition = monitor({
+    id: 'monitor-process',
+    filterConfig: { field: 'severity', cmp: '>=', value: 80 },
+    dedupKeyTemplate: 'deadline:{ticketId}',
+  })
+  const run: MonitorRun = {
+    id: 'run-process',
+    monitorId: definition.id,
+    outcome: 'quiet',
+    startedAt: NOW,
+    finishedAt: null,
+    scheduledFor: definition.nextSweepAt,
+    signalCount: 0,
+    matchedCount: 0,
+    suppressedCount: 0,
+    openedTicketIds: [],
+    llmInvoked: false,
+    costUsd: null,
+    error: null,
+  }
+  const storedSignal: MonitorSignal = {
+    id: 'signal-process',
+    monitorId: definition.id,
+    dedupKey: 'deadline:source-ticket-2',
+    firstSeenAt: NOW,
+    lastSeenAt: NOW,
+    lastEscalatedAt: null,
+    escalatedTicketId: null,
+    severity: escalatedSignal.severity,
+    payload: escalatedSignal.payload as Prisma.JsonObject,
+  }
+  const createdTickets: Array<Partial<Ticket>> = []
+  const auditEvents: Array<Omit<AuditLog, 'id' | 'seq' | 'createdAt' | 'hash' | 'prevHash'>> = []
+  const startInputs: Array<Record<string, unknown>> = []
+
+  const monitorRepo = {
+    async findDue() {
+      return [definition]
+    },
+    async claim() {
+      return definition
+    },
+    async createRun() {
+      return run
+    },
+    async upsertSignal() {
+      return storedSignal
+    },
+    async markSignalEscalated(_id: string, ticketId: string | null, now: Date) {
+      storedSignal.lastEscalatedAt = now
+      storedSignal.escalatedTicketId = ticketId
+    },
+    async updateRun(_id: string, data: Partial<MonitorRun>) {
+      Object.assign(run, data)
+      return run
+    },
+    async release() {},
+  } as unknown as MonitorRepository
+
+  const ticketRepo = {
+    async create(data: Partial<Ticket>) {
+      createdTickets.push(data)
+      return { ...data, id: 'should-not-open-ticket', createdAt: NOW, updatedAt: NOW } as Ticket
+    },
+  } as unknown as TicketRepository
+
+  const auditRepo = {
+    async append(data: Omit<AuditLog, 'id' | 'seq' | 'createdAt' | 'hash' | 'prevHash'>) {
+      auditEvents.push(data)
+      return {
+        ...data,
+        id: `audit-process-${auditEvents.length}`,
+        seq: BigInt(auditEvents.length),
+        createdAt: NOW,
+        hash: 'h',
+        prevHash: null,
+      } as AuditLog
+    },
+  } as unknown as AuditRepository
+
+  const processDefinitions = {
+    async listActiveMonitorCronTriggers() {
+      return [
+        {
+          id: 'trigger-process',
+          processDefinitionId: 'process-def-1',
+          inputMap: { contextMap: { ceg: 'payload.company', sourceTicketId: 'ticketId' } },
+        },
+      ]
+    },
+  } as unknown as ProcessDefinitionRepository
+
+  const processService = {
+    async startProcess(input: Record<string, unknown>) {
+      startInputs.push(input)
+      return { id: 'process-instance-1' }
+    },
+  } as never
+
+  const collector: MonitorCollector = {
+    kind: 'deadline',
+    async collect() {
+      return [escalatedSignal]
+    },
+  }
+
+  const service = new MonitorService(
+    monitorRepo,
+    ticketRepo,
+    auditRepo,
+    [collector],
+    undefined,
+    processDefinitions,
+    processService,
+  )
+  const result = await service.sweepDue(NOW, 1)
+
+  assert.equal(result[0].outcome, 'escalated')
+  assert.deepEqual(result[0].startedProcessIds, ['process-instance-1'])
+  assert.deepEqual(result[0].openedTicketIds, [])
+  assert.equal(createdTickets.length, 0)
+  assert.equal(startInputs.length, 1)
+  assert.equal(startInputs[0].processDefinitionId, 'process-def-1')
+  assert.equal(startInputs[0].triggerType, 'monitor_cron')
+  assert.deepEqual(startInputs[0].inputPayload, { ceg: 'Globex Zrt', sourceTicketId: 'source-ticket-2' })
+  assert.equal(storedSignal.lastEscalatedAt?.toISOString(), NOW.toISOString())
+  assert.equal(storedSignal.escalatedTicketId, null)
+  assert.equal(auditEvents.some((e) => e.action === 'monitor.process_trigger.started'), true)
 })
 
 console.log('=== valós értesítő adapter (webhook chat + routing) teszt ===')

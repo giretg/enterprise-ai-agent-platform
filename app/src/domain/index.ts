@@ -38,6 +38,8 @@ import { ConversationService } from '@/domain/conversation/conversation-service'
 import { PlaybookService } from '@/domain/playbook/playbook-service'
 import { PlaybookV2Service } from '@/domain/playbook/playbook-v2-service'
 import { ProcessService } from '@/domain/playbook/process-service'
+import { MonitorProcessAlertNotifier } from '@/domain/playbook/process-alert-notifier'
+import { ProcessDefinitionService } from '@/domain/playbook/process-definition-service'
 import { TicketStateMachine } from '@/domain/playbook/ticket-state-machine'
 import { IamService } from '@/domain/iam/iam-service'
 import { SandboxAppService } from '@/domain/sandbox/sandbox-app-service'
@@ -54,6 +56,7 @@ import {
   ProvisioningAssistant,
   PROVISIONING_DRAFT_CAPABILITIES,
 } from '@/domain/provisioning/provisioning-assistant'
+import { PlaybookAuthorAgent } from '@/domain/playbook/playbook-author-agent'
 import {
   AuditOnlyMonitorNotifier,
   RoutingMonitorNotifier,
@@ -68,10 +71,27 @@ import { lookup } from 'node:dns/promises'
 
 const playbookService = new PlaybookService(repositories.playbooks, repositories.audit)
 const playbookV2Service = new PlaybookV2Service(repositories.playbooksV2, repositories.audit)
+const monitorNotifier = new RoutingMonitorNotifier(
+  { chat: new WebhookChatNotifier() },
+  new AuditOnlyMonitorNotifier(),
+)
 const processService = new ProcessService(
   repositories.processes,
   repositories.playbooksV2,
   repositories.tickets,
+  repositories.audit,
+  // §7 Folyamat-alapú indítás: szerep→agent feloldás + alkalmasság-ellenőrzés.
+  repositories.processDefinitions,
+  repositories.agents,
+  repositories.toolBroker,
+  new MonitorProcessAlertNotifier(monitorNotifier),
+)
+const processDefinitionService = new ProcessDefinitionService(
+  repositories.processDefinitions,
+  repositories.playbooksV2,
+  repositories.agents,
+  repositories.toolBroker,
+  repositories.rolePermissions,
   repositories.audit,
 )
 const ticketStateMachine = new TicketStateMachine(
@@ -200,6 +220,8 @@ const toolBrokerService = new ToolBrokerService(
   sandboxAppService,
   webSearchService,
   webSearchPolicyService,
+  repositories.knowledgeChunks,
+  repositories.knowledgeArtifacts,
   () => platformSettingsService.isWebSearchEnabled(),
   () => platformSettingsService.isWebFetchEnabled(),
 )
@@ -209,6 +231,8 @@ const knowledgeBaseService = new KnowledgeBaseService(
   repositories.agents,
   repositories.audit,
   ticketService,
+  repositories.knowledgeArtifacts,
+  repositories.knowledgeChunks,
 )
 const iamService = new IamService(
   repositories.users,
@@ -306,6 +330,13 @@ function sha256Prefix(value: string): string {
 // A felfedező hurok (§8.3) web-egress runnerei a Tool Broker capability-gate-jén át futnak:
 //  - web_search a meglévő broker-tool mögött (connector + rate-limit + audit);
 //  - web_fetch a WebFetchService-en át, csak web-egress role capabilityvel (§7.4), hash-only audittal.
+// Playbook-Role-Agent-Binding §6/WP-10: NL leírás → validált Playbook-draft. A modell
+// kimenete CSAK adat (propose-not-apply); az agent sosem publikál, a hívó (server action)
+// a meglévő PlaybookV2Service draft-verzió-mentésén át rakja le a spec-et.
+const playbookAuthorAgent = new PlaybookAuthorAgent({
+  model: modelGateway,
+})
+
 const provisioningAssistant = new ProvisioningAssistant({
   model: modelGateway,
   discovery: {
@@ -423,6 +454,9 @@ const agentChatRuntime = new AgentChatRuntime(
   repositories.toolBroker,
   workspaceStorage,
   repositories.audit,
+  repositories.processDefinitions,
+  repositories.playbooksV2,
+  processService,
 )
 const wikiRuntime = new WikiAgentRuntime(
   repositories.agents,
@@ -465,10 +499,9 @@ const monitorService = new MonitorService(
   ],
   // §7 értesítés: `chat:<kulcs>` → allowlistolt webhook (Slack/Teams/Google Chat);
   // minden más csatorna a biztonságos audit-only adapterre esik vissza.
-  new RoutingMonitorNotifier(
-    { chat: new WebhookChatNotifier() },
-    new AuditOnlyMonitorNotifier(),
-  ),
+  monitorNotifier,
+  repositories.processDefinitions,
+  processService,
 )
 const localWikiHarnessLauncher: HarnessLauncher = {
   mode: 'local-wiki',
@@ -528,11 +561,13 @@ export const services = {
   playbooks: playbookService,
   playbooksV2: playbookV2Service,
   processes: processService,
+  processDefinitions: processDefinitionService,
   ticketStateMachine,
   conversations: conversationService,
   iam: iamService,
   provisioning: provisioningService,
   provisioningAssistant,
+  playbookAuthorAgent,
   sandboxApps: sandboxAppService,
   scheduledTasks: scheduledTaskService,
   monitors: monitorService,

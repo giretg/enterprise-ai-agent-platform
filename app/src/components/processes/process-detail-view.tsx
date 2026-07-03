@@ -10,6 +10,7 @@ export type ProcessStepView = {
   stepName: string
   status: string
   assignedRole: string
+  assignedAgentId: string | null
   ticketId: string | null
   startedAt: string | null
   completedAt: string | null
@@ -73,6 +74,8 @@ export type ProcessDetailData = {
     id: string
     processType: string
     status: string
+    processDefinitionId: string | null
+    triggerType: string | null
     playbookRef: string
     playbookContentHash: string
     startedByType: string
@@ -84,6 +87,7 @@ export type ProcessDetailData = {
   delegations: DelegationView[]
   gateTickets: GateTicketView[]
   actualFlow: ActualFlow | null
+  blockedReasons: Array<{ createdAt: string; stepId: string | null; reason: string }>
   intended: IntendedFlow | null
 }
 
@@ -199,6 +203,33 @@ export function ProcessDetailView({ data, canAct }: { data: ProcessDetailData; c
             ? ` · Lezárva: ${new Date(data.process.completedAt).toLocaleString('hu-HU')}`
             : ''}
         </p>
+        <dl className="mt-3 grid gap-2 text-xs text-ink-soft sm:grid-cols-3">
+          <div>
+            <dt className="font-medium text-ink">Forras Folyamat</dt>
+            <dd className="mt-0.5 font-mono">{data.process.processDefinitionId ?? 'legacy inditas'}</dd>
+          </div>
+          <div>
+            <dt className="font-medium text-ink">Trigger</dt>
+            <dd className="mt-0.5">{data.process.triggerType ?? 'legacy'}</dd>
+          </div>
+          <div>
+            <dt className="font-medium text-ink">Root ticket</dt>
+            <dd className="mt-0.5 font-mono">{data.process.rootTicketId ?? '-'}</dd>
+          </div>
+        </dl>
+        {data.process.status === 'blocked' && data.blockedReasons.length > 0 && (
+          <div className="mt-3 rounded-lg border border-coral/25 bg-coral/5 p-3 text-sm text-coral">
+            <p className="font-semibold">Elakadás oka</p>
+            <ul className="mt-1 space-y-1">
+              {data.blockedReasons.map((item, idx) => (
+                <li key={`${item.createdAt}-${idx}`}>
+                  {item.stepId ? <span className="font-mono">{item.stepId}: </span> : null}
+                  {item.reason}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </div>
 
       {message && (
@@ -222,6 +253,11 @@ export function ProcessDetailView({ data, canAct }: { data: ProcessDetailData; c
                 </div>
                 <p className="mt-1 text-xs text-ink-soft">
                   Szerep: {s.assignedRole}
+                  {s.assignedAgentId ? (
+                    <>
+                      {' · '}Agent: <span className="font-mono">{s.assignedAgentId}</span>
+                    </>
+                  ) : null}
                   {gates.length > 0 ? (
                     <>
                       {' · '}Kapuk:{' '}

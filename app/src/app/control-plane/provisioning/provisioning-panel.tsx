@@ -290,6 +290,9 @@ export function ProvisioningPanel() {
   const [discovering, setDiscovering] = useState(false)
   const [discoverySources, setDiscoverySources] = useState<DiscoverySource[]>([])
 
+  // Custom connector-sablon szerkesztő láthatósága (alapból csak egy gomb)
+  const [templateEditorOpen, setTemplateEditorOpen] = useState(false)
+
   // Connector sablon-katalógus
   const [selectedTemplateId, setSelectedTemplateId] = useState('')
   const [templateAuthMethod, setTemplateAuthMethod] =
@@ -585,11 +588,7 @@ export function ProvisioningPanel() {
         </p>
       </div>
 
-      {error ? (
-        <div className="rounded-lg border border-coral/40 bg-coral/10 px-4 py-3 text-sm text-coral">
-          {error}
-        </div>
-      ) : null}
+      <ErrorDialog message={error} onClose={() => setError(null)} />
       {notice ? (
         <div className="rounded-lg border border-sage/40 bg-sage/10 px-4 py-3 text-sm text-sage">
           {notice}
@@ -1163,7 +1162,27 @@ export function ProvisioningPanel() {
         </div>
       </Card>
 
+      {!templateEditorOpen ? (
+        <div>
+          <button
+            type="button"
+            onClick={() => setTemplateEditorOpen(true)}
+            className="inline-flex items-center gap-2 rounded-md border border-ink/15 bg-card px-4 py-2 text-sm font-semibold text-ink transition hover:border-coral/40 hover:text-coral-deep"
+          >
+            Custom connector-sablonok
+          </button>
+        </div>
+      ) : (
       <Card title="Custom connector-sablonok">
+        <div className="mb-4 flex justify-end">
+          <button
+            type="button"
+            onClick={() => setTemplateEditorOpen(false)}
+            className="rounded-md border border-ink/15 px-3 py-1.5 text-xs font-semibold text-ink-soft transition hover:border-ink/30 hover:text-ink"
+          >
+            Bezárás
+          </button>
+        </div>
         <div className="grid gap-4 lg:grid-cols-[1fr_24rem]">
           <div className="space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1276,6 +1295,7 @@ export function ProvisioningPanel() {
           </div>
         </div>
       </Card>
+      )}
 
       <Card title={`Draftok (${openDrafts.length})`}>
         {!loadedOnce ? (
@@ -1318,6 +1338,57 @@ export function ProvisioningPanel() {
           </div>
         )}
       </Card>
+    </div>
+  )
+}
+
+function ErrorDialog({ message, onClose }: { message: string | null; onClose: () => void }) {
+  useEffect(() => {
+    if (!message) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [message, onClose])
+
+  if (!message) return null
+
+  return (
+    <div
+      role="alertdialog"
+      aria-modal="true"
+      aria-label="Hiba"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+    >
+      <button
+        type="button"
+        aria-hidden
+        tabIndex={-1}
+        onClick={onClose}
+        className="absolute inset-0 cursor-default bg-ink/40 backdrop-blur-sm"
+      />
+      <div className="relative w-full max-w-md rounded-xl border border-coral/40 bg-card p-5 shadow-2xl">
+        <div className="flex items-start gap-3">
+          <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-coral/15 text-lg font-bold text-coral">
+            !
+          </span>
+          <div className="min-w-0 flex-1">
+            <h3 className="text-base font-semibold text-ink">Hiba</h3>
+            <p className="mt-1 whitespace-pre-wrap break-words text-sm text-ink-soft">{message}</p>
+          </div>
+        </div>
+        <div className="mt-4 flex justify-end">
+          <button
+            type="button"
+            autoFocus
+            onClick={onClose}
+            className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-card"
+          >
+            Értem
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

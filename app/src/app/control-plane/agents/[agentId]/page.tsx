@@ -1,7 +1,12 @@
 import Link from 'next/link'
 import type { ReactNode } from 'react'
 import { notFound } from 'next/navigation'
-import { getAgent, getAgentGovernance, getModelPolicy } from '@/app/actions/platform'
+import {
+  getAgent,
+  getAgentGovernance,
+  getModelPolicy,
+  listBehaviorProfiles,
+} from '@/app/actions/platform'
 import { listConnectorCatalog } from '@/app/actions/provisioning'
 import { getCurrentUser } from '@/auth'
 import { hasMinimumRole } from '@/auth/types'
@@ -22,8 +27,9 @@ import { AgentKnowledgeBasePanel } from '@/components/agents/agent-knowledge-bas
 import { AgentCapabilitiesPanel } from '@/components/agents/agent-capabilities-panel'
 import { WebSearchPolicyCard } from '@/components/agents/web-search-policy-card'
 import { AgentLifecycleControls } from '@/components/agents/agent-lifecycle-controls'
-import { BehaviorProfileUpdateCard } from '@/components/agents/behavior-profile-update-card'
+import { BehaviorProfileBox } from '@/components/agents/behavior-profile-box'
 import { resolveSelfEvolutionProfile } from '@/lib/self-evolution-profile'
+import { resolveBehaviorOverlay } from '@/lib/behavior-profile'
 import {
   agentRoleLabel,
   modelConfigSummary,
@@ -68,11 +74,12 @@ export default async function AgentDetailPage({
   params: Promise<{ agentId: string }>
 }) {
   const { agentId } = await params
-  const [res, govRes, policyRes, catalogRes, user] = await Promise.all([
+  const [res, govRes, policyRes, catalogRes, profilesRes, user] = await Promise.all([
     getAgent({ id: agentId }),
     getAgentGovernance({ agentId }),
     getModelPolicy(),
     listConnectorCatalog(),
+    listBehaviorProfiles(),
     getCurrentUser(),
   ])
   if (!res.success) notFound()
@@ -99,6 +106,10 @@ export default async function AgentDetailPage({
   const evolutionProfile = resolveSelfEvolutionProfile(agent.selfEvolutionProfile)
   const roleInfo = agentRoleLabel(agent.role)
   const modelProviders = policyRes.success ? enabledModelProviders(policyRes.data) : []
+  const behaviorProfiles = profilesRes.success
+    ? profilesRes.data.map((p) => ({ id: p.id, name: p.name, currentVersion: p.currentVersion }))
+    : []
+  const behaviorOverlay = resolveBehaviorOverlay(agent)
 
   return (
     <div className="space-y-6">
@@ -165,13 +176,17 @@ export default async function AgentDetailPage({
           </ExpandableContent>
         </ProfileSection>
 
-        <ProfileSection title="Munkastílus" subtitle="Hogyan dolgozik">
-          <ExpandableContent>
-            <ProseBlock
-              text={agent.behaviorProfile}
-              empty="Még nincs leírva, hogyan kommunikál és dolgozik."
-            />
-          </ExpandableContent>
+        <ProfileSection
+          title="Munkastílus"
+          subtitle="Hogyan dolgozik — központi profil + egyedi rész"
+        >
+          <BehaviorProfileBox
+            agentId={agent.id}
+            canEdit={isAdmin}
+            profiles={behaviorProfiles}
+            link={behaviorProfileLink}
+            overlay={behaviorOverlay}
+          />
         </ProfileSection>
 
         <ProfileSection
@@ -288,9 +303,6 @@ export default async function AgentDetailPage({
                 />
               </Card>
 
-              {behaviorProfileLink && (
-                <BehaviorProfileUpdateCard agentId={agent.id} link={behaviorProfileLink} />
-              )}
             </div>
           </div>
 
@@ -335,9 +347,7 @@ export default async function AgentDetailPage({
               <UpdateInstructionForm
                 agentId={agent.id}
                 roleInstruction={agent.roleInstruction}
-                behaviorProfile={agent.behaviorProfile}
                 roleVersion={agent.currentRoleInstructionVersion}
-                behaviorVersion={agent.currentBehaviorProfileVersion}
               />
 
               <AgentAvatarUpload

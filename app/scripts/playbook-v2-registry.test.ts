@@ -652,6 +652,45 @@ async function main() {
     assert.ok(a1After?.revokedAt, 'a régi default nincs revoke-olva')
   })
 
+  await test('assignment — agent_role roster nem írható többé', async () => {
+    const repo = new FakePlaybookV2Repository()
+    const svc = new PlaybookV2Service(repo, new FakeAuditRepository())
+    const pb = await svc.createPlaybook({
+      tenantId: TENANT,
+      key: 'invoice-processing',
+      name: 'x',
+      processType: 'invoice_processing',
+      actorUserId: AUTHOR,
+    })
+    const { version } = await svc.createPlaybookVersion({
+      tenantId: TENANT,
+      playbookId: pb.id,
+      spec: validSpec(),
+      changeSummary: 'init',
+      actorUserId: AUTHOR,
+    })
+    await svc.submitForApproval({ tenantId: TENANT, playbookVersionId: version.id, actorUserId: AUTHOR })
+    await svc.publishPlaybookVersion({
+      tenantId: TENANT,
+      playbookVersionId: version.id,
+      approverUserId: APPROVER,
+    })
+
+    await assert.rejects(
+      () =>
+        svc.assignPlaybook({
+          tenantId: TENANT,
+          playbookVersionId: version.id,
+          assignmentType: 'agent_role',
+          assignmentKey: 'extractor',
+          isDefault: true,
+          actorUserId: AUTHOR,
+        }),
+      (e: unknown) => e instanceof PlaybookV2Error && e.code === 'ASSIGNMENT_TYPE_DEPRECATED',
+    )
+    assert.equal(repo.assignments.length, 0)
+  })
+
   await test('startable — csak aktív process_type default published verzió indítható', async () => {
     const repo = new FakePlaybookV2Repository()
     const svc = new PlaybookV2Service(repo, new FakeAuditRepository())

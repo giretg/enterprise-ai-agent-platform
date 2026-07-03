@@ -2,13 +2,16 @@
 
 import { useRouter } from 'next/navigation'
 import { useState, useTransition } from 'react'
+import Link from 'next/link'
 import { transitionTicket } from '@/app/actions/platform'
+import { startProcessFromTicket } from '@/app/actions/process'
 import { authorizeTicketRunAs, revokeTicketRunAs } from '@/app/actions/connector-grants'
 import { ProposalCard } from '@/components/tickets/proposal-card'
 import { Badge, Card } from '@/components/ui/shell'
 import { TICKET_STATE_LABELS, TICKET_STATE_TONE } from '@/lib/ticket-labels'
 import { extractTaskDescription, formatTicketDateTime } from '@/lib/ticket-display'
 import { isRunAsAuthorized } from '@/lib/run-as-payload'
+import { resolveTicketTriggerInputPayload } from '@/lib/playbook-v2/trigger-input'
 
 function extractTaskDescriptionFromPayload(payload: Record<string, unknown> | null): string | null {
   return extractTaskDescription(payload)
@@ -42,6 +45,20 @@ type TicketView = {
     model: unknown
     recipe: { name: string; version: number; status: string } | null
   } | null
+}
+
+type TicketProcessTrigger = {
+  id: string
+  type: string
+  enabled: boolean
+  inputMap: unknown
+}
+
+export type TicketStartableProcessDefinition = {
+  id: string
+  name: string
+  description: string | null
+  triggers: TicketProcessTrigger[]
 }
 
 const REJECTABLE_STATES = new Set(['ready', 'in_progress', 'awaiting_human', 'done'])
@@ -148,6 +165,144 @@ export function TicketRunAsAuthorization({
           </button>
         </>
       )}
+    </Card>
+  )
+}
+
+export function TicketProcessStartPanel({
+  ticket,
+  definitions,
+}: {
+  ticket: TicketView
+  definitions: TicketStartableProcessDefinition[]
+}) {
+  const router = useRouter()
+  const [pending, startTransition] = useTransition()
+  const ticketDefinitions = definitions
+    .map((definition) => ({
+      ...definition,
+      triggers: definition.triggers.filter((trigger) => trigger.type === 'ticket' && trigger.enabled),
+    }))
+    .filter((definition) => definition.triggers.length > 0)
+  const [selectedDefinitionId, setSelectedDefinitionId] = useState(ticketDefinitions[0]?.id ?? '')
+  const selectedDefinition = ticketDefinitions.find((definition) => definition.id === selectedDefinitionId)
+  const [selectedTriggerId, setSelectedTriggerId] = useState(selectedDefinition?.triggers[0]?.id ?? '')
+  const selectedTrigger =
+    selectedDefinition?.triggers.find((trigger) => trigger.id === selectedTriggerId) ??
+    selectedDefinition?.triggers[0]
+  const [message, setMessage] = useState<{ tone: 'ok' | 'err'; text: string; processId?: string } | null>(null)
+
+  if (ticketDefinitions.length === 0) return null
+
+  const preview = selectedTrigger
+    ? resolveTicketTriggerInputPayload(selectedTrigger.inputMap, {
+        id: ticket.id,
+        title: ticket.title,
+        type: ticket.type,
+        state: ticket.state,
+        payload: ticket.payload,
+        createdAt: ticket.createdAt,
+        updatedAt: ticket.updatedAt,
+      })
+    : {}
+
+  const start = () => {
+    if (!selectedDefinition || !selectedTrigger) {
+      setMessage({ tone: 'err', text: 'Válassz ticket-triggerrel rendelkező Folyamatot.' })
+      return
+    }
+
+    setMessage(null)
+    startTransition(async () => {
+      const res = await startProcessFromTicket({
+        processDefinitionId: selectedDefinition.id,
+        triggerId: selectedTrigger.id,
+        ticketId: ticket.id,
+      })
+      if (!res.success) {
+        setMessage({ tone: 'err', text: res.error })
+        return
+      }
+      setMessage({ tone: 'ok', text: 'Futás elindítva ticket-triggerből.', processId: res.data.id })
+      router.refresh()
+    })
+  }
+
+  return (
+    <Card title="Futás indítása ticketből">
+      <div className="space-y-3">
+        <label className="block text-sm">
+          <span className="mb-1 block text-ink-soft">Folyamat</span>
+          <select
+            value={selectedDefinitionId}
+            onChange={(event) => {
+              const nextDefinition = ticketDefinitions.find((definition) => definition.id === event.target.value)
+              setSelectedDefinitionId(event.target.value)
+              setSelectedTriggerId(nextDefinition?.triggers[0]?.id ?? '')
+              setMessage(null)
+            }}
+            className="w-full rounded-lg border border-ink/15 bg-transparent px-3 py-2 text-sm"
+          >
+            {ticketDefinitions.map((definition) => (
+              <option key={definition.id} value={definition.id}>
+                {definition.name}
+              </option>
+            ))}
+          </select>
+          {selectedDefinition?.description && (
+            <span className="mt-1 block text-xs text-ink-faint">{selectedDefinition.description}</span>
+          )}
+        </label>
+
+        {selectedDefinition && selectedDefinition.triggers.length > 1 && (
+          <label className="block text-sm">
+            <span className="mb-1 block text-ink-soft">Ticket-trigger</span>
+            <select
+              value={selectedTrigger?.id ?? ''}
+              onChange={(event) => {
+                setSelectedTriggerId(event.target.value)
+                setMessage(null)
+              }}
+              className="w-full rounded-lg border border-ink/15 bg-transparent px-3 py-2 text-sm"
+            >
+              {selectedDefinition.triggers.map((trigger) => (
+                <option key={trigger.id} value={trigger.id}>
+                  {trigger.id.slice(0, 8)}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+
+        <div className="rounded-lg border border-ink/10 bg-night-2/70 p-3">
+          <p className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-ink-faint">
+            Feloldott trigger-input
+          </p>
+          <pre className="max-h-48 overflow-auto text-xs text-ink-soft">
+            {JSON.stringify(preview, null, 2)}
+          </pre>
+        </div>
+
+        {message && (
+          <p className={`text-sm ${message.tone === 'ok' ? 'text-sage' : 'text-coral'}`}>
+            {message.text}{' '}
+            {message.processId && (
+              <Link href={`/control-plane/processes/${message.processId}`} className="font-semibold underline">
+                Futás megnyitása
+              </Link>
+            )}
+          </p>
+        )}
+
+        <button
+          type="button"
+          disabled={pending}
+          onClick={start}
+          className="rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+        >
+          {pending ? 'Indítás...' : 'Futás indítása'}
+        </button>
+      </div>
     </Card>
   )
 }

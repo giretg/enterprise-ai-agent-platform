@@ -15,6 +15,7 @@ import {
   uploadDocument,
 } from '@/app/actions/platform'
 import { Card } from '@/components/ui/shell'
+import { KbArtifactReview } from '@/components/agents/kb-artifact-review'
 
 type KbDocument = { id: string; filename: string; status: string; createdAt: Date | string }
 type PendingDoc = { ticketId: string; documentId: string; filename: string; createdAt: Date | string }
@@ -44,6 +45,7 @@ export function AgentKnowledgeBasePanel({
   const [shareTargetId, setShareTargetId] = useState('')
   const [textInput, setTextInput] = useState('')
   const [loading, setLoading] = useState(true)
+  const [reviewDoc, setReviewDoc] = useState<PendingDoc | null>(null)
 
   const refreshDocs = useCallback(() => {
     if (isOrchestrator) {
@@ -184,6 +186,24 @@ export function AgentKnowledgeBasePanel({
   )
 
   return (
+    <>
+    {reviewDoc && (
+      <KbArtifactReview
+        agentId={agentId}
+        documentId={reviewDoc.documentId}
+        canApprove={canApprove}
+        actionPending={actionPending}
+        onApprove={(ticketId) => {
+          setReviewDoc(null)
+          handleApprove(ticketId)
+        }}
+        onReject={(ticketId) => {
+          setReviewDoc(null)
+          handleReject(ticketId)
+        }}
+        onClose={() => setReviewDoc(null)}
+      />
+    )}
     <Card title="Tudásbázis">
       <p className="mb-4 text-sm leading-relaxed text-ink-soft">
         A feltöltött szövegek a(z) <span className="font-medium text-ink">{agentName}</span> agent
@@ -246,28 +266,37 @@ export function AgentKnowledgeBasePanel({
                     {doc.filename}
                   </span>
                 </span>
-                {canApprove ? (
-                  <span className="flex shrink-0 gap-2">
-                    <button
-                      type="button"
-                      disabled={actionPending}
-                      onClick={() => handleApprove(doc.ticketId)}
-                      className="rounded-full bg-sage/20 px-3 py-1 text-xs font-semibold text-sage hover:bg-sage/30 disabled:opacity-50"
-                    >
-                      Jóváhagyás
-                    </button>
-                    <button
-                      type="button"
-                      disabled={actionPending}
-                      onClick={() => handleReject(doc.ticketId)}
-                      className="rounded-full bg-coral/20 px-3 py-1 text-xs font-semibold text-coral hover:bg-coral/30 disabled:opacity-50"
-                    >
-                      Elutasítás
-                    </button>
-                  </span>
-                ) : (
-                  <span className="shrink-0 text-xs text-ink-faint">approver hagyja jóvá</span>
-                )}
+                <span className="flex shrink-0 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setReviewDoc(doc)}
+                    className="rounded-full bg-sky/20 px-3 py-1 text-xs font-semibold text-sky hover:bg-sky/30"
+                  >
+                    Áttekintés
+                  </button>
+                  {canApprove ? (
+                    <>
+                      <button
+                        type="button"
+                        disabled={actionPending}
+                        onClick={() => handleApprove(doc.ticketId)}
+                        className="rounded-full bg-sage/20 px-3 py-1 text-xs font-semibold text-sage hover:bg-sage/30 disabled:opacity-50"
+                      >
+                        Jóváhagyás
+                      </button>
+                      <button
+                        type="button"
+                        disabled={actionPending}
+                        onClick={() => handleReject(doc.ticketId)}
+                        className="rounded-full bg-coral/20 px-3 py-1 text-xs font-semibold text-coral hover:bg-coral/30 disabled:opacity-50"
+                      >
+                        Elutasítás
+                      </button>
+                    </>
+                  ) : (
+                    <span className="self-center text-xs text-ink-faint">approver hagyja jóvá</span>
+                  )}
+                </span>
               </li>
             ))}
           </ul>
@@ -362,5 +391,6 @@ export function AgentKnowledgeBasePanel({
         </div>
       )}
     </Card>
+    </>
   )
 }

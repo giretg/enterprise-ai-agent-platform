@@ -8,6 +8,7 @@
  */
 import { requireRole } from '@/auth'
 import { services } from '@/domain'
+import { repositories } from '@/repositories/postgres'
 import { fail, ok } from '@/lib/result'
 import {
   createPlaybookV2Schema,
@@ -18,8 +19,11 @@ import {
   playbookVersionV2IdSchema,
   rejectPlaybookVersionV2Schema,
   assignPlaybookV2Schema,
+  draftPlaybookFromDescriptionSchema,
 } from '@/lib/validators/actions'
 import { PlaybookV2Error } from '@/domain/playbook/playbook-v2-service'
+import { parsePlaybookSpecV2 } from '@/lib/playbook-v2/spec'
+import { PLAYBOOK_AUTHOR_TEMPLATE } from '@/domain/playbook/playbook-author-agent'
 
 type AuthedUser = Awaited<ReturnType<typeof requireRole>>
 function tenantOf(user: AuthedUser): string {
@@ -140,6 +144,54 @@ export async function createPlaybookVersionV2(input: unknown) {
   }
 }
 
+/**
+ * Playbook-szerző agent (Feature-spec — Playbook-Role-Agent-Binding §5.A, §6, WP-10).
+ * NL leírás → validált (vagy hibás, de mindig visszacsatolt) Playbook-spec draft.
+ * PROPOSE-NOT-APPLY: ez az action NEM ír a DB-be. A visszaadott spec-et a hívó a
+ * meglévő `createPlaybookVersionV2`/`updatePlaybookVersionV2` action-nel menti draftként —
+ * a szerző-agent sosem publikál.
+ */
+export async function draftPlaybookFromDescription(input: unknown) {
+  try {
+    const user = await requireRole('admin')
+    const parsed = draftPlaybookFromDescriptionSchema.parse(input)
+
+    const agents = await repositories.agents.findMany({ tenantId: user.tenantId ?? null })
+    const author = agents.find((a) => a.name === PLAYBOOK_AUTHOR_TEMPLATE.name)
+    if (!author) {
+      return fail('A Playbook-szerző agent nincs seedelve. Futtasd: npm run db:seed.')
+    }
+
+    // Kényelmi capability-szótár: a tenant agentjeinek ténylegesen engedélyezett tool-jai —
+    // a szerep requiredCapabilities-e csak ezekből választhat (a validátor ezt kényszeríti ki).
+    const capabilitySets = await Promise.all(
+      agents.map((a) => repositories.toolBroker.findCapabilitiesForAgent(a.id)),
+    )
+    const knownCapabilities = [
+      ...new Set(
+        capabilitySets.flat().filter((c) => c.allowed).map((c) => c.toolName),
+      ),
+    ]
+
+    const result = await services.playbookAuthorAgent.draftSpec({
+      agentId: author.id,
+      agentVersion: author.currentVersion,
+      agentModelConfig: author.modelConfig,
+      tenantId: user.tenantId,
+      description: parsed.description,
+      knownCapabilities,
+      existingSpec: parsed.existingSpec,
+      priorValidation: parsed.priorValidation,
+    })
+    if (!result.ok) {
+      return fail(`${result.error}: ${result.detail}`)
+    }
+    return ok({ spec: result.spec, validation: result.validation })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Nem sikerült Playbook-draftot generálni')
+  }
+}
+
 export async function updatePlaybookVersionV2(input: unknown) {
   try {
     const user = await requireRole('admin')
@@ -251,5 +303,62 @@ export async function listStartablePlaybooks() {
     return ok(await services.playbooksV2.listStartablePlaybooks(tenantOf(user)))
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Nem sikerült betölteni az indítható Playbookokat')
+  }
+}
+
+/** Publikált Playbook-verziók Folyamat-összeállításhoz. */
+export async function listPublishedPlaybookVersionsForProcessBuilder() {
+  try {
+    const user = await requireRole('operator')
+    const playbooks = await services.playbooksV2.listPlaybooks(tenantOf(user))
+    return ok(
+      playbooks.flatMap((playbook) =>
+        playbook.versions
+          .filter((version) => version.status === 'published')
+          .map((version) => {
+            const spec = parsePlaybookSpecV2(version.spec)
+            const configSlots = new Map<
+              string,
+              { name: string; type: string; required: boolean; description: string | null }
+            >()
+            const triggerSlots = new Map<
+              string,
+              { name: string; type: string; required: boolean; description: string | null }
+            >()
+
+            for (const step of spec.steps) {
+              for (const slot of step.inputSlots ?? []) {
+                const target = slot.source === 'config' ? configSlots : triggerSlots
+                if (!target.has(slot.name)) {
+                  target.set(slot.name, {
+                    name: slot.name,
+                    type: slot.type,
+                    required: slot.required,
+                    description: slot.description ?? null,
+                  })
+                }
+              }
+            }
+
+            return {
+              playbookId: playbook.id,
+              playbookName: playbook.name,
+              processType: playbook.processType,
+              playbookVersionId: version.id,
+              version: version.version,
+              agentRoles: spec.roles
+                .filter((role) => role.type === 'agent_role')
+                .map((role) => ({
+                  key: role.key,
+                  requiredCapabilities: role.requiredCapabilities ?? [],
+                })),
+              configSlots: Array.from(configSlots.values()),
+              triggerSlots: Array.from(triggerSlots.values()),
+            }
+          }),
+      ),
+    )
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Nem sikerült betölteni a publikált Playbook-verziókat')
   }
 }

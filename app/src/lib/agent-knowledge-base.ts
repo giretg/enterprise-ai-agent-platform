@@ -73,11 +73,15 @@ export async function ensureAgentKnowledgeBase(
     update: {},
   })
 
-  await db.capability.upsert({
-    where: { agentId_toolName: { agentId: agent.id, toolName: 'kb_search' } },
-    create: { agentId: agent.id, toolName: 'kb_search', allowed: true },
-    update: { allowed: true },
-  })
+  // kb_search + a KB-v3 OKF-navigációs toolok (§9.2/§9.3): a keresés utáni
+  // többkörös bejárás (kb_list_index → kb_get_page) elsődleges retrieval-út (D-I).
+  for (const toolName of ['kb_search', 'kb_list_index', 'kb_get_page'] as const) {
+    await db.capability.upsert({
+      where: { agentId_toolName: { agentId: agent.id, toolName } },
+      create: { agentId: agent.id, toolName, allowed: true },
+      update: { allowed: true },
+    })
+  }
 
   return connector
 }

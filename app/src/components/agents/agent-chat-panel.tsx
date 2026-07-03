@@ -12,6 +12,7 @@ import {
   promoteToTicket,
   uploadDocument,
 } from '@/app/actions/platform'
+import { listChatTriggerableProcessDefinitions } from '@/app/actions/process'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { ChatMarkdown, TypingIndicator } from '@/components/chat/chat-markdown'
 import {
@@ -50,6 +51,13 @@ type ChatMessage = {
 }
 
 type ScheduledTaskRecurrence = 'none' | 'daily' | 'weekly' | 'monthly'
+
+type ChatProcessDefinition = {
+  id: string
+  name: string
+  description: string | null
+  slots: Array<{ name: string; type: string; required: boolean; description?: string }>
+}
 
 type AgentActivity = {
   id: string
@@ -321,6 +329,8 @@ export function AgentChatPanel({
   const [sessionsOpen, setSessionsOpen] = useState(false)
   const [sessionsFilter, setSessionsFilter] = useState<ChatSessionStatusFilter>('active')
   const [conversationStatus, setConversationStatus] = useState<'active' | 'archived'>('active')
+  const [chatProcessDefs, setChatProcessDefs] = useState<ChatProcessDefinition[]>([])
+  const [selectedProcessDefId, setSelectedProcessDefId] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
   const [ticketPending, startTicketTransition] = useTransition()
   const scrollRef = useRef<HTMLDivElement>(null)
@@ -365,6 +375,14 @@ export function AgentChatPanel({
     return () => window.clearTimeout(timer)
   }, [open, refreshSessions])
 
+  useEffect(() => {
+    if (!open) return
+    void (async () => {
+      const res = await listChatTriggerableProcessDefinitions({ agentId: agent.id })
+      if (res.success) setChatProcessDefs(res.data as ChatProcessDefinition[])
+    })()
+  }, [open, agent.id])
+
   const startNewSession = useCallback(() => {
     if (isAgentTyping) return
     setConversationId(null)
@@ -374,6 +392,7 @@ export function AgentChatPanel({
     setConversationStatus('active')
     setSessionsFilter('active')
     setSessionsOpen(false)
+    setSelectedProcessDefId(null)
   }, [isAgentTyping])
 
   const selectSession = useCallback(
@@ -387,6 +406,7 @@ export function AgentChatPanel({
       setStatusMessage(null)
       setLastTicketId(null)
       setSessionsOpen(false)
+      setSelectedProcessDefId(null)
       setConversationStatus(sessions.find((session) => session.id === id)?.status ?? 'active')
 
       const res = await loadAgentChatMessages({ conversationId: id, agentId: agent.id })
@@ -553,6 +573,8 @@ export function AgentChatPanel({
     setLastTicketId(null)
     setIsAgentTyping(true)
 
+    let accumulatedReply = ''
+
     void (async () => {
       try {
         const documentIds = localAttachments.length > 0 ? await uploadAttachments(localAttachments) : []
@@ -565,6 +587,7 @@ export function AgentChatPanel({
             content: text,
             conversationId: conversationId ?? undefined,
             attachmentDocumentIds: documentIds,
+            processDefinitionId: selectedProcessDefId ?? undefined,
           }),
         })
 
@@ -612,6 +635,7 @@ export function AgentChatPanel({
                 )
               })
             } else if (event.type === 'token' && typeof event.chunk === 'string') {
+              accumulatedReply += event.chunk
               flushSync(() => {
                 setMessages((prev) =>
                   prev.map((m) =>
@@ -629,6 +653,12 @@ export function AgentChatPanel({
                     : m,
                 ),
               )
+              // A Folyamat-választás csak addig marad rögzítve, amíg a Futás
+              // ténylegesen el nem indul (§4.4) — utána a chat visszaáll
+              // normál beszélgetésre, hogy ne próbálja újraindítani.
+              if (accumulatedReply.includes('Futás elindítva a(z)')) {
+                setSelectedProcessDefId(null)
+              }
               startTransition(() => { void refreshSessions() })
             } else if (event.type === 'error') {
               setMessages((prev) => prev.filter((m) => m.id !== optimisticUserId && m.id !== optimisticAgentId))
@@ -857,6 +887,40 @@ export function AgentChatPanel({
               {conversationStatus === 'archived' && (
                 <p className="mb-2 rounded-lg border border-line bg-night-2 px-3 py-2 text-xs text-ink-faint">
                   Archivált szál: olvasható, új üzenet nem fűzhető hozzá.
+                </p>
+              )}
+              {chatProcessDefs.length > 0 && (
+                <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-ink-soft">
+                  <label className="flex min-w-[13rem] flex-1 items-center gap-2">
+                    <span className="shrink-0">Folyamat indítása</span>
+                    <select
+                      value={selectedProcessDefId ?? ''}
+                      onChange={(e) => setSelectedProcessDefId(e.target.value || null)}
+                      disabled={composerDisabled}
+                      className="min-w-0 flex-1 rounded-lg border border-line bg-night-2 px-2 py-1.5 text-xs text-ink"
+                    >
+                      <option value="">— nincs —</option>
+                      {chatProcessDefs.map((def) => (
+                        <option key={def.id} value={def.id}>
+                          {def.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              )}
+              {selectedProcessDefId && (
+                <p className="mb-2 rounded-lg border border-line bg-night-2 px-3 py-2 text-xs text-ink-faint">
+                  {(() => {
+                    const def = chatProcessDefs.find((d) => d.id === selectedProcessDefId)
+                    const requiredSlots = def?.slots.filter((slot) => slot.required) ?? []
+                    if (requiredSlots.length === 0) {
+                      return 'A kiválasztott Folyamat indul a következő üzeneteddel.'
+                    }
+                    return `Add meg üzenetben: ${requiredSlots
+                      .map((slot) => slot.description ? `${slot.name} (${slot.description})` : slot.name)
+                      .join(', ')}`
+                  })()}
                 </p>
               )}
               {statusMessage && (

@@ -13,6 +13,7 @@ import {
   assignPlaybookV2,
 } from '@/app/actions/playbook'
 import { PlaybookFlowGraph } from '@/components/playbooks/playbook-flow-graph'
+import { PlaybookAuthorPanel } from '@/components/playbooks/playbook-author-panel'
 
 type ValidationResult = {
   valid: boolean
@@ -437,6 +438,8 @@ export function PlaybookDetail({
           {message.text}
         </p>
       )}
+
+      {canEdit && <PlaybookAuthorPanel playbookId={playbook.id} />}
 
       {/* Verzió lista */}
       <section className="atelier-card p-5">

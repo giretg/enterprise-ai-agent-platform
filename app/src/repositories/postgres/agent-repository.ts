@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs'
 import { randomBytes } from 'crypto'
 import { prisma } from '@/lib/db'
 import { ensureAgentKnowledgeBase } from '@/lib/agent-knowledge-base'
+import { composeBehaviorProfile } from '@/lib/behavior-profile'
 import { selfEvolutionProfileSchema } from '@/lib/self-evolution-profile'
 import { assertTransition, isPhysicallyDeletable } from '@/lib/agent-lifecycle'
 import type { AgentRepository, DocumentRepository } from '../interfaces'
@@ -54,6 +55,19 @@ export class PostgresAgentRepository implements AgentRepository {
     })
     const recipeVersion = currentAgentVersion?.recipeVersion ?? null
 
+    // §3.4: a megjelenítéshez a pinnelt profil-al-verzió TÖRZSE (a "központi rész"),
+    // hogy az egyedi overlay-től elkülönítve látszódjon. A verziók append-only-k, így
+    // a pinnelt verzió törzse determinisztikusan visszakérhető (drift-mentes).
+    const pinnedProfileVersion = agent.currentBehaviorProfileId
+      ? await prisma.behaviorProfileVersion.findFirst({
+          where: {
+            profileId: agent.currentBehaviorProfileId,
+            version: agent.currentBehaviorProfileVersion,
+          },
+          select: { body: true },
+        })
+      : null
+
     return {
       agent,
       memoryContent: agent.memory.currentVersion?.content ?? null,
@@ -84,6 +98,7 @@ export class PostgresAgentRepository implements AgentRepository {
             name: agent.behaviorProfileRef.name,
             currentVersion: agent.behaviorProfileRef.currentVersion,
             pinnedVersion: agent.currentBehaviorProfileVersion,
+            pinnedBody: pinnedProfileVersion?.body ?? '',
           }
         : null,
     }
@@ -159,6 +174,9 @@ export class PostgresAgentRepository implements AgentRepository {
         tenantId: input.tenantId ?? null,
         roleInstruction: input.roleInstruction,
         behaviorProfile: input.behaviorProfile,
+        // Létrehozáskor nincs megosztott profil — a megadott "hogyan" szöveg teljes
+        // egészében az agent egyedi overlay-e (§3.4). Az effektív = csak az overlay.
+        behaviorProfileOverlay: input.behaviorProfile,
         modelConfig: input.modelConfig as Prisma.InputJsonValue,
         status,
         role: agentRole,
@@ -442,6 +460,8 @@ export class PostgresAgentRepository implements AgentRepository {
     if (!currentVersion) throw new Error('Current agent version snapshot missing')
 
     const nextAgentVersion = agent.currentVersion + 1
+    // Az egyedi overlay megmarad — az effektív a friss profil-törzs + overlay (§3.4).
+    const effective = composeBehaviorProfile(input.profileBody, agent.behaviorProfileOverlay)
 
     await prisma.$transaction([
       prisma.agentVersion.create({
@@ -449,7 +469,7 @@ export class PostgresAgentRepository implements AgentRepository {
           agentId: agent.id,
           version: nextAgentVersion,
           roleInstructionSnapshot: agent.roleInstruction,
-          behaviorProfileSnapshot: input.profileBody,
+          behaviorProfileSnapshot: effective,
           roleInstructionVersion: agent.currentRoleInstructionVersion,
           behaviorProfileVersion: input.profileVersion,
           modelConfigSnapshot: currentVersion.modelConfigSnapshot as Prisma.InputJsonValue,
@@ -461,7 +481,7 @@ export class PostgresAgentRepository implements AgentRepository {
       prisma.agent.update({
         where: { id: agent.id },
         data: {
-          behaviorProfile: input.profileBody,
+          behaviorProfile: effective,
           currentBehaviorProfileId: input.profileId,
           currentBehaviorProfileVersion: input.profileVersion,
           currentVersion: nextAgentVersion,
@@ -470,6 +490,99 @@ export class PostgresAgentRepository implements AgentRepository {
     ])
 
     return { agentVersion: nextAgentVersion, behaviorProfileVersion: input.profileVersion }
+  }
+
+  /**
+   * A ténylegesen használt viselkedés-profil beállítása (§3.4): egy megosztott
+   * profil (vagy semmi) kiválasztása + az agent egyedi overlay-e. A kettőből
+   * komponálja az effektív "hogyan" szöveget, pinneli a profil aktuális
+   * al-verzióját, és — aktív agentnél — új reprodukálhatósági snapshotot fagyaszt.
+   * Draft agentnél (nincs snapshot) csak az élő mezőket állítja.
+   */
+  async setBehaviorProfile(input: {
+    agentId: string
+    profileId: string | null
+    profileVersion: number | null
+    profileBody: string | null
+    overlay: string | null
+  }) {
+    const agent = await prisma.agent.findUnique({ where: { id: input.agentId } })
+    if (!agent) throw new Error('Agent not found')
+
+    const overlay = input.overlay?.trim() ? input.overlay.trim() : null
+    const effective = composeBehaviorProfile(input.profileBody, overlay)
+    if (effective.length === 0) {
+      throw new Error('A munkastílus nem lehet üres — adj meg profilt vagy egyedi szöveget')
+    }
+
+    // No-op védelem: ha se a profil-kötés, se az overlay, se az effektív szöveg nem
+    // változott, ne fagyasszunk felesleges új verziót.
+    const unchanged =
+      effective === agent.behaviorProfile &&
+      (input.profileId ?? null) === (agent.currentBehaviorProfileId ?? null) &&
+      (overlay ?? '') === (agent.behaviorProfileOverlay ?? '')
+    if (unchanged) {
+      return {
+        agentVersion: agent.currentVersion,
+        behaviorProfileVersion: agent.currentBehaviorProfileVersion,
+      }
+    }
+
+    // A megosztott profilhoz kötött agentnél a viselkedés-al-verzió a profil pinnelt
+    // verziója; egyedi (profil nélküli) esetben az agent saját, növekvő al-verziója.
+    const nextBehaviorVersion =
+      input.profileId != null
+        ? (input.profileVersion ?? agent.currentBehaviorProfileVersion)
+        : agent.currentBehaviorProfileVersion + 1
+
+    const currentSnapshot = await prisma.agentVersion.findUnique({
+      where: { agentId_version: { agentId: agent.id, version: agent.currentVersion } },
+    })
+
+    // Draft agent: még nincs reprodukálhatósági snapshot (§4/I2) — csak az élő mezők.
+    if (!currentSnapshot) {
+      await prisma.agent.update({
+        where: { id: agent.id },
+        data: {
+          behaviorProfile: effective,
+          behaviorProfileOverlay: overlay,
+          currentBehaviorProfileId: input.profileId,
+          currentBehaviorProfileVersion: nextBehaviorVersion,
+        },
+      })
+      return { agentVersion: agent.currentVersion, behaviorProfileVersion: nextBehaviorVersion }
+    }
+
+    const nextAgentVersion = agent.currentVersion + 1
+
+    await prisma.$transaction([
+      prisma.agentVersion.create({
+        data: {
+          agentId: agent.id,
+          version: nextAgentVersion,
+          roleInstructionSnapshot: agent.roleInstruction,
+          behaviorProfileSnapshot: effective,
+          roleInstructionVersion: agent.currentRoleInstructionVersion,
+          behaviorProfileVersion: nextBehaviorVersion,
+          modelConfigSnapshot: currentSnapshot.modelConfigSnapshot as Prisma.InputJsonValue,
+          memoryVersionId: currentSnapshot.memoryVersionId,
+          recipeVersionId: currentSnapshot.recipeVersionId,
+          selfEvolutionSnapshot: (agent.selfEvolutionProfile ?? undefined) as Prisma.InputJsonValue | undefined,
+        },
+      }),
+      prisma.agent.update({
+        where: { id: agent.id },
+        data: {
+          behaviorProfile: effective,
+          behaviorProfileOverlay: overlay,
+          currentBehaviorProfileId: input.profileId,
+          currentBehaviorProfileVersion: nextBehaviorVersion,
+          currentVersion: nextAgentVersion,
+        },
+      }),
+    ])
+
+    return { agentVersion: nextAgentVersion, behaviorProfileVersion: nextBehaviorVersion }
   }
 
   /**
@@ -621,13 +734,27 @@ export class PostgresDocumentRepository implements DocumentRepository {
     })
   }
 
-  async create(data: Omit<Document, 'id' | 'createdAt'>): Promise<Document> {
-    return prisma.document.create({ data })
+  async create(
+    data: Omit<
+      Document,
+      'id' | 'createdAt' | 'mimeType' | 'contentHash' | 'processingMode' | 'metadata'
+    > &
+      Partial<Pick<Document, 'mimeType' | 'contentHash' | 'processingMode' | 'metadata'>>,
+  ): Promise<Document> {
+    const { metadata, ...rest } = data
+    return prisma.document.create({
+      data: {
+        ...rest,
+        ...(metadata !== undefined ? { metadata: metadata as Prisma.InputJsonValue } : {}),
+      },
+    })
   }
 
   async update(
     id: string,
-    data: Partial<Pick<Document, 'status' | 'extractedText' | 'connectorId'>>,
+    data: Partial<
+      Pick<Document, 'status' | 'extractedText' | 'connectorId' | 'processingMode'>
+    >,
   ): Promise<Document> {
     return prisma.document.update({ where: { id }, data })
   }

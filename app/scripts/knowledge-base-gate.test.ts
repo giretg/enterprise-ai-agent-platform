@@ -9,7 +9,15 @@
  */
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
-import type { Connector, Document, Ticket, TicketTransition } from '@prisma/client'
+import type {
+  Connector,
+  Document,
+  KnowledgeArtifact,
+  KnowledgeArtifactStatus,
+  KnowledgeChunk,
+  Ticket,
+  TicketTransition,
+} from '@prisma/client'
 import { TicketService } from '../src/domain/ticket/ticket-service'
 import {
   KnowledgeBaseService,
@@ -19,6 +27,8 @@ import type {
   AgentRepository,
   AuditRepository,
   DocumentRepository,
+  KnowledgeArtifactRepository,
+  KnowledgeChunkRepository,
   TicketRepository,
 } from '../src/repositories/interfaces'
 
@@ -111,10 +121,65 @@ function makeFakes() {
     },
   } as unknown as AuditRepository
 
+  const artifacts = new Map<string, KnowledgeArtifact>()
+  const chunks = new Map<string, KnowledgeChunk>()
+
+  const artifactRepo = {
+    async findById(id: string) {
+      return artifacts.get(id) ?? null
+    },
+    async create(data: Record<string, unknown>) {
+      const artifact = {
+        id: randomUUID(),
+        createdAt: new Date(),
+        publishedAt: null,
+        ...data,
+      } as unknown as KnowledgeArtifact
+      artifacts.set(artifact.id, artifact)
+      return artifact
+    },
+    async update(id: string, data: Partial<KnowledgeArtifact>) {
+      const current = artifacts.get(id)
+      if (!current) throw new Error('artifact not found')
+      const next = { ...current, ...data } as KnowledgeArtifact
+      artifacts.set(id, next)
+      return next
+    },
+    async findByConnector(connectorId: string, status?: KnowledgeArtifactStatus) {
+      return [...artifacts.values()].filter(
+        (a) => a.connectorId === connectorId && (!status || a.status === status),
+      )
+    },
+    async latestVersionForDocument(connectorId: string, sourceDocumentId: string) {
+      return [...artifacts.values()]
+        .filter((a) => a.connectorId === connectorId && a.sourceDocumentId === sourceDocumentId)
+        .reduce((max, a) => Math.max(max, a.version), 0)
+    },
+  } as unknown as KnowledgeArtifactRepository
+
+  const chunkRepo = {
+    async createMany(rows: Array<Omit<KnowledgeChunk, 'id' | 'createdAt'>>) {
+      for (const row of rows) {
+        const chunk = { id: randomUUID(), createdAt: new Date(), ...row } as KnowledgeChunk
+        chunks.set(chunk.id, chunk)
+      }
+      return rows.length
+    },
+    async findByArtifact(artifactId: string) {
+      return [...chunks.values()]
+        .filter((c) => c.artifactId === artifactId)
+        .sort((a, b) => a.chunkIndex - b.chunkIndex)
+    },
+    async deleteByArtifact(artifactId: string) {
+      for (const [id, c] of chunks) if (c.artifactId === artifactId) chunks.delete(id)
+    },
+  } as unknown as KnowledgeChunkRepository
+
   const connector = {
     id: 'kb-conn-1',
     type: 'knowledge_base',
     name: 'kb:agent-1',
+    tenantId: null,
   } as unknown as Connector
 
   const ensureKb = async (agent: { role: string }) =>
@@ -127,22 +192,25 @@ function makeFakes() {
     agentRepo,
     auditRepo,
     ticketService,
+    artifactRepo,
+    chunkRepo,
     ensureKb,
   )
 
-  return { kb, tickets, documents, agents, transitions, audits, connector }
+  return { kb, tickets, documents, agents, transitions, audits, connector, artifacts, chunks }
 }
 
 function seedDoc(
   documents: Map<string, Document>,
   filename: string,
   connectorId: string | null = null,
+  extractedText = 'tartalom',
 ): Document {
   const doc = {
     id: randomUUID(),
     filename,
     storageRef: `ref/${filename}`,
-    extractedText: 'tartalom',
+    extractedText,
     status: 'uploaded',
     connectorId,
     uploadedById: randomUUID(),
@@ -294,6 +362,108 @@ async function run() {
     assert.equal(asKbDocumentPayload({ proposedContent: 'x' }), null)
     assert.equal(asKbDocumentPayload(null), null)
     assert.equal(asKbDocumentPayload([1, 2, 3] as never), null)
+  })
+
+  // ── KB-v3 OKF artifact flow (§17 acceptance) ──────────────────────────────
+
+  await check('OKF-mód: requestDocument draft artifactot hoz létre, chunk MÉG nincs', async () => {
+    const { kb, documents, agents, artifacts, chunks } = makeFakes()
+    agents.set('agent-1', { id: 'agent-1', name: 'Wiki', role: 'worker' })
+    const doc = seedDoc(
+      documents,
+      'policy.md',
+      null,
+      '# Remote Work\nRules here.\n\n# Onboarding\nSteps here.',
+    )
+
+    await kb.requestDocument({
+      agentId: 'agent-1',
+      documentId: doc.id,
+      createdById: 'u',
+      processingMode: 'okf',
+    })
+
+    const drafts = [...artifacts.values()]
+    assert.equal(drafts.length, 1, 'egy draft artifact')
+    assert.equal(drafts[0].status, 'pending_review', 'pending_review, nem published')
+    assert.equal(drafts[0].version, 1)
+    assert.equal(drafts[0].sourceDocumentId, doc.id)
+    assert.equal(documents.get(doc.id)?.processingMode, 'okf', 'a mód a dokumentumon rögzül')
+    // Approval előtt NINCS chunk → nem kereshető.
+    assert.equal(chunks.size, 0, 'publikálás előtt nincs chunk index')
+  })
+
+  await check('OKF-mód: jóváhagyás publikál és felépíti a chunk indexet', async () => {
+    const { kb, documents, agents, artifacts, chunks, audits } = makeFakes()
+    agents.set('agent-1', { id: 'agent-1', name: 'Wiki', role: 'worker' })
+    const doc = seedDoc(
+      documents,
+      'kezikonyv.md',
+      null,
+      '# Bevezetés\nSzöveg.\n\n# Szabályok\nTöbb szöveg.',
+    )
+    const ticket = await kb.requestDocument({
+      agentId: 'agent-1',
+      documentId: doc.id,
+      createdById: 'u',
+      processingMode: 'okf',
+    })
+
+    await kb.approveDocument({ ticketId: ticket.id, approverId: 'a1', approverRole: 'approver' })
+
+    const artifact = [...artifacts.values()][0]
+    assert.equal(artifact.status, 'published', 'publikált')
+    assert.ok(artifact.publishedAt, 'publishedAt beáll')
+    assert.equal(artifact.approvedById, 'a1')
+    assert.ok(chunks.size >= 2, 'a heading-szekciókból chunkok épülnek')
+    // A chunkok a connector scope-ot hordozzák (D-B).
+    for (const c of chunks.values()) assert.equal(c.connectorId, 'kb-conn-1')
+    assert.ok(audits.some((a) => a.action === 'kb.artifact.generated'))
+    assert.ok(audits.some((a) => a.action === 'kb.artifact.published'))
+  })
+
+  await check('OKF-mód: elutasítás → az artifact failed, nem publikálódik', async () => {
+    const { kb, documents, agents, artifacts, chunks } = makeFakes()
+    agents.set('agent-1', { id: 'agent-1', name: 'Wiki', role: 'worker' })
+    const doc = seedDoc(documents, 'rossz-okf.md', null, '# X\nY')
+    const ticket = await kb.requestDocument({
+      agentId: 'agent-1',
+      documentId: doc.id,
+      createdById: 'u',
+      processingMode: 'okf',
+    })
+
+    await kb.rejectDocument({ ticketId: ticket.id, approverId: 'a1', approverRole: 'approver' })
+
+    assert.equal([...artifacts.values()][0].status, 'failed')
+    assert.equal(chunks.size, 0, 'elutasított artifact nem indexelődik')
+  })
+
+  await check('listPendingArtifacts a függő artifactokat adja, publish után 0', async () => {
+    const { kb, documents, agents } = makeFakes()
+    agents.set('agent-1', { id: 'agent-1', name: 'Wiki', role: 'worker' })
+    const doc = seedDoc(documents, 'fuggo-okf.md', null, '# A\nB')
+    const ticket = await kb.requestDocument({
+      agentId: 'agent-1',
+      documentId: doc.id,
+      createdById: 'u',
+      processingMode: 'okf',
+    })
+
+    const before = await kb.listPendingArtifacts('agent-1')
+    assert.equal(before.length, 1)
+
+    await kb.approveDocument({ ticketId: ticket.id, approverId: 'a1', approverRole: 'approver' })
+    const after = await kb.listPendingArtifacts('agent-1')
+    assert.equal(after.length, 0)
+  })
+
+  await check('raw_text_only (default): NEM keletkezik artifact', async () => {
+    const { kb, documents, agents, artifacts } = makeFakes()
+    agents.set('agent-1', { id: 'agent-1', name: 'Wiki', role: 'worker' })
+    const doc = seedDoc(documents, 'nyers.md')
+    await kb.requestDocument({ agentId: 'agent-1', documentId: doc.id, createdById: 'u' })
+    assert.equal(artifacts.size, 0, 'raw módban nincs OKF artifact')
   })
 
   console.log(failures === 0 ? '\n✅ minden teszt zöld' : `\n❌ ${failures} teszt bukott`)

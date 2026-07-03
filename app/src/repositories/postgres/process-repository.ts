@@ -26,10 +26,13 @@ export class PostgresProcessRepository implements ProcessRepository {
         playbookVersionId: input.playbookVersionId,
         playbookRef: input.playbookRef,
         playbookContentHash: input.playbookContentHash,
+        processDefinitionId: input.processDefinitionId ?? null,
+        triggerType: input.triggerType ?? null,
         startedByType: input.startedByType,
         startedByUserId: input.startedByUserId ?? null,
         startedByAgentId: input.startedByAgentId ?? null,
         conversationId: input.conversationId ?? null,
+        rootTicketId: input.rootTicketId ?? null,
         inputPayload: input.inputPayload,
       },
     })

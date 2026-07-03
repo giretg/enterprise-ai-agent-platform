@@ -15,12 +15,25 @@ import {
   processIdSchema,
   cancelProcessSchema,
   transitionProcessTicketSchema,
+  listProcessDefinitionsSchema,
+  processDefinitionIdSchema,
+  createProcessDefinitionSchema,
+  updateProcessDefinitionBindingsSchema,
+  attachProcessTriggerSchema,
+  detachProcessTriggerSchema,
+  startProcessFromTicketSchema,
+  suitableAgentsSchema,
+  chatTriggerableProcessDefinitionsSchema,
 } from '@/lib/validators/actions'
 import { reconstructActualFlow } from '@/lib/playbook-v2/runtime'
+import { parsePlaybookSpecV2 } from '@/lib/playbook-v2/spec'
+import { chatTriggerSlotDescriptors, resolveTicketTriggerInputPayload } from '@/lib/playbook-v2/trigger-input'
+import { isAgentSuitable } from '@/domain/playbook/suitability'
 import type { CompiledSpec } from '@/domain/playbook/playbook-compiler'
 import {
   ProcessServiceError,
 } from '@/domain/playbook/process-service'
+import { ProcessDefinitionServiceError } from '@/domain/playbook/process-definition-service'
 import {
   TicketStateMachineError,
   TicketTransitionDenied,
@@ -38,14 +51,257 @@ export async function startProcess(input: unknown) {
     const process = await services.processes.startProcess({
       tenantId: tenantOf(user),
       processType: parsed.processType,
+      processDefinitionId: parsed.processDefinitionId,
+      triggerType: parsed.triggerType ?? (parsed.processDefinitionId ? 'manual' : undefined),
       playbookVersionId: parsed.playbookVersionId,
       inputPayload: parsed.inputPayload ?? {},
       startedBy: { type: 'user', id: user.id },
+      conversationId: parsed.conversationId ?? null,
+      rootTicketId: parsed.rootTicketId ?? null,
     })
     return ok({ id: process.id })
   } catch (e) {
     if (e instanceof ProcessServiceError) return fail(e.message)
     return fail(e instanceof Error ? e.message : 'Nem sikerült elindítani a folyamatot')
+  }
+}
+
+export async function listProcessDefinitions(input: unknown = {}) {
+  try {
+    const user = await requireRole('viewer')
+    const parsed = listProcessDefinitionsSchema.parse(input)
+    const defs = await services.processDefinitions.listDefinitions(tenantOf(user), parsed.status)
+    return ok(
+      defs.map((d) => ({
+        id: d.id,
+        name: d.name,
+        description: d.description,
+        status: d.status,
+        playbookId: d.playbookId,
+        playbookVersionId: d.playbookVersionId,
+        roleBindings: d.roleBindings,
+        configValues: d.configValues,
+        approvedAt: d.approvedAt?.toISOString() ?? null,
+        updatedAt: d.updatedAt.toISOString(),
+        triggers: d.triggers.map((t) => ({
+          id: t.id,
+          type: t.type,
+          enabled: t.enabled,
+          inputMap: t.inputMap,
+          monitorDefinitionId: t.monitorDefinitionId,
+          createdAt: t.createdAt.toISOString(),
+        })),
+      })),
+    )
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Nem sikerült betölteni a Folyamatokat')
+  }
+}
+
+/**
+ * Chatből indítható Folyamatok egy agenthez (feature-spec §4.4, §4.6): aktív
+ * Folyamat, engedélyezett chat trigger, és az agent szerepelt a szerep-kötésben.
+ * A `roleBindings` sima Json ({ roleKey: agentId }), nem relációs FK, ezért
+ * alkalmazás-oldalon szűrünk (a tenantonkénti Folyamat-darabszám kicsi).
+ */
+export async function listChatTriggerableProcessDefinitions(input: unknown) {
+  try {
+    const user = await requireRole('operator')
+    const parsed = chatTriggerableProcessDefinitionsSchema.parse(input)
+    const tenantId = tenantOf(user)
+    const defs = await services.processDefinitions.listDefinitions(tenantId, 'active')
+    const eligible = defs.filter((d) => {
+      const hasChatTrigger = d.triggers.some((t) => t.type === 'chat' && t.enabled)
+      if (!hasChatTrigger) return false
+      const bindings = (d.roleBindings ?? {}) as Record<string, string>
+      return Object.values(bindings).includes(parsed.agentId)
+    })
+
+    const result = []
+    for (const def of eligible) {
+      const version = await repositories.playbooksV2.findVersion(tenantId, def.playbookVersionId)
+      const compiled = (version?.compiledSpec ?? null) as CompiledSpec | null
+      result.push({
+        id: def.id,
+        name: def.name,
+        description: def.description,
+        slots: compiled ? chatTriggerSlotDescriptors(compiled) : [],
+      })
+    }
+    return ok(result)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Nem sikerült betölteni a chatből indítható Folyamatokat')
+  }
+}
+
+export async function createProcessDefinition(input: unknown) {
+  try {
+    const user = await requireRole('operator')
+    const parsed = createProcessDefinitionSchema.parse(input)
+    const def = await services.processDefinitions.createDraft({
+      tenantId: tenantOf(user),
+      name: parsed.name,
+      description: parsed.description ?? null,
+      playbookVersionId: parsed.playbookVersionId,
+      createdBy: { userId: user.id },
+    })
+    return ok({ id: def.id })
+  } catch (e) {
+    if (e instanceof ProcessDefinitionServiceError) return fail(e.message)
+    return fail(e instanceof Error ? e.message : 'Nem sikerült létrehozni a Folyamat-draftot')
+  }
+}
+
+export async function updateProcessDefinitionBindings(input: unknown) {
+  try {
+    const user = await requireRole('operator')
+    const parsed = updateProcessDefinitionBindingsSchema.parse(input)
+    const def = await services.processDefinitions.updateBindings({
+      tenantId: tenantOf(user),
+      processDefinitionId: parsed.id,
+      roleBindings: parsed.roleBindings,
+      configValues: parsed.configValues ?? {},
+      actorUserId: user.id,
+    })
+    return ok({ id: def.id, status: def.status })
+  } catch (e) {
+    if (e instanceof ProcessDefinitionServiceError) return fail(e.message)
+    return fail(e instanceof Error ? e.message : 'Nem sikerült frissíteni a Folyamat kötéseit')
+  }
+}
+
+export async function attachProcessTrigger(input: unknown) {
+  try {
+    const user = await requireRole('operator')
+    const parsed = attachProcessTriggerSchema.parse(input)
+    const trigger = await services.processDefinitions.attachTrigger({
+      tenantId: tenantOf(user),
+      processDefinitionId: parsed.processDefinitionId,
+      type: parsed.type,
+      inputMap: parsed.inputMap ?? {},
+      monitorDefinitionId: parsed.monitorDefinitionId ?? null,
+      actorUserId: user.id,
+    })
+    return ok({ id: trigger.id })
+  } catch (e) {
+    if (e instanceof ProcessDefinitionServiceError) return fail(e.message)
+    return fail(e instanceof Error ? e.message : 'Nem sikerült csatolni a triggert')
+  }
+}
+
+export async function detachProcessTrigger(input: unknown) {
+  try {
+    const user = await requireRole('operator')
+    const parsed = detachProcessTriggerSchema.parse(input)
+    await services.processDefinitions.detachTrigger({
+      tenantId: tenantOf(user),
+      processDefinitionId: parsed.processDefinitionId,
+      triggerId: parsed.triggerId,
+      actorUserId: user.id,
+    })
+    return ok({ id: parsed.triggerId })
+  } catch (e) {
+    if (e instanceof ProcessDefinitionServiceError) return fail(e.message)
+    return fail(e instanceof Error ? e.message : 'Nem sikerült leválasztani a triggert')
+  }
+}
+
+export async function startProcessFromTicket(input: unknown) {
+  try {
+    const user = await requireRole('operator')
+    const parsed = startProcessFromTicketSchema.parse(input)
+    const tenantId = tenantOf(user)
+    const ticket = await repositories.tickets.findById(parsed.ticketId)
+    if (!ticket || ticket.tenantId !== tenantId) {
+      return fail('A trigger-ticket nem található.')
+    }
+
+    const def = await services.processDefinitions.getDefinition(tenantId, parsed.processDefinitionId)
+    const trigger = def.triggers.find((candidate) => {
+      if (candidate.type !== 'ticket' || !candidate.enabled) return false
+      return parsed.triggerId ? candidate.id === parsed.triggerId : true
+    })
+    if (!trigger) {
+      return fail('A Folyamathoz nincs aktív ticket-trigger csatolva.')
+    }
+
+    const inputPayload = resolveTicketTriggerInputPayload(trigger.inputMap, ticket)
+    const process = await services.processes.startProcess({
+      tenantId,
+      processDefinitionId: def.id,
+      triggerType: 'ticket',
+      inputPayload,
+      startedBy: { type: 'user', id: user.id },
+      rootTicketId: ticket.id,
+    })
+
+    return ok({ id: process.id, rootTicketId: ticket.id, inputPayload })
+  } catch (e) {
+    if (e instanceof ProcessDefinitionServiceError || e instanceof ProcessServiceError) return fail(e.message)
+    return fail(e instanceof Error ? e.message : 'Nem sikerült ticketből Futást indítani')
+  }
+}
+
+export async function activateProcessDefinition(input: unknown) {
+  try {
+    const user = await requireRole('approver')
+    const parsed = processDefinitionIdSchema.parse(input)
+    const def = await services.processDefinitions.activate({
+      tenantId: tenantOf(user),
+      processDefinitionId: parsed.id,
+      actorUserId: user.id,
+    })
+    return ok({ id: def.id, status: def.status })
+  } catch (e) {
+    if (e instanceof ProcessDefinitionServiceError) {
+      return fail(`${e.message}${e.details ? ` — ${JSON.stringify(e.details)}` : ''}`)
+    }
+    return fail(e instanceof Error ? e.message : 'Nem sikerült aktiválni a Folyamatot')
+  }
+}
+
+export async function archiveProcessDefinition(input: unknown) {
+  try {
+    const user = await requireRole('admin')
+    const parsed = processDefinitionIdSchema.parse(input)
+    const def = await services.processDefinitions.archive({
+      tenantId: tenantOf(user),
+      processDefinitionId: parsed.id,
+      actorUserId: user.id,
+    })
+    return ok({ id: def.id, status: def.status })
+  } catch (e) {
+    if (e instanceof ProcessDefinitionServiceError) return fail(e.message)
+    return fail(e instanceof Error ? e.message : 'Nem sikerült archiválni a Folyamatot')
+  }
+}
+
+export async function listSuitableAgents(input: unknown) {
+  try {
+    const user = await requireRole('operator')
+    const parsed = suitableAgentsSchema.parse(input)
+    const tenantId = tenantOf(user)
+    const version = await repositories.playbooksV2.findVersion(tenantId, parsed.playbookVersionId)
+    if (!version) return fail('A Playbook-verzió nem található.')
+    const role = parsePlaybookSpecV2(version.spec).roles.find((r) => r.key === parsed.roleKey)
+    if (!role || role.type !== 'agent_role') return fail('A megadott agent-szerep nem található.')
+
+    const agents = await repositories.agents.findMany({ tenantId })
+    const capabilitySets = await Promise.all(
+      agents.map((agent) => repositories.toolBroker.findCapabilitiesForAgent(agent.id)),
+    )
+    const suitable = []
+    for (const [i, agent] of agents.entries()) {
+      const result = isAgentSuitable(
+        { status: agent.status, tenantId: agent.tenantId, capabilities: capabilitySets[i] },
+        { requiredCapabilities: role.requiredCapabilities },
+        tenantId,
+      )
+      if (result.ok) suitable.push({ id: agent.id, name: agent.name, status: agent.status, role: agent.role })
+    }
+    return ok(suitable)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Nem sikerült betölteni az alkalmas agenteket')
   }
 }
 
@@ -99,12 +355,23 @@ export async function getProcessDetail(input: unknown) {
           compiled,
         )
       : null
+    const blockedEvents = detail.status === 'blocked'
+      ? await repositories.audit.findMany({
+          action: 'process.blocked',
+          targetType: 'process_instance',
+          targetId: detail.id,
+          tenantId,
+          limit: 5,
+        })
+      : []
 
     return ok({
       process: {
         id: detail.id,
         processType: detail.processType,
         status: detail.status,
+        processDefinitionId: detail.processDefinitionId,
+        triggerType: detail.triggerType,
         playbookRef: detail.playbookRef,
         playbookContentHash: detail.playbookContentHash,
         startedByType: detail.startedByType,
@@ -118,6 +385,7 @@ export async function getProcessDetail(input: unknown) {
         stepName: s.stepName,
         status: s.status,
         assignedRole: s.assignedRole,
+        assignedAgentId: s.assignedAgentId,
         ticketId: s.ticketId,
         startedAt: s.startedAt?.toISOString() ?? null,
         completedAt: s.completedAt?.toISOString() ?? null,
@@ -148,6 +416,16 @@ export async function getProcessDetail(input: unknown) {
           }
         }),
       actualFlow,
+      blockedReasons: blockedEvents.map((event) => {
+        const metadata = event.metadata && typeof event.metadata === 'object'
+          ? (event.metadata as Record<string, unknown>)
+          : {}
+        return {
+          createdAt: event.createdAt.toISOString(),
+          stepId: typeof metadata.step_id === 'string' ? metadata.step_id : null,
+          reason: typeof metadata.reason === 'string' ? metadata.reason : 'Ismeretlen blokk-ok.',
+        }
+      }),
       // §9.2 szándékolt flow: a compiled spec lépés-sorrendje és routing-élei.
       intended: compiled
         ? {

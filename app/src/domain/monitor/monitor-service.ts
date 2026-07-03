@@ -1,10 +1,12 @@
-import type { Prisma, MonitorDefinition, MonitorRun, MonitorRunOutcome, MonitorSignal } from '@prisma/client'
+import type { Prisma, MonitorDefinition, MonitorRun, MonitorRunOutcome, MonitorSignal, ProcessTrigger } from '@prisma/client'
 import type {
   AuditRepository,
   MonitorRepository,
+  ProcessDefinitionRepository,
   TicketRepository,
   UpdateMonitorInput,
 } from '@/repositories/interfaces'
+import type { ProcessService } from '@/domain/playbook/process-service'
 import { randomUUID } from 'crypto'
 import type { MonitorCollector, MonitorSignalDraft } from './collectors/types'
 import { evaluateFilter } from './filter-eval'
@@ -17,6 +19,7 @@ export type SweepResult = {
   monitorId: string
   outcome: MonitorRunOutcome
   openedTicketIds: string[]
+  startedProcessIds: string[]
 }
 
 function jsonObject(value: Prisma.JsonValue | null): Record<string, unknown> {
@@ -76,6 +79,8 @@ export class MonitorService {
     private audit: AuditRepository,
     collectors: MonitorCollector[] = [],
     private notifier: MonitorNotifier = new AuditOnlyMonitorNotifier(),
+    private processDefinitions?: ProcessDefinitionRepository,
+    private processService?: ProcessService,
   ) {
     this.collectors = new Map(collectors.map((c) => [c.kind, c]))
   }
@@ -198,7 +203,7 @@ export class MonitorService {
     // Idempotencia: ha erre a periódusra már van run, kilépünk (§4.11.7 dupla-fire).
     const run = await this.monitors.createRun(monitor.id, scheduledFor)
     if (!run) {
-      return { monitorId: monitor.id, outcome: 'skipped', openedTicketIds: [] }
+      return { monitorId: monitor.id, outcome: 'skipped', openedTicketIds: [], startedProcessIds: [] }
     }
 
     let outcome: MonitorRunOutcome = 'quiet'
@@ -206,6 +211,7 @@ export class MonitorService {
     let matchedCount = 0
     let suppressedCount = 0
     const openedTicketIds: string[] = []
+    const startedProcessIds: string[] = []
 
     try {
       // ---- 1. LÉPCSŐ (nulla LLM-token) ----
@@ -226,6 +232,12 @@ export class MonitorService {
       if (matched.length === 0) {
         outcome = 'quiet' // CSENDES alapállapot — a feature lényege
       } else {
+        // A monitor_cron triggerek a sweep alatt változatlanok — egyszer töltjük be,
+        // nem jelenként (különben N illeszkedő jel = N azonos lekérdezés).
+        const cronTriggers =
+          this.processDefinitions && this.processService
+            ? await this.processDefinitions.listActiveMonitorCronTriggers(monitor.tenantId, monitor.id)
+            : []
         // ---- cooldown / dedup ----
         for (const signal of matched) {
           const dedupKey = renderDedupKey(monitor, signal)
@@ -242,13 +254,26 @@ export class MonitorService {
             continue
           }
 
-          // ---- 2. LÉPCSŐ — eszkaláció ticketté ----
-          const ticketId = await this.openTicket(monitor, signal, run.id, dedupKey)
-          openedTicketIds.push(ticketId)
-          await this.monitors.markSignalEscalated(sig.id, ticketId, now)
-          await this.notifyEscalation(monitor, signal, run.id, dedupKey, ticketId, now)
+          // ---- 2. LÉPCSŐ — eszkaláció Futássá vagy legacy ticketté ----
+          const processIds = await this.startMonitorCronProcesses(
+            monitor,
+            signal,
+            run.id,
+            dedupKey,
+            now,
+            cronTriggers,
+          )
+          if (processIds.length > 0) {
+            startedProcessIds.push(...processIds)
+            await this.monitors.markSignalEscalated(sig.id, null, now)
+          } else {
+            const ticketId = await this.openTicket(monitor, signal, run.id, dedupKey)
+            openedTicketIds.push(ticketId)
+            await this.monitors.markSignalEscalated(sig.id, ticketId, now)
+            await this.notifyEscalation(monitor, signal, run.id, dedupKey, ticketId, now)
+          }
         }
-        outcome = openedTicketIds.length > 0 ? 'escalated' : 'suppressed'
+        outcome = openedTicketIds.length > 0 || startedProcessIds.length > 0 ? 'escalated' : 'suppressed'
       }
     } catch (error) {
       outcome = 'error'
@@ -262,8 +287,8 @@ export class MonitorService {
         llmInvoked: false,
         error: error instanceof Error ? error.message : String(error),
       })
-      await this.auditSweep(monitor, 'monitor.sweep.error', outcome, { signalCount, matchedCount })
-      return { monitorId: monitor.id, outcome, openedTicketIds }
+      await this.auditSweep(monitor, 'monitor.sweep.error', outcome, { signalCount, matchedCount, startedProcessIds })
+      return { monitorId: monitor.id, outcome, openedTicketIds, startedProcessIds }
     }
 
     await this.monitors.updateRun(run.id, {
@@ -280,8 +305,62 @@ export class MonitorService {
       matchedCount,
       suppressedCount,
       openedTicketIds,
+      startedProcessIds,
     })
-    return { monitorId: monitor.id, outcome, openedTicketIds }
+    return { monitorId: monitor.id, outcome, openedTicketIds, startedProcessIds }
+  }
+
+  /**
+   * Folyamat-feature-spec §4.4/§4.5: a Monitor-cron nem új scheduler, hanem a
+   * meglévő monitor-sweepből induló trigger. Ha a monitorhoz aktív Folyamat-trigger
+   * tartozik, a jelből `inputPayload` lesz és a Futás a háttérben, ticket-gráfban fut.
+   */
+  private async startMonitorCronProcesses(
+    monitor: MonitorDefinition,
+    signal: MonitorSignalDraft,
+    monitorRunId: string,
+    dedupKey: string,
+    now: Date,
+    triggers: ProcessTrigger[],
+  ): Promise<string[]> {
+    if (!this.processService || triggers.length === 0) return []
+
+    const startedProcessIds: string[] = []
+    for (const trigger of triggers) {
+      const inputPayload = resolveMonitorCronInputPayload(trigger.inputMap, {
+        monitor,
+        signal,
+        monitorRunId,
+        dedupKey,
+        now,
+      })
+      try {
+        const process = await this.processService.startProcess({
+          tenantId: monitor.tenantId,
+          processDefinitionId: trigger.processDefinitionId,
+          triggerType: 'monitor_cron',
+          inputPayload,
+          startedBy: { type: 'system' },
+        })
+        startedProcessIds.push(process.id)
+        await this.auditProcessTrigger(monitor, 'monitor.process_trigger.started', process.id, {
+          triggerId: trigger.id,
+          processDefinitionId: trigger.processDefinitionId,
+          monitorRunId,
+          dedupKey,
+          inputKeys: Object.keys(inputPayload),
+        })
+      } catch (error) {
+        await this.auditProcessTrigger(monitor, 'monitor.process_trigger.failed', trigger.processDefinitionId, {
+          triggerId: trigger.id,
+          processDefinitionId: trigger.processDefinitionId,
+          monitorRunId,
+          dedupKey,
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+    }
+    return startedProcessIds
   }
 
   /**
@@ -401,6 +480,27 @@ export class MonitorService {
     })
   }
 
+  private async auditProcessTrigger(
+    monitor: MonitorDefinition,
+    action: string,
+    targetId: string,
+    metadata: Record<string, unknown>,
+  ): Promise<void> {
+    await this.audit.append({
+      actorType: 'system',
+      actorId: null,
+      agentVersion: null,
+      action,
+      targetType: 'monitor',
+      targetId,
+      modelUsed: null,
+      inputRef: monitor.id,
+      outputRef: action.endsWith('.started') ? targetId : null,
+      policyDecision: action.endsWith('.started') ? 'started' : 'failed',
+      metadata: metadata as Prisma.JsonValue,
+    })
+  }
+
   private async auditSweep(
     monitor: MonitorDefinition,
     action: string,
@@ -421,4 +521,51 @@ export class MonitorService {
       metadata: metadata as Prisma.JsonValue,
     })
   }
+}
+
+type MonitorCronResolutionContext = {
+  monitor: MonitorDefinition
+  signal: MonitorSignalDraft
+  monitorRunId: string
+  dedupKey: string
+  now: Date
+}
+
+export function resolveMonitorCronInputPayload(
+  inputMap: Prisma.JsonValue,
+  ctx: MonitorCronResolutionContext,
+): Record<string, unknown> {
+  const map = jsonObject(inputMap)
+  const contextMap = jsonObject((map as { contextMap?: Prisma.JsonValue }).contextMap ?? null)
+  const payload: Record<string, unknown> = {}
+  for (const [slotName, expr] of Object.entries(contextMap)) {
+    payload[slotName] = resolveMonitorCronExpression(expr, ctx)
+  }
+  return payload
+}
+
+function resolveMonitorCronExpression(expr: unknown, ctx: MonitorCronResolutionContext): unknown {
+  if (expr === 'now()') return ctx.now.toISOString()
+  if (typeof expr !== 'string') return expr
+  if (expr === 'monitorRunId') return ctx.monitorRunId
+  if (expr === 'dedupKey') return ctx.dedupKey
+  if (expr === 'signal.title') return ctx.signal.title
+  if (expr === 'signal.severity') return ctx.signal.severity
+  if (expr === 'signal.dueBy') return ctx.signal.dueBy?.toISOString() ?? null
+  if (expr === 'monitor.id') return ctx.monitor.id
+  if (expr === 'monitor.title') return ctx.monitor.title
+  if (expr.startsWith('payload.')) return getPath(ctx.signal.payload, expr.slice('payload.'.length))
+  if (expr.startsWith('dedupKeyParts.')) return getPath(ctx.signal.dedupKeyParts, expr.slice('dedupKeyParts.'.length))
+  if (Object.prototype.hasOwnProperty.call(ctx.signal.payload, expr)) return ctx.signal.payload[expr]
+  if (Object.prototype.hasOwnProperty.call(ctx.signal.dedupKeyParts, expr)) return ctx.signal.dedupKeyParts[expr]
+  return expr
+}
+
+function getPath(value: unknown, path: string): unknown {
+  return path.split('.').reduce<unknown>((acc, key) => {
+    if (typeof acc === 'object' && acc !== null && key in acc) {
+      return (acc as Record<string, unknown>)[key]
+    }
+    return undefined
+  }, value)
 }

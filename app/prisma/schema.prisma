@@ -295,6 +295,45 @@ enum DocumentStatus {
   failed
 }
 
+// ── KB-v3: OKF dokumentum-tudásbázis (Knowledge-Base-v3-OKF-Spec §8.1) ──────
+// Feldolgozási mód dokumentumonként. `raw_text_only` a legacy/gyors út,
+// `okf` az LLM-generált OKF-javaslat review-ra. A v2 structured_rag / okf_plus_rag
+// tudatosan törölve — nincs RAG (D-A).
+enum KnowledgeProcessingMode {
+  raw_text_only
+  okf
+
+  @@map("knowledge_processing_mode")
+}
+
+enum KnowledgeArtifactStatus {
+  draft
+  processing
+  pending_review
+  published
+  failed
+  superseded
+
+  @@map("knowledge_artifact_status")
+}
+
+enum KnowledgeArtifactFormat {
+  okf_v0_1
+  markdown_bundle
+  raw_markdown
+  json
+
+  @@map("knowledge_artifact_format")
+}
+
+// A megoszthatóság a connector tulajdonsága, független a tartalom típusától (D-C/D-D).
+enum KnowledgeConnectorSharing {
+  single_agent
+  multi_agent
+
+  @@map("knowledge_connector_sharing")
+}
+
 enum AuditActorType {
   human
   agent
@@ -467,7 +506,15 @@ model Agent {
   // Szerep-instrukció ("mit csinál") és viselkedés-profil ("hogyan") külön
   // verziózva (§4.2/§5.3) — egymástól függetlenül frissíthető és visszakereshető.
   roleInstruction               String      @map("role_instruction")
+  // A ténylegesen használt viselkedés-profil ("hogyan"): a választott megosztott
+  // profil pinnelt törzse + az agent-specifikus `behaviorProfileOverlay` együtt,
+  // egy szövegbe komponálva (composeBehaviorProfile). A runtime EZT olvassa, így a
+  // prompt-építés és a reprodukálhatósági snapshot változatlan marad.
   behaviorProfile               String      @map("behavior_profile")
+  // Az agent-specifikus, egyedileg szerkeszthető kiegészítés a megosztott profil
+  // mellé (§3.4). Ez a "hogyan" azon része, ami csak erre az agentre igaz. Ha nincs
+  // megosztott profil, önmagában ez adja a teljes viselkedés-profilt.
+  behaviorProfileOverlay        String?     @map("behavior_profile_overlay")
   // Emberi arc (agent-persona.ts): admin által szerkeszthető megjelenített név,
   // üdvözlő mondat és jellemvonás. Ha null, a névből számított meleg
   // alapértelmezés jelenik meg. `avatarUrl` opcionális feltöltött portré
@@ -683,6 +730,21 @@ enum DelegationStatus {
   cancelled
 }
 
+// --- Folyamat (Process Definition) réteg (Folyamat-feature-spec §1, §4.1) -----
+
+enum ProcessDefinitionStatus {
+  draft
+  active
+  archived
+}
+
+enum ProcessTriggerType {
+  manual // Folyamatok-UI (kézi/teszt)
+  ticket
+  chat
+  monitor_cron
+}
+
 model PlaybookV2 {
   id                        String           @id @default(uuid()) @db.Uuid
   tenantId                  String?          @map("tenant_id") @db.Uuid
@@ -697,9 +759,10 @@ model PlaybookV2 {
   updatedAt                 DateTime         @updatedAt @map("updated_at") @db.Timestamptz
   archivedAt                DateTime?        @map("archived_at") @db.Timestamptz
 
-  versions    PlaybookVersionV2[]
-  assignments PlaybookAssignment[]
-  processes   ProcessInstance[]
+  versions           PlaybookVersionV2[]
+  assignments        PlaybookAssignment[]
+  processes          ProcessInstance[]
+  processDefinitions ProcessDefinition[]
 
   @@unique([tenantId, key])
   @@map("playbooks_v2")
@@ -723,9 +786,10 @@ model PlaybookVersionV2 {
   retiredAt        DateTime?               @map("retired_at") @db.Timestamptz
   createdAt        DateTime                @default(now()) @map("created_at") @db.Timestamptz
 
-  playbook    PlaybookV2           @relation(fields: [playbookId], references: [id], onDelete: Cascade)
-  assignments PlaybookAssignment[]
-  processes   ProcessInstance[]
+  playbook           PlaybookV2           @relation(fields: [playbookId], references: [id], onDelete: Cascade)
+  assignments        PlaybookAssignment[]
+  processes          ProcessInstance[]
+  processDefinitions ProcessDefinition[]
 
   @@unique([playbookId, version])
   @@unique([tenantId, playbookId, contentHash])
@@ -754,32 +818,37 @@ model PlaybookAssignment {
 // --- Fázis 2 Playbook process runtime (Feature-spec — Playbook §4.5–4.7) -----
 
 model ProcessInstance {
-  id                  String           @id @default(uuid()) @db.Uuid
-  tenantId            String?          @map("tenant_id") @db.Uuid
-  processType         String           @map("process_type")
-  status              ProcessStatus    @default(created)
-  playbookId          String           @map("playbook_id") @db.Uuid
-  playbookVersionId   String           @map("playbook_version_id") @db.Uuid
-  playbookRef         String           @map("playbook_ref")
-  playbookContentHash String           @map("playbook_content_hash")
-  startedByType       ProcessActorType @map("started_by_type")
-  startedByUserId     String?          @map("started_by_user_id") @db.Uuid
-  startedByAgentId    String?          @map("started_by_agent_id") @db.Uuid
-  conversationId      String?          @map("conversation_id") @db.Uuid
-  rootTicketId        String?          @map("root_ticket_id") @db.Uuid
-  inputPayload        Json             @default("{}") @map("input_payload")
-  outputPayload       Json             @default("{}") @map("output_payload")
-  startedAt           DateTime         @default(now()) @map("started_at") @db.Timestamptz
-  completedAt         DateTime?        @map("completed_at") @db.Timestamptz
-  failedAt            DateTime?        @map("failed_at") @db.Timestamptz
+  id                  String              @id @default(uuid()) @db.Uuid
+  tenantId            String?             @map("tenant_id") @db.Uuid
+  processType         String              @map("process_type")
+  status              ProcessStatus       @default(created)
+  playbookId          String              @map("playbook_id") @db.Uuid
+  playbookVersionId   String              @map("playbook_version_id") @db.Uuid
+  playbookRef         String              @map("playbook_ref")
+  playbookContentHash String              @map("playbook_content_hash")
+  // §7: a Futás forrás-Folyamata és triggere (opcionális a régi rekordok miatt).
+  processDefinitionId String?             @map("process_definition_id") @db.Uuid
+  triggerType         ProcessTriggerType? @map("trigger_type")
+  startedByType       ProcessActorType    @map("started_by_type")
+  startedByUserId     String?             @map("started_by_user_id") @db.Uuid
+  startedByAgentId    String?             @map("started_by_agent_id") @db.Uuid
+  conversationId      String?             @map("conversation_id") @db.Uuid
+  rootTicketId        String?             @map("root_ticket_id") @db.Uuid
+  inputPayload        Json                @default("{}") @map("input_payload")
+  outputPayload       Json                @default("{}") @map("output_payload")
+  startedAt           DateTime            @default(now()) @map("started_at") @db.Timestamptz
+  completedAt         DateTime?           @map("completed_at") @db.Timestamptz
+  failedAt            DateTime?           @map("failed_at") @db.Timestamptz
 
-  playbook        PlaybookV2            @relation(fields: [playbookId], references: [id])
-  playbookVersion PlaybookVersionV2     @relation(fields: [playbookVersionId], references: [id])
-  steps           ProcessStepInstance[]
-  delegations     DelegationEdge[]
+  playbook          PlaybookV2            @relation(fields: [playbookId], references: [id])
+  playbookVersion   PlaybookVersionV2     @relation(fields: [playbookVersionId], references: [id])
+  processDefinition ProcessDefinition?    @relation(fields: [processDefinitionId], references: [id])
+  steps             ProcessStepInstance[]
+  delegations       DelegationEdge[]
 
   @@index([tenantId, status])
   @@index([tenantId, processType])
+  @@index([processDefinitionId])
   @@map("process_instances")
 }
 
@@ -832,6 +901,63 @@ model DelegationEdge {
 
   @@index([tenantId, processInstanceId])
   @@map("delegation_edges")
+}
+
+/// Folyamat (2. szint): egy publikált Playbook-verzióra PIN-elt, konfigurált,
+/// nevesített, újrahasználható definíció. Folyamat-feature-spec §1, §4.1.
+model ProcessDefinition {
+  id                String                  @id @default(uuid()) @db.Uuid
+  tenantId          String?                 @map("tenant_id") @db.Uuid
+  name              String
+  description       String?
+  status            ProcessDefinitionStatus @default(draft)
+  // PIN a publikált Playbook-verzióra (§4.10). A verzió cseréje tudatos, külön aktus.
+  playbookId        String                  @map("playbook_id") @db.Uuid
+  playbookVersionId String                  @map("playbook_version_id") @db.Uuid
+  // roleKey -> agentId leképezés a Folyamaton (§4.1, §1.2). { "reviewer": "<uuid>", ... }
+  roleBindings      Json                    @default("{}") @map("role_bindings")
+  // config-forrású rések értékei (§4.7). { "sablon": "...", ... }
+  configValues      Json                    @default("{}") @map("config_values")
+  createdById       String                  @map("created_by_user_id") @db.Uuid
+  approvedById      String?                 @map("approved_by_user_id") @db.Uuid
+  approvedAt        DateTime?               @map("approved_at") @db.Timestamptz
+  createdAt         DateTime                @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime                @updatedAt @map("updated_at") @db.Timestamptz
+  archivedAt        DateTime?               @map("archived_at") @db.Timestamptz
+
+  playbook        PlaybookV2        @relation(fields: [playbookId], references: [id])
+  playbookVersion PlaybookVersionV2 @relation(fields: [playbookVersionId], references: [id])
+  triggers        ProcessTrigger[]
+  instances       ProcessInstance[]
+
+  @@index([tenantId, status])
+  @@map("process_definitions")
+}
+
+/// Egy Folyamathoz kötött trigger (§4.4). Egy Folyamatnak több triggere lehet.
+model ProcessTrigger {
+  id                  String             @id @default(uuid()) @db.Uuid
+  tenantId            String?            @map("tenant_id") @db.Uuid
+  processDefinitionId String             @map("process_definition_id") @db.Uuid
+  type                ProcessTriggerType
+  enabled             Boolean            @default(true)
+  // trigger-input -> deklarált rés leképezés (§4.4). Alakja triggertípus-függő:
+  //  ticket:       { fieldMap: { "<slotName>": "<ticketFieldKey>" } }
+  //  chat:         { slotNames: ["cég", ...] }
+  //  monitor_cron: { contextMap: { "<slotName>": "now()" | "<collectorField>" } }
+  //  manual:       {}  (az operátor űrlapon tölt)
+  inputMap            Json               @default("{}") @map("input_map")
+  // monitor_cron esetén a forrás MonitorDefinition (opcionális FK-ként is tükrözve)
+  monitorDefinitionId String?            @map("monitor_definition_id") @db.Uuid
+  createdById         String             @map("created_by_user_id") @db.Uuid
+  createdAt           DateTime           @default(now()) @map("created_at") @db.Timestamptz
+  revokedAt           DateTime?          @map("revoked_at") @db.Timestamptz
+
+  processDefinition ProcessDefinition @relation(fields: [processDefinitionId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, type])
+  @@index([processDefinitionId])
+  @@map("process_triggers")
 }
 
 model AgentApiKey {
@@ -921,11 +1047,12 @@ model Connector {
   tenantId       String?                 @map("tenant_id") @db.Uuid
   createdAt      DateTime                @default(now()) @map("created_at") @db.Timestamptz
 
-  agentConnectors AgentConnector[]
-  toolCalls       ToolCall[]
-  documents       Document[]
-  grants          ConnectorGrant[]
-  draft           ConnectorDraft?
+  agentConnectors    AgentConnector[]
+  toolCalls          ToolCall[]
+  documents          Document[]
+  grants             ConnectorGrant[]
+  draft              ConnectorDraft?
+  knowledgeArtifacts KnowledgeArtifact[]
 
   @@unique([type, name])
   @@map("connectors")
@@ -1033,11 +1160,85 @@ model Document {
   uploadedById  String         @map("uploaded_by") @db.Uuid
   createdAt     DateTime       @default(now()) @map("created_at") @db.Timestamptz
 
-  uploadedBy User       @relation("DocumentUploadedBy", fields: [uploadedById], references: [id])
-  connector  Connector? @relation(fields: [connectorId], references: [id])
+  // KB-v3 (§8.2) — opcionális metaadat + feldolgozási mód. Meglévő sorok
+  // változatlanul működnek (mind nullable / default).
+  mimeType       String?                  @map("mime_type")
+  contentHash    String?                  @map("content_hash")
+  processingMode KnowledgeProcessingMode? @map("processing_mode")
+  metadata       Json                     @default("{}")
+
+  uploadedBy User                @relation("DocumentUploadedBy", fields: [uploadedById], references: [id])
+  connector  Connector?          @relation(fields: [connectorId], references: [id])
   tickets    Ticket[]
+  artifacts  KnowledgeArtifact[]
 
   @@map("documents")
+}
+
+// ── KB-v3 adatmodell (§8.3/§8.4) ────────────────────────────────────────────
+// A scope-kulcs a `connectorId` (D-B); az `agentId` legfeljebb nullable
+// provenance, retrievalben SOHA nem szűr. A `tenantId` a `system` tenantnál is
+// valós UUID (D-E, lásd SYSTEM_TENANT_ID) — nincs NULL-izolációs ág.
+model KnowledgeArtifact {
+  id               String  @id @default(uuid()) @db.Uuid
+  tenantId         String? @map("tenant_id") @db.Uuid
+  connectorId      String  @map("connector_id") @db.Uuid // SCOPE-KULCS
+  createdByAgentId String? @map("created_by_agent_id") @db.Uuid // provenance, NEM scope
+  sourceDocumentId String? @map("source_document_id") @db.Uuid
+
+  format               KnowledgeArtifactFormat @default(okf_v0_1)
+  status               KnowledgeArtifactStatus @default(draft)
+  version              Int
+  contentHash          String                  @map("content_hash")
+  bundleRef            String                  @map("bundle_ref")
+  generationModel      String?                 @map("generation_model")
+  generationPromptHash String?                 @map("generation_prompt_hash")
+  validationResult     Json                    @default("{}") @map("validation_result")
+  reviewSummary        String?                 @map("review_summary")
+  createdById          String?                 @map("created_by") @db.Uuid
+  approvedById         String?                 @map("approved_by") @db.Uuid
+  createdAt            DateTime                @default(now()) @map("created_at") @db.Timestamptz
+  publishedAt          DateTime?               @map("published_at") @db.Timestamptz
+
+  connector      Connector        @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+  sourceDocument Document?        @relation(fields: [sourceDocumentId], references: [id])
+  chunks         KnowledgeChunk[]
+
+  @@unique([connectorId, sourceDocumentId, version])
+  @@index([tenantId, connectorId, status])
+  @@index([connectorId, status])
+  @@map("knowledge_artifacts")
+}
+
+model KnowledgeChunk {
+  id          String  @id @default(uuid()) @db.Uuid
+  tenantId    String? @map("tenant_id") @db.Uuid
+  artifactId  String  @map("artifact_id") @db.Uuid
+  connectorId String  @map("connector_id") @db.Uuid // SCOPE-KULCS (D-B)
+
+  path        String
+  title       String
+  type        String
+  section     String?
+  chunkIndex  Int     @map("chunk_index")
+  text        String
+  summary     String?
+  tags        Json    @default("[]")
+  metadata    Json    @default("{}")
+  sourceRef   Json?   @map("source_ref") // oldal/section-szint (§4.7), NEM span-pontos
+  contentHash String  @map("content_hash")
+
+  // Full-text: Postgres tsvector GIN index nyers SQL migrationnel (később).
+  // NINCS embedding mező (D-A). A vektor a KnowledgeIndexStore mögött adható hozzá.
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  artifact KnowledgeArtifact @relation(fields: [artifactId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, connectorId])
+  @@index([connectorId])
+  @@index([artifactId, path])
+  @@map("knowledge_chunks")
 }
 
 model Conversation {

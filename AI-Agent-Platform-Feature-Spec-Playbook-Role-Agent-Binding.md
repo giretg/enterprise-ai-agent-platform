@@ -1,48 +1,53 @@
-# Feature-spec – Playbook-szerepek összekötése tényleges agentekkel (Role→Agent binding)
+# Feature-spec – Playbook → Folyamat → Futás életciklus (Playbook processz-modell)
 
 **Készítette:** Excellence Pay KFT (Enterprise AI tanácsadás)
-**Verzió:** 0.1 (tervezet)
+**Verzió:** 0.2 (tervezet – teljes újrakeretezés)
 **Dátum:** 2026-07-03
-**Forrásdokumentumok:** `AI-Agent-Platform-Feature-Spec-Playbook-DONE.md` (§5 spec, §6.2 szemantikai validáció, §7 compiler/runtime, §8.2 ProcessService, §9.2 Operator UI, §13.2 pinnelés), `AI-Agent-Platform-Feature-Spec-Playbook-Orchestrator-DONE.md` (§2.2 `agent_name` binding), `AI-Agent-Platform-Feature-Spec-AgentRegistry-done.md`, `AI-Agent-Platform-Feature-Spec-IAM-RBAC-done.md`
-**Olvasó:** product owner, architect, fejlesztő(k). Feltételezi a Playbook Registry (Fázis 2), a Process runtime, az Agent Registry és az IAM/RBAC alapmodell ismeretét.
-**Státusz:** tervezet – önálló feature-spec. A hiányzó láncszemet írja le a jelenlegi kód és a szándékolt működés között.
+**Forrásdokumentumok:** `AI-Agent-Platform-Feature-Spec-Playbook-DONE.md` (§5 spec, §6.2 szemantikai validáció, §7 compiler/runtime, §8.2 ProcessService, §9.2 Operator UI, §13.2 pinnelés), `AI-Agent-Platform-Feature-Spec-Playbook-Orchestrator-DONE.md` (§2.2 `agent_name` binding), `AI-Agent-Platform-Feature-Spec-AgentRegistry-done.md`, `AI-Agent-Platform-Feature-Spec-IAM-RBAC-done.md`, `AI-Agent-Platform-Feature-Spec-Proactive-Monitor` (ütemezett triggerek), `provisioning` (draft→validál→jóváhagyás mintázat)
+**Olvasó:** product owner, architect, fejlesztő(k). Feltételezi a Playbook Registry (Fázis 2), a Process runtime, az Agent Registry, a Proaktív Monitor és az IAM/RBAC alapmodell ismeretét.
+**Státusz:** tervezet – önálló feature-spec. A **hiányzó életciklust** írja le a Playbook (recept) és a tényleges, agentekkel és emberekkel futó folyamat között.
+
+**Megvalósítási állapot (2026-07-03):** a **Fázis 1** (adat + spec alap), a **Fázis 2** (Folyamat-réteg + indítás), a **Fázis 4 API-része**, a **Monitor-cron triggerintegráció**, a **ticket-trigger backend/action/UI**, a **chat-trigger runtime/API + Folyamat-választó UI + LLM slot-filling fallback**, a **roster-leépítés**, a **blocked riasztó-adapter**, a **Folyamat-összeállító UI alapútvonala** és a **Playbook-szerző agent (§6, WP-10)** kész — a §4.1 szerep→agent kötés a Folyamaton, a §4.2 `agent_role` roster-írás tiltása, a §4.4/§4.5 futásidejű feloldás + `blocked` + best-effort webhook/audit-only riasztás, a §4.7 prompt-rétegzés, a §4.8 alkalmasság, a Folyamat/trigger REST API, a publikált Playbook-verzióból Folyamat-draft létrehozása, szerep→agent kötés, config-rések, triggercsatolás, aktiválás, a Futás-nézet meta/blokk-ok megjelenítése, a Monitor sweep→Futás indítás, a ticket `fieldMap`→Futás indítás, a chat `slotNames`/alias→Futás indítás és a Playbook-szerző agent (NL leírás → validált draft, propose-not-apply, sosem publikál) implementálva és tesztelve. **A négy trigger (§9 DoD) mind kész. A §9 DoD listája teljes egészében kész.** Részletes WP-szintű bontás: `AI-Agent-Platform-Dev-Spec-Playbook-Role-Agent-Binding.md` → „Megvalósítási állapot".
 
 ---
 
 ## 0. Mit ad ez a dokumentum
 
-Ez a specifikáció meghatározza, **hogyan kapcsolódjon össze egy absztrakt Playbook-szerep egy tényleges, konkrét agenttel (vagy emberi jóváhagyóval)** a folyamat futása során, és **melyik ponton** történjen ez a kötés.
+A korábbi 0.1-es verzió egy szűk problémát célzott: „hogyan kötődjön egy absztrakt Playbook-szerep egy konkrét agenthez a **példányosításnál**". A tervezés során kiderült, hogy a valódi hiány ennél tágabb, és a kötés helye is más:
 
-A jelenlegi állapotban a Playbook a szerepeket absztrakt módon írja le (`agent_role` / `human_role` + elvárt képességek/jogok), de a rendszer sehol nem köti ezeket tényleges szereplőhöz: a folyamat-ticketek `assignee` nélkül jönnek létre, így az „agent elvégzi a lépést” hurok nem záródik be. Ez a dokumentum ezt a hiányt tölti ki.
+**A platform ma nem ismeri a réteget a Playbook (absztrakt recept) és a Futás (egyetlen lefutás) között.** Emiatt nincs válasz arra, hogy:
 
-A javaslat lényege: a **szerep→agent kötés a folyamat-példányosításnál (Folyamatok / „Új folyamat indítása”)** történik, kétszintű feloldással (tenant-szintű alapértelmezés + futásidejű felülírás), megőrizve a Playbook-sablon hordozhatóságát.
+- hogyan lesz egy receptből tényleges, konkrét agentekhez és emberekhez rendelt, indítható folyamat;
+- hogyan **indul** egy folyamat a gyakorlatban (nyilván nem JSON-fájl kézi átadásával, hanem chatből, ticketből vagy ütemezetten);
+- hogyan készül el egyáltalán a Playbook, ha a felhasználó nem fog JSON-t szerkeszteni.
+
+Ez a dokumentum bevezeti a **háromszintű modellt** (Playbook → Folyamat → Futás), rögzíti, hogy a szerep→agent kötés a **Folyamat** rétegben történik, meghatározza a **triggereléset** (chat / ticket / Monitor-cron / kézi), és leírja a **Playbook-szerző agentet**, amely természetes nyelvből állít elő validált Playbook-draftot.
 
 ---
 
-## 1. Üzleti cél és indoklás
+## 1. A háromszintű modell (a dokumentum gerince)
 
-### 1.1 Probléma
+| Szint | Mi ez | Ki készíti | Kód ma |
+|---|---|---|---|
+| **1. Playbook** (recept) | Absztrakt, újrahasználható munkafolyamat: lépések, absztrakt szerepek, kapuk, delegációs élek, **sablonos utasítások tipizált résekkel**. Nem ismeri a konkrét világot. | Architect / owner, **a Playbook-szerző agent segítségével** (§6) | `PlaybookVersionV2` ✅ |
+| **2. Folyamat** (konfigurált definíció) | A receptre ráhúzva: **szerep→agent kötés**, a **konfig-rések** kitöltése, a **triggerek** csatolása, a **trigger-input → deklarált rés** leképezés. Nevesített, **playbook-verzióra PIN-elt**, újrahasználható. | Ember (operátor/admin), űrlapon, jóváhagyással | `ProcessDefinition` ✅ (API + összeállító UI alapútvonal kész) |
+| **3. Futás** (run) | Egyetlen tényleges lefutás egy triggerből, futás-bemenettel. | Trigger (chat / ticket / Monitor / kézi) | `ProcessInstance` ✅ (UI-nyelven „Futás") |
 
-- A Playbook **sablon**: leírja, milyen szerep (agent/ember) és milyen képességgel/joggal kell egy lépéshez, de **nem mondja meg, hogy pontosan ki csinálja**.
-- Enélkül a folyamat elindul, létrehozza a lépéseket és ticketeket, de az agent-lépések gazdátlanul maradnak – nincs, aki automatikusan elvégezze őket.
-- Az operátornak jelenleg nincs eszköze arra, hogy egy adott futáshoz megmondja: „ezt a szerepet a X agent töltse be”.
+### 1.1 Terminológiai figyelmeztetés (kötelező olvasmány a fejlesztőnek)
 
-### 1.2 Cél
+A kód ma `ProcessInstance`-t / „Process"-t használ **egyetlen futásra**. Ebben a specben a **„Folyamat" a 2. szint** (konfigurált definíció), a **„Futás" a 3. szint**. A kettő nem ugyanaz. A megvalósításnál:
 
-Tegyük lehetővé, hogy a folyamat indításakor (a példányosítás pillanatában) **minden agent-szerephez tényleges agent rendelődjön**, úgy, hogy:
+- **Playbook** = `PlaybookV2` / `PlaybookVersionV2` (marad).
+- **Folyamat** = **új entitás** (kód-javaslat: `ProcessDefinition`).
+- **Futás** = a meglévő `ProcessInstance`, UI-nyelven „Futás".
 
-- a Playbook-sablon **absztrakt és újrahasználható marad** (nem drótozunk bele konkrét agentet);
-- a kötés **auditálható és reprodukálható** (a futás rögzíti, ki dolgozott melyik szerepben);
-- ne legyen felesleges operátori teher (legyen értelmes alapértelmezés);
-- a **jogosultsági/képességi garanciák** (ki alkalmas egy szerepre) tényleges ellenőrzésre kerüljenek.
+A `PlaybookAssignment` séma-tábla (jelenlegi `assignmentType`/`assignmentKey`/`isDefault`) a korábbi „roster" csökevénye — a megvalósításnál el kell dönteni: átfunkcionáljuk a Folyamat tárolására, vagy megszűnik (§4.2, §6).
 
-### 1.3 Miért a példányosítás a helyes pont
+### 1.2 A kötés helye: miért a Folyamat, nem a Futás
 
-A folyamat-példány már ma is **rögzítési (PIN) pont**: rögzíti, melyik Playbook-verzióval fut végig, és ez a futás végéig nem változik. A „melyik agent tölti be a szerepet” ugyanilyen természetű, futás-specifikus döntés, ezért logikusan ide illeszkedik:
-
-- a sablon hordozhatósága megmarad;
-- ugyanaz a Playbook különböző futásokban más agenttel mehet (csapatonként, tenantonként, tesztként);
-- a döntés a verzió-PIN mellé kerül, konzisztens reprodukálhatósággal.
+- A **Folyamat** a természetes PIN-pont: rögzíti a playbook-verziót **és** a szerep→agent kötést, és ez futásról futásra változatlan.
+- Ugyanabból a Playbookból **több Folyamat** készülhet (pl. „Kódreview" A-csapat agentjeivel napi cronnal, illetve B-csapatéval ticketből) — a kötés a Folyamaton él, nem globális tenant-táblán.
+- A **Futás** már csak *feloldja* a Folyamat kötéseit; a nem-interaktív triggerek (cron, ticket) így ember nélkül is determinisztikusan feloldódnak.
 
 ---
 
@@ -50,11 +55,14 @@ A folyamat-példány már ma is **rögzítési (PIN) pont**: rögzíti, melyik P
 
 | Fogalom | Jelentés |
 |---|---|
-| **Playbook-szerep (role)** | Absztrakt szereplő a specben: `key`, `type` (`agent_role` / `human_role`), `requiredCapabilities`, `requiredPermissions`. |
-| **Szerep-kötés (role binding)** | Egy `role.key → konkrét szereplő` leképezés. Agent-szerepnél egy agent, emberi szerepnél jellemzően jogosultsági szerep (nem konkrét személy). |
-| **Tenant-roster** | Tenant-szintű, perzisztens alapértelmezett szerep-kötés (újrahasználható futások között). |
-| **Futásidejű override** | Egy adott folyamat-indításnál megadott, csak arra a futásra érvényes szerep-kötés. |
-| **Alkalmas agent** | Olyan aktív agent, amelynek képességei (Capability = engedélyezett tool-ok) lefedik a szerep `requiredCapabilities` listáját, és azonos tenanthoz tartozik. |
+| **Playbook-szerep (role)** | Absztrakt szereplő a receptben: `key`, `type` (`agent_role` / `human_role`), `requiredCapabilities`, `requiredPermissions`. |
+| **Tipizált rés (input slot)** | A lépés-utasítás sablonjának nevesített változója: `name`, `type` (incl. `freeform`), `required`, **forrás**: `config` (a Folyamat tölti) vagy `trigger` (a futás-bemenet tölti). |
+| **Szerep-kötés (role binding)** | `role.key → konkrét agent` leképezés, a **Folyamaton** rögzítve. |
+| **Folyamat (Process Definition)** | Konfigurált, nevesített, playbook-verzióra PIN-elt definíció: szerep-kötések + konfig-rés értékek + trigger-kötések. |
+| **Trigger** | A Futás indítási módja: **Folyamatok-UI (teszt/kézi)**, **ticket**, **chat**, **Monitor-cron**. Egy Folyamathoz több trigger is tartozhat. |
+| **Futás (Run)** | Egyetlen lefutás; a Folyamat kötéseivel, a triggerből érkező futás-bemenettel. |
+| **Alkalmas agent** | Aktív agent, azonos tenant, amelynek képességei (engedélyezett tool-ok) **lefedik** a szerep `requiredCapabilities` listáját. |
+| **Effektív prompt** | Egy agent-lépés tényleges promptja: `agent-perszóna (additív) + lépés-utasítás (sablon a résekkel kitöltve) + futás-input`. |
 
 ---
 
@@ -62,133 +70,172 @@ A folyamat-példány már ma is **rögzítési (PIN) pont**: rögzíti, melyik P
 
 ### 3.1 Benne van
 
-- Agent-szerepek (`agent_role`) összekötése konkrét agenttel a folyamat-indításnál.
-- Kétszintű feloldás: tenant-roster (alapértelmezés) + futásidejű override.
-- A kötés rögzítése a folyamat-példányon (audit, reprodukálhatóság).
-- A szerep-kötés érvényesítése a lépés-ticketek létrehozásakor (a ticket tényleges `agent`-hez kerül).
-- A képességi/jogosultsági alkalmasság ellenőrzése a választható agentekre.
+- A **Folyamat** réteg mint önálló entitás: szerep→agent kötés, konfig-rések, trigger-kötések, playbook-verzió-PIN.
+- **Tipizált input-rések** a Playbook lépéseiben (config vs. trigger forrással), és a **prompt-rétegzés** szabályai.
+- A **négy belépési pont** (Folyamatok-UI, ticket, chat, Monitor-cron) és triggertípusonként az **input-feloldás**.
+- **Cron-triggerelés a meglévő Proaktív Monitorral** (nem új scheduler), megelőző kapuval és futásidejű `blocked`+riasztással.
+- A szerep-kötés érvényesítése a lépés-ticketek létrehozásakor (a ticket tényleges agenthez kerül).
+- A **Playbook-szerző agent** (Playbook-szint): természetes nyelv → validált Playbook-draft + read-only folyamat-diagram; minden jóváhagyás emberé.
 
-### 3.2 Nincs benne (nem ennek a specifikációnak a tárgya)
+### 3.2 Nincs benne (tudatosan)
 
-- Konkrét emberi felhasználó kötése egy `human_role`-hoz indításkor. Az emberi jóváhagyás továbbra is **jogosultság-alapú** a kapunál (bárki, akinek megvan a `requiredPermissions` joga). Lásd §4.3.
-- Az agent tényleges végrehajtó hurokja (dispatcher → agent-runtime → kimenet). Ez külön, kapcsolódó feladat; itt csak az előfeltételét (a ticket tényleges agenthez kötése) teremtjük meg.
-- Több agent egy szerepben, terheléselosztás, automatikus dispatch-idejű választás (lásd §7 Alternatívák).
-- Playbook grafikus szerkesztő, párhuzamos ágak (a Playbook fő-spec nyitott döntései szerint kizárva).
+- **Folyamat-szintű szerző-agent** (v1). A Folyamatot ember rakja össze űrlapon; ha később lenne rá agent, az is csak draftol, jóváhagyás emberé.
+- Konkrét emberi **felhasználó** kötése `human_role`-hoz indításkor. A `human_role` marad **jogosultság-alapú** a kapunál (§4.3).
+- Az agent tényleges végrehajtó hurokja (dispatcher → agent-runtime → kimenet). Ez külön feladat; itt csak az előfeltételét (ticket tényleges agenthez kötve) teremtjük meg.
+- Több agent egy szerepben, terheléselosztás, dispatch-idejű automatikus választás (§7).
+- Playbook grafikus **szerkesztő**, párhuzamos ágak. (A folyamat **read-only megrajzolása** benne van, a drag-and-drop editor nincs.)
 
 ---
 
 ## 4. Funkcionális követelmények
 
-### 4.1 Szerep-kötés a folyamat indításakor
+### 4.1 Szerep-kötés a Folyamat összeállításánál (nem a Futásnál)
 
-- A „Folyamatok / Új folyamat indítása” felületen a Playbook kiválasztása után a rendszer **kilistázza a Playbook publikált verziójának `agent_role` szerepeit**.
-- Minden agent-szerephez **agent-választó** jelenik meg, amely **csak az alkalmas agenteket** kínálja fel (§2 „alkalmas agent”).
-- Minden agent-szerep-választó **alapból a tenant-roster értékével** van kitöltve, ha van ilyen; az operátor felülírhatja erre a futásra.
-- Az indítás **nem engedélyezett**, amíg minden kötelező agent-szerephez nincs érvényes, alkalmas agent kötve (kivéve, ha a §7 szerinti automatikus feloldás aktív).
+- A **Folyamat összeállítása** felületen az operátor kiválaszt egy **publikált Playbook-verziót**, és a rendszer kilistázza annak `agent_role` szerepeit.
+- Minden agent-szerephez **agent-választó** jelenik meg, amely **csak az alkalmas agenteket** kínálja (§2 „alkalmas agent").
+- Az operátor kitölti a **konfig-réseket** (a lépés-utasítások `config` forrású változóit) és csatolja a **triggereket** (§4.4).
+- A Folyamat **mentése/jóváhagyása emberi aktus**. Aktiválni csak akkor lehet, ha minden kötelező agent-szerephez alkalmas agent van kötve, minden kötelező konfig-rés kitöltve, és a csatolt triggerek átmennek a megelőző kapun (§4.5).
 
-### 4.2 Tenant-szintű alapértelmezett kötés (roster)
+### 4.2 A tenant-roster megszűnik
 
-- Az adminnak legyen lehetősége tenant-szinten `role.key → agent` alapértelmezést beállítani (szerepenként egy agent).
-- A roster **több Playbookon átívelő**: ha több Playbook ugyanazt a szerep-kulcsot használja, a roster közös alapértelmezésként szolgálhat (a konkrét szemantikát a bevezetés finomíthatja: globális vagy Playbook-specifikus roster).
-- A roster kizárólag alkalmas agentet fogadhat el.
+A 0.1-es tenant-szintű `role.key → agent` roster **elhal**: a kötés a Folyamaton él. Ha később kell tenant-szintű alapértelmezés (kényelmi előkitöltés a Folyamat összeállításakor), az kizárólag **javaslat**, nem futásidejű feloldási forrás.
 
 ### 4.3 Emberi szerepek kezelése
 
-- `human_role` szerephez indításkor **nem kötelező** konkrét személyt rendelni.
-- Az emberi lépés / jóváhagyási kapu továbbra is **jogosultság-alapú**: a lépést/kaput bárki kezelheti, akinek megvan a szerep `requiredPermissions` joga (a kapu-döntés a meglévő runtime-logika szerint role/permission alapján enged).
-- Opcionálisan (későbbi bővítés) megengedhető emberi szerep konkrét felhasználóhoz vagy szűkebb csoporthoz kötése – ez nem része ennek az alap-verziónak.
+- `human_role`-hoz nem kötelező konkrét személyt rendelni.
+- Az emberi lépés / jóváhagyási kapu **jogosultság-alapú**: bárki kezelheti, akinek megvan a szerep `requiredPermissions` joga.
+- Opcionálisan a Folyamat rögzíthet a lépéshez kiegészítő információt (leírás, elvárás), de ez nem konkrét felhasználó-kötés.
 
-### 4.4 Feloldási sorrend (a lépés-ticket létrehozásakor)
+### 4.4 Triggerelés és input-feloldás
 
-A rendszer a következő prioritással oldja fel a lépés `assignedRole`-ját tényleges agentre:
+Egy Futás négyféle triggerből indulhat; egy Folyamat **több triggert** is vihet (pl. éjszakai Monitor-cron *és* napközbeni ticket-indítás). A futás-résekhez (`trigger` forrású inputok) triggertípusonként másképp jut hozzá a rendszer:
 
-```
-1. futásidejű override (a folyamat-példány szerep-kötése)
-2. tenant-roster alapértelmezés
-3. (opcionális) automatikus, képesség-alapú választás
-4. nincs kötés → a ticket assignee nélkül marad, és a folyamat jelzi a hiányt
-```
-
-### 4.5 Alkalmassági (validációs) szabályok
-
-Egy agent akkor köthető egy `agent_role`-hoz, ha:
-
-- **aktív** (nem retired/suspended);
-- **azonos tenanthoz** tartozik (tenant-izoláció);
-- **képességei lefedik** a szerep `requiredCapabilities` listáját (a hiányzó képesség tiltó hiba).
-
-Emberi szerepnél az érintett jogosultságoknak (`requiredPermissions`) **létezniük kell az IAM/RBAC modellben** (ezt a Playbook-validáció publikáláskor már ellenőrzi; itt a futásidejű oldal is támaszkodik rá).
-
-### 4.6 Reprodukálhatóság és audit
-
-- A folyamat-példány **rögzíti a teljes szerep-kötést** (melyik szerephez melyik agent), a verzió-PIN mellé.
-- Az indítási audit-eseménybe bekerül a kötés (mely szerep → mely agent), hogy utólag bizonyítható legyen, ki dolgozott a futásban.
-- A kötés a futás alatt **nem változik** (a PIN filozófiával összhangban); esetleges csere külön, auditált művelet lehet (későbbi bővítés).
-
-### 4.7 Hibakezelés
-
-- Ha egy szerephez nincs alkalmas agent a tenantnál, az indító felület **egyértelmű hibaüzenettel** jelezze (és irányítson az Agent Registry / roster beállítás felé).
-- Ha az operátor olyan agentet próbál kötni, amely időközben inaktívvá vált, az indítás **elutasításra** kerül alkalmassági hibával.
-
----
-
-## 5. Felhasználói folyamat (indítás)
-
-1. Az operátor a „Folyamatok” oldalon kiválaszt egy **publikált** Playbookot.
-2. A rendszer megjeleníti a Playbook `agent_role` szerepeit, mindegyikhez egy alkalmas-agent választóval, a roster-alapértelmezéssel előkitöltve.
-3. Az operátor szükség szerint **felülírja** az egyes szerepekhez rendelt agenteket erre a futásra.
-4. Az operátor megadja a **bemeneti payload**-ot (a folyamat kezdő adatait).
-5. Indításkor a rendszer:
-   - validálja a kötéseket (alkalmasság, tenant, aktív állapot);
-   - PIN-eli a Playbook-verziót és a szerep-kötést;
-   - létrehozza a belépő lépést és a hozzá tartozó ticketet, immár a **feloldott tényleges agenthez** rendelve.
-6. Az operátor a folyamat-nézetben követi az előrehaladást; minden lépés-ticket a szerepéhez rendelt tényleges agenthez tartozik.
-
----
-
-## 6. Adat- és integrációs vázlat (nem kötelező részletezettségű)
-
-> Ez a szakasz a fejlesztői bekötés irányát adja meg; a végleges séma a megvalósításkor véglegesül.
-
-- **Folyamat-példány kiegészítése**: a példány tároljon egy szerep-kötés leképezést (`role.key → agentId`), a verzió-PIN mellett.
-- **Tenant-roster tárolás**: perzisztens `role.key → agentId` alapértelmezés tenantonként.
-- **Folyamat-indító szerződés (ProcessService.startProcess)**: fogadjon opcionális szerep-kötést; végezze el az alkalmassági validációt; a kötést mentse a példányra és az auditba.
-- **Lépés-ticket létrehozás**: a lépés `assignedRole`-ját a §4.4 sorrend szerint oldja fel konkrét agentre, és a ticketet ehhez az agenthez rendelje (a jelenlegi „assignee nélküli” állapot helyett).
-- **Alkalmassági forrás**: az agent-képességek (engedélyezett tool-ok) és a szerep `requiredCapabilities` összevetése – ugyanaz a logika, amit a Playbook-validáció szemantikai rétege (§6.2) előirányoz.
-- **Indító UI**: a kiválasztott Playbook publikált specjéből olvassa ki az `agent_role` szerepeket, és szerepenként kínáljon fel alkalmas-agent listát.
-
----
-
-## 7. Alternatívák és mérlegelés
-
-| Kötési pont | Előny | Hátrány |
+| Trigger | Hogyan kapja a futás-inputokat | Megjegyzés |
 |---|---|---|
-| **Sablonba drótozva (design-time, `agent_name`)** | Egyszerű, explicit | A sablon nem hordozható; minden agent-változásnál módosítani kell |
-| **Tenant-roster (perzisztens alapértelmezés)** | Kevés operátori döntés, újrahasználható | Kevésbé rugalmas futásonként; önmagában nem elég |
-| **Példányosításnál (ez a javaslat)** | Rugalmas, auditálható, PIN-konzisztens, sablon-hordozható | Futásonként döntést igényel – ezt a roster-alapértelmezés enyhíti |
-| **Dispatch-időben, automatikus képesség-illesztéssel** | Teljes automatizmus, nincs operátori döntés | Kevésbé explicit/kiszámítható; „melyik agentet” kérdést a rendszer dönti el |
+| **Folyamatok-UI (kézi/teszt)** | Az operátor űrlapon kitölti a deklarált mezőket. | Elsődlegesen tesztelésre. |
+| **Ticket** | A kiválasztott Folyamat input-deklarációjából **dinamikus űrlap** renderelődik a ticketen (kötelező + opcionális mezők). A trigger-ticket lesz a Futás `rootTicketId`-ja. | A trigger-ticket ≠ a Futás által gyártott lépés-ticketek. |
+| **Chat** | A Folyamat kiválasztásakor az LLM **megkapja a kitöltendő mezőket**, kinyeri őket az üzenetből, és a hiányzó kötelezőkre **visszakérdez**. A Futás `conversationId`-vel linkelt. | A chat **csak trigger-felület**, nem végrehajtási közeg (§4.6). |
+| **Monitor-cron** | Nincs ember; az inputok **ember nélkül feloldhatók** (configból vagy kontextusból, pl. „utolsó 24 óra commitjai" = `now()`-ból). | A cron a meglévő **Proaktív Monitor** (§4.5), nem új scheduler. |
 
-**Ajánlás:** a példányosításkori kötés a fő megoldás, **tenant-roster alapértelmezéssel**; a dispatch-idejű automatikus választás opcionális 3. szintként bevezethető (§4.4 3. lépés) a teljes automatizmushoz.
+**Feloldási sorrend a lépés-ticket létrehozásakor** (egyszerűsödött a 0.1-hez képest):
+
+```
+1. a Folyamat szerep-kötése (mindig ez az elsődleges és egyetlen forrás)
+2. ha nincs érvényes, alkalmas kötés → a Futás `blocked`, és riasztás megy a felelősnek
+```
+
+### 4.5 Cron-kapu, megelőző validáció és futásidejű blokk
+
+- **Megelőző kapu (config-idő, hangosan):** amikor egy Folyamathoz **Monitor-cron triggert** kötnek, a rendszer validál: minden kötelező futás-input ember nélkül feloldható-e? Ha nem, **a cron nem csatolható** — a hiba a szerkesztőasztalnál csattan, nem futáskor. A validáció **triggerenként** fut (egy Folyamat cron-triggere elbukhat, miközben a ticket-triggere érvényes).
+- **Futásidejű elakadás (megengedő, de sosem néma):** config-időben nem minden szűrhető ki (lejárt API-kulcs, üres adatforrás). Ha futáskor egy input vagy erőforrás nem oldható fel, a Futás **`blocked`** állapotba kerül és **kötelezően riasztást** küld egy felelősnek (admin/owner). **Néma, gazdátlan megállás tilos.**
+
+### 4.6 A Futás közege és a chat-viselkedés
+
+- A Futás **aszinkron ticket-gráf**: lépés-ticketek, delegációs élek, kapuk. Ez a végrehajtási közeg.
+- A **chat és a ticket csak trigger-felület.** Chat esetén az a modell, hogy a beszélgetés (a) kinyeri a futás-inputot, (b) létrehozza a Futást (`conversationId` linkkel), (c) a Futás a háttérben, tickettekben fut — akkor is, ha a Folyamat első lépése más agenthez van kötve, mint akivel a user chatel. A chatben **státusz / kapu-kérdés / eredmény** jelenik meg; a szálat nem „veszi át" egy másik agent.
+
+### 4.7 Prompt-rétegzés (a lépés effektív promptja)
+
+Az utasítás a **Playbookban** él (nem a Folyamaton), sablonként, tipizált résekkel — **B-út**:
+
+- **Alap-utasítás:** a Playbook lépése hordozza (pl. „kérdezd le a cég adatait és készíts riportot {{sablon}} alapján a következő cégről: {{cég}}").
+- **Rések forrása:** `config` (pl. `sablon` = a Folyamat tölti) vagy `trigger` (pl. `cég` = a futás-bemenet tölti).
+- **Perszóna additív:** effektív prompt = `agent-perszóna + lépés-utasítás + futás-input`. A perszónát **nem írjuk felül** — pont azért választunk konkrét agentet, mert a feladathoz kellő tudás/eszköz/hozzáférés az agentben van.
+- **Precedencia ütközésnél:** a **lépés-utasítás mérvadó arra, hogy MIT csináljon** (a feladat tartalma), a **perszóna** az identitásra / eszközökre / stílusra. Valódi tartalmi ütközésnél a Playbook lépés-utasítása nyer.
+
+### 4.8 Alkalmassági (validációs) szabályok
+
+Egy agent akkor köthető egy `agent_role`-hoz, ha **aktív** (nem retired/suspended), **azonos tenant**, és **képességei lefedik** a szerep `requiredCapabilities` listáját (a hiányzó képesség tiltó hiba). Ha a kötött agent időközben inaktívvá válik, a Folyamat aktiválása / a Futás indítása alkalmassági hibával elutasításra kerül. Emberi szerepnél a `requiredPermissions`-nek léteznie kell az IAM/RBAC modellben (publikáláskor a Playbook-validáció már ellenőrzi).
+
+### 4.9 Reprodukálhatóság és audit
+
+- A **Folyamat** rögzíti a playbook-verzió-PIN-t és a teljes szerep-kötést + konfig-rés értékeket.
+- A **Futás** rögzíti, melyik Folyamatból, melyik triggerből, milyen futás-bemenettel indult; az indítási audit-eseménybe bekerül a Folyamat, a trigger és a kötés.
+- A kötés a Futás alatt **nem változik**; a Folyamat playbook-verziójának cseréje **tudatos, külön aktus** (§4.10).
+
+### 4.10 Verziórögzítés és -követés
+
+- A Folyamat **egy konkrét playbook-verzióra** PIN-el.
+- Új playbook-verzió publikálásakor a Folyamat **nem ugrik automatikusan** — tudatosan kell áthúzni, mert az új verzió új szereplőket/réseket hozhat, ami **újrakötést** igényelhet. Az áthúzás a Folyamat szerkesztésének és újra-jóváhagyásának minősül.
+
+### 4.11 Hibakezelés
+
+- Ha egy szerephez nincs alkalmas agent a tenantnál, a Folyamat-összeállító felület **egyértelmű hibával** jelez, és az Agent Registry felé irányít.
+- Megelőző cron-kapu bukása esetén a cron-csatolás elutasításra kerül, a hiányzó/felold­hatatlan inputok megnevezésével.
+- Futásidejű `blocked`: kötelező riasztás + a Futás nézetben látható elakadás-ok.
 
 ---
 
-## 8. Kapcsolat a meglévő működéssel (miért ez a hiányzó láncszem)
+## 5. Felhasználói folyamatok
 
-- A Playbook-spec már ma is absztrakt szerepeket definiál (`assignedRole` → `roles[]`), de a szerep→agent feloldás sehol nem történik meg.
-- A Playbook-validáció szemantikai rétege **előirányozza** az alkalmasság-ellenőrzést („van legalább egy aktív, alkalmas agent a szerephez”), de ez a rész jelenleg nincs használatban.
-- A folyamat-runtime a lépés-ticketeket **agent nélkül** hozza létre, ezért az agent-lépések nem futnak le automatikusan.
-- Ez a feature a **példányosításnál** zárja be a kötést, ezzel megteremtve az előfeltételét annak, hogy az agent-lépések tényleges agenthez kerüljenek (és később automatikusan végrehajthatók legyenek).
+### 5.A Playbook szerzése (beszélgetéssel)
+
+1. A felhasználó a Playbook-szerző agentnek **természetes nyelven** elmondja, milyen folyamatot képzel el.
+2. Az agent (bekötve: ismeri a képesség-vokabulárt és az elérhető agenteket) **validált draftot** állít elő: lépések, szerepek, kapuk, delegációs élek, tipizált rések. A kimenet átmegy a meglévő `playbook-validator` + compileren; a beszélgetés a validációs hibákon **visszacsatol**.
+3. Az agent **megrajzolja** a folyamatot (read-only diagram), a user pontosít.
+4. A user **menti** (draft-verzió), majd egy jogosult ember **jóváhagyja / publikálja**. Az agent **soha nem publikál**.
+5. Meglévő Playbook szerkesztése ugyanígy: a beszélgetés **új draft-verziót** szül a meglévő verzió-életcikluson **belül**; végül ember nyomja meg a mentést.
+
+### 5.B Folyamat összeállítása (ember)
+
+1. Az operátor kiválaszt egy **publikált Playbook-verziót**.
+2. Szerepenként **alkalmas agentet** köt; kitölti a **konfig-réseket**; csatol egy vagy több **triggert** (ticket / chat / Monitor-cron / kézi), és megadja a **trigger-input → deklarált rés** leképezést (ticket mező-térkép, chat-mezőlista, cron-kontextus).
+3. A rendszer futtatja a **megelőző kaput** (alkalmasság, kötelező rések, cron-feloldhatóság triggerenként).
+4. Ember **jóváhagyja** a Folyamatot; ettől kezdve indítható.
+
+### 5.C Futás indítása (trigger)
+
+1. Trigger érkezik (chat-hivatkozás / ticket-kiválasztás / Monitor-cron / kézi teszt).
+2. A rendszer feloldja a futás-inputokat (§4.4), validálja őket a deklarált rések ellen, PIN-eli a Folyamatot és a playbook-verziót, és létrehozza a belépő lépés-ticketet a **feloldott tényleges agenthez** rendelve.
+3. A Futás aszinkron halad; kapuk emberi jóváhagyással; elakadás → `blocked` + riasztás. A haladás a Futás-nézetben (és chat-trigger esetén a beszélgetésben, státuszként) követhető.
+
+---
+
+## 6. A Playbook-szerző agent
+
+- **Hatókör:** csak a **Playbook-szint** (1. szint). Természetes nyelv → validált Playbook-draft + diagram. A Folyamat-szintet (2.) v1-ben ember állítja össze.
+- **Bekötött, nem üres LLM:** ismeri a képesség-vokabulárt és — a Folyamat-fázis támogatásához, ha később kiterjesztjük — az Agent Registryt és a Monitor-listát. (v1-ben a Playbook absztrakt marad, konkrét agentet nem drótoz.)
+- **Governance:** draftol a meglévő `draft → validál → ember jóváhagy → publish` láncba. **Sosem keletkezik futtatható artefaktum emberi kapu nélkül.** Ugyanaz a mintázat, mint a provisioning agentnél.
+- **Kimenet minősége:** nem „JSON-formázás" — a draft tipizált réseket, éleket, kapukat, képesség-igényeket hordoz, és a validátoron/​compileren átmegy, mielőtt menthető lenne.
+
+---
+
+## 7. Adat- és integrációs vázlat (nem kötelező részletezettségű)
+
+> A fejlesztői bekötés irányát adja; a végleges séma a megvalósításkor véglegesül.
+
+- **Új entitás – Folyamat (`ProcessDefinition`):** `playbookVersionId` (PIN), `role.key → agentId` kötések, `config`-rés értékek, trigger-kötések (típus + input-térkép), tenant, státusz (draft/active/archived), audit.
+- **`PlaybookVersionV2` bővítése:** a lépések **tipizált input-deklarációja** (name/type/required/source) és a **sablonos lépés-utasítás** a spec részévé válik.
+- **`ProcessInstance` (Futás):** kap egy `processDefinitionId` hivatkozást; a `startedByType` (`user`/`agent`/`system`), `conversationId`, `rootTicketId`, `inputPayload` mezők már léteznek — ezeket most töltjük meg értelmesen.
+- **Lépés-ticket létrehozás:** a `ProcessStepInstance.assignedAgentId` a **Folyamat kötéséből** töltődik (a jelenlegi `assigneeId: null` helyett).
+- **Trigger-integrációk:** ticket-oldali dinamikus űrlap a Folyamat input-deklarációjából; chat-oldali slot-filling; **Monitor** mint cron-trigger-forrás, amely a cron-kontextust futás-inputként adja át.
+- **`PlaybookAssignment`:** eldöntendő — a Folyamat tárolására átfunkcionálni, vagy megszüntetni (a roster elhalt).
+
+---
+
+## 8. Alternatívák és mérlegelés
+
+| Kötési pont | Előny | Hátrány | Döntés |
+|---|---|---|---|
+| Sablonba drótozva (design-time, `agent_name`) | Egyszerű, explicit | Nem hordozható; minden agent-változásnál módosítás | Elvetve |
+| Tenant-roster (globális alapértelmezés) | Kevés operátori döntés | Nem elég rugalmas; a Folyamat réteg kiváltja | **Elvetve** (roster elhal) |
+| **Folyamat-rétegű kötés (ez a javaslat)** | Rugalmas, auditálható, PIN-konzisztens, sablon-hordozható, nem-interaktív triggerekhez ember nélkül feloldható | Külön Folyamat-összeállító aktus kell | **Ajánlott** |
+| Dispatch-időben, automatikus képesség-illesztéssel | Teljes automatizmus | Kevésbé kiszámítható | Opcionális későbbi 3. szint |
 
 ---
 
 ## 9. Definition of Done (javasolt)
 
-- A folyamat-indító felület a kiválasztott Playbook agent-szerepeihez alkalmas-agent választót kínál, roster-alapértelmezéssel.
-- Az indítás validálja és PIN-eli a szerep-kötést; alkalmatlan/hiányzó kötésnél egyértelmű hibával elutasít.
-- A belépő és a további lépés-ticketek a feloldott tényleges agenthez kötve jönnek létre.
-- A szerep-kötés megjelenik az indítási audit-eseményben és a folyamat-nézetben.
-- Tenant-roster kezelhető (alapértelmezések beállítása szerepenként).
-- Az emberi szerepek jóváhagyása változatlanul jogosultság-alapú marad a kapunál.
+- ✅ Létezik a **Folyamat** entitás: playbook-verzió-PIN + szerep→agent kötés + konfig-rések + trigger-kötések, draft/active/archived életciklussal és emberi jóváhagyással.
+- ✅ A Playbook lépései **tipizált input-réseket** és **sablonos utasítást** hordoznak; a rések forrása (config/trigger) deklarált.
+- ✅ A **négy trigger** működik; a futás-inputok triggertípusonként helyesen oldódnak fel; a chat csak trigger-felület. **Státusz:** manual indítás, Monitor-cron sweep→Futás, ticket-trigger backend/action/UI, valamint chat-trigger runtime/API + Folyamat-választó UI + LLM slot-filling fallback kész.
+- ✅ A **Monitor-cron** trigger a megelőző kapun átmegy; a meglévő Monitor sweep `contextMap` alapján Futást indít; futásidejű elakadás → `blocked` + audit + best-effort riasztó adapter; néma megállás nincs.
+- ✅ A lépés-ticketek a Folyamat kötéséből **tényleges agenthez** jönnek létre.
+- ✅ Az effektív prompt a §4.7 rétegzés szerint áll össze (perszóna additív, lépés-utasítás mérvadó a feladatra).
+- ✅ A **Playbook-szerző agent** természetes nyelvből validált draftot + diagramot állít elő; minden jóváhagyás emberé; a szerkesztés a verzió-életcikluson belül új draftot szül.
+- ✅ A Folyamat, a trigger és a kötés megjelenik az indítási audit-eseményben és a Futás-nézetben.
+- ✅ A Folyamat-összeállító UI alapútvonala kész: publikált Playbook-verzió választása, alkalmas-agent választók, config-rések, triggercsatolás, aktiválás.
+- ✅ Az emberi szerepek jóváhagyása jogosultság-alapú marad a kapunál.
 
 ---
 
@@ -196,8 +243,11 @@ Emberi szerepnél az érintett jogosultságoknak (`requiredPermissions`) **léte
 
 | ID | Kérdés | Javasolt döntés |
 |---|---|---|
-| RB-1 | A tenant-roster globális vagy Playbook-specifikus legyen? | Indulásnak globális (szerep-kulcs szerinti); Playbook-specifikus felülírás később. |
-| RB-2 | Kell-e indításkor emberi szerephez konkrét felhasználót kötni? | Nem az alap-verzióban; marad jogosultság-alapú a kapunál. |
-| RB-3 | Megengedjük-e egy szerephez több agentet (terheléselosztás)? | Nem az alap-verzióban; egy szerep = egy agent futásonként. |
-| RB-4 | Bevezessük-e a dispatch-idejű automatikus választást? | Opcionális 3. szint; a kézi override mindig elsőbbséget élvez. |
-| RB-5 | Cserélhető-e a kötés futás közben? | Alapból nem (PIN); ha kell, külön auditált művelet legyen. |
+| RB-2 | Kell-e indításkor emberi szerephez konkrét felhasználót kötni? | Nem a v1-ben; marad jogosultság-alapú a kapunál. |
+| RB-3 | Megengedjük-e egy szerephez több agentet (terheléselosztás)? | Nem a v1-ben; egy szerep = egy agent Folyamatonként. |
+| RB-4 | Bevezessük-e a dispatch-idejű automatikus választást? | Opcionális későbbi 3. szint; a Folyamat-kötés mindig elsőbbség. |
+| PB-1 | A `PlaybookAssignment` tábla sorsa? | ✅ Eldöntve és implementálva: nem funkcionál át Folyamattá; külön `ProcessDefinition` tábla van, az `agent_role` roster-írás tiltott. |
+| PB-2 | Prompt-réteg tartalmi ütközésének élesetei (a §4.7 precedencián túl)? | Nyitva; mérés alapján finomítjuk. |
+| PB-3 | Chatben a státusz/kapu felszínre hozásának UX-e? | Nyitva; a Futás-státusz a beszélgetésben jelenjen meg, részletek a Futás-nézetben. |
+| PB-4 | Folyamat-szintű szerző-agent? | Későbbi bővítés; ha lesz, csak draftol, jóváhagyás emberé. |
+| PB-5 | Tenant-szintű kötés-javaslat (kényelmi előkitöltés a Folyamat-összeállításnál)? | Opcionális; kizárólag javaslat, nem futásidejű feloldási forrás. |

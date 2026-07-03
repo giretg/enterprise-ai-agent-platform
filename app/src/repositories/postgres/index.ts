@@ -7,10 +7,15 @@ import {
   PostgresModelRoutingPolicyRepository,
 } from './audit-repository'
 import { PostgresConversationRepository } from './conversation-repository'
+import {
+  PostgresKnowledgeArtifactRepository,
+  PostgresKnowledgeChunkRepository,
+} from './knowledge-repository'
 import { PostgresRecipeRepository } from './recipe-repository'
 import { PostgresPlaybookRepository } from './playbook-repository'
 import { PostgresPlaybookV2Repository } from './playbook-v2-repository'
 import { PostgresProcessRepository } from './process-repository'
+import { PostgresProcessDefinitionRepository } from './process-definition-repository'
 import { PostgresSandboxAppRepository } from './sandbox-app-repository'
 import { PostgresScheduledTaskRepository } from './scheduled-task-repository'
 import { PostgresTicketRepository } from './ticket-repository'
@@ -47,6 +52,7 @@ export const repositories = {
   playbooks: new PostgresPlaybookRepository(),
   playbooksV2: new PostgresPlaybookV2Repository(),
   processes: new PostgresProcessRepository(),
+  processDefinitions: new PostgresProcessDefinitionRepository(),
   sandboxApps: new PostgresSandboxAppRepository(),
   scheduledTasks: new PostgresScheduledTaskRepository(),
   conversations: new PostgresConversationRepository(),
@@ -56,4 +62,6 @@ export const repositories = {
   connectorTemplates: new PostgresConnectorTemplateRepository(),
   monitors: new PostgresMonitorRepository(),
   platformSettings: new PostgresPlatformSettingsRepository(),
+  knowledgeArtifacts: new PostgresKnowledgeArtifactRepository(),
+  knowledgeChunks: new PostgresKnowledgeChunkRepository(),
 }

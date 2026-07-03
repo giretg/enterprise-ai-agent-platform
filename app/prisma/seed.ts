@@ -9,6 +9,7 @@ import {
   PROVISIONING_ASSISTANT_TEMPLATE,
   PROVISIONING_DRAFT_CAPABILITIES,
 } from '../src/domain/provisioning/provisioning-assistant'
+import { PLAYBOOK_AUTHOR_TEMPLATE } from '../src/domain/playbook/playbook-author-agent'
 import {
   WEB_EGRESS_ROLE_TEMPLATE,
   WEB_EGRESS_TOOL_CAPABILITIES,
@@ -79,6 +80,7 @@ async function ensureBookkeeperAgent(adminId: string) {
       name: 'Könyvelő Agent',
       roleInstruction: BOOKKEEPER_ROLE_INSTRUCTION,
       behaviorProfile: BOOKKEEPER_BEHAVIOR_PROFILE,
+      behaviorProfileOverlay: BOOKKEEPER_BEHAVIOR_PROFILE,
       modelConfig,
       status: 'active',
       role: 'worker',
@@ -103,6 +105,63 @@ async function ensureBookkeeperAgent(adminId: string) {
   })
 
   await ensureToolBrokerSeed(agent.id)
+  return agent
+}
+
+/**
+ * Playbook-Role-Agent-Binding §6/WP-10: a Playbook-szerző agent szerep-sablonja az
+ * Agent Registryben. `worker`, eszközjog/capability nélkül — a kimenete kizárólag
+ * adat (draft spec), amit a hívó server action a meglévő PlaybookV2Service-en át ment.
+ */
+async function ensurePlaybookAuthorAgent(adminId: string) {
+  const t = PLAYBOOK_AUTHOR_TEMPLATE
+  const existing = await prisma.agent.findFirst({ where: { name: t.name } })
+  if (existing) return existing
+
+  const memory = await prisma.memory.create({ data: {} })
+  const memoryVersion = await prisma.memoryVersion.create({
+    data: {
+      memoryId: memory.id,
+      version: 1,
+      content: 'Playbook Author — természetes nyelvből validálható Playbook-draftot generál (propose, not apply).',
+      status: 'active',
+      source: 'seed',
+      approvedById: adminId,
+    },
+  })
+  await prisma.memory.update({ where: { id: memory.id }, data: { currentVersionId: memoryVersion.id } })
+
+  const modelConfig = { ...t.modelConfig }
+
+  const agent = await prisma.agent.create({
+    data: {
+      name: t.name,
+      roleInstruction: t.roleInstruction,
+      behaviorProfile: t.behaviorProfile,
+      behaviorProfileOverlay: t.behaviorProfile,
+      modelConfig,
+      status: 'active',
+      role: t.role,
+      currentVersion: 1,
+      currentRoleInstructionVersion: 1,
+      currentBehaviorProfileVersion: 1,
+      memoryId: memory.id,
+    },
+  })
+
+  await prisma.agentVersion.create({
+    data: {
+      agentId: agent.id,
+      version: 1,
+      roleInstructionSnapshot: t.roleInstruction,
+      behaviorProfileSnapshot: t.behaviorProfile,
+      roleInstructionVersion: 1,
+      behaviorProfileVersion: 1,
+      modelConfigSnapshot: modelConfig,
+      memoryVersionId: memoryVersion.id,
+    },
+  })
+
   return agent
 }
 
@@ -144,6 +203,7 @@ async function ensureProvisioningAssistantAgent(adminId: string) {
       name: t.name,
       roleInstruction: t.roleInstruction,
       behaviorProfile: t.behaviorProfile,
+      behaviorProfileOverlay: t.behaviorProfile,
       modelConfig,
       status: 'active',
       role: t.role,
@@ -253,6 +313,7 @@ async function ensureWebEgressRoleAgent(adminId: string) {
       name: t.name,
       roleInstruction: t.roleInstruction,
       behaviorProfile: t.behaviorProfile,
+      behaviorProfileOverlay: t.behaviorProfile,
       modelConfig,
       status: 'active',
       role: t.role,
@@ -490,6 +551,7 @@ async function ensureToolBrokerSeed(agentId: string) {
     'docx_read',
     'pdf_read',
     'pdf_create',
+    'pptx_create',
   ]) {
     await prisma.capability.upsert({
       where: { agentId_toolName: { agentId, toolName } },
@@ -814,6 +876,7 @@ async function ensureHSMOfficerAgent(adminId: string) {
       name: 'Key Management / HSM Officer Asszisztens',
       roleInstruction: HSM_ROLE_INSTRUCTION,
       behaviorProfile: HSM_BEHAVIOR_PROFILE,
+      behaviorProfileOverlay: HSM_BEHAVIOR_PROFILE,
       modelConfig,
       status: 'active',
       role: 'worker',
@@ -1244,11 +1307,13 @@ async function main() {
     await ensureHSMOfficerAgent(admin.id)
     const provisioningAssistant = await ensureProvisioningAssistantAgent(admin.id)
     const webEgressAgent = await ensureWebEgressRoleAgent(admin.id)
+    const playbookAuthorAgent = await ensurePlaybookAuthorAgent(admin.id)
     const allAgents = await prisma.agent.findMany({ select: { id: true } })
     for (const row of allAgents) {
-      // A provisioning-asszisztens és a web-egress role least-privilege: NEM kapnak
-      // chat/board eszközjogot (§6.1/§8.1), csak a szűk capability-osztályukat.
-      if (row.id === provisioningAssistant.id || row.id === webEgressAgent.id) continue
+      // A provisioning-asszisztens, a web-egress role és a Playbook-szerző agent
+      // least-privilege: NEM kapnak chat/board eszközjogot (§6.1/§8.1/WP-10), csak a
+      // szűk capability-osztályukat (a Playbook-szerzőnek egyáltalán nincs is).
+      if (row.id === provisioningAssistant.id || row.id === webEgressAgent.id || row.id === playbookAuthorAgent.id) continue
       await ensureChatToolsForAgent(row.id)
     }
     await ensureWikiRecipe(existingAgent.id, admin.id)
@@ -1288,6 +1353,7 @@ async function main() {
       name: 'Wiki Agent',
       roleInstruction: WIKI_ROLE_INSTRUCTION,
       behaviorProfile: WIKI_BEHAVIOR_PROFILE,
+      behaviorProfileOverlay: WIKI_BEHAVIOR_PROFILE,
       modelConfig,
       status: 'active',
       role: 'worker',
@@ -1330,6 +1396,7 @@ async function main() {
   await ensureHSMOfficerAgent(admin.id)
   await ensureProvisioningAssistantAgent(admin.id)
   await ensureWebEgressRoleAgent(admin.id)
+  await ensurePlaybookAuthorAgent(admin.id)
   await ensureWikiRecipe(agent.id, admin.id)
   await ensureWikiPlaybook(admin.id)
   await ensureDemoApiKey(agent.id)

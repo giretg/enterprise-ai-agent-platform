@@ -20,12 +20,25 @@ export type CompiledTransition = {
   requiresOutputContract?: boolean
 }
 
+/** Egy lépés tipizált input-rése a compiled specben (Folyamat-feature-spec §5, §7). */
+export type CompiledInputSlot = {
+  name: string
+  type: string
+  required: boolean
+  source: 'config' | 'trigger'
+  description?: string
+}
+
 export type CompiledTicketRule = {
   stepId: string
   stepName: string
   ticketType: string
   assignedRole: string
   allowedTransitions: CompiledTransition[]
+  /** §4.7 sablonos lépés-utasítás; undefined, ha a lépés nem ad meg sablont. */
+  instructionTemplate?: string
+  /** §4.7 tipizált rések; üres tömb, ha a lépés nem deklarál rést. */
+  inputSlots: CompiledInputSlot[]
 }
 
 export type CompiledGate = {
@@ -72,6 +85,14 @@ export class PlaybookCompiler {
       ticketType: step.ticketType,
       assignedRole: step.assignedRole,
       allowedTransitions: this.compileTransitions(step, roleByKey),
+      instructionTemplate: step.instructionTemplate,
+      inputSlots: (step.inputSlots ?? []).map((slot) => ({
+        name: slot.name,
+        type: slot.type,
+        required: slot.required,
+        source: slot.source,
+        description: slot.description,
+      })),
     }))
 
     const gates: CompiledGate[] = []

@@ -5,20 +5,17 @@ import { useState, useTransition } from 'react'
 import { updateAgentInstruction } from '@/app/actions/platform'
 import { Card } from '@/components/ui/shell'
 
-// Admin frissítheti a szerep-instrukciót és/vagy a viselkedés-profilt (§5.3).
-// Csak a ténylegesen változó mező al-verziója lép, és új agent-verzió fagy be.
+// Admin frissítheti a szerep-instrukciót (§5.3). A munkastílust ("hogyan") külön,
+// a "Munkastílus" doboz kezeli (központi profil + egyedi rész). Csak a ténylegesen
+// változó mező al-verziója lép, és új agent-verzió fagy be.
 export function UpdateInstructionForm({
   agentId,
   roleInstruction,
-  behaviorProfile,
   roleVersion,
-  behaviorVersion,
 }: {
   agentId: string
   roleInstruction: string
-  behaviorProfile: string
   roleVersion: number
-  behaviorVersion: number
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
@@ -26,32 +23,23 @@ export function UpdateInstructionForm({
   const [done, setDone] = useState<string | null>(null)
 
   return (
-    <Card title="Munkakör és munkastílus szerkesztése">
+    <Card title="Munkaköri leírás szerkesztése">
       <form
         className="space-y-4"
         onSubmit={(e) => {
           e.preventDefault()
           const fd = new FormData(e.currentTarget)
           const nextRole = String(fd.get('roleInstruction'))
-          const nextBehavior = String(fd.get('behaviorProfile'))
+          if (nextRole === roleInstruction) {
+            setError('Nincs változás a munkaköri leírásban')
+            return
+          }
           startTransition(async () => {
             setError(null)
             setDone(null)
-            const res = await updateAgentInstruction({
-              agentId,
-              ...(nextRole !== roleInstruction ? { roleInstruction: nextRole } : {}),
-              ...(nextBehavior !== behaviorProfile ? { behaviorProfile: nextBehavior } : {}),
-            })
+            const res = await updateAgentInstruction({ agentId, roleInstruction: nextRole })
             if (res.success) {
-              const changed = [
-                res.data.roleChanged ? `szerep → v${res.data.roleInstructionVersion}` : null,
-                res.data.behaviorChanged
-                  ? `viselkedés → v${res.data.behaviorProfileVersion}`
-                  : null,
-              ]
-                .filter(Boolean)
-                .join(', ')
-              setDone(`Agent v${res.data.agentVersion} (${changed})`)
+              setDone(`Agent v${res.data.agentVersion} (szerep → v${res.data.roleInstructionVersion})`)
               router.refresh()
             } else {
               setError(res.error)
@@ -65,15 +53,6 @@ export function UpdateInstructionForm({
             name="roleInstruction"
             defaultValue={roleInstruction}
             rows={3}
-            className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm"
-          />
-        </label>
-        <label className="block text-sm">
-          <span className="text-ink-soft">Munkastílus (jelenleg v{behaviorVersion})</span>
-          <textarea
-            name="behaviorProfile"
-            defaultValue={behaviorProfile}
-            rows={5}
             className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm"
           />
         </label>

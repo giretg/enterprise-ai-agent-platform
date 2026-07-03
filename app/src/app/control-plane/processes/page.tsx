@@ -1,9 +1,20 @@
 import Link from 'next/link'
 import { getCurrentUser } from '@/auth'
 import { hasMinimumRole } from '@/auth/types'
-import { listProcesses } from '@/app/actions/process'
-import { listStartablePlaybooks } from '@/app/actions/playbook'
-import { StartProcessForm, type StartablePlaybook } from '@/components/processes/start-process-form'
+import { listProcessDefinitions, listProcesses } from '@/app/actions/process'
+import {
+  listPublishedPlaybookVersionsForProcessBuilder,
+  listStartablePlaybooks,
+} from '@/app/actions/playbook'
+import {
+  ProcessDefinitionBuilder,
+  type ProcessBuilderPlaybookVersion,
+} from '@/components/processes/process-definition-builder'
+import {
+  StartProcessForm,
+  type StartablePlaybook,
+  type StartableProcessDefinition,
+} from '@/components/processes/start-process-form'
 
 const PROC_TONE: Record<string, string> = {
   created: 'bg-ink/8 text-ink-soft',
@@ -16,63 +27,68 @@ const PROC_TONE: Record<string, string> = {
 }
 
 export default async function ProcessesPage() {
-  const [user, processesRes, startableRes] = await Promise.all([
+  const [user, processesRes, definitionsRes, startableRes] = await Promise.all([
     getCurrentUser(),
     listProcesses(),
+    listProcessDefinitions({ status: 'active' }),
     listStartablePlaybooks(),
   ])
+  const builderVersionsRes = canUseBuilder(user)
+    ? await listPublishedPlaybookVersionsForProcessBuilder()
+    : { success: true as const, data: [] }
   const canStart = user ? hasMinimumRole(user.role, 'operator') : false
   const startable: StartablePlaybook[] = startableRes.success ? startableRes.data : []
+  const builderVersions: ProcessBuilderPlaybookVersion[] = builderVersionsRes.success
+    ? builderVersionsRes.data
+    : []
+  const definitions: StartableProcessDefinition[] = definitionsRes.success
+    ? definitionsRes.data.map((d) => ({
+        id: d.id,
+        name: d.name,
+        description: d.description,
+        playbookVersionId: d.playbookVersionId,
+        triggers: d.triggers.map((t) => ({ id: t.id, type: t.type, enabled: t.enabled })),
+      }))
+    : []
   const processes = processesRes.success ? processesRes.data : []
 
   return (
     <div className="space-y-6">
       <div>
         <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">Playbook</p>
-        <h1 className="mt-2 font-display text-3xl font-semibold">Folyamatok</h1>
+        <h1 className="mt-2 font-display text-3xl font-semibold">Folyamatok és Futások</h1>
         <p className="mt-1 max-w-2xl text-ink-soft">
-          Itt indíthatók és követhetők azok a munkák, amelyek egy jóváhagyott Playbook szerint futnak.
-          Egy folyamat mindig egy konkrét feladat végigvitele: látszik, hol tart, ki következik benne,
-          és melyik szabályrendszer alapján kell haladni.
+          A Folyamat a publikált Playbook-verzióra PIN-elt, agentekhez kötött konfiguráció. A Futás
+          egyetlen lefutás ebből a konfigurációból, kézi, ticket, chat vagy monitor triggerrel.
         </p>
       </div>
 
-      <section className="atelier-card p-5">
-        <h2 className="font-display text-lg font-semibold">Mire való és hogyan használd?</h2>
-        <div className="mt-3 grid gap-4 text-sm leading-6 text-ink-soft md:grid-cols-3">
-          <div>
-            <h3 className="font-semibold text-ink">1. Válassz Playbookot</h3>
-            <p className="mt-1">
-              Új folyamatot csak publikált Playbookból lehet indítani. Ez biztosítja, hogy mindenki
-              ugyanazokat a lépéseket és jóváhagyási pontokat kövesse.
+      {canStart && (
+        <section className="atelier-card p-5">
+          <h2 className="mb-4 font-display text-lg font-semibold">Új Folyamat összeállítása</h2>
+          {!builderVersionsRes.success && (
+            <p className="mb-3 text-sm text-coral">
+              Nem sikerült betölteni a publikált Playbook-verziókat: {builderVersionsRes.error}
             </p>
-          </div>
-          <div>
-            <h3 className="font-semibold text-ink">2. Indítsd el a munkát</h3>
-            <p className="mt-1">
-              Az indítás után a rendszer létrehozza a folyamatot, és rögzíti, melyik Playbook-verzió
-              alapján kell végigvinni.
-            </p>
-          </div>
-          <div>
-            <h3 className="font-semibold text-ink">3. Kövesd az állapotát</h3>
-            <p className="mt-1">
-              Az aktív és lezárt folyamatok listájában látod, mi fut, mi vár emberi döntésre, és mi zárult
-              le. Így nem kell külön kérdezgetni, hol akadt el a munka.
-            </p>
-          </div>
-        </div>
-      </section>
+          )}
+          <ProcessDefinitionBuilder playbookVersions={builderVersions} />
+        </section>
+      )}
 
       {canStart && (
         <section className="atelier-card p-5">
-          <h2 className="mb-4 font-display text-lg font-semibold">Új folyamat indítása</h2>
-          <StartProcessForm playbooks={startable} />
+          <h2 className="mb-4 font-display text-lg font-semibold">Új Futás indítása</h2>
+          {!definitionsRes.success && (
+            <p className="mb-3 text-sm text-coral">
+              Nem sikerült betölteni az aktív Folyamatokat: {definitionsRes.error}
+            </p>
+          )}
+          <StartProcessForm definitions={definitions} playbooks={startable} />
         </section>
       )}
 
       <section className="atelier-card p-5">
-        <h2 className="mb-4 font-display text-lg font-semibold">Aktív és lezárt folyamatok</h2>
+        <h2 className="mb-4 font-display text-lg font-semibold">Aktív és lezárt Futások</h2>
         {!processesRes.success && (
           <p className="text-sm text-coral">Nem sikerült betölteni: {processesRes.error}</p>
         )}
@@ -97,9 +113,13 @@ export default async function ProcessesPage() {
               </div>
             </li>
           ))}
-          {processes.length === 0 && <li className="py-3 text-sm text-ink-soft">Még nincs folyamat.</li>}
+          {processes.length === 0 && <li className="py-3 text-sm text-ink-soft">Még nincs Futás.</li>}
         </ul>
       </section>
     </div>
   )
+}
+
+function canUseBuilder(user: Awaited<ReturnType<typeof getCurrentUser>>) {
+  return user ? hasMinimumRole(user.role, 'operator') : false
 }

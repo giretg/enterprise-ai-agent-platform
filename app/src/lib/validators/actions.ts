@@ -209,6 +209,11 @@ export const deleteKbDocumentSchema = z.object({
   documentId: z.string().uuid(),
 })
 
+export const kbArtifactReviewSchema = z.object({
+  agentId: z.string().uuid(),
+  documentId: z.string().uuid(),
+})
+
 export const askWikiSchema = z.object({
   agentId: z.string().uuid(),
   question: z.string().trim().min(1).max(2000),
@@ -552,6 +557,14 @@ export const behaviorProfileIdSchema = z.object({
   profileId: z.string().uuid(),
 })
 
+export const setAgentBehaviorProfileSchema = z.object({
+  agentId: z.string().uuid(),
+  // `null` = nincs megosztott profil (tisztán egyedi munkastílus).
+  profileId: z.string().uuid().nullable(),
+  // Az agent-specifikus egyedi rész; üres is lehet, ha van választott profil.
+  overlay: z.string().max(20000).optional().default(''),
+})
+
 export const updateAgentInstructionSchema = z
   .object({
     agentId: z.string().uuid(),
@@ -673,6 +686,22 @@ export const toolInvokeSchema = z.discriminatedUnion('tool', [
     args: z.object({
       query: z.string().min(1),
       k: z.number().int().min(1).max(10).optional(),
+    }),
+  }),
+  z.object({
+    tool: z.literal('kb_list_index'),
+    ...toolInvokeBaseSchema,
+    args: z.object({
+      pathPrefix: z.string().max(200).optional(),
+      maxDepth: z.number().int().min(1).max(20).optional(),
+    }),
+  }),
+  z.object({
+    tool: z.literal('kb_get_page'),
+    ...toolInvokeBaseSchema,
+    args: z.object({
+      path: z.string().min(1).max(400),
+      artifactId: z.string().uuid().optional(),
     }),
   }),
   z.object({
@@ -967,6 +996,30 @@ export const toolInvokeSchema = z.discriminatedUnion('tool', [
     }),
   }),
   z.object({
+    tool: z.literal('pptx_create'),
+    ...toolInvokeBaseSchema,
+    args: z.object({
+      path: z.string().min(1).max(500),
+      title: z.string().max(300).optional(),
+      author: z.string().max(200).optional(),
+      subject: z.string().max(300).optional(),
+      slides: z
+        .array(
+          z.object({
+            layout: z.enum(['title', 'section', 'bullets', 'table']).optional(),
+            title: z.string().max(500).optional(),
+            subtitle: z.string().max(1000).optional(),
+            bullets: z.array(z.string().max(1000)).max(50).optional(),
+            headers: z.array(z.string().max(300)).max(20).optional(),
+            rows: z.array(z.array(xlsxCellValueSchema).max(20)).max(500).optional(),
+            notes: z.string().max(4000).optional(),
+          }),
+        )
+        .min(1)
+        .max(100),
+    }),
+  }),
+  z.object({
     tool: z.literal('web_search'),
     ...toolInvokeBaseSchema,
     args: z.object({
@@ -1151,10 +1204,67 @@ const playbookTicketStateSchema = z.enum([
   'rejected',
 ])
 
-export const startProcessSchema = z.object({
-  processType: z.string().trim().min(1).max(120),
-  playbookVersionId: z.string().uuid().optional(),
-  inputPayload: z.record(z.string(), z.unknown()).optional(),
+export const processTriggerTypeSchema = z.enum(['manual', 'ticket', 'chat', 'monitor_cron'])
+
+export const startProcessSchema = z
+  .object({
+    processDefinitionId: z.string().uuid().optional(),
+    triggerType: processTriggerTypeSchema.optional(),
+    processType: z.string().trim().min(1).max(120).optional(),
+    playbookVersionId: z.string().uuid().optional(),
+    inputPayload: z.record(z.string(), z.unknown()).optional(),
+    conversationId: z.string().uuid().nullable().optional(),
+    rootTicketId: z.string().uuid().nullable().optional(),
+  })
+  .refine((v) => Boolean(v.processDefinitionId || v.processType), {
+    message: 'processDefinitionId vagy processType megadása kötelező',
+  })
+
+export const listProcessDefinitionsSchema = z.object({
+  status: z.enum(['draft', 'active', 'archived']).optional(),
+})
+
+export const processDefinitionIdSchema = z.object({
+  id: z.string().uuid(),
+})
+
+export const createProcessDefinitionSchema = z.object({
+  name: z.string().trim().min(1).max(200),
+  description: z.string().trim().max(1000).nullable().optional(),
+  playbookVersionId: z.string().uuid(),
+})
+
+export const updateProcessDefinitionBindingsSchema = z.object({
+  id: z.string().uuid(),
+  roleBindings: z.record(z.string().min(1), z.string().uuid()),
+  configValues: z.record(z.string(), z.unknown()).optional(),
+})
+
+export const attachProcessTriggerSchema = z.object({
+  processDefinitionId: z.string().uuid(),
+  type: processTriggerTypeSchema,
+  inputMap: z.record(z.string(), z.unknown()).optional(),
+  monitorDefinitionId: z.string().uuid().nullable().optional(),
+})
+
+export const detachProcessTriggerSchema = z.object({
+  processDefinitionId: z.string().uuid(),
+  triggerId: z.string().uuid(),
+})
+
+export const startProcessFromTicketSchema = z.object({
+  processDefinitionId: z.string().uuid(),
+  ticketId: z.string().uuid(),
+  triggerId: z.string().uuid().optional(),
+})
+
+export const chatTriggerableProcessDefinitionsSchema = z.object({
+  agentId: z.string().uuid(),
+})
+
+export const suitableAgentsSchema = z.object({
+  playbookVersionId: z.string().uuid(),
+  roleKey: z.string().trim().min(1).max(120),
 })
 
 export const processIdSchema = z.object({
@@ -1199,6 +1309,18 @@ export const createPlaybookVersionV2Schema = z.object({
   changeSummary: z.string().trim().min(1).max(500),
 })
 
+export const draftPlaybookFromDescriptionSchema = z.object({
+  description: z.string().trim().min(1).max(4000),
+  existingSpec: z.unknown().optional(),
+  priorValidation: z
+    .object({
+      valid: z.boolean(),
+      errors: z.array(z.object({ code: z.string(), path: z.string(), message: z.string() })),
+      warnings: z.array(z.object({ code: z.string(), path: z.string(), message: z.string() })),
+    })
+    .optional(),
+})
+
 export const updatePlaybookVersionV2Schema = z.object({
   playbookVersionId: z.string().uuid(),
   spec: z.unknown(),
@@ -1216,7 +1338,7 @@ export const rejectPlaybookVersionV2Schema = z.object({
 
 export const assignPlaybookV2Schema = z.object({
   playbookVersionId: z.string().uuid(),
-  assignmentType: z.enum(['process_type', 'ticket_type', 'agent_role']),
+  assignmentType: z.enum(['process_type', 'ticket_type']),
   assignmentKey: z.string().trim().min(1).max(120),
   isDefault: z.boolean(),
 })

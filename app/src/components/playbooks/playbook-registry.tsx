@@ -4,6 +4,7 @@ import { useState, useTransition } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { createPlaybookV2 } from '@/app/actions/playbook'
+import { PlaybookAuthorPanel } from '@/components/playbooks/playbook-author-panel'
 
 export type PlaybookListView = {
   id: string
@@ -51,6 +52,7 @@ export function PlaybookRegistry({
 
   return (
     <div className="space-y-4">
+      {canEdit && <PlaybookAuthorPanel />}
       {canEdit && (
         <div className="atelier-card p-5">
           <div className="flex items-center justify-between">

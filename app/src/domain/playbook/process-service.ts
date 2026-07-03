@@ -16,15 +16,20 @@
  * A determinisztikus döntéseket a `@/lib/playbook-v2/runtime` (`evaluateAdvance`)
  * tiszta magja hozza; ez a service köti DB-hez és audithoz.
  */
-import type { Prisma, ProcessInstance, TicketState } from '@prisma/client'
+import type { Prisma, ProcessInstance, ProcessTriggerType, TicketState } from '@prisma/client'
 import type { CompiledSpec } from '@/domain/playbook/playbook-compiler'
 import { evaluateAdvance } from '@/lib/playbook-v2/runtime'
-import { formatPlaybookRefV2 } from '@/lib/playbook-v2/spec'
+import { formatPlaybookRefV2, parsePlaybookSpecV2, type PlaybookRole } from '@/lib/playbook-v2/spec'
+import { isAgentSuitable } from '@/domain/playbook/suitability'
+import { missingRequiredTriggerSlots } from '@/lib/playbook-v2/trigger-input'
 import type {
+  AgentRepository,
   AuditRepository,
   PlaybookV2Repository,
+  ProcessDefinitionRepository,
   ProcessRepository,
   TicketRepository,
+  ToolBrokerRepository,
 } from '@/repositories/interfaces'
 
 export type ProcessActor = { type: 'user' | 'agent' | 'system'; id?: string | null }
@@ -35,6 +40,7 @@ export type ProcessServiceErrorCode =
   | 'VERSION_NOT_PUBLISHED'
   | 'COMPILED_SPEC_MISSING'
   | 'INVALID_STATE'
+  | 'PROCESS_DEFINITION_DEPS_MISSING'
 
 export class ProcessServiceError extends Error {
   constructor(
@@ -47,10 +53,47 @@ export class ProcessServiceError extends Error {
   }
 }
 
+/**
+ * Belső jelzés: egy lépés-ticket nem hozható létre, mert a szerep→agent kötés
+ * hiányzik vagy alkalmatlan (§4.5, §4.11). A hívó (start/advance) elkapja és a
+ * Futást `blocked`-be viszi + riaszt — néma megállás tilos.
+ */
+class ProcessBlockedError extends Error {
+  constructor(
+    readonly stepId: string,
+    readonly reason: string,
+  ) {
+    super(reason)
+    this.name = 'ProcessBlockedError'
+  }
+}
+
+/**
+ * Szűk, dedikált riasztó-adapter a `blocked` Futáshoz (§4.5, §4.11). A
+ * governance-elv szerint (l. Proactive Monitor) allowlistolt chat-webhookon megy,
+ * NEM gmail_send-en. Best-effort: a `process.blocked` AUDIT mindig megtörténik,
+ * a riasztás hibája nem nyeli el a blokk tényét.
+ */
+export interface ProcessAlertNotifier {
+  processBlocked(input: {
+    tenantId: string | null
+    processInstanceId: string
+    stepId: string
+    reason: string
+  }): Promise<void>
+}
+
+/** A szerep→agent feloldás kontextusa egy Folyamatból indított Futáshoz. */
+type RoleResolution = {
+  roleBindings: Record<string, string>
+  roleByKey: Map<string, PlaybookRole>
+}
+
 export type ProcessAdvanceResult =
   | { kind: 'next_step'; stepId: string; ticketId: string }
   | { kind: 'await_gate'; gateId: string; ticketId: string }
   | { kind: 'completed' }
+  | { kind: 'blocked'; stepId: string; reason: string }
 
 export class ProcessService {
   constructor(
@@ -58,11 +101,54 @@ export class ProcessService {
     private readonly playbooks: PlaybookV2Repository,
     private readonly tickets: TicketRepository,
     private readonly audit: AuditRepository,
+    // §7 Folyamat-alapú indításhoz szükséges opcionális függőségek. Ha nincsenek
+    // bekötve, csak a régi processType-út működik (visszafelé kompatibilis).
+    private readonly defs?: ProcessDefinitionRepository,
+    private readonly agents?: AgentRepository,
+    private readonly toolBroker?: ToolBrokerRepository,
+    private readonly alertNotifier?: ProcessAlertNotifier,
   ) {}
 
   // --- §8.2 startProcess -----------------------------------------------------
 
   async startProcess(input: {
+    tenantId: string | null
+    processType?: string
+    playbookVersionId?: string
+    // §7.a — a Folyamat-alapú indítás elsődleges belépője (ÚJ).
+    processDefinitionId?: string | null
+    triggerType?: ProcessTriggerType | null
+    inputPayload: Record<string, unknown>
+    startedBy: ProcessActor
+    conversationId?: string | null
+    rootTicketId?: string | null
+  }): Promise<ProcessInstance> {
+    if (input.processDefinitionId) {
+      return this.startFromDefinition({
+        tenantId: input.tenantId,
+        processDefinitionId: input.processDefinitionId,
+        triggerType: input.triggerType ?? 'manual',
+        inputPayload: input.inputPayload,
+        startedBy: input.startedBy,
+        conversationId: input.conversationId ?? null,
+        rootTicketId: input.rootTicketId ?? null,
+      })
+    }
+    if (!input.processType) {
+      throw new ProcessServiceError('INVALID_STATE', 'processType vagy processDefinitionId megadása kötelező.')
+    }
+    return this.startFromProcessType({
+      tenantId: input.tenantId,
+      processType: input.processType,
+      playbookVersionId: input.playbookVersionId,
+      inputPayload: input.inputPayload,
+      startedBy: input.startedBy,
+      conversationId: input.conversationId ?? null,
+    })
+  }
+
+  /** §8.2 (legacy) — indítás process_type default-assignmentből vagy explicit verzióból. */
+  private async startFromProcessType(input: {
     tenantId: string | null
     processType: string
     playbookVersionId?: string
@@ -131,6 +217,129 @@ export class ProcessService {
     return this.processes.findProcess(input.tenantId, process.id) as Promise<ProcessInstance>
   }
 
+  /**
+   * §7.a — indítás egy AKTÍV Folyamatból (ProcessDefinition). A szerep→agent kötést
+   * a Folyamat adja (§4.4 egyetlen forrás); a belépő lépés-ticket a feloldott
+   * tényleges agenthez jön létre. Feloldhatatlan/alkalmatlan kötés vagy hiányzó
+   * kötelező trigger-rés → a Futás `blocked` + riasztás (§4.5, §4.11) — nem néma.
+   */
+  private async startFromDefinition(input: {
+    tenantId: string | null
+    processDefinitionId: string
+    triggerType: ProcessTriggerType
+    inputPayload: Record<string, unknown>
+    startedBy: ProcessActor
+    conversationId: string | null
+    rootTicketId: string | null
+  }): Promise<ProcessInstance> {
+    if (!this.defs || !this.agents || !this.toolBroker) {
+      throw new ProcessServiceError(
+        'PROCESS_DEFINITION_DEPS_MISSING',
+        'A Folyamat-alapú indításhoz nincsenek bekötve a szükséges repository-k.',
+      )
+    }
+    const def = await this.defs.findById(input.tenantId, input.processDefinitionId)
+    if (!def) {
+      throw new ProcessServiceError('NOT_FOUND_OR_FORBIDDEN', 'A Folyamat nem található vagy nincs jogosultság.')
+    }
+    if (def.status !== 'active') {
+      throw new ProcessServiceError('INVALID_STATE', 'Csak AKTÍV Folyamatból indítható Futás.')
+    }
+    const version = await this.playbooks.findVersion(input.tenantId, def.playbookVersionId)
+    if (!version) {
+      throw new ProcessServiceError('NOT_FOUND_OR_FORBIDDEN', 'A PIN-elt Playbook-verzió nem található.')
+    }
+    const playbook = await this.playbooks.findPlaybook(input.tenantId, version.playbookId)
+    if (!playbook) {
+      throw new ProcessServiceError('NOT_FOUND_OR_FORBIDDEN', 'A Playbook nem található.')
+    }
+    const compiled = this.requireCompiled(version.compiledSpec)
+    const spec = parsePlaybookSpecV2(version.spec)
+    const playbookRef = formatPlaybookRefV2(playbook.key, version.version)
+    const resolution: RoleResolution = {
+      roleBindings: this.asStringRecord(def.roleBindings),
+      roleByKey: new Map(spec.roles.map((r) => [r.key, r])),
+    }
+
+    const process = await this.processes.createProcess({
+      tenantId: input.tenantId,
+      processType: playbook.processType,
+      playbookId: playbook.id,
+      playbookVersionId: version.id,
+      playbookRef,
+      playbookContentHash: version.contentHash,
+      processDefinitionId: def.id,
+      triggerType: input.triggerType,
+      startedByType: input.startedBy.type,
+      startedByUserId: input.startedBy.type === 'user' ? input.startedBy.id ?? null : null,
+      startedByAgentId: input.startedBy.type === 'agent' ? input.startedBy.id ?? null : null,
+      conversationId: input.conversationId,
+      rootTicketId: input.rootTicketId,
+      inputPayload: input.inputPayload as Prisma.InputJsonValue,
+    })
+
+    await this.append(input.tenantId, input.startedBy, {
+      action: 'process.start',
+      targetType: 'process_instance',
+      targetId: process.id,
+      inputRef: playbookRef,
+      outputRef: version.contentHash,
+      policyDecision: 'started',
+      metadata: {
+        process_instance_id: process.id,
+        process_type: playbook.processType,
+        process_definition_id: def.id,
+        trigger_type: input.triggerType,
+        playbook_id: playbook.id,
+        playbook_version_id: version.id,
+        playbook_ref: playbookRef,
+        playbook_content_hash: version.contentHash,
+        started_by_type: input.startedBy.type,
+        conversation_id: input.conversationId,
+      },
+    })
+
+    // §4.4 — kötelező trigger-rés hiánya futáskor → blocked (nem néma dobás).
+    const missingTrigger = missingRequiredTriggerSlots(compiled, input.inputPayload)
+    if (missingTrigger.length > 0) {
+      return this.blockProcess(
+        input.tenantId,
+        process.id,
+        compiled.entryStepId,
+        `Hiányzó kötelező trigger-rés(ek): ${missingTrigger.join(', ')}.`,
+        input.startedBy,
+      )
+    }
+
+    const entryRule = compiled.ticketRules.find((r) => r.stepId === compiled.entryStepId)
+    if (!entryRule) {
+      throw new ProcessServiceError('COMPILED_SPEC_MISSING', 'A compiled spec nem tartalmaz belépő stepet.')
+    }
+    let ticket
+    try {
+      ticket = await this.createStepWithTicket(
+        input.tenantId,
+        process,
+        compiled,
+        entryRule.stepId,
+        input.startedBy,
+        undefined,
+        resolution,
+      )
+    } catch (e) {
+      if (e instanceof ProcessBlockedError) {
+        return this.blockProcess(input.tenantId, process.id, e.stepId, e.reason, input.startedBy)
+      }
+      throw e
+    }
+
+    await this.processes.updateProcess(process.id, {
+      status: 'running',
+      rootTicketId: input.rootTicketId ?? ticket.id,
+    })
+    return this.processes.findProcess(input.tenantId, process.id) as Promise<ProcessInstance>
+  }
+
   // --- §8.2 advance ----------------------------------------------------------
 
   /**
@@ -152,6 +361,9 @@ export class ProcessService {
     }
     const version = await this.playbooks.findVersion(input.tenantId, process.playbookVersionId)
     const compiled = this.requireCompiled(version?.compiledSpec)
+    // §7.b — Folyamatból indított Futásnál a következő lépések agentje is a
+    // Folyamat kötéséből oldódik fel; legacy (processDefinitionId nélküli) Futásnál null.
+    const resolution = version ? await this.loadResolution(process, version) : null
 
     const completedStep = await this.processes.findStep(process.id, input.completedStepId)
     if (completedStep && completedStep.status !== 'completed') {
@@ -240,14 +452,24 @@ export class ProcessService {
     if (process.status !== 'running') {
       await this.processes.updateProcess(process.id, { status: 'running' })
     }
-    const nextTicket = await this.createStepWithTicket(
-      input.tenantId,
-      process,
-      compiled,
-      decision.toStepId,
-      input.actor,
-      { fromStepId: input.completedStepId, fromTicketId: completedStep?.ticketId ?? null },
-    )
+    let nextTicket
+    try {
+      nextTicket = await this.createStepWithTicket(
+        input.tenantId,
+        process,
+        compiled,
+        decision.toStepId,
+        input.actor,
+        { fromStepId: input.completedStepId, fromTicketId: completedStep?.ticketId ?? null },
+        resolution,
+      )
+    } catch (e) {
+      if (e instanceof ProcessBlockedError) {
+        await this.blockProcess(input.tenantId, process.id, e.stepId, e.reason, input.actor)
+        return { kind: 'blocked', stepId: e.stepId, reason: e.reason }
+      }
+      throw e
+    }
     return { kind: 'next_step', stepId: decision.toStepId, ticketId: nextTicket.id }
   }
 
@@ -315,6 +537,7 @@ export class ProcessService {
     stepId: string,
     actor: ProcessActor,
     delegationFrom?: { fromStepId: string; fromTicketId: string | null },
+    resolution?: RoleResolution | null,
   ) {
     const rule = compiled.ticketRules.find((r) => r.stepId === stepId)
     if (!rule) {
@@ -325,6 +548,15 @@ export class ProcessService {
       ? compiled.gates.find((g) => g.stepId === stepId && g.blocking)?.gateId ?? null
       : null
 
+    // §4.4/§7.b — agent-lépésnél a tényleges agent a Folyamat kötéséből oldódik fel
+    // (ha Folyamatból indult a Futás). Feloldhatatlan/alkalmatlan kötés → ProcessBlockedError,
+    // amit a hívó (start/advance) `blocked`-be fordít. Az agent-feloldás a step/ticket
+    // létrehozása ELŐTT történik, hogy blokk esetén ne maradjon részleges rekord.
+    const resolvedAgentId =
+      !isHuman && resolution
+        ? await this.resolveAgentForRole(tenantId, resolution, rule.assignedRole, rule.stepId)
+        : null
+
     const step = await this.processes.createStep({
       tenantId,
       processInstanceId: process.id,
@@ -332,6 +564,7 @@ export class ProcessService {
       stepName: rule.stepName,
       status: 'ready',
       assignedRole: rule.assignedRole,
+      assignedAgentId: resolvedAgentId,
     })
 
     // A belépő agent-step azonnal dispatch-elhető (ready); az emberi step awaiting_human.
@@ -343,7 +576,7 @@ export class ProcessService {
       state: ticketState,
       assigneeType: isHuman ? 'human' : 'agent',
       assigneeId: null,
-      agentId: null,
+      agentId: resolvedAgentId,
       payload: {} as Prisma.JsonObject,
       sourceDocumentId: null,
       executeAfter: null,
@@ -369,6 +602,7 @@ export class ProcessService {
         step_id: rule.stepId,
         ticket_id: ticket.id,
         assignee_type: isHuman ? 'human' : 'agent',
+        assigned_agent_id: resolvedAgentId,
         required_gate_id: requiredGateId,
       },
     })
@@ -385,6 +619,7 @@ export class ProcessService {
         fromAgentId: actor.type === 'agent' ? actor.id ?? null : null,
         fromUserId: actor.type === 'user' ? actor.id ?? null : null,
         toActorType: isHuman ? 'user' : 'agent',
+        toAgentId: resolvedAgentId,
       })
       // A ready ticket egyúttal "delivered" a fogadó szereplőnek (§4.7 delegacios státusz).
       await this.processes.updateDelegation(delegation.id, {
@@ -417,6 +652,100 @@ export class ProcessService {
         await this.processes.updateDelegation(d.id, { status: 'done', doneAt: new Date() })
       }
     }
+  }
+
+  /**
+   * §7.b — a szerep→agent feloldás EGYETLEN forrása a Folyamat `roleBindings`-je.
+   * A kötött agentet újra ellenőrzi (`isAgentSuitable`), mert időközben inaktívvá
+   * válhatott (§4.8, §4.11). Hiány/alkalmatlanság → ProcessBlockedError.
+   */
+  private async resolveAgentForRole(
+    tenantId: string | null,
+    resolution: RoleResolution,
+    roleKey: string,
+    stepId: string,
+  ): Promise<string> {
+    const agentId = resolution.roleBindings[roleKey]
+    if (!agentId) {
+      throw new ProcessBlockedError(stepId, `A(z) '${roleKey}' szerephez nincs agent kötve a Folyamaton.`)
+    }
+    if (!this.agents || !this.toolBroker) {
+      throw new ProcessBlockedError(stepId, 'Nincs agent-repository az alkalmasság-ellenőrzéshez.')
+    }
+    const agent = await this.agents.findById(agentId, tenantId)
+    if (!agent) {
+      throw new ProcessBlockedError(stepId, `A(z) '${roleKey}' szerephez kötött agent nem található.`)
+    }
+    const capabilities = await this.toolBroker.findCapabilitiesForAgent(agentId)
+    const role = resolution.roleByKey.get(roleKey)
+    const suitability = isAgentSuitable(
+      { status: agent.status, tenantId: agent.tenantId, capabilities },
+      { requiredCapabilities: role?.requiredCapabilities },
+      tenantId,
+    )
+    if (!suitability.ok) {
+      throw new ProcessBlockedError(
+        stepId,
+        `A(z) '${roleKey}' szerephez kötött agent alkalmatlan: ${suitability.reason}`,
+      )
+    }
+    return agentId
+  }
+
+  /** A Folyamatból indított Futáshoz betölti a szerep→agent feloldás kontextusát. */
+  private async loadResolution(
+    process: ProcessInstance,
+    version: { spec: unknown },
+  ): Promise<RoleResolution | null> {
+    if (!process.processDefinitionId || !this.defs) return null
+    const def = await this.defs.findById(process.tenantId, process.processDefinitionId)
+    if (!def) return null
+    const spec = parsePlaybookSpecV2(version.spec)
+    return {
+      roleBindings: this.asStringRecord(def.roleBindings),
+      roleByKey: new Map(spec.roles.map((r) => [r.key, r])),
+    }
+  }
+
+  /**
+   * §4.5, §4.11 — a Futást `blocked`-be viszi, KÖTELEZŐ `process.blocked` auditot ír
+   * (a Futás-nézet ebből mutatja az elakadás-okot), és best-effort riasztást küld.
+   * Néma, gazdátlan megállás tilos: az audit mindig megtörténik, a riasztás hibája
+   * nem nyeli el a blokk tényét.
+   */
+  private async blockProcess(
+    tenantId: string | null,
+    processInstanceId: string,
+    stepId: string,
+    reason: string,
+    actor: ProcessActor,
+  ): Promise<ProcessInstance> {
+    await this.processes.updateProcess(processInstanceId, { status: 'blocked' })
+    await this.append(tenantId, actor, {
+      action: 'process.blocked',
+      targetType: 'process_instance',
+      targetId: processInstanceId,
+      policyDecision: 'blocked',
+      metadata: { process_instance_id: processInstanceId, step_id: stepId, reason },
+    })
+    if (this.alertNotifier) {
+      try {
+        await this.alertNotifier.processBlocked({ tenantId, processInstanceId, stepId, reason })
+      } catch {
+        // A blokk tényét az audit már rögzítette; a riasztás best-effort (§4.5).
+      }
+    }
+    return this.processes.findProcess(tenantId, processInstanceId) as Promise<ProcessInstance>
+  }
+
+  private asStringRecord(value: unknown): Record<string, string> {
+    const out: Record<string, string> = {}
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        if (typeof v === 'string') out[k] = v
+      }
+    }
+    return out
   }
 
   private async resolveDefaultVersionId(tenantId: string | null, processType: string): Promise<string> {

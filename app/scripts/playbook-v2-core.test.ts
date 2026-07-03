@@ -233,6 +233,80 @@ check('compile: routingRules tartalmazza az onComplete feltételes ágat', () =>
   assert.ok(gateRoute)
 })
 
+console.log('=== Tipizált input-rések + sablonos utasítás (Folyamat-spec §4.7, WP-3/4/5) ===')
+
+/** A validSpec extract_invoice lépésére sablonos utasítást + réseket húz (valid). */
+function specWithSlots(): Json {
+  const spec = validSpec()
+  const extract = arr(spec, 'steps')[0]
+  extract.instructionTemplate =
+    'Keresd ki a(z) {{ceg}} adatait és készíts riportot a(z) {{sablon}} alapján.'
+  extract.inputSlots = [
+    { name: 'ceg', type: 'string', required: true, source: 'trigger' },
+    { name: 'sablon', type: 'string', required: true, source: 'config' },
+  ]
+  return spec
+}
+
+check('WP-3: instructionTemplate + inputSlots parse-olható', () => {
+  const spec = parsePlaybookSpecV2(specWithSlots())
+  const step = spec.steps[0]
+  assert.equal(step.inputSlots?.length, 2)
+  assert.equal(step.inputSlots?.[0].source, 'trigger')
+  assert.match(step.instructionTemplate ?? '', /\{\{ceg\}\}/)
+})
+
+check('WP-3: rés nélküli régi spec továbbra is érvényes', () => {
+  const spec = parsePlaybookSpecV2(validSpec())
+  assert.equal(spec.steps[0].inputSlots, undefined)
+})
+
+check('WP-5: compiler átvezeti az inputSlots-ot + instructionTemplate-et', () => {
+  const spec = parsePlaybookSpecV2(specWithSlots()) as PlaybookSpecV2
+  const compiled = compiler.compile(spec)
+  const extract = compiled.ticketRules.find((r) => r.stepId === 'extract_invoice')!
+  assert.equal(extract.inputSlots.length, 2)
+  assert.equal(extract.inputSlots.find((s) => s.name === 'sablon')!.source, 'config')
+  assert.match(extract.instructionTemplate ?? '', /\{\{sablon\}\}/)
+  // régi (rés nélküli) lépés → üres tömb, nem undefined
+  const approval = compiled.ticketRules.find((r) => r.stepId === 'approval')!
+  assert.deepEqual(approval.inputSlots, [])
+})
+
+check('WP-4: valid template↔rés → nincs input-rés hiba', () => {
+  const result = validator.validateSpec(specWithSlots())
+  assert.equal(result.valid, true, JSON.stringify(result.errors))
+})
+
+check('WP-4: ismeretlen sablon-token → UNKNOWN_TEMPLATE_SLOT', () => {
+  const bad = specWithSlots()
+  arr(bad, 'steps')[0].instructionTemplate = 'Riport a(z) {{nincs_ilyen}} alapján.'
+  const result = validator.validateSpec(bad)
+  assert.ok(result.errors.some((e) => e.code === 'UNKNOWN_TEMPLATE_SLOT'), JSON.stringify(result.errors))
+})
+
+check('WP-4: kötelező rés nem szerepel a template-ben → REQUIRED_SLOT_UNUSED', () => {
+  const bad = specWithSlots()
+  arr(bad, 'steps')[0].instructionTemplate = 'Csak a(z) {{ceg}} kell.'
+  const result = validator.validateSpec(bad)
+  assert.ok(result.errors.some((e) => e.code === 'REQUIRED_SLOT_UNUSED'), JSON.stringify(result.errors))
+})
+
+check('WP-4: duplikált rés-név lépésen belül → DUPLICATE_INPUT_SLOT', () => {
+  const bad = specWithSlots()
+  const slots = arr(bad, 'steps')[0].inputSlots as Json[]
+  slots.push({ name: 'ceg', type: 'string', required: false, source: 'config' })
+  const result = validator.validateSpec(bad)
+  assert.ok(result.errors.some((e) => e.code === 'DUPLICATE_INPUT_SLOT'))
+})
+
+check('WP-4: ismeretlen capability a szótár ellen → UNKNOWN_CAPABILITY', () => {
+  const result = validator.validateSpec(validSpec(), {
+    knownCapabilities: new Set(['tool:web_fetch']), // tool:file_read hiányzik
+  })
+  assert.ok(result.errors.some((e) => e.code === 'UNKNOWN_CAPABILITY'), JSON.stringify(result.errors))
+})
+
 console.log('')
 if (failures > 0) {
   console.error(`❌ ${failures} teszt elbukott`)

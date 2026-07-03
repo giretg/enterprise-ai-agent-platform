@@ -27,7 +27,14 @@ const TOOL_GROUPS: ToolGroup[] = [
   },
   {
     label: 'Dokumentumok',
-    tools: ['docx_read', 'pdf_read', 'pdf_create'],
+    tools: ['docx_read', 'pdf_read', 'pdf_create', 'pptx_create', 'create_html'],
+  },
+  {
+    label: 'Sandbox App (App Registry)',
+    tools: [
+      'sandbox_app.create', 'sandbox_app.update_artifact',
+      'sandbox_app.preview', 'sandbox_app.export',
+    ],
   },
   {
     label: 'Email (Gmail)',
@@ -104,6 +111,7 @@ export function AgentCapabilitiesPanel({
         const linked = [
           res.data.workspaceLinked ? 'Workspace connector' : null,
           res.data.webSearchLinked ? 'Web Search connector' : null,
+          res.data.boardLinked ? 'Board connector' : null,
         ].filter(Boolean)
         const msg = linked.length
           ? `${res.data.updatedCount} eszköz engedélyezve — ${linked.join(', ')} automatikusan linkelve.`

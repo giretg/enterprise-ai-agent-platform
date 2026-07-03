@@ -2,6 +2,8 @@ import type {
   AgentRepository,
   AuditRepository,
   DocumentRepository,
+  PlaybookV2Repository,
+  ProcessDefinitionRepository,
   TicketRepository,
   ToolBrokerRepository,
 } from '@/repositories/interfaces'
@@ -9,11 +11,18 @@ import { composeSystemPrompt } from '@/lib/agent-prompt'
 import { formatOrgRoster } from '@/lib/agent-org-roster'
 import { buildRunAsAuthorization } from '@/lib/run-as-payload'
 import { formatHitsForPrompt, type KbHit } from '@/lib/kb-format'
+import {
+  chatTriggerSlotDescriptors,
+  missingRequiredTriggerSlots,
+  resolveChatTriggerInputPayload,
+} from '@/lib/playbook-v2/trigger-input'
 import type { ModelGateway } from '../gateway/model-gateway'
 import type { ConversationService } from '../conversation/conversation-service'
 import { assembleContext, type ContextAssemblyMessage } from '../conversation/context-assembly'
 import type { ToolBrokerService } from '../tool-broker/tool-broker-service'
 import type { WorkspaceStorage } from '../file-editor/workspace-storage'
+import type { CompiledSpec } from '../playbook/playbook-compiler'
+import type { ProcessService } from '../playbook/process-service'
 import { listAllowedChatTools, runAgentToolLoop, type ToolLoopActivityEvent } from './chat-tool-loop'
 
 const IMAGE_EXT = /\.(jpg|jpeg|png|gif|webp)$/i
@@ -112,6 +121,9 @@ export class AgentChatRuntime {
     private toolCaps: ToolBrokerRepository,
     private workspaceStorage: WorkspaceStorage,
     private audit: AuditRepository,
+    private processDefinitions?: ProcessDefinitionRepository,
+    private playbooksV2?: PlaybookV2Repository,
+    private processService?: ProcessService,
   ) {}
 
   async sendMessage(params: {
@@ -121,6 +133,8 @@ export class AgentChatRuntime {
     tenantId?: string | null
     conversationId?: string
     attachmentDocumentIds?: string[]
+    processDefinitionId?: string
+    processInputPayload?: Record<string, unknown>
   }) {
     const text = params.content.trim()
     const attachmentIds = params.attachmentDocumentIds ?? []
@@ -170,6 +184,39 @@ export class AgentChatRuntime {
       actorType: 'human',
       actorId: params.createdById,
     })
+
+    const processReply = await this.tryStartChatTriggeredProcess({
+      tenantId: params.tenantId ?? null,
+      processDefinitionId: params.processDefinitionId,
+      message: text,
+      explicitPayload: params.processInputPayload,
+      conversationId,
+      startedByUserId: params.createdById,
+      agentId: params.agentId,
+      agentVersion: agentDetails.agent.currentVersion,
+      modelConfig: agentDetails.agent.modelConfig as {
+        provider: string
+        model: string
+        temperature?: number
+        maxTokens?: number
+      },
+    })
+    if (processReply) {
+      const agentMessage = await this.conversations.appendMessage({
+        conversationId,
+        role: 'agent',
+        content: processReply,
+        actingUserId: params.createdById,
+        agentVersion: agentDetails.agent.currentVersion,
+        actorType: 'agent',
+        actorId: params.agentId,
+      })
+      return {
+        conversationId,
+        messageId: agentMessage.id,
+        reply: processReply,
+      }
+    }
 
     const kbSearch = await this.fetchKbSearchContext({
       agentId: params.agentId,
@@ -261,6 +308,8 @@ export class AgentChatRuntime {
     tenantId?: string | null
     conversationId?: string
     attachmentDocumentIds?: string[]
+    processDefinitionId?: string
+    processInputPayload?: Record<string, unknown>
   }): AsyncGenerator<
     | { type: 'activity'; activity: ToolLoopActivityEvent }
     | { type: 'token'; chunk: string }
@@ -319,6 +368,40 @@ export class AgentChatRuntime {
       actorType: 'human',
       actorId: params.createdById,
     })
+
+    const processReply = await this.tryStartChatTriggeredProcess({
+      tenantId: params.tenantId ?? null,
+      processDefinitionId: params.processDefinitionId,
+      message: text,
+      explicitPayload: params.processInputPayload,
+      conversationId,
+      startedByUserId: params.createdById,
+      agentId: params.agentId,
+      agentVersion: agentDetails.agent.currentVersion,
+      modelConfig: agentDetails.agent.modelConfig as {
+        provider: string
+        model: string
+        temperature?: number
+        maxTokens?: number
+      },
+    })
+    if (processReply) {
+      for (const chunk of chunkForStreaming(processReply)) {
+        yield { type: 'token', chunk }
+        await new Promise<void>((r) => setTimeout(r, 12))
+      }
+      const agentMessage = await this.conversations.appendMessage({
+        conversationId,
+        role: 'agent',
+        content: processReply,
+        actingUserId: params.createdById,
+        agentVersion: agentDetails.agent.currentVersion,
+        actorType: 'agent',
+        actorId: params.agentId,
+      })
+      yield { type: 'done', conversationId, messageId: agentMessage.id }
+      return
+    }
 
     const kbSearch = await this.fetchKbSearchContext({
       agentId: params.agentId,
@@ -511,6 +594,131 @@ export class AgentChatRuntime {
     })
 
     return ticket
+  }
+
+  private async tryStartChatTriggeredProcess(params: {
+    tenantId: string | null
+    processDefinitionId?: string
+    message: string
+    explicitPayload?: Record<string, unknown>
+    conversationId: string
+    startedByUserId: string
+    agentId: string
+    agentVersion: number
+    modelConfig: { provider: string; model: string; temperature?: number; maxTokens?: number }
+  }): Promise<string | null> {
+    if (!params.processDefinitionId) return null
+    if (!this.processDefinitions || !this.playbooksV2 || !this.processService) {
+      return 'A chat-trigger indítás nincs bekötve ezen a környezeten.'
+    }
+
+    const def = await this.processDefinitions.findById(params.tenantId, params.processDefinitionId)
+    if (!def) return 'A kiválasztott Folyamat nem található vagy nincs jogosultság.'
+
+    const chatTrigger = def.triggers.find((trigger) => trigger.type === 'chat' && trigger.enabled)
+    if (!chatTrigger) {
+      return 'Ehhez a Folyamathoz nincs aktív chat trigger csatolva.'
+    }
+
+    const version = await this.playbooksV2.findVersion(params.tenantId, def.playbookVersionId)
+    const compiled = version?.compiledSpec as CompiledSpec | null | undefined
+    if (!compiled || typeof compiled !== 'object') {
+      return 'A Folyamat PIN-elt Playbook-verziójának nincs futtatható compiled spec-je.'
+    }
+
+    let inputPayload = resolveChatTriggerInputPayload(
+      chatTrigger.inputMap,
+      params.message,
+      params.explicitPayload,
+    )
+    let missing = missingRequiredTriggerSlots(compiled, inputPayload)
+
+    // §4.4 „az LLM megkapja a kitöltendő mezőket, kinyeri őket az üzenetből":
+    // a determinisztikus (JSON / kulcs:érték) feloldás fölé épülő LLM-fallback,
+    // ha szabad szöveges üzenetből kellene még hiányzó réseket kinyerni.
+    if (missing.length > 0) {
+      const extracted = await this.extractChatTriggerSlotsWithLlm({
+        message: params.message,
+        compiled,
+        missing,
+        agentId: params.agentId,
+        agentVersion: params.agentVersion,
+        conversationId: params.conversationId,
+        startedByUserId: params.startedByUserId,
+        modelConfig: params.modelConfig,
+      })
+      if (extracted) {
+        inputPayload = { ...inputPayload, ...extracted }
+        missing = missingRequiredTriggerSlots(compiled, inputPayload)
+      }
+    }
+
+    if (missing.length > 0) {
+      return `A Folyamat indításához még hiányzik: ${missing.join(', ')}. Add meg ezeket név: érték formában, vagy a chat indító payloadban.`
+    }
+
+    const run = await this.processService.startProcess({
+      tenantId: params.tenantId,
+      processDefinitionId: def.id,
+      triggerType: 'chat',
+      inputPayload,
+      conversationId: params.conversationId,
+      startedBy: { type: 'user', id: params.startedByUserId },
+    })
+
+    return `Futás elindítva a(z) "${def.name}" Folyamatból. Futás azonosító: ${run.id}. Állapot: ${run.status}.`
+  }
+
+  /**
+   * §4.4 LLM slot-filling fallback: csak a hiányzó, kötelező résekre kérdez rá
+   * egy szűk, szigorúan-JSON kimenetet kérő promptban. Best-effort — hiba vagy
+   * érvénytelen JSON esetén `null`-t ad vissza, és a hívó a szokásos hiányzó-rés
+   * üzenettel kér vissza a felhasználótól.
+   */
+  private async extractChatTriggerSlotsWithLlm(params: {
+    message: string
+    compiled: CompiledSpec
+    missing: string[]
+    agentId: string
+    agentVersion: number
+    conversationId: string
+    startedByUserId: string
+    modelConfig: { provider: string; model: string; temperature?: number; maxTokens?: number }
+  }): Promise<Record<string, unknown> | null> {
+    const descriptors = chatTriggerSlotDescriptors(params.compiled).filter((slot) =>
+      params.missing.includes(slot.name),
+    )
+    if (descriptors.length === 0) return null
+
+    const slotList = descriptors
+      .map((slot) => `- ${slot.name} (${slot.type}${slot.required ? ', kötelező' : ''})${slot.description ? `: ${slot.description}` : ''}`)
+      .join('\n')
+
+    const system =
+      'Egy folyamatindító mezőkitöltő vagy. A felhasználó üzenetéből told ki a felsorolt mezőket. ' +
+      'KIZÁRÓLAG egy JSON objektumot adj vissza (semmi mást, se magyarázatot, se kódblokkot), ' +
+      'aminek a kulcsai a felsorolt mezőnevek. Ha egy mezőt nem tudsz kinyerni az üzenetből, hagyd ki a kulcsot.'
+    const user = `Mezők:\n${slotList}\n\nFelhasználói üzenet:\n${params.message}`
+
+    try {
+      const result = await this.gateway.call({
+        agentId: params.agentId,
+        agentVersion: params.agentVersion,
+        conversationId: params.conversationId,
+        messages: [
+          { role: 'system', content: system },
+          { role: 'user', content: user },
+        ],
+        modelConfig: params.modelConfig,
+      })
+      const jsonMatch = result.content.match(/\{[\s\S]*\}/)
+      if (!jsonMatch) return null
+      const parsed: unknown = JSON.parse(jsonMatch[0])
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null
+      return parsed as Record<string, unknown>
+    } catch {
+      return null
+    }
   }
 
   async getConversationMessages(

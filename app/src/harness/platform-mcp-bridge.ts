@@ -34,6 +34,7 @@ const BINARY_TOOLS = [
   'docx_read',
   'pdf_read',
   'pdf_create',
+  'pptx_create',
 ] as const
 
 /** Közös cella-stílus JSON-séma a formázó toolokhoz (CellStyle, §2). */
@@ -89,6 +90,31 @@ export const PLATFORM_BROKER_TOOLS = [
         k: { type: 'number', description: 'Maximum number of hits (default 5)' },
       },
       required: ['query'],
+    },
+  },
+  {
+    name: 'kb_list_index',
+    description:
+      'List the knowledge base (OKF) page tree for navigation: available pages with path + title. Use after kb_search to browse the structure, then open a page with kb_get_page.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        pathPrefix: { type: 'string', description: 'Restrict to a subtree, e.g. "policies/"' },
+        maxDepth: { type: 'number', description: 'Limit path depth' },
+      },
+    },
+  },
+  {
+    name: 'kb_get_page',
+    description:
+      'Open a specific knowledge base (OKF) page by path (from kb_search / kb_list_index). Returns the full page text and the source reference (document, page/section) for human verification.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'OKF page path, e.g. "pages/01-summary.md"' },
+        artifactId: { type: 'string', description: 'Optional artifact UUID to disambiguate the path' },
+      },
+      required: ['path'],
     },
   },
   {
@@ -251,6 +277,20 @@ export const PLATFORM_BROKER_TOOLS = [
         content: { type: 'string', description: 'Full file content to write' },
       },
       required: ['path', 'content'],
+    },
+  },
+  {
+    name: 'create_html',
+    description:
+      'Create a standalone HTML file (.html) in the ticket workspace. Use this for HTML documents instead of file_write. The html may be a full document (<!doctype…) or just a body fragment — a fragment is wrapped into a valid HTML5 skeleton (title sets the page title). Note: this is a plain downloadable workspace file, NOT an isolated in-platform runnable app (use sandbox_app.* for that).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'Relative path within workspace, e.g. "report.html"' },
+        html: { type: 'string', description: 'Full HTML document or a body fragment' },
+        title: { type: 'string', description: 'Page title used when wrapping a fragment' },
+      },
+      required: ['path', 'html'],
     },
   },
   {
@@ -505,6 +545,36 @@ export const PLATFORM_BROKER_TOOLS = [
     },
   },
   {
+    name: 'pptx_create',
+    description:
+      'Create a PowerPoint presentation (.pptx, 16:9) in the ticket workspace from slide specs. Slide layouts: "title", "section", "bullets" (uses bullets[]), "table" (uses headers[] + rows[][]). Layout is optional and inferred from provided fields.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string' },
+        title: { type: 'string' },
+        author: { type: 'string' },
+        subject: { type: 'string' },
+        slides: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              layout: { type: 'string', enum: ['title', 'section', 'bullets', 'table'] },
+              title: { type: 'string' },
+              subtitle: { type: 'string' },
+              bullets: { type: 'array', items: { type: 'string' } },
+              headers: { type: 'array', items: { type: 'string' } },
+              rows: { type: 'array', items: { type: 'array', items: {} } },
+              notes: { type: 'string' },
+            },
+          },
+        },
+      },
+      required: ['path', 'slides'],
+    },
+  },
+  {
     name: 'sandbox_app.create',
     description: 'Create a draft sandbox app record. The artifact must be uploaded separately.',
     inputSchema: {
@@ -730,9 +800,28 @@ export async function invokePlatformToolViaHttp(
         k: typeof args.k === 'number' ? args.k : undefined,
       },
     }
+  } else if (tool === 'kb_list_index') {
+    body = {
+      tool: 'kb_list_index',
+      ticketId,
+      args: {
+        pathPrefix: typeof args.pathPrefix === 'string' ? args.pathPrefix : undefined,
+        maxDepth: typeof args.maxDepth === 'number' ? args.maxDepth : undefined,
+      },
+    }
+  } else if (tool === 'kb_get_page') {
+    body = {
+      tool: 'kb_get_page',
+      ticketId,
+      args: {
+        path: String(args.path ?? ''),
+        artifactId: typeof args.artifactId === 'string' ? args.artifactId : undefined,
+      },
+    }
   } else if (
     tool.startsWith('http_api_') ||
     tool.startsWith('file_') ||
+    tool === 'create_html' ||
     (FILE_TOOLS as readonly string[]).includes(tool) ||
     (BINARY_TOOLS as readonly string[]).includes(tool) ||
     tool.startsWith('sandbox_app.')

@@ -40,6 +40,28 @@ export const playbookRoleSchema = z.object({
 })
 export type PlaybookRole = z.infer<typeof playbookRoleSchema>
 
+// --- Tipizált input-rés (Folyamat-feature-spec §2, §4.7) ------------------
+
+/** A rés forrása: `config` = a Folyamat tölti | `trigger` = a futás-bemenet tölti. */
+export const inputSlotSourceSchema = z.enum(['config', 'trigger'])
+export type InputSlotSource = z.infer<typeof inputSlotSourceSchema>
+
+export const inputSlotTypeSchema = z.enum(['string', 'number', 'boolean', 'freeform'])
+export type InputSlotType = z.infer<typeof inputSlotTypeSchema>
+
+/**
+ * A lépés-utasítás sablonjának nevesített, tipizált változója (`{{name}}`).
+ * A `source` dönti el, hogy a Folyamat (config) vagy a Futás-bemenet (trigger) tölti.
+ */
+export const playbookInputSlotSchema = z.object({
+  name: z.string().min(1), // template-változó neve: {{name}}
+  type: inputSlotTypeSchema,
+  required: z.boolean().default(true),
+  source: inputSlotSourceSchema,
+  description: z.string().optional(),
+})
+export type PlaybookInputSlot = z.infer<typeof playbookInputSlotSchema>
+
 // --- Step szerződés (§5.3) ------------------------------------------------
 
 export const stepCompletionRuleSchema = z
@@ -69,6 +91,10 @@ export const playbookStepSchema = z.object({
   // inputContract / outputContract: JSON-schema-szerű struktúra (lazán tárolva)
   inputContract: z.record(z.string(), z.unknown()).optional(),
   outputContract: z.record(z.string(), z.unknown()).optional(),
+  // §4.7: sablonos lépés-utasítás tipizált résekkel. A {{slot}} tokenek az
+  // inputSlots név-listájából oldódnak fel (config ill. trigger forrásból).
+  instructionTemplate: z.string().optional(),
+  inputSlots: z.array(playbookInputSlotSchema).optional(),
   onComplete: z.array(stepCompletionRuleSchema).optional(),
   timeoutMinutes: z.number().int().positive().optional(),
   retryPolicy: retryPolicySchema.optional(),

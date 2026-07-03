@@ -34,6 +34,7 @@ import {
   FileEditorError,
   type FileReadResult,
   type FileWriteResult,
+  type HtmlCreateResult,
   type FileEditResult,
   type FileListResult,
   type FileGlobResult,
@@ -52,9 +53,15 @@ import type {
   AgentRepository,
   AuditRepository,
   ConnectorGrantRepository,
+  KnowledgeArtifactRepository,
+  KnowledgeChunkRepository,
+  KnowledgeChunkSearchHit,
+  KnowledgeIndexEntry,
+  KnowledgePageChunk,
   TicketRepository,
   ToolBrokerRepository,
 } from '@/repositories/interfaces'
+import type { OkfSourceRef } from '@/lib/kb-v3'
 import type { TicketService } from '@/domain/ticket/ticket-service'
 import type {
   XlsxRow,
@@ -62,6 +69,7 @@ import type {
   CellStyle,
   XlsxSheetSpec,
 } from '@/domain/file-editor/adapters/xlsx-adapter'
+import type { PptxSlideSpec } from '@/domain/file-editor/adapters/pptx-adapter'
 import type { WebSearchPolicyService } from '@/domain/web-search/web-search-policy-service'
 import type { WebSearchService } from '@/domain/web-search/web-search-service'
 import {
@@ -90,10 +98,62 @@ export type KbSearchHit = {
   snippet: string
   sourceRef: string
   memoryVersion: number | null
+  // KB-v3 §9.1 — OKF chunk citation (opcionális; csak published OKF chunk-találatnál).
+  path?: string
+  title?: string
+  score?: number
+  source?: {
+    documentId?: string
+    filename?: string
+    page?: number
+    section?: string
+    cell?: string
+  }
 }
 
 export type KbSearchResult = {
   hits: KbSearchHit[]
+}
+
+// KB-v3 §9.2/§9.3 — OKF-navigáció (kb_list_index → kb_get_page). Elsődleges
+// retrieval-út a runtime többkörös tool-loopján (D-I).
+export type KbSource = {
+  documentId?: string
+  filename?: string
+  page?: number
+  section?: string
+  cell?: string
+}
+
+export type KbListIndexArgs = {
+  pathPrefix?: string
+  maxDepth?: number
+}
+
+export type KbListIndexEntry = {
+  path: string
+  title: string
+  type: string
+  artifactId: string
+}
+
+export type KbListIndexResult = {
+  pages: KbListIndexEntry[]
+}
+
+export type KbGetPageArgs = {
+  path: string
+  artifactId?: string
+}
+
+export type KbGetPageResult = {
+  found: boolean
+  path: string
+  title?: string
+  type?: string
+  text?: string
+  artifactId?: string
+  source?: KbSource
 }
 
 export type BoardWriteArgs = {
@@ -262,6 +322,7 @@ type SandboxAppExportResult = { filename: string; contentRef: string; contentHas
 
 export type FileReadArgs = { path: string; offset?: number; limit?: number }
 export type FileWriteArgs = { path: string; content: string }
+export type HtmlCreateArgs = { path: string; html: string; title?: string }
 export type FileEditArgs = { path: string; old_string: string; new_string: string; replace_all?: boolean }
 export type FileListArgs = { path?: string; recursive?: boolean }
 export type FileGlobArgs = { pattern: string }
@@ -303,6 +364,13 @@ export type PdfCreateArgs = {
   headers?: string[]
   rows?: Array<Array<string | number | boolean | null>>
 }
+export type PptxCreateArgs = {
+  path: string
+  title?: string
+  author?: string
+  subject?: string
+  slides: PptxSlideSpec[]
+}
 
 type ToolInvokeBase = {
   agentId: string
@@ -314,6 +382,8 @@ type ToolInvokeBase = {
 
 export type ToolBrokerInvokeInput =
   | (ToolInvokeBase & { tool: 'kb_search'; args: KbSearchArgs })
+  | (ToolInvokeBase & { tool: 'kb_list_index'; args: KbListIndexArgs })
+  | (ToolInvokeBase & { tool: 'kb_get_page'; args: KbGetPageArgs })
   | (ToolInvokeBase & { tool: 'board_write'; args: BoardWriteArgs })
   | (ToolInvokeBase & { tool: 'ticket_create'; args: TicketCreateArgs })
   | (ToolInvokeBase & { tool: 'agent_ask'; args: AgentAskArgs })
@@ -328,6 +398,7 @@ export type ToolBrokerInvokeInput =
   | (ToolInvokeBase & { tool: 'http_api_request'; args: HttpApiRequestArgs })
   | (ToolInvokeBase & { tool: 'file_read'; args: FileReadArgs })
   | (ToolInvokeBase & { tool: 'file_write'; args: FileWriteArgs })
+  | (ToolInvokeBase & { tool: 'create_html'; args: HtmlCreateArgs })
   | (ToolInvokeBase & { tool: 'file_edit'; args: FileEditArgs })
   | (ToolInvokeBase & { tool: 'file_list'; args: FileListArgs })
   | (ToolInvokeBase & { tool: 'file_glob'; args: FileGlobArgs })
@@ -342,6 +413,7 @@ export type ToolBrokerInvokeInput =
   | (ToolInvokeBase & { tool: 'docx_read'; args: DocxReadArgs })
   | (ToolInvokeBase & { tool: 'pdf_read'; args: PdfReadArgs })
   | (ToolInvokeBase & { tool: 'pdf_create'; args: PdfCreateArgs })
+  | (ToolInvokeBase & { tool: 'pptx_create'; args: PptxCreateArgs })
   | (ToolInvokeBase & { tool: 'sandbox_app.create'; args: SandboxAppCreateArgs })
   | (ToolInvokeBase & { tool: 'sandbox_app.update_artifact'; args: SandboxAppUpdateArtifactArgs })
   | (ToolInvokeBase & { tool: 'sandbox_app.preview'; args: SandboxAppPreviewArgs })
@@ -359,6 +431,8 @@ export type ToolBrokerInvokeResult =
       denied: false
       result:
         | KbSearchResult
+        | KbListIndexResult
+        | KbGetPageResult
         | BoardWriteResult
         | TicketCreateResult
         | AgentAskResult
@@ -372,6 +446,7 @@ export type ToolBrokerInvokeResult =
         | HttpApiCallResult
         | FileReadResult
         | FileWriteResult
+        | HtmlCreateResult
         | FileEditResult
         | FileListResult
         | FileGlobResult
@@ -406,6 +481,8 @@ const TOOL_REQUIREMENTS: Partial<Record<
   { connectorType: ConnectorType; accessMode: ConnectorAccessMode }
 >> = {
   kb_search: { connectorType: 'knowledge_base', accessMode: 'read' },
+  kb_list_index: { connectorType: 'knowledge_base', accessMode: 'read' },
+  kb_get_page: { connectorType: 'knowledge_base', accessMode: 'read' },
   board_write: { connectorType: 'board', accessMode: 'write' },
   ticket_create: { connectorType: 'board', accessMode: 'write' },
   agent_ask: { connectorType: 'board', accessMode: 'write' },
@@ -420,6 +497,7 @@ const TOOL_REQUIREMENTS: Partial<Record<
   http_api_request: { connectorType: 'http_api', accessMode: 'write' },
   file_read: { connectorType: 'workspace', accessMode: 'read' },
   file_write: { connectorType: 'workspace', accessMode: 'write' },
+  create_html: { connectorType: 'workspace', accessMode: 'write' },
   file_edit: { connectorType: 'workspace', accessMode: 'write' },
   file_list: { connectorType: 'workspace', accessMode: 'read' },
   file_glob: { connectorType: 'workspace', accessMode: 'read' },
@@ -434,6 +512,7 @@ const TOOL_REQUIREMENTS: Partial<Record<
   docx_read: { connectorType: 'workspace', accessMode: 'read' },
   pdf_read: { connectorType: 'workspace', accessMode: 'read' },
   pdf_create: { connectorType: 'workspace', accessMode: 'write' },
+  pptx_create: { connectorType: 'workspace', accessMode: 'write' },
   'sandbox_app.create': { connectorType: 'board', accessMode: 'write' },
   'sandbox_app.update_artifact': { connectorType: 'board', accessMode: 'write' },
   'sandbox_app.preview': { connectorType: 'board', accessMode: 'read' },
@@ -500,6 +579,201 @@ function snippet(value: string): string {
   return value.length > 2000 ? `${value.slice(0, 1997)}...` : value
 }
 
+/**
+ * KB-v3 §10 retrieval-összeállítás — tiszta, DB-mentes (ezért determinisztikusan
+ * tesztelhető). Sorrend:
+ *  1) published OKF-chunk full-text találatok (kurált, elöl — §9.1),
+ *  2) legacy stem-scoring a memórián + a NEM-superseded nyers dokumentumokon (§11.3),
+ *     k-ig feltöltve az OKF-találatok után,
+ *  3) ha egyik sem adott találatot: teljes-korpusz (fájlnév + törzs) fallback a
+ *     nem-superseded nyers dokumentumokon.
+ * A `supersededDocIds` a §10.5 szerinti „publikált OKF van rá" dokumentumhalmaz —
+ * ezek nyers `extractedText`-je nem jön vissza (nincs nyers + parafrázis duplázás).
+ */
+export function assembleKbHits(input: {
+  query: string
+  k: number
+  memoryContent: string
+  memoryId: string | null
+  memoryVersion: number | null
+  okfChunkHits: KnowledgeChunkSearchHit[]
+  docs: Array<{ id: string; filename: string; extractedText: string | null }>
+  supersededDocIds: Set<string>
+}): KbSearchHit[] {
+  const { query, k } = input
+  const termStems = queryTermStems(query)
+
+  type ScoredChunk = {
+    chunk: string
+    score: number
+    docId: string
+    sourceRef: string
+    memoryVersion: number | null
+  }
+
+  function scoreChunks(
+    text: string,
+    docId: string,
+    sourceRef: string,
+    memoryVersion: number | null,
+    extraStems: Iterable<string> = [],
+  ): ScoredChunk[] {
+    const extraStemSet = new Set(extraStems)
+    return text
+      .split(/\n{2,}|\n(?=-\s+)/)
+      .map((chunk) => chunk.trim())
+      .filter(Boolean)
+      .map((chunk) => {
+        const chunkStems = new Set(
+          normalizeText(chunk).split(/\s+/).filter(Boolean).map(stemToken),
+        )
+        for (const stem of extraStemSet) chunkStems.add(stem)
+        const score = termStems.reduce((sum, stem) => sum + (chunkStems.has(stem) ? 1 : 0), 0)
+        return { chunk, score, docId, sourceRef, memoryVersion }
+      })
+      .filter((item) => item.score > 0)
+  }
+
+  // 1) Elsődleges: published OKF-chunk full-text találatok navigálható path-szal +
+  // oldal/section-szintű forrás-linkkel (§4.7/§9.1).
+  const okfHits: KbSearchHit[] = input.okfChunkHits.map((hit) => {
+    const ref = (isRecord(hit.sourceRef) ? hit.sourceRef : {}) as OkfSourceRef
+    const source = {
+      documentId: typeof ref.documentId === 'string' ? ref.documentId : undefined,
+      filename: typeof ref.filename === 'string' ? ref.filename : undefined,
+      page: typeof ref.page === 'number' ? ref.page : undefined,
+      section: hit.section ?? (typeof ref.section === 'string' ? ref.section : undefined),
+      cell: typeof ref.cell === 'string' ? ref.cell : undefined,
+    }
+    return {
+      docId: source.documentId ? `doc:${source.documentId}` : `okf:${hit.artifactId}`,
+      snippet: snippet(hit.text),
+      // A fájlnév a sourceRef VÉGÉN áll, hogy a legacy `/:([^:]+)$/` kinyerés is működjön.
+      sourceRef: `okf:${hit.path}:${source.filename ?? hit.title}`,
+      memoryVersion: null,
+      path: hit.path,
+      title: hit.title,
+      score: hit.score,
+      source,
+    } satisfies KbSearchHit
+  })
+
+  const memoryChunks = scoreChunks(
+    input.memoryContent,
+    `memory:${input.memoryId}`,
+    `memory:${input.memoryId}:v${input.memoryVersion ?? 'unknown'}`,
+    input.memoryVersion,
+  )
+
+  const flatDocs = input.docs.filter((doc) => !input.supersededDocIds.has(doc.id))
+  const docChunks: ScoredChunk[] = flatDocs.flatMap((doc) =>
+    scoreChunks(
+      documentSearchCorpus(doc.filename, doc.extractedText),
+      `doc:${doc.id}`,
+      `doc:${doc.id}:${doc.filename}`,
+      null,
+      stemsFromText(filenameSearchText(doc.filename)),
+    ),
+  )
+
+  // 2) Legacy stem-scoring (memória + nem-superseded nyers doc) — az OKF UTÁN sorolva.
+  const legacyHits: KbSearchHit[] = [...memoryChunks, ...docChunks]
+    .sort((a, b) => b.score - a.score)
+    .map((item) => ({
+      docId: item.docId,
+      snippet: snippet(item.chunk),
+      sourceRef: item.sourceRef,
+      memoryVersion: item.memoryVersion,
+    }))
+
+  const hits: KbSearchHit[] = [...okfHits, ...legacyHits].slice(0, k)
+  if (hits.length > 0) return hits
+
+  // 3) Fallback (se OKF, se legacy chunk-egyezés): teljes korpusz a nem-superseded docokon.
+  if (flatDocs.length === 0) return hits
+  return flatDocs
+    .map((doc) => {
+      const corpus = normalizeText(documentSearchCorpus(doc.filename, doc.extractedText))
+      const filenameScore = stemsFromText(filenameSearchText(doc.filename)).filter((stem) =>
+        termStems.includes(stem),
+      ).length
+      const contentScore = termStems.filter((stem) => corpus.includes(stem)).length
+      return { doc, score: Math.max(filenameScore, contentScore) }
+    })
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, k)
+    .map(({ doc }) => {
+      const body = doc.extractedText?.trim()
+      const chunk = body
+        ? body.split(/\n{2,}|\n(?=-\s+)/).map((part) => part.trim()).find(Boolean) ?? body
+        : `[${doc.filename}]`
+      return {
+        docId: `doc:${doc.id}`,
+        snippet: snippet(chunk),
+        sourceRef: `doc:${doc.id}:${doc.filename}`,
+        memoryVersion: null,
+      } satisfies KbSearchHit
+    })
+}
+
+/** OKF chunk sourceRef (JSON) → tipizált citation-forrás (§4.7). */
+function toKbSource(sourceRef: unknown, section: string | null): KbSource {
+  const ref = (isRecord(sourceRef) ? sourceRef : {}) as OkfSourceRef
+  return {
+    documentId: typeof ref.documentId === 'string' ? ref.documentId : undefined,
+    filename: typeof ref.filename === 'string' ? ref.filename : undefined,
+    page: typeof ref.page === 'number' ? ref.page : undefined,
+    section: section ?? (typeof ref.section === 'string' ? ref.section : undefined),
+    cell: typeof ref.cell === 'string' ? ref.cell : undefined,
+  }
+}
+
+/** Egy `path` mélysége az OKF-fában (`pages/01-foo.md` → 2). */
+function pathDepth(path: string): number {
+  return path.split('/').filter(Boolean).length
+}
+
+/**
+ * §9.3 — `kb_list_index` tiszta összeállítója: a repo által adott published
+ * oldalakat opcionálisan `maxDepth`-ig szűri (a `pathPrefix` szűrést a repo
+ * végzi az indexen). DB-mentes, tesztelhető.
+ */
+export function assembleKbIndex(
+  entries: KnowledgeIndexEntry[],
+  maxDepth?: number,
+): KbListIndexResult {
+  const pages = entries
+    .filter((e) => maxDepth === undefined || pathDepth(e.path) <= maxDepth)
+    .map((e) => ({
+      path: e.path,
+      title: e.title,
+      type: e.type,
+      artifactId: e.artifactId,
+    }))
+  return { pages }
+}
+
+/**
+ * §9.2 — `kb_get_page` tiszta összeállítója: egy oldal chunkjait (chunkIndex
+ * sorrendben) egyetlen szöveggé fűzi, és az oldalcímet + a legelső chunk
+ * forrás-linkjét adja vissza (§4.7). DB-mentes, tesztelhető.
+ */
+export function assembleKbPage(path: string, chunks: KnowledgePageChunk[]): KbGetPageResult {
+  if (chunks.length === 0) return { found: false, path }
+  const ordered = [...chunks].sort((a, b) => a.chunkIndex - b.chunkIndex)
+  const first = ordered[0]
+  return {
+    found: true,
+    path,
+    title: first.title,
+    type: first.type,
+    artifactId: first.artifactId,
+    text: ordered.map((c) => c.text.trim()).filter(Boolean).join('\n\n'),
+    source: toKbSource(first.sourceRef, first.section),
+  }
+}
+
 function argsMeta(
   input: ToolBrokerInvokeInput,
   webSearchEffective?: WebSearchEffectiveQuery,
@@ -512,6 +786,18 @@ function argsMeta(
 
   if (input.tool === 'kb_search') {
     return { ...base, queryLength: input.args.query.length, k: input.args.k ?? 5 }
+  }
+
+  if (input.tool === 'kb_list_index') {
+    return {
+      ...base,
+      pathPrefix: input.args.pathPrefix ?? null,
+      maxDepth: input.args.maxDepth ?? null,
+    }
+  }
+
+  if (input.tool === 'kb_get_page') {
+    return { ...base, path: input.args.path, artifactId: input.args.artifactId ?? null }
   }
 
   if (input.tool === 'ticket_create') {
@@ -611,6 +897,7 @@ function argsMeta(
 
   if (input.tool === 'file_read') return { ...base, path: input.args.path, offset: input.args.offset ?? 1, limit: input.args.limit ?? 2000 }
   if (input.tool === 'file_write') return { ...base, path: input.args.path, contentLength: input.args.content.length }
+  if (input.tool === 'create_html') return { ...base, path: input.args.path, htmlLength: input.args.html.length }
   if (input.tool === 'file_edit') return { ...base, path: input.args.path, oldStringLength: input.args.old_string.length, replaceAll: input.args.replace_all ?? false }
   if (input.tool === 'file_list') return { ...base, path: input.args.path ?? '', recursive: input.args.recursive ?? false }
   if (input.tool === 'file_glob') return { ...base, pattern: input.args.pattern }
@@ -636,6 +923,7 @@ function argsMeta(
   if (input.tool === 'docx_read') return { ...base, path: input.args.path }
   if (input.tool === 'pdf_read') return { ...base, path: input.args.path, pageRange: input.args.page_range ?? null }
   if (input.tool === 'pdf_create') return { ...base, path: input.args.path, sourceXlsx: input.args.source_xlsx ?? null, rowCount: input.args.rows?.length ?? null }
+  if (input.tool === 'pptx_create') return { ...base, path: input.args.path, slideCount: input.args.slides?.length ?? 0 }
   if (input.tool === 'sandbox_app.create') return { ...base, name: input.args.name, criticality: input.args.criticality ?? 'L1' }
   if (input.tool === 'sandbox_app.update_artifact') return { ...base, appId: input.args.appId, htmlLength: input.args.html.length, activate: input.args.activate ?? false }
   if (input.tool === 'sandbox_app.preview') return { ...base, appId: input.args.appId, version: input.args.version ?? null }
@@ -689,6 +977,8 @@ function isWebSearchResult(value: unknown): value is WebSearchResult {
 function resultMeta(
   result:
     | KbSearchResult
+    | KbListIndexResult
+    | KbGetPageResult
     | BoardWriteResult
     | TicketCreateResult
     | AgentAskResult
@@ -702,6 +992,7 @@ function resultMeta(
     | HttpApiCallResult
     | FileReadResult
     | FileWriteResult
+    | HtmlCreateResult
     | FileEditResult
     | FileListResult
     | FileGlobResult
@@ -753,7 +1044,22 @@ function resultMeta(
   if ('hits' in result && Array.isArray(result.hits)) {
     return {
       hitCount: result.hits.length,
+      // §13 — hány találat jött a published OKF-chunk indexből (path-szal) vs. legacy.
+      okfHitCount: result.hits.filter((hit) => typeof hit.path === 'string').length,
       memoryVersions: [...new Set(result.hits.map((hit) => hit.memoryVersion))],
+    }
+  }
+
+  // KB-v3 §9.2/§9.3 — OKF-navigáció (kb_list_index / kb_get_page) audit-metája.
+  if ('pages' in result && Array.isArray(result.pages)) {
+    return { pageCount: result.pages.length }
+  }
+  if ('found' in result && 'path' in result) {
+    return {
+      found: result.found,
+      path: result.path,
+      artifactId: result.artifactId ?? null,
+      textLength: typeof result.text === 'string' ? result.text.length : 0,
     }
   }
 
@@ -1052,6 +1358,9 @@ export class ToolBrokerService {
     private sandboxApps: import('@/domain/sandbox/sandbox-app-service').SandboxAppService,
     private webSearch: WebSearchService,
     private webSearchPolicy: WebSearchPolicyService,
+    // KB-v3 §9.1/§10 — published OKF-chunk full-text retrieval + superseded (§10.5).
+    private knowledgeChunks: KnowledgeChunkRepository,
+    private knowledgeArtifacts: KnowledgeArtifactRepository,
     private isWebSearchEnabled: WebSearchEnabledLookup = prismaWebSearchEnabledLookup,
     private isWebFetchEnabled: WebFetchEnabledLookup = prismaWebFetchEnabledLookup,
     private isWebResearchDelegationEnabled: WebResearchDelegationEnabledLookup = prismaWebResearchDelegationEnabledLookup,
@@ -1228,6 +1537,14 @@ export class ToolBrokerService {
       if (!authorization.connector) throw new Error('kb_search requires connector authorization')
       return this.kbSearch(input.agentId, input.args, authorization.connector)
     }
+    if (input.tool === 'kb_list_index') {
+      if (!authorization.connector) throw new Error('kb_list_index requires connector authorization')
+      return this.kbListIndex(input.agentId, input.args, authorization.connector)
+    }
+    if (input.tool === 'kb_get_page') {
+      if (!authorization.connector) throw new Error('kb_get_page requires connector authorization')
+      return this.kbGetPage(input.agentId, input.args, authorization.connector)
+    }
     if (input.tool === 'board_write') return this.boardWrite(input)
     if (input.tool === 'ticket_create') return this.ticketCreate(input)
     if (input.tool === 'agent_ask') return this.agentAsk(input)
@@ -1267,7 +1584,14 @@ export class ToolBrokerService {
       )
     }
 
-    if (input.tool.startsWith('file_') || input.tool.startsWith('xlsx_') || input.tool.startsWith('pdf_') || input.tool === 'docx_read') {
+    if (
+      input.tool.startsWith('file_') ||
+      input.tool.startsWith('xlsx_') ||
+      input.tool.startsWith('pdf_') ||
+      input.tool === 'pptx_create' ||
+      input.tool === 'docx_read' ||
+      input.tool === 'create_html'
+    ) {
       if (!authorization.connector) throw new Error(`${input.tool} requires connector authorization`)
       return this.executeFileTool(input, authorization.connector, actingTenantId)
     }
@@ -1381,6 +1705,7 @@ export class ToolBrokerService {
     try {
       if (input.tool === 'file_read') return this.fileEditor.readFile(tenantId, workspaceId, input.args)
       if (input.tool === 'file_write') return this.fileEditor.writeFile(tenantId, workspaceId, input.args)
+      if (input.tool === 'create_html') return this.fileEditor.createHtml(tenantId, workspaceId, input.args)
       if (input.tool === 'file_edit') return this.fileEditor.editFile(tenantId, workspaceId, input.args)
       if (input.tool === 'file_list') return this.fileEditor.listFiles(tenantId, workspaceId, input.args)
       if (input.tool === 'file_glob') return this.fileEditor.globFiles(tenantId, workspaceId, input.args)
@@ -1395,6 +1720,7 @@ export class ToolBrokerService {
       if (input.tool === 'docx_read') return this.fileEditor.docxRead(tenantId, workspaceId, input.args)
       if (input.tool === 'pdf_read') return this.fileEditor.pdfRead(tenantId, workspaceId, input.args)
       if (input.tool === 'pdf_create') return this.fileEditor.pdfCreate(tenantId, workspaceId, input.args)
+      if (input.tool === 'pptx_create') return this.fileEditor.pptxCreate(tenantId, workspaceId, input.args)
     } catch (e) {
       if (e instanceof FileEditorError) {
         throw new Error(`${e.code}: ${e.message}`)
@@ -1530,6 +1856,18 @@ export class ToolBrokerService {
     return approvedRef === (args.draftId ?? args.to ?? '')
   }
 
+  /**
+   * §4.9.1 / D-B: az agenthez kötött ÖSSZES knowledge_base connector a scope —
+   * a retrieval (kb_search és a navigáció is) ezek unióján dolgozik, nem csak az
+   * authorizált egyen. Ha nincs linkelt KB, az authorizált connector a fallback.
+   */
+  private async resolveKbConnectorScope(agentId: string, connector: Connector): Promise<string[]> {
+    const linkedKbConnectorIds = (await this.tools.findConnectorsForAgent(agentId))
+      .filter((link) => link.connector.type === 'knowledge_base')
+      .map((link) => link.connector.id)
+    return linkedKbConnectorIds.length > 0 ? linkedKbConnectorIds : [connector.id]
+  }
+
   private async kbSearch(
     agentId: string,
     args: KbSearchArgs,
@@ -1538,109 +1876,57 @@ export class ToolBrokerService {
     const detail = await this.agents.findByIdWithDetails(agentId)
     if (!detail) throw new Error('Agent not found')
 
-    const termStems = queryTermStems(args.query)
-
     const k = args.k ?? 5
 
-    type ScoredChunk = { chunk: string; score: number; docId: string; sourceRef: string; memoryVersion: number | null }
+    const connectorIds = await this.resolveKbConnectorScope(agentId, connector)
 
-    function scoreChunks(
-      text: string,
-      docId: string,
-      sourceRef: string,
-      memoryVersion: number | null,
-      extraStems: Iterable<string> = [],
-    ): ScoredChunk[] {
-      const extraStemSet = new Set(extraStems)
-      return text
-        .split(/\n{2,}|\n(?=-\s+)/)
-        .map((chunk) => chunk.trim())
-        .filter(Boolean)
-        .map((chunk) => {
-          const chunkStems = new Set(
-            normalizeText(chunk)
-              .split(/\s+/)
-              .filter(Boolean)
-              .map(stemToken),
-          )
-          for (const stem of extraStemSet) chunkStems.add(stem)
-          const score = termStems.reduce((sum, stem) => sum + (chunkStems.has(stem) ? 1 : 0), 0)
-          return { chunk, score, docId, sourceRef, memoryVersion }
-        })
-        .filter((item) => item.score > 0)
-    }
+    const [okfChunkHits, supersededList, documentLists] = await Promise.all([
+      this.knowledgeChunks.searchChunks({ connectorIds, query: args.query, limit: k }),
+      this.knowledgeArtifacts.publishedSourceDocumentIds(connectorIds),
+      Promise.all(connectorIds.map((id) => this.tools.findDocumentsForConnector(id))),
+    ])
 
-    const memoryChunks = scoreChunks(
-      detail.memoryContent ?? '',
-      `memory:${detail.agent.memoryId}`,
-      `memory:${detail.agent.memoryId}:v${detail.memoryVersion ?? 'unknown'}`,
-      detail.memoryVersion,
-    )
+    const hits = assembleKbHits({
+      query: args.query,
+      k,
+      memoryContent: detail.memoryContent ?? '',
+      memoryId: detail.agent.memoryId,
+      memoryVersion: detail.memoryVersion,
+      okfChunkHits,
+      docs: documentLists.flat(),
+      supersededDocIds: new Set(supersededList),
+    })
 
-    // §4.9.1: egy agent több (akár megosztott) KB connectorhoz is köthető —
-    // a retrieval az agenthez kötött ÖSSZES knowledge_base connector dokumentumait
-    // uniózza, nem csak az authorizált egyét.
-    const linkedKbConnectorIds = (await this.tools.findConnectorsForAgent(agentId))
-      .filter((link) => link.connector.type === 'knowledge_base')
-      .map((link) => link.connector.id)
-    const connectorIds = linkedKbConnectorIds.length > 0 ? linkedKbConnectorIds : [connector.id]
-    const documentLists = await Promise.all(
-      connectorIds.map((id) => this.tools.findDocumentsForConnector(id)),
-    )
-    const flatDocs = documentLists.flat()
-    const docChunks: ScoredChunk[] = flatDocs.flatMap((doc) =>
-      scoreChunks(
-        documentSearchCorpus(doc.filename, doc.extractedText),
-        `doc:${doc.id}`,
-        `doc:${doc.id}:${doc.filename}`,
-        null,
-        stemsFromText(filenameSearchText(doc.filename)),
-      ),
-    )
+    return { hits }
+  }
 
-    let all = [...memoryChunks, ...docChunks]
-      .sort((a, b) => b.score - a.score)
-      .slice(0, k)
+  /** §9.3 — az agent scope-jában elérhető published OKF-oldalak listája (navigáció). */
+  private async kbListIndex(
+    agentId: string,
+    args: KbListIndexArgs,
+    connector: Connector,
+  ): Promise<KbListIndexResult> {
+    const connectorIds = await this.resolveKbConnectorScope(agentId, connector)
+    const entries = await this.knowledgeChunks.listIndex({
+      connectorIds,
+      pathPrefix: args.pathPrefix,
+    })
+    return assembleKbIndex(entries, args.maxDepth)
+  }
 
-    // Ha nincs egyező chunk, próbáljuk a teljes korpuszban (fájlnév + törzs) —
-    // pl. fájlnév-alapú kérdés vagy egyetlen kulcsszó (posnavigátor) a szövegben.
-    if (all.length === 0 && flatDocs.length > 0) {
-      const fallback = flatDocs
-        .map((doc) => {
-          const corpus = normalizeText(documentSearchCorpus(doc.filename, doc.extractedText))
-          const filenameScore = stemsFromText(filenameSearchText(doc.filename)).filter((stem) =>
-            termStems.includes(stem),
-          ).length
-          const contentScore = termStems.filter((stem) => corpus.includes(stem)).length
-          return { doc, score: Math.max(filenameScore, contentScore) }
-        })
-        .filter((item) => item.score > 0)
-        .sort((a, b) => b.score - a.score)
-        .slice(0, k)
-
-      all = fallback.map(({ doc }) => {
-        const body = doc.extractedText?.trim()
-        const chunk = body
-          ? body.split(/\n{2,}|\n(?=-\s+)/).map((part) => part.trim()).find(Boolean) ?? body
-          : `[${doc.filename}]`
-        return {
-          chunk,
-          score: 1,
-          docId: `doc:${doc.id}`,
-          sourceRef: `doc:${doc.id}:${doc.filename}`,
-          memoryVersion: null,
-        } satisfies ScoredChunk
-      })
-    }
-
-    return {
-      hits: all.map((item) => ({
-        docId: item.docId,
-        snippet: snippet(item.chunk),
-        sourceRef: item.sourceRef,
-        memoryVersion: item.memoryVersion,
-      })),
-    }
+  /** §9.2 — egy published OKF-oldal teljes tartalma + forrás-link (navigáció). */
+  private async kbGetPage(
+    agentId: string,
+    args: KbGetPageArgs,
+    connector: Connector,
+  ): Promise<KbGetPageResult> {
+    const connectorIds = await this.resolveKbConnectorScope(agentId, connector)
+    const chunks = await this.knowledgeChunks.getPageChunks({
+      connectorIds,
+      path: args.path,
+      artifactId: args.artifactId,
+    })
+    return assembleKbPage(args.path, chunks)
   }
 
   private async boardWrite(

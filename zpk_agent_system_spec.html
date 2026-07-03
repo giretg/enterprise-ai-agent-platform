@@ -1,0 +1,2486 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ZPK Agent System Specification</title>
+  <style>
+    :root {
+      --bg: #f7f8fb;
+      --panel: #ffffff;
+      --text: #18202a;
+      --muted: #5d6978;
+      --line: #d9dee7;
+      --accent: #245b8f;
+      --accent-soft: #e8f1f8;
+      --ok: #146b43;
+      --warn: #9a5b00;
+      --bad: #9b1c31;
+      --code-bg: #111827;
+      --code-text: #e5e7eb;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      color: var(--text);
+      background: var(--bg);
+      line-height: 1.55;
+    }
+
+    header {
+      background: #12263a;
+      color: white;
+      padding: 32px 40px;
+      border-bottom: 5px solid var(--accent);
+    }
+
+    header h1 {
+      margin: 0 0 8px;
+      font-size: 28px;
+      letter-spacing: 0;
+    }
+
+    header p {
+      margin: 0;
+      color: #d8e2ee;
+      max-width: 980px;
+    }
+
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 28px 24px 56px;
+    }
+
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 24px;
+      margin: 0 0 20px;
+    }
+
+    h2 {
+      margin: 0 0 14px;
+      font-size: 22px;
+      color: #102235;
+    }
+
+    h3 {
+      margin: 24px 0 10px;
+      font-size: 17px;
+      color: #183852;
+    }
+
+    h4 {
+      margin: 18px 0 8px;
+      font-size: 15px;
+      color: #25384a;
+    }
+
+    p {
+      margin: 8px 0 12px;
+    }
+
+    ul, ol {
+      margin-top: 8px;
+      padding-left: 22px;
+    }
+
+    li {
+      margin: 5px 0;
+    }
+
+    code {
+      font-family: Consolas, Menlo, Monaco, monospace;
+      font-size: 0.94em;
+      background: #eef2f7;
+      padding: 1px 4px;
+      border-radius: 4px;
+    }
+
+    pre {
+      margin: 12px 0;
+      padding: 16px;
+      overflow-x: auto;
+      background: var(--code-bg);
+      color: var(--code-text);
+      border-radius: 8px;
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    pre code {
+      padding: 0;
+      background: transparent;
+      color: inherit;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 12px 0 18px;
+      font-size: 14px;
+    }
+
+    th, td {
+      border: 1px solid var(--line);
+      padding: 9px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      background: #edf3f9;
+      color: #183852;
+    }
+
+    .toc {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .toc a {
+      display: block;
+      color: var(--accent);
+      text-decoration: none;
+      padding: 8px 10px;
+      background: var(--accent-soft);
+      border-radius: 6px;
+    }
+
+    .note, .warning, .decision {
+      border-left: 4px solid var(--accent);
+      background: #f4f8fb;
+      padding: 12px 14px;
+      margin: 14px 0;
+    }
+
+    .warning {
+      border-left-color: var(--warn);
+      background: #fff7e6;
+    }
+
+    .decision {
+      border-left-color: var(--ok);
+      background: #ecf8f2;
+    }
+
+    .bad {
+      color: var(--bad);
+      font-weight: bold;
+    }
+
+    .ok {
+      color: var(--ok);
+      font-weight: bold;
+    }
+
+    .status-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+      gap: 8px;
+      padding-left: 0;
+      list-style: none;
+    }
+
+    .status-list li {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px 10px;
+      background: #fbfcfe;
+      font-family: Consolas, Menlo, Monaco, monospace;
+      font-size: 13px;
+    }
+
+    .screen {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fbfcfe;
+      padding: 16px;
+      margin: 12px 0;
+    }
+
+    .screen-title {
+      font-weight: bold;
+      color: #183852;
+      margin-bottom: 10px;
+    }
+
+    .diagram-note {
+      border-left: 4px solid var(--accent);
+      background: #f4f8fb;
+      padding: 10px 12px;
+      color: var(--muted);
+      margin: 12px 0;
+    }
+
+    .mermaid {
+      background: #fbfcfe;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      margin: 12px 0 18px;
+      overflow-x: auto;
+    }
+
+    .field-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+      gap: 10px;
+    }
+
+    .field {
+      border: 1px solid var(--line);
+      background: white;
+      border-radius: 6px;
+      padding: 9px;
+      min-height: 58px;
+    }
+
+    .field span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 3px;
+    }
+
+    footer {
+      max-width: 1180px;
+      margin: 0 auto 36px;
+      padding: 0 24px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>ZPK Agent System Specification</h1>
+    <p>Detailed functional and technical specification for a Langflow-based agent system that generates and exports a Zone PIN Key under an existing Zone Master Key using a controlled payShield 10K host-interface tool module.</p>
+  </header>
+
+  <main>
+    <section id="toc">
+      <h2>Contents</h2>
+      <div class="toc">
+        <a href="#scope">1. Scope and Design Principles</a>
+        <a href="#architecture">2. Target Architecture</a>
+        <a href="#agents">3. Agent Roles</a>
+        <a href="#workflow">4. ZPK Workflow</a>
+        <a href="#request">5. Request Model</a>
+        <a href="#registry">6. Key Registry</a>
+        <a href="#database">7. PostgreSQL Schema</a>
+        <a href="#ui">8. Approval and Clarification UI</a>
+        <a href="#hsm-tool">9. HSM Tool Module Contract</a>
+        <a href="#knowledge-base">10. Knowledge Base and Command Catalog</a>
+        <a href="#identity-access">11. Identity, Authentication and Access Control</a>
+        <a href="#security">12. Security Considerations</a>
+        <a href="#audit">13. Audit and Evidence</a>
+        <a href="#errors">14. Error Handling</a>
+        <a href="#implementation-environment">15. Recommended On-Prem Implementation Environment</a>
+        <a href="#future">16. Future Extensions</a>
+      </div>
+    </section>
+
+    <section id="scope">
+      <h2>1. Scope and Design Principles</h2>
+      <p>The first implementation scope is deliberately narrow: generate a Zone PIN Key and export it encrypted under an already existing Zone Master Key for a selected target party and environment.</p>
+
+      <div class="decision">
+        <strong>Initial operation:</strong> <code>GENERATE_EXPORT_ZPK_UNDER_ZMK</code>.
+      </div>
+
+      <h3>In Scope</h3>
+      <ul>
+        <li>Request intake through a Sec Officer agent.</li>
+        <li>Clarification of business request data.</li>
+        <li>Target party lookup and cryptographic profile resolution.</li>
+        <li>Existing active ZMK lookup from the key registry by target party, environment, and KCV-based key identity.</li>
+        <li>ZPK generation and export under the resolved ZMK.</li>
+        <li>Human approval before execution.</li>
+        <li>Execution through a local Python module running under Langflow.</li>
+        <li>TCP/IP communication with the payShield 10K host interface.</li>
+        <li>Storage of encrypted key cryptograms, KCVs, metadata, and operation results in PostgreSQL.</li>
+        <li>Email notification for pending approvals, missing prerequisites, missing target-party profiles, multiple ZMK candidates, failed execution, and closure.</li>
+      </ul>
+
+      <h3>Out of Scope</h3>
+      <ul>
+        <li>HSM console operations.</li>
+        <li>Key component printing.</li>
+        <li>Clear key component handling.</li>
+        <li>Test-to-production or production-to-test key migration.</li>
+        <li>Emergency exception processing.</li>
+        <li>Direct raw HSM command entry by users or agents.</li>
+      </ul>
+
+      <h3>Core Principles</h3>
+      <ul>
+        <li>The agent initiates the operation, but a human approver authorizes execution.</li>
+        <li>The HSM tool module assembles the host command from validated structured input and the approved command template.</li>
+        <li>The agent must not send arbitrary command strings to the HSM.</li>
+        <li>The registry is the authoritative source for key metadata, target-party profiles, target-party to ZMK assignments, KCV-based key identification, and key lifecycle status.</li>
+        <li>Encrypted working-key cryptograms and key blocks may be stored in the database because their cryptographic protection is provided by the HSM key hierarchy, for example a key encrypted under the LMK hierarchy or a key exported under a ZMK. The LMK itself is never exported, never represented by a public cryptogram, and never stored outside the protected HSM environment. Database access control remains necessary for auditability and operational control.</li>
+      </ul>
+    </section>
+
+    <section id="architecture">
+      <h2>2. Target Architecture</h2>
+      <pre class="mermaid">flowchart TB
+  Request[Requester / External Request]
+  Sec[Sec Officer Agent]
+  Clarifier[Requirement Clarifier Agent]
+  Registry[Registry Agent]
+  Policy[Policy Agent]
+  Planner[HSM Planning Agent]
+  Plan[Ticket + Execution Plan]
+  Approval[Human Approval Web UI]
+  Tool[Controlled HSM Tool]
+  HSM[payShield 10K<br/>Host Interface over TCP/IP]
+  Result[Structured Result]
+  KR[Key Registry Update]
+  History[Ticket History Update]
+  Audit[Audit Evidence]
+  Email[Email Notification]
+
+  Request --> Sec
+  Sec --> Clarifier
+  Sec --> Registry
+  Sec --> Policy
+  Sec --> Planner
+
+  Clarifier --> Plan
+  Registry --> Plan
+  Policy --> Plan
+  Planner --> Plan
+
+  Plan --> Approval
+  Approval -->|approved| Tool
+  Tool --> HSM
+  HSM --> Result
+
+  Result --> KR
+  Result --> History
+  Result --> Audit
+  Result --> Email</pre>
+
+      <h3>Architecture Diagrams</h3>
+      <p>The following Mermaid diagrams show the system at three levels: system context, internal containers, and the TOTP authentication flow that uses the HSM data-encryption capability.</p>
+
+      <h4>System Context</h4>
+      <pre class="mermaid">flowchart LR
+  PM[PM<br/>Project Manager]
+  KMO[KMO<br/>Key Manager Officer]
+  DH[Department Head]
+  HM[HSM Manager<br/>time-limited]
+
+  SYS[KeyOps Agent System<br/>ticketing, approvals, registry, knowledge]
+  HSM[payShield 10K<br/>internal TCP/IP]
+  MAIL[Internal Email Service]
+
+  PM -->|create and track own tickets| SYS
+  KMO -->|approve key work, manage KR and knowledge| SYS
+  DH -->|appoint KMO and activate HSM Manager| SYS
+  HM -->|manage command templates during active window| SYS
+
+  SYS -->|payment key operations| HSM
+  SYS -->|auth-secret data encryption| HSM
+  SYS -->|notifications| MAIL</pre>
+
+      <h4>Container Diagram</h4>
+      <pre class="mermaid">flowchart TB
+  User[PM / KMO / Department Head / HSM Manager]
+  UI[Internal Web UI]
+  API[FastAPI Backend<br/>control plane]
+  DB[(PostgreSQL<br/>source of truth)]
+  LF[Langflow<br/>agent reasoning]
+  KB[Knowledge Base / pgvector<br/>approved docs and local experience]
+  Auth[Auth Module<br/>password, TOTP, sessions]
+  AuthTool[Auth HSM Data-Encryption Tool<br/>TOTP seed protection]
+  PayTool[Payment HSM Tool<br/>ZPK/ZMK operations]
+  HSM[payShield 10K]
+  Mail[Internal Email]
+
+  User --> UI
+  UI --> API
+
+  API --> DB
+  API --> LF
+  API --> KB
+  API --> Auth
+  API --> Mail
+
+  Auth -->|encrypt/decrypt TOTP seed| AuthTool
+  AuthTool -->|separate auth-secret command templates| HSM
+
+  LF -->|draft execution plan only| API
+  API -->|approved execution plan| PayTool
+  PayTool -->|payment command templates| HSM
+
+  API -->|audit events| DB
+  AuthTool -->|auth-secret audit category| DB
+  PayTool -->|payment-key audit category| DB</pre>
+
+      <h4>TOTP Authentication Sequence</h4>
+      <pre class="mermaid">sequenceDiagram
+  actor User as KMO / HSM Manager / Department Head
+  participant UI as Internal Web UI
+  participant API as FastAPI Auth API
+  participant DB as PostgreSQL
+  participant Tool as Auth HSM Data-Encryption Tool
+  participant HSM as payShield 10K
+
+  User->>UI: Submit username and password
+  UI->>API: POST /auth/login
+  API->>DB: Load user, password hash, role, MFA status
+  API->>API: Verify password
+  API-->>UI: Request TOTP code
+
+  User->>UI: Submit TOTP code
+  UI->>API: POST /auth/mfa/totp/verify
+  API->>DB: Load encrypted TOTP seed metadata
+  API->>Tool: Decrypt TOTP seed request
+  Tool->>HSM: Auth-secret data-decryption command
+  HSM-->>Tool: Decrypted seed or protected result
+  Tool-->>API: TOTP seed available to auth module
+  API->>API: Verify TOTP code and replay/rate limits
+  API->>DB: Write auth event and update session MFA state
+  API-->>UI: Authenticated session</pre>
+
+      <div class="diagram-note">
+        The HSM is reached through two strictly separated paths: the Payment HSM Tool for card/payment key operations, and the Auth HSM Data-Encryption Tool for protecting TOTP seeds and other authentication secrets. Both paths use separate command templates, access controls and audit categories.
+      </div>
+
+      <h3>Trust Boundaries</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Boundary</th>
+            <th>Description</th>
+            <th>Required Control</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Agent to database</td>
+            <td>Agents read and write ticket, registry, profile, and audit data.</td>
+            <td>Role-based database access, stored procedures or service layer, full audit events.</td>
+          </tr>
+          <tr>
+            <td>Agent to HSM tool</td>
+            <td>Agent submits an approved structured execution plan.</td>
+            <td>No raw HSM command input, schema validation, approval verification.</td>
+          </tr>
+          <tr>
+            <td>HSM tool to payShield</td>
+            <td>Tool sends TCP/IP host command and receives response.</td>
+            <td>Fixed endpoint configuration, environment separation, response validation, transport restrictions.</td>
+          </tr>
+          <tr>
+            <td>Knowledge base to agent reasoning</td>
+            <td>Agents use approved documentation and local rules.</td>
+            <td>Source versioning, approved ingestion, prompt-injection resistant retrieval.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="agents">
+      <h2>3. Agent Roles</h2>
+
+      <h3>Sec Officer Agent</h3>
+      <p>The Sec Officer agent is the only external-facing agent. It receives the request, creates or updates the ticket, coordinates specialist agents, and presents the final execution plan for approval.</p>
+      <ul>
+        <li>Collects requester identity, unit, target party, environment, business reason, activation date, and intended usage.</li>
+        <li>Determines whether the request belongs to the ZPK generation/export flow.</li>
+        <li>Routes console-only or component-printing requests to a human-only manual process.</li>
+        <li>Coordinates registry lookup, policy checks, execution planning, approval, execution, and closure.</li>
+      </ul>
+
+      <h3>Requirement Clarifier Agent</h3>
+      <p>This agent separates business clarification from cryptographic parameter clarification.</p>
+      <table>
+        <thead>
+          <tr>
+            <th>Missing Data Type</th>
+            <th>Clarification Target</th>
+            <th>Example</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Business request data</td>
+            <td>Requester</td>
+            <td>Missing target party, business reason, requested activation date.</td>
+          </tr>
+          <tr>
+            <td>Cryptographic profile data</td>
+            <td>Approver or designated security specialist</td>
+            <td>Missing default ZPK algorithm, key length, scheme, KCV format.</td>
+          </tr>
+          <tr>
+            <td>Prerequisite key data</td>
+            <td>Approver notification</td>
+            <td>No active ZMK exists for the target party and environment, or multiple possible ZMKs are assigned and KMO selection is required.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Registry Agent</h3>
+      <ul>
+        <li>Resolves the target party profile.</li>
+        <li>Finds active ZMK candidates for the target party and environment through the target-party to key assignment table.</li>
+        <li>Creates the ZPK key record after successful HSM execution.</li>
+        <li>Stores the encrypted ZPK cryptogram, KCV, protection key reference, lifecycle status, and ticket linkage.</li>
+      </ul>
+
+      <h3>Policy Agent</h3>
+      <ul>
+        <li>Validates environment separation.</li>
+        <li>Rejects test-production key migration attempts.</li>
+        <li>Rejects raw command execution requests.</li>
+        <li>Confirms that the intended usage is valid for the ZPK operation.</li>
+        <li>Confirms that the selected ZMK is active, assigned to the target party, and belongs to the same environment.</li>
+        <li>Requires human approval before the HSM tool can execute.</li>
+      </ul>
+
+      <h3>HSM Planning Agent</h3>
+      <p>This agent prepares a structured execution plan. It does not assemble the final payShield host command.</p>
+      <pre><code>{
+  "operation": "GENERATE_EXPORT_ZPK_UNDER_ZMK",
+  "environment": "PROD",
+  "target_party_code": "PROCESSOR_ABC",
+  "resolved_inputs": {
+    "zmk_key_id": "ZMK-PROD-00491",
+    "zmk_kcv": "12AB34",
+    "zpk_algorithm": "3DES",
+    "zpk_length": "DOUBLE",
+    "zpk_scheme": "X9.24",
+    "intended_usage": "online_pin_interchange",
+    "kcv_format": "STANDARD"
+  },
+  "approval_required": true
+}</code></pre>
+
+      <h3>Audit Agent</h3>
+      <p>The audit agent prepares human-readable evidence from immutable database events. It is not the source of truth; the event tables and HSM result records are.</p>
+    </section>
+
+    <section id="workflow">
+      <h2>4. ZPK Workflow</h2>
+      <h3>Happy Path</h3>
+      <ol>
+        <li>Requester submits a ZPK generation/export request.</li>
+        <li>Sec Officer agent creates a ticket in <code>DRAFT</code> status.</li>
+        <li>Requirement Clarifier validates requester, unit, environment, target party, intended usage, business reason, and activation date.</li>
+        <li>Registry Agent resolves the target party by <code>target_party_code</code>.</li>
+        <li>Registry Agent finds active ZMK candidates for the same target party and environment.</li>
+        <li>If exactly one active ZMK candidate exists, the workflow uses it automatically. If multiple active ZMK candidates exist, the workflow asks the KMO to select the correct ZMK. The PM cannot perform this selection because PM users cannot access the key registry.</li>
+        <li>Registry Agent loads the target party cryptographic profile.</li>
+        <li>If profile fields are complete, ticket moves to <code>READY_FOR_POLICY_CHECK</code>.</li>
+        <li>Policy Agent evaluates mandatory controls.</li>
+        <li>HSM Planning Agent creates the execution plan.</li>
+        <li>Ticket moves to <code>READY_FOR_APPROVAL</code>.</li>
+        <li>Email notification is sent to the approver.</li>
+        <li>Approver reviews the web UI and approves the execution.</li>
+        <li>Ticket moves to <code>APPROVED</code>.</li>
+        <li>HSM tool validates ticket status, approval, input schema, environment configuration, and module integrity.</li>
+        <li>HSM tool assembles the payShield host command from an approved template.</li>
+        <li>HSM tool sends the command over TCP/IP to the configured payShield host endpoint.</li>
+        <li>HSM tool parses and validates the response.</li>
+        <li>Registry Agent creates a ZPK record with encrypted key value, KCV, protection ZMK, and HSM operation reference.</li>
+        <li>Ticket history is updated with the structured result.</li>
+        <li>Email notification is sent to the requester and approver. The PM notification includes the generated ZPK cryptogram protected by the LMK hierarchy, the generated ZPK cryptogram exported under the selected ZMK, and the ZPK KCV.</li>
+        <li>Ticket moves to <code>CLOSED</code>.</li>
+      </ol>
+
+      <h3>Ticket Statuses</h3>
+      <ul class="status-list">
+        <li>DRAFT</li>
+        <li>CLARIFICATION_REQUIRED</li>
+        <li>CRYPTO_PROFILE_REQUIRED</li>
+        <li>PREREQUISITE_MISSING</li>
+        <li>READY_FOR_POLICY_CHECK</li>
+        <li>POLICY_REJECTED</li>
+        <li>READY_FOR_APPROVAL</li>
+        <li>APPROVED</li>
+        <li>EXECUTION_STARTED</li>
+        <li>EXECUTION_FAILED</li>
+        <li>EXECUTED</li>
+        <li>REGISTRY_UPDATED</li>
+        <li>CLOSED</li>
+        <li>REJECTED</li>
+      </ul>
+
+      <h3>Prerequisite Missing Path</h3>
+      <pre class="mermaid">flowchart TB
+  Lookup[Target party + environment lookup]
+  Missing[No ACTIVE ZMK found]
+  Status[Ticket status = PREREQUISITE_MISSING]
+  Notify[Approver notified]
+  Block[ZPK generation/export blocked until a valid ZMK exists]
+
+  Lookup --> Missing
+  Missing --> Status
+  Status --> Notify
+  Notify --> Block</pre>
+
+      <h3>Multiple ZMK Candidates Path</h3>
+      <pre class="mermaid">flowchart TB
+  Lookup[Target party + environment lookup]
+  Multiple[Multiple ACTIVE ZMK candidates found]
+  Status[Ticket status = CRYPTO_PROFILE_REQUIRED]
+  Notify[KMO notification email lists all candidate ZMK records]
+  Select[KMO selects applicable ZMK by KCV, key id, and assignment context]
+  Record[Selected ZMK is recorded in the ticket execution plan]
+  Resume[Workflow resumes at policy validation]
+
+  Lookup --> Multiple
+  Multiple --> Status
+  Status --> Notify
+  Notify --> Select
+  Select --> Record
+  Record --> Resume</pre>
+
+      <h3>Cryptographic Profile Missing Path</h3>
+      <pre class="mermaid">flowchart TB
+  Lookup[Target party crypto profile lookup]
+  Missing[Required ZPK defaults missing]
+  Status[Ticket status = CRYPTO_PROFILE_REQUIRED]
+  Notify[KMO notification email is sent with missing profile fields]
+  Complete[Approver provides missing values in web UI]
+  Store[Values stored in target_party_profiles]
+  Resume[Workflow resumes at policy validation]
+
+  Lookup --> Missing
+  Missing --> Status
+  Status --> Notify
+  Notify --> Complete
+  Complete --> Store
+  Store --> Resume</pre>
+    </section>
+
+    <section id="request">
+      <h2>5. Request Model</h2>
+      <p>The requester is expected to know the business intent, not low-level cryptographic parameters. The system resolves cryptographic parameters from the target party profile or asks the approver to complete them.</p>
+
+      <h3>Requester-Supplied Fields</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Field</th>
+            <th>Required</th>
+            <th>Description</th>
+            <th>Validation</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>requester_name</code></td>
+            <td>Yes</td>
+            <td>Name of the requester.</td>
+            <td>Non-empty.</td>
+          </tr>
+          <tr>
+            <td><code>requester_email</code></td>
+            <td>Yes</td>
+            <td>Email address for notifications.</td>
+            <td>Valid email format.</td>
+          </tr>
+          <tr>
+            <td><code>requester_unit</code></td>
+            <td>Yes</td>
+            <td>Unit of the requester.</td>
+            <td>Must map to an allowed internal unit or be explicitly recorded.</td>
+          </tr>
+          <tr>
+            <td><code>requesting_company_or_business_unit</code></td>
+            <td>Yes</td>
+            <td>Company or business unit represented by the request.</td>
+            <td>Non-empty.</td>
+          </tr>
+          <tr>
+            <td><code>environment</code></td>
+            <td>Yes</td>
+            <td>Execution environment.</td>
+            <td><code>TEST</code> or <code>PROD</code>.</td>
+          </tr>
+          <tr>
+            <td><code>operation</code></td>
+            <td>Yes</td>
+            <td>Requested operation.</td>
+            <td>For MVP: <code>GENERATE_EXPORT_ZPK_UNDER_ZMK</code>.</td>
+          </tr>
+          <tr>
+            <td><code>target_party_name</code></td>
+            <td>Yes</td>
+            <td>Human-readable target party name.</td>
+            <td>Must match or help resolve <code>target_party_code</code>.</td>
+          </tr>
+          <tr>
+            <td><code>target_party_code</code></td>
+            <td>Yes</td>
+            <td>Registry identifier of the target party.</td>
+            <td>Must exist or trigger target party creation process.</td>
+          </tr>
+          <tr>
+            <td><code>intended_usage</code></td>
+            <td>Yes</td>
+            <td>Business and cryptographic usage intent. Included now to support future key types.</td>
+            <td>For ZPK MVP: must be compatible with online PIN interchange.</td>
+          </tr>
+          <tr>
+            <td><code>business_reason</code></td>
+            <td>Yes</td>
+            <td>Why the key is needed.</td>
+            <td>Non-empty; stored in ticket history.</td>
+          </tr>
+          <tr>
+            <td><code>requested_activation_date</code></td>
+            <td>Yes</td>
+            <td>Requested date from which the generated key should be considered active.</td>
+            <td>Valid date; no past date for production unless policy allows.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>System-Resolved Fields</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Field</th>
+            <th>Source</th>
+            <th>Fallback</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>existing_zmk_key_id</code></td>
+            <td>Active ZMK registry lookup by target party and environment through <code>target_party_keys</code>. ZMK identity is primarily verified by KCV.</td>
+            <td>If missing, ticket becomes <code>PREREQUISITE_MISSING</code>. If multiple candidates exist, KMO selection is required.</td>
+          </tr>
+          <tr>
+            <td><code>zpk_algorithm</code></td>
+            <td>Target party crypto profile.</td>
+            <td>Approver supplies value; stored back to profile.</td>
+          </tr>
+          <tr>
+            <td><code>zpk_length</code></td>
+            <td>Target party crypto profile.</td>
+            <td>Approver supplies value; stored back to profile.</td>
+          </tr>
+          <tr>
+            <td><code>zpk_variant_or_scheme</code></td>
+            <td>Target party crypto profile.</td>
+            <td>Approver supplies value; stored back to profile.</td>
+          </tr>
+          <tr>
+            <td><code>kcv_format</code></td>
+            <td>Target party crypto profile or default local rule.</td>
+            <td>Approver supplies value.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="registry">
+      <h2>6. Key Registry</h2>
+      <p>The key registry is the authoritative source for key inventory. It records encrypted working-key cryptograms, key blocks, cryptographic metadata, lifecycle status, ownership, environment, and protection relationships. It does not record the LMK itself; the LMK is the root of the HSM key hierarchy and exists only inside the protected HSM environment.</p>
+
+      <h3>Key Types in MVP</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Key Type</th>
+            <th>Meaning</th>
+            <th>MVP Role</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>ZMK</code></td>
+            <td>Zone Master Key.</td>
+            <td>Must already exist and be active. Used as the export protection key. It is normally created manually outside this workflow and then registered in the key registry by a KMO.</td>
+          </tr>
+          <tr>
+            <td><code>ZPK</code></td>
+            <td>Zone PIN Key.</td>
+            <td>Generated by the HSM and exported encrypted under the selected ZMK.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>ZMK Identification and Target Party Assignment</h3>
+      <p>A ZMK is primarily identified operationally by its Key Check Value. The registry also assigns an internal <code>key_id</code> for database reference and audit traceability, but KCV must be visible to the KMO during selection, approval, and evidence review.</p>
+      <p>Target parties and ZMKs have a many-to-many relationship. One target party may have multiple active or historical ZMKs, and one ZMK may be assigned to multiple target parties depending on the operating model. Therefore, ZPK generation cannot always resolve the ZMK from the target party alone.</p>
+      <p>Target parties and ZPKs have a stricter relationship. A target party may have multiple ZPKs, but a ZPK belongs to exactly one target party. Therefore, the registry must prevent assigning the same ZPK to multiple target parties.</p>
+      <table>
+        <thead>
+          <tr>
+            <th>Case</th>
+            <th>System Behavior</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>No active ZMK assigned to the target party and environment.</td>
+            <td>Set ticket status to <code>PREREQUISITE_MISSING</code> and notify the KMO. ZPK generation cannot continue.</td>
+          </tr>
+          <tr>
+            <td>Exactly one active ZMK assigned.</td>
+            <td>Use that ZMK as the protecting key and include its <code>key_id</code> and KCV in the execution plan.</td>
+          </tr>
+          <tr>
+            <td>Multiple active ZMKs assigned.</td>
+            <td>Ask the KMO to select the correct ZMK. The PM cannot select a ZMK because PM users do not have key registry access.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>ZPK Ownership Rule</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Relationship</th>
+            <th>Cardinality</th>
+            <th>Rule</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Target Party to ZMK</td>
+            <td>Many-to-many</td>
+            <td>Multiple target parties may share a ZMK assignment, and one target party may have multiple ZMK assignments.</td>
+          </tr>
+          <tr>
+            <td>Target Party to ZPK</td>
+            <td>One-to-many</td>
+            <td>One target party may have multiple ZPKs, but each ZPK may be assigned to one target party only.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Manual ZMK Registration</h3>
+      <p>ZMK creation is a separate manual process outside the ZPK generation/export workflow. After a ZMK exists, a KMO may register it in the key registry so it can be used as a prerequisite for later ZPK export operations.</p>
+      <p>Minimum registration data:</p>
+      <ul>
+        <li>ZMK KCV.</li>
+        <li>Environment: <code>TEST</code> or <code>PROD</code>.</li>
+        <li>Encrypted ZMK representation or key block, if available through the approved operating process.</li>
+        <li>Key scheme, algorithm, and key length where known.</li>
+        <li>Assigned target party or parties.</li>
+        <li>Activation date and status.</li>
+        <li>Manual process reference or evidence reference.</li>
+        <li>KMO who registered the ZMK.</li>
+      </ul>
+
+      <h3>Key Protection Model</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Protection Type</th>
+            <th>Description</th>
+            <th>Storage Policy</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>LMK_HIERARCHY</code></td>
+            <td>A working-key cryptogram encrypted under the HSM Local Master Key hierarchy or a key derived from that hierarchy. The LMK itself is the root key material inside the HSM protected environment only.</td>
+            <td>The protected working-key cryptogram may be stored in the registry with metadata and KCV. The LMK is never stored, exported, or represented as a registry cryptogram.</td>
+          </tr>
+          <tr>
+            <td><code>ZMK</code></td>
+            <td>Exported key cryptogram protected under a Zone Master Key.</td>
+            <td>May be stored in the registry and linked to the protecting ZMK.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Target Party Profile</h3>
+      <p>The target party profile stores default cryptographic parameters so requesters do not need to know them. Missing profile values are completed by the approver and then persisted for future requests.</p>
+      <table>
+        <thead>
+          <tr>
+            <th>Field</th>
+            <th>Purpose</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>default_zpk_algorithm</code></td>
+            <td>Default algorithm for ZPK generation, for example <code>3DES</code> or <code>AES</code> if supported by the local profile.</td>
+          </tr>
+          <tr>
+            <td><code>default_zpk_length</code></td>
+            <td>Default key length, for example <code>DOUBLE</code> or <code>TRIPLE</code>.</td>
+          </tr>
+          <tr>
+            <td><code>default_zpk_scheme</code></td>
+            <td>Key scheme or variant convention required for this target party.</td>
+          </tr>
+          <tr>
+            <td><code>default_zpk_usage</code></td>
+            <td>Expected usage, for example <code>online_pin_interchange</code>.</td>
+          </tr>
+          <tr>
+            <td><code>default_kcv_format</code></td>
+            <td>Preferred KCV format for reporting and validation.</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section id="database">
+      <h2>7. PostgreSQL Schema</h2>
+      <p>The following DDL is a proposed starting point. It favors clear auditability and future extensibility over minimal table count.</p>
+
+      <h3>Enum Types</h3>
+      <pre><code>CREATE TYPE environment_type AS ENUM ('TEST', 'PROD');
+CREATE TYPE ticket_status AS ENUM (
+  'DRAFT',
+  'CLARIFICATION_REQUIRED',
+  'CRYPTO_PROFILE_REQUIRED',
+  'PREREQUISITE_MISSING',
+  'READY_FOR_POLICY_CHECK',
+  'POLICY_REJECTED',
+  'READY_FOR_APPROVAL',
+  'APPROVED',
+  'EXECUTION_STARTED',
+  'EXECUTION_FAILED',
+  'EXECUTED',
+  'REGISTRY_UPDATED',
+  'CLOSED',
+  'REJECTED'
+);
+CREATE TYPE key_type AS ENUM ('ZMK', 'ZPK');
+CREATE TYPE key_status AS ENUM ('PLANNED', 'ACTIVE', 'SUSPENDED', 'RETIRED', 'COMPROMISED');
+CREATE TYPE protection_type AS ENUM ('LMK_HIERARCHY', 'ZMK', 'OTHER');
+CREATE TYPE approval_status AS ENUM ('PENDING', 'APPROVED', 'REJECTED', 'CLARIFICATION_REQUESTED');
+CREATE TYPE user_status AS ENUM ('PENDING_ACTIVATION', 'ACTIVE', 'SUSPENDED', 'REVOKED');
+CREATE TYPE auth_factor_type AS ENUM ('PASSWORD', 'TOTP', 'WEBAUTHN', 'RECOVERY_CODE');
+CREATE TYPE role_code AS ENUM ('PM', 'KMO', 'HSM_MANAGER', 'DEPARTMENT_HEAD');</code></pre>
+
+      <h3>Users</h3>
+      <pre><code>CREATE TABLE users (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  username TEXT NOT NULL UNIQUE,
+  display_name TEXT NOT NULL,
+  email TEXT NOT NULL UNIQUE,
+  status user_status NOT NULL DEFAULT 'PENDING_ACTIVATION',
+  created_by UUID REFERENCES users(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_login_at TIMESTAMPTZ
+);</code></pre>
+
+      <h3>Roles and Permissions</h3>
+      <pre><code>CREATE TABLE roles (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  code role_code NOT NULL UNIQUE,
+  description TEXT NOT NULL
+);
+
+CREATE TABLE permissions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  code TEXT NOT NULL UNIQUE,
+  description TEXT NOT NULL
+);
+
+CREATE TABLE role_permissions (
+  role_id UUID NOT NULL REFERENCES roles(id),
+  permission_id UUID NOT NULL REFERENCES permissions(id),
+  PRIMARY KEY (role_id, permission_id)
+);
+
+CREATE TABLE user_roles (
+  user_id UUID NOT NULL REFERENCES users(id),
+  role_id UUID NOT NULL REFERENCES roles(id),
+  assigned_by UUID NOT NULL REFERENCES users(id),
+  approved_by UUID REFERENCES users(id),
+  assigned_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  revoked_at TIMESTAMPTZ,
+  PRIMARY KEY (user_id, role_id, assigned_at)
+);</code></pre>
+
+      <h3>Authentication Factors</h3>
+      <pre><code>CREATE TABLE auth_factors (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id),
+  factor_type auth_factor_type NOT NULL,
+  factor_label TEXT NOT NULL,
+  credential_id TEXT,
+  public_key TEXT,
+  secret_hash TEXT,
+  is_primary BOOLEAN NOT NULL DEFAULT false,
+  enabled BOOLEAN NOT NULL DEFAULT true,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_used_at TIMESTAMPTZ
+);</code></pre>
+
+      <h3>Sessions and Authentication Events</h3>
+      <pre><code>CREATE TABLE sessions (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id),
+  session_token_hash TEXT NOT NULL UNIQUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at TIMESTAMPTZ NOT NULL,
+  last_seen_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  mfa_verified_at TIMESTAMPTZ,
+  revoked_at TIMESTAMPTZ,
+  client_ip TEXT,
+  user_agent TEXT
+);
+
+CREATE TABLE auth_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID REFERENCES users(id),
+  event_type TEXT NOT NULL,
+  result TEXT NOT NULL,
+  factor_type auth_factor_type,
+  client_ip TEXT,
+  user_agent TEXT,
+  details JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);</code></pre>
+
+      <h3>KMO Appointment Requests</h3>
+      <pre><code>CREATE TABLE kmo_appointment_requests (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  candidate_user_id UUID NOT NULL REFERENCES users(id),
+  requested_by UUID NOT NULL REFERENCES users(id),
+  approved_by_department_head UUID REFERENCES users(id),
+  status TEXT NOT NULL DEFAULT 'PENDING',
+  justification TEXT NOT NULL,
+  decision_comment TEXT,
+  requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  decided_at TIMESTAMPTZ
+);</code></pre>
+
+      <h3>HSM Manager Activation Windows</h3>
+      <pre><code>CREATE TABLE hsm_manager_activation_windows (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  hsm_manager_user_id UUID NOT NULL REFERENCES users(id),
+  enabled_by_department_head UUID NOT NULL REFERENCES users(id),
+  reason TEXT NOT NULL,
+  starts_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  expires_at TIMESTAMPTZ NOT NULL,
+  revoked_at TIMESTAMPTZ,
+  revoked_by UUID REFERENCES users(id),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  CHECK (expires_at &lt;= starts_at + INTERVAL '120 minutes')
+);</code></pre>
+
+      <h3>Target Parties</h3>
+      <pre><code>CREATE TABLE target_parties (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  target_party_code TEXT NOT NULL UNIQUE,
+  target_party_name TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'ACTIVE',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);</code></pre>
+
+      <h3>Target Party Profiles</h3>
+      <pre><code>CREATE TABLE target_party_profiles (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  target_party_id UUID NOT NULL REFERENCES target_parties(id),
+  environment environment_type NOT NULL,
+  default_zpk_algorithm TEXT,
+  default_zpk_length TEXT,
+  default_zpk_scheme TEXT,
+  default_zpk_usage TEXT,
+  default_kcv_format TEXT,
+  profile_status TEXT NOT NULL DEFAULT 'ACTIVE',
+  approved_by TEXT,
+  approved_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (target_party_id, environment)
+);</code></pre>
+
+      <h3>Tickets</h3>
+      <pre><code>CREATE TABLE tickets (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  ticket_number TEXT NOT NULL UNIQUE,
+  operation TEXT NOT NULL,
+  status ticket_status NOT NULL DEFAULT 'DRAFT',
+  environment environment_type NOT NULL,
+  requester_name TEXT NOT NULL,
+  requester_email TEXT NOT NULL,
+  requester_unit TEXT NOT NULL,
+  requesting_company_or_business_unit TEXT NOT NULL,
+  target_party_id UUID REFERENCES target_parties(id),
+  target_party_name_input TEXT NOT NULL,
+  target_party_code_input TEXT NOT NULL,
+  intended_usage TEXT NOT NULL,
+  business_reason TEXT NOT NULL,
+  requested_activation_date DATE NOT NULL,
+  created_by_agent TEXT NOT NULL,
+  assigned_approver TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  closed_at TIMESTAMPTZ
+);</code></pre>
+
+      <h3>Ticket Events</h3>
+      <pre><code>CREATE TABLE ticket_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  ticket_id UUID NOT NULL REFERENCES tickets(id),
+  event_type TEXT NOT NULL,
+  actor_type TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  event_summary TEXT NOT NULL,
+  event_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_ticket_events_ticket_id_created_at
+  ON ticket_events(ticket_id, created_at);</code></pre>
+
+      <h3>Keys</h3>
+      <pre><code>CREATE TABLE keys (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  key_id TEXT NOT NULL UNIQUE,
+  key_type key_type NOT NULL,
+  environment environment_type NOT NULL,
+  status key_status NOT NULL,
+  algorithm TEXT,
+  key_length TEXT,
+  key_scheme TEXT,
+  intended_usage TEXT,
+  kcv TEXT,
+  kcv_format TEXT,
+  encrypted_key_value TEXT,
+  key_block TEXT,
+  exported_key_cryptogram TEXT,
+  protection_type protection_type,
+  protected_under_key_id UUID REFERENCES keys(id),
+  hsm_lmk_identifier TEXT,
+  registration_method TEXT NOT NULL DEFAULT 'SYSTEM_GENERATED',
+  manual_process_reference TEXT,
+  registered_by UUID REFERENCES users(id),
+  registered_at TIMESTAMPTZ,
+  created_ticket_id UUID REFERENCES tickets(id),
+  activated_at TIMESTAMPTZ,
+  retired_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_keys_lookup
+  ON keys(key_type, environment, status, kcv);
+
+CREATE INDEX idx_keys_protection
+  ON keys(protected_under_key_id);</code></pre>
+
+      <h3>Target Party to Key Assignments</h3>
+      <pre><code>CREATE TABLE target_party_keys (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  target_party_id UUID NOT NULL REFERENCES target_parties(id),
+  key_id UUID NOT NULL REFERENCES keys(id),
+  relationship_type TEXT NOT NULL,
+  environment environment_type NOT NULL,
+  status TEXT NOT NULL DEFAULT 'ACTIVE',
+  assignment_context TEXT,
+  assigned_by UUID NOT NULL REFERENCES users(id),
+  assigned_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  revoked_by UUID REFERENCES users(id),
+  revoked_at TIMESTAMPTZ,
+  UNIQUE (target_party_id, key_id, relationship_type, environment)
+);
+
+CREATE INDEX idx_target_party_keys_lookup
+  ON target_party_keys(target_party_id, environment, relationship_type, status);
+
+-- A ZPK may be assigned to only one target party.
+-- This partial index enforces the 1:n target party to ZPK rule when
+-- relationship_type = 'ZPK_OWNER'.
+CREATE UNIQUE INDEX uq_zpk_single_target_party
+  ON target_party_keys(key_id)
+  WHERE relationship_type = 'ZPK_OWNER' AND revoked_at IS NULL;</code></pre>
+
+      <h3>Policy Checks</h3>
+      <pre><code>CREATE TABLE policy_checks (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  ticket_id UUID NOT NULL REFERENCES tickets(id),
+  policy_name TEXT NOT NULL,
+  result TEXT NOT NULL,
+  details JSONB NOT NULL DEFAULT '{}'::jsonb,
+  checked_by_agent TEXT NOT NULL,
+  checked_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);</code></pre>
+
+      <h3>Approvals</h3>
+      <pre><code>CREATE TABLE approvals (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  ticket_id UUID NOT NULL REFERENCES tickets(id),
+  status approval_status NOT NULL DEFAULT 'PENDING',
+  approver_id TEXT NOT NULL,
+  approver_email TEXT NOT NULL,
+  approval_summary JSONB NOT NULL,
+  decision_comment TEXT,
+  requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  decided_at TIMESTAMPTZ
+);</code></pre>
+
+      <h3>HSM Operations</h3>
+      <pre><code>CREATE TABLE hsm_operations (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  ticket_id UUID NOT NULL REFERENCES tickets(id),
+  approval_id UUID NOT NULL REFERENCES approvals(id),
+  operation TEXT NOT NULL,
+  environment environment_type NOT NULL,
+  hsm_profile TEXT NOT NULL,
+  execution_plan JSONB NOT NULL,
+  status TEXT NOT NULL DEFAULT 'PLANNED',
+  started_at TIMESTAMPTZ,
+  finished_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);</code></pre>
+
+      <h3>HSM Operation Results</h3>
+      <pre><code>CREATE TABLE hsm_operation_results (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  hsm_operation_id UUID NOT NULL REFERENCES hsm_operations(id),
+  hsm_response_code TEXT NOT NULL,
+  hsm_response_text TEXT,
+  exported_key_cryptogram TEXT,
+  lmk_hierarchy_protected_key TEXT,
+  kcv TEXT,
+  kcv_format TEXT,
+  parsed_response JSONB NOT NULL DEFAULT '{}'::jsonb,
+  hsm_audit_reference TEXT,
+  raw_request_hash TEXT,
+  raw_response_hash TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);</code></pre>
+
+      <h3>Notification Events</h3>
+      <pre><code>CREATE TABLE notification_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  ticket_id UUID REFERENCES tickets(id),
+  notification_type TEXT NOT NULL,
+  recipient_email TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  notification_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  delivery_status TEXT NOT NULL,
+  provider_reference TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);</code></pre>
+
+      <h3>Knowledge Documents</h3>
+      <pre><code>CREATE TABLE knowledge_documents (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  document_code TEXT NOT NULL UNIQUE,
+  title TEXT NOT NULL,
+  source_file_name TEXT NOT NULL,
+  source_file_hash TEXT NOT NULL,
+  document_type TEXT NOT NULL,
+  source_owner TEXT NOT NULL,
+  version_label TEXT,
+  effective_date DATE,
+  status TEXT NOT NULL DEFAULT 'DRAFT',
+  uploaded_by TEXT NOT NULL,
+  approved_by TEXT,
+  approved_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);</code></pre>
+
+      <h3>Knowledge Chunks</h3>
+      <pre><code>CREATE TABLE knowledge_chunks (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  document_id UUID NOT NULL REFERENCES knowledge_documents(id),
+  chunk_index INTEGER NOT NULL,
+  page_from INTEGER,
+  page_to INTEGER,
+  section_title TEXT,
+  content TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  embedding_ref TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  UNIQUE (document_id, chunk_index)
+);</code></pre>
+
+      <h3>Local Experience Knowledge</h3>
+      <pre><code>CREATE TABLE knowledge_experiences (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  experience_code TEXT NOT NULL UNIQUE,
+  title TEXT NOT NULL,
+  experience_type TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  statement TEXT NOT NULL,
+  suggested_agent_behavior TEXT NOT NULL,
+  confidence TEXT NOT NULL DEFAULT 'MEDIUM',
+  status TEXT NOT NULL DEFAULT 'DRAFT',
+  submitted_by UUID NOT NULL REFERENCES users(id),
+  approved_by UUID REFERENCES users(id),
+  approved_at TIMESTAMPTZ,
+  superseded_by UUID REFERENCES knowledge_experiences(id),
+  valid_from TIMESTAMPTZ,
+  valid_to TIMESTAMPTZ,
+  metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_knowledge_experiences_lookup
+  ON knowledge_experiences(status, experience_type, scope);</code></pre>
+
+      <h3>HSM Command Catalog</h3>
+      <pre><code>CREATE TABLE hsm_command_catalog (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  catalog_code TEXT NOT NULL UNIQUE,
+  command_code TEXT NOT NULL,
+  response_code TEXT NOT NULL,
+  operation TEXT NOT NULL,
+  supported_use_case TEXT NOT NULL,
+  command_schema JSONB NOT NULL,
+  response_schema JSONB NOT NULL,
+  source_document_id UUID REFERENCES knowledge_documents(id),
+  source_page_from INTEGER,
+  source_page_to INTEGER,
+  status TEXT NOT NULL DEFAULT 'DRAFT',
+  approved_by TEXT,
+  approved_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);</code></pre>
+
+      <h3>HSM Command Templates</h3>
+      <pre><code>CREATE TABLE hsm_command_templates (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  template_code TEXT NOT NULL UNIQUE,
+  catalog_id UUID NOT NULL REFERENCES hsm_command_catalog(id),
+  template_version TEXT NOT NULL,
+  use_case TEXT NOT NULL,
+  allowed_environments environment_type[] NOT NULL,
+  fixed_fields JSONB NOT NULL,
+  allowed_parameters JSONB NOT NULL,
+  validation_rules JSONB NOT NULL,
+  template_hash TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'DRAFT',
+  approved_by TEXT,
+  approved_at TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);</code></pre>
+
+      <h3>Command Template Admin Events</h3>
+      <pre><code>CREATE TABLE command_template_admin_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  template_id UUID REFERENCES hsm_command_templates(id),
+  action TEXT NOT NULL,
+  actor_id UUID NOT NULL REFERENCES users(id),
+  hsm_manager_activation_window_id UUID REFERENCES hsm_manager_activation_windows(id),
+  event_summary TEXT NOT NULL,
+  before_state JSONB,
+  after_state JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);</code></pre>
+
+      <h3>Knowledge Administration Events</h3>
+      <pre><code>CREATE TABLE knowledge_admin_events (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  object_type TEXT NOT NULL,
+  object_id UUID NOT NULL,
+  event_type TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  event_summary TEXT NOT NULL,
+  event_payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);</code></pre>
+    </section>
+
+    <section id="ui">
+      <h2>8. Approval and Clarification UI</h2>
+      <p>The web UI should be operational rather than conversational. It must show the ticket, resolved registry data, missing data, policy checks, execution plan, and the complete history.</p>
+
+      <h3>Approval Screen</h3>
+      <div class="screen">
+        <div class="screen-title">Approve ZPK Generation and Export</div>
+        <div class="field-grid">
+          <div class="field"><span>Ticket</span>KEY-2026-000123</div>
+          <div class="field"><span>Status</span>READY_FOR_APPROVAL</div>
+          <div class="field"><span>Operation</span>Generate and export ZPK under existing ZMK</div>
+          <div class="field"><span>Environment</span>PROD</div>
+          <div class="field"><span>Requester</span>Jane Smith</div>
+          <div class="field"><span>Requester Unit</span>Card Operations</div>
+          <div class="field"><span>Target Party</span>PROCESSOR_ABC</div>
+          <div class="field"><span>Intended Usage</span>online_pin_interchange</div>
+          <div class="field"><span>ZMK</span>ZMK-PROD-00491</div>
+          <div class="field"><span>ZMK KCV</span>12AB34</div>
+          <div class="field"><span>ZPK Algorithm</span>3DES</div>
+          <div class="field"><span>ZPK Length</span>DOUBLE</div>
+          <div class="field"><span>ZPK Scheme</span>X9.24</div>
+          <div class="field"><span>KCV Format</span>STANDARD</div>
+          <div class="field"><span>Requested Activation Date</span>2026-07-15</div>
+          <div class="field"><span>Policy Checks</span>Passed</div>
+        </div>
+        <h4>Required Actions</h4>
+        <ul>
+          <li><code>Approve</code>: allows the HSM tool module to execute the approved structured plan.</li>
+          <li><code>Reject</code>: closes the request as rejected and records the reason.</li>
+          <li><code>Request Clarification</code>: sends the ticket back to clarification with a required question.</li>
+        </ul>
+      </div>
+
+      <h3>KMO Workbench During Approval</h3>
+      <p>The approval interface should include an integrated KMO workbench. The KMO must be able to inspect related registry and target-party information without leaving the approval context.</p>
+      <div class="screen">
+        <div class="screen-title">KMO Workbench Panels</div>
+        <div class="field-grid">
+          <div class="field"><span>Ticket Summary</span>Request data, intended usage, requester, target party, environment.</div>
+          <div class="field"><span>Target Party Profile</span>View and edit ZPK defaults, KCV format, local conventions, and active profile status.</div>
+          <div class="field"><span>Key Registry Browser</span>Read-only list of relevant ZMK and ZPK records with key id, KCV, status, environment, activation date, and assignment context.</div>
+          <div class="field"><span>ZMK Candidate Selector</span>Shown when multiple active ZMK candidates exist; KMO selects the applicable ZMK.</div>
+          <div class="field"><span>Policy and Knowledge Hints</span>Shows local experience records and policy checks that influenced clarification or planning.</div>
+          <div class="field"><span>Audit Preview</span>Shows what evidence will be recorded if the KMO approves.</div>
+        </div>
+      </div>
+
+      <h3>Cryptographic Profile Completion Screen</h3>
+      <div class="screen">
+        <div class="screen-title">Complete Target Party ZPK Profile</div>
+        <p>This screen is shown to the approver when the target party exists but required ZPK profile values are missing.</p>
+        <div class="field-grid">
+          <div class="field"><span>Target Party</span>PROCESSOR_ABC</div>
+          <div class="field"><span>Environment</span>PROD</div>
+          <div class="field"><span>Default ZPK Algorithm</span>Required select: 3DES / AES</div>
+          <div class="field"><span>Default ZPK Length</span>Required select: DOUBLE / TRIPLE / AES-128 / AES-256</div>
+          <div class="field"><span>Default ZPK Scheme</span>Required select or controlled text</div>
+          <div class="field"><span>Default ZPK Usage</span>online_pin_interchange</div>
+          <div class="field"><span>Default KCV Format</span>STANDARD</div>
+          <div class="field"><span>Approval Comment</span>Required text area</div>
+        </div>
+        <p>After submission, the values are stored in <code>target_party_profiles</code>, an event is appended to <code>ticket_events</code>, and the workflow resumes at policy validation.</p>
+      </div>
+
+      <h3>Email Notification Content</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Notification</th>
+            <th>Recipient</th>
+            <th>Required Content</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>ZPK generation completed</td>
+            <td>PM and KMO</td>
+            <td>Ticket number, target party, environment, generated ZPK KCV, ZPK cryptogram protected by the LMK hierarchy, ZPK cryptogram exported under the selected ZMK, selected ZMK key id and KCV.</td>
+          </tr>
+          <tr>
+            <td>Multiple ZMK candidates</td>
+            <td>KMO</td>
+            <td>Ticket number, target party, environment, and all candidate ZMKs with key id, KCV, status, assignment context, activation date, and relevant notes.</td>
+          </tr>
+          <tr>
+            <td>Missing target-party crypto profile</td>
+            <td>KMO</td>
+            <td>Ticket number, target party, environment, missing profile fields, and link to the profile completion screen.</td>
+          </tr>
+          <tr>
+            <td>Missing active ZMK</td>
+            <td>KMO</td>
+            <td>Ticket number, target party, environment, missing prerequisite description, and link to ZMK registration or assignment guidance.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Prerequisite Missing Screen</h3>
+      <div class="screen">
+        <div class="screen-title">Missing Active ZMK</div>
+        <p class="bad">The workflow cannot continue because no active ZMK exists for the target party and environment.</p>
+        <div class="field-grid">
+          <div class="field"><span>Target Party</span>PROCESSOR_ABC</div>
+          <div class="field"><span>Environment</span>PROD</div>
+          <div class="field"><span>Required Prerequisite</span>Active ZMK</div>
+          <div class="field"><span>Ticket Status</span>PREREQUISITE_MISSING</div>
+        </div>
+        <p>The approver is notified. The ZPK ticket remains blocked until a valid active ZMK is registered for the same target party and environment.</p>
+      </div>
+
+      <h3>Ticket History Panel</h3>
+      <p>Every ticket screen must include a history panel containing request intake, clarification questions, profile updates, policy checks, approval decision, execution status, HSM result summary, registry update, notifications, and final closure.</p>
+    </section>
+
+    <section id="hsm-tool">
+      <h2>9. HSM Tool Module Contract</h2>
+      <p>The HSM tool is a local Python module called by Langflow. Even though it is local, it should be treated as a protected execution boundary.</p>
+
+      <h3>Public Function</h3>
+      <pre><code>def generate_export_zpk_under_zmk(
+    request: GenerateExportZpkRequest
+) -> GenerateExportZpkResult:
+    ...</code></pre>
+
+      <h3>Input Model</h3>
+      <pre><code>class GenerateExportZpkRequest(BaseModel):
+    ticket_id: str
+    approval_id: str
+    approved_by: str
+    environment: Literal["TEST", "PROD"]
+    hsm_profile: str
+    target_party_code: str
+    zmk_key_id: str
+    zmk_encrypted_value: str | None
+    zmk_kcv: str
+    zpk_algorithm: str
+    zpk_length: str
+    zpk_scheme: str
+    intended_usage: str
+    kcv_format: str</code></pre>
+
+      <h3>Output Model</h3>
+      <pre><code>class GenerateExportZpkResult(BaseModel):
+    ticket_id: str
+    hsm_operation_id: str
+    environment: Literal["TEST", "PROD"]
+    hsm_response_code: str
+    hsm_response_text: str
+    exported_zpk_cryptogram: str
+    lmk_hierarchy_protected_zpk: str | None
+    zpk_kcv: str
+    kcv_format: str
+    hsm_audit_reference: str | None
+    raw_request_hash: str
+    raw_response_hash: str
+    executed_at: datetime</code></pre>
+
+      <h3>Mandatory Tool Checks</h3>
+      <ol>
+        <li>Validate the input schema.</li>
+        <li>Verify that the ticket exists and is in <code>APPROVED</code> status.</li>
+        <li>Verify that the approval exists, is approved, and belongs to the same ticket.</li>
+        <li>Verify that the selected ZMK exists, is active, matches the ticket environment, and is assigned to the target party through <code>target_party_keys</code>.</li>
+        <li>Verify that the environment maps to the correct HSM endpoint.</li>
+        <li>Run module integrity checks, for example code hash, package version, and template hash.</li>
+        <li>Assemble the HSM command from an approved internal template.</li>
+        <li>Send the command over TCP/IP.</li>
+        <li>Parse the response with strict field validation.</li>
+        <li>Return structured output only.</li>
+      </ol>
+
+      <h3>Prohibited Tool Behavior</h3>
+      <ul>
+        <li>Accepting raw HSM command strings from agents or users.</li>
+        <li>Executing without a valid approved ticket.</li>
+        <li>Mixing TEST and PROD configuration.</li>
+        <li>Falling back to a different HSM endpoint after connection failure.</li>
+        <li>Silently retrying an operation that may create another key unless an idempotency design is added.</li>
+      </ul>
+    </section>
+
+    <section id="knowledge-base">
+      <h2>10. Knowledge Base and Command Catalog</h2>
+      <p>The knowledge base is a separate administrative function. In the current role model, the KMO is also the knowledge administrator for documents, local experience records, and general knowledge content. Command schema and command template administration are separated from the KMO role and assigned exclusively to the HSM Manager during an active Department Head enabled time window. Operational agents consume only approved knowledge artifacts, approved local experience records, and approved command templates.</p>
+
+      <div class="decision">
+        <strong>Design decision:</strong> the knowledge base can help the agent understand HSM documentation, but the final TCP/IP message must be created by a deterministic Python builder using an approved command template.
+      </div>
+
+      <h3>Functional Separation</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Function</th>
+            <th>Purpose</th>
+            <th>Allowed Users</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Knowledge Base Administration</td>
+            <td>Upload documents, classify sources, run ingestion, review extracted content, maintain local experience records, approve knowledge versions.</td>
+            <td>KMO.</td>
+          </tr>
+          <tr>
+            <td>Command Catalog Administration</td>
+            <td>Create and approve structured command schemas from HSM documentation.</td>
+            <td>HSM Manager during an active Department Head enabled time window.</td>
+          </tr>
+          <tr>
+            <td>Command Template Administration</td>
+            <td>Create approved operation templates for concrete use cases, such as ZPK generation and export under ZMK.</td>
+            <td>HSM Manager during an active Department Head enabled time window.</td>
+          </tr>
+          <tr>
+            <td>Operational Use</td>
+            <td>Use approved knowledge, catalog entries, and templates to plan and execute approved tickets.</td>
+            <td>Sec Officer Agent, Policy Agent, Registry Agent, HSM Planning Agent, HSM Tool.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Knowledge Base Build Flow</h3>
+      <pre class="mermaid">flowchart TB
+  Upload[Document upload]
+  Register[Source registration and hash calculation]
+  Classify[Document classification]
+  Extract[Text extraction and chunking]
+  Tag[Metadata tagging]
+  Review[Human review]
+  Approve[Approved knowledge document version]
+  Index[Search index / vector index update]
+  Retrieve[Operational agents may retrieve approved content]
+
+  Upload --> Register
+  Register --> Classify
+  Classify --> Extract
+  Extract --> Tag
+  Tag --> Review
+  Review --> Approve
+  Approve --> Index
+  Index --> Retrieve</pre>
+
+      <h3>Supported Source Types</h3>
+      <ul>
+        <li>payShield 10K host command documentation.</li>
+        <li>payShield programmer manuals and key scheme tables.</li>
+        <li>PCI DSS, PCI PIN, PCI 3DS, and related control documentation.</li>
+        <li>ISO 27001 control mappings.</li>
+        <li>Local security policies and operating procedures.</li>
+        <li>Approved runbooks and implementation notes.</li>
+        <li>KMO-submitted local experience records covering terminology, common requester wording, local conventions, and operational heuristics.</li>
+      </ul>
+
+      <h3>Local Experience Knowledge</h3>
+      <p>During daily work, KMOs may capture operational experience that is not part of a formal vendor manual or PCI document but is useful for clarification and local interpretation. These entries are stored as structured local experience records and can be used by agents during request clarification and policy reasoning.</p>
+      <p>Local experience records must be clearly separated from formal policy and HSM command templates. They may help an agent ask better questions or infer a likely meaning, but they must not silently authorize execution or override an approved command template.</p>
+
+      <h4>Experience Categories</h4>
+      <table>
+        <thead>
+          <tr>
+            <th>Category</th>
+            <th>Purpose</th>
+            <th>Example</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>REQUESTER_TERMINOLOGY</code></td>
+            <td>Maps common requester wording to likely formal key-management terminology.</td>
+            <td>When PM Huan Ti writes "PIN transport key", he probably means ZPK.</td>
+          </tr>
+          <tr>
+            <td><code>LOCAL_SYNONYM</code></td>
+            <td>Records local alternative names for formal key types or concepts.</td>
+            <td>"Chip Master Key" is often called "MKAC" locally.</td>
+          </tr>
+          <tr>
+            <td><code>LOCAL_POLICY_HINT</code></td>
+            <td>Records local conventions that should influence policy checks or clarification.</td>
+            <td>Only key-block format keys are allowed locally.</td>
+          </tr>
+          <tr>
+            <td><code>CLARIFICATION_HEURISTIC</code></td>
+            <td>Helps the agent decide when to ask a follow-up question.</td>
+            <td>If a request mentions a vague PIN key without target party and environment, ask whether the intended key type is ZPK.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h4>Example Experience Records</h4>
+      <pre><code>{
+  "experience_type": "REQUESTER_TERMINOLOGY",
+  "scope": "PM:Huan Ti",
+  "statement": "When Huan Ti writes that a PIN transport key is needed, he most likely means a ZPK.",
+  "suggested_agent_behavior": "Ask a clarification question: 'Do you mean a Zone PIN Key (ZPK) for online PIN interchange?'",
+  "confidence": "MEDIUM",
+  "status": "APPROVED"
+}</code></pre>
+
+      <pre><code>{
+  "experience_type": "LOCAL_SYNONYM",
+  "scope": "GLOBAL",
+  "statement": "The local term MKAC is used for Chip Master Key for Application Cryptograms.",
+  "suggested_agent_behavior": "Normalize MKAC to the formal chip application cryptogram master key concept and show both terms in clarification.",
+  "confidence": "HIGH",
+  "status": "APPROVED"
+}</code></pre>
+
+      <pre><code>{
+  "experience_type": "LOCAL_POLICY_HINT",
+  "scope": "GLOBAL",
+  "statement": "The local operating model allows only key-block format keys.",
+  "suggested_agent_behavior": "During planning, reject or clarify any request that would use a non-key-block format. If this is intended as a hard policy, promote it to an approved policy rule.",
+  "confidence": "HIGH",
+  "status": "APPROVED"
+}</code></pre>
+
+      <h4>Use by Agents</h4>
+      <ul>
+        <li>The Requirement Clarifier Agent may use local experience to ask targeted follow-up questions.</li>
+        <li>The Policy Agent may use local experience as a hint, but hard enforcement requires an approved policy rule or approved command template constraint.</li>
+        <li>The Knowledge Base Agent must show the source experience record when using it in an explanation.</li>
+        <li>The HSM Tool must not consume local experience records directly. It consumes only approved command templates and validated execution plans.</li>
+      </ul>
+
+      <h3>Command Catalog Extraction</h3>
+      <p>HSM command documentation should be converted into a structured catalog. The catalog is not a generated answer; it is controlled configuration. For the example document <code>docs/40_PDFsam_hos.pdf</code>, the relevant operation is the payShield <code>A0</code> command with mode <code>1</code>, where the HSM generates a working key and returns a cryptogram protected by the HSM LMK hierarchy and another cryptogram exported under a supplied ZMK, TMK, or BDK. The response is <code>A1</code>. This does not mean that the LMK itself is exported or represented outside the HSM.</p>
+
+      <h4>Example Catalog Entry</h4>
+      <pre><code>{
+  "catalog_code": "PS10K_A0_GENERATE_EXPORT_KEY",
+  "command_code": "A0",
+  "response_code": "A1",
+  "operation": "GENERATE_EXPORT_KEY",
+  "supported_use_case": "GENERATE_EXPORT_ZPK_UNDER_ZMK",
+  "source": {
+    "document_code": "PS10K_CORE_HOST_COMMANDS_EXTRACT_40",
+    "page_from": 42,
+    "page_to": 47
+  },
+  "command_fields": [
+    {"name": "message_header", "length_type": "mA", "required": true},
+    {"name": "command_code", "fixed_value": "A0", "required": true},
+    {"name": "mode", "fixed_value": "1", "required": true},
+    {"name": "key_type", "required": true, "source": "command_template"},
+    {"name": "key_scheme_lmk", "required": true, "source": "command_template"},
+    {"name": "zmk_tmk_flag", "required": false, "source": "command_template"},
+    {"name": "zmk", "required": true, "source": "key_registry"},
+    {"name": "key_scheme_zmk", "required": true, "source": "target_party_profile"},
+    {"name": "lmk_identifier", "required": false, "source": "environment_profile"},
+    {"name": "key_block_fields", "required": false, "source": "target_party_profile"}
+  ],
+  "response_fields": [
+    {"name": "message_header", "required": true},
+    {"name": "response_code", "fixed_value": "A1", "required": true},
+    {"name": "error_code", "required": true},
+    {"name": "key_under_lmk", "required": true},
+    {"name": "key_under_zmk", "required": true},
+    {"name": "key_check_value", "required": true}
+  ]
+}</code></pre>
+
+      <h3>Approved Command Template for ZPK MVP</h3>
+      <p>The command template narrows the generic <code>A0</code> command into an approved local operation. The HSM tool may execute only approved templates.</p>
+      <pre><code>{
+  "template_code": "PS10K_A0_GEN_EXPORT_ZPK_UNDER_ZMK_V1",
+  "catalog_code": "PS10K_A0_GENERATE_EXPORT_KEY",
+  "use_case": "GENERATE_EXPORT_ZPK_UNDER_ZMK",
+  "fixed_fields": {
+    "command_code": "A0",
+    "mode": "1",
+    "zmk_tmk_flag": "0"
+  },
+  "allowed_parameters": {
+    "environment": ["TEST", "PROD"],
+    "operation": ["GENERATE_EXPORT_ZPK_UNDER_ZMK"],
+    "intended_usage": ["online_pin_interchange"]
+  },
+  "required_sources": {
+    "zmk": "key_registry.active_zmk_assignment_for_target_party_and_environment_or_kmo_selection",
+    "zpk_algorithm": "target_party_profile.default_zpk_algorithm",
+    "zpk_length": "target_party_profile.default_zpk_length",
+    "zpk_scheme": "target_party_profile.default_zpk_scheme",
+    "key_scheme_zmk": "target_party_profile.default_zpk_scheme"
+  },
+  "guards": [
+    "ticket_status_must_be_APPROVED",
+    "approval_must_match_current_execution_plan",
+    "zmk_status_must_be_ACTIVE",
+    "zmk_environment_must_match_ticket_environment",
+    "test_prod_migration_is_forbidden",
+    "raw_hsm_command_input_is_forbidden"
+  ]
+}</code></pre>
+
+      <h3>Command Template Management</h3>
+      <p>Command template management is restricted to the HSM Manager role. The HSM Manager account is normally inactive and can operate only during a Department Head enabled time window of at most 120 minutes. Template management includes create, update, delete, retire, and approve actions. Any change to a command template must create an immutable administration event with before and after state.</p>
+      <table>
+        <thead>
+          <tr>
+            <th>Action</th>
+            <th>Purpose</th>
+            <th>Control</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>CREATE</code></td>
+            <td>Create a new template from an approved command catalog entry.</td>
+            <td>Template starts in <code>DRAFT</code> status and cannot be executed.</td>
+          </tr>
+          <tr>
+            <td><code>UPDATE</code></td>
+            <td>Modify a draft or create a new version of an existing template.</td>
+            <td>Approved templates should not be edited in place; updates create a new version and new template hash.</td>
+          </tr>
+          <tr>
+            <td><code>DELETE</code></td>
+            <td>Remove an unused draft template.</td>
+            <td>Only draft templates with no execution history may be deleted.</td>
+          </tr>
+          <tr>
+            <td><code>RETIRE</code></td>
+            <td>Disable an approved template without deleting its audit history.</td>
+            <td>Retired templates cannot be used for new executions.</td>
+          </tr>
+          <tr>
+            <td><code>APPROVE</code></td>
+            <td>Make a reviewed template executable by the HSM tool.</td>
+            <td>Approval records template hash, catalog source, approver, and timestamp.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Knowledge Administration UI</h3>
+      <div class="screen">
+        <div class="screen-title">Upload and Register Knowledge Document</div>
+        <div class="field-grid">
+          <div class="field"><span>Document Type</span>HSM_HOST_COMMAND_MANUAL</div>
+          <div class="field"><span>Title</span>payShield 10K Core Host Commands</div>
+          <div class="field"><span>Source File</span>40_PDFsam_hos.pdf</div>
+          <div class="field"><span>Version Label</span>Local extract / vendor version</div>
+          <div class="field"><span>Source Owner</span>Security Department</div>
+          <div class="field"><span>Effective Date</span>Required if policy-relevant</div>
+          <div class="field"><span>Upload Hash</span>Calculated automatically</div>
+          <div class="field"><span>Status</span>DRAFT</div>
+        </div>
+      </div>
+
+      <div class="screen">
+        <div class="screen-title">Review Extracted Command Schema</div>
+        <div class="field-grid">
+          <div class="field"><span>Command Code</span>A0</div>
+          <div class="field"><span>Response Code</span>A1</div>
+          <div class="field"><span>Operation</span>Generate and export key</div>
+          <div class="field"><span>Source Pages</span>42-47</div>
+          <div class="field"><span>Schema Status</span>Pending HSM Manager review</div>
+          <div class="field"><span>Approval Action</span>Approve / Reject / Request correction</div>
+        </div>
+      </div>
+
+      <h3>Knowledge Administration Role-Based Access</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Role</th>
+            <th>Permissions</th>
+            <th>Restrictions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>PM</code></td>
+            <td>Create business requests and answer business clarifications for own tickets.</td>
+            <td>No access to KB administration, command catalog, or templates.</td>
+          </tr>
+          <tr>
+            <td><code>KMO</code></td>
+            <td>Approve tickets, supply missing target-party crypto profile values, upload knowledge documents, submit local experience records, and review evidence.</td>
+            <td>Can perform these actions only after successful authentication and, where required, MFA or step-up authentication.</td>
+          </tr>
+          <tr>
+            <td><code>HSM_MANAGER</code></td>
+            <td>Create, update, delete, retire, and approve command catalog entries and command templates.</td>
+            <td>Normally inactive. Can perform these actions only inside a Department Head enabled activation window of at most 120 minutes.</td>
+          </tr>
+          <tr>
+            <td><code>DEPARTMENT_HEAD</code></td>
+            <td>Approve KMO appointments and enable HSM Manager activation windows.</td>
+            <td>No access to operational key approval, HSM execution, KB administration, or command template management unless separately assigned the relevant role.</td>
+          </tr>
+          <tr>
+            <td><code>platform administrator</code></td>
+            <td>Maintain the application platform and database configuration.</td>
+            <td>No implicit right to grant KMO role, approve key operations, execute HSM tools, or approve command templates.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Operational Retrieval Rules</h3>
+      <ul>
+        <li>Operational agents may retrieve only <code>APPROVED</code> knowledge documents and chunks.</li>
+        <li>Operational agents may retrieve only <code>APPROVED</code> local experience records.</li>
+        <li>Operational HSM planning may use only <code>APPROVED</code> command catalog entries.</li>
+        <li>The HSM tool may execute only <code>APPROVED</code> command templates.</li>
+        <li>Local experience may guide clarification and terminology normalization, but hard enforcement requires an approved policy rule or command template.</li>
+        <li>If a document, local experience record, catalog entry, or template is updated, existing approvals do not automatically apply to the new version.</li>
+        <li>Every answer or plan that depends on knowledge base content must record the document code, local experience code, and version or timestamp used.</li>
+      </ul>
+    </section>
+
+    <section id="identity-access">
+      <h2>11. Identity, Authentication and Access Control</h2>
+      <p>The system uses a portable, self-contained identity and authorization model controlled inside the Security Department. It does not depend on the corporate identity provider for role assignment or cryptographic-operation authorization.</p>
+
+      <div class="decision">
+        <strong>Design decision:</strong> a chat statement such as "I am KMO" or "I am HSM Manager" is not authentication. It is only a claimed role. The system accepts role-sensitive actions only when the current authenticated session belongs to an active user with the required role, permission, and activation state.
+      </div>
+
+      <h3>Bootstrap Department Head</h3>
+      <p>During system initialization, one Department Head account is created through a controlled bootstrap procedure. This role has a deliberately narrow authority: it can approve KMO appointments and enable the HSM Manager account for a limited time window. It does not automatically receive operational key-management permissions.</p>
+      <table>
+        <thead>
+          <tr>
+            <th>Role</th>
+            <th>Authority</th>
+            <th>Explicit Restriction</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>DEPARTMENT_HEAD</code></td>
+            <td>Approve or reject KMO appointment requests and enable the HSM Manager account for a specified period up to 120 minutes. Suggested permissions: <code>appoint_kmo</code>, <code>activate_hsm_manager</code>, <code>revoke_hsm_manager_activation</code>.</td>
+            <td>No implicit right to approve key operations, execute HSM tools, edit target-party profiles, or manage command templates.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Operational Roles</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Role</th>
+            <th>Description</th>
+            <th>Permissions</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>PM</code></td>
+            <td>Project Manager. Creates and follows own tickets.</td>
+            <td><code>create_ticket</code>, <code>view_own_ticket</code>.</td>
+          </tr>
+          <tr>
+            <td><code>KMO</code></td>
+            <td>Key Manager Officer. Security Department user responsible for key-management approvals and controlled administration.</td>
+            <td><code>create_ticket</code>, <code>view_own_ticket</code>, <code>view_all_key_tickets</code>, <code>approve_key_operation</code>, <code>request_clarification</code>, <code>edit_target_party_profile</code>, <code>register_zmk</code>, <code>upload_knowledge_document</code>, <code>submit_local_experience</code>, <code>execute_hsm_tool</code>, <code>view_audit_evidence</code>.</td>
+          </tr>
+          <tr>
+            <td><code>HSM_MANAGER</code></td>
+            <td>Special account for HSM command catalog and command template administration.</td>
+            <td><code>create_command_template</code>, <code>update_command_template</code>, <code>delete_command_template</code>, <code>approve_command_template</code>. These permissions are effective only during a Department Head enabled activation window of at most 120 minutes.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>HSM Manager Activation Flow</h3>
+      <pre class="mermaid">flowchart TB
+  Inactive[HSM Manager account exists but is inactive]
+  Enable[Department Head enables HSM Manager for a stated reason]
+  Window[Activation window created, max 120 minutes]
+  MFA[HSM Manager authenticates with MFA]
+  Admin[Command catalog/template administration allowed inside active window]
+  End[Window expires or is revoked]
+  Return[HSM Manager account returns to inactive operational state]
+
+  Inactive --> Enable
+  Enable --> Window
+  Window --> MFA
+  MFA --> Admin
+  Admin --> End
+  End --> Return</pre>
+
+      <h3>KMO Appointment Flow</h3>
+      <pre class="mermaid">flowchart TB
+  User[User account exists]
+  Request[KMO appointment request is created]
+  Review{Department Head reviews candidate and justification}
+  Reject[Reject: no KMO role assigned]
+  Approve[Approve]
+  Assign[KMO role assigned and audit event recorded]
+  Active[User can perform KMO actions after authentication and MFA]
+
+  User --> Request
+  Request --> Review
+  Review -->|Reject| Reject
+  Review -->|Approve| Approve
+  Approve --> Assign
+  Assign --> Active</pre>
+
+      <h3>Authentication Requirements</h3>
+      <ul>
+        <li>The system must maintain its own user database, roles, permissions, sessions, authentication events, and KMO appointment records.</li>
+        <li>Every interactive chat or web session must be bound to an authenticated user session before any role-sensitive action is accepted.</li>
+        <li>PM access requires successful login. MFA is not required for PM users in the current scope.</li>
+        <li>KMO access requires successful login and multi-factor authentication.</li>
+        <li>KMO approval of a key operation requires a fresh step-up authentication event before approval is recorded.</li>
+        <li>HSM Manager access requires successful login, multi-factor authentication, and an active Department Head enabled activation window.</li>
+        <li>HSM Manager command template operations require step-up authentication inside the active window.</li>
+        <li>TOTP is an acceptable local MFA method for KMO, HSM Manager, and Department Head users. WebAuthn/FIDO2 can be introduced later as a stronger option.</li>
+        <li>Passwords, if used, must be stored only as slow salted password hashes. Plaintext passwords must never be stored.</li>
+      </ul>
+
+      <h3>Recommended Local Authentication Design</h3>
+      <p>The authentication solution should be portable and self-contained. It should not require a corporate identity provider, cloud identity service, or external authorization system. The preferred design is a local authentication module operated by the Security Department.</p>
+      <table>
+        <thead>
+          <tr>
+            <th>Layer</th>
+            <th>Recommendation</th>
+            <th>Reason</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>User identity</td>
+            <td>Local <code>users</code> table with Department Head bootstrap, KMO appointment workflow, and HSM Manager activation windows.</td>
+            <td>KMO appointment and HSM Manager activation remain under Security Department control.</td>
+          </tr>
+          <tr>
+            <td>Primary login</td>
+            <td>Username and password with Argon2id or bcrypt password hashing, or client-certificate login if local PKI is available.</td>
+            <td>Keeps the solution independent and deployable on-premises.</td>
+          </tr>
+          <tr>
+            <td>KMO, HSM Manager, and Department Head MFA</td>
+            <td>TOTP is the initial local MFA method. WebAuthn/FIDO2 security key or platform passkey can be introduced later as a stronger option.</td>
+            <td>Provides stronger protection for approval and administrative actions.</td>
+          </tr>
+          <tr>
+            <td>TOTP secret protection</td>
+            <td>TOTP seeds and recovery-sensitive authentication secrets are encrypted using the HSM data-encryption capability.</td>
+            <td>Protects authentication secrets while keeping the authentication function separate from payment key operations.</td>
+          </tr>
+          <tr>
+            <td>Step-up authentication</td>
+            <td>Required before <code>approve_key_operation</code>, <code>execute_hsm_tool</code>, command template administration, and sensitive registry changes.</td>
+            <td>Prevents stale sessions from authorizing sensitive operations.</td>
+          </tr>
+          <tr>
+            <td>Session protection</td>
+            <td>HTTP-only secure session cookies, server-side session storage, idle timeout, absolute timeout, and session revocation.</td>
+            <td>Allows local control and audit of active sessions.</td>
+          </tr>
+          <tr>
+            <td>Audit</td>
+            <td>Every login, failed login, MFA event, step-up event, role change, KMO appointment, and HSM Manager activation or revocation is recorded in <code>auth_events</code>.</td>
+            <td>Supports operational review and incident investigation.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Chat Authentication Behavior</h3>
+      <p>The chat interface must never infer role from natural language. It must use the current authenticated session and the authorization database.</p>
+      <pre><code>User message: "I am KMO" or "I am HSM Manager"
+
+System behavior:
+1. Read current authenticated session.
+2. Resolve user_id from session.
+3. Load active roles and permissions.
+4. If required role and permission are present, evaluate any extra activation requirement.
+5. For HSM Manager actions, require an active Department Head enabled time window.
+6. Otherwise deny the action and ask the user to authenticate or contact the Department Head process.</code></pre>
+
+      <h3>Authorization Checks</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Action</th>
+            <th>Required Permission</th>
+            <th>Additional Control</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Create a ticket</td>
+            <td><code>create_ticket</code></td>
+            <td>PM and KMO allowed.</td>
+          </tr>
+          <tr>
+            <td>View own ticket</td>
+            <td><code>view_own_ticket</code></td>
+            <td>Ticket requester must match authenticated user or delegated ownership.</td>
+          </tr>
+          <tr>
+            <td>View all key tickets</td>
+            <td><code>view_all_key_tickets</code></td>
+            <td>KMO only.</td>
+          </tr>
+          <tr>
+            <td>Approve key operation</td>
+            <td><code>approve_key_operation</code></td>
+            <td>KMO only; requires fresh MFA and execution plan hash binding.</td>
+          </tr>
+          <tr>
+            <td>Edit target party profile</td>
+            <td><code>edit_target_party_profile</code></td>
+            <td>KMO only; changes must be recorded in ticket or admin history.</td>
+          </tr>
+          <tr>
+            <td>Register manually created ZMK</td>
+            <td><code>register_zmk</code></td>
+            <td>KMO only; requires KCV, environment, status, assignment to one or more target parties, and manual process evidence reference.</td>
+          </tr>
+          <tr>
+            <td>Upload knowledge document</td>
+            <td><code>upload_knowledge_document</code></td>
+            <td>KMO only in the current model.</td>
+          </tr>
+          <tr>
+            <td>Submit local experience</td>
+            <td><code>submit_local_experience</code></td>
+            <td>KMO only; records local terminology, requester-specific wording, local conventions, or clarification heuristics for controlled agent use.</td>
+          </tr>
+          <tr>
+            <td>Create command template</td>
+            <td><code>create_command_template</code></td>
+            <td>HSM Manager only; requires active Department Head enabled window, MFA, and step-up authentication. Creates a draft template from an approved command catalog entry.</td>
+          </tr>
+          <tr>
+            <td>Update command template</td>
+            <td><code>update_command_template</code></td>
+            <td>HSM Manager only; requires active Department Head enabled window, MFA, and step-up authentication. Updates create a new version and new template hash.</td>
+          </tr>
+          <tr>
+            <td>Delete command template</td>
+            <td><code>delete_command_template</code></td>
+            <td>HSM Manager only; requires active Department Head enabled window. Allowed only for draft templates with no execution history.</td>
+          </tr>
+          <tr>
+            <td>Approve command template</td>
+            <td><code>approve_command_template</code></td>
+            <td>HSM Manager only; requires active Department Head enabled window, MFA, and step-up authentication. Approval records template hash and source catalog version.</td>
+          </tr>
+          <tr>
+            <td>Execute HSM tool</td>
+            <td><code>execute_hsm_tool</code></td>
+            <td>KMO only; execution still requires an approved ticket and approved execution plan. This permission does not allow bypassing approval.</td>
+          </tr>
+          <tr>
+            <td>View audit evidence</td>
+            <td><code>view_audit_evidence</code></td>
+            <td>KMO only.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Approval Binding</h3>
+      <p>When a KMO approves a key operation, the approval must be bound to the exact execution plan. If the plan changes, the previous approval is invalid.</p>
+      <pre><code>approval_record:
+  ticket_id
+  kmo_user_id
+  kmo_role_verified_at
+  mfa_step_up_event_id
+  execution_plan_hash
+  decision
+  decision_timestamp</code></pre>
+
+      <h3>Bootstrap and Recovery</h3>
+      <ul>
+        <li>The initial Department Head account is created only during system initialization.</li>
+        <li>Bootstrap credentials or recovery codes must be stored and handled under a documented local ceremony.</li>
+        <li>Department Head replacement must require a controlled administrative recovery procedure and must be audit logged.</li>
+        <li>No system administrator account should be able to silently grant itself KMO rights or activate HSM Manager capabilities without a recorded Department Head approval path.</li>
+      </ul>
+    </section>
+
+    <section id="security">
+      <h2>12. Security Considerations</h2>
+
+      <h3>Key Material Handling</h3>
+      <p>The host interface workflow does not handle clear key components. ZPK and other working keys are represented outside the HSM as encrypted cryptograms or key blocks. These values may be stored in PostgreSQL together with KCV and metadata. Their cryptographic protection is provided by the HSM key hierarchy, for example as a working-key cryptogram protected by the LMK hierarchy or as an exported key cryptogram protected under a ZMK. The LMK itself remains only inside the protected HSM environment and is never stored in the registry.</p>
+      <div class="warning">
+        Database access controls are still required. They protect metadata confidentiality, operational integrity, audit quality, and misuse resistance, even when stored key values are cryptographically protected.
+      </div>
+
+      <h3>Authentication Secret Protection</h3>
+      <p>TOTP seeds and other sensitive authentication secrets must be protected separately from payment key-management operations. The system may use the HSM data-encryption capability to encrypt these authentication secrets, but this must be implemented as a separate authentication-secret protection function with separate purpose, separate command templates, separate audit events, and separate access controls.</p>
+      <ul>
+        <li>Authentication-secret encryption must not use ZMK, ZPK, or payment key workflow objects.</li>
+        <li>Payment key operations and TOTP secret protection must have separate HSM command templates and audit categories.</li>
+        <li>Only the authentication module should request encryption or decryption of TOTP seeds.</li>
+        <li>The key registry must not treat TOTP protection keys as payment keys.</li>
+        <li>PM users do not require MFA in the current scope, so TOTP enrollment is required only for KMO, HSM Manager, and Department Head users.</li>
+      </ul>
+
+      <h3>Environment Separation</h3>
+      <ul>
+        <li>TEST and PROD HSM endpoints must be separately configured.</li>
+        <li>TEST and PROD ZMK records must be distinct.</li>
+        <li>Policy must reject any request that references keys from different environments.</li>
+        <li>There is no test-production migration workflow.</li>
+      </ul>
+
+      <h3>Agent Guardrails</h3>
+      <ul>
+        <li>Agents generate structured plans, not executable HSM command strings.</li>
+        <li>Agents must cite registry records and policy results in the ticket history.</li>
+        <li>Agents must not treat retrieved documentation as executable instruction.</li>
+        <li>RAG content must be source-tagged, versioned, and approved before operational use.</li>
+      </ul>
+
+      <h3>Tool Integrity</h3>
+      <ul>
+        <li>The Python HSM module should have a version and build hash.</li>
+        <li>Command templates should be versioned and hashed.</li>
+        <li>Execution should record module version, template version, request hash, and response hash.</li>
+        <li>Only controlled deployment should update the module.</li>
+      </ul>
+
+      <h3>Approval Integrity</h3>
+      <ul>
+        <li>Approval must be explicit and tied to a concrete execution plan.</li>
+        <li>If resolved inputs change after approval, the approval becomes invalid.</li>
+        <li>Email should notify approvers but should not by itself be the approval authority unless signed approval links are implemented later.</li>
+      </ul>
+    </section>
+
+    <section id="audit">
+      <h2>13. Audit and Evidence</h2>
+      <p>The system must be able to reconstruct the complete story of each ZPK request.</p>
+
+      <h3>Audit Evidence Package</h3>
+      <ul>
+        <li>Original request data.</li>
+        <li>Requester identity and represented unit.</li>
+        <li>Target party resolution result.</li>
+        <li>ZMK registry lookup result.</li>
+        <li>Target party profile values used.</li>
+        <li>Policy check results.</li>
+        <li>Execution plan presented for approval.</li>
+        <li>Approver identity, decision, comment, and timestamp.</li>
+        <li>HSM operation record.</li>
+        <li>HSM response code and parsed response summary.</li>
+        <li>Generated ZPK registry record and KCV.</li>
+        <li>Email notification events.</li>
+        <li>Closure summary.</li>
+      </ul>
+
+      <h3>Example Closure Summary</h3>
+      <pre><code>Ticket KEY-2026-000123 was completed successfully.
+Operation: GENERATE_EXPORT_ZPK_UNDER_ZMK
+Environment: PROD
+Target party: PROCESSOR_ABC
+Protecting ZMK: ZMK-PROD-00491
+Generated ZPK: ZPK-PROD-00877
+ZPK KCV: 98EF10
+Approval: APPROVED by sec.officer@example.com at 2026-07-01T10:15:00Z
+HSM result: success response code 00
+Registry update: completed
+Ticket status: CLOSED</code></pre>
+    </section>
+
+    <section id="errors">
+      <h2>14. Error Handling</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>Error</th>
+            <th>Status</th>
+            <th>Action</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Missing requester business data</td>
+            <td><code>CLARIFICATION_REQUIRED</code></td>
+            <td>Ask requester for missing fields.</td>
+          </tr>
+          <tr>
+            <td>Missing target party profile fields</td>
+            <td><code>CRYPTO_PROFILE_REQUIRED</code></td>
+            <td>Ask approver to complete and approve profile values.</td>
+          </tr>
+          <tr>
+            <td>No active ZMK</td>
+            <td><code>PREREQUISITE_MISSING</code></td>
+            <td>Notify approver; block workflow.</td>
+          </tr>
+          <tr>
+            <td>Policy violation</td>
+            <td><code>POLICY_REJECTED</code></td>
+            <td>Record violation and stop execution.</td>
+          </tr>
+          <tr>
+            <td>Approver rejection</td>
+            <td><code>REJECTED</code></td>
+            <td>Record decision comment and notify requester.</td>
+          </tr>
+          <tr>
+            <td>HSM connection failure</td>
+            <td><code>EXECUTION_FAILED</code></td>
+            <td>Record failure; do not change registry key status to active.</td>
+          </tr>
+          <tr>
+            <td>HSM command rejection</td>
+            <td><code>EXECUTION_FAILED</code></td>
+            <td>Store response code and parsed error. Human review required before retry.</td>
+          </tr>
+          <tr>
+            <td>Registry update failure after HSM success</td>
+            <td><code>EXECUTED</code></td>
+            <td>Preserve HSM result, alert operator, and complete registry recovery step.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <div class="warning">
+        ZPK generation is not automatically idempotent. A retry after an uncertain HSM result can create another key. The tool must avoid automatic retries unless a later design adds explicit idempotency or reconciliation logic.
+      </div>
+    </section>
+
+    <section id="implementation-environment">
+      <h2>15. Recommended On-Prem Implementation Environment</h2>
+      <p>The system should initially be implemented as an internal, on-premises or private-network solution. No runtime dependency should require sending ticket data, key registry data, HSM documentation, PCI documentation, or agent prompts to a public cloud service.</p>
+
+      <h3>Recommended Component Stack</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Component</th>
+            <th>Recommended Technology</th>
+            <th>Responsibility</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Web UI</td>
+            <td>Internal web application</td>
+            <td>PM ticket creation, KMO approval, KMO profile completion, ZMK registration, audit review.</td>
+          </tr>
+          <tr>
+            <td>Backend API</td>
+            <td>FastAPI</td>
+            <td>Authentication, RBAC, ticket lifecycle, approvals, registry APIs, knowledge administration APIs, audit APIs, controlled HSM tool invocation.</td>
+          </tr>
+          <tr>
+            <td>Agent Orchestration</td>
+            <td>Langflow</td>
+            <td>Sec Officer Agent, Requirement Clarifier Agent, Policy Agent, Registry Agent, Knowledge Base Agent, HSM Planning Agent. Langflow is an orchestration and reasoning layer, not the source of truth and not the direct HSM executor.</td>
+          </tr>
+          <tr>
+            <td>Database</td>
+            <td>PostgreSQL</td>
+            <td>Users, roles, permissions, tickets, approvals, key registry, target-party profiles, TP-key assignments, HSM operation records, audit events, knowledge metadata, command catalog, command templates.</td>
+          </tr>
+          <tr>
+            <td>Knowledge Search</td>
+            <td>PostgreSQL with pgvector or controlled local vector store</td>
+            <td>Approved document retrieval, knowledge chunks, command documentation search, source/version traceability.</td>
+          </tr>
+          <tr>
+            <td>HSM Tooling</td>
+            <td>Controlled Python packages or internal Python service</td>
+            <td>Approved command template validation, deterministic payShield host command assembly, TCP/IP send/receive, response parsing, result normalization.</td>
+          </tr>
+          <tr>
+            <td>HSM Connectivity</td>
+            <td>Internal TCP/IP only</td>
+            <td>Communication with payShield 10K host interface from the approved HSM tool host or service only.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Recommended Runtime Topology</h3>
+      <pre class="mermaid">flowchart TB
+  Browser[PM / KMO browser]
+  UI[Internal Web UI over HTTPS]
+  API[FastAPI backend]
+  DB[(PostgreSQL)]
+  Agents[Agent orchestration internal endpoint]
+  KB[Local knowledge base / vector index]
+  Tool[Controlled Python HSM tool package or service]
+  HSM[payShield 10K host interface over internal TCP/IP]
+
+  Browser --> UI
+  UI --> API
+  API --> DB
+  API --> Agents
+  API --> KB
+  API --> Tool
+  Tool --> HSM</pre>
+
+      <h3>Component Boundaries</h3>
+      <ul>
+        <li>FastAPI is the control plane. It owns authentication, authorization, ticket state, approvals, audit writes, and HSM execution authorization.</li>
+        <li>PostgreSQL is the source of truth. Langflow memory or flow state must not be treated as authoritative ticket, registry, approval, or audit state.</li>
+        <li>Langflow is used for agent reasoning, clarification, policy explanation, knowledge-base retrieval, and execution-plan drafting.</li>
+        <li>The HSM tool is deterministic and template-driven. It must not accept raw HSM command text from Langflow, chat, or users.</li>
+        <li>The payShield host interface should be reachable only from the approved HSM tool runtime host or service.</li>
+      </ul>
+
+      <h3>Deployment Options</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Option</th>
+            <th>Use</th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>Docker Compose on internal Linux VM</td>
+            <td>Recommended for MVP and controlled internal pilot.</td>
+            <td>Simple deployment model for FastAPI, PostgreSQL, Langflow, and supporting services.</td>
+          </tr>
+          <tr>
+            <td>Systemd-managed services</td>
+            <td>Suitable where container runtime is not preferred.</td>
+            <td>Requires more explicit service and dependency management.</td>
+          </tr>
+          <tr>
+            <td>Internal Kubernetes or OpenShift</td>
+            <td>Suitable for later production hardening if the organization already operates it.</td>
+            <td>Adds operational complexity; should not be required for the first MVP.</td>
+          </tr>
+        </tbody>
+      </table>
+
+      <h3>Network Controls</h3>
+      <ul>
+        <li>PM and KMO browsers access only the internal Web UI/API endpoint over HTTPS.</li>
+        <li>PostgreSQL is not exposed to user workstations.</li>
+        <li>Langflow is not exposed directly to PM/KMO users unless explicitly wrapped by the application.</li>
+        <li>The payShield TCP/IP endpoint is reachable only from the HSM tool runtime.</li>
+        <li>TEST and PROD HSM endpoints must use separate configuration and network controls.</li>
+        <li>No runtime internet access is required for core operation.</li>
+      </ul>
+
+      <h3>MVP Implementation Recommendation</h3>
+      <ol>
+        <li>Implement FastAPI, PostgreSQL schema, PM/KMO authentication, and basic ticket lifecycle.</li>
+        <li>Implement Langflow-based Sec Officer, Requirement Clarifier, Policy, Registry, and HSM Planning flows.</li>
+        <li>Implement a mock HSM tool for ZPK generate/export behavior and registry updates.</li>
+        <li>Implement knowledge document ingestion and command catalog approval for the <code>A0</code>/<code>A1</code> generate/export command.</li>
+        <li>Implement KMO approval with execution-plan hash binding.</li>
+        <li>Only after the above is stable, connect the controlled Python HSM tool to the real payShield host interface in TEST.</li>
+      </ol>
+    </section>
+
+    <section id="future">
+      <h2>16. Future Extensions</h2>
+      <ul>
+        <li>Excel import for existing key inventory.</li>
+        <li>JIRA integration for ticket synchronization.</li>
+        <li>Additional key types: chip issuer master keys, secure messaging keys, data authentication keys, CVK, PVK, TAK, TPK, BDK, KEK, AES and HMAC keys.</li>
+        <li>Separate delivery workflow for exported key cryptograms if partner delivery becomes part of the system.</li>
+        <li>Knowledge base ingestion workflow with approval, versioning, and source metadata.</li>
+        <li>Signed approval links for email-based approvals, if required later.</li>
+        <li>Operational dashboards for pending approvals, prerequisite failures, HSM failures, and key lifecycle status.</li>
+      </ul>
+    </section>
+  </main>
+
+  <footer>
+    <p>Specification version: 0.1 draft. Date: 2026-07-01. Scope: ZPK generation and export under existing ZMK using payShield 10K host interface through a controlled Langflow local Python tool module.</p>
+  </footer>
+  <script src="assets/mermaid.js"></script>
+  <script>
+    if (window.mermaid) {
+      window.mermaid.initialize({
+        startOnLoad: true,
+        securityLevel: 'strict',
+        theme: 'default'
+      });
+    }
+  </script>
+</body>
+</html>

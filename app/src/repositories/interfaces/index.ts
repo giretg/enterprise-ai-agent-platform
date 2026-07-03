@@ -14,6 +14,9 @@ import type {
   ConnectorType,
   Conversation,
   Document,
+  KnowledgeArtifact,
+  KnowledgeArtifactStatus,
+  KnowledgeChunk,
   Message,
   MessageCriticality,
   MessageRole,
@@ -55,6 +58,10 @@ import type {
   ProcessStatus,
   ProcessStepInstance,
   ProcessStepStatus,
+  ProcessDefinition,
+  ProcessDefinitionStatus,
+  ProcessTrigger,
+  ProcessTriggerType,
   DelegationEdge,
   DelegationStatus,
   ProcessActorType,
@@ -277,7 +284,7 @@ export interface MonitorRepository {
   updateRun(id: string, data: MonitorRunUpdate): Promise<MonitorRun>
   /** Cooldown / dedup nyilvántartás upsert. */
   upsertSignal(monitorId: string, dedupKey: string, data: MonitorSignalUpsert): Promise<MonitorSignal>
-  markSignalEscalated(id: string, ticketId: string, now: Date): Promise<void>
+  markSignalEscalated(id: string, ticketId: string | null, now: Date): Promise<void>
   findStaleLocked(cutoff: Date, limit: number): Promise<MonitorDefinition[]>
   releaseLock(id: string): Promise<void>
   /** Collector-támogatás: a board azon ticketei, amelyek due_by-ja az ablakon belül esedékes. */
@@ -356,6 +363,20 @@ export interface AgentRepository {
     profileBody: string
   }): Promise<{ agentVersion: number; behaviorProfileVersion: number }>
   /**
+   * A ténylegesen használt viselkedés-profil beállítása (§3.4): egy megosztott
+   * profil (vagy `null`) kiválasztása + az agent egyedi overlay-e. A kettőből
+   * komponálja az effektív "hogyan" szöveget, pinneli a profil al-verzióját, és —
+   * aktív agentnél — új `agent_versions` snapshotot fagyaszt. Draft agentnél csak
+   * az élő mezőket állítja (az első snapshotot az aktiválás fagyasztja, §4/I2).
+   */
+  setBehaviorProfile(input: {
+    agentId: string
+    profileId: string | null
+    profileVersion: number | null
+    profileBody: string | null
+    overlay: string | null
+  }): Promise<{ agentVersion: number; behaviorProfileVersion: number }>
+  /**
    * Frissíti a szerep-instrukciót és/vagy a viselkedés-profilt (§5.3). Csak a
    * ténylegesen változó összetevő al-verzióját lépteti, új `agent_versions`
    * snapshotot fagyaszt (mindkét szöveg + modell + memória + recipe), és lépteti
@@ -411,12 +432,129 @@ export interface AgentRepository {
 export interface DocumentRepository {
   findById(id: string): Promise<Document | null>
   findByConnectorId(connectorId: string): Promise<Document[]>
-  create(data: Omit<Document, 'id' | 'createdAt'>): Promise<Document>
+  create(
+    data: Omit<
+      Document,
+      'id' | 'createdAt' | 'mimeType' | 'contentHash' | 'processingMode' | 'metadata'
+    > &
+      Partial<Pick<Document, 'mimeType' | 'contentHash' | 'processingMode' | 'metadata'>>,
+  ): Promise<Document>
   update(
     id: string,
-    data: Partial<Pick<Document, 'status' | 'extractedText' | 'connectorId'>>,
+    data: Partial<
+      Pick<Document, 'status' | 'extractedText' | 'connectorId' | 'processingMode'>
+    >,
   ): Promise<Document>
   delete(id: string): Promise<void>
+}
+
+// ── KB-v3 (Knowledge-Base-v3-OKF-Spec §8.3/§11) ─────────────────────────────
+export interface KnowledgeArtifactRepository {
+  findById(id: string): Promise<KnowledgeArtifact | null>
+  create(
+    data: Omit<KnowledgeArtifact, 'id' | 'createdAt' | 'publishedAt'> & {
+      publishedAt?: Date | null
+    },
+  ): Promise<KnowledgeArtifact>
+  update(
+    id: string,
+    data: Partial<
+      Pick<
+        KnowledgeArtifact,
+        | 'status'
+        | 'contentHash'
+        | 'bundleRef'
+        | 'validationResult'
+        | 'reviewSummary'
+        | 'approvedById'
+        | 'publishedAt'
+      >
+    >,
+  ): Promise<KnowledgeArtifact>
+  /** Egy connector adott státuszú artifactjai (pl. `published`, `pending_review`). */
+  findByConnector(
+    connectorId: string,
+    status?: KnowledgeArtifactStatus,
+  ): Promise<KnowledgeArtifact[]>
+  /** A forrásdokumentumhoz tartozó legmagasabb verziószám (0, ha még nincs). */
+  latestVersionForDocument(connectorId: string, sourceDocumentId: string): Promise<number>
+  /**
+   * §10.5 — a megadott connectorokon PUBLISHED OKF-artifacttal bíró forrás-
+   * dokumentumok azonosítói. A retrieval ezekre a nyers dokumentumokra
+   * `superseded`-ként tekint (nem adja vissza a nyers `extractedText`-et is,
+   * ha már van jóváhagyott OKF-parafrázis).
+   */
+  publishedSourceDocumentIds(connectorIds: string[]): Promise<string[]>
+}
+
+/** §9.1 — full-text chunk-találat (ts_rank score-ral, NEM cosine). */
+export type KnowledgeChunkSearchHit = {
+  artifactId: string
+  connectorId: string
+  path: string
+  title: string
+  type: string
+  section: string | null
+  text: string
+  sourceRef: Prisma.JsonValue | null
+  score: number
+}
+
+/** §9.3 — az OKF-fa egy navigálható oldala (path-onként egy sor). */
+export type KnowledgeIndexEntry = {
+  artifactId: string
+  connectorId: string
+  path: string
+  title: string
+  type: string
+}
+
+/** §9.2 — egy OKF-oldal egy chunkja (chunkIndex sorrendben összeáll a teljes oldallá). */
+export type KnowledgePageChunk = {
+  artifactId: string
+  connectorId: string
+  path: string
+  title: string
+  type: string
+  section: string | null
+  chunkIndex: number
+  text: string
+  sourceRef: Prisma.JsonValue | null
+}
+
+export interface KnowledgeChunkRepository {
+  createMany(chunks: Array<Omit<KnowledgeChunk, 'id' | 'createdAt'>>): Promise<number>
+  findByArtifact(artifactId: string): Promise<KnowledgeChunk[]>
+  deleteByArtifact(artifactId: string): Promise<void>
+  /**
+   * §9.1/§10 — Postgres full-text keresés a publikált OKF-chunkokon. A scope
+   * `connectorId`-alapú (D-B), a rangsor `ts_rank`. Csak `published` artifact
+   * chunkjait adja vissza (§14.1).
+   */
+  searchChunks(params: {
+    connectorIds: string[]
+    query: string
+    limit: number
+  }): Promise<KnowledgeChunkSearchHit[]>
+  /**
+   * §9.3 — a publikált OKF-oldalak indexe a scope-connectorokon (path-onként egy
+   * sor). Navigáció: a `kb_list_index → kb_get_page` út belépő listája. Csak
+   * `published` artifact chunkjait nézi (§14.1); `connectorId`-scope (D-B).
+   */
+  listIndex(params: {
+    connectorIds: string[]
+    pathPrefix?: string
+  }): Promise<KnowledgeIndexEntry[]>
+  /**
+   * §9.2 — egy OKF-oldal minden publikált chunkja (chunkIndex szerint), a
+   * scope-connectorokon. `artifactId` megadható a path egyértelműsítéséhez
+   * (ha több artifact ugyanazt a path-ot használja).
+   */
+  getPageChunks(params: {
+    connectorIds: string[]
+    path: string
+    artifactId?: string
+  }): Promise<KnowledgePageChunk[]>
 }
 
 export interface PlatformSettingsRepository {
@@ -615,7 +753,7 @@ export type CreatePlaybookAssignmentInput = {
   tenantId: string | null
   playbookId: string
   playbookVersionId: string
-  assignmentType: string
+  assignmentType: 'process_type' | 'ticket_type'
   assignmentKey: string
   isDefault: boolean
   createdById: string
@@ -671,7 +809,8 @@ export interface PlaybookV2Repository {
     compiledSpec: Prisma.InputJsonValue
   }): Promise<PlaybookVersionV2>
 
-  /** Tranzakció: ha isDefault, a (tenant, type, key) párra létező aktív default-ot revoke-olja. */
+  /** Tranzakció: ha isDefault, a (tenant, type, key) párra létező aktív default-ot revoke-olja.
+   *  Csak legacy indítási defaultokhoz használható; agent-role rosterhez új kód nem írhat. */
   createAssignment(input: CreatePlaybookAssignmentInput): Promise<PlaybookAssignment>
   findDefaultAssignment(
     tenantId: string | null,
@@ -689,10 +828,14 @@ export type CreateProcessInstanceInput = {
   playbookVersionId: string
   playbookRef: string
   playbookContentHash: string
+  // Folyamat-feature-spec §7: a forrás-Folyamat és a trigger (opcionális a régi úthoz).
+  processDefinitionId?: string | null
+  triggerType?: ProcessTriggerType | null
   startedByType: ProcessActorType
   startedByUserId?: string | null
   startedByAgentId?: string | null
   conversationId?: string | null
+  rootTicketId?: string | null
   inputPayload: Prisma.InputJsonValue
 }
 
@@ -776,6 +919,64 @@ export interface ProcessRepository {
       failedAt: Date | null
     }>,
   ): Promise<DelegationEdge>
+}
+
+// --- Folyamat (Process Definition) réteg (Folyamat-feature-spec §1, §4.1, §7) ---
+
+export type CreateProcessDefinitionInput = {
+  tenantId: string | null
+  name: string
+  description?: string | null
+  playbookId: string
+  playbookVersionId: string
+  createdById: string
+}
+
+export type ProcessDefinitionWithTriggers = ProcessDefinition & {
+  triggers: ProcessTrigger[]
+}
+
+export type CreateProcessTriggerInput = {
+  tenantId: string | null
+  processDefinitionId: string
+  type: ProcessTriggerType
+  inputMap: Prisma.InputJsonValue
+  monitorDefinitionId?: string | null
+  createdById: string
+}
+
+export interface ProcessDefinitionRepository {
+  create(input: CreateProcessDefinitionInput): Promise<ProcessDefinition>
+  findById(tenantId: string | null, id: string): Promise<ProcessDefinitionWithTriggers | null>
+  list(
+    tenantId: string | null,
+    status?: ProcessDefinitionStatus,
+  ): Promise<ProcessDefinitionWithTriggers[]>
+  update(
+    id: string,
+    data: Partial<{
+      name: string
+      description: string | null
+      status: ProcessDefinitionStatus
+      playbookId: string
+      playbookVersionId: string
+      roleBindings: Prisma.InputJsonValue
+      configValues: Prisma.InputJsonValue
+      approvedById: string | null
+      approvedAt: Date | null
+      archivedAt: Date | null
+    }>,
+  ): Promise<ProcessDefinition>
+
+  createTrigger(input: CreateProcessTriggerInput): Promise<ProcessTrigger>
+  findTrigger(
+    tenantId: string | null,
+    id: string,
+  ): Promise<ProcessTrigger | null>
+  listTriggers(processDefinitionId: string): Promise<ProcessTrigger[]>
+  listActiveMonitorCronTriggers(tenantId: string | null, monitorDefinitionId: string): Promise<ProcessTrigger[]>
+  /** Hard-delete (a draft-fázisban csatolt/leválasztott trigger). */
+  deleteTrigger(id: string): Promise<void>
 }
 
 export interface ConversationRepository {

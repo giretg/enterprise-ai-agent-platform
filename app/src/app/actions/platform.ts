@@ -17,9 +17,12 @@ import { prisma, ensureActiveDatabaseMode } from '@/lib/db'
 import { ensureAgentKnowledgeBase } from '@/lib/agent-knowledge-base'
 import { getReportTemplate, listReportTemplates } from '@/domain/report/report-templates'
 import { computePlaybookGovernance } from '@/domain/governance/measurement-report'
-import { xlsxExtractText } from '@/domain/file-editor/adapters/xlsx-adapter'
-import { docxRead } from '@/domain/file-editor/adapters/docx-adapter'
-import { pdfRead } from '@/domain/file-editor/adapters/pdf-adapter'
+import {
+  extractStructured,
+  extractTextContent,
+  toExtractionMetadata,
+  type StructuredExtraction,
+} from '@/lib/kb-extraction'
 import {
   buildTicketDisplayExtras,
   enrichTicketsForBoard,
@@ -48,6 +51,7 @@ import {
   createBehaviorProfileSchema,
   updateBehaviorProfileSchema,
   acceptBehaviorProfileUpdateSchema,
+  setAgentBehaviorProfileSchema,
   behaviorProfileIdSchema,
   updateAgentInstructionSchema,
   updateAgentModelConfigSchema,
@@ -74,6 +78,7 @@ import {
   kbTicketSchema,
   shareKnowledgeBaseSchema,
   deleteKbDocumentSchema,
+  kbArtifactReviewSchema,
   rollbackMemorySchema,
   ticketFilterSchema,
   ticketIdSchema,
@@ -1426,6 +1431,72 @@ export async function acceptBehaviorProfileUpdate(input: {
   }
 }
 
+export async function setAgentBehaviorProfile(input: {
+  agentId: string
+  profileId: string | null
+  overlay?: string
+}) {
+  try {
+    const user = await requireRole('admin')
+    const parsed = setAgentBehaviorProfileSchema.parse(input)
+
+    const agent = await repositories.agents.findById(parsed.agentId, user.tenantId)
+    if (!agent) return fail('Agent not found')
+
+    let profileVersion: number | null = null
+    let profileBody: string | null = null
+    let profileName: string | null = null
+
+    if (parsed.profileId) {
+      const profile = await repositories.behaviorProfiles.findByIdWithVersions(
+        parsed.profileId,
+        user.tenantId,
+      )
+      if (!profile) return fail('Behavior profile not found')
+      const body = await repositories.behaviorProfiles.getVersionBody(
+        parsed.profileId,
+        profile.currentVersion,
+        user.tenantId,
+      )
+      if (body === null) return fail('Behavior profile version not found')
+      profileVersion = profile.currentVersion
+      profileBody = body
+      profileName = profile.name
+    }
+
+    const result = await repositories.agents.setBehaviorProfile({
+      agentId: parsed.agentId,
+      profileId: parsed.profileId,
+      profileVersion,
+      profileBody,
+      overlay: parsed.overlay,
+    })
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: result.agentVersion,
+      action: 'agent.behavior_profile_set',
+      targetType: 'agent',
+      targetId: parsed.agentId,
+      modelUsed: null,
+      inputRef: parsed.profileId,
+      outputRef: `v${result.agentVersion}`,
+      policyDecision: 'allowed',
+      metadata: {
+        profileId: parsed.profileId,
+        profileName,
+        behaviorProfileVersion: result.behaviorProfileVersion,
+        hasOverlay: (parsed.overlay ?? '').trim().length > 0,
+      },
+    })
+
+    return ok(result)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to set behavior profile')
+  }
+}
+
 export async function activateAgent(input: { agentId: string }) {
   try {
     const user = await requireRole('admin')
@@ -1574,26 +1645,29 @@ export async function uploadDocument(formData: FormData) {
 
     let filename = 'upload.txt'
     let extractedText = ''
+    let mimeType: string | null = null
+    // KB-v3 §7.3 — formátumfüggő extraction: normalizált markdown +
+    // forrás-provenance-os szeletek (PDF oldal / DOCX section / XLSX cella).
+    let extraction: StructuredExtraction | null = null
 
     if (typeof textOverride === 'string' && textOverride.trim()) {
       extractedText = textOverride
       filename = 'paste.txt'
+      mimeType = 'text/plain'
+      extraction = extractTextContent(textOverride)
     } else if (file instanceof File) {
       filename = safeUploadFilename(file.name)
-      const ext = filename.slice(filename.lastIndexOf('.')).toLowerCase()
+      mimeType = file.type || null
       if (file.type.startsWith('image/')) {
         const buffer = Buffer.from(await file.arrayBuffer())
         extractedText = `[image:${file.type}]${buffer.toString('base64')}`
-      } else if (ext === '.xlsx' || ext === '.xlsm') {
-        // Bináris formátum: a nyers szöveg olvashatatlan, ezért az adapterrel
-        // nyerünk ki kereshető szöveget (különben a kb_search nem talál benne).
-        extractedText = await xlsxExtractText(Buffer.from(await file.arrayBuffer()))
-      } else if (ext === '.docx') {
-        extractedText = (await docxRead(Buffer.from(await file.arrayBuffer()))).text
-      } else if (ext === '.pdf') {
-        extractedText = (await pdfRead(Buffer.from(await file.arrayBuffer()))).text
       } else {
-        extractedText = await file.text()
+        extraction = await extractStructured({
+          buffer: Buffer.from(await file.arrayBuffer()),
+          filename,
+          mimeType: file.type || null,
+        })
+        extractedText = extraction.markdown
       }
     } else {
       return fail('No file or text provided')
@@ -1610,6 +1684,10 @@ export async function uploadDocument(formData: FormData) {
       status: 'uploaded',
       connectorId: null,
       uploadedById: user.id,
+      mimeType,
+      // A szeletek (§4.7 forrás-refekkel) a metadata-ba kerülnek; az OKF-artifact
+      // generáláskor innen épül a bundle. Régi doksin nincs → heading-split fallback.
+      ...(extraction ? { metadata: { extraction: toExtractionMetadata(extraction) } } : {}),
     })
 
     return ok(document)
@@ -1751,6 +1829,25 @@ export async function listKbDocumentRequests(input: { agentId: string }) {
     return ok(pending)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list KB requests')
+  }
+}
+
+/**
+ * §12.2 hárompaneles review adatai: forrás extracted text + OKF file-tree
+ * preview + friss §7.6 validáció + a jóváhagyási ticket azonosítója.
+ */
+export async function getKbArtifactReview(input: { agentId: string; documentId: string }) {
+  try {
+    await requireRole('operator')
+    const parsed = kbArtifactReviewSchema.parse(input)
+    const review = await services.knowledgeBase.getArtifactReview({
+      agentId: parsed.agentId,
+      documentId: parsed.documentId,
+    })
+    if (!review) return fail('KB dokumentum nem található')
+    return ok(review)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to load KB review')
   }
 }
 
@@ -3073,15 +3170,23 @@ export async function syncTestDatabaseFromProduction(input: { confirm: true }) {
 }
 
 const WORKSPACE_TOOLS = [
-  'file_read', 'file_write', 'file_edit', 'file_list', 'file_glob',
+  'file_read', 'file_write', 'create_html', 'file_edit', 'file_list', 'file_glob',
   'file_search', 'file_delete',
   'xlsx_read_sheet', 'xlsx_write_cells', 'xlsx_append_rows',
   'xlsx_create', 'xlsx_format_range', 'xlsx_layout',
-  'docx_read', 'pdf_read', 'pdf_create',
+  'docx_read', 'pdf_read', 'pdf_create', 'pptx_create',
+] as const
+
+const SANDBOX_APP_TOOLS = [
+  'sandbox_app.create',
+  'sandbox_app.update_artifact',
+  'sandbox_app.preview',
+  'sandbox_app.export',
 ] as const
 
 const CONFIGURABLE_AGENT_TOOLS = [
   ...WORKSPACE_TOOLS,
+  ...SANDBOX_APP_TOOLS,
   'gmail_search',
   'gmail_get_message',
   'gmail_create_draft',
@@ -3114,6 +3219,7 @@ export async function updateAgentCapabilities(input: {
     const enabledSet = new Set(allTools)
     const needsWorkspace = WORKSPACE_TOOLS.some((t) => enabledSet.has(t))
     const needsWebSearch = enabledSet.has('web_search')
+    const needsBoard = SANDBOX_APP_TOOLS.some((t) => enabledSet.has(t))
 
     if (agent.role === 'orchestrator' && allTools.length > 0) {
       await repositories.audit.append({
@@ -3167,6 +3273,29 @@ export async function updateAgentCapabilities(input: {
       })
     }
 
+    // A sandbox_app.* toolok a `board` connectort igénylik (TOOL_REQUIREMENTS).
+    // A normál agentek ezt seedből megkapják; itt idempotensen biztosítjuk, hogy
+    // az App Registry jog engedélyezésekor a link garantáltan meglegyen.
+    if (needsBoard) {
+      const boardConnector = await prisma.connector.findFirst({
+        where: {
+          type: 'board',
+          lifecycleState: 'active',
+          OR: [{ tenantId: user.tenantId }, { tenantId: null }],
+        },
+        orderBy: { createdAt: 'asc' },
+      })
+      if (!boardConnector) return fail('Aktív Board connector nem található a rendszerben.')
+
+      await prisma.agentConnector.upsert({
+        where: {
+          agentId_connectorId: { agentId, connectorId: boardConnector.id },
+        },
+        create: { agentId, connectorId: boardConnector.id, accessMode: 'write' },
+        update: { accessMode: 'write' },
+      })
+    }
+
     const disabledTools = CONFIGURABLE_AGENT_TOOLS.filter((toolName) => !enabledSet.has(toolName))
 
     await Promise.all([
@@ -3201,6 +3330,7 @@ export async function updateAgentCapabilities(input: {
         disabledTools,
         workspaceLinked: needsWorkspace,
         webSearchLinked: needsWebSearch,
+        boardLinked: needsBoard,
       } as Prisma.JsonValue,
     })
 
@@ -3208,6 +3338,7 @@ export async function updateAgentCapabilities(input: {
       updatedCount: allTools.length,
       workspaceLinked: needsWorkspace,
       webSearchLinked: needsWebSearch,
+      boardLinked: needsBoard,
     })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to update capabilities')

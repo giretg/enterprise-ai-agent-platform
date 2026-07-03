@@ -21,11 +21,13 @@ export async function POST(request: Request) {
     return new Response('Invalid JSON body', { status: 400 })
   }
 
-  const { agentId, content, conversationId, attachmentDocumentIds } = body as {
+  const { agentId, content, conversationId, attachmentDocumentIds, processDefinitionId, processInputPayload } = body as {
     agentId?: string
     content?: string
     conversationId?: string
     attachmentDocumentIds?: string[]
+    processDefinitionId?: string
+    processInputPayload?: Record<string, unknown>
   }
 
   if (!agentId || typeof agentId !== 'string') {
@@ -51,6 +53,8 @@ export async function POST(request: Request) {
           tenantId: user.tenantId,
           conversationId,
           attachmentDocumentIds,
+          processDefinitionId,
+          processInputPayload,
         })
 
         for await (const event of gen) {

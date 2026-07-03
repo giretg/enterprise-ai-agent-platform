@@ -36,6 +36,11 @@ export type TenantValidationContext = {
   knownPermissions?: Set<string>
   /** role.key → az adott role/agent ténylegesen elérhető capability-i */
   roleCapabilities?: Map<string, Set<string>>
+  /**
+   * A tenant ismert capability-szótára (Capability.toolName vokabulár). Ha megadva,
+   * a `roles[].requiredCapabilities` értékeinek ebbe kell esniük (Folyamat-spec §4.8, WP-4).
+   */
+  knownCapabilities?: Set<string>
 }
 
 export class PlaybookValidator {
@@ -64,6 +69,7 @@ export class PlaybookValidator {
     this.checkCycles(spec, errors, warnings)
     this.checkGateCriticality(spec, errors)
     this.checkRoleAssigneeCompatibility(spec, errors)
+    this.checkInputSlots(spec, errors, warnings)
     this.checkTimeouts(spec, warnings)
     this.checkTenantContext(spec, ctx, errors, warnings)
 
@@ -284,6 +290,84 @@ export class PlaybookValidator {
     })
   }
 
+  // Folyamat-spec §4.7 / WP-4 — tipizált input-rés és a sablonos utasítás integritása.
+  private checkInputSlots(
+    spec: PlaybookSpecV2,
+    errors: ValidationIssue[],
+    warnings: ValidationIssue[],
+  ) {
+    spec.steps.forEach((step, i) => {
+      const slots = step.inputSlots ?? []
+      const template = step.instructionTemplate
+
+      // Forrás-particionálás: lépésen belül egyértelmű rés-név (egy név = egy forrás).
+      const slotNames = new Set<string>()
+      for (const slot of slots) {
+        if (slotNames.has(slot.name)) {
+          errors.push({
+            code: 'DUPLICATE_INPUT_SLOT',
+            path: `steps[${i}].inputSlots`,
+            message: `Duplikált input-rés név: '${slot.name}' (lépésen belül egyértelműnek kell lennie).`,
+          })
+        }
+        slotNames.add(slot.name)
+      }
+
+      // Ha egyik sincs megadva, nincs mit ellenőrizni; ha csak az egyik, az gyanús.
+      if (!template && slots.length === 0) return
+      if (template == null && slots.length > 0) {
+        warnings.push({
+          code: 'SLOTS_WITHOUT_TEMPLATE',
+          path: `steps[${i}].inputSlots`,
+          message: `A(z) '${step.id}' lépés input-réseket deklarál, de nincs instructionTemplate.`,
+        })
+        return
+      }
+
+      const tokens = this.extractTemplateTokens(template ?? '')
+
+      // 1. Minden {{token}} létező rés legyen.
+      for (const token of tokens) {
+        if (!slotNames.has(token)) {
+          errors.push({
+            code: 'UNKNOWN_TEMPLATE_SLOT',
+            path: `steps[${i}].instructionTemplate`,
+            message: `A(z) '{{${token}}}' sablon-token nincs deklarálva az inputSlots között.`,
+          })
+        }
+      }
+
+      // 2. Minden required rés jelenjen meg a template-ben; a nem-required kimaradása warning.
+      for (const slot of slots) {
+        if (tokens.has(slot.name)) continue
+        if (slot.required) {
+          errors.push({
+            code: 'REQUIRED_SLOT_UNUSED',
+            path: `steps[${i}].inputSlots`,
+            message: `A(z) '${slot.name}' kötelező rés nem szerepel az instructionTemplate-ben.`,
+          })
+        } else {
+          warnings.push({
+            code: 'OPTIONAL_SLOT_UNUSED',
+            path: `steps[${i}].inputSlots`,
+            message: `A(z) '${slot.name}' opcionális rés nem szerepel az instructionTemplate-ben.`,
+          })
+        }
+      }
+    })
+  }
+
+  /** `{{ token }}` nevek kinyerése (whitespace-toleráns), halmazként. */
+  private extractTemplateTokens(template: string): Set<string> {
+    const tokens = new Set<string>()
+    const re = /\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g
+    let match: RegExpExecArray | null
+    while ((match = re.exec(template)) !== null) {
+      tokens.add(match[1])
+    }
+    return tokens
+  }
+
   private checkTimeouts(spec: PlaybookSpecV2, warnings: ValidationIssue[]) {
     spec.steps.forEach((step, i) => {
       if (step.timeoutMinutes == null) {
@@ -347,6 +431,22 @@ export class PlaybookValidator {
               code: 'MISSING_CAPABILITY',
               path: `roles[${i}].requiredCapabilities`,
               message: `A(z) '${role.key}' role nem rendelkezik a(z) '${cap}' capability-vel.`,
+            })
+          }
+        }
+      })
+    }
+
+    // WP-4 / §4.8 — a requiredCapabilities értékei ismert tool-nevek legyenek.
+    if (ctx.knownCapabilities) {
+      spec.roles.forEach((role, i) => {
+        if (role.type !== 'agent_role') return
+        for (const cap of role.requiredCapabilities ?? []) {
+          if (!ctx.knownCapabilities!.has(cap)) {
+            errors.push({
+              code: 'UNKNOWN_CAPABILITY',
+              path: `roles[${i}].requiredCapabilities`,
+              message: `A(z) '${cap}' capability nem szerepel a tenant capability-szótárában.`,
             })
           }
         }
