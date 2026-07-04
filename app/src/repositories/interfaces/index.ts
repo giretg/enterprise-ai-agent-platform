@@ -43,6 +43,19 @@ import type {
   SandboxAppStatus,
   SandboxAppVersion,
   SandboxCreatedByType,
+  SandboxProject,
+  SandboxCommit,
+  SandboxCommitSource,
+  SandboxPromotion,
+  SandboxPromotionStatus,
+  SandboxDataSnapshot,
+  SandboxSnapshotKind,
+  SandboxSnapshotStatus,
+  SandboxExport,
+  SandboxExportScope,
+  SandboxExportStatus,
+  SandboxEnv,
+  SandboxActorType,
   ScheduledTask,
   ScheduledTaskKind,
   ScheduledTaskRecurrence,
@@ -1322,6 +1335,7 @@ export interface UserRepository {
       lastLoginAt: Date | null
       email: string
       name: string
+      jobDescription: string | null
     }>,
   ): Promise<User>
   upsertByExternalAuthId(params: {
@@ -1365,4 +1379,140 @@ export interface RolePermissionRepository {
   findAll(): Promise<RolePermission[]>
   findByKey(permissionKey: string): Promise<RolePermission | null>
   upsert(permissionKey: string, minRole: UserRole, description?: string | null): Promise<RolePermission>
+}
+
+// ── Sandbox verziózás / promóció / graduation (Feature-spec §3) ──────────────
+
+export type CreateSandboxProjectInput = {
+  tenantId: string | null
+  sandboxId: string | null
+  name: string
+  description: string | null
+  dataBinding?: Prisma.InputJsonValue
+  portability?: Prisma.InputJsonValue
+}
+
+export type SandboxProjectPointers = {
+  testCommitId?: string | null
+  liveCommitId?: string | null
+  headCommitId?: string | null
+}
+
+export type CreateSandboxCommitInput = {
+  tenantId: string | null
+  projectId: string
+  parentCommitId: string | null
+  basedOnCommitId: string | null
+  source: SandboxCommitSource
+  changeSummary: string
+  treeRef: string
+  treeHash: string
+  fileCount: number
+  totalSizeBytes: number
+  createdByType: SandboxActorType
+  createdByUserId: string | null
+  createdByAgentId: string | null
+  createdFromTicketId: string | null
+  createdFromRunId: string | null
+  buildCost?: Prisma.InputJsonValue
+}
+
+export type CreateSandboxPromotionInput = {
+  tenantId: string | null
+  projectId: string
+  fromCommitId: string
+  prevLiveCommitId: string | null
+  requestedByType: SandboxActorType
+  requestedByUserId: string | null
+  requestedByAgentId: string | null
+  reason: string | null
+}
+
+export type CreateSandboxSnapshotInput = {
+  tenantId: string | null
+  projectId: string
+  env: SandboxEnv
+  kind: SandboxSnapshotKind
+  status: SandboxSnapshotStatus
+  snapshotRef: string
+  schemaHash: string
+  rowCount: number | null
+  sizeBytes: number | null
+  createdByType: SandboxActorType
+  createdByUserId: string | null
+  linkedPromotionId: string | null
+  expiresAt: Date | null
+}
+
+export type CreateSandboxExportInput = {
+  tenantId: string | null
+  projectId: string
+  scope: SandboxExportScope
+  sourceCommitId: string
+  sourceSnapshotId: string | null
+  requestedByUserId: string
+  manifest?: Prisma.InputJsonValue
+  responsibilityTransferred: boolean
+}
+
+export interface SandboxVersioningRepository {
+  // projekt
+  createProject(input: CreateSandboxProjectInput): Promise<SandboxProject>
+  findProjectById(id: string): Promise<SandboxProject | null>
+  findProjectByName(tenantId: string | null, sandboxId: string | null, name: string): Promise<SandboxProject | null>
+  listProjects(filter: { tenantId: string | null; sandboxId?: string; limit?: number }): Promise<SandboxProject[]>
+  updateProjectPointers(id: string, pointers: SandboxProjectPointers): Promise<SandboxProject>
+  archiveProject(id: string): Promise<SandboxProject>
+
+  // commit (a `seq` kiosztás a repository felelőssége, tranzakcióban)
+  createCommit(input: CreateSandboxCommitInput): Promise<SandboxCommit>
+  findCommitById(id: string): Promise<SandboxCommit | null>
+  findCommitByTreeHash(projectId: string, treeHash: string): Promise<SandboxCommit | null>
+  listCommits(filter: { projectId: string; limit?: number; beforeSeq?: number }): Promise<SandboxCommit[]>
+
+  // promóció
+  createPromotion(input: CreateSandboxPromotionInput): Promise<SandboxPromotion>
+  findPromotionById(id: string): Promise<SandboxPromotion | null>
+  listPromotions(filter: { projectId: string; status?: SandboxPromotionStatus }): Promise<SandboxPromotion[]>
+  updatePromotion(
+    id: string,
+    data: Partial<{
+      status: SandboxPromotionStatus
+      prePromotionSnapshotId: string | null
+      approvedByUserId: string | null
+      reason: string | null
+      decidedAt: Date | null
+      promotedAt: Date | null
+    }>,
+  ): Promise<SandboxPromotion>
+
+  // adat-snapshot
+  createSnapshot(input: CreateSandboxSnapshotInput): Promise<SandboxDataSnapshot>
+  findSnapshotById(id: string): Promise<SandboxDataSnapshot | null>
+  listSnapshots(filter: { projectId: string; env?: SandboxEnv }): Promise<SandboxDataSnapshot[]>
+  updateSnapshot(
+    id: string,
+    data: Partial<{
+      status: SandboxSnapshotStatus
+      snapshotRef: string
+      schemaHash: string
+      rowCount: number | null
+      sizeBytes: number | null
+    }>,
+  ): Promise<SandboxDataSnapshot>
+
+  // export
+  createExport(input: CreateSandboxExportInput): Promise<SandboxExport>
+  findExportById(id: string): Promise<SandboxExport | null>
+  listExports(filter: { projectId: string }): Promise<SandboxExport[]>
+  updateExport(
+    id: string,
+    data: Partial<{
+      status: SandboxExportStatus
+      packageRef: string | null
+      packageHash: string | null
+      manifest: Prisma.InputJsonValue
+      completedAt: Date | null
+    }>,
+  ): Promise<SandboxExport>
 }

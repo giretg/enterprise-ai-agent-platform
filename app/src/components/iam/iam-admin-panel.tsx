@@ -10,6 +10,7 @@ import {
   inviteUser,
   reactivateUser,
   revokeInvitation,
+  setUserJobDescription,
   suspendUser,
   updateRolePermission,
 } from '@/app/actions/platform'
@@ -86,6 +87,7 @@ export function IamAdminPanel({
                   <tr>
                     <th className="pb-3 font-semibold">Név</th>
                     <th className="pb-3 font-semibold">Email</th>
+                    <th className="pb-3 font-semibold">Szerep leírás</th>
                     <th className="pb-3 font-semibold">Szerep</th>
                     <th className="pb-3 font-semibold">Státusz</th>
                     <th className="pb-3 font-semibold">Létrehozva</th>
@@ -273,9 +275,11 @@ function UserRow({ user, disabled }: { user: User; disabled: boolean }) {
   const [pending, startTransition] = useTransition()
   const [role, setRole] = useState<UserRole>(user.role ?? 'viewer')
   const [reason, setReason] = useState('')
+  const [jobDescription, setJobDescription] = useState(user.jobDescription ?? '')
   const [message, setMessage] = useState<string | null>(null)
   const isDisabled = disabled || pending
   const isPendingApproval = user.status === 'pending' && user.role === null
+  const jobDescriptionDirty = jobDescription.trim() !== (user.jobDescription ?? '').trim()
 
   return (
     <tr className="align-top">
@@ -285,6 +289,41 @@ function UserRow({ user, disabled }: { user: User; disabled: boolean }) {
         {message && <p className="mt-2 text-xs text-coral-deep">{message}</p>}
       </td>
       <td className="py-3 pr-4 text-ink-soft">{user.email}</td>
+      <td className="py-3 pr-4">
+        <div className="flex items-start gap-2">
+          <textarea
+            value={jobDescription}
+            disabled={isDisabled}
+            onChange={(event) => setJobDescription(event.target.value)}
+            rows={2}
+            maxLength={280}
+            placeholder="pl. marketing vezető"
+            className="w-48 rounded-lg border border-line bg-night-2 px-2 py-1.5 text-xs"
+          />
+          <button
+            type="button"
+            disabled={isDisabled || !jobDescriptionDirty}
+            className="rounded-full bg-sky/15 px-3 py-1.5 text-xs font-semibold text-sky disabled:opacity-50"
+            onClick={() => {
+              startTransition(async () => {
+                const result = await setUserJobDescription({
+                  targetUserId: user.id,
+                  jobDescription: jobDescription.trim() || null,
+                })
+                if (result.success) {
+                  setMessage(null)
+                  router.refresh()
+                } else {
+                  setMessage(result.error)
+                  setJobDescription(user.jobDescription ?? '')
+                }
+              })
+            }}
+          >
+            Mentés
+          </button>
+        </div>
+      </td>
       <td className="py-3 pr-4">
         <div className="flex items-center gap-2">
           <select

@@ -14,6 +14,7 @@ import type { Prisma, ProcessDefinition, ProcessTrigger } from '@prisma/client'
 import type { CompiledSpec, CompiledInputSlot } from '@/domain/playbook/playbook-compiler'
 import { parsePlaybookSpecV2, type PlaybookRole } from '@/lib/playbook-v2/spec'
 import { isAgentSuitable } from '@/domain/playbook/suitability'
+import { meetsMinRole } from '@/lib/iam-policy'
 import type {
   AgentRepository,
   AuditRepository,
@@ -22,6 +23,7 @@ import type {
   ProcessDefinitionWithTriggers,
   RolePermissionRepository,
   ToolBrokerRepository,
+  UserRepository,
 } from '@/repositories/interfaces'
 
 export type ProcessDefinitionServiceErrorCode =
@@ -54,6 +56,7 @@ export class ProcessDefinitionService {
     private readonly agents: AgentRepository,
     private readonly toolBroker: ToolBrokerRepository,
     private readonly rolePermissions: RolePermissionRepository,
+    private readonly users: UserRepository,
     private readonly audit: AuditRepository,
   ) {}
 
@@ -311,9 +314,7 @@ export class ProcessDefinitionService {
       return [{ code: 'VERSION_MISSING', message: 'A PIN-elt Playbook-verzió nem található.' }]
     }
     const spec = parsePlaybookSpecV2(version.spec)
-    const compiled = this.requireCompiled(version.compiledSpec)
     const roleBindings = this.asStringRecord(def.roleBindings)
-    const configValues = this.asRecord(def.configValues)
 
     // §4.8 — agent-szerepek: kötött + alkalmas agent.
     for (const role of spec.roles) {
@@ -335,27 +336,45 @@ export class ProcessDefinitionService {
       }
     }
 
-    // §4.1 — kötelező config-rések kitöltve.
-    for (const slot of this.uniqueSlots(compiled, 'config')) {
-      if (!slot.required) continue
-      const value = configValues[slot.name]
-      if (value === undefined || value === null || value === '') {
-        violations.push({
-          code: 'CONFIG_SLOT_MISSING',
-          message: `A(z) '${slot.name}' kötelező config-rés nincs kitöltve.`,
-        })
-      }
-    }
-
-    // §4.3, §4.8 — human-szerep requiredPermissions létezik az IAM modellben.
+    // §4.3, §4.8 — human-szerepek: kötött + aktív user + requiredPermissions.
     for (const role of spec.roles) {
       if (role.type !== 'human_role') continue
+      const userId = roleBindings[role.key]
+      if (!userId) {
+        violations.push({
+          code: 'HUMAN_ROLE_UNBOUND',
+          message: `A(z) '${role.key}' emberi szerephez nincs user kötve.`,
+        })
+        continue
+      }
+      const user = await this.users.findById(userId)
+      if (!user) {
+        violations.push({
+          code: 'HUMAN_USER_UNSUITABLE',
+          message: `A(z) '${role.key}' szerephez kötött user nem található.`,
+        })
+        continue
+      }
+      if (user.status !== 'active' || !user.role) {
+        violations.push({
+          code: 'HUMAN_USER_UNSUITABLE',
+          message: `A(z) '${role.key}' szerephez kötött user nem aktív vagy nincs platform szerepe.`,
+        })
+        continue
+      }
       for (const perm of role.requiredPermissions ?? []) {
         const known = await this.rolePermissions.findByKey(perm)
         if (!known) {
           violations.push({
             code: 'UNKNOWN_PERMISSION',
             message: `A(z) '${role.key}' szerep '${perm}' jogosultsága nem létezik az IAM modellben.`,
+          })
+          continue
+        }
+        if (!meetsMinRole(user.role, known.minRole)) {
+          violations.push({
+            code: 'HUMAN_USER_INSUFFICIENT_PERMISSION',
+            message: `A(z) '${role.key}' szerephez kötött user nem éri el a(z) '${perm}' jogosultság minimum szerepét (${known.minRole}).`,
           })
         }
       }
@@ -387,19 +406,20 @@ export class ProcessDefinitionService {
   }
 
   private async checkBoundAgent(
-    tenantId: string | null,
+    _tenantId: string | null,
     agentId: string,
     role: PlaybookRole,
   ): Promise<ReturnType<typeof isAgentSuitable>> {
-    const agent = await this.agents.findById(agentId, tenantId)
+    const agent = await this.agents.findById(agentId)
     if (!agent) {
       return { ok: false, reason: 'a kötött agent nem található.', missing: [] }
     }
+    const registryTenantId = agent.tenantId ?? null
     const capabilities = await this.toolBroker.findCapabilitiesForAgent(agentId)
     return isAgentSuitable(
       { status: agent.status, tenantId: agent.tenantId, capabilities },
       { requiredCapabilities: role.requiredCapabilities },
-      tenantId,
+      registryTenantId,
     )
   }
 

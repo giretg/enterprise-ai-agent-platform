@@ -6,6 +6,7 @@ import {
   activateProcessDefinition,
   attachProcessTrigger,
   createProcessDefinition,
+  listAssignableProcessUsers,
   listSuitableAgents,
   updateProcessDefinitionBindings,
 } from '@/app/actions/process'
@@ -17,6 +18,7 @@ export type ProcessBuilderPlaybookVersion = {
   playbookVersionId: string
   version: number
   agentRoles: { key: string; requiredCapabilities: string[] }[]
+  humanRoles: { key: string; requiredPermissions: string[] }[]
   configSlots: { name: string; type: string; required: boolean; description: string | null }[]
   triggerSlots: { name: string; type: string; required: boolean; description: string | null }[]
 }
@@ -28,14 +30,17 @@ type SuitableAgent = {
   role: string
 }
 
+type AssignableUser = {
+  id: string
+  name: string
+  email: string
+  role: string
+}
+
 type TriggerType = 'manual' | 'ticket' | 'chat' | 'monitor_cron'
 
 function initialName(version?: ProcessBuilderPlaybookVersion) {
   return version ? `${version.playbookName} Folyamat` : ''
-}
-
-function initialConfigValues(version?: ProcessBuilderPlaybookVersion) {
-  return Object.fromEntries((version?.configSlots ?? []).map((slot) => [slot.name, '']))
 }
 
 function initialChatSlotNames(version?: ProcessBuilderPlaybookVersion) {
@@ -79,9 +84,10 @@ export function ProcessDefinitionBuilder({
   const [name, setName] = useState(initialName(initialVersion))
   const [description, setDescription] = useState('')
   const [roleBindings, setRoleBindings] = useState<Record<string, string>>({})
-  const [configValues, setConfigValues] = useState<Record<string, string>>(initialConfigValues(initialVersion))
   const [suitableAgents, setSuitableAgents] = useState<Record<string, SuitableAgent[]>>({})
+  const [assignableUsers, setAssignableUsers] = useState<AssignableUser[]>([])
   const [agentLoadError, setAgentLoadError] = useState<string | null>(null)
+  const [userLoadError, setUserLoadError] = useState<string | null>(null)
   const [triggerType, setTriggerType] = useState<TriggerType>('manual')
   const [ticketFieldMapJson, setTicketFieldMapJson] = useState(initialTicketFieldMapJson(initialVersion))
   const [chatSlotNames, setChatSlotNames] = useState(initialChatSlotNames(initialVersion))
@@ -95,7 +101,6 @@ export function ProcessDefinitionBuilder({
     setName(initialName(version))
     setDescription('')
     setRoleBindings({})
-    setConfigValues(initialConfigValues(version))
     setChatSlotNames(initialChatSlotNames(version))
     setTicketFieldMapJson(initialTicketFieldMapJson(version))
     setMonitorContextMapJson(initialMonitorContextMapJson(version))
@@ -126,6 +131,23 @@ export function ProcessDefinitionBuilder({
       cancelled = true
     }
   }, [selectedVersion])
+
+  useEffect(() => {
+    let cancelled = false
+    async function loadUsers() {
+      setUserLoadError(null)
+      const res = await listAssignableProcessUsers()
+      if (!res.success) {
+        if (!cancelled) setUserLoadError(res.error)
+        return
+      }
+      if (!cancelled) setAssignableUsers(res.data)
+    }
+    void loadUsers()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   function parseJson(value: string, label: string): Record<string, unknown> | null {
     try {
@@ -163,8 +185,8 @@ export function ProcessDefinitionBuilder({
       setMessage({ tone: 'err', text: 'Minden agent-szerephez válassz alkalmas agentet.' })
       return
     }
-    if (selectedVersion.configSlots.some((slot) => slot.required && !configValues[slot.name]?.trim())) {
-      setMessage({ tone: 'err', text: 'Minden kötelező config-rést tölts ki.' })
+    if (selectedVersion.humanRoles.some((role) => !roleBindings[role.key])) {
+      setMessage({ tone: 'err', text: 'Minden emberi szerephez válassz usert.' })
       return
     }
     const inputMap = buildTriggerInputMap()
@@ -184,7 +206,7 @@ export function ProcessDefinitionBuilder({
       const updated = await updateProcessDefinitionBindings({
         id: created.data.id,
         roleBindings,
-        configValues,
+        configValues: {},
       })
       if (!updated.success) {
         setMessage({ tone: 'err', text: updated.error })
@@ -260,11 +282,15 @@ export function ProcessDefinitionBuilder({
       </label>
 
       {selectedVersion && (
-        <div className="grid gap-4 lg:grid-cols-2">
+        <div className="grid gap-4">
           <div className="rounded-lg border border-ink/10 p-4">
             <h3 className="font-semibold">Szerep-kötések</h3>
             {agentLoadError && <p className="mt-2 text-sm text-coral">{agentLoadError}</p>}
+            {userLoadError && <p className="mt-2 text-sm text-coral">{userLoadError}</p>}
             <div className="mt-3 space-y-3">
+              {selectedVersion.agentRoles.length > 0 && (
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-ink-soft">Agent szerepek</p>
+              )}
               {selectedVersion.agentRoles.map((role) => {
                 const agents = suitableAgents[role.key] ?? []
                 return (
@@ -297,36 +323,42 @@ export function ProcessDefinitionBuilder({
                   </label>
                 )
               })}
-              {selectedVersion.agentRoles.length === 0 && (
-                <p className="text-sm text-ink-soft">Ez a Playbook nem deklarál agent-szerepet.</p>
+              {selectedVersion.humanRoles.length > 0 && (
+                <p className="pt-2 text-xs font-semibold uppercase tracking-[0.16em] text-ink-soft">
+                  Emberi szerepek
+                </p>
               )}
-            </div>
-          </div>
-
-          <div className="rounded-lg border border-ink/10 p-4">
-            <h3 className="font-semibold">Config-rések</h3>
-            <div className="mt-3 space-y-3">
-              {selectedVersion.configSlots.map((slot) => (
-                <label key={slot.name} className="block text-sm">
-                  <span className="mb-1 flex items-center justify-between gap-2 text-ink-soft">
-                    <span>
-                      {slot.name}
-                      {slot.required ? ' *' : ''}
-                    </span>
-                    <span className="font-mono text-[11px]">{slot.type}</span>
+              {selectedVersion.humanRoles.map((role) => (
+                <label key={role.key} className="block text-sm">
+                  <span className="mb-1 flex flex-wrap items-center justify-between gap-2 text-ink-soft">
+                    <span>{role.key}</span>
+                    {role.requiredPermissions.length > 0 && (
+                      <span className="font-mono text-[11px]">{role.requiredPermissions.join(', ')}</span>
+                    )}
                   </span>
-                  <input
-                    value={configValues[slot.name] ?? ''}
+                  <select
+                    value={roleBindings[role.key] ?? ''}
                     onChange={(event) =>
-                      setConfigValues((current) => ({ ...current, [slot.name]: event.target.value }))
+                      setRoleBindings((current) => ({ ...current, [role.key]: event.target.value }))
                     }
                     className="w-full rounded-lg border border-ink/15 bg-transparent px-3 py-2 text-sm"
-                  />
-                  {slot.description && <span className="mt-1 block text-xs text-ink-soft">{slot.description}</span>}
+                  >
+                    <option value="">Válassz usert</option>
+                    {assignableUsers.map((user) => (
+                      <option key={user.id} value={user.id}>
+                        {user.name} - {user.email} - {user.role}
+                      </option>
+                    ))}
+                  </select>
+                  {assignableUsers.length === 0 && (
+                    <Link href="/control-plane/iam" className="mt-1 inline-block text-xs text-coral underline">
+                      Nincs aktív hozzárendelhető user
+                    </Link>
+                  )}
                 </label>
               ))}
-              {selectedVersion.configSlots.length === 0 && (
-                <p className="text-sm text-ink-soft">Nincs Folyamat-szintű config-rés.</p>
+              {selectedVersion.agentRoles.length === 0 && selectedVersion.humanRoles.length === 0 && (
+                <p className="text-sm text-ink-soft">Ez a Playbook nem deklarál szerepet.</p>
               )}
             </div>
           </div>

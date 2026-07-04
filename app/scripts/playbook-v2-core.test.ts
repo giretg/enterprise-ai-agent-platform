@@ -20,6 +20,8 @@ import {
 } from '../src/lib/playbook-v2/spec'
 import { PlaybookValidator } from '../src/domain/playbook/playbook-validator'
 import { PlaybookCompiler } from '../src/domain/playbook/playbook-compiler'
+import { syncInputSlotsWithTemplate } from '../src/lib/playbook-v2/input-slots-sync'
+import { getRoleType, upsertRoleType } from '../src/lib/playbook-v2/role-sync'
 
 let failures = 0
 function check(name: string, fn: () => void) {
@@ -305,6 +307,54 @@ check('WP-4: ismeretlen capability a szótár ellen → UNKNOWN_CAPABILITY', () 
     knownCapabilities: new Set(['tool:web_fetch']), // tool:file_read hiányzik
   })
   assert.ok(result.errors.some((e) => e.code === 'UNKNOWN_CAPABILITY'), JSON.stringify(result.errors))
+})
+
+console.log('=== instructionTemplate ↔ inputSlots szinkron ===')
+
+check('sync: új token → új slot trigger forrással', () => {
+  const synced = syncInputSlotsWithTemplate('Hello {{bank_name}}!', [])
+  assert.deepEqual(synced, [
+    { name: 'bank_name', type: 'string', required: true, source: 'trigger' },
+  ])
+})
+
+check('sync: eltávolított token → slot törlése, megmaradt metaadat', () => {
+  const existing = [
+    { name: 'ceg', type: 'string' as const, required: true, source: 'trigger' as const },
+    { name: 'sablon', type: 'string' as const, required: true, source: 'config' as const },
+  ]
+  const synced = syncInputSlotsWithTemplate('Csak {{ceg}} kell.', existing)
+  assert.deepEqual(synced, [existing[0]])
+})
+
+check('sync: ismerős token megtartja a meglévő slot metaadatot', () => {
+  const existing = [
+    { name: 'tone', type: 'freeform' as const, required: false, source: 'config' as const, description: 'Stílus' },
+  ]
+  const synced = syncInputSlotsWithTemplate('Stílus: {{tone}}', existing)
+  assert.deepEqual(synced, existing)
+})
+
+check('sync: nincs token → undefined', () => {
+  assert.equal(syncInputSlotsWithTemplate('Nincs placeholder', [{ name: 'x', type: 'string', required: true, source: 'trigger' }]), undefined)
+})
+
+console.log('=== roles[].type szinkron ===')
+
+check('role sync: getRoleType ismeretlen kulcs → agent_role', () => {
+  assert.equal(getRoleType([], 'unknown'), 'agent_role')
+})
+
+check('role sync: upsertRoleType frissít meglévőt', () => {
+  const roles = [{ key: 'approver', type: 'agent_role' as const }]
+  const next = upsertRoleType(roles, 'approver', 'human_role')
+  assert.equal(next.length, 1)
+  assert.equal(next[0].type, 'human_role')
+})
+
+check('role sync: upsertRoleType létrehoz újat', () => {
+  const next = upsertRoleType([], 'researcher', 'agent_role')
+  assert.deepEqual(next, [{ key: 'researcher', type: 'agent_role' }])
 })
 
 console.log('')

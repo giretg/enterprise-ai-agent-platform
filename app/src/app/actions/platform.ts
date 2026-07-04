@@ -93,6 +93,7 @@ import {
   changeUserRoleSchema,
   suspendUserSchema,
   reactivateUserSchema,
+  setUserJobDescriptionSchema,
   updateRolePermissionSchema,
   setDispatcherControlsSchema,
   setDatabaseModeSchema,
@@ -2704,6 +2705,29 @@ export async function reactivateUser(input: { targetUserId: string }) {
   }
 }
 
+/**
+ * A humán "szerep" leírás (jobDescription) beállítása — ezt látja az agent
+ * user_directory toolja, hogy egy feladathoz megtalálja az illetékest.
+ */
+export async function setUserJobDescription(input: {
+  targetUserId: string
+  jobDescription?: string | null
+}) {
+  try {
+    const actor = await requirePermission('user.role.write')
+    const parsed = setUserJobDescriptionSchema.parse(input)
+    const updated = await services.iam.setJobDescription({
+      targetUserId: parsed.targetUserId,
+      jobDescription: parsed.jobDescription ?? null,
+      actorId: actor.id,
+      actorTenantId: actor.tenantId,
+    })
+    return ok({ userId: updated.id, jobDescription: updated.jobDescription })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update user description')
+  }
+}
+
 /** GET/PATCH /permissions (§6) — a deklaratív permission-mátrix. */
 export async function getPermissionMatrix() {
   try {
@@ -3174,7 +3198,8 @@ const WORKSPACE_TOOLS = [
   'file_search', 'file_delete',
   'xlsx_read_sheet', 'xlsx_write_cells', 'xlsx_append_rows',
   'xlsx_create', 'xlsx_format_range', 'xlsx_layout',
-  'docx_read', 'pdf_read', 'pdf_create', 'pptx_create',
+  'pptx_create',
+  'docx_read', 'pdf_read', 'pdf_create',
 ] as const
 
 const SANDBOX_APP_TOOLS = [
@@ -3184,17 +3209,20 @@ const SANDBOX_APP_TOOLS = [
   'sandbox_app.export',
 ] as const
 
+const BOARD_TOOLS = ['ticket_create', 'board_write'] as const
+
 const CONFIGURABLE_AGENT_TOOLS = [
   ...WORKSPACE_TOOLS,
   ...SANDBOX_APP_TOOLS,
+  ...BOARD_TOOLS,
   'gmail_search',
   'gmail_get_message',
   'gmail_create_draft',
   'gmail_send',
   'agent_catalog',
   'agent_resolve',
+  'user_directory',
   'agent_ask',
-  'ticket_create',
   'http_api_get',
   'http_api_request',
   'web_search',
@@ -3219,7 +3247,7 @@ export async function updateAgentCapabilities(input: {
     const enabledSet = new Set(allTools)
     const needsWorkspace = WORKSPACE_TOOLS.some((t) => enabledSet.has(t))
     const needsWebSearch = enabledSet.has('web_search')
-    const needsBoard = SANDBOX_APP_TOOLS.some((t) => enabledSet.has(t))
+    const needsBoard = [...SANDBOX_APP_TOOLS, ...BOARD_TOOLS].some((t) => enabledSet.has(t))
 
     if (agent.role === 'orchestrator' && allTools.length > 0) {
       await repositories.audit.append({

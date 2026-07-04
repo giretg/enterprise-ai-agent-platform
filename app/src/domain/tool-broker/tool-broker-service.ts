@@ -220,6 +220,23 @@ export type DelegationProcessInput = {
 
 export type DelegationProcessor = (input: DelegationProcessInput) => Promise<void>
 
+/**
+ * Folyamat-ticket állapotváltásának gazdája (a `TicketStateMachine` szűk nézete).
+ * A `board_write` ezen keresztül zárja le a folyamat-lépéseket, hogy a kötelező
+ * kapuk és az output-szerződés kikényszerüljenek, és a `ProcessService.advance`
+ * ténylegesen tovább-léptesse a Futást (l. process-runtime-advance-gap). Ha nincs
+ * bekötve, a `board_write` a legacy `TicketService.transition`-re esik vissza.
+ */
+export interface PlaybookTicketTransitioner {
+  transitionTicket(input: {
+    tenantId: string | null
+    ticketId: string
+    toState: string
+    actor: { type: 'agent'; id?: string | null }
+    outputPayload?: Record<string, unknown>
+  }): Promise<unknown>
+}
+
 export type AgentResolveArgs = {
   query: string
   limit?: number
@@ -246,6 +263,27 @@ export type AgentCatalogArgs = {
 
 export type AgentCatalogResult = {
   agents: AgentCatalogEntry[]
+}
+
+// user_directory — a tenanthoz tartozó humán felhasználók listája az agentnek
+// (pl. a folyamat-agent innen keresi ki, ki az illetékes egy feladathoz, vagy
+// kinek nyisson ticketet). A `jobDescription` a humán szabad szöveges szerepe.
+export type UserDirectoryArgs = {
+  query?: string
+  limit?: number
+}
+
+export type UserDirectoryEntry = {
+  userId: string
+  name: string
+  email: string
+  role: string | null
+  jobDescription: string | null
+  status: string
+}
+
+export type UserDirectoryResult = {
+  users: UserDirectoryEntry[]
 }
 
 export type GmailSearchArgs = { query: string; maxResults?: number }
@@ -320,6 +358,22 @@ type SandboxAppUpdateArtifactResult = {
 type SandboxAppPreviewResult = { previewUrl: string; contentHash: string; expiresAt: string }
 type SandboxAppExportResult = { filename: string; contentRef: string; contentHash: string; sizeBytes: number }
 
+// Sandbox verziózás agent-toolok (SandboxVersioning-Graduation §5). Az agent
+// commitolhat, javasolhat promóciót és test-env snapshotot készíthet — de SOHA
+// nem promótálhat, nem exportálhat és nem nyúl live adathoz (a service kikényszeríti).
+export type SandboxCommitArgs = {
+  projectId: string
+  files: Array<{ path: string; contentRef: string }>
+  changeSummary: string
+  createdFromTicketId?: string
+}
+export type SandboxRequestPromotionArgs = { projectId: string; reason?: string }
+export type SandboxSnapshotArgs = { projectId: string; label?: string }
+
+type SandboxCommitResult = { commitId: string; seq: number; treeHash: string }
+type SandboxRequestPromotionResult = { promotionId: string; status: 'pending_approval'; fromCommitId: string }
+type SandboxSnapshotResult = { snapshotId: string; status: 'available'; schemaHash: string }
+
 export type FileReadArgs = { path: string; offset?: number; limit?: number }
 export type FileWriteArgs = { path: string; content: string }
 export type HtmlCreateArgs = { path: string; html: string; title?: string }
@@ -389,6 +443,7 @@ export type ToolBrokerInvokeInput =
   | (ToolInvokeBase & { tool: 'agent_ask'; args: AgentAskArgs })
   | (ToolInvokeBase & { tool: 'agent_resolve'; args: AgentResolveArgs })
   | (ToolInvokeBase & { tool: 'agent_catalog'; args: AgentCatalogArgs })
+  | (ToolInvokeBase & { tool: 'user_directory'; args: UserDirectoryArgs })
   | (ToolInvokeBase & { tool: 'gmail_search'; args: GmailSearchArgs })
   | (ToolInvokeBase & { tool: 'gmail_get_message'; args: GmailGetMessageArgs })
   | (ToolInvokeBase & { tool: 'mailbox_count'; args: MailboxCountArgs })
@@ -418,6 +473,9 @@ export type ToolBrokerInvokeInput =
   | (ToolInvokeBase & { tool: 'sandbox_app.update_artifact'; args: SandboxAppUpdateArtifactArgs })
   | (ToolInvokeBase & { tool: 'sandbox_app.preview'; args: SandboxAppPreviewArgs })
   | (ToolInvokeBase & { tool: 'sandbox_app.export'; args: SandboxAppExportArgs })
+  | (ToolInvokeBase & { tool: 'sandbox.commit'; args: SandboxCommitArgs })
+  | (ToolInvokeBase & { tool: 'sandbox.request_promotion'; args: SandboxRequestPromotionArgs })
+  | (ToolInvokeBase & { tool: 'sandbox.snapshot'; args: SandboxSnapshotArgs })
   | (ToolInvokeBase & { tool: 'web_search'; args: WebSearchArgs })
   | (ToolInvokeBase & { tool: 'web_research_request'; args: WebResearchArgs })
 
@@ -438,6 +496,7 @@ export type ToolBrokerInvokeResult =
         | AgentAskResult
         | AgentResolveResult
         | AgentCatalogResult
+        | UserDirectoryResult
         | GmailSearchResult
         | GmailGetMessageResult
         | MailboxCountResult
@@ -460,6 +519,9 @@ export type ToolBrokerInvokeResult =
         | XlsxCreateResult
         | DocxReadResult
         | PdfReadResult
+        | SandboxCommitResult
+        | SandboxRequestPromotionResult
+        | SandboxSnapshotResult
         | SandboxAppCreateResult
         | SandboxAppUpdateArtifactResult
         | SandboxAppPreviewResult
@@ -488,6 +550,7 @@ const TOOL_REQUIREMENTS: Partial<Record<
   agent_ask: { connectorType: 'board', accessMode: 'write' },
   agent_resolve: { connectorType: 'board', accessMode: 'read' },
   agent_catalog: { connectorType: 'board', accessMode: 'read' },
+  user_directory: { connectorType: 'board', accessMode: 'read' },
   gmail_search: { connectorType: 'gmail', accessMode: 'read' },
   gmail_get_message: { connectorType: 'gmail', accessMode: 'read' },
   mailbox_count: { connectorType: 'gmail', accessMode: 'read' },
@@ -517,10 +580,37 @@ const TOOL_REQUIREMENTS: Partial<Record<
   'sandbox_app.update_artifact': { connectorType: 'board', accessMode: 'write' },
   'sandbox_app.preview': { connectorType: 'board', accessMode: 'read' },
   'sandbox_app.export': { connectorType: 'board', accessMode: 'read' },
+  'sandbox.commit': { connectorType: 'board', accessMode: 'write' },
+  'sandbox.request_promotion': { connectorType: 'board', accessMode: 'write' },
+  'sandbox.snapshot': { connectorType: 'board', accessMode: 'write' },
   web_search: { connectorType: 'web_search', accessMode: 'read' },
 }
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * user_directory tiszta szűrője (DB-mentes, ezért determinisztikusan tesztelhető).
+ * Az opcionális `query` a néven / szerepen (role + jobDescription) / e-mailen szűr,
+ * ékezet- és kisbetű-függetlenül, ÉS-kapcsolt szótagokkal (minden keresőszónak
+ * illeszkednie kell). A `limit` 1..100 közé szorítva (alapból 50).
+ */
+export function filterUserDirectory(
+  entries: UserDirectoryEntry[],
+  args: UserDirectoryArgs,
+): UserDirectoryResult {
+  const query = normalizeText((args.query ?? '').trim())
+  const filtered = query
+    ? entries.filter((u) => {
+        const haystack = normalizeText(
+          [u.name, u.jobDescription ?? '', u.role ?? '', u.email].join(' '),
+        )
+        return query.split(/\s+/).every((term) => haystack.includes(term))
+      })
+    : entries
+
+  const limit = Math.min(Math.max(args.limit ?? 50, 1), 100)
+  return { users: filtered.slice(0, limit) }
 }
 
 function normalizeText(value: string): string {
@@ -838,6 +928,14 @@ function argsMeta(
     }
   }
 
+  if (input.tool === 'user_directory') {
+    return {
+      ...base,
+      queryLength: input.args.query?.length ?? 0,
+      limit: input.args.limit ?? null,
+    }
+  }
+
   if (input.tool === 'gmail_search') {
     return { ...base, queryLength: input.args.query.length, maxResults: input.args.maxResults ?? 10 }
   }
@@ -928,6 +1026,18 @@ function argsMeta(
   if (input.tool === 'sandbox_app.update_artifact') return { ...base, appId: input.args.appId, htmlLength: input.args.html.length, activate: input.args.activate ?? false }
   if (input.tool === 'sandbox_app.preview') return { ...base, appId: input.args.appId, version: input.args.version ?? null }
   if (input.tool === 'sandbox_app.export') return { ...base, appId: input.args.appId, version: input.args.version ?? null }
+  // §8.2: kód/adattartalom SOHA nem kerül auditba — csak projekt-id, fájldarabszám, path-lista.
+  if (input.tool === 'sandbox.commit')
+    return {
+      ...base,
+      projectId: input.args.projectId,
+      fileCount: input.args.files.length,
+      paths: input.args.files.map((f) => f.path).slice(0, 50),
+    }
+  if (input.tool === 'sandbox.request_promotion')
+    return { ...base, projectId: input.args.projectId, hasReason: Boolean(input.args.reason) }
+  if (input.tool === 'sandbox.snapshot')
+    return { ...base, projectId: input.args.projectId, env: 'test' }
   if (input.tool === 'web_search') {
     // I-WS-10/WS10: a nyers query SOSEM kerül auditba — csak hossz + hash. A
     // hash-t a policy.authorize() már kiszámolta (webSearchEffective.queryHash);
@@ -984,6 +1094,7 @@ function resultMeta(
     | AgentAskResult
     | AgentResolveResult
     | AgentCatalogResult
+    | UserDirectoryResult
     | GmailSearchResult
     | GmailGetMessageResult
     | MailboxCountResult
@@ -1010,6 +1121,9 @@ function resultMeta(
     | SandboxAppUpdateArtifactResult
     | SandboxAppPreviewResult
     | SandboxAppExportResult
+    | SandboxCommitResult
+    | SandboxRequestPromotionResult
+    | SandboxSnapshotResult
     | WebSearchResult
     | WebResearchDelegationResult,
 ): Record<string, unknown> {
@@ -1069,6 +1183,13 @@ function resultMeta(
 
   if ('count' in result && 'query' in result) {
     return { count: result.count, queryLength: result.query.length }
+  }
+
+  if ('users' in result && Array.isArray(result.users)) {
+    return {
+      userCount: result.users.length,
+      roles: [...new Set(result.users.map((u) => u.role))],
+    }
   }
 
   if ('agents' in result && Array.isArray(result.agents)) {
@@ -1211,6 +1332,32 @@ const prismaWebResearchDelegationEnabledLookup: WebResearchDelegationEnabledLook
 const prismaActingUserLookup: ActingUserLookup = async (userId) =>
   prisma.user.findUnique({ where: { id: userId }, select: { status: true } })
 
+/**
+ * user_directory feloldás — a tenant AKTÍV humán felhasználóit adja vissza a
+ * hozzájuk rendelt szabad szöveges szereppel (`jobDescription`). Cserepont a
+ * determinisztikus teszteléshez; alapból a Postgres `users` táblát kérdezi a hívó
+ * tenantjára szűkítve (tenant-izoláció — sosem lát cross-tenant felhasználót).
+ */
+export type TenantUserDirectoryLookup = (
+  tenantId: string | null,
+) => Promise<UserDirectoryEntry[]>
+
+const prismaTenantUserDirectoryLookup: TenantUserDirectoryLookup = async (tenantId) => {
+  const rows = await prisma.user.findMany({
+    where: { tenantId, status: 'active' },
+    select: { id: true, name: true, email: true, role: true, jobDescription: true, status: true },
+    orderBy: { name: 'asc' },
+  })
+  return rows.map((u) => ({
+    userId: u.id,
+    name: u.name,
+    email: u.email,
+    role: u.role,
+    jobDescription: u.jobDescription,
+    status: u.status,
+  }))
+}
+
 export class AllowlistAuthorizer implements Authorizer {
   constructor(
     private tools: ToolBrokerRepository,
@@ -1345,6 +1492,7 @@ export class AllowlistAuthorizer implements Authorizer {
 
 export class ToolBrokerService {
   private delegationProcessor: DelegationProcessor | null = null
+  private playbookTransitioner: PlaybookTicketTransitioner | null = null
 
   constructor(
     private agents: AgentRepository,
@@ -1356,6 +1504,7 @@ export class ToolBrokerService {
     private grantService: ConnectorGrantService,
     private fileEditor: FileEditorService,
     private sandboxApps: import('@/domain/sandbox/sandbox-app-service').SandboxAppService,
+    private sandboxVersioning: import('@/domain/sandbox-versioning/sandbox-versioning-service').SandboxVersioningService,
     private webSearch: WebSearchService,
     private webSearchPolicy: WebSearchPolicyService,
     // KB-v3 §9.1/§10 — published OKF-chunk full-text retrieval + superseded (§10.5).
@@ -1364,11 +1513,17 @@ export class ToolBrokerService {
     private isWebSearchEnabled: WebSearchEnabledLookup = prismaWebSearchEnabledLookup,
     private isWebFetchEnabled: WebFetchEnabledLookup = prismaWebFetchEnabledLookup,
     private isWebResearchDelegationEnabled: WebResearchDelegationEnabledLookup = prismaWebResearchDelegationEnabledLookup,
+    private lookupTenantUserDirectory: TenantUserDirectoryLookup = prismaTenantUserDirectoryLookup,
   ) {}
 
   /** Chat agent_ask: szinkron feldolgozás (pl. WikiAgentRuntime.processTicket). */
   setDelegationProcessor(processor: DelegationProcessor | null): void {
     this.delegationProcessor = processor
+  }
+
+  /** A folyamat-ticketek állapotváltását a Playbook state machine-hez köti (l. board_write). */
+  setPlaybookTransitioner(transitioner: PlaybookTicketTransitioner | null): void {
+    this.playbookTransitioner = transitioner
   }
 
   async invoke(input: ToolBrokerInvokeInput): Promise<ToolBrokerInvokeResult> {
@@ -1551,6 +1706,7 @@ export class ToolBrokerService {
     if (input.tool === 'web_research_request') return this.webResearchRequest(input)
     if (input.tool === 'agent_resolve') return this.agentResolve(input.args)
     if (input.tool === 'agent_catalog') return this.agentCatalog(input.args)
+    if (input.tool === 'user_directory') return this.userDirectory(input, actingTenantId)
 
     if (input.tool === 'web_search') {
       if (!authorization.connector) throw new Error('web_search requires connector authorization')
@@ -1598,6 +1754,14 @@ export class ToolBrokerService {
 
     if (input.tool.startsWith('sandbox_app.')) {
       return this.executeSandboxAppTool(input, actingTenantId)
+    }
+
+    if (
+      input.tool === 'sandbox.commit' ||
+      input.tool === 'sandbox.request_promotion' ||
+      input.tool === 'sandbox.snapshot'
+    ) {
+      return this.executeSandboxVersioningTool(input, actingTenantId)
     }
 
     const accessToken = await this.resolveDelegatedAccessToken(input, authorization)
@@ -1790,6 +1954,46 @@ export class ToolBrokerService {
     throw new Error(`Unknown sandbox_app tool: ${(input as { tool: string }).tool}`)
   }
 
+  /**
+   * Sandbox verziózás agent-toolok (SandboxVersioning-Graduation §5). Az agent
+   * commitolhat, javasolhat promóciót és `test`-env snapshotot készíthet. A
+   * SandboxVersioningService kikényszeríti, hogy az agent SOHA ne promótálhasson,
+   * exportálhasson vagy live adathoz nyúljon — ezekhez nincs capability sem (§5.1).
+   */
+  private async executeSandboxVersioningTool(
+    input: ToolBrokerInvokeInput & {
+      tool: 'sandbox.commit' | 'sandbox.request_promotion' | 'sandbox.snapshot'
+    },
+    actingTenantId: string | null,
+  ): Promise<SandboxCommitResult | SandboxRequestPromotionResult | SandboxSnapshotResult> {
+    const actor = { agentId: input.agentId, tenantId: actingTenantId, agentVersion: input.agentVersion }
+
+    if (input.tool === 'sandbox.commit') {
+      const a = input.args as SandboxCommitArgs
+      return this.sandboxVersioning.createSandboxCommit(
+        {
+          projectId: a.projectId,
+          files: a.files,
+          changeSummary: a.changeSummary,
+          createdFromTicketId: a.createdFromTicketId ?? input.ticketId,
+        },
+        actor,
+      )
+    }
+
+    if (input.tool === 'sandbox.request_promotion') {
+      const a = input.args as SandboxRequestPromotionArgs
+      return this.sandboxVersioning.requestPromotion({ projectId: a.projectId, reason: a.reason }, actor)
+    }
+
+    // sandbox.snapshot — az agentnek KIZÁRÓLAG `test` env (§5.1).
+    const a = input.args as SandboxSnapshotArgs
+    return this.sandboxVersioning.createDataSnapshot(
+      { projectId: a.projectId, env: 'test', label: a.label },
+      actor,
+    )
+  }
+
   private async resolveDelegatedAccessToken(
     input: ToolBrokerInvokeInput,
     authorization: Extract<AuthorizationResult, { allowed: true }>,
@@ -1946,6 +2150,31 @@ export class ToolBrokerService {
       return await this.completeDelegationReturn(ticket, mergedPayload, input)
     }
 
+    // Folyamat-lépés lezárása a Playbook state machine-en át: a kötelező kapuk és
+    // az output-szerződés kikényszerülnek, és a ProcessService.advance tovább-lépteti
+    // a Futást. A payload+state itt EGY átmenetben megy (a state machine az
+    // outputPayload-ot merge-öli és a szerződés ellen ellenőrzi) — ezért NEM írjuk
+    // meg előre a payloadot. Ha nincs bekötve a handler, a legacy útra esünk vissza.
+    const isProcessTicket = Boolean(
+      ticket.processInstanceId && ticket.playbookVersionId && ticket.playbookStepId,
+    )
+    if (
+      this.playbookTransitioner &&
+      isProcessTicket &&
+      input.args.patch.state &&
+      input.args.patch.state !== ticket.state
+    ) {
+      await this.playbookTransitioner.transitionTicket({
+        tenantId: ticket.tenantId,
+        ticketId: ticket.id,
+        toState: input.args.patch.state,
+        actor: { type: 'agent', id: input.agentId },
+        outputPayload: input.args.patch.payload,
+      })
+      const fresh = await this.tickets.findById(ticket.id)
+      return { ok: true, ticketId: ticket.id, state: fresh?.state ?? input.args.patch.state }
+    }
+
     let current = ticket
     if (input.args.patch.payload) {
       current = await this.tickets.update(current.id, {
@@ -2082,6 +2311,25 @@ export class ToolBrokerService {
       const assignee = await this.agents.findById(args.assigneeId)
       if (!assignee) throw new Error('Assignee agent not found')
     }
+    // Humán felelős (a user_directory-ból): ha az agent egy konkrét humán
+    // userId-t ad, validáljuk (létező, aktív, azonos tenant) és a ticketre
+    // kötjük — így a feladat egy NEVESÍTETT emberhez kerül, nem csak a "human"
+    // várólistára. Érvénytelen/ismeretlen id némán null (a ticket attól még
+    // awaiting_human-ra megy).
+    let humanAssigneeId: string | null = null
+    if (args.assigneeType === 'human' && args.assigneeId && UUID_RE.test(args.assigneeId)) {
+      const parentTenantId = input.ticketId
+        ? (await this.tickets.findById(input.ticketId))?.tenantId ?? null
+        : null
+      const candidate = await prisma.user.findUnique({
+        where: { id: args.assigneeId },
+        select: { id: true, status: true, tenantId: true },
+      })
+      if (candidate && candidate.status === 'active' && candidate.tenantId === parentTenantId) {
+        humanAssigneeId = candidate.id
+      }
+    }
+
     const safeSourceDocumentId =
       args.sourceDocumentId && UUID_RE.test(args.sourceDocumentId) ? args.sourceDocumentId : null
 
@@ -2112,7 +2360,7 @@ export class ToolBrokerService {
       title: args.title,
       state: initialState,
       assigneeType: args.assigneeType,
-      assigneeId: args.assigneeType === 'agent' ? args.assigneeId! : null,
+      assigneeId: args.assigneeType === 'agent' ? args.assigneeId! : humanAssigneeId,
       agentId: workerAgentId,
       payload: payload as Prisma.JsonValue,
       sourceDocumentId: safeSourceDocumentId,
@@ -2525,6 +2773,24 @@ export class ToolBrokerService {
     )
 
     return { agents }
+  }
+
+  /**
+   * user_directory — a hívó agent tenantjához tartozó AKTÍV humán felhasználók
+   * listája a szabad szöveges szerepükkel (`jobDescription`). A tenant a hívó
+   * kontextusából oldódik fel (acting-user tenant, különben az agent tenantja) —
+   * cross-tenant felhasználó SOHA nem szivárog ki. Az opcionális `query` a
+   * néven / szerepen / e-mailen szűr (ékezet- és kisbetű-független).
+   */
+  private async userDirectory(
+    input: Extract<ToolBrokerInvokeInput, { tool: 'user_directory' }>,
+    actingTenantId: string | null,
+  ): Promise<UserDirectoryResult> {
+    const agent = await this.agents.findById(input.agentId)
+    const tenantId = actingTenantId ?? agent?.tenantId ?? null
+
+    const all = await this.lookupTenantUserDirectory(tenantId)
+    return filterUserDirectory(all, input.args)
   }
 
   private async recordDenied(

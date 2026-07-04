@@ -410,6 +410,9 @@ model User {
   externalAuthId  String     @unique @map("external_auth_id")
   email           String
   name            String
+  // Szabad szöveges "humán szerep" leírás (pl. "marketing vezető", "copywriter").
+  // Az agent user_directory toolja ezt látja, hogy egy feladathoz megtalálja az illetékest.
+  jobDescription  String?    @map("job_description")
   role            UserRole?
   status          UserStatus @default(pending) @map("status")
   tenantId        String?    @map("tenant_id") @db.Uuid
@@ -1702,6 +1705,211 @@ model SandboxAppVersion {
   @@unique([tenantId, appId, contentHash])
   @@index([sourceTicketId])
   @@map("sandbox_app_versions")
+}
+
+// ── Feature-spec: Sandbox verziózás, test→live promóció, graduation (§3) ────
+// A sandbox mint verziózott projekt. Kulcs-invariáns: a KÓD (commit-fa) és az
+// ADAT (point-in-time snapshot) két külön sín; a go-live promóció ember-only
+// kemény padló; a graduation-export ember-only, reprodukálható checksummal.
+
+enum SandboxEnv {
+  test
+  live
+}
+
+enum SandboxCommitSource {
+  user
+  agent
+  system
+  import
+}
+
+enum SandboxPromotionStatus {
+  pending_approval
+  approved
+  promoted
+  rejected
+  rolled_back
+}
+
+enum SandboxSnapshotKind {
+  manual
+  pre_promotion
+  scheduled
+  pre_rollback
+}
+
+enum SandboxSnapshotStatus {
+  creating
+  available
+  restoring
+  expired
+  failed
+}
+
+enum SandboxExportStatus {
+  requested
+  building
+  ready
+  delivered
+  failed
+}
+
+enum SandboxExportScope {
+  code_only
+  code_and_schema
+  full
+}
+
+enum SandboxActorType {
+  user
+  agent
+  system
+}
+
+model SandboxProject {
+  id        String  @id @default(uuid()) @db.Uuid
+  tenantId  String? @map("tenant_id") @db.Uuid
+  sandboxId String? @map("sandbox_id") @db.Uuid
+
+  name        String
+  description String?
+
+  testCommitId String? @map("test_commit_id") @db.Uuid
+  liveCommitId String? @map("live_commit_id") @db.Uuid
+  headCommitId String? @map("head_commit_id") @db.Uuid
+
+  dataBinding Json @default("{}") @map("data_binding")
+  portability Json @default("{}")
+
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt  DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+  archivedAt DateTime? @map("archived_at") @db.Timestamptz
+
+  commits   SandboxCommit[]
+  promotions SandboxPromotion[]
+  snapshots SandboxDataSnapshot[]
+  exports   SandboxExport[]
+
+  @@unique([tenantId, sandboxId, name])
+  @@index([tenantId, sandboxId])
+  @@map("sandbox_projects")
+}
+
+model SandboxCommit {
+  id        String @id @default(uuid()) @db.Uuid
+  tenantId  String? @map("tenant_id") @db.Uuid
+  projectId String @map("project_id") @db.Uuid
+
+  seq              Int
+  parentCommitId   String? @map("parent_commit_id") @db.Uuid
+  basedOnCommitId  String? @map("based_on_commit_id") @db.Uuid
+
+  source        SandboxCommitSource
+  changeSummary String              @map("change_summary")
+
+  treeRef        String  @map("tree_ref")
+  treeHash       String  @map("tree_hash")
+  fileCount      Int     @map("file_count")
+  totalSizeBytes BigInt  @map("total_size_bytes")
+
+  createdByType     SandboxActorType @map("created_by_type")
+  createdByUserId   String?          @map("created_by_user_id") @db.Uuid
+  createdByAgentId  String?          @map("created_by_agent_id") @db.Uuid
+  createdFromTicketId String?        @map("created_from_ticket_id") @db.Uuid
+  createdFromRunId  String?          @map("created_from_run_id") @db.Uuid
+
+  buildCost Json @default("{}") @map("build_cost")
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  project SandboxProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, seq])
+  // NB: a tree_hash NEM unique — a rollback szándékosan új commitot hoz létre egy
+  // korábbi (azonos tartalmú) fára (invariáns 2 / SV3), ami ütközne a unique-kal.
+  @@index([tenantId, projectId, treeHash])
+  @@index([projectId])
+  @@map("sandbox_commits")
+}
+
+model SandboxPromotion {
+  id        String  @id @default(uuid()) @db.Uuid
+  tenantId  String? @map("tenant_id") @db.Uuid
+  projectId String  @map("project_id") @db.Uuid
+
+  fromCommitId          String  @map("from_commit_id") @db.Uuid
+  prevLiveCommitId      String? @map("prev_live_commit_id") @db.Uuid
+  prePromotionSnapshotId String? @map("pre_promotion_snapshot_id") @db.Uuid
+
+  status SandboxPromotionStatus @default(pending_approval)
+
+  requestedByType   SandboxActorType @map("requested_by_type")
+  requestedByUserId String?          @map("requested_by_user_id") @db.Uuid
+  requestedByAgentId String?         @map("requested_by_agent_id") @db.Uuid
+  approvedByUserId  String?          @map("approved_by_user_id") @db.Uuid
+  reason            String?
+
+  requestedAt DateTime  @default(now()) @map("requested_at") @db.Timestamptz
+  decidedAt   DateTime? @map("decided_at") @db.Timestamptz
+  promotedAt  DateTime? @map("promoted_at") @db.Timestamptz
+
+  project SandboxProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, status])
+  @@map("sandbox_promotions")
+}
+
+model SandboxDataSnapshot {
+  id        String  @id @default(uuid()) @db.Uuid
+  tenantId  String? @map("tenant_id") @db.Uuid
+  projectId String  @map("project_id") @db.Uuid
+  env       SandboxEnv
+
+  kind   SandboxSnapshotKind
+  status SandboxSnapshotStatus @default(creating)
+
+  snapshotRef String  @map("snapshot_ref")
+  schemaHash  String  @map("schema_hash")
+  rowCount    BigInt? @map("row_count")
+  sizeBytes   BigInt? @map("size_bytes")
+
+  createdByType     SandboxActorType @map("created_by_type")
+  createdByUserId   String?          @map("created_by_user_id") @db.Uuid
+  linkedPromotionId String?          @map("linked_promotion_id") @db.Uuid
+
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  expiresAt DateTime? @map("expires_at") @db.Timestamptz
+
+  project SandboxProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, env])
+  @@map("sandbox_data_snapshots")
+}
+
+model SandboxExport {
+  id        String  @id @default(uuid()) @db.Uuid
+  tenantId  String? @map("tenant_id") @db.Uuid
+  projectId String  @map("project_id") @db.Uuid
+
+  scope          SandboxExportScope
+  sourceCommitId String  @map("source_commit_id") @db.Uuid
+  sourceSnapshotId String? @map("source_snapshot_id") @db.Uuid
+
+  status      SandboxExportStatus @default(requested)
+  packageRef  String?             @map("package_ref")
+  packageHash String?             @map("package_hash")
+  manifest    Json                @default("{}")
+  responsibilityTransferred Boolean @default(false) @map("responsibility_transferred")
+
+  requestedByUserId String   @map("requested_by_user_id") @db.Uuid
+  requestedAt       DateTime @default(now()) @map("requested_at") @db.Timestamptz
+  completedAt       DateTime? @map("completed_at") @db.Timestamptz
+
+  project SandboxProject @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, status])
+  @@map("sandbox_exports")
 }
 
 // ── Fázis 2: Write-gate token ──────────────────────────────────────────────

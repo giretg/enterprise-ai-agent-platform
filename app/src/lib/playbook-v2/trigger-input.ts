@@ -77,7 +77,9 @@ export function resolveChatTriggerInputPayload(
 }
 
 type CompiledForSlots = {
+  entryStepId?: string
   ticketRules?: Array<{
+    stepId?: string
     inputSlots?: Array<{ name: string; required: boolean; source: string; description?: string; type?: string }>
   }>
 }
@@ -85,9 +87,11 @@ type CompiledForSlots = {
 export function missingRequiredTriggerSlots(
   compiled: CompiledForSlots,
   payload: Record<string, unknown>,
+  stepId?: string,
 ): string[] {
   const required = new Set<string>()
   for (const rule of compiled.ticketRules ?? []) {
+    if (stepId && 'stepId' in rule && rule.stepId !== stepId) continue
     for (const slot of rule.inputSlots ?? []) {
       if (slot.source === 'trigger' && slot.required) required.add(slot.name)
     }
@@ -104,9 +108,11 @@ export function missingRequiredTriggerSlots(
  */
 export function chatTriggerSlotDescriptors(
   compiled: CompiledForSlots,
+  stepId?: string,
 ): Array<{ name: string; type: string; required: boolean; description?: string }> {
   const seen = new Map<string, { name: string; type: string; required: boolean; description?: string }>()
   for (const rule of compiled.ticketRules ?? []) {
+    if (stepId && 'stepId' in rule && rule.stepId !== stepId) continue
     for (const slot of rule.inputSlots ?? []) {
       if (slot.source !== 'trigger') continue
       if (!seen.has(slot.name)) {

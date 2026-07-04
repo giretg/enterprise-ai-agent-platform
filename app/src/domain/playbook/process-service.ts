@@ -21,7 +21,6 @@ import type { CompiledSpec } from '@/domain/playbook/playbook-compiler'
 import { evaluateAdvance } from '@/lib/playbook-v2/runtime'
 import { formatPlaybookRefV2, parsePlaybookSpecV2, type PlaybookRole } from '@/lib/playbook-v2/spec'
 import { isAgentSuitable } from '@/domain/playbook/suitability'
-import { missingRequiredTriggerSlots } from '@/lib/playbook-v2/trigger-input'
 import type {
   AgentRepository,
   AuditRepository,
@@ -30,6 +29,7 @@ import type {
   ProcessRepository,
   TicketRepository,
   ToolBrokerRepository,
+  UserRepository,
 } from '@/repositories/interfaces'
 
 export type ProcessActor = { type: 'user' | 'agent' | 'system'; id?: string | null }
@@ -106,6 +106,7 @@ export class ProcessService {
     private readonly defs?: ProcessDefinitionRepository,
     private readonly agents?: AgentRepository,
     private readonly toolBroker?: ToolBrokerRepository,
+    private readonly users?: UserRepository,
     private readonly alertNotifier?: ProcessAlertNotifier,
   ) {}
 
@@ -211,7 +212,22 @@ export class ProcessService {
     if (!entryRule) {
       throw new ProcessServiceError('COMPILED_SPEC_MISSING', 'A compiled spec nem tartalmaz belépő stepet.')
     }
-    const ticket = await this.createStepWithTicket(input.tenantId, process, compiled, entryRule.stepId, input.startedBy)
+    let ticket
+    try {
+      ticket = await this.createStepWithTicket(
+        input.tenantId,
+        process,
+        compiled,
+        entryRule.stepId,
+        input.startedBy,
+        input.inputPayload,
+      )
+    } catch (e) {
+      if (e instanceof ProcessBlockedError) {
+        return this.blockProcess(input.tenantId, process.id, e.stepId, e.reason, input.startedBy)
+      }
+      throw e
+    }
 
     await this.processes.updateProcess(process.id, { status: 'running', rootTicketId: ticket.id })
     return this.processes.findProcess(input.tenantId, process.id) as Promise<ProcessInstance>
@@ -299,18 +315,6 @@ export class ProcessService {
       },
     })
 
-    // §4.4 — kötelező trigger-rés hiánya futáskor → blocked (nem néma dobás).
-    const missingTrigger = missingRequiredTriggerSlots(compiled, input.inputPayload)
-    if (missingTrigger.length > 0) {
-      return this.blockProcess(
-        input.tenantId,
-        process.id,
-        compiled.entryStepId,
-        `Hiányzó kötelező trigger-rés(ek): ${missingTrigger.join(', ')}.`,
-        input.startedBy,
-      )
-    }
-
     const entryRule = compiled.ticketRules.find((r) => r.stepId === compiled.entryStepId)
     if (!entryRule) {
       throw new ProcessServiceError('COMPILED_SPEC_MISSING', 'A compiled spec nem tartalmaz belépő stepet.')
@@ -323,6 +327,7 @@ export class ProcessService {
         compiled,
         entryRule.stepId,
         input.startedBy,
+        input.inputPayload,
         undefined,
         resolution,
       )
@@ -454,12 +459,17 @@ export class ProcessService {
     }
     let nextTicket
     try {
+      const stepInput = {
+        ...this.asRecord(process.inputPayload),
+        ...(input.resultPayload ?? {}),
+      }
       nextTicket = await this.createStepWithTicket(
         input.tenantId,
         process,
         compiled,
         decision.toStepId,
         input.actor,
+        stepInput,
         { fromStepId: input.completedStepId, fromTicketId: completedStep?.ticketId ?? null },
         resolution,
       )
@@ -536,6 +546,7 @@ export class ProcessService {
     compiled: CompiledSpec,
     stepId: string,
     actor: ProcessActor,
+    inputPayload: Record<string, unknown>,
     delegationFrom?: { fromStepId: string; fromTicketId: string | null },
     resolution?: RoleResolution | null,
   ) {
@@ -543,18 +554,23 @@ export class ProcessService {
     if (!rule) {
       throw new ProcessServiceError('COMPILED_SPEC_MISSING', `Nincs compiled szabály a(z) '${stepId}' stephez.`)
     }
+    const ticketPayload = this.stepTicketPayload(rule, inputPayload)
     const isHuman = this.isHumanStep(rule)
     const requiredGateId = isHuman
       ? compiled.gates.find((g) => g.stepId === stepId && g.blocking)?.gateId ?? null
       : null
 
-    // §4.4/§7.b — agent-lépésnél a tényleges agent a Folyamat kötéséből oldódik fel
+    // §4.4/§7.b — agent/human lépésnél a tényleges szereplő a Folyamat kötéséből oldódik fel
     // (ha Folyamatból indult a Futás). Feloldhatatlan/alkalmatlan kötés → ProcessBlockedError,
-    // amit a hívó (start/advance) `blocked`-be fordít. Az agent-feloldás a step/ticket
+    // amit a hívó (start/advance) `blocked`-be fordít. A szereplő-feloldás a step/ticket
     // létrehozása ELŐTT történik, hogy blokk esetén ne maradjon részleges rekord.
     const resolvedAgentId =
       !isHuman && resolution
         ? await this.resolveAgentForRole(tenantId, resolution, rule.assignedRole, rule.stepId)
+        : null
+    const resolvedUserId =
+      isHuman && resolution
+        ? await this.resolveUserForRole(tenantId, resolution, rule.assignedRole, rule.stepId)
         : null
 
     const step = await this.processes.createStep({
@@ -565,6 +581,7 @@ export class ProcessService {
       status: 'ready',
       assignedRole: rule.assignedRole,
       assignedAgentId: resolvedAgentId,
+      assignedUserId: resolvedUserId,
     })
 
     // A belépő agent-step azonnal dispatch-elhető (ready); az emberi step awaiting_human.
@@ -575,9 +592,9 @@ export class ProcessService {
       title: rule.stepName,
       state: ticketState,
       assigneeType: isHuman ? 'human' : 'agent',
-      assigneeId: null,
+      assigneeId: resolvedUserId,
       agentId: resolvedAgentId,
-      payload: {} as Prisma.JsonObject,
+      payload: ticketPayload as Prisma.JsonObject,
       sourceDocumentId: null,
       executeAfter: null,
       dueBy: null,
@@ -603,6 +620,7 @@ export class ProcessService {
         ticket_id: ticket.id,
         assignee_type: isHuman ? 'human' : 'agent',
         assigned_agent_id: resolvedAgentId,
+        assigned_user_id: resolvedUserId,
         required_gate_id: requiredGateId,
       },
     })
@@ -620,6 +638,7 @@ export class ProcessService {
         fromUserId: actor.type === 'user' ? actor.id ?? null : null,
         toActorType: isHuman ? 'user' : 'agent',
         toAgentId: resolvedAgentId,
+        toUserId: resolvedUserId,
       })
       // A ready ticket egyúttal "delivered" a fogadó szereplőnek (§4.7 delegacios státusz).
       await this.processes.updateDelegation(delegation.id, {
@@ -642,6 +661,29 @@ export class ProcessService {
     }
 
     return ticket
+  }
+
+  private stepTicketPayload(
+    rule: CompiledSpec['ticketRules'][number],
+    inputPayload: Record<string, unknown>,
+  ): Record<string, unknown> {
+    const payload: Record<string, unknown> = {}
+    const missing: string[] = []
+    for (const slot of rule.inputSlots ?? []) {
+      const value = inputPayload[slot.name]
+      if (value !== undefined && value !== null && value !== '') {
+        payload[slot.name] = value
+        continue
+      }
+      if (slot.required) missing.push(slot.name)
+    }
+    if (missing.length > 0) {
+      throw new ProcessBlockedError(
+        rule.stepId,
+        `A(z) '${rule.stepId}' step ticketjéhez hiányzó kötelező input-rés(ek): ${missing.join(', ')}.`,
+      )
+    }
+    return payload
   }
 
   /** Az adott stepbe vezető nyitott delegacios él(eke)t done-ra állítja (§4.7). */
@@ -672,16 +714,17 @@ export class ProcessService {
     if (!this.agents || !this.toolBroker) {
       throw new ProcessBlockedError(stepId, 'Nincs agent-repository az alkalmasság-ellenőrzéshez.')
     }
-    const agent = await this.agents.findById(agentId, tenantId)
+    const agent = await this.agents.findById(agentId)
     if (!agent) {
       throw new ProcessBlockedError(stepId, `A(z) '${roleKey}' szerephez kötött agent nem található.`)
     }
     const capabilities = await this.toolBroker.findCapabilitiesForAgent(agentId)
     const role = resolution.roleByKey.get(roleKey)
+    const registryTenantId = agent.tenantId ?? null
     const suitability = isAgentSuitable(
       { status: agent.status, tenantId: agent.tenantId, capabilities },
       { requiredCapabilities: role?.requiredCapabilities },
-      tenantId,
+      registryTenantId,
     )
     if (!suitability.ok) {
       throw new ProcessBlockedError(
@@ -690,6 +733,29 @@ export class ProcessService {
       )
     }
     return agentId
+  }
+
+  private async resolveUserForRole(
+    tenantId: string | null,
+    resolution: RoleResolution,
+    roleKey: string,
+    stepId: string,
+  ): Promise<string> {
+    const userId = resolution.roleBindings[roleKey]
+    if (!userId) {
+      throw new ProcessBlockedError(stepId, `A(z) '${roleKey}' emberi szerephez nincs user kötve a Folyamaton.`)
+    }
+    if (!this.users) {
+      throw new ProcessBlockedError(stepId, 'Nincs user-repository az emberi szerep feloldásához.')
+    }
+    const user = await this.users.findById(userId)
+    if (!user) {
+      throw new ProcessBlockedError(stepId, `A(z) '${roleKey}' szerephez kötött user nem található.`)
+    }
+    if (user.status !== 'active' || !user.role) {
+      throw new ProcessBlockedError(stepId, `A(z) '${roleKey}' szerephez kötött user nem aktív vagy nincs szerepe.`)
+    }
+    return userId
   }
 
   /** A Folyamatból indított Futáshoz betölti a szerep→agent feloldás kontextusát. */
@@ -746,6 +812,12 @@ export class ProcessService {
       }
     }
     return out
+  }
+
+  private asRecord(value: unknown): Record<string, unknown> {
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {}
   }
 
   private async resolveDefaultVersionId(tenantId: string | null, processType: string): Promise<string> {

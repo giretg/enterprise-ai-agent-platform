@@ -197,6 +197,18 @@ export const PLATFORM_BROKER_TOOLS = [
       },
     },
   },
+  {
+    name: 'user_directory',
+    description:
+      'List the human staff of the tenant — name, email, role and a free-text description (e.g. "marketing lead", "copywriter"). Use it to find who is responsible for a task, or to open a ticket for a specific person (pass the returned userId as ticket_create assigneeId with assigneeType="human"). The optional query filters by name/role/description.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'Optional search by name, role, or description keyword' },
+        limit: { type: 'number', description: 'Max results (default 50)' },
+      },
+    },
+  },
   ...GMAIL_TOOLS.map((name) => ({
     name,
     description:
@@ -627,6 +639,48 @@ export const PLATFORM_BROKER_TOOLS = [
     },
   },
   {
+    name: 'sandbox.commit',
+    description:
+      'Commit a set of files to a versioned sandbox project (code track). Moves ONLY the test tree; live never changes on commit. Files reference prepared content via contentRef (inline:<content> or workspace:<tenant>/<ticket>/<path>). Returns the new commit id, seq and deterministic tree hash.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        projectId: { type: 'string' },
+        changeSummary: { type: 'string' },
+        files: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: { path: { type: 'string' }, contentRef: { type: 'string' } },
+            required: ['path', 'contentRef'],
+          },
+        },
+        createdFromTicketId: { type: 'string' },
+      },
+      required: ['projectId', 'changeSummary', 'files'],
+    },
+  },
+  {
+    name: 'sandbox.request_promotion',
+    description:
+      'Request a test→live promotion for a sandbox project. This does NOT promote — a human must approve (hard floor). Returns a pending_approval promotion id.',
+    inputSchema: {
+      type: 'object',
+      properties: { projectId: { type: 'string' }, reason: { type: 'string' } },
+      required: ['projectId'],
+    },
+  },
+  {
+    name: 'sandbox.snapshot',
+    description:
+      'Create a point-in-time data snapshot of the sandbox project TEST environment (data track). Agents may only snapshot test; live snapshots are human-only.',
+    inputSchema: {
+      type: 'object',
+      properties: { projectId: { type: 'string' }, label: { type: 'string' } },
+      required: ['projectId'],
+    },
+  },
+  {
     name: 'http_api_get',
     description:
       'Read (GET) from the external REST API connector assigned to this agent. path is relative to the connector base URL (e.g. "/banks" or "/banks/{id}/crm"). The API key is injected by the platform.',
@@ -824,7 +878,8 @@ export async function invokePlatformToolViaHttp(
     tool === 'create_html' ||
     (FILE_TOOLS as readonly string[]).includes(tool) ||
     (BINARY_TOOLS as readonly string[]).includes(tool) ||
-    tool.startsWith('sandbox_app.')
+    tool.startsWith('sandbox_app.') ||
+    tool.startsWith('sandbox.')
   ) {
     body = { tool, ticketId, args }
   } else if (tool.startsWith('gmail_') || tool === 'mailbox_count') {
@@ -877,6 +932,15 @@ export async function invokePlatformToolViaHttp(
       args: {
         query: typeof args.query === 'string' ? args.query : undefined,
         agentId: typeof args.agentId === 'string' ? args.agentId : undefined,
+        limit: typeof args.limit === 'number' ? args.limit : undefined,
+      },
+    }
+  } else if (tool === 'user_directory') {
+    body = {
+      tool: 'user_directory',
+      ticketId,
+      args: {
+        query: typeof args.query === 'string' ? args.query : undefined,
         limit: typeof args.limit === 'number' ? args.limit : undefined,
       },
     }

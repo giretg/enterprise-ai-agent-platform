@@ -26,8 +26,12 @@ const TOOL_GROUPS: ToolGroup[] = [
     ],
   },
   {
+    label: 'PowerPoint (PPTX)',
+    tools: ['pptx_create'],
+  },
+  {
     label: 'Dokumentumok',
-    tools: ['docx_read', 'pdf_read', 'pdf_create', 'pptx_create', 'create_html'],
+    tools: ['docx_read', 'pdf_read', 'pdf_create', 'create_html'],
   },
   {
     label: 'Sandbox App (App Registry)',
@@ -42,7 +46,7 @@ const TOOL_GROUPS: ToolGroup[] = [
   },
   {
     label: 'Agent együttműködés',
-    tools: ['agent_catalog', 'agent_resolve', 'agent_ask', 'ticket_create'],
+    tools: ['agent_catalog', 'agent_resolve', 'user_directory', 'agent_ask', 'ticket_create', 'board_write'],
   },
   {
     label: 'HTTP API',
@@ -132,8 +136,8 @@ export function AgentCapabilitiesPanel({
   return (
     <Card title="Eszközjogok szerkesztése">
       <p className="mb-4 text-xs text-ink-faint">
-        Jelöld be az eszközöket, amelyeket az agent hívhat. A Workspace/XLSX eszközök
-        automatikusan linkelik az Agent Workspace connectort.
+        Jelöld be az eszközöket, amelyeket az agent hívhat. A Workspace, XLSX és PPTX
+        eszközök automatikusan linkelik az Agent Workspace connectort.
       </p>
 
       <div className="space-y-5">

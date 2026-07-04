@@ -40,6 +40,7 @@ async function test(name: string, fn: () => void | Promise<void>) {
 
 const TENANT = 't1'
 const AGENT_ID = randomUUID()
+const USER_ID = randomUUID()
 
 /** Egy agent belépő lépés trigger-réssel + egy config-rés a lépés-utasításban. */
 function specFixture(): PlaybookSpecV2 {
@@ -65,6 +66,30 @@ function specFixture(): PlaybookSpecV2 {
         ],
         allowedStates: ['ready', 'in_progress', 'done', 'failed'],
         timeoutMinutes: 60,
+      },
+    ],
+    gates: [],
+    transitions: [],
+  })
+}
+
+function humanEntrySpecFixture(): PlaybookSpecV2 {
+  return parsePlaybookSpecV2({
+    schemaVersion: '1.0',
+    key: 'approval',
+    name: 'Jóváhagyás',
+    processType: 'approval',
+    entryStepId: 'approve',
+    roles: [
+      { key: 'approver', type: 'human_role', requiredPermissions: ['ticket:approve'] },
+    ],
+    steps: [
+      {
+        id: 'approve',
+        name: 'Jóváhagyás',
+        ticketType: 'interaction',
+        assignedRole: 'approver',
+        allowedStates: ['awaiting_human', 'approved'],
       },
     ],
     gates: [],
@@ -123,7 +148,13 @@ function makeStubs(opts: {
   }
   const rolePermissions = {
     findByKey: async (key: string) =>
-      (opts.knownPermissions ?? []).includes(key) ? { permissionKey: key } : null,
+      (opts.knownPermissions ?? []).includes(key) ? { permissionKey: key, minRole: 'approver' } : null,
+  }
+  const users = {
+    findById: async (id: string) =>
+      id === USER_ID
+        ? { id: USER_ID, tenantId: TENANT, status: 'active', role: 'approver', name: 'Jóváhagyó', email: 'ok@example.com' }
+        : null,
   }
   const audit = {
     append: async (e: { action: string; metadata?: Record<string, unknown> }) => {
@@ -179,7 +210,7 @@ function makeStubs(opts: {
     deleteTrigger: async () => {},
   }
 
-  return { version, tickets, audits, processes, steps, defRow, playbooks, agents, toolBroker, rolePermissions, audit, processRepo, ticketRepo, defsRepo }
+  return { version, tickets, audits, processes, steps, defRow, playbooks, agents, toolBroker, rolePermissions, users, audit, processRepo, ticketRepo, defsRepo }
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -190,6 +221,7 @@ function makeDefService(s: ReturnType<typeof makeStubs>) {
     s.agents as any,
     s.toolBroker as any,
     s.rolePermissions as any,
+    s.users as any,
     s.audit as any,
   )
 }
@@ -203,6 +235,7 @@ function makeProcessService(s: ReturnType<typeof makeStubs>) {
     s.defsRepo as any,
     s.agents as any,
     s.toolBroker as any,
+    s.users as any,
   )
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
@@ -210,7 +243,7 @@ function makeProcessService(s: ReturnType<typeof makeStubs>) {
 async function main() {
   console.log('=== runActivationGate (§4.8, WP-6) ===')
 
-  await test('happy path: kötött+alkalmas agent, kitöltött config → nincs violation', async () => {
+  await test('happy path: kötött+alkalmas agent → nincs activation violation', async () => {
     const s = makeStubs({})
     const svc = makeDefService(s)
     const violations = await svc.runActivationGate(s.defRow as never)
@@ -232,12 +265,26 @@ async function main() {
     assert.ok(violations.some((v) => v.code === 'AGENT_UNSUITABLE'))
   })
 
-  await test('hiányzó kötelező config-rés → CONFIG_SLOT_MISSING', async () => {
-    const s = makeStubs({})
-    s.defRow.configValues = {}
+  await test('human role kötött aktív, jogosult userhez → nincs violation', async () => {
+    const s = makeStubs({ knownPermissions: ['ticket:approve'] })
+    const humanSpec = humanEntrySpecFixture()
+    s.version.spec = humanSpec
+    s.version.compiledSpec = compiler.compile(humanSpec, { playbookVersionId: 'v1' })
+    s.defRow.roleBindings = { approver: USER_ID }
     const svc = makeDefService(s)
     const violations = await svc.runActivationGate(s.defRow as never)
-    assert.ok(violations.some((v) => v.code === 'CONFIG_SLOT_MISSING'))
+    assert.deepEqual(violations, [])
+  })
+
+  await test('human role kötés nélkül → HUMAN_ROLE_UNBOUND', async () => {
+    const s = makeStubs({ knownPermissions: ['ticket:approve'] })
+    const humanSpec = humanEntrySpecFixture()
+    s.version.spec = humanSpec
+    s.version.compiledSpec = compiler.compile(humanSpec, { playbookVersionId: 'v1' })
+    s.defRow.roleBindings = {}
+    const svc = makeDefService(s)
+    const violations = await svc.runActivationGate(s.defRow as never)
+    assert.ok(violations.some((v) => v.code === 'HUMAN_ROLE_UNBOUND'))
   })
 
   console.log('=== checkCronResolvability (§4.5, WP-6) ===')
@@ -267,13 +314,14 @@ async function main() {
       tenantId: TENANT,
       processDefinitionId: s.defRow.id,
       triggerType: 'manual',
-      inputPayload: { ceg: 'Acme Kft' },
+      inputPayload: { ceg: 'Acme Kft', sablon: 'vezetői' },
       startedBy: { type: 'user', id: randomUUID() },
     })
     assert.equal(proc.status, 'running')
     assert.equal(s.tickets.length, 1)
     assert.equal(s.tickets[0].agentId, AGENT_ID)
     assert.equal(s.tickets[0].assigneeType, 'agent')
+    assert.deepEqual(s.tickets[0].payload, { ceg: 'Acme Kft', sablon: 'vezetői' })
     assert.ok(s.audits.some((a) => a.action === 'process.start' && a.metadata.process_definition_id === s.defRow.id))
   })
 
@@ -284,7 +332,7 @@ async function main() {
       tenantId: TENANT,
       processDefinitionId: s.defRow.id,
       triggerType: 'manual',
-      inputPayload: { ceg: 'Acme Kft' },
+      inputPayload: { ceg: 'Acme Kft', sablon: 'vezetői' },
       startedBy: { type: 'user', id: randomUUID() },
     })
     assert.equal(proc.status, 'blocked')
@@ -292,19 +340,40 @@ async function main() {
     assert.ok(s.audits.some((a) => a.action === 'process.blocked'))
   })
 
-  await test('hiányzó kötelező trigger-rés → blocked, nincs lépés-ticket', async () => {
+  await test('hiányzó kötelező step input-rés → blocked, nincs lépés-ticket', async () => {
     const s = makeStubs({})
     const svc = makeProcessService(s)
     const proc = await svc.startProcess({
       tenantId: TENANT,
       processDefinitionId: s.defRow.id,
       triggerType: 'monitor_cron',
-      inputPayload: {}, // 'ceg' hiányzik
+      inputPayload: { ceg: 'Acme Kft' }, // 'sablon' hiányzik az entry tickethez
       startedBy: { type: 'system' },
     })
     assert.equal(proc.status, 'blocked')
     assert.equal(s.tickets.length, 0)
     assert.ok(s.audits.some((a) => a.action === 'process.blocked'))
+  })
+
+  await test('human belépő lépés-ticket a KÖTÖTT userhez jön létre', async () => {
+    const s = makeStubs({ knownPermissions: ['ticket:approve'] })
+    const humanSpec = humanEntrySpecFixture()
+    s.version.spec = humanSpec
+    s.version.compiledSpec = compiler.compile(humanSpec, { playbookVersionId: 'v1' })
+    s.defRow.roleBindings = { approver: USER_ID }
+    const svc = makeProcessService(s)
+    const proc = await svc.startProcess({
+      tenantId: TENANT,
+      processDefinitionId: s.defRow.id,
+      triggerType: 'manual',
+      inputPayload: {},
+      startedBy: { type: 'user', id: randomUUID() },
+    })
+    assert.equal(proc.status, 'running')
+    assert.equal(s.tickets.length, 1)
+    assert.equal(s.tickets[0].assigneeType, 'human')
+    assert.equal(s.tickets[0].assigneeId, USER_ID)
+    assert.equal(s.steps[0].assignedUserId, USER_ID)
   })
 
   console.log('=== ticket trigger input-feloldás (§4.4, WP-9) ===')
@@ -346,7 +415,7 @@ async function main() {
       tenantId: TENANT,
       processDefinitionId: s.defRow.id,
       triggerType: 'ticket',
-      inputPayload: { ceg: 'Acme Kft' },
+      inputPayload: { ceg: 'Acme Kft', sablon: 'vezetői' },
       rootTicketId,
       startedBy: { type: 'user', id: randomUUID() },
     })
@@ -384,7 +453,7 @@ async function main() {
       tenantId: TENANT,
       processDefinitionId: s.defRow.id,
       triggerType: 'chat',
-      inputPayload: { ceg: 'Acme Kft' },
+      inputPayload: { ceg: 'Acme Kft', sablon: 'vezetői' },
       conversationId,
       startedBy: { type: 'user', id: randomUUID() },
     })

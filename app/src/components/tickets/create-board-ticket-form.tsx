@@ -216,7 +216,7 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
           </p>
           <p className="mt-1 text-xs text-ink-faint">
             A csatolt fájlok a ticket workspace-ébe kerülnek — az agent a feldolgozás során
-            eléri őket (file_list, file_read, xlsx_read_sheet, stb.).
+            eléri őket (file_list, file_read, xlsx_read_sheet, pptx_create, stb.).
           </p>
           <div className="mt-2">
             <TicketWorkspaceFileDropzone

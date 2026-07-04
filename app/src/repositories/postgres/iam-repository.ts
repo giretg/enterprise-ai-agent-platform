@@ -71,6 +71,7 @@ export class PostgresUserRepository implements UserRepository {
       lastLoginAt: Date | null
       email: string
       name: string
+      jobDescription: string | null
     }>,
   ) {
     return prisma.user.update({ where: { id }, data })

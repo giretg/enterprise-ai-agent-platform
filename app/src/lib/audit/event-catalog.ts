@@ -18,6 +18,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'user.invite.redeem',
   'user.invite.revoke',
   'user.permission.update',
+  'user.profile.update',
   'user.reactivate',
   'user.role.assign',
   'user.role.change',
@@ -25,6 +26,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'user.suspend',
 
   // Agent Registry
+  'agent.avatar',
   'agent.activated',
   'agent.api_key_revoked',
   'agent.api_key_rotated',
@@ -192,6 +194,19 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'sandbox_app.validation_failed',
   'sandbox_app.version.activate',
   'sandbox_app.version.create',
+
+  // Sandbox verziózás / promóció / graduation (SandboxVersioning-Graduation §8.1)
+  'sandbox.commit',
+  'sandbox.rollback',
+  'sandbox.promote.request',
+  'sandbox.promote.approve',
+  'sandbox.promote.reject',
+  'sandbox.snapshot.create',
+  'sandbox.snapshot.restore',
+  'sandbox.export.request',
+  'sandbox.export.ready',
+  'sandbox.export.delivered',
+  'sandbox.access_denied',
 
   // Web Search Tool kill-switch
   'web_search.config_changed',

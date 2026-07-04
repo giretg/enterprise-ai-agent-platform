@@ -23,6 +23,7 @@
   /* ── Estate accents (cellar palette) ─────────────────────────── */
   --color-coral: #b23a55;      /* primary — bordeaux rose */
   --color-coral-deep: #8c2840; /* deep wine */
+  --color-accent: #b23a55;     /* alias of primary (bordeaux) — bg/text/border-accent */
   --color-honey: #b07d24;      /* harvest gold */
   --color-sage: #5d8a4f;       /* vineyard green */
   --color-rose: #c25f7d;       /* rosé */

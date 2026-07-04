@@ -44,6 +44,11 @@ function tenantOf(user: AuthedUser): string {
   return user.tenantId ?? user.id
 }
 
+/** Agent/user registry tenant — null a platform scope, nem a synthetic user.id. */
+function registryTenantOf(user: AuthedUser): string | null {
+  return user.tenantId ?? null
+}
+
 export async function startProcess(input: unknown) {
   try {
     const user = await requireRole('operator')
@@ -125,7 +130,7 @@ export async function listChatTriggerableProcessDefinitions(input: unknown) {
         id: def.id,
         name: def.name,
         description: def.description,
-        slots: compiled ? chatTriggerSlotDescriptors(compiled) : [],
+        slots: compiled ? chatTriggerSlotDescriptors(compiled, compiled.entryStepId) : [],
       })
     }
     return ok(result)
@@ -280,13 +285,14 @@ export async function listSuitableAgents(input: unknown) {
   try {
     const user = await requireRole('operator')
     const parsed = suitableAgentsSchema.parse(input)
-    const tenantId = tenantOf(user)
-    const version = await repositories.playbooksV2.findVersion(tenantId, parsed.playbookVersionId)
+    const processTenantId = tenantOf(user)
+    const registryTenantId = registryTenantOf(user)
+    const version = await repositories.playbooksV2.findVersion(processTenantId, parsed.playbookVersionId)
     if (!version) return fail('A Playbook-verzió nem található.')
     const role = parsePlaybookSpecV2(version.spec).roles.find((r) => r.key === parsed.roleKey)
     if (!role || role.type !== 'agent_role') return fail('A megadott agent-szerep nem található.')
 
-    const agents = await repositories.agents.findMany({ tenantId })
+    const agents = await repositories.agents.findMany({ tenantId: registryTenantId })
     const capabilitySets = await Promise.all(
       agents.map((agent) => repositories.toolBroker.findCapabilitiesForAgent(agent.id)),
     )
@@ -295,13 +301,32 @@ export async function listSuitableAgents(input: unknown) {
       const result = isAgentSuitable(
         { status: agent.status, tenantId: agent.tenantId, capabilities: capabilitySets[i] },
         { requiredCapabilities: role.requiredCapabilities },
-        tenantId,
+        registryTenantId,
       )
       if (result.ok) suitable.push({ id: agent.id, name: agent.name, status: agent.status, role: agent.role })
     }
     return ok(suitable)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Nem sikerült betölteni az alkalmas agenteket')
+  }
+}
+
+export async function listAssignableProcessUsers() {
+  try {
+    const user = await requireRole('operator')
+    const users = await repositories.users.findMany({ tenantId: registryTenantOf(user), status: 'active' })
+    return ok(
+      users
+        .filter((u) => u.role !== null)
+        .map((u) => ({
+          id: u.id,
+          name: u.name,
+          email: u.email,
+          role: u.role!,
+        })),
+    )
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Nem sikerült betölteni a hozzárendelhető usereket')
   }
 }
 

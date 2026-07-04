@@ -157,7 +157,11 @@ export async function draftPlaybookFromDescription(input: unknown) {
     const parsed = draftPlaybookFromDescriptionSchema.parse(input)
 
     const agents = await repositories.agents.findMany({ tenantId: user.tenantId ?? null })
-    const author = agents.find((a) => a.name === PLAYBOOK_AUTHOR_TEMPLATE.name)
+    // A Playbook Author globális (tenantId=null) agent — ha a tenant-szűrt listában nincs,
+    // külön keressük, mert a findMany exact-match szűr tenantId-ra.
+    const author =
+      agents.find((a) => a.name === PLAYBOOK_AUTHOR_TEMPLATE.name) ??
+      (await repositories.agents.findMany()).find((a) => a.name === PLAYBOOK_AUTHOR_TEMPLATE.name)
     if (!author) {
       return fail('A Playbook-szerző agent nincs seedelve. Futtasd: npm run db:seed.')
     }
@@ -172,21 +176,46 @@ export async function draftPlaybookFromDescription(input: unknown) {
         capabilitySets.flat().filter((c) => c.allowed).map((c) => c.toolName),
       ),
     ]
+    const permissions = await repositories.rolePermissions.findAll()
+    const knownPermissions = permissions.map((p) => p.permissionKey)
 
-    const result = await services.playbookAuthorAgent.draftSpec({
+    const agentInput = {
       agentId: author.id,
       agentVersion: author.currentVersion,
       agentModelConfig: author.modelConfig,
       tenantId: user.tenantId,
-      description: parsed.description,
       knownCapabilities,
+      knownPermissions,
+    }
+
+    // Első generálás
+    let result = await services.playbookAuthorAgent.draftSpec({
+      ...agentInput,
+      description: parsed.description,
       existingSpec: parsed.existingSpec,
       priorValidation: parsed.priorValidation,
     })
     if (!result.ok) {
       return fail(`${result.error}: ${result.detail}`)
     }
-    return ok({ spec: result.spec, validation: result.validation })
+
+    // Auto-fix loop: legfeljebb 3 körben javítja a validációs hibákat
+    const AUTO_FIX_ROUNDS = 3
+    let fixRounds = 0
+    while (result.validation.errors.length > 0 && fixRounds < AUTO_FIX_ROUNDS) {
+      fixRounds++
+      const fix = await services.playbookAuthorAgent.draftSpec({
+        ...agentInput,
+        description: '',
+        existingSpec: result.spec,
+        priorValidation: result.validation,
+      })
+      if (!fix.ok) break
+      result = fix
+    }
+
+    const autoFixFailed = fixRounds === AUTO_FIX_ROUNDS && result.validation.errors.length > 0
+    return ok({ spec: result.spec, validation: result.validation, fixRounds, autoFixFailed })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Nem sikerült Playbook-draftot generálni')
   }
@@ -351,6 +380,12 @@ export async function listPublishedPlaybookVersionsForProcessBuilder() {
                 .map((role) => ({
                   key: role.key,
                   requiredCapabilities: role.requiredCapabilities ?? [],
+                })),
+              humanRoles: spec.roles
+                .filter((role) => role.type === 'human_role')
+                .map((role) => ({
+                  key: role.key,
+                  requiredPermissions: role.requiredPermissions ?? [],
                 })),
               configSlots: Array.from(configSlots.values()),
               triggerSlots: Array.from(triggerSlots.values()),

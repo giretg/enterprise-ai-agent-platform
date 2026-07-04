@@ -229,7 +229,7 @@ export class PostgresAgentRepository implements AgentRepository {
     }
 
     if (agentRole === 'worker') {
-      for (const toolName of ['ticket_create', 'agent_ask', 'agent_resolve', 'agent_catalog']) {
+      for (const toolName of ['ticket_create', 'agent_ask', 'agent_resolve', 'agent_catalog', 'user_directory']) {
         await prisma.capability.upsert({
           where: { agentId_toolName: { agentId: agent.id, toolName } },
           create: { agentId: agent.id, toolName, allowed: true },
