@@ -6,10 +6,17 @@ import { setDispatcherControls } from '@/app/actions/platform'
 
 export type DispatcherControlsView = {
   enabled: boolean
+  allowedModes: string[]
   pollIntervalMs: number
   blockedNotifyChannel: string
   updatedById: string | null
   updatedAt: string | null
+}
+
+const MODE_LABELS: Record<string, string> = {
+  'local-wiki': 'Lokális (fejlesztés)',
+  'cloud-run-job': 'Cloud Run (éles)',
+  'docker-local': 'Docker (lokális)',
 }
 
 export function DispatcherControlPanel({
@@ -30,7 +37,7 @@ export function DispatcherControlPanel({
   const [pending, startTransition] = useTransition()
   const [message, setMessage] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null)
 
-  function apply(next: { enabled?: boolean; pollIntervalSeconds?: number; blockedNotifyChannel?: string }) {
+  function apply(next: { enabled?: boolean; allowedModes?: string[]; pollIntervalSeconds?: number; blockedNotifyChannel?: string }) {
     setMessage(null)
     startTransition(async () => {
       const res = await setDispatcherControls(next)
@@ -50,6 +57,12 @@ export function DispatcherControlPanel({
     })
   }
 
+  function toggleMode(mode: string) {
+    const current = controls.allowedModes
+    const next = current.includes(mode) ? current.filter((m) => m !== mode) : [...current, mode]
+    apply({ allowedModes: next })
+  }
+
   const trimmedNotifyKey = notifyKey.trim()
   const desiredNotifyChannel =
     notifyEnabled && trimmedNotifyKey ? `chat:${trimmedNotifyKey}` : 'audit-only:dispatch-blocked'
@@ -58,19 +71,27 @@ export function DispatcherControlPanel({
     ? `MONITOR_NOTIFY_WEBHOOK_${trimmedNotifyKey.toUpperCase().replace(/-/g, '_')}`
     : 'MONITOR_NOTIFY_WEBHOOK_<KULCS>'
 
+  const allModesDisabled = controls.enabled && controls.allowedModes.length === 0
+
   return (
     <Card title="Dispatcher (agent-indítás)">
       <div className="space-y-5">
+
+        {/* Globális be/ki */}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex items-center gap-3">
             <span
               className={`inline-flex h-2.5 w-2.5 rounded-full ${
-                controls.enabled ? 'bg-emerald-400' : 'bg-red-400'
+                controls.enabled && !allModesDisabled ? 'bg-emerald-400' : 'bg-red-400'
               }`}
             />
             <div>
               <p className="text-sm font-semibold">
-                {controls.enabled ? 'Aktív — automatikusan indítja az agenteket' : 'Szüneteltetve — nem indít agentet'}
+                {controls.enabled
+                  ? allModesDisabled
+                    ? 'Aktív — de nincs engedélyezett mód'
+                    : 'Aktív — automatikusan indítja az agenteket'
+                  : 'Szüneteltetve — nem indít agentet'}
               </p>
               <p className="text-xs text-ink-soft">
                 {controls.enabled
@@ -91,6 +112,58 @@ export function DispatcherControlPanel({
           </button>
         </div>
 
+        {/* Mód-specifikus kapcsolók */}
+        <div className="border-t border-line/40 pt-4">
+          <p className="mb-1 text-sm font-medium">Engedélyezett dispatcher módok</p>
+          <p className="mb-3 text-xs text-ink-soft">
+            Melyik dispatcher példányok dolgozhatnak fel ticketeket. A lokális és a Cloud Run
+            ugyanazt az adatbázist látja — érdemes egyszerre csak egyet engedélyezni.
+          </p>
+          <div className="flex flex-col gap-2">
+            {(['local-wiki', 'cloud-run-job', 'docker-local'] as const).map((mode) => {
+              const active = controls.allowedModes.includes(mode)
+              return (
+                <label
+                  key={mode}
+                  className={`flex cursor-pointer items-center justify-between rounded-lg border px-4 py-2.5 transition-colors ${
+                    active
+                      ? 'border-emerald-500/40 bg-emerald-500/10'
+                      : 'border-line/40 bg-surface/30'
+                  } ${!canEdit || pending || !controls.enabled ? 'pointer-events-none opacity-50' : ''}`}
+                >
+                  <div>
+                    <p className="text-sm font-medium">{MODE_LABELS[mode]}</p>
+                    <p className="text-xs text-ink-soft font-mono">{mode}</p>
+                  </div>
+                  <div className="relative">
+                    <input
+                      type="checkbox"
+                      className="sr-only"
+                      checked={active}
+                      disabled={!canEdit || pending || !controls.enabled}
+                      onChange={() => toggleMode(mode)}
+                    />
+                    <div
+                      className={`h-5 w-9 rounded-full transition-colors ${active ? 'bg-emerald-500' : 'bg-line'}`}
+                    />
+                    <div
+                      className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition-transform ${
+                        active ? 'translate-x-4' : 'translate-x-0.5'
+                      }`}
+                    />
+                  </div>
+                </label>
+              )
+            })}
+          </div>
+          {allModesDisabled && (
+            <p className="mt-2 text-xs text-amber-400">
+              Figyelem: a dispatcher be van kapcsolva, de nincs engedélyezett mód — egyik példány sem fog ticketet feldolgozni.
+            </p>
+          )}
+        </div>
+
+        {/* Poll intervallum */}
         <div className="border-t border-line/40 pt-4">
           <label className="block text-sm font-medium">Cron safety-net intervallum</label>
           <p className="mb-2 text-xs text-ink-soft">
@@ -119,6 +192,7 @@ export function DispatcherControlPanel({
           </div>
         </div>
 
+        {/* Blokkolt dispatch értesítés */}
         <div className="border-t border-line/40 pt-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>

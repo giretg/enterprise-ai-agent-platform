@@ -3134,6 +3134,7 @@ export async function adminUpsertTicketType(input: {
 
 export async function setDispatcherControls(input: {
   enabled?: boolean
+  allowedModes?: string[]
   pollIntervalSeconds?: number
   blockedNotifyChannel?: string
 }) {
@@ -3144,6 +3145,7 @@ export async function setDispatcherControls(input: {
     const controls = await services.platformSettings.setDispatcherControls(
       {
         enabled: parsed.enabled,
+        allowedModes: parsed.allowedModes,
         pollIntervalMs:
           parsed.pollIntervalSeconds !== undefined ? parsed.pollIntervalSeconds * 1000 : undefined,
         blockedNotifyChannel: parsed.blockedNotifyChannel,

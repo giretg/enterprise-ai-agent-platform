@@ -143,8 +143,8 @@ export class DispatcherService {
     private modelCalls: ModelCallRepository,
     private resolveLauncher: HarnessLauncher | (() => HarnessLauncher),
     private budget: DispatchBudget = DEFAULT_DISPATCH_BUDGET,
-    /** Globális kill-switch (§5.7). Ha hiányzik, a dispatch mindig engedélyezett. */
-    private isDispatchEnabled: () => Promise<boolean> = async () => true,
+    /** Mode-specifikus engedélyezettség (§5.7). Ha hiányzik, a dispatch mindig engedélyezett. */
+    private isDispatchEnabled: (mode: string) => Promise<boolean> = async () => true,
     private agents?: AgentRepository,
     private alertNotifier?: DispatchAlertNotifier,
   ) {}
@@ -174,8 +174,8 @@ export class DispatcherService {
   async dispatchReadyBatch(limit = 10, now = new Date()) {
     const results: Array<{ ticketId: string; status: 'started' | 'skipped' | 'budget_blocked' | 'paused' }> = []
 
-    // Kill-switch: kikapcsolva egyetlen agentet sem indítunk; a ticketek `ready`-ben várnak.
-    if (!(await this.isDispatchEnabled())) {
+    // Kill-switch: kikapcsolva (vagy a mód nincs az allowedModes-ban) egyetlen agentet sem indítunk.
+    if (!(await this.isDispatchEnabled(this.launcher.mode))) {
       return [{ ticketId: '*', status: 'paused' as const }]
     }
 
@@ -188,7 +188,7 @@ export class DispatcherService {
   }
 
   async dispatchTicket(ticketId: string, now = new Date()) {
-    if (!(await this.isDispatchEnabled())) return { ticketId, status: 'paused' as const }
+    if (!(await this.isDispatchEnabled(this.launcher.mode))) return { ticketId, status: 'paused' as const }
     const ticket = await this.tickets.findById(ticketId)
     if (!ticket) return { ticketId, status: 'skipped' as const }
     if (ticket.state !== 'ready') return { ticketId, status: 'skipped' as const }

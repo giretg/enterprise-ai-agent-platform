@@ -45,8 +45,12 @@ export const POLL_INTERVAL_MIN_MS = 5_000
 export const POLL_INTERVAL_MAX_MS = 600_000
 export const DEFAULT_POLL_INTERVAL_MS = 30_000
 
+export const ALL_LAUNCHER_MODES = ['local-wiki', 'docker-local', 'cloud-run-job'] as const
+export type LauncherMode = (typeof ALL_LAUNCHER_MODES)[number]
+
 export type DispatcherControls = {
   enabled: boolean
+  allowedModes: string[]
   pollIntervalMs: number
   blockedNotifyChannel: string
   updatedById: string | null
@@ -55,6 +59,7 @@ export type DispatcherControls = {
 
 const DEFAULT_CONTROLS: DispatcherControls = {
   enabled: true,
+  allowedModes: [...ALL_LAUNCHER_MODES],
   pollIntervalMs: DEFAULT_POLL_INTERVAL_MS,
   blockedNotifyChannel: 'audit-only:dispatch-blocked',
   updatedById: null,
@@ -209,8 +214,14 @@ export class PlatformSettingsService {
   async getDispatcherControls(): Promise<DispatcherControls> {
     const raw = (await this.settings.get(DISPATCHER_CONTROLS_KEY)) as Partial<DispatcherControls> | null
     if (!raw || typeof raw !== 'object') return { ...DEFAULT_CONTROLS }
+    const rawModes = (raw as Record<string, unknown>).allowedModes
+    const allowedModes =
+      Array.isArray(rawModes) && rawModes.length > 0
+        ? (rawModes as string[]).filter((m) => ALL_LAUNCHER_MODES.includes(m as LauncherMode))
+        : [...DEFAULT_CONTROLS.allowedModes]
     return {
       enabled: typeof raw.enabled === 'boolean' ? raw.enabled : DEFAULT_CONTROLS.enabled,
+      allowedModes,
       pollIntervalMs:
         typeof raw.pollIntervalMs === 'number'
           ? clampInterval(raw.pollIntervalMs)
@@ -230,13 +241,24 @@ export class PlatformSettingsService {
     return controls.enabled
   }
 
+  /** Mode-specifikus engedélyezettség: a globális kill-switch ÉS az allowedModes listán van-e. */
+  async isDispatchEnabledForMode(mode: string): Promise<boolean> {
+    const controls = await this.getDispatcherControls()
+    return controls.enabled && controls.allowedModes.includes(mode)
+  }
+
   async setDispatcherControls(
-    input: { enabled?: boolean; pollIntervalMs?: number; blockedNotifyChannel?: string },
+    input: { enabled?: boolean; allowedModes?: string[]; pollIntervalMs?: number; blockedNotifyChannel?: string },
     actorId: string,
   ): Promise<DispatcherControls> {
     const current = await this.getDispatcherControls()
+    const nextAllowedModes =
+      input.allowedModes !== undefined
+        ? input.allowedModes.filter((m) => ALL_LAUNCHER_MODES.includes(m as LauncherMode))
+        : current.allowedModes
     const next: DispatcherControls = {
       enabled: input.enabled ?? current.enabled,
+      allowedModes: nextAllowedModes,
       pollIntervalMs:
         input.pollIntervalMs !== undefined ? clampInterval(input.pollIntervalMs) : current.pollIntervalMs,
       blockedNotifyChannel: input.blockedNotifyChannel ?? current.blockedNotifyChannel,
@@ -248,6 +270,7 @@ export class PlatformSettingsService {
       DISPATCHER_CONTROLS_KEY,
       {
         enabled: next.enabled,
+        allowedModes: next.allowedModes,
         pollIntervalMs: next.pollIntervalMs,
         blockedNotifyChannel: next.blockedNotifyChannel,
         updatedById: next.updatedById,
@@ -273,6 +296,7 @@ export class PlatformSettingsService {
       policyDecision: next.enabled ? 'enabled' : 'paused',
       metadata: {
         enabled: next.enabled,
+        allowedModes: next.allowedModes,
         pollIntervalMs: next.pollIntervalMs,
         blockedNotifyChannel: next.blockedNotifyChannel,
       },

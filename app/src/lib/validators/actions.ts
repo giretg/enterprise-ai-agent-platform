@@ -1090,6 +1090,7 @@ export const harnessCompletionSchema = z.object({
 export const setDispatcherControlsSchema = z
   .object({
     enabled: z.boolean().optional(),
+    allowedModes: z.array(z.enum(['local-wiki', 'docker-local', 'cloud-run-job'])).optional(),
     // UI másodpercben küldi; a service ms-ban tárol és klampol (5s–600s).
     pollIntervalSeconds: z.number().int().min(5).max(600).optional(),
     blockedNotifyChannel: z
@@ -1099,9 +1100,14 @@ export const setDispatcherControlsSchema = z
       .regex(/^(audit-only:[A-Za-z0-9_-]+|chat:[A-Za-z0-9_-]+)$/)
       .optional(),
   })
-  .refine((v) => v.enabled !== undefined || v.pollIntervalSeconds !== undefined || v.blockedNotifyChannel !== undefined, {
-    message: 'Legalább egy mezőt meg kell adni',
-  })
+  .refine(
+    (v) =>
+      v.enabled !== undefined ||
+      v.allowedModes !== undefined ||
+      v.pollIntervalSeconds !== undefined ||
+      v.blockedNotifyChannel !== undefined,
+    { message: 'Legalább egy mezőt meg kell adni' },
+  )
 
 export const setDatabaseModeSchema = z.object({
   mode: z.enum(['production', 'test']),

@@ -577,7 +577,7 @@ const dispatcherService = new DispatcherService(
   repositories.modelCalls,
   () => createHarnessLauncher(),
   dispatchBudgetFromEnv(),
-  () => platformSettingsService.isDispatchEnabled(),
+  (mode: string) => platformSettingsService.isDispatchEnabledForMode(mode),
   repositories.agents,
   new MonitorDispatchAlertNotifier(monitorNotifier, { platformSettings: platformSettingsService }),
 )
