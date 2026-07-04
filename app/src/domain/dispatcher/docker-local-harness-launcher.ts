@@ -1,6 +1,4 @@
-import { readFile } from 'node:fs/promises'
 import { spawn } from 'node:child_process'
-import { resolve } from 'node:path'
 import type { HarnessLauncher } from './dispatcher-service'
 import { buildHarnessContainerEnv, harnessEnvToDockerArgs } from './harness-run-env'
 
@@ -20,18 +18,6 @@ export type DockerLocalHarnessConfig = {
 function requireConfigValue(name: string, value: string | undefined): string {
   if (!value) throw new Error(`Missing docker-local harness config: ${name}`)
   return value
-}
-
-async function resolveAgentApiKey(config: DockerLocalHarnessConfig): Promise<string> {
-  if (config.agentApiKey?.trim()) return config.agentApiKey.trim()
-  try {
-    const raw = await readFile(resolve(process.cwd(), '.seed-demo-api-key'), 'utf8')
-    const key = raw.trim()
-    if (key) return key
-  } catch {
-    // fall through
-  }
-  throw new Error('Missing HARNESS_AGENT_API_KEY or .seed-demo-api-key for docker-local launcher')
 }
 
 export function dockerLocalConfigFromEnv(): DockerLocalHarnessConfig {
@@ -62,8 +48,16 @@ export class DockerLocalHarnessLauncher implements HarnessLauncher {
     actingUserId?: string
     question?: string
     gooseModel?: string
+    harnessAgentApiKey?: string
+    ephemeralKeyId?: string
   }): Promise<{ jobId: string; executionName?: string }> {
-    const agentApiKey = await resolveAgentApiKey(this.config)
+    const agentApiKey = input.harnessAgentApiKey?.trim()
+    if (!agentApiKey) {
+      throw new Error(
+        'Hiányzik a per-dispatch HARNESS_AGENT_API_KEY. A dispatcher efemer kulcsot kell adjon át; ' +
+          'közvetlen smoke-hoz állítsd be a HARNESS_AGENT_API_KEY env-et vagy add át harnessAgentApiKey-ként.',
+      )
+    }
     const platformUrl = `http://${this.config.platformHost}:${this.config.platformPort}`
 
     const env = buildHarnessContainerEnv(input, {

@@ -437,6 +437,11 @@ export interface AgentRepository {
     profile: Agent['selfEvolutionProfile']
   }): Promise<Agent>
   rotateApiKey(agentId: string): Promise<{ keyId: string; apiKey: string; scopes: string[] }>
+  issueEphemeralKey(
+    agentId: string,
+    opts?: { ttlMs?: number },
+  ): Promise<{ id: string; rawKey: string; scopes: string[] }>
+  revokeKey(keyId: string): Promise<void>
   revokeApiKey(keyId: string): Promise<{ keyId: string; agentId: string }>
   delete(agentId: string): Promise<{ id: string; name: string }>
   authenticateApiKey(rawKey: string): Promise<{ agentId: string; scopes: string[] } | null>

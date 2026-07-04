@@ -3,6 +3,7 @@ import { getCurrentUser } from '@/auth'
 import { hasMinimumRole } from '@/auth/types'
 import { listProcessDefinitions, listProcesses } from '@/app/actions/process'
 import {
+  listPlaybookVersionsForProcessDefinitionEditing,
   listPublishedPlaybookVersionsForProcessBuilder,
   listStartablePlaybooks,
 } from '@/app/actions/playbook'
@@ -15,6 +16,7 @@ import {
   type StartablePlaybook,
   type StartableProcessDefinition,
 } from '@/components/processes/start-process-form'
+import { ProcessDefinitionList } from '@/components/processes/process-definition-list'
 
 const PROC_TONE: Record<string, string> = {
   created: 'bg-ink/8 text-ink-soft',
@@ -30,26 +32,45 @@ export default async function ProcessesPage() {
   const [user, processesRes, definitionsRes, startableRes] = await Promise.all([
     getCurrentUser(),
     listProcesses(),
-    listProcessDefinitions({ status: 'active' }),
+    listProcessDefinitions({}),
     listStartablePlaybooks(),
   ])
-  const builderVersionsRes = canUseBuilder(user)
-    ? await listPublishedPlaybookVersionsForProcessBuilder()
-    : { success: true as const, data: [] }
   const canStart = user ? hasMinimumRole(user.role, 'operator') : false
+  const canEditDraft = user ? hasMinimumRole(user.role, 'operator') : false
+  const canArchive = user ? hasMinimumRole(user.role, 'admin') : false
+  const allDefinitions = definitionsRes.success ? definitionsRes.data : []
+  const pinnedVersionIds = [...new Set(allDefinitions.map((d) => d.playbookVersionId))]
+  const [builderVersionsRes, pinnedVersionsRes] = await Promise.all([
+    canUseBuilder(user)
+      ? listPublishedPlaybookVersionsForProcessBuilder()
+      : Promise.resolve({ success: true as const, data: [] as ProcessBuilderPlaybookVersion[] }),
+    canEditDraft && pinnedVersionIds.length > 0
+      ? listPlaybookVersionsForProcessDefinitionEditing(pinnedVersionIds)
+      : Promise.resolve({ success: true as const, data: [] as ProcessBuilderPlaybookVersion[] }),
+  ])
   const startable: StartablePlaybook[] = startableRes.success ? startableRes.data : []
   const builderVersions: ProcessBuilderPlaybookVersion[] = builderVersionsRes.success
     ? builderVersionsRes.data
     : []
-  const definitions: StartableProcessDefinition[] = definitionsRes.success
-    ? definitionsRes.data.map((d) => ({
-        id: d.id,
-        name: d.name,
-        description: d.description,
-        playbookVersionId: d.playbookVersionId,
-        triggers: d.triggers.map((t) => ({ id: t.id, type: t.type, enabled: t.enabled })),
-      }))
-    : []
+  const playbookVersionsById = new Map<string, ProcessBuilderPlaybookVersion>()
+  for (const version of builderVersions) {
+    playbookVersionsById.set(version.playbookVersionId, version)
+  }
+  if (pinnedVersionsRes.success) {
+    for (const version of pinnedVersionsRes.data) {
+      playbookVersionsById.set(version.playbookVersionId, version)
+    }
+  }
+  const playbookVersionsForList = [...playbookVersionsById.values()]
+  const definitions: StartableProcessDefinition[] = allDefinitions
+    .filter((d) => d.status === 'active')
+    .map((d) => ({
+      id: d.id,
+      name: d.name,
+      description: d.description,
+      playbookVersionId: d.playbookVersionId,
+      triggers: d.triggers.map((t) => ({ id: t.id, type: t.type, enabled: t.enabled })),
+    }))
   const processes = processesRes.success ? processesRes.data : []
 
   return (
@@ -86,6 +107,19 @@ export default async function ProcessesPage() {
           <StartProcessForm definitions={definitions} playbooks={startable} />
         </section>
       )}
+
+      <section className="atelier-card p-5">
+        <h2 className="mb-4 font-display text-lg font-semibold">Folyamatok</h2>
+        {!definitionsRes.success && (
+          <p className="text-sm text-coral">Nem sikerült betölteni: {definitionsRes.error}</p>
+        )}
+        <ProcessDefinitionList
+          definitions={allDefinitions}
+          playbookVersions={playbookVersionsForList}
+          canEditDraft={canEditDraft}
+          canArchive={canArchive}
+        />
+      </section>
 
       <section className="atelier-card p-5">
         <h2 className="mb-4 font-display text-lg font-semibold">Aktív és lezárt Futások</h2>

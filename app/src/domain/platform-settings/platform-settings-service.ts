@@ -48,6 +48,7 @@ export const DEFAULT_POLL_INTERVAL_MS = 30_000
 export type DispatcherControls = {
   enabled: boolean
   pollIntervalMs: number
+  blockedNotifyChannel: string
   updatedById: string | null
   updatedAt: string | null
 }
@@ -55,6 +56,7 @@ export type DispatcherControls = {
 const DEFAULT_CONTROLS: DispatcherControls = {
   enabled: true,
   pollIntervalMs: DEFAULT_POLL_INTERVAL_MS,
+  blockedNotifyChannel: 'audit-only:dispatch-blocked',
   updatedById: null,
   updatedAt: null,
 }
@@ -213,6 +215,10 @@ export class PlatformSettingsService {
         typeof raw.pollIntervalMs === 'number'
           ? clampInterval(raw.pollIntervalMs)
           : DEFAULT_CONTROLS.pollIntervalMs,
+      blockedNotifyChannel:
+        typeof raw.blockedNotifyChannel === 'string' && raw.blockedNotifyChannel.trim()
+          ? raw.blockedNotifyChannel.trim()
+          : DEFAULT_CONTROLS.blockedNotifyChannel,
       updatedById: typeof raw.updatedById === 'string' ? raw.updatedById : null,
       updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : null,
     }
@@ -225,7 +231,7 @@ export class PlatformSettingsService {
   }
 
   async setDispatcherControls(
-    input: { enabled?: boolean; pollIntervalMs?: number },
+    input: { enabled?: boolean; pollIntervalMs?: number; blockedNotifyChannel?: string },
     actorId: string,
   ): Promise<DispatcherControls> {
     const current = await this.getDispatcherControls()
@@ -233,6 +239,7 @@ export class PlatformSettingsService {
       enabled: input.enabled ?? current.enabled,
       pollIntervalMs:
         input.pollIntervalMs !== undefined ? clampInterval(input.pollIntervalMs) : current.pollIntervalMs,
+      blockedNotifyChannel: input.blockedNotifyChannel ?? current.blockedNotifyChannel,
       updatedById: actorId,
       updatedAt: new Date().toISOString(),
     }
@@ -242,6 +249,7 @@ export class PlatformSettingsService {
       {
         enabled: next.enabled,
         pollIntervalMs: next.pollIntervalMs,
+        blockedNotifyChannel: next.blockedNotifyChannel,
         updatedById: next.updatedById,
         updatedAt: next.updatedAt,
       },
@@ -263,7 +271,11 @@ export class PlatformSettingsService {
       inputRef: null,
       outputRef: null,
       policyDecision: next.enabled ? 'enabled' : 'paused',
-      metadata: { enabled: next.enabled, pollIntervalMs: next.pollIntervalMs },
+      metadata: {
+        enabled: next.enabled,
+        pollIntervalMs: next.pollIntervalMs,
+        blockedNotifyChannel: next.blockedNotifyChannel,
+      },
     })
 
     return next

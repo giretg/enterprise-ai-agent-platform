@@ -612,7 +612,11 @@ export class AgentChatRuntime {
       return 'A chat-trigger indítás nincs bekötve ezen a környezeten.'
     }
 
-    const def = await this.processDefinitions.findById(params.tenantId, params.processDefinitionId)
+    // Folyamat/playbook scope: tenantOf(user) = user.tenantId ?? user.id (process actions).
+    // A beszélgetés tenantId-ja ettől függetlenül maradhat null — ne keverjük össze.
+    const processTenantId = params.tenantId ?? params.startedByUserId
+
+    const def = await this.processDefinitions.findById(processTenantId, params.processDefinitionId)
     if (!def) return 'A kiválasztott Folyamat nem található vagy nincs jogosultság.'
 
     const chatTrigger = def.triggers.find((trigger) => trigger.type === 'chat' && trigger.enabled)
@@ -620,7 +624,7 @@ export class AgentChatRuntime {
       return 'Ehhez a Folyamathoz nincs aktív chat trigger csatolva.'
     }
 
-    const version = await this.playbooksV2.findVersion(params.tenantId, def.playbookVersionId)
+    const version = await this.playbooksV2.findVersion(processTenantId, def.playbookVersionId)
     const compiled = version?.compiledSpec as CompiledSpec | null | undefined
     if (!compiled || typeof compiled !== 'object') {
       return 'A Folyamat PIN-elt Playbook-verziójának nincs futtatható compiled spec-je.'
@@ -658,7 +662,7 @@ export class AgentChatRuntime {
     }
 
     const run = await this.processService.startProcess({
-      tenantId: params.tenantId,
+      tenantId: processTenantId,
       processDefinitionId: def.id,
       triggerType: 'chat',
       inputPayload,

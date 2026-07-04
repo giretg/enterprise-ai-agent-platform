@@ -24,10 +24,75 @@ import {
 import { PlaybookV2Error } from '@/domain/playbook/playbook-v2-service'
 import { parsePlaybookSpecV2 } from '@/lib/playbook-v2/spec'
 import { PLAYBOOK_AUTHOR_TEMPLATE } from '@/domain/playbook/playbook-author-agent'
+import type { PlaybookV2, PlaybookVersionV2 } from '@prisma/client'
+import { z } from 'zod'
 
 type AuthedUser = Awaited<ReturnType<typeof requireRole>>
 function tenantOf(user: AuthedUser): string {
   return user.tenantId ?? user.id
+}
+
+export type ProcessBuilderPlaybookVersionView = {
+  playbookId: string
+  playbookName: string
+  processType: string
+  playbookVersionId: string
+  version: number
+  agentRoles: { key: string; requiredCapabilities: string[] }[]
+  humanRoles: { key: string; requiredPermissions: string[] }[]
+  configSlots: { name: string; type: string; required: boolean; description: string | null }[]
+  triggerSlots: { name: string; type: string; required: boolean; description: string | null }[]
+}
+
+function toProcessBuilderPlaybookVersionView(
+  playbook: Pick<PlaybookV2, 'id' | 'name' | 'processType'>,
+  version: Pick<PlaybookVersionV2, 'id' | 'version' | 'spec'>,
+): ProcessBuilderPlaybookVersionView {
+  const spec = parsePlaybookSpecV2(version.spec)
+  const configSlots = new Map<
+    string,
+    { name: string; type: string; required: boolean; description: string | null }
+  >()
+  const triggerSlots = new Map<
+    string,
+    { name: string; type: string; required: boolean; description: string | null }
+  >()
+
+  for (const step of spec.steps) {
+    for (const slot of step.inputSlots ?? []) {
+      const target = slot.source === 'config' ? configSlots : triggerSlots
+      if (!target.has(slot.name)) {
+        target.set(slot.name, {
+          name: slot.name,
+          type: slot.type,
+          required: slot.required,
+          description: slot.description ?? null,
+        })
+      }
+    }
+  }
+
+  return {
+    playbookId: playbook.id,
+    playbookName: playbook.name,
+    processType: playbook.processType,
+    playbookVersionId: version.id,
+    version: version.version,
+    agentRoles: spec.roles
+      .filter((role) => role.type === 'agent_role')
+      .map((role) => ({
+        key: role.key,
+        requiredCapabilities: role.requiredCapabilities ?? [],
+      })),
+    humanRoles: spec.roles
+      .filter((role) => role.type === 'human_role')
+      .map((role) => ({
+        key: role.key,
+        requiredPermissions: role.requiredPermissions ?? [],
+      })),
+    configSlots: Array.from(configSlots.values()),
+    triggerSlots: Array.from(triggerSlots.values()),
+  }
 }
 
 export async function listPlaybooksV2() {
@@ -344,56 +409,38 @@ export async function listPublishedPlaybookVersionsForProcessBuilder() {
       playbooks.flatMap((playbook) =>
         playbook.versions
           .filter((version) => version.status === 'published')
-          .map((version) => {
-            const spec = parsePlaybookSpecV2(version.spec)
-            const configSlots = new Map<
-              string,
-              { name: string; type: string; required: boolean; description: string | null }
-            >()
-            const triggerSlots = new Map<
-              string,
-              { name: string; type: string; required: boolean; description: string | null }
-            >()
-
-            for (const step of spec.steps) {
-              for (const slot of step.inputSlots ?? []) {
-                const target = slot.source === 'config' ? configSlots : triggerSlots
-                if (!target.has(slot.name)) {
-                  target.set(slot.name, {
-                    name: slot.name,
-                    type: slot.type,
-                    required: slot.required,
-                    description: slot.description ?? null,
-                  })
-                }
-              }
-            }
-
-            return {
-              playbookId: playbook.id,
-              playbookName: playbook.name,
-              processType: playbook.processType,
-              playbookVersionId: version.id,
-              version: version.version,
-              agentRoles: spec.roles
-                .filter((role) => role.type === 'agent_role')
-                .map((role) => ({
-                  key: role.key,
-                  requiredCapabilities: role.requiredCapabilities ?? [],
-                })),
-              humanRoles: spec.roles
-                .filter((role) => role.type === 'human_role')
-                .map((role) => ({
-                  key: role.key,
-                  requiredPermissions: role.requiredPermissions ?? [],
-                })),
-              configSlots: Array.from(configSlots.values()),
-              triggerSlots: Array.from(triggerSlots.values()),
-            }
-          }),
+          .map((version) => toProcessBuilderPlaybookVersionView(playbook, version)),
       ),
     )
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Nem sikerült betölteni a publikált Playbook-verziókat')
+  }
+}
+
+/**
+ * PIN-elt Playbook-verziók Folyamat-szerkesztéshez — bármely státusz (pl. retired),
+ * mert a Folyamat a létrehozáskor rögzített verzióra hivatkozik.
+ */
+export async function listPlaybookVersionsForProcessDefinitionEditing(playbookVersionIds: unknown) {
+  try {
+    const user = await requireRole('operator')
+    const parsed = z.array(z.string().uuid()).parse(playbookVersionIds)
+    const tenantId = tenantOf(user)
+    const uniqueIds = [...new Set(parsed)]
+    const views: ProcessBuilderPlaybookVersionView[] = []
+
+    for (const id of uniqueIds) {
+      const version = await repositories.playbooksV2.findVersion(tenantId, id)
+      if (!version) continue
+      const playbook = await repositories.playbooksV2.findPlaybook(tenantId, version.playbookId)
+      if (!playbook) continue
+      views.push(toProcessBuilderPlaybookVersionView(playbook, version))
+    }
+
+    return ok(views)
+  } catch (e) {
+    return fail(
+      e instanceof Error ? e.message : 'Nem sikerült betölteni a Folyamathoz PIN-elt Playbook-verziókat',
+    )
   }
 }

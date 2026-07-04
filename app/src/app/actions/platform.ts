@@ -3135,6 +3135,7 @@ export async function adminUpsertTicketType(input: {
 export async function setDispatcherControls(input: {
   enabled?: boolean
   pollIntervalSeconds?: number
+  blockedNotifyChannel?: string
 }) {
   try {
     await ensureActiveDatabaseMode()
@@ -3145,6 +3146,7 @@ export async function setDispatcherControls(input: {
         enabled: parsed.enabled,
         pollIntervalMs:
           parsed.pollIntervalSeconds !== undefined ? parsed.pollIntervalSeconds * 1000 : undefined,
+        blockedNotifyChannel: parsed.blockedNotifyChannel,
       },
       actor.id,
     )

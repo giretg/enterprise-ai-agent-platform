@@ -256,6 +256,105 @@ export class ProcessDefinitionService {
     return updated
   }
 
+  /**
+   * Aktív Folyamat cseréje: új példány a módosításokkal, a régi archiválása.
+   * A futó Futások érintetlenek maradnak (saját PIN-elt verzióval).
+   */
+  async replaceActiveDefinition(input: {
+    tenantId: string | null
+    sourceProcessDefinitionId: string
+    roleBindings: Record<string, string>
+    configValues: Record<string, unknown>
+    triggerType: ProcessTrigger['type']
+    triggerInputMap: Record<string, unknown>
+    monitorDefinitionId?: string | null
+    actorUserId: string
+    activateNew: boolean
+  }): Promise<{ newDefinition: ProcessDefinition; supersededDefinitionId: string; activated: boolean }> {
+    const source = await this.requireDef(input.tenantId, input.sourceProcessDefinitionId)
+    if (source.status !== 'active') {
+      throw new ProcessDefinitionServiceError(
+        'INVALID_STATE',
+        `Csak aktív Folyamat cserélhető így (jelenlegi: ${source.status}).`,
+      )
+    }
+
+    const created = await this.defs.create({
+      tenantId: source.tenantId,
+      name: source.name,
+      description: source.description,
+      playbookId: source.playbookId,
+      playbookVersionId: source.playbookVersionId,
+      createdById: input.actorUserId,
+    })
+
+    await this.defs.update(created.id, {
+      roleBindings: input.roleBindings as Prisma.InputJsonValue,
+      configValues: input.configValues as Prisma.InputJsonValue,
+    })
+
+    await this.attachTrigger({
+      tenantId: input.tenantId,
+      processDefinitionId: created.id,
+      type: input.triggerType,
+      inputMap: input.triggerInputMap,
+      monitorDefinitionId: input.monitorDefinitionId ?? null,
+      actorUserId: input.actorUserId,
+    })
+
+    let activated = false
+    if (input.activateNew) {
+      const withTriggers = await this.requireDef(input.tenantId, created.id)
+      const violations = await this.runActivationGate(withTriggers)
+      if (violations.length > 0) {
+        throw new ProcessDefinitionServiceError(
+          'GATE_FAILED',
+          'Az új Folyamat nem aktiválható: a megelőző kapu hibát talált.',
+          violations,
+        )
+      }
+      await this.defs.update(created.id, {
+        status: 'active',
+        approvedById: input.actorUserId,
+        approvedAt: new Date(),
+      })
+      activated = true
+      await this.append(input.tenantId, input.actorUserId, {
+        action: 'process_definition.activate',
+        targetId: created.id,
+        policyDecision: 'active',
+        metadata: {
+          process_definition_id: created.id,
+          playbook_version_id: created.playbookVersionId,
+          replaced_definition_id: source.id,
+        },
+      })
+    }
+
+    await this.archive({
+      tenantId: input.tenantId,
+      processDefinitionId: source.id,
+      actorUserId: input.actorUserId,
+    })
+
+    const newDefinition = await this.requireDef(input.tenantId, created.id)
+    await this.append(input.tenantId, input.actorUserId, {
+      action: 'process_definition.replace_active',
+      targetId: newDefinition.id,
+      metadata: {
+        new_process_definition_id: newDefinition.id,
+        superseded_process_definition_id: source.id,
+        activated,
+      },
+    })
+
+    return {
+      newDefinition,
+      supersededDefinitionId: source.id,
+      activated,
+    }
+  }
+
   // --- §4.10 — verzió-áthúzás = szerkesztés + újra-jóváhagyás ----------------
 
   async rebindToVersion(input: {

@@ -1084,6 +1084,7 @@ export const harnessCompletionSchema = z.object({
   jobId: z.string().trim().min(1).max(300).optional(),
   executionName: z.string().trim().min(1).max(500).optional(),
   error: z.string().trim().max(1000).optional(),
+  errorCategory: z.enum(['permanent', 'transient']).optional(),
 })
 
 export const setDispatcherControlsSchema = z
@@ -1091,8 +1092,14 @@ export const setDispatcherControlsSchema = z
     enabled: z.boolean().optional(),
     // UI másodpercben küldi; a service ms-ban tárol és klampol (5s–600s).
     pollIntervalSeconds: z.number().int().min(5).max(600).optional(),
+    blockedNotifyChannel: z
+      .string()
+      .trim()
+      .max(120)
+      .regex(/^(audit-only:[A-Za-z0-9_-]+|chat:[A-Za-z0-9_-]+)$/)
+      .optional(),
   })
-  .refine((v) => v.enabled !== undefined || v.pollIntervalSeconds !== undefined, {
+  .refine((v) => v.enabled !== undefined || v.pollIntervalSeconds !== undefined || v.blockedNotifyChannel !== undefined, {
     message: 'Legalább egy mezőt meg kell adni',
   })
 
@@ -1251,6 +1258,15 @@ export const updateProcessDefinitionBindingsSchema = z.object({
   id: z.string().uuid(),
   roleBindings: z.record(z.string().min(1), z.string().uuid()),
   configValues: z.record(z.string(), z.unknown()).optional(),
+})
+
+export const replaceActiveProcessDefinitionSchema = z.object({
+  id: z.string().uuid(),
+  roleBindings: z.record(z.string().min(1), z.string().uuid()),
+  configValues: z.record(z.string(), z.unknown()).optional(),
+  triggerType: processTriggerTypeSchema,
+  triggerInputMap: z.record(z.string(), z.unknown()).optional(),
+  monitorDefinitionId: z.string().uuid().nullable().optional(),
 })
 
 export const attachProcessTriggerSchema = z.object({

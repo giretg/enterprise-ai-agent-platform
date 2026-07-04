@@ -972,6 +972,7 @@ model AgentApiKey {
   createdAt  DateTime     @default(now()) @map("created_at") @db.Timestamptz
   rotatedAt  DateTime?    @map("rotated_at") @db.Timestamptz
   lastUsedAt DateTime?    @map("last_used_at") @db.Timestamptz
+  expiresAt  DateTime?    @map("expires_at") @db.Timestamptz
 
   agent Agent @relation(fields: [agentId], references: [id], onDelete: Cascade)
 

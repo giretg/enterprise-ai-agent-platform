@@ -7,6 +7,7 @@
  * szerveroldali állapotgépe kényszeríti ki (§2.5, §11.3, P6).
  */
 import { requireRole } from '@/auth'
+import { hasMinimumRole } from '@/auth/types'
 import { services } from '@/domain'
 import { repositories } from '@/repositories/postgres'
 import { fail, ok } from '@/lib/result'
@@ -19,6 +20,7 @@ import {
   processDefinitionIdSchema,
   createProcessDefinitionSchema,
   updateProcessDefinitionBindingsSchema,
+  replaceActiveProcessDefinitionSchema,
   attachProcessTriggerSchema,
   detachProcessTriggerSchema,
   startProcessFromTicketSchema,
@@ -172,6 +174,40 @@ export async function updateProcessDefinitionBindings(input: unknown) {
   } catch (e) {
     if (e instanceof ProcessDefinitionServiceError) return fail(e.message)
     return fail(e instanceof Error ? e.message : 'Nem sikerült frissíteni a Folyamat kötéseit')
+  }
+}
+
+/** Aktív Folyamat cseréje: új példány + régi archiválása (a futó Futások érintetlenek). */
+export async function replaceActiveProcessDefinition(input: unknown) {
+  try {
+    const user = await requireRole('operator')
+    const parsed = replaceActiveProcessDefinitionSchema.parse(input)
+    const activateNew = hasMinimumRole(user.role, 'approver')
+    const result = await services.processDefinitions.replaceActiveDefinition({
+      tenantId: tenantOf(user),
+      sourceProcessDefinitionId: parsed.id,
+      roleBindings: parsed.roleBindings,
+      configValues: parsed.configValues ?? {},
+      triggerType: parsed.triggerType,
+      triggerInputMap: parsed.triggerInputMap ?? {},
+      monitorDefinitionId: parsed.monitorDefinitionId,
+      actorUserId: user.id,
+      activateNew,
+    })
+    return ok({
+      id: result.newDefinition.id,
+      status: result.newDefinition.status,
+      supersededId: result.supersededDefinitionId,
+      activated: result.activated,
+      message: result.activated
+        ? 'Új Folyamat aktiválva, a régi leállítva.'
+        : 'Új Folyamat-draft létrejött, a régi leállítva. Aktiválás approver jogosultsággal szükséges.',
+    })
+  } catch (e) {
+    if (e instanceof ProcessDefinitionServiceError) {
+      return fail(`${e.message}${e.details ? ` — ${JSON.stringify(e.details)}` : ''}`)
+    }
+    return fail(e instanceof Error ? e.message : 'Nem sikerült lecserélni a Folyamatot')
   }
 }
 

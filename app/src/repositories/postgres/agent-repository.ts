@@ -427,6 +427,38 @@ export class PostgresAgentRepository implements AgentRepository {
     return { keyId: created.id, apiKey: rawKey, scopes }
   }
 
+  async issueEphemeralKey(agentId: string, opts?: { ttlMs?: number }) {
+    const agent = await prisma.agent.findUnique({ where: { id: agentId } })
+    if (!agent) throw new Error('Agent not found')
+
+    const rawKey = `cp_sk_${randomBytes(16).toString('hex')}`
+    const scopes = serviceAccountScopesForRole(agent.role)
+    const ttlMs = opts?.ttlMs
+    const expiresAt =
+      typeof ttlMs === 'number' && Number.isFinite(ttlMs) && ttlMs > 0
+        ? new Date(Date.now() + ttlMs)
+        : null
+
+    const created = await prisma.agentApiKey.create({
+      data: {
+        agentId,
+        keyHash: await bcrypt.hash(rawKey, 10),
+        scopes,
+        status: 'active',
+        expiresAt,
+      },
+    })
+
+    return { id: created.id, rawKey, scopes }
+  }
+
+  async revokeKey(keyId: string) {
+    await prisma.agentApiKey.updateMany({
+      where: { id: keyId, status: 'active' },
+      data: { status: 'revoked', rotatedAt: new Date() },
+    })
+  }
+
   async revokeApiKey(keyId: string) {
     const existing = await prisma.agentApiKey.findUnique({ where: { id: keyId } })
     if (!existing) throw new Error('Agent API key not found')
@@ -700,8 +732,12 @@ export class PostgresAgentRepository implements AgentRepository {
   async authenticateApiKey(rawKey: string) {
     if (!rawKey.startsWith('cp_sk_')) return null
 
+    const now = new Date()
     const activeKeys = await prisma.agentApiKey.findMany({
-      where: { status: 'active' },
+      where: {
+        status: 'active',
+        OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
+      },
       select: { agentId: true, keyHash: true, scopes: true, id: true },
     })
 

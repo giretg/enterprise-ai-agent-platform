@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState, useTransition } from 'react'
 import Link from 'next/link'
+import { useRouter } from 'next/navigation'
 import {
   activateProcessDefinition,
   attachProcessTrigger,
@@ -74,6 +75,7 @@ export function ProcessDefinitionBuilder({
 }: {
   playbookVersions: ProcessBuilderPlaybookVersion[]
 }) {
+  const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [selectedVersionId, setSelectedVersionId] = useState(playbookVersions[0]?.playbookVersionId ?? '')
   const initialVersion = playbookVersions[0]
@@ -237,6 +239,7 @@ export function ProcessDefinitionBuilder({
         text: activate ? 'Folyamat létrehozva és aktiválva.' : 'Folyamat-draft létrehozva.',
         id: created.data.id,
       })
+      router.refresh()
     })
   }
 

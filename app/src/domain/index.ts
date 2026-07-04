@@ -16,6 +16,7 @@ import {
   dispatchBudgetFromEnv,
   type HarnessLauncher,
 } from '@/domain/dispatcher/dispatcher-service'
+import { MonitorDispatchAlertNotifier } from '@/domain/dispatcher/dispatch-alert-notifier'
 import { PlatformSettingsService } from '@/domain/platform-settings/platform-settings-service'
 import { CloudRunJobHarnessLauncher, cloudRunConfigFromEnv } from '@/domain/dispatcher/cloud-run-job-launcher'
 import {
@@ -578,6 +579,7 @@ const dispatcherService = new DispatcherService(
   dispatchBudgetFromEnv(),
   () => platformSettingsService.isDispatchEnabled(),
   repositories.agents,
+  new MonitorDispatchAlertNotifier(monitorNotifier, { platformSettings: platformSettingsService }),
 )
 
 export const services = {

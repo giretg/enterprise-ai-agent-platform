@@ -60,6 +60,9 @@ export class CloudRunJobHarnessLauncher implements HarnessLauncher {
     agentVersion?: number
     actingUserId?: string
     question?: string
+    gooseModel?: string
+    harnessAgentApiKey?: string
+    ephemeralKeyId?: string
   }): Promise<{ jobId: string; executionName?: string }> {
     const token = await getCloudRunAccessToken(this.config.bearerToken)
     const endpoint = cloudRunJobRunEndpoint(
@@ -77,7 +80,17 @@ export class CloudRunJobHarnessLauncher implements HarnessLauncher {
       modelGatewayUrl: this.config.modelGatewayUrl,
       toolBrokerMcpUrl: this.config.toolBrokerMcpUrl,
       platformApiUrl: this.config.platformApiUrl,
-      harnessAgentApiKey: this.config.harnessAgentApiKey,
+      harnessAgentApiKey:
+        input.harnessAgentApiKey?.trim() ??
+        (() => {
+          const fallback = this.config.harnessAgentApiKey?.trim()
+          if (!fallback) {
+            throw new Error(
+              'Hiányzik a per-dispatch HARNESS_AGENT_API_KEY. A dispatcher efemer kulcsot kell adjon át.',
+            )
+          }
+          return fallback
+        })(),
       egressEnforce: this.config.egressEnforce,
       stubBrokerFallback:
         this.config.stubBrokerFallback ?? this.config.harnessMode === 'goose',

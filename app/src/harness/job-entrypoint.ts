@@ -3,7 +3,11 @@ import { assertEgressDenyByDefault } from './egress-guard'
 import { resolveHarnessCommandJson } from './goose-command'
 import { prepareGooseHarnessEnv } from './goose-config'
 import { runStubHarnessAgentLoop, shouldRunStubHarnessAgentLoop } from './stub-harness-agent-loop'
-import { runWikiTicketProcessViaPlatform, shouldRunWikiTicketProcess } from './wiki-ticket-process'
+import {
+  HarnessProcessError,
+  runWikiTicketProcessViaPlatform,
+  shouldRunWikiTicketProcess,
+} from './wiki-ticket-process'
 
 export type HarnessRunStatus = 'succeeded' | 'failed'
 
@@ -113,6 +117,7 @@ async function postCompletion(
   ctx: HarnessContext,
   status: HarnessRunStatus,
   error: string | null,
+  errorCategory: 'permanent' | 'transient' | null,
   deps: HarnessEntrypointDeps,
 ): Promise<number> {
   const endpoint = completionEndpoint(ctx.callbackUrl, ctx.ticketId)
@@ -128,6 +133,7 @@ async function postCompletion(
       jobId: ctx.cloudRunJob ?? 'local-harness',
       executionName: ctx.cloudRunExecution ?? undefined,
       error: error ?? undefined,
+      errorCategory: errorCategory ?? undefined,
     }),
   })
 
@@ -155,6 +161,7 @@ export async function runHarnessEntrypoint(
 
   let status: HarnessRunStatus = 'succeeded'
   let error: string | null = null
+  let errorCategory: 'permanent' | 'transient' | null = null
   try {
     await assertEgressDenyByDefault(runtimeEnv, resolvedDeps.fetch)
     if (wikiMode) {
@@ -170,9 +177,10 @@ export async function runHarnessEntrypoint(
   } catch (e) {
     status = 'failed'
     error = e instanceof Error ? e.message : String(e)
+    errorCategory = e instanceof HarnessProcessError ? e.category : null
     resolvedDeps.log.error(error)
   }
 
-  const completionStatus = await postCompletion(ctx, status, error, resolvedDeps)
+  const completionStatus = await postCompletion(ctx, status, error, errorCategory, resolvedDeps)
   return { status, completionStatus }
 }

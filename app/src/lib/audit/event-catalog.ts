@@ -99,10 +99,13 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'delegation.return',
 
   // Dispatcher
+  'dispatch.blocked',
   'dispatch.budget_blocked',
   'dispatch.complete',
   'dispatch.complete.denied',
   'dispatch.error',
+  'dispatch.notify.failed',
+  'dispatch.notify.sent',
   'dispatch.start',
   'dispatch.timeout',
   'dispatcher.config_changed',
@@ -164,6 +167,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'process_definition.create',
   'process_definition.detach_trigger',
   'process_definition.rebind_version',
+  'process_definition.replace_active',
   'process_definition.update_bindings',
   'process.start',
   'process.step.await_gate',

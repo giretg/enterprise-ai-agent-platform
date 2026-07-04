@@ -5,7 +5,7 @@
  * prompt sablon, kritikusság, JSON modal. A létrehozás és draft-szerkesztés
  * közös UI-ja.
  */
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { PlaybookFlowGraph, type NodeClickPayload, type RawStep, type RawGate } from '@/components/playbooks/playbook-flow-graph'
 import {
   applySpecCriticality,
@@ -51,9 +51,7 @@ export function PlaybookSpecEditor({
   onSpecChange: (spec: PlaybookDraftSpec) => void
   onValidationChange?: (validation: PlaybookValidationResult) => void
 }) {
-  const [validation, setValidation] = useState<PlaybookValidationResult>(() =>
-    validatePlaybookDraftSpec(spec),
-  )
+  const validation = useMemo(() => validatePlaybookDraftSpec(spec), [spec])
   const [jsonOpen, setJsonOpen] = useState(false)
   const [jsonText, setJsonText] = useState('')
   const [jsonError, setJsonError] = useState<string | null>(null)
@@ -65,10 +63,8 @@ export function PlaybookSpecEditor({
   const [nameForm, setNameForm] = useState('')
 
   useEffect(() => {
-    const next = validatePlaybookDraftSpec(spec)
-    setValidation(next)
-    onValidationChange?.(next)
-  }, [spec, onValidationChange])
+    onValidationChange?.(validation)
+  }, [validation, onValidationChange])
 
   function updateSpec(next: PlaybookDraftSpec) {
     onSpecChange(next)
@@ -152,8 +148,6 @@ export function PlaybookSpecEditor({
     validation: PlaybookValidationResult
   }) {
     updateSpec(result.spec)
-    setValidation(result.validation)
-    onValidationChange?.(result.validation)
     if (editingNode?.type === 'step') {
       const updated = result.spec.steps?.find((s) => s.id === editingNode.id)
       if (updated) {

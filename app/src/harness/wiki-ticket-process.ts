@@ -4,6 +4,16 @@ function requireEnv(env: Record<string, string | undefined>, name: string): stri
   return value
 }
 
+export class HarnessProcessError extends Error {
+  constructor(
+    message: string,
+    readonly category: 'permanent' | 'transient',
+  ) {
+    super(message)
+    this.name = 'HarnessProcessError'
+  }
+}
+
 /**
  * Provider-független wiki ticket feldolgozás: a platform WikiAgentRuntime-ját hívja
  * HTTP-n keresztül (ugyanaz az út, mint local-wiki launcher).
@@ -42,9 +52,13 @@ export async function runWikiTicketProcessViaPlatform(
     )
   }
 
-  let payload: { success?: boolean; error?: string }
+  let payload: { success?: boolean; error?: string; category?: 'permanent' | 'transient' }
   try {
-    payload = JSON.parse(raw) as { success?: boolean; error?: string }
+    payload = JSON.parse(raw) as {
+      success?: boolean
+      error?: string
+      category?: 'permanent' | 'transient'
+    }
   } catch {
     throw new Error(
       `Platform válasz nem értelmezhető JSON-ként (${response.status}): ${raw.slice(0, 200)}`,
@@ -52,7 +66,12 @@ export async function runWikiTicketProcessViaPlatform(
   }
 
   if (!response.ok || !payload.success) {
-    throw new Error(payload.error ?? `Wiki ticket process failed: ${response.status}`)
+    const category =
+      payload.category ?? (response.status >= 400 && response.status < 500 ? 'permanent' : 'transient')
+    throw new HarnessProcessError(
+      payload.error ?? `Wiki ticket process failed: ${response.status}`,
+      category,
+    )
   }
 }
 
