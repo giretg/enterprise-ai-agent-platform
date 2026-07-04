@@ -31,23 +31,26 @@ export class PostgresTicketRepository implements TicketRepository {
   }
 
   async findReadyForDispatch(now: Date, limit: number): Promise<Ticket[]> {
+    // Prisma JSON-path filter NULL bug: `NOT { payload: { path: ['delegationReturned'], equals: true } }`
+    // generál: `payload #>> '{delegationReturned}' = 'true'` → NULL ha a mező hiányzik → `NOT NULL` = NULL (falsy)
+    // → kizárja azokat a ticketeket, ahol a mező nem létezik.
+    // Fix: raw SQL csak az ID-szűréshez (helyes @> containment); majd findMany a típusos objektumokhoz.
+    const ids = await prisma.$queryRaw<{ id: string }[]>`
+      SELECT id
+      FROM tickets
+      WHERE state = 'ready'
+        AND source != 'test'
+        AND lock_token IS NULL
+        AND (execute_after IS NULL OR execute_after <= ${now})
+        AND agent_id IS NOT NULL
+        AND NOT (payload @> '{"delegationReturned": true}')
+      ORDER BY updated_at ASC
+      LIMIT ${limit}
+    `
+    if (ids.length === 0) return []
     return prisma.ticket.findMany({
-      where: {
-        state: 'ready',
-        source: { not: 'test' },
-        lockToken: null,
-        OR: [{ executeAfter: null }, { executeAfter: { lte: now } }],
-        agentId: { not: null },
-        // Kész delegálások ne kerüljenek újra feldolgozásra (legacy ready állapot).
-        NOT: {
-          payload: {
-            path: ['delegationReturned'],
-            equals: true,
-          },
-        },
-      },
+      where: { id: { in: ids.map((r) => r.id) } },
       orderBy: { updatedAt: 'asc' },
-      take: limit,
     })
   }
 
