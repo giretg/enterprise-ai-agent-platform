@@ -99,7 +99,3 @@ env:
     value: "posnavigator.eu"
     availability:
       - RUNTIME
-  - variable: PROVIDER_CRM_API_KEY
-    secret: PROVIDER_CRM_API_KEY
-    availability:
-      - RUNTIME
