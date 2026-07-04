@@ -2,11 +2,10 @@
 
 /**
  * PlaybookFlowGraph — a Playbook-spec (§9.2) tervezett folyamatának SVG-gráfja.
+ * Szándékosan DEFENZÍV: nyers `unknown` specet fogad, saját minimál-parse-szal,
+ * és `null`-t ad vissza, ha a spec még nem rajzolható.
  *
- * A spec `steps` / `gates` / `transitions` + `onComplete` mezőiből determinisztikus,
- * rétegelt (longest-path) elrendezésű node-él gráfot rajzol. Szándékosan DEFENZÍV:
- * nyers `unknown` specet fogad, saját minimál-parse-szal (nincs zod/crypto a kliens-
- * bundle-ben), és `null`-t ad vissza, ha a spec még nem rajzolható.
+ * Ha `onNodeClick` prop van, a node-ok kattinthatók (szerkesztési mód).
  */
 
 type Condition =
@@ -14,14 +13,32 @@ type Condition =
   | { field?: string; op?: string; value?: string | number | boolean }
 
 type RawRule = { condition?: Condition; nextStepId?: string; gateId?: string }
-type RawStep = {
+export type RawStep = {
   id?: string
   name?: string
+  ticketType?: string
   assignedRole?: string
+  description?: string
   requiredGateIds?: string[]
+  allowedStates?: string[]
   onComplete?: RawRule[]
+  instructionTemplate?: string
+  inputSlots?: unknown[]
+  timeoutMinutes?: number
+  retryPolicy?: { maxAttempts?: number; onExhausted?: 'fail_process' | 'manual_review' }
+  inputContract?: Record<string, unknown>
+  outputContract?: Record<string, unknown>
 }
-type RawGate = { id?: string; type?: string; criticality?: string; blocking?: boolean }
+export type RawGate = {
+  id?: string
+  type?: string
+  criticality?: string
+  blocking?: boolean
+  requiredActorRole?: string
+  condition?: Condition
+  approvalMode?: 'single' | 'four_eyes' | 'multi_level'
+  evidenceRequired?: boolean
+}
 type RawTransition = { fromStepId?: string; toStepId?: string; trigger?: string }
 type RawSpec = {
   entryStepId?: string
@@ -34,21 +51,24 @@ type NodeKind = 'step' | 'gate'
 type GraphNode = {
   id: string
   label: string
-  sub: string
+  subLines: string[]  // max 2 sor az agent szerepnek
+  templateLines: string[]  // max 5 sor az instructionTemplate-ből
   kind: NodeKind
   isEntry: boolean
   criticality?: string
   layer: number
   row: number
+  height: number
 }
 type EdgeKind = 'flow' | 'gate' | 'requires'
-type GraphEdge = { from: string; to: string; label: string; kind: EdgeKind }
+type GraphEdge = { from: string; to: string; labelLines: string[]; kind: EdgeKind }
 
-const NODE_W = 164
-const NODE_H = 56
-const COL_GAP = 96
-const ROW_GAP = 30
-const PAD = 20
+const NODE_W = 180
+const NODE_H_MIN = 72
+const COL_GAP = 100
+const ROW_GAP = 36
+const PAD = 24
+const TEMPLATE_LINE_H = 10
 
 function conditionLabel(c: Condition | undefined): string {
   if (c == null || c === 'default') return 'alap'
@@ -58,11 +78,48 @@ function conditionLabel(c: Condition | undefined): string {
   return ''
 }
 
-function truncate(s: string, max: number): string {
-  return s.length > max ? `${s.slice(0, max - 1)}…` : s
+/** Szöveget szavakra vágja, és max maxLen karakteres sorokba tördeli. */
+function wrapText(text: string, maxLen: number, maxLines: number): string[] {
+  if (!text) return []
+  const words = text.split(' ')
+  const lines: string[] = []
+  let cur = ''
+  for (const w of words) {
+    if (lines.length >= maxLines) break
+    if (cur.length === 0) {
+      cur = w.length > maxLen ? w.slice(0, maxLen - 1) + '…' : w
+    } else if (cur.length + 1 + w.length <= maxLen) {
+      cur += ' ' + w
+    } else {
+      lines.push(cur)
+      if (lines.length >= maxLines) break
+      cur = w.length > maxLen ? w.slice(0, maxLen - 1) + '…' : w
+    }
+  }
+  if (cur && lines.length < maxLines) lines.push(cur)
+  return lines
 }
 
-/** Nyers spec → node/él modell, vagy null ha nincs mit rajzolni. */
+/** Az instructionTemplate első maxLines sora (sortörés + tördelés). */
+function templatePreviewLines(text: string, maxLines: number, maxLen: number): string[] {
+  if (!text.trim()) return []
+  const result: string[] = []
+  for (const raw of text.split(/\r?\n/)) {
+    if (result.length >= maxLines) break
+    result.push(...wrapText(raw.trim(), maxLen, maxLines - result.length))
+  }
+  return result.slice(0, maxLines)
+}
+
+function nodeHeight(n: GraphNode): number {
+  const roleBlock = 36 + n.subLines.length * 14
+  const templateBlock =
+    n.templateLines.length > 0
+      ? 14 + (n.templateLines.length - 1) * TEMPLATE_LINE_H + 10
+      : 0
+  return Math.max(NODE_H_MIN, roleBlock + templateBlock)
+}
+
 function buildModel(raw: RawSpec): { nodes: GraphNode[]; edges: GraphEdge[] } | null {
   const steps = Array.isArray(raw.steps) ? raw.steps.filter((s) => s && s.id) : []
   if (steps.length === 0) return null
@@ -70,27 +127,37 @@ function buildModel(raw: RawSpec): { nodes: GraphNode[]; edges: GraphEdge[] } | 
 
   const nodes = new Map<string, GraphNode>()
   for (const s of steps) {
-    nodes.set(s.id as string, {
+    const roleText = s.assignedRole ?? ''
+    const templateLines = templatePreviewLines(s.instructionTemplate ?? '', 5, 26)
+    const stepNode: GraphNode = {
       id: s.id as string,
-      label: truncate(s.name || (s.id as string), 22),
-      sub: s.assignedRole ? truncate(s.assignedRole, 22) : '',
+      label: wrapText(s.name || (s.id as string), 20, 1)[0] ?? (s.id as string),
+      subLines: wrapText(roleText, 22, 2),
+      templateLines,
       kind: 'step',
       isEntry: raw.entryStepId === s.id,
       layer: 0,
       row: 0,
-    })
+      height: NODE_H_MIN,
+    }
+    stepNode.height = nodeHeight(stepNode)
+    nodes.set(s.id as string, stepNode)
   }
   for (const g of gates) {
-    nodes.set(g.id as string, {
+    const gateNode: GraphNode = {
       id: g.id as string,
-      label: truncate(g.id as string, 22),
-      sub: g.type ? truncate(g.type.replace(/_/g, ' '), 22) : 'kapu',
+      label: wrapText(g.id as string, 20, 1)[0] ?? (g.id as string),
+      subLines: g.type ? wrapText(g.type.replace(/_/g, ' '), 22, 2) : ['kapu'],
+      templateLines: [],
       kind: 'gate',
       isEntry: false,
       criticality: g.criticality,
       layer: 0,
       row: 0,
-    })
+      height: NODE_H_MIN,
+    }
+    gateNode.height = nodeHeight(gateNode)
+    nodes.set(g.id as string, gateNode)
   }
 
   const edges: GraphEdge[] = []
@@ -100,7 +167,7 @@ function buildModel(raw: RawSpec): { nodes: GraphNode[]; edges: GraphEdge[] } | 
     const key = `${from}→${to}:${kind}`
     if (seen.has(key)) return
     seen.add(key)
-    edges.push({ from, to, label, kind })
+    edges.push({ from, to, labelLines: wrapText(label, 16, 2), kind })
   }
 
   for (const s of steps) {
@@ -120,8 +187,6 @@ function buildModel(raw: RawSpec): { nodes: GraphNode[]; edges: GraphEdge[] } | 
     }
   }
 
-  // Rétegkiosztás: longest-path relaxáció a routing-élek mentén (flow + gate + requires).
-  const entry = raw.entryStepId && nodes.has(raw.entryStepId) ? raw.entryStepId : steps[0].id
   const nodeCount = nodes.size
   for (let i = 0; i < nodeCount; i++) {
     let changed = false
@@ -135,10 +200,10 @@ function buildModel(raw: RawSpec): { nodes: GraphNode[]; edges: GraphEdge[] } | 
     }
     if (!changed) break
   }
+  const entry = raw.entryStepId && nodes.has(raw.entryStepId) ? raw.entryStepId : steps[0].id
   const entryNode = nodes.get(entry as string)
   if (entryNode) entryNode.layer = 0
 
-  // Sorok rétegen belül, beszúrási sorrendben.
   const byLayer = new Map<number, GraphNode[]>()
   for (const n of nodes.values()) {
     const list = byLayer.get(n.layer) ?? []
@@ -152,23 +217,68 @@ function buildModel(raw: RawSpec): { nodes: GraphNode[]; edges: GraphEdge[] } | 
   return { nodes: [...nodes.values()], edges }
 }
 
-function nodePos(n: GraphNode) {
-  const x = PAD + n.layer * (NODE_W + COL_GAP)
-  const y = PAD + n.row * (NODE_H + ROW_GAP)
-  return { x, y, cx: x + NODE_W / 2, cy: y + NODE_H / 2 }
+function layoutNodes(nodes: GraphNode[]): Map<string, { x: number; y: number; cx: number; cy: number }> {
+  const byLayer = new Map<number, GraphNode[]>()
+  for (const n of nodes) {
+    const list = byLayer.get(n.layer) ?? []
+    list.push(n)
+    byLayer.set(n.layer, list)
+  }
+  const positions = new Map<string, { x: number; y: number; cx: number; cy: number }>()
+  for (const [layer, list] of byLayer) {
+    list.sort((a, b) => a.row - b.row)
+    let y = PAD
+    for (const n of list) {
+      const x = PAD + layer * (NODE_W + COL_GAP)
+      positions.set(n.id, { x, y, cx: x + NODE_W / 2, cy: y + n.height / 2 })
+      y += n.height + ROW_GAP
+    }
+  }
+  return positions
 }
 
-export function PlaybookFlowGraph({ spec }: { spec: unknown }) {
+function svgBounds(nodes: GraphNode[], positions: Map<string, { x: number; y: number }>) {
+  let maxX = PAD
+  let maxY = PAD
+  for (const n of nodes) {
+    const p = positions.get(n.id)!
+    maxX = Math.max(maxX, p.x + NODE_W)
+    maxY = Math.max(maxY, p.y + n.height)
+  }
+  return { width: maxX + PAD, height: maxY + PAD }
+}
+
+export type NodeClickPayload =
+  | { type: 'step'; id: string; data: RawStep }
+  | { type: 'gate'; id: string; data: RawGate }
+
+export function PlaybookFlowGraph({
+  spec,
+  onNodeClick,
+}: {
+  spec: unknown
+  onNodeClick?: (payload: NodeClickPayload) => void
+}) {
   if (!spec || typeof spec !== 'object') return null
-  const model = buildModel(spec as RawSpec)
+  const raw = spec as RawSpec
+  const model = buildModel(raw)
   if (!model) return null
   const { nodes, edges } = model
 
   const nodeById = new Map(nodes.map((n) => [n.id, n]))
-  const maxLayer = Math.max(...nodes.map((n) => n.layer))
-  const maxRow = Math.max(...nodes.map((n) => n.row))
-  const width = PAD * 2 + (maxLayer + 1) * NODE_W + maxLayer * COL_GAP
-  const height = PAD * 2 + (maxRow + 1) * NODE_H + maxRow * ROW_GAP
+  const positions = layoutNodes(nodes)
+  const { width, height } = svgBounds(nodes, positions)
+
+  function handleNodeClick(n: GraphNode) {
+    if (!onNodeClick) return
+    if (n.kind === 'step') {
+      const data = (raw.steps ?? []).find((s) => s.id === n.id) ?? { id: n.id }
+      onNodeClick({ type: 'step', id: n.id, data })
+    } else {
+      const data = (raw.gates ?? []).find((g) => g.id === n.id) ?? { id: n.id }
+      onNodeClick({ type: 'gate', id: n.id, data })
+    }
+  }
 
   return (
     <div className="overflow-x-auto rounded-lg border border-ink/10 bg-paper/40 p-3">
@@ -197,14 +307,16 @@ export function PlaybookFlowGraph({ spec }: { spec: unknown }) {
         {edges.map((e, i) => {
           const u = nodeById.get(e.from)!
           const v = nodeById.get(e.to)!
-          const a = nodePos(u)
-          const b = nodePos(v)
-          // Balról jobbra: u jobb-közép → v bal-közép. Vissza-/oldalirányú éleknél is stabil.
+          const a = positions.get(e.from)!
+          const b = positions.get(e.to)!
+          const uH = u.height
+          const vH = v.height
           const x1 = a.x + NODE_W
-          const y1 = a.cy
+          const y1 = a.y + uH / 2
           const x2 = b.x
-          const y2 = b.cy
+          const y2 = b.y + vH / 2
           const mx = (x1 + x2) / 2
+          const my = (y1 + y2) / 2
           const dashed = e.kind === 'requires'
           const stroke =
             e.kind === 'gate'
@@ -222,15 +334,19 @@ export function PlaybookFlowGraph({ spec }: { spec: unknown }) {
                 strokeDasharray={dashed ? '4 3' : undefined}
                 markerEnd="url(#pb-arrow)"
               />
-              {e.label && (
+              {e.labelLines.length > 0 && (
                 <text
                   x={mx}
-                  y={(y1 + y2) / 2 - 4}
+                  y={my - (e.labelLines.length > 1 ? 8 : 4)}
                   textAnchor="middle"
                   className="fill-ink-soft"
                   style={{ fontSize: 9 }}
                 >
-                  {truncate(e.label, 18)}
+                  {e.labelLines.map((line, li) => (
+                    <tspan key={li} x={mx} dy={li === 0 ? 0 : 11}>
+                      {line}
+                    </tspan>
+                  ))}
                 </text>
               )}
             </g>
@@ -238,40 +354,97 @@ export function PlaybookFlowGraph({ spec }: { spec: unknown }) {
         })}
 
         {nodes.map((n) => {
-          const p = nodePos(n)
+          const p = positions.get(n.id)!
           const isGate = n.kind === 'gate'
+          const roleEndY = p.y + 36 + n.subLines.length * 14
           const fill = isGate ? 'fill-honey/10' : n.isEntry ? 'fill-coral/10' : 'fill-paper'
           const border = isGate
             ? 'stroke-honey/60'
             : n.isEntry
               ? 'stroke-coral/70'
               : 'stroke-ink/20'
+          const clickable = !!onNodeClick
           return (
-            <g key={n.id}>
+            <g
+              key={n.id}
+              onClick={() => handleNodeClick(n)}
+              style={clickable ? { cursor: 'pointer' } : undefined}
+              role={clickable ? 'button' : undefined}
+              aria-label={clickable ? `${n.label} szerkesztése` : undefined}
+            >
               <rect
                 x={p.x}
                 y={p.y}
                 width={NODE_W}
-                height={NODE_H}
+                height={n.height}
                 rx={isGate ? 6 : 10}
-                className={`${fill} ${border}`}
+                className={`${fill} ${border}${clickable ? ' hover:stroke-accent/70' : ''}`}
                 strokeWidth={n.isEntry ? 2 : 1.5}
               />
+              {/* Lépés/kapu neve */}
               <text
-                x={p.x + 12}
-                y={p.y + 22}
+                x={p.x + 10}
+                y={p.y + 20}
                 className="fill-ink"
                 style={{ fontSize: 12, fontWeight: 600 }}
               >
                 {n.label}
               </text>
-              <text x={p.x + 12} y={p.y + 39} className="fill-ink-soft" style={{ fontSize: 10 }}>
-                {isGate ? '◆ ' : ''}
-                {n.sub}
-                {n.criticality ? ` · ${n.criticality}` : ''}
-              </text>
+              {/* Agent szerep — 2 sor */}
+              {n.subLines.map((line, li) => (
+                <text
+                  key={li}
+                  x={p.x + 10}
+                  y={p.y + 36 + li * 14}
+                  className="fill-ink-soft"
+                  style={{ fontSize: 10 }}
+                >
+                  {li === 0 && isGate ? '◆ ' : ''}{line}
+                  {li === 0 && n.criticality ? ` · ${n.criticality}` : ''}
+                </text>
+              ))}
+              {n.templateLines.length > 0 && (
+                <>
+                  <text
+                    x={p.x + 10}
+                    y={roleEndY + 4}
+                    className="fill-ink/35"
+                    style={{ fontSize: 7 }}
+                  >
+                    prompt sablon
+                  </text>
+                  {n.templateLines.map((line, li) => (
+                    <text
+                      key={`t${li}`}
+                      x={p.x + 10}
+                      y={roleEndY + 14 + li * TEMPLATE_LINE_H}
+                      className="fill-ink-soft"
+                      style={{ fontSize: 8 }}
+                    >
+                      {line}
+                    </text>
+                  ))}
+                </>
+              )}
+              {clickable && (
+                <text
+                  x={p.x + NODE_W - 8}
+                  y={p.y + n.height - 8}
+                  textAnchor="end"
+                  className="fill-ink/25"
+                  style={{ fontSize: 8 }}
+                >
+                  ✎
+                </text>
+              )}
               {n.isEntry && (
-                <text x={p.x + NODE_W - 10} y={p.y + 15} textAnchor="end" className="fill-coral" style={{ fontSize: 8, fontWeight: 700 }}>
+                <text
+                  x={p.x + NODE_W - 10}
+                  y={p.y + 13}
+                  textAnchor="end"
+                  className="fill-coral"
+                  style={{ fontSize: 8, fontWeight: 700 }}
+                >
                   START
                 </text>
               )}
@@ -290,6 +463,11 @@ export function PlaybookFlowGraph({ spec }: { spec: unknown }) {
         <span className="inline-flex items-center gap-1">
           <span className="inline-block h-0 w-4 border-t border-dashed border-ink/40" /> kötelező kapu
         </span>
+        {onNodeClick && (
+          <span className="inline-flex items-center gap-1">
+            <span className="text-ink/40">✎</span> kattints a szerkesztéshez
+          </span>
+        )}
       </div>
     </div>
   )

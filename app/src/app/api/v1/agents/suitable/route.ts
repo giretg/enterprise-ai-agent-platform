@@ -11,6 +11,10 @@ function tenantOf(user: AuthedUser): string {
   return user.tenantId ?? user.id
 }
 
+function registryTenantOf(user: AuthedUser): string | null {
+  return user.tenantId ?? null
+}
+
 export async function GET(request: Request) {
   try {
     const user = await requireRole('operator')
@@ -21,21 +25,22 @@ export async function GET(request: Request) {
     })
     if (!parsed.success) return apiError(parsed.error.message, 400)
 
-    const tenantId = tenantOf(user)
-    const version = await repositories.playbooksV2.findVersion(tenantId, parsed.data.playbookVersionId)
+    const processTenantId = tenantOf(user)
+    const registryTenantId = registryTenantOf(user)
+    const version = await repositories.playbooksV2.findVersion(processTenantId, parsed.data.playbookVersionId)
     if (!version) return apiError('A Playbook-verzió nem található.', 404)
 
     const role = parsePlaybookSpecV2(version.spec).roles.find((r) => r.key === parsed.data.roleKey)
     if (!role || role.type !== 'agent_role') return apiError('A megadott agent-szerep nem található.', 404)
 
-    const agents = await repositories.agents.findMany({ tenantId })
+    const agents = await repositories.agents.findMany({ tenantId: registryTenantId })
     const suitable = []
     for (const agent of agents) {
       const capabilities = await repositories.toolBroker.findCapabilitiesForAgent(agent.id)
       const result = isAgentSuitable(
         { status: agent.status, tenantId: agent.tenantId, capabilities },
         { requiredCapabilities: role.requiredCapabilities },
-        tenantId,
+        registryTenantId,
       )
       if (result.ok) suitable.push({ id: agent.id, name: agent.name, status: agent.status, role: agent.role })
     }

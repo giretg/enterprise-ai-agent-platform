@@ -44,6 +44,8 @@ import { TicketStateMachine } from '@/domain/playbook/ticket-state-machine'
 import { IamService } from '@/domain/iam/iam-service'
 import { SandboxAppService } from '@/domain/sandbox/sandbox-app-service'
 import { GcsArtifactStore } from '@/domain/sandbox/artifact-store'
+import { SandboxVersioningService } from '@/domain/sandbox-versioning/sandbox-versioning-service'
+import { GcsCodeTreeStore, GcsDataSnapshotStore } from '@/domain/sandbox-versioning/stores'
 import { ScheduledTaskService } from '@/domain/scheduled-task/scheduled-task-service'
 import { MonitorService } from '@/domain/monitor/monitor-service'
 import { DeadlineCollector } from '@/domain/monitor/collectors/deadline-collector'
@@ -84,6 +86,7 @@ const processService = new ProcessService(
   repositories.processDefinitions,
   repositories.agents,
   repositories.toolBroker,
+  repositories.users,
   new MonitorProcessAlertNotifier(monitorNotifier),
 )
 const processDefinitionService = new ProcessDefinitionService(
@@ -92,6 +95,7 @@ const processDefinitionService = new ProcessDefinitionService(
   repositories.agents,
   repositories.toolBroker,
   repositories.rolePermissions,
+  repositories.users,
   repositories.audit,
 )
 const ticketStateMachine = new TicketStateMachine(
@@ -176,6 +180,36 @@ const sandboxAppService = new SandboxAppService(
   repositories.audit,
   new GcsArtifactStore(sandboxAppBucket),
 )
+
+// Sandbox verziózás / promóció / graduation (SandboxVersioning-Graduation §2.1).
+// Két külön immutable object-store sín (kód-fa + adat-snapshot). A `contentRef`
+// feloldás a File Editor workspace-tárból történik: `workspace:<tenant>/<ticket>/<path>`,
+// vagy `inline:<content>` az agent által előkészített literál tartalomhoz.
+const sandboxCodeBucket = process.env.SANDBOX_CODE_BUCKET ?? 'platform-sandbox-code-prod'
+const sandboxDataBucket = process.env.SANDBOX_DATA_BUCKET ?? 'platform-sandbox-data-prod'
+const sandboxContentResolver = async (contentRef: string): Promise<string> => {
+  if (contentRef.startsWith('inline:')) return contentRef.slice('inline:'.length)
+  if (contentRef.startsWith('workspace:')) {
+    const rest = contentRef.slice('workspace:'.length)
+    const slash1 = rest.indexOf('/')
+    const slash2 = rest.indexOf('/', slash1 + 1)
+    if (slash1 < 0 || slash2 < 0) throw new Error(`Invalid workspace contentRef: ${contentRef}`)
+    const tenantId = rest.slice(0, slash1)
+    const ticketId = rest.slice(slash1 + 1, slash2)
+    const filePath = rest.slice(slash2 + 1)
+    const buf = await workspaceStorage.read(tenantId, ticketId, filePath)
+    if (buf == null) throw new Error(`workspace content not found: ${contentRef}`)
+    return buf.toString('utf8')
+  }
+  throw new Error(`Unsupported contentRef scheme: ${contentRef}`)
+}
+const sandboxVersioningService = new SandboxVersioningService(
+  repositories.sandboxVersioning,
+  new GcsCodeTreeStore(sandboxCodeBucket),
+  new GcsDataSnapshotStore(sandboxDataBucket),
+  repositories.audit,
+  sandboxContentResolver,
+)
 // Web Search Tool (Feature-spec — WebSearchTool §8.3, D-WS-7): a provider
 // CONNECTOR-onként (tenant policy `config.provider`) cserélhető. A custom
 // provider tenant-config URL-t és connector secretet használhat; a managed
@@ -218,6 +252,7 @@ const toolBrokerService = new ToolBrokerService(
   connectorGrantService,
   fileEditorService,
   sandboxAppService,
+  sandboxVersioningService,
   webSearchService,
   webSearchPolicyService,
   repositories.knowledgeChunks,
@@ -481,6 +516,9 @@ const generalTaskRuntime = new GeneralTaskRuntime(
 toolBrokerService.setDelegationProcessor(async ({ ticketId, targetAgentId }) => {
   await wikiRuntime.processTicket({ ticketId, agentId: targetAgentId })
 })
+// Folyamat-ticket board_write állapotváltása a Playbook state machine-en át (kapuk +
+// output-szerződés + ProcessService.advance) — l. process-runtime-advance-gap.
+toolBrokerService.setPlaybookTransitioner(ticketStateMachine)
 const auditChainService = new AuditChainService(repositories.audit)
 const recipeService = new RecipeService(repositories.recipes, repositories.audit)
 const scheduledTaskService = new ScheduledTaskService(
@@ -569,6 +607,7 @@ export const services = {
   provisioningAssistant,
   playbookAuthorAgent,
   sandboxApps: sandboxAppService,
+  sandboxVersioning: sandboxVersioningService,
   scheduledTasks: scheduledTaskService,
   monitors: monitorService,
   connectorGrants: connectorGrantService,

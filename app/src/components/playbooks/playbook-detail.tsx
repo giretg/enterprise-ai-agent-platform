@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useRef, useState, useTransition } from 'react'
+import { useRef, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   createPlaybookVersionV2,
@@ -12,8 +12,15 @@ import {
   rejectPlaybookVersionV2,
   assignPlaybookV2,
 } from '@/app/actions/playbook'
-import { PlaybookFlowGraph } from '@/components/playbooks/playbook-flow-graph'
 import { PlaybookAuthorPanel } from '@/components/playbooks/playbook-author-panel'
+import { summarizeSpecCriticality } from '@/components/playbooks/playbook-criticality-ui'
+import {
+  PlaybookSpecEditor,
+  type PlaybookDraftSpec,
+  type PlaybookValidationResult,
+  syncPlaybookSpecInputSlots,
+  validatePlaybookDraftSpec,
+} from '@/components/playbooks/playbook-spec-editor'
 
 type ValidationResult = {
   valid: boolean
@@ -58,52 +65,48 @@ const VERSION_TONE: Record<string, string> = {
   retired: 'bg-ink/8 text-ink-soft',
 }
 
-const STARTER_SPEC = (key: string, processType: string) =>
-  JSON.stringify(
-    {
-      schemaVersion: '1.0',
-      key,
-      name: key,
-      processType,
-      entryStepId: 'extract',
-      roles: [
-        { key: 'extractor', type: 'agent_role' },
-        { key: 'approver', type: 'human_role', requiredPermissions: ['ticket:approve'] },
-      ],
-      steps: [
-        {
-          id: 'extract',
-          name: 'Adatkinyerés',
-          ticketType: 'interaction',
-          assignedRole: 'extractor',
-          allowedStates: ['ready', 'in_progress', 'done'],
-          onComplete: [{ condition: 'default', nextStepId: 'approval' }],
-        },
-        {
-          id: 'approval',
-          name: 'Jóváhagyás',
-          ticketType: 'interaction',
-          assignedRole: 'approver',
-          allowedStates: ['awaiting_human', 'approved'],
-          requiredGateIds: ['approve_posting'],
-        },
-      ],
-      gates: [
-        {
-          id: 'approve_posting',
-          type: 'human_approval',
-          requiredActorRole: 'approver',
-          blocking: true,
-          criticality: 'L2',
-          evidenceRequired: true,
-        },
-      ],
-      transitions: [{ fromStepId: 'extract', toStepId: 'approval', trigger: 'step.completed' }],
-      outputContract: { requiredFields: ['decision'] },
-    },
-    null,
-    2,
-  )
+const STARTER_SPEC = (key: string, processType: string): PlaybookDraftSpec =>
+  ({
+    schemaVersion: '1.0',
+    key,
+    name: key,
+    processType,
+    entryStepId: 'extract',
+    roles: [
+      { key: 'extractor', type: 'agent_role' },
+      { key: 'approver', type: 'human_role', requiredPermissions: ['ticket:approve'] },
+    ],
+    steps: [
+      {
+        id: 'extract',
+        name: 'Adatkinyerés',
+        ticketType: 'interaction',
+        assignedRole: 'extractor',
+        allowedStates: ['ready', 'in_progress', 'done'],
+        onComplete: [{ condition: 'default', nextStepId: 'approval' }],
+      },
+      {
+        id: 'approval',
+        name: 'Jóváhagyás',
+        ticketType: 'interaction',
+        assignedRole: 'approver',
+        allowedStates: ['awaiting_human', 'approved'],
+        requiredGateIds: ['approve_posting'],
+      },
+    ],
+    gates: [
+      {
+        id: 'approve_posting',
+        type: 'human_approval',
+        requiredActorRole: 'approver',
+        blocking: true,
+        criticality: 'L2',
+        evidenceRequired: true,
+      },
+    ],
+    transitions: [{ fromStepId: 'extract', toStepId: 'approval', trigger: 'step.completed' }],
+    outputContract: { requiredFields: ['decision'] },
+  }) as unknown as PlaybookDraftSpec
 
 function asValidation(v: unknown): ValidationResult | null {
   if (!v || typeof v !== 'object') return null
@@ -112,46 +115,51 @@ function asValidation(v: unknown): ValidationResult | null {
   return { valid: r.valid, errors: r.errors ?? [], warnings: r.warnings ?? [] }
 }
 
-// Szerkesztő panel — csak akkor jelenik meg, ha van aktív szerkesztési mód
-function SpecEditor({
+function VersionSpecEditor({
   mode,
   versionLabel,
-  specText,
+  spec,
   changeSummary,
-  parsedSpec,
-  parseError,
+  validation,
   pending,
   onSpecChange,
+  onValidationChange,
   onSummaryChange,
   onSaveDraft,
   onCreateNew,
   onClose,
 }: {
-  mode: 'edit' | 'new'
+  mode: 'edit' | 'new' | 'fork'
   versionLabel: string
-  specText: string
+  spec: PlaybookDraftSpec
   changeSummary: string
-  parsedSpec: unknown
-  parseError: string | null
+  validation: PlaybookValidationResult
   pending: boolean
-  onSpecChange: (v: string) => void
+  onSpecChange: (spec: PlaybookDraftSpec) => void
+  onValidationChange: (v: PlaybookValidationResult) => void
   onSummaryChange: (v: string) => void
   onSaveDraft: () => void
   onCreateNew: () => void
   onClose: () => void
 }) {
+  const title =
+    mode === 'edit'
+      ? `Piszkozat szerkesztése — ${versionLabel}`
+      : mode === 'fork'
+        ? `Új verzió — ${versionLabel} alapján`
+        : 'Új verzió'
+
+  const description =
+    mode === 'fork'
+      ? 'A publikált verzió nem módosítható — a változtatások csak új piszkozat-verzióként menthetők.'
+      : 'Kattints a folyamatábra dobozaira a lépések és kapuk szerkesztéséhez. A JSON a jobb felső sarokban érhető el.'
+
   return (
     <section className="atelier-card p-5">
       <div className="mb-4 flex items-start justify-between gap-2">
         <div>
-          <h2 className="font-display text-lg font-semibold">
-            {mode === 'edit' ? `Piszkozat szerkesztése — ${versionLabel}` : 'Új verzió'}
-          </h2>
-          <p className="mt-0.5 text-xs text-ink-soft">
-            {mode === 'edit'
-              ? 'JSON spec szerkesztése. „Mentés" felülírja a piszkozatot. „Mentés új verzióként" új sorszámot kap.'
-              : 'Tölts ki egy JSON spec-et, majd hozz létre új piszkozat-verziót.'}
-          </p>
+          <h2 className="font-display text-lg font-semibold">{title}</h2>
+          <p className="mt-0.5 text-xs text-ink-soft">{description}</p>
         </div>
         <button
           onClick={onClose}
@@ -161,26 +169,11 @@ function SpecEditor({
         </button>
       </div>
 
-      <textarea
-        value={specText}
-        onChange={(e) => onSpecChange(e.target.value)}
-        rows={20}
-        spellCheck={false}
-        className="w-full rounded-lg border border-ink/15 bg-transparent px-3 py-2 font-mono text-xs"
+      <PlaybookSpecEditor
+        spec={spec}
+        onSpecChange={onSpecChange}
+        onValidationChange={onValidationChange}
       />
-
-      <div className="mt-4">
-        <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-soft">
-          Folyamat-előnézet
-        </h3>
-        {parsedSpec ? (
-          <PlaybookFlowGraph spec={parsedSpec} />
-        ) : (
-          <p className="rounded-lg border border-coral/30 bg-coral/10 px-3 py-2 text-xs text-coral">
-            Érvényes JSON kell a gráf megjelenítéséhez.{parseError ? ` (${parseError})` : ''}
-          </p>
-        )}
-      </div>
 
       <div className="mt-4 space-y-2">
         <input
@@ -193,23 +186,25 @@ function SpecEditor({
           {mode === 'edit' && (
             <button
               onClick={onSaveDraft}
-              disabled={pending}
+              disabled={pending || !validation.valid}
               className="rounded-lg bg-coral px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
             >
               {pending ? 'Mentés…' : 'Mentés'}
             </button>
           )}
-          <button
-            onClick={onCreateNew}
-            disabled={pending}
-            className={
-              mode === 'new'
-                ? 'rounded-lg bg-coral px-4 py-2 text-sm font-medium text-white disabled:opacity-50'
-                : 'rounded-lg border border-ink/20 px-4 py-2 text-sm text-ink disabled:opacity-50'
-            }
-          >
-            {pending ? 'Létrehozás…' : 'Mentés új verzióként'}
-          </button>
+          {(mode === 'new' || mode === 'fork' || mode === 'edit') && (
+            <button
+              onClick={onCreateNew}
+              disabled={pending || !validation.valid}
+              className={
+                mode === 'new' || mode === 'fork'
+                  ? 'rounded-lg bg-coral px-4 py-2 text-sm font-medium text-white disabled:opacity-50'
+                  : 'rounded-lg border border-ink/20 px-4 py-2 text-sm text-ink disabled:opacity-50'
+              }
+            >
+              {pending ? 'Létrehozás…' : 'Mentés új verzióként'}
+            </button>
+          )}
         </div>
       </div>
     </section>
@@ -231,29 +226,17 @@ export function PlaybookDetail({
   const [pending, startTransition] = useTransition()
   const editorRef = useRef<HTMLDivElement>(null)
 
-  // Szerkesztő állapot
-  const [editorMode, setEditorMode] = useState<'edit' | 'new' | null>(null)
+  const [editorMode, setEditorMode] = useState<'edit' | 'new' | 'fork' | null>(null)
   const [editingVersionId, setEditingVersionId] = useState<string | null>(null)
-  const [specText, setSpecText] = useState('')
+  const [spec, setSpec] = useState<PlaybookDraftSpec | null>(null)
+  const [validation, setValidation] = useState<PlaybookValidationResult | null>(null)
   const [changeSummary, setChangeSummary] = useState('')
 
-  // Meta szerkesztő
   const [editingMeta, setEditingMeta] = useState(false)
   const [metaName, setMetaName] = useState(playbook.name)
   const [metaDescription, setMetaDescription] = useState(playbook.description ?? '')
 
   const [message, setMessage] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null)
-
-  const parsed = useMemo<{ spec: unknown } | { error: string }>(() => {
-    if (!specText) return { error: 'üres' }
-    try {
-      return { spec: JSON.parse(specText) }
-    } catch (e) {
-      return { error: e instanceof Error ? e.message : 'érvénytelen JSON' }
-    }
-  }, [specText])
-  const parsedSpec = 'spec' in parsed ? parsed.spec : null
-  const parseError = 'error' in parsed ? parsed.error : null
 
   function run(fn: () => Promise<{ success: boolean; error?: string }>, okText: string) {
     setMessage(null)
@@ -269,18 +252,33 @@ export function PlaybookDetail({
   }
 
   function openEdit(v: VersionView) {
+    const loaded = syncPlaybookSpecInputSlots(v.spec as PlaybookDraftSpec)
     setEditorMode('edit')
     setEditingVersionId(v.id)
-    setSpecText(JSON.stringify(v.spec, null, 2))
+    setSpec(loaded)
+    setValidation(asValidation(v.validationResult) ?? validatePlaybookDraftSpec(loaded))
     setChangeSummary(v.changeSummary)
     setMessage(null)
     setTimeout(() => editorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
   }
 
+  function openFork(v: VersionView) {
+    const loaded = syncPlaybookSpecInputSlots(v.spec as PlaybookDraftSpec)
+    setEditorMode('fork')
+    setEditingVersionId(v.id)
+    setSpec(loaded)
+    setValidation(asValidation(v.validationResult) ?? validatePlaybookDraftSpec(loaded))
+    setChangeSummary('')
+    setMessage(null)
+    setTimeout(() => editorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
+  }
+
   function openNew() {
+    const starter = STARTER_SPEC(playbook.key, playbook.processType)
     setEditorMode('new')
     setEditingVersionId(null)
-    setSpecText(STARTER_SPEC(playbook.key, playbook.processType))
+    setSpec(starter)
+    setValidation(validatePlaybookDraftSpec(starter))
     setChangeSummary('')
     setMessage(null)
     setTimeout(() => editorRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
@@ -289,26 +287,30 @@ export function PlaybookDetail({
   function closeEditor() {
     setEditorMode(null)
     setEditingVersionId(null)
-    setSpecText('')
+    setSpec(null)
+    setValidation(null)
     setChangeSummary('')
     setMessage(null)
   }
 
-  function validateSpec(): boolean {
-    if ('error' in parsed) {
-      setMessage({ tone: 'err', text: `Érvénytelen JSON: ${parsed.error}` })
+  function validateBeforeSave(): boolean {
+    if (!spec) {
+      setMessage({ tone: 'err', text: 'Nincs spec a mentéshez.' })
       return false
     }
     if (!changeSummary.trim()) {
       setMessage({ tone: 'err', text: 'Adj meg változás-összefoglalót.' })
       return false
     }
+    if (!validation?.valid) {
+      setMessage({ tone: 'err', text: 'A spec nem valid — javítsd a hibákat mentés előtt.' })
+      return false
+    }
     return true
   }
 
   function saveDraft() {
-    if (!validateSpec() || !editingVersionId) return
-    const spec = (parsed as { spec: unknown }).spec
+    if (!validateBeforeSave() || !editingVersionId || !spec) return
     startTransition(async () => {
       const res = await updatePlaybookVersionV2({ playbookVersionId: editingVersionId, spec, changeSummary })
       if (res.success) {
@@ -327,8 +329,7 @@ export function PlaybookDetail({
   }
 
   function createNew() {
-    if (!validateSpec()) return
-    const spec = (parsed as { spec: unknown }).spec
+    if (!validateBeforeSave() || !spec) return
     startTransition(async () => {
       const res = await createPlaybookVersionV2({ playbookId: playbook.id, spec, changeSummary })
       if (res.success) {
@@ -339,9 +340,7 @@ export function PlaybookDetail({
             ? `v${res.data.version} létrehozva, validáció zöld.`
             : `v${res.data.version} létrehozva, de szemantikai hibák: ${v?.errors.map((e) => e.code).join(', ') ?? '—'}`,
         })
-        setChangeSummary('')
-        setEditingVersionId(null)
-        setEditorMode(null)
+        closeEditor()
         router.refresh()
       } else {
         setMessage({ tone: 'err', text: res.error ?? 'Hiba' })
@@ -353,7 +352,6 @@ export function PlaybookDetail({
 
   return (
     <div className="space-y-6">
-      {/* Fejléc kártya */}
       <div className="atelier-card p-5">
         {editingMeta ? (
           <div className="space-y-3">
@@ -432,7 +430,6 @@ export function PlaybookDetail({
         )}
       </div>
 
-      {/* Üzenetsáv */}
       {message && (
         <p className={`text-sm ${message.tone === 'ok' ? 'text-sage' : 'text-coral'}`}>
           {message.text}
@@ -441,7 +438,6 @@ export function PlaybookDetail({
 
       {canEdit && <PlaybookAuthorPanel playbookId={playbook.id} />}
 
-      {/* Verzió lista */}
       <section className="atelier-card p-5">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="font-display text-lg font-semibold">Verziók</h2>
@@ -468,8 +464,9 @@ export function PlaybookDetail({
         ) : (
           <ul className="space-y-3">
             {versions.map((v) => {
-              const validation = asValidation(v.validationResult)
+              const versionValidation = asValidation(v.validationResult)
               const isBeingEdited = editingVersionId === v.id
+              const crit = summarizeSpecCriticality(v.spec)
               return (
                 <li
                   key={v.id}
@@ -487,9 +484,22 @@ export function PlaybookDetail({
                       >
                         {VERSION_LABEL[v.status] ?? v.status}
                       </span>
-                      {validation && (
-                        <span className={`text-xs ${validation.valid ? 'text-sage' : 'text-coral'}`}>
-                          {validation.valid ? '✓ valid' : `${validation.errors.length} hiba`}
+                      {versionValidation && (
+                        <span
+                          className={`text-xs ${versionValidation.valid ? 'text-sage' : 'text-coral'}`}
+                        >
+                          {versionValidation.valid ? '✓ valid' : `${versionValidation.errors.length} hiba`}
+                        </span>
+                      )}
+                      {crit.level && (
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+                            crit.fourEyes ? 'bg-honey/15 text-honey' : 'bg-ink/8 text-ink-soft'
+                          }`}
+                          title={crit.fourEyes ? 'Four-eyes kötelező publikáláskor' : undefined}
+                        >
+                          {crit.level}
+                          {crit.fourEyes ? ' · four-eyes' : ''}
                         </span>
                       )}
                     </div>
@@ -502,9 +512,9 @@ export function PlaybookDetail({
                     <p className="mt-1 text-xs text-ink-soft">{v.changeSummary}</p>
                   )}
 
-                  {validation && !validation.valid && validation.errors.length > 0 && (
+                  {versionValidation && !versionValidation.valid && versionValidation.errors.length > 0 && (
                     <ul className="mt-2 space-y-0.5">
-                      {validation.errors.map((e, i) => (
+                      {versionValidation.errors.map((e, i) => (
                         <li key={i} className="font-mono text-[11px] text-coral">
                           {e.code} @ {e.path}: {e.message}
                         </li>
@@ -583,24 +593,37 @@ export function PlaybookDetail({
                       </>
                     )}
                     {canEdit && v.status === 'published' && (
-                      <button
-                        onClick={() =>
-                          run(
-                            () =>
-                              assignPlaybookV2({
-                                playbookVersionId: v.id,
-                                assignmentType: 'process_type',
-                                assignmentKey: playbook.processType,
-                                isDefault: true,
-                              }),
-                            `Alapértelmezett Playbook beállítva: ${playbook.processType}.`,
-                          )
-                        }
-                        disabled={pending}
-                        className="rounded-lg border border-ink/20 px-3 py-1.5 text-xs text-ink disabled:opacity-50"
-                      >
-                        Beállítás alapértelmezettnek ({playbook.processType})
-                      </button>
+                      <>
+                        <button
+                          onClick={() => (isBeingEdited ? closeEditor() : openFork(v))}
+                          disabled={pending}
+                          className={`rounded-lg border px-3 py-1.5 text-xs disabled:opacity-50 ${
+                            isBeingEdited
+                              ? 'border-coral/50 text-coral'
+                              : 'border-ink/20 text-ink'
+                          }`}
+                        >
+                          {isBeingEdited ? 'Szerkesztő bezárása' : 'Szerkesztés'}
+                        </button>
+                        <button
+                          onClick={() =>
+                            run(
+                              () =>
+                                assignPlaybookV2({
+                                  playbookVersionId: v.id,
+                                  assignmentType: 'process_type',
+                                  assignmentKey: playbook.processType,
+                                  isDefault: true,
+                                }),
+                              `Alapértelmezett Playbook beállítva: ${playbook.processType}.`,
+                            )
+                          }
+                          disabled={pending}
+                          className="rounded-lg border border-ink/20 px-3 py-1.5 text-xs text-ink disabled:opacity-50"
+                        >
+                          Beállítás alapértelmezettnek ({playbook.processType})
+                        </button>
+                      </>
                     )}
                   </div>
                 </li>
@@ -610,18 +633,17 @@ export function PlaybookDetail({
         )}
       </section>
 
-      {/* Szerkesztő panel — csak akkor jelenik meg, ha meg van nyitva */}
-      {editorMode && (
+      {editorMode && spec && validation && (
         <div ref={editorRef}>
-          <SpecEditor
+          <VersionSpecEditor
             mode={editorMode}
             versionLabel={editingVersion ? `v${editingVersion.version}` : ''}
-            specText={specText}
+            spec={spec}
             changeSummary={changeSummary}
-            parsedSpec={parsedSpec}
-            parseError={parseError}
+            validation={validation}
             pending={pending}
-            onSpecChange={setSpecText}
+            onSpecChange={setSpec}
+            onValidationChange={setValidation}
             onSummaryChange={setChangeSummary}
             onSaveDraft={saveDraft}
             onCreateNew={createNew}

@@ -2,51 +2,75 @@
 
 /**
  * Playbook-szerző agent panel (Feature-spec — Playbook-Role-Agent-Binding §5.A, §6,
- * WP-10). Natural language leírásból draftot kér az agenttől, megmutatja a read-only
- * diagramot (`PlaybookFlowGraph`) és a validációs hibákat, és csak EMBERI mentés után
+ * WP-10). Natural language leírásból draftot kér az agenttől, megmutatja a szerkeszthető
+ * diagramot (`PlaybookSpecEditor`) és a validációs hibákat, és csak EMBERI mentés után
  * kerül a draft a meglévő `draft → validál → jóváhagy → publish` láncba — az agent maga
  * sosem ír a DB-be, sosem publikál.
  */
 import { useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import { draftPlaybookFromDescription, createPlaybookV2, createPlaybookVersionV2 } from '@/app/actions/playbook'
-import { PlaybookFlowGraph } from '@/components/playbooks/playbook-flow-graph'
-
-type ValidationIssue = { code: string; path: string; message: string }
-type ValidationResult = { valid: boolean; errors: ValidationIssue[]; warnings: ValidationIssue[] }
-
-type DraftSpec = {
-  key?: string
-  name?: string
-  processType?: string
-  [k: string]: unknown
-}
+import {
+  PlaybookSpecEditor,
+  type PlaybookDraftSpec,
+  type PlaybookValidationResult,
+} from '@/components/playbooks/playbook-spec-editor'
 
 export function PlaybookAuthorPanel({ playbookId }: { playbookId?: string }) {
   const router = useRouter()
-  const [pending, startTransition] = useTransition()
+  const [savePending, startTransition] = useTransition()
+  const [generating, setGenerating] = useState(false)
+  const pending = generating || savePending
   const [open, setOpen] = useState(false)
   const [description, setDescription] = useState('')
-  const [spec, setSpec] = useState<DraftSpec | null>(null)
-  const [validation, setValidation] = useState<ValidationResult | null>(null)
-  const [message, setMessage] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null)
+  const [spec, setSpec] = useState<PlaybookDraftSpec | null>(null)
+  const [validation, setValidation] = useState<PlaybookValidationResult | null>(null)
+  const [message, setMessage] = useState<{ tone: 'ok' | 'err' | 'warn'; text: string } | null>(null)
+  const [statusText, setStatusText] = useState<string | null>(null)
 
-  function generate() {
+  async function generate() {
     setMessage(null)
-    startTransition(async () => {
+    setGenerating(true)
+    setStatusText(
+      spec
+        ? 'Az agent frissíti és ellenőrzi a folyamatot…'
+        : 'Az agent elemzi a folyamat leírását és validálja a specet…',
+    )
+    try {
       const res = await draftPlaybookFromDescription({
         description,
         existingSpec: spec ?? undefined,
         priorValidation: validation ?? undefined,
       })
-      if (res.success) {
-        setSpec(res.data.spec as DraftSpec)
-        setValidation(res.data.validation as ValidationResult)
-        setDescription('')
-      } else {
+      if (!res.success) {
         setMessage({ tone: 'err', text: res.error })
+        return
       }
-    })
+      const data = res.data as {
+        spec: PlaybookDraftSpec
+        validation: PlaybookValidationResult
+        fixRounds?: number
+        autoFixFailed?: boolean
+      }
+      setSpec(data.spec)
+      setValidation(data.validation)
+      setDescription('')
+
+      if (data.autoFixFailed) {
+        setMessage({
+          tone: 'warn',
+          text: 'Az agent 3 javítási körrel próbálkozott, de a spec még mindig hibás — kérem emberi javítást.',
+        })
+      } else if ((data.fixRounds ?? 0) > 0 && data.validation.valid) {
+        setMessage({
+          tone: 'ok',
+          text: `${data.fixRounds} automatikus javítási kör után a spec érvényes lett.`,
+        })
+      }
+    } finally {
+      setStatusText(null)
+      setGenerating(false)
+    }
   }
 
   function save() {
@@ -91,7 +115,10 @@ export function PlaybookAuthorPanel({ playbookId }: { playbookId?: string }) {
             Írd le természetes nyelven a folyamatot — az agent draftot javasol, de sosem publikál.
           </p>
         </div>
-        <button onClick={() => setOpen((v) => !v)} className="rounded-lg border border-ink/20 px-3 py-1.5 text-sm">
+        <button
+          onClick={() => setOpen((v) => !v)}
+          className="rounded-lg border border-ink/20 px-3 py-1.5 text-sm"
+        >
           {open ? 'Bezár' : '+ Draft leírásból'}
         </button>
       </div>
@@ -116,38 +143,40 @@ export function PlaybookAuthorPanel({ playbookId }: { playbookId?: string }) {
             disabled={pending || !description.trim()}
             className="rounded-lg border border-ink/20 px-4 py-2 text-sm font-medium disabled:opacity-50"
           >
-            {pending ? 'Generálás…' : spec ? 'Draft frissítése' : 'Draft generálása'}
+            {pending
+              ? spec
+                ? 'Frissítés…'
+                : 'Generálás…'
+              : spec
+                ? 'Draft frissítése'
+                : 'Draft generálása'}
           </button>
 
-          {message && <p className="text-sm text-coral">{message.text}</p>}
+          {pending && statusText && (
+            <div className="flex items-center gap-2 rounded-lg border border-ink/10 bg-paper/60 px-3 py-2 text-sm text-ink-soft">
+              <svg className="h-3.5 w-3.5 animate-spin shrink-0" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+              </svg>
+              {statusText}
+            </div>
+          )}
+
+          {message && (
+            <p
+              className={`text-sm ${message.tone === 'err' ? 'text-coral' : message.tone === 'warn' ? 'text-honey' : 'text-sage'}`}
+            >
+              {message.text}
+            </p>
+          )}
 
           {spec && (
-            <div className="space-y-3 rounded-lg border border-ink/10 p-3">
-              <div className="text-sm">
-                <span className="font-semibold">{spec.name ?? '(névtelen)'}</span>{' '}
-                <span className="font-mono text-xs text-ink-soft">{spec.key}</span>
-              </div>
-
-              <PlaybookFlowGraph spec={spec} />
-
-              {validation && (
-                <div className="space-y-1 text-xs">
-                  <p className={validation.valid ? 'font-semibold text-sage' : 'font-semibold text-coral'}>
-                    {validation.valid ? 'Valid — menthető draftként.' : 'Nem valid — javítsd a hibákat.'}
-                  </p>
-                  {validation.errors.map((e, i) => (
-                    <p key={`err-${i}`} className="text-coral">
-                      {e.path}: {e.message}
-                    </p>
-                  ))}
-                  {validation.warnings.map((w, i) => (
-                    <p key={`warn-${i}`} className="text-honey">
-                      {w.path}: {w.message}
-                    </p>
-                  ))}
-                </div>
-              )}
-
+            <>
+              <PlaybookSpecEditor
+                spec={spec}
+                onSpecChange={setSpec}
+                onValidationChange={setValidation}
+              />
               <button
                 onClick={save}
                 disabled={pending || !validation?.valid}
@@ -155,7 +184,7 @@ export function PlaybookAuthorPanel({ playbookId }: { playbookId?: string }) {
               >
                 Mentés draft-verzióként
               </button>
-            </div>
+            </>
           )}
         </div>
       )}

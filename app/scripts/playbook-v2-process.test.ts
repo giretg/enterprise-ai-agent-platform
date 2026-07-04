@@ -41,6 +41,8 @@ import type {
 } from '../src/repositories/interfaces'
 import { PlaybookV2Service } from '../src/domain/playbook/playbook-v2-service'
 import { ProcessService } from '../src/domain/playbook/process-service'
+import { ToolBrokerService } from '../src/domain/tool-broker/tool-broker-service'
+import { TicketService } from '../src/domain/ticket/ticket-service'
 import {
   TicketStateMachine,
   TicketTransitionDenied,
@@ -610,6 +612,70 @@ async function main() {
     assert.equal(delegation.status, 'delivered')
     assert.equal(ctx.audit.byAction('process.step.create').length, 2) // entry + approval
     assert.equal(ctx.audit.byAction('delegation.create').length, 1)
+  })
+
+  await test('P5c — agent board_write (done) a brokeren át → state machine → advance (nem legacy TicketService)', async () => {
+    // Ez a valós agent-utat modellezi: a dispatcher futtatja az agentet, az a
+    // board_write eszközzel zárja le a lépését. A brokernek a folyamat-ticketet a
+    // TicketStateMachine-re kell irányítania, hogy az advance tovább-léptessen —
+    // l. process-runtime-advance-gap.
+    const ctx = await setupPublished(demoSpec())
+    const proc = await ctx.processService.startProcess({
+      tenantId: TENANT,
+      processType: 'invoice_processing',
+      inputPayload: {},
+      startedBy: { type: 'agent', id: AGENT },
+    })
+    const entry = ctx.ticketRepo.tickets.find((t) => t.id === proc.rootTicketId)!
+    // A dispatch szimulálása: a lépés agentje kötve, a ticket in_progress-ben fut.
+    entry.agentId = AGENT
+    entry.state = 'in_progress'
+
+    const ticketRepoTyped = ctx.ticketRepo as unknown as TicketRepository
+    const ticketService = new TicketService(ticketRepoTyped, ctx.audit as unknown as AuditRepository)
+    let legacyTransitionCalls = 0
+    const legacyTransition = ticketService.transition.bind(ticketService)
+    ticketService.transition = (async (args: Parameters<typeof legacyTransition>[0]) => {
+      legacyTransitionCalls++
+      return legacyTransition(args)
+    }) as typeof ticketService.transition
+
+    const broker = new ToolBrokerService(
+      { findById: async () => null } as never, // agents — board_write nem érinti
+      ticketRepoTyped,
+      { createToolCall: async () => undefined } as never, // tools — csak recordCall
+      ctx.audit as unknown as AuditRepository,
+      ticketService,
+      { authorize: async () => ({ allowed: true }) } as never, // permisszív authorizer
+      null as never, // grantService
+      null as never, // fileEditor
+      null as never, // sandboxApps
+      null as never, // sandboxVersioning
+      null as never, // webSearch
+      null as never, // webSearchPolicy
+      null as never, // knowledgeChunks
+      null as never, // knowledgeArtifacts
+    )
+    broker.setPlaybookTransitioner(ctx.stateMachine)
+
+    const res = await broker.invoke({
+      agentId: AGENT,
+      agentVersion: 1,
+      tool: 'board_write',
+      args: { ticketId: entry.id, patch: { state: 'done', payload: { decision: 'post' } } },
+    })
+
+    assert.equal(res.denied, false, 'a board_write nem járhatott sikerrel')
+    // A folyamat-ticket lezárása NEM a legacy TicketService.transition-ön ment.
+    assert.equal(legacyTransitionCalls, 0, 'a folyamat-ticket a legacy útra esett')
+    // Az advance ténylegesen létrehozta a következő (emberi) lépést.
+    const approvalTicket = ctx.ticketRepo.tickets.find((t) => t.playbookStepId === 'approval')
+    assert.ok(approvalTicket, 'az advance nem hozta létre az approval ticketet')
+    assert.equal(approvalTicket!.state, 'awaiting_human')
+    assert.equal(approvalTicket!.requiredGateId, 'approve_posting')
+    // A belépő step completed, a ticket done.
+    assert.equal(ctx.procRepo.steps.find((s) => s.stepId === 'extract')?.status, 'completed')
+    assert.equal((await ctx.ticketRepo.findById(entry.id))?.state, 'done')
   })
 
   await test('P5b — onComplete gate jóváhagyás után determinisztikusan nyitja a következő stepet', async () => {

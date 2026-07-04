@@ -365,6 +365,11 @@ export const reactivateUserSchema = z.object({
   targetUserId: z.string().uuid(),
 })
 
+export const setUserJobDescriptionSchema = z.object({
+  targetUserId: z.string().uuid(),
+  jobDescription: z.string().trim().max(280).nullish(),
+})
+
 export const updateRolePermissionSchema = z.object({
   permissionKey: z.string().trim().min(1),
   minRole: userRoleSchema,
@@ -758,6 +763,14 @@ export const toolInvokeSchema = z.discriminatedUnion('tool', [
       query: z.string().max(200).optional(),
       agentId: z.string().uuid().optional(),
       limit: z.number().int().min(1).max(25).optional(),
+    }),
+  }),
+  z.object({
+    tool: z.literal('user_directory'),
+    ...toolInvokeBaseSchema,
+    args: z.object({
+      query: z.string().max(200).optional(),
+      limit: z.number().int().min(1).max(100).optional(),
     }),
   }),
   z.object({
@@ -1309,17 +1322,22 @@ export const createPlaybookVersionV2Schema = z.object({
   changeSummary: z.string().trim().min(1).max(500),
 })
 
-export const draftPlaybookFromDescriptionSchema = z.object({
-  description: z.string().trim().min(1).max(4000),
-  existingSpec: z.unknown().optional(),
-  priorValidation: z
-    .object({
-      valid: z.boolean(),
-      errors: z.array(z.object({ code: z.string(), path: z.string(), message: z.string() })),
-      warnings: z.array(z.object({ code: z.string(), path: z.string(), message: z.string() })),
-    })
-    .optional(),
-})
+export const draftPlaybookFromDescriptionSchema = z
+  .object({
+    description: z.string().trim().max(4000).default(''),
+    existingSpec: z.unknown().optional(),
+    priorValidation: z
+      .object({
+        valid: z.boolean(),
+        errors: z.array(z.object({ code: z.string(), path: z.string(), message: z.string() })),
+        warnings: z.array(z.object({ code: z.string(), path: z.string(), message: z.string() })),
+      })
+      .optional(),
+  })
+  .refine((d) => d.description.length > 0 || d.existingSpec !== undefined, {
+    message: 'description vagy existingSpec megadása kötelező',
+    path: ['description'],
+  })
 
 export const updatePlaybookVersionV2Schema = z.object({
   playbookVersionId: z.string().uuid(),

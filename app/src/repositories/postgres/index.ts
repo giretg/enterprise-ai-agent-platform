@@ -17,6 +17,7 @@ import { PostgresPlaybookV2Repository } from './playbook-v2-repository'
 import { PostgresProcessRepository } from './process-repository'
 import { PostgresProcessDefinitionRepository } from './process-definition-repository'
 import { PostgresSandboxAppRepository } from './sandbox-app-repository'
+import { PostgresSandboxVersioningRepository } from './sandbox-versioning-repository'
 import { PostgresScheduledTaskRepository } from './scheduled-task-repository'
 import { PostgresTicketRepository } from './ticket-repository'
 import { PostgresToolBrokerRepository } from './tool-broker-repository'
@@ -54,6 +55,7 @@ export const repositories = {
   processes: new PostgresProcessRepository(),
   processDefinitions: new PostgresProcessDefinitionRepository(),
   sandboxApps: new PostgresSandboxAppRepository(),
+  sandboxVersioning: new PostgresSandboxVersioningRepository(),
   scheduledTasks: new PostgresScheduledTaskRepository(),
   conversations: new PostgresConversationRepository(),
   connectorGrants: new PostgresConnectorGrantRepository(),

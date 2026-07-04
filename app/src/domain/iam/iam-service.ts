@@ -267,6 +267,39 @@ export class IamService {
     return updated
   }
 
+  /**
+   * A humán "szerep" szabad szöveges leírásának beállítása (pl. "marketing vezető").
+   * Az agent user_directory toolja ezt látja. Tenant-izolált (N-IAM-6): cross-tenant
+   * célpont "not found". Üres/whitespace érték törli a leírást (null).
+   */
+  async setJobDescription(params: {
+    targetUserId: string
+    jobDescription: string | null
+    actorId: string
+    actorTenantId: string | null
+  }) {
+    const target = await this.loadTenantScopedUser(params.targetUserId, params.actorTenantId)
+    const next = params.jobDescription?.trim() ? params.jobDescription.trim() : null
+
+    const updated = await this.users.update(target.id, { jobDescription: next })
+
+    await this.audit.append({
+      actorType: 'human',
+      actorId: params.actorId,
+      agentVersion: null,
+      action: 'user.profile.update',
+      targetType: 'user',
+      targetId: target.id,
+      modelUsed: null,
+      inputRef: target.jobDescription ? 'set' : 'empty',
+      outputRef: next ? 'set' : 'empty',
+      policyDecision: 'profile_updated',
+      metadata: { field: 'jobDescription' },
+    })
+
+    return updated
+  }
+
   async listUsers(tenantId: string | null) {
     return this.users.findMany({ tenantId })
   }

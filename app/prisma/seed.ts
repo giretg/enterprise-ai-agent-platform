@@ -371,7 +371,7 @@ async function ensureChatToolsForAgent(agentId: string) {
     })
   }
 
-  for (const toolName of ['ticket_create', 'agent_ask', 'agent_resolve', 'agent_catalog']) {
+  for (const toolName of ['ticket_create', 'agent_ask', 'agent_resolve', 'agent_catalog', 'user_directory']) {
     await prisma.capability.upsert({
       where: { agentId_toolName: { agentId, toolName } },
       create: { agentId, toolName, allowed: true },
@@ -437,6 +437,12 @@ async function ensureToolBrokerSeed(agentId: string) {
   await prisma.capability.upsert({
     where: { agentId_toolName: { agentId, toolName: 'agent_catalog' } },
     create: { agentId, toolName: 'agent_catalog', allowed: true },
+    update: { allowed: true },
+  })
+
+  await prisma.capability.upsert({
+    where: { agentId_toolName: { agentId, toolName: 'user_directory' } },
+    create: { agentId, toolName: 'user_directory', allowed: true },
     update: { allowed: true },
   })
 
@@ -1010,6 +1016,7 @@ async function ensureHSMOfficerAgent(adminId: string) {
     'xlsx_layout',
     'xlsx_create',
     'xlsx_append_rows',
+    'pptx_create',
     'docx_read',
     'pdf_read',
     'file_read',

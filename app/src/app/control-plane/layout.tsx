@@ -6,11 +6,22 @@ import { AppShell, type NavEntry } from '@/components/ui/shell'
 const navItems: NavEntry[] = [
   { href: '/control-plane', label: 'Dashboard', exact: true },
   { href: '/control-plane/board', label: 'Board' },
-  { href: '/control-plane/agents', label: 'Agents' },
-  { href: '/control-plane/behavior-profiles', label: 'Viselkedés-profilok' },
-  { href: '/control-plane/apps', label: 'App Registry' },
-  { href: '/control-plane/playbooks', label: 'Playbookok' },
-  { href: '/control-plane/processes', label: 'Folyamatok' },
+  {
+    label: 'Ágensek',
+    children: [
+      { href: '/control-plane/agents', label: 'Agents' },
+      { href: '/control-plane/behavior-profiles', label: 'Viselkedés-profilok' },
+      { href: '/control-plane/apps', label: 'App Registry' },
+      { href: '/control-plane/sandbox-versions', label: 'Sandbox verziók' },
+    ],
+  },
+  {
+    label: 'Automatizálás',
+    children: [
+      { href: '/control-plane/playbooks', label: 'Playbookok' },
+      { href: '/control-plane/processes', label: 'Folyamatok' },
+    ],
+  },
   {
     label: 'Üzemeltetés',
     children: [

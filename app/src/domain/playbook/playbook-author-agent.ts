@@ -31,8 +31,9 @@ export const PLAYBOOK_AUTHOR_ROLE_INSTRUCTION = `You are a Playbook Authoring As
 HARD RULES (non-negotiable):
 - You never bind a concrete agent to a role. Roles stay abstract (a "role.key", not an agent name or id).
 - You never invent capabilities. Only use capability names that appear in the provided capability vocabulary; if the process needs something not in the vocabulary, describe it in the step's "description" field instead of inventing a capability string.
+- You never invent IAM permissions. Only use permission keys that appear in the provided IAM permission vocabulary; if none fits, omit "requiredPermissions" and describe the approval expectation in the role/step/gate names and descriptions.
 - Every "agent_role" role should declare "requiredCapabilities" (tool names from the vocabulary) that a suitable agent must have.
-- Every "human_role" role should declare "requiredPermissions" describing the IAM permission needed to act on it (as a short, readable permission key — do not invent exact IAM keys unless given).
+- Every "human_role" role may declare "requiredPermissions" from the IAM permission vocabulary when a platform permission is actually required.
 - Steps should carry a templated "instructionTemplate" with "{{slot}}" placeholders, and a matching "inputSlots" array. Each slot has: name, type ("string"|"number"|"boolean"|"freeform"), required, and source: "config" (a value the operator fills in once when assembling the Process) or "trigger" (a value that comes from each run's input, e.g. from chat/ticket/cron).
 - Every "{{token}}" used in instructionTemplate MUST appear in that step's inputSlots, and vice versa for required slots.
 - Blocking gates with a "human_approval" type must have requiredActorRole pointing to a "human_role", never an "agent_role" — nobody could approve it otherwise.
@@ -123,6 +124,7 @@ export class PlaybookAuthorAgent {
   buildAuthoringMessages(input: {
     description: string
     knownCapabilities?: string[]
+    knownPermissions?: string[]
     existingSpec?: unknown
     priorValidation?: ValidationResult
   }): GatewayMessage[] {
@@ -131,6 +133,11 @@ export class PlaybookAuthorAgent {
       parts.push(`Capability vocabulary (only use these for requiredCapabilities):\n${input.knownCapabilities.join(', ')}`)
     } else {
       parts.push('Capability vocabulary: none provided yet — keep requiredCapabilities generic and few, or omit them.')
+    }
+    if (input.knownPermissions?.length) {
+      parts.push(`IAM permission vocabulary (only use these for human_role.requiredPermissions):\n${input.knownPermissions.join(', ')}`)
+    } else {
+      parts.push('IAM permission vocabulary: none provided yet — omit human_role.requiredPermissions instead of inventing permission keys.')
     }
     if (input.existingSpec != null) {
       parts.push(`EXISTING spec to edit (return the full edited spec):\n${JSON.stringify(input.existingSpec)}`)
@@ -162,6 +169,7 @@ export class PlaybookAuthorAgent {
     conversationId?: string | null
     description: string
     knownCapabilities?: string[]
+    knownPermissions?: string[]
     existingSpec?: unknown
     priorValidation?: ValidationResult
     validationContext?: TenantValidationContext
@@ -174,6 +182,7 @@ export class PlaybookAuthorAgent {
     const messages = this.buildAuthoringMessages({
       description: input.description,
       knownCapabilities: input.knownCapabilities,
+      knownPermissions: input.knownPermissions,
       existingSpec: input.existingSpec,
       priorValidation: input.priorValidation,
     })
@@ -198,10 +207,14 @@ export class PlaybookAuthorAgent {
     const knownCapabilities =
       input.validationContext?.knownCapabilities ??
       (input.knownCapabilities?.length ? new Set(input.knownCapabilities) : undefined)
+    const knownPermissions =
+      input.validationContext?.knownPermissions ??
+      (input.knownPermissions?.length ? new Set(input.knownPermissions) : undefined)
 
     const validation = this.validator.validateSpec(raw, {
       ...input.validationContext,
       knownCapabilities,
+      knownPermissions,
     })
 
     return { ok: true, spec: raw, validation }

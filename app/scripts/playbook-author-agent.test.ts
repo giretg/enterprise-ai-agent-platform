@@ -80,10 +80,28 @@ async function main() {
       agentId: 'agent-author',
       description: 'Készíts egy lead-minősítő folyamatot: kutató agent gyűjt céginfót, ember jóváhagyja.',
       knownCapabilities: ['web_search'],
+      knownPermissions: ['sales.lead.review'],
     })
     assert.equal(result.ok, true)
     if (!result.ok) return
     assert.equal(result.validation.valid, true, JSON.stringify(result.validation.errors))
+  })
+
+  await test('draftSpec: ismeretlen human permission → UNKNOWN_PERMISSION, ha van IAM szótár', async () => {
+    const spec = validRawSpec()
+    ;(spec.roles[1] as { requiredPermissions: string[] }).requiredPermissions = ['marketing-content-approve']
+    const model = fixedModel(JSON.stringify(spec))
+    const agent = new PlaybookAuthorAgent({ model })
+    const result = await agent.draftSpec({
+      agentId: 'agent-author',
+      description: 'Készíts egy marketing jóváhagyási folyamatot.',
+      knownCapabilities: ['web_search'],
+      knownPermissions: ['sales.lead.review'],
+    })
+    assert.equal(result.ok, true)
+    if (!result.ok) return
+    assert.equal(result.validation.valid, false)
+    assert.ok(result.validation.errors.some((e) => e.code === 'UNKNOWN_PERMISSION'), JSON.stringify(result.validation.errors))
   })
 
   await test('draftSpec: ismeretlen capability → UNKNOWN_CAPABILITY, de spec visszajön (visszacsatolás)', async () => {
@@ -133,6 +151,7 @@ async function main() {
     await agent.draftSpec({
       agentId: 'agent-author',
       description: 'Javítsd a hibát.',
+      knownPermissions: ['sales.lead.review'],
       existingSpec,
       priorValidation: { valid: false, errors: [{ code: 'UNKNOWN_CAPABILITY', path: 'roles[0]', message: 'x' }], warnings: [] },
     })
@@ -140,6 +159,8 @@ async function main() {
     const userMsg = messages.find((m) => m.role === 'user')!
     assert.ok(userMsg.content.includes('EXISTING spec to edit'))
     assert.ok(userMsg.content.includes('UNKNOWN_CAPABILITY'))
+    assert.ok(userMsg.content.includes('IAM permission vocabulary'))
+    assert.ok(userMsg.content.includes('sales.lead.review'))
   })
 
   await test('draftSpec: sosem tartalmaz konkrét agent-kötést kérő instrukciót — a role kulcs marad', async () => {

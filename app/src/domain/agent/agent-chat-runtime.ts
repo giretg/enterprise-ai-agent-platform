@@ -631,7 +631,7 @@ export class AgentChatRuntime {
       params.message,
       params.explicitPayload,
     )
-    let missing = missingRequiredTriggerSlots(compiled, inputPayload)
+    let missing = missingRequiredTriggerSlots(compiled, inputPayload, compiled.entryStepId)
 
     // §4.4 „az LLM megkapja a kitöltendő mezőket, kinyeri őket az üzenetből":
     // a determinisztikus (JSON / kulcs:érték) feloldás fölé épülő LLM-fallback,
@@ -649,7 +649,7 @@ export class AgentChatRuntime {
       })
       if (extracted) {
         inputPayload = { ...inputPayload, ...extracted }
-        missing = missingRequiredTriggerSlots(compiled, inputPayload)
+        missing = missingRequiredTriggerSlots(compiled, inputPayload, compiled.entryStepId)
       }
     }
 
@@ -980,13 +980,13 @@ export class AgentChatRuntime {
           `A beszélgetés munkaterületén jelenleg elérhető fájlok (pontos elérési utak):\n` +
           workspaceFiles.map((p) => `- ${p}`).join('\n') +
           `\n\nEzeket a file_read / xlsx_read_sheet / file_search stb. eszközökkel éred el a fenti pontos néven. ` +
-          `Ha a kért adat egy itt felsorolt fájlban van, onnan dolgozz. Új fájlt (pl. Excel) az xlsx_create / file_write eszközzel hozz létre — a felhasználó a chat „Workspace fájlok" panelről tölti le.`,
+          `Ha a kért adat egy itt felsorolt fájlban van, onnan dolgozz. Új fájlt (pl. Excel → xlsx_create, prezentáció → pptx_create, egyéb → file_write) az eszközökkel hozz létre — a felhasználó a chat „Workspace fájlok" panelről tölti le.`,
       })
     } else {
       messages.push({
         role: 'system',
         content:
-          'A beszélgetés munkaterülete jelenleg üres (nincs feltöltött fájl). Ha a felhasználó létező fájlra hivatkozik, kérd meg, hogy csatolja (📎). Új fájlt (pl. Excel) az xlsx_create / file_write eszközzel hozhatsz létre — a felhasználó a „Workspace fájlok" panelről tölti le.',
+          'A beszélgetés munkaterülete jelenleg üres (nincs feltöltött fájl). Ha a felhasználó létező fájlra hivatkozik, kérd meg, hogy csatolja (📎). Új fájlt (pl. Excel → xlsx_create, prezentáció → pptx_create, egyéb → file_write) az eszközökkel hozhatsz létre — a felhasználó a „Workspace fájlok" panelről tölti le.',
       })
     }
 
