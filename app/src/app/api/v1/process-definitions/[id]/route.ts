@@ -1,21 +1,15 @@
-import { requireRole } from '@/auth'
+import { requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain'
 import { apiError, apiOk, readJson } from '@/lib/api-response'
 import { updateProcessDefinitionBindingsSchema } from '@/lib/validators/actions'
 import { ProcessDefinitionServiceError } from '@/domain/playbook/process-definition-service'
-
-type AuthedUser = Awaited<ReturnType<typeof requireRole>>
-
-function tenantOf(user: AuthedUser): string {
-  return user.tenantId ?? user.id
-}
 
 export async function PATCH(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const { id } = await params
     const parsed = updateProcessDefinitionBindingsSchema.safeParse({
       ...(await readJson(request) as Record<string, unknown>),
@@ -24,11 +18,11 @@ export async function PATCH(
     if (!parsed.success) return apiError(parsed.error.message, 400)
 
     const def = await services.processDefinitions.updateBindings({
-      tenantId: tenantOf(user),
+      tenantId: user.activeTenantId,
       processDefinitionId: parsed.data.id,
       roleBindings: parsed.data.roleBindings,
       configValues: parsed.data.configValues ?? {},
-      actorUserId: user.id,
+      actorUserId: user.user.id,
     })
     return apiOk({ id: def.id, status: def.status })
   } catch (e) {

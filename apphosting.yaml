@@ -98,3 +98,19 @@ env:
     value: "posnavigator.eu"
     availability:
       - RUNTIME
+  # --- Worker-processes admin panel (control-plane/system): Cloud Run wiki-dispatcher
+  # státusz/scale, Admin API-n át (metadata-server ambient token, nincs Bearer secret).
+  # A lokális worker (LOCAL_WORKER_CONTROL_URL/DISPATCHER_CONTROL_TOKEN) szándékosan
+  # nincs itt — az élő konténernek nincs elérése a te laptopod localhost-jához.
+  - variable: DISPATCHER_ADMIN_PROJECT_ID
+    value: "enterprise-ai-demo"
+    availability:
+      - RUNTIME
+  - variable: DISPATCHER_ADMIN_REGION
+    value: "europe-west4"
+    availability:
+      - RUNTIME
+  - variable: DISPATCHER_ADMIN_SERVICE_NAME
+    value: "wiki-dispatcher"
+    availability:
+      - RUNTIME

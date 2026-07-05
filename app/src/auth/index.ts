@@ -25,6 +25,12 @@ export async function getCurrentUser() {
   return getAuthProvider().getCurrentUser()
 }
 
+/**
+ * @deprecated Legacy, nem tenant-scope-olt jogosultság-ellenőrzés (a `User.role` oszlopot
+ * nézi). Használj helyette `requireTenantRole`-t (vagy `requirePlatformRole`-t) a
+ * `@/auth/tenant-context`-ből. Minden hívási hely migrálva (2026-07-05); ez a wrapper
+ * csak biztonsági hálóként maradt itt, egy külön cleanup PR-ben törölhető.
+ */
 export async function requireRole(minimum: Parameters<AuthProvider['requireRole']>[0]) {
   return getAuthProvider().requireRole(minimum)
 }

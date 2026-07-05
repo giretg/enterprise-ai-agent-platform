@@ -154,6 +154,10 @@ function KanbanColumn({
                 <p className="mt-1.5 break-words text-xs text-ink-faint">
                   Létrehozta: {ticket.creator.label}
                 </p>
+                <div className="mt-1 flex flex-col gap-0.5 text-[10px] text-ink-faint/70">
+                  <span>Létrehozva: {new Date(ticket.createdAt).toLocaleString('hu-HU', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
+                  <span>Módosítva: {new Date(ticket.updatedAt).toLocaleString('hu-HU', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
+                </div>
               </Card>
             </Link>
           </div>

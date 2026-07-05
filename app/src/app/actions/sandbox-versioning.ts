@@ -1,8 +1,7 @@
 'use server'
 
 import { z } from 'zod'
-import { requireRole } from '@/auth'
-import type { ActiveAuthUser } from '@/auth/types'
+import { requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain'
 import { fail, ok } from '@/lib/result'
 import { SandboxVersionError } from '@/domain/sandbox-versioning/errors'
@@ -16,8 +15,8 @@ import type { SandboxActor, SandboxRole } from '@/domain/sandbox-versioning/sand
  * sémájú (a File Editor-előkészített tartalomhoz).
  */
 
-function actorOf(user: ActiveAuthUser): SandboxActor {
-  return { userId: user.id, tenantId: user.tenantId, role: (user.role ?? 'viewer') as SandboxRole }
+function actorOf(user: Awaited<ReturnType<typeof requireTenantRole>>): SandboxActor {
+  return { userId: user.user.id, tenantId: user.activeTenantId, role: user.activeTenantRole as SandboxRole }
 }
 
 function toFail(e: unknown, fallback: string) {
@@ -27,7 +26,7 @@ function toFail(e: unknown, fallback: string) {
 
 export async function listSandboxProjects() {
   try {
-    const user = await requireRole('viewer')
+    const user = await requireTenantRole('viewer')
     const projects = await services.sandboxVersioning.listSandboxProjects(
       {},
       actorOf(user),
@@ -46,7 +45,7 @@ const createProjectSchema = z.object({
 
 export async function createSandboxProject(input: unknown) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const data = createProjectSchema.parse(input)
     const res = await services.sandboxVersioning.createSandboxProject(data, actorOf(user))
     return ok(res)
@@ -57,7 +56,7 @@ export async function createSandboxProject(input: unknown) {
 
 export async function getSandboxProjectDetail(input: unknown) {
   try {
-    const user = await requireRole('viewer')
+    const user = await requireTenantRole('viewer')
     const { projectId } = z.object({ projectId: z.string() }).parse(input)
     const actor = actorOf(user)
     const [history, promotions, snapshots] = await Promise.all([
@@ -82,7 +81,7 @@ const commitSchema = z.object({
 
 export async function createSandboxCommit(input: unknown) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const data = commitSchema.parse(input)
     const res = await services.sandboxVersioning.createSandboxCommit(data, actorOf(user))
     return ok(res)
@@ -93,7 +92,7 @@ export async function createSandboxCommit(input: unknown) {
 
 export async function diffSandboxCommits(input: unknown) {
   try {
-    const user = await requireRole('viewer')
+    const user = await requireTenantRole('viewer')
     const data = z
       .object({ projectId: z.string(), fromCommitId: z.string(), toCommitId: z.string() })
       .parse(input)
@@ -106,7 +105,7 @@ export async function diffSandboxCommits(input: unknown) {
 
 export async function rollbackSandboxCode(input: unknown) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const data = z
       .object({ projectId: z.string(), toCommitId: z.string(), reason: z.string().min(1) })
       .parse(input)
@@ -119,7 +118,7 @@ export async function rollbackSandboxCode(input: unknown) {
 
 export async function requestPromotion(input: unknown) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const data = z.object({ projectId: z.string(), reason: z.string().optional() }).parse(input)
     const res = await services.sandboxVersioning.requestPromotion(data, actorOf(user))
     return ok(res)
@@ -130,7 +129,7 @@ export async function requestPromotion(input: unknown) {
 
 export async function approvePromotion(input: unknown) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const data = z
       .object({
         promotionId: z.string(),
@@ -147,7 +146,7 @@ export async function approvePromotion(input: unknown) {
 
 export async function createDataSnapshot(input: unknown) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const data = z
       .object({ projectId: z.string(), env: z.enum(['test', 'live']), label: z.string().optional() })
       .parse(input)
@@ -160,7 +159,7 @@ export async function createDataSnapshot(input: unknown) {
 
 export async function restoreDataSnapshot(input: unknown) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const data = z
       .object({
         projectId: z.string(),
@@ -178,7 +177,7 @@ export async function restoreDataSnapshot(input: unknown) {
 
 export async function requestSandboxExport(input: unknown) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const data = z
       .object({
         projectId: z.string(),
@@ -197,7 +196,7 @@ export async function requestSandboxExport(input: unknown) {
 
 export async function getSandboxExport(input: unknown) {
   try {
-    const user = await requireRole('viewer')
+    const user = await requireTenantRole('viewer')
     const { exportId } = z.object({ exportId: z.string() }).parse(input)
     const res = await services.sandboxVersioning.getExport({ exportId }, actorOf(user))
     return ok(res)

@@ -296,6 +296,8 @@ export class PlaybookValidator {
     errors: ValidationIssue[],
     warnings: ValidationIssue[],
   ) {
+    const roleByKey = new Map(spec.roles.map((r) => [r.key, r]))
+
     spec.steps.forEach((step, i) => {
       const slots = step.inputSlots ?? []
       const template = step.instructionTemplate
@@ -313,8 +315,19 @@ export class PlaybookValidator {
         slotNames.add(slot.name)
       }
 
-      // Ha egyik sincs megadva, nincs mit ellenőrizni; ha csak az egyik, az gyanús.
-      if (!template && slots.length === 0) return
+      // Ha egyik sincs megadva, nincs mit ellenőrizni — de agent-lépésnél figyelmeztetés,
+      // mert instructionTemplate nélkül a ticket payload nem fog question mezőt kapni.
+      if (!template && slots.length === 0) {
+        const roleType = roleByKey.get(step.assignedRole)?.type ?? 'agent_role'
+        if (roleType === 'agent_role') {
+          warnings.push({
+            code: 'AGENT_STEP_NO_INSTRUCTION_TEMPLATE',
+            path: `steps[${i}].instructionTemplate`,
+            message: `A(z) '${step.id}' agent-lépésnek nincs instructionTemplate — a ticket prompt nélkül jön létre, az agent csak a ticket címéből tud dolgozni.`,
+          })
+        }
+        return
+      }
       if (template == null && slots.length > 0) {
         warnings.push({
           code: 'SLOTS_WITHOUT_TEMPLATE',

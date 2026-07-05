@@ -34,11 +34,19 @@ import {
   PostgresInvitationRepository,
   PostgresRolePermissionRepository,
 } from './iam-repository'
+import {
+  PostgresTenantRepository,
+  PostgresTenantMembershipRepository,
+  PostgresPlatformMembershipRepository,
+} from './tenant-repository'
 
 export const repositories = {
   users: new PostgresUserRepository(),
   invitations: new PostgresInvitationRepository(),
   rolePermissions: new PostgresRolePermissionRepository(),
+  tenants: new PostgresTenantRepository(),
+  tenantMemberships: new PostgresTenantMembershipRepository(),
+  platformMemberships: new PostgresPlatformMembershipRepository(),
   tickets: new PostgresTicketRepository(),
   agents: new PostgresAgentRepository(),
   behaviorProfiles: new PostgresBehaviorProfileRepository(),

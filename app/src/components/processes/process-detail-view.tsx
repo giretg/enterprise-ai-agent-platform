@@ -1,8 +1,13 @@
 'use client'
 
-import { useState, useTransition } from 'react'
+import { useEffect, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
+import Link from 'next/link'
 import { transitionProcessTicket, cancelProcess } from '@/app/actions/process'
+import { getTicket } from '@/app/actions/platform'
+import { Badge } from '@/components/ui/shell'
+import { TICKET_STATE_LABELS, TICKET_STATE_TONE } from '@/lib/ticket-labels'
+import { extractTaskDescription, formatTicketDateTime } from '@/lib/ticket-display'
 
 export type ProcessStepView = {
   id: string
@@ -120,6 +125,7 @@ export function ProcessDetailView({ data, canAct }: { data: ProcessDetailData; c
   const [pending, startTransition] = useTransition()
   const [message, setMessage] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null)
   const [evidenceByTicket, setEvidenceByTicket] = useState<Record<string, string>>({})
+  const [openTicketId, setOpenTicketId] = useState<string | null>(null)
 
   const gatesByStep = new Map<string, IntendedFlow['gates']>()
   for (const gate of data.intended?.gates ?? []) {
@@ -243,7 +249,25 @@ export function ProcessDetailView({ data, canAct }: { data: ProcessDetailData; c
           {data.steps.map((s) => {
             const gates = gatesByStep.get(s.stepId) ?? []
             return (
-              <li key={s.id} className="rounded-lg border border-ink/10 p-3">
+              <li
+                key={s.id}
+                className={`rounded-lg border border-ink/10 p-3 ${
+                  s.ticketId ? 'cursor-pointer transition-colors hover:border-accent/40 hover:bg-accent/5' : ''
+                }`}
+                onClick={s.ticketId ? () => setOpenTicketId(s.ticketId) : undefined}
+                role={s.ticketId ? 'button' : undefined}
+                tabIndex={s.ticketId ? 0 : undefined}
+                onKeyDown={
+                  s.ticketId
+                    ? (e) => {
+                        if (e.key === 'Enter' || e.key === ' ') {
+                          e.preventDefault()
+                          setOpenTicketId(s.ticketId)
+                        }
+                      }
+                    : undefined
+                }
+              >
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <span className="font-medium">{s.stepName}</span>
@@ -419,6 +443,111 @@ export function ProcessDetailView({ data, canAct }: { data: ProcessDetailData; c
           )}
         </section>
       )}
+
+      {openTicketId && <TicketDetailModal ticketId={openTicketId} onClose={() => setOpenTicketId(null)} />}
+    </div>
+  )
+}
+
+type TicketDetail = Extract<Awaited<ReturnType<typeof getTicket>>, { success: true }>['data']
+
+function TicketDetailModal({ ticketId, onClose }: { ticketId: string; onClose: () => void }) {
+  const [state, setState] = useState<
+    | { status: 'loading' }
+    | { status: 'error'; error: string }
+    | { status: 'ok'; ticket: TicketDetail }
+  >({ status: 'loading' })
+
+  useEffect(() => {
+    let cancelled = false
+    setState({ status: 'loading' })
+    getTicket({ id: ticketId }).then((res) => {
+      if (cancelled) return
+      if (res.success) {
+        setState({ status: 'ok', ticket: res.data })
+      } else {
+        setState({ status: 'error', error: res.error })
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [ticketId])
+
+  useEffect(() => {
+    function onKeyDown(e: KeyboardEvent) {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [onClose])
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="atelier-card max-h-[85vh] w-full max-w-xl overflow-y-auto p-5"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <h3 className="font-display text-lg font-semibold">Ticket részletek</h3>
+          <button
+            onClick={onClose}
+            className="rounded-lg border border-ink/15 px-2.5 py-1 text-sm text-ink-soft hover:bg-ink/5"
+          >
+            Bezárás
+          </button>
+        </div>
+
+        {state.status === 'loading' && <p className="text-sm text-ink-soft">Betöltés...</p>}
+        {state.status === 'error' && <p className="text-sm text-coral">{state.error}</p>}
+        {state.status === 'ok' && (
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="font-medium">{state.ticket.title}</span>
+              <Badge tone={TICKET_STATE_TONE[state.ticket.state] ?? 'neutral'}>
+                {TICKET_STATE_LABELS[state.ticket.state] ?? state.ticket.state}
+              </Badge>
+            </div>
+
+            {(() => {
+              const taskDescription =
+                state.ticket.taskDescription ?? extractTaskDescription(state.ticket.payload)
+              return taskDescription ? (
+                <p className="whitespace-pre-wrap text-sm leading-relaxed text-ink">{taskDescription}</p>
+              ) : null
+            })()}
+
+            <dl className="grid gap-x-6 gap-y-2 text-xs text-ink-soft sm:grid-cols-2">
+              {state.ticket.creator && (
+                <>
+                  <dt className="font-medium text-ink">Létrehozta</dt>
+                  <dd>{state.ticket.creator.label}</dd>
+                </>
+              )}
+              {state.ticket.assignee && (
+                <>
+                  <dt className="font-medium text-ink">Hozzárendelve</dt>
+                  <dd>{state.ticket.assignee.label}</dd>
+                </>
+              )}
+              <dt className="font-medium text-ink">Létrehozva</dt>
+              <dd>{formatTicketDateTime(state.ticket.createdAt)}</dd>
+              <dt className="font-medium text-ink">Utolsó módosítás</dt>
+              <dd>{formatTicketDateTime(state.ticket.updatedAt)}</dd>
+            </dl>
+
+            <Link
+              href={`/control-plane/tickets/${state.ticket.id}`}
+              className="inline-block text-sm font-medium text-accent hover:underline"
+            >
+              Megnyitás teljes nézetben →
+            </Link>
+          </div>
+        )}
+      </div>
     </div>
   )
 }

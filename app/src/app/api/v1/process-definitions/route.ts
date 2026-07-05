@@ -1,4 +1,4 @@
-import { requireRole } from '@/auth'
+import { requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain'
 import { apiError, apiOk, readJson } from '@/lib/api-response'
 import {
@@ -6,12 +6,6 @@ import {
   listProcessDefinitionsSchema,
 } from '@/lib/validators/actions'
 import { ProcessDefinitionServiceError } from '@/domain/playbook/process-definition-service'
-
-type AuthedUser = Awaited<ReturnType<typeof requireRole>>
-
-function tenantOf(user: AuthedUser): string {
-  return user.tenantId ?? user.id
-}
 
 function serializeDefinition(def: Awaited<ReturnType<typeof services.processDefinitions.getDefinition>>) {
   return {
@@ -38,14 +32,14 @@ function serializeDefinition(def: Awaited<ReturnType<typeof services.processDefi
 
 export async function GET(request: Request) {
   try {
-    const user = await requireRole('viewer')
+    const user = await requireTenantRole('viewer')
     const url = new URL(request.url)
     const parsed = listProcessDefinitionsSchema.safeParse({
       status: url.searchParams.get('status') ?? undefined,
     })
     if (!parsed.success) return apiError(parsed.error.message, 400)
 
-    const defs = await services.processDefinitions.listDefinitions(tenantOf(user), parsed.data.status)
+    const defs = await services.processDefinitions.listDefinitions(user.activeTenantId, parsed.data.status)
     return apiOk(defs.map(serializeDefinition))
   } catch (e) {
     return apiError(e instanceof Error ? e.message : 'Nem sikerült betölteni a Folyamatokat', 500)
@@ -54,16 +48,16 @@ export async function GET(request: Request) {
 
 export async function POST(request: Request) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const parsed = createProcessDefinitionSchema.safeParse(await readJson(request))
     if (!parsed.success) return apiError(parsed.error.message, 400)
 
     const def = await services.processDefinitions.createDraft({
-      tenantId: tenantOf(user),
+      tenantId: user.activeTenantId,
       name: parsed.data.name,
       description: parsed.data.description ?? null,
       playbookVersionId: parsed.data.playbookVersionId,
-      createdBy: { userId: user.id },
+      createdBy: { userId: user.user.id },
     })
     return apiOk({ id: def.id }, 201)
   } catch (e) {

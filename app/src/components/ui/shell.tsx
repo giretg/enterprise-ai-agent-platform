@@ -26,6 +26,7 @@ export function AppShell({
   children,
   switchLink,
   pathname,
+  headerExtra,
 }: {
   appName: string
   appSubtitle: string
@@ -34,6 +35,8 @@ export function AppShell({
   children: ReactNode
   switchLink: { href: string; label: string }
   pathname: string
+  /** Fejléc-slot a bal/jobb szélen (pl. tenant-switcher). */
+  headerExtra?: ReactNode
 }) {
   // The estate's two cellars: the tasting room (control plane) and the
   // working press-house (sandbox). Each keeps a warm monogram & tone.
@@ -162,6 +165,7 @@ export function AppShell({
             </nav>
 
             <div className="flex shrink-0 items-center gap-2">
+              {headerExtra}
               <ShellAuth clerkEnabled={clerkEnabled} />
               <Link
                 href={switchLink.href}

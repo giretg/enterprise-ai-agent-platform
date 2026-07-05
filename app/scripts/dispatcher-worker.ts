@@ -35,14 +35,34 @@ const health = {
   cycles: 0,
 }
 
+// A tényleges leállítás (main()-ben definiálva, a pg client lezárásával) csak a
+// LISTEN-kapcsolat felállása után elérhető — a health-szerver ezen a referencián
+// keresztül hívja meg, admin UI-ból érkező /control/stop kérésre.
+let triggerShutdown: ((signal: string) => Promise<void>) | null = null
+
 /**
- * Minimális HTTP health-szerver a Cloud Run service liveness/startup próbájához.
+ * Minimális HTTP health-szerver a Cloud Run service liveness/startup próbájához,
+ * plusz egy admin-vezérelt leállító végpont (§ admin UI worker-panel).
  * A worker maga eseményvezérelt (LISTEN/NOTIFY + cron), nincs bejövő forgalma;
  * a 200-as válasz csak azt jelzi, hogy a process él és a LISTEN kapcsolat áll.
  */
 function startHealthServer() {
   const port = Number(process.env.PORT ?? 8080)
   const server = createServer((req, res) => {
+    if (req.method === 'POST' && req.url === '/control/stop') {
+      const expectedToken = process.env.DISPATCHER_CONTROL_TOKEN?.trim()
+      const providedToken = req.headers['x-dispatcher-token']
+      if (!expectedToken || providedToken !== expectedToken) {
+        res.writeHead(401, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ error: 'invalid or missing x-dispatcher-token' }))
+        return
+      }
+      res.writeHead(202, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ status: 'stopping' }))
+      void triggerShutdown?.('http-control')
+      return
+    }
+
     const healthy = health.listening
     res.writeHead(healthy ? 200 : 503, { 'content-type': 'application/json' })
     res.end(JSON.stringify({ status: healthy ? 'ok' : 'starting', ...health }))
@@ -207,6 +227,7 @@ async function main() {
     await client.end().catch(() => {})
     process.exit(0)
   }
+  triggerShutdown = shutdown
   process.on('SIGINT', () => void shutdown('SIGINT'))
   process.on('SIGTERM', () => void shutdown('SIGTERM'))
 }

@@ -1,7 +1,7 @@
 'use server'
 
 import type { Prisma } from '@prisma/client'
-import { requireRole } from '@/auth'
+import { requirePlatformRole, requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain'
 import { repositories } from '@/repositories/postgres'
 import { parseWebSearchConfig, type WebSearchConnectorConfig } from '@/domain/web-search/web-search-types'
@@ -49,7 +49,7 @@ function toCallView(row: {
 /** Agent detail capability kártya (Feature-spec — WebSearchTool §7.1). */
 export async function getAgentWebSearchCalls(input: { agentId: string }) {
   try {
-    await requireRole('viewer')
+    await requireTenantRole('viewer')
     const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
     const rows = await repositories.toolBroker.listToolCallsByName('web_search', { agentId }, 10)
     return ok(rows.map(toCallView))
@@ -60,7 +60,7 @@ export async function getAgentWebSearchCalls(input: { agentId: string }) {
 
 export async function getWebSearchControls() {
   try {
-    await requireRole('viewer')
+    await requireTenantRole('viewer')
     const controls = await services.platformSettings.getWebSearchControls()
     return ok(controls)
   } catch (e) {
@@ -70,7 +70,7 @@ export async function getWebSearchControls() {
 
 export async function setWebSearchControls(input: unknown) {
   try {
-    const user = await requireRole('admin')
+    const user = (await requirePlatformRole('superadmin')).user
     const parsed = setWebSearchControlsSchema.parse(input)
     const controls = await services.platformSettings.setWebSearchControls(parsed, user.id)
     return ok(controls)
@@ -83,7 +83,7 @@ export async function setWebSearchControls(input: unknown) {
 
 export async function getWebFetchControls() {
   try {
-    await requireRole('viewer')
+    await requireTenantRole('viewer')
     const controls = await services.platformSettings.getWebFetchControls()
     return ok(controls)
   } catch (e) {
@@ -93,7 +93,7 @@ export async function getWebFetchControls() {
 
 export async function setWebFetchControls(input: unknown) {
   try {
-    const user = await requireRole('admin')
+    const user = (await requirePlatformRole('superadmin')).user
     const parsed = setWebFetchControlsSchema.parse(input)
     const controls = await services.platformSettings.setWebFetchControls(parsed, user.id)
     return ok(controls)
@@ -123,7 +123,7 @@ function normalizeDomains(values: string[]): string[] {
 
 export async function getWebSearchPolicy() {
   try {
-    await requireRole('viewer')
+    await requireTenantRole('viewer')
     const connector = await prisma.connector.findFirst({
       where: { type: 'web_search', lifecycleState: 'active' },
       orderBy: { createdAt: 'asc' },
@@ -144,7 +144,7 @@ export async function getWebSearchPolicy() {
 
 export async function updateWebSearchPolicy(input: unknown) {
   try {
-    const user = await requireRole('admin')
+    const user = (await requirePlatformRole('superadmin')).user
     const parsed = updateWebSearchPolicySchema.parse(input)
     const connector = await prisma.connector.findUnique({
       where: { id: parsed.connectorId },
@@ -253,7 +253,7 @@ export type WebSearchGovernanceSummary = {
 /** Governance dashboard web_search bontás (Feature-spec §7.3). */
 export async function getWebSearchGovernanceSummary(input?: { sinceDays?: number }) {
   try {
-    await requireRole('viewer')
+    await requireTenantRole('viewer')
     const since = new Date(Date.now() - (input?.sinceDays ?? 30) * 24 * 60 * 60 * 1000)
     const rows = await repositories.toolBroker.listToolCallsByName('web_search', { since }, 1000)
 

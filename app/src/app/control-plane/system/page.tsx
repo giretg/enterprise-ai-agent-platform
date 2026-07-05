@@ -1,11 +1,11 @@
-import { getCurrentUser } from '@/auth'
-import { hasMinimumRole } from '@/auth/types'
+import { getAuthContext } from '@/auth/context'
 import {
   getDatabaseMode,
   getDispatcherControls,
   getModelCallsSummary,
   getModelPolicy,
   getTicketTypeConfigs,
+  getWorkerProcessesStatus,
   listModelBudgets,
   listModelRoutingPolicies,
 } from '@/app/actions/platform'
@@ -17,6 +17,7 @@ import {
 } from '@/app/actions/web-search'
 import { DatabaseControlPanel } from './database-control-panel'
 import { DispatcherControlPanel } from './dispatcher-control-panel'
+import { WorkerProcessesPanel } from './worker-processes-panel'
 import { ModelGatewayPanel } from './model-gateway-panel'
 import { ModelPolicyPanel } from './model-policy-panel'
 import { TicketTypeConfigPanel } from './ticket-type-config-panel'
@@ -26,8 +27,9 @@ import { WebFetchControlPanel } from './web-fetch-control-panel'
 
 export default async function SystemPage() {
   const [
-    user,
+    ctx,
     controlsRes,
+    workerProcessesRes,
     dbModeRes,
     ticketTypesRes,
     modelPolicyRes,
@@ -39,8 +41,9 @@ export default async function SystemPage() {
     routingPoliciesRes,
     budgetsRes,
   ] = await Promise.all([
-    getCurrentUser(),
+    getAuthContext(),
     getDispatcherControls(),
+    getWorkerProcessesStatus(),
     getDatabaseMode(),
     getTicketTypeConfigs(),
     getModelPolicy(),
@@ -52,7 +55,9 @@ export default async function SystemPage() {
     listModelRoutingPolicies(),
     listModelBudgets(),
   ])
-  const canEdit = user ? hasMinimumRole(user.role, 'admin') : false
+  // §9.2/§13/4: a platform-globális vezérlőket csak platform-szerep szerkesztheti;
+  // a tenant-admin itt read-only nézetet kap (a WRITE-actionök platform-guard alatt).
+  const canEdit = Boolean(ctx?.platformRoles.includes('superadmin'))
 
   return (
     <div className="space-y-6">
@@ -80,6 +85,14 @@ export default async function SystemPage() {
         </div>
       ) : (
         <DispatcherControlPanel initial={controlsRes.data} canEdit={canEdit} />
+      )}
+
+      {!workerProcessesRes.success ? (
+        <div className="rounded-lg border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
+          {workerProcessesRes.error}
+        </div>
+      ) : (
+        <WorkerProcessesPanel initial={workerProcessesRes.data} canEdit={canEdit} />
       )}
 
       {!monitorControlsRes.success ? (

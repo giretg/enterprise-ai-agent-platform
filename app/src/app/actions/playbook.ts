@@ -6,7 +6,7 @@
  * publish/reject approver jog (§11.2 four-eyes: a jóváhagyó ≠ készítő — ezt a service
  * kényszeríti ki). A validáció/compile determinisztikus a service-rétegben.
  */
-import { requireRole } from '@/auth'
+import { requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain'
 import { repositories } from '@/repositories/postgres'
 import { fail, ok } from '@/lib/result'
@@ -26,11 +26,6 @@ import { parsePlaybookSpecV2 } from '@/lib/playbook-v2/spec'
 import { PLAYBOOK_AUTHOR_TEMPLATE } from '@/domain/playbook/playbook-author-agent'
 import type { PlaybookV2, PlaybookVersionV2 } from '@prisma/client'
 import { z } from 'zod'
-
-type AuthedUser = Awaited<ReturnType<typeof requireRole>>
-function tenantOf(user: AuthedUser): string {
-  return user.tenantId ?? user.id
-}
 
 export type ProcessBuilderPlaybookVersionView = {
   playbookId: string
@@ -97,8 +92,8 @@ function toProcessBuilderPlaybookVersionView(
 
 export async function listPlaybooksV2() {
   try {
-    const user = await requireRole('viewer')
-    const playbooks = await services.playbooksV2.listPlaybooks(tenantOf(user))
+    const user = await requireTenantRole('viewer')
+    const playbooks = await services.playbooksV2.listPlaybooks(user.activeTenantId)
     return ok(
       playbooks.map((p) => ({
         id: p.id,
@@ -118,9 +113,9 @@ export async function listPlaybooksV2() {
 
 export async function getPlaybookV2(input: unknown) {
   try {
-    const user = await requireRole('viewer')
+    const user = await requireTenantRole('viewer')
     const parsed = playbookV2IdSchema.parse(input)
-    const { playbook, versions } = await services.playbooksV2.getPlaybook(tenantOf(user), parsed.id)
+    const { playbook, versions } = await services.playbooksV2.getPlaybook(user.activeTenantId, parsed.id)
     return ok({
       playbook: {
         id: playbook.id,
@@ -153,16 +148,16 @@ export async function getPlaybookV2(input: unknown) {
 
 export async function createPlaybookV2(input: unknown) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = createPlaybookV2Schema.parse(input)
     const playbook = await services.playbooksV2.createPlaybook({
-      tenantId: tenantOf(user),
+      tenantId: user.activeTenantId,
       key: parsed.key,
       name: parsed.name,
       description: parsed.description ?? null,
       processType: parsed.processType,
-      ownerUserId: user.id,
-      actorUserId: user.id,
+      ownerUserId: user.user.id,
+      actorUserId: user.user.id,
     })
     return ok({ id: playbook.id })
   } catch (e) {
@@ -173,14 +168,14 @@ export async function createPlaybookV2(input: unknown) {
 
 export async function updatePlaybookMetaV2(input: unknown) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = updatePlaybookMetaSchema.parse(input)
     await services.playbooksV2.updatePlaybookMeta({
-      tenantId: tenantOf(user),
+      tenantId: user.activeTenantId,
       playbookId: parsed.playbookId,
       name: parsed.name,
       description: parsed.description ?? null,
-      actorUserId: user.id,
+      actorUserId: user.user.id,
     })
     return ok(null)
   } catch (e) {
@@ -191,14 +186,14 @@ export async function updatePlaybookMetaV2(input: unknown) {
 
 export async function createPlaybookVersionV2(input: unknown) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = createPlaybookVersionV2Schema.parse(input)
     const { version, validation } = await services.playbooksV2.createPlaybookVersion({
-      tenantId: tenantOf(user),
+      tenantId: user.activeTenantId,
       playbookId: parsed.playbookId,
       spec: parsed.spec,
       changeSummary: parsed.changeSummary,
-      actorUserId: user.id,
+      actorUserId: user.user.id,
     })
     return ok({ versionId: version.id, version: version.version, validation })
   } catch (e) {
@@ -218,10 +213,10 @@ export async function createPlaybookVersionV2(input: unknown) {
  */
 export async function draftPlaybookFromDescription(input: unknown) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = draftPlaybookFromDescriptionSchema.parse(input)
 
-    const agents = await repositories.agents.findMany({ tenantId: user.tenantId ?? null })
+    const agents = await repositories.agents.findMany({ tenantId: user.activeTenantId })
     // A Playbook Author globális (tenantId=null) agent — ha a tenant-szűrt listában nincs,
     // külön keressük, mert a findMany exact-match szűr tenantId-ra.
     const author =
@@ -248,7 +243,7 @@ export async function draftPlaybookFromDescription(input: unknown) {
       agentId: author.id,
       agentVersion: author.currentVersion,
       agentModelConfig: author.modelConfig,
-      tenantId: user.tenantId,
+      tenantId: user.activeTenantId,
       knownCapabilities,
       knownPermissions,
     }
@@ -288,14 +283,14 @@ export async function draftPlaybookFromDescription(input: unknown) {
 
 export async function updatePlaybookVersionV2(input: unknown) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = updatePlaybookVersionV2Schema.parse(input)
     const { version, validation } = await services.playbooksV2.updateDraftPlaybookVersion({
-      tenantId: tenantOf(user),
+      tenantId: user.activeTenantId,
       playbookVersionId: parsed.playbookVersionId,
       spec: parsed.spec,
       changeSummary: parsed.changeSummary,
-      actorUserId: user.id,
+      actorUserId: user.user.id,
     })
     return ok({ versionId: version.id, version: version.version, validation })
   } catch (e) {
@@ -308,12 +303,12 @@ export async function updatePlaybookVersionV2(input: unknown) {
 
 export async function validatePlaybookVersionV2(input: unknown) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = playbookVersionV2IdSchema.parse(input)
     const validation = await services.playbooksV2.validatePlaybookVersion({
-      tenantId: tenantOf(user),
+      tenantId: user.activeTenantId,
       playbookVersionId: parsed.playbookVersionId,
-      actorUserId: user.id,
+      actorUserId: user.user.id,
     })
     return ok(validation)
   } catch (e) {
@@ -324,12 +319,12 @@ export async function validatePlaybookVersionV2(input: unknown) {
 
 export async function submitPlaybookVersionV2(input: unknown) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = playbookVersionV2IdSchema.parse(input)
     const version = await services.playbooksV2.submitForApproval({
-      tenantId: tenantOf(user),
+      tenantId: user.activeTenantId,
       playbookVersionId: parsed.playbookVersionId,
-      actorUserId: user.id,
+      actorUserId: user.user.id,
     })
     return ok({ status: version.status })
   } catch (e) {
@@ -340,12 +335,12 @@ export async function submitPlaybookVersionV2(input: unknown) {
 
 export async function publishPlaybookVersionV2(input: unknown) {
   try {
-    const user = await requireRole('approver')
+    const user = await requireTenantRole('approver')
     const parsed = playbookVersionV2IdSchema.parse(input)
     const version = await services.playbooksV2.publishPlaybookVersion({
-      tenantId: tenantOf(user),
+      tenantId: user.activeTenantId,
       playbookVersionId: parsed.playbookVersionId,
-      approverUserId: user.id,
+      approverUserId: user.user.id,
     })
     return ok({ status: version.status })
   } catch (e) {
@@ -356,12 +351,12 @@ export async function publishPlaybookVersionV2(input: unknown) {
 
 export async function rejectPlaybookVersionV2(input: unknown) {
   try {
-    const user = await requireRole('approver')
+    const user = await requireTenantRole('approver')
     const parsed = rejectPlaybookVersionV2Schema.parse(input)
     const version = await services.playbooksV2.rejectPlaybookVersion({
-      tenantId: tenantOf(user),
+      tenantId: user.activeTenantId,
       playbookVersionId: parsed.playbookVersionId,
-      approverUserId: user.id,
+      approverUserId: user.user.id,
       reason: parsed.reason,
     })
     return ok({ status: version.status })
@@ -373,15 +368,15 @@ export async function rejectPlaybookVersionV2(input: unknown) {
 
 export async function assignPlaybookV2(input: unknown) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = assignPlaybookV2Schema.parse(input)
     const assignment = await services.playbooksV2.assignPlaybook({
-      tenantId: tenantOf(user),
+      tenantId: user.activeTenantId,
       playbookVersionId: parsed.playbookVersionId,
       assignmentType: parsed.assignmentType,
       assignmentKey: parsed.assignmentKey,
       isDefault: parsed.isDefault,
-      actorUserId: user.id,
+      actorUserId: user.user.id,
     })
     return ok({ id: assignment.id })
   } catch (e) {
@@ -393,8 +388,8 @@ export async function assignPlaybookV2(input: unknown) {
 /** Indítható (published) Playbookok process-type szerint — az operator start űrlaphoz. */
 export async function listStartablePlaybooks() {
   try {
-    const user = await requireRole('operator')
-    return ok(await services.playbooksV2.listStartablePlaybooks(tenantOf(user)))
+    const user = await requireTenantRole('operator')
+    return ok(await services.playbooksV2.listStartablePlaybooks(user.activeTenantId))
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Nem sikerült betölteni az indítható Playbookokat')
   }
@@ -403,8 +398,8 @@ export async function listStartablePlaybooks() {
 /** Publikált Playbook-verziók Folyamat-összeállításhoz. */
 export async function listPublishedPlaybookVersionsForProcessBuilder() {
   try {
-    const user = await requireRole('operator')
-    const playbooks = await services.playbooksV2.listPlaybooks(tenantOf(user))
+    const user = await requireTenantRole('operator')
+    const playbooks = await services.playbooksV2.listPlaybooks(user.activeTenantId)
     return ok(
       playbooks.flatMap((playbook) =>
         playbook.versions
@@ -423,9 +418,9 @@ export async function listPublishedPlaybookVersionsForProcessBuilder() {
  */
 export async function listPlaybookVersionsForProcessDefinitionEditing(playbookVersionIds: unknown) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const parsed = z.array(z.string().uuid()).parse(playbookVersionIds)
-    const tenantId = tenantOf(user)
+    const tenantId = user.activeTenantId
     const uniqueIds = [...new Set(parsed)]
     const views: ProcessBuilderPlaybookVersionView[] = []
 

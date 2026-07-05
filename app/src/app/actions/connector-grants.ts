@@ -1,7 +1,8 @@
 'use server'
 
 import type { Prisma } from '@prisma/client'
-import { getCurrentUser, requireRole } from '@/auth'
+import { getCurrentUser } from '@/auth'
+import { requireTenantRole } from '@/auth/tenant-context'
 import { hasMinimumRole } from '@/auth/types'
 import { services } from '@/domain'
 import { prisma } from '@/lib/db'
@@ -33,11 +34,11 @@ export async function listConnectorGrants() {
 
 export async function listUserDelegatedConnectors() {
   try {
-    const user = await requireRole('viewer')
+    const user = await requireTenantRole('viewer')
     const connectors = await prisma.connector.findMany({
       where: {
         authMode: 'user_delegated',
-        OR: [{ tenantId: null }, ...(user.tenantId ? [{ tenantId: user.tenantId }] : [])],
+        OR: [{ tenantId: null }, { tenantId: user.activeTenantId }],
       },
       orderBy: { name: 'asc' },
     })
@@ -123,7 +124,7 @@ export async function revokeConnectorGrant(input: { grantId: string }) {
 
 export async function approveGmailSend(input: { ticketId: string; draftId: string }) {
   try {
-    const user = await requireRole('approver')
+    const user = await requireTenantRole('approver')
     const parsed = approveGmailSendSchema.parse(input)
     const ticket = await prisma.ticket.findUnique({ where: { id: parsed.ticketId } })
     if (!ticket) return fail('Ticket not found')
@@ -136,14 +137,14 @@ export async function approveGmailSend(input: { ticketId: string; draftId: strin
     await services.tickets.transition({
       ticketId: ticket.id,
       toState: 'approved',
-      actor: { type: 'human', userId: user.id, role: user.role },
+      actor: { type: 'human', userId: user.user.id, role: user.activeTenantRole },
       note: `Gmail küldés jóváhagyva: ${parsed.draftId}`,
     })
 
     await prisma.ticket.update({
       where: { id: ticket.id },
       data: {
-        payload: { ...payload, gmailSendApproved: parsed.draftId, approvedBy: user.id },
+        payload: { ...payload, gmailSendApproved: parsed.draftId, approvedBy: user.user.id },
       },
     })
 
@@ -155,7 +156,7 @@ export async function approveGmailSend(input: { ticketId: string; draftId: strin
 
 export async function authorizeTicketRunAs(input: { ticketId: string }) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const { ticketId } = authorizeTicketRunAsSchema.parse(input)
 
     const ticket = await prisma.ticket.findUnique({ where: { id: ticketId } })
@@ -171,7 +172,7 @@ export async function authorizeTicketRunAs(input: { ticketId: string }) {
         : {}
     if (isRunAsAuthorized(payload)) return fail('Run-as is already authorized for this ticket')
 
-    const runAs = buildRunAsAuthorization({ userId: user.id })
+    const runAs = buildRunAsAuthorization({ userId: user.user.id })
     await prisma.ticket.update({
       where: { id: ticket.id },
       data: { payload: { ...payload, ...runAs } as Prisma.InputJsonValue },
@@ -179,19 +180,19 @@ export async function authorizeTicketRunAs(input: { ticketId: string }) {
 
     await repositories.audit.append({
       actorType: 'human',
-      actorId: user.id,
+      actorId: user.user.id,
       agentVersion: null,
       action: 'ticket.runas.authorize',
       targetType: 'ticket',
       targetId: ticket.id,
       modelUsed: null,
       inputRef: ticket.agentId ?? null,
-      outputRef: user.id,
+      outputRef: user.user.id,
       policyDecision: 'authorized',
-      metadata: { runAsUserId: user.id } as Prisma.JsonValue,
+      metadata: { runAsUserId: user.user.id } as Prisma.JsonValue,
     })
 
-    return ok({ ticketId: ticket.id, runAsUserId: user.id })
+    return ok({ ticketId: ticket.id, runAsUserId: user.user.id })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to authorize run-as')
   }
@@ -199,7 +200,7 @@ export async function authorizeTicketRunAs(input: { ticketId: string }) {
 
 export async function revokeTicketRunAs(input: { ticketId: string }) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const { ticketId } = authorizeTicketRunAsSchema.parse(input)
 
     const ticket = await prisma.ticket.findUnique({ where: { id: ticketId } })
@@ -211,7 +212,7 @@ export async function revokeTicketRunAs(input: { ticketId: string }) {
         : {}
     if (!isRunAsAuthorized(payload)) return fail('Run-as is not authorized for this ticket')
     const authorizedBy = readRunAsAuthorizedBy(payload)
-    if (authorizedBy !== user.id && !hasMinimumRole(user.role, 'admin')) {
+    if (authorizedBy !== user.user.id && !hasMinimumRole(user.activeTenantRole, 'admin')) {
       return fail('Only the authorizing user or an admin can revoke this run-as grant')
     }
 
@@ -222,16 +223,16 @@ export async function revokeTicketRunAs(input: { ticketId: string }) {
 
     await repositories.audit.append({
       actorType: 'human',
-      actorId: user.id,
+      actorId: user.user.id,
       agentVersion: null,
       action: 'ticket.runas.revoke',
       targetType: 'ticket',
       targetId: ticket.id,
       modelUsed: null,
       inputRef: ticket.agentId ?? null,
-      outputRef: user.id,
+      outputRef: user.user.id,
       policyDecision: 'revoked',
-      metadata: { revokedBy: user.id } as Prisma.JsonValue,
+      metadata: { revokedBy: user.user.id } as Prisma.JsonValue,
     })
 
     return ok({ ticketId: ticket.id })

@@ -27,6 +27,7 @@ import {
 import { POST as gatewayChatCompletions } from '../src/app/api/v1/gateway/v1/chat/completions/route'
 import { DISPATCH_NOTIFY_CHANNEL } from '../src/lib/dispatch-notify'
 import { prisma } from '../src/lib/db'
+import { upsertConnectorByTypeName } from '../src/lib/connector-upsert'
 import { buildRunAsAuthorization, isRunAsAuthorized, readRunAsUserId } from '../src/lib/run-as-payload'
 import { PLATFORM_TICKET_SOURCE_ENV } from '../src/lib/ticket-source'
 import { repositories } from '../src/repositories/postgres'
@@ -3483,13 +3484,7 @@ const FILE_EDITOR_TOOLS = [
 ] as const
 
 async function ensureWorkspaceForAgent(agentId: string) {
-  const workspace = await prisma.connector.upsert({
-    where: {
-      type_name: {
-        type: 'workspace',
-        name: 'Agent Workspace',
-      },
-    },
+  const workspace = await upsertConnectorByTypeName(prisma, {
     create: {
       type: 'workspace',
       name: 'Agent Workspace',

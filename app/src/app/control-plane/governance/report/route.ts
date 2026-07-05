@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { requireRole } from '@/auth'
+import { requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain'
 import { repositories } from '@/repositories/postgres'
 import {
@@ -19,7 +19,7 @@ function parseRange(value: string | null): MeasurementRange {
  */
 export async function GET(request: Request) {
   try {
-    await requireRole('viewer')
+    await requireTenantRole('viewer')
     const range = parseRange(new URL(request.url).searchParams.get('range'))
 
     const report = await buildMeasurementReport(

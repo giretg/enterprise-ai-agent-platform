@@ -1,9 +1,7 @@
 'use server'
 
 import { z } from 'zod'
-import { requireRole } from '@/auth'
-import { requirePermission } from '@/auth/permission'
-import type { ActiveAuthUser } from '@/auth/types'
+import { requirePlatformRole, requireTenantPermission, requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain'
 import { repositories } from '@/repositories/postgres'
 import { prisma } from '@/lib/db'
@@ -30,8 +28,8 @@ import { inspectPromptSensitivity } from '@/domain/gateway/sensitivity-router'
  * ProvisioningService is kikényszeríti (CR-MVP-002).
  */
 
-function actorOf(user: ActiveAuthUser): ProvisioningActor {
-  return { type: 'user', userId: user.id, role: user.role, tenantId: user.tenantId }
+function actorOf(user: Awaited<ReturnType<typeof requireTenantRole>>): ProvisioningActor {
+  return { type: 'user', userId: user.user.id, role: user.activeTenantRole, tenantId: user.activeTenantId }
 }
 
 /** A ProvisioningError üzenetét ügyfél-barát formában visszaadjuk (kód + üzenet). */
@@ -225,7 +223,7 @@ const deleteDraftSchema = z.object({
 
 export async function listProvisioningDrafts() {
   try {
-    const user = await requireRole('viewer')
+    const user = await requireTenantRole('viewer')
     const drafts = await services.provisioning.listDrafts(actorOf(user))
     return ok(drafts)
   } catch (e) {
@@ -235,7 +233,7 @@ export async function listProvisioningDrafts() {
 
 export async function listConnectorCatalog() {
   try {
-    const user = await requireRole('viewer')
+    const user = await requireTenantRole('viewer')
     const catalog = await services.provisioning.listCatalog(actorOf(user))
     return ok(catalog)
   } catch (e) {
@@ -245,7 +243,7 @@ export async function listConnectorCatalog() {
 
 export async function listProvisioningAssignableAgents() {
   try {
-    await requireRole('viewer')
+    await requireTenantRole('viewer')
     const agents = await repositories.agents.findMany()
     return ok(
       agents
@@ -267,7 +265,7 @@ export async function listProvisioningAssignableAgents() {
  */
 export async function draftConfigFromApiDoc(input: unknown) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const { docText, providerHint, sensitivityReviewAccepted } = draftFromDocSchema.parse(input)
 
     // A seedelt provisioning-asszisztens agent — audit-attribúció + a Registry modelConfig-je.
@@ -300,13 +298,13 @@ export async function draftConfigFromApiDoc(input: unknown) {
       agentId: assistant.id,
       agentVersion: assistant.currentVersion,
       agentModelConfig: assistant.modelConfig,
-      tenantId: user.tenantId,
+      tenantId: user.activeTenantId,
       docText,
       providerHint,
       ...(forbiddenFindings.length > 0
         ? {
             sensitivityOverride: {
-              reviewedByUserId: user.id,
+              reviewedByUserId: user.user.id,
               allowedForbiddenCategories: [...new Set(forbiddenFindings.map((f) => f.category))],
               reason: 'Provisioning API documentation sensitivity review accepted by admin',
             },
@@ -331,7 +329,7 @@ export async function draftConfigFromApiDoc(input: unknown) {
  */
 export async function discoverConnectorFromName(input: unknown) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const { connectorName, knownDomain, sensitivityReviewAccepted } = discoverSchema.parse(input)
 
     // A seedelt web-egress role agent — audit-attribúció + a Registry modelConfig-je + a
@@ -364,11 +362,11 @@ export async function discoverConnectorFromName(input: unknown) {
       egressRoleAgentId: egressAgent.id,
       egressRoleAgentVersion: egressAgent.currentVersion,
       agentModelConfig: egressAgent.modelConfig,
-      tenantId: user.tenantId,
+      tenantId: user.activeTenantId,
       ...(forbiddenFindings.length > 0
         ? {
             sensitivityOverride: {
-              reviewedByUserId: user.id,
+              reviewedByUserId: user.user.id,
               allowedForbiddenCategories: [...new Set(forbiddenFindings.map((f) => f.category))],
               reason: 'Provisioning web-discovery sensitivity review accepted by admin',
             },
@@ -427,12 +425,12 @@ export async function discoverConnectorFromName(input: unknown) {
  */
 export async function extendEgressAllowlist(input: unknown) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const { host, sourceType, draftId } = extendEgressSchema.parse(input)
     const res = await services.platformSettings.extendEgressAllowlist(
-      user.tenantId ?? null,
+      user.activeTenantId,
       host,
-      user.id,
+      user.user.id,
       { sourceType, draftId },
     )
     if (!res.ok) {
@@ -450,7 +448,7 @@ export async function extendEgressAllowlist(input: unknown) {
 
 export async function createConnectorDraft(input: unknown) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = createDraftSchema.parse(input)
     const res = await services.provisioning.createConnectorDraft(parsed, actorOf(user))
     return ok(res)
@@ -461,9 +459,9 @@ export async function createConnectorDraft(input: unknown) {
 
 export async function listConnectorTemplatesAction() {
   try {
-    const user = await requireRole('viewer')
+    const user = await requireTenantRole('viewer')
     const templates = await repositories.connectorTemplates.listVisible({
-      tenantId: user.tenantId ?? null,
+      tenantId: user.activeTenantId,
     })
     return ok(
       templates.map((template) => ({
@@ -485,10 +483,10 @@ export async function listConnectorTemplatesAction() {
 
 export async function createConnectorFromTemplateAction(input: unknown) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = createFromTemplateSchema.parse(input)
     const template = await repositories.connectorTemplates.findByIdVersion(parsed.templateId)
-    if (!template || (template.tenantId !== null && template.tenantId !== user.tenantId)) {
+    if (!template || (template.tenantId !== null && template.tenantId !== user.activeTenantId)) {
       return fail('Connector template not found')
     }
     if (template.status !== 'active') {
@@ -526,7 +524,7 @@ export async function createConnectorFromTemplateAction(input: unknown) {
 
     await repositories.audit.append({
       actorType: 'human',
-      actorId: user.id,
+      actorId: user.user.id,
       agentVersion: null,
       action: 'connector.materialize',
       targetType: 'connector',
@@ -550,17 +548,25 @@ export async function createConnectorFromTemplateAction(input: unknown) {
 
 export async function upsertConnectorTemplateAction(input: unknown) {
   try {
-    const user = await requirePermission('connector_template:manage')
     const parsed = upsertConnectorTemplateSchema.parse(input)
     const descriptor = parseTemplateDescriptor(parsed.descriptor)
 
     selfCheckTemplateDescriptor(descriptor, parsed.selfCheck)
 
-    if (parsed.tenantScoped === false && user.tenantId) {
-      return fail('Globális connector-sablont csak platform-szintű admin kontextusból lehet létrehozni.')
+    // §13/6: globális (platform-fallback) sablont CSAK platform-szerep írhat;
+    // tenant-scope sablont a tenant-admin, az AKTÍV tenant kontextusában.
+    const isGlobal = parsed.tenantScoped === false
+    let actorId: string
+    let tenantId: string | null
+    if (isGlobal) {
+      actorId = (await requirePlatformRole('superadmin')).user.id
+      tenantId = null
+    } else {
+      const ctx = await requireTenantPermission('connector_template:manage')
+      actorId = ctx.user.id
+      tenantId = ctx.activeTenantId
     }
 
-    const tenantId = parsed.tenantScoped === false ? null : user.tenantId
     const latest = await repositories.connectorTemplates.findLatestByKey(descriptor.key, tenantId ?? null)
     if (latest?.origin === 'builtin') {
       return fail('Builtin connector-sablon nem írható felül. Klónozd másik kulccsal.')
@@ -575,12 +581,12 @@ export async function upsertConnectorTemplateAction(input: unknown) {
       tenantId,
       descriptor,
       status: 'active',
-      createdById: user.id,
+      createdById: actorId,
     })
 
     await repositories.audit.append({
       actorType: 'human',
-      actorId: user.id,
+      actorId,
       agentVersion: null,
       action: 'connector.template.create',
       targetType: 'connector_template',
@@ -590,11 +596,12 @@ export async function upsertConnectorTemplateAction(input: unknown) {
       outputRef: `${descriptor.key}@${version}`,
       policyDecision: 'allowed',
       metadata: {
-        tenant_id: user.tenantId,
+        tenant_id: tenantId,
         templateKey: descriptor.key,
         templateVersion: version,
         origin: 'custom',
       },
+      tenantId,
     })
 
     return ok({
@@ -615,20 +622,28 @@ export async function upsertConnectorTemplateAction(input: unknown) {
 
 export async function deprecateConnectorTemplateAction(input: unknown) {
   try {
-    const user = await requirePermission('connector_template:manage')
     const parsed = deprecateConnectorTemplateSchema.parse(input)
     const template = await repositories.connectorTemplates.findByIdVersion(parsed.templateId)
-    if (!template || (template.tenantId !== null && template.tenantId !== user.tenantId)) {
-      return fail('Connector template not found')
-    }
+    if (!template) return fail('Connector template not found')
     if (template.origin === 'builtin') {
       return fail('Builtin connector-sablon nem deprecálható ezen a felületen.')
+    }
+
+    // §13/6: globális sablon → platform-szerep; tenant-sablon → tenant-admin az
+    // AKTÍV tenant kontextusában (cross-tenant célpont "not found").
+    let actorId: string
+    if (template.tenantId === null) {
+      actorId = (await requirePlatformRole('superadmin')).user.id
+    } else {
+      const ctx = await requireTenantPermission('connector_template:manage')
+      if (template.tenantId !== ctx.activeTenantId) return fail('Connector template not found')
+      actorId = ctx.user.id
     }
 
     await repositories.connectorTemplates.deprecate(template.id)
     await repositories.audit.append({
       actorType: 'human',
-      actorId: user.id,
+      actorId,
       agentVersion: null,
       action: 'connector.template.deprecate',
       targetType: 'connector_template',
@@ -638,10 +653,11 @@ export async function deprecateConnectorTemplateAction(input: unknown) {
       outputRef: `${template.key}@${template.version}`,
       policyDecision: 'allowed',
       metadata: {
-        tenant_id: user.tenantId,
+        tenant_id: template.tenantId,
         templateKey: template.key,
         templateVersion: template.version,
       },
+      tenantId: template.tenantId,
     })
 
     return ok({ id: template.id, status: 'deprecated' })
@@ -652,7 +668,7 @@ export async function deprecateConnectorTemplateAction(input: unknown) {
 
 export async function validateConnectorDraft(input: unknown) {
   try {
-    const user = await requireRole('viewer')
+    const user = await requireTenantRole('viewer')
     const parsed = draftIdSchema.parse(input)
     const res = await services.provisioning.validateConnectorDraft(parsed, actorOf(user))
     return ok(res)
@@ -663,7 +679,7 @@ export async function validateConnectorDraft(input: unknown) {
 
 export async function reviewConnectorDraft(input: unknown) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = reviewSchema.parse(input)
     const res = await services.provisioning.reviewConnectorDraft(parsed, actorOf(user))
     return ok(res)
@@ -674,7 +690,7 @@ export async function reviewConnectorDraft(input: unknown) {
 
 export async function testConnectorDraft(input: unknown) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = draftIdSchema.parse(input)
     const res = await services.provisioning.testConnectorDraft(parsed, actorOf(user))
     return ok(res)
@@ -685,7 +701,7 @@ export async function testConnectorDraft(input: unknown) {
 
 export async function activateConnector(input: unknown) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = activateSchema.parse(input)
     const res = await services.provisioning.activateConnector(
       {
@@ -707,14 +723,14 @@ export async function activateConnector(input: unknown) {
 
 export async function assignConnectorToAgent(input: unknown) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = assignSchema.parse(input)
     const [agent, connector] = await Promise.all([
-      repositories.agents.findById(parsed.agentId, user.tenantId),
+      repositories.agents.findById(parsed.agentId, user.activeTenantId),
       prisma.connector.findFirst({
         where: {
           id: parsed.connectorId,
-          tenantId: user.tenantId,
+          tenantId: user.activeTenantId,
           lifecycleState: 'active',
         },
       }),
@@ -742,14 +758,14 @@ export async function assignConnectorToAgent(input: unknown) {
 
 export async function unassignConnectorFromAgent(input: unknown) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = unassignSchema.parse(input)
     const [agent, connector] = await Promise.all([
-      repositories.agents.findById(parsed.agentId, user.tenantId),
+      repositories.agents.findById(parsed.agentId, user.activeTenantId),
       prisma.connector.findFirst({
         where: {
           id: parsed.connectorId,
-          tenantId: user.tenantId,
+          tenantId: user.activeTenantId,
           lifecycleState: 'active',
         },
       }),
@@ -781,7 +797,7 @@ export async function unassignConnectorFromAgent(input: unknown) {
  */
 export async function updateConnectorDraftConfig(input: unknown) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = updateDraftConfigSchema.parse(input)
     const res = await services.provisioning.updateConnectorDraftConfig(parsed, actorOf(user))
     return ok(res)
@@ -796,7 +812,7 @@ export async function updateConnectorDraftConfig(input: unknown) {
  */
 export async function reopenConnector(input: unknown) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = draftIdSchema.parse(input)
     const res = await services.provisioning.reopenConnector(parsed, actorOf(user))
     return ok(res)
@@ -812,7 +828,7 @@ export async function reopenConnector(input: unknown) {
  */
 export async function decommissionConnector(input: unknown) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = decommissionSchema.parse(input)
     const res = await services.provisioning.decommissionConnector(parsed, actorOf(user))
     if (res.affectedAgentIds.length > 0) {
@@ -830,7 +846,7 @@ export async function decommissionConnector(input: unknown) {
  */
 export async function deleteConnectorDraft(input: unknown) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = deleteDraftSchema.parse(input)
     const res = await services.provisioning.deleteConnectorDraft(parsed, actorOf(user))
     return ok(res)

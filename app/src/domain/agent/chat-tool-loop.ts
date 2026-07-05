@@ -1251,6 +1251,10 @@ export async function runAgentToolLoop(params: {
     await params.onActivity?.(event)
   }
 
+  // Repeated-call guard: (toolName, stableArgsKey) → count
+  const callRepeatTracker = new Map<string, number>()
+  const REPEAT_LIMIT = 3
+
   for (let turn = 0; turn < maxTurns; turn++) {
     await emitActivity({
       id: `reasoning-${turn}`,
@@ -1395,6 +1399,27 @@ export async function runAgentToolLoop(params: {
         continue
       }
 
+      // Repeated-call guard: ugyanazon (toolName, args) kombináció ismétlése korlátozott
+      const repeatKey = `${toolName}:${JSON.stringify(call.input)}`
+      const repeatCount = (callRepeatTracker.get(repeatKey) ?? 0) + 1
+      callRepeatTracker.set(repeatKey, repeatCount)
+      if (repeatCount > REPEAT_LIMIT) {
+        messages.push({
+          role: 'tool',
+          toolCallId: call.id,
+          toolName: call.name,
+          content: `[LOOP-GUARD] Ezt az eszközhívást (${call.name}) ugyanezekkel az argumentumokkal már ${repeatCount - 1}x megismételted, de az eredmény nem változott. Ne ismételd újra — foglald össze amit eddig megtudtál, és adj végső választ.`,
+        })
+        await emitActivity({
+          id: `tool-${call.id}`,
+          kind: 'tool',
+          title: call.name,
+          detail: `loop-guard: ${repeatCount - 1}x ismételt hívás leállítva`,
+          status: 'skipped',
+        })
+        continue
+      }
+
       try {
         await emitActivity({
           id: `tool-${call.id}`,
@@ -1471,6 +1496,22 @@ export async function runAgentToolLoop(params: {
           toolName: call.name,
           content: toolContent,
         })
+
+        // KB-miss early guidance: ha kb_search 0 találatot adott, figyelmeztessük a modellt
+        if ((toolName as string) === 'kb_search' && !result.denied) {
+          try {
+            const parsed = result.result as { hits?: unknown[] }
+            if (Array.isArray(parsed?.hits) && parsed.hits.length === 0) {
+              messages.push({
+                role: 'system',
+                content:
+                  'A tudásbázisban nincs releváns találat ehhez a kéréshez. Ne ismételgesd a kb_search hívást más lekérdezésekkel — ha nincs KB-tartalom, mondd el a felhasználónak hogy a kért folyamat vagy tartalom nem található a tudásbázisban, és adj tájékoztatást arról amit a rendelkezésre álló eszközökkel meg tudsz tenni.',
+              })
+            }
+          } catch {
+            // hibás struktúra esetén csendesen továbblépünk
+          }
+        }
       } catch (e) {
         const message = e instanceof Error ? e.message : 'tool_call_failed'
         await emitActivity({
@@ -1503,8 +1544,11 @@ export async function runAgentToolLoop(params: {
     modelConfig: params.modelConfig,
   })
 
+  const stripped = stripToolArtifacts(finalContent) || finalContent.trim()
   return {
-    content: stripToolArtifacts(finalContent) || finalContent.trim(),
+    content:
+      stripped ||
+      'Sajnos nem sikerült választ összeállítani — a rendelkezésre álló körök elfogytak anélkül, hogy befejeztem volna a feladatot. Kérlek fogalmazd át a kérést, vagy ellenőrizd, hogy a szükséges tartalom elérhető-e a tudásbázisban.',
     toolCallCount,
   }
 }

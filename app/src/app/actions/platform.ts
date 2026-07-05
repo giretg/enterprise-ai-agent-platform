@@ -5,12 +5,17 @@ import type { Prisma, UserRole } from '@prisma/client'
 import { mkdir, unlink, writeFile } from 'fs/promises'
 import path from 'path'
 import { clerkClient } from '@clerk/nextjs/server'
-import { getCurrentUser, requireRole } from '@/auth'
+import { getCurrentUser } from '@/auth'
 import { hasMinimumRole } from '@/auth/types'
 import { requirePermission } from '@/auth/permission'
+import { requirePlatformRole, requireTenantPermission, requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain'
 import { SandboxAppError } from '@/domain/sandbox/errors'
 import { dispatchBudgetFromEnv } from '@/domain/dispatcher/dispatcher-service'
+import {
+  getDispatcherServiceStatus,
+  setDispatcherServiceMinScale,
+} from '@/domain/dispatcher/cloud-run-service-admin'
 import { repositories } from '@/repositories/postgres'
 import { isClerkEnabled } from '@/lib/clerk-config'
 import { prisma, ensureActiveDatabaseMode } from '@/lib/db'
@@ -155,7 +160,7 @@ function decodeConversationPreview(content: string): string {
 
 export async function listTickets(input?: { filter?: unknown }) {
   try {
-    await requireRole('viewer')
+    await requireTenantRole('viewer')
     const filter = input?.filter ? ticketFilterSchema.parse(input.filter) : undefined
     const tickets = await repositories.tickets.findMany(filter)
     return ok(tickets)
@@ -166,9 +171,9 @@ export async function listTickets(input?: { filter?: unknown }) {
 
 export async function listBoardAssignees() {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const [agents, users] = await Promise.all([
-      repositories.agents.findMany({ tenantId: user.tenantId }),
+      repositories.agents.findMany({ tenantId: user.activeTenantId }),
       prisma.user.findMany({
         // `role: { not: null }` a deny-by-default invariáns tükre (N-IAM-3): egy
         // aktív, de role nélküli sor (elméletileg nem fordulhat elő) sem legyen kijelölhető.
@@ -245,13 +250,13 @@ export async function createBoardTicket(input: {
   deferDispatch?: boolean
 }) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const parsed = createBoardTicketSchema.parse(input)
 
     const promptText = parsed.description?.trim() || parsed.title.trim()
 
     if (parsed.assigneeType === 'agent') {
-      const agentDetails = await repositories.agents.findByIdWithDetails(parsed.assigneeId, user.tenantId)
+      const agentDetails = await repositories.agents.findByIdWithDetails(parsed.assigneeId, user.activeTenantId)
       if (!agentDetails) return fail('Agent not found')
       if (agentDetails.agent.status !== 'active') return fail('Agent is not active')
 
@@ -272,7 +277,7 @@ export async function createBoardTicket(input: {
       }
 
       const ticket = await repositories.tickets.create({
-        tenantId: user.tenantId,
+        tenantId: user.activeTenantId,
         type: 'interaction',
         title: parsed.title,
         state: 'ready',
@@ -283,7 +288,7 @@ export async function createBoardTicket(input: {
         sourceDocumentId: null,
         executeAfter: null,
         dueBy: null,
-        createdById: user.id,
+        createdById: user.user.id,
       })
 
       let warning: string | undefined
@@ -305,7 +310,7 @@ export async function createBoardTicket(input: {
     if (assignee.status !== 'active') return fail('User is not active')
 
     const ticket = await repositories.tickets.create({
-      tenantId: user.tenantId,
+      tenantId: user.activeTenantId,
       type: 'interaction',
       title: parsed.title,
       state: 'awaiting_human',
@@ -316,7 +321,7 @@ export async function createBoardTicket(input: {
       sourceDocumentId: null,
       executeAfter: null,
       dueBy: null,
-      createdById: user.id,
+      createdById: user.user.id,
     })
 
     return ok({ ticket })
@@ -327,7 +332,7 @@ export async function createBoardTicket(input: {
 
 export async function dispatchBoardTicket(input: { ticketId: string }) {
   try {
-    await requireRole('operator')
+    await requireTenantRole('operator')
     const { id: ticketId } = ticketIdSchema.parse(input)
     const ticket = await repositories.tickets.findById(ticketId)
     if (!ticket) return fail('Ticket not found')
@@ -348,7 +353,7 @@ export async function dispatchBoardTicket(input: { ticketId: string }) {
 
 export async function listBoardTickets() {
   try {
-    await requireRole('viewer')
+    await requireTenantRole('viewer')
     const tickets = await repositories.tickets.findMany({ excludeTest: true })
 
     const agentIds = new Set<string>()
@@ -379,7 +384,7 @@ export async function listBoardTickets() {
 
     const enriched = enrichTicketsForBoard(tickets, {
       agents: new Map(agents.map((agent) => [agent.id, agent.name])),
-      users: new Map(users.map((user) => [user.id, user.name])),
+      users: new Map(users.map((u) => [u.id, u.name])),
     })
 
     return ok(enriched)
@@ -390,9 +395,9 @@ export async function listBoardTickets() {
 
 export async function listScheduledTasks() {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const tasks = await services.scheduledTasks.list({
-      tenantId: user.tenantId,
+      tenantId: user.activeTenantId,
       limit: 100,
     })
     return ok(tasks)
@@ -403,12 +408,12 @@ export async function listScheduledTasks() {
 
 export async function revokeScheduledTask(input: { id: string }) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const { id } = scheduledTaskIdSchema.parse(input)
     const task = await services.scheduledTasks.revoke({
       scheduledTaskId: id,
-      actorId: user.id,
-      tenantId: user.tenantId,
+      actorId: user.user.id,
+      tenantId: user.activeTenantId,
     })
     return ok(task)
   } catch (e) {
@@ -418,7 +423,7 @@ export async function revokeScheduledTask(input: { id: string }) {
 
 export async function getTicket(input: { id: string }) {
   try {
-    await requireRole('viewer')
+    await requireTenantRole('viewer')
     const { id } = ticketIdSchema.parse(input)
     const ticket = await repositories.tickets.findById(id)
     if (!ticket) return fail('Ticket not found')
@@ -489,7 +494,7 @@ export async function getTicket(input: { id: string }) {
 
 export async function getTicketTransitions(input: { id: string }) {
   try {
-    await requireRole('viewer')
+    await requireTenantRole('viewer')
     const { id } = ticketIdSchema.parse(input)
     const transitions = await repositories.tickets.findTransitions(id)
     return ok(transitions)
@@ -504,7 +509,7 @@ export async function transitionTicket(input: {
   note?: string
 }): Promise<ActionResult<unknown>> {
   try {
-    const user = await requireRole(['viewer', 'operator', 'approver', 'admin'])
+    const user = await requireTenantRole(['viewer', 'operator', 'approver', 'admin'])
     const parsed = transitionTicketSchema.parse(input)
 
     const existing = await repositories.tickets.findById(parsed.id)
@@ -515,17 +520,17 @@ export async function transitionTicket(input: {
       (parsed.toState === 'approved' || parsed.toState === 'done') &&
       existing.state === 'awaiting_human'
     ) {
-      if (!hasMinimumRole(user.role, 'approver')) {
+      if (!hasMinimumRole(user.activeTenantRole, 'approver')) {
         return fail('Tanítás jóváhagyása approver jogosultságot igényel')
       }
-      const result = await services.training.approveTraining(parsed.id, user.id)
+      const result = await services.training.approveTraining(parsed.id, user.user.id)
       return ok(result)
     }
 
     const ticket = await services.tickets.transition({
       ticketId: parsed.id,
       toState: parsed.toState,
-      actor: { type: 'human', userId: user.id, role: user.role },
+      actor: { type: 'human', userId: user.user.id, role: user.activeTenantRole },
       note: parsed.note,
     })
 
@@ -546,8 +551,8 @@ export async function transitionTicket(input: {
 
 export async function listAgents() {
   try {
-    const user = await requireRole('viewer')
-    return ok(await repositories.agents.findMany({ tenantId: user.tenantId }))
+    const user = await requireTenantRole('viewer')
+    return ok(await repositories.agents.findMany({ tenantId: user.activeTenantId }))
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list agents')
   }
@@ -555,9 +560,9 @@ export async function listAgents() {
 
 export async function getAgent(input: { id: string }) {
   try {
-    const user = await requireRole('viewer')
+    const user = await requireTenantRole('viewer')
     const { id } = agentIdSchema.parse(input)
-    const detail = await repositories.agents.findByIdWithDetails(id, user.tenantId)
+    const detail = await repositories.agents.findByIdWithDetails(id, user.activeTenantId)
     if (!detail) return fail('Agent not found')
     return ok(detail)
   } catch (e) {
@@ -567,9 +572,9 @@ export async function getAgent(input: { id: string }) {
 
 export async function getAgentGovernance(input: { agentId: string }) {
   try {
-    const user = await requireRole('viewer')
+    const user = await requireTenantRole('viewer')
     const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
-    const agent = await repositories.agents.findById(agentId, user.tenantId)
+    const agent = await repositories.agents.findById(agentId, user.activeTenantId)
     if (!agent) return fail('Agent not found')
     const [capabilities, connectors] = await Promise.all([
       repositories.toolBroker.findCapabilitiesForAgent(agentId),
@@ -727,17 +732,17 @@ export async function createHttpApiConnectorForAgent(input: {
   }>
 }) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = createHttpApiConnectorSchema.parse(input)
 
-    const agent = await repositories.agents.findById(parsed.agentId, user.tenantId)
+    const agent = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
     if (!agent) return fail('Agent not found')
     if (agent.role === 'orchestrator') {
       return fail('Orchestrator agent nem kaphat HTTP API connectort vagy Tool Broker capability-t.')
     }
 
-    const existing = await prisma.connector.findUnique({
-      where: { type_name: { type: 'http_api', name: parsed.name } },
+    const existing = await prisma.connector.findFirst({
+      where: { type: 'http_api', name: parsed.name, tenantId: user.activeTenantId ?? null },
     })
     if (existing) return fail(`Már létezik „${parsed.name}" nevű API-kapcsolat — adj egyedi nevet.`)
 
@@ -756,7 +761,7 @@ export async function createHttpApiConnectorForAgent(input: {
         scope: 'global',
         config: config as Prisma.InputJsonValue,
         secretAlias: null,
-        tenantId: user.tenantId ?? null,
+        tenantId: user.activeTenantId ?? null,
       },
     })
 
@@ -791,7 +796,7 @@ export async function createHttpApiConnectorForAgent(input: {
 
     await repositories.audit.append({
       actorType: 'human',
-      actorId: user.id,
+      actorId: user.user.id,
       agentVersion: agent.currentVersion,
       action: 'connector.create',
       targetType: 'connector',
@@ -851,10 +856,10 @@ export async function updateHttpApiConnectorForAgent(input: {
   }>
 }) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = updateHttpApiConnectorSchema.parse(input)
 
-    const agent = await repositories.agents.findById(parsed.agentId, user.tenantId)
+    const agent = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
     if (!agent) return fail('Agent not found')
     if (agent.role === 'orchestrator') {
       return fail('Orchestrator agent nem kaphat HTTP API connectort vagy Tool Broker capability-t.')
@@ -878,8 +883,8 @@ export async function updateHttpApiConnectorForAgent(input: {
       )
     }
 
-    const existing = await prisma.connector.findUnique({
-      where: { type_name: { type: 'http_api', name: parsed.name } },
+    const existing = await prisma.connector.findFirst({
+      where: { type: 'http_api', name: parsed.name, tenantId: user.activeTenantId ?? null },
     })
     if (existing && existing.id !== parsed.connectorId) {
       return fail(`Már létezik „${parsed.name}" nevű API-kapcsolat — adj egyedi nevet.`)
@@ -946,7 +951,7 @@ export async function updateHttpApiConnectorForAgent(input: {
 
     await repositories.audit.append({
       actorType: 'human',
-      actorId: user.id,
+      actorId: user.user.id,
       agentVersion: agent.currentVersion,
       action: 'connector.update',
       targetType: 'connector',
@@ -983,7 +988,7 @@ export async function createAgent(input: {
   }
 }) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = createAgentSchema.parse(input)
     await services.platformSettings.assertModelAllowed(
       parsed.modelConfig.provider,
@@ -991,14 +996,14 @@ export async function createAgent(input: {
     )
     const result = await repositories.agents.create({
       ...parsed,
-      createdById: user.id,
-      tenantId: user.tenantId,
+      createdById: user.user.id,
+      tenantId: user.activeTenantId,
       status: 'draft',
     })
 
     await repositories.audit.append({
       actorType: 'human',
-      actorId: user.id,
+      actorId: user.user.id,
       agentVersion: null,
       action: 'agent.create',
       targetType: 'agent',
@@ -1022,9 +1027,9 @@ export async function updateAgentInstruction(input: {
   behaviorProfile?: string
 }) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = updateAgentInstructionSchema.parse(input)
-    const agent = await repositories.agents.findById(parsed.agentId, user.tenantId)
+    const agent = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
     if (!agent) return fail('Agent not found')
     const result = await repositories.agents.updateInstruction(parsed)
 
@@ -1035,7 +1040,7 @@ export async function updateAgentInstruction(input: {
 
     await repositories.audit.append({
       actorType: 'human',
-      actorId: user.id,
+      actorId: user.user.id,
       agentVersion: result.agentVersion,
       action: 'agent.version',
       targetType: 'agent',
@@ -1064,9 +1069,9 @@ export async function updateAgentPersona(input: {
   personaTrait?: string
 }) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = updateAgentPersonaSchema.parse(input)
-    const agent = await repositories.agents.findById(parsed.agentId, user.tenantId)
+    const agent = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
     if (!agent) return fail('Agent not found')
 
     const updated = await repositories.agents.updatePersona({
@@ -1078,7 +1083,7 @@ export async function updateAgentPersona(input: {
 
     await repositories.audit.append({
       actorType: 'human',
-      actorId: user.id,
+      actorId: user.user.id,
       agentVersion: agent.currentVersion,
       action: 'agent.persona',
       targetType: 'agent',
@@ -1108,9 +1113,9 @@ export async function updateAgentPersona(input: {
 
 export async function updateAgentAvatar(input: { agentId: string; avatarUrl: string }) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = updateAgentAvatarSchema.parse(input)
-    const agent = await repositories.agents.findById(parsed.agentId, user.tenantId)
+    const agent = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
     if (!agent) return fail('Agent not found')
 
     const nextAvatar = parsed.avatarUrl === '' ? null : parsed.avatarUrl
@@ -1118,7 +1123,7 @@ export async function updateAgentAvatar(input: { agentId: string; avatarUrl: str
 
     await repositories.audit.append({
       actorType: 'human',
-      actorId: user.id,
+      actorId: user.user.id,
       agentVersion: agent.currentVersion,
       action: 'agent.avatar',
       targetType: 'agent',
@@ -1141,9 +1146,9 @@ export async function updateAgentModelConfig(input: {
   modelConfig: { provider: string; model: string; temperature?: number; maxTokens?: number }
 }) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = updateAgentModelConfigSchema.parse(input)
-    const agent = await repositories.agents.findById(parsed.agentId, user.tenantId)
+    const agent = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
     if (!agent) return fail('Agent not found')
     await services.platformSettings.assertModelAllowed(
       parsed.modelConfig.provider,
@@ -1153,7 +1158,7 @@ export async function updateAgentModelConfig(input: {
 
     await repositories.audit.append({
       actorType: 'human',
-      actorId: user.id,
+      actorId: user.user.id,
       agentVersion: result.agentVersion,
       action: 'agent.version',
       targetType: 'agent',
@@ -1180,14 +1185,14 @@ export async function updateAgentSelfEvolutionProfile(input: {
   }
 }) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const parsedResult = updateAgentSelfEvolutionProfileSchema.safeParse(input)
     if (!parsedResult.success) {
       const idResult = agentIdSchema.safeParse({ id: input.agentId })
       if (idResult.success) {
         await repositories.audit.append({
           actorType: 'human',
-          actorId: user.id,
+          actorId: user.user.id,
           agentVersion: null,
           action: 'training.capability_escalation_denied',
           targetType: 'agent',
@@ -1207,13 +1212,13 @@ export async function updateAgentSelfEvolutionProfile(input: {
       return fail('Invalid self-evolution profile')
     }
     const parsed = parsedResult.data
-    const existing = await repositories.agents.findById(parsed.agentId, user.tenantId)
+    const existing = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
     if (!existing) return fail('Agent not found')
     const agent = await repositories.agents.updateSelfEvolutionProfile(parsed)
 
     await repositories.audit.append({
       actorType: 'human',
-      actorId: user.id,
+      actorId: user.user.id,
       agentVersion: agent.currentVersion,
       action: 'agent.self_evolution_profile_change',
       targetType: 'agent',
@@ -1233,15 +1238,15 @@ export async function updateAgentSelfEvolutionProfile(input: {
 
 export async function rotateAgentApiKey(input: { agentId: string }) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
-    const agent = await repositories.agents.findById(agentId, user.tenantId)
+    const agent = await repositories.agents.findById(agentId, user.activeTenantId)
     if (!agent) return fail('Agent not found')
     const result = await repositories.agents.rotateApiKey(agentId)
 
     await repositories.audit.append({
       actorType: 'human',
-      actorId: user.id,
+      actorId: user.user.id,
       agentVersion: null,
       action: 'agent.api_key_rotated',
       targetType: 'agent',
@@ -1261,18 +1266,18 @@ export async function rotateAgentApiKey(input: { agentId: string }) {
 
 export async function revokeAgentApiKey(input: { keyId: string }) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const { keyId } = agentApiKeyIdSchema.parse(input)
     const key = await prisma.agentApiKey.findUnique({
       where: { id: keyId },
       include: { agent: { select: { tenantId: true } } },
     })
-    if (!key || key.agent.tenantId !== user.tenantId) return fail('Agent API key not found')
+    if (!key || key.agent.tenantId !== user.activeTenantId) return fail('Agent API key not found')
     const result = await repositories.agents.revokeApiKey(keyId)
 
     await repositories.audit.append({
       actorType: 'human',
-      actorId: user.id,
+      actorId: user.user.id,
       agentVersion: null,
       action: 'agent.api_key_revoked',
       targetType: 'agent_api_key',
@@ -1294,8 +1299,8 @@ export async function revokeAgentApiKey(input: { keyId: string }) {
 
 export async function listBehaviorProfiles() {
   try {
-    const user = await requireRole('admin')
-    const profiles = await repositories.behaviorProfiles.findMany(user.tenantId)
+    const user = await requireTenantRole('admin')
+    const profiles = await repositories.behaviorProfiles.findMany(user.activeTenantId)
     return ok(profiles)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list behavior profiles')
@@ -1304,11 +1309,11 @@ export async function listBehaviorProfiles() {
 
 export async function getBehaviorProfile(input: { profileId: string }) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const { profileId } = behaviorProfileIdSchema.parse(input)
     const [profile, referrers] = await Promise.all([
-      repositories.behaviorProfiles.findByIdWithVersions(profileId, user.tenantId),
-      repositories.behaviorProfiles.listReferrers(profileId, user.tenantId),
+      repositories.behaviorProfiles.findByIdWithVersions(profileId, user.activeTenantId),
+      repositories.behaviorProfiles.listReferrers(profileId, user.activeTenantId),
     ])
     if (!profile) return fail('Behavior profile not found')
     return ok({ profile, referrers })
@@ -1319,18 +1324,18 @@ export async function getBehaviorProfile(input: { profileId: string }) {
 
 export async function createBehaviorProfile(input: { name: string; body: string }) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = createBehaviorProfileSchema.parse(input)
     const profile = await repositories.behaviorProfiles.create({
       name: parsed.name,
       body: parsed.body,
-      tenantId: user.tenantId,
-      approvedById: user.id,
+      tenantId: user.activeTenantId,
+      approvedById: user.user.id,
     })
 
     await repositories.audit.append({
       actorType: 'human',
-      actorId: user.id,
+      actorId: user.user.id,
       agentVersion: null,
       action: 'behavior_profile.created',
       targetType: 'behavior_profile',
@@ -1350,20 +1355,20 @@ export async function createBehaviorProfile(input: { name: string; body: string 
 
 export async function updateBehaviorProfile(input: { profileId: string; body: string }) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = updateBehaviorProfileSchema.parse(input)
     // I7: új al-verzió, de a hivatkozó agentek élő viselkedése NEM változik —
     // ahhoz külön `acceptBehaviorProfileUpdate` kell.
     const result = await repositories.behaviorProfiles.update({
       profileId: parsed.profileId,
       body: parsed.body,
-      approvedById: user.id,
-      tenantId: user.tenantId,
+      approvedById: user.user.id,
+      tenantId: user.activeTenantId,
     })
 
     await repositories.audit.append({
       actorType: 'human',
-      actorId: user.id,
+      actorId: user.user.id,
       agentVersion: null,
       action: 'agent.behavior_profile_updated',
       targetType: 'behavior_profile',
@@ -1387,16 +1392,16 @@ export async function acceptBehaviorProfileUpdate(input: {
   profileVersion: number
 }) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = acceptBehaviorProfileUpdateSchema.parse(input)
     const body = await repositories.behaviorProfiles.getVersionBody(
       parsed.profileId,
       parsed.profileVersion,
-      user.tenantId,
+      user.activeTenantId,
     )
     if (body === null) return fail('Behavior profile version not found')
 
-    const agent = await repositories.agents.findById(parsed.agentId, user.tenantId)
+    const agent = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
     if (!agent) return fail('Agent not found')
     if (agent.currentBehaviorProfileId !== parsed.profileId) {
       return fail('Behavior profile is not linked to this agent')
@@ -1411,7 +1416,7 @@ export async function acceptBehaviorProfileUpdate(input: {
 
     await repositories.audit.append({
       actorType: 'human',
-      actorId: user.id,
+      actorId: user.user.id,
       agentVersion: result.agentVersion,
       action: 'agent.behavior_profile_update_accepted',
       targetType: 'agent',
@@ -1438,10 +1443,10 @@ export async function setAgentBehaviorProfile(input: {
   overlay?: string
 }) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = setAgentBehaviorProfileSchema.parse(input)
 
-    const agent = await repositories.agents.findById(parsed.agentId, user.tenantId)
+    const agent = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
     if (!agent) return fail('Agent not found')
 
     let profileVersion: number | null = null
@@ -1451,13 +1456,13 @@ export async function setAgentBehaviorProfile(input: {
     if (parsed.profileId) {
       const profile = await repositories.behaviorProfiles.findByIdWithVersions(
         parsed.profileId,
-        user.tenantId,
+        user.activeTenantId,
       )
       if (!profile) return fail('Behavior profile not found')
       const body = await repositories.behaviorProfiles.getVersionBody(
         parsed.profileId,
         profile.currentVersion,
-        user.tenantId,
+        user.activeTenantId,
       )
       if (body === null) return fail('Behavior profile version not found')
       profileVersion = profile.currentVersion
@@ -1475,7 +1480,7 @@ export async function setAgentBehaviorProfile(input: {
 
     await repositories.audit.append({
       actorType: 'human',
-      actorId: user.id,
+      actorId: user.user.id,
       agentVersion: result.agentVersion,
       action: 'agent.behavior_profile_set',
       targetType: 'agent',
@@ -1500,15 +1505,15 @@ export async function setAgentBehaviorProfile(input: {
 
 export async function activateAgent(input: { agentId: string }) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
-    const agent = await repositories.agents.findById(agentId, user.tenantId)
+    const agent = await repositories.agents.findById(agentId, user.activeTenantId)
     if (!agent) return fail('Agent not found')
     const result = await repositories.agents.activate(agentId)
 
     await repositories.audit.append({
       actorType: 'human',
-      actorId: user.id,
+      actorId: user.user.id,
       agentVersion: result.agentVersion,
       action: 'agent.activated',
       targetType: 'agent',
@@ -1528,15 +1533,15 @@ export async function activateAgent(input: { agentId: string }) {
 
 export async function suspendAgent(input: { agentId: string; reason: string }) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = suspendAgentSchema.parse(input)
-    const existing = await repositories.agents.findById(parsed.agentId, user.tenantId)
+    const existing = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
     if (!existing) return fail('Agent not found')
     const agent = await repositories.agents.suspend(parsed.agentId, parsed.reason)
 
     await repositories.audit.append({
       actorType: 'human',
-      actorId: user.id,
+      actorId: user.user.id,
       agentVersion: agent.currentVersion,
       action: 'agent.suspended',
       targetType: 'agent',
@@ -1556,15 +1561,15 @@ export async function suspendAgent(input: { agentId: string; reason: string }) {
 
 export async function resumeAgent(input: { agentId: string }) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
-    const existing = await repositories.agents.findById(agentId, user.tenantId)
+    const existing = await repositories.agents.findById(agentId, user.activeTenantId)
     if (!existing) return fail('Agent not found')
     const agent = await repositories.agents.resume(agentId)
 
     await repositories.audit.append({
       actorType: 'human',
-      actorId: user.id,
+      actorId: user.user.id,
       agentVersion: agent.currentVersion,
       action: 'agent.resumed',
       targetType: 'agent',
@@ -1584,15 +1589,15 @@ export async function resumeAgent(input: { agentId: string }) {
 
 export async function retireAgent(input: { agentId: string }) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
-    const existing = await repositories.agents.findById(agentId, user.tenantId)
+    const existing = await repositories.agents.findById(agentId, user.activeTenantId)
     if (!existing) return fail('Agent not found')
     const agent = await repositories.agents.retire(agentId)
 
     await repositories.audit.append({
       actorType: 'human',
-      actorId: user.id,
+      actorId: user.user.id,
       agentVersion: agent.currentVersion,
       action: 'agent.retired',
       targetType: 'agent',
@@ -1612,15 +1617,15 @@ export async function retireAgent(input: { agentId: string }) {
 
 export async function deleteAgent(input: { id: string }) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const { id } = agentIdSchema.parse(input)
-    const existing = await repositories.agents.findById(id, user.tenantId)
+    const existing = await repositories.agents.findById(id, user.activeTenantId)
     if (!existing) return fail('Agent not found')
     const deleted = await repositories.agents.delete(id)
 
     await repositories.audit.append({
       actorType: 'human',
-      actorId: user.id,
+      actorId: user.user.id,
       agentVersion: null,
       action: 'agent.delete',
       targetType: 'agent',
@@ -1640,7 +1645,7 @@ export async function deleteAgent(input: { id: string }) {
 
 export async function uploadDocument(formData: FormData) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const file = formData.get('file')
     const textOverride = formData.get('text')
 
@@ -1684,7 +1689,7 @@ export async function uploadDocument(formData: FormData) {
       extractedText,
       status: 'uploaded',
       connectorId: null,
-      uploadedById: user.id,
+      uploadedById: user.user.id,
       mimeType,
       // A szeletek (§4.7 forrás-refekkel) a metadata-ba kerülnek; az OKF-artifact
       // generáláskor innen épül a bundle. Régi doksin nincs → heading-split fallback.
@@ -1699,12 +1704,12 @@ export async function uploadDocument(formData: FormData) {
 
 export async function processDocument(input: { documentId: string; agentId: string }) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const parsed = processDocumentSchema.parse(input)
     const result = await services.bookkeeper.processDocument(
       parsed.documentId,
       parsed.agentId,
-      user.id,
+      user.user.id,
     )
     return ok(result)
   } catch (e) {
@@ -1714,7 +1719,7 @@ export async function processDocument(input: { documentId: string; agentId: stri
 
 export async function processDocumentForWiki(input: { documentId: string; agentId: string }) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const parsed = processDocumentForWikiSchema.parse(input)
 
     const document = await repositories.documents.findById(parsed.documentId)
@@ -1736,7 +1741,7 @@ export async function processDocumentForWiki(input: { documentId: string; agentI
 
     await repositories.audit.append({
       actorType: 'human',
-      actorId: user.id,
+      actorId: user.user.id,
       agentVersion: null,
       action: 'tool.call',
       targetType: 'document',
@@ -1756,7 +1761,7 @@ export async function processDocumentForWiki(input: { documentId: string; agentI
 
 export async function listDocumentsForAgent(input: { agentId: string }) {
   try {
-    await requireRole('operator')
+    await requireTenantRole('operator')
     const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
 
     const agent = await repositories.agents.findById(agentId)
@@ -1778,12 +1783,12 @@ export async function listDocumentsForAgent(input: { agentId: string }) {
 /** Feltöltött dokumentumhoz jóváhagyási (tanítási) ticketet nyit — még nem kereshető. */
 export async function requestKbDocument(input: { documentId: string; agentId: string }) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const parsed = requestKbDocumentSchema.parse(input)
     const ticket = await services.knowledgeBase.requestDocument({
       agentId: parsed.agentId,
       documentId: parsed.documentId,
-      createdById: user.id,
+      createdById: user.user.id,
     })
     return ok(ticket)
   } catch (e) {
@@ -1794,12 +1799,12 @@ export async function requestKbDocument(input: { documentId: string; agentId: st
 /** Jóváhagyás után a dokumentum bekerül a KB-be és kereshetővé válik. */
 export async function approveKbDocument(input: { ticketId: string }) {
   try {
-    const user = await requireRole('approver')
+    const user = await requireTenantRole('approver')
     const parsed = kbTicketSchema.parse(input)
     const document = await services.knowledgeBase.approveDocument({
       ticketId: parsed.ticketId,
-      approverId: user.id,
-      approverRole: user.role,
+      approverId: user.user.id,
+      approverRole: user.activeTenantRole,
     })
     return ok(document)
   } catch (e) {
@@ -1809,12 +1814,12 @@ export async function approveKbDocument(input: { ticketId: string }) {
 
 export async function rejectKbDocument(input: { ticketId: string }) {
   try {
-    const user = await requireRole('approver')
+    const user = await requireTenantRole('approver')
     const parsed = kbTicketSchema.parse(input)
     const result = await services.knowledgeBase.rejectDocument({
       ticketId: parsed.ticketId,
-      approverId: user.id,
-      approverRole: user.role,
+      approverId: user.user.id,
+      approverRole: user.activeTenantRole,
     })
     return ok(result)
   } catch (e) {
@@ -1824,7 +1829,7 @@ export async function rejectKbDocument(input: { ticketId: string }) {
 
 export async function listKbDocumentRequests(input: { agentId: string }) {
   try {
-    await requireRole('operator')
+    await requireTenantRole('operator')
     const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
     const pending = await services.knowledgeBase.listPendingDocuments(agentId)
     return ok(pending)
@@ -1839,7 +1844,7 @@ export async function listKbDocumentRequests(input: { agentId: string }) {
  */
 export async function getKbArtifactReview(input: { agentId: string; documentId: string }) {
   try {
-    await requireRole('operator')
+    await requireTenantRole('operator')
     const parsed = kbArtifactReviewSchema.parse(input)
     const review = await services.knowledgeBase.getArtifactReview({
       agentId: parsed.agentId,
@@ -1857,7 +1862,7 @@ export async function getKbArtifactReview(input: { agentId: string; documentId: 
 /** Az agent KB connectorának megosztása egy másik (worker) agenttel. */
 export async function shareKnowledgeBaseWithAgent(input: { agentId: string; targetAgentId: string }) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const parsed = shareKnowledgeBaseSchema.parse(input)
     if (parsed.agentId === parsed.targetAgentId) {
       return fail('Source and target agents are the same')
@@ -1893,7 +1898,7 @@ export async function shareKnowledgeBaseWithAgent(input: { agentId: string; targ
 
     await repositories.audit.append({
       actorType: 'human',
-      actorId: user.id,
+      actorId: user.user.id,
       agentVersion: null,
       action: 'kb.shared',
       targetType: 'connector',
@@ -1917,7 +1922,7 @@ export async function unshareKnowledgeBaseFromAgent(input: {
   targetAgentId: string
 }) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const parsed = shareKnowledgeBaseSchema.parse(input)
     if (parsed.agentId === parsed.targetAgentId) {
       return fail('Cannot revoke the owner agent from its own knowledge base')
@@ -1947,7 +1952,7 @@ export async function unshareKnowledgeBaseFromAgent(input: {
 
     await repositories.audit.append({
       actorType: 'human',
-      actorId: user.id,
+      actorId: user.user.id,
       agentVersion: null,
       action: 'kb.unshared',
       targetType: 'connector',
@@ -1968,7 +1973,7 @@ export async function unshareKnowledgeBaseFromAgent(input: {
 /** A KB connector megosztási állapota: mely más agentek használják (a tulajdonos nélkül). */
 export async function getKnowledgeBaseSharing(input: { agentId: string }) {
   try {
-    await requireRole('operator')
+    await requireTenantRole('operator')
     const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
 
     const agent = await repositories.agents.findById(agentId)
@@ -1999,7 +2004,7 @@ export async function getKnowledgeBaseSharing(input: { agentId: string }) {
 /** Jóváhagyott KB-dokumentum törlése az agent saját tudásbázisából. */
 export async function deleteKbDocument(input: { agentId: string; documentId: string }) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const parsed = deleteKbDocumentSchema.parse(input)
 
     const agent = await repositories.agents.findById(parsed.agentId)
@@ -2028,7 +2033,7 @@ export async function deleteKbDocument(input: { agentId: string; documentId: str
 
     await repositories.audit.append({
       actorType: 'human',
-      actorId: user.id,
+      actorId: user.user.id,
       agentVersion: null,
       action: 'kb.document.deleted',
       targetType: 'document',
@@ -2048,12 +2053,12 @@ export async function deleteKbDocument(input: { agentId: string; documentId: str
 
 export async function askWiki(input: { agentId: string; question: string; conversationId?: string }) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const parsed = askWikiSchema.parse(input)
     const result = await services.wiki.askWiki({
       ...parsed,
-      createdById: user.id,
-      tenantId: user.tenantId,
+      createdById: user.user.id,
+      tenantId: user.activeTenantId,
     })
 
     return ok({
@@ -2074,7 +2079,7 @@ export async function askWiki(input: { agentId: string; question: string; conver
 
 export async function listReportTemplatesAction() {
   try {
-    await requireRole('viewer')
+    await requireTenantRole('viewer')
     return ok(
       listReportTemplates().map((t) => ({
         id: t.id,
@@ -2089,7 +2094,7 @@ export async function listReportTemplatesAction() {
 
 export async function generateReport(input: { agentId: string; templateId: string }) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const parsed = generateReportSchema.parse(input)
     const template = getReportTemplate(parsed.templateId)
     if (!template) return fail('Unknown report template')
@@ -2097,7 +2102,7 @@ export async function generateReport(input: { agentId: string; templateId: strin
     const ticket = await services.wiki.generateReport({
       agentId: parsed.agentId,
       template,
-      createdById: user.id,
+      createdById: user.user.id,
     })
 
     return ok({ ticketId: ticket.id })
@@ -2108,11 +2113,11 @@ export async function generateReport(input: { agentId: string; templateId: strin
 
 export async function promoteToTicket(input: { conversationId: string; reason?: string }) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const parsed = promoteToTicketSchema.parse(input)
     const { messages } = await services.conversations.getConversation(
       parsed.conversationId,
-      user.tenantId,
+      user.activeTenantId,
     )
 
     const lastAgent = [...messages].reverse().find((m) => m.role === 'agent' && m.content)
@@ -2127,7 +2132,7 @@ export async function promoteToTicket(input: { conversationId: string; reason?: 
 
     const ticket = await services.conversations.promoteToTicket({
       conversationId: parsed.conversationId,
-      createdById: user.id,
+      createdById: user.user.id,
       reason: parsed.reason ?? 'approval',
       answerPayload,
       agentMessageId: lastAgent.id,
@@ -2141,9 +2146,9 @@ export async function promoteToTicket(input: { conversationId: string; reason?: 
 
 export async function getConversation(input: { conversationId: string }) {
   try {
-    const user = await requireRole('viewer')
+    const user = await requireTenantRole('viewer')
     const { conversationId } = conversationIdSchema.parse(input)
-    const data = await services.conversations.getConversation(conversationId, user.tenantId)
+    const data = await services.conversations.getConversation(conversationId, user.activeTenantId)
     return ok(data)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to get conversation')
@@ -2157,12 +2162,12 @@ export async function sendAgentMessage(input: {
   attachmentDocumentIds?: string[]
 }) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const parsed = sendAgentMessageSchema.parse(input)
     const result = await services.agentChat.sendMessage({
       ...parsed,
-      createdById: user.id,
-      tenantId: user.tenantId,
+      createdById: user.user.id,
+      tenantId: user.activeTenantId,
     })
     return ok(result)
   } catch (e) {
@@ -2179,7 +2184,7 @@ export async function createAgentTaskTicket(input: {
   authorizeRunAs?: boolean
 }) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const parsed = createAgentTaskTicketSchema.parse(input)
     const executeAfter = parsed.executeAfter ? new Date(parsed.executeAfter) : null
     const ticket = await services.agentChat.createTaskTicket({
@@ -2189,8 +2194,8 @@ export async function createAgentTaskTicket(input: {
       attachmentDocumentIds: parsed.attachmentDocumentIds,
       executeAfter,
       authorizeRunAs: parsed.authorizeRunAs,
-      createdById: user.id,
-      tenantId: user.tenantId,
+      createdById: user.user.id,
+      tenantId: user.activeTenantId,
     })
     return ok({ ticketId: ticket.id, ticket })
   } catch (e) {
@@ -2210,7 +2215,7 @@ export async function createScheduledAgentTask(input: {
   authorizeRunAs?: boolean
 }) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const parsed = createScheduledAgentTaskSchema.parse(input)
     const scheduledTask = await services.scheduledTasks.createAgentTask({
       agentId: parsed.agentId,
@@ -2222,8 +2227,8 @@ export async function createScheduledAgentTask(input: {
       recurrence: parsed.recurrence,
       maxRuns: parsed.maxRuns,
       authorizeRunAs: parsed.authorizeRunAs,
-      createdById: user.id,
-      tenantId: user.tenantId,
+      createdById: user.user.id,
+      tenantId: user.activeTenantId,
     })
     return ok({ scheduledTaskId: scheduledTask.id, scheduledTask })
   } catch (e) {
@@ -2233,11 +2238,11 @@ export async function createScheduledAgentTask(input: {
 
 export async function loadAgentChatMessages(input: { conversationId: string; agentId: string }) {
   try {
-    const user = await requireRole('viewer')
+    const user = await requireTenantRole('viewer')
     const { conversationId, agentId } = loadAgentChatSchema.parse(input)
     const { conversation, messages } = await services.conversations.getConversation(
       conversationId,
-      user.tenantId,
+      user.activeTenantId,
     )
     if (conversation.agentId !== agentId) return fail('Conversation agent mismatch')
 
@@ -2301,13 +2306,13 @@ export async function loadAgentChatMessages(input: { conversationId: string; age
 
 export async function listAgentChatSessions(input: { agentId: string; status?: 'active' | 'archived' | 'all' }) {
   try {
-    const user = await requireRole('viewer')
+    const user = await requireTenantRole('viewer')
     const { agentId, status = 'active' } = listAgentChatSessionsSchema.parse(input)
     const rows = await prisma.conversation.findMany({
       where: {
         agentId,
-        createdById: user.id,
-        tenantId: user.tenantId,
+        createdById: user.user.id,
+        tenantId: user.activeTenantId,
         ...(status === 'all' ? {} : { status }),
       },
       orderBy: { lastMessageAt: 'desc' },
@@ -2341,12 +2346,12 @@ export async function listAgentChatSessions(input: { agentId: string; status?: '
 
 export async function deleteMessageContent(input: { messageId: string }) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const { messageId } = messageIdSchema.parse(input)
     const updated = await services.conversations.deleteMessageContent({
       messageId,
-      actorId: user.id,
-      tenantId: user.tenantId,
+      actorId: user.user.id,
+      tenantId: user.activeTenantId,
       reason: 'ui-message-delete',
     })
     return ok(updated)
@@ -2357,11 +2362,11 @@ export async function deleteMessageContent(input: { messageId: string }) {
 
 export async function createSandboxReport(input: { ticketId: string }) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const parsed = createSandboxReportSchema.parse(input)
     const app = await services.sandboxApps.createOrVersionWikiReport(parsed.ticketId, {
-      userId: user.id,
-      tenantId: user.tenantId,
+      userId: user.user.id,
+      tenantId: user.activeTenantId,
     })
     return ok(app)
   } catch (e) {
@@ -2371,11 +2376,11 @@ export async function createSandboxReport(input: { ticketId: string }) {
 
 export async function getSandboxReportForTicket(input: { ticketId: string }) {
   try {
-    const user = await requireRole('viewer')
+    const user = await requireTenantRole('viewer')
     const parsed = createSandboxReportSchema.parse(input)
     const app = await services.sandboxApps.getLatestForTicket(parsed.ticketId, {
-      userId: user.id,
-      tenantId: user.tenantId,
+      userId: user.user.id,
+      tenantId: user.activeTenantId,
     })
     return ok(app)
   } catch (e) {
@@ -2393,11 +2398,11 @@ function sandboxAppFail(e: unknown, fallback: string) {
 
 export async function createSandboxApp(input: z.infer<typeof createSandboxAppSchema>) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const parsed = createSandboxAppSchema.parse(input)
     const result = await services.sandboxApps.createSandboxApp(parsed, {
-      userId: user.id,
-      tenantId: user.tenantId,
+      userId: user.user.id,
+      tenantId: user.activeTenantId,
     })
     return ok(result)
   } catch (e) {
@@ -2407,11 +2412,11 @@ export async function createSandboxApp(input: z.infer<typeof createSandboxAppSch
 
 export async function upsertSandboxAppVersion(input: z.infer<typeof upsertSandboxAppVersionSchema>) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const parsed = upsertSandboxAppVersionSchema.parse(input)
     const result = await services.sandboxApps.upsertSandboxAppVersion(parsed, {
-      userId: user.id,
-      tenantId: user.tenantId,
+      userId: user.user.id,
+      tenantId: user.activeTenantId,
     })
     return ok(result)
   } catch (e) {
@@ -2423,11 +2428,11 @@ export async function activateSandboxAppVersion(
   input: z.infer<typeof activateSandboxAppVersionSchema>,
 ) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const parsed = activateSandboxAppVersionSchema.parse(input)
     const result = await services.sandboxApps.activateSandboxAppVersion(parsed, {
-      userId: user.id,
-      tenantId: user.tenantId,
+      userId: user.user.id,
+      tenantId: user.activeTenantId,
     })
     return ok(result)
   } catch (e) {
@@ -2437,11 +2442,11 @@ export async function activateSandboxAppVersion(
 
 export async function listSandboxApps(input: z.infer<typeof listSandboxAppsSchema>) {
   try {
-    const user = await requireRole('viewer')
+    const user = await requireTenantRole('viewer')
     const parsed = listSandboxAppsSchema.parse(input)
     const result = await services.sandboxApps.listSandboxApps(parsed, {
-      userId: user.id,
-      tenantId: user.tenantId,
+      userId: user.user.id,
+      tenantId: user.activeTenantId,
     })
     return ok(result)
   } catch (e) {
@@ -2451,11 +2456,11 @@ export async function listSandboxApps(input: z.infer<typeof listSandboxAppsSchem
 
 export async function getSandboxApp(input: z.infer<typeof getSandboxAppSchema>) {
   try {
-    const user = await requireRole('viewer')
+    const user = await requireTenantRole('viewer')
     const parsed = getSandboxAppSchema.parse(input)
     const result = await services.sandboxApps.getSandboxApp(parsed, {
-      userId: user.id,
-      tenantId: user.tenantId,
+      userId: user.user.id,
+      tenantId: user.activeTenantId,
     })
     return ok(result)
   } catch (e) {
@@ -2465,10 +2470,10 @@ export async function getSandboxApp(input: z.infer<typeof getSandboxAppSchema>) 
 
 export async function getSandboxAppRegistryMetrics() {
   try {
-    const user = await requireRole('viewer')
+    const user = await requireTenantRole('viewer')
     const result = await services.sandboxApps.getRegistryMetrics({
-      userId: user.id,
-      tenantId: user.tenantId,
+      userId: user.user.id,
+      tenantId: user.activeTenantId,
     })
     return ok(result)
   } catch (e) {
@@ -2478,11 +2483,11 @@ export async function getSandboxAppRegistryMetrics() {
 
 export async function getSandboxAppPreviewUrl(input: z.infer<typeof sandboxAppPreviewUrlSchema>) {
   try {
-    const user = await requireRole('viewer')
+    const user = await requireTenantRole('viewer')
     const parsed = sandboxAppPreviewUrlSchema.parse(input)
     const result = await services.sandboxApps.getSandboxAppPreviewUrl(parsed, {
-      userId: user.id,
-      tenantId: user.tenantId,
+      userId: user.user.id,
+      tenantId: user.activeTenantId,
     })
     return ok(result)
   } catch (e) {
@@ -2496,11 +2501,11 @@ export async function createTrainingTicket(input: {
   source: string
 }) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const parsed = createTrainingSchema.parse(input)
     const ticket = await services.training.createTrainingTicket({
       ...parsed,
-      createdById: user.id,
+      createdById: user.user.id,
     })
     return ok(ticket)
   } catch (e) {
@@ -2510,9 +2515,9 @@ export async function createTrainingTicket(input: {
 
 export async function approveTraining(input: { ticketId: string; overrideEval?: boolean }) {
   try {
-    const user = await requireRole('approver')
+    const user = await requireTenantRole('approver')
     const parsed = approveTrainingSchema.parse(input)
-    const result = await services.training.approveTraining(parsed.ticketId, user.id, {
+    const result = await services.training.approveTraining(parsed.ticketId, user.user.id, {
       overrideEval: parsed.overrideEval,
     })
     return ok(result)
@@ -2536,8 +2541,8 @@ export async function getMe() {
 
 export async function listUsers() {
   try {
-    const actor = await requirePermission('user.read')
-    const users = await services.iam.listUsers(actor.tenantId)
+    const ctx = await requireTenantPermission('user.read')
+    const users = await services.iam.listUsers(ctx.activeTenantId)
     return ok(users)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list users')
@@ -2546,8 +2551,8 @@ export async function listUsers() {
 
 export async function listInvitations() {
   try {
-    const actor = await requirePermission('user.read')
-    const invitations = await services.iam.listInvitations(actor.tenantId)
+    const ctx = await requireTenantPermission('user.read')
+    const invitations = await services.iam.listInvitations(ctx.activeTenantId)
     return ok(invitations)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list invitations')
@@ -2556,7 +2561,7 @@ export async function listInvitations() {
 
 export async function inviteUser(input: { email: string; role: string }) {
   try {
-    const actor = await requirePermission('user.invite')
+    const ctx = await requireTenantPermission('user.invite')
     const parsed = inviteUserSchema.parse(input)
     const email = parsed.email.trim().toLowerCase()
 
@@ -2581,8 +2586,8 @@ export async function inviteUser(input: { email: string; role: string }) {
     const result = await services.iam.inviteUser({
       email,
       role: parsed.role,
-      createdById: actor.id,
-      tenantId: actor.tenantId,
+      createdById: ctx.user.id,
+      tenantId: ctx.activeTenantId,
     })
     // A nyers token CSAK most adható vissza. Clerk-módban e-mail ment ki, a token csak
     // belső fallback — a UI ennek megfelelően jelzi, hogy nem kell kézzel megosztani.
@@ -2594,12 +2599,12 @@ export async function inviteUser(input: { email: string; role: string }) {
 
 export async function revokeInvitation(input: { invitationId: string }) {
   try {
-    const actor = await requirePermission('user.invite.revoke')
+    const ctx = await requireTenantPermission('user.invite.revoke')
     const parsed = revokeInvitationSchema.parse(input)
     const updated = await services.iam.revokeInvitation({
       invitationId: parsed.invitationId,
-      actorId: actor.id,
-      actorTenantId: actor.tenantId,
+      actorId: ctx.user.id,
+      actorTenantId: ctx.activeTenantId,
     })
     return ok({ invitationId: updated.id, status: updated.status })
   } catch (e) {
@@ -2627,13 +2632,13 @@ export async function redeemInvitation(input: { token: string; name?: string }) 
 /** §7/B: önregisztrált (pending, role=NULL) fiók jóváhagyása szerepkör-kiosztással. */
 export async function approveUser(input: { targetUserId: string; role: string }) {
   try {
-    const actor = await requirePermission('user.approve')
+    const ctx = await requireTenantPermission('user.approve')
     const parsed = approveUserSchema.parse(input)
     const updated = await services.iam.approveUser({
       targetUserId: parsed.targetUserId,
       role: parsed.role,
-      actorId: actor.id,
-      actorTenantId: actor.tenantId,
+      actorId: ctx.user.id,
+      actorTenantId: ctx.activeTenantId,
     })
     return ok({ userId: updated.id, role: updated.role, status: updated.status })
   } catch (e) {
@@ -2643,7 +2648,7 @@ export async function approveUser(input: { targetUserId: string; role: string })
 
 export async function changeUserRole(input: { targetUserId: string; newRole: string }) {
   try {
-    const actor = await requirePermission('user.role.write')
+    const ctx = await requireTenantPermission('user.role.write')
     const parsed = changeUserRoleSchema.parse(input)
 
     // A DB a jog forrása (N-IAM-1): a self-edit/lock-out/tenant-izoláció döntést a
@@ -2653,8 +2658,8 @@ export async function changeUserRole(input: { targetUserId: string; newRole: str
     const updated = await services.iam.changeRole({
       targetUserId: parsed.targetUserId,
       newRole: parsed.newRole,
-      actorId: actor.id,
-      actorTenantId: actor.tenantId,
+      actorId: ctx.user.id,
+      actorTenantId: ctx.activeTenantId,
     })
 
     if (isClerkEnabled()) {
@@ -2676,13 +2681,13 @@ export async function changeUserRole(input: { targetUserId: string; newRole: str
 
 export async function suspendUser(input: { targetUserId: string; reason: string }) {
   try {
-    const actor = await requirePermission('user.suspend')
+    const ctx = await requireTenantPermission('user.suspend')
     const parsed = suspendUserSchema.parse(input)
     const updated = await services.iam.suspendUser({
       targetUserId: parsed.targetUserId,
       reason: parsed.reason,
-      actorId: actor.id,
-      actorTenantId: actor.tenantId,
+      actorId: ctx.user.id,
+      actorTenantId: ctx.activeTenantId,
     })
     return ok({ userId: updated.id, status: updated.status })
   } catch (e) {
@@ -2692,12 +2697,12 @@ export async function suspendUser(input: { targetUserId: string; reason: string 
 
 export async function reactivateUser(input: { targetUserId: string }) {
   try {
-    const actor = await requirePermission('user.suspend')
+    const ctx = await requireTenantPermission('user.suspend')
     const parsed = reactivateUserSchema.parse(input)
     const updated = await services.iam.reactivateUser({
       targetUserId: parsed.targetUserId,
-      actorId: actor.id,
-      actorTenantId: actor.tenantId,
+      actorId: ctx.user.id,
+      actorTenantId: ctx.activeTenantId,
     })
     return ok({ userId: updated.id, status: updated.status })
   } catch (e) {
@@ -2714,13 +2719,13 @@ export async function setUserJobDescription(input: {
   jobDescription?: string | null
 }) {
   try {
-    const actor = await requirePermission('user.role.write')
+    const ctx = await requireTenantPermission('user.role.write')
     const parsed = setUserJobDescriptionSchema.parse(input)
     const updated = await services.iam.setJobDescription({
       targetUserId: parsed.targetUserId,
       jobDescription: parsed.jobDescription ?? null,
-      actorId: actor.id,
-      actorTenantId: actor.tenantId,
+      actorId: ctx.user.id,
+      actorTenantId: ctx.activeTenantId,
     })
     return ok({ userId: updated.id, jobDescription: updated.jobDescription })
   } catch (e) {
@@ -2787,7 +2792,7 @@ export async function createEval(input: {
   goldenSet: Array<{ description: string; type: string; value: string | number }>
 }) {
   try {
-    await requireRole('admin')
+    await requireTenantRole('admin')
     const parsed = createEvalSchema.parse(input)
     const evalDef = await services.eval.create(parsed)
     return ok(evalDef)
@@ -2798,7 +2803,7 @@ export async function createEval(input: {
 
 export async function runEval(input: { evalId: string; agentId: string; proposedContent: string }) {
   try {
-    await requireRole('approver')
+    await requireTenantRole('approver')
     const parsed = runEvalSchema.parse(input)
     const agent = await repositories.agents.findById(parsed.agentId)
     if (!agent) return fail('Agent not found')
@@ -2816,7 +2821,7 @@ export async function runEval(input: { evalId: string; agentId: string; proposed
 
 export async function listEvalsForAgent(input: { agentId: string }) {
   try {
-    await requireRole('viewer')
+    await requireTenantRole('viewer')
     const evals = await services.eval.findAllForAgent(input.agentId)
     return ok(evals)
   } catch (e) {
@@ -2826,12 +2831,12 @@ export async function listEvalsForAgent(input: { agentId: string }) {
 
 export async function rollbackMemory(input: { agentId: string; toVersion: number }) {
   try {
-    const user = await requireRole('approver')
+    const user = await requireTenantRole('approver')
     const parsed = rollbackMemorySchema.parse(input)
     const memoryVersion = await services.training.rollbackMemory(
       parsed.agentId,
       parsed.toVersion,
-      user.id,
+      user.user.id,
     )
     return ok(memoryVersion)
   } catch (e) {
@@ -2841,7 +2846,7 @@ export async function rollbackMemory(input: { agentId: string; toVersion: number
 
 export async function listAuditLog(input?: z.infer<typeof listAuditLogSchema>) {
   try {
-    await requireRole('approver')
+    await requireTenantRole('approver')
     const parsed = input ? listAuditLogSchema.parse(input) : {}
     const entries = await repositories.audit.findMany({
       limit: parsed.limit ?? 100,
@@ -2862,7 +2867,7 @@ export async function listAuditLog(input?: z.infer<typeof listAuditLogSchema>) {
 
 export async function archiveSandboxApp(input: z.infer<typeof archiveSandboxAppSchema>) {
   try {
-    await requireRole('operator')
+    await requireTenantRole('operator')
     const parsed = archiveSandboxAppSchema.parse(input)
     const user = await getCurrentUser()
     if (!user) throw new Error('Not authenticated')
@@ -2896,7 +2901,7 @@ function rangeToSince(range?: 'today' | '7d' | '30d' | 'all'): Date | undefined 
 
 export async function getModelCostSummary(input?: { range?: unknown }) {
   try {
-    await requireRole('viewer')
+    await requireTenantRole('viewer')
     const { range } = costSummarySchema.parse({ range: input?.range })
     const summary = await repositories.modelCalls.getCostSummary(rangeToSince(range))
     return ok(summary)
@@ -2907,7 +2912,7 @@ export async function getModelCostSummary(input?: { range?: unknown }) {
 
 export async function verifyAuditChain() {
   try {
-    await requireRole('approver')
+    await requireTenantRole('approver')
     const result = await services.auditChain.verifyChain()
     return ok(result)
   } catch (e) {
@@ -2917,7 +2922,7 @@ export async function verifyAuditChain() {
 
 export async function exportAuditSiem(input?: { since?: string }) {
   try {
-    await requireRole('admin')
+    await requireTenantRole('admin')
     const since = input?.since ? new Date(input.since) : undefined
     const jsonLines = await services.auditChain.exportJsonLines(since)
     return ok({ content: jsonLines, filename: `audit-siem-${new Date().toISOString().slice(0, 10)}.jsonl` })
@@ -2928,7 +2933,7 @@ export async function exportAuditSiem(input?: { since?: string }) {
 
 export async function listWorkspaceTenants() {
   try {
-    await requireRole('admin')
+    await requireTenantRole('admin')
     const rows = await prisma.user.findMany({
       where: { tenantId: { not: null } },
       select: { tenantId: true },
@@ -2944,14 +2949,14 @@ export async function listWorkspaceTenants() {
 /** GDPR / tenant offboarding — azonnali workspace törlés (§5.3). */
 export async function purgeTenantWorkspaces(tenantId: string) {
   try {
-    const actor = await requireRole('admin')
+    const actor = await requireTenantRole('admin')
     const normalized = tenantId.trim()
     if (!normalized) return fail('Tenant ID is required')
 
     const deleted = await services.workspaceLifecycle.purgeTenantWorkspaces(normalized)
     await repositories.audit.append({
       actorType: 'human',
-      actorId: actor.id,
+      actorId: actor.user.id,
       agentVersion: null,
       action: 'workspace.tenant.purge',
       targetType: 'tenant',
@@ -2970,7 +2975,7 @@ export async function purgeTenantWorkspaces(tenantId: string) {
 
 export async function getDashboardStats() {
   try {
-    await requireRole('viewer')
+    await requireTenantRole('viewer')
     const since = new Date(new Date().setHours(0, 0, 0, 0))
     const [agents, tickets, cost, tools] = await Promise.all([
       repositories.agents.findMany(),
@@ -3011,7 +3016,7 @@ const SANDBOX_AUDIT_ACTIONS = [
  */
 export async function getGovernanceReport(input?: { range?: unknown }) {
   try {
-    await requireRole('viewer')
+    await requireTenantRole('viewer')
     const { range } = costSummarySchema.parse({ range: input?.range })
     const since = rangeToSince(range)
 
@@ -3065,7 +3070,7 @@ export async function getGovernanceReport(input?: { range?: unknown }) {
 export async function getDispatcherControls() {
   try {
     await ensureActiveDatabaseMode()
-    await requireRole('operator')
+    await requireTenantRole('operator')
     const controls = await services.platformSettings.getDispatcherControls()
     return ok(controls)
   } catch (e) {
@@ -3076,7 +3081,7 @@ export async function getDispatcherControls() {
 export async function getTicketTypeConfigs() {
   try {
     await ensureActiveDatabaseMode()
-    await requireRole('operator')
+    await requireTenantRole('operator')
     const configs = await services.platformSettings.getTicketTypeConfigs()
     return ok(configs)
   } catch (e) {
@@ -3087,7 +3092,7 @@ export async function getTicketTypeConfigs() {
 export async function getModelPolicy() {
   try {
     await ensureActiveDatabaseMode()
-    await requireRole('operator')
+    await requireTenantRole('operator')
     const policy = await services.platformSettings.getModelPolicy()
     return ok(policy)
   } catch (e) {
@@ -3104,7 +3109,7 @@ export async function adminUpsertModelPolicyEntry(input: {
 }) {
   try {
     await ensureActiveDatabaseMode()
-    const actor = await requireRole('admin')
+    const actor = (await requirePlatformRole('superadmin')).user
     const parsed = modelPolicyEntrySchema.parse(input)
     const policy = await services.platformSettings.upsertModelPolicyEntry(parsed, actor.id)
     return ok(policy)
@@ -3123,7 +3128,7 @@ export async function adminUpsertTicketType(input: {
 }) {
   try {
     await ensureActiveDatabaseMode()
-    const actor = await requireRole('admin')
+    const actor = (await requirePlatformRole('superadmin')).user
     const parsed = ticketTypeConfigSchema.parse(input)
     const configs = await services.platformSettings.upsertTicketTypeConfig(parsed, actor.id)
     return ok(configs)
@@ -3140,7 +3145,7 @@ export async function setDispatcherControls(input: {
 }) {
   try {
     await ensureActiveDatabaseMode()
-    const actor = await requireRole('admin')
+    const actor = (await requirePlatformRole('superadmin')).user
     const parsed = setDispatcherControlsSchema.parse(input)
     const controls = await services.platformSettings.setDispatcherControls(
       {
@@ -3158,10 +3163,109 @@ export async function setDispatcherControls(input: {
   }
 }
 
+export type LocalWorkerStatus =
+  | { available: false }
+  | { available: true; running: false }
+  | {
+      available: true
+      running: true
+      startedAt: string
+      lastCycleAt: string | null
+      lastCycleError: string | null
+      cycles: number
+    }
+
+export type CloudRunWorkerStatus =
+  | { available: false; error: string }
+  | { available: true; minScale: number | null; ready: boolean; latestReadyRevisionName: string | null }
+
+export type WorkerProcessesStatus = {
+  local: LocalWorkerStatus
+  cloudRun: CloudRunWorkerStatus
+}
+
+async function fetchLocalWorkerStatus(): Promise<LocalWorkerStatus> {
+  const url = process.env.LOCAL_WORKER_CONTROL_URL?.trim()
+  if (!url) return { available: false }
+  try {
+    const response = await fetch(url, { signal: AbortSignal.timeout(1500) })
+    const body = (await response.json()) as {
+      listening?: boolean
+      startedAt?: string
+      lastCycleAt?: string | null
+      lastCycleError?: string | null
+      cycles?: number
+    }
+    if (!body.listening) return { available: true, running: false }
+    return {
+      available: true,
+      running: true,
+      startedAt: body.startedAt ?? '',
+      lastCycleAt: body.lastCycleAt ?? null,
+      lastCycleError: body.lastCycleError ?? null,
+      cycles: body.cycles ?? 0,
+    }
+  } catch {
+    return { available: true, running: false }
+  }
+}
+
+export async function getWorkerProcessesStatus(): Promise<ActionResult<WorkerProcessesStatus>> {
+  try {
+    await ensureActiveDatabaseMode()
+    await requireTenantRole('operator')
+    const [local, cloudRun] = await Promise.all([
+      fetchLocalWorkerStatus(),
+      getDispatcherServiceStatus()
+        .then((status) => ({ available: true as const, ...status }))
+        .catch((e) => ({ available: false as const, error: e instanceof Error ? e.message : String(e) })),
+    ])
+    return ok({ local, cloudRun })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to read worker processes status')
+  }
+}
+
+export async function stopLocalDispatcherWorker(): Promise<ActionResult<{ stopped: boolean }>> {
+  try {
+    await ensureActiveDatabaseMode()
+    await requirePlatformRole('superadmin')
+    const url = process.env.LOCAL_WORKER_CONTROL_URL?.trim()
+    const token = process.env.DISPATCHER_CONTROL_TOKEN?.trim()
+    if (!url || !token) {
+      return fail('LOCAL_WORKER_CONTROL_URL / DISPATCHER_CONTROL_TOKEN nincs beállítva ezen a szerveren')
+    }
+    const response = await fetch(`${url}/control/stop`, {
+      method: 'POST',
+      headers: { 'x-dispatcher-token': token },
+      signal: AbortSignal.timeout(3000),
+    })
+    if (!response.ok) {
+      return fail(`Local worker stop failed: ${response.status}`)
+    }
+    return ok({ stopped: true })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to stop local dispatcher worker')
+  }
+}
+
+export async function setCloudRunDispatcherScale(
+  minScale: 0 | 1,
+): Promise<ActionResult<CloudRunWorkerStatus>> {
+  try {
+    await ensureActiveDatabaseMode()
+    await requirePlatformRole('superadmin')
+    const status = await setDispatcherServiceMinScale(minScale)
+    return ok({ available: true, ...status })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update Cloud Run dispatcher scale')
+  }
+}
+
 export async function getDatabaseMode() {
   try {
     await ensureActiveDatabaseMode()
-    await requireRole('operator')
+    await requireTenantRole('operator')
     const [info, syncStatus] = await Promise.all([
       services.platformSettings.getDatabaseMode(),
       services.platformSettings.getDatabaseSyncStatus(),
@@ -3175,7 +3279,7 @@ export async function getDatabaseMode() {
 export async function setDatabaseMode(input: { mode: 'production' | 'test' }) {
   try {
     await ensureActiveDatabaseMode()
-    const actor = await requireRole('admin')
+    const actor = (await requirePlatformRole('superadmin')).user
     const parsed = setDatabaseModeSchema.parse(input)
     const info = await services.platformSettings.setDatabaseMode(parsed.mode, actor.id)
     return ok(info)
@@ -3187,7 +3291,7 @@ export async function setDatabaseMode(input: { mode: 'production' | 'test' }) {
 export async function syncTestDatabaseFromProduction(input: { confirm: true }) {
   try {
     await ensureActiveDatabaseMode()
-    const actor = await requireRole('admin')
+    const actor = (await requirePlatformRole('superadmin')).user
     syncTestDatabaseSchema.parse(input)
     const result = await services.platformSettings.syncTestDatabaseFromProduction(actor.id)
     const syncStatus = await services.platformSettings.getDatabaseSyncStatus()
@@ -3239,10 +3343,10 @@ export async function updateAgentCapabilities(input: {
   enabledTools: string[]
 }) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
 
-    const agent = await repositories.agents.findById(agentId, user.tenantId)
+    const agent = await repositories.agents.findById(agentId, user.activeTenantId)
     if (!agent) return fail('Agent not found')
 
     const allTools = [...new Set(input.enabledTools)].filter((toolName) =>
@@ -3256,7 +3360,7 @@ export async function updateAgentCapabilities(input: {
     if (agent.role === 'orchestrator' && allTools.length > 0) {
       await repositories.audit.append({
         actorType: 'human',
-        actorId: user.id,
+        actorId: user.user.id,
         agentVersion: agent.currentVersion,
         action: 'tool.authorize_denied_orchestrator',
         targetType: 'agent',
@@ -3272,7 +3376,7 @@ export async function updateAgentCapabilities(input: {
 
     if (needsWorkspace) {
       const workspaceConnector = await prisma.connector.findFirst({
-        where: { type: 'workspace', OR: [{ tenantId: user.tenantId }, { tenantId: null }] },
+        where: { type: 'workspace', OR: [{ tenantId: user.activeTenantId }, { tenantId: null }] },
       })
       if (!workspaceConnector) return fail('Workspace connector nem található a rendszerben.')
 
@@ -3290,7 +3394,7 @@ export async function updateAgentCapabilities(input: {
         where: {
           type: 'web_search',
           lifecycleState: 'active',
-          OR: [{ tenantId: user.tenantId }, { tenantId: null }],
+          OR: [{ tenantId: user.activeTenantId }, { tenantId: null }],
         },
         orderBy: { createdAt: 'asc' },
       })
@@ -3313,7 +3417,7 @@ export async function updateAgentCapabilities(input: {
         where: {
           type: 'board',
           lifecycleState: 'active',
-          OR: [{ tenantId: user.tenantId }, { tenantId: null }],
+          OR: [{ tenantId: user.activeTenantId }, { tenantId: null }],
         },
         orderBy: { createdAt: 'asc' },
       })
@@ -3348,7 +3452,7 @@ export async function updateAgentCapabilities(input: {
 
     await repositories.audit.append({
       actorType: 'human',
-      actorId: user.id,
+      actorId: user.user.id,
       agentVersion: agent.currentVersion,
       action: 'capability.update',
       targetType: 'tool',
@@ -3381,7 +3485,7 @@ export async function updateAgentCapabilities(input: {
 
 export async function listModelRoutingPolicies() {
   try {
-    await requireRole('operator')
+    await requireTenantRole('operator')
     const policies = await repositories.modelRoutingPolicies.list()
     return ok(policies)
   } catch (e) {
@@ -3398,7 +3502,7 @@ export async function createModelRoutingPolicy(input: {
   tenantId?: string
 }) {
   try {
-    await requireRole('admin')
+    await requirePlatformRole('superadmin')
     const policy = await repositories.modelRoutingPolicies.create({
       tenantId: input.tenantId ?? null,
       scope: input.scope,
@@ -3416,7 +3520,7 @@ export async function createModelRoutingPolicy(input: {
 
 export async function deleteModelRoutingPolicy(input: { id: string }) {
   try {
-    await requireRole('admin')
+    await requirePlatformRole('superadmin')
     await repositories.modelRoutingPolicies.delete(input.id)
     return ok({ deleted: true })
   } catch (e) {
@@ -3428,7 +3532,7 @@ export async function deleteModelRoutingPolicy(input: { id: string }) {
 
 export async function listModelBudgets() {
   try {
-    await requireRole('operator')
+    await requireTenantRole('operator')
     const budgets = await repositories.modelBudgets.list()
     return ok(budgets)
   } catch (e) {
@@ -3447,7 +3551,7 @@ export async function createModelBudget(input: {
   tenantId?: string
 }) {
   try {
-    await requireRole('admin')
+    await requirePlatformRole('superadmin')
     const budget = await repositories.modelBudgets.create({
       tenantId: input.tenantId ?? null,
       scope: input.scope,
@@ -3466,7 +3570,7 @@ export async function createModelBudget(input: {
 
 export async function deleteModelBudget(input: { id: string }) {
   try {
-    await requireRole('admin')
+    await requirePlatformRole('superadmin')
     await repositories.modelBudgets.delete(input.id)
     return ok({ deleted: true })
   } catch (e) {
@@ -3478,7 +3582,7 @@ export async function deleteModelBudget(input: { id: string }) {
 
 export async function getModelCallsSummary(input?: { sinceHours?: number }) {
   try {
-    await requireRole('operator')
+    await requireTenantRole('operator')
     const since = input?.sinceHours
       ? new Date(Date.now() - input.sinceHours * 60 * 60 * 1000)
       : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)

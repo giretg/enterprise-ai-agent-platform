@@ -6,7 +6,7 @@
  * tenant-scope-olt; a kötelező kapukat NEM ezek, hanem a `TicketStateMachine`
  * szerveroldali állapotgépe kényszeríti ki (§2.5, §11.3, P6).
  */
-import { requireRole } from '@/auth'
+import { requireTenantRole } from '@/auth/tenant-context'
 import { hasMinimumRole } from '@/auth/types'
 import { services } from '@/domain'
 import { repositories } from '@/repositories/postgres'
@@ -41,28 +41,18 @@ import {
   TicketTransitionDenied,
 } from '@/domain/playbook/ticket-state-machine'
 
-type AuthedUser = Awaited<ReturnType<typeof requireRole>>
-function tenantOf(user: AuthedUser): string {
-  return user.tenantId ?? user.id
-}
-
-/** Agent/user registry tenant — null a platform scope, nem a synthetic user.id. */
-function registryTenantOf(user: AuthedUser): string | null {
-  return user.tenantId ?? null
-}
-
 export async function startProcess(input: unknown) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const parsed = startProcessSchema.parse(input)
     const process = await services.processes.startProcess({
-      tenantId: tenantOf(user),
+      tenantId: user.activeTenantId,
       processType: parsed.processType,
       processDefinitionId: parsed.processDefinitionId,
       triggerType: parsed.triggerType ?? (parsed.processDefinitionId ? 'manual' : undefined),
       playbookVersionId: parsed.playbookVersionId,
       inputPayload: parsed.inputPayload ?? {},
-      startedBy: { type: 'user', id: user.id },
+      startedBy: { type: 'user', id: user.user.id },
       conversationId: parsed.conversationId ?? null,
       rootTicketId: parsed.rootTicketId ?? null,
     })
@@ -75,9 +65,9 @@ export async function startProcess(input: unknown) {
 
 export async function listProcessDefinitions(input: unknown = {}) {
   try {
-    const user = await requireRole('viewer')
+    const user = await requireTenantRole('viewer')
     const parsed = listProcessDefinitionsSchema.parse(input)
-    const defs = await services.processDefinitions.listDefinitions(tenantOf(user), parsed.status)
+    const defs = await services.processDefinitions.listDefinitions(user.activeTenantId, parsed.status)
     return ok(
       defs.map((d) => ({
         id: d.id,
@@ -113,9 +103,9 @@ export async function listProcessDefinitions(input: unknown = {}) {
  */
 export async function listChatTriggerableProcessDefinitions(input: unknown) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const parsed = chatTriggerableProcessDefinitionsSchema.parse(input)
-    const tenantId = tenantOf(user)
+    const tenantId = user.activeTenantId
     const defs = await services.processDefinitions.listDefinitions(tenantId, 'active')
     const eligible = defs.filter((d) => {
       const hasChatTrigger = d.triggers.some((t) => t.type === 'chat' && t.enabled)
@@ -143,14 +133,14 @@ export async function listChatTriggerableProcessDefinitions(input: unknown) {
 
 export async function createProcessDefinition(input: unknown) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const parsed = createProcessDefinitionSchema.parse(input)
     const def = await services.processDefinitions.createDraft({
-      tenantId: tenantOf(user),
+      tenantId: user.activeTenantId,
       name: parsed.name,
       description: parsed.description ?? null,
       playbookVersionId: parsed.playbookVersionId,
-      createdBy: { userId: user.id },
+      createdBy: { userId: user.user.id },
     })
     return ok({ id: def.id })
   } catch (e) {
@@ -161,14 +151,14 @@ export async function createProcessDefinition(input: unknown) {
 
 export async function updateProcessDefinitionBindings(input: unknown) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const parsed = updateProcessDefinitionBindingsSchema.parse(input)
     const def = await services.processDefinitions.updateBindings({
-      tenantId: tenantOf(user),
+      tenantId: user.activeTenantId,
       processDefinitionId: parsed.id,
       roleBindings: parsed.roleBindings,
       configValues: parsed.configValues ?? {},
-      actorUserId: user.id,
+      actorUserId: user.user.id,
     })
     return ok({ id: def.id, status: def.status })
   } catch (e) {
@@ -180,18 +170,18 @@ export async function updateProcessDefinitionBindings(input: unknown) {
 /** Aktív Folyamat cseréje: új példány + régi archiválása (a futó Futások érintetlenek). */
 export async function replaceActiveProcessDefinition(input: unknown) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const parsed = replaceActiveProcessDefinitionSchema.parse(input)
-    const activateNew = hasMinimumRole(user.role, 'approver')
+    const activateNew = hasMinimumRole(user.activeTenantRole, 'approver')
     const result = await services.processDefinitions.replaceActiveDefinition({
-      tenantId: tenantOf(user),
+      tenantId: user.activeTenantId,
       sourceProcessDefinitionId: parsed.id,
       roleBindings: parsed.roleBindings,
       configValues: parsed.configValues ?? {},
       triggerType: parsed.triggerType,
       triggerInputMap: parsed.triggerInputMap ?? {},
       monitorDefinitionId: parsed.monitorDefinitionId,
-      actorUserId: user.id,
+      actorUserId: user.user.id,
       activateNew,
     })
     return ok({
@@ -213,15 +203,15 @@ export async function replaceActiveProcessDefinition(input: unknown) {
 
 export async function attachProcessTrigger(input: unknown) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const parsed = attachProcessTriggerSchema.parse(input)
     const trigger = await services.processDefinitions.attachTrigger({
-      tenantId: tenantOf(user),
+      tenantId: user.activeTenantId,
       processDefinitionId: parsed.processDefinitionId,
       type: parsed.type,
       inputMap: parsed.inputMap ?? {},
       monitorDefinitionId: parsed.monitorDefinitionId ?? null,
-      actorUserId: user.id,
+      actorUserId: user.user.id,
     })
     return ok({ id: trigger.id })
   } catch (e) {
@@ -232,13 +222,13 @@ export async function attachProcessTrigger(input: unknown) {
 
 export async function detachProcessTrigger(input: unknown) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const parsed = detachProcessTriggerSchema.parse(input)
     await services.processDefinitions.detachTrigger({
-      tenantId: tenantOf(user),
+      tenantId: user.activeTenantId,
       processDefinitionId: parsed.processDefinitionId,
       triggerId: parsed.triggerId,
-      actorUserId: user.id,
+      actorUserId: user.user.id,
     })
     return ok({ id: parsed.triggerId })
   } catch (e) {
@@ -249,9 +239,9 @@ export async function detachProcessTrigger(input: unknown) {
 
 export async function startProcessFromTicket(input: unknown) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const parsed = startProcessFromTicketSchema.parse(input)
-    const tenantId = tenantOf(user)
+    const tenantId = user.activeTenantId
     const ticket = await repositories.tickets.findById(parsed.ticketId)
     if (!ticket || ticket.tenantId !== tenantId) {
       return fail('A trigger-ticket nem található.')
@@ -272,7 +262,7 @@ export async function startProcessFromTicket(input: unknown) {
       processDefinitionId: def.id,
       triggerType: 'ticket',
       inputPayload,
-      startedBy: { type: 'user', id: user.id },
+      startedBy: { type: 'user', id: user.user.id },
       rootTicketId: ticket.id,
     })
 
@@ -285,12 +275,12 @@ export async function startProcessFromTicket(input: unknown) {
 
 export async function activateProcessDefinition(input: unknown) {
   try {
-    const user = await requireRole('approver')
+    const user = await requireTenantRole('approver')
     const parsed = processDefinitionIdSchema.parse(input)
     const def = await services.processDefinitions.activate({
-      tenantId: tenantOf(user),
+      tenantId: user.activeTenantId,
       processDefinitionId: parsed.id,
-      actorUserId: user.id,
+      actorUserId: user.user.id,
     })
     return ok({ id: def.id, status: def.status })
   } catch (e) {
@@ -303,12 +293,12 @@ export async function activateProcessDefinition(input: unknown) {
 
 export async function archiveProcessDefinition(input: unknown) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = processDefinitionIdSchema.parse(input)
     const def = await services.processDefinitions.archive({
-      tenantId: tenantOf(user),
+      tenantId: user.activeTenantId,
       processDefinitionId: parsed.id,
-      actorUserId: user.id,
+      actorUserId: user.user.id,
     })
     return ok({ id: def.id, status: def.status })
   } catch (e) {
@@ -319,10 +309,12 @@ export async function archiveProcessDefinition(input: unknown) {
 
 export async function listSuitableAgents(input: unknown) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const parsed = suitableAgentsSchema.parse(input)
-    const processTenantId = tenantOf(user)
-    const registryTenantId = registryTenantOf(user)
+    const processTenantId = user.activeTenantId
+    // NOTE: requireTenantRole NO_TENANT-ot dob, mielőtt idáig érne — tisztán platform-
+    // szintű (tenant nélküli) superadmin ezt az endpointot többé nem éri el.
+    const registryTenantId: string | null = user.activeTenantId
     const version = await repositories.playbooksV2.findVersion(processTenantId, parsed.playbookVersionId)
     if (!version) return fail('A Playbook-verzió nem található.')
     const role = parsePlaybookSpecV2(version.spec).roles.find((r) => r.key === parsed.roleKey)
@@ -349,8 +341,8 @@ export async function listSuitableAgents(input: unknown) {
 
 export async function listAssignableProcessUsers() {
   try {
-    const user = await requireRole('operator')
-    const users = await repositories.users.findMany({ tenantId: registryTenantOf(user), status: 'active' })
+    const user = await requireTenantRole('operator')
+    const users = await repositories.users.findMany({ tenantId: user.activeTenantId, status: 'active' })
     return ok(
       users
         .filter((u) => u.role !== null)
@@ -368,8 +360,8 @@ export async function listAssignableProcessUsers() {
 
 export async function listProcesses() {
   try {
-    const user = await requireRole('viewer')
-    const processes = await services.processes.listProcesses(tenantOf(user))
+    const user = await requireTenantRole('viewer')
+    const processes = await services.processes.listProcesses(user.activeTenantId)
     return ok(
       processes.map((p) => ({
         id: p.id,
@@ -388,9 +380,9 @@ export async function listProcesses() {
 
 export async function getProcessDetail(input: unknown) {
   try {
-    const user = await requireRole('viewer')
+    const user = await requireTenantRole('viewer')
     const parsed = processIdSchema.parse(input)
-    const tenantId = tenantOf(user)
+    const tenantId = user.activeTenantId
     const detail = await services.processes.getProcess(tenantId, parsed.id)
     const tickets = await repositories.tickets.findMany({
       tenantId,
@@ -521,15 +513,15 @@ export async function getProcessDetail(input: unknown) {
 
 export async function transitionProcessTicket(input: unknown) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const parsed = transitionProcessTicketSchema.parse(input)
     await services.ticketStateMachine.transitionTicket({
-      tenantId: tenantOf(user),
+      tenantId: user.activeTenantId,
       ticketId: parsed.ticketId,
       toState: parsed.toState,
       // Emberi actor; a gate requiredActorRole-ját az operator/approver jog képviseli.
       // (A finomszemcsés Playbook-role ↔ user tagság külön IAM-bővítés tárgya.)
-      actor: { type: 'user', id: user.id, roles: user.role ? [user.role] : undefined },
+      actor: { type: 'user', id: user.user.id, roles: [user.activeTenantRole] },
       note: parsed.note,
       outputPayload: parsed.outputPayload,
       approvalEvidence: parsed.approvalEvidence,
@@ -546,13 +538,13 @@ export async function transitionProcessTicket(input: unknown) {
 
 export async function cancelProcess(input: unknown) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = cancelProcessSchema.parse(input)
     await services.processes.cancelProcess({
-      tenantId: tenantOf(user),
+      tenantId: user.activeTenantId,
       processInstanceId: parsed.id,
       reason: parsed.reason,
-      actorUserId: user.id,
+      actorUserId: user.user.id,
     })
     return ok({ id: parsed.id })
   } catch (e) {

@@ -1,23 +1,13 @@
-import { requireRole } from '@/auth'
+import { requireTenantRole } from '@/auth/tenant-context'
 import { repositories } from '@/repositories/postgres'
 import { apiError, apiOk } from '@/lib/api-response'
 import { suitableAgentsSchema } from '@/lib/validators/actions'
 import { parsePlaybookSpecV2 } from '@/lib/playbook-v2/spec'
 import { isAgentSuitable } from '@/domain/playbook/suitability'
 
-type AuthedUser = Awaited<ReturnType<typeof requireRole>>
-
-function tenantOf(user: AuthedUser): string {
-  return user.tenantId ?? user.id
-}
-
-function registryTenantOf(user: AuthedUser): string | null {
-  return user.tenantId ?? null
-}
-
 export async function GET(request: Request) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const url = new URL(request.url)
     const parsed = suitableAgentsSchema.safeParse({
       playbookVersionId: url.searchParams.get('playbookVersionId') ?? undefined,
@@ -25,8 +15,10 @@ export async function GET(request: Request) {
     })
     if (!parsed.success) return apiError(parsed.error.message, 400)
 
-    const processTenantId = tenantOf(user)
-    const registryTenantId = registryTenantOf(user)
+    const processTenantId = user.activeTenantId
+    // NOTE: requireTenantRole NO_TENANT-ot dob, mielőtt idáig érne — tisztán platform-
+    // szintű (tenant nélküli) superadmin ezt az endpointot többé nem éri el.
+    const registryTenantId: string | null = user.activeTenantId
     const version = await repositories.playbooksV2.findVersion(processTenantId, parsed.data.playbookVersionId)
     if (!version) return apiError('A Playbook-verzió nem található.', 404)
 

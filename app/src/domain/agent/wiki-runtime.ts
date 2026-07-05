@@ -335,7 +335,8 @@ export class WikiAgentRuntime {
       typeof ticket.payload === 'object' && ticket.payload !== null && !Array.isArray(ticket.payload)
         ? (ticket.payload as Record<string, unknown>)
         : {}
-    const { question } = readWikiTicketPayload(rawPayload)
+    const { question: rawQuestion } = readWikiTicketPayload(rawPayload)
+    const question = rawQuestion || ticket.title
     if (!question) throw new Error('Ticket payload is missing question')
 
     const agentDetails = await this.agents.findByIdWithDetails(params.agentId)

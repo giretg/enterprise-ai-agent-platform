@@ -302,6 +302,24 @@ check('WP-4: duplikált rés-név lépésen belül → DUPLICATE_INPUT_SLOT', ()
   assert.ok(result.errors.some((e) => e.code === 'DUPLICATE_INPUT_SLOT'))
 })
 
+check('WP-4: agent-lépésen nincs instructionTemplate → AGENT_STEP_NO_INSTRUCTION_TEMPLATE warning', () => {
+  // validSpec extract_invoice lépése agent_role, de nincs instructionTemplate
+  const result = validator.validateSpec(validSpec())
+  assert.ok(
+    result.warnings.some((w) => w.code === 'AGENT_STEP_NO_INSTRUCTION_TEMPLATE' && w.path.includes('steps[0]')),
+    JSON.stringify(result.warnings),
+  )
+})
+
+check('WP-4: human-lépésen nincs instructionTemplate → nincs warning', () => {
+  // validSpec approval lépése human_role — ott nem elvárás a template
+  const result = validator.validateSpec(validSpec())
+  assert.ok(
+    !result.warnings.some((w) => w.code === 'AGENT_STEP_NO_INSTRUCTION_TEMPLATE' && w.path.includes('steps[1]')),
+    'human lépésre nem várunk AGENT_STEP_NO_INSTRUCTION_TEMPLATE warningot',
+  )
+})
+
 check('WP-4: ismeretlen capability a szótár ellen → UNKNOWN_CAPABILITY', () => {
   const result = validator.validateSpec(validSpec(), {
     knownCapabilities: new Set(['tool:web_fetch']), // tool:file_read hiányzik

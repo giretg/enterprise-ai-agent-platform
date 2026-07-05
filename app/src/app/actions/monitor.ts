@@ -1,7 +1,7 @@
 'use server'
 
 import type { Prisma } from '@prisma/client'
-import { requireRole } from '@/auth'
+import { requirePlatformRole, requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain'
 import { repositories } from '@/repositories/postgres'
 import { fail, ok } from '@/lib/result'
@@ -15,7 +15,7 @@ import {
 
 export async function listMonitors() {
   try {
-    await requireRole('viewer')
+    await requireTenantRole('viewer')
     const monitors = await services.monitors.list()
     return ok(monitors)
   } catch (e) {
@@ -25,7 +25,7 @@ export async function listMonitors() {
 
 export async function getMonitor(input: { id: string }) {
   try {
-    await requireRole('viewer')
+    await requireTenantRole('viewer')
     const parsed = monitorIdSchema.parse(input)
     const monitor = await services.monitors.getById(parsed.id)
     if (!monitor) return fail('Monitor nem található')
@@ -37,10 +37,10 @@ export async function getMonitor(input: { id: string }) {
 
 export async function createMonitor(input: unknown) {
   try {
-    const user = await requireRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = createMonitorSchema.parse(input)
     const monitor = await repositories.monitors.create({
-      tenantId: user.tenantId ?? user.id,
+      tenantId: user.activeTenantId,
       kind: parsed.kind,
       title: parsed.title,
       description: parsed.description ?? null,
@@ -53,7 +53,7 @@ export async function createMonitor(input: unknown) {
       escalateAgentId: parsed.escalateAgentId ?? null,
       perRunBudgetUsd: parsed.perRunBudgetUsd ?? null,
       notifyChannel: parsed.notifyChannel ?? null,
-      createdById: user.id,
+      createdById: user.user.id,
     })
     return ok(monitor)
   } catch (e) {
@@ -63,7 +63,7 @@ export async function createMonitor(input: unknown) {
 
 export async function updateMonitor(input: unknown) {
   try {
-    await requireRole('admin')
+    await requireTenantRole('admin')
     const parsed = updateMonitorSchema.parse(input)
     const { id, collectorConfig, filterConfig, ...rest } = parsed
     const monitor = await services.monitors.update(id, {
@@ -79,7 +79,7 @@ export async function updateMonitor(input: unknown) {
 
 export async function pauseMonitor(input: { id: string }) {
   try {
-    await requireRole('admin')
+    await requireTenantRole('admin')
     const parsed = monitorIdSchema.parse(input)
     const monitor = await services.monitors.update(parsed.id, { status: 'paused' })
     return ok(monitor)
@@ -90,7 +90,7 @@ export async function pauseMonitor(input: { id: string }) {
 
 export async function resumeMonitor(input: { id: string }) {
   try {
-    await requireRole('admin')
+    await requireTenantRole('admin')
     const parsed = monitorIdSchema.parse(input)
     const monitor = await services.monitors.update(parsed.id, { status: 'active' })
     return ok(monitor)
@@ -101,7 +101,7 @@ export async function resumeMonitor(input: { id: string }) {
 
 export async function revokeMonitor(input: { id: string }) {
   try {
-    await requireRole('admin')
+    await requireTenantRole('admin')
     const parsed = monitorIdSchema.parse(input)
     const monitor = await services.monitors.revoke(parsed.id)
     return ok(monitor)
@@ -112,7 +112,7 @@ export async function revokeMonitor(input: { id: string }) {
 
 export async function getMonitorRuns(input: { id: string; limit?: number }) {
   try {
-    await requireRole('viewer')
+    await requireTenantRole('viewer')
     const parsed = monitorIdSchema.parse(input)
     const runs = await services.monitors.listRuns(parsed.id, input.limit ?? 20)
     return ok(runs)
@@ -123,7 +123,7 @@ export async function getMonitorRuns(input: { id: string; limit?: number }) {
 
 export async function getMonitorSignals(input: { id: string }) {
   try {
-    await requireRole('viewer')
+    await requireTenantRole('viewer')
     const parsed = monitorIdSchema.parse(input)
     const signals = await services.monitors.listSignals(parsed.id)
     return ok(signals)
@@ -134,7 +134,7 @@ export async function getMonitorSignals(input: { id: string }) {
 
 export async function dryRunMonitor(input: { id: string }) {
   try {
-    await requireRole('operator')
+    await requireTenantRole('operator')
     const parsed = monitorDryRunSchema.parse(input)
     const result = await services.monitors.dryRun(parsed.id)
     return ok(result)
@@ -145,7 +145,7 @@ export async function dryRunMonitor(input: { id: string }) {
 
 export async function getMonitorControls() {
   try {
-    await requireRole('viewer')
+    await requireTenantRole('viewer')
     const controls = await services.platformSettings.getMonitorControls()
     return ok(controls)
   } catch (e) {
@@ -155,7 +155,7 @@ export async function getMonitorControls() {
 
 export async function setMonitorControls(input: unknown) {
   try {
-    const user = await requireRole('admin')
+    const user = (await requirePlatformRole('superadmin')).user
     const parsed = setMonitorControlsSchema.parse(input)
     const controls = await services.platformSettings.setMonitorControls(parsed, user.id)
     return ok(controls)

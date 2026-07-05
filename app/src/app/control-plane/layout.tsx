@@ -2,6 +2,7 @@
 
 import { usePathname } from 'next/navigation'
 import { AppShell, type NavEntry } from '@/components/ui/shell'
+import { TenantSwitcher } from '@/components/tenant/tenant-switcher'
 
 const navItems: NavEntry[] = [
   { href: '/control-plane', label: 'Dashboard', exact: true },
@@ -36,6 +37,9 @@ const navItems: NavEntry[] = [
       { href: '/control-plane/connectors', label: 'Fiókok' },
       { href: '/control-plane/provisioning', label: 'Provisioning' },
       { href: '/control-plane/iam', label: 'IAM' },
+      { href: '/control-plane/platform/tenants', label: 'Platform · Tenantok' },
+      { href: '/control-plane/platform/iam', label: 'Platform · IAM' },
+      { href: '/control-plane/platform/settings', label: 'Platform · Beállítások' },
       { href: '/control-plane/governance', label: 'Governance' },
       { href: '/control-plane/system', label: 'Rendszer' },
       { href: '/control-plane/audit', label: 'Audit' },
@@ -49,11 +53,12 @@ export default function ControlPlaneLayout({ children }: { children: React.React
   return (
     <AppShell
       appName="A Pince"
-      appSubtitle="Control Plane · OSTOROSBOR"
+      appSubtitle="Control Plane"
       navItems={navItems}
       accentColor="slate"
       pathname={pathname}
       switchLink={{ href: '/sandbox', label: '→ Sandbox' }}
+      headerExtra={<TenantSwitcher />}
     >
       {children}
     </AppShell>

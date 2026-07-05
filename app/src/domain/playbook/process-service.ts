@@ -683,6 +683,12 @@ export class ProcessService {
         `A(z) '${rule.stepId}' step ticketjéhez hiányzó kötelező input-rés(ek): ${missing.join(', ')}.`,
       )
     }
+    if (rule.instructionTemplate) {
+      payload.question = rule.instructionTemplate.replace(/\{\{(\w+)\}\}/g, (_, token: string) => {
+        const v = payload[token]
+        return v !== undefined && v !== null ? String(v) : ''
+      })
+    }
     return payload
   }
 

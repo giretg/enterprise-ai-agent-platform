@@ -1,4 +1,4 @@
-import { requireRole } from '@/auth'
+import { requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain'
 
 // SSE: dinamikus, Node runtime, ne bufferelődjön / cache-elődjön a stream.
@@ -7,9 +7,9 @@ export const runtime = 'nodejs'
 export const fetchCache = 'force-no-store'
 
 export async function POST(request: Request) {
-  let user: Awaited<ReturnType<typeof requireRole>>
+  let user: Awaited<ReturnType<typeof requireTenantRole>>
   try {
-    user = await requireRole('operator')
+    user = await requireTenantRole('operator')
   } catch {
     return new Response('Unauthorized', { status: 401 })
   }
@@ -49,8 +49,8 @@ export async function POST(request: Request) {
         const gen = services.agentChat.sendMessageStream({
           agentId,
           content,
-          createdById: user.id,
-          tenantId: user.tenantId,
+          createdById: user.user.id,
+          tenantId: user.activeTenantId,
           conversationId,
           attachmentDocumentIds,
           processDefinitionId,

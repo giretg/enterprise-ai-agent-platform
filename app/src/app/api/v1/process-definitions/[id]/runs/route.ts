@@ -1,21 +1,15 @@
-import { requireRole } from '@/auth'
+import { requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain'
 import { apiError, apiOk, readJson } from '@/lib/api-response'
 import { startProcessSchema } from '@/lib/validators/actions'
 import { ProcessServiceError } from '@/domain/playbook/process-service'
-
-type AuthedUser = Awaited<ReturnType<typeof requireRole>>
-
-function tenantOf(user: AuthedUser): string {
-  return user.tenantId ?? user.id
-}
 
 export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
-    const user = await requireRole('operator')
+    const user = await requireTenantRole('operator')
     const { id } = await params
     const body = await readJson(request)
     const parsed = startProcessSchema.safeParse({
@@ -25,11 +19,11 @@ export async function POST(
     if (!parsed.success) return apiError(parsed.error.message, 400)
 
     const process = await services.processes.startProcess({
-      tenantId: tenantOf(user),
+      tenantId: user.activeTenantId,
       processDefinitionId: parsed.data.processDefinitionId,
       triggerType: parsed.data.triggerType ?? 'manual',
       inputPayload: parsed.data.inputPayload ?? {},
-      startedBy: { type: 'user', id: user.id },
+      startedBy: { type: 'user', id: user.user.id },
       conversationId: parsed.data.conversationId ?? null,
       rootTicketId: parsed.data.rootTicketId ?? null,
     })

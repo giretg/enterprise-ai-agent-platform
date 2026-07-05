@@ -1,28 +1,22 @@
-import { requireRole } from '@/auth'
+import { requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain'
 import { apiError, apiOk } from '@/lib/api-response'
 import { processDefinitionIdSchema } from '@/lib/validators/actions'
 import { ProcessDefinitionServiceError } from '@/domain/playbook/process-definition-service'
-
-type AuthedUser = Awaited<ReturnType<typeof requireRole>>
-
-function tenantOf(user: AuthedUser): string {
-  return user.tenantId ?? user.id
-}
 
 export async function POST(
   _request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
   try {
-    const user = await requireRole('approver')
+    const user = await requireTenantRole('approver')
     const parsed = processDefinitionIdSchema.safeParse(await params)
     if (!parsed.success) return apiError(parsed.error.message, 400)
 
     const def = await services.processDefinitions.activate({
-      tenantId: tenantOf(user),
+      tenantId: user.activeTenantId,
       processDefinitionId: parsed.data.id,
-      actorUserId: user.id,
+      actorUserId: user.user.id,
     })
     return apiOk({ id: def.id, status: def.status })
   } catch (e) {

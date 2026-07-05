@@ -18,11 +18,19 @@ import {
 import { ensureSystemRoleTemplates } from '../src/repositories/postgres/role-template-repository'
 import { ensureDefaultRolePermissions } from '../src/repositories/postgres/iam-repository'
 import { BUILTIN_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/builtin-templates'
+import { upsertConnectorByTypeName } from '../src/lib/connector-upsert'
 
 config({ path: path.join(process.cwd(), '.env.local') })
 config({ path: path.join(process.cwd(), '.env') })
 
 const prisma = new PrismaClient()
+
+/**
+ * A demo tenant fix azonosítója (Tenant-Management §11.1). A monitor-seed és a
+ * `scripts/backfill-tenant-demo.ts` is erre az UUID-re hivatkozik — egyetlen
+ * egytenantos dev/demo workspace.
+ */
+const DEMO_TENANT_ID = '00000000-0000-4000-a000-000000000001'
 
 // Szerep-instrukció ("mit csinál") és viselkedés-profil ("hogyan") külön
 // verziózva (§4.2/§5.3).
@@ -384,13 +392,7 @@ async function ensureToolBrokerSeed(agentId: string) {
   const agent = await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })
   await ensureAgentKnowledgeBase(agent, prisma)
 
-  const board = await prisma.connector.upsert({
-    where: {
-      type_name: {
-        type: 'board',
-        name: 'Control Plane Board',
-      },
-    },
+  const board = await upsertConnectorByTypeName(prisma, {
     create: {
       type: 'board',
       name: 'Control Plane Board',
@@ -446,13 +448,7 @@ async function ensureToolBrokerSeed(agentId: string) {
     update: { allowed: true },
   })
 
-  const gmail = await prisma.connector.upsert({
-    where: {
-      type_name: {
-        type: 'gmail',
-        name: 'Gmail (felhasználói)',
-      },
-    },
+  const gmail = await upsertConnectorByTypeName(prisma, {
     create: {
       type: 'gmail',
       name: 'Gmail (felhasználói)',
@@ -506,13 +502,7 @@ async function ensureToolBrokerSeed(agentId: string) {
     })
   }
 
-  const workspace = await prisma.connector.upsert({
-    where: {
-      type_name: {
-        type: 'workspace',
-        name: 'Agent Workspace',
-      },
-    },
+  const workspace = await upsertConnectorByTypeName(prisma, {
     create: {
       type: 'workspace',
       name: 'Agent Workspace',
@@ -592,8 +582,7 @@ async function ensureToolBrokerSeed(agentId: string) {
     restrictToEndpoints: true,
   }
 
-  const providerCrm = await prisma.connector.upsert({
-    where: { type_name: { type: 'http_api', name: 'Provider CRM (POSnavigator)' } },
+  const providerCrm = await upsertConnectorByTypeName(prisma, {
     create: {
       type: 'http_api',
       name: 'Provider CRM (POSnavigator)',
@@ -1070,8 +1059,7 @@ async function ensureWebSearchSeed(agentId: string) {
     requireHumanApprovalForSensitiveQuery: false,
   }
 
-  const connector = await prisma.connector.upsert({
-    where: { type_name: { type: 'web_search', name: 'Controlled Web Search (banking_strict)' } },
+  const connector = await upsertConnectorByTypeName(prisma, {
     create: {
       type: 'web_search',
       name: 'Controlled Web Search (banking_strict)',
@@ -1226,6 +1214,62 @@ async function ensureDemoApiKey(agentId: string) {
   console.log('  Demo API key (dev only): saved to .seed-demo-api-key')
 }
 
+/**
+ * Tenant-Management §11.1 dev seed: a `demo` tenant + tenant-admin/tag membershipek
+ * + egy dev-superadmin platform-membership. Idempotens (upsert). A `getAuthContext`
+ * ezekből a membershipekből oldja fel az aktív tenantot, a tenant-switcher pedig
+ * innen kapja a választható tenantokat.
+ */
+async function ensureDemoTenant(
+  admin: { id: string },
+  approver: { id: string },
+  operator: { id: string },
+) {
+  await prisma.tenant.upsert({
+    where: { id: DEMO_TENANT_ID },
+    update: {},
+    create: {
+      id: DEMO_TENANT_ID,
+      slug: 'demo',
+      displayName: 'Demo (Excellence Pay)',
+      legalName: 'Excellence Pay',
+      status: 'active',
+      domainAllowlist: [],
+      settings: {},
+      createdById: admin.id,
+    },
+  })
+
+  const memberships: Array<{ userId: string; role: 'admin' | 'approver' | 'operator' }> = [
+    { userId: admin.id, role: 'admin' },
+    { userId: approver.id, role: 'approver' },
+    { userId: operator.id, role: 'operator' },
+  ]
+  for (const m of memberships) {
+    await prisma.tenantMembership.upsert({
+      where: { tenantId_userId: { tenantId: DEMO_TENANT_ID, userId: m.userId } },
+      update: {},
+      create: {
+        tenantId: DEMO_TENANT_ID,
+        userId: m.userId,
+        role: m.role,
+        status: 'active',
+        isDefault: true,
+        activatedAt: new Date(),
+      },
+    })
+  }
+
+  // Dev-superadmin: a platform-felület tesztelhetőségéhez (NEM automatikus admin→superadmin).
+  await prisma.platformMembership.upsert({
+    where: { userId_role: { userId: admin.id, role: 'superadmin' } },
+    update: { status: 'active' },
+    create: { userId: admin.id, role: 'superadmin', status: 'active' },
+  })
+
+  console.log('Seed: demo tenant + membershipek + dev-superadmin kész')
+}
+
 async function main() {
   // §3.5: a két beépített rendszer-szintű szerep-sablon (worker | orchestrator).
   await ensureSystemRoleTemplates(prisma)
@@ -1278,11 +1322,13 @@ async function main() {
   void approver
   void operator
 
+  // Tenant-Management §11.1: demo tenant + membershipek + dev-superadmin.
+  await ensureDemoTenant(admin, approver, operator)
+
   // Minta proaktív monitor (Feature-spec — Proactive Monitor, PM-A DoD).
   // LLM-mentes deadline-figyelő: a 24 órán belül esedékes, le nem zárt due_by
   // ticketekre nyit monitor_alert tickettet a boardon. escalateAgentId=null →
   // nulla token; a 2. lépcső csak ticket-nyitás.
-  const DEMO_TENANT_ID = '00000000-0000-4000-a000-000000000001'
   const existingMonitor = await prisma.monitorDefinition.findFirst({
     where: { title: 'Határidő-figyelő (24h)' },
   })

@@ -28,6 +28,36 @@ enum InvitationStatus {
   revoked
 }
 
+// ── Tenant Management (Feature-spec Tenant-Management §4) ────────────────────
+
+enum TenantStatus {
+  active
+  suspended
+  offboarding
+  archived
+}
+
+enum TenantMembershipStatus {
+  pending
+  active
+  suspended
+}
+
+/**
+ * Platform-szintű szerep — NEM tenant-role (§3.1). MVP-ben elég a superadmin,
+ * de az enum bővíthetően vezet be további platform-szerepeket (§6.2, döntés 3.3/10).
+ */
+enum PlatformRole {
+  superadmin
+  platform_operator
+  platform_auditor
+}
+
+enum PlatformMembershipStatus {
+  active
+  suspended
+}
+
 enum ResourceGrantType {
   agent
   playbook
@@ -425,25 +455,29 @@ model User {
   createdAt       DateTime   @default(now()) @map("created_at") @db.Timestamptz
   updatedAt       DateTime   @default(now()) @updatedAt @map("updated_at") @db.Timestamptz
 
-  invitedBy                     User?               @relation("UserInvitedBy", fields: [invitedById], references: [id])
-  invitedUsers                  User[]              @relation("UserInvitedBy")
-  suspendedBy                   User?               @relation("UserSuspendedBy", fields: [suspendedById], references: [id])
-  suspendedUsers                User[]              @relation("UserSuspendedBy")
-  approvedMemoryVersions        MemoryVersion[]     @relation("MemoryApprovedBy")
-  approvedRecipeVersions        RecipeVersion[]     @relation("RecipeApprovedBy")
-  approvedPlaybookVersions      PlaybookVersion[]   @relation("PlaybookApprovedBy")
-  createdTickets                Ticket[]            @relation("TicketCreatedBy")
-  uploadedDocuments             Document[]          @relation("DocumentUploadedBy")
-  createdInvitations            Invitation[]        @relation("InvitationCreatedBy")
+  invitedBy                     User?                @relation("UserInvitedBy", fields: [invitedById], references: [id])
+  invitedUsers                  User[]               @relation("UserInvitedBy")
+  suspendedBy                   User?                @relation("UserSuspendedBy", fields: [suspendedById], references: [id])
+  suspendedUsers                User[]               @relation("UserSuspendedBy")
+  approvedMemoryVersions        MemoryVersion[]      @relation("MemoryApprovedBy")
+  approvedRecipeVersions        RecipeVersion[]      @relation("RecipeApprovedBy")
+  approvedPlaybookVersions      PlaybookVersion[]    @relation("PlaybookApprovedBy")
+  createdTickets                Ticket[]             @relation("TicketCreatedBy")
+  uploadedDocuments             Document[]           @relation("DocumentUploadedBy")
+  createdInvitations            Invitation[]         @relation("InvitationCreatedBy")
   connectorGrants               ConnectorGrant[]
-  scheduledTasksCreated         ScheduledTask[]     @relation("ScheduledTaskCreatedBy")
-  scheduledTasksRunAs           ScheduledTask[]     @relation("ScheduledTaskRunAsUser")
-  scheduledTasksRunAsAuthorized ScheduledTask[]     @relation("ScheduledTaskRunAsAuthorizedBy")
-  monitorDefinitionsCreated     MonitorDefinition[] @relation("MonitorDefinitionCreatedBy")
-  conversationsCreated          Conversation[]      @relation("ConversationCreatedBy")
-  messagesActing                Message[]           @relation("MessageActingUser")
-  resourceGrantsReceived        ResourceGrant[]     @relation("ResourceGrantUser")
-  resourceGrantsIssued          ResourceGrant[]     @relation("ResourceGrantGrantedBy")
+  scheduledTasksCreated         ScheduledTask[]      @relation("ScheduledTaskCreatedBy")
+  scheduledTasksRunAs           ScheduledTask[]      @relation("ScheduledTaskRunAsUser")
+  scheduledTasksRunAsAuthorized ScheduledTask[]      @relation("ScheduledTaskRunAsAuthorizedBy")
+  monitorDefinitionsCreated     MonitorDefinition[]  @relation("MonitorDefinitionCreatedBy")
+  conversationsCreated          Conversation[]       @relation("ConversationCreatedBy")
+  messagesActing                Message[]            @relation("MessageActingUser")
+  resourceGrantsReceived        ResourceGrant[]      @relation("ResourceGrantUser")
+  resourceGrantsIssued          ResourceGrant[]      @relation("ResourceGrantGrantedBy")
+  tenantMemberships             TenantMembership[]   @relation("MembershipUser")
+  membershipsInvited            TenantMembership[]   @relation("MembershipInvitedBy")
+  platformMemberships           PlatformMembership[] @relation("PlatformMembershipUser")
+  tenantsCreated                Tenant[]             @relation("TenantCreatedBy")
 
   @@index([tenantId, status])
   @@index([tenantId, role])
@@ -467,6 +501,76 @@ model Invitation {
 
   @@index([tenantId, status])
   @@map("invitations")
+}
+
+/**
+ * Tenant = egy cég/ügyfél első osztályú entitása (Feature-spec Tenant-Management §2, §4.1).
+ * A tenant a by-design multi-tenancy izolációs egysége: két tenant nem osztozik
+ * agenten, Playbookon, connectoron, sessionön vagy beálltáson (Koncepció 8.8).
+ */
+model Tenant {
+  id              String       @id @default(uuid()) @db.Uuid
+  slug            String       @unique
+  displayName     String       @map("display_name")
+  legalName       String?      @map("legal_name")
+  status          TenantStatus @default(active)
+  domainAllowlist Json         @default("[]") @map("domain_allowlist")
+  settings        Json         @default("{}")
+  createdById     String?      @map("created_by") @db.Uuid
+  createdAt       DateTime     @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime     @updatedAt @map("updated_at") @db.Timestamptz
+
+  createdBy   User?              @relation("TenantCreatedBy", fields: [createdById], references: [id])
+  memberships TenantMembership[]
+
+  @@index([status])
+  @@map("tenants")
+}
+
+/**
+ * Tenanton belüli szerep és státusz (§3.1, §4.1). A `User` a globális identitás,
+ * a tenant-tagságot és -szerepet ez a join-modell hordozza — egy user több tenant
+ * tagja is lehet (§2/3). Az igazság forrása membership-szinten van, nem a `User`-en.
+ */
+model TenantMembership {
+  id          String                 @id @default(uuid()) @db.Uuid
+  tenantId    String                 @map("tenant_id") @db.Uuid
+  userId      String                 @map("user_id") @db.Uuid
+  role        UserRole
+  status      TenantMembershipStatus @default(pending)
+  isDefault   Boolean                @default(false) @map("is_default")
+  invitedById String?                @map("invited_by") @db.Uuid
+  activatedAt DateTime?              @map("activated_at") @db.Timestamptz
+  createdAt   DateTime               @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime               @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant    Tenant @relation(fields: [tenantId], references: [id])
+  user      User   @relation("MembershipUser", fields: [userId], references: [id], onDelete: Cascade)
+  invitedBy User?  @relation("MembershipInvitedBy", fields: [invitedById], references: [id])
+
+  @@unique([tenantId, userId])
+  @@index([userId, status])
+  @@index([tenantId, role, status])
+  @@map("tenant_memberships")
+}
+
+/**
+ * Platform-szintű tagság (§3.1, §4.1). A superadmin NEM tenant-role, ezért külön
+ * modellben él — így a `hasMinimumRole(..., 'admin')` sosem tekinti tenant-adminnak.
+ */
+model PlatformMembership {
+  id        String                   @id @default(uuid()) @db.Uuid
+  userId    String                   @map("user_id") @db.Uuid
+  role      PlatformRole
+  status    PlatformMembershipStatus @default(active)
+  createdAt DateTime                 @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime                 @updatedAt @map("updated_at") @db.Timestamptz
+
+  user User @relation("PlatformMembershipUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, role])
+  @@index([role, status])
+  @@map("platform_memberships")
 }
 
 /**
@@ -1058,7 +1162,9 @@ model Connector {
   draft              ConnectorDraft?
   knowledgeArtifacts KnowledgeArtifact[]
 
-  @@unique([type, name])
+  // §4.2: tenant-scope egyediség — a régi @@unique([type, name]) cross-tenant
+  // névütközést okozott (két tenant nem használhatta ugyanazt a connector-nevet).
+  @@unique([tenantId, type, name])
   @@map("connectors")
 }
 
@@ -1787,10 +1893,10 @@ model SandboxProject {
   updatedAt  DateTime  @updatedAt @map("updated_at") @db.Timestamptz
   archivedAt DateTime? @map("archived_at") @db.Timestamptz
 
-  commits   SandboxCommit[]
+  commits    SandboxCommit[]
   promotions SandboxPromotion[]
-  snapshots SandboxDataSnapshot[]
-  exports   SandboxExport[]
+  snapshots  SandboxDataSnapshot[]
+  exports    SandboxExport[]
 
   @@unique([tenantId, sandboxId, name])
   @@index([tenantId, sandboxId])
@@ -1798,27 +1904,27 @@ model SandboxProject {
 }
 
 model SandboxCommit {
-  id        String @id @default(uuid()) @db.Uuid
+  id        String  @id @default(uuid()) @db.Uuid
   tenantId  String? @map("tenant_id") @db.Uuid
-  projectId String @map("project_id") @db.Uuid
+  projectId String  @map("project_id") @db.Uuid
 
-  seq              Int
-  parentCommitId   String? @map("parent_commit_id") @db.Uuid
-  basedOnCommitId  String? @map("based_on_commit_id") @db.Uuid
+  seq             Int
+  parentCommitId  String? @map("parent_commit_id") @db.Uuid
+  basedOnCommitId String? @map("based_on_commit_id") @db.Uuid
 
   source        SandboxCommitSource
   changeSummary String              @map("change_summary")
 
-  treeRef        String  @map("tree_ref")
-  treeHash       String  @map("tree_hash")
-  fileCount      Int     @map("file_count")
-  totalSizeBytes BigInt  @map("total_size_bytes")
+  treeRef        String @map("tree_ref")
+  treeHash       String @map("tree_hash")
+  fileCount      Int    @map("file_count")
+  totalSizeBytes BigInt @map("total_size_bytes")
 
-  createdByType     SandboxActorType @map("created_by_type")
-  createdByUserId   String?          @map("created_by_user_id") @db.Uuid
-  createdByAgentId  String?          @map("created_by_agent_id") @db.Uuid
-  createdFromTicketId String?        @map("created_from_ticket_id") @db.Uuid
-  createdFromRunId  String?          @map("created_from_run_id") @db.Uuid
+  createdByType       SandboxActorType @map("created_by_type")
+  createdByUserId     String?          @map("created_by_user_id") @db.Uuid
+  createdByAgentId    String?          @map("created_by_agent_id") @db.Uuid
+  createdFromTicketId String?          @map("created_from_ticket_id") @db.Uuid
+  createdFromRunId    String?          @map("created_from_run_id") @db.Uuid
 
   buildCost Json @default("{}") @map("build_cost")
 
@@ -1839,17 +1945,17 @@ model SandboxPromotion {
   tenantId  String? @map("tenant_id") @db.Uuid
   projectId String  @map("project_id") @db.Uuid
 
-  fromCommitId          String  @map("from_commit_id") @db.Uuid
-  prevLiveCommitId      String? @map("prev_live_commit_id") @db.Uuid
+  fromCommitId           String  @map("from_commit_id") @db.Uuid
+  prevLiveCommitId       String? @map("prev_live_commit_id") @db.Uuid
   prePromotionSnapshotId String? @map("pre_promotion_snapshot_id") @db.Uuid
 
   status SandboxPromotionStatus @default(pending_approval)
 
-  requestedByType   SandboxActorType @map("requested_by_type")
-  requestedByUserId String?          @map("requested_by_user_id") @db.Uuid
-  requestedByAgentId String?         @map("requested_by_agent_id") @db.Uuid
-  approvedByUserId  String?          @map("approved_by_user_id") @db.Uuid
-  reason            String?
+  requestedByType    SandboxActorType @map("requested_by_type")
+  requestedByUserId  String?          @map("requested_by_user_id") @db.Uuid
+  requestedByAgentId String?          @map("requested_by_agent_id") @db.Uuid
+  approvedByUserId   String?          @map("approved_by_user_id") @db.Uuid
+  reason             String?
 
   requestedAt DateTime  @default(now()) @map("requested_at") @db.Timestamptz
   decidedAt   DateTime? @map("decided_at") @db.Timestamptz
@@ -1862,9 +1968,9 @@ model SandboxPromotion {
 }
 
 model SandboxDataSnapshot {
-  id        String  @id @default(uuid()) @db.Uuid
-  tenantId  String? @map("tenant_id") @db.Uuid
-  projectId String  @map("project_id") @db.Uuid
+  id        String     @id @default(uuid()) @db.Uuid
+  tenantId  String?    @map("tenant_id") @db.Uuid
+  projectId String     @map("project_id") @db.Uuid
   env       SandboxEnv
 
   kind   SandboxSnapshotKind
@@ -1893,18 +1999,18 @@ model SandboxExport {
   tenantId  String? @map("tenant_id") @db.Uuid
   projectId String  @map("project_id") @db.Uuid
 
-  scope          SandboxExportScope
-  sourceCommitId String  @map("source_commit_id") @db.Uuid
-  sourceSnapshotId String? @map("source_snapshot_id") @db.Uuid
+  scope            SandboxExportScope
+  sourceCommitId   String             @map("source_commit_id") @db.Uuid
+  sourceSnapshotId String?            @map("source_snapshot_id") @db.Uuid
 
-  status      SandboxExportStatus @default(requested)
-  packageRef  String?             @map("package_ref")
-  packageHash String?             @map("package_hash")
-  manifest    Json                @default("{}")
-  responsibilityTransferred Boolean @default(false) @map("responsibility_transferred")
+  status                    SandboxExportStatus @default(requested)
+  packageRef                String?             @map("package_ref")
+  packageHash               String?             @map("package_hash")
+  manifest                  Json                @default("{}")
+  responsibilityTransferred Boolean             @default(false) @map("responsibility_transferred")
 
-  requestedByUserId String   @map("requested_by_user_id") @db.Uuid
-  requestedAt       DateTime @default(now()) @map("requested_at") @db.Timestamptz
+  requestedByUserId String    @map("requested_by_user_id") @db.Uuid
+  requestedAt       DateTime  @default(now()) @map("requested_at") @db.Timestamptz
   completedAt       DateTime? @map("completed_at") @db.Timestamptz
 
   project SandboxProject @relation(fields: [projectId], references: [id], onDelete: Cascade)

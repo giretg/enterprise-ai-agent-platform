@@ -340,7 +340,7 @@ export function ModelGatewayPanel({
             <StatBox label="Sikeres" value={summary.okCalls} />
             <StatBox label="Hiba" value={summary.errorCalls} />
             <StatBox label="Rate limited" value={summary.rateLimitedCalls} />
-            <StatBox label="Tokenek (becsült)" value={summary.tokens.toLocaleString()} />
+            <StatBox label="Tokenek (becsült)" value={summary.tokens.toLocaleString('hu-HU')} />
             <StatBox label="Avg latency (ms)" value={summary.avgLatencyMs} />
             <StatBox label="Becsült költség ($)" value={summary.cost.toFixed(4)} />
             <StatBox
@@ -371,7 +371,7 @@ export function ModelGatewayPanel({
                     <tr key={row.ticketId} className="border-t border-line/30">
                       <td className="py-1 pr-4 font-mono text-ink-faint">{row.ticketId.slice(0, 8)}…</td>
                       <td className="py-1 pr-4 text-ink">{row.calls}</td>
-                      <td className="py-1 pr-4 text-ink">{row.tokens.toLocaleString()}</td>
+                      <td className="py-1 pr-4 text-ink">{row.tokens.toLocaleString('hu-HU')}</td>
                       <td className="py-1 text-ink">{row.avgLatencyMs} ms</td>
                     </tr>
                   ))}

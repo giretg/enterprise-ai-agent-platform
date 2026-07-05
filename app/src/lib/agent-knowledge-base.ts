@@ -1,5 +1,6 @@
 import type { Agent, Connector, PrismaClient } from '@prisma/client'
 import { prisma } from '@/lib/db'
+import { upsertConnectorByTypeName } from '@/lib/connector-upsert'
 
 export function knowledgeBaseConnectorName(agentId: string): string {
   return `kb:${agentId}`
@@ -45,10 +46,7 @@ export async function ensureAgentKnowledgeBase(
 
   // Determinisztikus név + upsert: párhuzamos hívásnál (agent-create, seed,
   // dokumentum-feldolgozás) sem dob unique-constraint hibát.
-  const connector = await db.connector.upsert({
-    where: {
-      type_name: { type: 'knowledge_base', name: knowledgeBaseConnectorName(agent.id) },
-    },
+  const connector = await upsertConnectorByTypeName(db, {
     create: {
       type: 'knowledge_base',
       name: knowledgeBaseConnectorName(agent.id),

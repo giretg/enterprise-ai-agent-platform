@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { requireRole } from '@/auth'
+import { requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain'
 import { sandboxAppIdSchema } from '@/lib/validators/actions'
 
@@ -16,13 +16,13 @@ export async function GET(
   { params }: { params: Promise<{ appId: string }> },
 ) {
   try {
-    const user = await requireRole('viewer')
+    const user = await requireTenantRole('viewer')
     const parsed = sandboxAppIdSchema.parse(await params)
     const versionParam = new URL(request.url).searchParams.get('version')
     const versionNumber = versionParam ? parseInt(versionParam, 10) : undefined
     const { app, version } = await services.sandboxApps.getRenderableApp(
       parsed.appId,
-      { userId: user.id, tenantId: user.tenantId },
+      { userId: user.user.id, tenantId: user.activeTenantId },
       'sandbox_app.export',
       Number.isFinite(versionNumber) ? versionNumber : undefined,
     )

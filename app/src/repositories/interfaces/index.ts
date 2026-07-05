@@ -90,6 +90,13 @@ import type {
   Invitation,
   InvitationStatus,
   RolePermission,
+  Tenant,
+  TenantStatus,
+  TenantMembership,
+  TenantMembershipStatus,
+  PlatformMembership,
+  PlatformRole,
+  PlatformMembershipStatus,
 } from '@prisma/client'
 
 export type TicketFilter = {
@@ -1384,6 +1391,72 @@ export interface RolePermissionRepository {
   findAll(): Promise<RolePermission[]>
   findByKey(permissionKey: string): Promise<RolePermission | null>
   upsert(permissionKey: string, minRole: UserRole, description?: string | null): Promise<RolePermission>
+}
+
+// ── Tenant Management (Feature-spec Tenant-Management §4, §10) ────────────────
+
+export interface TenantRepository {
+  findById(id: string): Promise<Tenant | null>
+  findBySlug(slug: string): Promise<Tenant | null>
+  findMany(filter?: { status?: TenantStatus }): Promise<Tenant[]>
+  create(data: {
+    slug: string
+    displayName: string
+    legalName?: string | null
+    domainAllowlist?: string[]
+    settings?: Prisma.InputJsonValue
+    createdById?: string | null
+  }): Promise<Tenant>
+  update(
+    id: string,
+    data: Partial<{
+      displayName: string
+      legalName: string | null
+      status: TenantStatus
+      domainAllowlist: string[]
+      settings: Prisma.InputJsonValue
+    }>,
+  ): Promise<Tenant>
+}
+
+export interface TenantMembershipRepository {
+  findById(id: string): Promise<TenantMembership | null>
+  findByTenantAndUser(tenantId: string, userId: string): Promise<TenantMembership | null>
+  /** A user összes tagsága (aktív-tenant feloldáshoz, tenant-switcherhez). */
+  findByUser(userId: string): Promise<TenantMembership[]>
+  findByTenant(tenantId: string, filter?: { status?: TenantMembershipStatus; role?: UserRole }): Promise<TenantMembership[]>
+  countActiveAdmins(tenantId: string, excludeUserId?: string): Promise<number>
+  create(data: {
+    tenantId: string
+    userId: string
+    role: UserRole
+    status?: TenantMembershipStatus
+    isDefault?: boolean
+    invitedById?: string | null
+  }): Promise<TenantMembership>
+  update(
+    id: string,
+    data: Partial<{
+      role: UserRole
+      status: TenantMembershipStatus
+      isDefault: boolean
+      activatedAt: Date | null
+    }>,
+  ): Promise<TenantMembership>
+}
+
+export type PlatformMembershipWithUser = PlatformMembership & {
+  userEmail: string
+  userName: string
+}
+
+export interface PlatformMembershipRepository {
+  findByUser(userId: string): Promise<PlatformMembership[]>
+  findByRole(role: PlatformRole, filter?: { status?: PlatformMembershipStatus }): Promise<PlatformMembership[]>
+  /** Platform IAM nézethez (§9.3): minden platform-tag a user e-mail/név mezőivel. */
+  findAll(): Promise<PlatformMembershipWithUser[]>
+  upsert(data: { userId: string; role: PlatformRole; status?: PlatformMembershipStatus }): Promise<PlatformMembership>
+  delete(userId: string, role: PlatformRole): Promise<void>
 }
 
 // ── Sandbox verziózás / promóció / graduation (Feature-spec §3) ──────────────

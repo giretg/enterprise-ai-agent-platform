@@ -52,7 +52,7 @@ export class GeneralTaskRuntime {
     if (ticket.agentId !== params.agentId) throw new Error('Ticket not assigned to this agent')
 
     const payload = isRecord(ticket.payload) ? ticket.payload : {}
-    const question = readTicketPromptText(payload)
+    const question = readTicketPromptText(payload) || ticket.title
     const attachmentIds = readAttachmentIds(payload)
     if (!question && attachmentIds.length === 0) {
       throw new Error('Ticket payload is missing question')
