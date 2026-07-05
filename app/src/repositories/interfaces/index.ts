@@ -806,6 +806,8 @@ export type CreatePlaybookVersionV2Input = {
   contentHash: string
   validationResult: Prisma.InputJsonValue
   createdById: string
+  // Canvas node-pozíciók (D2) — nem hash-elt prezentáció; default {}.
+  layout?: Prisma.InputJsonValue
 }
 
 export type CreatePlaybookAssignmentInput = {
@@ -852,6 +854,7 @@ export interface PlaybookV2Repository {
       contentHash: string
       validationResult: Prisma.InputJsonValue
       compiledSpec: Prisma.InputJsonValue
+      layout: Prisma.InputJsonValue
       approvedById: string | null
       approvedAt: Date | null
       publishedAt: Date | null

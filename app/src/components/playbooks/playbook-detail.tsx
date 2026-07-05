@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useState, useTransition } from 'react'
+import { useEffect, useRef, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   createPlaybookVersionV2,
@@ -11,7 +11,10 @@ import {
   publishPlaybookVersionV2,
   rejectPlaybookVersionV2,
   assignPlaybookV2,
+  listStepTemplates,
 } from '@/app/actions/playbook'
+import type { CanvasStepTemplate } from '@/components/playbooks/playbook-canvas'
+import type { LayoutStore } from '@/lib/playbook-v2/canvas-mapping'
 import { PlaybookAuthorPanel } from '@/components/playbooks/playbook-author-panel'
 import { summarizeSpecCriticality } from '@/components/playbooks/playbook-criticality-ui'
 import {
@@ -35,9 +38,15 @@ export type VersionView = {
   changeSummary: string
   contentHash: string
   spec: unknown
+  layout: unknown
   validationResult: unknown
   publishedAt: string | null
   createdAt: string
+}
+
+function asLayout(v: unknown): LayoutStore | null {
+  if (!v || typeof v !== 'object') return null
+  return v as LayoutStore
 }
 
 export type PlaybookHead = {
@@ -122,6 +131,9 @@ function VersionSpecEditor({
   changeSummary,
   validation,
   pending,
+  layout,
+  onLayoutChange,
+  templates,
   onSpecChange,
   onValidationChange,
   onSummaryChange,
@@ -135,6 +147,9 @@ function VersionSpecEditor({
   changeSummary: string
   validation: PlaybookValidationResult
   pending: boolean
+  layout: LayoutStore | null
+  onLayoutChange: (layout: LayoutStore) => void
+  templates: CanvasStepTemplate[]
   onSpecChange: (spec: PlaybookDraftSpec) => void
   onValidationChange: (v: PlaybookValidationResult) => void
   onSummaryChange: (v: string) => void
@@ -152,7 +167,7 @@ function VersionSpecEditor({
   const description =
     mode === 'fork'
       ? 'A publikált verzió nem módosítható — a változtatások csak új piszkozat-verzióként menthetők.'
-      : 'Kattints a folyamatábra dobozaira a lépések és kapuk szerkesztéséhez. A JSON a jobb felső sarokban érhető el.'
+      : 'Húzd a palettáról az elemeket a vászonra, kösd össze őket, és a jobb oldali szerkesztőben állítsd be a részleteket. JSON csak debug célra.'
 
   return (
     <section className="atelier-card p-5">
@@ -173,6 +188,9 @@ function VersionSpecEditor({
         spec={spec}
         onSpecChange={onSpecChange}
         onValidationChange={onValidationChange}
+        layout={layout}
+        onLayoutChange={onLayoutChange}
+        templates={templates}
       />
 
       <div className="mt-4 space-y-2">
@@ -229,8 +247,21 @@ export function PlaybookDetail({
   const [editorMode, setEditorMode] = useState<'edit' | 'new' | 'fork' | null>(null)
   const [editingVersionId, setEditingVersionId] = useState<string | null>(null)
   const [spec, setSpec] = useState<PlaybookDraftSpec | null>(null)
+  const [layout, setLayout] = useState<LayoutStore | null>(null)
   const [validation, setValidation] = useState<PlaybookValidationResult | null>(null)
   const [changeSummary, setChangeSummary] = useState('')
+  const [templates, setTemplates] = useState<CanvasStepTemplate[]>([])
+
+  useEffect(() => {
+    if (!canEdit) return
+    let active = true
+    listStepTemplates().then((res) => {
+      if (active && res.success) setTemplates(res.data as CanvasStepTemplate[])
+    })
+    return () => {
+      active = false
+    }
+  }, [canEdit])
 
   const [editingMeta, setEditingMeta] = useState(false)
   const [metaName, setMetaName] = useState(playbook.name)
@@ -256,6 +287,7 @@ export function PlaybookDetail({
     setEditorMode('edit')
     setEditingVersionId(v.id)
     setSpec(loaded)
+    setLayout(asLayout(v.layout))
     setValidation(asValidation(v.validationResult) ?? validatePlaybookDraftSpec(loaded))
     setChangeSummary(v.changeSummary)
     setMessage(null)
@@ -267,6 +299,7 @@ export function PlaybookDetail({
     setEditorMode('fork')
     setEditingVersionId(v.id)
     setSpec(loaded)
+    setLayout(asLayout(v.layout))
     setValidation(asValidation(v.validationResult) ?? validatePlaybookDraftSpec(loaded))
     setChangeSummary('')
     setMessage(null)
@@ -278,6 +311,7 @@ export function PlaybookDetail({
     setEditorMode('new')
     setEditingVersionId(null)
     setSpec(starter)
+    setLayout(null)
     setValidation(validatePlaybookDraftSpec(starter))
     setChangeSummary('')
     setMessage(null)
@@ -288,6 +322,7 @@ export function PlaybookDetail({
     setEditorMode(null)
     setEditingVersionId(null)
     setSpec(null)
+    setLayout(null)
     setValidation(null)
     setChangeSummary('')
     setMessage(null)
@@ -312,7 +347,12 @@ export function PlaybookDetail({
   function saveDraft() {
     if (!validateBeforeSave() || !editingVersionId || !spec) return
     startTransition(async () => {
-      const res = await updatePlaybookVersionV2({ playbookVersionId: editingVersionId, spec, changeSummary })
+      const res = await updatePlaybookVersionV2({
+        playbookVersionId: editingVersionId,
+        spec,
+        changeSummary,
+        layout: layout ?? undefined,
+      })
       if (res.success) {
         const v = asValidation(res.data.validation)
         setMessage({
@@ -331,7 +371,12 @@ export function PlaybookDetail({
   function createNew() {
     if (!validateBeforeSave() || !spec) return
     startTransition(async () => {
-      const res = await createPlaybookVersionV2({ playbookId: playbook.id, spec, changeSummary })
+      const res = await createPlaybookVersionV2({
+        playbookId: playbook.id,
+        spec,
+        changeSummary,
+        layout: layout ?? undefined,
+      })
       if (res.success) {
         const v = asValidation(res.data.validation)
         setMessage({
@@ -642,6 +687,9 @@ export function PlaybookDetail({
             changeSummary={changeSummary}
             validation={validation}
             pending={pending}
+            layout={layout}
+            onLayoutChange={setLayout}
+            templates={templates}
             onSpecChange={setSpec}
             onValidationChange={setValidation}
             onSummaryChange={setChangeSummary}

@@ -19,6 +19,7 @@ import { ensureSystemRoleTemplates } from '../src/repositories/postgres/role-tem
 import { ensureDefaultRolePermissions } from '../src/repositories/postgres/iam-repository'
 import { BUILTIN_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/builtin-templates'
 import { upsertConnectorByTypeName } from '../src/lib/connector-upsert'
+import { ensureStarterStepTemplates } from '../src/domain/step-template/step-template-catalog'
 
 config({ path: path.join(process.cwd(), '.env.local') })
 config({ path: path.join(process.cwd(), '.env') })
@@ -1454,6 +1455,7 @@ async function main() {
   await ensureWikiPlaybook(admin.id)
   await ensureDemoApiKey(agent.id)
   await ensureBuiltinConnectorTemplates()
+  await ensureStarterStepTemplates(prisma)
 
   console.log('Seed complete')
   console.log('  Wiki Agent:', agent.id)

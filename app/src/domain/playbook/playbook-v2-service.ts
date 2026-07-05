@@ -107,6 +107,8 @@ export class PlaybookV2Service {
     spec: unknown
     changeSummary: string
     actorUserId: string
+    // Canvas node-pozíciók (D2) — nem hash-elt; a contentHash-t NEM befolyásolja.
+    layout?: Record<string, unknown>
     validationContext?: TenantValidationContext
   }): Promise<{ version: PlaybookVersionV2; validation: ValidationResult }> {
     const playbook = await this.requirePlaybook(input.tenantId, input.playbookId)
@@ -146,6 +148,7 @@ export class PlaybookV2Service {
       changeSummary: input.changeSummary,
       contentHash,
       validationResult: validation as unknown as Prisma.InputJsonValue,
+      layout: (input.layout ?? {}) as Prisma.InputJsonValue,
       createdById: input.actorUserId,
     })
 
@@ -182,6 +185,8 @@ export class PlaybookV2Service {
     spec: unknown
     changeSummary: string
     actorUserId: string
+    // Canvas node-pozíciók (D2). Ha undefined, a meglévő layout érintetlen marad.
+    layout?: Record<string, unknown>
     validationContext?: TenantValidationContext
   }): Promise<{ version: PlaybookVersionV2; validation: ValidationResult }> {
     const { playbook, version } = await this.requireVersion(input.tenantId, input.playbookVersionId)
@@ -225,6 +230,10 @@ export class PlaybookV2Service {
       changeSummary: input.changeSummary,
       contentHash,
       validationResult: validation as unknown as Prisma.InputJsonValue,
+      // A layout külön perzisztál, a spec/hash-től függetlenül (D2). Ha undefined, nem íródik.
+      ...(input.layout !== undefined
+        ? { layout: input.layout as Prisma.InputJsonValue }
+        : {}),
     })
 
     await this.append(input.tenantId, { type: 'human', id: input.actorUserId }, {

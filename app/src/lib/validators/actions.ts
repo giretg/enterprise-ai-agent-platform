@@ -1359,6 +1359,8 @@ export const createPlaybookVersionV2Schema = z.object({
   playbookId: z.string().uuid(),
   spec: z.unknown(),
   changeSummary: z.string().trim().min(1).max(500),
+  // Canvas node-pozíciók (Governed Flow Builder D2) — nem hash-elt prezentáció.
+  layout: z.record(z.string(), z.unknown()).optional(),
 })
 
 export const draftPlaybookFromDescriptionSchema = z
@@ -1382,6 +1384,8 @@ export const updatePlaybookVersionV2Schema = z.object({
   playbookVersionId: z.string().uuid(),
   spec: z.unknown(),
   changeSummary: z.string().trim().min(1).max(500),
+  // Canvas node-pozíciók (Governed Flow Builder D2) — nem hash-elt prezentáció.
+  layout: z.record(z.string(), z.unknown()).optional(),
 })
 
 export const playbookVersionV2IdSchema = z.object({

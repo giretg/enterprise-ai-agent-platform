@@ -61,6 +61,7 @@ export class PostgresPlaybookV2Repository implements PlaybookV2Repository {
         changeSummary: input.changeSummary,
         contentHash: input.contentHash,
         validationResult: input.validationResult,
+        layout: input.layout ?? {},
         createdById: input.createdById,
       },
     })
@@ -103,6 +104,7 @@ export class PostgresPlaybookV2Repository implements PlaybookV2Repository {
       contentHash: string
       validationResult: Prisma.InputJsonValue
       compiledSpec: Prisma.InputJsonValue
+      layout: Prisma.InputJsonValue
       approvedById: string | null
       approvedAt: Date | null
       publishedAt: Date | null

@@ -23,6 +23,8 @@ import {
 } from '@/lib/validators/actions'
 import { PlaybookV2Error } from '@/domain/playbook/playbook-v2-service'
 import { parsePlaybookSpecV2 } from '@/lib/playbook-v2/spec'
+import { prisma } from '@/lib/db'
+import { listPublishedStepTemplates } from '@/domain/step-template/step-template-catalog'
 import { PLAYBOOK_AUTHOR_TEMPLATE } from '@/domain/playbook/playbook-author-agent'
 import type { PlaybookV2, PlaybookVersionV2 } from '@prisma/client'
 import { z } from 'zod'
@@ -134,6 +136,7 @@ export async function getPlaybookV2(input: unknown) {
         contentHash: v.contentHash,
         validationResult: v.validationResult,
         spec: v.spec,
+        layout: v.layout,
         createdById: v.createdById,
         approvedById: v.approvedById,
         publishedAt: v.publishedAt?.toISOString() ?? null,
@@ -193,6 +196,7 @@ export async function createPlaybookVersionV2(input: unknown) {
       playbookId: parsed.playbookId,
       spec: parsed.spec,
       changeSummary: parsed.changeSummary,
+      layout: parsed.layout,
       actorUserId: user.user.id,
     })
     return ok({ versionId: version.id, version: version.version, validation })
@@ -290,6 +294,7 @@ export async function updatePlaybookVersionV2(input: unknown) {
       playbookVersionId: parsed.playbookVersionId,
       spec: parsed.spec,
       changeSummary: parsed.changeSummary,
+      layout: parsed.layout,
       actorUserId: user.user.id,
     })
     return ok({ versionId: version.id, version: version.version, validation })
@@ -382,6 +387,17 @@ export async function assignPlaybookV2(input: unknown) {
   } catch (e) {
     if (e instanceof PlaybookV2Error) return fail(e.message)
     return fail(e instanceof Error ? e.message : 'Nem sikerült hozzárendelni a Playbookot')
+  }
+}
+
+/** StepTemplate katalógus a Canvas palettájához (published globális + tenant, WP-3). */
+export async function listStepTemplates() {
+  try {
+    const user = await requireTenantRole('admin')
+    const items = await listPublishedStepTemplates(prisma, user.activeTenantId)
+    return ok(items)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Nem sikerült betölteni a lépés-sablonokat')
   }
 }
 

@@ -36,6 +36,7 @@ export default async function PlaybookDetailPage({
     changeSummary: v.changeSummary,
     contentHash: v.contentHash,
     spec: v.spec,
+    layout: v.layout,
     validationResult: v.validationResult,
     publishedAt: v.publishedAt,
     createdAt: v.createdAt,

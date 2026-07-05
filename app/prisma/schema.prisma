@@ -898,6 +898,10 @@ model PlaybookVersionV2 {
   status           PlaybookVersionV2Status @default(draft)
   spec             Json
   compiledSpec     Json?                   @map("compiled_spec")
+  // Canvas node-pozíciók / viewport — PREZENTÁCIÓ, a canonical contentHash-ből
+  // KIZÁRVA (Governed Flow Builder D2). Alak: { nodes: { "<stepId|gateId>": { x, y } }, viewport?: {...} }.
+  // Node arrébb húzása SOHA nem szül új contentHash-t vagy verziót.
+  layout           Json                    @default("{}")
   validationResult Json                    @default("{}") @map("validation_result")
   changeSummary    String                  @map("change_summary")
   contentHash      String                  @map("content_hash")
@@ -935,6 +939,52 @@ model PlaybookAssignment {
 
   @@index([tenantId, assignmentType, assignmentKey])
   @@map("playbook_assignments")
+}
+
+// --- Governed Flow Builder — StepTemplate katalógus (§3.2, WP-3) --------------
+// Governance-safe, újrahasznosítható lépés-legók a Canvas palettájához.
+// A template SOHA nem ad futásidejű tool-jogot (D3) — a capability-t a Tool Broker
+// kényszeríti ki runtime-ban; ez csak egy előkitöltött spec-fragment.
+
+enum StepTemplateStatus {
+  draft
+  published
+  retired
+}
+
+model StepTemplate {
+  id                        String             @id @default(uuid()) @db.Uuid
+  tenantId                  String?            @map("tenant_id") @db.Uuid // null = globális, admin-karbantartott
+  key                       String
+  name                      String
+  description               String?
+  category                  String?
+  status                    StepTemplateStatus @default(draft)
+  currentPublishedVersionId String?            @map("current_published_version_id") @db.Uuid
+  createdAt                 DateTime           @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt                 DateTime           @updatedAt @map("updated_at") @db.Timestamptz
+  archivedAt                DateTime?          @map("archived_at") @db.Timestamptz
+
+  versions StepTemplateVersion[]
+
+  @@unique([tenantId, key])
+  @@map("step_templates")
+}
+
+model StepTemplateVersion {
+  id          String   @id @default(uuid()) @db.Uuid
+  templateId  String   @map("template_id") @db.Uuid
+  version     Int
+  // Egy playbook-spec steps[]-fragment + ajánlott gate(ek), role-PLACEHOLDER-rel.
+  // requiredCapabilities benne van, DE ez csak JAVASLAT — jogot nem ad (D3).
+  fragment    Json
+  contentHash String   @map("content_hash")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  template StepTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)
+
+  @@unique([templateId, version])
+  @@map("step_template_versions")
 }
 
 // --- Fázis 2 Playbook process runtime (Feature-spec — Playbook §4.5–4.7) -----

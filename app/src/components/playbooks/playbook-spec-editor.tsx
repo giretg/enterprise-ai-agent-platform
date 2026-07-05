@@ -34,6 +34,8 @@ import {
 } from '@/components/playbooks/playbook-spec-shared'
 import { upsertRoleType } from '@/lib/playbook-v2/role-sync'
 import type { PlaybookRole } from '@/lib/playbook-v2/spec'
+import { PlaybookCanvas, type CanvasStepTemplate } from '@/components/playbooks/playbook-canvas'
+import type { LayoutStore } from '@/lib/playbook-v2/canvas-mapping'
 
 export type { PlaybookDraftSpec, PlaybookValidationResult } from '@/components/playbooks/playbook-spec-shared'
 export { syncPlaybookSpecInputSlots, validatePlaybookDraftSpec } from '@/components/playbooks/playbook-spec-shared'
@@ -46,12 +48,21 @@ export function PlaybookSpecEditor({
   spec,
   onSpecChange,
   onValidationChange,
+  layout,
+  onLayoutChange,
+  templates = [],
+  statusBadge,
 }: {
   spec: PlaybookDraftSpec
   onSpecChange: (spec: PlaybookDraftSpec) => void
   onValidationChange?: (validation: PlaybookValidationResult) => void
+  layout?: LayoutStore | null
+  onLayoutChange?: (layout: LayoutStore) => void
+  templates?: CanvasStepTemplate[]
+  statusBadge?: React.ReactNode
 }) {
   const validation = useMemo(() => validatePlaybookDraftSpec(spec), [spec])
+  const [view, setView] = useState<'canvas' | 'classic'>('canvas')
   const [jsonOpen, setJsonOpen] = useState(false)
   const [jsonText, setJsonText] = useState('')
   const [jsonError, setJsonError] = useState<string | null>(null)
@@ -253,7 +264,43 @@ export function PlaybookSpecEditor({
           onApply={applyAgentResult}
         />
 
-        <PlaybookFlowGraph spec={spec} onNodeClick={handleNodeClick} />
+        <div className="flex items-center gap-1 text-xs">
+          <span className="mr-1 text-ink-soft">Nézet:</span>
+          <button
+            onClick={() => setView('canvas')}
+            className={
+              view === 'canvas'
+                ? 'rounded-full bg-accent px-2.5 py-1 text-xs font-medium text-white'
+                : 'rounded-full border border-ink/20 px-2.5 py-1 text-xs text-ink-soft'
+            }
+          >
+            🎛 Vászon
+          </button>
+          <button
+            onClick={() => setView('classic')}
+            className={
+              view === 'classic'
+                ? 'rounded-full bg-accent px-2.5 py-1 text-xs font-medium text-white'
+                : 'rounded-full border border-ink/20 px-2.5 py-1 text-xs text-ink-soft'
+            }
+          >
+            📊 Klasszikus
+          </button>
+        </div>
+
+        {view === 'canvas' ? (
+          <PlaybookCanvas
+            spec={spec}
+            onSpecChange={updateSpec}
+            layout={layout ?? null}
+            onLayoutChange={onLayoutChange ?? (() => {})}
+            validation={validation}
+            templates={templates}
+            statusBadge={statusBadge}
+          />
+        ) : (
+          <>
+            <PlaybookFlowGraph spec={spec} onNodeClick={handleNodeClick} />
 
         {editingNode && (
           <div className="rounded-lg border border-accent/30 bg-accent/5 p-3 space-y-2">
@@ -335,6 +382,8 @@ export function PlaybookSpecEditor({
             </p>
           ))}
         </div>
+          </>
+        )}
       </div>
 
       {jsonOpen && (
