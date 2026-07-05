@@ -43,6 +43,7 @@ import { MonitorProcessAlertNotifier } from '@/domain/playbook/process-alert-not
 import { ProcessDefinitionService } from '@/domain/playbook/process-definition-service'
 import { TicketStateMachine } from '@/domain/playbook/ticket-state-machine'
 import { IamService } from '@/domain/iam/iam-service'
+import { TenantService } from '@/domain/tenant/tenant-service'
 import { SandboxAppService } from '@/domain/sandbox/sandbox-app-service'
 import { GcsArtifactStore } from '@/domain/sandbox/artifact-store'
 import { SandboxVersioningService } from '@/domain/sandbox-versioning/sandbox-versioning-service'
@@ -276,6 +277,12 @@ const iamService = new IamService(
   repositories.rolePermissions,
   repositories.audit,
   connectorGrantService,
+)
+const tenantService = new TenantService(
+  repositories.tenants,
+  repositories.tenantMemberships,
+  repositories.platformMemberships,
+  repositories.audit,
 )
 
 // Provisioning Assistant (§7.2/§14.2): a tenant egress-allowlist és a banki preset
@@ -546,7 +553,12 @@ const localWikiHarnessLauncher: HarnessLauncher = {
   mode: 'local-wiki',
   async launch(input) {
     const ticket = await repositories.tickets.findById(input.ticketId)
-    const route = resolveTicketProcessRoute(ticket?.payload)
+    // Process-instance ticketek (processInstanceId != null) a generalTaskRuntime-on futnak:
+    // a wikiRuntime `question` mezőt vár a payloadban, de a process ticketek csak
+    // `title`-t és inputSlot-okat tartalmaznak — a generalTaskRuntime már kezeli ezt
+    // (readTicketPromptText(payload) || ticket.title fallback, general-task-runtime.ts:55).
+    const isProcessTicket = Boolean(ticket?.processInstanceId)
+    const route = isProcessTicket ? 'general' : resolveTicketProcessRoute(ticket?.payload)
     if (route === 'general') {
       await generalTaskRuntime.processTicket({
         ticketId: input.ticketId,
@@ -605,6 +617,7 @@ export const services = {
   ticketStateMachine,
   conversations: conversationService,
   iam: iamService,
+  tenants: tenantService,
   provisioning: provisioningService,
   provisioningAssistant,
   playbookAuthorAgent,

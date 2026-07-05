@@ -72,19 +72,26 @@ export type CompiledSpec = {
 }
 
 /** Alapértelmezett állapot-ABC, ha a step nem ad `allowedStates`-t. */
-const DEFAULT_STATES = ['ready', 'in_progress', 'awaiting_human', 'done', 'failed'] as const
+const DEFAULT_STATES_AGENT = ['ready', 'in_progress', 'done', 'failed'] as const
+const DEFAULT_STATES_HUMAN = ['ready', 'in_progress', 'awaiting_human', 'done', 'failed'] as const
 
 export class PlaybookCompiler {
   compile(spec: PlaybookSpecV2, opts: { playbookVersionId?: string | null } = {}): CompiledSpec {
     const roleByKey = new Map(spec.roles.map((r) => [r.key, r]))
     const gateById = new Map(spec.gates.map((g) => [g.id, g]))
 
-    const ticketRules: CompiledTicketRule[] = spec.steps.map((step) => ({
+    const ticketRules: CompiledTicketRule[] = spec.steps.map((step) => {
+      const stepGateIds = [
+        ...(step.requiredGateIds ?? []),
+        ...(step.onComplete ?? []).flatMap((r) => (r.gateId ? [r.gateId] : [])),
+      ]
+      const hasGate = stepGateIds.length > 0
+      return {
       stepId: step.id,
       stepName: step.name,
       ticketType: step.ticketType,
       assignedRole: step.assignedRole,
-      allowedTransitions: this.compileTransitions(step, roleByKey),
+      allowedTransitions: this.compileTransitions(step, roleByKey, hasGate),
       instructionTemplate: step.instructionTemplate,
       inputSlots: (step.inputSlots ?? []).map((slot) => ({
         name: slot.name,
@@ -93,7 +100,8 @@ export class PlaybookCompiler {
         source: slot.source,
         description: slot.description,
       })),
-    }))
+      }
+    })
 
     const gates: CompiledGate[] = []
     const addCompiledGate = (gateId: string, stepId: string) => {
@@ -166,11 +174,16 @@ export class PlaybookCompiler {
   private compileTransitions(
     step: PlaybookStep,
     roleByKey: Map<string, { type: string }>,
+    hasGate = false,
   ): CompiledTransition[] {
-    const states = step.allowedStates?.length ? step.allowedStates : [...DEFAULT_STATES]
     const role = roleByKey.get(step.assignedRole)
-    const actorTypes: Array<'user' | 'agent' | 'system'> =
-      role?.type === 'human_role' ? ['user'] : ['agent', 'system']
+    const isHumanRole = role?.type === 'human_role'
+    const actorTypes: Array<'user' | 'agent' | 'system'> = isHumanRole ? ['user'] : ['agent', 'system']
+    // Agent-lépéseknél az awaiting_human csak akkor kerül be az alapértelmezett
+    // láncba, ha a lépéshez gate van rendelve (emberi jóváhagyás szükséges).
+    const needsAwaitingHuman = isHumanRole || hasGate
+    const defaultStates = needsAwaitingHuman ? [...DEFAULT_STATES_HUMAN] : [...DEFAULT_STATES_AGENT]
+    const states = step.allowedStates?.length ? step.allowedStates : defaultStates
 
     const transitions: CompiledTransition[] = []
     for (let i = 0; i < states.length - 1; i++) {
