@@ -8,6 +8,7 @@ import { getTicket } from '@/app/actions/platform'
 import { Badge } from '@/components/ui/shell'
 import { TICKET_STATE_LABELS, TICKET_STATE_TONE } from '@/lib/ticket-labels'
 import { extractTaskDescription, formatTicketDateTime } from '@/lib/ticket-display'
+import { PROCESS_STATUS_CLASS } from '@/lib/process-labels'
 
 export type ProcessStepView = {
   id: string
@@ -106,16 +107,6 @@ const STEP_TONE: Record<string, string> = {
   failed: 'bg-coral/15 text-coral',
 }
 
-const PROC_TONE: Record<string, string> = {
-  created: 'bg-ink/8 text-ink-soft',
-  running: 'bg-sky-500/15 text-sky-300',
-  awaiting_human: 'bg-honey/15 text-honey',
-  blocked: 'bg-coral/15 text-coral',
-  completed: 'bg-sage/15 text-sage',
-  failed: 'bg-coral/15 text-coral',
-  cancelled: 'bg-ink/8 text-ink-soft',
-}
-
 function Pill({ tone, children }: { tone: string; children: React.ReactNode }) {
   return <span className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${tone}`}>{children}</span>
 }
@@ -187,7 +178,7 @@ export function ProcessDetailView({ data, canAct }: { data: ProcessDetailData; c
           <div>
             <div className="flex items-center gap-2">
               <h2 className="font-display text-lg font-semibold">{data.process.processType}</h2>
-              <Pill tone={PROC_TONE[data.process.status] ?? 'bg-ink/8 text-ink-soft'}>
+              <Pill tone={PROCESS_STATUS_CLASS[data.process.status as keyof typeof PROCESS_STATUS_CLASS] ?? 'bg-ink/8 text-ink-soft'}>
                 {data.process.status}
               </Pill>
             </div>

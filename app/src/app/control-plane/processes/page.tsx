@@ -17,16 +17,7 @@ import {
   type StartableProcessDefinition,
 } from '@/components/processes/start-process-form'
 import { ProcessDefinitionList } from '@/components/processes/process-definition-list'
-
-const PROC_TONE: Record<string, string> = {
-  created: 'bg-ink/8 text-ink-soft',
-  running: 'bg-sky-500/15 text-sky-300',
-  awaiting_human: 'bg-honey/15 text-honey',
-  blocked: 'bg-coral/15 text-coral',
-  completed: 'bg-sage/15 text-sage',
-  failed: 'bg-coral/15 text-coral',
-  cancelled: 'bg-ink/8 text-ink-soft',
-}
+import { PROCESS_STATUS_CLASS } from '@/lib/process-labels'
 
 export default async function ProcessesPage() {
   const [user, processesRes, definitionsRes, startableRes] = await Promise.all([
@@ -139,7 +130,7 @@ export default async function ProcessesPage() {
                 </span>
                 <span
                   className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${
-                    PROC_TONE[p.status] ?? 'bg-ink/8 text-ink-soft'
+                    PROCESS_STATUS_CLASS[p.status as keyof typeof PROCESS_STATUS_CLASS] ?? 'bg-ink/8 text-ink-soft'
                   }`}
                 >
                   {p.status}

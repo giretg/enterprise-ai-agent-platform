@@ -1,5 +1,11 @@
-import type { AssigneeType, Ticket } from '@prisma/client'
+import type { AssigneeType, ProcessStatus, Ticket } from '@prisma/client'
 import { personaFor } from '@/lib/agent-persona'
+
+export type TicketProcessBadgeInfo = {
+  id: string
+  processType: string
+  status: ProcessStatus
+}
 
 export function readTicketPayload(payload: unknown): Record<string, unknown> | null {
   if (typeof payload === 'object' && payload !== null && !Array.isArray(payload)) {
@@ -169,9 +175,11 @@ export type EnrichedBoardTicket = Pick<
   | 'createdAt'
   | 'updatedAt'
   | 'createdById'
+  | 'processInstanceId'
 > &
   TicketDisplayExtras & {
     creator: TicketCreatorDisplay
+    process: TicketProcessBadgeInfo | null
   }
 
 export function formatTicketDateTime(value: Date | string): string {
@@ -206,6 +214,7 @@ export function enrichTicketsForBoard(
   names: {
     agents: Map<string, string>
     users: Map<string, string>
+    processes?: Map<string, { processType: string; status: ProcessStatus }>
   },
 ): EnrichedBoardTicket[] {
   return tickets.map((ticket) => {
@@ -221,6 +230,15 @@ export function enrichTicketsForBoard(
       responsibleAgentName: ticket.agentId ? (names.agents.get(ticket.agentId) ?? null) : null,
     })
 
+    const process = ticket.processInstanceId
+      ? (() => {
+          const info = names.processes?.get(ticket.processInstanceId as string)
+          return info
+            ? { id: ticket.processInstanceId as string, processType: info.processType, status: info.status }
+            : null
+        })()
+      : null
+
     return {
       id: ticket.id,
       title: ticket.title,
@@ -232,6 +250,7 @@ export function enrichTicketsForBoard(
       createdAt: ticket.createdAt,
       updatedAt: ticket.updatedAt,
       createdById: ticket.createdById,
+      processInstanceId: ticket.processInstanceId,
       ...display,
       creator: formatTicketCreator({
         createdById: ticket.createdById,
@@ -239,6 +258,7 @@ export function enrichTicketsForBoard(
         agentNames: names.agents,
         userNames: names.users,
       }),
+      process,
     }
   })
 }

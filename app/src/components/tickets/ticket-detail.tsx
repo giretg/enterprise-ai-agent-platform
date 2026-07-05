@@ -8,10 +8,12 @@ import { startProcessFromTicket } from '@/app/actions/process'
 import { authorizeTicketRunAs, revokeTicketRunAs } from '@/app/actions/connector-grants'
 import { ProposalCard } from '@/components/tickets/proposal-card'
 import { Badge, Card } from '@/components/ui/shell'
+import { ProcessBadge } from '@/components/processes/process-badge'
 import { TICKET_STATE_LABELS, TICKET_STATE_TONE } from '@/lib/ticket-labels'
 import { extractTaskDescription, formatTicketDateTime } from '@/lib/ticket-display'
 import { isRunAsAuthorized } from '@/lib/run-as-payload'
 import { resolveTicketTriggerInputPayload } from '@/lib/playbook-v2/trigger-input'
+import type { ProcessStatus } from '@prisma/client'
 
 function extractTaskDescriptionFromPayload(payload: Record<string, unknown> | null): string | null {
   return extractTaskDescription(payload)
@@ -45,6 +47,7 @@ type TicketView = {
     model: unknown
     recipe: { name: string; version: number; status: string } | null
   } | null
+  process?: { id: string; processType: string; status: ProcessStatus } | null
 }
 
 type TicketProcessTrigger = {
@@ -433,6 +436,13 @@ export function TicketMeta({ ticket, isAdmin = false }: { ticket: TicketView; is
           {TICKET_STATE_LABELS[ticket.state] ?? ticket.state}
         </Badge>
         <Badge tone="neutral">{ticket.type === 'training' ? 'Tanítás' : 'Interakció'}</Badge>
+        {ticket.process && (
+          <ProcessBadge
+            processInstanceId={ticket.process.id}
+            processType={ticket.process.processType}
+            status={ticket.process.status}
+          />
+        )}
       </div>
 
       <Card title="Metaadatok" className="mt-4">
