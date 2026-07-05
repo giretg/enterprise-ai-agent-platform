@@ -15,6 +15,7 @@ import {
 import type { Agent } from '@prisma/client'
 import { transitionTicket } from '@/app/actions/platform'
 import { Badge, Card } from '@/components/ui/shell'
+import { ProcessBadge } from '@/components/processes/process-badge'
 import { personaFor } from '@/lib/agent-persona'
 import { TICKET_STATE_LABELS } from '@/lib/ticket-labels'
 import {
@@ -22,6 +23,12 @@ import {
   matchesAssigneeFilter,
   type EnrichedBoardTicket,
 } from '@/lib/ticket-display'
+
+export type RecentBoardProcess = {
+  id: string
+  processType: string
+  startedAt: string
+}
 
 const COLUMN_VISIBLE_LIMIT = 10
 const COLUMN_WIDTH_CLASS = 'w-[280px] max-w-[280px]'
@@ -142,7 +149,16 @@ function KanbanColumn({
           >
             <Link href={`/control-plane/tickets/${ticket.id}`} draggable={false} className="block min-w-0">
               <Card className="!p-4 transition hover:border-coral/40">
-                <p className="break-words text-sm font-medium">{ticket.title}</p>
+                <div className="flex flex-wrap items-start justify-between gap-1.5">
+                  <p className="break-words text-sm font-medium">{ticket.title}</p>
+                  {ticket.process && (
+                    <ProcessBadge
+                      processInstanceId={ticket.process.id}
+                      processType={ticket.process.processType}
+                      status={ticket.process.status}
+                    />
+                  )}
+                </div>
                 <p className="mt-1 text-xs text-ink-faint">
                   {ticket.type === 'training' ? 'Tanítás' : 'Interakció'}
                 </p>
@@ -247,11 +263,13 @@ export function KanbanBoard({
   agents,
   canCreate = false,
   assigneeOptions,
+  recentProcesses = [],
 }: {
   tickets: EnrichedBoardTicket[]
   agents: Agent[]
   canCreate?: boolean
   assigneeOptions?: { agents: { id: string; name: string }[]; users: { id: string; name: string; role: string }[] }
+  recentProcesses?: RecentBoardProcess[]
 }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
@@ -260,6 +278,7 @@ export function KanbanBoard({
   const [message, setMessage] = useState<string | null>(null)
   const [expandedColumns, setExpandedColumns] = useState<Set<ColumnKey>>(new Set())
   const [assigneeFilter, setAssigneeFilter] = useState('all')
+  const [processFilter, setProcessFilter] = useState('all')
 
   const filterOptions = useMemo(
     () => buildAssigneeFilterOptions(tickets, agents),
@@ -267,8 +286,11 @@ export function KanbanBoard({
   )
 
   const filteredTickets = useMemo(
-    () => tickets.filter((ticket) => matchesAssigneeFilter(ticket, assigneeFilter)),
-    [tickets, assigneeFilter],
+    () =>
+      tickets
+        .filter((ticket) => matchesAssigneeFilter(ticket, assigneeFilter))
+        .filter((ticket) => processFilter === 'all' || ticket.process?.id === processFilter),
+    [tickets, assigneeFilter, processFilter],
   )
 
   const handleDrop = (ticketId: string, toState: ColumnKey) => {
@@ -306,7 +328,30 @@ export function KanbanBoard({
             </option>
           ))}
         </select>
-        {assigneeFilter !== 'all' && (
+
+        {recentProcesses.length > 0 && (
+          <>
+            <label htmlFor="process-filter" className="text-sm font-medium text-ink-soft">
+              Folyamat
+            </label>
+            <select
+              id="process-filter"
+              value={processFilter}
+              onChange={(e) => setProcessFilter(e.target.value)}
+              className="rounded-lg border border-line bg-night-2 px-3 py-2 text-sm text-ink"
+            >
+              <option value="all">Mind</option>
+              {recentProcesses.map((process) => (
+                <option key={process.id} value={process.id}>
+                  {process.processType} · #{process.id.slice(0, 8)} ·{' '}
+                  {new Date(process.startedAt).toLocaleDateString('hu-HU')}
+                </option>
+              ))}
+            </select>
+          </>
+        )}
+
+        {(assigneeFilter !== 'all' || processFilter !== 'all') && (
           <span className="text-xs text-ink-faint">{filteredTickets.length} feladat</span>
         )}
       </div>

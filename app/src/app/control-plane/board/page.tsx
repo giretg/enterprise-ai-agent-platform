@@ -1,21 +1,26 @@
 import { getCurrentUser } from '@/auth'
 import { hasMinimumRole } from '@/auth/types'
 import { listAgents, listBoardAssignees, listBoardTickets } from '@/app/actions/platform'
+import { listProcesses } from '@/app/actions/process'
 import { KanbanBoard } from '@/components/tickets/kanban-board'
+
+const RECENT_PROCESS_LIMIT = 20
 
 export default async function BoardPage() {
   const user = await getCurrentUser()
   const canCreate = user ? hasMinimumRole(user.role, 'operator') : false
 
-  const [ticketsRes, agentsRes, assigneesRes] = await Promise.all([
+  const [ticketsRes, agentsRes, assigneesRes, processesRes] = await Promise.all([
     listBoardTickets(),
     listAgents(),
     canCreate ? listBoardAssignees() : Promise.resolve(null),
+    listProcesses(),
   ])
   const tickets = ticketsRes.success ? ticketsRes.data : []
   const agents = agentsRes.success ? agentsRes.data : []
   const assigneeOptions =
     assigneesRes && assigneesRes.success ? assigneesRes.data : undefined
+  const recentProcesses = processesRes.success ? processesRes.data.slice(0, RECENT_PROCESS_LIMIT) : []
   const loadError = !ticketsRes.success ? ticketsRes.error : null
 
   return (
@@ -39,6 +44,7 @@ export default async function BoardPage() {
         agents={agents}
         canCreate={canCreate}
         assigneeOptions={assigneeOptions}
+        recentProcesses={recentProcesses}
       />
     </div>
   )

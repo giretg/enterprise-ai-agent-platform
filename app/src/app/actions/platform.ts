@@ -358,16 +358,18 @@ export async function listBoardTickets() {
 
     const agentIds = new Set<string>()
     const userIds = new Set<string>()
+    const processInstanceIds = new Set<string>()
     for (const ticket of tickets) {
       userIds.add(ticket.createdById)
       if (ticket.assigneeType === 'agent' && ticket.assigneeId) agentIds.add(ticket.assigneeId)
       if (ticket.assigneeType === 'human' && ticket.assigneeId) userIds.add(ticket.assigneeId)
       if (ticket.agentId) agentIds.add(ticket.agentId)
+      if (ticket.processInstanceId) processInstanceIds.add(ticket.processInstanceId)
       const creatorAgentId = extractCreatorAgentId(ticket.payload)
       if (creatorAgentId) agentIds.add(creatorAgentId)
     }
 
-    const [agents, users] = await Promise.all([
+    const [agents, users, processes] = await Promise.all([
       agentIds.size > 0
         ? prisma.agent.findMany({
             where: { id: { in: [...agentIds] } },
@@ -380,11 +382,18 @@ export async function listBoardTickets() {
             select: { id: true, name: true },
           })
         : Promise.resolve([]),
+      processInstanceIds.size > 0
+        ? prisma.processInstance.findMany({
+            where: { id: { in: [...processInstanceIds] } },
+            select: { id: true, processType: true, status: true },
+          })
+        : Promise.resolve([]),
     ])
 
     const enriched = enrichTicketsForBoard(tickets, {
       agents: new Map(agents.map((agent) => [agent.id, agent.name])),
       users: new Map(users.map((u) => [u.id, u.name])),
+      processes: new Map(processes.map((p) => [p.id, { processType: p.processType, status: p.status }])),
     })
 
     return ok(enriched)
@@ -454,13 +463,19 @@ export async function getTicket(input: { id: string }) {
       ? await repositories.agents.findById(ticket.agentId)
       : null
     const creatorAgentId = extractCreatorAgentId(ticket.payload)
-    const [assigneeUser, creatorUser, creatorAgent] = await Promise.all([
+    const [assigneeUser, creatorUser, creatorAgent, process] = await Promise.all([
       ticket.assigneeType === 'human' && ticket.assigneeId
         ? prisma.user.findUnique({ where: { id: ticket.assigneeId }, select: { name: true } })
         : Promise.resolve(null),
       prisma.user.findUnique({ where: { id: ticket.createdById }, select: { name: true } }),
       creatorAgentId
         ? repositories.agents.findById(creatorAgentId)
+        : Promise.resolve(null),
+      ticket.processInstanceId
+        ? prisma.processInstance.findUnique({
+            where: { id: ticket.processInstanceId },
+            select: { id: true, processType: true, status: true },
+          })
         : Promise.resolve(null),
     ])
 
@@ -480,6 +495,7 @@ export async function getTicket(input: { id: string }) {
       ...ticket,
       reproduction,
       ...display,
+      process,
       creator: formatTicketCreator({
         createdById: ticket.createdById,
         payload: ticket.payload,
