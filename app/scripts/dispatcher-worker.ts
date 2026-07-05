@@ -7,6 +7,11 @@
  * Cloud Run service-ként (production, min-instances ≥ 1) a konténernek a $PORT-ra
  * kell figyelnie, különben a platform unhealthy-nek jelöli — ezért egy minimális
  * health-szerver fut a worker mellett (lásd startHealthServer).
+ *
+ * DISPATCHER_RUN_FOR_MS (opcionális): ha be van állítva, a worker ennyi ms után
+ * magától leáll (lezárja a LISTEN-kapcsolatot, kilép) — így lokális teszteléshez
+ * NEM kell örökké futó process, csak amíg tényleg kell (§5.7 költség-kiegészítés).
+ * Pl.: DISPATCHER_RUN_FOR_MS=120000 npm run dispatcher:worker
  */
 import { config } from 'dotenv'
 import { resolve } from 'path'
@@ -20,12 +25,11 @@ import { services } from '../src/domain'
 import { ensureActiveDatabaseMode } from '../src/lib/db'
 import { getActiveDatabaseMode } from '../src/lib/database-mode'
 import { DISPATCH_NOTIFY_CHANNEL } from '../src/lib/dispatch-notify'
+import { runDispatchCycle as runSharedDispatchCycle } from '../src/domain/dispatcher/run-dispatch-cycle'
 
 const POLL_INTERVAL_MS = Number(process.env.DISPATCHER_POLL_INTERVAL_MS ?? 30_000)
 const BATCH_LIMIT = Number(process.env.DISPATCHER_BATCH_LIMIT ?? 10)
-
-let dispatchInFlight = false
-let lastMonitorSweepAt = 0
+const RUN_FOR_MS = Number(process.env.DISPATCHER_RUN_FOR_MS ?? 0)
 
 const health = {
   startedAt: new Date().toISOString(),
@@ -74,71 +78,37 @@ function startHealthServer() {
 }
 
 async function runDispatchCycle(ticketId?: string) {
-  if (dispatchInFlight) return
-  dispatchInFlight = true
   try {
-    await ensureActiveDatabaseMode()
-    const reclaimed = await services.dispatcher.reclaimStaleDispatches()
-    if (reclaimed.some((r) => r.status === 'reclaimed')) {
+    const summary = await runSharedDispatchCycle({ ticketId, batchLimit: BATCH_LIMIT })
+    if (summary.skipped) return
+
+    if (summary.reclaimedDispatches > 0) {
+      console.log(`[dispatcher] reclaimed ${summary.reclaimedDispatches} stale in_progress ticket(s)`)
+    }
+    if (summary.reclaimedScheduledTasks > 0) {
       console.log(
-        `[dispatcher] reclaimed ${reclaimed.filter((r) => r.status === 'reclaimed').length} stale in_progress ticket(s)`,
+        `[dispatcher] reclaimed ${summary.reclaimedScheduledTasks} stale materializing scheduled task(s)`,
       )
     }
-
-    const reclaimedTasks = await services.scheduledTasks.reclaimStaleMaterializations()
-    if (reclaimedTasks.some((r) => r.status === 'reclaimed')) {
+    if (summary.materializedScheduledTasks > 0) {
+      console.log(`[dispatcher] materialized ${summary.materializedScheduledTasks} scheduled task(s)`)
+    }
+    if (summary.monitorSweep.ran && summary.monitorSweep.escalated > 0) {
       console.log(
-        `[dispatcher] reclaimed ${reclaimedTasks.filter((r) => r.status === 'reclaimed').length} stale materializing scheduled task(s)`,
+        `[dispatcher] monitor: ${summary.monitorSweep.escalated} escalated sweep(s), ${summary.monitorSweep.openedTickets} ticket(s) opened`,
       )
     }
-
-    const materialized = await services.scheduledTasks.materializeDue(new Date(), BATCH_LIMIT)
-    const materializedCount = materialized.filter((r) => r.status === 'materialized').length
-    if (materializedCount > 0) {
-      console.log(`[dispatcher] materialized ${materializedCount} scheduled task(s)`)
-    }
-
-    // Proaktív monitor: nem-LLM söprés (1. lépcső). A drága LLM csak küszöböt átlépő
-    // jelnél, az eszkalált ticketen át indul (a meglévő dispatch-budget alatt).
-    const monitorControls = await services.platformSettings.getMonitorControls()
-    const monitorDue = Date.now() - lastMonitorSweepAt >= monitorControls.sweepIntervalSec * 1000
-    if (monitorControls.killSwitch) {
-      await services.platformSettings.auditMonitorSweepSkipped('kill_switch', {
-        sweepIntervalSec: monitorControls.sweepIntervalSec,
-        maxConcurrent: monitorControls.maxConcurrent,
-      })
-    } else if (monitorDue) {
-      lastMonitorSweepAt = Date.now()
-      await services.monitors.reclaimStaleLocks()
-      const sweeps = await services.monitors.sweepDue(
-        new Date(),
-        Math.min(BATCH_LIMIT, monitorControls.maxConcurrent),
-      )
-      const escalated = sweeps.filter((s) => s.outcome === 'escalated').length
-      if (escalated > 0) {
-        const opened = sweeps.reduce((sum, s) => sum + s.openedTicketIds.length, 0)
-        console.log(`[dispatcher] monitor: ${escalated} escalated sweep(s), ${opened} ticket(s) opened`)
-      }
-    }
-
-    const workspacePurge = await services.workspaceLifecycle.purgeExpiredWorkspaces(BATCH_LIMIT)
-    if (workspacePurge.purgedTickets > 0) {
+    if (summary.workspacePurge.purgedTickets > 0) {
       console.log(
-        `[dispatcher] purged ${workspacePurge.purgedTickets} expired workspace(s), ${workspacePurge.deletedObjects} object(s)`,
+        `[dispatcher] purged ${summary.workspacePurge.purgedTickets} expired workspace(s), ${summary.workspacePurge.deletedObjects} object(s)`,
       )
     }
 
     if (ticketId) {
-      const result = await services.dispatcher.dispatchTicket(ticketId)
-      console.log(`[dispatcher] ticket ${ticketId.slice(0, 8)}… → ${result.status}`)
-      return
-    }
-
-    const results = await services.dispatcher.dispatchReadyBatch(BATCH_LIMIT)
-    const started = results.filter((r) => r.status === 'started').length
-    if (started > 0 || results.some((r) => r.status === 'budget_blocked')) {
+      console.log(`[dispatcher] ticket ${ticketId.slice(0, 8)}… → ${summary.dispatch.ticketStatus}`)
+    } else if (summary.dispatch.started > 0 || summary.dispatch.budgetBlocked > 0) {
       console.log(
-        `[dispatcher] batch: ${results.length} scanned, ${started} started, ${results.filter((r) => r.status === 'budget_blocked').length} budget_blocked`,
+        `[dispatcher] batch: ${summary.dispatch.scanned} scanned, ${summary.dispatch.started} started, ${summary.dispatch.budgetBlocked} budget_blocked`,
       )
     }
     health.lastCycleAt = new Date().toISOString()
@@ -148,8 +118,6 @@ async function runDispatchCycle(ticketId?: string) {
     const message = error instanceof Error ? error.message : String(error)
     health.lastCycleError = message
     console.error('[dispatcher] cycle error:', message)
-  } finally {
-    dispatchInFlight = false
   }
 }
 
@@ -230,6 +198,14 @@ async function main() {
   triggerShutdown = shutdown
   process.on('SIGINT', () => void shutdown('SIGINT'))
   process.on('SIGTERM', () => void shutdown('SIGTERM'))
+
+  // Határidős futtatás (§5.7 költség-kiegészítés): ha be van állítva, a worker nem
+  // fut örökké — ennyi ms után lezárja a LISTEN-kapcsolatot és kilép. Így lokálisan
+  // csak addig terheli a Neon-t, amíg tényleg tesztelsz, nem "eszméletlenül" örökké.
+  if (RUN_FOR_MS > 0) {
+    console.log(`[dispatcher] DISPATCHER_RUN_FOR_MS beállítva — ${RUN_FOR_MS}ms után magától leáll`)
+    setTimeout(() => void shutdown('timebox'), RUN_FOR_MS)
+  }
 }
 
 main().catch((error) => {

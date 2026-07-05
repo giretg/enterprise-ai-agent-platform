@@ -79,6 +79,11 @@ const monitorNotifier = new RoutingMonitorNotifier(
   { chat: new WebhookChatNotifier() },
   new AuditOnlyMonitorNotifier(),
 )
+// Lazy referencia: a `dispatcherService` lejjebb, ProcessService-en TÚL épül fel (a
+// local-wiki launcher a wiki/generalTask runtime-okra épít, azok meg a processService-re
+// hivatkoznak toolBrokerServicen át) — kör nélkül csak függvényreferenciával adható át.
+// A closure csak akkor fut le, amikor egy ticket ready lesz, tehát a modul-inicializálás
+// végére `dispatcherService` már biztosan létezik (TDZ csak azonnali hívásnál számítana).
 const processService = new ProcessService(
   repositories.processes,
   repositories.playbooksV2,
@@ -90,6 +95,7 @@ const processService = new ProcessService(
   repositories.toolBroker,
   repositories.users,
   new MonitorProcessAlertNotifier(monitorNotifier),
+  (ticketId: string) => dispatcherService.dispatchTicket(ticketId),
 )
 const processDefinitionService = new ProcessDefinitionService(
   repositories.processDefinitions,

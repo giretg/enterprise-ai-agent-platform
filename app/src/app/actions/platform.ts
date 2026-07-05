@@ -198,14 +198,9 @@ async function runAgentTicketDispatch(
   ticketId: string,
   agentId: string,
 ): Promise<{ warning?: string; error?: string }> {
-  const launcherMode = process.env.HARNESS_LAUNCHER_MODE ?? 'local-wiki'
-  if (launcherMode !== 'local-wiki') {
-    return {
-      warning:
-        'Ticket létrejött (ready). Docker/Cloud Run módban a feldolgozáshoz futtasd: npm run dispatcher:worker',
-    }
-  }
-
+  // Azonnali dispatch minden launcher módban (§5.7 kiegészítés): a launch() docker-local
+  // és cloud-run-job esetén is fire-and-forget (konténer/Job indul, az eredmény külön
+  // harness-callbacken jön vissza) — nincs ok itt megvárni egy külön dispatcher-workert.
   try {
     const dispatchResult = await services.dispatcher.dispatchTicket(ticketId)
     if (dispatchResult.status === 'budget_blocked') {
@@ -228,7 +223,7 @@ async function runAgentTicketDispatch(
     if (dispatchResult.status === 'skipped') {
       return {
         warning:
-          'Ticket létrejött (ready), de a feldolgozás most nem indult el — frissíts, vagy indítsd a dispatcher workert.',
+          'Ticket létrejött (ready), de a feldolgozás most nem indult el — a cron safety-net vagy egy kézi dispatch veszi fel.',
       }
     }
     return {}
