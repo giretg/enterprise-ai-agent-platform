@@ -38,6 +38,7 @@ const COLUMNS = [
   { key: 'ready', label: TICKET_STATE_LABELS.ready, accent: 'border-honey/40' },
   { key: 'in_progress', label: TICKET_STATE_LABELS.in_progress, accent: 'border-sky/40' },
   { key: 'awaiting_human', label: TICKET_STATE_LABELS.awaiting_human, accent: 'border-coral/40' },
+  { key: 'needs_info', label: TICKET_STATE_LABELS.needs_info, accent: 'border-honey/50' },
   { key: 'approved', label: TICKET_STATE_LABELS.approved, accent: 'border-sage/40' },
   { key: 'done', label: TICKET_STATE_LABELS.done, accent: 'border-sage/60' },
   { key: 'rejected', label: TICKET_STATE_LABELS.rejected, accent: 'border-coral/60' },

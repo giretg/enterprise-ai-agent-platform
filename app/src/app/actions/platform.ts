@@ -91,6 +91,8 @@ import {
   ticketIdSchema,
   ticketTypeConfigSchema,
   transitionTicketSchema,
+  addTicketCommentSchema,
+  listTicketCommentsSchema,
   modelPolicyEntrySchema,
   createBoardTicketSchema,
   inviteUserSchema,
@@ -237,6 +239,48 @@ async function runAgentTicketDispatch(
           : 'Ticket létrejött, de a feldolgozás elbukott',
     }
   }
+}
+
+function assertTicketTenantScope(ticket: { tenantId: string | null }, tenantId: string | null) {
+  if (ticket.tenantId !== tenantId) throw new Error('Ticket not found')
+}
+
+function canWriteTicketComment(
+  ticket: { createdById: string },
+  user: { user: { id: string }; activeTenantRole: UserRole },
+) {
+  return hasMinimumRole(user.activeTenantRole, 'operator') || ticket.createdById === user.user.id
+}
+
+function metadataRecord(value: unknown): Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {}
+}
+
+function allowedTicketAttachment(file: File): boolean {
+  const mime = file.type || 'application/octet-stream'
+  const allowedMime =
+    mime.startsWith('image/') ||
+    [
+      'application/pdf',
+      'text/plain',
+      'text/markdown',
+      'text/csv',
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    ].includes(mime)
+  const allowedExtension = /\.(txt|md|csv|pdf|docx|xlsx|png|jpe?g|webp|gif)$/i.test(file.name)
+  return allowedMime || allowedExtension
+}
+
+async function requireCommentWritableTicket(ticketId: string) {
+  const user = await requireTenantRole(['viewer', 'operator', 'approver', 'admin'])
+  const ticket = await repositories.tickets.findById(ticketId)
+  if (!ticket) throw new Error('Ticket not found')
+  assertTicketTenantScope(ticket, user.activeTenantId)
+  if (!canWriteTicketComment(ticket, user)) throw new Error('Insufficient permissions')
+  return { user, ticket }
 }
 
 export async function createBoardTicket(input: {
@@ -516,6 +560,225 @@ export async function getTicketTransitions(input: { id: string }) {
   }
 }
 
+export async function listTicketComments(input: { ticketId: string }) {
+  try {
+    const user = await requireTenantRole('viewer')
+    const parsed = listTicketCommentsSchema.parse(input)
+    const ticket = await repositories.tickets.findById(parsed.ticketId)
+    if (!ticket) return fail('Ticket not found')
+    assertTicketTenantScope(ticket, user.activeTenantId)
+    return ok(await repositories.tickets.listComments(parsed.ticketId))
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to list ticket comments')
+  }
+}
+
+export async function uploadTicketCommentAttachment(formData: FormData) {
+  try {
+    const ticketId = formData.get('ticketId')
+    const kindRaw = formData.get('kind')
+    const file = formData.get('file')
+    if (typeof ticketId !== 'string') return fail('ticketId is required')
+    const { user, ticket } = await requireCommentWritableTicket(ticketId)
+    if (!(file instanceof File)) return fail('No file provided')
+    if (file.size > 25 * 1024 * 1024) return fail('A fájl legfeljebb 25 MB lehet')
+    if (!allowedTicketAttachment(file)) return fail('Nem támogatott fájltípus')
+
+    const kind = kindRaw === 'screenshot' ? 'screenshot' : 'file'
+    const filename = safeUploadFilename(file.name || (kind === 'screenshot' ? 'screenshot.png' : 'upload.bin'))
+    const mimeType = file.type || null
+    const buffer = Buffer.from(await file.arrayBuffer())
+    let extractedText = ''
+    let extraction: StructuredExtraction | null = null
+
+    if (mimeType?.startsWith('image/')) {
+      extractedText = `[image:${mimeType}]${buffer.toString('base64')}`
+    } else {
+      extraction = await extractStructured({ buffer, filename, mimeType })
+      extractedText = extraction.markdown
+    }
+
+    const { storageRef, absolutePath } = resolveUploadTarget(filename)
+    await mkdir(path.dirname(absolutePath), { recursive: true })
+    await writeFile(absolutePath, extractedText)
+
+    const document = await repositories.documents.create({
+      filename,
+      storageRef,
+      extractedText,
+      status: 'uploaded',
+      connectorId: null,
+      uploadedById: user.user.id,
+      mimeType,
+      metadata: {
+        ticketCommentDraft: true,
+        ticketId: ticket.id,
+        kind,
+        byteSize: file.size,
+        ...(extraction ? { extraction: toExtractionMetadata(extraction) } : {}),
+      },
+    })
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.user.id,
+      agentVersion: null,
+      action: 'ticket.comment.attachment.uploaded',
+      targetType: 'document',
+      targetId: document.id,
+      modelUsed: null,
+      inputRef: ticket.id,
+      outputRef: filename,
+      policyDecision: 'allowed',
+      metadata: { filename, mimeType, byteSize: file.size, kind },
+      tenantId: ticket.tenantId,
+      ticketId: ticket.id,
+    })
+
+    return ok({
+      documentId: document.id,
+      filename: document.filename,
+      mimeType: document.mimeType,
+      kind,
+      byteSize: file.size,
+    })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Attachment upload failed')
+  }
+}
+
+export async function addTicketComment(input: {
+  ticketId: string
+  body?: string
+  attachmentDocumentIds?: string[]
+  handBackToAgent?: boolean
+}) {
+  try {
+    const parsed = addTicketCommentSchema.parse(input)
+    const { user, ticket } = await requireCommentWritableTicket(parsed.ticketId)
+    const body = parsed.body.trim()
+    const attachmentIds = [...new Set(parsed.attachmentDocumentIds)]
+    if (!body && attachmentIds.length === 0) return fail('Komment vagy csatolmány megadása kötelező')
+    if (parsed.handBackToAgent && !ticket.agentId) return fail('A ticket nincs agenthez rendelve')
+    if (parsed.handBackToAgent && ticket.processInstanceId) {
+      return fail('Folyamat-ticketet v1-ben nem lehet agentnek visszaadni')
+    }
+    if (parsed.handBackToAgent && !['done', 'awaiting_human'].includes(ticket.state)) {
+      return fail('Csak kész vagy emberi válaszra váró ticket adható vissza agentnek')
+    }
+
+    const documents = attachmentIds.length
+      ? await prisma.document.findMany({ where: { id: { in: attachmentIds } } })
+      : []
+    const byId = new Map(documents.map((document) => [document.id, document]))
+    const usedAttachmentCount = attachmentIds.length
+      ? await prisma.ticketCommentAttachment.count({ where: { documentId: { in: attachmentIds } } })
+      : 0
+    if (usedAttachmentCount > 0) return fail('Egy csatolmány már hozzá van kötve egy kommenthez')
+
+    const attachments = attachmentIds.map((documentId) => {
+      const document = byId.get(documentId)
+      if (!document) throw new Error('Attachment not found')
+      const meta = metadataRecord(document.metadata)
+      if (document.uploadedById !== user.user.id) throw new Error('Attachment owner mismatch')
+      if (document.connectorId !== null) throw new Error('Attachment is already attached to a connector')
+      if (meta.ticketCommentDraft !== true || meta.ticketId !== ticket.id) {
+        throw new Error('Attachment is not a draft for this ticket')
+      }
+      return {
+        documentId,
+        kind: meta.kind === 'screenshot' ? 'screenshot' as const : 'file' as const,
+        filename: document.filename,
+        mimeType: document.mimeType,
+        byteSize: typeof meta.byteSize === 'number' ? meta.byteSize : null,
+      }
+    })
+
+    const recentDuplicate = await prisma.ticketComment.findFirst({
+      where: {
+        ticketId: ticket.id,
+        authorUserId: user.user.id,
+        kind: 'human_comment',
+        body,
+        createdAt: { gte: new Date(Date.now() - 15_000) },
+      },
+      orderBy: { createdAt: 'desc' },
+    })
+    if (recentDuplicate) {
+      return ok({ comment: recentDuplicate, warning: 'Dupla beküldés kihagyva.' })
+    }
+
+    const comment = await repositories.tickets.appendComment({
+      ticketId: ticket.id,
+      kind: 'human_comment',
+      authorType: 'human',
+      authorUserId: user.user.id,
+      authorDisplayName: user.user.name,
+      body,
+      attachments,
+    })
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.user.id,
+      agentVersion: null,
+      action: 'ticket.comment.add',
+      targetType: 'ticket',
+      targetId: ticket.id,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: String(comment.seq),
+      policyDecision: 'allowed',
+      metadata: { attachmentCount: attachments.length },
+      tenantId: ticket.tenantId,
+      ticketId: ticket.id,
+    })
+
+    let warning: string | undefined
+    if (parsed.handBackToAgent) {
+      await services.tickets.transition({
+        ticketId: ticket.id,
+        toState: 'needs_info',
+        actor: { type: 'human', userId: user.user.id, role: user.activeTenantRole },
+        note: body || 'Pontosítás csatolmányban',
+      })
+      await services.tickets.transition({
+        ticketId: ticket.id,
+        toState: 'ready',
+        actor: { type: 'system' },
+      })
+      await repositories.tickets.appendComment({
+        ticketId: ticket.id,
+        kind: 'system_note',
+        authorType: 'system',
+        body: 'Visszaadva újrafeldolgozásra',
+      })
+      await repositories.audit.append({
+        actorType: 'human',
+        actorId: user.user.id,
+        agentVersion: null,
+        action: 'ticket.handback',
+        targetType: 'ticket',
+        targetId: ticket.id,
+        modelUsed: null,
+        inputRef: ticket.state,
+        outputRef: 'ready',
+        policyDecision: 'allowed',
+        metadata: { commentId: comment.id },
+        tenantId: ticket.tenantId,
+        ticketId: ticket.id,
+      })
+      if (!ticket.agentId) return fail('A ticket nincs agenthez rendelve')
+      const dispatchOutcome = await runAgentTicketDispatch(ticket.id, ticket.agentId)
+      warning = dispatchOutcome.error ?? dispatchOutcome.warning
+    }
+
+    return ok({ comment, warning })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to add ticket comment')
+  }
+}
+
 export async function transitionTicket(input: {
   id: string
   toState: string
@@ -527,6 +790,7 @@ export async function transitionTicket(input: {
 
     const existing = await repositories.tickets.findById(parsed.id)
     if (!existing) return fail('Ticket not found')
+    assertTicketTenantScope(existing, user.activeTenantId)
 
     if (
       existing.type === 'training' &&
@@ -546,6 +810,17 @@ export async function transitionTicket(input: {
       actor: { type: 'human', userId: user.user.id, role: user.activeTenantRole },
       note: parsed.note,
     })
+
+    if (parsed.note?.trim()) {
+      await repositories.tickets.appendComment({
+        ticketId: parsed.id,
+        kind: 'human_comment',
+        authorType: 'human',
+        authorUserId: user.user.id,
+        authorDisplayName: user.user.name,
+        body: parsed.note.trim(),
+      })
+    }
 
     if (parsed.toState === 'approved') {
       const done = await services.tickets.transition({
@@ -1794,7 +2069,11 @@ export async function listDocumentsForAgent(input: { agentId: string }) {
 // ── KB-dokumentum jóváhagyási kapu (§9.3 / §4.6) ───────────────────────────
 
 /** Feltöltött dokumentumhoz jóváhagyási (tanítási) ticketet nyit — még nem kereshető. */
-export async function requestKbDocument(input: { documentId: string; agentId: string }) {
+export async function requestKbDocument(input: {
+  documentId: string
+  agentId: string
+  processingMode?: 'raw_text_only' | 'okf'
+}) {
   try {
     const user = await requireTenantRole('operator')
     const parsed = requestKbDocumentSchema.parse(input)
@@ -1802,6 +2081,7 @@ export async function requestKbDocument(input: { documentId: string; agentId: st
       agentId: parsed.agentId,
       documentId: parsed.documentId,
       createdById: user.user.id,
+      processingMode: parsed.processingMode,
     })
     return ok(ticket)
   } catch (e) {
@@ -3134,9 +3414,32 @@ export async function adminUpsertModelPolicyEntry(input: {
 export async function adminUpsertTicketType(input: {
   type: 'interaction' | 'training' | 'monitor_alert'
   allowedTransitions: Array<{
-    from: 'backlog' | 'ready' | 'approved' | 'in_progress' | 'awaiting_human' | 'done' | 'rejected'
-    to: 'backlog' | 'ready' | 'approved' | 'in_progress' | 'awaiting_human' | 'done' | 'rejected'
-    allowed: 'system' | 'agent' | 'approver' | 'operator' | 'admin' | 'system_or_operator'
+    from:
+      | 'backlog'
+      | 'ready'
+      | 'approved'
+      | 'in_progress'
+      | 'awaiting_human'
+      | 'needs_info'
+      | 'done'
+      | 'rejected'
+    to:
+      | 'backlog'
+      | 'ready'
+      | 'approved'
+      | 'in_progress'
+      | 'awaiting_human'
+      | 'needs_info'
+      | 'done'
+      | 'rejected'
+    allowed:
+      | 'system'
+      | 'agent'
+      | 'approver'
+      | 'operator'
+      | 'admin'
+      | 'system_or_operator'
+      | 'creator_or_operator'
   }>
 }) {
   try {

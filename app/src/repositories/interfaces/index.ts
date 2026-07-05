@@ -1,5 +1,6 @@
 import type {
   Agent,
+  AuditActorType,
   AuditLog,
   Connector,
   ConnectorAccessMode,
@@ -80,6 +81,10 @@ import type {
   ProcessActorType,
   ToolCall,
   Ticket,
+  TicketComment,
+  TicketCommentAttachment,
+  TicketCommentAttachmentKind,
+  TicketCommentKind,
   TicketSource,
   TicketState,
   TicketTransition,
@@ -174,8 +179,37 @@ export interface TicketRepository {
   completeDispatchLock(id: string, lockToken: string): Promise<Ticket | null>
   recordTransition(data: Omit<TicketTransition, 'id' | 'ts'>): Promise<TicketTransition>
   findTransitions(ticketId: string): Promise<TicketTransition[]>
+  appendComment(data: AppendTicketCommentInput): Promise<TicketCommentWithAttachments>
+  listComments(ticketId: string): Promise<TicketCommentWithAttachments[]>
   /** Transition statistics for the governance dashboard (§11: kontroll — jóváhagyott vs. automatikus lépések, visszadobási arány). */
   getTransitionStats(since?: Date): Promise<TransitionStats>
+}
+
+export type TicketCommentWithAttachments = TicketComment & {
+  attachments: Array<TicketCommentAttachment & { document: Document }>
+}
+
+export type AppendTicketCommentAttachmentInput = {
+  documentId: string
+  kind: TicketCommentAttachmentKind
+  filename: string
+  mimeType?: string | null
+  byteSize?: number | null
+}
+
+export type AppendTicketCommentInput = {
+  ticketId: string
+  kind: TicketCommentKind
+  authorType: AuditActorType
+  authorUserId?: string | null
+  authorAgentId?: string | null
+  authorDisplayName?: string | null
+  agentVersion?: number | null
+  body: string
+  structured?: Prisma.InputJsonValue | null
+  parentId?: string | null
+  transitionId?: string | null
+  attachments?: AppendTicketCommentAttachmentInput[]
 }
 
 export interface ScheduledTaskRepository {

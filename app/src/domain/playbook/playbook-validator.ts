@@ -69,6 +69,7 @@ export class PlaybookValidator {
     this.checkCycles(spec, errors, warnings)
     this.checkGateCriticality(spec, errors)
     this.checkRoleAssigneeCompatibility(spec, errors)
+    this.checkDeliverables(spec, errors)
     this.checkInputSlots(spec, errors, warnings)
     this.checkTimeouts(spec, warnings)
     this.checkTenantContext(spec, ctx, errors, warnings)
@@ -286,6 +287,23 @@ export class PlaybookValidator {
             message: `A(z) '${gate.id}' human_approval gate-hez nincs emberi role.`,
           })
         }
+      }
+    })
+  }
+
+  // §4.7b — fájl-deliverable csak agent-lépésen értelmes (a fájl-eszközöket az
+  //         agent hívja; emberi lépés nem gyárt tool-lal fájlt).
+  private checkDeliverables(spec: PlaybookSpecV2, errors: ValidationIssue[]) {
+    const roleByKey = new Map(spec.roles.map((r) => [r.key, r]))
+    spec.steps.forEach((step, i) => {
+      if (!step.deliverable) return
+      const role = roleByKey.get(step.assignedRole)
+      if (role && role.type !== 'agent_role') {
+        errors.push({
+          code: 'DELIVERABLE_ON_NON_AGENT_STEP',
+          path: `steps[${i}].deliverable`,
+          message: `A(z) '${step.id}' lépés deliverable-t deklarál, de a szerepe (${step.assignedRole}) nem agent_role — fájlt csak agent-lépés gyárthat.`,
+        })
       }
     })
   }

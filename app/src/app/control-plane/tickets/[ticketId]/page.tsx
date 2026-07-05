@@ -1,5 +1,5 @@
 import { notFound } from 'next/navigation'
-import { getTicket } from '@/app/actions/platform'
+import { getTicket, listTicketComments } from '@/app/actions/platform'
 import { listProcessDefinitions } from '@/app/actions/process'
 import { getCurrentUser } from '@/auth'
 import { hasMinimumRole } from '@/auth/types'
@@ -10,6 +10,7 @@ import {
   TicketRunAsAuthorization,
   type TicketStartableProcessDefinition,
 } from '@/components/tickets/ticket-detail'
+import { TicketThread } from '@/components/tickets/ticket-thread'
 import { TicketFilesPanel } from '@/components/tickets/ticket-files-panel'
 import { TicketHistory } from '@/components/tickets/ticket-history'
 
@@ -19,8 +20,9 @@ export default async function TicketDetailPage({
   params: Promise<{ ticketId: string }>
 }) {
   const { ticketId } = await params
-  const [res, user, definitionsRes] = await Promise.all([
+  const [res, commentsRes, user, definitionsRes] = await Promise.all([
     getTicket({ id: ticketId }),
+    listTicketComments({ ticketId }),
     getCurrentUser(),
     listProcessDefinitions({ status: 'active' }),
   ])
@@ -52,6 +54,7 @@ export default async function TicketDetailPage({
   return (
     <div className="space-y-6">
       <TicketMeta ticket={ticket} isAdmin={isAdmin} />
+      <TicketThread ticket={ticket} comments={commentsRes.success ? commentsRes.data : []} />
       <TicketRunAsAuthorization ticket={ticket} canManageRunAs={canManageRunAs} />
       {canStartProcess && <TicketProcessStartPanel ticket={ticket} definitions={definitions} />}
       <TicketFilesPanel ticketId={ticket.id} ticketState={ticket.state} />

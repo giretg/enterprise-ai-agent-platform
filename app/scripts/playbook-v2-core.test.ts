@@ -22,6 +22,13 @@ import { PlaybookValidator } from '../src/domain/playbook/playbook-validator'
 import { PlaybookCompiler } from '../src/domain/playbook/playbook-compiler'
 import { syncInputSlotsWithTemplate } from '../src/lib/playbook-v2/input-slots-sync'
 import { getRoleType, upsertRoleType } from '../src/lib/playbook-v2/role-sync'
+import { stringifyValue } from '../src/lib/playbook-v2/effective-prompt'
+import {
+  DELIVERABLE_TOOL_BY_FORMAT,
+  formatDeliverableInstruction,
+  pickDeliverableFile,
+  requireDeliverableFile,
+} from '../src/lib/playbook-v2/process-step-payload'
 
 let failures = 0
 function check(name: string, fn: () => void) {
@@ -373,6 +380,98 @@ check('role sync: upsertRoleType frissít meglévőt', () => {
 check('role sync: upsertRoleType létrehoz újat', () => {
   const next = upsertRoleType([], 'researcher', 'agent_role')
   assert.deepEqual(next, [{ key: 'researcher', type: 'agent_role' }])
+})
+
+console.log('=== §4.7b Deliverable (fájl-artefaktum lépés) ===')
+
+/** A validSpec extract_invoice lépéséhez HTML-deliverable-t köt. */
+function specWithDeliverable(deliverable: unknown, assignedRole = 'invoice_extractor'): Json {
+  const spec = validSpec()
+  const step = arr(spec, 'steps')[0]
+  step.assignedRole = assignedRole
+  step.deliverable = deliverable
+  return spec
+}
+
+check('deliverable Zod-parse: valid format átmegy, compilerbe kerül', () => {
+  const spec = parsePlaybookSpecV2(
+    specWithDeliverable({ format: 'html', field: 'report', filename: 'gdpr.html' }),
+  )
+  assert.deepEqual(spec.steps[0].deliverable, {
+    format: 'html',
+    field: 'report',
+    filename: 'gdpr.html',
+  })
+  const compiled = compiler.compile(spec)
+  const rule = compiled.ticketRules.find((r) => r.stepId === 'extract_invoice')
+  assert.equal(rule?.deliverable?.format, 'html')
+  assert.equal(rule?.deliverable?.field, 'report')
+})
+
+check('deliverable Zod-parse: ismeretlen format → dob', () => {
+  assert.throws(() => parsePlaybookSpecV2(specWithDeliverable({ format: 'gif' })))
+})
+
+check('deliverable agent-lépésen → nincs validátor-hiba', () => {
+  const result = validator.validateSpec(specWithDeliverable({ format: 'pdf' }))
+  assert.ok(!result.errors.some((e) => e.code === 'DELIVERABLE_ON_NON_AGENT_STEP'))
+})
+
+check('deliverable emberi lépésen → DELIVERABLE_ON_NON_AGENT_STEP', () => {
+  const result = validator.validateSpec(specWithDeliverable({ format: 'pptx' }, 'accounting_approver'))
+  assert.ok(result.errors.some((e) => e.code === 'DELIVERABLE_ON_NON_AGENT_STEP'))
+})
+
+console.log('=== §4.7b Deliverable helper-ök ===')
+
+check('DELIVERABLE_TOOL_BY_FORMAT teljes és helyes', () => {
+  assert.equal(DELIVERABLE_TOOL_BY_FORMAT.html, 'create_html')
+  assert.equal(DELIVERABLE_TOOL_BY_FORMAT.xlsx, 'xlsx_create')
+  assert.equal(DELIVERABLE_TOOL_BY_FORMAT.pptx, 'pptx_create')
+  assert.equal(DELIVERABLE_TOOL_BY_FORMAT.pdf, 'pdf_create')
+})
+
+check('formatDeliverableInstruction az eszközt és formátumot tartalmazza', () => {
+  const text = formatDeliverableInstruction({ format: 'html', filename: 'r.html' })
+  assert.match(text, /create_html/)
+  assert.match(text, /HTML/)
+  assert.match(text, /r\.html/)
+})
+
+check('pickDeliverableFile: az új, illeszkedő fájlt választja', () => {
+  const before = ['input.csv']
+  const after = ['input.csv', '.tool-results/01-x.json', 'gdpr-report.html']
+  assert.equal(pickDeliverableFile(before, after, 'html'), 'gdpr-report.html')
+})
+
+check('pickDeliverableFile: kihagyja a belső és a nem-illeszkedő fájlt', () => {
+  const before: string[] = []
+  const after = ['.tool-results/01-x.json', 'notes.txt', 'sheet.xlsx']
+  assert.equal(pickDeliverableFile(before, after, 'html'), null)
+  assert.equal(pickDeliverableFile(before, after, 'xlsx'), 'sheet.xlsx')
+})
+
+check('pickDeliverableFile: a már létező fájlt nem tekinti újnak', () => {
+  const before = ['old.html']
+  const after = ['old.html']
+  assert.equal(pickDeliverableFile(before, after, 'html'), null)
+})
+
+check('requireDeliverableFile: hiányzó fájlnál hangosan bukik', () => {
+  assert.equal(requireDeliverableFile({ format: 'html', filename: 'gdpr.html' }, 'gdpr.html'), 'gdpr.html')
+  assert.throws(
+    () => requireDeliverableFile({ format: 'html', filename: 'gdpr.html' }, null),
+    /nem készült új HTML fájl \(gdpr\.html\).*create_html/s,
+  )
+})
+
+console.log('=== RC#1 stringifyValue (objektum → JSON, nem [object Object]) ===')
+
+check('stringifyValue objektumot kanonikus JSON-ra alakít', () => {
+  assert.equal(stringifyValue({ a: 1, b: 'x' }), '{"a":1,"b":"x"}')
+  assert.equal(stringifyValue([{ id: 1 }, { id: 2 }]), '[{"id":1},{"id":2}]')
+  assert.notEqual(stringifyValue({ a: 1 }), '[object Object]')
+  assert.equal(stringifyValue('plain'), 'plain')
 })
 
 console.log('')

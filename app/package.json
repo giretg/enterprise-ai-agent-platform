@@ -24,6 +24,7 @@
     "db:apply-agent-api-key-expires-at:test": "tsx scripts/apply-agent-api-key-expires-at.ts test",
     "db:backfill-audit-attribution": "tsx scripts/backfill-audit-attribution.ts",
     "db:backfill-audit-attribution:test": "tsx scripts/backfill-audit-attribution.ts test",
+    "db:backfill-ticket-comments": "tsx scripts/backfill-ticket-comments.ts",
     "db:prune-ephemeral-agent-keys": "tsx scripts/prune-ephemeral-agent-keys.ts",
     "harness:run": "tsx scripts/harness-entrypoint.ts",
     "harness:egress-probe": "tsx scripts/harness-egress-probe.ts",

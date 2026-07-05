@@ -258,6 +258,7 @@ enum TicketState {
   approved
   in_progress
   awaiting_human
+  needs_info
   done
   rejected
 }
@@ -370,6 +371,18 @@ enum AuditActorType {
   system
 }
 
+enum TicketCommentKind {
+  human_comment
+  agent_answer
+  agent_progress
+  system_note
+}
+
+enum TicketCommentAttachmentKind {
+  file
+  screenshot
+}
+
 enum SandboxAppLevel {
   A0
   A1
@@ -463,6 +476,7 @@ model User {
   approvedRecipeVersions        RecipeVersion[]      @relation("RecipeApprovedBy")
   approvedPlaybookVersions      PlaybookVersion[]    @relation("PlaybookApprovedBy")
   createdTickets                Ticket[]             @relation("TicketCreatedBy")
+  ticketCommentsAuthored        TicketComment[]      @relation("TicketCommentAuthorUser")
   uploadedDocuments             Document[]           @relation("DocumentUploadedBy")
   createdInvitations            Invitation[]         @relation("InvitationCreatedBy")
   connectorGrants               ConnectorGrant[]
@@ -653,6 +667,7 @@ model Agent {
   apiKeys            AgentApiKey[]
   agentResources     AgentResource[]
   tickets            Ticket[]
+  ticketComments     TicketComment[]      @relation("TicketCommentAuthorAgent")
   modelCalls         ModelCall[]
   agentConnectors    AgentConnector[]
   capabilities       Capability[]
@@ -1281,6 +1296,7 @@ model Document {
   connector  Connector?          @relation(fields: [connectorId], references: [id])
   tickets    Ticket[]
   artifacts  KnowledgeArtifact[]
+  ticketCommentAttachments TicketCommentAttachment[]
 
   @@map("documents")
 }
@@ -1462,6 +1478,7 @@ model Ticket {
   sandboxAppVersions            SandboxAppVersion[]
   linkedMessages                Message[]
   scheduledTaskMaterializations ScheduledTask[]
+  comments                      TicketComment[]
 
   @@index([source, state])
   @@index([tenantId, state])
@@ -1612,6 +1629,54 @@ model TicketTransition {
 
   @@index([ticketId, ts])
   @@map("ticket_transitions")
+}
+
+model TicketComment {
+  id                String            @id @default(uuid()) @db.Uuid
+  ticketId          String            @map("ticket_id") @db.Uuid
+  seq               Int
+  kind              TicketCommentKind
+  authorType        AuditActorType    @map("author_type")
+  authorUserId      String?           @map("author_user_id") @db.Uuid
+  authorAgentId     String?           @map("author_agent_id") @db.Uuid
+  authorDisplayName String?           @map("author_display_name")
+  agentVersion      Int?              @map("agent_version")
+  body              String
+  structured        Json?
+  parentId          String?           @map("parent_id") @db.Uuid
+  transitionId      String?           @map("transition_id") @db.Uuid
+  createdAt         DateTime          @default(now()) @map("created_at") @db.Timestamptz
+
+  ticket      Ticket                    @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  authorUser  User?                     @relation("TicketCommentAuthorUser", fields: [authorUserId], references: [id])
+  authorAgent Agent?                    @relation("TicketCommentAuthorAgent", fields: [authorAgentId], references: [id])
+  parent      TicketComment?            @relation("TicketCommentThread", fields: [parentId], references: [id])
+  children    TicketComment[]           @relation("TicketCommentThread")
+  attachments TicketCommentAttachment[]
+
+  @@unique([ticketId, seq])
+  @@index([ticketId, createdAt])
+  @@map("ticket_comments")
+}
+
+model TicketCommentAttachment {
+  id         String                      @id @default(uuid()) @db.Uuid
+  commentId  String                      @map("comment_id") @db.Uuid
+  documentId String                      @map("document_id") @db.Uuid
+  seq        Int
+  kind       TicketCommentAttachmentKind
+  filename   String
+  mimeType   String?                     @map("mime_type")
+  byteSize   Int?                        @map("byte_size")
+  createdAt  DateTime                    @default(now()) @map("created_at") @db.Timestamptz
+
+  comment  TicketComment @relation(fields: [commentId], references: [id], onDelete: Cascade)
+  document Document      @relation(fields: [documentId], references: [id], onDelete: Restrict)
+
+  @@unique([commentId, seq])
+  @@unique([documentId])
+  @@index([documentId])
+  @@map("ticket_comment_attachments")
 }
 
 model AuditLog {

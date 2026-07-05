@@ -3,6 +3,7 @@
  * Determinisztikus, DB/LLM nélkül tesztelhető segédfüggvények.
  */
 import type { CompiledInputSlot, CompiledTicketRule } from '@/domain/playbook/playbook-compiler'
+import type { PlaybookDeliverable, PlaybookDeliverableFormat } from '@/lib/playbook-v2/spec'
 import { extractJsonObject } from '@/domain/provisioning/provisioning-assistant'
 
 export type ResolveStepInputOptions = {
@@ -178,3 +179,70 @@ export function normalizeAgentStepResult(
 }
 
 export type CompiledInputSlotSource = CompiledInputSlot['source']
+
+// --- §4.7b Deliverable (valódi fájl-artefaktum a lépéshez) ------------------
+
+/** A deliverable-formátumhoz tartozó fájl-előállító platform-eszköz. */
+export const DELIVERABLE_TOOL_BY_FORMAT: Record<PlaybookDeliverableFormat, string> = {
+  html: 'create_html',
+  xlsx: 'xlsx_create',
+  pptx: 'pptx_create',
+  pdf: 'pdf_create',
+}
+
+/** A deliverable-formátumhoz tartozó fájlkiterjesztés (a kész fájl felismeréséhez). */
+export const DELIVERABLE_EXT_BY_FORMAT: Record<PlaybookDeliverableFormat, string> = {
+  html: '.html',
+  xlsx: '.xlsx',
+  pptx: '.pptx',
+  pdf: '.pdf',
+}
+
+/** Ha a lépés nem ad `field`-et, ide kerül a kész fájl neve a lépés-payloadban. */
+export const DEFAULT_DELIVERABLE_FIELD = 'deliverableFile'
+
+/** A modellnek adott rendszer-utasítás, hogy valódi fájlt gyártson (ne szöveget). */
+export function formatDeliverableInstruction(deliverable: PlaybookDeliverable): string {
+  const tool = DELIVERABLE_TOOL_BY_FORMAT[deliverable.format]
+  const ext = DELIVERABLE_EXT_BY_FORMAT[deliverable.format]
+  const nameHint = deliverable.filename ? ` Javasolt fájlnév: ${deliverable.filename}.` : ''
+  return [
+    `Folyamat-lépés deliverable (KÖTELEZŐ): ennek a lépésnek VALÓDI ${deliverable.format.toUpperCase()} fájlt (${ext}) kell előállítania a(z) \`${tool}\` eszközzel a munkaterületen — NE a válaszba írt szövegként/markupként.${nameHint}`,
+    'A fájl a ticket munkaterületére kerül, ahonnan a felhasználó letölti. A szöveges válaszod csak rövid összefoglaló legyen; a teljes tartalom a fájlban van.',
+  ].join('\n')
+}
+
+/**
+ * Az előállított deliverable fájl kiválasztása a munkaterület before/after
+ * pillanatképéből: a formátum kiterjesztésére illeszkedő, ÚJ (a futás alatt
+ * keletkezett) fájl. Belső fájlokat (`.tool-results/`) kihagyja. Több találatnál
+ * a lexikálisan utolsót adja. Ha nincs új találat, `null`.
+ */
+export function pickDeliverableFile(
+  filesBefore: Iterable<string>,
+  filesAfter: Iterable<string>,
+  format: PlaybookDeliverableFormat,
+): string | null {
+  const ext = DELIVERABLE_EXT_BY_FORMAT[format]
+  const before = new Set(filesBefore)
+  const candidates = [...filesAfter]
+    .filter((p) => !before.has(p))
+    .filter((p) => !p.startsWith('.tool-results/'))
+    .filter((p) => p.toLowerCase().endsWith(ext))
+    .sort()
+  return candidates.length > 0 ? candidates[candidates.length - 1]! : null
+}
+
+/** A deliverable-lépés csak ténylegesen létrejött fájllal zárható sikeresen. */
+export function requireDeliverableFile(
+  deliverable: PlaybookDeliverable,
+  filePath: string | null,
+): string {
+  if (filePath) return filePath
+  const requiredTool = DELIVERABLE_TOOL_BY_FORMAT[deliverable.format]
+  const filenameHint = deliverable.filename ? ` (${deliverable.filename})` : ''
+  throw new Error(
+    `Deliverable lépés sikertelen: nem készült új ${deliverable.format.toUpperCase()} fájl${filenameHint}. ` +
+      `A lépés csak akkor zárható done-ra, ha az agent meghívja a(z) '${requiredTool}' eszközt és létrejön a fájl.`,
+  )
+}

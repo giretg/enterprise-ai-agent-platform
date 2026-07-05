@@ -7,6 +7,7 @@ export type TransitionAllowedActor =
   | 'operator'
   | 'admin'
   | 'system_or_operator'
+  | 'creator_or_operator'
 
 export type TicketTransitionConfigRule = {
   from: TicketState
@@ -27,6 +28,7 @@ export const TICKET_STATES: TicketState[] = [
   'approved',
   'in_progress',
   'awaiting_human',
+  'needs_info',
   'done',
   'rejected',
 ]
@@ -40,6 +42,7 @@ export const TRANSITION_ALLOWED_ACTORS: TransitionAllowedActor[] = [
   'operator',
   'admin',
   'system_or_operator',
+  'creator_or_operator',
 ]
 
 export const DEFAULT_TICKET_TRANSITIONS: TicketTransitionConfigRule[] = [
@@ -50,9 +53,13 @@ export const DEFAULT_TICKET_TRANSITIONS: TicketTransitionConfigRule[] = [
   { from: 'in_progress', to: 'done', allowed: 'system' },
   { from: 'in_progress', to: 'rejected', allowed: 'operator' },
   { from: 'awaiting_human', to: 'approved', allowed: 'approver' },
+  { from: 'awaiting_human', to: 'needs_info', allowed: 'creator_or_operator' },
   { from: 'awaiting_human', to: 'rejected', allowed: 'operator' },
   { from: 'approved', to: 'done', allowed: 'system' },
+  { from: 'done', to: 'needs_info', allowed: 'creator_or_operator' },
   { from: 'done', to: 'rejected', allowed: 'operator' },
+  { from: 'needs_info', to: 'ready', allowed: 'system_or_operator' },
+  { from: 'needs_info', to: 'rejected', allowed: 'operator' },
   { from: 'rejected', to: 'ready', allowed: 'operator' },
 ]
 
@@ -95,11 +102,20 @@ export function normalizeTicketTypeConfig(raw: unknown, type: TicketType): Ticke
       })
     : []
 
+  const mergedTransitions =
+    allowedTransitions.length > 0
+      ? [...allowedTransitions]
+      : defaultTicketTypeConfig(type).allowedTransitions
+  for (const rule of DEFAULT_TICKET_TRANSITIONS) {
+    const key = `${rule.from}:${rule.to}`
+    if (!seen.has(key) && !mergedTransitions.some((candidate) => `${candidate.from}:${candidate.to}` === key)) {
+      mergedTransitions.push({ ...rule })
+    }
+  }
+
   return {
     type,
-    allowedTransitions: allowedTransitions.length > 0
-      ? allowedTransitions
-      : defaultTicketTypeConfig(type).allowedTransitions,
+    allowedTransitions: mergedTransitions,
     updatedById: typeof value.updatedById === 'string' ? value.updatedById : null,
     updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : null,
   }

@@ -1,6 +1,6 @@
 import type { Prisma, TicketState } from '@prisma/client'
 import type { AuditRepository, TicketRepository, TransitionActor } from '@/repositories/interfaces'
-import { appendWikiFollowUpNote, clearWikiAnswerFields } from '@/lib/wiki-ticket-payload'
+import { appendWikiFollowUpNote } from '@/lib/wiki-ticket-payload'
 import type { PlaybookService } from '../playbook/playbook-service'
 import {
   DEFAULT_TICKET_TRANSITIONS,
@@ -8,7 +8,11 @@ import {
   type TicketTypeConfig,
 } from './ticket-type-config'
 
-function actorMatchesRule(actor: TransitionActor, allowed: TicketTransitionConfigRule['allowed']): boolean {
+function actorMatchesRule(
+  actor: TransitionActor,
+  allowed: TicketTransitionConfigRule['allowed'],
+  ticketCreatedById?: string,
+): boolean {
   if (allowed === 'system') return actor.type === 'system' || actor.type === 'agent'
   if (allowed === 'agent') return actor.type === 'agent' || actor.type === 'system'
   if (allowed === 'admin') return actor.type === 'human' && actor.role === 'admin'
@@ -23,6 +27,12 @@ function actorMatchesRule(actor: TransitionActor, allowed: TicketTransitionConfi
   }
   if (allowed === 'system_or_operator') {
     return actor.type === 'system' || actorMatchesRule(actor, 'operator')
+  }
+  if (allowed === 'creator_or_operator') {
+    return (
+      actorMatchesRule(actor, 'operator') ||
+      (actor.type === 'human' && Boolean(ticketCreatedById) && actor.userId === ticketCreatedById)
+    )
   }
   return false
 }
@@ -45,10 +55,11 @@ export class TicketService {
     from: TicketState,
     to: TicketState,
     actor: TransitionActor,
+    ticketCreatedById?: string,
   ): boolean {
     const rule = rules.find((t) => t.from === from && t.to === to)
     if (!rule) return false
-    return actorMatchesRule(actor, rule.allowed)
+    return actorMatchesRule(actor, rule.allowed, ticketCreatedById)
   }
 
   private async getTransitionRules(ticketType: TicketTypeConfig['type']): Promise<TicketTransitionConfigRule[]> {
@@ -78,7 +89,15 @@ export class TicketService {
 
     const transitionRules = await this.getTransitionRules(ticket.type)
 
-    if (!this.canTransitionWithRules(transitionRules, ticket.state, params.toState, params.actor)) {
+    if (
+      !this.canTransitionWithRules(
+        transitionRules,
+        ticket.state,
+        params.toState,
+        params.actor,
+        ticket.createdById,
+      )
+    ) {
       await this.audit.append({
         actorType,
         actorId,
@@ -136,14 +155,6 @@ export class TicketService {
       payload = appendWikiFollowUpNote(payloadRecord, params.note) as Prisma.JsonValue
     } else if (params.note && payloadRecord) {
       payload = { ...payloadRecord, transitionNote: params.note } as Prisma.JsonValue
-    }
-
-    if (params.toState === 'ready' && ticket.state === 'rejected' && payloadRecord) {
-      payload = clearWikiAnswerFields(
-        typeof payload === 'object' && payload !== null && !Array.isArray(payload)
-          ? (payload as Record<string, unknown>)
-          : payloadRecord,
-      ) as Prisma.JsonValue
     }
 
     if (params.toState === 'rejected' && ticket.state === 'in_progress' && ticket.lockToken) {

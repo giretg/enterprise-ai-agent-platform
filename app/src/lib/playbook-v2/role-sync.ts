@@ -29,9 +29,12 @@ export function upsertRoleType(
   const idx = list.findIndex((r) => r.key === roleKey)
   const caps = requiredCapabilities && requiredCapabilities.length > 0 ? requiredCapabilities : undefined
   if (idx >= 0) {
-    list[idx] = { ...list[idx], type, requiredCapabilities: caps }
+    const next = { ...list[idx], type }
+    if (caps) next.requiredCapabilities = caps
+    else delete next.requiredCapabilities
+    list[idx] = next
   } else {
-    list.push({ key: roleKey, type, requiredCapabilities: caps })
+    list.push(caps ? { key: roleKey, type, requiredCapabilities: caps } : { key: roleKey, type })
   }
   return list
 }

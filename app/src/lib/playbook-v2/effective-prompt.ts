@@ -40,7 +40,7 @@ export type EffectivePromptResult = {
 const SLOT_TOKEN_RE = /\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g
 
 /** Egy értéket promptba illeszthető stringgé alakít (objektum → kanonikus JSON). */
-function stringifyValue(value: unknown): string {
+export function stringifyValue(value: unknown): string {
   if (value == null) return ''
   if (typeof value === 'string') return value
   if (typeof value === 'number' || typeof value === 'boolean') return String(value)

@@ -80,6 +80,23 @@ export const retryPolicySchema = z.object({
   onExhausted: z.enum(['fail_process', 'manual_review']),
 })
 
+// §4.7b — lépés-deliverable: a lépés valódi fájl-artefaktumot állít elő a
+// ticket munkaterületére (nem szöveget a válaszba). A runtime a `format`-hoz
+// tartozó fájl-eszközt kéri (html→create_html, xlsx→xlsx_create, pptx→pptx_create,
+// pdf→pdf_create), a kész fájl nevét pedig a lépés-payload `deliverableFile`
+// mezőjébe (és ha megadott, a `field` outputContract-mezőbe) írja vissza.
+export const playbookDeliverableFormatSchema = z.enum(['html', 'xlsx', 'pptx', 'pdf'])
+export type PlaybookDeliverableFormat = z.infer<typeof playbookDeliverableFormatSchema>
+
+export const playbookDeliverableSchema = z.object({
+  format: playbookDeliverableFormatSchema,
+  /** Melyik outputContract-mezőbe kerüljön a fájlnév-referencia (alap: deliverableFile). */
+  field: z.string().min(1).optional(),
+  /** Javasolt fájlnév az agentnek (a runtime az útmutatóba teszi). */
+  filename: z.string().min(1).optional(),
+})
+export type PlaybookDeliverable = z.infer<typeof playbookDeliverableSchema>
+
 export const playbookStepSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -91,6 +108,8 @@ export const playbookStepSchema = z.object({
   // inputContract / outputContract: JSON-schema-szerű struktúra (lazán tárolva)
   inputContract: z.record(z.string(), z.unknown()).optional(),
   outputContract: z.record(z.string(), z.unknown()).optional(),
+  // §4.7b: a lépés valódi fájl-deliverable-t termel a ticket munkaterületére.
+  deliverable: playbookDeliverableSchema.optional(),
   // §4.7: sablonos lépés-utasítás tipizált résekkel. A {{slot}} tokenek az
   // inputSlots név-listájából oldódnak fel (config ill. trigger forrásból).
   instructionTemplate: z.string().optional(),

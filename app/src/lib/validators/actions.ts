@@ -8,6 +8,7 @@ export const ticketFilterSchema = z.object({
       'approved',
       'in_progress',
       'awaiting_human',
+      'needs_info',
       'done',
       'rejected',
     ])
@@ -97,6 +98,7 @@ export const transitionTicketSchema = z.object({
     'approved',
     'in_progress',
     'awaiting_human',
+    'needs_info',
     'done',
     'rejected',
   ]),
@@ -110,6 +112,7 @@ export const ticketTransitionAllowedActorSchema = z.enum([
   'operator',
   'admin',
   'system_or_operator',
+  'creator_or_operator',
 ])
 
 export const ticketTypeConfigSchema = z
@@ -124,6 +127,7 @@ export const ticketTypeConfigSchema = z
             'approved',
             'in_progress',
             'awaiting_human',
+            'needs_info',
             'done',
             'rejected',
           ]),
@@ -133,6 +137,7 @@ export const ticketTypeConfigSchema = z
             'approved',
             'in_progress',
             'awaiting_human',
+            'needs_info',
             'done',
             'rejected',
           ]),
@@ -156,6 +161,17 @@ export const ticketTypeConfigSchema = z
       seen.add(key)
     }
   })
+
+export const addTicketCommentSchema = z.object({
+  ticketId: z.string().uuid(),
+  body: z.string().max(16 * 1024).optional().default(''),
+  attachmentDocumentIds: z.array(z.string().uuid()).max(8).optional().default([]),
+  handBackToAgent: z.boolean().optional().default(false),
+})
+
+export const listTicketCommentsSchema = z.object({
+  ticketId: z.string().uuid(),
+})
 
 const modelProviderSchema = z.enum(['chatgpt-oauth', 'gemini', 'ollama', 'openrouter'])
 
@@ -193,6 +209,7 @@ export const processDocumentForWikiSchema = z.object({
 export const requestKbDocumentSchema = z.object({
   documentId: z.string().uuid(),
   agentId: z.string().uuid(),
+  processingMode: z.enum(['raw_text_only', 'okf']).optional(),
 })
 
 export const kbTicketSchema = z.object({

@@ -321,7 +321,11 @@ async function main() {
     assert.equal(s.tickets.length, 1)
     assert.equal(s.tickets[0].agentId, AGENT_ID)
     assert.equal(s.tickets[0].assigneeType, 'agent')
-    assert.deepEqual(s.tickets[0].payload, { ceg: 'Acme Kft', sablon: 'vezetői' })
+    assert.deepEqual(s.tickets[0].payload, {
+      ceg: 'Acme Kft',
+      sablon: 'vezetői',
+      question: 'Készíts riportot a(z) Acme Kft cégről a(z) vezetői sablon alapján.',
+    })
     assert.ok(s.audits.some((a) => a.action === 'process.start' && a.metadata.process_definition_id === s.defRow.id))
   })
 
@@ -342,17 +346,50 @@ async function main() {
 
   await test('hiányzó kötelező step input-rés → blocked, nincs lépés-ticket', async () => {
     const s = makeStubs({})
+    s.defRow.configValues = {} // a 'sablon' config-rés sincs a Folyamaton beállítva
     const svc = makeProcessService(s)
     const proc = await svc.startProcess({
       tenantId: TENANT,
       processDefinitionId: s.defRow.id,
       triggerType: 'monitor_cron',
-      inputPayload: { ceg: 'Acme Kft' }, // 'sablon' hiányzik az entry tickethez
+      inputPayload: { ceg: 'Acme Kft' }, // 'sablon' se triggerből, se configból
       startedBy: { type: 'system' },
     })
     assert.equal(proc.status, 'blocked')
     assert.equal(s.tickets.length, 0)
     assert.ok(s.audits.some((a) => a.action === 'process.blocked'))
+  })
+
+  await test('config-forrású rés a Folyamat configValues-ából oldódik fel (nem triggerből)', async () => {
+    const s = makeStubs({})
+    // configValues.sablon = 'negyedéves' van a Folyamaton; a trigger NEM adja a 'sablon'-t.
+    const svc = makeProcessService(s)
+    const proc = await svc.startProcess({
+      tenantId: TENANT,
+      processDefinitionId: s.defRow.id,
+      triggerType: 'monitor_cron',
+      inputPayload: { ceg: 'Acme Kft' },
+      startedBy: { type: 'system' },
+    })
+    assert.equal(proc.status, 'running')
+    assert.equal(s.tickets.length, 1)
+    const payload = s.tickets[0].payload as Record<string, unknown>
+    assert.equal(payload.ceg, 'Acme Kft')
+    assert.equal(payload.sablon, 'negyedéves') // configValues-ból oldódott fel
+  })
+
+  await test('explicit trigger-input felülírja a configValues-t ütközéskor', async () => {
+    const s = makeStubs({})
+    const svc = makeProcessService(s)
+    const proc = await svc.startProcess({
+      tenantId: TENANT,
+      processDefinitionId: s.defRow.id,
+      triggerType: 'manual',
+      inputPayload: { ceg: 'Acme Kft', sablon: 'vezetői' },
+      startedBy: { type: 'user', id: randomUUID() },
+    })
+    assert.equal(proc.status, 'running')
+    assert.equal((s.tickets[0].payload as Record<string, unknown>).sablon, 'vezetői')
   })
 
   await test('human belépő lépés-ticket a KÖTÖTT userhez jön létre', async () => {

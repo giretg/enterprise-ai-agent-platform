@@ -873,6 +873,49 @@ async function main() {
     assert.ok(steps.every((s) => s.status === 'completed'), 'nem minden step completed')
   })
 
+  await test('P5d — lezárt/blokkolt folyamaton az advance idempotens no-op (nem resurrektál running-ra)', async () => {
+    // Regresszió: egy már done ticket újra-dispatch-elése ne írja vissza `running`-ra
+    // a lezárt vagy blokkolt folyamatot (l. process-config-slot-stuck-running).
+    const ctx = await setupPublished(demoSpec())
+    const proc = await ctx.processService.startProcess({
+      tenantId: TENANT,
+      processType: 'invoice_processing',
+      inputPayload: {},
+      startedBy: { type: 'agent', id: AGENT },
+    })
+    const entry = ctx.ticketRepo.tickets.find((t) => t.id === proc.rootTicketId)!
+    await ctx.stateMachine.transitionTicket({ tenantId: TENANT, ticketId: entry.id, toState: 'in_progress', actor: { type: 'agent', id: AGENT } })
+    await ctx.stateMachine.transitionTicket({ tenantId: TENANT, ticketId: entry.id, toState: 'done', actor: { type: 'agent', id: AGENT }, outputPayload: { decision: 'post' } })
+    const approvalTicket = ctx.ticketRepo.tickets.find((t) => t.playbookStepId === 'approval')!
+    await ctx.stateMachine.transitionTicket({
+      tenantId: TENANT,
+      ticketId: approvalTicket.id,
+      toState: 'approved',
+      actor: { type: 'user', id: APPROVER_USER, roles: ['approver'] },
+      approvalEvidence: { signature: 'sig-123' },
+    })
+    assert.equal((await ctx.processService.getProcess(TENANT, proc.id)).status, 'completed')
+
+    const ticketsBefore = ctx.ticketRepo.tickets.length
+    const stepsBefore = (await ctx.procRepo.listSteps(proc.id)).length
+
+    // Az entry step "újra-befejezése" (re-dispatch szimuláció) a lezárt folyamaton.
+    const result = await ctx.processService.advance({
+      tenantId: TENANT,
+      processInstanceId: proc.id,
+      completedStepId: 'extract',
+      actor: { type: 'agent', id: AGENT },
+      resultPayload: { decision: 'post' },
+    })
+
+    assert.equal(result.kind, 'noop')
+    assert.equal((await ctx.processService.getProcess(TENANT, proc.id)).status, 'completed')
+    assert.equal(ctx.ticketRepo.tickets.length, ticketsBefore, 'nem jöhet létre új ticket')
+    assert.equal((await ctx.procRepo.listSteps(proc.id)).length, stepsBefore, 'nem jöhet létre új lépés')
+    // A no-op nem emittál step.complete auditot (a lépés már rég kész).
+    assert.equal(ctx.audit.byAction('process.complete').length, 1)
+  })
+
   await test('P9 — futás közbeni v2 publikálás NEM hat a futó (v1-re pin-elt) processre', async () => {
     const ctx = await setupPublished(demoSpec())
     const v1 = ctx.versionId

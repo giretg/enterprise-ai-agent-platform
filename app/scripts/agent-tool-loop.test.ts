@@ -14,7 +14,7 @@ import {
 } from '../src/domain/agent/chat-tool-loop'
 import { assembleContext } from '../src/domain/conversation/context-assembly'
 import { resolveTicketProcessRoute } from '../src/lib/ticket-process-route'
-import type { ModelGateway, ModelConfig, GatewayToolCall } from '../src/domain/gateway/model-gateway'
+import type { ModelGateway, ModelConfig, GatewayMessage, GatewayToolCall } from '../src/domain/gateway/model-gateway'
 import type {
   ToolBrokerService,
   ToolBrokerInvokeInput,
@@ -39,7 +39,7 @@ type GatewayCallArgs = {
   agentId: string
   ticketId?: string
   conversationId?: string
-  messages: Array<{ role: string; content: string }>
+  messages: GatewayMessage[]
   modelConfig: ModelConfig
 }
 
@@ -270,7 +270,9 @@ async function main() {
     } as unknown as ToolBrokerRepository
     const allowed = await listAllowedChatTools(caps, 'agent-1')
 
-    assert.deepEqual(allowed, ['web_search'])
+    // kb_search mostantól hívható platform-tool is (a pre-fetch mellett célzott
+    // újrakereséshez), ezért az engedélyezett listában megjelenik.
+    assert.deepEqual(allowed, ['web_search', 'kb_search'])
 
     await runAgentToolLoop({
       gateway: fakeGateway(
@@ -354,6 +356,47 @@ async function main() {
     assert.equal(brokerCalls[0].tool, 'file_read')
   })
 
+  await check('KB doc: azonosító nem mehet workspace docx_read/file_read eszköznek', async () => {
+    const gwCalls: GatewayCallArgs[] = []
+    const brokerCalls: ToolBrokerInvokeInput[] = []
+    const result = await runAgentToolLoop({
+      gateway: fakeGateway(
+        [
+          {
+            toolCalls: [
+              {
+                id: 'bad-doc-read',
+                name: 'docx_read',
+                input: { path: 'doc:ec96eff7-1234-4a5f-9000-111111111111' },
+              },
+            ],
+          },
+          { content: 'A kb_search találatok alapján dolgozom tovább.' },
+        ],
+        gwCalls,
+      ),
+      toolBroker: fakeToolBroker(brokerCalls),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { ticketId: 'ticket-kb-docref' },
+      mode: 'task',
+      messages: [{ role: 'user', content: 'Készíts riportot a KB policy alapján.' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: ['docx_read', 'kb_search'],
+    })
+
+    assert.equal(result.content, 'A kb_search találatok alapján dolgozom tovább.')
+    assert.equal(result.toolCallCount, 0)
+    assert.equal(brokerCalls.length, 0, 'a hibás workspace-read nem juthat el a brokerig')
+    const correction = gwCalls[1].messages.find(
+      (m) => m.role === 'tool' && m.toolCallId === 'bad-doc-read',
+    )
+    assert.ok(correction)
+    assert.match(correction.content ?? '', /tudásbázis-azonosítónak tűnik/)
+    assert.match(correction.content ?? '', /kb_search/)
+  })
+
   await check('nagy tool eredmény: teljes tartalom archiválva, kontextusban csak előnézet', async () => {
     const gwCalls: GatewayCallArgs[] = []
     const brokerCalls: ToolBrokerInvokeInput[] = []
@@ -396,6 +439,35 @@ async function main() {
     assert.match(toolMessage.content, /A teljes eredmény elmentve/)
     assert.match(toolMessage.content, /tool_result_read/)
     assert.ok(!toolMessage.content.includes('Ügyfél 400'))
+  })
+
+  await check('task mód: max turn kimerülés explicit exhausted státuszt ad', async () => {
+    const gwCalls: GatewayCallArgs[] = []
+    const brokerCalls: ToolBrokerInvokeInput[] = []
+    const result = await runAgentToolLoop({
+      gateway: fakeGateway(
+        [
+          { toolCalls: [{ id: 'search-1', name: 'kb_search', input: { query: 'policy', k: 5 } }] },
+          { content: '' },
+        ],
+        gwCalls,
+      ),
+      toolBroker: fakeToolBrokerResult(brokerCalls, { hits: [] }),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { ticketId: 'ticket-exhausted' },
+      mode: 'task',
+      messages: [{ role: 'user', content: 'készíts javaslatot policy hivatkozásokkal' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: ['kb_search'],
+      maxTurns: 1,
+    })
+
+    assert.equal(result.status, 'exhausted')
+    assert.equal(result.reason, 'max_turns_exhausted')
+    assert.equal(result.toolCallCount, 1)
+    assert.match(result.content, /nem sikerült|körök elfogytak/i)
   })
 
   await check('routing: hiányzó / üres / wiki source → wiki', () => {

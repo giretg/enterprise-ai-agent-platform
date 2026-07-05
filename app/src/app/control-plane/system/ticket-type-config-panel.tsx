@@ -28,6 +28,7 @@ const ACTOR_LABELS: Record<TransitionAllowedActor, string> = {
   operator: 'Operátor',
   admin: 'Admin',
   system_or_operator: 'Rendszer vagy operátor',
+  creator_or_operator: 'Létrehozó vagy operátor',
 }
 
 function cloneRules(rules: TicketTransitionConfigRule[]): TicketTransitionConfigRule[] {

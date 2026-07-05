@@ -9,6 +9,7 @@ import { composeSystemPrompt } from '@/lib/agent-prompt'
 import { buildRunAsAuthorization } from '@/lib/run-as-payload'
 import { readWikiTicketPayload, wikiSearchQuery, wikiUserPrompt } from '@/lib/wiki-ticket-payload'
 import { formatHitsForPrompt, type KbHit } from '@/lib/kb-format'
+import { buildThreadContextPrompt, latestHumanTicketComment } from '@/lib/ticket-thread-prompt'
 import type { GatewayMessage, ModelGateway } from '../gateway/model-gateway'
 import type { ToolBrokerService } from '../tool-broker/tool-broker-service'
 import type { PlaybookService } from '../playbook/playbook-service'
@@ -383,6 +384,24 @@ export class WikiAgentRuntime {
       throw new Error(`board_write denied: ${write.reason}`)
     }
 
+    await this.tickets.appendComment({
+      ticketId: ticket.id,
+      kind: 'agent_answer',
+      authorType: 'agent',
+      authorAgentId: params.agentId,
+      authorDisplayName: agentDetails.agent.name,
+      agentVersion,
+      body: answer.answer,
+      structured: {
+        sources: answer.sources,
+        rationale: answer.rationale,
+        confidence: answer.confidence,
+        model: modelConfig.model,
+        memoryVersion: agentDetails.memoryVersion,
+        retrievedSourceCount: hits.length,
+      },
+    })
+
     const updated = await this.tickets.findById(ticket.id)
     return {
       ticketId: ticket.id,
@@ -526,12 +545,18 @@ export class WikiAgentRuntime {
     context: InferenceContext
     tenantId?: string | null
   }): Promise<InferenceResult> {
+    const threadComments = params.context.ticketId
+      ? await this.tickets.listComments(params.context.ticketId)
+      : []
+    const searchQuery = [wikiSearchQuery(params.payload), latestHumanTicketComment(threadComments)]
+      .filter((part): part is string => Boolean(part?.trim()))
+      .join(' ')
     const search = await this.toolBroker.invoke({
       agentId: params.agentId,
       agentVersion: params.agentVersion,
       ...params.context,
       tool: 'kb_search',
-      args: { query: wikiSearchQuery(params.payload), k: 6 },
+      args: { query: searchQuery || wikiSearchQuery(params.payload), k: 6 },
     })
     if (search.denied) {
       throw new Error(`kb_search denied: ${search.reason}`)
@@ -560,6 +585,17 @@ export class WikiAgentRuntime {
           })
         : []
 
+    const threadPrompt =
+      threadComments.length > 0
+        ? buildThreadContextPrompt({
+            comments: threadComments,
+            originalTask: readWikiTicketPayload(params.payload).question,
+          })
+        : null
+    const userPayload = threadPrompt
+      ? { ...params.payload, question: threadPrompt }
+      : params.payload
+
     const { content } = await this.gateway.call({
       agentId: params.agentId,
       agentVersion: params.agentVersion,
@@ -573,7 +609,7 @@ export class WikiAgentRuntime {
         ...contextMessages,
         {
           role: 'user',
-          content: wikiUserPrompt(params.payload),
+          content: wikiUserPrompt(userPayload),
         },
       ],
       modelConfig: params.modelConfig,

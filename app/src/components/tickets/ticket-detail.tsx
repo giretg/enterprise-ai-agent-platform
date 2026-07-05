@@ -10,14 +10,10 @@ import { ProposalCard } from '@/components/tickets/proposal-card'
 import { Badge, Card } from '@/components/ui/shell'
 import { ProcessBadge } from '@/components/processes/process-badge'
 import { TICKET_STATE_LABELS, TICKET_STATE_TONE } from '@/lib/ticket-labels'
-import { extractTaskDescription, formatTicketDateTime } from '@/lib/ticket-display'
+import { formatTicketDateTime } from '@/lib/ticket-display'
 import { isRunAsAuthorized } from '@/lib/run-as-payload'
 import { resolveTicketTriggerInputPayload } from '@/lib/playbook-v2/trigger-input'
 import type { ProcessStatus } from '@prisma/client'
-
-function extractTaskDescriptionFromPayload(payload: Record<string, unknown> | null): string | null {
-  return extractTaskDescription(payload)
-}
 
 type TicketView = {
   id: string
@@ -31,6 +27,7 @@ type TicketView = {
   assigneeType?: string | null
   assigneeId?: string | null
   agentId?: string | null
+  processInstanceId?: string | null
   taskDescription?: string | null
   assignee?: {
     type: string | null
@@ -417,16 +414,7 @@ export function TicketMeta({ ticket, isAdmin = false }: { ticket: TicketView; is
   const payload = ticket.payload as Record<string, unknown> | null
   const proposal = payload?.proposal as Record<string, unknown> | undefined
   const diff = payload?.diff as Record<string, unknown> | undefined
-  const answer = typeof payload?.answer === 'string' ? payload.answer : null
-  const rationale = typeof payload?.rationale === 'string' ? payload.rationale : null
-  const confidence = typeof payload?.confidence === 'string' ? payload.confidence : null
-  const sources = Array.isArray(payload?.sources) ? payload.sources : []
-  const followUpNotes = Array.isArray(payload?.followUpNotes)
-    ? payload.followUpNotes.filter((note): note is string => typeof note === 'string' && note.trim().length > 0)
-    : []
-  const transitionNote = typeof payload?.transitionNote === 'string' ? payload.transitionNote : null
   const assignee = ticket.assignee
-  const taskDescription = ticket.taskDescription ?? extractTaskDescriptionFromPayload(payload)
 
   return (
     <>
@@ -473,45 +461,7 @@ export function TicketMeta({ ticket, isAdmin = false }: { ticket: TicketView; is
         )}
       </Card>
 
-      {taskDescription && (
-        <Card title="Feladat" className="mt-6">
-          <p className="text-base leading-relaxed text-ink whitespace-pre-wrap">{taskDescription}</p>
-        </Card>
-      )}
-
       {proposal && <ProposalCard proposal={proposal} className="mt-6" />}
-
-      {followUpNotes.length > 0 && (
-        <Card title="Pontosító kérések" className="mt-6">
-          <ol className="list-decimal space-y-2 pl-5 text-sm leading-relaxed text-ink-soft">
-            {followUpNotes.map((note, index) => (
-              <li key={index}>{note}</li>
-            ))}
-          </ol>
-          {transitionNote && transitionNote !== followUpNotes.at(-1) && (
-            <p className="mt-3 text-xs text-ink-faint">Legutóbbi indoklás: {transitionNote}</p>
-          )}
-        </Card>
-      )}
-
-      {answer && (
-        <Card title="Wiki-válasz" className="mt-6">
-          <p className="text-base leading-relaxed text-ink">{answer}</p>
-          {rationale && <p className="mt-4 text-sm leading-relaxed text-ink-soft">{rationale}</p>}
-          <div className="mt-4 flex flex-wrap gap-2">
-            {confidence && <Badge tone={confidence === 'high' ? 'success' : 'warning'}>{confidence}</Badge>}
-            {sources.map((source, index) => (
-              <Badge key={index} tone="neutral">
-                {typeof source === 'object' && source !== null
-                  ? `${'docId' in source ? String(source.docId) : 'source'} · ${
-                      'sectionRef' in source ? String(source.sectionRef) : index + 1
-                    }`
-                  : String(source)}
-              </Badge>
-            ))}
-          </div>
-        </Card>
-      )}
 
       {diff && (
         <Card title="Tanítási diff" className="mt-6">

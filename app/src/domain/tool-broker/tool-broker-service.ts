@@ -693,6 +693,10 @@ export function assembleKbHits(input: {
   const { query, k } = input
   const termStems = queryTermStems(query)
 
+  // Egy fájlnév-stem egyezés ennyi tartalmi-stem egyezést ér — a keresett
+  // dokumentumot a puszta cím-egyezés is a generikus tartalmi találatok elé emeli.
+  const FILENAME_STEM_WEIGHT = 3
+
   type ScoredChunk = {
     chunk: string
     score: number
@@ -706,9 +710,13 @@ export function assembleKbHits(input: {
     docId: string,
     sourceRef: string,
     memoryVersion: number | null,
-    extraStems: Iterable<string> = [],
+    filenameStems: Iterable<string> = [],
   ): ScoredChunk[] {
-    const extraStemSet = new Set(extraStems)
+    // A fájlnév-stemek a legerősebb „ez a keresett dokumentum" jelzés (a fájlnév a
+    // dokumentum egészére vonatkozik, nem egy chunkra). Ezért külön, magasabb
+    // súllyal pontozzuk őket: egy hosszú/zajos query esetén így a cél-dokumentum
+    // nem hígul fel a sok generikus tartalmi egyezés (más docok chunkjai) mögé.
+    const filenameStemSet = new Set(filenameStems)
     return text
       .split(/\n{2,}|\n(?=-\s+)/)
       .map((chunk) => chunk.trim())
@@ -717,8 +725,11 @@ export function assembleKbHits(input: {
         const chunkStems = new Set(
           normalizeText(chunk).split(/\s+/).filter(Boolean).map(stemToken),
         )
-        for (const stem of extraStemSet) chunkStems.add(stem)
-        const score = termStems.reduce((sum, stem) => sum + (chunkStems.has(stem) ? 1 : 0), 0)
+        const score = termStems.reduce((sum, stem) => {
+          if (filenameStemSet.has(stem)) return sum + FILENAME_STEM_WEIGHT
+          if (chunkStems.has(stem)) return sum + 1
+          return sum
+        }, 0)
         return { chunk, score, docId, sourceRef, memoryVersion }
       })
       .filter((item) => item.score > 0)

@@ -1,8 +1,20 @@
-import type { Prisma, Ticket, TicketTransition } from '@prisma/client'
+import { Prisma } from '@prisma/client'
+import type { Ticket, TicketTransition } from '@prisma/client'
 import { notifyTicketReady } from '@/lib/dispatch-notify'
 import { prisma } from '@/lib/db'
 import { resolveTicketSource } from '@/lib/ticket-source'
-import type { TicketFilter, TicketRepository } from '../interfaces'
+import type {
+  AppendTicketCommentInput,
+  TicketCommentWithAttachments,
+  TicketFilter,
+  TicketRepository,
+} from '../interfaces'
+
+const MAX_COMMENT_APPEND_RETRIES = 3
+
+function isUniqueCollision(error: unknown): boolean {
+  return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002'
+}
 
 export class PostgresTicketRepository implements TicketRepository {
   async findMany(filter?: TicketFilter): Promise<Ticket[]> {
@@ -174,6 +186,70 @@ export class PostgresTicketRepository implements TicketRepository {
     return prisma.ticketTransition.findMany({
       where: { ticketId },
       orderBy: { ts: 'asc' },
+    })
+  }
+
+  async appendComment(data: AppendTicketCommentInput): Promise<TicketCommentWithAttachments> {
+    if ((data.attachments?.length ?? 0) > 8) throw new Error('Too many attachments')
+
+    for (let attempt = 0; attempt < MAX_COMMENT_APPEND_RETRIES; attempt += 1) {
+      try {
+        return await prisma.$transaction(async (tx) => {
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${data.ticketId}))`
+
+          const last = await tx.ticketComment.findFirst({
+            where: { ticketId: data.ticketId },
+            orderBy: { seq: 'desc' },
+            select: { seq: true },
+          })
+          const seq = (last?.seq ?? 0) + 1
+
+          const comment = await tx.ticketComment.create({
+            data: {
+              ticketId: data.ticketId,
+              seq,
+              kind: data.kind,
+              authorType: data.authorType,
+              authorUserId: data.authorUserId ?? null,
+              authorAgentId: data.authorAgentId ?? null,
+              authorDisplayName: data.authorDisplayName ?? null,
+              agentVersion: data.agentVersion ?? null,
+              body: data.body,
+              structured: data.structured ?? undefined,
+              parentId: data.parentId ?? null,
+              transitionId: data.transitionId ?? null,
+              attachments: data.attachments?.length
+                ? {
+                    create: data.attachments.map((attachment, index) => ({
+                      documentId: attachment.documentId,
+                      seq: index + 1,
+                      kind: attachment.kind,
+                      filename: attachment.filename,
+                      mimeType: attachment.mimeType ?? null,
+                      byteSize: attachment.byteSize ?? null,
+                    })),
+                  }
+                : undefined,
+            },
+            include: { attachments: { include: { document: true }, orderBy: { seq: 'asc' } } },
+          })
+
+          return comment
+        })
+      } catch (error) {
+        if (isUniqueCollision(error) && attempt < MAX_COMMENT_APPEND_RETRIES - 1) continue
+        throw error
+      }
+    }
+
+    throw new Error('Failed to append ticket comment')
+  }
+
+  async listComments(ticketId: string): Promise<TicketCommentWithAttachments[]> {
+    return prisma.ticketComment.findMany({
+      where: { ticketId },
+      orderBy: { seq: 'asc' },
+      include: { attachments: { include: { document: true }, orderBy: { seq: 'asc' } } },
     })
   }
 

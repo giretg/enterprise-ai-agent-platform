@@ -7,6 +7,15 @@ import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { AgentChatButton } from '@/components/agents/agent-chat-panel'
 import { DeleteAgentButton } from '@/components/agents/delete-agent-button'
 import { personaFor, humanStatus } from '@/lib/agent-persona'
+import { modelLabel } from '@/lib/model-providers'
+
+function agentBrainLabel(agent: Agent) {
+  const modelConfig = agent.modelConfig as Record<string, unknown>
+  const provider = typeof modelConfig.provider === 'string' ? modelConfig.provider : 'chatgpt-oauth'
+  const model = typeof modelConfig.model === 'string' ? modelConfig.model : ''
+
+  return model ? modelLabel(provider, model) : null
+}
 
 export function AgentRegistryCard({
   agent,
@@ -17,6 +26,7 @@ export function AgentRegistryCard({
 }) {
   const p = personaFor(agent.name, agent)
   const mood = humanStatus(agent.status)
+  const brainLabel = agentBrainLabel(agent)
 
   return (
     <Card className="h-full transition-transform duration-200 hover:-translate-y-1">
@@ -31,7 +41,10 @@ export function AgentRegistryCard({
               </span>
             </div>
             <p className="mt-1 text-sm text-ink-faint">{agent.name}</p>
-            <p className="mt-1 text-xs font-medium text-sage">{mood.label}</p>
+            <p className="mt-1 text-xs font-medium text-sage">
+              {mood.label}
+              {brainLabel && ` (Agy: ${brainLabel})`}
+            </p>
           </div>
         </Link>
         <div className="flex shrink-0 flex-col items-end gap-2">

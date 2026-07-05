@@ -8,7 +8,15 @@ import { ProposalCard } from '@/components/tickets/proposal-card'
 import { Badge, Card } from '@/components/ui/shell'
 import { TICKET_STATE_LABELS, TICKET_STATE_TONE } from '@/lib/ticket-labels'
 
-type TicketState = 'backlog' | 'ready' | 'in_progress' | 'awaiting_human' | 'approved' | 'done' | 'rejected'
+type TicketState =
+  | 'backlog'
+  | 'ready'
+  | 'in_progress'
+  | 'awaiting_human'
+  | 'needs_info'
+  | 'approved'
+  | 'done'
+  | 'rejected'
 
 type SandboxReport = {
   id: string

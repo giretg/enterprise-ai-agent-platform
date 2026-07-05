@@ -10,6 +10,7 @@
 import type {
   PlaybookSpecV2,
   PlaybookStep,
+  PlaybookDeliverable,
   ConditionExpression,
 } from '@/lib/playbook-v2/spec'
 import { inferStepOutputFields, mergeOutputRequiredFields } from '@/lib/playbook-v2/step-output-inference'
@@ -48,6 +49,8 @@ export type CompiledTicketRule = {
   inputSlots: CompiledInputSlot[]
   /** Lépés szintű kötelező kimeneti mezők (outputContract + routing-következtetés). */
   outputRequiredFields: string[]
+  /** §4.7b — a lépés valódi fájl-deliverable-t termel; undefined, ha nem. */
+  deliverable?: PlaybookDeliverable
 }
 
 export type CompiledGate = {
@@ -123,6 +126,7 @@ export class PlaybookCompiler {
         readOutputContractFields(step.outputContract),
         inferredOutputs.get(step.id),
       ),
+      deliverable: step.deliverable,
       }
     })
 

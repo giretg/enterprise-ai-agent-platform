@@ -9,6 +9,7 @@ import { Badge } from '@/components/ui/shell'
 import { TICKET_STATE_LABELS, TICKET_STATE_TONE } from '@/lib/ticket-labels'
 import { extractTaskDescription, formatTicketDateTime } from '@/lib/ticket-display'
 import { PROCESS_STATUS_CLASS } from '@/lib/process-labels'
+import { TicketFilesPanel } from '@/components/tickets/ticket-files-panel'
 
 export type ProcessStepView = {
   id: string
@@ -529,6 +530,8 @@ function TicketDetailModal({ ticketId, onClose }: { ticketId: string; onClose: (
               <dt className="font-medium text-ink">Utolsó módosítás</dt>
               <dd>{formatTicketDateTime(state.ticket.updatedAt)}</dd>
             </dl>
+
+            <TicketFilesPanel ticketId={state.ticket.id} ticketState={state.ticket.state} />
 
             <Link
               href={`/control-plane/tickets/${state.ticket.id}`}

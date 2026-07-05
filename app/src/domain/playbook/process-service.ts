@@ -19,6 +19,7 @@
 import type { Prisma, ProcessInstance, ProcessTriggerType, TicketState } from '@prisma/client'
 import type { CompiledSpec } from '@/domain/playbook/playbook-compiler'
 import { evaluateAdvance } from '@/lib/playbook-v2/runtime'
+import { stringifyValue } from '@/lib/playbook-v2/effective-prompt'
 import {
   missingRequiredInputSlots,
   normalizeAgentStepResult,
@@ -99,6 +100,16 @@ export type ProcessAdvanceResult =
   | { kind: 'await_gate'; gateId: string; ticketId: string }
   | { kind: 'completed' }
   | { kind: 'blocked'; stepId: string; reason: string }
+  // Idempotens no-op: az advance egy már NEM tovább-léptethető (lezárt/blokkolt)
+  // folyamatra futott — pl. egy már done ticket újra-dispatch-elése miatt.
+  | { kind: 'noop'; status: ProcessInstance['status'] }
+
+/** Azok az állapotok, amelyekből egy folyamat még tovább-léptethető. */
+const ADVANCEABLE_PROCESS_STATUSES: ReadonlySet<ProcessInstance['status']> = new Set([
+  'created',
+  'running',
+  'awaiting_human',
+])
 
 export class ProcessService {
   constructor(
@@ -307,6 +318,15 @@ export class ProcessService {
       roleByKey: new Map(spec.roles.map((r) => [r.key, r])),
     }
 
+    // §4.7 — a Folyamat `configValues`-ai a `config`-forrású input-réseket töltik.
+    // A futás inputPayloadja a Folyamat configja + a trigger-input uniója; ütközéskor
+    // az explicit trigger-input nyer. Enélkül a `config`-slotok sosem oldódnának fel,
+    // és a folyamat az első config-slotos lépésnél blokkolna.
+    const runInput: Record<string, unknown> = {
+      ...this.asRecord(def.configValues),
+      ...input.inputPayload,
+    }
+
     const process = await this.processes.createProcess({
       tenantId: input.tenantId,
       processType: playbook.processType,
@@ -321,7 +341,7 @@ export class ProcessService {
       startedByAgentId: input.startedBy.type === 'agent' ? input.startedBy.id ?? null : null,
       conversationId: input.conversationId,
       rootTicketId: input.rootTicketId,
-      inputPayload: input.inputPayload as Prisma.InputJsonValue,
+      inputPayload: runInput as Prisma.InputJsonValue,
     })
 
     await this.append(input.tenantId, input.startedBy, {
@@ -357,7 +377,7 @@ export class ProcessService {
         compiled,
         entryRule.stepId,
         input.startedBy,
-        { processInput: input.inputPayload },
+        { processInput: runInput },
         undefined,
         resolution,
       )
@@ -393,6 +413,13 @@ export class ProcessService {
     const process = await this.processes.findProcess(input.tenantId, input.processInstanceId)
     if (!process) {
       throw new ProcessServiceError('NOT_FOUND_OR_FORBIDDEN', 'A folyamat nem található vagy nincs jogosultság.')
+    }
+    // Idempotencia-őr: lezárt (completed/cancelled/failed) vagy blokkolt folyamatra
+    // az advance NEM lép és NEM ír státuszt. Ez zárja ki, hogy egy már done ticket
+    // újra-dispatch-elése a `next_step` ágon keresztül visszaírja `running`-ra a
+    // korábban `blocked`-ba tett folyamatot (§7.3, dispatcher double-dispatch).
+    if (!ADVANCEABLE_PROCESS_STATUSES.has(process.status)) {
+      return { kind: 'noop', status: process.status }
     }
     const version = await this.playbooks.findVersion(input.tenantId, process.playbookVersionId)
     const compiled = this.requireCompiled(version?.compiledSpec)
@@ -728,7 +755,7 @@ export class ProcessService {
     if (rule.instructionTemplate) {
       payload.question = rule.instructionTemplate.replace(/\{\{(\w+)\}\}/g, (_, token: string) => {
         const v = resolved[token]
-        return v !== undefined && v !== null ? String(v) : ''
+        return v !== undefined && v !== null ? stringifyValue(v) : ''
       })
     }
     return payload

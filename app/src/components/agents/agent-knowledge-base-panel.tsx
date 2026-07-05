@@ -21,6 +21,7 @@ type KbDocument = { id: string; filename: string; status: string; createdAt: Dat
 type PendingDoc = { ticketId: string; documentId: string; filename: string; createdAt: Date | string }
 type AgentOption = { id: string; name: string; role: string }
 type SharedAgent = { id: string; name: string }
+type KnowledgeProcessingMode = 'raw_text_only' | 'okf'
 
 export function AgentKnowledgeBasePanel({
   agentId,
@@ -44,6 +45,7 @@ export function AgentKnowledgeBasePanel({
   const [agentOptions, setAgentOptions] = useState<AgentOption[]>([])
   const [shareTargetId, setShareTargetId] = useState('')
   const [textInput, setTextInput] = useState('')
+  const [processingMode, setProcessingMode] = useState<KnowledgeProcessingMode>('raw_text_only')
   const [loading, setLoading] = useState(true)
   const [reviewDoc, setReviewDoc] = useState<PendingDoc | null>(null)
 
@@ -112,13 +114,18 @@ export function AgentKnowledgeBasePanel({
       const requestRes = await requestKbDocument({
         documentId: (uploadRes.data as { id: string }).id,
         agentId,
+        processingMode,
       })
       if (!requestRes.success) {
         setUploadMessage(requestRes.error)
         return
       }
 
-      setUploadMessage(`Feltöltve — jóváhagyásra vár: ${file?.name ?? 'szöveg'}`)
+      setUploadMessage(
+        processingMode === 'okf'
+          ? `Feltöltve OKF review-ra — jóváhagyásra vár: ${file?.name ?? 'szöveg'}`
+          : `Feltöltve — jóváhagyásra vár: ${file?.name ?? 'szöveg'}`,
+      )
       setTextInput('')
       if (fileInput) fileInput.value = ''
       refreshDocs()
@@ -234,12 +241,39 @@ export function AgentKnowledgeBasePanel({
               onChange={(e) => setTextInput(e.target.value)}
             />
           </div>
+          <div>
+            <p className="mb-1 block text-xs font-medium text-ink-soft">Feldolgozás</p>
+            <div className="inline-flex rounded-full border border-line bg-night-2 p-1">
+              {[
+                { value: 'raw_text_only' as const, label: 'Nyers KB' },
+                { value: 'okf' as const, label: 'OKF wiki' },
+              ].map((mode) => (
+                <button
+                  key={mode.value}
+                  type="button"
+                  onClick={() => setProcessingMode(mode.value)}
+                  className={`rounded-full px-4 py-1.5 text-xs font-semibold transition ${
+                    processingMode === mode.value
+                      ? 'bg-sage/20 text-sage'
+                      : 'text-ink-faint hover:text-ink-soft'
+                  }`}
+                  aria-pressed={processingMode === mode.value}
+                >
+                  {mode.label}
+                </button>
+              ))}
+            </div>
+          </div>
           <button
             type="submit"
             disabled={uploadPending}
             className="rounded-full bg-honey/20 px-5 py-2.5 text-sm font-semibold text-honey hover:bg-honey/30 disabled:opacity-50"
           >
-            {uploadPending ? 'Feltöltés...' : '+ Beküldés jóváhagyásra'}
+            {uploadPending
+              ? 'Feltöltés...'
+              : processingMode === 'okf'
+                ? '+ Beküldés OKF review-ra'
+                : '+ Beküldés jóváhagyásra'}
           </button>
           {uploadMessage && <p className="text-sm text-ink-soft">{uploadMessage}</p>}
         </form>
