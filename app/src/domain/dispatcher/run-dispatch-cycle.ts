@@ -34,21 +34,27 @@ const EMPTY_SUMMARY: DispatchCycleSummary = {
 let cycleInFlight = false
 let lastMonitorSweepAt = 0
 
+export type DispatchCycleTrigger = 'worker' | 'scheduler' | 'manual'
+
 /**
  * A dispatcher egy ciklusa (§5.7): stale-reclaim, ütemezett task materializálás,
  * proaktív monitor söprés, workspace-purge, majd a ready ticketek (vagy egy adott
  * ticket) dispatchelése.
  *
  * Ugyanez a logika hívható egy hosszan futó workerből (LISTEN/NOTIFY + belső cron —
- * lásd `scripts/dispatcher-worker.ts`) ÉS egyetlen stateless HTTP-hívásból (Cloud
- * Scheduler → `/api/v1/internal/dispatch-cycle`) is: nincs perzisztens kapcsolat
- * vagy végtelen loop-függőség ahhoz, hogy a biztonsági háló lefusson.
+ * lásd `scripts/dispatcher-worker.ts`), egyetlen stateless HTTP-hívásból (Cloud
+ * Scheduler → `/api/v1/internal/dispatch-cycle`), ÉS egy admin-vezérelt kézi
+ * futtatásból (control-plane/system) is — nincs perzisztens kapcsolat vagy
+ * végtelen loop-függőség ahhoz, hogy a biztonsági háló lefusson. Minden lefutás
+ * (siker vagy hiba) a `platform_settings` táblába íródik (`recordDispatchCycleRun`),
+ * így az admin UI-n mindig látszik az utolsó futás, függetlenül a forrástól.
  */
 export async function runDispatchCycle(
-  input: { ticketId?: string; batchLimit?: number } = {},
+  input: { ticketId?: string; batchLimit?: number; triggeredBy?: DispatchCycleTrigger } = {},
 ): Promise<DispatchCycleSummary> {
   if (cycleInFlight) return EMPTY_SUMMARY
   cycleInFlight = true
+  const triggeredBy = input.triggeredBy ?? 'worker'
   try {
     await ensureActiveDatabaseMode()
     const batchLimit = input.batchLimit ?? DEFAULT_BATCH_LIMIT
@@ -90,40 +96,70 @@ export async function runDispatchCycle(
       deletedObjects: workspacePurgeResult.deletedObjects,
     }
 
+    let dispatch: DispatchCycleSummary['dispatch']
     if (input.ticketId) {
       const result = await services.dispatcher.dispatchTicket(input.ticketId)
-      return {
-        skipped: false,
-        reclaimedDispatches,
-        reclaimedScheduledTasks,
-        materializedScheduledTasks,
-        monitorSweep,
-        workspacePurge,
-        dispatch: {
-          scanned: 1,
-          started: result.status === 'started' ? 1 : 0,
-          budgetBlocked: result.status === 'budget_blocked' ? 1 : 0,
-          paused: result.status === 'paused',
-          ticketStatus: result.status,
-        },
+      dispatch = {
+        scanned: 1,
+        started: result.status === 'started' ? 1 : 0,
+        budgetBlocked: result.status === 'budget_blocked' ? 1 : 0,
+        paused: result.status === 'paused',
+        ticketStatus: result.status,
+      }
+    } else {
+      const results = await services.dispatcher.dispatchReadyBatch(batchLimit)
+      dispatch = {
+        scanned: results.length,
+        started: results.filter((r) => r.status === 'started').length,
+        budgetBlocked: results.filter((r) => r.status === 'budget_blocked').length,
+        paused: results.some((r) => r.status === 'paused'),
       }
     }
 
-    const results = await services.dispatcher.dispatchReadyBatch(batchLimit)
-    return {
+    const summary: DispatchCycleSummary = {
       skipped: false,
       reclaimedDispatches,
       reclaimedScheduledTasks,
       materializedScheduledTasks,
       monitorSweep,
       workspacePurge,
-      dispatch: {
-        scanned: results.length,
-        started: results.filter((r) => r.status === 'started').length,
-        budgetBlocked: results.filter((r) => r.status === 'budget_blocked').length,
-        paused: results.some((r) => r.status === 'paused'),
-      },
+      dispatch,
     }
+    await services.platformSettings
+      .recordDispatchCycleRun({
+        triggeredBy,
+        ok: true,
+        error: null,
+        reclaimedDispatches,
+        reclaimedScheduledTasks,
+        materializedScheduledTasks,
+        monitorSweepRan: monitorSweep.ran,
+        monitorEscalated: monitorSweep.escalated,
+        workspacePurgedTickets: workspacePurge.purgedTickets,
+        dispatchScanned: dispatch.scanned,
+        dispatchStarted: dispatch.started,
+        dispatchBudgetBlocked: dispatch.budgetBlocked,
+      })
+      .catch(() => {})
+    return summary
+  } catch (error) {
+    await services.platformSettings
+      .recordDispatchCycleRun({
+        triggeredBy,
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+        reclaimedDispatches: 0,
+        reclaimedScheduledTasks: 0,
+        materializedScheduledTasks: 0,
+        monitorSweepRan: false,
+        monitorEscalated: 0,
+        workspacePurgedTickets: 0,
+        dispatchScanned: 0,
+        dispatchStarted: 0,
+        dispatchBudgetBlocked: 0,
+      })
+      .catch(() => {})
+    throw error
   } finally {
     cycleInFlight = false
   }

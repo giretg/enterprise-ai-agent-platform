@@ -4,10 +4,17 @@ import { useCallback, useEffect, useState, useTransition } from 'react'
 import { Card } from '@/components/ui/shell'
 import {
   getWorkerProcessesStatus,
+  runDispatchCycleNow,
   setCloudRunDispatcherScale,
   stopLocalDispatcherWorker,
   type WorkerProcessesStatus,
 } from '@/app/actions/platform'
+
+const TRIGGER_LABELS: Record<string, string> = {
+  worker: 'lokális worker',
+  scheduler: 'Cloud Scheduler',
+  manual: 'kézi futtatás',
+}
 
 const REFRESH_INTERVAL_MS = 20_000
 
@@ -71,8 +78,25 @@ export function WorkerProcessesPanel({
     })
   }
 
+  function runCycleNow() {
+    setMessage(null)
+    startTransition(async () => {
+      const res = await runDispatchCycleNow()
+      if (res.success) {
+        setMessage({
+          tone: 'ok',
+          text: `Ciklus lefutott: ${res.data.dispatch.scanned} ticket vizsgálva, ${res.data.dispatch.started} indítva, ${res.data.dispatch.budgetBlocked} budget_blocked.`,
+        })
+      } else {
+        setMessage({ tone: 'err', text: res.error })
+      }
+      refresh()
+    })
+  }
+
   const local = status.local
   const cloudRun = status.cloudRun
+  const lastCycle = status.lastCycle
 
   return (
     <Card title="Worker-folyamatok (Neon compute forrás)">
@@ -80,7 +104,9 @@ export function WorkerProcessesPanel({
         <p className="text-xs text-ink-soft">
           Ezek a folyamatok tartják nyitva a kapcsolatot a production adatbázissal (LISTEN/NOTIFY +
           cron safety-net) — amíg futnak, a Neon compute nem tud lekapcsolni. A fenti dispatcher
-          kapcsoló csak az agent-indítást szünetelteti, ezeket nem.
+          kapcsoló csak az agent-indítást szünetelteti, ezeket nem. A ready ticketek zöme egyébként
+          azonnal, a keletkezésük kérésén belül dispatchelődik — ez a három folyamat csak a
+          biztonsági hálóhoz (stale-reclaim, ütemezett taskok, monitor-söprés) kell.
         </p>
 
         {/* Lokális worker */}
@@ -173,6 +199,33 @@ export function WorkerProcessesPanel({
               </>
             )}
           </div>
+        </div>
+
+        {/* Stateless dispatch-ciklus (Cloud Scheduler / kézi) */}
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-line/40 px-4 py-3">
+          <div className="flex items-center gap-3">
+            <Dot color={!lastCycle ? 'amber' : lastCycle.ok ? 'emerald' : 'red'} />
+            <div>
+              <p className="text-sm font-medium">Dispatch-ciklus (stateless — /api/v1/internal/dispatch-cycle)</p>
+              <p className="text-xs text-ink-soft">
+                {!lastCycle
+                  ? 'Még nem futott ciklus ezen a csatornán.'
+                  : `${lastCycle.ok ? 'OK' : `hiba: ${lastCycle.error}`} · forrás: ${TRIGGER_LABELS[lastCycle.triggeredBy] ?? lastCycle.triggeredBy} · ${new Date(lastCycle.ranAt).toLocaleString('hu-HU')} · ${lastCycle.dispatchScanned} vizsgálva, ${lastCycle.dispatchStarted} indítva, ${lastCycle.dispatchBudgetBlocked} budget_blocked, ${lastCycle.reclaimedDispatches} reclaim`}
+              </p>
+              <p className="mt-1 text-xs text-ink-soft">
+                Nincs hozzá állandó process — GCP Cloud Schedulerrel percenként/N percenként hívva
+                kiváltja a fenti Cloud Run service-t (min-instances=1 nélkül is fut a biztonsági háló).
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            disabled={!canEdit || pending}
+            onClick={runCycleNow}
+            className="rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40"
+          >
+            Ciklus futtatása most
+          </button>
         </div>
 
         {/* Docker per-ticket harness */}

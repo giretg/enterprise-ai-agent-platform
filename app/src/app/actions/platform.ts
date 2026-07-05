@@ -16,6 +16,8 @@ import {
   getDispatcherServiceStatus,
   setDispatcherServiceMinScale,
 } from '@/domain/dispatcher/cloud-run-service-admin'
+import { runDispatchCycle, type DispatchCycleSummary } from '@/domain/dispatcher/run-dispatch-cycle'
+import type { DispatchCycleRunRecord } from '@/domain/platform-settings/platform-settings-service'
 import { repositories } from '@/repositories/postgres'
 import { isClerkEnabled } from '@/lib/clerk-config'
 import { prisma, ensureActiveDatabaseMode } from '@/lib/db'
@@ -3177,6 +3179,7 @@ export type CloudRunWorkerStatus =
 export type WorkerProcessesStatus = {
   local: LocalWorkerStatus
   cloudRun: CloudRunWorkerStatus
+  lastCycle: DispatchCycleRunRecord | null
 }
 
 async function fetchLocalWorkerStatus(): Promise<LocalWorkerStatus> {
@@ -3209,15 +3212,33 @@ export async function getWorkerProcessesStatus(): Promise<ActionResult<WorkerPro
   try {
     await ensureActiveDatabaseMode()
     await requireTenantRole('operator')
-    const [local, cloudRun] = await Promise.all([
+    const [local, cloudRun, lastCycle] = await Promise.all([
       fetchLocalWorkerStatus(),
       getDispatcherServiceStatus()
         .then((status) => ({ available: true as const, ...status }))
         .catch((e) => ({ available: false as const, error: e instanceof Error ? e.message : String(e) })),
+      services.platformSettings.getLastDispatchCycleRun(),
     ])
-    return ok({ local, cloudRun })
+    return ok({ local, cloudRun, lastCycle })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to read worker processes status')
+  }
+}
+
+/**
+ * Kézi dispatch-ciklus indítás (§5.7 kiegészítés — admin UI gomb): ugyanazt a
+ * ciklust futtatja le, mint a Cloud Scheduler-hívta stateless endpoint vagy a
+ * lokális worker, csak közvetlenül, ebből a kérésből — nem kell hozzá sem
+ * dispatcher-worker process, sem Cloud Scheduler beállítva.
+ */
+export async function runDispatchCycleNow(): Promise<ActionResult<DispatchCycleSummary>> {
+  try {
+    await ensureActiveDatabaseMode()
+    await requirePlatformRole('superadmin')
+    const summary = await runDispatchCycle({ triggeredBy: 'manual' })
+    return ok(summary)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to run dispatch cycle')
   }
 }
 

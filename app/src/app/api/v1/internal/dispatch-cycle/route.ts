@@ -35,7 +35,7 @@ export async function POST(request: Request) {
   }
 
   try {
-    const summary = await runDispatchCycle({ ticketId })
+    const summary = await runDispatchCycle({ ticketId, triggeredBy: 'scheduler' })
     return NextResponse.json({ success: true, data: summary })
   } catch (e) {
     return jsonError(e instanceof Error ? e.message : 'Dispatch cycle failed', 500)

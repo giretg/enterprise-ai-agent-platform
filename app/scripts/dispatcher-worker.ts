@@ -79,7 +79,7 @@ function startHealthServer() {
 
 async function runDispatchCycle(ticketId?: string) {
   try {
-    const summary = await runSharedDispatchCycle({ ticketId, batchLimit: BATCH_LIMIT })
+    const summary = await runSharedDispatchCycle({ ticketId, batchLimit: BATCH_LIMIT, triggeredBy: 'worker' })
     if (summary.skipped) return
 
     if (summary.reclaimedDispatches > 0) {
