@@ -67,6 +67,11 @@ export type SensitivityOverride = {
   reason: string
 }
 
+export type ModelOverrideHint = {
+  provider: string
+  model: string
+}
+
 /** Egy natív tool definíció, amit a providernek átadunk (function calling). */
 export type ToolDefinition = {
   name: string
@@ -667,6 +672,8 @@ export class ModelGateway {
     ticketType?: string
     messages: GatewayMessage[]
     modelConfig: ModelConfig
+    /** Low-trust request-level model choice. Routing policy must explicitly allow it. */
+    modelOverrideHint?: ModelOverrideHint
     /** Natív tool use definíciók — átadva a provider function callingot kér. */
     tools?: ToolDefinition[]
     /** Explicit human review for narrowly scoped, audited sensitivity overrides. */
@@ -675,6 +682,8 @@ export class ModelGateway {
     content: string
     toolCalls?: GatewayToolCall[]
     usage: { promptTokens: number; completionTokens: number }
+    provider: string
+    model: string
   }> {
     const agentVersion = params.agentVersion ?? null
 
@@ -732,6 +741,7 @@ export class ModelGateway {
         agentId: params.agentId,
         tenantId: params.tenantId,
         ticketType: params.ticketType,
+        overrideHint: params.modelOverrideHint,
         agentModelConfig: params.modelConfig,
       })
       resolvedConfig = { ...resolvedConfig, provider: decision.provider, model: decision.model }
@@ -867,6 +877,8 @@ export class ModelGateway {
         content,
         ...(result.toolCalls?.length ? { toolCalls: result.toolCalls } : {}),
         usage: { promptTokens, completionTokens },
+        provider: provider.name,
+        model: usedModel,
       }
     } catch (error: unknown) {
       if (error instanceof GatewayBudgetError) throw error
@@ -918,6 +930,7 @@ export class ModelGateway {
     ticketType?: string
     messages: GatewayMessage[]
     modelConfig: ModelConfig
+    modelOverrideHint?: ModelOverrideHint
     sensitivityOverride?: SensitivityOverride
   }): AsyncGenerator<string, void, unknown> {
     const agentVersion = params.agentVersion ?? null
@@ -976,6 +989,7 @@ export class ModelGateway {
         agentId: params.agentId,
         tenantId: params.tenantId,
         ticketType: params.ticketType,
+        overrideHint: params.modelOverrideHint,
         agentModelConfig: params.modelConfig,
       })
       resolvedConfig = { ...resolvedConfig, provider: decision.provider, model: decision.model }

@@ -1,5 +1,29 @@
 # Enterprise code review log
 
+## 2026-07-06 - Model Gateway governed routing / request model override
+
+- Reviewed modules:
+  - `app/src/domain/gateway/model-gateway.ts`
+  - `app/src/domain/gateway/routing-engine.ts`
+  - `app/src/domain/gateway/sensitivity-router.ts`
+  - `app/src/domain/gateway/budget-engine.ts`
+  - `app/src/app/api/v1/gateway/v1/chat/completions/route.ts`
+  - `app/src/lib/harness-model-config.ts`
+  - `app/scripts/model-gateway-negative.test.ts`
+- Result:
+  - The Model Gateway already centralizes provider calls, sensitivity classification, budget guardrails, model-call audit records, and provider abstraction in a shape that is appropriate for enterprise control-plane enforcement.
+  - Found a governance bypass in the OpenAI-compatible gateway API path. A caller-provided `model` value was merged into `modelConfig` before entering the gateway, so the routing engine treated it as the agent's registry model. Without an explicit routing policy this let a request choose another model identifier, which can bypass central cost, vendor, residency, and approval expectations.
+  - Found that the routing engine's `overrideHint` contract was documented as low trust but, if used, would have accepted the override before policy evaluation. That is the wrong default for an enterprise AI gateway because request-level preferences must be opt-in governance decisions, not caller authority.
+- Fix applied:
+  - Request-selected models now travel as `modelOverrideHint` instead of overwriting the agent registry `modelConfig`.
+  - `RoutingEngine` ignores request model overrides by default and honors them only when the matched routing policy explicitly sets `allowRequestOverride: true`; optional provider/model allowlists further constrain which override can be used.
+  - The `/api/v1/gateway/v1/chat/completions` response now reports the actual model used by the gateway, so clients and audit evidence do not claim that a denied override was honored.
+  - Added MG-N7 negative tests covering default-deny override behavior, explicitly allowlisted override behavior, and denied unallowlisted override behavior.
+- Business impact:
+  - Prevents API clients, harnesses, or compromised agents from silently switching to unapproved, more expensive, or non-compliant model backends.
+  - Keeps model routing, vendor selection, and data-governance decisions in the platform control plane where administrators can review and audit them.
+  - Improves customer-facing transparency by returning the actual model that processed the request.
+
 ## 2026-07-01 - Per-user connector grant / OAuth token vault
 
 - Reviewed modules:

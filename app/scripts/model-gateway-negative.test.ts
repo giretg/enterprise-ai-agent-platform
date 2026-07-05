@@ -1,5 +1,5 @@
 /**
- * Model Gateway kötelező negatív tesztek (§10.2 MG-N1–MG-N6)
+ * Model Gateway kötelező negatív tesztek (§10.2 MG-N1–MG-N7)
  *
  * Futtatás: npx tsx scripts/model-gateway-negative.test.ts
  *
@@ -9,6 +9,7 @@
  * MG-N4: verifyChain() zöld; az audit payload nem tartalmaz nyers prompt/válasz tartalmat.
  * MG-N5: Érzékeny (PII/PAN) prompt külső modellhez → sensitivity-router lokálisra kényszerít / blokkol.
  * MG-N6: Agent/prompt nem tudja felülírni a sensitivity-döntést.
+ * MG-N7: Request-szintű model override csak explicit routing policy alapján érvényesülhet.
  */
 
 import assert from 'node:assert/strict'
@@ -19,13 +20,18 @@ import {
   GatewayBudgetError,
   type ModelProvider,
 } from '../src/domain/gateway/model-gateway'
+import { RoutingEngine } from '../src/domain/gateway/routing-engine'
 import {
   classifyPrompt,
   inspectPromptSensitivity,
 } from '../src/domain/gateway/sensitivity-router'
 import { computeAuditHash } from '../src/lib/crypto/hash-chain'
-import type { AuditRepository, ModelCallRepository } from '../src/repositories/interfaces'
-import type { AuditLog, ModelCall } from '@prisma/client'
+import type {
+  AuditRepository,
+  ModelCallRepository,
+  ModelRoutingPolicyRepository,
+} from '../src/repositories/interfaces'
+import type { AuditLog, ModelCall, ModelRoutingPolicy } from '@prisma/client'
 
 let failures = 0
 function check(name: string, fn: () => void | Promise<void>) {
@@ -83,11 +89,59 @@ function makeModelCallRepo(existingCalls: number): {
   return { repo, created }
 }
 
+function makeRoutingPolicyRepo(policies: ModelRoutingPolicy[]): ModelRoutingPolicyRepository {
+  return {
+    async list() { return policies },
+    async findById(id) { return policies.find((policy) => policy.id === id) ?? null },
+    async create(data) {
+      const row = {
+        id: crypto.randomUUID(),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+        ...data,
+      } as ModelRoutingPolicy
+      policies.push(row)
+      return row
+    },
+    async update(id, data) {
+      const index = policies.findIndex((policy) => policy.id === id)
+      assert.notEqual(index, -1, `Policy not found: ${id}`)
+      policies[index] = { ...policies[index], ...data, updatedAt: new Date() } as ModelRoutingPolicy
+      return policies[index]
+    },
+    async delete(id) {
+      const index = policies.findIndex((policy) => policy.id === id)
+      if (index !== -1) policies.splice(index, 1)
+    },
+    async findForRouting() { return policies },
+  }
+}
+
+function makeRoutingPolicy(input: {
+  provider: string
+  model: string
+  conditions?: unknown
+  priority?: number
+}): ModelRoutingPolicy {
+  return {
+    id: crypto.randomUUID(),
+    tenantId: null,
+    scope: 'global',
+    scopeRef: null,
+    provider: input.provider,
+    model: input.model,
+    priority: input.priority ?? 100,
+    conditions: input.conditions as ModelRoutingPolicy['conditions'],
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  }
+}
+
 const TEST_TICKET_ID = 'aaaaaaaa-bbbb-4000-8000-000000000001'
 const TEST_AGENT_ID = 'aaaaaaaa-bbbb-4000-8000-000000000002'
 
 async function main() {
-  console.log('=== Model Gateway negatív tesztek (MG-N1–MG-N6) ===\n')
+  console.log('=== Model Gateway negatív tesztek (MG-N1–MG-N7) ===\n')
 
   // ── MG-N1: Egress guardrail konfigurálható ──────────────────────────────
   await check('MG-N1: guardrailFromEnv alapértéke >= 1 (provider-limit aktív)', () => {
@@ -411,6 +465,156 @@ async function main() {
 
     assert.ok(result.content, 'Válasz üres')
     assert.equal(externalCalls.n, 1, 'Külső provider nem hívódott, pedig admin engedélyezte')
+  })
+
+  // ── MG-N7: Request-level model override governance ──────────────────────
+  await check('MG-N7: request model override policy nélkül nem írja felül az agent modelljét', async () => {
+    const { repo: auditRepo } = makeAuditRepo()
+    const { repo: modelCallRepo, created } = makeModelCallRepo(0)
+
+    const agentCalls = { n: 0 }
+    const overrideCalls = { n: 0 }
+    const providers = new Map<string, ModelProvider>([
+      [
+        'chatgpt-oauth',
+        {
+          name: 'chatgpt-oauth',
+          async chat() {
+            agentCalls.n++
+            return { content: 'agent model', latencyMs: 1 }
+          },
+        },
+      ],
+      [
+        'openrouter',
+        {
+          name: 'openrouter',
+          async chat() {
+            overrideCalls.n++
+            return { content: 'override model', latencyMs: 1 }
+          },
+        },
+      ],
+    ])
+    const routing = new RoutingEngine(makeRoutingPolicyRepo([]))
+    const gw = new ModelGateway(auditRepo, modelCallRepo, providers, { maxCallsPerTicket: 30 }, routing)
+
+    const result = await gw.call({
+      agentId: TEST_AGENT_ID,
+      messages: [{ role: 'user', content: 'összefoglaló' }],
+      modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+      modelOverrideHint: { provider: 'openrouter', model: '~openai/gpt-latest' },
+    })
+
+    assert.equal(result.model, 'chatgpt-oauth-default')
+    assert.equal(agentCalls.n, 1)
+    assert.equal(overrideCalls.n, 0, 'Nem engedélyezett request override provider hívódott')
+    assert.equal(created[0]?.provider, 'chatgpt-oauth')
+    assert.equal(created[0]?.model, 'chatgpt-oauth-default')
+  })
+
+  await check('MG-N7: request model override csak explicit allowlistelt routing policy esetén érvényesül', async () => {
+    const { repo: auditRepo } = makeAuditRepo()
+    const { repo: modelCallRepo } = makeModelCallRepo(0)
+
+    const agentCalls = { n: 0 }
+    const overrideCalls = { n: 0 }
+    const providers = new Map<string, ModelProvider>([
+      [
+        'chatgpt-oauth',
+        {
+          name: 'chatgpt-oauth',
+          async chat() {
+            agentCalls.n++
+            return { content: 'agent model', latencyMs: 1 }
+          },
+        },
+      ],
+      [
+        'openrouter',
+        {
+          name: 'openrouter',
+          async chat() {
+            overrideCalls.n++
+            return { content: 'approved override', latencyMs: 1 }
+          },
+        },
+      ],
+    ])
+    const routing = new RoutingEngine(makeRoutingPolicyRepo([
+      makeRoutingPolicy({
+        provider: 'chatgpt-oauth',
+        model: 'chatgpt-oauth-default',
+        conditions: {
+          allowRequestOverride: true,
+          allowedRequestModels: [{ provider: 'openrouter', model: '~openai/gpt-latest' }],
+        },
+      }),
+    ]))
+    const gw = new ModelGateway(auditRepo, modelCallRepo, providers, { maxCallsPerTicket: 30 }, routing)
+
+    const result = await gw.call({
+      agentId: TEST_AGENT_ID,
+      messages: [{ role: 'user', content: 'összefoglaló' }],
+      modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+      modelOverrideHint: { provider: 'openrouter', model: '~openai/gpt-latest' },
+    })
+
+    assert.equal(result.model, '~openai/gpt-latest')
+    assert.equal(agentCalls.n, 0)
+    assert.equal(overrideCalls.n, 1)
+  })
+
+  await check('MG-N7: nem allowlistelt override esetén a routing policy modellje marad érvényben', async () => {
+    const { repo: auditRepo } = makeAuditRepo()
+    const { repo: modelCallRepo } = makeModelCallRepo(0)
+
+    const policyCalls = { n: 0 }
+    const overrideCalls = { n: 0 }
+    const providers = new Map<string, ModelProvider>([
+      [
+        'ollama',
+        {
+          name: 'ollama',
+          async chat() {
+            policyCalls.n++
+            return { content: 'policy model', latencyMs: 1 }
+          },
+        },
+      ],
+      [
+        'openrouter',
+        {
+          name: 'openrouter',
+          async chat() {
+            overrideCalls.n++
+            return { content: 'disallowed override', latencyMs: 1 }
+          },
+        },
+      ],
+    ])
+    const routing = new RoutingEngine(makeRoutingPolicyRepo([
+      makeRoutingPolicy({
+        provider: 'ollama',
+        model: 'gemma-local',
+        conditions: {
+          allowRequestOverride: true,
+          allowedRequestModels: [{ provider: 'openrouter', model: 'approved-model' }],
+        },
+      }),
+    ]))
+    const gw = new ModelGateway(auditRepo, modelCallRepo, providers, { maxCallsPerTicket: 30 }, routing)
+
+    const result = await gw.call({
+      agentId: TEST_AGENT_ID,
+      messages: [{ role: 'user', content: 'összefoglaló' }],
+      modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+      modelOverrideHint: { provider: 'openrouter', model: 'unapproved-model' },
+    })
+
+    assert.equal(result.model, 'gemma-local')
+    assert.equal(policyCalls.n, 1)
+    assert.equal(overrideCalls.n, 0, 'Nem allowlistelt request override provider hívódott')
   })
 
   // ── Összesítés ────────────────────────────────────────────────────────────
