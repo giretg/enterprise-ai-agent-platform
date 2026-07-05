@@ -48,6 +48,13 @@ env:
     secret: HARNESS_CALLBACK_TOKEN
     availability:
       - RUNTIME
+  # Cloud Scheduler → POST /api/v1/internal/dispatch-cycle hitelesítés (x-dispatcher-token
+  # fejléc). Ugyanaz a token, mint a lokális worker /control/stop végpontjáé — korábban csak
+  # .env.local-ban élt, de a Scheduler az éles App Hosting instance-t hívja, ezért itt is kell.
+  - variable: DISPATCHER_CONTROL_TOKEN
+    secret: DISPATCHER_CONTROL_TOKEN
+    availability:
+      - RUNTIME
   # Stabil Server Action ID-k build/deploy között (version skew ellen).
   - variable: NEXT_SERVER_ACTIONS_ENCRYPTION_KEY
     secret: NEXT_SERVER_ACTIONS_ENCRYPTION_KEY

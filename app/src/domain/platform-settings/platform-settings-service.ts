@@ -38,6 +38,7 @@ import { WEB_FETCH_CONTROLS_KEY } from '@/domain/web-fetch/web-fetch-types'
 import { matchForbiddenHost } from '@/domain/net/egress-guard'
 
 export const DISPATCHER_CONTROLS_KEY = 'dispatcher.controls'
+export const DISPATCHER_LAST_CYCLE_KEY = 'dispatcher.last_cycle'
 export const TICKET_TYPE_CONFIGS_KEY = 'ticket.type_configs'
 export const MONITOR_CONTROLS_KEY = 'monitor.controls'
 
@@ -64,6 +65,29 @@ const DEFAULT_CONTROLS: DispatcherControls = {
   blockedNotifyChannel: 'audit-only:dispatch-blocked',
   updatedById: null,
   updatedAt: null,
+}
+
+/**
+ * Egyetlen dispatch-ciklus (§5.7 kiegészítés — stateless/időzített út) legutóbbi
+ * lefutásának lenyomata. Bármelyik hívó írja: a lokális worker (LISTEN/cron),
+ * a Cloud Scheduler-hívta stateless endpoint, vagy egy admin-vezérelt kézi
+ * futtatás — így az admin UI-n mindig látszik, futott-e egyáltalán a
+ * biztonsági háló, függetlenül attól, hogy melyik mechanizmus indította.
+ */
+export type DispatchCycleRunRecord = {
+  ranAt: string
+  triggeredBy: 'worker' | 'scheduler' | 'manual'
+  ok: boolean
+  error: string | null
+  reclaimedDispatches: number
+  reclaimedScheduledTasks: number
+  materializedScheduledTasks: number
+  monitorSweepRan: boolean
+  monitorEscalated: number
+  workspacePurgedTickets: number
+  dispatchScanned: number
+  dispatchStarted: number
+  dispatchBudgetBlocked: number
 }
 
 export type MonitorControls = {
@@ -303,6 +327,39 @@ export class PlatformSettingsService {
     })
 
     return next
+  }
+
+  /** Nem auditál (rendszer-belső könyvelés) — csak az admin UI státusz-kijelzéséhez kell. */
+  async recordDispatchCycleRun(record: Omit<DispatchCycleRunRecord, 'ranAt'>): Promise<void> {
+    await this.settings.set(DISPATCHER_LAST_CYCLE_KEY, {
+      ranAt: new Date().toISOString(),
+      ...record,
+    })
+  }
+
+  async getLastDispatchCycleRun(): Promise<DispatchCycleRunRecord | null> {
+    const raw = (await this.settings.get(DISPATCHER_LAST_CYCLE_KEY)) as Partial<DispatchCycleRunRecord> | null
+    if (!raw || typeof raw !== 'object' || typeof raw.ranAt !== 'string') return null
+    return {
+      ranAt: raw.ranAt,
+      triggeredBy:
+        raw.triggeredBy === 'worker' || raw.triggeredBy === 'scheduler' || raw.triggeredBy === 'manual'
+          ? raw.triggeredBy
+          : 'worker',
+      ok: typeof raw.ok === 'boolean' ? raw.ok : false,
+      error: typeof raw.error === 'string' ? raw.error : null,
+      reclaimedDispatches: typeof raw.reclaimedDispatches === 'number' ? raw.reclaimedDispatches : 0,
+      reclaimedScheduledTasks:
+        typeof raw.reclaimedScheduledTasks === 'number' ? raw.reclaimedScheduledTasks : 0,
+      materializedScheduledTasks:
+        typeof raw.materializedScheduledTasks === 'number' ? raw.materializedScheduledTasks : 0,
+      monitorSweepRan: typeof raw.monitorSweepRan === 'boolean' ? raw.monitorSweepRan : false,
+      monitorEscalated: typeof raw.monitorEscalated === 'number' ? raw.monitorEscalated : 0,
+      workspacePurgedTickets: typeof raw.workspacePurgedTickets === 'number' ? raw.workspacePurgedTickets : 0,
+      dispatchScanned: typeof raw.dispatchScanned === 'number' ? raw.dispatchScanned : 0,
+      dispatchStarted: typeof raw.dispatchStarted === 'number' ? raw.dispatchStarted : 0,
+      dispatchBudgetBlocked: typeof raw.dispatchBudgetBlocked === 'number' ? raw.dispatchBudgetBlocked : 0,
+    }
   }
 
   async getTicketTypeConfigs(): Promise<TicketTypeConfig[]> {

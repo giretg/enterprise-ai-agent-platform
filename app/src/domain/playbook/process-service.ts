@@ -113,7 +113,32 @@ export class ProcessService {
     private readonly toolBroker?: ToolBrokerRepository,
     private readonly users?: UserRepository,
     private readonly alertNotifier?: ProcessAlertNotifier,
+    // Azonnali dispatch-gyorsítóút (§5.7 kiegészítés): a belépő/soron következő
+    // agent-step ticketjét ugyanabban a kérésben elindítja, ahelyett hogy a
+    // NOTIFY/cron-safety-net külön workerére várna. Launcher-mód-független —
+    // docker-local/cloud-run-job esetén a launch() már ma is fire-and-forget,
+    // a tényleges eredmény a harness-callbacken jön vissza. Ha hiányzik (pl.
+    // tesztekben), a ticket a régi módon 'ready'-ben marad a worker/cron számára.
+    private readonly dispatchTicket?: (ticketId: string) => Promise<unknown>,
   ) {}
+
+  /** Best-effort azonnali dispatch — bukása nem hiúsíthatja meg a step/ticket létrehozását. */
+  private async triggerImmediateDispatch(tenantId: string | null, ticketId: string): Promise<void> {
+    if (!this.dispatchTicket) return
+    try {
+      await this.dispatchTicket(ticketId)
+    } catch (error) {
+      await this.append(tenantId, { type: 'system' }, {
+        action: 'process.step.dispatch_deferred',
+        targetType: 'ticket',
+        targetId: ticketId,
+        policyDecision: 'deferred',
+        metadata: {
+          error: error instanceof Error ? error.message : String(error),
+        },
+      })
+    }
+  }
 
   // --- §8.2 startProcess -----------------------------------------------------
 
@@ -670,6 +695,12 @@ export class ProcessService {
           to_ticket_id: ticket.id,
         },
       })
+    }
+
+    // Azonnali dispatch: agent-step ready ticketje ugyanabban a kérésben elindul,
+    // ahelyett hogy a NOTIFY-t figyelő workerre / cron-safety-netre várna.
+    if (!isHuman) {
+      await this.triggerImmediateDispatch(tenantId, ticket.id)
     }
 
     return ticket

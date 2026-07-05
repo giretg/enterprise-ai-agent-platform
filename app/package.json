@@ -34,6 +34,7 @@
     "dispatcher:worker": "tsx --import ./scripts/load-env.ts scripts/dispatcher-worker.ts",
     "dispatcher:cloud-run-deploy": "bash infra/gcp/deploy-dispatcher-service.sh",
     "dispatcher:cloud-run-smoke": "tsx scripts/dispatcher-cloud-run-smoke.ts",
+    "dispatcher:cloud-scheduler-deploy": "bash infra/gcp/deploy-dispatch-cycle-scheduler.sh",
     "report:measurement": "tsx scripts/measurement-report.ts",
     "s2:stub": "tsx scripts/chatgpt-oauth-stub.ts",
     "s2:provider": "tsx scripts/chatgpt-oauth-provider.ts",
