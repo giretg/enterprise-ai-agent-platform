@@ -173,6 +173,8 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'process.step.await_gate',
   'process.step.complete',
   'process.step.create',
+  'ticket.comment.add',
+  'ticket.comment.attachment.uploaded',
   'ticket.runas.authorize',
   'ticket.runas.revoke',
   'ticket.transition',

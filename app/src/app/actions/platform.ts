@@ -831,6 +831,10 @@ export async function transitionTicket(input: {
       return ok(done ?? ticket)
     }
 
+    if (parsed.toState === 'ready' && existing.agentId) {
+      await runAgentTicketDispatch(parsed.id, existing.agentId)
+    }
+
     return ok(ticket)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Transition failed')
