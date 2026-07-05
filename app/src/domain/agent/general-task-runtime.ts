@@ -1,11 +1,20 @@
 import type {
   AgentRepository,
   DocumentRepository,
+  PlaybookV2Repository,
   TicketRepository,
   ToolBrokerRepository,
 } from '@/repositories/interfaces'
+import type { CompiledSpec } from '@/domain/playbook/playbook-compiler'
 import { composeSystemPrompt } from '@/lib/agent-prompt'
 import { formatOrgRoster } from '@/lib/agent-org-roster'
+import { buildEffectivePrompt } from '@/lib/playbook-v2/effective-prompt'
+import {
+  buildStepCompletionPayload,
+  formatOutputContractInstruction,
+  outputRequiredFieldsForStep,
+  playbookSlotValuesFromTicketPayload,
+} from '@/lib/playbook-v2/process-step-payload'
 import { readTicketPromptText } from '@/lib/wiki-ticket-payload'
 import { formatHitsForPrompt, type KbHit } from '@/lib/kb-format'
 import type { ModelGateway, ModelConfig } from '../gateway/model-gateway'
@@ -29,6 +38,12 @@ function safeToolResultName(value: string): string {
   return cleaned.slice(0, 80) || 'tool-result'
 }
 
+type ProcessStepContext = {
+  compiled: CompiledSpec
+  stepRule: CompiledSpec['ticketRules'][number]
+  outputRequiredFields: string[]
+}
+
 /**
  * Kontextus-agnosztikus feladat-runtime: chatből, delegálásból vagy agent-tool
  * útján létrehozott ticketeket dolgoz fel az egységes {@link runAgentToolLoop}-pal,
@@ -44,6 +59,7 @@ export class GeneralTaskRuntime {
     private toolBroker: ToolBrokerService,
     private toolCaps: ToolBrokerRepository,
     private workspaceStorage: WorkspaceStorage,
+    private playbooks?: PlaybookV2Repository,
   ) {}
 
   async processTicket(params: { ticketId: string; agentId: string }) {
@@ -52,7 +68,16 @@ export class GeneralTaskRuntime {
     if (ticket.agentId !== params.agentId) throw new Error('Ticket not assigned to this agent')
 
     const payload = isRecord(ticket.payload) ? ticket.payload : {}
-    const question = readTicketPromptText(payload) || ticket.title
+    const processStep = await this.loadProcessStepContext(ticket)
+    let question = readTicketPromptText(payload) || ticket.title
+    if (processStep) {
+      const { prompt } = buildEffectivePrompt({
+        agentPersona: '',
+        instructionTemplate: processStep.stepRule.instructionTemplate,
+        slots: playbookSlotValuesFromTicketPayload(payload),
+      })
+      if (prompt.trim()) question = prompt.trim()
+    }
     const attachmentIds = readAttachmentIds(payload)
     if (!question && attachmentIds.length === 0) {
       throw new Error('Ticket payload is missing question')
@@ -79,6 +104,7 @@ export class GeneralTaskRuntime {
       question,
       attachmentBlock,
       kbSearch,
+      processStep,
     })
 
     const allowedTools = await listAllowedChatTools(this.toolCaps, params.agentId)
@@ -98,6 +124,25 @@ export class GeneralTaskRuntime {
         this.archiveLargeToolResult(ticket.tenantId ?? 'global', ticket.id, input),
     })
 
+    const completionPayload = processStep
+      ? buildStepCompletionPayload({
+          agentContent: answer,
+          outputRequiredFields: processStep.outputRequiredFields,
+          meta: {
+            toolCallCount,
+            agentVersion,
+            model: modelConfig.model,
+            memoryVersion: agentDetails.memoryVersion,
+          },
+        })
+      : {
+          answer,
+          toolCallCount,
+          agentVersion,
+          model: modelConfig.model,
+          memoryVersion: agentDetails.memoryVersion,
+        }
+
     const write = await this.toolBroker.invoke({
       agentId: params.agentId,
       agentVersion,
@@ -106,13 +151,7 @@ export class GeneralTaskRuntime {
       args: {
         ticketId: ticket.id,
         patch: {
-          payload: {
-            answer,
-            toolCallCount,
-            agentVersion,
-            model: modelConfig.model,
-            memoryVersion: agentDetails.memoryVersion,
-          },
+          payload: completionPayload,
           state: 'done',
         },
       },
@@ -127,6 +166,32 @@ export class GeneralTaskRuntime {
       answer,
       toolCallCount,
       ticket: updated,
+    }
+  }
+
+  private async loadProcessStepContext(
+    ticket: NonNullable<Awaited<ReturnType<TicketRepository['findById']>>>,
+  ): Promise<ProcessStepContext | null> {
+    if (
+      !ticket.processInstanceId ||
+      !ticket.playbookVersionId ||
+      !ticket.playbookStepId ||
+      !this.playbooks
+    ) {
+      return null
+    }
+
+    const version = await this.playbooks.findVersion(ticket.tenantId, ticket.playbookVersionId)
+    const compiled = version?.compiledSpec as CompiledSpec | undefined
+    if (!compiled) return null
+
+    const stepRule = compiled.ticketRules.find((r) => r.stepId === ticket.playbookStepId)
+    if (!stepRule) return null
+
+    return {
+      compiled,
+      stepRule,
+      outputRequiredFields: outputRequiredFieldsForStep(stepRule, compiled.outputRequiredFields),
     }
   }
 
@@ -185,6 +250,7 @@ export class GeneralTaskRuntime {
     question: string
     attachmentBlock: string
     kbSearch: { enabled: boolean; hits: KbHit[] }
+    processStep: ProcessStepContext | null
   }) {
     const allAgents = await this.agents.findMany()
     const orgRoster = formatOrgRoster(allAgents)
@@ -198,6 +264,15 @@ export class GeneralTaskRuntime {
         role: 'system',
         content: `Memória (aktív verzió):\n${params.agentDetails.memoryContent.trim()}`,
       })
+    }
+
+    if (params.processStep) {
+      const outputInstruction = formatOutputContractInstruction(
+        params.processStep.outputRequiredFields,
+      )
+      if (outputInstruction) {
+        messages.push({ role: 'system', content: outputInstruction })
+      }
     }
 
     if (params.kbSearch.enabled) {

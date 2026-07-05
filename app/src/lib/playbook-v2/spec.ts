@@ -42,8 +42,8 @@ export type PlaybookRole = z.infer<typeof playbookRoleSchema>
 
 // --- Tipizált input-rés (Folyamat-feature-spec §2, §4.7) ------------------
 
-/** A rés forrása: `config` = a Folyamat tölti | `trigger` = a futás-bemenet tölti. */
-export const inputSlotSourceSchema = z.enum(['config', 'trigger'])
+/** A rés forrása: `config` = Folyamat | `trigger` = futás-bemenet | `step` = előző lépés kimenete. */
+export const inputSlotSourceSchema = z.enum(['config', 'trigger', 'step'])
 export type InputSlotSource = z.infer<typeof inputSlotSourceSchema>
 
 export const inputSlotTypeSchema = z.enum(['string', 'number', 'boolean', 'freeform'])

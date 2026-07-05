@@ -125,6 +125,7 @@ export class ConversationService {
     actingUserId?: string | null
     agentVersion?: number | null
     model?: string | null
+    ticketRefId?: string | null
     criticality?: MessageCriticality | null
     actorType?: AuditActorType
     actorId?: string | null
@@ -145,6 +146,7 @@ export class ConversationService {
       actingUserId: params.actingUserId ?? null,
       agentVersion: params.agentVersion ?? null,
       model: params.model ?? null,
+      ticketRefId: params.ticketRefId ?? null,
       criticality: params.criticality ?? null,
     })
 

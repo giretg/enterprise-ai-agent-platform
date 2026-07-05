@@ -71,7 +71,7 @@ type AgentActivity = {
 type AgentChatStreamEvent =
   | { type: 'activity'; activity: AgentActivity }
   | { type: 'token'; chunk: string }
-  | { type: 'done'; conversationId: string; messageId: string }
+  | { type: 'done'; conversationId: string; messageId: string; ticketRefId?: string | null }
   | { type: 'error'; message?: string }
 
 function isImageFile(file: File): boolean {
@@ -285,7 +285,9 @@ function MessageBubble({
               isUser ? 'text-card' : 'text-coral'
             }`}
           >
-            Ticket megnyitása →
+            {message.text.includes('Futás elindítva a(z)')
+              ? 'Belépő ticket megnyitása →'
+              : 'Ticket megnyitása →'}
           </Link>
         )}
       </div>
@@ -649,7 +651,12 @@ export function AgentChatPanel({
               setMessages((prev) =>
                 prev.map((m) =>
                   m.id === optimisticAgentId
-                    ? { ...m, id: event.messageId!, activitiesCollapsed: true }
+                    ? {
+                        ...m,
+                        id: event.messageId!,
+                        ticketRefId: event.ticketRefId ?? m.ticketRefId,
+                        activitiesCollapsed: true,
+                      }
                     : m,
                 ),
               )

@@ -34,7 +34,7 @@ HARD RULES (non-negotiable):
 - You never invent IAM permissions. Only use permission keys that appear in the provided IAM permission vocabulary; if none fits, omit "requiredPermissions" and describe the approval expectation in the role/step/gate names and descriptions.
 - Every "agent_role" role should declare "requiredCapabilities" (tool names from the vocabulary) that a suitable agent must have.
 - Every "human_role" role may declare "requiredPermissions" from the IAM permission vocabulary when a platform permission is actually required.
-- Steps should carry a templated "instructionTemplate" with "{{slot}}" placeholders, and a matching "inputSlots" array. Each slot has: name, type ("string"|"number"|"boolean"|"freeform"), required, and source: "config" (a value the operator fills in once when assembling the Process) or "trigger" (a value that comes from each run's input, e.g. from chat/ticket/cron).
+- Steps should carry a templated "instructionTemplate" with "{{slot}}" placeholders, and a matching "inputSlots" array. Each slot has: name, type ("string"|"number"|"boolean"|"freeform"), required, and source: "config" (a value the operator fills in once when assembling the Process) or "trigger" (a value that comes from each run's input, e.g. from chat/ticket/cron) or "step" (output from the previous step in the flow).
 - Every "{{token}}" used in instructionTemplate MUST appear in that step's inputSlots, and vice versa for required slots.
 - Blocking gates with a "human_approval" type must have requiredActorRole pointing to a "human_role", never an "agent_role" — nobody could approve it otherwise.
 - L2/L3 criticality gates must be blocking.
@@ -53,7 +53,7 @@ OUTPUT: a single JSON object only (no prose, no markdown fences) matching this s
   "steps": [ {
     "id": string, "name": string, "ticketType": string, "assignedRole": string,
     "description"?: string,
-    "instructionTemplate"?: string, "inputSlots"?: [ { "name": string, "type": "string"|"number"|"boolean"|"freeform", "required": boolean, "source": "config"|"trigger", "description"?: string } ],
+    "instructionTemplate"?: string, "inputSlots"?: [ { "name": string, "type": "string"|"number"|"boolean"|"freeform", "required": boolean, "source": "config"|"trigger"|"step", "description"?: string } ],
     "requiredGateIds"?: string[],
     "onComplete"?: [ { "condition": "default" | { "field": string, "op": "=="|"!="|">="|"<="|">"|"<", "value": string|number|boolean }, "nextStepId"?: string, "gateId"?: string } ]
   } ],

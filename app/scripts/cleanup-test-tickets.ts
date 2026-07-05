@@ -2,11 +2,7 @@
  * Egyszeri (vagy ismétlő) takarítás: teszt ticketek törlése a boardról.
  * Futtatás: npm run db:cleanup-test-tickets
  */
-import { config } from 'dotenv'
-import { resolve } from 'path'
-
-config({ path: resolve(process.cwd(), '.env.local') })
-config({ path: resolve(process.cwd(), '.env') })
+import './load-env'
 
 import { prisma } from '../src/lib/db'
 import { isLegacyTestTicketTitle } from '../src/lib/ticket-source'

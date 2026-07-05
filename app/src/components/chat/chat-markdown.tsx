@@ -1,6 +1,33 @@
+import Link from 'next/link'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { Components } from 'react-markdown'
+
+function MarkdownLink({
+  href,
+  children,
+  className,
+}: {
+  href?: string
+  children?: React.ReactNode
+  className?: string
+}) {
+  if (href?.startsWith('/')) {
+    return (
+      <Link href={href} className={className}>
+        {children}
+      </Link>
+    )
+  }
+  return (
+    <a href={href} target="_blank" rel="noopener noreferrer" className={className}>
+      {children}
+    </a>
+  )
+}
+
+const linkClassName =
+  'font-medium text-coral underline decoration-coral/40 underline-offset-2 hover:text-coral-deep'
 
 const agentComponents: Components = {
   p: ({ children }) => <p className="mb-3 last:mb-0 leading-relaxed">{children}</p>,
@@ -38,14 +65,9 @@ const agentComponents: Components = {
     <blockquote className="my-2 border-l-2 border-sage/50 pl-3 text-ink-soft italic">{children}</blockquote>
   ),
   a: ({ href, children }) => (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      className="font-medium text-coral underline decoration-coral/40 underline-offset-2 hover:text-coral-deep"
-    >
+    <MarkdownLink href={href} className={linkClassName}>
       {children}
-    </a>
+    </MarkdownLink>
   ),
   hr: () => <hr className="my-3 border-line" />,
 }

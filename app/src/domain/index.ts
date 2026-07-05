@@ -520,6 +520,7 @@ const generalTaskRuntime = new GeneralTaskRuntime(
   toolBrokerService,
   repositories.toolBroker,
   workspaceStorage,
+  repositories.playbooksV2,
 )
 toolBrokerService.setDelegationProcessor(async ({ ticketId, targetAgentId }) => {
   await wikiRuntime.processTicket({ ticketId, agentId: targetAgentId })

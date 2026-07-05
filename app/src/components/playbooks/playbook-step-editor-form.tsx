@@ -48,7 +48,7 @@ export type StepFormState = {
 const CONDITION_OPS: ConditionOp[] = ['==', '!=', '>=', '<=', '>', '<']
 
 const INPUT_SLOT_TYPES: PlaybookInputSlot['type'][] = ['string', 'number', 'boolean', 'freeform']
-const INPUT_SLOT_SOURCES: PlaybookInputSlot['source'][] = ['config', 'trigger']
+const INPUT_SLOT_SOURCES: PlaybookInputSlot['source'][] = ['config', 'trigger', 'step']
 
 const FIELD_CLASS = 'w-full rounded border border-ink/15 bg-transparent px-2 py-1 text-sm'
 const LABEL_CLASS = 'text-ink-soft mb-0.5 block'
@@ -478,7 +478,7 @@ export function PlaybookStepEditorForm({
                 </select>
                 <PlaybookFieldHint>
                   config: egyszer beállított érték a folyamatnál; trigger: minden futásnál érkező
-                  bemenet (pl. chatből, ticketből).
+                  bemenet (pl. chatből); step: az előző lépés kimenete.
                 </PlaybookFieldHint>
               </label>
               <div className="sm:col-span-2">

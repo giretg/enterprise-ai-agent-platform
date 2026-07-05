@@ -31,7 +31,7 @@
     "harness:docker-goose-smoke": "tsx scripts/harness-docker-goose-smoke.ts",
     "harness:cloud-run-deploy": "bash infra/gcp/deploy-harness-job.sh",
     "harness:cloud-run-smoke": "tsx scripts/harness-cloud-run-smoke.ts",
-    "dispatcher:worker": "tsx scripts/dispatcher-worker.ts",
+    "dispatcher:worker": "tsx --import ./scripts/load-env.ts scripts/dispatcher-worker.ts",
     "dispatcher:cloud-run-deploy": "bash infra/gcp/deploy-dispatcher-service.sh",
     "dispatcher:cloud-run-smoke": "tsx scripts/dispatcher-cloud-run-smoke.ts",
     "report:measurement": "tsx scripts/measurement-report.ts",

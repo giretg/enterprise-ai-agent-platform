@@ -13,8 +13,9 @@
  * KRITIKUS invariáns (§2.5, §11.3, P6): az agent kimenete SOHA nem léphet át blocking
  * kapu által zárt átmenetet. A motor a `compiled_spec` alapján dönt, nem a prompt alapján.
  */
-import type { CompiledSpec, CompiledGate, CompiledRoutingRule } from '@/domain/playbook/playbook-compiler'
+import type { CompiledSpec, CompiledGate, CompiledRoutingRule, CompiledTicketRule } from '@/domain/playbook/playbook-compiler'
 import type { ConditionExpression, ConditionOp } from '@/lib/playbook-v2/spec'
+import { outputRequiredFieldsForStep } from '@/lib/playbook-v2/process-step-payload'
 
 export type RuntimeActorType = 'user' | 'agent' | 'system'
 
@@ -111,14 +112,17 @@ export function evaluateTicketTransition(
   }
 
   // §7.2.6 — output contract (csak ha az átmenet megköveteli).
-  if (transition.requiresOutputContract && compiled.outputRequiredFields.length > 0) {
-    const missing = missingOutputFields(compiled.outputRequiredFields, input.outputPayload)
-    if (missing.length > 0) {
-      return {
-        allowed: false,
-        denyCode: 'OUTPUT_CONTRACT_VIOLATION',
-        reason: `Hiányzó kötelező output mezők: ${missing.join(', ')}.`,
-        missingFields: missing,
+  if (transition.requiresOutputContract) {
+    const requiredFields = outputRequiredFieldsForStep(rule, compiled.outputRequiredFields)
+    if (requiredFields.length > 0) {
+      const missing = missingOutputFields(requiredFields, input.outputPayload)
+      if (missing.length > 0) {
+        return {
+          allowed: false,
+          denyCode: 'OUTPUT_CONTRACT_VIOLATION',
+          reason: `Hiányzó kötelező output mezők: ${missing.join(', ')}.`,
+          missingFields: missing,
+        }
       }
     }
   }

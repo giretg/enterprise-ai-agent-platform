@@ -19,6 +19,11 @@
 import type { Prisma, ProcessInstance, ProcessTriggerType, TicketState } from '@prisma/client'
 import type { CompiledSpec } from '@/domain/playbook/playbook-compiler'
 import { evaluateAdvance } from '@/lib/playbook-v2/runtime'
+import {
+  missingRequiredInputSlots,
+  normalizeAgentStepResult,
+  resolveStepInputPayload,
+} from '@/lib/playbook-v2/process-step-payload'
 import { formatPlaybookRefV2, parsePlaybookSpecV2, type PlaybookRole } from '@/lib/playbook-v2/spec'
 import { isAgentSuitable } from '@/domain/playbook/suitability'
 import type {
@@ -220,7 +225,7 @@ export class ProcessService {
         compiled,
         entryRule.stepId,
         input.startedBy,
-        input.inputPayload,
+        { processInput: input.inputPayload },
       )
     } catch (e) {
       if (e instanceof ProcessBlockedError) {
@@ -327,7 +332,7 @@ export class ProcessService {
         compiled,
         entryRule.stepId,
         input.startedBy,
-        input.inputPayload,
+        { processInput: input.inputPayload },
         undefined,
         resolution,
       )
@@ -459,17 +464,21 @@ export class ProcessService {
     }
     let nextTicket
     try {
-      const stepInput = {
-        ...this.asRecord(process.inputPayload),
-        ...(input.resultPayload ?? {}),
-      }
+      const completedRule = compiled.ticketRules.find((r) => r.stepId === input.completedStepId)
+      const previousStepResult = normalizeAgentStepResult(
+        completedRule,
+        input.resultPayload ?? {},
+      )
       nextTicket = await this.createStepWithTicket(
         input.tenantId,
         process,
         compiled,
         decision.toStepId,
         input.actor,
-        stepInput,
+        {
+          processInput: this.asRecord(process.inputPayload),
+          previousStepResult,
+        },
         { fromStepId: input.completedStepId, fromTicketId: completedStep?.ticketId ?? null },
         resolution,
       )
@@ -546,7 +555,10 @@ export class ProcessService {
     compiled: CompiledSpec,
     stepId: string,
     actor: ProcessActor,
-    inputPayload: Record<string, unknown>,
+    slotContext: {
+      processInput: Record<string, unknown>
+      previousStepResult?: Record<string, unknown>
+    },
     delegationFrom?: { fromStepId: string; fromTicketId: string | null },
     resolution?: RoleResolution | null,
   ) {
@@ -554,7 +566,7 @@ export class ProcessService {
     if (!rule) {
       throw new ProcessServiceError('COMPILED_SPEC_MISSING', `Nincs compiled szabály a(z) '${stepId}' stephez.`)
     }
-    const ticketPayload = this.stepTicketPayload(rule, inputPayload)
+    const ticketPayload = this.stepTicketPayload(rule, slotContext)
     const isHuman = this.isHumanStep(rule)
     const requiredGateId = isHuman
       ? compiled.gates.find((g) => g.stepId === stepId && g.blocking)?.gateId ?? null
@@ -665,27 +677,26 @@ export class ProcessService {
 
   private stepTicketPayload(
     rule: CompiledSpec['ticketRules'][number],
-    inputPayload: Record<string, unknown>,
+    slotContext: {
+      processInput: Record<string, unknown>
+      previousStepResult?: Record<string, unknown>
+    },
   ): Record<string, unknown> {
-    const payload: Record<string, unknown> = {}
-    const missing: string[] = []
-    for (const slot of rule.inputSlots ?? []) {
-      const value = inputPayload[slot.name]
-      if (value !== undefined && value !== null && value !== '') {
-        payload[slot.name] = value
-        continue
-      }
-      if (slot.required) missing.push(slot.name)
-    }
+    const resolved = resolveStepInputPayload(rule, {
+      processInput: slotContext.processInput,
+      previousStepResult: slotContext.previousStepResult ?? {},
+    })
+    const missing = missingRequiredInputSlots(rule, resolved)
     if (missing.length > 0) {
       throw new ProcessBlockedError(
         rule.stepId,
         `A(z) '${rule.stepId}' step ticketjéhez hiányzó kötelező input-rés(ek): ${missing.join(', ')}.`,
       )
     }
+    const payload: Record<string, unknown> = { ...resolved }
     if (rule.instructionTemplate) {
       payload.question = rule.instructionTemplate.replace(/\{\{(\w+)\}\}/g, (_, token: string) => {
-        const v = payload[token]
+        const v = resolved[token]
         return v !== undefined && v !== null ? String(v) : ''
       })
     }

@@ -12,6 +12,7 @@ import type {
   PlaybookStep,
   ConditionExpression,
 } from '@/lib/playbook-v2/spec'
+import { inferStepOutputFields, mergeOutputRequiredFields } from '@/lib/playbook-v2/step-output-inference'
 
 export type CompiledTransition = {
   fromState: string
@@ -25,8 +26,14 @@ export type CompiledInputSlot = {
   name: string
   type: string
   required: boolean
-  source: 'config' | 'trigger'
+  source: 'config' | 'trigger' | 'step'
   description?: string
+}
+
+function readOutputContractFields(outputContract?: Record<string, unknown>): string[] {
+  const fields = outputContract?.requiredFields
+  if (!Array.isArray(fields)) return []
+  return fields.filter((f): f is string => typeof f === 'string' && f.length > 0)
 }
 
 export type CompiledTicketRule = {
@@ -39,6 +46,8 @@ export type CompiledTicketRule = {
   instructionTemplate?: string
   /** §4.7 tipizált rések; üres tömb, ha a lépés nem deklarál rést. */
   inputSlots: CompiledInputSlot[]
+  /** Lépés szintű kötelező kimeneti mezők (outputContract + routing-következtetés). */
+  outputRequiredFields: string[]
 }
 
 export type CompiledGate = {
@@ -79,6 +88,7 @@ export class PlaybookCompiler {
   compile(spec: PlaybookSpecV2, opts: { playbookVersionId?: string | null } = {}): CompiledSpec {
     const roleByKey = new Map(spec.roles.map((r) => [r.key, r]))
     const gateById = new Map(spec.gates.map((g) => [g.id, g]))
+    const inferredOutputs = inferStepOutputFields(spec)
 
     const ticketRules: CompiledTicketRule[] = spec.steps.map((step) => {
       const stepGateIds = [
@@ -91,7 +101,16 @@ export class PlaybookCompiler {
       stepName: step.name,
       ticketType: step.ticketType,
       assignedRole: step.assignedRole,
-      allowedTransitions: this.compileTransitions(step, roleByKey, hasGate),
+      allowedTransitions: this.compileTransitions(
+        step,
+        roleByKey,
+        hasGate,
+        mergeOutputRequiredFields(
+          readOutputContractFields(step.outputContract),
+          inferredOutputs.get(step.id),
+        ),
+        readOutputContractFields(spec.outputContract),
+      ),
       instructionTemplate: step.instructionTemplate,
       inputSlots: (step.inputSlots ?? []).map((slot) => ({
         name: slot.name,
@@ -100,6 +119,10 @@ export class PlaybookCompiler {
         source: slot.source,
         description: slot.description,
       })),
+      outputRequiredFields: mergeOutputRequiredFields(
+        readOutputContractFields(step.outputContract),
+        inferredOutputs.get(step.id),
+      ),
       }
     })
 
@@ -175,6 +198,8 @@ export class PlaybookCompiler {
     step: PlaybookStep,
     roleByKey: Map<string, { type: string }>,
     hasGate = false,
+    stepOutputFields: string[] = [],
+    globalOutputFields: string[] = [],
   ): CompiledTransition[] {
     const role = roleByKey.get(step.assignedRole)
     const isHumanRole = role?.type === 'human_role'
@@ -192,11 +217,14 @@ export class PlaybookCompiler {
       // Az output contractot a process terminál-írása (`done`) köti; a `approved`
       // emberi jóváhagyás kapuval védett, nem output-termelő átmenet (§7.1 példa).
       const isTerminalWrite = toState === 'done'
+      const outputFields =
+        stepOutputFields.length > 0 ? stepOutputFields : globalOutputFields
       transitions.push({
         fromState,
         toState,
         allowedActorTypes: actorTypes,
-        requiresOutputContract: isTerminalWrite || undefined,
+        requiresOutputContract:
+          isTerminalWrite && outputFields.length > 0 ? true : undefined,
       })
     }
     return transitions

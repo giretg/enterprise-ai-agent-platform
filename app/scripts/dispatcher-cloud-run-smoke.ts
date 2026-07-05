@@ -16,12 +16,8 @@
  *   - DATABASE/DIRECT_URL a közös Neon-ra mutat (a service ugyanazt látja)
  * Futtatás: npm run dispatcher:cloud-run-smoke
  */
-import { config } from 'dotenv'
-import { resolve } from 'path'
+import './load-env'
 import { randomUUID } from 'crypto'
-
-config({ path: resolve(process.cwd(), '.env.local') })
-config({ path: resolve(process.cwd(), '.env') })
 
 import { prisma } from '../src/lib/db'
 import { DISPATCH_NOTIFY_CHANNEL } from '../src/lib/dispatch-notify'

@@ -7,7 +7,17 @@
  * Futtatás: npm run test:playbook-lifecycle
  */
 import assert from 'node:assert/strict'
+import { PlaybookCompiler } from '../src/domain/playbook/playbook-compiler'
 import { buildEffectivePrompt } from '../src/lib/playbook-v2/effective-prompt'
+import {
+  buildStepCompletionPayload,
+  normalizeAgentStepResult,
+  parseAgentStepOutput,
+  resolveStepInputPayload,
+} from '../src/lib/playbook-v2/process-step-payload'
+import { inferStepOutputFields } from '../src/lib/playbook-v2/step-output-inference'
+import { evaluateTicketTransition } from '../src/lib/playbook-v2/runtime'
+import { parsePlaybookSpecV2 } from '../src/lib/playbook-v2/spec'
 import { isAgentSuitable } from '../src/domain/playbook/suitability'
 
 let failures = 0
@@ -111,6 +121,155 @@ check('idegen tenant → nem ok', () => {
 check('nincs requiredCapability → ok (csak státusz+tenant számít)', () => {
   const r = isAgentSuitable(baseAgent, {}, 't1')
   assert.equal(r.ok, true)
+})
+
+console.log('=== process-step-payload (lépés közötti adatátadás) ===')
+
+check('resolveStepInputPayload: trigger fallback előző lépés mezőjéből', () => {
+  const resolved = resolveStepInputPayload(
+    {
+      inputSlots: [
+        { name: 'research_results', type: 'freeform', required: true, source: 'trigger' },
+      ],
+    },
+    {
+      processInput: {},
+      previousStepResult: { research_results: 'kutatás' },
+    },
+  )
+  assert.equal(resolved.research_results, 'kutatás')
+})
+
+check('normalizeAgentStepResult: answer → outputContract mező', () => {
+  const normalized = normalizeAgentStepResult(
+    { outputRequiredFields: ['research_results'] },
+    { answer: 'kutatási szöveg', toolCallCount: 1 },
+  )
+  assert.equal(normalized.research_results, 'kutatási szöveg')
+  assert.equal(normalized.answer, 'kutatási szöveg')
+})
+
+check('resolveStepInputPayload: step forrás az előző lépésből jön', () => {
+  const resolved = resolveStepInputPayload(
+    {
+      inputSlots: [
+        { name: 'research_results', type: 'freeform', required: true, source: 'step' },
+        { name: 'topic', type: 'string', required: true, source: 'trigger' },
+      ],
+    },
+    {
+      processInput: { topic: 'GDPR incidens' },
+      previousStepResult: { research_results: { facts: [] } },
+    },
+  )
+  assert.deepEqual(resolved.research_results, { facts: [] })
+  assert.equal(resolved.topic, 'GDPR incidens')
+})
+
+check('parseAgentStepOutput: egy mező → teljes szöveg', () => {
+  const out = parseAgentStepOutput('Kutatási összefoglaló szöveg', ['research_results'])
+  assert.equal(out.research_results, 'Kutatási összefoglaló szöveg')
+})
+
+check('parseAgentStepOutput: JSON blokk', () => {
+  const out = parseAgentStepOutput(
+    'Kész.\n```json\n{"research_results":{"facts":[]}}\n```',
+    ['research_results'],
+  )
+  assert.deepEqual(out.research_results, { facts: [] })
+})
+
+check('buildStepCompletionPayload: outputContract mezők a ticket payloadban', () => {
+  const payload = buildStepCompletionPayload({
+    agentContent: '{"research_results":"adat"}',
+    outputRequiredFields: ['research_results'],
+    meta: { toolCallCount: 1 },
+  })
+  assert.equal(payload.research_results, 'adat')
+  assert.equal(payload.toolCallCount, 1)
+})
+
+console.log('=== step-output-inference + compiler ===')
+
+const twoStepSpec = parsePlaybookSpecV2({
+  schemaVersion: '1.0',
+  key: 'privacy-flow',
+  name: 'Privacy flow',
+  processType: 'data_protection_tipp',
+  entryStepId: 'research_incidents',
+  roles: [
+    { key: 'research_agent', type: 'agent_role' },
+    { key: 'key_agent', type: 'agent_role' },
+  ],
+  steps: [
+    {
+      id: 'research_incidents',
+      name: 'Research',
+      ticketType: 'research',
+      assignedRole: 'research_agent',
+      onComplete: [{ condition: 'default', nextStepId: 'analyze_and_draft_recommendations' }],
+    },
+    {
+      id: 'analyze_and_draft_recommendations',
+      name: 'Analyze',
+      ticketType: 'analysis',
+      assignedRole: 'key_agent',
+      instructionTemplate: 'Elemezd: {{research_results}}',
+      inputSlots: [
+        {
+          name: 'research_results',
+          type: 'freeform',
+          required: true,
+          source: 'step',
+        },
+      ],
+    },
+  ],
+  gates: [],
+  transitions: [],
+})
+
+check('inferStepOutputFields: research lépés kimenete research_results', () => {
+  const inferred = inferStepOutputFields(twoStepSpec)
+  assert.deepEqual(inferred.get('research_incidents'), ['research_results'])
+})
+
+check('compiler: outputRequiredFields átvezetés + step input feloldás', () => {
+  const compiler = new PlaybookCompiler()
+  const compiled = compiler.compile(twoStepSpec)
+  const researchRule = compiled.ticketRules.find((r) => r.stepId === 'research_incidents')!
+  const analyzeRule = compiled.ticketRules.find((r) => r.stepId === 'analyze_and_draft_recommendations')!
+  assert.deepEqual(researchRule.outputRequiredFields, ['research_results'])
+  assert.equal(analyzeRule.inputSlots[0]?.source, 'step')
+
+  const resolved = resolveStepInputPayload(analyzeRule, {
+    processInput: { topic: 'x' },
+    previousStepResult: { research_results: 'kutatás' },
+  })
+  assert.equal(resolved.research_results, 'kutatás')
+})
+
+check('evaluateTicketTransition: lépés outputContract kikényszerítése', () => {
+  const compiler = new PlaybookCompiler()
+  const compiled = compiler.compile(twoStepSpec)
+  const denied = evaluateTicketTransition(compiled, {
+    stepId: 'research_incidents',
+    fromState: 'in_progress',
+    toState: 'done',
+    actor: { type: 'agent' },
+    outputPayload: { answer: 'csak szöveg' },
+  })
+  assert.equal(denied.allowed, false)
+  if (!denied.allowed) assert.equal(denied.denyCode, 'OUTPUT_CONTRACT_VIOLATION')
+
+  const allowed = evaluateTicketTransition(compiled, {
+    stepId: 'research_incidents',
+    fromState: 'in_progress',
+    toState: 'done',
+    actor: { type: 'agent' },
+    outputPayload: { research_results: 'kutatás' },
+  })
+  assert.equal(allowed.allowed, true)
 })
 
 console.log('')

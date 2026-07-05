@@ -110,6 +110,11 @@ function encodeStoredMessage(text: string, attachmentIds: string[]): string {
   return JSON.stringify({ text, attachmentIds })
 }
 
+type ChatProcessReply = {
+  text: string
+  ticketRefId?: string | null
+}
+
 export class AgentChatRuntime {
   constructor(
     private agents: AgentRepository,
@@ -205,16 +210,17 @@ export class AgentChatRuntime {
       const agentMessage = await this.conversations.appendMessage({
         conversationId,
         role: 'agent',
-        content: processReply,
+        content: processReply.text,
         actingUserId: params.createdById,
         agentVersion: agentDetails.agent.currentVersion,
         actorType: 'agent',
         actorId: params.agentId,
+        ticketRefId: processReply.ticketRefId ?? null,
       })
       return {
         conversationId,
         messageId: agentMessage.id,
-        reply: processReply,
+        reply: processReply.text,
       }
     }
 
@@ -313,7 +319,7 @@ export class AgentChatRuntime {
   }): AsyncGenerator<
     | { type: 'activity'; activity: ToolLoopActivityEvent }
     | { type: 'token'; chunk: string }
-    | { type: 'done'; conversationId: string; messageId: string }
+    | { type: 'done'; conversationId: string; messageId: string; ticketRefId?: string | null }
     | { type: 'error'; message: string },
     void,
     unknown
@@ -386,20 +392,26 @@ export class AgentChatRuntime {
       },
     })
     if (processReply) {
-      for (const chunk of chunkForStreaming(processReply)) {
+      for (const chunk of chunkForStreaming(processReply.text)) {
         yield { type: 'token', chunk }
         await new Promise<void>((r) => setTimeout(r, 12))
       }
       const agentMessage = await this.conversations.appendMessage({
         conversationId,
         role: 'agent',
-        content: processReply,
+        content: processReply.text,
         actingUserId: params.createdById,
         agentVersion: agentDetails.agent.currentVersion,
         actorType: 'agent',
         actorId: params.agentId,
+        ticketRefId: processReply.ticketRefId ?? null,
       })
-      yield { type: 'done', conversationId, messageId: agentMessage.id }
+      yield {
+        type: 'done',
+        conversationId,
+        messageId: agentMessage.id,
+        ticketRefId: processReply.ticketRefId ?? null,
+      }
       return
     }
 
@@ -606,10 +618,10 @@ export class AgentChatRuntime {
     agentId: string
     agentVersion: number
     modelConfig: { provider: string; model: string; temperature?: number; maxTokens?: number }
-  }): Promise<string | null> {
+  }): Promise<ChatProcessReply | null> {
     if (!params.processDefinitionId) return null
     if (!this.processDefinitions || !this.playbooksV2 || !this.processService) {
-      return 'A chat-trigger indítás nincs bekötve ezen a környezeten.'
+      return { text: 'A chat-trigger indítás nincs bekötve ezen a környezeten.' }
     }
 
     // Folyamat/playbook scope: tenantOf(user) = user.tenantId ?? user.id (process actions).
@@ -617,17 +629,17 @@ export class AgentChatRuntime {
     const processTenantId = params.tenantId ?? params.startedByUserId
 
     const def = await this.processDefinitions.findById(processTenantId, params.processDefinitionId)
-    if (!def) return 'A kiválasztott Folyamat nem található vagy nincs jogosultság.'
+    if (!def) return { text: 'A kiválasztott Folyamat nem található vagy nincs jogosultság.' }
 
     const chatTrigger = def.triggers.find((trigger) => trigger.type === 'chat' && trigger.enabled)
     if (!chatTrigger) {
-      return 'Ehhez a Folyamathoz nincs aktív chat trigger csatolva.'
+      return { text: 'Ehhez a Folyamathoz nincs aktív chat trigger csatolva.' }
     }
 
     const version = await this.playbooksV2.findVersion(processTenantId, def.playbookVersionId)
     const compiled = version?.compiledSpec as CompiledSpec | null | undefined
     if (!compiled || typeof compiled !== 'object') {
-      return 'A Folyamat PIN-elt Playbook-verziójának nincs futtatható compiled spec-je.'
+      return { text: 'A Folyamat PIN-elt Playbook-verziójának nincs futtatható compiled spec-je.' }
     }
 
     let inputPayload = resolveChatTriggerInputPayload(
@@ -658,7 +670,9 @@ export class AgentChatRuntime {
     }
 
     if (missing.length > 0) {
-      return `A Folyamat indításához még hiányzik: ${missing.join(', ')}. Add meg ezeket név: érték formában, vagy a chat indító payloadban.`
+      return {
+        text: `A Folyamat indításához még hiányzik: ${missing.join(', ')}. Add meg ezeket név: érték formában, vagy a chat indító payloadban.`,
+      }
     }
 
     const run = await this.processService.startProcess({
@@ -670,7 +684,11 @@ export class AgentChatRuntime {
       startedBy: { type: 'user', id: params.startedByUserId },
     })
 
-    return `Futás elindítva a(z) "${def.name}" Folyamatból. Futás azonosító: ${run.id}. Állapot: ${run.status}.`
+    const processLink = `/control-plane/processes/${run.id}`
+    return {
+      text: `Futás elindítva a(z) [${def.name}](${processLink}) Folyamatból. Futás azonosító: ${run.id}. Állapot: ${run.status}.`,
+      ticketRefId: run.rootTicketId,
+    }
   }
 
   /**

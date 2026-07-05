@@ -8,13 +8,9 @@
  * kell figyelnie, különben a platform unhealthy-nek jelöli — ezért egy minimális
  * health-szerver fut a worker mellett (lásd startHealthServer).
  */
-import { config } from 'dotenv'
-import { resolve } from 'path'
+import './load-env'
 import { createServer } from 'http'
 import { Client } from 'pg'
-
-config({ path: resolve(process.cwd(), '.env.local') })
-config({ path: resolve(process.cwd(), '.env') })
 
 import { services } from '../src/domain'
 import { ensureActiveDatabaseMode } from '../src/lib/db'
