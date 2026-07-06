@@ -72,29 +72,33 @@ export async function POST(request: Request) {
     return jsonError('At least one message is required', 400)
   }
 
-  const modelName = resolveGatewayRequestModel(parsed.data.model, modelConfig.model)
+  const requestedModel = resolveGatewayRequestModel(parsed.data.model, modelConfig.model)
+  const modelOverrideHint =
+    requestedModel !== modelConfig.model
+      ? { provider: modelConfig.provider, model: requestedModel }
+      : undefined
 
   if (isStubProviderConfigured() && parsed.data.tools?.length) {
     const stubCompletion = buildStubOpenAiCompletion({
       messages: parsed.data.messages,
       tools: parsed.data.tools,
-      model: modelName,
+      model: requestedModel,
       ticketId,
     })
     if (stubCompletion) {
-      await services.gateway.call({
+      const gatewayResult = await services.gateway.call({
         agentId: auth.agentId,
         agentVersion: agentVersion ?? agent.currentVersion,
         ticketId,
         messages,
         modelConfig: {
           ...modelConfig,
-          model: modelName,
           temperature: parsed.data.temperature ?? modelConfig.temperature,
           maxTokens: parsed.data.max_tokens ?? modelConfig.maxTokens,
         },
+        modelOverrideHint,
       })
-      return NextResponse.json(stubCompletion.body)
+      return NextResponse.json({ ...stubCompletion.body, model: gatewayResult.model })
     }
   }
 
@@ -106,10 +110,10 @@ export async function POST(request: Request) {
       messages,
       modelConfig: {
         ...modelConfig,
-        model: modelName,
         temperature: parsed.data.temperature ?? modelConfig.temperature,
         maxTokens: parsed.data.max_tokens ?? modelConfig.maxTokens,
       },
+      modelOverrideHint,
     })
 
     // Szöveges tool-hívás relay (S6): a valódi ChatGPT-OAuth backend sima
@@ -121,7 +125,7 @@ export async function POST(request: Request) {
       const relayed = relayTextToolCall({
         content: result.content,
         tools: parsed.data.tools,
-        model: modelName,
+        model: result.model,
         usage: result.usage,
       })
       if (relayed) {
@@ -137,7 +141,7 @@ export async function POST(request: Request) {
       id: completionId,
       object: 'chat.completion',
       created: Math.floor(Date.now() / 1000),
-      model: modelName,
+      model: result.model,
       choices: [
         {
           index: 0,

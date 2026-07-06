@@ -2,9 +2,9 @@
  * Routing priority chain (§5, step 3 — Fázis 2-A)
  *
  * Resolution order (lower index = higher priority):
- *   1. Ticket/Playbook override (from modelConfig override hint)
- *   2. Agent modelConfig (model_config.default_model)
- *   3. Global routing policy from model_routing_policies table
+ *   1. Routing policy from model_routing_policies table
+ *   2. Request override, only when the matched policy explicitly allows it
+ *   3. Agent modelConfig (model_config.default_model)
  *   4. Fallback model (from agent model_config.fallback_model)
  *
  * The Gateway makes the final deterministic decision — agents cannot override it.
@@ -32,32 +32,88 @@ export type RoutingDecision = {
   source: 'override' | 'agent' | 'policy' | 'fallback'
 }
 
+type OverridePolicyConditions = {
+  allowRequestOverride?: boolean
+  allowedRequestModels?: Array<string | { provider?: string; model?: string }>
+  allowedRequestProviders?: string[]
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string')
+}
+
+function parseConditions(conditions: unknown): OverridePolicyConditions {
+  if (!isRecord(conditions)) return {}
+  return {
+    allowRequestOverride:
+      typeof conditions.allowRequestOverride === 'boolean'
+        ? conditions.allowRequestOverride
+        : undefined,
+    allowedRequestModels: Array.isArray(conditions.allowedRequestModels)
+      ? conditions.allowedRequestModels.filter((item): item is string | { provider?: string; model?: string } => {
+          if (typeof item === 'string') return true
+          return isRecord(item)
+        })
+      : undefined,
+    allowedRequestProviders: isStringArray(conditions.allowedRequestProviders)
+      ? conditions.allowedRequestProviders
+      : undefined,
+  }
+}
+
+function modelAllowed(
+  allowed: OverridePolicyConditions['allowedRequestModels'],
+  override: { provider: string; model: string },
+): boolean {
+  if (!allowed?.length) return true
+  return allowed.some((item) => {
+    if (typeof item === 'string') {
+      return item === override.model || item === `${override.provider}/${override.model}`
+    }
+    return (
+      (item.provider === undefined || item.provider === override.provider) &&
+      item.model === override.model
+    )
+  })
+}
+
 export class RoutingEngine {
   constructor(private policyRepo: ModelRoutingPolicyRepository) {}
 
   async resolve(ctx: RoutingContext): Promise<RoutingDecision> {
-    // 1. Ticket-level / Playbook override (request modelConfig override hint)
-    if (ctx.overrideHint?.provider && ctx.overrideHint?.model) {
-      return { provider: ctx.overrideHint.provider, model: ctx.overrideHint.model, source: 'override' }
-    }
+    const policies = await this.policyRepo.findForRouting({
+      tenantId: ctx.tenantId,
+      agentId: ctx.agentId,
+      ticketType: ctx.ticketType,
+    })
 
-    // 2. Agent modelConfig
-    if (ctx.agentModelConfig.provider && ctx.agentModelConfig.model) {
-      // 3. Check if a routing policy overrides the agent config
-      const policies = await this.policyRepo.findForRouting({
-        tenantId: ctx.tenantId,
-        agentId: ctx.agentId,
-        ticketType: ctx.ticketType,
-      })
-
-      // Find first matching policy (ordered by priority ASC)
-      for (const policy of policies) {
-        if (this.matchesConditions(policy.conditions, ctx)) {
-          return { provider: policy.provider, model: policy.model, source: 'policy' }
+    // 1-2. First matching governance policy wins. A request-level model
+    // override is honored only when that matched policy explicitly permits it.
+    for (const policy of policies) {
+      if (!this.matchesConditions(policy.conditions, ctx)) continue
+      if (ctx.overrideHint?.provider && ctx.overrideHint?.model) {
+        const conditions = parseConditions(policy.conditions)
+        const providerAllowed =
+          !conditions.allowedRequestProviders?.length ||
+          conditions.allowedRequestProviders.includes(ctx.overrideHint.provider)
+        if (
+          conditions.allowRequestOverride === true &&
+          providerAllowed &&
+          modelAllowed(conditions.allowedRequestModels, ctx.overrideHint)
+        ) {
+          return { provider: ctx.overrideHint.provider, model: ctx.overrideHint.model, source: 'override' }
         }
       }
+      return { provider: policy.provider, model: policy.model, source: 'policy' }
+    }
 
-      // No policy match → use agent config
+    // 3. Agent modelConfig. Request overrides are deliberately ignored when no
+    // governance policy allowed them.
+    if (ctx.agentModelConfig.provider && ctx.agentModelConfig.model) {
       return {
         provider: ctx.agentModelConfig.provider,
         model: ctx.agentModelConfig.model,
