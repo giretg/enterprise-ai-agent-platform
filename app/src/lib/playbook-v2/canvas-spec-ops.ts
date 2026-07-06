@@ -235,6 +235,141 @@ export function deleteNodeFromSpec(spec: PlaybookDraftSpec, id: string): Playboo
   return next
 }
 
+function isStepId(spec: PlaybookDraftSpec, id: string): boolean {
+  return (spec.steps ?? []).some((s) => s.id === id)
+}
+function isGateId(spec: PlaybookDraftSpec, id: string): boolean {
+  return (spec.gates ?? []).some((g) => g.id === id)
+}
+
+/**
+ * Új lépés BESZÚRÁSA a kiválasztott node UTÁN (D: "insert after selected").
+ * - afterId = Start: az új lesz a belépő, a korábbi belépő az új default folytatása lesz.
+ * - afterId = step: az új beékelődik a step default (step-célú) folytatása ELÉ
+ *   (step → új → korábbi-cél), így nem a Vége elé lóg, hanem a láncba kerül.
+ * - afterId = gate / ismeretlen / null: nincs láncolás (árva node, régi viselkedés).
+ */
+export function addStepAfter(
+  spec: PlaybookDraftSpec,
+  kind: 'agent' | 'human' | 'decision',
+  afterId: string | null | undefined,
+): AddResult {
+  const res = addStep(spec, kind)
+  if (!afterId) return res
+  return { spec: linkNewStepAfter(res.spec, afterId, res.id), id: res.id }
+}
+
+function linkNewStepAfter(spec: PlaybookDraftSpec, afterId: string, newId: string): PlaybookDraftSpec {
+  const next = clone(spec)
+  const steps = next.steps ?? []
+  const newStep = steps.find((s) => s.id === newId)
+  if (!newStep) return next
+
+  // Start után: az új a belépő, a korábbi belépő az új default folytatása.
+  if (afterId === START_NODE_ID) {
+    const prevEntry = (next as { entryStepId?: string }).entryStepId
+    ;(next as { entryStepId?: string }).entryStepId = newId
+    if (prevEntry && prevEntry !== newId && steps.some((s) => s.id === prevEntry)) {
+      newStep.onComplete = [{ condition: 'default', nextStepId: prevEntry }]
+    }
+    return next
+  }
+
+  const src = steps.find((s) => s.id === afterId)
+  if (!src) return next // gate vagy ismeretlen → árva
+
+  src.onComplete = src.onComplete ?? []
+  // "default step-rule": feltétel nélküli, step-célú folytatás (gate-célút nem bántjuk).
+  const def = src.onComplete.find(
+    (r) => (r.condition == null || r.condition === 'default') && r.nextStepId && !r.gateId,
+  )
+  if (def) {
+    const oldTarget = def.nextStepId
+    def.nextStepId = newId
+    if (oldTarget && oldTarget !== newId && steps.some((s) => s.id === oldTarget)) {
+      newStep.onComplete = [{ condition: 'default', nextStepId: oldTarget }]
+    }
+  } else {
+    src.onComplete.push({ condition: 'default', nextStepId: newId })
+  }
+  return next
+}
+
+/** Új kapu a kiválasztott node után: step esetén a step kötelező kapujaként köti be. */
+export function addGateAfter(spec: PlaybookDraftSpec, afterId: string | null | undefined): AddResult {
+  const res = addGate(spec)
+  if (afterId && isStepId(res.spec, afterId)) {
+    const next = clone(res.spec)
+    const src = (next.steps ?? []).find((s) => s.id === afterId)
+    if (src) src.requiredGateIds = [...new Set([...(src.requiredGateIds ?? []), res.id])]
+    return { spec: next, id: res.id }
+  }
+  return res
+}
+
+/**
+ * Egy meglévő él ÁTKÖTÉSE másik célpontra (jobb oldali él-szerkesztő).
+ * A newTarget = End a routing törlését jelenti (a lépés terminálissá válik).
+ */
+export function retargetEdge(
+  spec: PlaybookDraftSpec,
+  edge: { source: string; kind: string; ruleIndex?: number; transitionIndex?: number; fromRequiredGate?: boolean; target: string },
+  newTarget: string,
+): PlaybookDraftSpec {
+  if (edge.kind === 'entry' || edge.kind === 'end') return spec
+  if (newTarget === edge.target) return spec
+  if (newTarget === END_NODE_ID) return deleteEdgeFromSpec(spec, edge)
+
+  const next = clone(spec)
+
+  if (edge.fromRequiredGate || edge.kind === 'requires') {
+    if (!isGateId(next, newTarget)) return spec // requires csak kapura mutathat
+    const src = (next.steps ?? []).find((s) => s.id === edge.source)
+    if (src) {
+      src.requiredGateIds = [
+        ...new Set((src.requiredGateIds ?? []).map((g) => (g === edge.target ? newTarget : g))),
+      ]
+    }
+    return next
+  }
+
+  if (edge.transitionIndex != null) {
+    const transitions = Array.isArray(next.transitions)
+      ? (next.transitions as Array<{ toStepId?: string }>)
+      : []
+    const t = transitions[edge.transitionIndex]
+    if (t && isStepId(next, newTarget)) t.toStepId = newTarget
+    return next
+  }
+
+  if (edge.ruleIndex != null) {
+    const src = (next.steps ?? []).find((s) => s.id === edge.source)
+    const rule = src?.onComplete?.[edge.ruleIndex]
+    if (rule) {
+      if (isGateId(next, newTarget)) {
+        rule.gateId = newTarget
+        delete rule.nextStepId
+      } else if (isStepId(next, newTarget)) {
+        rule.nextStepId = newTarget
+        delete rule.gateId
+      }
+    }
+    return next
+  }
+  return spec
+}
+
+/** Egy él megfordítása: törli, majd a fordított irányban újraköti (source ⇄ target). */
+export function reverseEdge(
+  spec: PlaybookDraftSpec,
+  edge: { source: string; kind: string; ruleIndex?: number; transitionIndex?: number; fromRequiredGate?: boolean; target: string },
+): PlaybookDraftSpec {
+  if (edge.kind === 'entry' || edge.kind === 'end') return spec
+  if (edge.target === END_NODE_ID || edge.target === START_NODE_ID) return spec
+  const deleted = deleteEdgeFromSpec(spec, edge)
+  return connectNodes(deleted, edge.target, edge.source)
+}
+
 /** Egy step teljes cseréje (inspector-mentés) id szerint. */
 export function replaceStep(spec: PlaybookDraftSpec, stepId: string, patch: RawStep): PlaybookDraftSpec {
   const next = clone(spec)

@@ -13,7 +13,7 @@
  * KRITIKUS invariáns (§2.5, §11.3, P6): az agent kimenete SOHA nem léphet át blocking
  * kapu által zárt átmenetet. A motor a `compiled_spec` alapján dönt, nem a prompt alapján.
  */
-import type { CompiledSpec, CompiledGate, CompiledRoutingRule, CompiledTicketRule } from '@/domain/playbook/playbook-compiler'
+import type { CompiledSpec, CompiledGate, CompiledRoutingRule } from '@/domain/playbook/playbook-compiler'
 import type { ConditionExpression, ConditionOp } from '@/lib/playbook-v2/spec'
 import { outputRequiredFieldsForStep } from '@/lib/playbook-v2/process-step-payload'
 
@@ -201,15 +201,34 @@ function missingOutputFields(required: string[], payload?: Record<string, unknow
 // --- §7.3 process advance routing -----------------------------------------
 
 export type AdvanceDecision =
-  | { kind: 'next_step'; toStepId: string; rule: CompiledRoutingRule }
-  | { kind: 'await_gate'; gateId: string; rule: CompiledRoutingRule }
+  | { kind: 'next_step'; toStepId: string; rule: CompiledRoutingRule; selectedOutcome?: string }
+  | { kind: 'await_gate'; gateId: string; rule: CompiledRoutingRule; selectedOutcome?: string }
+  /** WP-7 §10.2 — implicit hiba-él (BPMN error boundary): kezeletlen blocked/failed → default awaiting_human. */
+  | { kind: 'await_human'; reason: string; outcomeStatus: 'blocked' | 'failed' }
   | { kind: 'complete' }
 
+/** WP-7 — az él hiba-él-e (outcome.status-ra ágazó). */
+function isErrorEdge(rule: CompiledRoutingRule): boolean {
+  return rule.edgeType === 'error' || rule.edgeType === 'blocked'
+}
+
+/** A payload `outcome.status` mezője, ha strukturált step-outcome-ot adott a step. */
+function readOutcomeStatus(payload: Record<string, unknown>): 'ok' | 'blocked' | 'failed' | undefined {
+  const outcome = payload['outcome']
+  if (outcome == null || typeof outcome !== 'object') return undefined
+  const status = (outcome as Record<string, unknown>)['status']
+  return status === 'ok' || status === 'blocked' || status === 'failed' ? status : undefined
+}
+
 /**
- * §7.3 — a befejezett step `onComplete` / routing szabályaiból DETERMINISZTIKUSAN
- * kiválasztja a következő lépést. A feltételes ágakat a `result_payload` ellen
- * értékeli; a `default` (vagy feltétel nélküli) ág a végső fallback. Ha egyik ág
- * sem illeszkedik és nincs fallback, a folyamat befejezett (terminál step).
+ * §7.3 + WP-7 §10.2 — a befejezett step routing szabályaiból DETERMINISZTIKUSAN
+ * kiválasztja a következő lépést.
+ *
+ * KASZKÁD-VÉDELEM: ha a step gépi `outcome.status`-a `blocked`/`failed`, ELŐSZÖR a
+ * hiba-él dönt (a happy-path ágakat NEM veszi figyelembe, hogy a tartalmi kudarc ne
+ * propagálódjon sikerként). Ha nincs explicit hiba-él, az implicit BPMN error boundary
+ * → `await_human` (default awaiting_human). Csak `ok`/hiányzó outcome-nál fut a happy path:
+ * konkrét feltételes ágak előbb, `default` fallback utoljára.
  */
 export function evaluateAdvance(
   compiled: CompiledSpec,
@@ -217,13 +236,31 @@ export function evaluateAdvance(
   resultPayload: Record<string, unknown> = {},
 ): AdvanceDecision {
   const rules = compiled.routingRules.filter((r) => r.fromStepId === completedStepId)
-  if (rules.length === 0) {
-    return { kind: 'complete' }
+  const outcomeStatus = readOutcomeStatus(resultPayload)
+
+  // --- WP-7: hiba-út (kaszkád-védelem) ------------------------------------
+  if (outcomeStatus === 'blocked' || outcomeStatus === 'failed') {
+    const errorEdges = rules.filter(isErrorEdge)
+    for (const rule of errorEdges) {
+      if (rule.condition && evaluateCondition(rule.condition, resultPayload)) {
+        return toDecision(rule)
+      }
+    }
+    // Nincs kezelt hiba-él → implicit boundary, default awaiting_human.
+    return {
+      kind: 'await_human',
+      reason: `unhandled_${outcomeStatus}`,
+      outcomeStatus,
+    }
   }
 
-  // Először a konkrét feltételes ágak, utoljára a default/feltétel nélküli fallback.
-  const conditional = rules.filter((r) => r.condition != null && r.condition !== 'default')
-  const fallbacks = rules.filter((r) => r.condition == null || r.condition === 'default')
+  // --- Happy path (ok / hiányzó outcome) — a hiba-éleket kizárjuk ----------
+  const businessRules = rules.filter((r) => !isErrorEdge(r))
+  if (businessRules.length === 0) {
+    return { kind: 'complete' }
+  }
+  const conditional = businessRules.filter((r) => r.condition != null && r.condition !== 'default')
+  const fallbacks = businessRules.filter((r) => r.condition == null || r.condition === 'default')
 
   for (const rule of conditional) {
     if (evaluateCondition(rule.condition!, resultPayload)) {
@@ -240,12 +277,72 @@ export function evaluateAdvance(
 
 function toDecision(rule: CompiledRoutingRule): AdvanceDecision {
   if (rule.gateId) {
-    return { kind: 'await_gate', gateId: rule.gateId, rule }
+    return { kind: 'await_gate', gateId: rule.gateId, rule, selectedOutcome: rule.outcome }
   }
   if (rule.toStepId) {
-    return { kind: 'next_step', toStepId: rule.toStepId, rule }
+    return { kind: 'next_step', toStepId: rule.toStepId, rule, selectedOutcome: rule.outcome }
   }
   return { kind: 'complete' }
+}
+
+/**
+ * WP-8 §11.7 — pure branch-preview endpoint. A Canvas/Simulation UGYANAZT az ágat
+ * mutatja, mint a runtime `evaluateAdvance` (elfogadási kritérium). Audit-barát
+ * kimenetet ad: melyik feltétel illeszkedett, milyen kimenetre, milyen célra.
+ */
+export type BranchPreview = {
+  decision: AdvanceDecision
+  targetKind: 'next_step' | 'await_gate' | 'await_human' | 'complete'
+  targetId: string | null
+  selectedOutcome: string | null
+  matchedCondition: ConditionExpression | null
+  edgeType: CompiledRoutingRule['edgeType'] | null
+}
+
+export function evaluatePlaybookAdvance(
+  compiled: CompiledSpec,
+  completedStepId: string,
+  samplePayload: Record<string, unknown> = {},
+): BranchPreview {
+  const decision = evaluateAdvance(compiled, completedStepId, samplePayload)
+  switch (decision.kind) {
+    case 'next_step':
+      return {
+        decision,
+        targetKind: 'next_step',
+        targetId: decision.toStepId,
+        selectedOutcome: decision.selectedOutcome ?? null,
+        matchedCondition: decision.rule.condition ?? null,
+        edgeType: decision.rule.edgeType ?? null,
+      }
+    case 'await_gate':
+      return {
+        decision,
+        targetKind: 'await_gate',
+        targetId: decision.gateId,
+        selectedOutcome: decision.selectedOutcome ?? null,
+        matchedCondition: decision.rule.condition ?? null,
+        edgeType: decision.rule.edgeType ?? null,
+      }
+    case 'await_human':
+      return {
+        decision,
+        targetKind: 'await_human',
+        targetId: null,
+        selectedOutcome: decision.outcomeStatus,
+        matchedCondition: null,
+        edgeType: null,
+      }
+    case 'complete':
+      return {
+        decision,
+        targetKind: 'complete',
+        targetId: null,
+        selectedOutcome: null,
+        matchedCondition: null,
+        edgeType: null,
+      }
+  }
 }
 
 // --- Feltétel-kiértékelés (§5 ConditionExpression) ------------------------

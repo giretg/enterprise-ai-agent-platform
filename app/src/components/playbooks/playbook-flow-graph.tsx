@@ -252,18 +252,46 @@ export type NodeClickPayload =
   | { type: 'step'; id: string; data: RawStep }
   | { type: 'gate'; id: string; data: RawGate }
 
+/** WP-1 §4 — futásidejű trace-overlay a tervezett gráfra (read-only). */
+export type TraceStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped' | 'awaiting'
+export type TraceOverlay = {
+  nodeStatus?: Record<string, TraceStatus>
+  /** Bejárt élek `${from}→${to}` alakban. */
+  traversedEdges?: string[]
+  /** A bejárt élek közül azok, amelyek eltérnek a tervtől (nem-tervezett ág). */
+  deviationEdges?: string[]
+}
+
+const TRACE_NODE_TONE: Record<
+  TraceStatus,
+  { fill: string; stroke: string; text: string; label: string }
+> = {
+  done: { fill: 'fill-sage/15', stroke: 'stroke-sage/70', text: 'fill-sage', label: 'kész' },
+  running: { fill: 'fill-sky-500/15', stroke: 'stroke-sky-500/70', text: 'fill-sky-500', label: 'fut' },
+  awaiting: { fill: 'fill-honey/15', stroke: 'stroke-honey/70', text: 'fill-honey', label: 'vár' },
+  failed: { fill: 'fill-coral/15', stroke: 'stroke-coral/70', text: 'fill-coral', label: 'hiba' },
+  skipped: { fill: 'fill-ink/8', stroke: 'stroke-ink/25', text: 'fill-ink/40', label: 'kihagyva' },
+  pending: { fill: 'fill-paper', stroke: 'stroke-ink/20', text: 'fill-ink/40', label: 'függőben' },
+}
+
 export function PlaybookFlowGraph({
   spec,
   onNodeClick,
+  traceOverlay,
 }: {
   spec: unknown
   onNodeClick?: (payload: NodeClickPayload) => void
+  traceOverlay?: TraceOverlay
 }) {
   if (!spec || typeof spec !== 'object') return null
   const raw = spec as RawSpec
   const model = buildModel(raw)
   if (!model) return null
   const { nodes, edges } = model
+
+  const traversedSet = new Set(traceOverlay?.traversedEdges ?? [])
+  const deviationSet = new Set(traceOverlay?.deviationEdges ?? [])
+  const hasTrace = !!traceOverlay
 
   const nodeById = new Map(nodes.map((n) => [n.id, n]))
   const positions = layoutNodes(nodes)
@@ -317,20 +345,25 @@ export function PlaybookFlowGraph({
           const y2 = b.y + vH / 2
           const mx = (x1 + x2) / 2
           const my = (y1 + y2) / 2
+          const edgeKey = `${e.from}→${e.to}`
+          const traversed = traversedSet.has(edgeKey)
+          const deviation = deviationSet.has(edgeKey)
           const dashed = e.kind === 'requires'
-          const stroke =
+          const baseStroke =
             e.kind === 'gate'
               ? 'stroke-honey/70'
               : e.kind === 'requires'
                 ? 'stroke-ink/30'
                 : 'stroke-ink/40'
+          // Trace: bejárt él kiemelve; eltérő (nem-tervezett) ág coral-lal.
+          const stroke = deviation ? 'stroke-coral' : traversed ? 'stroke-sky-500' : baseStroke
           return (
             <g key={`e${i}`}>
               <path
                 d={`M ${x1} ${y1} C ${mx} ${y1}, ${mx} ${y2}, ${x2} ${y2}`}
                 fill="none"
                 className={stroke}
-                strokeWidth={1.5}
+                strokeWidth={traversed || deviation ? 3 : 1.5}
                 strokeDasharray={dashed ? '4 3' : undefined}
                 markerEnd="url(#pb-arrow)"
               />
@@ -357,12 +390,22 @@ export function PlaybookFlowGraph({
           const p = positions.get(n.id)!
           const isGate = n.kind === 'gate'
           const roleEndY = p.y + 36 + n.subLines.length * 14
-          const fill = isGate ? 'fill-honey/10' : n.isEntry ? 'fill-coral/10' : 'fill-paper'
-          const border = isGate
-            ? 'stroke-honey/60'
-            : n.isEntry
-              ? 'stroke-coral/70'
-              : 'stroke-ink/20'
+          const trace = traceOverlay?.nodeStatus?.[n.id]
+          const traceTone = trace ? TRACE_NODE_TONE[trace] : null
+          const fill = traceTone
+            ? traceTone.fill
+            : isGate
+              ? 'fill-honey/10'
+              : n.isEntry
+                ? 'fill-coral/10'
+                : 'fill-paper'
+          const border = traceTone
+            ? traceTone.stroke
+            : isGate
+              ? 'stroke-honey/60'
+              : n.isEntry
+                ? 'stroke-coral/70'
+                : 'stroke-ink/20'
           const clickable = !!onNodeClick
           return (
             <g
@@ -437,7 +480,7 @@ export function PlaybookFlowGraph({
                   ✎
                 </text>
               )}
-              {n.isEntry && (
+              {n.isEntry && !traceTone && (
                 <text
                   x={p.x + NODE_W - 10}
                   y={p.y + 13}
@@ -446,6 +489,17 @@ export function PlaybookFlowGraph({
                   style={{ fontSize: 8, fontWeight: 700 }}
                 >
                   START
+                </text>
+              )}
+              {traceTone && (
+                <text
+                  x={p.x + NODE_W - 8}
+                  y={p.y + 13}
+                  textAnchor="end"
+                  className={traceTone.text}
+                  style={{ fontSize: 8, fontWeight: 700 }}
+                >
+                  {traceTone.label}
                 </text>
               )}
             </g>
@@ -467,6 +521,25 @@ export function PlaybookFlowGraph({
           <span className="inline-flex items-center gap-1">
             <span className="text-ink/40">✎</span> kattints a szerkesztéshez
           </span>
+        )}
+        {hasTrace && (
+          <>
+            <span className="inline-flex items-center gap-1">
+              <span className="inline-block h-2.5 w-2.5 rounded border border-sage/70 bg-sage/15" /> kész
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <span className="inline-block h-2.5 w-2.5 rounded border border-sky-500/70 bg-sky-500/15" /> fut
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <span className="inline-block h-2.5 w-2.5 rounded border border-coral/70 bg-coral/15" /> hiba
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <span className="inline-block h-0 w-4 border-t-2 border-sky-500" /> bejárt út
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <span className="inline-block h-0 w-4 border-t-2 border-coral" /> eltérő ág
+            </span>
+          </>
         )}
       </div>
     </div>

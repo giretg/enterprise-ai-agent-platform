@@ -979,6 +979,10 @@ model StepTemplateVersion {
   // requiredCapabilities benne van, DE ez csak JAVASLAT — jogot nem ad (D3).
   fragment    Json
   contentHash String   @map("content_hash")
+  // D8 — opcionális "certified" tier: a published-höz NEM kell eval, a certify-hoz igen.
+  // evalSamples alak: [{ sampleInput, expectations[] }] — a hash-elt fragmenten KÍVÜL.
+  certified   Boolean  @default(false)
+  evalSamples Json     @default("[]") @map("eval_samples")
   createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
 
   template StepTemplate @relation(fields: [templateId], references: [id], onDelete: Cascade)

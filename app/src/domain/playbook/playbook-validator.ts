@@ -13,8 +13,10 @@
 import {
   safeParsePlaybookSpecV2,
   type PlaybookSpecV2,
+  type PlaybookStep,
   type ConditionExpression,
 } from '@/lib/playbook-v2/spec'
+import { desugarDecision } from '@/domain/playbook/playbook-compiler'
 
 export type ValidationIssue = {
   code: string
@@ -72,6 +74,8 @@ export class PlaybookValidator {
     this.checkDeliverables(spec, errors)
     this.checkInputSlots(spec, errors, warnings)
     this.checkTimeouts(spec, warnings)
+    this.checkDecisionSteps(spec, errors, warnings)
+    this.checkErrorEdges(spec, errors, warnings)
     this.checkTenantContext(spec, ctx, errors, warnings)
 
     return { valid: errors.length === 0, errors, warnings }
@@ -147,6 +151,63 @@ export class PlaybookValidator {
           })
         }
       })
+
+      // WP-7 §10.2 — hiba-él (onError/onBlocked) célok létezése.
+      for (const [key, target] of [
+        ['onError', step.onError],
+        ['onBlocked', step.onBlocked],
+      ] as const) {
+        if (!target) continue
+        if (target.nextStepId && !stepIds.has(target.nextStepId)) {
+          errors.push({
+            code: 'UNKNOWN_BRANCH_TARGET',
+            path: `steps[${i}].${key}.nextStepId`,
+            message: `A(z) '${target.nextStepId}' hiba-él cél-step nem létezik.`,
+          })
+        }
+        if (target.gateId && !gateIds.has(target.gateId)) {
+          errors.push({
+            code: 'UNKNOWN_BRANCH_TARGET',
+            path: `steps[${i}].${key}.gateId`,
+            message: `A(z) '${target.gateId}' hiba-él cél-gate nem létezik.`,
+          })
+        }
+      }
+
+      // WP-8 §11.4 — decision-ágak (branches + fallback) célok létezése.
+      if (step.decision) {
+        step.decision.branches.forEach((b, k) => {
+          if (b.nextStepId && !stepIds.has(b.nextStepId)) {
+            errors.push({
+              code: 'UNKNOWN_BRANCH_TARGET',
+              path: `steps[${i}].decision.branches[${k}].nextStepId`,
+              message: `A(z) '${b.nextStepId}' branch cél-step nem létezik.`,
+            })
+          }
+          if (b.gateId && !gateIds.has(b.gateId)) {
+            errors.push({
+              code: 'UNKNOWN_BRANCH_TARGET',
+              path: `steps[${i}].decision.branches[${k}].gateId`,
+              message: `A(z) '${b.gateId}' branch cél-gate nem létezik.`,
+            })
+          }
+        })
+        const fb = step.decision.fallback
+        if (fb?.nextStepId && !stepIds.has(fb.nextStepId)) {
+          errors.push({
+            code: 'UNKNOWN_BRANCH_TARGET',
+            path: `steps[${i}].decision.fallback.nextStepId`,
+            message: `A(z) '${fb.nextStepId}' fallback cél-step nem létezik.`,
+          })
+        }
+        if (fb?.gateId && !gateIds.has(fb.gateId)) {
+          errors.push({
+            code: 'UNKNOWN_BRANCH_TARGET',
+            path: `steps[${i}].decision.fallback.gateId`,
+            message: `A(z) '${fb.gateId}' fallback cél-gate nem létezik.`,
+          })
+        }
+      }
     })
 
     spec.transitions.forEach((t, i) => {
@@ -522,13 +583,135 @@ export class PlaybookValidator {
       adjacency.set(from, list)
     }
     for (const step of spec.steps) {
-      for (const rule of step.onComplete ?? []) {
+      // A decision-blokk desugarolt ágai is valós útvonalak (WP-8) — különben a
+      // csak decision-branchen elérhető step tévesen UNREACHABLE lenne.
+      for (const rule of desugarDecision(step)) {
         if (rule.nextStepId) add(step.id, rule.nextStepId)
       }
+      // A hiba-élek (onError/onBlocked) is elérhetővé teszik a cél-stepet (WP-7).
+      if (step.onError?.nextStepId) add(step.id, step.onError.nextStepId)
+      if (step.onBlocked?.nextStepId) add(step.id, step.onBlocked.nextStepId)
     }
     for (const t of spec.transitions) add(t.fromStepId, t.toStepId)
     return adjacency
   }
+
+  // WP-8 §11.4 — Decision Step validáció.
+  private checkDecisionSteps(
+    spec: PlaybookSpecV2,
+    errors: ValidationIssue[],
+    warnings: ValidationIssue[],
+  ) {
+    const gateById = new Map(spec.gates.map((g) => [g.id, g]))
+
+    spec.steps.forEach((step, i) => {
+      const decision = step.decision
+      if (!decision) return
+      const field = decision.field ?? 'decision'
+
+      // OUTPUT_CONTRACT_HAS_DECISION — a döntési mező legyen kötelező kimenet.
+      const required = readRequiredFields(step.outputContract)
+      if (!required.includes(field)) {
+        errors.push({
+          code: 'OUTPUT_CONTRACT_HAS_DECISION',
+          path: `steps[${i}].outputContract.requiredFields`,
+          message: `A(z) '${step.id}' Decision Step outputContract-jának tartalmaznia kell a(z) '${field}' döntési mezőt.`,
+        })
+      }
+
+      // OUTCOME_BRANCH_REQUIRED — minden allowedOutcome-hoz legyen branch (vagy fallback).
+      const branchOutcomes = new Set(decision.branches.map((b) => b.outcome))
+      for (const outcome of decision.allowedOutcomes ?? []) {
+        if (!branchOutcomes.has(outcome) && !decision.fallback) {
+          errors.push({
+            code: 'OUTCOME_BRANCH_REQUIRED',
+            path: `steps[${i}].decision`,
+            message: `A(z) '${outcome}' engedélyezett kimenethez nincs branch és nincs fallback.`,
+          })
+        }
+      }
+
+      // DEFAULT_BRANCH_RECOMMENDED / NO_SILENT_COMPLETE — fallback nélkül a nem-illeszkedő
+      // kimenet néma process-complete-et okozhat.
+      if (!decision.fallback) {
+        warnings.push({
+          code: 'NO_SILENT_COMPLETE',
+          path: `steps[${i}].decision.fallback`,
+          message: `A(z) '${step.id}' Decision Stephez nincs fallback ág — ismeretlen kimenet néma process-lezárást okozhat. Ajánlott egy manual_review gate fallback.`,
+        })
+      }
+
+      // CRITICAL_BRANCH_GATE_REQUIRED + EVIDENCE_REQUIRED_FOR_HIGH_RISK.
+      decision.branches.forEach((b, k) => {
+        const critical = b.criticality === 'L2' || b.criticality === 'L3'
+        if (!critical) return
+        const gate = b.gateId ? gateById.get(b.gateId) : undefined
+        if (!gate || !gate.blocking) {
+          errors.push({
+            code: 'CRITICAL_BRANCH_GATE_REQUIRED',
+            path: `steps[${i}].decision.branches[${k}]`,
+            message: `A(z) '${b.outcome}' (${b.criticality}) branch csak blocking gate-en át léphet — jelenleg ${gate ? 'nem-blocking gate' : b.nextStepId ? 'közvetlen step' : 'nincs cél'}.`,
+          })
+        }
+        const hasEvidence = b.requiresEvidence || decision.requiresEvidence || decision.evidenceField != null
+        if (!hasEvidence) {
+          errors.push({
+            code: 'EVIDENCE_REQUIRED_FOR_HIGH_RISK',
+            path: `steps[${i}].decision.branches[${k}]`,
+            message: `A(z) '${b.outcome}' (${b.criticality}) magas kockázatú branch-hez bizonyíték kell (branch.requiresEvidence vagy decision.evidenceField).`,
+          })
+        }
+      })
+
+      // Step-önhivatkozó közvetlen ciklus figyelmeztetés (a referencia-check a létezést fedi).
+      for (const b of decision.branches) {
+        if (b.nextStepId && b.nextStepId === step.id) {
+          warnings.push({
+            code: 'DECISION_SELF_LOOP',
+            path: `steps[${i}].decision`,
+            message: `A(z) '${step.id}' Decision Step egy ága önmagára mutat (${b.outcome}).`,
+          })
+        }
+      }
+    })
+  }
+
+  // WP-7 §10.5 — minden nem-terminális step hiba-kimenete kezelt (explicit hiba-él vagy
+  // implicit default awaiting_human). Az implicit ág mindig létezik, ezért ez figyelmeztetés,
+  // nem blocking-error: jelzi, hogy a step hibája a default emberi felülvizsgálatra megy.
+  private checkErrorEdges(
+    spec: PlaybookSpecV2,
+    _errors: ValidationIssue[],
+    warnings: ValidationIssue[],
+  ) {
+    const transitionSources = new Set(spec.transitions.map((t) => t.fromStepId))
+    for (let i = 0; i < spec.steps.length; i++) {
+      const step = spec.steps[i]!
+      if (isTerminalStep(step) && !transitionSources.has(step.id)) continue
+      const hasExplicitErrorEdge = step.onError != null || step.onBlocked != null
+      if (!hasExplicitErrorEdge) {
+        warnings.push({
+          code: 'IMPLICIT_ERROR_EDGE',
+          path: `steps[${i}]`,
+          message: `A(z) '${step.id}' nem-terminális lépésnek nincs explicit onError/onBlocked hiba-éle — a blocked/failed kimenet az implicit default emberi felülvizsgálatra (awaiting_human) megy.`,
+        })
+      }
+    }
+  }
+}
+
+/** Egy step outputContract.requiredFields listája (üres, ha nincs). */
+function readRequiredFields(outputContract?: Record<string, unknown>): string[] {
+  const fields = outputContract?.requiredFields
+  if (!Array.isArray(fields)) return []
+  return fields.filter((f): f is string => typeof f === 'string' && f.length > 0)
+}
+
+/** Terminális step: nincs sem happy-path routing (onComplete/decision), sem transition. */
+function isTerminalStep(step: PlaybookStep): boolean {
+  const hasOnComplete = (step.onComplete ?? []).length > 0
+  const hasDecision = step.decision != null
+  return !hasOnComplete && !hasDecision
 }
 
 /** Kényelmi újraexport, hogy a condition-típus a service rétegben is elérhető legyen. */

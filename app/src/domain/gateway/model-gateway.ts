@@ -1,5 +1,16 @@
 import { Prisma, type ModelCallStatus } from '@prisma/client'
-import type { AuditRepository, ModelCallRepository } from '@/repositories/interfaces'
+import type {
+  AuditRepository,
+  ModelCallRepository,
+  PlatformSettingsRepository,
+} from '@/repositories/interfaces'
+import {
+  computeModelCostEur,
+  parseModelPricingSetting,
+  DEFAULT_MODEL_PRICING,
+  MODEL_PRICING_SETTING_KEY,
+  type ModelPricingTable,
+} from '@/lib/model-pricing'
 import { callChatGptOAuth, callChatGptOAuthStream, stubChatStream } from './chatgpt-oauth-bridge'
 import { GeminiProvider } from './gemini-provider'
 import { createTokenStoreFromEnv, ensureFreshTokens } from './oauth-token-store'
@@ -661,7 +672,27 @@ export class ModelGateway {
     private routingEngine?: RoutingEngine,
     private budgetEngine?: BudgetEngine,
     private sensitivityPolicy: SensitivityPolicy = DEFAULT_SENSITIVITY_POLICY,
+    // D11 / §16.1 — a `model.pricing` tarifa-forrás a valódi costEstimate-hez.
+    // Ha nincs megadva, a beépített DEFAULT_MODEL_PRICING él (a költség NEM marad 0).
+    private pricingSettings?: Pick<PlatformSettingsRepository, 'get'>,
   ) {}
+
+  /** Cache-elt tarifa-betöltés (setting → default fallback). */
+  private cachedPricing: ModelPricingTable | null = null
+  private async loadPricing(): Promise<ModelPricingTable> {
+    if (this.cachedPricing) return this.cachedPricing
+    if (!this.pricingSettings) {
+      this.cachedPricing = DEFAULT_MODEL_PRICING
+      return this.cachedPricing
+    }
+    try {
+      const raw = await this.pricingSettings.get(MODEL_PRICING_SETTING_KEY)
+      this.cachedPricing = parseModelPricingSetting(raw)
+    } catch {
+      this.cachedPricing = DEFAULT_MODEL_PRICING
+    }
+    return this.cachedPricing
+  }
 
   async call(params: {
     agentId: string
@@ -834,8 +865,14 @@ export class ModelGateway {
       const content = result.content
       const promptTokens = result.usage?.promptTokens ?? Math.ceil(prompt.length / 4)
       const completionTokens = result.usage?.completionTokens ?? Math.ceil(content.length / 4)
-      const costEstimate = 0
       const usedModel = result.model || model
+      // §16.1 — valódi becslés a token-számokból (korábban fixen 0).
+      const costEstimate = computeModelCostEur(
+        usedModel,
+        promptTokens,
+        completionTokens,
+        await this.loadPricing(),
+      )
 
       await this.modelCalls.create({
         agentId: params.agentId,
@@ -1080,6 +1117,13 @@ export class ModelGateway {
         content = result.content
         const promptTokens = result.usage?.promptTokens ?? Math.ceil(prompt.length / 4)
         const completionTokens = result.usage?.completionTokens ?? Math.ceil(content.length / 4)
+        const usedModel = result.model || model
+        const costEstimate = computeModelCostEur(
+          usedModel,
+          promptTokens,
+          completionTokens,
+          await this.loadPricing(),
+        )
         const targetType = params.ticketId ? 'ticket' : params.conversationId ? 'conversation' : 'agent'
         const targetId = params.ticketId ?? params.conversationId ?? params.agentId
         await this.modelCalls.create({
@@ -1088,10 +1132,10 @@ export class ModelGateway {
           ticketId: params.ticketId ?? null,
           conversationId: params.conversationId ?? null,
           provider: provider.name,
-          model: result.model || model,
+          model: usedModel,
           promptTokens,
           completionTokens,
-          costEstimate: new Prisma.Decimal(0),
+          costEstimate: new Prisma.Decimal(costEstimate),
           latencyMs: result.latencyMs,
           status: 'ok',
         })
@@ -1102,11 +1146,11 @@ export class ModelGateway {
           action: 'model.call',
           targetType,
           targetId,
-          modelUsed: result.model || model,
+          modelUsed: usedModel,
           inputRef: `tokens:${promptTokens}`,
           outputRef: `tokens:${completionTokens}`,
           policyDecision: 'allowed',
-          metadata: { costEstimate: 0, latencyMs: result.latencyMs, status: 'ok', sensitivity: sensitivity.level },
+          metadata: { costEstimate, latencyMs: result.latencyMs, status: 'ok', sensitivity: sensitivity.level },
         })
         yield content
       } catch (error: unknown) {

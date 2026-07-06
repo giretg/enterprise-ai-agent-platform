@@ -80,6 +80,87 @@ export const retryPolicySchema = z.object({
   onExhausted: z.enum(['fail_process', 'manual_review']),
 })
 
+// --- Step-outcome kontraktus (WP-7 / D12, §10.1) --------------------------
+
+/**
+ * Gépi step-kimenet-státusz a próza MELLETT. A hard signalokat (kb_search 0-hit,
+ * tool-denied, tool-loop exception) a runtime KÉNYSZERÍTI rá determinisztikusan,
+ * nem az agent optimista önbevallására bízva.
+ *  - `ok`      — a step teljesítette a szerződését (outputContract kitöltve) → happy path.
+ *  - `blocked` — hiányzó előfeltétel/input, emberrel vagy másik lépéssel feloldható (NEM hard hiba).
+ *  - `failed`  — hard hiba (tool exception, tool-denied, kimerített retry).
+ */
+export const stepOutcomeStatusSchema = z.enum(['ok', 'blocked', 'failed'])
+export type StepOutcomeStatus = z.infer<typeof stepOutcomeStatusSchema>
+
+export const stepOutcomeSchema = z.object({
+  status: stepOutcomeStatusSchema,
+  reason: z.string().optional(),
+  missing: z.array(z.string()).optional(),
+})
+export type StepOutcome = z.infer<typeof stepOutcomeSchema>
+
+/** A payloadban az `outcome`-mező kanonikus kulcsa (routing-feltétel: `outcome.status`). */
+export const STEP_OUTCOME_FIELD = 'outcome' as const
+export const STEP_OUTCOME_STATUS_PATH = 'outcome.status' as const
+
+// --- Hiba-él routing-cél (WP-7 / §10.2, BPMN error boundary) --------------
+
+/** Egy `onError`/`onBlocked`/`fallback` routing-cél: step VAGY gate. */
+export const routingTargetSchema = z
+  .object({
+    nextStepId: z.string().min(1).optional(),
+    gateId: z.string().min(1).optional(),
+  })
+  .refine((r) => r.nextStepId != null || r.gateId != null, {
+    message: 'routing-célnak nextStepId vagy gateId kell.',
+  })
+export type RoutingTarget = z.infer<typeof routingTargetSchema>
+
+// --- Criticality + Decision Step sugar-blokk (WP-8 / D13, §11.2b) ----------
+// A criticalitySchema-t itt (a step-séma ELŐTT) definiáljuk, mert a decision-blokk
+// hivatkozza; a gate-séma is innen olvassa.
+
+export const criticalitySchema = z.enum(['L0', 'L1', 'L2', 'L3'])
+export type Criticality = z.infer<typeof criticalitySchema>
+
+/**
+ * Egy engedélyezett kimenet (outcome) → célág. Olvasható authoring-cukor;
+ * a compiler `onComplete`/routingRules-ra desugarolja (nincs új runtime-semantics).
+ */
+export const decisionBranchSchema = z
+  .object({
+    outcome: z.string().min(1),
+    label: z.string().optional(),
+    nextStepId: z.string().min(1).optional(),
+    gateId: z.string().min(1).optional(),
+    criticality: criticalitySchema.optional(),
+    requiresEvidence: z.boolean().optional(),
+  })
+  .refine((b) => b.nextStepId != null || b.gateId != null, {
+    message: 'decision branch-nek nextStepId vagy gateId kell.',
+  })
+export type DecisionBranch = z.infer<typeof decisionBranchSchema>
+
+/**
+ * Explicit, olvasható A/B (multi-outcome) elágazás. A `decision`-blokk a HASH-ELT
+ * `spec` része (D13, ellentétben a layouttal); compile-time desugar `onComplete`-re.
+ */
+export const decisionSpecSchema = z.object({
+  /** Melyik output-mező hordozza a döntést (alap: `decision`). */
+  field: z.string().min(1).default('decision'),
+  confidenceField: z.string().min(1).optional(),
+  evidenceField: z.string().min(1).optional(),
+  /** Engedélyezett kimenetek; ha üres, a branches[].outcome halmazából derivált. */
+  allowedOutcomes: z.array(z.string().min(1)).optional(),
+  branches: z.array(decisionBranchSchema).min(1),
+  fallback: routingTargetSchema.optional(),
+  /** Küszöb az automatikus ág-választáshoz (MVP: külön helper/warning kényszeríti, §11.2). */
+  minConfidenceForAutoBranch: z.number().min(0).max(1).optional(),
+  requiresEvidence: z.boolean().optional(),
+})
+export type DecisionSpec = z.infer<typeof decisionSpecSchema>
+
 // §4.7b — lépés-deliverable: a lépés valódi fájl-artefaktumot állít elő a
 // ticket munkaterületére (nem szöveget a válaszba). A runtime a `format`-hoz
 // tartozó fájl-eszközt kéri (html→create_html, xlsx→xlsx_create, pptx→pptx_create,
@@ -115,6 +196,13 @@ export const playbookStepSchema = z.object({
   instructionTemplate: z.string().optional(),
   inputSlots: z.array(playbookInputSlotSchema).optional(),
   onComplete: z.array(stepCompletionRuleSchema).optional(),
+  // WP-7 / §10.2 — implicit hiba-él (BPMN error boundary). Ha nincs megadva,
+  // a compiler az implicit default-terminálhoz (awaiting_human) köti. A happy path-t
+  // a szerző húzza; a hiba-ágat csak akkor kell, ha nem a default awaiting_human kell.
+  onError: routingTargetSchema.optional(),
+  onBlocked: routingTargetSchema.optional(),
+  // WP-8 / §11.2b — explicit Decision Step sugar-blokk; compile-time desugar onComplete-re.
+  decision: decisionSpecSchema.optional(),
   timeoutMinutes: z.number().int().positive().optional(),
   retryPolicy: retryPolicySchema.optional(),
 })
@@ -130,9 +218,6 @@ export const gateTypeSchema = z.enum([
   'manual_review',
 ])
 export type GateType = z.infer<typeof gateTypeSchema>
-
-export const criticalitySchema = z.enum(['L0', 'L1', 'L2', 'L3'])
-export type Criticality = z.infer<typeof criticalitySchema>
 
 export const playbookGateSchema = z
   .object({

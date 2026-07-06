@@ -479,6 +479,8 @@ export async function getProcessDetail(input: unknown) {
           reason: typeof metadata.reason === 'string' ? metadata.reason : 'Ismeretlen blokk-ok.',
         }
       }),
+      // WP-1 §4 — a PIN-elt authored spec a folyamat-trace SVG-gráfjához (read-only overlay).
+      spec: version ? parsePlaybookSpecV2(version.spec) : null,
       // §9.2 szándékolt flow: a compiled spec lépés-sorrendje és routing-élei.
       intended: compiled
         ? {

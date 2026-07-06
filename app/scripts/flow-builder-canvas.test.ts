@@ -20,10 +20,14 @@ import {
 import {
   addStep,
   addGate,
+  addStepAfter,
+  addGateAfter,
   insertTemplateFragment,
   connectNodes,
   deleteEdgeFromSpec,
   deleteNodeFromSpec,
+  retargetEdge,
+  reverseEdge,
   replaceGate,
 } from '../src/lib/playbook-v2/canvas-spec-ops'
 import { parsePlaybookSpecV2, computePlaybookContentHash } from '../src/lib/playbook-v2/spec'
@@ -181,6 +185,72 @@ check('replaceGate: kapu cseréje id szerint', () => {
   })
   const gate = (next.gates ?? []).find((g) => g.id === gid)!
   assert.equal(gate.criticality, 'L3')
+})
+
+check('addStepAfter: kijelölt step UTÁN a láncba ékel (a → új → régi-cél)', () => {
+  // a → b lánc; új lépés "a" után → a → új → b
+  let spec = addStep(baseSpec(), 'agent').spec
+  const bId = spec.steps!.find((s) => s.id !== 'a')!.id as string
+  spec = connectNodes(spec, 'a', bId)
+  const before = JSON.stringify(spec)
+  const { spec: next, id: newId } = addStepAfter(spec, 'agent', 'a')
+  assert.equal(JSON.stringify(spec), before, 'addStepAfter nem mutálja az inputot')
+  const a = next.steps!.find((s) => s.id === 'a')!
+  const nw = next.steps!.find((s) => s.id === newId)!
+  assert.ok((a.onComplete ?? []).some((r) => r.nextStepId === newId), 'a → új default él')
+  assert.ok(!(a.onComplete ?? []).some((r) => r.nextStepId === bId), 'a → b él megszűnt')
+  assert.ok((nw.onComplete ?? []).some((r) => r.nextStepId === bId), 'új → b örökölte a farkot')
+})
+
+check('addStepAfter: kijelölés nélkül árva (régi viselkedés — end-re lóg)', () => {
+  const { spec: next, id } = addStepAfter(baseSpec(), 'human', null)
+  const s = next.steps!.find((st) => st.id === id)!
+  assert.ok(!s.onComplete || s.onComplete.length === 0, 'nincs kimenő él → terminális')
+})
+
+check('addStepAfter: Start után az új a belépő, a régi belépő követi', () => {
+  const { spec: next, id } = addStepAfter(baseSpec(), 'agent', START_NODE_ID)
+  assert.equal((next as { entryStepId?: string }).entryStepId, id, 'új a belépő')
+  const nw = next.steps!.find((s) => s.id === id)!
+  assert.ok((nw.onComplete ?? []).some((r) => r.nextStepId === 'a'), 'régi belépő (a) követi')
+})
+
+check('addGateAfter: kijelölt step kötelező kapujaként köti be', () => {
+  const { spec: next, id } = addGateAfter(baseSpec(), 'a')
+  const a = next.steps!.find((s) => s.id === 'a')!
+  assert.ok((a.requiredGateIds ?? []).includes(id), 'a step requiredGateIds-jébe került')
+})
+
+check('retargetEdge: onComplete cél átkötése másik stepre', () => {
+  let spec = addStep(baseSpec(), 'agent').spec // b
+  const bId = spec.steps!.find((s) => s.id !== 'a')!.id as string
+  spec = addStep(spec, 'agent').spec // c
+  const cId = spec.steps!.find((s) => s.id !== 'a' && s.id !== bId)!.id as string
+  spec = connectNodes(spec, 'a', bId) // a → b
+  const next = retargetEdge(spec, { source: 'a', target: bId, kind: 'flow', ruleIndex: 0 }, cId)
+  const a = next.steps!.find((s) => s.id === 'a')!
+  assert.ok((a.onComplete ?? []).some((r) => r.nextStepId === cId), 'a → c az új cél')
+  assert.ok(!(a.onComplete ?? []).some((r) => r.nextStepId === bId), 'a → b megszűnt')
+})
+
+check('retargetEdge: End célpont a routing törlését jelenti', () => {
+  let spec = addStep(baseSpec(), 'agent').spec
+  const bId = spec.steps!.find((s) => s.id !== 'a')!.id as string
+  spec = connectNodes(spec, 'a', bId)
+  const next = retargetEdge(spec, { source: 'a', target: bId, kind: 'flow', ruleIndex: 0 }, END_NODE_ID)
+  const a = next.steps!.find((s) => s.id === 'a')!
+  assert.ok(!a.onComplete || a.onComplete.length === 0, 'onComplete törölve → terminális')
+})
+
+check('reverseEdge: a → b megfordítva b → a', () => {
+  let spec = addStep(baseSpec(), 'agent').spec
+  const bId = spec.steps!.find((s) => s.id !== 'a')!.id as string
+  spec = connectNodes(spec, 'a', bId)
+  const next = reverseEdge(spec, { source: 'a', target: bId, kind: 'flow', ruleIndex: 0 })
+  const a = next.steps!.find((s) => s.id === 'a')!
+  const b = next.steps!.find((s) => s.id === bId)!
+  assert.ok(!(a.onComplete ?? []).some((r) => r.nextStepId === bId), 'a → b megszűnt')
+  assert.ok((b.onComplete ?? []).some((r) => r.nextStepId === 'a'), 'b → a létrejött')
 })
 
 check('extractLayout: pozíciók kinyerése kerekítve', () => {

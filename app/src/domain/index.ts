@@ -160,6 +160,8 @@ const modelGateway = new ModelGateway(
   undefined,
   routingEngine,
   budgetEngine,
+  undefined, // sensitivityPolicy → default
+  repositories.platformSettings, // D11 — model.pricing tarifa a valódi costEstimate-hez
 )
 const bookkeeperRuntime = new BookkeeperAgentRuntime(
   repositories.agents,

@@ -23,8 +23,14 @@ import {
 } from '@/lib/validators/actions'
 import { PlaybookV2Error } from '@/domain/playbook/playbook-v2-service'
 import { parsePlaybookSpecV2 } from '@/lib/playbook-v2/spec'
+import { PlaybookCompiler, type CompiledSpec } from '@/domain/playbook/playbook-compiler'
+import { PlaybookSimulator } from '@/domain/playbook/playbook-simulator'
+import { diffPlaybookSpecs } from '@/domain/playbook/playbook-diff'
+import { exportPlaybookPack, importPlaybookPack } from '@/domain/playbook/playbook-pack'
+import { evaluatePlaybookAdvance } from '@/lib/playbook-v2/runtime'
 import { prisma } from '@/lib/db'
 import { listPublishedStepTemplates } from '@/domain/step-template/step-template-catalog'
+import { createStepTemplate } from '@/domain/step-template/step-template-service'
 import { PLAYBOOK_AUTHOR_TEMPLATE } from '@/domain/playbook/playbook-author-agent'
 import type { PlaybookV2, PlaybookVersionV2 } from '@prisma/client'
 import { z } from 'zod'
@@ -453,5 +459,235 @@ export async function listPlaybookVersionsForProcessDefinitionEditing(playbookVe
     return fail(
       e instanceof Error ? e.message : 'Nem sikerült betölteni a Folyamathoz PIN-elt Playbook-verziókat',
     )
+  }
+}
+
+// --- Governed Flow Builder: WP-4 Simulation / WP-5 Diff / WP-6 Pack ----------
+
+const compilerSingleton = new PlaybookCompiler()
+const simulatorSingleton = new PlaybookSimulator()
+
+/** A verzió compiled specje (pin-elt), vagy friss fordítás, ha még nincs. */
+function compiledOf(version: { spec: unknown; compiledSpec: unknown; id: string }): CompiledSpec {
+  if (version.compiledSpec && typeof version.compiledSpec === 'object') {
+    return version.compiledSpec as CompiledSpec
+  }
+  return compilerSingleton.compile(parsePlaybookSpecV2(version.spec), { playbookVersionId: version.id })
+}
+
+/**
+ * WP-4 — szimbolikus dry-run egy Playbook-verzión. A `roleBindings` / `roleCapabilities`
+ * a hívótól (pl. egy ProcessDefinition kötéseiből); üresen a hiányzó-role/capability
+ * findingokat mutatja. NEM ír éles rendszerbe, nem hív LLM-et (D4).
+ */
+export async function simulatePlaybookVersionV2(input: unknown) {
+  try {
+    const user = await requireTenantRole('operator')
+    const parsed = z
+      .object({
+        playbookVersionId: z.string().uuid(),
+        sampleInput: z.record(z.string(), z.unknown()).optional(),
+        roleBindings: z.record(z.string(), z.string().nullable()).optional(),
+        roleCapabilities: z.record(z.string(), z.array(z.string())).optional(),
+      })
+      .parse(input)
+    const version = await repositories.playbooksV2.findVersion(user.activeTenantId, parsed.playbookVersionId)
+    if (!version) return fail('A Playbook-verzió nem található.')
+    const spec = parsePlaybookSpecV2(version.spec)
+    const report = simulatorSingleton.simulate({
+      spec,
+      compiled: compiledOf(version),
+      roleBindings: parsed.roleBindings ?? {},
+      roleCapabilities: parsed.roleCapabilities ?? {},
+      sampleInput: parsed.sampleInput ?? {},
+    })
+    return ok(report)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Nem sikerült a szimuláció')
+  }
+}
+
+/** WP-8 — pure branch-preview: a Canvas/Simulation ugyanazt az ágat adja, mint a runtime. */
+export async function previewPlaybookAdvanceV2(input: unknown) {
+  try {
+    const user = await requireTenantRole('operator')
+    const parsed = z
+      .object({
+        playbookVersionId: z.string().uuid(),
+        stepId: z.string().min(1),
+        samplePayload: z.record(z.string(), z.unknown()).optional(),
+      })
+      .parse(input)
+    const version = await repositories.playbooksV2.findVersion(user.activeTenantId, parsed.playbookVersionId)
+    if (!version) return fail('A Playbook-verzió nem található.')
+    return ok(evaluatePlaybookAdvance(compiledOf(version), parsed.stepId, parsed.samplePayload ?? {}))
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Nem sikerült a branch-előnézet')
+  }
+}
+
+/** WP-5 — risk-weighted verzió-diff két verzió spec-je között (layout-független). */
+export async function diffPlaybookVersionsV2(input: unknown) {
+  try {
+    const user = await requireTenantRole('viewer')
+    const parsed = z
+      .object({ baseVersionId: z.string().uuid(), targetVersionId: z.string().uuid() })
+      .parse(input)
+    const tenantId = user.activeTenantId
+    const base = await repositories.playbooksV2.findVersion(tenantId, parsed.baseVersionId)
+    const target = await repositories.playbooksV2.findVersion(tenantId, parsed.targetVersionId)
+    if (!base || !target) return fail('Az egyik verzió nem található.')
+    const diff = diffPlaybookSpecs(parsePlaybookSpecV2(base.spec), parsePlaybookSpecV2(target.spec))
+    return ok({
+      diff,
+      base: { version: base.version, contentHash: base.contentHash },
+      target: { version: target.version, contentHash: target.contentHash },
+    })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Nem sikerült a verzió-diff')
+  }
+}
+
+/** WP-6 — egy Playbook publikált (vagy legfrissebb) verziójának pack-export (csak template). */
+export async function exportPlaybookPackV2(input: unknown) {
+  try {
+    const user = await requireTenantRole('admin')
+    const parsed = playbookV2IdSchema.parse(input)
+    const { playbook, versions } = await services.playbooksV2.getPlaybook(user.activeTenantId, parsed.id)
+    const chosen =
+      versions.find((v) => v.id === playbook.currentPublishedVersionId) ??
+      versions.find((v) => v.status === 'published') ??
+      versions[0]
+    if (!chosen) return fail('A Playbookhoz nincs verzió.')
+    const pack = exportPlaybookPack({
+      playbooks: [{ key: playbook.key, name: playbook.name, spec: parsePlaybookSpecV2(chosen.spec) }],
+      metadata: { title: playbook.name, author: user.user.id, description: playbook.description ?? undefined },
+    })
+    return ok(pack)
+  } catch (e) {
+    if (e instanceof PlaybookV2Error) return fail(e.message)
+    return fail(e instanceof Error ? e.message : 'Nem sikerült a pack-export')
+  }
+}
+
+/**
+ * WP-6 — pack-import ELŐNÉZET (validate → map). SOHA nem élesít automatikusan (D9):
+ * ez csak a validációs eredményt adja vissza; a tényleges létrehozás külön, jóváhagyott lépés.
+ */
+export async function importPlaybookPackPreviewV2(input: unknown) {
+  try {
+    await requireTenantRole('admin')
+    const parsed = z.object({ pack: z.unknown() }).parse(input)
+    return ok(importPlaybookPack(parsed.pack))
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Nem sikerült a pack-import előnézet')
+  }
+}
+
+/**
+ * WP-6 — pack-import APPLY (validate → map → approve → apply). A jóváhagyott packből
+ * DRAFT Playbook(oka)t + verziót és tenant-scoped DRAFT StepTemplate-eket hoz létre.
+ * SOHA nem publikál/élesít (D9): a publish/approval a meglévő külön lánc. A tenant-
+ * specifikus értékek (secret, connector-grant, role-binding) NEM a pack részei — ezek
+ * import után kitöltendő konfigurációként jelennek meg (a connector-template-eket kézzel
+ * kell a connector-katalógusba importálni). A név/kulcs ütközést a mapping oldja fel.
+ */
+export async function importPlaybookPackApplyV2(input: unknown) {
+  try {
+    const user = await requireTenantRole('admin')
+    const parsed = z
+      .object({
+        pack: z.unknown(),
+        playbookMappings: z
+          .array(z.object({ sourceKey: z.string(), targetKey: z.string().min(2), targetName: z.string().min(1) }))
+          .optional(),
+        stepTemplateMappings: z
+          .array(z.object({ sourceKey: z.string(), targetKey: z.string().min(2), targetName: z.string().min(1) }))
+          .optional(),
+      })
+      .parse(input)
+
+    const imported = importPlaybookPack(parsed.pack)
+    if (!imported.valid) {
+      return fail(`A pack nem érvényes: ${imported.errors.join(' ')}`)
+    }
+
+    const tenantId = user.activeTenantId
+    const pbMap = new Map((parsed.playbookMappings ?? []).map((m) => [m.sourceKey, m]))
+    const stMap = new Map((parsed.stepTemplateMappings ?? []).map((m) => [m.sourceKey, m]))
+
+    const createdPlaybooks: Array<{ key: string; playbookId: string; versionId: string }> = []
+    const createdStepTemplates: Array<{ key: string; id: string }> = []
+    const itemErrors: string[] = []
+
+    for (const p of imported.playbooks) {
+      const mapping = pbMap.get(p.key)
+      const key = mapping?.targetKey ?? p.key
+      const name = mapping?.targetName ?? p.name
+      try {
+        const spec = parsePlaybookSpecV2(p.spec)
+        const playbook = await services.playbooksV2.createPlaybook({
+          tenantId,
+          key,
+          name,
+          description: `Pack import: ${imported.metadata?.title ?? ''}`.trim(),
+          processType: spec.processType,
+          actorUserId: user.user.id,
+        })
+        const { version } = await services.playbooksV2.createPlaybookVersion({
+          tenantId,
+          playbookId: playbook.id,
+          spec,
+          changeSummary: `Pack import (${imported.metadata?.title ?? 'pack'})`,
+          actorUserId: user.user.id,
+        })
+        createdPlaybooks.push({ key, playbookId: playbook.id, versionId: version.id })
+      } catch (e) {
+        itemErrors.push(`Playbook '${key}': ${e instanceof Error ? e.message : 'ismeretlen hiba'}`)
+      }
+    }
+
+    for (const st of imported.stepTemplates) {
+      const mapping = stMap.get(st.key)
+      const key = mapping?.targetKey ?? st.key
+      const name = mapping?.targetName ?? st.name
+      try {
+        const res = await createStepTemplate(prisma, { tenantId, key, name, fragment: st.fragment })
+        createdStepTemplates.push({ key, id: res.id })
+      } catch (e) {
+        itemErrors.push(`Sablon '${key}': ${e instanceof Error ? e.message : 'ismeretlen hiba'}`)
+      }
+    }
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.user.id,
+      agentVersion: null,
+      action: 'playbook.pack.import',
+      targetType: 'playbook_pack',
+      targetId: null,
+      modelUsed: null,
+      inputRef: imported.metadata?.title ?? null,
+      outputRef: null,
+      policyDecision: 'imported_as_draft',
+      metadata: {
+        playbooks: String(createdPlaybooks.length),
+        stepTemplates: String(createdStepTemplates.length),
+        errors: String(itemErrors.length),
+      },
+      tenantId,
+    })
+
+    return ok({
+      createdPlaybooks,
+      createdStepTemplates,
+      itemErrors,
+      // Connector-template-ek NEM importálódnak automatikusan — manuális follow-up.
+      connectorTemplatesPending: imported.connectorTemplates.length,
+      warnings: imported.warnings,
+    })
+  } catch (e) {
+    if (e instanceof PlaybookV2Error) return fail(e.message)
+    return fail(e instanceof Error ? e.message : 'Nem sikerült a pack-import alkalmazása')
   }
 }

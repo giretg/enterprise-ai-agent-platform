@@ -13,6 +13,7 @@ import { formatOrgRoster } from '@/lib/agent-org-roster'
 import { buildEffectivePrompt } from '@/lib/playbook-v2/effective-prompt'
 import {
   buildStepCompletionPayload,
+  computeStepOutcome,
   DEFAULT_DELIVERABLE_FIELD,
   DELIVERABLE_TOOL_BY_FORMAT,
   formatDeliverableInstruction,
@@ -168,6 +169,7 @@ export class GeneralTaskRuntime {
       const failurePayload = {
         ...payload,
         answer,
+        outcome: { status: 'failed', reason: 'tool_loop_exhausted' },
         error: {
           code: 'TOOL_LOOP_EXHAUSTED',
           reason: loopResult.reason,
@@ -251,6 +253,77 @@ export class GeneralTaskRuntime {
       }
     }
 
+    // WP-7 / §10.1 — determinista step-outcome a hard signalokból (NEM az agent
+    // önbevallásából). A soft failure (kb_search 0-hit → forrás nélküli próza) így nem
+    // propagálódhat sikerként a downstream lépésbe.
+    const stepOutcome = computeStepOutcome({
+      loopStatus: loopResult.status,
+      toolCallCount,
+      kbZeroHit: kbSearch.enabled && kbSearch.hits.length === 0,
+    })
+
+    // Process-lépésnél a nem-`ok` outcome SOHA nem lesz happy-path `done`: a lépést az
+    // implicit hiba-élre (emberi felülvizsgálat) tereljük, a prózáját nem adjuk át inputként.
+    if (processStep && stepOutcome.status !== 'ok') {
+      const blockedPayload = {
+        ...payload,
+        answer,
+        outcome: stepOutcome,
+        toolCallCount,
+        agentVersion,
+        model: modelConfig.model,
+        memoryVersion: agentDetails.memoryVersion,
+      }
+      const awaitingReview = await this.tickets.update(ticket.id, {
+        state: 'awaiting_human',
+        payload: blockedPayload as Prisma.JsonValue,
+      })
+      await this.tickets.recordTransition({
+        ticketId: ticket.id,
+        fromState: ticket.state,
+        toState: 'awaiting_human',
+        actorType: 'agent',
+        actorId: params.agentId,
+        agentVersion,
+        note: `step outcome ${stepOutcome.status} (${stepOutcome.reason ?? 'n/a'}); human review required`,
+      })
+      if (ticket.processInstanceId && this.processes) {
+        const step = await this.processes.findStepByTicket(ticket.tenantId, ticket.id)
+        if (step) {
+          await this.processes.updateStep(step.id, {
+            status: stepOutcome.status === 'failed' ? 'failed' : 'awaiting_gate',
+            resultPayload: blockedPayload as Prisma.InputJsonValue,
+            ...(stepOutcome.status === 'failed' ? { failedAt: new Date() } : {}),
+          })
+        }
+        await this.processes.updateProcess(ticket.processInstanceId, {
+          status: stepOutcome.status === 'failed' ? 'blocked' : 'awaiting_human',
+        })
+      }
+      await this.tickets.appendComment({
+        ticketId: ticket.id,
+        kind: 'agent_answer',
+        authorType: 'agent',
+        authorAgentId: params.agentId,
+        authorDisplayName: agentDetails.agent.name,
+        agentVersion,
+        body: answer,
+        structured: {
+          model: modelConfig.model,
+          toolCallCount,
+          memoryVersion: agentDetails.memoryVersion,
+          status: stepOutcome.status,
+          reason: stepOutcome.reason,
+        },
+      })
+      return {
+        ticketId: ticket.id,
+        answer,
+        toolCallCount,
+        ticket: awaitingReview,
+      }
+    }
+
     const completionPayload = processStep
       ? buildStepCompletionPayload({
           agentContent: answer,
@@ -260,6 +333,7 @@ export class GeneralTaskRuntime {
             agentVersion,
             model: modelConfig.model,
             memoryVersion: agentDetails.memoryVersion,
+            outcome: stepOutcome,
             ...deliverableMeta,
           },
         })

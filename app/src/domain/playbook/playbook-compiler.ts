@@ -12,7 +12,9 @@ import type {
   PlaybookStep,
   PlaybookDeliverable,
   ConditionExpression,
+  StepCompletionRule,
 } from '@/lib/playbook-v2/spec'
+import { STEP_OUTCOME_STATUS_PATH } from '@/lib/playbook-v2/spec'
 import { inferStepOutputFields, mergeOutputRequiredFields } from '@/lib/playbook-v2/step-output-inference'
 
 export type CompiledTransition = {
@@ -35,6 +37,36 @@ function readOutputContractFields(outputContract?: Record<string, unknown>): str
   const fields = outputContract?.requiredFields
   if (!Array.isArray(fields)) return []
   return fields.filter((f): f is string => typeof f === 'string' && f.length > 0)
+}
+
+/**
+ * WP-8 §11.2b — a Decision Step sugar-blokk desugarolása `onComplete`-szabályokká.
+ * A `branches[]` konkrét feltételes ágakká (`field == outcome`), a `fallback`
+ * `default` ággá fordul. Ha nincs `decision`, a nyers `onComplete` marad (visszafelé
+ * kompatibilis; ha MINDKETTŐ van, a decision-szabályok kerülnek a nyers onComplete elé).
+ */
+export function desugarDecision(step: PlaybookStep): StepCompletionRule[] {
+  if (!step.decision) return step.onComplete ?? []
+  const field = step.decision.field ?? 'decision'
+  const rules: StepCompletionRule[] = step.decision.branches.map((b) => ({
+    condition: { field, op: '==' as const, value: b.outcome },
+    nextStepId: b.nextStepId,
+    gateId: b.gateId,
+  }))
+  if (step.decision.fallback) {
+    rules.push({
+      condition: 'default',
+      nextStepId: step.decision.fallback.nextStepId,
+      gateId: step.decision.fallback.gateId,
+    })
+  }
+  // A kézzel írt onComplete-szabályok a decision után (ritka; a decision az elsődleges).
+  return [...rules, ...(step.onComplete ?? [])]
+}
+
+/** A step effektív happy-path routing-szabályai (decision desugar VAGY nyers onComplete). */
+function effectiveOnComplete(step: PlaybookStep): StepCompletionRule[] {
+  return desugarDecision(step)
 }
 
 export type CompiledTicketRule = {
@@ -65,12 +97,19 @@ export type CompiledGate = {
   evidenceRequired: boolean
 }
 
+/** Egy routing-él fajtája — trace/simulation/audit olvashatósághoz (WP-7/WP-8). */
+export type RoutingEdgeType = 'happy' | 'default' | 'decision' | 'error' | 'blocked' | 'transition'
+
 export type CompiledRoutingRule = {
   fromStepId: string
   toStepId?: string
   gateId?: string
   trigger: string
   condition?: ConditionExpression
+  /** Az él fajtája (happy/decision/hiba-él). Alap: 'happy'. */
+  edgeType?: RoutingEdgeType
+  /** A kiválasztott üzleti kimenet címkéje (decision-érték vagy 'failed'/'blocked') — audithoz. */
+  outcome?: string
 }
 
 export type CompiledSpec = {
@@ -96,7 +135,9 @@ export class PlaybookCompiler {
     const ticketRules: CompiledTicketRule[] = spec.steps.map((step) => {
       const stepGateIds = [
         ...(step.requiredGateIds ?? []),
-        ...(step.onComplete ?? []).flatMap((r) => (r.gateId ? [r.gateId] : [])),
+        ...effectiveOnComplete(step).flatMap((r) => (r.gateId ? [r.gateId] : [])),
+        ...(step.onError?.gateId ? [step.onError.gateId] : []),
+        ...(step.onBlocked?.gateId ? [step.onBlocked.gateId] : []),
       ]
       const hasGate = stepGateIds.length > 0
       return {
@@ -152,23 +193,60 @@ export class PlaybookCompiler {
     }
 
     for (const step of spec.steps) {
+      const effectiveRules = effectiveOnComplete(step)
       for (const gateId of step.requiredGateIds ?? []) {
         addCompiledGate(gateId, step.id)
       }
-      for (const rule of step.onComplete ?? []) {
+      for (const rule of effectiveRules) {
         if (rule.gateId) addCompiledGate(rule.gateId, step.id)
+      }
+      // WP-7 §10.2 — az onError/onBlocked hiba-él gate-célja is compiled gate.
+      for (const target of [step.onError, step.onBlocked]) {
+        if (target?.gateId) addCompiledGate(target.gateId, step.id)
       }
     }
 
     const routingRules: CompiledRoutingRule[] = []
     for (const step of spec.steps) {
-      for (const rule of step.onComplete ?? []) {
+      // WP-7 §10.2 — a hiba-élek ELŐSZÖR (magasabb prioritás az evaluateAdvance-ban).
+      if (step.onError) {
+        routingRules.push({
+          fromStepId: step.id,
+          toStepId: step.onError.nextStepId,
+          gateId: step.onError.gateId,
+          trigger: 'step.completed',
+          condition: { field: STEP_OUTCOME_STATUS_PATH, op: '==', value: 'failed' },
+          edgeType: 'error',
+          outcome: 'failed',
+        })
+      }
+      if (step.onBlocked) {
+        routingRules.push({
+          fromStepId: step.id,
+          toStepId: step.onBlocked.nextStepId,
+          gateId: step.onBlocked.gateId,
+          trigger: 'step.completed',
+          condition: { field: STEP_OUTCOME_STATUS_PATH, op: '==', value: 'blocked' },
+          edgeType: 'blocked',
+          outcome: 'blocked',
+        })
+      }
+      // WP-8 §11.2b — decision-blokk desugar; egyébként a nyers onComplete.
+      const decisionOutcomes = new Set((step.decision?.branches ?? []).map((b) => b.outcome))
+      for (const rule of effectiveOnComplete(step)) {
+        const isFallback = rule.condition === 'default'
+        const outcome =
+          step.decision && rule.condition !== 'default' && rule.condition.field === (step.decision.field ?? 'decision')
+            ? String(rule.condition.value)
+            : undefined
         routingRules.push({
           fromStepId: step.id,
           toStepId: rule.nextStepId,
           gateId: rule.gateId,
           trigger: 'step.completed',
           condition: rule.condition,
+          edgeType: isFallback ? 'default' : step.decision ? 'decision' : 'happy',
+          outcome: outcome && decisionOutcomes.has(outcome) ? outcome : undefined,
         })
       }
     }
@@ -178,7 +256,12 @@ export class PlaybookCompiler {
         (r) => r.fromStepId === t.fromStepId && r.toStepId === t.toStepId,
       )
       if (!alreadyCovered) {
-        routingRules.push({ fromStepId: t.fromStepId, toStepId: t.toStepId, trigger: t.trigger })
+        routingRules.push({
+          fromStepId: t.fromStepId,
+          toStepId: t.toStepId,
+          trigger: t.trigger,
+          edgeType: 'transition',
+        })
       }
     }
 

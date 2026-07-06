@@ -98,6 +98,8 @@ type RoleResolution = {
 export type ProcessAdvanceResult =
   | { kind: 'next_step'; stepId: string; ticketId: string }
   | { kind: 'await_gate'; gateId: string; ticketId: string }
+  // WP-7 §10.2 — implicit hiba-él (kezeletlen blocked/failed) → emberi felülvizsgálat.
+  | { kind: 'await_human'; reason: string; ticketId: string }
   | { kind: 'completed' }
   | { kind: 'blocked'; stepId: string; reason: string }
   // Idempotens no-op: az advance egy már NEM tovább-léptethető (lezárt/blokkolt)
@@ -502,15 +504,93 @@ export class ProcessService {
         policyDecision: 'awaiting_gate',
         metadata: {
           process_instance_id: process.id,
+          completed_step_id: input.completedStepId,
           gate_id: decision.gateId,
+          selected_outcome: decision.selectedOutcome ?? null,
+          matched_condition: decision.rule.condition ?? null,
           required_actor_role: gate?.requiredActorRole ?? null,
           ticket_id: gateTicket.id,
+          playbook_version_id: process.playbookVersionId,
         },
       })
       return { kind: 'await_gate', gateId: decision.gateId, ticketId: gateTicket.id }
     }
 
+    if (decision.kind === 'await_human') {
+      // WP-7 §10.2 — kezeletlen blocked/failed step: implicit BPMN error boundary.
+      // A tartalmi kudarc SOHA nem propagál sikerként; emberi felülvizsgálatra vár.
+      if (completedStep) {
+        await this.processes.updateStep(completedStep.id, { status: 'awaiting_gate' })
+      }
+      const reviewTicket = await this.tickets.create({
+        tenantId: input.tenantId,
+        type: 'interaction',
+        title: `Emberi felülvizsgálat: ${input.completedStepId} (${decision.outcomeStatus})`,
+        state: 'awaiting_human',
+        assigneeType: 'human',
+        assigneeId: null,
+        agentId: null,
+        payload: (input.resultPayload ?? {}) as Prisma.JsonObject,
+        sourceDocumentId: null,
+        executeAfter: null,
+        dueBy: null,
+        createdById: this.systemUserId(process),
+        processInstanceId: process.id,
+        playbookRef: process.playbookRef,
+        playbookVersionId: process.playbookVersionId,
+        playbookStepId: input.completedStepId,
+        requiredGateId: null,
+      })
+      await this.processes.updateProcess(process.id, { status: 'awaiting_human' })
+      await this.append(input.tenantId, input.actor, {
+        action: 'process.blocked',
+        targetType: 'process_instance',
+        targetId: process.id,
+        inputRef: process.playbookRef,
+        policyDecision: 'blocked',
+        metadata: {
+          process_instance_id: process.id,
+          completed_step_id: input.completedStepId,
+          reason: decision.reason,
+          outcome_status: decision.outcomeStatus,
+          ticket_id: reviewTicket.id,
+          playbook_version_id: process.playbookVersionId,
+        },
+      })
+      if (this.alertNotifier) {
+        try {
+          await this.alertNotifier.processBlocked({
+            tenantId: input.tenantId,
+            processInstanceId: process.id,
+            stepId: input.completedStepId,
+            reason: decision.reason,
+          })
+        } catch {
+          // best-effort riasztás (§4.5) — a blokk tényét az audit már rögzítette.
+        }
+      }
+      return { kind: 'await_human', reason: decision.reason, ticketId: reviewTicket.id }
+    }
+
     // decision.kind === 'next_step'
+    await this.append(input.tenantId, input.actor, {
+      action: 'process.step.advance',
+      targetType: 'process_instance',
+      targetId: process.id,
+      inputRef: process.playbookRef,
+      policyDecision: 'advanced',
+      metadata: {
+        process_instance_id: process.id,
+        completed_step_id: input.completedStepId,
+        target_kind: 'next_step',
+        target_id: decision.toStepId,
+        selected_outcome: decision.selectedOutcome ?? null,
+        matched_condition: decision.rule.condition ?? null,
+        edge_type: decision.rule.edgeType ?? null,
+        playbook_version_id: process.playbookVersionId,
+        playbook_content_hash: version?.contentHash ?? null,
+      },
+    })
     if (process.status !== 'running') {
       await this.processes.updateProcess(process.id, { status: 'running' })
     }

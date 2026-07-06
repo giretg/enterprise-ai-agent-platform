@@ -19,6 +19,7 @@ import {
   type Node,
   type Edge,
   type Connection,
+  type ReactFlowInstance,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
 
@@ -33,12 +34,14 @@ import {
   END_NODE_ID,
 } from '@/lib/playbook-v2/canvas-mapping'
 import {
-  addStep,
-  addGate,
+  addStepAfter,
+  addGateAfter,
   insertTemplateFragment,
   connectNodes,
   deleteEdgeFromSpec,
   deleteNodeFromSpec,
+  retargetEdge,
+  reverseEdge,
   replaceStep,
   replaceGate,
 } from '@/lib/playbook-v2/canvas-spec-ops'
@@ -165,6 +168,32 @@ function PaletteButton({
   )
 }
 
+function ToolbarButton({
+  icon,
+  label,
+  hint,
+  onClick,
+  disabled,
+}: {
+  icon: string
+  label: string
+  hint: string
+  onClick: () => void
+  disabled?: boolean
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={hint}
+      className="flex items-center gap-1.5 rounded-md border border-ink/15 bg-paper px-2 py-1 text-xs text-ink transition-colors hover:border-accent/40 hover:bg-accent/5 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:border-ink/15 disabled:hover:bg-paper"
+    >
+      <span aria-hidden>{icon}</span>
+      <span className="font-medium">{label}</span>
+    </button>
+  )
+}
+
 // --- Inspector (kulcsolt: selection + struktúra változáskor újraépül) -------
 
 function StepInspector({
@@ -185,14 +214,29 @@ function StepInspector({
     form.onCompleteRules.some((r) => r.conditionKind === 'field') ||
     /"decision"/.test(form.outputContractJson)
 
-  function save() {
-    const { stepPatch, jsonError } = buildStepFromForm(step, form)
+  // A legfrissebb spec/onSpecChange/step-et ref-en tartjuk (effektben frissítve), hogy a
+  // live-apply effect CSAK a `form` változására fusson, ne minden apply utáni re-renderre.
+  const latestRef = useRef({ spec, onSpecChange, step })
+  useEffect(() => {
+    latestRef.current = { spec, onSpecChange, step }
+  })
+
+  // Live-sync: minden form-változás azonnal a specbe (és így a vászonra) íródik.
+  // Az első futást (mount/kiválasztás) kihagyjuk, hogy a puszta kijelölés ne írja felül a specet.
+  const mountedRef = useRef(false)
+  useEffect(() => {
+    if (!mountedRef.current) {
+      mountedRef.current = true
+      return
+    }
+    const { spec: curSpec, onSpecChange: curOnChange, step: curStep } = latestRef.current
+    const { stepPatch, jsonError } = buildStepFromForm(curStep, form)
     if (jsonError) {
       setError(jsonError)
       return
     }
     setError(null)
-    let next = replaceStep(spec, step.id as string, stepPatch)
+    let next = replaceStep(curSpec, curStep.id as string, stepPatch)
     if (form.assignedRole.trim()) {
       next = {
         ...next,
@@ -204,8 +248,8 @@ function StepInspector({
         ),
       }
     }
-    onSpecChange(next)
-  }
+    curOnChange(next)
+  }, [form])
 
   return (
     <div className="space-y-3">
@@ -219,13 +263,11 @@ function StepInspector({
         gateIds={gateIds}
         roles={spec.roles as PlaybookRole[] | undefined}
       />
-      {error && <p className="text-xs text-coral">{error}</p>}
-      <button
-        onClick={save}
-        className="w-full rounded-lg bg-accent px-3 py-2 text-sm font-medium text-white"
-      >
-        Alkalmaz a lépésre
-      </button>
+      {error ? (
+        <p className="text-xs text-coral">⚠ {error} — a hibás mező mentése kimarad, a többi frissül.</p>
+      ) : (
+        <p className="text-[11px] text-ink-faint">✓ A módosítások azonnal megjelennek a vásznon.</p>
+      )}
     </div>
   )
 }
@@ -241,20 +283,128 @@ function GateInspector({
 }) {
   const [form, setForm] = useState<GateFormState>(() => gateFormFromRaw(gate))
 
-  function save() {
-    const patch = buildGateFromForm(gate, form)
-    onSpecChange(replaceGate(spec, gate.id as string, patch))
-  }
+  const latestRef = useRef({ spec, onSpecChange, gate })
+  useEffect(() => {
+    latestRef.current = { spec, onSpecChange, gate }
+  })
+
+  const mountedRef = useRef(false)
+  useEffect(() => {
+    if (!mountedRef.current) {
+      mountedRef.current = true
+      return
+    }
+    const { spec: curSpec, onSpecChange: curOnChange, gate: curGate } = latestRef.current
+    const patch = buildGateFromForm(curGate, form)
+    curOnChange(replaceGate(curSpec, curGate.id as string, patch))
+  }, [form])
 
   return (
     <div className="space-y-3">
       <PlaybookGateEditorForm form={form} onChange={setForm} roles={spec.roles as PlaybookRole[] | undefined} />
-      <button
-        onClick={save}
-        className="w-full rounded-lg bg-honey px-3 py-2 text-sm font-medium text-white"
-      >
-        Alkalmaz a kapura
-      </button>
+      <p className="text-[11px] text-ink-faint">✓ A módosítások azonnal megjelennek a vásznon.</p>
+    </div>
+  )
+}
+
+// --- Él-inspector (kapcsolat szerkesztése kézzel) --------------------------
+
+const EDGE_KIND_LABEL: Record<CanvasEdgeKind, string> = {
+  entry: 'belépő',
+  flow: 'folytatás',
+  decision: 'döntési ág',
+  gate: 'kapu-routing',
+  requires: 'kötelező kapu',
+  end: 'befejezés',
+}
+
+function EdgeInspector({
+  spec,
+  source,
+  target,
+  data,
+  targetOptions,
+  onRetarget,
+  onReverse,
+  onDelete,
+}: {
+  spec: PlaybookDraftSpec
+  source: string
+  target: string
+  data: EdgeData
+  targetOptions: Array<{ id: string; label: string }>
+  onRetarget: (id: string) => void
+  onReverse: () => void
+  onDelete: () => void
+}) {
+  const labelOf = (id: string): string => {
+    if (id === START_NODE_ID) return 'Start'
+    if (id === END_NODE_ID) return 'Vége'
+    const step = (spec.steps ?? []).find((s) => s.id === id)
+    if (step) return step.name || (step.id as string)
+    return id
+  }
+
+  const readOnly = data.kind === 'entry' || data.kind === 'end'
+  const canReverse = data.kind === 'flow' || data.kind === 'decision' || data.kind === 'gate'
+
+  return (
+    <div className="space-y-3">
+      <p className="text-xs font-semibold text-ink">🔗 Kapcsolat</p>
+      <div className="rounded-lg border border-ink/12 bg-paper/60 p-2.5 text-xs">
+        <p className="flex items-center gap-1.5">
+          <span className="font-medium text-ink">{labelOf(source)}</span>
+          <span className="text-ink-faint">→</span>
+          <span className="font-medium text-ink">{labelOf(target)}</span>
+        </p>
+        <p className="mt-1 text-[10px] text-ink-faint">Típus: {EDGE_KIND_LABEL[data.kind]}</p>
+      </div>
+
+      {readOnly ? (
+        <p className="rounded bg-ink/5 px-2 py-1.5 text-[11px] text-ink-faint">
+          {data.kind === 'entry'
+            ? 'A belépő élt a lépés „belépő" beállítása vagy a Start→lépés összekötés vezérli.'
+            : 'A „Vége" felé mutató él automatikus (a lépésnek nincs kimenő folytatása).'}
+        </p>
+      ) : (
+        <>
+          <label className="block text-xs">
+            <span className="mb-0.5 block text-ink-soft">Célpont átkötése</span>
+            <select
+              value={targetOptions.some((o) => o.id === target) ? target : ''}
+              onChange={(e) => e.target.value && onRetarget(e.target.value)}
+              className="w-full rounded border border-ink/15 bg-transparent px-2 py-1 text-sm"
+            >
+              <option value="" disabled>
+                Válassz célpontot…
+              </option>
+              {targetOptions.map((o) => (
+                <option key={o.id} value={o.id}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <div className="flex gap-2">
+            {canReverse && (
+              <button
+                onClick={onReverse}
+                title="A kapcsolat irányának megfordítása"
+                className="flex-1 rounded-lg border border-ink/20 px-3 py-2 text-xs font-medium text-ink hover:border-accent/40 hover:text-accent"
+              >
+                ⇄ Irány megfordítása
+              </button>
+            )}
+            <button
+              onClick={onDelete}
+              className="flex-1 rounded-lg border border-coral/40 px-3 py-2 text-xs font-medium text-coral hover:bg-coral/5"
+            >
+              🗑 Kapcsolat törlése
+            </button>
+          </div>
+        </>
+      )}
     </div>
   )
 }
@@ -281,8 +431,10 @@ export function PlaybookCanvas({
   const [rfNodes, setRfNodes, onNodesChange] = useNodesState<Node>([])
   const [rfEdges, setRfEdges, onEdgesChange] = useEdgesState<Edge>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null)
   const [jsonOpen, setJsonOpen] = useState(false)
   const [templatesOpen, setTemplatesOpen] = useState(false)
+  const rfInstance = useRef<ReactFlowInstance<Node, Edge> | null>(null)
 
   const errorIds = useMemo(() => nodeErrorIds(spec, validation), [spec, validation])
 
@@ -320,7 +472,7 @@ export function PlaybookCanvas({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [structureKey])
 
-  // Hiba-highlight frissítése re-seed nélkül.
+  // Hiba-highlight + kijelölés frissítése re-seed nélkül.
   useEffect(() => {
     setRfNodes((nds) =>
       nds.map((n) => ({
@@ -331,6 +483,11 @@ export function PlaybookCanvas({
     )
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [errorIds, selectedId])
+
+  useEffect(() => {
+    setRfEdges((eds) => eds.map((e) => ({ ...e, selected: e.id === selectedEdgeId })))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedEdgeId])
 
   const persistLayout = useCallback(() => {
     onLayoutChange(extractLayout(nodesRef.current, layoutRef.current?.viewport))
@@ -380,16 +537,126 @@ export function PlaybookCanvas({
   )
 
   const onNodeClick = useCallback((_: unknown, node: Node) => {
+    setSelectedEdgeId(null)
     setSelectedId(node.id === START_NODE_ID || node.id === END_NODE_ID ? null : node.id)
   }, [])
 
+  const onEdgeClick = useCallback((_: unknown, edge: Edge) => {
+    setSelectedId(null)
+    setSelectedEdgeId(edge.id)
+  }, [])
+
+  const clearSelection = useCallback(() => {
+    setSelectedId(null)
+    setSelectedEdgeId(null)
+  }, [])
+
   function addAndSelect(result: { spec: PlaybookDraftSpec; id: string }) {
+    setSelectedEdgeId(null)
     setSelectedId(result.id)
     onSpecChange(result.spec)
   }
 
   const selectedStep = (spec.steps ?? []).find((s) => s.id === selectedId)
   const selectedGate = (spec.gates ?? []).find((g) => g.id === selectedId)
+  const selectedEdge = rfEdges.find((e) => e.id === selectedEdgeId)
+  const selectedEdgeData = selectedEdge?.data as unknown as EdgeData | undefined
+
+  // Toolbar: kijelölt node VAGY él törlése.
+  const deleteSelected = useCallback(() => {
+    if (selectedId) {
+      const next = deleteNodeFromSpec(spec, selectedId)
+      if (next !== spec) {
+        setSelectedId(null)
+        onSpecChange(next)
+      }
+      return
+    }
+    if (selectedEdge && selectedEdgeData) {
+      const next = deleteEdgeFromSpec(spec, {
+        source: selectedEdge.source,
+        target: selectedEdge.target,
+        kind: selectedEdgeData.kind,
+        ruleIndex: selectedEdgeData.ruleIndex,
+        transitionIndex: selectedEdgeData.transitionIndex,
+        fromRequiredGate: selectedEdgeData.fromRequiredGate,
+      })
+      if (next !== spec) {
+        setSelectedEdgeId(null)
+        onSpecChange(next)
+      }
+    }
+  }, [spec, onSpecChange, selectedId, selectedEdge, selectedEdgeData])
+
+  // Toolbar: teljes újrarendezés (rétegzett auto-layout) + illesztés.
+  const autoLayout = useCallback(() => {
+    const model = specToCanvasModel(spec, null)
+    onLayoutChange(extractLayout(model.nodes, layoutRef.current?.viewport))
+    setRfNodes(model.nodes.map((n) => toRfNode(n, errorIds, selectedId)))
+    setRfEdges(model.edges.map(toRfEdge))
+    requestAnimationFrame(() => rfInstance.current?.fitView({ padding: 0.2, duration: 300 }))
+  }, [spec, onLayoutChange, errorIds, selectedId, setRfNodes, setRfEdges])
+
+  const fitView = useCallback(() => {
+    rfInstance.current?.fitView({ padding: 0.2, duration: 300 })
+  }, [])
+
+  const canDelete = Boolean(
+    selectedId || (selectedEdgeData && selectedEdgeData.kind !== 'entry' && selectedEdgeData.kind !== 'end'),
+  )
+
+  // Az él-szerkesztő célpont-választójának opciói.
+  const nodeTargetOptions = useMemo(() => {
+    const opts: Array<{ id: string; label: string }> = []
+    const requiresGate = selectedEdgeData?.fromRequiredGate || selectedEdgeData?.kind === 'requires'
+    if (!requiresGate) {
+      for (const s of spec.steps ?? []) {
+        if (s.id && s.id !== selectedEdge?.source) opts.push({ id: s.id, label: `🔹 ${s.name || s.id}` })
+      }
+    }
+    for (const g of spec.gates ?? []) {
+      if (g.id) opts.push({ id: g.id, label: `◆ ${g.id}` })
+    }
+    if (!requiresGate) opts.push({ id: END_NODE_ID, label: '⯀ Vége (routing törlése)' })
+    return opts
+  }, [spec, selectedEdge, selectedEdgeData])
+
+  function retargetSelectedEdge(newTarget: string) {
+    if (!selectedEdge || !selectedEdgeData) return
+    onSpecChange(
+      retargetEdge(
+        spec,
+        {
+          source: selectedEdge.source,
+          target: selectedEdge.target,
+          kind: selectedEdgeData.kind,
+          ruleIndex: selectedEdgeData.ruleIndex,
+          transitionIndex: selectedEdgeData.transitionIndex,
+          fromRequiredGate: selectedEdgeData.fromRequiredGate,
+        },
+        newTarget,
+      ),
+    )
+  }
+
+  function reverseSelectedEdge() {
+    if (!selectedEdge || !selectedEdgeData) return
+    setSelectedEdgeId(null)
+    onSpecChange(
+      reverseEdge(spec, {
+        source: selectedEdge.source,
+        target: selectedEdge.target,
+        kind: selectedEdgeData.kind,
+        ruleIndex: selectedEdgeData.ruleIndex,
+        transitionIndex: selectedEdgeData.transitionIndex,
+        fromRequiredGate: selectedEdgeData.fromRequiredGate,
+      }),
+    )
+  }
+
+  // A paletta a kiválasztott node UTÁN szúr be (ha van kijelölés).
+  const insertAfterId = selectedId
+  const insertAfterLabel = selectedStep ? selectedStep.name || selectedId : null
 
   return (
     <div className="rounded-xl border border-ink/10 bg-paper/40">
@@ -413,35 +680,58 @@ export function PlaybookCanvas({
         </div>
       </div>
 
+      {/* Eszköztár — a vászon műveletei gombokkal (nem csak billentyűvel) */}
+      <div className="flex flex-wrap items-center gap-1.5 border-b border-ink/10 bg-paper/60 px-3 py-1.5">
+        <ToolbarButton icon="🗑" label="Kijelölt törlése" hint="A kijelölt lépés/kapu vagy kapcsolat törlése (Del)" disabled={!canDelete} onClick={deleteSelected} />
+        <ToolbarButton icon="🎯" label="Illesztés" hint="A teljes ábra a nézetbe illesztése" onClick={fitView} />
+        <ToolbarButton icon="⤢" label="Auto-elrendezés" hint="Rétegzett újrarendezés (a kézi pozíciók felülíródnak)" onClick={autoLayout} />
+        <span className="ml-auto text-[11px] text-ink-faint">
+          {selectedId
+            ? 'Node kijelölve — jobb oldalon szerkeszd, a paletta mögé szúr be.'
+            : selectedEdgeId
+              ? 'Kapcsolat kijelölve — jobb oldalon átkötheted/megfordíthatod.'
+              : 'Kattints egy dobozra vagy nyílra a szerkesztéshez.'}
+        </span>
+      </div>
+
       <div className="grid grid-cols-[170px_1fr_320px] max-[1100px]:grid-cols-1">
         {/* Paletta */}
         <div className="space-y-1.5 border-r border-ink/10 p-2 max-[1100px]:border-b max-[1100px]:border-r-0">
           <p className="px-1 pb-1 text-[10px] font-semibold uppercase tracking-wide text-ink-faint">
             Elemek
           </p>
+          {insertAfterLabel ? (
+            <p className="mb-1 rounded bg-accent/8 px-1.5 py-1 text-[10px] leading-snug text-accent">
+              Beszúrás <span className="font-semibold">„{insertAfterLabel}”</span> után
+            </p>
+          ) : (
+            <p className="mb-1 px-1 text-[10px] leading-snug text-ink-faint">
+              Tipp: jelölj ki egy lépést → az új elem MÖGÉ kerül a láncban.
+            </p>
+          )}
           <PaletteButton
             icon="🤖"
             label="Agent lépés"
             hint="Automatikus, agent által végzett lépés"
-            onClick={() => addAndSelect(addStep(spec, 'agent'))}
+            onClick={() => addAndSelect(addStepAfter(spec, 'agent', insertAfterId))}
           />
           <PaletteButton
             icon="👤"
             label="Emberi feladat"
             hint="Emberi szerep interakciója (jóváhagyás, kitöltés)"
-            onClick={() => addAndSelect(addStep(spec, 'human'))}
+            onClick={() => addAndSelect(addStepAfter(spec, 'human', insertAfterId))}
           />
           <PaletteButton
             icon="◈"
             label="Döntési lépés"
             hint="Multi-outcome elágazás — az agent strukturáltan dönt"
-            onClick={() => addAndSelect(addStep(spec, 'decision'))}
+            onClick={() => addAndSelect(addStepAfter(spec, 'decision', insertAfterId))}
           />
           <PaletteButton
             icon="◆"
             label="Jóváhagyási kapu"
             hint="Emberi jóváhagyási / policy ellenőrzési pont"
-            onClick={() => addAndSelect(addGate(spec))}
+            onClick={() => addAndSelect(addGateAfter(spec, insertAfterId))}
           />
 
           <button
@@ -471,8 +761,8 @@ export function PlaybookCanvas({
           )}
 
           <p className="px-1 pt-2 text-[10px] leading-snug text-ink-faint">
-            Húzz élt a node-ok pöttyei között az összekötéshez. Node kijelölése → jobb oldali szerkesztő.
-            Del billentyű: törlés.
+            Húzz élt a node-ok pöttyei között az összekötéshez. Node/kapcsolat kijelölése → jobb oldali
+            szerkesztő. Del billentyű vagy 🗑 gomb: törlés.
           </p>
         </div>
 
@@ -482,6 +772,7 @@ export function PlaybookCanvas({
             nodes={rfNodes}
             edges={rfEdges}
             nodeTypes={CANVAS_NODE_TYPES}
+            onInit={(inst) => (rfInstance.current = inst)}
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
@@ -489,7 +780,8 @@ export function PlaybookCanvas({
             onNodesDelete={onNodesDelete}
             onEdgesDelete={onEdgesDelete}
             onNodeClick={onNodeClick}
-            onPaneClick={() => setSelectedId(null)}
+            onEdgeClick={onEdgeClick}
+            onPaneClick={clearSelection}
             fitView
             proOptions={{ hideAttribution: true }}
             defaultEdgeOptions={{ type: 'default' }}
@@ -510,7 +802,7 @@ export function PlaybookCanvas({
                 </p>
               </div>
               <StepInspector
-                key={`step:${selectedId}:${structureKey.length}`}
+                key={`step:${selectedId}`}
                 spec={spec}
                 step={selectedStep}
                 onSpecChange={onSpecChange}
@@ -522,16 +814,27 @@ export function PlaybookCanvas({
                 ◆ Kapu: <span className="font-mono">{selectedGate.id}</span>
               </p>
               <GateInspector
-                key={`gate:${selectedId}:${structureKey.length}`}
+                key={`gate:${selectedId}`}
                 spec={spec}
                 gate={selectedGate}
                 onSpecChange={onSpecChange}
               />
             </>
+          ) : selectedEdge && selectedEdgeData ? (
+            <EdgeInspector
+              spec={spec}
+              source={selectedEdge.source}
+              target={selectedEdge.target}
+              data={selectedEdgeData}
+              targetOptions={nodeTargetOptions}
+              onRetarget={retargetSelectedEdge}
+              onReverse={reverseSelectedEdge}
+              onDelete={deleteSelected}
+            />
           ) : (
             <div className="flex h-full flex-col items-center justify-center gap-2 text-center text-xs text-ink-faint">
               <span className="text-2xl">👈</span>
-              <p>Válassz ki egy node-ot a szerkesztéshez, vagy adj hozzá elemet a palettáról.</p>
+              <p>Válassz ki egy node-ot vagy kapcsolatot a szerkesztéshez, vagy adj hozzá elemet a palettáról.</p>
             </div>
           )}
         </div>

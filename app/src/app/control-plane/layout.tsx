@@ -20,6 +20,7 @@ const navItems: NavEntry[] = [
     label: 'Automatizálás',
     children: [
       { href: '/control-plane/playbooks', label: 'Playbookok' },
+      { href: '/control-plane/step-templates', label: 'Lépés-sablonok' },
       { href: '/control-plane/processes', label: 'Folyamatok' },
     ],
   },

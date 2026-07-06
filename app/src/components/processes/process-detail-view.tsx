@@ -10,6 +10,7 @@ import { TICKET_STATE_LABELS, TICKET_STATE_TONE } from '@/lib/ticket-labels'
 import { extractTaskDescription, formatTicketDateTime } from '@/lib/ticket-display'
 import { PROCESS_STATUS_CLASS } from '@/lib/process-labels'
 import { TicketFilesPanel } from '@/components/tickets/ticket-files-panel'
+import { PlaybookFlowGraph, type TraceStatus, type TraceOverlay } from '@/components/playbooks/playbook-flow-graph'
 
 export type ProcessStepView = {
   id: string
@@ -96,6 +97,7 @@ export type ProcessDetailData = {
   actualFlow: ActualFlow | null
   blockedReasons: Array<{ createdAt: string; stepId: string | null; reason: string }>
   intended: IntendedFlow | null
+  spec: unknown | null
 }
 
 const STEP_TONE: Record<string, string> = {
@@ -119,6 +121,17 @@ export function ProcessDetailView({ data, canAct }: { data: ProcessDetailData; c
   const [evidenceByTicket, setEvidenceByTicket] = useState<Record<string, string>>({})
   const [openTicketId, setOpenTicketId] = useState<string | null>(null)
 
+  // WP-1 / D10 — Runtime Trace overlay poll (3–5s), amíg a folyamat nem terminális.
+  // Terminális állapotban (completed/failed/cancelled) a poll leáll. Push (SSE) későbbi opt.
+  const isTerminal = ['completed', 'failed', 'cancelled'].includes(data.process.status)
+  useEffect(() => {
+    if (isTerminal) return
+    const id = setInterval(() => {
+      router.refresh()
+    }, 4000)
+    return () => clearInterval(id)
+  }, [isTerminal, router])
+
   const gatesByStep = new Map<string, IntendedFlow['gates']>()
   for (const gate of data.intended?.gates ?? []) {
     gatesByStep.set(gate.stepId, [...(gatesByStep.get(gate.stepId) ?? []), gate])
@@ -131,6 +144,32 @@ export function ProcessDetailView({ data, canAct }: { data: ProcessDetailData; c
     (data.actualFlow?.actualEdges ?? []).map((e) => [`${e.fromStepId}→${e.toStepId}`, e]),
   )
   const actualStepById = new Map((data.actualFlow?.executedSteps ?? []).map((s) => [s.stepId, s]))
+
+  // WP-1 §4 — trace-overlay a folyamat-gráfhoz: node-státusz + bejárt/eltérő élek.
+  const stepStatusToTrace = (status: string): TraceStatus => {
+    switch (status) {
+      case 'completed':
+        return 'done'
+      case 'failed':
+        return 'failed'
+      case 'awaiting_gate':
+        return 'awaiting'
+      case 'skipped':
+        return 'skipped'
+      case 'ready':
+      case 'in_progress':
+        return 'running'
+      default:
+        return 'pending'
+    }
+  }
+  const traceOverlay: TraceOverlay = {
+    nodeStatus: Object.fromEntries(data.steps.map((s) => [s.stepId, stepStatusToTrace(s.status)])),
+    traversedEdges: (data.actualFlow?.actualEdges ?? []).map((e) => `${e.fromStepId}→${e.toStepId}`),
+    deviationEdges: (data.actualFlow?.actualEdges ?? [])
+      .filter((e) => !e.inIntended)
+      .map((e) => `${e.fromStepId}→${e.toStepId}`),
+  }
 
   function doTransition(ticketId: string, toState: string, evidenceRequired: boolean) {
     setMessage(null)
@@ -386,6 +425,14 @@ export function ProcessDetailView({ data, canAct }: { data: ProcessDetailData; c
               </Pill>
             )}
           </div>
+          {data.spec ? (
+            <div className="mb-4">
+              <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-soft">
+                Folyamat-trace (a tervezett gráfra rárajzolva)
+              </p>
+              <PlaybookFlowGraph spec={data.spec} traceOverlay={traceOverlay} />
+            </div>
+          ) : null}
           <div className="grid gap-4 md:grid-cols-2">
             <div>
               <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-ink-soft">

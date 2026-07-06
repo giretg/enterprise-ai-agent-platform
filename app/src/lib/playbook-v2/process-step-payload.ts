@@ -3,7 +3,12 @@
  * Determinisztikus, DB/LLM nélkül tesztelhető segédfüggvények.
  */
 import type { CompiledInputSlot, CompiledTicketRule } from '@/domain/playbook/playbook-compiler'
-import type { PlaybookDeliverable, PlaybookDeliverableFormat } from '@/lib/playbook-v2/spec'
+import type {
+  PlaybookDeliverable,
+  PlaybookDeliverableFormat,
+  StepOutcome,
+} from '@/lib/playbook-v2/spec'
+import { STEP_OUTCOME_FIELD } from '@/lib/playbook-v2/spec'
 import { extractJsonObject } from '@/domain/provisioning/provisioning-assistant'
 
 export type ResolveStepInputOptions = {
@@ -124,6 +129,50 @@ export function buildStepCompletionPayload(input: {
     ...structured,
     ...(input.meta ?? {}),
   }
+}
+
+// --- WP-7 / D12 (§10.1) Determinista step-outcome kényszerítés ---------------
+
+export type StepOutcomeSignals = {
+  /** A tool-loop kimenete (`exhausted` → hard hiba). */
+  loopStatus: 'completed' | 'exhausted' | string
+  /** Hány tool-hívás történt a loopban. */
+  toolCallCount: number
+  /** A pre-fetch kb_search engedélyezett volt ÉS 0 találatot adott. */
+  kbZeroHit: boolean
+  /** Bármely tool-hívást a broker megtagadott (denied). */
+  toolDenied?: boolean
+}
+
+/**
+ * A step gépi `outcome`-ja a HARD SIGNALOKBÓL, determinisztikusan — az agent optimista
+ * önbevallását felülírva (§10.1). NEM az agent prózáját elemzi.
+ *
+ *  - `failed`  — a tool-loop kimerült VAGY a broker tool-hívást tagadott meg;
+ *  - `blocked` — a pre-fetch kb_search 0 találatot adott ÉS az agent EGYETLEN tool-t sem
+ *                hívott (nincs célzott kb_search / file / gmail), tehát a KB-függő állítások
+ *                forrás nélküliek → emberrel/másik lépéssel feloldható;
+ *  - `ok`      — egyébként (a happy path érintetlen; visszafelé kompatibilis).
+ */
+export function computeStepOutcome(signals: StepOutcomeSignals): StepOutcome {
+  if (signals.loopStatus === 'exhausted') {
+    return { status: 'failed', reason: 'tool_loop_exhausted' }
+  }
+  if (signals.toolDenied) {
+    return { status: 'failed', reason: 'tool_denied' }
+  }
+  if (signals.kbZeroHit && signals.toolCallCount === 0) {
+    return { status: 'blocked', reason: 'missing_kb_source' }
+  }
+  return { status: 'ok' }
+}
+
+/** Az `outcome`-mező kanonikus kulccsal a completion payloadhoz (routing: `outcome.status`). */
+export function withStepOutcome(
+  payload: Record<string, unknown>,
+  outcome: StepOutcome,
+): Record<string, unknown> {
+  return { ...payload, [STEP_OUTCOME_FIELD]: outcome }
 }
 
 export function outputRequiredFieldsForStep(

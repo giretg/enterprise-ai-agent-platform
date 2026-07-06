@@ -11,7 +11,17 @@ export default async function PlaybooksPage() {
   return (
     <div className="space-y-6">
       <div>
-        <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">Playbook</p>
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">Playbook</p>
+          {canEdit && (
+            <a
+              href="/control-plane/playbooks/import"
+              className="rounded-lg border border-ink/20 px-3 py-1.5 text-sm hover:bg-ink/5"
+            >
+              ⇪ Pack import
+            </a>
+          )}
+        </div>
         <h1 className="mt-2 font-display text-3xl font-semibold">Playbookok</h1>
         <p className="mt-1 max-w-2xl text-ink-soft">
           A Playbook egy közös, jóváhagyott folyamatleírás: megmondja, hogy egy adott munkát ki indít,

@@ -16,6 +16,7 @@ import {
 import type { CanvasStepTemplate } from '@/components/playbooks/playbook-canvas'
 import type { LayoutStore } from '@/lib/playbook-v2/canvas-mapping'
 import { PlaybookAuthorPanel } from '@/components/playbooks/playbook-author-panel'
+import { PlaybookGovernancePanel } from '@/components/playbooks/playbook-governance-panel'
 import { summarizeSpecCriticality } from '@/components/playbooks/playbook-criticality-ui'
 import {
   PlaybookSpecEditor,
@@ -677,6 +678,13 @@ export function PlaybookDetail({
           </ul>
         )}
       </section>
+
+      {versions.length > 0 && (
+        <PlaybookGovernancePanel
+          playbookId={playbook.id}
+          versions={versions.map((v) => ({ id: v.id, version: v.version, status: v.status }))}
+        />
+      )}
 
       {editorMode && spec && validation && (
         <div ref={editorRef}>
