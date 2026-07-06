@@ -10,15 +10,19 @@ import assert from 'node:assert/strict'
 import { PlaybookCompiler } from '../src/domain/playbook/playbook-compiler'
 import { buildEffectivePrompt } from '../src/lib/playbook-v2/effective-prompt'
 import {
+  agentAnswerStructuredFromPayload,
   buildStepCompletionPayload,
+  extractAgentAnswerDisplayBody,
   normalizeAgentStepResult,
   parseAgentStepOutput,
+  readStepOutcome,
   resolveStepInputPayload,
 } from '../src/lib/playbook-v2/process-step-payload'
 import { inferStepOutputFields } from '../src/lib/playbook-v2/step-output-inference'
 import { evaluateTicketTransition } from '../src/lib/playbook-v2/runtime'
 import { parsePlaybookSpecV2 } from '../src/lib/playbook-v2/spec'
 import { isAgentSuitable } from '../src/domain/playbook/suitability'
+import { PlaybookValidator } from '../src/domain/playbook/playbook-validator'
 
 let failures = 0
 function check(name: string, fn: () => void) {
@@ -166,9 +170,10 @@ check('resolveStepInputPayload: step forrás az előző lépésből jön', () =>
   assert.equal(resolved.topic, 'GDPR incidens')
 })
 
-check('parseAgentStepOutput: egy mező → teljes szöveg', () => {
+check('parseAgentStepOutput: JSON nélküli válasz → a mező hiányzik (nem a nyers szöveg)', () => {
   const out = parseAgentStepOutput('Kutatási összefoglaló szöveg', ['research_results'])
-  assert.equal(out.research_results, 'Kutatási összefoglaló szöveg')
+  assert.equal(out.research_results, undefined)
+  assert.equal(out.answer, 'Kutatási összefoglaló szöveg')
 })
 
 check('parseAgentStepOutput: JSON blokk', () => {
@@ -187,6 +192,55 @@ check('buildStepCompletionPayload: outputContract mezők a ticket payloadban', (
   })
   assert.equal(payload.research_results, 'adat')
   assert.equal(payload.toolCallCount, 1)
+})
+
+check('extractAgentAnswerDisplayBody: drafted_proposal a playbook output mezőből', () => {
+  const body = extractAgentAnswerDisplayBody(
+    {
+      research_results: 'kutatás összefoglaló',
+      drafted_proposal: 'Ez a javasolt szöveg a banknak.',
+      toolCallCount: 3,
+      model: 'qwen/test',
+    },
+    ['drafted_proposal'],
+  )
+  assert.equal(body, 'Ez a javasolt szöveg a banknak.')
+})
+
+check('extractAgentAnswerDisplayBody: answer elsőbbséget élvez', () => {
+  const body = extractAgentAnswerDisplayBody({
+    answer: 'Közvetlen válasz',
+    drafted_proposal: 'Más mező',
+  })
+  assert.equal(body, 'Közvetlen válasz')
+})
+
+check('agentAnswerStructuredFromPayload: model és toolCallCount', () => {
+  const structured = agentAnswerStructuredFromPayload({
+    model: 'qwen/test',
+    toolCallCount: 7,
+    memoryVersion: 5,
+  })
+  assert.equal(structured.model, 'qwen/test')
+  assert.equal(structured.toolCallCount, 7)
+  assert.equal(structured.memoryVersion, 5)
+})
+
+check('readStepOutcome: status+reason kiolvasva auditra (pl. tool_denied)', () => {
+  const out = readStepOutcome({ outcome: { status: 'failed', reason: 'tool_denied' } })
+  assert.equal(out.status, 'failed')
+  assert.equal(out.reason, 'tool_denied')
+})
+
+check('readStepOutcome: hiányzó outcome → üres (nincs audit-zaj)', () => {
+  assert.deepEqual(readStepOutcome({}), {})
+  assert.deepEqual(readStepOutcome(undefined), {})
+})
+
+check('readStepOutcome: ismeretlen státusz-érték figyelmen kívül marad', () => {
+  const out = readStepOutcome({ outcome: { status: 'weird', reason: 'x' } })
+  assert.equal(out.status, undefined)
+  assert.equal(out.reason, 'x')
 })
 
 console.log('=== step-output-inference + compiler ===')
@@ -234,6 +288,74 @@ check('inferStepOutputFields: research lépés kimenete research_results', () =>
   assert.deepEqual(inferred.get('research_incidents'), ['research_results'])
 })
 
+// WP-8 regresszió: a Decision Step ágai (branches + fallback) is valós routing-élek,
+// ezért a döntési lépés kimenet-következtetésének látnia kell az ágak mögötti,
+// `step`-forrású kötelező input-réseket — különben a döntési lépés némán `ok`-ként
+// zárul, és a folyamat csak a KÖVETKEZŐ lépésnél akad el (output_contract_unmet).
+const decisionBranchSpec = parsePlaybookSpecV2({
+  schemaVersion: '1.0',
+  key: 'decision-infer-flow',
+  name: 'Decision infer flow',
+  processType: 'decision_test',
+  entryStepId: 'triage',
+  roles: [{ key: 'triage_agent', type: 'agent_role' }],
+  steps: [
+    {
+      id: 'triage',
+      name: 'Triage',
+      ticketType: 'triage',
+      assignedRole: 'triage_agent',
+      instructionTemplate: 'Döntsd el: {{ticket}}',
+      outputContract: { requiredFields: ['decision'] },
+      decision: {
+        field: 'decision',
+        branches: [{ outcome: 'approve', nextStepId: 'execute' }],
+        fallback: { nextStepId: 'reject' },
+      },
+    },
+    {
+      id: 'execute',
+      name: 'Execute',
+      ticketType: 'execution',
+      assignedRole: 'triage_agent',
+      instructionTemplate: 'Hajtsd végre: {{approved_amount}}',
+      inputSlots: [
+        { name: 'approved_amount', type: 'string', required: true, source: 'step' },
+      ],
+    },
+    {
+      id: 'reject',
+      name: 'Reject',
+      ticketType: 'rejection',
+      assignedRole: 'triage_agent',
+      instructionTemplate: 'Indokold: {{reject_reason}}',
+      inputSlots: [
+        { name: 'reject_reason', type: 'string', required: true, source: 'step' },
+      ],
+    },
+  ],
+  gates: [],
+  transitions: [],
+})
+
+check('inferStepOutputFields: decision branch + fallback mögötti step-input mezők', () => {
+  const inferred = inferStepOutputFields(decisionBranchSpec)
+  // A branch (execute → approved_amount) ÉS a fallback (reject → reject_reason)
+  // downstream step-input rései is a döntési lépés kimeneti szerződésébe kerülnek.
+  assert.deepEqual(
+    [...(inferred.get('triage') ?? [])].sort(),
+    ['approved_amount', 'reject_reason'],
+  )
+})
+
+check('compiler: decision-lépés outputRequiredFields tartalmazza az ág-mezőket', () => {
+  const compiler = new PlaybookCompiler()
+  const compiled = compiler.compile(decisionBranchSpec)
+  const triageRule = compiled.ticketRules.find((r) => r.stepId === 'triage')!
+  assert.ok(triageRule.outputRequiredFields.includes('approved_amount'))
+  assert.ok(triageRule.outputRequiredFields.includes('reject_reason'))
+})
+
 check('compiler: outputRequiredFields átvezetés + step input feloldás', () => {
   const compiler = new PlaybookCompiler()
   const compiled = compiler.compile(twoStepSpec)
@@ -270,6 +392,78 @@ check('evaluateTicketTransition: lépés outputContract kikényszerítése', () 
     outputPayload: { research_results: 'kutatás' },
   })
   assert.equal(allowed.allowed, true)
+})
+
+console.log('=== checkOutputContractCoverage (output ↔ downstream input kontraktus) ===')
+
+function specWithFetchStep(instructionTemplate: string, outputContract?: Record<string, unknown>) {
+  return {
+    schemaVersion: '1.0',
+    key: 'coverage-flow',
+    name: 'Coverage flow',
+    processType: 'coverage_test',
+    entryStepId: 'fetch_status',
+    roles: [{ key: 'crm_agent', type: 'agent_role' as const }],
+    steps: [
+      {
+        id: 'fetch_status',
+        name: 'Fetch',
+        ticketType: 'data-retrieval',
+        assignedRole: 'crm_agent',
+        instructionTemplate,
+        ...(outputContract ? { outputContract } : {}),
+        onComplete: [{ condition: 'default' as const, nextStepId: 'check_activity' }],
+      },
+      {
+        id: 'check_activity',
+        name: 'Check activity',
+        ticketType: 'data-check',
+        assignedRole: 'crm_agent',
+        instructionTemplate: 'Nézd meg: {{providerName}} {{lastActivityDate}}',
+        inputSlots: [
+          { name: 'providerName', type: 'string' as const, required: true, source: 'step' as const },
+          { name: 'lastActivityDate', type: 'string' as const, required: true, source: 'step' as const },
+        ],
+      },
+    ],
+    gates: [],
+    transitions: [],
+  }
+}
+
+check('prompt nem nevesíti a downstream mezőket → OUTPUT_CONTRACT_NOT_PROMPTED warning', () => {
+  const validator = new PlaybookValidator()
+  const result = validator.validateSpec(
+    specWithFetchStep('Fetch the current CRM status for {{providerName}}.', undefined),
+  )
+  const warning = result.warnings.find((w) => w.code === 'OUTPUT_CONTRACT_NOT_PROMPTED')
+  assert.ok(warning, JSON.stringify(result.warnings))
+  assert.match(warning!.message, /lastActivityDate/)
+})
+
+check('prompt nevesíti mindkét mezőt → nincs OUTPUT_CONTRACT_NOT_PROMPTED warning', () => {
+  const validator = new PlaybookValidator()
+  const result = validator.validateSpec(
+    specWithFetchStep(
+      'Fetch the status for {{providerName}}. Adj vissza JSON-t: {"providerName": "...", "lastActivityDate": "..."}.',
+      undefined,
+    ),
+  )
+  assert.equal(
+    result.warnings.some((w) => w.code === 'OUTPUT_CONTRACT_NOT_PROMPTED'),
+    false,
+    JSON.stringify(result.warnings),
+  )
+})
+
+check('explicit outputContract hiányos a downstream igényhez képest → OUTPUT_CONTRACT_INCOMPLETE warning', () => {
+  const validator = new PlaybookValidator()
+  const result = validator.validateSpec(
+    specWithFetchStep('Fetch the status for {{providerName}}.', { requiredFields: ['providerName'] }),
+  )
+  const warning = result.warnings.find((w) => w.code === 'OUTPUT_CONTRACT_INCOMPLETE')
+  assert.ok(warning, JSON.stringify(result.warnings))
+  assert.match(warning!.message, /lastActivityDate/)
 })
 
 console.log('')

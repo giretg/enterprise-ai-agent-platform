@@ -7,9 +7,105 @@ import type {
   PlaybookDeliverable,
   PlaybookDeliverableFormat,
   StepOutcome,
+  StepOutcomeStatus,
 } from '@/lib/playbook-v2/spec'
 import { STEP_OUTCOME_FIELD } from '@/lib/playbook-v2/spec'
 import { extractJsonObject } from '@/domain/provisioning/provisioning-assistant'
+import { stringifyValue } from '@/lib/playbook-v2/effective-prompt'
+
+/** Meta mezők, amelyek nem agent-válasz szöveg a ticket payloadban. */
+export const AGENT_ANSWER_PAYLOAD_SKIP_KEYS = new Set([
+  'question',
+  'task',
+  'toolCallCount',
+  'agentVersion',
+  'model',
+  'memoryVersion',
+  'source',
+  'createdByAgentId',
+  'parentTicketId',
+  'conversationId',
+  'attachmentDocumentIds',
+  'runAsUserId',
+  'runAsAuthorized',
+  'runAsAuthorizedAt',
+  'ephemeralKeyId',
+  'failureCount',
+  'deliverableFormat',
+  'deliverableFile',
+  'delegationReturned',
+  'answeredByAgentId',
+  'delegationCompletedAt',
+  STEP_OUTCOME_FIELD,
+  'error',
+  'followUpNotes',
+  'sources',
+  'rationale',
+  'confidence',
+  'retrievedSources',
+  'retrievedSourceCount',
+  'recipeName',
+  'recipeVersion',
+  'proposal',
+  'diff',
+  'reasoning',
+])
+
+function displayValue(value: unknown): string | null {
+  if (typeof value === 'string') {
+    const trimmed = value.trim()
+    return trimmed.length > 0 ? trimmed : null
+  }
+  if (value === undefined || value === null) return null
+  if (typeof value === 'object') {
+    const text = stringifyValue(value).trim()
+    return text.length > 0 ? text : null
+  }
+  return String(value)
+}
+
+/**
+ * Emberi olvasható agent-válasz a ticket payloadból.
+ * - `answer` (általános ticket)
+ * - outputContract mezők (pl. `drafted_proposal`, `research_results`)
+ * - egyéb jelentős slot-értékek fallback-ként
+ */
+export function extractAgentAnswerDisplayBody(
+  payload: Record<string, unknown>,
+  preferredFields: string[] = [],
+): string | null {
+  const answer = displayValue(payload.answer)
+  if (answer) return answer
+
+  for (const field of preferredFields) {
+    const value = displayValue(payload[field])
+    if (value) return value
+  }
+
+  for (const [key, value] of Object.entries(payload)) {
+    if (AGENT_ANSWER_PAYLOAD_SKIP_KEYS.has(key) || key.startsWith('runAs')) continue
+    const text = displayValue(value)
+    if (text && text.length >= 20) return text
+  }
+
+  return null
+}
+
+/** `agent_answer` structured mező a payload metaadataiból (badge-ekhez). */
+export function agentAnswerStructuredFromPayload(
+  payload: Record<string, unknown>,
+): Record<string, unknown> {
+  const structured: Record<string, unknown> = {}
+  if (typeof payload.model === 'string') structured.model = payload.model
+  if (typeof payload.confidence === 'string') structured.confidence = payload.confidence
+  if (typeof payload.toolCallCount === 'number') structured.toolCallCount = payload.toolCallCount
+  if (typeof payload.memoryVersion === 'number') structured.memoryVersion = payload.memoryVersion
+  if (Array.isArray(payload.sources)) structured.sources = payload.sources
+  if (typeof payload.rationale === 'string') structured.rationale = payload.rationale
+  const outcome = payload[STEP_OUTCOME_FIELD]
+  if (outcome != null && typeof outcome === 'object') structured.outcome = outcome
+  return structured
+}
 
 export type ResolveStepInputOptions = {
   /** Futás szintű input (trigger + config, process.inputPayload). */
@@ -87,7 +183,13 @@ export function playbookSlotValuesFromTicketPayload(
 /**
  * Agent szöveges válaszából a lépés outputContract mezőit nyeri ki.
  * - JSON objektum a válaszban → kötelező kulcsok
- * - egyetlen kötelező mező → teljes szöveg fallback
+ * - JSON nélkül / hiányos JSON → a mezők HIÁNYZÓNAK számítanak (csak `answer` kerül be
+ *   kontextusként), hogy a hard-signal `computeStepOutcome` helyesen `blocked`-ként
+ *   jelölje a lépést. Egy kötelező mezőnél a teljes nyers szöveget érvényes értékként
+ *   elfogadni régen csendben elfedte, ha a modell nem tett JSON-t a válasz végére
+ *   (miközben a runtime mindig kéri azt, ha `outputRequiredFields` nem üres) — a hibás
+ *   érték így némán tovaterjedt a következő lépésekbe ahelyett, hogy emberi
+ *   felülvizsgálatra terelődött volna.
  */
 export function parseAgentStepOutput(
   content: string,
@@ -111,11 +213,7 @@ export function parseAgentStepOutput(
     if (Object.keys(out).length > 0) return { ...out, answer: trimmed }
   }
 
-  if (requiredFields.length === 1) {
-    return { [requiredFields[0]!]: trimmed }
-  }
-
-  return { answer: trimmed }
+  return trimmed ? { answer: trimmed } : {}
 }
 
 /** board_write payload összeállítása a lépés outputContract mezőivel. */
@@ -138,10 +236,17 @@ export type StepOutcomeSignals = {
   loopStatus: 'completed' | 'exhausted' | string
   /** Hány tool-hívás történt a loopban. */
   toolCallCount: number
-  /** A pre-fetch kb_search engedélyezett volt ÉS 0 találatot adott. */
+  /** A pre-fetch kb_search engedélyezett volt ÉS 0 találatot adott (diagnosztikai jel). */
   kbZeroHit: boolean
   /** Bármely tool-hívást a broker megtagadott (denied). */
   toolDenied?: boolean
+  /**
+   * Hibapolicy spec §5.1/WP-3 — a lépés outputContract kötelező mezői közül melyik
+   * hiányzik a parse-olt agent-kimenetből (üres/hiányzó tömb = teljesült). Ha nem üres,
+   * a step NEM zárható néma `ok`-ként — a `done`-ra írás máskülönben az
+   * `evaluateTicketTransition` `OUTPUT_CONTRACT_VIOLATION` DENY-jébe futna.
+   */
+  missingOutputFields?: string[]
 }
 
 /**
@@ -149,9 +254,7 @@ export type StepOutcomeSignals = {
  * önbevallását felülírva (§10.1). NEM az agent prózáját elemzi.
  *
  *  - `failed`  — a tool-loop kimerült VAGY a broker tool-hívást tagadott meg;
- *  - `blocked` — a pre-fetch kb_search 0 találatot adott ÉS az agent EGYETLEN tool-t sem
- *                hívott (nincs célzott kb_search / file / gmail), tehát a KB-függő állítások
- *                forrás nélküliek → emberrel/másik lépéssel feloldható;
+ *  - `blocked` — a lépés outputContract kötelező mezői hiányoznak a végleges kimenetből;
  *  - `ok`      — egyébként (a happy path érintetlen; visszafelé kompatibilis).
  */
 export function computeStepOutcome(signals: StepOutcomeSignals): StepOutcome {
@@ -161,8 +264,8 @@ export function computeStepOutcome(signals: StepOutcomeSignals): StepOutcome {
   if (signals.toolDenied) {
     return { status: 'failed', reason: 'tool_denied' }
   }
-  if (signals.kbZeroHit && signals.toolCallCount === 0) {
-    return { status: 'blocked', reason: 'missing_kb_source' }
+  if (signals.missingOutputFields && signals.missingOutputFields.length > 0) {
+    return { status: 'blocked', reason: 'output_contract_unmet', missing: signals.missingOutputFields }
   }
   return { status: 'ok' }
 }
@@ -173,6 +276,25 @@ export function withStepOutcome(
   outcome: StepOutcome,
 ): Record<string, unknown> {
   return { ...payload, [STEP_OUTCOME_FIELD]: outcome }
+}
+
+/**
+ * A payload `outcome`-mezőjének kiolvasása audit célra (hiba-policy spec §9 —
+ * `outcome_status`/`outcome_reason`). A reason lehet runtime hard-hiba
+ * (`tool_denied`, `tool_loop_exhausted`), output contract hiba vagy explicit agent/runtime
+ * payloadból érkező domain-ok; ez a helper audit-visszakereshetővé teszi.
+ */
+export function readStepOutcome(
+  payload: Record<string, unknown> | undefined,
+): { status?: StepOutcomeStatus; reason?: string } {
+  const outcome = (payload ?? {})[STEP_OUTCOME_FIELD]
+  if (outcome == null || typeof outcome !== 'object') return {}
+  const status = (outcome as Record<string, unknown>)['status']
+  const reason = (outcome as Record<string, unknown>)['reason']
+  return {
+    status: status === 'ok' || status === 'blocked' || status === 'failed' ? status : undefined,
+    reason: typeof reason === 'string' ? reason : undefined,
+  }
 }
 
 export function outputRequiredFieldsForStep(

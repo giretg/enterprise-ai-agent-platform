@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { backfillHttpApiConnectorConfig } from '../src/domain/connector/canonical-config'
 import { parseHttpApiConfig } from '../src/domain/connector/http-api-client'
 import { BUILTIN_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/builtin-templates'
+import { GLOBAL_CUSTOM_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/custom-template-seeds'
 import {
   ConnectorTemplateMaterializationError,
   materializeConnectorConfig,
@@ -180,6 +181,33 @@ async function main() {
     assert.equal(config.provenance?.templateOrigin, 'custom')
     // a self-check által materializált config futásidőben is parse-olható (materialization contract)
     parseHttpApiConfig(config)
+  })
+
+  await test('seeded GitHub custom descriptor materializes to runtime-parseable config', () => {
+    const rawDescriptor = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'github')
+    assert.ok(rawDescriptor, 'missing github custom template')
+    const descriptor = parseTemplateDescriptor(rawDescriptor)
+    assert.ok(descriptor.activationHelp?.includes('Personal access token'))
+
+    const config = materializeConnectorConfig(
+      descriptor,
+      {
+        authMethodKind: 'bearer',
+        instanceValues: {},
+      },
+      { personalAccessToken: 'secret-ref:github-pat' },
+      {
+        templateKey: descriptor.key,
+        templateVersion: 1,
+        templateOrigin: 'custom',
+        materializedAt: '2026-07-06T00:00:00.000Z',
+      },
+    )
+
+    const runtime = parseHttpApiConfig(config)
+    assert.equal(runtime.baseUrl, 'https://api.github.com')
+    assert.equal(runtime.auth.scheme, 'bearer')
+    assert.ok((config.proposedTools ?? []).some((tool) => tool.name === 'get_authenticated_user'))
   })
 
   await test('broken custom descriptor fails template self-check', () => {

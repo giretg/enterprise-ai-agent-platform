@@ -1,4 +1,10 @@
-import type { ProcessInstance, ProcessStepInstance, DelegationEdge, Prisma } from '@prisma/client'
+import type {
+  ProcessInstance,
+  ProcessStepInstance,
+  DelegationEdge,
+  ProcessStatus,
+  Prisma,
+} from '@prisma/client'
 import { prisma } from '@/lib/db'
 import type {
   CreateProcessInstanceInput,
@@ -73,6 +79,26 @@ export class PostgresProcessRepository implements ProcessRepository {
     }>,
   ): Promise<ProcessInstance> {
     return prisma.processInstance.update({ where: { id }, data })
+  }
+
+  async updateProcessIfStatusIn(
+    id: string,
+    statuses: ProcessStatus[],
+    data: Partial<{
+      status: ProcessInstance['status']
+      rootTicketId: string | null
+      outputPayload: Prisma.InputJsonValue
+      completedAt: Date | null
+      failedAt: Date | null
+    }>,
+  ): Promise<ProcessInstance | null> {
+    if (statuses.length === 0) return null
+    const result = await prisma.processInstance.updateMany({
+      where: { id, status: { in: statuses } },
+      data,
+    })
+    if (result.count === 0) return null
+    return prisma.processInstance.findFirst({ where: { id } })
   }
 
   async createStep(input: CreateProcessStepInput): Promise<ProcessStepInstance> {

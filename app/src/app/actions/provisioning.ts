@@ -38,6 +38,17 @@ function toFail(e: unknown, fallback: string) {
   return fail(e instanceof Error ? e.message : fallback)
 }
 
+function ensureCustomTemplateActivationHelp(descriptor: {
+  key: string
+  activationHelp?: string
+}) {
+  if (descriptor.activationHelp?.trim()) return
+  throw new ProvisioningError(
+    'PROVISIONING_INVALID_INPUT',
+    `A custom connector-sablonhoz kötelező activationHelp mező: ${descriptor.key}`,
+  )
+}
+
 // A draft-config sémáját a domain-rétegből vesszük át (connector-config.ts), hogy az
 // action- és a domain-réteg SOHA ne csússzon szét. Korábban itt egy szűkített másolat
 // élt, amely a Zod strip-elése miatt NÉMÁN eldobta az `auth.tokenUrl` / `auth.clientId`
@@ -550,6 +561,7 @@ export async function upsertConnectorTemplateAction(input: unknown) {
   try {
     const parsed = upsertConnectorTemplateSchema.parse(input)
     const descriptor = parseTemplateDescriptor(parsed.descriptor)
+    ensureCustomTemplateActivationHelp(descriptor)
 
     selfCheckTemplateDescriptor(descriptor, parsed.selfCheck)
 

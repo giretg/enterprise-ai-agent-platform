@@ -155,6 +155,28 @@ check('output contract teljesül → done engedélyezett', () => {
   assert.equal(d.allowed, true)
 })
 
+check('hibapolicy §7 — failed outcome a done-átmenetnél NEM OUTPUT_CONTRACT_VIOLATION (a hiba-útnak el kell érnie az evaluateAdvance-ot)', () => {
+  const d = evaluateTicketTransition(compiled, {
+    stepId: 'extract_invoice',
+    fromState: 'in_progress',
+    toState: 'done',
+    actor: { type: 'agent' },
+    outputPayload: { outcome: { status: 'failed', reason: 'tool_loop_exhausted' } },
+  })
+  assert.equal(d.allowed, true)
+})
+
+check('hibapolicy §7 — blocked outcome a done-átmenetnél szintén átmegy az output-contracton', () => {
+  const d = evaluateTicketTransition(compiled, {
+    stepId: 'extract_invoice',
+    fromState: 'in_progress',
+    toState: 'done',
+    actor: { type: 'agent' },
+    outputPayload: { outcome: { status: 'blocked', reason: 'missing_kb_source' } },
+  })
+  assert.equal(d.allowed, true)
+})
+
 console.log('=== §13.1 / P6 gate-bypass enforcement ===')
 
 check('P6: agent awaiting_human→approved megkerülés → GATE_BYPASS_DENIED', () => {

@@ -62,6 +62,7 @@ export const templateDescriptorSchema = z.object({
   key: connectorTemplateKeySchema,
   displayName: z.string().min(1),
   description: z.string().optional(),
+  activationHelp: z.string().min(1).optional(),
   baseUrl: z.string().url(),
   egressHosts: z.array(z.string().min(1)).min(1),
   authMethods: z.array(authMethodDescriptorSchema).min(1),

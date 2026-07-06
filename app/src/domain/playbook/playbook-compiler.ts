@@ -13,9 +13,17 @@ import type {
   PlaybookDeliverable,
   ConditionExpression,
   StepCompletionRule,
+  RoutingTarget,
+  ErrorRoutes,
+  ErrorRoute,
+  ErrorPolicy,
 } from '@/lib/playbook-v2/spec'
-import { STEP_OUTCOME_STATUS_PATH } from '@/lib/playbook-v2/spec'
-import { inferStepOutputFields, mergeOutputRequiredFields } from '@/lib/playbook-v2/step-output-inference'
+import { STEP_OUTCOME_STATUS_PATH, STEP_OUTCOME_REASON_PATH } from '@/lib/playbook-v2/spec'
+import {
+  inferStepOutputFields,
+  mergeOutputRequiredFields,
+  readOutputContractFields,
+} from '@/lib/playbook-v2/step-output-inference'
 
 export type CompiledTransition = {
   fromState: string
@@ -33,10 +41,100 @@ export type CompiledInputSlot = {
   description?: string
 }
 
-function readOutputContractFields(outputContract?: Record<string, unknown>): string[] {
-  const fields = outputContract?.requiredFields
-  if (!Array.isArray(fields)) return []
-  return fields.filter((f): f is string => typeof f === 'string' && f.length > 0)
+function isErrorRoutesTarget(
+  target: RoutingTarget | ErrorRoutes,
+): target is ErrorRoutes {
+  return 'routes' in target && Array.isArray((target as ErrorRoutes).routes)
+}
+
+/**
+ * Hibapolicy spec §5.2 / P2 — egy `onError`/`onBlocked` célt reason-kulcsos
+ * hiba-utakra és egy opcionális catch-all célra bont szét. A catch-all a mai
+ * egyszerű `RoutingTarget`-nek felel meg (`outcome.status` illeszkedés).
+ */
+export function normalizeErrorTarget(
+  target: RoutingTarget | ErrorRoutes | undefined,
+): { reasonRoutes: ErrorRoute[]; catchAll: RoutingTarget | null } {
+  if (!target) return { reasonRoutes: [], catchAll: null }
+  if (isErrorRoutesTarget(target)) {
+    const hasCatchAll = target.nextStepId != null || target.gateId != null
+    return {
+      reasonRoutes: target.routes,
+      catchAll: hasCatchAll ? { nextStepId: target.nextStepId, gateId: target.gateId } : null,
+    }
+  }
+  return { reasonRoutes: [], catchAll: target }
+}
+
+/**
+ * Hibapolicy spec §4.2/WP-4 — a cél (nextStepId/gateId) ténylegesen létezik-e EBBEN a
+ * Playbookban. A tenant-default egy TENANT-szintű (nem hash-elt) beállítás, ezért csak akkor
+ * használható fel egy adott Playbooknál, ha a hivatkozott step/gate valóban létezik benne —
+ * különben csendben kimarad (a végső háló `await_human` marad), a validátor pedig warningot ad.
+ */
+export function isRoutingTargetResolvable(
+  target: RoutingTarget | undefined,
+  stepIds: ReadonlySet<string>,
+  gateIds: ReadonlySet<string>,
+): target is RoutingTarget {
+  if (!target) return false
+  if (target.nextStepId == null && target.gateId == null) return false
+  if (target.nextStepId != null && !stepIds.has(target.nextStepId)) return false
+  if (target.gateId != null && !gateIds.has(target.gateId)) return false
+  return true
+}
+
+/** A step onError/onBlocked célja (catch-all + minden reason-route) által hivatkozott gate-id-k. */
+function errorTargetGateIds(target: RoutingTarget | ErrorRoutes | undefined): string[] {
+  const { reasonRoutes, catchAll } = normalizeErrorTarget(target)
+  const ids: string[] = []
+  if (catchAll?.gateId) ids.push(catchAll.gateId)
+  for (const route of reasonRoutes) {
+    if (route.gateId) ids.push(route.gateId)
+  }
+  return ids
+}
+
+/**
+ * Hibapolicy spec §5.3 / P2 — egy step lépés-szintű `onError`/`onBlocked` céljából
+ * routing-élt (éleket) bocsát ki: minden reason-kulcsos route ELŐSZÖR (magasabb
+ * prioritás, mert az `evaluateAdvance` a hiba-éleket beszúrási sorrendben nézi),
+ * majd a catch-all (status-alapú) él, HA a wrapper adott ilyet.
+ */
+function pushStepErrorRoutingRules(
+  routingRules: CompiledRoutingRule[],
+  stepId: string,
+  target: RoutingTarget | ErrorRoutes | undefined,
+  statusValue: 'failed' | 'blocked',
+  edgeType: 'error' | 'blocked',
+): void {
+  const { reasonRoutes, catchAll } = normalizeErrorTarget(target)
+  for (const route of reasonRoutes) {
+    routingRules.push({
+      fromStepId: stepId,
+      toStepId: route.nextStepId,
+      gateId: route.gateId,
+      trigger: 'step.completed',
+      condition: route.reason
+        ? { field: STEP_OUTCOME_REASON_PATH, op: '==', value: route.reason }
+        : { field: STEP_OUTCOME_STATUS_PATH, op: '==', value: statusValue },
+      edgeType,
+      outcome: route.reason ?? statusValue,
+      errorRouteSource: 'step',
+    })
+  }
+  if (catchAll) {
+    routingRules.push({
+      fromStepId: stepId,
+      toStepId: catchAll.nextStepId,
+      gateId: catchAll.gateId,
+      trigger: 'step.completed',
+      condition: { field: STEP_OUTCOME_STATUS_PATH, op: '==', value: statusValue },
+      edgeType,
+      outcome: statusValue,
+      errorRouteSource: 'step',
+    })
+  }
 }
 
 /**
@@ -100,6 +198,9 @@ export type CompiledGate = {
 /** Egy routing-él fajtája — trace/simulation/audit olvashatósághoz (WP-7/WP-8). */
 export type RoutingEdgeType = 'happy' | 'default' | 'decision' | 'error' | 'blocked' | 'transition'
 
+/** Hiba-él (error/blocked) forrása — hibakezelési policy spec §9 audit-mező. */
+export type ErrorRouteSource = 'step' | 'playbook_default' | 'tenant_default'
+
 export type CompiledRoutingRule = {
   fromStepId: string
   toStepId?: string
@@ -110,6 +211,8 @@ export type CompiledRoutingRule = {
   edgeType?: RoutingEdgeType
   /** A kiválasztott üzleti kimenet címkéje (decision-érték vagy 'failed'/'blocked') — audithoz. */
   outcome?: string
+  /** Csak error/blocked éleken: lépés-szintű explicit vagy Playbook-default (hibapolicy spec §9). */
+  errorRouteSource?: ErrorRouteSource
 }
 
 export type CompiledSpec = {
@@ -122,22 +225,60 @@ export type CompiledSpec = {
   routingRules: CompiledRoutingRule[]
 }
 
-/** Alapértelmezett állapot-ABC, ha a step nem ad `allowedStates`-t. */
-const DEFAULT_STATES_AGENT = ['ready', 'in_progress', 'done', 'failed'] as const
-const DEFAULT_STATES_HUMAN = ['ready', 'in_progress', 'awaiting_human', 'done', 'failed'] as const
+/**
+ * Alapértelmezett állapot-ABC, ha a step nem ad `allowedStates`-t.
+ * A Prisma `TicketState` enumhoz igazítva (nincs 'failed' állapot — a terminális
+ * negatív állapot 'rejected').
+ */
+const DEFAULT_STATES_AGENT = ['ready', 'in_progress', 'done', 'rejected'] as const
+const DEFAULT_STATES_HUMAN = ['ready', 'in_progress', 'awaiting_human', 'done', 'rejected'] as const
 
 export class PlaybookCompiler {
-  compile(spec: PlaybookSpecV2, opts: { playbookVersionId?: string | null } = {}): CompiledSpec {
+  compile(
+    spec: PlaybookSpecV2,
+    opts: {
+      playbookVersionId?: string | null
+      /**
+       * Hibapolicy spec §4.2/WP-4 — publish-időben feloldott tenant-szintű alapértelmezés.
+       * NEM a hash-elt spec része (a `defaultErrorPolicy`-val ellentétben); a hívó
+       * (`PlaybookV2Service.publishPlaybookVersion`) tölti a `PlatformSettingsService`-ből.
+       * Csak azokon az ágakon lép életbe, ahol a Playbooknak SEM lépés-, SEM Playbook-szintű
+       * defaultja nincs, és csak ha a célja ténylegesen létezik ebben a Playbookban.
+       */
+      tenantDefaultErrorPolicy?: ErrorPolicy
+    } = {},
+  ): CompiledSpec {
     const roleByKey = new Map(spec.roles.map((r) => [r.key, r]))
     const gateById = new Map(spec.gates.map((g) => [g.id, g]))
+    const stepIds = new Set(spec.steps.map((s) => s.id))
+    const gateIds = new Set(spec.gates.map((g) => g.id))
     const inferredOutputs = inferStepOutputFields(spec)
+
+    /**
+     * A lépés effektív default hiba-ága (P1 Playbook-default ELŐBB, mint a WP-4
+     * tenant-default), csak akkor, ha a lépésnek NINCS saját onError/onBlocked-je.
+     * `null`, ha se lépés-, se Playbook-, se (érvényes) tenant-default nincs — ekkor a
+     * runtime a beégetett `await_human` végső hálóra esik (TE-3, változatlan).
+     */
+    const effectiveDefault = (
+      ownTarget: RoutingTarget | ErrorRoutes | undefined,
+      playbookDefault: RoutingTarget | undefined,
+      tenantDefault: RoutingTarget | undefined,
+    ): { target: RoutingTarget; source: ErrorRouteSource } | null => {
+      if (ownTarget) return null
+      if (playbookDefault) return { target: playbookDefault, source: 'playbook_default' }
+      if (isRoutingTargetResolvable(tenantDefault, stepIds, gateIds)) {
+        return { target: tenantDefault, source: 'tenant_default' }
+      }
+      return null
+    }
 
     const ticketRules: CompiledTicketRule[] = spec.steps.map((step) => {
       const stepGateIds = [
         ...(step.requiredGateIds ?? []),
         ...effectiveOnComplete(step).flatMap((r) => (r.gateId ? [r.gateId] : [])),
-        ...(step.onError?.gateId ? [step.onError.gateId] : []),
-        ...(step.onBlocked?.gateId ? [step.onBlocked.gateId] : []),
+        ...errorTargetGateIds(step.onError),
+        ...errorTargetGateIds(step.onBlocked),
       ]
       const hasGate = stepGateIds.length > 0
       return {
@@ -200,36 +341,68 @@ export class PlaybookCompiler {
       for (const rule of effectiveRules) {
         if (rule.gateId) addCompiledGate(rule.gateId, step.id)
       }
-      // WP-7 §10.2 — az onError/onBlocked hiba-él gate-célja is compiled gate.
+      // WP-7 §10.2 / hibapolicy spec §5.2 — az onError/onBlocked (catch-all ÉS
+      // reason-kulcsos route-ok) hiba-él gate-céljai is compiled gate-ek.
       for (const target of [step.onError, step.onBlocked]) {
-        if (target?.gateId) addCompiledGate(target.gateId, step.id)
+        for (const gateId of errorTargetGateIds(target)) addCompiledGate(gateId, step.id)
       }
+      // Hibapolicy spec §4.3 / P1 + §4.2 / WP-4 — Playbook- ill. tenant-default hiba-él
+      // gate-célja, csak ha a lépésnek NINCS saját onError/onBlocked (lépés-szint elsőbbséget
+      // élvez, a Playbook-default pedig a tenant-default előtt).
+      const errDefault = effectiveDefault(
+        step.onError,
+        spec.defaultErrorPolicy?.onError,
+        opts.tenantDefaultErrorPolicy?.onError,
+      )
+      if (errDefault?.target.gateId) addCompiledGate(errDefault.target.gateId, step.id)
+      const blockedDefault = effectiveDefault(
+        step.onBlocked,
+        spec.defaultErrorPolicy?.onBlocked,
+        opts.tenantDefaultErrorPolicy?.onBlocked,
+      )
+      if (blockedDefault?.target.gateId) addCompiledGate(blockedDefault.target.gateId, step.id)
     }
 
     const routingRules: CompiledRoutingRule[] = []
     for (const step of spec.steps) {
-      // WP-7 §10.2 — a hiba-élek ELŐSZÖR (magasabb prioritás az evaluateAdvance-ban).
+      // WP-7 §10.2 / hibapolicy spec §5.3 — a hiba-élek ELŐSZÖR (magasabb prioritás az
+      // evaluateAdvance-ban): reason-specifikus → status catch-all → Playbook-default.
       if (step.onError) {
-        routingRules.push({
-          fromStepId: step.id,
-          toStepId: step.onError.nextStepId,
-          gateId: step.onError.gateId,
-          trigger: 'step.completed',
-          condition: { field: STEP_OUTCOME_STATUS_PATH, op: '==', value: 'failed' },
-          edgeType: 'error',
-          outcome: 'failed',
-        })
+        pushStepErrorRoutingRules(routingRules, step.id, step.onError, 'failed', 'error')
+      } else {
+        // Hibapolicy spec §4.3 / P1 + §4.2 / WP-4 — Playbook-default ELŐBB, tenant-default
+        // csak ha se lépés-, se Playbook-default nincs (a beszúrási sorrend biztosítja, hogy
+        // a runtime evaluateAdvance-ja ELŐSZÖR a lépés-szintűt találná, ha lenne).
+        const def = effectiveDefault(undefined, spec.defaultErrorPolicy?.onError, opts.tenantDefaultErrorPolicy?.onError)
+        if (def) {
+          routingRules.push({
+            fromStepId: step.id,
+            toStepId: def.target.nextStepId,
+            gateId: def.target.gateId,
+            trigger: 'step.completed',
+            condition: { field: STEP_OUTCOME_STATUS_PATH, op: '==', value: 'failed' },
+            edgeType: 'error',
+            outcome: 'failed',
+            errorRouteSource: def.source,
+          })
+        }
       }
       if (step.onBlocked) {
-        routingRules.push({
-          fromStepId: step.id,
-          toStepId: step.onBlocked.nextStepId,
-          gateId: step.onBlocked.gateId,
-          trigger: 'step.completed',
-          condition: { field: STEP_OUTCOME_STATUS_PATH, op: '==', value: 'blocked' },
-          edgeType: 'blocked',
-          outcome: 'blocked',
-        })
+        pushStepErrorRoutingRules(routingRules, step.id, step.onBlocked, 'blocked', 'blocked')
+      } else {
+        const def = effectiveDefault(undefined, spec.defaultErrorPolicy?.onBlocked, opts.tenantDefaultErrorPolicy?.onBlocked)
+        if (def) {
+          routingRules.push({
+            fromStepId: step.id,
+            toStepId: def.target.nextStepId,
+            gateId: def.target.gateId,
+            trigger: 'step.completed',
+            condition: { field: STEP_OUTCOME_STATUS_PATH, op: '==', value: 'blocked' },
+            edgeType: 'blocked',
+            outcome: 'blocked',
+            errorRouteSource: def.source,
+          })
+        }
       }
       // WP-8 §11.2b — decision-blokk desugar; egyébként a nyers onComplete.
       const decisionOutcomes = new Set((step.decision?.branches ?? []).map((b) => b.outcome))

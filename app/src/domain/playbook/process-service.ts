@@ -18,13 +18,15 @@
  */
 import type { Prisma, ProcessInstance, ProcessTriggerType, TicketState } from '@prisma/client'
 import type { CompiledSpec } from '@/domain/playbook/playbook-compiler'
-import { evaluateAdvance } from '@/lib/playbook-v2/runtime'
+import { evaluateAdvance, type AdvanceDecision } from '@/lib/playbook-v2/runtime'
 import { stringifyValue } from '@/lib/playbook-v2/effective-prompt'
 import {
   missingRequiredInputSlots,
   normalizeAgentStepResult,
+  readStepOutcome,
   resolveStepInputPayload,
 } from '@/lib/playbook-v2/process-step-payload'
+import { ADVANCEABLE_PROCESS_STATUSES } from '@/lib/playbook-v2/process-status'
 import { formatPlaybookRefV2, parsePlaybookSpecV2, type PlaybookRole } from '@/lib/playbook-v2/spec'
 import { isAgentSuitable } from '@/domain/playbook/suitability'
 import type {
@@ -106,12 +108,22 @@ export type ProcessAdvanceResult =
   // folyamatra futott — pl. egy már done ticket újra-dispatch-elése miatt.
   | { kind: 'noop'; status: ProcessInstance['status'] }
 
-/** Azok az állapotok, amelyekből egy folyamat még tovább-léptethető. */
-const ADVANCEABLE_PROCESS_STATUSES: ReadonlySet<ProcessInstance['status']> = new Set([
-  'created',
-  'running',
-  'awaiting_human',
-])
+/**
+ * Hibapolicy spec §9 — melyik réteg döntött a hiba-ág kiválasztásáról (audit).
+ * `null`, ha a döntés nem hiba-él (happy path / decision / transition).
+ */
+function errorRouteSourceOf(
+  decision: AdvanceDecision,
+): 'step' | 'playbook_default' | 'tenant_default' | 'await_human_fallback' | null {
+  if (decision.kind === 'await_human') return 'await_human_fallback'
+  if (decision.kind === 'next_step' || decision.kind === 'await_gate') {
+    const edgeType = decision.rule.edgeType
+    if (edgeType === 'error' || edgeType === 'blocked') {
+      return decision.rule.errorRouteSource ?? 'step'
+    }
+  }
+  return null
+}
 
 export class ProcessService {
   constructor(
@@ -430,6 +442,24 @@ export class ProcessService {
     const resolution = version ? await this.loadResolution(process, version) : null
 
     const completedStep = await this.processes.findStep(process.id, input.completedStepId)
+    // Idempotencia-őr (2. réteg): ha EZ a step már korábban lezárult (`completed`)
+    // vagy már kapura/emberi felülvizsgálatra lett irányítva (`awaiting_gate` —
+    // ezt KIZÁRÓLAG az advance() await_gate/await_human ága állítja), akkor egy
+    // sima (nem kapu-jóváhagyási) advance-hívás egy késő/duplikált dispatch
+    // visszhangja (harness timeout reclaim vagy dupla ready-poll). Egy ilyen
+    // visszhang a `next_step` ágon át felülírná a folyamat közben már beállt
+    // `awaiting_human`/`blocked` státuszát `running`-ra (lásd
+    // [[process-config-slot-stuck-running]]) — ezért itt, ÚJRA-feldolgozás
+    // nélkül, no-op-ot adunk. A `completedGateId`-vel érkező hívás (emberi
+    // jóváhagyó nyitja a kaput) NEM duplikátum — a step SZÁNDÉKOSAN
+    // `awaiting_gate`-ben van, ezt kell tovább-léptetnie.
+    if (
+      !input.completedGateId &&
+      completedStep &&
+      (completedStep.status === 'completed' || completedStep.status === 'awaiting_gate')
+    ) {
+      return { kind: 'noop', status: process.status }
+    }
     if (completedStep && completedStep.status !== 'completed') {
       await this.processes.updateStep(completedStep.id, {
         status: 'completed',
@@ -452,13 +482,24 @@ export class ProcessService {
     const decision = input.completedGateId
       ? this.evaluateGateAdvance(compiled, input.completedStepId, input.completedGateId)
       : evaluateAdvance(compiled, input.completedStepId, input.resultPayload ?? {})
+    // Hibakezelési policy spec §9 — a step gépi outcome-ja audit-visszakereshető legyen
+    // minden ágon (miért ment arra a döntésre), routing-viselkedés módosítása nélkül.
+    const { status: outcomeStatus, reason: outcomeReason } = readStepOutcome(input.resultPayload)
 
     if (decision.kind === 'complete') {
-      await this.processes.updateProcess(process.id, {
-        status: 'completed',
-        completedAt: new Date(),
-        outputPayload: (input.resultPayload ?? {}) as Prisma.InputJsonValue,
-      })
+      const finalized = await this.processes.updateProcessIfStatusIn(
+        process.id,
+        [...ADVANCEABLE_PROCESS_STATUSES],
+        {
+          status: 'completed',
+          completedAt: new Date(),
+          outputPayload: (input.resultPayload ?? {}) as Prisma.InputJsonValue,
+        },
+      )
+      if (!finalized) {
+        const fresh = await this.processes.findProcess(input.tenantId, process.id)
+        return { kind: 'noop', status: fresh?.status ?? process.status }
+      }
       await this.append(input.tenantId, input.actor, {
         action: 'process.complete',
         targetType: 'process_instance',
@@ -508,9 +549,13 @@ export class ProcessService {
           gate_id: decision.gateId,
           selected_outcome: decision.selectedOutcome ?? null,
           matched_condition: decision.rule.condition ?? null,
+          edge_type: decision.rule.edgeType ?? null,
           required_actor_role: gate?.requiredActorRole ?? null,
           ticket_id: gateTicket.id,
           playbook_version_id: process.playbookVersionId,
+          outcome_status: outcomeStatus ?? null,
+          outcome_reason: outcomeReason ?? null,
+          error_route_source: errorRouteSourceOf(decision),
         },
       })
       return { kind: 'await_gate', gateId: decision.gateId, ticketId: gateTicket.id }
@@ -553,6 +598,8 @@ export class ProcessService {
           completed_step_id: input.completedStepId,
           reason: decision.reason,
           outcome_status: decision.outcomeStatus,
+          outcome_reason: outcomeReason ?? null,
+          error_route_source: errorRouteSourceOf(decision),
           ticket_id: reviewTicket.id,
           playbook_version_id: process.playbookVersionId,
         },
@@ -573,6 +620,11 @@ export class ProcessService {
     }
 
     // decision.kind === 'next_step'
+    const freshProcess = await this.processes.findProcess(input.tenantId, process.id)
+    if (!freshProcess || !ADVANCEABLE_PROCESS_STATUSES.has(freshProcess.status)) {
+      return { kind: 'noop', status: freshProcess?.status ?? process.status }
+    }
+
     await this.append(input.tenantId, input.actor, {
       action: 'process.step.advance',
       targetType: 'process_instance',
@@ -587,15 +639,24 @@ export class ProcessService {
         selected_outcome: decision.selectedOutcome ?? null,
         matched_condition: decision.rule.condition ?? null,
         edge_type: decision.rule.edgeType ?? null,
+        outcome_status: outcomeStatus ?? null,
+        outcome_reason: outcomeReason ?? null,
+        error_route_source: errorRouteSourceOf(decision),
         playbook_version_id: process.playbookVersionId,
         playbook_content_hash: version?.contentHash ?? null,
       },
     })
-    if (process.status !== 'running') {
-      await this.processes.updateProcess(process.id, { status: 'running' })
-    }
+    // Csak created/awaiting_human-ból emeljük running-ra — terminális (pl. completed)
+    // állapotot SOHA nem írhatunk felül (verseny: késő, párhuzamos next_step advance).
+    await this.processes.updateProcessIfStatusIn(process.id, ['created', 'awaiting_human'], {
+      status: 'running',
+    })
     let nextTicket
     try {
+      const stillAdvanceable = await this.processes.findProcess(input.tenantId, process.id)
+      if (!stillAdvanceable || !ADVANCEABLE_PROCESS_STATUSES.has(stillAdvanceable.status)) {
+        return { kind: 'noop', status: stillAdvanceable?.status ?? freshProcess.status }
+      }
       const completedRule = compiled.ticketRules.find((r) => r.stepId === input.completedStepId)
       const previousStepResult = normalizeAgentStepResult(
         completedRule,
@@ -748,6 +809,7 @@ export class ProcessService {
       playbookVersionId: process.playbookVersionId,
       playbookStepId: rule.stepId,
       requiredGateId,
+      conversationId: process.conversationId,
     })
 
     await this.processes.updateStep(step.id, { ticketId: ticket.id, startedAt: new Date() })

@@ -3,60 +3,9 @@
 import { useRouter } from 'next/navigation'
 import { useState, useTransition } from 'react'
 import { updateAgentCapabilities } from '@/app/actions/platform'
+import { ToolCapabilityCheckboxGroups } from '@/components/tool-capabilities/tool-capability-checkbox-groups'
 import { Card } from '@/components/ui/shell'
-
-type ToolGroup = {
-  label: string
-  tools: string[]
-}
-
-const TOOL_GROUPS: ToolGroup[] = [
-  {
-    label: 'Fájlkezelés (Workspace)',
-    tools: [
-      'file_read', 'file_write', 'file_edit', 'file_list',
-      'file_glob', 'file_search', 'file_delete',
-    ],
-  },
-  {
-    label: 'Excel (XLSX)',
-    tools: [
-      'xlsx_read_sheet', 'xlsx_write_cells', 'xlsx_append_rows',
-      'xlsx_create', 'xlsx_format_range', 'xlsx_layout',
-    ],
-  },
-  {
-    label: 'PowerPoint (PPTX)',
-    tools: ['pptx_create'],
-  },
-  {
-    label: 'Dokumentumok',
-    tools: ['docx_read', 'pdf_read', 'pdf_create', 'create_html'],
-  },
-  {
-    label: 'Sandbox App (App Registry)',
-    tools: [
-      'sandbox_app.create', 'sandbox_app.update_artifact',
-      'sandbox_app.preview', 'sandbox_app.export',
-    ],
-  },
-  {
-    label: 'Email (Gmail)',
-    tools: ['gmail_search', 'gmail_get_message', 'gmail_create_draft', 'gmail_send'],
-  },
-  {
-    label: 'Agent együttműködés',
-    tools: ['agent_catalog', 'agent_resolve', 'user_directory', 'agent_ask', 'ticket_create', 'board_write'],
-  },
-  {
-    label: 'HTTP API',
-    tools: ['http_api_get', 'http_api_request'],
-  },
-  {
-    label: 'Webes kutatás',
-    tools: ['web_search', 'web_research_request'],
-  },
-]
+import { NORMAL_TOOL_CAPABILITY_GROUPS } from '@/lib/tool-capability-catalog'
 
 export function AgentCapabilitiesPanel({
   agentId,
@@ -77,29 +26,8 @@ export function AgentCapabilitiesPanel({
   )
   const [enabled, setEnabled] = useState<Set<string>>(initialEnabled)
 
-  function toggle(tool: string) {
-    if (isOrchestrator && tool === 'web_search' && !enabled.has(tool)) return
-    setEnabled((prev) => {
-      const next = new Set(prev)
-      if (next.has(tool)) next.delete(tool)
-      else next.add(tool)
-      return next
-    })
-    setDone(null)
-  }
-
-  function toggleGroup(tools: string[], allOn: boolean) {
-    const selectableTools = tools.filter(
-      (tool) => !(isOrchestrator && tool === 'web_search' && !enabled.has(tool)),
-    )
-    setEnabled((prev) => {
-      const next = new Set(prev)
-      for (const t of selectableTools) {
-        if (allOn) next.delete(t)
-        else next.add(t)
-      }
-      return next
-    })
+  function setEnabledAndClearDone(next: Set<string>) {
+    setEnabled(next)
     setDone(null)
   }
 
@@ -113,7 +41,10 @@ export function AgentCapabilitiesPanel({
       })
       if (res.success) {
         const linked = [
+          res.data.knowledgeBaseLinked ? 'Knowledge Base connector' : null,
           res.data.workspaceLinked ? 'Workspace connector' : null,
+          res.data.gmailLinked ? 'Gmail connector' : null,
+          res.data.httpApiLinked ? 'HTTP API connector' : null,
           res.data.webSearchLinked ? 'Web Search connector' : null,
           res.data.boardLinked ? 'Board connector' : null,
         ].filter(Boolean)
@@ -136,58 +67,16 @@ export function AgentCapabilitiesPanel({
   return (
     <Card title="Eszközjogok szerkesztése">
       <p className="mb-4 text-xs text-ink-faint">
-        Jelöld be az eszközöket, amelyeket az agent hívhat. A Workspace, XLSX és PPTX
-        eszközök automatikusan linkelik az Agent Workspace connectort.
+        Jelöld be az eszközöket, amelyeket az agent hívhat. A kapcsolódó platform
+        connectorokat a rendszer mentéskor automatikusan linkeli, ha szükséges.
       </p>
 
-      <div className="space-y-5">
-        {TOOL_GROUPS.map((group) => {
-          const allOn = group.tools.every((t) => enabled.has(t))
-          const someOn = !allOn && group.tools.some((t) => enabled.has(t))
-          return (
-            <div key={group.label}>
-              <div className="mb-2 flex items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => toggleGroup(group.tools, allOn)}
-                  className={`h-4 w-4 rounded border text-xs ${
-                    allOn
-                      ? 'border-sage bg-sage text-white'
-                      : someOn
-                        ? 'border-sky bg-sky/40'
-                        : 'border-line bg-night-2'
-                  }`}
-                  aria-label={`${group.label} csoport ${allOn ? 'kikapcsolása' : 'bekapcsolása'}`}
-                />
-                <span className="text-xs font-semibold uppercase tracking-wide text-ink-soft">
-                  {group.label}
-                </span>
-              </div>
-              <div className="grid grid-cols-2 gap-1 pl-6 sm:grid-cols-3">
-                {group.tools.map((tool) => (
-                  <label
-                    key={tool}
-                    className={`flex items-center gap-2 rounded-lg px-2 py-1.5 ${
-                      isOrchestrator && tool === 'web_search' && !enabled.has(tool)
-                        ? 'cursor-not-allowed opacity-50'
-                        : 'cursor-pointer hover:bg-night-2'
-                    }`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={enabled.has(tool)}
-                      onChange={() => toggle(tool)}
-                      disabled={isOrchestrator && tool === 'web_search' && !enabled.has(tool)}
-                      className="accent-sage"
-                    />
-                    <span className="font-mono text-xs text-ink-soft">{tool}</span>
-                  </label>
-                ))}
-              </div>
-            </div>
-          )
-        })}
-      </div>
+      <ToolCapabilityCheckboxGroups
+        groups={NORMAL_TOOL_CAPABILITY_GROUPS}
+        enabled={enabled}
+        onChange={setEnabledAndClearDone}
+        isToolDisabled={(_tool, selected) => isOrchestrator && !selected.has(_tool)}
+      />
 
       {error && <p className="mt-4 text-sm text-coral">{error}</p>}
       {done && (

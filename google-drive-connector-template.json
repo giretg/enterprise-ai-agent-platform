@@ -2,6 +2,7 @@
   "key": "google-drive",
   "displayName": "Google Drive",
   "description": "Google Drive REST API v3 connector delegált felhasználói OAuth hozzáféréssel. Fájlok és mappák listázása, metaadat-olvasás, feltöltés, szerkesztés és törlés.",
+  "activationHelp": "1. A Google Cloud Console-ban hozz létre vagy válassz ki egy projektet.\n2. Engedélyezd a Google Drive API-t az API Library-ben.\n3. Az OAuth consent screen oldalon állítsd be az alkalmazást és add hozzá a szükséges scope-okat.\n4. Hozz létre egy OAuth Client ID-t (Web application típussal).\n5. Az Authorized redirect URI mezőbe vedd fel a platform callback URL-jét.\n6. Az aktiválásnál add meg a Client ID-t és a Client Secretet; a Secret Secret Managerbe vagy env alias mögé kerüljön.",
   "baseUrl": "https://www.googleapis.com",
   "egressHosts": [
     "www.googleapis.com",

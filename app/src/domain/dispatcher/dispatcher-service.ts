@@ -1,11 +1,16 @@
 import { randomUUID } from 'crypto'
-import type { Prisma, Ticket } from '@prisma/client'
+import type { Prisma, ProcessStepStatus, Ticket } from '@prisma/client'
 import type {
   AgentRepository,
   AuditRepository,
   ModelCallRepository,
+  ProcessRepository,
   TicketRepository,
 } from '@/repositories/interfaces'
+import {
+  ADVANCEABLE_PROCESS_STATUSES,
+  TERMINAL_PROCESS_STATUSES,
+} from '@/lib/playbook-v2/process-status'
 import { parseAgentModelConfig } from '@/lib/harness-model-config'
 import { isRunAsAuthorized, readRunAsUserId } from '@/lib/run-as-payload'
 import { wikiSearchQuery } from '@/lib/wiki-ticket-payload'
@@ -23,6 +28,20 @@ export const DEFAULT_DISPATCH_BUDGET: DispatchBudget = {
 
 const DEFAULT_HARNESS_MAX_RETRIES = 3
 const DEFAULT_HARNESS_DISPATCH_TIMEOUT_MS = 1_800_000
+
+/**
+ * Lépés-állapotok, amelyeknél a step döntése már megszületett — sem a stale-dispatch
+ * reclaim, sem egy késő/duplikált ready-poll nem futtathatja újra az agentet.
+ * `awaiting_gate`-et a runtime kapura VÁRÁSRA és a WP-7 await_human hard-blokkra is
+ * használja (process-service.ts advance() await_gate/await_human ága) — mindkettőnél
+ * a lépés lezárult a dispatcher szemszögéből, csak emberi/gate-döntésre vár.
+ */
+const STEP_DISPATCH_TERMINAL_STATUSES: ReadonlySet<ProcessStepStatus> = new Set([
+  'completed',
+  'awaiting_gate',
+  'failed',
+  'skipped',
+])
 
 type HarnessErrorCategory = 'permanent' | 'transient'
 
@@ -147,6 +166,7 @@ export class DispatcherService {
     private isDispatchEnabled: (mode: string) => Promise<boolean> = async () => true,
     private agents?: AgentRepository,
     private alertNotifier?: DispatchAlertNotifier,
+    private processes?: ProcessRepository,
   ) {}
 
   private async resolveHarnessGooseModel(
@@ -193,6 +213,9 @@ export class DispatcherService {
     if (!ticket) return { ticketId, status: 'skipped' as const }
     if (ticket.state !== 'ready') return { ticketId, status: 'skipped' as const }
     if (ticket.executeAfter && ticket.executeAfter > now) return { ticketId, status: 'skipped' as const }
+    if (await this.shouldSkipProcessTicketDispatch(ticket)) {
+      return { ticketId, status: 'skipped' as const }
+    }
     return this.dispatchReadyTicket(ticket, now)
   }
 
@@ -217,18 +240,21 @@ export class DispatcherService {
       }
 
       await this.tickets.releaseDispatchLock(ticket.id, ticket.lockToken)
+      const reclaimToDone = await this.shouldFinalizeProcessTicketAfterStaleDispatch(ticket)
       const updated = await this.tickets.update(ticket.id, {
-        state: 'ready',
+        state: reclaimToDone ? 'done' : 'ready',
         payload: withDispatchPayload(ticket.payload, { ephemeralKeyId: undefined }),
       })
       await this.tickets.recordTransition({
         ticketId: ticket.id,
         fromState: 'in_progress',
-        toState: 'ready',
+        toState: reclaimToDone ? 'done' : 'ready',
         actorType: 'system',
         actorId: null,
         agentVersion: null,
-        note: `dispatch timeout after ${timeoutMs}ms`,
+        note: reclaimToDone
+          ? `dispatch timeout on completed process step — ticket finalized as done`
+          : `dispatch timeout after ${timeoutMs}ms`,
       })
 
       await this.audit.append({
@@ -428,6 +454,9 @@ export class DispatcherService {
     if (!ticket.agentId) {
       return { ticketId: ticket.id, status: 'skipped' }
     }
+    if (await this.shouldSkipProcessTicketDispatch(ticket)) {
+      return { ticketId: ticket.id, status: 'skipped' }
+    }
 
     // I1 (§8): kizárólag `active` agent dispatchelhető. A draft/suspended/retired
     // agentre érkező dispatch-kísérletet auditáljuk és kihagyjuk — így egy menet
@@ -597,6 +626,43 @@ export class DispatcherService {
       },
     })
     return { ticketId: ticket.id, status: 'started' }
+  }
+
+  /**
+   * Playbook-lépés ticket: ne indítsunk újra futást, ha a Futás már terminális
+   * vagy a lépés instance már lezárult (késő harness / dupla dispatch). A
+   * `completed`-en kívül az `awaiting_gate` (kapura VAGY emberi felülvizsgálatra
+   * váró, §7.3/WP-7 await_human ág) és a `failed`/`skipped` is ilyen — ezekben az
+   * állapotokban a step döntése már megszületett, újra-dispatch csak duplikált
+   * agent-futást és (advance() újrahívásán át) a Futás státuszának felülírását
+   * okozná (lásd [[process-config-slot-stuck-running]]).
+   */
+  private async shouldSkipProcessTicketDispatch(ticket: Ticket): Promise<boolean> {
+    if (!ticket.processInstanceId || !this.processes) return false
+
+    const proc = await this.processes.findProcess(ticket.tenantId, ticket.processInstanceId)
+    if (proc && TERMINAL_PROCESS_STATUSES.has(proc.status)) return true
+    if (proc && !ADVANCEABLE_PROCESS_STATUSES.has(proc.status)) return true
+
+    if (ticket.playbookStepId) {
+      const step = await this.processes.findStep(ticket.processInstanceId, ticket.playbookStepId)
+      if (step && STEP_DISPATCH_TERMINAL_STATUSES.has(step.status)) return true
+    }
+    return false
+  }
+
+  /** Stale dispatch reclaim: terminális / már lezárt lépés ticket ne kerüljön vissza ready-be. */
+  private async shouldFinalizeProcessTicketAfterStaleDispatch(ticket: Ticket): Promise<boolean> {
+    if (!ticket.processInstanceId || !this.processes) return false
+
+    const proc = await this.processes.findProcess(ticket.tenantId, ticket.processInstanceId)
+    if (proc && TERMINAL_PROCESS_STATUSES.has(proc.status)) return true
+
+    if (ticket.playbookStepId) {
+      const step = await this.processes.findStep(ticket.processInstanceId, ticket.playbookStepId)
+      if (step && STEP_DISPATCH_TERMINAL_STATUSES.has(step.status)) return true
+    }
+    return false
   }
 
   private completionMetadata(input: {

@@ -46,9 +46,10 @@ import {
   replaceGate,
 } from '@/lib/playbook-v2/canvas-spec-ops'
 import { CANVAS_NODE_TYPES } from '@/components/playbooks/playbook-canvas-nodes'
-import type {
-  PlaybookDraftSpec,
-  PlaybookValidationResult,
+import {
+  readDefaultErrorPolicy,
+  type PlaybookDraftSpec,
+  type PlaybookValidationResult,
 } from '@/components/playbooks/playbook-spec-shared'
 import {
   buildStepFromForm,
@@ -119,6 +120,11 @@ function toRfNode(n: CanvasNode, errorIds: Set<string>, selectedId: string | nul
   }
 }
 
+/** A kapu-célú élek (kind 'gate'/'requires') a lépés/döntés ALJÁN lévő `gate-out` pöttyétől a
+ * kapu TETEJÉN lévő `gate-in` pöttyéig futnak (nem a fő láncot vivő jobb/bal pöttyön) — D: a kapu
+ * a lépéshez tartozó előfeltétel/döntés, nem a folyamat következő láncszeme. */
+const GATE_TARGET_EDGE_KINDS: ReadonlySet<CanvasEdgeKind> = new Set(['gate', 'requires'])
+
 function toRfEdge(e: CanvasEdge): Edge {
   const style = EDGE_STYLE[e.kind]
   const data: EdgeData = {
@@ -128,10 +134,13 @@ function toRfEdge(e: CanvasEdge): Edge {
     fromRequiredGate: e.fromRequiredGate,
     target: e.target,
   }
+  const toGate = GATE_TARGET_EDGE_KINDS.has(e.kind)
   return {
     id: e.id,
     source: e.source,
     target: e.target,
+    sourceHandle: toGate ? 'gate-out' : undefined,
+    targetHandle: toGate ? 'gate-in' : undefined,
     label: e.label && e.label !== 'alap' ? e.label : undefined,
     animated: style.animated,
     deletable: e.kind !== 'entry' && e.kind !== 'end',
@@ -205,7 +214,9 @@ function StepInspector({
   step: RawStep
   onSpecChange: (spec: PlaybookDraftSpec) => void
 }) {
-  const [form, setForm] = useState<StepFormState>(() => stepFormFromRaw(step, spec.roles))
+  const [form, setForm] = useState<StepFormState>(() =>
+    stepFormFromRaw(step, spec.roles, readDefaultErrorPolicy(spec)),
+  )
   const [error, setError] = useState<string | null>(null)
   const stepIds = (spec.steps ?? []).map((s) => s.id).filter((id): id is string => Boolean(id) && id !== step.id)
   const gateIds = (spec.gates ?? []).map((g) => g.id).filter((id): id is string => Boolean(id))
@@ -262,6 +273,7 @@ function StepInspector({
         stepIds={stepIds}
         gateIds={gateIds}
         roles={spec.roles as PlaybookRole[] | undefined}
+        defaultErrorPolicy={readDefaultErrorPolicy(spec)}
       />
       {error ? (
         <p className="text-xs text-coral">⚠ {error} — a hibás mező mentése kimarad, a többi frissül.</p>
@@ -500,6 +512,14 @@ export function PlaybookCanvas({
     },
     [spec, onSpecChange],
   )
+
+  // A `gate-out` (lépés/döntés alja) csak a `gate-in`-nel (kapu teteje) párosítható, és fordítva —
+  // a fő lánc pöttyei (jobb/bal) csak egymással. Így húzás közben sem lehet félrekötni.
+  const isValidConnection = useCallback((conn: Connection | Edge) => {
+    const sourceIsGateOut = (conn as Connection).sourceHandle === 'gate-out'
+    const targetIsGateIn = (conn as Connection).targetHandle === 'gate-in'
+    return sourceIsGateOut === targetIsGateIn
+  }, [])
 
   const onNodesDelete = useCallback(
     (deleted: Node[]) => {
@@ -761,8 +781,10 @@ export function PlaybookCanvas({
           )}
 
           <p className="px-1 pt-2 text-[10px] leading-snug text-ink-faint">
-            Húzz élt a node-ok pöttyei között az összekötéshez. Node/kapcsolat kijelölése → jobb oldali
-            szerkesztő. Del billentyű vagy 🗑 gomb: törlés.
+            Húzz élt a node-ok jobb/bal pöttyei között a folytatáshoz. A lépés ALSÓ (sárga) pöttye
+            csak kapuhoz köthető — ez jelzi, hogy a kapu a lépéshez tartozó előfeltétel, nem a
+            következő láncszem. Node/kapcsolat kijelölése → jobb oldali szerkesztő. Del billentyű
+            vagy 🗑 gomb: törlés.
           </p>
         </div>
 
@@ -776,6 +798,7 @@ export function PlaybookCanvas({
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
+            isValidConnection={isValidConnection}
             onNodeDragStop={persistLayout}
             onNodesDelete={onNodesDelete}
             onEdgesDelete={onEdgesDelete}

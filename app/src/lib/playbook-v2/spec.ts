@@ -103,6 +103,8 @@ export type StepOutcome = z.infer<typeof stepOutcomeSchema>
 /** A payloadban az `outcome`-mező kanonikus kulcsa (routing-feltétel: `outcome.status`). */
 export const STEP_OUTCOME_FIELD = 'outcome' as const
 export const STEP_OUTCOME_STATUS_PATH = 'outcome.status' as const
+/** Hibapolicy spec §5.2/P2 — a reason-kulcsos hiba-út feltétel-mezője. */
+export const STEP_OUTCOME_REASON_PATH = 'outcome.reason' as const
 
 // --- Hiba-él routing-cél (WP-7 / §10.2, BPMN error boundary) --------------
 
@@ -116,6 +118,72 @@ export const routingTargetSchema = z
     message: 'routing-célnak nextStepId vagy gateId kell.',
   })
 export type RoutingTarget = z.infer<typeof routingTargetSchema>
+
+// --- Hibatípus-tudatos routing (hibakezelési policy spec §5, P2) ----------
+
+/**
+ * Nevesített, bővíthető szótár a determinisztikus hard-signal `outcome.reason`-höz
+ * (§5.1). Egyedi (nem nevesített) reason-ök a `computeStepOutcome`-ban továbbra is
+ * megengedettek — csak a routing NEM célozhatja őket névvel, a status catch-all
+ * (`outcome.status`) akkor is illeszkedik rájuk.
+ */
+export const stepOutcomeReasonSchema = z.enum([
+  'tool_loop_exhausted',
+  'tool_denied',
+  'missing_kb_source',
+  'timeout',
+  'output_contract_unmet',
+])
+export type StepOutcomeReason = z.infer<typeof stepOutcomeReasonSchema>
+
+/** Egy reason-kulcsos hiba-út (§5.2); `reason` hiányában a wrapper catch-all célja illeszkedik helyette. */
+export const errorRouteSchema = z
+  .object({
+    reason: stepOutcomeReasonSchema.optional(),
+    nextStepId: z.string().min(1).optional(),
+    gateId: z.string().min(1).optional(),
+  })
+  .refine((r) => r.nextStepId != null || r.gateId != null, {
+    message: 'hiba-útnak nextStepId vagy gateId kell.',
+  })
+export type ErrorRoute = z.infer<typeof errorRouteSchema>
+
+/**
+ * Reason-kulcsos hiba-él lista + opcionális catch-all cél (a wrapperen megadott
+ * `nextStepId`/`gateId`, ha egyetlen reason sem illeszkedik). A catch-all opcionális:
+ * ha hiányzik, a nem-illeszkedő reason-ök a Playbook-default/`await_human` felé mennek.
+ */
+export const errorRoutesSchema = z.object({
+  nextStepId: z.string().min(1).optional(),
+  gateId: z.string().min(1).optional(),
+  routes: z.array(errorRouteSchema).min(1),
+})
+export type ErrorRoutes = z.infer<typeof errorRoutesSchema>
+
+/**
+ * Egy step `onError`/`onBlocked` célja: a mai egyszerű catch-all `RoutingTarget`
+ * VAGY a reason-kulcsos `ErrorRoutes`. Az union sorrendje szándékos: `errorRoutesSchema`
+ * ELŐSZÖR, mert a `routes` mező megléte egyértelműen megkülönbözteti a két alakot —
+ * fordított sorrendben a `routingTargetSchema` némán lestrippelné a `routes` tömböt.
+ */
+export const stepErrorTargetSchema = z.union([errorRoutesSchema, routingTargetSchema])
+export type StepErrorTarget = z.infer<typeof stepErrorTargetSchema>
+
+// --- Playbook-szintű default hibaág (hibakezelési policy spec §4, P1) -----
+
+/**
+ * Playbook-szintű alapértelmezett hibaág. Csak azokon a lépéseken lép életbe,
+ * amelyeknek NINCS saját `onError`/`onBlocked` éle (lépés-szint elsőbbséget élvez).
+ * A beégetett `await_human` végső biztonsági háló marad, ha se lépés-, se
+ * Playbook-szintű default nincs (§3 TE-3).
+ */
+export const errorPolicySchema = z.object({
+  /** Kezeletlen `failed` step-outcome default célja (step VAGY gate). */
+  onError: routingTargetSchema.optional(),
+  /** Kezeletlen `blocked` step-outcome default célja. */
+  onBlocked: routingTargetSchema.optional(),
+})
+export type ErrorPolicy = z.infer<typeof errorPolicySchema>
 
 // --- Criticality + Decision Step sugar-blokk (WP-8 / D13, §11.2b) ----------
 // A criticalitySchema-t itt (a step-séma ELŐTT) definiáljuk, mert a decision-blokk
@@ -199,8 +267,9 @@ export const playbookStepSchema = z.object({
   // WP-7 / §10.2 — implicit hiba-él (BPMN error boundary). Ha nincs megadva,
   // a compiler az implicit default-terminálhoz (awaiting_human) köti. A happy path-t
   // a szerző húzza; a hiba-ágat csak akkor kell, ha nem a default awaiting_human kell.
-  onError: routingTargetSchema.optional(),
-  onBlocked: routingTargetSchema.optional(),
+  // Hibapolicy spec §5.2 / P2 — catch-all `RoutingTarget` VAGY reason-kulcsos `ErrorRoutes`.
+  onError: stepErrorTargetSchema.optional(),
+  onBlocked: stepErrorTargetSchema.optional(),
   // WP-8 / §11.2b — explicit Decision Step sugar-blokk; compile-time desugar onComplete-re.
   decision: decisionSpecSchema.optional(),
   timeoutMinutes: z.number().int().positive().optional(),
@@ -263,6 +332,9 @@ export const playbookSpecV2Schema = z.object({
   gates: z.array(playbookGateSchema).default([]),
   transitions: z.array(playbookTransitionSchema).default([]),
   outputContract: playbookOutputContractSchema.optional(),
+  // hibakezelési policy spec §4 / P1 — Playbook-szintű default hibaág; a hash-elt
+  // spec része, csak a saját onError/onBlocked NÉLKÜLI lépéseken lép életbe.
+  defaultErrorPolicy: errorPolicySchema.optional(),
   // draft-only menekülő flag: hiányzó ticket-típusok engedélyezése (§6.2)
   allowMissingTicketTypes: z.boolean().optional(),
 })

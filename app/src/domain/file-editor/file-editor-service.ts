@@ -195,6 +195,26 @@ export class FileEditorService {
     return { path: safePath, totalLines, content: numbered }
   }
 
+  async readTextFileOrNull(
+    tenantId: string,
+    ticketId: string,
+    args: { path: string },
+  ): Promise<string | null> {
+    const safePath = resolveSafePath(args.path)
+    const buf = await this.storage.read(tenantId, ticketId, safePath)
+    return buf ? buf.toString('utf8') : null
+  }
+
+  /** Nyers bájtok (numerikus sortördelés nélkül) — pl. git blob-hash számításhoz. */
+  async readRawFile(
+    tenantId: string,
+    ticketId: string,
+    args: { path: string },
+  ): Promise<Buffer | null> {
+    const safePath = resolveSafePath(args.path)
+    return this.storage.read(tenantId, ticketId, safePath)
+  }
+
   async writeFile(
     tenantId: string,
     ticketId: string,

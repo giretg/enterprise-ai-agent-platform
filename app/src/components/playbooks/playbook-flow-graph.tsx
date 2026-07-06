@@ -28,6 +28,8 @@ export type RawStep = {
   retryPolicy?: { maxAttempts?: number; onExhausted?: 'fail_process' | 'manual_review' }
   inputContract?: Record<string, unknown>
   outputContract?: Record<string, unknown>
+  onError?: { nextStepId?: string; gateId?: string; routes?: unknown[] }
+  onBlocked?: { nextStepId?: string; gateId?: string; routes?: unknown[] }
 }
 export type RawGate = {
   id?: string

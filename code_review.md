@@ -1,5 +1,97 @@
 # Enterprise code review log
 
+## 2026-07-07 - Tool Broker: agent-oldali tenant-izoláció (delegálás + felderítés)
+
+- Reviewed modules:
+  - `app/src/domain/tool-broker/tool-broker-service.ts` (a governance-chokepoint:
+    `AllowlistAuthorizer.authorize`, `ToolBrokerService.invoke`/`executeTool`,
+    gmail-send jóváhagyás, http_api/file/sandbox/repo végrehajtók, acting-user/tenant
+    feloldás, `agentResolve`/`agentCatalog`/`agentAsk`/`ticketCreate`/`userDirectory`)
+  - `app/src/lib/agent-catalog.ts` (`buildAgentCatalogEntry` — teljes capability/connector belépő)
+  - `app/prisma/schema.prisma` `Agent.tenantId` (nullable → megosztott vs tenant-saját agent)
+  - `app/prisma/seed.ts` (a demo agentek mind globálisak, tenantId null)
+- Result:
+  - A Tool Broker törzse enterprise-helyes: fail-closed capability/role-template kapu,
+    connector lifecycle- és tenant-izoláció a connectorokon, delegált OAuth-token
+    injekció client_secret-szivárgás nélkül, append-only tool-call audit.
+  - Talált tenant-izolációs rést az AGENT-irányú toolokban. A `user_directory` és a
+    `ticket_create` HUMÁN-felelős ága kifejezetten tenant-szűrt ("cross-tenant user
+    SOHA nem szivárog ki"), de az `agent_resolve`, `agent_catalog`, `agent_ask`, és a
+    `ticket_create` AGENT-felelős ága a teljes agent-táblán dolgozott (`agents.findMany()` /
+    `findById()` tenant-szűrő nélkül). Multi-tenant telepítésen ez egy tenant agentjének
+    engedte, hogy (a) felderítse egy másik tenant agentjeinek nevét, szerepét és TELJES
+    capability-/connector-katalógusát, és (b) cross-tenant agentnek delegáljon feladatot
+    (confused deputy — a célagent a saját connectorai/tudásbázisa felett dolgozna egy idegen
+    tenant kérdésén). A demóban minden agent globális (tenantId null), ezért ma nem éles,
+    de pontosan a multi-tenant enterprise használatban válik kihasználhatóvá.
+- Fix applied:
+  - Új tiszta szabály: `isAgentReachableFromTenant(agentTenantId, effectiveTenantId)` —
+    megosztott (null) agent bárhonnan elérhető, egyébként csak azonos tenant; plusz a
+    `filterAgentsByTenant` lista-szűrő. Ez a `user_directory` tenant-izolációjának
+    agent-oldali párja (defense-in-depth, sosem fail-open).
+  - `agent_resolve` és `agent_catalog` (lista- ÉS `agentId`-direktlookup-ág is) a hívó
+    effektív tenantjára szűr (`resolveCallerTenantId` = acting-user tenant, különben a
+    hívó agent tenantja — a `user_directory` mintája). `agent_ask` és a `ticket_create`
+    agent-felelős ága elutasítja a cross-tenant célagentet (a delegálás-ticket tenantja,
+    különben a cselekvő felhasználó tenantja a referencia).
+  - Új determinisztikus teszt: `scripts/tool-broker-tenant-isolation.test.ts` (8 eset:
+    pure szabály + agent_resolve szűrés + agent_catalog direkt-lookup + agent_ask/
+    ticket_create cross-tenant deny), `test:tool-broker-tenant`. A kapcsolódó suite-ok
+    (tool-broker-bridge, user-directory, repo-pr, tool-loop) zöldek; a módosított fájlok
+    tsc/eslint tiszták.
+- Business impact:
+  - Megakadályozza, hogy egy tenant agentje (vagy egy prompt-injektált agent) felderítse
+    vagy elérje egy másik ügyfél-tenant agentjeit — se adat-, se capability-, se
+    delegációs úton. A tenant-határ a domain-rétegbe kerül, ahol a runtime és az audit
+    ugyanazt az invariánst látja.
+- Decisions raised (not auto-fixed):
+  - D1 — `checkGmailSendApproval` a jóváhagyó ticketet ID alapján, tenant/agent-kötés és
+    egyszer-használatosság (replay-védelem) nélkül fogadja el; a tényleges küldést a
+    per-user grant korlátozza ugyan a saját postafiókra, de a per-küldés emberi jóváhagyás
+    újrafelhasználható. Termék/biztonsági döntést igényel (kötés a konkrét draft-hoz + consume).
+  - D2 — `argsMeta` a `ticket_create`-nél `Object.keys(input.args.payload)`-t hív; ma a séma
+    kötelezővé teszi a payloadot (`?? {}`), de egy hiányzó payload a hiba-ági auditban
+    TypeError-t dobna. Robusztusság-nit, külön javítható.
+
+## 2026-07-06 - Governed Flow Builder: Playbook v2 compile + runtime path
+
+- Reviewed modules:
+  - `app/src/lib/playbook-v2/runtime.ts` (deterministic transition + advance engine)
+  - `app/src/lib/playbook-v2/process-step-payload.ts` (step outcome + output contract)
+  - `app/src/lib/playbook-v2/step-output-inference.ts`
+  - `app/src/domain/playbook/playbook-compiler.ts`
+  - `app/src/domain/playbook/playbook-validator.ts`
+  - `app/src/domain/playbook/process-service.ts` (advance / concurrency hardening)
+  - `app/src/domain/agent/general-task-runtime.ts` (step outcome enforcement path)
+- Result:
+  - The governed orchestration core has the right enterprise shape: gate-bypass is
+    fail-closed (agent/system can never cross a blocking human gate), the cascade
+    protection routes `blocked`/`failed` step outcomes away from the happy path, and the
+    recent concurrency hardening (idempotency guard + conditional status writes) targets a
+    real "stuck running" race.
+  - Found a correctness gap in output-contract inference. `inferStepOutputFields` only
+    walked `step.onComplete`, but Decision Steps (WP-8) route via `decision.branches` /
+    `fallback` (desugared to onComplete at compile time). A decision branch leading to a
+    step with a required `step`-source input slot never had that field inferred into the
+    decision step's output contract, so neither the validator warned nor the runtime
+    enforced it — the decision step closed silently as `ok` and the process only blocked
+    later at the next step's creation (`output_contract_unmet` class).
+- Fix applied:
+  - `inferStepOutputFields` now collects next-step targets from both `onComplete` and
+    `decision.branches` / `decision.fallback` via a local `happyPathNextStepIds` helper,
+    consistent with the compiler's `desugarDecision` and the validator's `buildAdjacency`
+    (traversal inlined to avoid a circular import).
+  - Added 2 regression tests in `playbook-process-lifecycle.test.ts` (branch + fallback
+    field inference and compiler `outputRequiredFields` pass-through). Full playbook-v2
+    core/runtime/process/governed/lifecycle/process-def suites green; eslint clean.
+- Decisions raised (not auto-fixed; see `docs/code-review/2026-07-06-playbook-runtime-decisions.md`):
+  - D1 — `StepOutcomeSignals.toolDenied` is unreachable code: the tool loop never surfaces
+    a mid-loop broker denial, so a step can close `ok` despite a governance-denied tool
+    call. Needs a product/security decision on whether denial should hard-fail the step.
+  - D2 — the `await_gate` / `await_human` advance branches lack the terminal-status guard
+    that `next_step` / `complete` use; unreachable today under the single-active-step
+    invariant, but a defense-in-depth inconsistency.
+
 ## 2026-07-06 - Model Gateway governed routing / request model override
 
 - Reviewed modules:

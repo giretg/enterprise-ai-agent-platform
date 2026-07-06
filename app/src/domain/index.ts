@@ -74,7 +74,15 @@ import { createHash } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
 
 const playbookService = new PlaybookService(repositories.playbooks, repositories.audit)
-const playbookV2Service = new PlaybookV2Service(repositories.playbooksV2, repositories.audit)
+// Hibapolicy spec §4.2/WP-4 — a tenant-default lekérdezője function-ként injektált (mint a
+// `ticketService` ticket-type-config lekérdezője lejjebb), mert a `platformSettingsService`
+// csak KÉSŐBB (ebben a fájlban) épül fel — a closure csak publish-hívásnál fut le, akkorra
+// már biztosan létezik (ugyanaz a lazy-referencia minta, mint a dispatcherService-nél).
+const playbookV2Service = new PlaybookV2Service(
+  repositories.playbooksV2,
+  repositories.audit,
+  (tenantId) => platformSettingsService.getTenantDefaultErrorPolicy(tenantId),
+)
 const monitorNotifier = new RoutingMonitorNotifier(
   { chat: new WebhookChatNotifier() },
   new AuditOnlyMonitorNotifier(),
@@ -530,6 +538,7 @@ const generalTaskRuntime = new GeneralTaskRuntime(
   workspaceStorage,
   repositories.playbooksV2,
   repositories.processes,
+  conversationService,
 )
 toolBrokerService.setDelegationProcessor(async ({ ticketId, targetAgentId }) => {
   await wikiRuntime.processTicket({ ticketId, agentId: targetAgentId })
@@ -602,6 +611,7 @@ const dispatcherService = new DispatcherService(
   (mode: string) => platformSettingsService.isDispatchEnabledForMode(mode),
   repositories.agents,
   new MonitorDispatchAlertNotifier(monitorNotifier, { platformSettings: platformSettingsService }),
+  repositories.processes,
 )
 
 export const services = {

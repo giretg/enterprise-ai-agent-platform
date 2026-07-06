@@ -3605,7 +3605,7 @@ async function scenarioFileEditor(operatorId: string, agentId: string, agentVers
     tool: 'file_write',
     args: { path: 'notes/hello.txt', content: 'Hello World\nLine two' },
   })
-  if (!write.denied && 'bytesWritten' in write.result && write.result.path === 'notes/hello.txt') {
+  if (!write.denied && 'bytesWritten' in write.result && 'path' in write.result && write.result.path === 'notes/hello.txt') {
     pass('file_write — fájl létrehozva a workspace-ben')
   } else {
     fail('file_write', write.denied ? write.reason : JSON.stringify(write.result))

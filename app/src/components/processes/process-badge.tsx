@@ -44,7 +44,7 @@ export function ProcessBadge({
         PROCESS_STATUS_CLASS[status] ?? 'bg-ink/8 text-ink-soft'
       } ${className}`}
     >
-      ⚙ #{processInstanceId.slice(0, 8)}
+      ⚙ {processType.slice(0, 10)} #{processInstanceId.slice(0, 8)}
     </span>
   )
 }

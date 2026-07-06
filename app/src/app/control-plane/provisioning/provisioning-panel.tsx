@@ -135,6 +135,7 @@ type TemplateDescriptor = {
   key: string
   displayName: string
   description?: string
+  activationHelp?: string
   authMethods: Array<{ kind: 'api_key' | 'bearer' | 'basic' | 'service_oauth2' | 'user_delegated_oauth2' }>
   instanceFields: Array<{
     name: string
@@ -196,6 +197,8 @@ const EXAMPLE_TEMPLATE_DESCRIPTOR = JSON.stringify(
     key: 'custom-crm',
     displayName: 'Custom CRM',
     description: 'Tenant-scope-olt HTTP API sablon API-kulcsos hitelesítéssel.',
+    activationHelp:
+      'Írd le röviden, hol hoz létre a user API kulcsot, milyen scopes/jogok kellenek, és mit kell beállítania az aktiválás előtt.',
     baseUrl: 'https://api.custom-crm.example',
     egressHosts: ['api.custom-crm.example'],
     authMethods: [{ kind: 'api_key', header: 'X-Api-Key' }],
@@ -1309,6 +1312,7 @@ export function ProvisioningPanel() {
                 key={d.draftId}
                 draft={d}
                 agents={agents}
+                templates={templates}
                 latestTemplateVersions={latestTemplateVersions}
                 pending={pending}
                 run={run}
@@ -1330,6 +1334,7 @@ export function ProvisioningPanel() {
                 key={d.draftId}
                 draft={d}
                 agents={agents}
+                templates={templates}
                 latestTemplateVersions={latestTemplateVersions}
                 pending={pending}
                 run={run}
@@ -1396,12 +1401,14 @@ function ErrorDialog({ message, onClose }: { message: string | null; onClose: ()
 function DraftCard({
   draft,
   agents,
+  templates,
   latestTemplateVersions,
   pending,
   run,
 }: {
   draft: DraftRow
   agents: AgentOption[]
+  templates: ConnectorTemplateRow[]
   latestTemplateVersions: Record<string, number>
   pending: boolean
   run: (fn: () => Promise<{ success: boolean; error?: string }>, okMsg: string) => void
@@ -1442,6 +1449,18 @@ function DraftCard({
     typeof provenance?.templateVersion === 'number' &&
     typeof latestTemplateVersion === 'number' &&
     latestTemplateVersion > provenance.templateVersion
+  const templateDescriptor =
+    (provenance?.templateId
+      ? templates.find((template) => template.id === provenance.templateId)
+      : undefined)?.descriptor ??
+    templates.find(
+      (template) =>
+        template.key === provenance?.templateKey &&
+        template.origin === provenance?.templateOrigin &&
+        template.version === provenance?.templateVersion &&
+        (template.origin !== 'custom' || template.tenantId === null || template.tenantId === draft.tenantId),
+    )?.descriptor
+  const activationHelp = templateDescriptor?.activationHelp?.trim() ?? ''
   const isActive = draft.lifecycleState === 'active'
   const isUserDelegated = draft.authMode === 'user_delegated' || cfg?.authMode === 'user_delegated' || draft.httpApiView?.isDelegated === true
   // oauth2 (service VAGY delegált) → nem-titkos client_id-t kell megadni (config.auth.clientId).
@@ -2053,6 +2072,12 @@ function DraftCard({
           {!isActive && selectedStep === 'activate' ? (
             <div className="rounded-md border border-ink/12 bg-wash/40 p-3">
               <h4 className="mb-2 font-semibold">Aktiválás (emberi admin-aktus)</h4>
+              {activationHelp ? (
+                <div className="mb-3 rounded-md border border-sage/30 bg-sage/8 p-3 text-xs">
+                  <p className="mb-1 font-semibold text-sage">Beállítási segítség ehhez az API-hoz</p>
+                  <p className="whitespace-pre-line text-ink-soft">{activationHelp}</p>
+                </div>
+              ) : null}
               {!activationReady ? (
                 <p className="mb-3 text-xs text-honey">
                   Az aktiválás feltétele: approved review, nem-failed validáció és sikeres

@@ -1,7 +1,7 @@
 'use server'
 
 import { z } from 'zod'
-import type { Prisma, UserRole } from '@prisma/client'
+import type { ConnectorAccessMode, ConnectorType, Prisma, UserRole } from '@prisma/client'
 import { mkdir, unlink, writeFile } from 'fs/promises'
 import path from 'path'
 import { clerkClient } from '@clerk/nextjs/server'
@@ -37,6 +37,7 @@ import {
   formatTicketCreator,
 } from '@/lib/ticket-display'
 import { fail, ok, type ActionResult } from '@/lib/result'
+import { NORMAL_TOOL_CAPABILITY_NAMES } from '@/lib/tool-capability-catalog'
 import {
   agentIdSchema,
   approveTrainingSchema,
@@ -3640,7 +3641,10 @@ export async function syncTestDatabaseFromProduction(input: { confirm: true }) {
   }
 }
 
+const KNOWLEDGE_BASE_TOOLS = ['kb_search', 'kb_list_index', 'kb_get_page'] as const
+
 const WORKSPACE_TOOLS = [
+  'repo_prepare',
   'file_read', 'file_write', 'create_html', 'file_edit', 'file_list', 'file_glob',
   'file_search', 'file_delete',
   'xlsx_read_sheet', 'xlsx_write_cells', 'xlsx_append_rows',
@@ -3656,26 +3660,61 @@ const SANDBOX_APP_TOOLS = [
   'sandbox_app.export',
 ] as const
 
-const BOARD_TOOLS = ['ticket_create', 'board_write'] as const
-
-const CONFIGURABLE_AGENT_TOOLS = [
-  ...WORKSPACE_TOOLS,
-  ...SANDBOX_APP_TOOLS,
-  ...BOARD_TOOLS,
-  'gmail_search',
-  'gmail_get_message',
-  'gmail_create_draft',
-  'gmail_send',
-  'agent_catalog',
-  'agent_resolve',
-  'user_directory',
-  'agent_ask',
-  'http_api_get',
-  'http_api_request',
-  'web_search',
+const SANDBOX_VERSION_TOOLS = [
+  'sandbox.commit',
+  'sandbox.request_promotion',
+  'sandbox.snapshot',
 ] as const
 
+const BOARD_TOOLS = ['ticket_create', 'board_write'] as const
+
+const GMAIL_TOOLS = [
+  'gmail_search',
+  'gmail_get_message',
+  'mailbox_count',
+  'gmail_create_draft',
+  'gmail_send',
+] as const
+
+const GMAIL_WRITE_TOOLS = ['gmail_create_draft', 'gmail_send'] as const
+
+const HTTP_API_TOOLS = ['http_api_get', 'http_api_request'] as const
+
+const CONFIGURABLE_AGENT_TOOLS = NORMAL_TOOL_CAPABILITY_NAMES
+
 const CONFIGURABLE_AGENT_TOOL_SET = new Set<string>(CONFIGURABLE_AGENT_TOOLS)
+
+async function linkActiveConnectorForAgent(input: {
+  agentId: string
+  tenantId: string | null
+  type: ConnectorType
+  accessMode: ConnectorAccessMode
+  missingMessage: string
+}): Promise<{ success: true } | { success: false; error: string }> {
+  const connector = await prisma.connector.findFirst({
+    where: {
+      type: input.type,
+      lifecycleState: 'active',
+      OR: [{ tenantId: input.tenantId }, { tenantId: null }],
+    },
+    orderBy: { createdAt: 'asc' },
+  })
+  if (!connector) return { success: false, error: input.missingMessage }
+
+  await prisma.agentConnector.upsert({
+    where: {
+      agentId_connectorId: { agentId: input.agentId, connectorId: connector.id },
+    },
+    create: {
+      agentId: input.agentId,
+      connectorId: connector.id,
+      accessMode: input.accessMode,
+    },
+    update: { accessMode: input.accessMode },
+  })
+
+  return { success: true }
+}
 
 export async function updateAgentCapabilities(input: {
   agentId: string
@@ -3692,9 +3731,16 @@ export async function updateAgentCapabilities(input: {
       CONFIGURABLE_AGENT_TOOL_SET.has(toolName),
     )
     const enabledSet = new Set(allTools)
+    const needsKnowledgeBase = KNOWLEDGE_BASE_TOOLS.some((t) => enabledSet.has(t))
     const needsWorkspace = WORKSPACE_TOOLS.some((t) => enabledSet.has(t))
+    const needsGmail = GMAIL_TOOLS.some((t) => enabledSet.has(t))
+    const needsGmailWrite = GMAIL_WRITE_TOOLS.some((t) => enabledSet.has(t))
+    const needsHttpApi = HTTP_API_TOOLS.some((t) => enabledSet.has(t))
+    const needsHttpApiWrite = enabledSet.has('http_api_request')
     const needsWebSearch = enabledSet.has('web_search')
-    const needsBoard = [...SANDBOX_APP_TOOLS, ...BOARD_TOOLS].some((t) => enabledSet.has(t))
+    const needsBoard = [...SANDBOX_APP_TOOLS, ...SANDBOX_VERSION_TOOLS, ...BOARD_TOOLS].some((t) =>
+      enabledSet.has(t),
+    )
 
     if (agent.role === 'orchestrator' && allTools.length > 0) {
       await repositories.audit.append({
@@ -3713,62 +3759,67 @@ export async function updateAgentCapabilities(input: {
       return fail('Orchestrator agent nem kaphat Tool Broker capability-t.')
     }
 
-    if (needsWorkspace) {
-      const workspaceConnector = await prisma.connector.findFirst({
-        where: { type: 'workspace', OR: [{ tenantId: user.activeTenantId }, { tenantId: null }] },
-      })
-      if (!workspaceConnector) return fail('Workspace connector nem található a rendszerben.')
+    if (needsKnowledgeBase) {
+      const connector = await ensureAgentKnowledgeBase(agent, prisma)
+      if (!connector) return fail('Knowledge Base connector nem hozható létre ehhez az agenthez.')
+    }
 
-      await prisma.agentConnector.upsert({
-        where: {
-          agentId_connectorId: { agentId, connectorId: workspaceConnector.id },
-        },
-        create: { agentId, connectorId: workspaceConnector.id, accessMode: 'write' },
-        update: { accessMode: 'write' },
+    if (needsWorkspace) {
+      const linked = await linkActiveConnectorForAgent({
+        agentId,
+        tenantId: user.activeTenantId,
+        type: 'workspace',
+        accessMode: 'write',
+        missingMessage: 'Workspace connector nem található a rendszerben.',
       })
+      if (!linked.success) return fail(linked.error)
+    }
+
+    if (needsGmail) {
+      const linked = await linkActiveConnectorForAgent({
+        agentId,
+        tenantId: user.activeTenantId,
+        type: 'gmail',
+        accessMode: needsGmailWrite ? 'write' : 'read',
+        missingMessage: 'Aktív Gmail connector nem található a rendszerben.',
+      })
+      if (!linked.success) return fail(linked.error)
+    }
+
+    if (needsHttpApi) {
+      const linked = await linkActiveConnectorForAgent({
+        agentId,
+        tenantId: user.activeTenantId,
+        type: 'http_api',
+        accessMode: needsHttpApiWrite ? 'write' : 'read',
+        missingMessage: 'Aktív HTTP API connector nem található a rendszerben.',
+      })
+      if (!linked.success) return fail(linked.error)
     }
 
     if (needsWebSearch) {
-      const webSearchConnector = await prisma.connector.findFirst({
-        where: {
-          type: 'web_search',
-          lifecycleState: 'active',
-          OR: [{ tenantId: user.activeTenantId }, { tenantId: null }],
-        },
-        orderBy: { createdAt: 'asc' },
+      const linked = await linkActiveConnectorForAgent({
+        agentId,
+        tenantId: user.activeTenantId,
+        type: 'web_search',
+        accessMode: 'read',
+        missingMessage: 'Aktív Web Search connector nem található a rendszerben.',
       })
-      if (!webSearchConnector) return fail('Aktív Web Search connector nem található a rendszerben.')
-
-      await prisma.agentConnector.upsert({
-        where: {
-          agentId_connectorId: { agentId, connectorId: webSearchConnector.id },
-        },
-        create: { agentId, connectorId: webSearchConnector.id, accessMode: 'read' },
-        update: { accessMode: 'read' },
-      })
+      if (!linked.success) return fail(linked.error)
     }
 
     // A sandbox_app.* toolok a `board` connectort igénylik (TOOL_REQUIREMENTS).
     // A normál agentek ezt seedből megkapják; itt idempotensen biztosítjuk, hogy
     // az App Registry jog engedélyezésekor a link garantáltan meglegyen.
     if (needsBoard) {
-      const boardConnector = await prisma.connector.findFirst({
-        where: {
-          type: 'board',
-          lifecycleState: 'active',
-          OR: [{ tenantId: user.activeTenantId }, { tenantId: null }],
-        },
-        orderBy: { createdAt: 'asc' },
+      const linked = await linkActiveConnectorForAgent({
+        agentId,
+        tenantId: user.activeTenantId,
+        type: 'board',
+        accessMode: 'write',
+        missingMessage: 'Aktív Board connector nem található a rendszerben.',
       })
-      if (!boardConnector) return fail('Aktív Board connector nem található a rendszerben.')
-
-      await prisma.agentConnector.upsert({
-        where: {
-          agentId_connectorId: { agentId, connectorId: boardConnector.id },
-        },
-        create: { agentId, connectorId: boardConnector.id, accessMode: 'write' },
-        update: { accessMode: 'write' },
-      })
+      if (!linked.success) return fail(linked.error)
     }
 
     const disabledTools = CONFIGURABLE_AGENT_TOOLS.filter((toolName) => !enabledSet.has(toolName))
@@ -3803,7 +3854,10 @@ export async function updateAgentCapabilities(input: {
       metadata: {
         enabledTools: allTools,
         disabledTools,
+        knowledgeBaseLinked: needsKnowledgeBase,
         workspaceLinked: needsWorkspace,
+        gmailLinked: needsGmail,
+        httpApiLinked: needsHttpApi,
         webSearchLinked: needsWebSearch,
         boardLinked: needsBoard,
       } as Prisma.JsonValue,
@@ -3811,7 +3865,10 @@ export async function updateAgentCapabilities(input: {
 
     return ok({
       updatedCount: allTools.length,
+      knowledgeBaseLinked: needsKnowledgeBase,
       workspaceLinked: needsWorkspace,
+      gmailLinked: needsGmail,
+      httpApiLinked: needsHttpApi,
       webSearchLinked: needsWebSearch,
       boardLinked: needsBoard,
     })

@@ -65,7 +65,7 @@ function validSpec(): Json {
         name: 'Szamlaadatok kinyerese',
         ticketType: 'invoice_extract',
         assignedRole: 'invoice_extractor',
-        allowedStates: ['ready', 'in_progress', 'awaiting_human', 'done', 'failed'],
+        allowedStates: ['ready', 'in_progress', 'awaiting_human', 'done', 'rejected'],
         timeoutMinutes: 60,
         onComplete: [
           { condition: { field: 'confidence', op: '>=', value: 0.85 }, nextStepId: 'approval' },

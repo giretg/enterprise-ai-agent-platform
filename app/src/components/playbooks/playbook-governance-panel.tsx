@@ -5,14 +5,17 @@
  * Izolált, önálló komponens: saját állapot + hibakezelés, nem nyúl a szerkesztőhöz.
  * A determinisztikus munkát a szerveroldali action-ök végzik (simulate/diff/export).
  */
-import { useState, useTransition } from 'react'
+import { useEffect, useState, useTransition } from 'react'
 import {
   simulatePlaybookVersionV2,
   diffPlaybookVersionsV2,
   exportPlaybookPackV2,
 } from '@/app/actions/playbook'
+import { listProcessDefinitions } from '@/app/actions/process'
 
 type VersionRef = { id: string; version: number; status: string }
+
+type ProcessDefinitionRef = { id: string; name: string; playbookVersionId: string }
 
 type SimReport = {
   findings: Array<{ category: string; severity: string; stepId?: string; gateId?: string; message: string }>
@@ -60,6 +63,20 @@ export function PlaybookGovernancePanel({
 
   const [simVersionId, setSimVersionId] = useState(versions[0]?.id ?? '')
   const [sim, setSim] = useState<SimReport | null>(null)
+  const [processDefinitions, setProcessDefinitions] = useState<ProcessDefinitionRef[]>([])
+  const [simProcessDefinitionId, setSimProcessDefinitionId] = useState<string>('')
+
+  useEffect(() => {
+    let cancelled = false
+    listProcessDefinitions({}).then((res) => {
+      if (!cancelled && res.success) {
+        setProcessDefinitions(res.data as ProcessDefinitionRef[])
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const [baseId, setBaseId] = useState(versions[1]?.id ?? versions[0]?.id ?? '')
   const [targetId, setTargetId] = useState(versions[0]?.id ?? '')
@@ -72,7 +89,10 @@ export function PlaybookGovernancePanel({
   function runSim() {
     setError(null)
     startTransition(async () => {
-      const res = await simulatePlaybookVersionV2({ playbookVersionId: simVersionId })
+      const res = await simulatePlaybookVersionV2({
+        playbookVersionId: simVersionId,
+        ...(simProcessDefinitionId ? { processDefinitionId: simProcessDefinitionId } : {}),
+      })
       if (res.success) setSim(res.data as SimReport)
       else setError(res.error)
     })
@@ -122,7 +142,10 @@ export function PlaybookGovernancePanel({
           <span className="text-xs font-medium text-ink-soft">Szimbolikus szimuláció</span>
           <select
             value={simVersionId}
-            onChange={(e) => setSimVersionId(e.target.value)}
+            onChange={(e) => {
+              setSimVersionId(e.target.value)
+              setSimProcessDefinitionId('')
+            }}
             className="rounded border border-ink/15 bg-transparent px-2 py-1 text-xs"
           >
             {versions.map((v) => (
@@ -130,6 +153,21 @@ export function PlaybookGovernancePanel({
                 {versionLabel(v)}
               </option>
             ))}
+          </select>
+          <select
+            value={simProcessDefinitionId}
+            onChange={(e) => setSimProcessDefinitionId(e.target.value)}
+            className="rounded border border-ink/15 bg-transparent px-2 py-1 text-xs"
+            title="Ha kiválasztasz egy Folyamatot, a szimuláció annak roleBindings-eit használja a hiányzó-role/capability ellenőrzéshez."
+          >
+            <option value="">Kötések nélkül (üres roleBindings)</option>
+            {processDefinitions
+              .filter((p) => p.playbookVersionId === simVersionId)
+              .map((p) => (
+                <option key={p.id} value={p.id}>
+                  Folyamat: {p.name}
+                </option>
+              ))}
           </select>
           <button
             onClick={runSim}

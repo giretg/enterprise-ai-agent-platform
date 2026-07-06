@@ -418,6 +418,17 @@ export async function getProcessDetail(input: unknown) {
         })
       : []
 
+    const agentIds = new Set(detail.steps.map((s) => s.assignedAgentId).filter((id): id is string => !!id))
+    const agentNameById = new Map<string, string>()
+    if (agentIds.size > 0) {
+      const agentRecords = await Promise.all(
+        [...agentIds].map((id) => repositories.agents.findById(id, tenantId)),
+      )
+      for (const agent of agentRecords) {
+        if (agent) agentNameById.set(agent.id, agent.name)
+      }
+    }
+
     return ok({
       process: {
         id: detail.id,
@@ -439,6 +450,7 @@ export async function getProcessDetail(input: unknown) {
         status: s.status,
         assignedRole: s.assignedRole,
         assignedAgentId: s.assignedAgentId,
+        assignedAgentName: s.assignedAgentId ? agentNameById.get(s.assignedAgentId) ?? null : null,
         ticketId: s.ticketId,
         startedAt: s.startedAt?.toISOString() ?? null,
         completedAt: s.completedAt?.toISOString() ?? null,

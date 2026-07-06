@@ -161,4 +161,12 @@ export class PostgresToolBrokerRepository implements ToolBrokerRepository {
       take: limit,
     })
   }
+
+  async listToolCallsForConversation(conversationId: string, limit = 200): Promise<ToolCall[]> {
+    return prisma.toolCall.findMany({
+      where: { conversationId },
+      orderBy: { createdAt: 'asc' },
+      take: limit,
+    })
+  }
 }

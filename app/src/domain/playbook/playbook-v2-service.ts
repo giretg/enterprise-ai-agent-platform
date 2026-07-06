@@ -19,6 +19,7 @@ import {
   computePlaybookContentHash,
   formatPlaybookRefV2,
   type PlaybookSpecV2,
+  type ErrorPolicy,
 } from '@/lib/playbook-v2/spec'
 import {
   PlaybookValidator,
@@ -59,6 +60,17 @@ export class PlaybookV2Service {
   constructor(
     private readonly repo: PlaybookV2Repository,
     private readonly audit: AuditRepository,
+    /**
+     * Hibapolicy spec §4.2/WP-4 — a tenant publish-időben feloldott alapértelmezett
+     * hibapolicy-jának lekérdezője (`PlatformSettingsService.getTenantDefaultErrorPolicy`).
+     * Függvényként (nem szolgáltatás-referenciaként) injektált — ugyanaz a minta, mint a
+     * `TicketService`-nél a ticket-type-config lekérdezőnél (domain/index.ts) —, hogy
+     * elkerüljük a `PlatformSettingsService` ↔ `PlaybookV2Service` kör-függőséget.
+     * Opcionális: híján a tenant-default lépés csendben kimarad (visszafelé kompatibilis).
+     */
+    private readonly getTenantDefaultErrorPolicy?: (
+      tenantId: string | null,
+    ) => Promise<ErrorPolicy | null>,
   ) {}
 
   // --- §8.1 createPlaybook ---------------------------------------------------
@@ -351,7 +363,16 @@ export class PlaybookV2Service {
     }
     const spec = parsed.data
 
-    const validation = this.validator.validateSpec(spec, input.validationContext ?? {})
+    // Hibapolicy spec §4.2/WP-4 — a tenant-default publish-időben olvasódik fel (TE-2: NEM
+    // a hash-elt spec része, csak a validációba és a compilerbe kerül be — a `version.spec`/
+    // `contentHash` érintetlen marad, csak a `compiled_spec` tükrözi a feloldott eredményt).
+    const tenantDefaultErrorPolicy =
+      (await this.getTenantDefaultErrorPolicy?.(input.tenantId)) ?? undefined
+
+    const validation = this.validator.validateSpec(spec, {
+      ...(input.validationContext ?? {}),
+      tenantDefaultErrorPolicy,
+    })
     if (!validation.valid) {
       throw new PlaybookV2Error('NOT_VALID', 'Hibás spec nem publikálható.', {
         errors: validation.errors,
@@ -366,7 +387,10 @@ export class PlaybookV2Service {
       )
     }
 
-    const compiled = this.compiler.compile(spec, { playbookVersionId: version.id })
+    const compiled = this.compiler.compile(spec, {
+      playbookVersionId: version.id,
+      tenantDefaultErrorPolicy,
+    })
     const published = await this.repo.publishVersion({
       versionId: version.id,
       playbookId: playbook.id,

@@ -1,4 +1,5 @@
 import type {
+  Agent,
   AgentRole,
   AssigneeType,
   Connector,
@@ -20,6 +21,10 @@ import {
   type AgentCatalogEntry,
 } from '@/lib/agent-catalog'
 import { readDelegationPayload, shouldCompleteDelegation } from '@/lib/delegation-payload'
+import {
+  agentAnswerStructuredFromPayload,
+  extractAgentAnswerDisplayBody,
+} from '@/lib/playbook-v2/process-step-payload'
 import { isRunAsAuthorized, readRunAsUserId, RUN_AS_AUTHORIZED_AT, RUN_AS_AUTHORIZED_BY } from '@/lib/run-as-payload'
 import { GmailApiAuthError, GmailApiClient } from '@/domain/connector-grant/gmail-api-client'
 import { gmailToolAllowedByScopes } from '@/domain/connector-grant/gmail-scopes'
@@ -382,6 +387,54 @@ export type FileListArgs = { path?: string; recursive?: boolean }
 export type FileGlobArgs = { pattern: string }
 export type FileSearchArgs = { pattern: string; path?: string; glob?: string; ignore_case?: boolean; max_results?: number }
 export type FileDeleteArgs = { path: string }
+export type RepoPrepareArgs = {
+  repoUrl?: string
+  owner?: string
+  repo?: string
+  ref?: string
+  forceRefresh?: boolean
+}
+export type RepoPrepareResult = {
+  ok: true
+  repoPath: string
+  status: 'already_current' | 'updated'
+  owner: string
+  repo: string
+  ref: string
+  commitSha: string
+  filesIndexed: number
+  filesWritten: number
+  filesSkipped: number
+  bytesWritten: number
+  metadataPath: string
+  nextSteps: string[]
+}
+export type RepoOpenPullRequestArgs = {
+  title: string
+  body?: string
+  branch?: string
+  baseRef?: string
+  draft?: boolean
+}
+export type RepoOpenPullRequestResult =
+  | {
+      ok: true
+      changed: false
+      message: string
+    }
+  | {
+      ok: true
+      changed: true
+      owner: string
+      repo: string
+      baseRef: string
+      branch: string
+      commitSha: string
+      pullRequestUrl: string
+      pullRequestNumber: number
+      filesChanged: number
+      changedPaths: string[]
+    }
 export type XlsxReadSheetArgs = { path: string; sheet?: string; max_rows?: number }
 export type XlsxWriteCellsArgs = {
   path: string
@@ -451,6 +504,8 @@ export type ToolBrokerInvokeInput =
   | (ToolInvokeBase & { tool: 'gmail_send'; args: GmailSendArgs })
   | (ToolInvokeBase & { tool: 'http_api_get'; args: HttpApiGetArgs })
   | (ToolInvokeBase & { tool: 'http_api_request'; args: HttpApiRequestArgs })
+  | (ToolInvokeBase & { tool: 'repo_prepare'; args: RepoPrepareArgs })
+  | (ToolInvokeBase & { tool: 'repo_open_pull_request'; args: RepoOpenPullRequestArgs })
   | (ToolInvokeBase & { tool: 'file_read'; args: FileReadArgs })
   | (ToolInvokeBase & { tool: 'file_write'; args: FileWriteArgs })
   | (ToolInvokeBase & { tool: 'create_html'; args: HtmlCreateArgs })
@@ -503,6 +558,8 @@ export type ToolBrokerInvokeResult =
         | GmailCreateDraftResult
         | GmailSendResult
         | HttpApiCallResult
+        | RepoPrepareResult
+        | RepoOpenPullRequestResult
         | FileReadResult
         | FileWriteResult
         | HtmlCreateResult
@@ -558,6 +615,8 @@ const TOOL_REQUIREMENTS: Partial<Record<
   gmail_send: { connectorType: 'gmail', accessMode: 'write' },
   http_api_get: { connectorType: 'http_api', accessMode: 'read' },
   http_api_request: { connectorType: 'http_api', accessMode: 'write' },
+  repo_prepare: { connectorType: 'workspace', accessMode: 'write' },
+  repo_open_pull_request: { connectorType: 'workspace', accessMode: 'write' },
   file_read: { connectorType: 'workspace', accessMode: 'read' },
   file_write: { connectorType: 'workspace', accessMode: 'write' },
   create_html: { connectorType: 'workspace', accessMode: 'write' },
@@ -613,6 +672,31 @@ export function filterUserDirectory(
   return { users: filtered.slice(0, limit) }
 }
 
+/**
+ * Cél-agent tenant-elérhetőségi szabály (multi-tenant izoláció, DB-mentes, ezért
+ * determinisztikusan tesztelhető). Egy agent akkor érhető el egy adott
+ * tenant-kontextusból, ha MEGOSZTOTT (tenantId === null, platform-szintű agent),
+ * vagy pontosan az adott tenanthoz tartozik. Cross-tenant agent SOHA nem oldódik
+ * fel — sem felderítésre (agent_resolve / agent_catalog), sem delegálásra
+ * (agent_ask / ticket_create agent-felelős). Ez a `user_directory`
+ * tenant-izolációjának agent-oldali párja (defense-in-depth, sosem fail-open).
+ */
+export function isAgentReachableFromTenant(
+  agentTenantId: string | null,
+  effectiveTenantId: string | null,
+): boolean {
+  if (agentTenantId === null) return true
+  return agentTenantId === effectiveTenantId
+}
+
+/** Cél-agent lista tenant-szűrése (l. {@link isAgentReachableFromTenant}). */
+export function filterAgentsByTenant<T extends { tenantId: string | null }>(
+  agents: T[],
+  effectiveTenantId: string | null,
+): T[] {
+  return agents.filter((agent) => isAgentReachableFromTenant(agent.tenantId, effectiveTenantId))
+}
+
 function normalizeText(value: string): string {
   return value
     .normalize('NFD')
@@ -640,6 +724,175 @@ function queryTermStems(query: string): string[] {
         .filter((term) => term.length >= 3)
         .map(stemToken),
     ),
+  ]
+}
+
+const REPO_WORKSPACE_PATH = 'repo'
+const REPO_METADATA_PATH = `${REPO_WORKSPACE_PATH}/.repo_prepare.json`
+const REPO_IMPORT_MAX_FILES = Number(process.env.REPO_PREPARE_MAX_FILES ?? 1200)
+const REPO_IMPORT_MAX_TOTAL_BYTES = Number(process.env.REPO_PREPARE_MAX_TOTAL_BYTES ?? 12 * 1024 * 1024)
+const REPO_IMPORT_MAX_FILE_BYTES = Number(process.env.REPO_PREPARE_MAX_FILE_BYTES ?? 512 * 1024)
+
+const REPO_EXCLUDED_DIRS = new Set([
+  '.git',
+  '.hg',
+  '.svn',
+  '.next',
+  '.nuxt',
+  '.turbo',
+  '.vercel',
+  'node_modules',
+  'dist',
+  'build',
+  'coverage',
+  '.cache',
+  'vendor',
+])
+
+const REPO_SKIPPED_EXTENSIONS = new Set([
+  '.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.pdf', '.zip', '.gz', '.tgz',
+  '.woff', '.woff2', '.ttf', '.otf', '.mp4', '.mov', '.mp3', '.wav', '.exe', '.dll',
+])
+
+type GitHubRepoTarget = { owner: string; repo: string; ref?: string }
+type GitHubRepoResponse = { default_branch?: string }
+type GitHubCommitResponse = { sha: string; commit?: { tree?: { sha?: string } } }
+type GitHubTreeItem = { path: string; mode: string; type: string; sha: string; size?: number }
+type GitHubTreeResponse = { tree: GitHubTreeItem[]; truncated?: boolean }
+type GitHubBlobResponse = { content: string; encoding: string; size?: number }
+type RepoPrepareMetadata = {
+  owner: string
+  repo: string
+  ref: string
+  commitSha: string
+  repoPath: string
+  filesIndexed: number
+  bytesWritten: number
+  preparedAt: string
+}
+
+function parseGitHubRepoUrl(repoUrl: string): GitHubRepoTarget | null {
+  try {
+    const url = new URL(repoUrl.trim())
+    const parts = url.pathname.replace(/^\/+|\/+$/g, '').split('/')
+    if (url.hostname === 'github.com' && parts.length >= 2) {
+      return { owner: parts[0], repo: parts[1].replace(/\.git$/i, '') }
+    }
+    if (url.hostname === 'api.github.com' && parts[0] === 'repos' && parts.length >= 3) {
+      return { owner: parts[1], repo: parts[2].replace(/\.git$/i, '') }
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
+function validGitHubName(value: string): boolean {
+  return /^[A-Za-z0-9_.-]+$/.test(value) && !value.includes('..') && !value.includes('/')
+}
+
+function resolveRepoTarget(args: RepoPrepareArgs, agent: Agent): GitHubRepoTarget {
+  const direct =
+    args.owner && args.repo
+      ? { owner: args.owner, repo: args.repo, ref: args.ref }
+      : args.repoUrl
+        ? { ...parseGitHubRepoUrl(args.repoUrl), ref: args.ref }
+        : null
+  if (direct?.owner && direct.repo) {
+    if (!validGitHubName(direct.owner) || !validGitHubName(direct.repo)) {
+      throw new Error('repo_prepare invalid GitHub owner/repo')
+    }
+    return { owner: direct.owner, repo: direct.repo, ref: direct.ref }
+  }
+
+  const config = isRecord(agent.modelConfig) ? agent.modelConfig : {}
+  const candidates = [
+    config.repoUrl,
+    config.repositoryUrl,
+    config.githubRepoUrl,
+    isRecord(config.repository) ? config.repository.url : undefined,
+    isRecord(config.repo) ? config.repo.url : undefined,
+  ]
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string') continue
+    const parsed = parseGitHubRepoUrl(candidate)
+    if (parsed) {
+      return {
+        ...parsed,
+        ref:
+          args.ref ??
+          (isRecord(config.repository) && typeof config.repository.ref === 'string'
+            ? config.repository.ref
+            : undefined),
+      }
+    }
+  }
+
+  const structured = isRecord(config.repository)
+    ? config.repository
+    : isRecord(config.repo)
+      ? config.repo
+      : null
+  if (structured && typeof structured.owner === 'string' && typeof structured.repo === 'string') {
+    if (!validGitHubName(structured.owner) || !validGitHubName(structured.repo)) {
+      throw new Error('repo_prepare invalid configured GitHub owner/repo')
+    }
+    return {
+      owner: structured.owner,
+      repo: structured.repo,
+      ref: args.ref ?? (typeof structured.ref === 'string' ? structured.ref : undefined),
+    }
+  }
+
+  throw new Error('repo_prepare requires repoUrl or owner+repo, or an agent modelConfig.repository')
+}
+
+function shouldSkipRepoPath(path: string, size = 0): boolean {
+  const parts = path.split('/')
+  if (parts.some((part) => REPO_EXCLUDED_DIRS.has(part))) return true
+  if (size > REPO_IMPORT_MAX_FILE_BYTES) return true
+  const lower = path.toLowerCase()
+  return [...REPO_SKIPPED_EXTENSIONS].some((ext) => lower.endsWith(ext))
+}
+
+function decodeRepoMetadata(raw: string | null): RepoPrepareMetadata | null {
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw) as Partial<RepoPrepareMetadata>
+    if (
+      typeof parsed.owner === 'string' &&
+      typeof parsed.repo === 'string' &&
+      typeof parsed.ref === 'string' &&
+      typeof parsed.commitSha === 'string'
+    ) {
+      return parsed as RepoPrepareMetadata
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
+function assertUtf8Text(buffer: Buffer): boolean {
+  if (buffer.includes(0)) return false
+  const text = buffer.toString('utf8')
+  return !text.includes('\uFFFD')
+}
+
+/** Git blob SHA-1 (a GitHub tree/blob API ugyan\u00EDgy c\u00EDmzi a tartalmat), hogy a
+ *  workspace-f\u00E1jlokat b\u00E1jt-egyenl\u0151s\u00E9g szerint tudjuk \u00F6sszevetni az import\u00E1lt
+ *  snapshot blob-shaival \u2014 en\u00E9lk\u00FCl nem der\u00FClne ki, melyik f\u00E1jl v\u00E1ltozott. */
+function gitBlobSha1(content: Buffer): string {
+  const header = Buffer.from(`blob ${content.length}\0`, 'utf8')
+  return createHash('sha1').update(Buffer.concat([header, content])).digest('hex')
+}
+
+function repoPrepareNextSteps(): string[] {
+  return [
+    'Use file_search under repoPath before reading files.',
+    'Use file_glob for filename/path discovery.',
+    'Use file_read only for the specific files you need.',
+    'Use file_edit/file_write for workspace changes, then summarize exact changed paths.',
   ]
 }
 
@@ -1004,6 +1257,28 @@ function argsMeta(
     }
   }
 
+  if (input.tool === 'repo_prepare') {
+    return {
+      ...base,
+      hasRepoUrl: Boolean(input.args.repoUrl),
+      owner: input.args.owner ?? null,
+      repo: input.args.repo ?? null,
+      ref: input.args.ref ?? null,
+      forceRefresh: input.args.forceRefresh ?? false,
+    }
+  }
+
+  if (input.tool === 'repo_open_pull_request') {
+    return {
+      ...base,
+      titleLength: input.args.title.length,
+      hasBody: Boolean(input.args.body),
+      branch: input.args.branch ?? null,
+      baseRef: input.args.baseRef ?? null,
+      draft: input.args.draft ?? false,
+    }
+  }
+
   if (input.tool === 'file_read') return { ...base, path: input.args.path, offset: input.args.offset ?? 1, limit: input.args.limit ?? 2000 }
   if (input.tool === 'file_write') return { ...base, path: input.args.path, contentLength: input.args.content.length }
   if (input.tool === 'create_html') return { ...base, path: input.args.path, htmlLength: input.args.html.length }
@@ -1112,6 +1387,8 @@ function resultMeta(
     | GmailCreateDraftResult
     | GmailSendResult
     | HttpApiCallResult
+    | RepoPrepareResult
+    | RepoOpenPullRequestResult
     | FileReadResult
     | FileWriteResult
     | HtmlCreateResult
@@ -1152,6 +1429,38 @@ function resultMeta(
   }
   if ('status' in result && 'ok' in result && 'body' in result) {
     return { status: result.status, ok: result.ok }
+  }
+
+  if ('repoPath' in result && 'commitSha' in result) {
+    return {
+      status: result.status,
+      repoPath: result.repoPath,
+      owner: result.owner,
+      repo: result.repo,
+      ref: result.ref,
+      commitSha: result.commitSha,
+      filesIndexed: result.filesIndexed,
+      filesWritten: result.filesWritten,
+      filesSkipped: result.filesSkipped,
+      bytesWritten: result.bytesWritten,
+    }
+  }
+
+  if ('changed' in result) {
+    return result.changed
+      ? {
+          changed: true,
+          owner: result.owner,
+          repo: result.repo,
+          branch: result.branch,
+          baseRef: result.baseRef,
+          commitSha: result.commitSha,
+          pullRequestUrl: result.pullRequestUrl,
+          pullRequestNumber: result.pullRequestNumber,
+          filesChanged: result.filesChanged,
+          changedPaths: result.changedPaths,
+        }
+      : { changed: false, message: result.message }
   }
 
   if ('ok' in result && !('ticketId' in result) && (('result' in result) || ('error' in result))) {
@@ -1502,6 +1811,11 @@ export class AllowlistAuthorizer implements Authorizer {
 }
 
 export class ToolBrokerService {
+  private static readonly AGENT_ANSWER_COMPLETION_STATES = new Set<string>([
+    'done',
+    'awaiting_human',
+  ])
+
   private delegationProcessor: DelegationProcessor | null = null
   private playbookTransitioner: PlaybookTicketTransitioner | null = null
 
@@ -1712,11 +2026,15 @@ export class ToolBrokerService {
       return this.kbGetPage(input.agentId, input.args, authorization.connector)
     }
     if (input.tool === 'board_write') return this.boardWrite(input)
-    if (input.tool === 'ticket_create') return this.ticketCreate(input)
-    if (input.tool === 'agent_ask') return this.agentAsk(input)
+    if (input.tool === 'ticket_create') return this.ticketCreate(input, actingTenantId)
+    if (input.tool === 'agent_ask') return this.agentAsk(input, actingTenantId)
     if (input.tool === 'web_research_request') return this.webResearchRequest(input)
-    if (input.tool === 'agent_resolve') return this.agentResolve(input.args)
-    if (input.tool === 'agent_catalog') return this.agentCatalog(input.args)
+    if (input.tool === 'agent_resolve') {
+      return this.agentResolve(input.args, await this.resolveCallerTenantId(input, actingTenantId))
+    }
+    if (input.tool === 'agent_catalog') {
+      return this.agentCatalog(input.args, await this.resolveCallerTenantId(input, actingTenantId))
+    }
     if (input.tool === 'user_directory') return this.userDirectory(input, actingTenantId)
 
     if (input.tool === 'web_search') {
@@ -1749,6 +2067,16 @@ export class ToolBrokerService {
         authorization.agentSecretAlias,
         delegatedAccessToken,
       )
+    }
+
+    if (input.tool === 'repo_prepare') {
+      if (!authorization.connector) throw new Error('repo_prepare requires connector authorization')
+      return this.repoPrepare(input, authorization.connector, actingTenantId)
+    }
+
+    if (input.tool === 'repo_open_pull_request') {
+      if (!authorization.connector) throw new Error('repo_open_pull_request requires connector authorization')
+      return this.repoOpenPullRequest(input, authorization.connector, actingTenantId)
     }
 
     if (
@@ -1861,6 +2189,368 @@ export class ToolBrokerService {
       body: input.args.body,
       context,
     })
+  }
+
+  private async repoPrepare(
+    input: Extract<ToolBrokerInvokeInput, { tool: 'repo_prepare' }>,
+    workspaceConnector: Connector,
+    actingTenantId: string | null,
+  ): Promise<RepoPrepareResult> {
+    const workspaceId = input.ticketId ?? input.conversationId
+    if (!workspaceId) throw new Error('repo_prepare requires a ticketId or conversationId')
+
+    const agent = await this.agents.findById(input.agentId)
+    if (!agent) throw new Error('repo_prepare agent not found')
+
+    const target = resolveRepoTarget(input.args, agent)
+    const token = await this.resolveGitHubTokenForAgent(input.agentId)
+    const repoInfo = await this.githubJson<GitHubRepoResponse>(
+      `/repos/${target.owner}/${target.repo}`,
+      token,
+    )
+    const ref = target.ref ?? repoInfo.default_branch ?? 'main'
+    const commit = await this.githubJson<GitHubCommitResponse>(
+      `/repos/${target.owner}/${target.repo}/commits/${encodeURIComponent(ref)}`,
+      token,
+    )
+    const commitSha = commit.sha
+    const treeSha = commit.commit?.tree?.sha ?? commitSha
+
+    const tenantId = actingTenantId ?? workspaceConnector.tenantId ?? 'global'
+    const existingMetadata = decodeRepoMetadata(
+      await this.fileEditor.readTextFileOrNull(tenantId, workspaceId, { path: REPO_METADATA_PATH }),
+    )
+    if (
+      !input.args.forceRefresh &&
+      existingMetadata?.owner === target.owner &&
+      existingMetadata.repo === target.repo &&
+      existingMetadata.ref === ref &&
+      existingMetadata.commitSha === commitSha
+    ) {
+      return {
+        ok: true,
+        repoPath: REPO_WORKSPACE_PATH,
+        status: 'already_current',
+        owner: target.owner,
+        repo: target.repo,
+        ref,
+        commitSha,
+        filesIndexed: existingMetadata.filesIndexed ?? 0,
+        filesWritten: 0,
+        filesSkipped: 0,
+        bytesWritten: existingMetadata.bytesWritten ?? 0,
+        metadataPath: REPO_METADATA_PATH,
+        nextSteps: repoPrepareNextSteps(),
+      }
+    }
+
+    const tree = await this.githubJson<GitHubTreeResponse>(
+      `/repos/${target.owner}/${target.repo}/git/trees/${treeSha}?recursive=1`,
+      token,
+    )
+    if (tree.truncated) {
+      throw new Error('repo_prepare GitHub tree is truncated; narrow the repo/ref or raise import limits')
+    }
+
+    const current = await this.fileEditor.listFiles(tenantId, workspaceId, {
+      path: REPO_WORKSPACE_PATH,
+      recursive: true,
+    })
+    await Promise.all(
+      current.entries
+        .filter((entry) => entry.type === 'file')
+        .map((entry) => this.fileEditor.deleteFile(tenantId, workspaceId, { path: entry.path })),
+    )
+
+    const blobs = tree.tree.filter((item) => item.type === 'blob')
+    const candidates = blobs
+      .filter((item) => !shouldSkipRepoPath(item.path, item.size ?? 0))
+      .slice(0, REPO_IMPORT_MAX_FILES)
+    let filesWritten = 0
+    let filesSkipped = blobs.length - candidates.length
+    let bytesWritten = 0
+    let nextIndex = 0
+
+    const importOne = async (item: GitHubTreeItem) => {
+      if (bytesWritten >= REPO_IMPORT_MAX_TOTAL_BYTES) {
+        filesSkipped += 1
+        return
+      }
+      const blob = await this.githubJson<GitHubBlobResponse>(
+        `/repos/${target.owner}/${target.repo}/git/blobs/${item.sha}`,
+        token,
+      )
+      if (blob.encoding !== 'base64') {
+        filesSkipped += 1
+        return
+      }
+      const buffer = Buffer.from(blob.content.replace(/\s+/g, ''), 'base64')
+      if (buffer.length > REPO_IMPORT_MAX_FILE_BYTES || !assertUtf8Text(buffer)) {
+        filesSkipped += 1
+        return
+      }
+      if (bytesWritten + buffer.length > REPO_IMPORT_MAX_TOTAL_BYTES) {
+        filesSkipped += 1
+        return
+      }
+      await this.fileEditor.writeFile(tenantId, workspaceId, {
+        path: `${REPO_WORKSPACE_PATH}/${item.path}`,
+        content: buffer.toString('utf8'),
+      })
+      bytesWritten += buffer.length
+      filesWritten += 1
+    }
+
+    const worker = async () => {
+      while (nextIndex < candidates.length) {
+        const item = candidates[nextIndex]
+        nextIndex += 1
+        await importOne(item)
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(6, candidates.length) }, () => worker()))
+
+    const metadata: RepoPrepareMetadata = {
+      owner: target.owner,
+      repo: target.repo,
+      ref,
+      commitSha,
+      repoPath: REPO_WORKSPACE_PATH,
+      filesIndexed: filesWritten,
+      bytesWritten,
+      preparedAt: new Date().toISOString(),
+    }
+    await this.fileEditor.writeFile(tenantId, workspaceId, {
+      path: REPO_METADATA_PATH,
+      content: JSON.stringify(metadata, null, 2),
+    })
+
+    return {
+      ok: true,
+      repoPath: REPO_WORKSPACE_PATH,
+      status: 'updated',
+      owner: target.owner,
+      repo: target.repo,
+      ref,
+      commitSha,
+      filesIndexed: filesWritten,
+      filesWritten,
+      filesSkipped,
+      bytesWritten,
+      metadataPath: REPO_METADATA_PATH,
+      nextSteps: repoPrepareNextSteps(),
+    }
+  }
+
+  /**
+   * Branch létrehozása + commit + PR megnyitása a `repo_prepare`-rel importált
+   * workspace-klón és a jelenlegi bázisref FRISS állása közti diffből. A
+   * diff-bázis szándékosan az import-kori snapshot (metadata.commitSha), NEM a
+   * friss head — így csak a ténylegesen file_edit/file_write/file_delete-elt
+   * fájlok kerülnek be, a commit/tree bázisa viszont a friss head-ről ágazik,
+   * hogy ne írjunk felül közben történt remote változásokat.
+   */
+  private async repoOpenPullRequest(
+    input: Extract<ToolBrokerInvokeInput, { tool: 'repo_open_pull_request' }>,
+    workspaceConnector: Connector,
+    actingTenantId: string | null,
+  ): Promise<RepoOpenPullRequestResult> {
+    const workspaceId = input.ticketId ?? input.conversationId
+    if (!workspaceId) throw new Error('repo_open_pull_request requires a ticketId or conversationId')
+
+    const tenantId = actingTenantId ?? workspaceConnector.tenantId ?? 'global'
+    const metadata = decodeRepoMetadata(
+      await this.fileEditor.readTextFileOrNull(tenantId, workspaceId, { path: REPO_METADATA_PATH }),
+    )
+    if (!metadata) {
+      throw new Error(
+        'repo_open_pull_request requires a prior repo_prepare in this workspace (no .repo_prepare.json found)',
+      )
+    }
+
+    const token = await this.resolveGitHubTokenForAgent(input.agentId)
+    const baseRef = input.args.baseRef ?? metadata.ref
+
+    const importedTree = await this.githubJson<GitHubTreeResponse>(
+      `/repos/${metadata.owner}/${metadata.repo}/git/trees/${metadata.commitSha}?recursive=1`,
+      token,
+    )
+    if (importedTree.truncated) {
+      throw new Error('repo_open_pull_request: imported GitHub tree is truncated; cannot diff reliably')
+    }
+    const originalShaByPath = new Map(
+      importedTree.tree.filter((item) => item.type === 'blob').map((item) => [item.path, item.sha]),
+    )
+
+    const prefix = `${REPO_WORKSPACE_PATH}/`
+    const current = await this.fileEditor.listFiles(tenantId, workspaceId, {
+      path: REPO_WORKSPACE_PATH,
+      recursive: true,
+    })
+    const currentRelPaths = current.entries
+      .filter((entry) => entry.type === 'file' && entry.path !== REPO_METADATA_PATH)
+      .map((entry) => entry.path.slice(prefix.length))
+
+    const changes: Array<{ path: string; content: Buffer | null }> = []
+    for (const relPath of currentRelPaths) {
+      const buf = await this.fileEditor.readRawFile(tenantId, workspaceId, { path: `${prefix}${relPath}` })
+      if (!buf) continue
+      if (originalShaByPath.get(relPath) !== gitBlobSha1(buf)) {
+        changes.push({ path: relPath, content: buf })
+      }
+    }
+    const currentRelSet = new Set(currentRelPaths)
+    for (const relPath of originalShaByPath.keys()) {
+      if (!currentRelSet.has(relPath)) changes.push({ path: relPath, content: null })
+    }
+
+    if (changes.length === 0) {
+      return {
+        ok: true,
+        changed: false,
+        message:
+          'Nincs változás a repo workspace-ben a legutóbbi repo_prepare óta — nincs mit commitolni/PR-ezni.',
+      }
+    }
+
+    const baseCommit = await this.githubJson<GitHubCommitResponse>(
+      `/repos/${metadata.owner}/${metadata.repo}/commits/${encodeURIComponent(baseRef)}`,
+      token,
+    )
+    const baseHeadSha = baseCommit.sha
+    const baseHeadTreeSha = baseCommit.commit?.tree?.sha ?? baseHeadSha
+
+    const treeEntries = changes.map((change) =>
+      change.content
+        ? { path: change.path, mode: '100644', type: 'blob', content: change.content.toString('utf8') }
+        : { path: change.path, mode: '100644', type: 'blob', sha: null },
+    )
+    const newTree = await this.githubRequestJson<{ sha: string }>(
+      `/repos/${metadata.owner}/${metadata.repo}/git/trees`,
+      token,
+      'POST',
+      { base_tree: baseHeadTreeSha, tree: treeEntries },
+    )
+    const newCommit = await this.githubRequestJson<{ sha: string }>(
+      `/repos/${metadata.owner}/${metadata.repo}/git/commits`,
+      token,
+      'POST',
+      { message: input.args.title, tree: newTree.sha, parents: [baseHeadSha] },
+    )
+    const branch = await this.createRepoBranch(
+      metadata.owner,
+      metadata.repo,
+      token,
+      input.args.branch,
+      newCommit.sha,
+    )
+    const pr = await this.githubRequestJson<{ html_url: string; number: number }>(
+      `/repos/${metadata.owner}/${metadata.repo}/pulls`,
+      token,
+      'POST',
+      {
+        title: input.args.title,
+        body: input.args.body ?? '',
+        head: branch,
+        base: baseRef,
+        draft: input.args.draft ?? false,
+      },
+    )
+
+    return {
+      ok: true,
+      changed: true,
+      owner: metadata.owner,
+      repo: metadata.repo,
+      baseRef,
+      branch,
+      commitSha: newCommit.sha,
+      pullRequestUrl: pr.html_url,
+      pullRequestNumber: pr.number,
+      filesChanged: changes.length,
+      changedPaths: changes.map((c) => c.path).sort(),
+    }
+  }
+
+  private async createRepoBranch(
+    owner: string,
+    repo: string,
+    token: string | null,
+    requestedBranch: string | undefined,
+    commitSha: string,
+  ): Promise<string> {
+    const base = requestedBranch?.trim() || `agent/pr-${Date.now().toString(36)}`
+    let candidate = base
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const res = await fetch(`https://api.github.com/repos/${owner}/${repo}/git/refs`, {
+        method: 'POST',
+        headers: {
+          accept: 'application/vnd.github+json',
+          'content-type': 'application/json',
+          'user-agent': 'enterprise-ai-agent-platform',
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ ref: `refs/heads/${candidate}`, sha: commitSha }),
+      })
+      if (res.ok) return candidate
+      if (res.status !== 422) {
+        const detail = await res.text().catch(() => '')
+        throw new Error(`GitHub API failed creating branch: HTTP ${res.status}${detail ? ` — ${detail.slice(0, 300)}` : ''}`)
+      }
+      candidate = `${base}-${attempt + 2}`
+    }
+    throw new Error('repo_open_pull_request: could not allocate a free branch name (too many collisions)')
+  }
+
+  private async githubJson<T>(path: string, token: string | null): Promise<T> {
+    const res = await fetch(`https://api.github.com${path}`, {
+      headers: {
+        accept: 'application/vnd.github+json',
+        'user-agent': 'enterprise-ai-agent-platform',
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+      },
+    })
+    if (!res.ok) {
+      throw new Error(`GitHub API failed: HTTP ${res.status}`)
+    }
+    return (await res.json()) as T
+  }
+
+  private async githubRequestJson<T>(
+    path: string,
+    token: string | null,
+    method: 'POST' | 'PATCH',
+    body: unknown,
+  ): Promise<T> {
+    const res = await fetch(`https://api.github.com${path}`, {
+      method,
+      headers: {
+        accept: 'application/vnd.github+json',
+        'content-type': 'application/json',
+        'user-agent': 'enterprise-ai-agent-platform',
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(body),
+    })
+    if (!res.ok) {
+      const detail = await res.text().catch(() => '')
+      throw new Error(`GitHub API failed: HTTP ${res.status}${detail ? ` — ${detail.slice(0, 300)}` : ''}`)
+    }
+    return (await res.json()) as T
+  }
+
+  private async resolveGitHubTokenForAgent(agentId: string): Promise<string | null> {
+    const connectors = await this.tools.findConnectorsForAgent(agentId)
+    const github = connectors.find(({ connector }) => {
+      if (connector.type !== 'http_api') return false
+      const config = isRecord(connector.config) ? connector.config : {}
+      const baseUrl = typeof config.baseUrl === 'string' ? config.baseUrl : ''
+      const provider = typeof config.provider === 'string' ? config.provider.toLowerCase() : ''
+      return provider.includes('github') || baseUrl.includes('api.github.com')
+    })
+    if (!github) return null
+    const alias = github.agentSecretAlias ?? github.connector.secretAlias
+    return alias ? resolveConnectorApiKey(alias) : null
   }
 
   private async executeFileTool(
@@ -2057,6 +2747,22 @@ export class ToolBrokerService {
     return user?.tenantId ?? null
   }
 
+  /**
+   * A hívó agent effektív tenant-kontextusa a tenant-izolációs döntésekhez
+   * (agent felderítés/delegálás). A cselekvő felhasználó tenantja az elsődleges,
+   * különben a hívó agent saját tenantja — a `user_directory` feloldásával
+   * megegyező minta, hogy a humán- és az agent-directory ugyanazon a tenant-határon
+   * lásson.
+   */
+  private async resolveCallerTenantId(
+    input: ToolBrokerInvokeInput,
+    actingTenantId: string | null,
+  ): Promise<string | null> {
+    if (actingTenantId) return actingTenantId
+    const agent = await this.agents.findById(input.agentId)
+    return agent?.tenantId ?? null
+  }
+
   private async checkGmailSendApproval(
     input: ToolBrokerInvokeInput,
     args: GmailSendArgs,
@@ -2161,6 +2867,8 @@ export class ToolBrokerService {
       return await this.completeDelegationReturn(ticket, mergedPayload, input)
     }
 
+    let result: BoardWriteResult
+
     // Folyamat-lépés lezárása a Playbook state machine-en át: a kötelező kapuk és
     // az output-szerződés kikényszerülnek, és a ProcessService.advance tovább-lépteti
     // a Futást. A payload+state itt EGY átmenetben megy (a state machine az
@@ -2183,26 +2891,65 @@ export class ToolBrokerService {
         outputPayload: input.args.patch.payload,
       })
       const fresh = await this.tickets.findById(ticket.id)
-      return { ok: true, ticketId: ticket.id, state: fresh?.state ?? input.args.patch.state }
+      result = { ok: true, ticketId: ticket.id, state: fresh?.state ?? input.args.patch.state }
+    } else {
+      let current = ticket
+      if (input.args.patch.payload) {
+        current = await this.tickets.update(current.id, {
+          payload: mergedPayload as Prisma.JsonValue,
+        })
+      }
+
+      if (input.args.patch.state && input.args.patch.state !== current.state) {
+        current = await this.ticketService.transition({
+          ticketId: current.id,
+          toState: input.args.patch.state,
+          actor: { type: 'agent', agentId: input.agentId },
+          agentVersion: input.agentVersion,
+        })
+      }
+
+      result = { ok: true, ticketId: current.id, state: current.state }
     }
 
-    let current = ticket
-    if (input.args.patch.payload) {
-      current = await this.tickets.update(current.id, {
-        payload: mergedPayload as Prisma.JsonValue,
-      })
-    }
+    await this.maybeRecordAgentAnswerComment({
+      ticketId: ticket.id,
+      agentId: input.agentId,
+      agentVersion: input.agentVersion,
+    })
 
-    if (input.args.patch.state && input.args.patch.state !== current.state) {
-      current = await this.ticketService.transition({
-        ticketId: current.id,
-        toState: input.args.patch.state,
-        actor: { type: 'agent', agentId: input.agentId },
-        agentVersion: input.agentVersion,
-      })
-    }
+    return result
+  }
 
-    return { ok: true, ticketId: current.id, state: current.state }
+  /** Goose/board_write útvonal: agent-válasz a ticket-szálba (outputContract mezőkkel is). */
+  private async maybeRecordAgentAnswerComment(input: {
+    ticketId: string
+    agentId: string
+    agentVersion: number
+  }): Promise<void> {
+    const ticket = await this.tickets.findById(input.ticketId)
+    if (!ticket || ticket.agentId !== input.agentId) return
+    if (!ToolBrokerService.AGENT_ANSWER_COMPLETION_STATES.has(ticket.state)) return
+
+    const payload = isRecord(ticket.payload) ? ticket.payload : {}
+    const body = extractAgentAnswerDisplayBody(payload)
+    if (!body) return
+
+    const existing = await this.tickets.listComments(input.ticketId)
+    const lastAgent = [...existing].reverse().find((comment) => comment.kind === 'agent_answer')
+    if (lastAgent && lastAgent.body.trim() === body.trim()) return
+
+    const agent = await this.agents.findById(input.agentId)
+    await this.tickets.appendComment({
+      ticketId: input.ticketId,
+      kind: 'agent_answer',
+      authorType: 'agent',
+      authorAgentId: input.agentId,
+      authorDisplayName: agent?.name ?? 'Agent',
+      agentVersion: input.agentVersion,
+      body,
+      structured: agentAnswerStructuredFromPayload(payload) as Prisma.JsonObject,
+    })
   }
 
   private async completeDelegationReturn(
@@ -2308,6 +3055,7 @@ export class ToolBrokerService {
 
   private async ticketCreate(
     input: Extract<ToolBrokerInvokeInput, { tool: 'ticket_create' }>,
+    actingTenantId: string | null,
   ): Promise<TicketCreateResult> {
     const { args } = input
 
@@ -2321,6 +3069,15 @@ export class ToolBrokerService {
       }
       const assignee = await this.agents.findById(args.assigneeId)
       if (!assignee) throw new Error('Assignee agent not found')
+      // Tenant-izoláció: a feladat a szülő-ticket (különben a cselekvő felhasználó)
+      // tenantjában jön létre; cross-tenant agenthez SOHA nem rendelünk ticketet.
+      // Ez az agent-felelős párja a humán-felelős ág alábbi tenant-ellenőrzésének.
+      const assigneeRefTenantId =
+        (input.ticketId ? (await this.tickets.findById(input.ticketId))?.tenantId ?? null : null) ??
+        actingTenantId
+      if (!isAgentReachableFromTenant(assignee.tenantId, assigneeRefTenantId)) {
+        throw new Error('Assignee agent is not reachable from this tenant')
+      }
     }
     // Humán felelős (a user_directory-ból): ha az agent egy konkrét humán
     // userId-t ad, validáljuk (létező, aktív, azonos tenant) és a ticketre
@@ -2400,6 +3157,7 @@ export class ToolBrokerService {
 
   private async agentAsk(
     input: Extract<ToolBrokerInvokeInput, { tool: 'agent_ask' }>,
+    actingTenantId: string | null,
   ): Promise<AgentAskResult> {
     const question = input.args.question.trim()
     if (!question) throw new Error('Question is required')
@@ -2412,6 +3170,16 @@ export class ToolBrokerService {
     if (!target) throw new Error('Target agent not found')
     if (target.role === 'orchestrator') {
       throw new Error('Target agent is orchestrator and cannot answer delegated tickets')
+    }
+
+    // Tenant-izoláció: a delegálás-ticket a szülő-ticket (különben a cselekvő
+    // felhasználó) tenantjában jön létre; cross-tenant agentnek SOHA nem delegálunk.
+    const parentTenantId = input.ticketId
+      ? (await this.tickets.findById(input.ticketId))?.tenantId ?? null
+      : null
+    const effectiveTenantId = parentTenantId ?? actingTenantId
+    if (!isAgentReachableFromTenant(target.tenantId, effectiveTenantId)) {
+      throw new Error('Target agent is not reachable from this tenant')
     }
 
     const payload: Record<string, unknown> = {
@@ -2427,7 +3195,7 @@ export class ToolBrokerService {
     }
 
     const ticket = await this.tickets.create({
-      tenantId: input.ticketId ? (await this.tickets.findById(input.ticketId))?.tenantId ?? null : null,
+      tenantId: parentTenantId,
       type: 'interaction',
       title: `Delegálás: ${question.slice(0, 80)}`,
       state: 'ready',
@@ -2728,12 +3496,16 @@ export class ToolBrokerService {
     })
   }
 
-  private async agentResolve(args: AgentResolveArgs): Promise<AgentResolveResult> {
+  private async agentResolve(
+    args: AgentResolveArgs,
+    effectiveTenantId: string | null,
+  ): Promise<AgentResolveResult> {
     const query = normalizeText(args.query.trim())
     if (!query) throw new Error('Query is required')
 
     const limit = args.limit ?? 5
-    const all = await this.agents.findMany()
+    // Tenant-izoláció: cross-tenant agent SOHA nem szivárog ki a felderítésbe.
+    const all = filterAgentsByTenant(await this.agents.findMany(), effectiveTenantId)
 
     const scored = all
       .filter((agent) => agent.status === 'active')
@@ -2758,15 +3530,25 @@ export class ToolBrokerService {
     }
   }
 
-  private async agentCatalog(args: AgentCatalogArgs): Promise<AgentCatalogResult> {
+  private async agentCatalog(
+    args: AgentCatalogArgs,
+    effectiveTenantId: string | null,
+  ): Promise<AgentCatalogResult> {
     const limitDefault = args.query?.trim() ? 5 : 25
 
     if (args.agentId) {
+      // Tenant-izoláció: cross-tenant agentet nem árulunk el (a teljes
+      // capability-/connector-katalógusát sem) — nem-elérhető id némán üres.
+      const agent = await this.agents.findById(args.agentId)
+      if (!agent || !isAgentReachableFromTenant(agent.tenantId, effectiveTenantId)) {
+        return { agents: [] }
+      }
       const entry = await buildAgentCatalogEntry(args.agentId, this.agents, this.tools)
       return { agents: [entry] }
     }
 
-    const all = await this.agents.findMany()
+    // Tenant-izoláció: a katalógus csak a saját tenant + megosztott agenteket listázza.
+    const all = filterAgentsByTenant(await this.agents.findMany(), effectiveTenantId)
     let candidates = all.filter((agent) => agent.status === 'active')
 
     if (args.query?.trim()) {

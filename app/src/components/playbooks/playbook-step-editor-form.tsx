@@ -2,9 +2,12 @@
 
 import type { RawStep } from '@/components/playbooks/playbook-flow-graph'
 import { PlaybookFieldHint } from '@/components/playbooks/playbook-field-hint'
+import { ToolCapabilityCheckboxGroups } from '@/components/tool-capabilities/tool-capability-checkbox-groups'
 import { syncInputSlotsWithTemplate } from '@/lib/playbook-v2/input-slots-sync'
 import { getRoleCapabilities, getRoleType, PLAYBOOK_ROLE_TYPE_OPTIONS, type PlaybookRoleType } from '@/lib/playbook-v2/role-sync'
 import type { PlaybookInputSlot, PlaybookRole, PlaybookStep } from '@/lib/playbook-v2/spec'
+import { PLAYBOOK_CAPABILITY_GROUPS, PLAYBOOK_CAPABILITY_NAMES } from '@/lib/tool-capability-catalog'
+import { TICKET_STATES } from '@/domain/ticket/ticket-type-config'
 
 type RawRule = NonNullable<PlaybookStep['onComplete']>[number]
 type ConditionOp = '==' | '!=' | '>=' | '<=' | '>' | '<'
@@ -26,6 +29,41 @@ export type InputSlotFormRow = {
   description: string
 }
 
+/** Egy `onError`/`onBlocked` mező szerkesztő-állapota (hibapolicy spec §4/§5). */
+export type ErrorTargetFormState = {
+  /** inherit: nincs saját él, a Playbook-default (vagy await_human) érvényes.
+   *  override: saját catch-all célpont (targetKind/targetId).
+   *  complex: a lépésen reason-kulcsos (`routes`) hiba-út van — itt csak megjelenítve, nem szerkeszthető. */
+  mode: 'inherit' | 'override' | 'complex'
+  targetKind: 'step' | 'gate'
+  targetId: string
+}
+
+export type ErrorPolicyTarget = { nextStepId?: string; gateId?: string } | undefined
+type RawErrorTarget = { nextStepId?: string; gateId?: string; routes?: unknown[] } | undefined
+
+function errorTargetFormFromRaw(raw: RawErrorTarget, playbookDefault: ErrorPolicyTarget): ErrorTargetFormState {
+  if (raw == null) {
+    if (playbookDefault?.gateId) return { mode: 'inherit', targetKind: 'gate', targetId: playbookDefault.gateId }
+    if (playbookDefault?.nextStepId) return { mode: 'inherit', targetKind: 'step', targetId: playbookDefault.nextStepId }
+    return { mode: 'inherit', targetKind: 'step', targetId: '' }
+  }
+  if (Array.isArray(raw.routes)) {
+    if (raw.gateId) return { mode: 'complex', targetKind: 'gate', targetId: raw.gateId }
+    return { mode: 'complex', targetKind: 'step', targetId: raw.nextStepId ?? '' }
+  }
+  if (raw.gateId) return { mode: 'override', targetKind: 'gate', targetId: raw.gateId }
+  return { mode: 'override', targetKind: 'step', targetId: raw.nextStepId ?? '' }
+}
+
+/** `existing` csak a `complex` módban kell (a reason-kulcsos `routes` érintetlen megőrzéséhez). */
+function errorTargetFormToRaw(form: ErrorTargetFormState, existing: RawErrorTarget): RawErrorTarget {
+  if (form.mode === 'complex') return existing
+  if (form.mode === 'inherit') return undefined
+  if (!form.targetId.trim()) return undefined
+  return form.targetKind === 'gate' ? { gateId: form.targetId.trim() } : { nextStepId: form.targetId.trim() }
+}
+
 export type StepFormState = {
   name: string
   ticketType: string
@@ -35,7 +73,7 @@ export type StepFormState = {
   description: string
   instructionTemplate: string
   timeoutMinutes: string
-  allowedStatesText: string
+  allowedStates: string[]
   requiredGateIds: string[]
   inputSlots: InputSlotFormRow[]
   onCompleteRules: OnCompleteFormRule[]
@@ -43,6 +81,8 @@ export type StepFormState = {
   retryOnExhausted: '' | 'fail_process' | 'manual_review'
   inputContractJson: string
   outputContractJson: string
+  onError: ErrorTargetFormState
+  onBlocked: ErrorTargetFormState
 }
 
 const CONDITION_OPS: ConditionOp[] = ['==', '!=', '>=', '<=', '>', '<']
@@ -50,20 +90,11 @@ const CONDITION_OPS: ConditionOp[] = ['==', '!=', '>=', '<=', '>', '<']
 const INPUT_SLOT_TYPES: PlaybookInputSlot['type'][] = ['string', 'number', 'boolean', 'freeform']
 const INPUT_SLOT_SOURCES: PlaybookInputSlot['source'][] = ['config', 'trigger', 'step']
 
+/** Gyakori ticketType javaslatok — csak kényelmi cél, a mező bármilyen egyéni szöveget elfogad. */
+const TICKET_TYPE_SUGGESTIONS = ['agent_task', 'human_approval', 'review', 'notification']
+
 const FIELD_CLASS = 'w-full rounded border border-ink/15 bg-transparent px-2 py-1 text-sm'
 const LABEL_CLASS = 'text-ink-soft mb-0.5 block'
-
-function joinList(items: string[] | undefined): string {
-  return (items ?? []).join(', ')
-}
-
-function parseList(text: string): string[] | undefined {
-  const items = text
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean)
-  return items.length > 0 ? items : undefined
-}
 
 function parseJsonField(text: string): Record<string, unknown> | undefined {
   const trimmed = text.trim()
@@ -108,7 +139,11 @@ function formSlotsToPlaybook(rows: InputSlotFormRow[]): PlaybookInputSlot[] {
   }))
 }
 
-export function stepFormFromRaw(step: RawStep, roles: PlaybookRole[] | undefined): StepFormState {
+export function stepFormFromRaw(
+  step: RawStep,
+  roles: PlaybookRole[] | undefined,
+  defaultErrorPolicy?: { onError?: ErrorPolicyTarget; onBlocked?: ErrorPolicyTarget },
+): StepFormState {
   const slots = step.inputSlots as PlaybookInputSlot[] | undefined
   return {
     name: step.name ?? '',
@@ -119,7 +154,7 @@ export function stepFormFromRaw(step: RawStep, roles: PlaybookRole[] | undefined
     description: step.description ?? '',
     instructionTemplate: step.instructionTemplate ?? '',
     timeoutMinutes: step.timeoutMinutes != null ? String(step.timeoutMinutes) : '',
-    allowedStatesText: joinList(step.allowedStates),
+    allowedStates: [...(step.allowedStates ?? [])],
     requiredGateIds: [...(step.requiredGateIds ?? [])],
     inputSlots: inputSlotsToForm(slots),
     onCompleteRules: onCompleteToForm(step.onComplete),
@@ -128,6 +163,8 @@ export function stepFormFromRaw(step: RawStep, roles: PlaybookRole[] | undefined
     retryOnExhausted: step.retryPolicy?.onExhausted ?? '',
     inputContractJson: stringifyJsonField(step.inputContract),
     outputContractJson: stringifyJsonField(step.outputContract),
+    onError: errorTargetFormFromRaw(step.onError, defaultErrorPolicy?.onError),
+    onBlocked: errorTargetFormFromRaw(step.onBlocked, defaultErrorPolicy?.onBlocked),
   }
 }
 
@@ -237,13 +274,15 @@ export function buildStepFromForm(existing: RawStep, form: StepFormState): StepS
         instructionTemplate,
         inputSlots: mergeSyncedInputSlots(instructionTemplate, form.inputSlots),
         timeoutMinutes: timeoutMinutes && !Number.isNaN(timeoutMinutes) ? timeoutMinutes : undefined,
-        allowedStates: parseList(form.allowedStatesText),
+        allowedStates: form.allowedStates.length > 0 ? [...form.allowedStates] : undefined,
         requiredGateIds:
           form.requiredGateIds.length > 0 ? [...form.requiredGateIds] : undefined,
         onComplete: onCompleteFromForm(form.onCompleteRules),
         retryPolicy,
         inputContract: parseJsonField(form.inputContractJson),
         outputContract: parseJsonField(form.outputContractJson),
+        onError: errorTargetFormToRaw(form.onError, existing.onError),
+        onBlocked: errorTargetFormToRaw(form.onBlocked, existing.onBlocked),
       },
     }
   } catch (e) {
@@ -265,18 +304,103 @@ function emptyOnCompleteRule(): OnCompleteFormRule {
   }
 }
 
-const ALL_CAPABILITIES = [
-  'agent_catalog', 'agent_resolve', 'agent_ask', 'user_directory',
-  'ticket_create', 'board_write',
-  'http_api_get', 'http_api_request',
-  'web_search', 'web_research_request',
-  'kb_search',
-  'file_read', 'file_write', 'file_edit', 'file_list', 'file_glob', 'file_search', 'file_delete',
-  'xlsx_read_sheet', 'xlsx_write_cells', 'xlsx_append_rows', 'xlsx_create',
-  'pptx_create', 'docx_read', 'pdf_read', 'pdf_create', 'create_html',
-  'gmail_search', 'gmail_get_message', 'gmail_create_draft', 'gmail_send',
-  'sandbox_app.create', 'sandbox_app.update_artifact', 'sandbox_app.preview', 'sandbox_app.export',
-]
+function ErrorTargetFieldset({
+  label,
+  hint,
+  value,
+  onChange,
+  playbookDefault,
+  stepIds,
+  gateIds,
+}: {
+  label: string
+  hint: string
+  value: ErrorTargetFormState
+  onChange: (next: ErrorTargetFormState) => void
+  playbookDefault: ErrorPolicyTarget
+  stepIds: string[]
+  gateIds: string[]
+}) {
+  const defaultLabel = playbookDefault?.gateId
+    ? `◆ kapu: ${playbookDefault.gateId}`
+    : playbookDefault?.nextStepId
+      ? `🔹 lépés: ${playbookDefault.nextStepId}`
+      : null
+
+  return (
+    <div className="space-y-1.5 rounded border border-ink/10 bg-paper/40 p-2">
+      <p className="text-xs font-medium text-ink">{label}</p>
+      <PlaybookFieldHint>{hint}</PlaybookFieldHint>
+
+      {value.mode === 'complex' ? (
+        <p className="rounded bg-honey/10 px-2 py-1 text-[11px] text-honey">
+          Egyedi, reason-alapú hiba-útvonal (routes) van beállítva ehhez a lépéshez — ez a mező csak a
+          catch-all célt tudja szerkeszteni, a reason-szabályok a JSON-nézetben módosíthatók.
+        </p>
+      ) : (
+        <>
+          <select
+            value={value.mode}
+            onChange={(e) => {
+              const mode = e.target.value as 'inherit' | 'override'
+              if (mode === 'inherit') {
+                onChange({ ...value, mode })
+                return
+              }
+              onChange({
+                ...value,
+                mode,
+                targetKind: value.targetId ? value.targetKind : playbookDefault?.gateId ? 'gate' : 'step',
+                targetId: value.targetId || playbookDefault?.gateId || playbookDefault?.nextStepId || '',
+              })
+            }}
+            className={FIELD_CLASS}
+          >
+            <option value="inherit">Playbook-alapértelmezés öröklése</option>
+            <option value="override">Egyéni felülírás ezen a lépésen</option>
+          </select>
+
+          {value.mode === 'inherit' ? (
+            <p className="text-[11px] text-ink-faint">
+              {defaultLabel ? (
+                <>
+                  Öröklött cél: <span className="font-mono">{defaultLabel}</span>
+                </>
+              ) : (
+                'Nincs Playbook-default beállítva — emberi felülvizsgálatra megy (awaiting_human).'
+              )}
+            </p>
+          ) : (
+            <div className="grid grid-cols-2 gap-2">
+              <select
+                value={value.targetKind}
+                onChange={(e) =>
+                  onChange({ ...value, targetKind: e.target.value as 'step' | 'gate', targetId: '' })
+                }
+                className={FIELD_CLASS}
+              >
+                <option value="step">lépés</option>
+                <option value="gate">kapu</option>
+              </select>
+              <select
+                value={value.targetId}
+                onChange={(e) => onChange({ ...value, targetId: e.target.value })}
+                className={FIELD_CLASS}
+              >
+                <option value="">— válassz —</option>
+                {(value.targetKind === 'gate' ? gateIds : stepIds).map((id) => (
+                  <option key={id} value={id}>
+                    {id}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  )
+}
 
 export function PlaybookStepEditorForm({
   form,
@@ -284,12 +408,14 @@ export function PlaybookStepEditorForm({
   stepIds,
   gateIds,
   roles,
+  defaultErrorPolicy,
 }: {
   form: StepFormState
   onChange: (next: StepFormState) => void
   stepIds: string[]
   gateIds: string[]
   roles?: PlaybookRole[]
+  defaultErrorPolicy?: { onError?: ErrorPolicyTarget; onBlocked?: ErrorPolicyTarget }
 }) {
   function patch(partial: Partial<StepFormState>) {
     onChange({ ...form, ...partial })
@@ -303,6 +429,12 @@ export function PlaybookStepEditorForm({
   function updateInputSlot(index: number, partial: Partial<InputSlotFormRow>) {
     const next = form.inputSlots.map((r, i) => (i === index ? { ...r, ...partial } : r))
     patch({ inputSlots: next })
+  }
+
+  function updateRequiredCapabilities(next: Set<string>) {
+    const known = PLAYBOOK_CAPABILITY_NAMES.filter((cap) => next.has(cap))
+    const custom = [...next].filter((cap) => !PLAYBOOK_CAPABILITY_NAMES.includes(cap))
+    patch({ requiredCapabilities: [...known, ...custom] })
   }
 
   return (
@@ -326,10 +458,17 @@ export function PlaybookStepEditorForm({
             onChange={(e) => patch({ ticketType: e.target.value })}
             className={FIELD_CLASS}
             placeholder="Pl.: agent_task, human_approval"
+            list="ticket-type-suggestions"
           />
+          <datalist id="ticket-type-suggestions">
+            {TICKET_TYPE_SUGGESTIONS.map((t) => (
+              <option key={t} value={t} />
+            ))}
+          </datalist>
           <PlaybookFieldHint>
-            Milyen típusú munkacikk jön létre ebből a lépésből a futás során. Segít szűrni,
-            riportolni és összekötni a platform ticket-kezelésével.
+            Tisztán dokumentációs címke — a futtatást nem befolyásolja, de segít a ticketek
+            szűrésében/csoportosításában a lépések között. Választhatsz a javaslatokból, vagy írhatsz
+            egyéni értéket.
           </PlaybookFieldHint>
         </label>
       </div>
@@ -396,23 +535,11 @@ export function PlaybookStepEditorForm({
             Az agent csak akkor köthető ehhez a szerephez, ha ezek a tool-ok engedélyezve vannak nála.
             Jelöld be azokat, amelyeket a lépés ténylegesen használ.
           </PlaybookFieldHint>
-          <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 sm:grid-cols-3">
-            {ALL_CAPABILITIES.map((cap) => (
-              <label key={cap} className="flex items-center gap-1.5 text-xs">
-                <input
-                  type="checkbox"
-                  checked={form.requiredCapabilities.includes(cap)}
-                  onChange={(e) => {
-                    const next = e.target.checked
-                      ? [...form.requiredCapabilities, cap]
-                      : form.requiredCapabilities.filter((c) => c !== cap)
-                    patch({ requiredCapabilities: next })
-                  }}
-                />
-                <span className="font-mono">{cap}</span>
-              </label>
-            ))}
-          </div>
+          <ToolCapabilityCheckboxGroups
+            groups={PLAYBOOK_CAPABILITY_GROUPS}
+            enabled={new Set(form.requiredCapabilities)}
+            onChange={updateRequiredCapabilities}
+          />
         </fieldset>
       )}
 
@@ -522,19 +649,31 @@ export function PlaybookStepEditorForm({
             elkerülve, hogy a folyamat örökre beragadjon.
           </PlaybookFieldHint>
         </label>
-        <label className="block text-xs">
+        <fieldset className="block text-xs">
           <span className={LABEL_CLASS}>Engedélyezett állapotok (allowedStates)</span>
-          <input
-            value={form.allowedStatesText}
-            onChange={(e) => patch({ allowedStatesText: e.target.value })}
-            className={FIELD_CLASS}
-            placeholder="ready, in_progress, done, failed"
-          />
+          <div className="grid grid-cols-2 gap-x-2 gap-y-0.5 rounded border border-ink/15 p-2">
+            {TICKET_STATES.map((state) => (
+              <label key={state} className="flex items-center gap-1.5 text-xs">
+                <input
+                  type="checkbox"
+                  checked={form.allowedStates.includes(state)}
+                  onChange={(e) => {
+                    const next = e.target.checked
+                      ? [...form.allowedStates, state]
+                      : form.allowedStates.filter((s) => s !== state)
+                    patch({ allowedStates: next })
+                  }}
+                />
+                <span className="font-mono">{state}</span>
+              </label>
+            ))}
+          </div>
           <PlaybookFieldHint>
-            A ticket milyen állapotokon mehet át ebben a lépésben (vesszővel elválasztva). Pl. emberi
-            lépésnél: awaiting_human, approved.
+            A ticket milyen állapotokon mehet át ebben a lépésben. Ha üresen hagyod, a lépés
+            szerepkör-típusa (agent/ember) szerinti alapértelmezett állapotlánc érvényesül. Pl. emberi
+            lépésnél jelöld: awaiting_human, approved.
           </PlaybookFieldHint>
-        </label>
+        </fieldset>
       </div>
 
       {gateIds.length > 0 && (
@@ -716,6 +855,35 @@ export function PlaybookStepEditorForm({
             </select>
           </label>
         </div>
+      </fieldset>
+
+      <fieldset className="rounded border border-ink/10 p-2 space-y-2">
+        <legend className="px-1 text-xs font-semibold text-ink-soft">
+          Hiba-útvonalak (onError / onBlocked)
+        </legend>
+        <PlaybookFieldHint>
+          Hova menjen a lépés, ha a végrehajtása hibázik (`failed`) vagy elakad (`blocked`)? Alapból a
+          Playbook-szintű alapértelmezés érvényes (ha van), enélkül a beégetett emberi felülvizsgálat
+          (awaiting_human). Itt felülírhatod kifejezetten erre a lépésre.
+        </PlaybookFieldHint>
+        <ErrorTargetFieldset
+          label="onError — végrehajtási hiba"
+          hint="Kezeletlen kivétel / hibás kimenet esetén ide irányít."
+          value={form.onError}
+          onChange={(next) => patch({ onError: next })}
+          playbookDefault={defaultErrorPolicy?.onError}
+          stepIds={stepIds}
+          gateIds={gateIds}
+        />
+        <ErrorTargetFieldset
+          label="onBlocked — elakadás"
+          hint="Timeout vagy eszköz-tiltás miatti elakadás esetén ide irányít."
+          value={form.onBlocked}
+          onChange={(next) => patch({ onBlocked: next })}
+          playbookDefault={defaultErrorPolicy?.onBlocked}
+          stepIds={stepIds}
+          gateIds={gateIds}
+        />
       </fieldset>
 
       <div className="grid gap-2 lg:grid-cols-2">

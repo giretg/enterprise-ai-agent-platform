@@ -25,6 +25,17 @@ export function validatePlaybookDraftSpec(spec: PlaybookDraftSpec): PlaybookVali
   return playbookValidator.validateSpec(spec)
 }
 
+type RawErrorPolicy = {
+  onError?: { nextStepId?: string; gateId?: string }
+  onBlocked?: { nextStepId?: string; gateId?: string }
+}
+
+/** A Playbook-szintű default hibaág kiolvasása (hibapolicy spec §4) — az index-signature miatt kézzel. */
+export function readDefaultErrorPolicy(spec: PlaybookDraftSpec): RawErrorPolicy {
+  const policy = (spec as { defaultErrorPolicy?: RawErrorPolicy }).defaultErrorPolicy
+  return policy ?? {}
+}
+
 export function syncPlaybookSpecInputSlots(spec: PlaybookDraftSpec): PlaybookDraftSpec {
   const steps = (spec.steps ?? []).map((step) => {
     const instructionTemplate = step.instructionTemplate

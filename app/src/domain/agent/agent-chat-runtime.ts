@@ -1,3 +1,4 @@
+import type { ToolCall } from '@prisma/client'
 import type {
   AgentRepository,
   AuditRepository,
@@ -23,7 +24,12 @@ import type { ToolBrokerService } from '../tool-broker/tool-broker-service'
 import type { WorkspaceStorage } from '../file-editor/workspace-storage'
 import type { CompiledSpec } from '../playbook/playbook-compiler'
 import type { ProcessService } from '../playbook/process-service'
-import { listAllowedChatTools, runAgentToolLoop, type ToolLoopActivityEvent } from './chat-tool-loop'
+import {
+  listAllowedChatTools,
+  resolveToolLoopMaxTurns,
+  runAgentToolLoop,
+  type ToolLoopActivityEvent,
+} from './chat-tool-loop'
 
 const IMAGE_EXT = /\.(jpg|jpeg|png|gif|webp)$/i
 const IMAGE_MARKER = /^(\[image:([^\]]+)\])([\s\S]*)$/
@@ -31,6 +37,93 @@ const IMAGE_MARKER = /^(\[image:([^\]]+)\])([\s\S]*)$/
 function safeToolResultName(value: string): string {
   const cleaned = value.replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '')
   return cleaned.slice(0, 80) || 'tool-result'
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+const TOOL_CALL_META_NOISE_KEYS = new Set([
+  'ticketId',
+  'conversationId',
+  'actingUserId',
+  'acting_user_id',
+  'connector_id',
+  'connectorId',
+  'connector_type',
+  'access_mode',
+  'grant_id',
+])
+
+/**
+ * A korábbi fordulók agent-válaszai eddig csak nyers szövegként kerültek a
+ * promptba — a ténylegesen lefutott tool-hívások (pl. melyik fájlt szerkesztette
+ * a file_edit) elvesztek, ezért a modell a következő körben nem tudott a saját
+ * korábbi munkájára hivatkozni (l. repo_prepare/file_edit → PR-kérés eset).
+ * Ez a szinopszis a ToolCall.resultMeta releváns mezőit adja vissza tömören.
+ */
+function formatToolCallSynopsisLine(call: ToolCall): string {
+  const status = call.status === 'ok' ? 'siker' : call.status === 'denied' ? 'megtagadva' : 'hiba'
+  const meta = isRecord(call.resultMeta) ? call.resultMeta : {}
+  const details = Object.entries(meta)
+    .filter(([key, value]) => !TOOL_CALL_META_NOISE_KEYS.has(key) && value !== null && value !== undefined)
+    .slice(0, 8)
+    .map(([key, value]) => `${key}=${typeof value === 'string' ? value : JSON.stringify(value)}`)
+    .join(', ')
+  return `  • ${call.toolName} (${status})${details ? `: ${details}` : ''}`
+}
+
+function formatToolCallSynopsisBlock(calls: ToolCall[]): string {
+  if (calls.length === 0) return ''
+  return `\n\n[Ebben a körben lefutott eszközhívások]\n${calls.map(formatToolCallSynopsisLine).join('\n')}`
+}
+
+/**
+ * A korábbi (user/agent) fordulókat gateway-üzenetekké alakítja VALÓDI
+ * párbeszéd-szerepekkel: a felhasználó fordulói `user`, az agent korábbi
+ * válaszai `assistant` szerepűek. Ez kritikus a többfordulós kontextushoz — ha
+ * minden korábbi üzenet `user` szerepet kap (mint korábban a `[Korábbi agent
+ * válasz]` prefix-szel), a gyenge modellek (pl. qwen3) nem látják, hogy ők maguk
+ * már válaszoltak, és a következő fordulóban „nem volt előző kérésed"-et
+ * mondanak. Az agent-fordulóhoz a saját tool-hívásainak szinopszisát is
+ * hozzáfűzzük (melyik fájlt szerkesztette stb.). Exportálva, hogy a
+ * kontextus-átvitel DB/gateway nélkül is tesztelhető legyen.
+ */
+export function buildHistoryGatewayMessages(
+  historyMessages: ContextAssemblyMessage[],
+  toolCalls: ToolCall[],
+  latestAttachmentBlock: string,
+): Array<{ role: 'user' | 'assistant'; content: string }> {
+  const result: Array<{ role: 'user' | 'assistant'; content: string }> = []
+  const visible = historyMessages.filter((m) => m.content && !m.contentDeletedAt)
+  for (let i = 0; i < visible.length; i++) {
+    const message = visible[i]
+    if (!message.content) continue
+
+    if (message.role === 'user') {
+      const parsed = parseStoredMessage(message.content)
+      const isLatest = i === visible.length - 1
+      const content =
+        isLatest && latestAttachmentBlock
+          ? `${parsed.text || '(csatolmányok)'}${latestAttachmentBlock}`.trim()
+          : parsed.text
+      result.push({ role: 'user', content })
+    } else if (message.role === 'agent') {
+      // A fordulóhoz tartozó tool-hívások: az előző (user) üzenet és ez az
+      // agent-üzenet létrejötte közötti időablakban lefutott ToolCall-ok —
+      // e nélkül a modell csak a nyers válaszszövegből következtethetne
+      // vissza arra, mit módosított (l. repo_prepare/file_edit → PR-kérés eset).
+      const windowStart = i > 0 ? visible[i - 1].createdAt : new Date(0)
+      const turnToolCalls = toolCalls.filter(
+        (call) => call.createdAt > windowStart && call.createdAt <= message.createdAt,
+      )
+      result.push({
+        role: 'assistant',
+        content: `${message.content}${formatToolCallSynopsisBlock(turnToolCalls)}`,
+      })
+    }
+  }
+  return result
 }
 
 /**
@@ -249,15 +342,18 @@ export class AgentChatRuntime {
       memoryContent: agentDetails.memoryContent,
       documentAliases: this.contextDocumentAliases(attachmentDocs, workspaceFiles, kbSearch.hits),
     })
+    const priorToolCalls = await this.toolCaps.listToolCallsForConversation(conversationId)
     const gatewayMessages = await this.buildGatewayMessages(
       agentDetails,
       assembledContext.messages,
       attachmentBlock,
       kbSearch,
       workspaceFiles,
+      priorToolCalls,
     )
 
     const allowedChatTools = await listAllowedChatTools(this.toolCaps, params.agentId)
+    const maxTurns = resolveToolLoopMaxTurns(modelConfig, allowedChatTools)
     let reply: string
     if (allowedChatTools.length > 0) {
       reply = (
@@ -273,6 +369,7 @@ export class AgentChatRuntime {
           messages: gatewayMessages,
           modelConfig,
           allowedTools: allowedChatTools,
+          maxTurns,
           archiveLargeToolResult: (input) =>
             this.archiveLargeToolResult(tenantKey, conversationId, input),
         })
@@ -440,15 +537,18 @@ export class AgentChatRuntime {
       memoryContent: agentDetails.memoryContent,
       documentAliases: this.contextDocumentAliases(attachmentDocs, workspaceFiles, kbSearch.hits),
     })
+    const priorToolCalls = await this.toolCaps.listToolCallsForConversation(conversationId)
     const gatewayMessages = await this.buildGatewayMessages(
       agentDetails,
       assembledContext.messages,
       attachmentBlock,
       kbSearch,
       workspaceFiles,
+      priorToolCalls,
     )
 
     const allowedChatTools = await listAllowedChatTools(this.toolCaps, params.agentId)
+    const maxTurns = resolveToolLoopMaxTurns(modelConfig, allowedChatTools)
 
     let reply: string
     if (allowedChatTools.length > 0) {
@@ -480,6 +580,7 @@ export class AgentChatRuntime {
         messages: gatewayMessages,
         modelConfig,
         allowedTools: allowedChatTools,
+        maxTurns,
         archiveLargeToolResult: (input) =>
           this.archiveLargeToolResult(tenantKey, conversationId, input),
         onActivity: pushActivity,
@@ -958,11 +1059,12 @@ export class AgentChatRuntime {
     latestAttachmentBlock: string,
     kbSearch: { enabled: boolean; hits: KbHit[] },
     workspaceFiles: string[],
+    toolCalls: ToolCall[] = [],
   ) {
     const allAgents = await this.agents.findMany()
     const orgRoster = formatOrgRoster(allAgents)
 
-    const messages: Array<{ role: 'user' | 'system'; content: string }> = [
+    const messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [
       { role: 'system', content: composeSystemPrompt(agentDetails.agent) },
     ]
 
@@ -1012,23 +1114,7 @@ export class AgentChatRuntime {
       })
     }
 
-    const visible = historyMessages.filter((m) => m.content && !m.contentDeletedAt)
-    for (let i = 0; i < visible.length; i++) {
-      const message = visible[i]
-      if (!message.content) continue
-
-      if (message.role === 'user') {
-        const parsed = parseStoredMessage(message.content)
-        const isLatest = i === visible.length - 1
-        const content =
-          isLatest && latestAttachmentBlock
-            ? `${parsed.text || '(csatolmányok)'}${latestAttachmentBlock}`.trim()
-            : parsed.text
-        messages.push({ role: 'user', content })
-      } else if (message.role === 'agent') {
-        messages.push({ role: 'user', content: `[Korábbi agent válasz]\n${message.content}` })
-      }
-    }
+    messages.push(...buildHistoryGatewayMessages(historyMessages, toolCalls, latestAttachmentBlock))
 
     return messages
   }

@@ -18,6 +18,7 @@ import {
 import { ensureSystemRoleTemplates } from '../src/repositories/postgres/role-template-repository'
 import { ensureDefaultRolePermissions } from '../src/repositories/postgres/iam-repository'
 import { BUILTIN_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/builtin-templates'
+import { GLOBAL_CUSTOM_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/custom-template-seeds'
 import { upsertConnectorByTypeName } from '../src/lib/connector-upsert'
 import { ensureStarterStepTemplates } from '../src/domain/step-template/step-template-catalog'
 
@@ -287,6 +288,29 @@ async function ensureBuiltinConnectorTemplates() {
   }
 }
 
+async function ensureGlobalCustomConnectorTemplates() {
+  for (const descriptor of GLOBAL_CUSTOM_CONNECTOR_TEMPLATES) {
+    const existing = await prisma.connectorTemplate.findFirst({
+      where: { key: descriptor.key, tenantId: null, origin: 'custom' },
+      orderBy: [{ version: 'desc' }],
+    })
+    if (existing) continue
+
+    await prisma.connectorTemplate.create({
+      data: {
+        key: descriptor.key,
+        version: 1,
+        origin: 'custom',
+        displayName: descriptor.displayName,
+        description: descriptor.description ?? null,
+        tenantId: null,
+        descriptor,
+        status: 'active',
+      },
+    })
+  }
+}
+
 /**
  * Web-egress role agent (WebFetch-Egress §8.1, §17/8). Capability-izolált `worker`: a
  * `web_fetch` platform-tool KIZÁRÓLAG neki adható (§7.4) + `web_search` + `provisioning.discover.*`.
@@ -532,6 +556,8 @@ async function ensureToolBrokerSeed(agentId: string) {
   })
 
   for (const toolName of [
+    'repo_prepare',
+    'repo_open_pull_request',
     'file_read',
     'file_write',
     'file_edit',
@@ -1374,6 +1400,7 @@ async function main() {
     await ensureWikiPlaybook(admin.id)
     await ensureDemoApiKey(existingAgent.id)
     await ensureBuiltinConnectorTemplates()
+    await ensureGlobalCustomConnectorTemplates()
     return
   }
 
@@ -1455,6 +1482,7 @@ async function main() {
   await ensureWikiPlaybook(admin.id)
   await ensureDemoApiKey(agent.id)
   await ensureBuiltinConnectorTemplates()
+  await ensureGlobalCustomConnectorTemplates()
   await ensureStarterStepTemplates(prisma)
 
   console.log('Seed complete')

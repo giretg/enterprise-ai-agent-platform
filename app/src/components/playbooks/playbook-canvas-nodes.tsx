@@ -71,6 +71,7 @@ export function StepNode({ data, selected }: NodeProps) {
         <p className="mt-1 text-[10px] text-honey">◆ {model.step?.requiredGateIds?.length} kötelező kapu</p>
       )}
       <Handle type="source" position={Position.Right} className={HANDLE_CLASS} />
+      <Handle type="source" position={Position.Bottom} id="gate-out" className={`${HANDLE_CLASS} !bg-honey`} />
     </div>
   )
 }
@@ -99,6 +100,7 @@ export function DecisionNode({ data, selected }: NodeProps) {
         {outcomeCount > 0 ? `${outcomeCount} kimeneti ág` : 'nincs ág — kösd be a kimeneteket'}
       </p>
       <Handle type="source" position={Position.Right} className={`${HANDLE_CLASS} !bg-grape`} />
+      <Handle type="source" position={Position.Bottom} id="gate-out" className={`${HANDLE_CLASS} !bg-honey`} />
     </div>
   )
 }
@@ -110,7 +112,10 @@ export function GateNode({ data, selected }: NodeProps) {
   const blocking = model.gate?.blocking
   return (
     <div className={`w-[170px] rounded-lg border border-honey/60 bg-honey/10 px-3 py-2 shadow-sm${ring}`}>
-      <Handle type="target" position={Position.Left} className={`${HANDLE_CLASS} !bg-honey`} />
+      {/* A kapu NEM láncszem-node (nincs saját kimenő routingja) — a target handle a
+          lépés ALJÁN lévő `gate-out` pöttyétől jön, felülről, hogy vizuálisan is a
+          lépéshez tartozó előfeltételként/döntésként látszódjon, ne a folyamat következő lépéseként. */}
+      <Handle type="target" position={Position.Top} id="gate-in" className={`${HANDLE_CLASS} !bg-honey`} />
       <div className="flex items-center gap-1.5">
         <span aria-hidden className="text-honey">◆</span>
         <span className="text-sm font-semibold leading-tight text-ink">{model.label}</span>
@@ -120,7 +125,6 @@ export function GateNode({ data, selected }: NodeProps) {
         {crit ? ` · ${crit}` : ''}
       </p>
       {blocking && <p className="mt-0.5 text-[9px] font-semibold text-coral">blokkoló</p>}
-      <Handle type="source" position={Position.Right} className={`${HANDLE_CLASS} !bg-honey`} />
     </div>
   )
 }

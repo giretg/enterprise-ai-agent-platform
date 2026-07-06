@@ -60,8 +60,12 @@ type LooseStep = {
     minConfidenceForAutoBranch?: number
     requiresEvidence?: boolean
   }
-  onError?: { nextStepId?: string; gateId?: string }
-  onBlocked?: { nextStepId?: string; gateId?: string }
+  onError?:
+    | { nextStepId?: string; gateId?: string }
+    | { nextStepId?: string; gateId?: string; routes: Array<{ reason?: string; nextStepId?: string; gateId?: string }> }
+  onBlocked?:
+    | { nextStepId?: string; gateId?: string }
+    | { nextStepId?: string; gateId?: string; routes: Array<{ reason?: string; nextStepId?: string; gateId?: string }> }
 }
 type LooseGate = {
   id: string
@@ -209,10 +213,10 @@ console.log('=== WP-7 determinista outcome (hard signal felülírás) ===')
 check('tool-loop exhausted → failed', () => {
   assert.equal(computeStepOutcome({ loopStatus: 'exhausted', toolCallCount: 3, kbZeroHit: false }).status, 'failed')
 })
-check('kb 0-hit + 0 tool-hívás → blocked (missing_kb_source)', () => {
+check('kb 0-hit + 0 tool-hívás → ok (a retrieval miss önmagában nem blokkol)', () => {
   const o = computeStepOutcome({ loopStatus: 'completed', toolCallCount: 0, kbZeroHit: true })
-  assert.equal(o.status, 'blocked')
-  assert.equal(o.reason, 'missing_kb_source')
+  assert.equal(o.status, 'ok')
+  assert.equal(o.reason, undefined)
 })
 check('kb 0-hit DE volt tool-hívás → ok (nem blokkol tévesen)', () => {
   assert.equal(computeStepOutcome({ loopStatus: 'completed', toolCallCount: 2, kbZeroHit: true }).status, 'ok')
@@ -222,6 +226,26 @@ check('tool-denied → failed', () => {
 })
 check('minden rendben → ok', () => {
   assert.equal(computeStepOutcome({ loopStatus: 'completed', toolCallCount: 1, kbZeroHit: false }).status, 'ok')
+})
+check('hibapolicy §5.1/WP-3 — hiányzó outputContract mező → blocked (output_contract_unmet)', () => {
+  const o = computeStepOutcome({
+    loopStatus: 'completed',
+    toolCallCount: 1,
+    kbZeroHit: false,
+    missingOutputFields: ['amount'],
+  })
+  assert.equal(o.status, 'blocked')
+  assert.equal(o.reason, 'output_contract_unmet')
+  assert.deepEqual(o.missing, ['amount'])
+})
+check('hibapolicy §5.1/WP-3 — üres missingOutputFields nem blokkol', () => {
+  const o = computeStepOutcome({
+    loopStatus: 'completed',
+    toolCallCount: 1,
+    kbZeroHit: false,
+    missingOutputFields: [],
+  })
+  assert.equal(o.status, 'ok')
 })
 
 console.log('=== WP-8 validátor-szabályok ===')
@@ -269,6 +293,361 @@ check('IMPLICIT_ERROR_EDGE — hiba-él nélküli nem-terminális step → warni
 check('decision-branchen elérhető step NEM UNREACHABLE', () => {
   const r = validator.validateSpec(decisionSpec())
   assert.ok(!r.errors.some((e) => e.code === 'UNREACHABLE_STEP'), JSON.stringify(r.errors))
+})
+
+console.log('=== P1 Playbook-szintű default hibaág (hibakezelési policy spec §4) ===')
+
+/** Decision-spec, de a `classify` step onBlocked NÉLKÜL + Playbook-default hibaág. */
+function defaultErrorPolicySpec(): LooseSpec & {
+  defaultErrorPolicy?: { onError?: { gateId?: string }; onBlocked?: { gateId?: string } }
+} {
+  const s = decisionSpec()
+  delete s.steps[0]!.onBlocked
+  return {
+    ...s,
+    gates: [
+      ...s.gates,
+      { id: 'incident_review', type: 'manual_review', requiredActorRole: 'finance_approver', blocking: true },
+    ],
+    defaultErrorPolicy: {
+      onError: { gateId: 'incident_review' },
+      onBlocked: { gateId: 'incident_review' },
+    },
+  }
+}
+
+const defaultPolicyCompiled = compiler.compile(parsePlaybookSpecV2(defaultErrorPolicySpec()), {
+  playbookVersionId: 'vdef1',
+})
+
+check('failed, nincs lépés-szintű onError → Playbook-default hibaágra megy (NEM await_human)', () => {
+  const d = evaluateAdvance(defaultPolicyCompiled, 'classify', {
+    decision: 'clean_match',
+    outcome: { status: 'failed', reason: 'tool_denied' },
+  })
+  assert.equal(d.kind, 'await_gate')
+  assert.equal(d.kind === 'await_gate' && d.gateId, 'incident_review')
+})
+
+check('blocked, nincs lépés-szintű onBlocked (törölve) → Playbook-default hibaágra megy', () => {
+  const d = evaluateAdvance(defaultPolicyCompiled, 'classify', {
+    decision: 'clean_match',
+    outcome: { status: 'blocked', reason: 'missing_kb_source' },
+  })
+  assert.equal(d.kind, 'await_gate')
+  assert.equal(d.kind === 'await_gate' && d.gateId, 'incident_review')
+})
+
+check('lépés-szintű onError elsőbbséget élvez a Playbook-default felett', () => {
+  const s = defaultErrorPolicySpec()
+  s.steps[0]!.onError = { gateId: 'major_exception_approval' }
+  const compiled = compiler.compile(parsePlaybookSpecV2(s), { playbookVersionId: 'vdef2' })
+  const d = evaluateAdvance(compiled, 'classify', {
+    decision: 'clean_match',
+    outcome: { status: 'failed', reason: 'tool_denied' },
+  })
+  assert.equal(d.kind, 'await_gate')
+  assert.equal(d.kind === 'await_gate' && d.gateId, 'major_exception_approval')
+})
+
+check('defaultErrorPolicy NÉLKÜLI Playbook bit-azonos await_human viselkedést kap (back-compat)', () => {
+  const d = evaluateAdvance(decisionCompiled, 'classify', {
+    decision: 'clean_match',
+    outcome: { status: 'failed', reason: 'tool_denied' },
+  })
+  assert.equal(d.kind, 'await_human')
+})
+
+check('evaluatePlaybookAdvance a default hibaágnál is a runtime-mal azonos célt ad (Simulation-parity)', () => {
+  const preview = evaluatePlaybookAdvance(defaultPolicyCompiled, 'classify', {
+    decision: 'clean_match',
+    outcome: { status: 'failed', reason: 'tool_denied' },
+  })
+  assert.equal(preview.targetKind, 'await_gate')
+  assert.equal(preview.targetId, 'incident_review')
+  assert.equal(preview.edgeType, 'error')
+})
+
+check('UNKNOWN_DEFAULT_ERROR_TARGET — nem létező default hiba-él cél', () => {
+  const s = defaultErrorPolicySpec()
+  s.defaultErrorPolicy!.onError = { gateId: 'nincs_ilyen_gate' }
+  const r = validator.validateSpec(s)
+  assert.ok(r.errors.some((e) => e.code === 'UNKNOWN_DEFAULT_ERROR_TARGET'))
+})
+
+check('IMPLICIT_ERROR_EDGE NEM jelez, ha a Playbook-default mindkét ágat lefedi', () => {
+  const r = validator.validateSpec(defaultErrorPolicySpec())
+  assert.ok(!r.warnings.some((w) => w.code === 'IMPLICIT_ERROR_EDGE'), JSON.stringify(r.warnings))
+})
+
+console.log('=== WP-5 Validátor — hibaút minőségi szabályok (hibakezelési policy spec §8) ===')
+
+check('DUPLICATE_ERROR_REASON_ROUTE — egy reason-höz két útvonal a reason-routes-only wrapperben', () => {
+  const s = decisionSpec()
+  s.steps[0]!.onError = {
+    routes: [
+      { reason: 'tool_denied', gateId: 'major_exception_approval' },
+      { reason: 'tool_denied', nextStepId: 'finance_review' },
+    ],
+  }
+  const r = validator.validateSpec(s)
+  assert.ok(r.errors.some((e) => e.code === 'DUPLICATE_ERROR_REASON_ROUTE'), JSON.stringify(r.errors))
+})
+
+check('DUPLICATE_ERROR_REASON_ROUTE NEM jelez, ha a két reason különböző', () => {
+  const r = validator.validateSpec(reasonRoutingSpec())
+  assert.ok(
+    !r.errors.some((e) => e.code === 'DUPLICATE_ERROR_REASON_ROUTE'),
+    JSON.stringify(r.errors),
+  )
+})
+
+check('CRITICAL_STEP_NO_ERROR_PATH — kritikus (L2) required gate-es lépésnek nincs hibaága', () => {
+  const s = decisionSpec()
+  delete s.steps[0]!.onBlocked
+  const step0 = s.steps[0]! as LooseStep & { requiredGateIds?: string[] }
+  step0.requiredGateIds = ['major_exception_approval'] // L2 gate
+  const r = validator.validateSpec(s)
+  assert.ok(r.warnings.some((w) => w.code === 'CRITICAL_STEP_NO_ERROR_PATH'), JSON.stringify(r.warnings))
+})
+
+check('CRITICAL_STEP_NO_ERROR_PATH NEM jelez, ha a Playbook-default mindkét ágat lefedi', () => {
+  const s = defaultErrorPolicySpec()
+  const step0 = s.steps[0]! as LooseStep & { requiredGateIds?: string[] }
+  step0.requiredGateIds = ['major_exception_approval']
+  const r = validator.validateSpec(s)
+  assert.ok(
+    !r.warnings.some((w) => w.code === 'CRITICAL_STEP_NO_ERROR_PATH'),
+    JSON.stringify(r.warnings),
+  )
+})
+
+check('DEFAULT_ERROR_TARGET_NOT_BLOCKING_GATE — default hiba-él nem-blocking gate-re megy', () => {
+  const s = defaultErrorPolicySpec()
+  s.gates.push({ id: 'nonblocking_review', type: 'manual_review', blocking: false })
+  s.defaultErrorPolicy!.onError = { gateId: 'nonblocking_review' }
+  const r = validator.validateSpec(s)
+  assert.ok(
+    r.warnings.some((w) => w.code === 'DEFAULT_ERROR_TARGET_NOT_BLOCKING_GATE'),
+    JSON.stringify(r.warnings),
+  )
+})
+
+console.log('=== WP-4 Tenant-default hibapolicy feloldás (hibakezelési policy spec §4.2) ===')
+
+/** Decision-spec Playbook-default NÉLKÜL — csak a tenant-default tölthet be. */
+function tenantDefaultBaseSpec(): LooseSpec {
+  const s = decisionSpec()
+  delete s.steps[0]!.onBlocked
+  s.gates.push({
+    id: 'incident_review',
+    type: 'manual_review',
+    requiredActorRole: 'finance_approver',
+    blocking: true,
+  })
+  return s
+}
+
+check('tenant-default hiba-él fut, ha nincs se lépés-, se Playbook-default (compiler)', () => {
+  const compiled = compiler.compile(parsePlaybookSpecV2(tenantDefaultBaseSpec()), {
+    playbookVersionId: 'vtenant1',
+    tenantDefaultErrorPolicy: { onError: { gateId: 'incident_review' }, onBlocked: { gateId: 'incident_review' } },
+  })
+  const d = evaluateAdvance(compiled, 'classify', {
+    decision: 'clean_match',
+    outcome: { status: 'failed', reason: 'tool_denied' },
+  })
+  assert.equal(d.kind, 'await_gate')
+  assert.equal(d.kind === 'await_gate' && d.gateId, 'incident_review')
+  assert.equal(d.kind === 'await_gate' && d.rule.errorRouteSource, 'tenant_default')
+})
+
+check('Playbook-default elsőbbséget élvez a tenant-default felett', () => {
+  const s = defaultErrorPolicySpec()
+  s.gates.push({ id: 'tenant_fallback', type: 'manual_review', blocking: true })
+  const compiled = compiler.compile(parsePlaybookSpecV2(s), {
+    playbookVersionId: 'vtenant2',
+    tenantDefaultErrorPolicy: { onError: { gateId: 'tenant_fallback' } },
+  })
+  const d = evaluateAdvance(compiled, 'classify', {
+    decision: 'clean_match',
+    outcome: { status: 'failed', reason: 'tool_denied' },
+  })
+  assert.equal(d.kind === 'await_gate' && d.gateId, 'incident_review')
+  assert.equal(d.kind === 'await_gate' && d.rule.errorRouteSource, 'playbook_default')
+})
+
+check('lépés-szintű onError elsőbbséget élvez a tenant-default felett is', () => {
+  const s = tenantDefaultBaseSpec()
+  s.steps[0]!.onError = { gateId: 'major_exception_approval' }
+  const compiled = compiler.compile(parsePlaybookSpecV2(s), {
+    playbookVersionId: 'vtenant3',
+    tenantDefaultErrorPolicy: { onError: { gateId: 'incident_review' } },
+  })
+  const d = evaluateAdvance(compiled, 'classify', {
+    decision: 'clean_match',
+    outcome: { status: 'failed', reason: 'tool_denied' },
+  })
+  assert.equal(d.kind === 'await_gate' && d.gateId, 'major_exception_approval')
+  assert.equal(d.kind === 'await_gate' && d.rule.errorRouteSource, 'step')
+})
+
+check('a Playbookban nem létező tenant-default cél csendben kimarad → await_human (nem dob)', () => {
+  const compiled = compiler.compile(parsePlaybookSpecV2(tenantDefaultBaseSpec()), {
+    playbookVersionId: 'vtenant4',
+    tenantDefaultErrorPolicy: { onError: { gateId: 'nincs_ilyen_gate_a_playbookban' } },
+  })
+  const d = evaluateAdvance(compiled, 'classify', {
+    decision: 'clean_match',
+    outcome: { status: 'failed', reason: 'tool_denied' },
+  })
+  assert.equal(d.kind, 'await_human')
+})
+
+check('tenant-default NÉLKÜLI compile bit-azonos (nincs plusz él) — back-compat', () => {
+  const withoutTenant = compiler.compile(parsePlaybookSpecV2(tenantDefaultBaseSpec()), {
+    playbookVersionId: 'vtenant5',
+  })
+  const d = evaluateAdvance(withoutTenant, 'classify', {
+    decision: 'clean_match',
+    outcome: { status: 'failed', reason: 'tool_denied' },
+  })
+  assert.equal(d.kind, 'await_human')
+})
+
+check('validátor — TENANT_DEFAULT_ERROR_TARGET_MISSING, ha a tenant-default cél nem létezik a Playbookban', () => {
+  const r = validator.validateSpec(tenantDefaultBaseSpec(), {
+    tenantDefaultErrorPolicy: { onError: { gateId: 'nincs_ilyen_gate_a_playbookban' } },
+  })
+  assert.ok(
+    r.warnings.some((w) => w.code === 'TENANT_DEFAULT_ERROR_TARGET_MISSING'),
+    JSON.stringify(r.warnings),
+  )
+})
+
+check('validátor — CRITICAL_STEP_NO_ERROR_PATH NEM jelez, ha csak a (feloldható) tenant-default fedi le', () => {
+  const s = tenantDefaultBaseSpec()
+  const step0 = s.steps[0]! as LooseStep & { requiredGateIds?: string[] }
+  step0.requiredGateIds = ['major_exception_approval'] // L2 gate
+  const r = validator.validateSpec(s, {
+    tenantDefaultErrorPolicy: { onError: { gateId: 'incident_review' }, onBlocked: { gateId: 'incident_review' } },
+  })
+  assert.ok(
+    !r.warnings.some((w) => w.code === 'CRITICAL_STEP_NO_ERROR_PATH'),
+    JSON.stringify(r.warnings),
+  )
+})
+
+check(
+  'pinning-invariáns: egy már compile-olt spec nem változik, ha a tenant-default utólag módosul',
+  () => {
+    const spec = parsePlaybookSpecV2(tenantDefaultBaseSpec())
+    const compiledAtPublish = compiler.compile(spec, {
+      playbookVersionId: 'vtenant-pin',
+      tenantDefaultErrorPolicy: { onError: { gateId: 'incident_review' } },
+    })
+    // A tenant policy "utólag" megváltozik (pl. admin átírja) — a MÁR publikált compiled_spec
+    // (ami a fenti `compiledAtPublish`, a folyamathoz pin-elve) ettől NEM változik, mert a
+    // compile csak publish-időben fut le újra egy ÚJ verzióhoz, nem a régi verzióra visszamenőleg.
+    const changedTenantPolicy = { onError: { gateId: 'major_exception_approval' } }
+    const stillPinned = evaluateAdvance(compiledAtPublish, 'classify', {
+      decision: 'clean_match',
+      outcome: { status: 'failed', reason: 'tool_denied' },
+    })
+    assert.equal(stillPinned.kind === 'await_gate' && stillPinned.gateId, 'incident_review')
+    // Egy ÚJ compile (pl. egy következő Playbook-verzió publikálásakor) viszont már az ÚJ
+    // tenant-defaultot tükrözi — ez a determinisztikus, nem élő-config-olvasós runtime lényege.
+    const recompiledLater = compiler.compile(spec, {
+      playbookVersionId: 'vtenant-pin-2',
+      tenantDefaultErrorPolicy: changedTenantPolicy,
+    })
+    const afterChange = evaluateAdvance(recompiledLater, 'classify', {
+      decision: 'clean_match',
+      outcome: { status: 'failed', reason: 'tool_denied' },
+    })
+    assert.equal(afterChange.kind === 'await_gate' && afterChange.gateId, 'major_exception_approval')
+  },
+)
+
+console.log('=== P2 Hibatípus-tudatos routing (hibakezelési policy spec §5) ===')
+
+/** Decision-spec, de a `classify` step reason-kulcsos onError-routes-szal + catch-all-lal. */
+function reasonRoutingSpec(): LooseSpec {
+  const s = decisionSpec()
+  s.steps[0]!.onError = {
+    gateId: 'decision_fallback_review', // catch-all (nem-illeszkedő reason / reason nélküli failed)
+    routes: [
+      { reason: 'tool_denied', gateId: 'major_exception_approval' },
+      { reason: 'tool_loop_exhausted', nextStepId: 'finance_review' },
+    ],
+  }
+  return s
+}
+
+const reasonRoutingCompiled = compiler.compile(parsePlaybookSpecV2(reasonRoutingSpec()), {
+  playbookVersionId: 'vreason1',
+})
+
+check('reason-specifikus route (tool_denied) elsőbbséget élvez a catch-all felett', () => {
+  const d = evaluateAdvance(reasonRoutingCompiled, 'classify', {
+    decision: 'clean_match',
+    outcome: { status: 'failed', reason: 'tool_denied' },
+  })
+  assert.equal(d.kind, 'await_gate')
+  assert.equal(d.kind === 'await_gate' && d.gateId, 'major_exception_approval')
+})
+
+check('másik reason-specifikus route (tool_loop_exhausted) → saját cél (next_step)', () => {
+  const d = evaluateAdvance(reasonRoutingCompiled, 'classify', {
+    decision: 'clean_match',
+    outcome: { status: 'failed', reason: 'tool_loop_exhausted' },
+  })
+  assert.equal(d.kind, 'next_step')
+  assert.equal(d.kind === 'next_step' && d.toStepId, 'finance_review')
+})
+
+check('nem-illeszkedő reason (missing_kb_source failed-del) → catch-all cél', () => {
+  const d = evaluateAdvance(reasonRoutingCompiled, 'classify', {
+    decision: 'clean_match',
+    outcome: { status: 'failed', reason: 'missing_kb_source' },
+  })
+  assert.equal(d.kind, 'await_gate')
+  assert.equal(d.kind === 'await_gate' && d.gateId, 'decision_fallback_review')
+})
+
+check('reason nélküli failed outcome → catch-all cél (visszafelé kompat)', () => {
+  const d = evaluateAdvance(reasonRoutingCompiled, 'classify', {
+    decision: 'clean_match',
+    outcome: { status: 'failed' },
+  })
+  assert.equal(d.kind, 'await_gate')
+  assert.equal(d.kind === 'await_gate' && d.gateId, 'decision_fallback_review')
+})
+
+check('reason-routes-only onError (catch-all NÉLKÜL) → nem-illeszkedő reason await_human-ra megy (NEM Playbook-default)', () => {
+  const s = decisionSpec()
+  s.steps[0]!.onError = { routes: [{ reason: 'tool_denied', gateId: 'major_exception_approval' }] }
+  const spec = {
+    ...s,
+    gates: [...s.gates, { id: 'incident_review', type: 'manual_review', blocking: true }],
+    defaultErrorPolicy: { onError: { gateId: 'incident_review' } },
+  }
+  const compiled = compiler.compile(parsePlaybookSpecV2(spec), { playbookVersionId: 'vreason2' })
+  const d = evaluateAdvance(compiled, 'classify', {
+    decision: 'clean_match',
+    outcome: { status: 'failed', reason: 'tool_loop_exhausted' },
+  })
+  assert.equal(d.kind, 'await_human')
+})
+
+check('evaluatePlaybookAdvance a reason-routingnál is a runtime-mal azonos célt ad (Simulation-parity)', () => {
+  const preview = evaluatePlaybookAdvance(reasonRoutingCompiled, 'classify', {
+    decision: 'clean_match',
+    outcome: { status: 'failed', reason: 'tool_denied' },
+  })
+  assert.equal(preview.targetKind, 'await_gate')
+  assert.equal(preview.targetId, 'major_exception_approval')
+  assert.equal(preview.edgeType, 'error')
 })
 
 console.log('=== WP-4 Symbolic Simulation ===')

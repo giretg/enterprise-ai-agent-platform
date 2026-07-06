@@ -15,8 +15,20 @@ import {
   type PlaybookSpecV2,
   type PlaybookStep,
   type ConditionExpression,
+  type ErrorPolicy,
+  type RoutingTarget,
 } from '@/lib/playbook-v2/spec'
-import { desugarDecision } from '@/domain/playbook/playbook-compiler'
+import {
+  desugarDecision,
+  normalizeErrorTarget,
+  isRoutingTargetResolvable,
+} from '@/domain/playbook/playbook-compiler'
+import { TICKET_STATES } from '@/domain/ticket/ticket-type-config'
+import {
+  inferStepOutputFields,
+  mergeOutputRequiredFields,
+  readOutputContractFields,
+} from '@/lib/playbook-v2/step-output-inference'
 
 export type ValidationIssue = {
   code: string
@@ -43,6 +55,13 @@ export type TenantValidationContext = {
    * a `roles[].requiredCapabilities` értékeinek ebbe kell esniük (Folyamat-spec §4.8, WP-4).
    */
   knownCapabilities?: Set<string>
+  /**
+   * Hibapolicy spec §4.2/WP-4 — a tenant publish-időben feloldott alapértelmezett hibapolicy-ja
+   * (a `PlatformSettingsService`-ből). Csak arra szolgál, hogy a validátor jelezze, ha a tenant
+   * egy olyan step/gate-et vár, ami EBBEN a Playbookban nem létezik (§4.2 note) — a compiler
+   * emiatt nem bukik, csak csendben kihagyja, és a beégetett `await_human` marad érvényben.
+   */
+  tenantDefaultErrorPolicy?: ErrorPolicy
 }
 
 export class PlaybookValidator {
@@ -73,9 +92,12 @@ export class PlaybookValidator {
     this.checkRoleAssigneeCompatibility(spec, errors)
     this.checkDeliverables(spec, errors)
     this.checkInputSlots(spec, errors, warnings)
+    this.checkOutputContractCoverage(spec, warnings)
     this.checkTimeouts(spec, warnings)
     this.checkDecisionSteps(spec, errors, warnings)
-    this.checkErrorEdges(spec, errors, warnings)
+    this.checkErrorEdges(spec, ctx, errors, warnings)
+    this.checkErrorRouteQuality(spec, ctx, errors, warnings)
+    this.checkTenantDefaultErrorTargets(spec, ctx, warnings)
     this.checkTenantContext(spec, ctx, errors, warnings)
 
     return { valid: errors.length === 0, errors, warnings }
@@ -126,6 +148,15 @@ export class PlaybookValidator {
           message: `A(z) '${step.assignedRole}' role nincs definiálva.`,
         })
       }
+      for (const state of step.allowedStates ?? []) {
+        if (!TICKET_STATES.includes(state as (typeof TICKET_STATES)[number])) {
+          errors.push({
+            code: 'UNKNOWN_TICKET_STATE',
+            path: `steps[${i}].allowedStates`,
+            message: `A(z) '${state}' nem érvényes ticket-állapot (ismert: ${TICKET_STATES.join(', ')}).`,
+          })
+        }
+      }
       for (const gid of step.requiredGateIds ?? []) {
         if (!gateIds.has(gid)) {
           errors.push({
@@ -152,25 +183,33 @@ export class PlaybookValidator {
         }
       })
 
-      // WP-7 §10.2 — hiba-él (onError/onBlocked) célok létezése.
+      // WP-7 §10.2 / hibapolicy spec §5.2 — hiba-él (onError/onBlocked) célok létezése,
+      // a catch-all cél ÉS minden reason-kulcsos route esetén is (P2).
       for (const [key, target] of [
         ['onError', step.onError],
         ['onBlocked', step.onBlocked],
       ] as const) {
         if (!target) continue
-        if (target.nextStepId && !stepIds.has(target.nextStepId)) {
-          errors.push({
-            code: 'UNKNOWN_BRANCH_TARGET',
-            path: `steps[${i}].${key}.nextStepId`,
-            message: `A(z) '${target.nextStepId}' hiba-él cél-step nem létezik.`,
-          })
-        }
-        if (target.gateId && !gateIds.has(target.gateId)) {
-          errors.push({
-            code: 'UNKNOWN_BRANCH_TARGET',
-            path: `steps[${i}].${key}.gateId`,
-            message: `A(z) '${target.gateId}' hiba-él cél-gate nem létezik.`,
-          })
+        const { reasonRoutes, catchAll } = normalizeErrorTarget(target)
+        const routeTargets = [
+          ...(catchAll ? [{ label: `${key}`, route: catchAll }] : []),
+          ...reasonRoutes.map((r, k) => ({ label: `${key}.routes[${k}]`, route: r })),
+        ]
+        for (const { label, route } of routeTargets) {
+          if (route.nextStepId && !stepIds.has(route.nextStepId)) {
+            errors.push({
+              code: 'UNKNOWN_BRANCH_TARGET',
+              path: `steps[${i}].${label}.nextStepId`,
+              message: `A(z) '${route.nextStepId}' hiba-él cél-step nem létezik.`,
+            })
+          }
+          if (route.gateId && !gateIds.has(route.gateId)) {
+            errors.push({
+              code: 'UNKNOWN_BRANCH_TARGET',
+              path: `steps[${i}].${label}.gateId`,
+              message: `A(z) '${route.gateId}' hiba-él cél-gate nem létezik.`,
+            })
+          }
         }
       }
 
@@ -236,6 +275,29 @@ export class PlaybookValidator {
         })
       }
     })
+
+    // Hibapolicy spec §4.1/§8 / P1 — a Playbook-szintű default hibaág célja létező
+    // step vagy gate legyen (UNKNOWN_DEFAULT_ERROR_TARGET).
+    for (const [key, target] of [
+      ['defaultErrorPolicy.onError', spec.defaultErrorPolicy?.onError],
+      ['defaultErrorPolicy.onBlocked', spec.defaultErrorPolicy?.onBlocked],
+    ] as const) {
+      if (!target) continue
+      if (target.nextStepId && !stepIds.has(target.nextStepId)) {
+        errors.push({
+          code: 'UNKNOWN_DEFAULT_ERROR_TARGET',
+          path: `${key}.nextStepId`,
+          message: `A(z) '${target.nextStepId}' default hiba-él cél-step nem létezik.`,
+        })
+      }
+      if (target.gateId && !gateIds.has(target.gateId)) {
+        errors.push({
+          code: 'UNKNOWN_DEFAULT_ERROR_TARGET',
+          path: `${key}.gateId`,
+          message: `A(z) '${target.gateId}' default hiba-él cél-gate nem létezik.`,
+        })
+      }
+    }
   }
 
   // §6.1 — nincs elérhetetlen step (entry-ből onComplete + transitions mentén)
@@ -460,6 +522,52 @@ export class PlaybookValidator {
     return tokens
   }
 
+  /**
+   * Egy lépés kimeneti kontraktusának a KÖVETKEZŐ lépés(ek) input-kontraktusát
+   * kell fedni — ugyanaz a `inferStepOutputFields` (routing + `source: 'step'`
+   * kötelező input-rések) határozza meg a szükséges mezőket, amit a compiler is
+   * használ (§7.3/WP-3), így ez a validáció-réteg SOHA nem térhet el a futásidejű
+   * kikényszerítéstől. Két independens kockázatot jelez:
+   *  - `OUTPUT_CONTRACT_INCOMPLETE` — a lépés explicit `outputContract`-ja nem
+   *    fedi a downstream igényt (a runtime automatikusan pótolja a hiányt, de a
+   *    deklaráció ettől még félrevezető/nem önleíró).
+   *  - `OUTPUT_CONTRACT_NOT_PROMPTED` — egyik szükséges mező neve sem szerepel a
+   *    lépés `instructionTemplate`-jében. A runtime ilyenkor is befűz egy generikus
+   *    "adj vissza JSON-t ezekkel a kulcsokkal" rendszerutasítást, de ez a modelltől
+   *    függően nem elég erős — pontosan ez okozta az `output_contract_unmet`
+   *    elakadást a `payment-provider-engagement-flow` `step-fetch-crm-status`
+   *    lépésén (2026-07-06). A szerzőnek a promptban NEVESÍTENIE kell a mezőket.
+   */
+  private checkOutputContractCoverage(spec: PlaybookSpecV2, warnings: ValidationIssue[]) {
+    const inferredOutputs = inferStepOutputFields(spec)
+
+    spec.steps.forEach((step, i) => {
+      const explicitFields = readOutputContractFields(step.outputContract)
+      const inferredFields = inferredOutputs.get(step.id) ?? []
+      const requiredFields = mergeOutputRequiredFields(explicitFields, inferredFields)
+      if (requiredFields.length === 0) return
+
+      const missingFromExplicit = inferredFields.filter((f) => !explicitFields.includes(f))
+      if (explicitFields.length > 0 && missingFromExplicit.length > 0) {
+        warnings.push({
+          code: 'OUTPUT_CONTRACT_INCOMPLETE',
+          path: `steps[${i}].outputContract`,
+          message: `A(z) '${step.id}' explicit outputContract.requiredFields nem tartalmazza a következő lépés(ek) input-kontraktusa miatt szükséges mező(ke)t: ${missingFromExplicit.join(', ')}. A runtime ezt automatikusan pótolja, de érdemes a deklarációt is teljessé tenni.`,
+        })
+      }
+
+      const template = (step.instructionTemplate ?? '').toLowerCase()
+      const notPrompted = requiredFields.filter((f) => !template.includes(f.toLowerCase()))
+      if (notPrompted.length > 0) {
+        warnings.push({
+          code: 'OUTPUT_CONTRACT_NOT_PROMPTED',
+          path: `steps[${i}].instructionTemplate`,
+          message: `A(z) '${step.id}' lépés kimeneti kontraktusa (a következő lépés input-kontraktusa miatt) megköveteli ezeket a mezőket: ${notPrompted.join(', ')}. Egyik sem szerepel az instructionTemplate szövegében — az agent könnyen figyelmen kívül hagyhatja a strukturált kimenetet, és csak prózában válaszolhat (output_contract_unmet elakadás kockázata). Nevesítsd a mezőket a promptban.`,
+        })
+      }
+    })
+  }
+
   private checkTimeouts(spec: PlaybookSpecV2, warnings: ValidationIssue[]) {
     spec.steps.forEach((step, i) => {
       if (step.timeoutMinutes == null) {
@@ -574,6 +682,98 @@ export class PlaybookValidator {
     })
   }
 
+  // Hibapolicy spec §8 (WP-5) — a reason-kulcsos hiba-útvonalak minőségi szabályai.
+  // Az UNKNOWN_ERROR_REASON-t a séma (stepOutcomeReasonSchema enum) már kikényszeríti
+  // SCHEMA_INVALID-ként, ezért itt nincs rá külön szabály.
+  private checkErrorRouteQuality(
+    spec: PlaybookSpecV2,
+    ctx: TenantValidationContext,
+    errors: ValidationIssue[],
+    warnings: ValidationIssue[],
+  ) {
+    const gateById = new Map(spec.gates.map((g) => [g.id, g]))
+
+    // DUPLICATE_ERROR_REASON_ROUTE — egy lépésen belül egy reason-höz max. egy hiba-út
+    // (onError és onBlocked külön-külön névtere, mert más outcome.status-ra illeszkednek).
+    spec.steps.forEach((step, i) => {
+      for (const [key, target] of [
+        ['onError', step.onError],
+        ['onBlocked', step.onBlocked],
+      ] as const) {
+        const { reasonRoutes } = normalizeErrorTarget(target)
+        const seen = new Set<string>()
+        for (const route of reasonRoutes) {
+          if (!route.reason) continue
+          if (seen.has(route.reason)) {
+            errors.push({
+              code: 'DUPLICATE_ERROR_REASON_ROUTE',
+              path: `steps[${i}].${key}.routes`,
+              message: `A(z) '${step.id}' lépés '${key}' hiba-ágán a(z) '${route.reason}' reason-höz több útvonal is szerepel.`,
+            })
+          }
+          seen.add(route.reason)
+        }
+      }
+    })
+
+    // CRITICAL_STEP_NO_ERROR_PATH — L2/L3-nak minősülő lépésnek (kritikus required
+    // gate vagy kritikus decision-branch) legyen saját, Playbook-default vagy (feloldható)
+    // tenant-default hibaága.
+    const { error: hasDefaultError, blocked: hasDefaultBlocked } = this.hasResolvedDefaultCoverage(spec, ctx)
+    spec.steps.forEach((step, i) => {
+      const requiredGateCritical = (step.requiredGateIds ?? []).some((gid) => {
+        const gate = gateById.get(gid)
+        return gate?.criticality === 'L2' || gate?.criticality === 'L3'
+      })
+      const decisionCritical = (step.decision?.branches ?? []).some(
+        (b) => b.criticality === 'L2' || b.criticality === 'L3',
+      )
+      if (!requiredGateCritical && !decisionCritical) return
+
+      const errorCovered = step.onError != null || hasDefaultError
+      const blockedCovered = step.onBlocked != null || hasDefaultBlocked
+      if (!errorCovered || !blockedCovered) {
+        warnings.push({
+          code: 'CRITICAL_STEP_NO_ERROR_PATH',
+          path: `steps[${i}]`,
+          message: `A(z) '${step.id}' kritikus (L2/L3) lépésnek nincs saját, Playbook-default vagy tenant-default hibaága — a hiba a beégetett awaiting_human-ra esik vissza.`,
+        })
+      }
+    })
+
+    // DEFAULT_ERROR_TARGET_NOT_BLOCKING_GATE — a default hibaág gate-célja legyen
+    // blocking, különben a hibaút néma átfutást engedne (Playbook- ÉS feloldható
+    // tenant-default gate-célra is).
+    const stepIds = new Set(spec.steps.map((s) => s.id))
+    const gateIds = new Set(spec.gates.map((g) => g.id))
+    for (const [key, target] of [
+      ['defaultErrorPolicy.onError', spec.defaultErrorPolicy?.onError],
+      ['defaultErrorPolicy.onBlocked', spec.defaultErrorPolicy?.onBlocked],
+      [
+        'tenantDefaultErrorPolicy.onError',
+        isRoutingTargetResolvable(ctx.tenantDefaultErrorPolicy?.onError, stepIds, gateIds)
+          ? ctx.tenantDefaultErrorPolicy?.onError
+          : undefined,
+      ],
+      [
+        'tenantDefaultErrorPolicy.onBlocked',
+        isRoutingTargetResolvable(ctx.tenantDefaultErrorPolicy?.onBlocked, stepIds, gateIds)
+          ? ctx.tenantDefaultErrorPolicy?.onBlocked
+          : undefined,
+      ],
+    ] as const) {
+      if (!target?.gateId) continue
+      const gate = gateById.get(target.gateId)
+      if (gate && !gate.blocking) {
+        warnings.push({
+          code: 'DEFAULT_ERROR_TARGET_NOT_BLOCKING_GATE',
+          path: key,
+          message: `A(z) '${target.gateId}' default hiba-él cél-gate nem blocking — a hibaút néma átfutást engedhet.`,
+        })
+      }
+    }
+  }
+
   /** entry-elérhetőséghez és ciklushoz: step → következő stepek (onComplete + transitions). */
   private buildAdjacency(spec: PlaybookSpecV2): Map<string, string[]> {
     const adjacency = new Map<string, string[]>()
@@ -588,9 +788,15 @@ export class PlaybookValidator {
       for (const rule of desugarDecision(step)) {
         if (rule.nextStepId) add(step.id, rule.nextStepId)
       }
-      // A hiba-élek (onError/onBlocked) is elérhetővé teszik a cél-stepet (WP-7).
-      if (step.onError?.nextStepId) add(step.id, step.onError.nextStepId)
-      if (step.onBlocked?.nextStepId) add(step.id, step.onBlocked.nextStepId)
+      // A hiba-élek (onError/onBlocked) is elérhetővé teszik a cél-stepet (WP-7),
+      // a reason-kulcsos route-ok célja is (hibapolicy spec §5.2 / P2).
+      for (const target of [step.onError, step.onBlocked]) {
+        const { reasonRoutes, catchAll } = normalizeErrorTarget(target)
+        if (catchAll?.nextStepId) add(step.id, catchAll.nextStepId)
+        for (const route of reasonRoutes) {
+          if (route.nextStepId) add(step.id, route.nextStepId)
+        }
+      }
     }
     for (const t of spec.transitions) add(t.fromStepId, t.toStepId)
     return adjacency
@@ -676,24 +882,84 @@ export class PlaybookValidator {
     })
   }
 
+  /**
+   * Hibapolicy spec §4.3/P1 + §4.2/WP-4 — van-e EGYÁLTALÁN default hibaág (Playbook- vagy
+   * feloldható tenant-szintű) az egyes ágakra. A tenant-default csak akkor számít lefedettnek,
+   * ha a célja (step/gate) ténylegesen létezik EBBEN a Playbookban — különben a compiler is
+   * kihagyja, és a beégetett `await_human` marad (§4.3 TE-3).
+   */
+  private hasResolvedDefaultCoverage(
+    spec: PlaybookSpecV2,
+    ctx: TenantValidationContext,
+  ): { error: boolean; blocked: boolean } {
+    const stepIds = new Set(spec.steps.map((s) => s.id))
+    const gateIds = new Set(spec.gates.map((g) => g.id))
+    const tenantResolvable = (target: RoutingTarget | undefined) =>
+      isRoutingTargetResolvable(target, stepIds, gateIds)
+    return {
+      error:
+        spec.defaultErrorPolicy?.onError != null ||
+        tenantResolvable(ctx.tenantDefaultErrorPolicy?.onError),
+      blocked:
+        spec.defaultErrorPolicy?.onBlocked != null ||
+        tenantResolvable(ctx.tenantDefaultErrorPolicy?.onBlocked),
+    }
+  }
+
+  // Hibapolicy spec §4.2/WP-4 — ha a tenant egy olyan step/gate-et vár default hibacélul,
+  // ami EBBEN a Playbookban nem létezik, ezt warningként jelezzük (a compiler csendben
+  // kihagyja, a beégetett `await_human` marad — nem blokkoljuk a publisht emiatt, §4.2 note).
+  private checkTenantDefaultErrorTargets(
+    spec: PlaybookSpecV2,
+    ctx: TenantValidationContext,
+    warnings: ValidationIssue[],
+  ) {
+    const policy = ctx.tenantDefaultErrorPolicy
+    if (!policy) return
+    const stepIds = new Set(spec.steps.map((s) => s.id))
+    const gateIds = new Set(spec.gates.map((g) => g.id))
+    for (const [key, target] of [
+      ['tenantDefaultErrorPolicy.onError', policy.onError],
+      ['tenantDefaultErrorPolicy.onBlocked', policy.onBlocked],
+    ] as const) {
+      if (!target) continue
+      const missingStep = target.nextStepId != null && !stepIds.has(target.nextStepId)
+      const missingGate = target.gateId != null && !gateIds.has(target.gateId)
+      if (missingStep || missingGate) {
+        warnings.push({
+          code: 'TENANT_DEFAULT_ERROR_TARGET_MISSING',
+          path: key,
+          message: `A tenant hibapolicy '${target.nextStepId ?? target.gateId}' célt vár default hibaágul, de a Playbook nem tartalmazza — a beégetett await_human marad érvényben.`,
+        })
+      }
+    }
+  }
+
   // WP-7 §10.5 — minden nem-terminális step hiba-kimenete kezelt (explicit hiba-él vagy
   // implicit default awaiting_human). Az implicit ág mindig létezik, ezért ez figyelmeztetés,
   // nem blocking-error: jelzi, hogy a step hibája a default emberi felülvizsgálatra megy.
   private checkErrorEdges(
     spec: PlaybookSpecV2,
+    ctx: TenantValidationContext,
     _errors: ValidationIssue[],
     warnings: ValidationIssue[],
   ) {
     const transitionSources = new Set(spec.transitions.map((t) => t.fromStepId))
+    // Hibapolicy spec §4.3 / P1 + §4.2 / WP-4 — ha VAN Playbook- vagy feloldható
+    // tenant-default (mindkét ágra), az a lépés-szintű onError/onBlocked HIÁNYÁBAN is
+    // lefedi a hibautat; ekkor nem "implicit awaiting_human" a kimenet, hanem a
+    // konfigurált default cél.
+    const { error: hasDefaultError, blocked: hasDefaultBlocked } = this.hasResolvedDefaultCoverage(spec, ctx)
     for (let i = 0; i < spec.steps.length; i++) {
       const step = spec.steps[i]!
       if (isTerminalStep(step) && !transitionSources.has(step.id)) continue
-      const hasExplicitErrorEdge = step.onError != null || step.onBlocked != null
-      if (!hasExplicitErrorEdge) {
+      const errorCovered = step.onError != null || hasDefaultError
+      const blockedCovered = step.onBlocked != null || hasDefaultBlocked
+      if (!errorCovered || !blockedCovered) {
         warnings.push({
           code: 'IMPLICIT_ERROR_EDGE',
           path: `steps[${i}]`,
-          message: `A(z) '${step.id}' nem-terminális lépésnek nincs explicit onError/onBlocked hiba-éle — a blocked/failed kimenet az implicit default emberi felülvizsgálatra (awaiting_human) megy.`,
+          message: `A(z) '${step.id}' nem-terminális lépésnek nincs explicit (vagy Playbook-default) onError/onBlocked hiba-éle — a blocked/failed kimenet az implicit default emberi felülvizsgálatra (awaiting_human) megy.`,
         })
       }
     }

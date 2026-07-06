@@ -348,6 +348,16 @@ class FakeProcessRepository implements ProcessRepository {
     Object.assign(p, data)
     return p
   }
+  async updateProcessIfStatusIn(
+    id: string,
+    statuses: ProcessInstance['status'][],
+    data: Record<string, unknown>,
+  ) {
+    const p = this.processes.find((x) => x.id === id)
+    if (!p || !statuses.includes(p.status)) return null
+    Object.assign(p, data)
+    return p
+  }
   async createStep(input: CreateProcessStepInput): Promise<ProcessStepInstance> {
     const s = {
       id: randomUUID(),
@@ -914,6 +924,58 @@ async function main() {
     assert.equal((await ctx.procRepo.listSteps(proc.id)).length, stepsBefore, 'nem jöhet létre új lépés')
     // A no-op nem emittál step.complete auditot (a lépés már rég kész).
     assert.equal(ctx.audit.byAction('process.complete').length, 1)
+  })
+
+  await test('P8b — completed Futás: running visszaírás és késő next_step advance blokkolva', async () => {
+    const ctx = await setupPublished(demoSpec())
+    const proc = await ctx.processService.startProcess({
+      tenantId: TENANT,
+      processType: 'invoice_processing',
+      inputPayload: {},
+      startedBy: { type: 'agent', id: AGENT },
+    })
+    const entry = ctx.ticketRepo.tickets.find((t) => t.id === proc.rootTicketId)!
+    await ctx.stateMachine.transitionTicket({
+      tenantId: TENANT,
+      ticketId: entry.id,
+      toState: 'in_progress',
+      actor: { type: 'agent', id: AGENT },
+    })
+    await ctx.stateMachine.transitionTicket({
+      tenantId: TENANT,
+      ticketId: entry.id,
+      toState: 'done',
+      actor: { type: 'agent', id: AGENT },
+      outputPayload: { decision: 'post' },
+    })
+    const approvalTicket = ctx.ticketRepo.tickets.find((t) => t.playbookStepId === 'approval')!
+    await ctx.stateMachine.transitionTicket({
+      tenantId: TENANT,
+      ticketId: approvalTicket.id,
+      toState: 'approved',
+      actor: { type: 'user', id: APPROVER_USER, roles: ['approver'] },
+      approvalEvidence: { signature: 'sig-123' },
+    })
+    assert.equal((await ctx.processService.getProcess(TENANT, proc.id)).status, 'completed')
+
+    // Szimulált verseny: completed után a régi next_step ág nem írhat running-ot.
+    const bumped = await ctx.procRepo.updateProcessIfStatusIn(
+      proc.id,
+      ['created', 'awaiting_human'],
+      { status: 'running' },
+    )
+    assert.equal(bumped, null)
+    assert.equal((await ctx.processService.getProcess(TENANT, proc.id)).status, 'completed')
+
+    const lateAdvance = await ctx.processService.advance({
+      tenantId: TENANT,
+      processInstanceId: proc.id,
+      completedStepId: 'extract',
+      actor: { type: 'agent', id: AGENT },
+      resultPayload: { decision: 'post' },
+    })
+    assert.equal(lateAdvance.kind, 'noop')
+    assert.equal((await ctx.processService.getProcess(TENANT, proc.id)).status, 'completed')
   })
 
   await test('P9 — futás közbeni v2 publikálás NEM hat a futó (v1-re pin-elt) processre', async () => {

@@ -36,6 +36,7 @@ HARD RULES (non-negotiable):
 - Every "human_role" role may declare "requiredPermissions" from the IAM permission vocabulary when a platform permission is actually required.
 - Steps should carry a templated "instructionTemplate" with "{{slot}}" placeholders, and a matching "inputSlots" array. Each slot has: name, type ("string"|"number"|"boolean"|"freeform"), required, and source: "config" (a value the operator fills in once when assembling the Process) or "trigger" (a value that comes from each run's input, e.g. from chat/ticket/cron) or "step" (output from the previous step in the flow).
 - Every "{{token}}" used in instructionTemplate MUST appear in that step's inputSlots, and vice versa for required slots.
+- If a LATER step has a required inputSlot with source "step" (meaning it expects that value as output from an earlier step), the EARLIER step's instructionTemplate must explicitly name that exact field and ask the executing agent to return it as a structured value (e.g. "at the end of your answer, return a JSON object with the key <fieldName>"). Do not rely on the runtime to infer this silently — an agent that only sees prose instructions will often answer in prose only, and the step will then be blocked as "output_contract_unmet". Optionally also declare the step's own "outputContract": { "requiredFields": [...] } to make this explicit.
 - Blocking gates with a "human_approval" type must have requiredActorRole pointing to a "human_role", never an "agent_role" — nobody could approve it otherwise.
 - L2/L3 criticality gates must be blocking.
 - entryStepId must reference an existing step id; every step/gate id must be unique; the graph must be reachable from entryStepId and free of cycles unless a gate breaks the loop.
@@ -145,6 +146,15 @@ export class PlaybookAuthorAgent {
     if (input.priorValidation && !input.priorValidation.valid) {
       parts.push(
         `The previous draft FAILED validation with these errors — fix them:\n${JSON.stringify(input.priorValidation.errors)}`,
+      )
+    }
+    // A warningok NEM buktatják a draftot (`valid` maradhat true), de az
+    // OUTPUT_CONTRACT_NOT_PROMPTED/OUTPUT_CONTRACT_INCOMPLETE (§checkOutputContractCoverage)
+    // pontosan ilyen — visszacsatolás nélkül a szerző agent soha nem szembesülne vele,
+    // csak a következő futáskor a runtime `output_contract_unmet` blokkjában.
+    if (input.priorValidation?.warnings?.length) {
+      parts.push(
+        `The previous draft passed validation but raised these warnings — address them if reasonable:\n${JSON.stringify(input.priorValidation.warnings)}`,
       )
     }
     parts.push(`User request:\n${input.description}`)

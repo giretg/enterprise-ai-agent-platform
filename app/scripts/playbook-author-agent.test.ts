@@ -163,6 +163,35 @@ async function main() {
     assert.ok(userMsg.content.includes('sales.lead.review'))
   })
 
+  await test('draftSpec: előző validációs WARNING (pl. OUTPUT_CONTRACT_NOT_PROMPTED) is bekerül a promptba, nem csak az error', async () => {
+    const model = fixedModel(JSON.stringify(validRawSpec()))
+    const agent = new PlaybookAuthorAgent({ model })
+    await agent.draftSpec({
+      agentId: 'agent-author',
+      description: 'Javítsd a figyelmeztetést.',
+      existingSpec: validRawSpec(),
+      priorValidation: {
+        valid: true,
+        errors: [],
+        warnings: [
+          {
+            code: 'OUTPUT_CONTRACT_NOT_PROMPTED',
+            path: 'steps[0].instructionTemplate',
+            message: 'lastActivityDate hiányzik a promptból',
+          },
+        ],
+      },
+    })
+    const messages = (model as { lastMessages?: unknown }).lastMessages as Array<{ role: string; content: string }>
+    const userMsg = messages.find((m) => m.role === 'user')!
+    assert.ok(userMsg.content.includes('OUTPUT_CONTRACT_NOT_PROMPTED'))
+    assert.ok(userMsg.content.includes('lastActivityDate'))
+  })
+
+  await test('draftSpec: rendszerprompt előírja a downstream step-mezők explicit nevesítését', async () => {
+    assert.ok(PLAYBOOK_AUTHOR_ROLE_INSTRUCTION.includes('output_contract_unmet'))
+  })
+
   await test('draftSpec: sosem tartalmaz konkrét agent-kötést kérő instrukciót — a role kulcs marad', async () => {
     assert.ok(PLAYBOOK_AUTHOR_ROLE_INSTRUCTION.includes('never bind a concrete agent'))
   })

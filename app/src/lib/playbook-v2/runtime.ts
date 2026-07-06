@@ -111,8 +111,11 @@ export function evaluateTicketTransition(
     }
   }
 
-  // §7.2.6 — output contract (csak ha az átmenet megköveteli).
-  if (transition.requiresOutputContract) {
+  // §7.2.6 — output contract (csak ha az átmenet megköveteli). Hibapolicy spec §7 —
+  // egy `blocked`/`failed` hard-signal outcome-ot NEM utasíthat el az output-contract
+  // (a step tartalmilag nem teljesített, ezért a kimeneti mezők hiánya várt; a hiba-útnak
+  // el KELL érnie az evaluateAdvance-ot, nem szabad itt DENY-jal elakadnia).
+  if (transition.requiresOutputContract && !isErrorOutcomePayload(input.outputPayload)) {
     const requiredFields = outputRequiredFieldsForStep(rule, compiled.outputRequiredFields)
     if (requiredFields.length > 0) {
       const missing = missingOutputFields(requiredFields, input.outputPayload)
@@ -188,6 +191,12 @@ function gateDecision(gate: CompiledGate, input: TransitionInput): TransitionDec
 
 function hasEvidence(evidence?: Record<string, unknown>): boolean {
   return evidence != null && Object.keys(evidence).length > 0
+}
+
+/** Hibapolicy spec §7 — a payload `outcome.status`-a hiba (blocked/failed)-e. */
+function isErrorOutcomePayload(payload?: Record<string, unknown>): boolean {
+  const status = readOutcomeStatus(payload ?? {})
+  return status === 'blocked' || status === 'failed'
 }
 
 function missingOutputFields(required: string[], payload?: Record<string, unknown>): string[] {

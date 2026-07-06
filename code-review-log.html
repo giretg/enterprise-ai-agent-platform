@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Enterprise AI Agent Platform — Code Review Log</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --border: #2a2f3a;
+    --text: #e6e9ef; --muted: #97a0b0; --accent: #6ea8fe; --green: #3fb950;
+    --amber: #d29922; --red: #f85149; --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  header { padding: 28px 32px 18px; border-bottom: 1px solid var(--border);
+    background: linear-gradient(180deg, #131722, #0f1115); }
+  h1 { margin: 0 0 6px; font-size: 22px; letter-spacing: .2px; }
+  .sub { color: var(--muted); font-size: 13.5px; }
+  main { padding: 26px 32px 60px; max-width: 1080px; margin: 0 auto; }
+  h2 { font-size: 15px; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--muted); margin: 34px 0 12px; }
+  table { width: 100%; border-collapse: collapse; margin: 8px 0 24px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
+  th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--border);
+    font-size: 13.5px; vertical-align: top; }
+  th { background: var(--panel2); color: var(--muted); font-weight: 600; }
+  tr:last-child td { border-bottom: none; }
+  .entry { background: var(--panel); border: 1px solid var(--border);
+    border-radius: 12px; padding: 18px 20px; margin: 14px 0; }
+  .entry h3 { margin: 0 0 4px; font-size: 16px; }
+  .meta { color: var(--muted); font-size: 12.5px; margin-bottom: 12px; }
+  .badge { display: inline-block; padding: 2px 9px; border-radius: 20px;
+    font-size: 11.5px; font-weight: 600; margin-right: 6px; }
+  .b-fixed { background: rgba(63,185,80,.14); color: var(--green); border: 1px solid rgba(63,185,80,.35); }
+  .b-decision { background: rgba(210,153,34,.14); color: var(--amber); border: 1px solid rgba(210,153,34,.35); }
+  .b-clean { background: rgba(110,168,254,.14); color: var(--accent); border: 1px solid rgba(110,168,254,.35); }
+  .entry ul { margin: 8px 0 4px; padding-left: 20px; }
+  .entry li { margin: 4px 0; }
+  code, .path { font-family: var(--mono); font-size: 12.5px; background: var(--panel2);
+    padding: 1px 6px; border-radius: 5px; color: #cdd6e4; }
+  .files { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .callout { border-left: 3px solid var(--accent); padding: 8px 12px; margin: 10px 0;
+    background: var(--panel2); border-radius: 0 8px 8px 0; }
+  a { color: var(--accent); }
+  footer { color: var(--muted); font-size: 12px; padding: 18px 32px; border-top: 1px solid var(--border); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Enterprise AI Agent Platform — Code Review Log</h1>
+  <div class="sub">Rendszeres, területenkénti kritikus code review napló. Minden futás egy még
+  át nem nézett / régen nézett / jelentősen változott területet céloz. A részletes,
+  géppel is olvasható jegyzőkönyv a <code>code_review.md</code>-ben folytatódik.</div>
+</header>
+<main>
+
+  <h2>Áttekintett területek</h2>
+  <table>
+    <thead>
+      <tr><th>Dátum</th><th>Terület</th><th>Eredmény</th><th>Kimenet</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>2026-07-06</td>
+        <td>Governed Flow Builder — Playbook v2 compile + runtime út
+          (<span class="path">step-output-inference</span>, <span class="path">compiler</span>,
+          <span class="path">validator</span>, <span class="path">runtime</span>,
+          <span class="path">process-service</span>, <span class="path">general-task-runtime</span>)</td>
+        <td><span class="badge b-fixed">1 javítás</span><span class="badge b-decision">2 döntés</span></td>
+        <td>Decision-branch output-következtetés hézag javítva + regressziós teszt;
+          2 döntést igénylő pont dokumentálva</td>
+      </tr>
+      <tr>
+        <td>2026-07-06</td>
+        <td>Model Gateway — governed routing / request model override</td>
+        <td><span class="badge b-fixed">javítva</span></td>
+        <td>Override-bypass befoltozva, default-deny + allowlist, MG-N7 tesztek (lásd code_review.md)</td>
+      </tr>
+      <tr>
+        <td>2026-07-04</td>
+        <td>Web fetch / egress guard — SSRF határ</td>
+        <td><span class="badge b-fixed">javítva</span></td>
+        <td>IPv6-mapped / reserved tartományok osztályozása (lásd code_review.md)</td>
+      </tr>
+      <tr>
+        <td>2026-07-01</td>
+        <td>Per-user connector grant / OAuth token vault</td>
+        <td><span class="badge b-fixed">javítva</span></td>
+        <td>Grant-tulajdon újraellenőrzés, fail-closed OAuth (lásd code_review.md)</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h2>2026-07-06 — Governed Flow Builder: Playbook v2 compile + runtime út</h2>
+
+  <div class="entry">
+    <h3>Miért ez a terület</h3>
+    <div class="meta">Kritikusság: MAGAS · Változás mértéke: NAGY (working tree ~+2600 sor) · Korábban nem review-zott</div>
+    <p>Ez a platform autonóm, több-lépéses agent-orkesztrációjának magja: a
+    <em>determinisztikus</em> réteg, amely eldönti, hogy egy agent kimenete átléphet-e egy
+    emberi jóváhagyó kapun, és hogy egy lépés kudarca (blocked/failed) hogyan terelődik
+    hibaágra vagy emberi felülvizsgálatra. Egy hiba itt közvetlenül governance-megkerülést
+    vagy néma, hibás továbblépést okozhat. A Governed Flow Builder (WP-2..8) most a legnagyobb
+    és legfrissebb változás, és eddig nem volt átnézve.</p>
+    <div class="files">Átnézve: src/lib/playbook-v2/{runtime, process-step-payload, step-output-inference, spec}.ts ·
+    src/domain/playbook/{playbook-compiler, playbook-validator, process-service}.ts ·
+    src/domain/agent/general-task-runtime.ts</div>
+  </div>
+
+  <div class="entry">
+    <h3><span class="badge b-fixed">JAVÍTVA</span> Decision Step ágai kimaradtak az output-kontraktus következtetéséből</h3>
+    <div class="meta">Fájl: <span class="path">src/lib/playbook-v2/step-output-inference.ts</span></div>
+    <p><strong>Tünet.</strong> Az <code>inferStepOutputFields</code> kizárólag a
+    <code>step.onComplete</code> ágakat járta be, amikor kikövetkeztette, mely kimeneti
+    mezőket kell egy lépésnek termelnie (a következő lépés kötelező, <code>step</code>-forrású
+    input-résein alapulva). A Decision Step (WP-8) viszont a <code>step.decision.branches</code>
+    és <code>fallback</code> ágakon keresztül irányít — ezeket a compiler
+    <code>desugarDecision</code>-je fordítja <code>onComplete</code>-re, de a következtetés a
+    <em>nyers</em> specet olvasta, így nem látta őket.</p>
+    <p><strong>Következmény.</strong> Ha egy döntési ág olyan lépésre mutatott, amely kötelező
+    <code>step</code>-forrású input-rést vár, azt a mezőt a döntési lépés kimeneti szerződése
+    <em>sosem</em> tartalmazta. Ezért: (1) a validátor nem adott
+    <code>OUTPUT_CONTRACT_NOT_PROMPTED</code> figyelmeztetést a szerzőnek, (2) a runtime nem
+    kényszerítette ki a mezőt, így a döntési lépés némán <code>ok</code>-ként zárult, és a
+    folyamat csak a <em>következő</em> lépés ticketjének létrehozásakor akadt el
+    (<code>ProcessBlockedError</code> → <code>blocked</code>). Pontosan ez a
+    „<code>output_contract_unmet</code>” elakadási osztály, amelynek megelőzésére a
+    következtetés készült — csak a Decision Stepre volt egy lyuk.</p>
+    <p><strong>Javítás.</strong> Bevezettem egy <code>happyPathNextStepIds(step)</code> helpert,
+    amely az <code>onComplete</code> mellett a <code>decision.branches</code> és a
+    <code>decision.fallback</code> cél-stepjeit is összegyűjti — konzisztensen a compiler
+    <code>desugarDecision</code>-jével és a validátor <code>buildAdjacency</code>-jével. A
+    körkörös import elkerülésére a bejárás lokálisan van, nem a compilerből importálva.</p>
+    <p><strong>Verifikáció.</strong> 2 új regressziós teszt a
+    <code>playbook-process-lifecycle.test.ts</code>-ben (branch + fallback mögötti mezők
+    következtetése és a compiler <code>outputRequiredFields</code> átvezetése). A teljes
+    playbook-v2 core / runtime / process / governed / lifecycle / process-def tesztkészlet
+    zöld; eslint tiszta.</p>
+  </div>
+
+  <div class="entry">
+    <h3><span class="badge b-decision">DÖNTÉS KELL</span> A <code>tool_denied</code> hard-signal soha nem aktiválódik</h3>
+    <div class="meta">Fájl: <span class="path">src/domain/agent/general-task-runtime.ts:238</span> ·
+    <span class="path">src/lib/playbook-v2/process-step-payload.ts:258</span> ·
+    <span class="path">src/domain/agent/chat-tool-loop.ts:73</span></div>
+    <p><code>computeStepOutcome</code> a <code>toolDenied</code> jelet <code>failed /
+    tool_denied</code> kemény hibaként dokumentálja, de a hívó (<code>general-task-runtime</code>)
+    soha nem tölti ki. A <code>ToolLoopResult</code> típus csak <code>completed | exhausted</code>
+    állapotot ad vissza — azt nem, hogy a loop közben a broker megtagadott-e egy tool-hívást
+    (a megtagadás szövege visszamegy a modellnek, és a loop <code>completed</code>-tel zárulhat).
+    Így a <code>StepOutcomeSignals.toolDenied</code> mező jelenleg elérhetetlen kód.</p>
+    <div class="callout"><strong>Governance-relevancia:</strong> egy agent, amelytől a broker
+    megtagadott egy kritikus tool-hívást, mégis <code>ok</code>-ként zárhat egy lépést, ha a
+    kimeneti mezőket más úton előállítja. Kérdés: egy lépés közbeni tool-megtagadás keményen
+    buktassa-e a lépést (<code>failed/tool_denied</code>), vagy a jelenlegi „hagyd a modellt
+    helyreállni” viselkedés a szándékolt? Az előbbihez át kellene vezetni egy
+    <code>deniedToolCall</code> jelet a <code>ToolLoopResult</code>-on. Termék/biztonsági döntést
+    igényel — nem „nyilvánvaló” javítás.</p>
+  </div>
+
+  <div class="entry">
+    <h3><span class="badge b-decision">DÖNTÉS KELL</span> Inkonzisztens terminál-státusz védelem az advance ágakon</h3>
+    <div class="meta">Fájl: <span class="path">src/domain/playbook/process-service.ts</span>
+    (<code>await_gate</code> ~539, <code>await_human</code> ~589 vs. <code>complete</code>/<code>next_step</code>)</div>
+    <p>A <code>next_step</code> és <code>complete</code> ágak most már
+    <code>updateProcessIfStatusIn(...)</code> feltételes íróval védettek, hogy egy késő/párhuzamos
+    advance ne írhasson felül egy már terminális (<code>completed</code>) állapotot. Az
+    <code>await_gate</code> és <code>await_human</code> ágak viszont feltétel nélküli
+    <code>updateProcess(status: 'awaiting_human')</code>-t hívnak.</p>
+    <div class="callout"><strong>Jelenleg elérhetetlen</strong> az egy-aktív-lépés invariáns
+    miatt (egy lineáris folyamatban egyszerre egy lépés aktív), ezért nem „nyilvánvaló” hiba.
+    De defense-in-depth szempontból javasolt ugyanazt a státusz-őrt alkalmazni az await-ágakra
+    is (csak <code>ADVANCEABLE_PROCESS_STATUSES</code>-ból emelhessen <code>awaiting_human</code>-ba),
+    hogy egy jövőbeli párhuzamos-lépés kiterjesztés se tudjon terminális állapotot felülírni.</div>
+  </div>
+
+  <div class="entry">
+    <h3><span class="badge b-clean">MEGJEGYZÉS</span> Defenzív észrevétel — null-feltételű hiba-él</h3>
+    <div class="meta">Fájl: <span class="path">src/lib/playbook-v2/runtime.ts:254</span></div>
+    <p>Az <code>evaluateAdvance</code> hiba-ág ciklusa <code>if (rule.condition &amp;&amp;
+    evaluateCondition(...))</code> — egy <code>condition</code> nélküli hiba-él némán kimaradna.
+    A compiler jelenleg <em>mindig</em> ad feltételt a hiba-élekre (reason- vagy status-illesztés),
+    ezért ez ma nem elérhető, de érdemes egy defenzív megjegyzés vagy egy explicit
+    „feltétel nélküli hiba-él = mindig illeszkedik” ág, ha a compiled-spec kézzel is előállhat.</p>
+  </div>
+
+  <div class="entry">
+    <h3><span class="badge b-clean">POZITÍV</span> Erős pontok</h3>
+    <ul>
+      <li>A kapu-megkerülés védelem (<code>gateDecision</code>) helyesen fail-closed:
+        agent/system SOHA nem léphet át blocking emberi kaput; a kapu-ellenőrzés a
+        transition-lánc ellenőrzése <em>előtt</em> fut (P6).</li>
+      <li>A kaszkád-védelem (<code>evaluateAdvance</code>): <code>blocked</code>/<code>failed</code>
+        outcome esetén a happy-path ágak kizárva, hiba-él vagy implicit <code>await_human</code>
+        boundary — a tartalmi kudarc nem propagálódhat sikerként.</li>
+      <li>A concurrency-hardening (idempotencia-őr + feltételes státusz-írások) valós, korábban
+        tapasztalt „stuck running” versenyhelyzetet céloz, jó kommentekkel.</li>
+      <li>A validátor kétrétegű, kiterjedt keresztreferencia-, elérhetőség-, ciklus- és
+        error-path lefedettséggel; a Decision Step és hibapolicy szabályok gazdagon lefedettek.</li>
+    </ul>
+  </div>
+
+  <footer>
+    Generálta: automatizált code-review futás (Claude Code). A döntést igénylő pontok
+    részletei a <code>docs/code-review/2026-07-06-playbook-runtime-decisions.md</code>-ben.
+  </footer>
+</main>
+</body>
+</html>

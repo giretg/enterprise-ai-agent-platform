@@ -6,6 +6,10 @@ import { addTicketComment, uploadTicketCommentAttachment } from '@/app/actions/p
 import { Badge, Card } from '@/components/ui/shell'
 import { ChatMarkdown } from '@/components/chat/chat-markdown'
 import { formatTicketDateTime } from '@/lib/ticket-display'
+import {
+  agentAnswerStructuredFromPayload,
+  extractAgentAnswerDisplayBody,
+} from '@/lib/playbook-v2/process-step-payload'
 
 type ThreadAttachment = {
   id: string
@@ -256,8 +260,11 @@ export function TicketThread({
     agentId?: string | null
     processInstanceId?: string | null
     taskDescription?: string | null
+    payload?: unknown
+    updatedAt?: string | Date
     createdAt: string | Date
     creator?: { label: string } | null
+    assignee?: { label: string } | null
   }
   comments: TicketThreadComment[]
 }) {
@@ -266,6 +273,17 @@ export function TicketThread({
     ticket.agentId && !ticket.processInstanceId && ['done', 'awaiting_human'].includes(ticket.state),
   )
   const sorted = useMemo(() => [...comments].sort((a, b) => a.seq - b.seq), [comments])
+  const payloadRecord = useMemo(() => structuredRecord(ticket.payload), [ticket.payload])
+  const hasAgentComment = sorted.some((comment) => comment.kind === 'agent_answer')
+  const payloadFallbackAnswer = useMemo(() => {
+    if (hasAgentComment) return null
+    if (!['done', 'awaiting_human'].includes(ticket.state)) return null
+    return extractAgentAnswerDisplayBody(payloadRecord)
+  }, [hasAgentComment, payloadRecord, ticket.state])
+  const payloadFallbackStructured = useMemo(
+    () => (payloadFallbackAnswer ? agentAnswerStructuredFromPayload(payloadRecord) : {}),
+    [payloadFallbackAnswer, payloadRecord],
+  )
 
   return (
     <Card title="Ticket-szál" className="mt-6">
@@ -316,6 +334,27 @@ export function TicketThread({
             </article>
           )
         })}
+
+        {payloadFallbackAnswer && (
+          <article className="rounded-lg border border-sky/25 bg-sky/5 p-4">
+            <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-ink-faint">
+              <Badge tone="success">AI agent</Badge>
+              <span>{ticket.assignee?.label ?? 'Agent'}</span>
+              <span>{formatTicketDateTime(ticket.updatedAt ?? ticket.createdAt)}</span>
+              {typeof payloadFallbackStructured.confidence === 'string' && (
+                <Badge
+                  tone={payloadFallbackStructured.confidence === 'high' ? 'success' : 'warning'}
+                >
+                  {payloadFallbackStructured.confidence}
+                </Badge>
+              )}
+              {typeof payloadFallbackStructured.model === 'string' && (
+                <Badge tone="neutral">{payloadFallbackStructured.model}</Badge>
+              )}
+            </div>
+            <ChatMarkdown content={payloadFallbackAnswer} variant="agent" />
+          </article>
+        )}
 
         <TicketCommentComposer ticketId={ticket.id} canHandBack={canHandBack} />
       </div>

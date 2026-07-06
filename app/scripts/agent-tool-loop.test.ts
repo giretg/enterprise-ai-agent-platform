@@ -137,6 +137,7 @@ async function main() {
           role: 'user',
           content: 'old secret content',
           contentDeletedAt: null,
+          createdAt: new Date('2025-12-31T00:00:00Z'),
         },
         {
           id: 'm2',
@@ -144,6 +145,7 @@ async function main() {
           role: 'agent',
           content: null,
           contentDeletedAt: new Date('2026-01-01T00:00:00Z'),
+          createdAt: new Date('2025-12-31T00:01:00Z'),
         },
         {
           id: 'm3',
@@ -151,6 +153,7 @@ async function main() {
           role: 'user',
           content: 'x'.repeat(200),
           contentDeletedAt: null,
+          createdAt: new Date('2025-12-31T00:02:00Z'),
         },
         {
           id: 'm4',
@@ -158,6 +161,7 @@ async function main() {
           role: 'user',
           content: 'latest',
           contentDeletedAt: null,
+          createdAt: new Date('2025-12-31T00:03:00Z'),
         },
       ],
     })

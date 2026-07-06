@@ -9,6 +9,7 @@ export type ContextAssemblyMessage = {
   role: string
   content: string | null
   contentDeletedAt: Date | null
+  createdAt: Date
 }
 
 export type AssembledContext = {

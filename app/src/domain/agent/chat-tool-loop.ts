@@ -32,6 +32,8 @@ export const CHAT_PLATFORM_TOOLS = [
   'gmail_send',
   'http_api_get',
   'http_api_request',
+  'repo_prepare',
+  'repo_open_pull_request',
   'file_read',
   'file_write',
   'create_html',
@@ -114,6 +116,17 @@ export type ToolLoopActivityEvent = {
   detail?: string
   status: 'running' | 'done' | 'error' | 'skipped'
   archivePath?: string
+}
+
+export function resolveToolLoopMaxTurns(
+  modelConfig: ModelConfig,
+  allowedTools: readonly ChatPlatformToolName[],
+): number | undefined {
+  const raw = (modelConfig as Record<string, unknown>).maxToolTurns
+  if (typeof raw === 'number' && Number.isFinite(raw)) {
+    return clamp(raw, 5, 80)
+  }
+  return allowedTools.includes('repo_prepare') ? 40 : undefined
 }
 
 const TOOL_RESULT_READ = 'tool_result_read'
@@ -228,6 +241,27 @@ const TOOL_SCHEMAS: Record<ChatPlatformToolName, ToolSchema> = {
         body: { type: 'object', additionalProperties: true },
       },
       ['method', 'path'],
+    ),
+  },
+  repo_prepare: {
+    description:
+      'GitHub repo előkészítése a conversation workspace-ben. Repo-val kapcsolatos kódkeresés vagy módosítás előtt EZT hívd először. Idempotens: ha ugyanaz a commit már le van kérve, nem tölt újra. Siker után a visszaadott repoPath alatt dolgozz file_search/file_glob/file_read/file_edit eszközökkel; ne járd be a GitHub API-t könyvtáranként.',
+    inputSchema: objectSchema(
+      {
+        repoUrl: STR,
+        owner: STR,
+        repo: STR,
+        ref: STR,
+        forceRefresh: BOOL,
+      },
+    ),
+  },
+  repo_open_pull_request: {
+    description:
+      'Elkészíti és a GitHub-ra tolja az eddigi workspace-módosításokat: branch-et hoz létre, commitol, és PR-t nyit. Csak a repo_prepare óta file_edit/file_write/file_delete eszközzel ténylegesen módosított fájlokat viszi be — NEM az egész repót. Ha nincs módosított fájl, changed:false-t ad vissza commit/PR nélkül. Mindig repo_prepare + tényleges file_edit/file_write UTÁN hívd; ha nincs korábbi file_edit/file_write ebben a workspace-ben, ne hívd meg, hanem kérdezz vissza, mit módosítson. A `branch` opcionális (ha üres, automatikusan generálódik); a `baseRef` alapból a repo_prepare-nél használt ág.',
+    inputSchema: objectSchema(
+      { title: STR, body: STR, branch: STR, baseRef: STR, draft: BOOL },
+      ['title'],
     ),
   },
   file_read: {
@@ -682,6 +716,14 @@ function describeToolCall(tool: string, args: Record<string, unknown>): string |
       return typeof args.path === 'string'
         ? `${httpMethodArg(args.method)} ${shortText(args.path, 80)}`
         : undefined
+    case 'repo_prepare':
+      if (typeof args.repoUrl === 'string') return shortText(args.repoUrl, 80)
+      if (typeof args.owner === 'string' && typeof args.repo === 'string') {
+        return `${args.owner}/${args.repo}`
+      }
+      return 'repo workspace előkészítés'
+    case 'repo_open_pull_request':
+      return typeof args.title === 'string' ? shortText(args.title, 90) : undefined
     case 'agent_ask':
       return typeof args.question === 'string' ? shortText(args.question) : undefined
     case 'ticket_create':
@@ -732,6 +774,15 @@ function describeToolResult(result: unknown): string {
   if (Array.isArray(record.files)) return `${record.files.length} fájl`
   if (Array.isArray(record.hits)) return `${record.hits.length} találat`
   if (Array.isArray(record.results)) return `${record.results.length} találat`
+  if (typeof record.repoPath === 'string' && typeof record.status === 'string') {
+    return `${record.status}: ${record.repoPath}`
+  }
+  if (record.changed === false && typeof record.message === 'string') {
+    return shortText(record.message, 90)
+  }
+  if (typeof record.pullRequestUrl === 'string') {
+    return `PR: ${shortText(record.pullRequestUrl, 90)}`
+  }
   if (record.ok === true && record.result && typeof record.result === 'object') {
     const result = record.result as Record<string, unknown>
     return `${Array.isArray(result.facts) ? result.facts.length : 0} kutatási tény`
@@ -959,6 +1010,32 @@ function buildToolInvoke(
           path: strArg(args, 'path'),
           query: httpQueryArg(args.query),
           body: args.body,
+        },
+      }
+
+    case 'repo_prepare':
+      return {
+        ...common,
+        tool: 'repo_prepare',
+        args: {
+          repoUrl: typeof args.repoUrl === 'string' ? args.repoUrl : undefined,
+          owner: typeof args.owner === 'string' ? args.owner : undefined,
+          repo: typeof args.repo === 'string' ? args.repo : undefined,
+          ref: typeof args.ref === 'string' ? args.ref : undefined,
+          forceRefresh: boolArg(args, 'forceRefresh'),
+        },
+      }
+
+    case 'repo_open_pull_request':
+      return {
+        ...common,
+        tool: 'repo_open_pull_request',
+        args: {
+          title: strArg(args, 'title'),
+          body: typeof args.body === 'string' ? args.body : undefined,
+          branch: typeof args.branch === 'string' ? args.branch : undefined,
+          baseRef: typeof args.baseRef === 'string' ? args.baseRef : undefined,
+          draft: boolArg(args, 'draft'),
         },
       }
 
@@ -1292,6 +1369,16 @@ export async function runAgentToolLoop(params: {
   if (params.allowedTools.some((t) => t === 'http_api_get' || t === 'http_api_request')) {
     const spec = await describeHttpApiConnectors(params.toolCaps, params.agentId)
     if (spec) messages.push({ role: 'system', content: spec })
+  }
+  if (params.allowedTools.includes('repo_prepare')) {
+    messages.push({
+      role: 'system',
+      content:
+        'Repo-feladatnál (kód keresése, módosítása, fájl megtalálása, GitHub repo vizsgálata) először hívd a repo_prepare eszközt. Ha sikeres, a repoPath alatti workspace fájlokon dolgozz file_search/file_glob/file_read/file_edit eszközökkel. Ne használd a GitHub REST API-t mappák kézi bejárására, ha repo_prepare elérhető.' +
+        (params.allowedTools.includes('repo_open_pull_request')
+          ? ' Ha a felhasználó azt kéri, hogy a módosítást "tedd fel githubra" / "nyiss PR-t" / "commitold": NE mondd, hogy nincs mit — nézd meg az előző köreid tool-hívásait (fentebb, "[Ebben a körben lefutott eszközhívások]" alatt), és ha volt file_edit/file_write ebben a workspace-ben, hívd a repo_open_pull_request eszközt (title kötelező). Ha nem emlékszel pontosan melyik fájlt módosítottad, előbb repo_prepare-rel frissítsd a kontextust és file_search-csel/file_read-del nézd meg újra, NE találgass.'
+          : ''),
+    })
   }
 
   let toolCallCount = 0

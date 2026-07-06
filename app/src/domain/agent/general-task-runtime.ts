@@ -8,17 +8,21 @@ import type {
 } from '@/repositories/interfaces'
 import type { Prisma } from '@prisma/client'
 import type { CompiledSpec } from '@/domain/playbook/playbook-compiler'
+import type { ConversationService, ConversationMessageView } from '@/domain/conversation/conversation-service'
+import type { StepOutcome } from '@/lib/playbook-v2/spec'
 import { composeSystemPrompt } from '@/lib/agent-prompt'
 import { formatOrgRoster } from '@/lib/agent-org-roster'
 import { buildEffectivePrompt } from '@/lib/playbook-v2/effective-prompt'
 import {
-  buildStepCompletionPayload,
+  agentAnswerStructuredFromPayload,
   computeStepOutcome,
   DEFAULT_DELIVERABLE_FIELD,
   DELIVERABLE_TOOL_BY_FORMAT,
+  extractAgentAnswerDisplayBody,
   formatDeliverableInstruction,
   formatOutputContractInstruction,
   outputRequiredFieldsForStep,
+  parseAgentStepOutput,
   pickDeliverableFile,
   playbookSlotValuesFromTicketPayload,
   requireDeliverableFile,
@@ -31,7 +35,7 @@ import type { ModelGateway, ModelConfig } from '../gateway/model-gateway'
 import type { ToolBrokerService } from '../tool-broker/tool-broker-service'
 import type { WorkspaceStorage } from '../file-editor/workspace-storage'
 import { formatAttachmentBlock } from './agent-chat-runtime'
-import { listAllowedChatTools, runAgentToolLoop } from './chat-tool-loop'
+import { listAllowedChatTools, resolveToolLoopMaxTurns, runAgentToolLoop } from './chat-tool-loop'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -46,6 +50,20 @@ function readAttachmentIds(payload: Record<string, unknown>): string[] {
 function safeToolResultName(value: string): string {
   const cleaned = value.replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '')
   return cleaned.slice(0, 80) || 'tool-result'
+}
+
+function clipText(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value
+  return `${value.slice(0, Math.max(0, maxChars - 24)).trimEnd()}\n[levagva]`
+}
+
+function formatConversationForPrompt(messages: ConversationMessageView[]): string | null {
+  const relevant = messages.filter((m) => m.content?.trim())
+  if (relevant.length === 0) return null
+  const rendered = relevant
+    .map((m) => `[${m.seq}] ${m.role}: ${clipText(m.content!.trim(), 1200)}`)
+    .join('\n')
+  return clipText(rendered, 8000)
 }
 
 type ProcessStepContext = {
@@ -71,6 +89,7 @@ export class GeneralTaskRuntime {
     private workspaceStorage: WorkspaceStorage,
     private playbooks?: PlaybookV2Repository,
     private processes?: ProcessRepository,
+    private conversations?: ConversationService,
   ) {}
 
   async processTicket(params: { ticketId: string; agentId: string }) {
@@ -102,6 +121,7 @@ export class GeneralTaskRuntime {
 
     const attachmentDocs = await this.loadDocuments(attachmentIds)
     const attachmentBlock = formatAttachmentBlock(attachmentDocs)
+    const conversationContext = await this.loadConversationContext(ticket)
     const threadComments = await this.tickets.listComments(ticket.id)
     const threadPrompt = threadComments.length > 0
       ? buildThreadContextPrompt({ comments: threadComments, originalTask: question })
@@ -128,6 +148,7 @@ export class GeneralTaskRuntime {
       attachmentBlock,
       kbSearch,
       processStep,
+      conversationContext,
     })
 
     const allowedTools = await listAllowedChatTools(this.toolCaps, params.agentId)
@@ -160,76 +181,41 @@ export class GeneralTaskRuntime {
       messages,
       modelConfig,
       allowedTools,
+      maxTurns: resolveToolLoopMaxTurns(modelConfig, allowedTools),
       archiveLargeToolResult: (input) =>
         this.archiveLargeToolResult(wsTenant, ticket.id, input),
     })
     const { content: answer, toolCallCount } = loopResult
 
     if (loopResult.status === 'exhausted') {
-      const failurePayload = {
-        ...payload,
-        answer,
-        outcome: { status: 'failed', reason: 'tool_loop_exhausted' },
-        error: {
-          code: 'TOOL_LOOP_EXHAUSTED',
-          reason: loopResult.reason,
-          message:
-            'Az agent kimerítette a rendelkezésre álló eszközhasználati köröket, ezért a lépés nem zárható sikeresként.',
-        },
-        toolCallCount,
+      const updated = await this.routeNonOkStepOutcome({
+        ticket,
+        processStep,
+        agentId: params.agentId,
+        agentName: agentDetails.agent.name,
         agentVersion,
+        answer,
+        toolCallCount,
         model: modelConfig.model,
         memoryVersion: agentDetails.memoryVersion,
-      }
-      const awaitingReview = await this.tickets.update(ticket.id, {
-        state: 'awaiting_human',
-        payload: failurePayload as Prisma.JsonValue,
-      })
-      await this.tickets.recordTransition({
-        ticketId: ticket.id,
-        fromState: ticket.state,
-        toState: 'awaiting_human',
-        actorType: 'agent',
-        actorId: params.agentId,
-        agentVersion,
-        note: 'tool loop exhausted before completing task; human review required',
-      })
-      if (ticket.processInstanceId && this.processes) {
-        const step = await this.processes.findStepByTicket(ticket.tenantId, ticket.id)
-        if (step) {
-          await this.processes.updateStep(step.id, {
-            status: 'failed',
-            failedAt: new Date(),
-            resultPayload: failurePayload as Prisma.InputJsonValue,
-          })
-        }
-        await this.processes.updateProcess(ticket.processInstanceId, {
-          status: 'blocked',
-          failedAt: new Date(),
-          outputPayload: failurePayload as Prisma.InputJsonValue,
-        })
-      }
-      await this.tickets.appendComment({
-        ticketId: ticket.id,
-        kind: 'agent_answer',
-        authorType: 'agent',
-        authorAgentId: params.agentId,
-        authorDisplayName: agentDetails.agent.name,
-        agentVersion,
-        body: answer,
-        structured: {
-          model: modelConfig.model,
-          toolCallCount,
-          memoryVersion: agentDetails.memoryVersion,
-          status: 'failed',
-          errorCode: 'TOOL_LOOP_EXHAUSTED',
+        payload,
+        stepOutcome: { status: 'failed', reason: 'tool_loop_exhausted' },
+        extraPayload: {
+          error: {
+            code: 'TOOL_LOOP_EXHAUSTED',
+            reason: loopResult.reason,
+            message:
+              'Az agent kimerítette a rendelkezésre álló eszközhasználati köröket, ezért a lépés nem zárható sikeresként.',
+          },
         },
+        extraStructured: { errorCode: 'TOOL_LOOP_EXHAUSTED' },
+        note: 'tool loop exhausted before completing task; human review required',
       })
       return {
         ticketId: ticket.id,
         answer,
         toolCallCount,
-        ticket: awaitingReview,
+        ticket: updated,
       }
     }
 
@@ -253,90 +239,90 @@ export class GeneralTaskRuntime {
       }
     }
 
-    // WP-7 / §10.1 — determinista step-outcome a hard signalokból (NEM az agent
-    // önbevallásából). A soft failure (kb_search 0-hit → forrás nélküli próza) így nem
-    // propagálódhat sikerként a downstream lépésbe.
+    // Hibapolicy spec §5.1/WP-3 — a lépés outputContract-ja is hard-signal: ha a kötelező
+    // mezők hiányoznak a parse-olt kimenetből, a step NEM zárható néma `ok`-ként (különben a
+    // `done`-ra írás az evaluateTicketTransition OUTPUT_CONTRACT_VIOLATION DENY-jébe futna).
+    const structuredOutput = processStep
+      ? parseAgentStepOutput(answer, processStep.outputRequiredFields)
+      : null
+    let missingOutputFields = processStep
+      ? processStep.outputRequiredFields.filter(
+          (field) => structuredOutput![field] === undefined || structuredOutput![field] === null,
+        )
+      : []
+
+    // Sok modell a tool-loop UTÁN nem teszi vissza a kért záró JSON-blokkot, pedig a
+    // tényleges tartalmi válasz (`answer`) helyes — ilyenkor a hibás formázás miatt NE
+    // essen a step azonnal await_human-ra: egyetlen, célzott (tool nélküli) "strukturálj
+    // JSON-ra" javító hívással próbáljuk a már meglévő szöveges válaszból kinyerni a
+    // hiányzó mezőket, mielőtt hard-signal `blocked`-nek minősítenénk a lépést.
+    if (processStep && missingOutputFields.length > 0 && answer.trim()) {
+      const repaired = await this.repairStructuredOutput({
+        agentId: params.agentId,
+        agentVersion,
+        ticketId: ticket.id,
+        modelConfig,
+        answer,
+        requiredFields: missingOutputFields,
+      })
+      if (repaired) {
+        for (const field of missingOutputFields) {
+          if (repaired[field] !== undefined && repaired[field] !== null) {
+            structuredOutput![field] = repaired[field]
+          }
+        }
+        missingOutputFields = processStep.outputRequiredFields.filter(
+          (field) => structuredOutput![field] === undefined || structuredOutput![field] === null,
+        )
+      }
+    }
+
+    // WP-7 / §10.1 — determinisztikus step-outcome hard runtime hibákból és az
+    // outputContractből. A KB prefetch 0-hit csak kontextusjel: önmagában nem bizonyítja,
+    // hogy a lépés nem teljesíthető más forrásból.
     const stepOutcome = computeStepOutcome({
       loopStatus: loopResult.status,
       toolCallCount,
       kbZeroHit: kbSearch.enabled && kbSearch.hits.length === 0,
+      missingOutputFields,
     })
 
-    // Process-lépésnél a nem-`ok` outcome SOHA nem lesz happy-path `done`: a lépést az
-    // implicit hiba-élre (emberi felülvizsgálat) tereljük, a prózáját nem adjuk át inputként.
+    // Process-lépésnél a nem-`ok` outcome SOHA nem lesz happy-path `done`-ként némán
+    // elfogadva: a hibapolicy spec (§4/§7) útján a step.onError/onBlocked / Playbook-default
+    // hibaágra (vagy végső háló esetén emberi felülvizsgálatra) tereljük.
     if (processStep && stepOutcome.status !== 'ok') {
-      const blockedPayload = {
-        ...payload,
-        answer,
-        outcome: stepOutcome,
-        toolCallCount,
+      const updated = await this.routeNonOkStepOutcome({
+        ticket,
+        processStep,
+        agentId: params.agentId,
+        agentName: agentDetails.agent.name,
         agentVersion,
+        answer,
+        toolCallCount,
         model: modelConfig.model,
         memoryVersion: agentDetails.memoryVersion,
-      }
-      const awaitingReview = await this.tickets.update(ticket.id, {
-        state: 'awaiting_human',
-        payload: blockedPayload as Prisma.JsonValue,
-      })
-      await this.tickets.recordTransition({
-        ticketId: ticket.id,
-        fromState: ticket.state,
-        toState: 'awaiting_human',
-        actorType: 'agent',
-        actorId: params.agentId,
-        agentVersion,
+        payload,
+        stepOutcome,
         note: `step outcome ${stepOutcome.status} (${stepOutcome.reason ?? 'n/a'}); human review required`,
-      })
-      if (ticket.processInstanceId && this.processes) {
-        const step = await this.processes.findStepByTicket(ticket.tenantId, ticket.id)
-        if (step) {
-          await this.processes.updateStep(step.id, {
-            status: stepOutcome.status === 'failed' ? 'failed' : 'awaiting_gate',
-            resultPayload: blockedPayload as Prisma.InputJsonValue,
-            ...(stepOutcome.status === 'failed' ? { failedAt: new Date() } : {}),
-          })
-        }
-        await this.processes.updateProcess(ticket.processInstanceId, {
-          status: stepOutcome.status === 'failed' ? 'blocked' : 'awaiting_human',
-        })
-      }
-      await this.tickets.appendComment({
-        ticketId: ticket.id,
-        kind: 'agent_answer',
-        authorType: 'agent',
-        authorAgentId: params.agentId,
-        authorDisplayName: agentDetails.agent.name,
-        agentVersion,
-        body: answer,
-        structured: {
-          model: modelConfig.model,
-          toolCallCount,
-          memoryVersion: agentDetails.memoryVersion,
-          status: stepOutcome.status,
-          reason: stepOutcome.reason,
-        },
       })
       return {
         ticketId: ticket.id,
         answer,
         toolCallCount,
-        ticket: awaitingReview,
+        ticket: updated,
       }
     }
 
     const completionPayload = processStep
-      ? buildStepCompletionPayload({
-          agentContent: answer,
-          outputRequiredFields: processStep.outputRequiredFields,
-          meta: {
-            toolCallCount,
-            agentVersion,
-            model: modelConfig.model,
-            memoryVersion: agentDetails.memoryVersion,
-            outcome: stepOutcome,
-            ...deliverableMeta,
-          },
-        })
+      ? {
+          ...structuredOutput,
+          toolCallCount,
+          agentVersion,
+          model: modelConfig.model,
+          memoryVersion: agentDetails.memoryVersion,
+          outcome: stepOutcome,
+          ...deliverableMeta,
+        }
       : {
           answer,
           toolCallCount,
@@ -362,27 +348,179 @@ export class GeneralTaskRuntime {
       throw new Error(`board_write denied: ${write.reason}`)
     }
 
-    await this.tickets.appendComment({
-      ticketId: ticket.id,
-      kind: 'agent_answer',
-      authorType: 'agent',
-      authorAgentId: params.agentId,
-      authorDisplayName: agentDetails.agent.name,
-      agentVersion,
-      body: answer,
-      structured: {
-        model: modelConfig.model,
-        toolCallCount,
-        memoryVersion: agentDetails.memoryVersion,
-      },
-    })
-
     const updated = await this.tickets.findById(ticket.id)
     return {
       ticketId: ticket.id,
       answer,
       toolCallCount,
       ticket: updated,
+    }
+  }
+
+  /**
+   * Hibapolicy spec (§4/§7) — egy `blocked`/`failed` step-outcome-ot Playbook-folyamat
+   * ticketnél `board_write('done')`-ként ír vissza, hogy a `TicketStateMachine` →
+   * `ProcessService.advance` → `evaluateAdvance` ténylegesen kiértékelje a
+   * `step.onError`/`onBlocked` / Playbook-default hibaágat, mielőtt a beégetett
+   * `await_human` végső hálóra esne (egy közvetlen ticket-írás megkerülné ezt a routingot).
+   * Nem Playbook-folyamat ticketnél (nincs compiled routing) közvetlen emberi felülvizsgálatra megy.
+   */
+  private async routeNonOkStepOutcome(input: {
+    ticket: NonNullable<Awaited<ReturnType<TicketRepository['findById']>>>
+    processStep: ProcessStepContext | null
+    agentId: string
+    agentName: string
+    agentVersion: number
+    answer: string
+    toolCallCount: number
+    model: string
+    memoryVersion: number | null
+    payload: Record<string, unknown>
+    stepOutcome: StepOutcome
+    extraPayload?: Record<string, unknown>
+    extraStructured?: Record<string, unknown>
+    note: string
+  }) {
+    const { ticket, processStep, agentId, agentVersion, stepOutcome } = input
+    const outcomePayload = {
+      ...input.payload,
+      answer: input.answer,
+      outcome: stepOutcome,
+      toolCallCount: input.toolCallCount,
+      agentVersion,
+      model: input.model,
+      memoryVersion: input.memoryVersion,
+      ...(input.extraPayload ?? {}),
+    }
+
+    await this.appendAgentAnswerComment({
+      ticketId: ticket.id,
+      agentId,
+      agentName: input.agentName,
+      agentVersion,
+      answerPayload: outcomePayload,
+      outputRequiredFields: processStep?.outputRequiredFields,
+      extraStructured: {
+        model: input.model,
+        toolCallCount: input.toolCallCount,
+        memoryVersion: input.memoryVersion,
+        status: stepOutcome.status,
+        reason: stepOutcome.reason,
+        ...(input.extraStructured ?? {}),
+      },
+    })
+
+    if (processStep) {
+      const write = await this.toolBroker.invoke({
+        agentId,
+        agentVersion,
+        ticketId: ticket.id,
+        tool: 'board_write',
+        args: {
+          ticketId: ticket.id,
+          patch: { payload: outcomePayload, state: 'done' },
+        },
+      })
+      if (write.denied) {
+        throw new Error(`board_write denied: ${write.reason}`)
+      }
+      return this.tickets.findById(ticket.id)
+    }
+
+    const awaitingReview = await this.tickets.update(ticket.id, {
+      state: 'awaiting_human',
+      payload: outcomePayload as Prisma.JsonValue,
+    })
+    await this.tickets.recordTransition({
+      ticketId: ticket.id,
+      fromState: ticket.state,
+      toState: 'awaiting_human',
+      actorType: 'agent',
+      actorId: agentId,
+      agentVersion,
+      note: input.note,
+    })
+    return awaitingReview
+  }
+
+  private async appendAgentAnswerComment(input: {
+    ticketId: string
+    agentId: string
+    agentName: string
+    agentVersion: number
+    answerPayload: Record<string, unknown>
+    outputRequiredFields?: string[]
+    extraStructured?: Record<string, unknown>
+  }): Promise<void> {
+    const body =
+      extractAgentAnswerDisplayBody(input.answerPayload, input.outputRequiredFields ?? []) ??
+      (typeof input.answerPayload.answer === 'string' ? input.answerPayload.answer.trim() : null)
+    if (!body) return
+
+    const existing = await this.tickets.listComments(input.ticketId)
+    const lastAgent = [...existing].reverse().find((comment) => comment.kind === 'agent_answer')
+    if (lastAgent && lastAgent.body.trim() === body.trim()) return
+
+    await this.tickets.appendComment({
+      ticketId: input.ticketId,
+      kind: 'agent_answer',
+      authorType: 'agent',
+      authorAgentId: input.agentId,
+      authorDisplayName: input.agentName,
+      agentVersion: input.agentVersion,
+      body,
+      structured: {
+        ...agentAnswerStructuredFromPayload(input.answerPayload),
+        ...(input.extraStructured ?? {}),
+      } as Prisma.JsonObject,
+    })
+  }
+
+  /**
+   * Egyetlen, tool nélküli javító hívás: a modell saját (már megszületett) szöveges
+   * válaszát térképezi le a hiányzó outputContract mezőkre. Nem a fő feladatot ismétli
+   * meg — csak formázási/kinyerési feladat, ezért megbízhatóbban betartja a szigorú
+   * JSON-only elvárást, mint a fő (tool-loopos) válasz. Ha ez a hívás is hibázik vagy
+   * hiányos, a hívó a normál hard-signal `blocked`/`await_human` útra esik — nincs
+   * végtelen retry, legfeljebb egy plusz modellhívás történik lépésenként.
+   */
+  private async repairStructuredOutput(input: {
+    agentId: string
+    agentVersion: number
+    ticketId: string
+    modelConfig: ModelConfig
+    answer: string
+    requiredFields: string[]
+  }): Promise<Record<string, unknown> | null> {
+    try {
+      const keys = input.requiredFields.join(', ')
+      const result = await this.gateway.call({
+        agentId: input.agentId,
+        agentVersion: input.agentVersion,
+        ticketId: input.ticketId,
+        messages: [
+          {
+            role: 'system',
+            content: [
+              'Kizárólag adat-strukturáló feladatod van, ne végezz semmilyen új kutatást vagy eszközhívást.',
+              `A user üzenete egy korábbi agent-válasz. Alakítsd át EGYETLEN JSON objektummá, PONTOSAN ezekkel a kulcsokkal: ${keys}.`,
+              'A válaszod KIZÁRÓLAG a JSON objektum legyen, más szöveg, magyarázat vagy code fence nélkül.',
+              'Ha egy kulcs értékét nem találod a szövegben, az adott kulcs értéke legyen üres string.',
+            ].join('\n'),
+          },
+          { role: 'user', content: input.answer },
+        ],
+        modelConfig: input.modelConfig,
+      })
+      const parsed = parseAgentStepOutput(result.content, input.requiredFields)
+      const hasAny = input.requiredFields.some(
+        (field) => parsed[field] !== undefined && parsed[field] !== null,
+      )
+      return hasAny ? parsed : null
+    } catch {
+      // A javító hívás hibája nem eshet vissza a fő lépés kimenetére — a hívó
+      // egyszerűen a hiányzó mezőkkel, hard-signal `blocked`-ként folytatja.
+      return null
     }
   }
 
@@ -409,6 +547,29 @@ export class GeneralTaskRuntime {
       compiled,
       stepRule,
       outputRequiredFields: outputRequiredFieldsForStep(stepRule, compiled.outputRequiredFields),
+    }
+  }
+
+  /**
+   * Chatből indított Folyamat lépés-ticketjéhez a kiváltó beszélgetés kivonata:
+   * a `ticket.conversationId` a Folyamat indító beszélgetésére mutat (l.
+   * process-service.ts `createStepWithTicket`), de az instructionTemplate-ek
+   * jellemzően "a promptban" szövegre hivatkoznak anélkül, hogy maguk
+   * tartalmaznák azt — enélkül az agent látótere üres, és tévesen azt
+   * jelentheti, hogy a felhasználó semmit nem adott meg.
+   */
+  private async loadConversationContext(
+    ticket: NonNullable<Awaited<ReturnType<TicketRepository['findById']>>>,
+  ): Promise<string | null> {
+    if (!ticket.conversationId || !this.conversations) return null
+    try {
+      const { messages } = await this.conversations.getConversation(
+        ticket.conversationId,
+        ticket.tenantId,
+      )
+      return formatConversationForPrompt(messages)
+    } catch {
+      return null
     }
   }
 
@@ -468,6 +629,7 @@ export class GeneralTaskRuntime {
     attachmentBlock: string
     kbSearch: { enabled: boolean; hits: KbHit[] }
     processStep: ProcessStepContext | null
+    conversationContext: string | null
   }) {
     const allAgents = await this.agents.findMany()
     const orgRoster = formatOrgRoster(allAgents)
@@ -480,6 +642,13 @@ export class GeneralTaskRuntime {
       messages.push({
         role: 'system',
         content: `Memória (aktív verzió):\n${params.agentDetails.memoryContent.trim()}`,
+      })
+    }
+
+    if (params.conversationContext) {
+      messages.push({
+        role: 'system',
+        content: `Ez a lépés egy chatből indított Folyamat része. A lenti utasítás "a promptra" hivatkozhat — az alább idézett, a Folyamatot elindító beszélgetés a forrás, ebből olvasd ki a szükséges adatokat:\n\n${params.conversationContext}`,
       })
     }
 

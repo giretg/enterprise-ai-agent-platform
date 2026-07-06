@@ -32,7 +32,9 @@ import { prisma } from '@/lib/db'
 import { listPublishedStepTemplates } from '@/domain/step-template/step-template-catalog'
 import { createStepTemplate } from '@/domain/step-template/step-template-service'
 import { PLAYBOOK_AUTHOR_TEMPLATE } from '@/domain/playbook/playbook-author-agent'
+import { PLAYBOOK_CAPABILITY_NAMES } from '@/lib/tool-capability-catalog'
 import type { PlaybookV2, PlaybookVersionV2 } from '@prisma/client'
+import { errorPolicySchema } from '@/lib/playbook-v2/spec'
 import { z } from 'zod'
 
 export type ProcessBuilderPlaybookVersionView = {
@@ -236,14 +238,19 @@ export async function draftPlaybookFromDescription(input: unknown) {
       return fail('A Playbook-szerző agent nincs seedelve. Futtasd: npm run db:seed.')
     }
 
-    // Kényelmi capability-szótár: a tenant agentjeinek ténylegesen engedélyezett tool-jai —
-    // a szerep requiredCapabilities-e csak ezekből választhat (a validátor ezt kényszeríti ki).
+    // Kényelmi capability-szótár: a katalógus szerinti Playbook capability-k + a tenant
+    // agentjein ténylegesen látott extra capability-k. A Playbook requiredCapabilities
+    // bővebb, mint az agent-szerkesztő normál Tool Broker katalógusa, mert szerep-specifikus
+    // zárt capability-stringeket is tartalmazhat.
     const capabilitySets = await Promise.all(
       agents.map((a) => repositories.toolBroker.findCapabilitiesForAgent(a.id)),
     )
     const knownCapabilities = [
       ...new Set(
-        capabilitySets.flat().filter((c) => c.allowed).map((c) => c.toolName),
+        [
+          ...PLAYBOOK_CAPABILITY_NAMES,
+          ...capabilitySets.flat().filter((c) => c.allowed).map((c) => c.toolName),
+        ],
       ),
     ]
     const permissions = await repositories.rolePermissions.findAll()
@@ -477,8 +484,10 @@ function compiledOf(version: { spec: unknown; compiledSpec: unknown; id: string 
 
 /**
  * WP-4 — szimbolikus dry-run egy Playbook-verzión. A `roleBindings` / `roleCapabilities`
- * a hívótól (pl. egy ProcessDefinition kötéseiből); üresen a hiányzó-role/capability
- * findingokat mutatja. NEM ír éles rendszerbe, nem hív LLM-et (D4).
+ * vagy a hívótól jön, vagy — ha `processDefinitionId` van megadva — egy már létező
+ * Folyamat kötéseiből töltődik be (annak `roleBindings`-e + a kötött agentek tényleges
+ * capability-i a tool brokeren át). Üresen a hiányzó-role/capability findingokat mutatja.
+ * NEM ír éles rendszerbe, nem hív LLM-et (D4).
  */
 export async function simulatePlaybookVersionV2(input: unknown) {
   try {
@@ -486,6 +495,7 @@ export async function simulatePlaybookVersionV2(input: unknown) {
     const parsed = z
       .object({
         playbookVersionId: z.string().uuid(),
+        processDefinitionId: z.string().uuid().optional(),
         sampleInput: z.record(z.string(), z.unknown()).optional(),
         roleBindings: z.record(z.string(), z.string().nullable()).optional(),
         roleCapabilities: z.record(z.string(), z.array(z.string())).optional(),
@@ -494,11 +504,33 @@ export async function simulatePlaybookVersionV2(input: unknown) {
     const version = await repositories.playbooksV2.findVersion(user.activeTenantId, parsed.playbookVersionId)
     if (!version) return fail('A Playbook-verzió nem található.')
     const spec = parsePlaybookSpecV2(version.spec)
+
+    let roleBindings = parsed.roleBindings ?? {}
+    let roleCapabilities = parsed.roleCapabilities ?? {}
+    if (parsed.processDefinitionId) {
+      const processDefinition = await repositories.processDefinitions.findById(
+        user.activeTenantId,
+        parsed.processDefinitionId,
+      )
+      if (!processDefinition) return fail('A kiválasztott Folyamat nem található.')
+      if (processDefinition.playbookVersionId !== parsed.playbookVersionId) {
+        return fail('A kiválasztott Folyamat egy másik Playbook-verzióra van PIN-elve.')
+      }
+      roleBindings = { ...(processDefinition.roleBindings as Record<string, string | null>), ...roleBindings }
+      const derivedCapabilities: Record<string, string[]> = {}
+      for (const [roleKey, agentId] of Object.entries(roleBindings)) {
+        if (!agentId) continue
+        const capabilities = await repositories.toolBroker.findCapabilitiesForAgent(agentId)
+        derivedCapabilities[roleKey] = capabilities.filter((c) => c.allowed).map((c) => c.toolName)
+      }
+      roleCapabilities = { ...derivedCapabilities, ...roleCapabilities }
+    }
+
     const report = simulatorSingleton.simulate({
       spec,
       compiled: compiledOf(version),
-      roleBindings: parsed.roleBindings ?? {},
-      roleCapabilities: parsed.roleCapabilities ?? {},
+      roleBindings,
+      roleCapabilities,
       sampleInput: parsed.sampleInput ?? {},
     })
     return ok(report)
@@ -689,5 +721,35 @@ export async function importPlaybookPackApplyV2(input: unknown) {
   } catch (e) {
     if (e instanceof PlaybookV2Error) return fail(e.message)
     return fail(e instanceof Error ? e.message : 'Nem sikerült a pack-import alkalmazása')
+  }
+}
+
+// --- Hibapolicy spec §4.2/WP-4 — tenant-default hibaág admin-beállítása -------------------
+
+export async function getTenantDefaultErrorPolicyAction() {
+  try {
+    const user = await requireTenantRole('viewer')
+    const policy = await services.platformSettings.getTenantDefaultErrorPolicy(user.activeTenantId)
+    return ok(policy ?? {})
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Nem sikerült lekérdezni a tenant hibapolicy-t')
+  }
+}
+
+export async function setTenantDefaultErrorPolicyAction(input: unknown) {
+  try {
+    const user = await requireTenantRole('admin')
+    if (!user.activeTenantId) {
+      return fail('Platform-szintű (tenant nélküli) kontextusban nem állítható be tenant-default hibapolicy.')
+    }
+    const parsed = errorPolicySchema.parse(input)
+    const policy = await services.platformSettings.setTenantDefaultErrorPolicy(
+      user.activeTenantId,
+      parsed,
+      user.user.id,
+    )
+    return ok(policy)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Nem sikerült beállítani a tenant hibapolicy-t')
   }
 }

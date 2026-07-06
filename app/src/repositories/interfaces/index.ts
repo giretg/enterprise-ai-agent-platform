@@ -746,6 +746,10 @@ export interface ToolBrokerRepository {
     filter?: { agentId?: string; since?: Date },
     limit?: number,
   ): Promise<ToolCall[]>
+  /** Chat-kontextus: a beszélgetés korábbi tool-hívásai (időrendben), hogy a
+   *  következő forduló promptja a nyers agent-szöveg mellett strukturáltan is
+   *  lássa, mit hívott és milyen eredménnyel (pl. melyik fájlt szerkesztette). */
+  listToolCallsForConversation(conversationId: string, limit?: number): Promise<ToolCall[]>
 }
 
 export type RecipeWithVersions = Recipe & { versions: RecipeVersion[] }
@@ -949,6 +953,23 @@ export interface ProcessRepository {
       failedAt: Date | null
     }>,
   ): Promise<ProcessInstance>
+
+  /**
+   * Atomikus állapotfrissítés: csak akkor ír, ha a futás jelenlegi státusza a
+   * megadott halmazban van. Versenyhelyzetben (pl. complete vs. késő next_step)
+   * nem írja felül a terminális állapotot — `null` = nem történt módosítás.
+   */
+  updateProcessIfStatusIn(
+    id: string,
+    statuses: ProcessStatus[],
+    data: Partial<{
+      status: ProcessStatus
+      rootTicketId: string | null
+      outputPayload: Prisma.InputJsonValue
+      completedAt: Date | null
+      failedAt: Date | null
+    }>,
+  ): Promise<ProcessInstance | null>
 
   createStep(input: CreateProcessStepInput): Promise<ProcessStepInstance>
   findStep(processInstanceId: string, stepId: string): Promise<ProcessStepInstance | null>

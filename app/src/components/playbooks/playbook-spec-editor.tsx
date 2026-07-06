@@ -27,6 +27,7 @@ import {
   type GateFormState,
 } from '@/components/playbooks/playbook-gate-editor-form'
 import {
+  readDefaultErrorPolicy,
   syncPlaybookSpecInputSlots,
   validatePlaybookDraftSpec,
   type PlaybookDraftSpec,
@@ -102,7 +103,7 @@ export function PlaybookSpecEditor({
   const handleNodeClick = useCallback((payload: NodeClickPayload) => {
     setStepFormError(null)
     if (payload.type === 'step') {
-      setStepForm(stepFormFromRaw(payload.data as RawStep, spec.roles))
+      setStepForm(stepFormFromRaw(payload.data as RawStep, spec.roles, readDefaultErrorPolicy(spec)))
       setGateForm(null)
     } else {
       const g = payload.data as RawGate
@@ -110,7 +111,7 @@ export function PlaybookSpecEditor({
       setGateForm(gateFormFromRaw(g))
     }
     setEditingNode(payload)
-  }, [spec.roles])
+  }, [spec])
 
   function saveNodeEdit() {
     if (!editingNode) return
@@ -162,7 +163,7 @@ export function PlaybookSpecEditor({
     if (editingNode?.type === 'step') {
       const updated = result.spec.steps?.find((s) => s.id === editingNode.id)
       if (updated) {
-        setStepForm(stepFormFromRaw(updated, result.spec.roles))
+        setStepForm(stepFormFromRaw(updated, result.spec.roles, readDefaultErrorPolicy(result.spec)))
       }
     } else if (editingNode?.type === 'gate') {
       const updated = result.spec.gates?.find((g) => g.id === editingNode.id)
@@ -339,6 +340,7 @@ export function PlaybookSpecEditor({
                   stepIds={stepIds.filter((id) => id !== editingNode.id)}
                   gateIds={gateIds}
                   roles={spec.roles}
+                  defaultErrorPolicy={readDefaultErrorPolicy(spec)}
                 />
                 {stepFormError && <p className="text-xs text-coral">{stepFormError}</p>}
               </>

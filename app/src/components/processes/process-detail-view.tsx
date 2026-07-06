@@ -4,12 +4,13 @@ import { useEffect, useState, useTransition } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { transitionProcessTicket, cancelProcess } from '@/app/actions/process'
-import { getTicket } from '@/app/actions/platform'
+import { getTicket, listTicketComments } from '@/app/actions/platform'
 import { Badge } from '@/components/ui/shell'
 import { TICKET_STATE_LABELS, TICKET_STATE_TONE } from '@/lib/ticket-labels'
-import { extractTaskDescription, formatTicketDateTime } from '@/lib/ticket-display'
+import { formatTicketDateTime } from '@/lib/ticket-display'
 import { PROCESS_STATUS_CLASS } from '@/lib/process-labels'
 import { TicketFilesPanel } from '@/components/tickets/ticket-files-panel'
+import { TicketThread, type TicketThreadComment } from '@/components/tickets/ticket-thread'
 import { PlaybookFlowGraph, type TraceStatus, type TraceOverlay } from '@/components/playbooks/playbook-flow-graph'
 
 export type ProcessStepView = {
@@ -19,6 +20,7 @@ export type ProcessStepView = {
   status: string
   assignedRole: string
   assignedAgentId: string | null
+  assignedAgentName?: string | null
   ticketId: string | null
   startedAt: string | null
   completedAt: string | null
@@ -310,7 +312,8 @@ export function ProcessDetailView({ data, canAct }: { data: ProcessDetailData; c
                   Szerep: {s.assignedRole}
                   {s.assignedAgentId ? (
                     <>
-                      {' · '}Agent: <span className="font-mono">{s.assignedAgentId}</span>
+                      {' · '}Agent: {s.assignedAgentName ? `${s.assignedAgentName} ` : ''}
+                      <span className="font-mono">({s.assignedAgentId})</span>
                     </>
                   ) : null}
                   {gates.length > 0 ? (
@@ -494,20 +497,26 @@ function TicketDetailModal({ ticketId, onClose }: { ticketId: string; onClose: (
   const [state, setState] = useState<
     | { status: 'loading' }
     | { status: 'error'; error: string }
-    | { status: 'ok'; ticket: TicketDetail }
+    | { status: 'ok'; ticket: TicketDetail; comments: TicketThreadComment[] }
   >({ status: 'loading' })
 
   useEffect(() => {
     let cancelled = false
     setState({ status: 'loading' })
-    getTicket({ id: ticketId }).then((res) => {
-      if (cancelled) return
-      if (res.success) {
-        setState({ status: 'ok', ticket: res.data })
-      } else {
-        setState({ status: 'error', error: res.error })
-      }
-    })
+    Promise.all([getTicket({ id: ticketId }), listTicketComments({ ticketId })]).then(
+      ([ticketRes, commentsRes]) => {
+        if (cancelled) return
+        if (ticketRes.success) {
+          setState({
+            status: 'ok',
+            ticket: ticketRes.data,
+            comments: commentsRes.success ? (commentsRes.data as TicketThreadComment[]) : [],
+          })
+        } else {
+          setState({ status: 'error', error: ticketRes.error })
+        }
+      },
+    )
     return () => {
       cancelled = true
     }
@@ -551,13 +560,7 @@ function TicketDetailModal({ ticketId, onClose }: { ticketId: string; onClose: (
               </Badge>
             </div>
 
-            {(() => {
-              const taskDescription =
-                state.ticket.taskDescription ?? extractTaskDescription(state.ticket.payload)
-              return taskDescription ? (
-                <p className="whitespace-pre-wrap text-sm leading-relaxed text-ink">{taskDescription}</p>
-              ) : null
-            })()}
+            <TicketThread ticket={state.ticket} comments={state.comments} />
 
             <dl className="grid gap-x-6 gap-y-2 text-xs text-ink-soft sm:grid-cols-2">
               {state.ticket.creator && (

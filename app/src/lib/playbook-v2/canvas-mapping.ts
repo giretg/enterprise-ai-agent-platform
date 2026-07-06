@@ -182,6 +182,34 @@ export function computeAutoLayout(spec: PlaybookDraftSpec): Record<string, { x: 
       pos[id] = { x: PAD_X + (l + 1) * COL_W, y: PAD_Y + row * ROW_H }
     })
   }
+
+  // Egyetlen stephez kötött kapuk (akár requiredGateIds, akár onComplete gateId-n át) NE önálló
+  // láncszemként kapjanak oszlopot, hanem a birtokos step ALÁ kerüljenek — vizuálisan is jelezve,
+  // hogy a kapu a lépéshez tartozó előfeltétel/döntés, nem a folyamat következő lépése. Megosztott
+  // (több step által hivatkozott) kapuk a normál rétegzett pozíciójukat tartják.
+  const gateIdSet = new Set(gates.map((g) => g.id as string))
+  const gateOwners = new Map<string, Set<string>>()
+  const addOwner = (gid: string, stepId: string) => {
+    if (!gateIdSet.has(gid)) return
+    const owners = gateOwners.get(gid) ?? new Set<string>()
+    owners.add(stepId)
+    gateOwners.set(gid, owners)
+  }
+  for (const s of steps) {
+    for (const gid of s.requiredGateIds ?? []) addOwner(gid, s.id as string)
+    for (const r of s.onComplete ?? []) if (r.gateId) addOwner(r.gateId, s.id as string)
+  }
+  const perStepGateCount = new Map<string, number>()
+  for (const [gid, owners] of gateOwners) {
+    if (owners.size !== 1) continue
+    const stepId = [...owners][0]!
+    const base = pos[stepId]
+    if (!base) continue
+    const idx = perStepGateCount.get(stepId) ?? 0
+    pos[gid] = { x: base.x + 20, y: base.y + 130 + idx * 90 }
+    perStepGateCount.set(stepId, idx + 1)
+  }
+
   return pos
 }
 

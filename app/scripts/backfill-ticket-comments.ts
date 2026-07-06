@@ -1,5 +1,6 @@
 import { prisma } from '@/lib/db'
 import { repositories } from '@/repositories/postgres'
+import { extractAgentAnswerDisplayBody } from '@/lib/playbook-v2/process-step-payload'
 
 function payloadRecord(value: unknown): Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -30,9 +31,9 @@ async function main() {
     const followUpNotes = Array.isArray(payload.followUpNotes)
       ? payload.followUpNotes.filter((note): note is string => typeof note === 'string' && note.trim().length > 0)
       : []
-    const answer = typeof payload.answer === 'string' && payload.answer.trim()
-      ? payload.answer.trim()
-      : null
+    const answer =
+      extractAgentAnswerDisplayBody(payload) ??
+      (typeof payload.answer === 'string' && payload.answer.trim() ? payload.answer.trim() : null)
 
     for (const note of followUpNotes) {
       await repositories.tickets.appendComment({

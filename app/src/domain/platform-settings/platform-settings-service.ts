@@ -36,6 +36,7 @@ import type { Prisma, TicketType } from '@prisma/client'
 import { WEB_SEARCH_CONTROLS_KEY } from '@/domain/web-search/web-search-types'
 import { WEB_FETCH_CONTROLS_KEY } from '@/domain/web-fetch/web-fetch-types'
 import { matchForbiddenHost } from '@/domain/net/egress-guard'
+import { errorPolicySchema, type ErrorPolicy } from '@/lib/playbook-v2/spec'
 
 export const DISPATCHER_CONTROLS_KEY = 'dispatcher.controls'
 export const DISPATCHER_LAST_CYCLE_KEY = 'dispatcher.last_cycle'
@@ -148,6 +149,14 @@ const DEFAULT_WEB_FETCH_CONTROLS: WebFetchControls = {
  */
 export const PROVISIONING_EGRESS_ALLOWLIST_KEY = 'provisioning.egress_allowlist'
 const EGRESS_GLOBAL_BUCKET = '__global__'
+
+/**
+ * Hibapolicy spec §4.2/WP-4 — tenant-szintű alapértelmezett hibaág-policy tárolókulcsa.
+ * Egyetlen `PlatformSetting` sor, tenantId → `ErrorPolicy` bucket (ugyanaz a minta, mint az
+ * egress-allowlistnél). Élő, NEM pin-elt beállítás — a `PlaybookV2Service.publishPlaybookVersion`
+ * olvassa ki publish-időben, és a FELOLDOTT eredmény kerül a `compiled_spec`-be (TE-2).
+ */
+export const PLAYBOOK_TENANT_DEFAULT_ERROR_POLICY_KEY = 'playbook.tenant_default_error_policy'
 type EgressAllowlistStore = Record<string, string[]>
 
 /**
@@ -863,5 +872,62 @@ export class PlatformSettingsService {
       })
       throw error
     }
+  }
+
+  /**
+   * Hibapolicy spec §4.2/WP-4 — a tenant alapértelmezett hibaág-policyja. `null`, ha nincs
+   * tenant (`tenantId === null`, pl. platform-szintű Playbook) vagy a tenant nem állított be
+   * semmit. Olcsó, nem auditál (a publish-útvonal olvassa).
+   */
+  async getTenantDefaultErrorPolicy(tenantId: string | null): Promise<ErrorPolicy | null> {
+    if (!tenantId) return null
+    const raw = (await this.settings.get(PLAYBOOK_TENANT_DEFAULT_ERROR_POLICY_KEY)) as Record<
+      string,
+      unknown
+    > | null
+    if (!raw || typeof raw !== 'object') return null
+    const parsed = errorPolicySchema.safeParse(raw[tenantId])
+    return parsed.success ? parsed.data : null
+  }
+
+  /**
+   * A tenant alapértelmezett hibaág-policyjának auditált admin-beállítása (§4.2). A cél
+   * (step/gate) létezését ITT nem ellenőrizzük — az Playbook-specifikus (egy tenant több
+   * Playbookot futtathat), ezt a `PlaybookValidator` jelzi publish-időben, ha a policy egy
+   * adott Playbookra nem illeszkedik (`TENANT_DEFAULT_ERROR_TARGET_MISSING`).
+   */
+  async setTenantDefaultErrorPolicy(
+    tenantId: string,
+    policy: ErrorPolicy,
+    actorId: string,
+  ): Promise<ErrorPolicy> {
+    const validated = errorPolicySchema.parse(policy)
+    const raw = (await this.settings.get(PLAYBOOK_TENANT_DEFAULT_ERROR_POLICY_KEY)) as Record<
+      string,
+      unknown
+    > | null
+    const store: Record<string, unknown> = raw && typeof raw === 'object' ? { ...raw } : {}
+    store[tenantId] = validated
+    await this.settings.set(
+      PLAYBOOK_TENANT_DEFAULT_ERROR_POLICY_KEY,
+      store as Prisma.InputJsonObject,
+      actorId,
+    )
+
+    await this.audit.append({
+      actorType: 'human',
+      actorId,
+      agentVersion: null,
+      action: 'playbook.tenant_default_error_policy.set',
+      targetType: 'platform_setting',
+      targetId: null,
+      modelUsed: null,
+      inputRef: tenantId,
+      outputRef: null,
+      policyDecision: 'allowed',
+      metadata: { tenantId, policy: validated },
+    })
+
+    return validated
   }
 }
