@@ -53,7 +53,7 @@ export default function ControlPlaneLayout({ children }: { children: React.React
 
   return (
     <AppShell
-      appName="A Pince"
+      appName="E-AI"
       appSubtitle="Control Plane"
       navItems={navItems}
       accentColor="slate"
