@@ -7,9 +7,9 @@ import path from 'path'
 import { clerkClient } from '@clerk/nextjs/server'
 import { getCurrentUser } from '@/auth'
 import { hasMinimumRole } from '@/auth/types'
-import { requirePermission } from '@/auth/permission'
 import { requirePlatformRole, requireTenantPermission, requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain'
+import { buildTenantAccessAuditFilter } from '@/domain/iam/access-audit'
 import { SandboxAppError } from '@/domain/sandbox/errors'
 import { dispatchBudgetFromEnv } from '@/domain/dispatcher/dispatcher-service'
 import {
@@ -3034,7 +3034,7 @@ export async function setUserJobDescription(input: {
 /** GET/PATCH /permissions (§6) — a deklaratív permission-mátrix. */
 export async function getPermissionMatrix() {
   try {
-    await requirePermission('user.permission.write')
+    await requireTenantPermission('user.permission.write')
     const matrix = await services.iam.getPermissionMatrix()
     return ok(matrix)
   } catch (e) {
@@ -3044,12 +3044,13 @@ export async function getPermissionMatrix() {
 
 export async function updateRolePermission(input: { permissionKey: string; minRole: string }) {
   try {
-    const actor = await requirePermission('user.permission.write')
+    const ctx = await requireTenantPermission('user.permission.write')
     const parsed = updateRolePermissionSchema.parse(input)
     const updated = await services.iam.updatePermission({
       permissionKey: parsed.permissionKey,
       minRole: parsed.minRole,
-      actorId: actor.id,
+      actorId: ctx.user.id,
+      tenantId: ctx.activeTenantId,
     })
     return ok(updated)
   } catch (e) {
@@ -3057,27 +3058,13 @@ export async function updateRolePermission(input: { permissionKey: string; minRo
   }
 }
 
-const ACCESS_AUDIT_ACTIONS = [
-  'user.invite.issue',
-  'user.invite.redeem',
-  'user.invite.revoke',
-  'user.selfregister',
-  'user.role.assign',
-  'user.role.change',
-  'user.suspend',
-  'user.reactivate',
-  'user.permission.update',
-  'user.authz.deny',
-]
-
 /** GET /audit/access (§6) — kizárólag a hozzáférési audit-eseménytípusok (§8.5). */
 export async function getAccessAuditLog(input?: { limit?: number }) {
   try {
-    await requirePermission('audit.read')
-    const entries = await repositories.audit.findMany({
-      action: ACCESS_AUDIT_ACTIONS,
-      limit: input?.limit ?? 200,
-    })
+    const ctx = await requireTenantPermission('audit.read')
+    const entries = await repositories.audit.findMany(
+      buildTenantAccessAuditFilter({ tenantId: ctx.activeTenantId, limit: input?.limit }),
+    )
     return ok(entries)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to load access audit log')

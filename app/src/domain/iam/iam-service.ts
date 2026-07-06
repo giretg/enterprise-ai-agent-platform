@@ -312,7 +312,12 @@ export class IamService {
     return this.rolePermissions.findAll()
   }
 
-  async updatePermission(params: { permissionKey: string; minRole: UserRole; actorId: string }) {
+  async updatePermission(params: {
+    permissionKey: string
+    minRole: UserRole
+    actorId: string
+    tenantId: string | null
+  }) {
     const before = await this.rolePermissions.findByKey(params.permissionKey)
     const updated = await this.rolePermissions.upsert(params.permissionKey, params.minRole, before?.description)
 
@@ -327,7 +332,8 @@ export class IamService {
       inputRef: before?.minRole ?? null,
       outputRef: params.minRole,
       policyDecision: 'permission_updated',
-      metadata: { permissionKey: params.permissionKey },
+      metadata: { permissionKey: params.permissionKey, tenantId: params.tenantId },
+      tenantId: params.tenantId,
     })
 
     return updated

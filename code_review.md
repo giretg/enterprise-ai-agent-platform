@@ -1,5 +1,34 @@
 # Enterprise code review log
 
+## 2026-07-07 - IAM/RBAC tenant-context boundary (permission matrix + access audit)
+
+- Reviewed modules:
+  - `app/src/domain/iam/iam-service.ts` (invite/redeem/approve/role-change/suspend/reactivate, tenant-scoped target loading, last-admin lock, permission matrix update)
+  - `app/src/auth/tenant-context.ts` (tenant membership / superadmin assume resolution, `requireTenantPermission`)
+  - `app/src/auth/permission.ts` (legacy user-role based `requirePermission`)
+  - `app/src/app/actions/platform.ts` IAM server actions (`listUsers`, invitation/user lifecycle, permission matrix, access audit)
+  - `app/src/repositories/postgres/iam-repository.ts` and `app/src/repositories/postgres/audit-repository.ts`
+  - `app/src/lib/iam-policy.ts`, `app/src/auth/context.ts`, `app/prisma/schema.prisma` IAM/tenant models
+- Result:
+  - The IAM domain service already enforces the important enterprise invariants for user lifecycle operations: tenant-scoped target lookup, self-modification denial, last active admin lockout, one-time invitation redemption, and append-only audit events.
+  - Found a tenant-boundary gap in the IAM admin surface. The permission matrix and access-audit actions still used legacy `requirePermission`, which decides from the global `User.role`, not the active `TenantMembership` / superadmin-assume tenant context. In a migrated multi-tenant deployment this can deny a valid tenant admin whose membership is correct but legacy `User.role` is stale/null, and it can also apply/read IAM governance outside the selected tenant context. `getAccessAuditLog` also listed all access audit rows matching the action names, with no `tenantId` filter.
+- Fix applied:
+  - `getPermissionMatrix`, `updateRolePermission`, and `getAccessAuditLog` now use `requireTenantPermission`, so the active tenant membership or explicit superadmin assume context is the authorization boundary.
+  - Access audit list construction moved to `buildTenantAccessAuditFilter`, which always includes the active tenant id and the fixed access-audit action allowlist.
+  - `IamService.updatePermission` now writes explicit `tenantId` attribution and includes the tenant id in metadata for `user.permission.update`.
+  - Added `scripts/iam-tenant-boundary.test.ts` and `test:iam-tenant-boundary` to cover tenant-scoped access-audit filters and permission-update audit attribution.
+- Business impact:
+  - Prevents IAM administration and access audit review from accidentally crossing customer tenant boundaries.
+  - Aligns the admin UI with the platform's current multi-tenant model: tenant membership and superadmin assume mode are the source of authority, not legacy single-tenant user-role fields.
+  - Improves audit evidence for enterprise customers because permission-matrix changes are attributable to a specific tenant context.
+- Verification:
+  - `npm run test:iam-tenant-boundary --prefix app`
+  - `npm run test:iam-policy --prefix app`
+  - `npm run test:tenant-management --prefix app`
+  - `npx eslint src/domain/iam/iam-service.ts src/domain/iam/access-audit.ts src/app/actions/platform.ts scripts/iam-tenant-boundary.test.ts` from `app/`
+- Decisions raised (not auto-fixed):
+  - D1 — `RolePermission` is still a global table. The current fix scopes the action boundary and audit visibility by active tenant, but the matrix value itself remains platform-wide. If customers need tenant-specific IAM policies, the schema should add `tenantId` to `RolePermission` with a platform-default fallback.
+
 ## 2026-07-07 - Tool Broker: agent-oldali tenant-izoláció (delegálás + felderítés)
 
 - Reviewed modules:
