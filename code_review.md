@@ -1,5 +1,53 @@
 # Enterprise code review log
 
+## 2026-07-07 - Sandbox-app preview/export: agent-írta HTML kiszolgálás izoláció (CSP sandbox)
+
+- Reviewed modules:
+  - `app/src/app/api/sandbox-apps/preview/route.ts` (cookieless, aláírt-token preview kiszolgálás)
+  - `app/src/app/api/sandbox-apps/[appId]/export/route.ts` (auth-olt HTML export/letöltés)
+  - `app/src/domain/sandbox/sandbox-app-service.ts` (`servePreviewByToken`, `getRenderableApp`,
+    `ensureReadable` tenant-kapu, `getSandboxAppPreviewUrl` audit)
+  - `app/src/domain/sandbox/preview-token.ts` (HMAC-SHA256 preview token, lejárat)
+  - `app/src/components/sandbox/sandbox-app-version-panel.tsx` (a beágyazó iframe)
+- Result:
+  - A szolgáltatás-réteg helyes: a preview token `tenantId+appId+version+contentHash`-re
+    kötött, HMAC-aláírt, 10 perces lejárattal (fail-closed `exp < now`), a `servePreviewByToken`
+    re-ellenőrzi a tenant-egyezést és a contentHash-integritást (egységes not-found), az
+    `ensureReadable` tenant-kaput auditál. (A `preview-token.ts` beégetett dev-secret defaultja
+    külön, már nyitott PR #8 hatókörében van — itt nem duplikáltam.)
+  - Talált egy kiszolgálás-rétegbeli izolációs rést. Az agent (potenciálisan prompt-injektált)
+    által írt HTML-t a preview route inline `text/html`-ként szolgálja ki, a válaszban NINCS
+    CSP `sandbox` direktíva. A beágyazó iframe ugyan `sandbox="allow-scripts"` (átlátszatlan
+    origó — jó), de a preview URL top-level (új fülön) megnyitva, VAGY ha a beágyazó markup
+    megváltozna, a HTML a platform origójában futna. Mivel a `SANDBOX_PREVIEW_ORIGIN` alapból
+    üres (→ platform-azonos origó), az izoláció a deployment-configtól és a beágyazó markuptól
+    függött, nem magától a válasznál. Az export route ráadásul CSP nélkül szolgálta a HTML-t
+    (az `attachment` disposition + nosniff mérsékel, de nem defense-in-depth).
+- Fix applied:
+  - Új `src/lib/sandbox-csp.ts` — a preview és export CSP közös építője, benne a kulcs
+    `sandbox allow-scripts` direktívával. Ez a böngészőt arra kényszeríti, hogy a dokumentumot
+    egyedi, ÁTLÁTSZATLAN origó-ban futtassa a válasz alapján — top-level megnyitásnál is —,
+    miközben az inline script (a data-app rendereléséhez) fut. A `allow-scripts` PONTOSAN a
+    meglévő iframe-attribútum, ezért a normál útra nézve nincs viselkedés-változás.
+  - A preview route mostantól ezt a buildert használja; az export route CSP-t is küld
+    (`sandbox` + `frame-ancestors 'none'`).
+  - Új `scripts/sandbox-csp.test.ts` + `test:sandbox-csp` (5 eset: sandbox jelen, nincs
+    allow-same-origin, network/form/object/base tiltott, frame-ancestors szűkít, inline enged).
+    tsc/eslint tiszta a módosított fájlokon.
+- Business impact:
+  - Az agent-generált HTML izolációja mostantól magának a HTTP-válasznak a tulajdonsága, nem a
+    helyes deploymenté vagy a beágyazó markupé. Egy hibás konfiguráció vagy egy közvetlenül
+    megnyitott preview-link sem engedi, hogy a modell által írt (esetleg prompt-injektált) kód
+    a platform sütijeihez/DOM-jához/tárolójához nyúljon vagy navigációval adatot vigyen ki.
+- Verification:
+  - `npm run test:sandbox-csp` (worktree, node_modules symlink), tsc/eslint a módosított fájlokra.
+- Decisions raised (not auto-fixed):
+  - D1 — A `script-src 'unsafe-inline'` szükségszerű (a data-app inline JS-t futtat); a valódi
+    csökkentés egy külön, sütimentes preview-origó (`SANDBOX_PREVIEW_ORIGIN`) + nonce-alapú CSP
+    lenne, de az A0 statikus HTML-modell mellett a `sandbox` átlátszatlan-origó a fő kontroll.
+  - D2 — Fontold meg a `SANDBOX_PREVIEW_ORIGIN` kötelezővé tételét prodban (külön origó), hogy
+    az izoláció ne csak a `sandbox` direktívára támaszkodjon (defense-in-depth).
+
 ## 2026-07-07 - Tool Broker: agent-oldali tenant-izoláció (delegálás + felderítés)
 
 - Reviewed modules:

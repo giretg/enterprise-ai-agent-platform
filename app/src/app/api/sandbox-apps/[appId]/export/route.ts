@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server'
 import { requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain'
 import { sandboxAppIdSchema } from '@/lib/validators/actions'
+import { sandboxExportCsp } from '@/lib/sandbox-csp'
 
 function safeDownloadName(name: string): string {
   return `${name
@@ -31,6 +32,7 @@ export async function GET(
       headers: {
         'Content-Type': 'text/html; charset=utf-8',
         'Content-Disposition': `attachment; filename="${safeDownloadName(app.name)}"`,
+        'Content-Security-Policy': sandboxExportCsp(),
         'X-Content-Type-Options': 'nosniff',
         'X-Sandbox-App-Hash': version.htmlHash,
       },
