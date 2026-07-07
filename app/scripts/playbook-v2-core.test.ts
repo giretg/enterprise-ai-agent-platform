@@ -461,7 +461,7 @@ check('requireDeliverableFile: hiányzó fájlnál hangosan bukik', () => {
   assert.equal(requireDeliverableFile({ format: 'html', filename: 'gdpr.html' }, 'gdpr.html'), 'gdpr.html')
   assert.throws(
     () => requireDeliverableFile({ format: 'html', filename: 'gdpr.html' }, null),
-    /nem készült új HTML fájl \(gdpr\.html\).*create_html/s,
+    /nem készült új HTML fájl \(gdpr\.html\)[\s\S]*create_html/,
   )
 })
 

@@ -1,5 +1,5 @@
 import { notFound } from 'next/navigation'
-import { getAgent } from '@/app/actions/platform'
+import { getAgent, listSandboxApps } from '@/app/actions/platform'
 import { AgentSandboxWorkspace } from '@/components/sandbox/agent-sandbox-workspace'
 import { sandboxKindForAgent } from '@/lib/agent-kind'
 
@@ -15,6 +15,9 @@ export default async function AgentSandboxPage({
   const { agent } = res.data
   const kind = sandboxKindForAgent(agent)
 
+  const appsRes = await listSandboxApps({ createdByAgentId: agentId, limit: 20 })
+  const apps = appsRes.success ? appsRes.data.apps : []
+
   return (
     <AgentSandboxWorkspace
       kind={kind}
@@ -23,6 +26,7 @@ export default async function AgentSandboxPage({
         name: agent.name,
         roleInstruction: agent.roleInstruction,
       }}
+      apps={apps}
     />
   )
 }

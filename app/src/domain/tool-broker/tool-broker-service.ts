@@ -2592,6 +2592,7 @@ export class ToolBrokerService {
           description: a.description,
           criticality: a.criticality ?? 'L1',
           createdFromTicketId: a.createdFromTicketId ?? input.ticketId,
+          createdFromConversationId: input.conversationId,
         },
         actor,
       )

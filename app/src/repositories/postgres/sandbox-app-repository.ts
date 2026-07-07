@@ -147,6 +147,7 @@ export class PostgresSandboxAppRepository implements SandboxAppRepository {
     const where: Prisma.SandboxAppWhereInput = {
       tenantId: filter.tenantId,
       ...(filter.sandboxId !== undefined ? { sandboxId: filter.sandboxId } : {}),
+      ...(filter.createdByAgentId ? { createdByAgentId: filter.createdByAgentId } : {}),
       ...(filter.status ? { status: filter.status } : {}),
       ...(filter.search
         ? {

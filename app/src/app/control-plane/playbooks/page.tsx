@@ -1,3 +1,4 @@
+import Link from 'next/link'
 import { getCurrentUser } from '@/auth'
 import { hasMinimumRole } from '@/auth/types'
 import { listPlaybooksV2 } from '@/app/actions/playbook'
@@ -14,12 +15,12 @@ export default async function PlaybooksPage() {
         <div className="flex items-center justify-between gap-3">
           <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">Playbook</p>
           {canEdit && (
-            <a
+            <Link
               href="/control-plane/playbooks/import"
               className="rounded-lg border border-ink/20 px-3 py-1.5 text-sm hover:bg-ink/5"
             >
               ⇪ Pack import
-            </a>
+            </Link>
           )}
         </div>
         <h1 className="mt-2 font-display text-3xl font-semibold">Playbookok</h1>

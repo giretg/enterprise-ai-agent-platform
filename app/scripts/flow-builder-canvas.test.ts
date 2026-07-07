@@ -90,7 +90,7 @@ check('computeAutoLayout: minden step/gate kap pozíciót', () => {
 })
 
 check('connectNodes: step→step default onComplete routing', () => {
-  let spec = addStep(baseSpec(), 'agent').spec
+  const spec = addStep(baseSpec(), 'agent').spec
   const bId = (spec.steps ?? []).find((s) => s.id !== 'a')!.id as string
   const before = JSON.stringify(spec)
   const next = connectNodes(spec, 'a', bId)

@@ -486,7 +486,9 @@ export function ProcessDetailView({ data, canAct }: { data: ProcessDetailData; c
         </section>
       )}
 
-      {openTicketId && <TicketDetailModal ticketId={openTicketId} onClose={() => setOpenTicketId(null)} />}
+      {openTicketId && (
+        <TicketDetailModal key={openTicketId} ticketId={openTicketId} onClose={() => setOpenTicketId(null)} />
+      )}
     </div>
   )
 }
@@ -502,7 +504,7 @@ function TicketDetailModal({ ticketId, onClose }: { ticketId: string; onClose: (
 
   useEffect(() => {
     let cancelled = false
-    setState({ status: 'loading' })
+    // A modal ticketId-nként remountol (key), így a kezdő 'loading' állapot már friss.
     Promise.all([getTicket({ id: ticketId }), listTicketComments({ ticketId })]).then(
       ([ticketRes, commentsRes]) => {
         if (cancelled) return

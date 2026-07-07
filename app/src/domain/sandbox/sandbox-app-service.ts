@@ -17,7 +17,10 @@ import { signPreviewToken, verifyPreviewToken, PREVIEW_TOKEN_TTL_MS } from './pr
 const PREVIEW_ROUTE_PATH = '/api/sandbox-apps/preview'
 
 function buildPreviewUrl(token: string): string {
-  const origin = process.env.SANDBOX_PREVIEW_ORIGIN?.replace(/\/$/, '') ?? ''
+  const origin = (process.env.SANDBOX_PREVIEW_ORIGIN ?? process.env.NEXT_PUBLIC_APP_URL ?? '').replace(
+    /\/$/,
+    '',
+  )
   return `${origin}${PREVIEW_ROUTE_PATH}?t=${encodeURIComponent(token)}`
 }
 
@@ -395,6 +398,7 @@ export class SandboxAppService {
   async listSandboxApps(
     input: {
       sandboxId?: string
+      createdByAgentId?: string
       status?: 'draft' | 'active' | 'archived' | 'blocked'
       search?: string
       limit?: number
@@ -405,6 +409,7 @@ export class SandboxAppService {
     const { items, nextCursor } = await this.sandboxApps.list({
       tenantId: actor.tenantId,
       sandboxId: input.sandboxId,
+      createdByAgentId: input.createdByAgentId,
       status: input.status,
       search: input.search,
       limit: input.limit,

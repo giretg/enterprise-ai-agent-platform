@@ -53,6 +53,7 @@ export const upsertSandboxAppVersionSchema = z.object({
 
 export const listSandboxAppsSchema = z.object({
   sandboxId: z.string().uuid().optional(),
+  createdByAgentId: z.string().uuid().optional(),
   status: z.enum(['draft', 'active', 'archived', 'blocked']).optional(),
   search: z.string().max(200).optional(),
   limit: z.number().int().positive().max(200).optional(),
