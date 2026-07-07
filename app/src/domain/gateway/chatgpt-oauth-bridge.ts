@@ -26,11 +26,22 @@ export function resolveModel(requested: string | undefined): string {
   return requested
 }
 
-type ResponsesMessageItem = {
+type ResponsesInputMessageContent = { type: 'input_text'; text: string }
+type ResponsesAssistantMessageContent =
+  | { type: 'output_text'; text: string }
+  | { type: 'refusal'; refusal: string }
+
+type ResponsesInputMessageItem = {
   type: 'message'
-  role: 'user' | 'assistant' | 'developer'
-  content: Array<{ type: 'input_text'; text: string }>
+  role: 'user' | 'developer'
+  content: ResponsesInputMessageContent[]
 }
+type ResponsesAssistantMessageItem = {
+  type: 'message'
+  role: 'assistant'
+  content: ResponsesAssistantMessageContent[]
+}
+type ResponsesMessageItem = ResponsesInputMessageItem | ResponsesAssistantMessageItem
 type ResponsesFunctionCallItem = {
   type: 'function_call'
   call_id: string
@@ -75,7 +86,7 @@ export function toResponsesRequest(messages: GatewayMessage[]): {
         input.push({
           type: 'message',
           role: 'assistant',
-          content: [{ type: 'input_text', text: m.content }],
+          content: [{ type: 'output_text', text: m.content }],
         })
       }
       for (const call of m.toolCalls ?? []) {
