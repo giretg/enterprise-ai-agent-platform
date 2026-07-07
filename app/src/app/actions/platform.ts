@@ -22,6 +22,7 @@ import { repositories } from '@/repositories/postgres'
 import { isClerkEnabled } from '@/lib/clerk-config'
 import { prisma, ensureActiveDatabaseMode } from '@/lib/db'
 import { ensureAgentKnowledgeBase } from '@/lib/agent-knowledge-base'
+import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
 import { getReportTemplate, listReportTemplates } from '@/domain/report/report-templates'
 import { computePlaybookGovernance } from '@/domain/governance/measurement-report'
 import {
@@ -244,6 +245,20 @@ async function runAgentTicketDispatch(
 
 function assertTicketTenantScope(ticket: { tenantId: string | null }, tenantId: string | null) {
   if (ticket.tenantId !== tenantId) throw new Error('Ticket not found')
+}
+
+/**
+ * Agent tenant-határ a KB-műveletekhez: a hívó AKTÍV tenantjából elérhető-e az
+ * agent. Megosztott (tenantId === null) agent bárhonnan elérhető; cross-tenant
+ * agent SOHA. Opak `Agent not found` — nem szivárogtatja egy másik tenant
+ * agentjének létezését. (Ugyanaz az invariáns, mint a Tool Broker
+ * `isAgentReachableFromTenant`-nél; a KB a legérzékenyebb ügyfél-tartalom.)
+ */
+function assertAgentTenantReachable(
+  agent: { tenantId: string | null },
+  tenantId: string | null,
+) {
+  if (!isAgentReachableFromTenant(agent.tenantId, tenantId)) throw new Error('Agent not found')
 }
 
 function canWriteTicketComment(
@@ -2020,6 +2035,7 @@ export async function processDocumentForWiki(input: { documentId: string; agentI
 
     const agent = await repositories.agents.findById(parsed.agentId)
     if (!agent) return fail('Agent not found')
+    assertAgentTenantReachable(agent, user.activeTenantId)
     if (agent.role === 'orchestrator') {
       return fail('Orchestrator agents do not use a knowledge base')
     }
@@ -2054,11 +2070,12 @@ export async function processDocumentForWiki(input: { documentId: string; agentI
 
 export async function listDocumentsForAgent(input: { agentId: string }) {
   try {
-    await requireTenantRole('operator')
+    const user = await requireTenantRole('operator')
     const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
 
     const agent = await repositories.agents.findById(agentId)
     if (!agent) return fail('Agent not found')
+    assertAgentTenantReachable(agent, user.activeTenantId)
     if (agent.role === 'orchestrator') return ok([])
 
     const kbConnector = await ensureAgentKnowledgeBase(agent)
@@ -2086,6 +2103,7 @@ export async function requestKbDocument(input: {
       agentId: parsed.agentId,
       documentId: parsed.documentId,
       createdById: user.user.id,
+      actorTenantId: user.activeTenantId,
       processingMode: parsed.processingMode,
     })
     return ok(ticket)
@@ -2103,6 +2121,7 @@ export async function approveKbDocument(input: { ticketId: string }) {
       ticketId: parsed.ticketId,
       approverId: user.user.id,
       approverRole: user.activeTenantRole,
+      actorTenantId: user.activeTenantId,
     })
     return ok(document)
   } catch (e) {
@@ -2118,6 +2137,7 @@ export async function rejectKbDocument(input: { ticketId: string }) {
       ticketId: parsed.ticketId,
       approverId: user.user.id,
       approverRole: user.activeTenantRole,
+      actorTenantId: user.activeTenantId,
     })
     return ok(result)
   } catch (e) {
@@ -2127,9 +2147,9 @@ export async function rejectKbDocument(input: { ticketId: string }) {
 
 export async function listKbDocumentRequests(input: { agentId: string }) {
   try {
-    await requireTenantRole('operator')
+    const user = await requireTenantRole('operator')
     const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
-    const pending = await services.knowledgeBase.listPendingDocuments(agentId)
+    const pending = await services.knowledgeBase.listPendingDocuments(agentId, user.activeTenantId)
     return ok(pending)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list KB requests')
@@ -2142,11 +2162,12 @@ export async function listKbDocumentRequests(input: { agentId: string }) {
  */
 export async function getKbArtifactReview(input: { agentId: string; documentId: string }) {
   try {
-    await requireTenantRole('operator')
+    const user = await requireTenantRole('operator')
     const parsed = kbArtifactReviewSchema.parse(input)
     const review = await services.knowledgeBase.getArtifactReview({
       agentId: parsed.agentId,
       documentId: parsed.documentId,
+      actorTenantId: user.activeTenantId,
     })
     if (!review) return fail('KB dokumentum nem található')
     return ok(review)
@@ -2168,12 +2189,14 @@ export async function shareKnowledgeBaseWithAgent(input: { agentId: string; targ
 
     const source = await repositories.agents.findById(parsed.agentId)
     if (!source) return fail('Source agent not found')
+    assertAgentTenantReachable(source, user.activeTenantId)
     if (source.role === 'orchestrator') {
       return fail('Orchestrator agents do not use a knowledge base')
     }
 
     const target = await repositories.agents.findById(parsed.targetAgentId)
     if (!target) return fail('Target agent not found')
+    assertAgentTenantReachable(target, user.activeTenantId)
     if (target.role === 'orchestrator') {
       return fail('Orchestrator agents do not use a knowledge base')
     }
@@ -2228,6 +2251,7 @@ export async function unshareKnowledgeBaseFromAgent(input: {
 
     const source = await repositories.agents.findById(parsed.agentId)
     if (!source) return fail('Source agent not found')
+    assertAgentTenantReachable(source, user.activeTenantId)
     if (source.role === 'orchestrator') {
       return fail('Orchestrator agents do not use a knowledge base')
     }
@@ -2271,11 +2295,12 @@ export async function unshareKnowledgeBaseFromAgent(input: {
 /** A KB connector megosztási állapota: mely más agentek használják (a tulajdonos nélkül). */
 export async function getKnowledgeBaseSharing(input: { agentId: string }) {
   try {
-    await requireTenantRole('operator')
+    const user = await requireTenantRole('operator')
     const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
 
     const agent = await repositories.agents.findById(agentId)
     if (!agent) return fail('Agent not found')
+    assertAgentTenantReachable(agent, user.activeTenantId)
     if (agent.role === 'orchestrator') {
       return ok({ connectorId: null, sharedWithAgents: [] })
     }
@@ -2307,6 +2332,7 @@ export async function deleteKbDocument(input: { agentId: string; documentId: str
 
     const agent = await repositories.agents.findById(parsed.agentId)
     if (!agent) return fail('Agent not found')
+    assertAgentTenantReachable(agent, user.activeTenantId)
     if (agent.role === 'orchestrator') {
       return fail('Orchestrator agents do not use a knowledge base')
     }

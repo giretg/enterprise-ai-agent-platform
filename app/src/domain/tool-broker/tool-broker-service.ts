@@ -21,6 +21,7 @@ import {
   type AgentCatalogEntry,
 } from '@/lib/agent-catalog'
 import { readDelegationPayload, shouldCompleteDelegation } from '@/lib/delegation-payload'
+import { isAgentReachableFromTenant, filterAgentsByTenant } from '@/lib/tenant-reachability'
 import {
   agentAnswerStructuredFromPayload,
   extractAgentAnswerDisplayBody,
@@ -672,30 +673,12 @@ export function filterUserDirectory(
   return { users: filtered.slice(0, limit) }
 }
 
-/**
- * Cél-agent tenant-elérhetőségi szabály (multi-tenant izoláció, DB-mentes, ezért
- * determinisztikusan tesztelhető). Egy agent akkor érhető el egy adott
- * tenant-kontextusból, ha MEGOSZTOTT (tenantId === null, platform-szintű agent),
- * vagy pontosan az adott tenanthoz tartozik. Cross-tenant agent SOHA nem oldódik
- * fel — sem felderítésre (agent_resolve / agent_catalog), sem delegálásra
- * (agent_ask / ticket_create agent-felelős). Ez a `user_directory`
- * tenant-izolációjának agent-oldali párja (defense-in-depth, sosem fail-open).
- */
-export function isAgentReachableFromTenant(
-  agentTenantId: string | null,
-  effectiveTenantId: string | null,
-): boolean {
-  if (agentTenantId === null) return true
-  return agentTenantId === effectiveTenantId
-}
-
-/** Cél-agent lista tenant-szűrése (l. {@link isAgentReachableFromTenant}). */
-export function filterAgentsByTenant<T extends { tenantId: string | null }>(
-  agents: T[],
-  effectiveTenantId: string | null,
-): T[] {
-  return agents.filter((agent) => isAgentReachableFromTenant(agent.tenantId, effectiveTenantId))
-}
+// A tenant-elérhetőségi szabály immár a `@/lib/tenant-reachability` közös
+// modulban él (a Tool Broker ÉS a Knowledge Base ugyanazt az invariánst
+// használja). Itt re-exportáljuk a visszafelé kompatibilitás miatt (a
+// tool-broker-tenant-isolation.test.ts innen importál); a modulon belüli
+// használat a fenti importon keresztül történik.
+export { isAgentReachableFromTenant, filterAgentsByTenant }
 
 function normalizeText(value: string): string {
   return value

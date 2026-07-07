@@ -16,6 +16,7 @@ import type {
   TicketRepository,
 } from '@/repositories/interfaces'
 import { ensureAgentKnowledgeBase } from '@/lib/agent-knowledge-base'
+import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
 import {
   buildOkfBundle,
   chunkOkfBundle,
@@ -75,6 +76,42 @@ export class KnowledgeBaseService {
   ) {}
 
   /**
+   * Tenant-határ ellenőrzés: a hívó AKTÍV tenantjából (superadmin assume esetén az
+   * assume-tenant) elérhető-e a cél-agent. Megosztott (tenantId === null) agent
+   * bárhonnan elérhető; egyébként csak azonos tenant. Cross-tenant hozzáférés
+   * `Agent not found`-dal bukik (opak — nem szivárogtatja egy másik tenant
+   * agentjének/dokumentumának LÉTEZÉSÉT). Ez a KB defense-in-depth párja a Tool
+   * Broker `isAgentReachableFromTenant` izolációjának — a tudásbázis a legérzékenyebb
+   * ügyfél-tartalom, ezért a domain-rétegben, fail-closed módon őrizzük.
+   */
+  private assertAgentReachable(
+    agent: Pick<Agent, 'id' | 'tenantId'>,
+    actorTenantId: string | null,
+  ): void {
+    if (!isAgentReachableFromTenant(agent.tenantId, actorTenantId)) {
+      throw new Error('Agent not found')
+    }
+  }
+
+  /**
+   * Ticket-alapú (approve/reject) tenant-határ: a KB-ticket a saját agentjének
+   * scope-jában él, ezért a ticket agentjén keresztül döntünk. Ha az agent másik
+   * tenanté (és nem megosztott), a művelet `KB ticket not found`-dal bukik — ugyanaz
+   * az opak elutasítás, mint egy nem létező ticketnél (nincs cross-tenant létezés-
+   * oracle).
+   */
+  private async assertTicketAgentReachable(
+    ticket: Ticket,
+    actorTenantId: string | null,
+  ): Promise<void> {
+    if (!ticket.agentId) throw new Error('KB ticket not found')
+    const agent = await this.agents.findById(ticket.agentId)
+    if (!agent || !isAgentReachableFromTenant(agent.tenantId, actorTenantId)) {
+      throw new Error('KB ticket not found')
+    }
+  }
+
+  /**
    * Feltöltött (de még nem csatolt) dokumentumhoz jóváhagyási ticketet nyit.
    * A dokumentum csak a jóváhagyás után kerül a KB connectorba — addig a
    * kb_search nem találja meg.
@@ -83,11 +120,14 @@ export class KnowledgeBaseService {
     agentId: string
     documentId: string
     createdById: string
+    /** A hívó aktív tenantja (multi-tenant izoláció); null = platform/megosztott. */
+    actorTenantId: string | null
     /** KB-v3 §7.2 — feldolgozási mód; alapból nyers szöveg. */
     processingMode?: KnowledgeProcessingMode
   }): Promise<Ticket> {
     const agent = await this.agents.findById(params.agentId)
     if (!agent) throw new Error('Agent not found')
+    this.assertAgentReachable(agent, params.actorTenantId)
     if (agent.role === 'orchestrator') {
       throw new Error('Orchestrator agents do not use a knowledge base')
     }
@@ -162,9 +202,12 @@ export class KnowledgeBaseService {
     ticketId: string
     approverId: string
     approverRole: UserRole
+    /** A hívó aktív tenantja (multi-tenant izoláció); null = platform/megosztott. */
+    actorTenantId: string | null
   }): Promise<Document> {
     const ticket = await this.tickets.findById(params.ticketId)
     if (!ticket || ticket.type !== 'training') throw new Error('KB ticket not found')
+    await this.assertTicketAgentReachable(ticket, params.actorTenantId)
     const payload = asKbDocumentPayload(ticket.payload)
     if (!payload) throw new Error('Not a KB document ticket')
     if (ticket.state !== 'awaiting_human') throw new Error('Ticket not awaiting approval')
@@ -218,9 +261,12 @@ export class KnowledgeBaseService {
     ticketId: string
     approverId: string
     approverRole: UserRole
+    /** A hívó aktív tenantja (multi-tenant izoláció); null = platform/megosztott. */
+    actorTenantId: string | null
   }): Promise<{ rejected: true }> {
     const ticket = await this.tickets.findById(params.ticketId)
     if (!ticket || ticket.type !== 'training') throw new Error('KB ticket not found')
+    await this.assertTicketAgentReachable(ticket, params.actorTenantId)
     const payload = asKbDocumentPayload(ticket.payload)
     if (!payload) throw new Error('Not a KB document ticket')
     if (ticket.state !== 'awaiting_human') throw new Error('Ticket not awaiting approval')
@@ -258,9 +304,15 @@ export class KnowledgeBaseService {
   }
 
   /** Az agenthez tartozó, jóváhagyásra váró KB-dokumentum ticketek. */
-  async listPendingDocuments(agentId: string): Promise<
+  async listPendingDocuments(
+    agentId: string,
+    actorTenantId: string | null,
+  ): Promise<
     Array<{ ticketId: string; documentId: string; filename: string; createdAt: Date }>
   > {
+    const agent = await this.agents.findById(agentId)
+    if (!agent) throw new Error('Agent not found')
+    this.assertAgentReachable(agent, actorTenantId)
     const tickets = await this.tickets.findMany({
       type: 'training',
       agentId,
@@ -463,9 +515,13 @@ export class KnowledgeBaseService {
   }
 
   /** Jóváhagyásra váró OKF-artifactok az agenthez linkelt KB-connectorokon. */
-  async listPendingArtifacts(agentId: string): Promise<KnowledgeArtifact[]> {
+  async listPendingArtifacts(
+    agentId: string,
+    actorTenantId: string | null,
+  ): Promise<KnowledgeArtifact[]> {
     const agent = await this.agents.findById(agentId)
     if (!agent) throw new Error('Agent not found')
+    this.assertAgentReachable(agent, actorTenantId)
     const connector = await this.ensureKnowledgeBase(agent)
     if (!connector) return []
     return this.artifacts.findByConnector(connector.id, 'pending_review')
@@ -477,7 +533,12 @@ export class KnowledgeBaseService {
    * és a hozzá tartozó jóváhagyási ticket. `null`, ha a dokumentum nem található
    * vagy nem az agent KB-jéhez tartozik.
    */
-  async getArtifactReview(params: { agentId: string; documentId: string }): Promise<{
+  async getArtifactReview(params: {
+    agentId: string
+    documentId: string
+    /** A hívó aktív tenantja (multi-tenant izoláció); null = platform/megosztott. */
+    actorTenantId: string | null
+  }): Promise<{
     filename: string
     processingMode: KnowledgeProcessingMode | null
     extractedText: string | null
@@ -493,6 +554,7 @@ export class KnowledgeBaseService {
   } | null> {
     const agent = await this.agents.findById(params.agentId)
     if (!agent) throw new Error('Agent not found')
+    this.assertAgentReachable(agent, params.actorTenantId)
     const connector = await this.ensureKnowledgeBase(agent)
     if (!connector) return null
 

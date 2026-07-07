@@ -1,5 +1,67 @@
 # Enterprise code review log
 
+## 2026-07-07 - Knowledge Base tenant-határ (dokumentum-gate + megosztás + review)
+
+- Áttekintett modulok:
+  - `app/src/domain/knowledge-base/knowledge-base-service.ts` (requestDocument /
+    approveDocument / rejectDocument / listPendingDocuments / listPendingArtifacts /
+    getArtifactReview / publishArtifact + draft-artifact flow)
+  - `app/src/app/actions/platform.ts` KB server actionök (requestKbDocument,
+    approveKbDocument, rejectKbDocument, listKbDocumentRequests, getKbArtifactReview,
+    processDocumentForWiki, listDocumentsForAgent, shareKnowledgeBaseWithAgent,
+    unshareKnowledgeBaseFromAgent, getKnowledgeBaseSharing, deleteKbDocument)
+  - `app/src/repositories/postgres/knowledge-repository.ts` (searchChunks / listIndex /
+    getPageChunks retrieval scope), `app/src/domain/tool-broker/tool-broker-service.ts`
+    `resolveKbConnectorScope` + kb_search/kb_list_index/kb_get_page
+  - `app/src/auth/tenant-context.ts` (`requireTenantRole`), `app/prisma/schema.prisma`
+    Document / KnowledgeArtifact / KnowledgeChunk / Agent tenant-mezők
+- Eredmény:
+  - A KB retrieval-út (kb_search és a navigáció) helyesen a Tool Broker fail-closed
+    capability-kapuján és a connector-scope-on át fut, PUBLISHED-only chunkokra.
+  - Talált egy cross-tenant IDOR-osztályt a KB admin-felületen. A KB actionök a hívó
+    aktív tenant-szerepét hitelesítették (`requireTenantRole`), de a cél `agentId` /
+    `documentId` / `ticketId` / `targetAgentId` feloldása globális `findById` volt,
+    tenant-szűrő NÉLKÜL. Multi-tenant telepítésen ez egy tenant operátorának/approverének
+    engedte, hogy (a) egy MÁSIK tenant agentjének tudásbázis-review tartalmát (extracted
+    text, OKF file-tree) olvassa (`getKbArtifactReview`, `listKbDocumentRequests`),
+    (b) idegen dokumentumot csatoljon idegen agent KB-jéhez a jóváhagyási kapu megkerülésével
+    (`processDocumentForWiki`) vagy azon át (`requestKbDocument`), (c) idegen KB-jóváhagyást
+    hagyjon jóvá/utasítson el (`approve/rejectKbDocument`), (d) cross-tenant KB-t osszon meg
+    vagy szüntessen meg (`share/unshare/deleteKbDocument`). A demóban minden agent globális
+    (tenantId null), ezért ma nem éles — de pontosan a multi-tenant enterprise használatban
+    válik kihasználhatóvá (ugyanaz a mintázat, mint a 2026-07-07 Tool Broker és IAM review).
+- Javítás:
+  - Új közös primitív: a `isAgentReachableFromTenant` / `filterAgentsByTenant` a Tool
+    Brokerből egy megosztott `app/src/lib/tenant-reachability.ts` modulba került (a Tool
+    Broker re-exportál, a meglévő teszt változatlan) — így a KB ÉS a Tool Broker EGY
+    tenant-invariánst használ (megosztott/null agent bárhonnan elérhető, cross-tenant SOHA).
+  - A KB domain-service minden agent-/ticket-belépője `actorTenantId`-t kap és fail-closed
+    módon ellenőrzi az elérhetőséget (`assertAgentReachable` / `assertTicketAgentReachable`);
+    a cross-tenant hozzáférés opak `Agent not found` / `KB ticket not found` (nincs
+    létezés-oracle).
+  - A prisma-direkt KB actionök (`processDocumentForWiki`, `listDocumentsForAgent`,
+    `share/unshareKnowledgeBaseWithAgent`, `getKnowledgeBaseSharing`, `deleteKbDocument`)
+    `assertAgentTenantReachable` őrt kaptak a forrás- ÉS cél-agentre.
+  - Új determinisztikus teszt: `scripts/kb-tenant-boundary.test.ts` (10 eset:
+    tiszta szabály + request/approve/reject/getReview/listPending cross-tenant deny +
+    saját-tenant/megosztott allow), `test:kb-tenant-boundary`. A `knowledge-base-gate.test.ts`
+    happy-path suite frissítve (actorTenantId) és zöld; tool-broker-tenant zöld; a módosított
+    fájlok tsc/eslint tiszták.
+- Üzleti hatás:
+  - Megakadályozza, hogy egy ügyfél-tenant KB-adminisztrátora belásson vagy beleírjon egy
+    másik ügyfél-tenant tudásbázisába — a tudásbázis a platform legérzékenyebb, ügyfél-tulajdonú
+    tartalma. A tenant-határ a domain-rétegbe kerül, ahol a runtime és az audit ugyanazt az
+    invariánst látja.
+- Nyitott döntések (nem auto-javítva):
+  - D1 — `Document`-nek nincs saját `tenantId` oszlopa; a tenant a connectoron / feltöltőn át
+    származtatott. A `requestDocument` jelenleg tetszőleges CSATLAKOZATLAN documentId-t elfogad,
+    ha a cél-agent elérhető; egy szigorúbb modell a dokumentum feltöltőjének tenantját is
+    ellenőrizné (schema-bővítés kellhet).
+  - D2 — `shareKnowledgeBaseWithAgent` megengedi, hogy egy tenant-saját KB-t egy MEGOSZTOTT
+    (null) cél-agenthez kössenek, ami platform-szintűvé tehet ügyfél-tartalmat. A reachability
+    ezt (a demó globális agentjei miatt) nem tiltja; termék/biztonsági döntést igényel, hogy a
+    megosztott agent lehet-e tenant-saját KB célpontja.
+
 ## 2026-07-07 - IAM/RBAC tenant-context boundary (permission matrix + access audit)
 
 - Reviewed modules:
