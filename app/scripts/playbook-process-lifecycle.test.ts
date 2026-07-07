@@ -184,6 +184,22 @@ check('parseAgentStepOutput: JSON blokk', () => {
   assert.deepEqual(out.research_results, { facts: [] })
 })
 
+check('parseAgentStepOutput: nyers sortörés a KULCSBAN → normalizált illesztéssel kinyerhető', () => {
+  // Valós modell-kimenet: `{"provider\nName": "Barion"}` — a nyers sortörés miatt a JSON
+  // önmagában érvénytelen, a kulcs sem egyezne. A robusztus parse+normalizálás helyreteszi.
+  const out = parseAgentStepOutput('{"provider\nName": "Barion"}', ['providerName'])
+  assert.equal(out.providerName, 'Barion')
+})
+
+check('parseAgentStepOutput: nyers sortörés/tab az ÉRTÉKBEN → tartalom megmarad', () => {
+  const out = parseAgentStepOutput(
+    '{"providerName":"Barion","announcementSummary":"1. sor\n2. sor\ttab"}',
+    ['providerName', 'announcementSummary'],
+  )
+  assert.equal(out.providerName, 'Barion')
+  assert.equal(out.announcementSummary, '1. sor\n2. sor\ttab')
+})
+
 check('buildStepCompletionPayload: outputContract mezők a ticket payloadban', () => {
   const payload = buildStepCompletionPayload({
     agentContent: '{"research_results":"adat"}',

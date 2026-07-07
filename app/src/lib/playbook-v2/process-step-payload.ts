@@ -203,10 +203,21 @@ export function parseAgentStepOutput(
   const parsed = extractJsonObject(trimmed)
   if (parsed != null && typeof parsed === 'object' && !Array.isArray(parsed)) {
     const record = parsed as Record<string, unknown>
+    // Whitespace-normalizált kulcs-index: egyes modellek nyers sortörést szúrnak a kulcsba
+    // (pl. `"provider\nName"`), amit az extractJsonObject már parse-olhatóvá tett, de a kulcs
+    // így nem egyezne a kötelező mezőnévvel. A normalizált illesztés ezt is helyreteszi.
+    const normalizeKey = (key: string) => key.replace(/\s+/g, '')
+    const normalizedIndex = new Map<string, unknown>()
+    for (const [key, value] of Object.entries(record)) {
+      const nk = normalizeKey(key)
+      if (!normalizedIndex.has(nk)) normalizedIndex.set(nk, value)
+    }
     const out: Record<string, unknown> = {}
     for (const field of requiredFields) {
-      if (record[field] !== undefined && record[field] !== null) {
-        out[field] = record[field]
+      const direct = record[field]
+      const value = direct !== undefined && direct !== null ? direct : normalizedIndex.get(normalizeKey(field))
+      if (value !== undefined && value !== null) {
+        out[field] = value
       }
     }
     if (requiredFields.every((f) => out[f] !== undefined)) return out

@@ -100,7 +100,7 @@ export function ConversationFilesPanel({ conversationId, panelRef }: Props) {
       </button>
 
       {open && (
-        <div className="px-4 pb-3">
+        <div className="max-h-[33vh] overflow-y-auto px-4 pb-3">
           {visibleFiles.length === 0 ? (
             <p className="text-xs text-ink-faint">Nincs fájl a workspace-ben.</p>
           ) : (

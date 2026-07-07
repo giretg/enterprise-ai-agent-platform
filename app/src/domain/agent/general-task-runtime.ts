@@ -73,6 +73,25 @@ type ProcessStepContext = {
 }
 
 /**
+ * A sikeres (`ok`) lépés happy-path cél-állapota a compiled state-machine-ből, nem beégetve.
+ * Emberi kapuval védett lépésen az agent kimenete SOHA nem léphet `done`-ra (§2.5): ott csak
+ * `in_progress → awaiting_human` engedélyezett, ahol a jóváhagyó dönt. Normál (kapu nélküli)
+ * lépésen `in_progress → done` az agent útja. Nem-Folyamat (chat/delegálás) ticketnél nincs
+ * compiled szabály → `done` a visszamenőleg kompatibilis alapértelmezés.
+ */
+function resolveHappyPathCompletionState(
+  processStep: ProcessStepContext | null,
+): 'done' | 'awaiting_human' {
+  if (!processStep) return 'done'
+  const fromInProgress = processStep.stepRule.allowedTransitions.filter(
+    (t) => t.fromState === 'in_progress' && t.allowedActorTypes.includes('agent'),
+  )
+  if (fromInProgress.some((t) => t.toState === 'done')) return 'done'
+  if (fromInProgress.some((t) => t.toState === 'awaiting_human')) return 'awaiting_human'
+  return 'done'
+}
+
+/**
  * Kontextus-agnosztikus feladat-runtime: chatből, delegálásból vagy agent-tool
  * útján létrehozott ticketeket dolgoz fel az egységes {@link runAgentToolLoop}-pal,
  * majd az eredményt `board_write`-tal visszaírja a ticketbe. A wiki-specifikus
@@ -283,6 +302,11 @@ export class GeneralTaskRuntime {
     const stepOutcome = computeStepOutcome({
       loopStatus: loopResult.status,
       toolCallCount,
+      // Ha a broker BÁRMELY tool-hívást megtagadott (grant/policy DENY), a lépés hard-signal
+      // `failed` — az agent nem tudta elvégezni a rábízott műveletet (pl. hiányzó Gmail-olvasási
+      // jog), akkor sem, ha a záró prózája ezt „ok"-ként tünteti fel. Így a Folyamat a hibaágra
+      // (onError/onBlocked → emberi felülvizsgálat) kerül, nem némán „completed"-ként zárul.
+      toolDenied: loopResult.deniedCount > 0,
       kbZeroHit: kbSearch.enabled && kbSearch.hits.length === 0,
       missingOutputFields,
     })
@@ -331,6 +355,32 @@ export class GeneralTaskRuntime {
           memoryVersion: agentDetails.memoryVersion,
         }
 
+    // A sikeres (happy-path) lépés agent-válaszát is a ticket-szálba írjuk `agent_answer`
+    // kommentként — különben a válasz csak a payloadban élne, és a ticket-thread UI üres
+    // maradna (a hiba-ág `routeNonOkStepOutcome` már ír kommentet; itt szimmetrikusan
+    // pótoljuk a happy-path-on). A `answer` mezőt explicit átadjuk, hogy a strukturált
+    // completionPayload mellett a szöveges válaszból is ki tudja nyerni a megjelenítendő body-t.
+    await this.appendAgentAnswerComment({
+      ticketId: ticket.id,
+      agentId: params.agentId,
+      agentName: agentDetails.agent.name,
+      agentVersion,
+      answerPayload: { ...completionPayload, answer },
+      outputRequiredFields: processStep?.outputRequiredFields,
+      extraStructured: {
+        model: modelConfig.model,
+        toolCallCount,
+        memoryVersion: agentDetails.memoryVersion,
+        status: stepOutcome.status,
+      },
+    })
+
+    // A happy-path cél-állapotot a compiled state-machine-ből vezetjük le, NEM égetjük be
+    // `done`-ra: egy emberi kapuval (requiredGateIds) védett lépésen az agent kimenete SOHA
+    // nem léphet `done`-ra (§2.5), csak `awaiting_human`-ra, ahol a jóváhagyó dönt. Enélkül
+    // a beégetett `board_write('done')` `TRANSITION_NOT_ALLOWED`-ba futott, a runtime a nem-
+    // `denied` hibát elnyelte, és a Folyamat némán, láthatatlanul megállt a kapunál.
+    const completionState = resolveHappyPathCompletionState(processStep)
     const write = await this.toolBroker.invoke({
       agentId: params.agentId,
       agentVersion,
@@ -340,7 +390,7 @@ export class GeneralTaskRuntime {
         ticketId: ticket.id,
         patch: {
           payload: completionPayload,
-          state: 'done',
+          state: completionState,
         },
       },
     })

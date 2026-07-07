@@ -73,8 +73,14 @@ export type ToolLoopContext =
 
 export type ToolLoopMode = 'chat' | 'task'
 export type ToolLoopResult =
-  | { content: string; toolCallCount: number; status: 'completed'; reason?: undefined }
-  | { content: string; toolCallCount: number; status: 'exhausted'; reason: 'max_turns_exhausted' }
+  | { content: string; toolCallCount: number; deniedCount: number; status: 'completed'; reason?: undefined }
+  | {
+      content: string
+      toolCallCount: number
+      deniedCount: number
+      status: 'exhausted'
+      reason: 'max_turns_exhausted'
+    }
 
 export const TOOL_LOOP_EXHAUSTED_MESSAGE =
   'Sajnos nem sikerült választ összeállítani — a rendelkezésre álló körök elfogytak anélkül, hogy befejeztem volna a feladatot. Kérlek fogalmazd át a kérést, vagy ellenőrizd, hogy a szükséges tartalom elérhető-e a tudásbázisban.'
@@ -1382,6 +1388,10 @@ export async function runAgentToolLoop(params: {
   }
 
   let toolCallCount = 0
+  // Hány tool-hívást tagadott meg a broker (policy/grant DENY). Hard-signal a step-outcome-hoz:
+  // egy megtagadott képesség azt jelenti, hogy az agent NEM tudta elvégezni a rábízott műveletet,
+  // még ha a záró prózája optimista is (§10.1 — az agent önbevallását felülírjuk).
+  let deniedCount = 0
   const archivedToolResults = new Map<string, { content: string; bytes: number; toolName: string }>()
   const tools = [
     ...toToolDefinitions(params.allowedTools),
@@ -1449,7 +1459,7 @@ export async function runAgentToolLoop(params: {
 
     if (calls.length === 0) {
       const cleaned = stripToolArtifacts(content)
-      if (cleaned) return { content: cleaned, toolCallCount, status: 'completed' }
+      if (cleaned) return { content: cleaned, toolCallCount, deniedCount, status: 'completed' }
 
       if (turn < maxTurns - 1) {
         messages.push({
@@ -1461,6 +1471,7 @@ export async function runAgentToolLoop(params: {
       return {
         content: content.trim() || 'Nem kaptam választ a modelltől.',
         toolCallCount,
+        deniedCount,
         status: 'completed',
       }
     }
@@ -1605,6 +1616,7 @@ export async function runAgentToolLoop(params: {
 
         const result = await params.toolBroker.invoke(invokeInput)
         toolCallCount += 1
+        if (result.denied) deniedCount += 1
 
         const rawContent = result.denied
           ? `ELUTASÍTVA: ${result.reason}`
@@ -1716,6 +1728,7 @@ export async function runAgentToolLoop(params: {
   return {
     content: stripped || TOOL_LOOP_EXHAUSTED_MESSAGE,
     toolCallCount,
+    deniedCount,
     status: 'exhausted',
     reason: 'max_turns_exhausted',
   }
