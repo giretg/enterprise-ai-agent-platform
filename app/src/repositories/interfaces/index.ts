@@ -1184,6 +1184,7 @@ export type AddSandboxAppVersionInput = {
 export type SandboxAppListFilter = {
   tenantId: string | null
   sandboxId?: string | null
+  createdByAgentId?: string
   status?: SandboxAppStatus
   search?: string
   limit?: number

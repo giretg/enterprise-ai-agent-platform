@@ -10,11 +10,12 @@
  * timingSafeEqual).
  */
 import { createHmac, timingSafeEqual } from 'crypto'
+import { resolveSecret } from '@/lib/crypto/secret-resolver'
 
-const PREVIEW_SECRET =
-  process.env.SANDBOX_PREVIEW_SECRET ??
-  process.env.WRITE_GATE_SECRET ??
-  'dev-sandbox-preview-secret-change-in-prod'
+const PREVIEW_SECRET = resolveSecret(
+  ['SANDBOX_PREVIEW_SECRET', 'WRITE_GATE_SECRET'],
+  'dev-sandbox-preview-secret-change-in-prod',
+)
 
 export const PREVIEW_TOKEN_TTL_MS = 10 * 60 * 1000 // 10 perc (§4.5: rövid életű)
 

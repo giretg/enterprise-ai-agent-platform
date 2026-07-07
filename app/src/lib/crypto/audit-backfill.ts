@@ -1,10 +1,42 @@
 import type { AuditLog, Prisma } from '@prisma/client'
 import { prisma } from '@/lib/db'
-import { computeAuditHash, GENESIS_HASH } from '@/lib/crypto/hash-chain'
+import {
+  computeAuditHash,
+  computeAuditHashV2,
+  parseAuditHashVersion,
+  GENESIS_HASH,
+} from '@/lib/crypto/hash-chain'
 
 type AuditDb = Prisma.TransactionClient | typeof prisma
 
+/**
+ * A reconcile a MEGLÉVŐ sor tárolt hash-verziója szerint számol újra: egy v2 sort v2
+ * formulával (teljes mezőfedés), egy v1 (legacy) sort v1-gyel. Hash nélküli (gap) sort
+ * a jelenlegi verzióval (v2) horgonyoz — az új írások eleve v2-esek. Így a repair nem
+ * minősíti vissza a v2 sorok governance/metadata-fedését.
+ */
 function hashFields(row: AuditLog, prevHash: string) {
+  if (!row.hash || parseAuditHashVersion(row.hash) === 2) {
+    return computeAuditHashV2({
+      seq: row.seq,
+      prevHash,
+      actorType: row.actorType,
+      actorId: row.actorId,
+      agentVersion: row.agentVersion,
+      action: row.action,
+      targetType: row.targetType,
+      targetId: row.targetId,
+      modelUsed: row.modelUsed,
+      inputRef: row.inputRef,
+      outputRef: row.outputRef,
+      policyDecision: row.policyDecision,
+      metadata: row.metadata,
+      tenantId: row.tenantId,
+      ticketId: row.ticketId,
+      conversationId: row.conversationId,
+      createdAt: row.createdAt,
+    })
+  }
   return computeAuditHash({
     seq: row.seq,
     prevHash,

@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { services } from '@/domain'
+import { sandboxPreviewCsp } from '@/lib/sandbox-csp'
 
 /**
  * Cookieless preview kiszolgálás (Feature-spec — App Registry §4.5, §6).
@@ -8,24 +9,14 @@ import { services } from '@/domain'
  * token (?t=) alapján szolgál ki, így a preview izolált futtatási felület marad.
  * A token tenantId+appId+version+contentHash-re érvényes; a service ellenőrzi a
  * tenant-egyezést és a tartalom-integritást. Az A0 CSP tiltja a hálózatot, a
- * formot, az objektumot és a platform API-t (§6.3).
+ * formot, az objektumot és a platform API-t, és a `sandbox allow-scripts`
+ * direktívával átlátszatlan origó-ba zárja az agent-írta HTML-t (§6.3).
  */
 
 function previewCsp(): string {
   const frameAncestors =
     process.env.SANDBOX_PREVIEW_FRAME_ANCESTORS ?? process.env.NEXT_PUBLIC_APP_URL ?? "'self'"
-  return [
-    "default-src 'none'",
-    "script-src 'unsafe-inline'",
-    "style-src 'unsafe-inline'",
-    'img-src data: blob:',
-    'font-src data:',
-    "connect-src 'none'",
-    "object-src 'none'",
-    `frame-ancestors ${frameAncestors}`,
-    "base-uri 'none'",
-    "form-action 'none'",
-  ].join('; ')
+  return sandboxPreviewCsp(frameAncestors)
 }
 
 export async function GET(request: Request) {

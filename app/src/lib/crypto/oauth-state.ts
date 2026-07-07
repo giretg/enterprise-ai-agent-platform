@@ -6,9 +6,12 @@ import {
   randomBytes,
   timingSafeEqual,
 } from 'crypto'
+import { resolveSecret } from './secret-resolver'
 
-const OAUTH_STATE_SECRET =
-  process.env.OAUTH_STATE_SECRET ?? process.env.WRITE_GATE_SECRET ?? 'dev-oauth-state-secret-change-in-prod'
+const OAUTH_STATE_SECRET = resolveSecret(
+  ['OAUTH_STATE_SECRET', 'WRITE_GATE_SECRET'],
+  'dev-oauth-state-secret-change-in-prod',
+)
 
 const STATE_TTL_MS = 10 * 60 * 1000 // 10 perc
 

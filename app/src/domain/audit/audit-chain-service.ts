@@ -1,6 +1,53 @@
 import type { AuditLog } from '@prisma/client'
 import type { AuditRepository } from '@/repositories/interfaces'
-import { computeAuditHash, GENESIS_HASH } from '@/lib/crypto/hash-chain'
+import {
+  computeAuditHash,
+  computeAuditHashV2,
+  parseAuditHashVersion,
+  GENESIS_HASH,
+} from '@/lib/crypto/hash-chain'
+
+/**
+ * A tárolt hash verziója dönti el, melyik formulával kell újraszámolni az elvárt értéket.
+ * A v2 a sor minden érdemi mezőjét fedi; a v1 (legacy) csak a vázat. A verzió magában a
+ * hash-stringben utazik (`"2:"` előfej), így egy v2 sort nem lehet a v1 formulával
+ * (ami a policyDecision/metadata mezőket figyelmen kívül hagyja) átverni a verifikáción.
+ * A v2 az attribúciós oszlopokat (tenant/ticket/conversation) közvetlenül a tárolt
+ * értékből ellenőrzi — pontosan azt, amit írás-időben a hash fedett.
+ */
+function expectedHashForRow(row: AuditLog, prevHash: string): string {
+  if (row.hash && parseAuditHashVersion(row.hash) === 2) {
+    return computeAuditHashV2({
+      seq: row.seq,
+      prevHash,
+      actorType: row.actorType,
+      actorId: row.actorId,
+      agentVersion: row.agentVersion,
+      action: row.action,
+      targetType: row.targetType,
+      targetId: row.targetId,
+      modelUsed: row.modelUsed,
+      inputRef: row.inputRef,
+      outputRef: row.outputRef,
+      policyDecision: row.policyDecision,
+      metadata: row.metadata,
+      tenantId: row.tenantId,
+      ticketId: row.ticketId,
+      conversationId: row.conversationId,
+      createdAt: row.createdAt,
+    })
+  }
+  return computeAuditHash({
+    seq: row.seq,
+    prevHash,
+    actorType: row.actorType,
+    actorId: row.actorId,
+    action: row.action,
+    targetType: row.targetType,
+    targetId: row.targetId,
+    createdAt: row.createdAt,
+  })
+}
 
 export type VerifyResult =
   | { ok: true; checked: number }
@@ -28,16 +75,7 @@ export class AuditChainService {
         return { ok: false, checked: rows.indexOf(row), firstBreakSeq: row.seq.toString() }
       }
 
-      const expected = computeAuditHash({
-        seq: row.seq,
-        prevHash,
-        actorType: row.actorType,
-        actorId: row.actorId,
-        action: row.action,
-        targetType: row.targetType,
-        targetId: row.targetId,
-        createdAt: row.createdAt,
-      })
+      const expected = expectedHashForRow(row, prevHash)
 
       if (row.hash !== expected) {
         return { ok: false, checked: rows.indexOf(row), firstBreakSeq: row.seq.toString() }

@@ -114,3 +114,18 @@ env:
     value: "wiki-dispatcher"
     availability:
       - RUNTIME
+  # --- Fail-closed aláíró/titkosító titkok (WP-1 / review F1) ---
+  # Prod alatt KÖTELEZŐ: hiányukban a folyamat boot-kor leáll (secret-resolver.ts),
+  # így élesben nincs hamisítható dev-default. Érték: openssl rand -hex 32.
+  - variable: WRITE_GATE_SECRET
+    secret: WRITE_GATE_SECRET
+    availability:
+      - RUNTIME
+  - variable: OAUTH_STATE_SECRET
+    secret: OAUTH_STATE_SECRET
+    availability:
+      - RUNTIME
+  - variable: SANDBOX_PREVIEW_SECRET
+    secret: SANDBOX_PREVIEW_SECRET
+    availability:
+      - RUNTIME
