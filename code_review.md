@@ -1,5 +1,55 @@
 # Enterprise code review log
 
+## 2026-07-07 - Kriptográfiai bizalmi határ: aláíró/titkosító titkok fail-closed feloldása
+
+- Reviewed modules:
+  - `app/src/lib/crypto/hash-chain.ts` (audit-hash + write-gate token HMAC + write-gate szignatúra verify)
+  - `app/src/domain/audit/audit-chain-service.ts` (`verifyChain` teljes/szegmens, `exportJsonLines`)
+  - `app/src/repositories/postgres/audit-repository.ts` (`append` — az egyetlen audit belépési pont, advisory-lock + INSERT-előtti hash)
+  - `app/src/domain/writegate/write-gate-service.ts` (issue/consume token-életciklus)
+  - `app/src/lib/crypto/oauth-state.ts` (OAuth-state HMAC + AES-256-GCM, PKCE code_verifier védelem)
+  - `app/src/domain/sandbox/preview-token.ts` (cookieless, tenant-kötött sandbox preview token HMAC)
+- Result:
+  - Az audit/write-gate/oauth/preview kriptográfiai törzs alapvetően helyes: egyetlen
+    append belépési pont advisory-lock alatt, INSERT-előtti hash (append-only DB-triggerrel),
+    konstans-idejű aláírás-összehasonlítás, authentikált (AES-256-GCM) OAuth-state, TTL +
+    tartalom-hash-kötés a write-gate tokeneknél, session-mentes tenant-kötött preview token.
+  - Talált egy **fail-open** biztonsági rést: HÁROM aláíró/titkosító titok
+    (`WRITE_GATE_SECRET`, `OAUTH_STATE_SECRET`, `SANDBOX_PREVIEW_SECRET`) egy beégetett
+    fejlesztői alapértékre esett vissza (`... ?? 'dev-...-change-in-prod'`). Ha egy éles
+    környezetben bármelyik env-változó hiányzott (új környezet, elfelejtett secret,
+    félrekonfiguráció), a rendszer NEM állt le — némán egy forráskódban publikált, mindenki
+    által ismert kulccsal írt alá és titkosított. Következmény éles környezetben, hiányzó
+    titok esetén: (a) write-gate jóváhagyás hamisítható (agent öntanulás/memória-írás kapu),
+    (b) OAuth-state hamisítható ÉS a PKCE code_verifier visszafejthető (CSRF / fiók-összekötés),
+    (c) bármely tenant sandbox-preview tokenje hamisítható → cross-tenant artefakt-hozzáférés.
+    Súlyosbító: mindhárom a `WRITE_GATE_SECRET`-re is fallbackol, így egyetlen hiányzó
+    változó kaszkádol.
+- Fix applied:
+  - Új központi, LUSTA, fail-closed feloldó: `app/src/lib/crypto/secret-config.ts`
+    (`resolveSigningSecret`). `NODE_ENV=production` alatt valós, konfigurált titok nélkül
+    (üres VAGY `change-in-prod` placeholder) DOB — nem esik vissza a beégetett kulcsra.
+    Fejlesztésben/tesztben a determinisztikus dev-default marad. A feloldás a signing/verify
+    hívás idején fut (nem modul-betöltéskor), így a production build nem dől el build-időben
+    hiányzó titok miatt.
+  - `hash-chain.ts`, `oauth-state.ts`, `preview-token.ts` mind a központi feloldón át kéri a
+    titkát (a korábbi env-fallback prioritás megtartva: elsődleges → megosztott → dev-default).
+  - Új determinisztikus teszt: `scripts/secret-config.test.ts` (`test:secret-config`, 9 eset:
+    dev-default, valós titok, production fail-closed, placeholder-marker deny, fallback-prioritás,
+    write-gate integráció). A `test:sandbox-app` (preview-token út) zöld; a módosított fájlok
+    tsc/eslint tiszták (az egyetlen tsc-hiba a `playbook-v2-core.test.ts` már main-en meglévő
+    regex-flag ügye, nem érintett fájl).
+- Business impact:
+  - Megszünteti azt a kockázatot, hogy egy éles környezet félrekonfigurációja (hiányzó
+    titok-env) némán, ismert kulccsal működjön tovább. Éles alatt a rendszer inkább leáll a
+    kockázatos műveletnél, minthogy hamisítható/visszafejthető kriptográfiával fusson.
+  - Enterprise-elvárás: a titkok kezelése fail-closed, a bizonytalanság nem old fel jogosultságot.
+- Decisions raised (not auto-fixed; lásd `docs/code-review/2026-07-07-crypto-secret-audit-decisions.md`):
+  - D1 — Az audit hash-lánc nem fedi le a `policyDecision` / `metadata` / `modelUsed` /
+    `inputRef` / `outputRef` / `agentVersion` mezőket, így ezek utólag módosíthatók a lánc
+    törése nélkül. A javítás visszafelé nem kompatibilis (láncszakadás), verziózott hash-t
+    (`hashVersion` oszlop + sor-szintű képletválasztás) igényel → séma/termék-döntés.
+
 ## 2026-07-07 - Tool Broker: agent-oldali tenant-izoláció (delegálás + felderítés)
 
 - Reviewed modules:

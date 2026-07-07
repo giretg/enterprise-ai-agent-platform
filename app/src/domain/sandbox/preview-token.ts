@@ -10,11 +10,19 @@
  * timingSafeEqual).
  */
 import { createHmac, timingSafeEqual } from 'crypto'
+import { resolveSigningSecret } from '@/lib/crypto/secret-config'
 
-const PREVIEW_SECRET =
-  process.env.SANDBOX_PREVIEW_SECRET ??
-  process.env.WRITE_GATE_SECRET ??
-  'dev-sandbox-preview-secret-change-in-prod'
+/**
+ * Lusta, fail-closed feloldás (lásd secret-config.ts). Beégetett kulccsal bárki
+ * hamisíthatna preview tokent BÁRMELY tenant appjára/verziójára → cross-tenant
+ * artefakt-hozzáférés.
+ */
+function previewSecret(): string {
+  return resolveSigningSecret(
+    ['SANDBOX_PREVIEW_SECRET', 'WRITE_GATE_SECRET'],
+    'dev-sandbox-preview-secret-change-in-prod',
+  )
+}
 
 export const PREVIEW_TOKEN_TTL_MS = 10 * 60 * 1000 // 10 perc (§4.5: rövid életű)
 
@@ -39,7 +47,7 @@ export class PreviewTokenError extends Error {
 }
 
 function sign(encoded: string): string {
-  return createHmac('sha256', PREVIEW_SECRET).update(encoded).digest('base64url')
+  return createHmac('sha256', previewSecret()).update(encoded).digest('base64url')
 }
 
 export function signPreviewToken(params: {

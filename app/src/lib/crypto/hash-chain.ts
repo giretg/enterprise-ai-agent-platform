@@ -1,4 +1,5 @@
 import { createHash, createHmac, randomBytes } from 'crypto'
+import { resolveSigningSecret } from './secret-config'
 
 export const GENESIS_HASH = '0'.repeat(64)
 
@@ -27,8 +28,14 @@ export function computeAuditHash(params: {
 
 // ── Write-gate token crypto ───────────────────────────────────────────────
 
-const WRITE_GATE_SECRET =
-  process.env.WRITE_GATE_SECRET ?? 'dev-write-gate-secret-change-in-prod'
+/**
+ * Lusta feloldás: a titkot az aláírás/verifikáció pillanatában kérjük le, nem
+ * modul-betöltéskor — így éles környezetben hiányzó titok esetén fail-closed a
+ * signing (nem a build). Fejlesztésben a determinisztikus dev-default marad.
+ */
+function writeGateSecret(): string {
+  return resolveSigningSecret(['WRITE_GATE_SECRET'], 'dev-write-gate-secret-change-in-prod')
+}
 
 export function computeDiffHash(content: string): string {
   return createHash('sha256').update(content, 'utf8').digest('hex')
@@ -51,7 +58,7 @@ export function signWriteGateToken(params: {
   expiresAt: Date
 }): string {
   const msg = [params.tokenHash, params.expectedDiffHash, params.ticketId, params.expiresAt.toISOString()].join(':')
-  return createHmac('sha256', WRITE_GATE_SECRET).update(msg).digest('hex')
+  return createHmac('sha256', writeGateSecret()).update(msg).digest('hex')
 }
 
 export function verifyWriteGateSignature(params: {

@@ -6,9 +6,21 @@ import {
   randomBytes,
   timingSafeEqual,
 } from 'crypto'
+import { resolveSigningSecret } from './secret-config'
 
-const OAUTH_STATE_SECRET =
-  process.env.OAUTH_STATE_SECRET ?? process.env.WRITE_GATE_SECRET ?? 'dev-oauth-state-secret-change-in-prod'
+/**
+ * Lusta, fail-closed feloldás (lásd secret-config.ts). Az OAuth-state a
+ * legérzékenyebb: ez a titok EGYSZERRE aláíró-kulcs (legacy signed state) ÉS az
+ * AES-256-GCM titkosítás kulcsának forrása, ami védi a PKCE code_verifier-t és a
+ * user/tenant azonosítót. Beégetett kulccsal az egész state hamisítható és
+ * visszafejthető lenne.
+ */
+function oauthStateSecret(): string {
+  return resolveSigningSecret(
+    ['OAUTH_STATE_SECRET', 'WRITE_GATE_SECRET'],
+    'dev-oauth-state-secret-change-in-prod',
+  )
+}
 
 const STATE_TTL_MS = 10 * 60 * 1000 // 10 perc
 
@@ -22,11 +34,11 @@ export type OAuthStatePayload = {
 }
 
 function signPayload(payload: string): string {
-  return createHmac('sha256', OAUTH_STATE_SECRET).update(payload).digest('hex')
+  return createHmac('sha256', oauthStateSecret()).update(payload).digest('hex')
 }
 
 function encryptionKey(): Buffer {
-  return createHash('sha256').update(OAUTH_STATE_SECRET).digest()
+  return createHash('sha256').update(oauthStateSecret()).digest()
 }
 
 function encodeJson(payload: OAuthStatePayload): string {
