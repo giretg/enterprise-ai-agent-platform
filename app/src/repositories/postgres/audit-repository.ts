@@ -10,7 +10,7 @@ import type {
   ModelRoutingPolicyRepository,
   ModelRoutingScope,
 } from '../interfaces'
-import { computeAuditHash, GENESIS_HASH } from '@/lib/crypto/hash-chain'
+import { computeAuditHashV2, GENESIS_HASH } from '@/lib/crypto/hash-chain'
 import { assertAuditMetadataSafe } from '@/lib/audit/payload-guard'
 import { assertAuditActionRegistered } from '@/lib/audit/event-catalog'
 import { deriveAuditAttribution } from '@/lib/audit/attribution'
@@ -49,18 +49,30 @@ export class PostgresAuditRepository implements AuditRepository {
         const prevHash = last?.hash ?? GENESIS_HASH
         const createdAt = new Date()
 
-        const hash = computeAuditHash({
+        // A hash-t a származtatott attribúcióval EGYÜTT számítjuk, hogy a tenant/ticket/
+        // conversation kötés is a lánc-fedett mezők közé kerüljön (v2 — teljes soronkénti
+        // fedés a governance-döntéssel és a payload-mutatókkal együtt).
+        const attribution = deriveAuditAttribution(data)
+
+        const hash = computeAuditHashV2({
           seq,
           prevHash,
           actorType: data.actorType,
           actorId: data.actorId,
+          agentVersion: data.agentVersion,
           action: data.action,
           targetType: data.targetType,
           targetId: data.targetId,
+          modelUsed: data.modelUsed,
+          inputRef: data.inputRef,
+          outputRef: data.outputRef,
+          policyDecision: data.policyDecision,
+          metadata: data.metadata,
+          tenantId: attribution.tenantId,
+          ticketId: attribution.ticketId,
+          conversationId: attribution.conversationId,
           createdAt,
         })
-
-        const attribution = deriveAuditAttribution(data)
 
         return tx.auditLog.create({
           data: { ...data, ...attribution, seq, prevHash, hash, createdAt } as Prisma.AuditLogCreateInput,

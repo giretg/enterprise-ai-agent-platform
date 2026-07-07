@@ -1,18 +1,32 @@
 import type { AuditLog, Prisma } from '@prisma/client'
 import { prisma } from '@/lib/db'
-import { computeAuditHash, GENESIS_HASH } from '@/lib/crypto/hash-chain'
+import { computeAuditHashV2, GENESIS_HASH } from '@/lib/crypto/hash-chain'
 
 type AuditDb = Prisma.TransactionClient | typeof prisma
 
+/**
+ * Az egyszeri (admin) reconcile a teljes láncot a v2 (teljes soronkénti fedésű) formulára
+ * hozza. Ez a `backfill-audit-hashes` migrációs eszköz útja, ahol az append-only trigger
+ * kézzel, egyszeri jelleggel le van tiltva; runtime úton NEM fut.
+ */
 function hashFields(row: AuditLog, prevHash: string) {
-  return computeAuditHash({
+  return computeAuditHashV2({
     seq: row.seq,
     prevHash,
     actorType: row.actorType,
     actorId: row.actorId,
+    agentVersion: row.agentVersion,
     action: row.action,
     targetType: row.targetType,
     targetId: row.targetId,
+    modelUsed: row.modelUsed,
+    inputRef: row.inputRef,
+    outputRef: row.outputRef,
+    policyDecision: row.policyDecision,
+    metadata: row.metadata,
+    tenantId: row.tenantId,
+    ticketId: row.ticketId,
+    conversationId: row.conversationId,
     createdAt: row.createdAt,
   })
 }

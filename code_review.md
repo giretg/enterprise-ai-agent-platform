@@ -1,5 +1,62 @@
 # Enterprise code review log
 
+## 2026-07-07 - Audit hash-lánc: teljes soronkénti fedés (tamper-evidence)
+
+- Reviewed modules:
+  - `app/src/lib/crypto/hash-chain.ts` (`computeAuditHash` — a lánc kanonikus hash-formulája)
+  - `app/src/domain/audit/audit-chain-service.ts` (`verifyChain` teljes lánc + szegmens)
+  - `app/src/repositories/postgres/audit-repository.ts` (`append` — az EGYETLEN belépési
+    pont, advisory-lock + atomi INSERT + hash írás előtt)
+  - `app/src/lib/crypto/audit-backfill.ts` (`reconcileAuditChain` egyszeri migráció)
+  - `app/src/lib/audit/attribution.ts`, `app/src/lib/audit/payload-guard.ts`
+  - `app/prisma/schema.prisma` `AuditLog` modell, `scripts/apply-audit-append-only-trigger.ts`
+    (DB-szintű BEFORE UPDATE/DELETE append-only trigger), `scripts/audit-log.test.ts`
+- Result:
+  - A DB-szintű védelem (append-only trigger) és a lánc-szerkezet (advisory-lock alatt
+    monoton seq, prevHash-láncolás, egy atomi INSERT) enterprise-helyes.
+  - Talált egy KRITIKUS tamper-evidence rést a kriptográfiai rétegben. A `computeAuditHash`
+    kanonikus formula CSAK a sor "vázát" fedte (seq/prevHash/actorType/actorId/action/
+    targetType/targetId/createdAt). NEM fedte a governance-döntést (`policyDecision`), a
+    payload-bizonyíték mutatókat (`inputRef`/`outputRef`), a `metadata`-t, a `modelUsed`/
+    `agentVersion` provenienciát, és a tenant/ticket/conversation attribúciót. Ezért egy
+    `deny`→`allow` átírás, egy payload-mutató lecserélése vagy a metaadat átírása NEM
+    törte meg a `verifyChain()`-t — a lánc "épnek" jelentette a manipulált sort. A rést a
+    korábbi teszt kifejezetten dokumentálta ("metadata NINCS hash-fedve"), és az
+    `attribution.ts` kommentje tévesen állította, hogy "a canonical hash a teljes sorra
+    vonatkozik".
+- Fix applied:
+  - Új, verziózott `computeAuditHashV2` — a sor MINDEN érdemi mezőjét fedi. A verzió magában
+    a tárolt hash-stringben utazik (`"2:"` előfej), ezért nincs szükség séma-migrációra, és
+    egy v2 sort nem lehet a mezőket ignoráló v1 formulával átverni (a prevHash a teljes,
+    előfejes stringet láncolja).
+  - `PostgresAuditRepository.append` mostantól v2-t ír, a származtatott attribúcióval együtt
+    (a tenant-határ kötése is fedve). `AuditChainService.verifyChain` verzió-érzékeny: v1 és
+    v2 sorokat is helyesen ellenőriz (vegyes lánc a migráció alatt is zöld). A `reconcileAuditChain`
+    egyszeri admin-migráció a teljes láncot v2-re emeli.
+  - `scripts/audit-log.test.ts`: a régi "rés dokumentáló" teszt helyére 6 új eset (v2 teljes
+    lánc, metadata-/policyDecision-/output_ref-tamper detektálás, vegyes v1+v2 lánc, és a
+    "v2 nem bújik el v1 formulával" invariáns). 23/23 zöld; a playbook-v2-process verifyChain
+    suite is zöld; tsc/eslint tiszta a módosított fájlokon.
+- Business impact:
+  - Az audit-napló mostantól ténylegesen tamper-evident a compliance szempontból legfontosabb
+    mezőkre: a governance-verdikt (engedélyezve/tiltva), a bizonyíték-mutatók és a
+    tenant-hovatartozás sem írható át észrevétlenül. Ez az exportált (ügyfélnek/auditor­nak
+    átadott) bizonyíték értékét emeli: a lánc a teljes tartalomra önhitelesítő.
+- Verification / rollout:
+  - `npm run test:audit-log`, `npm run test:playbook-v2-process` (worktree, node_modules symlink).
+  - Élő DB-t igénylő kapu (ebből a sandboxból nem futott): `db:backfill-audit` a meglévő lánc
+    v2-re emeléséhez (a trigger egyszeri, kézi kikapcsolása mellett), majd `acceptance-e2e` /
+    S2 smoke a jsonb-metaadat round-trip validálására.
+- Decisions raised (not auto-fixed):
+  - D1 — Az audit hash unkeyed SHA-256 (nem HMAC). A DB-írási joggal rendelkező támadó a v2
+    lánc egészét is újraszámolhatja; a valódi kriptográfiai kötést egy kulcsolt (HMAC) lánc +
+    külső horgonyzás (periodikus head-hash export write-once tárba) adná. A write-gate token már
+    HMAC-ot használ ugyanebben a fájlban — a lánc kulcsolása külön termék/kulcskezelési döntés.
+  - D2 — A `metadata` jsonb; a v2 hash a kulcs-sorrendtől függetlenített kanonikus formán számol.
+    A jelenlegi audit-metaadat alakok (id-k, számlálók, ref-ek, a payload-guard által korlátozva)
+    hűen round-trippelnek, de egy jövőbeli, szélsőséges numerikus/unicode metaadat elméletileg
+    eltérhet — az élő acceptance/smoke a kapu erre.
+
 ## 2026-07-07 - Tool Broker: agent-oldali tenant-izoláció (delegálás + felderítés)
 
 - Reviewed modules:
