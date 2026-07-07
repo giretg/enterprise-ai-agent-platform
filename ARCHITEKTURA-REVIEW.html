@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="hu">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Architektúra-ellenőrzés — Enterprise AI Agent Platform</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1a1a; --muted: #5a6472; --border: #e2e6ec;
+    --card: #f7f9fc; --accent: #2b6cb0; --accent-soft: #ebf3fb;
+    --warn-bg: #fff8e6; --warn-border: #f0c650; --risk-bg: #fdecec; --risk-border: #e08b8b;
+    --ok-bg: #eaf7ee; --ok-border: #8bce9f; --code-bg: #f1f3f7; --th: #eef2f7;
+    --crit: #c0392b; --high: #d97706; --med: #b7950b; --low: #2b6cb0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171c; --fg: #e6e9ee; --muted: #9aa4b2; --border: #2a2f38;
+      --card: #1b1f26; --accent: #6bb0ee; --accent-soft: #1c2733;
+      --warn-bg: #2c2716; --warn-border: #7a6320; --risk-bg: #2e1c1c; --risk-border: #7a3a3a;
+      --ok-bg: #172a1e; --ok-border: #2f6a44; --code-bg: #1e232b; --th: #1e242c;
+      --crit: #e74c3c; --high: #e0912a; --med: #d4b13a; --low: #6bb0ee;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  .wrap { display: grid; grid-template-columns: 300px 1fr; max-width: 1500px; margin: 0 auto; }
+  nav.toc { position: sticky; top: 0; align-self: start; height: 100vh; overflow-y: auto;
+    border-right: 1px solid var(--border); padding: 24px 18px; background: var(--card); font-size: 13.5px; }
+  nav.toc h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 12px; }
+  nav.toc ol { list-style: none; padding: 0; margin: 0; counter-reset: s; }
+  nav.toc li { counter-increment: s; margin: 2px 0; }
+  nav.toc a { color: var(--fg); text-decoration: none; display: block; padding: 4px 8px; border-radius: 6px; }
+  nav.toc a::before { content: counter(s) ". "; color: var(--muted); }
+  nav.toc a:hover { background: var(--accent-soft); color: var(--accent); }
+  main { padding: 40px 56px 120px; min-width: 0; overflow-x: hidden; }
+  header.doc { border-bottom: 2px solid var(--border); padding-bottom: 22px; margin-bottom: 8px; }
+  header.doc h1 { font-size: 30px; margin: 0 0 6px; letter-spacing: -.02em; }
+  header.doc .sub { color: var(--muted); font-size: 15px; }
+  header.doc .meta { margin-top: 14px; font-size: 13px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 8px 18px; }
+  h2.sec { font-size: 23px; margin: 52px 0 14px; padding-top: 14px; border-top: 1px solid var(--border); letter-spacing: -.01em; }
+  h2.sec .n { color: var(--accent); font-variant-numeric: tabular-nums; }
+  h3 { font-size: 18px; margin: 30px 0 10px; }
+  h4 { font-size: 13.5px; margin: 20px 0 6px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  p { margin: 10px 0; }
+  code { background: var(--code-bg); padding: 1.5px 6px; border-radius: 5px; font-size: 13px;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; font-size: 13.5px; display: block; overflow-x: auto; }
+  th, td { border: 1px solid var(--border); padding: 8px 11px; text-align: left; vertical-align: top; }
+  th { background: var(--th); font-weight: 600; }
+  tbody tr:nth-child(even) td { background: var(--card); }
+  .callout { border: 1px solid var(--border); border-left-width: 4px; border-radius: 8px; padding: 12px 16px; margin: 16px 0; background: var(--card); }
+  .callout.warn { background: var(--warn-bg); border-left-color: var(--warn-border); }
+  .callout.risk { background: var(--risk-bg); border-left-color: var(--risk-border); }
+  .callout.ok { background: var(--ok-bg); border-left-color: var(--ok-border); }
+  .callout .lbl { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; display: block; margin-bottom: 4px; }
+  ul, ol { padding-left: 22px; } li { margin: 4px 0; }
+  .sev { display: inline-block; font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 4px; color: #fff; letter-spacing: .03em; vertical-align: middle; }
+  .sev.crit { background: var(--crit); }
+  .sev.high { background: var(--high); }
+  .sev.med  { background: var(--med); }
+  .sev.low  { background: var(--low); }
+  .sev.info { background: var(--muted); }
+  .finding { border: 1px solid var(--border); border-radius: 10px; padding: 4px 18px 14px; margin: 20px 0; background: var(--card); }
+  .finding > h3 { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .finding .fid { font-family: ui-monospace, monospace; font-size: 13px; color: var(--muted); }
+  .kv { font-size: 13px; color: var(--muted); margin: 2px 0; }
+  .kv strong { color: var(--fg); }
+  .pill { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 20px; border: 1px solid var(--border); background: var(--accent-soft); color: var(--accent); margin-left: 6px; vertical-align: middle; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .score { display: flex; gap: 22px; flex-wrap: wrap; margin: 18px 0; }
+  .score .card { flex: 1 1 150px; border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; background: var(--card); }
+  .score .card .big { font-size: 30px; font-weight: 800; letter-spacing: -.02em; }
+  .score .card .cap { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  @media (max-width: 1000px) { .wrap { grid-template-columns: 1fr; } nav.toc { position: static; height: auto; border-right: none; border-bottom: 1px solid var(--border); } main { padding: 28px 20px 80px; } .grid2 { grid-template-columns: 1fr; } }
+  .legend { font-size: 12.5px; color: var(--muted); margin: 6px 0 0; }
+  a.filelink { color: var(--accent); text-decoration: none; } a.filelink:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav class="toc">
+  <h2>Tartalom</h2>
+  <ol>
+    <li><a href="#s1">Vezetői összefoglaló</a></li>
+    <li><a href="#s2">Módszertan és hatókör</a></li>
+    <li><a href="#s3">Erősségek</a></li>
+    <li><a href="#s4">Súlyossági térkép</a></li>
+    <li><a href="#s5">Biztonsági megállapítások</a></li>
+    <li><a href="#s6">Karbantarthatóság &amp; áttekinthetőség</a></li>
+    <li><a href="#s7">Üzemeltethetőség</a></li>
+    <li><a href="#s8">Priorizált akcióterv</a></li>
+    <li><a href="#s9">Hiányzó elemek — enterprise readiness</a></li>
+    <li><a href="#s10">Záró értékelés</a></li>
+  </ol>
+  <p class="legend" style="margin-top:18px">Súlyosság:<br>
+  <span class="sev crit">KRITIKUS</span> <span class="sev high">MAGAS</span><br style="line-height:2">
+  <span class="sev med">KÖZEPES</span> <span class="sev low">ALACSONY</span></p>
+  <p class="legend">Minden megállapítás kódból/config-ból ellenőrizve (2026-07-07, <code>main</code> ág).</p>
+</nav>
+
+<main>
+<header class="doc">
+  <h1>Architektúra-ellenőrzés</h1>
+  <div class="sub">Független review az <code>ARCHITEKTURA.html</code> dokumentum és a futó kódbázis alapján — enterprise-érettségi fókusszal</div>
+  <div class="meta">
+    <span><strong>Tárgy:</strong> <code>enterprise-ai-agent-platform</code></span>
+    <span><strong>Ág:</strong> <code>main</code> @ <code>2fe567e6</code></span>
+    <span><strong>Dátum:</strong> 2026-07-07</span>
+    <span><strong>Fókusz:</strong> áttekinthetőség · menedzselhetőség · biztonság · eladhatóság · üzemeltethetőség</span>
+  </div>
+</header>
+
+<!-- ============================ 1 ============================ -->
+<h2 class="sec" id="s1"><span class="n">1.</span> Vezetői összefoglaló</h2>
+<p>
+A platform <strong>architektúrája koncepcionálisan erős és éretten megtervezett</strong>: governance-first szemlélet,
+tiszta réteges felépítés, központi policy-kapuk (Tool Broker, Model Gateway), append-only audit hash-lánc,
+deny-by-default capability- és egress-modell, valamint konzekvens multi-tenant izoláció. Ez a tervezői minőség
+egy enterprise AI-platformnál <strong>ritka és értékes</strong> — a bizalom helyesen a platform-kontrollokban van, nem az agentben.
+</p>
+<p>
+Ugyanakkor a rendszer jelenleg egy <strong>„kész MVP → nem kész termék” szakaszban</strong> van. A funkcionális
+mélység messze megelőzi az <strong>üzemeltetési és kiadási érettséget</strong>. Enterprise ügyfélnek ma <em>nem</em> szállítható
+biztonsággal, három ok miatt: (1) éles konfigurációban <strong>kikényszeríthető titkok</strong> vannak, (2) nincs
+<strong>kiadási kapu</strong> (CI/CD, migráció, kapuzott merge), és (3) nincs <strong>megfigyelhetőség</strong> (log/metrika/riasztás).
+</p>
+
+<div class="score">
+  <div class="card"><div class="cap">Architektúra-terv</div><div class="big" style="color:var(--ok-border)">A−</div><div class="kv">Érett minták, tiszta rétegek</div></div>
+  <div class="card"><div class="cap">Biztonság (terv)</div><div class="big" style="color:var(--ok-border)">A−</div><div class="kv">Kiváló modell, defense-in-depth</div></div>
+  <div class="card"><div class="cap">Biztonság (éles config)</div><div class="big" style="color:var(--crit)">D</div><div class="kv">Fail-open titkok prod-ban</div></div>
+  <div class="card"><div class="cap">Üzemeltethetőség</div><div class="big" style="color:var(--high)">C−</div><div class="kv">Nincs CI/CD, obs., migráció</div></div>
+  <div class="card"><div class="cap">Enterprise-eladhatóság</div><div class="big" style="color:var(--high)">C</div><div class="kv">Compliance-alapok hiányoznak</div></div>
+</div>
+
+<div class="callout risk"><span class="lbl">A legfontosabb 5 megállapítás</span>
+<ol style="margin:6px 0">
+  <li><span class="sev crit">KRITIKUS</span> <strong>Kikényszeríthető titkok élesben.</strong> Három aláíró/titkosító titok (<code>WRITE_GATE_SECRET</code>, <code>OAUTH_STATE_SECRET</code>, sandbox-preview) publikusan ismert dev-defaultra esik vissza, ÉS egyik sincs bekötve az <code>apphosting.yaml</code>-ba → éles Firebase-deployon garantáltan a hamisítható konstanst használja. <em>(F1)</em></li>
+  <li><span class="sev high">MAGAS</span> <strong>Kritikus biztonsági javítások nyitott ágakban rekedtek.</strong> A KB IDOR, audit-hash teljes fedés, sandbox-CSP és fail-closed titkok fixek külön branchekben vannak, a <code>main</code> a sebezhető verziót futtatja. <em>(F2)</em></li>
+  <li><span class="sev high">MAGAS</span> <strong>Nincs CI/CD és nincs DB-migráció.</strong> Kizárólag <code>prisma db push</code> (nincs verziózott sématörténet, nincs rollback), és nincs kapuzott merge (lint/tsc/teszt/deploy). <em>(M3, O1)</em></li>
+  <li><span class="sev high">MAGAS</span> <strong>Nincs megfigyelhetőség.</strong> Nincs strukturált naplózás, metrika, trace vagy error-tracking (0 db pino/otel/sentry). Éles incidens ma vakon kezelhető. <em>(O2)</em></li>
+  <li><span class="sev med">KÖZEPES</span> <strong>Isten-objektum a Tool Brokerben (3 662 sor) és a chat-tool-loopban (1 789 sor).</strong> A legmagasabb kockázatú, legnehezebben review-zható kód pont a legkritikusabb ponton. <em>(M1)</em></li>
+</ol>
+</div>
+
+<!-- ============================ 2 ============================ -->
+<h2 class="sec" id="s2"><span class="n">2.</span> Módszertan és hatókör</h2>
+<p>Az ellenőrzés az <code>ARCHITEKTURA.html</code> állításait a valós forráskóddal és konfigurációval vetette össze
+(<span style="color:var(--ok-border);font-weight:600">nem</span> csak a dokumentumra hagyatkozva). Ellenőrzött források:</p>
+<ul>
+  <li><strong>Struktúra &amp; méret:</strong> <code>src/domain/**</code> fájlméretek, <code>domain/index.ts</code> DI-gyökér, <code>prisma/schema.prisma</code>.</li>
+  <li><strong>Titkok:</strong> <code>src/lib/crypto/hash-chain.ts</code>, <code>oauth-state.ts</code>, <code>sandbox/preview-token.ts</code> vs. <code>apphosting.yaml</code> secret-lista.</li>
+  <li><strong>Kiadási lánc:</strong> <code>.github/</code>, <code>prisma/migrations/</code>, <code>package.json</code> scriptek, git-ágak.</li>
+  <li><strong>Megfigyelhetőség:</strong> függőséglista, <code>console.*</code> előfordulás, health-endpointok.</li>
+  <li><strong>Kód-higiénia:</strong> TypeScript <code>strict</code>, TODO/FIXME sűrűség az <code>src/</code>-ben.</li>
+</ul>
+<p class="legend">Az <code>ARCHITEKTURA.html</code> tartalmi állításai <strong>pontosnak bizonyultak</strong>; ez a review azokat üzleti/üzemeltetési súlyozással rangsorolja és kiegészíti a hiányzó enterprise-elemekkel.</p>
+
+<!-- ============================ 3 ============================ -->
+<h2 class="sec" id="s3"><span class="n">3.</span> Erősségek — amit a rendszer jól csinál</h2>
+<p>Ezeket a döntéseket <strong>meg kell tartani</strong>; ritka, hogy egy AI-platform ilyen szinten kezdi a governance-t.</p>
+<table>
+<thead><tr><th>Erősség</th><th>Miért számít enterprise-ben</th><th>Igazolás</th></tr></thead>
+<tbody>
+<tr><td><strong>Governance-first, központi kapuk</strong></td><td>Minden agent-akció egyetlen auditált brókeren megy át — a policy/compliance egy helyen kényszeríthető</td><td><code>tool-broker-service.ts</code>, <code>model-gateway.ts</code></td></tr>
+<tr><td><strong>Append-only audit hash-lánc</strong></td><td>Manipuláció-detektálás; szabályozott iparágban alapkövetelmény</td><td><code>hash-chain.ts</code> + DB-trigger</td></tr>
+<tr><td><strong>Deny-by-default capability &amp; egress</strong></td><td>Az agent alapból semmit nem tehet; a jog explicit — a támadási felület minimális</td><td>Capability-tábla, <code>egress-guard.ts</code></td></tr>
+<tr><td><strong>Tiszta réteges + repository absztrakció</strong></td><td>Tesztelhető, cserélhető perzisztencia; a domain nem lát Prisma-t</td><td><code>repositories/interfaces</code></td></tr>
+<tr><td><strong>Propose-not-apply agent-minta</strong></td><td>Az LLM kimenete csak adat; determinisztikus validátor a kapu — nincs „AI publikál élesbe”</td><td>Playbook-author, Provisioning</td></tr>
+<tr><td><strong>Kötelező emberi kapuk állapotgépben</strong></td><td>Agent-kimenet szerveroldalon nem kerülhet meg egy jóváhagyási kaput</td><td><code>ticket-state-machine.ts</code></td></tr>
+<tr><td><strong>TypeScript <code>strict</code> + zod a határokon</strong></td><td>Típus- és sémabiztos I/O; kevesebb futásidejű meglepetés</td><td><code>tsconfig.json</code>, <code>validators/</code></td></tr>
+<tr><td><strong>Tiszta kódtörzs</strong></td><td>0 TODO/FIXME az <code>src/</code>-ben — a technikai adósság a specekben, nem elszórva a kódban</td><td>grep <code>src/**</code></td></tr>
+</tbody>
+</table>
+
+<!-- ============================ 4 ============================ -->
+<h2 class="sec" id="s4"><span class="n">4.</span> Súlyossági térkép</h2>
+<table>
+<thead><tr><th>ID</th><th>Megállapítás</th><th>Súlyosság</th><th>Kategória</th><th>Állapot</th></tr></thead>
+<tbody>
+<tr><td><code>F1</code></td><td>Fail-open titkok, éles configban is aktív</td><td><span class="sev crit">KRITIKUS</span></td><td>Biztonság</td><td>Nyitva (main)</td></tr>
+<tr><td><code>F2</code></td><td>Security-fixek nyitott ágakban, main sebezhető</td><td><span class="sev high">MAGAS</span></td><td>Biztonság / folyamat</td><td>Nyitva</td></tr>
+<tr><td><code>F3</code></td><td>Audit-hash v1 (részleges mezőfedés) a main-en</td><td><span class="sev high">MAGAS</span></td><td>Biztonság / integritás</td><td>Fix külön ágban</td></tr>
+<tr><td><code>O1</code></td><td>Nincs CI/CD pipeline</td><td><span class="sev high">MAGAS</span></td><td>Üzemeltetés</td><td>Hiányzik</td></tr>
+<tr><td><code>M3</code></td><td>Nincs DB-migráció (csak <code>db push</code>)</td><td><span class="sev high">MAGAS</span></td><td>Menedzselhetőség</td><td>Hiányzik</td></tr>
+<tr><td><code>O2</code></td><td>Nincs observability (log/metric/trace/error)</td><td><span class="sev high">MAGAS</span></td><td>Üzemeltetés</td><td>Hiányzik</td></tr>
+<tr><td><code>M1</code></td><td>Isten-objektumok (broker 3662, chat-loop 1789)</td><td><span class="sev med">KÖZEPES</span></td><td>Áttekinthetőség</td><td>Refaktor kell</td></tr>
+<tr><td><code>M4</code></td><td>Nagy uncommitted / branch-szórt felület</td><td><span class="sev med">KÖZEPES</span></td><td>Menedzselhetőség</td><td>Folyamat</td></tr>
+<tr><td><code>O3</code></td><td>Nincs app-szintű health/readiness endpoint</td><td><span class="sev med">KÖZEPES</span></td><td>Üzemeltetés</td><td>Hiányzik</td></tr>
+<tr><td><code>O4</code></td><td>Nincs App Router error boundary / not-found</td><td><span class="sev low">ALACSONY</span></td><td>Reziliencia / UX</td><td>Hiányzik</td></tr>
+<tr><td><code>O5</code></td><td>Postgres mint queue — nincs retry/DLQ szemantika</td><td><span class="sev low">ALACSONY</span></td><td>Skálázás</td><td>Tudatos MVP</td></tr>
+<tr><td><code>M2</code></td><td>Kényes DI init-sorrend + lazy closure-ök</td><td><span class="sev low">ALACSONY</span></td><td>Áttekinthetőség</td><td>Megfigyelendő</td></tr>
+</tbody>
+</table>
+
+<!-- ============================ 5 ============================ -->
+<h2 class="sec" id="s5"><span class="n">5.</span> Biztonsági megállapítások</h2>
+
+<div class="finding">
+<h3><span class="sev crit">KRITIKUS</span> <span class="fid">F1</span> Kikényszeríthető (fail-open) titkok éles környezetben</h3>
+<p class="kv"><strong>Hely:</strong> <code>src/lib/crypto/hash-chain.ts:31</code>, <code>src/lib/crypto/oauth-state.ts:11</code>, <code>src/domain/sandbox/preview-token.ts:17</code> · <strong>Kereszt-igazolás:</strong> <code>apphosting.yaml</code></p>
+<p>Három biztonsági titok publikusan ismert dev-konstansra esik vissza, ha az env nincs beállítva:</p>
+<pre style="background:var(--code-bg);padding:10px 14px;border-radius:8px;overflow-x:auto;font-size:12.5px"><code>WRITE_GATE_SECRET  ?? 'dev-write-gate-secret-change-in-prod'
+OAUTH_STATE_SECRET ?? WRITE_GATE_SECRET ?? 'dev-oauth-state-secret-change-in-prod'
+                      'dev-sandbox-preview-secret-change-in-prod'   // preview-token</code></pre>
+<p><strong>Miért kritikus és nem elméleti:</strong> ellenőriztem az <code>apphosting.yaml</code> secret-listáját — a bekötött titkok között
+<code>DATABASE_URL</code>, <code>GEMINI_API_KEY</code>, <code>CLERK_SECRET_KEY</code>, <code>HARNESS_CALLBACK_TOKEN</code>, <code>NEXT_SERVER_ACTIONS_ENCRYPTION_KEY</code>, <code>GMAIL_OAUTH_CLIENT_SECRET</code> szerepel,
+de <strong>a fenti három egyike sem</strong>. Vagyis a jelenlegi Firebase App Hosting deployon élesben <em>biztosan</em> a publikus konstanst használja.</p>
+<p><strong>Következmény:</strong> hamisítható <em>write-gate token</em> (felügyelt memória-írás megkerülése), hamisítható <em>OAuth state</em> (CSRF a connector-grant folyamatban), hamisítható <em>sandbox preview token</em>.</p>
+<div class="callout ok"><span class="lbl">Javaslat</span>
+(1) A három titok <strong>azonnal</strong> be az <code>apphosting.yaml</code>-ba + Secret Managerbe. (2) A <code>enterprise-review-crypto-secret-fail-closed</code> ág <strong>fail-closed</strong> resolvere merge-elve: prod (<code>NODE_ENV=production</code>) alatt env hiányában induláskor dobjon, ne fusson dev-defaulttal. (3) Egyszeri <strong>titok-rotáció</strong>, mert a régi defaultok kompromittáltnak tekintendők.</div>
+</div>
+
+<div class="finding">
+<h3><span class="sev high">MAGAS</span> <span class="fid">F2</span> Kritikus biztonsági javítások nyitott ágakban rekedtek</h3>
+<p class="kv"><strong>Igazolás:</strong> git-ágak — <code>review/kb-tenant-boundary</code>, <code>security/audit-hash-full-coverage</code>, <code>security/sandbox-preview-csp-isolation</code>, <code>enterprise-review-crypto-secret-fail-closed</code></p>
+<p>Négy elkészült, code-review-zott security-fix külön ágban él; a <code>main</code> ezek nélkül fut. Ez a fenti F1 tünete rendszerszinten: <strong>a javítás elkészül, de nem éri el a terméket</strong>. Enterprise környezetben egy le nem szállított security-fix ugyanolyan kockázat, mint a nem létező.</p>
+<div class="callout ok"><span class="lbl">Javaslat</span>Ágak review-ja és <strong>bemergelése a main-be prioritással</strong>, majd a working-tree/branch-szórtság felszámolása (l. M4). Ezután a merge-eket CI-kapuhoz kötni (O1), hogy ne fordulhasson elő újra „kész, de nem élő” fix.</div>
+</div>
+
+<div class="finding">
+<h3><span class="sev high">MAGAS</span> <span class="fid">F3</span> Audit-hash v1: részleges mezőfedés a main-en</h3>
+<p class="kv"><strong>Hely:</strong> <code>src/lib/crypto/hash-chain.ts</code> (<code>computeAuditHash</code>)</p>
+<p>A main-en futó hash a sor vázát fedi (<code>seq, actor, action, target, createdAt</code>), de a <code>policyDecision</code> (pl. <em>deny→allow</em> átírás), a payload-referencia és a metadata <strong>nincs a hash alatt</strong> — ezek utólagos manipulációja a lánc-ellenőrzést nem bukná meg. A teljes fedésű v2 formula elkészült (<code>security/audit-hash-full-coverage</code>), verzió-előtaggal és verzió-érzékeny <code>verifyChain</code>-nel — de nincs bemergelve.</p>
+<div class="callout ok"><span class="lbl">Javaslat</span>v2 merge; a verzió-előtag (<code>"2:"</code>) a lánc-migrációt visszafelé kompatibilissá teszi. Ezzel az audit-ígéret („minden policy-döntés megváltoztathatatlan”) valóban teljesül — ez compliance-audit során bizonyíték-értékű.</div>
+</div>
+
+<!-- ============================ 6 ============================ -->
+<h2 class="sec" id="s6"><span class="n">6.</span> Karbantarthatóság &amp; áttekinthetőség</h2>
+
+<div class="finding">
+<h3><span class="sev med">KÖZEPES</span> <span class="fid">M1</span> Isten-objektumok a legkritikusabb kódúton</h3>
+<p class="kv"><strong>Hely:</strong> <code>tool-broker-service.ts</code> — <strong>3 662 sor</strong>; <code>agent/chat-tool-loop.ts</code> — <strong>1 789 sor</strong>; <code>model-gateway.ts</code> — 1 276; <code>agent-chat-runtime.ts</code> — 1 137</p>
+<p>A Tool Broker egyetlen fájlban tartalmazza a ~40 tool authorizálását, végrehajtását és auditját. Ez a legmagasabb módosítási kockázatú pont, mégis itt a legnagyobb a kognitív teher és a legnehezebb a review — minden agent-akció ezen fut. A doc ezt helyesen jelzi; a review megerősíti és kiegészíti: a <code>chat-tool-loop.ts</code> (1789 sor) hasonlóan kritikus, de a doc nem emeli ki.</p>
+<div class="callout ok"><span class="lbl">Javaslat</span>Tool-onkénti <strong>handler-regiszter</strong> minta: közös <code>authorize → execute → audit</code> keret marad a broker-magban, minden tool külön fájlban implementálja a <code>ToolHandler</code> interfészt (args-séma, capability, executor). Ez a broker-magot ~300–400 sorra csökkenti, a bővítés lokálissá válik, és a <code>test:tool-broker-*</code> tesztek tool-onként célzottá tehetők. A viselkedést nem változtatja — mechanikus, alacsony kockázatú, de nagy áttekinthetőségi nyereség.</div>
+</div>
+
+<div class="finding">
+<h3><span class="sev high">MAGAS</span> <span class="fid">M3</span> Nincs adatbázis-migráció — kizárólag <code>prisma db push</code></h3>
+<p class="kv"><strong>Igazolás:</strong> nincs <code>prisma/migrations/</code> könyvtár; <code>package.json</code> minden sémaváltozást <code>db push</code>-sal + ad-hoc <code>db:backfill-*</code>/<code>db:apply-*</code> scriptekkel old meg</p>
+<p>A <code>db push</code> deklaratív séma-szinkron: nincs <strong>verziózott sématörténet</strong>, nincs <strong>rollback</strong>, nincs <strong>determinisztikus, auditálható környezetek-közti előrelépés</strong> (dev→staging→prod). A ~60 modelles séma és a párhuzamos ad-hoc SQL-trigger/index scriptek (<code>db:apply-audit-append-only</code>, <code>db:apply-kb-fts</code>…) mellett ez éles rendszeren <strong>séma-drift és nem-reprodukálható állapot</strong> forrása. Enterprise SaaS-nál a migráció-történet a change-management alapja.</p>
+<div class="callout ok"><span class="lbl">Javaslat</span>Átállás <code>prisma migrate</code>-re: a jelenlegi séma legyen a <code>0000_init</code> baseline, az ad-hoc <code>apply-*</code> scriptek tartalmát migrációkba emelni. Így minden sémaváltozás verziózott, review-zható és a CI-ban futtatható staging ellen.</div>
+</div>
+
+<div class="finding">
+<h3><span class="sev med">KÖZEPES</span> <span class="fid">M4</span> Branch-szórt / uncommitted munkafelület</h3>
+<p class="kv"><strong>Kontextus:</strong> több kész feature és 4 security-fix külön ágban / working-tree-ben; a projekt <code>main</code>-only workflow-t követ</p>
+<p>A main-only workflow önmagában rendben van, de jelenleg épp ellene dolgozik: kész munka nem a main-en van (F2). Ez „elveszés” és összeakadás kockázata, és megnehezíti annak megállapítását, mi is fut valójában élesben.</p>
+<div class="callout ok"><span class="lbl">Javaslat</span>Inkrementális, gyakori commit a main-re (CI-kapu mögött); a nyitott review-ágak lezárása merge-dzsel vagy tudatos elvetéssel. Cél: <strong>a main = az igazság élesről</strong>.</div>
+</div>
+
+<div class="callout"><span class="lbl">M2 — DI init-sorrend <span class="sev low">ALACSONY</span></span>
+A <code>domain/index.ts</code> (654 sor) kézi DI-gyökér körkörös függőségeket lazy closure-rel old fel (<code>ProcessService↔DispatcherService</code> stb.). Ma működik és explicit, de rossz init-sorrend TDZ/undefined hibát adhat. Nem sürgős; ha a fájl tovább nő, érdemes explicit factory/provider réteget vagy könnyű DI-konténert megfontolni. Egyelőre <strong>megfigyelendő</strong>, nem beavatkozás.</div>
+
+<!-- ============================ 7 ============================ -->
+<h2 class="sec" id="s7"><span class="n">7.</span> Üzemeltethetőség</h2>
+
+<div class="finding">
+<h3><span class="sev high">MAGAS</span> <span class="fid">O1</span> Nincs CI/CD pipeline</h3>
+<p class="kv"><strong>Igazolás:</strong> nincs <code>.github/workflows</code> sem a gyökérben, sem az <code>app/</code>-ban; build/teszt/deploy kézi npm-scriptekkel</p>
+<p>Nincs kapuzott merge: egy elrontott commit lint-, típus- vagy teszthiba nélkül a main-re kerülhet (a jegyzetek szerint egy agent egyszer eltörte az audit hash-láncot — pont ez ellen véd a CI). A ~48 domain-teszt megvan, de <strong>nem fut automatikusan</strong>.</p>
+<div class="callout ok"><span class="lbl">Javaslat</span>GitHub Actions minimum: PR-en <code>eslint</code> + <code>tsc --noEmit</code> + <code>prisma validate</code> + a stub-DB-s <code>test:*</code> mátrix; main-en deploy-gate (Firebase App Hosting + dispatcher/harness). Ez az egyetlen leggyorsabban megtérülő beavatkozás — közvetlenül lezárja az F2/M4 visszatérését is.</div>
+</div>
+
+<div class="finding">
+<h3><span class="sev high">MAGAS</span> <span class="fid">O2</span> Nincs megfigyelhetőség (observability)</h3>
+<p class="kv"><strong>Igazolás:</strong> 0 db strukturált-log / trace / metrika függőség (nincs <code>pino</code>/<code>winston</code>/<code>@opentelemetry</code>/<code>sentry</code>/<code>prom-client</code>); mindössze 5 <code>console.*</code> az <code>src/</code>-ben</p>
+<p>Az audit-lánc <em>compliance</em>-célra kiváló, de <strong>nem operatív telemetria</strong>. Éles hibánál ma nincs strukturált napló korrelációs ID-vel, nincs latency/error-rate metrika a gateway/broker/dispatcher körül, nincs riasztás, és nincs kivétel-aggregáció. Egy több-tenantos SaaS-t így nem lehet SLA mellett üzemeltetni — az „mi történt a 3. tenantnál 14:05-kor” kérdés megválaszolhatatlan.</p>
+<div class="callout ok"><span class="lbl">Javaslat</span>(1) Strukturált JSON-logger (pl. <code>pino</code>) request/tenant/ticket korrelációs mezőkkel. (2) Kulcs-metrikák a Gateway/Broker/Dispatcher köré (hívásszám, latency, deny-arány, budget-kimerülés, dispatch-lag). (3) Error-tracking (Sentry vagy GCP Error Reporting). (4) A meglévő audit-eseményekből dashboard. GCP-n a Cloud Logging/Monitoring natívan adja az alapokat.</div>
+</div>
+
+<div class="grid2">
+<div class="finding">
+<h3><span class="sev med">KÖZEPES</span> <span class="fid">O3</span> Nincs app-szintű health endpoint</h3>
+<p>A dispatcher-worker indít <code>http</code> health-szervert, de a Next.js appnak nincs <code>/api/healthz</code> readiness/liveness végpontja (DB-elérés + kritikus függőségek). Load balancer / uptime-monitor nem tud rá támaszkodni.</p>
+<div class="callout ok"><span class="lbl">Javaslat</span>Könnyű <code>/api/healthz</code> (liveness) + <code>/api/readyz</code> (DB-ping, secret-jelenlét-ellenőrzés) — utóbbi egyben az F1-et is korán jelezné.</div>
+</div>
+<div class="finding">
+<h3><span class="sev low">ALACSONY</span> <span class="fid">O4</span> Nincs error boundary / not-found</h3>
+<p>Nincs <code>error.tsx</code>, <code>global-error.tsx</code> vagy <code>not-found.tsx</code> az App Routerben. Éles hibánál a felhasználó nyers hibát/üres oldalt kaphat, és a hiba nem kerül kontrollált kezelésre.</p>
+<div class="callout ok"><span class="lbl">Javaslat</span>Gyökér <code>error.tsx</code> + <code>not-found.tsx</code>, a boundary az O2 error-trackinghez kötve.</div>
+</div>
+</div>
+
+<div class="callout"><span class="lbl">O5 — Postgres mint queue <span class="sev low">ALACSONY</span></span>
+A <code>LISTEN/NOTIFY</code> + <code>Ticket</code>-tábla queue-ként tudatos MVP-döntés, ma megfelelő. Skálázási plafon és a hiányzó natív retry/DLQ-szemantika miatt terhelésnél (sok tenant, sok párhuzamos futás) mérlegelendő a Pub/Sub. <strong>Nem sürgős</strong>, de a kapacitástervbe (l. §9) bekerülendő.</div>
+
+<!-- ============================ 8 ============================ -->
+<h2 class="sec" id="s8"><span class="n">8.</span> Priorizált akcióterv</h2>
+<p>A javaslatok idő- és kockázati sorrendben. A „Most” blokk a szállíthatóság előfeltétele.</p>
+<table>
+<thead><tr><th>Prioritás</th><th>Akció</th><th>ID</th><th>Becsült ráfordítás</th><th>Kockázat, ha kimarad</th></tr></thead>
+<tbody>
+<tr><td><span class="sev crit">MOST</span></td><td>Fail-open titkok bekötése + fail-closed resolver + rotáció</td><td>F1</td><td>0,5–1 nap</td><td>Éles rendszer hamisítható tokenekkel</td></tr>
+<tr><td><span class="sev crit">MOST</span></td><td>Nyitott security-ágak (KB IDOR, audit-hash v2, sandbox-CSP, fail-closed) merge a main-be</td><td>F2, F3</td><td>1–2 nap</td><td>Kész fixek nem védenek</td></tr>
+<tr><td><span class="sev high">MOST</span></td><td>Minimál CI: lint + tsc + prisma validate + stub-teszt mátrix PR-kapun</td><td>O1</td><td>1–2 nap</td><td>Regresszió a main-en, ismételt „kész de nem élő”</td></tr>
+<tr><td><span class="sev high">KÖVETKEZŐ</span></td><td>Átállás <code>prisma migrate</code>-re; baseline + ad-hoc scriptek migrációba</td><td>M3</td><td>2–3 nap</td><td>Séma-drift, nem-reprodukálható prod</td></tr>
+<tr><td><span class="sev high">KÖVETKEZŐ</span></td><td>Observability: pino-log + korrelációs ID + kulcs-metrikák + error-tracking</td><td>O2</td><td>3–5 nap</td><td>Vak üzemeltetés, nincs SLA-tartás</td></tr>
+<tr><td><span class="sev med">KÖVETKEZŐ</span></td><td><code>/api/healthz</code> + <code>/api/readyz</code>; App Router error boundary</td><td>O3, O4</td><td>0,5–1 nap</td><td>Nincs megbízható uptime-jelzés</td></tr>
+<tr><td><span class="sev med">KÉSŐBB</span></td><td>Tool Broker + chat-tool-loop bontása handler-regiszterre</td><td>M1</td><td>4–6 nap</td><td>Növekvő review-teher, regresszió-veszély</td></tr>
+<tr><td><span class="sev low">KÉSŐBB</span></td><td>DI-provider réteg megfontolása; queue-stratégia terhelés-mérés után</td><td>M2, O5</td><td>skálázáskor</td><td>Skálázási plafon</td></tr>
+</tbody>
+</table>
+
+<!-- ============================ 9 ============================ -->
+<h2 class="sec" id="s9"><span class="n">9.</span> Hiányzó elemek — enterprise readiness</h2>
+<p>Ezek <strong>nem</strong> kód-hibák, hanem a <em>termékké</em> és <em>eladható/üzemeltethető SaaS-szá</em> éréshez hiányzó, a kódbázisban ma nem azonosítható elemek. Egy vállalati beszerzési / biztonsági átvilágítás (vendor security review) ezeket kérni fogja.</p>
+
+<h3>9.1 Compliance &amp; adatvédelem</h3>
+<table>
+<thead><tr><th>Hiányzó elem</th><th>Miért kell enterprise-ben</th><th>Javasolt első lépés</th></tr></thead>
+<tbody>
+<tr><td><strong>SOC 2 / ISO 27001 alapok</strong></td><td>A legtöbb enterprise beszerzés belépő-feltétele; a governance/audit alapok megvannak, a folyamati kontrollok (hozzáférés-review, change-mgmt) hiányoznak</td><td>Kontroll-leltár + gap-analízis; a meglévő audit-láncra építeni</td></tr>
+<tr><td><strong>GDPR: tenant adat-export &amp; -törlés</strong></td><td>„Right to erasure” / adathordozhatóság; multi-tenant sémánál kulcs. Ma nincs látható per-tenant export/purge folyamat</td><td>Per-tenant export + kaszkádolt, auditált törlési job (a <code>tenantId</code>-modell adott)</td></tr>
+<tr><td><strong>Adatmegőrzés &amp; residency</strong></td><td>Van <code>RetentionPolicy</code> a KB-ra, de nincs platform-szintű retenció az auditra/ticketekre; EU-residency igény gyakori</td><td>Retenciós mátrix entitásonként; Neon/GCS régió-döntés dokumentálása</td></tr>
+<tr><td><strong>DPA / al-adatfeldolgozó lista</strong></td><td>LLM-providerek (OpenAI/Gemini/OpenRouter) mint sub-processorok — az ügyfél tudni akarja, hova megy az adat</td><td>Sub-processor lista + a sensitivity-router policy dokumentálása ügyfél felé</td></tr>
+</tbody>
+</table>
+
+<h3>9.2 Üzembiztonság &amp; folytonosság</h3>
+<table>
+<thead><tr><th>Hiányzó elem</th><th>Miért kell</th><th>Javasolt első lépés</th></tr></thead>
+<tbody>
+<tr><td><strong>Backup &amp; Disaster Recovery (RPO/RTO)</strong></td><td>Nincs dokumentált mentési/visszaállítási terv a DB-re (Neon) és a GCS-artifactokra; enterprise SLA-hoz elengedhetetlen</td><td>RPO/RTO célok kitűzése; Neon PITR + GCS-verziózás bekapcsolása és tesztelt restore-runbook</td></tr>
+<tr><td><strong>Secret-rotáció folyamat</strong></td><td>F1 rávilágít: nincs rotációs életciklus a titkokra (agent-API-kulcs, connector-secret, aláíró titkok)</td><td>Rotációs ütem + kulcs-verziózás; agent-API-kulcs lejárat már részben megvan (<code>expires-at</code>)</td></tr>
+<tr><td><strong>Incident response &amp; on-call</strong></td><td>Nincs runbook, riasztási lánc, súlyossági osztályozás; O2 nélkül amúgy sem detektálható az incidens</td><td>Sev-osztályok + eszkalációs runbook; az audit-láncból incidens-forensics</td></tr>
+<tr><td><strong>SLA / SLO definíció</strong></td><td>Enterprise szerződés SLA-t vár; ma nincs mért baseline (l. O2)</td><td>Availability/latency SLO-k a metrikák bevezetése után</td></tr>
+<tr><td><strong>Kapacitás- &amp; terhelésteszt</strong></td><td>A Postgres-queue (O5) és a Cloud Run harness skálázási plafonja méretlen</td><td>Terhelésprofil felvétele; a queue-váltás döntése adatból</td></tr>
+</tbody>
+</table>
+
+<h3>9.3 Ellátási lánc &amp; alkalmazásbiztonság</h3>
+<table>
+<thead><tr><th>Hiányzó elem</th><th>Miért kell</th><th>Javasolt első lépés</th></tr></thead>
+<tbody>
+<tr><td><strong>Dependency- &amp; secret-scanning</strong></td><td>Nincs automatikus sebezhetőség-/titok-szkennelés (Dependabot/CodeQL/gitleaks); F1 pont ilyet fogott volna el</td><td>GitHub Dependabot + CodeQL + gitleaks a CI-ba (O1-re épül)</td></tr>
+<tr><td><strong>SBOM</strong></td><td>Enterprise beszerzés egyre gyakrabban kér szoftver-anyagjegyzéket</td><td>SBOM-generálás (CycloneDX) a build-lépésben</td></tr>
+<tr><td><strong>Threat model &amp; pen-test</strong></td><td>Az agent-orkesztráció új támadási felület (prompt-injection→tool-abuse); nincs formális modell vagy külső pen-teszt</td><td>STRIDE-modell a Broker/Gateway/egress köré; éves külső pen-teszt</td></tr>
+<tr><td><strong>Prompt-injection / tool-abuse védelem tesztelése</strong></td><td>A deny-by-default és propose-not-apply jó alap, de nincs adversarial teszt-készlet</td><td>Red-team teszt-korpusz a runtime-okra (a <code>test:*</code> keretbe)</td></tr>
+</tbody>
+</table>
+
+<h3>9.4 Termék- &amp; üzemeltetési dokumentáció</h3>
+<table>
+<thead><tr><th>Hiányzó elem</th><th>Miért kell</th><th>Javasolt első lépés</th></tr></thead>
+<tbody>
+<tr><td><strong>Operátor-runbookok</strong></td><td>Van kiváló fejlesztői/architektúra-dok, de nincs „mit tegyél, ha X leáll” üzemeltetési runbook</td><td>Runbookok a top-5 hibaforgatókönyvre (DB, dispatcher, harness, gateway, secret)</td></tr>
+<tr><td><strong>Tenant-onboarding / offboarding folyamat</strong></td><td>Van tenant-management, de nincs dokumentált end-to-end ügyfél-onboarding (provisioning→első futás→offboarding+adattörlés)</td><td>Onboarding-runbook, a GDPR-törléshez kötve (9.1)</td></tr>
+<tr><td><strong>Verziózás &amp; changelog</strong></td><td>Enterprise ügyfél változás-követhetőséget vár (release notes, verziószám)</td><td>SemVer + CHANGELOG a CI-release-hez kötve</td></tr>
+<tr><td><strong>Architektúra-dokumentum karbantartása</strong></td><td>Az <code>ARCHITEKTURA.html</code> kiváló, de a CI-ban nincs semmi, ami frissen tartsa (drift-veszély)</td><td>Dok-review a release-folyamat része legyen</td></tr>
+</tbody>
+</table>
+
+<!-- ============================ 10 ============================ -->
+<h2 class="sec" id="s10"><span class="n">10.</span> Záró értékelés</h2>
+<div class="callout ok"><span class="lbl">Összegzés</span>
+A platform <strong>architektúrája enterprise-szintű</strong>: a governance-modell, az audit-lánc, a deny-by-default kontrollok és a réteges felépítés olyan alapot adnak, amelyre biztonságos terméket lehet építeni. A tervezői minőség nem kérdés.
+</div>
+<p>Amit a szállíthatóság és eladhatóság ma <strong>blokkol</strong>, az nem az architektúra, hanem a <strong>kiadási és üzemeltetési érettség</strong>:</p>
+<ul>
+  <li><strong>Azonnal (napok):</strong> F1 (fail-open titkok) + F2/F3 (nyitott security-fixek merge) + O1 (minimál CI). Enélkül éles ügyfélre engedni nem szabad.</li>
+  <li><strong>Rövid táv (hetek):</strong> M3 (migráció), O2 (observability), O3/O4 (health + error boundary). Ezekkel a rendszer <em>üzemeltethetővé</em> válik.</li>
+  <li><strong>Közép táv:</strong> M1 (broker-bontás) + a §9 enterprise-readiness elemek (compliance, DR, supply-chain, runbookok). Ezekkel válik <em>eladhatóvá</em> a nagyvállalati beszerzésen.</li>
+</ul>
+<p>A jó hír: a nehezebbik felét — a helyes architektúrát — a csapat már megcsinálta. A hátralévő munka nagyrészt <strong>mechanikus és jól ütemezhető</strong>, és a legnagyobb kockázatok (F1, F2) néhány nap alatt lezárhatók.</p>
+<p class="legend">Minden megállapítás a <code>main</code> ág (2026-07-07) forráskódjából és konfigurációjából ellenőrizve. A „hiányzó elemek” fejezet olyan tételeket sorol, amelyek a kódbázisban ma nem azonosíthatók — ha valamelyik mégis létezik (pl. külső Confluence-runbook), az a megfelelő sort tárgytalanná teszi.</p>
+
+</main>
+</div>
+</body>
+</html>

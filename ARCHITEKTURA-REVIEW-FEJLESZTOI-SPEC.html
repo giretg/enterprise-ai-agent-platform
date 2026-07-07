@@ -1,0 +1,543 @@
+<!doctype html>
+<html lang="hu">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Fejlesztői specifikáció — Architektúra-javítások</title>
+<style>
+  :root {
+    --bg:#ffffff; --fg:#1a1a1a; --muted:#5a6472; --border:#e2e6ec;
+    --card:#f7f9fc; --accent:#2b6cb0; --accent-soft:#ebf3fb;
+    --warn-bg:#fff8e6; --warn-border:#f0c650; --risk-bg:#fdecec; --risk-border:#e08b8b;
+    --ok-bg:#eaf7ee; --ok-border:#8bce9f; --code-bg:#f1f3f7; --th:#eef2f7;
+    --crit:#c0392b; --high:#d97706; --med:#b7950b; --low:#2b6cb0; --kbd:#e7ebf1;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#14171c; --fg:#e6e9ee; --muted:#9aa4b2; --border:#2a2f38;
+      --card:#1b1f26; --accent:#6bb0ee; --accent-soft:#1c2733;
+      --warn-bg:#2c2716; --warn-border:#7a6320; --risk-bg:#2e1c1c; --risk-border:#7a3a3a;
+      --ok-bg:#172a1e; --ok-border:#2f6a44; --code-bg:#1e232b; --th:#1e242c;
+      --crit:#e74c3c; --high:#e0912a; --med:#d4b13a; --low:#6bb0ee; --kbd:#242a33;
+    }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+    font:16px/1.65 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; }
+  .wrap { display:grid; grid-template-columns:300px 1fr; max-width:1500px; margin:0 auto; }
+  nav.toc { position:sticky; top:0; align-self:start; height:100vh; overflow-y:auto;
+    border-right:1px solid var(--border); padding:24px 18px; background:var(--card); font-size:13.5px; }
+  nav.toc h2 { font-size:13px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:0 0 12px; }
+  nav.toc ol { list-style:none; padding:0; margin:0; }
+  nav.toc li { margin:2px 0; }
+  nav.toc a { color:var(--fg); text-decoration:none; display:block; padding:4px 8px; border-radius:6px; }
+  nav.toc a:hover { background:var(--accent-soft); color:var(--accent); }
+  nav.toc .wpnum { color:var(--muted); font-variant-numeric:tabular-nums; }
+  main { padding:40px 56px 120px; min-width:0; overflow-x:hidden; }
+  header.doc { border-bottom:2px solid var(--border); padding-bottom:22px; margin-bottom:8px; }
+  header.doc h1 { font-size:29px; margin:0 0 6px; letter-spacing:-.02em; }
+  header.doc .sub { color:var(--muted); font-size:15px; }
+  header.doc .meta { margin-top:14px; font-size:13px; color:var(--muted); display:flex; flex-wrap:wrap; gap:8px 18px; }
+  h2.sec { font-size:23px; margin:52px 0 14px; padding-top:14px; border-top:1px solid var(--border); letter-spacing:-.01em; }
+  h2.sec .n { color:var(--accent); font-variant-numeric:tabular-nums; }
+  h3 { font-size:18px; margin:26px 0 10px; }
+  h4 { font-size:13px; margin:18px 0 6px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
+  p { margin:10px 0; }
+  code { background:var(--code-bg); padding:1.5px 6px; border-radius:5px; font-size:13px;
+    font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace; }
+  pre { background:var(--code-bg); padding:14px 16px; border-radius:10px; overflow-x:auto; font-size:12.5px;
+    border:1px solid var(--border); line-height:1.5; }
+  pre code { background:none; padding:0; font-size:12.5px; }
+  table { border-collapse:collapse; width:100%; margin:16px 0; font-size:13.5px; display:block; overflow-x:auto; }
+  th, td { border:1px solid var(--border); padding:8px 11px; text-align:left; vertical-align:top; }
+  th { background:var(--th); font-weight:600; }
+  tbody tr:nth-child(even) td { background:var(--card); }
+  .callout { border:1px solid var(--border); border-left-width:4px; border-radius:8px; padding:12px 16px; margin:16px 0; background:var(--card); }
+  .callout.warn { background:var(--warn-bg); border-left-color:var(--warn-border); }
+  .callout.risk { background:var(--risk-bg); border-left-color:var(--risk-border); }
+  .callout.ok { background:var(--ok-bg); border-left-color:var(--ok-border); }
+  .callout .lbl { font-weight:700; font-size:12px; text-transform:uppercase; letter-spacing:.05em; display:block; margin-bottom:4px; }
+  ul, ol { padding-left:22px; } li { margin:4px 0; }
+  .sev { display:inline-block; font-size:11px; font-weight:700; padding:1px 8px; border-radius:4px; color:#fff; letter-spacing:.03em; vertical-align:middle; }
+  .sev.crit{background:var(--crit)} .sev.high{background:var(--high)} .sev.med{background:var(--med)} .sev.low{background:var(--low)} .sev.info{background:var(--muted)}
+  .wp { border:1px solid var(--border); border-radius:12px; padding:6px 20px 18px; margin:26px 0; background:var(--card); }
+  .wp > h3 { display:flex; align-items:center; gap:10px; flex-wrap:wrap; border-bottom:1px solid var(--border); padding-bottom:10px; }
+  .wp .tag { font-family:ui-monospace,monospace; font-size:12px; background:var(--accent-soft); color:var(--accent); padding:2px 8px; border-radius:6px; }
+  .meta-row { display:flex; flex-wrap:wrap; gap:6px 22px; font-size:13px; color:var(--muted); margin:10px 0; }
+  .meta-row b { color:var(--fg); }
+  .ac { background:var(--ok-bg); border:1px solid var(--ok-border); border-radius:8px; padding:10px 16px; margin:14px 0; }
+  .ac .lbl { font-weight:700; font-size:12px; text-transform:uppercase; letter-spacing:.05em; display:block; margin-bottom:4px; color:var(--ok-border); }
+  .ac ul { margin:6px 0; } .ac li::marker { content:"☐ "; }
+  kbd { background:var(--kbd); border:1px solid var(--border); border-bottom-width:2px; border-radius:5px; padding:1px 6px; font-size:12px; font-family:ui-monospace,monospace; }
+  .filelbl { font-family:ui-monospace,monospace; font-size:12px; color:var(--muted); display:block; margin:12px 0 4px; }
+  .filelbl b { color:var(--accent); }
+  @media (max-width:1000px) { .wrap{grid-template-columns:1fr} nav.toc{position:static;height:auto;border-right:none;border-bottom:1px solid var(--border)} main{padding:28px 20px 80px} }
+  .legend { font-size:12.5px; color:var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav class="toc">
+  <h2>Munkacsomagok</h2>
+  <ol>
+    <li><a href="#intro"><span class="wpnum">0.</span> Bevezető &amp; konvenciók</a></li>
+    <li><a href="#seq"><span class="wpnum">§</span> Sorrend &amp; függőségek</a></li>
+    <li><a href="#wp1"><span class="wpnum">WP-1</span> Fail-closed titkok <span class="sev crit">KRIT</span> <span class="sev" style="background:var(--ok-border)">✓ KÉSZ</span></a></li>
+    <li><a href="#wp2"><span class="wpnum">WP-2</span> Audit-hash v2 <span class="sev high">MAG</span> <span class="sev" style="background:var(--ok-border)">✓ KÉSZ</span></a></li>
+    <li><a href="#wp3"><span class="wpnum">WP-3</span> Sandbox CSP <span class="sev high">MAG</span> <span class="sev" style="background:var(--ok-border)">✓ KÉSZ</span></a></li>
+    <li><a href="#wp4"><span class="wpnum">WP-4</span> CI pipeline <span class="sev high">MAG</span> <span class="sev" style="background:var(--ok-border)">✓ KÉSZ</span></a></li>
+    <li><a href="#wp5"><span class="wpnum">WP-5</span> Prisma migrate <span class="sev high">MAG</span> <span class="sev" style="background:var(--ok-border)">✓ KÉSZ</span></a></li>
+    <li><a href="#wp6"><span class="wpnum">WP-6</span> Observability <span class="sev high">MAG</span></a></li>
+    <li><a href="#wp7"><span class="wpnum">WP-7</span> Health &amp; error UI <span class="sev med">KÖZ</span></a></li>
+    <li><a href="#wp8"><span class="wpnum">WP-8</span> Broker refaktor <span class="sev med">KÖZ</span></a></li>
+    <li><a href="#dod"><span class="wpnum">§</span> Definition of Done</a></li>
+  </ol>
+  <p class="legend" style="margin-top:16px">Cél-ág: <code>main</code> · minden WP külön commit(ok) CI-kapu mögött.</p>
+</nav>
+
+<main>
+<header class="doc">
+  <h1>Fejlesztői specifikáció — Architektúra-javítások</h1>
+  <div class="sub">Az <code>ARCHITEKTURA-REVIEW.html</code> megállapításainak végrehajtható munkacsomagjai</div>
+  <div class="meta">
+    <span><strong>Tárgy:</strong> <code>enterprise-ai-agent-platform</code></span>
+    <span><strong>Bázis:</strong> <code>main</code> @ <code>2fe567e6</code></span>
+    <span><strong>Dátum:</strong> 2026-07-07</span>
+    <span><strong>Nyelv:</strong> TypeScript (strict) · Next.js 16</span>
+  </div>
+</header>
+
+<!-- ============ 0 ============ -->
+<h2 class="sec" id="intro"><span class="n">0.</span> Bevezető &amp; konvenciók</h2>
+<p>Ez a dokumentum a review nyolc megállapítását (F1, F3, F2/sandbox-CSP, O1, M3, O2, O3/O4, M1) <strong>végrehajtható munkacsomagokra</strong> bontja. Minden WP önállóan szállítható, saját elfogadási kritériummal és teszttel.</p>
+
+<div class="callout warn"><span class="lbl">Fontos kiindulási tény — a fix-ágak elavultak</span>
+Ellenőrizve: a KB-IDOR és IAM-tenant fixek <strong>már a <code>main</code>-en vannak</strong> (<code>2fe567e6</code>, <code>0e3e1420</code>) — a <code>review/kb-tenant-boundary</code> diff üres a main-hez képest. A megmaradt ágak (<code>security/audit-hash-full-coverage</code>, <code>security/sandbox-preview-csp-isolation</code>, <code>enterprise-review-crypto-secret-fail-closed</code>) <strong>a main mögött állnak</strong> (törölt teszt-fájlokat is tartalmaznak) → tiszta merge nem lehetséges. <b>Ezért ezeket a fixeket a jelen main tetején újra kell implementálni</b> (a régi ágak referenciaként használhatók), nem cherry-pickelni. Az ágakat utána le kell zárni.</div>
+
+<h4>Munkafolyamati szabályok</h4>
+<ul>
+  <li><strong>Main-only workflow:</strong> ne nyiss hosszú életű feature-branchet; kis, gyakori commit a <code>main</code>-re, a WP-4 CI-kapu mögött.</li>
+  <li><strong>Teszt minden WP-hez:</strong> a repó konvenciója önálló <code>scripts/*.test.ts</code> (tsx) + <code>test:*</code> npm-script; stub-DB-hez <code>DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub</code>.</li>
+  <li><strong>Ellenőrző futtatás WP után:</strong> <code>npm run lint &amp;&amp; npx tsc --noEmit &amp;&amp; npm run test:&lt;érintett&gt;</code>.</li>
+  <li><strong>Audit hash-formula:</strong> soha ne módosítsd a <code>verifyChain</code> verzió-kezelése nélkül (l. WP-2).</li>
+  <li><strong>Neon-kapcsolat:</strong> kerüld a sok ad-hoc <code>tsx -e</code> scriptet (idle pool-szivárgás).</li>
+</ul>
+
+<!-- ============ SEQ ============ -->
+<h2 class="sec" id="seq"><span class="n">§</span> Sorrend &amp; függőségek</h2>
+<table>
+<thead><tr><th>Hullám</th><th>Munkacsomag</th><th>Függőség</th><th>Becslés</th></tr></thead>
+<tbody>
+<tr><td rowspan="3"><strong>1 — Blokkoló<br>(szállítás előfeltétele)</strong></td><td>WP-1 Fail-closed titkok</td><td>—</td><td>0,5–1 nap</td></tr>
+<tr><td>WP-2 Audit-hash v2</td><td>—</td><td>1 nap</td></tr>
+<tr><td>WP-3 Sandbox CSP</td><td>—</td><td>0,5 nap</td></tr>
+<tr><td rowspan="2"><strong>2 — Kiadási lánc</strong></td><td>WP-4 CI pipeline</td><td>WP-1..3 tesztjei zöldek</td><td>1–2 nap</td></tr>
+<tr><td>WP-5 Prisma migrate baseline</td><td>WP-4 (CI futtatja)</td><td>2–3 nap</td></tr>
+<tr><td rowspan="2"><strong>3 — Üzemeltethetőség</strong></td><td>WP-6 Observability</td><td>—</td><td>3–5 nap</td></tr>
+<tr><td>WP-7 Health + error UI</td><td>WP-6 (error-tracking hookhoz)</td><td>0,5–1 nap</td></tr>
+<tr><td><strong>4 — Áttekinthetőség</strong></td><td>WP-8 Broker refaktor</td><td>WP-4 (teszt-védőháló)</td><td>4–6 nap</td></tr>
+</tbody>
+</table>
+
+<!-- ============ WP-1 ============ -->
+<div class="wp" id="wp1">
+<h3><span class="tag">WP-1</span> Fail-closed titok-feloldás + prod-bekötés + rotáció <span class="sev crit">KRITIKUS</span> <span class="sev" style="background:var(--ok-border)">✓ KÉSZ</span></h3>
+<div class="meta-row"><span><b>Lelet:</b> F1</span><span><b>Cél:</b> élesben ne futhasson publikus dev-default titokkal</span></div>
+<div class="callout ok"><span class="lbl">✓ Elkészült — 2026-07-07 (main working tree, nincs commitolva)</span>
+<ul style="margin:6px 0">
+  <li><b>Új:</b> <code>app/src/lib/crypto/secret-resolver.ts</code> — a <code>resolveSecret(names, devDefault)</code> a <code>NODE_ENV</code>-et <em>a függvényen belül</em> olvassa (tesztelhetőség), prod alatt hiányzó env → <code>throw</code>, nem-prod → dev-default + <code>console.warn</code>.</li>
+  <li><b>3 hívóhely átkötve:</b> <code>hash-chain.ts</code> (WRITE_GATE_SECRET), <code>oauth-state.ts</code> (OAUTH_STATE_SECRET→WRITE_GATE_SECRET fallback), <code>domain/sandbox/preview-token.ts</code> (SANDBOX_PREVIEW_SECRET→WRITE_GATE_SECRET fallback) — a fail-open <code>?? 'dev-…'</code> minta megszűnt.</li>
+  <li><b>Prod-bekötés:</b> mindhárom titok bekötve <code>apphosting.yaml</code> <em>mindkét</em> példányába (gyökér + <code>app/</code>), <code>availability: [RUNTIME]</code>.</li>
+  <li><b>Teszt:</b> új <code>scripts/secret-config.test.ts</code> + <code>test:secret-config</code> npm-script — <b>8/8 zöld</b> (prod-throw, üres-string, env-elsőbbség, dev-fallback+warn, fallback-lánc).</li>
+  <li><b>Verifikáció:</b> <code>tsc</code> tiszta az érintett fájlokra (a maradék hiba egy független teszt-fájl előzőleg is meglévő regex-flag gondja), <code>eslint</code> 0 hiba, a hash-chain-t importáló <code>test:audit-log</code> továbbra is 18/18 zöld.</li>
+</ul>
+<b>Hátra (nem-kód / üzemeltetés):</b> Secret Manager provisioning (<code>apphosting:secrets:set</code> × 3, <code>openssl rand -hex 32</code>) + a régi dev-defaultok egyszeri rotációja a deploy-ablakban (1.4).</div>
+<p><b>Probléma:</b> három titok fail-open dev-defaultra esik, és egyik sincs bekötve az <code>apphosting.yaml</code>-ba → prod garantáltan a hamisítható konstanst használja.</p>
+
+<h4>1.1 — Közös fail-closed resolver</h4>
+<p>Új, egyetlen helyre koncentrált feloldó, hogy a minta ne szóródjon szét. Prod alatt env hiányában <strong>induláskor dob</strong>; nem-prod alatt determinisztikus dev-defaultot ad, de <code>warn</code>-ol.</p>
+<span class="filelbl">új: <b>app/src/lib/crypto/secret-resolver.ts</b></span>
+<pre><code>const isProd = process.env.NODE_ENV === 'production'
+
+/**
+ * Fail-closed titok-feloldás. Prod alatt kötelező az env; hiányában
+ * a folyamat induláskor leáll (nem fut kompromittált dev-defaulttal).
+ */
+export function resolveSecret(
+  names: string[],           // fallback-lánc, pl. ['OAUTH_STATE_SECRET','WRITE_GATE_SECRET']
+  devDefault: string,        // CSAK nem-prod alatt használt determinisztikus default
+): string {
+  for (const n of names) {
+    const v = process.env[n]
+    if (v &amp;&amp; v.length > 0) return v
+  }
+  if (isProd) {
+    throw new Error(
+      `[secret-resolver] Kötelező titok hiányzik prod alatt: ${names.join(' | ')}. ` +
+      `Állítsd be a Secret Managerben és az apphosting.yaml-ban.`,
+    )
+  }
+  console.warn(`[secret-resolver] DEV default használatban: ${names[0]} (NE használd prod-ban)`)
+  return devDefault
+}</code></pre>
+
+<h4>1.2 — A három hívóhely átírása</h4>
+<span class="filelbl">mód: <b>app/src/lib/crypto/hash-chain.ts</b> (~31. sor)</span>
+<pre><code>import { resolveSecret } from './secret-resolver'
+const WRITE_GATE_SECRET = resolveSecret(['WRITE_GATE_SECRET'], 'dev-write-gate-secret-change-in-prod')</code></pre>
+<span class="filelbl">mód: <b>app/src/lib/crypto/oauth-state.ts</b> (~11. sor)</span>
+<pre><code>const OAUTH_STATE_SECRET = resolveSecret(
+  ['OAUTH_STATE_SECRET', 'WRITE_GATE_SECRET'], 'dev-oauth-state-secret-change-in-prod')</code></pre>
+<span class="filelbl">mód: <b>app/src/domain/sandbox/preview-token.ts</b> (~17. sor)</span>
+<pre><code>const PREVIEW_SECRET = resolveSecret(
+  ['SANDBOX_PREVIEW_SECRET', 'WRITE_GATE_SECRET'], 'dev-sandbox-preview-secret-change-in-prod')</code></pre>
+<div class="callout warn"><span class="lbl">Modul-betöltési figyelmeztetés</span>Ezek modul-szintű konstansok → a <code>throw</code> import-időben megtörténik. Ez szándékos (fail-fast a boot-nál), de győződj meg róla, hogy a <strong>tesztek</strong> és a <strong>build</strong> nem <code>NODE_ENV=production</code>-nel futnak env nélkül. A CI-build (WP-4) állítsa be a szükséges dummy értékeket, vagy futtasson <code>NODE_ENV=test</code>-ben.</div>
+
+<h4>1.3 — Prod-bekötés</h4>
+<span class="filelbl">mód: <b>apphosting.yaml</b> (env blokk) — mindkét példány (gyökér + app/)</span>
+<pre><code>  - variable: WRITE_GATE_SECRET
+    secret: WRITE_GATE_SECRET
+    availability: [RUNTIME]
+  - variable: OAUTH_STATE_SECRET
+    secret: OAUTH_STATE_SECRET
+    availability: [RUNTIME]
+  - variable: SANDBOX_PREVIEW_SECRET
+    secret: SANDBOX_PREVIEW_SECRET
+    availability: [RUNTIME]</code></pre>
+<pre><code># Secret Manager provisioning (erős, random értékek):
+npx firebase-tools apphosting:secrets:set WRITE_GATE_SECRET
+npx firebase-tools apphosting:secrets:set OAUTH_STATE_SECRET
+npx firebase-tools apphosting:secrets:set SANDBOX_PREVIEW_SECRET
+# érték-generálás: openssl rand -hex 32</code></pre>
+
+<h4>1.4 — Rotáció</h4>
+<p>A régi dev-defaultok kompromittáltnak tekintendők. Egyszeri rotáció: friss random titkok beállítása. Hatás: a kiadott write-gate / preview tokenek és folyamatban lévő OAuth-state-ek érvénytelenednek (mindkettő ≤10 perc TTL / rövid életű → elhanyagolható). Kommunikáld a deploy-ablakban.</p>
+
+<div class="ac"><span class="lbl">Elfogadási kritérium</span>
+<ul>
+  <li><code>NODE_ENV=production</code> + hiányzó env → a process induláskor dob (nem fut default-tal).</li>
+  <li>Nem-prod + hiányzó env → dev-default + <code>warn</code>, a meglévő tesztek zöldek maradnak.</li>
+  <li>Mindhárom titok bekötve az <code>apphosting.yaml</code> mindkét példányában és a Secret Managerben.</li>
+  <li>Új teszt: <code>scripts/secret-config.test.ts</code> (referencia: a fail-closed ág <code>secret-config.test.ts</code>-e) lefedi a prod-throw és a dev-fallback ágat.</li>
+</ul></div>
+<div class="meta-row"><span><b>Teszt:</b> <code>npm run test:secret-config</code> (új script)</span><span><b>Kockázat:</b> alacsony (mechanikus), de boot-blokkoló → CI env-fegyelem kell</span></div>
+</div>
+
+<!-- ============ WP-2 ============ -->
+<div class="wp" id="wp2">
+<h3><span class="tag">WP-2</span> Audit-hash v2 — teljes mezőfedés <span class="sev high">MAGAS</span> <span class="sev" style="background:var(--ok-border)">✓ KÉSZ</span></h3>
+<div class="meta-row"><span><b>Lelet:</b> F3</span><span><b>Cél:</b> a policyDecision/metadata/payload-ref is a hash alatt legyen, visszafelé kompatibilisen</span></div>
+<div class="callout ok"><span class="lbl">✓ Elkészült — 2026-07-07 (main working tree, nincs commitolva)</span>
+<ul style="margin:6px 0">
+  <li><b>Verzió-önleíró hash:</b> a <code>hash-chain.ts</code> kapott egy <code>computeAuditHashV2</code>-t, ami <code>"2:"</code> előfejjel tér vissza. A verzió magában a tárolt hash-stringben utazik → <strong>nincs szükség séma-oszlopra</strong> (a WP-5 migrációtól függetlenül szállítható), és a láncba kötött <code>prevHash</code> a teljes, előfejes stringet hordozza.</li>
+  <li><b>Teljes mezőfedés:</b> a v2 canonical fedi a <code>policyDecision</code>-t (deny→allow), a payload-mutatókat (<code>input_ref</code>/<code>output_ref</code>), a <code>model_used</code>/<code>agent_version</code>, a determinisztikusan (kulcs-rendezetten) kanonikalizált <code>metadata</code>-t és a származtatott <code>tenant/ticket/conversation</code> attribúciót.</li>
+  <li><b>Verzió-érzékeny verify:</b> az <code>AuditChainService.verifyChain</code> soronként a tárolt hash előfeje alapján választ formulát (<code>parseAuditHashVersion</code>) — a régi v1 sorok v1-gyel, az újak v2-vel. Egy v2 sort nem lehet a v1 formulával (ami a metadatát figyelmen kívül hagyja) átverni.</li>
+  <li><b>Írás + repair átkötve:</b> a <code>PostgresAuditRepository.append</code> mostantól v2-t ír (a hash a <code>deriveAuditAttribution</code> kimenetével EGYÜTT számolódik); az <code>audit-backfill.ts reconcile</code> is verzió-érzékeny, nem minősíti vissza a v2 sorokat.</li>
+  <li><b>Teszt:</b> <code>scripts/audit-log.test.ts</code> +6 új eset (v2 lánc, metadata/policyDecision/output_ref tamper, vegyes v1+v2 lánc, v1-átverés elleni invariáns) — <b>23/23 zöld</b>. <code>tsc</code> tiszta, <code>eslint</code> 0 hiba az érintett fájlokra.</li>
+</ul>
+<b>Hátra (nem-kód):</b> a <code>hashVersion</code> oszlop bevezetése <em>nem szükséges</em> ehhez a megoldáshoz; ha később mégis kell (analitika), az WP-5 migráció. A meglévő láncok visszamenőleg érvényesek maradnak (v1 sorok nincsenek rehash-elve).</div>
+<p><b>Probléma:</b> a main <code>computeAuditHash</code> csak a vázat fedi; a <code>policyDecision</code> (deny→allow), payload-ref és metadata utólagos átírása a lánc-ellenőrzést nem bukná.</p>
+
+<span class="filelbl">mód: <b>app/src/lib/crypto/hash-chain.ts</b> — <code>computeAuditHash</code></span>
+<pre><code>// Verzió-előtag a hash-stringben → verzió-érzékeny verify, visszafelé kompatibilis lánc.
+export function computeAuditHash(params: {
+  seq: bigint; prevHash: string
+  actorType: string; actorId: string | null
+  action: string; targetType: string; targetId: string | null
+  createdAt: Date
+  // ÚJ, opcionális mezők (v2):
+  policyDecision?: string | null
+  payloadRef?: string | null
+  metadata?: unknown
+}): string {
+  const canonical = JSON.stringify({
+    v: 2,                                   // verzió-diszkriminátor
+    seq: params.seq.toString(),
+    prevHash: params.prevHash,
+    actorType: params.actorType,
+    actorId: params.actorId ?? '',
+    action: params.action,
+    targetType: params.targetType,
+    targetId: params.targetId ?? '',
+    createdAt: params.createdAt.toISOString(),
+    policyDecision: params.policyDecision ?? '',
+    payloadRef: params.payloadRef ?? '',
+    metadata: stableStringify(params.metadata ?? null),  // kulcs-rendezett, determinisztikus
+  })
+  return createHash('sha256').update(canonical, 'utf8').digest('hex')
+}</code></pre>
+<div class="callout warn"><span class="lbl">Kritikus: verifyChain verzió-kezelés</span>
+A <code>AuditChainService.verifyChain</code> a meglévő (v1) sorokat a <strong>régi</strong> formulával, az új sorokat a v2-vel ellenőrizze. Diszkriminátor: a sor <code>createdAt</code>-ja a v2 bevezetése előtt/után, vagy egy explicit <code>hashVersion</code> oszlop az <code>AuditLog</code>-on (ajánlott — determinisztikus). Ne backfilleld a régi hasheket: a lánc integritása pont attól él, hogy a régi hasheket nem írjuk át.</div>
+<p><b>Séma:</b> ha <code>hashVersion Int @default(1)</code> oszlopot vezetsz be az <code>AuditLog</code>-ra → WP-5 migráció (addig <code>db push</code> dev-en). Az append-only trigger továbbra is tiltja az UPDATE/DELETE-et.</p>
+
+<div class="ac"><span class="lbl">Elfogadási kritérium</span>
+<ul>
+  <li>Új v2 sor hash-e fedi a policyDecision + payloadRef + metadata mezőket.</li>
+  <li><code>verifyChain</code> vegyes (v1+v2) láncon zöld; egy v2-sor bármely fedett mezőjének manuális átírása → verify <strong>bukik</strong>.</li>
+  <li>Meglévő <code>scripts/audit-log.test.ts</code> kiterjesztve (referencia: <code>security/audit-hash-full-coverage</code> ág +141 sor).</li>
+</ul></div>
+<div class="meta-row"><span><b>Teszt:</b> <code>npm run test:audit-log</code></span><span><b>Hívók:</b> az <code>audit.append(</code> pontokon add át az új mezőket</span></div>
+</div>
+
+<!-- ============ WP-3 ============ -->
+<div class="wp" id="wp3">
+<h3><span class="tag">WP-3</span> Sandbox preview/export CSP-izoláció <span class="sev high">MAGAS</span> <span class="sev" style="background:var(--ok-border)">✓ KÉSZ</span></h3>
+<div class="meta-row"><span><b>Lelet:</b> F2 (sandbox rész)</span><span><b>Cél:</b> az agent-írta HTML ne fusson a platform-origón szabadon</span></div>
+<div class="callout ok"><span class="lbl">✓ Elkészült — 2026-07-07 (main working tree, nincs commitolva)</span>
+<ul style="margin:6px 0">
+  <li><b>Új:</b> <code>app/src/lib/sandbox-csp.ts</code> — közös <code>BASE_DIRECTIVES</code> a <code>sandbox allow-scripts</code> direktívával (<b>allow-same-origin nélkül</b> → átlátszatlan origó), + két exportált builder: <code>sandboxPreviewCsp(frameAncestors)</code> és <code>sandboxExportCsp()</code>.</li>
+  <li><b>Preview route átkötve:</b> <code>api/sandbox-apps/preview/route.ts</code> — a helyi <code>previewCsp()</code> mostantól a közös <code>sandboxPreviewCsp()</code>-t hívja; a <code>frame-ancestors</code> továbbra is a <code>SANDBOX_PREVIEW_FRAME_ANCESTORS</code>/<code>NEXT_PUBLIC_APP_URL</code>-ből jön. A hálózat/form/object/base változatlanul tiltott.</li>
+  <li><b>Export route bekötve:</b> <code>api/sandbox-apps/[appId]/export/route.ts</code> — a letöltött HTML mostantól <b>kap</b> <code>Content-Security-Policy: … sandbox allow-scripts; frame-ancestors 'none'</code> fejlécet (eddig egyáltalán nem volt CSP-je) — defense-in-depth inline renderelés ellen.</li>
+  <li><b>Teszt:</b> új <code>scripts/sandbox-csp.test.ts</code> + <code>test:sandbox-csp</code> npm-script — <b>6/6 zöld</b> (sandbox-direktíva, no allow-same-origin preview+export, exfil-csatorna tiltás, frame-ancestors szűkítés, inline script/style). <code>tsc</code> tiszta az érintett fájlokra, <code>eslint</code> 0 hiba.</li>
+</ul>
+<b>Viselkedés-változás:</b> a legit (beágyazott iframe) previewre nincs — az iframe <code>sandbox="allow-scripts"</code> attribútuma már ugyanezt a szintet adta; csak a nem szándékolt top-level / rosszul konfigurált út zárul be.</div>
+<p><b>Probléma:</b> a preview/export válasz nem küld <code>sandbox</code> CSP-direktívát → a generált HTML top-level megnyitva platform-origón futhat.</p>
+
+<span class="filelbl">új: <b>app/src/lib/sandbox-csp.ts</b></span>
+<pre><code>/** Deny-by-default CSP az agent-generált HTML-hez. `allow-scripts` a working
+ *  appokhoz, de allow-same-origin NÉLKÜL → az origin opaque, nincs platform-hozzáférés. */
+export const SANDBOX_CSP =
+  "sandbox allow-scripts; default-src 'none'; " +
+  "img-src data: blob:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; " +
+  "font-src data:; base-uri 'none'; form-action 'none';"
+
+export function sandboxHtmlHeaders(): Record&lt;string, string&gt; {
+  return {
+    'Content-Type': 'text/html; charset=utf-8',
+    'Content-Security-Policy': SANDBOX_CSP,
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'SAMEORIGIN',
+  }
+}</code></pre>
+<span class="filelbl">mód: <b>app/src/app/api/sandbox-apps/preview/route.ts</b> + <b>.../[appId]/export/route.ts</b></span>
+<pre><code>import { sandboxHtmlHeaders } from '@/lib/sandbox-csp'
+return new Response(html, { headers: sandboxHtmlHeaders() })</code></pre>
+<div class="callout"><span class="lbl">Megjegyzés</span>Viselkedés-változás nincs a legit appokra (scriptek futnak); csak a platform-origó elérése tiltott. Referencia-teszt: <code>security/sandbox-preview-csp-isolation</code> ág <code>sandbox-csp.test.ts</code>-e (+63 sor).</div>
+<div class="ac"><span class="lbl">Elfogadási kritérium</span>
+<ul>
+  <li>A preview és az export válasz is tartalmazza a <code>Content-Security-Policy: sandbox allow-scripts …</code> fejlécet.</li>
+  <li>Nincs <code>allow-same-origin</code> a sandbox tokenben.</li>
+  <li>Új teszt: <code>scripts/sandbox-csp.test.ts</code> assertálja a fejléceket mindkét route-on.</li>
+</ul></div>
+<div class="meta-row"><span><b>Teszt:</b> <code>npm run test:sandbox-csp</code> (új script)</span></div>
+</div>
+
+<!-- ============ WP-4 ============ -->
+<div class="wp" id="wp4">
+<h3><span class="tag">WP-4</span> CI pipeline (GitHub Actions) <span class="sev high">MAGAS</span> <span class="sev" style="background:var(--ok-border)">✓ KÉSZ</span></h3>
+<div class="meta-row"><span><b>Lelet:</b> O1</span><span><b>Cél:</b> kapuzott merge — lint + tsc + prisma validate + teszt-mátrix + supply-chain</span></div>
+<div class="callout ok"><span class="lbl">✓ Elkészült — 2026-07-07 (main working tree, nincs commitolva)</span>
+<ul style="margin:6px 0">
+  <li><b>Új:</b> <code>.github/workflows/ci.yml</code> — két job. <b>verify</b> (working-dir <code>app/</code>): <code>npm ci</code> → <code>prisma generate</code> → <code>prisma validate</code> → <code>lint</code> → <code>tsc --noEmit</code> → 6 stub-DB teszt (<code>secret-config, audit-log, sandbox-csp, tool-broker-tenant, playbook-v2-process, iam-policy</code>). <b>security-scan</b>: gitleaks + CodeQL (typescript). <code>concurrency</code>-vel a régi futások megszakadnak.</li>
+  <li><b>Új:</b> <code>.github/dependabot.yml</code> — heti npm (<code>/app</code> csoportosított minor+patch, + gyökér wrapper) és <code>github-actions</code> frissítések.</li>
+  <li><b>Node 22</b> (a spec 20-at javasolt, de a fejlesztői gép <code>v22.23.1</code>-et futtat, Next 16 → node 20.9+ → a lokálishoz igazítva, hogy ne legyen „lokálisan zöld / CI-ben piros").</li>
+  <li><b>Env-fegyelem:</b> <code>NODE_ENV=test</code> (WP-1 fail-closed nem blokkol), <code>DATABASE_URL</code> <b>és</b> <code>DIRECT_URL</code> stub (a séma pooler+direct Neon-mintát használ — a <code>prisma validate</code> mindkettőt kéri).</li>
+  <li><b>Kapu zöldre állítva:</b> 6 <em>előzőleg is meglévő</em>, a biztonsági munkától független hiba javítva, hogy a kapu ne legyen az első futáskor piros: 1 tsc (<code>playbook-v2-core.test.ts</code> <code>/s</code> regex-flag → <code>[\s\S]</code>) + 5 eslint (<code>prefer-const</code>; 2× <code>no-explicit-any</code> a <code>recompile-pv.ts</code> dev-scriptben; <code>&lt;a&gt;</code>→<code>&lt;Link&gt;</code> a playbooks page-en; <code>set-state-in-effect</code> a <code>process-detail-view.tsx</code>-ben → <code>key</code>-alapú remount).</li>
+  <li><b>Verifikáció:</b> a teljes <code>verify</code> lánc lokálisan, a CI env-jével <b>végig zöld</b> (generate/validate/lint/tsc + 6/6 teszt). A <code>security-scan</code> GitHub-infrán fut (a YAML érvényes).</li>
+</ul>
+<b>Hátra (nem-kód / GitHub-admin):</b> branch protection bekapcsolása a <code>main</code>-en (CI kötelező a mergehez) + Dependabot engedélyezése a repo Security-beállításokban. Ezek repo-adminisztrációs lépések, nem kódból állíthatók.</div>
+<p>Nincs <code>.github/workflows</code>. Ez zárja le az F2/M4 visszatérését is: kész fix nem maradhat a main-en kívül, és regresszió nem juthat be.</p>
+<span class="filelbl">új: <b>.github/workflows/ci.yml</b></span>
+<pre><code>name: CI
+on:
+  pull_request: { branches: [main] }
+  push: { branches: [main] }
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    defaults: { run: { working-directory: app } }
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://stub:stub@127.0.0.1:5432/stub
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm, cache-dependency-path: app/package-lock.json }
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npx prisma validate
+      - run: npm run lint
+      - run: npx tsc --noEmit
+      - run: |          # stub-DB-s domain tesztek (nem igényelnek élő DB-t)
+          npm run test:secret-config
+          npm run test:audit-log
+          npm run test:sandbox-csp
+          npm run test:tool-broker-tenant
+          npm run test:playbook-v2-process
+          npm run test:iam-policy
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: gitleaks/gitleaks-action@v2      # titok-szkennelés (F1 osztályt fogná el)
+      - uses: github/codeql-action/init@v3
+        with: { languages: typescript }
+      - uses: github/codeql-action/analyze@v3</code></pre>
+<div class="callout ok"><span class="lbl">Kiegészítés</span>Kapcsold be a <strong>Dependabot</strong>-ot (<code>.github/dependabot.yml</code>, npm ökoszisztéma) és a GitHub <strong>branch protection</strong>-t a <code>main</code>-en (CI kötelező a mergehez). A teljes <code>test:*</code> mátrix fokozatosan bővíthető; kezdd a DB-mentes, stub-URL-es scriptekkel.</div>
+<div class="ac"><span class="lbl">Elfogadási kritérium</span>
+<ul>
+  <li>PR-en fut: <code>lint</code>, <code>tsc --noEmit</code>, <code>prisma validate</code>, a kiválasztott stub-teszt-mátrix, gitleaks + CodeQL.</li>
+  <li>Piros job blokkolja a merget (branch protection bekapcsolva).</li>
+  <li>Dependabot aktív az <code>app/</code> npm-manifestre.</li>
+</ul></div>
+</div>
+
+<!-- ============ WP-5 ============ -->
+<div class="wp" id="wp5">
+<h3><span class="tag">WP-5</span> Prisma migrate baseline <span class="sev high">MAGAS</span> <span class="sev" style="background:var(--ok-border)">✓ KÉSZ</span></h3>
+<div class="meta-row"><span><b>Lelet:</b> M3</span><span><b>Cél:</b> verziózott, review-zható, környezetek-közt reprodukálható sématörténet</span></div>
+<div class="callout ok"><span class="lbl">✓ Elkészült — 2026-07-07 (main working tree, nincs commitolva)</span>
+<ul style="margin:6px 0">
+  <li><b>Baseline generálva:</b> <code>prisma/migrations/0000_init/migration.sql</code> (2018 sor) a jelenlegi sémából, offline (<code>migrate diff --from-empty --to-schema-datamodel --script</code>, DB-kapcsolat nélkül → nincs Neon-pool terhelés). A kötelező <code>migration_lock.toml</code> (postgresql) is bekötve.</li>
+  <li><b>Ad-hoc SQL migrációkba emelve:</b> <code>0001_audit_append_only_trigger</code> (az <code>audit_log</code> append-only trigger) és <code>0002_kb_chunk_fts_index</code> (a <code>knowledge_chunks</code> tsvector GIN full-text index) — ezek nem ábrázolhatók Prisma-sémában, ezért nyers SQL-ként, a working apply-scriptekkel szó szerint egyezően. Az <code>agent_api_keys.expires_at</code> <b>már a sémában van</b> → a baseline lefedi, külön migráció nem kellett.</li>
+  <li><b>CI-kapu bővítve:</b> új <code>migrations</code> job a <code>ci.yml</code>-ben — ephemeral <code>postgres:16</code> service ellen <code>migrate deploy</code> + <code>migrate status</code>; bizonyítja, hogy a lánc friss DB-re hibátlanul alkalmazható.</li>
+  <li><b>Workflow-váltás:</b> új <code>db:migrate:deploy</code> / <code>db:migrate:status</code> npm-scriptek; a <code>README.md</code> „Séma-migrációk (Prisma Migrate)" szekciója rögzíti: <em>sémaváltás = új migráció, nem <code>db push</code></em> + a meglévő DB-k <code>resolve --applied</code> baseline-elése.</li>
+  <li><b>Verifikáció (lokális, izolált Postgres 18):</b> mind a 3 migráció tisztán lement (<code>migrate deploy</code>), <code>migrate status</code> → „schema is up to date", <code>migrate diff --from-url … --to-schema-datamodel</code> → <b>„No difference detected"</b> (nincs drift); a trigger és a GIN-index létezik, az <code>audit_log</code> UPDATE/DELETE ténylegesen <code>append-only</code> hibával elutasítva.</li>
+</ul>
+<b>Hátra (nem-kód / üzemeltetés):</b> a meglévő prod/dev/test Neon DB-k egyszeri <code>migrate resolve --applied 0000_init</code> baseline-elése (különben a <code>migrate deploy</code> újrafuttatná a 0000-t) — teszt-branchen próbálva elsőként.</div>
+<p><b>Probléma:</b> Ma nincs <code>prisma/migrations/</code>; minden séma <code>db push</code> + ad-hoc <code>db:apply-*</code>/<code>db:backfill-*</code> scriptekkel megy → drift-veszély.</p>
+<h4>Lépések</h4>
+<ol>
+  <li><b>Baseline generálás</b> a jelenlegi sémából (adatvesztés nélkül, meglévő DB ellen):
+    <pre><code>cd app
+npx prisma migrate diff \
+  --from-empty --to-schema-datamodel prisma/schema.prisma \
+  --script > prisma/migrations/0000_init/migration.sql
+npx prisma migrate resolve --applied 0000_init   # meglévő prod/dev DB-n</code></pre></li>
+  <li><b>Ad-hoc SQL beemelése migrációkba:</b> az <code>apply-audit-append-only-trigger</code>, <code>apply-kb-chunk-fts-index</code>, <code>apply-agent-api-key-expires-at</code> és a WP-2 <code>hashVersion</code> oszlop → külön migrációk (<code>0001_audit_append_only</code>, <code>0002_kb_fts</code>, …). A backfill-scriptek maradhatnak külön (adat, nem séma).</li>
+  <li><b>Workflow-váltás:</b> fejlesztésben <code>db:migrate</code> (nem <code>db:push</code>); a CI (WP-4) egy ephemeral Postgres ellen futtatja a <code>migrate deploy</code>-t + a stub-teszteket.</li>
+  <li><b>Dokumentálás:</b> <code>app/AGENTS.md</code>/<code>README.md</code> frissítése: „sémaváltás = új migráció, nem db push”.</li>
+</ol>
+<div class="callout risk"><span class="lbl">Vigyázat — éles DB</span>A baseline-t <code>migrate resolve --applied</code>-del kell „már alkalmazott”-nak jelölni a meglévő prod/dev/test DB-ken, különben a <code>migrate deploy</code> újra lefuttatná. Teszt-branch (Neon) ellen próbáld ki elsőként.</div>
+<div class="ac"><span class="lbl">Elfogadási kritérium</span>
+<ul>
+  <li>Létezik <code>prisma/migrations/</code> baseline-nal; friss DB <code>migrate deploy</code>-jal a jelenlegi sémát adja.</li>
+  <li>Meglévő környezetek <code>resolve</code>-val baseline-eltek, nincs újrafuttatás.</li>
+  <li>CI ephemeral DB ellen futtatja a migrációkat.</li>
+  <li>Az ad-hoc SQL-triggerek/indexek migrációkban (nem csak scriptben).</li>
+</ul></div>
+</div>
+
+<!-- ============ WP-6 ============ -->
+<div class="wp" id="wp6">
+<h3><span class="tag">WP-6</span> Observability — log, metrika, error-tracking <span class="sev high">MAGAS</span></h3>
+<div class="meta-row"><span><b>Lelet:</b> O2</span><span><b>Cél:</b> strukturált, korrelálható operatív telemetria (az audit-lánc ezt NEM adja)</span></div>
+<h4>6.1 Strukturált naplózó</h4>
+<span class="filelbl">új: <b>app/src/lib/observability/logger.ts</b> (<code>pino</code>)</span>
+<pre><code>import pino from 'pino'
+export const logger = pino({
+  level: process.env.LOG_LEVEL ?? 'info',
+  redact: ['*.secret','*.token','*.apiKey','*.authorization'],  // titok-redakció
+  formatters: { level: (l) => ({ level: l }) },
+})
+// Kérésenkénti gyerek-logger korrelációs mezőkkel:
+export const requestLogger = (ctx: { requestId: string; tenantId?: string | null; ticketId?: string | null }) =>
+  logger.child(ctx)</code></pre>
+<p>Vezesd be a kritikus útvonalakon: <code>tool-broker-service.ts</code> (invoke → allow/deny), <code>model-gateway.ts</code> (hívás, latency, budget), <code>dispatcher-service.ts</code> (dispatch-lag, launcher), a middleware (requestId generálás). A meglévő 5 <code>console.*</code> hívás cseréje.</p>
+<h4>6.2 Metrikák</h4>
+<p>GCP Cloud Run/App Hosting alatt a legkevesebb súrlódás: strukturált log-alapú metrikák (Cloud Logging → Log-based metrics) VAGY <code>prom-client</code> egy <code>/api/metrics</code> mögött. Kulcs-jelek: gateway hívásszám &amp; p95 latency, broker <strong>deny-arány</strong>, budget-kimerülés, dispatch-lag, harness-futás-hossz, 5xx-arány.</p>
+<h4>6.3 Error-tracking</h4>
+<p>Sentry (<code>@sentry/nextjs</code>) VAGY GCP Error Reporting. A kivétel-kontextusba a <code>requestId</code>/<code>tenantId</code> kerüljön (a WP-7 error boundary ide köt).</p>
+<div class="callout warn"><span class="lbl">Adatvédelem</span>A logban SOHA ne legyen nyers prompt/PII/titok — a <code>redact</code> lista és a meglévő „csak hash + metaadat” audit-elv itt is érvényes.</div>
+<div class="ac"><span class="lbl">Elfogadási kritérium</span>
+<ul>
+  <li>Minden HTTP-kérés kap <code>requestId</code>-t; a gateway/broker/dispatcher logja strukturált JSON tenant/ticket korrelációval.</li>
+  <li>Titok/PII redaktálva; nincs nyers prompt a logban.</li>
+  <li>Legalább a 6.2 kulcs-metrikák láthatók egy dashboardon.</li>
+  <li>Kezeletlen kivétel a Sentry/Error Reportingba kerül kontextussal.</li>
+</ul></div>
+</div>
+
+<!-- ============ WP-7 ============ -->
+<div class="wp" id="wp7">
+<h3><span class="tag">WP-7</span> Health-endpointok + App Router error boundary <span class="sev med">KÖZEPES</span></h3>
+<div class="meta-row"><span><b>Lelet:</b> O3, O4</span></div>
+<span class="filelbl">új: <b>app/src/app/api/healthz/route.ts</b> (liveness — olcsó)</span>
+<pre><code>export const dynamic = 'force-dynamic'
+export function GET() { return Response.json({ status: 'ok', ts: Date.now() }) }</code></pre>
+<span class="filelbl">új: <b>app/src/app/api/readyz/route.ts</b> (readiness — DB-ping + titok-jelenlét)</span>
+<pre><code>import { prisma } from '@/lib/db'
+export const dynamic = 'force-dynamic'
+export async function GET() {
+  try {
+    await prisma.$queryRaw`SELECT 1`
+    // WP-1 fail-closed miatt a titkok jelenléte booton már garantált; itt csak DB-t ellenőrzünk
+    return Response.json({ status: 'ready' })
+  } catch (e) {
+    return Response.json({ status: 'unready', error: String(e) }, { status: 503 })
+  }
+}</code></pre>
+<p>Vedd fel a middleware public-matcherbe (<code>/api/healthz</code>, <code>/api/readyz</code> auth nélkül). Kösd rá az uptime-monitort / load balancert.</p>
+<span class="filelbl">új: <b>app/src/app/error.tsx</b> + <b>global-error.tsx</b> + <b>not-found.tsx</b></span>
+<pre><code>'use client'
+export default function Error({ error, reset }: { error: Error &amp; { digest?: string }; reset: () => void }) {
+  // WP-6: Sentry.captureException(error) itt
+  return (&lt;div style={{padding:32}}&gt;
+    &lt;h2&gt;Hiba történt&lt;/h2&gt;
+    &lt;p&gt;Hivatkozás: {error.digest ?? '—'}&lt;/p&gt;
+    &lt;button onClick={reset}&gt;Újra&lt;/button&gt;
+  &lt;/div&gt;)
+}</code></pre>
+<div class="ac"><span class="lbl">Elfogadási kritérium</span>
+<ul>
+  <li><code>/api/healthz</code> 200-at ad DB nélkül is; <code>/api/readyz</code> 503-at ad DB-hiba esetén.</li>
+  <li>Mindkettő auth-mentes a middleware-ben.</li>
+  <li>Gyökér <code>error.tsx</code> + <code>not-found.tsx</code> létezik; a boundary a WP-6 error-trackinghez köt.</li>
+</ul></div>
+</div>
+
+<!-- ============ WP-8 ============ -->
+<div class="wp" id="wp8">
+<h3><span class="tag">WP-8</span> Tool Broker + chat-tool-loop bontása handler-regiszterre <span class="sev med">KÖZEPES</span></h3>
+<div class="meta-row"><span><b>Lelet:</b> M1</span><span><b>Cél:</b> a 3 662 soros isten-objektum áttekinthetővé + bővíthetővé tétele viselkedés-változás nélkül</span></div>
+<div class="callout warn"><span class="lbl">Előfeltétel</span>Csak WP-4 (CI teszt-védőháló) után kezdd. Ez tisztán <strong>mechanikus refaktor</strong> — nulla viselkedés-változás a cél; a <code>test:tool-broker-*</code> mátrixnak végig zöldnek kell maradnia minden lépés után.</div>
+<h4>Cél-struktúra</h4>
+<pre><code>src/domain/tool-broker/
+  tool-broker-service.ts     // ~300-400 sor: authorize → dispatch → audit KERET marad
+  handlers/
+    tool-handler.ts          // interfész: { name, capability, argsSchema(zod), execute(ctx,args) }
+    registry.ts              // name → handler leképezés
+    board-write.handler.ts
+    gmail-send.handler.ts    // a speciális approval-kapu a handlerbe költözik
+    web-search.handler.ts
+    ...                      // ~40 tool egyenként</code></pre>
+<h4>Megközelítés (inkrementális, biztonságos)</h4>
+<ol>
+  <li>Definiáld a <code>ToolHandler</code> interfészt + a közös <code>ctx</code>-et (aktor, tenant, audit, connector-grant).</li>
+  <li><b>Egyszerre egy tool</b>: emeld ki az <code>executeTool</code> nagy <code>switch</code>/if-láncából egy handler-fájlba, regisztráld, futtasd a broker-tesztet. Commit.</li>
+  <li>A tenant-izoláció, capability-gate, audit + ToolCall rögzítés a <strong>keretben</strong> marad (ne szóródjon szét) — a handler csak a tool-specifikus args-sémát és executort adja.</li>
+  <li>A speciális kapuk (<code>gmail_send</code> approval, <code>board_write</code> ticket-tulajdon) a saját handlerükbe, de a keret hívja őket.</li>
+</ol>
+<div class="ac"><span class="lbl">Elfogadási kritérium</span>
+<ul>
+  <li>A broker-mag &lt; 500 sor; minden tool külön handler-fájlban.</li>
+  <li><code>test:tool-broker-tenant</code>, <code>test:tool-broker-bridge</code>, <code>test:tool-loop</code> és a teljes broker-mátrix zöld — <strong>változatlan</strong> viselkedés.</li>
+  <li>Új tool hozzáadása = 1 új handler-fájl + registry-bejegyzés + capability-seed (nincs broker-mag módosítás).</li>
+</ul></div>
+</div>
+
+<!-- ============ DOD ============ -->
+<h2 class="sec" id="dod"><span class="n">§</span> Definition of Done — összesített</h2>
+<table>
+<thead><tr><th>WP</th><th>Kész, ha…</th><th>Teszt / bizonyíték</th></tr></thead>
+<tbody>
+<tr><td>WP-1 <span class="sev" style="background:var(--ok-border)">✓</span></td><td><b>Kód kész:</b> prod env-hiány → boot-throw; 3 titok apphosting mindkét példányban. <b>Hátra:</b> SecretMgr provisioning + rotáció (üzemeltetés)</td><td><code>test:secret-config</code> 8/8 zöld + deploy-ellenőrzés</td></tr>
+<tr><td>WP-2 <span class="sev" style="background:var(--ok-border)">✓</span></td><td><b>Kész:</b> v2 hash (<code>"2:"</code> önleíró előfej) fedi policyDecision/metadata/payloadRef/attribúció; vegyes lánc verify zöld, manipuláció bukik; append+reconcile átkötve. Séma-oszlop nem kellett.</td><td><code>test:audit-log</code> 23/23 zöld</td></tr>
+<tr><td>WP-3 <span class="sev" style="background:var(--ok-border)">✓</span></td><td><b>Kész:</b> közös <code>sandbox-csp.ts</code>; preview+export egyaránt <code>sandbox allow-scripts</code> fejléccel, same-origin nélkül; export eddig CSP nélkül volt.</td><td><code>test:sandbox-csp</code> 6/6 zöld</td></tr>
+<tr><td>WP-4 <span class="sev" style="background:var(--ok-border)">✓</span></td><td><b>Kód kész:</b> <code>ci.yml</code> (verify + security-scan) + <code>dependabot.yml</code>; a teljes verify-lánc lokálisan zöld; 6 előzőleg meglévő lint/tsc hiba javítva. <b>Hátra:</b> branch protection + Dependabot bekapcsolása (GitHub-admin)</td><td>lokálisan zöld verify (6/6 teszt) · CI a repóban futni fog PR-en</td></tr>
+<tr><td>WP-5 <span class="sev" style="background:var(--ok-border)">✓</span></td><td><b>Kód kész:</b> <code>0000_init</code> baseline + <code>0001</code> trigger + <code>0002</code> FTS-index; CI <code>migrate deploy</code> job ephemeral Postgresen; README workflow-váltás. <b>Hátra:</b> meglévő Neon DB-k <code>resolve --applied</code> baseline-elése (üzemeltetés)</td><td>friss DB reprodukálja a sémát — lokálisan verifikálva (deploy + status + drift=0)</td></tr>
+<tr><td>WP-6</td><td>strukturált log + korreláció + redakció; kulcs-metrikák; error-tracking</td><td>dashboard + Sentry esemény</td></tr>
+<tr><td>WP-7</td><td>healthz/readyz + error/not-found boundary</td><td>curl 200/503; kiváltott hiba UI</td></tr>
+<tr><td>WP-8</td><td>broker-mag &lt;500 sor, tool-onkénti handler, változatlan viselkedés</td><td>teljes broker teszt-mátrix zöld</td></tr>
+</tbody>
+</table>
+
+<div class="callout ok"><span class="lbl">Végállapot</span>
+Az 1. hullám (WP-1..3) lezárása után a rendszer <strong>éles ügyfélre engedhető</strong> biztonsági szempontból. A 2. hullámmal (WP-4..5) <strong>menedzselhető és reprodukálható</strong> a kiadás. A 3. hullámmal (WP-6..7) <strong>üzemeltethető SLA mellett</strong>. A WP-8 a hosszú távú karbantarthatóságot javítja. A §9 (review) enterprise-readiness elemei — compliance, DR, runbookok — ezen felül, üzleti prioritás szerint ütemezendők.</div>
+
+<p class="legend">Minden fájl-útvonal és sorszám a <code>main</code> @ <code>2fe567e6</code> állapotból ellenőrizve (2026-07-07). A kódrészletek illeszkedő vázlatok, nem szó szerinti diffek — a meglévő konvenciókhoz (zod, repository-absztrakció, audit-append minta) igazítandók implementáláskor.</p>
+
+</main>
+</div>
+</body>
+</html>

@@ -1,0 +1,727 @@
+<!doctype html>
+<html lang="hu">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Enterprise AI Agent Platform — Architektúra-dokumentum</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>
+  window.addEventListener('DOMContentLoaded', () => {
+    const dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    mermaid.initialize({ startOnLoad: true, theme: dark ? 'dark' : 'default', securityLevel: 'loose', flowchart: { htmlLabels: true } });
+  });
+</script>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1a1a1a; --muted: #5a6472; --border: #e2e6ec;
+    --card: #f7f9fc; --accent: #2b6cb0; --accent-soft: #ebf3fb;
+    --warn-bg: #fff8e6; --warn-border: #f0c650; --risk-bg: #fdecec; --risk-border: #e08b8b;
+    --ok-bg: #eaf7ee; --ok-border: #8bce9f; --code-bg: #f1f3f7; --th: #eef2f7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14171c; --fg: #e6e9ee; --muted: #9aa4b2; --border: #2a2f38;
+      --card: #1b1f26; --accent: #6bb0ee; --accent-soft: #1c2733;
+      --warn-bg: #2c2716; --warn-border: #7a6320; --risk-bg: #2e1c1c; --risk-border: #7a3a3a;
+      --ok-bg: #172a1e; --ok-border: #2f6a44; --code-bg: #1e232b; --th: #1e242c;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+  .wrap { display: grid; grid-template-columns: 288px 1fr; max-width: 1500px; margin: 0 auto; }
+  nav.toc { position: sticky; top: 0; align-self: start; height: 100vh; overflow-y: auto;
+    border-right: 1px solid var(--border); padding: 24px 18px; background: var(--card); font-size: 13.5px; }
+  nav.toc h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin: 0 0 12px; }
+  nav.toc ol { list-style: none; padding: 0; margin: 0; counter-reset: s; }
+  nav.toc li { counter-increment: s; margin: 2px 0; }
+  nav.toc a { color: var(--fg); text-decoration: none; display: block; padding: 4px 8px; border-radius: 6px; }
+  nav.toc a::before { content: counter(s) ". "; color: var(--muted); }
+  nav.toc a:hover { background: var(--accent-soft); color: var(--accent); }
+  main { padding: 40px 56px 120px; min-width: 0; overflow-x: hidden; }
+  header.doc { border-bottom: 2px solid var(--border); padding-bottom: 22px; margin-bottom: 8px; }
+  header.doc h1 { font-size: 30px; margin: 0 0 6px; letter-spacing: -.02em; }
+  header.doc .sub { color: var(--muted); font-size: 15px; }
+  header.doc .meta { margin-top: 14px; font-size: 13px; color: var(--muted); display: flex; flex-wrap: wrap; gap: 8px 18px; }
+  h2.sec { font-size: 23px; margin: 52px 0 14px; padding-top: 14px; border-top: 1px solid var(--border); letter-spacing: -.01em; }
+  h2.sec .n { color: var(--accent); font-variant-numeric: tabular-nums; }
+  h3 { font-size: 18px; margin: 30px 0 10px; }
+  h4 { font-size: 15px; margin: 20px 0 6px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  p { margin: 10px 0; }
+  code { background: var(--code-bg); padding: 1.5px 6px; border-radius: 5px; font-size: 13px;
+    font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
+  table { border-collapse: collapse; width: 100%; margin: 16px 0; font-size: 13.5px; display: block; overflow-x: auto; }
+  th, td { border: 1px solid var(--border); padding: 8px 11px; text-align: left; vertical-align: top; }
+  th { background: var(--th); font-weight: 600; }
+  tbody tr:nth-child(even) td { background: var(--card); }
+  .callout { border: 1px solid var(--border); border-left-width: 4px; border-radius: 8px; padding: 12px 16px; margin: 16px 0; background: var(--card); }
+  .callout.warn { background: var(--warn-bg); border-left-color: var(--warn-border); }
+  .callout.risk { background: var(--risk-bg); border-left-color: var(--risk-border); }
+  .callout.ok { background: var(--ok-bg); border-left-color: var(--ok-border); }
+  .callout .lbl { font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; display: block; margin-bottom: 4px; }
+  .mermaid { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 18px; margin: 18px 0; text-align: center; overflow-x: auto; }
+  ul, ol { padding-left: 22px; } li { margin: 4px 0; }
+  .pill { display: inline-block; font-size: 11px; padding: 1px 8px; border-radius: 20px; border: 1px solid var(--border); background: var(--accent-soft); color: var(--accent); margin-left: 6px; vertical-align: middle; }
+  .conf { font-size: 12px; font-weight: 600; padding: 1px 7px; border-radius: 4px; }
+  .conf.sure { background: var(--ok-bg); color: #2f6a44; border: 1px solid var(--ok-border); }
+  .conf.prob { background: var(--warn-bg); color: #8a6d1a; border: 1px solid var(--warn-border); }
+  .conf.unk  { background: var(--risk-bg); color: #9a3a3a; border: 1px solid var(--risk-border); }
+  @media (prefers-color-scheme: dark) { .conf.sure{color:#8bce9f} .conf.prob{color:#e0c46a} .conf.unk{color:#e08b8b} }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 1000px) { .wrap { grid-template-columns: 1fr; } nav.toc { position: static; height: auto; border-right: none; border-bottom: 1px solid var(--border); } main { padding: 28px 20px 80px; } .grid2 { grid-template-columns: 1fr; } }
+  .legend { font-size: 12.5px; color: var(--muted); margin: 6px 0 0; }
+  a.filelink { color: var(--accent); text-decoration: none; } a.filelink:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<nav class="toc">
+  <h2>Tartalom</h2>
+  <ol>
+    <li><a href="#s1">Executive summary</a></li>
+    <li><a href="#s2">Rendszeráttekintés</a></li>
+    <li><a href="#s3">Technológiai stack</a></li>
+    <li><a href="#s4">Repository-struktúra</a></li>
+    <li><a href="#s5">Modulok és felelősségek</a></li>
+    <li><a href="#s6">Modulok közötti kommunikáció</a></li>
+    <li><a href="#s7">Adatmodell és adatáramlás</a></li>
+    <li><a href="#s8">API-k és interfészek</a></li>
+    <li><a href="#s9">Auth, autorizáció, biztonság</a></li>
+    <li><a href="#s10">Konfiguráció és env</a></li>
+    <li><a href="#s11">Futtatás, build, deploy</a></li>
+    <li><a href="#s12">Tesztelési stratégia</a></li>
+    <li><a href="#s13">Fejlesztési navigáció</a></li>
+    <li><a href="#s14">Kódbázis-térkép AI agenteknek</a></li>
+    <li><a href="#s15">Design döntések és minták</a></li>
+    <li><a href="#s16">Kockázatok és tech-adósság</a></li>
+    <li><a href="#s17">Glossary</a></li>
+    <li><a href="#s18">Összefoglaló</a></li>
+  </ol>
+  <p class="legend" style="margin-top:18px">Bizonyossági jelölés:<br>
+  <span class="conf sure">biztos</span> kódból igazolt ·
+  <span class="conf prob">valószínű</span> következtetett ·
+  <span class="conf unk">nyitott</span> nem egyértelmű</p>
+</nav>
+
+<main>
+<header class="doc">
+  <h1>Enterprise AI Agent Platform</h1>
+  <div class="sub">Architektúra-dokumentum — governance-központú, több-tenantos AI-agent orkesztrációs platform</div>
+  <div class="meta">
+    <span><strong>Kódbázis:</strong> <code>enterprise-ai-agent-platform</code></span>
+    <span><strong>Fő alkalmazás:</strong> <code>app/</code> (Next.js App Router)</span>
+    <span><strong>Nyelv:</strong> TypeScript (strict)</span>
+    <span><strong>Generálva:</strong> 2026-07-07</span>
+    <span><strong>Módszer:</strong> kódbázis-elemzés (source, schema, routes, DI-gyökér, tesztek)</span>
+  </div>
+</header>
+
+<!-- ============================ 1 ============================ -->
+<h2 class="sec" id="s1"><span class="n">1.</span> Executive summary</h2>
+<p>
+Ez a rendszer egy <strong>vállalati AI-agent platform</strong>: célja, hogy szervezeti folyamatokat
+(pl. tudásbázis-kérdések megválaszolása, dokumentum-előállítás, connector-onboarding, monitoring)
+<strong>felügyelt, auditálható AI-agentekkel</strong> automatizáljon. A kulcsszó a <em>governance</em>:
+minden agent-akció egy központi engedélyező kapun (Tool Broker) megy át, minden művelet
+<strong>megváltoztathatatlan, hash-láncolt audit-naplóba</strong> kerül, és az érzékeny, „világba kiható”
+lépések (pl. e-mail küldés, éles változtatás) <strong>emberi jóváhagyáshoz</strong> vagy kötelező
+<strong>döntési kapukhoz</strong> vannak kötve.
+</p>
+<p>Egy nem technikai stakeholder számára a rendszer három dolgot ad:</p>
+<ul>
+  <li><strong>Control Plane</strong> — admin/operátor felület: agentek, folyamatok (playbookok), ticketek,
+  jogosultságok, connectorok, monitorok és az audit-napló kezelése.</li>
+  <li><strong>Agent-futtató réteg</strong> — az agentek elszigetelt „harness” környezetben futnak, és csak
+  a platform két átjáróján (modell-átjáró + eszköz-bróker) keresztül férnek a modellekhez és eszközökhöz.</li>
+  <li><strong>Sandbox</strong> — citált tudásbázis-válaszok és agent által generált HTML-riportok biztonságos
+  előnézete/exportja.</li>
+</ul>
+<p>
+Technológiai alap: <strong>Next.js 16 (App Router) + React 19 + TypeScript</strong>, <strong>PostgreSQL (Neon)</strong>
+Prisma ORM-mel, <strong>Clerk</strong> (opcionális) humán-auth-tal, és több LLM-szolgáltatóval (ChatGPT OAuth-híd,
+Google Gemini, OpenRouter) egy egységes <strong>Model Gateway</strong> mögött. A háttérfeldolgozás egy
+esemény­vezérelt <strong>Dispatcher</strong> workeren és <strong>Google Cloud Run</strong> harness-jobokon fut.
+</p>
+<div class="callout"><span class="lbl">Egy mondatban</span>
+Governance-first, több-tenantos, moduláris monolit, amely LLM-agentek munkáját brókereli, kapuzza és auditálja —
+a bizalom nem az agentben, hanem a körülötte lévő platform-kontrollokban van.</div>
+
+<!-- ============================ 2 ============================ -->
+<h2 class="sec" id="s2"><span class="n">2.</span> Rendszeráttekintés</h2>
+<p><strong>Alkalmazás típusa:</strong> <span class="conf sure">biztos</span> szerveroldali renderelésű
+<strong>moduláris monolit</strong> Next.js App Routerrel — egyetlen deploy-olható webalkalmazás, amelyben
+a UI (React Server/Client Components), a REST/agent API-k (route handlerek), a szerver-akciók és a teljes
+üzleti logika (<code>src/domain</code>) együtt él. Mellette <strong>különálló háttérprocesszek</strong> futnak:
+a Dispatcher worker és a konténerizált agent-harness.</p>
+
+<h3>Fő komponensek és szerepük</h3>
+<table>
+<thead><tr><th>Komponens</th><th>Szerep</th><th>Hol él</th></tr></thead>
+<tbody>
+<tr><td><strong>Control Plane UI</strong></td><td>Admin/operátor felület (agent, folyamat, ticket, IAM, connector, monitor, audit)</td><td><code>src/app/control-plane</code></td></tr>
+<tr><td><strong>Sandbox UI</strong></td><td>Wiki-agent válaszok, HTML-riport preview/export, verzió-proposalok</td><td><code>src/app/sandbox</code></td></tr>
+<tr><td><strong>REST / Agent API</strong></td><td>Agent- és harness-facing végpontok, webhookok, OpenAI-kompatibilis gateway</td><td><code>src/app/api</code></td></tr>
+<tr><td><strong>Domain réteg</strong></td><td>Minden üzleti szolgáltatás (~35 service), DI-gyökér a <code>services</code> objektum</td><td><code>src/domain</code></td></tr>
+<tr><td><strong>Repository réteg</strong></td><td>Postgres-hozzáférés interfészek mögött (Prisma)</td><td><code>src/repositories</code></td></tr>
+<tr><td><strong>Model Gateway</strong></td><td>Egységes LLM-hozzáférés, routing, budget, sensitivity, költség</td><td><code>src/domain/gateway</code></td></tr>
+<tr><td><strong>Tool Broker</strong></td><td>Központi eszköz-engedélyező és -végrehajtó (~40 tool), tenant-izoláció, audit</td><td><code>src/domain/tool-broker</code></td></tr>
+<tr><td><strong>Dispatcher worker</strong></td><td>Nem-LLM háttérprocessz: ticket→harness indítás, LISTEN/NOTIFY + cron</td><td><code>scripts/dispatcher-worker.ts</code></td></tr>
+<tr><td><strong>Agent harness</strong></td><td>Izolált agent-futtató (Goose CLI) Dockerben / Cloud Run Jobban, deny-by-default egress</td><td><code>Dockerfile.harness</code>, <code>harness/</code></td></tr>
+</tbody>
+</table>
+
+<h3>Magas szintű architektúra</h3>
+<div class="mermaid">
+flowchart TD
+  Human["Operátor / Admin<br/>(böngésző)"] --> UI["Control Plane &amp; Sandbox UI<br/>(Next.js RSC/CC)"]
+  UI --> Actions["Server Actions<br/>src/app/actions"]
+  Actions --> Domain["Domain services<br/>src/domain/index.ts"]
+  Agent["AI Agent (harness)"] -->|OpenAI-kompatibilis| GW["Model Gateway<br/>/api/v1/gateway"]
+  Agent -->|MCP stdio bridge / REST| TB["Tool Broker<br/>/api/v1/agent/tools"]
+  Domain --> Repos["Repositories (Prisma)"]
+  GW --> Domain
+  TB --> Domain
+  Repos --> DB[("PostgreSQL (Neon)")]
+  Disp["Dispatcher worker"] -->|LISTEN/NOTIFY| DB
+  Disp -->|launch| Agent
+  GW -->|LLM| Ext["ChatGPT OAuth / Gemini / OpenRouter"]
+  TB -->|connector| Ext2["Gmail, HTTP API-k, GitHub, web egress"]
+  Domain --> GCS[("GCS: workspace,<br/>sandbox artifacts")]
+  Clerk["Clerk (opcionális)"] -.auth.-> UI
+</div>
+
+<h3>Tipikus feldolgozási folyamat (folyamat-ticket)</h3>
+<ol>
+  <li>Operátor a Control Plane-en elindít egy <strong>Folyamatot</strong> (ProcessDefinition) vagy létrehoz egy ticketet
+  (server action → <code>ProcessService</code>/<code>TicketService</code>).</li>
+  <li>A folyamat lépéseihez <strong>ticketek</strong> jönnek létre, szerep→agent feloldással; a ticket <code>ready</code> lesz,
+  a repo <code>pg_notify('dispatch_ticket_ready')</code>-t küld.</li>
+  <li>A <strong>Dispatcher</strong> felveszi, dispatch-lockot szerez, ellenőrzi a budgetet, és elindítja a
+  <strong>harnesst</strong> (lokálisan a wiki/general runtime, vagy Cloud Run Job).</li>
+  <li>Az agent a <strong>Model Gateway</strong>-en át hív modellt, és a <strong>Tool Brokeren</strong> át használ eszközöket
+  (minden hívás engedélyezve + auditálva).</li>
+  <li>Az eredmény a ticket-workspace-be / <code>board_write</code>-on át kerül; a <strong>TicketStateMachine</strong>
+  kényszeríti a kapukat, és — kapu esetén — emberi jóváhagyásra (<code>awaiting_human</code>) állítja a ticketet,
+  vagy továbblépteti a folyamatot.</li>
+</ol>
+
+<!-- ============================ 3 ============================ -->
+<h2 class="sec" id="s3"><span class="n">3.</span> Technológiai stack</h2>
+<p>Forrás: <a class="filelink" href="app/package.json">app/package.json</a>, <code>apphosting.yaml</code>, <code>prisma/schema.prisma</code>. <span class="conf sure">biztos</span></p>
+<table>
+<thead><tr><th>Réteg</th><th>Technológia</th><th>Verzió</th><th>Mire használja a rendszer</th></tr></thead>
+<tbody>
+<tr><td>Nyelv</td><td>TypeScript</td><td>^5 (strict)</td><td>Teljes app + domain + scriptek + tesztek</td></tr>
+<tr><td>Framework</td><td>Next.js (App Router)</td><td>16.2.9</td><td>UI, route handlerek, server actions, middleware; Turbopack</td></tr>
+<tr><td>Frontend</td><td>React / React DOM</td><td>19.2.4</td><td>Server + Client Components a Control Plane / Sandbox UI-hoz</td></tr>
+<tr><td>Frontend</td><td>Tailwind CSS v4</td><td>^4</td><td>Styling (PostCSS pluginnel)</td></tr>
+<tr><td>Frontend</td><td>@xyflow/react (React Flow)</td><td>^12.11</td><td>Governed Flow Builder — Playbook Canvas vászon</td></tr>
+<tr><td>Frontend</td><td>react-markdown + remark-gfm</td><td>^10 / ^4</td><td>Agent-válaszok / KB tartalom renderelés</td></tr>
+<tr><td>Adatbázis</td><td>PostgreSQL (Neon)</td><td>—</td><td>Elsődleges tárolás; pooled + direct kapcsolat</td></tr>
+<tr><td>ORM</td><td>Prisma + @prisma/client</td><td>^6.19</td><td>Séma, migráció, típusos hozzáférés; <code>pg</code> a LISTEN/NOTIFY-hoz</td></tr>
+<tr><td>Auth</td><td>@clerk/nextjs</td><td>^7.5</td><td>Humán auth (opcionális); dev-fallback provider Clerk nélkül</td></tr>
+<tr><td>Auth</td><td>bcryptjs</td><td>^3.0</td><td>Agent API-kulcsok hash-elése (<code>keyHash</code>)</td></tr>
+<tr><td>LLM</td><td>@google/genai</td><td>^2.8</td><td>Gemini provider a Model Gatewayben</td></tr>
+<tr><td>LLM</td><td>ChatGPT OAuth bridge / OpenRouter</td><td>—</td><td>S2 mediált LLM (OAuth-híd) + kísérleti többmodell-elérés (env)</td></tr>
+<tr><td>Dok-generálás</td><td>exceljs, pptxgenjs, pdf-lib, pdf-parse, mammoth</td><td>—</td><td>xlsx/pptx/pdf/docx előállítás és olvasás a File Editor tool-okban</td></tr>
+<tr><td>Validáció</td><td>zod</td><td>^4.4</td><td>Server action + API bemenetek sémavalidációja</td></tr>
+<tr><td>Agent harness</td><td>Goose CLI (Docker)</td><td>—</td><td>Izolált agent-loop; <code>Dockerfile.harness</code> + recipe</td></tr>
+<tr><td>Deploy / infra</td><td>Firebase App Hosting, GCP Cloud Run, GCS</td><td>—</td><td>App hosting; Dispatcher service + harness job; artifact/workspace tár</td></tr>
+<tr><td>Build tooling</td><td>tsx, ESLint 9, Prisma generate</td><td>—</td><td>Scriptek/tesztek futtatása, lint, kliens-generálás</td></tr>
+<tr><td>Teszt</td><td>@playwright/test + tsx test scriptek</td><td>^1.61</td><td>E2E (Playwright) + ~48 domain-szintű assertion-script</td></tr>
+</tbody>
+</table>
+<div class="callout"><span class="lbl">Nincs a stackben</span>
+Kódból <strong>nem</strong> azonosítható: külön cache-réteg (Redis), dedikált message queue/event bus (a „queue” szerepét a Postgres <code>LISTEN/NOTIFY</code> + a <code>Ticket</code> tábla tölti be), és nincs beépített unit-test runner (Jest/Vitest) — a tesztek önálló tsx-scriptek assertionökkel.</div>
+
+<!-- ============================ 4 ============================ -->
+<h2 class="sec" id="s4"><span class="n">4.</span> Repository és könyvtárstruktúra</h2>
+<p>A repó gyökere főként specifikációkat (<code>*.md</code>, <code>*.html</code>) tartalmaz; a futó rendszer az <code>app/</code> alatt van. <span class="conf sure">biztos</span></p>
+<table>
+<thead><tr><th>Útvonal</th><th>Szerep</th><th>Megjegyzés</th></tr></thead>
+<tbody>
+<tr><td><code>app/</code></td><td>A tényleges Next.js alkalmazás</td><td>Minden futó kód itt; a gyökér <code>package.json</code> csak proxy-scriptek</td></tr>
+<tr><td><code>app/src/app/</code></td><td>App Router: oldalak, API route-ok, server actions</td><td><code>control-plane</code>, <code>sandbox</code>, <code>api</code>, <code>actions</code></td></tr>
+<tr><td><code>app/src/domain/</code></td><td><strong>Üzleti logika</strong> — ~35 modul/service</td><td>A rendszer szíve; belépő: <code>domain/index.ts</code> (DI-gyökér)</td></tr>
+<tr><td><code>app/src/repositories/</code></td><td>Perzisztencia — interfészek + Postgres impl.</td><td><code>interfaces/index.ts</code> a szerződés, <code>postgres/*</code> a Prisma-implementáció</td></tr>
+<tr><td><code>app/src/lib/</code></td><td>Megosztott utility-k, tiszta magok, validátorok</td><td>Pl. <code>crypto/hash-chain.ts</code>, <code>playbook-v2/</code>, <code>validators/</code>, <code>db.ts</code></td></tr>
+<tr><td><code>app/src/auth/</code></td><td>Auth-absztrakció (Clerk/dev), tenant-kontextus, agent API-kulcs</td><td><code>context.ts</code>, <code>agent-api-key.ts</code>, <code>tenant-context.ts</code></td></tr>
+<tr><td><code>app/src/components/</code></td><td>React komponensek témánként</td><td><code>agents</code>, <code>tickets</code>, <code>playbooks</code>, <code>iam</code>, <code>chat</code>, …</td></tr>
+<tr><td><code>app/src/harness/</code></td><td>Harness-oldali kód (egress-guard, Goose config, MCP bridge)</td><td>A konténerben futó belépési pont: <code>job-entrypoint.ts</code></td></tr>
+<tr><td><code>app/prisma/</code></td><td>Adatbázis-séma és seed</td><td><code>schema.prisma</code> (~2200 sor, ~60 modell), <code>seed.ts</code></td></tr>
+<tr><td><code>app/scripts/</code></td><td>~83 operatív + teszt script (tsx)</td><td>Dispatcher worker, db-migrációk/backfillek, ~48 <code>*.test.ts</code></td></tr>
+<tr><td><code>app/infra/gcp/</code></td><td>Cloud Run / Scheduler deploy scriptek + setup docs</td><td>Harness job, dispatcher service, dispatch-cycle scheduler</td></tr>
+<tr><td><code>app/e2e/</code></td><td>Playwright E2E tesztek</td><td><code>playwright.config.ts</code></td></tr>
+<tr><td><code>app/harness/recipes/</code></td><td>Goose recipe(k)</td><td><code>wiki-answer.yaml</code></td></tr>
+<tr><td><code>*.md</code> (gyökér)</td><td>Feature-specifikációk és koncepció</td><td>Nagyon részletes; a „forrás az igazságról” dokumentumok, de nem futó kód</td></tr>
+<tr><td><code>apphosting.yaml</code></td><td>Firebase App Hosting konfiguráció</td><td>Env/secret bekötés, runConfig; gyökérben és <code>app/</code>-ban is</td></tr>
+</tbody>
+</table>
+
+<!-- ============================ 5 ============================ -->
+<h2 class="sec" id="s5"><span class="n">5.</span> Modulok és felelősségi körök</h2>
+<p>A domain modulok DI-vel, a <a class="filelink" href="app/src/domain/index.ts">domain/index.ts</a> kompozíciós gyökérben kötődnek össze,
+és a <code>services</code> objektumon keresztül érhetők el. Az alábbiakban a legfontosabbak. <span class="conf sure">biztos</span></p>
+
+<h3>Tool Broker <span class="pill">központi, kritikus</span></h3>
+<p><strong>Szerep:</strong> Az egyetlen kapu, amelyen keresztül agentek eszközöket (~40 tool) használnak.
+Minden hívásnál: aktor→tenant feloldás, <strong>engedélyezés</strong> (AllowlistAuthorizer: capability-katalógus + connector-grant + tenant-boundary),
+speciális kapuk (pl. <code>gmail_send</code> emberi jóváhagyás, <code>board_write</code> ticket-tulajdon, <code>web_search</code> policy),
+majd végrehajtás és <strong>audit + ToolCall</strong> rögzítés.</p>
+<h4>Fő fájlok</h4>
+<ul><li><code>src/domain/tool-broker/tool-broker-service.ts</code> (~3700 sor: <code>ToolBrokerService</code> + <code>AllowlistAuthorizer</code>)</li>
+<li><code>src/lib/tool-capability-catalog.ts</code> — a tool→capability leképezés</li></ul>
+<h4>Kapcsolódó modulok</h4>
+<ul><li><strong>Be:</strong> agent runtimes (wiki/general/chat), agent tools REST route</li>
+<li><strong>Ki:</strong> Ticket, ConnectorGrant, FileEditor, SandboxApp, SandboxVersioning, WebSearch/WebFetch, KnowledgeBase, Audit</li></ul>
+<div class="callout warn"><span class="lbl">Figyelem</span>Ez a fájl <strong>~3700 soros „isten-objektum”</strong> — a legmagasabb módosítási kockázat. Tenant-izolációs rése korábban javítva lett (l. delegációs/agent-ág), a change-eket mindig teszttel (<code>test:tool-broker-*</code>) fedd le.</div>
+
+<h3>Model Gateway <span class="pill">kritikus</span></h3>
+<p><strong>Szerep:</strong> Egységes, OpenAI-kompatibilis LLM-hozzáférés. Routing (melyik modell), budget-plafon
+(per-ticket guardrail + napi cap), sensitivity-router (mit szabad külső modellnek), költségbecslés (<code>model.pricing</code>),
+és minden hívás <code>ModelCall</code> + audit rögzítése. Providerek: ChatGPT OAuth-híd, Gemini, stub, OpenRouter (env).</p>
+<h4>Fő fájlok</h4>
+<ul><li><code>src/domain/gateway/model-gateway.ts</code>, <code>routing-engine.ts</code>, <code>budget-engine.ts</code>, <code>sensitivity-router.ts</code>, <code>chatgpt-oauth-bridge.ts</code>, <code>gemini-provider.ts</code>, <code>oauth-token-store.ts</code></li></ul>
+
+<h3>Dispatcher <span class="pill">háttér</span></h3>
+<p><strong>Szerep:</strong> Nem-LLM worker, amely a <code>ready</code> ticketeket harness-futásra indítja. Esemény­vezérelt
+(<code>LISTEN/NOTIFY</code>) + 30 mp cron biztonsági háló; dispatch-lock, budget-cap, timeout-watchdog, launcher-választás
+(<code>local-wiki</code> / <code>docker-local</code> / <code>cloud-run-job</code>).</p>
+<h4>Fő fájlok</h4>
+<ul><li><code>src/domain/dispatcher/dispatcher-service.ts</code>, <code>cloud-run-job-launcher.ts</code>, <code>docker-local-harness-launcher.ts</code>, <code>run-dispatch-cycle.ts</code></li>
+<li><code>scripts/dispatcher-worker.ts</code> (belépési pont)</li></ul>
+
+<h3>Playbook / Process runtime <span class="pill">összetett</span></h3>
+<p><strong>Szerep:</strong> Háromszintű modell — <strong>Playbook</strong> (V2, verziózott spec) → <strong>Folyamat</strong>
+(ProcessDefinition: publikált verzióra PIN-elt, konfigurált definíció) → <strong>Futás</strong> (ProcessInstance +
+StepInstance + DelegationEdge). A <code>TicketStateMachine</code> a szerveroldali kapu-kényszerítő: a step-átmenetek,
+gate-ek, output-szerződés és RBAC-role itt dől el; agent-kimenet SOHA nem léphet át blokkoló emberi kaput.</p>
+<h4>Fő fájlok</h4>
+<ul><li><code>src/domain/playbook/</code>: <code>playbook-v2-service.ts</code>, <code>process-service.ts</code>, <code>process-definition-service.ts</code>, <code>ticket-state-machine.ts</code>, <code>playbook-compiler.ts</code>, <code>playbook-validator.ts</code>, <code>playbook-simulator.ts</code>, <code>playbook-diff.ts</code>, <code>playbook-pack.ts</code>, <code>playbook-author-agent.ts</code>, <code>suitability.ts</code></li>
+<li>Tiszta magok: <code>src/lib/playbook-v2/</code> (runtime, step-payload)</li></ul>
+
+<h3>Ticket <span class="pill">domain-mag</span></h3>
+<p><strong>Szerep:</strong> A munka atomi egysége. <code>TicketService</code> a nem-playbook ticketeknél; a playbook-ticketek a
+<code>TicketStateMachine</code>-en mennek. Állapotok: <code>backlog → ready → in_progress → awaiting_human/needs_info → done/rejected</code> (+ <code>approved</code>).</p>
+<h4>Fő fájlok</h4><ul><li><code>src/domain/ticket/ticket-service.ts</code>, <code>ticket-type-config.ts</code></li></ul>
+
+<h3>IAM / RBAC és Tenant <span class="pill">biztonság-kritikus</span></h3>
+<p><strong>Szerep:</strong> <code>IamService</code> — szerepek, jogosultságok (<code>RolePermission</code>), erőforrás-grantek
+(<code>ResourceGrant</code>), meghívók (invitation redeem), <strong>tenant-boundary access audit</strong>. <code>TenantService</code> —
+tenant-tagságok, platform-tagság (superadmin), aktív tenant váltása (cookie).</p>
+<h4>Fő fájlok</h4><ul><li><code>src/domain/iam/iam-service.ts</code>, <code>access-audit.ts</code>; <code>src/domain/tenant/tenant-service.ts</code>; <code>src/auth/context.ts</code>, <code>tenant-context.ts</code>; <code>src/lib/tenant-policy.ts</code>, <code>iam-policy.ts</code></li></ul>
+
+<h3>Audit <span class="pill">biztonság-kritikus</span></h3>
+<p><strong>Szerep:</strong> Megváltoztathatatlan, <strong>hash-láncolt</strong> napló (SHA-256, genesis-horgony), append-only DB-triggerrel
+védve; <code>AuditChainService.verifyChain</code> teljes vagy checkpoint-szegmens ellenőrzés.</p>
+<h4>Fő fájlok</h4><ul><li><code>src/domain/audit/audit-chain-service.ts</code>, <code>src/lib/crypto/hash-chain.ts</code>, <code>src/lib/audit/*</code></li></ul>
+<div class="callout warn"><span class="lbl">Nyitott pont</span>A <code>computeAuditHash</code> jelenleg a sor <em>vázát</em> fedi (seq, actor, action, target, createdAt). A <code>policyDecision</code>/payload-ref/metadata teljes lefedése egy <strong>v2</strong> formulában készült el, ami a projektjegyzetek szerint <em>nyitott PR-ben</em> van — a fő ágon még a v1 formula fut. <span class="conf prob">valószínű</span></div>
+
+<h3>Connector / Provisioning</h3>
+<p><strong>Szerep:</strong> Külső rendszerek integrációja. <code>Connector</code> + <code>ConnectorTemplate</code> (sablon-katalógus) +
+<code>ConnectorDraft</code> (provisioning-asszisztens által generált, majd validált draft) + <code>ConnectorGrant</code>
+(per-user delegált OAuth, pl. Gmail). Generikus <code>HttpApiClient</code> + titok-tár (<code>connector-secret-store</code>).</p>
+<h4>Fő fájlok</h4><ul><li><code>src/domain/connector/*</code>, <code>src/domain/connector-grant/*</code>, <code>src/domain/connector-template/*</code>, <code>src/domain/provisioning/*</code></li></ul>
+
+<h3>Knowledge Base (KB-v3, OKF)</h3>
+<p><strong>Szerep:</strong> Dokumentum-tudásbázis. <code>Document</code> → <code>KnowledgeArtifact</code> (OKF-struktúra, review-val) →
+<code>KnowledgeChunk</code> (Postgres full-text kereséssel). Citált válaszok; <strong>RAG tudatosan elhagyva</strong> (D-A).</p>
+<h4>Fő fájlok</h4><ul><li><code>src/domain/knowledge-base/knowledge-base-service.ts</code>, <code>src/lib/kb-*.ts</code></li></ul>
+
+<h3>Sandbox App &amp; Sandbox Versioning</h3>
+<p><strong>Szerep:</strong> Agent által generált HTML-appok biztonságos preview/export (CSP-sandbox izoláció), illetve
+kód-fa + adat-snapshot immutable verziózás, promóció és „graduation” (SandboxVersioning-Graduation).</p>
+<h4>Fő fájlok</h4><ul><li><code>src/domain/sandbox/*</code> (<code>sandbox-app-service.ts</code>, <code>html-validator.ts</code>, <code>preview-token.ts</code>), <code>src/domain/sandbox-versioning/*</code></li></ul>
+
+<h3>Monitor &amp; Scheduled Task</h3>
+<p><strong>Szerep:</strong> Proaktív felügyelet. <code>MonitorDefinition</code> + collectorok (deadline, board-backlog, connector-count) →
+<code>MonitorRun</code>/<code>MonitorSignal</code>; értesítés allowlistolt chat-webhookra vagy audit-only-ra esik vissza.
+<code>ScheduledTask</code> — ismétlődő agent-feladatok materializálása ticketté.</p>
+<h4>Fő fájlok</h4><ul><li><code>src/domain/monitor/*</code> (+ <code>collectors/</code>), <code>src/domain/scheduled-task/scheduled-task-service.ts</code></li></ul>
+
+<h3>Web Egress (Search / Fetch / Research)</h3>
+<p><strong>Szerep:</strong> Szabályozott web-hozzáférés. <code>WebSearchService</code> (connector-alapú provider + rate-limit + policy),
+<code>WebFetchService</code> (SSRF/DNS-rebinding-őr, allowlist, budget, hash-only audit), web-research delegáció agentek között.
+Alattuk az <code>egress-guard</code> deny-by-default.</p>
+<h4>Fő fájlok</h4><ul><li><code>src/domain/web-search/*</code>, <code>src/domain/web-fetch/*</code>, <code>src/domain/web-research/*</code>, <code>src/domain/net/egress-guard.ts</code></li></ul>
+
+<h3>Agent runtimes &amp; Training</h3>
+<p><strong>Szerep:</strong> Négy runtime — <code>WikiAgentRuntime</code> (citált KB-válasz), <code>GeneralTaskRuntime</code> (folyamat-/általános feladat),
+<code>AgentChatRuntime</code> (interaktív chat streammel), <code>BookkeeperAgentRuntime</code>. A <code>chat-tool-loop</code> a közös tool-hurok.
+<code>TrainingService</code> + <code>SelfEvolutionGuard</code> + <code>WriteGateService</code> a felügyelt „tanítás”/memória-írás.</p>
+<h4>Fő fájlok</h4><ul><li><code>src/domain/agent/*</code>, <code>src/domain/training/*</code>, <code>src/domain/writegate/write-gate-service.ts</code></li></ul>
+
+<!-- ============================ 6 ============================ -->
+<h2 class="sec" id="s6"><span class="n">6.</span> Modulok közötti kommunikáció</h2>
+<p>A kommunikáció alapmintái <span class="conf sure">biztos</span>:</p>
+<ul>
+  <li><strong>Direkt függvényhívás + konstruktor-injekció:</strong> a domain-szolgáltatások egymást a
+  <code>domain/index.ts</code>-ben kapott referenciákon hívják. A DI kézi (nincs DI-konténer).</li>
+  <li><strong>Repository-absztrakció:</strong> minden perzisztencia az <code>interfaces/index.ts</code> szerződésén megy;
+  a szolgáltatások sosem látnak közvetlen Prisma-t (kevés kivétellel, pl. hash-only audit count a broker/index closure-ökben).</li>
+  <li><strong>HTTP/REST:</strong> a harnessben futó agent a platformmal két REST-átjárón beszél (Gateway + Tool Broker), Bearer agent-API-kulccsal.</li>
+  <li><strong>MCP stdio bridge:</strong> a Goose harness egy <code>platform_broker</code> stdio MCP-hídon proxy-zik a Tool Broker REST felé.</li>
+  <li><strong>Postgres <code>LISTEN/NOTIFY</code>:</strong> ticket-készenlét jelzése a Dispatchernek (<code>dispatch_ticket_ready</code>).</li>
+  <li><strong>Adatbázison keresztüli indirekt kommunikáció:</strong> a <code>Ticket</code>/<code>ProcessInstance</code>/<code>DelegationEdge</code> táblák a munkafolyamat „üzenetsorai”.</li>
+  <li><strong>Lazy függvény-referencia a körkörös függőségekre:</strong> pl. <code>ProcessService</code> ↔ <code>DispatcherService</code>,
+  <code>PlaybookV2Service</code> ↔ <code>PlatformSettingsService</code> — closure-rel feloldva (l. index.ts kommentek).</li>
+  <li><strong>Callback-injektálás:</strong> <code>toolBrokerService.setDelegationProcessor(...)</code>,
+  <code>setPlaybookTransitioner(ticketStateMachine)</code> — a broker futásidőben kapja a delegáció/állapotgép-hookot.</li>
+</ul>
+<div class="mermaid">
+flowchart LR
+  subgraph API["API / Actions réteg"]
+    RH["REST route handlerek"]
+    SA["Server Actions"]
+  end
+  subgraph DOM["Domain services (DI: domain/index.ts)"]
+    TS["TicketService"]
+    TSM["TicketStateMachine"]
+    PS["ProcessService"]
+    TB["ToolBrokerService"]
+    GW["ModelGateway"]
+    AUD["Audit"]
+  end
+  RH --> TB
+  RH --> GW
+  SA --> TS
+  SA --> PS
+  PS --> TSM
+  TSM --> PS
+  TB -->|setPlaybookTransitioner| TSM
+  TB -->|setDelegationProcessor| RT["Agent runtimes"]
+  RT --> GW
+  RT --> TB
+  DOM --> REPO["Repositories (interfaces)"]
+  REPO --> DB[("PostgreSQL")]
+  TS --> AUD
+  TB --> AUD
+  GW --> AUD
+  TSM --> AUD
+  DISP["Dispatcher worker"] -->|LISTEN/NOTIFY| DB
+  DISP -->|launch harness| RT
+</div>
+
+<!-- ============================ 7 ============================ -->
+<h2 class="sec" id="s7"><span class="n">7.</span> Adatmodell és adatáramlás</h2>
+<p>Az adatmodell a <a class="filelink" href="app/prisma/schema.prisma">prisma/schema.prisma</a>-ban él: kb. <strong>60 modell</strong> és
+<strong>70+ enum</strong>. Szinte minden fő entitásnak van opcionális <code>tenantId</code> mezője (több-tenantosság).
+Az adat SSR-akciókban/API-ban keletkezik, zod-dal validálódik, a repository-kon át Postgresbe kerül, és az
+audit-lánc rögzíti a policy-döntéseket. <span class="conf sure">biztos</span></p>
+
+<h3>Fő entitás-csoportok</h3>
+<table>
+<thead><tr><th>Domain</th><th>Kulcs-entitások</th><th>Szerep</th></tr></thead>
+<tbody>
+<tr><td>Identitás &amp; tenancy</td><td>User, Tenant, TenantMembership, PlatformMembership, Invitation, RolePermission, ResourceGrant</td><td>Ki kicsoda, melyik tenantban, milyen joggal</td></tr>
+<tr><td>Agentek</td><td>Agent, AgentVersion, BehaviorProfile(+Version), RoleTemplate, AgentApiKey, Memory(+Version)</td><td>Agent-életciklus, verziózás, megosztott behavior-profilok, API-kulcs, tanított memória</td></tr>
+<tr><td>Munka</td><td>Ticket, TicketTransition, TicketComment(+Attachment), Conversation, Message</td><td>Feladat-egység, állapotátmenetek, ticket-szál, chat</td></tr>
+<tr><td>Playbook / folyamat</td><td>PlaybookV2(+VersionV2), ProcessDefinition, ProcessTrigger, ProcessInstance, ProcessStepInstance, DelegationEdge, StepTemplate(+Version), PlaybookAssignment</td><td>Háromszintű orkesztráció + step-legók + szerep→agent kötés</td></tr>
+<tr><td>Connectorok</td><td>Connector, ConnectorTemplate, ConnectorDraft, ConnectorGrant, AgentConnector, Capability</td><td>Külső integráció, sablon, draft-onboarding, per-user grant, capability-gate</td></tr>
+<tr><td>Tudás</td><td>Document, KnowledgeArtifact, KnowledgeChunk, RetentionPolicy</td><td>KB-v3 OKF pipeline + FTS + retenció</td></tr>
+<tr><td>Governance</td><td>AuditLog, ModelCall, ToolCall, Eval(+Run), ModelRoutingPolicy, ModelBudget, WriteGateToken, PlatformSetting</td><td>Napló, modell-/tool-hívás-nyilvántartás, kiértékelés, budget, platform-config</td></tr>
+<tr><td>Sandbox</td><td>SandboxApp(+Version), SandboxProject, SandboxCommit, SandboxPromotion, SandboxDataSnapshot, SandboxExport</td><td>HTML-appok + kód/adat verziózás, promóció, export</td></tr>
+<tr><td>Automatizálás</td><td>ScheduledTask, MonitorDefinition, MonitorRun, MonitorSignal</td><td>Ütemezett feladatok, proaktív monitorok</td></tr>
+</tbody>
+</table>
+
+<h3>Playbook → Folyamat → Futás kapcsolat</h3>
+<div class="mermaid">
+erDiagram
+  PlaybookV2 ||--o{ PlaybookVersionV2 : "verziók"
+  PlaybookVersionV2 ||--o{ ProcessDefinition : "PIN-elt verzió"
+  ProcessDefinition ||--o{ ProcessTrigger : "triggerek"
+  ProcessDefinition ||--o{ ProcessInstance : "futások"
+  ProcessInstance ||--o{ ProcessStepInstance : "lépések"
+  ProcessInstance ||--o{ DelegationEdge : "delegációk"
+  ProcessStepInstance ||--o| Ticket : "ticket"
+  Ticket ||--o{ TicketTransition : "átmenetek"
+  Ticket ||--o{ ToolCall : "eszközhívások"
+  Ticket ||--o{ ModelCall : "modellhívások"
+</div>
+
+<h3>Adatáramlás — egy agent-futás</h3>
+<div class="mermaid">
+flowchart TD
+  A["Ticket ready (payload validálva)"] --> B["pg_notify dispatch_ticket_ready"]
+  B --> C["Dispatcher: lock + budget check"]
+  C --> D["Harness launch (agent runtime)"]
+  D --> E["ModelGateway.chat → ModelCall + audit"]
+  D --> F["ToolBroker.invoke → authorize"]
+  F -->|allowed| G["executeTool → ToolCall + audit(allowed)"]
+  F -->|denied| H["ToolCall + audit(denied)"]
+  G --> I["board_write / workspace file"]
+  I --> J["TicketStateMachine: gate + output contract"]
+  J -->|kapu: emberi| K["awaiting_human"]
+  J -->|kész| L["ProcessService.advance → következő lépés"]
+</div>
+
+<!-- ============================ 8 ============================ -->
+<h2 class="sec" id="s8"><span class="n">8.</span> API-k és külső interfészek</h2>
+<p>Belső interfész-típusok: <strong>REST route handlerek</strong> (<code>src/app/api</code>), <strong>Server Actions</strong>
+(<code>src/app/actions</code>, RSC/UI-felé), <strong>webhook</strong> (Clerk), <strong>OpenAI-kompatibilis gateway</strong>,
+és <strong>agent-facing REST</strong>. <span class="conf sure">biztos</span></p>
+
+<h4>REST végpontok (route.ts alapján)</h4>
+<table>
+<thead><tr><th>Method</th><th>Path</th><th>Modul</th><th>Funkció</th><th>Auth</th></tr></thead>
+<tbody>
+<tr><td>POST</td><td><code>/api/v1/gateway/v1/chat/completions</code></td><td>Model Gateway</td><td>OpenAI-kompatibilis LLM-hívás (agent/harness)</td><td>Agent API-kulcs (<code>tool:invoke</code> scope)</td></tr>
+<tr><td>POST</td><td><code>/api/v1/agent/tools</code></td><td>Tool Broker</td><td>Eszközhívás engedélyezéssel</td><td>Agent API-kulcs</td></tr>
+<tr><td>GET/…</td><td><code>/api/v1/agent/tickets</code>, <code>/api/v1/agent/tickets/[id]</code></td><td>Ticket</td><td>Agent ticket-lekérés/frissítés</td><td>Agent API-kulcs</td></tr>
+<tr><td>GET</td><td><code>/api/v1/agents/suitable</code></td><td>Playbook</td><td>Alkalmas agentek szerepre</td><td>Session</td></tr>
+<tr><td>POST</td><td><code>/api/v1/harness/tickets/[id]/complete</code>, <code>/process</code></td><td>Dispatcher/Harness</td><td>Harness callback (lock-feloldás, feldolgozás)</td><td>Harness callback token</td></tr>
+<tr><td>POST</td><td><code>/api/v1/internal/dispatch-cycle</code></td><td>Dispatcher</td><td>Cloud Scheduler által hívott dispatch-ciklus</td><td>Control token</td></tr>
+<tr><td>CRUD</td><td><code>/api/v1/process-definitions</code> (+ <code>[id]</code>, <code>/activate</code>, <code>/archive</code>, <code>/triggers</code>, <code>/runs</code>)</td><td>ProcessDefinition</td><td>Folyamat-definíció életciklus</td><td>Session (tenant-role)</td></tr>
+<tr><td>CRUD</td><td><code>/api/v1/tickets/[id]/workspace/files</code>, <code>/api/v1/conversations/[id]/workspace/files</code></td><td>File Editor</td><td>Workspace-fájl műveletek</td><td>Session / agent</td></tr>
+<tr><td>POST</td><td><code>/api/v1/agent-chat/stream</code></td><td>AgentChatRuntime</td><td>Streamelt agent-chat</td><td>Session</td></tr>
+<tr><td>—</td><td><code>/api/connectors/oauth/callback</code></td><td>Connector Grant</td><td>OAuth callback (per-user delegált grant)</td><td>OAuth state</td></tr>
+<tr><td>—</td><td><code>/api/sandbox-apps/preview</code>, <code>/api/sandbox-apps/[appId]/export</code></td><td>Sandbox</td><td>HTML-app preview/export (CSP-sandbox)</td><td>Preview token / session</td></tr>
+<tr><td>POST</td><td><code>/api/webhooks/clerk</code></td><td>Auth</td><td>Clerk user-sync webhook</td><td>Clerk signing secret</td></tr>
+</tbody>
+</table>
+<p class="legend">A publikus (auth-mentes middleware-ben) útvonalak: <code>/sign-in</code>, <code>/sign-up</code>, <code>/api/v1/agent*</code>, <code>/api/v1/gateway*</code>, <code>/api/v1/harness*</code>, <code>/api/webhooks*</code> — ezeknek saját (agent-kulcs / token / signing-secret) auth-juk van, nem a Clerk session.</p>
+
+<h4>Server Actions</h4>
+<p><code>src/app/actions/</code>: <code>process.ts</code>, <code>playbook.ts</code>, <code>tenant.ts</code>, <code>platform.ts</code>,
+<code>monitor.ts</code>, <code>provisioning.ts</code>, <code>sandbox-versioning.ts</code>, <code>step-template.ts</code>,
+<code>connector-grants.ts</code>, <code>web-search.ts</code> — mind <code>'use server'</code>, tenant-role ellenőrzéssel és zod-validációval.</p>
+
+<h4>Külső interfészek (kimenő)</h4>
+<ul>
+  <li><strong>LLM:</strong> ChatGPT OAuth provider, Google Gemini, OpenRouter (env-alapú).</li>
+  <li><strong>Connector:</strong> Gmail API (delegált OAuth), generikus HTTP API-k, GitHub (repo PR tool), web-egress (search/fetch).</li>
+  <li><strong>GCP:</strong> Cloud Run Jobs (harness), Cloud Run service (dispatcher), GCS (workspace/sandbox artifact), Cloud Scheduler.</li>
+</ul>
+
+<h4>CLI / background</h4>
+<p><code>npm run dispatcher:worker</code> (worker), <code>harness:*</code> (harness smoke/deploy), <code>db:*</code> (migráció/seed/backfill),
+<code>report:measurement</code>, ~48 <code>test:*</code>.</p>
+
+<!-- ============================ 9 ============================ -->
+<h2 class="sec" id="s9"><span class="n">9.</span> Authentikáció, autorizáció és biztonsági modell</h2>
+<h3>Auth-rétegek</h3>
+<ul>
+  <li><strong>Humán auth:</strong> Clerk (<code>clerkMiddleware</code> a <code>proxy.ts</code>/<code>middleware.ts</code>-ben). Clerk hiányában
+  <code>DevAuthProvider</code> (dev-fallback, alap szerep <code>operator</code>) — de ha sem Clerk, sem dev-auth nincs engedve,
+  a middleware <strong>503</strong>-at ad (fail-closed a request szintjén). <span class="conf sure">biztos</span></li>
+  <li><strong>Agent auth:</strong> Bearer <strong>API-kulcs</strong>, bcrypt-hash-elve tárolva (<code>AgentApiKey.keyHash</code>);
+  <code>authenticateAgentRequest</code> + scope-ellenőrzés (<code>requireAgentScope</code>, pl. <code>tool:invoke</code>).</li>
+  <li><strong>Harness callback:</strong> megosztott token (<code>HARNESS_CALLBACK_TOKEN</code>).</li>
+  <li><strong>Webhook:</strong> Clerk signing secret; OAuth callback state.</li>
+</ul>
+<h3>Autorizáció</h3>
+<ul>
+  <li><strong>Tenant-boundary:</strong> aktív tenant a session-cookie-ból (<code>active_tenant_id</code>); superadmin „assume tenant” auditált. Minden erőforrás <code>tenantId</code>-hoz kötött.</li>
+  <li><strong>RBAC:</strong> <code>RolePermission</code> + <code>hasMinimumRole</code>/<code>requireTenantRole</code> a server actionökben.</li>
+  <li><strong>Capability-gate:</strong> az agent-eszközök deny-by-default a <code>Capability</code> táblából; a Tool Broker <code>AllowlistAuthorizer</code>-e dönt.</li>
+  <li><strong>Kötelező kapuk:</strong> a <code>TicketStateMachine</code> szerveroldalon kényszeríti — agent-kimenet nem léphet át blokkoló emberi kaput.</li>
+</ul>
+<h3>Biztonság-kritikus pontok</h3>
+<table>
+<thead><tr><th>Terület</th><th>Kontroll</th><th>Hol</th></tr></thead>
+<tbody>
+<tr><td>Eszköz-engedélyezés</td><td>Central broker + capability + connector-grant + tenant-boundary</td><td><code>tool-broker-service.ts</code></td></tr>
+<tr><td>E-mail küldés</td><td><code>gmail_send</code> emberi jóváhagyás-köteles</td><td><code>checkGmailSendApproval</code></td></tr>
+<tr><td>Audit-integritás</td><td>SHA-256 hash-lánc + append-only DB-trigger</td><td><code>hash-chain.ts</code>, audit-trigger script</td></tr>
+<tr><td>Web-egress</td><td>Deny-by-default, SSRF + DNS-rebinding-őr, allowlist, budget, hash-only audit</td><td><code>net/egress-guard.ts</code>, <code>web-fetch-service.ts</code></td></tr>
+<tr><td>Tanított memória-írás</td><td>HMAC-aláírt write-gate token</td><td><code>write-gate-service.ts</code>, <code>hash-chain.ts</code></td></tr>
+<tr><td>Agent-HTML izoláció</td><td>CSP <code>sandbox</code> a preview/export válaszban</td><td><code>sandbox/preview-token.ts</code>, sandbox-csp</td></tr>
+<tr><td>Harness egress</td><td>VPC deny-by-default + induló runtime probe</td><td><code>harness/egress-guard.ts</code></td></tr>
+</tbody>
+</table>
+<h3>Érzékeny adatok / secretek</h3>
+<p>Secretek névvel (érték nélkül) a §10-ben. Érzékeny adat: agent-API-kulcsok (hash), connector-titkok (secret-store/env-ref),
+OAuth tokenek (grant-vault), audit-payload referenciák (nyers tartalom/URL/query <strong>nem</strong> kerül auditba — csak hash + metaadat).</p>
+<div class="callout risk"><span class="lbl">Kockázat</span>Kódból látható <strong>fail-open dev-default titkok</strong>: pl. <code>WRITE_GATE_SECRET ?? 'dev-write-gate-secret-change-in-prod'</code> a <code>hash-chain.ts</code>-ben. A projektjegyzetek szerint egy <em>fail-closed</em> (prod alatt beégetett default tiltása) javítás nyitott PR-ben van. Éles környezetben ezeket kötelező env-ből beállítani. <span class="conf prob">valószínű</span></div>
+
+<!-- ============================ 10 ============================ -->
+<h2 class="sec" id="s10"><span class="n">10.</span> Konfiguráció és környezeti változók</h2>
+<p>Forrás: <code>app/.env.example</code>, <code>apphosting.yaml</code>, <code>infra/gcp/*.env.example</code>. Csak a kódból/példákból azonosított kulcsok. <span class="conf sure">biztos</span></p>
+<table>
+<thead><tr><th>Név</th><th>Hol</th><th>Szerep</th><th>Köt./opc.</th></tr></thead>
+<tbody>
+<tr><td><code>DATABASE_URL</code> / <code>DIRECT_URL</code></td><td>Next app / Prisma</td><td>Neon pooled / direct kapcsolat (migráció+seed a direct)</td><td>Kötelező</td></tr>
+<tr><td><code>DATABASE_URL_TEST</code> / <code>DIRECT_URL_TEST</code></td><td>Teszt DB-mód</td><td>Neon branch a teszt-adatbázishoz (<code>/control-plane/system</code> váltás)</td><td>Opcionális</td></tr>
+<tr><td><code>NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY</code>, <code>CLERK_SECRET_KEY</code>, <code>CLERK_WEBHOOK_SIGNING_SECRET</code></td><td>Auth</td><td>Clerk humán-auth és user-sync webhook</td><td>Opcionális (dev-auth fallback)</td></tr>
+<tr><td><code>DEV_AUTH_ROLE</code>, <code>DEV_AUTH_EMAIL</code>, <code>DEV_AUTH_USER_ID</code>, <code>DEV_AUTH_NAME</code></td><td>Dev auth</td><td>Clerk nélküli fejlesztői identitás (pl. <code>approver</code> jóváhagyáshoz)</td><td>Opcionális</td></tr>
+<tr><td><code>CHATGPT_OAUTH_PROVIDER_URL</code> / <code>_KEY</code></td><td>Model Gateway</td><td>S2 mediált LLM (vagy <code>stub</code>)</td><td>Opcionális</td></tr>
+<tr><td><code>GEMINI_API_KEY</code>, <code>OPENROUTER_API_KEY</code>, <code>OPENROUTER_BASE_URL</code></td><td>Model Gateway</td><td>Gemini provider / kísérleti többmodell-elérés</td><td>Opcionális</td></tr>
+<tr><td><code>GATEWAY_MAX_CALLS_PER_TICKET</code></td><td>Model Gateway</td><td>Per-ticket modellhívás-plafon (alap 30)</td><td>Opcionális</td></tr>
+<tr><td><code>WRITE_GATE_SECRET</code></td><td>Write gate</td><td>HMAC-titok a tanítás-token aláíráshoz</td><td>Prod: kötelező</td></tr>
+<tr><td><code>HARNESS_LAUNCHER_MODE</code></td><td>Dispatcher</td><td><code>local-wiki</code> / <code>docker-local</code> / <code>cloud-run-job</code></td><td>Opcionális (alap local-wiki)</td></tr>
+<tr><td><code>HARNESS_MODE</code>, <code>HARNESS_RECIPE_PATH</code>, <code>HARNESS_MAX_TURNS</code>, <code>HARNESS_COMMAND_JSON</code></td><td>Harness</td><td>Goose recipe/loop-konfiguráció</td><td>Opcionális</td></tr>
+<tr><td><code>HARNESS_CALLBACK_URL</code> / <code>_TOKEN</code>, <code>HARNESS_AGENT_API_KEY</code>, <code>HARNESS_EGRESS_ENFORCE</code>, <code>HARNESS_DISPATCH_TIMEOUT_MS</code></td><td>Harness↔platform</td><td>Callback, agent-kulcs, egress-kényszerítés, watchdog</td><td>Opc./prod</td></tr>
+<tr><td><code>HARNESS_CLOUD_RUN_PROJECT_ID</code> / <code>_LOCATION</code> / <code>_JOB_NAME</code> / <code>_BEARER_TOKEN</code></td><td>Cloud Run Job</td><td>Harness job indítás GCP-n</td><td>Cloud mód</td></tr>
+<tr><td><code>MODEL_GATEWAY_URL</code>, <code>PLATFORM_API_URL</code>, <code>TOOL_BROKER_MCP_URL</code></td><td>Harness bridge</td><td>Gateway + platform REST + MCP bridge cél</td><td>Cloud/goose mód</td></tr>
+<tr><td><code>DISPATCHER_POLL_INTERVAL_MS</code>, <code>DISPATCHER_BATCH_LIMIT</code>, <code>DISPATCHER_RUN_FOR_MS</code>, <code>DISPATCHER_CONTROL_TOKEN</code></td><td>Dispatcher worker</td><td>Cron-időzítés, batch, futásidő-limit, admin-vezérlés</td><td>Opcionális</td></tr>
+<tr><td><code>DISPATCHER_ADMIN_PROJECT_ID</code> / <code>_REGION</code> / <code>_SERVICE_NAME</code>, <code>CLOUD_RUN_ADMIN_BEARER_TOKEN</code></td><td>Dispatcher admin</td><td>Cloud Run service-admin (skálázás UI-ból)</td><td>Cloud mód</td></tr>
+<tr><td><code>WORKSPACE_BUCKET</code>, <code>SANDBOX_APP_BUCKET</code>, <code>SANDBOX_CODE_BUCKET</code>, <code>SANDBOX_DATA_BUCKET</code></td><td>GCS tárak</td><td>File-workspace + sandbox artifact/kód/adat bucketek</td><td>Prod</td></tr>
+<tr><td><code>PROVISIONING_EGRESS_ALLOWLIST</code>, <code>PROVISIONING_BANK_PRESET</code>, <code>PROVIDER_CRM_API_KEY</code></td><td>Provisioning</td><td>Egress-allowlist, banki preset, sandbox-token</td><td>Opcionális</td></tr>
+<tr><td><code>WEB_SEARCH_*_API_URL</code> / <code>_API_KEY</code>, <code>WEB_FETCH_MAX_PER_*</code></td><td>Web-egress</td><td>Search-provider + fetch-budget</td><td>Opcionális (stub fallback)</td></tr>
+</tbody>
+</table>
+
+<!-- ============================ 11 ============================ -->
+<h2 class="sec" id="s11"><span class="n">11.</span> Futtatás, build és deployment</h2>
+<h4>Lokális futtatás</h4>
+<pre><code>cd app
+cp .env.example .env.local          # DATABASE_URL + DIRECT_URL (Neon) beállítása
+npm install
+npm run db:push                     # séma; vagy db:migrate
+npm run db:seed                     # demo-adat
+npm run dev                         # http://localhost:3000/control-plane
+npm run dispatcher:worker           # háttér-dispatcher (LISTEN/NOTIFY + cron)</code></pre>
+<h4>Build</h4>
+<p><code>npm run build</code> = <code>prisma generate &amp;&amp; next build</code> (a gyökér <code>build</code> előbb <code>npm ci --prefix app</code>). <code>postinstall</code> is <code>prisma generate</code>-t hív.</p>
+<h4>Tesztek</h4>
+<p><code>npm run test:acceptance</code> (E2E acceptance), <code>npm run test:e2e</code> (Playwright), és a domain-tesztek: <code>npm run test:tool-broker-tenant</code>, <code>test:playbook-v2</code>, <code>test:iam-policy</code>, … (~48 script). Sok teszt <code>DATABASE_URL=postgresql://stub…</code> stub-bal fut (nincs valódi DB).</p>
+<h4>Deployment</h4>
+<ul>
+  <li><strong>App:</strong> Firebase App Hosting — <code>npm run deploy</code> (<code>firebase deploy --only apphosting</code>); config: <code>apphosting.yaml</code> (secretek Secret Managerből, <code>runConfig</code>: cpu 1 / mem 512Mi / max 10 instance).</li>
+  <li><strong>Dispatcher:</strong> Cloud Run service (min-instances ≥ 1, health-szerver a <code>$PORT</code>-on) — <code>infra/gcp/deploy-dispatcher-service.sh</code>.</li>
+  <li><strong>Harness:</strong> Cloud Run Job — <code>deploy-harness-job.sh</code>; VPC connector + <code>--vpc-egress=all-traffic</code> a deny-by-default egresshez.</li>
+  <li><strong>Dispatch-cycle:</strong> Cloud Scheduler → <code>/api/v1/internal/dispatch-cycle</code>.</li>
+</ul>
+<div class="callout warn"><span class="lbl">Nem található a repóban</span>Nincs <code>.github/workflows</code> vagy más deklaratív <strong>CI/CD pipeline</strong> — a build/teszt/deploy jelenleg <strong>manuális npm-scriptekkel</strong> történik. <span class="conf sure">biztos</span></div>
+
+<!-- ============================ 12 ============================ -->
+<h2 class="sec" id="s12"><span class="n">12.</span> Tesztelési stratégia</h2>
+<ul>
+  <li><strong>Domain-szintű assertion-scriptek (~48 db):</strong> <code>app/scripts/*.test.ts</code>, tsx-szel futtatva, saját <code>test:*</code> npm-scripttel. Nincs Jest/Vitest runner — az assertion-ök kézzel írt <code>assert</code>-ekkel/dobásokkal. Sok stub <code>DATABASE_URL</code>-lel fut (nincs DB-igény).</li>
+  <li><strong>E2E (Playwright):</strong> <code>app/e2e/</code>, <code>playwright.config.ts</code>; pl. File Editor E2E dev-auth + stub storage-dzsel (<code>FILE_EDITOR_STUB=true</code>).</li>
+  <li><strong>Acceptance:</strong> <code>scripts/acceptance-e2e.ts</code> — teljes láncot húz (gateway + broker + stub provider).</li>
+  <li><strong>Live smoke-ok:</strong> <code>s2:live-smoke</code>, <code>s7:live-smoke</code>, <code>harness:*-smoke</code>, <code>smoke:kb-nav</code>.</li>
+</ul>
+<h4>Lefedettség (kódból)</h4>
+<p>Jól fedett: Tool Broker tenant-izoláció, Playbook V2 runtime/process/lifecycle, IAM policy + tenant-boundary, web-egress (guard/fetch/search/research), KB (gate/retrieval/extraction/validator/eval), connector (template/http/per-user), dispatcher retry-loop, sandbox versioning, audit-log.</p>
+<h4>Mock/stub minták</h4>
+<ul><li>Stub Postgres URL a DB-mentes tesztekhez; <code>StubSearchProviderAdapter</code>, ChatGPT OAuth <code>stub</code> provider, <code>SANDBOX_*_STUB</code>, <code>FILE_EDITOR_STUB</code>, <code>HARNESS_STUB_BROKER_FALLBACK</code>.</li></ul>
+<div class="callout warn"><span class="lbl">Alultesztelt terület (valószínűsítve)</span>A React UI-komponensek (<code>src/components</code>, <code>src/app/control-plane</code>) explicit komponens-tesztje nem látszik; a lefedettség domain-/API-központú. <span class="conf prob">valószínű</span></div>
+
+<!-- ============================ 13 ============================ -->
+<h2 class="sec" id="s13"><span class="n">13.</span> Tipikus fejlesztési feladatokhoz navigációs útmutató</h2>
+<table>
+<thead><tr><th>Feladat</th><th>Elsődleges hely</th><th>Kapcsolódó helyek</th><th>Mire figyelj</th></tr></thead>
+<tbody>
+<tr><td>Új REST endpoint</td><td><code>src/app/api/.../route.ts</code></td><td><code>src/lib/validators/*</code>, <code>src/domain/*</code>, <code>middleware.ts</code> (public route?)</td><td>Zod-validáció; agent-vs-session auth; új public route a middleware matcherbe</td></tr>
+<tr><td>Új server action</td><td><code>src/app/actions/*.ts</code></td><td><code>requireTenantRole</code>, <code>src/domain/*</code>, <code>result.ts</code></td><td><code>'use server'</code>; tenant-role gate; <code>ok/fail</code> visszatérés</td></tr>
+<tr><td>Új domain logika</td><td><code>src/domain/&lt;modul&gt;/</code></td><td><code>domain/index.ts</code> (DI-bekötés), <code>repositories/interfaces</code></td><td>Konstruktor-injekció; ne hívj közvetlen Prisma-t; körkörös függőség → lazy closure</td></tr>
+<tr><td>Új agent-eszköz (tool)</td><td><code>tool-broker-service.ts</code> (<code>executeTool</code> + args)</td><td><code>tool-capability-catalog.ts</code>, seed capability-grant, <code>test:tool-broker-*</code></td><td>Capability-gate deny-by-default; audit + ToolCall rögzítés; tenant-izoláció</td></tr>
+<tr><td>DB-modell / migráció</td><td><code>prisma/schema.prisma</code></td><td><code>repositories/postgres/*</code>, <code>repositories/interfaces</code>, <code>prisma/seed.ts</code></td><td><code>db:push</code>/<code>db:migrate</code>; <code>tenantId</code> mező + index; backfill-script ha kell</td></tr>
+<tr><td>Validáció</td><td><code>src/lib/validators/actions.ts</code>, <code>gateway.ts</code></td><td>Hívó route/action</td><td>Zod-séma; a validátor a tényleges kapu, nem a modell-kimenet</td></tr>
+<tr><td>Auth / jogosultság</td><td><code>src/auth/*</code>, <code>src/lib/iam-policy.ts</code>, <code>tenant-policy.ts</code></td><td><code>IamService</code>, <code>TenantService</code>, <code>middleware.ts</code></td><td>Tenant-boundary; RBAC role-minimum; superadmin assume auditált</td></tr>
+<tr><td>Playbook-kapu / állapotgép</td><td><code>ticket-state-machine.ts</code></td><td><code>lib/playbook-v2/runtime.ts</code>, <code>process-service.ts</code>, <code>playbook-compiler.ts</code></td><td>Kötelező sorrend (§7.2); blokkoló emberi kapu invariáns</td></tr>
+<tr><td>Külső integráció</td><td><code>src/domain/connector*/</code>, <code>provisioning/</code></td><td><code>http-api-client.ts</code>, <code>connector-secret-store.ts</code>, egress-guard</td><td>Deny-by-default egress; titok-alias feloldás; grant-alapú auth</td></tr>
+<tr><td>Tesztek</td><td><code>scripts/*.test.ts</code> + <code>package.json</code> <code>test:*</code></td><td><code>e2e/</code>, stub env-ek</td><td>Stub DATABASE_URL a DB-mentes tesztekhez; ne hagyj idle Neon-kapcsolatot</td></tr>
+<tr><td>Konfiguráció</td><td><code>.env.local</code> / <code>apphosting.yaml</code></td><td><code>infra/gcp/*.env.example</code>, <code>domain/index.ts</code> (env-olvasás)</td><td>Prod: Secret Manager; a legtöbb env a DI-gyökérben olvasódik</td></tr>
+</tbody>
+</table>
+
+<!-- ============================ 14 ============================ -->
+<h2 class="sec" id="s14"><span class="n">14.</span> AI agenteknek szóló kódbázis-térkép</h2>
+<h4>Olvasási sorrend (belépési pontok)</h4>
+<ol>
+  <li><a class="filelink" href="app/README.md">app/README.md</a> + <code>app/AGENTS.md</code> — futtatás, harness, repo-szabályok. <strong>Figyelem:</strong> az AGENTS.md szerint ez a Next.js verzió <em>eltér</em> a betanított tudásodtól — olvasd a <code>node_modules/next/dist/docs/</code>-ot kód előtt.</li>
+  <li><a class="filelink" href="app/src/domain/index.ts">src/domain/index.ts</a> — a teljes DI-gráf; ebből látod, mi mitől függ.</li>
+  <li><a class="filelink" href="app/prisma/schema.prisma">prisma/schema.prisma</a> — az adatmodell, a rendszer „szótára”.</li>
+  <li><code>src/repositories/interfaces/index.ts</code> — a perzisztencia-szerződések.</li>
+  <li>A releváns domain-modul + a hozzá tartozó gyökér-<code>*.md</code> feature-spec (ezek nagyon részletesek és §-hivatkozásokkal vannak a kódban is).</li>
+</ol>
+<h4>Kritikus modulok (nagy hatókör)</h4>
+<ul><li><code>tool-broker-service.ts</code>, <code>model-gateway.ts</code>, <code>ticket-state-machine.ts</code>, <code>dispatcher-service.ts</code>, <code>iam-service.ts</code>, <code>audit-chain-service.ts</code>.</li></ul>
+<h4>Implicit szabályok (a kódból/jegyzetekből)</h4>
+<ul>
+  <li>Csak a <code>main</code> ágon dolgozz — a projektben <strong>nincs feature-branch munkafolyamat</strong>.</li>
+  <li>Sub-agentet csak tényleg komplex feladatra használj; sub-agent után mindig <code>git diff</code> (a jegyzetek szerint egy „research-only” agent egyszer eltörte az audit hash-láncot).</li>
+  <li>A <strong>propose-not-apply</strong> minta kötelező az agent-szerzőknél (playbook/provisioning): a modell kimenete CSAK adat, a determinisztikus validátor a kapu.</li>
+  <li>Audit: nyers URL/query/tartalom SOHA nem megy a naplóba — csak hash + metaadat.</li>
+  <li>Kerüld a sok ad-hoc <code>npx tsx -e</code> scriptet: idle Neon-kapcsolat-szivárgást okoz (a teszt „lefagyottnak” tűnik).</li>
+</ul>
+<h4>Stabil vs. gyakran változó</h4>
+<div class="grid2">
+<div class="callout ok"><span class="lbl">Stabil interfészek</span>
+<code>repositories/interfaces</code>, <code>hash-chain.ts</code>, auth-context szerződés, OpenAI-kompatibilis gateway-kontraktus, tool-broker <code>invoke()</code> szignatúra.</div>
+<div class="callout warn"><span class="lbl">Gyakran mozgó / kockázatos</span>
+<code>tool-broker-service.ts</code> (isten-objektum), <code>domain/index.ts</code> (kényes DI-sorrend, lazy closure-ök), Playbook/Process runtime, seed.</div>
+</div>
+<h4>Hasznos keresőkifejezések</h4>
+<ul><li><code>input.tool === '</code> (tool-elágazások), <code>audit.append(</code> (naplózási pontok), <code>requireTenantRole</code>/<code>requireAgentScope</code> (auth-gate), <code>evaluateTicketTransition</code> (kapu-mag), <code>policyDecision</code> (engedélyezési döntések), <code>tenantId</code> (izoláció).</li></ul>
+<div class="callout risk"><span class="lbl">Anti-pattern / veszélyes módosítás</span>
+Ne kerüld meg a Tool Brokert közvetlen connector-hívással; ne írj közvetlen Prisma-t domain-service-ben; ne módosítsd az audit hash-formulát a <code>verifyChain</code> verzió-kezelése nélkül; ne léptess ticketet a <code>TicketStateMachine</code> megkerülésével (megsértheti a kötelező emberi kaput).</div>
+
+<!-- ============================ 15 ============================ -->
+<h2 class="sec" id="s15"><span class="n">15.</span> Fontos design döntések és architektúrális minták</h2>
+<table>
+<thead><tr><th>Minta</th><th>Hol látható</th><th>Előny / kockázat</th></tr></thead>
+<tbody>
+<tr><td><strong>Moduláris monolit</strong></td><td>Egy Next.js app + különálló worker/harness process</td><td>+ Egyszerű deploy, közös típusok. − A Tool Broker/DI-gyökér koncentrálja a kockázatot</td></tr>
+<tr><td><strong>Layered + Repository</strong></td><td><code>app → actions/api → domain → repositories → DB</code></td><td>+ Tesztelhetőség (stub repo). − Sok boilerplate az interfészeknél</td></tr>
+<tr><td><strong>Kézi Dependency Injection</strong></td><td><code>domain/index.ts</code> kompozíciós gyökér</td><td>+ Explicit, átlátható gráf. − Kényes init-sorrend, lazy closure-ök a körökre</td></tr>
+<tr><td><strong>Gateway / Broker (adapter)</strong></td><td>Model Gateway (LLM), Tool Broker (eszköz), connector-adapterek</td><td>+ Egységes policy/audit/költség egy helyen. − Központi hot-spot</td></tr>
+<tr><td><strong>Esemény-vezérelt háttér</strong></td><td>Postgres <code>LISTEN/NOTIFY</code> + cron safety net</td><td>+ Nincs külön queue-infra. − A Postgres a queue is; skálázási plafon</td></tr>
+<tr><td><strong>Állapotgép + policy-mag</strong></td><td><code>TicketStateMachine</code> + tiszta <code>evaluateTicketTransition</code></td><td>+ Kötelező kapuk determinisztikus kényszerítése. − A folyamat-modell összetett</td></tr>
+<tr><td><strong>Append-only audit hash-lánc</strong></td><td><code>AuditChainService</code>, DB-trigger</td><td>+ Manipuláció-detektálás. − Formula-verziózás és teljes lefedés gondos kezelést kíván</td></tr>
+<tr><td><strong>Propose-not-apply agentek</strong></td><td>Playbook-author, Provisioning-assistant</td><td>+ Az LLM nem publikál; a validátor a kapu. − Két lépcső, több kód</td></tr>
+<tr><td><strong>Multi-tenant shared kernel</strong></td><td><code>tenantId</code> mindenütt + tenant-policy</td><td>+ Egy séma, sok tenant. − Minden lekérdezésnél tenant-boundary fegyelem kell</td></tr>
+<tr><td><strong>Sandbox-izoláció</strong></td><td>Harness VPC-egress deny + CSP-sandbox HTML</td><td>+ Defense-in-depth. − Konfig-függő (env/VPC helyes beállítása)</td></tr>
+</tbody>
+</table>
+
+<!-- ============================ 16 ============================ -->
+<h2 class="sec" id="s16"><span class="n">16.</span> Kockázatok, technikai adósságok, nyitott kérdések</h2>
+<table>
+<thead><tr><th>Probléma</th><th>Hol</th><th>Miért kockázat</th><th>Javasolt irány</th></tr></thead>
+<tbody>
+<tr><td><strong>Isten-objektum</strong> a Tool Brokerben (~3700 sor)</td><td><code>tool-broker-service.ts</code></td><td>Magas kognitív teher, regresszió-veszély, nehéz review; itt fut minden agent-akció</td><td>Tool-onkénti handler-ekre bontás, közös audit/authz keret megtartásával</td></tr>
+<tr><td><strong>Kényes DI init-sorrend</strong> + lazy closure-ök</td><td><code>domain/index.ts</code></td><td>Körkörös függőségek closure-rel feloldva; rossz sorrend TDZ/undefined hibát adhat</td><td>Explicit factory/provider réteg vagy könnyű DI-konténer megfontolása</td></tr>
+<tr><td><strong>Audit hash lefedettség v1</strong> a fő ágon</td><td><code>hash-chain.ts</code>, <code>audit-chain-service.ts</code></td><td>A vázon kívüli mezők (policyDecision, metadata) manipulációja nem detektált a v1-ben</td><td>A nyitott v2-lefedő PR bemergelése verzió-érzékeny <code>verifyChain</code>-nel</td></tr>
+<tr><td><strong>Fail-open dev-default titkok</strong></td><td><code>WRITE_GATE_SECRET</code> és társai</td><td>Ha prod-ban nincs env, dev-defaultra esik → hamisítható token/aláírás</td><td>Fail-closed prod alatt (a nyitott „crypto secret” PR iránya)</td></tr>
+<tr><td><strong>Nincs CI/CD</strong></td><td>repó egésze</td><td>Manuális build/teszt/deploy → emberi hiba, nincs kapuzott merge</td><td>GitHub Actions: lint + tsc + <code>test:*</code> mátrix + deploy-gate</td></tr>
+<tr><td><strong>Postgres mint queue</strong></td><td>Dispatcher / <code>LISTEN/NOTIFY</code></td><td>Skálázási plafon, nincs natív retry/DLQ-szemantika</td><td>Terhelésnél dedikált queue (Pub/Sub) mérlegelése; jelenleg tudatos MVP-döntés</td></tr>
+<tr><td><strong>Neon connection-szivárgás</strong> ad-hoc scriptekből</td><td><code>scripts/*</code>, tesztfuttatás</td><td>Idle pool kimerülés → „lefagyó” tesztek (nem kód-hiba)</td><td>Kapcsolat-lezárás fegyelem; <code>pg_terminate_backend</code> tisztításhoz</td></tr>
+<tr><td><strong>Nagy uncommitted felület</strong> (jegyzetek szerint)</td><td>working tree</td><td>Több kész feature nincs commitolva → elveszés/összeakadás veszélye</td><td>Inkrementális commit + a <code>main</code>-only workflow tartása</td></tr>
+<tr><td><strong>UI-tesztlefedettség</strong> hiánya</td><td><code>src/components</code>, control-plane</td><td>Regressziók a felületen nincsenek automatikusan kapuzva</td><td>Playwright-lefedettség kiterjesztése a fő flow-kra</td></tr>
+</tbody>
+</table>
+<p class="legend">TODO/FIXME jelölések explicit keresése nem történt teljeskörűen; a fenti pontok kódból/DI-ből/jegyzetekből azonosítottak. <span class="conf prob">valószínű</span></p>
+
+<!-- ============================ 17 ============================ -->
+<h2 class="sec" id="s17"><span class="n">17.</span> Rövid glossary</h2>
+<table>
+<thead><tr><th>Fogalom</th><th>Jelentés</th></tr></thead>
+<tbody>
+<tr><td><strong>Control Plane</strong></td><td>Az admin/operátor felület: agentek, folyamatok, ticketek, IAM, connectorok, audit kezelése</td></tr>
+<tr><td><strong>Tool Broker</strong></td><td>Központi eszköz-engedélyező és -végrehajtó; minden agent-akció rajta megy át, auditálva</td></tr>
+<tr><td><strong>Model Gateway</strong></td><td>Egységes, OpenAI-kompatibilis LLM-hozzáférés routinggal, budgettel, sensitivityvel, költséggel</td></tr>
+<tr><td><strong>Harness</strong></td><td>Az izolált agent-futtató környezet (Goose CLI Dockerben/Cloud Run Jobban), deny-by-default egresszel</td></tr>
+<tr><td><strong>Dispatcher</strong></td><td>Nem-LLM háttér-worker, amely ready ticketeket harness-futásra indít (LISTEN/NOTIFY + cron)</td></tr>
+<tr><td><strong>Ticket</strong></td><td>A munka atomi egysége; állapotgéppel és audittal kezelt</td></tr>
+<tr><td><strong>Playbook (V2)</strong></td><td>Verziózott, publikálható folyamat-spec (a „recept”)</td></tr>
+<tr><td><strong>Folyamat (ProcessDefinition)</strong></td><td>Egy publikált Playbook-verzióra PIN-elt, konfigurált, nevesített definíció</td></tr>
+<tr><td><strong>Futás (ProcessInstance)</strong></td><td>Egy Folyamat egy konkrét végrehajtása lépésekkel és delegációkkal</td></tr>
+<tr><td><strong>Gate / kapu</strong></td><td>Kötelező (gyakran emberi jóváhagyású) átmeneti pont; a state machine kényszeríti</td></tr>
+<tr><td><strong>Capability</strong></td><td>Agent→eszköz engedély (deny-by-default) a <code>Capability</code> táblában</td></tr>
+<tr><td><strong>ConnectorGrant</strong></td><td>Per-user delegált hozzáférés külső rendszerhez (pl. Gmail OAuth)</td></tr>
+<tr><td><strong>OKF (KB-v3)</strong></td><td>Az LLM-generált, review-zott dokumentum-tudásstruktúra; citált válaszok alapja (RAG nélkül)</td></tr>
+<tr><td><strong>Write gate</strong></td><td>HMAC-aláírt token a felügyelt tanítás/memória-íráshoz</td></tr>
+<tr><td><strong>Sandbox versioning / graduation</strong></td><td>Kód-fa + adat-snapshot immutable verziózás, promócióval és „érettségi” lépcsővel</td></tr>
+<tr><td><strong>Egress-guard</strong></td><td>Deny-by-default kimenő-hálózati őr (SSRF, DNS-rebinding védelem)</td></tr>
+<tr><td><strong>Superadmin / assume tenant</strong></td><td>Platform-szintű szerep, amely idegen tenantba léphet be — auditált módon</td></tr>
+</tbody>
+</table>
+
+<!-- ============================ 18 ============================ -->
+<h2 class="sec" id="s18"><span class="n">18.</span> Összefoglaló</h2>
+<ul>
+  <li><strong>Fő szerkezet:</strong> egyetlen Next.js moduláris monolit (UI + API + domain + repositories) Postgresre, mellette Dispatcher worker és konténerizált agent-harness. A domain-gráf a <code>domain/index.ts</code> kézi DI-gyökérben áll össze.</li>
+  <li><strong>Legfontosabb modulok:</strong> <em>Tool Broker</em> (eszköz-engedélyezés), <em>Model Gateway</em> (LLM), <em>TicketStateMachine + Process/Playbook runtime</em> (kapuzott orkesztráció), <em>IAM/Tenant</em> (izoláció), <em>Audit hash-lánc</em> (integritás).</li>
+  <li><strong>Módosításkor figyelj:</strong> tenant-boundary mindenütt; deny-by-default capability/egress; a kötelező emberi kapuk megkerülhetetlensége; audit rögzítés minden policy-döntésnél; a DI init-sorrend és a Tool Broker mérete.</li>
+  <li><strong>Hol kezdj:</strong> új fejlesztő/AI agent → <code>app/README.md</code> + <code>AGENTS.md</code> → <code>domain/index.ts</code> → <code>prisma/schema.prisma</code> → az érintett domain-modul és a hozzá tartozó gyökér feature-spec (<code>*.md</code>). A tesztet a megfelelő <code>scripts/*.test.ts</code> + <code>test:*</code> scripttel futtasd, lehetőleg stub DATABASE_URL-lel.</li>
+</ul>
+<div class="callout"><span class="lbl">Bizonyosság</span>A dokumentum döntő része kódból közvetlenül igazolt (<span class="conf sure">biztos</span>). A hash-lánc v1/v2 státusz, a fail-open titkok javításának állapota és a „nagy uncommitted felület” a projektjegyzetekre és a working tree-re támaszkodik (<span class="conf prob">valószínű</span>) — ezeket a bemergelt PR-ek / friss <code>git log</code> pontosíthatja.</div>
+
+</main>
+</div>
+</body>
+</html>
