@@ -1,0 +1,139 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+# Egy PR-hoz elég a legfrissebb futás; a korábbiakat megszakítjuk.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  security-events: write   # CodeQL SARIF feltöltéshez
+
+jobs:
+  verify:
+    name: Lint · tsc · prisma · stub-tesztek
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    env:
+      # WP-1 fail-closed: NODE_ENV=test alatt a titkok dev-defaultra eshetnek (nem prod-throw),
+      # így a modul-szintű secret-resolver nem blokkolja a boot-ot / a teszteket.
+      NODE_ENV: test
+      # A séma pooler + direct URL-t is használ (Neon-minta); prisma validate mindkettőt kéri.
+      DATABASE_URL: postgresql://stub:stub@127.0.0.1:5432/stub
+      DIRECT_URL: postgresql://stub:stub@127.0.0.1:5432/stub
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      # A postinstall (prisma generate) az npm ci alatt lefut; a NODE_ENV=test
+      # nem szűri ki a devDependencies-t, mert az npm csak a --production flagre figyel.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Prisma generate
+        run: npx prisma generate
+
+      - name: Prisma validate
+        run: npx prisma validate
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: Type-check (tsc --noEmit)
+        run: npx tsc --noEmit
+
+      - name: Stub-DB domain tests
+        run: |
+          npm run test:secret-config
+          npm run test:audit-log
+          npm run test:sandbox-csp
+          npm run test:tool-broker-tenant
+          npm run test:playbook-v2-process
+          npm run test:iam-policy
+
+  migrations:
+    name: Prisma migrate deploy (ephemeral Postgres)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: ci
+          POSTGRES_PASSWORD: ci
+          POSTGRES_DB: ci
+        ports:
+          - 5432:5432
+        # Amíg a DB nem fogad kapcsolatot, a job várjon.
+        options: >-
+          --health-cmd "pg_isready -U ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      NODE_ENV: test
+      # Ephemeral CI-DB — nincs pooler, a direct URL ugyanaz.
+      DATABASE_URL: postgresql://ci:ci@127.0.0.1:5432/ci
+      DIRECT_URL: postgresql://ci:ci@127.0.0.1:5432/ci
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # A teljes verziózott migrációs lánc (baseline + trigger + FTS-index) hibátlanul
+      # alkalmazható egy üres Postgresre → nincs drift, nincs kézi db push függés.
+      - name: Prisma migrate deploy
+        run: npx prisma migrate deploy
+
+      # A DB sémája megegyezik a migrációk által leírttal (nincs pending / nincs eltérés).
+      - name: Prisma migrate status
+        run: npx prisma migrate status
+
+  security-scan:
+    name: Titok-szkennelés + CodeQL
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # gitleaks a teljes history-t szkennelje
+
+      - name: Gitleaks (secret scan)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: CodeQL init
+        uses: github/codeql-action/init@v3
+        with:
+          languages: typescript
+
+      - name: CodeQL analyze
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: /language:typescript

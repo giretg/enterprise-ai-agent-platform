@@ -1,0 +1,36 @@
+version: 2
+updates:
+  # Alkalmazás-függőségek (a valódi manifest az app/ alatt van).
+  - package-ecosystem: npm
+    directory: /app
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 10
+    groups:
+      # A patch/minor frissítéseket egy PR-be vonjuk össze a zaj csökkentésére.
+      minor-and-patch:
+        update-types:
+          - minor
+          - patch
+    labels:
+      - dependencies
+
+  # Gyökér wrapper-manifest (thin: build/deploy scriptek).
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    labels:
+      - dependencies
+
+  # A CI action-ök verziózása is fusson be a Dependabotba.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    labels:
+      - ci

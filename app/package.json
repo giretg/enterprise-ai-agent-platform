@@ -9,6 +9,8 @@
     "lint": "eslint",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
+    "db:migrate:deploy": "prisma migrate deploy",
+    "db:migrate:status": "prisma migrate status",
     "db:push": "prisma db push",
     "db:push:test": "tsx scripts/db-with-test-env.ts push",
     "db:seed:test": "tsx scripts/db-with-test-env.ts seed",
@@ -90,6 +92,8 @@
     "test:sandbox-app": "SANDBOX_APP_STUB=true tsx scripts/sandbox-app-registry.test.ts",
     "test:sandbox-versioning": "SANDBOX_VERSIONING_STUB=true DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/sandbox-versioning.test.ts",
     "test:audit-log": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/audit-log.test.ts",
+    "test:secret-config": "tsx scripts/secret-config.test.ts",
+    "test:sandbox-csp": "tsx scripts/sandbox-csp.test.ts",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "postinstall": "prisma generate"

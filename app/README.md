@@ -43,6 +43,40 @@ Nyisd meg: http://localhost:3000/control-plane
 
 A repó gyökeréből ugyanez: `npm run dev`, `npm run build`, stb.
 
+### Séma-migrációk (Prisma Migrate) — WP-5
+
+A séma verziózott migrációkkal megy, **nem** ad-hoc `db push`-sal. A migrációtörténet
+a `prisma/migrations/` alatt él, review-zható és környezetek közt reprodukálható:
+
+- `0000_init` — a teljes séma baseline-ja (a `schema.prisma`-ból generálva).
+- `0001_audit_append_only_trigger` — az `audit_log` append-only trigger (nyers SQL, nem
+  ábrázolható Prisma-sémában).
+- `0002_kb_chunk_fts_index` — a `knowledge_chunks` tsvector GIN full-text index.
+
+**Munkafolyamat:**
+
+| Helyzet | Parancs |
+|---|---|
+| Fejlesztői sémaváltás | `npm run db:migrate` (`prisma migrate dev` — új migrációt generál) |
+| Éles / staging deploy | `npm run db:migrate:deploy` (`prisma migrate deploy`) |
+| Állapot ellenőrzése | `npm run db:migrate:status` |
+
+> **Szabály:** sémaváltás = **új migráció**, nem `db push`. A `db push` már csak gyors dev-iterációra.
+
+**Meglévő DB baseline-elése (egyszeri):** ahol a séma korábban `db push`-sal került fel
+(prod/dev/test), a baseline-t „már alkalmazott"-nak kell jelölni, hogy a `migrate deploy` ne
+futtassa újra a `0000_init`-et:
+
+```bash
+npx prisma migrate resolve --applied 0000_init
+# a 0001/0002 nyers SQL idempotens (IF NOT EXISTS / OR REPLACE); ha a trigger/index már
+# telepítve volt a régi apply-scripttel, jelöld szintén appliednek, vagy hagyd lefutni.
+```
+
+A CI (`.github/workflows/ci.yml` → `migrations` job) minden PR-en egy ephemeral Postgres
+ellen futtatja a `migrate deploy` + `migrate status`-t, így a migrációs lánc bizonyítottan
+tiszta DB-re alkalmazható és nincs drift a sémához képest.
+
 ## Architektúra
 
 - `src/domain/` — üzleti logika (TicketService, ModelGateway, WikiAgentRuntime, TrainingService)
