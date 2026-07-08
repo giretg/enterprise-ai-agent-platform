@@ -91,9 +91,9 @@ function appStatusTone(status: string): 'neutral' | 'success' | 'warning' | 'dan
 }
 
 /**
- * Az agent által (chatben vagy ticketen át) létrehozott App Registry appok —
- * ugyanaz az adat, mint a Control Plane → App Registry, csak agentre szűrve.
- * A "Megnyitás" mindig friss, rövid életű preview linket kér (nem a chatben
+ * Az agent által (chatben vagy ticketen át) létrehozott mini-appok — ugyanaz
+ * az adat, mint a Control Plane → Mini-appok, csak agentre szűrve. A
+ * "Megnyitás" mindig friss, rövid életű preview linket kér (nem a chatben
  * korábban kapott, azóta lejárt tokent használja újra).
  */
 function AgentSandboxApps({ apps }: { apps: AgentSandboxAppSummary[] }) {
@@ -117,12 +117,12 @@ function AgentSandboxApps({ apps }: { apps: AgentSandboxAppSummary[] }) {
   if (apps.length === 0) return null
 
   return (
-    <Card title={`Sandbox appok (${apps.length})`}>
+    <Card title={`Mini-appok (${apps.length})`}>
       <p className="mb-3 text-sm text-ink-soft">
-        Ezeket az önálló, böngészőben megnyitható riportokat/mini-appokat az agent hozta létre. Ugyanez a
+        Ezeket az önálló, böngészőben megnyitható mini-appokat az agent hozta létre. Ugyanez a
         lista bővebben a{' '}
         <Link href="/control-plane/apps" className="text-coral hover:underline">
-          App Registry-ben
+          Mini-appok között
         </Link>{' '}
         is elérhető.
       </p>

@@ -164,6 +164,95 @@ function decodeConversationPreview(content: string): string {
   return content
 }
 
+function extractJsonObject(text: string): Record<string, unknown> | null {
+  const trimmed = text.trim()
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i)
+  const candidate = fenced?.[1]?.trim() || trimmed
+  const start = candidate.indexOf('{')
+  const end = candidate.lastIndexOf('}')
+  if (start < 0 || end <= start) return null
+  try {
+    const parsed = JSON.parse(candidate.slice(start, end + 1)) as unknown
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : null
+  } catch {
+    return null
+  }
+}
+
+function formatConversationForTicketPrompt(
+  messages: Array<{
+    role: 'user' | 'agent' | 'system' | 'tool'
+    content: string | null
+    contentDeletedAt?: Date | null
+    createdAt: Date
+  }>,
+): string {
+  return messages
+    .map((message, index) => {
+      const roleLabel =
+        message.role === 'user'
+          ? 'Felhasználó'
+          : message.role === 'agent'
+            ? 'AI'
+            : message.role === 'tool'
+              ? 'Eszköz'
+              : 'Rendszer'
+      const rawContent =
+        message.contentDeletedAt || !message.content
+          ? '[törölt vagy üres üzenet]'
+          : message.role === 'user'
+            ? parseStoredChatMessage(message.content).text || '[üres user üzenet]'
+            : message.content
+      return `${index + 1}. ${roleLabel} (${message.createdAt.toISOString()}): ${rawContent}`
+    })
+    .join('\n')
+}
+
+function buildTicketGenerationPrompt(input: {
+  transcript: string
+  agents: Array<{ id: string; name: string; role?: string | null }>
+  users: Array<{ id: string; name: string | null; role?: string | null; jobDescription?: string | null }>
+}): string {
+  const agentList =
+    input.agents.length > 0
+      ? input.agents.map((agent) => `- ${agent.id} | ${agent.name} | role=${agent.role ?? 'n/a'}`).join('\n')
+      : '- nincs elérhető agent'
+  const userList =
+    input.users.length > 0
+      ? input.users
+          .map(
+            (user) =>
+              `- ${user.id} | ${user.name ?? 'Névtelen'} | role=${user.role ?? 'n/a'} | job=${user.jobDescription ?? 'n/a'}`,
+          )
+          .join('\n')
+      : '- nincs elérhető humán munkatárs'
+
+  return [
+    'Feladat: elemezd a beszélgetést, és döntsd el, kell-e belőle ticketet nyitni.',
+    'Ha NEM egyértelmű, hogy pontosan mi a feladat vagy ki a felelős, NE találgass: tegyél fel 1 rövid tisztázó kérdést.',
+    'Ha egyértelmű, hozz létre EGY ticket-javaslatot.',
+    'A felelőst kizárólag a megadott agent/user listából választhatod, pontos assigneeId-val.',
+    'Humán feladatnál assigneeType="human", AI/agent feladatnál assigneeType="agent".',
+    'A `title` legyen rövid, a `description` pedig 2-6 mondatban foglalja össze a konkrét elvárt eredményt és releváns kontextust.',
+    'Válaszolj KIZÁRÓLAG JSON-nal, más szöveg nélkül.',
+    'A JSON egyik alakja:',
+    '{"status":"needs_clarification","question":"..."}',
+    'vagy:',
+    '{"status":"create_ticket","title":"...","description":"...","assigneeType":"human|agent","assigneeId":"uuid","rationale":"..."}',
+    '',
+    'Elérhető agentek:',
+    agentList,
+    '',
+    'Elérhető humán munkatársak:',
+    userList,
+    '',
+    'Beszélgetés:',
+    input.transcript,
+  ].join('\n')
+}
+
 export async function listTickets(input?: { filter?: unknown }) {
   try {
     await requireTenantRole('viewer')
@@ -2468,6 +2557,144 @@ export async function promoteToTicket(input: { conversationId: string; reason?: 
   }
 }
 
+export async function archiveConversation(input: { conversationId: string }) {
+  try {
+    const user = await requireTenantRole('operator')
+    const { conversationId } = conversationIdSchema.parse(input)
+    const archived = await services.conversations.archiveConversation({
+      conversationId,
+      actorId: user.user.id,
+      tenantId: user.activeTenantId,
+    })
+    return ok({ conversationId: archived.id, status: archived.status })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to archive conversation')
+  }
+}
+
+export async function promoteConversationWithAi(input: { conversationId: string }) {
+  try {
+    const user = await requireTenantRole('operator')
+    const { conversationId } = conversationIdSchema.parse(input)
+    const { conversation, messages } = await services.conversations.getConversation(conversationId, user.activeTenantId)
+    const agentDetails = await repositories.agents.findByIdWithDetails(conversation.agentId, user.activeTenantId)
+    if (!agentDetails) return fail('Agent not found')
+
+    const [agents, users] = await Promise.all([
+      repositories.agents.findMany({ tenantId: user.activeTenantId }),
+      prisma.user.findMany({
+        where: { tenantId: user.activeTenantId, status: 'active' },
+        select: { id: true, name: true, role: true, jobDescription: true },
+        orderBy: { name: 'asc' },
+      }),
+    ])
+
+    const prompt = buildTicketGenerationPrompt({
+      transcript: formatConversationForTicketPrompt(messages),
+      agents: agents
+        .filter((agent) => agent.status === 'active')
+        .map((agent) => ({ id: agent.id, name: agent.name, role: agent.role })),
+      users,
+    })
+    const modelConfig = agentDetails.agent.modelConfig as {
+      provider: string
+      model: string
+      temperature?: number
+      maxTokens?: number
+    }
+    const response = await services.gateway.call({
+      agentId: conversation.agentId,
+      agentVersion: agentDetails.agent.currentVersion,
+      tenantId: user.activeTenantId,
+      conversationId,
+      messages: [
+        {
+          role: 'system',
+          content: 'Tapasztalt projektkoordinátor vagy. Beszélgetésekből ticketet vagy tisztázó kérdést készítesz.',
+        },
+        { role: 'user', content: prompt },
+      ],
+      modelConfig: {
+        ...modelConfig,
+        temperature: 0.1,
+      },
+    })
+    const parsed = extractJsonObject(response.content)
+    if (!parsed || typeof parsed.status !== 'string') {
+      return fail('Az AI ticket-előkészítése nem adott értelmezhető választ.')
+    }
+
+    if (parsed.status === 'needs_clarification') {
+      const question =
+        typeof parsed.question === 'string' && parsed.question.trim()
+          ? parsed.question.trim()
+          : 'Mielőtt ticketet nyitok, pontosítsd kérlek a feladatot vagy a felelőst.'
+      const appended = await services.conversations.appendMessage({
+        conversationId,
+        tenantId: user.activeTenantId,
+        role: 'agent',
+        content: question,
+        actingUserId: user.user.id,
+        agentVersion: agentDetails.agent.currentVersion,
+        model: modelConfig.model,
+        actorType: 'agent',
+        actorId: conversation.agentId,
+      })
+      return ok({ outcome: 'needs_clarification', question, messageId: appended.id })
+    }
+
+    if (parsed.status !== 'create_ticket') {
+      return fail('Az AI ticket-előkészítése ismeretlen státuszt adott vissza.')
+    }
+
+    const title = typeof parsed.title === 'string' ? parsed.title.trim() : ''
+    const description = typeof parsed.description === 'string' ? parsed.description.trim() : ''
+    const assigneeType = parsed.assigneeType === 'agent' ? 'agent' : parsed.assigneeType === 'human' ? 'human' : null
+    const assigneeId = typeof parsed.assigneeId === 'string' ? parsed.assigneeId : ''
+    if (!title || !description || !assigneeType || !assigneeId) {
+      return fail('Az AI ticket-javaslata hiányos volt.')
+    }
+
+    const boardTicketResult = await createBoardTicket({
+      title,
+      description,
+      assigneeType,
+      assigneeId,
+    })
+    if (!boardTicketResult.success) return boardTicketResult
+
+    const ticket = boardTicketResult.data.ticket
+    const ticketLink = `/control-plane/tickets/${ticket.id}`
+    const responseText =
+      `Létrehoztam a ticketet: [${ticket.title}](${ticketLink}).` +
+      (typeof parsed.rationale === 'string' && parsed.rationale.trim()
+        ? ` Rövid indoklás: ${parsed.rationale.trim()}`
+        : '')
+    const appended = await services.conversations.appendMessage({
+      conversationId,
+      tenantId: user.activeTenantId,
+      role: 'agent',
+      content: responseText,
+      actingUserId: user.user.id,
+      agentVersion: agentDetails.agent.currentVersion,
+      model: modelConfig.model,
+      ticketRefId: ticket.id,
+      actorType: 'agent',
+      actorId: conversation.agentId,
+    })
+
+    return ok({
+      outcome: 'ticket_created',
+      ticketId: ticket.id,
+      ticket,
+      messageId: appended.id,
+      warning: 'warning' in boardTicketResult.data ? boardTicketResult.data.warning : undefined,
+    })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'AI promote failed')
+  }
+}
+
 export async function getConversation(input: { conversationId: string }) {
   try {
     const user = await requireTenantRole('viewer')
@@ -2628,10 +2855,16 @@ export async function loadAgentChatMessages(input: { conversationId: string; age
   }
 }
 
-export async function listAgentChatSessions(input: { agentId: string; status?: 'active' | 'archived' | 'all' }) {
+export async function listAgentChatSessions(input: {
+  agentId: string
+  status?: 'active' | 'archived' | 'all'
+  limit?: number
+  offset?: number
+}) {
   try {
     const user = await requireTenantRole('viewer')
-    const { agentId, status = 'active' } = listAgentChatSessionsSchema.parse(input)
+    const { agentId, status = 'active', limit = 10, offset = 0 } = listAgentChatSessionsSchema.parse(input)
+    const take = Math.min(limit, 50)
     const rows = await prisma.conversation.findMany({
       where: {
         agentId,
@@ -2640,7 +2873,8 @@ export async function listAgentChatSessions(input: { agentId: string; status?: '
         ...(status === 'all' ? {} : { status }),
       },
       orderBy: { lastMessageAt: 'desc' },
-      take: 50,
+      skip: offset,
+      take: take + 1,
       include: {
         messages: {
           where: { role: 'user', contentDeletedAt: null },
@@ -2650,7 +2884,9 @@ export async function listAgentChatSessions(input: { agentId: string; status?: '
         },
       },
     })
-    const sessions = rows.map(({ messages, ...conversation }) => {
+    const hasMore = rows.length > take
+    const pageRows = hasMore ? rows.slice(0, take) : rows
+    const sessions = pageRows.map(({ messages, ...conversation }) => {
       const raw = decodeInlineConversationContent(messages[0]?.contentRef)
       const preview = raw ? decodeConversationPreview(raw).slice(0, 120) : null
       return {
@@ -2662,7 +2898,11 @@ export async function listAgentChatSessions(input: { agentId: string; status?: '
         status: conversation.status,
       }
     })
-    return ok({ sessions })
+    return ok({
+      sessions,
+      hasMore,
+      nextOffset: offset + sessions.length,
+    })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list chat sessions')
   }
@@ -3671,6 +3911,8 @@ const SANDBOX_APP_TOOLS = [
   'sandbox_app.update_artifact',
   'sandbox_app.preview',
   'sandbox_app.export',
+  'sandbox_app.list',
+  'sandbox_app.get',
 ] as const
 
 const SANDBOX_VERSION_TOOLS = [

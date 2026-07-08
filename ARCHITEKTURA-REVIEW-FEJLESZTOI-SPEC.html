@@ -87,9 +87,9 @@
     <li><a href="#wp3"><span class="wpnum">WP-3</span> Sandbox CSP <span class="sev high">MAG</span> <span class="sev" style="background:var(--ok-border)">✓ KÉSZ</span></a></li>
     <li><a href="#wp4"><span class="wpnum">WP-4</span> CI pipeline <span class="sev high">MAG</span> <span class="sev" style="background:var(--ok-border)">✓ KÉSZ</span></a></li>
     <li><a href="#wp5"><span class="wpnum">WP-5</span> Prisma migrate <span class="sev high">MAG</span> <span class="sev" style="background:var(--ok-border)">✓ KÉSZ</span></a></li>
-    <li><a href="#wp6"><span class="wpnum">WP-6</span> Observability <span class="sev high">MAG</span></a></li>
-    <li><a href="#wp7"><span class="wpnum">WP-7</span> Health &amp; error UI <span class="sev med">KÖZ</span></a></li>
-    <li><a href="#wp8"><span class="wpnum">WP-8</span> Broker refaktor <span class="sev med">KÖZ</span></a></li>
+    <li><a href="#wp6"><span class="wpnum">WP-6</span> Observability <span class="sev high">MAG</span> <span class="sev" style="background:var(--ok-border)">✓ KÉSZ</span></a></li>
+    <li><a href="#wp7"><span class="wpnum">WP-7</span> Health &amp; error UI <span class="sev med">KÖZ</span> <span class="sev" style="background:var(--ok-border)">✓ KÉSZ</span></a></li>
+    <li><a href="#wp8"><span class="wpnum">WP-8</span> Broker refaktor <span class="sev med">KÖZ</span> <span class="sev" style="background:var(--ok-border)">✓ KÉSZ</span></a></li>
     <li><a href="#dod"><span class="wpnum">§</span> Definition of Done</a></li>
   </ol>
   <p class="legend" style="margin-top:16px">Cél-ág: <code>main</code> · minden WP külön commit(ok) CI-kapu mögött.</p>
@@ -420,8 +420,24 @@ npx prisma migrate resolve --applied 0000_init   # meglévő prod/dev DB-n</code
 
 <!-- ============ WP-6 ============ -->
 <div class="wp" id="wp6">
-<h3><span class="tag">WP-6</span> Observability — log, metrika, error-tracking <span class="sev high">MAGAS</span></h3>
+<h3><span class="tag">WP-6</span> Observability — log, metrika, error-tracking <span class="sev high">MAGAS</span> <span class="sev" style="background:var(--ok-border)">✓ KÉSZ</span></h3>
 <div class="meta-row"><span><b>Lelet:</b> O2</span><span><b>Cél:</b> strukturált, korrelálható operatív telemetria (az audit-lánc ezt NEM adja)</span></div>
+<div class="callout ok"><span class="lbl">✓ Elkészült — 2026-07-07 (main working tree, nincs commitolva)</span>
+<ul style="margin:6px 0">
+  <li><b>Új modul:</b> <code>app/src/lib/observability/</code> — <b>zéró-függoségu</b> (nincs pino/prom-client/Sentry npm-dep → a boot fail-closed marad, nincs új supply-chain felület), de a hívói felület pino-/Sentry-kompatibilis, így késobb 1:1 kicserélheto.
+    <ul>
+      <li><code>logger.ts</code> — strukturált JSON-logger (<code>logger.info(fields, msg)</code> / <code>logger.child(ctx)</code>), <b>rekurzív kulcs-név redakció</b> (<code>secret/token/apiKey/authorization/password/cookie/prompt/messages/content</code>) → nyers prompt/PII SOHA nem kerül logba; körhivatkozás- és mélység-biztos; szint-szurés <code>LOG_LEVEL</code>-bol.</li>
+      <li><code>metrics.ts</code> — in-process counter+histogram regiszter <b>Prometheus text exposition</b>-nel; elore definiált kulcs-jelek (6.2): <code>model_gateway_calls_total</code>+<code>_latency_ms</code>, <code>tool_broker_calls_total</code> (deny-arány), <code>dispatcher_events_total</code>+<code>_lag_ms</code>, <code>http_responses_total</code>, <code>captured_exceptions_total</code>.</li>
+      <li><code>error-tracking.ts</code> — <code>captureException(err, ctx)</code> pluggable sinkkel (<code>setErrorSink</code> → Sentry/GCP Error Reporting bekötheto); alapból strukturált <code>error</code>-log + számláló, a sink-hiba nem propagál.</li>
+      <li><code>request-context.ts</code> — <code>x-request-id</code> átvétel/generálás, injektálás-szuréssel.</li>
+    </ul>
+  </li>
+  <li><b>Kérés-korreláció:</b> a <code>middleware.ts</code> minden kérésre beállítja az <code>x-request-id</code>-t (bejövot átvesz vagy UUID-t generál) és a válaszba is visszaadja; az operatív endpointok (<code>/api/healthz</code>, <code>/api/readyz</code>, <code>/api/metrics</code>) auth-mentes public-matcherbe kerültek (WP-7 elore-bekötés).</li>
+  <li><b>Kritikus utak bekötve:</b> <code>tool-broker-service.ts</code> (<code>recordCall</code> choke-point → minden allow/deny egy metrika+strukturált log), <code>model-gateway.ts</code> (ok/hiba/rate-limit/budget_blocked hívásszám+latency), <code>dispatcher-service.ts</code> (started/budget_blocked/denied_inactive/error kimenet + <b>dispatch-lag</b>). A szórványos <code>console.*</code> hívások (<code>clerk webhook</code>, <code>database-sync</code>) a strukturált loggerre cserélve.</li>
+  <li><b>Scrape-endpoint:</b> új <code>app/src/app/api/metrics/route.ts</code> — Prometheus-formátum, opcionális <code>METRICS_TOKEN</code> bearer-védelem.</li>
+  <li><b>Teszt:</b> új <code>scripts/observability.test.ts</code> + <code>test:observability</code> npm-script — <b>13/13 zöld</b> (redakció, child-korreláció, szint-szurés, körhivatkozás, counter/histogram exposition, label-escape, captureException+sink, requestId átvétel/generálás/szurés). A CI <code>verify</code> job stub-teszt-mátrixába felvéve. <code>tsc</code> tiszta, <code>eslint</code> 0 hiba.</li>
+</ul>
+<b>Hátra (nem-kód / üzemeltetés):</b> a dashboard összeállítása a Prometheus/Cloud Logging metrikákból, és — ha kell külso aggregátor — a Sentry DSN / GCP Error Reporting bekötése a <code>setErrorSink</code>-en át (kód-hook kész, csak a DSN-provisioning van hátra, a WP-1 Secret Manager-mintához hasonlóan).</div>
 <h4>6.1 Strukturált naplózó</h4>
 <span class="filelbl">új: <b>app/src/lib/observability/logger.ts</b> (<code>pino</code>)</span>
 <pre><code>import pino from 'pino'
@@ -450,8 +466,17 @@ export const requestLogger = (ctx: { requestId: string; tenantId?: string | null
 
 <!-- ============ WP-7 ============ -->
 <div class="wp" id="wp7">
-<h3><span class="tag">WP-7</span> Health-endpointok + App Router error boundary <span class="sev med">KÖZEPES</span></h3>
+<h3><span class="tag">WP-7</span> Health-endpointok + App Router error boundary <span class="sev med">KÖZEPES</span> <span class="sev" style="background:var(--ok-border)">✓ KÉSZ</span></h3>
 <div class="meta-row"><span><b>Lelet:</b> O3, O4</span></div>
+<div class="callout ok"><span class="lbl">✓ Elkészült — 2026-07-07 (main working tree, nincs commitolva)</span>
+<ul style="margin:6px 0">
+  <li><b>Liveness:</b> új <code>app/src/app/api/healthz/route.ts</code> — olcsó, DB nélküli <code>{ status:'ok', ts }</code>; élo szerveren <b>HTTP 200</b> + a válasz hordozza az <code>x-request-id</code>-t (WP-6 korreláció végponttól végpontig igazolva).</li>
+  <li><b>Readiness:</b> új <code>app/src/app/api/readyz/route.ts</code> — <code>prisma.$queryRaw&#96;SELECT 1&#96;</code> DB-ping; hiba → <b>503 <code>unready</code></b> + <code>captureException</code> (WP-6 error-tracking); élo dev-DB-vel <b>200 <code>ready</code></b>. Mindkét endpoint már a middleware public-matcherében volt (WP-6 elore-bekötés), auth nélkül szolgál.</li>
+  <li><b>Hibahatárok:</b> új <code>app/src/app/error.tsx</code> (route-szintu, <code>useEffect</code>→<code>captureException</code>, <code>reset()</code>), <code>global-error.tsx</code> (saját <code>&lt;html&gt;/&lt;body&gt;</code> + <code>globals.css</code>, mert a layoutot váltja) és <code>not-found.tsx</code> (404, szerver-komponens) — mind a repo Tailwind-v4 design-system-tokenjeivel (<code>bg-card</code>/<code>text-ink</code>/<code>bg-coral</code>). A 404 élo szerveren <b>HTTP 404</b> + a saját magyar UI renderelodik.</li>
+  <li><b>Menet közben feltárt + javított KRITIKUS regresszió (WP-6):</b> a middleware az <b>edge runtime</b>-on fut, de a <code>request-context.ts</code> a Node <code>crypto</code> modult importálta (<code>randomUUID</code>) → <em>minden</em> kérés 500-zal esett el (a healthz is). Átírva a <b>Web Crypto globálra</b> (<code>globalThis.crypto.randomUUID()</code>), ami edge-en és node-on egyaránt elérheto. Enélkül a platform futásidoben megbénult volna; unit-teszt nem fogta el, csak az élo szerver.</li>
+  <li><b>Teszt:</b> új <code>scripts/health-endpoints.test.ts</code> + <code>test:health-endpoints</code> npm-script — <b>2/2 zöld</b> (healthz 200 DB nélkül; readyz 503 elérhetetlen stub-DB-n). A CI <code>verify</code> stub-teszt-mátrixába felvéve. <code>observability</code> teszt (request-context fed) <b>13/13</b> zöld a fix után, <code>tsc</code> tiszta, <code>eslint</code> 0 hiba.</li>
+</ul>
+<b>Hátra (nem-kód / üzemeltetés):</b> az uptime-monitor / load balancer rákötése a <code>/api/healthz</code> (liveness) és <code>/api/readyz</code> (readiness) endpointokra.</div>
 <span class="filelbl">új: <b>app/src/app/api/healthz/route.ts</b> (liveness — olcsó)</span>
 <pre><code>export const dynamic = 'force-dynamic'
 export function GET() { return Response.json({ status: 'ok', ts: Date.now() }) }</code></pre>
@@ -488,9 +513,24 @@ export default function Error({ error, reset }: { error: Error &amp; { digest?: 
 
 <!-- ============ WP-8 ============ -->
 <div class="wp" id="wp8">
-<h3><span class="tag">WP-8</span> Tool Broker + chat-tool-loop bontása handler-regiszterre <span class="sev med">KÖZEPES</span></h3>
+<h3><span class="tag">WP-8</span> Tool Broker + chat-tool-loop bontása handler-regiszterre <span class="sev med">KÖZEPES</span> <span class="sev" style="background:var(--ok-border)">✓ KÉSZ</span></h3>
 <div class="meta-row"><span><b>Lelet:</b> M1</span><span><b>Cél:</b> a 3 662 soros isten-objektum áttekinthetővé + bővíthetővé tétele viselkedés-változás nélkül</span></div>
-<div class="callout warn"><span class="lbl">Előfeltétel</span>Csak WP-4 (CI teszt-védőháló) után kezdd. Ez tisztán <strong>mechanikus refaktor</strong> — nulla viselkedés-változás a cél; a <code>test:tool-broker-*</code> mátrixnak végig zöldnek kell maradnia minden lépés után.</div>
+<div class="callout ok"><span class="lbl">✓ 1. hullám elkészült — 2026-07-07 (main working tree, nincs commitolva)</span>
+<ul>
+  <li><b>Handler-regiszter infrastruktúra:</b> új <code>handlers/tool-handler.ts</code> — a <code>ToolHandler</code> interfész (<code>id</code>, <code>handles(tool)</code>, <code>execute(args)</code>) + a <code>HandlerContext</code> seam (a broker <code>this</code>-hez kötött megosztott képességei: service-ek, tenant-feloldás, delegált token). Új <code>handlers/registry.ts</code> — rendezett handler-lista + <code>resolveToolHandler(tool)</code> (egzakt nevek ÉS prefix-csoportok, pl. <code>file_</code>, <code>sandbox_app.</code>).</li>
+  <li><b>Dispatch átkötve:</b> a korábbi ~120 soros <code>executeTool</code> if-lánc helyén most <b>adat-vezérelt registry-dispatch</b> áll (~15 sor). A tenant-izoláció, capability-gate, a speciális kapuk (<code>gmail_send</code> approval, <code>board_write</code> ticket-tulajdon, <code>web_search</code> policy), a <code>ToolCall</code>-rögzítés és az audit maradtak a <b>keretben</b> (<code>invoke</code>) — a handler csak a tool-végrehajtást adja.</li>
+  <li><b>Öt tool-csoport ténylegesen kiemelve</b> a magból saját handler-fájlba: <code>file.handler.ts</code> (file_*/xlsx_*/pdf_*/docx_read/pptx_create/create_html), <code>sandbox-app.handler.ts</code>, <code>sandbox-versioning.handler.ts</code>, <code>gmail.handler.ts</code> (a delegált token-feloldással), <code>web-search.handler.ts</code>. A delegáció-klaszter + kb/http/repo handlerek egyelore a <code>ctx</code>-en át hívják a keret meglévo, tesztelt metódusait (bittre azonos viselkedés).</li>
+  <li><b>Bizonyíték — nulla viselkedés-változás:</b> <code>tsc</code> + <code>eslint</code> tiszta; a teljes érintett teszt-mátrix zöld: <code>tool-loop</code>, <code>tool-broker-bridge</code>, <code>tool-broker-tenant</code>, <code>web-search</code>, <code>per-user-connector</code> (http_api + gmail delegált), <code>repo-pr</code>, <code>user-directory</code>, <code>role-template</code>, <code>kb-retrieval</code>, <code>kb-gate</code>, <code>kb-eval</code>, <code>monitor</code>, <code>provisioning</code>, <code>playbook-v2-process</code>.</li>
+</ul>
+</div>
+<div class="callout ok"><span class="lbl">✓ 2. hullám elkészült — 2026-07-08 (main working tree, nincs commitolva)</span>
+<ul>
+  <li><b>A mag &lt;500 sorra apadt:</b> <code>tool-broker-service.ts</code> <b>3 479 → 401 sor</b> (−3 458/+196). A fájl mostantól KIZÁRÓLAG a keret: <code>constructor</code>+<code>handlerContext</code>-bekötés, <code>invoke</code> (authorize → speciális kapuk → dispatch → audit), <code>executeTool</code> registry-dispatch, a cselekvő-feloldás (<code>resolveActingUserId/TenantId</code>) és a <code>checkGmailSendApproval</code> kapu.</li>
+  <li><b>A koncernek külön modulokba emelve</b> (tisztán mechanikus, <code>this.</code>→<code>self.</code>, bittre azonos viselkedés): <code>tool-broker-types.ts</code> (550 — a teljes publikus tool-args/eredmény-felület, a mag <code>export *</code>-gal re-exportálja), <code>tool-broker-authorizer.ts</code> (306 — <code>AllowlistAuthorizer</code> + <code>TOOL_REQUIREMENTS</code> + cserélhető DB-lookupok), <code>tool-broker-support.ts</code> (903 — állapotmentes repo/KB/audit-meta segédek), <code>tool-broker-delegation.ts</code> (1 383 — a delegáció-törzsek: <code>kb*</code>, <code>board_write</code>, <code>ticket_create</code>, <code>agent_ask</code>, <code>web_research_request</code>, <code>http_api</code>, <code>repo*</code>, <code>agent_resolve/catalog</code>, <code>user_directory</code> + a megosztott delegáció-segédek), <code>tool-broker-audit.ts</code> (132 — a <code>recordCall</code>/<code>recordDenied</code> choke-point).</li>
+  <li><b>Runtime import-ciklus nincs:</b> a mag ÉRTÉKként importálja a free-function delegáció/audit-modulokat, azok viszont a <code>ToolBrokerService</code>-t CSAK <code>import type</code>-ként (build-kor törlődik). A handlerek a változatlan <code>HandlerContext</code>-en át hívják a törzseket (a keret köti be, <code>this</code>-t átadva <code>self</code>-ként).</li>
+  <li><b>Bizonyíték — nulla viselkedés-változás:</b> <code>tsc</code> + <code>eslint</code> tiszta; a teljes broker-mátrix (16 suite: <code>tool-loop</code>, <code>tool-broker-bridge</code>, <code>tool-broker-tenant</code>, <code>web-search</code>, <code>web-research</code>, <code>repo-pr</code>, <code>user-directory</code>, <code>role-template</code>, <code>per-user-connector</code>, <code>kb-retrieval/gate/eval</code>, <code>monitor</code>, <code>provisioning</code>, <code>playbook-v2-process/process-def</code>) végig zöld; a publikus import-felület (<code>AllowlistAuthorizer</code>, <code>Authorizer</code>, lookup-típusok, <code>assembleKb*</code>, <code>filterUserDirectory</code>, tenant-reachability) re-exporttal megőrizve — a fogyasztók és tesztek importjai változatlanok.</li>
+</ul>
+Ezzel mind a három elfogadási kritérium teljesül: a mag &lt;500 sor (AC#1), a teljes mátrix zöld = változatlan viselkedés (AC#2), és új tool = 1 handler-fájl + registry-bejegyzés a mag módosítása nélkül (AC#3).</div>
 <h4>Cél-struktúra</h4>
 <pre><code>src/domain/tool-broker/
   tool-broker-service.ts     // ~300-400 sor: authorize → dispatch → audit KERET marad
@@ -526,9 +566,9 @@ export default function Error({ error, reset }: { error: Error &amp; { digest?: 
 <tr><td>WP-3 <span class="sev" style="background:var(--ok-border)">✓</span></td><td><b>Kész:</b> közös <code>sandbox-csp.ts</code>; preview+export egyaránt <code>sandbox allow-scripts</code> fejléccel, same-origin nélkül; export eddig CSP nélkül volt.</td><td><code>test:sandbox-csp</code> 6/6 zöld</td></tr>
 <tr><td>WP-4 <span class="sev" style="background:var(--ok-border)">✓</span></td><td><b>Kód kész:</b> <code>ci.yml</code> (verify + security-scan) + <code>dependabot.yml</code>; a teljes verify-lánc lokálisan zöld; 6 előzőleg meglévő lint/tsc hiba javítva. <b>Hátra:</b> branch protection + Dependabot bekapcsolása (GitHub-admin)</td><td>lokálisan zöld verify (6/6 teszt) · CI a repóban futni fog PR-en</td></tr>
 <tr><td>WP-5 <span class="sev" style="background:var(--ok-border)">✓</span></td><td><b>Kód kész:</b> <code>0000_init</code> baseline + <code>0001</code> trigger + <code>0002</code> FTS-index; CI <code>migrate deploy</code> job ephemeral Postgresen; README workflow-váltás. <b>Hátra:</b> meglévő Neon DB-k <code>resolve --applied</code> baseline-elése (üzemeltetés)</td><td>friss DB reprodukálja a sémát — lokálisan verifikálva (deploy + status + drift=0)</td></tr>
-<tr><td>WP-6</td><td>strukturált log + korreláció + redakció; kulcs-metrikák; error-tracking</td><td>dashboard + Sentry esemény</td></tr>
-<tr><td>WP-7</td><td>healthz/readyz + error/not-found boundary</td><td>curl 200/503; kiváltott hiba UI</td></tr>
-<tr><td>WP-8</td><td>broker-mag &lt;500 sor, tool-onkénti handler, változatlan viselkedés</td><td>teljes broker teszt-mátrix zöld</td></tr>
+<tr><td>WP-6 <span class="sev" style="background:var(--ok-border)">✓</span></td><td><b>Kód kész:</b> zéró-dep <code>lib/observability/</code> (logger+redakció, metrika-regiszter, error-tracking, requestId); broker/gateway/dispatcher bekötve; <code>/api/metrics</code> + <code>console.*</code> kiváltva. <b>Hátra:</b> dashboard + Sentry-DSN bekötés (üzemeltetés)</td><td><code>test:observability</code> 13/13 zöld · CI verify-be felvéve</td></tr>
+<tr><td>WP-7 <span class="sev" style="background:var(--ok-border)">✓</span></td><td><b>Kód kész:</b> <code>healthz</code> (200, auth nélkül) + <code>readyz</code> (DB-ping → 200/503) + <code>error/global-error/not-found</code> boundary a design-system-tokenekkel; közben javítva egy KRITIKUS WP-6 edge-runtime regresszió (middleware Node-<code>crypto</code> → Web Crypto). <b>Hátra:</b> uptime-monitor rákötés (üzemeltetés)</td><td><code>test:health-endpoints</code> 2/2 zöld · élo curl 200/200/404 + <code>x-request-id</code></td></tr>
+<tr><td>WP-8 <span class="sev" style="background:var(--ok-border)">✓</span></td><td><b>Kész (mindkét hullám):</b> handler-regiszter + adat-vezérelt dispatch (1. hullám), majd a mag <b>3 479 → 401 sorra</b> apadt (2. hullám): a típusok/authorizer/support/delegáció/audit koncernek külön modulokba, a delegáció-törzsek free-function mintában (<code>self: ToolBrokerService</code>, runtime import-ciklus nélkül); a keret (authorize→gate→dispatch→audit) és a publikus import-felület változatlan. AC#1 (&lt;500) + AC#2 (zöld) + AC#3 (új tool = handler+registry) mind teljesül.</td><td>16 broker-suite végig zöld (tool-loop, -bridge, -tenant, web-search, web-research, per-user-connector, repo-pr, user-directory, role-template, kb-*, monitor, provisioning, playbook); tsc/eslint tiszta</td></tr>
 </tbody>
 </table>
 

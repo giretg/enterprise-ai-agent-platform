@@ -33,7 +33,7 @@ export default async function AppDetailPage({
       <div>
         <div className="mb-2 flex items-center gap-2 text-sm text-ink-soft">
           <Link href="/control-plane/apps" className="hover:text-coral">
-            App Registry
+            Mini-appok
           </Link>
           <span>/</span>
           <span className="text-ink">{app.name}</span>
@@ -106,7 +106,7 @@ export default async function AppDetailPage({
           </div>
           <div>
             <dt className="text-xs font-semibold uppercase tracking-wide text-ink-faint">
-              App ID
+              Mini-app ID
             </dt>
             <dd className="mt-0.5 font-mono text-xs text-ink-faint">{app.appId}</dd>
           </div>

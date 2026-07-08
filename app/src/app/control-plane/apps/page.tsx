@@ -35,10 +35,10 @@ export default async function AppRegistryPage() {
           <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">
             Sandbox Plane
           </p>
-          <h1 className="mt-2 font-display text-3xl font-semibold">App Registry</h1>
+          <h1 className="mt-2 font-display text-3xl font-semibold">Mini-appok</h1>
           <p className="mt-1 max-w-2xl text-ink-soft">
-            Agent által generált, verziózott A0 single-file HTML alkalmazások. Izolált preview,
-            export, rollback — platform session és hálózat nélkül.
+            Agent (vagy ember) által készített, verziózott mini-appok (A0 single-file HTML). Izolált
+            preview, export, rollback — platform session és hálózat nélkül.
           </p>
         </div>
         <CreateSandboxAppToggle />
@@ -49,7 +49,7 @@ export default async function AppRegistryPage() {
         <Card title="Metrikák">
           <dl className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
             <Metric
-              label="Appok"
+              label="Mini-appok"
               value={String(metrics.appsTotal)}
               hint={`${metrics.appsByCreator.agent} agent · ${metrics.appsByCreator.user} ember`}
             />
@@ -83,8 +83,8 @@ export default async function AppRegistryPage() {
       {apps.length === 0 && res.success && (
         <Card>
           <p className="text-sm text-ink-faint">
-            Még nincs app ebben a tenantban. Kézzel az{' '}
-            <strong>App létrehozása</strong> gombbal, az agent a{' '}
+            Még nincs mini-app ebben a tenantban. Kézzel a{' '}
+            <strong>Mini-app létrehozása</strong> gombbal, az agent a{' '}
             <code className="rounded bg-night-2 px-1.5 py-0.5 font-mono text-xs">
               sandbox_app.create
             </code>{' '}

@@ -1543,7 +1543,7 @@ async function scenario10_sandboxAppRegistry(operatorId: string, agentId: string
       tenantId: tenantA,
     }, 'sandbox_app.export')
     if (
-      preview.version.htmlContent.includes('A0 sandbox riport') &&
+      preview.version.htmlContent.includes('Mini-app riport') &&
       exported.version.htmlHash === v2.htmlHash
     ) {
       pass('Preview/export renderelhető és hash egyezik')

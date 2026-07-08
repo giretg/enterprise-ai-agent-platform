@@ -87,6 +87,7 @@
     "test:kb-extraction": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/kb-extraction.test.ts",
     "test:kb-validator": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/kb-validator.test.ts",
     "test:kb-eval": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/kb-eval.test.ts",
+    "test:skill-catalog": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/skill-catalog.test.ts",
     "smoke:kb-nav": "tsx scripts/kb-nav-live-smoke.ts",
     "test:acceptance": "tsx scripts/acceptance-e2e.ts",
     "test:sandbox-app": "SANDBOX_APP_STUB=true tsx scripts/sandbox-app-registry.test.ts",
@@ -94,6 +95,8 @@
     "test:audit-log": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/audit-log.test.ts",
     "test:secret-config": "tsx scripts/secret-config.test.ts",
     "test:sandbox-csp": "tsx scripts/sandbox-csp.test.ts",
+    "test:observability": "tsx scripts/observability.test.ts",
+    "test:health-endpoints": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/health-endpoints.test.ts",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "postinstall": "prisma generate"

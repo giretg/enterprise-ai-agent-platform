@@ -14,6 +14,7 @@ import {
 import { parseAgentModelConfig } from '@/lib/harness-model-config'
 import { isRunAsAuthorized, readRunAsUserId } from '@/lib/run-as-payload'
 import { wikiSearchQuery } from '@/lib/wiki-ticket-payload'
+import { logger, dispatchTotal, dispatchLagMs } from '@/lib/observability'
 import type { DispatchAlertNotifier } from './dispatch-alert-notifier'
 
 export type DispatchBudget = {
@@ -477,6 +478,7 @@ export class DispatcherService {
           policyDecision: 'denied',
           metadata: { ticketId: ticket.id, status: agent?.status ?? 'missing' },
         })
+        dispatchTotal.inc({ result: 'denied_inactive' })
         return { ticketId: ticket.id, status: 'skipped' }
       }
     }
@@ -498,6 +500,11 @@ export class DispatcherService {
         policyDecision: 'budget_blocked',
         metadata: usage,
       })
+      dispatchTotal.inc({ result: 'budget_blocked' })
+      logger.warn(
+        { event: 'dispatch', result: 'budget_blocked', ticketId: ticket.id, agentId: ticket.agentId },
+        'dispatch budget blocked',
+      )
       return { ticketId: ticket.id, status: 'budget_blocked' }
     }
 
@@ -589,6 +596,17 @@ export class DispatcherService {
           keyId: ephemeralKey?.id ?? null,
         },
       })
+      dispatchTotal.inc({ result: 'error' })
+      logger.error(
+        {
+          event: 'dispatch',
+          result: 'error',
+          ticketId: ticket.id,
+          agentId: ticket.agentId,
+          error: error instanceof Error ? error.message : String(error),
+        },
+        'dispatch failed',
+      )
       throw error
     }
 
@@ -625,6 +643,24 @@ export class DispatcherService {
         keyId: ephemeralKey?.id ?? null,
       },
     })
+
+    // WP-6 (O2): dispatch-lag (a ticket utolsó frissítése óta a launchig) + kimenet.
+    const readyAt = ticket.updatedAt instanceof Date ? ticket.updatedAt.getTime() : null
+    const lagMs = readyAt !== null ? Math.max(0, now.getTime() - readyAt) : null
+    dispatchTotal.inc({ result: 'started' })
+    if (lagMs !== null) dispatchLagMs.observe(lagMs, { launcher: launcher?.mode ?? 'unknown' })
+    logger.info(
+      {
+        event: 'dispatch',
+        result: 'started',
+        ticketId: ticket.id,
+        agentId: ticket.agentId,
+        launcherMode: launcher?.mode ?? 'unknown',
+        jobId: job.jobId,
+        lagMs,
+      },
+      'dispatch started',
+    )
     return { ticketId: ticket.id, status: 'started' }
   }
 

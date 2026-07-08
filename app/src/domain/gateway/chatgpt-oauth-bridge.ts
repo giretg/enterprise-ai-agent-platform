@@ -59,6 +59,15 @@ type ResponsesInputItem =
   | ResponsesFunctionCallOutputItem
 
 /**
+ * A ChatGPT OAuth Responses API a tool nevekben csak `[a-zA-Z0-9_-]` mintát fogad.
+ * A belső platform-tooling pontozott neveket is használ (`sandbox_app.create`),
+ * ezért outbound normalizálunk, inbound pedig visszamappeljük az eredetire.
+ */
+function sanitizeResponseToolName(name: string): string {
+  return name.replace(/[^a-zA-Z0-9_-]/g, '_')
+}
+
+/**
  * A Gateway üzenet-listáját Responses API alakra hozza: a `system` üzenetek a
  * top-level `instructions`-be mennek, a többi `input` itemmé. A natív tool use
  * üzeneteket dedikált item-típusokra fordítja:
@@ -93,7 +102,7 @@ export function toResponsesRequest(messages: GatewayMessage[]): {
         input.push({
           type: 'function_call',
           call_id: call.id,
-          name: call.name,
+          name: sanitizeResponseToolName(call.name),
           arguments: JSON.stringify(call.input ?? {}),
         })
       }
@@ -280,6 +289,20 @@ export async function callChatGptOAuth(input: {
 }): Promise<BridgeResult> {
   const model = resolveModel(input.model)
   const { instructions, input: responsesInput } = toResponsesRequest(input.messages)
+  const responseToolNameToOriginal = new Map<string, string>()
+  const responseTools =
+    input.tools?.map((t, index) => {
+      const base = sanitizeResponseToolName(t.name)
+      const isCollision = responseToolNameToOriginal.has(base)
+      const safeName = isCollision ? `${base}_${index}` : base
+      responseToolNameToOriginal.set(safeName, t.name)
+      return {
+        type: 'function' as const,
+        name: safeName,
+        description: t.description,
+        parameters: t.inputSchema,
+      }
+    }) ?? []
 
   const res = await fetch(RESPONSES_URL, {
     method: 'POST',
@@ -299,14 +322,9 @@ export async function callChatGptOAuth(input: {
       stream: true,
       store: false,
       reasoning: { effort: input.reasoningEffort ?? 'low' },
-      ...(input.tools?.length
+      ...(responseTools.length
         ? {
-            tools: input.tools.map((t) => ({
-              type: 'function',
-              name: t.name,
-              description: t.description,
-              parameters: t.inputSchema,
-            })),
+            tools: responseTools,
             tool_choice: 'auto',
           }
         : {}),
@@ -345,6 +363,7 @@ export async function callChatGptOAuth(input: {
     if (evt.type === 'response.output_item.done' && evt.item?.type === 'function_call') {
       const name = evt.item.name
       if (typeof name === 'string' && name) {
+        const resolvedName = responseToolNameToOriginal.get(name) ?? name
         let parsed: Record<string, unknown> = {}
         if (typeof evt.item.arguments === 'string' && evt.item.arguments.trim()) {
           try {
@@ -358,7 +377,7 @@ export async function callChatGptOAuth(input: {
         }
         toolCalls.push({
           id: evt.item.call_id || evt.item.id || `call_${toolCalls.length}`,
-          name,
+          name: resolvedName,
           input: parsed,
         })
       }

@@ -16,7 +16,7 @@ export function CreateSandboxAppToggle() {
       onClick={() => setOpen(true)}
       className="rounded-full bg-sage/20 px-5 py-2.5 text-sm font-semibold text-sage hover:bg-sage/30"
     >
-      + App létrehozása
+      + Mini-app létrehozása
     </button>
   )
 }

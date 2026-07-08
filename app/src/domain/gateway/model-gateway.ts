@@ -21,6 +21,7 @@ import {
 } from './sensitivity-router'
 import type { RoutingEngine } from './routing-engine'
 import type { BudgetEngine } from './budget-engine'
+import { logger, modelCallsTotal, modelCallLatencyMs } from '@/lib/observability'
 
 export type GatewayGuardrail = {
   /** Ticketenkénti modellhívás-plafon (5.4) — túllépve a Gateway nem hív. */
@@ -816,6 +817,7 @@ export class ModelGateway {
           policyDecision: 'budget_blocked',
           metadata: usage,
         })
+        modelCallsTotal.inc({ provider: 'guardrail', status: 'budget_blocked' })
         throw new GatewayBudgetError(
           `Gateway guardrail: ticket ${params.ticketId} reached ${this.guardrail.maxCallsPerTicket} model calls`,
         )
@@ -845,6 +847,7 @@ export class ModelGateway {
           policyDecision: 'budget_blocked',
           metadata: { reason: budgetCheck.reason },
         })
+        modelCallsTotal.inc({ provider: 'budget', status: 'budget_blocked' })
         throw new GatewayBudgetError(`Gateway budget gate: ${budgetCheck.reason}`)
       }
     }
@@ -887,6 +890,25 @@ export class ModelGateway {
         latencyMs: result.latencyMs,
         status: 'ok',
       })
+
+      // WP-6 (O2): gateway telemetria — hívásszám + latency + költség (metaadat).
+      modelCallsTotal.inc({ provider: provider.name, status: 'ok' })
+      modelCallLatencyMs.observe(result.latencyMs, { provider: provider.name })
+      logger.info(
+        {
+          event: 'model.call',
+          provider: provider.name,
+          model: usedModel,
+          status: 'ok',
+          latencyMs: result.latencyMs,
+          costEstimate,
+          promptTokens,
+          completionTokens,
+          agentId: params.agentId,
+          ticketId: params.ticketId ?? null,
+        },
+        'model gateway call',
+      )
 
       const targetType = params.ticketId ? 'ticket' : params.conversationId ? 'conversation' : 'agent'
       const targetId = params.ticketId ?? params.conversationId ?? params.agentId
@@ -936,6 +958,23 @@ export class ModelGateway {
         latencyMs,
         status,
       })
+
+      // WP-6 (O2): hibás modellhívás telemetriája (rate_limited / error).
+      modelCallsTotal.inc({ provider: provider.name, status })
+      modelCallLatencyMs.observe(latencyMs, { provider: provider.name })
+      logger.warn(
+        {
+          event: 'model.call',
+          provider: provider.name,
+          model,
+          status,
+          latencyMs,
+          agentId: params.agentId,
+          ticketId: params.ticketId ?? null,
+          error: message,
+        },
+        'model gateway call failed',
+      )
 
       const targetType = params.ticketId ? 'ticket' : params.conversationId ? 'conversation' : 'agent'
       const targetId = params.ticketId ?? params.conversationId ?? params.agentId

@@ -111,7 +111,7 @@ function renderWikiReportHtml(params: {
 <body>
   <main>
     <header>
-      <p class="eyebrow">A0 sandbox riport</p>
+      <p class="eyebrow">Mini-app riport</p>
       <h1>${escapeHtml(params.title)}</h1>
       <div class="meta">
         <span class="pill">confidence: ${escapeHtml(params.confidence || 'unknown')}</span>
@@ -140,7 +140,7 @@ function renderWikiReportHtml(params: {
     </section>
 
     <footer>
-      Excellence AI Agent Platform MVP · single-file HTML export · sha256 hash a registryben
+      Excellence AI Agent Platform MVP · mini-app (single-file HTML export) · sha256 hash a registryben
     </footer>
   </main>
 </body>
@@ -459,6 +459,29 @@ export class SandboxAppService {
   }
 
   /**
+   * Agent-tool (`sandbox_app.get`) számára: a mini-app metaadata + a kért
+   * (vagy legutolsó) verzió TÉNYLEGES HTML tartalma — hogy egy módosítás előtt
+   * az agent lássa, mit szerkeszt (a sandbox_app.update_artifact ugyanis a
+   * teljes HTML-t felülírja, nem foltoz).
+   */
+  async getSandboxAppSource(input: { appId: string; version?: number }, actor: Actor) {
+    const { app, version } = await this.getRenderableApp(
+      input.appId,
+      actor,
+      'sandbox_app.read',
+      input.version,
+    )
+    return {
+      appId: app.id,
+      name: app.name,
+      status: app.status,
+      version: version.version,
+      contentHash: version.htmlHash,
+      html: version.htmlContent,
+    }
+  }
+
+  /**
    * App Registry observability metrikák (§8.3). A táblákból számolható mutatókat
    * a repository adja tenant-scoped módon; az audit-eredetű eseményszámokat itt
    * fűzzük hozzá. Az AuditLog tenant-globális, ezért a tenant app-azonosítóira
@@ -549,7 +572,7 @@ export class SandboxAppService {
   async getRenderableApp(
     appId: string,
     actor: Actor,
-    action: 'sandbox_app.preview' | 'sandbox_app.export',
+    action: 'sandbox_app.preview' | 'sandbox_app.export' | 'sandbox_app.read',
     version?: number,
   ) {
     const af = resolveActorFields(actor)

@@ -39,6 +39,12 @@ import type {
   RecipeScope,
   RecipeTicketType,
   RecipeVersion,
+  Skill,
+  SkillVersion,
+  AgentSkill,
+  SkillCatalogScope,
+  SkillSourceType,
+  SkillRiskTier,
   SandboxApp,
   SandboxAppCriticality,
   SandboxAppStatus,
@@ -766,6 +772,60 @@ export interface RecipeRepository {
   addVersion(recipeId: string, content: Prisma.JsonValue): Promise<RecipeVersion>
   approveVersion(versionId: string, approverId: string): Promise<RecipeVersion>
   getActiveVersion(recipeId: string): Promise<RecipeVersion | null>
+}
+
+// ── Skill-katalógus (skill-catalog-spec.md, WP-1) ───────────────────────────
+
+export type SkillWithVersions = Skill & { versions: SkillVersion[] }
+export type AgentSkillWithVersion = AgentSkill & {
+  skillVersion: SkillVersion & { skill: Skill }
+}
+
+export interface CreateSkillInput {
+  name: string
+  description: string
+  catalogScope: SkillCatalogScope
+  tenantId: string | null
+  sourceType: SkillSourceType
+  provenance: Prisma.InputJsonValue | null
+  license: string | null
+  riskTier: SkillRiskTier
+  content: Prisma.InputJsonValue
+  requires: Prisma.InputJsonValue
+  contentHash: string
+}
+
+export interface AddSkillVersionInput {
+  skillId: string
+  content: Prisma.InputJsonValue
+  requires: Prisma.InputJsonValue
+  contentHash: string
+}
+
+export interface SkillRepository {
+  /** Global (tenantId null) + a megadott tenant skilljei — fail-closed olvasás. */
+  listForTenant(actorTenantId: string | null): Promise<SkillWithVersions[]>
+  findById(id: string): Promise<SkillWithVersions | null>
+  findVersionById(versionId: string): Promise<(SkillVersion & { skill: Skill }) | null>
+  createSkill(input: CreateSkillInput): Promise<{ skill: Skill; version: SkillVersion }>
+  addVersion(input: AddSkillVersionInput): Promise<SkillVersion>
+  /** Jóváhagyás: az adott verzió `active`, az addigi aktív `retired`. */
+  approveVersion(versionId: string, params: { approverId: string; signature: string }): Promise<SkillVersion>
+  /** Rollback: egy korábbi (approved/retired/rolled_back) verzió újraaktiválása. */
+  rollbackToVersion(
+    versionId: string,
+    params: { approverId: string; signature: string },
+  ): Promise<SkillVersion>
+  getActiveVersion(skillId: string): Promise<SkillVersion | null>
+
+  // Hozzárendelés (AgentSkill)
+  assign(input: { agentId: string; skillVersionId: string; assignedById: string | null }): Promise<AgentSkill>
+  unassign(agentId: string, skillVersionId: string): Promise<void>
+  setEnabled(agentId: string, skillVersionId: string, enabled: boolean): Promise<AgentSkill>
+  listAgentSkills(agentId: string): Promise<AgentSkillWithVersion[]>
+  /** Context-assembler: csak az enabled hozzárendelt skill-verziók (Level-0 index). */
+  listEnabledForAgent(agentId: string): Promise<AgentSkillWithVersion[]>
+  findAssignment(agentId: string, skillVersionId: string): Promise<AgentSkillWithVersion | null>
 }
 
 export type PlaybookWithVersions = Playbook & { versions: PlaybookVersion[] }

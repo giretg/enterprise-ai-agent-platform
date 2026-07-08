@@ -639,6 +639,31 @@ export const PLATFORM_BROKER_TOOLS = [
     },
   },
   {
+    name: 'sandbox_app.list',
+    description: "List the calling agent's own mini-apps (sandbox apps).",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        search: { type: 'string' },
+        status: { type: 'string', enum: ['draft', 'active', 'archived', 'blocked'] },
+        limit: { type: 'number' },
+      },
+      required: [],
+    },
+  },
+  {
+    name: 'sandbox_app.get',
+    description: 'Fetch the actual HTML source of a mini-app version, for reading before editing.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        appId: { type: 'string' },
+        version: { type: 'number' },
+      },
+      required: ['appId'],
+    },
+  },
+  {
     name: 'sandbox.commit',
     description:
       'Commit a set of files to a versioned sandbox project (code track). Moves ONLY the test tree; live never changes on commit. Files reference prepared content via contentRef (inline:<content> or workspace:<tenant>/<ticket>/<path>). Returns the new commit id, seq and deterministic tree hash.',

@@ -1,0 +1,384 @@
+# Chat Agent-forduló ellenállóság + leállítás — fejlesztői specifikáció
+
+Státusz: **DRAFT / kód nincs** · Verzió: v0.1 · Dátum: 2026-07-08
+Scope: az interaktív **chat** (agent-chat) ág. A ticket/Folyamat (dispatcher) ág
+külön, DB-perzisztált állapotgépen fut és nem tárgya ennek a specnek — csak
+mintaként hivatkozunk rá.
+
+---
+
+## 1. Cél
+
+Három, egymással összefüggő probléma megoldása az agent-chatben:
+
+1. **Ne vesszenek el a beszélgetések.** Ha a felhasználó bezárja az ablakot,
+   navigál, vagy hard-refresht csinál, miközben az agent dolgozik: a háttérmunka
+   fusson tovább, a végeredmény kerüljön az adatbázisba, és visszatéréskor
+   (előzmény-betöltéskor vagy reconnect-tel) legyen látható.
+2. **Ne kerüljön a rendszer végtelen ciklusba.** A tool-loop legyen több
+   dimenzióban korlátozott (kör, faliórai idő, tool-hívás-büdzsé, ismétlés,
+   előrehaladás), és a beragadt futásokat egy watchdog zárja le.
+3. **Legyen leállítás a chat képernyőn.** A felhasználó egy Stop gombbal
+   megszakíthatja a futó agent-fordulót; a részeredmény őrződjön meg.
+
+---
+
+## 2. Jelenlegi állapot (kódalapú diagnózis)
+
+### 2.1 Az agent-forduló a SSE-kapcsolathoz kötött
+
+- Végpont: `app/src/app/api/v1/agent-chat/stream/route.ts` — `ReadableStream`
+  `start(controller)` egy `for await (const event of gen)` ciklussal olvassa a
+  `AgentChatRuntime.sendMessageStream` generátort, és `controller.enqueue`-val
+  továbbítja a `data:` eventeket.
+- `sendMessageStream` (`app/src/domain/agent/agent-chat-runtime.ts`, ~407–652):
+  - a **user üzenet DB-be írása azonnal** megtörténik (`appendMessage`, ~466),
+    tehát a kérdés soha nem vész el;
+  - a tool-loop (`runAgentToolLoop`) egy **eagerly indított promise**
+    (`resultPromise`, ~571) — a tényleges tool-mellékhatások (gmail_send,
+    file_write, ticket_create…) a generátor `yield`-jeitől függetlenül lefutnak;
+  - **DE a záró agent-üzenet DB-írása** (`appendMessage`, ~640) a generátor
+    végén, több `yield` UTÁN történik. Ha a kliens lecsatlakozik, a route
+    `for await`-ja megszakad → `gen.return()` → a generátor a soron lévő
+    `yield`-nél véglegesen felfügged, a ~640 sori írás **soha nem fut le**.
+
+**Következmény:** ablakbezárás / hard-refresh közben a tool-mellékhatások
+megtörténnek, de a **végleges agent-válasz elveszhet** (nem íródik a `messages`
+táblába), így visszatéréskor nem látszik. Az `activities` (agent-aktivitás
+panel) is csak kliens-oldali React state — reconnect nélkül elvész.
+
+### 2.2 Loop-védelem — ami már van
+
+`runAgentToolLoop` (`chat-tool-loop.ts`, ~1338–1738):
+- **`maxTurns`** — `resolveToolLoopMaxTurns`: `maxToolTurns` clamp [5,80], vagy
+  40 ha `repo_prepare` engedélyezett, egyébként a belső default 20.
+- **Repeated-call guard** — `REPEAT_LIMIT = 3` per `(toolName, JSON(args))`.
+- **Kimerülés** — `TOOL_LOOP_EXHAUSTED_MESSAGE` + `status:'exhausted'`.
+
+**Hiányzik:** faliórai időkorlát, globális tool-hívás-büdzsé (a kör-limit nem
+fedi, mert egy körben több tool is hívható), előrehaladás-figyelés (nincs új
+szöveg + ismétlődő eredmény), költség/token-plafon, és infra-szintű watchdog a
+beragadt futásra.
+
+### 2.3 Leállítás — nincs
+
+- A `fetch` (`agent-chat-panel.tsx`, ~584) mögött **nincs `AbortController`**.
+- `isAgentTyping` csak letiltja a szerkesztőt; nincs Stop gomb, nincs
+  cancel-végpont, a loopnak nincs megszakítási jele.
+
+---
+
+## 3. Tervezési elvek és döntések
+
+> A megoldás magja: **az agent-forduló váljon első osztályú, perzisztált,
+> újracsatlakoztatható „futássá" (AgentTurn)** — ahogy a ticket/Folyamat ág is
+> DB-perzisztált. Az SSE ne a munka *hajtóereje* legyen, hanem *nézet* a futás
+> fölött.
+
+| # | Döntés | Választás | Indok |
+|---|--------|-----------|-------|
+| **D1** | Mi a perzisztencia egysége? | Új **`AgentTurn`** rekord fordulónként | A `messages` végállapot; kell egy köztes, élő rekord a progress/kontroll tárolásához. |
+| **D2** | A végeredmény DB-írása mihez kötött? | A **loop-lezáró finalizerhez**, NEM a stream-fogyasztáshoz | Ez zárja le a 2.1 rést. A finalizer a `resultPromise` completion-jén fut, kliens nélkül is. |
+| **D3** | Ki „birtokolja" a végrehajtást? | **Detached run-manager**, a kéréstől függetlenül | Ablakbezárás ne állítsa le a munkát. |
+| **D4** | Reconnect hogyan? | Új **GET SSE** végpont, ami előbb *snapshotot* küld (perzisztált partialText+activities+status), majd élő deltát | Hard-refresh után folytatólagos nézet. |
+| **D5** | A kliens-lecsatlakozás == cancel? | **NEM.** Csak az explicit Stop gomb cancel | A cél épp a háttér-folytatás; a véletlen disconnect nem szándéknyilvánítás. |
+| **D6** | Stop szemantika | **Kooperatív**: a loop a `cancelRequested` flaget ellenőrzi kör-határon és tool-hívás előtt; a részeredményt megőrzi | Determinisztikus, nincs félbehagyott tool. Egy már elindult tool-hívás befejeződik, új nem indul. |
+| **D7** | Egy beszélgetésen egyszerre hány aktív forduló? | **Egy.** Második POST aktív forduló alatt elutasítva (409) | Egyszerű mentális modell; nincs versengő írás a `messages`/`seq`-re. |
+| **D8** | Deployment-topológia | **Tier-1 (in-process)** először, **Tier-2 (dispatcher-birtokolt, DB-lock+heartbeat)** a robusztus célállapot | Fázisozható; a Tier-2 tükrözi a meglévő ticket-dispatchert (lock_token+stale reclaim). |
+| **D9** | Token-perzisztencia granularitás | Throttle-flush (`partialText` ~1 mp / N token), activity-nként upsert, terminálkor teljes írás | Reconnect-snapshot DB-túlterhelés nélkül. |
+| **D10** | Beragadt futás | **Watchdog**: `heartbeatAt` régebbi a küszöbnél → `failed`/`exhausted` + finalizálás | Infra-szintű végtelen-ciklus / crash-védelem. |
+| **D11** | Visszamenőleges kompatibilitás | A `sendMessage` (nem-stream) útvonal is a finalizeren keresztül ír | Egységes írási pont, ne duplázódjon a logika. |
+
+---
+
+## 4. Adatmodell — `AgentTurn`
+
+Új Prisma modell (`prisma/schema.prisma`). A mezőnév-konvenció a meglévő
+`Ticket`/`ScheduledTask` mintát követi (`lock_token`, `locked_at`).
+
+```prisma
+enum AgentTurnStatus {
+  queued        // létrejött, még nem indult a loop
+  running       // tool-loop fut
+  streaming     // loop kész, a záró szöveg streamelése zajlik (opcionális átmenet)
+  completed     // sikeres, assistant üzenet perzisztálva
+  exhausted     // guard állította le (max_turns / wallclock / budget), részválasz megőrizve
+  cancelled     // felhasználó Stop- olta
+  failed        // hiba / watchdog általi lezárás
+}
+
+model AgentTurn {
+  id                 String   @id @default(uuid()) @db.Uuid
+  conversationId     String   @map("conversation_id") @db.Uuid
+  tenantId           String?  @map("tenant_id") @db.Uuid
+  agentId            String   @map("agent_id") @db.Uuid
+  agentVersion       Int      @map("agent_version")
+  createdById        String   @map("created_by") @db.Uuid
+
+  status             AgentTurnStatus @default(queued)
+  userMessageId      String   @map("user_message_id") @db.Uuid
+  assistantMessageId String?  @map("assistant_message_id") @db.Uuid
+
+  // Progress / reconnect-snapshot
+  partialText        String   @default("") @map("partial_text")
+  activities         Json     @default("[]")           // ToolLoopActivityEvent[]
+
+  // Loop-elszámolás
+  turnCount          Int      @default(0) @map("turn_count")
+  toolCallCount      Int      @default(0) @map("tool_call_count")
+  deniedCount        Int      @default(0) @map("denied_count")
+
+  // Kontroll
+  cancelRequested    Boolean  @default(false) @map("cancel_requested")
+  cancelRequestedById String? @map("cancel_requested_by") @db.Uuid
+  cancelRequestedAt  DateTime? @map("cancel_requested_at") @db.Timestamptz
+
+  // Életciklus / lock (Tier-2)
+  lockToken          String?  @map("lock_token")
+  lockedAt           DateTime? @map("locked_at") @db.Timestamptz
+  heartbeatAt        DateTime @default(now()) @map("heartbeat_at") @db.Timestamptz
+  startedAt          DateTime @default(now()) @map("started_at") @db.Timestamptz
+  finishedAt         DateTime? @map("finished_at") @db.Timestamptz
+  reason             String?                            // max_turns_exhausted | wallclock_timeout | tool_budget | no_progress | cancelled | watchdog | error
+  error              String?
+
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt          DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, status])
+  @@index([status, heartbeatAt])       // watchdog
+  @@map("agent_turns")
+}
+```
+
+Kapcsolódás: `Conversation` kap egy `agentTurns AgentTurn[]` relációt.
+A `messages` tábla változatlan; a `Message` a végállapot, az `AgentTurn` a
+lezáráskor `assistantMessageId`-vel mutat rá.
+
+**Aktív-forduló invariáns (D7):** legfeljebb egy `AgentTurn` lehet
+`queued|running|streaming` státuszban egy `conversationId`-hez. Kényszerítés:
+részleges egyedi index vagy tranzakciós ellenőrzés a létrehozáskor.
+
+---
+
+## 5. Végrehajtási életciklus
+
+### 5.1 Indítás — `POST /api/v1/agent-chat/stream` (módosított)
+
+1. Auth (mint ma).
+2. `AgentChatRuntime`: user üzenet perzisztálása (mint ma).
+3. **Aktív-forduló ellenőrzés (D7):** ha van futó forduló → `409` +
+   `{ activeTurnId }` (a kliens erre reattach-el, l. 6.3).
+4. `AgentTurn` létrehozása (`status: running`), `userMessageId` bekötve.
+5. **Detached indítás:** a `AgentTurnRunner.start(turnId)` beteszi a futást egy
+   in-process registrybe (`Map<turnId, RunHandle>`), és **nem** `await`-eli a
+   loop teljes lefutását a kérés-scope-ban.
+6. A POST-válasz SSE **feliratkozik** a futás in-process event-buszára és relézi
+   az eventeket (`activity`/`token`/`done`/`error`). Ha a kliens lecsatlakozik,
+   a feliratkozás megszűnik, **de a futás megy tovább** (D3/D5).
+
+### 5.2 A runner és a loop
+
+- `AgentTurnRunner` egy `EventEmitter`-szerű buszt tart fordulónként; a
+  `runAgentToolLoop` `onActivity`-je ide push-ol, és bevezetünk egy `onToken`
+  callbacket a záró szöveg streameléséhez (ma a szó-chunkolás a runtime-ban van;
+  átkerül a runnerbe).
+- **Finalizer (D2):** a `resultPromise` completion-jén (siker/hiba egyaránt) a
+  runner:
+  1. `appendMessage(role:'agent', content: reply)` — a végleges üzenet (a
+     content a meglévő content-store úton, `contentRef`/`contentHash`);
+  2. `AgentTurn` → `completed|exhausted|cancelled|failed`, `assistantMessageId`,
+     `finishedAt`, `reason` beállítása;
+  3. `done` event a buszra (ha van feliratkozó);
+  4. registry-ből törlés.
+  Ez a pont **kliens-független** → a válasz sosem vész el.
+- **Heartbeat (Tier-2, D10):** a loop minden kör elején `heartbeatAt = now()`.
+
+### 5.3 Perzisztencia-granularitás (D9)
+
+- `activities`: minden `emitActivity`-nél upsert az `AgentTurn.activities`-be
+  (kis frekvencia, tool-hívásonként).
+- `partialText`: throttle-flush — max ~1 mp-enként vagy ~200 karakterenként.
+- Terminálkor: teljes `partialText` + `messages` írás.
+
+---
+
+## 6. SSE / API felület
+
+### 6.1 `POST /api/v1/agent-chat/stream` — indít + tail (élő)
+Mint 5.1. Új eventtípus: `{ type: 'turn'; turnId }` legelöl, hogy a kliens
+ismerje a `turnId`-t (a Stop és a reconnect ehhez kell).
+
+### 6.2 `POST /api/v1/agent-chat/turns/[turnId]/cancel` — Stop (D6)
+- Auth + tulajdon-ellenőrzés (a forduló `createdById`/tenant).
+- `cancelRequested=true`, `cancelRequestedBy/At` beállítása.
+- Ha a runner in-process elérhető: azonnali in-memory jelzés is (gyorsabb, mint
+  a DB-poll). Tier-2-ben a loop DB-ből is olvassa a flaget.
+- Válasz: `202 Accepted`. A tényleges leállás a loop következő ellenőrzési
+  pontján történik; a `done` event `reason:'cancelled'`-del jön.
+
+### 6.3 `GET /api/v1/agent-chat/turns/[turnId]/stream` — reconnect (D4)
+- Első event: **snapshot** — `{ type:'snapshot', status, partialText, activities }`.
+- Ha a forduló még aktív: feliratkozás az élő buszra (Tier-1), vagy DB-poll
+  ~750 ms-enként a `partialText`/`activities`/`status` deltájára (Tier-2).
+- Ha már terminál: snapshot + `done`, majd zárás.
+
+### 6.4 `GET /api/v1/agent-chat/turns?conversationId=…&active=1` — van-e futó?
+- A kliens a beszélgetés betöltésekor ezzel dönti el, kell-e reattach.
+
+---
+
+## 7. Loop-védelem (2. pillér)
+
+Egyetlen, tesztelhető döntéshozó a loop tetején és minden tool-hívás előtt:
+
+```ts
+type StopDecision =
+  | { continue: true }
+  | { continue: false; reason: 'max_turns_exhausted' | 'wallclock_timeout'
+        | 'tool_budget' | 'no_progress' | 'cancelled' }
+
+function evaluateLoopContinuation(state): StopDecision
+```
+
+Ellenőrzött feltételek:
+
+1. **`cancelled`** — `cancelRequested` (in-memory jel vagy DB-flag).
+2. **`max_turns_exhausted`** — meglévő `maxTurns` (változatlan).
+3. **`wallclock_timeout`** — `Date.now() - startedAt > maxWallClockMs`
+   (konfigurálható; default ~180_000 ms). Kör elején és hosszú tool-hívás után
+   is ellenőrizve.
+4. **`tool_budget`** — `toolCallCount >= maxToolCalls` (default ~60), a kör-limittől
+   függetlenül (egy körben több tool is futhat).
+5. **`no_progress`** — N (default 3) egymást követő kör, amelyben nincs új
+   asszisztens-szöveg ÉS csak már látott eredményt adó tool-hívás van. A meglévő
+   `REPEAT_LIMIT`-et kiegészíti (az per-args, ez per-kör aggregált).
+6. **(opcionális) `cost_budget`** — ha a gateway usage-t ad vissza, kumulált
+   token/költség-plafon.
+
+Leálláskor a loop **gráceful finalizál**: a `messages` közé kerül a részleges
+válasz + állapot-jelölő (pl. „⏹️ Leállítva — a részeredmény megőrizve", ill.
+kimerülésnél a meglévő `TOOL_LOOP_EXHAUSTED_MESSAGE`), és a `reason` az
+`AgentTurn`-re íródik.
+
+**Watchdog (D10):** külön ciklus/cron (a meglévő dispatcher-ütem mellé) az
+`AgentTurn` táblát nézi: `status ∈ {running,streaming}` ÉS
+`heartbeatAt < now() - staleMs` (default ~120_000 ms) → `failed`,
+`reason:'watchdog'`, `finishedAt=now()`, és lezáró rendszerüzenet a
+beszélgetésbe. Ez fogja a crash-elt / valóban beragadt futásokat.
+
+---
+
+## 8. Frontend változások (`agent-chat-panel.tsx`)
+
+### 8.1 Stop gomb (3. pillér)
+- Futás alatt (`isAgentTyping`) a **Küldés** gomb helyén/mellett **Stop**
+  (`⏹️ Leállítás`) jelenik meg.
+- Kattintás → `POST …/turns/{activeTurnId}/cancel`. `activeTurnId` a stream
+  első `turn` eventjéből (6.1).
+- A gomb `pending` állapotot mutat, amíg a `done`(cancelled) meg nem érkezik.
+- A `fetch`-hez **`AbortController`** is kell — de csak a *kliens-oldali*
+  olvasás megszakítására (pl. bezárás), ami **nem** cancel-eli a szervert (D5).
+  A szerver-cancel kizárólag a Stop-végponton át.
+
+### 8.2 Reconnect visszatéréskor (1. pillér UI-oldala)
+- A beszélgetés megnyitásakor / `selectSession` után:
+  1. `getConversationMessages` betölti a perzisztált előzményt (mint ma);
+  2. `GET …/turns?conversationId=…&active=1` — ha van aktív forduló, a kliens
+     `GET …/turns/{turnId}/stream`-mel reattach-el: snapshot (partialText +
+     activities) a megfelelő agent-buborékba, majd élő delta a `done`-ig.
+- Ha nincs aktív forduló: a végállapot már a `messages`-ben van, nincs teendő.
+
+### 8.3 Optimista buborék egyeztetése
+- A jelenlegi `optimistic-agent-*` buborékot a `turn` event `turnId`-jével
+  társítjuk, hogy reconnect és Stop után is a helyes buborék frissüljön.
+
+---
+
+## 9. Edge case-ek
+
+| # | Eset | Elvárt viselkedés |
+|---|------|-------------------|
+| E1 | Ablakbezárás loop közben | Loop tovább fut; finalizer perzisztál; visszatéréskor `messages`-ből látszik. |
+| E2 | Hard-refresh loop közben | 8.2 reattach: snapshot + élő delta; ha épp lezárult, a kész üzenet a historyban. |
+| E3 | Stop kattintás | Következő ellenőrzési ponton leáll; részeredmény + jelölő perzisztálva; `cancelled`. |
+| E4 | Stop egy már elindult tool-hívás közben | Az adott tool befejeződik (mellékhatás megtörténhet); új tool nem indul; utána finalize. |
+| E5 | Dupla küldés / két tab | Második POST `409` + `activeTurnId`; a kliens reattach-el, nem indít újat (D7). |
+| E6 | Szerver-crash loop közben | Watchdog lezárja (`failed`); a beszélgetés nem marad örökké „gépel" állapotban. |
+| E7 | Végtelen tool-ciklus | 7. guard (turns/wallclock/budget/no_progress) leállítja `exhausted`-del. |
+| E8 | Reconnect terminál futásra | Snapshot + `done` azonnal; nincs lógó SSE. |
+| E9 | Tenant/tulajdon-idegen cancel/reattach | 403; a forduló `createdById`+tenant ellenőrzött. |
+| E10 | Több app-instance (Tier-1) | Reattach csak azonos instance-en él; ezért Tier-2 a skálázható cél (8. WP). Tier-1-ben fallback: perzisztált snapshot poll. |
+| E11 | Folyamat-trigger ág (`tryStartChatTriggeredProcess`) | Változatlan: az már a Folyamat-futásra delegál, a válasz rövid; forduló-perzisztencia nem szükséges, de a finalizer-út közös. |
+
+---
+
+## 10. Deployment-topológia (D8)
+
+- **Tier-1 (in-process runner).** A runner-registry + event-busz a Node
+  processben él. „Háttér folytatódik" = amíg a process él. Reattach csak azonos
+  instance-en élő buszról; több instance esetén a reattach a perzisztált
+  snapshotra + DB-pollra esik vissza. Elég a jelenlegi (jellemzően single-node /
+  self-host) üzemhez, és ez az első szállítható increment.
+- **Tier-2 (dispatcher-birtokolt).** A forduló futtatását egy worker veszi fel
+  `lock_token` + `heartbeatAt` alapon (ahogy a ticket-dispatcher), a DB az
+  igazság forrása; bármely instance ki tudja szolgálni a reattach SSE-t
+  DB-pollból. A watchdog reclaim-eli a stale futásokat. Ez a horizontálisan
+  skálázható, crash-túlélő célállapot (a web-process újraindulása után is
+  folytatható/lezárható a forduló).
+
+---
+
+## 11. Munkacsomagok
+
+**1. hullám — perzisztencia + no-loss (Tier-1)**
+- **WP-1** `AgentTurn` modell + migráció + repository.
+- **WP-2** `AgentTurnRunner` (registry, busz, **finalizer** = D2 rés lezárása);
+  `sendMessageStream`/`sendMessage` átkötése a finalizerre.
+- **WP-3** `POST stream` átalakítás detached indításra + `turn` event.
+
+**2. hullám — védelem**
+- **WP-4** `evaluateLoopContinuation` (wallclock + tool_budget + no_progress) a
+  meglévő maxTurns/REPEAT_LIMIT mellé.
+- **WP-5** Watchdog (stale `AgentTurn` reclaim) + gráceful finalize.
+
+**3. hullám — kontroll + reconnect UI**
+- **WP-6** `cancel` végpont + loop cancel-ellenőrzés (D6).
+- **WP-7** `GET turns/[id]/stream` (snapshot+delta) + `GET turns?active=1`.
+- **WP-8** Frontend: Stop gomb, AbortController, reattach a session-betöltésbe.
+
+**4. hullám — skálázás (opcionális, ha kell)**
+- **WP-9** Tier-2: dispatcher-birtokolt futtatás lock+heartbeat, DB-poll reattach.
+
+---
+
+## 12. Tesztelési terv
+
+- **Finalizer-perzisztencia:** loop lefut, a fogyasztó (generátor/subscriber)
+  eldobva → az agent-üzenet mégis a `messages`-ben (E1).
+- **Guardok:** wallclock/tool_budget/no_progress unit-teszt determinisztikus
+  fake gateway-jel; `exhausted` + `reason` helyes.
+- **Cancel:** `cancelRequested` → a loop a következő ponton leáll, részszöveg
+  megőrizve, `cancelled` (E3); tool-közbeni cancel nem hagy félbe tool-t (E4).
+- **Aktív-forduló invariáns:** párhuzamos POST → `409` (E5).
+- **Watchdog:** heartbeat-elöregített forduló → `failed` (E6).
+- **Reattach:** aktív fordulóra GET stream snapshot+delta; terminálra azonnali
+  `done` (E2/E8).
+- **Jogosultság:** idegen tenant cancel/reattach → 403 (E9).
+
+---
+
+## 13. Nyitott kérdések
+
+- **Q1 (D8):** Elég-e most a **Tier-1** (single-node feltételezés), vagy
+  rögtön a **Tier-2** dispatcher-birtokolt futtatás kell? (Prod topológia kérdése.)
+- **Q2:** A záró szöveg streamelése is a fordulóhoz kötött legyen-e (streaming
+  státusz), vagy elég a loop-eredményt egyben perzisztálni és a reattach csak a
+  kész szöveget mutatja? (Élmény vs. egyszerűség.)
+- **Q3:** Kell-e a felhasználónak **explicit „folytatom a háttérben" jelzés**
+  bezáráskor (pl. toast), vagy legyen néma a háttér-folytatás?
+- **Q4:** A `partialText` perzisztálás alóli kivétel — tartalom-guard /
+  redakció (a `messages` content-store úton megy; a `partial_text` nyers). Kell-e
+  ugyanaz a content-guard a köztes snapshotra is?

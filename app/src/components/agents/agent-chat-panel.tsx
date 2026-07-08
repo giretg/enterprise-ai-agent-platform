@@ -4,12 +4,13 @@ import Link from 'next/link'
 import { useCallback, useEffect, useRef, useState, useTransition } from 'react'
 import { createPortal, flushSync } from 'react-dom'
 import {
+  archiveConversation,
   createAgentTaskTicket,
   createScheduledAgentTask,
   deleteMessageContent,
   listAgentChatSessions,
   loadAgentChatMessages,
-  promoteToTicket,
+  promoteConversationWithAi,
   uploadDocument,
 } from '@/app/actions/platform'
 import { listChatTriggerableProcessDefinitions } from '@/app/actions/process'
@@ -74,6 +75,8 @@ type AgentChatStreamEvent =
   | { type: 'done'; conversationId: string; messageId: string; ticketRefId?: string | null }
   | { type: 'error'; message?: string }
 
+const CHAT_SESSIONS_PAGE_SIZE = 10
+
 function isImageFile(file: File): boolean {
   return file.type.startsWith('image/')
 }
@@ -131,6 +134,22 @@ function upsertActivity(activities: AgentActivity[] | undefined, next: AgentActi
   const index = current.findIndex((activity) => activity.id === next.id)
   if (index < 0) return [...current, next]
   return current.map((activity, i) => (i === index ? { ...activity, ...next } : activity))
+}
+
+function FieldHelp({ description }: { description: string }) {
+  return (
+    <details className="group relative inline-flex">
+      <summary
+        className="flex h-4 w-4 cursor-help list-none items-center justify-center rounded-full border border-line bg-card text-[10px] font-semibold text-ink-faint transition-colors hover:border-coral/40 hover:text-coral-deep"
+        aria-label="Mező súgó"
+      >
+        ?
+      </summary>
+      <div className="pointer-events-none absolute left-1/2 top-[calc(100%+0.35rem)] z-20 w-56 -translate-x-1/2 rounded-lg border border-line bg-card px-2.5 py-2 text-[11px] leading-relaxed text-ink-soft opacity-0 shadow-lg transition-opacity group-hover:opacity-100 group-open:opacity-100">
+        {description}
+      </div>
+    </details>
+  )
 }
 
 function AgentActivityPanel({
@@ -328,6 +347,9 @@ export function AgentChatPanel({
   const [isAgentTyping, setIsAgentTyping] = useState(false)
   const [sessions, setSessions] = useState<ChatSession[]>([])
   const [sessionsLoading, setSessionsLoading] = useState(false)
+  const [sessionsLoadingMore, setSessionsLoadingMore] = useState(false)
+  const [sessionsHasMore, setSessionsHasMore] = useState(false)
+  const [sessionsNextOffset, setSessionsNextOffset] = useState(0)
   const [sessionsOpen, setSessionsOpen] = useState(false)
   const [sessionsFilter, setSessionsFilter] = useState<ChatSessionStatusFilter>('active')
   const [conversationStatus, setConversationStatus] = useState<'active' | 'archived'>('active')
@@ -335,6 +357,7 @@ export function AgentChatPanel({
   const [selectedProcessDefId, setSelectedProcessDefId] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
   const [ticketPending, startTicketTransition] = useTransition()
+  const [archivePending, startArchiveTransition] = useTransition()
   const scrollRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
@@ -364,12 +387,47 @@ export function AgentChatPanel({
   const refreshSessions = useCallback(async () => {
     setSessionsLoading(true)
     try {
-      const res = await listAgentChatSessions({ agentId: agent.id, status: sessionsFilter })
-      if (res.success) setSessions(res.data.sessions)
+      const res = await listAgentChatSessions({
+        agentId: agent.id,
+        status: sessionsFilter,
+        limit: CHAT_SESSIONS_PAGE_SIZE,
+        offset: 0,
+      })
+      if (res.success) {
+        setSessions(res.data.sessions)
+        setSessionsHasMore(res.data.hasMore)
+        setSessionsNextOffset(res.data.nextOffset)
+      }
     } finally {
       setSessionsLoading(false)
     }
   }, [agent.id, sessionsFilter])
+
+  const loadMoreSessions = useCallback(async () => {
+    if (sessionsLoading || sessionsLoadingMore || !sessionsHasMore) return
+    setSessionsLoadingMore(true)
+    try {
+      const res = await listAgentChatSessions({
+        agentId: agent.id,
+        status: sessionsFilter,
+        limit: CHAT_SESSIONS_PAGE_SIZE,
+        offset: sessionsNextOffset,
+      })
+      if (res.success) {
+        setSessions((prev) => {
+          const merged = [...prev]
+          for (const session of res.data.sessions) {
+            if (!merged.some((existing) => existing.id === session.id)) merged.push(session)
+          }
+          return merged
+        })
+        setSessionsHasMore(res.data.hasMore)
+        setSessionsNextOffset(res.data.nextOffset)
+      }
+    } finally {
+      setSessionsLoadingMore(false)
+    }
+  }, [agent.id, sessionsFilter, sessionsHasMore, sessionsLoading, sessionsLoadingMore, sessionsNextOffset])
 
   useEffect(() => {
     if (!open) return
@@ -486,7 +544,7 @@ export function AgentChatPanel({
     !pending &&
     !ticketPending &&
     !isAgentTyping
-  const controlsBusy = pending || ticketPending || isAgentTyping
+  const controlsBusy = pending || ticketPending || archivePending || isAgentTyping
   const composerDisabled = controlsBusy || conversationStatus === 'archived'
 
   const handleDeleteMessageContent = useCallback(
@@ -520,24 +578,46 @@ export function AgentChatPanel({
     startTicketTransition(async () => {
       setStatusMessage(null)
       setLastTicketId(null)
-      const res = await promoteToTicket({ conversationId, reason: 'chat-promote' })
+      const res = await promoteConversationWithAi({ conversationId })
       if (!res.success) {
         setStatusMessage(res.error)
         return
       }
-      setLastTicketId(res.data.ticketId)
-      setMessages((prev) => {
-        const lastAgentIndex = [...prev].reverse().findIndex((message) => message.role === 'agent')
-        if (lastAgentIndex < 0) return prev
-        const targetIndex = prev.length - 1 - lastAgentIndex
-        return prev.map((message, index) =>
-          index === targetIndex ? { ...message, ticketRefId: res.data.ticketId } : message,
+      const refreshed = await loadAgentChatMessages({ conversationId, agentId: agent.id })
+      if (refreshed.success) {
+        setConversationStatus(refreshed.data.conversation.status)
+        setMessages(
+          refreshed.data.messages.map((m) => ({
+            ...m,
+            createdAt: new Date(m.createdAt).toISOString(),
+          })),
         )
-      })
-      setStatusMessage('Beszélgetés ticketre emelve.')
+      }
+      if ('ticketId' in res.data) {
+        setLastTicketId(res.data.ticketId)
+        setStatusMessage('A ticket elkészült és belinkeltem a beszélgetésbe.')
+      } else {
+        setStatusMessage('Az AI visszakérdezett a ticket létrehozása előtt.')
+      }
       await refreshSessions()
     })
-  }, [conversationId, controlsBusy, refreshSessions])
+  }, [agent.id, conversationId, controlsBusy, refreshSessions])
+
+  const handleArchiveConversation = useCallback(() => {
+    if (!conversationId || controlsBusy || conversationStatus === 'archived') return
+    if (!window.confirm('Archiválod ezt a beszélgetést? Ezután csak olvasható lesz.')) return
+    startArchiveTransition(async () => {
+      setStatusMessage(null)
+      const res = await archiveConversation({ conversationId })
+      if (!res.success) {
+        setStatusMessage(res.error)
+        return
+      }
+      setConversationStatus('archived')
+      setStatusMessage('Beszélgetés archiválva.')
+      await refreshSessions()
+    })
+  }, [controlsBusy, conversationId, conversationStatus, refreshSessions])
 
   const handleSend = () => {
     if (!canSubmit) return
@@ -602,6 +682,7 @@ export function AgentChatPanel({
         const reader = response.body.getReader()
         const decoder = new TextDecoder()
         let buffer = ''
+        let streamTerminalEvent = false
 
         while (true) {
           const { done, value } = await reader.read()
@@ -667,10 +748,23 @@ export function AgentChatPanel({
                 setSelectedProcessDefId(null)
               }
               startTransition(() => { void refreshSessions() })
+              streamTerminalEvent = true
+              break
             } else if (event.type === 'error') {
               setMessages((prev) => prev.filter((m) => m.id !== optimisticUserId && m.id !== optimisticAgentId))
               setStatusMessage(event.message ?? 'Küldés sikertelen')
+              streamTerminalEvent = true
+              break
             }
+          }
+          if (streamTerminalEvent) break
+        }
+
+        if (streamTerminalEvent) {
+          try {
+            await reader.cancel()
+          } catch {
+            // A stream néha már lezárt állapotban van; ezt nyeljük.
           }
         }
       } catch (e) {
@@ -794,24 +888,29 @@ export function AgentChatPanel({
             </p>
           </div>
           <div className="hidden items-center gap-2 sm:flex">
-            <button
-              type="button"
-              onClick={startNewSession}
-              disabled={controlsBusy}
-              className="rounded-xl border border-line px-3 py-1.5 text-xs font-semibold text-ink-soft transition-colors hover:border-coral/40 hover:text-coral-deep disabled:opacity-40"
-            >
-              Új szál
-            </button>
             {conversationId && (
-              <button
-                type="button"
-                onClick={handlePromoteConversation}
-                disabled={controlsBusy}
-                className="rounded-xl border border-line px-3 py-1.5 text-xs font-semibold text-ink-soft transition-colors hover:border-honey/50 hover:bg-honey/10 hover:text-honey disabled:opacity-40"
-                title="Beszélgetés ticketre emelése"
-              >
-                Promote
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={handlePromoteConversation}
+                  disabled={controlsBusy || conversationStatus === 'archived'}
+                  className="rounded-xl border border-line px-3 py-1.5 text-xs font-semibold text-ink-soft transition-colors hover:border-honey/50 hover:bg-honey/10 hover:text-honey disabled:opacity-40"
+                  title="AI ticket készítése a beszélgetésből"
+                >
+                  {ticketPending ? 'Elemzés…' : 'Ticket készítése'}
+                </button>
+                {conversationStatus !== 'archived' && (
+                  <button
+                    type="button"
+                    onClick={handleArchiveConversation}
+                    disabled={controlsBusy || ticketPending || archivePending}
+                    className="rounded-xl border border-line px-3 py-1.5 text-xs font-semibold text-ink-soft transition-colors hover:border-coral/40 hover:bg-coral/10 hover:text-coral-deep disabled:opacity-40"
+                    title="Beszélgetés archiválása"
+                  >
+                    {archivePending ? 'Archiválás…' : 'Archiválás'}
+                  </button>
+                )}
+              </>
             )}
           </div>
           <button
@@ -844,9 +943,12 @@ export function AgentChatPanel({
               activeConversationId={conversationId}
               statusFilter={sessionsFilter}
               loading={sessionsLoading}
+              loadingMore={sessionsLoadingMore}
+              hasMore={sessionsHasMore}
               isBusy={controlsBusy}
               onSelect={selectSession}
               onNewChat={startNewSession}
+              onLoadMore={loadMoreSessions}
               onStatusFilterChange={setSessionsFilter}
               className="h-full"
             />
@@ -899,7 +1001,10 @@ export function AgentChatPanel({
               {chatProcessDefs.length > 0 && (
                 <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-ink-soft">
                   <label className="flex min-w-[13rem] flex-1 items-center gap-2">
-                    <span className="shrink-0">Folyamat indítása</span>
+                    <span className="inline-flex shrink-0 items-center gap-1.5">
+                      Folyamat indítása
+                      <FieldHelp description="Ha kiválasztasz egy folyamatot, a következő üzenet nem sima chat válasz lesz, hanem ezt a folyamatot indítja el." />
+                    </span>
                     <select
                       value={selectedProcessDefId ?? ''}
                       onChange={(e) => setSelectedProcessDefId(e.target.value || null)}
@@ -981,7 +1086,10 @@ export function AgentChatPanel({
 
           <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-ink-soft">
             <label className="flex min-w-[13rem] flex-1 items-center gap-2">
-              <span className="shrink-0">Ütemezés</span>
+              <span className="inline-flex shrink-0 items-center gap-1.5">
+                Ütemezés
+                <FieldHelp description="Időpont megadásával az üzenetből azonnali küldés helyett ütemezett task lesz." />
+              </span>
               <input
                 type="datetime-local"
                 value={ticketExecuteAfter}
@@ -993,7 +1101,10 @@ export function AgentChatPanel({
             {ticketExecuteAfter && (
               <>
                 <label className="flex items-center gap-2">
-                  <span className="shrink-0">Ismétlés</span>
+                  <span className="inline-flex shrink-0 items-center gap-1.5">
+                    Ismétlés
+                    <FieldHelp description="Megadja, hogy az ütemezett task egyszer fusson vagy ismétlődjön napi/heti/havi ritmusban." />
+                  </span>
                   <select
                     value={ticketRecurrence}
                     onChange={(e) => setTicketRecurrence(e.target.value as ScheduledTaskRecurrence)}
@@ -1008,7 +1119,10 @@ export function AgentChatPanel({
                 </label>
                 {ticketRecurrence !== 'none' && (
                   <label className="flex items-center gap-2">
-                    <span className="shrink-0">Max</span>
+                    <span className="inline-flex shrink-0 items-center gap-1.5">
+                      Max
+                      <FieldHelp description="Az ismétlődő ütemezés legfeljebb ennyi alkalommal fut le, utána leáll." />
+                    </span>
                     <input
                       type="number"
                       min={1}
@@ -1030,7 +1144,10 @@ export function AgentChatPanel({
                 disabled={composerDisabled}
                 className="h-3.5 w-3.5 accent-coral"
               />
-              <span>Run-as</span>
+              <span className="inline-flex items-center gap-1.5">
+                Run-as
+                <FieldHelp description="Engedélyezi, hogy a ticket végrehajtásakor a rendszer a nevedben futtathasson jogosultságot igénylő lépéseket." />
+              </span>
             </label>
           </div>
 
@@ -1064,6 +1181,7 @@ export function AgentChatPanel({
               disabled={composerDisabled}
               className="max-h-36 min-h-[44px] flex-1 resize-none bg-transparent px-1 py-2.5 text-sm text-ink placeholder:text-ink-faint focus:outline-none disabled:opacity-50"
             />
+            <FieldHelp description="Ide írd az üzenetet az agentnek. Enterrel küldöd, Shift+Enterrel új sort szúrsz be." />
 
             <button
               type="button"

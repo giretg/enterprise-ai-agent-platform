@@ -27,7 +27,7 @@ export function CreateSandboxAppForm({ onCancel }: { onCancel: () => void }) {
 
   return (
     <form onSubmit={handleSubmit} className="rounded-xl border border-line bg-night-1/30 p-5 space-y-4">
-      <h2 className="font-display text-lg font-semibold">Új A0 app létrehozása</h2>
+      <h2 className="font-display text-lg font-semibold">Új mini-app létrehozása</h2>
 
       {error && (
         <p className="rounded-lg border border-coral/30 bg-coral/10 px-4 py-2 text-sm text-coral">
@@ -101,7 +101,7 @@ export function CreateSandboxAppForm({ onCancel }: { onCancel: () => void }) {
       </div>
 
       <p className="text-xs text-ink-faint">
-        A0 · single_html · hálózat nélkül · platform session nélkül. Verzió az app megnyitása után adható hozzá.
+        A0 · single_html · hálózat nélkül · platform session nélkül. Verzió a mini-app megnyitása után adható hozzá.
       </p>
 
       <div className="flex gap-2">
@@ -110,7 +110,7 @@ export function CreateSandboxAppForm({ onCancel }: { onCancel: () => void }) {
           disabled={pending || name.trim().length < 3}
           className="rounded-full bg-sage/20 px-5 py-2 text-sm font-semibold text-sage hover:bg-sage/30 disabled:opacity-50"
         >
-          {pending ? 'Létrehozás…' : 'App létrehozása'}
+          {pending ? 'Létrehozás…' : 'Mini-app létrehozása'}
         </button>
         <button
           type="button"

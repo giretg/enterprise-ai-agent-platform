@@ -4,6 +4,7 @@ import {
   isNeonBranchRestoreConfigured,
   isTestDatabaseConfigured,
 } from '@/lib/database-mode'
+import { logger } from '@/lib/observability'
 
 const COPY_BATCH_SIZE = 500
 const NEON_API_BASE = 'https://console.neon.tech/api/v2'
@@ -221,7 +222,10 @@ export async function syncProductionDatabaseToTest(): Promise<DatabaseSyncResult
       return await syncViaNeonRestore()
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      console.warn('[database-sync] Neon restore failed, falling back to pg copy:', message)
+      logger.warn(
+        { event: 'database-sync', error: message },
+        'Neon restore failed, falling back to pg copy',
+      )
     }
   }
 

@@ -12,7 +12,7 @@ const navItems: NavEntry[] = [
     children: [
       { href: '/control-plane/agents', label: 'Agents' },
       { href: '/control-plane/behavior-profiles', label: 'Viselkedés-profilok' },
-      { href: '/control-plane/apps', label: 'App Registry' },
+      { href: '/control-plane/apps', label: 'Mini-appok' },
       { href: '/control-plane/sandbox-versions', label: 'Sandbox verziók' },
     ],
   },

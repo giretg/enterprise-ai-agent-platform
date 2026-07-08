@@ -12,6 +12,7 @@ import {
   PostgresKnowledgeChunkRepository,
 } from './knowledge-repository'
 import { PostgresRecipeRepository } from './recipe-repository'
+import { PostgresSkillRepository } from './skill-repository'
 import { PostgresPlaybookRepository } from './playbook-repository'
 import { PostgresPlaybookV2Repository } from './playbook-v2-repository'
 import { PostgresProcessRepository } from './process-repository'
@@ -58,6 +59,7 @@ export const repositories = {
   modelBudgets: new PostgresModelBudgetRepository(),
   toolBroker: new PostgresToolBrokerRepository(),
   recipes: new PostgresRecipeRepository(),
+  skills: new PostgresSkillRepository(),
   playbooks: new PostgresPlaybookRepository(),
   playbooksV2: new PostgresPlaybookV2Repository(),
   processes: new PostgresProcessRepository(),

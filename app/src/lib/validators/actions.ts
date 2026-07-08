@@ -286,6 +286,8 @@ export const loadAgentChatSchema = z.object({
 export const listAgentChatSessionsSchema = z.object({
   agentId: z.string().uuid(),
   status: z.enum(['active', 'archived', 'all']).optional(),
+  limit: z.number().int().min(1).max(50).optional(),
+  offset: z.number().int().min(0).optional(),
 })
 
 export const conversationIdSchema = z.object({

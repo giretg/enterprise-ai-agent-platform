@@ -1,5 +1,5 @@
 import { notFound } from 'next/navigation'
-import { getTicket, listTicketComments } from '@/app/actions/platform'
+import { getTicket, getTicketTransitions, listTicketComments } from '@/app/actions/platform'
 import { listProcessDefinitions } from '@/app/actions/process'
 import { getCurrentUser } from '@/auth'
 import { hasMinimumRole } from '@/auth/types'
@@ -20,15 +20,18 @@ export default async function TicketDetailPage({
   params: Promise<{ ticketId: string }>
 }) {
   const { ticketId } = await params
-  const [res, commentsRes, user, definitionsRes] = await Promise.all([
-    getTicket({ id: ticketId }),
+  const [commentsRes, user, definitionsRes, transitionsRes] = await Promise.all([
     listTicketComments({ ticketId }),
     getCurrentUser(),
     listProcessDefinitions({ status: 'active' }),
+    getTicketTransitions({ id: ticketId }),
   ])
+  // Fetched last so its state can never be older than the history above.
+  const res = await getTicket({ id: ticketId })
   if (!res.success) notFound()
 
   const ticket = res.data
+  const transitions = transitionsRes.success ? transitionsRes.data : []
   const isAdmin = user ? hasMinimumRole(user.role, 'admin') : false
   const canManageRunAs = user ? hasMinimumRole(user.role, 'operator') : false
   const canStartProcess = user ? hasMinimumRole(user.role, 'operator') : false
@@ -59,7 +62,7 @@ export default async function TicketDetailPage({
       {canStartProcess && <TicketProcessStartPanel ticket={ticket} definitions={definitions} />}
       <TicketFilesPanel ticketId={ticket.id} ticketState={ticket.state} />
       <TicketActions ticket={ticket} />
-      <TicketHistory ticketId={ticket.id} />
+      <TicketHistory transitions={transitions} />
     </div>
   )
 }

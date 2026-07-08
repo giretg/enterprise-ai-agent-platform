@@ -54,17 +54,17 @@ export function SandboxReportPanel({
   }
 
   return (
-    <Card title="A0 sandbox riport">
+    <Card title="Mini-app riport">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <p className="text-sm text-ink-soft">
-            Single-file HTML preview és export a wiki-válaszból.
+            Mini-app (single-file HTML) preview és export a wiki-válaszból.
           </p>
           {report && (
             <div className="mt-2 flex flex-wrap gap-2">
               <Badge tone="success">v{report.version}</Badge>
               <Badge tone="neutral">sha256 {report.htmlHash.slice(0, 12)}</Badge>
-              <Badge tone="neutral">sandbox preview · nincs hálózat / nincs platform API</Badge>
+              <Badge tone="neutral">mini-app preview · nincs hálózat / nincs platform API</Badge>
             </div>
           )}
         </div>

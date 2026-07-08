@@ -246,6 +246,35 @@ enum RecipeVersionStatus {
   retired
 }
 
+// ── Skill-katalógus (spec: skill-catalog-spec.md) ───────────────────────────
+// Importálható/szerezhető, governance alá vont agent-skillek. A skill puha része
+// (instrukciók) promptba injektálva; a kemény része (`requires` capability-manifeszt)
+// a Tool Brokerrel kikényszerítve. Fázis 1: kizárólag T0/T1 (instrukció-only).
+enum SkillCatalogScope {
+  global // admin-kurált, tenantoknak read-only
+  tenant // tenant-lokális, más tenantnak sosem látható
+}
+
+enum SkillSourceType {
+  authored
+  imported
+}
+
+enum SkillRiskTier {
+  t0 // csak instrukció, nincs tool-igény, nincs kód
+  t1 // instrukció + tool-igény, nincs kód
+  t2 // kód, nincs egress/secret (Fázis 2)
+  t3 // kód + háló/secret (Fázis 2)
+}
+
+enum SkillVersionStatus {
+  proposed
+  approved
+  active
+  retired
+  rolled_back
+}
+
 enum TicketType {
   interaction
   training
@@ -474,6 +503,7 @@ model User {
   suspendedUsers                User[]               @relation("UserSuspendedBy")
   approvedMemoryVersions        MemoryVersion[]      @relation("MemoryApprovedBy")
   approvedRecipeVersions        RecipeVersion[]      @relation("RecipeApprovedBy")
+  approvedSkillVersions         SkillVersion[]       @relation("SkillApprovedBy")
   approvedPlaybookVersions      PlaybookVersion[]    @relation("PlaybookApprovedBy")
   createdTickets                Ticket[]             @relation("TicketCreatedBy")
   ticketCommentsAuthored        TicketComment[]      @relation("TicketCommentAuthorUser")
@@ -671,6 +701,7 @@ model Agent {
   modelCalls         ModelCall[]
   agentConnectors    AgentConnector[]
   capabilities       Capability[]
+  agentSkills        AgentSkill[]
   toolCalls          ToolCall[]
   writeGateTokens    WriteGateToken[]
   evals              Eval[]
@@ -766,6 +797,60 @@ model RecipeVersion {
 
   @@unique([recipeId, version])
   @@map("recipe_versions")
+}
+
+// ── Skill-katalógus modellek (spec §3) ──────────────────────────────────────
+// A meglévő `Recipe`-hez NEM nyúlunk (az az agent tanítási/interakciós útja).
+model Skill {
+  id           String            @id @default(uuid()) @db.Uuid
+  name         String
+  description  String // Level-0 index szöveg (méret-limitált)
+  catalogScope SkillCatalogScope @default(tenant)
+  tenantId     String?           @map("tenant_id") @db.Uuid // null ⇔ global
+  sourceType   SkillSourceType   @default(authored)
+  provenance   Json? // forrás-URL/id, eredeti hash, importált-formátum
+  license      String? // SPDX vagy 'proprietary' / null
+  riskTier     SkillRiskTier // F1: csak t0/t1
+  createdAt    DateTime          @default(now()) @map("created_at") @db.Timestamptz
+
+  versions SkillVersion[]
+
+  @@index([tenantId])
+  @@map("skills")
+}
+
+model SkillVersion {
+  id           String             @id @default(uuid()) @db.Uuid
+  skillId      String             @map("skill_id") @db.Uuid
+  version      Int
+  content      Json // { instructions[], triggerKeywords[], parameters[] }
+  requires     Json // capability-manifeszt: [{ toolName, reason }]
+  status       SkillVersionStatus @default(proposed)
+  contentHash  String             @map("content_hash")
+  signature    String? // WriteGateToken-mechanizmussal aláírva (WP-7)
+  approvedById String?            @map("approved_by") @db.Uuid
+  createdAt    DateTime           @default(now()) @map("created_at") @db.Timestamptz
+
+  skill       Skill        @relation(fields: [skillId], references: [id], onDelete: Cascade)
+  approvedBy  User?        @relation("SkillApprovedBy", fields: [approvedById], references: [id])
+  agentSkills AgentSkill[]
+
+  @@unique([skillId, version])
+  @@map("skill_versions")
+}
+
+model AgentSkill {
+  agentId        String   @map("agent_id") @db.Uuid
+  skillVersionId String   @map("skill_version_id") @db.Uuid
+  enabled        Boolean  @default(true)
+  assignedById   String?  @map("assigned_by") @db.Uuid
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  agent        Agent        @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  skillVersion SkillVersion @relation(fields: [skillVersionId], references: [id], onDelete: Cascade)
+
+  @@id([agentId, skillVersionId])
+  @@map("agent_skills")
 }
 
 model Playbook {

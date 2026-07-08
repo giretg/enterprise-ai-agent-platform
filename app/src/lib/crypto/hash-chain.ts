@@ -149,6 +149,40 @@ export function signWriteGateToken(params: {
   return createHmac('sha256', WRITE_GATE_SECRET).update(msg).digest('hex')
 }
 
+/**
+ * Skill-verzió aláírás (skill-catalog-spec §D12). A WriteGateToken-mechanizmust
+ * reuse-oljuk: HMAC a verzió identitása + tartalom-hash + jóváhagyó felett, így
+ * bármely futásra bizonyítható, MELYIK skill-verzió volt aktív és hogy nem
+ * hamisították. A signature a `SkillVersion.signature` mezőbe kerül.
+ */
+export function signSkillVersion(params: {
+  skillVersionId: string
+  contentHash: string
+  approverId: string
+}): string {
+  const msg = ['skill', params.skillVersionId, params.contentHash, params.approverId].join(':')
+  return createHmac('sha256', WRITE_GATE_SECRET).update(msg).digest('hex')
+}
+
+export function verifySkillVersionSignature(params: {
+  skillVersionId: string
+  contentHash: string
+  approverId: string
+  signature: string
+}): boolean {
+  const expected = signSkillVersion(params)
+  try {
+    const a = Buffer.from(expected, 'hex')
+    const b = Buffer.from(params.signature, 'hex')
+    if (a.length !== b.length) return false
+    let diff = 0
+    for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i]
+    return diff === 0
+  } catch {
+    return false
+  }
+}
+
 export function verifyWriteGateSignature(params: {
   tokenHash: string
   expectedDiffHash: string

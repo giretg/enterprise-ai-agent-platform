@@ -199,6 +199,17 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'recipe.create',
   'recipe.version',
 
+  // Skill-katalógus (skill-catalog-spec.md, WP-7)
+  'skill.imported',
+  'skill.created',
+  'skill.version.proposed',
+  'skill.version.approved',
+  'skill.assigned',
+  'skill.unassigned',
+  'skill.loaded',
+  'skill.rolled_back',
+  'skill.access_denied',
+
   // Sandbox App Registry
   'retention.sweep',
   'sandbox_app.access_denied',
@@ -206,6 +217,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'sandbox_app.create',
   'sandbox_app.export',
   'sandbox_app.preview',
+  'sandbox_app.read',
   'sandbox_app.validation_failed',
   'sandbox_app.version.activate',
   'sandbox_app.version.create',

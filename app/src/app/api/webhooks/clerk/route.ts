@@ -3,6 +3,7 @@ import type { UserRole } from '@prisma/client'
 import type { NextRequest } from 'next/server'
 import { prisma } from '@/lib/db'
 import { syncClerkUser, DomainNotAllowedError } from '@/auth/clerk-user-sync'
+import { logger } from '@/lib/observability'
 
 function readClerkRole(metadata: unknown): UserRole | null {
   const role = (metadata as { role?: string } | undefined)?.role
@@ -32,7 +33,7 @@ export async function POST(req: NextRequest) {
   try {
     evt = await verifyWebhook(req)
   } catch (err) {
-    console.error('Clerk webhook verification failed:', err)
+    logger.error({ event: 'clerk.webhook', error: String(err) }, 'Clerk webhook verification failed')
     return new Response('Verification failed', { status: 400 })
   }
 
@@ -61,7 +62,7 @@ export async function POST(req: NextRequest) {
 
   if (evt.type === 'user.deleted') {
     // FK-k miatt nem törlünk — login-kor upsert továbbra is működik
-    console.info('Clerk user.deleted:', evt.data.id)
+    logger.info({ event: 'clerk.webhook', userId: evt.data.id }, 'Clerk user.deleted')
   }
 
   return new Response('OK', { status: 200 })

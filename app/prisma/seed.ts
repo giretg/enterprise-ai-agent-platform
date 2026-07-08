@@ -21,6 +21,12 @@ import { BUILTIN_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/bu
 import { GLOBAL_CUSTOM_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/custom-template-seeds'
 import { upsertConnectorByTypeName } from '../src/lib/connector-upsert'
 import { ensureStarterStepTemplates } from '../src/domain/step-template/step-template-catalog'
+import {
+  computeSkillContentHash,
+  type SkillContent,
+  type SkillRequirement,
+} from '../src/lib/skill/skill-content'
+import { signSkillVersion } from '../src/lib/crypto/hash-chain'
 
 config({ path: path.join(process.cwd(), '.env.local') })
 config({ path: path.join(process.cwd(), '.env') })
@@ -1226,6 +1232,96 @@ async function ensureWikiRecipe(agentId: string, approverId: string) {
   })
 }
 
+/**
+ * Skill-katalógus demo seed (skill-catalog-spec.md, WP-1). Két GLOBAL T0/T1
+ * skill aktív, aláírt verzióval — a katalógus és a hozzárendelés UI-hoz.
+ * Idempotens (név alapján). A verzió aláírása a runtime signSkillVersion-nel
+ * egyezik (reprodukálhatóság, D12).
+ */
+async function ensureDemoSkills(approverId: string) {
+  const demos: Array<{
+    name: string
+    description: string
+    riskTier: 't0' | 't1'
+    content: SkillContent
+    requires: SkillRequirement[]
+  }> = [
+    {
+      name: 'reconciliation-checklist',
+      description:
+        'Bankszámla-egyeztetés lépésről lépésre: kivonat betöltése, tételpárosítás, eltérés-jelentés. Instrukció-only (T0).',
+      riskTier: 't0',
+      content: {
+        instructions: [
+          '# Cél\nAdott időszakra egyeztesd a banki kivonatot a főkönyvi tételekkel, és jelezd az eltéréseket.',
+          '## Lépések\n1. Töltsd be a kivonatot és a főkönyvi kivonatot.\n2. Párosítsd a tételeket dátum + összeg alapján.\n3. A nem párosított tételeket listázd külön, indoklással.\n4. Készíts rövid egyeztetési összefoglalót.',
+        ],
+        triggerKeywords: ['egyeztetés', 'reconciliation', 'kivonat'],
+        parameters: [],
+      },
+      requires: [],
+    },
+    {
+      name: 'kb-answer-helper',
+      description:
+        'Tudásbázis-alapú válaszadás: a jóváhagyott KB-ból keres és idézettel válaszol. Tool-igény: kb_search (T1).',
+      riskTier: 't1',
+      content: {
+        instructions: [
+          '# Cél\nKérdésre kizárólag a jóváhagyott tudásbázis alapján válaszolj, forrás-megjelöléssel.',
+          '## Munkamenet\n1. Fogalmazd át a kérdést keresési kulcsszavakká.\n2. Keress a tudásbázisban (kb_search).\n3. Csak a talált forrásokra támaszkodva válaszolj; ha nincs elég információ, mondd ki.',
+        ],
+        triggerKeywords: ['tudásbázis', 'kb', 'válasz'],
+        parameters: [],
+      },
+      requires: [{ toolName: 'kb_search', reason: 'Tudásbázis-keresés a válaszhoz' }],
+    },
+  ]
+
+  for (const demo of demos) {
+    const existing = await prisma.skill.findFirst({
+      where: { name: demo.name, tenantId: null },
+    })
+    if (existing) continue
+
+    const contentHash = computeSkillContentHash(demo.content, demo.requires)
+    const skill = await prisma.skill.create({
+      data: {
+        name: demo.name,
+        description: demo.description,
+        catalogScope: 'global',
+        tenantId: null,
+        sourceType: 'authored',
+        provenance: { origin: 'authored', format: 'seed' },
+        license: null,
+        riskTier: demo.riskTier,
+        versions: {
+          create: {
+            version: 1,
+            content: demo.content as unknown as object,
+            requires: demo.requires as unknown as object,
+            contentHash,
+            status: 'active',
+            approvedById: approverId,
+          },
+        },
+      },
+      include: { versions: true },
+    })
+
+    const version = skill.versions[0]
+    const signature = signSkillVersion({
+      skillVersionId: version.id,
+      contentHash,
+      approverId,
+    })
+    await prisma.skillVersion.update({
+      where: { id: version.id },
+      data: { signature },
+    })
+  }
+}
+
 // Friss demó API-kulcs az agentnek + lokális fájlba írás (acceptance + kézi teszt).
 async function ensureDemoApiKey(agentId: string) {
   const rawKey = `cp_sk_${randomBytes(16).toString('hex')}`
@@ -1401,6 +1497,7 @@ async function main() {
     await ensureDemoApiKey(existingAgent.id)
     await ensureBuiltinConnectorTemplates()
     await ensureGlobalCustomConnectorTemplates()
+    await ensureDemoSkills(admin.id)
     return
   }
 
@@ -1480,6 +1577,7 @@ async function main() {
   await ensurePlaybookAuthorAgent(admin.id)
   await ensureWikiRecipe(agent.id, admin.id)
   await ensureWikiPlaybook(admin.id)
+  await ensureDemoSkills(admin.id)
   await ensureDemoApiKey(agent.id)
   await ensureBuiltinConnectorTemplates()
   await ensureGlobalCustomConnectorTemplates()

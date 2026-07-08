@@ -32,10 +32,11 @@ export const NORMAL_TOOL_CAPABILITY_GROUPS = [
     tools: ['docx_read', 'pdf_read', 'pdf_create', 'create_html'],
   },
   {
-    label: 'Sandbox App (App Registry)',
+    label: 'Mini-app',
     tools: [
       'sandbox_app.create', 'sandbox_app.update_artifact',
       'sandbox_app.preview', 'sandbox_app.export',
+      'sandbox_app.list', 'sandbox_app.get',
     ],
   },
   {

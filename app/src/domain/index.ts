@@ -35,6 +35,7 @@ import { WorkspaceStorage } from '@/domain/file-editor/workspace-storage'
 import { FileEditorService } from '@/domain/file-editor/file-editor-service'
 import { WorkspaceLifecycleService } from '@/domain/file-editor/workspace-lifecycle-service'
 import { RecipeService } from '@/domain/recipe/recipe-service'
+import { SkillService } from '@/domain/skill/skill-service'
 import { ConversationService } from '@/domain/conversation/conversation-service'
 import { PlaybookService } from '@/domain/playbook/playbook-service'
 import { PlaybookV2Service } from '@/domain/playbook/playbook-v2-service'
@@ -548,6 +549,7 @@ toolBrokerService.setDelegationProcessor(async ({ ticketId, targetAgentId }) => 
 toolBrokerService.setPlaybookTransitioner(ticketStateMachine)
 const auditChainService = new AuditChainService(repositories.audit)
 const recipeService = new RecipeService(repositories.recipes, repositories.audit)
+const skillService = new SkillService(repositories.skills, repositories.audit, repositories.toolBroker)
 const scheduledTaskService = new ScheduledTaskService(
   repositories.scheduledTasks,
   repositories.tickets,
@@ -630,6 +632,7 @@ export const services = {
   dispatcher: dispatcherService,
   toolBroker: toolBrokerService,
   recipes: recipeService,
+  skills: skillService,
   playbooks: playbookService,
   playbooksV2: playbookV2Service,
   processes: processService,
