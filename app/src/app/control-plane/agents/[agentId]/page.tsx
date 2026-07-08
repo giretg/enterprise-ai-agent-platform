@@ -8,6 +8,7 @@ import {
   listBehaviorProfiles,
 } from '@/app/actions/platform'
 import { listConnectorCatalog } from '@/app/actions/provisioning'
+import { getAgentSkillsAction, listAssignableSkillsAction } from '@/app/actions/skills'
 import { getCurrentUser } from '@/auth'
 import { hasMinimumRole } from '@/auth/types'
 import { Badge, Card } from '@/components/ui/shell'
@@ -15,6 +16,7 @@ import { ExpandableContent } from '@/components/ui/expandable-content'
 import { Collapsible } from '@/components/ui/collapsible'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { AgentChatButton } from '@/components/agents/agent-chat-panel'
+import { AgentMiniAppsLink } from '@/components/agents/agent-mini-apps-link'
 import { UpdateInstructionForm } from '@/components/agents/update-instruction-form'
 import { UpdatePersonaForm } from '@/components/agents/update-persona-form'
 import { AgentAvatarUpload } from '@/components/agents/agent-avatar-upload'
@@ -25,6 +27,7 @@ import { AssignExistingConnectorForm } from '@/components/agents/assign-existing
 import { ApiConnectorList } from '@/components/agents/api-connector-list'
 import { AgentKnowledgeBasePanel } from '@/components/agents/agent-knowledge-base-panel'
 import { AgentCapabilitiesPanel } from '@/components/agents/agent-capabilities-panel'
+import { AgentSkillsPanel } from '@/components/agents/agent-skills-panel'
 import { WebSearchPolicyCard } from '@/components/agents/web-search-policy-card'
 import { AgentLifecycleControls } from '@/components/agents/agent-lifecycle-controls'
 import { BehaviorProfileBox } from '@/components/agents/behavior-profile-box'
@@ -38,7 +41,6 @@ import {
   selfEvolutionSummary,
 } from '@/lib/agent-profile-labels'
 import { personaFor, humanStatus } from '@/lib/agent-persona'
-import { sandboxKindForAgent, sandboxLabelForKind } from '@/lib/agent-kind'
 import { enabledModelProviders } from '@/lib/model-policy'
 
 function ProfileSection({
@@ -74,14 +76,17 @@ export default async function AgentDetailPage({
   params: Promise<{ agentId: string }>
 }) {
   const { agentId } = await params
-  const [res, govRes, policyRes, catalogRes, profilesRes, user] = await Promise.all([
-    getAgent({ id: agentId }),
-    getAgentGovernance({ agentId }),
-    getModelPolicy(),
-    listConnectorCatalog(),
-    listBehaviorProfiles(),
-    getCurrentUser(),
-  ])
+  const [res, govRes, policyRes, catalogRes, profilesRes, user, agentSkillsRes, assignableSkillsRes] =
+    await Promise.all([
+      getAgent({ id: agentId }),
+      getAgentGovernance({ agentId }),
+      getModelPolicy(),
+      listConnectorCatalog(),
+      listBehaviorProfiles(),
+      getCurrentUser(),
+      getAgentSkillsAction(agentId),
+      listAssignableSkillsAction(agentId),
+    ])
   if (!res.success) notFound()
 
   const isAdmin = user ? hasMinimumRole(user.role, 'admin') : false
@@ -102,7 +107,6 @@ export default async function AgentDetailPage({
   const persona = personaFor(agent.name, agent)
   const defaultPersona = personaFor(agent.name)
   const mood = humanStatus(agent.status)
-  const sandboxKind = sandboxKindForAgent(agent)
   const evolutionProfile = resolveSelfEvolutionProfile(agent.selfEvolutionProfile)
   const roleInfo = agentRoleLabel(agent.role)
   const modelProviders = policyRes.success ? enabledModelProviders(policyRes.data) : []
@@ -151,15 +155,7 @@ export default async function AgentDetailPage({
               personaTrait: agent.personaTrait,
             }}
           />
-          <Link
-            href={`/sandbox/${agent.id}`}
-            className="rounded-full border border-line bg-card px-5 py-2.5 text-sm font-semibold text-ink-soft transition-colors hover:border-sage/50 hover:text-sage"
-          >
-            Sandbox munkatér
-          </Link>
-          <Badge tone={sandboxKind === 'generic' ? 'neutral' : 'success'}>
-            {sandboxLabelForKind(sandboxKind)}
-          </Badge>
+          <AgentMiniAppsLink agentId={agent.id} />
           <span className="text-sm text-ink-faint">
             {roleInfo.title} — {roleInfo.description}
           </span>
@@ -417,6 +413,14 @@ export default async function AgentDetailPage({
                   agentId={agent.id}
                   currentCapabilities={governance.capabilities}
                   isOrchestrator={agent.role === 'orchestrator'}
+                />
+              )}
+
+              {isAdmin && (
+                <AgentSkillsPanel
+                  agentId={agent.id}
+                  assigned={agentSkillsRes.success ? agentSkillsRes.data : []}
+                  assignable={assignableSkillsRes.success ? assignableSkillsRes.data : []}
                 />
               )}
             </div>

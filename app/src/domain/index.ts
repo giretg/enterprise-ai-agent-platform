@@ -504,6 +504,7 @@ const provisioningAssistant = new ProvisioningAssistant({
     },
   },
 })
+const skillService = new SkillService(repositories.skills, repositories.audit, repositories.toolBroker)
 const agentChatRuntime = new AgentChatRuntime(
   repositories.agents,
   repositories.documents,
@@ -517,6 +518,7 @@ const agentChatRuntime = new AgentChatRuntime(
   repositories.processDefinitions,
   repositories.playbooksV2,
   processService,
+  skillService,
 )
 const wikiRuntime = new WikiAgentRuntime(
   repositories.agents,
@@ -540,6 +542,7 @@ const generalTaskRuntime = new GeneralTaskRuntime(
   repositories.playbooksV2,
   repositories.processes,
   conversationService,
+  skillService,
 )
 toolBrokerService.setDelegationProcessor(async ({ ticketId, targetAgentId }) => {
   await wikiRuntime.processTicket({ ticketId, agentId: targetAgentId })
@@ -549,7 +552,6 @@ toolBrokerService.setDelegationProcessor(async ({ ticketId, targetAgentId }) => 
 toolBrokerService.setPlaybookTransitioner(ticketStateMachine)
 const auditChainService = new AuditChainService(repositories.audit)
 const recipeService = new RecipeService(repositories.recipes, repositories.audit)
-const skillService = new SkillService(repositories.skills, repositories.audit, repositories.toolBroker)
 const scheduledTaskService = new ScheduledTaskService(
   repositories.scheduledTasks,
   repositories.tickets,

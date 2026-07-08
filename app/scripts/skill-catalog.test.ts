@@ -27,6 +27,8 @@ import {
   buildLoadedSkillPrompt,
   type AssignedSkillEntry,
 } from '../src/lib/skill/skill-context'
+import { runAgentToolLoop, type LoadSkillFn } from '../src/domain/agent/chat-tool-loop'
+import { SkillService } from '../src/domain/skill/skill-service'
 
 let failures = 0
 function check(name: string, fn: () => void | Promise<void>) {
@@ -281,6 +283,147 @@ async function main() {
     assert.ok(body.includes('Első lépés.'))
     assert.ok(body.includes('Második lépés.'))
     assert.ok(body.includes('kulcs'))
+  })
+
+  console.log('Live runtime-bekötés / load_skill tool (§WP-5)')
+
+  await check('a loop injektálja az indexet és a load_skill híváskor a Level-1 törzset adja vissza', async () => {
+    // Stub gateway: 1. kör → load_skill hívás; 2. kör → záró szöveg.
+    let turn = 0
+    const systemPrompts: string[] = []
+    const gateway = {
+      call: async (input: { messages: Array<{ role: string; content?: string }>; tools?: unknown[] }) => {
+        for (const m of input.messages) {
+          if (m.role === 'system' && typeof m.content === 'string') systemPrompts.push(m.content)
+        }
+        turn++
+        if (turn === 1) {
+          assert.ok(
+            (input.tools ?? []).some((t) => (t as { name?: string }).name === 'load_skill'),
+            'a load_skill tool elérhető',
+          )
+          return {
+            content: '',
+            toolCalls: [{ id: 'c1', name: 'load_skill', input: { skillVersionId: 'v1' } }],
+          }
+        }
+        return { content: 'Kész válasz.', toolCalls: [] }
+      },
+    }
+
+    let loadedId: string | null = null
+    const loadSkill: LoadSkillFn = async (skillVersionId) => {
+      loadedId = skillVersionId
+      return { ok: true, instructions: '# Skill: Alpha (v1)\n\nElső lépés.' }
+    }
+
+    const result = await runAgentToolLoop({
+      gateway: gateway as never,
+      toolBroker: {} as never,
+      toolCaps: {} as never,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-1' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'Segíts.' }],
+      modelConfig: { provider: 'stub', model: 'stub' } as never,
+      allowedTools: [],
+      skillIndexPrompt: buildSkillIndexPrompt(entries),
+      loadSkill,
+    })
+
+    assert.equal(loadedId, 'v1', 'a loop a modell által kért skillVersionId-t töltötte be')
+    assert.ok(
+      systemPrompts.some((p) => p.includes('Alpha') && p.includes('load_skill')),
+      'a Level-0 index rendszer-üzenetként bekerült',
+    )
+    assert.ok(result.content.includes('Kész válasz.'))
+    assert.equal(result.toolCallCount, 1)
+  })
+
+  await check('load_skill ismeretlen/nem hozzárendelt id → ELUTASÍTVA (deny-by-default)', async () => {
+    let turn = 0
+    const gateway = {
+      call: async () => {
+        turn++
+        if (turn === 1) {
+          return {
+            content: '',
+            toolCalls: [{ id: 'c1', name: 'load_skill', input: { skillVersionId: 'nope' } }],
+          }
+        }
+        return { content: 'Nincs ilyen skill.', toolCalls: [] }
+      },
+    }
+    const loadSkill: LoadSkillFn = async () => ({ ok: false, reason: 'nincs hozzárendelve' })
+
+    const result = await runAgentToolLoop({
+      gateway: gateway as never,
+      toolBroker: {} as never,
+      toolCaps: {} as never,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-1' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'Segíts.' }],
+      modelConfig: { provider: 'stub', model: 'stub' } as never,
+      allowedTools: [],
+      skillIndexPrompt: buildSkillIndexPrompt(entries),
+      loadSkill,
+    })
+    assert.equal(result.deniedCount, 1, 'a megtagadott betöltés denied-ként számolódik')
+  })
+
+  console.log('')
+  console.log('Futásidejű snapshot perzisztálás (§WP-5/D9/D12)')
+
+  await check('nem-üres snapshot → audit skill.run_snapshot a futáshoz kötve', async () => {
+    const appended: Array<Record<string, unknown>> = []
+    const skillsRepo = {
+      listEnabledForAgent: async () => [
+        { skillVersionId: 'v1' },
+        { skillVersionId: 'v2' },
+      ],
+    }
+    const auditRepo = {
+      append: async (data: Record<string, unknown>) => {
+        appended.push(data)
+        return data
+      },
+    }
+    const svc = new SkillService(skillsRepo as never, auditRepo as never, {} as never)
+    const ids = await svc.recordRunSkillSnapshot({
+      agentId: 'agent-1',
+      context: { ticketId: 'ticket-9' },
+      actorTenantId: TENANT_A,
+    })
+    assert.deepEqual(ids, ['v1', 'v2'])
+    assert.equal(appended.length, 1, 'egy audit-bejegyzés keletkezik')
+    assert.equal(appended[0].action, 'skill.run_snapshot')
+    assert.equal(appended[0].ticketId, 'ticket-9', 'a futáshoz (ticket) kötve')
+    assert.deepEqual(
+      (appended[0].metadata as { skillVersionIds: string[] }).skillVersionIds,
+      ['v1', 'v2'],
+    )
+  })
+
+  await check('üres snapshot (nincs skill) → NINCS audit-bejegyzés', async () => {
+    const appended: unknown[] = []
+    const skillsRepo = { listEnabledForAgent: async () => [] }
+    const auditRepo = {
+      append: async (d: unknown) => {
+        appended.push(d)
+        return d
+      },
+    }
+    const svc = new SkillService(skillsRepo as never, auditRepo as never, {} as never)
+    const ids = await svc.recordRunSkillSnapshot({
+      agentId: 'agent-1',
+      context: { conversationId: 'conv-1' },
+      actorTenantId: null,
+    })
+    assert.deepEqual(ids, [])
+    assert.equal(appended.length, 0, 'üres snapshotnál nem ír auditot')
   })
 
   console.log('')

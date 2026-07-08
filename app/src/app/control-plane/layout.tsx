@@ -12,6 +12,7 @@ const navItems: NavEntry[] = [
     children: [
       { href: '/control-plane/agents', label: 'Agents' },
       { href: '/control-plane/behavior-profiles', label: 'Viselkedés-profilok' },
+      { href: '/control-plane/skills', label: 'Skill-katalógus' },
       { href: '/control-plane/apps', label: 'Mini-appok' },
       { href: '/control-plane/sandbox-versions', label: 'Sandbox verziók' },
     ],
@@ -58,7 +59,6 @@ export default function ControlPlaneLayout({ children }: { children: React.React
       navItems={navItems}
       accentColor="slate"
       pathname={pathname}
-      switchLink={{ href: '/sandbox', label: '→ Sandbox' }}
       headerExtra={<TenantSwitcher />}
     >
       {children}

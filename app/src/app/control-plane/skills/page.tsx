@@ -1,0 +1,45 @@
+import { getCurrentUser } from '@/auth'
+import { hasMinimumRole } from '@/auth/types'
+import { Card } from '@/components/ui/shell'
+import { listSkillCatalogAction } from '@/app/actions/skills'
+import { SkillCatalogManager } from '@/components/skills/skill-catalog-manager'
+
+export default async function SkillCatalogPage() {
+  const user = await getCurrentUser()
+  const isAdmin = user ? hasMinimumRole(user.role, 'admin') : false
+  const canView = user ? hasMinimumRole(user.role, 'operator') : false
+
+  if (!canView) {
+    return (
+      <Card>
+        <p className="text-sm text-ink-faint">
+          A skill-katalógus megtekintéséhez legalább operátor jogosultság szükséges.
+        </p>
+      </Card>
+    )
+  }
+
+  const res = await listSkillCatalogAction()
+  const skills = res.success ? res.data : []
+
+  return (
+    <div className="space-y-8">
+      <div className="animate-rise">
+        <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">
+          Governance alá vont skillek
+        </p>
+        <h1 className="mt-2 font-display text-[2.4rem] font-semibold leading-tight">
+          Skill-katalógus
+        </h1>
+        <p className="mt-2 max-w-2xl text-ink-soft">
+          Importálható (<code>SKILL.md</code>) vagy appon belül szerzett, verziózott,
+          aláírt agent-skillek. A skill „ereje” mindig annyi, amennyi capability-t az
+          admin melléad — a szöveg maga tehetetlen. Minden verzió a write-gate kapun megy
+          át: <em>proposed → approved → active</em>, rollbackkel.
+        </p>
+      </div>
+
+      <SkillCatalogManager skills={skills} isAdmin={isAdmin} />
+    </div>
+  )
+}

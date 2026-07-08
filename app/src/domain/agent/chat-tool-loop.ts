@@ -518,6 +518,25 @@ const TOOL_RESULT_READ_DEFINITION: ToolDefinition = {
   inputSchema: objectSchema({ path: STR, offset: NUM, limit: NUM }, ['path']),
 }
 
+// ── Progresszív skill-betöltés (skill-catalog-spec.md §D7, WP-5) ────────────
+// A `load_skill` NEM capability-alapú connector-tool, hanem a Level-0 indexben
+// felkínált, hozzárendelt skillek teljes instrukciójának behúzása. Az enforcement
+// fail-closed a SkillService-ben (csak ténylegesen hozzárendelt, enabled verzió),
+// ezért a loop külön ágon kezeli (a capability-allowlist NEM vonatkozik rá).
+const LOAD_SKILL_TOOL = 'load_skill'
+
+/** A `load_skill` végrehajtó — a SkillService.loadSkillForAgent-re köt (D7). */
+export type LoadSkillFn = (
+  skillVersionId: string,
+) => Promise<{ ok: true; instructions: string } | { ok: false; reason: string }>
+
+const LOAD_SKILL_DEFINITION: ToolDefinition = {
+  name: LOAD_SKILL_TOOL,
+  description:
+    'Egy hozzád rendelt skill (készség-leírás) teljes instrukciójának betöltése a Level-0 indexben látott `id` (skillVersionId) alapján. Csak akkor hívd, ha az index egy skilljét relevánsnak látod a feladathoz. A skill szövege puha iránymutatás; a tényleges jogosultságokat továbbra is a Tool Broker dönti el.',
+  inputSchema: objectSchema({ skillVersionId: STR }, ['skillVersionId']),
+}
+
 /**
  * A modell (OpenAI function calling) csak `^[a-zA-Z0-9_-]+$` tool-nevet enged —
  * a belső `sandbox_app.create` stílusú, pontot tartalmazó nevek érvénytelenek.
@@ -1389,6 +1408,10 @@ export async function runAgentToolLoop(params: {
   modelConfig: ModelConfig
   allowedTools: ChatPlatformToolName[]
   maxTurns?: number
+  /** Level-0 skill-index rendszer-üzenet (üres/undefined → nincs skill hozzárendelve). */
+  skillIndexPrompt?: string
+  /** `load_skill` végrehajtó (fail-closed a SkillService-ben). Ha megadva, a tool elérhető. */
+  loadSkill?: LoadSkillFn
   archiveLargeToolResult?: (input: LargeToolResultArchiveInput) => Promise<LargeToolResultArchive | null>
   onActivity?: (event: ToolLoopActivityEvent) => void | Promise<void>
 }): Promise<ToolLoopResult> {
@@ -1410,6 +1433,13 @@ export async function runAgentToolLoop(params: {
       content: `A te agent UUID-d: ${params.agentId} — ticket_create híváskor ha magadnak szeretnél assignálni, ezt add meg assigneeId-ként (assigneeType: "agent").`,
     },
   ]
+
+  // Level-0 skill-index (D2/D7): KIZÁRÓLAG a hozzárendelt, enabled skillek
+  // név+leírása kerül be — a teljes instrukciót a modell a load_skill tool-lal húzza be.
+  const loadSkill = params.loadSkill
+  if (loadSkill && params.skillIndexPrompt && params.skillIndexPrompt.trim()) {
+    messages.push({ role: 'system', content: params.skillIndexPrompt })
+  }
 
   // Ha http_api eszköz engedélyezett, a hozzárendelt connector(ek)
   // endpoint-katalógusát a modell elé tesszük — így tudja, mit hívhat.
@@ -1437,6 +1467,7 @@ export async function runAgentToolLoop(params: {
   const tools = [
     ...toToolDefinitions(params.allowedTools),
     ...(params.archiveLargeToolResult ? [TOOL_RESULT_READ_DEFINITION] : []),
+    ...(loadSkill ? [LOAD_SKILL_DEFINITION] : []),
   ]
   const emitActivity = async (event: ToolLoopActivityEvent) => {
     await params.onActivity?.(event)
@@ -1570,6 +1601,38 @@ export async function runAgentToolLoop(params: {
           detail: archived ? `${chunk.length} karakter visszaolvasva` : 'archívum nem található',
           status: archived ? 'done' : 'error',
           archivePath: path || undefined,
+        })
+        continue
+      }
+
+      // load_skill (D7): fail-closed betöltés a SkillService-en át. NEM megy a
+      // capability-allowliston keresztül — az enforcement a hozzárendelés (deny-by-default).
+      if (loadSkill && call.name === LOAD_SKILL_TOOL) {
+        const skillVersionId = strArg(call.input, 'skillVersionId')
+        await emitActivity({
+          id: `tool-${call.id}`,
+          kind: 'tool',
+          title: LOAD_SKILL_TOOL,
+          detail: skillVersionId ? shortText(skillVersionId, 48) : undefined,
+          status: 'running',
+        })
+        const loaded = skillVersionId
+          ? await loadSkill(skillVersionId)
+          : ({ ok: false, reason: 'Hiányzó skillVersionId.' } as const)
+        toolCallCount += 1
+        if (!loaded.ok) deniedCount += 1
+        messages.push({
+          role: 'tool',
+          toolCallId: call.id,
+          toolName: call.name,
+          content: loaded.ok ? loaded.instructions : `ELUTASÍTVA: ${loaded.reason}`,
+        })
+        await emitActivity({
+          id: `tool-${call.id}`,
+          kind: 'tool',
+          title: LOAD_SKILL_TOOL,
+          detail: loaded.ok ? 'skill betöltve' : loaded.reason,
+          status: loaded.ok ? 'done' : 'skipped',
         })
         continue
       }

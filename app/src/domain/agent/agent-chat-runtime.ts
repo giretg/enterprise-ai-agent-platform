@@ -28,8 +28,10 @@ import {
   listAllowedChatTools,
   resolveToolLoopMaxTurns,
   runAgentToolLoop,
+  type LoadSkillFn,
   type ToolLoopActivityEvent,
 } from './chat-tool-loop'
+import type { SkillService } from '../skill/skill-service'
 
 const IMAGE_EXT = /\.(jpg|jpeg|png|gif|webp)$/i
 const IMAGE_MARKER = /^(\[image:([^\]]+)\])([\s\S]*)$/
@@ -222,7 +224,31 @@ export class AgentChatRuntime {
     private processDefinitions?: ProcessDefinitionRepository,
     private playbooksV2?: PlaybookV2Repository,
     private processService?: ProcessService,
+    private skills?: SkillService,
   ) {}
+
+  /**
+   * Level-0 skill-index + `load_skill` végrehajtó összeállítása egy futáshoz
+   * (skill-catalog-spec.md WP-5). Ha nincs SkillService bekötve vagy nincs
+   * hozzárendelt skill, üres promptot és undefined callbacket ad — ilyenkor a
+   * load_skill tool sem jelenik meg.
+   */
+  private async buildSkillBinding(
+    agentId: string,
+    tenantId: string | null,
+  ): Promise<{ skillIndexPrompt: string; loadSkill?: LoadSkillFn }> {
+    if (!this.skills) return { skillIndexPrompt: '' }
+    const skills = this.skills
+    const skillIndexPrompt = await skills.buildSkillIndexPrompt(agentId)
+    if (!skillIndexPrompt) return { skillIndexPrompt: '' }
+    const loadSkill: LoadSkillFn = (skillVersionId) =>
+      skills.loadSkillForAgent({
+        agentId,
+        skillVersionId,
+        actor: { actorId: null, actorTenantId: tenantId, isPlatformAdmin: false },
+      })
+    return { skillIndexPrompt, loadSkill }
+  }
 
   async sendMessage(params: {
     agentId: string
@@ -354,8 +380,20 @@ export class AgentChatRuntime {
 
     const allowedChatTools = await listAllowedChatTools(this.toolCaps, params.agentId)
     const maxTurns = resolveToolLoopMaxTurns(modelConfig, allowedChatTools)
+    const skillBinding = await this.buildSkillBinding(params.agentId, params.tenantId ?? null)
+    // Futásidejű skill-snapshot perzisztálás a reprodukálhatósághoz (WP-5/D9/D12):
+    // a conversationhoz kötve rögzítjük, mely skill-verziók voltak élők a futáskor.
+    if (this.skills && skillBinding.loadSkill) {
+      await this.skills.recordRunSkillSnapshot({
+        agentId: params.agentId,
+        context: { conversationId },
+        actorTenantId: params.tenantId ?? null,
+      })
+    }
     let reply: string
-    if (allowedChatTools.length > 0) {
+    // A tool-loop akkor is fut, ha nincs capability-tool, de van hozzárendelt skill
+    // (a load_skill elérhetőségéhez), különben az index behúzhatatlan lenne (WP-5).
+    if (allowedChatTools.length > 0 || skillBinding.loadSkill) {
       reply = (
         await runAgentToolLoop({
           gateway: this.gateway,
@@ -370,6 +408,8 @@ export class AgentChatRuntime {
           modelConfig,
           allowedTools: allowedChatTools,
           maxTurns,
+          skillIndexPrompt: skillBinding.skillIndexPrompt,
+          loadSkill: skillBinding.loadSkill,
           archiveLargeToolResult: (input) =>
             this.archiveLargeToolResult(tenantKey, conversationId, input),
         })
@@ -549,9 +589,18 @@ export class AgentChatRuntime {
 
     const allowedChatTools = await listAllowedChatTools(this.toolCaps, params.agentId)
     const maxTurns = resolveToolLoopMaxTurns(modelConfig, allowedChatTools)
+    const skillBinding = await this.buildSkillBinding(params.agentId, params.tenantId ?? null)
+    // Futásidejű skill-snapshot perzisztálás (WP-5/D9/D12) a stream-ágon is.
+    if (this.skills && skillBinding.loadSkill) {
+      await this.skills.recordRunSkillSnapshot({
+        agentId: params.agentId,
+        context: { conversationId },
+        actorTenantId: params.tenantId ?? null,
+      })
+    }
 
     let reply: string
-    if (allowedChatTools.length > 0) {
+    if (allowedChatTools.length > 0 || skillBinding.loadSkill) {
       // A tool loop nem streamelhető élőben (a gyenge modellek a tool-hívást
       // szövegként szivárogtatják, amit nem mutathatunk a usernek). Lefuttatjuk
       // szinkronban, majd a kész választ szavanként, szimulált streamingként
@@ -581,6 +630,8 @@ export class AgentChatRuntime {
         modelConfig,
         allowedTools: allowedChatTools,
         maxTurns,
+        skillIndexPrompt: skillBinding.skillIndexPrompt,
+        loadSkill: skillBinding.loadSkill,
         archiveLargeToolResult: (input) =>
           this.archiveLargeToolResult(tenantKey, conversationId, input),
         onActivity: pushActivity,

@@ -1,5 +1,5 @@
 import Link from 'next/link'
-import { listSandboxApps, getSandboxAppRegistryMetrics } from '@/app/actions/platform'
+import { listSandboxApps, getSandboxAppRegistryMetrics, getAgent } from '@/app/actions/platform'
 import { Badge, Card } from '@/components/ui/shell'
 import { CreateSandboxAppToggle } from '@/components/sandbox/create-sandbox-app-toggle'
 
@@ -20,13 +20,20 @@ function Metric({ label, value, hint }: { label: string; value: string; hint?: s
   )
 }
 
-export default async function AppRegistryPage() {
+export default async function AppRegistryPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ agentId?: string }>
+}) {
+  const { agentId } = await searchParams
+  const agentRes = agentId ? await getAgent({ id: agentId }) : null
   const [res, metricsRes] = await Promise.all([
-    listSandboxApps({}),
+    listSandboxApps(agentId ? { createdByAgentId: agentId } : {}),
     getSandboxAppRegistryMetrics(),
   ])
   const apps = res.success ? res.data.apps : []
   const metrics = metricsRes.success ? metricsRes.data : null
+  const agentName = agentRes?.success ? agentRes.data.agent.name : null
 
   return (
     <div className="space-y-6">
@@ -35,11 +42,22 @@ export default async function AppRegistryPage() {
           <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">
             Sandbox Plane
           </p>
-          <h1 className="mt-2 font-display text-3xl font-semibold">Mini-appok</h1>
+          <h1 className="mt-2 font-display text-3xl font-semibold">
+            {agentName ? `${agentName} mini-appjai` : 'Mini-appok'}
+          </h1>
           <p className="mt-1 max-w-2xl text-ink-soft">
-            Agent (vagy ember) által készített, verziózott mini-appok (A0 single-file HTML). Izolált
-            preview, export, rollback — platform session és hálózat nélkül.
+            {agentName
+              ? 'Az agent által létrehozott, böngészőben megnyitható mini-appok (A0 single-file HTML).'
+              : 'Agent (vagy ember) által készített, verziózott mini-appok (A0 single-file HTML). Izolált preview, export, rollback — platform session és hálózat nélkül.'}
           </p>
+          {agentId && (
+            <Link
+              href="/control-plane/apps"
+              className="mt-2 inline-block text-sm font-medium text-coral hover:underline"
+            >
+              ← Összes mini-app
+            </Link>
+          )}
         </div>
         <CreateSandboxAppToggle />
       </div>
@@ -131,8 +149,15 @@ export default async function AppRegistryPage() {
                     {app.activeVersion !== undefined ? `v${app.activeVersion}` : '—'}
                   </td>
                   <td className="px-4 py-3">
-                    <Badge tone={app.createdByLabel === 'agent' ? 'warning' : 'neutral'}>
-                      {app.createdByLabel}
+                    <Badge
+                      tone={
+                        (app as { createdByType?: string }).createdByType === 'agent' ||
+                        app.createdByLabel === 'agent'
+                          ? 'warning'
+                          : 'neutral'
+                      }
+                    >
+                      {(app as { createdByName?: string }).createdByName ?? app.createdByLabel}
                     </Badge>
                   </td>
                   <td className="px-4 py-3">

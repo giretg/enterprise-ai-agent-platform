@@ -5,6 +5,7 @@ import type { Agent } from '@prisma/client'
 import { Badge, Card } from '@/components/ui/shell'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { AgentChatButton } from '@/components/agents/agent-chat-panel'
+import { AgentMiniAppsLink } from '@/components/agents/agent-mini-apps-link'
 import { DeleteAgentButton } from '@/components/agents/delete-agent-button'
 import { personaFor, humanStatus } from '@/lib/agent-persona'
 import { modelLabel } from '@/lib/model-providers'
@@ -63,18 +64,21 @@ export function AgentRegistryCard({
 
           <p className="line-clamp-2 text-xs text-ink-faint">{agent.roleInstruction}</p>
         </Link>
-        <AgentChatButton
-          agent={{
-            id: agent.id,
-            name: agent.name,
-            status: agent.status,
-            avatarUrl: agent.avatarUrl,
-            personaNickname: agent.personaNickname,
-            personaGreeting: agent.personaGreeting,
-            personaTrait: agent.personaTrait,
-          }}
-          compact
-        />
+        <div className="flex shrink-0 flex-col items-end gap-2">
+          <AgentChatButton
+            agent={{
+              id: agent.id,
+              name: agent.name,
+              status: agent.status,
+              avatarUrl: agent.avatarUrl,
+              personaNickname: agent.personaNickname,
+              personaGreeting: agent.personaGreeting,
+              personaTrait: agent.personaTrait,
+            }}
+            compact
+          />
+          <AgentMiniAppsLink agentId={agent.id} compact />
+        </div>
       </div>
     </Card>
   )

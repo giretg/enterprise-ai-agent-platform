@@ -5,6 +5,7 @@ import type { Agent } from '@prisma/client'
 import { Card } from '@/components/ui/shell'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { AgentChatButton } from '@/components/agents/agent-chat-panel'
+import { AgentMiniAppsLink } from '@/components/agents/agent-mini-apps-link'
 import { personaFor, humanStatus } from '@/lib/agent-persona'
 
 export function DashboardAgentCard({ agent }: { agent: Agent }) {
@@ -25,18 +26,21 @@ export function DashboardAgentCard({ agent }: { agent: Agent }) {
         <Link href={`/control-plane/agents/${agent.id}`} className="min-w-0 flex-1">
           <p className="text-sm italic leading-relaxed text-ink-soft">“{p.greeting}”</p>
         </Link>
-        <AgentChatButton
-          agent={{
-            id: agent.id,
-            name: agent.name,
-            status: agent.status,
-            avatarUrl: agent.avatarUrl,
-            personaNickname: agent.personaNickname,
-            personaGreeting: agent.personaGreeting,
-            personaTrait: agent.personaTrait,
-          }}
-          compact
-        />
+        <div className="flex shrink-0 flex-col items-end gap-2">
+          <AgentChatButton
+            agent={{
+              id: agent.id,
+              name: agent.name,
+              status: agent.status,
+              avatarUrl: agent.avatarUrl,
+              personaNickname: agent.personaNickname,
+              personaGreeting: agent.personaGreeting,
+              personaTrait: agent.personaTrait,
+            }}
+            compact
+          />
+          <AgentMiniAppsLink agentId={agent.id} compact />
+        </div>
       </div>
     </Card>
   )

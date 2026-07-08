@@ -33,7 +33,7 @@ export function AppShell({
   navItems: NavEntry[]
   accentColor: 'slate' | 'teal'
   children: ReactNode
-  switchLink: { href: string; label: string }
+  switchLink?: { href: string; label: string }
   pathname: string
   /** Fejléc-slot a bal/jobb szélen (pl. tenant-switcher). */
   headerExtra?: ReactNode
@@ -167,12 +167,14 @@ export function AppShell({
             <div className="flex shrink-0 items-center gap-2">
               {headerExtra}
               <ShellAuth clerkEnabled={clerkEnabled} />
-              <Link
-                href={switchLink.href}
-                className="hidden rounded-full border border-line bg-card px-3 py-2 text-xs font-semibold text-ink-soft transition-colors hover:border-coral/45 hover:text-coral-deep sm:inline-flex sm:px-4"
-              >
-                {switchLink.label}
-              </Link>
+              {switchLink && (
+                <Link
+                  href={switchLink.href}
+                  className="hidden rounded-full border border-line bg-card px-3 py-2 text-xs font-semibold text-ink-soft transition-colors hover:border-coral/45 hover:text-coral-deep sm:inline-flex sm:px-4"
+                >
+                  {switchLink.label}
+                </Link>
+              )}
               <button
                 type="button"
                 aria-label={mobileMenuOpen ? 'Menü bezárása' : 'Menü megnyitása'}
@@ -238,13 +240,15 @@ export function AppShell({
                 </Link>
               )
             })}
-            <Link
-              href={switchLink.href}
-              onClick={() => setMobileMenuOpen(false)}
-              className="mt-1 rounded-full border border-line bg-card px-4 py-2 text-sm font-semibold text-ink-soft transition-colors hover:border-coral/45 hover:text-coral-deep"
-            >
-              {switchLink.label}
-            </Link>
+            {switchLink && (
+              <Link
+                href={switchLink.href}
+                onClick={() => setMobileMenuOpen(false)}
+                className="mt-1 rounded-full border border-line bg-card px-4 py-2 text-sm font-semibold text-ink-soft transition-colors hover:border-coral/45 hover:text-coral-deep"
+              >
+                {switchLink.label}
+              </Link>
+            )}
           </nav>
         </div>
       </header>

@@ -3012,7 +3012,27 @@ export async function listSandboxApps(input: z.infer<typeof listSandboxAppsSchem
       userId: user.user.id,
       tenantId: user.activeTenantId,
     })
-    return ok(result)
+    const appsWithNames = await Promise.all(
+      result.apps.map(async (app) => {
+        const createdByAgentId = (app as { createdByAgentId?: string }).createdByAgentId
+        const createdByUserId = (app as { createdByUserId?: string }).createdByUserId
+        const createdByType = (app as { createdByType?: string }).createdByType
+        if (createdByAgentId) {
+          const agent = await repositories.agents.findById(createdByAgentId, user.activeTenantId)
+          return { ...app, createdByName: agent?.name ?? 'Ismeretlen agent' }
+        }
+        if (createdByUserId) {
+          const creator = await repositories.users.findById(createdByUserId)
+          return { ...app, createdByName: creator?.name ?? 'Ismeretlen felhasználó' }
+        }
+        return {
+          ...app,
+          createdByName: createdByType === 'agent' ? 'Ismeretlen agent' : 'Ismeretlen felhasználó',
+        }
+      }),
+    )
+    const response = { ...result, apps: appsWithNames }
+    return ok(response)
   } catch (e) {
     return sandboxAppFail(e, 'Failed to list sandbox apps')
   }

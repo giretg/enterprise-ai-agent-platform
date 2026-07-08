@@ -449,6 +449,39 @@ export class SkillService {
   }
 
   /**
+   * Futásidejű snapshot PERZISZTÁLÁS (D9/D12): a futás kezdetén az aktív, enabled
+   * skill-verzió-id-ket az audit-láncba írja, a futáshoz (ticket/conversation)
+   * kötve — így bármely futásra utólag megmondható, mely skill-verziók voltak
+   * élők (reprodukálhatóság). Üres snapshotnál (nincs hozzárendelt skill) nem ír
+   * bejegyzést. Idempotens hívási hely: a runtime a tool-loop előtt hívja.
+   */
+  async recordRunSkillSnapshot(input: {
+    agentId: string
+    context: { ticketId?: string | null; conversationId?: string | null }
+    actorTenantId: string | null
+  }): Promise<string[]> {
+    const skillVersionIds = await this.getRunSkillSnapshot(input.agentId)
+    if (skillVersionIds.length === 0) return []
+    await this.audit.append({
+      actorType: 'agent',
+      actorId: input.agentId,
+      agentVersion: null,
+      action: 'skill.run_snapshot',
+      targetType: 'agent',
+      targetId: input.agentId,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: `${skillVersionIds.length} skill`,
+      policyDecision: 'active',
+      tenantId: input.actorTenantId,
+      ticketId: input.context.ticketId ?? null,
+      conversationId: input.context.conversationId ?? null,
+      metadata: { skillVersionIds },
+    })
+    return skillVersionIds
+  }
+
+  /**
    * Readiness a skill `requires` igényei és az agent capability-i alapján
    * (§D10). Csak jelez — jogot nem ad.
    */

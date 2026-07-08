@@ -1,6 +1,20 @@
 # Fejlesztői specifikáció — Skill-katalógus (importálható, governance alá vont agent-skillek)
 
-Státusz: **véglegesített tervezet — döntés-komplett (D1–D13), kód nincs** · Utolsó folytatás: **2026-07-07** · Kapcsolódó koncepció: `AI-Agent-Platform-Koncepcio.md` §4.6.3–4.6.4 (reflexió + önfejlesztési profil), §4.8.6 (recipe-katalógus + progresszív betöltés), §4.9 (erőforrás-modell) · Kapcsolódó memória: `connector-template-catalog-build`, `provisioning-assistant-build`, `iam-rbac-build`, `code-review-tool-broker-tenant-isolation` · Forrás: grill-me egyeztetés (2026-07-07)
+Státusz: **Fázis 1 KÉSZ a D14 desztilláció + verzió-diff UI kivételével (WP-1..5 teljes, WP-4/6/7 UI él)** · Utolsó folytatás: **2026-07-08** · Kapcsolódó koncepció: `AI-Agent-Platform-Koncepcio.md` §4.6.3–4.6.4 (reflexió + önfejlesztési profil), §4.8.6 (recipe-katalógus + progresszív betöltés), §4.9 (erőforrás-modell) · Kapcsolódó memória: `connector-template-catalog-build`, `provisioning-assistant-build`, `iam-rbac-build`, `code-review-tool-broker-tenant-isolation` · Forrás: grill-me egyeztetés (2026-07-07)
+
+> ## Megvalósítási állapot (2026-07-08)
+>
+> | WP | Állapot | Megjegyzés |
+> |---|---|---|
+> | **WP-1** Katalógus-entitások + repository + scope | ✅ **KÉSZ** | `Skill`/`SkillVersion`/`AgentSkill` séma+migráció, `skill-repository.ts`, fail-closed `skill-scope.ts`, seed |
+> | **WP-2** `SKILL.md` import-adapter | ✅ **KÉSZ** | `skill-md-adapter.ts` (frontmatter + instrukció-bontás + provenience/hash/licenc) |
+> | **WP-3** Import provisioning-pipeline | ✅ **KÉSZ** | `skill-validator.ts` (séma/méret/injection-lint/kód-detektálás → T2/T3 elutasítás), tier-levezetés, `SkillService.importSkillMd` + `approveVersion` (aláírt) |
+> | **WP-4** Hozzárendelés + readiness-check | ✅ **KÉSZ** | `assign/unassign` auditált, `computeSkillReadiness` (zöld/sárga/piros); **agent-detail skill-panel él** (`agent-skills-panel.tsx` + `actions/skills.ts`: readiness-jelzés, enable-kapcsoló, leszerelés, katalógusból hozzárendelés) |
+> | **WP-5** Context-assembler + progresszív betöltés | ✅ **KÉSZ (live + snapshot)** | Level-0 index a promptba + `load_skill` valódi tool a `runAgentToolLoop`-ban (chat stream+non-stream **és** task-ág), fail-closed betöltés, `skill.loaded`/`skill.access_denied` audit. **Futásidejű snapshot perzisztálva:** `recordRunSkillSnapshot` → `skill.run_snapshot` audit a futáshoz (ticket/conversation) kötve, mindkét runtime-ban bekötve (reprodukálhatóság, D9/D12) |
+> | **WP-6** App-on belüli szerzés/szerkesztés (3 forrás) | 🟡 **import + kézi UI KÉSZ, D14 desztilláció hátra** | write-gate `proposeVersion`/`approveVersion`/`rollbackToVersion` domain kész; **`/control-plane/skills` katalógus-oldal él** (`skill-catalog-manager.tsx`): SKILL.md import-form + kézi editor (mindkettő a hardcoded validátoron át, `proposed`-ként). HÁTRA: **desztilláció beszélgetésből** (D14) + meglévő skill in-place verzió-editor |
+> | **WP-7** Governance & audit | 🟡 **rollback/approve UI KÉSZ, verzió-diff hátra** | aláírás (`signSkillVersion`), rollback, minden audit-esemény bekötve (`skill.run_snapshot` felvéve az event-katalógusba); **verziólista + jóváhagyás + rollback gombok élnek** a katalógus-oldalon. HÁTRA: verzió-diff vizualizáció |
+>
+> **Tesztek:** `npm run test:skill-catalog` zöld (adapter, validátor, fail-closed scope, readiness, content-hash, progresszív betöltés, live `load_skill` loop-bekötés **és a futásidejű snapshot-perzisztálás**). `tsc`/`eslint` tiszta. UI: nem commitolva; a control-plane route-ok auth-gate mögött (paritásban a többi oldallal).
 
 ## 0. Vezetői állítás
 
@@ -150,46 +164,47 @@ Enumok: `SkillCatalogScope { global, tenant }`, `SkillSourceType { authored, imp
 
 ## 4. Munkacsomagok
 
-### WP-1 — Katalógus-entitások + repository + scope
+### WP-1 — Katalógus-entitások + repository + scope ✅ KÉSZ
 - Séma (§3), migráció, repository (`skill-repository.ts`) az `interfaces/index.ts`-be kötve.
 - **Fail-closed scope-feloldás**: `resolveSkillForActor(actorTenantId, skillId)` — global (read-only) VAGY a saját tenant; idegen tenant skillje **sosem** olvasható (a tool-broker/KB tenant-minta reuse).
 - Seed: 1–2 T0 demo-skill (pl. „reconciliation-checklist").
 
-### WP-2 — `SKILL.md` import-adapter
+### WP-2 — `SKILL.md` import-adapter ✅ KÉSZ
 - Parser: YAML frontmatter (`name`, `description`) + markdown törzs → `instructions[]` (szekciókra bontva) + `triggerKeywords[]` (ha van).
 - **Provenience-rögzítés**: forrás, eredeti bájt-hash, formátum-jelölés; **licenc-metaadat** kinyerése (frontmatter / `LICENSE` / hiány → `null`, humán döntésre).
 - **Fork-on-import**: az importált skill innentől a mi verziózott másolatunk; upstream frissítés nem folyik be automatikusan.
 - Admin-only belépési pont.
 
-### WP-3 — Import provisioning-pipeline
+### WP-3 — Import provisioning-pipeline ✅ KÉSZ
 - **Hardcoded validátor (kapu):** séma-megfelelés, méret-limit, injection-minta lint (pl. „ignore previous", secret-kérés, exfil-minták), **kód-jelenlét detektálás** → ha kód van, **T2/T3 → Fázis 1-ben elutasít**.
 - **Tier-levezetés:** tartalomból T0/T1 (van-e `requires` tool-igény).
 - **Tanácsadó LLM-review:** kockázat-összegzés, javasolt `requires` capability-lista — **nem kapu** (D5).
 - **Humán jóváhagyás → `active`**, aláírt `SkillVersion` (WriteGateToken reuse), audit-esemény.
 
-### WP-4 — Hozzárendelés + readiness-check
-- `AgentSkill` assign/unassign action (admin), **auditált**.
-- **Readiness-check UI**: a skill `requires` listáját összeveti az agent `Capability`-ivel → zöld (mind megvan) / sárga (van, de nem mind) / piros (hiányzó tool connector nélkül → nem működőképes).
+### WP-4 — Hozzárendelés + readiness-check ✅ KÉSZ
+- `AgentSkill` assign/unassign action (admin), **auditált**. *(domain: `SkillService.assign/unassign`, `listAgentSkillsWithReadiness`; action: `actions/skills.ts` `assignSkillAction`/`unassignSkillAction`/`setSkillEnabledAction`, tenant-admin kapu.)*
+- **Readiness-check UI**: a skill `requires` listáját összeveti az agent `Capability`-ivel → zöld (mind megvan) / sárga (van, de nem mind) / piros (hiányzó tool connector nélkül → nem működőképes). *(él: `agent-skills-panel.tsx` — per-tool státusz-badge + összesített szín.)*
 - **Kemény padló:** a check csak jelez; capability-grant külön, magasabb jogú aktus. A skill sosem ad magának jogot.
-- Skill-panel az agent-detail oldalon (a `agent-capabilities-panel` mintájára).
+- Skill-panel az agent-detail oldalon (a `agent-capabilities-panel` mintájára). *(`AgentSkillsPanel` a Szerkesztés-szekcióban, csak admin; hozzárendelés a katalógus aktív verzióiból.)*
 
-### WP-5 — Context-assembler integráció (progresszív betöltés)
-- **Level-0 index**: a prompt-összeállító a `AgentSkill enabled=true` skillek `name+description`-jét injektálja — **kizárólag** ezeket (D2 kemény kontroll).
-- **`load_skill` tool**: brokerelt, deny-by-default (csak a hozzárendelt skillekre oldható fel), a hívás **ToolCall-ként auditált**; visszaadja a Level-1 `instructions`-t.
-- **Futásidejű snapshot**: a futás rögzíti az aktív skill-verzió-id-ket (reprodukálhatóság, D9/D12).
+### WP-5 — Context-assembler integráció (progresszív betöltés) ✅ KÉSZ (live + snapshot)
+- **Level-0 index**: a prompt-összeállító a `AgentSkill enabled=true` skillek `name+description`-jét injektálja — **kizárólag** ezeket (D2 kemény kontroll). *(`AgentChatRuntime.buildSkillBinding` + `runAgentToolLoop` `skillIndexPrompt` — chat stream+non-stream és task-ág.)*
+- **`load_skill` tool**: deny-by-default (csak a hozzárendelt skillekre oldható fel a `SkillService.loadSkillForAgent` fail-closed feloldásán át), a hívás **ToolCall-ként auditált** (`skill.loaded` / megtagadás: `skill.access_denied`); visszaadja a Level-1 `instructions`-t. A tool a capability-allowliston KÍVÜL fut (nem connector-tool), enforcement = a hozzárendelés. Ha az agentnek van hozzárendelt skillje, a tool-loop akkor is elindul, ha nincs más capability-tool.
+- **Futásidejű snapshot** ✅: `SkillService.getRunSkillSnapshot` (aktív, enabled skill-verzió-id-k) + **`recordRunSkillSnapshot`** — a futás kezdetén `skill.run_snapshot` audit-eseményt ír a futáshoz (ticketId/conversationId) kötve, a snapshot skill-verzió-id-kkel. Bekötve a `general-task-runtime`-ba (ticket) és az `agent-chat-runtime` mindkét (stream + non-stream) ágába (conversation). Üres snapshotnál nem ír. Reprodukálhatóság = a snapshot-esemény visszakeresése (D9/D12).
 
-### WP-6 — App-on belüli skill-szerzés/szerkesztés (három forrás)
-- Strukturált editor (`name`/`description`/`instructions`/`triggerKeywords`/`requires`) a **write-gate pipeline** fölött: `proposed → approved → active`, verziózás, **rollback**, audit.
+### WP-6 — App-on belüli skill-szerzés/szerkesztés (három forrás) 🟡 import + kézi UI KÉSZ, D14 hátra
+> A write-gate domain-primitívek megvannak (`SkillService.createSkill/proposeVersion/approveVersion/rollbackToVersion`); az **import + kézi UI él** (`/control-plane/skills`, `skill-catalog-manager.tsx` + `actions/skills.ts`). A hiányzó rész a **desztilláló action** (D14) + a meglévő skill in-place verzió-editora.
+- Strukturált editor (`name`/`description`/`instructions`/`triggerKeywords`/`requires`) a **write-gate pipeline** fölött: `proposed → approved → active`, verziózás, **rollback**, audit. *(kézi editor + verziólista/approve/rollback él; `triggerKeywords`/`parameters` a kézi formban egyelőre üres — bővíthető.)*
 - **Három szerzési forrás, EGY pipeline** (mind `proposed`-ként landol, azonos kapu):
-  1. **Import** (`SKILL.md`, WP-2/3).
-  2. **Kézi szerzés** (üres editor).
-  3. **Desztilláció beszélgetésből** (D14): „készíts ebből skillt" action egy conversation/ticket felett → az agent instrukció-only javaslatot ad + levezetett `requires` (javasolt-nem-adott) + provenience (forrás-id). A desztilláló **kódot nem** emelhet ki (T0/T1 kényszerítve).
-- **Célzás:** a javaslat lehet **új skill** vagy **meglévő új verziója** (edit vs create), a dedup/drift kezelésére.
-- **Megosztott skill** (global vagy több agenthez kötött) módosítása → jóváhagyás-köteles (4.9.3).
+  1. **Import** (`SKILL.md`, WP-2/3). ✅ UI: `importSkillMdAction` + import-form (scope-választó, validátor-hibák megjelenítve).
+  2. **Kézi szerzés** (üres editor). ✅ UI: `createSkillAction` + strukturált form (a hardcoded validátoron át).
+  3. **Desztilláció beszélgetésből** (D14): „készíts ebből skillt" action egy conversation/ticket felett → az agent instrukció-only javaslatot ad + levezetett `requires` (javasolt-nem-adott) + provenience (forrás-id). A desztilláló **kódot nem** emelhet ki (T0/T1 kényszerítve). 🔴 **HÁTRA** (domain: gateway + conversation-olvasás + `validateSkill` T0/T1-kapu; UI: chat-panel „desztilláld" gomb).
+- **Célzás:** a javaslat lehet **új skill** vagy **meglévő új verziója** (edit vs create), a dedup/drift kezelésére. *(domain kész: `proposeVersion` meglévő skillre; UI-oldali „új verzió" editor hátra.)*
+- **Megosztott skill** (global vagy több agenthez kötött) módosítása → jóváhagyás-köteles (4.9.3). *(a scope-kapu él: global írás csak platform-adminnak.)*
 
-### WP-7 — Governance & audit
-- `SkillVersion` aláírás (WriteGateToken), rollback-action, verzió-diff (a recipe/memória mintára).
-- Audit-események: `skill.imported`, `skill.version.approved`, `skill.assigned`, `skill.unassigned`, `skill.loaded` (a `load_skill` hívás), `skill.rolled_back`.
+### WP-7 — Governance & audit 🟡 approve/rollback UI KÉSZ, verzió-diff hátra
+- `SkillVersion` aláírás (WriteGateToken), rollback-action, verzió-diff (a recipe/memória mintára). *(aláírás + rollback + audit domain kész; **verziólista + jóváhagyás- + rollback-gombok élnek** a katalógus-oldalon, aláírás-jelzéssel és content-hash prefixszel. HÁTRA: verzió-diff vizualizáció.)*
+- Audit-események: `skill.imported`, `skill.created`, `skill.version.proposed`, `skill.version.approved`, `skill.assigned`, `skill.unassigned`, `skill.loaded` (a `load_skill` hívás), `skill.access_denied`, `skill.rolled_back`, **`skill.run_snapshot`** (futásidejű reprodukálhatóság). *(mind az event-katalógusban.)*
 
 ## 5. Fejlesztői hatás / kockázatok
 

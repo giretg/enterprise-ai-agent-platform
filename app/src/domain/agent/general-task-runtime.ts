@@ -35,7 +35,8 @@ import type { ModelGateway, ModelConfig } from '../gateway/model-gateway'
 import type { ToolBrokerService } from '../tool-broker/tool-broker-service'
 import type { WorkspaceStorage } from '../file-editor/workspace-storage'
 import { formatAttachmentBlock } from './agent-chat-runtime'
-import { listAllowedChatTools, resolveToolLoopMaxTurns, runAgentToolLoop } from './chat-tool-loop'
+import { listAllowedChatTools, resolveToolLoopMaxTurns, runAgentToolLoop, type LoadSkillFn } from './chat-tool-loop'
+import type { SkillService } from '../skill/skill-service'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -109,6 +110,7 @@ export class GeneralTaskRuntime {
     private playbooks?: PlaybookV2Repository,
     private processes?: ProcessRepository,
     private conversations?: ConversationService,
+    private skills?: SkillService,
   ) {}
 
   async processTicket(params: { ticketId: string; agentId: string }) {
@@ -189,6 +191,28 @@ export class GeneralTaskRuntime {
       ? await this.workspaceStorage.list(wsTenant, ticket.id).catch(() => [] as string[])
       : null
 
+    // Level-0 skill-index + load_skill a task-ághoz is (WP-5/D9).
+    const skillIndexPrompt = this.skills
+      ? await this.skills.buildSkillIndexPrompt(params.agentId)
+      : ''
+    const loadSkill: LoadSkillFn | undefined =
+      this.skills && skillIndexPrompt
+        ? (skillVersionId) =>
+            this.skills!.loadSkillForAgent({
+              agentId: params.agentId,
+              skillVersionId,
+              actor: { actorId: null, actorTenantId: ticket.tenantId ?? null, isPlatformAdmin: false },
+            })
+        : undefined
+    // Futásidejű skill-snapshot perzisztálás a ticket-futáshoz kötve (WP-5/D9/D12).
+    if (this.skills && skillIndexPrompt) {
+      await this.skills.recordRunSkillSnapshot({
+        agentId: params.agentId,
+        context: { ticketId: ticket.id },
+        actorTenantId: ticket.tenantId ?? null,
+      })
+    }
+
     const loopResult = await runAgentToolLoop({
       gateway: this.gateway,
       toolBroker: this.toolBroker,
@@ -201,6 +225,8 @@ export class GeneralTaskRuntime {
       modelConfig,
       allowedTools,
       maxTurns: resolveToolLoopMaxTurns(modelConfig, allowedTools),
+      skillIndexPrompt,
+      loadSkill,
       archiveLargeToolResult: (input) =>
         this.archiveLargeToolResult(wsTenant, ticket.id, input),
     })

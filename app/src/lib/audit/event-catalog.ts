@@ -209,6 +209,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'skill.loaded',
   'skill.rolled_back',
   'skill.access_denied',
+  'skill.run_snapshot',
 
   // Sandbox App Registry
   'retention.sweep',
