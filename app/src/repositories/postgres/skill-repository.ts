@@ -28,6 +28,16 @@ export class PostgresSkillRepository implements SkillRepository {
     })
   }
 
+  async findByNameInScope(name: string, tenantId: string | null): Promise<Skill | null> {
+    const normalized = name.trim().toLowerCase()
+    if (!normalized) return null
+    const candidates = await prisma.skill.findMany({
+      where: { tenantId },
+      select: { id: true, name: true, description: true, catalogScope: true, tenantId: true, sourceType: true, provenance: true, license: true, riskTier: true, createdAt: true },
+    })
+    return candidates.find((s) => s.name.trim().toLowerCase() === normalized) ?? null
+  }
+
   async findVersionById(versionId: string): Promise<(SkillVersion & { skill: Skill }) | null> {
     return prisma.skillVersion.findUnique({
       where: { id: versionId },
@@ -130,6 +140,25 @@ export class PostgresSkillRepository implements SkillRepository {
       where: { skillId, status: 'active' },
       orderBy: { version: 'desc' },
     })
+  }
+
+  async retireActiveVersion(skillId: string): Promise<SkillVersion | null> {
+    const active = await this.getActiveVersion(skillId)
+    if (!active) return null
+    return prisma.skillVersion.update({
+      where: { id: active.id },
+      data: { status: 'retired' },
+    })
+  }
+
+  async countAssignmentsForSkill(skillId: string): Promise<number> {
+    return prisma.agentSkill.count({
+      where: { skillVersion: { skillId } },
+    })
+  }
+
+  async deleteSkill(skillId: string): Promise<void> {
+    await prisma.skill.delete({ where: { id: skillId } })
   }
 
   async assign(input: {

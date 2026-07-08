@@ -26,7 +26,7 @@ import {
 
 const IMAGE = process.env.HARNESS_DOCKER_IMAGE ?? 'wiki-harness:local'
 const SAMPLE_QUESTION =
-  'Mi az MVP célja, és milyen átjárókon kell átmennie az agent műveleteinek?'
+  'Mi a platform célja, és milyen átjárókon kell átmennie az agent műveleteinek?'
 
 async function main() {
   if (!(await dockerImageExists(IMAGE))) {

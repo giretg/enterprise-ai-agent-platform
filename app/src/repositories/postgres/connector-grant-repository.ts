@@ -7,7 +7,18 @@ export interface ConnectorGrantRepository {
     connectorId: string
     userId: string
   }): Promise<ConnectorGrant | null>
-  findByUser(userId: string, tenantId?: string | null): Promise<Array<ConnectorGrant & { connector: { id: string; name: string; type: string } }>>
+  findActiveByConnector(connectorId: string): Promise<ConnectorGrant[]>
+  findActiveForInactiveConnectors(userId: string, tenantId?: string | null): Promise<ConnectorGrant[]>
+  findByUser(
+    userId: string,
+    tenantId?: string | null,
+  ): Promise<
+    Array<
+      ConnectorGrant & {
+        connector: { id: string; name: string; type: string; lifecycleState: string }
+      }
+    >
+  >
   create(data: {
     tenantId: string | null
     connectorId: string
@@ -38,6 +49,24 @@ export class PostgresConnectorGrantRepository implements ConnectorGrantRepositor
         connectorId: params.connectorId,
         userId: params.userId,
         status: 'active',
+        connector: { lifecycleState: 'active' },
+      },
+    })
+  }
+
+  async findActiveByConnector(connectorId: string) {
+    return prisma.connectorGrant.findMany({
+      where: { connectorId, status: 'active' },
+    })
+  }
+
+  async findActiveForInactiveConnectors(userId: string, tenantId?: string | null) {
+    return prisma.connectorGrant.findMany({
+      where: {
+        userId,
+        status: 'active',
+        ...(tenantId !== undefined ? { tenantId } : {}),
+        connector: { lifecycleState: { not: 'active' } },
       },
     })
   }
@@ -48,7 +77,9 @@ export class PostgresConnectorGrantRepository implements ConnectorGrantRepositor
         userId,
         ...(tenantId !== undefined ? { tenantId } : {}),
       },
-      include: { connector: { select: { id: true, name: true, type: true } } },
+      include: {
+        connector: { select: { id: true, name: true, type: true, lifecycleState: true } },
+      },
       orderBy: { grantedAt: 'desc' },
     })
   }

@@ -13,7 +13,7 @@ type OpenAiTool = {
 function extractQuestion(messages: OpenAiMessage[]): string {
   const combined = messages.map((m) => m.content ?? '').join('\n')
   const match = combined.match(/Kérdés:\s*(.+?)(?:\n|$)/i)
-  return match?.[1]?.trim() || 'MVP gateway broker'
+  return match?.[1]?.trim() || 'platform gateway broker'
 }
 
 function isKbSearchToolName(name: string | undefined): boolean {
@@ -105,7 +105,7 @@ export function buildStubOpenAiCompletion(input: {
           state: 'done',
           payload: {
             answer:
-              'Az MVP célja egy architektúra-teljes walking skeleton; minden modellhívás a Model Gatewayen, minden eszközhívás a Tool Brokeren keresztül történik.',
+              'A platform célja kontrollált, auditálható AI agent munkakörnyezet biztosítása; minden modellhívás a Model Gatewayen, minden eszközhívás a Tool Brokeren keresztül történik.',
             sources: [{ docId: 'memory:stub', sectionRef: 'acceptance:wiki' }],
             rationale: 'Stub harness E2E — kb_search + board_write proof.',
             confidence: 'high',

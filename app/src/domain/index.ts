@@ -62,6 +62,8 @@ import {
   PROVISIONING_DRAFT_CAPABILITIES,
 } from '@/domain/provisioning/provisioning-assistant'
 import { PlaybookAuthorAgent } from '@/domain/playbook/playbook-author-agent'
+import { SkillDistillerAgent } from '@/domain/skill/skill-distiller-agent'
+import { SkillReviewAgent } from '@/domain/skill/skill-review-agent'
 import {
   AuditOnlyMonitorNotifier,
   RoutingMonitorNotifier,
@@ -354,6 +356,7 @@ const provisioningSandboxTester = new HttpSandboxConnectionTester({
 const provisioningService = new ProvisioningService({
   drafts: repositories.connectorDrafts,
   audit: repositories.audit,
+  connectorGrants: connectorGrantService,
   resolveEgressAllowlist: (tenantId) => resolveEgressAllowlist(tenantId),
   resolveBankPreset: async () => provisioningBankPreset,
   sandboxTester: provisioningSandboxTester,
@@ -504,7 +507,18 @@ const provisioningAssistant = new ProvisioningAssistant({
     },
   },
 })
-const skillService = new SkillService(repositories.skills, repositories.audit, repositories.toolBroker)
+const skillDistillerAgent = new SkillDistillerAgent({
+  model: modelGateway,
+})
+const skillReviewAgent = new SkillReviewAgent({
+  model: modelGateway,
+})
+const skillService = new SkillService(
+  repositories.skills,
+  repositories.audit,
+  repositories.toolBroker,
+  repositories.conversations,
+)
 const agentChatRuntime = new AgentChatRuntime(
   repositories.agents,
   repositories.documents,
@@ -635,6 +649,8 @@ export const services = {
   toolBroker: toolBrokerService,
   recipes: recipeService,
   skills: skillService,
+  skillDistillerAgent,
+  skillReviewAgent,
   playbooks: playbookService,
   playbooksV2: playbookV2Service,
   processes: processService,

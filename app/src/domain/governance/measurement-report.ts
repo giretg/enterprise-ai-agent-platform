@@ -273,7 +273,7 @@ export function renderMeasurementMarkdown(report: MeasurementReport): string {
   const { quality, throughput, control, cost, gatewayStatus, tools, chain } = report
   const lines: string[] = []
 
-  lines.push('# Mérési riport — AI Agent Platform MVP')
+  lines.push('# Mérési riport — AI Agent Platform')
   lines.push('')
   lines.push(`*Elfogadási kritérium §9.1/7 — automatikusan generált egy valódi futás adataiból.*`)
   lines.push('')

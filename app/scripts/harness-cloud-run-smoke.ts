@@ -21,7 +21,7 @@ import { getCloudRunAccessToken, waitForCloudRunExecution } from '../src/domain/
 import { readSeedApiKey, isPlatformReachable, platformBaseUrl } from './harness-docker-shared'
 
 const SAMPLE_QUESTION =
-  'Mi az MVP célja, és milyen átjárókon kell átmennie az agent műveleteinek?'
+  'Mi a platform célja, és milyen átjárókon kell átmennie az agent műveleteinek?'
 const EXECUTION_TIMEOUT_MS = Number(process.env.HARNESS_CLOUD_RUN_SMOKE_TIMEOUT_MS ?? '300000')
 
 async function main() {

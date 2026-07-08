@@ -806,17 +806,23 @@ export interface SkillRepository {
   /** Global (tenantId null) + a megadott tenant skilljei — fail-closed olvasás. */
   listForTenant(actorTenantId: string | null): Promise<SkillWithVersions[]>
   findById(id: string): Promise<SkillWithVersions | null>
+  /** Hatókörön belüli név-keresés (case-insensitive, trim) — egyediség-kapuhoz. */
+  findByNameInScope(name: string, tenantId: string | null): Promise<Skill | null>
   findVersionById(versionId: string): Promise<(SkillVersion & { skill: Skill }) | null>
   createSkill(input: CreateSkillInput): Promise<{ skill: Skill; version: SkillVersion }>
   addVersion(input: AddSkillVersionInput): Promise<SkillVersion>
   /** Jóváhagyás: az adott verzió `active`, az addigi aktív `retired`. */
   approveVersion(versionId: string, params: { approverId: string; signature: string }): Promise<SkillVersion>
-  /** Rollback: egy korábbi (approved/retired/rolled_back) verzió újraaktiválása. */
+  /** Rollback: egy korábban aktív (`retired` / `rolled_back`) verzió újraaktiválása. */
   rollbackToVersion(
     versionId: string,
     params: { approverId: string; signature: string },
   ): Promise<SkillVersion>
+  /** Az aktív verzió `retired` — a skill nem hozzárendelhető, meglévő hozzárendelések megmaradnak. */
+  retireActiveVersion(skillId: string): Promise<SkillVersion | null>
   getActiveVersion(skillId: string): Promise<SkillVersion | null>
+  countAssignmentsForSkill(skillId: string): Promise<number>
+  deleteSkill(skillId: string): Promise<void>
 
   // Hozzárendelés (AgentSkill)
   assign(input: { agentId: string; skillVersionId: string; assignedById: string | null }): Promise<AgentSkill>
@@ -1280,13 +1286,23 @@ export interface ConnectorGrantRepository {
     connectorId: string
     userId: string
   }): Promise<import('@prisma/client').ConnectorGrant | null>
+  findActiveByConnector(connectorId: string): Promise<import('@prisma/client').ConnectorGrant[]>
+  findActiveForInactiveConnectors(
+    userId: string,
+    tenantId?: string | null,
+  ): Promise<import('@prisma/client').ConnectorGrant[]>
   findByUser(
     userId: string,
     tenantId?: string | null,
   ): Promise<
     Array<
       import('@prisma/client').ConnectorGrant & {
-        connector: { id: string; name: string; type: string }
+        connector: {
+          id: string
+          name: string
+          type: string
+          lifecycleState: import('@prisma/client').ConnectorLifecycleState
+        }
       }
     >
   >
@@ -1317,6 +1333,7 @@ export type ConnectorDraftWithConnector = ConnectorDraft & {
 export interface CreateConnectorDraftInput {
   tenantId: string | null
   name: string
+  connectorType?: ConnectorType
   authMode: ConnectorAuthMode
   sourceType: ConnectorDraftSourceType
   sourceRef: string | null
@@ -1418,6 +1435,17 @@ export interface ConnectorDraftRepository {
    * Visszaadja az érintett agentId-ket, hogy a hívó capability-syncet futtathasson.
    */
   decommission(params: { draftId: string }): Promise<{ connectorId: string; affectedAgentIds: string[] }>
+  /** Aktív connector metaadat draft nélkül (leszerelés / admin ellenőrzés). */
+  findConnectorById(connectorId: string): Promise<{
+    id: string
+    tenantId: string | null
+    lifecycleState: string
+    secretAlias: string | null
+  } | null>
+  /** Draft nélküli (pl. seed-ből jött) aktív connector leszerelése — ugyanaz a lifecycle/audit út. */
+  decommissionByConnectorId(params: {
+    connectorId: string
+  }): Promise<{ connectorId: string; affectedAgentIds: string[] }>
   /**
    * SOSEM aktivált draft (lifecycle_state IN draft,validated) végleges hard-delete-je
    * (CSAK emberi admin) — a botched draftok takarításához. A connector-sor törlése

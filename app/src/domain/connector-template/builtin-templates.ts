@@ -3,8 +3,18 @@ import type { TemplateDescriptor } from './template-descriptor'
 export const BUILTIN_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
   {
     key: 'google-workspace',
-    displayName: 'Google Workspace',
-    description: 'Google Workspace/Gmail delegated OAuth connector with explicit provider metadata.',
+    connectorType: 'gmail',
+    displayName: 'Gmail (felhasználói)',
+    description:
+      'Per-user delegált Gmail OAuth connector — a platform gmail_* eszközei ezen a connectoron futnak.',
+    activationHelp: `1. Nyisd meg a Google Cloud Console-t: https://console.cloud.google.com/
+2. Válaszd ki vagy hozd létre a projektet.
+3. APIs & Services → Library → engedélyezd a „Gmail API” szolgáltatást.
+4. APIs & Services → OAuth consent screen → állítsd be (Internal vagy External; teszthez add hozzá a tesztfelhasználókat).
+5. APIs & Services → Credentials → Create credentials → OAuth client ID.
+6. Application type: Web application.
+7. Authorized redirect URIs: add meg a platform redirect URI-ját (az aktiválás lépésnél másolható: …/api/connectors/oauth/callback).
+8. Másold ki a Client ID-t és a Client secretet — ezeket az aktiválás lépésnél add meg (nem a sablon-forrásnál).`,
     baseUrl: 'https://gmail.googleapis.com',
     egressHosts: [
       'gmail.googleapis.com',
@@ -25,15 +35,21 @@ export const BUILTIN_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
     ],
     scopeCatalog: [
       {
-        value: 'gmail.readonly',
-        label: 'Gmail read-only',
-        description: 'Read Gmail messages and metadata.',
+        value: 'gmail.modify',
+        label: 'Olvasás + írás',
+        description: 'Gmail olvasás, piszkozat és címkézés.',
         default: true,
       },
       {
+        value: 'gmail.readonly',
+        label: 'Csak olvasás',
+        description: 'Gmail üzenetek és metaadatok olvasása.',
+        default: false,
+      },
+      {
         value: 'gmail.send',
-        label: 'Gmail send',
-        description: 'Send email as the connected user.',
+        label: 'Csak küldés',
+        description: 'Email küldés a csatlakoztatott fiókból.',
         default: false,
       },
     ],
@@ -55,23 +71,7 @@ export const BUILTIN_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
         default: true,
       },
     ],
-    instanceFields: [
-      {
-        name: 'clientId',
-        label: 'OAuth client ID',
-        type: 'string',
-        required: true,
-        target: 'auth.clientId',
-      },
-      {
-        name: 'clientSecret',
-        label: 'OAuth client secret',
-        type: 'secret',
-        required: true,
-        secretAliasHint: 'google-workspace-oauth-client-secret',
-        target: 'auth.secretAliasSuggested',
-      },
-    ],
+    instanceFields: [],
   },
   {
     key: 'microsoft-365',

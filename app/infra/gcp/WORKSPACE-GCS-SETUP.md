@@ -67,7 +67,7 @@ A workspace connector `secretAlias`: `platform/gcs-service-account` (Secret Mana
 
 Az app-szintű kvóta (`WORKSPACE_MAX_BYTES`, default 500 MB) minden írásnál ellenőrzött.
 A GCS lifecycle rule **biztonsági hálóként** törölheti a túlzottan nagy objektumokat vagy
-a lejárt prefixeket — az MVP-ben a retention purge főleg app-szinten fut (dispatcher worker).
+a lejárt prefixeket — a retention purge főleg app-szinten fut (dispatcher worker).
 
 **Ajánlott lifecycle JSON** (`workspace-lifecycle.json`):
 

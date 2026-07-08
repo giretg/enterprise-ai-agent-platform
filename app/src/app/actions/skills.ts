@@ -4,6 +4,7 @@ import { revalidatePath } from 'next/cache'
 import { z } from 'zod'
 import { requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain'
+import { repositories } from '@/repositories/postgres'
 import { fail, ok, type ActionResult } from '@/lib/result'
 import { SkillAccessError, type ActorContext } from '@/domain/skill/skill-service'
 import {
@@ -11,6 +12,13 @@ import {
   skillRequiresSchema,
 } from '@/lib/skill/skill-content'
 import { validateSkill } from '@/lib/skill/skill-validator'
+import { diffSkillVersions } from '@/lib/skill/skill-diff'
+import { PROVISIONING_ASSISTANT_TEMPLATE } from '@/domain/provisioning/provisioning-assistant'
+import {
+  parseSkillContent,
+  parseSkillRequires,
+  type SkillContent,
+} from '@/lib/skill/skill-content'
 import type { TenantAuthContext } from '@/auth/context'
 import type { SkillReadiness } from '@/lib/skill/skill-readiness'
 import type { SkillRiskTier } from '@prisma/client'
@@ -314,6 +322,83 @@ const proposeSchema = z.object({
   requires: skillRequiresSchema,
 })
 
+export interface SkillVersionDetail {
+  versionId: string
+  skillId: string
+  version: number
+  status: string
+  content: SkillContent
+  requires: Array<{ toolName: string; reason: string }>
+  contentHash: string
+}
+
+/** Egy skill-verzió teljes tartalma szerkesztéshez / diff alaphoz (fail-closed olvasás). */
+export async function getSkillVersionAction(
+  versionId: string,
+): Promise<ActionResult<SkillVersionDetail>> {
+  try {
+    const ctx = await requireTenantRole('operator')
+    const target = await repositories.skills.findVersionById(versionId)
+    if (!target) return fail('A skill-verzió nem található.')
+    const readable = await services.skills.getReadableSkill(ctx.activeTenantId, target.skillId)
+    if (!readable) return fail('A skill nem olvasható ebből a tenantból.')
+    return ok({
+      versionId: target.id,
+      skillId: target.skillId,
+      version: target.version,
+      status: target.status,
+      content: parseSkillContent(target.content),
+      requires: parseSkillRequires(target.requires),
+      contentHash: target.contentHash,
+    })
+  } catch (err) {
+    return fail(messageFrom(err))
+  }
+}
+
+/** WP-7 — két skill-verzió tartalmi diff-je (layout-független, determinisztikus). */
+export async function diffSkillVersionsAction(input: {
+  baseVersionId: string
+  targetVersionId: string
+}): Promise<
+  ActionResult<{
+    diff: ReturnType<typeof diffSkillVersions>
+    base: { version: number; contentHash: string }
+    target: { version: number; contentHash: string }
+  }>
+> {
+  try {
+    const ctx = await requireTenantRole('operator')
+    const [base, target] = await Promise.all([
+      repositories.skills.findVersionById(input.baseVersionId),
+      repositories.skills.findVersionById(input.targetVersionId),
+    ])
+    if (!base || !target) return fail('Az egyik verzió nem található.')
+    if (base.skillId !== target.skillId) {
+      return fail('A diff csak ugyanazon skill két verziója között értelmezhető.')
+    }
+    const readable = await services.skills.getReadableSkill(ctx.activeTenantId, base.skillId)
+    if (!readable) return fail('A skill nem olvasható ebből a tenantból.')
+    const diff = diffSkillVersions(
+      {
+        content: parseSkillContent(base.content),
+        requires: parseSkillRequires(base.requires),
+      },
+      {
+        content: parseSkillContent(target.content),
+        requires: parseSkillRequires(target.requires),
+      },
+    )
+    return ok({
+      diff,
+      base: { version: base.version, contentHash: base.contentHash },
+      target: { version: target.version, contentHash: target.contentHash },
+    })
+  } catch (err) {
+    return fail(messageFrom(err))
+  }
+}
+
 export async function proposeSkillVersionAction(
   input: z.input<typeof proposeSchema>,
 ): Promise<ActionResult<{ versionId: string; version: number }>> {
@@ -367,3 +452,140 @@ export async function rollbackSkillVersionAction(
     return fail(messageFrom(err))
   }
 }
+
+export async function deactivateSkillAction(
+  skillId: string,
+): Promise<ActionResult<{ versionId: string; version: number }>> {
+  try {
+    const ctx = await requireTenantRole('admin')
+    const res = await services.skills.deactivateSkill({ skillId, actor: actorFrom(ctx) })
+    if (!res) return fail('Nincs aktív verzió.')
+    revalidatePath('/control-plane/skills')
+    return ok(res)
+  } catch (err) {
+    return fail(messageFrom(err))
+  }
+}
+
+export async function deleteSkillAction(skillId: string): Promise<ActionResult<null>> {
+  try {
+    const ctx = await requireTenantRole('admin')
+    await services.skills.deleteSkill({ skillId, actor: actorFrom(ctx) })
+    revalidatePath('/control-plane/skills')
+    return ok(null)
+  } catch (err) {
+    return fail(messageFrom(err))
+  }
+}
+
+// ── WP-3: tanácsadó LLM-review (nem kapu) ────────────────────────────────────
+
+export interface SkillAdvisoryReviewResult {
+  validation: {
+    ok: boolean
+    errors: string[]
+    warnings: string[]
+    riskTier: SkillRiskTier
+  }
+  review: {
+    riskSummary: string
+    overallAssessment: 'low' | 'medium' | 'high'
+    concerns: string[]
+    suggestedRequires: Array<{ toolName: string; reason: string }>
+  }
+}
+
+export async function reviewSkillVersionAction(
+  versionId: string,
+): Promise<ActionResult<SkillAdvisoryReviewResult>> {
+  try {
+    const ctx = await requireTenantRole('admin')
+    // A seedelt Provisioning Assistant — audit-attribúció + Registry modelConfig (feladat-specifikus prompt a review agentben).
+    const agents = await repositories.agents.findMany()
+    const assistant = agents.find((a) => a.name === PROVISIONING_ASSISTANT_TEMPLATE.name)
+    if (!assistant) {
+      return fail('A review-agent nincs seedelve. Futtasd: npm run db:seed.')
+    }
+
+    const result = await services.skills.advisoryReviewVersion({
+      versionId,
+      reviewAgentId: assistant.id,
+      reviewAgentVersion: assistant.currentVersion,
+      reviewAgentModelConfig: assistant.modelConfig,
+      actor: actorFrom(ctx),
+      reviewer: services.skillReviewAgent,
+    })
+    if (!result.ok) {
+      const prefix = result.stage === 'access' ? 'Hozzáférés megtagadva' : 'LLM-review sikertelen'
+      return fail(`${prefix}: ${result.detail}`)
+    }
+    return ok({ validation: result.validation, review: result.review })
+  } catch (err) {
+    return fail(messageFrom(err))
+  }
+}
+
+// ── WP-6 / D14: desztilláció beszélgetésből ─────────────────────────────────
+
+const distillSchema = z.object({
+  conversationId: z.string().uuid(),
+  agentId: z.string().uuid(),
+  targetSkillId: z.string().uuid().optional(),
+})
+
+export interface DistilledSkillPreview {
+  skillId: string
+  versionId: string
+  name: string
+  description: string
+  riskTier: SkillRiskTier
+  requires: Array<{ toolName: string; reason: string }>
+  created: boolean
+}
+
+export async function distillSkillFromConversationAction(
+  input: z.input<typeof distillSchema>,
+): Promise<ActionResult<DistilledSkillPreview>> {
+  try {
+    const parsed = distillSchema.parse(input)
+    const ctx = await requireTenantRole('admin')
+    const agent = await repositories.agents.findById(parsed.agentId)
+    if (!agent) return fail('Az agent nem található.')
+
+    const result = await services.skills.distillFromConversation({
+      conversationId: parsed.conversationId,
+      agentId: parsed.agentId,
+      agentVersion: agent.currentVersion,
+      agentModelConfig: agent.modelConfig,
+      actor: actorFrom(ctx),
+      distiller: services.skillDistillerAgent,
+      targetSkillId: parsed.targetSkillId,
+    })
+
+    if (!result.ok) {
+      const prefix =
+        result.stage === 'validation'
+          ? 'A desztillált skill nem felelt meg a validátornak'
+          : result.stage === 'distill'
+            ? 'A desztilláló nem tudott érvényes draftot készíteni'
+            : result.stage === 'empty'
+              ? 'Nincs desztillálható tartalom'
+              : 'Hozzáférés megtagadva'
+      return fail(`${prefix}: ${result.detail}`)
+    }
+
+    revalidatePath('/control-plane/skills')
+    return ok({
+      skillId: result.skillId,
+      versionId: result.versionId,
+      name: result.draft.name,
+      description: result.draft.description,
+      riskTier: result.riskTier,
+      requires: result.requires,
+      created: result.created,
+    })
+  } catch (err) {
+    return fail(messageFrom(err))
+  }
+}
+

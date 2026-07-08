@@ -60,7 +60,7 @@ export function AppShell({
   return (
     <div className="min-h-screen text-ink">
       <div className="border-b border-honey/25 bg-honey/8 px-4 py-2 text-center text-[11px] font-medium uppercase tracking-[0.18em] text-honey">
-        MVP v1 · Postgres + ChatGPT OAuth · {clerkEnabled ? 'Clerk auth' : 'dev auth'}
+        Platform v1 · Postgres + ChatGPT OAuth · {clerkEnabled ? 'Clerk auth' : 'dev auth'}
       </div>
       <header className="sticky top-0 z-20 border-b border-line bg-night/80 backdrop-blur-xl">
         <div className="mx-auto max-w-7xl px-4 py-3.5 sm:px-5">

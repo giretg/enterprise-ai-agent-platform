@@ -27,7 +27,7 @@ process.env.CHATGPT_OAUTH_PROVIDER_URL = PROVIDER_URL
 process.env.CHATGPT_OAUTH_PROVIDER_KEY = KEY
 delete process.env.CHATGPT_OAUTH_STUB
 
-const QUESTION = 'A belső tudásbázis szerint mi az MVP fő célja? Válaszolj egy mondatban.'
+const QUESTION = 'A belső tudásbázis szerint mi a platform fő célja? Válaszolj egy mondatban.'
 
 function startSidecar() {
   const child = spawn('npx', ['tsx', 'scripts/chatgpt-oauth-provider.ts'], {

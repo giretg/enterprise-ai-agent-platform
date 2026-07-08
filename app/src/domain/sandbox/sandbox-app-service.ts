@@ -140,7 +140,7 @@ function renderWikiReportHtml(params: {
     </section>
 
     <footer>
-      Excellence AI Agent Platform MVP · mini-app (single-file HTML export) · sha256 hash a registryben
+      Excellence AI Agent Platform · mini-app (single-file HTML export) · sha256 hash a registryben
     </footer>
   </main>
 </body>

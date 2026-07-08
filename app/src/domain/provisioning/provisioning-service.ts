@@ -11,14 +11,20 @@
  * hozzárendelés agent-aktorral SOHA → `PROVISIONING_FORBIDDEN` + provisioning.access_denied.
  */
 import { createHash } from 'crypto'
-import type { ConnectorAccessMode, Prisma, UserRole } from '@prisma/client'
+import type { ConnectorAccessMode, ConnectorType, Prisma, UserRole } from '@prisma/client'
 import type { AuditRepository, ConnectorDraftRepository } from '@/repositories/interfaces'
+import type { ConnectorGrantService } from '@/domain/connector-grant/connector-grant-service'
+import {
+  normalizeGmailConnectorConfig,
+  type GmailConnectorConfig,
+} from '@/domain/connector-template/gmail-connector-config'
 import {
   normalizeConnectorConfig,
   ConnectorConfigParseError,
   type ConnectorConfig,
 } from './connector-config'
 import { validateDraftConfig, type ValidationResult } from './draft-validator'
+import { validateGmailDraftConfig } from './gmail-draft-validator'
 import { ProvisioningError } from './errors'
 
 export type ProvisioningActor =
@@ -56,6 +62,8 @@ export interface ProvisioningDeps {
    * draft-rétegre is. Emberi admin-aktorra nincs hatása.
    */
   resolveAgentCapabilities?: (agentId: string) => Promise<readonly string[]>
+  /** Per-user grantek visszavonása, ha a connector offline/archivált lesz. */
+  connectorGrants?: ConnectorGrantService
 }
 
 function sha256Hex(content: string): string {
@@ -78,13 +86,15 @@ export class ProvisioningService {
       sourceContent?: string
       generatedConfig: unknown
       generatedFromConversationId?: string | null
+      connectorType?: ConnectorType
+      secretAliasSuggested?: string | null
     },
     actor: ProvisioningActor,
   ): Promise<{
     connectorId: string
     draftId: string
     lifecycleState: 'draft'
-    config: ConnectorConfig
+    config: ConnectorConfig | GmailConnectorConfig
   }> {
     await this.requireDraftCapability(actor, 'provisioning.draft.create')
 
@@ -92,9 +102,17 @@ export class ProvisioningService {
       throw new ProvisioningError('PROVISIONING_INVALID_INPUT', 'name is required')
     }
 
-    let config: ConnectorConfig
+    const connectorType = input.connectorType ?? 'http_api'
+    let config: ConnectorConfig | GmailConnectorConfig
+    let authMode: ConnectorConfig['authMode']
     try {
-      config = normalizeConnectorConfig(input.generatedConfig)
+      if (connectorType === 'gmail') {
+        config = normalizeGmailConnectorConfig(input.generatedConfig)
+        authMode = 'user_delegated'
+      } else {
+        config = normalizeConnectorConfig(input.generatedConfig)
+        authMode = config.authMode
+      }
     } catch (e) {
       if (e instanceof ConnectorConfigParseError) {
         throw new ProvisioningError('PROVISIONING_INVALID_INPUT', e.message, e.issues)
@@ -102,23 +120,32 @@ export class ProvisioningService {
       throw e
     }
 
+    const secretAliasSuggested =
+      input.secretAliasSuggested ??
+      (connectorType === 'gmail'
+        ? null
+        : (config as ConnectorConfig).auth.secretAliasSuggested ?? null)
+
     // A forrás hash-e: a megadott sourceRef-ből vagy a nyers tartalomból. A tartalom
     // SOSEM kerül auditba/DB-be — csak a hash (§7.1, §10.1, P8).
-    const sourceHash = config.provenance?.sourceHash
-      ? normalizeSourceHash(config.provenance.sourceHash)
-      : input.sourceContent != null
+    const sourceHash =
+      (connectorType === 'gmail'
+        ? (config as GmailConnectorConfig).provenance?.sourceHash
+        : (config as ConnectorConfig).provenance?.sourceHash) ??
+      (input.sourceContent != null
         ? sha256Hex(input.sourceContent)
-        : sha256Hex(input.sourceRef ?? `${input.name}:${input.sourceType}`)
+        : sha256Hex(input.sourceRef ?? `${input.name}:${input.sourceType}`))
 
     const draft = await this.deps.drafts.createDraft({
       tenantId: actor.tenantId,
       name: input.name.trim(),
-      authMode: config.authMode,
+      connectorType,
+      authMode,
       sourceType: input.sourceType,
       sourceRef: input.sourceRef ?? null,
       sourceHash,
-      config: configToJson(config),
-      secretAliasSuggested: config.auth.secretAliasSuggested ?? null,
+      config: config as unknown as Prisma.InputJsonValue,
+      secretAliasSuggested,
       generatedByAgentId: actor.type === 'agent' ? actor.agentId : null,
       generatedByAgentVersion: actor.type === 'agent' ? actor.agentVersion ?? null : null,
       generatedFromConversationId: input.generatedFromConversationId ?? null,
@@ -148,13 +175,17 @@ export class ProvisioningService {
     await this.requireDraftCapability(actor, 'provisioning.draft.validate')
     const draft = await this.loadDraftForTenant(input.draftId, actor)
 
-    const config = parseStoredConfig(draft.connector.config)
-    const [egressAllowlist, bankPreset] = await Promise.all([
-      this.deps.resolveEgressAllowlist(actor.tenantId),
-      this.deps.resolveBankPreset(actor.tenantId),
-    ])
-
-    const validationResult = validateDraftConfig(config, { egressAllowlist, bankPreset })
+    let validationResult: ValidationResult
+    if (draft.connector.type === 'gmail') {
+      validationResult = validateGmailDraftConfig(parseGmailStoredConfig(draft.connector.config))
+    } else {
+      const config = parseStoredConfig(draft.connector.config)
+      const [egressAllowlist, bankPreset] = await Promise.all([
+        this.deps.resolveEgressAllowlist(actor.tenantId),
+        this.deps.resolveBankPreset(actor.tenantId),
+      ])
+      validationResult = validateDraftConfig(config, { egressAllowlist, bankPreset })
+    }
 
     await this.deps.drafts.setValidationResult(
       draft.id,
@@ -207,10 +238,21 @@ export class ProvisioningService {
   ): Promise<{ ok: boolean; statusCode?: number; detail?: string }> {
     this.requireHumanAdmin(actor, 'testConnectorDraft')
     const draft = await this.loadDraftForTenant(input.draftId, actor)
-    const config = parseStoredConfig(draft.connector.config)
 
     let result: { ok: boolean; statusCode?: number; detail?: string }
-    if (this.deps.sandboxTester) {
+    if (draft.connector.type === 'gmail') {
+      const config = parseGmailStoredConfig(draft.connector.config)
+      const authUrlOk = /^https?:\/\//i.test(config.oauth.authUrl?.trim() ?? '')
+      const tokenUrlOk = /^https?:\/\//i.test(config.oauth.tokenUrl?.trim() ?? '')
+      const scopesOk = config.oauth.scopes.length > 0
+      // A clientId/secret az aktiválás kapuja — a sandbox csak a sablonból materializált
+      // OAuth metaadatokat ellenőrzi (mint a http_api delegált draft validátornál).
+      result = {
+        ok: authUrlOk && tokenUrlOk && scopesOk,
+        detail: 'gmail_oauth_metadata_check',
+      }
+    } else if (this.deps.sandboxTester) {
+      const config = parseStoredConfig(draft.connector.config)
       result = await this.deps.sandboxTester.test({
         config,
         secretAlias: draft.connector.secretAlias,
@@ -246,7 +288,7 @@ export class ProvisioningService {
   ): Promise<{ connectorId: string; lifecycleState: 'active' }> {
     const user = this.requireHumanAdmin(actor, 'activateConnector')
     const draft = await this.loadDraftForTenant(input.draftId, actor)
-    const config = parseStoredConfig(draft.connector.config)
+    const isGmail = draft.connector.type === 'gmail'
 
     // Előfeltételek (§8.5, P5): approved review + nem-failed validáció + sikeres
     // sandbox-teszt + (secretAlias VAGY apiKey).
@@ -289,78 +331,99 @@ export class ProvisioningService {
       }
     }
 
-    // OAuth2 client_id (nem titok, ezért NEM a Secret Store-ba, hanem a configba
-    // → config.auth.clientId). A service-oauth2 runtime (http-api-client) és a
-    // delegált grant-flow is innen olvassa. A client_id-t a szolgáltatónál
-    // regisztrált OAuth-app adja — a discovery ezt nem tudja kitalálni.
     const trimmedClientId = input.clientId?.trim()
-    const existingClientId =
-      typeof config.auth.clientId === 'string' ? config.auth.clientId.trim() : ''
-    // Service-módú oauth2-nél a client_id kötelező és nincs env-fallback → fail-fast
-    // aktiváláskor, hogy ne az első token-refresh csússzon el (§oauth2).
-    if (
-      config.authMode !== 'user_delegated' &&
-      config.auth.type === 'oauth2' &&
-      !trimmedClientId &&
-      !existingClientId
-    ) {
-      throw new ProvisioningError(
-        'OAUTH_CLIENT_ID_MISSING',
-        'oauth2 connector requires config.auth.clientId (from the provider OAuth app registration)',
-      )
-    }
-    // A nyers configra mergeljük (nem a parse-oltra) — így a séma által nem
-    // modellezett kulcsokat (pl. delegált `oauth` blokk) nem tüntetjük el.
     let nextConfig: Prisma.InputJsonValue | undefined
-    const rawConfig = { ...((draft.connector.config as Record<string, unknown> | null) ?? {}) }
-    let configMutated = false
+    let authMode: ConnectorConfig['authMode']
 
-    if (trimmedClientId && trimmedClientId !== existingClientId) {
-      const rawAuth = { ...((rawConfig.auth as Record<string, unknown> | undefined) ?? {}) }
-      rawAuth.clientId = trimmedClientId
-      rawConfig.auth = rawAuth
-      configMutated = true
-    }
-
-    // Delegált oauth2 → runtime-alak normalizálása (mint a manuális „API-kapcsolat"
-    // form, platform.ts buildHttpApiConfig). A provisioning-draft `auth.type=oauth2`
-    // alakot a runtime http-api-kliens SERVICE oauth2-ként (client_credentials)
-    // értelmezné, kikerülve a user-delegált per-user Bearer-injekciót → minden
-    // tool-hívás elhasal. Ezért aktiváláskor átírjuk a futásidejű alakra:
-    //   auth: { scheme: 'bearer' }  (a per-user grant access token megy ki Bearerként)
-    //   oauth: { authUrl?, tokenUrl?, clientId?, scopes, userInfoUrl?, offlineParams?, ... }
-    //          (a consent-flow paraméterei; a ConnectorGrantService olvassa)
-    if (config.authMode === 'user_delegated' && config.auth.type === 'oauth2') {
-      const authUrl = typeof config.auth.authUrl === 'string' ? config.auth.authUrl.trim() : ''
-      const tokenUrl = typeof config.auth.tokenUrl === 'string' ? config.auth.tokenUrl.trim() : ''
-      const userInfoUrl =
-        typeof config.auth.userInfoUrl === 'string' ? config.auth.userInfoUrl.trim() : ''
-      const accountEmailField =
-        typeof config.auth.accountEmailField === 'string' && config.auth.accountEmailField.trim()
-          ? config.auth.accountEmailField.trim()
-          : undefined
-      const effectiveClientId = trimmedClientId || existingClientId
-      const scopes =
-        config.scopesSuggested.length > 0
-          ? config.scopesSuggested
-          : typeof config.auth.scope === 'string'
-            ? config.auth.scope.split(/\s+/).filter(Boolean)
-            : []
-      rawConfig.auth = { scheme: 'bearer' }
-      rawConfig.oauth = {
-        ...(authUrl ? { authUrl } : {}),
-        ...(tokenUrl ? { tokenUrl } : {}),
-        ...(effectiveClientId ? { clientId: effectiveClientId } : {}),
-        scopes,
-        ...(userInfoUrl ? { userInfoUrl } : {}),
-        ...(accountEmailField ? { accountEmailField } : {}),
-        ...(config.auth.offlineParams ? { offlineParams: config.auth.offlineParams } : {}),
-        ...(config.auth.scopeTransform ? { scopeTransform: config.auth.scopeTransform } : {}),
+    if (isGmail) {
+      const gmailConfig = parseGmailStoredConfig(draft.connector.config)
+      const effectiveClientId = trimmedClientId || gmailConfig.oauth.clientId?.trim() || ''
+      if (!effectiveClientId) {
+        throw new ProvisioningError(
+          'OAUTH_CLIENT_ID_MISSING',
+          'gmail connector requires oauth.clientId (from the provider OAuth app registration)',
+        )
       }
-      configMutated = true
-    }
+      authMode = 'user_delegated'
+      nextConfig = {
+        ...gmailConfig,
+        oauth: {
+          ...gmailConfig.oauth,
+          clientId: effectiveClientId,
+        },
+      } as unknown as Prisma.InputJsonValue
+    } else {
+      const config = parseStoredConfig(draft.connector.config)
+      authMode = config.authMode
 
-    if (configMutated) nextConfig = rawConfig as Prisma.InputJsonValue
+      // A nyers configra mergeljük (nem a parse-oltra) — így a séma által nem
+      // modellezett kulcsokat (pl. delegált `oauth` blokk) nem tüntetjük el.
+      const rawConfig = { ...((draft.connector.config as Record<string, unknown> | null) ?? {}) }
+      let configMutated = false
+
+      const existingClientId =
+        typeof config.auth.clientId === 'string' ? config.auth.clientId.trim() : ''
+      // Service-módú oauth2-nél a client_id kötelező és nincs env-fallback → fail-fast
+      // aktiváláskor, hogy ne az első token-refresh csússzon el (§oauth2).
+      if (
+        config.authMode !== 'user_delegated' &&
+        config.auth.type === 'oauth2' &&
+        !trimmedClientId &&
+        !existingClientId
+      ) {
+        throw new ProvisioningError(
+          'OAUTH_CLIENT_ID_MISSING',
+          'oauth2 connector requires config.auth.clientId (from the provider OAuth app registration)',
+        )
+      }
+
+      if (trimmedClientId && trimmedClientId !== existingClientId) {
+        const rawAuth = { ...((rawConfig.auth as Record<string, unknown> | undefined) ?? {}) }
+        rawAuth.clientId = trimmedClientId
+        rawConfig.auth = rawAuth
+        configMutated = true
+      }
+
+      // Delegált oauth2 → runtime-alak normalizálása (mint a manuális „API-kapcsolat"
+      // form, platform.ts buildHttpApiConfig). A provisioning-draft `auth.type=oauth2`
+      // alakot a runtime http-api-kliens SERVICE oauth2-ként (client_credentials)
+      // értelmezné, kikerülve a user-delegált per-user Bearer-injekciót → minden
+      // tool-hívás elhasal. Ezért aktiváláskor átírjuk a futásidejű alakra:
+      //   auth: { scheme: 'bearer' }  (a per-user grant access token megy ki Bearerként)
+      //   oauth: { authUrl?, tokenUrl?, clientId?, scopes, userInfoUrl?, offlineParams?, ... }
+      //          (a consent-flow paraméterei; a ConnectorGrantService olvassa)
+      if (config.authMode === 'user_delegated' && config.auth.type === 'oauth2') {
+        const authUrl = typeof config.auth.authUrl === 'string' ? config.auth.authUrl.trim() : ''
+        const tokenUrl = typeof config.auth.tokenUrl === 'string' ? config.auth.tokenUrl.trim() : ''
+        const userInfoUrl =
+          typeof config.auth.userInfoUrl === 'string' ? config.auth.userInfoUrl.trim() : ''
+        const accountEmailField =
+          typeof config.auth.accountEmailField === 'string' && config.auth.accountEmailField.trim()
+            ? config.auth.accountEmailField.trim()
+            : undefined
+        const effectiveClientId = trimmedClientId || existingClientId
+        const scopes =
+          config.scopesSuggested.length > 0
+            ? config.scopesSuggested
+            : typeof config.auth.scope === 'string'
+              ? config.auth.scope.split(/\s+/).filter(Boolean)
+              : []
+        rawConfig.auth = { scheme: 'bearer' }
+        rawConfig.oauth = {
+          ...(authUrl ? { authUrl } : {}),
+          ...(tokenUrl ? { tokenUrl } : {}),
+          ...(effectiveClientId ? { clientId: effectiveClientId } : {}),
+          scopes,
+          ...(userInfoUrl ? { userInfoUrl } : {}),
+          ...(accountEmailField ? { accountEmailField } : {}),
+          ...(config.auth.offlineParams ? { offlineParams: config.auth.offlineParams } : {}),
+          ...(config.auth.scopeTransform ? { scopeTransform: config.auth.scopeTransform } : {}),
+        }
+        configMutated = true
+      }
+
+      if (configMutated) nextConfig = rawConfig as Prisma.InputJsonValue
+    }
 
     // Kétszintű emberi kapu (§7.3, §14/4): banki preset → minden aktiválás dual-control;
     // egyébként L2–L3 dual-control, L1 egy admin.
@@ -387,7 +450,7 @@ export class ProvisioningService {
     const connector = await this.deps.drafts.activate({
       draftId: draft.id,
       secretAlias: resolvedAlias,
-      authMode: config.authMode,
+      authMode,
       secondApproverId: dualControlRequired ? input.approverId ?? null : null,
       ...(nextConfig ? { config: nextConfig } : {}),
     })
@@ -539,6 +602,13 @@ export class ProvisioningService {
 
     const connector = await this.deps.drafts.reopen({ draftId: draft.id })
 
+    await this.deps.connectorGrants?.revokeActiveGrantsForConnector({
+      connectorId: connector.id,
+      actorId: actor.type === 'user' ? actor.userId : 'system',
+      actorType: 'system',
+      reason: 'connector_reopened',
+    })
+
     await this.appendAudit(actor, 'provisioning.connector.reopen', connector.id, {
       draft_id: draft.id,
       connector_id: connector.id,
@@ -572,6 +642,67 @@ export class ProvisioningService {
     }
 
     // Kétszemes kapu (szimmetrikus az aktiválással): bank-preset → mindig; egyébként L2–L3.
+    const dualControl = await this.assertDecommissionDualControl(input, actor, user.userId)
+
+    const { connectorId, affectedAgentIds } = await this.deps.drafts.decommission({
+      draftId: draft.id,
+    })
+
+    return this.finalizeDecommission({
+      actor,
+      connectorId,
+      affectedAgentIds,
+      secretAlias: draft.connector.secretAlias,
+      auditMeta: {
+        draft_id: draft.id,
+        criticality: dualControl.criticality,
+        approver_id: dualControl.dualControlRequired ? input.approverId ?? null : null,
+        reason: input.reason ?? null,
+      },
+    })
+  }
+
+  /**
+   * Aktív connector leszerelése connectorId alapján — draft rekord nélkül is (pl. seed / legacy).
+   */
+  async decommissionActiveConnector(
+    input: { connectorId: string; criticality?: Criticality; approverId?: string; reason?: string },
+    actor: ProvisioningActor,
+  ): Promise<{ connectorId: string; lifecycleState: 'archived'; affectedAgentIds: string[] }> {
+    const user = this.requireHumanAdmin(actor, 'decommissionActiveConnector')
+    const connector = await this.loadConnectorForTenant(input.connectorId, actor)
+
+    if (connector.lifecycleState !== 'active') {
+      throw new ProvisioningError(
+        'CONNECTOR_NOT_ACTIVE',
+        'only an active connector can be decommissioned',
+      )
+    }
+
+    const dualControl = await this.assertDecommissionDualControl(input, actor, user.userId)
+    const { connectorId, affectedAgentIds } = await this.deps.drafts.decommissionByConnectorId({
+      connectorId: connector.id,
+    })
+
+    return this.finalizeDecommission({
+      actor,
+      connectorId,
+      affectedAgentIds,
+      secretAlias: connector.secretAlias,
+      auditMeta: {
+        draft_id: null,
+        criticality: dualControl.criticality,
+        approver_id: dualControl.dualControlRequired ? input.approverId ?? null : null,
+        reason: input.reason ?? null,
+      },
+    })
+  }
+
+  private async assertDecommissionDualControl(
+    input: { criticality?: Criticality; approverId?: string },
+    actor: ProvisioningActor,
+    userId: string,
+  ): Promise<{ criticality: Criticality; dualControlRequired: boolean }> {
     const criticality = input.criticality ?? 'L1'
     const bankPreset = await this.deps.resolveBankPreset(actor.tenantId)
     const dualControlRequired = bankPreset || criticality === 'L2' || criticality === 'L3'
@@ -583,20 +714,38 @@ export class ProvisioningService {
           { criticality, bankPreset },
         )
       }
-      if (input.approverId === user.userId) {
+      if (input.approverId === userId) {
         throw new ProvisioningError(
           'APPROVAL_SAME_ACTOR',
           'second approver must differ from the decommissioning admin (four-eyes)',
         )
       }
     }
+    return { criticality, dualControlRequired }
+  }
 
-    const secretAlias = draft.connector.secretAlias
-    const { connectorId, affectedAgentIds } = await this.deps.drafts.decommission({
-      draftId: draft.id,
+  private async finalizeDecommission(params: {
+    actor: ProvisioningActor
+    connectorId: string
+    affectedAgentIds: string[]
+    secretAlias: string | null
+    auditMeta: {
+      draft_id: string | null
+      criticality: Criticality
+      approver_id: string | null
+      reason: string | null
+    }
+  }): Promise<{ connectorId: string; lifecycleState: 'archived'; affectedAgentIds: string[] }> {
+    const { actor, connectorId, affectedAgentIds, secretAlias, auditMeta } = params
+    const userId = actor.type === 'user' ? actor.userId : 'system'
+
+    await this.deps.connectorGrants?.revokeActiveGrantsForConnector({
+      connectorId,
+      actorId: userId,
+      actorType: 'human',
+      reason: 'connector_decommissioned',
     })
 
-    // A menedzselt secret-ref best-effort törlése (a leszerelt connector titka ne maradjon).
     if (secretAlias) {
       const { isConnectorSecretRef, deleteConnectorApiKey } = await import(
         '@/domain/connector/connector-secret-store'
@@ -607,12 +756,12 @@ export class ProvisioningService {
     }
 
     await this.appendAudit(actor, 'provisioning.connector.decommission', connectorId, {
-      draft_id: draft.id,
+      draft_id: auditMeta.draft_id,
       connector_id: connectorId,
-      criticality,
-      approver_id: dualControlRequired ? input.approverId : null,
+      criticality: auditMeta.criticality,
+      approver_id: auditMeta.approver_id,
       revoked_agent_links: affectedAgentIds.length,
-      reason: input.reason ?? null,
+      reason: auditMeta.reason,
       policyDecision: 'allowed',
     })
 
@@ -640,6 +789,12 @@ export class ProvisioningService {
     }
 
     const connectorId = draft.connectorId
+    await this.deps.connectorGrants?.revokeActiveGrantsForConnector({
+      connectorId,
+      actorId: actor.type === 'user' ? actor.userId : 'system',
+      actorType: 'human',
+      reason: 'connector_draft_deleted',
+    })
     await this.deps.drafts.deleteDraft({ draftId: draft.id })
 
     await this.appendAudit(actor, 'provisioning.draft.delete', connectorId, {
@@ -676,6 +831,9 @@ export class ProvisioningService {
       authMode: d.connector.authMode,
       // A diff-nézethez: a generált deskriptor (§4.3). A secret SOSEM része — csak alias-név.
       config: safeParseStoredConfig(d.connector.config),
+      // Gmail connector config (provider + oauth) — secret-mentes nézet.
+      gmailView:
+        d.connector.type === 'gmail' ? safeGmailConfigView(d.connector.config) : null,
       // Fallback nézet, ha a config nem provisioning-ConnectorConfig alakú (pl. az
       // API-szerkesztőn átírt http_api config). Secret-mentes.
       httpApiView: safeHttpApiView(d.connector.config),
@@ -738,6 +896,26 @@ export class ProvisioningService {
     }
   }
 
+  private async loadConnectorForTenant(connectorId: string, actor: ProvisioningActor) {
+    const connector = await this.deps.drafts.findConnectorById(connectorId)
+    const allowed =
+      connector &&
+      (connector.tenantId === actor.tenantId ||
+        (connector.tenantId === null && actor.tenantId !== null))
+    if (!allowed) {
+      void this.appendAudit(actor, 'provisioning.access_denied', null, {
+        attempted_action: 'access_connector',
+        connector_id: connectorId,
+        policyDecision: 'denied',
+      })
+      throw new ProvisioningError(
+        'CONNECTOR_NOT_FOUND_OR_FORBIDDEN',
+        'connector not found in tenant',
+      )
+    }
+    return connector
+  }
+
   private async loadDraftForTenant(draftId: string, actor: ProvisioningActor) {
     const draft = await this.deps.drafts.findById(draftId)
     if (!draft || draft.tenantId !== actor.tenantId) {
@@ -795,6 +973,18 @@ function configToJson(config: ConnectorConfig): Prisma.InputJsonValue {
   return config as unknown as Prisma.InputJsonValue
 }
 
+function parseGmailStoredConfig(raw: unknown): GmailConnectorConfig {
+  try {
+    return normalizeGmailConnectorConfig(raw)
+  } catch (e) {
+    throw new ProvisioningError(
+      'PROVISIONING_INVALID_INPUT',
+      'stored gmail config invalid',
+      e,
+    )
+  }
+}
+
 function parseStoredConfig(raw: unknown): ConnectorConfig {
   try {
     return normalizeConnectorConfig(raw)
@@ -821,6 +1011,45 @@ export type HttpApiConfigView = {
   /** Auto-consent (user-delegált) jel: a config.oauth.authUrl jelenléte. */
   isDelegated: boolean
   endpoints: Array<{ method: string; path: string }>
+}
+
+export type GmailConfigView = {
+  provider: string
+  authUrl: string
+  tokenUrl: string
+  userInfoUrl?: string
+  clientId?: string
+  scopes: string[]
+  scopeTransform: string
+  provenance?: {
+    templateKey?: string
+    templateVersion?: number
+    templateOrigin?: string
+  }
+}
+
+function safeGmailConfigView(raw: unknown): GmailConfigView | null {
+  try {
+    const config = normalizeGmailConnectorConfig(raw)
+    return {
+      provider: config.provider,
+      authUrl: config.oauth.authUrl,
+      tokenUrl: config.oauth.tokenUrl,
+      userInfoUrl: config.oauth.userInfoUrl,
+      clientId: config.oauth.clientId,
+      scopes: config.oauth.scopes,
+      scopeTransform: config.oauth.scopeTransform,
+      provenance: config.provenance
+        ? {
+            templateKey: config.provenance.templateKey,
+            templateVersion: config.provenance.templateVersion,
+            templateOrigin: config.provenance.templateOrigin,
+          }
+        : undefined,
+    }
+  } catch {
+    return null
+  }
 }
 
 /**

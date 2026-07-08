@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { useCallback, useEffect, useRef, useState, useTransition } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react'
 import { createPortal, flushSync } from 'react-dom'
 import {
   archiveConversation,
@@ -13,7 +13,11 @@ import {
   promoteConversationWithAi,
   uploadDocument,
 } from '@/app/actions/platform'
+import { distillSkillFromConversationAction, getAgentSkillsAction } from '@/app/actions/skills'
 import { listChatTriggerableProcessDefinitions } from '@/app/actions/process'
+import { listAgentDelegatedConnectors } from '@/app/actions/connector-grants'
+import { AgentDelegatedConnectorsBar } from '@/components/agents/agent-delegated-connectors-bar'
+import type { AgentDelegatedConnectorRow } from '@/lib/agent-delegated-connectors'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { ChatMarkdown, TypingIndicator } from '@/components/chat/chat-markdown'
 import {
@@ -26,6 +30,12 @@ import {
   type ConversationFilesPanelHandle,
 } from '@/components/chat/conversation-files-panel'
 import { personaFor } from '@/lib/agent-persona'
+import {
+  filterSkillsForSlashQuery,
+  getActiveSlashQuery,
+  insertSkillSlashToken,
+  skillNameToSlashToken,
+} from '@/lib/skill/skill-slash-command'
 
 type PendingAttachment = {
   id: string
@@ -314,7 +324,14 @@ function MessageBubble({
   )
 }
 
-export type ChatAgent = {
+export type ChatSkillOption = {
+  skillId: string
+  skillVersionId: string
+  name: string
+  description: string
+}
+
+type ChatAgent = {
   id: string
   name: string
   status?: string
@@ -328,10 +345,13 @@ export function AgentChatPanel({
   agent,
   open,
   onClose,
+  canDistillSkill = false,
 }: {
   agent: ChatAgent
   open: boolean
   onClose: () => void
+  /** Admin: D14 skill-desztilláció a beszélgetésből (skill-catalog-spec §WP-6). */
+  canDistillSkill?: boolean
 }) {
   const persona = personaFor(agent.name, agent)
   const [input, setInput] = useState('')
@@ -358,11 +378,21 @@ export function AgentChatPanel({
   const [pending, startTransition] = useTransition()
   const [ticketPending, startTicketTransition] = useTransition()
   const [archivePending, startArchiveTransition] = useTransition()
+  const [distillPending, startDistillTransition] = useTransition()
+  const [distillTargetSkillId, setDistillTargetSkillId] = useState<string>('')
+  const [distillTargets, setDistillTargets] = useState<Array<{ id: string; name: string }>>([])
+  const [agentSkills, setAgentSkills] = useState<ChatSkillOption[]>([])
+  const [inputCursor, setInputCursor] = useState(0)
+  const [slashSelectedIndex, setSlashSelectedIndex] = useState(0)
   const scrollRef = useRef<HTMLDivElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const filesRef = useRef<ConversationFilesPanelHandle>(null)
   const [mounted, setMounted] = useState(false)
+  const [connectableUserConnectors, setConnectableUserConnectors] = useState<
+    AgentDelegatedConnectorRow[]
+  >([])
+  const [connectableUserConnectorsLoading, setConnectableUserConnectorsLoading] = useState(false)
 
   useEffect(() => {
     const timer = window.setTimeout(() => setMounted(true), 0)
@@ -377,6 +407,25 @@ export function AgentChatPanel({
       document.body.style.overflow = prevOverflow
     }
   }, [open])
+
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    void (async () => {
+      setConnectableUserConnectorsLoading(true)
+      try {
+        const res = await listAgentDelegatedConnectors(agent.id)
+        if (cancelled) return
+        setConnectableUserConnectors(res.success ? res.data : [])
+      } finally {
+        if (!cancelled) setConnectableUserConnectorsLoading(false)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [open, agent.id])
 
   const scrollToBottom = useCallback(() => {
     requestAnimationFrame(() => {
@@ -544,8 +593,74 @@ export function AgentChatPanel({
     !pending &&
     !ticketPending &&
     !isAgentTyping
-  const controlsBusy = pending || ticketPending || archivePending || isAgentTyping
+  const controlsBusy = pending || ticketPending || archivePending || distillPending || isAgentTyping
+
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    getAgentSkillsAction(agent.id).then((res) => {
+      if (cancelled || !res.success) return
+      const enabledBySkill = new Map<string, ChatSkillOption>()
+      const distillBySkill = new Map<string, { id: string; name: string }>()
+      for (const row of res.data) {
+        if (!distillBySkill.has(row.skillId)) {
+          distillBySkill.set(row.skillId, { id: row.skillId, name: row.name })
+        }
+        if (row.enabled && !enabledBySkill.has(row.skillId)) {
+          enabledBySkill.set(row.skillId, {
+            skillId: row.skillId,
+            skillVersionId: row.skillVersionId,
+            name: row.name,
+            description: row.description,
+          })
+        }
+      }
+      setAgentSkills([...enabledBySkill.values()])
+      if (canDistillSkill) {
+        setDistillTargets([...distillBySkill.values()])
+      }
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [agent.id, canDistillSkill, open])
+
+  const slashContext = useMemo(
+    () => getActiveSlashQuery(input, inputCursor),
+    [input, inputCursor],
+  )
+  const slashSkillOptions = useMemo(
+    () => (slashContext ? filterSkillsForSlashQuery(agentSkills, slashContext.query) : []),
+    [agentSkills, slashContext],
+  )
+
+  const applySkillSlashSelection = useCallback(
+    (skill: ChatSkillOption) => {
+      if (!slashContext) return
+      const next = insertSkillSlashToken({
+        text: input,
+        cursorPos: inputCursor,
+        slashStart: slashContext.start,
+        token: skillNameToSlashToken(skill.name),
+      })
+      setInput(next.text)
+      setInputCursor(next.cursorPos)
+      setSlashSelectedIndex(0)
+      requestAnimationFrame(() => {
+        const textarea = textareaRef.current
+        if (!textarea) return
+        textarea.focus()
+        textarea.setSelectionRange(next.cursorPos, next.cursorPos)
+      })
+    },
+    [input, inputCursor, slashContext],
+  )
+
+  const syncInputCursor = useCallback((target: HTMLTextAreaElement) => {
+    setInputCursor(target.selectionStart ?? 0)
+  }, [])
   const composerDisabled = controlsBusy || conversationStatus === 'archived'
+  const slashMenuOpen = !composerDisabled && slashContext !== null
 
   const handleDeleteMessageContent = useCallback(
     (messageId: string) => {
@@ -618,6 +733,34 @@ export function AgentChatPanel({
       await refreshSessions()
     })
   }, [controlsBusy, conversationId, conversationStatus, refreshSessions])
+
+  const handleDistillSkill = useCallback(() => {
+    if (!conversationId || controlsBusy || !canDistillSkill) return
+    if (messages.length === 0) {
+      setStatusMessage('Nincs desztillálható üzenet ebben a beszélgetésben.')
+      return
+    }
+    startDistillTransition(async () => {
+      setStatusMessage(null)
+      const res = await distillSkillFromConversationAction({
+        conversationId,
+        agentId: agent.id,
+        ...(distillTargetSkillId ? { targetSkillId: distillTargetSkillId } : {}),
+      })
+      if (!res.success) {
+        setStatusMessage(res.error)
+        return
+      }
+      const reqHint =
+        res.data.requires.length > 0
+          ? ` Javasolt eszközök: ${res.data.requires.map((r) => r.toolName).join(', ')}.`
+          : ''
+      const versionHint = res.data.created ? 'Új skill draft' : 'Új verzió javaslat'
+      setStatusMessage(
+        `${versionHint} (${res.data.riskTier}): „${res.data.name}".${reqHint} Jóváhagyás: Skill katalógus.`,
+      )
+    })
+  }, [agent.id, canDistillSkill, conversationId, controlsBusy, distillTargetSkillId, messages.length])
 
   const handleSend = () => {
     if (!canSubmit) return
@@ -841,6 +984,24 @@ export function AgentChatPanel({
   }
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (slashMenuOpen && slashSkillOptions.length > 0) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault()
+        setSlashSelectedIndex((index) => Math.min(index + 1, slashSkillOptions.length - 1))
+        return
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault()
+        setSlashSelectedIndex((index) => Math.max(index - 1, 0))
+        return
+      }
+      if (e.key === 'Enter' || e.key === 'Tab') {
+        e.preventDefault()
+        const skill = slashSkillOptions[slashSelectedIndex]
+        if (skill) applySkillSlashSelection(skill)
+        return
+      }
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       handleSend()
@@ -886,6 +1047,11 @@ export function AgentChatPanel({
                 </span>
               )}
             </p>
+            {connectableUserConnectorsLoading ? (
+              <p className="mt-2 text-[11px] text-ink-faint">Kapcsolatok betöltése…</p>
+            ) : connectableUserConnectors.length > 0 ? (
+              <AgentDelegatedConnectorsBar items={connectableUserConnectors} variant="compact" />
+            ) : null}
           </div>
           <div className="hidden items-center gap-2 sm:flex">
             {conversationId && (
@@ -899,6 +1065,35 @@ export function AgentChatPanel({
                 >
                   {ticketPending ? 'Elemzés…' : 'Ticket készítése'}
                 </button>
+                {canDistillSkill && (
+                  <>
+                    {distillTargets.length > 0 && (
+                      <select
+                        value={distillTargetSkillId}
+                        onChange={(e) => setDistillTargetSkillId(e.target.value)}
+                        disabled={controlsBusy}
+                        className="max-w-[10rem] rounded-xl border border-line bg-card px-2 py-1.5 text-xs text-ink-soft disabled:opacity-40"
+                        title="Desztillálás célja: új skill, vagy az agenthez rendelt skill új verziója"
+                      >
+                        <option value="">Új skill</option>
+                        {distillTargets.map((s) => (
+                          <option key={s.id} value={s.id}>
+                            {s.name} (új verzió)
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                    <button
+                      type="button"
+                      onClick={handleDistillSkill}
+                      disabled={controlsBusy || messages.length === 0}
+                      className="rounded-xl border border-line px-3 py-1.5 text-xs font-semibold text-ink-soft transition-colors hover:border-sage/50 hover:bg-sage/10 hover:text-sage disabled:opacity-40"
+                      title="Skill draft készítése a beszélgetés módszeréből (proposed — jóváhagyás kell)"
+                    >
+                      {distillPending ? 'Desztillálás…' : 'Skill desztillálása'}
+                    </button>
+                  </>
+                )}
                 {conversationStatus !== 'archived' && (
                   <button
                     type="button"
@@ -1151,7 +1346,41 @@ export function AgentChatPanel({
             </label>
           </div>
 
-          <div className="flex items-end gap-2 rounded-2xl border border-line bg-card p-2 shadow-sm focus-within:border-coral/40 focus-within:ring-2 focus-within:ring-coral/15">
+          <div className="relative flex items-end gap-2 rounded-2xl border border-line bg-card p-2 shadow-sm focus-within:border-coral/40 focus-within:ring-2 focus-within:ring-coral/15">
+            {slashMenuOpen && (
+              <div
+                role="listbox"
+                aria-label="Skill slash-parancsok"
+                className="absolute bottom-full left-12 z-20 mb-1 max-h-48 w-72 overflow-y-auto rounded-xl border border-line bg-card py-1 shadow-lg"
+              >
+                {agentSkills.length === 0 ? (
+                  <p className="px-3 py-2 text-xs text-ink-faint">
+                    Ehhez az agenthez nincs engedélyezett skill hozzárendelve.
+                  </p>
+                ) : slashSkillOptions.length === 0 ? (
+                  <p className="px-3 py-2 text-xs text-ink-faint">Nincs illeszkedő skill.</p>
+                ) : (
+                  slashSkillOptions.map((skill, index) => (
+                    <button
+                      key={skill.skillVersionId}
+                      type="button"
+                      role="option"
+                      aria-selected={index === slashSelectedIndex}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => applySkillSlashSelection(skill)}
+                      className={`flex w-full flex-col px-3 py-2 text-left text-xs transition-colors ${
+                        index === slashSelectedIndex
+                          ? 'bg-coral/10 text-coral-deep'
+                          : 'hover:bg-night-2'
+                      }`}
+                    >
+                      <span className="font-semibold">/{skillNameToSlashToken(skill.name)}</span>
+                      <span className="line-clamp-2 text-ink-faint">{skill.description}</span>
+                    </button>
+                  ))
+                )}
+              </div>
+            )}
             <input
               ref={fileInputRef}
               type="file"
@@ -1174,14 +1403,21 @@ export function AgentChatPanel({
             <textarea
               ref={textareaRef}
               value={input}
-              onChange={(e) => setInput(e.target.value)}
+              onChange={(e) => {
+                setInput(e.target.value)
+                syncInputCursor(e.target)
+                setSlashSelectedIndex(0)
+              }}
+              onSelect={(e) => syncInputCursor(e.currentTarget)}
+              onClick={(e) => syncInputCursor(e.currentTarget)}
+              onKeyUp={(e) => syncInputCursor(e.currentTarget)}
               onKeyDown={handleKeyDown}
               rows={1}
-              placeholder={`Üzenet ${persona.nickname}-nak…`}
+              placeholder={`Üzenet ${persona.nickname}-nak… (/ a skill betöltéséhez)`}
               disabled={composerDisabled}
               className="max-h-36 min-h-[44px] flex-1 resize-none bg-transparent px-1 py-2.5 text-sm text-ink placeholder:text-ink-faint focus:outline-none disabled:opacity-50"
             />
-            <FieldHelp description="Ide írd az üzenetet az agentnek. Enterrel küldöd, Shift+Enterrel új sort szúrsz be." />
+            <FieldHelp description="Ide írd az üzenetet. / megnyomására skill választható — a kiválasztott skill a küldéskor bekerül a promptba. Enter küld, Shift+Enter új sor." />
 
             <button
               type="button"
@@ -1204,7 +1440,7 @@ export function AgentChatPanel({
           </div>
 
           <p className="mt-2 text-center text-[11px] text-ink-faint">
-            Enter küld · Shift+Enter új sor · Ticket = feladat a Kanban táblán
+            Enter küld · Shift+Enter új sor · /skill-név = skill betöltése a promptba
           </p>
             </div>
           </div>
@@ -1219,10 +1455,12 @@ export function AgentChatButton({
   agent,
   className = '',
   compact = false,
+  canDistillSkill = false,
 }: {
   agent: ChatAgent
   className?: string
   compact?: boolean
+  canDistillSkill?: boolean
 }) {
   const [open, setOpen] = useState(false)
 
@@ -1244,7 +1482,12 @@ export function AgentChatButton({
       >
         💬 {compact ? 'Beszél' : 'Beszélgetés'}
       </button>
-      <AgentChatPanel agent={agent} open={open} onClose={() => setOpen(false)} />
+      <AgentChatPanel
+        agent={agent}
+        open={open}
+        onClose={() => setOpen(false)}
+        canDistillSkill={canDistillSkill}
+      />
     </>
   )
 }

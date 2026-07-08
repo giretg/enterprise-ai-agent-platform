@@ -1,15 +1,15 @@
 # Enterprise AI Agent Platform
 
-Kontrollált Enterprise AI Agent Platform — MVP walking skeleton (Next.js + Postgres).
+Kontrollált Enterprise AI Agent Platform — production-oriented agent control plane (Next.js + Postgres).
 
 - **Control Plane** — governance, board, ticketek, audit, agent registry
 - **Sandbox** — wiki-agent tudásbázis, citált válaszok, A0 HTML riport preview/export
 
 ## Dokumentáció
 
-- [`AI-Agent-Platform-MVP-Dev-Spec-Roadmap-v1.0.md`](AI-Agent-Platform-MVP-Dev-Spec-Roadmap-v1.0.md) — MVP fejlesztési spec és roadmap
+- [`AI-Agent-Platform-MVP-Dev-Spec-Roadmap-v1.0.md`](AI-Agent-Platform-MVP-Dev-Spec-Roadmap-v1.0.md) — historikus v1 fejlesztési spec és roadmap
 - [`AI-Agent-Platform-Koncepcio.md`](AI-Agent-Platform-Koncepcio.md) — teljes koncepció
-- [`AI-Agent-Platform-MVP-Terv-v1.0.md`](AI-Agent-Platform-MVP-Terv-v1.0.md) — MVP terv
+- [`AI-Agent-Platform-MVP-Terv-v1.0.md`](AI-Agent-Platform-MVP-Terv-v1.0.md) — historikus v1 terv
 
 ## Futtatás
 

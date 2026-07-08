@@ -97,17 +97,19 @@ export function AssignExistingConnectorForm({
               </label>
             </div>
 
-            <label className="block text-sm">
-              <span className="text-ink-soft">Per-agent API kulcs</span>
-              <input
-                type="password"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                placeholder="Üresen hagyva a kapcsolat megosztott kulcsát használja"
-                autoComplete="off"
-                className={INPUT}
-              />
-            </label>
+            {selected?.type !== 'gmail' ? (
+              <label className="block text-sm">
+                <span className="text-ink-soft">Per-agent API kulcs</span>
+                <input
+                  type="password"
+                  value={apiKey}
+                  onChange={(e) => setApiKey(e.target.value)}
+                  placeholder="Üresen hagyva a kapcsolat megosztott kulcsát használja"
+                  autoComplete="off"
+                  className={INPUT}
+                />
+              </label>
+            ) : null}
 
             {error && <p className="text-sm text-coral">{error}</p>}
             {done && <p className="text-sm text-sage">{done}</p>}

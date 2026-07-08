@@ -5,7 +5,7 @@ import { buildTree, type BuiltTree, type TreeFileInput, type TreeManifestEntry }
  * Sandbox verziózás tárrétege (Feature-spec §2.1/§2.2).
  *
  * Két külön, immutable object-store sín:
- *  - CodeTreeStore: per-commit teljes fa-snapshot (§13/1. nyitott döntés: MVP-ben
+ *  - CodeTreeStore: per-commit teljes fa-snapshot (§13/1. nyitott döntés:
  *    teljes fa, később content-addressed dedup). A DB SOSEM tárol nyers fájltartalmat,
  *    csak `tree_ref + tree_hash + méret` (invariáns: F-SV-1 elfogadás).
  *  - DataSnapshotStore: point-in-time adat-dump (§4.5). A kód-sínnel SOHA nem keveredik.
@@ -188,7 +188,7 @@ export interface CreatedSnapshot {
 
 /**
  * Point-in-time adat-snapshot (§3.5/§4.5). A koncepció szerint ez a modul üzleti
- * adatát (pl. CRM-sorok + séma) menti; MVP-ben a `data_binding` alapján determinisztikus,
+ * adatát (pl. CRM-sorok + séma) menti; a `data_binding` alapján determinisztikus,
  * hordozható logikai dump referenciát ad (§13/2. nyitott döntés: logikai dump).
  * A séma állapotát a `schema_hash` a kód-fától FÜGGETLENÜL követi (kettős sín).
  */
@@ -217,7 +217,7 @@ export class GcsDataSnapshotStore implements DataSnapshotStore {
     const snapshotRef = dataSnapshotPath(params)
     const bindingJson = JSON.stringify(params.dataBinding ?? {})
     const schemaHash = `sha256:${createHash('sha256').update(bindingJson).digest('hex')}`
-    // MVP: a tényleges sor-dump a `data_binding` store-jaiból jönne; itt determinisztikus
+    // A tényleges sor-dump a `data_binding` store-jaiból jönne; itt determinisztikus
     // méret/darab a bindingből származtatva, hogy a mérés (§8.3) és a checksum stabil legyen.
     const rowCount = Array.isArray((params.dataBinding as { stores?: unknown[] })?.stores)
       ? ((params.dataBinding as { stores?: unknown[] }).stores as unknown[]).length

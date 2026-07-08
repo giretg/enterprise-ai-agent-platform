@@ -23,7 +23,7 @@ import { prisma } from '../src/lib/db'
 import { DISPATCH_NOTIFY_CHANNEL } from '../src/lib/dispatch-notify'
 
 const SAMPLE_QUESTION =
-  'Mi az MVP célja, és milyen átjárókon kell átmennie az agent műveleteinek?'
+  'Mi a platform célja, és milyen átjárókon kell átmennie az agent műveleteinek?'
 const TIMEOUT_MS = Number(process.env.DISPATCHER_SMOKE_TIMEOUT_MS ?? '120000')
 const POLL_MS = 3000
 

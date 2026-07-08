@@ -28,7 +28,7 @@ export type AgentSandboxAppSummary = {
   updatedAt: string
 }
 
-const SAMPLE_QUESTION = 'Mi az MVP célja, és milyen gatewayeken kell átmennie az agent műveleteinek?'
+const SAMPLE_QUESTION = 'Mi a platform célja, és milyen gatewayeken kell átmennie az agent műveleteinek?'
 const SAMPLE_INVOICE = `Beszállító: Ostoros Office Kft.
 Számlaszám: SZ-2026-0142
 Dátum: 2026-06-12

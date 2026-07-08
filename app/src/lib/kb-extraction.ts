@@ -15,8 +15,8 @@ import type { ExtractedBlock } from './kb-v3'
  * OKF-oldal a saját forrás-linkjével. A `markdown` a legacy `extractedText`
  * mezőt tölti (backward compatibility, §4.2).
  *
- * A layout-aware span-pontos citation (bekezdés/byte-offset) tudatosan
- * post-MVP (D-G/D7) — itt oldal/section/cella a granularitás.
+ * A layout-aware span-pontos citation (bekezdés/byte-offset) külön bővítési
+ * döntés (D-G/D7) — itt oldal/section/cella a granularitás.
  */
 
 export type ExtractionFormat = 'pdf' | 'docx' | 'xlsx' | 'text'

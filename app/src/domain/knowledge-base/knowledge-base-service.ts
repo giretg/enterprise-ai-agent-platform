@@ -145,7 +145,7 @@ export class KnowledgeBaseService {
     await this.documents.update(document.id, { processingMode })
 
     // OKF-mód: már a review-ticket nyitásakor legenerálunk egy draft artifactot,
-    // hogy az approver tartalmat lásson (§7.5 — MVP determinisztikus, nem LLM).
+    // hogy az approver tartalmat lásson (§7.5 — determinisztikus, nem LLM).
     if (processingMode === 'okf') {
       await this.createDraftArtifact({
         document,
@@ -335,7 +335,7 @@ export class KnowledgeBaseService {
   // ── KB-v3 artifact flow (§11.1) ───────────────────────────────────────────
 
   /**
-   * Draft OKF-artifact a forrásdokumentumból (§7.5). MVP-ben determinisztikus
+   * Draft OKF-artifact a forrásdokumentumból (§7.5). Determinisztikus
    * (nem LLM); `pending_review` státuszt kap, approval előtt SOHA nem kereshető
    * (chunk csak publikáláskor keletkezik). Verzió: a doc korábbi verzióira +1.
    */

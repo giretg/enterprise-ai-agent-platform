@@ -21,7 +21,7 @@ const STUB_MESSAGES: GmailMessageSummary[] = [
     id: 'stub-msg-1',
     threadId: 'stub-thread-1',
     from: 'noreply@example.com',
-    subject: 'MVP acceptance stub üzenet',
+    subject: 'Platform acceptance stub üzenet',
     snippet: 'Ez egy stub Gmail találat az acceptance teszthez.',
     date: new Date().toISOString(),
   },

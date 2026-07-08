@@ -13,13 +13,16 @@ const EXPECTED_KEY = process.env.CHATGPT_OAUTH_PROVIDER_KEY ?? 'stub-internal-ke
 
 function stubWikiAnswer(messages: Array<{ role: string; content: string }>): string {
   const combined = messages.map((m) => m.content).join('\n').toLowerCase()
-  const hasMvp = combined.includes('mvp') || combined.includes('átjáró') || combined.includes('gateway')
+  const hasPlatformQuestion =
+    combined.includes('platform') ||
+    combined.includes('átjáró') ||
+    combined.includes('gateway')
   const hasSources = combined.includes('forrás') || combined.includes('docid') || combined.includes('[1]')
 
-  if (!hasSources && hasMvp) {
+  if (!hasSources && hasPlatformQuestion) {
     return JSON.stringify({
       answer:
-        'Az MVP célja egy architektúra-teljes walking skeleton. Minden modellhívás a Model Gatewayen, minden eszközhívás a Tool Brokeren keresztül történik.',
+        'A platform célja kontrollált, auditálható AI agent munkakörnyezet biztosítása. Minden modellhívás a Model Gatewayen, minden eszközhívás a Tool Brokeren keresztül történik.',
       sources: [{ docId: 'memory:stub', sectionRef: 'memory:stub:v1' }],
       rationale: 'Stub provider — belső tudásbázis mintából.',
       confidence: 'high',
@@ -29,7 +32,7 @@ function stubWikiAnswer(messages: Array<{ role: string; content: string }>): str
   if (hasSources) {
     return JSON.stringify({
       answer:
-        'Az MVP célja egy architektúra-teljes walking skeleton, amelyben minden komponens legalább egyszer valódi futásban összeáll.',
+        'A platform kontrollált, auditálható agent-munkakörnyezet, ahol a modell- és eszközhívások központi átjárókon mennek át.',
       sources: [{ docId: 'memory:stub', sectionRef: 'acceptance:wiki' }],
       rationale: 'Stub provider — a megadott forrásrészletek alapján.',
       confidence: 'high',

@@ -440,6 +440,7 @@ export class ConnectorGrantService {
     actorType: 'human' | 'system'
     expectedUserId?: string
     expectedTenantId?: string | null
+    reason?: string
   }) {
     const grant = await this.loadGrantForAccess({
       grantId: params.grantId,
@@ -463,10 +464,48 @@ export class ConnectorGrantService {
       inputRef: grant.connectorId,
       outputRef: grant.userId,
       policyDecision: 'revoked',
-      metadata: { actor: params.actorId } as Prisma.JsonValue,
+      metadata: {
+        actor: params.actorId,
+        ...(params.reason ? { reason: params.reason } : {}),
+      } as Prisma.JsonValue,
     })
 
     return updated
+  }
+
+  async revokeActiveGrantsForConnector(params: {
+    connectorId: string
+    actorId: string
+    actorType: 'human' | 'system'
+    reason: string
+  }): Promise<number> {
+    const grants = await this.grants.findActiveByConnector(params.connectorId)
+    for (const grant of grants) {
+      await this.revokeGrant({
+        grantId: grant.id,
+        actorId: params.actorId,
+        actorType: params.actorType,
+        reason: params.reason,
+      })
+    }
+    return grants.length
+  }
+
+  async revokeGrantsForNonActiveConnectors(
+    userId: string,
+    tenantId: string | null | undefined,
+    actorId: string,
+  ): Promise<number> {
+    const stale = await this.grants.findActiveForInactiveConnectors(userId, tenantId)
+    for (const grant of stale) {
+      await this.revokeGrant({
+        grantId: grant.id,
+        actorId,
+        actorType: 'system',
+        reason: 'connector_not_active',
+      })
+    }
+    return stale.length
   }
 
   async revokeAllForUser(userId: string, actorId: string) {

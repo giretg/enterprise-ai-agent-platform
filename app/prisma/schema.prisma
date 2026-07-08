@@ -44,8 +44,8 @@ enum TenantMembershipStatus {
 }
 
 /**
- * Platform-szintű szerep — NEM tenant-role (§3.1). MVP-ben elég a superadmin,
- * de az enum bővíthetően vezet be további platform-szerepeket (§6.2, döntés 3.3/10).
+ * Platform-szintű szerep — NEM tenant-role (§3.1). Az enum bővíthetően
+ * vezeti be a platform-szerepeket (§6.2, döntés 3.3/10).
  */
 enum PlatformRole {
   superadmin
@@ -171,7 +171,7 @@ enum ConnectorAccessMode {
 }
 
 // ── Fázis 2: Provisioning Assistant (Connector Onboarding) ──────────────────
-// A connector életciklus-állapota. DEFAULT `active`, hogy a meglévő (MVP) sorok
+// A connector életciklus-állapota. DEFAULT `active`, hogy a meglévő sorok
 // viselkedése változatlan maradjon; a draft-connector `draft|validated`
 // állapotban a Tool Brokerben SOHA nem oldódik fel (runtime DENY).
 // (Feature-spec — Provisioning-Assistant §4.1.)
@@ -883,7 +883,7 @@ model PlaybookVersion {
 
 // --- Fázis 2 Playbook (Feature-spec — Playbook §4) ---------------------------
 // Új, párhuzamos V2 réteg az objektum-alapú, verziózott Playbook-folyamatokhoz.
-// A meglévő MVP `playbooks` / `playbook_versions` táblákat NEM érinti.
+// A meglévő `playbooks` / `playbook_versions` táblákat NEM érinti.
 
 enum PlaybookV2Status {
   draft

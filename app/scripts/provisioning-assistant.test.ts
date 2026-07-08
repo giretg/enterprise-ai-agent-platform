@@ -113,7 +113,7 @@ class FakeDraftRepo implements ConnectorDraftRepository {
     const draftId = `draft-${this.seq}`
     const connector: Connector = {
       id: connectorId,
-      type: 'http_api' as ConnectorType,
+      type: (input.connectorType ?? 'http_api') as ConnectorType,
       name: input.name,
       authMode: input.authMode,
       scope: 'single',
@@ -247,6 +247,11 @@ class FakeDraftRepo implements ConnectorDraftRepository {
     d.connector.lifecycleState = 'archived'
     return { connectorId: d.connectorId, affectedAgentIds }
   }
+  async decommissionByConnectorId(params: { connectorId: string }) {
+    const draft = [...this.drafts.values()].find((d) => d.connectorId === params.connectorId)
+    if (!draft) throw new Error('connector not found')
+    return this.decommission({ draftId: draft.id })
+  }
   async deleteDraft(params: { draftId: string }) {
     const d = this.drafts.get(params.draftId)!
     this.agentConnectors = this.agentConnectors.filter((ac) => ac.connectorId !== d.connectorId)
@@ -256,6 +261,16 @@ class FakeDraftRepo implements ConnectorDraftRepository {
     return [...this.drafts.values()]
       .filter((d) => d.tenantId === tenantId && d.connector.lifecycleState === 'active')
       .map((d) => ({ id: d.connectorId, type: d.connector.type, name: d.connector.name }))
+  }
+  async findConnectorById(connectorId: string) {
+    const draft = [...this.drafts.values()].find((d) => d.connectorId === connectorId)
+    if (!draft) return null
+    return {
+      id: draft.connectorId,
+      tenantId: draft.tenantId,
+      lifecycleState: draft.connector.lifecycleState,
+      secretAlias: draft.connector.secretAlias,
+    }
   }
 }
 
@@ -1060,6 +1075,39 @@ async function run() {
     assert.equal(r.ok, false)
     assert.equal(r.detail, 'request_failed')
     assert.ok(!JSON.stringify(r).includes('api.acme-crm.example'))
+  })
+
+  await test('SBX: Gmail sandbox zöld clientId nélkül (aktiváláskor kell)', async () => {
+    const audit = new FakeAudit()
+    const drafts = new FakeDraftRepo()
+    const svc = new ProvisioningService({
+      drafts,
+      audit,
+      resolveEgressAllowlist: async () => ALLOWLIST,
+      resolveBankPreset: async () => false,
+    })
+    const created = await svc.createConnectorDraft(
+      {
+        name: 'Gmail',
+        sourceType: 'template',
+        connectorType: 'gmail',
+        generatedConfig: {
+          provider: 'google',
+          oauth: {
+            authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+            tokenUrl: 'https://oauth2.googleapis.com/token',
+            userInfoUrl: 'https://www.googleapis.com/oauth2/v2/userinfo',
+            scopes: ['https://www.googleapis.com/auth/gmail.modify'],
+            scopeTransform: 'gmailAlias',
+          },
+        },
+      },
+      adminActor,
+    )
+    const t = await svc.testConnectorDraft({ draftId: created.draftId }, adminActor)
+    assert.equal(t.ok, true)
+    assert.equal(t.detail, 'gmail_oauth_metadata_check')
+    assert.equal(drafts.drafts.get(created.draftId)!.sandboxTestOk, true)
   })
 
   await test('SBX: integráció — testConnectorDraft a valódi testerrel zöld utat ad', async () => {

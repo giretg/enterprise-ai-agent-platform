@@ -1,6 +1,6 @@
 /**
  * A0 app-policy validáció (Feature-spec — App Registry §3.4).
- * Az MVP-ben a policy deklaratív, de erősen korlátozott: hálózat / connector /
+ * Az A0 policy deklaratív, de erősen korlátozott: hálózat / connector /
  * secret / nem-beágyazott adat tilos. Bármely tiltott érték → POLICY_NOT_ALLOWED_FOR_A0.
  */
 import { SandboxAppError } from './errors'
@@ -39,7 +39,7 @@ export function validateAndNormalizeA0Policy(
   const policy = requested ?? {}
 
   if (policy.level !== undefined && policy.level !== 'A0') {
-    throw new SandboxAppError('POLICY_NOT_ALLOWED_FOR_A0', `level must be A0 in MVP, got ${String(policy.level)}`)
+    throw new SandboxAppError('POLICY_NOT_ALLOWED_FOR_A0', `level must be A0, got ${String(policy.level)}`)
   }
   if (policy.network !== undefined && policy.network !== 'none') {
     throw new SandboxAppError('POLICY_NOT_ALLOWED_FOR_A0', 'network must be "none" for A0')

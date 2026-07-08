@@ -3,11 +3,16 @@ import {
   normalizeConnectorConfig,
   type ConnectorConfig,
 } from '@/domain/provisioning/connector-config'
+import { materializeGmailConnectorConfig } from './gmail-connector-config'
 import type {
   AuthMethodDescriptor,
   InstanceFieldDescriptor,
+  MaterializeConnectorInput,
   TemplateDescriptor,
 } from './template-descriptor'
+import { ConnectorTemplateMaterializationError } from './template-descriptor'
+
+export { ConnectorTemplateMaterializationError }
 
 export type ConnectorTemplateProvenance = {
   templateId?: string
@@ -15,20 +20,6 @@ export type ConnectorTemplateProvenance = {
   templateVersion: number
   templateOrigin: 'builtin' | 'custom'
   materializedAt?: string
-}
-
-export type MaterializeConnectorInput = {
-  authMethodKind: AuthMethodDescriptor['kind']
-  instanceValues: Record<string, string>
-  selectedScopes?: string[]
-  selectedEndpoints?: string[]
-}
-
-export class ConnectorTemplateMaterializationError extends Error {
-  constructor(message: string) {
-    super(message)
-    this.name = 'ConnectorTemplateMaterializationError'
-  }
 }
 
 export function materializeConnectorConfig(
@@ -100,6 +91,37 @@ export function selfCheckTemplateDescriptor(
     instanceValues[field.name] =
       sample?.instanceValues?.[field.name] ??
       sampleValueForField(field, descriptor.key)
+  }
+
+  if ((descriptor.connectorType ?? 'http_api') === 'gmail') {
+    materializeGmailConnectorConfig(
+      descriptor,
+      {
+        authMethodKind,
+        instanceValues,
+        selectedScopes: sample?.selectedScopes,
+        selectedEndpoints: sample?.selectedEndpoints,
+      },
+      secretAliases,
+      {
+        templateKey: descriptor.key,
+        templateVersion: 1,
+        templateOrigin: 'custom',
+        materializedAt: '2026-07-02T00:00:00.000Z',
+      },
+    )
+    // Gmail sablonok nem http_api runtime configot adnak — a self-check itt csak
+    // a materializálhatóságot ellenőrzi. Visszatérési típus kompatibilitás miatt
+    // egy minimális http_api placeholder configot adunk vissza.
+    return normalizeConnectorConfig({
+      provider: descriptor.key,
+      baseUrl: descriptor.baseUrl,
+      egressHosts: descriptor.egressHosts,
+      authMode: 'user_delegated',
+      auth: { type: 'oauth2', authUrl: 'https://accounts.google.com/o/oauth2/v2/auth', tokenUrl: 'https://oauth2.googleapis.com/token', clientId: 'self-check' },
+      scopesSuggested: [],
+      proposedTools: [],
+    })
   }
 
   return materializeConnectorConfig(

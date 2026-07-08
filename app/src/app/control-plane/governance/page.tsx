@@ -182,8 +182,8 @@ export default async function GovernancePage({
               </p>
             </Card>
 
-            {/* Sandbox app (CR-MVP-001) */}
-            <Card title="Sandbox appok (CR-MVP-001)" className="lg:col-span-1">
+            {/* Sandbox app registry */}
+            <Card title="Sandbox appok" className="lg:col-span-1">
               <ul className="space-y-2 text-sm">
                 {[
                   ['Létrehozva', report.sandbox.created],

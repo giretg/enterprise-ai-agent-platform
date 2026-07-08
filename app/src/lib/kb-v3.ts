@@ -133,7 +133,7 @@ type BuildOkfBundleInput = {
 type BuildSection = { title: string; body: string; sourceRef: OkfSourceRef }
 
 /**
- * Determinisztikus OKF-bundle a kinyert szövegből (§17.3). MVP: NEM LLM —
+ * Determinisztikus OKF-bundle a kinyert szövegből (§17.3). NEM LLM —
  * a formátumfüggő extraction-szeletek (vagy fallbackként a markdown headingek)
  * mentén szekciózza a törzset, és minden oldal `## Source` szekciója a
  * forrásdokumentum konkrét helyére (oldal/section/cella) mutató linket hordoz

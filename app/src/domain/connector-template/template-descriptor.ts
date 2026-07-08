@@ -40,6 +40,13 @@ export const templateEndpointSchema = z.object({
 })
 export type TemplateEndpoint = z.infer<typeof templateEndpointSchema>
 
+export type MaterializeConnectorInput = {
+  authMethodKind: AuthMethodDescriptor['kind']
+  instanceValues: Record<string, string>
+  selectedScopes?: string[]
+  selectedEndpoints?: string[]
+}
+
 const oauthBase = z.object({
   authUrl: z.string().url(),
   tokenUrl: z.string().url(),
@@ -58,11 +65,15 @@ export const authMethodDescriptorSchema = z.discriminatedUnion('kind', [
 ])
 export type AuthMethodDescriptor = z.infer<typeof authMethodDescriptorSchema>
 
+export const templateConnectorTypeSchema = z.enum(['http_api', 'gmail']).default('http_api')
+
 export const templateDescriptorSchema = z.object({
   key: connectorTemplateKeySchema,
   displayName: z.string().min(1),
   description: z.string().optional(),
   activationHelp: z.string().min(1).optional(),
+  /** A materializált connector Prisma `type` mezője. Alapértelmezés: http_api. */
+  connectorType: templateConnectorTypeSchema.default('http_api'),
   baseUrl: z.string().url(),
   egressHosts: z.array(z.string().min(1)).min(1),
   authMethods: z.array(authMethodDescriptorSchema).min(1),
@@ -75,4 +86,11 @@ export type TemplateDescriptor = z.infer<typeof templateDescriptorSchema>
 
 export function parseTemplateDescriptor(input: unknown): TemplateDescriptor {
   return templateDescriptorSchema.parse(input)
+}
+
+export class ConnectorTemplateMaterializationError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ConnectorTemplateMaterializationError'
+  }
 }

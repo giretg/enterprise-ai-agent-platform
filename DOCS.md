@@ -138,7 +138,7 @@ enterprise-ai-agent-platform/
 │   ├── infra/gcp/                # GCP deploy scriptek + setup dokumentáció
 │   └── scripts/                  # Dev / ops segédscriptek
 ├── AI-Agent-Platform-Koncepcio.md  # Teljes architekturális koncepció
-├── AI-Agent-Platform-MVP-Dev-Spec-Roadmap-v1.0.md
+├── AI-Agent-Platform-MVP-Dev-Spec-Roadmap-v1.0.md  # Historikus v1 fejlesztési spec
 ├── DEPLOY.md                       # Production deploy útmutató
 └── DOCS.md                         # Ez a dokumentum
 ```

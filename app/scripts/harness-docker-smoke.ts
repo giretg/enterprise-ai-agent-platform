@@ -40,7 +40,7 @@ async function main() {
       assigneeId: agent.id,
       agentId: agent.id,
       payload: {
-        question: 'Mi az MVP célja?',
+        question: 'Mi a platform célja?',
         agentVersion: agent.currentVersion,
       },
       lockToken,

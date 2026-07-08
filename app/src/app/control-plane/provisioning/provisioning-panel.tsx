@@ -67,6 +67,20 @@ type HttpApiConfigView = {
   isDelegated: boolean
   endpoints: Array<{ method: string; path: string }>
 } | null
+type GmailConfigView = {
+  provider: string
+  authUrl: string
+  tokenUrl: string
+  userInfoUrl?: string
+  clientId?: string
+  scopes: string[]
+  scopeTransform: string
+  provenance?: {
+    templateKey?: string
+    templateVersion?: number
+    templateOrigin?: string
+  }
+} | null
 type DraftRow = {
   draftId: string
   connectorId: string
@@ -81,6 +95,7 @@ type DraftRow = {
   authMode: string
   config: DraftConfig
   httpApiView: HttpApiConfigView
+  gmailView: GmailConfigView
   sourceType: string
   sourceHash: string
   createdAt: string | Date
@@ -315,11 +330,13 @@ export function ProvisioningPanel() {
     setSelectedEndpoints(descriptor.endpoints.filter((e) => e.default !== false).map((e) => e.name))
     setTemplateValues({})
     setTemplateSecretAliases(
-      Object.fromEntries(
-        descriptor.instanceFields
-          .filter((field) => field.type === 'secret' && field.secretAliasHint)
-          .map((field) => [field.name, field.secretAliasHint ?? '']),
-      ),
+      descriptor.connectorType === 'gmail'
+        ? {}
+        : Object.fromEntries(
+            descriptor.instanceFields
+              .filter((field) => field.type === 'secret' && field.secretAliasHint)
+              .map((field) => [field.name, field.secretAliasHint ?? '']),
+          ),
     )
   }, [])
 
@@ -490,6 +507,7 @@ export function ProvisioningPanel() {
   }, [templates])
   const selectedTemplate = templates.find((t) => t.id === selectedTemplateId) ?? templates[0]
   const selectedTemplateDescriptor = selectedTemplate?.descriptor
+  const isGmailTemplate = selectedTemplateDescriptor?.connectorType === 'gmail'
   const effectiveTemplateAuthMethod =
     selectedTemplateDescriptor?.authMethods.find((m) => m.kind === templateAuthMethod)?.kind ??
     selectedTemplateDescriptor?.authMethods[0]?.kind ??
@@ -794,7 +812,7 @@ export function ProvisioningPanel() {
                               </div>
                             </div>
 
-                            {selectedTemplateDescriptor.instanceFields.length > 0 ? (
+                            {selectedTemplateDescriptor.instanceFields.length > 0 && !isGmailTemplate ? (
                               <div className="grid gap-3 sm:grid-cols-2">
                                 {selectedTemplateDescriptor.instanceFields.map((field) => {
                                   const value =
@@ -1416,7 +1434,7 @@ function DraftCard({
   const [open, setOpen] = useState(false)
   const [secretAlias, setSecretAlias] = useState(draft.secretAliasSuggested ?? '')
   const [apiKey, setApiKey] = useState('')
-  const [clientId, setClientId] = useState('')
+  const [clientId, setClientId] = useState(() => draft.gmailView?.clientId ?? '')
   const [approverId, setApproverId] = useState('')
   const [criticality, setCriticality] = useState<'L1' | 'L2' | 'L3'>('L1')
   const [agentId, setAgentId] = useState('')
@@ -1436,7 +1454,8 @@ function DraftCard({
 
   const v = draft.validationResult
   const cfg = draft.config
-  const provenance = cfg?.provenance
+  const gmailView = draft.gmailView
+  const provenance = cfg?.provenance ?? gmailView?.provenance
   const templateVersionKey = templateLineKey({
     key: provenance?.templateKey,
     origin: provenance?.templateOrigin,
@@ -1459,12 +1478,21 @@ function DraftCard({
         template.origin === provenance?.templateOrigin &&
         template.version === provenance?.templateVersion &&
         (template.origin !== 'custom' || template.tenantId === null || template.tenantId === draft.tenantId),
-    )?.descriptor
+    )?.descriptor ??
+    (provenance?.templateKey
+      ? templates.find((template) => template.key === provenance.templateKey)?.descriptor
+      : undefined)
+  const isGmailConnector = draft.connectorType === 'gmail'
   const activationHelp = templateDescriptor?.activationHelp?.trim() ?? ''
   const isActive = draft.lifecycleState === 'active'
-  const isUserDelegated = draft.authMode === 'user_delegated' || cfg?.authMode === 'user_delegated' || draft.httpApiView?.isDelegated === true
+  const isUserDelegated =
+    isGmailConnector ||
+    draft.authMode === 'user_delegated' ||
+    cfg?.authMode === 'user_delegated' ||
+    draft.httpApiView?.isDelegated === true
   // oauth2 (service VAGY delegált) → nem-titkos client_id-t kell megadni (config.auth.clientId).
   const isOauth2 =
+    isGmailConnector ||
     isUserDelegated ||
     draft.httpApiView?.authScheme === 'oauth2' ||
     cfg?.auth?.type === 'oauth2'
@@ -1478,7 +1506,7 @@ function DraftCard({
   const sandboxReady = draft.sandboxTestOk === true
   const activationReady = reviewApproved && validationReady && sandboxReady
   const draftSteps: Array<{ id: DraftManageStep; label: string; hint: string; done: boolean }> = [
-    { id: 'inspect', label: 'Áttekintés', hint: 'Config és toolok', done: !!cfg || !!draft.httpApiView },
+    { id: 'inspect', label: 'Áttekintés', hint: 'Config és toolok', done: !!cfg || !!draft.httpApiView || !!gmailView },
     { id: 'validate', label: 'Validáció', hint: v ? v.status : 'Még nem futott', done: validationReady },
     { id: 'review', label: 'Review', hint: draft.reviewStatus, done: reviewApproved },
     {
@@ -1603,6 +1631,18 @@ function DraftCard({
             {provenance.templateKey} v{provenance.templateVersion ?? '?'}
           </Badge>
         ) : null}
+        {isActive ? (
+          <button
+            type="button"
+            className="ml-auto rounded-md border border-coral/40 bg-coral/10 px-2.5 py-1 text-xs font-semibold text-coral"
+            onClick={() => {
+              setOpen(true)
+              setActiveStep('revoke')
+            }}
+          >
+            Megszüntetés
+          </button>
+        ) : null}
       </div>
 
       {open ? (
@@ -1679,6 +1719,61 @@ function DraftCard({
                     ))
                   )}
                 </div>
+              </div>
+            </div>
+          ) : gmailView ? (
+            <div className="grid gap-4 md:grid-cols-2">
+              <div>
+                <h4 className="mb-1 font-semibold">Gmail OAuth</h4>
+                <p className="text-xs text-ink-soft">
+                  {draft.authMode} · provider: {gmailView.provider}
+                </p>
+                <ul className="mt-2 space-y-1 font-mono text-xs">
+                  <li>
+                    <span className="text-ink-soft">authUrl:</span> {gmailView.authUrl}
+                  </li>
+                  <li>
+                    <span className="text-ink-soft">tokenUrl:</span> {gmailView.tokenUrl}
+                  </li>
+                  {gmailView.userInfoUrl ? (
+                    <li>
+                      <span className="text-ink-soft">userInfoUrl:</span> {gmailView.userInfoUrl}
+                    </li>
+                  ) : null}
+                  <li>
+                    <span className="text-ink-soft">clientId:</span>{' '}
+                    {gmailView.clientId?.trim() ? (
+                      <code>{gmailView.clientId}</code>
+                    ) : (
+                      <span className="text-honey">aktiváláskor megadandó</span>
+                    )}
+                  </li>
+                </ul>
+              </div>
+              <div>
+                <h4 className="mb-1 font-semibold">Scope-ok</h4>
+                <div className="flex flex-wrap gap-1">
+                  {gmailView.scopes.length === 0 ? (
+                    <span className="text-xs text-ink-soft">—</span>
+                  ) : (
+                    gmailView.scopes.map((scope) => (
+                      <Badge key={scope} tone="neutral">
+                        {scope.replace('https://www.googleapis.com/auth/', '')}
+                      </Badge>
+                    ))
+                  )}
+                </div>
+                <p className="mt-3 text-xs text-ink-soft">
+                  scopeTransform: <code>{gmailView.scopeTransform}</code>
+                </p>
+                {gmailView.provenance?.templateKey ? (
+                  <p className="mt-1 text-xs text-ink-soft">
+                    sablon: {gmailView.provenance.templateKey}
+                    {gmailView.provenance.templateVersion
+                      ? ` v${gmailView.provenance.templateVersion}`
+                      : ''}
+                  </p>
+                ) : null}
               </div>
             </div>
           ) : draft.httpApiView ? (
@@ -2144,6 +2239,7 @@ function DraftCard({
                   <label className="text-xs sm:col-span-2">
                     <span className="mb-1 block text-ink-soft">
                       OAuth client ID (nem titok → config)
+                      {isGmailConnector ? ' — Google Cloud OAuth client' : ''}
                     </span>
                     <input
                       className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"

@@ -5,14 +5,14 @@ import { useEffect, useState, useTransition } from 'react'
 import type { Connector, ConnectorGrant } from '@prisma/client'
 import { Card } from '@/components/ui/shell'
 import {
-  listConnectorGrants,
-  listUserDelegatedConnectors,
+  listConnectorsPanelContext,
   revokeConnectorGrant,
   startConnectorOAuth,
 } from '@/app/actions/connector-grants'
+import { decommissionActiveConnector } from '@/app/actions/provisioning'
 
 type GrantRow = ConnectorGrant & {
-  connector: { id: string; name: string; type: string }
+  connector: { id: string; name: string; type: string; lifecycleState: string }
 }
 
 const GMAIL_SCOPE_PROFILES = [
@@ -76,6 +76,8 @@ export function ConnectorsPanel() {
   const [pending, startTransition] = useTransition()
   const [grants, setGrants] = useState<GrantRow[]>([])
   const [connectors, setConnectors] = useState<Connector[]>([])
+  const [isAdmin, setIsAdmin] = useState(false)
+  const [decommissionTarget, setDecommissionTarget] = useState<string | null>(null)
   const [selectedScopes, setSelectedScopes] = useState<Record<string, string[]>>({})
   const [error, setError] = useState<string | null>(() => {
     const err = searchParams.get('error')
@@ -87,18 +89,21 @@ export function ConnectorsPanel() {
 
   useEffect(() => {
     startTransition(async () => {
-      const [g, c] = await Promise.all([listConnectorGrants(), listUserDelegatedConnectors()])
-      if (g.success) setGrants(g.data)
-      if (c.success) {
-        setConnectors(c.data)
-        setSelectedScopes((prev) => {
-          const next = { ...prev }
-          for (const connector of c.data) {
-            next[connector.id] ??= connectorConfiguredScopes(connector)
-          }
-          return next
-        })
+      const res = await listConnectorsPanelContext()
+      if (!res.success) {
+        setError(res.error)
+        return
       }
+      setGrants(res.data.grants as GrantRow[])
+      setConnectors(res.data.connectors)
+      setIsAdmin(res.data.isAdmin)
+      setSelectedScopes((prev) => {
+        const next = { ...prev }
+        for (const connector of res.data.connectors) {
+          next[connector.id] ??= connectorConfiguredScopes(connector)
+        }
+        return next
+      })
     })
   }, [])
 
@@ -129,7 +134,10 @@ export function ConnectorsPanel() {
           ) : (
             connectors.map((connector) => {
               const activeGrant = grants.find(
-                (g) => g.connectorId === connector.id && g.status === 'active',
+                (g) =>
+                  g.connectorId === connector.id &&
+                  g.status === 'active' &&
+                  g.connector.lifecycleState === 'active',
               )
               const currentScopes = selectedScopes[connector.id] ?? connectorConfiguredScopes(connector)
               const scopeProfiles = availableScopeProfiles(connector)
@@ -143,6 +151,7 @@ export function ConnectorsPanel() {
                     <p className="font-medium text-ink">{connector.name}</p>
                     <p className="text-xs text-ink-soft">
                       {connector.type} · {connector.authMode}
+                      {connector.tenantId ? '' : ' · globális'}
                     </p>
                     {activeGrant?.accountLabel && (
                       <p className="text-xs text-emerald-300/90">Összekötve: {activeGrant.accountLabel}</p>
@@ -151,7 +160,53 @@ export function ConnectorsPanel() {
                       <p className="text-xs text-ink-soft">Scope: {scopeText(activeGrant.scopes)}</p>
                     )}
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    {isAdmin ? (
+                      decommissionTarget === connector.id ? (
+                        <>
+                          <span className="text-xs text-coral">Biztosan leszereljük?</span>
+                          <button
+                            type="button"
+                            disabled={pending}
+                            className="rounded-lg border border-coral/50 bg-coral/10 px-3 py-1.5 text-sm text-coral"
+                            onClick={() =>
+                              startTransition(async () => {
+                                const res = await decommissionActiveConnector({
+                                  connectorId: connector.id,
+                                  reason: 'Admin leszerelés az Összekötött fiókok felületről',
+                                })
+                                if (res.success) {
+                                  setConnectors((prev) => prev.filter((c) => c.id !== connector.id))
+                                  setGrants((prev) =>
+                                    prev.filter((g) => g.connectorId !== connector.id),
+                                  )
+                                  setDecommissionTarget(null)
+                                  setMessage('Connector leszerelve és archiválva.')
+                                } else setError(res.error)
+                              })
+                            }
+                          >
+                            Igen, megszüntetés
+                          </button>
+                          <button
+                            type="button"
+                            className="rounded-lg border border-line px-3 py-1.5 text-sm text-ink-soft"
+                            onClick={() => setDecommissionTarget(null)}
+                          >
+                            Mégse
+                          </button>
+                        </>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={pending}
+                          className="rounded-lg border border-coral/40 px-3 py-1.5 text-sm text-coral hover:bg-coral/10"
+                          onClick={() => setDecommissionTarget(connector.id)}
+                        >
+                          Leszerelés
+                        </button>
+                      )
+                    ) : null}
                     {activeGrant ? (
                       <button
                         type="button"

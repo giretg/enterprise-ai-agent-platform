@@ -29,6 +29,31 @@ import {
 } from '../src/lib/skill/skill-context'
 import { runAgentToolLoop, type LoadSkillFn } from '../src/domain/agent/chat-tool-loop'
 import { SkillService } from '../src/domain/skill/skill-service'
+import {
+  buildTranscriptText,
+  buildDistillMessages,
+  parseDistillOutput,
+} from '../src/domain/skill/skill-distiller-agent'
+import {
+  conversationMessagesToTurns,
+  deriveRequiresFromToolCalls,
+} from '../src/lib/skill/skill-distill-transcript'
+import { diffSkillVersions } from '../src/lib/skill/skill-diff'
+import { normalizeSkillName, skillNamesEqual } from '../src/lib/skill/skill-name'
+import {
+  filterSkillsForSlashQuery,
+  getActiveSlashQuery,
+  insertSkillSlashToken,
+  parseSkillSlashCommands,
+  skillNameToSlashToken,
+} from '../src/lib/skill/skill-slash-command'
+import {
+  parseReviewOutput,
+  buildReviewMessages,
+  resolveSkillReviewModelConfig,
+  SKILL_REVIEW_ROLE_INSTRUCTION,
+} from '../src/domain/skill/skill-review-agent'
+import { PROVISIONING_ASSISTANT_ROLE_INSTRUCTION } from '../src/domain/provisioning/provisioning-assistant'
 
 let failures = 0
 function check(name: string, fn: () => void | Promise<void>) {
@@ -285,6 +310,35 @@ async function main() {
     assert.ok(body.includes('kulcs'))
   })
 
+  await check('/slash parancs: felismerés, fail-closed feloldás, modell felé tisztított szöveg', () => {
+    assert.equal(skillNameToSlashToken('KB Answer Helper'), 'kb-answer-helper')
+    const parsed = parseSkillSlashCommands('/alpha mi a teendő?', entries)
+    assert.deepEqual(parsed.skillVersionIds, ['v1'])
+    assert.equal(parsed.modelFacingText, 'mi a teendő?')
+    const unknown = parseSkillSlashCommands('/nincs-ilyen kérdés', entries)
+    assert.deepEqual(unknown.skillVersionIds, [])
+    assert.equal(unknown.modelFacingText, '/nincs-ilyen kérdés')
+  })
+
+  await check('slash autocomplete: aktív query + beszúrás', () => {
+    const ctx = getActiveSlashQuery('hello /alp world', 10)
+    assert.ok(ctx)
+    assert.equal(ctx.query, 'alp')
+    const inserted = insertSkillSlashToken({
+      text: 'hello /alp world',
+      cursorPos: 10,
+      slashStart: ctx.start,
+      token: 'alpha',
+    })
+    assert.equal(inserted.text, 'hello /alpha world')
+    const filtered = filterSkillsForSlashQuery(
+      entries.map((e) => ({ name: e.name, description: e.description })),
+      'bet',
+    )
+    assert.equal(filtered.length, 1)
+    assert.equal(filtered[0]?.name, 'Beta')
+  })
+
   console.log('Live runtime-bekötés / load_skill tool (§WP-5)')
 
   await check('a loop injektálja az indexet és a load_skill híváskor a Level-1 törzset adja vissza', async () => {
@@ -424,6 +478,188 @@ async function main() {
     })
     assert.deepEqual(ids, [])
     assert.equal(appended.length, 0, 'üres snapshotnál nem ír auditot')
+  })
+
+  console.log('')
+  console.log('Skill-desztilláció (§D14)')
+
+  await check('conversationMessagesToTurns: user/agent szöveg, system/tool kihagyva', () => {
+    const turns = conversationMessagesToTurns([
+      { role: 'user', content: JSON.stringify({ text: 'Helló' }), contentDeletedAt: null },
+      { role: 'system', content: 'hidden', contentDeletedAt: null },
+      { role: 'agent', content: 'Szia!', contentDeletedAt: null },
+      { role: 'tool', content: '{"result":"x"}', contentDeletedAt: null },
+      { role: 'user', content: '  ', contentDeletedAt: null },
+    ])
+    assert.equal(turns.length, 2)
+    assert.equal(turns[0].role, 'user')
+    assert.equal(turns[1].text, 'Szia!')
+  })
+
+  await check('deriveRequiresFromToolCalls: csak ok hívások, load_skill kihagyva', () => {
+    const req = deriveRequiresFromToolCalls([
+      { toolName: 'kb_search', status: 'ok' },
+      { toolName: 'load_skill', status: 'ok' },
+      { toolName: 'kb_search', status: 'ok' },
+      { toolName: 'web_search', status: 'denied' },
+    ])
+    assert.deepEqual(req.map((r) => r.toolName), ['kb_search'])
+  })
+
+  await check('buildTranscriptText hosszú beszélgetésnél a végét tartja meg', () => {
+    const turns = Array.from({ length: 50 }, (_, i) => ({
+      role: 'user' as const,
+      text: `turn-${i}-${'x'.repeat(800)}`,
+    }))
+    const text = buildTranscriptText(turns, 5000)
+    assert.ok(text.includes('…(korábbi rész levágva)…'))
+    assert.ok(text.length <= 5100)
+  })
+
+  await check('parseDistillOutput érvényes JSON → draft', () => {
+    const r = parseDistillOutput(
+      JSON.stringify({
+        name: 'Checklist skill',
+        description: 'Egyeztetés lépései.',
+        instructions: ['Töltsd be a kivonatot.', 'Egyeztesd.'],
+        triggerKeywords: ['egyeztetés'],
+      }),
+    )
+    assert.equal(r.ok, true)
+    if (r.ok) {
+      assert.equal(r.draft.name, 'Checklist skill')
+      assert.equal(r.draft.content.instructions.length, 2)
+    }
+  })
+
+  await check('buildDistillMessages nem kér requires mezőt a modelltől', () => {
+    const msgs = buildDistillMessages({
+      transcript: 'User: hi\n\nAgent: hello',
+      usedTools: ['kb_search'],
+    })
+    const user = msgs.find((m) => m.role === 'user')?.content ?? ''
+    assert.ok(user.includes('do NOT output a requires field'))
+    assert.ok(user.includes('kb_search'))
+  })
+
+  console.log('')
+  console.log('Skill-verzió diff (WP-7)')
+
+  await check('diffSkillVersions: requires hozzáadás = high kockázat', () => {
+    const diff = diffSkillVersions(
+      {
+        content: { instructions: ['A'], triggerKeywords: [], parameters: [] },
+        requires: [],
+      },
+      {
+        content: { instructions: ['A'], triggerKeywords: [], parameters: [] },
+        requires: [{ toolName: 'kb_search', reason: '' }],
+      },
+    )
+    assert.equal(diff.highestRisk, 'high')
+    assert.ok(diff.changes.some((c) => c.category === 'requires' && c.kind === 'added'))
+  })
+
+  await check('diffSkillVersions: instrukció módosítás = medium', () => {
+    const diff = diffSkillVersions(
+      {
+        content: { instructions: ['Régi lépés'], triggerKeywords: [], parameters: [] },
+        requires: [],
+      },
+      {
+        content: { instructions: ['Új lépés'], triggerKeywords: [], parameters: [] },
+        requires: [],
+      },
+    )
+    assert.equal(diff.highestRisk, 'medium')
+    assert.equal(diff.changes.length, 1)
+    assert.equal(diff.changes[0].kind, 'modified')
+  })
+
+  await check('diffSkillVersions: azonos tartalom = üres diff', () => {
+    const payload = {
+      content: { instructions: ['X'], triggerKeywords: ['a'], parameters: [] },
+      requires: [{ toolName: 'kb_search', reason: 'kell' }],
+    }
+    const diff = diffSkillVersions(payload, payload)
+    assert.equal(diff.changes.length, 0)
+    assert.equal(diff.highestRisk, 'none')
+  })
+
+  console.log('Skill-név egyediség')
+
+  await check('skillNamesEqual: case-insensitive és trim', () => {
+    assert.equal(skillNamesEqual('  Grill Me  ', 'grill me'), true)
+    assert.equal(skillNamesEqual('Alpha', 'Beta'), false)
+    assert.equal(normalizeSkillName('  x  '), 'x')
+  })
+
+  console.log('Skill tanácsadó LLM-review (WP-3 §D5)')
+
+  await check('parseReviewOutput: érvényes JSON → advisory review', () => {
+    const parsed = parseReviewOutput(
+      JSON.stringify({
+        riskSummary: 'T0 instrukció-only skill, alacsony kockázat.',
+        overallAssessment: 'low',
+        concerns: [],
+        suggestedRequires: [{ toolName: 'kb_search', reason: 'keresés szükséges' }],
+      }),
+    )
+    assert.equal(parsed.ok, true)
+    if (parsed.ok) {
+      assert.equal(parsed.review.overallAssessment, 'low')
+      assert.equal(parsed.review.suggestedRequires[0]?.toolName, 'kb_search')
+    }
+  })
+
+  await check('parseReviewOutput: hiányzó riskSummary → PARSE_FAILED', () => {
+    const parsed = parseReviewOutput(JSON.stringify({ overallAssessment: 'high', concerns: [] }))
+    assert.equal(parsed.ok, false)
+  })
+
+  await check('buildReviewMessages: a skill payload benne van a user üzenetben', () => {
+    const msgs = buildReviewMessages({
+      name: 'Test',
+      description: 'Desc',
+      content: { instructions: ['Do X'], triggerKeywords: ['x'], parameters: [] },
+      requires: [],
+      riskTier: 't0',
+      sourceType: 'authored',
+    })
+    assert.equal(msgs.length, 2)
+    const userContent = msgs[1]?.content ?? ''
+    assert.match(userContent, /Test/)
+    assert.match(userContent, /Do X/)
+  })
+
+  await check('buildReviewMessages: skill-review prompt, NEM connector provisioning prompt', () => {
+    const msgs = buildReviewMessages({
+      name: 'Test',
+      description: 'Desc',
+      content: { instructions: ['Do X'], triggerKeywords: [], parameters: [] },
+      requires: [],
+      riskTier: 't0',
+      sourceType: 'imported',
+    })
+    assert.equal(msgs[0]?.content, SKILL_REVIEW_ROLE_INSTRUCTION)
+    assert.notEqual(msgs[0]?.content, PROVISIONING_ASSISTANT_ROLE_INSTRUCTION)
+  })
+
+  await check('resolveSkillReviewModelConfig: Provisioning Assistant Registry config', () => {
+    const cfg = resolveSkillReviewModelConfig({
+      provider: 'gemini',
+      model: 'gemini-2.0-flash',
+      temperature: 0.2,
+    })
+    assert.equal(cfg.provider, 'gemini')
+    assert.equal(cfg.model, 'gemini-2.0-flash')
+    assert.equal(cfg.temperature, 0.2)
+  })
+
+  await check('resolveSkillReviewModelConfig: ismeretlen provider → sablon fallback', () => {
+    const cfg = resolveSkillReviewModelConfig({ provider: 'unknown', model: 'x' })
+    assert.equal(cfg.provider, 'chatgpt-oauth')
+    assert.equal(cfg.model, 'chatgpt-oauth-default')
   })
 
   console.log('')

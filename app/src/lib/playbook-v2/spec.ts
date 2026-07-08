@@ -4,7 +4,7 @@
  * FORRÁS-IGAZSÁGA: a Playbook írja le a szándékolt flow-t (szerepek, átadások, kapuk),
  * amit a PlaybookCompiler determinisztikus ticket-állapotgéppé fordít.
  *
- * FONTOS: ez NEM a meglévő MVP `@/lib/playbook-spec` (tömb-alapú, wiki-horgokhoz).
+ * FONTOS: ez NEM a meglévő `@/lib/playbook-spec` (tömb-alapú, wiki-horgokhoz).
  * A két formátum párhuzamosan él; ez a `schemaVersion: "1.0"` objektum-alapú Fázis 2 spec.
  *
  * A validáció a Zod-sémán (alak) + a PlaybookValidator szemantikai rétegén (§6) megy át.
@@ -223,7 +223,7 @@ export const decisionSpecSchema = z.object({
   allowedOutcomes: z.array(z.string().min(1)).optional(),
   branches: z.array(decisionBranchSchema).min(1),
   fallback: routingTargetSchema.optional(),
-  /** Küszöb az automatikus ág-választáshoz (MVP: külön helper/warning kényszeríti, §11.2). */
+  /** Küszöb az automatikus ág-választáshoz (külön helper/warning kényszeríti, §11.2). */
   minConfidenceForAutoBranch: z.number().min(0).max(1).optional(),
   requiresEvidence: z.boolean().optional(),
 })

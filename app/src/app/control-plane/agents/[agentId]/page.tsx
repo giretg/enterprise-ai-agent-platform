@@ -8,6 +8,7 @@ import {
   listBehaviorProfiles,
 } from '@/app/actions/platform'
 import { listConnectorCatalog } from '@/app/actions/provisioning'
+import { listAgentDelegatedConnectors } from '@/app/actions/connector-grants'
 import { getAgentSkillsAction, listAssignableSkillsAction } from '@/app/actions/skills'
 import { getCurrentUser } from '@/auth'
 import { hasMinimumRole } from '@/auth/types'
@@ -16,6 +17,7 @@ import { ExpandableContent } from '@/components/ui/expandable-content'
 import { Collapsible } from '@/components/ui/collapsible'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { AgentChatButton } from '@/components/agents/agent-chat-panel'
+import { AgentDelegatedConnectorsBar } from '@/components/agents/agent-delegated-connectors-bar'
 import { AgentMiniAppsLink } from '@/components/agents/agent-mini-apps-link'
 import { UpdateInstructionForm } from '@/components/agents/update-instruction-form'
 import { UpdatePersonaForm } from '@/components/agents/update-persona-form'
@@ -76,7 +78,7 @@ export default async function AgentDetailPage({
   params: Promise<{ agentId: string }>
 }) {
   const { agentId } = await params
-  const [res, govRes, policyRes, catalogRes, profilesRes, user, agentSkillsRes, assignableSkillsRes] =
+  const [res, govRes, policyRes, catalogRes, profilesRes, user, agentSkillsRes, assignableSkillsRes, delegatedRes] =
     await Promise.all([
       getAgent({ id: agentId }),
       getAgentGovernance({ agentId }),
@@ -86,6 +88,7 @@ export default async function AgentDetailPage({
       getCurrentUser(),
       getAgentSkillsAction(agentId),
       listAssignableSkillsAction(agentId),
+      listAgentDelegatedConnectors(agentId),
     ])
   if (!res.success) notFound()
 
@@ -100,7 +103,9 @@ export default async function AgentDetailPage({
   )
   const assignableConnectors = catalogRes.success
     ? catalogRes.data.filter(
-        (connector) => connector.type === 'http_api' && !assignedConnectorIds.has(connector.id),
+        (connector) =>
+          (connector.type === 'http_api' || connector.type === 'gmail') &&
+          !assignedConnectorIds.has(connector.id),
       )
     : []
   const modelConfig = agent.modelConfig as Record<string, unknown>
@@ -114,6 +119,7 @@ export default async function AgentDetailPage({
     ? profilesRes.data.map((p) => ({ id: p.id, name: p.name, currentVersion: p.currentVersion }))
     : []
   const behaviorOverlay = resolveBehaviorOverlay(agent)
+  const delegatedConnectors = delegatedRes.success ? delegatedRes.data : []
 
   return (
     <div className="space-y-6">
@@ -125,7 +131,7 @@ export default async function AgentDetailPage({
       </Link>
 
       <Card className="animate-rise">
-        <div className="flex flex-wrap items-center gap-5">
+        <div className="flex flex-wrap items-start gap-5">
           <AgentAvatar name={agent.name} status={agent.status} size="lg" avatarUrl={agent.avatarUrl} />
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-3">
@@ -140,6 +146,9 @@ export default async function AgentDetailPage({
             <p className="mt-2 text-sm text-ink-faint">{agent.name}</p>
             <p className="mt-2 max-w-2xl text-base italic text-ink-soft">&quot;{persona.greeting}&quot;</p>
           </div>
+          {delegatedConnectors.length > 0 ? (
+            <AgentDelegatedConnectorsBar items={delegatedConnectors} variant="sidebar" />
+          ) : null}
         </div>
         <div className="estate-rule my-4" />
         <p className="text-sm leading-relaxed text-ink-soft">{persona.trait}</p>
@@ -154,6 +163,7 @@ export default async function AgentDetailPage({
               personaGreeting: agent.personaGreeting,
               personaTrait: agent.personaTrait,
             }}
+            canDistillSkill={isAdmin}
           />
           <AgentMiniAppsLink agentId={agent.id} />
           <span className="text-sm text-ink-faint">

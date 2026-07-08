@@ -2,7 +2,7 @@
 
 > Készült: 2026-06-16 (session 12). Ez a dokumentum összefoglalja, hogyan állt fel a
 > **wiki-harness** Cloud Run Job és az éles smoke proof a `enterprise-ai-demo` projektben,
-> milyen döntéseket hoztunk, milyen hibákba futottunk, és **mire kell figyelni az MVP után**.
+> milyen döntéseket hoztunk, milyen hibákba futottunk, és **mire kell figyelni a kezdeti v1 baseline után**.
 
 ---
 
@@ -138,7 +138,7 @@ Közvetlenül push után az App Hosting egy ideig még a régi revíziót szolg�
 
 ---
 
-## 5. Mire kell figyelni az MVP után (FONTOS)
+## 5. Mire kell figyelni a kezdeti v1 baseline után (FONTOS)
 
 ### 5.1 Hálózati szintű egress (most NINCS)
 Jelenleg **app-szintű** egress guard van (`egress-guard.ts` + N4 acceptance), a Jobon `HARNESS_EGRESS_ENFORCE=false`.

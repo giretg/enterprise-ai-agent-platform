@@ -48,7 +48,7 @@ function matchesAny(host: string, patterns: string[]): boolean {
 }
 
 export class WebSearchPolicyService {
-  /** Query-safety guard: PII/secret/kártyaadat gyanú esetén MVP-ben default blokk (D-WS-5). */
+  /** Query-safety guard: PII/secret/kártyaadat gyanú esetén default blokk (D-WS-5). */
   classifyQuery(query: string): { blocked: boolean; category?: string } {
     const inspection = inspectPromptSensitivity([{ role: 'user', content: query }])
     if (inspection.level === 'clean') return { blocked: false }

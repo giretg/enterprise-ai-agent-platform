@@ -20,6 +20,7 @@ import { ensureDefaultRolePermissions } from '../src/repositories/postgres/iam-r
 import { BUILTIN_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/builtin-templates'
 import { GLOBAL_CUSTOM_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/custom-template-seeds'
 import { upsertConnectorByTypeName } from '../src/lib/connector-upsert'
+import { ensureTenantGmailConnector } from '../src/lib/seed-gmail-connector'
 import { ensureStarterStepTemplates } from '../src/domain/step-template/step-template-catalog'
 import {
   computeSkillContentHash,
@@ -49,8 +50,8 @@ const WIKI_BEHAVIOR_PROFILE = `Magyarul, tömören válaszolj, és minden lénye
 Ha nincs elég forrás, mondd ki, hogy nincs elég forrás, és ne találj ki tényt.`
 
 const INITIAL_MEMORY = `Excellence Pay belső tudásbázis - kezdő tartalom:
-- Az MVP célja architektúra-teljes walking skeleton létrehozása.
-- Az első lakó agent egy belső wiki-agent.
+- A platform célja kontrollált, auditálható AI agent munkakörnyezet biztosítása.
+- Az egyik referencia agent egy belső wiki-agent.
 - A modellforrás kizárólag ChatGPT OAuth lehet.
 - Minden modellhívás a Model Gatewayen, minden eszközhívás a Tool Brokeren keresztül történik.`
 
@@ -419,6 +420,32 @@ async function ensureChatToolsForAgent(agentId: string) {
   }
 }
 
+async function linkGmailConnectorIfAvailable(agentId: string) {
+  const agent = await prisma.agent.findUnique({
+    where: { id: agentId },
+    select: { tenantId: true },
+  })
+  if (!agent) return
+
+  const gmail = await prisma.connector.findFirst({
+    where: {
+      type: 'gmail',
+      lifecycleState: 'active',
+      ...(agent.tenantId
+        ? { OR: [{ tenantId: agent.tenantId }, { tenantId: null }] }
+        : { tenantId: null }),
+    },
+    orderBy: [{ tenantId: 'desc' }],
+  })
+  if (!gmail) return
+
+  await prisma.agentConnector.upsert({
+    where: { agentId_connectorId: { agentId, connectorId: gmail.id } },
+    create: { agentId, connectorId: gmail.id, accessMode: 'write' },
+    update: { accessMode: 'write' },
+  })
+}
+
 async function ensureToolBrokerSeed(agentId: string) {
   const agent = await prisma.agent.findUniqueOrThrow({ where: { id: agentId } })
   await ensureAgentKnowledgeBase(agent, prisma)
@@ -479,52 +506,6 @@ async function ensureToolBrokerSeed(agentId: string) {
     update: { allowed: true },
   })
 
-  const gmail = await upsertConnectorByTypeName(prisma, {
-    create: {
-      type: 'gmail',
-      name: 'Gmail (felhasználói)',
-      authMode: 'user_delegated',
-      scope: 'single',
-      secretAlias: 'secret://gmail/oauth-client',
-      version: 1,
-      config: {
-        provider: 'google',
-        oauth: {
-          authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
-          tokenUrl: 'https://oauth2.googleapis.com/token',
-          userInfoUrl: 'https://www.googleapis.com/oauth2/v2/userinfo',
-          accountEmailField: 'email',
-          scopes: ['https://www.googleapis.com/auth/gmail.modify'],
-          clientId: process.env.GMAIL_OAUTH_CLIENT_ID ?? 'stub-client-id',
-          offlineParams: { access_type: 'offline' },
-          scopeTransform: 'gmailAlias',
-        },
-      },
-    },
-    update: {
-      authMode: 'user_delegated',
-      config: {
-        provider: 'google',
-        oauth: {
-          authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
-          tokenUrl: 'https://oauth2.googleapis.com/token',
-          userInfoUrl: 'https://www.googleapis.com/oauth2/v2/userinfo',
-          accountEmailField: 'email',
-          scopes: ['https://www.googleapis.com/auth/gmail.modify'],
-          clientId: process.env.GMAIL_OAUTH_CLIENT_ID ?? 'stub-client-id',
-          offlineParams: { access_type: 'offline' },
-          scopeTransform: 'gmailAlias',
-        },
-      },
-    },
-  })
-
-  await prisma.agentConnector.upsert({
-    where: { agentId_connectorId: { agentId, connectorId: gmail.id } },
-    create: { agentId, connectorId: gmail.id, accessMode: 'write' },
-    update: { accessMode: 'write' },
-  })
-
   for (const toolName of ['gmail_search', 'gmail_get_message', 'mailbox_count', 'gmail_create_draft', 'gmail_send']) {
     await prisma.capability.upsert({
       where: { agentId_toolName: { agentId, toolName } },
@@ -532,6 +513,8 @@ async function ensureToolBrokerSeed(agentId: string) {
       update: { allowed: true },
     })
   }
+
+  await linkGmailConnectorIfAvailable(agentId)
 
   const workspace = await upsertConnectorByTypeName(prisma, {
     create: {
@@ -1362,6 +1345,9 @@ async function ensureDemoTenant(
       createdById: admin.id,
     },
   })
+
+  const demoGmail = await ensureTenantGmailConnector(prisma, DEMO_TENANT_ID)
+  console.log('  Demo Gmail connector (provisioned template):', demoGmail.id)
 
   const memberships: Array<{ userId: string; role: 'admin' | 'approver' | 'operator' }> = [
     { userId: admin.id, role: 'admin' },

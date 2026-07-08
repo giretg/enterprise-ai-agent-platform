@@ -17,8 +17,8 @@ import type {
 /**
  * Postgres implementáció a provisioning draft-réteghez
  * (Feature-spec — Provisioning-Assistant §4.1, §4.2, §8). A provisioning-asszisztens
- * által generált connectorok `type = http_api` (a nem-HTTP típusok §1.2 szerint
- * out-of-scope). A draft `lifecycle_state = draft` állapotban jön létre, így a
+ * által generált connectorok alapértelmezetten `type = http_api`. A `gmail`
+ * connectorType sablonok `type = gmail` rekordot kapnak (google-workspace sablon).
  * Tool Brokerben SOHA nem oldódik fel aktiválás előtt.
  */
 export class PostgresConnectorDraftRepository implements ConnectorDraftRepository {
@@ -26,7 +26,7 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
     return prisma.$transaction(async (tx) => {
       const connector = await tx.connector.create({
         data: {
-          type: 'http_api',
+          type: input.connectorType ?? 'http_api',
           name: input.name,
           authMode: input.authMode,
           scope: 'single',
@@ -234,6 +234,13 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
     })
   }
 
+  async findConnectorById(connectorId: string) {
+    return prisma.connector.findUnique({
+      where: { id: connectorId },
+      select: { id: true, tenantId: true, lifecycleState: true, secretAlias: true },
+    })
+  }
+
   async decommission(params: {
     draftId: string
   }): Promise<{ connectorId: string; affectedAgentIds: string[] }> {
@@ -243,35 +250,42 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
         include: { connector: true },
       })
       if (!draft) throw new Error('draft not found')
-      if (draft.connector.lifecycleState !== 'active') {
-        throw new Error('only an active connector can be decommissioned')
-      }
-      const connectorId = draft.connectorId
-
-      // 1) Érintett agentek — a capability-synchez (a hívó action recomputeolja).
-      const links = await tx.agentConnector.findMany({
-        where: { connectorId },
-        select: { agentId: true },
-      })
-      const affectedAgentIds = [...new Set(links.map((l) => l.agentId))]
-
-      // 2) Agent-kötések levétele.
-      await tx.agentConnector.deleteMany({ where: { connectorId } })
-
-      // 3) Aktív user-grantek auditált visszavonása (revoked).
-      await tx.connectorGrant.updateMany({
-        where: { connectorId, status: 'active' },
-        data: { status: 'revoked', revokedAt: new Date() },
-      })
-
-      // 4) Lifecycle → archived (nem hard-delete; az előzmény és az audit-lánc megmarad).
-      await tx.connector.update({
-        where: { id: connectorId },
-        data: { lifecycleState: 'archived' },
-      })
-
-      return { connectorId, affectedAgentIds }
+      return this.decommissionActiveConnectorTx(tx, draft.connectorId)
     })
+  }
+
+  async decommissionByConnectorId(params: {
+    connectorId: string
+  }): Promise<{ connectorId: string; affectedAgentIds: string[] }> {
+    return prisma.$transaction(async (tx) =>
+      this.decommissionActiveConnectorTx(tx, params.connectorId),
+    )
+  }
+
+  private async decommissionActiveConnectorTx(
+    tx: Parameters<Parameters<typeof prisma.$transaction>[0]>[0],
+    connectorId: string,
+  ): Promise<{ connectorId: string; affectedAgentIds: string[] }> {
+    const connector = await tx.connector.findUnique({ where: { id: connectorId } })
+    if (!connector) throw new Error('connector not found')
+    if (connector.lifecycleState !== 'active') {
+      throw new Error('only an active connector can be decommissioned')
+    }
+
+    const links = await tx.agentConnector.findMany({
+      where: { connectorId },
+      select: { agentId: true },
+    })
+    const affectedAgentIds = [...new Set(links.map((l) => l.agentId))]
+
+    await tx.agentConnector.deleteMany({ where: { connectorId } })
+
+    await tx.connector.update({
+      where: { id: connectorId },
+      data: { lifecycleState: 'archived' },
+    })
+
+    return { connectorId, affectedAgentIds }
   }
 
   async deleteDraft(params: { draftId: string }): Promise<void> {

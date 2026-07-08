@@ -35,7 +35,7 @@ console.log('=== text-tool-relay parser teszt ===')
 
 check('kb_search: csupasz JSON → tool_calls a prefixelt goose-névvel', () => {
   const completion = relayTextToolCall({
-    content: '{"tool":"kb_search","args":{"query":"MVP cél","k":6}}',
+    content: '{"tool":"kb_search","args":{"query":"platform cél","k":6}}',
     tools: TOOLS,
     model: 'gpt-5.5',
     usage: { promptTokens: 100, completionTokens: 10 },
@@ -46,7 +46,7 @@ check('kb_search: csupasz JSON → tool_calls a prefixelt goose-névvel', () => 
   assert.equal(choice.message.content, null)
   const call = choice.message.tool_calls[0]
   assert.equal(call.function.name, 'platform_broker__kb_search')
-  assert.deepEqual(JSON.parse(call.function.arguments), { query: 'MVP cél', k: 6 })
+  assert.deepEqual(JSON.parse(call.function.arguments), { query: 'platform cél', k: 6 })
   assert.equal(completion.usage.total_tokens, 110)
 })
 

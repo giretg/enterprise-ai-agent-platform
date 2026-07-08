@@ -11,7 +11,7 @@
  *  - draft tárolható szemantikai hibákkal is, de Zod-alak kötelező (§15);
  *  - az audit payloadba SOHA nem kerül a teljes spec, csak ref/hash/metaadat (§10.2, §15).
  *
- * FONTOS: ez NEM a meglévő MVP `PlaybookService` (wiki-horgok, tömb-spec) — párhuzamos réteg.
+ * FONTOS: ez NEM a meglévő `PlaybookService` (wiki-horgok, tömb-spec) — párhuzamos réteg.
  */
 import type { Prisma, PlaybookV2, PlaybookVersionV2, PlaybookAssignment } from '@prisma/client'
 import {

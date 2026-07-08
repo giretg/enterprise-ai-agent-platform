@@ -1,4 +1,4 @@
-# Enterprise AI Agent Platform MVP
+# Enterprise AI Agent Platform
 
 Next.js App Router alkalmazás valódi Postgres adattal, Clerk/dev auth-val és ChatGPT OAuth Model Gateway adapterrel.
 
@@ -229,9 +229,9 @@ npm run deploy   # repó gyökeréből
 
 ## Dokumentáció
 
-- [`AI-Agent-Platform-MVP-Dev-Spec-Roadmap-v1.0.md`](../AI-Agent-Platform-MVP-Dev-Spec-Roadmap-v1.0.md) — MVP fejlesztési spec és roadmap
+- [`AI-Agent-Platform-MVP-Dev-Spec-Roadmap-v1.0.md`](../AI-Agent-Platform-MVP-Dev-Spec-Roadmap-v1.0.md) — historikus v1 fejlesztési spec és roadmap
 - [`AI-Agent-Platform-Koncepcio.md`](../AI-Agent-Platform-Koncepcio.md) — teljes koncepció
-- [`AI-Agent-Platform-MVP-Terv-v1.0.md`](../AI-Agent-Platform-MVP-Terv-v1.0.md) — MVP terv
+- [`AI-Agent-Platform-MVP-Terv-v1.0.md`](../AI-Agent-Platform-MVP-Terv-v1.0.md) — historikus v1 terv
 
 ## Acceptance teszt
 

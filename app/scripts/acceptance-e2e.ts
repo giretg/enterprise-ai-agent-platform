@@ -1,5 +1,5 @@
 /**
- * MVP v1 acceptance — walking skeleton smoke checks
+ * Platform acceptance — governed agent workflow smoke checks
  * Futtatás: npm run test:acceptance (app/)
  */
 import { existsSync } from 'node:fs'
@@ -42,7 +42,7 @@ import { syncClerkUser, DomainNotAllowedError } from '../src/auth/clerk-user-syn
 import { decideAuthz } from '../src/lib/iam-policy'
 
 const SAMPLE_WIKI_QUESTION =
-  'Mi az MVP célja, és milyen átjárókon kell átmennie az agent műveleteinek?'
+  'Mi a platform célja, és milyen átjárókon kell átmennie az agent műveleteinek?'
 
 function isEmbeddedOAuthConfigured(): boolean {
   if (process.env.CHATGPT_OAUTH_TOKEN_SECRET?.trim()) return true
@@ -707,7 +707,7 @@ async function scenario7_toolBroker(operatorId: string, agentId: string, agentVe
     agentId,
     agentVersion,
     tool: 'kb_search',
-    args: { query: 'MVP wiki agent ChatGPT OAuth', k: 3 },
+    args: { query: 'platform wiki agent ChatGPT OAuth', k: 3 },
   })
 
   if (!search.denied && 'hits' in search.result && search.result.hits.length > 0) {
@@ -723,7 +723,7 @@ async function scenario7_toolBroker(operatorId: string, agentId: string, agentVe
     assigneeType: 'agent',
     assigneeId: agentId,
     agentId,
-    payload: { question: 'Mi az MVP célja?' },
+    payload: { question: 'Mi a platform célja?' },
     sourceDocumentId: null,
     executeAfter: null,
     dueBy: null,
@@ -739,7 +739,7 @@ async function scenario7_toolBroker(operatorId: string, agentId: string, agentVe
       ticketId: ticket.id,
       patch: {
         payload: {
-          answer: 'Az MVP célja egy architektúra-teljes walking skeleton.',
+          answer: 'A platform célja kontrollált, auditálható AI agent munkakörnyezet biztosítása.',
           sources: ['acceptance:kts'],
         },
         state: 'awaiting_human',
@@ -813,7 +813,7 @@ async function scenario7_toolBroker(operatorId: string, agentId: string, agentVe
     tool: 'agent_ask',
     args: {
       targetAgentId: helper.id,
-      question: 'Mi az MVP célja a delegálás tesztben?',
+      question: 'Mi a platform célja a delegálás tesztben?',
     },
   })
 
@@ -831,7 +831,7 @@ async function scenario7_toolBroker(operatorId: string, agentId: string, agentVe
         ticketId: ask.result.ticketId,
         patch: {
           payload: {
-            answer: 'Delegált válasz: walking skeleton.',
+            answer: 'Delegált válasz: kontrollált agent workflow.',
             sources: [{ docId: 'acceptance', sectionRef: 'delegation' }],
           },
           state: 'done',
@@ -854,7 +854,7 @@ async function scenario7_toolBroker(operatorId: string, agentId: string, agentVe
       returned.assigneeId === agentId &&
       returned.agentId === agentId &&
       returnedPayload?.delegationReturned === true &&
-      returnedPayload?.answer === 'Delegált válasz: walking skeleton.'
+      returnedPayload?.answer === 'Delegált válasz: kontrollált agent workflow.'
     ) {
       pass('agent_ask — válasz után delegálás ticket lezárva (done)', returned.id)
     } else {
@@ -884,7 +884,7 @@ async function scenario7_toolBroker(operatorId: string, agentId: string, agentVe
         (entry) =>
           typeof entry === 'object' &&
           entry !== null &&
-          (entry as { answer?: string }).answer === 'Delegált válasz: walking skeleton.',
+          (entry as { answer?: string }).answer === 'Delegált válasz: kontrollált agent workflow.',
       )
     ) {
       pass('agent_ask — parent ticket delegatedAnswers frissítve')
@@ -1501,11 +1501,11 @@ async function scenario10_sandboxAppRegistry(operatorId: string, agentId: string
     agentId,
     tenantId: tenantA,
     payload: {
-      question: 'Mi az MVP célja?',
-      answer: 'Az MVP célja egy architektúra-teljes walking skeleton.',
+      question: 'Mi a platform célja?',
+      answer: 'A platform célja kontrollált, auditálható AI agent munkakörnyezet biztosítása.',
       rationale: 'A válasz a seedelt tudásbázis rövid leírására támaszkodik.',
       confidence: 'high',
-      sources: [{ docId: 'acceptance:kts', sectionRef: 'mvp-goal' }],
+      sources: [{ docId: 'acceptance:kts', sectionRef: 'platform-goal' }],
       agentVersion: 1,
       model: 'chatgpt-oauth-test',
     },
@@ -2166,7 +2166,7 @@ async function scenario17_mcpBridge(agentId: string, agentVersion: number) {
     agentId,
     agentVersion,
     tool: 'kb_search',
-    args: { query: 'MVP gateway broker', k: 2 },
+    args: { query: 'platform gateway broker', k: 2 },
   })
 
   const called = await handleMcpRequest(
@@ -2176,7 +2176,7 @@ async function scenario17_mcpBridge(agentId: string, agentVersion: number) {
       method: 'tools/call',
       params: {
         name: 'kb_search',
-        arguments: { query: 'MVP gateway broker', k: 2 },
+        arguments: { query: 'platform gateway broker', k: 2 },
       },
     },
     async (tool, args) => {
@@ -3974,7 +3974,7 @@ async function scenarioPerUserConnector(operatorId: string, agentId: string, age
     agentId,
     agentVersion,
     tool: 'gmail_search',
-    args: { query: 'MVP' },
+    args: { query: 'platform' },
   })
   if (deniedNoActing.denied && deniedNoActing.reason === 'acting_user_required') {
     pass('G1 — gmail hívás acting_user nélkül DENY')
@@ -4003,7 +4003,7 @@ async function scenarioPerUserConnector(operatorId: string, agentId: string, age
     agentId,
     agentVersion,
     tool: 'gmail_search',
-    args: { query: 'MVP', maxResults: 5 },
+    args: { query: 'platform', maxResults: 5 },
     conversationId: conversation.id,
     actingUserId: approver.id,
   })
@@ -4017,7 +4017,7 @@ async function scenarioPerUserConnector(operatorId: string, agentId: string, age
     agentId,
     agentVersion,
     tool: 'gmail_search',
-    args: { query: 'MVP', maxResults: 5 },
+    args: { query: 'platform', maxResults: 5 },
     actingUserId: operatorId,
   })
   if (!search.denied && 'messages' in (search.result as { messages?: unknown[] })) {
@@ -4042,7 +4042,7 @@ async function scenarioPerUserConnector(operatorId: string, agentId: string, age
       agentId,
       agentVersion,
       tool: 'gmail_search',
-      args: { query: 'MVP', maxResults: 1 },
+      args: { query: 'platform', maxResults: 1 },
       actingUserId: tenantUser.id,
     })
     if (!tenantSearch.denied && 'messages' in (tenantSearch.result as { messages?: unknown[] })) {
@@ -4184,7 +4184,7 @@ async function scenarioPerUserConnector(operatorId: string, agentId: string, age
         agentId,
         agentVersion,
         tool: 'gmail_search',
-        args: { query: 'MVP', maxResults: 1 },
+        args: { query: 'platform', maxResults: 1 },
         actingUserId: operatorId,
       })
       if (expired.denied && expired.reason === 'connector_grant_expired') {
@@ -4361,7 +4361,7 @@ async function scenarioPerUserConnector(operatorId: string, agentId: string, age
     agentId,
     agentVersion,
     tool: 'gmail_search',
-    args: { query: 'MVP' },
+    args: { query: 'platform' },
     ticketId: runTicket.id,
   })
   if (deniedImplicitRunAs.denied && deniedImplicitRunAs.reason === 'acting_user_required') {
@@ -4374,7 +4374,7 @@ async function scenarioPerUserConnector(operatorId: string, agentId: string, age
     agentId,
     agentVersion,
     tool: 'gmail_search',
-    args: { query: 'MVP' },
+    args: { query: 'platform' },
     ticketId: runTicket.id,
     actingUserId: operatorId,
   })
@@ -4388,7 +4388,7 @@ async function scenarioPerUserConnector(operatorId: string, agentId: string, age
     agentId,
     agentVersion,
     tool: 'gmail_search',
-    args: { query: 'MVP' },
+    args: { query: 'platform' },
     ticketId: runTicket.id,
     conversationId: conversation.id,
   })
@@ -4415,7 +4415,7 @@ async function scenarioPerUserConnector(operatorId: string, agentId: string, age
     agentId,
     agentVersion,
     tool: 'gmail_search',
-    args: { query: 'MVP', maxResults: 3 },
+    args: { query: 'platform', maxResults: 3 },
     ticketId: runTicket.id,
   })
   if (!withRunAs.denied && 'messages' in (withRunAs.result as { messages?: unknown[] })) {
@@ -4466,7 +4466,7 @@ async function scenarioPerUserConnector(operatorId: string, agentId: string, age
       agentId,
       agentVersion,
       tool: 'gmail_search',
-      args: { query: 'MVP', maxResults: 1 },
+      args: { query: 'platform', maxResults: 1 },
       ticketId: scheduledGmailMaterialized.ticketId,
     })
     if (
@@ -4531,7 +4531,7 @@ async function scenarioPerUserConnector(operatorId: string, agentId: string, age
     agentId,
     agentVersion,
     tool: 'gmail_search',
-    args: { query: 'MVP' },
+    args: { query: 'platform' },
     actingUserId: operatorId,
   })
   if (afterRevoke.denied && afterRevoke.reason === 'connector_grant_missing') {
@@ -4560,7 +4560,7 @@ async function scenarioPerUserConnector(operatorId: string, agentId: string, age
       agentId,
       agentVersion,
       tool: 'gmail_search',
-      args: { query: 'MVP' },
+      args: { query: 'platform' },
       actingUserId: operatorId,
     })
     if (deniedSuspended.denied && deniedSuspended.reason === 'acting_user_suspended') {

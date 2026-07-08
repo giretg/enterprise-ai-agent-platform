@@ -142,7 +142,7 @@ export class RoutingEngine {
     // Null conditions = unconditional match
     if (!conditions || typeof conditions !== 'object') return true
     // Structured conditions matching could be extended here.
-    // For MVP Fázis 2 we support only unconditional policies.
+    // Current policy evaluation supports only unconditional policies.
     return true
   }
 }

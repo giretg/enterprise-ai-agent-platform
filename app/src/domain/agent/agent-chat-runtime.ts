@@ -95,6 +95,7 @@ export function buildHistoryGatewayMessages(
   historyMessages: ContextAssemblyMessage[],
   toolCalls: ToolCall[],
   latestAttachmentBlock: string,
+  latestUserTextOverride?: string,
 ): Array<{ role: 'user' | 'assistant'; content: string }> {
   const result: Array<{ role: 'user' | 'assistant'; content: string }> = []
   const visible = historyMessages.filter((m) => m.content && !m.contentDeletedAt)
@@ -105,10 +106,14 @@ export function buildHistoryGatewayMessages(
     if (message.role === 'user') {
       const parsed = parseStoredMessage(message.content)
       const isLatest = i === visible.length - 1
+      const userText =
+        isLatest && latestUserTextOverride !== undefined
+          ? latestUserTextOverride
+          : parsed.text
       const content =
         isLatest && latestAttachmentBlock
-          ? `${parsed.text || '(csatolmányok)'}${latestAttachmentBlock}`.trim()
-          : parsed.text
+          ? `${userText || '(csatolmányok)'}${latestAttachmentBlock}`.trim()
+          : userText
       result.push({ role: 'user', content })
     } else if (message.role === 'agent') {
       // A fordulóhoz tartozó tool-hívások: az előző (user) üzenet és ez az
@@ -250,6 +255,30 @@ export class AgentChatRuntime {
     return { skillIndexPrompt, loadSkill }
   }
 
+  private async resolveSlashSkillsForMessage(
+    agentId: string,
+    tenantId: string | null,
+    messageText: string,
+  ): Promise<{
+    modelFacingText: string
+    preloadedSkillPrompts: string[]
+    loadedSkillNames: string[]
+  }> {
+    if (!this.skills) {
+      return { modelFacingText: messageText, preloadedSkillPrompts: [], loadedSkillNames: [] }
+    }
+    const resolved = await this.skills.resolveSlashSkillLoads({
+      agentId,
+      messageText,
+      actor: { actorId: null, actorTenantId: tenantId, isPlatformAdmin: false },
+    })
+    return {
+      modelFacingText: resolved.modelFacingText,
+      preloadedSkillPrompts: resolved.preloadedPrompts,
+      loadedSkillNames: resolved.loadedSkillNames,
+    }
+  }
+
   async sendMessage(params: {
     agentId: string
     content: string
@@ -343,12 +372,19 @@ export class AgentChatRuntime {
       }
     }
 
+    const slashResolved = await this.resolveSlashSkillsForMessage(
+      params.agentId,
+      params.tenantId ?? null,
+      text,
+    )
+    const latestUserTextOverride =
+      slashResolved.modelFacingText !== text ? slashResolved.modelFacingText : undefined
     const kbSearch = await this.fetchKbSearchContext({
       agentId: params.agentId,
       agentVersion: agentDetails.agent.currentVersion,
       conversationId,
       actingUserId: params.createdById,
-      query: text,
+      query: slashResolved.modelFacingText || text,
     })
     const history = await this.conversations.getConversation(conversationId, params.tenantId ?? null)
     const modelConfig = agentDetails.agent.modelConfig as {
@@ -376,6 +412,7 @@ export class AgentChatRuntime {
       kbSearch,
       workspaceFiles,
       priorToolCalls,
+      latestUserTextOverride,
     )
 
     const allowedChatTools = await listAllowedChatTools(this.toolCaps, params.agentId)
@@ -393,7 +430,11 @@ export class AgentChatRuntime {
     let reply: string
     // A tool-loop akkor is fut, ha nincs capability-tool, de van hozzárendelt skill
     // (a load_skill elérhetőségéhez), különben az index behúzhatatlan lenne (WP-5).
-    if (allowedChatTools.length > 0 || skillBinding.loadSkill) {
+    if (
+      allowedChatTools.length > 0 ||
+      skillBinding.loadSkill ||
+      slashResolved.preloadedSkillPrompts.length > 0
+    ) {
       reply = (
         await runAgentToolLoop({
           gateway: this.gateway,
@@ -409,6 +450,7 @@ export class AgentChatRuntime {
           allowedTools: allowedChatTools,
           maxTurns,
           skillIndexPrompt: skillBinding.skillIndexPrompt,
+          preloadedSkillPrompts: slashResolved.preloadedSkillPrompts,
           loadSkill: skillBinding.loadSkill,
           archiveLargeToolResult: (input) =>
             this.archiveLargeToolResult(tenantKey, conversationId, input),
@@ -552,12 +594,19 @@ export class AgentChatRuntime {
       return
     }
 
+    const slashResolved = await this.resolveSlashSkillsForMessage(
+      params.agentId,
+      params.tenantId ?? null,
+      text,
+    )
+    const latestUserTextOverride =
+      slashResolved.modelFacingText !== text ? slashResolved.modelFacingText : undefined
     const kbSearch = await this.fetchKbSearchContext({
       agentId: params.agentId,
       agentVersion: agentDetails.agent.currentVersion,
       conversationId,
       actingUserId: params.createdById,
-      query: text,
+      query: slashResolved.modelFacingText || text,
     })
     const history = await this.conversations.getConversation(conversationId, params.tenantId ?? null)
     const modelConfig = agentDetails.agent.modelConfig as {
@@ -585,6 +634,7 @@ export class AgentChatRuntime {
       kbSearch,
       workspaceFiles,
       priorToolCalls,
+      latestUserTextOverride,
     )
 
     const allowedChatTools = await listAllowedChatTools(this.toolCaps, params.agentId)
@@ -599,8 +649,25 @@ export class AgentChatRuntime {
       })
     }
 
+    for (const skillName of slashResolved.loadedSkillNames) {
+      yield {
+        type: 'activity',
+        activity: {
+          id: `skill-slash-${skillName}`,
+          kind: 'tool',
+          title: `Skill betöltve: ${skillName}`,
+          detail: 'Felhasználói /slash parancs alapján',
+          status: 'done',
+        },
+      }
+    }
+
     let reply: string
-    if (allowedChatTools.length > 0 || skillBinding.loadSkill) {
+    if (
+      allowedChatTools.length > 0 ||
+      skillBinding.loadSkill ||
+      slashResolved.preloadedSkillPrompts.length > 0
+    ) {
       // A tool loop nem streamelhető élőben (a gyenge modellek a tool-hívást
       // szövegként szivárogtatják, amit nem mutathatunk a usernek). Lefuttatjuk
       // szinkronban, majd a kész választ szavanként, szimulált streamingként
@@ -629,12 +696,13 @@ export class AgentChatRuntime {
         messages: gatewayMessages,
         modelConfig,
         allowedTools: allowedChatTools,
-        maxTurns,
-        skillIndexPrompt: skillBinding.skillIndexPrompt,
-        loadSkill: skillBinding.loadSkill,
-        archiveLargeToolResult: (input) =>
-          this.archiveLargeToolResult(tenantKey, conversationId, input),
-        onActivity: pushActivity,
+          maxTurns,
+          skillIndexPrompt: skillBinding.skillIndexPrompt,
+          preloadedSkillPrompts: slashResolved.preloadedSkillPrompts,
+          loadSkill: skillBinding.loadSkill,
+          archiveLargeToolResult: (input) =>
+            this.archiveLargeToolResult(tenantKey, conversationId, input),
+          onActivity: pushActivity,
       }).then(
         (result) => ({ ok: true as const, result }),
         (error: unknown) => ({ ok: false as const, error }),
@@ -1111,6 +1179,7 @@ export class AgentChatRuntime {
     kbSearch: { enabled: boolean; hits: KbHit[] },
     workspaceFiles: string[],
     toolCalls: ToolCall[] = [],
+    latestUserTextOverride?: string,
   ) {
     const allAgents = await this.agents.findMany()
     const orgRoster = formatOrgRoster(allAgents)
@@ -1165,7 +1234,7 @@ export class AgentChatRuntime {
       })
     }
 
-    messages.push(...buildHistoryGatewayMessages(historyMessages, toolCalls, latestAttachmentBlock))
+    messages.push(...buildHistoryGatewayMessages(historyMessages, toolCalls, latestAttachmentBlock, latestUserTextOverride))
 
     return messages
   }

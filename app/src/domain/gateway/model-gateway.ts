@@ -321,7 +321,7 @@ function stubWikiAnswer(messages: GatewayMessage[]): ModelProviderResult {
 
   const content = JSON.stringify({
     answer:
-      'Az MVP célja egy architektúra-teljes walking skeleton; minden modellhívás a Model Gatewayen, minden eszközhívás a Tool Brokeren keresztül történik.',
+      'A platform célja kontrollált, auditálható AI agent munkakörnyezet biztosítása; minden modellhívás a Model Gatewayen, minden eszközhívás a Tool Brokeren keresztül történik.',
     sources: [{ docId: 'memory:stub', sectionRef: 'acceptance:wiki' }],
     rationale: 'Stub harness E2E — kb_search + board_write proof.',
     confidence: 'high',
@@ -800,7 +800,7 @@ export class ModelGateway {
       .map((m) => `${m.role.toUpperCase()}: ${messageText(m)}`)
       .join('\n\n')
 
-    // ── Step 4a: Ticket-level guardrail (MVP) ───────────────────────────────
+    // ── Step 4a: Ticket-level guardrail ────────────────────────────────────
     if (params.ticketId && isUuid(params.ticketId)) {
       const usage = await this.modelCalls.getUsageForTicket(params.ticketId)
       if (usage.calls >= this.guardrail.maxCallsPerTicket) {

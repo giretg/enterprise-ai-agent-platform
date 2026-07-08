@@ -8,6 +8,7 @@ import {
   materializeConnectorConfig,
   selfCheckTemplateDescriptor,
 } from '../src/domain/connector-template/materializer'
+import { materializeGmailConnectorConfig } from '../src/domain/connector-template/gmail-connector-config'
 import { parseTemplateDescriptor } from '../src/domain/connector-template/template-descriptor'
 
 let failures = 0
@@ -36,14 +37,15 @@ async function main() {
     }
   })
 
-  await test('Google Workspace materializes self-contained OAuth config', () => {
+  await test('Gmail template materializes delegated oauth config', () => {
     const descriptor = parseTemplateDescriptor(BUILTIN_CONNECTOR_TEMPLATES[0])
-    const config = materializeConnectorConfig(
+    assert.equal(descriptor.connectorType, 'gmail')
+    const config = materializeGmailConnectorConfig(
       descriptor,
       {
         authMethodKind: 'user_delegated_oauth2',
         instanceValues: { clientId: 'google-client-id.apps.googleusercontent.com' },
-        selectedScopes: ['gmail.readonly'],
+        selectedScopes: ['gmail.modify'],
       },
       { clientSecret: 'secret-ref:connector-template/google-workspace/client-secret' },
       {
@@ -55,26 +57,19 @@ async function main() {
       },
     )
 
-    assert.equal(config.authMode, 'user_delegated')
-    assert.equal(config.auth.type, 'oauth2')
-    assert.equal(config.auth.authUrl, 'https://accounts.google.com/o/oauth2/v2/auth')
-    assert.equal(config.auth.tokenUrl, 'https://oauth2.googleapis.com/token')
-    assert.equal(config.auth.userInfoUrl, 'https://www.googleapis.com/oauth2/v2/userinfo')
-    assert.deepEqual(config.auth.offlineParams, { access_type: 'offline' })
-    assert.equal(config.auth.scopeTransform, 'gmailAlias')
-    assert.equal(config.auth.secretAliasSuggested, 'secret-ref:connector-template/google-workspace/client-secret')
-    assert.equal(config.auth.clientId, 'google-client-id.apps.googleusercontent.com')
+    assert.equal(config.provider, 'google')
+    assert.equal(config.oauth.authUrl, 'https://accounts.google.com/o/oauth2/v2/auth')
+    assert.equal(config.oauth.tokenUrl, 'https://oauth2.googleapis.com/token')
+    assert.equal(config.oauth.userInfoUrl, 'https://www.googleapis.com/oauth2/v2/userinfo')
+    assert.deepEqual(config.oauth.offlineParams, { access_type: 'offline' })
+    assert.equal(config.oauth.scopeTransform, 'gmailAlias')
+    assert.equal(config.oauth.clientId, 'google-client-id.apps.googleusercontent.com')
+    assert.ok(config.oauth.scopes.includes('https://www.googleapis.com/auth/gmail.modify'))
     assert.ok(!JSON.stringify(config).includes('raw-client-secret'))
     assert.equal(config.provenance?.templateKey, 'google-workspace')
-
-    const runtime = parseHttpApiConfig(config)
-    assert.equal(runtime.auth.scheme, 'oauth2')
-    assert.equal(runtime.auth.tokenUrl, 'https://oauth2.googleapis.com/token')
-    assert.equal(runtime.auth.authUrl, 'https://accounts.google.com/o/oauth2/v2/auth')
-    assert.deepEqual(runtime.auth.offlineParams, { access_type: 'offline' })
   })
 
-  await test('all builtin templates materialize to runtime-parseable configs', () => {
+  await test('all builtin http_api templates materialize to runtime-parseable configs', () => {
     const inputs: Record<
       string,
       {
@@ -107,6 +102,7 @@ async function main() {
 
     for (const rawDescriptor of BUILTIN_CONNECTOR_TEMPLATES) {
       const descriptor = parseTemplateDescriptor(rawDescriptor)
+      if ((descriptor.connectorType ?? 'http_api') === 'gmail') continue
       const input = inputs[descriptor.key]
       assert.ok(input, `missing test input for ${descriptor.key}`)
       const config = materializeConnectorConfig(
@@ -130,28 +126,27 @@ async function main() {
     }
   })
 
-  await test('missing OAuth client id fails before runtime use', () => {
+  await test('Gmail draft materializes without client id (activation supplies it)', () => {
     const descriptor = parseTemplateDescriptor(BUILTIN_CONNECTOR_TEMPLATES[0])
-    assert.throws(
-      () =>
-        materializeConnectorConfig(
-          descriptor,
-          {
-            authMethodKind: 'user_delegated_oauth2',
-            instanceValues: {},
-            selectedScopes: ['gmail.readonly'],
-          },
-          { clientSecret: 'secret-ref:client-secret' },
-        ),
-      ConnectorTemplateMaterializationError,
+    const config = materializeGmailConnectorConfig(
+      descriptor,
+      {
+        authMethodKind: 'user_delegated_oauth2',
+        instanceValues: {},
+        selectedScopes: ['gmail.modify'],
+      },
+      {},
     )
+    assert.equal(config.oauth.clientId, undefined)
+    assert.ok(config.oauth.scopes.length > 0)
+    assert.ok(descriptor.activationHelp?.includes('Google Cloud Console'))
   })
 
-  await test('unknown selected scope is rejected', () => {
+  await test('unknown selected Gmail scope is rejected', () => {
     const descriptor = parseTemplateDescriptor(BUILTIN_CONNECTOR_TEMPLATES[0])
     assert.throws(
       () =>
-        materializeConnectorConfig(
+        materializeGmailConnectorConfig(
           descriptor,
           {
             authMethodKind: 'user_delegated_oauth2',

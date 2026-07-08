@@ -1410,6 +1410,8 @@ export async function runAgentToolLoop(params: {
   maxTurns?: number
   /** Level-0 skill-index rendszer-üzenet (üres/undefined → nincs skill hozzárendelve). */
   skillIndexPrompt?: string
+  /** Level-1: a felhasználó `/skill` slash-parancsával kért, előre betöltött skillek. */
+  preloadedSkillPrompts?: string[]
   /** `load_skill` végrehajtó (fail-closed a SkillService-ben). Ha megadva, a tool elérhető. */
   loadSkill?: LoadSkillFn
   archiveLargeToolResult?: (input: LargeToolResultArchiveInput) => Promise<LargeToolResultArchive | null>
@@ -1439,6 +1441,12 @@ export async function runAgentToolLoop(params: {
   const loadSkill = params.loadSkill
   if (loadSkill && params.skillIndexPrompt && params.skillIndexPrompt.trim()) {
     messages.push({ role: 'system', content: params.skillIndexPrompt })
+  }
+
+  if (params.preloadedSkillPrompts?.length) {
+    for (const prompt of params.preloadedSkillPrompts) {
+      messages.push({ role: 'system', content: prompt })
+    }
   }
 
   // Ha http_api eszköz engedélyezett, a hozzárendelt connector(ek)

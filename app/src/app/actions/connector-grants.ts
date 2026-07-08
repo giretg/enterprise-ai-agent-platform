@@ -20,15 +20,61 @@ import {
   readRunAsAuthorizedBy,
   removeRunAsAuthorization,
 } from '@/lib/run-as-payload'
+import { loadAgentDelegatedConnectors } from '@/lib/agent-delegated-connectors-server'
+
+export async function listAgentDelegatedConnectors(agentId: string) {
+  try {
+    const user = await requireTenantRole('viewer')
+    const items = await loadAgentDelegatedConnectors(
+      agentId,
+      user.user.id,
+      user.activeTenantId,
+    )
+    return ok(items)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to load agent connectors')
+  }
+}
 
 export async function listConnectorGrants() {
   try {
     const user = await getCurrentUser()
     if (!user) return fail('Not authenticated')
+    await services.connectorGrants.revokeGrantsForNonActiveConnectors(
+      user.id,
+      user.tenantId,
+      user.id,
+    )
     const grants = await services.connectorGrants.listForUser(user.id, user.tenantId)
     return ok(grants)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list grants')
+  }
+}
+
+export async function listConnectorsPanelContext() {
+  try {
+    const user = await requireTenantRole('viewer')
+    const isAdmin = hasMinimumRole(user.activeTenantRole, 'admin')
+    await services.connectorGrants.revokeGrantsForNonActiveConnectors(
+      user.user.id,
+      user.activeTenantId,
+      user.user.id,
+    )
+    const [grants, connectors] = await Promise.all([
+      services.connectorGrants.listForUser(user.user.id, user.activeTenantId),
+      prisma.connector.findMany({
+        where: {
+          authMode: 'user_delegated',
+          lifecycleState: 'active',
+          OR: [{ tenantId: null }, { tenantId: user.activeTenantId }],
+        },
+        orderBy: { name: 'asc' },
+      }),
+    ])
+    return ok({ grants, connectors, isAdmin })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to load connectors panel')
   }
 }
 
@@ -38,6 +84,7 @@ export async function listUserDelegatedConnectors() {
     const connectors = await prisma.connector.findMany({
       where: {
         authMode: 'user_delegated',
+        lifecycleState: 'active',
         OR: [{ tenantId: null }, { tenantId: user.activeTenantId }],
       },
       orderBy: { name: 'asc' },
@@ -56,6 +103,7 @@ export async function startConnectorOAuth(input: { connectorId: string; scopes?:
     const connector = await prisma.connector.findUnique({ where: { id: connectorId } })
     if (!connector) return fail('Connector not found')
     if (connector.authMode !== 'user_delegated') return fail('Connector is not user_delegated')
+    if (connector.lifecycleState !== 'active') return fail('Connector is not active')
     if (connector.tenantId && connector.tenantId !== user.tenantId) return fail('Connector not found')
 
     if (process.env.GMAIL_OAUTH_STUB === 'true') {

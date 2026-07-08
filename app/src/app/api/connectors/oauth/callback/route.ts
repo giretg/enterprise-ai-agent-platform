@@ -29,6 +29,7 @@ export async function GET(request: Request) {
     const statePayload = verifyOAuthState(state)
     const connector = await prisma.connector.findUnique({ where: { id: statePayload.connectorId } })
     if (!connector) throw new Error('connector_not_found')
+    if (connector.lifecycleState !== 'active') throw new Error('connector_not_active')
 
     await services.connectorGrants.completeOAuthCallback({
       code,

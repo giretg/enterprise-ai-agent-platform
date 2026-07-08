@@ -14,6 +14,7 @@ import {
   materializeConnectorConfig,
   selfCheckTemplateDescriptor,
 } from '@/domain/connector-template/materializer'
+import { materializeGmailConnectorConfig } from '@/domain/connector-template/gmail-connector-config'
 import {
   parseTemplateDescriptor,
   templateDescriptorSchema,
@@ -148,7 +149,45 @@ async function syncAssignedConnectorCapabilities(
   agentId: string,
   connectorId: string,
   accessMode: 'read' | 'write',
+  connectorType: 'http_api' | 'gmail',
 ) {
+  if (connectorType === 'gmail') {
+    const readTools = ['gmail_search', 'gmail_get_message', 'mailbox_count'] as const
+    const writeTools = ['gmail_create_draft', 'gmail_send'] as const
+    for (const toolName of readTools) {
+      await prisma.capability.upsert({
+        where: { agentId_toolName: { agentId, toolName } },
+        create: { agentId, toolName, allowed: true },
+        update: { allowed: true },
+      })
+    }
+    if (accessMode === 'write') {
+      for (const toolName of writeTools) {
+        await prisma.capability.upsert({
+          where: { agentId_toolName: { agentId, toolName } },
+          create: { agentId, toolName, allowed: true },
+          update: { allowed: true },
+        })
+      }
+      return
+    }
+    const writeConnectorCount = await prisma.agentConnector.count({
+      where: {
+        agentId,
+        connectorId: { not: connectorId },
+        accessMode: 'write',
+        connector: { type: 'gmail', lifecycleState: 'active' },
+      },
+    })
+    if (writeConnectorCount === 0) {
+      await prisma.capability.updateMany({
+        where: { agentId, toolName: { in: [...writeTools] } },
+        data: { allowed: false },
+      })
+    }
+    return
+  }
+
   await prisma.capability.upsert({
     where: { agentId_toolName: { agentId, toolName: 'http_api_get' } },
     create: { agentId, toolName: 'http_api_get', allowed: true },
@@ -187,8 +226,11 @@ async function syncAssignedConnectorCapabilities(
  * A megszüntetés ekkor már levette az agent_connectors kötést, ezért a count tükrözi a valóságot.
  */
 async function syncConnectorRemovalCapabilities(agentIds: string[]) {
+  const GMAIL_READ_TOOLS = ['gmail_search', 'gmail_get_message', 'mailbox_count'] as const
+  const GMAIL_WRITE_TOOLS = ['gmail_create_draft', 'gmail_send'] as const
+
   for (const agentId of agentIds) {
-    const [anyActive, writeActive] = await Promise.all([
+    const [httpAnyActive, httpWriteActive, gmailAnyActive, gmailWriteActive] = await Promise.all([
       prisma.agentConnector.count({
         where: { agentId, connector: { type: 'http_api', lifecycleState: 'active' } },
       }),
@@ -199,16 +241,37 @@ async function syncConnectorRemovalCapabilities(agentIds: string[]) {
           connector: { type: 'http_api', lifecycleState: 'active' },
         },
       }),
+      prisma.agentConnector.count({
+        where: { agentId, connector: { type: 'gmail', lifecycleState: 'active' } },
+      }),
+      prisma.agentConnector.count({
+        where: {
+          agentId,
+          accessMode: 'write',
+          connector: { type: 'gmail', lifecycleState: 'active' },
+        },
+      }),
     ])
-    if (anyActive === 0) {
+    if (httpAnyActive === 0) {
       await prisma.capability.updateMany({
         where: { agentId, toolName: 'http_api_get' },
         data: { allowed: false },
       })
     }
-    if (writeActive === 0) {
+    if (httpWriteActive === 0) {
       await prisma.capability.updateMany({
         where: { agentId, toolName: 'http_api_request' },
+        data: { allowed: false },
+      })
+    }
+    if (gmailAnyActive === 0) {
+      await prisma.capability.updateMany({
+        where: { agentId, toolName: { in: [...GMAIL_READ_TOOLS, ...GMAIL_WRITE_TOOLS] } },
+        data: { allowed: false },
+      })
+    } else if (gmailWriteActive === 0) {
+      await prisma.capability.updateMany({
+        where: { agentId, toolName: { in: [...GMAIL_WRITE_TOOLS] } },
         data: { allowed: false },
       })
     }
@@ -222,6 +285,13 @@ const updateDraftConfigSchema = z.object({
 
 const decommissionSchema = z.object({
   draftId: z.string().min(1),
+  criticality: z.enum(['L1', 'L2', 'L3']).optional(),
+  approverId: z.string().optional(),
+  reason: z.string().max(500).optional(),
+})
+
+const decommissionActiveConnectorSchema = z.object({
+  connectorId: z.string().min(1),
   criticality: z.enum(['L1', 'L2', 'L3']).optional(),
   approverId: z.string().optional(),
   reason: z.string().max(500).optional(),
@@ -505,22 +575,46 @@ export async function createConnectorFromTemplateAction(input: unknown) {
     }
 
     const descriptor = parseTemplateDescriptor(template.descriptor)
-    const config = materializeConnectorConfig(
-      descriptor,
-      {
-        authMethodKind: parsed.authMethodKind,
-        instanceValues: parsed.instanceValues,
-        selectedScopes: parsed.selectedScopes,
-        selectedEndpoints: parsed.selectedEndpoints,
-      },
-      parsed.secretAliases,
-      {
-        templateId: template.id,
-        templateKey: template.key,
-        templateVersion: template.version,
-        templateOrigin: template.origin,
-      },
-    )
+    const connectorType = descriptor.connectorType ?? 'http_api'
+    const generatedConfig =
+      connectorType === 'gmail'
+        ? materializeGmailConnectorConfig(
+            descriptor,
+            {
+              authMethodKind: parsed.authMethodKind,
+              instanceValues: parsed.instanceValues,
+              selectedScopes: parsed.selectedScopes,
+              selectedEndpoints: parsed.selectedEndpoints,
+            },
+            parsed.secretAliases,
+            {
+              templateId: template.id,
+              templateKey: template.key,
+              templateVersion: template.version,
+              templateOrigin: template.origin,
+            },
+          )
+        : materializeConnectorConfig(
+            descriptor,
+            {
+              authMethodKind: parsed.authMethodKind,
+              instanceValues: parsed.instanceValues,
+              selectedScopes: parsed.selectedScopes,
+              selectedEndpoints: parsed.selectedEndpoints,
+            },
+            parsed.secretAliases,
+            {
+              templateId: template.id,
+              templateKey: template.key,
+              templateVersion: template.version,
+              templateOrigin: template.origin,
+            },
+          )
+
+    const secretAliasSuggested =
+      connectorType === 'gmail'
+        ? (parsed.secretAliases.clientSecret?.trim() || 'google-workspace-oauth-client-secret')
+        : null
 
     const res = await services.provisioning.createConnectorDraft(
       {
@@ -528,7 +622,9 @@ export async function createConnectorFromTemplateAction(input: unknown) {
         sourceType: 'template',
         sourceRef: `${template.key}@${template.version}`,
         sourceContent: JSON.stringify(template.descriptor),
-        generatedConfig: config,
+        generatedConfig,
+        connectorType,
+        secretAliasSuggested,
       },
       actorOf(user),
     )
@@ -759,8 +855,13 @@ export async function assignConnectorToAgent(input: unknown) {
       },
       actorOf(user),
     )
-    if (connector.type === 'http_api') {
-      await syncAssignedConnectorCapabilities(parsed.agentId, parsed.connectorId, parsed.accessMode)
+    if (connector.type === 'http_api' || connector.type === 'gmail') {
+      await syncAssignedConnectorCapabilities(
+        parsed.agentId,
+        parsed.connectorId,
+        parsed.accessMode,
+        connector.type,
+      )
     }
     return ok(res)
   } catch (e) {
@@ -793,7 +894,7 @@ export async function unassignConnectorFromAgent(input: unknown) {
       },
       actorOf(user),
     )
-    if (connector.type === 'http_api') {
+    if (connector.type === 'http_api' || connector.type === 'gmail') {
       await syncConnectorRemovalCapabilities([parsed.agentId])
     }
     return ok(res)
@@ -843,6 +944,24 @@ export async function decommissionConnector(input: unknown) {
     const user = await requireTenantRole('admin')
     const parsed = decommissionSchema.parse(input)
     const res = await services.provisioning.decommissionConnector(parsed, actorOf(user))
+    if (res.affectedAgentIds.length > 0) {
+      await syncConnectorRemovalCapabilities(res.affectedAgentIds)
+    }
+    return ok(res)
+  } catch (e) {
+    return toFail(e, 'Nem sikerült megszüntetni a connectort')
+  }
+}
+
+/**
+ * Aktív connector leszerelése connectorId alapján (admin-only) — draft nélküli legacy/seed
+ * connectorokhoz is. Ugyanaz a leszerelési út, mint a provisioning draft megszüntetésnél.
+ */
+export async function decommissionActiveConnector(input: unknown) {
+  try {
+    const user = await requireTenantRole('admin')
+    const parsed = decommissionActiveConnectorSchema.parse(input)
+    const res = await services.provisioning.decommissionActiveConnector(parsed, actorOf(user))
     if (res.affectedAgentIds.length > 0) {
       await syncConnectorRemovalCapabilities(res.affectedAgentIds)
     }
