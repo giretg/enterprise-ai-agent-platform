@@ -1,5 +1,80 @@
 # Enterprise code review log
 
+## 2026-07-09 - Conversation Session / Agent Chat tenant-határ + workspace fájl API
+
+- Áttekintett modulok:
+  - `app/src/domain/conversation/conversation-service.ts` (conversation lookup, append,
+    promoteToTicket, audit)
+  - `app/src/domain/agent/agent-chat-runtime.ts` és `app/src/domain/agent/wiki-runtime.ts`
+    (chat/wiki conversation indítás, stream, task ticket, report/wiki ticket)
+  - `app/src/app/actions/platform.ts` conversation/wiki server actionök
+  - `app/src/app/api/v1/conversations/[id]/workspace/files/route.ts` és
+    `app/src/app/api/v1/tickets/[id]/workspace/files/route.ts`
+  - `app/src/repositories/postgres/conversation-repository.ts`, `app/prisma/schema.prisma`
+    Conversation/Message tenant- és retention-mezők
+- Eredmény:
+  - A ConversationService alapvető tenant-scope mintája jó irányú: ha a hívó tenantot ad,
+    a beszélgetés olvasása/archiválása/törlése opak `Conversation not found` hibával
+    fail-closed, és cross-tenant olvasási kísérlet auditot ír.
+  - Találtam egy AgentChat/Wiki runtime tenant-rést: a chat és wiki belépők az agentet
+    globális `findByIdWithDetails(agentId)` hívással töltötték, miközben a tenantot csak a
+    conversationre adták át. Multi-tenant éles környezetben egy tenant operátora idegen
+    tenant agent ID-ját célba vehette volna, ami prompt-, modelConfig-, memory-/recipe- és
+    capability-kitettséget, illetve téves ticket/delegációs mellékhatásokat okozhat.
+  - Találtam egy workspace fájl API tenant-rést is: a conversation/ticket workspace fájl
+    route-ok csak `getCurrentUser()`-t használtak, globálisan oldották fel a conversationt /
+    ticketet, és a storage tenant-kulcsot a legacy `user.tenantId` mezőből képezték az aktív
+    tenant-kontextus helyett. Ez nem elégséges enterprise izoláció fájl-listázás,
+    letöltés/signed URL és feltöltés útvonalon.
+  - A `promoteToTicket` action az első olvasást tenant-szűrten végezte, de a domain
+    promóciós hívásba nem vitte tovább a tenantId-t. Ez TOCTOU/IDOR jellegű defense-in-depth
+    rés volt a conversationből ticketet nyitó útvonalon.
+- Javítás:
+  - AgentChatRuntime és WikiAgentRuntime a közös `isAgentReachableFromTenant` szabályt
+    alkalmazza minden human-facing chat/wiki/task/report belépőn: megosztott agent elérhető,
+    saját tenant agent elérhető, cross-tenant agent opak `Agent not found`.
+  - A chat/wiki message append hívások ugyanazt a tenantId-t viszik tovább a ConversationService
+    felé, így nem csak az előzetes lookup, hanem maga az append is tenant-scope-olt.
+  - A conversation és ticket workspace fájl API-k `requireTenantRole('viewer')`-t kérnek
+    olvasásra/listázásra, `requireTenantRole('operator')`-t feltöltésre, és `findFirst({ id,
+    tenantId: activeTenantId })` alapján oldják fel a cél objektumot. A storage kulcs az
+    objektum tenantjához / aktív tenantjához kötött, nem legacy user mezőhöz.
+  - A `ConversationService.promoteToTicket` tenantId-ja kötelező lett; a production action az
+    aktív tenantot adja át, a demó/acceptance globális agent útvonal explicit `null`-t.
+  - Új determinisztikus teszt: `scripts/agent-chat-tenant-boundary.test.ts` (sendMessage,
+    sendMessageStream, createTaskTicket cross-tenant deny mellékhatás előtt), valamint új
+    ConversationSession regresszió a cross-tenant promote tiltásra.
+- Üzleti hatás:
+  - Megakadályozza, hogy egy ügyfél operátora egy másik ügyfél agentjével vagy annak
+    workspace fájljaival dolgozzon pusztán ID ismeretében. Ez különösen fontos, mert a
+    chat runtime a platform legérzékenyebb prompt-kontekstusát állítja össze (memory,
+    knowledge, tool history, attachment workspace), és a workspace fájl API közvetlen
+    dokumentum-hozzáférést ad.
+  - Az aktív tenant-kontextus lesz az egységes auditálható határ a chat, wiki, ticket és
+    fájlműveletek között, ami ügyfél-tenant izoláció és compliance review szempontból
+    védhetőbb kontroll.
+- Verifikáció:
+  - `npm run test:agent-chat-tenant-boundary --prefix app`
+  - `npm run test:conversation-session --prefix app`
+  - `npm run test:chat-tool-history --prefix app`
+  - `npx eslint src/domain/agent/agent-chat-runtime.ts src/domain/agent/wiki-runtime.ts
+    src/domain/conversation/conversation-service.ts src/app/actions/platform.ts
+    src/app/api/v1/conversations/[id]/workspace/files/route.ts
+    src/app/api/v1/tickets/[id]/workspace/files/route.ts
+    scripts/agent-chat-tenant-boundary.test.ts scripts/conversation-session.test.ts`
+  - `git diff --check`
+  - Megjegyzés: a teljes `npx tsc --noEmit` jelenleg nem zöld a repo meglévő
+    provisioning/connector-template típushibái miatt (`TemplateDescriptor.connectorType`,
+    provisioning panel template metadata, `ProvisioningErrorCode`); ezek nem a most
+    módosított conversation/chat/workspace fájlokból erednek.
+- Nyitott döntések (nem auto-javítva):
+  - D1 — A workspace fájl API jelenleg tenant-szintű viewer/operator jogosultságot használ,
+    nem conversation/ticket tulajdonosi vagy assignee-szintű ACL-t. Ha egy tenanton belül is
+    szigorúbb adatmegosztás kell, külön per-resource access policy szükséges.
+  - D2 — A `Document` modellnek továbbra sincs saját `tenantId` mezője; a chat-csatolmányok
+    documentId alapján töltődnek. Ez kapcsolódik a 2026-07-07 KB review D1 döntéséhez, és
+    séma-szintű tenant-attribúcióval lenne zárható teljesen.
+
 ## 2026-07-07 - Knowledge Base tenant-határ (dokumentum-gate + megosztás + review)
 
 - Áttekintett modulok:

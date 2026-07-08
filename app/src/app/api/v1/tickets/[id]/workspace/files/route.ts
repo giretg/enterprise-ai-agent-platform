@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server'
-import { getCurrentUser } from '@/auth'
+import { requireTenantRole } from '@/auth/tenant-context'
 import { prisma } from '@/lib/db'
 import { WorkspaceStorage } from '@/domain/file-editor/workspace-storage'
 import { FileEditorError } from '@/domain/file-editor/workspace-storage'
@@ -12,10 +12,10 @@ function getStorage() {
   return new WorkspaceStorage(process.env.WORKSPACE_BUCKET ?? 'platform-workspace-prod')
 }
 
-async function resolveTicket(ticketId: string) {
-  return prisma.ticket.findUnique({
-    where: { id: ticketId },
-    select: { id: true, agentId: true, createdById: true },
+async function resolveTicket(ticketId: string, tenantId: string) {
+  return prisma.ticket.findFirst({
+    where: { id: ticketId, tenantId },
+    select: { id: true, tenantId: true, agentId: true, createdById: true },
   })
 }
 
@@ -27,11 +27,11 @@ export async function GET(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const user = await getCurrentUser().catch(() => null)
+  const user = await requireTenantRole('viewer').catch(() => null)
   if (!user) return jsonError('Unauthorized', 401)
 
   const { id: ticketId } = await params
-  const ticket = await resolveTicket(ticketId)
+  const ticket = await resolveTicket(ticketId, user.activeTenantId)
   if (!ticket) return jsonError('Ticket not found', 404)
 
   const url = new URL(request.url)
@@ -39,7 +39,7 @@ export async function GET(
   const signed = url.searchParams.get('signed') === '1'
 
   const storage = getStorage()
-  const tenantId = user.tenantId ?? 'global'
+  const tenantId = ticket.tenantId ?? user.activeTenantId
 
   try {
     if (filePath) {
@@ -79,11 +79,11 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const user = await getCurrentUser().catch(() => null)
+  const user = await requireTenantRole('operator').catch(() => null)
   if (!user) return jsonError('Unauthorized', 401)
 
   const { id: ticketId } = await params
-  const ticket = await resolveTicket(ticketId)
+  const ticket = await resolveTicket(ticketId, user.activeTenantId)
   if (!ticket) return jsonError('Ticket not found', 404)
 
   let formData: FormData
@@ -103,7 +103,7 @@ export async function POST(
   if (file.size > MAX) return jsonError('File exceeds 50 MB limit', 413)
 
   const storage = getStorage()
-  const tenantId = user.tenantId ?? 'global'
+  const tenantId = ticket.tenantId ?? user.activeTenantId
 
   try {
     const buf = Buffer.from(await file.arrayBuffer())

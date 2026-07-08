@@ -10,6 +10,7 @@ import { buildRunAsAuthorization } from '@/lib/run-as-payload'
 import { readWikiTicketPayload, wikiSearchQuery, wikiUserPrompt } from '@/lib/wiki-ticket-payload'
 import { formatHitsForPrompt, type KbHit } from '@/lib/kb-format'
 import { buildThreadContextPrompt, latestHumanTicketComment } from '@/lib/ticket-thread-prompt'
+import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
 import type { GatewayMessage, ModelGateway } from '../gateway/model-gateway'
 import type { ToolBrokerService } from '../tool-broker/tool-broker-service'
 import type { PlaybookService } from '../playbook/playbook-service'
@@ -51,6 +52,15 @@ function extractJsonObject(content: string): unknown {
 }
 
 type AgentDetails = NonNullable<Awaited<ReturnType<AgentRepository['findByIdWithDetails']>>>
+
+function assertAgentReachableForWiki(
+  agentTenantId: string | null,
+  actorTenantId: string | null,
+): void {
+  if (!isAgentReachableFromTenant(agentTenantId, actorTenantId)) {
+    throw new Error('Agent not found')
+  }
+}
 
 type ModelConfig = {
   provider: string
@@ -96,6 +106,7 @@ export class WikiAgentRuntime {
 
     const agentDetails = await this.agents.findByIdWithDetails(params.agentId)
     if (!agentDetails) throw new Error('Agent not found')
+    assertAgentReachableForWiki(agentDetails.agent.tenantId, params.tenantId ?? null)
 
     let conversationId = params.conversationId
     if (conversationId) {
@@ -115,6 +126,7 @@ export class WikiAgentRuntime {
 
     await this.conversations.appendMessage({
       conversationId,
+      tenantId: params.tenantId ?? null,
       role: 'user',
       content: question,
       actingUserId: params.createdById,
@@ -149,6 +161,7 @@ export class WikiAgentRuntime {
   }) {
     const agentDetails = await this.agents.findByIdWithDetails(params.agentId)
     if (!agentDetails) throw new Error('Agent not found')
+    assertAgentReachableForWiki(agentDetails.agent.tenantId, params.tenantId ?? null)
 
     const modelConfig = agentDetails.agent.modelConfig as ModelConfig
     const agentVersion = agentDetails.agent.currentVersion
@@ -169,6 +182,7 @@ export class WikiAgentRuntime {
 
       const agentMessage = await this.conversations.appendMessage({
         conversationId: params.conversationId,
+        tenantId: params.tenantId ?? null,
         role: 'agent',
         content,
         actingUserId: params.actingUserId ?? null,
@@ -200,6 +214,7 @@ export class WikiAgentRuntime {
 
     const agentMessage = await this.conversations.appendMessage({
       conversationId: params.conversationId,
+      tenantId: params.tenantId ?? null,
       role: 'agent',
       content: JSON.stringify({
         answer: answer.answer,
@@ -225,10 +240,16 @@ export class WikiAgentRuntime {
   }
 
   /** Legacy ticket-alapú flow — harness / playbook pin teszt / visszafelé kompatibilitás. */
-  async askWikiViaTicket(params: { agentId: string; question: string; createdById: string }) {
+  async askWikiViaTicket(params: {
+    agentId: string
+    question: string
+    createdById: string
+    tenantId?: string | null
+  }) {
     const ticket = await this.createQuestionTicket(params)
     const agentDetails = await this.agents.findByIdWithDetails(params.agentId)
     if (!agentDetails) throw new Error('Agent not found')
+    assertAgentReachableForWiki(agentDetails.agent.tenantId, params.tenantId ?? null)
     await this.ticketService.transition({
       ticketId: ticket.id,
       toState: 'in_progress',
@@ -253,6 +274,7 @@ export class WikiAgentRuntime {
 
     const agentDetails = await this.agents.findByIdWithDetails(params.agentId)
     if (!agentDetails) throw new Error('Agent not found')
+    assertAgentReachableForWiki(agentDetails.agent.tenantId, params.tenantId ?? null)
 
     const modelConfig = agentDetails.agent.modelConfig as ModelConfig
     const agentVersion = agentDetails.agent.currentVersion
@@ -312,11 +334,13 @@ export class WikiAgentRuntime {
     agentId: string
     template: ReportTemplate
     createdById: string
+    tenantId?: string | null
   }) {
     return this.createQuestionTicket({
       agentId: params.agentId,
       question: params.template.prompt,
       createdById: params.createdById,
+      tenantId: params.tenantId ?? null,
       title: `Riport: ${params.template.name}`,
       extraPayload: {
         source: 'wiki',

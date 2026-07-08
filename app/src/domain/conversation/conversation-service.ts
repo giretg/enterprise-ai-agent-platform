@@ -354,7 +354,7 @@ export class ConversationService {
     conversationId: string
     createdById: string
     reason?: string
-    tenantId?: string | null
+    tenantId: string | null
     type?: Ticket['type']
     answerPayload: Record<string, unknown>
     fromMessageId?: string | null

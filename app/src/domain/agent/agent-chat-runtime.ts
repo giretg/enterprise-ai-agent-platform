@@ -12,6 +12,7 @@ import { composeSystemPrompt } from '@/lib/agent-prompt'
 import { formatOrgRoster } from '@/lib/agent-org-roster'
 import { buildRunAsAuthorization } from '@/lib/run-as-payload'
 import { formatHitsForPrompt, type KbHit } from '@/lib/kb-format'
+import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
 import {
   chatTriggerSlotDescriptors,
   missingRequiredTriggerSlots,
@@ -210,6 +211,15 @@ function encodeStoredMessage(text: string, attachmentIds: string[]): string {
   return JSON.stringify({ text, attachmentIds })
 }
 
+function assertAgentReachableForChat(
+  agentTenantId: string | null,
+  actorTenantId: string | null,
+): void {
+  if (!isAgentReachableFromTenant(agentTenantId, actorTenantId)) {
+    throw new Error('Agent not found')
+  }
+}
+
 type ChatProcessReply = {
   text: string
   ticketRefId?: string | null
@@ -295,6 +305,7 @@ export class AgentChatRuntime {
 
     const agentDetails = await this.agents.findByIdWithDetails(params.agentId)
     if (!agentDetails) throw new Error('Agent not found')
+    assertAgentReachableForChat(agentDetails.agent.tenantId, params.tenantId ?? null)
 
     let conversationId = params.conversationId
     if (conversationId) {
@@ -331,6 +342,7 @@ export class AgentChatRuntime {
 
     await this.conversations.appendMessage({
       conversationId,
+      tenantId: params.tenantId ?? null,
       role: 'user',
       content: encodeStoredMessage(userFacingText, attachmentIds),
       actingUserId: params.createdById,
@@ -357,6 +369,7 @@ export class AgentChatRuntime {
     if (processReply) {
       const agentMessage = await this.conversations.appendMessage({
         conversationId,
+        tenantId: params.tenantId ?? null,
         role: 'agent',
         content: processReply.text,
         actingUserId: params.createdById,
@@ -470,6 +483,7 @@ export class AgentChatRuntime {
 
     const agentMessage = await this.conversations.appendMessage({
       conversationId,
+      tenantId: params.tenantId ?? null,
       role: 'agent',
       content: reply.trim(),
       actingUserId: params.createdById,
@@ -515,6 +529,12 @@ export class AgentChatRuntime {
       yield { type: 'error', message: 'Agent not found' }
       return
     }
+    try {
+      assertAgentReachableForChat(agentDetails.agent.tenantId, params.tenantId ?? null)
+    } catch (e) {
+      yield { type: 'error', message: e instanceof Error ? e.message : 'Agent not found' }
+      return
+    }
 
     let conversationId = params.conversationId
     if (conversationId) {
@@ -547,6 +567,7 @@ export class AgentChatRuntime {
 
     await this.conversations.appendMessage({
       conversationId,
+      tenantId: params.tenantId ?? null,
       role: 'user',
       content: encodeStoredMessage(userFacingText, attachmentIds),
       actingUserId: params.createdById,
@@ -577,6 +598,7 @@ export class AgentChatRuntime {
       }
       const agentMessage = await this.conversations.appendMessage({
         conversationId,
+        tenantId: params.tenantId ?? null,
         role: 'agent',
         content: processReply.text,
         actingUserId: params.createdById,
@@ -758,6 +780,7 @@ export class AgentChatRuntime {
 
     const agentMessage = await this.conversations.appendMessage({
       conversationId,
+      tenantId: params.tenantId ?? null,
       role: 'agent',
       content: reply.trim(),
       actingUserId: params.createdById,
@@ -786,6 +809,7 @@ export class AgentChatRuntime {
 
     const agentDetails = await this.agents.findByIdWithDetails(params.agentId)
     if (!agentDetails) throw new Error('Agent not found')
+    assertAgentReachableForChat(agentDetails.agent.tenantId, params.tenantId ?? null)
 
     const attachmentDocs = await this.loadDocuments(attachmentIds)
     const modelConfig = agentDetails.agent.modelConfig as {

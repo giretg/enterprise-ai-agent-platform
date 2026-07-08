@@ -2516,6 +2516,7 @@ export async function generateReport(input: { agentId: string; templateId: strin
       agentId: parsed.agentId,
       template,
       createdById: user.user.id,
+      tenantId: user.activeTenantId,
     })
 
     return ok({ ticketId: ticket.id })
@@ -2546,6 +2547,7 @@ export async function promoteToTicket(input: { conversationId: string; reason?: 
     const ticket = await services.conversations.promoteToTicket({
       conversationId: parsed.conversationId,
       createdById: user.user.id,
+      tenantId: user.activeTenantId,
       reason: parsed.reason ?? 'approval',
       answerPayload,
       agentMessageId: lastAgent.id,

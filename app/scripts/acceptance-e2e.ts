@@ -181,6 +181,7 @@ async function scenario1_e2e(operatorId: string, approverId: string, agentId: st
     const ticket = await services.conversations.promoteToTicket({
       conversationId: wikiResult.conversationId,
       createdById: operatorId,
+      tenantId: null,
       reason: 'approval',
       answerPayload: {
         question: SAMPLE_WIKI_QUESTION,
