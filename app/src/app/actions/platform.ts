@@ -16,6 +16,11 @@ import {
   getDispatcherServiceStatus,
   setDispatcherServiceMinScale,
 } from '@/domain/dispatcher/cloud-run-service-admin'
+import {
+  getSchedulerJobStatus,
+  setSchedulerJobIntervalMinutes,
+  setSchedulerJobPaused,
+} from '@/domain/dispatcher/cloud-scheduler-admin'
 import { runDispatchCycle, type DispatchCycleSummary } from '@/domain/dispatcher/run-dispatch-cycle'
 import type { DispatchCycleRunRecord } from '@/domain/platform-settings/platform-settings-service'
 import { repositories } from '@/repositories/postgres'
@@ -3176,9 +3181,20 @@ export type CloudRunWorkerStatus =
   | { available: false; error: string }
   | { available: true; minScale: number | null; ready: boolean; latestReadyRevisionName: string | null }
 
+export type SchedulerWorkerStatus =
+  | { available: false; error: string }
+  | {
+      available: true
+      state: 'ENABLED' | 'PAUSED' | 'UNKNOWN'
+      schedule: string | null
+      timeZone: string | null
+      lastAttemptStatus: string | null
+    }
+
 export type WorkerProcessesStatus = {
   local: LocalWorkerStatus
   cloudRun: CloudRunWorkerStatus
+  scheduler: SchedulerWorkerStatus
   lastCycle: DispatchCycleRunRecord | null
 }
 
@@ -3212,14 +3228,17 @@ export async function getWorkerProcessesStatus(): Promise<ActionResult<WorkerPro
   try {
     await ensureActiveDatabaseMode()
     await requireTenantRole('operator')
-    const [local, cloudRun, lastCycle] = await Promise.all([
+    const [local, cloudRun, scheduler, lastCycle] = await Promise.all([
       fetchLocalWorkerStatus(),
       getDispatcherServiceStatus()
         .then((status) => ({ available: true as const, ...status }))
         .catch((e) => ({ available: false as const, error: e instanceof Error ? e.message : String(e) })),
+      getSchedulerJobStatus()
+        .then((status) => ({ available: true as const, ...status }))
+        .catch((e) => ({ available: false as const, error: e instanceof Error ? e.message : String(e) })),
       services.platformSettings.getLastDispatchCycleRun(),
     ])
-    return ok({ local, cloudRun, lastCycle })
+    return ok({ local, cloudRun, scheduler, lastCycle })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to read worker processes status')
   }
@@ -3275,6 +3294,34 @@ export async function setCloudRunDispatcherScale(
     return ok({ available: true, ...status })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to update Cloud Run dispatcher scale')
+  }
+}
+
+/** A dispatch-cycle-sweep Cloud Scheduler job szüneteltetése/folytatása az admin UI-ból. */
+export async function setDispatchSchedulerPaused(
+  paused: boolean,
+): Promise<ActionResult<SchedulerWorkerStatus>> {
+  try {
+    await ensureActiveDatabaseMode()
+    await requirePlatformRole('superadmin')
+    const status = await setSchedulerJobPaused(paused)
+    return ok({ available: true, ...status })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update Cloud Scheduler job state')
+  }
+}
+
+/** A dispatch-cycle-sweep Cloud Scheduler job intervallumának állítása (2-59 perc). */
+export async function setDispatchSchedulerIntervalMinutes(
+  minutes: number,
+): Promise<ActionResult<SchedulerWorkerStatus>> {
+  try {
+    await ensureActiveDatabaseMode()
+    await requirePlatformRole('superadmin')
+    const status = await setSchedulerJobIntervalMinutes(minutes)
+    return ok({ available: true, ...status })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update Cloud Scheduler interval')
   }
 }
 

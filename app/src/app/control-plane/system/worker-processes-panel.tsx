@@ -6,9 +6,19 @@ import {
   getWorkerProcessesStatus,
   runDispatchCycleNow,
   setCloudRunDispatcherScale,
+  setDispatchSchedulerIntervalMinutes,
+  setDispatchSchedulerPaused,
   stopLocalDispatcherWorker,
   type WorkerProcessesStatus,
 } from '@/app/actions/platform'
+
+/** N-percenkénti cron mintából (star-slash-N óra-perc formátum) N-t olvas ki; minden más ütemnél a nyers cron-szöveget mutatjuk, nem szerkeszthető dial-lal. */
+function parseEveryNMinutes(schedule: string | null): number | null {
+  const match = schedule?.match(/^\*\/(\d+) \* \* \* \*$/)
+  if (!match) return null
+  const n = Number(match[1])
+  return Number.isFinite(n) && n > 0 ? n : null
+}
 
 const TRIGGER_LABELS: Record<string, string> = {
   worker: 'lokális worker',
@@ -38,11 +48,19 @@ export function WorkerProcessesPanel({
   const [pending, startTransition] = useTransition()
   const [message, setMessage] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null)
   const [confirmingCloudRunStop, setConfirmingCloudRunStop] = useState(false)
+  const [schedulerIntervalInput, setSchedulerIntervalInput] = useState<number | null>(
+    initial.scheduler.available ? parseEveryNMinutes(initial.scheduler.schedule) : null,
+  )
 
   const refresh = useCallback(() => {
     startTransition(async () => {
       const res = await getWorkerProcessesStatus()
-      if (res.success) setStatus(res.data)
+      if (res.success) {
+        setStatus(res.data)
+        if (res.data.scheduler.available) {
+          setSchedulerIntervalInput(parseEveryNMinutes(res.data.scheduler.schedule))
+        }
+      }
     })
   }, [])
 
@@ -94,9 +112,38 @@ export function WorkerProcessesPanel({
     })
   }
 
+  function toggleSchedulerPaused(paused: boolean) {
+    setMessage(null)
+    startTransition(async () => {
+      const res = await setDispatchSchedulerPaused(paused)
+      if (res.success) {
+        setMessage({ tone: 'ok', text: paused ? 'Cloud Scheduler szüneteltetve.' : 'Cloud Scheduler folytatva.' })
+      } else {
+        setMessage({ tone: 'err', text: res.error })
+      }
+      refresh()
+    })
+  }
+
+  function saveSchedulerInterval() {
+    if (schedulerIntervalInput === null) return
+    setMessage(null)
+    startTransition(async () => {
+      const res = await setDispatchSchedulerIntervalMinutes(schedulerIntervalInput)
+      if (res.success) {
+        setMessage({ tone: 'ok', text: `Cloud Scheduler intervallum mentve: ${res.data.available ? res.data.schedule : ''}` })
+      } else {
+        setMessage({ tone: 'err', text: res.error })
+      }
+      refresh()
+    })
+  }
+
   const local = status.local
   const cloudRun = status.cloudRun
+  const scheduler = status.scheduler
   const lastCycle = status.lastCycle
+  const currentSchedulerInterval = scheduler.available ? parseEveryNMinutes(scheduler.schedule) : null
 
   return (
     <Card title="Worker-folyamatok (Neon compute forrás)">
@@ -226,6 +273,70 @@ export function WorkerProcessesPanel({
           >
             Ciklus futtatása most
           </button>
+        </div>
+
+        {/* Cloud Scheduler — a stateless ciklus időzítője */}
+        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-line/40 px-4 py-3">
+          <div className="flex items-center gap-3">
+            <Dot
+              color={
+                !scheduler.available ? 'amber' : scheduler.state === 'ENABLED' ? 'emerald' : 'red'
+              }
+            />
+            <div>
+              <p className="text-sm font-medium">Cloud Scheduler (dispatch-cycle-sweep)</p>
+              <p className="text-xs text-ink-soft">
+                {!scheduler.available
+                  ? `Nem elérhető: ${scheduler.error}`
+                  : `${scheduler.state === 'ENABLED' ? 'Fut' : scheduler.state === 'PAUSED' ? 'Szüneteltetve' : 'Ismeretlen állapot'} · ütem: ${scheduler.schedule ?? '?'} (${scheduler.timeZone ?? '?'})${scheduler.lastAttemptStatus ? ` · utolsó futás: ${scheduler.lastAttemptStatus}` : ''}`}
+              </p>
+            </div>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {scheduler.available && currentSchedulerInterval !== null ? (
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="number"
+                  min={2}
+                  max={59}
+                  value={schedulerIntervalInput ?? ''}
+                  disabled={!canEdit || pending}
+                  onChange={(e) => setSchedulerIntervalInput(Number(e.target.value))}
+                  className="w-16 rounded-lg border border-line bg-panel px-2 py-1.5 text-sm text-ink disabled:opacity-50"
+                />
+                <span className="text-xs text-ink-soft">perc</span>
+                <button
+                  type="button"
+                  disabled={
+                    !canEdit ||
+                    pending ||
+                    schedulerIntervalInput === null ||
+                    schedulerIntervalInput === currentSchedulerInterval
+                  }
+                  onClick={saveSchedulerInterval}
+                  className="rounded-lg bg-accent px-3 py-1.5 text-sm text-white disabled:opacity-40"
+                >
+                  Mentés
+                </button>
+              </div>
+            ) : null}
+            <button
+              type="button"
+              disabled={!canEdit || pending || !scheduler.available || scheduler.state !== 'ENABLED'}
+              onClick={() => toggleSchedulerPaused(true)}
+              className="rounded-lg bg-red-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-600 disabled:opacity-40"
+            >
+              Szüneteltetés
+            </button>
+            <button
+              type="button"
+              disabled={!canEdit || pending || !scheduler.available || scheduler.state !== 'PAUSED'}
+              onClick={() => toggleSchedulerPaused(false)}
+              className="rounded-lg bg-emerald-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-600 disabled:opacity-40"
+            >
+              Folytatás
+            </button>
+          </div>
         </div>
 
         {/* Docker per-ticket harness */}
