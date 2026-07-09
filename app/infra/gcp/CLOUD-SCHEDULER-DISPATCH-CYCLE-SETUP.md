@@ -90,7 +90,45 @@ lokális worker, vagy a „Ciklus futtatása most” gomb indította.
 
 ---
 
-## 5. A régi Cloud Run service leállítása
+## 5. Be/ki kapcsolás és intervallum-állítás az admin UI-ból
+
+A `dispatch-cycle-sweep` job szüneteltethető/folytatható és az intervalluma (percben)
+állítható a `control-plane/system` → „Worker-folyamatok” panel „Cloud Scheduler” sorából
+is, nem csak `gcloud`-dal vagy a Console-ból. Ehhez az App Hosting futásidejű service
+accountjának IAM-jogot kell adni a Cloud Scheduler API-hoz — a Cloud Scheduler nem támogat
+job-szintű (resource-level) IAM-et (ellentétben a Cloud Run service-ekkel), ezért ez egy
+**projekt-szintű** binding. Least-privilege okból egy egyedi szerepkört hozunk létre a
+beépített (túl tág) `roles/cloudscheduler.admin` helyett — ez csak a get/pause/resume/update
+műveleteket engedi, a job törlését/létrehozását nem:
+
+```bash
+PROJECT=enterprise-ai-demo
+
+# Egyedi, szűk-jogú szerepkör — csak amit az admin UI ténylegesen használ
+gcloud iam roles create dispatchSchedulerOperator \
+  --project=$PROJECT \
+  --title="Dispatch Scheduler Operator" \
+  --description="Get/pause/resume/update a dispatch-cycle-sweep Cloud Scheduler jobon" \
+  --permissions=cloudscheduler.jobs.get,cloudscheduler.jobs.pause,cloudscheduler.jobs.resume,cloudscheduler.jobs.update \
+  --stage=GA
+
+# Kötés az App Hosting futásidejű service accountjához
+gcloud projects add-iam-policy-binding $PROJECT \
+  --member="serviceAccount:firebase-app-hosting-compute@${PROJECT}.iam.gserviceaccount.com" \
+  --role="projects/${PROJECT}/roles/dispatchSchedulerOperator"
+```
+
+Ha ez a binding hiányzik, a panel „Cloud Scheduler” sora „Nem elérhető: ...403...” hibát
+mutat — ez várható és biztonságos alapállapot, amíg nem futtatod le a fenti két parancsot.
+
+Env-oldalon nincs új kötelező beállítás a meglévő Cloud Run admin blokkon felül
+(`DISPATCHER_ADMIN_PROJECT_ID`, `DISPATCHER_ADMIN_REGION` — ugyanaz a projekt/régió) —
+csak a `DISPATCHER_SCHEDULER_JOB_NAME` (alap: `dispatch-cycle-sweep`) az új env var, ha a
+jobot más néven hoztad létre.
+
+---
+
+## 6. A régi Cloud Run service leállítása
 
 Ha eddig a `wiki-dispatcher` service csak a LISTEN/cron miatt futott folyamatosan, most
 már nullára skálázható (a Scheduler átveszi a biztonsági háló szerepét):
@@ -106,10 +144,13 @@ törölni — ha valaha vissza akarsz állni a folyamatos LISTEN/NOTIFY módra, 
 
 ---
 
-## 6. Kapcsolódó fájlok
+## 7. Kapcsolódó fájlok
 
 - `app/src/app/api/v1/internal/dispatch-cycle/route.ts` — a stateless végpont
 - `app/src/domain/dispatcher/run-dispatch-cycle.ts` — a megosztott ciklus-logika (worker +
   végpont + admin UI kézi gomb közös magja)
+- `app/src/domain/dispatcher/cloud-scheduler-admin.ts` — Cloud Scheduler admin API wrapper
+  (get/pause/resume/update)
 - `app/infra/gcp/deploy-dispatch-cycle-scheduler.sh`, `dispatch-cycle-scheduler.env.example`
-- `app/src/app/control-plane/system/worker-processes-panel.tsx` — admin UI állapot + kézi trigger
+- `app/src/app/control-plane/system/worker-processes-panel.tsx` — admin UI állapot, kézi
+  trigger, Scheduler be/ki + intervallum
