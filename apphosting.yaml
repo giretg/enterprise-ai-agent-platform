@@ -49,6 +49,11 @@ env:
     secret: HARNESS_CALLBACK_TOKEN
     availability:
       - RUNTIME
+  # Cloud Scheduler → POST /api/v1/internal/dispatch-cycle (x-dispatcher-token).
+  - variable: DISPATCHER_CONTROL_TOKEN
+    secret: DISPATCHER_CONTROL_TOKEN
+    availability:
+      - RUNTIME
   - variable: NEXT_SERVER_ACTIONS_ENCRYPTION_KEY
     secret: NEXT_SERVER_ACTIONS_ENCRYPTION_KEY
     availability:

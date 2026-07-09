@@ -9,6 +9,8 @@ const isPublicRoute = createRouteMatcher([
   '/api/v1/agent(.*)',
   '/api/v1/gateway(.*)',
   '/api/v1/harness(.*)',
+  // Cloud Scheduler → token auth a route handlerben (x-dispatcher-token), nem Clerk.
+  '/api/v1/internal/dispatch-cycle(.*)',
   '/api/webhooks(.*)',
   // WP-6/WP-7: operatív endpointok auth nélkül (uptime-monitor / scrape).
   '/api/healthz(.*)',
