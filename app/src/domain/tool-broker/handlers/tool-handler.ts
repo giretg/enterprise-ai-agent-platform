@@ -30,6 +30,7 @@ import type {
   KbListIndexResult,
   KbSearchArgs,
   KbSearchResult,
+  MemoryProposeResult,
   RepoOpenPullRequestResult,
   RepoPrepareResult,
   TicketCreateResult,
@@ -101,6 +102,10 @@ export interface HandlerContext {
     connector: Connector,
     actingTenantId: string | null,
   ): Promise<RepoOpenPullRequestResult>
+  memoryPropose(
+    input: Extract<ToolBrokerInvokeInput, { tool: 'memory_propose' }>,
+    actingTenantId: string | null,
+  ): Promise<MemoryProposeResult>
 }
 
 /** Minden handler-hívás egyetlen, immutábilis argumentum-csomagot kap. */

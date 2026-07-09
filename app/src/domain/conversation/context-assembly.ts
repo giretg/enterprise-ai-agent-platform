@@ -1,7 +1,12 @@
 import type { AuditRepository } from '@/repositories/interfaces'
 
 export const DEFAULT_CONTEXT_RECENCY_MESSAGES = 16
-export const DEFAULT_CONTEXT_BUDGET_TOKENS = 6000
+// agent-memory-persistent-cross-conversation-spec.md §10.3 (v2.1 token-budget
+// összjáték): a retrieval-alapú memória-blokk (§12.2 default 1200+2500=3700
+// token) az üzenetek mellett nem fér el kényelmesen a korábbi 6000-es
+// keretben — a memória-rész a saját §12.2 keretén belül marad, ez a teljes,
+// egymásba ágyazott felső korlát.
+export const DEFAULT_CONTEXT_BUDGET_TOKENS = 10000
 
 export type ContextAssemblyMessage = {
   id: string
@@ -24,7 +29,7 @@ export type AssembledContext = {
   truncated: boolean
 }
 
-function estimateTextTokens(value: string): number {
+export function estimateTextTokens(value: string): number {
   return Math.max(1, Math.ceil(value.length / 4))
 }
 
@@ -41,12 +46,21 @@ function normalizeDocumentAliases(aliases: string[] = []): string[] {
 function estimateContextTokens(params: {
   messages: ContextAssemblyMessage[]
   memoryContent?: string | null
+  memoryContextTokens?: number
   documentAliases: string[]
 }): number {
   const messageTokens = params.messages.reduce((sum, message) => sum + estimateMessageTokens(message), 0)
-  const memoryTokens = params.memoryContent?.trim()
-    ? estimateTextTokens(params.memoryContent.trim()) + 8
-    : 0
+  // §10.3 (v2.1): a retrieval-alapú `Project memory context` blokk tényleges
+  // token-becslése (memoryContextTokens) váltja fel a legacy `memoryContent`
+  // teljes-szöveg becslését — a hívó ezt adja át, ha retrieval-only módban fut
+  // (agent-chat-runtime.ts / general-task-runtime.ts). A `memoryContent` ág
+  // csak a nem migrált wiki-runtime.ts-hez marad meg visszafelé kompatibilisen.
+  const memoryTokens =
+    params.memoryContextTokens !== undefined
+      ? Math.max(0, params.memoryContextTokens)
+      : params.memoryContent?.trim()
+        ? estimateTextTokens(params.memoryContent.trim()) + 8
+        : 0
   const documentTokens =
     params.documentAliases.length > 0
       ? estimateTextTokens(params.documentAliases.join('\n')) + params.documentAliases.length
@@ -63,6 +77,7 @@ export async function assembleContext(params: {
   messages: ContextAssemblyMessage[]
   memoryVersion: number | null
   memoryContent?: string | null
+  memoryContextTokens?: number
   documentAliases?: string[]
   budgetTokens?: number
   recencyWindowMessages?: number
@@ -87,6 +102,7 @@ export async function assembleContext(params: {
   const fixedTokenEstimate = estimateContextTokens({
     messages: [],
     memoryContent: params.memoryContent,
+    memoryContextTokens: params.memoryContextTokens,
     documentAliases,
   })
   const messageBudget = Math.max(1, budgetTokens - fixedTokenEstimate)
@@ -115,6 +131,7 @@ export async function assembleContext(params: {
   const estimatedTokens = estimateContextTokens({
     messages: selectedMessages,
     memoryContent: params.memoryContent,
+    memoryContextTokens: params.memoryContextTokens,
     documentAliases,
   })
 
@@ -180,4 +197,51 @@ export async function assembleContext(params: {
     budgetTokens,
     truncated: droppedSeqs.length > 0 || estimatedTokens > budgetTokens,
   }
+}
+
+const MEMORY_QUERY_TOKEN_CAP = 400
+const MEMORY_QUERY_RECENT_MESSAGE_COUNT = 5
+
+/**
+ * agent-memory-persistent-cross-conversation-spec.md §5.1.1 — a
+ * `MemoryRetrievalRequest.query` építése. A `MemoryRetrievalService` pure marad
+ * (nem ismeri a chat/task runtime-formátumot); ez a függvény adja a
+ * runtime-specifikus lekérdezés-szöveget, ~400 token cap-pel.
+ *
+ * - chat: utolsó user-üzenet (elsődleges) + max 5 előző üzenet (user+assistant,
+ *   tool-payload nélkül), recency-sorrendben.
+ * - task: ticket-cím + aktuális step-instrukció + step-input rövid összefoglaló.
+ */
+export function buildMemoryRetrievalQuery(
+  params:
+    | {
+        queryKind: 'chat'
+        latestUserMessage: string
+        recentMessages?: ContextAssemblyMessage[]
+      }
+    | {
+        queryKind: 'task'
+        ticketTitle: string
+        stepInstruction?: string | null
+        stepInputSummary?: string | null
+      },
+): string {
+  let raw: string
+  if (params.queryKind === 'chat') {
+    const recent = (params.recentMessages ?? [])
+      .filter((m) => m.content && !m.contentDeletedAt && (m.role === 'user' || m.role === 'agent'))
+      .sort((a, b) => a.seq - b.seq)
+      .slice(-MEMORY_QUERY_RECENT_MESSAGE_COUNT)
+      .map((m) => m.content!.trim())
+      .filter(Boolean)
+    raw = [params.latestUserMessage.trim(), ...recent].filter(Boolean).join('\n')
+  } else {
+    raw = [params.ticketTitle, params.stepInstruction, params.stepInputSummary]
+      .filter((part): part is string => Boolean(part?.trim()))
+      .map((part) => part.trim())
+      .join('\n')
+  }
+
+  const capChars = MEMORY_QUERY_TOKEN_CAP * 4
+  return raw.length > capChars ? raw.slice(0, capChars) : raw
 }

@@ -1,5 +1,7 @@
 import type { Connector, ConnectorGrant, Prisma } from '@prisma/client'
 import type { AuditRepository, ConnectorGrantRepository } from '@/repositories/interfaces'
+import { prisma } from '@/lib/db'
+import { readTenantGoogleOAuthConfig } from '@/lib/tenant-google-oauth-config'
 import {
   buildGrantTokenRef,
   createGrantTokenStore,
@@ -115,6 +117,41 @@ function readOAuthConfig(connector: Connector): ResolvedOAuthConfig {
   }
 }
 
+function isGoogleConnector(connector: Connector): boolean {
+  if (connector.type === 'gmail') return true
+  const config = (connector.config ?? {}) as ConnectorOAuthConfig
+  const provider = (config.provider ?? '').toLowerCase()
+  return provider.includes('google')
+}
+
+async function resolveTenantGoogleOAuthConfig(
+  connector: Connector,
+): Promise<TenantGoogleOAuthConfig | null> {
+  if (!isGoogleConnector(connector) || !connector.tenantId) return null
+  const tenant = await prisma.tenant.findUnique({
+    where: { id: connector.tenantId },
+    select: { settings: true },
+  })
+  return readTenantGoogleOAuthConfig(tenant?.settings)
+}
+
+type TenantGoogleOAuthConfig = {
+  clientId: string
+  clientSecret: string
+  redirectUri?: string
+}
+
+async function resolveOAuthConfig(connector: Connector): Promise<ResolvedOAuthConfig> {
+  const base = readOAuthConfig(connector)
+  const tenantGoogle = await resolveTenantGoogleOAuthConfig(connector)
+  if (!tenantGoogle) return base
+  return {
+    ...base,
+    clientId: tenantGoogle.clientId,
+    ...(tenantGoogle.redirectUri ? { redirectUri: tenantGoogle.redirectUri } : {}),
+  }
+}
+
 function resolveRequestedScopes(connector: Connector, requestedScopes?: string[]): string[] {
   const normalize = scopeNormalizerFor(connector)
   const oauth = readOAuthConfig(connector)
@@ -150,6 +187,8 @@ function resolveGrantedScopes(params: {
 
 async function resolveClientSecret(connector: Connector): Promise<string> {
   if (process.env.GMAIL_OAUTH_STUB === 'true') return 'stub-client-secret'
+  const tenantGoogle = await resolveTenantGoogleOAuthConfig(connector)
+  if (tenantGoogle?.clientSecret) return tenantGoogle.clientSecret
   const alias = connector.secretAlias
   if (!alias) throw new Error('connector missing client secret alias')
 
@@ -174,7 +213,7 @@ async function exchangeCodeForTokens(params: {
   codeVerifier: string
   requestedScopes?: string[]
 }): Promise<ConnectorGrantTokens> {
-  const oauth = readOAuthConfig(params.connector)
+  const oauth = await resolveOAuthConfig(params.connector)
   const fallbackScopes = resolveRequestedScopes(params.connector, params.requestedScopes)
 
   if (process.env.GMAIL_OAUTH_STUB === 'true') {
@@ -266,7 +305,7 @@ async function refreshGrantTokens(
     }
   }
 
-  const oauth = readOAuthConfig(connector)
+  const oauth = await resolveOAuthConfig(connector)
   const clientSecret = await resolveClientSecret(connector)
   const body = new URLSearchParams({
     refresh_token: current.refreshToken,
@@ -330,19 +369,19 @@ export class ConnectorGrantService {
     return grant
   }
 
-  buildAuthorizationUrl(params: {
+  async buildAuthorizationUrl(params: {
     connector: Connector
     userId: string
     tenantId: string | null
     requestedScopes?: string[]
-  }): { url: string; state: string } {
+  }): Promise<{ url: string; state: string }> {
     if (params.connector.authMode !== 'user_delegated') {
       throw new Error('connector is not user_delegated')
     }
     if (params.connector.tenantId && params.connector.tenantId !== params.tenantId) {
       throw new Error('connector tenant mismatch')
     }
-    const oauth = readOAuthConfig(params.connector)
+    const oauth = await resolveOAuthConfig(params.connector)
     const scopes = resolveRequestedScopes(params.connector, params.requestedScopes)
     const { state, codeVerifier } = createOAuthState({
       userId: params.userId,

@@ -1022,9 +1022,11 @@ export type GmailConfigView = {
   scopes: string[]
   scopeTransform: string
   provenance?: {
+    templateId?: string
     templateKey?: string
     templateVersion?: number
-    templateOrigin?: string
+    templateOrigin?: 'builtin' | 'custom'
+    materializedAt?: string
   }
 }
 
@@ -1041,9 +1043,11 @@ function safeGmailConfigView(raw: unknown): GmailConfigView | null {
       scopeTransform: config.oauth.scopeTransform,
       provenance: config.provenance
         ? {
+            templateId: config.provenance.templateId,
             templateKey: config.provenance.templateKey,
             templateVersion: config.provenance.templateVersion,
             templateOrigin: config.provenance.templateOrigin,
+            materializedAt: config.provenance.materializedAt,
           }
         : undefined,
     }

@@ -23,6 +23,7 @@ import type {
 } from '@/repositories/interfaces'
 
 import type { TicketService } from '@/domain/ticket/ticket-service'
+import type { MemoryProposalService } from '@/domain/memory/memory-proposal-service'
 import type { WebSearchPolicyService } from '@/domain/web-search/web-search-policy-service'
 import type { WebSearchService } from '@/domain/web-search/web-search-service'
 import {
@@ -76,6 +77,7 @@ import {
   kbGetPage,
   kbListIndex,
   kbSearch,
+  memoryPropose,
   repoOpenPullRequest,
   repoPrepare,
   resolveCallerTenantId,
@@ -126,6 +128,7 @@ export class ToolBrokerService {
     // KB-v3 §9.1/§10 — published OKF-chunk full-text retrieval + superseded (§10.5).
     readonly knowledgeChunks: KnowledgeChunkRepository,
     readonly knowledgeArtifacts: KnowledgeArtifactRepository,
+    readonly memoryProposal: MemoryProposalService,
     private isWebSearchEnabled: WebSearchEnabledLookup = prismaWebSearchEnabledLookup,
     readonly isWebFetchEnabled: WebFetchEnabledLookup = prismaWebFetchEnabledLookup,
     readonly isWebResearchDelegationEnabled: WebResearchDelegationEnabledLookup = prismaWebResearchDelegationEnabledLookup,
@@ -159,6 +162,7 @@ export class ToolBrokerService {
         repoPrepare(this, input, connector, actingTenantId),
       repoOpenPullRequest: (input, connector, actingTenantId) =>
         repoOpenPullRequest(this, input, connector, actingTenantId),
+      memoryPropose: (input, actingTenantId) => memoryPropose(this, input, actingTenantId),
     }
   }
 

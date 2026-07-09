@@ -19,7 +19,18 @@ import {
 } from '@/lib/playbook-v2/trigger-input'
 import type { ModelGateway } from '../gateway/model-gateway'
 import type { ConversationService } from '../conversation/conversation-service'
-import { assembleContext, type ContextAssemblyMessage } from '../conversation/context-assembly'
+import {
+  assembleContext,
+  buildMemoryRetrievalQuery,
+  type ContextAssemblyMessage,
+} from '../conversation/context-assembly'
+import { MEMORY_RETRIEVAL_USAGE_PROMPT, kbSearchAnswerInstruction } from '@/lib/memory-prompt'
+import {
+  buildMemoryRetrievalRequest,
+  loadProjectMemoryContext,
+  memoryContextSystemMessages,
+} from '../memory/memory-runtime-helper'
+import type { MemoryRetrievalService } from '../memory/memory-retrieval-service'
 import type { ToolBrokerService } from '../tool-broker/tool-broker-service'
 import type { WorkspaceStorage } from '../file-editor/workspace-storage'
 import type { CompiledSpec } from '../playbook/playbook-compiler'
@@ -30,6 +41,7 @@ import {
   runAgentToolLoop,
   type LoadSkillFn,
   type ToolLoopActivityEvent,
+  type ToolLoopMemoryCandidateEvent,
 } from './chat-tool-loop'
 import type { SkillService } from '../skill/skill-service'
 
@@ -230,6 +242,7 @@ export class AgentChatRuntime {
     private playbooksV2?: PlaybookV2Repository,
     private processService?: ProcessService,
     private skills?: SkillService,
+    private memoryRetrieval?: MemoryRetrievalService,
   ) {}
 
   /**
@@ -393,6 +406,17 @@ export class AgentChatRuntime {
       temperature?: number
       maxTokens?: number
     }
+    const memoryContext = await this.retrieveProjectMemoryContext({
+      agentDetails,
+      projectKey: history.conversation.projectKey,
+      query: buildMemoryRetrievalQuery({
+        queryKind: 'chat',
+        latestUserMessage: slashResolved.modelFacingText || text,
+        recentMessages: history.messages,
+      }),
+      tenantId: params.tenantId ?? null,
+      conversationId,
+    })
     const assembledContext = await assembleContext({
       audit: this.audit,
       conversationId,
@@ -401,7 +425,7 @@ export class AgentChatRuntime {
       actingUserId: params.createdById,
       messages: history.messages,
       memoryVersion: agentDetails.memoryVersion,
-      memoryContent: agentDetails.memoryContent,
+      memoryContextTokens: memoryContext.tokens,
       documentAliases: this.contextDocumentAliases(attachmentDocs, workspaceFiles, kbSearch.hits),
     })
     const priorToolCalls = await this.toolCaps.listToolCallsForConversation(conversationId)
@@ -413,6 +437,7 @@ export class AgentChatRuntime {
       workspaceFiles,
       priorToolCalls,
       latestUserTextOverride,
+      memoryContext.block,
     )
 
     const allowedChatTools = await listAllowedChatTools(this.toolCaps, params.agentId)
@@ -497,6 +522,7 @@ export class AgentChatRuntime {
     processInputPayload?: Record<string, unknown>
   }): AsyncGenerator<
     | { type: 'activity'; activity: ToolLoopActivityEvent }
+    | { type: 'memory_candidate'; candidate: ToolLoopMemoryCandidateEvent }
     | { type: 'token'; chunk: string }
     | { type: 'done'; conversationId: string; messageId: string; ticketRefId?: string | null }
     | { type: 'error'; message: string },
@@ -615,6 +641,17 @@ export class AgentChatRuntime {
       temperature?: number
       maxTokens?: number
     }
+    const memoryContext = await this.retrieveProjectMemoryContext({
+      agentDetails,
+      projectKey: history.conversation.projectKey,
+      query: buildMemoryRetrievalQuery({
+        queryKind: 'chat',
+        latestUserMessage: slashResolved.modelFacingText || text,
+        recentMessages: history.messages,
+      }),
+      tenantId: params.tenantId ?? null,
+      conversationId,
+    })
     const assembledContext = await assembleContext({
       audit: this.audit,
       conversationId,
@@ -623,7 +660,7 @@ export class AgentChatRuntime {
       actingUserId: params.createdById,
       messages: history.messages,
       memoryVersion: agentDetails.memoryVersion,
-      memoryContent: agentDetails.memoryContent,
+      memoryContextTokens: memoryContext.tokens,
       documentAliases: this.contextDocumentAliases(attachmentDocs, workspaceFiles, kbSearch.hits),
     })
     const priorToolCalls = await this.toolCaps.listToolCallsForConversation(conversationId)
@@ -635,6 +672,7 @@ export class AgentChatRuntime {
       workspaceFiles,
       priorToolCalls,
       latestUserTextOverride,
+      memoryContext.block,
     )
 
     const allowedChatTools = await listAllowedChatTools(this.toolCaps, params.agentId)
@@ -672,17 +710,31 @@ export class AgentChatRuntime {
       // szövegként szivárogtatják, amit nem mutathatunk a usernek). Lefuttatjuk
       // szinkronban, majd a kész választ szavanként, szimulált streamingként
       // adjuk ki — így a tool-os agenteknél is folyamatosan jelenik meg a szöveg.
-      const activityQueue: ToolLoopActivityEvent[] = []
-      let wakeActivity: (() => void) | null = null
-      const pushActivity = (activity: ToolLoopActivityEvent) => {
-        activityQueue.push(activity)
-        wakeActivity?.()
-        wakeActivity = null
+      // WP-5 — az activity- és a memory-candidate-esemény ugyanabba a queue-ba
+      // tolódik, egyetlen wake-resolverrel (két külön resolver versenyezne
+      // egymással, ha mindkét forrás egyszerre tolna be egy eseményt).
+      type SideEvent =
+        | { kind: 'activity'; activity: ToolLoopActivityEvent }
+        | { kind: 'memory_candidate'; candidate: ToolLoopMemoryCandidateEvent }
+      const sideEventQueue: SideEvent[] = []
+      let wakeSideEvent: (() => void) | null = null
+      const pushSideEvent = (event: SideEvent) => {
+        sideEventQueue.push(event)
+        wakeSideEvent?.()
+        wakeSideEvent = null
       }
-      const waitForActivity = () =>
+      const waitForSideEvent = () =>
         new Promise<null>((resolve) => {
-          wakeActivity = () => resolve(null)
+          wakeSideEvent = () => resolve(null)
         })
+      const drainSideEvents = function* () {
+        while (sideEventQueue.length > 0) {
+          const event = sideEventQueue.shift()
+          if (!event) continue
+          if (event.kind === 'activity') yield { type: 'activity' as const, activity: event.activity }
+          else yield { type: 'memory_candidate' as const, candidate: event.candidate }
+        }
+      }
 
       const resultPromise = runAgentToolLoop({
         gateway: this.gateway,
@@ -702,7 +754,8 @@ export class AgentChatRuntime {
           loadSkill: skillBinding.loadSkill,
           archiveLargeToolResult: (input) =>
             this.archiveLargeToolResult(tenantKey, conversationId, input),
-          onActivity: pushActivity,
+          onActivity: (activity) => pushSideEvent({ kind: 'activity', activity }),
+          onMemoryCandidate: (candidate) => pushSideEvent({ kind: 'memory_candidate', candidate }),
       }).then(
         (result) => ({ ok: true as const, result }),
         (error: unknown) => ({ ok: false as const, error }),
@@ -710,16 +763,10 @@ export class AgentChatRuntime {
 
       let result: Awaited<typeof resultPromise> | null = null
       while (!result) {
-        while (activityQueue.length > 0) {
-          const activity = activityQueue.shift()
-          if (activity) yield { type: 'activity', activity }
-        }
-        result = await Promise.race([resultPromise, waitForActivity()])
+        yield* drainSideEvents()
+        result = await Promise.race([resultPromise, waitForSideEvent()])
       }
-      while (activityQueue.length > 0) {
-        const activity = activityQueue.shift()
-        if (activity) yield { type: 'activity', activity }
-      }
+      yield* drainSideEvents()
 
       if (!result.ok) {
         yield {
@@ -1172,6 +1219,33 @@ export class AgentChatRuntime {
     return { enabled: true, hits: search.result.hits as KbHit[] }
   }
 
+  /** agent-memory-persistent-cross-conversation-spec.md §10.3 — retrieval-only memória-blokk chatben. */
+  private async retrieveProjectMemoryContext(params: {
+    agentDetails: NonNullable<Awaited<ReturnType<AgentRepository['findByIdWithDetails']>>>
+    projectKey: string
+    query: string
+    tenantId: string | null
+    conversationId: string
+  }) {
+    return loadProjectMemoryContext({
+      memoryRetrieval: this.memoryRetrieval,
+      audit: this.audit,
+      actorId: params.agentDetails.agent.id,
+      agentVersion: params.agentDetails.agent.currentVersion,
+      tenantId: params.tenantId,
+      conversationId: params.conversationId,
+      request: buildMemoryRetrievalRequest({
+        agentId: params.agentDetails.agent.id,
+        memoryId: params.agentDetails.agent.memoryId,
+        tenantId: params.tenantId,
+        projectKey: params.projectKey,
+        query: params.query,
+        queryKind: 'chat',
+        runRef: { threadId: params.conversationId },
+      }),
+    })
+  }
+
   private async buildGatewayMessages(
     agentDetails: NonNullable<Awaited<ReturnType<AgentRepository['findByIdWithDetails']>>>,
     historyMessages: ContextAssemblyMessage[],
@@ -1180,6 +1254,7 @@ export class AgentChatRuntime {
     workspaceFiles: string[],
     toolCalls: ToolCall[] = [],
     latestUserTextOverride?: string,
+    memoryContextBlock?: string | null,
   ) {
     const allAgents = await this.agents.findMany()
     const orgRoster = formatOrgRoster(allAgents)
@@ -1188,18 +1263,21 @@ export class AgentChatRuntime {
       { role: 'system', content: composeSystemPrompt(agentDetails.agent) },
     ]
 
-    if (agentDetails.memoryContent?.trim()) {
-      messages.push({
-        role: 'system',
-        content: `Memória (aktív verzió):\n${agentDetails.memoryContent.trim()}`,
-      })
+    // agent-memory-persistent-cross-conversation-spec.md §10.3 — retrieval-only:
+    // a legacy `agentDetails.memoryContent` teljes-inject blokk helyett a
+    // `MemoryRetrievalService`-ből épített, elhatárolt `Project memory context`
+    // blokk (§16 S4: adat, nem utasítás), a capture-policy prompt-tal együtt.
+    if (memoryContextBlock) {
+      messages.push(...memoryContextSystemMessages(memoryContextBlock))
+      messages.push({ role: 'system', content: MEMORY_RETRIEVAL_USAGE_PROMPT })
     }
 
     if (kbSearch.enabled) {
-      const answerInstruction =
-        kbSearch.hits.length === 0
-          ? 'A tudásbázis (kb_search) nem adott találatot erre a kérdésre. Ez NEM jelenti, hogy nincs válasz: email/postafiók kérdésnél gmail_search, fájl/munkaterület kérdésnél file_* eszköz — ha engedélyezve van. Csak akkor mondd, hogy nincs elég forrás, ha a releváns eszközök sem adnak adatot.'
-          : 'A belső tudásbázis tényállításaihoz kizárólag az alábbi kb_search találatokra támaszkodj. Minden lényegi állításhoz adj forráshivatkozást.'
+      const answerInstruction = kbSearchAnswerInstruction({
+        hitCount: kbSearch.hits.length,
+        hasMemoryContext: Boolean(memoryContextBlock),
+        mode: 'chat',
+      })
       messages.push({
         role: 'system',
         content: `${answerInstruction}\n\nTudásbázis találatok (kb_search):\n${formatHitsForPrompt(kbSearch.hits)}`,

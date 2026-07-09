@@ -506,6 +506,15 @@ async function ensureToolBrokerSeed(agentId: string) {
     update: { allowed: true },
   })
 
+  // agent-memory-persistent-cross-conversation-spec.md §6/§13 WP-1/WP-4: a
+  // capability itt csak a fail-closed tool-broker-őrt nyitja meg — a
+  // memory_propose handler maga a WP-4-ben kerül a registry-be.
+  await prisma.capability.upsert({
+    where: { agentId_toolName: { agentId, toolName: 'memory_propose' } },
+    create: { agentId, toolName: 'memory_propose', allowed: true },
+    update: { allowed: true },
+  })
+
   for (const toolName of ['gmail_search', 'gmail_get_message', 'mailbox_count', 'gmail_create_draft', 'gmail_send']) {
     await prisma.capability.upsert({
       where: { agentId_toolName: { agentId, toolName } },

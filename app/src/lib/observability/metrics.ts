@@ -102,9 +102,35 @@ class Histogram {
   }
 }
 
+/** Utolsó ismert érték, cimkénként (pl. `memory_chunks_active{projectKey}`). */
+class Gauge {
+  private readonly series = new Map<string, { labels: Labels; value: number }>()
+  constructor(
+    readonly name: string,
+    readonly help: string,
+  ) {}
+
+  set(value: number, labels: Labels = {}): void {
+    this.series.set(labelKey(labels), { labels, value })
+  }
+
+  render(): string {
+    const lines = [`# HELP ${this.name} ${this.help}`, `# TYPE ${this.name} gauge`]
+    for (const { labels, value } of this.series.values()) {
+      lines.push(`${this.name}${renderLabels(labels)} ${value}`)
+    }
+    return lines.join('\n')
+  }
+
+  reset(): void {
+    this.series.clear()
+  }
+}
+
 class Registry {
   private readonly counters = new Map<string, Counter>()
   private readonly histograms = new Map<string, Histogram>()
+  private readonly gauges = new Map<string, Gauge>()
 
   counter(name: string, help: string): Counter {
     let c = this.counters.get(name)
@@ -124,11 +150,21 @@ class Registry {
     return h
   }
 
+  gauge(name: string, help: string): Gauge {
+    let g = this.gauges.get(name)
+    if (!g) {
+      g = new Gauge(name, help)
+      this.gauges.set(name, g)
+    }
+    return g
+  }
+
   /** Prometheus text exposition — a `/api/metrics` route ezt adja vissza. */
   render(): string {
     const blocks: string[] = []
     for (const c of this.counters.values()) blocks.push(c.render())
     for (const h of this.histograms.values()) blocks.push(h.render())
+    for (const g of this.gauges.values()) blocks.push(g.render())
     return blocks.join('\n\n') + '\n'
   }
 
@@ -136,6 +172,7 @@ class Registry {
   resetAll(): void {
     for (const c of this.counters.values()) c.reset()
     for (const h of this.histograms.values()) h.reset()
+    for (const g of this.gauges.values()) g.reset()
   }
 }
 
@@ -179,4 +216,43 @@ export const capturedExceptionsTotal = registry.counter(
   'Exceptions captured by the error tracker, by source',
 )
 
-export { Counter, Histogram, Registry }
+// ── agent-memory-persistent-cross-conversation-spec.md §14 — memória-metrikák ──
+
+/** Memória-javaslatok száma állapotonként (proposed/approved/ticketed/rejected/blocked). */
+export const memoryCandidatesTotal = registry.counter(
+  'memory_candidates_total',
+  'Memory candidates by status',
+)
+/** Inline (write-gate) úton jóváhagyott memória-javaslatok száma. */
+export const memoryInlineApprovalsTotal = registry.counter(
+  'memory_inline_approvals_total',
+  'Memory candidates approved via the inline write-gate path',
+)
+/** Ticketbe irányított memória-javaslatok száma. */
+export const memoryTicketedTotal = registry.counter(
+  'memory_ticketed_total',
+  'Memory candidates routed to a training ticket',
+)
+/** A memóriára ténylegesen elköltött prompt-token retrievalonként. */
+export const memoryRetrieveTokens = registry.histogram(
+  'memory_retrieve_tokens',
+  'Prompt tokens spent on the project memory context block per retrieval',
+  [50, 100, 250, 500, 1000, 2000, 4000, 8000],
+)
+/** Memória-retrieval latency ms-ben. */
+export const memoryRetrievalLatencyMs = registry.histogram(
+  'memory_retrieval_latency_ms',
+  'Memory retrieval latency in milliseconds',
+)
+/** Aktív memória-chunkok száma projektenként (méret-trend, §5.2/Q7). */
+export const memoryChunksActive = registry.gauge(
+  'memory_chunks_active',
+  'Active memory chunk count by project',
+)
+/** Felismert memória-konfliktusok száma feloldás-mód szerint (§7). */
+export const memoryConflictsTotal = registry.counter(
+  'memory_conflicts_total',
+  'Memory conflicts detected, by resolution',
+)
+
+export { Counter, Histogram, Gauge, Registry }

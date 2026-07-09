@@ -11,6 +11,11 @@ import {
   PostgresKnowledgeArtifactRepository,
   PostgresKnowledgeChunkRepository,
 } from './knowledge-repository'
+import {
+  PostgresMemoryChunkRepository,
+  PostgresMemoryCandidateRepository,
+  PostgresMemoryVersionRepository,
+} from './memory-repository'
 import { PostgresRecipeRepository } from './recipe-repository'
 import { PostgresSkillRepository } from './skill-repository'
 import { PostgresPlaybookRepository } from './playbook-repository'
@@ -76,4 +81,7 @@ export const repositories = {
   platformSettings: new PostgresPlatformSettingsRepository(),
   knowledgeArtifacts: new PostgresKnowledgeArtifactRepository(),
   knowledgeChunks: new PostgresKnowledgeChunkRepository(),
+  memoryChunks: new PostgresMemoryChunkRepository(),
+  memoryCandidates: new PostgresMemoryCandidateRepository(),
+  memoryVersions: new PostgresMemoryVersionRepository(),
 }

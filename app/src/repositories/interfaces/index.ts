@@ -18,6 +18,9 @@ import type {
   KnowledgeArtifact,
   KnowledgeArtifactStatus,
   KnowledgeChunk,
+  MemoryChunk,
+  MemoryCandidate,
+  MemoryVersion,
   Message,
   MessageCriticality,
   MessageRole,
@@ -620,6 +623,164 @@ export interface KnowledgeChunkRepository {
     path: string
     artifactId?: string
   }): Promise<KnowledgePageChunk[]>
+}
+
+// ── Tartós agent-memória (agent-memory-persistent-cross-conversation-spec.md, WP-2/WP-4) ──
+
+/** FTS-találat a memória-scope-on — a KB `ts_rank` mintáját tükrözi (§9.1). */
+export type MemoryChunkSearchHit = {
+  chunk: MemoryChunk
+  textRelevance: number
+}
+
+export interface MemoryChunkRepository {
+  /**
+   * §5.2 — publikált/aktív chunkok FTS-keresése a scope-on (memoryId + projectKey
+   * + opcionális workstreamKey), `ts_rank` alapú relevanciával. Üres `query` esetén
+   * üres listát ad — a hívó (MemoryRetrievalService) a no-query ágon a
+   * `listRecentActive`-ot használja helyette (§5.1.1).
+   */
+  searchActive(params: {
+    memoryId: string
+    projectKey: string
+    workstreamKey?: string | null
+    query: string
+    limit: number
+  }): Promise<MemoryChunkSearchHit[]>
+  /** No-query fallback: legutóbb létrehozott/frissített aktív chunkok a scope-on (§5.1.1). */
+  listRecentActive(params: {
+    memoryId: string
+    projectKey: string
+    workstreamKey?: string | null
+    limit: number
+  }): Promise<MemoryChunk[]>
+  /** A scope egyetlen aktív `focus` chunkja (§3.1 invariáns: scope-onként legfeljebb 1). */
+  findActiveFocus(params: {
+    memoryId: string
+    projectKey: string
+    workstreamKey?: string | null
+  }): Promise<MemoryChunk | null>
+  /** T3 `project_state` kivetített listáihoz — típusonkénti aktív chunkok, recency szerint (§4.1). */
+  listActiveByType(params: {
+    memoryId: string
+    projectKey: string
+    workstreamKey?: string | null
+    type: string
+    limit: number
+  }): Promise<MemoryChunk[]>
+  /** §5.2 — retrieval után: `retrievedCount`++ és `lastRetrievedAt` frissítése a visszaadott chunkokon. */
+  markRetrieved(chunkIds: string[]): Promise<void>
+  findById(id: string): Promise<MemoryChunk | null>
+  /** WP-6 — candidate jóváhagyáskor: create/update/supersede művelet T2-írása. */
+  create(data: {
+    memoryId: string
+    agentId: string
+    tenantId: string | null
+    projectKey: string
+    workstreamKey: string | null
+    type: string
+    path: string
+    title: string
+    text: string
+    summary: string | null
+    tags: string[]
+    salience: number
+    confidence: string
+    sourceRefs: unknown
+    evidence: string | null
+    approvedBy: string
+    approvedAt: Date
+    reviewAfter: Date | null
+    expiresAt: Date | null
+    supersedes: string | null
+    contentHash: string
+  }): Promise<MemoryChunk>
+  /** WP-6 — archive/supersede/delete_request jóváhagyáskor a cél-chunk állapotváltása. */
+  updateStatus(
+    id: string,
+    patch: { status: string; supersededBy?: string | null },
+  ): Promise<MemoryChunk>
+  /** WP-8 — manifest-snapshothoz: a scope TELJES aktív chunk-id-halmaza (nem cappelt). */
+  listActiveIds(params: {
+    memoryId: string
+    projectKey: string
+    workstreamKey?: string | null
+  }): Promise<string[]>
+  /** WP-8 — rollback set-diffhez: több chunk státuszának egy körben történő billentése. */
+  setStatusMany(ids: string[], status: string): Promise<void>
+  /** WP-8/G11 — dedup-horgony: rollback→re-capture ciklusban a hash-egyezésű chunk reaktiválandó. */
+  findByContentHash(params: {
+    memoryId: string
+    projectKey: string
+    workstreamKey?: string | null
+    contentHash: string
+  }): Promise<MemoryChunk | null>
+  /** WP-8 — maintenance `demote` proposal jóváhagyásakor: salience csökkentés szorzóval. */
+  demoteSalience(id: string, factor: number): Promise<MemoryChunk>
+}
+
+export interface MemoryCandidateRepository {
+  create(
+    data: Omit<MemoryCandidate, 'id' | 'createdAt' | 'updatedAt'>,
+  ): Promise<MemoryCandidate>
+  findById(id: string): Promise<MemoryCandidate | null>
+  /** §6.2 batch-kártya — egy futás/szál összes javaslata (WP-5 előkészítés). */
+  listByRun(params: {
+    memoryId: string
+    proposedByRunId?: string | null
+    proposedInThreadId?: string | null
+    status?: string
+  }): Promise<MemoryCandidate[]>
+  /** WP-6 — jóváhagyás/elutasítás/módosítás/ticketesítés állapotváltása. */
+  updateStatus(
+    id: string,
+    patch: {
+      status: string
+      approvedBy?: string | null
+      approvedAt?: Date | null
+      rejectedBy?: string | null
+      rejectedAt?: Date | null
+      ticketId?: string | null
+      writeGateTokenId?: string | null
+      payload?: unknown
+    },
+  ): Promise<MemoryCandidate>
+}
+
+/**
+ * §9.3 (WP-8) — a `MemoryVersion` mostani szerepe a T2 pillanatkép-manifeszt
+ * (activeChunkIds/changeSet/projectKey/workstreamKey). A verziószám globális
+ * per-memory (`@@unique([memoryId, version])`), de egy manifest-sor egyetlen
+ * (projectKey, workstreamKey) scope-ot fed le — a rollback csak azt a scope-ot
+ * billenti (§9.3 rollback).
+ */
+export interface MemoryVersionRepository {
+  /** A memory következő globális verziószáma (max+1, `training-service.ts` mintáját követve). */
+  nextVersionNumber(memoryId: string): Promise<number>
+  create(data: {
+    memoryId: string
+    version: number
+    projectKey: string
+    workstreamKey: string | null
+    activeChunkIds: string[]
+    changeSet: unknown
+    sourceCandidateIds: string[]
+    approvedById: string | null
+  }): Promise<MemoryVersion>
+  /** A scope legutóbb létrehozott manifesztje ("jelenlegi" — nincs külön `status`-alapú "current" jelölés, §9.3). */
+  findLatestForScope(params: {
+    memoryId: string
+    projectKey: string
+    workstreamKey?: string | null
+  }): Promise<MemoryVersion | null>
+  findByVersion(params: { memoryId: string; version: number }): Promise<MemoryVersion | null>
+  /** Timeline UI-hoz (§11.2) — a scope manifestjei recency szerint. */
+  listForScope(params: {
+    memoryId: string
+    projectKey: string
+    workstreamKey?: string | null
+    limit: number
+  }): Promise<MemoryVersion[]>
 }
 
 export interface PlatformSettingsRepository {

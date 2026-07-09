@@ -6,6 +6,11 @@ import { AgentChatRuntime } from '@/domain/agent/agent-chat-runtime'
 import { GeneralTaskRuntime } from '@/domain/agent/general-task-runtime'
 import { WikiAgentRuntime } from '@/domain/agent/wiki-runtime'
 import { TicketService } from '@/domain/ticket/ticket-service'
+import { MemoryRetrievalService } from '@/domain/memory/memory-retrieval-service'
+import { MemoryProposalService } from '@/domain/memory/memory-proposal-service'
+import { MemoryApprovalService } from '@/domain/memory/memory-approval-service'
+import { MemoryRollbackService } from '@/domain/memory/memory-rollback-service'
+import { MemoryMaintenanceService } from '@/domain/memory/memory-maintenance-service'
 import { TrainingService } from '@/domain/training/training-service'
 import { SelfEvolutionGuard } from '@/domain/training/self-evolution-guard'
 import { AuditChainService } from '@/domain/audit/audit-chain-service'
@@ -174,12 +179,24 @@ const modelGateway = new ModelGateway(
   undefined, // sensitivityPolicy → default
   repositories.platformSettings, // D11 — model.pricing tarifa a valódi costEstimate-hez
 )
+// Tartós agent-memória (agent-memory-persistent-cross-conversation-spec.md
+// WP-2/WP-4): a retrieval service pure, a proposal service a T1 candidate-írást
+// végzi — mindkettő a chat/task/bookkeeper runtime-okba és a Tool Brokerbe injektálva.
+const memoryRetrievalService = new MemoryRetrievalService(repositories.memoryChunks)
+const memoryProposalService = new MemoryProposalService(
+  repositories.agents,
+  repositories.memoryCandidates,
+  repositories.memoryChunks,
+  repositories.audit,
+)
 const bookkeeperRuntime = new BookkeeperAgentRuntime(
   repositories.agents,
   repositories.documents,
   repositories.tickets,
   modelGateway,
   ticketService,
+  repositories.audit,
+  memoryRetrievalService,
 )
 const writeGateService = new WriteGateService()
 const evalService = new EvalService()
@@ -192,6 +209,35 @@ const trainingService = new TrainingService(
   evalService,
   repositories.agents,
   selfEvolutionGuard,
+)
+// Tartós agent-memória — WP-6 (agent-memory-persistent-cross-conversation-spec.md
+// §6.3/§9.4): candidate → T2 chunk jóváhagyás, inline write-gate consume vagy
+// ticket-elágazással (a `TrainingService.approveTraining` mintáját követi).
+const memoryApprovalService = new MemoryApprovalService(
+  repositories.agents,
+  repositories.memoryCandidates,
+  repositories.memoryChunks,
+  repositories.audit,
+  writeGateService,
+  evalService,
+  repositories.rolePermissions,
+  repositories.tickets,
+  ticketService,
+  repositories.users,
+  repositories.memoryVersions,
+)
+// Tartós agent-memória — WP-8 (agent-memory-persistent-cross-conversation-spec.md
+// §9.3/§8): manifest-alapú, append-only rollback + proposal-only maintenance job.
+const memoryRollbackService = new MemoryRollbackService(
+  repositories.memoryChunks,
+  repositories.memoryVersions,
+  repositories.audit,
+)
+const memoryMaintenanceService = new MemoryMaintenanceService(
+  repositories.memoryChunks,
+  repositories.memoryCandidates,
+  repositories.audit,
+  repositories.agents,
 )
 const sandboxAppBucket = process.env.SANDBOX_APP_BUCKET ?? 'platform-sandbox-apps-prod'
 const sandboxAppService = new SandboxAppService(
@@ -278,6 +324,7 @@ const toolBrokerService = new ToolBrokerService(
   webSearchPolicyService,
   repositories.knowledgeChunks,
   repositories.knowledgeArtifacts,
+  memoryProposalService,
   () => platformSettingsService.isWebSearchEnabled(),
   () => platformSettingsService.isWebFetchEnabled(),
 )
@@ -533,6 +580,7 @@ const agentChatRuntime = new AgentChatRuntime(
   repositories.playbooksV2,
   processService,
   skillService,
+  memoryRetrievalService,
 )
 const wikiRuntime = new WikiAgentRuntime(
   repositories.agents,
@@ -557,6 +605,8 @@ const generalTaskRuntime = new GeneralTaskRuntime(
   repositories.processes,
   conversationService,
   skillService,
+  repositories.audit,
+  memoryRetrievalService,
 )
 toolBrokerService.setDelegationProcessor(async ({ ticketId, targetAgentId }) => {
   await wikiRuntime.processTicket({ ticketId, agentId: targetAgentId })
@@ -641,6 +691,9 @@ export const services = {
   generalTask: generalTaskRuntime,
   bookkeeper: bookkeeperRuntime,
   training: trainingService,
+  memoryApproval: memoryApprovalService,
+  memoryRollback: memoryRollbackService,
+  memoryMaintenance: memoryMaintenanceService,
   knowledgeBase: knowledgeBaseService,
   auditChain: auditChainService,
   writeGate: writeGateService,

@@ -294,7 +294,7 @@ export class TrainingService {
         version: nextVersion,
         content: payload.proposedContent,
         diffFromPrevious: currentVersion
-          ? computeDiff(currentVersion.content, payload.proposedContent)
+          ? computeDiff(currentVersion.content ?? '', payload.proposedContent)
           : undefined,
         status: 'active',
         source: payload.source ?? 'training',

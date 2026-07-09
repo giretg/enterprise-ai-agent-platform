@@ -89,6 +89,12 @@ import {
   deleteKbDocumentSchema,
   kbArtifactReviewSchema,
   rollbackMemorySchema,
+  memoryCandidateIdSchema,
+  rejectMemoryCandidateSchema,
+  modifyMemoryCandidateSchema,
+  approveMemoryCandidateTicketSchema,
+  memoryScopeSchema,
+  rollbackMemoryVersionSchema,
   ticketFilterSchema,
   ticketIdSchema,
   ticketTypeConfigSchema,
@@ -3107,6 +3113,358 @@ export async function approveTraining(input: { ticketId: string; overrideEval?: 
     return ok(result)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to approve training')
+  }
+}
+
+// ── Tartós agent-memória — WP-6 (agent-memory-persistent-cross-conversation-spec.md
+// §6.2/§6.3): a chat-kártya "Jóváhagyom"/"Módosítom"/"Ticketbe küldöm"/"Elvetem"
+// gombjai. A tényleges inline-vs-ticket elágazás a MemoryApprovalService-ben dől
+// el (RBAC + agent self_evolution_profile alapján) — az action csak a baseline
+// "legalább operator" beléptető kaput adja, minden más a service felelőssége. ──
+
+export async function approveMemoryCandidate(input: { candidateId: string }) {
+  try {
+    const user = await requireTenantRole('operator')
+    const parsed = memoryCandidateIdSchema.parse(input)
+    const result = await services.memoryApproval.approve(parsed.candidateId, user.user.id)
+    return result.ok ? ok(result) : fail(result.reason)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to approve memory candidate')
+  }
+}
+
+export async function rejectMemoryCandidate(input: { candidateId: string; reason?: string }) {
+  try {
+    const user = await requireTenantRole('operator')
+    const parsed = rejectMemoryCandidateSchema.parse(input)
+    const result = await services.memoryApproval.reject(parsed.candidateId, user.user.id, parsed.reason)
+    return result.ok ? ok(result) : fail(result.reason)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to reject memory candidate')
+  }
+}
+
+export async function modifyMemoryCandidate(input: {
+  candidateId: string
+  patch: { title?: string; summary?: string; text?: string; tags?: string[]; evidence?: string; reason?: string }
+}) {
+  try {
+    const user = await requireTenantRole('operator')
+    const parsed = modifyMemoryCandidateSchema.parse(input)
+    const result = await services.memoryApproval.modify(parsed.candidateId, user.user.id, parsed.patch)
+    return result.ok ? ok(result) : fail(result.reason)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to modify memory candidate')
+  }
+}
+
+export async function ticketMemoryCandidate(input: { candidateId: string }) {
+  try {
+    const user = await requireTenantRole('operator')
+    const parsed = memoryCandidateIdSchema.parse(input)
+    const result = await services.memoryApproval.ticket(parsed.candidateId, user.user.id)
+    return result.ok ? ok(result) : fail(result.reason)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to ticket memory candidate')
+  }
+}
+
+export async function approveMemoryCandidateTicket(input: { ticketId: string }) {
+  try {
+    const user = await requireTenantRole('approver')
+    const parsed = approveMemoryCandidateTicketSchema.parse(input)
+    const result = await services.memoryApproval.approveTicketedCandidate(parsed.ticketId, user.user.id)
+    return result.ok ? ok(result) : fail(result.reason)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to approve memory candidate ticket')
+  }
+}
+
+// ── Tartós agent-memória — WP-8 (agent-memory-persistent-cross-conversation-spec.md
+// §8/§9.3/§11.2): agent memória-oldal olvasás, karbantartás-indítás, manifest-alapú
+// rollback. A rollback/maintenance permission-kulcs alapú kapun megy (`memory.rollback`
+// / `memory.maintenance.run`, minRole admin) — nem a `requireTenantRole` szerep-literállal. ──
+
+export async function listAgentMemoryProjectKeys(input: { agentId: string }) {
+  try {
+    await requireTenantRole('viewer')
+    const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
+    const agent = await repositories.agents.findById(agentId)
+    if (!agent?.memoryId) return fail('Agent not found')
+
+    const keys = new Set<string>(['__general__'])
+    const memoryId = agent.memoryId
+
+    const [convRows, chunkRows, candidateRows, versionRows] = await Promise.all([
+      prisma.conversation.findMany({
+        where: { agentId },
+        distinct: ['projectKey'],
+        select: { projectKey: true },
+      }),
+      prisma.memoryChunk.findMany({
+        where: { memoryId },
+        distinct: ['projectKey'],
+        select: { projectKey: true },
+      }),
+      prisma.memoryCandidate.findMany({
+        where: { memoryId },
+        distinct: ['projectKey'],
+        select: { projectKey: true },
+      }),
+      prisma.memoryVersion.findMany({
+        where: { memoryId },
+        distinct: ['projectKey'],
+        select: { projectKey: true },
+      }),
+    ])
+
+    for (const row of [...convRows, ...chunkRows, ...candidateRows, ...versionRows]) {
+      const key = row.projectKey?.trim()
+      if (key) keys.add(key)
+    }
+
+    const projectKeys = [...keys].sort((a, b) => {
+      if (a === '__general__') return -1
+      if (b === '__general__') return 1
+      return a.localeCompare(b, 'hu')
+    })
+
+    return ok({ projectKeys })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to list memory project keys')
+  }
+}
+
+export async function getAgentMemoryOverview(input: { agentId: string; projectKey: string; workstreamKey?: string }) {
+  try {
+    await requireTenantRole('viewer')
+    const parsed = memoryScopeSchema.parse(input)
+    const agent = await repositories.agents.findById(parsed.agentId)
+    if (!agent) return fail('Agent not found')
+    const memoryId = agent.memoryId
+    // workstreamKey nélkül az egész projectKey scope — ne szűrjünk workstream_key IS NULL-ra.
+    const workstreamKey = parsed.workstreamKey
+
+    const [focus, decisions, openTasks, constraints, artifacts, activeChunks, versions] = await Promise.all([
+      repositories.memoryChunks.findActiveFocus({ memoryId, projectKey: parsed.projectKey, workstreamKey }),
+      repositories.memoryChunks.listActiveByType({ memoryId, projectKey: parsed.projectKey, workstreamKey, type: 'decision', limit: 20 }),
+      repositories.memoryChunks.listActiveByType({ memoryId, projectKey: parsed.projectKey, workstreamKey, type: 'open_task', limit: 20 }),
+      repositories.memoryChunks.listActiveByType({ memoryId, projectKey: parsed.projectKey, workstreamKey, type: 'constraint', limit: 20 }),
+      repositories.memoryChunks.listActiveByType({ memoryId, projectKey: parsed.projectKey, workstreamKey, type: 'artifact', limit: 20 }),
+      repositories.memoryChunks.listRecentActive({ memoryId, projectKey: parsed.projectKey, workstreamKey, limit: 100 }),
+      repositories.memoryVersions.listForScope({ memoryId, projectKey: parsed.projectKey, workstreamKey, limit: 20 }),
+    ])
+
+    const [proposed, modified, ticketed] = await Promise.all([
+      repositories.memoryCandidates.listByRun({ memoryId, status: 'proposed' }),
+      repositories.memoryCandidates.listByRun({ memoryId, status: 'modified' }),
+      repositories.memoryCandidates.listByRun({ memoryId, status: 'ticketed' }),
+    ])
+    const pending = [...proposed, ...modified, ...ticketed].filter((c) => c.projectKey === parsed.projectKey)
+    const candidateQueue = pending.filter((c) => c.proposedBy !== 'maintenance_job')
+    const maintenanceProposals = pending.filter((c) => c.proposedBy === 'maintenance_job')
+
+    return ok({
+      projectState: { focus, decisions, openTasks, constraints, artifacts },
+      activeChunks,
+      candidateQueue,
+      maintenanceProposals,
+      versions,
+    })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to load agent memory overview')
+  }
+}
+
+export async function runMemoryMaintenance(input: { agentId: string; projectKey: string; workstreamKey?: string }) {
+  try {
+    const ctx = await requireTenantPermission('memory.maintenance.run')
+    const parsed = memoryScopeSchema.parse(input)
+    const agent = await repositories.agents.findById(parsed.agentId)
+    if (!agent) return fail('Agent not found')
+
+    const result = await services.memoryMaintenance.run({
+      memoryId: agent.memoryId,
+      agentId: parsed.agentId,
+      tenantId: ctx.activeTenantId,
+      projectKey: parsed.projectKey,
+      workstreamKey: parsed.workstreamKey,
+      actorId: ctx.user.id,
+    })
+    return ok(result)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to run memory maintenance')
+  }
+}
+
+export async function rollbackMemoryVersion(input: {
+  agentId: string
+  projectKey: string
+  workstreamKey?: string
+  toVersion: number
+}) {
+  try {
+    const ctx = await requireTenantPermission('memory.rollback')
+    const parsed = rollbackMemoryVersionSchema.parse(input)
+    const agent = await repositories.agents.findById(parsed.agentId)
+    if (!agent) return fail('Agent not found')
+
+    const result = await services.memoryRollback.rollback({
+      memoryId: agent.memoryId,
+      projectKey: parsed.projectKey,
+      workstreamKey: parsed.workstreamKey ?? null,
+      toVersion: parsed.toVersion,
+      actorId: ctx.user.id,
+      tenantId: ctx.activeTenantId,
+    })
+    return result.ok ? ok(result) : fail(result.reason)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to roll back memory version')
+  }
+}
+
+/**
+ * agent-memory-persistent-cross-conversation-spec.md §14 — dashboard-nézet a
+ * meglévő audit-eseményekre/metrikákra: candidate-átfutás, inline/ticket arány,
+ * memória-méret trend projektenként, retrieval token/latencia, user-feedback
+ * arány. DB-alapú (nem az efemer in-process metrika-regiszterből olvas), a
+ * `getModelCallsSummary` mintáját követve — így szerver-újraindítás/több
+ * instance esetén is konzisztens.
+ */
+export async function getMemoryObservabilityDashboard(input?: { sinceHours?: number }) {
+  try {
+    const ctx = await requireTenantRole('viewer')
+    const tenantId = ctx.activeTenantId
+    const sinceHours = input?.sinceHours ?? 720
+    const since = new Date(Date.now() - sinceHours * 60 * 60 * 1000)
+
+    const tenantAgents = await prisma.agent.findMany({ where: { tenantId }, select: { memoryId: true } })
+    const memoryIds = tenantAgents.map((a) => a.memoryId)
+
+    const [
+      statusGroups,
+      resolvedCandidates,
+      pendingCount,
+      ticketPathCount,
+      inlineApprovedCount,
+      activeChunkGroups,
+      recentVersions,
+      feedbackAgg,
+      conflictGroups,
+      retrieveAudits,
+    ] = await Promise.all([
+      prisma.memoryCandidate.groupBy({
+        by: ['status'],
+        where: { tenantId, createdAt: { gte: since } },
+        _count: { _all: true },
+      }),
+      prisma.memoryCandidate.findMany({
+        where: { tenantId, createdAt: { gte: since }, status: { in: ['approved', 'rejected'] } },
+        select: { createdAt: true, approvedAt: true, rejectedAt: true },
+      }),
+      prisma.memoryCandidate.count({
+        where: { tenantId, createdAt: { gte: since }, status: { in: ['proposed', 'modified', 'ticketed'] } },
+      }),
+      prisma.memoryCandidate.count({
+        where: { tenantId, createdAt: { gte: since }, ticketId: { not: null } },
+      }),
+      prisma.memoryCandidate.count({
+        where: { tenantId, createdAt: { gte: since }, ticketId: null, status: 'approved' },
+      }),
+      prisma.memoryChunk.groupBy({
+        by: ['projectKey'],
+        where: { tenantId, status: 'active' },
+        _count: { _all: true },
+      }),
+      memoryIds.length > 0
+        ? prisma.memoryVersion.findMany({
+            where: { memoryId: { in: memoryIds }, projectKey: { not: null }, createdAt: { gte: since } },
+            select: { projectKey: true, activeChunkIds: true, createdAt: true },
+            orderBy: { createdAt: 'asc' },
+            take: 500,
+          })
+        : Promise.resolve([]),
+      prisma.memoryChunk.aggregate({
+        where: { tenantId, status: 'active' },
+        _sum: { userConfirmedHelpfulCount: true, userCorrectedCount: true },
+      }),
+      prisma.auditLog.groupBy({
+        by: ['targetType'],
+        where: { tenantId, action: 'memory.conflict_detected', createdAt: { gte: since } },
+        _count: { _all: true },
+      }),
+      prisma.auditLog.findMany({
+        where: { tenantId, action: 'memory.retrieve', createdAt: { gte: since } },
+        select: { metadata: true },
+        orderBy: { createdAt: 'desc' },
+        take: 500,
+      }),
+    ])
+
+    const decisionMinutes = resolvedCandidates
+      .map((c) => {
+        const decidedAt = c.approvedAt ?? c.rejectedAt
+        if (!decidedAt) return null
+        return (decidedAt.getTime() - c.createdAt.getTime()) / 60000
+      })
+      .filter((v): v is number => v !== null)
+    const avgDecisionMinutes =
+      decisionMinutes.length > 0
+        ? Math.round((decisionMinutes.reduce((a, b) => a + b, 0) / decisionMinutes.length) * 10) / 10
+        : null
+
+    const trendByProject = new Map<string, { at: string; activeCount: number }[]>()
+    for (const v of recentVersions) {
+      if (!v.projectKey) continue
+      const ids = Array.isArray(v.activeChunkIds) ? v.activeChunkIds : []
+      const points = trendByProject.get(v.projectKey) ?? []
+      points.push({ at: v.createdAt.toISOString(), activeCount: ids.length })
+      trendByProject.set(v.projectKey, points)
+    }
+
+    let tokenSum = 0
+    let tokenCount = 0
+    let latencySum = 0
+    let latencyCount = 0
+    for (const row of retrieveAudits) {
+      const meta = row.metadata as { contextTokens?: unknown; latencyMs?: unknown } | null
+      if (meta && typeof meta.contextTokens === 'number') {
+        tokenSum += meta.contextTokens
+        tokenCount++
+      }
+      if (meta && typeof meta.latencyMs === 'number') {
+        latencySum += meta.latencyMs
+        latencyCount++
+      }
+    }
+
+    const confirmedHelpful = feedbackAgg._sum.userConfirmedHelpfulCount ?? 0
+    const corrected = feedbackAgg._sum.userCorrectedCount ?? 0
+
+    return ok({
+      sinceHours,
+      candidatesByStatus: statusGroups.map((g) => ({ status: g.status, count: g._count._all })),
+      decisionThroughput: { avgMinutes: avgDecisionMinutes, resolvedCount: decisionMinutes.length, pendingCount },
+      inlineVsTicket: { inlineApproved: inlineApprovedCount, ticketed: ticketPathCount },
+      conflicts: {
+        retrieval: conflictGroups.find((g) => g.targetType === 'memory')?._count._all ?? 0,
+        publish: conflictGroups.find((g) => g.targetType === 'memory_candidate')?._count._all ?? 0,
+      },
+      chunksActiveByProject: activeChunkGroups.map((g) => ({ projectKey: g.projectKey, count: g._count._all })),
+      chunkTrend: Array.from(trendByProject.entries()).map(([projectKey, points]) => ({ projectKey, points })),
+      userFeedback: {
+        confirmedHelpful,
+        corrected,
+        ratio: confirmedHelpful + corrected > 0 ? confirmedHelpful / (confirmedHelpful + corrected) : null,
+      },
+      retrieval: {
+        avgTokens: tokenCount > 0 ? Math.round(tokenSum / tokenCount) : null,
+        avgLatencyMs: latencyCount > 0 ? Math.round(latencySum / latencyCount) : null,
+        sampleCount: Math.max(tokenCount, latencyCount),
+      },
+    })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to load memory observability dashboard')
   }
 }
 

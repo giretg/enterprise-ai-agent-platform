@@ -71,6 +71,7 @@ import type {
   KbListIndexResult,
   KbSearchArgs,
   KbSearchResult,
+  MemoryProposeResult,
   RepoOpenPullRequestResult,
   RepoPrepareResult,
   TicketCreateResult,
@@ -1380,4 +1381,53 @@ export async function userDirectory(self: ToolBrokerService,
     const all = await self.lookupTenantUserDirectory(tenantId)
     return filterUserDirectory(all, input.args)
   }
+
+/**
+ * memory_propose — agent-memory-persistent-cross-conversation-spec.md §6.1/§10.3.
+ * A `projectKey`-t NEM az agent args-ja adja (scope-injekció ellen, §2.1 NF2):
+ * a futás kontextusából oldódik fel — chatben a `Conversation.projectKey`,
+ * folyamat-ticketnél a `Ticket.processInstanceId → ProcessInstance.processDefinitionId`,
+ * egyébként a `__general__` szentinel (§2.1).
+ */
+export async function memoryPropose(self: ToolBrokerService,
+  input: Extract<ToolBrokerInvokeInput, { tool: 'memory_propose' }>,
+  actingTenantId: string | null,
+): Promise<MemoryProposeResult> {
+  const projectKey = await resolveMemoryProjectKey(self, input)
+  return self.memoryProposal.proposeMemoryChange(
+    {
+      agentId: input.agentId,
+      agentVersion: input.agentVersion,
+      actingTenantId,
+      projectKey,
+      ticketId: input.ticketId ?? null,
+      conversationId: input.conversationId ?? null,
+    },
+    input.args,
+  )
+}
+
+async function resolveMemoryProjectKey(
+  self: ToolBrokerService,
+  input: Extract<ToolBrokerInvokeInput, { tool: 'memory_propose' }>,
+): Promise<string> {
+  if (input.conversationId) {
+    const conversation = await prisma.conversation.findUnique({
+      where: { id: input.conversationId },
+      select: { projectKey: true },
+    })
+    if (conversation) return conversation.projectKey
+  }
+  if (input.ticketId) {
+    const ticket = await self.tickets.findById(input.ticketId)
+    if (ticket?.processInstanceId) {
+      const process = await prisma.processInstance.findUnique({
+        where: { id: ticket.processInstanceId },
+        select: { processDefinitionId: true },
+      })
+      if (process?.processDefinitionId) return process.processDefinitionId
+    }
+  }
+  return '__general__'
+}
 

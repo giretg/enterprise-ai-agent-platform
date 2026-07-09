@@ -8,6 +8,7 @@ import {
   listConnectorsPanelContext,
   revokeConnectorGrant,
   startConnectorOAuth,
+  upsertTenantGoogleOAuth,
 } from '@/app/actions/connector-grants'
 import { decommissionActiveConnector } from '@/app/actions/provisioning'
 
@@ -78,6 +79,10 @@ export function ConnectorsPanel() {
   const [connectors, setConnectors] = useState<Connector[]>([])
   const [isAdmin, setIsAdmin] = useState(false)
   const [decommissionTarget, setDecommissionTarget] = useState<string | null>(null)
+  const [googleClientId, setGoogleClientId] = useState('')
+  const [googleClientSecret, setGoogleClientSecret] = useState('')
+  const [googleRedirectUri, setGoogleRedirectUri] = useState('')
+  const [googleConfigured, setGoogleConfigured] = useState(false)
   const [selectedScopes, setSelectedScopes] = useState<Record<string, string[]>>({})
   const [error, setError] = useState<string | null>(() => {
     const err = searchParams.get('error')
@@ -97,6 +102,8 @@ export function ConnectorsPanel() {
       setGrants(res.data.grants as GrantRow[])
       setConnectors(res.data.connectors)
       setIsAdmin(res.data.isAdmin)
+      setGoogleConfigured(Boolean(res.data.googleOauth?.configured))
+      setGoogleRedirectUri(res.data.googleOauth?.redirectUri ?? '')
       setSelectedScopes((prev) => {
         const next = { ...prev }
         for (const connector of res.data.connectors) {
@@ -126,6 +133,68 @@ export function ConnectorsPanel() {
           {error}
         </p>
       )}
+
+      {isAdmin ? (
+        <Card title="Tenant Google OAuth (admin)">
+          <div className="space-y-3">
+            <p className="text-sm text-ink-soft">
+              Egyszeri tenant-szintű beállítás. Ezt használja minden Google connector, utána a
+              felhasználóknak csak a saját OAuth belépés kell.
+            </p>
+            {googleConfigured ? (
+              <p className="text-xs text-emerald-300">
+                Beállítva. Új secret mentése felülírja a korábbit.
+              </p>
+            ) : null}
+            <div className="grid gap-3 md:grid-cols-2">
+              <input
+                value={googleClientId}
+                onChange={(e) => setGoogleClientId(e.target.value)}
+                placeholder="Google OAuth Client ID"
+                className="rounded-lg border border-line bg-panel px-3 py-2 text-sm"
+              />
+              <input
+                type="password"
+                value={googleClientSecret}
+                onChange={(e) => setGoogleClientSecret(e.target.value)}
+                placeholder="Google OAuth Client Secret"
+                className="rounded-lg border border-line bg-panel px-3 py-2 text-sm"
+              />
+            </div>
+            <input
+              value={googleRedirectUri}
+              onChange={(e) => setGoogleRedirectUri(e.target.value)}
+              placeholder="Redirect URI (opcionális)"
+              className="w-full rounded-lg border border-line bg-panel px-3 py-2 text-sm"
+            />
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                disabled={pending || !googleClientId.trim() || !googleClientSecret.trim()}
+                className="rounded-lg bg-accent px-3 py-1.5 text-sm text-white disabled:opacity-50"
+                onClick={() =>
+                  startTransition(async () => {
+                    const res = await upsertTenantGoogleOAuth({
+                      clientId: googleClientId.trim(),
+                      clientSecret: googleClientSecret.trim(),
+                      ...(googleRedirectUri.trim() ? { redirectUri: googleRedirectUri.trim() } : {}),
+                    })
+                    if (res.success) {
+                      setGoogleConfigured(true)
+                      setGoogleClientSecret('')
+                      setMessage('Tenant Google OAuth config mentve.')
+                    } else {
+                      setError(res.error)
+                    }
+                  })
+                }
+              >
+                Mentés
+              </button>
+            </div>
+          </div>
+        </Card>
+      ) : null}
 
       <Card title="Elérhető connectorok">
         <ul className="space-y-3">

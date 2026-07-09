@@ -10,12 +10,24 @@ import {
 const TOKEN_TTL_MS = 15 * 60 * 1000 // 15 perc
 
 export class WriteGateService {
+  /**
+   * §9.4 — a token horgonya training-útnál `trainingTicketId`, memória-útnál
+   * (inline candidate-jóváhagyás) `memoryCandidateId`. Pontosan az egyiknek
+   * kell kitöltöttnek lennie; ez az invariáns itt, alkalmazás-szinten dől el
+   * (a séma mindkettőt nullable-nek engedi).
+   */
   async issue(params: {
-    trainingTicketId: string
+    trainingTicketId?: string
+    memoryCandidateId?: string
     agentId: string
     targetMemoryId: string
     proposedContent: string
   }): Promise<WriteGateToken> {
+    const subjectId = params.trainingTicketId ?? params.memoryCandidateId
+    if (!subjectId || (params.trainingTicketId && params.memoryCandidateId)) {
+      throw new Error('write_gate: exactly one of trainingTicketId/memoryCandidateId is required')
+    }
+
     const expectedDiffHash = computeDiffHash(params.proposedContent)
     const { tokenHash } = generateTokenPair()
     const expiresAt = new Date(Date.now() + TOKEN_TTL_MS)
@@ -23,13 +35,14 @@ export class WriteGateService {
     const signature = signWriteGateToken({
       tokenHash,
       expectedDiffHash,
-      ticketId: params.trainingTicketId,
+      subjectId,
       expiresAt,
     })
 
     return prisma.writeGateToken.create({
       data: {
-        trainingTicketId: params.trainingTicketId,
+        trainingTicketId: params.trainingTicketId ?? null,
+        memoryCandidateId: params.memoryCandidateId ?? null,
         agentId: params.agentId,
         targetMemoryId: params.targetMemoryId,
         expectedDiffHash,
@@ -58,10 +71,13 @@ export class WriteGateService {
       throw new Error('write_gate: content hash mismatch — approved diff does not match')
     }
 
+    const subjectId = token.trainingTicketId ?? token.memoryCandidateId
+    if (!subjectId) throw new Error('write_gate: token has no subject anchor')
+
     const signatureOk = verifyWriteGateSignature({
       tokenHash: token.tokenHash,
       expectedDiffHash: token.expectedDiffHash,
-      ticketId: token.trainingTicketId,
+      subjectId,
       expiresAt: token.expiresAt,
       signature: token.signature,
     })

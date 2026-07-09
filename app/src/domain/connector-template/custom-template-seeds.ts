@@ -11,6 +11,7 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
   {
     key: 'github',
     displayName: 'GitHub',
+    connectorType: 'http_api',
     description:
       'GitHub REST API connector fine-grained personal access tokennel vagy klasszikus PAT-tel.',
     activationHelp: `1. GitHubban nyisd meg a Settings -> Developer settings -> Personal access tokens oldalt.

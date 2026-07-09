@@ -65,6 +65,10 @@ export const NORMAL_TOOL_CAPABILITY_GROUPS = [
     label: 'Webes kutatás',
     tools: ['web_search', 'web_research_request'],
   },
+  {
+    label: 'Projektmemória',
+    tools: ['memory_propose'],
+  },
 ] as const satisfies readonly ToolCapabilityGroup[]
 
 export const CLOSED_ROLE_CAPABILITY_GROUPS = [

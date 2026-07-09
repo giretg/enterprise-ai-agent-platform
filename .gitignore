@@ -10,3 +10,4 @@ dist/
 /uploads
 .seed-demo-api-key
 .claude/
+*-debug.log

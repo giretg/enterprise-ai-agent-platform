@@ -33,6 +33,7 @@ import { AgentSkillsPanel } from '@/components/agents/agent-skills-panel'
 import { WebSearchPolicyCard } from '@/components/agents/web-search-policy-card'
 import { AgentLifecycleControls } from '@/components/agents/agent-lifecycle-controls'
 import { BehaviorProfileBox } from '@/components/agents/behavior-profile-box'
+import { MemoryPanel } from '@/components/agents/memory-panel'
 import { resolveSelfEvolutionProfile } from '@/lib/self-evolution-profile'
 import { resolveBehaviorOverlay } from '@/lib/behavior-profile'
 import {
@@ -311,6 +312,14 @@ export default async function AgentDetailPage({
 
             </div>
           </div>
+
+          <Card title="Projekt-memória (tartós, cross-conversation)">
+            <p className="mb-4 text-sm leading-relaxed text-ink-soft">
+              Amit az agent projektfolytonossági állapotként megjegyzett — fókusz, döntések,
+              nyitott feladatok, konfliktusok — és a jóváhagyási/karbantartási/rollback-eszközök.
+            </p>
+            <MemoryPanel agentId={agent.id} />
+          </Card>
 
           {governance && (
             <div className="grid gap-6 lg:grid-cols-2">

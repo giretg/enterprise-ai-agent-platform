@@ -227,6 +227,13 @@ export class AllowlistAuthorizer implements Authorizer {
       return { allowed: true }
     }
 
+    // memory_propose — agent-memory-persistent-cross-conversation-spec.md §6.3:
+    // nincs connector-fogalma (nem KB/board/gmail-szerű integráció), a kapu
+    // kizárólag a fenti capability-ellenőrzés (Capability(agentId,'memory_propose')).
+    if (input.tool === 'memory_propose') {
+      return { allowed: true }
+    }
+
     const requirement = TOOL_REQUIREMENTS[input.tool]
     if (!requirement) {
       return { allowed: false, reason: 'tool_not_configured' }

@@ -1249,6 +1249,7 @@ async function run() {
     // később admin injektálja külön aktusban). A config sosem tárol nyers tokent.
     const stored = drafts.drafts.get(created.draftId)!
     assert.equal(stored.connector.secretAlias, 'env:ACME_CRM_SERVICE_KEY')
+    assert.ok('auth' in created.config)
     assert.equal(created.config.auth.secretAliasSuggested, 'env:ACME_CRM_SERVICE_KEY')
     // Az auditban sem alias-érték, sem secret nem szerepel — csak hash + referencia (P8).
     const blob = JSON.stringify(audit.events, (_k, v) =>

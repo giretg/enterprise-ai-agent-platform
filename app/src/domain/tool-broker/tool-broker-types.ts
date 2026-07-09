@@ -242,6 +242,34 @@ export type UserDirectoryResult = {
   users: UserDirectoryEntry[]
 }
 
+// memory_propose — agent-memory-persistent-cross-conversation-spec.md §6.1.
+// A `projectKey`/`tenantId` NEM agent-vezérelt mező (scope-injekció ellen):
+// a broker/handler a futás kontextusából (conversationId → Conversation.projectKey,
+// vagy ticketId → Ticket.processInstanceId → ProcessInstance.processDefinitionId)
+// oldja fel, nem az args-ból.
+export type MemoryProposeSourceRefArg = { type: string; id?: string; path?: string }
+export type MemoryProposeArgs = {
+  operation: 'create' | 'update' | 'supersede' | 'archive' | 'delete_request'
+  type?: string
+  workstreamKey?: string
+  path?: string
+  title?: string
+  summary?: string
+  text?: string
+  tags?: string[]
+  salienceHint?: string
+  confidence?: string
+  supersedes?: string
+  reviewAfter?: string
+  expiresAt?: string
+  sourceRefs?: MemoryProposeSourceRefArg[]
+  evidence?: string
+  reason: string
+}
+export type MemoryProposeResult =
+  | { ok: true; candidateId: string; status: 'proposed' }
+  | { ok: false; reason: string }
+
 export type GmailSearchArgs = { query: string; maxResults?: number }
 export type GmailGetMessageArgs = { id: string }
 export type MailboxCountArgs = {
@@ -514,6 +542,7 @@ export type ToolBrokerInvokeInput =
   | (ToolInvokeBase & { tool: 'sandbox.snapshot'; args: SandboxSnapshotArgs })
   | (ToolInvokeBase & { tool: 'web_search'; args: WebSearchArgs })
   | (ToolInvokeBase & { tool: 'web_research_request'; args: WebResearchArgs })
+  | (ToolInvokeBase & { tool: 'memory_propose'; args: MemoryProposeArgs })
 
 export type ToolBrokerInvokeResult =
   | {
@@ -568,6 +597,7 @@ export type ToolBrokerInvokeResult =
         | SandboxAppGetResult
         | WebSearchResult
         | WebResearchDelegationResult
+        | MemoryProposeResult
       resultMeta: Record<string, unknown>
       latencyMs: number
     }

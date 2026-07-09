@@ -1,6 +1,7 @@
 'use server'
 
 import type { Prisma } from '@prisma/client'
+import { z } from 'zod'
 import { getCurrentUser } from '@/auth'
 import { requireTenantRole } from '@/auth/tenant-context'
 import { hasMinimumRole } from '@/auth/types'
@@ -21,6 +22,10 @@ import {
   removeRunAsAuthorization,
 } from '@/lib/run-as-payload'
 import { loadAgentDelegatedConnectors } from '@/lib/agent-delegated-connectors-server'
+import {
+  readTenantGoogleOAuthConfig,
+  upsertTenantGoogleOAuthConfig,
+} from '@/lib/tenant-google-oauth-config'
 
 export async function listAgentDelegatedConnectors(agentId: string) {
   try {
@@ -61,7 +66,7 @@ export async function listConnectorsPanelContext() {
       user.activeTenantId,
       user.user.id,
     )
-    const [grants, connectors] = await Promise.all([
+    const [grants, connectors, tenant] = await Promise.all([
       services.connectorGrants.listForUser(user.user.id, user.activeTenantId),
       prisma.connector.findMany({
         where: {
@@ -71,10 +76,62 @@ export async function listConnectorsPanelContext() {
         },
         orderBy: { name: 'asc' },
       }),
+      repositories.tenants.findById(user.activeTenantId),
     ])
-    return ok({ grants, connectors, isAdmin })
+    const googleOauth = readTenantGoogleOAuthConfig(tenant?.settings)
+    return ok({
+      grants,
+      connectors,
+      isAdmin,
+      googleOauth: {
+        configured: Boolean(googleOauth),
+        clientIdHint: googleOauth?.clientId ? `${googleOauth.clientId.slice(0, 14)}...` : null,
+        redirectUri: googleOauth?.redirectUri ?? null,
+      },
+    })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to load connectors panel')
+  }
+}
+
+export async function upsertTenantGoogleOAuth(input: {
+  clientId: string
+  clientSecret: string
+  redirectUri?: string
+}) {
+  try {
+    const user = await requireTenantRole('admin')
+    const parsed = z.object({
+      clientId: z.string().trim().min(1),
+      clientSecret: z.string().trim().min(1),
+      redirectUri: z.string().trim().url().optional(),
+    }).parse(input)
+
+    const tenant = await repositories.tenants.findById(user.activeTenantId)
+    if (!tenant) return fail('Tenant not found')
+    const settings = upsertTenantGoogleOAuthConfig(tenant.settings, {
+      clientId: parsed.clientId,
+      clientSecret: parsed.clientSecret,
+      ...(parsed.redirectUri ? { redirectUri: parsed.redirectUri } : {}),
+    })
+    await repositories.tenants.update(user.activeTenantId, { settings })
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.user.id,
+      agentVersion: null,
+      action: 'tenant.oauth.google.update',
+      targetType: 'tenant',
+      targetId: user.activeTenantId,
+      modelUsed: null,
+      inputRef: 'google',
+      outputRef: parsed.clientId,
+      policyDecision: 'configured',
+      metadata: { redirectUri: parsed.redirectUri ?? null, source: 'connectors_panel' } as Prisma.JsonValue,
+      tenantId: user.activeTenantId,
+    })
+    return ok({ configured: true })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to save tenant Google OAuth config')
   }
 }
 
@@ -123,7 +180,7 @@ export async function startConnectorOAuth(input: { connectorId: string; scopes?:
       return ok({ url: '/control-plane/connectors?connected=1', stub: true })
     }
 
-    const { url } = services.connectorGrants.buildAuthorizationUrl({
+    const { url } = await services.connectorGrants.buildAuthorizationUrl({
       connector,
       userId: user.id,
       tenantId: user.tenantId,

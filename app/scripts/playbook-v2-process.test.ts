@@ -665,6 +665,7 @@ async function main() {
       null as never, // webSearchPolicy
       null as never, // knowledgeChunks
       null as never, // knowledgeArtifacts
+      null as never, // memoryProposal
     )
     broker.setPlaybookTransitioner(ctx.stateMachine)
 

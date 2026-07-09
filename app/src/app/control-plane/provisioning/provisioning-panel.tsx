@@ -76,9 +76,11 @@ type GmailConfigView = {
   scopes: string[]
   scopeTransform: string
   provenance?: {
+    templateId?: string
     templateKey?: string
     templateVersion?: number
-    templateOrigin?: string
+    templateOrigin?: 'builtin' | 'custom'
+    materializedAt?: string
   }
 } | null
 type DraftRow = {
@@ -151,6 +153,7 @@ type TemplateDescriptor = {
   displayName: string
   description?: string
   activationHelp?: string
+  connectorType: 'gmail' | 'http_api'
   authMethods: Array<{ kind: 'api_key' | 'bearer' | 'basic' | 'service_oauth2' | 'user_delegated_oauth2' }>
   instanceFields: Array<{
     name: string

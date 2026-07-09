@@ -337,6 +337,48 @@ export const rollbackMemorySchema = z.object({
   toVersion: z.number().int().positive(),
 })
 
+// ── Tartós agent-memória — WP-6 (agent-memory-persistent-cross-conversation-spec.md §6.2) ──
+
+export const memoryCandidateIdSchema = z.object({
+  candidateId: z.string().uuid(),
+})
+
+export const rejectMemoryCandidateSchema = z.object({
+  candidateId: z.string().uuid(),
+  reason: z.string().optional(),
+})
+
+export const modifyMemoryCandidateSchema = z.object({
+  candidateId: z.string().uuid(),
+  patch: z.object({
+    title: z.string().min(1).optional(),
+    summary: z.string().optional(),
+    text: z.string().min(1).optional(),
+    tags: z.array(z.string()).optional(),
+    evidence: z.string().optional(),
+    reason: z.string().optional(),
+  }),
+})
+
+export const approveMemoryCandidateTicketSchema = z.object({
+  ticketId: z.string().uuid(),
+})
+
+// ── Tartós agent-memória — WP-8 (agent-memory-persistent-cross-conversation-spec.md
+// §8/§9.3/§11.2): maintenance-indítás, manifest-alapú (chunk-scope-os) rollback, és
+// az agent memória-oldal olvasása. NEM ugyanaz, mint a legacy `rollbackMemorySchema`
+// (§9.3 — a régi full-inject rollback nem projectKey-scoped). ──
+
+export const memoryScopeSchema = z.object({
+  agentId: z.string().uuid(),
+  projectKey: z.string().min(1),
+  workstreamKey: z.string().min(1).optional(),
+})
+
+export const rollbackMemoryVersionSchema = memoryScopeSchema.extend({
+  toVersion: z.number().int().positive(),
+})
+
 export const agentIdSchema = z.object({
   id: z.string().uuid(),
 })

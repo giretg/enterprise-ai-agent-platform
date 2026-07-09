@@ -189,6 +189,29 @@ export const DEFAULT_ROLE_PERMISSIONS: Array<{
     minRole: 'admin',
     description: 'Connector-sablon katalógus kezelése',
   },
+  // agent-memory-persistent-cross-conversation-spec.md §12.1 (WP-1/WP-6)
+  { permissionKey: 'memory.propose', minRole: 'operator', description: 'Memória-javaslat kezdeményezése' },
+  {
+    permissionKey: 'memory.inline_approve',
+    minRole: 'approver',
+    description: 'Memória-javaslat azonnali jóváhagyása (write-gate)',
+  },
+  {
+    permissionKey: 'memory.ticket_approve',
+    minRole: 'approver',
+    description: 'Memória-javaslat jóváhagyása tanítási ticketen át',
+  },
+  {
+    permissionKey: 'memory.maintenance.run',
+    minRole: 'admin',
+    description: 'Memória-karbantartás (consolidation) indítása',
+  },
+  { permissionKey: 'memory.rollback', minRole: 'admin', description: 'Memória-verzió visszagörgetése' },
+  {
+    permissionKey: 'memory.delete_approve',
+    minRole: 'admin',
+    description: 'Memóriaelem végleges (hard) törlésének jóváhagyása',
+  },
 ]
 
 export async function ensureDefaultRolePermissions(

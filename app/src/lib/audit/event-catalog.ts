@@ -13,6 +13,7 @@
 export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   // IAM / RBAC (access.*, user.*)
   'access.denied',
+  'tenant.oauth.google.update',
   'user.authz.deny',
   'user.invite.issue',
   'user.invite.redeem',
@@ -119,6 +120,30 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'memory.write.eval_override',
   'memory.write_denied',
   'training.capability_escalation_denied',
+  // Tartós agent-memória (agent-memory-persistent-cross-conversation-spec.md WP-3/WP-4)
+  'memory.retrieve',
+  'memory.propose',
+  // §3.2/§16 S3 — capture-idő content-guard hard-block (detektált secret/kulcs)
+  'memory.propose.blocked',
+  // Tartós agent-memória — WP-6 (jóváhagyási elágazás, §6.3/§14.1)
+  'memory.candidate.modified',
+  'memory.candidate.approved',
+  'memory.candidate.ticketed',
+  'memory.candidate.rejected',
+  'memory.chunk.created',
+  'memory.chunk.updated',
+  'memory.chunk.superseded',
+  'memory.chunk.archived',
+  'memory.chunk.deleted',
+  // Tartós agent-memória — WP-7 (konfliktus-előszűrés, §7/§14.1)
+  'memory.conflict_detected',
+  // Tartós agent-memória — WP-8 (maintenance/consolidation + rollback, §8.4/§9.3/§14.1)
+  'memory.chunk.delete_requested',
+  'memory.chunk.demoted',
+  'memory.maintenance.started',
+  'memory.maintenance.proposed',
+  'memory.maintenance.approved',
+  'memory.maintenance.rejected',
 
   // Knowledge base
   'kb.document.approved',

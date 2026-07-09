@@ -60,6 +60,7 @@ export const CHAT_PLATFORM_TOOLS = [
   'sandbox_app.get',
   'web_search',
   'web_research_request',
+  'memory_propose',
 ] as const
 
 export type ChatPlatformToolName = (typeof CHAT_PLATFORM_TOOLS)[number]
@@ -126,6 +127,23 @@ export type ToolLoopActivityEvent = {
   detail?: string
   status: 'running' | 'done' | 'error' | 'skipped'
   archivePath?: string
+}
+
+/**
+ * WP-5 (agent-memory-persistent-cross-conversation-spec.md §6.2) — a chat
+ * kártyához szükséges mezők egy sikeres `memory_propose` hívás után. A
+ * `MemoryProposeServiceResult` ok-ágából épül, extra DB-round-trip nélkül.
+ */
+export type ToolLoopMemoryCandidateEvent = {
+  candidateId: string
+  operation: string
+  type: string | null
+  title: string | null
+  summary: string | null
+  projectKey: string
+  workstreamKey: string | null
+  // §3.2/§16 S3 — lágy PII-figyelmeztetés kategóriái (a kártyán jelölve).
+  piiWarning: string[]
 }
 
 export function resolveToolLoopMaxTurns(
@@ -509,6 +527,40 @@ const TOOL_SCHEMAS: Record<ChatPlatformToolName, ToolSchema> = {
       ['objective'],
     ),
   },
+  memory_propose: {
+    description:
+      'Projektfolytonossági memória-javaslat (NEM azonnali írás — jóváhagyás-köteles javaslat). Akkor hívd, ha a "Project memory context" blokkban leírt capture-policy szerint érdemi projektállapot-változás történt: döntés (decision), nyitott feladat (open_task), feltárás/tanulság (finding), megkötés (constraint), fontos fájl/branch/dokumentum (artifact), sikertelen próbálkozás (failed_attempt), ideiglenes feltételezés (assumption), átadás (handoff_summary), vagy a futás/session végén a "hol tartunk + következő lépés" narratíva (focus — scope-onként legfeljebb 1 aktív, a régit automatikusan felváltja). A `type` a fentiek egyike; a `path`/`title`/`text` a create/update/supersede művelethez kötelező. Az `operation` "update"/"supersede"/"archive"/"delete_request" esetén a `supersedes` mezőben add meg a célzott, meglévő chunk azonosítóját (a "Project memory context" blokkban látott chunk-id-k egyikét). NE javasolj: felhasználói preferenciát, viselkedési szabályt, céges szabályzatot, nyers beszélgetés-átiratot vagy egyszeri, lejárt részletet.',
+    inputSchema: objectSchema(
+      {
+        operation: { type: 'string', enum: ['create', 'update', 'supersede', 'archive', 'delete_request'] },
+        type: {
+          type: 'string',
+          enum: [
+            'focus', 'decision', 'open_task', 'assumption', 'finding',
+            'constraint', 'artifact', 'failed_attempt', 'handoff_summary',
+          ],
+        },
+        workstreamKey: STR,
+        path: STR,
+        title: STR,
+        summary: STR,
+        text: STR,
+        tags: { type: 'array', items: STR },
+        salienceHint: { type: 'string', enum: ['normal', 'high'] },
+        confidence: { type: 'string', enum: ['low', 'normal', 'high'] },
+        supersedes: STR,
+        reviewAfter: STR,
+        expiresAt: STR,
+        sourceRefs: {
+          type: 'array',
+          items: objectSchema({ type: STR, id: STR, path: STR }, ['type']),
+        },
+        evidence: STR,
+        reason: STR,
+      },
+      ['operation', 'reason'],
+    ),
+  },
 }
 
 const TOOL_RESULT_READ_DEFINITION: ToolDefinition = {
@@ -730,6 +782,26 @@ function recordArg(args: Record<string, unknown>, key: string): Record<string, u
   return undefined
 }
 
+function memorySourceRefsArg(
+  args: Record<string, unknown>,
+  key: string,
+): Array<{ type: string; id?: string; path?: string }> | undefined {
+  const value = args[key]
+  if (!Array.isArray(value)) return undefined
+  const refs = value
+    .filter((item): item is Record<string, unknown> => isPlainRecord(item) && typeof item.type === 'string')
+    .map((item) => ({
+      type: item.type as string,
+      id: typeof item.id === 'string' ? item.id : undefined,
+      path: typeof item.path === 'string' ? item.path : undefined,
+    }))
+  return refs.length > 0 ? refs : undefined
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
 function shortText(value: string, max = 90): string {
   const clean = value.replace(/\s+/g, ' ').trim()
   return clean.length > max ? `${clean.slice(0, max - 1)}…` : clean
@@ -800,6 +872,8 @@ function describeToolCall(tool: string, args: Record<string, unknown>): string |
       return typeof args.query === 'string' ? shortText(args.query, 90) : undefined
     case 'web_research_request':
       return typeof args.objective === 'string' ? shortText(args.objective, 90) : undefined
+    case 'memory_propose':
+      return typeof args.title === 'string' ? shortText(args.title, 90) : args.operation as string | undefined
     default:
       return undefined
   }
@@ -1382,6 +1456,41 @@ function buildToolInvoke(
         },
       }
 
+    case 'memory_propose': {
+      const operation = strArg(args, 'operation')
+      if (
+        operation !== 'create' &&
+        operation !== 'update' &&
+        operation !== 'supersede' &&
+        operation !== 'archive' &&
+        operation !== 'delete_request'
+      ) {
+        throw new Error(`Invalid memory_propose operation: ${operation}`)
+      }
+      return {
+        ...common,
+        tool: 'memory_propose',
+        args: {
+          operation,
+          type: typeof args.type === 'string' ? args.type : undefined,
+          workstreamKey: typeof args.workstreamKey === 'string' ? args.workstreamKey : undefined,
+          path: typeof args.path === 'string' ? args.path : undefined,
+          title: typeof args.title === 'string' ? args.title : undefined,
+          summary: typeof args.summary === 'string' ? args.summary : undefined,
+          text: typeof args.text === 'string' ? args.text : undefined,
+          tags: stringArrayArg(args, 'tags'),
+          salienceHint: typeof args.salienceHint === 'string' ? args.salienceHint : undefined,
+          confidence: typeof args.confidence === 'string' ? args.confidence : undefined,
+          supersedes: typeof args.supersedes === 'string' ? args.supersedes : undefined,
+          reviewAfter: typeof args.reviewAfter === 'string' ? args.reviewAfter : undefined,
+          expiresAt: typeof args.expiresAt === 'string' ? args.expiresAt : undefined,
+          sourceRefs: memorySourceRefsArg(args, 'sourceRefs'),
+          evidence: typeof args.evidence === 'string' ? args.evidence : undefined,
+          reason: strArg(args, 'reason'),
+        },
+      }
+    }
+
     default: {
       const _exhaustive: never = tool
       throw new Error(`Unsupported chat tool: ${_exhaustive}`)
@@ -1416,6 +1525,8 @@ export async function runAgentToolLoop(params: {
   loadSkill?: LoadSkillFn
   archiveLargeToolResult?: (input: LargeToolResultArchiveInput) => Promise<LargeToolResultArchive | null>
   onActivity?: (event: ToolLoopActivityEvent) => void | Promise<void>
+  /** WP-5 — sikeres `memory_propose` hívás után a chat-kártyához (§6.2). */
+  onMemoryCandidate?: (event: ToolLoopMemoryCandidateEvent) => void | Promise<void>
 }): Promise<ToolLoopResult> {
   const maxTurns = params.maxTurns ?? 20
   const modeNote =
@@ -1740,6 +1851,21 @@ export async function runAgentToolLoop(params: {
           detail: result.denied ? result.reason : describeToolResult(result.result),
           status: result.denied ? 'skipped' : 'done',
         })
+        if (toolName === 'memory_propose' && !result.denied) {
+          const proposeResult = result.result as { ok: boolean } & Partial<ToolLoopMemoryCandidateEvent>
+          if (proposeResult.ok && proposeResult.candidateId) {
+            await params.onMemoryCandidate?.({
+              candidateId: proposeResult.candidateId,
+              operation: proposeResult.operation ?? 'create',
+              type: proposeResult.type ?? null,
+              title: proposeResult.title ?? null,
+              summary: proposeResult.summary ?? null,
+              projectKey: proposeResult.projectKey ?? '__general__',
+              workstreamKey: proposeResult.workstreamKey ?? null,
+              piiWarning: proposeResult.piiWarning ?? [],
+            })
+          }
+        }
         let toolContent = formatToolResultForModel(toolName as ChatPlatformToolName, rawContent)
         if (toolContent.length > TOOL_RESULT_INLINE_LIMIT) {
           const archive = params.archiveLargeToolResult

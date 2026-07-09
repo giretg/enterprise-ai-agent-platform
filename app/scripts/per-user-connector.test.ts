@@ -426,9 +426,9 @@ await test('http_api delegált: acting_user nélkül (autonóm) → DENY (acting
   assert.equal(grantQueries.length, 0)
 })
 
-await test('buildAuthorizationUrl: generikus provider a config.oauth-ot használja (nincs Google-default, nincs access_type)', () => {
+await test('buildAuthorizationUrl: generikus provider a config.oauth-ot használja (nincs Google-default, nincs access_type)', async () => {
   const { service } = buildGrantService()
-  const { url } = service.buildAuthorizationUrl({
+  const { url } = await service.buildAuthorizationUrl({
     connector: httpApiDelegatedConnector(),
     userId: 'user-Y',
     tenantId: 'tenant-A',
@@ -445,9 +445,9 @@ await test('buildAuthorizationUrl: generikus provider a config.oauth-ot használ
   assert.ok(parsed.searchParams.get('redirect_uri')?.endsWith('/api/connectors/oauth/callback'))
 })
 
-await test('buildAuthorizationUrl: hiányzó config.oauth (nem-Google) → érthető hiba', () => {
+await test('buildAuthorizationUrl: hiányzó config.oauth (nem-Google) → érthető hiba', async () => {
   const { service } = buildGrantService()
-  assert.throws(
+  await assert.rejects(
     () =>
       service.buildAuthorizationUrl({
         connector: httpApiDelegatedConnector({ config: { baseUrl: 'https://crm.example.com/api', auth: { scheme: 'bearer' } } as unknown as Connector['config'] }),
@@ -458,9 +458,9 @@ await test('buildAuthorizationUrl: hiányzó config.oauth (nem-Google) → érth
   )
 })
 
-await test('buildAuthorizationUrl: Google/Gmail connector explicit configból kap access_type=offline-t', () => {
+await test('buildAuthorizationUrl: Google/Gmail connector explicit configból kap access_type=offline-t', async () => {
   const { service } = buildGrantService()
-  const { url } = service.buildAuthorizationUrl({
+  const { url } = await service.buildAuthorizationUrl({
     connector: gmailConnector({
       config: {
         oauth: {
@@ -482,9 +482,9 @@ await test('buildAuthorizationUrl: Google/Gmail connector explicit configból ka
   assert.equal(parsed.searchParams.get('scope'), GMAIL_SCOPES.readonly)
 })
 
-await test('buildAuthorizationUrl: Google provisioning descriptor explicit auth mezőiből épít consent URL-t', () => {
+await test('buildAuthorizationUrl: Google provisioning descriptor explicit auth mezőiből épít consent URL-t', async () => {
   const { service } = buildGrantService()
-  const { url } = service.buildAuthorizationUrl({
+  const { url } = await service.buildAuthorizationUrl({
     connector: httpApiDelegatedConnector({
       config: {
         provider: 'google_search_console',

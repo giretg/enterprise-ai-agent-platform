@@ -2,6 +2,7 @@ import { getAuthContext } from '@/auth/context'
 import {
   getDatabaseMode,
   getDispatcherControls,
+  getMemoryObservabilityDashboard,
   getModelCallsSummary,
   getModelPolicy,
   getTicketTypeConfigs,
@@ -24,6 +25,7 @@ import { TicketTypeConfigPanel } from './ticket-type-config-panel'
 import { MonitorControlPanel } from './monitor-control-panel'
 import { WebSearchControlPanel } from './web-search-control-panel'
 import { WebFetchControlPanel } from './web-fetch-control-panel'
+import { MemoryObservabilityPanel } from './memory-observability-panel'
 
 export default async function SystemPage() {
   const [
@@ -40,6 +42,7 @@ export default async function SystemPage() {
     gatewayStatsRes,
     routingPoliciesRes,
     budgetsRes,
+    memoryObservabilityRes,
   ] = await Promise.all([
     getAuthContext(),
     getDispatcherControls(),
@@ -54,6 +57,7 @@ export default async function SystemPage() {
     getModelCallsSummary(),
     listModelRoutingPolicies(),
     listModelBudgets(),
+    getMemoryObservabilityDashboard(),
   ])
   // §9.2/§13/4: a platform-globális vezérlőket csak platform-szerep szerkesztheti;
   // a tenant-admin itt read-only nézetet kap (a WRITE-actionök platform-guard alatt).
@@ -148,6 +152,8 @@ export default async function SystemPage() {
           canEdit={canEdit}
         />
       )}
+
+      {memoryObservabilityRes.success && <MemoryObservabilityPanel data={memoryObservabilityRes.data} />}
     </div>
   )
 }

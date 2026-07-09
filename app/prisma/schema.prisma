@@ -697,13 +697,15 @@ model Agent {
   apiKeys            AgentApiKey[]
   agentResources     AgentResource[]
   tickets            Ticket[]
-  ticketComments     TicketComment[]      @relation("TicketCommentAuthorAgent")
+  ticketComments     TicketComment[]     @relation("TicketCommentAuthorAgent")
   modelCalls         ModelCall[]
   agentConnectors    AgentConnector[]
   capabilities       Capability[]
   agentSkills        AgentSkill[]
   toolCalls          ToolCall[]
   writeGateTokens    WriteGateToken[]
+  memoryChunks       MemoryChunk[]       @relation("MemoryChunkAgent")
+  memoryCandidates   MemoryCandidate[]   @relation("MemoryCandidateAgent")
   evals              Eval[]
   scheduledTasks     ScheduledTask[]
   monitorDefinitions MonitorDefinition[]
@@ -1242,9 +1244,11 @@ model Memory {
   currentVersionId String? @map("current_version_id") @db.Uuid
 
   agent           Agent?
-  versions        MemoryVersion[]  @relation("MemoryVersions")
-  currentVersion  MemoryVersion?   @relation("MemoryCurrentVersion", fields: [currentVersionId], references: [id])
+  versions        MemoryVersion[]   @relation("MemoryVersions")
+  currentVersion  MemoryVersion?    @relation("MemoryCurrentVersion", fields: [currentVersionId], references: [id])
   writeGateTokens WriteGateToken[]
+  chunks          MemoryChunk[]     @relation("MemoryChunks")
+  candidates      MemoryCandidate[] @relation("MemoryCandidates")
 
   @@map("memories")
 }
@@ -1253,12 +1257,22 @@ model MemoryVersion {
   id               String              @id @default(uuid()) @db.Uuid
   memoryId         String              @map("memory_id") @db.Uuid
   version          Int
-  content          String
+  // Legacy full-inject szövegblokk (§1.1). A tartós agent-memória spec
+  // (agent-memory-persistent-cross-conversation-spec.md §9.3) óta a T2
+  // kanonikus forrás a MemoryChunk; ez a mező demo-agenteken kívül NULL.
+  content          String?
   diffFromPrevious Json?               @map("diff_from_previous")
   status           MemoryVersionStatus @default(proposed)
   source           String?
   approvedById     String?             @map("approved_by") @db.Uuid
   createdAt        DateTime            @default(now()) @map("created_at") @db.Timestamptz
+
+  // §9.3: a MemoryVersion mostani szerepe a T2 pillanatkép-manifeszt.
+  activeChunkIds     Json?   @map("active_chunk_ids")
+  changeSet          Json?   @map("change_set")
+  projectKey         String? @map("project_key")
+  workstreamKey      String? @map("workstream_key")
+  sourceCandidateIds Json?   @map("source_candidate_ids")
 
   memory           Memory         @relation("MemoryVersions", fields: [memoryId], references: [id], onDelete: Cascade)
   approvedBy       User?          @relation("MemoryApprovedBy", fields: [approvedById], references: [id])
@@ -1268,6 +1282,101 @@ model MemoryVersion {
 
   @@unique([memoryId, version])
   @@map("memory_versions")
+}
+
+// ── Tartós agent-memória (agent-memory-persistent-cross-conversation-spec.md, WP-1) ─────
+
+model MemoryChunk {
+  id       String @id @default(uuid()) @db.Uuid
+  memoryId String @map("memory_id") @db.Uuid
+  agentId  String @map("agent_id") @db.Uuid
+
+  tenantId      String? @map("tenant_id") @db.Uuid
+  projectKey    String  @map("project_key")
+  workstreamKey String? @map("workstream_key")
+
+  type     String
+  path     String
+  title    String
+  section  String?
+  text     String
+  summary  String?
+  tags     String[] @default([])
+  metadata Json?
+
+  status     String @default("active")
+  salience   Float  @default(0.5)
+  confidence String @default("normal")
+
+  sourceRefs Json?   @map("source_refs")
+  evidence   String?
+
+  approvedBy String?   @map("approved_by") @db.Uuid
+  approvedAt DateTime? @map("approved_at") @db.Timestamptz
+
+  reviewAfter DateTime? @map("review_after") @db.Timestamptz
+  expiresAt   DateTime? @map("expires_at") @db.Timestamptz
+
+  supersedes   String? @map("supersedes") @db.Uuid
+  supersededBy String? @map("superseded_by") @db.Uuid
+
+  retrievedCount            Int       @default(0) @map("retrieved_count")
+  usedInAnswerCount         Int       @default(0) @map("used_in_answer_count")
+  userConfirmedHelpfulCount Int       @default(0) @map("user_confirmed_helpful_count")
+  userCorrectedCount        Int       @default(0) @map("user_corrected_count")
+  lastRetrievedAt           DateTime? @map("last_retrieved_at") @db.Timestamptz
+  lastUsedAt                DateTime? @map("last_used_at") @db.Timestamptz
+  lastValidatedAt           DateTime? @map("last_validated_at") @db.Timestamptz
+
+  contentHash String   @map("content_hash")
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt   DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  memory Memory @relation("MemoryChunks", fields: [memoryId], references: [id], onDelete: Cascade)
+  agent  Agent  @relation("MemoryChunkAgent", fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([memoryId, projectKey, workstreamKey, status])
+  @@index([memoryId, path, status])
+  @@index([tenantId, agentId, status])
+  @@map("memory_chunks")
+}
+
+model MemoryCandidate {
+  id       String @id @default(uuid()) @db.Uuid
+  memoryId String @map("memory_id") @db.Uuid
+  agentId  String @map("agent_id") @db.Uuid
+
+  tenantId      String? @map("tenant_id") @db.Uuid
+  projectKey    String  @map("project_key")
+  workstreamKey String? @map("workstream_key")
+
+  operation String
+  payload   Json
+  status    String @default("proposed")
+
+  proposedBy         String  @map("proposed_by")
+  proposedByRunId    String? @map("proposed_by_run_id")
+  proposedInThreadId String? @map("proposed_in_thread_id")
+  ticketId           String? @map("ticket_id") @db.Uuid
+
+  approvedBy String?   @map("approved_by") @db.Uuid
+  approvedAt DateTime? @map("approved_at") @db.Timestamptz
+  rejectedBy String?   @map("rejected_by") @db.Uuid
+  rejectedAt DateTime? @map("rejected_at") @db.Timestamptz
+
+  writeGateTokenId String? @map("write_gate_token_id") @db.Uuid
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  memory         Memory          @relation("MemoryCandidates", fields: [memoryId], references: [id], onDelete: Cascade)
+  agent          Agent           @relation("MemoryCandidateAgent", fields: [agentId], references: [id], onDelete: Cascade)
+  ticket         Ticket?         @relation(fields: [ticketId], references: [id])
+  writeGateToken WriteGateToken?
+
+  @@index([memoryId, projectKey, status])
+  @@index([agentId, status])
+  @@map("memory_candidates")
 }
 
 model Resource {
@@ -1431,10 +1540,10 @@ model Document {
   processingMode KnowledgeProcessingMode? @map("processing_mode")
   metadata       Json                     @default("{}")
 
-  uploadedBy User                @relation("DocumentUploadedBy", fields: [uploadedById], references: [id])
-  connector  Connector?          @relation(fields: [connectorId], references: [id])
-  tickets    Ticket[]
-  artifacts  KnowledgeArtifact[]
+  uploadedBy               User                      @relation("DocumentUploadedBy", fields: [uploadedById], references: [id])
+  connector                Connector?                @relation(fields: [connectorId], references: [id])
+  tickets                  Ticket[]
+  artifacts                KnowledgeArtifact[]
   ticketCommentAttachments TicketCommentAttachment[]
 
   @@map("documents")
@@ -1512,6 +1621,10 @@ model Conversation {
   agentId           String             @map("agent_id") @db.Uuid
   title             String?
   status            ConversationStatus @default(active)
+  // agent-memory-persistent-cross-conversation-spec.md §2.1: chat-oldali
+  // projektfolytonossági scope-kulcs; soft-default a per-tenant+agent
+  // "__general__" projektre, a chat-fejléc projekt-választója írja.
+  projectKey        String             @default("__general__") @map("project_key")
   createdById       String             @map("created_by") @db.Uuid
   retentionPolicyId String?            @map("retention_policy_id") @db.Uuid
   retainUntil       DateTime?          @map("retain_until") @db.Timestamptz
@@ -1612,6 +1725,7 @@ model Ticket {
   modelCalls                    ModelCall[]
   toolCalls                     ToolCall[]
   writeGateTokens               WriteGateToken[]
+  memoryCandidates              MemoryCandidate[]
   transitions                   TicketTransition[]
   trainingTicket                TrainingTicket?
   sandboxAppVersions            SandboxAppVersion[]
@@ -2233,21 +2347,26 @@ enum WriteGateTokenStatus {
 }
 
 model WriteGateToken {
-  id               String               @id @default(uuid()) @db.Uuid
-  trainingTicketId String               @map("training_ticket_id") @db.Uuid
-  agentId          String               @map("agent_id") @db.Uuid
-  targetMemoryId   String               @map("target_memory_id") @db.Uuid
-  expectedDiffHash String               @map("expected_diff_hash")
-  tokenHash        String               @map("token_hash")
-  signature        String
-  status           WriteGateTokenStatus @default(issued)
-  issuedAt         DateTime             @default(now()) @map("issued_at") @db.Timestamptz
-  expiresAt        DateTime             @map("expires_at") @db.Timestamptz
-  consumedAt       DateTime?            @map("consumed_at") @db.Timestamptz
+  id                String               @id @default(uuid()) @db.Uuid
+  // §9.4: az inline (ticket nélküli) memória-jóváhagyáshoz nullable — pontosan
+  // az egyik horgony (trainingTicketId vagy memoryCandidateId) töltött ki;
+  // az invariánst a MemoryApprovalService/TrainingService alkalmazás-szinten őrzi.
+  trainingTicketId  String?              @map("training_ticket_id") @db.Uuid
+  memoryCandidateId String?              @unique @map("memory_candidate_id") @db.Uuid
+  agentId           String               @map("agent_id") @db.Uuid
+  targetMemoryId    String               @map("target_memory_id") @db.Uuid
+  expectedDiffHash  String               @map("expected_diff_hash")
+  tokenHash         String               @map("token_hash")
+  signature         String
+  status            WriteGateTokenStatus @default(issued)
+  issuedAt          DateTime             @default(now()) @map("issued_at") @db.Timestamptz
+  expiresAt         DateTime             @map("expires_at") @db.Timestamptz
+  consumedAt        DateTime?            @map("consumed_at") @db.Timestamptz
 
-  trainingTicket Ticket @relation(fields: [trainingTicketId], references: [id], onDelete: Cascade)
-  agent          Agent  @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  targetMemory   Memory @relation(fields: [targetMemoryId], references: [id], onDelete: Cascade)
+  trainingTicket  Ticket?          @relation(fields: [trainingTicketId], references: [id], onDelete: Cascade)
+  memoryCandidate MemoryCandidate? @relation(fields: [memoryCandidateId], references: [id], onDelete: Cascade)
+  agent           Agent            @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  targetMemory    Memory           @relation(fields: [targetMemoryId], references: [id], onDelete: Cascade)
 
   @@map("write_gate_tokens")
 }

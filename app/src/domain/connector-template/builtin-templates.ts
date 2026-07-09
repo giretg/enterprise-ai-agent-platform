@@ -77,6 +77,7 @@ export const BUILTIN_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
     key: 'microsoft-365',
     displayName: 'Microsoft 365',
     description: 'Microsoft Graph delegated OAuth connector with explicit provider metadata.',
+    connectorType: 'http_api',
     baseUrl: 'https://graph.microsoft.com',
     egressHosts: ['graph.microsoft.com', 'login.microsoftonline.com'],
     authMethods: [
@@ -156,6 +157,7 @@ export const BUILTIN_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
     key: 'jira-cloud',
     displayName: 'Jira Cloud',
     description: 'Atlassian Jira Cloud REST connector using an API token header.',
+    connectorType: 'http_api',
     baseUrl: 'https://{siteHost}',
     egressHosts: ['{siteHost}'],
     authMethods: [{ kind: 'api_key', header: 'Authorization' }],
@@ -209,6 +211,7 @@ export const BUILTIN_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
     key: 'slack',
     displayName: 'Slack',
     description: 'Slack Web API connector using a bot or user bearer token.',
+    connectorType: 'http_api',
     baseUrl: 'https://slack.com',
     egressHosts: ['slack.com', 'www.slack.com'],
     authMethods: [{ kind: 'bearer' }],

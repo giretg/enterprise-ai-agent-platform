@@ -146,6 +146,7 @@ function makeBroker(fileEditor: FakeFileEditor) {
     null as unknown as WebSearchPolicyService,
     null as never,
     null as never,
+    null as never, // memoryProposal
   )
 }
 

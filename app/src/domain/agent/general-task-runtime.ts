@@ -1,5 +1,6 @@
 import type {
   AgentRepository,
+  AuditRepository,
   DocumentRepository,
   PlaybookV2Repository,
   ProcessRepository,
@@ -31,6 +32,14 @@ import { readTicketPromptText } from '@/lib/wiki-ticket-payload'
 import { formatHitsForPrompt, type KbHit } from '@/lib/kb-format'
 import { distillKbSearchQuery } from '@/lib/kb-query'
 import { buildThreadContextPrompt, latestHumanTicketComment } from '@/lib/ticket-thread-prompt'
+import { buildMemoryRetrievalQuery } from '../conversation/context-assembly'
+import { MEMORY_RETRIEVAL_USAGE_PROMPT, kbSearchAnswerInstruction } from '@/lib/memory-prompt'
+import {
+  buildMemoryRetrievalRequest,
+  loadProjectMemoryContext,
+  memoryContextSystemMessages,
+} from '../memory/memory-runtime-helper'
+import type { MemoryRetrievalService } from '../memory/memory-retrieval-service'
 import type { ModelGateway, ModelConfig } from '../gateway/model-gateway'
 import type { ToolBrokerService } from '../tool-broker/tool-broker-service'
 import type { WorkspaceStorage } from '../file-editor/workspace-storage'
@@ -111,6 +120,8 @@ export class GeneralTaskRuntime {
     private processes?: ProcessRepository,
     private conversations?: ConversationService,
     private skills?: SkillService,
+    private audit?: AuditRepository,
+    private memoryRetrieval?: MemoryRetrievalService,
   ) {}
 
   async processTicket(params: { ticketId: string; agentId: string }) {
@@ -163,6 +174,12 @@ export class GeneralTaskRuntime {
       query: distillKbSearchQuery(kbQuery || question),
     })
 
+    const memoryContext = await this.retrieveProjectMemoryContext({
+      agentDetails,
+      ticket,
+      taskPrompt,
+    })
+
     const messages = await this.buildTaskMessages({
       agentDetails,
       question: taskPrompt,
@@ -170,6 +187,7 @@ export class GeneralTaskRuntime {
       kbSearch,
       processStep,
       conversationContext,
+      memoryContextBlock: memoryContext.block,
     })
 
     const allowedTools = await listAllowedChatTools(this.toolCaps, params.agentId)
@@ -654,6 +672,56 @@ export class GeneralTaskRuntime {
     return docs.filter((doc): doc is NonNullable<(typeof docs)[number]> => Boolean(doc))
   }
 
+  /**
+   * agent-memory-persistent-cross-conversation-spec.md §2.1 — task/process-run
+   * `projectKey` = a Folyamat-DEFINÍCIÓ (`ProcessDefinition.id`), nem az
+   * instance; process nélküli ad-hoc ticketnél `__general__` (soha nem néma
+   * fail-closed).
+   */
+  private async resolveProjectKeyForTicket(
+    ticket: NonNullable<Awaited<ReturnType<TicketRepository['findById']>>>,
+  ): Promise<string> {
+    if (ticket.processInstanceId && this.processes) {
+      const process = await this.processes.findProcess(ticket.tenantId, ticket.processInstanceId)
+      if (process?.processDefinitionId) return process.processDefinitionId
+    }
+    return '__general__'
+  }
+
+  /** agent-memory-persistent-cross-conversation-spec.md §10.3 — retrieval-only memória-blokk task-ágon. */
+  private async retrieveProjectMemoryContext(params: {
+    agentDetails: NonNullable<Awaited<ReturnType<AgentRepository['findByIdWithDetails']>>>
+    ticket: NonNullable<Awaited<ReturnType<TicketRepository['findById']>>>
+    taskPrompt: string
+  }) {
+    if (!this.memoryRetrieval || !this.audit) {
+      return { block: null, tokens: 0, memoryMode: 'degraded' as const }
+    }
+    const projectKey = await this.resolveProjectKeyForTicket(params.ticket)
+    return loadProjectMemoryContext({
+      memoryRetrieval: this.memoryRetrieval,
+      audit: this.audit,
+      actorId: params.agentDetails.agent.id,
+      agentVersion: params.agentDetails.agent.currentVersion,
+      tenantId: params.ticket.tenantId,
+      ticketId: params.ticket.id,
+      conversationId: params.ticket.conversationId ?? null,
+      request: buildMemoryRetrievalRequest({
+        agentId: params.agentDetails.agent.id,
+        memoryId: params.agentDetails.agent.memoryId,
+        tenantId: params.ticket.tenantId,
+        projectKey,
+        query: buildMemoryRetrievalQuery({
+          queryKind: 'task',
+          ticketTitle: params.ticket.title,
+          stepInstruction: params.taskPrompt,
+        }),
+        queryKind: 'task',
+        runRef: { ticketId: params.ticket.id },
+      }),
+    })
+  }
+
   private async archiveLargeToolResult(
     tenantId: string,
     ticketId: string,
@@ -706,6 +774,7 @@ export class GeneralTaskRuntime {
     kbSearch: { enabled: boolean; hits: KbHit[] }
     processStep: ProcessStepContext | null
     conversationContext: string | null
+    memoryContextBlock?: string | null
   }) {
     const allAgents = await this.agents.findMany()
     const orgRoster = formatOrgRoster(allAgents)
@@ -714,11 +783,12 @@ export class GeneralTaskRuntime {
       { role: 'system', content: composeSystemPrompt(params.agentDetails.agent) },
     ]
 
-    if (params.agentDetails.memoryContent?.trim()) {
-      messages.push({
-        role: 'system',
-        content: `Memória (aktív verzió):\n${params.agentDetails.memoryContent.trim()}`,
-      })
+    // agent-memory-persistent-cross-conversation-spec.md §10.3 — retrieval-only:
+    // a legacy `agentDetails.memoryContent` teljes-inject helyett a
+    // `MemoryRetrievalService`-ből épített `Project memory context` blokk.
+    if (params.memoryContextBlock) {
+      messages.push(...memoryContextSystemMessages(params.memoryContextBlock))
+      messages.push({ role: 'system', content: MEMORY_RETRIEVAL_USAGE_PROMPT })
     }
 
     if (params.conversationContext) {
@@ -746,10 +816,11 @@ export class GeneralTaskRuntime {
     }
 
     if (params.kbSearch.enabled) {
-      const answerInstruction =
-        params.kbSearch.hits.length === 0
-          ? 'Az előre lefuttatott tudásbázis-keresés (kb_search) nem adott találatot erre a feladatra. Ez NEM jelenti, hogy nincs megoldás. Ha a feladatban KONKRÉT dokumentumnév szerepel (pl. egy .docx/.pdf fájlnév), hívd a kb_search eszközt közvetlenül a PONTOS névvel vagy egy szűkebb kulcsszóval — a pre-fetch a zajos feladatszöveg miatt is elhibázhatta. Emellett: email/postafiók feladatnál gmail_search, fájl/munkaterület feladatnál file_* eszköz — ha engedélyezve van. Csak akkor mondd, hogy nincs elég forrás, ha a célzott kb_search és a többi releváns eszköz sem ad adatot.'
-          : 'A belső tudásbázis tényállításaihoz kizárólag az alábbi kb_search találatokra támaszkodj. Minden lényegi állításhoz adj forráshivatkozást.'
+      const answerInstruction = kbSearchAnswerInstruction({
+        hitCount: params.kbSearch.hits.length,
+        hasMemoryContext: Boolean(params.memoryContextBlock),
+        mode: 'task',
+      })
       messages.push({
         role: 'system',
         content: `${answerInstruction}\n\nTudásbázis találatok (kb_search):\n${formatHitsForPrompt(params.kbSearch.hits)}`,

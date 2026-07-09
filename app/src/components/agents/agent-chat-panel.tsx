@@ -4,13 +4,17 @@ import Link from 'next/link'
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react'
 import { createPortal, flushSync } from 'react-dom'
 import {
+  approveMemoryCandidate,
   archiveConversation,
   createAgentTaskTicket,
   createScheduledAgentTask,
   deleteMessageContent,
   listAgentChatSessions,
   loadAgentChatMessages,
+  modifyMemoryCandidate,
   promoteConversationWithAi,
+  rejectMemoryCandidate,
+  ticketMemoryCandidate,
   uploadDocument,
 } from '@/app/actions/platform'
 import { distillSkillFromConversationAction, getAgentSkillsAction } from '@/app/actions/skills'
@@ -59,6 +63,7 @@ type ChatMessage = {
   ticketRefId?: string | null
   activities?: AgentActivity[]
   activitiesCollapsed?: boolean
+  memoryCandidates?: MemoryCandidateCard[]
 }
 
 type ScheduledTaskRecurrence = 'none' | 'daily' | 'weekly' | 'monthly'
@@ -79,8 +84,27 @@ type AgentActivity = {
   archivePath?: string
 }
 
+/**
+ * WP-5 (agent-memory-persistent-cross-conversation-spec.md §6.2) — az agent
+ * `memory_propose` hívása után a chat-streambe kerülő batch-kártya egy sora.
+ * A `status`/`resultMessage` kliens-oldali, a jóváhagyási gombok eredményét
+ * tükrözi (a szerver a forrás-igazság, ez csak a kártya azonnali visszajelzése).
+ */
+type MemoryCandidateCard = {
+  candidateId: string
+  operation: string
+  type: string | null
+  title: string | null
+  summary: string | null
+  projectKey: string
+  workstreamKey: string | null
+  status: 'proposed' | 'approved' | 'ticketed' | 'rejected'
+  resultMessage?: string
+}
+
 type AgentChatStreamEvent =
   | { type: 'activity'; activity: AgentActivity }
+  | { type: 'memory_candidate'; candidate: Omit<MemoryCandidateCard, 'status' | 'resultMessage'> }
   | { type: 'token'; chunk: string }
   | { type: 'done'; conversationId: string; messageId: string; ticketRefId?: string | null }
   | { type: 'error'; message?: string }
@@ -144,6 +168,35 @@ function upsertActivity(activities: AgentActivity[] | undefined, next: AgentActi
   const index = current.findIndex((activity) => activity.id === next.id)
   if (index < 0) return [...current, next]
   return current.map((activity, i) => (i === index ? { ...activity, ...next } : activity))
+}
+
+function upsertMemoryCandidate(
+  candidates: MemoryCandidateCard[] | undefined,
+  next: MemoryCandidateCard,
+): MemoryCandidateCard[] {
+  const current = candidates ?? []
+  const index = current.findIndex((c) => c.candidateId === next.candidateId)
+  if (index < 0) return [...current, next]
+  return current.map((c, i) => (i === index ? { ...c, ...next } : c))
+}
+
+const MEMORY_CANDIDATE_TYPE_LABEL: Record<string, string> = {
+  focus: 'Fókusz',
+  decision: 'Döntés',
+  open_task: 'Nyitott feladat',
+  assumption: 'Feltételezés',
+  finding: 'Feltárás',
+  constraint: 'Megkötés',
+  artifact: 'Artifact',
+  failed_attempt: 'Sikertelen próbálkozás',
+  handoff_summary: 'Átadás-összefoglaló',
+}
+
+const MEMORY_CANDIDATE_STATUS_LABEL: Record<MemoryCandidateCard['status'], string> = {
+  proposed: 'Jóváhagyásra vár',
+  approved: 'Jóváhagyva',
+  ticketed: 'Ticketben (jóváhagyásra vár)',
+  rejected: 'Elutasítva',
 }
 
 function FieldHelp({ description }: { description: string }) {
@@ -221,14 +274,186 @@ function AgentActivityPanel({
   )
 }
 
+/**
+ * WP-5 (§6.2 batch-kártya) — egy üzenet összes memória-javaslata egy kártyán,
+ * soronként Jóváhagyom/Módosítom/Ticketbe küldöm/Elutasítom gombbal, plusz
+ * egy "Jóváhagyom mind" a nyitott (proposed) sorokra. A jogosultsági
+ * elágazást (inline vs. ticket) a szerver dönti el — a kártya csak a
+ * visszakapott eredményt (jóváhagyva / ticketben / hiba) jeleníti meg.
+ */
+function MemoryCandidatesPanel({
+  candidates,
+  onUpdate,
+}: {
+  candidates: MemoryCandidateCard[]
+  onUpdate: (candidateId: string, patch: Partial<MemoryCandidateCard>) => void
+}) {
+  const [pending, startTransition] = useTransition()
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editSummary, setEditSummary] = useState('')
+
+  const openCount = candidates.filter((c) => c.status === 'proposed').length
+
+  const runApprove = (candidateId: string) => {
+    startTransition(async () => {
+      const res = await approveMemoryCandidate({ candidateId })
+      if (!res.success) {
+        onUpdate(candidateId, { resultMessage: res.error })
+        return
+      }
+      const outcome = (res.data as { outcome?: string }).outcome
+      onUpdate(candidateId, {
+        status: outcome === 'ticketed' ? 'ticketed' : 'approved',
+        resultMessage: undefined,
+      })
+    })
+  }
+
+  const runReject = (candidateId: string) => {
+    startTransition(async () => {
+      const res = await rejectMemoryCandidate({ candidateId })
+      onUpdate(candidateId, {
+        status: res.success ? 'rejected' : 'proposed',
+        resultMessage: res.success ? undefined : res.error,
+      })
+    })
+  }
+
+  const runTicket = (candidateId: string) => {
+    startTransition(async () => {
+      const res = await ticketMemoryCandidate({ candidateId })
+      onUpdate(candidateId, {
+        status: res.success ? 'ticketed' : 'proposed',
+        resultMessage: res.success ? undefined : res.error,
+      })
+    })
+  }
+
+  const runModifySave = (candidateId: string) => {
+    startTransition(async () => {
+      const res = await modifyMemoryCandidate({ candidateId, patch: { summary: editSummary } })
+      onUpdate(candidateId, {
+        summary: res.success ? editSummary : candidates.find((c) => c.candidateId === candidateId)?.summary ?? null,
+        resultMessage: res.success ? undefined : res.error,
+      })
+      if (res.success) setEditingId(null)
+    })
+  }
+
+  return (
+    <div className="mb-3 rounded-lg border border-line bg-night-2/70 px-3 py-2 text-xs text-ink-soft">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className="font-medium text-ink">Memória-javaslat{candidates.length > 1 ? `ok (${candidates.length})` : ''}</span>
+        {openCount > 1 && (
+          <button
+            type="button"
+            disabled={pending}
+            className="rounded-full bg-sage/20 px-3 py-1 text-[11px] font-semibold text-sage disabled:opacity-50"
+            onClick={() => candidates.filter((c) => c.status === 'proposed').forEach((c) => runApprove(c.candidateId))}
+          >
+            Jóváhagyom mind
+          </button>
+        )}
+      </div>
+      <div className="space-y-2">
+        {candidates.map((c) => (
+          <div key={c.candidateId} className="rounded-md border border-line/70 bg-card/40 px-2.5 py-2">
+            <div className="flex flex-wrap items-baseline gap-2">
+              <span className="rounded-full bg-card px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-faint">
+                {MEMORY_CANDIDATE_TYPE_LABEL[c.type ?? ''] ?? c.type ?? c.operation}
+              </span>
+              <span className="truncate font-medium text-ink">{c.title ?? '(cím nélkül)'}</span>
+              <span className="ml-auto shrink-0 text-[10px] text-ink-faint">{MEMORY_CANDIDATE_STATUS_LABEL[c.status]}</span>
+            </div>
+            {c.summary && <p className="mt-1 text-[11px] text-ink-faint">{c.summary}</p>}
+            <p className="mt-1 text-[10px] text-ink-faint">
+              scope: {c.projectKey}
+              {c.workstreamKey ? ` / ${c.workstreamKey}` : ''}
+            </p>
+            {c.resultMessage && <p className="mt-1 text-[11px] text-coral">{c.resultMessage}</p>}
+            {c.status === 'proposed' && (
+              <div className="mt-2 flex flex-wrap gap-1.5">
+                <button
+                  type="button"
+                  disabled={pending}
+                  className="rounded-full bg-sage/20 px-2.5 py-1 text-[11px] font-semibold text-sage disabled:opacity-50"
+                  onClick={() => runApprove(c.candidateId)}
+                >
+                  Jóváhagyom
+                </button>
+                <button
+                  type="button"
+                  disabled={pending}
+                  className="rounded-full bg-sky/20 px-2.5 py-1 text-[11px] font-semibold text-sky disabled:opacity-50"
+                  onClick={() => {
+                    setEditingId(editingId === c.candidateId ? null : c.candidateId)
+                    setEditSummary(c.summary ?? '')
+                  }}
+                >
+                  Módosítom
+                </button>
+                <button
+                  type="button"
+                  disabled={pending}
+                  className="rounded-full bg-honey/20 px-2.5 py-1 text-[11px] font-semibold text-honey disabled:opacity-50"
+                  onClick={() => runTicket(c.candidateId)}
+                >
+                  Ticketbe küldöm
+                </button>
+                <button
+                  type="button"
+                  disabled={pending}
+                  className="rounded-full bg-coral/20 px-2.5 py-1 text-[11px] font-semibold text-coral disabled:opacity-50"
+                  onClick={() => runReject(c.candidateId)}
+                >
+                  Elutasítom
+                </button>
+              </div>
+            )}
+            {editingId === c.candidateId && (
+              <div className="mt-2 flex flex-col gap-1.5">
+                <textarea
+                  className="w-full rounded-lg border border-line bg-night-2 p-2 text-[11px]"
+                  rows={3}
+                  value={editSummary}
+                  onChange={(e) => setEditSummary(e.target.value)}
+                />
+                <div className="flex gap-1.5">
+                  <button
+                    type="button"
+                    disabled={pending}
+                    className="rounded-full bg-sage/20 px-2.5 py-1 text-[11px] font-semibold text-sage disabled:opacity-50"
+                    onClick={() => runModifySave(c.candidateId)}
+                  >
+                    Mentés
+                  </button>
+                  <button
+                    type="button"
+                    className="rounded-full bg-card px-2.5 py-1 text-[11px] font-semibold text-ink-faint"
+                    onClick={() => setEditingId(null)}
+                  >
+                    Mégse
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function MessageBubble({
   message,
   isBusy,
   onDeleteContent,
+  onMemoryCandidateUpdate,
 }: {
   message: ChatMessage
   isBusy: boolean
   onDeleteContent: (messageId: string) => void
+  onMemoryCandidateUpdate: (messageId: string, candidateId: string, patch: Partial<MemoryCandidateCard>) => void
 }) {
   const isUser = message.role === 'user'
   const isDeleted = Boolean(message.contentDeletedAt)
@@ -255,6 +480,12 @@ function MessageBubble({
               <AgentActivityPanel
                 activities={message.activities}
                 collapsed={message.activitiesCollapsed ?? false}
+              />
+            )}
+            {!isUser && message.memoryCandidates && message.memoryCandidates.length > 0 && (
+              <MemoryCandidatesPanel
+                candidates={message.memoryCandidates}
+                onUpdate={(candidateId, patch) => onMemoryCandidateUpdate(message.id, candidateId, patch)}
               />
             )}
             {message.text &&
@@ -688,6 +919,24 @@ export function AgentChatPanel({
     [controlsBusy, refreshSessions],
   )
 
+  const handleMemoryCandidateUpdate = useCallback(
+    (messageId: string, candidateId: string, patch: Partial<MemoryCandidateCard>) => {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === messageId
+            ? {
+                ...m,
+                memoryCandidates: m.memoryCandidates?.map((c) =>
+                  c.candidateId === candidateId ? { ...c, ...patch } : c,
+                ),
+              }
+            : m,
+        ),
+      )
+    },
+    [],
+  )
+
   const handlePromoteConversation = useCallback(() => {
     if (!conversationId || controlsBusy) return
     startTicketTransition(async () => {
@@ -855,6 +1104,22 @@ export function AgentChatPanel({
                           ...m,
                           activities: upsertActivity(m.activities, event.activity),
                           activitiesCollapsed: false,
+                        }
+                      : m,
+                  ),
+                )
+              })
+            } else if (event.type === 'memory_candidate' && event.candidate) {
+              flushSync(() => {
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === optimisticAgentId
+                      ? {
+                          ...m,
+                          memoryCandidates: upsertMemoryCandidate(m.memoryCandidates, {
+                            ...event.candidate,
+                            status: 'proposed',
+                          }),
                         }
                       : m,
                   ),
@@ -1169,6 +1434,7 @@ export function AgentChatPanel({
                       message={message}
                       isBusy={controlsBusy}
                       onDeleteContent={handleDeleteMessageContent}
+                      onMemoryCandidateUpdate={handleMemoryCandidateUpdate}
                     />
                   ))}
                   {isAgentTyping &&

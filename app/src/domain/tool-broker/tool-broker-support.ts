@@ -717,6 +717,15 @@ export function argsMeta(
     }
   }
 
+  if (input.tool === 'memory_propose') {
+    return {
+      ...base,
+      operation: input.args.operation,
+      type: input.args.type ?? null,
+      hasSupersedes: Boolean(input.args.supersedes),
+    }
+  }
+
   return {
     ...base,
     ticketId: input.args.ticketId,

@@ -139,13 +139,19 @@ export function generateTokenPair(): { rawToken: string; tokenHash: string } {
   return { rawToken, tokenHash }
 }
 
+/**
+ * `subjectId` a jóváhagyandó változás horgonya — training-útnál a ticketId,
+ * memória-útnál (agent-memory-persistent-cross-conversation-spec.md §9.4) a
+ * MemoryCandidate.id. A hívó (write-gate-service.ts) garantálja, hogy pontosan
+ * az egyik horgony létezik egy adott tokenre.
+ */
 export function signWriteGateToken(params: {
   tokenHash: string
   expectedDiffHash: string
-  ticketId: string
+  subjectId: string
   expiresAt: Date
 }): string {
-  const msg = [params.tokenHash, params.expectedDiffHash, params.ticketId, params.expiresAt.toISOString()].join(':')
+  const msg = [params.tokenHash, params.expectedDiffHash, params.subjectId, params.expiresAt.toISOString()].join(':')
   return createHmac('sha256', WRITE_GATE_SECRET).update(msg).digest('hex')
 }
 
@@ -186,7 +192,7 @@ export function verifySkillVersionSignature(params: {
 export function verifyWriteGateSignature(params: {
   tokenHash: string
   expectedDiffHash: string
-  ticketId: string
+  subjectId: string
   expiresAt: Date
   signature: string
 }): boolean {

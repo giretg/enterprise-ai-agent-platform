@@ -1,9 +1,21 @@
 import { z } from 'zod'
 import { prisma } from '@/lib/db'
-import type { AgentRepository, DocumentRepository, TicketRepository } from '@/repositories/interfaces'
+import type { AgentRepository, AuditRepository, DocumentRepository, TicketRepository } from '@/repositories/interfaces'
 import { composeSystemPrompt } from '@/lib/agent-prompt'
+import { buildMemoryRetrievalQuery } from '../conversation/context-assembly'
+import {
+  buildMemoryRetrievalRequest,
+  loadProjectMemoryContext,
+  memoryContextSystemMessages,
+} from '../memory/memory-runtime-helper'
+import type { MemoryRetrievalService } from '../memory/memory-retrieval-service'
 import type { ModelGateway } from '../gateway/model-gateway'
 import { TicketService } from '../ticket/ticket-service'
+
+// Bookkeeper (számla-feldolgozás) ad-hoc, ticket-mentes, egyszeri elemzés —
+// nincs Folyamat-definíció, ezért mindig a per-tenant+agent `__general__`
+// projekt-scope (§2.1 default szentinel).
+const BOOKKEEPER_PROJECT_KEY = '__general__'
 
 const llmString = z
   .union([z.string(), z.null(), z.undefined()])
@@ -41,6 +53,8 @@ export class BookkeeperAgentRuntime {
     private tickets: TicketRepository,
     private gateway: ModelGateway,
     private ticketService: TicketService,
+    private audit?: AuditRepository,
+    private memoryRetrieval?: MemoryRetrievalService,
   ) {}
 
   async processDocument(documentId: string, agentId: string, createdById: string) {
@@ -65,14 +79,35 @@ export class BookkeeperAgentRuntime {
         temperature?: number
       }
 
+      const memoryContext =
+        this.memoryRetrieval && this.audit
+          ? await loadProjectMemoryContext({
+              memoryRetrieval: this.memoryRetrieval,
+              audit: this.audit,
+              actorId: agentId,
+              agentVersion: agentDetails.agent.currentVersion,
+              tenantId: agentDetails.agent.tenantId,
+              request: buildMemoryRetrievalRequest({
+                agentId,
+                memoryId: agentDetails.agent.memoryId,
+                tenantId: agentDetails.agent.tenantId,
+                projectKey: BOOKKEEPER_PROJECT_KEY,
+                query: buildMemoryRetrievalQuery({
+                  queryKind: 'task',
+                  ticketTitle: document.filename,
+                  stepInstruction: document.extractedText?.slice(0, 2000) ?? undefined,
+                }),
+                queryKind: 'task',
+                runRef: {},
+              }),
+            })
+          : { block: null }
+
       const { content } = await this.gateway.call({
         agentId,
         messages: [
           { role: 'system', content: composeSystemPrompt(agentDetails.agent) },
-          {
-            role: 'system',
-            content: `Memória (aktív verzió):\n${agentDetails.memoryContent ?? '(üres)'}`,
-          },
+          ...memoryContextSystemMessages(memoryContext.block),
           {
             role: 'user',
             content: `Elemezd az alábbi számlát és adj vissza CSAK valid JSON-t, semmi mást:
