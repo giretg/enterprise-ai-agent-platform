@@ -35,6 +35,19 @@ let activeMode: DatabaseMode = resolveInitialMode()
 let lastRefreshAt = 0
 let refreshInFlight: Promise<DatabaseMode> | null = null
 
+/** Secret Manager / .env másolás gyakran idézőjeleket hagy a connection stringen. */
+function normalizeDatabaseUrl(value: string | undefined): string | undefined {
+  const trimmed = value?.trim()
+  if (!trimmed) return undefined
+  if (
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+  ) {
+    return trimmed.slice(1, -1)
+  }
+  return trimmed
+}
+
 function resolveInitialMode(): DatabaseMode {
   const env = process.env.DATABASE_MODE?.trim().toLowerCase()
   if (env === 'test') return 'test'
@@ -42,7 +55,7 @@ function resolveInitialMode(): DatabaseMode {
 }
 
 export function isTestDatabaseConfigured(): boolean {
-  return Boolean(process.env.DATABASE_URL_TEST?.trim())
+  return Boolean(normalizeDatabaseUrl(process.env.DATABASE_URL_TEST))
 }
 
 export function isNeonBranchRestoreConfigured(): boolean {
@@ -56,16 +69,16 @@ export function isNeonBranchRestoreConfigured(): boolean {
 
 export function directDatabaseUrlForMode(mode: DatabaseMode): string {
   if (mode === 'test') {
-    const direct = process.env.DIRECT_URL_TEST?.trim()
-    const pooled = process.env.DATABASE_URL_TEST?.trim()
+    const direct = normalizeDatabaseUrl(process.env.DIRECT_URL_TEST)
+    const pooled = normalizeDatabaseUrl(process.env.DATABASE_URL_TEST)
     const url = direct ?? pooled
     if (!url) {
       throw new Error('DIRECT_URL_TEST / DATABASE_URL_TEST nincs beállítva')
     }
     return url
   }
-  const direct = process.env.DIRECT_URL?.trim()
-  const pooled = process.env.DATABASE_URL?.trim()
+  const direct = normalizeDatabaseUrl(process.env.DIRECT_URL)
+  const pooled = normalizeDatabaseUrl(process.env.DATABASE_URL)
   const url = direct ?? pooled
   if (!url) {
     throw new Error('DIRECT_URL / DATABASE_URL nincs beállítva')
@@ -84,13 +97,13 @@ export function setActiveDatabaseMode(mode: DatabaseMode): void {
 
 export function databaseUrlForMode(mode: DatabaseMode): string {
   if (mode === 'test') {
-    const testUrl = process.env.DATABASE_URL_TEST?.trim()
+    const testUrl = normalizeDatabaseUrl(process.env.DATABASE_URL_TEST)
     if (!testUrl) {
       throw new Error('DATABASE_URL_TEST nincs beállítva — teszt mód nem használható')
     }
     return testUrl
   }
-  const prodUrl = process.env.DATABASE_URL?.trim()
+  const prodUrl = normalizeDatabaseUrl(process.env.DATABASE_URL)
   if (!prodUrl) {
     throw new Error('DATABASE_URL nincs beállítva')
   }
@@ -168,7 +181,9 @@ export function hostFromDatabaseUrl(url: string | undefined): string | null {
 export function buildDatabaseModeInfo(state: DatabaseModeState): DatabaseModeInfo {
   const mode = state.mode === 'test' && !isTestDatabaseConfigured() ? 'production' : state.mode
   const activeUrl =
-    mode === 'test' ? process.env.DATABASE_URL_TEST : process.env.DATABASE_URL
+    mode === 'test'
+      ? normalizeDatabaseUrl(process.env.DATABASE_URL_TEST)
+      : normalizeDatabaseUrl(process.env.DATABASE_URL)
   return {
     ...state,
     mode,
