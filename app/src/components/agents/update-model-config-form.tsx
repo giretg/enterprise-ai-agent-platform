@@ -30,10 +30,14 @@ export function UpdateModelConfigForm({
   const [provider, setProvider] = useState(current.provider)
   const [model, setModel] = useState(current.model)
   const safeProviders = providers.length > 0 ? providers : MODEL_PROVIDERS
-  const providerOptions = safeProviders.some((p) => p.value === current.provider)
-    ? safeProviders
+  const uniqueProviders = safeProviders.filter(
+    (option, index, allProviders) =>
+      allProviders.findIndex((candidate) => candidate.value === option.value) === index,
+  )
+  const providerOptions = uniqueProviders.some((p) => p.value === current.provider)
+    ? uniqueProviders
     : [
-        ...safeProviders,
+        ...uniqueProviders,
         {
           ...providerOption(current.provider),
           defaultModel: current.model,
