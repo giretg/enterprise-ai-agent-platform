@@ -112,12 +112,15 @@ env:
   - variable: WRITE_GATE_SECRET
     secret: WRITE_GATE_SECRET
     availability:
+      - BUILD
       - RUNTIME
   - variable: OAUTH_STATE_SECRET
     secret: OAUTH_STATE_SECRET
     availability:
+      - BUILD
       - RUNTIME
   - variable: SANDBOX_PREVIEW_SECRET
     secret: SANDBOX_PREVIEW_SECRET
     availability:
+      - BUILD
       - RUNTIME
