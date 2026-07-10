@@ -103,6 +103,7 @@
     "test:sandbox-csp": "tsx scripts/sandbox-csp.test.ts",
     "test:observability": "tsx scripts/observability.test.ts",
     "test:health-endpoints": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/health-endpoints.test.ts",
+    "test:workspace-resource-access": "tsx scripts/workspace-resource-access.test.ts",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "postinstall": "prisma generate"

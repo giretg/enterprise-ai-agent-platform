@@ -263,9 +263,12 @@ function buildTicketGenerationPrompt(input: {
 
 export async function listTickets(input?: { filter?: unknown }) {
   try {
-    await requireTenantRole('viewer')
+    const user = await requireTenantRole('viewer')
     const filter = input?.filter ? ticketFilterSchema.parse(input.filter) : undefined
-    const tickets = await repositories.tickets.findMany(filter)
+    const tickets = await repositories.tickets.findMany({
+      ...(filter ?? {}),
+      tenantId: user.activeTenantId,
+    })
     return ok(tickets)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list tickets')
@@ -275,14 +278,16 @@ export async function listTickets(input?: { filter?: unknown }) {
 export async function listBoardAssignees() {
   try {
     const user = await requireTenantRole('operator')
-    const [agents, users] = await Promise.all([
+    const [agents, memberships] = await Promise.all([
       repositories.agents.findMany({ tenantId: user.activeTenantId }),
-      prisma.user.findMany({
-        // `role: { not: null }` a deny-by-default invariáns tükre (N-IAM-3): egy
-        // aktív, de role nélküli sor (elméletileg nem fordulhat elő) sem legyen kijelölhető.
-        where: { status: 'active', role: { not: null } },
-        select: { id: true, name: true, role: true },
-        orderBy: { name: 'asc' },
+      prisma.tenantMembership.findMany({
+        where: {
+          tenantId: user.activeTenantId,
+          status: 'active',
+          user: { status: 'active' },
+        },
+        include: { user: { select: { id: true, name: true } } },
+        orderBy: { user: { name: 'asc' } },
       }),
     ])
 
@@ -290,7 +295,11 @@ export async function listBoardAssignees() {
       agents: agents
         .filter((agent) => agent.status === 'active')
         .map((agent) => ({ id: agent.id, name: agent.name })),
-      users: users.filter((u): u is typeof u & { role: UserRole } => u.role !== null),
+      users: memberships.map((membership) => ({
+        id: membership.user.id,
+        name: membership.user.name,
+        role: membership.role,
+      })),
     })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list board assignees')
@@ -459,9 +468,17 @@ export async function createBoardTicket(input: {
     const payload: Record<string, unknown> = { source: 'board' }
     if (parsed.description) payload.task = parsed.description
 
-    const assignee = await prisma.user.findUnique({ where: { id: parsed.assigneeId } })
-    if (!assignee) return fail('User not found')
-    if (assignee.status !== 'active') return fail('User is not active')
+    const assigneeMembership = await prisma.tenantMembership.findUnique({
+      where: {
+        tenantId_userId: {
+          tenantId: user.activeTenantId,
+          userId: parsed.assigneeId,
+        },
+      },
+      include: { user: { select: { status: true } } },
+    })
+    if (!assigneeMembership || assigneeMembership.status !== 'active') return fail('User not found')
+    if (assigneeMembership.user.status !== 'active') return fail('User is not active')
 
     const ticket = await repositories.tickets.create({
       tenantId: user.activeTenantId,
@@ -486,10 +503,11 @@ export async function createBoardTicket(input: {
 
 export async function dispatchBoardTicket(input: { ticketId: string }) {
   try {
-    await requireTenantRole('operator')
+    const user = await requireTenantRole('operator')
     const { id: ticketId } = ticketIdSchema.parse(input)
     const ticket = await repositories.tickets.findById(ticketId)
     if (!ticket) return fail('Ticket not found')
+    assertTicketTenantScope(ticket, user.activeTenantId)
     if (ticket.assigneeType !== 'agent' || !ticket.assigneeId) {
       return fail('Ticket is not assigned to an agent')
     }
@@ -507,8 +525,11 @@ export async function dispatchBoardTicket(input: { ticketId: string }) {
 
 export async function listBoardTickets() {
   try {
-    await requireTenantRole('viewer')
-    const tickets = await repositories.tickets.findMany({ excludeTest: true })
+    const user = await requireTenantRole('viewer')
+    const tickets = await repositories.tickets.findMany({
+      excludeTest: true,
+      tenantId: user.activeTenantId,
+    })
 
     const agentIds = new Set<string>()
     const userIds = new Set<string>()
@@ -586,10 +607,11 @@ export async function revokeScheduledTask(input: { id: string }) {
 
 export async function getTicket(input: { id: string }) {
   try {
-    await requireTenantRole('viewer')
+    const user = await requireTenantRole('viewer')
     const { id } = ticketIdSchema.parse(input)
     const ticket = await repositories.tickets.findById(id)
     if (!ticket) return fail('Ticket not found')
+    assertTicketTenantScope(ticket, user.activeTenantId)
 
     let reproduction: {
       agentVersion: number
@@ -664,8 +686,11 @@ export async function getTicket(input: { id: string }) {
 
 export async function getTicketTransitions(input: { id: string }) {
   try {
-    await requireTenantRole('viewer')
+    const user = await requireTenantRole('viewer')
     const { id } = ticketIdSchema.parse(input)
+    const ticket = await repositories.tickets.findById(id)
+    if (!ticket) return fail('Ticket not found')
+    assertTicketTenantScope(ticket, user.activeTenantId)
     const transitions = await repositories.tickets.findTransitions(id)
     return ok(transitions)
   } catch (e) {

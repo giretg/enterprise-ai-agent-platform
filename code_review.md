@@ -1,5 +1,34 @@
 # Enterprise code review log
 
+## 2026-07-11 - Ticket board / workspace file tenant boundary
+
+- Reviewed modules:
+  - `app/src/app/actions/platform.ts` ticket board actions (`listTickets`, `listBoardAssignees`, `createBoardTicket`, `dispatchBoardTicket`, `listBoardTickets`, `getTicket`, `getTicketTransitions`)
+  - `app/src/app/api/v1/tickets/[id]/workspace/files/route.ts` ticket workspace list/download/signed-url/upload route
+  - `app/src/app/api/v1/conversations/[id]/workspace/files/route.ts` conversation workspace list/download/signed-url/upload route
+  - `app/src/domain/file-editor/workspace-storage.ts` storage key and quota behavior
+  - `app/src/domain/agent/general-task-runtime.ts` and `app/src/domain/agent/agent-chat-runtime.ts` runtime workspace tenant-key usage
+- Result:
+  - Found a cross-tenant IDOR class in the ticket/workspace surface. The workspace file routes only required a logged-in user, loaded tickets/conversations by global ID, and derived the storage prefix from legacy `user.tenantId` instead of the active tenant context. A user who knew another tenant's ticket or conversation ID could list, download, request signed URLs for, or upload files against that workspace route.
+  - Found related board-ticket tenant gaps. `listTickets`, `listBoardTickets`, `getTicket`, `getTicketTransitions`, and `dispatchBoardTicket` authenticated the caller but did not consistently scope the target ticket to the active tenant. `listBoardAssignees` listed globally active users, and human ticket creation accepted any active user ID, allowing cross-tenant user discovery and assignment.
+- Fix applied:
+  - Added `resolveWorkspaceTenantKey` as a small fail-closed workspace resource guard. HTTP workspace access now requires active tenant auth: `viewer` for list/download/signed-url and `operator` for upload. The route returns an opaque 404 for cross-tenant or tenantless legacy resources and uses the active tenant key only after the resource tenant matches.
+  - Ticket lists and board lists now pass `tenantId: activeTenantId`; single-ticket read/transition lookup and dispatch now assert `ticket.tenantId === activeTenantId` before returning data or triggering work.
+  - Board human assignees now come from active `TenantMembership` rows in the selected tenant, not global users. Human ticket creation requires an active membership in the active tenant.
+  - Added `scripts/workspace-resource-access.test.ts` and `test:workspace-resource-access` for the storage-key tenant invariant, including cross-tenant and tenantless legacy denial.
+- Business impact:
+  - Protects customer work artifacts: ticket and conversation workspaces may contain uploaded documents, generated files, tool outputs, and deliverables. These are tenant-owned business records and must not be accessible by knowing an ID from another tenant.
+  - Prevents support/operations users in one tenant from seeing another tenant's tickets, transitions, assignee population, or accidentally dispatching another tenant's agent work.
+  - Aligns the board and workspace APIs with the platform's enterprise tenant model: the active tenant membership is the authority boundary, not legacy single-tenant user metadata.
+- Verification:
+  - `npm run test:workspace-resource-access --prefix app`
+  - `npm run test:conversation-session --prefix app`
+  - `npm run test:tenant-isolation --prefix app`
+  - `npx eslint 'src/app/api/v1/tickets/[id]/workspace/files/route.ts' 'src/app/api/v1/conversations/[id]/workspace/files/route.ts' src/app/actions/platform.ts src/lib/workspace-resource-access.ts scripts/workspace-resource-access.test.ts` from `app/`
+  - `npx tsc --noEmit` from `app/`
+- Decisions raised (not auto-fixed):
+  - D1 — Tenantless legacy ticket/conversation workspaces are now denied through these HTTP routes. If the product needs migration access for old `tenantId = null` workspaces, build an explicit admin migration/export flow rather than letting tenant users reach null-tenant storage implicitly.
+
 ## 2026-07-10 - Sandbox App Registry / preview-token isolation / archive tenant boundary
 
 - Reviewed modules:

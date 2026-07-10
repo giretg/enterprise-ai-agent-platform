@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server'
-import { getCurrentUser } from '@/auth'
+import { requireTenantRole } from '@/auth/tenant-context'
 import { prisma } from '@/lib/db'
 import { WorkspaceStorage } from '@/domain/file-editor/workspace-storage'
 import { FileEditorError } from '@/domain/file-editor/workspace-storage'
+import { resolveWorkspaceTenantKey } from '@/lib/workspace-resource-access'
 
 function jsonError(message: string, status: number) {
   return NextResponse.json({ success: false, error: message }, { status })
@@ -15,7 +16,7 @@ function getStorage() {
 async function resolveConversation(conversationId: string) {
   return prisma.conversation.findUnique({
     where: { id: conversationId },
-    select: { id: true, agentId: true, createdById: true },
+    select: { id: true, tenantId: true, agentId: true, createdById: true },
   })
 }
 
@@ -27,19 +28,24 @@ export async function GET(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const user = await getCurrentUser().catch(() => null)
+  const user = await requireTenantRole('viewer').catch(() => null)
   if (!user) return jsonError('Unauthorized', 401)
 
   const { id: conversationId } = await params
   const conversation = await resolveConversation(conversationId)
   if (!conversation) return jsonError('Conversation not found', 404)
+  let tenantId: string
+  try {
+    tenantId = resolveWorkspaceTenantKey(conversation, user.activeTenantId)
+  } catch {
+    return jsonError('Conversation not found', 404)
+  }
 
   const url = new URL(request.url)
   const filePath = url.searchParams.get('path')
   const signed = url.searchParams.get('signed') === '1'
 
   const storage = getStorage()
-  const tenantId = user.tenantId ?? 'global'
 
   try {
     if (filePath) {
@@ -79,12 +85,18 @@ export async function POST(
   request: Request,
   { params }: { params: Promise<{ id: string }> },
 ) {
-  const user = await getCurrentUser().catch(() => null)
+  const user = await requireTenantRole('operator').catch(() => null)
   if (!user) return jsonError('Unauthorized', 401)
 
   const { id: conversationId } = await params
   const conversation = await resolveConversation(conversationId)
   if (!conversation) return jsonError('Conversation not found', 404)
+  let tenantId: string
+  try {
+    tenantId = resolveWorkspaceTenantKey(conversation, user.activeTenantId)
+  } catch {
+    return jsonError('Conversation not found', 404)
+  }
 
   let formData: FormData
   try {
@@ -103,7 +115,6 @@ export async function POST(
   if (file.size > MAX) return jsonError('File exceeds 50 MB limit', 413)
 
   const storage = getStorage()
-  const tenantId = user.tenantId ?? 'global'
 
   try {
     const buf = Buffer.from(await file.arrayBuffer())
