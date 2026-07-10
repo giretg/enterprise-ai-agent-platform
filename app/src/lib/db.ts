@@ -74,7 +74,10 @@ function resolvePrismaClient(): PrismaClient {
 
 export const prisma: PrismaClient = new Proxy({} as PrismaClient, {
   get(_target, prop) {
-    void ensureActiveDatabaseMode()
+    // Tűz-és-felejtsd frissítés: DB-kiesés alatt a rejectet ITT kell elnyelni, különben
+    // property-access-enként keletkezik egy gazdátlan promise → unhandledRejection.
+    // A tényleges lekérdezés úgyis a saját hívójánál hibázik, kezelhető módon.
+    void ensureActiveDatabaseMode().catch(() => {})
     const client = resolvePrismaClient()
     const value = Reflect.get(client, prop, client)
     if (typeof value === 'function') {

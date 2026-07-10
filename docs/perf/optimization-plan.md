@@ -67,12 +67,43 @@ csak a kódból következik — **verifikálandó**, hogy okozott-e adatinkonzis
 (pl. `AgentVersion` sor `Agent.currentVersion` bump nélkül). A P0 javítás a
 kockázatot megszünteti.
 
-### Kapcsolódó, még nyitott
+---
 
-- **`connection_limit` a poololt Neon URL-en.** Egyetlen kliens mellett is érdemes
-  explicitté tenni: `?connection_limit=5&pool_timeout=10`. Enélkül a Prisma
-  `num_cpus * 2 + 1` alapértéket használ, ami több Cloud Run példány mellett
-  a Neon pooler felé továbbra is túlfoglalhat.
+## P0b — A 2026-07-10 13:01-es 500-as incidens (JAVÍTVA)
+
+Tünet: `GET /control-plane` → 500, 5.493 s, majd
+`PrismaClientInitializationError: Can't reach database server at ep-divine-sunset-…-pooler`,
+végül `⨯ unhandledRejection`.
+
+**Nem a Neon halt meg.** A Secret Managerben lévő prod `DATABASE_URL`-lel a
+`select 1` innen hibátlanul lefut, a host DNS-e és a TCP/5432 is rendben. A
+`5.493 s` gyakorlatilag pontosan a Prisma alapértelmezett 5 s-es `connect_timeout`-ja,
+ami kapcsolat-kiéheztetésre utal — összhangban a P0 szivárgással.
+
+A `db.ts` viszont bármilyen átmeneti DB-hibát **önerősítő összeomlássá** alakított.
+Három egymást erősítő hiba, mindhárom javítva:
+
+1. **Gazdátlan promise.** A proxy `get` trapje `void ensureActiveDatabaseMode()`-ot
+   hívott `.catch()` nélkül. DB-kiesés alatt ez property-access-enként egy elkapatlan
+   rejectet szült → `unhandledRejection`, ami a konténert is elviheti.
+   → `.catch(() => {})`; a valódi hiba úgyis a lekérdezés hívójánál jelenik meg.
+
+2. **Retry-vihar.** A `refreshActiveDatabaseMode` csak **sikeres** olvasás után
+   frissítette a `lastRefreshAt`-et. Hiba esetén a 15 s-es TTL sosem nyílt meg, így
+   minden `prisma.<model>` hozzáférés új `platformSetting.findUnique()`-et lőtt ki a
+   már elérhetetlen adatbázisra — a P0 szivárgás miatt mindegyiket **saját új
+   kliensről**. Mért hatás: 50 hívás → 50 lekérdezés; javítás után 50 hívás → **1**.
+   → `lastRefreshAt` a `finally` ágba került; a mód az utolsó ismert értéken marad.
+
+3. **Pool-méret.** A P0 javítás után egyetlen megosztott kliens van, és a Prisma
+   alapértelmezése `num_cpus * 2 + 1` — Cloud Runon `cpu: 1` mellett **3 kapcsolat**,
+   `concurrency: 40` mellett. Ez a szivárgás megszüntetése után pool-timeoutot okozott
+   volna, tehát a P0 önmagában nem lett volna elég.
+   → `applyPoolDefaults()` a `createPrismaClientForUrl`-ben:
+   `connection_limit=10` (env-ből felülírható), `pool_timeout=20`, `connect_timeout=10`.
+   A connection stringben már megadott értéket sosem írja felül.
+
+A javítások a kódban vannak, a `DATABASE_URL` secretet **nem kell** hozzányúlni.
 
 ---
 

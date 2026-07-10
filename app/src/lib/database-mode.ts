@@ -147,9 +147,12 @@ export async function refreshActiveDatabaseMode(
       } else {
         activeMode = state.mode
       }
-      lastRefreshAt = Date.now()
       return activeMode
     } finally {
+      // Hibánál is TTL-t nyitunk: DB-kiesés alatt a `prisma` proxy property-access-enként
+      // hívna ide, és minden egyes hívás új platformSetting-lekérdezést indítana a már
+      // elérhetetlen adatbázis felé. A mód ilyenkor az utolsó ismert értéken marad.
+      lastRefreshAt = Date.now()
       refreshInFlight = null
     }
   })()
@@ -157,9 +160,34 @@ export async function refreshActiveDatabaseMode(
   return refreshInFlight
 }
 
+/**
+ * A Prisma alapértelmezett `connection_limit`-je `num_cpus * 2 + 1`. Cloud Runon
+ * `cpu: 1` mellett ez 3 kapcsolat, miközben a `concurrency` 40 — a poolra váró
+ * kérések `pool_timeout` hibába futnának. A poolt ezért explicitté tesszük, de a
+ * connection stringben megadott értéket sosem írjuk felül.
+ */
+const POOL_DEFAULTS: Record<string, string> = {
+  connection_limit: process.env.PRISMA_CONNECTION_LIMIT?.trim() || '10',
+  pool_timeout: '20',
+  connect_timeout: '10',
+}
+
+export function applyPoolDefaults(url: string): string {
+  try {
+    const parsed = new URL(url)
+    for (const [key, value] of Object.entries(POOL_DEFAULTS)) {
+      if (!parsed.searchParams.has(key)) parsed.searchParams.set(key, value)
+    }
+    return parsed.toString()
+  } catch {
+    // Nem parse-olható URL — a Prisma úgyis beszédesebb hibát ad rá, mint mi.
+    return url
+  }
+}
+
 export function createPrismaClientForUrl(url: string): PrismaClient {
   return new PrismaClient({
-    datasources: { db: { url } },
+    datasources: { db: { url: applyPoolDefaults(url) } },
     log: process.env.NODE_ENV === 'development' ? ['error', 'warn'] : ['error'],
   })
 }
