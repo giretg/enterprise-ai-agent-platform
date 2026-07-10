@@ -129,3 +129,9 @@ env:
     value: "projects/346824017066/secrets"
     availability:
       - RUNTIME
+  # Per-user OAuth grant tokenek (Gmail stb.) — Secret Manager; nélküle .connector-grants fájl
+  # az ephemeral konténer FS-en (deploy/restart után ENOENT).
+  - variable: CONNECTOR_GRANT_SECRET_PREFIX
+    value: "projects/346824017066/secrets"
+    availability:
+      - RUNTIME
