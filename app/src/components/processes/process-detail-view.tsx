@@ -125,13 +125,22 @@ export function ProcessDetailView({ data, canAct }: { data: ProcessDetailData; c
 
   // WP-1 / D10 — Runtime Trace overlay poll (3–5s), amíg a folyamat nem terminális.
   // Terminális állapotban (completed/failed/cancelled) a poll leáll. Push (SSE) későbbi opt.
+  // Rejtett fülön nem frissítünk: a `router.refresh()` újrafuttatja a route szerver-lekérdezéseit,
+  // vagyis egy nyitva felejtett nézet ébren tartaná a Neon computeot. Visszatéréskor azonnal
+  // behozzuk a lemaradást.
   const isTerminal = ['completed', 'failed', 'cancelled'].includes(data.process.status)
   useEffect(() => {
     if (isTerminal) return
-    const id = setInterval(() => {
+    const refreshIfVisible = () => {
+      if (document.hidden) return
       router.refresh()
-    }, 4000)
-    return () => clearInterval(id)
+    }
+    const id = setInterval(refreshIfVisible, 4000)
+    document.addEventListener('visibilitychange', refreshIfVisible)
+    return () => {
+      clearInterval(id)
+      document.removeEventListener('visibilitychange', refreshIfVisible)
+    }
   }, [isTerminal, router])
 
   const gatesByStep = new Map<string, IntendedFlow['gates']>()

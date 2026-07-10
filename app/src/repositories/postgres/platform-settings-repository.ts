@@ -9,7 +9,11 @@ export class PostgresPlatformSettingsRepository implements PlatformSettingsRepos
     return row ? row.value : null
   }
 
-  async set(key: string, value: Prisma.InputJsonValue, updatedById?: string | null): Promise<void> {
+  async set(
+    key: string,
+    value: Prisma.InputJsonValue | Prisma.NullTypes.JsonNull,
+    updatedById?: string | null,
+  ): Promise<void> {
     await configPrisma.platformSetting.upsert({
       where: { key },
       create: { key, value, updatedById: updatedById ?? null },

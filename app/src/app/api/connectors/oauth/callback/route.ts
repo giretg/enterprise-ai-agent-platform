@@ -2,11 +2,12 @@ import { NextResponse } from 'next/server'
 import { getCurrentUser } from '@/auth'
 import { services } from '@/domain'
 import { prisma } from '@/lib/db'
+import { publicAppUrl } from '@/lib/public-app-url'
 
 export async function GET(request: Request) {
   const user = await getCurrentUser().catch(() => null)
   if (!user) {
-    return NextResponse.redirect(new URL('/sign-in', request.url))
+    return NextResponse.redirect(publicAppUrl('/sign-in', request))
   }
 
   const url = new URL(request.url)
@@ -16,12 +17,12 @@ export async function GET(request: Request) {
 
   if (error) {
     return NextResponse.redirect(
-      new URL(`/control-plane/connectors?error=${encodeURIComponent(error)}`, request.url),
+      publicAppUrl(`/control-plane/connectors?error=${encodeURIComponent(error)}`, request),
     )
   }
 
   if (!code || !state) {
-    return NextResponse.redirect(new URL('/control-plane/connectors?error=missing_code', request.url))
+    return NextResponse.redirect(publicAppUrl('/control-plane/connectors?error=missing_code', request))
   }
 
   try {
@@ -38,11 +39,11 @@ export async function GET(request: Request) {
       actorId: user.id,
     })
 
-    return NextResponse.redirect(new URL('/control-plane/connectors?connected=1', request.url))
+    return NextResponse.redirect(publicAppUrl('/control-plane/connectors?connected=1', request))
   } catch (e) {
     const message = e instanceof Error ? e.message : 'oauth_callback_failed'
     return NextResponse.redirect(
-      new URL(`/control-plane/connectors?error=${encodeURIComponent(message)}`, request.url),
+      publicAppUrl(`/control-plane/connectors?error=${encodeURIComponent(message)}`, request),
     )
   }
 }

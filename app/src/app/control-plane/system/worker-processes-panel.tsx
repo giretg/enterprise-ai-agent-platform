@@ -1,16 +1,18 @@
 'use client'
 
-import { useCallback, useEffect, useState, useTransition } from 'react'
+import { useCallback, useState, useTransition } from 'react'
 import { Card } from '@/components/ui/shell'
 import {
   getWorkerProcessesStatus,
   runDispatchCycleNow,
-  setCloudRunDispatcherScale,
   setDispatchSchedulerIntervalMinutes,
   setDispatchSchedulerPaused,
   stopLocalDispatcherWorker,
   type WorkerProcessesStatus,
 } from '@/app/actions/platform'
+import type { DispatchCycleRunRecord } from '@/domain/platform-settings/platform-settings-service'
+import type { MonitorControlsView } from './monitor-control-panel'
+import { isSafetyNetAutoOn } from './automation-status'
 
 /** N-percenkénti cron mintából (star-slash-N óra-perc formátum) N-t olvas ki; minden más ütemnél a nyers cron-szöveget mutatjuk, nem szerkeszthető dial-lal. */
 function parseEveryNMinutes(schedule: string | null): number | null {
@@ -26,34 +28,83 @@ const TRIGGER_LABELS: Record<string, string> = {
   manual: 'kézi futtatás',
 }
 
-const REFRESH_INTERVAL_MS = 20_000
+function formatLastCycleDetails(cycle: DispatchCycleRunRecord): string {
+  const monitorPart = cycle.monitorSweepRan
+    ? cycle.monitorEscalated > 0
+      ? `monitor: ${cycle.monitorEscalated} eszkalált`
+      : 'monitor: söpört, csendes'
+    : 'monitor: nem söpört (kill-switch vagy kimaradt lépés)'
+  return [
+    `${cycle.reclaimedDispatches} elakadt futás visszavéve`,
+    `${cycle.reclaimedScheduledTasks} ütemezett task reclaim`,
+    `${cycle.materializedScheduledTasks} ütemezett task materializálva`,
+    monitorPart,
+    `${cycle.workspacePurgedTickets} workspace takarítva`,
+    `${cycle.dispatchScanned} ticket vizsgálva, ${cycle.dispatchStarted} agent indítva, ${cycle.dispatchBudgetBlocked} budget-blokk`,
+  ].join(' · ')
+}
 
-function Dot({ color }: { color: 'emerald' | 'red' | 'amber' }) {
+function formatCycleRunMessage(summary: {
+  reclaimedDispatches: number
+  materializedScheduledTasks: number
+  monitorSweep: { ran: boolean; escalated: number; openedTickets: number }
+  workspacePurge: { purgedTickets: number }
+  dispatch: { scanned: number; started: number; budgetBlocked: number }
+}): string {
+  const monitorPart = summary.monitorSweep.ran
+    ? summary.monitorSweep.escalated > 0
+      ? `monitor: ${summary.monitorSweep.escalated} eszkalált, ${summary.monitorSweep.openedTickets} ticket`
+      : 'monitor: söpört'
+    : 'monitor: nem söpört'
+  return [
+    `${summary.reclaimedDispatches} elakadt futás visszavéve`,
+    `${summary.materializedScheduledTasks} ütemezett task materializálva`,
+    monitorPart,
+    `${summary.workspacePurge.purgedTickets} workspace takarítva`,
+    `${summary.dispatch.scanned} ticket vizsgálva, ${summary.dispatch.started} indítva`,
+  ].join(' · ')
+}
+
+/** `slate` = szándékosan kikapcsolt folyamat (nem hiba), szemben a `red` = váratlanul áll. */
+function Dot({ color }: { color: 'emerald' | 'red' | 'amber' | 'slate' }) {
   const cls = {
     emerald: 'bg-emerald-400',
     red: 'bg-red-400',
     amber: 'bg-amber-400',
+    slate: 'bg-ink-soft/40',
   }[color]
   return <span className={`inline-flex h-2.5 w-2.5 rounded-full ${cls}`} />
 }
 
 export function WorkerProcessesPanel({
   initial,
+  monitor,
   canEdit,
 }: {
   initial: WorkerProcessesStatus
+  monitor: MonitorControlsView
   canEdit: boolean
 }) {
   const [status, setStatus] = useState(initial)
+  // A gombokat CSAK a felhasználó által indított művelet tilthatja le; a frissítésnek külön
+  // jelzője van. Közös `useTransition`-ön osztozva a frissítés kiszürkítené a gombokat.
   const [pending, startTransition] = useTransition()
+  const [refreshing, setRefreshing] = useState(false)
   const [message, setMessage] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null)
-  const [confirmingCloudRunStop, setConfirmingCloudRunStop] = useState(false)
   const [schedulerIntervalInput, setSchedulerIntervalInput] = useState<number | null>(
     initial.scheduler.available ? parseEveryNMinutes(initial.scheduler.schedule) : null,
   )
 
-  const refresh = useCallback(() => {
-    startTransition(async () => {
+  /**
+   * Szándékosan nincs periodikus poll. A `getWorkerProcessesStatus` egy Server Action, és a
+   * Next minden hívása után újrarendereli a route RSC-fáját — a teljes `SystemPage`-et, annak
+   * minden lekérdezésével. Egy háttérben ketyegő poll így körönként felébresztené a Neon
+   * computeot és hívná a Cloud Scheduler API-t, pusztán attól, hogy nyitva van a fül. A panel
+   * adatai ritkán változnak: kézi „Frissítés”, illetve minden művelet után magától frissül.
+   */
+  const refresh = useCallback(async () => {
+    setRefreshing(true)
+    try {
       const res = await getWorkerProcessesStatus()
       if (res.success) {
         setStatus(res.data)
@@ -61,13 +112,10 @@ export function WorkerProcessesPanel({
           setSchedulerIntervalInput(parseEveryNMinutes(res.data.scheduler.schedule))
         }
       }
-    })
+    } finally {
+      setRefreshing(false)
+    }
   }, [])
-
-  useEffect(() => {
-    const id = setInterval(refresh, REFRESH_INTERVAL_MS)
-    return () => clearInterval(id)
-  }, [refresh])
 
   function stopLocal() {
     setMessage(null)
@@ -78,21 +126,7 @@ export function WorkerProcessesPanel({
       } else {
         setMessage({ tone: 'err', text: res.error })
       }
-      refresh()
-    })
-  }
-
-  function setCloudRunScale(minScale: 0 | 1) {
-    setMessage(null)
-    setConfirmingCloudRunStop(false)
-    startTransition(async () => {
-      const res = await setCloudRunDispatcherScale(minScale)
-      if (res.success) {
-        setMessage({ tone: 'ok', text: minScale === 0 ? 'Cloud Run leállítva (minScale=0).' : 'Cloud Run indítva (minScale=1).' })
-      } else {
-        setMessage({ tone: 'err', text: res.error })
-      }
-      refresh()
+      await refresh()
     })
   }
 
@@ -103,12 +137,12 @@ export function WorkerProcessesPanel({
       if (res.success) {
         setMessage({
           tone: 'ok',
-          text: `Ciklus lefutott: ${res.data.dispatch.scanned} ticket vizsgálva, ${res.data.dispatch.started} indítva, ${res.data.dispatch.budgetBlocked} budget_blocked.`,
+          text: `Ciklus lefutott: ${formatCycleRunMessage(res.data)}.`,
         })
       } else {
         setMessage({ tone: 'err', text: res.error })
       }
-      refresh()
+      await refresh()
     })
   }
 
@@ -121,7 +155,7 @@ export function WorkerProcessesPanel({
       } else {
         setMessage({ tone: 'err', text: res.error })
       }
-      refresh()
+      await refresh()
     })
   }
 
@@ -135,40 +169,51 @@ export function WorkerProcessesPanel({
       } else {
         setMessage({ tone: 'err', text: res.error })
       }
-      refresh()
+      await refresh()
     })
   }
 
   const local = status.local
-  const cloudRun = status.cloudRun
   const scheduler = status.scheduler
   const lastCycle = status.lastCycle
   const currentSchedulerInterval = scheduler.available ? parseEveryNMinutes(scheduler.schedule) : null
 
+  const safetyNetAutoOn = isSafetyNetAutoOn(scheduler, local)
+  const monitorWouldSweep = !monitor.killSwitch && safetyNetAutoOn
+
   return (
-    <Card title="Worker-folyamatok (Neon compute forrás)">
+    <Card title="Biztonsági háló (háttérfolyamatok)">
       <div className="space-y-4">
         <p className="text-xs text-ink-soft">
-          Ezek a folyamatok tartják nyitva a kapcsolatot a production adatbázissal (LISTEN/NOTIFY +
-          cron safety-net) — amíg futnak, a Neon compute nem tud lekapcsolni. A fenti dispatcher
-          kapcsoló csak az agent-indítást szünetelteti, ezeket nem. A ready ticketek zöme egyébként
-          azonnal, a keletkezésük kérésén belül dispatchelődik — ez a három folyamat csak a
-          biztonsági hálóhoz (stale-reclaim, ütemezett taskok, monitor-söprés) kell.
+          Egy <strong>kör</strong> öt lépést fut le sorban: elakadt futások visszavétele → ütemezett
+          taskok esedékessé tétele → monitor-söprés → workspace-takarítás → ready ticketek
+          agent-indítása (ha a dispatcher be van kapcsolva). A ready ticketek zöme ettől függetlenül
+          azonnal indul keletkezéskor.
         </p>
+        <p className="text-xs text-ink-soft">
+          <strong>Neon-költség:</strong> minden automatikus kör felébreszti az adatbázist. A lokális
+          worker ennél rosszabb: folyamatosan nyitva tartja a kapcsolatot. Teszt/üresjárathoz a fenti
+          „Üresjárat mód” vagy a Scheduler szüneteltetése a leghatékonyabb.
+        </p>
+
+        <div className="rounded-lg border border-line/40 bg-surface/20 px-4 py-2.5 text-xs text-ink-soft">
+          <strong>Monitor-söprés most:</strong>{' '}
+          {monitorWouldSweep
+            ? 'futni fog a következő automatikus körben (kill-switch ki, Scheduler vagy lokális worker aktív).'
+            : !monitor.killSwitch
+              ? 'engedélyezve, de nincs automatikus kör — a Scheduler szünetel és a lokális worker sem fut.'
+              : 'kill-switch miatt kimarad (a kör többi lépése lefuthat).'}
+        </div>
 
         {/* Lokális worker */}
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-line/40 px-4 py-3">
           <div className="flex items-center gap-3">
-            <Dot
-              color={
-                !local.available ? 'amber' : local.running ? 'emerald' : 'red'
-              }
-            />
+            <Dot color={!local.available ? 'slate' : local.running ? 'emerald' : 'red'} />
             <div>
-              <p className="text-sm font-medium">Lokális (dispatcher-worker.ts)</p>
+              <p className="text-sm font-medium">Lokális worker (fejlesztéshez)</p>
               <p className="text-xs text-ink-soft">
                 {!local.available
-                  ? 'Nem elérhető innen (csak akkor látható, ha ezt a felületet a saját géped lokális szerveréről nyitod meg és a LOCAL_WORKER_CONTROL_URL be van állítva).'
+                  ? 'Nem látható innen. Ez a sor csak akkor él, ha a felületet a saját gépeden futó szerverről nyitod meg. Éles környezetben nincs ilyen folyamat.'
                   : local.running
                     ? `Fut · ${local.cycles} ciklus · utolsó: ${local.lastCycleAt ? new Date(local.lastCycleAt).toLocaleTimeString('hu-HU') : '—'}${local.lastCycleError ? ` · hiba: ${local.lastCycleError}` : ''}`
                     : 'Nem fut.'}
@@ -185,84 +230,29 @@ export function WorkerProcessesPanel({
           </button>
         </div>
 
-        {/* Cloud Run wiki-dispatcher */}
-        <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-line/40 px-4 py-3">
-          <div className="flex items-center gap-3">
-            <Dot
-              color={
-                !cloudRun.available ? 'amber' : cloudRun.minScale === 0 ? 'red' : 'emerald'
-              }
-            />
-            <div>
-              <p className="text-sm font-medium">Cloud Run (wiki-dispatcher)</p>
-              <p className="text-xs text-ink-soft">
-                {!cloudRun.available
-                  ? `Nem elérhető: ${cloudRun.error}`
-                  : `minScale=${cloudRun.minScale ?? '?'} · ${cloudRun.ready ? 'ready' : 'not ready'}${
-                      cloudRun.latestReadyRevisionName ? ` · ${cloudRun.latestReadyRevisionName}` : ''
-                    }`}
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            {confirmingCloudRunStop ? (
-              <>
-                <span className="text-xs text-amber-400">Biztos? Ez az éles service-t állítja le.</span>
-                <button
-                  type="button"
-                  disabled={pending}
-                  onClick={() => setCloudRunScale(0)}
-                  className="rounded-lg bg-red-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-600 disabled:opacity-40"
-                >
-                  Igen, leállítás
-                </button>
-                <button
-                  type="button"
-                  disabled={pending}
-                  onClick={() => setConfirmingCloudRunStop(false)}
-                  className="rounded-lg border border-line px-3 py-1.5 text-sm"
-                >
-                  Mégse
-                </button>
-              </>
-            ) : (
-              <>
-                <button
-                  type="button"
-                  disabled={!canEdit || pending || !cloudRun.available || cloudRun.minScale === 1}
-                  onClick={() => setCloudRunScale(1)}
-                  className="rounded-lg bg-emerald-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-emerald-600 disabled:opacity-40"
-                >
-                  Indítás
-                </button>
-                <button
-                  type="button"
-                  disabled={!canEdit || pending || !cloudRun.available || cloudRun.minScale === 0}
-                  onClick={() => setConfirmingCloudRunStop(true)}
-                  className="rounded-lg bg-red-500 px-3 py-1.5 text-sm font-medium text-white hover:bg-red-600 disabled:opacity-40"
-                >
-                  Leállítás
-                </button>
-              </>
-            )}
-          </div>
-        </div>
-
         {/* Stateless dispatch-ciklus (Cloud Scheduler / kézi) */}
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-line/40 px-4 py-3">
           <div className="flex items-center gap-3">
             <Dot color={!lastCycle ? 'amber' : lastCycle.ok ? 'emerald' : 'red'} />
             <div>
-              <p className="text-sm font-medium">Dispatch-ciklus (stateless — /api/v1/internal/dispatch-cycle)</p>
+              <p className="text-sm font-medium">Biztonsági háló egy körének lefutása</p>
               <p className="text-xs text-ink-soft">
-                {!lastCycle
-                  ? 'Még nem futott ciklus ezen a csatornán.'
-                  : `${lastCycle.ok ? 'OK' : `hiba: ${lastCycle.error}`} · forrás: ${TRIGGER_LABELS[lastCycle.triggeredBy] ?? lastCycle.triggeredBy} · ${new Date(lastCycle.ranAt).toLocaleString('hu-HU')} · ${lastCycle.dispatchScanned} vizsgálva, ${lastCycle.dispatchStarted} indítva, ${lastCycle.dispatchBudgetBlocked} budget_blocked, ${lastCycle.reclaimedDispatches} reclaim`}
+                Nincs hozzá állandó folyamat. A lenti Cloud Scheduler N percenként meghívja a webapp{' '}
+                <span className="font-mono">/api/v1/internal/dispatch-cycle</span> végpontját: a
+                webapp felébred, lefuttat egy kört, majd visszaskálázódhat nullára. Ugyanez a kör fut
+                le a „Ciklus futtatása most” gombra is.
               </p>
               <p className="mt-1 text-xs text-ink-soft">
-                Nincs hozzá állandó process — GCP Cloud Schedulerrel percenként/N percenként hívva
-                kiváltja a fenti Cloud Run service-t (min-instances=1 nélkül is fut a biztonsági háló).
+                <strong>Utolsó lefutás:</strong>{' '}
+                {!lastCycle
+                  ? 'még nem futott.'
+                  : `${lastCycle.ok ? 'sikeres' : `hiba: ${lastCycle.error}`} · indította: ${TRIGGER_LABELS[lastCycle.triggeredBy] ?? lastCycle.triggeredBy} · ${new Date(lastCycle.ranAt).toLocaleString('hu-HU')}`}
               </p>
+              {lastCycle ? (
+                <p className="mt-1 text-xs text-ink-soft font-mono leading-relaxed">
+                  {formatLastCycleDetails(lastCycle)}
+                </p>
+              ) : null}
             </div>
           </div>
           <button
@@ -284,12 +274,23 @@ export function WorkerProcessesPanel({
               }
             />
             <div>
-              <p className="text-sm font-medium">Cloud Scheduler (dispatch-cycle-sweep)</p>
+              <p className="text-sm font-medium">Cloud Scheduler — a biztonsági háló ütemezője</p>
               <p className="text-xs text-ink-soft">
-                {!scheduler.available
-                  ? `Nem elérhető: ${scheduler.error}`
-                  : `${scheduler.state === 'ENABLED' ? 'Fut' : scheduler.state === 'PAUSED' ? 'Szüneteltetve' : 'Ismeretlen állapot'} · ütem: ${scheduler.schedule ?? '?'} (${scheduler.timeZone ?? '?'})${scheduler.lastAttemptStatus ? ` · utolsó futás: ${scheduler.lastAttemptStatus}` : ''}`}
+                Ez indítja az automatikus kört élesben. Ha szünetel, a ticketek továbbra is elindulhatnak
+                keletkezéskor, de az elakadt futások, ütemezett taskok, monitor-söprés és workspace-takarítás
+                kimarad — <strong>és a Neon nem ébred ütemezetten</strong>.
               </p>
+              <p className="mt-1 text-xs text-ink-soft">
+                {!scheduler.available
+                  ? `Állapot nem lekérdezhető innen: ${scheduler.error}. A GCP-ben a job ettől még futhat — ellenőrizd a Cloud Scheduler konzolt, vagy állítsd le ott is teszteléshez.`
+                  : `${scheduler.state === 'ENABLED' ? 'Fut' : scheduler.state === 'PAUSED' ? 'Szüneteltetve' : 'Ismeretlen állapot'} · ütem: ${scheduler.schedule ?? '?'} (${scheduler.timeZone ?? '?'})${scheduler.lastAttemptStatus ? ` · utolsó GCP-futás: ${scheduler.lastAttemptStatus}` : ''}`}
+              </p>
+              {scheduler.available && scheduler.state === 'PAUSED' ? (
+                <p className="mt-1 text-xs text-amber-400">
+                  Jelenleg szünetel — a biztonsági háló nem fut. Ez tudatos döntés lehet (így a Neon
+                  compute lekapcsolhat), csak tudni kell róla.
+                </p>
+              ) : null}
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-2">
@@ -341,12 +342,12 @@ export function WorkerProcessesPanel({
 
         {/* Docker per-ticket harness */}
         <div className="flex items-center gap-3 rounded-lg border border-line/40 px-4 py-3">
-          <Dot color="amber" />
+          <Dot color="slate" />
           <div>
-            <p className="text-sm font-medium">Docker (per-ticket harness)</p>
+            <p className="text-sm font-medium">Docker (fejlesztéshez)</p>
             <p className="text-xs text-ink-soft">
-              Nincs állandó folyamat — minden ticketnél új konténer indul, és a futás végén megszűnik.
-              Nincs mit leállítani rajta.
+              Nincs állandó folyamat: minden ticketnél új konténer indul, és a futás végén megszűnik.
+              Nincs rajta mit leállítani, és adatbázis-kapcsolatot sem tart nyitva.
             </p>
           </div>
         </div>
@@ -363,19 +364,18 @@ export function WorkerProcessesPanel({
           </p>
         ) : null}
 
-        <div className="flex items-center justify-between">
-          {!canEdit ? (
-            <p className="text-xs text-ink-soft">Leállításhoz admin jogosultság szükséges.</p>
-          ) : (
-            <span />
-          )}
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <p className="text-xs text-ink-soft">
+            Az adatok pillanatképek — magától nem frissül.
+            {!canEdit ? ' Leállításhoz admin jogosultság szükséges.' : ''}
+          </p>
           <button
             type="button"
-            disabled={pending}
-            onClick={refresh}
+            disabled={pending || refreshing}
+            onClick={() => void refresh()}
             className="rounded-lg border border-line px-3 py-1.5 text-sm disabled:opacity-40"
           >
-            Frissítés
+            {refreshing ? 'Frissítés…' : 'Frissítés'}
           </button>
         </div>
       </div>

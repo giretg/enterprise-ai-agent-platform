@@ -13,10 +13,6 @@ import { buildTenantAccessAuditFilter } from '@/domain/iam/access-audit'
 import { SandboxAppError } from '@/domain/sandbox/errors'
 import { dispatchBudgetFromEnv } from '@/domain/dispatcher/dispatcher-service'
 import {
-  getDispatcherServiceStatus,
-  setDispatcherServiceMinScale,
-} from '@/domain/dispatcher/cloud-run-service-admin'
-import {
   getSchedulerJobStatus,
   setSchedulerJobIntervalMinutes,
   setSchedulerJobPaused,
@@ -4130,10 +4126,6 @@ export type LocalWorkerStatus =
       cycles: number
     }
 
-export type CloudRunWorkerStatus =
-  | { available: false; error: string }
-  | { available: true; minScale: number | null; ready: boolean; latestReadyRevisionName: string | null }
-
 export type SchedulerWorkerStatus =
   | { available: false; error: string }
   | {
@@ -4146,7 +4138,6 @@ export type SchedulerWorkerStatus =
 
 export type WorkerProcessesStatus = {
   local: LocalWorkerStatus
-  cloudRun: CloudRunWorkerStatus
   scheduler: SchedulerWorkerStatus
   lastCycle: DispatchCycleRunRecord | null
 }
@@ -4181,17 +4172,14 @@ export async function getWorkerProcessesStatus(): Promise<ActionResult<WorkerPro
   try {
     await ensureActiveDatabaseMode()
     await requireTenantRole('operator')
-    const [local, cloudRun, scheduler, lastCycle] = await Promise.all([
+    const [local, scheduler, lastCycle] = await Promise.all([
       fetchLocalWorkerStatus(),
-      getDispatcherServiceStatus()
-        .then((status) => ({ available: true as const, ...status }))
-        .catch((e) => ({ available: false as const, error: e instanceof Error ? e.message : String(e) })),
       getSchedulerJobStatus()
         .then((status) => ({ available: true as const, ...status }))
         .catch((e) => ({ available: false as const, error: e instanceof Error ? e.message : String(e) })),
       services.platformSettings.getLastDispatchCycleRun(),
     ])
-    return ok({ local, cloudRun, scheduler, lastCycle })
+    return ok({ local, scheduler, lastCycle })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to read worker processes status')
   }
@@ -4237,19 +4225,6 @@ export async function stopLocalDispatcherWorker(): Promise<ActionResult<{ stoppe
   }
 }
 
-export async function setCloudRunDispatcherScale(
-  minScale: 0 | 1,
-): Promise<ActionResult<CloudRunWorkerStatus>> {
-  try {
-    await ensureActiveDatabaseMode()
-    await requirePlatformRole('superadmin')
-    const status = await setDispatcherServiceMinScale(minScale)
-    return ok({ available: true, ...status })
-  } catch (e) {
-    return fail(e instanceof Error ? e.message : 'Failed to update Cloud Run dispatcher scale')
-  }
-}
-
 /** A dispatch-cycle-sweep Cloud Scheduler job szüneteltetése/folytatása az admin UI-ból. */
 export async function setDispatchSchedulerPaused(
   paused: boolean,
@@ -4275,6 +4250,128 @@ export async function setDispatchSchedulerIntervalMinutes(
     return ok({ available: true, ...status })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to update Cloud Scheduler interval')
+  }
+}
+
+/**
+ * Teszt / üresjárat: agent-indítás ki, monitor kill-switch be, Cloud Scheduler szünet (ha elérhető).
+ * Elmenti az előző állapotot visszaállításhoz. A lokális workert külön kell leállítani.
+ */
+export async function setMinimalCostMode(): Promise<
+  ActionResult<{ warnings: string[] }>
+> {
+  try {
+    await ensureActiveDatabaseMode()
+    const actor = (await requirePlatformRole('superadmin')).user
+    const warnings: string[] = []
+
+    const [dispatcher, monitor] = await Promise.all([
+      services.platformSettings.getDispatcherControls(),
+      services.platformSettings.getMonitorControls(),
+    ])
+
+    let schedulerState: 'ENABLED' | 'PAUSED' | null = null
+    try {
+      const status = await getSchedulerJobStatus()
+      schedulerState = status.state === 'ENABLED' || status.state === 'PAUSED' ? status.state : null
+    } catch {
+      schedulerState = null
+    }
+
+    await services.platformSettings.saveAutomationIdleSnapshot(
+      {
+        dispatcherEnabled: dispatcher.enabled,
+        monitorKillSwitch: monitor.killSwitch,
+        schedulerState,
+        savedAt: new Date().toISOString(),
+      },
+      actor.id,
+    )
+
+    await services.platformSettings.setDispatcherControls({ enabled: false }, actor.id)
+    await services.platformSettings.setMonitorControls({ killSwitch: true }, actor.id)
+
+    try {
+      await setSchedulerJobPaused(true)
+    } catch (e) {
+      warnings.push(
+        e instanceof Error
+          ? `Cloud Scheduler nem szüneteltethető: ${e.message}`
+          : 'Cloud Scheduler nem szüneteltethető innen',
+      )
+    }
+
+    return ok({ warnings })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to enable minimal cost mode')
+  }
+}
+
+/** Üresjárat mód visszavonása — a bekapcsolás előtti mentett állapotot állítja vissza. */
+export async function resumeAutomationMode(): Promise<
+  ActionResult<{ warnings: string[] }>
+> {
+  try {
+    await ensureActiveDatabaseMode()
+    const actor = (await requirePlatformRole('superadmin')).user
+    const warnings: string[] = []
+
+    const snapshot = await services.platformSettings.getAutomationIdleSnapshot()
+    if (!snapshot) {
+      await services.platformSettings.setDispatcherControls({ enabled: true }, actor.id)
+      await services.platformSettings.setMonitorControls({ killSwitch: false }, actor.id)
+      try {
+        await setSchedulerJobPaused(false)
+      } catch (e) {
+        warnings.push(
+          e instanceof Error
+            ? `Cloud Scheduler nem folytatható: ${e.message}`
+            : 'Cloud Scheduler nem folytatható innen',
+        )
+      }
+      warnings.unshift('Nincs mentett állapot — alapértelmezett normál mód visszaállítva.')
+      return ok({ warnings })
+    }
+
+    await services.platformSettings.setDispatcherControls(
+      { enabled: snapshot.dispatcherEnabled },
+      actor.id,
+    )
+    await services.platformSettings.setMonitorControls(
+      { killSwitch: snapshot.monitorKillSwitch },
+      actor.id,
+    )
+
+    if (snapshot.schedulerState === 'ENABLED') {
+      try {
+        await setSchedulerJobPaused(false)
+      } catch (e) {
+        warnings.push(
+          e instanceof Error
+            ? `Cloud Scheduler nem folytatható: ${e.message}`
+            : 'Cloud Scheduler nem folytatható innen',
+        )
+      }
+    }
+
+    await services.platformSettings.clearAutomationIdleSnapshot(actor.id)
+
+    return ok({ warnings })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to resume automation mode')
+  }
+}
+
+export async function getAutomationIdleSnapshot(): Promise<
+  ActionResult<import('@/domain/platform-settings/platform-settings-service').AutomationIdleSnapshot | null>
+> {
+  try {
+    await ensureActiveDatabaseMode()
+    await requireTenantRole('operator')
+    const snapshot = await services.platformSettings.getAutomationIdleSnapshot()
+    return ok(snapshot)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to read idle snapshot')
   }
 }
 
@@ -4369,14 +4466,24 @@ async function linkActiveConnectorForAgent(input: {
   accessMode: ConnectorAccessMode
   missingMessage: string
 }): Promise<{ success: true } | { success: false; error: string }> {
-  const connector = await prisma.connector.findFirst({
-    where: {
-      type: input.type,
-      lifecycleState: 'active',
-      OR: [{ tenantId: input.tenantId }, { tenantId: null }],
-    },
-    orderBy: { createdAt: 'asc' },
-  })
+  let connector
+  if (input.type === 'web_search' && input.tenantId) {
+    const { findTenantWebSearchConnector, ensureTenantWebSearchConnector } = await import(
+      '@/domain/web-search/web-search-connector-service'
+    )
+    connector =
+      (await findTenantWebSearchConnector(input.tenantId)) ??
+      (await ensureTenantWebSearchConnector(input.tenantId))
+  } else {
+    connector = await prisma.connector.findFirst({
+      where: {
+        type: input.type,
+        lifecycleState: 'active',
+        OR: [{ tenantId: input.tenantId }, { tenantId: null }],
+      },
+      orderBy: { createdAt: 'asc' },
+    })
+  }
   if (!connector) return { success: false, error: input.missingMessage }
 
   await prisma.agentConnector.upsert({

@@ -5,6 +5,7 @@ import type {
   TenantMembershipRepository,
   PlatformMembershipRepository,
 } from '@/repositories/interfaces'
+import { ensureTenantWebSearchConnector } from '@/domain/web-search/web-search-connector-service'
 import {
   TENANT_AUDIT_ACTIONS,
   checkLastTenantAdminLock,
@@ -83,6 +84,8 @@ export class TenantService {
         actorId: params.createdById,
       })
     }
+
+    await ensureTenantWebSearchConnector(tenant.id)
 
     return tenant
   }

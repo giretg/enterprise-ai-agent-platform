@@ -32,8 +32,9 @@ import {
   type ModelPolicy,
   type ModelPolicyInput,
 } from '@/lib/model-policy'
-import type { Prisma, TicketType } from '@prisma/client'
-import { WEB_SEARCH_CONTROLS_KEY } from '@/domain/web-search/web-search-types'
+import { Prisma } from '@prisma/client'
+import type { TicketType } from '@prisma/client'
+import { WEB_SEARCH_CONTROLS_KEY, WEB_SEARCH_TENANT_CONTROLS_KEY } from '@/domain/web-search/web-search-types'
 import { WEB_FETCH_CONTROLS_KEY } from '@/domain/web-fetch/web-fetch-types'
 import { matchForbiddenHost } from '@/domain/net/egress-guard'
 import { errorPolicySchema, type ErrorPolicy } from '@/lib/playbook-v2/spec'
@@ -42,6 +43,7 @@ export const DISPATCHER_CONTROLS_KEY = 'dispatcher.controls'
 export const DISPATCHER_LAST_CYCLE_KEY = 'dispatcher.last_cycle'
 export const TICKET_TYPE_CONFIGS_KEY = 'ticket.type_configs'
 export const MONITOR_CONTROLS_KEY = 'monitor.controls'
+export const AUTOMATION_IDLE_SNAPSHOT_KEY = 'automation.idle_snapshot'
 
 export const POLL_INTERVAL_MIN_MS = 5_000
 export const POLL_INTERVAL_MAX_MS = 600_000
@@ -91,9 +93,15 @@ export type DispatchCycleRunRecord = {
   dispatchBudgetBlocked: number
 }
 
+/**
+ * A söprés ütemét NEM itt szabályozzuk: minden monitor a saját `intervalSeconds`/`nextSweepAt`
+ * mezője szerint válik esedékessé (`MonitorRepository.findDue`). A korábbi globális
+ * `sweepIntervalSec` throttle csak késleltette az esedékes monitorokat, ráadásul in-memory
+ * számlálón ült, ami minden hidegindításnál nullázódott — ezért megszűnt.
+ */
 export type MonitorControls = {
   killSwitch: boolean
-  sweepIntervalSec: number
+  /** Hány esedékes monitort dolgozunk fel egy körben (sorosan). */
   maxConcurrent: number
   updatedById: string | null
   updatedAt: string | null
@@ -101,10 +109,18 @@ export type MonitorControls = {
 
 const DEFAULT_MONITOR_CONTROLS: MonitorControls = {
   killSwitch: false,
-  sweepIntervalSec: 60,
   maxConcurrent: 5,
   updatedById: null,
   updatedAt: null,
+}
+
+/** Üresjárat mód előtti állapot — visszaállításhoz. */
+export type AutomationIdleSnapshot = {
+  dispatcherEnabled: boolean
+  monitorKillSwitch: boolean
+  /** null = Scheduler állapota nem volt lekérdezhető bekapcsoláskor. */
+  schedulerState: 'ENABLED' | 'PAUSED' | null
+  savedAt: string
 }
 
 export type WebSearchControls = {
@@ -112,6 +128,11 @@ export type WebSearchControls = {
   updatedById: string | null
   updatedAt: string | null
 }
+
+/** Ugyanaz a kapcsoló-alak, de tenantonként tárolva (`WEB_SEARCH_TENANT_CONTROLS_KEY`). */
+export type WebSearchTenantControls = WebSearchControls
+
+type WebSearchTenantControlsStore = Record<string, Partial<WebSearchTenantControls>>
 
 const DEFAULT_WEB_SEARCH_CONTROLS: WebSearchControls = {
   killSwitch: false,
@@ -248,10 +269,11 @@ export class PlatformSettingsService {
     const raw = (await this.settings.get(DISPATCHER_CONTROLS_KEY)) as Partial<DispatcherControls> | null
     if (!raw || typeof raw !== 'object') return { ...DEFAULT_CONTROLS }
     const rawModes = (raw as Record<string, unknown>).allowedModes
-    const allowedModes =
-      Array.isArray(rawModes) && rawModes.length > 0
-        ? (rawModes as string[]).filter((m) => ALL_LAUNCHER_MODES.includes(m as LauncherMode))
-        : [...DEFAULT_CONTROLS.allowedModes]
+    // Az üres lista érvényes állapot ("egyetlen futtató-környezet sem indíthat agentet"),
+    // nem hiányzó érték — csak a nem-tömb alakra esünk vissza az alapértelmezésre.
+    const allowedModes = Array.isArray(rawModes)
+      ? (rawModes as string[]).filter((m) => ALL_LAUNCHER_MODES.includes(m as LauncherMode))
+      : [...DEFAULT_CONTROLS.allowedModes]
     return {
       enabled: typeof raw.enabled === 'boolean' ? raw.enabled : DEFAULT_CONTROLS.enabled,
       allowedModes,
@@ -474,10 +496,6 @@ export class PlatformSettingsService {
     if (!raw || typeof raw !== 'object') return { ...DEFAULT_MONITOR_CONTROLS }
     return {
       killSwitch: typeof raw.killSwitch === 'boolean' ? raw.killSwitch : DEFAULT_MONITOR_CONTROLS.killSwitch,
-      sweepIntervalSec:
-        typeof raw.sweepIntervalSec === 'number' && raw.sweepIntervalSec >= 10
-          ? raw.sweepIntervalSec
-          : DEFAULT_MONITOR_CONTROLS.sweepIntervalSec,
       maxConcurrent:
         typeof raw.maxConcurrent === 'number' && raw.maxConcurrent >= 1
           ? raw.maxConcurrent
@@ -492,33 +510,14 @@ export class PlatformSettingsService {
     return !controls.killSwitch
   }
 
-  async auditMonitorSweepSkipped(reason: string, metadata: Record<string, unknown> = {}): Promise<void> {
-    await this.audit.append({
-      actorType: 'system',
-      actorId: null,
-      agentVersion: null,
-      action: 'monitor.sweep.skipped',
-      targetType: 'monitor',
-      targetId: null,
-      modelUsed: null,
-      inputRef: null,
-      outputRef: null,
-      policyDecision: reason,
-      metadata: metadata as Prisma.JsonValue,
-    })
-  }
 
   async setMonitorControls(
-    input: { killSwitch?: boolean; sweepIntervalSec?: number; maxConcurrent?: number },
+    input: { killSwitch?: boolean; maxConcurrent?: number },
     actorId: string,
   ): Promise<MonitorControls> {
     const current = await this.getMonitorControls()
     const next: MonitorControls = {
       killSwitch: input.killSwitch ?? current.killSwitch,
-      sweepIntervalSec:
-        input.sweepIntervalSec !== undefined
-          ? Math.max(10, Math.min(3600, input.sweepIntervalSec))
-          : current.sweepIntervalSec,
       maxConcurrent:
         input.maxConcurrent !== undefined
           ? Math.max(1, Math.min(20, input.maxConcurrent))
@@ -544,12 +543,37 @@ export class PlatformSettingsService {
       policyDecision: next.killSwitch ? 'paused' : 'enabled',
       metadata: {
         killSwitch: next.killSwitch,
-        sweepIntervalSec: next.sweepIntervalSec,
         maxConcurrent: next.maxConcurrent,
       },
     })
 
     return next
+  }
+
+  async getAutomationIdleSnapshot(): Promise<AutomationIdleSnapshot | null> {
+    const raw = (await this.settings.get(AUTOMATION_IDLE_SNAPSHOT_KEY)) as Partial<AutomationIdleSnapshot> | null
+    if (!raw || typeof raw !== 'object' || typeof raw.savedAt !== 'string') return null
+    if (typeof raw.dispatcherEnabled !== 'boolean' || typeof raw.monitorKillSwitch !== 'boolean') return null
+    const schedulerState =
+      raw.schedulerState === 'ENABLED' || raw.schedulerState === 'PAUSED' ? raw.schedulerState : null
+    return {
+      dispatcherEnabled: raw.dispatcherEnabled,
+      monitorKillSwitch: raw.monitorKillSwitch,
+      schedulerState,
+      savedAt: raw.savedAt,
+    }
+  }
+
+  async saveAutomationIdleSnapshot(snapshot: AutomationIdleSnapshot, actorId: string): Promise<void> {
+    await this.settings.set(
+      AUTOMATION_IDLE_SNAPSHOT_KEY,
+      snapshot as unknown as Prisma.InputJsonObject,
+      actorId,
+    )
+  }
+
+  async clearAutomationIdleSnapshot(actorId: string): Promise<void> {
+    await this.settings.set(AUTOMATION_IDLE_SNAPSHOT_KEY, Prisma.JsonNull, actorId)
   }
 
   async getWebSearchControls(): Promise<WebSearchControls> {
@@ -566,6 +590,66 @@ export class PlatformSettingsService {
   async isWebSearchEnabled(): Promise<boolean> {
     const controls = await this.getWebSearchControls()
     return !controls.killSwitch
+  }
+
+  async getTenantWebSearchControls(tenantId: string): Promise<WebSearchTenantControls> {
+    const raw = (await this.settings.get(WEB_SEARCH_TENANT_CONTROLS_KEY)) as WebSearchTenantControlsStore | null
+    const bucket = raw?.[tenantId]
+    if (!bucket || typeof bucket !== 'object') {
+      return { killSwitch: false, updatedById: null, updatedAt: null }
+    }
+    return {
+      killSwitch: bucket.killSwitch === true,
+      updatedById: typeof bucket.updatedById === 'string' ? bucket.updatedById : null,
+      updatedAt: typeof bucket.updatedAt === 'string' ? bucket.updatedAt : null,
+    }
+  }
+
+  /** Platform + tenant kill-switch — mindkettőnek engedélyezettnek kell lennie. */
+  async isWebSearchEnabledForTenant(tenantId: string | null): Promise<boolean> {
+    if (!(await this.isWebSearchEnabled())) return false
+    if (!tenantId) return true
+    const tenantControls = await this.getTenantWebSearchControls(tenantId)
+    return !tenantControls.killSwitch
+  }
+
+  async setTenantWebSearchControls(
+    tenantId: string,
+    input: { killSwitch: boolean },
+    actorId: string,
+  ): Promise<WebSearchTenantControls> {
+    const raw = (await this.settings.get(WEB_SEARCH_TENANT_CONTROLS_KEY)) as WebSearchTenantControlsStore | null
+    const store: WebSearchTenantControlsStore = raw && typeof raw === 'object' ? { ...raw } : {}
+    const current = await this.getTenantWebSearchControls(tenantId)
+    const next: WebSearchTenantControls = {
+      killSwitch: input.killSwitch,
+      updatedById: actorId,
+      updatedAt: new Date().toISOString(),
+    }
+    store[tenantId] = next
+    await this.settings.set(WEB_SEARCH_TENANT_CONTROLS_KEY, store as unknown as Prisma.InputJsonObject, actorId)
+
+    await this.audit.append({
+      actorType: 'human',
+      actorId,
+      agentVersion: null,
+      action:
+        current.killSwitch !== next.killSwitch
+          ? next.killSwitch
+            ? 'web_search.tenant.paused'
+            : 'web_search.tenant.resumed'
+          : 'web_search.tenant.config_changed',
+      targetType: 'platform_setting',
+      targetId: tenantId,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: null,
+      policyDecision: next.killSwitch ? 'paused' : 'enabled',
+      metadata: { tenantId, killSwitch: next.killSwitch },
+      tenantId,
+    })
+
+    return next
   }
 
   async setWebSearchControls(input: { killSwitch: boolean }, actorId: string): Promise<WebSearchControls> {

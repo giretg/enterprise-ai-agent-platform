@@ -89,11 +89,19 @@ export function WikiProposalDetail({
       }
     }
 
+    // Rejtett fülön nem pollozunk: a `getTicket` Server Action, tehát minden hívása
+    // újrarendereli a route-ot és felébreszti az adatbázist. Visszatéréskor azonnal frissítünk.
+    const pollIfVisible = () => {
+      if (!document.hidden) void poll()
+    }
+
     void poll()
-    const timer = setInterval(() => void poll(), 2000)
+    const timer = setInterval(pollIfVisible, 2000)
+    document.addEventListener('visibilitychange', pollIfVisible)
     return () => {
       cancelled = true
       clearInterval(timer)
+      document.removeEventListener('visibilitychange', pollIfVisible)
     }
   }, [isPending, ticketId, sandboxReport])
 

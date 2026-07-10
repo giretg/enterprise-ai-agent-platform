@@ -3,11 +3,16 @@
  * (Feature-spec — WebSearchTool §3, §4).
  */
 
-/** PlatformSetting kulcs a web_search kill-switchhez (Feature-spec §7.2, WS13). */
+/** PlatformSetting kulcs a web_search platform kill-switchhez (Feature-spec §7.2, WS13). */
 export const WEB_SEARCH_CONTROLS_KEY = 'web_search.controls'
 
+/** Tenant bucket: `{ [tenantId]: { killSwitch, updatedAt?, updatedById? } }`. */
+export const WEB_SEARCH_TENANT_CONTROLS_KEY = 'web_search.tenant_controls'
+
+export type WebSearchProvider = 'platform_hosted_search' | 'custom_search_api' | 'stub'
+
 export type WebSearchConnectorConfig = {
-  provider: 'managed_search' | 'custom_search_api' | 'stub'
+  provider: WebSearchProvider
   providerApiUrl?: string
   allowedDomains: string[]
   deniedDomains: string[]
@@ -26,7 +31,7 @@ export type WebSearchConnectorConfig = {
 }
 
 export const DEFAULT_WEB_SEARCH_CONFIG: WebSearchConnectorConfig = {
-  provider: 'stub',
+  provider: 'platform_hosted_search',
   providerApiUrl: undefined,
   allowedDomains: [],
   deniedDomains: [],
@@ -48,12 +53,18 @@ function asStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((d): d is string => typeof d === 'string') : []
 }
 
+/** Régi DB érték (`managed_search`) → `platform_hosted_search`. */
+export function normalizeWebSearchProvider(raw: unknown): WebSearchProvider {
+  if (raw === 'managed_search' || raw === 'platform_hosted_search') return 'platform_hosted_search'
+  if (raw === 'custom_search_api') return 'custom_search_api'
+  return 'stub'
+}
+
 export function parseWebSearchConfig(raw: unknown): WebSearchConnectorConfig {
   if (!raw || typeof raw !== 'object') return { ...DEFAULT_WEB_SEARCH_CONFIG }
-  const v = raw as Partial<WebSearchConnectorConfig>
+  const v = raw as Partial<WebSearchConnectorConfig> & { provider?: unknown }
   return {
-    provider:
-      v.provider === 'custom_search_api' || v.provider === 'managed_search' ? v.provider : 'stub',
+    provider: normalizeWebSearchProvider(v.provider),
     providerApiUrl: typeof v.providerApiUrl === 'string' && v.providerApiUrl.trim()
       ? v.providerApiUrl.trim()
       : undefined,
@@ -138,6 +149,7 @@ export type WebSearchResult = {
 /** Tool Broker hibakódok (Feature-spec §4.3). */
 export type WebSearchDenyReason =
   | 'web_search_disabled'
+  | 'web_search_disabled_tenant'
   | 'query_policy_blocked'
   | 'domain_not_allowed'
   | 'domain_denied'

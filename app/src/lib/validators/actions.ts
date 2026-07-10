@@ -1182,16 +1182,17 @@ export const syncTestDatabaseSchema = z.object({
 export const setMonitorControlsSchema = z
   .object({
     killSwitch: z.boolean().optional(),
-    sweepIntervalSec: z.number().int().min(10).max(3600).optional(),
     maxConcurrent: z.number().int().min(1).max(20).optional(),
   })
-  .refine(
-    (v) =>
-      v.killSwitch !== undefined || v.sweepIntervalSec !== undefined || v.maxConcurrent !== undefined,
-    { message: 'Legalább egy mezőt meg kell adni' },
-  )
+  .refine((v) => v.killSwitch !== undefined || v.maxConcurrent !== undefined, {
+    message: 'Legalább egy mezőt meg kell adni',
+  })
 
 export const setWebSearchControlsSchema = z.object({
+  killSwitch: z.boolean(),
+})
+
+export const setTenantWebSearchControlsSchema = z.object({
   killSwitch: z.boolean(),
 })
 
@@ -1215,9 +1216,19 @@ const optionalHttpUrlSchema = z
     message: 'Az API URL-nek http(s) címmel kell kezdődnie',
   })
 
+export const updatePlatformHostedWebSearchSchema = z.object({
+  providerApiUrl: optionalHttpUrlSchema,
+  apiKey: z
+    .string()
+    .trim()
+    .max(4000)
+    .optional()
+    .transform((value) => value?.trim() || undefined),
+})
+
 export const updateWebSearchPolicySchema = z.object({
   connectorId: z.string().uuid(),
-  provider: z.enum(['stub', 'custom_search_api', 'managed_search']),
+  provider: z.enum(['stub', 'custom_search_api', 'platform_hosted_search']),
   providerApiUrl: optionalHttpUrlSchema,
   apiKey: z
     .string()

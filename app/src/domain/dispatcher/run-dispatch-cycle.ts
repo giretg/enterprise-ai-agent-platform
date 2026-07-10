@@ -32,7 +32,6 @@ const EMPTY_SUMMARY: DispatchCycleSummary = {
 }
 
 let cycleInFlight = false
-let lastMonitorSweepAt = 0
 
 export type DispatchCycleTrigger = 'worker' | 'scheduler' | 'manual'
 
@@ -70,16 +69,18 @@ export async function runDispatchCycle(
 
     // Proaktív monitor: nem-LLM söprés (1. lépcső). A drága LLM csak küszöböt átlépő
     // jelnél, az eszkalált ticketen át indul (a meglévő dispatch-budget alatt).
+    //
+    // Nincs ciklus-szintű throttle: melyik monitor esedékes, azt a saját `nextSweepAt`-je
+    // dönti el (`findDue`), monitoronként külön `intervalSeconds` alapján. Egy globális
+    // időzár csak késleltetné az esedékes monitorokat a saját beállításuk ellenére.
+    // Kill-switch alatt nem írunk körönkénti audit sort: minden `audit.append` globális
+    // advisory lockot vesz a hash-láncra, tehát percenkénti „nem történt semmi” bejegyzés
+    // zajjal tölti a láncot és sorosítja az írásokat. A nyom így sem vész el: a ki/be
+    // kapcsolást a `monitor.paused`/`monitor.resumed` esemény rögzíti (actorral), az
+    // egyes körök pedig a `monitorSweepRan: false` mezőt kapják a ciklus-lenyomatban.
     const monitorControls = await services.platformSettings.getMonitorControls()
-    const monitorDue = Date.now() - lastMonitorSweepAt >= monitorControls.sweepIntervalSec * 1000
     let monitorSweep: DispatchCycleSummary['monitorSweep'] = { ran: false, escalated: 0, openedTickets: 0 }
-    if (monitorControls.killSwitch) {
-      await services.platformSettings.auditMonitorSweepSkipped('kill_switch', {
-        sweepIntervalSec: monitorControls.sweepIntervalSec,
-        maxConcurrent: monitorControls.maxConcurrent,
-      })
-    } else if (monitorDue) {
-      lastMonitorSweepAt = Date.now()
+    if (!monitorControls.killSwitch) {
       await services.monitors.reclaimStaleLocks()
       const sweeps = await services.monitors.sweepDue(
         new Date(),

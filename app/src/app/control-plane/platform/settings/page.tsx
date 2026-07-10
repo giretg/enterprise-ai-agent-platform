@@ -1,4 +1,5 @@
 import { getAuthContext } from '@/auth/context'
+import Link from 'next/link'
 import {
   getDatabaseMode,
   getDispatcherControls,
@@ -11,22 +12,20 @@ import { getMonitorControls } from '@/app/actions/monitor'
 import {
   getWebFetchControls,
   getWebSearchControls,
-  getWebSearchPolicy,
+  getPlatformHostedWebSearchPolicy,
 } from '@/app/actions/web-search'
+import { readDispatcherRuntime } from '@/lib/dispatcher-runtime'
 import { DatabaseControlPanel } from '@/app/control-plane/system/database-control-panel'
-import { DispatcherControlPanel } from '@/app/control-plane/system/dispatcher-control-panel'
+import { AutomationSettingsLinkPanel } from '@/app/control-plane/system/automation-settings-link-panel'
 import { ModelGatewayPanel } from '@/app/control-plane/system/model-gateway-panel'
 import { ModelPolicyPanel } from '@/app/control-plane/system/model-policy-panel'
-import { MonitorControlPanel } from '@/app/control-plane/system/monitor-control-panel'
 import { WebSearchControlPanel } from '@/app/control-plane/system/web-search-control-panel'
 import { WebFetchControlPanel } from '@/app/control-plane/system/web-fetch-control-panel'
 
 /**
- * Platform-globális beállítások (Tenant-Management §9.2, §13/4). A dispatcher
- * kill-switch, DB-környezet, model policy/gateway/routing/budget és a web-fetch/
- * web-search vezérlők NEM tenant-adat — csak platform-szerep szerkesztheti. A
- * WRITE-actionök `requirePlatformRole('superadmin')` alatt vannak; a `canEdit`
- * itt ugyanezt tükrözi, hogy a tenant-admin csak read-only nézetet kapjon.
+ * Platform-globális policy-k (Tenant-Management §9.2, §13/4): DB-környezet, model
+ * policy/gateway, web-fetch/web-search. Az automatizmus-vezérlés (dispatcher, biztonsági
+ * háló, monitor) a Rendszer → Üzemeltetés oldalon van.
  */
 export default async function PlatformSettingsPage() {
   const [
@@ -48,7 +47,7 @@ export default async function PlatformSettingsPage() {
     getModelPolicy(),
     getMonitorControls(),
     getWebSearchControls(),
-    getWebSearchPolicy(),
+    getPlatformHostedWebSearchPolicy(),
     getWebFetchControls(),
     getModelCallsSummary(),
     listModelRoutingPolicies(),
@@ -80,22 +79,29 @@ export default async function PlatformSettingsPage() {
         <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">Platform</p>
         <h1 className="mt-2 font-display text-3xl font-semibold">Platform-beállítások</h1>
         <p className="mt-1 max-w-2xl text-ink-soft">
-          Platform-globális vezérlők: dispatcher kill-switch, adatbázis-környezet, model policy /
-          gateway / routing / budget, valamint a web-egress (web-fetch / web-search) kapcsolók.
-          Ezek minden tenantra hatnak — kizárólag platform-szerep szerkesztheti.
+          Platform-globális policy-k: adatbázis-környezet, model policy / gateway / routing / budget,
+          valamint a web-egress (web-fetch / web-search) kapcsolók. Az agent-indítás, a biztonsági háló
+          és a monitor-söprés vezérlése a{' '}
+          <Link href="/control-plane/system" className="text-accent hover:underline">
+            Rendszer → Üzemeltetés
+          </Link>{' '}
+          oldalon van — ott látszik a futásidő-állapot és a költségkontroll is.
         </p>
       </header>
 
       {dbModeRes.success && <DatabaseControlPanel initial={dbModeRes.data} canEdit={canEdit} />}
-      {controlsRes.success && <DispatcherControlPanel initial={controlsRes.data} canEdit={canEdit} />}
-      {monitorControlsRes.success && (
-        <MonitorControlPanel initial={monitorControlsRes.data} canEdit={canEdit} />
+      {controlsRes.success && monitorControlsRes.success && (
+        <AutomationSettingsLinkPanel
+          dispatcher={controlsRes.data}
+          runtime={readDispatcherRuntime()}
+          monitor={monitorControlsRes.data}
+        />
       )}
       {webSearchControlsRes.success && (
         <WebSearchControlPanel
           initial={webSearchControlsRes.data}
-          policy={webSearchPolicyRes.success ? webSearchPolicyRes.data : null}
-          policyError={!webSearchPolicyRes.success ? webSearchPolicyRes.error : null}
+          platformHostedPolicy={webSearchPolicyRes.success ? webSearchPolicyRes.data : null}
+          platformHostedError={!webSearchPolicyRes.success ? webSearchPolicyRes.error : null}
           canEdit={canEdit}
         />
       )}

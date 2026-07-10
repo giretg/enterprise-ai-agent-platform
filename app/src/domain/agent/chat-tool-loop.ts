@@ -1503,6 +1503,14 @@ function buildToolInvoke(
  * feladat-ticket (`ticketId`) kontextusban egyaránt fut — a képességek
  * azonosak, csak a kontextus (és a board_write utómunka a hívónál) tér el.
  */
+/** A chat Stop gomb kooperatív megszakítása — nem hiba, részeredmény mentéssel zárul. */
+export class AgentToolLoopCancelledError extends Error {
+  constructor() {
+    super('Tool loop cancelled')
+    this.name = 'AgentToolLoopCancelledError'
+  }
+}
+
 export async function runAgentToolLoop(params: {
   gateway: ModelGateway
   toolBroker: ToolBrokerService
@@ -1527,6 +1535,8 @@ export async function runAgentToolLoop(params: {
   onActivity?: (event: ToolLoopActivityEvent) => void | Promise<void>
   /** WP-5 — sikeres `memory_propose` hívás után a chat-kártyához (§6.2). */
   onMemoryCandidate?: (event: ToolLoopMemoryCandidateEvent) => void | Promise<void>
+  /** Kooperatív leállítás (pl. chat Stop) — kör- és tool-hívás-határon ellenőrizve. */
+  shouldCancel?: () => boolean
 }): Promise<ToolLoopResult> {
   const maxTurns = params.maxTurns ?? 20
   const modeNote =
@@ -1597,6 +1607,9 @@ export async function runAgentToolLoop(params: {
   const REPEAT_LIMIT = 3
 
   for (let turn = 0; turn < maxTurns; turn++) {
+    if (params.shouldCancel?.()) {
+      throw new AgentToolLoopCancelledError()
+    }
     await emitActivity({
       id: `reasoning-${turn}`,
       kind: 'reasoning',
@@ -1677,6 +1690,9 @@ export async function runAgentToolLoop(params: {
     })
 
     for (const call of calls) {
+      if (params.shouldCancel?.()) {
+        throw new AgentToolLoopCancelledError()
+      }
       if (call.name === TOOL_RESULT_READ) {
         const path = typeof call.input.path === 'string' ? call.input.path : ''
         await emitActivity({

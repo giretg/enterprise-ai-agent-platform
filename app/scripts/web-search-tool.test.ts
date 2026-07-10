@@ -63,7 +63,9 @@ function buildAuthorizer(opts: {
   } as unknown as ToolBrokerRepository
 
   const agents = {
-    findById: async () => ({ id: 'agent-1', role: opts.agentRole }) as Agent,
+    // A web_search connector tenant-szintű: az agentnek ugyanabban a tenantban kell lennie,
+    // különben az authorizer `tenant_isolation`-nel utasít el, mielőtt a connectorhoz érne.
+    findById: async () => ({ id: 'agent-1', role: opts.agentRole, tenantId: 'tenant-1' }) as Agent,
   } as unknown as AgentRepository
 
   const grants = { findActiveGrant: async () => null } as unknown as ConnectorGrantRepository
@@ -76,18 +78,18 @@ function buildAuthorizer(opts: {
   return new AllowlistAuthorizer(tools, agents, grants, lookupActingUser, lookupRoleTemplate)
 }
 
-function activeConnector(config: WebSearchConnectorConfig): Connector {
+function activeConnector(config: WebSearchConnectorConfig, tenantId = 'tenant-1'): Connector {
   return {
     id: 'connector-web-search',
     type: 'web_search',
-    name: 'Controlled Web Search',
+    name: 'Web Search',
     authMode: 'agent_owned',
     scope: 'global',
-    secretAlias: 'platform/web-search-provider-key',
+    secretAlias: null,
     version: 1,
     config: config as unknown as Connector['config'],
     lifecycleState: 'active',
-    tenantId: null,
+    tenantId,
     createdAt: new Date(),
   } as Connector
 }

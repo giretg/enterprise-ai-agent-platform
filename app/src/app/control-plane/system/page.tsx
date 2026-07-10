@@ -7,23 +7,23 @@ import {
   getModelPolicy,
   getTicketTypeConfigs,
   getWorkerProcessesStatus,
+  getAutomationIdleSnapshot,
   listModelBudgets,
   listModelRoutingPolicies,
 } from '@/app/actions/platform'
 import { getMonitorControls } from '@/app/actions/monitor'
 import {
   getWebFetchControls,
-  getWebSearchControls,
+  getTenantWebSearchControls,
   getWebSearchPolicy,
 } from '@/app/actions/web-search'
+import { readDispatcherRuntime } from '@/lib/dispatcher-runtime'
 import { DatabaseControlPanel } from './database-control-panel'
-import { DispatcherControlPanel } from './dispatcher-control-panel'
-import { WorkerProcessesPanel } from './worker-processes-panel'
+import { AutomationControlSection } from './automation-control-section'
 import { ModelGatewayPanel } from './model-gateway-panel'
 import { ModelPolicyPanel } from './model-policy-panel'
 import { TicketTypeConfigPanel } from './ticket-type-config-panel'
-import { MonitorControlPanel } from './monitor-control-panel'
-import { WebSearchControlPanel } from './web-search-control-panel'
+import { TenantWebSearchPolicyPanel } from './tenant-web-search-policy-panel'
 import { WebFetchControlPanel } from './web-fetch-control-panel'
 import { MemoryObservabilityPanel } from './memory-observability-panel'
 
@@ -32,12 +32,13 @@ export default async function SystemPage() {
     ctx,
     controlsRes,
     workerProcessesRes,
+    idleSnapshotRes,
     dbModeRes,
     ticketTypesRes,
     modelPolicyRes,
     monitorControlsRes,
-    webSearchControlsRes,
-    webSearchPolicyRes,
+    tenantWebSearchPolicyRes,
+    tenantWebSearchControlsRes,
     webFetchControlsRes,
     gatewayStatsRes,
     routingPoliciesRes,
@@ -47,12 +48,13 @@ export default async function SystemPage() {
     getAuthContext(),
     getDispatcherControls(),
     getWorkerProcessesStatus(),
+    getAutomationIdleSnapshot(),
     getDatabaseMode(),
     getTicketTypeConfigs(),
     getModelPolicy(),
     getMonitorControls(),
-    getWebSearchControls(),
     getWebSearchPolicy(),
+    getTenantWebSearchControls(),
     getWebFetchControls(),
     getModelCallsSummary(),
     listModelRoutingPolicies(),
@@ -62,6 +64,18 @@ export default async function SystemPage() {
   // §9.2/§13/4: a platform-globális vezérlőket csak platform-szerep szerkesztheti;
   // a tenant-admin itt read-only nézetet kap (a WRITE-actionök platform-guard alatt).
   const canEdit = Boolean(ctx?.platformRoles.includes('superadmin'))
+  const canEditTenantWebSearch =
+    Boolean(ctx?.kind === 'tenant' && ctx.activeTenantRole === 'admin') || canEdit
+
+  const settingsKey = [
+    controlsRes.success ? controlsRes.data.updatedAt : '',
+    monitorControlsRes.success ? monitorControlsRes.data.updatedAt : '',
+    workerProcessesRes.success ? workerProcessesRes.data.lastCycle?.ranAt : '',
+    workerProcessesRes.success && workerProcessesRes.data.scheduler.available
+      ? workerProcessesRes.data.scheduler.state
+      : '',
+    idleSnapshotRes.success ? idleSnapshotRes.data?.savedAt : '',
+  ].join('|')
 
   return (
     <div className="space-y-6">
@@ -69,9 +83,9 @@ export default async function SystemPage() {
         <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">Rendszer</p>
         <h1 className="mt-2 font-display text-3xl font-semibold">Üzemeltetés</h1>
         <p className="mt-1 max-w-2xl text-ink-soft">
-          A háttérben futó automatizmusok és az adatbázis-környezet vezérlése. A dispatcher
-          folyamatosan figyeli a ticketeket — itt állítható le, szabályozható, vagy teszt adatbázisra
-          váltható.
+          Itt látod, mi fut a háttérben és mennyibe kerülhet. A ticketek többsége keletkezéskor azonnal
+          indul — a panelek az <em>automatikus</em> folyamatokat szabályozzák: agent-indítás, ütemezett
+          karbantartó körök (Neon ébresztés), proaktív monitor-söprés.
         </p>
       </div>
 
@@ -83,40 +97,46 @@ export default async function SystemPage() {
         <DatabaseControlPanel initial={dbModeRes.data} canEdit={canEdit} />
       )}
 
-      {!controlsRes.success ? (
-        <div className="rounded-lg border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
-          {controlsRes.error}
-        </div>
-      ) : (
-        <DispatcherControlPanel initial={controlsRes.data} canEdit={canEdit} />
-      )}
-
-      {!workerProcessesRes.success ? (
-        <div className="rounded-lg border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
-          {workerProcessesRes.error}
-        </div>
-      ) : (
-        <WorkerProcessesPanel initial={workerProcessesRes.data} canEdit={canEdit} />
-      )}
-
-      {!monitorControlsRes.success ? (
-        <div className="rounded-lg border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
-          {monitorControlsRes.error}
-        </div>
-      ) : (
-        <MonitorControlPanel initial={monitorControlsRes.data} canEdit={canEdit} />
-      )}
-
-      {!webSearchControlsRes.success ? (
-        <div className="rounded-lg border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
-          {webSearchControlsRes.error}
-        </div>
-      ) : (
-        <WebSearchControlPanel
-          initial={webSearchControlsRes.data}
-          policy={webSearchPolicyRes.success ? webSearchPolicyRes.data : null}
-          policyError={!webSearchPolicyRes.success ? webSearchPolicyRes.error : null}
+      {controlsRes.success && workerProcessesRes.success && monitorControlsRes.success ? (
+        <AutomationControlSection
+          dispatcher={controlsRes.data}
+          runtime={readDispatcherRuntime()}
+          workerStatus={workerProcessesRes.data}
+          monitor={monitorControlsRes.data}
+          idleSnapshot={idleSnapshotRes.success ? idleSnapshotRes.data : null}
           canEdit={canEdit}
+          settingsKey={settingsKey}
+        />
+      ) : (
+        <>
+          {!controlsRes.success ? (
+            <div className="rounded-lg border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
+              {controlsRes.error}
+            </div>
+          ) : null}
+          {!workerProcessesRes.success ? (
+            <div className="rounded-lg border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
+              {workerProcessesRes.error}
+            </div>
+          ) : null}
+          {!monitorControlsRes.success ? (
+            <div className="rounded-lg border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
+              {monitorControlsRes.error}
+            </div>
+          ) : null}
+        </>
+      )}
+
+      {!tenantWebSearchControlsRes.success ? (
+        <div className="rounded-lg border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
+          {tenantWebSearchControlsRes.error}
+        </div>
+      ) : (
+        <TenantWebSearchPolicyPanel
+          initialPolicy={tenantWebSearchPolicyRes.success ? tenantWebSearchPolicyRes.data : null}
+          initialTenantControls={tenantWebSearchControlsRes.data}
+          policyError={!tenantWebSearchPolicyRes.success ? tenantWebSearchPolicyRes.error : null}
+          canEdit={canEditTenantWebSearch}
         />
       )}
 

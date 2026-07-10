@@ -103,10 +103,12 @@ type MemoryCandidateCard = {
 }
 
 type AgentChatStreamEvent =
+  | { type: 'meta'; conversationId: string }
   | { type: 'activity'; activity: AgentActivity }
   | { type: 'memory_candidate'; candidate: Omit<MemoryCandidateCard, 'status' | 'resultMessage'> }
   | { type: 'token'; chunk: string }
   | { type: 'done'; conversationId: string; messageId: string; ticketRefId?: string | null }
+  | { type: 'cancelled'; conversationId: string; messageId: string }
   | { type: 'error'; message?: string }
 
 const CHAT_SESSIONS_PAGE_SIZE = 10
@@ -596,6 +598,7 @@ export function AgentChatPanel({
   const [ticketMaxRuns, setTicketMaxRuns] = useState('')
   const [ticketAuthorizeRunAs, setTicketAuthorizeRunAs] = useState(false)
   const [isAgentTyping, setIsAgentTyping] = useState(false)
+  const [stopPending, setStopPending] = useState(false)
   const [sessions, setSessions] = useState<ChatSession[]>([])
   const [sessionsLoading, setSessionsLoading] = useState(false)
   const [sessionsLoadingMore, setSessionsLoadingMore] = useState(false)
@@ -619,6 +622,8 @@ export function AgentChatPanel({
   const fileInputRef = useRef<HTMLInputElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const filesRef = useRef<ConversationFilesPanelHandle>(null)
+  const streamAbortRef = useRef<AbortController | null>(null)
+  const streamConversationIdRef = useRef<string | null>(null)
   const [mounted, setMounted] = useState(false)
   const [connectableUserConnectors, setConnectableUserConnectors] = useState<
     AgentDelegatedConnectorRow[]
@@ -637,6 +642,10 @@ export function AgentChatPanel({
     return () => {
       document.body.style.overflow = prevOverflow
     }
+  }, [open])
+
+  useEffect(() => {
+    if (!open) streamAbortRef.current?.abort()
   }, [open])
 
   useEffect(() => {
@@ -1011,6 +1020,56 @@ export function AgentChatPanel({
     })
   }, [agent.id, canDistillSkill, conversationId, controlsBusy, distillTargetSkillId, messages.length])
 
+  const reloadConversationMessages = useCallback(
+    async (convId: string) => {
+      const res = await loadAgentChatMessages({ conversationId: convId, agentId: agent.id })
+      if (!res.success) {
+        setStatusMessage(res.error)
+        return false
+      }
+      setConversationId(convId)
+      setConversationStatus(res.data.conversation.status)
+      setMessages(
+        res.data.messages.map((m) => ({
+          ...m,
+          createdAt: new Date(m.createdAt).toISOString(),
+        })),
+      )
+      startTransition(() => {
+        void refreshSessions()
+      })
+      return true
+    },
+    [agent.id, refreshSessions],
+  )
+
+  const handleStop = () => {
+    const convId = streamConversationIdRef.current ?? conversationId
+    if (!convId || stopPending) return
+    setStopPending(true)
+    setStatusMessage(null)
+    void (async () => {
+      try {
+        const response = await fetch('/api/v1/agent-chat/cancel', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ conversationId: convId }),
+        })
+        if (!response.ok) {
+          setStopPending(false)
+          setStatusMessage(
+            response.status === 404
+              ? 'Nincs futó válasz — lehet, hogy már befejeződött.'
+              : 'Megállítás sikertelen.',
+          )
+        }
+      } catch {
+        setStopPending(false)
+        setStatusMessage('Megállítás sikertelen.')
+      }
+    })()
+  }
+
   const handleSend = () => {
     if (!canSubmit) return
     const text = input.trim()
@@ -1046,16 +1105,22 @@ export function AgentChatPanel({
     setStatusMessage(null)
     setLastTicketId(null)
     setIsAgentTyping(true)
+    streamConversationIdRef.current = conversationId
 
     let accumulatedReply = ''
+
+    const abortController = new AbortController()
+    streamAbortRef.current = abortController
 
     void (async () => {
       try {
         const documentIds = localAttachments.length > 0 ? await uploadAttachments(localAttachments) : []
+        if (abortController.signal.aborted) return
 
         const response = await fetch('/api/v1/agent-chat/stream', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          signal: abortController.signal,
           body: JSON.stringify({
             agentId: agent.id,
             content: text,
@@ -1095,7 +1160,11 @@ export function AgentChatPanel({
               continue
             }
 
-            if (event.type === 'activity') {
+            if (event.type === 'meta' && event.conversationId) {
+              streamConversationIdRef.current = event.conversationId
+              setConversationId(event.conversationId)
+              setConversationStatus('active')
+            } else if (event.type === 'activity') {
               flushSync(() => {
                 setMessages((prev) =>
                   prev.map((m) =>
@@ -1158,6 +1227,11 @@ export function AgentChatPanel({
               startTransition(() => { void refreshSessions() })
               streamTerminalEvent = true
               break
+            } else if (event.type === 'cancelled' && event.conversationId && event.messageId) {
+              await reloadConversationMessages(event.conversationId)
+              setStatusMessage('Agent válasz megszakítva — részeredmény mentve.')
+              streamTerminalEvent = true
+              break
             } else if (event.type === 'error') {
               setMessages((prev) => prev.filter((m) => m.id !== optimisticUserId && m.id !== optimisticAgentId))
               setStatusMessage(event.message ?? 'Küldés sikertelen')
@@ -1176,9 +1250,17 @@ export function AgentChatPanel({
           }
         }
       } catch (e) {
+        if (e instanceof DOMException && e.name === 'AbortError') {
+          return
+        }
         setMessages((prev) => prev.filter((m) => m.id !== optimisticUserId && m.id !== optimisticAgentId))
         setStatusMessage(e instanceof Error ? e.message : 'Küldés sikertelen')
       } finally {
+        if (streamAbortRef.current === abortController) {
+          streamAbortRef.current = null
+        }
+        streamConversationIdRef.current = null
+        setStopPending(false)
         setIsAgentTyping(false)
         filesRef.current?.refresh()
       }
@@ -1695,14 +1777,25 @@ export function AgentChatPanel({
               {ticketPending ? '…' : ticketExecuteAfter ? 'Ütemezés' : 'Ticket'}
             </button>
 
-            <button
-              type="button"
-              onClick={handleSend}
-              disabled={!canSubmit}
-              className="shrink-0 rounded-xl bg-coral px-4 py-2.5 text-sm font-semibold text-card shadow-[0_8px_20px_-10px_rgba(178,58,85,0.8)] transition-transform hover:-translate-y-0.5 disabled:opacity-40"
-            >
-              {pending ? '…' : 'Küldés'}
-            </button>
+            {isAgentTyping ? (
+              <button
+                type="button"
+                onClick={handleStop}
+                disabled={stopPending}
+                className="shrink-0 rounded-xl border border-coral bg-card px-4 py-2.5 text-sm font-semibold text-coral shadow-[0_8px_20px_-10px_rgba(178,58,85,0.35)] transition-transform hover:-translate-y-0.5 hover:bg-coral/10 disabled:opacity-50"
+              >
+                {stopPending ? 'Megállítás…' : 'Megállítás'}
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={handleSend}
+                disabled={!canSubmit}
+                className="shrink-0 rounded-xl bg-coral px-4 py-2.5 text-sm font-semibold text-card shadow-[0_8px_20px_-10px_rgba(178,58,85,0.8)] transition-transform hover:-translate-y-0.5 disabled:opacity-40"
+              >
+                {pending ? '…' : 'Küldés'}
+              </button>
+            )}
           </div>
 
           <p className="mt-2 text-center text-[11px] text-ink-faint">

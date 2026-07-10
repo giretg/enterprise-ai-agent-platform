@@ -110,7 +110,8 @@ function readOAuthConfig(connector: Connector): ResolvedOAuthConfig {
     clientIdRef: oauth.clientIdRef,
     redirectUri:
       oauth.redirectUri ??
-      `${process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'}/api/connectors/oauth/callback`,
+      (process.env.GMAIL_OAUTH_REDIRECT_URI?.trim() ||
+        `${process.env.NEXT_PUBLIC_APP_URL ?? 'http://localhost:3000'}/api/connectors/oauth/callback`),
     userInfoUrl: oauth.userInfoUrl ?? auth.userInfoUrl,
     accountEmailField: oauth.accountEmailField ?? auth.accountEmailField ?? 'email',
     offlineParams: oauth.offlineParams ?? auth.offlineParams ?? {},

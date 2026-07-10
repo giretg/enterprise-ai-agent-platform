@@ -45,27 +45,36 @@ export async function POST(request: Request) {
 
   const stream = new ReadableStream({
     async start(controller) {
-      try {
-        const gen = services.agentChat.sendMessageStream({
-          agentId,
-          content,
-          createdById: user.user.id,
-          tenantId: user.activeTenantId,
-          conversationId,
-          attachmentDocumentIds,
-          processDefinitionId,
-          processInputPayload,
-        })
+      const gen = services.agentChat.sendMessageStream({
+        agentId,
+        content,
+        createdById: user.user.id,
+        tenantId: user.activeTenantId,
+        conversationId,
+        attachmentDocumentIds,
+        processDefinitionId,
+        processInputPayload,
+      })
 
+      try {
         for await (const event of gen) {
+          if (request.signal.aborted) {
+            break
+          }
           controller.enqueue(sseEvent(event))
-          if (event.type === 'done' || event.type === 'error') break
+          if (event.type === 'done' || event.type === 'cancelled' || event.type === 'error') break
         }
       } catch (err) {
-        const message = err instanceof Error ? err.message : 'Stream failed'
-        controller.enqueue(sseEvent({ type: 'error', message }))
+        if (!request.signal.aborted) {
+          const message = err instanceof Error ? err.message : 'Stream failed'
+          controller.enqueue(sseEvent({ type: 'error', message }))
+        }
       } finally {
-        controller.close()
+        try {
+          controller.close()
+        } catch {
+          // A kliens megszakítása után a stream már lehet zárt.
+        }
       }
     },
   })

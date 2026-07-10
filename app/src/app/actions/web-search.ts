@@ -1,9 +1,17 @@
 'use server'
 
-import type { Prisma } from '@prisma/client'
+import type { Connector, Prisma } from '@prisma/client'
+import { getAuthContext } from '@/auth/context'
 import { requirePlatformRole, requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain'
 import { repositories } from '@/repositories/postgres'
+import {
+  ensurePlatformHostedWebSearchConnector,
+  ensureTenantWebSearchConnector,
+  findPlatformHostedWebSearchConnector,
+  findTenantWebSearchConnector,
+  PLATFORM_HOSTED_WEB_SEARCH_CONNECTOR_NAME,
+} from '@/domain/web-search/web-search-connector-service'
 import { parseWebSearchConfig, type WebSearchConnectorConfig } from '@/domain/web-search/web-search-types'
 import { prisma } from '@/lib/db'
 import { fail, ok } from '@/lib/result'
@@ -11,6 +19,8 @@ import {
   agentIdSchema,
   setWebFetchControlsSchema,
   setWebSearchControlsSchema,
+  setTenantWebSearchControlsSchema,
+  updatePlatformHostedWebSearchSchema,
   updateWebSearchPolicySchema,
 } from '@/lib/validators/actions'
 
@@ -46,6 +56,41 @@ function toCallView(row: {
   }
 }
 
+function connectorToPolicyView(connector: Connector): {
+  connectorId: string
+  connectorName: string
+  tenantId: string | null
+  lifecycleState: string
+  secretAlias: string | null
+  config: WebSearchConnectorConfig
+} {
+  return {
+    connectorId: connector.id,
+    connectorName: connector.name,
+    tenantId: connector.tenantId,
+    lifecycleState: connector.lifecycleState,
+    secretAlias: connector.secretAlias,
+    config: parseWebSearchConfig(connector.config),
+  }
+}
+
+function normalizeDomains(values: string[]): string[] {
+  return [
+    ...new Set(
+      values
+        .map((value) => value.trim().toLowerCase())
+        .filter(Boolean)
+        .map((value) => value.replace(/^https?:\/\//, '').replace(/\/.*$/, '')),
+    ),
+  ]
+}
+
+async function resolveTenantWebSearchConnectorForContext(tenantId: string) {
+  return (
+    (await findTenantWebSearchConnector(tenantId)) ?? (await ensureTenantWebSearchConnector(tenantId))
+  )
+}
+
 /** Agent detail capability kártya (Feature-spec — WebSearchTool §7.1). */
 export async function getAgentWebSearchCalls(input: { agentId: string }) {
   try {
@@ -58,6 +103,7 @@ export async function getAgentWebSearchCalls(input: { agentId: string }) {
   }
 }
 
+/** Platform kill-switch (minden tenant). */
 export async function getWebSearchControls() {
   try {
     await requireTenantRole('viewer')
@@ -76,6 +122,32 @@ export async function setWebSearchControls(input: unknown) {
     return ok(controls)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Nem sikerült menteni a web-search vezérlőit')
+  }
+}
+
+/** Tenant kill-switch — tenant admin vagy superadmin (assume tenant kontextusban). */
+export async function getTenantWebSearchControls() {
+  try {
+    const ctx = await requireTenantRole('viewer')
+    const controls = await services.platformSettings.getTenantWebSearchControls(ctx.activeTenantId!)
+    return ok(controls)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Nem sikerült betölteni a tenant web-search vezérlőit')
+  }
+}
+
+export async function setTenantWebSearchControls(input: unknown) {
+  try {
+    const ctx = await requireTenantRole('admin')
+    const parsed = setTenantWebSearchControlsSchema.parse(input)
+    const controls = await services.platformSettings.setTenantWebSearchControls(
+      ctx.activeTenantId!,
+      parsed,
+      ctx.user.id,
+    )
+    return ok(controls)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Nem sikerült menteni a tenant web-search vezérlőit')
   }
 }
 
@@ -102,59 +174,126 @@ export async function setWebFetchControls(input: unknown) {
   }
 }
 
-export type WebSearchPolicyView = {
-  connectorId: string
-  connectorName: string
-  lifecycleState: string
-  secretAlias: string | null
-  config: WebSearchConnectorConfig
-}
+export type WebSearchPolicyView = ReturnType<typeof connectorToPolicyView>
 
-function normalizeDomains(values: string[]): string[] {
-  return [
-    ...new Set(
-      values
-        .map((value) => value.trim().toLowerCase())
-        .filter(Boolean)
-        .map((value) => value.replace(/^https?:\/\//, '').replace(/\/.*$/, '')),
-    ),
-  ]
-}
-
+/** Aktív tenant web search policy — minden agent ezt használja. */
 export async function getWebSearchPolicy() {
   try {
-    await requireTenantRole('viewer')
-    const connector = await prisma.connector.findFirst({
-      where: { type: 'web_search', lifecycleState: 'active' },
-      orderBy: { createdAt: 'asc' },
-    })
-    if (!connector) return fail('Aktív Web Search connector nem található.')
-
-    return ok({
-      connectorId: connector.id,
-      connectorName: connector.name,
-      lifecycleState: connector.lifecycleState,
-      secretAlias: connector.secretAlias,
-      config: parseWebSearchConfig(connector.config),
-    })
+    const ctx = await requireTenantRole('viewer')
+    const connector = await resolveTenantWebSearchConnectorForContext(ctx.activeTenantId!)
+    return ok(connectorToPolicyView(connector))
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Nem sikerült betölteni a web-search policyt')
   }
 }
 
-export async function updateWebSearchPolicy(input: unknown) {
+/** Platform-hosted search hitelesítő adatai (URL + kulcs) — superadmin. */
+export async function getPlatformHostedWebSearchPolicy() {
+  try {
+    await requirePlatformRole('superadmin')
+    const connector =
+      (await findPlatformHostedWebSearchConnector()) ??
+      (await ensurePlatformHostedWebSearchConnector())
+    return ok(connectorToPolicyView(connector))
+  } catch (e) {
+    return fail(
+      e instanceof Error ? e.message : 'Nem sikerült betölteni a platform-hosted web search beállítást',
+    )
+  }
+}
+
+export async function updatePlatformHostedWebSearch(input: unknown) {
   try {
     const user = (await requirePlatformRole('superadmin')).user
-    const parsed = updateWebSearchPolicySchema.parse(input)
-    const connector = await prisma.connector.findUnique({
-      where: { id: parsed.connectorId },
+    const parsed = updatePlatformHostedWebSearchSchema.parse(input)
+    const connector =
+      (await findPlatformHostedWebSearchConnector()) ??
+      (await ensurePlatformHostedWebSearchConnector())
+
+    const previous = parseWebSearchConfig(connector.config)
+    const nextConfig: WebSearchConnectorConfig = {
+      ...previous,
+      provider: 'custom_search_api',
+      providerApiUrl: parsed.providerApiUrl ?? previous.providerApiUrl,
+    }
+    if (!nextConfig.providerApiUrl) {
+      return fail('Platform-hosted searchhez API URL szükséges.')
+    }
+
+    let nextSecretAlias = connector.secretAlias
+    const apiKeyRotated = Boolean(parsed.apiKey)
+    if (parsed.apiKey) {
+      const { saveConnectorApiKey, buildConnectorSecretRef } = await import(
+        '@/domain/connector/connector-secret-store'
+      )
+      await saveConnectorApiKey(connector.id, parsed.apiKey)
+      nextSecretAlias = buildConnectorSecretRef(connector.id)
+    }
+
+    const updated = await prisma.connector.update({
+      where: { id: connector.id },
+      data: {
+        name: PLATFORM_HOSTED_WEB_SEARCH_CONNECTOR_NAME,
+        config: nextConfig as unknown as Prisma.InputJsonValue,
+        secretAlias: nextSecretAlias,
+        version: { increment: 1 },
+        lifecycleState: 'active',
+      },
     })
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: null,
+      action: 'web_search.platform_hosted.config_changed',
+      targetType: 'connector',
+      targetId: connector.id,
+      modelUsed: null,
+      inputRef: connector.name,
+      outputRef: 'updated',
+      policyDecision: 'allowed',
+      metadata: {
+        connectorId: connector.id,
+        providerApiUrl: nextConfig.providerApiUrl ?? null,
+        apiKeyRotated,
+      } as Prisma.JsonValue,
+      tenantId: null,
+    })
+
+    return ok(connectorToPolicyView(updated))
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Nem sikerült menteni a platform-hosted web search beállítást')
+  }
+}
+
+export async function updateWebSearchPolicy(input: unknown) {
+  try {
+    const authCtx = await getAuthContext()
+    const isSuperadmin = Boolean(authCtx?.platformRoles.includes('superadmin'))
+    const parsed = updateWebSearchPolicySchema.parse(input)
+
+    const connector = await prisma.connector.findUnique({ where: { id: parsed.connectorId } })
     if (!connector || connector.type !== 'web_search') {
       return fail('Web Search connector nem található.')
+    }
+    if (connector.tenantId === null) {
+      return fail('Platform connector — használd a platform-hosted search szerkesztőt.')
     }
     if (connector.lifecycleState !== 'active') {
       return fail('Csak aktív Web Search connector policy szerkeszthető.')
     }
+
+    if (isSuperadmin) {
+      await requirePlatformRole('superadmin')
+    } else {
+      const tenantCtx = await requireTenantRole('admin')
+      if (connector.tenantId !== tenantCtx.activeTenantId) {
+        return fail('Csak a saját tenant web search policy-ja szerkeszthető.')
+      }
+    }
+
+    const actorId = authCtx?.user.id
+    if (!actorId) return fail('Nincs bejelentkezve')
 
     const previous = parseWebSearchConfig(connector.config)
     const nextConfig: WebSearchConnectorConfig = {
@@ -176,18 +315,21 @@ export async function updateWebSearchPolicy(input: unknown) {
       retentionDays: parsed.retentionDays,
       requireHumanApprovalForSensitiveQuery: parsed.requireHumanApprovalForSensitiveQuery,
     }
-    if (parsed.provider === 'custom_search_api' && !nextConfig.providerApiUrl && !process.env.WEB_SEARCH_PROVIDER_API_URL?.trim()) {
-      return fail('custom_search_api providerhez API URL szükséges, vagy WEB_SEARCH_PROVIDER_API_URL env beállítás.')
+    if (parsed.provider === 'custom_search_api' && !nextConfig.providerApiUrl) {
+      return fail('custom_search_api providerhez API URL szükséges.')
     }
 
     let nextSecretAlias = connector.secretAlias
     const apiKeyRotated = Boolean(parsed.apiKey)
-    if (parsed.apiKey) {
+    if (parsed.apiKey && parsed.provider === 'custom_search_api') {
       const { saveConnectorApiKey, buildConnectorSecretRef } = await import(
         '@/domain/connector/connector-secret-store'
       )
       await saveConnectorApiKey(connector.id, parsed.apiKey)
       nextSecretAlias = buildConnectorSecretRef(connector.id)
+    }
+    if (parsed.provider === 'platform_hosted_search') {
+      nextSecretAlias = null
     }
 
     const updated = await prisma.connector.update({
@@ -201,7 +343,7 @@ export async function updateWebSearchPolicy(input: unknown) {
 
     await repositories.audit.append({
       actorType: 'human',
-      actorId: user.id,
+      actorId,
       agentVersion: null,
       action: 'web_search.config_changed',
       targetType: 'connector',
@@ -212,6 +354,7 @@ export async function updateWebSearchPolicy(input: unknown) {
       policyDecision: 'allowed',
       metadata: {
         connectorId: connector.id,
+        tenantId: connector.tenantId,
         provider: nextConfig.provider,
         previousProvider: previous.provider,
         allowGeneralWeb: nextConfig.allowGeneralWeb,
@@ -225,15 +368,10 @@ export async function updateWebSearchPolicy(input: unknown) {
         maxQueriesPerAgentDay: nextConfig.maxQueriesPerAgentDay,
         apiKeyRotated,
       } as Prisma.JsonValue,
+      tenantId: connector.tenantId,
     })
 
-    return ok({
-      connectorId: updated.id,
-      connectorName: updated.name,
-      lifecycleState: updated.lifecycleState,
-      secretAlias: updated.secretAlias,
-      config: parseWebSearchConfig(updated.config),
-    })
+    return ok(connectorToPolicyView(updated))
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Nem sikerült menteni a web-search policyt')
   }
@@ -250,12 +388,20 @@ export type WebSearchGovernanceSummary = {
   topResultDomains: Array<{ domain: string; count: number }>
 }
 
-/** Governance dashboard web_search bontás (Feature-spec §7.3). */
+/** Governance dashboard web_search bontás (Feature-spec §7.3) — tenant scope. */
 export async function getWebSearchGovernanceSummary(input?: { sinceDays?: number }) {
   try {
-    await requireTenantRole('viewer')
+    const ctx = await requireTenantRole('viewer')
     const since = new Date(Date.now() - (input?.sinceDays ?? 30) * 24 * 60 * 60 * 1000)
-    const rows = await repositories.toolBroker.listToolCallsByName('web_search', { since }, 1000)
+    const rows = await prisma.toolCall.findMany({
+      where: {
+        toolName: 'web_search',
+        createdAt: { gte: since },
+        agent: { tenantId: ctx.activeTenantId },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 1000,
+    })
 
     const denyReasonCounts = new Map<string, number>()
     const domainCounts = new Map<string, number>()

@@ -232,7 +232,7 @@ export class ToolBrokerService {
       if (!authorization.connector) throw new Error('web_search requires connector authorization')
       const config = parseWebSearchConfig(authorization.connector.config)
       const [enabled, ticketQueryCount, agentDayQueryCount] = await Promise.all([
-        this.isWebSearchEnabled(),
+        this.isWebSearchEnabled(actingTenantId),
         ticketId ? this.tools.countToolCallsForTicket(ticketId, 'web_search') : Promise.resolve(0),
         this.tools.countToolCallsForAgentSince(
           input.agentId,

@@ -128,19 +128,25 @@ jobot más néven hoztad létre.
 
 ---
 
-## 6. A régi Cloud Run service leállítása
+## 6. A régi Cloud Run service
 
-Ha eddig a `wiki-dispatcher` service csak a LISTEN/cron miatt futott folyamatosan, most
-már nullára skálázható (a Scheduler átveszi a biztonsági háló szerepét):
+A `wiki-dispatcher` service korábban csak a LISTEN/cron miatt futott folyamatosan. A Scheduler
+átvette a biztonsági háló szerepét, ezért a service **törölve lett** az `enterprise-ai-demo`
+projektből (2026-07 állapot — `gcloud run services list` nem mutatja).
 
-```bash
-gcloud run services update wiki-dispatcher \
-  --project=$GCP_PROJECT_ID --region=$GCP_REGION --min-instances=0
-```
+Ennek két következménye van:
 
-Ugyanez elérhető az admin UI-ból is (Cloud Run sor → „Leállítás”). A service maga nem kell
-törölni — ha valaha vissza akarsz állni a folyamatos LISTEN/NOTIFY módra, elég
-`--min-instances=1`-re visszaállítani.
+- Az admin UI-ból eltűnt a „Cloud Run service (wiki-dispatcher)” sor, és vele együtt a
+  `setCloudRunDispatcherScale` action, a `cloud-run-service-admin.ts` modul, valamint a
+  `DISPATCHER_ADMIN_SERVICE_NAME` env-változó. Egy nem létező erőforráshoz nem adunk vezérlőt.
+- Visszaállni nem `--min-instances=1`-gyel lehet, hanem újradeployolással:
+  `bash infra/gcp/deploy-dispatcher-service.sh`. Vedd figyelembe, hogy onnantól a service
+  folyamatosan fut, és nyitva tartja a Neon-kapcsolatot. A scale-vezérlést ilyenkor `gcloud`-dal
+  végezd, vagy állítsd vissza a fenti UI-sort.
+
+Fontos, hogy ez a **service** külön dolog a `wiki-harness` **Cloud Run Jobtól**: utóbbi él, és
+ő futtatja az agenteket `HARNESS_LAUNCHER_MODE=cloud-run-job` mellett, ticketenként egy-egy
+konténerben (scale-to-zero, csak futás közben kerül pénzbe).
 
 ---
 

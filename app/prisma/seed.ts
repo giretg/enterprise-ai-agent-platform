@@ -20,6 +20,11 @@ import { ensureDefaultRolePermissions } from '../src/repositories/postgres/iam-r
 import { BUILTIN_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/builtin-templates'
 import { GLOBAL_CUSTOM_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/custom-template-seeds'
 import { upsertConnectorByTypeName } from '../src/lib/connector-upsert'
+import {
+  ensureAllTenantsHaveWebSearchConnector,
+  ensurePlatformHostedWebSearchConnector,
+  ensureTenantWebSearchConnector,
+} from '../src/domain/web-search/web-search-connector-service'
 import { ensureTenantGmailConnector } from '../src/lib/seed-gmail-connector'
 import { ensureStarterStepTemplates } from '../src/domain/step-template/step-template-catalog'
 import {
@@ -1058,8 +1063,21 @@ async function ensureHSMOfficerAgent(adminId: string) {
  * capability sort — ezt csak worker agentekhez kötjük.
  */
 async function ensureWebSearchSeed(agentId: string) {
-  const config = {
-    provider: 'stub',
+  await ensurePlatformHostedWebSearchConnector({
+    provider: 'custom_search_api',
+    allowedDomains: [],
+    deniedDomains: ['pastebin.com', '*.onion'],
+    allowGeneralWeb: false,
+    safeSearch: 'strict',
+  })
+
+  const agent = await prisma.agent.findUnique({ where: { id: agentId }, select: { tenantId: true } })
+  if (!agent?.tenantId) {
+    console.warn('  ensureWebSearchSeed: agent has no tenantId, skipping tenant connector link')
+    return
+  }
+
+  const tenantConnector = await ensureTenantWebSearchConnector(agent.tenantId, {
     allowedDomains: [
       '*.gov.hu',
       '*.mnb.hu',
@@ -1070,38 +1088,14 @@ async function ensureWebSearchSeed(agentId: string) {
       'docs.stripe.com',
     ],
     deniedDomains: ['pastebin.com', '*.onion'],
-    defaultLocale: 'hu-HU',
-    defaultRegion: 'HU',
-    defaultMaxResults: 5,
-    hardMaxResults: 10,
-    maxQueryLength: 500,
-    maxQueriesPerTicket: 10,
-    maxQueriesPerAgentDay: 100,
     allowGeneralWeb: false,
     safeSearch: 'strict',
-    logRawQuery: false,
-    retentionDays: 90,
-    requireHumanApprovalForSensitiveQuery: false,
-  }
-
-  const connector = await upsertConnectorByTypeName(prisma, {
-    create: {
-      type: 'web_search',
-      name: 'Controlled Web Search (banking_strict)',
-      authMode: 'agent_owned',
-      scope: 'global',
-      tenantId: null,
-      secretAlias: 'platform/web-search-provider-key',
-      version: 1,
-      config,
-      lifecycleState: 'active',
-    },
-    update: { config, tenantId: null },
+    provider: 'platform_hosted_search',
   })
 
   await prisma.agentConnector.upsert({
-    where: { agentId_connectorId: { agentId, connectorId: connector.id } },
-    create: { agentId, connectorId: connector.id, accessMode: 'read' },
+    where: { agentId_connectorId: { agentId, connectorId: tenantConnector.id } },
+    create: { agentId, connectorId: tenantConnector.id, accessMode: 'read' },
     update: { accessMode: 'read' },
   })
 
@@ -1577,6 +1571,10 @@ async function main() {
   await ensureBuiltinConnectorTemplates()
   await ensureGlobalCustomConnectorTemplates()
   await ensureStarterStepTemplates(prisma)
+  const backfilled = await ensureAllTenantsHaveWebSearchConnector()
+  if (backfilled > 0) {
+    console.log(`  Web Search tenant connectors backfilled: ${backfilled}`)
+  }
 
   console.log('Seed complete')
   console.log('  Wiki Agent:', agent.id)

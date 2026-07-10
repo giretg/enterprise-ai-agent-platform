@@ -43,6 +43,7 @@ yarn-error.log*
 # GCP harness job config (contains secrets) — keep only the .example
 infra/gcp/harness-job.env
 infra/gcp/dispatcher-service.env
+infra/gcp/dispatch-cycle-scheduler.env
 
 # vercel
 .vercel

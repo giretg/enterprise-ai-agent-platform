@@ -27,7 +27,7 @@ export function kbSearchAnswerInstruction(params: {
   if (params.hitCount === 0) {
     return params.mode === 'task'
       ? 'Az előre lefuttatott tudásbázis-keresés (kb_search) nem adott találatot erre a feladatra. Ez NEM jelenti, hogy nincs megoldás. Ha a feladatban KONKRÉT dokumentumnév szerepel (pl. egy .docx/.pdf fájlnév), hívd a kb_search eszközt közvetlenül a PONTOS névvel vagy egy szűkebb kulcsszóval — a pre-fetch a zajos feladatszöveg miatt is elhibázhatta. Emellett: email/postafiók feladatnál gmail_search, fájl/munkaterület feladatnál file_* eszköz — ha engedélyezve van. Csak akkor mondd, hogy nincs elég forrás, ha a célzott kb_search és a többi releváns eszköz sem ad adatot.'
-      : 'A tudásbázis (kb_search) nem adott találatot erre a kérdésre. Ez NEM jelenti, hogy nincs válasz: email/postafiók kérdésnél gmail_search, fájl/munkaterület kérdésnél file_* eszköz — ha engedélyezve van. Csak akkor mondd, hogy nincs elég forrás, ha a releváns eszközök sem adnak adatot.'
+      : 'A tudásbázis (kb_search) nem adott találatot erre a kérdésre. Ez NEM jelenti, hogy nincs válasz: aktuális webes/publikus információnál web_search, email/postafiók kérdésnél gmail_search, fájl/munkaterület kérdésnél file_* eszköz — ha engedélyezve van. Csak akkor mondd, hogy nincs elég forrás, ha a releváns eszközök sem adnak adatot.'
   }
   if (params.hasMemoryContext) {
     return 'A hivatalos/dokumentált tudásbázis-tényállításokhoz (pl. szabályzat, OKF, publikus értéklista) kizárólag az alábbi kb_search találatokra támaszkodj — de a Project memory context releváns emlékeit a fenti szabály szerint említsd meg. Minden kb_search-alapú állításhoz adj forráshivatkozást.'

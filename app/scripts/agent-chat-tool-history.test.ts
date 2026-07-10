@@ -14,7 +14,7 @@
  */
 import assert from 'node:assert/strict'
 import type { ToolCall } from '@prisma/client'
-import { buildHistoryGatewayMessages } from '../src/domain/agent/agent-chat-runtime'
+import { buildCancelledTurnMessage, buildHistoryGatewayMessages } from '../src/domain/agent/agent-chat-runtime'
 import type { ContextAssemblyMessage } from '../src/domain/conversation/context-assembly'
 
 let failures = 0
@@ -149,6 +149,70 @@ async function main() {
     assert.ok(content.includes('gmail_send (megtagadva): reason=no_grant'))
     assert.ok(!content.includes('conversationId'))
     assert.ok(!content.includes('actingUserId'))
+  })
+
+  await test('megszakított forduló: tool-összefoglaló + folytatás-útmutató, nincs stream-chunk', () => {
+    const content = buildCancelledTurnMessage({
+      turnToolCalls: [
+        call({
+          toolName: 'web_search',
+          createdAt: new Date('2026-07-06T21:11:00Z'),
+          resultMeta: { query: '24.hu utolsó cikk', resultCount: 5 },
+        }),
+      ],
+      activities: [],
+    })
+    assert.ok(content.includes('Megszakítva'))
+    assert.ok(content.includes('Lefutott eszközök: web_search'))
+    assert.ok(content.includes('folytasd'))
+    assert.ok(!content.includes('chunk'))
+    assert.ok(!content.includes('[Ebben a körben lefutott eszközhívások]'))
+  })
+
+  await test('megszakított forduló: kész válasz kerül mentésre, nem félbemaradt token', () => {
+    const fullReply = 'Az utolsó cikk a 24.hu-n a következő témában jelent meg: gazdaság.'
+    const content = buildCancelledTurnMessage({
+      completedReply: fullReply,
+      turnToolCalls: [
+        call({
+          toolName: 'web_search',
+          createdAt: new Date('2026-07-06T21:11:00Z'),
+          resultMeta: { query: '24.hu', resultCount: 3 },
+        }),
+      ],
+    })
+    assert.ok(content.includes('[Válasz]'))
+    assert.ok(content.includes(fullReply))
+    assert.ok(!content.includes('félbemaradt'))
+  })
+
+  await test('megszakított forduló szinopszisa bekerül a következő kör promptjába', () => {
+    const cancelledReply = buildCancelledTurnMessage({
+      turnToolCalls: [
+        call({
+          toolName: 'web_search',
+          createdAt: new Date('2026-07-06T21:11:00Z'),
+          resultMeta: { query: '24.hu', resultCount: 2 },
+        }),
+      ],
+    })
+    const toolCalls = [
+      call({
+        toolName: 'web_search',
+        createdAt: new Date('2026-07-06T21:11:00Z'),
+        resultMeta: { query: '24.hu', resultCount: 2 },
+      }),
+    ]
+    const messages: ContextAssemblyMessage[] = [
+      msg({ id: 'u1', seq: 1, role: 'user', content: 'mi az utolsó cikk?', createdAt: new Date('2026-07-06T21:10:00Z') }),
+      msg({ id: 'a1', seq: 2, role: 'agent', content: cancelledReply, createdAt: new Date('2026-07-06T21:12:00Z') }),
+      msg({ id: 'u2', seq: 3, role: 'user', content: 'folytasd', createdAt: new Date('2026-07-06T21:14:00Z') }),
+    ]
+    const result = buildHistoryGatewayMessages(messages, toolCalls, '')
+    assert.equal(result.length, 3)
+    assert.ok(result[1].content.includes('web_search (siker)'))
+    assert.ok(result[1].content.includes('Megszakítva'))
+    assert.equal(result[2].content, 'folytasd')
   })
 
   if (failures > 0) {

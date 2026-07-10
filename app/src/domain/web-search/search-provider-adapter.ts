@@ -149,7 +149,7 @@ export class StubSearchProviderAdapter implements SearchProviderAdapter {
 export type HttpSearchProviderConfig = {
   apiUrl: string
   apiKey?: string
-  providerName?: 'custom_search_api' | 'managed_search' | 'brave'
+  providerName?: 'custom_search_api' | 'platform_hosted_search' | 'brave'
   providerType?: 'bing' | 'brave' // az URL alapján inference, vagy explicit
 }
 

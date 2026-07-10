@@ -2,10 +2,9 @@ import { getCloudRunAccessToken } from './cloud-run-auth'
 
 /**
  * Cloud Scheduler admin wrapper a `dispatch-cycle-sweep` job be/ki kapcsolásához és
- * intervallum-állításához az admin UI-ból (§5.7 kiegészítés — analóg a Cloud Run
- * `cloud-run-service-admin.ts`-szel). A `getCloudRunAccessToken` név történelmi — ez egy
- * generikus GCP access token lekérő (metadata-szerver vagy explicit bearer), bármely
- * Google API híváshoz újrahasználható, nem csak Cloud Runhoz.
+ * intervallum-állításához az admin UI-ból (§5.7 kiegészítés). A `getCloudRunAccessToken` név
+ * történelmi — ez egy generikus GCP access token lekérő (metadata-szerver vagy explicit bearer),
+ * bármely Google API híváshoz újrahasználható, nem csak Cloud Runhoz.
  */
 
 export type SchedulerJobState = 'ENABLED' | 'PAUSED' | 'UNKNOWN'

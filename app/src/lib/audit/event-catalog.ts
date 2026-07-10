@@ -167,6 +167,9 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'monitor.sweep.error',
   'monitor.sweep.escalated',
   'monitor.sweep.quiet',
+  // Legacy: a kill-switch alatti, körönkénti „kihagyva” bejegyzést megszüntettük (minden
+  // audit.append globális advisory lockot vesz a hash-láncra, így percenkénti zaj volt).
+  // Regisztrálva marad, mert korábbi sorok hivatkoznak rá.
   'monitor.sweep.skipped',
   'monitor.sweep.suppressed',
 
@@ -266,6 +269,10 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
 
   // Web Search Tool kill-switch
   'web_search.config_changed',
+  'web_search.platform_hosted.config_changed',
+  'web_search.tenant.config_changed',
+  'web_search.tenant.paused',
+  'web_search.tenant.resumed',
   'web_search.paused',
   'web_search.resumed',
 

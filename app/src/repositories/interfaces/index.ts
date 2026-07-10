@@ -785,7 +785,14 @@ export interface MemoryVersionRepository {
 
 export interface PlatformSettingsRepository {
   get(key: string): Promise<unknown | null>
-  set(key: string, value: Prisma.InputJsonValue, updatedById?: string | null): Promise<void>
+  /** `Prisma.JsonNull` a „nincs érték” — a `value` oszlop nem nullable, törölni nem tudunk. */
+  set(
+    key: string,
+    value:
+      | import('@prisma/client').Prisma.InputJsonValue
+      | import('@prisma/client').Prisma.NullTypes.JsonNull,
+    updatedById?: string | null,
+  ): Promise<void>
 }
 
 export interface AuditRepository {

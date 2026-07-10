@@ -103,20 +103,16 @@ env:
     value: "posnavigator.eu"
     availability:
       - RUNTIME
-  # --- Worker-processes admin panel (control-plane/system): Cloud Run wiki-dispatcher
-  # státusz/scale, Admin API-n át (metadata-server ambient token, nincs Bearer secret).
-  # A lokális worker (LOCAL_WORKER_CONTROL_URL/DISPATCHER_CONTROL_TOKEN) szándékosan
-  # nincs itt — az élő konténernek nincs elérése a te laptopod localhost-jához.
+  # --- Worker-processes admin panel (control-plane/system): a dispatch-cycle-sweep Cloud
+  # Scheduler job státusza/szüneteltetése, Admin API-n át (metadata-server ambient token,
+  # nincs Bearer secret). A lokális worker (LOCAL_WORKER_CONTROL_URL/DISPATCHER_CONTROL_TOKEN)
+  # szándékosan nincs itt — az élő konténernek nincs elérése a te laptopod localhost-jához.
   - variable: DISPATCHER_ADMIN_PROJECT_ID
     value: "enterprise-ai-demo"
     availability:
       - RUNTIME
   - variable: DISPATCHER_ADMIN_REGION
     value: "europe-west4"
-    availability:
-      - RUNTIME
-  - variable: DISPATCHER_ADMIN_SERVICE_NAME
-    value: "wiki-dispatcher"
     availability:
       - RUNTIME
   # --- Fail-closed aláíró/titkosító titkok (WP-1 / review F1) ---
@@ -136,4 +132,9 @@ env:
     secret: SANDBOX_PREVIEW_SECRET
     availability:
       - BUILD
+      - RUNTIME
+  # Connector API-kulcsok (web_search custom + platform-hosted) — Secret Manager.
+  - variable: CONNECTOR_SECRET_PREFIX
+    value: "projects/346824017066/secrets"
+    availability:
       - RUNTIME

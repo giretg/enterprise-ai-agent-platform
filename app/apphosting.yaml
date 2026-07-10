@@ -124,3 +124,8 @@ env:
     availability:
       - BUILD
       - RUNTIME
+  # Connector API-kulcsok (web_search custom + platform-hosted) — Secret Manager.
+  - variable: CONNECTOR_SECRET_PREFIX
+    value: "projects/346824017066/secrets"
+    availability:
+      - RUNTIME

@@ -14,7 +14,7 @@ import type {
 } from '@prisma/client'
 import { prisma } from '@/lib/db'
 import { gmailToolAllowedByScopes } from '@/domain/connector-grant/gmail-scopes'
-import { WEB_SEARCH_CONTROLS_KEY } from '@/domain/web-search/web-search-types'
+import { WEB_SEARCH_CONTROLS_KEY, WEB_SEARCH_TENANT_CONTROLS_KEY } from '@/domain/web-search/web-search-types'
 import type {
   AgentRepository,
   ConnectorGrantRepository,
@@ -123,14 +123,19 @@ const prismaRoleTemplateLookup: RoleTemplateLookup = async (key, tenantId) => {
  * web_search kill-switch (Feature-spec — WebSearchTool §7.2, WS13). Cserepont a
  * teszteléshez; alapból a `platform_settings` táblát kérdezi.
  */
-export type WebSearchEnabledLookup = () => Promise<boolean>
+export type WebSearchEnabledLookup = (tenantId: string | null) => Promise<boolean>
 export type WebFetchEnabledLookup = () => Promise<boolean>
 export type WebResearchDelegationEnabledLookup = () => Promise<boolean>
 
-export const prismaWebSearchEnabledLookup: WebSearchEnabledLookup = async () => {
-  const row = await prisma.platformSetting.findUnique({ where: { key: WEB_SEARCH_CONTROLS_KEY } })
-  const value = row?.value as { killSwitch?: boolean } | null
-  return value?.killSwitch !== true
+export const prismaWebSearchEnabledLookup: WebSearchEnabledLookup = async (tenantId) => {
+  const platformRow = await prisma.platformSetting.findUnique({ where: { key: WEB_SEARCH_CONTROLS_KEY } })
+  const platformValue = platformRow?.value as { killSwitch?: boolean } | null
+  if (platformValue?.killSwitch === true) return false
+  if (!tenantId) return true
+  const tenantRow = await prisma.platformSetting.findUnique({ where: { key: WEB_SEARCH_TENANT_CONTROLS_KEY } })
+  const tenantStore = tenantRow?.value as Record<string, { killSwitch?: boolean }> | null
+  const tenantBucket = tenantStore?.[tenantId]
+  return tenantBucket?.killSwitch !== true
 }
 
 export const prismaWebFetchEnabledLookup: WebFetchEnabledLookup = async () => {

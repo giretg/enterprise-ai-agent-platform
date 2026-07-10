@@ -34,13 +34,19 @@ export class PostgresToolBrokerRepository implements ToolBrokerRepository {
     accessMode: ConnectorAccessMode,
     tenantId?: string | null,
   ): Promise<{ connector: Connector; agentSecretAlias: string | null } | null> {
+    const connectorScope =
+      type === 'web_search' && tenantId
+        ? { type, tenantId }
+        : { type, ...connectorTenantScope(tenantId) }
+
     const agentConnector = await prisma.agentConnector.findFirst({
       where: {
         agentId,
         accessMode: { in: connectorAccessModes(accessMode) },
-        connector: { type, ...connectorTenantScope(tenantId) },
+        connector: connectorScope,
       },
       include: { connector: true },
+      orderBy: { connector: { createdAt: 'asc' } },
     })
     if (!agentConnector) return null
     return { connector: agentConnector.connector, agentSecretAlias: agentConnector.secretAlias ?? null }
@@ -53,14 +59,20 @@ export class PostgresToolBrokerRepository implements ToolBrokerRepository {
     accessMode: ConnectorAccessMode,
     tenantId?: string | null,
   ): Promise<{ connector: Connector; agentSecretAlias: string | null } | null> {
+    const connectorScope =
+      type === 'web_search' && tenantId
+        ? { type, tenantId, id: connectorId }
+        : { type, id: connectorId, ...connectorTenantScope(tenantId) }
+
     const agentConnector = await prisma.agentConnector.findFirst({
       where: {
         agentId,
         connectorId,
         accessMode: { in: connectorAccessModes(accessMode) },
-        connector: { type, ...connectorTenantScope(tenantId) },
+        connector: connectorScope,
       },
       include: { connector: true },
+      orderBy: { connector: { createdAt: 'asc' } },
     })
     if (!agentConnector) return null
     return { connector: agentConnector.connector, agentSecretAlias: agentConnector.secretAlias ?? null }
