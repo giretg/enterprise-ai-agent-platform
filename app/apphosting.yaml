@@ -10,13 +10,17 @@ runConfig:
   concurrency: 40
 
 env:
+  # A projektben az `ostorosbor-crm` backend is fut, és a névtelen DATABASE_URL /
+  # DIRECT_URL secreteken osztoznánk vele: a CRM deployja felülírja őket a saját
+  # adatbázisával, amit a platform a KÖVETKEZŐ deployján venne fel (P2021: a
+  # public.users nem létezik). A platform ezért saját névtérrel olvas.
   - variable: DATABASE_URL
-    secret: DATABASE_URL
+    secret: PLATFORM_DATABASE_URL
     availability:
       - BUILD
       - RUNTIME
   - variable: DIRECT_URL
-    secret: DIRECT_URL
+    secret: PLATFORM_DIRECT_URL
     availability:
       - BUILD
   - variable: DATABASE_URL_TEST
