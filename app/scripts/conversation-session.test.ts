@@ -234,12 +234,14 @@ function buildService() {
   const tickets = new MemoryTicketRepo()
   const audit = {
     events: [] as Record<string, unknown>[],
+    failAppend: false,
     append: async (event: Record<string, unknown>) => {
+      if (audit.failAppend) throw new Error('audit_unavailable')
       const stored = { id: `audit-${audit.events.length + 1}`, ...event }
       audit.events.push(stored)
       return stored
     },
-  } as unknown as AuditRepository & { events: Record<string, unknown>[] }
+  } as unknown as AuditRepository & { events: Record<string, unknown>[]; failAppend: boolean }
   const playbooks = {
     getActiveRefByName: async () => 'playbook:wiki-interaction@v1',
     auditProcessStart: async () => undefined,
@@ -336,6 +338,33 @@ async function main() {
       /conversation_archived/,
     )
     assert.equal(conversations.messages.get(conv.id)?.length ?? 0, 0)
+  })
+
+  await test('persist-ACK seam — audit hiba előtt jelzi a már commitolt üzenetet', async () => {
+    const { service, conversations, audit } = buildService()
+    const conv = await service.createConversation({
+      agentId: 'agent-1',
+      createdById: 'user-1',
+      tenantId: 'tenant-A',
+    })
+    let persistedMessageId: string | null = null
+    audit.failAppend = true
+
+    await assert.rejects(
+      () =>
+        service.appendMessage({
+          conversationId: conv.id,
+          role: 'user',
+          content: 'DB-ben maradó kérdés',
+          onPersisted: (message) => {
+            persistedMessageId = message.id
+          },
+        }),
+      /audit_unavailable/,
+    )
+
+    assert.equal(persistedMessageId, 'msg-1')
+    assert.equal(conversations.messages.get(conv.id)?.[0]?.id, persistedMessageId)
   })
 
   await test('acting user — user és agent fordulón is eltárolódik', async () => {

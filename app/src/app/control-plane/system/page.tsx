@@ -1,5 +1,6 @@
 import { getAuthContext } from '@/auth/context'
 import {
+  getDailyBudgetOverview,
   getDatabaseMode,
   getDispatcherControls,
   getMemoryObservabilityDashboard,
@@ -20,6 +21,7 @@ import {
 import { readDispatcherRuntime } from '@/lib/dispatcher-runtime'
 import { DatabaseControlPanel } from './database-control-panel'
 import { AutomationControlSection } from './automation-control-section'
+import { DailyBudgetPanel } from './daily-budget-panel'
 import { ModelGatewayPanel } from './model-gateway-panel'
 import { ModelPolicyPanel } from './model-policy-panel'
 import { TicketTypeConfigPanel } from './ticket-type-config-panel'
@@ -44,6 +46,7 @@ export default async function SystemPage() {
     routingPoliciesRes,
     budgetsRes,
     memoryObservabilityRes,
+    dailyBudgetRes,
   ] = await Promise.all([
     getAuthContext(),
     getDispatcherControls(),
@@ -60,12 +63,16 @@ export default async function SystemPage() {
     listModelRoutingPolicies(),
     listModelBudgets(),
     getMemoryObservabilityDashboard(),
+    getDailyBudgetOverview(),
   ])
   // §9.2/§13/4: a platform-globális vezérlőket csak platform-szerep szerkesztheti;
   // a tenant-admin itt read-only nézetet kap (a WRITE-actionök platform-guard alatt).
   const canEdit = Boolean(ctx?.platformRoles.includes('superadmin'))
   const canEditTenantWebSearch =
     Boolean(ctx?.kind === 'tenant' && ctx.activeTenantRole === 'admin') || canEdit
+  // A napi model-keret a saját tenant erőforrása → tenant-admin állíthatja (a WRITE-action
+  // maga is `requireTenantRole('admin')` alatt van, ez csak a felület elrejtése).
+  const canEditTenantBudget = canEditTenantWebSearch
 
   const settingsKey = [
     controlsRes.success ? controlsRes.data.updatedAt : '',
@@ -125,6 +132,14 @@ export default async function SystemPage() {
             </div>
           ) : null}
         </>
+      )}
+
+      {dailyBudgetRes.success ? (
+        <DailyBudgetPanel overview={dailyBudgetRes.data} canEdit={canEditTenantBudget} />
+      ) : (
+        <div className="rounded-lg border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
+          {dailyBudgetRes.error}
+        </div>
       )}
 
       {!tenantWebSearchControlsRes.success ? (

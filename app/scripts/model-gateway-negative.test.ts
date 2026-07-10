@@ -1,5 +1,5 @@
 /**
- * Model Gateway kötelező negatív tesztek (§10.2 MG-N1–MG-N7)
+ * Model Gateway kötelező negatív tesztek (§10.2 MG-N1–MG-N8)
  *
  * Futtatás: npx tsx scripts/model-gateway-negative.test.ts
  *
@@ -10,6 +10,8 @@
  * MG-N5: Érzékeny (PII/PAN) prompt külső modellhez → sensitivity-router lokálisra kényszerít / blokkol.
  * MG-N6: Agent/prompt nem tudja felülírni a sensitivity-döntést.
  * MG-N7: Request-szintű model override csak explicit routing policy alapján érvényesülhet.
+ * MG-N8: Fail-closed routing, ha nincs helyi modell; per-agent felmentés csak a
+ *        `sensitive` szintre hat; a tool-eredmény tartalma is osztályozódik.
  */
 
 import assert from 'node:assert/strict'
@@ -18,6 +20,8 @@ import {
   DEFAULT_MAX_CALLS_PER_TICKET,
   ModelGateway,
   GatewayBudgetError,
+  GatewaySensitivityError,
+  type AgentSensitivityPolicyReader,
   type ModelProvider,
 } from '../src/domain/gateway/model-gateway'
 import { RoutingEngine } from '../src/domain/gateway/routing-engine'
@@ -81,6 +85,9 @@ function makeModelCallRepo(existingCalls: number): {
     async getUsageForAgentSince() { return { calls: 0, tokens: 0 } },
     async getUsageForTicket() { return { calls: existingCalls, tokens: existingCalls * 100 } },
     async getUsageForAgent() { return { calls: existingCalls, tokens: existingCalls * 100 } },
+    async getUsageForTenant() { return { calls: existingCalls, tokens: existingCalls * 100 } },
+    async getUsageForTicketType() { return { calls: existingCalls, tokens: existingCalls * 100 } },
+    async getUsageByAgent() { return [] },
     async getGovernanceSummary() {
       return { calls: 0, tokens: 0, cost: 0, avgLatencyMs: 0, okCalls: 0, errorCalls: 0, rateLimitedCalls: 0 }
     },
@@ -350,7 +357,7 @@ async function main() {
     const gw = new ModelGateway(
       auditRepo, modelCallRepo, providers, { maxCallsPerTicket: 30 },
       undefined, undefined,
-      { enforceLocalForSensitive: true, localProvider: 'ollama', localModel: 'gemma-local' },
+      { enforceLocalForSensitive: true, localProvider: 'ollama', localModel: 'gemma-local', localModelAvailable: true },
     )
 
     const result = await gw.call({
@@ -454,7 +461,7 @@ async function main() {
     const gw = new ModelGateway(
       auditRepo, modelCallRepo, providers, { maxCallsPerTicket: 30 },
       undefined, undefined,
-      { enforceLocalForSensitive: false, localProvider: 'ollama', localModel: 'gemma-local' },
+      { enforceLocalForSensitive: false, localProvider: 'ollama', localModel: 'gemma-local', localModelAvailable: false },
     )
 
     const result = await gw.call({
@@ -615,6 +622,142 @@ async function main() {
     assert.equal(result.model, 'gemma-local')
     assert.equal(policyCalls.n, 1)
     assert.equal(overrideCalls.n, 0, 'Nem allowlistelt request override provider hívódott')
+  })
+
+  // ── MG-N8: Fail-closed routing + per-agent felmentés + tool-scope ────────
+  const agentPolicy = (allow: boolean): AgentSensitivityPolicyReader => ({
+    async allowsSensitiveExternalModel() {
+      return allow
+    },
+  })
+
+  await check('MG-N8: tool-eredményben érkező PAN is forbidden (nem csak user/assistant)', () => {
+    const decision = classifyPrompt([
+      { role: 'user', content: 'Nézd meg az utolsó levelemet' },
+      { role: 'tool', content: 'From: a@b.hu\nA kártyaszám: 4111111111111111' },
+    ])
+    assert.equal(decision.level, 'forbidden', 'tool-eredmény PAN-ja átcsúszott az osztályozáson')
+  })
+
+  await check('MG-N8: sensitive + nincs elérhető lokális modell → fail-closed, provider nem hívódik', async () => {
+    const { repo: auditRepo, events } = makeAuditRepo()
+    const { repo: modelCallRepo } = makeModelCallRepo(0)
+
+    const externalCalls = { n: 0 }
+    const providers = new Map<string, ModelProvider>([
+      ['chatgpt-oauth', { name: 'chatgpt-oauth', async chat() { externalCalls.n++; return { content: 'külső', latencyMs: 1 } } }],
+    ])
+
+    const gw = new ModelGateway(
+      auditRepo, modelCallRepo, providers, { maxCallsPerTicket: 30 },
+      undefined, undefined,
+      { enforceLocalForSensitive: true, localProvider: 'ollama', localModel: 'gemma-local', localModelAvailable: false },
+    )
+
+    await assert.rejects(
+      () => gw.call({
+        agentId: TEST_AGENT_ID,
+        messages: [{ role: 'user', content: 'Írj a szilagyi.tamas@tmdminformatika.hu címre' }],
+        modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+      }),
+      (e: unknown) => e instanceof GatewaySensitivityError && e.reason === 'local_model_unavailable',
+      'Nem GatewaySensitivityError-t dobott',
+    )
+
+    assert.equal(externalCalls.n, 0, 'Külső provider hívódott, pedig érzékeny volt a prompt')
+    assert.ok(
+      events.some((r) => r.policyDecision === 'sensitivity_local_unavailable'),
+      'Hiányzik a sensitivity_local_unavailable audit bejegyzés',
+    )
+  })
+
+  await check('MG-N8: per-agent felmentés → sensitive mehet külső modellre, auditálva', async () => {
+    const { repo: auditRepo, events } = makeAuditRepo()
+    const { repo: modelCallRepo } = makeModelCallRepo(0)
+
+    const externalCalls = { n: 0 }
+    const providers = new Map<string, ModelProvider>([
+      ['chatgpt-oauth', { name: 'chatgpt-oauth', async chat() { externalCalls.n++; return { content: 'külső', latencyMs: 1 } } }],
+    ])
+
+    const gw = new ModelGateway(
+      auditRepo, modelCallRepo, providers, { maxCallsPerTicket: 30 },
+      undefined, undefined,
+      { enforceLocalForSensitive: true, localProvider: 'ollama', localModel: 'gemma-local', localModelAvailable: false },
+      undefined,
+      agentPolicy(true),
+    )
+
+    const result = await gw.call({
+      agentId: TEST_AGENT_ID,
+      messages: [{ role: 'user', content: 'Írj a szilagyi.tamas@tmdminformatika.hu címre' }],
+      modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+    })
+
+    assert.equal(result.provider, 'chatgpt-oauth')
+    assert.equal(externalCalls.n, 1, 'A felmentett agent hívása nem jutott ki a külső providerhez')
+    assert.ok(
+      events.some((r) => r.action === 'model.call.sensitivity_agent_bypass'),
+      'Hiányzik a bypass audit bejegyzés',
+    )
+  })
+
+  await check('MG-N8: per-agent felmentés a forbidden szintet NEM kapcsolja ki', async () => {
+    const { repo: auditRepo } = makeAuditRepo()
+    const { repo: modelCallRepo } = makeModelCallRepo(0)
+
+    const externalCalls = { n: 0 }
+    const providers = new Map<string, ModelProvider>([
+      ['chatgpt-oauth', { name: 'chatgpt-oauth', async chat() { externalCalls.n++; return { content: 'külső', latencyMs: 1 } } }],
+    ])
+
+    const gw = new ModelGateway(
+      auditRepo, modelCallRepo, providers, { maxCallsPerTicket: 30 },
+      undefined, undefined,
+      { enforceLocalForSensitive: true, localProvider: 'ollama', localModel: 'gemma-local', localModelAvailable: false },
+      undefined,
+      agentPolicy(true),
+    )
+
+    await assert.rejects(
+      () => gw.call({
+        agentId: TEST_AGENT_ID,
+        messages: [{ role: 'user', content: 'A kártyám: 4111111111111111' }],
+        modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+      }),
+      GatewayBudgetError,
+      'A felmentett agent forbidden tartalma nem blokkolódott',
+    )
+    assert.equal(externalCalls.n, 0, 'Forbidden tartalom kijutott a külső providerhez')
+  })
+
+  await check('MG-N8: lokális modell elérhetőnek jelölve, de a hívás elhal → GatewaySensitivityError', async () => {
+    const { repo: auditRepo } = makeAuditRepo()
+    const { repo: modelCallRepo } = makeModelCallRepo(0)
+
+    const providers = new Map<string, ModelProvider>([
+      ['chatgpt-oauth', { name: 'chatgpt-oauth', async chat() { return { content: 'külső', latencyMs: 1 } } }],
+      ['ollama', { name: 'ollama', async chat() { throw new Error('fetch failed') } }],
+    ])
+
+    const gw = new ModelGateway(
+      auditRepo, modelCallRepo, providers, { maxCallsPerTicket: 30 },
+      undefined, undefined,
+      { enforceLocalForSensitive: true, localProvider: 'ollama', localModel: 'gemma-local', localModelAvailable: true },
+    )
+
+    await assert.rejects(
+      () => gw.call({
+        agentId: TEST_AGENT_ID,
+        messages: [{ role: 'user', content: 'Írj a szilagyi.tamas@tmdminformatika.hu címre' }],
+        modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+      }),
+      (e: unknown) =>
+        e instanceof GatewaySensitivityError &&
+        e.reason === 'local_call_failed' &&
+        !/^fetch failed$/.test(e.message),
+      'A nyers fetch failed jutott a hívóhoz',
+    )
   })
 
   // ── Összesítés ────────────────────────────────────────────────────────────

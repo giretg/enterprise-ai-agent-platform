@@ -1,6 +1,7 @@
 import { Prisma } from '@prisma/client'
-import type { AuditLog, ModelBudget, ModelCall, ModelRoutingPolicy } from '@prisma/client'
+import type { AuditLog, ModelBudget, ModelCall, ModelRoutingPolicy, TicketType } from '@prisma/client'
 import { prisma } from '@/lib/db'
+import { budgetPeriodSince } from '@/lib/budget-period'
 import type {
   AuditRepository,
   ModelBudgetRepository,
@@ -206,25 +207,60 @@ export class PostgresModelCallRepository implements ModelCallRepository {
     )
   }
 
-  async getUsageForAgent(agentId: string, period: ModelBudgetPeriod) {
-    const now = new Date()
-    const since = new Date(now)
-    if (period === 'day') since.setDate(now.getDate() - 1)
-    else if (period === 'week') since.setDate(now.getDate() - 7)
-    else since.setMonth(now.getMonth() - 1)
-
-    const rows = await prisma.modelCall.findMany({
-      where: { agentId, createdAt: { gte: since } },
-      select: { promptTokens: true, completionTokens: true },
+  /**
+   * A budget-kapuk közös aggregátuma. `_count._all` a hívásszám, a token két oszlop
+   * összege — DB-oldali aggregáció, hogy egy nagy forgalmú bucket se töltsön be
+   * több tízezer sort minden dispatch-döntéshez.
+   */
+  private async sumUsage(where: Prisma.ModelCallWhereInput) {
+    const agg = await prisma.modelCall.aggregate({
+      where,
+      _count: { _all: true },
+      _sum: { promptTokens: true, completionTokens: true },
     })
+    return {
+      calls: agg._count._all,
+      tokens: (agg._sum.promptTokens ?? 0) + (agg._sum.completionTokens ?? 0),
+    }
+  }
 
-    return rows.reduce(
-      (acc, row) => ({
-        calls: acc.calls + 1,
-        tokens: acc.tokens + row.promptTokens + row.completionTokens,
-      }),
-      { calls: 0, tokens: 0 },
-    )
+  async getUsageForAgent(agentId: string, period: ModelBudgetPeriod) {
+    return this.sumUsage({ agentId, createdAt: { gte: budgetPeriodSince(period) } })
+  }
+
+  async getUsageForTenant(tenantId: string | null, period: ModelBudgetPeriod) {
+    // `agent.tenantId` a bucket-kulcs: a `model_calls` táblán nincs tenant oszlop, és nem is
+    // kell — a `null` ág pontosan a megosztott (platform) agenteket fogja meg.
+    return this.sumUsage({
+      createdAt: { gte: budgetPeriodSince(period) },
+      agent: { tenantId },
+    })
+  }
+
+  async getUsageForTicketType(
+    tenantId: string | null,
+    ticketType: TicketType,
+    period: ModelBudgetPeriod,
+  ) {
+    return this.sumUsage({
+      createdAt: { gte: budgetPeriodSince(period) },
+      agent: { tenantId },
+      ticket: { type: ticketType },
+    })
+  }
+
+  async getUsageByAgent(tenantId: string | null, period: ModelBudgetPeriod) {
+    const rows = await prisma.modelCall.groupBy({
+      by: ['agentId'],
+      where: { createdAt: { gte: budgetPeriodSince(period) }, agent: { tenantId } },
+      _count: { _all: true },
+      _sum: { promptTokens: true, completionTokens: true },
+    })
+    return rows.map((row) => ({
+      agentId: row.agentId,
+      calls: row._count._all,
+      tokens: (row._sum.promptTokens ?? 0) + (row._sum.completionTokens ?? 0),
+    }))
   }
 
   async getGovernanceSummary(since?: Date) {
@@ -409,7 +445,11 @@ export class PostgresModelBudgetRepository implements ModelBudgetRepository {
     await prisma.modelBudget.delete({ where: { id } })
   }
 
-  async findApplicable(filter: { tenantId?: string; agentId?: string; ticketType?: string }): Promise<ModelBudget[]> {
+  async findApplicable(filter: {
+    tenantId?: string | null
+    agentId?: string
+    ticketType?: string
+  }): Promise<ModelBudget[]> {
     const scopes: ModelBudgetScope[] = ['tenant']
     const scopeRefs: string[] = []
     if (filter.agentId) {
@@ -428,6 +468,10 @@ export class PostgresModelBudgetRepository implements ModelBudgetRepository {
           {
             OR: [
               { scope: 'tenant' },
+              // `scope=agent` + `scopeRef=null` = a bucket MINDEN agentjére külön-külön érvényes
+              // per-agent alapértelmezés (ez a `DISPATCH_MAX_*` env-változók DB-beli megfelelője).
+              // Nélküle csak név szerint felsorolt agentekre lehetne per-agent keretet adni.
+              { scope: 'agent', scopeRef: null },
               { scopeRef: { in: scopeRefs } },
             ],
           },

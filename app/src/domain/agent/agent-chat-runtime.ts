@@ -1,4 +1,4 @@
-import type { ToolCall } from '@prisma/client'
+import type { Message, ToolCall } from '@prisma/client'
 import type {
   AgentRepository,
   AuditRepository,
@@ -671,7 +671,7 @@ export class AgentChatRuntime {
       processInputPayload?: Record<string, unknown>
     },
   ): AsyncGenerator<
-    | { type: 'meta'; conversationId: string }
+    | { type: 'meta'; conversationId: string; userMessageId: string }
     | { type: 'activity'; activity: ToolLoopActivityEvent }
     | { type: 'memory_candidate'; candidate: ToolLoopMemoryCandidateEvent }
     | { type: 'token'; chunk: string }
@@ -734,14 +734,32 @@ export class AgentChatRuntime {
       await this.materializeDocumentsToWorkspace(tenantKey, conversationId, knowledgeDocs, presentFiles)
       const workspaceFiles = await this.listWorkspaceFiles(tenantKey, conversationId)
 
-      const userMessage = await this.conversations.appendMessage({
-        conversationId,
-        role: 'user',
-        content: encodeStoredMessage(userFacingText, attachmentIds),
-        actingUserId: params.createdById,
-        actorType: 'human',
-        actorId: params.createdById,
-      })
+      let persistedUserMessage: Message | null = null
+      let userMessage: Message
+      try {
+        userMessage = await this.conversations.appendMessage({
+          conversationId,
+          role: 'user',
+          content: encodeStoredMessage(userFacingText, attachmentIds),
+          actingUserId: params.createdById,
+          actorType: 'human',
+          actorId: params.createdById,
+          onPersisted: (message) => {
+            persistedUserMessage = message
+          },
+        })
+      } catch (error) {
+        // Az üzenet commitja után az audit/ref frissítés még hibázhat. Ilyenkor az
+        // ACK-nak meg kell előznie a hibát, különben a kliens egy DB-ben lévő sort törölne.
+        if (persistedUserMessage) {
+          yield {
+            type: 'meta',
+            conversationId,
+            userMessageId: (persistedUserMessage as Message).id,
+          }
+        }
+        throw error
+      }
 
       turn = {
         conversationId,
@@ -757,7 +775,9 @@ export class AgentChatRuntime {
       activeConversationId = conversationId
       registerActiveChatTurn(conversationId)
 
-      yield { type: 'meta', conversationId }
+      // Persist-ACK: a kliens csak ettől a ponttól tarthatja meg hiba esetén az
+      // optimista user-buborékot. Az id-val rögtön a perzisztált rekordra vált.
+      yield { type: 'meta', conversationId, userMessageId: userMessage.id }
 
       const processReply = await this.tryStartChatTriggeredProcess({
         tenantId: params.tenantId ?? null,

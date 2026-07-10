@@ -1,4 +1,4 @@
-import { ModelGateway } from '@/domain/gateway/model-gateway'
+import { ModelGateway, type AgentSensitivityPolicyReader } from '@/domain/gateway/model-gateway'
 import { RoutingEngine } from '@/domain/gateway/routing-engine'
 import { BudgetEngine } from '@/domain/gateway/budget-engine'
 import { BookkeeperAgentRuntime } from '@/domain/agent/bookkeeper-runtime'
@@ -170,6 +170,14 @@ const toolAuthorizer = new AllowlistAuthorizer(
 )
 const routingEngine = new RoutingEngine(repositories.modelRoutingPolicies)
 const budgetEngine = new BudgetEngine(repositories.modelBudgets, repositories.modelCalls)
+// Sensitivity router: a per-agent felmentést a gateway az agentId-ból oldja fel,
+// így a nyolc hívási hely paraméter-lánca változatlan marad.
+const agentSensitivityPolicy: AgentSensitivityPolicyReader = {
+  async allowsSensitiveExternalModel(agentId: string): Promise<boolean> {
+    const agent = await repositories.agents.findById(agentId)
+    return agent?.allowSensitiveExternalModel ?? false
+  },
+}
 const modelGateway = new ModelGateway(
   repositories.audit,
   repositories.modelCalls,
@@ -177,8 +185,9 @@ const modelGateway = new ModelGateway(
   undefined,
   routingEngine,
   budgetEngine,
-  undefined, // sensitivityPolicy → default
+  undefined, // sensitivityPolicy → env (sensitivityPolicyFromEnv)
   repositories.platformSettings, // D11 — model.pricing tarifa a valódi costEstimate-hez
+  agentSensitivityPolicy,
 )
 // Tartós agent-memória (agent-memory-persistent-cross-conversation-spec.md
 // WP-2/WP-4): a retrieval service pure, a proposal service a T1 candidate-írást
@@ -690,6 +699,7 @@ const dispatcherService = new DispatcherService(
   repositories.agents,
   new MonitorDispatchAlertNotifier(monitorNotifier, { platformSettings: platformSettingsService }),
   repositories.processes,
+  budgetEngine,
 )
 
 export const services = {

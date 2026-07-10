@@ -5,6 +5,7 @@ import { readTenantGoogleOAuthConfig } from '@/lib/tenant-google-oauth-config'
 import {
   buildGrantTokenRef,
   createGrantTokenStore,
+  GrantTokenMissingError,
   isAccessTokenExpired,
   type ConnectorGrantTokens,
 } from './grant-token-vault'
@@ -615,7 +616,24 @@ export class ConnectorGrantService {
       requireActive: true,
     })
     const store = createGrantTokenStore(params.tokenRef)
-    let tokens = await store.load()
+    let tokens: ConnectorGrantTokens
+    try {
+      tokens = await store.load()
+    } catch (error) {
+      // A grant DB-sora túlélheti a token-tárolót (pl. a régi efemer konténer-FS-en
+      // született token, miközben a store már Secret Manager). Ilyenkor a grant
+      // `active` maradna örökre, és minden tool-hívás nyers store-hibán bukna.
+      // Múló store-hibán (5xx, hálózat, IAM) viszont NEM égetjük el a grantot.
+      if (!(error instanceof GrantTokenMissingError)) throw error
+      await this.markGrantExpired({
+        grantId: params.grantId,
+        connectorId: params.connector.id,
+        actingUserId: params.actingUserId,
+        tenantId: params.tenantId,
+        metadata: { reason: 'token_unavailable', store: store.label } as Prisma.JsonValue,
+      })
+      throw new Error('grant_token_expired')
+    }
 
     if (isAccessTokenExpired(tokens.expiresAt)) {
       try {

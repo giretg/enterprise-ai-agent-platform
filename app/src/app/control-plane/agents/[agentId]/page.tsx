@@ -11,6 +11,7 @@ import { AgentDelegatedConnectorsBar } from '@/components/agents/agent-delegated
 import { AgentMiniAppsLink } from '@/components/agents/agent-mini-apps-link'
 import { UpdateInstructionForm } from '@/components/agents/update-instruction-form'
 import { UpdatePersonaForm } from '@/components/agents/update-persona-form'
+import { SensitivityPolicyForm } from '@/components/agents/sensitivity-policy-form'
 import { AgentAvatarUpload } from '@/components/agents/agent-avatar-upload'
 import { UpdateModelConfigForm } from '@/components/agents/update-model-config-form'
 import { UpdateSelfEvolutionProfileForm } from '@/components/agents/update-self-evolution-profile-form'
@@ -380,6 +381,11 @@ export default async function AgentDetailPage({
                 defaultNickname={defaultPersona.nickname}
                 defaultGreeting={defaultPersona.greeting}
                 defaultTrait={defaultPersona.trait}
+              />
+
+              <SensitivityPolicyForm
+                agentId={agent.id}
+                allowSensitiveExternalModel={agent.allowSensitiveExternalModel}
               />
 
               <UpdateModelConfigForm

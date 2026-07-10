@@ -103,7 +103,7 @@ type MemoryCandidateCard = {
 }
 
 type AgentChatStreamEvent =
-  | { type: 'meta'; conversationId: string }
+  | { type: 'meta'; conversationId: string; userMessageId: string }
   | { type: 'activity'; activity: AgentActivity }
   | { type: 'memory_candidate'; candidate: Omit<MemoryCandidateCard, 'status' | 'resultMessage'> }
   | { type: 'token'; chunk: string }
@@ -1113,6 +1113,18 @@ export function AgentChatPanel({
     streamAbortRef.current = abortController
 
     void (async () => {
+      let persistedUserMessageId: string | null = null
+
+      function removeFailedOptimisticMessages() {
+        setMessages((prev) =>
+          prev.filter(
+            (message) =>
+              message.id !== optimisticAgentId &&
+              (persistedUserMessageId !== null || message.id !== optimisticUserId),
+          ),
+        )
+      }
+
       try {
         const documentIds = localAttachments.length > 0 ? await uploadAttachments(localAttachments) : []
         if (abortController.signal.aborted) return
@@ -1131,7 +1143,7 @@ export function AgentChatPanel({
         })
 
         if (!response.ok || !response.body) {
-          setMessages((prev) => prev.filter((m) => m.id !== optimisticUserId && m.id !== optimisticAgentId))
+          removeFailedOptimisticMessages()
           setStatusMessage(`Küldés sikertelen (${response.status})`)
           return
         }
@@ -1161,9 +1173,17 @@ export function AgentChatPanel({
             }
 
             if (event.type === 'meta' && event.conversationId) {
+              persistedUserMessageId = event.userMessageId
               streamConversationIdRef.current = event.conversationId
               setConversationId(event.conversationId)
               setConversationStatus('active')
+              setMessages((prev) =>
+                prev.map((message) =>
+                  message.id === optimisticUserId
+                    ? { ...message, id: event.userMessageId }
+                    : message,
+                ),
+              )
             } else if (event.type === 'activity') {
               flushSync(() => {
                 setMessages((prev) =>
@@ -1233,13 +1253,20 @@ export function AgentChatPanel({
               streamTerminalEvent = true
               break
             } else if (event.type === 'error') {
-              setMessages((prev) => prev.filter((m) => m.id !== optimisticUserId && m.id !== optimisticAgentId))
+              // Csak a persist-ACK után tartjuk meg a user-üzenetet. Validációs vagy
+              // korai szerverhiba esetén a meta esemény még nem érkezett meg.
+              removeFailedOptimisticMessages()
               setStatusMessage(event.message ?? 'Küldés sikertelen')
               streamTerminalEvent = true
               break
             }
           }
           if (streamTerminalEvent) break
+        }
+
+        if (!streamTerminalEvent) {
+          removeFailedOptimisticMessages()
+          setStatusMessage('A válaszfolyam váratlanul megszakadt')
         }
 
         if (streamTerminalEvent) {
@@ -1253,7 +1280,7 @@ export function AgentChatPanel({
         if (e instanceof DOMException && e.name === 'AbortError') {
           return
         }
-        setMessages((prev) => prev.filter((m) => m.id !== optimisticUserId && m.id !== optimisticAgentId))
+        removeFailedOptimisticMessages()
         setStatusMessage(e instanceof Error ? e.message : 'Küldés sikertelen')
       } finally {
         if (streamAbortRef.current === abortController) {

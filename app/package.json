@@ -46,6 +46,8 @@
     "s2:secret-setup": "bash infra/gcp/setup-chatgpt-oauth-secret.sh",
     "s7:live-smoke": "tsx scripts/s7-live-smoke.ts",
     "test:gateway-relay": "tsx scripts/text-tool-relay.test.ts",
+    "test:gateway-negative": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/model-gateway-negative.test.ts",
+    "test:dispatch-budget": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/dispatch-budget.test.ts",
     "test:monitor": "tsx scripts/monitor-engine.test.ts",
     "test:provisioning": "tsx scripts/provisioning-assistant.test.ts",
     "test:playbook-author": "tsx scripts/playbook-author-agent.test.ts",

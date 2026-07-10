@@ -16,7 +16,8 @@ import { GeminiProvider } from './gemini-provider'
 import { createTokenStoreFromEnv, ensureFreshTokens } from './oauth-token-store'
 import {
   classifyPrompt,
-  DEFAULT_SENSITIVITY_POLICY,
+  sensitivityPolicyFromEnv,
+  type SensitivityDecision,
   type SensitivityPolicy,
 } from './sensitivity-router'
 import type { RoutingEngine } from './routing-engine'
@@ -52,6 +53,32 @@ export class GatewayBudgetError extends Error {
     super(message)
     this.name = 'GatewayBudgetError'
   }
+}
+
+/**
+ * A `sensitive` prompt nem küldhető külső providerhez, és a helyi modell sem
+ * elérhető. A hívó (chat SSE / task runtime) ezt felhasználónak mutatható
+ * üzenetként kapja meg — nem nyers `fetch failed`-ként.
+ */
+export class GatewaySensitivityError extends Error {
+  constructor(
+    message: string,
+    readonly category: string | undefined,
+    readonly reason: 'local_model_unavailable' | 'local_call_failed',
+  ) {
+    super(message)
+    this.name = 'GatewaySensitivityError'
+  }
+}
+
+/**
+ * Per-agent felülbírálás olvasása (§ sensitivity router). Azért interface és nem
+ * hívási paraméter, mert a gateway-nek nyolc hívási helye van, és mindegyik
+ * átadja már az `agentId`-t — így a bővítés egy seamre korlátozódik.
+ */
+export interface AgentSensitivityPolicyReader {
+  /** Igaz, ha az agent `sensitive` tartalmat is küldhet külső modellnek. */
+  allowsSensitiveExternalModel(agentId: string): Promise<boolean>
 }
 
 function isUuid(value: string): boolean {
@@ -672,11 +699,134 @@ export class ModelGateway {
     private guardrail: GatewayGuardrail = guardrailFromEnv(),
     private routingEngine?: RoutingEngine,
     private budgetEngine?: BudgetEngine,
-    private sensitivityPolicy: SensitivityPolicy = DEFAULT_SENSITIVITY_POLICY,
+    private sensitivityPolicy: SensitivityPolicy = sensitivityPolicyFromEnv(),
     // D11 / §16.1 — a `model.pricing` tarifa-forrás a valódi costEstimate-hez.
     // Ha nincs megadva, a beépített DEFAULT_MODEL_PRICING él (a költség NEM marad 0).
     private pricingSettings?: Pick<PlatformSettingsRepository, 'get'>,
+    /** Ha nincs megadva, egyetlen agent sem kap külső-provider felmentést. */
+    private agentSensitivityPolicy?: AgentSensitivityPolicyReader,
   ) {}
+
+  /**
+   * Eldönti, hogy a `sensitive` prompt hová mehet. Három kimenet:
+   *   - `external`  — az agent kapott felmentést (audit-ált), marad a routing döntése
+   *   - `local`     — helyi modellre kényszerítünk
+   *   - dobás       — nincs hová: fail-closed blokk
+   *
+   * A `forbidden` szint (PAN, IBAN, privát kulcs) ide nem jut el: azt a hívó már
+   * korábban blokkolta, és agent-kapcsolóval NEM hatástalanítható.
+   */
+  private async resolveSensitiveTarget(ctx: {
+    agentId: string
+    agentVersion: number | null
+    ticketId?: string
+    conversationId?: string
+    modelUsed: string
+    sensitivity: SensitivityDecision
+  }): Promise<'external' | 'local'> {
+    const targetType = ctx.ticketId ? 'ticket' : ctx.conversationId ? 'conversation' : 'agent'
+    const targetId = ctx.ticketId ?? ctx.conversationId ?? ctx.agentId
+    const category = ctx.sensitivity.matchedCategory
+
+    const bypass = await this.agentSensitivityPolicy?.allowsSensitiveExternalModel(ctx.agentId)
+    if (bypass) {
+      await this.audit.append({
+        actorType: 'agent',
+        actorId: ctx.agentId,
+        agentVersion: ctx.agentVersion,
+        action: 'model.call.sensitivity_agent_bypass',
+        targetType,
+        targetId,
+        modelUsed: ctx.modelUsed,
+        inputRef: `sensitivity:${category}`,
+        outputRef: 'allowed_by_agent_policy',
+        policyDecision: 'agent_sensitivity_bypass',
+        metadata: { reason: 'agent_allows_sensitive_external_model', category },
+      })
+      return 'external'
+    }
+
+    const localUsable =
+      this.sensitivityPolicy.localModelAvailable &&
+      this.providers.has(this.sensitivityPolicy.localProvider)
+    if (localUsable) return 'local'
+
+    await this.audit.append({
+      actorType: 'agent',
+      actorId: ctx.agentId,
+      agentVersion: ctx.agentVersion,
+      action: 'model.call.denied',
+      targetType,
+      targetId,
+      modelUsed: ctx.modelUsed,
+      inputRef: `sensitivity:${category}`,
+      outputRef: 'blocked',
+      policyDecision: 'sensitivity_local_unavailable',
+      metadata: {
+        reason: 'sensitivity_local_unavailable',
+        category,
+        localProvider: this.sensitivityPolicy.localProvider,
+        localModel: this.sensitivityPolicy.localModel,
+      },
+    })
+    modelCallsTotal.inc({ provider: 'sensitivity', status: 'local_unavailable' })
+    throw new GatewaySensitivityError(
+      `Érzékeny tartalmat (${category}) észleltem, ezt csak helyi modell dolgozhatná fel — ` +
+        `de ebben a környezetben nincs elérhető helyi modell (${this.sensitivityPolicy.localProvider}/${this.sensitivityPolicy.localModel}). ` +
+        `A hívás blokkolva. Engedélyezd az agentnél a külső modellt, vagy állíts be helyi modellt.`,
+      category,
+      'local_model_unavailable',
+    )
+  }
+
+  private async applySensitivityRouting(ctx: {
+    agentId: string
+    agentVersion: number | null
+    ticketId?: string
+    conversationId?: string
+    resolvedConfig: ModelConfig
+    sensitivity: SensitivityDecision
+  }): Promise<{ resolvedConfig: ModelConfig; forcedLocal: boolean }> {
+    if (ctx.sensitivity.level !== 'sensitive' || !this.sensitivityPolicy.enforceLocalForSensitive) {
+      return { resolvedConfig: ctx.resolvedConfig, forcedLocal: false }
+    }
+
+    const target = await this.resolveSensitiveTarget({
+      agentId: ctx.agentId,
+      agentVersion: ctx.agentVersion,
+      ticketId: ctx.ticketId,
+      conversationId: ctx.conversationId,
+      modelUsed: ctx.resolvedConfig.model,
+      sensitivity: ctx.sensitivity,
+    })
+    if (target === 'external') {
+      return { resolvedConfig: ctx.resolvedConfig, forcedLocal: false }
+    }
+
+    return {
+      resolvedConfig: {
+        ...ctx.resolvedConfig,
+        provider: this.sensitivityPolicy.localProvider,
+        model: this.sensitivityPolicy.localModel,
+      },
+      forcedLocal: true,
+    }
+  }
+
+  private localSensitivityError(params: {
+    sensitivity: SensitivityDecision
+    provider: string
+    model: string
+    providerError: string
+  }): GatewaySensitivityError {
+    return new GatewaySensitivityError(
+      `Érzékeny tartalmat (${params.sensitivity.matchedCategory}) észleltem, a helyi modell ` +
+        `(${params.provider}/${params.model}) viszont nem válaszolt: ${params.providerError}. ` +
+        `A hívás blokkolva, adat nem hagyta el a platformot.`,
+      params.sensitivity.matchedCategory,
+      'local_call_failed',
+    )
+  }
 
   /** Cache-elt tarifa-betöltés (setting → default fallback). */
   private cachedPricing: ModelPricingTable | null = null
@@ -780,13 +930,16 @@ export class ModelGateway {
     }
 
     // Sensitivity override: force local model for sensitive prompts
-    if (sensitivity.level === 'sensitive' && this.sensitivityPolicy.enforceLocalForSensitive) {
-      resolvedConfig = {
-        ...resolvedConfig,
-        provider: this.sensitivityPolicy.localProvider,
-        model: this.sensitivityPolicy.localModel,
-      }
-    }
+    const sensitivityRouting = await this.applySensitivityRouting({
+      agentId: params.agentId,
+      agentVersion,
+      ticketId: params.ticketId,
+      conversationId: params.conversationId,
+      resolvedConfig,
+      sensitivity,
+    })
+    resolvedConfig = sensitivityRouting.resolvedConfig
+    const forcedLocal = sensitivityRouting.forcedLocal
 
     const provider = this.providers.get(resolvedConfig.provider)
     if (!provider) {
@@ -993,6 +1146,17 @@ export class ModelGateway {
         metadata: { latencyMs, status, error: message },
       })
 
+      // A helyi modell elérhetőnek volt jelölve, de a hívás mégis elhalt (pl. az
+      // Ollama nem fut). A nyers `fetch failed` semmit nem mond a felhasználónak.
+      if (forcedLocal) {
+        throw this.localSensitivityError({
+          sensitivity,
+          provider: provider.name,
+          model,
+          providerError: message,
+        })
+      }
+
       throw error
     }
   }
@@ -1071,13 +1235,16 @@ export class ModelGateway {
       resolvedConfig = { ...resolvedConfig, provider: decision.provider, model: decision.model }
     }
 
-    if (sensitivity.level === 'sensitive' && this.sensitivityPolicy.enforceLocalForSensitive) {
-      resolvedConfig = {
-        ...resolvedConfig,
-        provider: this.sensitivityPolicy.localProvider,
-        model: this.sensitivityPolicy.localModel,
-      }
-    }
+    const sensitivityRouting = await this.applySensitivityRouting({
+      agentId: params.agentId,
+      agentVersion,
+      ticketId: params.ticketId,
+      conversationId: params.conversationId,
+      resolvedConfig,
+      sensitivity,
+    })
+    resolvedConfig = sensitivityRouting.resolvedConfig
+    const forcedLocal = sensitivityRouting.forcedLocal
 
     const provider = this.providers.get(resolvedConfig.provider)
     if (!provider) {
@@ -1308,6 +1475,15 @@ export class ModelGateway {
         policyDecision: status,
         metadata: { latencyMs, status, error: errorMessage },
       })
+
+      if (forcedLocal) {
+        throw this.localSensitivityError({
+          sensitivity,
+          provider: provider.name,
+          model,
+          providerError: errorMessage,
+        })
+      }
 
       throw error
     }

@@ -15,6 +15,18 @@ export type ConnectorGrantTokens = {
   lastRefresh?: string
 }
 
+/**
+ * A grant tokenje nincs meg, vagy olvashatatlan — a felhasználónak újra kell
+ * engedélyeznie. Elkülönítve a múló store-hibáktól (5xx, hálózat, IAM), amelyek
+ * után a grant még érvényes lehet.
+ */
+export class GrantTokenMissingError extends Error {
+  constructor(reason: string) {
+    super(`Grant token unavailable: ${reason}`)
+    this.name = 'GrantTokenMissingError'
+  }
+}
+
 type TokenFileShape = {
   access_token: string
   refresh_token: string
@@ -36,9 +48,14 @@ function toFileShape(t: ConnectorGrantTokens): TokenFileShape {
 }
 
 function fromFileShape(raw: string): ConnectorGrantTokens {
-  const parsed = JSON.parse(raw) as TokenFileShape
+  let parsed: TokenFileShape
+  try {
+    parsed = JSON.parse(raw) as TokenFileShape
+  } catch {
+    throw new GrantTokenMissingError('payload is not valid JSON')
+  }
   if (!parsed.access_token || !parsed.refresh_token) {
-    throw new Error('Grant token payload missing access_token/refresh_token')
+    throw new GrantTokenMissingError('payload missing access_token/refresh_token')
   }
   return {
     accessToken: parsed.access_token,
@@ -74,7 +91,15 @@ export class FileGrantTokenStore implements ConnectorGrantTokenStore {
   }
 
   async load(): Promise<ConnectorGrantTokens> {
-    const raw = await readFile(this.filePath, 'utf8')
+    let raw: string
+    try {
+      raw = await readFile(this.filePath, 'utf8')
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        throw new GrantTokenMissingError(`no token file at ${this.filePath}`)
+      }
+      throw error
+    }
     return fromFileShape(raw)
   }
 
@@ -138,11 +163,16 @@ export class SecretManagerGrantTokenStore implements ConnectorGrantTokenStore {
       `https://secretmanager.googleapis.com/v1/${this.secretResource}/versions/latest:access`,
       { headers: { authorization: `Bearer ${token}` } },
     )
+    if (res.status === 404) {
+      // A secret (vagy a `latest` verziója) nem létezik: a grant tokenje sosem
+      // került ide, vagy megsemmisítettük — újra-engedélyezés kell.
+      throw new GrantTokenMissingError(`secret not found: ${this.secretResource}`)
+    }
     if (!res.ok) {
       throw new Error(`Secret Manager access failed: ${res.status} ${(await res.text()).slice(0, 200)}`)
     }
     const data = (await res.json()) as { payload?: { data?: string } }
-    if (!data.payload?.data) throw new Error('Secret Manager version payload empty')
+    if (!data.payload?.data) throw new GrantTokenMissingError('secret version payload empty')
     return fromFileShape(Buffer.from(data.payload.data, 'base64').toString('utf8'))
   }
 

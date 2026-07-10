@@ -13,6 +13,10 @@
 export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   // IAM / RBAC (access.*, user.*)
   'access.denied',
+  'platform.role.grant',
+  'platform.role.revoke',
+  'tenant.member.role.change',
+  'tenant.member.suspend',
   'tenant.oauth.google.update',
   'user.authz.deny',
   'user.invite.issue',
@@ -37,9 +41,12 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'agent.create',
   'agent.delete',
   'agent.dispatch_denied_inactive',
+  'agent.persona',
   'agent.resumed',
   'agent.retired',
   'agent.self_evolution_profile_change',
+  // Sensitivity router per-agent felmentés ki/bekapcsolása (§4.7.2).
+  'agent.sensitivity_policy',
   'agent.suspended',
   'agent.version',
   'behavior_profile.created',
@@ -89,9 +96,15 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'model.call',
   'model.call.denied',
   'model.call.sensitivity_override',
+  // Az agent felmentést kapott a `sensitive` tartalom külső modellre küldésére
+  // (agents.allow_sensitive_external_model). A `forbidden` szintre nem terjed ki.
+  'model.call.sensitivity_agent_bypass',
+  // Napi model-keret (összesített tenant + per-agent) átállítása a tenant admin felületről.
+  'model.budget_changed',
   'model_policy.upsert',
 
   // Tool Broker
+  'tool.authorize_denied_orchestrator',
   'tool.call',
   'tool.call.denied',
 
@@ -180,6 +193,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'playbook.assignment.create',
   'playbook.create',
   'playbook.pack.import',
+  'playbook.tenant_default_error_policy.set',
   'playbook.update_meta',
   'playbook.version.create',
   'playbook.version.publish',
@@ -212,6 +226,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'process.step.dispatch_deferred',
   'ticket.comment.add',
   'ticket.comment.attachment.uploaded',
+  'ticket.handback',
   'ticket.runas.authorize',
   'ticket.runas.revoke',
   'ticket.transition',

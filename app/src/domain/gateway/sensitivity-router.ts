@@ -87,9 +87,22 @@ const SENSITIVE_PATTERNS: Array<{ re: RegExp; category: string }> = [
 
 // ── Classifier ───────────────────────────────────────────────────────────────
 
+/**
+ * A prompt minden olyan része, ami ténylegesen kimegy a providerhez.
+ *
+ * A `tool` szerepű üzenetek is ide tartoznak: a gateway a teljes `messages`
+ * tömböt fűzi promptba, így egy `gmail_get_message` nyers válasza épp úgy
+ * elhagyja a platformot, mint a felhasználó gépelt szövege. Korábban csak a
+ * `user`/`assistant` üzeneteket néztük, és a tool-eredményben érkező PAN/IBAN
+ * osztályozás nélkül ment ki külső providerhez.
+ *
+ * A `system` üzenetek szándékosan kimaradnak: azokat a platform állítja elő
+ * (tool-instrukció, skill-szöveg), nem felhasználói adatforrás. A memória-chunk
+ * injektálás ezen a résen még átfér — l. a router-redesign specet.
+ */
 function extractText(messages: Array<{ role: string; content?: string | null }>): string {
   return messages
-    .filter((m) => m.role === 'user' || m.role === 'assistant')
+    .filter((m) => m.role === 'user' || m.role === 'assistant' || m.role === 'tool')
     .map((m) => m.content ?? '')
     .join('\n')
 }
@@ -242,10 +255,33 @@ export type SensitivityPolicy = {
   localProvider: string
   /** Model to force for sensitive prompts. */
   localModel: string
+  /**
+   * Whether a local model is actually deployed in this environment.
+   *
+   * Fail-closed: alapból `false`. Managed környezetben (App Hosting) nincs
+   * Ollama-sidecar, ezért a `sensitive` prompt nem irányítható sehová — ilyenkor
+   * a gateway blokkol, ahelyett hogy egy nem létező localhost-ra hívna és nyers
+   * `fetch failed`-del elhalna. Explicit opt-in kell hozzá.
+   */
+  localModelAvailable: boolean
 }
 
 export const DEFAULT_SENSITIVITY_POLICY: SensitivityPolicy = {
   enforceLocalForSensitive: true,
   localProvider: 'ollama',
   localModel: 'gemma-local',
+  localModelAvailable: false,
+}
+
+/**
+ * Env-vezérelt policy. A célmodell azért állítható, mert nem minden telepítésben
+ * Ollama a helyi backend; a redesign ezt majd tenant-szintű konfigba emeli.
+ */
+export function sensitivityPolicyFromEnv(env: NodeJS.ProcessEnv = process.env): SensitivityPolicy {
+  return {
+    enforceLocalForSensitive: env.SENSITIVITY_ENFORCE_LOCAL !== 'false',
+    localProvider: env.SENSITIVITY_LOCAL_PROVIDER || DEFAULT_SENSITIVITY_POLICY.localProvider,
+    localModel: env.SENSITIVITY_LOCAL_MODEL || DEFAULT_SENSITIVITY_POLICY.localModel,
+    localModelAvailable: env.SENSITIVITY_LOCAL_MODEL_AVAILABLE === 'true',
+  }
 }

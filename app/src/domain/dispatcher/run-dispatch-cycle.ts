@@ -15,9 +15,17 @@ export type DispatchCycleSummary = {
     scanned: number
     started: number
     budgetBlocked: number
+    skipped: number
     paused: boolean
+    /**
+     * Kihagyás-indokok darabszáma (`process_terminal`, `lock_lost`, …). E nélkül egy be nem
+     * induló ticketnél a felületen nem látszott, melyik kapu fogta meg.
+     */
+    skipReasons: Record<string, number>
     /** Csak input.ticketId esetén: a konkrét ticket dispatch-eredménye. */
     ticketStatus?: 'started' | 'skipped' | 'budget_blocked' | 'paused'
+    /** Csak input.ticketId esetén: a `skipped`/`budget_blocked` indoklása. */
+    ticketReason?: string
   }
 }
 
@@ -28,7 +36,7 @@ const EMPTY_SUMMARY: DispatchCycleSummary = {
   materializedScheduledTasks: 0,
   monitorSweep: { ran: false, escalated: 0, openedTickets: 0 },
   workspacePurge: { purgedTickets: 0, deletedObjects: 0 },
-  dispatch: { scanned: 0, started: 0, budgetBlocked: 0, paused: false },
+  dispatch: { scanned: 0, started: 0, budgetBlocked: 0, skipped: 0, paused: false, skipReasons: {} },
 }
 
 let cycleInFlight = false
@@ -101,19 +109,31 @@ export async function runDispatchCycle(
     if (input.ticketId) {
       const result = await services.dispatcher.dispatchTicket(input.ticketId)
       dispatch = {
-        scanned: 1,
+        // A `paused` sentinel nem egy megvizsgált ticket — ne számoljuk annak.
+        scanned: result.status === 'paused' ? 0 : 1,
         started: result.status === 'started' ? 1 : 0,
         budgetBlocked: result.status === 'budget_blocked' ? 1 : 0,
+        skipped: result.status === 'skipped' ? 1 : 0,
         paused: result.status === 'paused',
+        skipReasons: result.status === 'skipped' && result.reason ? { [result.reason]: 1 } : {},
         ticketStatus: result.status,
+        ticketReason: result.reason,
       }
     } else {
       const results = await services.dispatcher.dispatchReadyBatch(batchLimit)
+      const paused = results.some((r) => r.status === 'paused')
+      const skipReasons: Record<string, number> = {}
+      for (const r of results) {
+        if (r.status !== 'skipped' || !r.reason) continue
+        skipReasons[r.reason] = (skipReasons[r.reason] ?? 0) + 1
+      }
       dispatch = {
-        scanned: results.length,
+        scanned: paused ? 0 : results.length,
         started: results.filter((r) => r.status === 'started').length,
         budgetBlocked: results.filter((r) => r.status === 'budget_blocked').length,
-        paused: results.some((r) => r.status === 'paused'),
+        skipped: results.filter((r) => r.status === 'skipped').length,
+        paused,
+        skipReasons,
       }
     }
 

@@ -15,6 +15,7 @@ import { parseAgentModelConfig } from '@/lib/harness-model-config'
 import { isRunAsAuthorized, readRunAsUserId } from '@/lib/run-as-payload'
 import { wikiSearchQuery } from '@/lib/wiki-ticket-payload'
 import { logger, dispatchTotal, dispatchLagMs } from '@/lib/observability'
+import { exceedsHardCap, type BudgetEngine, type BudgetUsage } from '@/domain/gateway/budget-engine'
 import type { DispatchAlertNotifier } from './dispatch-alert-notifier'
 
 export type DispatchBudget = {
@@ -22,9 +23,29 @@ export type DispatchBudget = {
   maxTokensPerDay: number
 }
 
+/**
+ * Végső mentsvár, ha egyetlen `model_budgets` sor sem vonatkozik az agentre. Nem szabad
+ * fail-openre váltani: keret nélkül egy hurokba került agent egy éjszaka alatt elégeti a
+ * havi model-költséget. Aki tágabb keretet akar, vegyen fel egy tenant- vagy agent-szintű
+ * budgetet az admin felületen (vagy állítsa a `DISPATCH_MAX_*` env-változókat).
+ */
 export const DEFAULT_DISPATCH_BUDGET: DispatchBudget = {
   maxCallsPerDay: 100,
   maxTokensPerDay: 100_000,
+}
+
+/** Miért nem indult el egy egyébként ready ticket. Audit + admin UI közös szótára. */
+export type DispatchSkipReason =
+  | 'no_agent'
+  | 'agent_inactive'
+  | 'process_terminal'
+  | 'lock_lost'
+
+export type DispatchOutcome = {
+  ticketId: string
+  status: 'started' | 'skipped' | 'budget_blocked' | 'paused'
+  /** `skipped` esetén a konkrét ág; `budget_blocked` esetén a keret indoklása. */
+  reason?: DispatchSkipReason | string
 }
 
 const DEFAULT_HARNESS_MAX_RETRIES = 3
@@ -168,6 +189,12 @@ export class DispatcherService {
     private agents?: AgentRepository,
     private alertNotifier?: DispatchAlertNotifier,
     private processes?: ProcessRepository,
+    /**
+     * A `model_budgets` táblán alapuló, hatókör-helyes keretek (tenant-összesített + per-agent).
+     * Ha hiányzik, vagy egyetlen keret sem vonatkozik az agentre, a `budget` env-alapú
+     * per-agent kerete dönt.
+     */
+    private budgetEngine?: BudgetEngine,
   ) {}
 
   private async resolveHarnessGooseModel(
@@ -192,8 +219,8 @@ export class DispatcherService {
     return typeof this.resolveLauncher === 'function' ? this.resolveLauncher() : this.resolveLauncher
   }
 
-  async dispatchReadyBatch(limit = 10, now = new Date()) {
-    const results: Array<{ ticketId: string; status: 'started' | 'skipped' | 'budget_blocked' | 'paused' }> = []
+  async dispatchReadyBatch(limit = 10, now = new Date()): Promise<DispatchOutcome[]> {
+    const results: DispatchOutcome[] = []
 
     // Kill-switch: kikapcsolva (vagy a mód nincs az allowedModes-ban) egyetlen agentet sem indítunk.
     if (!(await this.isDispatchEnabled(this.launcher.mode))) {
@@ -208,14 +235,16 @@ export class DispatcherService {
     return results
   }
 
-  async dispatchTicket(ticketId: string, now = new Date()) {
-    if (!(await this.isDispatchEnabled(this.launcher.mode))) return { ticketId, status: 'paused' as const }
+  async dispatchTicket(ticketId: string, now = new Date()): Promise<DispatchOutcome> {
+    if (!(await this.isDispatchEnabled(this.launcher.mode))) return { ticketId, status: 'paused' }
     const ticket = await this.tickets.findById(ticketId)
-    if (!ticket) return { ticketId, status: 'skipped' as const }
-    if (ticket.state !== 'ready') return { ticketId, status: 'skipped' as const }
-    if (ticket.executeAfter && ticket.executeAfter > now) return { ticketId, status: 'skipped' as const }
+    if (!ticket) return { ticketId, status: 'skipped', reason: 'no_agent' }
+    if (ticket.state !== 'ready') return { ticketId, status: 'skipped', reason: 'not_ready' }
+    if (ticket.executeAfter && ticket.executeAfter > now) {
+      return { ticketId, status: 'skipped', reason: 'scheduled_later' }
+    }
     if (await this.shouldSkipProcessTicketDispatch(ticket)) {
-      return { ticketId, status: 'skipped' as const }
+      return this.skip(ticket, 'process_terminal')
     }
     return this.dispatchReadyTicket(ticket, now)
   }
@@ -448,45 +477,104 @@ export class DispatcherService {
     return { ticketId: input.ticketId, status: 'completed' }
   }
 
-  private async dispatchReadyTicket(
+  /**
+   * Minden kihagyás hagyjon nyomot. Korábban a `process_terminal` és a `lock_lost` ág
+   * némán tűnt el — se log, se metrika, se audit —, így egy be nem induló ticketnél nem
+   * lehetett megmondani, melyik kapu fogta meg. A `silent` csak a metrikát hallgattatja el
+   * ott, ahol a hívó már saját, beszédesebb metrikát növelt.
+   */
+  private skip(
     ticket: Ticket,
-    now: Date,
-  ): Promise<{ ticketId: string; status: 'started' | 'skipped' | 'budget_blocked' }> {
-    if (!ticket.agentId) {
-      return { ticketId: ticket.id, status: 'skipped' }
-    }
-    if (await this.shouldSkipProcessTicketDispatch(ticket)) {
-      return { ticketId: ticket.id, status: 'skipped' }
-    }
+    reason: DispatchSkipReason,
+    opts?: { silent?: boolean },
+  ): DispatchOutcome {
+    if (!opts?.silent) dispatchTotal.inc({ result: 'skipped' })
+    logger.info(
+      { event: 'dispatch', result: 'skipped', reason, ticketId: ticket.id, agentId: ticket.agentId },
+      'dispatch skipped',
+    )
+    return { ticketId: ticket.id, status: 'skipped', reason }
+  }
 
-    // I1 (§8): kizárólag `active` agent dispatchelhető. A draft/suspended/retired
-    // agentre érkező dispatch-kísérletet auditáljuk és kihagyjuk — így egy menet
-    // közben felfüggesztett/nyugdíjazott agent halasztott ticketje sem fut le.
-    if (this.agents) {
-      const agent = await this.agents.findById(ticket.agentId)
-      if (!agent || agent.status !== 'active') {
-        await this.audit.append({
-          actorType: 'system',
-          actorId: null,
-          agentVersion: null,
-          action: 'agent.dispatch_denied_inactive',
-          targetType: 'agent',
-          targetId: ticket.agentId,
-          modelUsed: null,
-          inputRef: ticket.id,
-          outputRef: agent?.status ?? 'missing',
-          policyDecision: 'denied',
-          metadata: { ticketId: ticket.id, status: agent?.status ?? 'missing' },
-        })
-        dispatchTotal.inc({ result: 'denied_inactive' })
-        return { ticketId: ticket.id, status: 'skipped' }
+  /**
+   * A napi keret két kapuja: a tenant összesített kerete és a per-agent keret (a
+   * `model_budgets` sorok hatóköre dönti el, melyik van egyáltalán beállítva). Ha egyetlen
+   * keret sem vonatkozik erre az agentre, az env-alapú per-agent mentsvár marad — sosem
+   * esünk keret nélküli állapotba.
+   */
+  private async checkBudget(
+    ticket: Ticket,
+    tenantId: string | null,
+    now: Date,
+  ): Promise<{ scope: string; reason: string; usage: BudgetUsage } | null> {
+    const agentId = ticket.agentId
+    if (!agentId) return null
+
+    if (this.budgetEngine) {
+      const statuses = await this.budgetEngine.statuses({ tenantId, agentId, ticketType: ticket.type })
+      if (statuses.length > 0) {
+        const hit = statuses.find((s) => s.exhausted)
+        if (!hit) return null
+        return {
+          scope: hit.budget.scope,
+          reason: exceedsHardCap(hit.budget, hit.usage) ?? 'budget exhausted',
+          usage: hit.usage,
+        }
       }
     }
 
     const since = new Date(now)
     since.setHours(0, 0, 0, 0)
-    const usage = await this.modelCalls.getUsageForAgentSince(ticket.agentId, since)
-    if (usage.calls >= this.budget.maxCallsPerDay || usage.tokens >= this.budget.maxTokensPerDay) {
+    const usage = await this.modelCalls.getUsageForAgentSince(agentId, since)
+    if (usage.calls >= this.budget.maxCallsPerDay) {
+      return {
+        scope: 'env_default',
+        reason: `Call limit exceeded: ${usage.calls}/${this.budget.maxCallsPerDay} per day (scope=env_default)`,
+        usage,
+      }
+    }
+    if (usage.tokens >= this.budget.maxTokensPerDay) {
+      return {
+        scope: 'env_default',
+        reason: `Token limit exceeded: ${usage.tokens}/${this.budget.maxTokensPerDay} per day (scope=env_default)`,
+        usage,
+      }
+    }
+    return null
+  }
+
+  private async dispatchReadyTicket(ticket: Ticket, now: Date): Promise<DispatchOutcome> {
+    if (!ticket.agentId) {
+      return this.skip(ticket, 'no_agent')
+    }
+    if (await this.shouldSkipProcessTicketDispatch(ticket)) {
+      return this.skip(ticket, 'process_terminal')
+    }
+
+    // I1 (§8): kizárólag `active` agent dispatchelhető. A draft/suspended/retired
+    // agentre érkező dispatch-kísérletet auditáljuk és kihagyjuk — így egy menet
+    // közben felfüggesztett/nyugdíjazott agent halasztott ticketje sem fut le.
+    const agent = this.agents ? await this.agents.findById(ticket.agentId) : null
+    if (this.agents && (!agent || agent.status !== 'active')) {
+      await this.audit.append({
+        actorType: 'system',
+        actorId: null,
+        agentVersion: null,
+        action: 'agent.dispatch_denied_inactive',
+        targetType: 'agent',
+        targetId: ticket.agentId,
+        modelUsed: null,
+        inputRef: ticket.id,
+        outputRef: agent?.status ?? 'missing',
+        policyDecision: 'denied',
+        metadata: { ticketId: ticket.id, status: agent?.status ?? 'missing' },
+      })
+      dispatchTotal.inc({ result: 'denied_inactive' })
+      return this.skip(ticket, 'agent_inactive', { silent: true })
+    }
+
+    const breach = await this.checkBudget(ticket, agent?.tenantId ?? null, now)
+    if (breach) {
       await this.audit.append({
         actorType: 'system',
         actorId: null,
@@ -496,22 +584,29 @@ export class DispatcherService {
         targetId: ticket.id,
         modelUsed: null,
         inputRef: ticket.agentId,
-        outputRef: null,
+        outputRef: breach.scope,
         policyDecision: 'budget_blocked',
-        metadata: usage,
+        metadata: { ...breach.usage, scope: breach.scope, reason: breach.reason },
       })
       dispatchTotal.inc({ result: 'budget_blocked' })
       logger.warn(
-        { event: 'dispatch', result: 'budget_blocked', ticketId: ticket.id, agentId: ticket.agentId },
+        {
+          event: 'dispatch',
+          result: 'budget_blocked',
+          ticketId: ticket.id,
+          agentId: ticket.agentId,
+          scope: breach.scope,
+          reason: breach.reason,
+        },
         'dispatch budget blocked',
       )
-      return { ticketId: ticket.id, status: 'budget_blocked' }
+      return { ticketId: ticket.id, status: 'budget_blocked', reason: breach.reason }
     }
 
     const lockToken = randomUUID()
     const lockedTicket = await this.tickets.acquireDispatchLock(ticket.id, lockToken, now)
     if (!lockedTicket) {
-      return { ticketId: ticket.id, status: 'skipped' }
+      return this.skip(ticket, 'lock_lost')
     }
 
     const payload = ticketPayloadObject(ticket.payload)

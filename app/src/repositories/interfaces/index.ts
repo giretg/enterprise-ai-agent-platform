@@ -854,6 +854,26 @@ export interface ModelCallRepository {
   getUsageForAgentSince(agentId: string, since: Date): Promise<{ calls: number; tokens: number }>
   getUsageForTicket(ticketId: string): Promise<{ calls: number; tokens: number }>
   getUsageForAgent(agentId: string, period: ModelBudgetPeriod): Promise<{ calls: number; tokens: number }>
+  /**
+   * Egy tenant összes agentjének együttes fogyasztása. `tenantId: null` = platform-bucket,
+   * azaz a tenanthoz nem kötött (megosztott) agentek — ezek egyetlen tenant keretét sem
+   * terhelik, külön platform-szintű kereten osztoznak.
+   */
+  getUsageForTenant(
+    tenantId: string | null,
+    period: ModelBudgetPeriod,
+  ): Promise<{ calls: number; tokens: number }>
+  /** Egy ticket-típusra elszámolt hívások a bucketen belül (`tenantId: null` = platform). */
+  getUsageForTicketType(
+    tenantId: string | null,
+    ticketType: Ticket['type'],
+    period: ModelBudgetPeriod,
+  ): Promise<{ calls: number; tokens: number }>
+  /** Bucket agentenkénti bontása — a per-agent keret melletti „ki hol tart" nézethez. */
+  getUsageByAgent(
+    tenantId: string | null,
+    period: ModelBudgetPeriod,
+  ): Promise<Array<{ agentId: string; calls: number; tokens: number }>>
   /** Aggregate Gateway metrics for the governance dashboard (§11: hatékonyság + költség). */
   getGovernanceSummary(since?: Date): Promise<ModelCallGovernanceSummary>
   /** Per-ticket Gateway usage breakdown, most recent first. */
@@ -880,8 +900,18 @@ export interface ModelBudgetRepository {
   create(data: Omit<ModelBudget, 'id' | 'createdAt' | 'updatedAt'>): Promise<ModelBudget>
   update(id: string, data: Partial<Omit<ModelBudget, 'id' | 'createdAt' | 'updatedAt'>>): Promise<ModelBudget>
   delete(id: string): Promise<void>
-  /** Find all applicable budgets for a given call context, from most-specific to least-specific. */
-  findApplicable(filter: { tenantId?: string; agentId?: string; ticketType?: string }): Promise<ModelBudget[]>
+  /**
+   * Find all applicable budgets for a given call context, from most-specific to least-specific.
+   *
+   * A `tenantId` háromértékű: konkrét id → az adott tenant ÉS a platform-szintű (`tenantId: null`)
+   * keretek; `null` → kizárólag a platform-szintűek; `undefined` → nincs tenant-szűrés, tehát
+   * MINDEN tenant kerete visszajön. Az utóbbit csak admin-listázás használhatja, kapu-döntés soha.
+   */
+  findApplicable(filter: {
+    tenantId?: string | null
+    agentId?: string
+    ticketType?: string
+  }): Promise<ModelBudget[]>
 }
 
 export { ModelBudgetPeriod, ModelBudgetScope, ModelRoutingScope }

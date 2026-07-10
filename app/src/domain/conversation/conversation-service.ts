@@ -1,6 +1,7 @@
 import type {
   AuditActorType,
   Conversation,
+  Message,
   MessageCriticality,
   MessageRole,
   Ticket,
@@ -129,6 +130,8 @@ export class ConversationService {
     criticality?: MessageCriticality | null
     actorType?: AuditActorType
     actorId?: string | null
+    /** A repository-tranzakció commitja után, még az audit-kapcsolás előtt fut. */
+    onPersisted?: (message: Message) => void
   }) {
     if (params.tenantId !== undefined) {
       const conversation = await this.findConversationScoped({
@@ -149,6 +152,7 @@ export class ConversationService {
       ticketRefId: params.ticketRefId ?? null,
       criticality: params.criticality ?? null,
     })
+    params.onPersisted?.(message)
 
     const auditEvent = await this.audit.append({
       actorType: params.actorType ?? 'system',

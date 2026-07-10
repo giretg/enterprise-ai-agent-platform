@@ -642,6 +642,12 @@ export const updateAgentInstructionSchema = z
     message: 'Legalább a szerep-instrukciót vagy a viselkedés-profilt meg kell adni',
   })
 
+/** Sensitivity router per-agent felmentés (§4.7.2). A `forbidden` szint nem érintett. */
+export const updateAgentSensitivityPolicySchema = z.object({
+  agentId: z.string().uuid(),
+  allowSensitiveExternalModel: z.boolean(),
+})
+
 export const updateAgentPersonaSchema = z
   .object({
     agentId: z.string().uuid(),

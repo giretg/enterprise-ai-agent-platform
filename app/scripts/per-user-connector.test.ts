@@ -8,7 +8,7 @@
  * Authorizer csak engedélyt ad, nyers tokent sosem lát (G3 → architekturálisan kizárt).
  */
 import assert from 'node:assert/strict'
-import { mkdtemp } from 'node:fs/promises'
+import { mkdir, mkdtemp } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type {
@@ -618,6 +618,67 @@ await test('resolveAccessToken tokenRef-csere esetén DENY', async () => {
         tenantId: activeGrant.tenantId,
       }),
     /connector_grant_forbidden/,
+  )
+})
+
+await test('resolveAccessToken elérhetetlen token-tároló esetén a grantot expired-re állítja', async () => {
+  const activeGrant = grant({
+    expiresAt: new Date(Date.now() + 3600_000),
+    tokenRef: 'tenant/tenant-A/user/user-Y/connector/conn-gmail-vanished',
+  })
+  const { service, auditEvents } = buildGrantService(activeGrant)
+  // A token-tárolóba semmit nem mentünk: a store.load() ENOENT-tel bukik,
+  // mintha a grant a mai store-hoz képest egy korábbi tárolóban született volna.
+  await assert.rejects(
+    () =>
+      service.resolveAccessToken({
+        connector: gmailConnector(),
+        grantId: activeGrant.id,
+        tokenRef: activeGrant.tokenRef,
+        actingUserId: activeGrant.userId,
+        tenantId: activeGrant.tenantId,
+      }),
+    /grant_token_expired/,
+  )
+  const expiry = auditEvents.at(-1) as { action: string; metadata: { reason: string } }
+  assert.equal(expiry.action, 'connector.grant.expire')
+  assert.equal(expiry.metadata.reason, 'token_unavailable')
+
+  // a grant nem maradhat active — a következő hívás már a státusz-kapun akad fenn
+  await assert.rejects(
+    () =>
+      service.resolveAccessToken({
+        connector: gmailConnector(),
+        grantId: activeGrant.id,
+        tokenRef: activeGrant.tokenRef,
+        actingUserId: activeGrant.userId,
+        tenantId: activeGrant.tenantId,
+      }),
+    /connector_grant_not_active/,
+  )
+})
+
+await test('resolveAccessToken múló store-hibán NEM égeti el a grantot', async () => {
+  const tokenRef = 'tenant/tenant-A/user/user-Y/connector/conn-gmail-unreadable'
+  const activeGrant = grant({ expiresAt: new Date(Date.now() + 3600_000), tokenRef })
+  const { service, auditEvents } = buildGrantService(activeGrant)
+  // Könyvtár a token-fájl helyén → EISDIR: a tároló elérhetetlen, de a token nem "hiányzik".
+  await mkdir(join(grantTokenDir, `${tokenRef}.json`), { recursive: true })
+
+  await assert.rejects(
+    () =>
+      service.resolveAccessToken({
+        connector: gmailConnector(),
+        grantId: activeGrant.id,
+        tokenRef: activeGrant.tokenRef,
+        actingUserId: activeGrant.userId,
+        tenantId: activeGrant.tenantId,
+      }),
+    /EISDIR/,
+  )
+  assert.equal(
+    auditEvents.some((e) => (e as { action: string }).action === 'connector.grant.expire'),
+    false,
   )
 })
 

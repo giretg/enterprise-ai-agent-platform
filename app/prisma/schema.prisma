@@ -684,6 +684,12 @@ model Agent {
   // és a `behavior_profile` szöveg az elfogadott profil-al-verzió másolata (kaszkád).
   currentBehaviorProfileId      String?     @map("current_behavior_profile_id") @db.Uuid
   role                          AgentRole   @default(worker)
+  // Sensitivity router (§4.7.2): ha true, az agent `sensitive` szintű tartalmat
+  // (email-cím, TAJ, adószám) is küldhet külső modellnek. Egy email-szortírozó
+  // agent enélkül működésképtelen, mert minden fordulója `sensitive`-nek minősül.
+  // A `forbidden` szint (kártyaszám, IBAN, privát kulcs) ezzel NEM kapcsolható ki.
+  // Csak tenant admin / superadmin írhatja, minden váltás auditált.
+  allowSensitiveExternalModel   Boolean     @default(false) @map("allow_sensitive_external_model")
   selfEvolutionProfile          Json?       @map("self_evolution_profile")
   memoryId                      String      @unique @map("memory_id") @db.Uuid
   createdAt                     DateTime    @default(now()) @map("created_at") @db.Timestamptz

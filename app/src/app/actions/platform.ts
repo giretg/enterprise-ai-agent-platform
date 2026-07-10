@@ -68,6 +68,7 @@ import {
   updateAgentPersonaSchema,
   updateAgentAvatarSchema,
   updateAgentSelfEvolutionProfileSchema,
+  updateAgentSensitivityPolicySchema,
   createHttpApiConnectorSchema,
   updateHttpApiConnectorSchema,
   createTrainingSchema,
@@ -1463,6 +1464,49 @@ export async function updateAgentInstruction(input: {
     return ok(result)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to update agent instruction')
+  }
+}
+
+/**
+ * Sensitivity router per-agent felmentés (§4.7.2). Tenant admin (és a tenantban
+ * eljáró superadmin) írhatja. A `forbidden` szintre — kártyaszám, IBAN, privát
+ * kulcs — ez NEM terjed ki, azt a gateway továbbra is feltétel nélkül blokkolja.
+ */
+export async function updateAgentSensitivityPolicy(input: {
+  agentId: string
+  allowSensitiveExternalModel: boolean
+}) {
+  try {
+    const user = await requireTenantRole('admin')
+    const parsed = updateAgentSensitivityPolicySchema.parse(input)
+    const agent = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
+    if (!agent) return fail('Agent not found')
+    if (agent.allowSensitiveExternalModel === parsed.allowSensitiveExternalModel) {
+      return ok({ allowSensitiveExternalModel: agent.allowSensitiveExternalModel })
+    }
+
+    const updated = await repositories.agents.updateSensitivityPolicy(parsed)
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.user.id,
+      agentVersion: agent.currentVersion,
+      action: 'agent.sensitivity_policy',
+      targetType: 'agent',
+      targetId: parsed.agentId,
+      modelUsed: null,
+      inputRef: `from:${agent.allowSensitiveExternalModel}`,
+      outputRef: `to:${updated.allowSensitiveExternalModel}`,
+      policyDecision: 'allowed',
+      metadata: {
+        allowSensitiveExternalModel: updated.allowSensitiveExternalModel,
+        scope: 'sensitive_tier_only',
+      },
+    })
+
+    return ok(updated)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update agent sensitivity policy')
   }
 }
 
@@ -4713,11 +4757,153 @@ export async function deleteModelRoutingPolicy(input: { id: string }) {
 
 export async function listModelBudgets() {
   try {
-    await requireTenantRole('operator')
-    const budgets = await repositories.modelBudgets.list()
-    return ok(budgets)
+    const ctx = await requireTenantRole('operator')
+    // A `list()` szűrő nélkül MINDEN tenant keretét visszaadta egy tenant-operatornak.
+    // A saját tenant + a platform-szintű (tenantId: null) sorok láthatók, más nem.
+    const [own, platformWide] = await Promise.all([
+      repositories.modelBudgets.list({ tenantId: ctx.activeTenantId }),
+      repositories.modelBudgets.list({ tenantId: undefined }).then((rows) =>
+        rows.filter((b) => b.tenantId === null),
+      ),
+    ])
+    return ok([...own, ...platformWide])
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list model budgets')
+  }
+}
+
+export type BudgetLimits = {
+  callLimit: number | null
+  tokenLimit: number | null
+}
+
+export type ConfiguredBudgetLimits = BudgetLimits & { configured: boolean }
+
+export type DailyBudgetOverview = {
+  tenantId: string
+  /** Az összesített tenant-keret; `null` limit = korlátlan, `null` sor = nincs beállítva. */
+  tenant: ConfiguredBudgetLimits
+  /** Minden agentre külön-külön érvényes napi keret. */
+  perAgent: ConfiguredBudgetLimits
+  /** Az env-mentsvár, ami akkor dönt, ha egyetlen keret sincs beállítva. */
+  envFallback: { maxCallsPerDay: number; maxTokensPerDay: number }
+  usage: {
+    tenant: { calls: number; tokens: number }
+    agents: Array<{ agentId: string; name: string; calls: number; tokens: number }>
+  }
+}
+
+/**
+ * A tenant napi model-kerete és a hozzá tartozó tényleges fogyasztás egy nézetben. A
+ * fogyasztás ugyanazon a gördülő 24 órás ablakon számol, amit a dispatcher-kapu is néz
+ * (`budgetPeriodSince`), így a kiírt „elhasznált / limit" nem tér el a kapu döntésétől.
+ */
+export async function getDailyBudgetOverview(): Promise<ActionResult<DailyBudgetOverview>> {
+  try {
+    const ctx = await requireTenantRole('operator')
+    const tenantId = ctx.activeTenantId
+
+    const budgets = await repositories.modelBudgets.list({ tenantId })
+    const dayBudgets = budgets.filter((b) => b.period === 'day')
+    const tenantBudget = dayBudgets.find((b) => b.scope === 'tenant')
+    const perAgentBudget = dayBudgets.find((b) => b.scope === 'agent' && b.scopeRef === null)
+
+    const [tenantUsage, byAgent, agents] = await Promise.all([
+      repositories.modelCalls.getUsageForTenant(tenantId, 'day'),
+      repositories.modelCalls.getUsageByAgent(tenantId, 'day'),
+      repositories.agents.findMany({ tenantId }),
+    ])
+
+    const nameById = new Map(agents.map((a) => [a.id, a.name]))
+
+    return ok({
+      tenantId,
+      tenant: {
+        callLimit: tenantBudget?.callLimit ?? null,
+        tokenLimit: tenantBudget?.tokenLimit ?? null,
+        configured: Boolean(tenantBudget),
+      },
+      perAgent: {
+        callLimit: perAgentBudget?.callLimit ?? null,
+        tokenLimit: perAgentBudget?.tokenLimit ?? null,
+        configured: Boolean(perAgentBudget),
+      },
+      envFallback: dispatchBudgetFromEnv(),
+      usage: {
+        tenant: tenantUsage,
+        agents: byAgent
+          .map((u) => ({ ...u, name: nameById.get(u.agentId) ?? u.agentId }))
+          .sort((a, b) => b.tokens - a.tokens),
+      },
+    })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to load budget overview')
+  }
+}
+
+/**
+ * A tenant napi keretének beállítása: az összesített és a per-agent sor együtt (upsert).
+ * `null` limit = korlátlan az adott dimenzióban. Tenant-admin joggal megy, mert a saját
+ * tenantja keretét állítja — platform-szintű (`tenantId: null`) sort innen nem lehet írni.
+ */
+export type TenantDailyBudgetInput = {
+  tenant: BudgetLimits
+  perAgent: BudgetLimits
+}
+
+export async function setTenantDailyBudget(
+  input: TenantDailyBudgetInput,
+): Promise<ActionResult<{ saved: true }>> {
+  try {
+    const ctx = await requireTenantRole('admin')
+    const tenantId = ctx.activeTenantId
+
+    const existing = (await repositories.modelBudgets.list({ tenantId })).filter(
+      (b) => b.period === 'day',
+    )
+    const upsert = async (
+      scope: 'tenant' | 'agent',
+      limits: BudgetLimits,
+    ) => {
+      const row = existing.find(
+        (b) => b.scope === scope && (scope === 'tenant' || b.scopeRef === null),
+      )
+      if (row) {
+        await repositories.modelBudgets.update(row.id, { ...limits })
+        return
+      }
+      await repositories.modelBudgets.create({
+        tenantId,
+        scope,
+        scopeRef: null,
+        period: 'day',
+        callLimit: limits.callLimit,
+        tokenLimit: limits.tokenLimit,
+        softThreshold: null,
+        hardCap: true,
+      })
+    }
+
+    await upsert('tenant', input.tenant)
+    await upsert('agent', input.perAgent)
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: ctx.user.id,
+      agentVersion: null,
+      action: 'model.budget_changed',
+      targetType: 'tenant',
+      targetId: tenantId,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: null,
+      policyDecision: 'allowed',
+      metadata: { tenant: input.tenant, perAgent: input.perAgent, period: 'day' },
+    })
+
+    return ok({ saved: true })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to save daily budget')
   }
 }
 

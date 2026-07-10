@@ -347,6 +347,22 @@ export class PostgresAgentRepository implements AgentRepository {
     return { agentVersion: nextAgentVersion }
   }
 
+  /**
+   * Sensitivity router per-agent felmentés (§4.7.2). Nem emel agent-verziót: a
+   * prompt-reprodukálhatóságot nem érinti, csak azt, hová mehet a hívás.
+   */
+  async updateSensitivityPolicy(input: {
+    agentId: string
+    allowSensitiveExternalModel: boolean
+  }): Promise<{ allowSensitiveExternalModel: boolean }> {
+    const updated = await prisma.agent.update({
+      where: { id: input.agentId },
+      data: { allowSensitiveExternalModel: input.allowSensitiveExternalModel },
+      select: { allowSensitiveExternalModel: true },
+    })
+    return updated
+  }
+
   async updatePersona(input: {
     agentId: string
     personaNickname?: string | null

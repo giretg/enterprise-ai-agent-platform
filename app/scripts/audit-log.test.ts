@@ -3,13 +3,34 @@
  * Futtatás: npm run test:audit-log
  */
 import assert from 'node:assert/strict'
+import { readdirSync, readFileSync } from 'node:fs'
+import path from 'node:path'
 import type { AuditLog } from '@prisma/client'
 import { assertAuditMetadataSafe, UnsafeAuditPayloadError } from '../src/lib/audit/payload-guard'
-import { assertAuditActionRegistered, UnregisteredAuditActionError } from '../src/lib/audit/event-catalog'
+import {
+  assertAuditActionRegistered,
+  REGISTERED_AUDIT_ACTIONS,
+  UnregisteredAuditActionError,
+} from '../src/lib/audit/event-catalog'
 import { deriveAuditAttribution } from '../src/lib/audit/attribution'
 import { computeAuditHash, computeAuditHashV2, GENESIS_HASH } from '../src/lib/crypto/hash-chain'
 import { AuditChainService } from '../src/domain/audit/audit-chain-service'
 import type { AuditRepository } from '../src/repositories/interfaces'
+
+/**
+ * `audit.append({ ... action: '<literal>' ... })` — az append-objektum első `action`
+ * kulcsáig olvasunk, így a hívás előtti/utáni `action:` mezők (pl. metadata-kulcsok) nem
+ * kerülnek bele. A `[\s\S]*?` lusta, ezért a legközelebbi appendhez tapad.
+ */
+const APPEND_ACTION_RE = /audit\.append\(\{[\s\S]*?\baction: '([^']+)'/g
+
+function collectSourceFiles(dir: string): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    const full = path.join(dir, entry.name)
+    if (entry.isDirectory()) return collectSourceFiles(full)
+    return /\.tsx?$/.test(entry.name) ? [full] : []
+  })
+}
 
 let passed = 0
 let failed = 0
@@ -362,6 +383,21 @@ async function main() {
     const svc = new AuditChainService(new FakeAuditRepository(rows))
     const result = await svc.verifyChain(BigInt(4), BigInt(8))
     assert.equal(result.ok, false)
+  })
+
+  // ── katalógus-lefedettség: minden append() action-literál regisztrálva van ──
+
+  check('event-catalog: minden audit.append() action-literál szerepel a katalógusban', () => {
+    const unregistered: string[] = []
+    for (const file of collectSourceFiles(path.join(__dirname, '..', 'src'))) {
+      const source = readFileSync(file, 'utf8')
+      for (const [, action] of source.matchAll(APPEND_ACTION_RE)) {
+        if (!REGISTERED_AUDIT_ACTIONS.has(action)) {
+          unregistered.push(`${path.relative(path.join(__dirname, '..'), file)}: '${action}'`)
+        }
+      }
+    }
+    assert.deepEqual(unregistered, [])
   })
 
   console.log(failed === 0 ? `\nMinden teszt zöld (${passed}).` : `\n${failed} teszt bukott (${passed} zöld).`)

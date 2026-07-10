@@ -44,24 +44,64 @@ function formatLastCycleDetails(cycle: DispatchCycleRunRecord): string {
   ].join(' · ')
 }
 
+/** Gépi kihagyás-indok → magyar mondat. Ismeretlen kulcsot változatlanul mutatunk. */
+const SKIP_REASON_LABELS: Record<string, string> = {
+  no_agent: 'nincs agent hozzárendelve',
+  agent_inactive: 'az agent nem aktív',
+  process_terminal: 'a folyamat/lépés már lezárult',
+  lock_lost: 'a ticketet közben más vitte el',
+  not_ready: 'a ticket nem ready állapotban van',
+  scheduled_later: 'későbbre van ütemezve',
+}
+
+function formatSkipReasons(skipReasons: Record<string, number>): string | null {
+  const parts = Object.entries(skipReasons).map(
+    ([reason, count]) => `${count} ${SKIP_REASON_LABELS[reason] ?? reason}`,
+  )
+  return parts.length > 0 ? `kihagyva: ${parts.join(', ')}` : null
+}
+
+/**
+ * A dispatch-eredmény mind a négy kimenetét ki kell írni. Korábban csak a `scanned` és a
+ * `started` szerepelt, így a „szüneteltetve", a „budget-blokk" és a „kihagyva" ág azonos
+ * szöveget adott („1 ticket vizsgálva, 0 indítva") — nem lehetett megkülönböztetni őket.
+ */
 function formatCycleRunMessage(summary: {
   reclaimedDispatches: number
   materializedScheduledTasks: number
   monitorSweep: { ran: boolean; escalated: number; openedTickets: number }
   workspacePurge: { purgedTickets: number }
-  dispatch: { scanned: number; started: number; budgetBlocked: number }
+  dispatch: {
+    scanned: number
+    started: number
+    budgetBlocked: number
+    skipped: number
+    paused: boolean
+    skipReasons: Record<string, number>
+  }
 }): string {
   const monitorPart = summary.monitorSweep.ran
     ? summary.monitorSweep.escalated > 0
       ? `monitor: ${summary.monitorSweep.escalated} eszkalált, ${summary.monitorSweep.openedTickets} ticket`
       : 'monitor: söpört'
     : 'monitor: nem söpört'
+
+  const dispatchPart = summary.dispatch.paused
+    ? 'agent-indítás szünetel — egyetlen ticketet sem vizsgált'
+    : [
+        `${summary.dispatch.scanned} ticket vizsgálva, ${summary.dispatch.started} indítva`,
+        summary.dispatch.budgetBlocked > 0 ? `${summary.dispatch.budgetBlocked} budget-blokk` : null,
+        formatSkipReasons(summary.dispatch.skipReasons),
+      ]
+        .filter(Boolean)
+        .join(' · ')
+
   return [
     `${summary.reclaimedDispatches} elakadt futás visszavéve`,
     `${summary.materializedScheduledTasks} ütemezett task materializálva`,
     monitorPart,
     `${summary.workspacePurge.purgedTickets} workspace takarítva`,
-    `${summary.dispatch.scanned} ticket vizsgálva, ${summary.dispatch.started} indítva`,
+    dispatchPart,
   ].join(' · ')
 }
 
