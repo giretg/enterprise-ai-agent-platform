@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useState, useTransition } from 'react'
+import { useCallback, useState, useTransition } from 'react'
 import {
   approveKbDocument,
   deleteKbDocument,
@@ -16,6 +16,7 @@ import {
 } from '@/app/actions/platform'
 import { Card } from '@/components/ui/shell'
 import { KbArtifactReview } from '@/components/agents/kb-artifact-review'
+import type { AgentDetailKbInitial } from '@/lib/agent-detail-page-data'
 
 type KbDocument = { id: string; filename: string; status: string; createdAt: Date | string }
 type PendingDoc = { ticketId: string; documentId: string; filename: string; createdAt: Date | string }
@@ -29,24 +30,26 @@ export function AgentKnowledgeBasePanel({
   isOrchestrator,
   canUpload,
   canApprove,
+  initialData,
 }: {
   agentId: string
   agentName: string
   isOrchestrator: boolean
   canUpload: boolean
   canApprove: boolean
+  initialData?: AgentDetailKbInitial
 }) {
   const [uploadPending, startUpload] = useTransition()
   const [actionPending, startAction] = useTransition()
   const [uploadMessage, setUploadMessage] = useState<string | null>(null)
-  const [kbDocs, setKbDocs] = useState<KbDocument[]>([])
-  const [pendingDocs, setPendingDocs] = useState<PendingDoc[]>([])
-  const [sharedWith, setSharedWith] = useState<SharedAgent[]>([])
-  const [agentOptions, setAgentOptions] = useState<AgentOption[]>([])
+  const [kbDocs, setKbDocs] = useState<KbDocument[]>(initialData?.kbDocs ?? [])
+  const [pendingDocs, setPendingDocs] = useState<PendingDoc[]>(initialData?.pendingDocs ?? [])
+  const [sharedWith, setSharedWith] = useState<SharedAgent[]>(initialData?.sharedWith ?? [])
+  const [agentOptions, setAgentOptions] = useState<AgentOption[]>(initialData?.agentOptions ?? [])
   const [shareTargetId, setShareTargetId] = useState('')
   const [textInput, setTextInput] = useState('')
   const [processingMode, setProcessingMode] = useState<KnowledgeProcessingMode>('raw_text_only')
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(!initialData)
   const [reviewDoc, setReviewDoc] = useState<PendingDoc | null>(null)
 
   const refreshDocs = useCallback(() => {
@@ -70,20 +73,6 @@ export function AgentKnowledgeBasePanel({
       setLoading(false)
     })
   }, [agentId, isOrchestrator])
-
-  useEffect(() => {
-    const timeout = window.setTimeout(() => {
-      refreshDocs()
-    }, 0)
-    return () => window.clearTimeout(timeout)
-  }, [refreshDocs])
-
-  useEffect(() => {
-    if (isOrchestrator || !canUpload) return
-    listAgents().then((res) => {
-      if (res.success) setAgentOptions(res.data as AgentOption[])
-    })
-  }, [isOrchestrator, canUpload])
 
   const handleUpload = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()

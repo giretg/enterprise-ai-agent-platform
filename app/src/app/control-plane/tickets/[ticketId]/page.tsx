@@ -1,7 +1,7 @@
 import { notFound } from 'next/navigation'
 import { getTicket, getTicketTransitions, listTicketComments } from '@/app/actions/platform'
 import { listProcessDefinitions } from '@/app/actions/process'
-import { getCurrentUser } from '@/auth'
+import { getAuthContext } from '@/auth/context'
 import { hasMinimumRole } from '@/auth/types'
 import {
   TicketActions,
@@ -20,9 +20,9 @@ export default async function TicketDetailPage({
   params: Promise<{ ticketId: string }>
 }) {
   const { ticketId } = await params
-  const [commentsRes, user, definitionsRes, transitionsRes] = await Promise.all([
+  const [commentsRes, ctx, definitionsRes, transitionsRes] = await Promise.all([
     listTicketComments({ ticketId }),
-    getCurrentUser(),
+    getAuthContext(),
     listProcessDefinitions({ status: 'active' }),
     getTicketTransitions({ id: ticketId }),
   ])
@@ -32,9 +32,9 @@ export default async function TicketDetailPage({
 
   const ticket = res.data
   const transitions = transitionsRes.success ? transitionsRes.data : []
-  const isAdmin = user ? hasMinimumRole(user.role, 'admin') : false
-  const canManageRunAs = user ? hasMinimumRole(user.role, 'operator') : false
-  const canStartProcess = user ? hasMinimumRole(user.role, 'operator') : false
+  const isAdmin = hasMinimumRole(ctx?.activeTenantRole, 'admin')
+  const canManageRunAs = hasMinimumRole(ctx?.activeTenantRole, 'operator')
+  const canStartProcess = hasMinimumRole(ctx?.activeTenantRole, 'operator')
   const definitions: TicketStartableProcessDefinition[] =
     canStartProcess && definitionsRes.success
       ? definitionsRes.data

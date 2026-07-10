@@ -1,13 +1,13 @@
-import { getCurrentUser } from '@/auth'
+import { getAuthContext } from '@/auth/context'
 import { hasMinimumRole } from '@/auth/types'
 import { Card } from '@/components/ui/shell'
 import { listSkillCatalogAction } from '@/app/actions/skills'
 import { SkillCatalogManager } from '@/components/skills/skill-catalog-manager'
 
 export default async function SkillCatalogPage() {
-  const user = await getCurrentUser()
-  const isAdmin = user ? hasMinimumRole(user.role, 'admin') : false
-  const canView = user ? hasMinimumRole(user.role, 'operator') : false
+  const ctx = await getAuthContext()
+  const isAdmin = hasMinimumRole(ctx?.activeTenantRole, 'admin')
+  const canView = hasMinimumRole(ctx?.activeTenantRole, 'operator')
 
   if (!canView) {
     return (

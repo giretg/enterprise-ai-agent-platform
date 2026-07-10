@@ -1,12 +1,12 @@
 import Link from 'next/link'
-import { getCurrentUser } from '@/auth'
+import { getAuthContext } from '@/auth/context'
 import { hasMinimumRole } from '@/auth/types'
 import { listPlaybooksV2 } from '@/app/actions/playbook'
 import { PlaybookRegistry, type PlaybookListView } from '@/components/playbooks/playbook-registry'
 
 export default async function PlaybooksPage() {
-  const [user, res] = await Promise.all([getCurrentUser(), listPlaybooksV2()])
-  const canEdit = user ? hasMinimumRole(user.role, 'admin') : false
+  const [ctx, res] = await Promise.all([getAuthContext(), listPlaybooksV2()])
+  const canEdit = hasMinimumRole(ctx?.activeTenantRole, 'admin')
   const playbooks: PlaybookListView[] = res.success ? res.data : []
 
   return (

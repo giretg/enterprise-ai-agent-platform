@@ -34,6 +34,18 @@ function updateData(input: ClerkUserSyncInput, currentRole?: UserRole | null) {
   }
 }
 
+function emailsEqual(a: string, b: string): boolean {
+  return a.toLowerCase() === b.toLowerCase()
+}
+
+function userMatchesSyncData(user: User, data: ReturnType<typeof updateData>): boolean {
+  return (
+    emailsEqual(user.email, data.email) &&
+    user.name === data.name &&
+    user.role === data.role
+  )
+}
+
 async function findBestUserByEmail(prisma: PrismaClient, email: string): Promise<User | null> {
   const emailMatches = await prisma.user.findMany({
     where: {
@@ -58,21 +70,32 @@ export async function syncClerkUser(prisma: PrismaClient, input: ClerkUserSyncIn
 
   if (existingByAuthId) {
     const existingByEmail = await findBestUserByEmail(prisma, input.email)
+    const data = updateData(input, existingByEmail?.role ?? existingByAuthId.role)
+    if (userMatchesSyncData(existingByAuthId, data)) {
+      return existingByAuthId
+    }
     return prisma.user.update({
       where: { id: existingByAuthId.id },
-      data: updateData(input, existingByEmail?.role ?? existingByAuthId.role),
+      data,
     })
   }
 
   const existingByEmail = await findBestUserByEmail(prisma, input.email)
 
   if (existingByEmail) {
+    const data = {
+      externalAuthId: input.externalAuthId,
+      ...updateData(input, existingByEmail.role),
+    }
+    if (
+      existingByEmail.externalAuthId === data.externalAuthId &&
+      userMatchesSyncData(existingByEmail, data)
+    ) {
+      return existingByEmail
+    }
     return prisma.user.update({
       where: { id: existingByEmail.id },
-      data: {
-        externalAuthId: input.externalAuthId,
-        ...updateData(input, existingByEmail.role),
-      },
+      data,
     })
   }
 

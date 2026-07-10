@@ -1,6 +1,6 @@
 'use client'
 
-import { useEffect, useState, useTransition } from 'react'
+import { useEffect, useRef, useState, useTransition } from 'react'
 import {
   approveMemoryCandidate,
   getAgentMemoryOverview,
@@ -9,6 +9,7 @@ import {
   rollbackMemoryVersion,
   runMemoryMaintenance,
 } from '@/app/actions/platform'
+import type { AgentDetailMemoryOverview } from '@/lib/agent-detail-page-data'
 
 type ChunkRow = {
   id: string
@@ -36,19 +37,7 @@ type VersionRow = {
   activeChunkIds: unknown
 }
 
-type Overview = {
-  projectState: {
-    focus: ChunkRow | null
-    decisions: ChunkRow[]
-    openTasks: ChunkRow[]
-    constraints: ChunkRow[]
-    artifacts: ChunkRow[]
-  }
-  activeChunks: ChunkRow[]
-  candidateQueue: CandidateRow[]
-  maintenanceProposals: CandidateRow[]
-  versions: VersionRow[]
-}
+type Overview = AgentDetailMemoryOverview
 
 function fmtDate(d: string | Date) {
   return new Date(d).toLocaleString('hu-HU')
@@ -84,13 +73,24 @@ function ChunkList({ title, chunks }: { title: string; chunks: ChunkRow[] }) {
   )
 }
 
-export function MemoryPanel({ agentId }: { agentId: string }) {
-  const [projectKey, setProjectKey] = useState('__general__')
-  const [projectKeys, setProjectKeys] = useState<string[]>(['__general__'])
-  const [overview, setOverview] = useState<Overview | null>(null)
+export function MemoryPanel({
+  agentId,
+  initialProjectKeys,
+  initialProjectKey = '__general__',
+  initialOverview,
+}: {
+  agentId: string
+  initialProjectKeys?: string[]
+  initialProjectKey?: string
+  initialOverview?: Overview | null
+}) {
+  const [projectKey, setProjectKey] = useState(initialProjectKey)
+  const [projectKeys, setProjectKeys] = useState<string[]>(initialProjectKeys ?? ['__general__'])
+  const [overview, setOverview] = useState<Overview | null>(initialOverview ?? null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
+  const skipInitialOverviewLoad = useRef(Boolean(initialOverview))
 
   function loadOverview() {
     startTransition(async () => {
@@ -113,11 +113,16 @@ export function MemoryPanel({ agentId }: { agentId: string }) {
   }
 
   useEffect(() => {
+    if (initialProjectKeys) return
     loadProjectKeys()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentId])
+  }, [agentId, initialProjectKeys])
 
   useEffect(() => {
+    if (skipInitialOverviewLoad.current) {
+      skipInitialOverviewLoad.current = false
+      return
+    }
     loadOverview()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentId, projectKey])
@@ -205,7 +210,9 @@ export function MemoryPanel({ agentId }: { agentId: string }) {
 
       {error && <p className="text-xs text-coral">{error}</p>}
       {notice && <p className="text-xs text-sage">{notice}</p>}
-      {!overview && !error && <p className="text-sm text-ink-faint">Betöltés…</p>}
+      {!overview && !error && !initialOverview && (
+        <p className="text-sm text-ink-faint">Betöltés…</p>
+      )}
 
       {state && (
         <div className="atelier-soft p-3">

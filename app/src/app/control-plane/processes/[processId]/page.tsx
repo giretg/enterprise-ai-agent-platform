@@ -1,6 +1,6 @@
 import { notFound } from 'next/navigation'
 import Link from 'next/link'
-import { getCurrentUser } from '@/auth'
+import { getAuthContext } from '@/auth/context'
 import { hasMinimumRole } from '@/auth/types'
 import { getProcessDetail } from '@/app/actions/process'
 import { ProcessDetailView, type ProcessDetailData } from '@/components/processes/process-detail-view'
@@ -11,10 +11,10 @@ export default async function ProcessDetailPage({
   params: Promise<{ processId: string }>
 }) {
   const { processId } = await params
-  const [user, detailRes] = await Promise.all([getCurrentUser(), getProcessDetail({ id: processId })])
+  const [ctx, detailRes] = await Promise.all([getAuthContext(), getProcessDetail({ id: processId })])
   if (!detailRes.success) notFound()
 
-  const canAct = user ? hasMinimumRole(user.role, 'operator') : false
+  const canAct = hasMinimumRole(ctx?.activeTenantRole, 'operator')
   const data = detailRes.data as ProcessDetailData
 
   return (

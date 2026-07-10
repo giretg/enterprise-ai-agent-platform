@@ -1,12 +1,12 @@
 import { listBehaviorProfiles } from '@/app/actions/platform'
-import { getCurrentUser } from '@/auth'
+import { getAuthContext } from '@/auth/context'
 import { hasMinimumRole } from '@/auth/types'
 import { Card } from '@/components/ui/shell'
 import { BehaviorProfileCatalog } from '@/components/agents/behavior-profile-catalog'
 
 export default async function BehaviorProfilesPage() {
-  const user = await getCurrentUser()
-  const isAdmin = user ? hasMinimumRole(user.role, 'admin') : false
+  const ctx = await getAuthContext()
+  const isAdmin = hasMinimumRole(ctx?.activeTenantRole, 'admin')
 
   if (!isAdmin) {
     return (

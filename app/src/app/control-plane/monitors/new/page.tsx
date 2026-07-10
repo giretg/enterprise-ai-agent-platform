@@ -1,12 +1,12 @@
-import { getCurrentUser } from '@/auth'
+import { getAuthContext } from '@/auth/context'
 import { hasMinimumRole } from '@/auth/types'
 import { listAgents } from '@/app/actions/platform'
 import { MonitorEditorForm } from '@/components/monitors/monitor-editor-form'
 import { redirect } from 'next/navigation'
 
 export default async function NewMonitorPage() {
-  const user = await getCurrentUser()
-  if (!user || !hasMinimumRole(user.role, 'admin')) {
+  const ctx = await getAuthContext()
+  if (!hasMinimumRole(ctx?.activeTenantRole, 'admin')) {
     redirect('/control-plane/monitors')
   }
 

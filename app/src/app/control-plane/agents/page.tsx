@@ -1,14 +1,14 @@
 import Link from 'next/link'
 import { listAgents } from '@/app/actions/platform'
-import { getCurrentUser } from '@/auth'
+import { getAuthContext } from '@/auth/context'
 import { hasMinimumRole } from '@/auth/types'
 import { AgentRegistryCard } from '@/components/agents/agent-registry-card'
 import { Card } from '@/components/ui/shell'
 
 export default async function AgentRegistryPage() {
-  const [res, user] = await Promise.all([listAgents(), getCurrentUser()])
+  const [res, ctx] = await Promise.all([listAgents(), getAuthContext()])
   const agents = res.success ? res.data : []
-  const canDelete = user ? hasMinimumRole(user.role, 'admin') : false
+  const canDelete = hasMinimumRole(ctx?.activeTenantRole, 'admin')
   const canCreate = canDelete
 
   return (

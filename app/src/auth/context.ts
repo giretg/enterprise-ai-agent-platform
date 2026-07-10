@@ -1,3 +1,4 @@
+import { cache } from 'react'
 import { cookies } from 'next/headers'
 import type { PlatformRole, UserRole } from '@prisma/client'
 import { repositories } from '@/repositories/postgres'
@@ -63,7 +64,7 @@ function legacyFallbackMembership(user: AuthUser): MembershipView[] {
   return [{ tenantId: user.tenantId, role: user.role, status: 'active', isDefault: true }]
 }
 
-export async function getAuthContext(): Promise<AuthContext | null> {
+async function resolveAuthContext(): Promise<AuthContext | null> {
   const user = await getCurrentUser()
   if (!user) return null
 
@@ -155,3 +156,6 @@ export async function getAuthContext(): Promise<AuthContext | null> {
     assumed: false,
   }
 }
+
+/** Request-szintű deduplikáció: párhuzamos Server Action / RSC hívások egy auth stacket osztanak. */
+export const getAuthContext = cache(resolveAuthContext)

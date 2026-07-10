@@ -1,6 +1,6 @@
 import { notFound } from 'next/navigation'
 import Link from 'next/link'
-import { getCurrentUser } from '@/auth'
+import { getAuthContext } from '@/auth/context'
 import { hasMinimumRole } from '@/auth/types'
 import { listAgents } from '@/app/actions/platform'
 import { getMonitor, getMonitorRuns, getMonitorSignals } from '@/app/actions/monitor'
@@ -34,8 +34,8 @@ export default async function MonitorDetailPage({
   params: Promise<{ monitorId: string }>
 }) {
   const { monitorId } = await params
-  const [user, monitorRes, runsRes, signalsRes, agentsRes] = await Promise.all([
-    getCurrentUser(),
+  const [ctx, monitorRes, runsRes, signalsRes, agentsRes] = await Promise.all([
+    getAuthContext(),
     getMonitor({ id: monitorId }),
     getMonitorRuns({ id: monitorId, limit: 30 }),
     getMonitorSignals({ id: monitorId }),
@@ -45,8 +45,8 @@ export default async function MonitorDetailPage({
   if (!monitorRes.success) notFound()
   const monitor = monitorRes.data
 
-  const canEdit = user ? hasMinimumRole(user.role, 'admin') : false
-  const canRun = user ? hasMinimumRole(user.role, 'operator') : false
+  const canEdit = hasMinimumRole(ctx?.activeTenantRole, 'admin')
+  const canRun = hasMinimumRole(ctx?.activeTenantRole, 'operator')
 
   const agents = agentsRes.success
     ? agentsRes.data.map((a) => ({ id: a.id, name: a.name }))

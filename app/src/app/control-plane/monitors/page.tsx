@@ -1,12 +1,12 @@
 import Link from 'next/link'
-import { getCurrentUser } from '@/auth'
+import { getAuthContext } from '@/auth/context'
 import { hasMinimumRole } from '@/auth/types'
 import { listMonitors } from '@/app/actions/monitor'
 import { MonitorList, type MonitorListView } from '@/components/monitors/monitor-list'
 
 export default async function MonitorsPage() {
-  const [user, monitorsRes] = await Promise.all([getCurrentUser(), listMonitors()])
-  const canEdit = user ? hasMinimumRole(user.role, 'admin') : false
+  const [ctx, monitorsRes] = await Promise.all([getAuthContext(), listMonitors()])
+  const canEdit = hasMinimumRole(ctx?.activeTenantRole, 'admin')
 
   const monitors: MonitorListView[] = monitorsRes.success
     ? monitorsRes.data.map((m) => ({

@@ -35,10 +35,12 @@ function getOrCreateClient(mode: DatabaseMode): PrismaClient {
   const cached = cache[mode]
   if (cached && !prismaClientIsStale(cached)) return cached
 
+  // A kliens módonként EGYSZER jön létre. A `prisma` proxy minden property-access-nél
+  // ide fut be, így cache nélkül minden lekérdezés külön query engine-t és külön
+  // connection poolt nyitna — sosem zárva.
+  void cached?.$disconnect()
   const client = createPrismaClientForUrl(databaseUrlForMode(mode))
-  if (process.env.NODE_ENV !== 'production') {
-    cache[mode] = client
-  }
+  cache[mode] = client
   return client
 }
 
@@ -47,10 +49,9 @@ function getConfigPrismaClient(): PrismaClient {
   const cached = globalForPrisma.configPrisma
   if (cached && !prismaClientIsStale(cached)) return cached
 
+  void cached?.$disconnect()
   const client = createPrismaClientForUrl(configDatabaseUrl())
-  if (process.env.NODE_ENV !== 'production') {
-    globalForPrisma.configPrisma = client
-  }
+  globalForPrisma.configPrisma = client
   return client
 }
 

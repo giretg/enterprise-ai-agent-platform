@@ -1,17 +1,7 @@
 import Link from 'next/link'
 import type { ReactNode } from 'react'
 import { notFound } from 'next/navigation'
-import {
-  getAgent,
-  getAgentGovernance,
-  getModelPolicy,
-  listBehaviorProfiles,
-} from '@/app/actions/platform'
-import { listConnectorCatalog } from '@/app/actions/provisioning'
-import { listAgentDelegatedConnectors } from '@/app/actions/connector-grants'
-import { getAgentSkillsAction, listAssignableSkillsAction } from '@/app/actions/skills'
-import { getCurrentUser } from '@/auth'
-import { hasMinimumRole } from '@/auth/types'
+import { getAgentDetailPageData } from '@/app/actions/agent-detail-page'
 import { Badge, Card } from '@/components/ui/shell'
 import { ExpandableContent } from '@/components/ui/expandable-content'
 import { Collapsible } from '@/components/ui/collapsible'
@@ -30,6 +20,7 @@ import { ApiConnectorList } from '@/components/agents/api-connector-list'
 import { AgentKnowledgeBasePanel } from '@/components/agents/agent-knowledge-base-panel'
 import { AgentCapabilitiesPanel } from '@/components/agents/agent-capabilities-panel'
 import { AgentSkillsPanel } from '@/components/agents/agent-skills-panel'
+import type { AgentSkillRow, AssignableSkill } from '@/app/actions/skills'
 import { WebSearchPolicyCard } from '@/components/agents/web-search-policy-card'
 import { AgentLifecycleControls } from '@/components/agents/agent-lifecycle-controls'
 import { BehaviorProfileBox } from '@/components/agents/behavior-profile-box'
@@ -79,48 +70,47 @@ export default async function AgentDetailPage({
   params: Promise<{ agentId: string }>
 }) {
   const { agentId } = await params
-  const [res, govRes, policyRes, catalogRes, profilesRes, user, agentSkillsRes, assignableSkillsRes, delegatedRes] =
-    await Promise.all([
-      getAgent({ id: agentId }),
-      getAgentGovernance({ agentId }),
-      getModelPolicy(),
-      listConnectorCatalog(),
-      listBehaviorProfiles(),
-      getCurrentUser(),
-      getAgentSkillsAction(agentId),
-      listAssignableSkillsAction(agentId),
-      listAgentDelegatedConnectors(agentId),
-    ])
+  const res = await getAgentDetailPageData({ id: agentId })
   if (!res.success) notFound()
 
-  const isAdmin = user ? hasMinimumRole(user.role, 'admin') : false
-  const canManageKb = user ? hasMinimumRole(user.role, 'operator') : false
-  const canApproveKb = user ? hasMinimumRole(user.role, 'approver') : false
-  const { agent, memoryContent, memoryVersion, recipe, resources, apiKeyPreview, behaviorProfileLink } =
-    res.data
-  const governance = govRes.success ? govRes.data : null
+  const {
+    isAdmin,
+    canManageKb,
+    canApproveKb,
+    agent,
+    memoryContent,
+    memoryVersion,
+    recipe,
+    resources,
+    apiKeyPreview,
+    behaviorProfileLink,
+    delegatedConnectors,
+    governance,
+    modelPolicy,
+    connectorCatalog,
+    behaviorProfiles,
+    agentSkills,
+    assignableSkills,
+    memoryPanel,
+    knowledgeBase,
+  } = res.data
+
   const assignedConnectorIds = new Set(
     governance?.connectors.map((item) => item.connector.id) ?? [],
   )
-  const assignableConnectors = catalogRes.success
-    ? catalogRes.data.filter(
-        (connector) =>
-          (connector.type === 'http_api' || connector.type === 'gmail') &&
-          !assignedConnectorIds.has(connector.id),
-      )
-    : []
+  const assignableConnectors = (connectorCatalog ?? []).filter(
+    (connector) =>
+      (connector.type === 'http_api' || connector.type === 'gmail') &&
+      !assignedConnectorIds.has(connector.id),
+  )
   const modelConfig = agent.modelConfig as Record<string, unknown>
   const persona = personaFor(agent.name, agent)
   const defaultPersona = personaFor(agent.name)
   const mood = humanStatus(agent.status)
   const evolutionProfile = resolveSelfEvolutionProfile(agent.selfEvolutionProfile)
   const roleInfo = agentRoleLabel(agent.role)
-  const modelProviders = policyRes.success ? enabledModelProviders(policyRes.data) : []
-  const behaviorProfiles = profilesRes.success
-    ? profilesRes.data.map((p) => ({ id: p.id, name: p.name, currentVersion: p.currentVersion }))
-    : []
+  const modelProviders = modelPolicy ? enabledModelProviders(modelPolicy) : []
   const behaviorOverlay = resolveBehaviorOverlay(agent)
-  const delegatedConnectors = delegatedRes.success ? delegatedRes.data : []
 
   return (
     <div className="space-y-6">
@@ -231,6 +221,7 @@ export default async function AgentDetailPage({
               isOrchestrator={agent.role === 'orchestrator'}
               canUpload={canManageKb}
               canApprove={canApproveKb}
+              initialData={knowledgeBase ?? undefined}
             />
           </div>
         )}
@@ -318,7 +309,16 @@ export default async function AgentDetailPage({
               Amit az agent projektfolytonossági állapotként megjegyzett — fókusz, döntések,
               nyitott feladatok, konfliktusok — és a jóváhagyási/karbantartási/rollback-eszközök.
             </p>
-            <MemoryPanel agentId={agent.id} />
+            {memoryPanel ? (
+              <MemoryPanel
+                agentId={agent.id}
+                initialProjectKeys={memoryPanel.projectKeys}
+                initialProjectKey={memoryPanel.initialProjectKey}
+                initialOverview={memoryPanel.initialOverview}
+              />
+            ) : (
+              <MemoryPanel agentId={agent.id} />
+            )}
           </Card>
 
           {governance && (
@@ -438,8 +438,8 @@ export default async function AgentDetailPage({
               {isAdmin && (
                 <AgentSkillsPanel
                   agentId={agent.id}
-                  assigned={agentSkillsRes.success ? agentSkillsRes.data : []}
-                  assignable={assignableSkillsRes.success ? assignableSkillsRes.data : []}
+                  assigned={agentSkills as AgentSkillRow[]}
+                  assignable={assignableSkills as AssignableSkill[]}
                 />
               )}
             </div>

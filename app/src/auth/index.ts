@@ -1,3 +1,4 @@
+import { cache } from 'react'
 import { isClerkEnabled, isDevAuthAllowed } from '@/lib/clerk-config'
 import { ClerkAuthProvider } from './clerk-provider'
 import { DevAuthProvider } from './dev-provider'
@@ -21,9 +22,7 @@ export function getAuthProvider(): AuthProvider {
   return provider
 }
 
-export async function getCurrentUser() {
-  return getAuthProvider().getCurrentUser()
-}
+export const getCurrentUser = cache(async () => getAuthProvider().getCurrentUser())
 
 /**
  * @deprecated Legacy, nem tenant-scope-olt jogosultság-ellenőrzés (a `User.role` oszlopot

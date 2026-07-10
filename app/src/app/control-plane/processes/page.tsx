@@ -1,5 +1,5 @@
 import Link from 'next/link'
-import { getCurrentUser } from '@/auth'
+import { getAuthContext } from '@/auth/context'
 import { hasMinimumRole } from '@/auth/types'
 import { listProcessDefinitions, listProcesses } from '@/app/actions/process'
 import {
@@ -20,19 +20,20 @@ import { ProcessDefinitionList } from '@/components/processes/process-definition
 import { PROCESS_STATUS_CLASS } from '@/lib/process-labels'
 
 export default async function ProcessesPage() {
-  const [user, processesRes, definitionsRes, startableRes] = await Promise.all([
-    getCurrentUser(),
+  const [ctx, processesRes, definitionsRes, startableRes] = await Promise.all([
+    getAuthContext(),
     listProcesses(),
     listProcessDefinitions({}),
     listStartablePlaybooks(),
   ])
-  const canStart = user ? hasMinimumRole(user.role, 'operator') : false
-  const canEditDraft = user ? hasMinimumRole(user.role, 'operator') : false
-  const canArchive = user ? hasMinimumRole(user.role, 'admin') : false
+  const canStart = hasMinimumRole(ctx?.activeTenantRole, 'operator')
+  const canEditDraft = hasMinimumRole(ctx?.activeTenantRole, 'operator')
+  const canArchive = hasMinimumRole(ctx?.activeTenantRole, 'admin')
+  const canUseBuilder = hasMinimumRole(ctx?.activeTenantRole, 'operator')
   const allDefinitions = definitionsRes.success ? definitionsRes.data : []
   const pinnedVersionIds = [...new Set(allDefinitions.map((d) => d.playbookVersionId))]
   const [builderVersionsRes, pinnedVersionsRes] = await Promise.all([
-    canUseBuilder(user)
+    canUseBuilder
       ? listPublishedPlaybookVersionsForProcessBuilder()
       : Promise.resolve({ success: true as const, data: [] as ProcessBuilderPlaybookVersion[] }),
     canEditDraft && pinnedVersionIds.length > 0
@@ -143,8 +144,4 @@ export default async function ProcessesPage() {
       </section>
     </div>
   )
-}
-
-function canUseBuilder(user: Awaited<ReturnType<typeof getCurrentUser>>) {
-  return user ? hasMinimumRole(user.role, 'operator') : false
 }

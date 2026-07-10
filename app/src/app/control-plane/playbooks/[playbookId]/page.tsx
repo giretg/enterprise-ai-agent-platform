@@ -1,6 +1,6 @@
 import { notFound } from 'next/navigation'
 import Link from 'next/link'
-import { getCurrentUser } from '@/auth'
+import { getAuthContext } from '@/auth/context'
 import { hasMinimumRole } from '@/auth/types'
 import { getPlaybookV2 } from '@/app/actions/playbook'
 import {
@@ -15,11 +15,11 @@ export default async function PlaybookDetailPage({
   params: Promise<{ playbookId: string }>
 }) {
   const { playbookId } = await params
-  const [user, res] = await Promise.all([getCurrentUser(), getPlaybookV2({ id: playbookId })])
+  const [ctx, res] = await Promise.all([getAuthContext(), getPlaybookV2({ id: playbookId })])
   if (!res.success) notFound()
 
-  const canEdit = user ? hasMinimumRole(user.role, 'admin') : false
-  const canApprove = user ? hasMinimumRole(user.role, 'approver') : false
+  const canEdit = hasMinimumRole(ctx?.activeTenantRole, 'admin')
+  const canApprove = hasMinimumRole(ctx?.activeTenantRole, 'approver')
 
   const playbook: PlaybookHead = {
     id: res.data.playbook.id,

@@ -1,8 +1,16 @@
+import { cache } from 'react'
 import type { PlatformRole, UserRole } from '@prisma/client'
 import { repositories } from '@/repositories/postgres'
 import { decideAuthz, hasMinimumRole } from '@/lib/iam-policy'
 import { hasMinimumPlatformRole, tenantStatusAllowsOperations } from '@/lib/tenant-policy'
-import { getAuthContext, type PlatformAuthContext, type TenantAuthContext } from './context'
+import {
+  getAuthContext,
+  type AuthContext,
+  type PlatformAuthContext,
+  type TenantAuthContext,
+} from './context'
+
+const getTenantById = cache((tenantId: string) => repositories.tenants.findById(tenantId))
 
 /**
  * Tenant- és platform-szintű guardok (Feature-spec Tenant-Management §5.4).
@@ -39,17 +47,17 @@ export class PlatformAuthError extends Error {
   }
 }
 
-export async function requireTenantRole(
+export async function requireTenantRoleFromContext(
+  ctx: AuthContext | null,
   minimum: UserRole | UserRole[],
 ): Promise<TenantAuthContext> {
-  const ctx = await getAuthContext()
   if (!ctx) throw new TenantAuthError('NO_USER')
   if (ctx.kind !== 'tenant' || !ctx.activeTenantId || !ctx.activeTenantRole) {
     throw new TenantAuthError('NO_TENANT')
   }
 
   // §7.3: suspended/offboarding/archived tenantban nincs tenant-művelet.
-  const tenant = await repositories.tenants.findById(ctx.activeTenantId)
+  const tenant = await getTenantById(ctx.activeTenantId)
   if (tenant && !tenantStatusAllowsOperations(tenant.status)) {
     throw new TenantAuthError('TENANT_NOT_ACTIVE')
   }
@@ -59,6 +67,12 @@ export async function requireTenantRole(
   }
 
   return ctx as TenantAuthContext
+}
+
+export async function requireTenantRole(
+  minimum: UserRole | UserRole[],
+): Promise<TenantAuthContext> {
+  return requireTenantRoleFromContext(await getAuthContext(), minimum)
 }
 
 /**
@@ -78,7 +92,7 @@ export async function requireTenantPermission(
   }
 
   // §7.3: suspended/offboarding/archived tenantban nincs tenant-művelet.
-  const tenant = await repositories.tenants.findById(ctx.activeTenantId)
+  const tenant = await getTenantById(ctx.activeTenantId)
   if (tenant && !tenantStatusAllowsOperations(tenant.status)) {
     throw new TenantAuthError('TENANT_NOT_ACTIVE')
   }

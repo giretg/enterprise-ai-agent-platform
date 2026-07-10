@@ -1,4 +1,4 @@
-import { getCurrentUser } from '@/auth'
+import { getAuthContext } from '@/auth/context'
 import { hasMinimumRole } from '@/auth/types'
 import { listAgents, listBoardAssignees, listBoardTickets } from '@/app/actions/platform'
 import { listProcesses } from '@/app/actions/process'
@@ -7,8 +7,8 @@ import { KanbanBoard } from '@/components/tickets/kanban-board'
 const RECENT_PROCESS_LIMIT = 20
 
 export default async function BoardPage() {
-  const user = await getCurrentUser()
-  const canCreate = user ? hasMinimumRole(user.role, 'operator') : false
+  const ctx = await getAuthContext()
+  const canCreate = hasMinimumRole(ctx?.activeTenantRole, 'operator')
 
   const [ticketsRes, agentsRes, assigneesRes, processesRes] = await Promise.all([
     listBoardTickets(),
