@@ -386,6 +386,20 @@ async function main() {
     assert.ok((await audit.findMany({ action: 'sandbox_app.access_denied' })).length === 1)
   })
 
+  await test('N1 (archive) — más tenant nem archiválhat sandbox appot', async () => {
+    const { service, audit } = buildService()
+    const a = await service.createSandboxApp({ name: 'Tenant A archive', criticality: 'L1' }, ACTOR_A)
+    await assert.rejects(
+      service.archiveSandboxApp({ appId: a.appId, reason: 'cleanup' }, ACTOR_B),
+      (e) => e instanceof SandboxAppError && e.code === 'APP_NOT_FOUND_OR_FORBIDDEN',
+    )
+    assert.ok((await audit.findMany({ action: 'sandbox_app.access_denied' })).length === 1)
+
+    const archived = await service.archiveSandboxApp({ appId: a.appId, reason: 'cleanup' }, ACTOR_A)
+    assert.deepEqual(archived, { appId: a.appId, status: 'archived' })
+    assert.ok((await audit.findMany({ action: 'sandbox_app.archive' })).length === 1)
+  })
+
   await test('N8 — A0 policy kényszer: connector / magasabb szint → POLICY_NOT_ALLOWED_FOR_A0', async () => {
     const { service } = buildService()
     await assert.rejects(

@@ -3801,13 +3801,11 @@ export async function listAuditLog(input?: z.infer<typeof listAuditLogSchema>) {
 
 export async function archiveSandboxApp(input: z.infer<typeof archiveSandboxAppSchema>) {
   try {
-    await requireTenantRole('operator')
+    const user = await requireTenantRole('operator')
     const parsed = archiveSandboxAppSchema.parse(input)
-    const user = await getCurrentUser()
-    if (!user) throw new Error('Not authenticated')
     const result = await services.sandboxApps.archiveSandboxApp(parsed, {
-      userId: user.id,
-      tenantId: user.tenantId,
+      userId: user.user.id,
+      tenantId: user.activeTenantId,
     })
     return ok(result)
   } catch (e) {

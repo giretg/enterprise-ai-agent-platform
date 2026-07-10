@@ -1,5 +1,32 @@
 # Enterprise code review log
 
+## 2026-07-10 - Sandbox App Registry / preview-token isolation / archive tenant boundary
+
+- Reviewed modules:
+  - `app/src/domain/sandbox/sandbox-app-service.ts` (create/version/activate/list/get/export/preview/archive, tenant gate, preview token serve path)
+  - `app/src/domain/sandbox/preview-token.ts` (HMAC-signed preview payload and expiry)
+  - `app/src/app/api/sandbox-apps/preview/route.ts` and `app/src/app/api/sandbox-apps/[appId]/export/route.ts` (cookieless preview/export serving headers)
+  - `app/src/repositories/postgres/sandbox-app-repository.ts` (tenant-scoped listing/metrics, version persistence)
+  - `app/src/app/actions/platform.ts` sandbox app server actions
+  - `app/scripts/sandbox-app-registry.test.ts` and `app/src/lib/sandbox-csp.ts` coverage surface
+- Result:
+  - The registry core has a production-appropriate shape for A0 single-file apps: immutable versions, deterministic content hashes, HTML linting before persistence, short-lived signed preview URLs, cookieless preview serving, CSP sandboxing without `allow-same-origin`, and tenant checks inside the domain service before read/export/preview/archive operations.
+  - Found one enterprise tenant-boundary gap in the human archive action. `create`, `version`, `activate`, `list`, `get`, `metrics`, and `previewUrl` all pass `requireTenantRole(...).activeTenantId` into the sandbox service, but `archiveSandboxApp` reloaded `getCurrentUser()` and passed the legacy `user.tenantId`. In a migrated multi-tenant account, a user operating in tenant B could be authorized by tenant B membership while the archive service checked tenant A from the legacy profile. That can either wrongly deny the active tenant's own archive operation or archive a different tenant's app if the caller knows its id.
+- Fix applied:
+  - `archiveSandboxApp` now uses the same active tenant context as the rest of the sandbox app actions: `requireTenantRole('operator')` returns both `user.user.id` and `user.activeTenantId`, and those values are passed directly into the domain service.
+  - Added a deterministic archive tenant-boundary regression in `sandbox-app-registry.test.ts`: cross-tenant archive is denied with `APP_NOT_FOUND_OR_FORBIDDEN` and `sandbox_app.access_denied`, while same-tenant archive succeeds and emits `sandbox_app.archive`.
+- Business impact:
+  - Aligns sandbox app lifecycle control with the selected customer tenant, which is critical because mini-apps are executable customer artifacts. Operators can no longer accidentally apply lifecycle changes based on stale legacy tenant metadata instead of the tenant they are administering.
+  - Preserves the audit story for enterprise customers: denied cross-tenant archive attempts and successful archives remain explicit governance events.
+- Verification:
+  - `SANDBOX_APP_STUB=true node --import tsx scripts/sandbox-app-registry.test.ts` from `app/`
+  - `node --import tsx scripts/sandbox-csp.test.ts` from `app/`
+  - `npx eslint src/app/actions/platform.ts scripts/sandbox-app-registry.test.ts src/domain/sandbox/sandbox-app-service.ts src/domain/sandbox/preview-token.ts src/app/api/sandbox-apps/preview/route.ts 'src/app/api/sandbox-apps/[appId]/export/route.ts'` from `app/`
+  - Note: the package-script form `npm run test:sandbox-app --prefix app` and `npm run test:sandbox-csp --prefix app` hit the local sandbox's `tsx` IPC pipe restriction (`listen EPERM`); the same tests pass via `node --import tsx`.
+- Decisions raised (not auto-fixed):
+  - D1 — Preview tokens are not currently single-use. They are short-lived and bound to `tenantId + appId + version + contentHash`, which is acceptable for preview links, but stricter regulated deployments may want replay tracking or a nonce table.
+  - D2 — Sandbox audit attribution is mostly derived from target references today. If enterprise reporting needs direct tenant filtering for every sandbox event, the service should pass `tenantId` explicitly on every `audit.append` call rather than relying on derived attribution.
+
 ## 2026-07-07 - Knowledge Base tenant-határ (dokumentum-gate + megosztás + review)
 
 - Áttekintett modulok:
