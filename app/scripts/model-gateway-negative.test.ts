@@ -343,6 +343,43 @@ async function main() {
     assert.equal(decision.level, 'clean', `Elvárt: clean, kapott: ${decision.level}`)
   })
 
+  await check('MG-N5: rendelésszám / tracking → clean (Luhn nélkül nem kártya)', () => {
+    const decision = classifyPrompt([
+      { role: 'user', content: 'Az Ön rendelési száma: 1234 5678 9012 3456' },
+    ])
+    assert.equal(decision.level, 'clean', `Elvárt: clean, kapott: ${decision.level}`)
+  })
+
+  await check('MG-N5: két tool-üzenet szegélye → clean (nem szabad újsoron át match-elni)', () => {
+    const decision = classifyPrompt([
+      { role: 'tool', content: '{"hits":[{"content":"oldal 1234"}]}' },
+      { role: 'tool', content: '{"messages":[{"snippet":"5678-9012-3456"}]}' },
+    ])
+    assert.equal(decision.level, 'clean', `Elvárt: clean, kapott: ${decision.level}`)
+  })
+
+  await check('MG-N5: IBAN szóközökkel → forbidden iban (nem card_broad)', () => {
+    const decision = classifyPrompt([
+      { role: 'user', content: 'Utald ide: HU42 1177 3016 1111 1018 0000 0000' },
+    ])
+    assert.equal(decision.level, 'forbidden', `Elvárt: forbidden, kapott: ${decision.level}`)
+    assert.equal(decision.matchedCategory, 'iban', `Elvárt: iban, kapott: ${decision.matchedCategory}`)
+  })
+
+  await check('MG-N5: IBAN-szerű szám rossz mod-97 checksum → clean', () => {
+    const decision = classifyPrompt([
+      { role: 'user', content: 'Utald ide: HU99 1177 3016 1111 1018 0000 0000' },
+    ])
+    assert.equal(decision.level, 'clean', `Elvárt: clean, kapott: ${decision.level}`)
+  })
+
+  await check('MG-N5: formázott Visa tesztkártya → forbidden pan/card', () => {
+    const decision = classifyPrompt([
+      { role: 'user', content: 'Fizess ezzel: 4111 1111 1111 1111' },
+    ])
+    assert.equal(decision.level, 'forbidden', `Elvárt: forbidden, kapott: ${decision.level}`)
+  })
+
   await check('MG-N5: sensitive prompt → lokális provider, külső nem hívódik', async () => {
     const { repo: auditRepo } = makeAuditRepo()
     const { repo: modelCallRepo } = makeModelCallRepo(0)

@@ -16,6 +16,7 @@ import { GeminiProvider } from './gemini-provider'
 import { createTokenStoreFromEnv, ensureFreshTokens } from './oauth-token-store'
 import {
   classifyPrompt,
+  formatSensitivityBlockMessage,
   sensitivityPolicyFromEnv,
   type SensitivityDecision,
   type SensitivityPolicy,
@@ -891,9 +892,7 @@ export class ModelGateway {
         policyDecision: 'sensitivity_block',
         metadata: { reason: 'sensitivity_block', category: sensitivity.matchedCategory },
       })
-      throw new GatewayBudgetError(
-        `Gateway sensitivity block: forbidden content detected (${sensitivity.matchedCategory})`,
-      )
+      throw new GatewayBudgetError(formatSensitivityBlockMessage(sensitivity.matchedCategory))
     }
     if (sensitivityOverrideAllowed) {
       const targetType = params.ticketId ? 'ticket' : params.conversationId ? 'conversation' : 'agent'
@@ -1197,9 +1196,7 @@ export class ModelGateway {
         policyDecision: 'sensitivity_block',
         metadata: { reason: 'sensitivity_block', category: sensitivity.matchedCategory },
       })
-      throw new GatewayBudgetError(
-        `Gateway sensitivity block: forbidden content detected (${sensitivity.matchedCategory})`,
-      )
+      throw new GatewayBudgetError(formatSensitivityBlockMessage(sensitivity.matchedCategory))
     }
     if (sensitivityOverrideAllowed) {
       const targetType = params.ticketId ? 'ticket' : params.conversationId ? 'conversation' : 'agent'
