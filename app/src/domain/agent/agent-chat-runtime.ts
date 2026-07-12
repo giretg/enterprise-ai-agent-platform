@@ -45,6 +45,7 @@ import {
   type ToolLoopMemoryCandidateEvent,
 } from './chat-tool-loop'
 import type { SkillService } from '../skill/skill-service'
+import { assembleGatewayMessages, type PromptSegments } from './prompt-assembler'
 import {
   isChatTurnCancelRequested,
   registerActiveChatTurn,
@@ -511,7 +512,7 @@ export class AgentChatRuntime {
       documentAliases: this.contextDocumentAliases(attachmentDocs, workspaceFiles, kbSearch.hits),
     })
     const priorToolCalls = await this.toolCaps.listToolCallsForConversation(conversationId)
-    const gatewayMessages = await this.buildGatewayMessages(
+    const gatewayPrompt = await this.buildGatewayMessages(
       agentDetails,
       assembledContext.messages,
       attachmentBlock,
@@ -552,7 +553,7 @@ export class AgentChatRuntime {
           context: { conversationId },
           mode: 'chat',
           actingUserId: params.createdById,
-          messages: gatewayMessages,
+          promptSegments: gatewayPrompt,
           modelConfig,
           allowedTools: allowedChatTools,
           maxTurns,
@@ -569,7 +570,7 @@ export class AgentChatRuntime {
         agentVersion: agentDetails.agent.currentVersion,
         conversationId,
         actingUserId: params.createdById,
-        messages: gatewayMessages,
+        messages: assembleGatewayMessages(gatewayPrompt),
         modelConfig,
       }
       reply = (await this.gateway.call(gatewayInput)).content
@@ -853,7 +854,7 @@ export class AgentChatRuntime {
         documentAliases: this.contextDocumentAliases(attachmentDocs, workspaceFiles, kbSearch.hits),
       })
       const priorToolCalls = await this.toolCaps.listToolCallsForConversation(conversationId)
-      const gatewayMessages = await this.buildGatewayMessages(
+      const gatewayPrompt = await this.buildGatewayMessages(
         agentDetails,
         assembledContext.messages,
         attachmentBlock,
@@ -929,7 +930,7 @@ export class AgentChatRuntime {
           context: { conversationId },
           mode: 'chat',
           actingUserId: params.createdById,
-          messages: gatewayMessages,
+          promptSegments: gatewayPrompt,
           modelConfig,
           allowedTools: allowedChatTools,
           maxTurns,
@@ -993,7 +994,7 @@ export class AgentChatRuntime {
             agentVersion: agentDetails.agent.currentVersion,
             conversationId,
             actingUserId: params.createdById,
-            messages: gatewayMessages,
+            messages: assembleGatewayMessages(gatewayPrompt),
             modelConfig,
           }
           let accumulated = ''
@@ -1467,17 +1468,27 @@ export class AgentChatRuntime {
     const allAgents = await this.agents.findMany()
     const orgRoster = formatOrgRoster(allAgents)
 
-    const messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }> = [
+    const stablePreamble: PromptSegments['stablePreamble'] = [
       { role: 'system', content: composeSystemPrompt(agentDetails.agent) },
+      { role: 'system', content: orgRoster },
+      {
+        role: 'system',
+        content:
+          'Ez egy közvetlen beszélgetés a felhasználóval. Válaszolj természetes, segítőkész hangnemben magyarul. Ha csatolmány érkezett, hivatkozz rá a válaszodban. Email, fájl, ticket vagy más agent feladat kérésénél használd a platform eszközöket — ne állítsd, hogy megcsináltad vagy nincs adat, ha nem hívtál eszközt.',
+      },
     ]
+    const stablePostamble: PromptSegments['stablePostamble'] = []
+    const variableContext: PromptSegments['variableContext'] = []
 
     // agent-memory-persistent-cross-conversation-spec.md §10.3 — retrieval-only:
     // a legacy `agentDetails.memoryContent` teljes-inject blokk helyett a
     // `MemoryRetrievalService`-ből épített, elhatárolt `Project memory context`
     // blokk (§16 S4: adat, nem utasítás), a capture-policy prompt-tal együtt.
     if (memoryContextBlock) {
-      messages.push(...memoryContextSystemMessages(memoryContextBlock))
-      messages.push({ role: 'system', content: MEMORY_RETRIEVAL_USAGE_PROMPT })
+      const [capturePolicy, memoryData] = memoryContextSystemMessages(memoryContextBlock)
+      if (capturePolicy) stablePostamble.push(capturePolicy)
+      stablePostamble.push({ role: 'system', content: MEMORY_RETRIEVAL_USAGE_PROMPT })
+      if (memoryData) variableContext.push(memoryData)
     }
 
     if (kbSearch.enabled) {
@@ -1486,25 +1497,18 @@ export class AgentChatRuntime {
         hasMemoryContext: Boolean(memoryContextBlock),
         mode: 'chat',
       })
-      messages.push({
+      stablePostamble.push({ role: 'system', content: answerInstruction })
+      variableContext.push({
         role: 'system',
-        content: `${answerInstruction}\n\nTudásbázis találatok (kb_search):\n${formatHitsForPrompt(kbSearch.hits)}`,
+        content: `Tudásbázis találatok (kb_search):\n${formatHitsForPrompt(kbSearch.hits)}`,
       })
     }
-
-    messages.push({ role: 'system', content: orgRoster })
-
-    messages.push({
-      role: 'system',
-      content:
-        'Ez egy közvetlen beszélgetés a felhasználóval. Válaszolj természetes, segítőkész hangnemben magyarul. Ha csatolmány érkezett, hivatkozz rá a válaszodban. Email, fájl, ticket vagy más agent feladat kérésénél használd a platform eszközöket — ne állítsd, hogy megcsináltad vagy nincs adat, ha nem hívtál eszközt.',
-    })
 
     // A munkaterületen ténylegesen elérhető fájlok pontos listája. Ez a forrás
     // igazsága — a fájlnevekre ezekkel a pontos utakkal hivatkozz, NE találgass
     // tudásbázisból vett elérési utat.
     if (workspaceFiles.length > 0) {
-      messages.push({
+      variableContext.push({
         role: 'system',
         content:
           `A beszélgetés munkaterületén jelenleg elérhető fájlok (pontos elérési utak):\n` +
@@ -1513,16 +1517,19 @@ export class AgentChatRuntime {
           `Ha a kért adat egy itt felsorolt fájlban van, onnan dolgozz. Új fájlt (pl. Excel → xlsx_create, prezentáció → pptx_create, egyéb → file_write) az eszközökkel hozz létre — a felhasználó a chat „Workspace fájlok" panelről tölti le.`,
       })
     } else {
-      messages.push({
+      variableContext.push({
         role: 'system',
         content:
           'A beszélgetés munkaterülete jelenleg üres (nincs feltöltött fájl). Ha a felhasználó létező fájlra hivatkozik, kérd meg, hogy csatolja (📎). Új fájlt (pl. Excel → xlsx_create, prezentáció → pptx_create, egyéb → file_write) az eszközökkel hozhatsz létre — a felhasználó a „Workspace fájlok" panelről tölti le.',
       })
     }
 
-    messages.push(...buildHistoryGatewayMessages(historyMessages, toolCalls, latestAttachmentBlock, latestUserTextOverride))
-
-    return messages
+    return {
+      stablePreamble,
+      stablePostamble,
+      variableContext,
+      history: buildHistoryGatewayMessages(historyMessages, toolCalls, latestAttachmentBlock, latestUserTextOverride),
+    } satisfies PromptSegments
   }
 }
 

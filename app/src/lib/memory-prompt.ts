@@ -84,7 +84,7 @@ export function formatProjectMemoryContextBlock(
 
   if (hasChunks) {
     lines.push('', 'Releváns korábbi emlékek (keresés alapján):')
-    for (const chunk of result.chunks) lines.push(formatChunkLine(chunk, true))
+    for (const chunk of result.chunks) lines.push(formatChunkLine(chunk))
   }
 
   if (result.conflictSets.length > 0) {

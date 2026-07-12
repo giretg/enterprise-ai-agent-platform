@@ -46,6 +46,7 @@ import type { WorkspaceStorage } from '../file-editor/workspace-storage'
 import { formatAttachmentBlock } from './agent-chat-runtime'
 import { listAllowedChatTools, resolveToolLoopMaxTurns, runAgentToolLoop, type LoadSkillFn } from './chat-tool-loop'
 import type { SkillService } from '../skill/skill-service'
+import type { PromptSegments } from './prompt-assembler'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -239,7 +240,7 @@ export class GeneralTaskRuntime {
       agentVersion,
       context: { ticketId: ticket.id },
       mode: 'task',
-      messages,
+      promptSegments: messages,
       modelConfig,
       allowedTools,
       maxTurns: resolveToolLoopMaxTurns(modelConfig, allowedTools),
@@ -779,20 +780,25 @@ export class GeneralTaskRuntime {
     const allAgents = await this.agents.findMany()
     const orgRoster = formatOrgRoster(allAgents)
 
-    const messages: Array<{ role: 'user' | 'system'; content: string }> = [
+    const stablePreamble: PromptSegments['stablePreamble'] = [
       { role: 'system', content: composeSystemPrompt(params.agentDetails.agent) },
+      { role: 'system', content: orgRoster },
     ]
+    const stablePostamble: PromptSegments['stablePostamble'] = []
+    const variableContext: PromptSegments['variableContext'] = []
 
     // agent-memory-persistent-cross-conversation-spec.md §10.3 — retrieval-only:
     // a legacy `agentDetails.memoryContent` teljes-inject helyett a
     // `MemoryRetrievalService`-ből épített `Project memory context` blokk.
     if (params.memoryContextBlock) {
-      messages.push(...memoryContextSystemMessages(params.memoryContextBlock))
-      messages.push({ role: 'system', content: MEMORY_RETRIEVAL_USAGE_PROMPT })
+      const [capturePolicy, memoryData] = memoryContextSystemMessages(params.memoryContextBlock)
+      if (capturePolicy) stablePostamble.push(capturePolicy)
+      stablePostamble.push({ role: 'system', content: MEMORY_RETRIEVAL_USAGE_PROMPT })
+      if (memoryData) variableContext.push(memoryData)
     }
 
     if (params.conversationContext) {
-      messages.push({
+      variableContext.push({
         role: 'system',
         content: `Ez a lépés egy chatből indított Folyamat része. A lenti utasítás "a promptra" hivatkozhat — az alább idézett, a Folyamatot elindító beszélgetés a forrás, ebből olvasd ki a szükséges adatokat:\n\n${params.conversationContext}`,
       })
@@ -804,13 +810,13 @@ export class GeneralTaskRuntime {
         // Deliverable-lépésnél a fájl a végtermék: az outputContract JSON-kényszere
         // helyett a valódi fájl-előállítást írjuk elő (§4.7b), különben a modell a
         // tartalmat szövegként a mezőbe ömlesztené.
-        messages.push({ role: 'system', content: formatDeliverableInstruction(deliverable) })
+        variableContext.push({ role: 'system', content: formatDeliverableInstruction(deliverable) })
       } else {
         const outputInstruction = formatOutputContractInstruction(
           params.processStep.outputRequiredFields,
         )
         if (outputInstruction) {
-          messages.push({ role: 'system', content: outputInstruction })
+          variableContext.push({ role: 'system', content: outputInstruction })
         }
       }
     }
@@ -821,19 +827,21 @@ export class GeneralTaskRuntime {
         hasMemoryContext: Boolean(params.memoryContextBlock),
         mode: 'task',
       })
-      messages.push({
+      stablePostamble.push({ role: 'system', content: answerInstruction })
+      variableContext.push({
         role: 'system',
-        content: `${answerInstruction}\n\nTudásbázis találatok (kb_search):\n${formatHitsForPrompt(params.kbSearch.hits)}`,
+        content: `Tudásbázis találatok (kb_search):\n${formatHitsForPrompt(params.kbSearch.hits)}`,
       })
     }
-
-    messages.push({ role: 'system', content: orgRoster })
 
     const userContent = params.attachmentBlock
       ? `${params.question || '(csatolmányok)'}${params.attachmentBlock}`.trim()
       : params.question
-    messages.push({ role: 'user', content: userContent })
-
-    return messages
+    return {
+      stablePreamble,
+      stablePostamble,
+      variableContext,
+      history: [{ role: 'user', content: userContent }],
+    } satisfies PromptSegments
   }
 }

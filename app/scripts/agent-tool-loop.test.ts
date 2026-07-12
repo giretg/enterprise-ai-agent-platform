@@ -14,7 +14,7 @@ import {
 } from '../src/domain/agent/chat-tool-loop'
 import { assembleContext } from '../src/domain/conversation/context-assembly'
 import { resolveTicketProcessRoute } from '../src/lib/ticket-process-route'
-import type { ModelGateway, ModelConfig, GatewayMessage, GatewayToolCall } from '../src/domain/gateway/model-gateway'
+import type { ModelGateway, ModelConfig, GatewayMessage, GatewayToolCall, ToolDefinition } from '../src/domain/gateway/model-gateway'
 import type {
   ToolBrokerService,
   ToolBrokerInvokeInput,
@@ -41,6 +41,7 @@ type GatewayCallArgs = {
   conversationId?: string
   messages: GatewayMessage[]
   modelConfig: ModelConfig
+  tools?: ToolDefinition[]
 }
 
 type FakeResponse = { content?: string; toolCalls?: GatewayToolCall[] }
@@ -208,6 +209,41 @@ async function main() {
     // a gateway is ticketId kontextust kapott (guardrail / audit célból)
     assert.equal(gwCalls[0].ticketId, 'ticket-1')
     assert.equal(gwCalls[0].conversationId, undefined)
+  })
+
+  await check('prompt cache: a loop statikus prefixe a változó kontextus és előzmény elé kerül', async () => {
+    const gwCalls: GatewayCallArgs[] = []
+    await runAgentToolLoop({
+      gateway: fakeGateway([{ content: 'Kész.' }], gwCalls),
+      toolBroker: fakeToolBroker([]),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-cache' },
+      mode: 'chat',
+      promptSegments: {
+        stablePreamble: [{ role: 'system', content: 'agent + roster' }],
+        stablePostamble: [{ role: 'system', content: 'memory + KB policy' }],
+        variableContext: [{ role: 'system', content: 'Project memory context: változó' }],
+        history: [{ role: 'user', content: 'kérdés' }],
+      },
+      preloadedSkillPrompts: ['slash skill: változó'],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: ['web_search', 'file_read'],
+    })
+
+    const content = gwCalls[0].messages.map((message) =>
+      ('content' in message ? message.content : message.role) ?? '',
+    )
+    const toolInstruction = content.findIndex((value) => value.includes('natív tool-hívással'))
+    const policy = content.indexOf('memory + KB policy')
+    const memory = content.indexOf('Project memory context: változó')
+    const slashSkill = content.indexOf('slash skill: változó')
+    const history = content.indexOf('kérdés')
+    assert.ok(toolInstruction > 0 && toolInstruction < policy)
+    assert.ok(policy < memory && memory < slashSkill && slashSkill < history)
+    assert.deepEqual(gwCalls[0].tools?.map((tool) => tool.name), ['file_read', 'web_search'])
+    assert.ok(content.some((value) => value === 'A számodra engedélyezett eszközök: file_read, web_search'))
   })
 
   await check('chat mód: conversationId + actingUserId propagál', async () => {

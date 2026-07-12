@@ -10,6 +10,7 @@ import type {
 import type { ToolBrokerRepository } from '@/repositories/interfaces'
 import type { XlsxRow, XlsxSheetSpec, CellStyle, XlsxCellChange } from '@/domain/file-editor/adapters/xlsx-adapter'
 import type { PptxSlideSpec } from '@/domain/file-editor/adapters/pptx-adapter'
+import { assembleGatewayMessages, type PromptSegments } from './prompt-assembler'
 
 /** Chatben hívható platform toolok (capability + connector alapján szűrve).
  *  A `kb_search` a runtime elején egyszer előre is lefut (a találatok a promptba
@@ -1540,7 +1541,10 @@ export async function runAgentToolLoop(params: {
   mode: ToolLoopMode
   /** Chatben a beszélgető felhasználó; taskban a broker oldja fel a ticket run-as payloadjából. */
   actingUserId?: string
-  messages: GatewayMessage[]
+  /** Szegmentált runtime-prompt; a loop statikus blokkjai a stabil cache-prefixbe kerülnek. */
+  promptSegments?: PromptSegments
+  /** @deprecated Kompatibilitási bemenet; új hívók a promptSegments mezőt használják. */
+  messages?: GatewayMessage[]
   modelConfig: ModelConfig
   allowedTools: ChatPlatformToolName[]
   maxTurns?: number
@@ -1562,13 +1566,13 @@ export async function runAgentToolLoop(params: {
     params.mode === 'task'
       ? 'Ez egy aszinkron feladat — a végeredményed visszakerül a ticketbe. Dolgozz végig minden szükséges eszközhívást, majd add meg a kész választ természetes magyar szövegként (NE JSON).'
       : 'Ez egy közvetlen beszélgetés — a végén természetes magyar szöveggel válaszolj a felhasználónak (NE JSON).'
-  const messages: GatewayMessage[] = [
-    ...params.messages,
-    { role: 'system', content: TOOL_INSTRUCTION },
+  const allowedTools = [...params.allowedTools].sort()
+  const loopStablePreamble: GatewayMessage[] = [
     { role: 'system', content: modeNote },
+    { role: 'system', content: TOOL_INSTRUCTION },
     {
       role: 'system',
-      content: `A számodra engedélyezett eszközök: ${params.allowedTools.join(', ')}`,
+      content: `A számodra engedélyezett eszközök: ${allowedTools.join(', ')}`,
     },
     {
       role: 'system',
@@ -1580,31 +1584,40 @@ export async function runAgentToolLoop(params: {
   // név+leírása kerül be — a teljes instrukciót a modell a load_skill tool-lal húzza be.
   const loadSkill = params.loadSkill
   if (loadSkill && params.skillIndexPrompt && params.skillIndexPrompt.trim()) {
-    messages.push({ role: 'system', content: params.skillIndexPrompt })
-  }
-
-  if (params.preloadedSkillPrompts?.length) {
-    for (const prompt of params.preloadedSkillPrompts) {
-      messages.push({ role: 'system', content: prompt })
-    }
+    loopStablePreamble.push({ role: 'system', content: params.skillIndexPrompt })
   }
 
   // Ha http_api eszköz engedélyezett, a hozzárendelt connector(ek)
   // endpoint-katalógusát a modell elé tesszük — így tudja, mit hívhat.
-  if (params.allowedTools.some((t) => t === 'http_api_get' || t === 'http_api_request')) {
+  if (allowedTools.some((t) => t === 'http_api_get' || t === 'http_api_request')) {
     const spec = await describeHttpApiConnectors(params.toolCaps, params.agentId)
-    if (spec) messages.push({ role: 'system', content: spec })
+    if (spec) loopStablePreamble.push({ role: 'system', content: spec })
   }
-  if (params.allowedTools.includes('repo_prepare')) {
-    messages.push({
+  if (allowedTools.includes('repo_prepare')) {
+    loopStablePreamble.push({
       role: 'system',
       content:
         'Repo-feladatnál (kód keresése, módosítása, fájl megtalálása, GitHub repo vizsgálata) először hívd a repo_prepare eszközt. Ha sikeres, a repoPath alatti workspace fájlokon dolgozz file_search/file_glob/file_read/file_edit eszközökkel. Ne használd a GitHub REST API-t mappák kézi bejárására, ha repo_prepare elérhető.' +
-        (params.allowedTools.includes('repo_open_pull_request')
+        (allowedTools.includes('repo_open_pull_request')
           ? ' Ha a felhasználó azt kéri, hogy a módosítást "tedd fel githubra" / "nyiss PR-t" / "commitold": NE mondd, hogy nincs mit — nézd meg az előző köreid tool-hívásait (fentebb, "[Ebben a körben lefutott eszközhívások]" alatt), és ha volt file_edit/file_write ebben a workspace-ben, hívd a repo_open_pull_request eszközt (title kötelező). Ha nem emlékszel pontosan melyik fájlt módosítottad, előbb repo_prepare-rel frissítsd a kontextust és file_search-csel/file_read-del nézd meg újra, NE találgass.'
           : ''),
     })
   }
+
+  const runtimePrompt = params.promptSegments ?? {
+    stablePreamble: [],
+    history: params.messages ?? [],
+  }
+  const messages = assembleGatewayMessages({
+    stablePreamble: [...runtimePrompt.stablePreamble, ...loopStablePreamble],
+    stablePostamble: runtimePrompt.stablePostamble,
+    variableContext: [
+      ...(runtimePrompt.variableContext ?? []),
+      ...(params.preloadedSkillPrompts ?? []).map((content) => ({ role: 'system' as const, content })),
+    ],
+    history: runtimePrompt.history,
+    toolTail: runtimePrompt.toolTail,
+  })
 
   let toolCallCount = 0
   // Hány tool-hívást tagadott meg a broker (policy/grant DENY). Hard-signal a step-outcome-hoz:
@@ -1613,7 +1626,7 @@ export async function runAgentToolLoop(params: {
   let deniedCount = 0
   const archivedToolResults = new Map<string, { content: string; bytes: number; toolName: string }>()
   const tools = [
-    ...toToolDefinitions(params.allowedTools),
+    ...toToolDefinitions(allowedTools),
     ...(params.archiveLargeToolResult ? [TOOL_RESULT_READ_DEFINITION] : []),
     ...(loadSkill ? [LOAD_SKILL_DEFINITION] : []),
   ]
