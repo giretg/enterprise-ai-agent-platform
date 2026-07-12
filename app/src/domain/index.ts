@@ -233,7 +233,6 @@ const memoryApprovalService = new MemoryApprovalService(
   repositories.rolePermissions,
   repositories.tickets,
   ticketService,
-  repositories.users,
   repositories.memoryVersions,
 )
 // Tartós agent-memória — WP-8 (agent-memory-persistent-cross-conversation-spec.md

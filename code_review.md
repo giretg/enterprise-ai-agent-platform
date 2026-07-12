@@ -1,5 +1,32 @@
 # Enterprise code review log
 
+## 2026-07-13 - Persistent agent memory: tenant boundary / approval / rollback surface
+
+- Reviewed modules:
+  - `app/src/domain/memory/memory-approval-service.ts` candidate approval, ticket routing, T2 write-gate writes, and chunk-target mutation path
+  - `app/src/app/actions/platform.ts` memory candidate actions, memory overview/project-key reads, maintenance trigger, and manifest rollback action
+  - `app/src/domain/memory/memory-proposal-service.ts`, `memory-maintenance-service.ts`, `memory-retrieval-service.ts`, and `memory-runtime-helper.ts` capture/retrieval scope propagation
+  - `app/src/repositories/postgres/memory-repository.ts`, `app/src/lib/tenant-reachability.ts`, `app/src/lib/agent-detail-page-data.ts`, and `app/prisma/schema.prisma` persistence and tenant-scope contracts
+  - `docs/specs/agent-memory-persistent-cross-conversation-spec.md` (§2.1, §6, §8, §9.3, NF2, S1, S6)
+- Result:
+  - Found a cross-tenant IDOR class across the memory administration surface. The project-key list, memory overview, maintenance trigger, and rollback action authenticated an active tenant user but fetched the target agent by global ID without checking that it was reachable from the active tenant. A tenant operator who knew another tenant's agent ID could read its memory project keys and curated chunks, initiate maintenance proposals, or roll back its memory manifest.
+  - Found the same boundary flaw in candidate lifecycle actions. The approval service derived tenant authority from legacy `User.tenantId`, rather than the request's active tenant membership / superadmin-assume context; reject, modify, and ticket creation lacked a candidate tenant check. The ticket path also created training tickets without `tenantId`, weakening later ticket-scope enforcement.
+  - Found an authorization-adjacent arbitrary-target write. A memory proposal's `supersedes` chunk ID is model-controlled input, but approval mutated the target by global ID without confirming it belonged to the candidate's memory, agent, tenant, project, and workstream. A known foreign chunk UUID could therefore be archived, deleted, demoted, or superseded through an otherwise authorized approval.
+- Fix applied:
+  - Memory actions now assert the target agent is reachable from the active tenant before reading its memory or invoking maintenance/rollback.
+  - `MemoryApprovalService` now accepts the active tenant id and role explicitly, uses them for authorization, and fail-closes candidate lifecycle operations unless both the candidate and its agent are in scope. It no longer treats the stale single-tenant user profile as authority.
+  - Memory-candidate training tickets are explicitly tenant-attributed; ticket approval verifies both ticket and candidate tenant scope.
+  - Before a write-gate token is issued, candidate target chunks are validated against the full memory/agent/tenant/project/workstream scope. Out-of-scope targets are rejected before any mutation or token consumption.
+  - Extended `memory-approval-service.test.ts` with tenant-attributed ticket and cross-scope target regression coverage.
+- Business impact:
+  - Persistent memory stores project decisions, constraints, and operational context that may re-enter future agent prompts. The fix stops one customer from viewing, changing, or rolling back another customer's retained agent knowledge, and prevents a prompt-influenced agent from using a foreign chunk ID to alter another customer's context.
+  - Approval records and training tickets now retain the tenant that authorized them, providing a trustworthy audit trail for regulated or multi-tenant deployments.
+- Verification:
+  - `npm run test:memory-approval` from `app/`
+  - `npx tsc --noEmit` from `app/`
+  - `npx eslint src/domain/memory/memory-approval-service.ts src/app/actions/platform.ts scripts/memory-approval-service.test.ts` from `app/`
+  - `git diff --check`
+
 ## 2026-07-11 - Ticket board / workspace file tenant boundary
 
 - Reviewed modules:

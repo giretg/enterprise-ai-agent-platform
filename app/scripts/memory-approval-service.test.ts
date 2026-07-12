@@ -15,7 +15,7 @@
  * Futtatás: npm run test:memory-approval
  */
 import assert from 'node:assert/strict'
-import type { Agent, MemoryCandidate, MemoryChunk, MemoryVersion, RolePermission, Ticket, User } from '@prisma/client'
+import type { Agent, MemoryCandidate, MemoryChunk, MemoryVersion, RolePermission, Ticket } from '@prisma/client'
 import { MemoryApprovalService } from '../src/domain/memory/memory-approval-service'
 import { TicketService } from '../src/domain/ticket/ticket-service'
 import { computeDiffHash } from '../src/lib/crypto/hash-chain'
@@ -27,7 +27,6 @@ import type {
   MemoryVersionRepository,
   RolePermissionRepository,
   TicketRepository,
-  UserRepository,
 } from '../src/repositories/interfaces'
 import type { WriteGateService } from '../src/domain/writegate/write-gate-service'
 import type { EvalService } from '../src/domain/eval/eval-service'
@@ -49,6 +48,8 @@ const AGENT_ID = 'a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1'
 const MEMORY_ID = 'c1c1c1c1-c1c1-4c1c-8c1c-c1c1c1c1c1c1'
 const APPROVER_ID = 'd1d1d1d1-d1d1-4d1d-8d1d-d1d1d1d1d1d1'
 const OPERATOR_ID = 'e1e1e1e1-e1e1-4e1e-8e1e-e1e1e1e1e1e1'
+const APPROVER = { id: APPROVER_ID, tenantId: TENANT_A, role: 'approver' as const }
+const OPERATOR = { id: OPERATOR_ID, tenantId: TENANT_A, role: 'operator' as const }
 
 function agent(overrides: Partial<Agent> = {}): Agent {
   return {
@@ -59,10 +60,6 @@ function agent(overrides: Partial<Agent> = {}): Agent {
     selfEvolutionProfile: null,
     ...overrides,
   } as unknown as Agent
-}
-
-function user(id: string, role: 'operator' | 'approver' | 'admin', tenantId: string | null = TENANT_A): User {
-  return { id, role, status: 'active', tenantId } as unknown as User
 }
 
 // ── Fake repository-k / szolgáltatások ──────────────────────────────────────
@@ -160,11 +157,6 @@ function makeFakes(opts: { evalActive?: boolean; evalPasses?: boolean } = {}) {
     findById: async (id: string) => agentsById.get(id) ?? null,
   } as unknown as AgentRepository
 
-  const usersById = new Map<string, User>()
-  const users: UserRepository = {
-    findById: async (id: string) => usersById.get(id) ?? null,
-  } as unknown as UserRepository
-
   const permissionsByKey = new Map<string, RolePermission>()
   const rolePermissions: RolePermissionRepository = {
     findAll: async () => [...permissionsByKey.values()],
@@ -176,7 +168,14 @@ function makeFakes(opts: { evalActive?: boolean; evalPasses?: boolean } = {}) {
 
   const tickets: TicketRepository = {
     findById: async (id: string) => ticketStore.get(id) ?? null,
-    create: async (data: { state: string; type: string; payload: unknown; agentId?: string | null; createdById?: string }) => {
+    create: async (data: {
+      state: string
+      type: string
+      payload: unknown
+      agentId?: string | null
+      createdById?: string
+      tenantId?: string | null
+    }) => {
       const ticket = {
         id: `ticket-${++ticketSeq}`,
         state: data.state,
@@ -184,6 +183,7 @@ function makeFakes(opts: { evalActive?: boolean; evalPasses?: boolean } = {}) {
         payload: data.payload,
         agentId: data.agentId,
         createdById: data.createdById,
+        tenantId: data.tenantId,
       } as unknown as Ticket
       ticketStore.set(ticket.id, ticket)
       return ticket
@@ -252,7 +252,6 @@ function makeFakes(opts: { evalActive?: boolean; evalPasses?: boolean } = {}) {
     rolePermissions,
     tickets,
     ticketService,
-    users,
     versions,
   )
 
@@ -264,7 +263,6 @@ function makeFakes(opts: { evalActive?: boolean; evalPasses?: boolean } = {}) {
     versionStore,
     auditLog,
     agentsById,
-    usersById,
     permissionsByKey,
   }
 }
@@ -321,10 +319,9 @@ async function run() {
     const f = makeFakes()
     setupPermissions(f.permissionsByKey)
     f.agentsById.set(AGENT_ID, agent())
-    f.usersById.set(APPROVER_ID, user(APPROVER_ID, 'approver'))
     seedCandidate(f.candidateStore, { id: 'cand-1' })
 
-    const result = await f.service.approve('cand-1', APPROVER_ID)
+    const result = await f.service.approve('cand-1', APPROVER)
     assert.equal(result.ok, true)
     assert.equal((result as { outcome: string }).outcome, 'approved')
 
@@ -347,8 +344,13 @@ async function run() {
     const f = makeFakes()
     setupPermissions(f.permissionsByKey)
     f.agentsById.set(AGENT_ID, agent())
-    f.usersById.set(APPROVER_ID, user(APPROVER_ID, 'approver'))
-    f.chunkStore.set('chunk-target', { id: 'chunk-target', status: 'active' } as unknown as MemoryChunk)
+    f.chunkStore.set(
+      'chunk-target',
+      {
+        id: 'chunk-target', status: 'active', memoryId: MEMORY_ID, agentId: AGENT_ID,
+        tenantId: TENANT_A, projectKey: 'proj-1', workstreamKey: null,
+      } as unknown as MemoryChunk,
+    )
     const seeded = seedCandidate(f.candidateStore, {
       id: 'cand-archive',
       operation: 'archive',
@@ -358,7 +360,7 @@ async function run() {
       payload: { ...(seeded.payload as Record<string, unknown>), supersedes: 'chunk-target' },
     } as unknown as MemoryCandidate)
 
-    const result = await f.service.approve('cand-archive', APPROVER_ID)
+    const result = await f.service.approve('cand-archive', APPROVER)
     assert.equal(result.ok, true)
     assert.equal((result as { chunkId: string }).chunkId, 'chunk-target')
     assert.equal(f.chunkStore.get('chunk-target')!.status, 'archived')
@@ -370,10 +372,9 @@ async function run() {
     const f = makeFakes()
     setupPermissions(f.permissionsByKey)
     f.agentsById.set(AGENT_ID, agent())
-    f.usersById.set(OPERATOR_ID, user(OPERATOR_ID, 'operator'))
     seedCandidate(f.candidateStore, { id: 'cand-2' })
 
-    const result = await f.service.approve('cand-2', OPERATOR_ID)
+    const result = await f.service.approve('cand-2', OPERATOR)
     assert.equal(result.ok, true)
     assert.equal((result as { outcome: string }).outcome, 'ticketed')
 
@@ -383,6 +384,7 @@ async function run() {
 
     const ticket = f.ticketStore.get(candidate.ticketId!)!
     assert.equal(ticket.state, 'awaiting_human')
+    assert.equal(ticket.tenantId, TENANT_A)
     assert.equal((ticket.payload as { kind: string }).kind, 'memory_candidate')
 
     const actions = f.auditLog.map((a) => a.action)
@@ -400,10 +402,9 @@ async function run() {
       AGENT_ID,
       agent({ selfEvolutionProfile: { scope: ['memory'], approval_mode: 'auto_after_eval' } as never }),
     )
-    f.usersById.set(OPERATOR_ID, user(OPERATOR_ID, 'operator'))
     seedCandidate(f.candidateStore, { id: 'cand-rbac' })
 
-    const result = await f.service.approve('cand-rbac', OPERATOR_ID)
+    const result = await f.service.approve('cand-rbac', OPERATOR)
     assert.equal(result.ok, true)
     assert.equal((result as { outcome: string }).outcome, 'ticketed')
     assert.equal(f.candidateStore.get('cand-rbac')!.status, 'ticketed')
@@ -417,15 +418,13 @@ async function run() {
     const f = makeFakes()
     setupPermissions(f.permissionsByKey)
     f.agentsById.set(AGENT_ID, agent())
-    f.usersById.set(OPERATOR_ID, user(OPERATOR_ID, 'operator'))
-    f.usersById.set(APPROVER_ID, user(APPROVER_ID, 'approver'))
     seedCandidate(f.candidateStore, { id: 'cand-3' })
 
-    const ticketed = await f.service.approve('cand-3', OPERATOR_ID)
+    const ticketed = await f.service.approve('cand-3', OPERATOR)
     assert.equal((ticketed as { outcome: string }).outcome, 'ticketed')
     const ticketId = f.candidateStore.get('cand-3')!.ticketId!
 
-    const approved = await f.service.approveTicketedCandidate(ticketId, APPROVER_ID)
+    const approved = await f.service.approveTicketedCandidate(ticketId, APPROVER)
     assert.equal(approved.ok, true)
     assert.equal((approved as { outcome: string }).outcome, 'approved')
     assert.equal(f.candidateStore.get('cand-3')!.status, 'approved')
@@ -436,10 +435,9 @@ async function run() {
     const f = makeFakes()
     setupPermissions(f.permissionsByKey)
     f.agentsById.set(AGENT_ID, agent({ selfEvolutionProfile: { scope: ['behavior'], approval_mode: 'human' } as never }))
-    f.usersById.set(APPROVER_ID, user(APPROVER_ID, 'approver'))
     seedCandidate(f.candidateStore, { id: 'cand-4' })
 
-    const result = await f.service.approve('cand-4', APPROVER_ID)
+    const result = await f.service.approve('cand-4', APPROVER)
     assert.equal(result.ok, false)
     assert.equal((result as { reason: string }).reason, 'self_evolution_scope_excludes_memory')
     assert.equal(f.candidateStore.get('cand-4')!.status, 'proposed')
@@ -449,20 +447,41 @@ async function run() {
     const f = makeFakes()
     setupPermissions(f.permissionsByKey)
     f.agentsById.set(AGENT_ID, agent())
-    f.usersById.set(APPROVER_ID, user(APPROVER_ID, 'approver', TENANT_B))
     seedCandidate(f.candidateStore, { id: 'cand-5', tenantId: TENANT_A })
 
-    const result = await f.service.approve('cand-5', APPROVER_ID)
+    const result = await f.service.approve('cand-5', { ...APPROVER, tenantId: TENANT_B })
     assert.equal(result.ok, false)
     assert.equal((result as { reason: string }).reason, 'tenant_mismatch')
   })
 
+  await test('cross-scope cél-chunk → write-gate előtt elutasítja (S6)', async () => {
+    const f = makeFakes()
+    setupPermissions(f.permissionsByKey)
+    f.agentsById.set(AGENT_ID, agent())
+    const seeded = seedCandidate(f.candidateStore, { id: 'cand-cross-scope', operation: 'archive' })
+    f.candidateStore.set('cand-cross-scope', {
+      ...seeded,
+      payload: { ...(seeded.payload as Record<string, unknown>), supersedes: 'tenant-b-chunk' },
+    } as unknown as MemoryCandidate)
+    f.chunkStore.set(
+      'tenant-b-chunk',
+      {
+        id: 'tenant-b-chunk', status: 'active', memoryId: 'other-memory', agentId: 'other-agent',
+        tenantId: TENANT_B, projectKey: 'proj-1', workstreamKey: null,
+      } as unknown as MemoryChunk,
+    )
+
+    await assert.rejects(() => f.service.approve('cand-cross-scope', APPROVER), /memory_target_not_found/)
+    assert.equal(f.candidateStore.get('cand-cross-scope')!.status, 'proposed')
+    assert.equal(f.chunkStore.get('tenant-b-chunk')!.status, 'active')
+  })
+
   await test('reject: candidate rejected státuszba kerül, audit sor', async () => {
     const f = makeFakes()
-    f.usersById.set(APPROVER_ID, user(APPROVER_ID, 'approver'))
+    f.agentsById.set(AGENT_ID, agent())
     seedCandidate(f.candidateStore, { id: 'cand-6' })
 
-    const result = await f.service.reject('cand-6', APPROVER_ID, 'nem releváns')
+    const result = await f.service.reject('cand-6', APPROVER, 'nem releváns')
     assert.equal(result.ok, true)
     assert.equal(f.candidateStore.get('cand-6')!.status, 'rejected')
     assert.ok(f.auditLog.some((a) => a.action === 'memory.candidate.rejected'))
@@ -472,10 +491,9 @@ async function run() {
     const f = makeFakes()
     setupPermissions(f.permissionsByKey)
     f.agentsById.set(AGENT_ID, agent())
-    f.usersById.set(APPROVER_ID, user(APPROVER_ID, 'approver'))
     seedCandidate(f.candidateStore, { id: 'cand-8' })
 
-    const result = await f.service.approve('cand-8', APPROVER_ID)
+    const result = await f.service.approve('cand-8', APPROVER)
     assert.equal(result.ok, true)
     const chunkId = (result as { chunkId: string }).chunkId
 
@@ -490,10 +508,9 @@ async function run() {
     const f = makeFakes()
     setupPermissions(f.permissionsByKey)
     f.agentsById.set(AGENT_ID, agent())
-    f.usersById.set(APPROVER_ID, user(APPROVER_ID, 'approver'))
 
     seedCandidate(f.candidateStore, { id: 'cand-9a' })
-    const created = await f.service.approve('cand-9a', APPROVER_ID)
+    const created = await f.service.approve('cand-9a', APPROVER)
     const chunkId = (created as { chunkId: string }).chunkId
 
     const archiveCand = seedCandidate(f.candidateStore, { id: 'cand-9b', operation: 'archive' })
@@ -501,13 +518,13 @@ async function run() {
       ...archiveCand,
       payload: { ...(archiveCand.payload as Record<string, unknown>), supersedes: chunkId },
     } as unknown as MemoryCandidate)
-    await f.service.approve('cand-9b', APPROVER_ID)
+    await f.service.approve('cand-9b', APPROVER)
     assert.equal(f.chunkStore.get(chunkId)!.status, 'archived')
 
     // Ugyanaz a tartalom (title/summary/text/tags/type/path) mint cand-9a — a
     // canonicalContent-hash egyezik, tehát reaktiválás várt, nem új chunk.
     seedCandidate(f.candidateStore, { id: 'cand-9c' })
-    const recaptured = await f.service.approve('cand-9c', APPROVER_ID)
+    const recaptured = await f.service.approve('cand-9c', APPROVER)
     assert.equal(recaptured.ok, true)
     assert.equal((recaptured as { chunkId: string }).chunkId, chunkId)
     assert.equal(f.chunkStore.get(chunkId)!.status, 'active')
@@ -518,16 +535,15 @@ async function run() {
     const f = makeFakes()
     setupPermissions(f.permissionsByKey)
     f.agentsById.set(AGENT_ID, agent())
-    f.usersById.set(APPROVER_ID, user(APPROVER_ID, 'approver'))
     seedCandidate(f.candidateStore, { id: 'cand-7' })
 
-    const modified = await f.service.modify('cand-7', APPROVER_ID, { summary: 'Frissített összefoglaló' })
+    const modified = await f.service.modify('cand-7', APPROVER, { summary: 'Frissített összefoglaló' })
     assert.equal(modified.ok, true)
     assert.equal(f.candidateStore.get('cand-7')!.status, 'modified')
     assert.equal((f.candidateStore.get('cand-7')!.payload as { summary: string }).summary, 'Frissített összefoglaló')
 
     // 'modified' státuszból is jóváhagyható.
-    const approved = await f.service.approve('cand-7', APPROVER_ID)
+    const approved = await f.service.approve('cand-7', APPROVER)
     assert.equal(approved.ok, true)
   })
 

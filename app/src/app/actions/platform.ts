@@ -3196,7 +3196,11 @@ export async function approveMemoryCandidate(input: { candidateId: string }) {
   try {
     const user = await requireTenantRole('operator')
     const parsed = memoryCandidateIdSchema.parse(input)
-    const result = await services.memoryApproval.approve(parsed.candidateId, user.user.id)
+    const result = await services.memoryApproval.approve(parsed.candidateId, {
+      id: user.user.id,
+      tenantId: user.activeTenantId,
+      role: user.activeTenantRole,
+    })
     return result.ok ? ok(result) : fail(result.reason)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to approve memory candidate')
@@ -3207,7 +3211,11 @@ export async function rejectMemoryCandidate(input: { candidateId: string; reason
   try {
     const user = await requireTenantRole('operator')
     const parsed = rejectMemoryCandidateSchema.parse(input)
-    const result = await services.memoryApproval.reject(parsed.candidateId, user.user.id, parsed.reason)
+    const result = await services.memoryApproval.reject(
+      parsed.candidateId,
+      { id: user.user.id, tenantId: user.activeTenantId, role: user.activeTenantRole },
+      parsed.reason,
+    )
     return result.ok ? ok(result) : fail(result.reason)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to reject memory candidate')
@@ -3221,7 +3229,11 @@ export async function modifyMemoryCandidate(input: {
   try {
     const user = await requireTenantRole('operator')
     const parsed = modifyMemoryCandidateSchema.parse(input)
-    const result = await services.memoryApproval.modify(parsed.candidateId, user.user.id, parsed.patch)
+    const result = await services.memoryApproval.modify(
+      parsed.candidateId,
+      { id: user.user.id, tenantId: user.activeTenantId, role: user.activeTenantRole },
+      parsed.patch,
+    )
     return result.ok ? ok(result) : fail(result.reason)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to modify memory candidate')
@@ -3232,7 +3244,11 @@ export async function ticketMemoryCandidate(input: { candidateId: string }) {
   try {
     const user = await requireTenantRole('operator')
     const parsed = memoryCandidateIdSchema.parse(input)
-    const result = await services.memoryApproval.ticket(parsed.candidateId, user.user.id)
+    const result = await services.memoryApproval.ticket(parsed.candidateId, {
+      id: user.user.id,
+      tenantId: user.activeTenantId,
+      role: user.activeTenantRole,
+    })
     return result.ok ? ok(result) : fail(result.reason)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to ticket memory candidate')
@@ -3243,7 +3259,11 @@ export async function approveMemoryCandidateTicket(input: { ticketId: string }) 
   try {
     const user = await requireTenantRole('approver')
     const parsed = approveMemoryCandidateTicketSchema.parse(input)
-    const result = await services.memoryApproval.approveTicketedCandidate(parsed.ticketId, user.user.id)
+    const result = await services.memoryApproval.approveTicketedCandidate(parsed.ticketId, {
+      id: user.user.id,
+      tenantId: user.activeTenantId,
+      role: user.activeTenantRole,
+    })
     return result.ok ? ok(result) : fail(result.reason)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to approve memory candidate ticket')
@@ -3257,10 +3277,11 @@ export async function approveMemoryCandidateTicket(input: { ticketId: string }) 
 
 export async function listAgentMemoryProjectKeys(input: { agentId: string }) {
   try {
-    await requireTenantRole('viewer')
+    const ctx = await requireTenantRole('viewer')
     const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
     const agent = await repositories.agents.findById(agentId)
     if (!agent?.memoryId) return fail('Agent not found')
+    assertAgentTenantReachable(agent, ctx.activeTenantId)
 
     const keys = new Set<string>(['__general__'])
     const memoryId = agent.memoryId
@@ -3307,10 +3328,11 @@ export async function listAgentMemoryProjectKeys(input: { agentId: string }) {
 
 export async function getAgentMemoryOverview(input: { agentId: string; projectKey: string; workstreamKey?: string }) {
   try {
-    await requireTenantRole('viewer')
+    const ctx = await requireTenantRole('viewer')
     const parsed = memoryScopeSchema.parse(input)
     const agent = await repositories.agents.findById(parsed.agentId)
     if (!agent) return fail('Agent not found')
+    assertAgentTenantReachable(agent, ctx.activeTenantId)
     const memoryId = agent.memoryId
     // workstreamKey nélkül az egész projectKey scope — ne szűrjünk workstream_key IS NULL-ra.
     const workstreamKey = parsed.workstreamKey
@@ -3352,6 +3374,7 @@ export async function runMemoryMaintenance(input: { agentId: string; projectKey:
     const parsed = memoryScopeSchema.parse(input)
     const agent = await repositories.agents.findById(parsed.agentId)
     if (!agent) return fail('Agent not found')
+    assertAgentTenantReachable(agent, ctx.activeTenantId)
 
     const result = await services.memoryMaintenance.run({
       memoryId: agent.memoryId,
@@ -3378,6 +3401,7 @@ export async function rollbackMemoryVersion(input: {
     const parsed = rollbackMemoryVersionSchema.parse(input)
     const agent = await repositories.agents.findById(parsed.agentId)
     if (!agent) return fail('Agent not found')
+    assertAgentTenantReachable(agent, ctx.activeTenantId)
 
     const result = await services.memoryRollback.rollback({
       memoryId: agent.memoryId,

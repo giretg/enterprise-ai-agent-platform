@@ -18,8 +18,8 @@ import type {
   MemoryVersionRepository,
   RolePermissionRepository,
   TicketRepository,
-  UserRepository,
 } from '@/repositories/interfaces'
+import type { UserRole } from '@prisma/client'
 import type { TicketService } from '../ticket/ticket-service'
 import type { WriteGateService } from '../writegate/write-gate-service'
 import type { EvalService } from '../eval/eval-service'
@@ -56,6 +56,17 @@ export type MemoryApprovalResult =
   | { ok: true; outcome: 'rejected' }
   | { ok: true; outcome: 'modified' }
   | { ok: false; reason: string }
+
+/**
+ * A jóváhagyás authz-bemenete mindig a request AKTÍV tenant-kontextusából jön.
+ * A legacy `User.tenantId` nem használható itt: egy felhasználó több tenantnak
+ * is tagja lehet, illetve a superadmin assume-módban dolgozhat.
+ */
+export type MemoryApprovalActor = {
+  id: string
+  tenantId: string
+  role: UserRole
+}
 
 const MEMORY_CANDIDATE_TICKET_KIND = 'memory_candidate'
 
@@ -124,48 +135,23 @@ export class MemoryApprovalService {
     private readonly rolePermissions: RolePermissionRepository,
     private readonly tickets: TicketRepository,
     private readonly ticketService: TicketService,
-    private readonly users: UserRepository,
     private readonly versions: MemoryVersionRepository,
   ) {}
 
   /** A chat-kártya "Jóváhagyom" gombja — §6.3 szerint elágazik inline/ticket között. */
-  async approve(candidateId: string, actorId: string): Promise<MemoryApprovalResult> {
-    const candidate = await this.candidates.findById(candidateId)
-    if (!candidate) return { ok: false, reason: 'candidate_not_found' }
+  async approve(candidateId: string, actor: MemoryApprovalActor): Promise<MemoryApprovalResult> {
+    const resolved = await this.resolveCandidateForActor(candidateId, actor, 'memory.inline_approve')
+    if (!resolved.ok) return resolved.result
+    const { candidate, agent } = resolved
     if (candidate.status !== 'proposed' && candidate.status !== 'modified') {
       return { ok: false, reason: `candidate_not_pending:${candidate.status}` }
-    }
-
-    const approver = await this.users.findById(actorId)
-    if (!approver || !approver.role) return { ok: false, reason: 'approver_not_found' }
-
-    const agent = await this.agents.findById(candidate.agentId)
-    if (!agent) return { ok: false, reason: 'agent_not_found' }
-
-    // S6 — fail-closed tenant-határ (a KB tenant-boundary fixhez hasonlóan).
-    if (!isAgentReachableFromTenant(candidate.tenantId, approver.tenantId)) {
-      await this.audit.append({
-        actorType: 'human',
-        actorId,
-        agentVersion: null,
-        action: 'user.authz.deny',
-        targetType: 'memory_candidate',
-        targetId: candidateId,
-        modelUsed: null,
-        inputRef: 'memory.inline_approve',
-        outputRef: null,
-        policyDecision: 'tenant_mismatch',
-        tenantId: candidate.tenantId,
-        metadata: { candidateId, approverTenantId: approver.tenantId },
-      })
-      return { ok: false, reason: 'tenant_mismatch' }
     }
 
     const profile = resolveSelfEvolutionProfile(agent.selfEvolutionProfile)
     if (!profile.scope.includes('memory')) {
       await this.audit.append({
         actorType: 'human',
-        actorId,
+        actorId: actor.id,
         agentVersion: agent.currentVersion,
         action: 'user.authz.deny',
         targetType: 'memory_candidate',
@@ -195,7 +181,7 @@ export class MemoryApprovalService {
       if (!evalRun.passed) {
         await this.audit.append({
           actorType: 'human',
-          actorId,
+          actorId: actor.id,
           agentVersion: agent.currentVersion,
           action: 'memory.write.eval_blocked',
           targetType: 'memory_candidate',
@@ -213,7 +199,7 @@ export class MemoryApprovalService {
 
     const permissionKey = candidate.operation === 'delete_request' ? 'memory.delete_approve' : 'memory.inline_approve'
     const permEntry = await this.rolePermissions.findByKey(permissionKey)
-    const canInline = decideAuthz(approver, permEntry?.minRole ?? null).allow
+    const canInline = decideAuthz({ status: 'active', role: actor.role }, permEntry?.minRole ?? null).allow
 
     // §6.3/§12.1 — a T2-írás HORGONYA a `memory.inline_approve` (delete-nél
     // `memory.delete_approve`) capability. Ha az aktor NEM hordozza, a jóváhagyás
@@ -223,7 +209,7 @@ export class MemoryApprovalService {
     if (!canInline) {
       await this.audit.append({
         actorType: 'human',
-        actorId,
+        actorId: actor.id,
         agentVersion: agent.currentVersion,
         action: 'user.authz.deny',
         targetType: 'memory_candidate',
@@ -235,19 +221,20 @@ export class MemoryApprovalService {
         tenantId: candidate.tenantId,
         metadata: { candidateId, agentId: agent.id, permissionKey },
       })
-      return this.ticket(candidateId, actorId)
+      return this.ticket(candidateId, actor)
     }
 
-    const chunkId = await this.performInlineWrite(candidate, payload, actorId)
+    const chunkId = await this.performInlineWrite(candidate, payload, actor.id)
     memoryCandidatesTotal.inc({ status: 'approved' })
     memoryInlineApprovalsTotal.inc()
     return { ok: true, outcome: 'approved', chunkId }
   }
 
   /** Explicit "Ticketbe küldöm" — jogosultságtól függetlenül ticketet nyit. */
-  async ticket(candidateId: string, actorId: string): Promise<MemoryApprovalResult> {
-    const candidate = await this.candidates.findById(candidateId)
-    if (!candidate) return { ok: false, reason: 'candidate_not_found' }
+  async ticket(candidateId: string, actor: MemoryApprovalActor): Promise<MemoryApprovalResult> {
+    const resolved = await this.resolveCandidateForActor(candidateId, actor, 'memory.ticket')
+    if (!resolved.ok) return resolved.result
+    const { candidate } = resolved
     if (candidate.status !== 'proposed' && candidate.status !== 'modified') {
       return { ok: false, reason: `candidate_not_pending:${candidate.status}` }
     }
@@ -271,7 +258,8 @@ export class MemoryApprovalService {
       sourceDocumentId: null,
       executeAfter: null,
       dueBy: null,
-      createdById: actorId,
+      createdById: actor.id,
+      tenantId: candidate.tenantId,
     })
 
     await this.ticketService.transition({ ticketId: created.id, toState: 'ready', actor: { type: 'system' } })
@@ -287,7 +275,7 @@ export class MemoryApprovalService {
     memoryTicketedTotal.inc()
     await this.audit.append({
       actorType: 'human',
-      actorId,
+      actorId: actor.id,
       agentVersion: null,
       action: 'memory.candidate.ticketed',
       targetType: 'memory_candidate',
@@ -305,7 +293,7 @@ export class MemoryApprovalService {
   }
 
   /** A generikus ticket-jóváhagyási UI hívja, ha a ticket `payload.kind === 'memory_candidate'`. */
-  async approveTicketedCandidate(ticketId: string, actorId: string): Promise<MemoryApprovalResult> {
+  async approveTicketedCandidate(ticketId: string, actor: MemoryApprovalActor): Promise<MemoryApprovalResult> {
     const ticket = await this.tickets.findById(ticketId)
     if (!ticket || ticket.type !== 'training') return { ok: false, reason: 'ticket_not_found' }
     if (ticket.state !== 'awaiting_human') return { ok: false, reason: 'ticket_not_awaiting_approval' }
@@ -316,46 +304,45 @@ export class MemoryApprovalService {
     if (payloadKind !== MEMORY_CANDIDATE_TICKET_KIND) return { ok: false, reason: 'not_a_memory_candidate_ticket' }
 
     const candidateId = (ticket.payload as { candidateId: string }).candidateId
-    const candidate = await this.candidates.findById(candidateId)
-    if (!candidate) return { ok: false, reason: 'candidate_not_found' }
-    if (candidate.status !== 'ticketed') return { ok: false, reason: `candidate_not_ticketed:${candidate.status}` }
+    if (ticket.tenantId !== actor.tenantId) return { ok: false, reason: 'ticket_not_found' }
 
-    const approver = await this.users.findById(actorId)
-    if (!approver || !approver.role) return { ok: false, reason: 'approver_not_found' }
-    if (!isAgentReachableFromTenant(candidate.tenantId, approver.tenantId)) {
-      return { ok: false, reason: 'tenant_mismatch' }
-    }
+    const resolved = await this.resolveCandidateForActor(candidateId, actor, 'memory.ticket_approve')
+    if (!resolved.ok) return resolved.result
+    const { candidate } = resolved
+    if (candidate.status !== 'ticketed') return { ok: false, reason: `candidate_not_ticketed:${candidate.status}` }
+    if (ticket.tenantId !== candidate.tenantId) return { ok: false, reason: 'ticket_not_found' }
 
     const payload = readPayload(candidate.payload)
-    const chunkId = await this.performInlineWrite(candidate, payload, actorId)
+    const chunkId = await this.performInlineWrite(candidate, payload, actor.id)
     memoryCandidatesTotal.inc({ status: 'approved' })
 
     await this.ticketService.transition({
       ticketId,
       toState: 'approved',
-      actor: { type: 'human', userId: actorId, role: approver.role },
+      actor: { type: 'human', userId: actor.id, role: actor.role },
     })
     await this.ticketService.transition({ ticketId, toState: 'done', actor: { type: 'system' } })
 
     return { ok: true, outcome: 'approved', chunkId }
   }
 
-  async reject(candidateId: string, actorId: string, reason?: string): Promise<MemoryApprovalResult> {
-    const candidate = await this.candidates.findById(candidateId)
-    if (!candidate) return { ok: false, reason: 'candidate_not_found' }
+  async reject(candidateId: string, actor: MemoryApprovalActor, reason?: string): Promise<MemoryApprovalResult> {
+    const resolved = await this.resolveCandidateForActor(candidateId, actor, 'memory.reject')
+    if (!resolved.ok) return resolved.result
+    const { candidate } = resolved
     if (candidate.status !== 'proposed' && candidate.status !== 'modified') {
       return { ok: false, reason: `candidate_not_pending:${candidate.status}` }
     }
 
     await this.candidates.updateStatus(candidateId, {
       status: 'rejected',
-      rejectedBy: actorId,
+      rejectedBy: actor.id,
       rejectedAt: new Date(),
     })
     memoryCandidatesTotal.inc({ status: 'rejected' })
     await this.audit.append({
       actorType: 'human',
-      actorId,
+      actorId: actor.id,
       agentVersion: null,
       action: 'memory.candidate.rejected',
       targetType: 'memory_candidate',
@@ -373,11 +360,12 @@ export class MemoryApprovalService {
   /** A kártya "Módosítom" gombja — a payload finomítása, a candidate `proposed` marad. */
   async modify(
     candidateId: string,
-    actorId: string,
+    actor: MemoryApprovalActor,
     patch: Partial<Pick<MemoryCandidatePayload, 'title' | 'summary' | 'text' | 'tags' | 'evidence' | 'reason'>>,
   ): Promise<MemoryApprovalResult> {
-    const candidate = await this.candidates.findById(candidateId)
-    if (!candidate) return { ok: false, reason: 'candidate_not_found' }
+    const resolved = await this.resolveCandidateForActor(candidateId, actor, 'memory.modify')
+    if (!resolved.ok) return resolved.result
+    const { candidate } = resolved
     if (candidate.status !== 'proposed' && candidate.status !== 'modified') {
       return { ok: false, reason: `candidate_not_pending:${candidate.status}` }
     }
@@ -387,7 +375,7 @@ export class MemoryApprovalService {
     await this.candidates.updateStatus(candidateId, { status: 'modified', payload: nextPayload })
     await this.audit.append({
       actorType: 'human',
-      actorId,
+      actorId: actor.id,
       agentVersion: null,
       action: 'memory.candidate.modified',
       targetType: 'memory_candidate',
@@ -403,11 +391,37 @@ export class MemoryApprovalService {
   }
 
   private async performInlineWrite(
-    candidate: { id: string; agentId: string; memoryId: string; tenantId: string | null; projectKey: string; operation: string },
+    candidate: {
+      id: string
+      agentId: string
+      memoryId: string
+      tenantId: string | null
+      projectKey: string
+      workstreamKey: string | null
+      operation: string
+    },
     payload: MemoryCandidatePayload,
     actorId: string,
   ): Promise<string> {
     const canonicalContent = buildCanonicalContent(candidate.operation, payload)
+
+    // A proposalban lévő cél-chunk ID egy nem megbízható modell-bemenet. Mielőtt
+    // write-gate tokent fogyasztanánk, ugyanahhoz a memória/agent/tenant/projekt
+    // scope-hoz kötjük; különben egy ismert idegen UUID cross-tenant T2-írást
+    // eredményezhetne.
+    if (payload.supersedes) {
+      const target = await this.chunks.findById(payload.supersedes)
+      if (
+        !target ||
+        target.memoryId !== candidate.memoryId ||
+        target.agentId !== candidate.agentId ||
+        target.tenantId !== candidate.tenantId ||
+        target.projectKey !== candidate.projectKey ||
+        target.workstreamKey !== candidate.workstreamKey
+      ) {
+        throw new Error('memory_target_not_found')
+      }
+    }
 
     const gateToken = await this.writeGate.issue({
       memoryCandidateId: candidate.id,
@@ -585,5 +599,41 @@ export class MemoryApprovalService {
     }
 
     return resultChunkId
+  }
+
+  /** S6: candidate és cél-agent csak az aktív tenantból kezelhető. */
+  private async resolveCandidateForActor(
+    candidateId: string,
+    actor: MemoryApprovalActor,
+    inputRef: string,
+  ): Promise<
+    | { ok: true; candidate: Awaited<ReturnType<MemoryCandidateRepository['findById']>> & {}; agent: NonNullable<Awaited<ReturnType<AgentRepository['findById']>>> }
+    | { ok: false; result: MemoryApprovalResult }
+  > {
+    const candidate = await this.candidates.findById(candidateId)
+    if (!candidate) return { ok: false, result: { ok: false, reason: 'candidate_not_found' } }
+
+    const agent = await this.agents.findById(candidate.agentId)
+    if (!agent) return { ok: false, result: { ok: false, reason: 'agent_not_found' } }
+
+    if (candidate.tenantId !== actor.tenantId || !isAgentReachableFromTenant(agent.tenantId, actor.tenantId)) {
+      await this.audit.append({
+        actorType: 'human',
+        actorId: actor.id,
+        agentVersion: agent.currentVersion,
+        action: 'user.authz.deny',
+        targetType: 'memory_candidate',
+        targetId: candidateId,
+        modelUsed: null,
+        inputRef,
+        outputRef: null,
+        policyDecision: 'tenant_mismatch',
+        tenantId: candidate.tenantId,
+        metadata: { candidateId, activeTenantId: actor.tenantId, agentId: agent.id },
+      })
+      return { ok: false, result: { ok: false, reason: 'tenant_mismatch' } }
+    }
+
+    return { ok: true, candidate, agent }
   }
 }
