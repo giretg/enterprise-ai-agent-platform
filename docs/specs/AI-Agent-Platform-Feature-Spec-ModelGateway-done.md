@@ -240,6 +240,8 @@ Hibaag: barmely 🔒 kapu elutasitasa -> `status` beallitas, `denied.reason`, `m
 
 **Retry-policy (MVP):** atmeneti hibara (5xx, halozat) max 2 ujraprobalas exponencialis backoffal; minden kiserlet kulon `latency`-vel, de **egy** vegso `model_calls` sorral (a kiserletszam a payload metaadataban). Idempotencia: a hivo nem ir ketszer ticketre ugyanazon valaszbol.
 
+**Provider fetch-timeout (utolagos kiegeszites — 2026-07-12):** az OpenAI-kompatibilis provider-hivasok (`OpenAiCompatibleProvider`, tipikusan OpenRouter/Ollama) `AbortController`-alapu **kliens-oldali timeout**-tal futnak. Timeout eseten a `fetch` megszakad, es a hivas a fenti `error`-agra esik (nem varakozik vegtelenul egy akadt kapcsolatra). A kuszob a `MODEL_PROVIDER_FETCH_TIMEOUT_MS` env-valtozobol jon, **default 120000 ms (120 s)**; ervenytelen/nempozitiv ertek eseten a default lep eletbe. Cel: a Gateway ne fuggjon vegtelenul egy lassu/akadt modell-providertol. (Ez a **modell**-provider idokorlatja; a WebSearchTool-spec kereso-adapter timeoutja ettol fuggetlen, kulon ertek.)
+
 ---
 
 ## 8. Biztonsagi kovetelmenyek

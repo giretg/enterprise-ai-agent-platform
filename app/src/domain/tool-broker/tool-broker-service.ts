@@ -231,9 +231,13 @@ export class ToolBrokerService {
     if (input.tool === 'web_search') {
       if (!authorization.connector) throw new Error('web_search requires connector authorization')
       const config = parseWebSearchConfig(authorization.connector.config)
-      const [enabled, ticketQueryCount, agentDayQueryCount] = await Promise.all([
+      const [enabled, scopedQueryCount, agentDayQueryCount] = await Promise.all([
         this.isWebSearchEnabled(actingTenantId),
-        ticketId ? this.tools.countToolCallsForTicket(ticketId, 'web_search') : Promise.resolve(0),
+        ticketId
+          ? this.tools.countToolCallsForTicket(ticketId, 'web_search')
+          : input.conversationId
+            ? this.tools.countToolCallsForConversation(input.conversationId, 'web_search')
+            : Promise.resolve(0),
         this.tools.countToolCallsForAgentSince(
           input.agentId,
           'web_search',
@@ -242,7 +246,7 @@ export class ToolBrokerService {
       ])
       const decision = this.webSearchPolicy.authorize(input.args, config, {
         enabled,
-        ticketQueryCount,
+        scopedQueryCount,
         agentDayQueryCount,
       })
       if (!decision.allowed) {

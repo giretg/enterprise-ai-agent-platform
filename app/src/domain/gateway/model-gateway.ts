@@ -25,6 +25,33 @@ import type { RoutingEngine } from './routing-engine'
 import type { BudgetEngine } from './budget-engine'
 import { logger, modelCallsTotal, modelCallLatencyMs } from '@/lib/observability'
 
+/** OpenRouter / Ollama stb. provider fetch timeout (ms). Default: 120s. */
+const DEFAULT_MODEL_PROVIDER_FETCH_TIMEOUT_MS = 120_000
+
+function modelProviderFetchTimeoutMs(): number {
+  const raw = process.env.MODEL_PROVIDER_FETCH_TIMEOUT_MS
+  const parsed = raw ? Number(raw) : DEFAULT_MODEL_PROVIDER_FETCH_TIMEOUT_MS
+  return Number.isFinite(parsed) && parsed > 0
+    ? Math.floor(parsed)
+    : DEFAULT_MODEL_PROVIDER_FETCH_TIMEOUT_MS
+}
+
+async function fetchWithProviderTimeout(url: string, init: RequestInit): Promise<Response> {
+  const timeoutMs = modelProviderFetchTimeoutMs()
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    return await fetch(url, { ...init, signal: controller.signal })
+  } catch (error: unknown) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error(`Model provider request timed out after ${timeoutMs}ms`)
+    }
+    throw error
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 export type GatewayGuardrail = {
   /** Ticketenkénti modellhívás-plafon (5.4) — túllépve a Gateway nem hív. */
   maxCallsPerTicket: number
@@ -514,7 +541,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     }
 
     const started = Date.now()
-    const response = await fetch(`${baseUrl}/chat/completions`, {
+    const response = await fetchWithProviderTimeout(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
@@ -584,7 +611,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
       throw new Error(`${this.name} provider API key not configured (${this.apiKeyEnvVar})`)
     }
 
-    const response = await fetch(`${baseUrl}/chat/completions`, {
+    const response = await fetchWithProviderTimeout(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',

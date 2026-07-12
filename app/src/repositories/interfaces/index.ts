@@ -942,6 +942,8 @@ export interface ToolBrokerRepository {
   getToolCallCountsByTicket(since?: Date): Promise<Record<string, number>>
   /** Web Search rate-limit (maxQueriesPerTicket) — Feature-spec WebSearchTool §5.4. */
   countToolCallsForTicket(ticketId: string, toolName: string): Promise<number>
+  /** Chat: beszélgetés-scope web_search limit (ticket nélküli fordulók). */
+  countToolCallsForConversation(conversationId: string, toolName: string): Promise<number>
   /** Web Search rate-limit (maxQueriesPerAgentDay) — Feature-spec WebSearchTool §5.4. */
   countToolCallsForAgentSince(agentId: string, toolName: string, since: Date): Promise<number>
   /** Governance/agent-card nézethez — Feature-spec WebSearchTool §7.1/§7.3. */

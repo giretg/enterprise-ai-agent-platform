@@ -295,6 +295,14 @@ beszélgetésbe. Ez fogja a crash-elt / valóban beragadt futásokat.
 - A jelenlegi `optimistic-agent-*` buborékot a `turn` event `turnId`-jével
   társítjuk, hogy reconnect és Stop után is a helyes buborék frissüljön.
 
+### 8.4 Megvalósított átmeneti lépés — kliens-oldali finalizálás (utólagos kiegészítés — 2026-07-12)
+
+A teljes D2/D4 (szerver-oldali `AgentTurn` + loop-finalizer + reconnect GET-SSE) még nem épült meg. Előtte **átmeneti, kizárólag kliens-oldali** védelem került az `agent-chat-panel.tsx`-be: `finalizeInterruptedStream()`.
+
+- **Mit csinál:** ha a stream terminál-esemény (`done`) nélkül szakad meg, **és** a felhasználói üzenet már perzisztálódott (`persistedUserMessageId` megvan), akkor az optimista agent-buborékot nem dobja el (`removeFailedOptimisticMessages`), hanem **megtartja** a részleges szöveget / activity-ket; ha nincs részszöveg de van activity, egy „⏳ A válaszfolyam megszakadt…" jelzőt tesz be.
+- **Mit NEM old meg:** ez a §2.1-ben leírt rést csak a **még nyitott panelen** enyhíti; hard-refresh / navigáció után a részeredmény továbbra is elvész, mert a §2.1 végén jelzett módon a partial csak kliens-React-state. A tartós megoldás továbbra is a **D2 loop-finalizer** (szerver-oldali perzisztencia) + **D4 reconnect** — ezt ez a lépés **nem** váltja ki, csak áthidalja.
+- **DoD-viszony:** a §4 `AgentTurn` tábla, a §5.2 finalizer és a §6.3 reconnect-végpont **nyitott** marad; a 8.4 nem zárja azokat.
+
 ---
 
 ## 9. Edge case-ek

@@ -8,9 +8,9 @@ const navItems: NavEntry[] = [
   { href: '/control-plane', label: 'Dashboard', exact: true },
   { href: '/control-plane/board', label: 'Board' },
   {
-    label: 'Ágensek',
+    label: 'Munkatársak',
     children: [
-      { href: '/control-plane/agents', label: 'Agents' },
+      { href: '/control-plane/agents', label: 'Munkatársak' },
       { href: '/control-plane/behavior-profiles', label: 'Viselkedés-profilok' },
       { href: '/control-plane/skills', label: 'Skill-katalógus' },
       { href: '/control-plane/apps', label: 'Mini-appok' },

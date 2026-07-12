@@ -155,7 +155,7 @@ async function main() {
     const decision = policy.authorize(
       { query: 'kártyaszabvány módosítás' },
       bankingStrictConfig(),
-      { enabled: true, ticketQueryCount: 0, agentDayQueryCount: 0 },
+      { enabled: true, scopedQueryCount: 0, agentDayQueryCount: 0 },
     )
     // alapértelmezett (domains paraméter nélkül) a tenant allowlist megy ki — ez engedett.
     assert.equal(decision.allowed, true)
@@ -165,7 +165,7 @@ async function main() {
     const decision = policy.authorize(
       { query: 'kártyaszabvány módosítás', domains: ['evil.example'] },
       bankingStrictConfig(),
-      { enabled: true, ticketQueryCount: 0, agentDayQueryCount: 0 },
+      { enabled: true, scopedQueryCount: 0, agentDayQueryCount: 0 },
     )
     assert.equal(decision.allowed, false)
     if (!decision.allowed) assert.equal(decision.reason, 'domain_not_allowed')
@@ -175,7 +175,7 @@ async function main() {
     const decision = policy.authorize(
       { query: 'visa scheme update', domains: ['pastebin.com'] },
       bankingStrictConfig(),
-      { enabled: true, ticketQueryCount: 0, agentDayQueryCount: 0 },
+      { enabled: true, scopedQueryCount: 0, agentDayQueryCount: 0 },
     )
     assert.equal(decision.allowed, false)
     if (!decision.allowed) assert.equal(decision.reason, 'domain_denied')
@@ -185,7 +185,7 @@ async function main() {
     const decision = policy.authorize(
       { query: 'mnb árfolyam', domains: ['mnb.hu', 'evil.example'] },
       bankingStrictConfig(),
-      { enabled: true, ticketQueryCount: 0, agentDayQueryCount: 0 },
+      { enabled: true, scopedQueryCount: 0, agentDayQueryCount: 0 },
     )
     assert.equal(decision.allowed, true)
     if (decision.allowed) assert.deepEqual(decision.effective.domains, ['mnb.hu'])
@@ -196,7 +196,7 @@ async function main() {
     const decision = policy.authorize(
       { query: 'mi a hiba ha api_key: sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' },
       bankingStrictConfig(),
-      { enabled: true, ticketQueryCount: 0, agentDayQueryCount: 0 },
+      { enabled: true, scopedQueryCount: 0, agentDayQueryCount: 0 },
     )
     assert.equal(decision.allowed, false)
     if (!decision.allowed) assert.equal(decision.reason, 'query_policy_blocked')
@@ -206,7 +206,7 @@ async function main() {
     const decision = policy.authorize(
       { query: 'mit jelent ez a tranzakció: 4111111111111111' },
       bankingStrictConfig(),
-      { enabled: true, ticketQueryCount: 0, agentDayQueryCount: 0 },
+      { enabled: true, scopedQueryCount: 0, agentDayQueryCount: 0 },
     )
     assert.equal(decision.allowed, false)
     if (!decision.allowed) assert.equal(decision.reason, 'query_policy_blocked')
@@ -216,7 +216,7 @@ async function main() {
     const decision = policy.authorize(
       { query: 'mnb árfolyam közlemény 2026' },
       bankingStrictConfig(),
-      { enabled: true, ticketQueryCount: 0, agentDayQueryCount: 0 },
+      { enabled: true, scopedQueryCount: 0, agentDayQueryCount: 0 },
     )
     assert.equal(decision.allowed, true)
   })
@@ -226,7 +226,7 @@ async function main() {
     const decision = policy.authorize(
       { query: 'mnb árfolyam' },
       bankingStrictConfig({ maxQueriesPerAgentDay: 5 }),
-      { enabled: true, ticketQueryCount: 0, agentDayQueryCount: 5 },
+      { enabled: true, scopedQueryCount: 0, agentDayQueryCount: 5 },
     )
     assert.equal(decision.allowed, false)
     if (!decision.allowed) assert.equal(decision.reason, 'rate_limited')
@@ -236,7 +236,17 @@ async function main() {
     const decision = policy.authorize(
       { query: 'mnb árfolyam' },
       bankingStrictConfig({ maxQueriesPerTicket: 2 }),
-      { enabled: true, ticketQueryCount: 2, agentDayQueryCount: 0 },
+      { enabled: true, scopedQueryCount: 2, agentDayQueryCount: 0 },
+    )
+    assert.equal(decision.allowed, false)
+    if (!decision.allowed) assert.equal(decision.reason, 'rate_limited')
+  })
+
+  await test('beszélgetés-scope limit (chat, ticket nélkül) → rate_limited', () => {
+    const decision = policy.authorize(
+      { query: 'telex vezető hír' },
+      bankingStrictConfig({ maxQueriesPerTicket: 10 }),
+      { enabled: true, scopedQueryCount: 10, agentDayQueryCount: 0 },
     )
     assert.equal(decision.allowed, false)
     if (!decision.allowed) assert.equal(decision.reason, 'rate_limited')
@@ -247,7 +257,7 @@ async function main() {
     const decision = policy.authorize(
       { query: 'mnb árfolyam' },
       bankingStrictConfig(),
-      { enabled: false, ticketQueryCount: 0, agentDayQueryCount: 0 },
+      { enabled: false, scopedQueryCount: 0, agentDayQueryCount: 0 },
     )
     assert.equal(decision.allowed, false)
     if (!decision.allowed) assert.equal(decision.reason, 'web_search_disabled')
@@ -258,7 +268,7 @@ async function main() {
     const decision = policy.authorize(
       { query: 'mnb árfolyam', maxResults: 100 },
       bankingStrictConfig({ hardMaxResults: 10 }),
-      { enabled: true, ticketQueryCount: 0, agentDayQueryCount: 0 },
+      { enabled: true, scopedQueryCount: 0, agentDayQueryCount: 0 },
     )
     assert.equal(decision.allowed, true)
     if (decision.allowed) {
@@ -273,7 +283,7 @@ async function main() {
     const decision = policy.authorize(
       { query: rawQuery },
       bankingStrictConfig(),
-      { enabled: true, ticketQueryCount: 0, agentDayQueryCount: 0 },
+      { enabled: true, scopedQueryCount: 0, agentDayQueryCount: 0 },
     )
     assert.equal(decision.allowed, true)
     if (decision.allowed) {
@@ -290,7 +300,7 @@ async function main() {
     const decision = policy.authorize(
       { query: 'mnb árfolyam', domains: ['mnb.hu'] },
       config,
-      { enabled: true, ticketQueryCount: 0, agentDayQueryCount: 0 },
+      { enabled: true, scopedQueryCount: 0, agentDayQueryCount: 0 },
     )
     assert.equal(decision.allowed, true)
     if (!decision.allowed) return
@@ -321,7 +331,7 @@ async function main() {
     const decision = policy.authorize(
       { query: 'public info' },
       config,
-      { enabled: true, ticketQueryCount: 0, agentDayQueryCount: 0 },
+      { enabled: true, scopedQueryCount: 0, agentDayQueryCount: 0 },
     )
     assert.equal(decision.allowed, true)
     if (!decision.allowed) return
@@ -343,7 +353,7 @@ async function main() {
     const svc = new WebSearchService(async () => new GovAdapter(), policy)
     const decision = policy.authorize({ query: 'jogszabály' }, config, {
       enabled: true,
-      ticketQueryCount: 0,
+      scopedQueryCount: 0,
       agentDayQueryCount: 0,
     })
     assert.equal(decision.allowed, true)
@@ -450,7 +460,7 @@ async function main() {
     }, policy)
     const decision = policy.authorize({ query: 'public info' }, config, {
       enabled: true,
-      ticketQueryCount: 0,
+      scopedQueryCount: 0,
       agentDayQueryCount: 0,
     })
     assert.equal(decision.allowed, true)

@@ -11,7 +11,8 @@ import type { WebSearchArgs, WebSearchAuthorizeDecision, WebSearchConnectorConfi
 export type WebSearchUsageContext = {
   /** Kill-switch (web_search.enabled) — Feature-spec §7.2, WS13. */
   enabled: boolean
-  ticketQueryCount: number
+  /** Ticket vagy chat-beszélgetés scope-ban eddigi web_search hívások (maxQueriesPerTicket). */
+  scopedQueryCount: number
   agentDayQueryCount: number
 }
 
@@ -129,8 +130,9 @@ export class WebSearchPolicyService {
       return { allowed: false, reason: domainResolution.reason, detail: 'no domain in scope for this query' }
     }
 
-    if (usage.ticketQueryCount >= config.maxQueriesPerTicket) {
-      return { allowed: false, reason: 'rate_limited', detail: 'maxQueriesPerTicket exceeded' }
+    if (usage.scopedQueryCount >= config.maxQueriesPerTicket) {
+      // A limit ticket- ÉS chat-beszélgetés-scope-ban is a maxQueriesPerTicket küszöböt használja.
+      return { allowed: false, reason: 'rate_limited', detail: 'maxQueriesPerTicket (scope) exceeded' }
     }
     if (usage.agentDayQueryCount >= config.maxQueriesPerAgentDay) {
       return { allowed: false, reason: 'rate_limited', detail: 'maxQueriesPerAgentDay exceeded' }

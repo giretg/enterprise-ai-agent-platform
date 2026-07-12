@@ -427,6 +427,16 @@ Banki / PSP presetben a `needs_human_approval` MVP-ben kezelhető egyszerű blok
 
 A limiteket a Tool Broker enforce-olja, nem a prompt. A dispatcher budget cap és a governance dashboard ugyanúgy lássa a web tool hívásokat, mint a `kb_search` vagy file tool hívásokat.
 
+#### 5.4.1 Chat-beszélgetés scope + forduló-szintű védelem (utólagos kiegészítés — 2026-07-12)
+
+A §5.4 eredeti `maxQueriesPerTicket` limitje csak **ticket-scope**-ban volt értelmezve. Éles chatben viszont a legtöbb web_search hívás **ticket nélkül**, egy `conversationId` alatt fut — ott a per-ticket számláló mindig 0 maradt, így a limit gyakorlatilag nem kötött. Az alábbi kiegészítések ezt a rést zárják:
+
+- **Scope-general számláló.** A policy `WebSearchUsageContext.ticketQueryCount` mezője `scopedQueryCount`-ra általánosult. Ha van `ticketId`, a scope a ticket; ha nincs, a scope a `conversationId`. Mindkettőre a **`maxQueriesPerTicket`** küszöb vonatkozik. Repository: `countToolCallsForConversation(conversationId, toolName)` — a ticket-scope-hoz igazodva **csak `status: 'ok'`** hívásokat számol, így elutasított/hibás/rate-limitelt hívás nem fogyasztja a keretet.
+- **Forduló-szintű plafon (`MAX_WEB_SEARCH_PER_TURN = 3`).** A chat tool-loop egyetlen modell-fordulóban legfeljebb 3 `web_search` hívást enged; a többi `skipped` activityvel kimarad. Ez a modell „párhuzamos keresés-áradat" viselkedését fékezi, nem a tenant-keretet váltja ki — a Broker/policy enforcement (§5.4) változatlanul az igazi kapu.
+- **Provider-429 forduló-őr.** Ha egy `web_search` hívás provider rate-limitet (429 / `rate_limited`) jelez, a loop a **forduló hátralévő** `web_search` hívásait kihagyja, és egy system-üzenettel jelzi a modellnek, hogy a keresőt ne próbálja újra, hanem a már megkapott találatokból válaszoljon.
+
+Megjegyzés: a forduló-szintű plafon és a 429-őr **loop-oldali** heurisztika (nem tenant-konfigurálható); tudatos, minimalista védelem. Ha később tenant-szintű finomhangolás kell, a küszöböt a connector configba kell emelni.
+
 ### 5.5 Prompt injection határ
 
 A webes találatot a context assembly mindig külön, explicit címkével adja át:

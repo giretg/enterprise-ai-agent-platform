@@ -1125,6 +1125,31 @@ export function AgentChatPanel({
         )
       }
 
+      function finalizeInterruptedStream() {
+        const hasContent = (activitiesLen: number, text: string) =>
+          activitiesLen > 0 || text.trim().length > 0
+        setMessages((prev) =>
+          prev
+            .map((message) => {
+              if (message.id !== optimisticAgentId) return message
+              const partialText = accumulatedReply.trim()
+              if (!hasContent(message.activities?.length ?? 0, partialText)) return message
+              return {
+                ...message,
+                text:
+                  partialText ||
+                  '⏳ A válaszfolyam megszakadt — az alábbi lépések részben lefutottak.',
+                activitiesCollapsed: false,
+              }
+            })
+            .filter(
+              (message) =>
+                message.id !== optimisticAgentId ||
+                hasContent(message.activities?.length ?? 0, message.text),
+            ),
+        )
+      }
+
       try {
         const documentIds = localAttachments.length > 0 ? await uploadAttachments(localAttachments) : []
         if (abortController.signal.aborted) return
@@ -1265,7 +1290,11 @@ export function AgentChatPanel({
         }
 
         if (!streamTerminalEvent) {
-          removeFailedOptimisticMessages()
+          if (persistedUserMessageId) {
+            finalizeInterruptedStream()
+          } else {
+            removeFailedOptimisticMessages()
+          }
           setStatusMessage('A válaszfolyam váratlanul megszakadt')
         }
 

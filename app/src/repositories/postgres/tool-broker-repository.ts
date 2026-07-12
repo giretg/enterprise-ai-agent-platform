@@ -152,6 +152,12 @@ export class PostgresToolBrokerRepository implements ToolBrokerRepository {
     })
   }
 
+  async countToolCallsForConversation(conversationId: string, toolName: string): Promise<number> {
+    return prisma.toolCall.count({
+      where: { conversationId, toolName, status: 'ok' },
+    })
+  }
+
   async countToolCallsForAgentSince(agentId: string, toolName: string, since: Date): Promise<number> {
     return prisma.toolCall.count({
       where: { agentId, toolName, status: 'ok', createdAt: { gte: since } },

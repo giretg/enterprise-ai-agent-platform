@@ -1511,6 +1511,25 @@ export class AgentToolLoopCancelledError extends Error {
   }
 }
 
+const MAX_WEB_SEARCH_PER_TURN = 3
+
+const WEB_SEARCH_RATE_LIMIT_SYSTEM_MESSAGE =
+  'A webes keresőszolgáltatás rate limitet jelzett (429). Ne indíts több web_search hívást ebben a fordulóban — foglald össze a már megkapott találatokat, vagy mondd el, hogy a kereső jelenleg nem elérhető.'
+
+type WebSearchGuard = { webSearchRateLimited: boolean }
+
+function isWebSearchProviderRateLimited(message: string): boolean {
+  const lower = message.toLowerCase()
+  // 'rate_limit' részstringként fedi a 'rate_limited'-et is; a szóközös 'rate limit' külön ág.
+  return lower.includes('429') || lower.includes('rate limit') || lower.includes('rate_limit')
+}
+
+function markWebSearchRateLimited(state: WebSearchGuard, messages: GatewayMessage[]): void {
+  if (state.webSearchRateLimited) return
+  state.webSearchRateLimited = true
+  messages.push({ role: 'system', content: WEB_SEARCH_RATE_LIMIT_SYSTEM_MESSAGE })
+}
+
 export async function runAgentToolLoop(params: {
   gateway: ModelGateway
   toolBroker: ToolBrokerService
@@ -1602,14 +1621,22 @@ export async function runAgentToolLoop(params: {
     await params.onActivity?.(event)
   }
 
+  // Egy tool-hívás kihagyása: tool-üzenet a modellnek + 'skipped' activity a UI-nak.
+  const skipToolCall = async (call: GatewayToolCall, content: string, detail: string) => {
+    messages.push({ role: 'tool', toolCallId: call.id, toolName: call.name, content })
+    await emitActivity({ id: `tool-${call.id}`, kind: 'tool', title: call.name, detail, status: 'skipped' })
+  }
+
   // Repeated-call guard: (toolName, stableArgsKey) → count
   const callRepeatTracker = new Map<string, number>()
   const REPEAT_LIMIT = 3
+  const webSearchGuard: WebSearchGuard = { webSearchRateLimited: false }
 
   for (let turn = 0; turn < maxTurns; turn++) {
     if (params.shouldCancel?.()) {
       throw new AgentToolLoopCancelledError()
     }
+    let webSearchCallsThisTurn = 0
     await emitActivity({
       id: `reasoning-${turn}`,
       kind: 'reasoning',
@@ -1818,6 +1845,26 @@ export async function runAgentToolLoop(params: {
       }
 
       // Repeated-call guard: ugyanazon (toolName, args) kombináció ismétlése korlátozott
+      if (toolName === 'web_search') {
+        if (webSearchGuard.webSearchRateLimited) {
+          await skipToolCall(
+            call,
+            '[RATE-LIMIT] A webes kereső rate limit alatt van — ez a hívás kimaradt. Ne próbálkozz újra web_search-sel; adj választ a már megkapott találatokból.',
+            'web_search rate limit — további hívások kihagyva',
+          )
+          continue
+        }
+        if (webSearchCallsThisTurn >= MAX_WEB_SEARCH_PER_TURN) {
+          await skipToolCall(
+            call,
+            `[LIMIT] Egy körben legfeljebb ${MAX_WEB_SEARCH_PER_TURN} web_search hívás engedélyezett — ez kimaradt.`,
+            `turn limit: max ${MAX_WEB_SEARCH_PER_TURN} web_search`,
+          )
+          continue
+        }
+        webSearchCallsThisTurn += 1
+      }
+
       const repeatKey = `${toolName}:${JSON.stringify(call.input)}`
       const repeatCount = (callRepeatTracker.get(repeatKey) ?? 0) + 1
       callRepeatTracker.set(repeatKey, repeatCount)
@@ -1856,6 +1903,13 @@ export async function runAgentToolLoop(params: {
         const result = await params.toolBroker.invoke(invokeInput)
         toolCallCount += 1
         if (result.denied) deniedCount += 1
+        if (
+          toolName === 'web_search' &&
+          result.denied &&
+          (result.reason === 'rate_limited' || isWebSearchProviderRateLimited(result.reason ?? ''))
+        ) {
+          markWebSearchRateLimited(webSearchGuard, messages)
+        }
 
         const rawContent = result.denied
           ? `ELUTASÍTVA: ${result.reason}`
@@ -1950,6 +2004,9 @@ export async function runAgentToolLoop(params: {
         }
       } catch (e) {
         const message = e instanceof Error ? e.message : 'tool_call_failed'
+        if (toolName === 'web_search' && isWebSearchProviderRateLimited(message)) {
+          markWebSearchRateLimited(webSearchGuard, messages)
+        }
         await emitActivity({
           id: `tool-${call.id}`,
           kind: 'tool',
