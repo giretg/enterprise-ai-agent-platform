@@ -1,6 +1,7 @@
 import type { Prisma, MonitorDefinition, MonitorRun, MonitorRunOutcome, MonitorSignal, ProcessTrigger } from '@prisma/client'
 import type {
   AuditRepository,
+  AgentRepository,
   MonitorRepository,
   ProcessDefinitionRepository,
   TicketRepository,
@@ -14,6 +15,7 @@ import {
   AuditOnlyMonitorNotifier,
   type MonitorNotifier,
 } from '@/lib/notify/monitor-notifier'
+import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
 
 export type SweepResult = {
   monitorId: string
@@ -81,32 +83,37 @@ export class MonitorService {
     private notifier: MonitorNotifier = new AuditOnlyMonitorNotifier(),
     private processDefinitions?: ProcessDefinitionRepository,
     private processService?: ProcessService,
+    private agents?: AgentRepository,
   ) {
     this.collectors = new Map(collectors.map((c) => [c.kind, c]))
   }
 
-  async list(filter?: { tenantId?: string }) {
-    return this.monitors.findMany(filter)
+  async list(tenantId: string) {
+    return this.monitors.findMany({ tenantId })
   }
 
-  async getById(id: string): Promise<MonitorDefinition | null> {
-    return this.monitors.findById(id)
+  async getById(id: string, tenantId: string): Promise<MonitorDefinition> {
+    return this.requireTenantMonitor(id, tenantId)
   }
 
-  async update(id: string, data: UpdateMonitorInput): Promise<MonitorDefinition> {
-    return this.monitors.update(id, data)
+  async update(id: string, tenantId: string, data: UpdateMonitorInput): Promise<MonitorDefinition> {
+    const monitor = await this.requireTenantMonitor(id, tenantId)
+    return this.monitors.update(monitor.id, data)
   }
 
-  async revoke(id: string): Promise<MonitorDefinition> {
-    return this.monitors.revoke(id)
+  async revoke(id: string, tenantId: string): Promise<MonitorDefinition> {
+    const monitor = await this.requireTenantMonitor(id, tenantId)
+    return this.monitors.revoke(monitor.id)
   }
 
-  async listRuns(monitorId: string, limit = 20): Promise<MonitorRun[]> {
-    return this.monitors.findRuns(monitorId, limit)
+  async listRuns(monitorId: string, tenantId: string, limit = 20): Promise<MonitorRun[]> {
+    const monitor = await this.requireTenantMonitor(monitorId, tenantId)
+    return this.monitors.findRuns(monitor.id, limit)
   }
 
-  async listSignals(monitorId: string, limit = 50): Promise<MonitorSignal[]> {
-    return this.monitors.findSignalsByMonitor(monitorId, limit)
+  async listSignals(monitorId: string, tenantId: string, limit = 50): Promise<MonitorSignal[]> {
+    const monitor = await this.requireTenantMonitor(monitorId, tenantId)
+    return this.monitors.findSignalsByMonitor(monitor.id, limit)
   }
 
   /**
@@ -114,9 +121,8 @@ export class MonitorService {
    * nem nyit ticketet, nem hív LLM-et, nem ír adatbázisba. Az eredmény a szerkesztő
    * hangolásához mutatja meg, mi lenne eszkalálva / elnyomva.
    */
-  async dryRun(monitorId: string, now = new Date()) {
-    const monitor = await this.monitors.findById(monitorId)
-    if (!monitor) throw new Error('Monitor not found')
+  async dryRun(monitorId: string, tenantId: string, now = new Date()) {
+    const monitor = await this.requireTenantMonitor(monitorId, tenantId)
 
     const collector = this.collectors.get(monitor.kind)
     const signals = collector
@@ -212,6 +218,7 @@ export class MonitorService {
     let suppressedCount = 0
     const openedTicketIds: string[] = []
     const startedProcessIds: string[] = []
+    let escalationAgentId: string | null = null
 
     try {
       // ---- 1. LÉPCSŐ (nulla LLM-token) ----
@@ -232,6 +239,9 @@ export class MonitorService {
       if (matched.length === 0) {
         outcome = 'quiet' // CSENDES alapállapot — a feature lényege
       } else {
+        // Agent-feloldás csak tényleges eszkaláció előtt kell. Egy hibás agent
+        // konfiguráció vagy átmeneti lookup-hiba ezért nem tesz hibássá csendes sweepet.
+        escalationAgentId = await this.resolveEscalationAgentId(monitor)
         // A monitor_cron triggerek a sweep alatt változatlanok — egyszer töltjük be,
         // nem jelenként (különben N illeszkedő jel = N azonos lekérdezés).
         const cronTriggers =
@@ -267,7 +277,13 @@ export class MonitorService {
             startedProcessIds.push(...processIds)
             await this.monitors.markSignalEscalated(sig.id, null, now)
           } else {
-            const ticketId = await this.openTicket(monitor, signal, run.id, dedupKey)
+            const ticketId = await this.openTicket(
+              monitor,
+              signal,
+              run.id,
+              dedupKey,
+              escalationAgentId,
+            )
             openedTicketIds.push(ticketId)
             await this.monitors.markSignalEscalated(sig.id, ticketId, now)
             await this.notifyEscalation(monitor, signal, run.id, dedupKey, ticketId, now)
@@ -298,7 +314,7 @@ export class MonitorService {
       matchedCount,
       suppressedCount,
       openedTicketIds,
-      llmInvoked: Boolean(monitor.escalateAgentId) && openedTicketIds.length > 0,
+      llmInvoked: Boolean(escalationAgentId) && openedTicketIds.length > 0,
     })
     await this.auditSweep(monitor, `monitor.sweep.${outcome}`, outcome, {
       signalCount,
@@ -373,16 +389,17 @@ export class MonitorService {
     signal: MonitorSignalDraft,
     monitorRunId: string,
     dedupKey: string,
+    escalationAgentId: string | null,
   ): Promise<string> {
-    const hasAgent = Boolean(monitor.escalateAgentId)
+    const hasAgent = Boolean(escalationAgentId)
     const ticket = await this.tickets.create({
       tenantId: monitor.tenantId,
       type: monitor.openTicketType,
       title: signal.title,
       state: hasAgent ? 'ready' : 'backlog',
       assigneeType: hasAgent ? 'agent' : null,
-      assigneeId: monitor.escalateAgentId ?? null,
-      agentId: monitor.escalateAgentId ?? null,
+      assigneeId: escalationAgentId,
+      agentId: escalationAgentId,
       payload: {
         ...signal.payload,
         tenantId: monitor.tenantId,
@@ -520,6 +537,34 @@ export class MonitorService {
       policyDecision: outcome,
       metadata: metadata as Prisma.JsonValue,
     })
+  }
+
+  /**
+   * A monitor admin-műveletek a kiválasztott tenant szerepével azonosítják a hívót.
+   * A globális UUID önmagában nem jogosultság: más tenant monitorának állapota, jelei
+   * és futásnaplója üzleti és operatív adatot tartalmazhat.
+   */
+  private async requireTenantMonitor(id: string, tenantId: string): Promise<MonitorDefinition> {
+    const monitor = await this.monitors.findById(id)
+    if (!monitor || monitor.tenantId !== tenantId) throw new Error('Monitor not found')
+    return monitor
+  }
+
+  /**
+   * Régi vagy közvetlenül betöltött konfiguráció sem indíthat más tenant agentjét.
+   * A monitorozás ettől még nem áll le: a jel emberi backlog ticketként marad meg.
+   */
+  private async resolveEscalationAgentId(monitor: MonitorDefinition): Promise<string | null> {
+    if (!monitor.escalateAgentId || !this.agents) return monitor.escalateAgentId
+    try {
+      const agent = await this.agents.findById(monitor.escalateAgentId)
+      if (!agent || !isAgentReachableFromTenant(agent.tenantId, monitor.tenantId)) {
+        return null
+      }
+      return agent.id
+    } catch {
+      return null
+    }
   }
 }
 

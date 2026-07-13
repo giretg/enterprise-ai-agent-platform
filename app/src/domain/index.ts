@@ -653,6 +653,7 @@ const monitorService = new MonitorService(
   monitorNotifier,
   repositories.processDefinitions,
   processService,
+  repositories.agents,
 )
 const localWikiHarnessLauncher: HarnessLauncher = {
   mode: 'local-wiki',

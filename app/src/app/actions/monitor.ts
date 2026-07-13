@@ -5,6 +5,7 @@ import { requirePlatformRole, requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain'
 import { repositories } from '@/repositories/postgres'
 import { fail, ok } from '@/lib/result'
+import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
 import {
   createMonitorSchema,
   updateMonitorSchema,
@@ -15,8 +16,8 @@ import {
 
 export async function listMonitors() {
   try {
-    await requireTenantRole('viewer')
-    const monitors = await services.monitors.list()
+    const user = await requireTenantRole('viewer')
+    const monitors = await services.monitors.list(user.activeTenantId)
     return ok(monitors)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Nem sikerült betölteni a monitorokat')
@@ -25,10 +26,9 @@ export async function listMonitors() {
 
 export async function getMonitor(input: { id: string }) {
   try {
-    await requireTenantRole('viewer')
+    const user = await requireTenantRole('viewer')
     const parsed = monitorIdSchema.parse(input)
-    const monitor = await services.monitors.getById(parsed.id)
-    if (!monitor) return fail('Monitor nem található')
+    const monitor = await services.monitors.getById(parsed.id, user.activeTenantId)
     return ok(monitor)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Nem sikerült betölteni a monitort')
@@ -39,6 +39,7 @@ export async function createMonitor(input: unknown) {
   try {
     const user = await requireTenantRole('admin')
     const parsed = createMonitorSchema.parse(input)
+    await assertEscalationAgentReachable(parsed.escalateAgentId, user.activeTenantId)
     const monitor = await repositories.monitors.create({
       tenantId: user.activeTenantId,
       kind: parsed.kind,
@@ -63,10 +64,11 @@ export async function createMonitor(input: unknown) {
 
 export async function updateMonitor(input: unknown) {
   try {
-    await requireTenantRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = updateMonitorSchema.parse(input)
     const { id, collectorConfig, filterConfig, ...rest } = parsed
-    const monitor = await services.monitors.update(id, {
+    await assertEscalationAgentReachable(rest.escalateAgentId, user.activeTenantId)
+    const monitor = await services.monitors.update(id, user.activeTenantId, {
       ...rest,
       ...(collectorConfig !== undefined ? { collectorConfig: collectorConfig as Prisma.InputJsonValue } : {}),
       ...(filterConfig !== undefined ? { filterConfig: filterConfig as Prisma.InputJsonValue } : {}),
@@ -79,9 +81,9 @@ export async function updateMonitor(input: unknown) {
 
 export async function pauseMonitor(input: { id: string }) {
   try {
-    await requireTenantRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = monitorIdSchema.parse(input)
-    const monitor = await services.monitors.update(parsed.id, { status: 'paused' })
+    const monitor = await services.monitors.update(parsed.id, user.activeTenantId, { status: 'paused' })
     return ok(monitor)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Nem sikerült szüneteltetni a monitort')
@@ -90,9 +92,9 @@ export async function pauseMonitor(input: { id: string }) {
 
 export async function resumeMonitor(input: { id: string }) {
   try {
-    await requireTenantRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = monitorIdSchema.parse(input)
-    const monitor = await services.monitors.update(parsed.id, { status: 'active' })
+    const monitor = await services.monitors.update(parsed.id, user.activeTenantId, { status: 'active' })
     return ok(monitor)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Nem sikerült folytatni a monitort')
@@ -101,9 +103,9 @@ export async function resumeMonitor(input: { id: string }) {
 
 export async function revokeMonitor(input: { id: string }) {
   try {
-    await requireTenantRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = monitorIdSchema.parse(input)
-    const monitor = await services.monitors.revoke(parsed.id)
+    const monitor = await services.monitors.revoke(parsed.id, user.activeTenantId)
     return ok(monitor)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Nem sikerült visszavonni a monitort')
@@ -112,9 +114,9 @@ export async function revokeMonitor(input: { id: string }) {
 
 export async function getMonitorRuns(input: { id: string; limit?: number }) {
   try {
-    await requireTenantRole('viewer')
+    const user = await requireTenantRole('viewer')
     const parsed = monitorIdSchema.parse(input)
-    const runs = await services.monitors.listRuns(parsed.id, input.limit ?? 20)
+    const runs = await services.monitors.listRuns(parsed.id, user.activeTenantId, input.limit ?? 20)
     return ok(runs)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Nem sikerült betölteni a futásnaplót')
@@ -123,9 +125,9 @@ export async function getMonitorRuns(input: { id: string; limit?: number }) {
 
 export async function getMonitorSignals(input: { id: string }) {
   try {
-    await requireTenantRole('viewer')
+    const user = await requireTenantRole('viewer')
     const parsed = monitorIdSchema.parse(input)
-    const signals = await services.monitors.listSignals(parsed.id)
+    const signals = await services.monitors.listSignals(parsed.id, user.activeTenantId)
     return ok(signals)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Nem sikerült betölteni a jeleket')
@@ -134,9 +136,9 @@ export async function getMonitorSignals(input: { id: string }) {
 
 export async function dryRunMonitor(input: { id: string }) {
   try {
-    await requireTenantRole('operator')
+    const user = await requireTenantRole('operator')
     const parsed = monitorDryRunSchema.parse(input)
-    const result = await services.monitors.dryRun(parsed.id)
+    const result = await services.monitors.dryRun(parsed.id, user.activeTenantId)
     return ok(result)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Nem sikerült elvégezni a próba-futást')
@@ -161,5 +163,14 @@ export async function setMonitorControls(input: unknown) {
     return ok(controls)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Nem sikerült menteni a monitor vezérlőit')
+  }
+}
+
+/** A shared agent elérhető, más tenant saját agentje sosem használható eszkalációra. */
+async function assertEscalationAgentReachable(agentId: string | null | undefined, tenantId: string) {
+  if (!agentId) return
+  const agent = await repositories.agents.findById(agentId)
+  if (!agent || !isAgentReachableFromTenant(agent.tenantId, tenantId)) {
+    throw new Error('Agent not found')
   }
 }
