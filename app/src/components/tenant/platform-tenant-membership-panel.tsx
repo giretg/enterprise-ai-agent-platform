@@ -60,20 +60,32 @@ type Props = {
 export function PlatformTenantMembershipPanel({ tenantId, tenantLabel, users, canManage, onClose }: Props) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
-  const [error, setError] = useState<string | null>(null)
-  const [members, setMembers] = useState<TenantMemberRow[]>([])
-  const [loading, setLoading] = useState(true)
+  const [snapshot, setSnapshot] = useState<{
+    tenantId: string
+    members: TenantMemberRow[]
+    error: string | null
+    loading: boolean
+  }>({ tenantId, members: [], error: null, loading: true })
   const [form, setForm] = useState<{ userId: string; role: UserRole }>({ userId: '', role: 'operator' })
+
+  const loading = snapshot.tenantId !== tenantId || snapshot.loading
+  const members = snapshot.tenantId === tenantId ? snapshot.members : []
+  const error = snapshot.tenantId === tenantId ? snapshot.error : null
 
   useEffect(() => {
     let cancelled = false
-    setLoading(true)
-    setError(null)
     listPlatformTenantMembers({ tenantId }).then((res) => {
       if (cancelled) return
-      if (res.success) setMembers(res.data)
-      else setError(res.error ?? 'Nem sikerült betölteni a tagokat')
-      setLoading(false)
+      if (res.success) {
+        setSnapshot({ tenantId, members: res.data, error: null, loading: false })
+      } else {
+        setSnapshot({
+          tenantId,
+          members: [],
+          error: res.error ?? 'Nem sikerült betölteni a tagokat',
+          loading: false,
+        })
+      }
     })
     return () => {
       cancelled = true
@@ -82,16 +94,18 @@ export function PlatformTenantMembershipPanel({ tenantId, tenantLabel, users, ca
 
   const reloadMembers = () => {
     listPlatformTenantMembers({ tenantId }).then((res) => {
-      if (res.success) setMembers(res.data)
+      if (res.success) {
+        setSnapshot((current) => ({ ...current, tenantId, members: res.data, loading: false, error: null }))
+      }
     })
   }
 
   const run = (fn: () => Promise<{ success: boolean; error?: string }>) => {
-    setError(null)
     startTransition(async () => {
       const res = await fn()
-      if (!res.success) setError(res.error ?? 'Ismeretlen hiba')
-      else {
+      if (!res.success) {
+        setSnapshot((current) => ({ ...current, tenantId, error: res.error ?? 'Ismeretlen hiba' }))
+      } else {
         reloadMembers()
         router.refresh()
       }
