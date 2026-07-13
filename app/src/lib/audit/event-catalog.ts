@@ -17,6 +17,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'platform.role.revoke',
   'tenant.create',
   'tenant.offboard',
+  'tenant.reactivate',
   'tenant.member.add',
   'tenant.member.update',
   'tenant.member.role.change',
