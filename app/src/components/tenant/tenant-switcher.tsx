@@ -11,7 +11,13 @@ import { getTenantSwitcherState, switchTenant, exitTenant } from '@/app/actions/
  * kontextusát külön jelöli, és van "kilépés" (→ platform-mód) művelete.
  */
 
-type TenantOption = { id: string; slug: string; displayName: string; status: string }
+type TenantOption = {
+  id: string
+  slug: string
+  displayName: string
+  status: string
+  isMembership: boolean
+}
 
 type SwitcherState = {
   activeTenantId: string | null
@@ -48,7 +54,6 @@ export function TenantSwitcher() {
 
   const active = state.tenants.find((t) => t.id === state.activeTenantId) ?? null
   const label = active?.displayName ?? (state.kind === 'platform' ? 'Platform' : 'Nincs tenant')
-  // Egytenantos, nem-superadmin user: nincs mit váltani — csak címke.
   const interactive = state.isSuperadmin || state.tenants.length > 1 || state.assumed
 
   const doSwitch = (tenantId: string) => {
@@ -114,6 +119,7 @@ export function TenantSwitcher() {
             )}
             {state.tenants.map((t) => {
               const isActive = t.id === state.activeTenantId && !state.assumed
+              const isAssumedActive = t.id === state.activeTenantId && state.assumed
               return (
                 <button
                   key={t.id}
@@ -122,19 +128,26 @@ export function TenantSwitcher() {
                   disabled={pending}
                   onClick={() => doSwitch(t.id)}
                   className={`flex w-full items-center justify-between gap-2 rounded-xl px-3 py-2 text-left text-sm font-medium transition-colors disabled:opacity-60 ${
-                    isActive ? 'bg-coral/10 text-coral-deep' : 'text-ink-soft hover:bg-coral/8 hover:text-ink'
+                    isActive || isAssumedActive ? 'bg-coral/10 text-coral-deep' : 'text-ink-soft hover:bg-coral/8 hover:text-ink'
                   }`}
                 >
                   <span className="min-w-0">
                     <span className="block truncate">{t.displayName}</span>
                     <span className="block truncate text-[11px] text-ink-faint">{t.slug}</span>
                   </span>
-                  {t.status !== 'active' && (
-                    <span className={`shrink-0 text-[10px] font-bold uppercase ${statusTone[t.status] ?? 'text-ink-faint'}`}>
-                      {t.status}
-                    </span>
-                  )}
-                  {isActive && <span aria-hidden className="shrink-0 text-coral">✓</span>}
+                  <span className="flex shrink-0 items-center gap-1.5">
+                    {!t.isMembership && state.isSuperadmin && (
+                      <span className="rounded-full bg-honey/15 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide text-honey">
+                        assume
+                      </span>
+                    )}
+                    {t.status !== 'active' && (
+                      <span className={`text-[10px] font-bold uppercase ${statusTone[t.status] ?? 'text-ink-faint'}`}>
+                        {t.status}
+                      </span>
+                    )}
+                    {(isActive || isAssumedActive) && <span aria-hidden className="text-coral">✓</span>}
+                  </span>
                 </button>
               )
             })}

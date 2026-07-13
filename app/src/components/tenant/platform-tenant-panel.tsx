@@ -10,6 +10,10 @@ import {
   archiveTenant,
 } from '@/app/actions/tenant'
 import { Badge, Card } from '@/components/ui/shell'
+import {
+  PlatformTenantMembershipPanel,
+  type PlatformUserOption,
+} from '@/components/tenant/platform-tenant-membership-panel'
 
 /** A `listTenants` action által visszaadott (szerializálható) tenant-nézet. */
 export type TenantRow = {
@@ -28,11 +32,26 @@ const statusTone: Record<string, 'success' | 'warning' | 'danger' | 'neutral'> =
   archived: 'neutral',
 }
 
-export function PlatformTenantPanel({ tenants }: { tenants: TenantRow[] }) {
+export function PlatformTenantPanel({
+  tenants,
+  users,
+  canManageMemberships,
+}: {
+  tenants: TenantRow[]
+  users: PlatformUserOption[]
+  canManageMemberships: boolean
+}) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
-  const [form, setForm] = useState({ slug: '', displayName: '', legalName: '', domainAllowlist: '' })
+  const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null)
+  const [form, setForm] = useState({
+    slug: '',
+    displayName: '',
+    legalName: '',
+    domainAllowlist: '',
+    initialAdminUserId: '',
+  })
 
   const run = (fn: () => Promise<{ success: boolean; error?: string }>) => {
     setError(null)
@@ -55,8 +74,11 @@ export function PlatformTenantPanel({ tenants }: { tenants: TenantRow[] }) {
         displayName: form.displayName,
         legalName: form.legalName || undefined,
         domainAllowlist: domainAllowlist.length > 0 ? domainAllowlist : undefined,
+        initialAdminUserId: form.initialAdminUserId || undefined,
       })
-      if (res.success) setForm({ slug: '', displayName: '', legalName: '', domainAllowlist: '' })
+      if (res.success) {
+        setForm({ slug: '', displayName: '', legalName: '', domainAllowlist: '', initialAdminUserId: '' })
+      }
       return res
     })
   }
@@ -111,6 +133,23 @@ export function PlatformTenantPanel({ tenants }: { tenants: TenantRow[] }) {
               className={inputClass}
             />
           </label>
+          <label className="text-sm sm:col-span-2">
+            <span className="mb-1 block text-xs font-semibold uppercase tracking-wide text-ink-faint">
+              Első tenant-admin (opc.)
+            </span>
+            <select
+              value={form.initialAdminUserId}
+              onChange={(e) => setForm((f) => ({ ...f, initialAdminUserId: e.target.value }))}
+              className={inputClass}
+            >
+              <option value="">Nincs — később adom hozzá</option>
+              {users.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.name} ({u.email})
+                </option>
+              ))}
+            </select>
+          </label>
           <div className="sm:col-span-2">
             <button
               type="submit"
@@ -134,7 +173,7 @@ export function PlatformTenantPanel({ tenants }: { tenants: TenantRow[] }) {
                   <th className="py-2 pr-3">Tenant</th>
                   <th className="py-2 pr-3">Slug</th>
                   <th className="py-2 pr-3">Státusz</th>
-                  <th className="py-2 pr-3 text-right">Életciklus</th>
+                  <th className="py-2 pr-3 text-right">Műveletek</th>
                 </tr>
               </thead>
               <tbody>
@@ -150,6 +189,14 @@ export function PlatformTenantPanel({ tenants }: { tenants: TenantRow[] }) {
                     </td>
                     <td className="py-2.5 pr-3">
                       <div className="flex flex-wrap justify-end gap-1.5">
+                        <button
+                          type="button"
+                          disabled={pending}
+                          className={btnClass}
+                          onClick={() => setSelectedTenantId((cur) => (cur === t.id ? null : t.id))}
+                        >
+                          {selectedTenantId === t.id ? 'Tagok ▲' : 'Tagok'}
+                        </button>
                         {t.status === 'active' && (
                           <>
                             <button disabled={pending} className={btnClass} onClick={() => run(() => suspendTenant({ tenantId: t.id }))}>
@@ -160,7 +207,7 @@ export function PlatformTenantPanel({ tenants }: { tenants: TenantRow[] }) {
                             </button>
                           </>
                         )}
-                        {t.status === 'suspended' && (
+                        {(t.status === 'suspended' || t.status === 'offboarding') && (
                           <button disabled={pending} className={btnClass} onClick={() => run(() => reactivateTenant({ tenantId: t.id }))}>
                             Visszaállít
                           </button>
@@ -180,6 +227,16 @@ export function PlatformTenantPanel({ tenants }: { tenants: TenantRow[] }) {
           </div>
         )}
       </Card>
+
+      {selectedTenantId && (
+        <PlatformTenantMembershipPanel
+          tenantId={selectedTenantId}
+          tenantLabel={tenants.find((t) => t.id === selectedTenantId)?.displayName ?? selectedTenantId}
+          users={users}
+          canManage={canManageMemberships}
+          onClose={() => setSelectedTenantId(null)}
+        />
+      )}
     </div>
   )
 }

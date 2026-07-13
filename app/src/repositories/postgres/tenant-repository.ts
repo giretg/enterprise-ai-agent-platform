@@ -104,6 +104,15 @@ export class PostgresTenantMembershipRepository implements TenantMembershipRepos
     })
   }
 
+  async findByTenantWithUsers(tenantId: string) {
+    const rows = await prisma.tenantMembership.findMany({
+      where: { tenantId },
+      include: { user: { select: { email: true, name: true } } },
+      orderBy: { createdAt: 'asc' },
+    })
+    return rows.map(({ user, ...m }) => ({ ...m, userEmail: user.email, userName: user.name }))
+  }
+
   async countActiveAdmins(tenantId: string, excludeUserId?: string) {
     return prisma.tenantMembership.count({
       where: {

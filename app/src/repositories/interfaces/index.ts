@@ -1770,12 +1770,19 @@ export interface TenantRepository {
   ): Promise<Tenant>
 }
 
+export type TenantMembershipWithUser = TenantMembership & {
+  userEmail: string
+  userName: string
+}
+
 export interface TenantMembershipRepository {
   findById(id: string): Promise<TenantMembership | null>
   findByTenantAndUser(tenantId: string, userId: string): Promise<TenantMembership | null>
   /** A user összes tagsága (aktív-tenant feloldáshoz, tenant-switcherhez). */
   findByUser(userId: string): Promise<TenantMembership[]>
   findByTenant(tenantId: string, filter?: { status?: TenantMembershipStatus; role?: UserRole }): Promise<TenantMembership[]>
+  /** Platform tenant IAM nézethez (§9.3): tenant tagok user e-mail/név mezőivel. */
+  findByTenantWithUsers(tenantId: string): Promise<TenantMembershipWithUser[]>
   countActiveAdmins(tenantId: string, excludeUserId?: string): Promise<number>
   create(data: {
     tenantId: string

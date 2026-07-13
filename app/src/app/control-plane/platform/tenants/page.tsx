@@ -1,4 +1,5 @@
-import { listTenants } from '@/app/actions/tenant'
+import { listTenants, listPlatformUsers } from '@/app/actions/tenant'
+import { getAuthContext } from '@/auth/context'
 import { PlatformTenantPanel } from '@/components/tenant/platform-tenant-panel'
 
 /**
@@ -8,7 +9,8 @@ import { PlatformTenantPanel } from '@/components/tenant/platform-tenant-panel'
  * mind a `requirePlatformRole('superadmin')` guard alatti server actionökön megy.
  */
 export default async function PlatformTenantsPage() {
-  const res = await listTenants()
+  const [res, usersRes, ctx] = await Promise.all([listTenants(), listPlatformUsers(), getAuthContext()])
+  const canManageMemberships = Boolean(ctx?.platformRoles.includes('superadmin'))
 
   if (!res.success) {
     return (
@@ -37,7 +39,17 @@ export default async function PlatformTenantsPage() {
           </p>
         </div>
       </header>
-      <PlatformTenantPanel tenants={res.data} />
+      {!usersRes.success && (
+        <div className="rounded-lg border border-honey/35 bg-honey/10 p-3 text-sm text-ink-soft">
+          Felhasználólista nem töltődött be — a tag-hozzáadás és első admin kiválasztás nem elérhető.
+          <span className="mt-1 block text-xs text-ink-faint">{usersRes.error}</span>
+        </div>
+      )}
+      <PlatformTenantPanel
+        tenants={res.data}
+        users={usersRes.success ? usersRes.data : []}
+        canManageMemberships={canManageMemberships}
+      />
     </div>
   )
 }

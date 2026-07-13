@@ -101,19 +101,43 @@ export async function getTenantSwitcherState() {
     const ctx = await getAuthContext()
     if (!ctx) return fail('Unauthorized')
 
-    const membershipTenantIds = ctx.memberships
-      .filter((m) => m.status === 'active')
-      .map((m) => m.tenantId)
-    const tenants = await Promise.all(membershipTenantIds.map((id) => repositories.tenants.findById(id)))
+    const membershipTenantIds = new Set(
+      ctx.memberships.filter((m) => m.status === 'active').map((m) => m.tenantId),
+    )
+
+    if (ctx.platformRoles.includes('superadmin')) {
+      const allTenants = (await repositories.tenants.findMany()).filter((t) => t.status !== 'archived')
+      return ok({
+        activeTenantId: ctx.activeTenantId,
+        assumed: ctx.assumed,
+        kind: ctx.kind,
+        isSuperadmin: true,
+        tenants: allTenants.map((t) => ({
+          id: t.id,
+          slug: t.slug,
+          displayName: t.displayName,
+          status: t.status,
+          isMembership: membershipTenantIds.has(t.id),
+        })),
+      })
+    }
+
+    const tenants = await Promise.all([...membershipTenantIds].map((id) => repositories.tenants.findById(id)))
 
     return ok({
       activeTenantId: ctx.activeTenantId,
       assumed: ctx.assumed,
       kind: ctx.kind,
-      isSuperadmin: ctx.platformRoles.includes('superadmin'),
+      isSuperadmin: false,
       tenants: tenants
         .filter((t): t is NonNullable<typeof t> => t !== null)
-        .map((t) => ({ id: t.id, slug: t.slug, displayName: t.displayName, status: t.status })),
+        .map((t) => ({
+          id: t.id,
+          slug: t.slug,
+          displayName: t.displayName,
+          status: t.status,
+          isMembership: true,
+        })),
     })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to load tenant switcher')
@@ -366,5 +390,102 @@ export async function suspendTenantMember(input: { targetUserId: string }) {
     return ok(membership)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to suspend member')
+  }
+}
+
+// ── Platform tenant membership — auditor read / superadmin write (§8.1, §9.3) ─
+
+/** Összes aktív user — tenant-tagság kiosztáshoz a platform admin felületen. */
+export async function listPlatformUsers() {
+  try {
+    await requirePlatformRole('platform_auditor')
+    const users = await repositories.users.findMany({ status: 'active' })
+    return ok(
+      users.map((u) => ({
+        id: u.id,
+        email: u.email,
+        name: u.name,
+      })),
+    )
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to list users')
+  }
+}
+
+const platformTenantIdSchema = z.object({ tenantId: z.string().uuid() })
+
+export async function listPlatformTenantMembers(input: { tenantId: string }) {
+  try {
+    await requirePlatformRole('platform_auditor')
+    const { tenantId } = platformTenantIdSchema.parse(input)
+    const members = await repositories.tenantMemberships.findByTenantWithUsers(tenantId)
+    return ok(members)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to list tenant members')
+  }
+}
+
+const platformAddMemberSchema = z.object({
+  tenantId: z.string().uuid(),
+  userId: z.string().uuid(),
+  role: z.enum(['admin', 'approver', 'operator', 'viewer']),
+})
+
+export async function addPlatformTenantMember(input: z.infer<typeof platformAddMemberSchema>) {
+  try {
+    const ctx = await requirePlatformRole('superadmin')
+    const parsed = platformAddMemberSchema.parse(input)
+    const membership = await services.tenants.addMember({
+      tenantId: parsed.tenantId,
+      userId: parsed.userId,
+      role: parsed.role,
+      status: 'active',
+      actorId: ctx.user.id,
+    })
+    revalidatePath('/control-plane/platform/tenants')
+    return ok(membership)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to add tenant member')
+  }
+}
+
+const platformChangeMemberRoleSchema = z.object({
+  tenantId: z.string().uuid(),
+  targetUserId: z.string().uuid(),
+  newRole: z.enum(['admin', 'approver', 'operator', 'viewer']),
+})
+
+export async function changePlatformTenantMemberRole(input: z.infer<typeof platformChangeMemberRoleSchema>) {
+  try {
+    const ctx = await requirePlatformRole('superadmin')
+    const parsed = platformChangeMemberRoleSchema.parse(input)
+    const membership = await services.tenants.changeMemberRole({
+      tenantId: parsed.tenantId,
+      targetUserId: parsed.targetUserId,
+      newRole: parsed.newRole,
+      actorId: ctx.user.id,
+    })
+    revalidatePath('/control-plane/platform/tenants')
+    return ok(membership)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to change member role')
+  }
+}
+
+export async function suspendPlatformTenantMember(input: { tenantId: string; targetUserId: string }) {
+  try {
+    const ctx = await requirePlatformRole('superadmin')
+    const parsed = z
+      .object({ tenantId: z.string().uuid(), targetUserId: z.string().uuid() })
+      .parse(input)
+    const membership = await services.tenants.suspendMember({
+      tenantId: parsed.tenantId,
+      targetUserId: parsed.targetUserId,
+      actorId: ctx.user.id,
+    })
+    revalidatePath('/control-plane/platform/tenants')
+    return ok(membership)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to suspend tenant member')
   }
 }
