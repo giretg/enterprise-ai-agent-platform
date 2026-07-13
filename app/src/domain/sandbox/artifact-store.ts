@@ -100,7 +100,11 @@ export class GcsArtifactStore implements ArtifactStore {
       body: params.html,
     })
     if (!res.ok) {
-      throw new ArtifactStoreError('GCS_WRITE_FAILED', `GCS upload failed: HTTP ${res.status}`)
+      const detail =
+        res.status === 404
+          ? `bucket "${this.bucket}" not found — create it or set SANDBOX_APP_BUCKET`
+          : `HTTP ${res.status}`
+      throw new ArtifactStoreError('GCS_WRITE_FAILED', `GCS upload failed: ${detail}`)
     }
     return { artifactRef: objectPath, sizeBytes }
   }

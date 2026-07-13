@@ -8,6 +8,7 @@ import type {
   TicketRepository,
 } from '@/repositories/interfaces'
 import type { ArtifactStore } from './artifact-store'
+import { ArtifactStoreError } from './artifact-store'
 import { SandboxAppError } from './errors'
 import { assertArtifactSize, lintHtml, type ValidationResult } from './html-validator'
 import { validateAndNormalizeA0Policy, type SandboxAppPolicy } from './app-policy'
@@ -324,6 +325,21 @@ export class SandboxAppService {
 
     const contentHash = sha256(html)
 
+    const existing = await this.sandboxApps.findVersionByContentHash(app.id, contentHash)
+    if (existing) {
+      return this.finalizeExistingVersion({
+        app,
+        version: existing,
+        html,
+        actor: af,
+        activate: input.activate ?? false,
+        sourceTicketId: input.sourceTicketId ?? null,
+        contentHash,
+        validationResult,
+        sizeBytes,
+      })
+    }
+
     const version = await this.sandboxApps.addVersion({
       appId: app.id,
       tenantId: app.tenantId,
@@ -338,13 +354,18 @@ export class SandboxAppService {
       validationResult: validationResult as unknown as Prisma.InputJsonValue,
     })
 
-    // Az artefakt a verziósor artifactRef-jére kerül (path = artifactObjectPath).
-    await this.artifacts.put({
-      tenantId: app.tenantId,
-      appId: app.id,
-      version: version.version,
-      html,
-    })
+    try {
+      // Az artefakt a verziósor artifactRef-jére kerül (path = artifactObjectPath).
+      await this.artifacts.put({
+        tenantId: app.tenantId,
+        appId: app.id,
+        version: version.version,
+        html,
+      })
+    } catch (error) {
+      await this.sandboxApps.deleteVersion(version.id).catch(() => undefined)
+      throw error
+    }
 
     let status: 'draft' | 'active' = 'draft'
     if (input.activate) {
@@ -376,6 +397,60 @@ export class SandboxAppService {
     }
 
     return { versionId: version.id, version: version.version, contentHash, validationResult, status }
+  }
+
+  private async finalizeExistingVersion(params: {
+    app: { id: string; tenantId: string | null }
+    version: SandboxAppVersion
+    html: string
+    actor: ReturnType<typeof resolveActorFields>
+    activate: boolean
+    sourceTicketId: string | null
+    contentHash: string
+    validationResult: ValidationResult
+    sizeBytes: number
+  }): Promise<{
+    versionId: string
+    version: number
+    contentHash: string
+    validationResult: ValidationResult
+    status: 'draft' | 'active'
+  }> {
+    let artifactReady = true
+    try {
+      await this.artifacts.get(params.version.artifactRef)
+    } catch (error) {
+      if (!(error instanceof ArtifactStoreError && error.code === 'ARTIFACT_NOT_FOUND')) {
+        throw error
+      }
+      artifactReady = false
+    }
+
+    if (!artifactReady) {
+      await this.artifacts.put({
+        tenantId: params.app.tenantId,
+        appId: params.app.id,
+        version: params.version.version,
+        html: params.html,
+      })
+    }
+
+    let status: 'draft' | 'active' = params.version.status === 'active' ? 'active' : 'draft'
+    if (params.activate && status !== 'active') {
+      await this.sandboxApps.setActiveVersion({
+        appId: params.app.id,
+        versionId: params.version.id,
+      })
+      status = 'active'
+    }
+
+    return {
+      versionId: params.version.id,
+      version: params.version.version,
+      contentHash: params.contentHash,
+      validationResult: params.validationResult,
+      status,
+    }
   }
 
   async activateSandboxAppVersion(

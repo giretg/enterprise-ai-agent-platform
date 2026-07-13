@@ -61,6 +61,17 @@ export class PostgresSandboxAppRepository implements SandboxAppRepository {
     })
   }
 
+  async findVersionByContentHash(appId: string, contentHash: string): Promise<SandboxAppVersion | null> {
+    return prisma.sandboxAppVersion.findFirst({
+      where: { appId, contentHash },
+      orderBy: { version: 'desc' },
+    })
+  }
+
+  async deleteVersion(versionId: string): Promise<void> {
+    await prisma.sandboxAppVersion.delete({ where: { id: versionId } })
+  }
+
   async addVersion(input: AddSandboxAppVersionInput): Promise<SandboxAppVersion> {
     return prisma.$transaction(async (tx) => {
       const last = await tx.sandboxAppVersion.findFirst({

@@ -156,6 +156,18 @@ class FakeSandboxApps implements SandboxAppRepository {
     return app
   }
 
+  async findVersionByContentHash(appId: string, contentHash: string): Promise<SandboxAppVersion | null> {
+    return (
+      this.versions
+        .filter((v) => v.appId === appId && v.contentHash === contentHash)
+        .sort((a, b) => b.version - a.version)[0] ?? null
+    )
+  }
+
+  async deleteVersion(versionId: string): Promise<void> {
+    this.versions = this.versions.filter((v) => v.id !== versionId)
+  }
+
   async addVersion(input: AddSandboxAppVersionInput): Promise<SandboxAppVersion> {
     const existing = this.versions.filter((v) => v.appId === input.appId)
     const version = existing.reduce((m, v) => Math.max(m, v.version), 0) + 1

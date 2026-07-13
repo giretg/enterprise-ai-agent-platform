@@ -1468,6 +1468,10 @@ export interface SandboxAppRepository {
    * artefaktot (a path determinisztikus: lásd artifactObjectPath).
    */
   addVersion(input: AddSandboxAppVersionInput): Promise<SandboxAppVersion>
+  /** Ugyanazon app + contentHash — idempotens update_artifact újrapróbáláshoz. */
+  findVersionByContentHash(appId: string, contentHash: string): Promise<SandboxAppVersion | null>
+  /** GCS feltöltés hibája után az árva verziósor törlése. */
+  deleteVersion(versionId: string): Promise<void>
   /** Aktív verzió átállítása: app.activeVersionId + verzió-státuszok (active/superseded). */
   setActiveVersion(params: { appId: string; versionId: string }): Promise<void>
   /** App archiválása (status = 'archived', archivedAt = now). */

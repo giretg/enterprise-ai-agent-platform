@@ -102,6 +102,11 @@ env:
     value: "platform-workspace@enterprise-ai-demo.iam.gserviceaccount.com"
     availability:
       - RUNTIME
+  # --- Sandbox App Registry artifact store (mini-app HTML, GCS) ---
+  - variable: SANDBOX_APP_BUCKET
+    value: "platform-sandbox-apps-prod"
+    availability:
+      - RUNTIME
   # --- Provisioning Assistant (connector onboarding) ---
   - variable: PROVISIONING_EGRESS_ALLOWLIST
     value: "posnavigator.eu"
