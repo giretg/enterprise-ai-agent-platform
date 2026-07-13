@@ -15,6 +15,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'access.denied',
   'platform.role.grant',
   'platform.role.revoke',
+  'tenant.create',
   'tenant.member.role.change',
   'tenant.member.suspend',
   'tenant.oauth.google.update',

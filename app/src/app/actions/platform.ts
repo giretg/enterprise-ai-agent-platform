@@ -4516,7 +4516,7 @@ const WORKSPACE_TOOLS = [
   'xlsx_read_sheet', 'xlsx_write_cells', 'xlsx_append_rows',
   'xlsx_create', 'xlsx_format_range', 'xlsx_layout',
   'pptx_create',
-  'docx_read', 'pdf_read', 'pdf_create',
+  'docx_read', 'docx_create', 'pdf_read', 'pdf_create',
 ] as const
 
 const SANDBOX_APP_TOOLS = [

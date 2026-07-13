@@ -1069,6 +1069,29 @@ export const toolInvokeSchema = z.discriminatedUnion('tool', [
     }),
   }),
   z.object({
+    tool: z.literal('docx_create'),
+    ...toolInvokeBaseSchema,
+    args: z.object({
+      path: z.string().min(1).max(500),
+      title: z.string().max(300).optional(),
+      author: z.string().max(200).optional(),
+      subject: z.string().max(300).optional(),
+      blocks: z
+        .array(
+          z.object({
+            type: z.enum(['heading', 'paragraph', 'bullets', 'table']).optional(),
+            level: z.union([z.literal(1), z.literal(2), z.literal(3)]).optional(),
+            text: z.string().max(10000).optional(),
+            bullets: z.array(z.string().max(1000)).max(100).optional(),
+            headers: z.array(z.string().max(300)).max(20).optional(),
+            rows: z.array(z.array(xlsxCellValueSchema).max(20)).max(500).optional(),
+          }),
+        )
+        .min(1)
+        .max(200),
+    }),
+  }),
+  z.object({
     tool: z.literal('pdf_read'),
     ...toolInvokeBaseSchema,
     args: z.object({

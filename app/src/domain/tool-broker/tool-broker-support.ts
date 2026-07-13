@@ -669,6 +669,7 @@ export function argsMeta(
   if (input.tool === 'xlsx_create') return { ...base, path: input.args.path, sheetCount: input.args.sheets.length }
   if (input.tool === 'xlsx_append_rows') return { ...base, path: input.args.path, sheet: input.args.sheet ?? null, rowCount: input.args.rows.length }
   if (input.tool === 'docx_read') return { ...base, path: input.args.path }
+  if (input.tool === 'docx_create') return { ...base, path: input.args.path, blockCount: input.args.blocks?.length ?? 0 }
   if (input.tool === 'pdf_read') return { ...base, path: input.args.path, pageRange: input.args.page_range ?? null }
   if (input.tool === 'pdf_create') return { ...base, path: input.args.path, sourceXlsx: input.args.source_xlsx ?? null, rowCount: input.args.rows?.length ?? null }
   if (input.tool === 'pptx_create') return { ...base, path: input.args.path, slideCount: input.args.slides?.length ?? 0 }

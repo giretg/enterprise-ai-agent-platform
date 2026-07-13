@@ -3480,6 +3480,7 @@ const FILE_EDITOR_TOOLS = [
   'xlsx_write_cells',
   'xlsx_append_rows',
   'docx_read',
+  'docx_create',
   'pdf_read',
 ] as const
 
@@ -3846,6 +3847,48 @@ async function scenarioFileEditor(operatorId: string, agentId: string, agentVers
     }
   } else {
     fail('docx_read', docxRead.reason)
+  }
+
+  const docxCreate = await services.toolBroker.invoke({
+    agentId,
+    agentVersion,
+    ticketId: ticket.id,
+    tool: 'docx_create',
+    args: {
+      path: 'docs/created.docx',
+      title: 'Created Doc',
+      blocks: [
+        { type: 'heading', text: 'Teszt cím', level: 1 },
+        { type: 'paragraph', text: 'Ez egy létrehozott Word dokumentum.' },
+        { type: 'bullets', bullets: ['Első pont', 'Második pont'] },
+      ],
+    },
+  })
+  if (!docxCreate.denied) {
+    const createResult = docxCreate.result as { path: string; bytesWritten: number; blocks: number }
+    if (createResult.path === 'docs/created.docx' && createResult.bytesWritten > 0 && createResult.blocks === 3) {
+      const createdRead = await services.toolBroker.invoke({
+        agentId,
+        agentVersion,
+        ticketId: ticket.id,
+        tool: 'docx_read',
+        args: { path: 'docs/created.docx' },
+      })
+      if (!createdRead.denied) {
+        const createdText = (createdRead.result as { text: string }).text
+        if (createdText.includes('Teszt cím') && createdText.includes('létrehozott Word')) {
+          pass('docx_create — Word dokumentum létrehozva és visszaolvasva')
+        } else {
+          fail('docx_create', `visszaolvasott szöveg: ${JSON.stringify(createdText)}`)
+        }
+      } else {
+        fail('docx_create', createdRead.reason)
+      }
+    } else {
+      fail('docx_create', JSON.stringify(createResult))
+    }
+  } else {
+    fail('docx_create', docxCreate.reason)
   }
 
   const pdfRead = await services.toolBroker.invoke({

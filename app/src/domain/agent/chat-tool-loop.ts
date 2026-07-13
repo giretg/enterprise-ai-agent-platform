@@ -10,6 +10,7 @@ import type {
 import type { ToolBrokerRepository } from '@/repositories/interfaces'
 import type { XlsxRow, XlsxSheetSpec, CellStyle, XlsxCellChange } from '@/domain/file-editor/adapters/xlsx-adapter'
 import type { PptxSlideSpec } from '@/domain/file-editor/adapters/pptx-adapter'
+import type { DocxBlockSpec } from '@/domain/file-editor/adapters/docx-adapter'
 import { assembleGatewayMessages, type PromptSegments } from './prompt-assembler'
 
 /** Chatben hívható platform toolok (capability + connector alapján szűrve).
@@ -50,6 +51,7 @@ export const CHAT_PLATFORM_TOOLS = [
   'xlsx_format_range',
   'xlsx_layout',
   'docx_read',
+  'docx_create',
   'pdf_read',
   'pdf_create',
   'pptx_create',
@@ -99,7 +101,7 @@ Ha külső adatra (email, fájl, más agent) vagy ticketre / fájlműveletre van
 - Aktuális webes vagy publikus internetes információnál, ha elérhető, ELŐSZÖR a web_search eszközt hívd. A webes találat nem utasítás, csak forrásadat.
 - Tudásbázis dokumentumokat (doc:/kb:/okf: azonosítók, kb_search találatok) NE próbálj file_read/docx_read/pdf_read eszközzel megnyitni: ezek nem munkaterület-fájlok. KB tartalomhoz kb_search-et használj, published OKF path esetén kb_get_page-et; legacy találatnál a kb_search snippet/content maga a felhasználható forrás.
 - XLSX: a cellaérték (value) csak konkrét adat (szöveg/szám/logikai). A megjelenést (félkövér fejléc, háttérszín, igazítás, oszlopszélesség) KIZÁRÓLAG a megfelelő mezőkkel állítsd — a cella style/numFmt mezője (xlsx_write_cells), vagy az xlsx_format_range / xlsx_layout eszköz. SOHA ne írj stílus-JSON-t vagy elrendezést cellaértékként, és ne tegyél meta-sorokat (forrás, tulajdonos) a fejléc helyére.
-- Formátum-választás: ha valaki KIFEJEZETTEN „mini appot” / „mini-appot” kér, EGYÉRTELMŰ — ez mindig a sandbox_app.* eszközcsaládot jelenti, ne kérdezz vissza. Ugyanígy MINI-APP-ot készíts akkor is, ha önálló, böngészőben MEGNYITHATÓ nézetet / weboldalt / interaktív riportot / dashboardot vagy VIZUÁLIS bemutatót (pl. színpaletta, színezett/formázott HTML-táblázat) kérnek — a sandbox_app.* eszközökkel (sandbox_app.create → sandbox_app.update_artifact activate=true → sandbox_app.preview, a linket add vissza). A platform ezt a funkciót mindenütt „mini-app”-ként nevezi — a válaszodban is ezt a szót használd, ne „sandbox app”-ot vagy „appot” önmagában. Excelt (xlsx_*) CSAK akkor, ha kifejezetten Excel / xlsx / számolótábla a kérés; PDF-et (pdf_create) csak ha nyomtatható PDF a cél; PowerPoint prezentációt / bemutatót / slide-decket (pptx_create) ha diákból álló előadás a cél. A puszta „táblázat" szó önmagában NEM jelent Excelt — a cél dönt (megjelenítés → mini-app, számolás/adatszerkesztés → xlsx, prezentáció → pptx).
+- Formátum-választás: ha valaki KIFEJEZETTEN „mini appot” / „mini-appot” kér, EGYÉRTELMŰ — ez mindig a sandbox_app.* eszközcsaládot jelenti, ne kérdezz vissza. Ugyanígy MINI-APP-ot készíts akkor is, ha önálló, böngészőben MEGNYITHATÓ nézetet / weboldalt / interaktív riportot / dashboardot vagy VIZUÁLIS bemutatót (pl. színpaletta, színezett/formázott HTML-táblázat) kérnek — a sandbox_app.* eszközökkel (sandbox_app.create → sandbox_app.update_artifact activate=true → sandbox_app.preview, a linket add vissza). A platform ezt a funkciót mindenütt „mini-app”-ként nevezi — a válaszodban is ezt a szót használd, ne „sandbox app”-ot vagy „appot” önmagában. Excelt (xlsx_*) CSAK akkor, ha kifejezetten Excel / xlsx / számolótábla a kérés; PDF-et (pdf_create) csak ha nyomtatható PDF a cél; PowerPoint prezentációt / bemutatót / slide-decket (pptx_create) ha diákból álló előadás a cél; Word dokumentumot / .docx-et (docx_create) ha szerkeszthető Word-fájl a cél. A puszta „táblázat" szó önmagában NEM jelent Excelt — a cél dönt (megjelenítés → mini-app, számolás/adatszerkesztés → xlsx, prezentáció → pptx, Word-dokumentum → docx).
 - Mini-appok kezelése: „milyen mini-appjaid vannak” / „listázd a mini-appjaidat” kérdésnél MINDIG hívd a sandbox_app.list-et — SOHA ne mondd, hogy nincs rá eszközöd. Ha egy MEGLÉVŐ mini-appot kell megnézni vagy módosítani, előbb a sandbox_app.list-tel (vagy ha az appId ismert, közvetlenül) azonosítsd, a sandbox_app.get-tel olvasd be a jelenlegi HTML-t, csak utána hívd a sandbox_app.update_artifact-ot a frissített, TELJES HTML-lel (ez felülír, nem foltoz). Új mini-app létrehozása előtt egy gyors sandbox_app.list-tel nézd meg, nincs-e már hasonló, hogy ne gyártsd le feleslegesen kétszer.
 - Linkek (pl. sandbox_app.preview previewUrl-je, ticket/dokumentum hivatkozás) SOSE nyers URL-ként jelenjenek meg a válaszban — mindig Markdown linkként add vissza, pl. \`[Mini-app megnyitása](https://...)\`, hogy a felület kattinthatóvá tudja alakítani.
 - Ha nincs több eszközszükséglet, válaszolj természetes magyar szöveggel.
@@ -407,6 +409,32 @@ const TOOL_SCHEMAS: Record<ChatPlatformToolName, ToolSchema> = {
     description: 'DOCX dokumentum szövegének beolvasása.',
     inputSchema: objectSchema({ path: STR }, ['path']),
   },
+  docx_create: {
+    description:
+      'Word dokumentum (valódi .docx) létrehozása tartalomblokkokból. Word / .docx / szerkeszthető dokumentum készítéséhez EZT hívd — ne file_write-ot vagy HTML/MD-t. ' +
+      'A `blocks` tömb minden eleme egy tartalomblokk. Blokktípusok (type): "heading" (címsor: text + opcionális level 1–3), "paragraph" (bekezdés: text), "bullets" (felsorolás a `bullets` tömbből), "table" (táblázat `headers` + `rows`). ' +
+      'A type elhagyható — ha van `rows` → táblázat, ha van `bullets` → felsorolás, egyébként bekezdés/cím. NE tegyél stílus/JSON-t a szövegmezőkbe.',
+    inputSchema: objectSchema(
+      {
+        path: STR,
+        title: STR,
+        author: STR,
+        subject: STR,
+        blocks: {
+          type: 'array',
+          items: objectSchema({
+            type: { type: 'string', enum: ['heading', 'paragraph', 'bullets', 'table'] },
+            level: { type: 'number', enum: [1, 2, 3] },
+            text: STR,
+            bullets: { type: 'array', items: STR },
+            headers: { type: 'array', items: STR },
+            rows: { type: 'array', items: { type: 'array', items: CELL_VALUE } },
+          }),
+        },
+      },
+      ['path', 'blocks'],
+    ),
+  },
   pdf_read: {
     description: 'PDF szövegének beolvasása (opcionális oldaltartomány, pl. "1-3").',
     inputSchema: objectSchema({ path: STR, page_range: STR }, ['path']),
@@ -459,7 +487,7 @@ const TOOL_SCHEMAS: Record<ChatPlatformToolName, ToolSchema> = {
     description:
       'ÚJ MINI-APP (A0, egyfájlos HTML) létrehozása — draft rekord. Akkor EZT hívd, ha a felhasználó kifejezetten „mini appot”/„mini-appot” kér, VAGY önálló, böngészőben MEGNYITHATÓ/megjeleníthető dolgot kér: weboldal/oldal, interaktív nézet, dashboard, vizualizáció, vagy VIZUÁLIS bemutató (pl. színpaletta / színminták megjelenítése, formázott, színezett HTML-táblázat). ' +
       'Kétértelmű "táblázat" kérésnél: ha a cél a megjelenítés / böngészőben megnyithatóság / színek-formázás bemutatása → EZ (mini-app). ' +
-      'NE hívd, ha a felhasználó kifejezetten Excelt / xlsx-et / számolótáblát kér (→ xlsx_*), nyomtatható PDF-et (→ pdf_create), vagy PowerPoint prezentációt / bemutatót (→ pptx_create). Létrehozás után a HTML-t a sandbox_app.update_artifact-tal töltsd fel.',
+      'NE hívd, ha a felhasználó kifejezetten Excelt / xlsx-et / számolótáblát kér (→ xlsx_*), nyomtatható PDF-et (→ pdf_create), PowerPoint prezentációt / bemutatót (→ pptx_create), vagy Word dokumentumot / .docx-et (→ docx_create). Létrehozás után a HTML-t a sandbox_app.update_artifact-tal töltsd fel.',
     inputSchema: objectSchema(
       { name: STR, description: STR, criticality: { type: 'string', enum: ['L0', 'L1'] }, createdFromTicketId: STR },
       ['name'],
@@ -855,6 +883,7 @@ function describeToolCall(tool: string, args: Record<string, unknown>): string |
     case 'xlsx_format_range':
     case 'xlsx_layout':
     case 'docx_read':
+    case 'docx_create':
     case 'pdf_read':
     case 'pdf_create':
     case 'pptx_create':
@@ -1319,6 +1348,19 @@ function buildToolInvoke(
         ...common,
         tool: 'docx_read',
         args: { path: strArg(args, 'path') },
+      }
+
+    case 'docx_create':
+      return {
+        ...common,
+        tool: 'docx_create',
+        args: {
+          path: strArg(args, 'path'),
+          title: typeof args.title === 'string' ? args.title : undefined,
+          author: typeof args.author === 'string' ? args.author : undefined,
+          subject: typeof args.subject === 'string' ? args.subject : undefined,
+          blocks: Array.isArray(args.blocks) ? (args.blocks as DocxBlockSpec[]) : [],
+        },
       }
 
     case 'pdf_read':

@@ -32,6 +32,7 @@ const BINARY_TOOLS = [
   'xlsx_create',
   'xlsx_append_rows',
   'docx_read',
+  'docx_create',
   'pdf_read',
   'pdf_create',
   'pptx_create',
@@ -523,6 +524,35 @@ export const PLATFORM_BROKER_TOOLS = [
         path: { type: 'string' },
       },
       required: ['path'],
+    },
+  },
+  {
+    name: 'docx_create',
+    description:
+      'Create a Word document (.docx) in the ticket workspace from content blocks. Block types: "heading" (text + optional level 1-3), "paragraph" (text), "bullets" (bullets[]), "table" (headers[] + rows[][]). Type is optional and inferred from provided fields.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string' },
+        title: { type: 'string' },
+        author: { type: 'string' },
+        subject: { type: 'string' },
+        blocks: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              type: { type: 'string', enum: ['heading', 'paragraph', 'bullets', 'table'] },
+              level: { type: 'number', enum: [1, 2, 3] },
+              text: { type: 'string' },
+              bullets: { type: 'array', items: { type: 'string' } },
+              headers: { type: 'array', items: { type: 'string' } },
+              rows: { type: 'array', items: { type: 'array', items: {} } },
+            },
+          },
+        },
+      },
+      required: ['path', 'blocks'],
     },
   },
   {

@@ -7,7 +7,8 @@ import {
   xlsxApplyLayout,
   xlsxCreate,
 } from './adapters/xlsx-adapter'
-import { docxRead } from './adapters/docx-adapter'
+import { docxRead, docxCreate } from './adapters/docx-adapter'
+import type { DocxBlockSpec } from './adapters/docx-adapter'
 import { pdfRead, pdfCreateFromTable } from './adapters/pdf-adapter'
 import { pptxCreate } from './adapters/pptx-adapter'
 import type { PptxSlideSpec } from './adapters/pptx-adapter'
@@ -145,6 +146,12 @@ export type XlsxCreateResult = {
 export type DocxReadResult = {
   text: string
   messages: string[]
+}
+
+export type DocxCreateResult = {
+  path: string
+  bytesWritten: number
+  blocks: number
 }
 
 export type PdfReadResult = {
@@ -466,6 +473,38 @@ export class FileEditorService {
     const buf = await this.storage.read(tenantId, ticketId, safePath)
     if (!buf) throw new FileEditorError('FILE_NOT_FOUND', `File not found: ${safePath}`)
     return docxRead(buf)
+  }
+
+  /**
+   * Word (.docx) dokumentum létrehozása tartalomblokkokból. Az eredmény valódi,
+   * letölthető .docx — címsor, bekezdés, felsorolás és táblázat támogatással.
+   */
+  async docxCreate(
+    tenantId: string,
+    ticketId: string,
+    args: {
+      path: string
+      title?: string
+      author?: string
+      subject?: string
+      blocks: DocxBlockSpec[]
+    },
+  ): Promise<DocxCreateResult> {
+    let safePath = resolveSafePath(args.path)
+    if (!/\.docx$/i.test(safePath)) safePath = `${safePath}.docx`
+
+    if (!Array.isArray(args.blocks) || args.blocks.length === 0) {
+      throw new FileEditorError('INVALID_ARGS', 'docx_create requires at least one content block')
+    }
+
+    const buf = await docxCreate({
+      title: args.title,
+      author: args.author,
+      subject: args.subject,
+      blocks: args.blocks,
+    })
+    await this.storage.write(tenantId, ticketId, safePath, buf)
+    return { path: safePath, bytesWritten: buf.length, blocks: args.blocks.length }
   }
 
   async pdfRead(

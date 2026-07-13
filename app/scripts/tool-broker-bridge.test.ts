@@ -33,6 +33,7 @@ async function main() {
     assert.ok(tools.includes('board_write'))
     assert.ok(tools.includes('web_search'))
     assert.ok(tools.includes('pdf_create'))
+    assert.ok(tools.includes('docx_create'))
     assert.ok(tools.includes('sandbox_app.update_artifact'))
   })
 

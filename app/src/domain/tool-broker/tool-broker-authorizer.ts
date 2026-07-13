@@ -63,6 +63,7 @@ export const TOOL_REQUIREMENTS: Partial<Record<
   xlsx_create: { connectorType: 'workspace', accessMode: 'write' },
   xlsx_append_rows: { connectorType: 'workspace', accessMode: 'write' },
   docx_read: { connectorType: 'workspace', accessMode: 'read' },
+  docx_create: { connectorType: 'workspace', accessMode: 'write' },
   pdf_read: { connectorType: 'workspace', accessMode: 'read' },
   pdf_create: { connectorType: 'workspace', accessMode: 'write' },
   pptx_create: { connectorType: 'workspace', accessMode: 'write' },

@@ -29,6 +29,7 @@ import type {
   XlsxLayoutResult,
   XlsxCreateResult,
   DocxReadResult,
+  DocxCreateResult,
   PdfReadResult,
 } from '@/domain/file-editor/file-editor-service'
 import type {
@@ -38,6 +39,7 @@ import type {
   XlsxSheetSpec,
 } from '@/domain/file-editor/adapters/xlsx-adapter'
 import type { PptxSlideSpec } from '@/domain/file-editor/adapters/pptx-adapter'
+import type { DocxBlockSpec } from '@/domain/file-editor/adapters/docx-adapter'
 import type { WebSearchArgs, WebSearchResult } from '@/domain/web-search/web-search-types'
 import type {
   WebResearchRequestArgs,
@@ -469,6 +471,13 @@ export type XlsxCreateArgs = {
 }
 export type XlsxAppendRowsArgs = { path: string; sheet?: string; rows: XlsxRow[] }
 export type DocxReadArgs = { path: string }
+export type DocxCreateArgs = {
+  path: string
+  title?: string
+  author?: string
+  subject?: string
+  blocks: DocxBlockSpec[]
+}
 export type PdfReadArgs = { path: string; page_range?: string }
 export type PdfCreateArgs = {
   path: string
@@ -528,6 +537,7 @@ export type ToolBrokerInvokeInput =
   | (ToolInvokeBase & { tool: 'xlsx_create'; args: XlsxCreateArgs })
   | (ToolInvokeBase & { tool: 'xlsx_append_rows'; args: XlsxAppendRowsArgs })
   | (ToolInvokeBase & { tool: 'docx_read'; args: DocxReadArgs })
+  | (ToolInvokeBase & { tool: 'docx_create'; args: DocxCreateArgs })
   | (ToolInvokeBase & { tool: 'pdf_read'; args: PdfReadArgs })
   | (ToolInvokeBase & { tool: 'pdf_create'; args: PdfCreateArgs })
   | (ToolInvokeBase & { tool: 'pptx_create'; args: PptxCreateArgs })
@@ -585,6 +595,7 @@ export type ToolBrokerInvokeResult =
         | XlsxLayoutResult
         | XlsxCreateResult
         | DocxReadResult
+        | DocxCreateResult
         | PdfReadResult
         | SandboxCommitResult
         | SandboxRequestPromotionResult

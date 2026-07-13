@@ -4,13 +4,14 @@ import type { ToolHandler, ToolHandlerArgs } from './tool-handler'
 const FILE_TOOLS = new Set([
   'create_html',
   'docx_read',
+  'docx_create',
   'pdf_read',
   'pdf_create',
   'pptx_create',
 ])
 
 /**
- * Fájl-munkaterület eszközök (file_*, xlsx_*, pdf_*, docx_read, pptx_create,
+ * Fájl-munkaterület eszközök (file_*, xlsx_*, pdf_*, docx_read/docx_create, pptx_create,
  * create_html). A munkaterület tenant-kulcsa a cselekvő felhasználó tenantja —
  * ez egyezik a feltöltési úttal (route + chat-bridge); fallback a connector
  * tenantra, majd 'global'-ra. A `FileEditorError` domain-hiba felszíni
@@ -67,6 +68,8 @@ export const fileToolHandler: ToolHandler = {
           return fe.xlsxAppendRows(tenantId, workspaceId, input.args)
         case 'docx_read':
           return fe.docxRead(tenantId, workspaceId, input.args)
+        case 'docx_create':
+          return fe.docxCreate(tenantId, workspaceId, input.args)
         case 'pdf_read':
           return fe.pdfRead(tenantId, workspaceId, input.args)
         case 'pdf_create':
