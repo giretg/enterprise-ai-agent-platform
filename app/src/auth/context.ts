@@ -99,22 +99,17 @@ async function resolveAuthContext(): Promise<AuthContext | null> {
   }
 
   const requestedTenantId = await readActiveTenantCookie()
-  const resolved = resolveActiveTenant({ memberships, platformRoles, requestedTenantId })
 
-  if (resolved.kind === 'tenant') {
-    return {
-      user,
-      platformRoles,
-      memberships,
-      kind: 'tenant',
-      activeTenantId: resolved.tenantId,
-      activeTenantRole: resolved.role,
-      assumed: false,
-    }
-  }
+  // Superadmin assume: ha a cookie EXPLICIT egy olyan tenantra mutat, ahol a
+  // hívónak nincs active membershipje, ez assume-szándék. Ezt a default-membership
+  // visszaesés ELŐTT kell eldönteni — különben (ha van bármilyen membershipünk) a
+  // resolveActiveTenant mindig a defaultra esne, és az assume soha nem érvényesülne
+  // (a fejléc-váltó „beragadna" a default tenantra, §5.3/§9.1).
+  const requestedIsActiveMembership =
+    !!requestedTenantId &&
+    memberships.some((m) => m.tenantId === requestedTenantId && m.status === 'active')
 
-  // Superadmin assume: a cookie egy olyan tenantra mutat, ahol nincs membership.
-  if (requestedTenantId && isSuperadmin(platformRoles)) {
+  if (requestedTenantId && !requestedIsActiveMembership && isSuperadmin(platformRoles)) {
     try {
       const tenant = await repositories.tenants.findById(requestedTenantId)
       if (tenant) {
@@ -130,7 +125,21 @@ async function resolveAuthContext(): Promise<AuthContext | null> {
         }
       }
     } catch {
-      // ignore — platform/none útra esünk
+      // ignore — a normál feloldásra (membership/default/platform) esünk vissza
+    }
+  }
+
+  const resolved = resolveActiveTenant({ memberships, platformRoles, requestedTenantId })
+
+  if (resolved.kind === 'tenant') {
+    return {
+      user,
+      platformRoles,
+      memberships,
+      kind: 'tenant',
+      activeTenantId: resolved.tenantId,
+      activeTenantRole: resolved.role,
+      assumed: false,
     }
   }
 
