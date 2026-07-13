@@ -1,7 +1,7 @@
 'use client'
 
 import { useEffect, useState, useTransition } from 'react'
-import { useRouter } from 'next/navigation'
+import { usePathname } from 'next/navigation'
 import { getTenantSwitcherState, switchTenant, exitTenant } from '@/app/actions/tenant'
 
 /**
@@ -35,7 +35,7 @@ const statusTone: Record<string, string> = {
 }
 
 export function TenantSwitcher() {
-  const router = useRouter()
+  const pathname = usePathname()
   const [state, setState] = useState<SwitcherState | null>(null)
   const [open, setOpen] = useState(false)
   const [pending, startTransition] = useTransition()
@@ -62,17 +62,17 @@ export function TenantSwitcher() {
       return
     }
     startTransition(async () => {
-      const res = await switchTenant({ tenantId })
       setOpen(false)
-      if (res.success) router.refresh()
+      // A server action cookie-t állít és redirect()-tel újratölti az oldalt —
+      // a sima router.refresh() nem mindig veszi át azonnal az új cookie-t.
+      await switchTenant({ tenantId, returnTo: pathname })
     })
   }
 
   const doExit = () => {
     startTransition(async () => {
-      await exitTenant()
       setOpen(false)
-      router.refresh()
+      await exitTenant({ returnTo: pathname })
     })
   }
 
