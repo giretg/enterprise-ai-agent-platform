@@ -2,7 +2,6 @@
 
 import { cookies } from 'next/headers'
 import { revalidatePath } from 'next/cache'
-import { redirect, unstable_rethrow } from 'next/navigation'
 import { z } from 'zod'
 import { services } from '@/domain'
 import { getAuthContext, ACTIVE_TENANT_COOKIE } from '@/auth/context'
@@ -12,12 +11,6 @@ import { repositories } from '@/repositories/postgres'
 import { fail, ok } from '@/lib/result'
 
 const ACTIVE_TENANT_COOKIE_MAX_AGE = 60 * 60 * 24 * 30 // 30 nap
-
-/** Belső útvonal — open redirect ellen (tenant váltás utáni visszatéréshez). */
-function safeReturnTo(path: string | undefined): string | null {
-  if (!path || !path.startsWith('/') || path.startsWith('//')) return null
-  return path
-}
 
 async function setActiveTenantCookie(tenantId: string) {
   const store = await cookies()
@@ -31,18 +24,15 @@ async function setActiveTenantCookie(tenantId: string) {
 
 // ── Tenant-váltás / assume / exit (§5.3, §9.1) ──────────────────────────────
 
-const switchTenantSchema = z.object({
-  tenantId: z.string().uuid(),
-  returnTo: z.string().optional(),
-})
+const switchTenantSchema = z.object({ tenantId: z.string().uuid() })
 
 /**
  * Aktív tenant kiválasztása (§5.3). Tenant-tag csak SAJÁT active membershipre
  * válthat; superadmin bármely tenantot "assume" módban választhat, audit mellett.
  */
-export async function switchTenant(input: { tenantId: string; returnTo?: string }) {
+export async function switchTenant(input: { tenantId: string }) {
   try {
-    const { tenantId, returnTo } = switchTenantSchema.parse(input)
+    const { tenantId } = switchTenantSchema.parse(input)
     const ctx = await getAuthContext()
     if (!ctx) return fail('Unauthorized')
 
@@ -78,23 +68,15 @@ export async function switchTenant(input: { tenantId: string; returnTo?: string 
     }
 
     revalidatePath('/', 'layout')
-
-    const destination = safeReturnTo(returnTo)
-    if (destination) redirect(destination)
-
     return ok({ tenantId, mode: decision.mode })
   } catch (e) {
-    unstable_rethrow(e)
     return fail(e instanceof Error ? e.message : 'Failed to switch tenant')
   }
 }
 
-const exitTenantSchema = z.object({ returnTo: z.string().optional() })
-
 /** Superadmin kilépése az assumed tenantból ⇒ platform-kontextus (§5.3). */
-export async function exitTenant(input?: { returnTo?: string }) {
+export async function exitTenant() {
   try {
-    const { returnTo } = exitTenantSchema.parse(input ?? {})
     const ctx = await getAuthContext()
     if (!ctx) return fail('Unauthorized')
 
@@ -107,13 +89,8 @@ export async function exitTenant(input?: { returnTo?: string }) {
     }
 
     revalidatePath('/', 'layout')
-
-    const destination = safeReturnTo(returnTo)
-    if (destination) redirect(destination)
-
     return ok({ exited: true })
   } catch (e) {
-    unstable_rethrow(e)
     return fail(e instanceof Error ? e.message : 'Failed to exit tenant')
   }
 }
