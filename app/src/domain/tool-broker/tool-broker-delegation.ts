@@ -553,7 +553,7 @@ export async function resolveDelegatedAccessToken(self: ToolBrokerService,
       grantId: authorization.grant.id,
       tokenRef: authorization.grant.tokenRef,
       actingUserId,
-      tenantId: (await self.resolveActingTenantId(actingUserId)) ?? authorization.connector.tenantId ?? null,
+      tenantId: (await self.resolveActingTenantId(input, actingUserId)) ?? authorization.connector.tenantId ?? null,
     })
   }
 

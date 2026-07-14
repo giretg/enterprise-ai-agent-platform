@@ -180,7 +180,7 @@ export class ToolBrokerService {
     const startedAt = Date.now()
     const ticketId = input.tool === 'board_write' ? input.args.ticketId : input.ticketId ?? null
     const actingUserId = await this.resolveActingUserId(input)
-    const actingTenantId = actingUserId ? await this.resolveActingTenantId(actingUserId) : null
+    const actingTenantId = actingUserId ? await this.resolveActingTenantId(input, actingUserId) : null
 
     const authorization = await this.authorizer.authorize({
       agentId: input.agentId,
@@ -384,12 +384,39 @@ export class ToolBrokerService {
     return null
   }
 
-  async resolveActingTenantId(actingUserId: string): Promise<string | null> {
+  /**
+   * A user.tenantId oszlop csak a user *default* tenantját tükrözi — ha a user
+   * tenant-váltóval egy másik (nem-default) tenant kontextusában dolgozik, ezt
+   * csak a ticket/conversation tenantId-je rögzíti. Ezért a ticket/conversation
+   * tenant elsőbbséget élvez, a user.tenantId csak akkor fallback, ha egyik sincs.
+   */
+  async resolveActingTenantId(input: ToolBrokerInvokeInput, actingUserId: string): Promise<string | null> {
+    const contextTenantId = await this.resolveContextTenantId(input)
+    if (contextTenantId) return contextTenantId
+
     const user = await prisma.user.findUnique({
       where: { id: actingUserId },
       select: { tenantId: true },
     })
     return user?.tenantId ?? null
+  }
+
+  private async resolveContextTenantId(input: ToolBrokerInvokeInput): Promise<string | null> {
+    const effectiveTicketId = input.tool === 'board_write' ? input.args.ticketId : input.ticketId
+    if (effectiveTicketId) {
+      const ticket = await this.tickets.findById(effectiveTicketId)
+      if (ticket?.tenantId) return ticket.tenantId
+    }
+
+    if (input.conversationId) {
+      const conversation = await prisma.conversation.findUnique({
+        where: { id: input.conversationId },
+        select: { tenantId: true },
+      })
+      if (conversation?.tenantId) return conversation.tenantId
+    }
+
+    return null
   }
 
   private async checkGmailSendApproval(
