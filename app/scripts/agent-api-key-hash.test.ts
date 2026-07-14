@@ -9,7 +9,6 @@
  * Futtatás: npm run test:agent-api-key-hash
  */
 import assert from 'node:assert/strict'
-import { createHash } from 'node:crypto'
 import {
   AGENT_API_KEY_PREFIX,
   deriveAgentApiKeyLookupHash,
@@ -35,11 +34,11 @@ check('determinisztikus: ugyanaz a kulcs mindig ugyanazt a hash-t adja', () => {
   assert.equal(deriveAgentApiKeyLookupHash(key), deriveAgentApiKeyLookupHash(key))
 })
 
-check('a hash a nyers kulcs SHA-256 hex lenyomata (tárolás=keresés invariáns)', () => {
+check('a kereső-HMAC fix hosszúságú és tárolás=keresés invariáns', () => {
   const key = `${AGENT_API_KEY_PREFIX}deadbeefdeadbeefdeadbeefdeadbeef`
-  const expected = createHash('sha256').update(key).digest('hex')
-  assert.equal(deriveAgentApiKeyLookupHash(key), expected)
-  assert.equal(expected.length, 64)
+  const lookupHash = deriveAgentApiKeyLookupHash(key)
+  assert.equal(lookupHash.length, 64)
+  assert.match(lookupHash, /^[0-9a-f]{64}$/)
 })
 
 check('különböző kulcsok különböző hash-t adnak (nincs cross-agent ütközés)', () => {

@@ -1,4 +1,5 @@
-import { createHash } from 'crypto'
+import { createHmac } from 'crypto'
+import { resolveSecret } from '@/lib/crypto/secret-resolver'
 
 /**
  * Agent service-account API-kulcs alaki előtagja. Minden platform-kulcs ezzel kezdődik
@@ -7,22 +8,26 @@ import { createHash } from 'crypto'
  */
 export const AGENT_API_KEY_PREFIX = 'cp_sk_'
 
+const AGENT_API_KEY_LOOKUP_SECRET = resolveSecret(
+  ['AGENT_API_KEY_LOOKUP_SECRET', 'WRITE_GATE_SECRET'],
+  'dev-agent-api-key-lookup-secret-change-in-prod',
+)
+
 export function isAgentApiKeyFormat(rawKey: string): boolean {
   return rawKey.startsWith(AGENT_API_KEY_PREFIX)
 }
 
 /**
- * Determinisztikus, indexelhető kereső-hash a nyers API-kulcsból.
+ * Determinisztikus, indexelhető kereső-HMAC a nyers API-kulcsból.
  *
  * A kulcs *nyugalmi* titka továbbra is bcrypt-tel van tárolva (lassú, sózott — véd az
  * adatbázis-szivárgás elleni brute-force-tól). Ez a SHA-256 hash KIZÁRÓLAG gyors,
  * egyedi-indexelt megkeresésre szolgál: a hitelesítés O(1) `findUnique`-kal megtalálja
  * a pontos kulcssort, ahelyett hogy minden aktív kulcson végig-bcrypt-elne (O(n)).
  *
- * Miért biztonságos önmagában a SHA-256 keresésre: a kulcs 128 bit egyenletes véletlen
- * (`randomBytes(16)`), amit egy determinisztikus hash nem gyengít kimerítő kereséssel
- * visszafejthető szintre. A bcrypt-ellenőrzés így is megmarad mélységi védelemként.
+ * A szerveroldali kulcs miatt az adatbázis-szivárgás nem ad offline ellenőrzőt a nyers
+ * API-kulcshoz, miközben a bcrypt-ellenőrzés mélységi védelemként változatlanul megmarad.
  */
 export function deriveAgentApiKeyLookupHash(rawKey: string): string {
-  return createHash('sha256').update(rawKey).digest('hex')
+  return createHmac('sha256', AGENT_API_KEY_LOOKUP_SECRET).update(rawKey, 'utf8').digest('hex')
 }

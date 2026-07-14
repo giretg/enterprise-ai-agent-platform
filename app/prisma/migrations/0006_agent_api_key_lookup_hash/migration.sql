@@ -2,9 +2,10 @@
 --
 -- A korábbi hitelesítés MINDEN aktív kulcson végig-bcrypt-elt (O(n) lassú hash minden
 -- kérésnél), ami több száz/ezer agent esetén másodperces késleltetést és DoS-felületet
--- jelentett. Ez az oszlop a nyers kulcs determinisztikus SHA-256 hash-ét tárolja, amin
+-- jelentett. Ez az oszlop a nyers kulcs szerveroldali kulccsal képzett HMAC-SHA-256
+-- kereső-lenyomatát tárolja, amin
 -- egyedi index van, így a hitelesítés O(1) megkereséssel megtalálja a pontos kulcssort.
--- A nyugalmi titok továbbra is a `key_hash` (bcrypt) — a SHA-256 csak keresésre szolgál.
+-- A nyugalmi titok továbbra is a `key_hash` (bcrypt) — a HMAC csak keresésre szolgál.
 --
 -- Nullable: a régi kulcsoknak nincs kereső-hash-ük; azokat a hitelesítés visszafelé
 -- kompatibilis módon kezeli (legacy fallback + első használatkor feltöltött hash).
