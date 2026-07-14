@@ -1,25 +1,19 @@
 import { z } from 'zod'
 import {
-  GITHUB_REPOSITORY_PATTERN,
-  MAX_GITHUB_REPOSITORIES,
+  parseGitHubRepositoryAccessConfig,
+  type GitHubRepositoryAccess,
 } from './github-repository-access'
 
-export const githubRepositoryAccessSchema = z.discriminatedUnion('mode', [
-  z.object({ mode: z.literal('any') }),
-  z.object({
-    mode: z.literal('selected'),
-    repositories: z
-      .array(
-        z
-          .string()
-          .trim()
-          .regex(GITHUB_REPOSITORY_PATTERN)
-          .transform((repository) => repository.toLowerCase()),
-      )
-      .min(1)
-      .transform((repositories) => [...new Set(repositories)])
-      .refine((repositories) => repositories.length <= MAX_GITHUB_REPOSITORIES, {
-        message: `At most ${MAX_GITHUB_REPOSITORIES} GitHub repositories are allowed`,
-      }),
-  }),
-])
+export const githubRepositoryAccessSchema = z.unknown().transform((value, context) => {
+  try {
+    const parsed = parseGitHubRepositoryAccessConfig(value)
+    if (!parsed) throw new Error('GitHub repository access is required')
+    return parsed satisfies GitHubRepositoryAccess
+  } catch (error) {
+    context.addIssue({
+      code: 'custom',
+      message: error instanceof Error ? error.message : 'Invalid GitHub repository access',
+    })
+    return z.NEVER
+  }
+})
