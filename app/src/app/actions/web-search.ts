@@ -6,11 +6,9 @@ import { requirePlatformRole, requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain'
 import { repositories } from '@/repositories/postgres'
 import {
-  ensurePlatformHostedWebSearchConnector,
+  ensurePlatformWebSearchConnector,
   ensureTenantWebSearchConnector,
-  findPlatformHostedWebSearchConnector,
-  findTenantWebSearchConnector,
-  PLATFORM_HOSTED_WEB_SEARCH_CONNECTOR_NAME,
+  PLATFORM_WEB_SEARCH_CONNECTOR_NAME,
 } from '@/domain/web-search/web-search-connector-service'
 import { parseWebSearchConfig, type WebSearchConnectorConfig } from '@/domain/web-search/web-search-types'
 import { prisma } from '@/lib/db'
@@ -20,7 +18,7 @@ import {
   setWebFetchControlsSchema,
   setWebSearchControlsSchema,
   setTenantWebSearchControlsSchema,
-  updatePlatformHostedWebSearchSchema,
+  updatePlatformWebSearchSchema,
   updateWebSearchPolicySchema,
 } from '@/lib/validators/actions'
 
@@ -86,9 +84,8 @@ function normalizeDomains(values: string[]): string[] {
 }
 
 async function resolveTenantWebSearchConnectorForContext(tenantId: string) {
-  return (
-    (await findTenantWebSearchConnector(tenantId)) ?? (await ensureTenantWebSearchConnector(tenantId))
-  )
+  // Az ensure a létező legacy platform_hosted/stub tenant connectorokat is customra migrálja.
+  return ensureTenantWebSearchConnector(tenantId)
 }
 
 /** Agent detail capability kártya (Feature-spec — WebSearchTool §7.1). */
@@ -187,28 +184,24 @@ export async function getWebSearchPolicy() {
   }
 }
 
-/** Platform-hosted search hitelesítő adatai (URL + kulcs) — superadmin. */
-export async function getPlatformHostedWebSearchPolicy() {
+/** Platform web search hitelesítő adatai (URL + kulcs) — superadmin. */
+export async function getPlatformWebSearchPolicy() {
   try {
     await requirePlatformRole('superadmin')
-    const connector =
-      (await findPlatformHostedWebSearchConnector()) ??
-      (await ensurePlatformHostedWebSearchConnector())
+    const connector = await ensurePlatformWebSearchConnector()
     return ok(connectorToPolicyView(connector))
   } catch (e) {
     return fail(
-      e instanceof Error ? e.message : 'Nem sikerült betölteni a platform-hosted web search beállítást',
+      e instanceof Error ? e.message : 'Nem sikerült betölteni a platform web search beállítást',
     )
   }
 }
 
-export async function updatePlatformHostedWebSearch(input: unknown) {
+export async function updatePlatformWebSearch(input: unknown) {
   try {
     const user = (await requirePlatformRole('superadmin')).user
-    const parsed = updatePlatformHostedWebSearchSchema.parse(input)
-    const connector =
-      (await findPlatformHostedWebSearchConnector()) ??
-      (await ensurePlatformHostedWebSearchConnector())
+    const parsed = updatePlatformWebSearchSchema.parse(input)
+    const connector = await ensurePlatformWebSearchConnector()
 
     const previous = parseWebSearchConfig(connector.config)
     const nextConfig: WebSearchConnectorConfig = {
@@ -217,7 +210,7 @@ export async function updatePlatformHostedWebSearch(input: unknown) {
       providerApiUrl: parsed.providerApiUrl ?? previous.providerApiUrl,
     }
     if (!nextConfig.providerApiUrl) {
-      return fail('Platform-hosted searchhez API URL szükséges.')
+      return fail('Platform web searchhez API URL szükséges.')
     }
 
     let nextSecretAlias = connector.secretAlias
@@ -233,7 +226,7 @@ export async function updatePlatformHostedWebSearch(input: unknown) {
     const updated = await prisma.connector.update({
       where: { id: connector.id },
       data: {
-        name: PLATFORM_HOSTED_WEB_SEARCH_CONNECTOR_NAME,
+        name: PLATFORM_WEB_SEARCH_CONNECTOR_NAME,
         config: nextConfig as unknown as Prisma.InputJsonValue,
         secretAlias: nextSecretAlias,
         version: { increment: 1 },
@@ -262,7 +255,7 @@ export async function updatePlatformHostedWebSearch(input: unknown) {
 
     return ok(connectorToPolicyView(updated))
   } catch (e) {
-    return fail(e instanceof Error ? e.message : 'Nem sikerült menteni a platform-hosted web search beállítást')
+    return fail(e instanceof Error ? e.message : 'Nem sikerült menteni a platform web search beállítást')
   }
 }
 
@@ -277,7 +270,7 @@ export async function updateWebSearchPolicy(input: unknown) {
       return fail('Web Search connector nem található.')
     }
     if (connector.tenantId === null) {
-      return fail('Platform connector — használd a platform-hosted search szerkesztőt.')
+      return fail('Platform connector — használd a platform web search szerkesztőt.')
     }
     if (connector.lifecycleState !== 'active') {
       return fail('Csak aktív Web Search connector policy szerkeszthető.')
@@ -298,8 +291,8 @@ export async function updateWebSearchPolicy(input: unknown) {
     const previous = parseWebSearchConfig(connector.config)
     const nextConfig: WebSearchConnectorConfig = {
       ...previous,
-      provider: parsed.provider,
-      providerApiUrl: parsed.provider === 'custom_search_api' ? parsed.providerApiUrl : undefined,
+      provider: 'custom_search_api',
+      providerApiUrl: parsed.providerApiUrl,
       allowedDomains: normalizeDomains(parsed.allowedDomains),
       deniedDomains: normalizeDomains(parsed.deniedDomains),
       allowGeneralWeb: parsed.allowGeneralWeb,
@@ -315,23 +308,19 @@ export async function updateWebSearchPolicy(input: unknown) {
       retentionDays: parsed.retentionDays,
       requireHumanApprovalForSensitiveQuery: parsed.requireHumanApprovalForSensitiveQuery,
     }
-    if (parsed.provider === 'custom_search_api' && !nextConfig.providerApiUrl) {
+    if (!nextConfig.providerApiUrl) {
       return fail('custom_search_api providerhez API URL szükséges.')
     }
 
     let nextSecretAlias = connector.secretAlias
     const apiKeyRotated = Boolean(parsed.apiKey)
-    if (parsed.apiKey && parsed.provider === 'custom_search_api') {
+    if (parsed.apiKey) {
       const { saveConnectorApiKey, buildConnectorSecretRef } = await import(
         '@/domain/connector/connector-secret-store'
       )
       await saveConnectorApiKey(connector.id, parsed.apiKey)
       nextSecretAlias = buildConnectorSecretRef(connector.id)
     }
-    if (parsed.provider === 'platform_hosted_search') {
-      nextSecretAlias = null
-    }
-
     const updated = await prisma.connector.update({
       where: { id: connector.id },
       data: {

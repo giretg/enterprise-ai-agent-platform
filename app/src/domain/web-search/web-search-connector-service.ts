@@ -1,9 +1,9 @@
 /**
- * Web Search connector lifecycle — tenant-scoped policy + platform-hosted credentials.
+ * Web Search connector lifecycle — két egymástól elválasztott konfigurációs sík.
  *
- * Minden tenant onboardingkor saját `web_search` connectort kap (policy).
- * A `platform_hosted_search` provider a platform default connector kulcsát/URL-jét
- * használja (költség-elkülönítés opcionálisan saját `custom_search_api` kulccsal).
+ * A platform connector kizárólag a tenant nélküli system agenteké (provisioning
+ * web-discovery / web-egress). Minden tenant saját `custom_search_api` connectort,
+ * endpointot és secretet kap; tenant connector nem hivatkozhat a platform kulcsára.
  */
 import type { Connector, Prisma } from '@prisma/client'
 import { prisma } from '@/lib/db'
@@ -14,7 +14,8 @@ import {
   type WebSearchConnectorConfig,
 } from './web-search-types'
 
-export const PLATFORM_HOSTED_WEB_SEARCH_CONNECTOR_NAME = 'Platform Hosted Web Search'
+export const PLATFORM_WEB_SEARCH_CONNECTOR_NAME = 'Platform Web Search'
+const LEGACY_PLATFORM_WEB_SEARCH_CONNECTOR_NAME = 'Platform Hosted Web Search'
 export const TENANT_WEB_SEARCH_CONNECTOR_NAME = 'Web Search'
 
 export function defaultTenantWebSearchConfig(
@@ -22,18 +23,19 @@ export function defaultTenantWebSearchConfig(
 ): WebSearchConnectorConfig {
   return {
     ...DEFAULT_WEB_SEARCH_CONFIG,
-    provider: 'platform_hosted_search',
     allowGeneralWeb: true,
     ...overrides,
+    // A scope-határt override sem írhatja felül.
+    provider: 'custom_search_api',
   }
 }
 
-export async function findPlatformHostedWebSearchConnector(): Promise<Connector | null> {
+export async function findPlatformWebSearchConnector(): Promise<Connector | null> {
   return prisma.connector.findFirst({
     where: {
       type: 'web_search',
       tenantId: null,
-      name: PLATFORM_HOSTED_WEB_SEARCH_CONNECTOR_NAME,
+      name: { in: [PLATFORM_WEB_SEARCH_CONNECTOR_NAME, LEGACY_PLATFORM_WEB_SEARCH_CONNECTOR_NAME] },
       lifecycleState: 'active',
     },
     orderBy: { createdAt: 'asc' },
@@ -53,12 +55,20 @@ export async function findTenantWebSearchConnector(tenantId: string): Promise<Co
 }
 
 /**
- * Platform default connector — csak a platform_hosted_search provider hitelesítő adatai
- * (API URL + secret-ref). Nem tenant policy.
+ * Platform connector — a tenant nélküli system agentek web-search policy-ja és
+ * hitelesítő adatai (API URL + secret-ref). Nem tenant policy és tenant nem örökli.
  */
-export async function ensurePlatformHostedWebSearchConnector(
+export async function ensurePlatformWebSearchConnector(
   configOverrides: Partial<WebSearchConnectorConfig> = {},
 ): Promise<Connector> {
+  const existing = await findPlatformWebSearchConnector()
+  if (existing) {
+    return prisma.connector.update({
+      where: { id: existing.id },
+      data: { name: PLATFORM_WEB_SEARCH_CONNECTOR_NAME, lifecycleState: 'active' },
+    })
+  }
+
   const config: WebSearchConnectorConfig = {
     ...DEFAULT_WEB_SEARCH_CONFIG,
     provider: 'custom_search_api',
@@ -70,7 +80,7 @@ export async function ensurePlatformHostedWebSearchConnector(
   return upsertConnectorByTypeName(prisma, {
     create: {
       type: 'web_search',
-      name: PLATFORM_HOSTED_WEB_SEARCH_CONNECTOR_NAME,
+      name: PLATFORM_WEB_SEARCH_CONNECTOR_NAME,
       authMode: 'agent_owned',
       scope: 'global',
       tenantId: null,
@@ -91,17 +101,26 @@ export async function ensureTenantWebSearchConnector(
   configOverrides: Partial<WebSearchConnectorConfig> = {},
 ): Promise<Connector> {
   const existing = await findTenantWebSearchConnector(tenantId)
-  if (existing) return existing
+  if (existing) {
+    const existingConfig = parseWebSearchConfig(existing.config)
+    if (existingConfig.provider === 'custom_search_api') return existing
 
-  const platform = await findPlatformHostedWebSearchConnector()
-  const platformConfig = platform ? parseWebSearchConfig(platform.config) : null
-  const config = defaultTenantWebSearchConfig({
-    allowedDomains: platformConfig?.allowedDomains ?? DEFAULT_WEB_SEARCH_CONFIG.allowedDomains,
-    deniedDomains: platformConfig?.deniedDomains ?? DEFAULT_WEB_SEARCH_CONFIG.deniedDomains,
-    allowGeneralWeb: platformConfig?.allowGeneralWeb ?? true,
-    safeSearch: platformConfig?.safeSearch ?? 'strict',
-    ...configOverrides,
-  })
+    // Deploy/backfill migráció: a korábbi platform_hosted_search/stub tenant-konfigot
+    // leválasztjuk a platform connectorról. Policy-mezők maradnak, platform endpoint és
+    // secret viszont nem kerül át; a tenant adminnak saját endpointot/kulcsot kell megadnia.
+    delete existingConfig.providerApiUrl
+    existingConfig.provider = 'custom_search_api'
+    return prisma.connector.update({
+      where: { id: existing.id },
+      data: {
+        config: existingConfig as unknown as Prisma.InputJsonValue,
+        secretAlias: null,
+        version: { increment: 1 },
+      },
+    })
+  }
+
+  const config = defaultTenantWebSearchConfig(configOverrides)
 
   return prisma.connector.create({
     data: {
@@ -127,10 +146,8 @@ export async function ensureAllTenantsHaveWebSearchConnector(): Promise<number> 
   let created = 0
   for (const { id } of tenants) {
     const before = await findTenantWebSearchConnector(id)
-    if (!before) {
-      await ensureTenantWebSearchConnector(id)
-      created++
-    }
+    await ensureTenantWebSearchConnector(id)
+    if (!before) created++
   }
   return created
 }

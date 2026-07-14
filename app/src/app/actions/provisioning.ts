@@ -415,8 +415,18 @@ export async function discoverConnectorFromName(input: unknown) {
 
     // A seedelt web-egress role agent — audit-attribúció + a Registry modelConfig-je + a
     // web.fetch/discover capability-k hordozója. Ha nincs, a felfedezés nem elérhető.
+    //
+    // A web-egress worker PLATFORM-SZINTŰ (system) agent: tenantId=null, és egy platform-szintű
+    // web_search connectort old fel (§8.1). Ezért TENANTFÜGGETLENÜL, a system példányt kell
+    // választani — különben egy tenanthoz kötött példány a SAJÁT tenantja search-connectorát
+    // (és kulcsát) használná minden más tenant felfedezésénél is. A tenant-kötött példány csak
+    // átmeneti visszaesés (még nem migrált seed), a system-szintűt preferáljuk.
     const agents = await repositories.agents.findMany()
-    const egressAgent = agents.find((a) => a.name === WEB_EGRESS_ROLE_TEMPLATE.name)
+    const egressCandidates = agents.filter(
+      (a) => a.name === WEB_EGRESS_ROLE_TEMPLATE.name && a.status === 'active',
+    )
+    const egressAgent =
+      egressCandidates.find((a) => a.tenantId === null) ?? egressCandidates[0]
     if (!egressAgent) {
       return fail(
         'A web-egress role agent nincs seedelve. Futtasd: npm run db:seed (a felfedezés flag mögött).',

@@ -22,9 +22,10 @@ import { GLOBAL_CUSTOM_CONNECTOR_TEMPLATES } from '../src/domain/connector-templ
 import { upsertConnectorByTypeName } from '../src/lib/connector-upsert'
 import {
   ensureAllTenantsHaveWebSearchConnector,
-  ensurePlatformHostedWebSearchConnector,
+  ensurePlatformWebSearchConnector,
   ensureTenantWebSearchConnector,
 } from '../src/domain/web-search/web-search-connector-service'
+import { buildConnectorSecretRef } from '../src/domain/connector/connector-secret-store'
 import { ensureTenantGmailConnector } from '../src/lib/seed-gmail-connector'
 import { ensureStarterStepTemplates } from '../src/domain/step-template/step-template-catalog'
 import {
@@ -334,6 +335,13 @@ async function ensureWebEgressRoleAgent(adminId: string) {
   const t = WEB_EGRESS_ROLE_TEMPLATE
   const existing = await prisma.agent.findFirst({ where: { name: t.name } })
   if (existing) {
+    // A web-egress worker PLATFORM-szintű (system) agent: tenantId=null (§8.1). Egy korábbi
+    // tenant-backfill tévesen tenanthoz köthette — itt visszaállítjuk system-szintre, különben
+    // a web_search a tenant SAJÁT connectorát (és kulcsát) oldaná fel minden más tenant
+    // felfedezésénél is.
+    if (existing.tenantId !== null) {
+      await prisma.agent.update({ where: { id: existing.id }, data: { tenantId: null } })
+    }
     await ensureWebEgressRoleCapabilities(existing.id)
     await ensureWebSearchSeed(existing.id)
     return existing
@@ -362,6 +370,10 @@ async function ensureWebEgressRoleAgent(adminId: string) {
       modelConfig,
       status: 'active',
       role: t.role,
+      // PLATFORM-szintű (system) agent: tenantId=null. NEM köthető egy tenanthoz, mert a
+      // felfedezés minden tenant nevében ezt használja, és platform-szintű web_search
+      // connectort old fel (§8.1).
+      tenantId: null,
       currentVersion: 1,
       currentRoleInstructionVersion: 1,
       currentBehaviorProfileVersion: 1,
@@ -1065,7 +1077,7 @@ async function ensureHSMOfficerAgent(adminId: string) {
  * capability sort — ezt csak worker agentekhez kötjük.
  */
 async function ensureWebSearchSeed(agentId: string) {
-  await ensurePlatformHostedWebSearchConnector({
+  await ensurePlatformWebSearchConnector({
     provider: 'custom_search_api',
     allowedDomains: [],
     deniedDomains: ['pastebin.com', '*.onion'],
@@ -1075,7 +1087,9 @@ async function ensureWebSearchSeed(agentId: string) {
 
   const agent = await prisma.agent.findUnique({ where: { id: agentId }, select: { tenantId: true } })
   if (!agent?.tenantId) {
-    console.warn('  ensureWebSearchSeed: agent has no tenantId, skipping tenant connector link')
+    // PLATFORM-szintű (system) agent: platform-szintű (tenantId=null) web_search connectorra
+    // kötjük — MINDEN tenant felfedezése ezt a MEGOSZTOTT connectort/kulcsot használja (§8.1).
+    await ensurePlatformWebSearchLink(agentId)
     return
   }
 
@@ -1092,20 +1106,46 @@ async function ensureWebSearchSeed(agentId: string) {
     deniedDomains: ['pastebin.com', '*.onion'],
     allowGeneralWeb: false,
     safeSearch: 'strict',
-    provider: 'platform_hosted_search',
+    provider: 'custom_search_api',
   })
 
+  await ensureWebSearchAgentLink(agentId, tenantConnector.id)
+}
+
+async function ensureWebSearchAgentLink(agentId: string, connectorId: string) {
   await prisma.agentConnector.upsert({
-    where: { agentId_connectorId: { agentId, connectorId: tenantConnector.id } },
-    create: { agentId, connectorId: tenantConnector.id, accessMode: 'read' },
+    where: { agentId_connectorId: { agentId, connectorId } },
+    create: { agentId, connectorId, accessMode: 'read' },
     update: { accessMode: 'read' },
   })
-
   await prisma.capability.upsert({
     where: { agentId_toolName: { agentId, toolName: 'web_search' } },
     create: { agentId, toolName: 'web_search', allowed: true },
     update: { allowed: true },
   })
+}
+
+/**
+ * PLATFORM-szintű (system) web-egress agent web_search-bekötése: egy platform-szintű
+ * (tenantId=null) web_search connector + link + capability. A connector `custom_search_api`
+ * providerrel a SAJÁT `secret-ref` kulcsát oldja fel (prod: Secret Manager, dev: lokális fájl)
+ * — ez a MEGOSZTOTT kulcs minden tenant felfedezéséhez. A tényleges kulcs feltöltése operatív
+ * lépés (saveConnectorApiKey / SM); a seed csak a bekötést + a self-ref aliast garantálja.
+ */
+async function ensurePlatformWebSearchLink(agentId: string) {
+  const platform = await ensurePlatformWebSearchConnector({
+    providerApiUrl: 'https://api.search.brave.com/res/v1/web/search',
+    allowGeneralWeb: true,
+    safeSearch: 'strict',
+    deniedDomains: ['pastebin.com', '*.onion'],
+  })
+  if (!platform.secretAlias) {
+    await prisma.connector.update({
+      where: { id: platform.id },
+      data: { secretAlias: buildConnectorSecretRef(platform.id) },
+    })
+  }
+  await ensureWebSearchAgentLink(agentId, platform.id)
 }
 
 const WIKI_PLAYBOOK_SPEC = [
@@ -1489,6 +1529,7 @@ async function main() {
     await ensureBuiltinConnectorTemplates()
     await ensureGlobalCustomConnectorTemplates()
     await ensureDemoSkills(admin.id)
+    await ensureAllTenantsHaveWebSearchConnector()
     return
   }
 

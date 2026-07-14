@@ -81,6 +81,7 @@
     "test:behavior-profile": "tsx scripts/behavior-profile-cascade.test.ts",
     "test:role-template": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/role-template-enforcement.test.ts",
     "test:web-search": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/web-search-tool.test.ts",
+    "test:web-search-scope": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/web-search-scope-separation.test.ts",
     "test:egress-guard": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/egress-guard.test.ts",
     "test:web-fetch": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/web-fetch.test.ts",
     "test:web-research": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/web-research-delegation.test.ts",

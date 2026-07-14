@@ -14,7 +14,11 @@ import type {
 } from '@prisma/client'
 import { prisma } from '@/lib/db'
 import { gmailToolAllowedByScopes } from '@/domain/connector-grant/gmail-scopes'
-import { WEB_SEARCH_CONTROLS_KEY, WEB_SEARCH_TENANT_CONTROLS_KEY } from '@/domain/web-search/web-search-types'
+import {
+  isWebSearchScopeEnabled,
+  WEB_SEARCH_CONTROLS_KEY,
+  WEB_SEARCH_TENANT_CONTROLS_KEY,
+} from '@/domain/web-search/web-search-types'
 import type {
   AgentRepository,
   ConnectorGrantRepository,
@@ -131,12 +135,20 @@ export type WebResearchDelegationEnabledLookup = () => Promise<boolean>
 export const prismaWebSearchEnabledLookup: WebSearchEnabledLookup = async (tenantId) => {
   const platformRow = await prisma.platformSetting.findUnique({ where: { key: WEB_SEARCH_CONTROLS_KEY } })
   const platformValue = platformRow?.value as { killSwitch?: boolean } | null
-  if (platformValue?.killSwitch === true) return false
-  if (!tenantId) return true
+  if (!tenantId) {
+    return isWebSearchScopeEnabled({
+      tenantId: null,
+      platformKillSwitch: platformValue?.killSwitch === true,
+    })
+  }
   const tenantRow = await prisma.platformSetting.findUnique({ where: { key: WEB_SEARCH_TENANT_CONTROLS_KEY } })
   const tenantStore = tenantRow?.value as Record<string, { killSwitch?: boolean }> | null
   const tenantBucket = tenantStore?.[tenantId]
-  return tenantBucket?.killSwitch !== true
+  return isWebSearchScopeEnabled({
+    tenantId,
+    platformKillSwitch: platformValue?.killSwitch === true,
+    tenantKillSwitch: tenantBucket?.killSwitch === true,
+  })
 }
 
 export const prismaWebFetchEnabledLookup: WebFetchEnabledLookup = async () => {

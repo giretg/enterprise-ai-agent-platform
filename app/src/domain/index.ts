@@ -32,7 +32,7 @@ import { AllowlistAuthorizer, ToolBrokerService } from '@/domain/tool-broker/too
 import { WebSearchPolicyService } from '@/domain/web-search/web-search-policy-service'
 import { WebSearchService } from '@/domain/web-search/web-search-service'
 import { HttpSearchProviderAdapter, StubSearchProviderAdapter } from '@/domain/web-search/search-provider-adapter'
-import { findPlatformHostedWebSearchConnector } from '@/domain/web-search/web-search-connector-service'
+import { findPlatformWebSearchConnector } from '@/domain/web-search/web-search-connector-service'
 import { parseWebSearchConfig, type WebSearchAdapterResolver, type WebSearchResult } from '@/domain/web-search/web-search-types'
 import { WebFetchService, toWebFetchAuditMeta } from '@/domain/web-fetch/web-fetch-service'
 import { resolveWebFetchLimitsFromEnv } from '@/domain/web-fetch/web-fetch-types'
@@ -286,15 +286,15 @@ const sandboxVersioningService = new SandboxVersioningService(
   repositories.audit,
   sandboxContentResolver,
 )
-// Web Search Tool (Feature-spec — WebSearchTool §8.3, D-WS-7): tenant connector policy +
-// platform-hosted vagy saját custom_search_api kulcs; stub ha nincs live konfig.
+// Web Search Tool (Feature-spec — WebSearchTool §8.3, D-WS-7): a tenant connector saját
+// custom kulcsot, a tenant nélküli system agent a külön platform connectort használja.
 const webSearchAdapterResolver: WebSearchAdapterResolver = async (config, secretAlias) => {
   if (config.provider === 'stub') {
     return new StubSearchProviderAdapter()
   }
 
   if (config.provider === 'platform_hosted_search') {
-    const platformConnector = await findPlatformHostedWebSearchConnector()
+    const platformConnector = await findPlatformWebSearchConnector()
     if (!platformConnector) return new StubSearchProviderAdapter()
     const platformConfig = parseWebSearchConfig(platformConnector.config)
     const apiUrl = platformConfig.providerApiUrl?.trim()

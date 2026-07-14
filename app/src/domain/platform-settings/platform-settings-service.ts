@@ -34,7 +34,11 @@ import {
 } from '@/lib/model-policy'
 import { Prisma } from '@prisma/client'
 import type { TicketType } from '@prisma/client'
-import { WEB_SEARCH_CONTROLS_KEY, WEB_SEARCH_TENANT_CONTROLS_KEY } from '@/domain/web-search/web-search-types'
+import {
+  isWebSearchScopeEnabled,
+  WEB_SEARCH_CONTROLS_KEY,
+  WEB_SEARCH_TENANT_CONTROLS_KEY,
+} from '@/domain/web-search/web-search-types'
 import { WEB_FETCH_CONTROLS_KEY } from '@/domain/web-fetch/web-fetch-types'
 import { matchForbiddenHost } from '@/domain/net/egress-guard'
 import { errorPolicySchema, type ErrorPolicy } from '@/lib/playbook-v2/spec'
@@ -605,12 +609,13 @@ export class PlatformSettingsService {
     }
   }
 
-  /** Platform + tenant kill-switch — mindkettőnek engedélyezettnek kell lennie. */
+  /** Scope szerinti kill-switch: system agent → platform, tenant agent → tenant. */
   async isWebSearchEnabledForTenant(tenantId: string | null): Promise<boolean> {
-    if (!(await this.isWebSearchEnabled())) return false
-    if (!tenantId) return true
-    const tenantControls = await this.getTenantWebSearchControls(tenantId)
-    return !tenantControls.killSwitch
+    const platformKillSwitch = tenantId ? false : !(await this.isWebSearchEnabled())
+    const tenantKillSwitch = tenantId
+      ? (await this.getTenantWebSearchControls(tenantId)).killSwitch
+      : undefined
+    return isWebSearchScopeEnabled({ tenantId, platformKillSwitch, tenantKillSwitch })
   }
 
   async setTenantWebSearchControls(

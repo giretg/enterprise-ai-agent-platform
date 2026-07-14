@@ -1,6 +1,6 @@
 /**
  * Web Search tenant-modell migráció:
- * - platform-hosted connector
+ * - platform-szintű system-agent connector
  * - tenant connector / tenant
  * - agent link átkötése tenant connectorra (globális legacy link eltávolítása)
  *
@@ -10,10 +10,10 @@ import { config } from 'dotenv'
 import { PrismaClient } from '@prisma/client'
 import {
   ensureAllTenantsHaveWebSearchConnector,
-  ensurePlatformHostedWebSearchConnector,
+  ensurePlatformWebSearchConnector,
   ensureTenantWebSearchConnector,
   findTenantWebSearchConnector,
-  PLATFORM_HOSTED_WEB_SEARCH_CONNECTOR_NAME,
+  PLATFORM_WEB_SEARCH_CONNECTOR_NAME,
   TENANT_WEB_SEARCH_CONNECTOR_NAME,
 } from '../src/domain/web-search/web-search-connector-service'
 
@@ -23,8 +23,8 @@ config()
 const prisma = new PrismaClient()
 
 async function main() {
-  await ensurePlatformHostedWebSearchConnector()
-  console.log('✓ Platform Hosted Web Search connector')
+  await ensurePlatformWebSearchConnector()
+  console.log('✓ Platform Web Search connector')
 
   const created = await ensureAllTenantsHaveWebSearchConnector()
   console.log(`✓ Tenant connectors (új: ${created})`)
@@ -74,7 +74,7 @@ async function main() {
     where: {
       type: 'web_search',
       tenantId: null,
-      name: { not: PLATFORM_HOSTED_WEB_SEARCH_CONNECTOR_NAME },
+      name: { not: PLATFORM_WEB_SEARCH_CONNECTOR_NAME },
       lifecycleState: 'active',
     },
     data: { lifecycleState: 'archived' },

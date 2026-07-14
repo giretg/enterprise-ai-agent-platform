@@ -4,7 +4,7 @@ import { useState, useTransition } from 'react'
 import { Card } from '@/components/ui/shell'
 import {
   setWebSearchControls,
-  updatePlatformHostedWebSearch,
+  updatePlatformWebSearch,
   type WebSearchPolicyView,
 } from '@/app/actions/web-search'
 
@@ -16,23 +16,23 @@ export type WebSearchControlsView = {
 
 export function WebSearchControlPanel({
   initial,
-  platformHostedPolicy,
-  platformHostedError,
+  platformPolicy,
+  platformError,
   canEdit,
 }: {
   initial: WebSearchControlsView
-  platformHostedPolicy: WebSearchPolicyView | null
-  platformHostedError: string | null
+  platformPolicy: WebSearchPolicyView | null
+  platformError: string | null
   canEdit: boolean
 }) {
   const [controls, setControls] = useState(initial)
-  const [hostedPolicy, setHostedPolicy] = useState(platformHostedPolicy)
-  const [apiUrl, setApiUrl] = useState(platformHostedPolicy?.config.providerApiUrl ?? '')
+  const [platformPolicyState, setPlatformPolicyState] = useState(platformPolicy)
+  const [apiUrl, setApiUrl] = useState(platformPolicy?.config.providerApiUrl ?? '')
   const [apiKey, setApiKey] = useState('')
   const [pending, startTransition] = useTransition()
-  const [hostedPending, startHostedTransition] = useTransition()
+  const [platformPending, startPlatformTransition] = useTransition()
   const [message, setMessage] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null)
-  const [hostedMessage, setHostedMessage] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null)
+  const [platformMessage, setPlatformMessage] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null)
 
   const active = !controls.killSwitch
 
@@ -49,20 +49,20 @@ export function WebSearchControlPanel({
     })
   }
 
-  function savePlatformHosted() {
-    setHostedMessage(null)
-    startHostedTransition(async () => {
-      const res = await updatePlatformHostedWebSearch({
+  function savePlatformWebSearch() {
+    setPlatformMessage(null)
+    startPlatformTransition(async () => {
+      const res = await updatePlatformWebSearch({
         providerApiUrl: apiUrl,
         apiKey: apiKey || undefined,
       })
       if (res.success) {
-        setHostedPolicy(res.data)
+        setPlatformPolicyState(res.data)
         setApiUrl(res.data.config.providerApiUrl ?? '')
         setApiKey('')
-        setHostedMessage({ tone: 'ok', text: 'Platform-hosted search mentve.' })
+        setPlatformMessage({ tone: 'ok', text: 'Platform web search mentve.' })
       } else {
-        setHostedMessage({ tone: 'err', text: res.error })
+        setPlatformMessage({ tone: 'err', text: res.error })
       }
     })
   }
@@ -78,8 +78,8 @@ export function WebSearchControlPanel({
             <div>
               <p className="text-sm font-semibold">
                 {active
-                  ? 'Platform web search aktív (tenant kill-switch külön)'
-                  : 'Platform kill-switch — minden tenant web_search tiltva'}
+                  ? 'Platform web search aktív a system agentek számára'
+                  : 'Platform kill-switch — a system agentek web_search hívásai tiltva'}
               </p>
             </div>
           </div>
@@ -110,18 +110,18 @@ export function WebSearchControlPanel({
         <div className="estate-rule" />
 
         <div className="space-y-3">
-          <p className="text-sm font-semibold text-ink">Platform-hosted search (központi API kulcs)</p>
+          <p className="text-sm font-semibold text-ink">Platform web search (központi API kulcs)</p>
           <p className="text-xs text-ink-soft">
-            A <code>platform_hosted_search</code> providert választó tenantek ezt a kulcsot és URL-t használják.
-            Tenant policy (allowlist, limitek) tenantonként külön állítható.
+            Ezt az endpointot és kulcsot kizárólag a tenant nélküli provisioning/web-egress system
+            agentek használják. A tenantok nem öröklik és nem választhatják ezt a beállítást.
           </p>
-          {platformHostedError ? (
-            <p className="text-sm text-coral-deep">{platformHostedError}</p>
+          {platformError ? (
+            <p className="text-sm text-coral-deep">{platformError}</p>
           ) : (
             <>
-              {hostedPolicy?.secretAlias ? (
+              {platformPolicyState?.secretAlias ? (
                 <p className="text-xs text-ink-soft">
-                  Aktív secret: <code>{hostedPolicy.secretAlias}</code>
+                  Aktív secret: <code>{platformPolicyState.secretAlias}</code>
                 </p>
               ) : null}
               <div className="grid gap-4 lg:grid-cols-2">
@@ -131,7 +131,7 @@ export function WebSearchControlPanel({
                     type="url"
                     value={apiUrl}
                     onChange={(event) => setApiUrl(event.target.value)}
-                    disabled={!canEdit || hostedPending}
+                    disabled={!canEdit || platformPending}
                     placeholder="https://api.search.brave.com/res/v1/web/search"
                     className="w-full rounded-lg border border-line bg-card px-3 py-2 text-sm text-ink disabled:opacity-60"
                   />
@@ -142,32 +142,32 @@ export function WebSearchControlPanel({
                     type="password"
                     value={apiKey}
                     onChange={(event) => setApiKey(event.target.value)}
-                    disabled={!canEdit || hostedPending}
+                    disabled={!canEdit || platformPending}
                     placeholder="Új kulcs → Secret Manager (secret-ref)"
                     autoComplete="new-password"
                     className="w-full rounded-lg border border-line bg-card px-3 py-2 text-sm text-ink disabled:opacity-60"
                   />
                 </label>
               </div>
-              {hostedMessage ? (
+              {platformMessage ? (
                 <p
                   className={`rounded-lg border px-3 py-2 text-sm ${
-                    hostedMessage.tone === 'ok'
+                    platformMessage.tone === 'ok'
                       ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
                       : 'border-red-500/30 bg-red-500/10 text-red-300'
                   }`}
                 >
-                  {hostedMessage.text}
+                  {platformMessage.text}
                 </p>
               ) : null}
               {canEdit ? (
                 <button
                   type="button"
-                  disabled={hostedPending}
-                  onClick={savePlatformHosted}
+                  disabled={platformPending}
+                  onClick={savePlatformWebSearch}
                   className="rounded-lg bg-sage px-4 py-2 text-sm font-medium text-white hover:bg-sage-deep disabled:opacity-50"
                 >
-                  Platform-hosted mentése
+                  Platform web search mentése
                 </button>
               ) : null}
             </>

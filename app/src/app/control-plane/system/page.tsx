@@ -14,7 +14,6 @@ import {
 } from '@/app/actions/platform'
 import { getMonitorControls } from '@/app/actions/monitor'
 import {
-  getWebFetchControls,
   getTenantWebSearchControls,
   getWebSearchPolicy,
 } from '@/app/actions/web-search'
@@ -26,7 +25,6 @@ import { ModelGatewayPanel } from './model-gateway-panel'
 import { ModelPolicyPanel } from './model-policy-panel'
 import { TicketTypeConfigPanel } from './ticket-type-config-panel'
 import { TenantWebSearchPolicyPanel } from './tenant-web-search-policy-panel'
-import { WebFetchControlPanel } from './web-fetch-control-panel'
 import { MemoryObservabilityPanel } from './memory-observability-panel'
 
 export default async function SystemPage() {
@@ -41,7 +39,6 @@ export default async function SystemPage() {
     monitorControlsRes,
     tenantWebSearchPolicyRes,
     tenantWebSearchControlsRes,
-    webFetchControlsRes,
     gatewayStatsRes,
     routingPoliciesRes,
     budgetsRes,
@@ -58,7 +55,6 @@ export default async function SystemPage() {
     getMonitorControls(),
     getWebSearchPolicy(),
     getTenantWebSearchControls(),
-    getWebFetchControls(),
     getModelCallsSummary(),
     listModelRoutingPolicies(),
     listModelBudgets(),
@@ -153,14 +149,6 @@ export default async function SystemPage() {
           policyError={!tenantWebSearchPolicyRes.success ? tenantWebSearchPolicyRes.error : null}
           canEdit={canEditTenantWebSearch}
         />
-      )}
-
-      {!webFetchControlsRes.success ? (
-        <div className="rounded-lg border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
-          {webFetchControlsRes.error}
-        </div>
-      ) : (
-        <WebFetchControlPanel initial={webFetchControlsRes.data} canEdit={canEdit} />
       )}
 
       {!ticketTypesRes.success ? (

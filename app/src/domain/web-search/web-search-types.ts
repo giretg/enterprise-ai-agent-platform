@@ -9,7 +9,27 @@ export const WEB_SEARCH_CONTROLS_KEY = 'web_search.controls'
 /** Tenant bucket: `{ [tenantId]: { killSwitch, updatedAt?, updatedById? } }`. */
 export const WEB_SEARCH_TENANT_CONTROLS_KEY = 'web_search.tenant_controls'
 
+/**
+ * A két kill-switch scope-ja nem fed át: tenant futásnál csak a tenant kapcsoló,
+ * tenant nélküli system agentnél csak a platform kapcsoló számít.
+ */
+export function isWebSearchScopeEnabled(input: {
+  tenantId: string | null
+  platformKillSwitch: boolean
+  tenantKillSwitch?: boolean
+}): boolean {
+  return input.tenantId ? input.tenantKillSwitch !== true : !input.platformKillSwitch
+}
+
 export type WebSearchProvider = 'platform_hosted_search' | 'custom_search_api' | 'stub'
+
+/** Tenant connector kizárólag saját custom providert használhat; system scope legacy-kompatibilis. */
+export function isWebSearchProviderAllowedForScope(
+  tenantId: string | null,
+  provider: WebSearchProvider,
+): boolean {
+  return tenantId === null || provider === 'custom_search_api'
+}
 
 export type WebSearchConnectorConfig = {
   provider: WebSearchProvider

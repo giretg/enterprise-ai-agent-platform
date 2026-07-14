@@ -1245,7 +1245,7 @@ const optionalHttpUrlSchema = z
     message: 'Az API URL-nek http(s) címmel kell kezdődnie',
   })
 
-export const updatePlatformHostedWebSearchSchema = z.object({
+export const updatePlatformWebSearchSchema = z.object({
   providerApiUrl: optionalHttpUrlSchema,
   apiKey: z
     .string()
@@ -1257,7 +1257,8 @@ export const updatePlatformHostedWebSearchSchema = z.object({
 
 export const updateWebSearchPolicySchema = z.object({
   connectorId: z.string().uuid(),
-  provider: z.enum(['stub', 'custom_search_api', 'platform_hosted_search']),
+  // Tenant scope-ban nincs platform credential-fallback és nincs stub mód.
+  provider: z.literal('custom_search_api'),
   providerApiUrl: optionalHttpUrlSchema,
   apiKey: z
     .string()

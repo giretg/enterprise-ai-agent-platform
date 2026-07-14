@@ -12,7 +12,7 @@ import { getMonitorControls } from '@/app/actions/monitor'
 import {
   getWebFetchControls,
   getWebSearchControls,
-  getPlatformHostedWebSearchPolicy,
+  getPlatformWebSearchPolicy,
 } from '@/app/actions/web-search'
 import { readDispatcherRuntime } from '@/lib/dispatcher-runtime'
 import { DatabaseControlPanel } from '@/app/control-plane/system/database-control-panel'
@@ -47,7 +47,7 @@ export default async function PlatformSettingsPage() {
     getModelPolicy(),
     getMonitorControls(),
     getWebSearchControls(),
-    getPlatformHostedWebSearchPolicy(),
+    getPlatformWebSearchPolicy(),
     getWebFetchControls(),
     getModelCallsSummary(),
     listModelRoutingPolicies(),
@@ -100,8 +100,8 @@ export default async function PlatformSettingsPage() {
       {webSearchControlsRes.success && (
         <WebSearchControlPanel
           initial={webSearchControlsRes.data}
-          platformHostedPolicy={webSearchPolicyRes.success ? webSearchPolicyRes.data : null}
-          platformHostedError={!webSearchPolicyRes.success ? webSearchPolicyRes.error : null}
+          platformPolicy={webSearchPolicyRes.success ? webSearchPolicyRes.data : null}
+          platformError={!webSearchPolicyRes.success ? webSearchPolicyRes.error : null}
           canEdit={canEdit}
         />
       )}

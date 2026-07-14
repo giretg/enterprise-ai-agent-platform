@@ -15,6 +15,22 @@ import { getCloudRunAccessToken } from '@/domain/dispatcher/cloud-run-auth'
 
 const SECRET_REF_PREFIX = 'secret-ref:'
 
+/**
+ * A connector API-kulcsa nincs (még) beállítva a titok-tárolóban: Secret Manager 404
+ * (a `connector-key-<id>` secret/verzió nem létezik) vagy dev-fájl ENOENT, ill. üres verzió.
+ * TIPIZÁLT hiba, hogy a hívó (pl. web_search handler) FELHASZNÁLÓBARÁT, cselekvésre okító
+ * üzenetté fordíthassa a nyers „Secret Manager access failed: 404" helyett.
+ */
+export class ConnectorApiKeyMissingError extends Error {
+  constructor(
+    public readonly secretId: string,
+    public readonly reason: 'not_found' | 'empty',
+  ) {
+    super(`Connector API key not configured (${secretId}, ${reason})`)
+    this.name = 'ConnectorApiKeyMissingError'
+  }
+}
+
 export function buildConnectorSecretRef(connectorId: string): string {
   return `${SECRET_REF_PREFIX}${connectorId}`
 }
@@ -93,14 +109,26 @@ export async function loadConnectorApiKeyByRef(ref: string): Promise<string> {
       `https://secretmanager.googleapis.com/v1/${smResource(secretId)}/versions/latest:access`,
       { headers: { authorization: `Bearer ${token}` } },
     )
+    // 404 = a titok (vagy a `latest` verzió) nincs beállítva → tipizált „hiányzó kulcs" hiba,
+    // hogy a hívó felhasználóbarát üzenetet adhasson. Más státusz (401/403/5xx) valódi
+    // hozzáférési/hálózati hiba marad.
+    if (res.status === 404) throw new ConnectorApiKeyMissingError(secretId, 'not_found')
     if (!res.ok) throw new Error(`Secret Manager access failed: ${res.status}`)
     const data = (await res.json()) as { payload?: { data?: string } }
-    if (!data.payload?.data) throw new Error('Connector secret version empty')
+    if (!data.payload?.data) throw new ConnectorApiKeyMissingError(secretId, 'empty')
     return Buffer.from(data.payload.data, 'base64').toString('utf8').trim()
   }
 
-  const raw = await readFile(devFilePath(secretId), 'utf8')
-  return raw.trim()
+  try {
+    const raw = await readFile(devFilePath(secretId), 'utf8')
+    return raw.trim()
+  } catch (e) {
+    // Dev: a lokális kulcs-fájl nem létezik → ugyanaz a „hiányzó kulcs" eset, mint prod 404.
+    if ((e as NodeJS.ErrnoException)?.code === 'ENOENT') {
+      throw new ConnectorApiKeyMissingError(secretId, 'not_found')
+    }
+    throw e
+  }
 }
 
 export async function deleteConnectorApiKey(connectorId: string): Promise<void> {
