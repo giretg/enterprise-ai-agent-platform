@@ -29,5 +29,7 @@ export function isAgentApiKeyFormat(rawKey: string): boolean {
  * API-kulcshoz, miközben a bcrypt-ellenőrzés mélységi védelemként változatlanul megmarad.
  */
 export function deriveAgentApiKeyLookupHash(rawKey: string): string {
+  // codeql[js/insufficient-password-hash] — this is a keyed lookup HMAC, not at-rest password storage;
+  // the bcrypt keyHash remains the credential verifier.
   return createHmac('sha256', AGENT_API_KEY_LOOKUP_SECRET).update(rawKey, 'utf8').digest('hex')
 }
