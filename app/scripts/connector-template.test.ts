@@ -188,7 +188,7 @@ async function main() {
       descriptor,
       {
         authMethodKind: 'bearer',
-        instanceValues: {},
+        instanceValues: { repositoryAccess: 'giretg/ostorosbor-crm, excellence/partner-api' },
       },
       { personalAccessToken: 'secret-ref:github-pat' },
       {
@@ -202,6 +202,10 @@ async function main() {
     const runtime = parseHttpApiConfig(config)
     assert.equal(runtime.baseUrl, 'https://api.github.com')
     assert.equal(runtime.auth.scheme, 'bearer')
+    assert.deepEqual(runtime.githubRepositoryAccess, {
+      mode: 'selected',
+      repositories: ['giretg/ostorosbor-crm', 'excellence/partner-api'],
+    })
     assert.ok((config.proposedTools ?? []).some((tool) => tool.name === 'get_authenticated_user'))
   })
 

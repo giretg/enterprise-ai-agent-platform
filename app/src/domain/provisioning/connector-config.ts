@@ -66,6 +66,17 @@ export const connectorConfigSchema = z.object({
     .object({ rps: z.number().nonnegative(), burst: z.number().nonnegative() })
     .optional(),
   proposedTools: z.array(proposedToolSchema).default([]),
+  githubRepositoryAccess: z
+    .discriminatedUnion('mode', [
+      z.object({ mode: z.literal('any') }),
+      z.object({
+        mode: z.literal('selected'),
+        repositories: z
+          .array(z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/))
+          .min(1),
+      }),
+    ])
+    .optional(),
   provenance: z
     .object({
       sourceHash: z.string().optional(),

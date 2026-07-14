@@ -1043,6 +1043,9 @@ function httpApiConnectorConfig(input: {
   requestHeaders?: Record<string, string>
   writeHeaders?: Record<string, string>
   restrictToEndpoints?: boolean
+  githubRepositoryAccess?:
+    | { mode: 'any' }
+    | { mode: 'selected'; repositories: string[] }
   endpoints?: Array<{
     method: string
     path: string
@@ -1091,6 +1094,7 @@ function httpApiConnectorConfig(input: {
       : {}),
     ...(input.endpoints && input.endpoints.length > 0 ? { endpoints: input.endpoints } : {}),
     restrictToEndpoints: input.restrictToEndpoints,
+    ...(input.githubRepositoryAccess ? { githubRepositoryAccess: input.githubRepositoryAccess } : {}),
   }
 }
 
@@ -1153,6 +1157,9 @@ export async function createHttpApiConnectorForAgent(input: {
   writeHeaders?: Record<string, string>
   accessMode?: 'read' | 'write'
   restrictToEndpoints?: boolean
+  githubRepositoryAccess?:
+    | { mode: 'any' }
+    | { mode: 'selected'; repositories: string[] }
   endpoints?: Array<{
     method: string
     path: string
@@ -1277,6 +1284,9 @@ export async function updateHttpApiConnectorForAgent(input: {
   writeHeaders?: Record<string, string>
   accessMode?: 'read' | 'write'
   restrictToEndpoints?: boolean
+  githubRepositoryAccess?:
+    | { mode: 'any' }
+    | { mode: 'selected'; repositories: string[] }
   endpoints?: Array<{
     method: string
     path: string

@@ -3,6 +3,12 @@
 import { useRouter } from 'next/navigation'
 import { useState, useTransition } from 'react'
 import { createHttpApiConnectorForAgent } from '@/app/actions/platform'
+import {
+  GitHubRepositoryAccessFields,
+  parseGitHubRepositoryAccess,
+  type GitHubRepositoryAccess,
+  type GitHubRepositoryAccessMode,
+} from '@/components/agents/github-repository-access-fields'
 import { Card } from '@/components/ui/shell'
 
 type EndpointRow = { method: string; path: string; description: string; idempotent: boolean; profile: string }
@@ -103,6 +109,9 @@ export function AddApiConnectorForm({ agentId, bare = false }: { agentId: string
   const [requestHeadersText, setRequestHeadersText] = useState('')
   const [writeHeadersText, setWriteHeadersText] = useState('')
   const [restrictToEndpoints, setRestrictToEndpoints] = useState(false)
+  const [githubRepositoryAccessMode, setGitHubRepositoryAccessMode] =
+    useState<GitHubRepositoryAccessMode>('selected')
+  const [githubRepositoriesText, setGitHubRepositoriesText] = useState('')
   const [endpoints, setEndpoints] = useState<EndpointRow[]>([
     { method: 'GET', path: '', description: '', idempotent: false, profile: '' },
   ])
@@ -133,12 +142,18 @@ export function AddApiConnectorForm({ agentId, bare = false }: { agentId: string
       let requestHeaders: Record<string, string> | undefined
       let writeHeaders: Record<string, string> | undefined
       let authProfiles: AuthProfiles | undefined
+      let githubRepositoryAccess: GitHubRepositoryAccess | undefined
       try {
         authProfiles = parseAuthProfilesJson(authProfilesText)
         requestHeaders = parseHeaderJson('Minden hívás fejlécei', requestHeadersText)
         writeHeaders = parseHeaderJson('Író hívások fejlécei', writeHeadersText)
+        githubRepositoryAccess = parseGitHubRepositoryAccess(
+          baseUrl.trim(),
+          githubRepositoryAccessMode,
+          githubRepositoriesText,
+        )
       } catch (e) {
-        setError(e instanceof Error ? e.message : 'Hibás fejléc JSON.')
+        setError(e instanceof Error ? e.message : 'Hibás connector-konfiguráció.')
         return
       }
 
@@ -173,6 +188,7 @@ export function AddApiConnectorForm({ agentId, bare = false }: { agentId: string
         ...(writeHeaders ? { writeHeaders } : {}),
         accessMode,
         restrictToEndpoints,
+        ...(githubRepositoryAccess ? { githubRepositoryAccess } : {}),
         ...(cleanedEndpoints.length > 0 ? { endpoints: cleanedEndpoints } : {}),
       })
 
@@ -193,6 +209,8 @@ export function AddApiConnectorForm({ agentId, bare = false }: { agentId: string
         setDefaultAuthProfile('')
         setRequestHeadersText('')
         setWriteHeadersText('')
+        setGitHubRepositoryAccessMode('selected')
+        setGitHubRepositoriesText('')
         setEndpoints([{ method: 'GET', path: '', description: '', idempotent: false, profile: '' }])
         setRestrictToEndpoints(false)
         router.refresh()
@@ -234,6 +252,13 @@ export function AddApiConnectorForm({ agentId, bare = false }: { agentId: string
               className={INPUT}
             />
           </label>
+          <GitHubRepositoryAccessFields
+            baseUrl={baseUrl}
+            mode={githubRepositoryAccessMode}
+            repositoriesText={githubRepositoriesText}
+            onModeChange={setGitHubRepositoryAccessMode}
+            onRepositoriesTextChange={setGitHubRepositoriesText}
+          />
           <label className="block text-sm">
             <span className="text-ink-soft">Hitelesítés módja</span>
             <select

@@ -148,6 +148,7 @@ function sampleValueForField(field: InstanceFieldDescriptor, key: string): strin
   if (field.validation?.format === 'host') return `api.${key}.example`
   if (field.validation?.format === 'hostList') return `api.${key}.example`
   if (field.name.toLowerCase().includes('clientid')) return `${key}-client-id`
+  if (field.name.toLowerCase().includes('repository')) return 'owner/example-repository'
   if (field.name.toLowerCase().includes('host')) return `api.${key}.example`
   return `${key}-${field.name}`
 }
@@ -288,6 +289,22 @@ function assignTarget(
   }
   if (target === 'auth.headerName') {
     config.auth.headerName = interpolated
+    return
+  }
+  if (target === 'github.repositoryAccess') {
+    if (interpolated === '*') {
+      config.githubRepositoryAccess = { mode: 'any' }
+      return
+    }
+    const repositories = [
+      ...new Set(
+        interpolated
+          .split(/[\s,]+/)
+          .map((repository) => repository.trim().toLowerCase())
+          .filter(Boolean),
+      ),
+    ]
+    config.githubRepositoryAccess = { mode: 'selected', repositories }
     return
   }
   throw new ConnectorTemplateMaterializationError(`unsupported template target: ${target}`)

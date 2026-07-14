@@ -43,6 +43,10 @@ export type HttpApiAuthProfile = {
   auth?: HttpApiAuthConfig
 }
 
+export type GitHubRepositoryAccess =
+  | { mode: 'any' }
+  | { mode: 'selected'; repositories: string[] }
+
 export type HttpApiConfig = {
   baseUrl: string
   auth: HttpApiAuthConfig
@@ -60,6 +64,8 @@ export type HttpApiConfig = {
   endpoints?: HttpApiEndpoint[]
   /** Ha true: csak az `endpoints` listában szereplő (method+path) hívható. */
   restrictToEndpoints?: boolean
+  /** GitHub connector repository-határa. Hiánya visszafelé kompatibilisen `any`. */
+  githubRepositoryAccess?: GitHubRepositoryAccess
   /** Maximális válasz-méret karakterben (alap: 20000). */
   maxResponseChars?: number
 }
@@ -67,6 +73,7 @@ export type HttpApiConfig = {
 const READ_METHODS = new Set(['GET', 'HEAD'])
 const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 const DEFAULT_MAX_RESPONSE_CHARS = 20_000
+const GITHUB_REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -160,6 +167,7 @@ export function parseHttpApiConfig(raw: unknown): HttpApiConfig {
     : undefined
 
   const authProfiles = parseAuthProfiles(raw.authProfiles)
+  const githubRepositoryAccess = parseGitHubRepositoryAccess(raw.githubRepositoryAccess)
 
   return {
     baseUrl: baseUrl.replace(/\/+$/, ''),
@@ -174,6 +182,7 @@ export function parseHttpApiConfig(raw: unknown): HttpApiConfig {
     description: typeof raw.description === 'string' ? raw.description : undefined,
     endpoints,
     restrictToEndpoints: raw.restrictToEndpoints === true,
+    ...(githubRepositoryAccess ? { githubRepositoryAccess } : {}),
     maxResponseChars:
       typeof raw.maxResponseChars === 'number' && raw.maxResponseChars > 0
         ? raw.maxResponseChars
@@ -201,6 +210,31 @@ function parseStringRecord(raw: unknown, field: string): Record<string, string> 
     out[key] = value
   }
   return Object.keys(out).length > 0 ? out : undefined
+}
+
+function parseGitHubRepositoryAccess(raw: unknown): GitHubRepositoryAccess | undefined {
+  if (raw === undefined) return undefined
+  if (!isRecord(raw)) {
+    throw new Error('http_api config.githubRepositoryAccess must be an object')
+  }
+  if (raw.mode === 'any') return { mode: 'any' }
+  if (raw.mode !== 'selected') {
+    throw new Error('http_api config.githubRepositoryAccess.mode must be "any" or "selected"')
+  }
+  if (!Array.isArray(raw.repositories) || raw.repositories.length === 0) {
+    throw new Error('http_api selected GitHub repository access requires repositories')
+  }
+  const repositories = [
+    ...new Set(
+      raw.repositories.map((repository) => {
+        if (typeof repository !== 'string' || !GITHUB_REPOSITORY_PATTERN.test(repository.trim())) {
+          throw new Error('http_api GitHub repository must use owner/repo format')
+        }
+        return repository.trim().toLowerCase()
+      }),
+    ),
+  ]
+  return { mode: 'selected', repositories }
 }
 
 function parseAuthProfiles(raw: unknown): Record<string, HttpApiAuthProfile> | undefined {
@@ -377,6 +411,7 @@ export class HttpApiClient {
       // SSRF-védelem: a path nem írhatja felül a connector hostját.
       throw new HttpApiError('path must be relative to the connector baseUrl', 'invalid_path')
     }
+    this.assertGitHubRepositoryAllowed(path)
     const normalized = path.split('?')[0]
     const endpoint = (this.config.endpoints ?? []).find(
       (e) => e.method === method && pathMatches(e.path, normalized),
@@ -387,6 +422,41 @@ export class HttpApiClient {
       }
     }
     return endpoint
+  }
+
+  private assertGitHubRepositoryAllowed(path: string): void {
+    const access = this.config.githubRepositoryAccess
+    if (!access || access.mode === 'any') return
+
+    let normalized: string
+    try {
+      normalized = this.buildUrl(path).pathname
+    } catch {
+      throw new HttpApiError('GitHub repository path is invalid', 'invalid_path')
+    }
+    const match = normalized.match(/^\/?repos\/([^/]+)\/([^/]+)(?:\/|$)/i)
+    if (!match) {
+      throw new HttpApiError(
+        `GitHub path requires a selected owner/repo scope: ${path}`,
+        'github_repository_scope_required',
+      )
+    }
+
+    let repository: string
+    try {
+      repository = `${decodeURIComponent(match[1])}/${decodeURIComponent(match[2])}`.toLowerCase()
+    } catch {
+      throw new HttpApiError('GitHub repository path is invalid', 'invalid_path')
+    }
+    if (!GITHUB_REPOSITORY_PATTERN.test(repository)) {
+      throw new HttpApiError('GitHub repository path is invalid', 'invalid_path')
+    }
+    if (!access.repositories.includes(repository)) {
+      throw new HttpApiError(
+        `GitHub repository not allowed: ${repository}`,
+        'github_repository_not_allowed',
+      )
+    }
   }
 
   private buildUrl(path: string, query?: HttpApiRequestParams['query']): URL {

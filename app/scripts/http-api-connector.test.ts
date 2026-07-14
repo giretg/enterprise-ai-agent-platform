@@ -94,6 +94,91 @@ async function main() {
     assert.equal(res.ok, true)
   })
 
+  await test('GitHub repository scope: a kiválasztott owner/repo hívható', async () => {
+    const config = parseHttpApiConfig({
+      baseUrl: 'https://api.github.com',
+      auth: { scheme: 'bearer' },
+      githubRepositoryAccess: {
+        mode: 'selected',
+        repositories: ['giretg/ostorosbor-crm'],
+      },
+    })
+    const client = new HttpApiClient(config, 'stub-api-key')
+    const res = await client.request({
+      method: 'GET',
+      path: '/repos/GIRETG/Ostorosbor-CRM/contents/src',
+    })
+    assert.equal(res.ok, true)
+  })
+
+  await test('GitHub repository scope: másik repository hívása elutasítva', async () => {
+    const config = parseHttpApiConfig({
+      baseUrl: 'https://api.github.com',
+      auth: { scheme: 'bearer' },
+      githubRepositoryAccess: {
+        mode: 'selected',
+        repositories: ['giretg/ostorosbor-crm'],
+      },
+    })
+    const client = new HttpApiClient(config, 'stub-api-key')
+    await assert.rejects(
+      client.request({
+        method: 'GET',
+        path: '/repos/giretg/enterprise-ai-agent-platform/contents',
+      }),
+      (e: unknown) => e instanceof HttpApiError && e.code === 'github_repository_not_allowed',
+    )
+  })
+
+  await test('GitHub repository scope: dot-segmenttel sem kerülhető meg az allowlist', async () => {
+    const config = parseHttpApiConfig({
+      baseUrl: 'https://api.github.com',
+      auth: { scheme: 'bearer' },
+      githubRepositoryAccess: {
+        mode: 'selected',
+        repositories: ['giretg/ostorosbor-crm'],
+      },
+    })
+    const client = new HttpApiClient(config, 'stub-api-key')
+    await assert.rejects(
+      client.request({
+        method: 'GET',
+        path: '/repos/giretg/ostorosbor-crm/../../enterprise-ai-agent-platform/contents',
+      }),
+      (e: unknown) => e instanceof HttpApiError && e.code === 'github_repository_not_allowed',
+    )
+  })
+
+  await test('GitHub repository scope: selected módban a repository-listázás elutasítva', async () => {
+    const config = parseHttpApiConfig({
+      baseUrl: 'https://api.github.com',
+      auth: { scheme: 'bearer' },
+      githubRepositoryAccess: {
+        mode: 'selected',
+        repositories: ['giretg/ostorosbor-crm'],
+      },
+    })
+    const client = new HttpApiClient(config, 'stub-api-key')
+    await assert.rejects(
+      client.request({ method: 'GET', path: '/user/repos' }),
+      (e: unknown) => e instanceof HttpApiError && e.code === 'github_repository_scope_required',
+    )
+  })
+
+  await test('GitHub repository scope: any módban bármely repository hívható', async () => {
+    const config = parseHttpApiConfig({
+      baseUrl: 'https://api.github.com',
+      auth: { scheme: 'bearer' },
+      githubRepositoryAccess: { mode: 'any' },
+    })
+    const client = new HttpApiClient(config, 'stub-api-key')
+    const res = await client.request({
+      method: 'GET',
+      path: '/repos/giretg/enterprise-ai-agent-platform/contents',
+    })
+    assert.equal(res.ok, true)
+  })
+
   await test('SSRF-védelem: abszolút URL a path-ban elutasítva', async () => {
     const open = parseHttpApiConfig({ baseUrl: 'https://x.io', auth: { scheme: 'bearer' } })
     const client = new HttpApiClient(open, 'stub-api-key')

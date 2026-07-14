@@ -475,6 +475,17 @@ const httpApiAuthProfileSchema = z.object({
     .optional(),
 })
 
+const githubRepositoryAccessSchema = z.discriminatedUnion('mode', [
+  z.object({ mode: z.literal('any') }),
+  z.object({
+    mode: z.literal('selected'),
+    repositories: z
+      .array(z.string().trim().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/))
+      .min(1)
+      .max(100),
+  }),
+])
+
 const httpApiConnectorFields = {
   name: z.string().trim().min(1).max(120),
   baseUrl: z.string().trim().url().max(500),
@@ -500,6 +511,7 @@ const httpApiConnectorFields = {
   writeHeaders: z.record(z.string(), z.string()).optional(),
   accessMode: z.enum(['read', 'write']).default('write'),
   restrictToEndpoints: z.boolean().default(false),
+  githubRepositoryAccess: githubRepositoryAccessSchema.optional(),
   endpoints: z.array(httpApiEndpointSchema).max(100).optional(),
 }
 

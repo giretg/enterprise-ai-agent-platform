@@ -5,6 +5,12 @@ import { useState, useTransition } from 'react'
 import { updateHttpApiConnectorForAgent } from '@/app/actions/platform'
 import { unassignConnectorFromAgent } from '@/app/actions/provisioning'
 import { startConnectorOAuth } from '@/app/actions/connector-grants'
+import {
+  GitHubRepositoryAccessFields,
+  parseGitHubRepositoryAccess,
+  readGitHubRepositoryAccess,
+  type GitHubRepositoryAccess,
+} from '@/components/agents/github-repository-access-fields'
 import { Badge } from '@/components/ui/shell'
 import { connectorAccessLabel } from '@/lib/agent-profile-labels'
 
@@ -124,6 +130,7 @@ function readInitialConfig(config: unknown) {
         }))
         .filter((endpoint) => endpoint.path.trim().length > 0)
     : []
+  const githubRepositoryAccess = readGitHubRepositoryAccess(raw.githubRepositoryAccess)
 
   return {
     baseUrl: typeof raw.baseUrl === 'string' ? raw.baseUrl : '',
@@ -159,6 +166,8 @@ function readInitialConfig(config: unknown) {
     requestHeadersText: headerJson(raw.requestHeaders),
     writeHeadersText: headerJson(raw.writeHeaders),
     restrictToEndpoints: raw.restrictToEndpoints === true,
+    githubRepositoryAccessMode: githubRepositoryAccess.mode,
+    githubRepositoriesText: githubRepositoryAccess.repositoriesText,
     endpoints:
       endpoints.length > 0
         ? endpoints
@@ -204,6 +213,12 @@ function EditApiConnectorForm({
   const [requestHeadersText, setRequestHeadersText] = useState(initial.requestHeadersText)
   const [writeHeadersText, setWriteHeadersText] = useState(initial.writeHeadersText)
   const [restrictToEndpoints, setRestrictToEndpoints] = useState(initial.restrictToEndpoints)
+  const [githubRepositoryAccessMode, setGitHubRepositoryAccessMode] = useState(
+    initial.githubRepositoryAccessMode,
+  )
+  const [githubRepositoriesText, setGitHubRepositoriesText] = useState(
+    initial.githubRepositoriesText,
+  )
   const [endpoints, setEndpoints] = useState<EndpointRow[]>(initial.endpoints)
 
   function updateEndpoint(index: number, patch: Partial<EndpointRow>) {
@@ -234,12 +249,18 @@ function EditApiConnectorForm({
     let requestHeaders: Record<string, string> | undefined
     let writeHeaders: Record<string, string> | undefined
     let authProfiles: AuthProfiles | undefined
+    let githubRepositoryAccess: GitHubRepositoryAccess | undefined
     try {
       authProfiles = parseAuthProfilesJson(authProfilesText)
       requestHeaders = parseHeaderJson('Minden hívás fejlécei', requestHeadersText)
       writeHeaders = parseHeaderJson('Író hívások fejlécei', writeHeadersText)
+      githubRepositoryAccess = parseGitHubRepositoryAccess(
+        baseUrl.trim(),
+        githubRepositoryAccessMode,
+        githubRepositoriesText,
+      )
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Hibás fejléc JSON.')
+      setError(e instanceof Error ? e.message : 'Hibás connector-konfiguráció.')
       return null
     }
 
@@ -277,6 +298,7 @@ function EditApiConnectorForm({
       ...(writeHeaders ? { writeHeaders } : {}),
       accessMode,
       restrictToEndpoints,
+      ...(githubRepositoryAccess ? { githubRepositoryAccess } : {}),
       ...(cleanedEndpoints.length > 0 ? { endpoints: cleanedEndpoints } : {}),
     })
 
@@ -351,6 +373,13 @@ function EditApiConnectorForm({
             className={INPUT}
           />
         </label>
+        <GitHubRepositoryAccessFields
+          baseUrl={baseUrl}
+          mode={githubRepositoryAccessMode}
+          repositoriesText={githubRepositoriesText}
+          onModeChange={setGitHubRepositoryAccessMode}
+          onRepositoriesTextChange={setGitHubRepositoriesText}
+        />
         <label className="block text-sm">
           <span className="text-ink-soft">Hitelesítés módja</span>
           <select

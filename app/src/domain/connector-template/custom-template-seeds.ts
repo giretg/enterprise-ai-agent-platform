@@ -94,6 +94,17 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
     ],
     instanceFields: [
       {
+        name: 'repositoryAccess',
+        label: 'Repository-hozzáférés (* vagy owner/repo lista)',
+        type: 'string',
+        required: true,
+        validation: {
+          pattern:
+            '^(?:\\*|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:[\\s,]+[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)*)$',
+        },
+        target: 'github.repositoryAccess',
+      },
+      {
         name: 'personalAccessToken',
         label: 'GitHub personal access token',
         type: 'secret',
