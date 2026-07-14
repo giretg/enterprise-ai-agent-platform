@@ -1,4 +1,5 @@
 import type { TemplateDescriptor } from './template-descriptor'
+import { GITHUB_REPOSITORY_LIST_PATTERN_SOURCE } from '@/domain/connector/github-repository-access'
 
 /**
  * Globális custom connector-sablonok seedje.
@@ -99,8 +100,7 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
         type: 'string',
         required: true,
         validation: {
-          pattern:
-            '^(?:\\*|[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:[\\s,]+[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)*)$',
+          pattern: GITHUB_REPOSITORY_LIST_PATTERN_SOURCE,
         },
         target: 'github.repositoryAccess',
       },

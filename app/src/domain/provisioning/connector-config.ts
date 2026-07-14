@@ -6,6 +6,7 @@
  * validátor (§4.4, draft-validator.ts) végzi.
  */
 import { z } from 'zod'
+import { githubRepositoryAccessSchema } from '@/domain/connector/github-repository-access-schema'
 
 export const HTTP_METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const
 export type HttpMethod = (typeof HTTP_METHODS)[number]
@@ -66,17 +67,7 @@ export const connectorConfigSchema = z.object({
     .object({ rps: z.number().nonnegative(), burst: z.number().nonnegative() })
     .optional(),
   proposedTools: z.array(proposedToolSchema).default([]),
-  githubRepositoryAccess: z
-    .discriminatedUnion('mode', [
-      z.object({ mode: z.literal('any') }),
-      z.object({
-        mode: z.literal('selected'),
-        repositories: z
-          .array(z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/))
-          .min(1),
-      }),
-    ])
-    .optional(),
+  githubRepositoryAccess: githubRepositoryAccessSchema.optional(),
   provenance: z
     .object({
       sourceHash: z.string().optional(),

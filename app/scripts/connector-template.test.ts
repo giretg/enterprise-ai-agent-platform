@@ -206,7 +206,23 @@ async function main() {
       mode: 'selected',
       repositories: ['giretg/ostorosbor-crm', 'excellence/partner-api'],
     })
-    assert.ok((config.proposedTools ?? []).some((tool) => tool.name === 'get_authenticated_user'))
+    assert.ok((config.proposedTools ?? []).every((tool) => tool.path.startsWith('/repos/{owner}/{repo}')))
+    assert.ok(!(config.proposedTools ?? []).some((tool) => tool.name === 'list_user_repositories'))
+  })
+
+  await test('seeded GitHub custom descriptor keeps account-wide tools in any mode', () => {
+    const rawDescriptor = GLOBAL_CUSTOM_CONNECTOR_TEMPLATES.find((item) => item.key === 'github')
+    assert.ok(rawDescriptor, 'missing github custom template')
+    const config = materializeConnectorConfig(
+      parseTemplateDescriptor(rawDescriptor),
+      {
+        authMethodKind: 'bearer',
+        instanceValues: { repositoryAccess: '*' },
+      },
+      { personalAccessToken: 'secret-ref:github-pat' },
+    )
+    assert.deepEqual(parseHttpApiConfig(config).githubRepositoryAccess, { mode: 'any' })
+    assert.ok((config.proposedTools ?? []).some((tool) => tool.name === 'list_user_repositories'))
   })
 
   await test('broken custom descriptor fails template self-check', () => {

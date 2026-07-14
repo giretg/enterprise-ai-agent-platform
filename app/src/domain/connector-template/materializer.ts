@@ -1,4 +1,5 @@
 import { parseHttpApiConfig } from '@/domain/connector/http-api-client'
+import { gitHubRepositoryAccessFromText } from '@/domain/connector/github-repository-access'
 import {
   normalizeConnectorConfig,
   type ConnectorConfig,
@@ -55,11 +56,20 @@ export function materializeConnectorConfig(
   }
 
   const withFields = applyInstanceFields(base, descriptor.instanceFields, chosen.instanceValues, secretAliases)
+  const scopedConfig =
+    withFields.githubRepositoryAccess?.mode === 'selected'
+      ? {
+          ...withFields,
+          proposedTools: withFields.proposedTools.filter((tool) =>
+            tool.path.startsWith('/repos/{owner}/{repo}'),
+          ),
+        }
+      : withFields
   const normalized = normalizeConnectorConfig({
-    ...withFields,
+    ...scopedConfig,
     egressHosts: normalizeHosts([
-      ...withFields.egressHosts,
-      ...hostsFromConfig(withFields),
+      ...scopedConfig.egressHosts,
+      ...hostsFromConfig(scopedConfig),
     ]),
   })
 
@@ -292,19 +302,7 @@ function assignTarget(
     return
   }
   if (target === 'github.repositoryAccess') {
-    if (interpolated === '*') {
-      config.githubRepositoryAccess = { mode: 'any' }
-      return
-    }
-    const repositories = [
-      ...new Set(
-        interpolated
-          .split(/[\s,]+/)
-          .map((repository) => repository.trim().toLowerCase())
-          .filter(Boolean),
-      ),
-    ]
-    config.githubRepositoryAccess = { mode: 'selected', repositories }
+    config.githubRepositoryAccess = gitHubRepositoryAccessFromText(interpolated)
     return
   }
   throw new ConnectorTemplateMaterializationError(`unsupported template target: ${target}`)

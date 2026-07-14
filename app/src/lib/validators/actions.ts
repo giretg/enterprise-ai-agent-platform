@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { githubRepositoryAccessSchema } from '@/domain/connector/github-repository-access-schema'
 
 export const ticketFilterSchema = z.object({
   state: z
@@ -474,17 +475,6 @@ const httpApiAuthProfileSchema = z.object({
     ])
     .optional(),
 })
-
-const githubRepositoryAccessSchema = z.discriminatedUnion('mode', [
-  z.object({ mode: z.literal('any') }),
-  z.object({
-    mode: z.literal('selected'),
-    repositories: z
-      .array(z.string().trim().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/))
-      .min(1)
-      .max(100),
-  }),
-])
 
 const httpApiConnectorFields = {
   name: z.string().trim().min(1).max(120),

@@ -12,6 +12,11 @@
  */
 import { createHash } from 'node:crypto'
 import { getCloudRunAccessToken } from '@/domain/dispatcher/cloud-run-auth'
+import {
+  GITHUB_REPOSITORY_PATTERN,
+  parseGitHubRepositoryAccessConfig,
+  type GitHubRepositoryAccess,
+} from './github-repository-access'
 
 export type HttpApiAuthConfig =
   | { scheme: 'header'; header: string }
@@ -43,10 +48,6 @@ export type HttpApiAuthProfile = {
   auth?: HttpApiAuthConfig
 }
 
-export type GitHubRepositoryAccess =
-  | { mode: 'any' }
-  | { mode: 'selected'; repositories: string[] }
-
 export type HttpApiConfig = {
   baseUrl: string
   auth: HttpApiAuthConfig
@@ -73,7 +74,6 @@ export type HttpApiConfig = {
 const READ_METHODS = new Set(['GET', 'HEAD'])
 const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 const DEFAULT_MAX_RESPONSE_CHARS = 20_000
-const GITHUB_REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -167,7 +167,7 @@ export function parseHttpApiConfig(raw: unknown): HttpApiConfig {
     : undefined
 
   const authProfiles = parseAuthProfiles(raw.authProfiles)
-  const githubRepositoryAccess = parseGitHubRepositoryAccess(raw.githubRepositoryAccess)
+  const githubRepositoryAccess = parseGitHubRepositoryAccessConfig(raw.githubRepositoryAccess)
 
   return {
     baseUrl: baseUrl.replace(/\/+$/, ''),
@@ -210,31 +210,6 @@ function parseStringRecord(raw: unknown, field: string): Record<string, string> 
     out[key] = value
   }
   return Object.keys(out).length > 0 ? out : undefined
-}
-
-function parseGitHubRepositoryAccess(raw: unknown): GitHubRepositoryAccess | undefined {
-  if (raw === undefined) return undefined
-  if (!isRecord(raw)) {
-    throw new Error('http_api config.githubRepositoryAccess must be an object')
-  }
-  if (raw.mode === 'any') return { mode: 'any' }
-  if (raw.mode !== 'selected') {
-    throw new Error('http_api config.githubRepositoryAccess.mode must be "any" or "selected"')
-  }
-  if (!Array.isArray(raw.repositories) || raw.repositories.length === 0) {
-    throw new Error('http_api selected GitHub repository access requires repositories')
-  }
-  const repositories = [
-    ...new Set(
-      raw.repositories.map((repository) => {
-        if (typeof repository !== 'string' || !GITHUB_REPOSITORY_PATTERN.test(repository.trim())) {
-          throw new Error('http_api GitHub repository must use owner/repo format')
-        }
-        return repository.trim().toLowerCase()
-      }),
-    ),
-  ]
-  return { mode: 'selected', repositories }
 }
 
 function parseAuthProfiles(raw: unknown): Record<string, HttpApiAuthProfile> | undefined {

@@ -1,11 +1,12 @@
 'use client'
 
-export type GitHubRepositoryAccessMode = 'any' | 'selected'
-export type GitHubRepositoryAccess =
-  | { mode: 'any' }
-  | { mode: 'selected'; repositories: string[] }
+import {
+  gitHubRepositoryAccessFromText,
+  type GitHubRepositoryAccess,
+} from '@/domain/connector/github-repository-access'
 
-const REPOSITORY_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
+export type { GitHubRepositoryAccess }
+export type GitHubRepositoryAccessMode = GitHubRepositoryAccess['mode']
 
 export function isGitHubApiUrl(baseUrl: string): boolean {
   try {
@@ -22,23 +23,13 @@ export function parseGitHubRepositoryAccess(
 ): GitHubRepositoryAccess | undefined {
   if (!isGitHubApiUrl(baseUrl)) return undefined
   if (mode === 'any') return { mode: 'any' }
-
-  const repositories = [
-    ...new Set(
-      repositoriesText
-        .split(/[\s,]+/)
-        .map((repository) => repository.trim())
-        .filter(Boolean),
-    ),
-  ]
-  if (repositories.length === 0) {
-    throw new Error('GitHub repository-hozzáférés: adj meg legalább egy owner/repo értéket.')
+  try {
+    return gitHubRepositoryAccessFromText(repositoriesText)
+  } catch (error) {
+    throw new Error(
+      `GitHub repository-hozzáférés: ${error instanceof Error ? error.message : 'érvénytelen lista'}`,
+    )
   }
-  const invalid = repositories.find((repository) => !REPOSITORY_PATTERN.test(repository))
-  if (invalid) {
-    throw new Error(`GitHub repository-hozzáférés: érvénytelen owner/repo érték: ${invalid}`)
-  }
-  return { mode: 'selected', repositories }
 }
 
 export function readGitHubRepositoryAccess(raw: unknown): {

@@ -9,6 +9,7 @@ import { getCurrentUser } from '@/auth'
 import { hasMinimumRole } from '@/auth/types'
 import { requirePlatformRole, requireTenantPermission, requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain'
+import type { GitHubRepositoryAccess } from '@/domain/connector/github-repository-access'
 import { buildTenantAccessAuditFilter } from '@/domain/iam/access-audit'
 import { SandboxAppError } from '@/domain/sandbox/errors'
 import { dispatchBudgetFromEnv } from '@/domain/dispatcher/dispatcher-service'
@@ -1043,9 +1044,7 @@ function httpApiConnectorConfig(input: {
   requestHeaders?: Record<string, string>
   writeHeaders?: Record<string, string>
   restrictToEndpoints?: boolean
-  githubRepositoryAccess?:
-    | { mode: 'any' }
-    | { mode: 'selected'; repositories: string[] }
+  githubRepositoryAccess?: GitHubRepositoryAccess
   endpoints?: Array<{
     method: string
     path: string
@@ -1157,9 +1156,7 @@ export async function createHttpApiConnectorForAgent(input: {
   writeHeaders?: Record<string, string>
   accessMode?: 'read' | 'write'
   restrictToEndpoints?: boolean
-  githubRepositoryAccess?:
-    | { mode: 'any' }
-    | { mode: 'selected'; repositories: string[] }
+  githubRepositoryAccess?: GitHubRepositoryAccess
   endpoints?: Array<{
     method: string
     path: string
@@ -1284,9 +1281,7 @@ export async function updateHttpApiConnectorForAgent(input: {
   writeHeaders?: Record<string, string>
   accessMode?: 'read' | 'write'
   restrictToEndpoints?: boolean
-  githubRepositoryAccess?:
-    | { mode: 'any' }
-    | { mode: 'selected'; repositories: string[] }
+  githubRepositoryAccess?: GitHubRepositoryAccess
   endpoints?: Array<{
     method: string
     path: string
