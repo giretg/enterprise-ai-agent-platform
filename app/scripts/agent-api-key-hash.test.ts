@@ -34,7 +34,7 @@ check('determinisztikus: ugyanaz a kulcs mindig ugyanazt a hash-t adja', () => {
   assert.equal(deriveAgentApiKeyLookupHash(key), deriveAgentApiKeyLookupHash(key))
 })
 
-check('a kereső-HMAC fix hosszúságú és tárolás=keresés invariáns', () => {
+check('a kereső-HKDF fix hosszúságú és tárolás=keresés invariáns', () => {
   const key = `${AGENT_API_KEY_PREFIX}deadbeefdeadbeefdeadbeefdeadbeef`
   const lookupHash = deriveAgentApiKeyLookupHash(key)
   assert.equal(lookupHash.length, 64)
