@@ -1407,7 +1407,6 @@ async function scenario9_iam() {
           externalAuthId: `acc-iam-domaindeny-${suffix}`,
           email: `newperson-${suffix}@not-allowed.example`,
           name: 'Acc Domain Denied',
-          role: null,
         })
         fail('Domain-allowlist elutasítás', 'nem engedett domainnel is létrejött a fiók')
       } catch (e) {
@@ -1423,7 +1422,6 @@ async function scenario9_iam() {
       externalAuthId: `acc-iam-selfreg-${suffix}`,
       email: `selfreg-${suffix}@acc.test`,
       name: 'Acc Self Registered',
-      role: null,
     })
     createdUserIds.push(selfRegistered.id)
     if (selfRegistered.status === 'pending' && selfRegistered.role === null) {

@@ -77,6 +77,7 @@
     "test:dispatcher-retry-loop": "tsx scripts/dispatcher-retry-loop.test.ts",
     "test:iam-policy": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/iam-policy.test.ts",
     "test:iam-tenant-boundary": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/iam-tenant-boundary.test.ts",
+    "test:clerk-invitation-membership": "tsx scripts/clerk-invitation-membership.test.ts",
     "test:tenant-management": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/tenant-management.test.ts",
     "test:tenant-isolation": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/tenant-isolation.test.ts",
     "test:behavior-profile": "tsx scripts/behavior-profile-cascade.test.ts",

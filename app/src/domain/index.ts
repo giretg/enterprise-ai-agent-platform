@@ -361,6 +361,7 @@ const iamService = new IamService(
   repositories.rolePermissions,
   repositories.audit,
   connectorGrantService,
+  repositories.tenantMemberships,
 )
 const tenantService = new TenantService(
   repositories.tenants,

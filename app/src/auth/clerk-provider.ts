@@ -5,36 +5,25 @@ import type { AuthProvider, AuthUser, ActiveAuthUser } from './types'
 import { assertRole } from './types'
 import { syncClerkUser, DomainNotAllowedError } from './clerk-user-sync'
 
-function readClerkRole(metadata: unknown): UserRole | null {
-  const role = (metadata as { role?: string } | undefined)?.role
-  if (role === 'admin' || role === 'approver' || role === 'operator' || role === 'viewer') {
-    return role
-  }
-  return null
-}
-
 export class ClerkAuthProvider implements AuthProvider {
   async getCurrentUser(): Promise<AuthUser | null> {
     const clerkUser = await currentUser()
     if (!clerkUser) return null
 
     const externalAuthId = clerkUser.id
-    const email =
-      clerkUser.primaryEmailAddress?.emailAddress ??
-      clerkUser.emailAddresses[0]?.emailAddress ??
-      'unknown@local'
+    const primaryEmail = clerkUser.primaryEmailAddress
+    if (!primaryEmail || primaryEmail.verification?.status !== 'verified') return null
+    const email = primaryEmail.emailAddress
     const name =
       [clerkUser.firstName, clerkUser.lastName].filter(Boolean).join(' ') ||
       clerkUser.username ||
       email
-    const clerkRole = readClerkRole(clerkUser.publicMetadata)
     let user
     try {
       user = await syncClerkUser(prisma, {
         externalAuthId,
         email,
         name,
-        role: clerkRole,
       })
     } catch (err) {
       // §7/B: domain-allowlist elutasítás ⇒ nincs belső fiók, a hívó úgy kezeli,

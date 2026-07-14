@@ -23,6 +23,7 @@ import type { DispatchCycleRunRecord } from '@/domain/platform-settings/platform
 import { repositories } from '@/repositories/postgres'
 import { isClerkEnabled } from '@/lib/clerk-config'
 import { prisma, ensureActiveDatabaseMode } from '@/lib/db'
+import { logger } from '@/lib/observability'
 import { ensureAgentKnowledgeBase } from '@/lib/agent-knowledge-base'
 import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
 import { getReportTemplate, listReportTemplates } from '@/domain/report/report-templates'
@@ -3606,30 +3607,45 @@ export async function inviteUser(input: { email: string; role: string }) {
     const parsed = inviteUserSchema.parse(input)
     const email = parsed.email.trim().toLowerCase()
 
-    // Clerk-natív gating: regisztrálni csak meghívóval lehet (Dashboard → Restrictions:
-    // "sign-ups restricted to invitations"). A Clerk-meghívó hordozza a szerepkört a
-    // publicMetadata-ban; a `user.created` webhook ebből állítja be — nincs külön beváltó lépés.
-    let clerkInvited = false
-    if (isClerkEnabled()) {
-      const appUrl = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, '')
-      const client = await clerkClient()
-      await client.invitations.createInvitation({
-        emailAddress: email,
-        publicMetadata: { role: parsed.role },
-        notify: true,
-        ignoreExisting: true,
-        ...(appUrl ? { redirectUrl: `${appUrl}/sign-up` } : {}),
-      })
-      clerkInvited = true
-    }
-
-    // In-app napló + token-alapú beváltás (spec-tesztelt domain folyamat, dev/fallback útvonal).
+    // A helyi invitation az autorizáció forrása; Clerk csak az identitást és a
+    // kézbesítést adja. Előbb a helyi, auditált rekord jön létre, majd annak id-ja
+    // kerül a Clerk szerver-oldali metadatajába pontos kötésként.
     const result = await services.iam.inviteUser({
       email,
       role: parsed.role,
       createdById: ctx.user.id,
       tenantId: ctx.activeTenantId,
     })
+
+    let clerkInvited = false
+    if (isClerkEnabled()) {
+      try {
+        const appUrl = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, '')
+        const client = await clerkClient()
+        const clerkInvitation = await client.invitations.createInvitation({
+          emailAddress: email,
+          publicMetadata: { enterpriseInvitationId: result.invitation.id },
+          notify: true,
+          ignoreExisting: true,
+          ...(appUrl ? { redirectUrl: `${appUrl}/sign-up` } : {}),
+        })
+        await services.iam.bindClerkInvitation({
+          invitationId: result.invitation.id,
+          clerkInvitationId: clerkInvitation.id,
+        })
+        clerkInvited = true
+      } catch (error) {
+        // Fail closed: a locally issued token must not remain usable when the
+        // selected production identity provider did not accept the invitation.
+        await services.iam.revokeInvitation({
+          invitationId: result.invitation.id,
+          actorId: ctx.user.id,
+          actorTenantId: ctx.activeTenantId,
+        })
+        throw error
+      }
+    }
+
     // A nyers token CSAK most adható vissza. Clerk-módban e-mail ment ki, a token csak
     // belső fallback — a UI ennek megfelelően jelzi, hogy nem kell kézzel megosztani.
     return ok({ invitationId: result.invitation.id, token: result.rawToken, clerkInvited })
@@ -3642,11 +3658,25 @@ export async function revokeInvitation(input: { invitationId: string }) {
   try {
     const ctx = await requireTenantPermission('user.invite.revoke')
     const parsed = revokeInvitationSchema.parse(input)
+    const invitation = await repositories.invitations.findById(parsed.invitationId)
     const updated = await services.iam.revokeInvitation({
       invitationId: parsed.invitationId,
       actorId: ctx.user.id,
       actorTenantId: ctx.activeTenantId,
     })
+    if (isClerkEnabled() && invitation?.clerkInvitationId) {
+      try {
+        const client = await clerkClient()
+        await client.invitations.revokeInvitation(invitation.clerkInvitationId)
+      } catch (error) {
+        // The local denial is already authoritative and fail-closed. Keep the
+        // provider drift visible for operations without reopening the grant.
+        logger.error(
+          { event: 'clerk.invitation.revoke_failed', invitationId: invitation.id, error: String(error) },
+          'Clerk invitation revoke failed after local revocation',
+        )
+      }
+    }
     return ok({ invitationId: updated.id, status: updated.status })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to revoke invitation')

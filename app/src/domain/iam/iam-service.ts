@@ -1,5 +1,11 @@
-import type { UserRole } from '@prisma/client'
-import type { AuditRepository, UserRepository, InvitationRepository, RolePermissionRepository } from '@/repositories/interfaces'
+import type { Invitation, User, UserRole } from '@prisma/client'
+import type {
+  AuditRepository,
+  UserRepository,
+  InvitationRepository,
+  RolePermissionRepository,
+  TenantMembershipRepository,
+} from '@/repositories/interfaces'
 import { generateTokenPair, hashOpaqueToken } from '@/lib/crypto/hash-chain'
 import { checkInvitationRedeemable, checkLastAdminLock, isSelfModification } from '@/lib/iam-policy'
 
@@ -26,6 +32,7 @@ export class IamService {
     private rolePermissions: RolePermissionRepository,
     private audit: AuditRepository,
     private connectorGrants?: import('@/domain/connector-grant/connector-grant-service').ConnectorGrantService,
+    private memberships?: TenantMembershipRepository,
   ) {}
 
   async inviteUser(params: { email: string; role: UserRole; createdById: string; tenantId: string | null }) {
@@ -67,10 +74,8 @@ export class IamService {
       throw new Error(`invitation: cannot revoke, already ${invitation.status}`)
     }
 
-    const updated = await this.invitations.update(invitation.id, {
-      status: 'revoked',
-      revokedAt: new Date(),
-    })
+    const updated = await this.invitations.revokePending(invitation.id, new Date())
+    if (!updated) throw new Error('invitation: cannot revoke, already redeemed')
 
     await this.audit.append({
       actorType: 'human',
@@ -102,6 +107,9 @@ export class IamService {
       throw new Error(`invitation: ${check.reason.toLowerCase()}`)
     }
 
+    const claimed = await this.invitations.claimPendingRedemption(invitation.id, params.email, new Date())
+    if (!claimed) throw new Error('invitation: already_redeemed_or_unavailable')
+
     const user = await this.users.upsertByExternalAuthId({
       externalAuthId: params.externalAuthId,
       create: {
@@ -120,7 +128,92 @@ export class IamService {
       },
     })
 
-    await this.invitations.update(invitation.id, { status: 'redeemed', redeemedAt: new Date() })
+    await this.completeInvitationRedemption(claimed, user, 'token')
+
+    return user
+  }
+
+  /** Stores the native Clerk invitation id for revocation/reconciliation. It never grants access. */
+  async bindClerkInvitation(params: { invitationId: string; clerkInvitationId: string }) {
+    const invitation = await this.invitations.findById(params.invitationId)
+    if (!invitation) throw new Error('invitation: not found')
+    if (invitation.status !== 'pending') throw new Error('invitation: not pending')
+    return this.invitations.update(invitation.id, { clerkInvitationId: params.clerkInvitationId })
+  }
+
+  /**
+   * Provider identity is not authorization. A signed Clerk lifecycle event may
+   * activate exactly the locally-issued invitation id copied into Clerk's
+   * server-only public metadata, after local email/status/expiry checks.
+   */
+  async redeemClerkInvitation(params: { invitationId: string; user: User }) {
+    const invitation = await this.invitations.findById(params.invitationId)
+    if (!invitation) throw new Error('invitation: not found')
+
+    // Clerk retries signed events. A completed local invitation is a successful
+    // no-op for the same verified e-mail, never a second grant or audit event.
+    if (invitation.status === 'redeemed') {
+      if (invitation.email.trim().toLowerCase() !== params.user.email.trim().toLowerCase()) {
+        throw new Error('invitation: email_mismatch')
+      }
+      return params.user
+    }
+
+    const check = checkInvitationRedeemable(invitation, { email: params.user.email, now: new Date() })
+    if (!check.ok) {
+      if (check.reason === 'EXPIRED' && invitation.status === 'pending') {
+        await this.invitations.update(invitation.id, { status: 'expired' })
+      }
+      throw new Error(`invitation: ${check.reason.toLowerCase()}`)
+    }
+
+    const claimed = await this.invitations.claimPendingRedemption(invitation.id, params.user.email, new Date())
+    if (!claimed) {
+      const current = await this.invitations.findById(invitation.id)
+      if (current?.status === 'redeemed' && current.email.trim().toLowerCase() === params.user.email.trim().toLowerCase()) {
+        return params.user
+      }
+      throw new Error('invitation: already_redeemed_or_unavailable')
+    }
+    const user = await this.users.update(params.user.id, {
+      role: invitation.role,
+      status: 'active',
+      activatedAt: new Date(),
+      invitedById: invitation.createdById,
+    })
+    await this.completeInvitationRedemption(claimed, user, 'clerk')
+    return user
+  }
+
+  private async completeInvitationRedemption(
+    invitation: Invitation,
+    user: User,
+    source: 'token' | 'clerk',
+  ) {
+    if (invitation.tenantId) {
+      if (!this.memberships) throw new Error('invitation: tenant membership repository unavailable')
+      const membership = await this.memberships.upsert({
+        tenantId: invitation.tenantId,
+        userId: user.id,
+        role: invitation.role,
+        status: 'active',
+        invitedById: invitation.createdById,
+      })
+      await this.audit.append({
+        actorType: 'human',
+        actorId: user.id,
+        agentVersion: null,
+        action: 'tenant.member.invite_accept',
+        targetType: 'tenant_membership',
+        targetId: membership.id,
+        modelUsed: null,
+        inputRef: invitation.id,
+        outputRef: invitation.role,
+        policyDecision: 'active',
+        metadata: { invitationId: invitation.id, source },
+        tenantId: invitation.tenantId,
+      })
+    }
 
     await this.audit.append({
       actorType: 'human',
@@ -133,10 +226,9 @@ export class IamService {
       inputRef: invitation.id,
       outputRef: invitation.role,
       policyDecision: 'redeemed',
-      metadata: { email: user.email },
+      metadata: { email: user.email, source },
+      tenantId: invitation.tenantId,
     })
-
-    return user
   }
 
   /** §7/B: pending + role=NULL önregisztrált fiók jóváhagyása szerepkör-kiosztással. */

@@ -531,6 +531,8 @@ model User {
 model Invitation {
   id          String           @id @default(uuid()) @db.Uuid
   tenantId    String?          @map("tenant_id") @db.Uuid
+  // A Clerk-meghívó visszavonásához és a provider/local állapot egyeztetéséhez.
+  clerkInvitationId String?    @unique @map("clerk_invitation_id")
   email       String
   role        UserRole
   tokenHash   String           @unique @map("token_hash")

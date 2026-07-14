@@ -1,31 +1,32 @@
 import { verifyWebhook } from '@clerk/nextjs/webhooks'
-import type { UserRole } from '@prisma/client'
 import type { NextRequest } from 'next/server'
 import { prisma } from '@/lib/db'
 import { syncClerkUser, DomainNotAllowedError } from '@/auth/clerk-user-sync'
+import { services } from '@/domain'
 import { logger } from '@/lib/observability'
-
-function readClerkRole(metadata: unknown): UserRole | null {
-  const role = (metadata as { role?: string } | undefined)?.role
-  if (role === 'admin' || role === 'approver' || role === 'operator' || role === 'viewer') {
-    return role
-  }
-  return null
-}
 
 function userFromEvent(data: {
   id: string
-  email_addresses: { email_address: string }[]
+  primary_email_address_id: string | null
+  email_addresses: { id: string; email_address: string; verification: { status: string } | null }[]
   first_name: string | null
   last_name: string | null
   username: string | null
   public_metadata: unknown
 }) {
-  const email = data.email_addresses[0]?.email_address ?? 'unknown@local'
+  const primaryEmail = data.email_addresses.find((address) => address.id === data.primary_email_address_id)
+  if (!primaryEmail || primaryEmail.verification?.status !== 'verified') return null
+  const email = primaryEmail.email_address
   const name =
     [data.first_name, data.last_name].filter(Boolean).join(' ') || data.username || email
-  const role = readClerkRole(data.public_metadata)
-  return { externalAuthId: data.id, email, name, role }
+  const invitationId = (data.public_metadata as { enterpriseInvitationId?: unknown } | null)
+    ?.enterpriseInvitationId
+  return {
+    externalAuthId: data.id,
+    email,
+    name,
+    invitationId: typeof invitationId === 'string' ? invitationId : null,
+  }
 }
 
 export async function POST(req: NextRequest) {
@@ -39,8 +40,15 @@ export async function POST(req: NextRequest) {
 
   if (evt.type === 'user.created' || evt.type === 'user.updated') {
     const user = userFromEvent(evt.data)
+    if (!user) {
+      logger.info({ event: 'clerk.webhook', userId: evt.data.id }, 'Clerk webhook skipped: primary email is not verified')
+      return new Response('OK', { status: 200 })
+    }
     try {
-      await syncClerkUser(prisma, user)
+      const synced = await syncClerkUser(prisma, user)
+      if (user.invitationId) {
+        await services.iam.redeemClerkInvitation({ invitationId: user.invitationId, user: synced })
+      }
     } catch (err) {
       if (err instanceof DomainNotAllowedError) {
         // §7/B: az elutasítás + audit már megtörtént syncClerkUser-ben; a webhook
@@ -48,15 +56,6 @@ export async function POST(req: NextRequest) {
         return new Response('OK', { status: 200 })
       }
       throw err
-    }
-
-    if (evt.type === 'user.created') {
-      // Clerk-meghívóval érkezett regisztráció: a megfelelő in-app meghívót beváltottra
-      // állítjuk, hogy a Meghívók lista a valóságot tükrözze (nincs külön token-beváltás).
-      await prisma.invitation.updateMany({
-        where: { email: user.email.toLowerCase(), status: 'pending' },
-        data: { status: 'redeemed', redeemedAt: new Date() },
-      })
     }
   }
 

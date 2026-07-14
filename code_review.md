@@ -1,5 +1,28 @@
 # Enterprise code review log
 
+## 2026-07-15 - Clerk meghívó-onboarding / tenant-membership provisioning
+
+- Reviewed modules:
+  - `app/src/app/actions/platform.ts` Clerk- és helyi meghívó-kibocsátás/visszavonás
+  - `app/src/app/api/webhooks/clerk/route.ts`, `app/src/auth/clerk-provider.ts`, `app/src/auth/clerk-user-sync.ts` hitelesített provider-életciklus és identitásszinkron
+  - `app/src/domain/iam/iam-service.ts`, `app/src/repositories/postgres/iam-repository.ts`, `tenant-repository.ts`, valamint az `Invitation` / `TenantMembership` adatmodell
+  - `docs/specs/AI-Agent-Platform-Feature-Spec-IAM-RBAC-done.md` (§0, §3.2, §5, §7, §8, §9)
+- Result:
+  - Találtam három éles, P1-szintű kockázatot. A Clerk `publicMetadata.role` közvetlenül aktív belső szereppé vált, így egy provider-oldali hiba vagy rosszul kötött meghívó megkerülhette a Control Plane meghívó- és auditkapuját. A Clerk-meghívó elfogadása nem hozott létre `TenantMembership`-et, ezért a felhasználó nem kapott aktív tenant-kontektsust. Végül a webhook azonos e-mailhez tartozó ÖSSZES pending meghívót beváltottra jelölte, lejárat-, tenant- és konkrét meghívó-kötés nélkül: ez más tenant onboardingját tehette használhatatlanná.
+  - Melléklelet: a tokenes meghívó-beváltás read-check-write sorrendje párhuzamos kéréseknél két beváltást/auditot is megengedhetett.
+- Fix applied:
+  - A Clerk többé nem dönt szerepkörről. Csak igazolt elsődleges e-mailt szinkronizál; az új identitás `pending` és szerep nélküli, amíg a helyi, pontos meghívó nem jogosítja fel.
+  - A helyi meghívó előbb jön létre, és az UUID-ja a Clerk szerveroldali metadatajába kerül. A hitelesített webhook kizárólag ezt az egy, e-mailben egyező, nem lejárt, `pending` meghívót fogadhatja el; e-mail-alapú tömeges beváltás nincs. A helyi `Invitation` tárolja a Clerk invitation ID-t is, a normál visszavonás mindkét oldalt megpróbálja visszavonni.
+  - Sikeres beváltás idempotens `TenantMembership.upsert`-tel létrehozza/aktiválja a tenant-tagságot és a tenant-attribútumú auditot. A `claimPendingRedemption` és a `revokePending` compare-and-set csak egy párhuzamos beváltást vagy visszavonást enged nyerni; retry esetén nem készül második jogosultság vagy auditesemény.
+  - Új `clerk-invitation-membership.test.ts` fedi a pontos tenant-kötést, e-mail-eltérést, lejáratot és webhook-újraküldést.
+- Business impact:
+  - A meghívás most valóban azt az egy ügyfél-teret és szerepet adja, amelyet az admin kijelölt — sem a külső identitásszolgáltató metadataja, sem egy azonos e-mailes másik tenant-meghívó nem adhat hozzáférést. Ez megakadályozza az onboarding során történő jogosultság-emelést és a másik ügyfél beléptetési folyamatának megrongálását, miközben az új munkatárs azonnal a helyes tenantban kezdhet dolgozni.
+- Verification:
+  - `npm run test:clerk-invitation-membership`, `npm run test:iam-policy`, `npm run test:iam-tenant-boundary`, `npm run test:tenant-management`, `npm run test:tenant-isolation` from `app/`
+  - `npx tsc --noEmit`; célzott `npx eslint`; `DIRECT_URL=... npx prisma validate`; `git diff --check`
+- Decisions raised (not auto-fixed):
+  - D1 — Ha a helyi visszavonás után a Clerk API átmenetileg hibázik, a helyi kapu fail-closed marad és hiba-napló készül, de automatikus provider-oldali retry/outbox még nincs. Szabályozott telepítéshez érdemes erre rövid retry- és reconcile-jobot bevezetni.
+
 ## 2026-07-14 - Agent API-kulcs hitelesítés skálázhatósága és O(n) bcrypt-DoS
 
 - Reviewed modules:

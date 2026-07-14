@@ -122,6 +122,29 @@ export class PostgresInvitationRepository implements InvitationRepository {
     })
   }
 
+  async claimPendingRedemption(id: string, email: string, now: Date) {
+    const claimed = await prisma.invitation.updateMany({
+      where: {
+        id,
+        email: email.trim().toLowerCase(),
+        status: 'pending',
+        expiresAt: { gt: now },
+      },
+      data: { status: 'redeemed', redeemedAt: now },
+    })
+    if (claimed.count !== 1) return null
+    return prisma.invitation.findUnique({ where: { id } })
+  }
+
+  async revokePending(id: string, revokedAt: Date) {
+    const revoked = await prisma.invitation.updateMany({
+      where: { id, status: 'pending' },
+      data: { status: 'revoked', revokedAt },
+    })
+    if (revoked.count !== 1) return null
+    return prisma.invitation.findUnique({ where: { id } })
+  }
+
   async create(data: {
     tenantId: string | null
     email: string
@@ -142,7 +165,10 @@ export class PostgresInvitationRepository implements InvitationRepository {
     })
   }
 
-  async update(id: string, data: Partial<{ status: InvitationStatus; redeemedAt: Date; revokedAt: Date }>) {
+  async update(
+    id: string,
+    data: Partial<{ status: InvitationStatus; redeemedAt: Date; revokedAt: Date; clerkInvitationId: string | null }>,
+  ) {
     return prisma.invitation.update({ where: { id }, data })
   }
 }

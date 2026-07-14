@@ -1724,6 +1724,10 @@ export interface InvitationRepository {
   findById(id: string): Promise<Invitation | null>
   findByTokenHash(tokenHash: string): Promise<Invitation | null>
   findMany(filter?: { tenantId?: string | null; status?: InvitationStatus }): Promise<Invitation[]>
+  /** Compare-and-set claim: exactly one concurrent redemption can win. */
+  claimPendingRedemption(id: string, email: string, now: Date): Promise<Invitation | null>
+  /** Compare-and-set revoke: never overwrite an already redeemed invitation. */
+  revokePending(id: string, revokedAt: Date): Promise<Invitation | null>
   create(data: {
     tenantId: string | null
     email: string
@@ -1734,7 +1738,7 @@ export interface InvitationRepository {
   }): Promise<Invitation>
   update(
     id: string,
-    data: Partial<{ status: InvitationStatus; redeemedAt: Date; revokedAt: Date }>,
+    data: Partial<{ status: InvitationStatus; redeemedAt: Date; revokedAt: Date; clerkInvitationId: string | null }>,
   ): Promise<Invitation>
 }
 
@@ -1785,6 +1789,15 @@ export interface TenantMembershipRepository {
   findByTenantWithUsers(tenantId: string): Promise<TenantMembershipWithUser[]>
   countActiveAdmins(tenantId: string, excludeUserId?: string): Promise<number>
   create(data: {
+    tenantId: string
+    userId: string
+    role: UserRole
+    status?: TenantMembershipStatus
+    isDefault?: boolean
+    invitedById?: string | null
+  }): Promise<TenantMembership>
+  /** Idempotent activation for invitation delivery retries and concurrent sign-ins. */
+  upsert(data: {
     tenantId: string
     userId: string
     role: UserRole
