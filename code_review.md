@@ -1,5 +1,31 @@
 # Enterprise code review log
 
+## 2026-07-14 - Agent API-kulcs hitelesítés skálázhatósága és O(n) bcrypt-DoS
+
+- Reviewed modules:
+  - `app/src/auth/agent-api-key.ts` a gép-gép (service-account) Bearer-token belépőpont és scope-őr
+  - `app/src/repositories/postgres/agent-repository.ts` `authenticateApiKey` kulcs-ellenőrzés, valamint a kulcs-kiadó utak (`create`, `rotateApiKey`, `issueEphemeralKey`)
+  - `app/src/app/api/v1/agent/tools/route.ts`, `app/src/app/api/v1/agent/tickets/route.ts` és a többi agent-facing API-route, amely erre a hitelesítésre épül
+  - `app/prisma/schema.prisma` `AgentApiKey` modell
+- Result:
+  - A tenant- és scope-modell rendben van: a kulcs egy agent-identitáshoz és egy fix scope-listához kötött, a route-ok fail-closed módon `requireAgentScope`-ot kérnek, a titok bcrypt-tel van tárolva. NEM találtam tenant-határ- vagy jogosultság-rést ezen a felületen.
+  - Találtam viszont egy éles használatot blokkoló skálázhatósági (és ezzel DoS-) hibát. A `authenticateApiKey` MINDEN aktív API-kulcsot betöltött az ÖSSZES agentről/tenantről, majd sorban `bcrypt.compare`-t futtatott rájuk, amíg egyezést nem talált. A bcrypt (cost 10) szándékosan lassú (~50-100 ms/hívás), így minden egyes agent-API-hívás költsége az aktív kulcsok számával lineárisan nőtt: pár száz agentnél már másodperces hitelesítési késleltetés, ezresnél gyakorlatilag használhatatlan — és egy támadó érvénytelen tokenekkel szándékosan a teljes O(n) bcrypt-szkennt kényszerítheti ki (CPU-kimerítés). Ez a demóban (kevés kulcs) nem látszik, de pontosan az enterprise-skálán válik éles-blokkolóvá.
+- Fix applied:
+  - Új közös primitív: `app/src/lib/agent-api-key-hash.ts` — `isAgentApiKeyFormat` (előtag-őr) és `deriveAgentApiKeyLookupHash` (determinisztikus SHA-256 kereső-hash). A nyugalmi titok TOVÁBBRA is bcrypt (adatbázis-szivárgás elleni védelem változatlan); a SHA-256 kizárólag gyors, egyedi-indexelt megkeresésre szolgál, és önmagában is biztonságos, mert a kulcs 128 bit egyenletes véletlen.
+  - Séma + `0006_agent_api_key_lookup_hash` migráció: nullable `lookup_hash` oszlop egyedi indexszel. A hitelesítés így O(1) `findUnique`-kal megtalálja a pontos kulcssort, majd EGYETLEN bcrypt-ellenőrzést végez mélységi védelemként.
+  - Minden kulcs-kiadó út (`create`, `rotateApiKey`, `issueEphemeralKey`) feltölti a kereső-hash-t. A migráció ELŐTT kiadott kulcsok visszafelé kompatibilisek: egy szűkített legacy-szkenn (csak a `lookup_hash IS NULL` sorokon) hitelesíti őket, és első sikeres használatkor feltölti a kereső-hash-üket, így a következő hitelesítés már a gyors úton fut. A legacy-halmaz monoton nullára csökken.
+- Business impact:
+  - A gép-gép API a platform végrehajtási felülete (tool-hívás, ticket-létrehozás): ha a hitelesítés lelassul vagy CPU-kimerítéssel megbénítható, az az egész agent-flotta leállását jelentheti. A javítás konstans idejűvé teszi a hitelesítést a kulcsok számától függetlenül, ezzel eltávolít egy éles-blokkoló skálázhatósági falat és egy olcsó DoS-felületet — a biztonsági tulajdonságok (bcrypt nyugalmi titok, scope-kötés, lejárat/visszavonás tisztelete) csökkentése nélkül.
+- Verification:
+  - `npm run test:agent-api-key-hash` (új determinisztikus, DB-mentes teszt: determinizmus, tárolás=keresés invariáns, ütközés-mentesség, formátum-őr)
+  - `npx tsc --noEmit` from `app/`
+  - `npx eslint src/lib/agent-api-key-hash.ts src/repositories/postgres/agent-repository.ts scripts/agent-api-key-hash.test.ts` from `app/`
+  - `npx prisma validate` (séma érvényes; a `prisma generate` a `lookupHash` mezővel újragenerált)
+  - `git diff --check`
+- Decisions raised (not auto-fixed):
+  - D1 — A `/api/v1/internal/dispatch-cycle` route a `DISPATCHER_CONTROL_TOKEN` statikus titkot sima `!==`-vel hasonlítja (nem konstans idejű). Hálózaton át a timing-oracle gyakorlatilag nem kihasználható, de egy `crypto.timingSafeEqual`-ra váltás olcsó keményítés lenne.
+  - D2 — A migrációt éles/teszt Neon adatbázisra még alkalmazni kell (`prisma migrate deploy`); a PR csak a migrációs fájlt tartalmazza, adatbázis-változtatást nem futtattam.
+
 ## 2026-07-13 - Persistent agent memory: tenant boundary / approval / rollback surface
 
 - Reviewed modules:

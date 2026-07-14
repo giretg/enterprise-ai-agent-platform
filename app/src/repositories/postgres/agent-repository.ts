@@ -754,13 +754,27 @@ export class PostgresAgentRepository implements AgentRepository {
 
     const now = new Date()
 
+    const keySelect = {
+      id: true,
+      agentId: true,
+      keyHash: true,
+      scopes: true,
+      status: true,
+      expiresAt: true,
+    } as const
+
     const isUsable = (key: { status: string; expiresAt: Date | null }) =>
       key.status === 'active' && (key.expiresAt === null || key.expiresAt > now)
 
-    const accept = async (key: { id: string; agentId: string; scopes: unknown }) => {
+    // Egyetlen elfogadási pont: frissíti a lastUsedAt-ot (és opcionálisan feltölti a
+    // kereső-hash-t a legacy kulcsoknál), majd visszaadja az agent-identitást + scope-okat.
+    const accept = async (
+      key: { id: string; agentId: string; scopes: unknown },
+      backfillLookupHash?: string,
+    ) => {
       await prisma.agentApiKey.update({
         where: { id: key.id },
-        data: { lastUsedAt: new Date() },
+        data: { lastUsedAt: new Date(), ...(backfillLookupHash ? { lookupHash: backfillLookupHash } : {}) },
       })
       return { agentId: key.agentId, scopes: key.scopes as string[] }
     }
@@ -771,7 +785,7 @@ export class PostgresAgentRepository implements AgentRepository {
     const lookupHash = deriveAgentApiKeyLookupHash(rawKey)
     const direct = await prisma.agentApiKey.findUnique({
       where: { lookupHash },
-      select: { id: true, agentId: true, keyHash: true, scopes: true, status: true, expiresAt: true },
+      select: keySelect,
     })
     if (direct) {
       if (isUsable(direct) && (await bcrypt.compare(rawKey, direct.keyHash))) {
@@ -789,16 +803,12 @@ export class PostgresAgentRepository implements AgentRepository {
         lookupHash: null,
         OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
       },
-      select: { id: true, agentId: true, keyHash: true, scopes: true, status: true, expiresAt: true },
+      select: keySelect,
     })
 
     for (const key of legacyKeys) {
       if (await bcrypt.compare(rawKey, key.keyHash)) {
-        await prisma.agentApiKey.update({
-          where: { id: key.id },
-          data: { lastUsedAt: new Date(), lookupHash },
-        })
-        return { agentId: key.agentId, scopes: key.scopes as string[] }
+        return accept(key, lookupHash)
       }
     }
 
