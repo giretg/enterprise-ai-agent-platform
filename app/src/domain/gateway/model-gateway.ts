@@ -731,18 +731,109 @@ export class ModelGateway {
     // D11 / §16.1 — a `model.pricing` tarifa-forrás a valódi costEstimate-hez.
     // Ha nincs megadva, a beépített DEFAULT_MODEL_PRICING él (a költség NEM marad 0).
     private pricingSettings?: Pick<PlatformSettingsRepository, 'get'>,
-    /** Ha nincs megadva, egyetlen agent sem kap külső-provider felmentést. */
+    /** Ha nincs megadva, egyetlen agent sem kap sensitivity-router felmentést. */
     private agentSensitivityPolicy?: AgentSensitivityPolicyReader,
   ) {}
+
+  /**
+   * Ellenőrzi és auditálja az agent teljes sensitivity-router felmentését.
+   * Bekapcsolva sem a `sensitive`, sem a `forbidden` osztály nem akadályozza
+   * a modellhívást; az osztályozás és az auditnyom ettől még megmarad.
+   */
+  private async allowsAgentSensitivityBypass(ctx: {
+    agentId: string
+    agentVersion: number | null
+    ticketId?: string
+    conversationId?: string
+    modelUsed: string
+    sensitivity: SensitivityDecision
+  }): Promise<boolean> {
+    const bypass = await this.agentSensitivityPolicy?.allowsSensitiveExternalModel(ctx.agentId)
+    if (!bypass) return false
+
+    const targetType = ctx.ticketId ? 'ticket' : ctx.conversationId ? 'conversation' : 'agent'
+    const targetId = ctx.ticketId ?? ctx.conversationId ?? ctx.agentId
+    const category = ctx.sensitivity.matchedCategory
+    await this.audit.append({
+      actorType: 'agent',
+      actorId: ctx.agentId,
+      agentVersion: ctx.agentVersion,
+      action: 'model.call.sensitivity_agent_bypass',
+      targetType,
+      targetId,
+      modelUsed: ctx.modelUsed,
+      inputRef: `sensitivity:${category}`,
+      outputRef: 'allowed_by_agent_policy',
+      policyDecision: 'agent_sensitivity_bypass',
+      metadata: {
+        reason: 'agent_allows_sensitive_external_model',
+        level: ctx.sensitivity.level,
+        category,
+      },
+    })
+    return true
+  }
+
+  /** Közös forbidden preflight a normál és a streaming modellhíváshoz. */
+  private async enforceForbiddenSensitivityPolicy(ctx: {
+    agentId: string
+    agentVersion: number | null
+    ticketId?: string
+    conversationId?: string
+    modelUsed: string
+    sensitivity: SensitivityDecision
+    sensitivityOverride?: SensitivityOverride
+  }): Promise<void> {
+    if (ctx.sensitivity.level !== 'forbidden') return
+
+    if (await this.allowsAgentSensitivityBypass(ctx)) return
+
+    const category = ctx.sensitivity.matchedCategory
+    const targetType = ctx.ticketId ? 'ticket' : ctx.conversationId ? 'conversation' : 'agent'
+    const targetId = ctx.ticketId ?? ctx.conversationId ?? ctx.agentId
+    const sensitivityOverrideAllowed =
+      !!category && ctx.sensitivityOverride?.allowedForbiddenCategories.includes(category)
+
+    if (!sensitivityOverrideAllowed) {
+      await this.audit.append({
+        actorType: 'agent',
+        actorId: ctx.agentId,
+        agentVersion: ctx.agentVersion,
+        action: 'model.call.denied',
+        targetType,
+        targetId,
+        modelUsed: ctx.modelUsed,
+        inputRef: `sensitivity:${category}`,
+        outputRef: 'blocked',
+        policyDecision: 'sensitivity_block',
+        metadata: { reason: 'sensitivity_block', category },
+      })
+      throw new GatewayBudgetError(formatSensitivityBlockMessage(category))
+    }
+
+    await this.audit.append({
+      actorType: 'human',
+      actorId: ctx.sensitivityOverride!.reviewedByUserId,
+      agentVersion: ctx.agentVersion,
+      action: 'model.call.sensitivity_override',
+      targetType,
+      targetId,
+      modelUsed: ctx.modelUsed,
+      inputRef: `sensitivity:${category}`,
+      outputRef: 'allowed_by_human_review',
+      policyDecision: 'human_review_override',
+      metadata: {
+        reason: ctx.sensitivityOverride!.reason,
+        category,
+      },
+    })
+  }
 
   /**
    * Eldönti, hogy a `sensitive` prompt hová mehet. Három kimenet:
    *   - `external`  — az agent kapott felmentést (audit-ált), marad a routing döntése
    *   - `local`     — helyi modellre kényszerítünk
    *   - dobás       — nincs hová: fail-closed blokk
-   *
-   * A `forbidden` szint (PAN, IBAN, privát kulcs) ide nem jut el: azt a hívó már
-   * korábban blokkolta, és agent-kapcsolóval NEM hatástalanítható.
    */
   private async resolveSensitiveTarget(ctx: {
     agentId: string
@@ -752,33 +843,17 @@ export class ModelGateway {
     modelUsed: string
     sensitivity: SensitivityDecision
   }): Promise<'external' | 'local'> {
-    const targetType = ctx.ticketId ? 'ticket' : ctx.conversationId ? 'conversation' : 'agent'
-    const targetId = ctx.ticketId ?? ctx.conversationId ?? ctx.agentId
     const category = ctx.sensitivity.matchedCategory
 
-    const bypass = await this.agentSensitivityPolicy?.allowsSensitiveExternalModel(ctx.agentId)
-    if (bypass) {
-      await this.audit.append({
-        actorType: 'agent',
-        actorId: ctx.agentId,
-        agentVersion: ctx.agentVersion,
-        action: 'model.call.sensitivity_agent_bypass',
-        targetType,
-        targetId,
-        modelUsed: ctx.modelUsed,
-        inputRef: `sensitivity:${category}`,
-        outputRef: 'allowed_by_agent_policy',
-        policyDecision: 'agent_sensitivity_bypass',
-        metadata: { reason: 'agent_allows_sensitive_external_model', category },
-      })
-      return 'external'
-    }
+    if (await this.allowsAgentSensitivityBypass(ctx)) return 'external'
 
     const localUsable =
       this.sensitivityPolicy.localModelAvailable &&
       this.providers.has(this.sensitivityPolicy.localProvider)
     if (localUsable) return 'local'
 
+    const targetType = ctx.ticketId ? 'ticket' : ctx.conversationId ? 'conversation' : 'agent'
+    const targetId = ctx.ticketId ?? ctx.conversationId ?? ctx.agentId
     await this.audit.append({
       actorType: 'agent',
       actorId: ctx.agentId,
@@ -899,48 +974,15 @@ export class ModelGateway {
 
     // ── Step 2: Sensitivity pre-flight (Fázis 2-B) ─────────────────────────
     const sensitivity = classifyPrompt(params.messages)
-    const sensitivityOverrideAllowed =
-      sensitivity.level === 'forbidden' &&
-      !!sensitivity.matchedCategory &&
-      params.sensitivityOverride?.allowedForbiddenCategories.includes(sensitivity.matchedCategory)
-    if (sensitivity.level === 'forbidden' && !sensitivityOverrideAllowed) {
-      const targetType = params.ticketId ? 'ticket' : params.conversationId ? 'conversation' : 'agent'
-      const targetId = params.ticketId ?? params.conversationId ?? params.agentId
-      await this.audit.append({
-        actorType: 'agent',
-        actorId: params.agentId,
-        agentVersion,
-        action: 'model.call.denied',
-        targetType,
-        targetId,
-        modelUsed: params.modelConfig.model,
-        inputRef: `sensitivity:${sensitivity.matchedCategory}`,
-        outputRef: 'blocked',
-        policyDecision: 'sensitivity_block',
-        metadata: { reason: 'sensitivity_block', category: sensitivity.matchedCategory },
-      })
-      throw new GatewayBudgetError(formatSensitivityBlockMessage(sensitivity.matchedCategory))
-    }
-    if (sensitivityOverrideAllowed) {
-      const targetType = params.ticketId ? 'ticket' : params.conversationId ? 'conversation' : 'agent'
-      const targetId = params.ticketId ?? params.conversationId ?? params.agentId
-      await this.audit.append({
-        actorType: 'human',
-        actorId: params.sensitivityOverride!.reviewedByUserId,
-        agentVersion,
-        action: 'model.call.sensitivity_override',
-        targetType,
-        targetId,
-        modelUsed: params.modelConfig.model,
-        inputRef: `sensitivity:${sensitivity.matchedCategory}`,
-        outputRef: 'allowed_by_human_review',
-        policyDecision: 'human_review_override',
-        metadata: {
-          reason: params.sensitivityOverride!.reason,
-          category: sensitivity.matchedCategory,
-        },
-      })
-    }
+    await this.enforceForbiddenSensitivityPolicy({
+      agentId: params.agentId,
+      agentVersion,
+      ticketId: params.ticketId,
+      conversationId: params.conversationId,
+      modelUsed: params.modelConfig.model,
+      sensitivity,
+      sensitivityOverride: params.sensitivityOverride,
+    })
 
     // ── Step 3: Routing (Fázis 2-A) ────────────────────────────────────────
     let resolvedConfig = { ...params.modelConfig }
@@ -1203,48 +1245,15 @@ export class ModelGateway {
 
     // Sensitivity pre-flight (Fázis 2-B)
     const sensitivity = classifyPrompt(params.messages)
-    const sensitivityOverrideAllowed =
-      sensitivity.level === 'forbidden' &&
-      !!sensitivity.matchedCategory &&
-      params.sensitivityOverride?.allowedForbiddenCategories.includes(sensitivity.matchedCategory)
-    if (sensitivity.level === 'forbidden' && !sensitivityOverrideAllowed) {
-      const targetType = params.ticketId ? 'ticket' : params.conversationId ? 'conversation' : 'agent'
-      const targetId = params.ticketId ?? params.conversationId ?? params.agentId
-      await this.audit.append({
-        actorType: 'agent',
-        actorId: params.agentId,
-        agentVersion,
-        action: 'model.call.denied',
-        targetType,
-        targetId,
-        modelUsed: params.modelConfig.model,
-        inputRef: `sensitivity:${sensitivity.matchedCategory}`,
-        outputRef: 'blocked',
-        policyDecision: 'sensitivity_block',
-        metadata: { reason: 'sensitivity_block', category: sensitivity.matchedCategory },
-      })
-      throw new GatewayBudgetError(formatSensitivityBlockMessage(sensitivity.matchedCategory))
-    }
-    if (sensitivityOverrideAllowed) {
-      const targetType = params.ticketId ? 'ticket' : params.conversationId ? 'conversation' : 'agent'
-      const targetId = params.ticketId ?? params.conversationId ?? params.agentId
-      await this.audit.append({
-        actorType: 'human',
-        actorId: params.sensitivityOverride!.reviewedByUserId,
-        agentVersion,
-        action: 'model.call.sensitivity_override',
-        targetType,
-        targetId,
-        modelUsed: params.modelConfig.model,
-        inputRef: `sensitivity:${sensitivity.matchedCategory}`,
-        outputRef: 'allowed_by_human_review',
-        policyDecision: 'human_review_override',
-        metadata: {
-          reason: params.sensitivityOverride!.reason,
-          category: sensitivity.matchedCategory,
-        },
-      })
-    }
+    await this.enforceForbiddenSensitivityPolicy({
+      agentId: params.agentId,
+      agentVersion,
+      ticketId: params.ticketId,
+      conversationId: params.conversationId,
+      modelUsed: params.modelConfig.model,
+      sensitivity,
+      sensitivityOverride: params.sensitivityOverride,
+    })
 
     // Routing engine (Fázis 2-A)
     let resolvedConfig = { ...params.modelConfig }

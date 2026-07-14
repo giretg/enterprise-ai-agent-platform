@@ -364,7 +364,8 @@ export async function draftConfigFromApiDoc(input: unknown) {
     })
     const sensitivity = inspectPromptSensitivity(messages)
     const forbiddenFindings = sensitivity.findings.filter((f) => f.level === 'forbidden')
-    if (forbiddenFindings.length > 0 && !sensitivityReviewAccepted) {
+    const sensitivityBypassEnabled = assistant.allowSensitiveExternalModel
+    if (forbiddenFindings.length > 0 && !sensitivityBypassEnabled && !sensitivityReviewAccepted) {
       return ok({
         requiresSensitivityReview: true,
         sensitivity: {
@@ -382,7 +383,7 @@ export async function draftConfigFromApiDoc(input: unknown) {
       tenantId: user.activeTenantId,
       docText,
       providerHint,
-      ...(forbiddenFindings.length > 0
+      ...(forbiddenFindings.length > 0 && !sensitivityBypassEnabled
         ? {
             sensitivityOverride: {
               reviewedByUserId: user.user.id,
@@ -436,7 +437,8 @@ export async function discoverConnectorFromName(input: unknown) {
     // Érzékenységi kapu a connector-névre (mint a docText-re a kézi úton).
     const sensitivity = inspectPromptSensitivity([{ role: 'user', content: connectorName }])
     const forbiddenFindings = sensitivity.findings.filter((f) => f.level === 'forbidden')
-    if (forbiddenFindings.length > 0 && !sensitivityReviewAccepted) {
+    const sensitivityBypassEnabled = egressAgent.allowSensitiveExternalModel
+    if (forbiddenFindings.length > 0 && !sensitivityBypassEnabled && !sensitivityReviewAccepted) {
       return ok({
         requiresSensitivityReview: true,
         sensitivity: {
@@ -454,7 +456,7 @@ export async function discoverConnectorFromName(input: unknown) {
       egressRoleAgentVersion: egressAgent.currentVersion,
       agentModelConfig: egressAgent.modelConfig,
       tenantId: user.activeTenantId,
-      ...(forbiddenFindings.length > 0
+      ...(forbiddenFindings.length > 0 && !sensitivityBypassEnabled
         ? {
             sensitivityOverride: {
               reviewedByUserId: user.user.id,

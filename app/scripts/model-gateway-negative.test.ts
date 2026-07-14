@@ -739,8 +739,8 @@ async function main() {
     )
   })
 
-  await check('MG-N8: per-agent felmentés a forbidden szintet NEM kapcsolja ki', async () => {
-    const { repo: auditRepo } = makeAuditRepo()
+  await check('MG-N8: per-agent felmentés a forbidden szintet is átengedi, auditálva', async () => {
+    const { repo: auditRepo, events } = makeAuditRepo()
     const { repo: modelCallRepo } = makeModelCallRepo(0)
 
     const externalCalls = { n: 0 }
@@ -756,16 +756,22 @@ async function main() {
       agentPolicy(true),
     )
 
-    await assert.rejects(
-      () => gw.call({
-        agentId: TEST_AGENT_ID,
-        messages: [{ role: 'user', content: 'A kártyám: 4111111111111111' }],
-        modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
-      }),
-      GatewayBudgetError,
-      'A felmentett agent forbidden tartalma nem blokkolódott',
+    const result = await gw.call({
+      agentId: TEST_AGENT_ID,
+      messages: [{ role: 'user', content: 'A kártyám: 4111111111111111' }],
+      modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+    })
+
+    assert.equal(result.content, 'külső')
+    assert.equal(externalCalls.n, 1, 'A felmentett agent forbidden tartalma nem jutott el a providerhez')
+    assert.ok(
+      events.some(
+        (r) =>
+          r.action === 'model.call.sensitivity_agent_bypass' &&
+          r.policyDecision === 'agent_sensitivity_bypass',
+      ),
+      'Hiányzik a forbidden bypass audit bejegyzés',
     )
-    assert.equal(externalCalls.n, 0, 'Forbidden tartalom kijutott a külső providerhez')
   })
 
   await check('MG-N8: lokális modell elérhetőnek jelölve, de a hívás elhal → GatewaySensitivityError', async () => {

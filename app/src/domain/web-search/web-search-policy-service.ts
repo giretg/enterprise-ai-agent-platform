@@ -14,6 +14,8 @@ export type WebSearchUsageContext = {
   /** Ticket vagy chat-beszélgetés scope-ban eddigi web_search hívások (maxQueriesPerTicket). */
   scopedQueryCount: number
   agentDayQueryCount: number
+  /** Agent-szintű teljes sensitivity-router felmentés. */
+  bypassSensitivity?: boolean
 }
 
 function queryHash(query: string): string {
@@ -117,7 +119,7 @@ export class WebSearchPolicyService {
     }
 
     const safety = this.classifyQuery(query)
-    if (safety.blocked) {
+    if (safety.blocked && !usage.bypassSensitivity) {
       return {
         allowed: false,
         reason: 'query_policy_blocked',

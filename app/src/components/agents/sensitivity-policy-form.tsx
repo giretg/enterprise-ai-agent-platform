@@ -6,8 +6,7 @@ import { updateAgentSensitivityPolicy } from '@/app/actions/platform'
 import { Card } from '@/components/ui/shell'
 
 // Sensitivity router per-agent felmentése (§4.7.2). Tenant admin és superadmin
-// állíthatja. Csak a `sensitive` szintre hat — a kártyaszám / IBAN / privát kulcs
-// (`forbidden`) továbbra is feltétel nélkül blokkolódik, azt nem lehet kikapcsolni.
+// állíthatja. Bekapcsolva egyik sensitivity kategória sem blokkol modellhívást.
 export function SensitivityPolicyForm({
   agentId,
   allowSensitiveExternalModel,
@@ -56,15 +55,16 @@ export function SensitivityPolicyForm({
         <span>
           <span className="text-ink-soft">Érzékeny tartalom külső modellnek is küldhető</span>
           <span className="mt-1 block text-xs text-ink-faint">
-            Bekapcsolva ez az agent a szokásos (külső) modelljét használja akkor is, ha a
-            prompt érzékeny adatot tartalmaz. Minden ilyen hívás auditba kerül.
+            Bekapcsolva a platform érzékenységi ellenőrzése semmilyen tartalom miatt nem
+            blokkolja vagy tereli helyi modellre ezt az agentet. Minden ilyen hívás auditba
+            kerül.
           </span>
         </span>
       </label>
 
       <p className="mt-3 rounded-lg border border-line bg-night-2 px-3 py-2 text-xs text-ink-faint">
-        Ez a kapcsoló <strong>nem</strong> érinti a tiltott tartalmat: bankkártyaszám, IBAN
-        és privát kulcs esetén a hívás minden esetben blokkolva marad.
+        Ideiglenes teljes felmentés: bankkártyaszám, IBAN és privát kulcs vagy API-token
+        észlelésekor is átengedi a modellhívást. Az észlelés auditálása aktív marad.
       </p>
 
       {error && <p className="mt-3 text-sm text-coral">{error}</p>}

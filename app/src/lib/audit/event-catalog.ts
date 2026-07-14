@@ -106,8 +106,8 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'model.call',
   'model.call.denied',
   'model.call.sensitivity_override',
-  // Az agent felmentést kapott a `sensitive` tartalom külső modellre küldésére
-  // (agents.allow_sensitive_external_model). A `forbidden` szintre nem terjed ki.
+  // Az agent teljes felmentést kapott a sensitivity-router blokkolása/reroute-ja alól
+  // (agents.allow_sensitive_external_model); az osztályozási auditnyom megmarad.
   'model.call.sensitivity_agent_bypass',
   // Napi model-keret (összesített tenant + per-agent) átállítása a tenant admin felületről.
   'model.budget_changed',

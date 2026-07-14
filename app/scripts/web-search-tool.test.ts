@@ -212,6 +212,20 @@ async function main() {
     if (!decision.allowed) assert.equal(decision.reason, 'query_policy_blocked')
   })
 
+  await test('agent sensitivity felmentéssel a PAN-os query is átmegy', () => {
+    const decision = policy.authorize(
+      { query: 'mit jelent ez a tranzakció: 4111111111111111' },
+      bankingStrictConfig(),
+      {
+        enabled: true,
+        scopedQueryCount: 0,
+        agentDayQueryCount: 0,
+        bypassSensitivity: true,
+      },
+    )
+    assert.equal(decision.allowed, true)
+  })
+
   await test('tiszta, üzleti célú query átmegy a query-safety guardon', () => {
     const decision = policy.authorize(
       { query: 'mnb árfolyam közlemény 2026' },

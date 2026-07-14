@@ -1493,9 +1493,9 @@ export async function updateAgentInstruction(input: {
 }
 
 /**
- * Sensitivity router per-agent felmentés (§4.7.2). Tenant admin (és a tenantban
- * eljáró superadmin) írhatja. A `forbidden` szintre — kártyaszám, IBAN, privát
- * kulcs — ez NEM terjed ki, azt a gateway továbbra is feltétel nélkül blokkolja.
+ * Sensitivity router per-agent teljes felmentés (§4.7.2). Tenant admin (és a
+ * tenantban eljáró superadmin) írhatja. Bekapcsolva minden sensitivity szintet
+ * átenged; az osztályozás és az auditálás továbbra is lefut.
  */
 export async function updateAgentSensitivityPolicy(input: {
   agentId: string
@@ -1525,7 +1525,7 @@ export async function updateAgentSensitivityPolicy(input: {
       policyDecision: 'allowed',
       metadata: {
         allowSensitiveExternalModel: updated.allowSensitiveExternalModel,
-        scope: 'sensitive_tier_only',
+        scope: 'all_sensitivity_tiers',
       },
     })
 
