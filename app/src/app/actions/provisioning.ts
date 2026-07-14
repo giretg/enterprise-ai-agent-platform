@@ -9,6 +9,7 @@ import { fail, ok } from '@/lib/result'
 import { ProvisioningError } from '@/domain/provisioning/errors'
 import type { ProvisioningActor } from '@/domain/provisioning/provisioning-service'
 import { PROVISIONING_ASSISTANT_TEMPLATE } from '@/domain/provisioning/provisioning-assistant'
+import { formatProvisioningAssistantError } from '@/domain/provisioning/provisioning-assistant-errors'
 import { connectorConfigSchema } from '@/domain/provisioning/connector-config'
 import {
   materializeConnectorConfig,
@@ -349,8 +350,11 @@ export async function listConnectorCatalog() {
 
 export async function listProvisioningAssignableAgents() {
   try {
-    await requireTenantRole('viewer')
-    const agents = await repositories.agents.findMany()
+    const user = await requireTenantRole('viewer')
+    // Csak az aktív tenant agentjei — a bekötés (assignConnectorToAgent) is
+    // `activeTenantId`-re szűr, így a lista és a bind konzisztens. A superadmin a
+    // többi tenant agentjeit tenant-váltással éri el, nem összefésült listával.
+    const agents = await repositories.agents.findMany({ tenantId: user.activeTenantId })
     return ok(
       agents
         .filter((agent) => agent.status === 'active')
@@ -426,7 +430,7 @@ export async function draftConfigFromApiDoc(input: unknown) {
       })
     }
     if (!result.ok) {
-      return fail(`${result.error}: ${result.detail}`)
+      return fail(formatProvisioningAssistantError(result.error, result.detail, 'doc'))
     }
     return ok({ config: result.config, requiresSensitivityReview: false })
   } catch (e) {
@@ -471,7 +475,7 @@ export async function fetchApiDocFromUrl(input: unknown) {
         policyDecision: 'blocked',
         metadata: { reason: result.error, detail: result.detail },
       })
-      return fail(`${result.error}: ${result.detail}`)
+      return fail(formatProvisioningAssistantError(result.error, result.detail, 'fetch'))
     }
 
     await repositories.audit.append({
@@ -590,7 +594,7 @@ export async function discoverConnectorFromName(input: unknown) {
         policyDecision: 'blocked',
         metadata: { reason: result.error },
       })
-      return fail(`${result.error}: ${result.detail}`)
+      return fail(formatProvisioningAssistantError(result.error, result.detail, 'discover'))
     }
     await repositories.audit.append({
       actorType: 'agent',

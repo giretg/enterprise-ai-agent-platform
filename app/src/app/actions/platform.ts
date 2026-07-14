@@ -4573,14 +4573,22 @@ async function linkActiveConnectorForAgent(input: {
       (await findTenantWebSearchConnector(input.tenantId)) ??
       (await ensureTenantWebSearchConnector(input.tenantId))
   } else {
-    connector = await prisma.connector.findFirst({
-      where: {
-        type: input.type,
-        lifecycleState: 'active',
-        OR: [{ tenantId: input.tenantId }, { tenantId: null }],
-      },
-      orderBy: { createdAt: 'asc' },
-    })
+    // Tenant-preferencia: ELŐSZÖR a tenant saját connectora, és CSAK ha nincs, akkor a
+    // platform (tenantId=null) megosztott connector. A korábbi `OR + orderBy createdAt asc`
+    // a legrégebbit vette a saját∪null halmazból, így a régi platform-seed connectorok
+    // (pl. a Provider CRM) legyőzték a tenant saját connectorát — cross-tenant szivárgás.
+    // Idegen tenant connectora sosem jöhet szóba (a runtime tenant_isolation őre is tiltja).
+    connector =
+      (input.tenantId
+        ? await prisma.connector.findFirst({
+            where: { type: input.type, lifecycleState: 'active', tenantId: input.tenantId },
+            orderBy: { createdAt: 'asc' },
+          })
+        : null) ??
+      (await prisma.connector.findFirst({
+        where: { type: input.type, lifecycleState: 'active', tenantId: null },
+        orderBy: { createdAt: 'asc' },
+      }))
   }
   if (!connector) return { success: false, error: input.missingMessage }
 
@@ -4618,8 +4626,11 @@ export async function updateAgentCapabilities(input: {
     const needsWorkspace = WORKSPACE_TOOLS.some((t) => enabledSet.has(t))
     const needsGmail = GMAIL_TOOLS.some((t) => enabledSet.has(t))
     const needsGmailWrite = GMAIL_WRITE_TOOLS.some((t) => enabledSet.has(t))
+    // A HTTP API tool bekapcsolása CSAK a jogot adja meg — connectort NEM linkelünk
+    // automatikusan. Nincs „kanonikus" http_api connector (egy tenantnak több is lehet),
+    // és az auto-választás korábban a legrégebbi platform-connectort (Provider CRM) húzta
+    // be cross-tenant. A konkrét connectort az adminnak explicit hozzá kell rendelnie.
     const needsHttpApi = HTTP_API_TOOLS.some((t) => enabledSet.has(t))
-    const needsHttpApiWrite = enabledSet.has('http_api_request')
     const needsWebSearch = enabledSet.has('web_search')
     const needsBoard = [...SANDBOX_APP_TOOLS, ...SANDBOX_VERSION_TOOLS, ...BOARD_TOOLS].some((t) =>
       enabledSet.has(t),
@@ -4665,17 +4676,6 @@ export async function updateAgentCapabilities(input: {
         type: 'gmail',
         accessMode: needsGmailWrite ? 'write' : 'read',
         missingMessage: 'Aktív Gmail connector nem található a rendszerben.',
-      })
-      if (!linked.success) return fail(linked.error)
-    }
-
-    if (needsHttpApi) {
-      const linked = await linkActiveConnectorForAgent({
-        agentId,
-        tenantId: user.activeTenantId,
-        type: 'http_api',
-        accessMode: needsHttpApiWrite ? 'write' : 'read',
-        missingMessage: 'Aktív HTTP API connector nem található a rendszerben.',
       })
       if (!linked.success) return fail(linked.error)
     }
@@ -4740,7 +4740,8 @@ export async function updateAgentCapabilities(input: {
         knowledgeBaseLinked: needsKnowledgeBase,
         workspaceLinked: needsWorkspace,
         gmailLinked: needsGmail,
-        httpApiLinked: needsHttpApi,
+        httpApiLinked: false,
+        httpApiAssignmentRequired: needsHttpApi,
         webSearchLinked: needsWebSearch,
         boardLinked: needsBoard,
       } as Prisma.JsonValue,
@@ -4751,7 +4752,9 @@ export async function updateAgentCapabilities(input: {
       knowledgeBaseLinked: needsKnowledgeBase,
       workspaceLinked: needsWorkspace,
       gmailLinked: needsGmail,
-      httpApiLinked: needsHttpApi,
+      // A http_api connector sosem linkelődik automatikusan — külön hozzárendelés kell.
+      httpApiLinked: false,
+      httpApiAssignmentRequired: needsHttpApi,
       webSearchLinked: needsWebSearch,
       boardLinked: needsBoard,
     })

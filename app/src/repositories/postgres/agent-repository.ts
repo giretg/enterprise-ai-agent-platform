@@ -219,27 +219,11 @@ export class PostgresAgentRepository implements AgentRepository {
       },
     })
 
-    const board = await prisma.connector.findFirst({
-      where: { type: 'board', name: 'Control Plane Board' },
-    })
-    if (board) {
-      await prisma.agentConnector.upsert({
-        where: { agentId_connectorId: { agentId: agent.id, connectorId: board.id } },
-        create: { agentId: agent.id, connectorId: board.id, accessMode: 'write' },
-        update: { accessMode: 'write' },
-      })
-    }
-
-    if (agentRole === 'worker') {
-      for (const toolName of ['ticket_create', 'agent_ask', 'agent_resolve', 'agent_catalog', 'user_directory']) {
-        await prisma.capability.upsert({
-          where: { agentId_toolName: { agentId: agent.id, toolName } },
-          create: { agentId: agent.id, toolName, allowed: true },
-          update: { allowed: true },
-        })
-      }
-    }
-
+    // A Control Plane Board (kanban + agent-együttműködés: ticket_create, board_write,
+    // agent_ask/resolve/catalog, user_directory) hozzáférés NEM jár alapból: engedélyhez
+    // kötött. Az admin a capability-panelen kapcsolja be — ekkor az updateAgentCapabilities
+    // `needsBoard` ága köti be a PLATFORM (tenant-preferált, majd null) boardot. Így nem
+    // szivárog be automatikusan egy másik tenant vagy a platform kontroll-connectorja.
     await ensureAgentKnowledgeBase(agent)
 
     return { agent, apiKey: rawKey }

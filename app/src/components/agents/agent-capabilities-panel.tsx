@@ -48,9 +48,12 @@ export function AgentCapabilitiesPanel({
           res.data.webSearchLinked ? 'Web Search connector' : null,
           res.data.boardLinked ? 'Board connector' : null,
         ].filter(Boolean)
-        const msg = linked.length
+        const base = linked.length
           ? `${res.data.updatedCount} eszköz engedélyezve — ${linked.join(', ')} automatikusan linkelve.`
           : `${res.data.updatedCount} eszköz engedélyezve.`
+        const msg = res.data.httpApiAssignmentRequired
+          ? `${base} A HTTP API tool használatához rendelj hozzá egy kapcsolatot a „Meglévő kapcsolat hozzárendelése" résznél.`
+          : base
         setDone(msg)
         router.refresh()
       } else {

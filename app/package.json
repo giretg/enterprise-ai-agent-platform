@@ -51,6 +51,7 @@
     "test:dispatch-budget": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/dispatch-budget.test.ts",
     "test:monitor": "tsx scripts/monitor-engine.test.ts",
     "test:provisioning": "tsx scripts/provisioning-assistant.test.ts",
+    "test:provisioning-errors": "tsx scripts/provisioning-assistant-errors.test.ts",
     "test:playbook-author": "tsx scripts/playbook-author-agent.test.ts",
     "test:playbook-v2": "tsx scripts/playbook-v2-core.test.ts",
     "test:flow-builder-canvas": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/flow-builder-canvas.test.ts",
