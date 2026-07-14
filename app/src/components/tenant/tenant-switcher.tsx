@@ -1,6 +1,7 @@
 'use client'
 
-import { useEffect, useState, useTransition } from 'react'
+import { useCallback, useEffect, useState, useTransition } from 'react'
+import { useRouter } from 'next/navigation'
 import { getTenantSwitcherState, switchTenant, exitTenant } from '@/app/actions/tenant'
 
 /**
@@ -34,9 +35,15 @@ const statusTone: Record<string, string> = {
 }
 
 export function TenantSwitcher() {
+  const router = useRouter()
   const [state, setState] = useState<SwitcherState | null>(null)
   const [open, setOpen] = useState(false)
   const [pending, startTransition] = useTransition()
+
+  const refreshState = useCallback(async () => {
+    const res = await getTenantSwitcherState()
+    if (res.success) setState(res.data)
+  }, [])
 
   useEffect(() => {
     let cancelled = false
@@ -63,9 +70,12 @@ export function TenantSwitcher() {
       setOpen(false)
       const res = await switchTenant({ tenantId })
       if (res.success) {
-        // Teljes újratöltés: router.refresh() és same-URL redirect sem veszi
-        // mindig át az új cookie-t (pl. visszaváltáskor ugyanarra az oldalra).
-        window.location.reload()
+        // A switcher saját state-jét a szerverről töltjük újra (az új cookie-t
+        // olvasva) — a reload nem megbízhatóan frissítette a legördülő feliratot,
+        // és a stale state miatt a visszaváltás no-op lett. A tartalmat a
+        // router.refresh() (+ az action revalidatePath-je) frissíti.
+        await refreshState()
+        router.refresh()
       }
     })
   }
@@ -74,7 +84,10 @@ export function TenantSwitcher() {
     startTransition(async () => {
       setOpen(false)
       const res = await exitTenant()
-      if (res.success) window.location.reload()
+      if (res.success) {
+        await refreshState()
+        router.refresh()
+      }
     })
   }
 

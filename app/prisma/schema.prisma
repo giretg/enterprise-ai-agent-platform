@@ -1233,6 +1233,7 @@ model AgentApiKey {
   id         String       @id @default(uuid()) @db.Uuid
   agentId    String       @map("agent_id") @db.Uuid
   keyHash    String       @map("key_hash")
+  lookupHash String?      @unique @map("lookup_hash")
   scopes     Json
   status     ApiKeyStatus @default(active)
   createdAt  DateTime     @default(now()) @map("created_at") @db.Timestamptz
