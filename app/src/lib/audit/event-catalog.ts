@@ -90,6 +90,8 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'provisioning.discover.search',
   'provisioning.discover.draft',
   'provisioning.discover.blocked',
+  'provisioning.doc.fetch',
+  'provisioning.doc.fetch.blocked',
   'connector.egress_allowlist.extend',
 
   // ConversationSession

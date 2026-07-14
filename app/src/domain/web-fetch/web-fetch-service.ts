@@ -45,6 +45,8 @@ export type WebFetchRequest = {
   enabled: boolean
   /** Fetch-budget (§7.2/11); a számlálót a hívó vezeti, itt csak kapuzunk. */
   budget?: WebFetchBudget
+  /** Egyszeri felülírás a service alap maxContentChars limitjére (pl. admin API-doksi letöltés). */
+  maxContentChars?: number
 }
 
 function hashPrefix(content: string): string {
@@ -214,10 +216,11 @@ export class WebFetchService {
       const raw = new TextDecoder('utf-8', { fatal: false }).decode(body.bytes)
 
       // (10) Sanitizálás + hossz-limit.
-      const text = sanitizeFetchedContent({
+      const maxContentChars = req.maxContentChars ?? this.limits.maxContentChars
+      const { text, truncated } = sanitizeFetchedContent({
         raw,
         contentType,
-        maxContentChars: this.limits.maxContentChars,
+        maxContentChars,
       })
 
       return {
@@ -229,6 +232,7 @@ export class WebFetchService {
         contentHash: hashPrefix(text),
         urlHash: hashPrefix(url),
         text,
+        truncated,
       }
     } catch (e) {
       const detail = e instanceof Error && e.name === 'AbortError' ? 'timeout' : 'request_failed'

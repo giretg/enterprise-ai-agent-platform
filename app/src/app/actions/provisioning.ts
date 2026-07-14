@@ -109,6 +109,27 @@ const discoverSchema = z.object({
   sensitivityReviewAccepted: z.boolean().optional(),
 })
 
+const fetchApiDocUrlSchema = z.object({
+  url: z.string().url().max(2048),
+})
+
+export type FetchApiDocFromUrlData = {
+  docText: string
+  sourceUrl: string
+  host: string
+  bytes: number
+  contentType: string
+  truncated: boolean
+}
+
+async function resolveProvisioningEgressAgent() {
+  const agents = await repositories.agents.findMany()
+  const egressCandidates = agents.filter(
+    (a) => a.name === WEB_EGRESS_ROLE_TEMPLATE.name && a.status === 'active',
+  )
+  return egressCandidates.find((a) => a.tenantId === null) ?? egressCandidates[0] ?? null
+}
+
 const extendEgressSchema = z.object({
   host: z.string().min(1).max(253),
   sourceType: z.enum(['official', 'vendor_doc']).optional(),
@@ -403,6 +424,81 @@ export async function draftConfigFromApiDoc(input: unknown) {
 }
 
 /**
+ * API-doksi letöltése admin által megadott URL-ről (web_fetch). A tartalom a UI-ban
+ * jóváhagyásra kerül; a generálás a meglévő `draftConfigFromApiDoc` úton folytatódik.
+ * Admin-only; az URL explicit allowlist- és allowedSourceUrls-ként szerepel.
+ */
+export async function fetchApiDocFromUrl(input: unknown) {
+  try {
+    const user = await requireTenantRole('admin')
+    const { url } = fetchApiDocUrlSchema.parse(input)
+
+    const egressAgent = await resolveProvisioningEgressAgent()
+    if (!egressAgent) {
+      return fail(
+        'A web-egress role agent nincs seedelve. Futtasd: npm run db:seed, majd kapcsold be a web_fetch platform-toolt.',
+      )
+    }
+
+    const result = await services.provisioningAssistant.fetchApiDocFromUrl({
+      url,
+      egressRoleAgentId: egressAgent.id,
+      tenantId: user.activeTenantId,
+    })
+
+    if (!result.ok) {
+      await repositories.audit.append({
+        actorType: 'user',
+        actorId: user.user.id,
+        agentVersion: null,
+        action: 'provisioning.doc.fetch.blocked',
+        targetType: 'provisioning_doc_fetch',
+        targetId: null,
+        modelUsed: null,
+        inputRef: null,
+        outputRef: null,
+        policyDecision: 'blocked',
+        metadata: { reason: result.error, detail: result.detail },
+      })
+      return fail(`${result.error}: ${result.detail}`)
+    }
+
+    await repositories.audit.append({
+      actorType: 'user',
+      actorId: user.user.id,
+      agentVersion: null,
+      action: 'provisioning.doc.fetch',
+      targetType: 'provisioning_doc_fetch',
+      targetId: null,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: null,
+      policyDecision: 'allowed',
+      metadata: {
+        urlHash: result.urlHash,
+        host: result.host,
+        sourceType: result.sourceType,
+        contentHash: result.contentHash,
+        bytes: result.bytes,
+        contentType: result.contentType,
+        truncated: result.truncated,
+      },
+    })
+
+    return ok({
+      docText: result.text,
+      sourceUrl: result.sourceUrl,
+      host: result.host,
+      bytes: result.bytes,
+      contentType: result.contentType,
+      truncated: result.truncated,
+    } satisfies FetchApiDocFromUrlData)
+  } catch (e) {
+    return toFail(e, 'Nem sikerült letölteni az API-doksit az URL-ről')
+  }
+}
+
+/**
  * Kapcsolat felfedezése névből (WebFetch-Egress §5, §12.1). Admin-only. A web-egress role
  * agent a weben megkeresi és letölti a spec doksiját, és ebből ConnectorConfig-jelöltet ad
  * vissza (propose-not-apply). NEM hoz létre draftot — az admin a visszaadott configot
@@ -422,12 +518,7 @@ export async function discoverConnectorFromName(input: unknown) {
     // választani — különben egy tenanthoz kötött példány a SAJÁT tenantja search-connectorát
     // (és kulcsát) használná minden más tenant felfedezésénél is. A tenant-kötött példány csak
     // átmeneti visszaesés (még nem migrált seed), a system-szintűt preferáljuk.
-    const agents = await repositories.agents.findMany()
-    const egressCandidates = agents.filter(
-      (a) => a.name === WEB_EGRESS_ROLE_TEMPLATE.name && a.status === 'active',
-    )
-    const egressAgent =
-      egressCandidates.find((a) => a.tenantId === null) ?? egressCandidates[0]
+    const egressAgent = await resolveProvisioningEgressAgent()
     if (!egressAgent) {
       return fail(
         'A web-egress role agent nincs seedelve. Futtasd: npm run db:seed (a felfedezés flag mögött).',

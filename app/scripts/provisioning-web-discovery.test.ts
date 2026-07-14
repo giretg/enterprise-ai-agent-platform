@@ -278,6 +278,48 @@ async function main() {
     assert.equal(!r.ok && r.error, 'FETCH_FAILED')
   })
 
+  await test('WD-P5 admin URL fetch: letöltött OpenAPI szöveg visszaadása jóváhagyásra', async () => {
+    const openapi = '{"openapi":"3.0.3","paths":{"/items":{"get":{}}}}'
+    const deps = makeDiscoveryDeps({
+      runWebFetch: async (input) => {
+        assert.equal(input.url, 'https://api.example.com/openapi.json')
+        assert.equal(input.allowedSourceUrls[0], input.url)
+        assert.ok(input.allowlistHosts.includes('api.example.com'))
+        return {
+          ok: true,
+          host: 'api.example.com',
+          sourceType: 'official',
+          contentType: 'application/json',
+          bytes: openapi.length,
+          contentHash: 'ch_openapi',
+          urlHash: 'uh_openapi',
+          text: openapi,
+        }
+      },
+    })
+    const assistant = new ProvisioningAssistant({ model: fakeModel(validConfig()), discovery: deps })
+    const r = await assistant.fetchApiDocFromUrl({
+      url: 'https://api.example.com/openapi.json',
+      egressRoleAgentId: AGENT_ID,
+    })
+    assert.equal(r.ok, true)
+    if (r.ok) {
+      assert.equal(r.text, openapi)
+      assert.equal(r.sourceUrl, 'https://api.example.com/openapi.json')
+    }
+  })
+
+  await test('ADF-N1 admin URL fetch: http séma → INVALID_URL', async () => {
+    const deps = makeDiscoveryDeps()
+    const assistant = new ProvisioningAssistant({ model: fakeModel(validConfig()), discovery: deps })
+    const r = await assistant.fetchApiDocFromUrl({
+      url: 'http://api.example.com/openapi.json',
+      egressRoleAgentId: AGENT_ID,
+    })
+    assert.equal(r.ok, false)
+    assert.equal(!r.ok && r.error, 'INVALID_URL')
+  })
+
   if (failures > 0) {
     console.error(`\n${failures} web-discovery teszt elbukott.`)
     process.exit(1)

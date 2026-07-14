@@ -12,6 +12,7 @@ import {
   deleteConnectorDraft,
   discoverConnectorFromName,
   draftConfigFromApiDoc,
+  fetchApiDocFromUrl,
   extendEgressAllowlist,
   listConnectorTemplatesAction,
   listProvisioningAssignableAgents,
@@ -22,6 +23,7 @@ import {
   updateConnectorDraftConfig,
   upsertConnectorTemplateAction,
   validateConnectorDraft,
+  type FetchApiDocFromUrlData,
 } from '@/app/actions/provisioning'
 import { startConnectorOAuth } from '@/app/actions/connector-grants'
 
@@ -266,6 +268,14 @@ const API_DOC_FILE_EXTENSIONS = [
 const API_DOC_FILE_ACCEPT = API_DOC_FILE_EXTENSIONS.join(',')
 const MAX_API_DOC_FILE_BYTES = 2 * 1024 * 1024
 
+function inferDocSourceType(sourceRef: string, contentType?: string): 'openapi' | 'api_doc' {
+  const normalized = sourceRef.toLowerCase()
+  if (/(openapi|swagger)/.test(normalized) || contentType?.includes('json')) {
+    return 'openapi'
+  }
+  return 'api_doc'
+}
+
 function statusTone(s?: CheckStatus): 'neutral' | 'success' | 'warning' | 'danger' {
   if (s === 'passed') return 'success'
   if (s === 'warned') return 'warning'
@@ -303,6 +313,9 @@ export function ProvisioningPanel() {
   // F2-P-F: doksi → config-jelölt generálás állapota
   const [docText, setDocText] = useState('')
   const [docSourceRef, setDocSourceRef] = useState<string | null>(null)
+  const [docUrl, setDocUrl] = useState('')
+  const [docTruncated, setDocTruncated] = useState(false)
+  const [fetchingDoc, setFetchingDoc] = useState(false)
   const [sensitivityFindings, setSensitivityFindings] = useState<SensitivityFinding[]>([])
   const [generating, setGenerating] = useState(false)
 
@@ -416,6 +429,36 @@ export function ProvisioningPanel() {
     })
   }, [docText, name])
 
+  const onFetchDocFromUrl = useCallback(() => {
+    const url = docUrl.trim()
+    if (!url) {
+      setError('Add meg az API-doksi vagy OpenAPI URL-jét.')
+      return
+    }
+    setError(null)
+    setNotice(null)
+    setFetchingDoc(true)
+    startTransition(async () => {
+      const res = await fetchApiDocFromUrl({ url })
+      setFetchingDoc(false)
+      if (res.success) {
+        const data = res.data as FetchApiDocFromUrlData
+        setDocText(data.docText)
+        setDocSourceRef(data.sourceUrl)
+        setDocTruncated(data.truncated)
+        setSensitivityFindings([])
+        setSourceType(inferDocSourceType(data.sourceUrl, data.contentType))
+        setNotice(
+          data.truncated
+            ? 'Dokumentum letöltve (csonkolva a méretlimit miatt). Ellenőrizd a tartalmat, majd generálj config-jelöltet.'
+            : 'Dokumentum letöltve. Ellenőrizd a tartalmat alább, majd kattints a Config-jelölt generálására.',
+        )
+      } else {
+        setError(res.error)
+      }
+    })
+  }, [docUrl])
+
   const onDiscover = useCallback((sensitivityReviewAccepted = false) => {
     setError(null)
     setNotice(null)
@@ -482,12 +525,9 @@ export function ProvisioningPanel() {
       }
       setDocText(text)
       setDocSourceRef(file.name)
+      setDocTruncated(false)
       setSensitivityFindings([])
-      if (/(openapi|swagger)/.test(normalizedName)) {
-        setSourceType('openapi')
-      } else {
-        setSourceType('api_doc')
-      }
+      setSourceType(inferDocSourceType(file.name))
       setNotice(`${file.name} betöltve. A tartalom a generálási mezőbe került.`)
     } catch {
       setDocSourceRef(null)
@@ -996,7 +1036,34 @@ export function ProvisioningPanel() {
                     <span className="mb-1 block text-sm font-semibold">
                       Generálás API-doksiból (provisioning-asszisztens)
                     </span>
+                    <div className="mb-3 rounded-md border border-sage/25 bg-sage/5 p-3">
+                      <span className="mb-1 block text-xs font-semibold text-ink">
+                        1. lépés — letöltés URL-ről
+                      </span>
+                      <p className="mb-2 text-xs text-ink-soft">
+                        Add meg a publikus OpenAPI vagy API-doksi URL-t. A platform letölti, te
+                        átnézed a tartalmat, majd a provisioning-asszisztens generál config-jelöltet.
+                      </p>
+                      <div className="flex flex-col gap-2 sm:flex-row">
+                        <input
+                          type="url"
+                          className="min-w-0 flex-1 rounded-md border border-ink/15 bg-paper px-3 py-2 font-mono text-xs"
+                          value={docUrl}
+                          onChange={(e) => setDocUrl(e.target.value)}
+                          placeholder="https://példa.app/api/v1/openapi.json"
+                        />
+                        <button
+                          type="button"
+                          disabled={pending || fetchingDoc || !docUrl.trim()}
+                          onClick={onFetchDocFromUrl}
+                          className="shrink-0 rounded-md border border-sage/40 bg-sage/10 px-3 py-1.5 text-xs font-semibold text-sage disabled:opacity-50"
+                        >
+                          {fetchingDoc ? 'Letöltés…' : 'Letöltés'}
+                        </button>
+                      </div>
+                    </div>
                     <div className="mb-2 flex flex-col gap-1 text-xs text-ink-soft sm:flex-row sm:items-center sm:justify-between">
+                      <span className="font-semibold text-ink">2. lépés — átnézés vagy fájlfeltöltés</span>
                       <label className="inline-flex w-fit cursor-pointer items-center rounded-md border border-ink/15 bg-paper px-3 py-1.5 font-semibold text-ink hover:border-sage/50">
                         <span>API-doksi fájl feltöltése</span>
                         <input
@@ -1006,20 +1073,30 @@ export function ProvisioningPanel() {
                           className="sr-only"
                         />
                       </label>
-                      <span>OpenAPI, Postman, RAML, GraphQL, WSDL/XML, HAR, Markdown/HTML/TXT.</span>
                     </div>
+                    <p className="mb-2 text-xs text-ink-soft">
+                      OpenAPI, Postman, RAML, GraphQL, WSDL/XML, HAR, Markdown/HTML/TXT.
+                    </p>
                     <textarea
                       className="h-40 w-full rounded-md border border-ink/15 bg-paper px-3 py-2 font-mono text-xs"
                       value={docText}
                       onChange={(e) => {
                         setDocText(e.target.value)
                         setDocSourceRef(null)
+                        setDocTruncated(false)
                         setSensitivityFindings([])
                       }}
                       placeholder="Pl. 'Acme CRM API. Base URL: https://api.acme-crm.example. GET /v1/contacts...'"
                     />
                     {docSourceRef ? (
-                      <p className="mt-1 text-xs text-ink-soft">Betöltött fájl: {docSourceRef}</p>
+                      <p className="mt-1 text-xs text-ink-soft">
+                        Forrás: {docSourceRef}
+                        {docTruncated ? (
+                          <span className="ml-2 font-semibold text-honey">
+                            (csonkolva — a teljes spec túl nagy volt)
+                          </span>
+                        ) : null}
+                      </p>
                     ) : null}
                     {sensitivityFindings.length > 0 ? (
                       <div className="mt-2 rounded-md border border-honey/40 bg-honey/10 p-3 text-xs text-ink">
@@ -1059,7 +1136,7 @@ export function ProvisioningPanel() {
                       onClick={() => onGenerate(false)}
                       className="mt-2 rounded-md border border-sage/40 bg-sage/10 px-3 py-1.5 text-xs font-semibold text-sage disabled:opacity-50"
                     >
-                      {generating ? 'Generálás…' : 'Config-jelölt generálása'}
+                      {generating ? 'Generálás…' : '3. lépés — Config-jelölt generálása'}
                     </button>
                   </div>
                 ) : null}

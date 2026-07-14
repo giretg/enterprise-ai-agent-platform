@@ -501,7 +501,7 @@ const provisioningAssistant = new ProvisioningAssistant({
       })
       return results
     },
-    runWebFetch: async ({ url, sourceType, allowedSourceUrls, allowlistHosts, agentId, fetchIndex }) => {
+    runWebFetch: async ({ url, sourceType, allowedSourceUrls, allowlistHosts, agentId, fetchIndex, maxContentChars }) => {
       // §7.4 kapu: a web_fetch KIZÁRÓLAG web-egress role capabilityvel hívható.
       const cap = await repositories.toolBroker.findCapability(agentId, 'web_fetch')
       const agent = await repositories.agents.findById(agentId)
@@ -534,6 +534,7 @@ const provisioningAssistant = new ProvisioningAssistant({
         allowedSourceUrls,
         allowlistHosts,
         enabled,
+        maxContentChars,
         budget: {
           perDiscoveryUsed: fetchIndex,
           perDiscoveryMax: webFetchBudgetMax.perDiscovery,

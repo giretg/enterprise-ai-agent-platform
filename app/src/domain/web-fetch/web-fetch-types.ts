@@ -87,6 +87,8 @@ export type WebFetchOk = {
   urlHash: string
   /** A sanitizált, hossz-limitált szöveg — CSAK a hívónak (drafting), sosem auditba. */
   text: string
+  /** Igaz, ha a nyers tartalom hosszabb volt, mint a megengedett karakter-limit. */
+  truncated?: boolean
 }
 
 export type WebFetchBlocked = {

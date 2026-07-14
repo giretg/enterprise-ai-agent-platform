@@ -176,6 +176,7 @@ export interface DiscoveryDeps {
     allowlistHosts: string[]
     agentId: string
     fetchIndex: number
+    maxContentChars?: number
   }) => Promise<WebFetchResult>
   /** A felfedezés feature-flag (§14, `provisioning.web_discovery.enabled`). */
   isDiscoveryEnabled: () => Promise<boolean>
@@ -205,6 +206,28 @@ export type DiscoverConfigResult =
   | {
       ok: false
       error: 'NO_TRUSTED_SOURCE' | 'FETCH_FAILED' | 'PARSE_FAILED' | 'DISCOVERY_DISABLED'
+      detail: string
+    }
+
+/** Admin által megadott API-doksi URL letöltésének felső karakter-limitje (mint a fájlfeltöltés: 2 MB). */
+export const PROVISIONING_API_DOC_MAX_CHARS = 2 * 1024 * 1024
+
+export type FetchApiDocResult =
+  | {
+      ok: true
+      text: string
+      sourceUrl: string
+      host: string
+      bytes: number
+      contentHash: string
+      urlHash: string
+      contentType: string
+      sourceType: 'official'
+      truncated: boolean
+    }
+  | {
+      ok: false
+      error: 'FETCH_DISABLED' | 'FETCH_FAILED' | 'INVALID_URL'
       detail: string
     }
 
@@ -417,6 +440,73 @@ export class ProvisioningAssistant {
         egressRoleAgentId: input.egressRoleAgentId,
         egressRoleAgentVersion: input.egressRoleAgentVersion,
       },
+    }
+  }
+
+  /**
+   * Admin által megadott hivatalos API-doksi/OpenAPI URL letöltése (web_fetch).
+   * A tartalom NEM megy azonnal a modellnek — a hívó megjeleníti jóváhagyásra, majd a
+   * meglévő `draftConfigFromDoc` út folytatódik. Az URL explicit allowlist- és
+   * allowedSourceUrls-ként szerepel (admin attesztálja, nem az LLM választ).
+   */
+  async fetchApiDocFromUrl(input: {
+    url: string
+    egressRoleAgentId: string
+    tenantId?: string | null
+    maxContentChars?: number
+  }): Promise<FetchApiDocResult> {
+    const discovery = this.deps.discovery
+    if (!discovery) {
+      return { ok: false, error: 'FETCH_DISABLED', detail: 'web_fetch not configured' }
+    }
+
+    let parsed: URL
+    try {
+      parsed = new URL(input.url.trim())
+    } catch {
+      return { ok: false, error: 'INVALID_URL', detail: 'invalid url' }
+    }
+    if (parsed.protocol !== 'https:') {
+      return { ok: false, error: 'INVALID_URL', detail: 'only https urls are allowed' }
+    }
+
+    const normalizedUrl = parsed.toString()
+    const host = parsed.hostname.toLowerCase()
+    const envAllowlist = await discovery.resolveEgressAllowlist(input.tenantId ?? null)
+    const allowlistHosts = [...new Set([host, ...envAllowlist.map((h) => h.toLowerCase())])]
+
+    const result = await discovery.runWebFetch({
+      url: normalizedUrl,
+      sourceType: 'official',
+      allowedSourceUrls: [normalizedUrl],
+      allowlistHosts,
+      agentId: input.egressRoleAgentId,
+      fetchIndex: 0,
+      maxContentChars: input.maxContentChars ?? PROVISIONING_API_DOC_MAX_CHARS,
+    })
+
+    if (!result.ok) {
+      const detail =
+        result.reason === 'web_fetch_disabled'
+          ? 'web_fetch platform-tool is disabled'
+          : result.detail ?? result.reason
+      return { ok: false, error: 'FETCH_FAILED', detail }
+    }
+    if (!result.text.trim()) {
+      return { ok: false, error: 'FETCH_FAILED', detail: 'empty document' }
+    }
+
+    return {
+      ok: true,
+      text: result.text,
+      sourceUrl: normalizedUrl,
+      host: result.host,
+      bytes: result.bytes,
+      contentHash: result.contentHash,
+      urlHash: result.urlHash,
+      contentType: result.contentType,
+      sourceType: 'official',
+      truncated: result.truncated === true,
     }
   }
 }

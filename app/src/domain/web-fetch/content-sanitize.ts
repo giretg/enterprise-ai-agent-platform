@@ -50,14 +50,16 @@ export function sanitizeFetchedContent(input: {
   raw: string
   contentType: string
   maxContentChars: number
-}): string {
+}): { text: string; truncated: boolean } {
   let text = input.raw
   if (HTML_CONTENT_TYPES.test(input.contentType)) {
     text = decodeBasicEntities(stripTags(stripDangerousBlocks(text)))
   }
   text = collapseWhitespace(text)
+  let truncated = false
   if (text.length > input.maxContentChars) {
     text = text.slice(0, input.maxContentChars)
+    truncated = true
   }
-  return text
+  return { text, truncated }
 }
