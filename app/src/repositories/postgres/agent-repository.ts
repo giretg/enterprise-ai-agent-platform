@@ -6,6 +6,7 @@ import { ensureAgentKnowledgeBase } from '@/lib/agent-knowledge-base'
 import { composeBehaviorProfile } from '@/lib/behavior-profile'
 import { selfEvolutionProfileSchema } from '@/lib/self-evolution-profile'
 import { assertTransition, isPhysicallyDeletable } from '@/lib/agent-lifecycle'
+import { deriveAgentApiKeyLookupHash, isAgentApiKeyFormat } from '@/lib/agent-api-key-hash'
 import type { AgentRepository, DocumentRepository } from '../interfaces'
 
 function agentVisibilityWhere(id: string, tenantId?: string | null): Prisma.AgentWhereInput {
@@ -212,6 +213,7 @@ export class PostgresAgentRepository implements AgentRepository {
       data: {
         agentId: agent.id,
         keyHash: await bcrypt.hash(rawKey, 10),
+        lookupHash: deriveAgentApiKeyLookupHash(rawKey),
         scopes: serviceAccountScopesForRole(agentRole),
         status: 'active',
       },
@@ -433,6 +435,7 @@ export class PostgresAgentRepository implements AgentRepository {
         data: {
           agentId,
           keyHash: await bcrypt.hash(rawKey, 10),
+          lookupHash: deriveAgentApiKeyLookupHash(rawKey),
           scopes,
           status: 'active',
           rotatedAt: now,
@@ -459,6 +462,7 @@ export class PostgresAgentRepository implements AgentRepository {
       data: {
         agentId,
         keyHash: await bcrypt.hash(rawKey, 10),
+        lookupHash: deriveAgentApiKeyLookupHash(rawKey),
         scopes,
         status: 'active',
         expiresAt,
@@ -746,27 +750,55 @@ export class PostgresAgentRepository implements AgentRepository {
   }
 
   async authenticateApiKey(rawKey: string) {
-    if (!rawKey.startsWith('cp_sk_')) return null
+    if (!isAgentApiKeyFormat(rawKey)) return null
 
     const now = new Date()
-    const activeKeys = await prisma.agentApiKey.findMany({
+
+    const isUsable = (key: { status: string; expiresAt: Date | null }) =>
+      key.status === 'active' && (key.expiresAt === null || key.expiresAt > now)
+
+    const accept = async (key: { id: string; agentId: string; scopes: unknown }) => {
+      await prisma.agentApiKey.update({
+        where: { id: key.id },
+        data: { lastUsedAt: new Date() },
+      })
+      return { agentId: key.agentId, scopes: key.scopes as string[] }
+    }
+
+    // Gyors út: O(1) egyedi-indexelt megkeresés a determinisztikus kereső-hash-en, majd
+    // egyetlen bcrypt-ellenőrzés mélységi védelemként. Így a hitelesítés NEM skálázódik az
+    // aktív kulcsok számával (a régi kód minden kulcson végig-bcrypt-elt → O(n) lassú hash).
+    const lookupHash = deriveAgentApiKeyLookupHash(rawKey)
+    const direct = await prisma.agentApiKey.findUnique({
+      where: { lookupHash },
+      select: { id: true, agentId: true, keyHash: true, scopes: true, status: true, expiresAt: true },
+    })
+    if (direct) {
+      if (isUsable(direct) && (await bcrypt.compare(rawKey, direct.keyHash))) {
+        return accept(direct)
+      }
+      return null
+    }
+
+    // Visszafelé kompatibilis út: a migráció ELŐTT kiadott kulcsoknak nincs kereső-hash-ük.
+    // Csak ezeket a legacy sorokat vizsgáljuk (nem az összeset), és találatkor feltöltjük a
+    // kereső-hash-t, így a kulcs a következő használatkor már a gyors úton hitelesít.
+    const legacyKeys = await prisma.agentApiKey.findMany({
       where: {
         status: 'active',
+        lookupHash: null,
         OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
       },
-      select: { agentId: true, keyHash: true, scopes: true, id: true },
+      select: { id: true, agentId: true, keyHash: true, scopes: true, status: true, expiresAt: true },
     })
 
-    for (const key of activeKeys) {
+    for (const key of legacyKeys) {
       if (await bcrypt.compare(rawKey, key.keyHash)) {
         await prisma.agentApiKey.update({
           where: { id: key.id },
-          data: { lastUsedAt: new Date() },
+          data: { lastUsedAt: new Date(), lookupHash },
         })
-        return {
-          agentId: key.agentId,
-          scopes: key.scopes as string[],
-        }
+        return { agentId: key.agentId, scopes: key.scopes as string[] }
       }
     }
 
