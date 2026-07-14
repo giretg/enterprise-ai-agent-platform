@@ -115,16 +115,63 @@ type SensitivityFinding = {
   column: number
   snippet: string
 }
+type SensitivityReviewData = {
+  level: 'clean' | 'sensitive' | 'forbidden'
+  matchedCategory?: string
+  findings: SensitivityFinding[]
+}
 type DraftConfigFromDocData =
   | { config: DraftConfig; requiresSensitivityReview: false }
   | {
       requiresSensitivityReview: true
-      sensitivity: {
-        level: 'forbidden'
-        matchedCategory?: string
-        findings: SensitivityFinding[]
-      }
+      sensitivity: SensitivityReviewData
     }
+
+function SensitivityReviewBanner(props: {
+  findings: SensitivityFinding[]
+  pending: boolean
+  busy: boolean
+  onAccept: () => void
+}) {
+  return (
+    <div className="mt-2 rounded-md border border-honey/40 bg-honey/10 p-3 text-xs text-ink">
+      <p className="font-semibold text-honey">
+        Érzékeny mintát találtunk a tartalomban (pl. email, TAJ, adószám).
+      </p>
+      <p className="mt-1 text-ink-soft">
+        Alapból csak helyi modell dolgozhatná fel — de gyakran dummy/példa adat szerepel API-doksikban.
+        Ha biztos vagy benne, hogy nem valódi érzékeny adat, folytathatod külső modelllel is.
+      </p>
+      <div className="mt-2 space-y-1">
+        {props.findings.map((finding, index) => (
+          <div
+            key={`${finding.category}-${finding.line}-${finding.column}-${index}`}
+            className="rounded border border-honey/30 bg-paper px-2 py-1"
+          >
+            <span className="font-semibold">{finding.category}</span>
+            <span className="text-ink-soft">
+              {' '}
+              - {finding.line}. sor, {finding.column}. oszlop
+            </span>
+            <code className="mt-1 block break-all font-mono text-[11px] text-ink-soft">
+              {finding.snippet}
+            </code>
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <button
+          type="button"
+          disabled={props.pending || props.busy}
+          onClick={props.onAccept}
+          className="rounded-md border border-honey/50 bg-paper px-3 py-1.5 font-semibold text-honey disabled:opacity-50"
+        >
+          Folytatás — dummy/példa adat
+        </button>
+      </div>
+    </div>
+  )
+}
 
 type DiscoverySource = {
   urlHash: string
@@ -142,7 +189,7 @@ type DiscoverData =
     }
   | {
       requiresSensitivityReview: true
-      sensitivity: { level: 'forbidden'; matchedCategory?: string; findings: SensitivityFinding[] }
+      sensitivity: SensitivityReviewData
     }
 
 type CreateStep = 'basics' | 'source' | 'review'
@@ -411,7 +458,9 @@ export function ProvisioningPanel() {
         const data = res.data as DraftConfigFromDocData
         if (data.requiresSensitivityReview) {
           setSensitivityFindings(data.sensitivity.findings)
-          setNotice(null)
+          setNotice(
+            'Érzékeny mintát találtunk a dokumentumban. Ha dummy/példa adat, folytathatod a gombbal.',
+          )
           return
         }
         setSensitivityFindings([])
@@ -474,6 +523,9 @@ export function ProvisioningPanel() {
         const data = res.data as DiscoverData
         if (data.requiresSensitivityReview) {
           setSensitivityFindings(data.sensitivity.findings)
+          setNotice(
+            'Érzékeny mintát találtunk a letöltött dokumentumban. Ha dummy/példa adat, folytathatod a gombbal.',
+          )
           return
         }
         setSensitivityFindings([])
@@ -1005,6 +1057,14 @@ export function ProvisioningPanel() {
                     >
                       {discovering ? 'Felfedezés…' : 'Felfedezés'}
                     </button>
+                    {sensitivityFindings.length > 0 && sourceMethod === 'discover' ? (
+                      <SensitivityReviewBanner
+                        findings={sensitivityFindings}
+                        pending={pending}
+                        busy={discovering}
+                        onAccept={() => onDiscover(true)}
+                      />
+                    ) : null}
                     {discoverySources.length > 0 ? (
                       <div className="mt-2 space-y-1">
                         <p className="text-xs font-semibold text-ink-soft">Források (provenance):</p>
@@ -1098,37 +1158,13 @@ export function ProvisioningPanel() {
                         ) : null}
                       </p>
                     ) : null}
-                    {sensitivityFindings.length > 0 ? (
-                      <div className="mt-2 rounded-md border border-honey/40 bg-honey/10 p-3 text-xs text-ink">
-                        <p className="font-semibold text-honey">
-                          A Gateway kockázatos mintát talált a dokumentumban.
-                        </p>
-                        <div className="mt-2 space-y-1">
-                          {sensitivityFindings.map((finding, index) => (
-                            <div
-                              key={`${finding.category}-${finding.line}-${finding.column}-${index}`}
-                              className="rounded border border-honey/30 bg-paper px-2 py-1"
-                            >
-                              <span className="font-semibold">{finding.category}</span>
-                              <span className="text-ink-soft">
-                                {' '}
-                                - {finding.line}. sor, {finding.column}. oszlop
-                              </span>
-                              <code className="mt-1 block break-all font-mono text-[11px] text-ink-soft">
-                                {finding.snippet}
-                              </code>
-                            </div>
-                          ))}
-                        </div>
-                        <button
-                          type="button"
-                          disabled={pending || generating}
-                          onClick={() => onGenerate(true)}
-                          className="mt-2 rounded-md border border-honey/50 bg-paper px-3 py-1.5 font-semibold text-honey disabled:opacity-50"
-                        >
-                          Átnéztem, nem tartalmaz valódi secretet
-                        </button>
-                      </div>
+                    {sensitivityFindings.length > 0 && sourceMethod === 'document' ? (
+                      <SensitivityReviewBanner
+                        findings={sensitivityFindings}
+                        pending={pending}
+                        busy={generating}
+                        onAccept={() => onGenerate(true)}
+                      />
                     ) : null}
                     <button
                       type="button"

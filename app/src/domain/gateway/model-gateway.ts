@@ -842,6 +842,7 @@ export class ModelGateway {
     conversationId?: string
     modelUsed: string
     sensitivity: SensitivityDecision
+    sensitivityOverride?: SensitivityOverride
   }): Promise<'external' | 'local'> {
     const category = ctx.sensitivity.matchedCategory
 
@@ -851,6 +852,31 @@ export class ModelGateway {
       this.sensitivityPolicy.localModelAvailable &&
       this.providers.has(this.sensitivityPolicy.localProvider)
     if (localUsable) return 'local'
+
+    const sensitivityOverrideAllowed =
+      !!category && ctx.sensitivityOverride?.allowedForbiddenCategories.includes(category)
+    if (sensitivityOverrideAllowed) {
+      const targetType = ctx.ticketId ? 'ticket' : ctx.conversationId ? 'conversation' : 'agent'
+      const targetId = ctx.ticketId ?? ctx.conversationId ?? ctx.agentId
+      await this.audit.append({
+        actorType: 'human',
+        actorId: ctx.sensitivityOverride!.reviewedByUserId,
+        agentVersion: ctx.agentVersion,
+        action: 'model.call.sensitivity_override',
+        targetType,
+        targetId,
+        modelUsed: ctx.modelUsed,
+        inputRef: `sensitivity:${category}`,
+        outputRef: 'allowed_by_human_review',
+        policyDecision: 'human_review_override',
+        metadata: {
+          reason: ctx.sensitivityOverride!.reason,
+          category,
+          level: ctx.sensitivity.level,
+        },
+      })
+      return 'external'
+    }
 
     const targetType = ctx.ticketId ? 'ticket' : ctx.conversationId ? 'conversation' : 'agent'
     const targetId = ctx.ticketId ?? ctx.conversationId ?? ctx.agentId
@@ -889,6 +915,7 @@ export class ModelGateway {
     conversationId?: string
     resolvedConfig: ModelConfig
     sensitivity: SensitivityDecision
+    sensitivityOverride?: SensitivityOverride
   }): Promise<{ resolvedConfig: ModelConfig; forcedLocal: boolean }> {
     if (ctx.sensitivity.level !== 'sensitive' || !this.sensitivityPolicy.enforceLocalForSensitive) {
       return { resolvedConfig: ctx.resolvedConfig, forcedLocal: false }
@@ -901,6 +928,7 @@ export class ModelGateway {
       conversationId: ctx.conversationId,
       modelUsed: ctx.resolvedConfig.model,
       sensitivity: ctx.sensitivity,
+      sensitivityOverride: ctx.sensitivityOverride,
     })
     if (target === 'external') {
       return { resolvedConfig: ctx.resolvedConfig, forcedLocal: false }
@@ -1005,6 +1033,7 @@ export class ModelGateway {
       conversationId: params.conversationId,
       resolvedConfig,
       sensitivity,
+      sensitivityOverride: params.sensitivityOverride,
     })
     resolvedConfig = sensitivityRouting.resolvedConfig
     const forcedLocal = sensitivityRouting.forcedLocal
@@ -1275,6 +1304,7 @@ export class ModelGateway {
       conversationId: params.conversationId,
       resolvedConfig,
       sensitivity,
+      sensitivityOverride: params.sensitivityOverride,
     })
     resolvedConfig = sensitivityRouting.resolvedConfig
     const forcedLocal = sensitivityRouting.forcedLocal

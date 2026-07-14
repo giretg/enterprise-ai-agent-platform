@@ -20,7 +20,11 @@ import {
   templateDescriptorSchema,
 } from '@/domain/connector-template/template-descriptor'
 import { WEB_EGRESS_ROLE_TEMPLATE } from '@/domain/agents/web-egress-role'
-import { inspectPromptSensitivity } from '@/domain/gateway/sensitivity-router'
+import {
+  inspectPromptSensitivity,
+  reviewableSensitivityFindings,
+  type SensitivityFinding,
+} from '@/domain/gateway/sensitivity-router'
 
 /**
  * Server actions a Provisioning Assistant (Connector Onboarding) admin-felülethez
@@ -384,15 +388,18 @@ export async function draftConfigFromApiDoc(input: unknown) {
       providerHint,
     })
     const sensitivity = inspectPromptSensitivity(messages)
-    const forbiddenFindings = sensitivity.findings.filter((f) => f.level === 'forbidden')
     const sensitivityBypassEnabled = assistant.allowSensitiveExternalModel
-    if (forbiddenFindings.length > 0 && !sensitivityBypassEnabled && !sensitivityReviewAccepted) {
+    const reviewFindings = reviewableSensitivityFindings(sensitivity.findings, {
+      allowSensitiveExternalModel: sensitivityBypassEnabled,
+      sensitivityReviewAccepted,
+    })
+    if (reviewFindings.length > 0) {
       return ok({
         requiresSensitivityReview: true,
         sensitivity: {
           level: sensitivity.level,
           matchedCategory: sensitivity.matchedCategory,
-          findings: forbiddenFindings,
+          findings: reviewFindings,
         },
       })
     }
@@ -404,16 +411,20 @@ export async function draftConfigFromApiDoc(input: unknown) {
       tenantId: user.activeTenantId,
       docText,
       providerHint,
-      ...(forbiddenFindings.length > 0 && !sensitivityBypassEnabled
-        ? {
-            sensitivityOverride: {
-              reviewedByUserId: user.user.id,
-              allowedForbiddenCategories: [...new Set(forbiddenFindings.map((f) => f.category))],
-              reason: 'Provisioning API documentation sensitivity review accepted by admin',
-            },
-          }
-        : {}),
+      allowSensitiveExternalModel: sensitivityBypassEnabled,
+      sensitivityReviewAccepted,
+      reviewedByUserId: sensitivityReviewAccepted ? user.user.id : undefined,
     })
+    if (!result.ok && result.error === 'SENSITIVITY_REVIEW_REQUIRED') {
+      return ok({
+        requiresSensitivityReview: true,
+        sensitivity: {
+          level: result.level,
+          matchedCategory: result.matchedCategory,
+          findings: result.findings,
+        },
+      })
+    }
     if (!result.ok) {
       return fail(`${result.error}: ${result.detail}`)
     }
@@ -448,7 +459,7 @@ export async function fetchApiDocFromUrl(input: unknown) {
 
     if (!result.ok) {
       await repositories.audit.append({
-        actorType: 'user',
+        actorType: 'human',
         actorId: user.user.id,
         agentVersion: null,
         action: 'provisioning.doc.fetch.blocked',
@@ -464,7 +475,7 @@ export async function fetchApiDocFromUrl(input: unknown) {
     }
 
     await repositories.audit.append({
-      actorType: 'user',
+      actorType: 'human',
       actorId: user.user.id,
       agentVersion: null,
       action: 'provisioning.doc.fetch',
@@ -527,15 +538,18 @@ export async function discoverConnectorFromName(input: unknown) {
 
     // Érzékenységi kapu a connector-névre (mint a docText-re a kézi úton).
     const sensitivity = inspectPromptSensitivity([{ role: 'user', content: connectorName }])
-    const forbiddenFindings = sensitivity.findings.filter((f) => f.level === 'forbidden')
     const sensitivityBypassEnabled = egressAgent.allowSensitiveExternalModel
-    if (forbiddenFindings.length > 0 && !sensitivityBypassEnabled && !sensitivityReviewAccepted) {
+    const reviewFindings = reviewableSensitivityFindings(sensitivity.findings, {
+      allowSensitiveExternalModel: sensitivityBypassEnabled,
+      sensitivityReviewAccepted,
+    })
+    if (reviewFindings.length > 0) {
       return ok({
         requiresSensitivityReview: true,
         sensitivity: {
           level: sensitivity.level,
           matchedCategory: sensitivity.matchedCategory,
-          findings: forbiddenFindings,
+          findings: reviewFindings,
         },
       })
     }
@@ -547,16 +561,20 @@ export async function discoverConnectorFromName(input: unknown) {
       egressRoleAgentVersion: egressAgent.currentVersion,
       agentModelConfig: egressAgent.modelConfig,
       tenantId: user.activeTenantId,
-      ...(forbiddenFindings.length > 0 && !sensitivityBypassEnabled
-        ? {
-            sensitivityOverride: {
-              reviewedByUserId: user.user.id,
-              allowedForbiddenCategories: [...new Set(forbiddenFindings.map((f) => f.category))],
-              reason: 'Provisioning web-discovery sensitivity review accepted by admin',
-            },
-          }
-        : {}),
+      allowSensitiveExternalModel: sensitivityBypassEnabled,
+      sensitivityReviewAccepted,
+      reviewedByUserId: sensitivityReviewAccepted ? user.user.id : undefined,
     })
+    if (!result.ok && result.error === 'SENSITIVITY_REVIEW_REQUIRED') {
+      return ok({
+        requiresSensitivityReview: true,
+        sensitivity: {
+          level: result.level,
+          matchedCategory: result.matchedCategory,
+          findings: result.findings,
+        },
+      })
+    }
     // §11.1/§11.2 felfedezés-kimenet audit — actor = web-egress role agent, hash-only (§11.3).
     if (!result.ok) {
       await repositories.audit.append({

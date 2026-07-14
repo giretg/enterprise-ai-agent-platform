@@ -708,6 +708,44 @@ async function main() {
     )
   })
 
+  await check('MG-N8: sensitive + human review override → külső provider, auditálva', async () => {
+    const { repo: auditRepo, events } = makeAuditRepo()
+    const { repo: modelCallRepo } = makeModelCallRepo(0)
+
+    const externalCalls = { n: 0 }
+    const providers = new Map<string, ModelProvider>([
+      ['chatgpt-oauth', { name: 'chatgpt-oauth', async chat() { externalCalls.n++; return { content: 'külső', latencyMs: 1 } } }],
+    ])
+
+    const gw = new ModelGateway(
+      auditRepo, modelCallRepo, providers, { maxCallsPerTicket: 30 },
+      undefined, undefined,
+      { enforceLocalForSensitive: true, localProvider: 'ollama', localModel: 'gemma-local', localModelAvailable: false },
+    )
+
+    const result = await gw.call({
+      agentId: TEST_AGENT_ID,
+      messages: [{ role: 'user', content: 'Írj a szilagyi.tamas@tmdminformatika.hu címre' }],
+      modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+      sensitivityOverride: {
+        reviewedByUserId: 'admin-1',
+        allowedForbiddenCategories: ['email'],
+        reason: 'admin confirmed documentation sample email',
+      },
+    })
+
+    assert.equal(result.content, 'külső')
+    assert.equal(externalCalls.n, 1)
+    assert.ok(
+      events.some(
+        (e) =>
+          e.action === 'model.call.sensitivity_override' &&
+          e.policyDecision === 'human_review_override',
+      ),
+      'Hiányzik a sensitive human override audit bejegyzés',
+    )
+  })
+
   await check('MG-N8: per-agent felmentés → sensitive mehet külső modellre, auditálva', async () => {
     const { repo: auditRepo, events } = makeAuditRepo()
     const { repo: modelCallRepo } = makeModelCallRepo(0)

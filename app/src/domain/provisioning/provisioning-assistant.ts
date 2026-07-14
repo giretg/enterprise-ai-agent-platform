@@ -20,6 +20,12 @@ import type {
   ModelConfig,
   SensitivityOverride,
 } from '@/domain/gateway/model-gateway'
+import {
+  inspectPromptSensitivity,
+  reviewableSensitivityFindings,
+  type SensitivityFinding,
+  type SensitivityLevel,
+} from '@/domain/gateway/sensitivity-router'
 import type { WebSearchResultItem } from '@/domain/web-search/web-search-types'
 import type { WebFetchResult, WebFetchSourceType } from '@/domain/web-fetch/web-fetch-types'
 import {
@@ -116,6 +122,14 @@ export interface ConfigDraftingModel {
 export type DraftConfigResult =
   | { ok: true; config: ConnectorConfig }
   | { ok: false; error: 'PARSE_FAILED'; detail: string; issues?: unknown }
+  | {
+      ok: false
+      error: 'SENSITIVITY_REVIEW_REQUIRED'
+      detail: string
+      level: SensitivityLevel
+      matchedCategory?: string
+      findings: SensitivityFinding[]
+    }
 
 const SUPPORTED_PROVISIONING_PROVIDERS = new Set([
   'chatgpt-oauth',
@@ -205,8 +219,16 @@ export type DiscoverConfigResult =
   | { ok: true; config: ConnectorConfig; provenance: DiscoveryProvenance }
   | {
       ok: false
-      error: 'NO_TRUSTED_SOURCE' | 'FETCH_FAILED' | 'PARSE_FAILED' | 'DISCOVERY_DISABLED'
+      error:
+        | 'NO_TRUSTED_SOURCE'
+        | 'FETCH_FAILED'
+        | 'PARSE_FAILED'
+        | 'DISCOVERY_DISABLED'
+        | 'SENSITIVITY_REVIEW_REQUIRED'
       detail: string
+      level?: SensitivityLevel
+      matchedCategory?: string
+      findings?: SensitivityFinding[]
     }
 
 /** Admin által megadott API-doksi URL letöltésének felső karakter-limitje (mint a fájlfeltöltés: 2 MB). */
@@ -275,6 +297,10 @@ export class ProvisioningAssistant {
     conversationId?: string | null
     docText: string
     providerHint?: string
+    allowSensitiveExternalModel?: boolean
+    /** Ember jóváhagyta az érzékeny tartalom külső modellre küldését. */
+    sensitivityReviewAccepted?: boolean
+    reviewedByUserId?: string
     sensitivityOverride?: SensitivityOverride
   }): Promise<DraftConfigResult> {
     if (!input.docText?.trim()) {
@@ -286,6 +312,30 @@ export class ProvisioningAssistant {
       providerHint: input.providerHint,
     })
 
+    const sensitivity = inspectPromptSensitivity(messages)
+    const reviewFindings = reviewableSensitivityFindings(sensitivity.findings, {
+      allowSensitiveExternalModel: input.allowSensitiveExternalModel,
+    })
+    let sensitivityOverride = input.sensitivityOverride
+    if (reviewFindings.length > 0) {
+      if (input.sensitivityReviewAccepted && input.reviewedByUserId) {
+        sensitivityOverride = {
+          reviewedByUserId: input.reviewedByUserId,
+          allowedForbiddenCategories: [...new Set(reviewFindings.map((f) => f.category))],
+          reason: 'Provisioning sensitivity review accepted by admin',
+        }
+      } else {
+        return {
+          ok: false,
+          error: 'SENSITIVITY_REVIEW_REQUIRED',
+          detail: 'sensitive content requires human review',
+          level: sensitivity.level,
+          matchedCategory: sensitivity.matchedCategory,
+          findings: reviewFindings,
+        }
+      }
+    }
+
     const modelConfig =
       this.deps.modelConfig ?? resolveProvisioningModelConfig(input.agentModelConfig)
 
@@ -296,7 +346,7 @@ export class ProvisioningAssistant {
       conversationId: input.conversationId ?? undefined,
       messages,
       modelConfig,
-      sensitivityOverride: input.sensitivityOverride,
+      sensitivityOverride,
     })
 
     const raw = extractJsonObject(content)
@@ -335,6 +385,9 @@ export class ProvisioningAssistant {
     agentModelConfig?: unknown
     tenantId?: string | null
     conversationId?: string | null
+    allowSensitiveExternalModel?: boolean
+    sensitivityReviewAccepted?: boolean
+    reviewedByUserId?: string
     sensitivityOverride?: SensitivityOverride
   }): Promise<DiscoverConfigResult> {
     const discovery = this.deps.discovery
@@ -425,9 +478,22 @@ export class ProvisioningAssistant {
       conversationId: input.conversationId,
       docText,
       providerHint: name,
+      allowSensitiveExternalModel: input.allowSensitiveExternalModel,
+      sensitivityReviewAccepted: input.sensitivityReviewAccepted,
+      reviewedByUserId: input.reviewedByUserId,
       sensitivityOverride: input.sensitivityOverride,
     })
     if (!draft.ok) {
+      if (draft.error === 'SENSITIVITY_REVIEW_REQUIRED') {
+        return {
+          ok: false,
+          error: 'SENSITIVITY_REVIEW_REQUIRED',
+          detail: draft.detail,
+          level: draft.level,
+          matchedCategory: draft.matchedCategory,
+          findings: draft.findings,
+        }
+      }
       return { ok: false, error: 'PARSE_FAILED', detail: draft.detail }
     }
 

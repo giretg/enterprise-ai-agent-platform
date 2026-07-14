@@ -409,3 +409,27 @@ export function sensitivityPolicyFromEnv(env: NodeJS.ProcessEnv = process.env): 
     localModelAvailable: env.SENSITIVITY_LOCAL_MODEL_AVAILABLE === 'true',
   }
 }
+
+/**
+ * Mely találatok kérnek emberi jóváhagyást provisioning / admin felületen, mielőtt
+ * külső modellhez menne a prompt. A `forbidden` mindig review-köteles (kivéve agent
+ * bypass); a `sensitive` csak akkor, ha nincs elérhető helyi modell a környezetben.
+ */
+export function reviewableSensitivityFindings(
+  findings: SensitivityFinding[],
+  options: {
+    allowSensitiveExternalModel?: boolean
+    /** Ha megvan, a hívó már jóváhagyta — nem kérünk újra review-t. */
+    sensitivityReviewAccepted?: boolean
+  } = {},
+): SensitivityFinding[] {
+  if (options.allowSensitiveExternalModel || options.sensitivityReviewAccepted) return []
+  const policy = sensitivityPolicyFromEnv()
+  return findings.filter((f) => {
+    if (f.level === 'forbidden') return true
+    if (f.level === 'sensitive') {
+      return policy.enforceLocalForSensitive && !policy.localModelAvailable
+    }
+    return false
+  })
+}
