@@ -74,6 +74,8 @@ export const connectorConfigSchema = z.object({
    * saját őrrel véd), ezért opcionális.
    */
   restrictToEndpoints: z.boolean().optional(),
+  /** Sablonozható fejlécek minden hívásra (pl. X-Agent-Id, X-Connector-Call-Id). */
+  requestHeaders: z.record(z.string(), z.string()).optional(),
   githubRepositoryAccess: githubRepositoryAccessSchema.optional(),
   provenance: z
     .object({

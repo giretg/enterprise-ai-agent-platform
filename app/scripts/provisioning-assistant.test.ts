@@ -284,6 +284,12 @@ const failTester: SandboxConnectionTester = {
     return { ok: false, statusCode: 503, detail: 'sandbox unreachable' }
   },
 }
+const authFailTester: SandboxConnectionTester = {
+  async test(input) {
+    if (input.token) return { ok: false, statusCode: 401, detail: 'bad token' }
+    return { ok: true, statusCode: 401, detail: 'reachable_auth_required' }
+  },
+}
 
 const TENANT = 'tenant-a'
 const adminActor: ProvisioningActor = {
@@ -357,6 +363,10 @@ async function draftToActivatable(
 
 async function run() {
   console.log('Provisioning Assistant — determinisztikus teszt\n')
+  process.env.K = process.env.K ?? 'test-key'
+  process.env.ACME_CRM_SERVICE_KEY = process.env.ACME_CRM_SERVICE_KEY ?? 'test-key'
+  process.env.ACME_OAUTH_SECRET = process.env.ACME_OAUTH_SECRET ?? 'test-secret'
+  process.env.GSC_CLIENT_SECRET = process.env.GSC_CLIENT_SECRET ?? 'test-gsc-secret'
 
   // P1: admin draft generál connector_drafts + source_hash
   await test('P1: createConnectorDraft → draft + source_hash, lifecycle draft', async () => {
@@ -477,11 +487,19 @@ async function run() {
     )
   })
 
-  await test('P5-neg: aktiválás secret-alias nélkül → SECRET_ALIAS_MISSING', async () => {
+  await test('P5-neg: aktiválás kulcs/alias nélkül → ACTIVATION_KEYLESS_UNCONFIRMED', async () => {
     const { svc } = makeService()
     const created = await draftToActivatable(svc)
-    await expectError('SECRET_ALIAS_MISSING', () =>
+    await expectError('ACTIVATION_KEYLESS_UNCONFIRMED', () =>
       svc.activateConnector({ draftId: created.draftId, secretAlias: '  ' }, adminActor),
+    )
+  })
+
+  await test('P5-neg: kulcsos auth-teszt bukása → ACTIVATION_AUTH_TEST_FAILED', async () => {
+    const { svc } = makeService({ tester: authFailTester })
+    const created = await draftToActivatable(svc)
+    await expectError('ACTIVATION_AUTH_TEST_FAILED', () =>
+      svc.activateConnector({ draftId: created.draftId, apiKey: 'bad-key' }, adminActor),
     )
   })
 

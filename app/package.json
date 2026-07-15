@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
-    "build": "prisma generate && next build",
+    "build": "prisma generate && WRITE_GATE_SECRET=${WRITE_GATE_SECRET:-local-dev-write-gate-secret} AGENT_API_KEY_LOOKUP_SECRET=${AGENT_API_KEY_LOOKUP_SECRET:-local-dev-write-gate-secret} next build",
     "start": "next start",
     "lint": "eslint",
     "db:generate": "prisma generate",

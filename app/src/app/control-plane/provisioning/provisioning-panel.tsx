@@ -20,6 +20,7 @@ import {
   reopenConnector,
   reviewConnectorDraft,
   testConnectorDraft,
+  testConnectorDraftWithCredentials,
   updateConnectorDraftConfig,
   upsertConnectorTemplateAction,
   validateConnectorDraft,
@@ -1576,6 +1577,7 @@ function DraftCard({
   const [decommApprover, setDecommApprover] = useState('')
   const [decommCriticality, setDecommCriticality] = useState<'L1' | 'L2' | 'L3'>('L1')
   const [confirmDecomm, setConfirmDecomm] = useState(false)
+  const [authTestDetail, setAuthTestDetail] = useState<string | null>(null)
 
   const v = draft.validationResult
   const cfg = draft.config
@@ -1621,6 +1623,38 @@ function DraftCard({
     isUserDelegated ||
     draft.httpApiView?.authScheme === 'oauth2' ||
     cfg?.auth?.type === 'oauth2'
+  const hasActivationCredentials =
+    !!apiKey.trim() ||
+    (!!secretAlias.trim() && isResolvableSecretAlias(secretAlias.trim()))
+  const hasInvalidSecretAlias =
+    !apiKey.trim() && !!secretAlias.trim() && !isResolvableSecretAlias(secretAlias.trim())
+
+  const buildActivationInput = (confirmKeyless?: boolean) => ({
+    draftId: draft.draftId,
+    ...(apiKey.trim()
+      ? { apiKey: apiKey.trim() }
+      : secretAlias.trim()
+        ? { secretAlias: secretAlias.trim() }
+        : {}),
+    ...(confirmKeyless ? { confirmKeyless: true as const } : {}),
+    ...(isOauth2 && clientId.trim() ? { clientId: clientId.trim() } : {}),
+    criticality,
+    approverId: approverId.trim() || undefined,
+  })
+
+  const handleActivate = () => {
+    if (hasInvalidSecretAlias) return
+    if (!hasActivationCredentials) {
+      const confirmed = window.confirm(
+        'Nem adtál meg API-kulcsot vagy érvényes titok-hivatkozást. Biztosan kulcs nélkül aktiválod? Az agent hívásai addig auth hibát fognak adni.',
+      )
+      if (!confirmed) return
+      run(() => activateConnector(buildActivationInput(true)), 'Connector aktiválva (kulcs nélkül).')
+      return
+    }
+    run(() => activateConnector(buildActivationInput()), 'Connector aktiválva.')
+  }
+
   const writeTools = useMemo(
     () => (cfg?.proposedTools ?? []).filter((t) => t.access === 'write'),
     [cfg],
@@ -2417,32 +2451,45 @@ function DraftCard({
                   />
                 </label>
               </div>
+              {!hasActivationCredentials ? (
+                <p className="mt-2 text-xs text-honey">
+                  Kulcs nélkül is aktiválhatsz, de megerősítést kérünk — az agent addig nem fog
+                  sikeresen hívni.
+                </p>
+              ) : null}
+              {authTestDetail ? (
+                <p className="mt-2 text-xs text-ink-soft">Kulcsos teszt: {authTestDetail}</p>
+              ) : null}
               <div className="mt-2 flex flex-wrap gap-2">
+                {hasActivationCredentials && !isGmailConnector ? (
+                  <button
+                    type="button"
+                    disabled={pending || !activationReady || hasInvalidSecretAlias}
+                    onClick={() =>
+                      run(async () => {
+                        const res = await testConnectorDraftWithCredentials(buildActivationInput())
+                        if (!res.success) return res
+                        const detail = res.data.detail ?? (res.data.ok ? 'ok' : 'fail')
+                        setAuthTestDetail(
+                          res.data.ok
+                            ? `sikeres (${res.data.statusCode ?? 200})`
+                            : `sikertelen — ${detail}`,
+                        )
+                        return {
+                          success: res.data.ok,
+                          error: res.data.ok ? undefined : detail,
+                        }
+                      }, 'Kulcsos teszt sikeres.')
+                    }
+                    className="rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold disabled:opacity-50"
+                  >
+                    Kulccsal teszt
+                  </button>
+                ) : null}
                 <button
                   type="button"
-                  disabled={
-                    pending ||
-                    !activationReady ||
-                    (!apiKey.trim() && !secretAlias.trim()) ||
-                    (!apiKey.trim() &&
-                      !!secretAlias.trim() &&
-                      !isResolvableSecretAlias(secretAlias.trim()))
-                  }
-                  onClick={() =>
-                    run(
-                      () =>
-                        activateConnector({
-                          draftId: draft.draftId,
-                          ...(apiKey.trim()
-                            ? { apiKey: apiKey.trim() }
-                            : { secretAlias: secretAlias.trim() }),
-                          ...(isOauth2 && clientId.trim() ? { clientId: clientId.trim() } : {}),
-                          criticality,
-                          approverId: approverId.trim() || undefined,
-                        }),
-                      'Connector aktiválva.',
-                    )
-                  }
+                  disabled={pending || !activationReady || hasInvalidSecretAlias}
+                  onClick={handleActivate}
                   className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
                 >
                   Aktiválás
@@ -2450,25 +2497,18 @@ function DraftCard({
                 {isUserDelegated ? (
                   <button
                     type="button"
-                    disabled={
-                    pending ||
-                    !activationReady ||
-                    (!apiKey.trim() && !secretAlias.trim()) ||
-                    (!apiKey.trim() &&
-                      !!secretAlias.trim() &&
-                      !isResolvableSecretAlias(secretAlias.trim()))
-                  }
-                    onClick={() =>
+                    disabled={pending || !activationReady || hasInvalidSecretAlias}
+                    onClick={() => {
+                      if (!hasActivationCredentials) {
+                        const confirmed = window.confirm(
+                          'Nem adtál meg API-kulcsot vagy érvényes titok-hivatkozást. Biztosan kulcs nélkül aktiválod?',
+                        )
+                        if (!confirmed) return
+                      }
                       run(async () => {
-                        const activated = await activateConnector({
-                          draftId: draft.draftId,
-                          ...(apiKey.trim()
-                            ? { apiKey: apiKey.trim() }
-                            : { secretAlias: secretAlias.trim() }),
-                          ...(isOauth2 && clientId.trim() ? { clientId: clientId.trim() } : {}),
-                          criticality,
-                          approverId: approverId.trim() || undefined,
-                        })
+                        const activated = await activateConnector(
+                          buildActivationInput(!hasActivationCredentials),
+                        )
                         if (!activated.success) return { success: false, error: activated.error }
 
                         const consent = await startConnectorOAuth({ connectorId: draft.connectorId })
@@ -2478,7 +2518,7 @@ function DraftCard({
                         }
                         return { success: true }
                       }, 'Connector aktiválva, consent-flow elindítva.')
-                    }
+                    }}
                     className="rounded-md border border-sage/40 bg-sage/10 px-3 py-1.5 text-xs font-semibold text-sage disabled:opacity-50"
                   >
                     Aktiválás és auto-consent indítása

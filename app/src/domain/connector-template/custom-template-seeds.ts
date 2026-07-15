@@ -1,6 +1,13 @@
 import type { TemplateDescriptor } from './template-descriptor'
 import { GITHUB_REPOSITORY_LIST_PATTERN_SOURCE } from '@/domain/connector/github-repository-access'
 
+/** Kötelező CRM audit/trace fejlécek — a sablon materializáláskor a connector configba kerülnek. */
+const OSTOROSBOR_CRM_REQUEST_HEADERS = {
+  'X-Agent-Id': '{{agent.id}}',
+  'X-Acting-User': '{{actingUser.email}}',
+  'X-Connector-Call-Id': '{{call.id}}',
+} as const
+
 /**
  * Globális custom connector-sablonok seedje.
  *
@@ -126,6 +133,7 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
     baseUrl: 'https://{crmHost}/api/connector/v1',
     egressHosts: ['{crmHost}'],
     authMethods: [{ kind: 'bearer' }],
+    requestHeaders: { ...OSTOROSBOR_CRM_REQUEST_HEADERS },
     scopeCatalog: [],
     endpoints: [
       {
@@ -271,6 +279,7 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
     baseUrl: 'https://{crmHost}/api/connector/v1',
     egressHosts: ['{crmHost}'],
     authMethods: [{ kind: 'bearer' }],
+    requestHeaders: { ...OSTOROSBOR_CRM_REQUEST_HEADERS },
     scopeCatalog: [],
     endpoints: [
       {

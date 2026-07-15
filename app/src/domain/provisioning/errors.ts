@@ -11,6 +11,8 @@ export type ProvisioningErrorCode =
   | 'DRAFT_VALIDATION_FAILED'
   | 'DRAFT_NOT_APPROVED'
   | 'SANDBOX_TEST_FAILED'
+  | 'ACTIVATION_AUTH_TEST_FAILED'
+  | 'ACTIVATION_KEYLESS_UNCONFIRMED'
   | 'SECRET_ALIAS_MISSING'
   | 'OAUTH_CLIENT_ID_MISSING' // service-oauth2: hiányzik a config.auth.clientId
   | 'APPROVAL_SAME_ACTOR' // dual-control: reviewer === approver

@@ -156,6 +156,13 @@ const activateSchema = z.object({
   approverId: z.string().optional(),
   criticality: z.enum(['L1', 'L2', 'L3']).optional(),
   reason: z.string().optional(),
+  confirmKeyless: z.boolean().optional(),
+})
+
+const testWithCredentialsSchema = z.object({
+  draftId: z.string().min(1),
+  apiKey: z.string().optional(),
+  secretAlias: z.string().optional(),
 })
 
 const assignSchema = z.object({
@@ -915,6 +922,20 @@ export async function testConnectorDraft(input: unknown) {
   }
 }
 
+export async function testConnectorDraftWithCredentials(input: unknown) {
+  try {
+    const user = await requireTenantRole('admin')
+    const parsed = testWithCredentialsSchema.parse(input)
+    const res = await services.provisioning.testConnectorDraftWithCredentials(
+      parsed,
+      actorOf(user),
+    )
+    return ok(res)
+  } catch (e) {
+    return toFail(e, 'Nem sikerült lefuttatni a kulcsos tesztet')
+  }
+}
+
 export async function activateConnector(input: unknown) {
   try {
     const user = await requireTenantRole('admin')
@@ -928,6 +949,7 @@ export async function activateConnector(input: unknown) {
         approverId: parsed.approverId,
         criticality: parsed.criticality,
         reason: parsed.reason,
+        confirmKeyless: parsed.confirmKeyless,
       },
       actorOf(user),
     )

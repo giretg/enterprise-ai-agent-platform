@@ -101,6 +101,27 @@ function authHeaderFor(
   }
 }
 
+/** Sandbox placeholder értékek a sablonfejlécekhez (pl. X-Connector-Call-Id). */
+const SANDBOX_HEADER_TEMPLATE_VALUES: Record<string, string> = {
+  'agent.id': '00000000-0000-4000-8000-000000000001',
+  'actingUser.email': 'sandbox@provisioning.local',
+  'call.id': '00000000-0000-4000-8000-000000000002',
+}
+
+function renderSandboxRequestHeaders(
+  requestHeaders: Record<string, string> | undefined,
+): Record<string, string> {
+  if (!requestHeaders) return {}
+  const out: Record<string, string> = {}
+  for (const [name, template] of Object.entries(requestHeaders)) {
+    out[name] = template.replace(/\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g, (_match, key: string) => {
+      const value = SANDBOX_HEADER_TEMPLATE_VALUES[key]
+      return value ?? 'sandbox'
+    })
+  }
+  return out
+}
+
 /**
  * WP-1 (B1): explicit, cselekvésre váltó üzenet, ha a sandbox valódi kulccsal is
  * auth-hibát (401/403) kap. Séma-specifikus, hogy a leggyakoribb hibát (a hiányzó
@@ -128,6 +149,8 @@ export class HttpSandboxConnectionTester implements SandboxConnectionTester {
     config: ConnectorConfig
     secretAlias: string | null
     tenantId: string | null
+    /** Ha megadva, ezt a tokent használjuk (pl. aktiválás előtti kulcs-teszt). */
+    token?: string | null
   }): Promise<{ ok: boolean; statusCode?: number; detail?: string }> {
     // (0) A tárolt config-ot ÚJRA normalizáljuk — a hívás nem bízik a perzisztált alakban.
     let config: ConnectorConfig
@@ -165,12 +188,18 @@ export class HttpSandboxConnectionTester implements SandboxConnectionTester {
       return { ok: false, detail: 'forbidden_host' }
     }
 
-    // (4) Non-prod token feloldása (opcionális). A token SOHA nem kerül naplóba.
-    let headers: Record<string, string> = { Accept: 'application/json' }
-    const token = (await this.deps.resolveSandboxToken?.({
-      secretAlias: input.secretAlias,
-      tenantId: input.tenantId,
-    })) ?? null
+    // (4) Token feloldása (opcionális). A token SOHA nem kerül naplóba.
+    let headers: Record<string, string> = {
+      Accept: 'application/json',
+      ...renderSandboxRequestHeaders(config.requestHeaders),
+    }
+    const token =
+      input.token ??
+      ((await this.deps.resolveSandboxToken?.({
+        secretAlias: input.secretAlias,
+        tenantId: input.tenantId,
+      })) ??
+        null)
     if (token) {
       headers = { ...headers, ...authHeaderFor(config, token) }
     }
