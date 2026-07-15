@@ -21,73 +21,41 @@ config({ path: resolve(process.cwd(), '.env.local') })
 config({ path: resolve(process.cwd(), '.env') })
 
 import { PrismaClient, type Prisma } from '@prisma/client'
-import { parseHttpApiConfig } from '../src/domain/connector/http-api-client'
 import {
   isConnectorSecretRef,
   loadConnectorApiKeyByRef,
   saveConnectorApiKey,
 } from '../src/domain/connector/connector-secret-store'
+import {
+  applyMigrationWithSecretCompensation,
+  isOstorosborBearerMigrationCandidate,
+  rematerializeOstorosborConnectorConfig,
+} from '../src/domain/connector-template/ostorosbor-bearer-migration'
 import { PostgresAuditRepository } from '../src/repositories/postgres/audit-repository'
 
 const prisma = new PrismaClient()
 const audit = new PostgresAuditRepository()
 
-function isRecord(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v)
-}
-
-/**
- * A „Bearer-csapda" auth-alak: a kulcs az `Authorization` fejlécbe kerül, prefix nélkül.
- * Kétféle tárolt alak fordulhat elő: provisioning (`auth.type=api_key_header`) és runtime
- * (`auth.scheme=header`). A cél mindkettőnél az explicit bearer séma.
- */
-function detectBearerTrap(cfg: Record<string, unknown>): 'provisioning' | 'runtime' | null {
-  const auth = isRecord(cfg.auth) ? cfg.auth : null
-  if (!auth) return null
-  if (auth.type === 'api_key_header' && String(auth.headerName ?? '').toLowerCase() === 'authorization') {
-    return 'provisioning'
-  }
-  if (auth.scheme === 'header' && String(auth.header ?? '').toLowerCase() === 'authorization') {
-    return 'runtime'
-  }
-  return null
-}
-
-function rewriteAuthToBearer(cfg: Record<string, unknown>, shape: 'provisioning' | 'runtime') {
-  const auth = isRecord(cfg.auth) ? { ...cfg.auth } : {}
-  // A megosztható javasolt aliast megtartjuk (provisioning alak).
-  const secretAliasSuggested =
-    typeof auth.secretAliasSuggested === 'string' ? auth.secretAliasSuggested : undefined
-  const nextAuth =
-    shape === 'provisioning'
-      ? { type: 'bearer_token', ...(secretAliasSuggested ? { secretAliasSuggested } : {}) }
-      : { scheme: 'bearer' }
-  return { ...cfg, auth: nextAuth }
-}
-
-/** Ha a tárolt kulcs feleslegesen `Bearer ` előtaggal kezdődik, azt eltávolítjuk. */
-async function stripBearerPrefixFromStoredKey(
-  connectorId: string,
+/** Ha a tárolt kulcs `Bearer ` előtagos, előkészíti a kompenzálható rotációt. */
+async function readBearerPrefixPlan(
   secretAlias: string | null,
-  apply: boolean,
-): Promise<boolean> {
-  if (!secretAlias || !isConnectorSecretRef(secretAlias)) return false
+): Promise<{ original: string; stripped: string } | null> {
+  if (!secretAlias || !isConnectorSecretRef(secretAlias)) return null
   let current: string
   try {
     current = await loadConnectorApiKeyByRef(secretAlias)
   } catch {
-    return false
+    return null
   }
   const match = current.match(/^Bearer\s+([\s\S]+)$/)
-  if (!match) return false
-  if (apply) await saveConnectorApiKey(connectorId, match[1].trim())
-  return true
+  if (!match) return null
+  return { original: current, stripped: match[1].trim() }
 }
 
 async function main() {
   const apply = process.argv.includes('--apply')
   const connectors = await prisma.connector.findMany({
-    where: { type: 'http_api', lifecycleState: { not: 'archived' } },
+    where: { type: 'http_api', lifecycleState: 'active' },
     orderBy: { createdAt: 'asc' },
   })
 
@@ -97,41 +65,41 @@ async function main() {
   let keysStripped = 0
 
   for (const connector of connectors) {
-    const cfg = isRecord(connector.config) ? connector.config : null
-    if (!cfg) {
-      skipped += 1
-      continue
-    }
-    const shape = detectBearerTrap(cfg)
-    if (!shape) continue
+    if (!isOstorosborBearerMigrationCandidate(connector)) continue
 
-    const nextConfig = rewriteAuthToBearer(cfg, shape)
-    // Szerződés-ellenőrzés: az új config a runtime motorral is érvényes legyen.
+    let nextConfig
     try {
-      parseHttpApiConfig(nextConfig)
+      nextConfig = rematerializeOstorosborConnectorConfig(connector)
     } catch (e) {
-      console.log(`  ✗ ${connector.name} (${connector.id}) — új config érvénytelen: ${(e as Error).message}`)
+      console.log(
+        `  ✗ ${connector.name} (${connector.id}) — újramaterializálás sikertelen: ${(e as Error).message}`,
+      )
       skipped += 1
       continue
     }
 
-    const strippedPrefix = await stripBearerPrefixFromStoredKey(
-      connector.id,
-      connector.secretAlias,
-      apply,
-    )
+    const prefixPlan = await readBearerPrefixPlan(connector.secretAlias)
+    const strippedPrefix = Boolean(prefixPlan)
     if (strippedPrefix) keysStripped += 1
 
     console.log(
-      `  ${apply ? '✓' : '-'} ${connector.name} (${connector.id}) — ${shape} auth → bearer` +
+      `  ${apply ? '✓' : '-'} ${connector.name} (${connector.id}) — sablonból újramaterializálva` +
         (strippedPrefix ? ' + kulcs Bearer-prefix eltávolítva' : ''),
     )
     changed += 1
 
     if (!apply) continue
-    await prisma.connector.update({
-      where: { id: connector.id },
-      data: { config: nextConfig as Prisma.InputJsonValue, version: { increment: 1 } },
+    await applyMigrationWithSecretCompensation({
+      ...(prefixPlan
+        ? { originalSecret: prefixPlan.original, strippedSecret: prefixPlan.stripped }
+        : {}),
+      saveSecret: (value) => saveConnectorApiKey(connector.id, value),
+      updateConfig: async () => {
+        await prisma.connector.update({
+          where: { id: connector.id },
+          data: { config: nextConfig as Prisma.InputJsonValue, version: { increment: 1 } },
+        })
+      },
     })
     await audit.append({
       actorType: 'system',
@@ -146,7 +114,7 @@ async function main() {
       policyDecision: 'allowed',
       metadata: {
         migration: 'ostorosbor-bearer',
-        authShape: shape,
+        strategy: 'template_rematerialization',
         keyPrefixStripped: strippedPrefix,
       },
     })

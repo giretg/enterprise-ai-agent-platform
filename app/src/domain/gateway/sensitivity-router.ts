@@ -533,3 +533,153 @@ export function redactSensitiveText(text: string): { text: string; redactedCount
   out += text.slice(cursor)
   return { text: out, redactedCount: merged.length }
 }
+
+/**
+ * Stateful outbound guard reasoning-summary streamekhez.
+ *
+ * A guard csak teljes sorokat ad tovább, ezért a delta-határon szétszakadó
+ * PAN/IBAN/email/titok tokeneket mindig egyben látja. A PEM privátkulcs-blokkot
+ * a BEGIN sortól az END sorig visszatartja, mert annak base64 törzse önmagában
+ * már nem ismerhető fel biztonságosan. A `finish()` a turn végén a maradékot is
+ * redaktálva üríti.
+ */
+export class StreamingSensitiveTextRedactor {
+  private static readonly SOFT_FLUSH_CHARS = 512
+  private static readonly PATTERN_OVERLAP_CHARS = 128
+  private static readonly HARD_BUFFER_CHARS = 4096
+  private static readonly PRIVATE_KEY_END_TAIL_CHARS = 96
+  private pending = ''
+  private suppressingOpaqueToken = false
+  private insidePrivateKey = false
+  private privateKeyTail = ''
+
+  constructor(private readonly emit: (text: string) => void) {}
+
+  push(delta: string): void {
+    if (!delta) return
+    let next = delta
+    if (this.insidePrivateKey) {
+      const keyStream = this.privateKeyTail + next
+      const privateKeyEnd = /-----END [A-Z ]*PRIVATE KEY-----/i.exec(keyStream)
+      if (!privateKeyEnd) {
+        this.privateKeyTail = keyStream.slice(
+          -StreamingSensitiveTextRedactor.PRIVATE_KEY_END_TAIL_CHARS,
+        )
+        return
+      }
+      this.insidePrivateKey = false
+      this.privateKeyTail = ''
+      next = keyStream.slice(privateKeyEnd.index + privateKeyEnd[0].length)
+      if (!next) return
+    }
+    if (this.suppressingOpaqueToken) {
+      const tokenEnd = next.search(/[\s,;]/)
+      if (tokenEnd < 0) return
+      this.suppressingOpaqueToken = false
+      next = next.slice(tokenEnd + 1)
+      if (!next) return
+    }
+    this.pending += next
+    this.drain(false)
+  }
+
+  finish(): void {
+    this.drain(true)
+    this.suppressingOpaqueToken = false
+    this.insidePrivateKey = false
+    this.privateKeyTail = ''
+  }
+
+  private emitRedacted(chunk: string): void {
+    if (!chunk) return
+    const { text } = redactSensitiveText(chunk)
+    if (text) this.emit(text)
+  }
+
+  private drain(final: boolean): void {
+    while (this.pending) {
+      const privateKeyStart = this.pending.search(PRIVATE_KEY_BLOCK_RE)
+      if (privateKeyStart >= 0) {
+        if (privateKeyStart > 0) {
+          this.emitRedacted(this.pending.slice(0, privateKeyStart))
+          this.pending = this.pending.slice(privateKeyStart)
+        }
+
+        const privateKeyEnd = /-----END [A-Z ]*PRIVATE KEY-----/i.exec(this.pending)
+        if (!privateKeyEnd) {
+          if (final) {
+            this.emitRedacted(this.pending)
+            this.pending = ''
+          } else {
+            this.emit('«redaktált:titok»')
+            this.insidePrivateKey = true
+            this.privateKeyTail = this.pending.slice(
+              -StreamingSensitiveTextRedactor.PRIVATE_KEY_END_TAIL_CHARS,
+            )
+            this.pending = ''
+          }
+          return
+        }
+
+        const blockEnd = privateKeyEnd.index + privateKeyEnd[0].length
+        this.emitRedacted(this.pending.slice(0, blockEnd))
+        this.pending = this.pending.slice(blockEnd)
+        continue
+      }
+
+      const newline = this.pending.indexOf('\n')
+      if (newline >= 0) {
+        this.emitRedacted(this.pending.slice(0, newline + 1))
+        this.pending = this.pending.slice(newline + 1)
+        continue
+      }
+
+      const safeCut = this.findSafeProseCut()
+      if (safeCut > 0) {
+        this.emitRedacted(this.pending.slice(0, safeCut))
+        this.pending = this.pending.slice(safeCut)
+        continue
+      }
+
+      if (!final && this.pending.length > StreamingSensitiveTextRedactor.HARD_BUFFER_CHARS) {
+        // Határoló nélküli, túl hosszú tokennél nem tudjuk bizonyítani, hogy nem
+        // titok/email. Fail-closed: a teljes tokent elnyomjuk a következő valódi
+        // tokenhatárig, így a memória korlátos és nyers részlet sem szivárog ki.
+        this.emit('«redaktált:hosszú, nem ellenőrizhető reasoning-token»')
+        this.pending = ''
+        this.suppressingOpaqueToken = true
+      }
+      break
+    }
+
+    if (final && this.pending) {
+      this.emitRedacted(this.pending)
+      this.pending = ''
+    }
+  }
+
+  private findSafeProseCut(): number {
+    if (this.pending.length <= StreamingSensitiveTextRedactor.SOFT_FLUSH_CHARS) return -1
+    const limit = this.pending.length - StreamingSensitiveTextRedactor.PATTERN_OVERLAP_CHARS
+    for (let index = limit; index >= 0; index--) {
+      if (!/[ \t]/.test(this.pending[index] ?? '')) continue
+      const previous = this.pending[index - 1] ?? ''
+      const next = this.pending[index + 1] ?? ''
+      // Számformátumon belül (PAN/IBAN/TAJ/adószám) soha ne vágjunk.
+      if (/\d/.test(previous) || /\d/.test(next)) continue
+      const lineStart = this.pending.lastIndexOf('\n', index - 1) + 1
+      const beforeBoundary = this.pending.slice(lineStart, index + 1)
+      // `api_key: <érték>` esetén a kulcs és az érték közti whitespace nem
+      // biztonságos határ: a következő chunk elveszítené a hozzárendelés kontextusát.
+      if (
+        /(?:password|secret|api[_-]?key|token|auth[_-]?key|private[_-]?key)\s*[:=]\s*$/i.test(
+          beforeBoundary,
+        )
+      ) {
+        continue
+      }
+      return index + 1
+    }
+    return -1
+  }
+}

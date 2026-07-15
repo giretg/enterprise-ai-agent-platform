@@ -144,6 +144,7 @@
     "@playwright/test": "^1.61.0",
     "@tailwindcss/postcss": "^4",
     "@types/bcryptjs": "^2.4.6",
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^20",
     "@types/pdf-parse": "^1.1.4",
     "@types/pg": "^8.15.5",

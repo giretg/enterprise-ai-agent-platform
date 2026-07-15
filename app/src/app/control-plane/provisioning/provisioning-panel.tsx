@@ -26,6 +26,7 @@ import {
   type FetchApiDocFromUrlData,
 } from '@/app/actions/provisioning'
 import { startConnectorOAuth } from '@/app/actions/connector-grants'
+import { isResolvableSecretAlias } from '@/domain/provisioning/secret-alias'
 
 // A listProvisioningDrafts visszaadott alakja (provisioning-service.listDrafts).
 type CheckStatus = 'passed' | 'warned' | 'failed'
@@ -335,19 +336,6 @@ function reviewTone(s: string): 'neutral' | 'success' | 'warning' | 'danger' {
   if (s === 'changes_requested') return 'warning'
   return 'neutral'
 }
-/**
- * WP-7 (B5): kliens-oldali alias-forma ellenőrzés — a szerver
- * `isResolvableSecretAlias` tükre. Csak feloldható formák: env:NÉV,
- * secret-manager:projects/…, secret-ref:<id>. Bare név NEM elfogadott.
- */
-function isResolvableSecretAliasClient(value: string): boolean {
-  return (
-    /^env:[A-Za-z_][A-Za-z0-9_]*$/.test(value) ||
-    value.startsWith('secret-manager:projects/') ||
-    value.startsWith('secret-ref:')
-  )
-}
-
 function lifecycleTone(s: string): 'neutral' | 'success' | 'warning' | 'danger' {
   if (s === 'active') return 'success'
   if (s === 'blocked' || s === 'archived') return 'danger'
@@ -2357,7 +2345,7 @@ function DraftCard({
                       placeholder="env:ACME_CRM_API_KEY"
                       disabled={!!apiKey.trim()}
                     />
-                    {!apiKey.trim() && secretAlias.trim() && !isResolvableSecretAliasClient(secretAlias.trim()) ? (
+                    {!apiKey.trim() && secretAlias.trim() && !isResolvableSecretAlias(secretAlias.trim()) ? (
                       <p className="mt-1 text-coral">
                         Nem elfogadott alias-forma. Használj <code>env:</code>,{' '}
                         <code>secret-manager:</code> vagy <code>secret-ref:</code> előtagot — vagy hagyd
@@ -2438,7 +2426,7 @@ function DraftCard({
                     (!apiKey.trim() && !secretAlias.trim()) ||
                     (!apiKey.trim() &&
                       !!secretAlias.trim() &&
-                      !isResolvableSecretAliasClient(secretAlias.trim()))
+                      !isResolvableSecretAlias(secretAlias.trim()))
                   }
                   onClick={() =>
                     run(
@@ -2468,7 +2456,7 @@ function DraftCard({
                     (!apiKey.trim() && !secretAlias.trim()) ||
                     (!apiKey.trim() &&
                       !!secretAlias.trim() &&
-                      !isResolvableSecretAliasClient(secretAlias.trim()))
+                      !isResolvableSecretAlias(secretAlias.trim()))
                   }
                     onClick={() =>
                       run(async () => {

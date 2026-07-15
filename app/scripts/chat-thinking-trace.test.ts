@@ -10,10 +10,17 @@
  */
 import assert from 'node:assert/strict'
 import { callChatGptOAuth } from '../src/domain/gateway/chatgpt-oauth-bridge'
-import { redactSensitiveText } from '../src/domain/gateway/sensitivity-router'
+import {
+  StreamingSensitiveTextRedactor,
+  redactSensitiveText,
+} from '../src/domain/gateway/sensitivity-router'
 import { OpenAiCompatibleProvider } from '../src/domain/gateway/model-gateway'
 import { extractGeminiThoughtText } from '../src/domain/gateway/gemini-provider'
 import { PlatformSettingsService } from '../src/domain/platform-settings/platform-settings-service'
+import {
+  appendThinkingDelta,
+  canStartThinkingTraceStream,
+} from '../src/lib/chat-thinking-trace'
 import type { AuditRepository, PlatformSettingsRepository } from '../src/repositories/interfaces'
 
 let failures = 0
@@ -115,6 +122,72 @@ async function main() {
     const clean = redactSensitiveText('Ez egy teljesen ártalmatlan gondolat.')
     assert.equal(clean.redactedCount, 0)
     assert.equal(clean.text, 'Ez egy teljesen ártalmatlan gondolat.')
+  })
+
+  await check('content-guard stream: delta-határon szétszakadó PAN és IBAN sem szivárog ki', () => {
+    const emitted: string[] = []
+    const guard = new StreamingSensitiveTextRedactor((text) => emitted.push(text))
+
+    guard.push('Kártya: 4111 1111')
+    guard.push(' 1111 1111.\nIBAN: HU42 1177 3016')
+    guard.push(' 1111 1018 0000 0000\n')
+    guard.finish()
+
+    const output = emitted.join('')
+    assert.ok(!output.includes('4111 1111 1111 1111'), 'a szétszakított PAN nem mehet ki')
+    assert.ok(!output.includes('HU42 1177 3016 1111'), 'a szétszakított IBAN nem mehet ki')
+    assert.ok(output.includes('«redaktált:'), 'redakciós jelölő kimegy')
+  })
+
+  await check('content-guard stream: többsoros privát kulcs teljes törzse visszatartva és redaktálva', () => {
+    const emitted: string[] = []
+    const guard = new StreamingSensitiveTextRedactor((text) => emitted.push(text))
+
+    guard.push('Előtte biztonságos sor.\n-----BEGIN PRIVATE KEY-----\nMIIE')
+    assert.ok(emitted.join('').startsWith('Előtte biztonságos sor.\n'))
+    assert.ok(emitted.join('').includes('«redaktált:titok»'))
+    guard.push('vQIBADANBgkqhkiG9w0BAQEFAASCBK')
+    assert.ok(!emitted.join('').includes('MIIEvQIB'), 'a nyitott kulcsblokk törzse nem mehet ki')
+    guard.push('QAwggSkAgEAAoIBAQ==\n-----END PRIVATE KEY-----\nUtána.\n')
+    guard.finish()
+
+    const output = emitted.join('')
+    assert.ok(!output.includes('MIIEvQIB'), 'a privát kulcs törzse nem maradhat a kimenetben')
+    assert.ok(output.includes('«redaktált:titok»'))
+    assert.ok(output.endsWith('Utána.\n'))
+  })
+
+  await check('content-guard stream: lezáratlan privát kulcs törzse korlátosan eldobódik', () => {
+    const emitted: string[] = []
+    const guard = new StreamingSensitiveTextRedactor((text) => emitted.push(text))
+    guard.push(`-----BEGIN PRIVATE KEY-----\n${'A'.repeat(10_000)}`)
+    guard.push('további-kulcstörzs')
+    guard.finish()
+
+    assert.equal(emitted.join(''), '«redaktált:titok»')
+  })
+
+  await check('content-guard stream: hosszú, újsor nélküli reasoning menet közben is ürül', () => {
+    const emitted: string[] = []
+    const guard = new StreamingSensitiveTextRedactor((text) => emitted.push(text))
+    guard.push('Biztonságos gondolat '.repeat(40))
+    assert.ok(emitted.length > 0, 'a guard nem várhat a teljes turn végéig')
+    guard.finish()
+    assert.equal(emitted.join(''), 'Biztonságos gondolat '.repeat(40))
+  })
+
+  await check('content-guard stream: határoló nélküli óriás secret fail-closed és korlátos', () => {
+    const emitted: string[] = []
+    const guard = new StreamingSensitiveTextRedactor((text) => emitted.push(text))
+    const secret = `api_key:${'x'.repeat(5000)}`
+    guard.push(secret)
+    guard.push(' biztonságos folytatás\n')
+    guard.finish()
+
+    const output = emitted.join('')
+    assert.ok(!output.includes('x'.repeat(100)), 'az óriás secret részlete sem mehet ki')
+    assert.ok(output.includes('«redaktált:hosszú, nem ellenőrizhető reasoning-token»'))
+    assert.ok(output.endsWith('biztonságos folytatás\n'))
   })
 
   await check('WP-7 openrouter: reasoning.exclude=false + delta forward ha keres reasoning-et', async () => {
@@ -233,6 +306,23 @@ async function main() {
 
     await svc.setTenantThinkingTraceControls('tenant-1', { enabled: false }, 'user-1')
     assert.equal(await svc.isChatThinkingTraceEnabledForTenant('tenant-1'), false)
+  })
+
+  await check('feature-flag kliens: kikapcsolva eldobja, bekapcsolva felhalmozza a thinking deltát', () => {
+    const current = { 'reasoning-0': 'Első ' }
+    const event = { turnId: 'reasoning-0', delta: 'második.' }
+
+    assert.equal(
+      appendThinkingDelta(current, event, 'disabled'),
+      current,
+      'kikapcsolva ugyanazt az állapotot adja vissza',
+    )
+    assert.equal(canStartThinkingTraceStream('loading'), false)
+    assert.equal(canStartThinkingTraceStream('disabled'), true)
+    assert.equal(canStartThinkingTraceStream('enabled'), true)
+    assert.deepEqual(appendThinkingDelta(current, event, 'enabled'), {
+      'reasoning-0': 'Első második.',
+    })
   })
 
   console.log(`\n=== Osszesites === ${failures === 0 ? 'MIND ZOLD' : `${failures} sikertelen`}`)

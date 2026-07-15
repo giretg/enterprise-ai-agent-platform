@@ -18,7 +18,7 @@ import {
   resolveChatTriggerInputPayload,
 } from '@/lib/playbook-v2/trigger-input'
 import type { ModelGateway } from '../gateway/model-gateway'
-import { redactSensitiveText } from '../gateway/sensitivity-router'
+import { StreamingSensitiveTextRedactor } from '../gateway/sensitivity-router'
 import type { ConversationService } from '../conversation/conversation-service'
 import {
   assembleContext,
@@ -1010,35 +1010,18 @@ export class AgentChatRuntime {
       } else {
         try {
           // Chat "thinking-trace" (tool nélküli ág): a reasoning-summary deltákat
-          // sorpuffer + tartalom-őr (D5) mögött gyűjtjük, és a következő token-yield
+          // közös stateful tartalom-őr (D5) mögött gyűjtjük, és a következő token-yield
           // előtt ürítjük ki `thinking` eseményként (a generátorból callbackből nem
           // lehet yield-elni). turnId egyetlen körre `reasoning-0`.
           const thinkingEnabled = this.isThinkingTraceEnabled
             ? await this.isThinkingTraceEnabled(params.tenantId ?? null)
             : false
           const pendingThinking: string[] = []
-          let reasoningPending = ''
-          const guardReasoning = (chunk: string) => {
-            if (!chunk) return
-            const { text } = redactSensitiveText(chunk)
-            if (text) pendingThinking.push(text)
-          }
+          const reasoningRedactor = new StreamingSensitiveTextRedactor((text) =>
+            pendingThinking.push(text),
+          )
           const onReasoningDelta = thinkingEnabled
-            ? (delta: string) => {
-                reasoningPending += delta
-                let nl: number
-                while ((nl = reasoningPending.indexOf('\n')) >= 0) {
-                  guardReasoning(reasoningPending.slice(0, nl + 1))
-                  reasoningPending = reasoningPending.slice(nl + 1)
-                }
-                if (reasoningPending.length > 600) {
-                  const cut = reasoningPending.lastIndexOf(' ')
-                  if (cut > 0) {
-                    guardReasoning(reasoningPending.slice(0, cut + 1))
-                    reasoningPending = reasoningPending.slice(cut + 1)
-                  }
-                }
-              }
+            ? (delta: string) => reasoningRedactor.push(delta)
             : undefined
           const gatewayInput = {
             agentId: params.agentId,
@@ -1062,7 +1045,7 @@ export class AgentChatRuntime {
             accumulated += chunk
             yield { type: 'token', chunk }
           }
-          if (reasoningPending) guardReasoning(reasoningPending)
+          reasoningRedactor.finish()
           while (pendingThinking.length > 0) {
             yield { type: 'thinking', turnId: 'reasoning-0', delta: pendingThinking.shift()! }
           }

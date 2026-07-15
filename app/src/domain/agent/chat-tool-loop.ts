@@ -7,7 +7,7 @@ import type {
   ModelGateway,
   ToolDefinition,
 } from '@/domain/gateway/model-gateway'
-import { redactSensitiveText } from '@/domain/gateway/sensitivity-router'
+import { StreamingSensitiveTextRedactor } from '@/domain/gateway/sensitivity-router'
 import type { ToolBrokerRepository } from '@/repositories/interfaces'
 import type { XlsxRow, XlsxSheetSpec, CellStyle, XlsxCellChange } from '@/domain/file-editor/adapters/xlsx-adapter'
 import type { PptxSlideSpec } from '@/domain/file-editor/adapters/pptx-adapter'
@@ -1709,35 +1709,15 @@ export async function runAgentToolLoop(params: {
     })
 
     // Chat "thinking-trace" (§5, WP-3): a provider reasoning-summary deltáit
-    // sorpufferrel, a tartalom-őrön (D5) átengedve továbbítjuk. A sorpuffer
-    // garantálja, hogy egy összefüggő titok/PAN token ne szakadjon két redakciós
-    // szegmens közé; a hosszú, újsor nélküli gondolatot szóhatáron flush-oljuk.
-    let reasoningPending = ''
+    // közös, stateful tartalom-őrön (D5) átengedve továbbítjuk. A guard a
+    // delta-határokat és a többsoros privátkulcs-blokkokat is egyben kezeli.
     let reasoningGuarded = ''
-    const REASONING_SOFT_FLUSH = 600
-    const emitReasoningChunk = (chunk: string) => {
-      if (!chunk) return
-      const { text } = redactSensitiveText(chunk)
-      if (!text) return
+    const reasoningRedactor = new StreamingSensitiveTextRedactor((text) => {
       reasoningGuarded += text
       params.onReasoning?.(reasoningTurnId, text)
-    }
+    })
     const onReasoningDelta = params.onReasoning
-      ? (delta: string) => {
-          reasoningPending += delta
-          let nl: number
-          while ((nl = reasoningPending.indexOf('\n')) >= 0) {
-            emitReasoningChunk(reasoningPending.slice(0, nl + 1))
-            reasoningPending = reasoningPending.slice(nl + 1)
-          }
-          if (reasoningPending.length > REASONING_SOFT_FLUSH) {
-            const cut = reasoningPending.lastIndexOf(' ')
-            if (cut > 0) {
-              emitReasoningChunk(reasoningPending.slice(0, cut + 1))
-              reasoningPending = reasoningPending.slice(cut + 1)
-            }
-          }
-        }
+      ? (delta: string) => reasoningRedactor.push(delta)
       : undefined
 
     const { content, toolCalls } = await params.gateway.call({
@@ -1752,10 +1732,7 @@ export async function runAgentToolLoop(params: {
     // Forduló-végi flush + összefoglaló (D3): ahol volt valódi reasoning, a
     // placeholder-cím "Gondolkodás"-ra vált és a rövidített, redaktált szöveg a
     // detail; ahol nem volt, a statikus placeholder marad fallbackként.
-    if (reasoningPending) {
-      emitReasoningChunk(reasoningPending)
-      reasoningPending = ''
-    }
+    reasoningRedactor.finish()
     const reasoningSummary = reasoningGuarded.trim()
     await emitActivity({
       id: reasoningTurnId,

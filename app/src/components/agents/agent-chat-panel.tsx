@@ -20,6 +20,7 @@ import {
 import { distillSkillFromConversationAction, getAgentSkillsAction } from '@/app/actions/skills'
 import { listChatTriggerableProcessDefinitions } from '@/app/actions/process'
 import { listAgentDelegatedConnectors } from '@/app/actions/connector-grants'
+import { getTenantThinkingTraceControls } from '@/app/actions/chat-thinking-trace'
 import { AgentDelegatedConnectorsBar } from '@/components/agents/agent-delegated-connectors-bar'
 import type { AgentDelegatedConnectorRow } from '@/lib/agent-delegated-connectors'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
@@ -34,6 +35,11 @@ import {
   type ConversationFilesPanelHandle,
 } from '@/components/chat/conversation-files-panel'
 import { personaFor } from '@/lib/agent-persona'
+import {
+  appendThinkingDelta,
+  canStartThinkingTraceStream,
+  type ThinkingTraceControlState,
+} from '@/lib/chat-thinking-trace'
 import {
   filterSkillsForSlashQuery,
   getActiveSlashQuery,
@@ -665,6 +671,8 @@ export function AgentChatPanel({
     AgentDelegatedConnectorRow[]
   >([])
   const [connectableUserConnectorsLoading, setConnectableUserConnectorsLoading] = useState(false)
+  const [thinkingTraceControls, setThinkingTraceControls] =
+    useState<ThinkingTraceControlState>('loading')
 
   useEffect(() => {
     const timer = window.setTimeout(() => setMounted(true), 0)
@@ -702,6 +710,17 @@ export function AgentChatPanel({
       cancelled = true
     }
   }, [open, agent.id])
+
+  useEffect(() => {
+    let cancelled = false
+    void getTenantThinkingTraceControls().then((res) => {
+      if (cancelled) return
+      setThinkingTraceControls(res.success && res.data.enabled === true ? 'enabled' : 'disabled')
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const scrollToBottom = useCallback(() => {
     requestAnimationFrame(() => {
@@ -868,7 +887,8 @@ export function AgentChatPanel({
     (input.trim().length > 0 || pendingAttachments.length > 0) &&
     !pending &&
     !ticketPending &&
-    !isAgentTyping
+    !isAgentTyping &&
+    canStartThinkingTraceStream(thinkingTraceControls)
   const controlsBusy = pending || ticketPending || archivePending || distillPending || isAgentTyping
 
   useEffect(() => {
@@ -1259,7 +1279,11 @@ export function AgentChatPanel({
                   ),
                 )
               })
-            } else if (event.type === 'thinking' && typeof event.delta === 'string') {
+            } else if (
+              event.type === 'thinking' &&
+              typeof event.delta === 'string' &&
+              thinkingTraceControls === 'enabled'
+            ) {
               const { turnId, delta } = event
               flushSync(() => {
                 setMessages((prev) =>
@@ -1267,10 +1291,11 @@ export function AgentChatPanel({
                     m.id === optimisticAgentId
                       ? {
                           ...m,
-                          thinking: {
-                            ...m.thinking,
-                            [turnId]: (m.thinking?.[turnId] ?? '') + delta,
-                          },
+                          thinking: appendThinkingDelta(
+                            m.thinking,
+                            { turnId, delta },
+                            thinkingTraceControls,
+                          ),
                           activitiesCollapsed: false,
                         }
                       : m,
@@ -1951,12 +1976,14 @@ export function AgentChatButton({
       >
         💬 {compact ? 'Beszél' : 'Beszélgetés'}
       </button>
-      <AgentChatPanel
-        agent={agent}
-        open={open}
-        onClose={() => setOpen(false)}
-        canDistillSkill={canDistillSkill}
-      />
+      {open && (
+        <AgentChatPanel
+          agent={agent}
+          open
+          onClose={() => setOpen(false)}
+          canDistillSkill={canDistillSkill}
+        />
+      )}
     </>
   )
 }

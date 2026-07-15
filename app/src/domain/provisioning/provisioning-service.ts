@@ -26,6 +26,7 @@ import {
 import { validateDraftConfig, type ValidationResult } from './draft-validator'
 import { validateGmailDraftConfig } from './gmail-draft-validator'
 import { ProvisioningError } from './errors'
+import { isResolvableSecretAlias } from './secret-alias'
 
 export type ProvisioningActor =
   | { type: 'user'; userId: string; role: UserRole; tenantId: string | null }
@@ -959,14 +960,6 @@ export class ProvisioningService {
 
 function normalizeSourceHash(value: string): string {
   return value.startsWith('sha256:') ? value : `sha256:${value}`
-}
-
-function isResolvableSecretAlias(value: string): boolean {
-  return (
-    /^env:[A-Za-z_][A-Za-z0-9_]*$/.test(value) ||
-    value.startsWith('secret-manager:projects/') ||
-    value.startsWith('secret-ref:')
-  )
 }
 
 function configToJson(config: ConnectorConfig): Prisma.InputJsonValue {

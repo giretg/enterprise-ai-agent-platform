@@ -273,7 +273,7 @@ function mapSecurityScheme(
 
     const authorizationCode = isRecord(flows.authorizationCode)
       ? flows.authorizationCode
-      : isRecord(scheme.flow) && scheme.flow === 'accessCode'
+      : scheme.flow === 'accessCode'
         ? scheme
         : null
     const clientCredentials = isRecord(flows.clientCredentials) ? flows.clientCredentials : null
