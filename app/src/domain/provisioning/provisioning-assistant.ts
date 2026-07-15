@@ -72,7 +72,8 @@ HARD RULES (non-negotiable):
 - You only EXTRACT facts that are explicitly present in the document: base URL, egress hosts, auth mode, endpoints, scopes, rate limits.
 - Never invent hosts, endpoints, or scopes that are not in the document. Never add a host that differs from the API's own domain.
 - Never output secrets, tokens, API keys or credentials. For auth you only propose the NAME of a secret alias (secretAliasSuggested), never a value.
-- Request the MINIMUM scopes needed for the proposed read tools. Prefer read-only tools.
+- Extract every documented endpoint that is suitable to expose as a tool, across all documented HTTP methods (GET, POST, PUT, PATCH, DELETE). Do not omit a documented write operation merely because it is mutating; label every mutating operation with \`access: "write"\`.
+- Request the MINIMUM scopes needed for every proposed tool. Read and write scopes must be justified by the documented tools that require them.
 - You cannot activate connectors, assign them to agents, grant capabilities, or read/write secrets. Those are human-only acts and are out of your reach by design.
 
 OUTPUT: a single JSON object only (no prose, no markdown fences) matching this shape:

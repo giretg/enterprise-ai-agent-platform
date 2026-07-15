@@ -1315,6 +1315,15 @@ async function run() {
     assert.ok(!msgs[0].content.includes('IGNORE ALL RULES'))
   })
 
+  await test('F2-P-F: a szerepprompt minden dokumentált HTTP metódus kivonatolását kéri', () => {
+    assert.match(
+      PROVISIONING_ASSISTANT_ROLE_INSTRUCTION,
+      /across all documented HTTP methods \(GET, POST, PUT, PATCH, DELETE\)/,
+    )
+    assert.match(PROVISIONING_ASSISTANT_ROLE_INSTRUCTION, /mutating operation.*access: "write"/)
+    assert.doesNotMatch(PROVISIONING_ASSISTANT_ROLE_INSTRUCTION, /Prefer read-only tools/i)
+  })
+
   // S-P1 spike: tiszta doksi → helyes draft generálódik és átmegy a validáción.
   await test('S-P1: tiszta doksiból a modell-jelölt draft VALID (validation != failed)', async () => {
     const model = fixedModel(JSON.stringify(cleanConfig()))
