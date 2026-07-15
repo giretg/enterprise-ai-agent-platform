@@ -25,6 +25,13 @@ export const proposedToolSchema = z.object({
   path: z.string().min(1),
   access: z.enum(['read', 'write']),
   description: z.string().optional(),
+  /**
+   * Ha true: az endpoint írási hívásaihoz a futásidejű http-api-kliens automatikusan
+   * egyedi `Idempotency-Key` fejlécet injektál (lásd http-api-client.ts). Az OpenAPI-
+   * extractor akkor állítja be, ha a spec az operationön kötelező `Idempotency-Key`
+   * header-paramétert deklarál. Csak mutáló metódusokon van értelme.
+   */
+  idempotent: z.boolean().optional(),
 })
 export type ProposedTool = z.infer<typeof proposedToolSchema>
 

@@ -43,6 +43,72 @@ const MINIMAL_OPENAPI = {
   },
 }
 
+const IDEMPOTENCY_OPENAPI = {
+  openapi: '3.0.3',
+  info: { title: 'Ledger API', version: '1.0.0' },
+  servers: [{ url: 'https://api.ledger.example/v1' }],
+  components: {
+    securitySchemes: {
+      ApiKeyAuth: { type: 'apiKey', in: 'header', name: 'X-Api-Key' },
+    },
+    parameters: {
+      IdempotencyKey: {
+        name: 'Idempotency-Key',
+        in: 'header',
+        required: true,
+        schema: { type: 'string' },
+      },
+    },
+  },
+  security: [{ ApiKeyAuth: ['ledger.write'] }],
+  paths: {
+    // Operation-szintű, KÖTELEZŐ Idempotency-Key → idempotent: true
+    '/orders': {
+      post: {
+        operationId: 'createOrder',
+        parameters: [{ name: 'Idempotency-Key', in: 'header', required: true, schema: { type: 'string' } }],
+      },
+      // GET-en még kötelező Idempotency-Key esetén se jelöljük (a runtime csak írásra injektál)
+      get: {
+        operationId: 'listOrders',
+        parameters: [{ name: 'Idempotency-Key', in: 'header', required: true, schema: { type: 'string' } }],
+      },
+    },
+    // $ref-elt paraméter → fel kell oldani
+    '/orders/{id}': {
+      patch: {
+        operationId: 'updateOrder',
+        parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }],
+      },
+      // Path-szintű paraméter minden operationre érvényes
+      parameters: [{ $ref: '#/components/parameters/IdempotencyKey' }],
+      delete: { operationId: 'deleteOrder' },
+    },
+    // Idempotency-Key jelen van, de NEM kötelező → nem jelöljük
+    '/events': {
+      post: {
+        operationId: 'createEvent',
+        parameters: [{ name: 'Idempotency-Key', in: 'header', required: false, schema: { type: 'string' } }],
+      },
+    },
+    // Írás fejléc-követelmény nélkül → nem idempotent
+    '/webhooks': {
+      post: { operationId: 'createWebhook' },
+    },
+  },
+}
+
+function toolByName(
+  result: ReturnType<typeof tryExtractConnectorConfigFromOpenApi>,
+  name: string,
+) {
+  assert.equal(result.ok, true)
+  if (!result.ok) throw new Error('extract failed')
+  const tool = result.config.proposedTools.find((t) => t.name === name)
+  assert.ok(tool, `tool ${name} not found`)
+  return tool
+}
+
 async function test(name: string, fn: () => void | Promise<void>) {
   try {
     await fn()
@@ -92,6 +158,36 @@ async function run() {
     )
   })
 
+  await test('idempotencia: operation-szintű kötelező Idempotency-Key → idempotent: true', () => {
+    const result = tryExtractConnectorConfigFromOpenApi(JSON.stringify(IDEMPOTENCY_OPENAPI), 'ledger')
+    assert.equal(toolByName(result, 'createOrder').idempotent, true)
+  })
+
+  await test('idempotencia: $ref-elt paraméter feloldódik → idempotent: true', () => {
+    const result = tryExtractConnectorConfigFromOpenApi(JSON.stringify(IDEMPOTENCY_OPENAPI), 'ledger')
+    assert.equal(toolByName(result, 'updateOrder').idempotent, true)
+  })
+
+  await test('idempotencia: path-szintű paraméter minden operationre hat → deleteOrder idempotent', () => {
+    const result = tryExtractConnectorConfigFromOpenApi(JSON.stringify(IDEMPOTENCY_OPENAPI), 'ledger')
+    assert.equal(toolByName(result, 'deleteOrder').idempotent, true)
+  })
+
+  await test('idempotencia: nem kötelező Idempotency-Key → nem jelöljük', () => {
+    const result = tryExtractConnectorConfigFromOpenApi(JSON.stringify(IDEMPOTENCY_OPENAPI), 'ledger')
+    assert.equal(toolByName(result, 'createEvent').idempotent, undefined)
+  })
+
+  await test('idempotencia: fejléc-követelmény nélküli írás → nem idempotent', () => {
+    const result = tryExtractConnectorConfigFromOpenApi(JSON.stringify(IDEMPOTENCY_OPENAPI), 'ledger')
+    assert.equal(toolByName(result, 'createWebhook').idempotent, undefined)
+  })
+
+  await test('idempotencia: GET-en kötelező Idempotency-Key esetén sem jelöljük (runtime csak írásra injektál)', () => {
+    const result = tryExtractConnectorConfigFromOpenApi(JSON.stringify(IDEMPOTENCY_OPENAPI), 'ledger')
+    assert.equal(toolByName(result, 'listOrders').idempotent, undefined)
+  })
+
   await test('próza doksi → not_openapi (LLM fallback)', () => {
     const result = tryExtractConnectorConfigFromOpenApi('Acme CRM API. GET /v1/contacts')
     assert.equal(result.ok, false)
@@ -118,7 +214,14 @@ async function run() {
     assert.equal(result.config.auth.headerName, 'X-API-Key')
     assert.equal(result.config.proposedTools.length, 130)
     assert.ok(result.config.scopesSuggested.includes('partners:read'))
-    assert.ok(result.config.proposedTools.some((t) => t.name === 'createPartner'))
+    const createPartner = result.config.proposedTools.find((t) => t.name === 'createPartner')
+    assert.ok(createPartner)
+    // A regresszió lényege: az Ostoros spec minden íráshoz kötelező Idempotency-Key
+    // fejlécet ír elő → a kinyerésnek idempotent: true-t kell adnia (ezt hagyta ki eddig).
+    assert.equal(createPartner.idempotent, true)
+    const writeTools = result.config.proposedTools.filter((t) => t.access === 'write')
+    const idempotentWrites = writeTools.filter((t) => t.idempotent === true)
+    assert.equal(idempotentWrites.length, 71, '71/73 írási művelet idempotens az Ostoros specben')
   })
 
   await test('extractConnectorConfigFromOpenApiSpec — hiányzó server → unsupported', () => {

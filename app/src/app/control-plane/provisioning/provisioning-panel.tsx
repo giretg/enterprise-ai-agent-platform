@@ -46,6 +46,7 @@ type ProposedTool = {
   path: string
   access: 'read' | 'write'
   description?: string
+  idempotent?: boolean
 }
 type DraftConfig = {
   provider: string
@@ -55,6 +56,7 @@ type DraftConfig = {
   auth: { type: string; headerName?: string; secretAliasSuggested?: string }
   scopesSuggested: string[]
   rateLimit?: { rps: number; burst: number }
+  defaultActingUserEmail?: string
   proposedTools: ProposedTool[]
   provenance?: {
     sourceHash?: string

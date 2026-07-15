@@ -355,6 +355,49 @@ function descriptionForOperation(operation: Record<string, unknown>): string | u
   return text.length > 500 ? `${text.slice(0, 497)}...` : text
 }
 
+/**
+ * A futásidejű http-api-kliens ezt a fejléc-nevet injektálja idempotens endpointra
+ * (http-api-client.ts). A detektálás ehhez igazodik: csak azt jelöljük `idempotent`-nek,
+ * amit a runtime ténylegesen ki tud szolgálni.
+ */
+const IDEMPOTENCY_HEADER = 'idempotency-key'
+
+/** Feloldja a `$ref`-et, ha a paraméter-bejegyzés hivatkozás (OpenAPI 3 + Swagger 2.0). */
+function resolveMaybeRef(spec: OpenApiSpec, value: unknown): unknown {
+  if (isRecord(value) && typeof value.$ref === 'string') {
+    return resolveLocalRef(spec, value.$ref)
+  }
+  return value
+}
+
+/**
+ * Igaz, ha az operation (a path-szintű paraméterekkel együtt) KÖTELEZŐ `Idempotency-Key`
+ * header-paramétert deklarál. Ez az a jel, amit a determinisztikus kinyerés eddig
+ * figyelmen kívül hagyott: a `parameters` tömböt egyáltalán nem nézte, így a spec-ben
+ * explicit írási-fejléc követelmény sosem jutott el a confighoz.
+ */
+function operationRequiresIdempotencyKey(
+  spec: OpenApiSpec,
+  pathItem: Record<string, unknown>,
+  operation: Record<string, unknown>,
+): boolean {
+  // A path-szintű paraméterek minden operationre érvényesek; az operation-szintűek
+  // felülírhatják, de az idempotencia-fejléc szempontjából elég, ha bármelyik előírja.
+  const groups = [pathItem.parameters, operation.parameters]
+  for (const group of groups) {
+    if (!Array.isArray(group)) continue
+    for (const rawParam of group) {
+      const param = resolveMaybeRef(spec, rawParam)
+      if (!isRecord(param)) continue
+      if (param.in !== 'header') continue
+      if (typeof param.name !== 'string') continue
+      if (param.name.toLowerCase() !== IDEMPOTENCY_HEADER) continue
+      if (param.required === true) return true
+    }
+  }
+  return false
+}
+
 function extractProposedTools(spec: OpenApiSpec): ProposedTool[] {
   const tools: ProposedTool[] = []
   const seen = new Set<string>()
@@ -380,12 +423,17 @@ function extractProposedTools(spec: OpenApiSpec): ProposedTool[] {
         }
       }
 
+      // Idempotencia csak mutáló metóduson értelmezett (a runtime is csak ott injektál).
+      const idempotent =
+        WRITE_METHODS.has(httpMethod) && operationRequiresIdempotencyKey(spec, pathItem, operation)
+
       tools.push({
         name,
         method: httpMethod,
         path: pathTemplate,
         access: WRITE_METHODS.has(httpMethod) ? 'write' : 'read',
         ...(descriptionForOperation(operation) ? { description: descriptionForOperation(operation) } : {}),
+        ...(idempotent ? { idempotent: true } : {}),
       })
     }
   }
