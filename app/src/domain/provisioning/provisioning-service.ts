@@ -18,6 +18,7 @@ import {
   normalizeGmailConnectorConfig,
   type GmailConnectorConfig,
 } from '@/domain/connector-template/gmail-connector-config'
+import { enrichOstorosborConnectorConfig } from '@/domain/connector-template/ostorosbor-config-enrichment'
 import {
   normalizeConnectorConfig,
   ConnectorConfigParseError,
@@ -276,7 +277,12 @@ export class ProvisioningService {
 
   /** Aktiválás előtti kulcsos próbahívás — a megadott kulccsal/aliassal, nem a draft secret-ref-fel. */
   async testConnectorDraftWithCredentials(
-    input: { draftId: string; apiKey?: string; secretAlias?: string },
+    input: {
+      draftId: string
+      apiKey?: string
+      secretAlias?: string
+      defaultActingUserEmail?: string
+    },
     actor: ProvisioningActor,
   ): Promise<{ ok: boolean; statusCode?: number; detail?: string }> {
     this.requireHumanAdmin(actor, 'testConnectorDraftWithCredentials')
@@ -294,7 +300,9 @@ export class ProvisioningService {
       return { ok: false, detail: 'no_credentials_provided' }
     }
 
-    const config = parseStoredConfig(draft.connector.config)
+    const config = parseStoredConfig(draft.connector.config, {
+      defaultActingUserEmail: input.defaultActingUserEmail,
+    })
     return this.deps.sandboxTester.test({
       config,
       secretAlias: draft.connector.secretAlias,
@@ -316,6 +324,8 @@ export class ProvisioningService {
       reason?: string
       /** Kulcs/alias nélküli aktiválás explicit megerősítése. */
       confirmKeyless?: boolean
+      /** Ostorosbor CRM: acting user e-mail a kulcsos teszthez / aktiváláshoz. */
+      defaultActingUserEmail?: string
     },
     actor: ProvisioningActor,
   ): Promise<{ connectorId: string; lifecycleState: 'active' }> {
@@ -360,7 +370,9 @@ export class ProvisioningService {
           'could not resolve credentials for activation auth test',
         )
       }
-      const config = parseStoredConfig(draft.connector.config)
+      const config = parseStoredConfig(draft.connector.config, {
+        defaultActingUserEmail: input.defaultActingUserEmail,
+      })
       const authTest = await this.deps.sandboxTester.test({
         config,
         secretAlias: draft.connector.secretAlias,
@@ -414,13 +426,27 @@ export class ProvisioningService {
         },
       } as unknown as Prisma.InputJsonValue
     } else {
-      const config = parseStoredConfig(draft.connector.config)
+      const config = parseStoredConfig(draft.connector.config, {
+        defaultActingUserEmail: input.defaultActingUserEmail,
+      })
       authMode = config.authMode
 
       // A nyers configra mergeljük (nem a parse-oltra) — így a séma által nem
       // modellezett kulcsokat (pl. delegált `oauth` blokk) nem tüntetjük el.
       const rawConfig = { ...((draft.connector.config as Record<string, unknown> | null) ?? {}) }
       let configMutated = false
+
+      const ostorosborEnrichment = enrichOstorosborConnectorConfig(config)
+      if (ostorosborEnrichment.changed) {
+        rawConfig.requestHeaders = ostorosborEnrichment.config.requestHeaders
+        configMutated = true
+      }
+      const actingEmail =
+        input.defaultActingUserEmail?.trim() || config.defaultActingUserEmail?.trim()
+      if (actingEmail && rawConfig.defaultActingUserEmail !== actingEmail) {
+        rawConfig.defaultActingUserEmail = actingEmail
+        configMutated = true
+      }
 
       const existingClientId =
         typeof config.auth.clientId === 'string' ? config.auth.clientId.trim() : ''
@@ -1038,9 +1064,18 @@ function parseGmailStoredConfig(raw: unknown): GmailConnectorConfig {
   }
 }
 
-function parseStoredConfig(raw: unknown): ConnectorConfig {
+function parseStoredConfig(
+  raw: unknown,
+  overrides?: { defaultActingUserEmail?: string },
+): ConnectorConfig {
   try {
-    return normalizeConnectorConfig(raw)
+    let config = normalizeConnectorConfig(raw)
+    config = enrichOstorosborConnectorConfig(config).config
+    const actingEmail = overrides?.defaultActingUserEmail?.trim()
+    if (actingEmail) {
+      config = { ...config, defaultActingUserEmail: actingEmail }
+    }
+    return config
   } catch (e) {
     if (e instanceof ConnectorConfigParseError) {
       throw new ProvisioningError('PROVISIONING_INVALID_INPUT', 'stored config invalid', e.issues)

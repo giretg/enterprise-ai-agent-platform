@@ -18,6 +18,7 @@ import {
   isOstorosborBearerMigrationCandidate,
   rematerializeOstorosborConnectorConfig,
 } from '../src/domain/connector-template/ostorosbor-bearer-migration'
+import { enrichOstorosborConnectorConfig } from '../src/domain/connector-template/ostorosbor-config-enrichment'
 
 let failures = 0
 function pass(name: string) {
@@ -319,6 +320,24 @@ async function main() {
       false,
       'idegen Authorization-headeres connector nem migrálható',
     )
+  })
+
+  await test('Ostorosbor enrich backfill hiányzó requestHeaders-t régi draft configban', () => {
+    const { config, changed } = enrichOstorosborConnectorConfig({
+      provider: 'ostorosbor-crm-sales-delegated',
+      baseUrl: 'https://crm.example/api/connector/v1',
+      egressHosts: ['crm.example'],
+      authMode: 'service',
+      auth: { type: 'bearer_token' },
+      scopesSuggested: [],
+      proposedTools: [{ name: 'list_accounts', method: 'GET', path: '/accounts', access: 'read' }],
+    })
+    assert.equal(changed, true)
+    assert.deepEqual(config.requestHeaders, {
+      'X-Agent-Id': '{{agent.id}}',
+      'X-Acting-User': '{{actingUser.email}}',
+      'X-Connector-Call-Id': '{{call.id}}',
+    })
   })
 
   await test('Ostorosbor bearer migráció újramaterializál, sandbox /accounts 200', async () => {

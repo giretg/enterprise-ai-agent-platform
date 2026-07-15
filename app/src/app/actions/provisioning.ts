@@ -157,12 +157,14 @@ const activateSchema = z.object({
   criticality: z.enum(['L1', 'L2', 'L3']).optional(),
   reason: z.string().optional(),
   confirmKeyless: z.boolean().optional(),
+  defaultActingUserEmail: z.string().email().optional(),
 })
 
 const testWithCredentialsSchema = z.object({
   draftId: z.string().min(1),
   apiKey: z.string().optional(),
   secretAlias: z.string().optional(),
+  defaultActingUserEmail: z.string().email().optional(),
 })
 
 const assignSchema = z.object({
@@ -950,6 +952,7 @@ export async function activateConnector(input: unknown) {
         criticality: parsed.criticality,
         reason: parsed.reason,
         confirmKeyless: parsed.confirmKeyless,
+        defaultActingUserEmail: parsed.defaultActingUserEmail,
       },
       actorOf(user),
     )

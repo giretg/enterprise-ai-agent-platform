@@ -1586,6 +1586,7 @@ function DraftCard({
 
   const v = draft.validationResult
   const cfg = draft.config
+  const [actingUserEmail, setActingUserEmail] = useState(() => cfg?.defaultActingUserEmail ?? '')
   const gmailView = draft.gmailView
   const provenance = cfg?.provenance ?? gmailView?.provenance
   const templateVersionKey = templateLineKey({
@@ -1628,6 +1629,9 @@ function DraftCard({
     isUserDelegated ||
     draft.httpApiView?.authScheme === 'oauth2' ||
     cfg?.auth?.type === 'oauth2'
+  const isOstorosborCrm =
+    provenance?.templateKey?.startsWith('ostorosbor-crm') === true ||
+    cfg?.provider?.startsWith('ostorosbor-crm') === true
   const hasActivationCredentials =
     !!apiKey.trim() ||
     (!!secretAlias.trim() && isResolvableSecretAlias(secretAlias.trim()))
@@ -1643,6 +1647,9 @@ function DraftCard({
         : {}),
     ...(confirmKeyless ? { confirmKeyless: true as const } : {}),
     ...(isOauth2 && clientId.trim() ? { clientId: clientId.trim() } : {}),
+    ...(isOstorosborCrm && actingUserEmail.trim()
+      ? { defaultActingUserEmail: actingUserEmail.trim() }
+      : {}),
     criticality,
     approverId: approverId.trim() || undefined,
   })
@@ -2393,6 +2400,25 @@ function DraftCard({
                     ) : null}
                   </div>
                 </details>
+                {isOstorosborCrm ? (
+                  <label className="text-xs sm:col-span-2">
+                    <span className="mb-1 block text-ink-soft">
+                      Acting user e-mail (CRM-ben regisztrált — X-Acting-User fejléc)
+                    </span>
+                    <input
+                      type="email"
+                      className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
+                      value={actingUserEmail}
+                      onChange={(e) => setActingUserEmail(e.target.value)}
+                      placeholder="pl. ertekesito@ceg.hu"
+                    />
+                    {!actingUserEmail.trim() ? (
+                      <p className="mt-1 text-honey">
+                        A kulcsos teszthez kötelező CRM-ben regisztrált acting user e-mail.
+                      </p>
+                    ) : null}
+                  </label>
+                ) : null}
                 {isUserDelegated ? (
                   <div className="text-xs sm:col-span-2">
                     <span className="mb-1 block text-ink-soft">
@@ -2469,7 +2495,12 @@ function DraftCard({
                 {hasActivationCredentials && !isGmailConnector ? (
                   <button
                     type="button"
-                    disabled={pending || !activationReady || hasInvalidSecretAlias}
+                    disabled={
+                      pending ||
+                      !activationReady ||
+                      hasInvalidSecretAlias ||
+                      (isOstorosborCrm && !actingUserEmail.trim())
+                    }
                     onClick={() =>
                       run(async () => {
                         const res = await testConnectorDraftWithCredentials(buildActivationInput())

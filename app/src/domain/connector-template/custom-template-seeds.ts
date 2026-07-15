@@ -7,7 +7,7 @@ export const OSTOROSBOR_CRM_DEFAULT_INSTANCE_VALUES: Record<string, string> = {
 }
 
 /** Kötelező CRM audit/trace fejlécek — a sablon materializáláskor a connector configba kerülnek. */
-const OSTOROSBOR_CRM_REQUEST_HEADERS = {
+export const OSTOROSBOR_CRM_REQUEST_HEADERS = {
   'X-Agent-Id': '{{agent.id}}',
   'X-Acting-User': '{{actingUser.email}}',
   'X-Connector-Call-Id': '{{call.id}}',

@@ -42,6 +42,8 @@ import {
   parseHttpApiConfig,
   resolveConnectorApiKey,
 } from '@/domain/connector/http-api-client'
+import { enrichOstorosborConnectorConfig } from '@/domain/connector-template/ostorosbor-config-enrichment'
+import { normalizeConnectorConfig } from '@/domain/provisioning/connector-config'
 
 import {
   type WebSearchResult,
@@ -116,7 +118,15 @@ import type { ToolBrokerService } from './tool-broker-service'
 // A folyamat-ticket "agent-válasz kész" cél-állapotai (l. maybeRecordAgentAnswerComment).
 const AGENT_ANSWER_COMPLETION_STATES = new Set<string>(['done', 'awaiting_human'])
 
-export async function executeHttpApiTool(self: ToolBrokerService, 
+function resolveHttpApiConnectorConfig(raw: unknown): unknown {
+  try {
+    return enrichOstorosborConnectorConfig(normalizeConnectorConfig(raw)).config
+  } catch {
+    return raw
+  }
+}
+
+export async function executeHttpApiTool(self: ToolBrokerService,
     input: Extract<ToolBrokerInvokeInput, { tool: 'http_api_get' | 'http_api_request' }>,
     connector: Connector,
     actingTenantId: string | null,
@@ -124,7 +134,7 @@ export async function executeHttpApiTool(self: ToolBrokerService,
     agentSecretAlias?: string | null,
     delegatedAccessToken?: string,
   ): Promise<HttpApiCallResult> {
-    const config = parseHttpApiConfig(connector.config)
+    const config = parseHttpApiConfig(resolveHttpApiConnectorConfig(connector.config))
     // user_delegated (auto-consent oauth2): a per-user grant access token megy ki
     // Bearerként (config.auth = bearer). A connector secretAlias ilyenkor a
     // client_secret-et rejti, ezt SOHA nem oldjuk fel apiKey-ként — ezt a delegált
