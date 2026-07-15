@@ -174,6 +174,23 @@ async function run() {
     assert.equal(repo.context!.connector.activeSpecVersionId, versionId)
   })
 
+  await test('SoD: a link beállítója a KÉSŐBBI verziókat sem hagyhatja jóvá egyedül (superadmin kivétel)', async () => {
+    const { service, repo, sync, connectorId } = await ready()
+    await service.approveUrl(connectorId, { id: APPROVER, tenantId: TENANT })
+    await service.markTrusted(connectorId, { id: APPROVER, tenantId: TENANT })
+    // v1: első verzió — jóváhagyja egy másik kolléga (a beállító nem).
+    await service.sync(connectorId, { id: SETTER, tenantId: TENANT })
+    await service.approveVersion(connectorId, repo.versions[0].id, { id: APPROVER, tenantId: TENANT })
+    // v2: egy új (kockázatos) írási végpont — a beállító nem élesítheti egyedül.
+    sync.result = { ok: true, rawText: '{"v":2}', rawHash: 'hash-2', capabilitySet: capabilitySet([{ method: 'GET', path: '/customers' }, { method: 'POST', path: '/customers' }]), host: 'partner.example' }
+    await service.sync(connectorId, { id: SETTER, tenantId: TENANT })
+    const v2 = repo.versions[1]
+    await expectCode('SEPARATION_OF_DUTIES', () => service.approveVersion(connectorId, v2.id, { id: SETTER, tenantId: TENANT }))
+    // Superadmin beállító (sodExempt) továbbra is egyedül élesíthet.
+    await service.approveVersion(connectorId, v2.id, { id: SETTER, tenantId: TENANT, sodExempt: true })
+    assert.equal(repo.context!.connector.activeSpecVersionId, v2.id)
+  })
+
   await test('rollback az előző approved snapshotot aktiválja és a jelenlegit rolled_back-ként megőrzi', async () => {
     const { service, repo, sync, connectorId } = await ready()
     await service.approveUrl(connectorId, { id: APPROVER, tenantId: TENANT }); await service.markTrusted(connectorId, { id: APPROVER, tenantId: TENANT })
