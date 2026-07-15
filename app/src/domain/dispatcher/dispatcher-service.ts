@@ -675,6 +675,17 @@ export class DispatcherService {
         state: 'ready',
         payload: withDispatchPayload(lockedTicket.payload, { ephemeralKeyId: undefined }),
       })
+      if (started) {
+        await this.tickets.recordTransition({
+          ticketId: ticket.id,
+          fromState: started.state,
+          toState: 'ready',
+          actorType: 'system',
+          actorId: null,
+          agentVersion: null,
+          note: 'dispatcher launch failed',
+        })
+      }
       await this.audit.append({
         actorType: 'system',
         actorId: null,

@@ -363,6 +363,10 @@ async function testLaunchFailureRevokesEphemeralKeyAndReleasesTicket() {
   assert.equal(tickets.ticket.lockToken, null)
   assert.deepEqual(tickets.ticket.payload, {})
   assert.deepEqual(agents.revoked, [`key-${baseTicket.agentId}`])
+  assert.deepEqual(tickets.transitions, [
+    { toState: 'in_progress', note: 'dispatcher start' },
+    { toState: 'ready', note: 'dispatcher launch failed' },
+  ])
   assert.ok(audit.events.some((event) => event.action === 'dispatch.error'))
 }
 
