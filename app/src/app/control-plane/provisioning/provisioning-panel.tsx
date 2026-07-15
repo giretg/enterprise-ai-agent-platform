@@ -121,7 +121,7 @@ type SensitivityReviewData = {
   findings: SensitivityFinding[]
 }
 type DraftConfigFromDocData =
-  | { config: DraftConfig; requiresSensitivityReview: false }
+  | { config: DraftConfig; requiresSensitivityReview: false; extractionMethod?: 'openapi' | 'llm' }
   | {
       requiresSensitivityReview: true
       sensitivity: SensitivityReviewData
@@ -481,8 +481,13 @@ export function ProvisioningPanel() {
         if (!name.trim() && data.config?.provider) {
           setName(data.config.provider)
         }
+        if (data.extractionMethod === 'openapi') {
+          setSourceType('openapi')
+        }
         setNotice(
-          'Config-jelölt generálva. Nézd át, majd hozd létre a draftot — a validátor a létrehozás után dönt.',
+          data.extractionMethod === 'openapi'
+            ? 'OpenAPI spec felismerve — config-jelölt determinisztikusan kinyerve (LLM nélkül). Nézd át, majd hozd létre a draftot.'
+            : 'Config-jelölt generálva. Nézd át, majd hozd létre a draftot — a validátor a létrehozás után dönt.',
         )
         setCreateStep('review')
       } else {
@@ -1148,7 +1153,10 @@ export function ProvisioningPanel() {
                       </label>
                     </div>
                     <p className="mb-2 text-xs text-ink-soft">
-                      OpenAPI, Postman, RAML, GraphQL, WSDL/XML, HAR, Markdown/HTML/TXT.
+                      OpenAPI JSON/YAML automatikusan felismerésre kerül és determinisztikusan
+                      feldolgozódik; egyéb formátumoknál (Markdown, próza) az asszisztens LLM-et
+                      használ. Támogatott: OpenAPI, Postman, RAML, GraphQL, WSDL/XML, HAR,
+                      Markdown/HTML/TXT.
                     </p>
                     <textarea
                       className="h-40 w-full rounded-md border border-ink/15 bg-paper px-3 py-2 font-mono text-xs"

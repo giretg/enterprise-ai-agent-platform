@@ -1380,6 +1380,36 @@ async function run() {
     }
   })
 
+  await test('F2-P-F: OpenAPI spec → determinisztikus config, modell NEM hívódik', async () => {
+    const openApiDoc = JSON.stringify({
+      openapi: '3.0.3',
+      info: { title: 'Fold API', version: '1.0.0' },
+      servers: [{ url: 'https://fold.example/api/v1' }],
+      components: {
+        securitySchemes: {
+          ApiKeyAuth: { type: 'apiKey', in: 'header', name: 'X-API-Key' },
+        },
+      },
+      paths: {
+        '/partners': {
+          get: { operationId: 'listPartners', security: [{ ApiKeyAuth: ['partners:read'] }] },
+        },
+      },
+    })
+    const model = fixedModel('SHOULD NOT BE CALLED')
+    const assistant = new ProvisioningAssistant({ model })
+    const r = await assistant.draftConfigFromDoc({
+      agentId: 'agent-prov',
+      docText: openApiDoc,
+      providerHint: 'ostoros-fold',
+    })
+    assert.equal(r.ok, true)
+    if (!r.ok) return
+    assert.equal(r.extractionMethod, 'openapi')
+    assert.equal(r.config.provider, 'ostoros-fold')
+    assert.equal(model.lastMessages, undefined)
+  })
+
   await test('S-P1: a modell szemét kimenete → PARSE_FAILED (nem keletkezik draft)', async () => {
     const assistant = new ProvisioningAssistant({ model: fixedModel('I cannot help with that.') })
     const r = await assistant.draftConfigFromDoc({ agentId: 'agent-prov', docText: 'doc' })

@@ -387,27 +387,6 @@ export async function draftConfigFromApiDoc(input: unknown) {
       )
     }
 
-    const messages = services.provisioningAssistant.buildDraftingMessages({
-      docText,
-      providerHint,
-    })
-    const sensitivity = inspectPromptSensitivity(messages)
-    const sensitivityBypassEnabled = assistant.allowSensitiveExternalModel
-    const reviewFindings = reviewableSensitivityFindings(sensitivity.findings, {
-      allowSensitiveExternalModel: sensitivityBypassEnabled,
-      sensitivityReviewAccepted,
-    })
-    if (reviewFindings.length > 0) {
-      return ok({
-        requiresSensitivityReview: true,
-        sensitivity: {
-          level: sensitivity.level,
-          matchedCategory: sensitivity.matchedCategory,
-          findings: reviewFindings,
-        },
-      })
-    }
-
     const result = await services.provisioningAssistant.draftConfigFromDoc({
       agentId: assistant.id,
       agentVersion: assistant.currentVersion,
@@ -415,7 +394,7 @@ export async function draftConfigFromApiDoc(input: unknown) {
       tenantId: user.activeTenantId,
       docText,
       providerHint,
-      allowSensitiveExternalModel: sensitivityBypassEnabled,
+      allowSensitiveExternalModel: assistant.allowSensitiveExternalModel,
       sensitivityReviewAccepted,
       reviewedByUserId: sensitivityReviewAccepted ? user.user.id : undefined,
     })
@@ -432,7 +411,11 @@ export async function draftConfigFromApiDoc(input: unknown) {
     if (!result.ok) {
       return fail(formatProvisioningAssistantError(result.error, result.detail, 'doc'))
     }
-    return ok({ config: result.config, requiresSensitivityReview: false })
+    return ok({
+      config: result.config,
+      requiresSensitivityReview: false,
+      extractionMethod: result.extractionMethod ?? 'llm',
+    })
   } catch (e) {
     return toFail(e, 'Nem sikerült legenerálni a configot a doksiból')
   }
