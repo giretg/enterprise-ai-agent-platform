@@ -218,6 +218,30 @@ enum ConnectorDraftReviewStatus {
   @@map("connector_draft_review_status")
 }
 
+// ── Önfrissítő connector (Dev-Spec — Self-Updating-Connector §5) ────────────
+// A connector "módja". DEFAULT `fixed`, hogy a meglévő sorok viselkedése
+// változatlan maradjon; `self_updating` connector kap egy ConnectorSpecSource-ot
+// és a futásidejű képességeit az `activeSpecVersion` capabilitySet-je adja (A3).
+enum ConnectorMode {
+  fixed
+  self_updating
+
+  @@map("connector_mode")
+}
+
+// Egy letöltött+parse-olt spec-pillanatkép életciklusa (Dev-Spec §5/§9).
+// `proposed` a szinkron eredménye; emberi jóváhagyás → `approved` (ez lesz az aktív),
+// a korábbi aktív → `superseded`; elutasítás → `rejected`; rollback → `rolled_back`.
+enum ConnectorSpecVersionStatus {
+  proposed
+  approved
+  superseded
+  rejected
+  rolled_back
+
+  @@map("connector_spec_version_status")
+}
+
 enum ToolCallStatus {
   ok
   denied
@@ -1423,12 +1447,21 @@ model Connector {
   tenantId       String?                 @map("tenant_id") @db.Uuid
   createdAt      DateTime                @default(now()) @map("created_at") @db.Timestamptz
 
+  // ── Önfrissítő connector (Dev-Spec — Self-Updating-Connector) ──
+  // `fixed` a default; `self_updating` esetén a futásidejű képességet az
+  // `activeSpecVersion` capabilitySet-je adja (A3), nem a `config.endpoints`.
+  connectorMode       ConnectorMode         @default(fixed) @map("connector_mode")
+  activeSpecVersionId String?               @map("active_spec_version_id") @db.Uuid
+  activeSpecVersion   ConnectorSpecVersion? @relation("ActiveSpecVersion", fields: [activeSpecVersionId], references: [id], onDelete: SetNull)
+
   agentConnectors    AgentConnector[]
   toolCalls          ToolCall[]
   documents          Document[]
   grants             ConnectorGrant[]
   draft              ConnectorDraft?
   knowledgeArtifacts KnowledgeArtifact[]
+  specSource         ConnectorSpecSource?
+  specVersions       ConnectorSpecVersion[] @relation("SpecVersions")
 
   // §4.2: tenant-scope egyediség — a régi @@unique([type, name]) cross-tenant
   // névütközést okozott (két tenant nem használhatta ugyanazt a connector-nevet).
@@ -1480,6 +1513,58 @@ model ConnectorDraft {
 
   @@unique([tenantId, connectorId])
   @@map("connector_drafts")
+}
+
+// ── Önfrissítő connector: spec-forrás (Dev-Spec §5) ─────────────────────────
+// A connectorhoz kötött, JÓVÁHAGYOTT link, amiről a szinkron a leírást húzza.
+// A titok (kulcs) NEM ide kerül — az a Connector.secretAlias mögött marad (A6).
+// A `specUrl`-t egyszer explicit jóvá kell hagyni (T2/A4), utána oda van szögezve.
+model ConnectorSpecSource {
+  id                String    @id @default(uuid()) @db.Uuid
+  tenantId          String?   @map("tenant_id") @db.Uuid
+  connectorId       String    @unique @map("connector_id") @db.Uuid
+  connector         Connector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
+  specUrl           String    @map("spec_url") // A4: pinned, jóváhagyott link
+  specFormat        String    @default("openapi_3") @map("spec_format") // jövőállóság (D1)
+  urlApprovedById   String?   @map("url_approved_by") @db.Uuid // ki hagyta jóvá a linket (T2)
+  urlApprovedAt     DateTime? @map("url_approved_at") @db.Timestamptz
+  trustedById       String?   @map("trusted_by") @db.Uuid // T1: explicit partner-bizalmi minősítés
+  trustedAt         DateTime? @map("trusted_at") @db.Timestamptz
+  autoApprovePolicy Json?     @map("auto_approve_policy") // D5/T4: mi mehet emberi kapu nélkül
+  lastSyncedAt      DateTime? @map("last_synced_at") @db.Timestamptz
+  createdById       String?   @map("created_by") @db.Uuid
+  createdAt         DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("connector_spec_sources")
+}
+
+// ── Önfrissítő connector: verziózott spec-pillanatkép (Dev-Spec §5, §7 A7) ──
+// Append-only történet. `rawSnapshot` a bizonyíték ("ezt töltöttük le, ekkor"),
+// `capabilitySet` a kiparse-olt, strukturált képességlista (a broker ezt érti).
+// Egyszerre pontosan egy `approved` verzió az aktív (Connector.activeSpecVersionId).
+model ConnectorSpecVersion {
+  id                String                     @id @default(uuid()) @db.Uuid
+  tenantId          String?                    @map("tenant_id") @db.Uuid
+  connectorId       String                     @map("connector_id") @db.Uuid
+  connector         Connector                  @relation("SpecVersions", fields: [connectorId], references: [id], onDelete: Cascade)
+  versionNo         Int                        @map("version_no") // 1,2,3… append-only
+  rawSnapshot       Json                       @map("raw_snapshot") // nyers spec (bizonyíték)
+  rawHash           String                     @map("raw_hash") // tartalom-hash (A4/A5)
+  capabilitySet     Json                       @map("capability_set") // kiparse-olt, strukturált képességek
+  status            ConnectorSpecVersionStatus @default(proposed)
+  diffFromVersionId String?                    @map("diff_from_version_id") @db.Uuid
+  diffSummary       Json?                      @map("diff_summary") // A2: gépi diff (§6)
+  fetchedAt         DateTime                   @default(now()) @map("fetched_at") @db.Timestamptz
+  approvedById      String?                    @map("approved_by") @db.Uuid
+  approvedAt        DateTime?                  @map("approved_at") @db.Timestamptz
+  createdAt         DateTime                   @default(now()) @map("created_at") @db.Timestamptz
+
+  activeForConnectors Connector[] @relation("ActiveSpecVersion")
+
+  @@unique([connectorId, versionNo])
+  @@index([connectorId, status])
+  @@map("connector_spec_versions")
 }
 
 model ConnectorGrant {

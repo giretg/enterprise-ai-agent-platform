@@ -175,6 +175,7 @@ export async function executeHttpApiTool(self: ToolBrokerService,
         method: 'GET',
         path: input.args.path,
         query: input.args.query,
+        headers: input.args.headers,
         context,
       })
     }
@@ -182,6 +183,7 @@ export async function executeHttpApiTool(self: ToolBrokerService,
       method: input.args.method,
       path: input.args.path,
       query: input.args.query,
+      headers: input.args.headers,
       body: input.args.body,
       context,
     })
@@ -1441,4 +1443,3 @@ async function resolveMemoryProjectKey(
   }
   return '__general__'
 }
-

@@ -29,6 +29,7 @@ import {
 import { startConnectorOAuth } from '@/app/actions/connector-grants'
 import { isResolvableSecretAlias } from '@/domain/provisioning/secret-alias'
 import { OSTOROSBOR_CRM_DEFAULT_INSTANCE_VALUES } from '@/domain/connector-template/custom-template-seeds'
+import Link from 'next/link'
 
 // A listProvisioningDrafts visszaadott alakja (provisioning-service.listDrafts).
 type CheckStatus = 'passed' | 'warned' | 'failed'
@@ -716,6 +717,12 @@ export function ProvisioningPanel() {
           draft connector-deskriptort állít elő; az aktiválás és az agenthez rendelés emberi
           admin-aktus marad (CR-MVP-002).
         </p>
+      </div>
+
+      <div className="rounded-lg border border-sage/35 bg-sage/8 p-4">
+        <p className="font-semibold">🔄 Kulcs + API-leírás linkje van?</p>
+        <p className="mt-1 text-sm text-ink-soft">Megbízható partnerhez választhatod az önfrissítő kapcsolatot; a későbbi képességeket diffként, külön jóváhagyással veheted át.</p>
+        <Link href="/control-plane/connectors/self-updating" className="mt-3 inline-block rounded-md bg-ink px-3 py-2 text-xs font-semibold text-card">Önfrissítő kapcsolat beállítása</Link>
       </div>
 
       <ErrorDialog message={error} onClose={() => setError(null)} />

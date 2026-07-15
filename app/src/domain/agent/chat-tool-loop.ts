@@ -255,21 +255,22 @@ const TOOL_SCHEMAS: Record<ChatPlatformToolName, ToolSchema> = {
   },
   http_api_get: {
     description:
-      'Olvasó (GET) hívás a hozzád rendelt külső REST API-n. A `connectorId` értékét a rendszerüzenetben látod. A `path` a connector baseUrl-jéhez relatív (pl. "/banks" vagy "/banks/{id}/crm"). A query paramétereket a `query` objektumban add meg.',
+      'Olvasó (GET) hívás a hozzád rendelt külső REST API-n. A `connectorId` értékét a rendszerüzenetben látod. A `path` a connector baseUrl-jéhez relatív. A query paramétereket a `query`, a jóváhagyott snapshotban deklarált fejléceket a `headers` objektumban add meg.',
     inputSchema: objectSchema(
-      { connectorId: STR, path: STR, query: { type: 'object', additionalProperties: true } },
+      { connectorId: STR, path: STR, query: { type: 'object', additionalProperties: true }, headers: { type: 'object', additionalProperties: { type: 'string' } } },
       ['path'],
     ),
   },
   http_api_request: {
     description:
-      'Író (POST/PUT/PATCH/DELETE) hívás a hozzád rendelt külső REST API-n. A `connectorId` értékét a rendszerüzenetben látod. A `path` a connector baseUrl-jéhez relatív; a kérés törzsét a `body` objektumban add meg. Csak akkor hívd, ha a művelet tényleges állapotváltozást igényel.',
+      'Író (POST/PUT/PATCH/DELETE) hívás a hozzád rendelt külső REST API-n. A `connectorId` értékét a rendszerüzenetben látod. A `path` relatív; a törzset a `body`, a jóváhagyott snapshotban deklarált fejléceket a `headers` objektumban add meg. Csak tényleges állapotváltozásnál hívd.',
     inputSchema: objectSchema(
       {
         connectorId: STR,
         method: { type: 'string', enum: ['POST', 'PUT', 'PATCH', 'DELETE'] },
         path: STR,
         query: { type: 'object', additionalProperties: true },
+        headers: { type: 'object', additionalProperties: { type: 'string' } },
         body: { type: 'object', additionalProperties: true },
       },
       ['method', 'path'],
@@ -986,6 +987,12 @@ function httpQueryArg(value: unknown): Record<string, string | number | boolean>
   return Object.keys(out).length > 0 ? out : undefined
 }
 
+function httpHeadersArg(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const entries = Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined
+}
+
 function httpMethodArg(value: unknown): 'POST' | 'PUT' | 'PATCH' | 'DELETE' {
   const m = typeof value === 'string' ? value.toUpperCase() : ''
   return m === 'PUT' || m === 'PATCH' || m === 'DELETE' ? m : 'POST'
@@ -1144,6 +1151,7 @@ function buildToolInvoke(
           connectorId: typeof args.connectorId === 'string' ? args.connectorId : undefined,
           path: strArg(args, 'path'),
           query: httpQueryArg(args.query),
+          headers: httpHeadersArg(args.headers),
         },
       }
 
@@ -1156,6 +1164,7 @@ function buildToolInvoke(
           method: httpMethodArg(args.method),
           path: strArg(args, 'path'),
           query: httpQueryArg(args.query),
+          headers: httpHeadersArg(args.headers),
           body: args.body,
         },
       }

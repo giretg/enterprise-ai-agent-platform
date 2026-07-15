@@ -18,6 +18,36 @@ import { deriveAuditAttribution } from '@/lib/audit/attribution'
 
 const AUDIT_CHAIN_LOCK_KEY = 424242
 
+type AppendAuditInput = Parameters<AuditRepository['append']>[0]
+
+/** Ugyanaz az audit-hash-lánc írás, egy hívó által már megnyitott tranzakcióban. */
+export async function appendAuditInTransaction(
+  tx: Prisma.TransactionClient,
+  data: AppendAuditInput,
+): Promise<AuditLog> {
+  assertAuditActionRegistered(data.action)
+  assertAuditMetadataSafe(data.metadata)
+  await tx.$executeRaw`SELECT pg_advisory_xact_lock(${AUDIT_CHAIN_LOCK_KEY})`
+  const [{ nextval: seq }] = await tx.$queryRaw<{ nextval: bigint }[]>`
+    SELECT nextval('audit_log_seq_seq') AS nextval
+  `
+  const last = await tx.auditLog.findFirst({ orderBy: { seq: 'desc' } })
+  const prevHash = last?.hash ?? GENESIS_HASH
+  const createdAt = new Date()
+  const attribution = deriveAuditAttribution(data)
+  const hash = computeAuditHashV2({
+    seq, prevHash, actorType: data.actorType, actorId: data.actorId,
+    agentVersion: data.agentVersion, action: data.action, targetType: data.targetType,
+    targetId: data.targetId, modelUsed: data.modelUsed, inputRef: data.inputRef,
+    outputRef: data.outputRef, policyDecision: data.policyDecision, metadata: data.metadata,
+    tenantId: attribution.tenantId, ticketId: attribution.ticketId,
+    conversationId: attribution.conversationId, createdAt,
+  })
+  return tx.auditLog.create({
+    data: { ...data, ...attribution, seq, prevHash, hash, createdAt } as Prisma.AuditLogCreateInput,
+  })
+}
+
 export class PostgresAuditRepository implements AuditRepository {
   /**
    * Egyetlen belépési pont az audit_log-ba (spec-invariáns #1). A hash-t INSERT ELŐTT
@@ -36,49 +66,8 @@ export class PostgresAuditRepository implements AuditRepository {
       conversationId?: string | null
     },
   ): Promise<AuditLog> {
-    assertAuditActionRegistered(data.action)
-    assertAuditMetadataSafe(data.metadata)
-
     return prisma.$transaction(
-      async (tx) => {
-        await tx.$executeRaw`SELECT pg_advisory_xact_lock(${AUDIT_CHAIN_LOCK_KEY})`
-
-        const [{ nextval: seq }] = await tx.$queryRaw<{ nextval: bigint }[]>`
-          SELECT nextval('audit_log_seq_seq') AS nextval
-        `
-        const last = await tx.auditLog.findFirst({ orderBy: { seq: 'desc' } })
-        const prevHash = last?.hash ?? GENESIS_HASH
-        const createdAt = new Date()
-
-        // A hash-t a származtatott attribúcióval EGYÜTT számítjuk, hogy a tenant/ticket/
-        // conversation kötés is a lánc-fedett mezők közé kerüljön (v2 — teljes soronkénti
-        // fedés a governance-döntéssel és a payload-mutatókkal együtt).
-        const attribution = deriveAuditAttribution(data)
-
-        const hash = computeAuditHashV2({
-          seq,
-          prevHash,
-          actorType: data.actorType,
-          actorId: data.actorId,
-          agentVersion: data.agentVersion,
-          action: data.action,
-          targetType: data.targetType,
-          targetId: data.targetId,
-          modelUsed: data.modelUsed,
-          inputRef: data.inputRef,
-          outputRef: data.outputRef,
-          policyDecision: data.policyDecision,
-          metadata: data.metadata,
-          tenantId: attribution.tenantId,
-          ticketId: attribution.ticketId,
-          conversationId: attribution.conversationId,
-          createdAt,
-        })
-
-        return tx.auditLog.create({
-          data: { ...data, ...attribution, seq, prevHash, hash, createdAt } as Prisma.AuditLogCreateInput,
-        })
-      },
+      (tx) => appendAuditInTransaction(tx, data),
       { timeout: 60_000 },
     )
   }

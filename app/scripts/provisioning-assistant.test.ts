@@ -121,6 +121,8 @@ class FakeDraftRepo implements ConnectorDraftRepository {
       version: 1,
       config: input.config as Prisma.JsonValue,
       lifecycleState: 'draft',
+      connectorMode: 'fixed',
+      activeSpecVersionId: null,
       tenantId: input.tenantId,
       createdAt: new Date(),
     }

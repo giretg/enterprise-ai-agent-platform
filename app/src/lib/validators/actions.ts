@@ -898,6 +898,7 @@ export const toolInvokeSchema = z.discriminatedUnion('tool', [
       connectorId: z.string().uuid().optional(),
       path: z.string().min(1).max(1000),
       query: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
+      headers: z.record(z.string(), z.string().max(4000)).optional(),
     }),
   }),
   z.object({
@@ -908,6 +909,7 @@ export const toolInvokeSchema = z.discriminatedUnion('tool', [
       method: z.enum(['POST', 'PUT', 'PATCH', 'DELETE']),
       path: z.string().min(1).max(1000),
       query: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
+      headers: z.record(z.string(), z.string().max(4000)).optional(),
       body: z.unknown().optional(),
     }),
   }),

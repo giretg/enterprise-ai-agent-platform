@@ -32,6 +32,13 @@ export const proposedToolSchema = z.object({
    * header-paramétert deklarál. Csak mutáló metódusokon van értelme.
    */
   idempotent: z.boolean().optional(),
+  /** Capability-diffhez megőrzött, titokmentes paraméter-kontraktus. */
+  parameters: z.array(z.object({
+    name: z.string().min(1),
+    in: z.enum(['path', 'query', 'header', 'cookie', 'body']),
+    required: z.boolean(),
+    type: z.string().min(1),
+  })).optional(),
 })
 export type ProposedTool = z.infer<typeof proposedToolSchema>
 

@@ -398,6 +398,77 @@ function operationRequiresIdempotencyKey(
   return false
 }
 
+function schemaSignature(spec: OpenApiSpec, schema: unknown, seen = new Set<string>()): string {
+  const resolved = isRecord(schema) ? schema : {}
+  if (typeof resolved.$ref === 'string') {
+    if (seen.has(resolved.$ref)) return `ref:${resolved.$ref}`
+    const target = resolveLocalRef(spec, resolved.$ref)
+    return target
+      ? `ref:${resolved.$ref}<${schemaSignature(spec, target, new Set([...seen, resolved.$ref]))}>`
+      : `ref:${resolved.$ref}`
+  }
+  const variants = ['oneOf', 'anyOf', 'allOf'].find((key) => Array.isArray(resolved[key]))
+  if (variants) {
+    return `${variants}<${(resolved[variants] as unknown[]).map((item) => schemaSignature(spec, item, seen)).sort().join('|')}>`
+  }
+  const type = typeof resolved.type === 'string' ? resolved.type : 'unknown'
+  const format = typeof resolved.format === 'string' ? `:${resolved.format}` : ''
+  if (type === 'array') return `array<${schemaSignature(spec, resolved.items, seen)}>${format}`
+  if (type === 'object' || isRecord(resolved.properties)) {
+    const required = new Set(Array.isArray(resolved.required) ? resolved.required.filter((item): item is string => typeof item === 'string') : [])
+    const properties = isRecord(resolved.properties) ? resolved.properties : {}
+    const fields = Object.entries(properties)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([name, value]) => `${name}${required.has(name) ? '!' : '?'}:${schemaSignature(spec, value, seen)}`)
+    return `object{${fields.join(',')}}`
+  }
+  if (Array.isArray(resolved.enum)) return `${type}${format}:enum<${resolved.enum.map(String).sort().join('|')}>`
+  return `${type}${format}`
+}
+
+function operationParameters(
+  spec: OpenApiSpec,
+  pathItem: Record<string, unknown>,
+  operation: Record<string, unknown>,
+): NonNullable<ProposedTool['parameters']> {
+  const byKey = new Map<string, NonNullable<ProposedTool['parameters']>[number]>()
+  for (const group of [pathItem.parameters, operation.parameters]) {
+    if (!Array.isArray(group)) continue
+    for (const raw of group) {
+      const param = resolveMaybeRef(spec, raw)
+      if (!isRecord(param) || typeof param.name !== 'string' || typeof param.in !== 'string') continue
+      if (!['path', 'query', 'header', 'cookie', 'body'].includes(param.in)) continue
+      // Az Idempotency-Key külön auth-kategóriaként jelenik meg, ne duplázzuk breakingként.
+      if (param.in === 'header' && param.name.toLowerCase() === IDEMPOTENCY_HEADER) continue
+      const schema = isRecord(param.schema) ? param.schema : param
+      const item = {
+        name: param.name,
+        in: param.in as 'path' | 'query' | 'header' | 'cookie' | 'body',
+        required: param.in === 'path' || param.required === true,
+        type: schemaSignature(spec, schema),
+      }
+      byKey.set(`${item.in}:${item.name.toLowerCase()}`, item)
+    }
+  }
+
+  // OpenAPI 3 requestBody ugyanúgy a capability szerződésének része.
+  const rawBody = resolveMaybeRef(spec, operation.requestBody)
+  if (isRecord(rawBody) && isRecord(rawBody.content)) {
+    for (const [mediaType, media] of Object.entries(rawBody.content)) {
+      const mediaRecord = resolveMaybeRef(spec, media)
+      if (!isRecord(mediaRecord)) continue
+      const item = {
+        name: mediaType,
+        in: 'body' as const,
+        required: rawBody.required === true,
+        type: schemaSignature(spec, resolveMaybeRef(spec, mediaRecord.schema)),
+      }
+      byKey.set(`body:${mediaType.toLowerCase()}`, item)
+    }
+  }
+  return [...byKey.values()].sort((a, b) => `${a.in}:${a.name}`.localeCompare(`${b.in}:${b.name}`))
+}
+
 function extractProposedTools(spec: OpenApiSpec): ProposedTool[] {
   const tools: ProposedTool[] = []
   const seen = new Set<string>()
@@ -426,6 +497,7 @@ function extractProposedTools(spec: OpenApiSpec): ProposedTool[] {
       // Idempotencia csak mutáló metóduson értelmezett (a runtime is csak ott injektál).
       const idempotent =
         WRITE_METHODS.has(httpMethod) && operationRequiresIdempotencyKey(spec, pathItem, operation)
+      const parameters = operationParameters(spec, pathItem, operation)
 
       tools.push({
         name,
@@ -434,6 +506,7 @@ function extractProposedTools(spec: OpenApiSpec): ProposedTool[] {
         access: WRITE_METHODS.has(httpMethod) ? 'write' : 'read',
         ...(descriptionForOperation(operation) ? { description: descriptionForOperation(operation) } : {}),
         ...(idempotent ? { idempotent: true } : {}),
+        ...(parameters.length ? { parameters } : {}),
       })
     }
   }
