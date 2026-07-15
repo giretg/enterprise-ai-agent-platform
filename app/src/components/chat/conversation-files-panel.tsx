@@ -18,12 +18,10 @@ export function ConversationFilesPanel({ conversationId, panelRef }: Props) {
   const [files, setFiles] = useState<WorkspaceFile[]>([])
   const [loading, setLoading] = useState(false)
   const [open, setOpen] = useState(false)
-  const [technicalOpen, setTechnicalOpen] = useState(false)
 
   const listUrl = conversationWorkspaceFilesUrl(conversationId)
 
   const visibleFiles = files.filter((file) => !file.path.startsWith('.tool-results/'))
-  const technicalFiles = files.filter((file) => file.path.startsWith('.tool-results/'))
 
   const loadFiles = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true)
@@ -120,36 +118,6 @@ export function ConversationFilesPanel({ conversationId, panelRef }: Props) {
                 </li>
               ))}
             </ul>
-          )}
-          {technicalFiles.length > 0 && (
-            <div className="mt-2 border-t border-line pt-2">
-              <button
-                type="button"
-                onClick={() => setTechnicalOpen((v) => !v)}
-                className="flex w-full items-center justify-between text-[11px] font-medium text-ink-faint hover:text-ink-soft"
-              >
-                <span>Technikai tool-archívum ({technicalFiles.length})</span>
-                <span>{technicalOpen ? '▲' : '▼'}</span>
-              </button>
-              {technicalOpen && (
-                <ul className="mt-1.5 divide-y divide-line">
-                  {technicalFiles.map((f) => (
-                    <li key={f.path} className="flex items-center justify-between py-1.5">
-                      <span className="truncate text-[11px] text-ink-faint" title={f.path}>
-                        {f.path}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => void handleDownload(f.path)}
-                        className="ml-2 shrink-0 text-[11px] font-medium text-sky hover:underline"
-                      >
-                        Letöltés
-                      </button>
-                    </li>
-                  ))}
-                </ul>
-              )}
-            </div>
           )}
         </div>
       )}

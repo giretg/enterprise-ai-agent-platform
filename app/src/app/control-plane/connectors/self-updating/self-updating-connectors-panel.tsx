@@ -160,12 +160,15 @@ export function SelfUpdatingConnectorsPanel() {
             <input value={specUrl} onChange={(e) => setSpecUrl(e.target.value)} className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2" placeholder="https://partner.example/openapi.json" />
             <span className="mt-1 block text-xs text-ink-soft">Innen olvassuk ki a képességeket, de csak amikor megnyomod a Frissítés keresése gombot — sosem magától.</span>
           </label>
-          <p className="rounded-md border border-honey/35 bg-honey/8 p-3 text-xs">A linket egy másik kollégának jóvá kell hagynia, mielőtt élesítjük.</p>
+          <p className="rounded-md border border-honey/35 bg-honey/8 p-3 text-xs">
+            A linket általában egy másik kollégának kell jóváhagynia, mielőtt élesítjük — így biztos, hogy nem elgépelt vagy hamis címről olvasunk.
+            Platform-superadmin egyedül is jóváhagyhatja és élesítheti.
+          </p>
           <button type="button" disabled={pending || !name.trim() || !apiKey.trim() || !specUrl.trim()} className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-card disabled:opacity-50" onClick={() => run(async () => {
             const result = await createSelfUpdatingConnector({ name, apiKey, specUrl })
             if (result.success) { setName(''); setApiKey(''); setSpecUrl('') }
             return result
-          }, 'A kapcsolat létrejött; most egy másik kolléga jóváhagyása szükséges.')}>
+          }, 'A kapcsolat létrejött. Jóvá kell hagyni a linket és a partner megbízhatóságát, mielőtt frissítést kereshetsz.')}>
             Kapcsolat létrehozása
           </button>
         </div>

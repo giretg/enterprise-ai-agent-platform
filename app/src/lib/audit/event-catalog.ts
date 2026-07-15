@@ -316,6 +316,11 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'web_search.paused',
   'web_search.resumed',
 
+  // Chat thinking-trace tenant-szintű kapcsoló
+  'chat.thinking_trace.enabled',
+  'chat.thinking_trace.disabled',
+  'chat.thinking_trace.config_changed',
+
   // Web Fetch (WS-D) platform-tool (WebFetch-Egress §11.1)
   'web_fetch.request',
   'web_fetch.blocked',

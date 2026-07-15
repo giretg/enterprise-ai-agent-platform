@@ -145,6 +145,18 @@ async function run() {
     await expectCode('SEPARATION_OF_DUTIES', () => service.markTrusted(connectorId, { id: SETTER, tenantId: TENANT }))
   })
 
+  await test('SoD kivétel: superadmin (sodExempt) egyedül is élesíthet', async () => {
+    const { service, repo, connectorId } = await ready()
+    const superActor = { id: SETTER, tenantId: TENANT, sodExempt: true }
+    await service.approveUrl(connectorId, superActor)
+    await service.markTrusted(connectorId, superActor)
+    const proposal = await service.sync(connectorId, superActor)
+    assert.equal(proposal.kind, 'proposed')
+    const versionId = repo.versions[0].id
+    await service.approveVersion(connectorId, versionId, superActor)
+    assert.equal(repo.context!.connector.activeSpecVersionId, versionId)
+  })
+
   await test('fail-closed: jóváhagyatlan linknél nem indul szinkron', async () => {
     const { service, connectorId } = await ready()
     await expectCode('URL_NOT_APPROVED', () => service.sync(connectorId, { id: APPROVER, tenantId: TENANT }))

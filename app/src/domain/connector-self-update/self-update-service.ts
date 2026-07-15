@@ -3,7 +3,12 @@ import { computeCapabilityDiff, isAutoApprovable } from './spec-diff'
 import { parseCapabilitySet, type CapabilitySet } from './capability-set'
 import type { SpecSyncResult } from './spec-sync'
 
-export type SelfUpdateActor = { id: string; tenantId: string }
+export type SelfUpdateActor = {
+  id: string
+  tenantId: string
+  /** Platform superadmin: SoD (T2) alól felmentve — egyedül is élesíthet. */
+  sodExempt?: boolean
+}
 
 export type SelfUpdatingConnector = {
   id: string
@@ -60,8 +65,22 @@ export interface SelfUpdatingConnectorRepository {
   }): Promise<SelfUpdatingContext>
   deleteUninitialized(connectorId: string, tenantId: string): Promise<void>
   findContext(connectorId: string, tenantId: string): Promise<SelfUpdatingContext | null>
-  approveUrl(input: { sourceId: string; connectorId: string; tenantId: string; actorId: string; at: Date }): Promise<void>
-  markTrusted(input: { sourceId: string; connectorId: string; tenantId: string; actorId: string; at: Date }): Promise<void>
+  approveUrl(input: {
+    sourceId: string
+    connectorId: string
+    tenantId: string
+    actorId: string
+    at: Date
+    auditMetadata?: Record<string, unknown>
+  }): Promise<void>
+  markTrusted(input: {
+    sourceId: string
+    connectorId: string
+    tenantId: string
+    actorId: string
+    at: Date
+    auditMetadata?: Record<string, unknown>
+  }): Promise<void>
   updatePolicy(input: { sourceId: string; connectorId: string; tenantId: string; actorId: string; policy: AutoApprovePolicy }): Promise<void>
   listUsage(connectorId: string, tenantId: string): Promise<Record<string, UsageRef[]>>
   findOpenProposalByHash(connectorId: string, tenantId: string, rawHash: string): Promise<SelfUpdatingSpecVersion | null>
@@ -83,6 +102,7 @@ export interface SelfUpdatingConnectorRepository {
     actorId: string
     approvedById: string | null
     approvedAt: Date
+    auditMetadata?: Record<string, unknown>
   }): Promise<SelfUpdatingSpecVersion>
   rejectVersion(input: {
     connectorId: string
@@ -163,18 +183,28 @@ export class SelfUpdatingConnectorService {
 
   async approveUrl(connectorId: string, actor: SelfUpdateActor): Promise<void> {
     const ctx = await this.context(connectorId, actor)
-    this.requireDifferentActor(ctx.source.createdById, actor.id, 'A linket másik kollégának kell jóváhagynia.')
+    this.requireDifferentActor(ctx.source.createdById, actor, 'A linket másik kollégának kell jóváhagynia.')
     const at = this.now()
-    await this.repo.approveUrl({ sourceId: ctx.source.id, connectorId, tenantId: actor.tenantId, actorId: actor.id, at })
-    if (!this.repo.atomicAudit) await this.record('connector.self_update.source.approve', actor, connectorId, 'allowed')
+    const auditMetadata = this.sodMeta(actor, ctx.source.createdById)
+    await this.repo.approveUrl({
+      sourceId: ctx.source.id, connectorId, tenantId: actor.tenantId, actorId: actor.id, at, auditMetadata,
+    })
+    if (!this.repo.atomicAudit) {
+      await this.record('connector.self_update.source.approve', actor, connectorId, 'allowed', auditMetadata)
+    }
   }
 
   async markTrusted(connectorId: string, actor: SelfUpdateActor): Promise<void> {
     const ctx = await this.context(connectorId, actor)
-    this.requireDifferentActor(ctx.source.createdById, actor.id, 'A megbízható minősítést másik kollégának kell megadnia.')
+    this.requireDifferentActor(ctx.source.createdById, actor, 'A megbízható minősítést másik kollégának kell megadnia.')
     const at = this.now()
-    await this.repo.markTrusted({ sourceId: ctx.source.id, connectorId, tenantId: actor.tenantId, actorId: actor.id, at })
-    if (!this.repo.atomicAudit) await this.record('connector.self_update.trust.approve', actor, connectorId, 'allowed')
+    const auditMetadata = this.sodMeta(actor, ctx.source.createdById)
+    await this.repo.markTrusted({
+      sourceId: ctx.source.id, connectorId, tenantId: actor.tenantId, actorId: actor.id, at, auditMetadata,
+    })
+    if (!this.repo.atomicAudit) {
+      await this.record('connector.self_update.trust.approve', actor, connectorId, 'allowed', auditMetadata)
+    }
   }
 
   async updatePolicy(
@@ -284,10 +314,11 @@ export class SelfUpdatingConnectorService {
     if (!ctx.activeVersion) {
       this.requireDifferentActor(
         ctx.source.createdById,
-        actor.id,
+        actor,
         'Az első verziót nem hagyhatja jóvá a link beállítója.',
       )
     }
+    const sod = this.sodMeta(actor, ctx.source.createdById)
     const version = await this.repo.activateVersion({
       connectorId,
       tenantId: actor.tenantId,
@@ -295,11 +326,13 @@ export class SelfUpdatingConnectorService {
       approvedById: actor.id,
       approvedAt: this.now(),
       actorId: actor.id,
+      auditMetadata: sod,
     })
     if (!this.repo.atomicAudit) await this.record('connector.self_update.version.approve', actor, connectorId, 'allowed', {
       version_id: version.id,
       version_no: version.versionNo,
       previous_version_id: ctx.activeVersion?.id ?? null,
+      ...sod,
     })
     return version
   }
@@ -349,8 +382,15 @@ export class SelfUpdatingConnectorService {
     return ctx
   }
 
-  private requireDifferentActor(configuredById: string, actorId: string, message: string) {
-    if (configuredById === actorId) throw new SelfUpdateError('SEPARATION_OF_DUTIES', message)
+  private requireDifferentActor(configuredById: string, actor: SelfUpdateActor, message: string) {
+    if (configuredById === actor.id && !actor.sodExempt) {
+      throw new SelfUpdateError('SEPARATION_OF_DUTIES', message)
+    }
+  }
+
+  private sodMeta(actor: SelfUpdateActor, configuredById: string): Record<string, unknown> | undefined {
+    if (configuredById === actor.id && actor.sodExempt) return { sod_bypass: 'superadmin' }
+    return undefined
   }
 
   private async record(

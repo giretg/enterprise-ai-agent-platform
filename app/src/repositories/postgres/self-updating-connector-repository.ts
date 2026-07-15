@@ -174,7 +174,10 @@ export class PostgresSelfUpdatingConnectorRepository implements SelfUpdatingConn
     }
   }
 
-  async approveUrl(input: { sourceId: string; connectorId: string; tenantId: string; actorId: string; at: Date }) {
+  async approveUrl(input: {
+    sourceId: string; connectorId: string; tenantId: string; actorId: string; at: Date
+    auditMetadata?: Record<string, unknown>
+  }) {
     await prisma.$transaction(async (tx) => {
       const updated = await tx.connectorSpecSource.updateMany({
         where: { id: input.sourceId, connectorId: input.connectorId, tenantId: input.tenantId },
@@ -184,11 +187,15 @@ export class PostgresSelfUpdatingConnectorRepository implements SelfUpdatingConn
       await appendAuditInTransaction(tx, connectorAudit({
         action: 'connector.self_update.source.approve', actorId: input.actorId,
         tenantId: input.tenantId, connectorId: input.connectorId, policyDecision: 'allowed',
+        metadata: input.auditMetadata,
       }))
     }, { timeout: 60_000 })
   }
 
-  async markTrusted(input: { sourceId: string; connectorId: string; tenantId: string; actorId: string; at: Date }) {
+  async markTrusted(input: {
+    sourceId: string; connectorId: string; tenantId: string; actorId: string; at: Date
+    auditMetadata?: Record<string, unknown>
+  }) {
     await prisma.$transaction(async (tx) => {
       const updated = await tx.connectorSpecSource.updateMany({
         where: { id: input.sourceId, connectorId: input.connectorId, tenantId: input.tenantId },
@@ -198,6 +205,7 @@ export class PostgresSelfUpdatingConnectorRepository implements SelfUpdatingConn
       await appendAuditInTransaction(tx, connectorAudit({
         action: 'connector.self_update.trust.approve', actorId: input.actorId,
         tenantId: input.tenantId, connectorId: input.connectorId, policyDecision: 'allowed',
+        metadata: input.auditMetadata,
       }))
     }, { timeout: 60_000 })
   }
@@ -311,7 +319,11 @@ export class PostgresSelfUpdatingConnectorRepository implements SelfUpdatingConn
     return versionOf(row)
   }
 
-  async activateVersion(input: { connectorId: string; tenantId: string; versionId: string; actorId: string; approvedById: string | null; approvedAt: Date }) {
+  async activateVersion(input: {
+    connectorId: string; tenantId: string; versionId: string; actorId: string
+    approvedById: string | null; approvedAt: Date
+    auditMetadata?: Record<string, unknown>
+  }) {
     const row = await prisma.$transaction(async (tx) => {
       const connector = await tx.connector.findFirst({ where: { id: input.connectorId, tenantId: input.tenantId, connectorMode: 'self_updating' }, select: { activeSpecVersionId: true } })
       const next = await tx.connectorSpecVersion.findFirst({ where: { id: input.versionId, connectorId: input.connectorId, tenantId: input.tenantId } })
@@ -366,6 +378,7 @@ export class PostgresSelfUpdatingConnectorRepository implements SelfUpdatingConn
           previous_version_id: connector.activeSpecVersionId,
           triggered_by_id: input.actorId,
           rejected_proposal_ids: rejectedProposals.map(({ id }) => id),
+          ...input.auditMetadata,
         },
       }))
       return approved

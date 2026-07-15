@@ -21,6 +21,7 @@ import {
   appendThinkingDelta,
   canStartThinkingTraceStream,
 } from '../src/lib/chat-thinking-trace'
+import { assertAuditActionRegistered } from '../src/lib/audit/event-catalog'
 import type { AuditRepository, PlatformSettingsRepository } from '../src/repositories/interfaces'
 
 let failures = 0
@@ -291,7 +292,9 @@ async function main() {
         store.set(key, value)
       },
     }
-    const auditRepo = { append: async () => {} } as unknown as AuditRepository
+    const auditRepo = {
+      append: async (event: { action: string }) => assertAuditActionRegistered(event.action),
+    } as unknown as AuditRepository
     const svc = new PlatformSettingsService(settingsRepo, auditRepo)
 
     assert.equal(await svc.isChatThinkingTraceEnabledForTenant('tenant-1'), false)
@@ -299,6 +302,8 @@ async function main() {
 
     await svc.setTenantThinkingTraceControls('tenant-1', { enabled: true }, 'user-1')
     assert.equal(await svc.isChatThinkingTraceEnabledForTenant('tenant-1'), true)
+    // Az érték változatlan mentése a config_changed audit actiont is ellenőrzi.
+    await svc.setTenantThinkingTraceControls('tenant-1', { enabled: true }, 'user-1')
     // Más tenant nem érintett.
     assert.equal(await svc.isChatThinkingTraceEnabledForTenant('tenant-2'), false)
     // A system (tenant nélküli) agent továbbra is kikapcsolt.

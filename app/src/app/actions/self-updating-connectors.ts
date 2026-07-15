@@ -12,6 +12,7 @@ import {
 } from '@/domain/connector/connector-secret-store'
 import { prisma } from '@/lib/db'
 import { fail, ok } from '@/lib/result'
+import { isSuperadmin } from '@/lib/tenant-policy'
 import { appendAuditInTransaction } from '@/repositories/postgres/audit-repository'
 import {
   tenantSelfUpdateAutoApproveEnabled,
@@ -33,7 +34,12 @@ function actionError(error: unknown, fallback: string) {
 }
 
 function actor(ctx: Awaited<ReturnType<typeof requireTenantRole>>) {
-  return { id: ctx.user.id, tenantId: ctx.activeTenantId }
+  return {
+    id: ctx.user.id,
+    tenantId: ctx.activeTenantId,
+    // T2 SoD: sima admin/approver nem hagyhatja jóvá a saját linkjét; superadmin igen.
+    sodExempt: isSuperadmin(ctx.platformRoles),
+  }
 }
 
 export async function listSelfUpdatingConnectors() {
