@@ -80,12 +80,17 @@ export function rematerializeOstorosborConnectorConfig(
     (typeof suggestedAlias === 'string' ? suggestedAlias : null) ??
     `secret-ref:connector/${connector.id}`
   const provenance = isRecord(connector.config.provenance) ? connector.config.provenance : {}
+  const actingUserEmail =
+    typeof connector.config.defaultActingUserEmail === 'string' &&
+    connector.config.defaultActingUserEmail.trim()
+      ? connector.config.defaultActingUserEmail.trim()
+      : 'unknown@configure-in-provisioning.local'
 
   return materializeConnectorConfig(
     descriptor,
     {
       authMethodKind: 'bearer',
-      instanceValues: { crmHost },
+      instanceValues: { crmHost, actingUserEmail },
       selectedEndpoints: selectedEndpointNames(connector.config),
     },
     { apiKey: apiKeyAlias },

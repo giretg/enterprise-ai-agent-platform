@@ -28,6 +28,7 @@ import {
 } from '@/app/actions/provisioning'
 import { startConnectorOAuth } from '@/app/actions/connector-grants'
 import { isResolvableSecretAlias } from '@/domain/provisioning/secret-alias'
+import { OSTOROSBOR_CRM_DEFAULT_INSTANCE_VALUES } from '@/domain/connector-template/custom-template-seeds'
 
 // A listProvisioningDrafts visszaadott alakja (provisioning-service.listDrafts).
 type CheckStatus = 'passed' | 'warned' | 'failed'
@@ -393,7 +394,11 @@ export function ProvisioningPanel() {
     setTemplateAuthMethod(descriptor.authMethods[0]?.kind ?? 'api_key')
     setSelectedScopes(descriptor.scopeCatalog.filter((s) => s.default).map((s) => s.value))
     setSelectedEndpoints(descriptor.endpoints.filter((e) => e.default !== false).map((e) => e.name))
-    setTemplateValues({})
+    setTemplateValues(
+      template.key.startsWith('ostorosbor-crm')
+        ? { ...OSTOROSBOR_CRM_DEFAULT_INSTANCE_VALUES }
+        : {},
+    )
     setTemplateSecretAliases(
       descriptor.connectorType === 'gmail'
         ? {}

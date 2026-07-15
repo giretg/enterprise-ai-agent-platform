@@ -76,6 +76,8 @@ export const connectorConfigSchema = z.object({
   restrictToEndpoints: z.boolean().optional(),
   /** Sablonozható fejlécek minden hívásra (pl. X-Agent-Id, X-Connector-Call-Id). */
   requestHeaders: z.record(z.string(), z.string()).optional(),
+  /** CRM acting user fallback, ha a runtime actingUser.email hiányzik (Ostorosbor). */
+  defaultActingUserEmail: z.string().email().optional(),
   githubRepositoryAccess: githubRepositoryAccessSchema.optional(),
   provenance: z
     .object({

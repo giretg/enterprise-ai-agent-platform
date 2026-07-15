@@ -104,18 +104,23 @@ function authHeaderFor(
 /** Sandbox placeholder értékek a sablonfejlécekhez (pl. X-Connector-Call-Id). */
 const SANDBOX_HEADER_TEMPLATE_VALUES: Record<string, string> = {
   'agent.id': '00000000-0000-4000-8000-000000000001',
-  'actingUser.email': 'sandbox@provisioning.local',
   'call.id': '00000000-0000-4000-8000-000000000002',
 }
 
 function renderSandboxRequestHeaders(
   requestHeaders: Record<string, string> | undefined,
+  defaultActingUserEmail?: string,
 ): Record<string, string> {
   if (!requestHeaders) return {}
+  const templateValues: Record<string, string> = {
+    ...SANDBOX_HEADER_TEMPLATE_VALUES,
+    'actingUser.email':
+      defaultActingUserEmail?.trim() || 'sandbox@provisioning.local',
+  }
   const out: Record<string, string> = {}
   for (const [name, template] of Object.entries(requestHeaders)) {
     out[name] = template.replace(/\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g, (_match, key: string) => {
-      const value = SANDBOX_HEADER_TEMPLATE_VALUES[key]
+      const value = templateValues[key]
       return value ?? 'sandbox'
     })
   }
@@ -129,17 +134,27 @@ function renderSandboxRequestHeaders(
  */
 function authFailureDetail(config: ConnectorConfig, status: number): string {
   const prefix = `a szerver ${status}-at adott a próbahívásra`
+  const headerHint =
+    config.requestHeaders && Object.keys(config.requestHeaders).length > 0
+      ? ' Ellenőrizd a kötelező fejléceket is (X-Agent-Id, X-Acting-User, X-Connector-Call-Id), és hogy az „Acting user e-mail” mező CRM-ben regisztrált felhasználóra mutat.'
+      : ''
   switch (config.auth.type) {
     case 'bearer_token':
     case 'oauth2':
-      return `${prefix} — a rendszer az \`Authorization: Bearer <kulcs>\` fejlécet küldi; ellenőrizd, hogy a tárolt érték a NYERS kulcs (a \`Bearer \` előtagot ne tartalmazza), és hogy a kulcs érvényes.`
+      return `${prefix} — a rendszer az \`Authorization: Bearer <kulcs>\` fejlécet küldi; ellenőrizd, hogy a tárolt érték a NYERS kulcs (a \`Bearer \` előtagot ne tartalmazza), és hogy a kulcs érvényes.${headerHint}`
     case 'api_key_header':
-      return `${prefix} — a kulcs változtatás nélkül a \`${config.auth.headerName || 'X-Api-Key'}\` fejlécbe kerül; ellenőrizd a fejléc nevét és a kulcs alakját. Ha a szerver \`Bearer\`-t vár, a tárolt értéknek is \`Bearer <kulcs>\`-nek kell lennie.`
+      return `${prefix} — a kulcs változtatás nélkül a \`${config.auth.headerName || 'X-Api-Key'}\` fejlécbe kerül; ellenőrizd a fejléc nevét és a kulcs alakját. Ha a szerver \`Bearer\`-t vár, a tárolt értéknek is \`Bearer <kulcs>\`-nek kell lennie.${headerHint}`
     case 'basic':
-      return `${prefix} — Basic auth; a tárolt értéknek a base64(\`felhasználó:jelszó\`) alaknak kell lennie.`
+      return `${prefix} — Basic auth; a tárolt értéknek a base64(\`felhasználó:jelszó\`) alaknak kell lennie.${headerHint}`
     default:
-      return `${prefix} — ellenőrizd a kulcs formátumát, a \`Bearer\` előtagot és a hitelesítő fejléc nevét.`
+      return `${prefix} — ellenőrizd a kulcs formátumát, a \`Bearer\` előtagot és a hitelesítő fejléc nevét.${headerHint}`
   }
+}
+
+function actingUserNotFoundDetail(config: ConnectorConfig): string {
+  const email = config.defaultActingUserEmail?.trim()
+  const who = email ? `\`${email}\`` : 'a megadott acting user e-mail'
+  return `Az acting user (${who}) nem található vagy inaktív a CRM-ben — adj meg egy regisztrált, aktív felhasználó e-mail címét az „Acting user e-mail” mezőben.`
 }
 
 export class HttpSandboxConnectionTester implements SandboxConnectionTester {
@@ -191,7 +206,7 @@ export class HttpSandboxConnectionTester implements SandboxConnectionTester {
     // (4) Token feloldása (opcionális). A token SOHA nem kerül naplóba.
     let headers: Record<string, string> = {
       Accept: 'application/json',
-      ...renderSandboxRequestHeaders(config.requestHeaders),
+      ...renderSandboxRequestHeaders(config.requestHeaders, config.defaultActingUserEmail),
     }
     const token =
       input.token ??
@@ -227,9 +242,16 @@ export class HttpSandboxConnectionTester implements SandboxConnectionTester {
       //    endpoint létezik, az auth később, a secret-alias rendszeren keresztül kerül be
       //    (aktiválás / agent-hozzárendelés). A 403-at is idesoroljuk, mert több vendor
       //    (pl. Google) hitelesítés hiányában 403-at ad vissza — ez ugyanaz a jel.
-      //  - Ha a sandbox VALÓDI (non-prod) tokent küldött, és mégis 401/403 jön, az egy
-      //    tényleges auth-formátum hiba (WP-1/B1 "Bearer-csapda"): explicit, cselekvésre
-      //    váltó üzenetet adunk, nem tüntetjük el zöldként.
+      //  - Ha a sandbox VALÓDI (non-prod) tokent küldött:
+      //      • 401 → auth-formátum / érvénytelen kulcs / hiányzó fejléc (WP-1/B1)
+      //      • 403 → kulcs elfogadva, scope/jog korlátozás (Ostorosbor CRM)
+      //      • 404 → acting user nem található a CRM-ben
+      if (res.status === 404 && token) {
+        return { ok: false, statusCode: 404, detail: actingUserNotFoundDetail(config) }
+      }
+      if (res.status === 403 && token) {
+        return { ok: true, statusCode: 403, detail: 'authenticated_scope_limited' }
+      }
       if (res.status === 401 || res.status === 403) {
         if (token) {
           return { ok: false, statusCode: res.status, detail: authFailureDetail(config, res.status) }

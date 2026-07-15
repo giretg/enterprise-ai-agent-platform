@@ -1112,6 +1112,45 @@ async function run() {
     assert.ok(!JSON.stringify(r).includes('np-token-should-not-leak'))
   })
 
+  await test('SBX: VALÓDI tokennel 403 → ok=true (kulcs elfogadva, scope korlátozott)', async () => {
+    const { fn } = recordingFetch({ status: 403 })
+    const tester = new HttpSandboxConnectionTester({
+      resolveEgressAllowlist: async () => ALLOWLIST,
+      fetchImpl: fn,
+    })
+    const r = await tester.test({
+      config: { ...cleanConfig(), auth: { type: 'bearer_token' } } as unknown as ConnectorConfig,
+      secretAlias: null,
+      tenantId: TENANT,
+      token: 'valid-token',
+    })
+    assert.equal(r.ok, true)
+    assert.equal(r.statusCode, 403)
+    assert.equal(r.detail, 'authenticated_scope_limited')
+  })
+
+  await test('SBX: VALÓDI tokennel 404 → acting user nem található üzenet', async () => {
+    const { fn } = recordingFetch({ status: 404 })
+    const tester = new HttpSandboxConnectionTester({
+      resolveEgressAllowlist: async () => ALLOWLIST,
+      fetchImpl: fn,
+    })
+    const r = await tester.test({
+      config: {
+        ...cleanConfig(),
+        auth: { type: 'bearer_token' },
+        defaultActingUserEmail: 'unknown@example.com',
+      } as unknown as ConnectorConfig,
+      secretAlias: null,
+      tenantId: TENANT,
+      token: 'valid-token',
+    })
+    assert.equal(r.ok, false)
+    assert.equal(r.statusCode, 404)
+    assert.ok(/acting user/i.test(r.detail ?? ''))
+    assert.ok(/unknown@example.com/.test(r.detail ?? ''))
+  })
+
   await test('SBX: fetch dob (hálózati hiba) → request_failed, sanitizált detail', async () => {
     const tester = new HttpSandboxConnectionTester({
       resolveEgressAllowlist: async () => ALLOWLIST,

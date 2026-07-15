@@ -57,6 +57,8 @@ export type HttpApiConfig = {
   defaultAuthProfile?: string
   /** Minden hívásra injektált, sablonozható fejlécek. */
   requestHeaders?: Record<string, string>
+  /** Acting user fallback, ha a chat actingUser.email hiányzik (Ostorosbor CRM). */
+  defaultActingUserEmail?: string
   /** Csak író hívásokra injektált, sablonozható fejlécek. */
   writeHeaders?: Record<string, string>
   /** Emberi nyelvű API-leírás — a modell elé kerül a tool loopban. */
@@ -179,6 +181,10 @@ export function parseHttpApiConfig(raw: unknown): HttpApiConfig {
         : undefined,
     requestHeaders: parseHeaderTemplates(raw.requestHeaders, 'requestHeaders'),
     writeHeaders: parseHeaderTemplates(raw.writeHeaders, 'writeHeaders'),
+    defaultActingUserEmail:
+      typeof raw.defaultActingUserEmail === 'string' && raw.defaultActingUserEmail.trim()
+        ? raw.defaultActingUserEmail.trim()
+        : undefined,
     description: typeof raw.description === 'string' ? raw.description : undefined,
     endpoints,
     restrictToEndpoints: raw.restrictToEndpoints === true,
@@ -340,6 +346,8 @@ export type HttpApiTemplateContext = {
   agent: { id: string; version?: number }
   connector: { id: string; name: string }
   actingUser?: { id: string; email: string; tenantId: string | null } | null
+  /** Connector config fallback — pl. Ostorosbor CRM sandbox/legacy hívások. */
+  defaultActingUserEmail?: string
   tenant?: { id: string } | null
   call: { id: string; idempotencyKey: string }
   now: { iso: string }
@@ -672,7 +680,7 @@ function templateValue(key: string, context: HttpApiTemplateContext): string | n
     'connector.id': context.connector.id,
     'connector.name': context.connector.name,
     'actingUser.id': context.actingUser?.id,
-    'actingUser.email': context.actingUser?.email,
+    'actingUser.email': context.actingUser?.email ?? context.defaultActingUserEmail,
     'actingUser.tenantId': context.actingUser?.tenantId,
     'tenant.id': context.tenant?.id,
     'call.id': context.call.id,

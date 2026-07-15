@@ -317,6 +317,10 @@ function assignTarget(
     config.githubRepositoryAccess = gitHubRepositoryAccessFromText(interpolated)
     return
   }
+  if (target === 'defaultActingUserEmail') {
+    config.defaultActingUserEmail = interpolated
+    return
+  }
   throw new ConnectorTemplateMaterializationError(`unsupported template target: ${target}`)
 }
 
