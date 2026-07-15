@@ -123,6 +123,10 @@ async function main() {
       assert.ok(runtime.baseUrl.startsWith('https://'))
       assert.ok((config.proposedTools ?? []).length > 0)
       assert.equal(config.provenance?.templateKey, descriptor.key)
+      // WP-3: endpoint-listás, nem-github http_api sablon alapból korlátozott, és a
+      // korlát a runtime configon is átjön (a modell csak a listát hívhatja).
+      assert.equal(config.restrictToEndpoints, true, `${descriptor.key} should restrict endpoints`)
+      assert.equal(runtime.restrictToEndpoints, true)
     }
   })
 
@@ -223,6 +227,9 @@ async function main() {
     )
     assert.deepEqual(parseHttpApiConfig(config).githubRepositoryAccess, { mode: 'any' })
     assert.ok((config.proposedTools ?? []).some((tool) => tool.name === 'list_user_repositories'))
+    // WP-3 kivétel: GitHub repo-scope connectort NEM korlátozzuk endpoint-listával —
+    // azt a repository-határ őrzi, a katalógusa szándékosan tágabb.
+    assert.equal(config.restrictToEndpoints, undefined)
   })
 
   await test('broken custom descriptor fails template self-check', () => {

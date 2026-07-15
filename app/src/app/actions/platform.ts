@@ -1410,6 +1410,99 @@ export async function updateHttpApiConnectorForAgent(input: {
   }
 }
 
+/**
+ * WP-5 (B4) — KÖTÉS-szintű (agent↔connector) szerkesztés. Ez az egyetlen biztonságos
+ * agent-szintű művelet a külső kapcsolatokon: CSAK az `AgentConnector` sort érinti
+ * (hozzáférés + opcionális per-agent kulcs), a connector strukturális configját (baseUrl,
+ * auth, fejlécek, endpointok) SOHA nem írja — azt a provisioning kezeli (WP-4). Így az
+ * agent-nézetből egy „csak új kulcs" mentés semmi mást nem változtat, és a módosítás
+ * nem hat ki a connectort osztó többi agentre.
+ */
+export async function updateAgentConnectorBinding(input: {
+  agentId: string
+  connectorId: string
+  accessMode: 'read' | 'write'
+  /** Per-agent kulcs (opcionális). Üresen hagyva a jelenlegi marad. */
+  apiKey?: string
+  /** Ha true: a per-agent kulcs törlődik, az agent a tenant-szintű kulcsra esik vissza. */
+  clearApiKey?: boolean
+}) {
+  try {
+    const user = await requireTenantRole('admin')
+    const accessMode = input.accessMode === 'write' ? 'write' : 'read'
+
+    const link = await prisma.agentConnector.findUnique({
+      where: {
+        agentId_connectorId: { agentId: input.agentId, connectorId: input.connectorId },
+      },
+      include: { connector: true, agent: true },
+    })
+    if (!link) return fail('API-kapcsolat nincs ehhez az agenthez rendelve.')
+    if (link.connector.type !== 'http_api') return fail('Csak API-kapcsolat köthető itt.')
+    // Tenant-izoláció: az agentnek (és így a kötésnek) az aktív tenantban kell lennie.
+    if (link.agent.tenantId !== (user.activeTenantId ?? null)) {
+      return fail('Az agent nem érhető el ebben a tenantban.')
+    }
+
+    // Per-agent kulcs kezelése. user_delegated (auto-consent) connectoron a per-agent
+    // kulcs futásidőben NEM érvényesül (a per-user grant token megy ki) — ezért nem
+    // engedjük megadni (csendes elnyelés tilos, WP-2 közös követelmény).
+    let nextSecretAlias: string | null | undefined // undefined = változatlan
+    const { saveConnectorApiKey, buildConnectorSecretRef, deleteConnectorApiKey, isConnectorSecretRef } =
+      await import('@/domain/connector/connector-secret-store')
+    const scopedSecretId = `${input.agentId}_ac_${input.connectorId}`
+
+    if (input.clearApiKey) {
+      if (link.secretAlias && isConnectorSecretRef(link.secretAlias)) {
+        await deleteConnectorApiKey(scopedSecretId).catch(() => {})
+      }
+      nextSecretAlias = null
+    } else if (input.apiKey?.trim()) {
+      if (link.connector.authMode === 'user_delegated') {
+        return fail(
+          'Ez egy automatikus-hozzájárulású (user-delegált) kapcsolat — a per-agent kulcs futásidőben nem érvényesül. A hitelesítést az „Összekötött fiókok" oldalon kezeld.',
+        )
+      }
+      await saveConnectorApiKey(scopedSecretId, input.apiKey.trim())
+      nextSecretAlias = buildConnectorSecretRef(scopedSecretId)
+    }
+
+    await prisma.agentConnector.update({
+      where: {
+        agentId_connectorId: { agentId: input.agentId, connectorId: input.connectorId },
+      },
+      data: {
+        accessMode,
+        ...(nextSecretAlias !== undefined ? { secretAlias: nextSecretAlias } : {}),
+      },
+    })
+
+    await syncHttpApiCapabilities(input.agentId, input.connectorId, accessMode)
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.user.id,
+      agentVersion: link.agent.currentVersion,
+      action: 'connector.binding.update',
+      targetType: 'connector',
+      targetId: input.connectorId,
+      modelUsed: null,
+      inputRef: input.agentId,
+      outputRef: link.connector.name,
+      policyDecision: 'allowed',
+      metadata: {
+        accessMode,
+        perAgentKeyRotated: Boolean(input.apiKey?.trim()),
+        perAgentKeyCleared: Boolean(input.clearApiKey),
+      },
+    })
+
+    return ok({ connectorId: input.connectorId, name: link.connector.name })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update connector binding')
+  }
+}
+
 export async function createAgent(input: {
   name: string
   roleInstruction: string

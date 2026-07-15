@@ -64,6 +64,13 @@ type ChatMessage = {
   activities?: AgentActivity[]
   activitiesCollapsed?: boolean
   memoryCandidates?: MemoryCandidateCard[]
+  /**
+   * Chat "thinking-trace" spec §6 — élő, streamelt reasoning-szöveg körönként
+   * (turnId → felhalmozott szöveg). Csak a folyamat alatti megjelenítésre; nem
+   * perzisztált (D4). A körhöz tartozó reasoning-activity lezárásakor a szerver
+   * összefoglaló `detail`-je veszi át a helyét.
+   */
+  thinking?: Record<string, string>
 }
 
 type ScheduledTaskRecurrence = 'none' | 'daily' | 'weekly' | 'monthly'
@@ -106,6 +113,7 @@ type AgentChatStreamEvent =
   | { type: 'meta'; conversationId: string; userMessageId: string }
   | { type: 'activity'; activity: AgentActivity }
   | { type: 'memory_candidate'; candidate: Omit<MemoryCandidateCard, 'status' | 'resultMessage'> }
+  | { type: 'thinking'; turnId: string; delta: string }
   | { type: 'token'; chunk: string }
   | { type: 'done'; conversationId: string; messageId: string; ticketRefId?: string | null }
   | { type: 'cancelled'; conversationId: string; messageId: string }
@@ -220,9 +228,11 @@ function FieldHelp({ description }: { description: string }) {
 function AgentActivityPanel({
   activities,
   collapsed,
+  thinking,
 }: {
   activities: AgentActivity[]
   collapsed: boolean
+  thinking?: Record<string, string>
 }) {
   const running = activities.find((activity) => activity.status === 'running')
   const hasError = activities.some((activity) => activity.status === 'error')
@@ -247,30 +257,55 @@ function AgentActivityPanel({
         </span>
       </summary>
       <div className="mt-2 space-y-1.5">
-        {activities.map((activity) => (
-          <div key={activity.id} className="flex min-w-0 items-start gap-2">
-            <span
-              className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${activityDotClass(activity.status)} ${
-                activity.status === 'running' ? 'animate-pulse' : ''
-              }`}
-              aria-hidden
-            />
-            <div className="min-w-0 flex-1">
-              <div className="flex min-w-0 items-baseline gap-2">
-                <span className="truncate font-medium text-ink">{activity.title}</span>
-                <span className="shrink-0 text-[10px] uppercase tracking-wide text-ink-faint">
-                  {activityStatusLabel(activity.status)}
-                </span>
+        {activities.map((activity) => {
+          // Chat "thinking-trace" (§6.1/D6): amíg a reasoning-kör fut, a szerverről
+          // streamelt (már redaktált) gondolkodás-szöveget élőben mutatjuk; lezáráskor
+          // az activity összefoglaló `detail`-je veszi át — vizuálisan dőlt/másodlagos.
+          const liveThinking =
+            activity.kind === 'reasoning' && activity.status === 'running'
+              ? thinking?.[activity.id]?.trim()
+              : undefined
+          return (
+            <div key={activity.id} className="flex min-w-0 items-start gap-2">
+              <span
+                className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${activityDotClass(activity.status)} ${
+                  activity.status === 'running' ? 'animate-pulse' : ''
+                }`}
+                aria-hidden
+              />
+              <div className="min-w-0 flex-1">
+                <div className="flex min-w-0 items-baseline gap-2">
+                  <span className="truncate font-medium text-ink">
+                    {liveThinking ? 'Gondolkodás' : activity.title}
+                  </span>
+                  <span className="shrink-0 text-[10px] uppercase tracking-wide text-ink-faint">
+                    {activityStatusLabel(activity.status)}
+                  </span>
+                </div>
+                {liveThinking ? (
+                  <p
+                    className="mt-0.5 line-clamp-3 whitespace-pre-wrap text-[11px] italic text-ink-faint"
+                    aria-live="polite"
+                  >
+                    {liveThinking}
+                  </p>
+                ) : (
+                  (activity.detail || activity.archivePath) && (
+                    <p
+                      className={`truncate text-[11px] text-ink-faint ${
+                        activity.kind === 'reasoning' ? 'italic' : ''
+                      }`}
+                      title={activity.archivePath ?? activity.detail}
+                    >
+                      {activity.detail}
+                      {activity.archivePath ? ` · ${activity.archivePath}` : ''}
+                    </p>
+                  )
+                )}
               </div>
-              {(activity.detail || activity.archivePath) && (
-                <p className="truncate text-[11px] text-ink-faint" title={activity.archivePath ?? activity.detail}>
-                  {activity.detail}
-                  {activity.archivePath ? ` · ${activity.archivePath}` : ''}
-                </p>
-              )}
             </div>
-          </div>
-        ))}
+          )
+        })}
       </div>
     </details>
   )
@@ -482,6 +517,7 @@ function MessageBubble({
               <AgentActivityPanel
                 activities={message.activities}
                 collapsed={message.activitiesCollapsed ?? false}
+                thinking={message.thinking}
               />
             )}
             {!isUser && message.memoryCandidates && message.memoryCandidates.length > 0 && (
@@ -1217,6 +1253,24 @@ export function AgentChatPanel({
                       ? {
                           ...m,
                           activities: upsertActivity(m.activities, event.activity),
+                          activitiesCollapsed: false,
+                        }
+                      : m,
+                  ),
+                )
+              })
+            } else if (event.type === 'thinking' && typeof event.delta === 'string') {
+              const { turnId, delta } = event
+              flushSync(() => {
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === optimisticAgentId
+                      ? {
+                          ...m,
+                          thinking: {
+                            ...m.thinking,
+                            [turnId]: (m.thinking?.[turnId] ?? '') + delta,
+                          },
                           activitiesCollapsed: false,
                         }
                       : m,

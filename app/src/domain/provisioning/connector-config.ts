@@ -67,6 +67,13 @@ export const connectorConfigSchema = z.object({
     .object({ rps: z.number().nonnegative(), burst: z.number().nonnegative() })
     .optional(),
   proposedTools: z.array(proposedToolSchema).default([]),
+  /**
+   * Ha true: futásidőben CSAK a `proposedTools`-ban felsorolt (method+path) hívható
+   * (endpoint-allowlist, WP-3/B3). A runtime http-api-kliens ezt a `restrictToEndpoints`
+   * mezőt olvassa. GitHub repo-scope connectoron tudatosan nem állítjuk (a repo-határ
+   * saját őrrel véd), ezért opcionális.
+   */
+  restrictToEndpoints: z.boolean().optional(),
   githubRepositoryAccess: githubRepositoryAccessSchema.optional(),
   provenance: z
     .object({

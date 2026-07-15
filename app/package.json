@@ -29,6 +29,7 @@
     "db:backfill-audit-attribution:test": "tsx scripts/backfill-audit-attribution.ts test",
     "db:backfill-ticket-comments": "tsx scripts/backfill-ticket-comments.ts",
     "db:prune-ephemeral-agent-keys": "tsx scripts/prune-ephemeral-agent-keys.ts",
+    "db:migrate-ostorosbor-bearer": "tsx scripts/migrate-ostorosbor-bearer.ts",
     "harness:run": "tsx scripts/harness-entrypoint.ts",
     "harness:egress-probe": "tsx scripts/harness-egress-probe.ts",
     "harness:docker-smoke": "tsx scripts/harness-docker-smoke.ts",
@@ -90,6 +91,7 @@
     "test:connector-template": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/connector-template.test.ts",
     "test:egress-allowlist": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/egress-allowlist-extend.test.ts",
     "test:http-api": "tsx scripts/http-api-connector.test.ts",
+    "test:http-api-per-agent-key": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/http-api-per-agent-key.test.ts",
     "test:per-user-connector": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/per-user-connector.test.ts",
     "test:kb-gate": "DATABASE_URL=postgresql://kbtest:kbtest@127.0.0.1:5432/kbtest tsx scripts/knowledge-base-gate.test.ts",
     "test:kb-tenant-boundary": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/kb-tenant-boundary.test.ts",
@@ -108,6 +110,7 @@
     "test:observability": "tsx scripts/observability.test.ts",
     "test:health-endpoints": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/health-endpoints.test.ts",
     "test:workspace-resource-access": "tsx scripts/workspace-resource-access.test.ts",
+    "test:chat-thinking-trace": "tsx scripts/chat-thinking-trace.test.ts",
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "postinstall": "prisma generate"

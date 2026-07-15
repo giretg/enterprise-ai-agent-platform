@@ -600,6 +600,7 @@ const agentChatRuntime = new AgentChatRuntime(
   processService,
   skillService,
   memoryRetrievalService,
+  (tenantId) => platformSettingsService.isChatThinkingTraceEnabledForTenant(tenantId),
 )
 const wikiRuntime = new WikiAgentRuntime(
   repositories.agents,

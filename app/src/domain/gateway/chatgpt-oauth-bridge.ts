@@ -201,14 +201,33 @@ export async function* stubChatStream(content: string): AsyncGenerator<string, v
 }
 
 /**
+ * A ChatGPT Responses backend reasoning-summary delta eseménye. A `reasoning`
+ * kérésre a backend a gondolkodás rövid összefoglalóját streameli — külön
+ * eseménytípuson, NEM az `output_text` csatornán. A pontos típusnév verziónként
+ * eltérhet (`response.reasoning_summary_text.delta` / `response.reasoning_text.delta`),
+ * ezért a végződésre illesztünk. A nyers reasoning-tartalom (`response.reasoning.*`,
+ * "encrypted" vagy nyers gondolatlánc) SZÁNDÉKOSAN kimarad — csak az összefoglaló megy tovább.
+ */
+function reasoningSummaryDelta(evt: { type?: string; delta?: string }): string | null {
+  if (typeof evt.type !== 'string' || typeof evt.delta !== 'string' || !evt.delta) return null
+  if (/reasoning_summary_text\.delta$/.test(evt.type) || /reasoning_summary\.delta$/.test(evt.type)) {
+    return evt.delta
+  }
+  return null
+}
+
+/**
  * Streaming variáns: a ChatGPT Responses backend SSE streamjét olvassa
- * inkrementálisan és `response.output_text.delta` eseményenként yield-el.
+ * inkrementálisan és `response.output_text.delta` eseményenként yield-el. Ha
+ * `onReasoningDelta` meg van adva, a reasoning-summary deltákat oldalcsatornán
+ * továbbadja (a yield-elt szöveg csak a válasz-token marad).
  */
 export async function* callChatGptOAuthStream(input: {
   tokens: ChatGptOAuthTokens
   messages: GatewayMessage[]
   model: string
   reasoningEffort?: 'low' | 'medium' | 'high'
+  onReasoningDelta?: (delta: string) => void
 }): AsyncGenerator<string, void, unknown> {
   const model = resolveModel(input.model)
   const { instructions, input: responsesInput } = toResponsesRequest(input.messages)
@@ -267,6 +286,10 @@ export async function* callChatGptOAuthStream(input: {
         if (evt.type === 'response.output_text.delta' && typeof evt.delta === 'string' && evt.delta) {
           yield evt.delta
         }
+        if (input.onReasoningDelta) {
+          const reasoning = reasoningSummaryDelta(evt)
+          if (reasoning) input.onReasoningDelta(reasoning)
+        }
         if (evt.type === 'response.completed') return
       }
     }
@@ -286,6 +309,12 @@ export async function callChatGptOAuth(input: {
   model: string
   tools?: ToolDefinition[]
   reasoningEffort?: 'low' | 'medium' | 'high'
+  /**
+   * Ha meg van adva, a reasoning-summary deltákat érkezéskor (a válasz-token/tool-hívás
+   * ELŐTT) továbbadja — ez teszi lehetővé a "gondolkodás közben" streamelést a
+   * nem-streamelő tool-loopban is (az egész SSE-t inkrementálisan olvassuk).
+   */
+  onReasoningDelta?: (delta: string) => void
 }): Promise<BridgeResult> {
   const model = resolveModel(input.model)
   const { instructions, input: responsesInput } = toResponsesRequest(input.messages)
@@ -336,15 +365,17 @@ export async function callChatGptOAuth(input: {
     throw new Error(`ChatGPT OAuth backend failed: ${res.status} ${body}`)
   }
 
-  const raw = await res.text()
+  if (!res.body) throw new Error('ChatGPT OAuth backend returned no body')
+
   let content = ''
   let promptTokens = 0
   let completionTokens = 0
   const toolCalls: GatewayToolCall[] = []
-  for (const line of raw.split('\n')) {
-    if (!line.startsWith('data:')) continue
+
+  const handleLine = (line: string) => {
+    if (!line.startsWith('data:')) return
     const payload = line.slice(5).trim()
-    if (!payload || payload === '[DONE]') continue
+    if (!payload || payload === '[DONE]') return
     let evt: {
       type?: string
       delta?: string
@@ -354,10 +385,15 @@ export async function callChatGptOAuth(input: {
     try {
       evt = JSON.parse(payload)
     } catch {
-      continue
+      return
     }
     if (evt.type === 'response.output_text.delta' && typeof evt.delta === 'string') {
       content += evt.delta
+    }
+    // Reasoning-summary delta: érkezéskor, a válasz-token/tool-hívás előtt megy ki.
+    if (input.onReasoningDelta) {
+      const reasoning = reasoningSummaryDelta(evt)
+      if (reasoning) input.onReasoningDelta(reasoning)
     }
     // A modell egy kész tool hívása: function_call output item.
     if (evt.type === 'response.output_item.done' && evt.item?.type === 'function_call') {
@@ -387,6 +423,23 @@ export async function callChatGptOAuth(input: {
       completionTokens = evt.response.usage.output_tokens ?? 0
     }
   }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''
+      for (const line of lines) handleLine(line)
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  if (buffer) handleLine(buffer)
 
   // Tool-only válasznál a content üres — csak akkor hiba, ha sem szöveg, sem
   // tool hívás nem jött vissza.

@@ -127,13 +127,13 @@ export async function executeHttpApiTool(self: ToolBrokerService,
     const config = parseHttpApiConfig(connector.config)
     // user_delegated (auto-consent oauth2): a per-user grant access token megy ki
     // Bearerként (config.auth = bearer). A connector secretAlias ilyenkor a
-    // client_secret-et rejti, ezt SOHA nem oldjuk fel apiKey-ként.
-    // agent_owned módban az agentConnector.secretAlias az irányadó (per-agent kulcs);
-    // egyébként a connector szintű megosztott kulcs kerül felhasználásra.
-    const effectiveAlias =
-      connector.authMode === 'agent_owned' && agentSecretAlias
-        ? agentSecretAlias
-        : connector.secretAlias
+    // client_secret-et rejti, ezt SOHA nem oldjuk fel apiKey-ként — ezt a delegált
+    // ág (delegatedAccessToken) rövidre zárja, így az alias-feloldás meg sem történik.
+    // WP-2 (B2, D-1/A): ha az agent-kötésen van per-agent kulcs (agentSecretAlias),
+    // azt használjuk az ÜZEMMÓDTÓL függetlenül (service/agent_owned egyaránt); ha
+    // nincs, a connector-szintű (tenant) megosztott kulcs a fallback. Így a UI-ban
+    // megadott per-agent kulcs valóban hat, nem nyelődik el csendben.
+    const effectiveAlias = agentSecretAlias ?? connector.secretAlias
     const defaultApiKey = delegatedAccessToken
       ? delegatedAccessToken
       : effectiveAlias

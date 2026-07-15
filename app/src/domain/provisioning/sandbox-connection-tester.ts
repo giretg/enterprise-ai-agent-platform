@@ -101,6 +101,26 @@ function authHeaderFor(
   }
 }
 
+/**
+ * WP-1 (B1): explicit, cselekvésre váltó üzenet, ha a sandbox valódi kulccsal is
+ * auth-hibát (401/403) kap. Séma-specifikus, hogy a leggyakoribb hibát (a hiányzó
+ * `Bearer ` előtag / rossz fejléc-név) egy nem-fejlesztő is meg tudja fejteni.
+ */
+function authFailureDetail(config: ConnectorConfig, status: number): string {
+  const prefix = `a szerver ${status}-at adott a próbahívásra`
+  switch (config.auth.type) {
+    case 'bearer_token':
+    case 'oauth2':
+      return `${prefix} — a rendszer az \`Authorization: Bearer <kulcs>\` fejlécet küldi; ellenőrizd, hogy a tárolt érték a NYERS kulcs (a \`Bearer \` előtagot ne tartalmazza), és hogy a kulcs érvényes.`
+    case 'api_key_header':
+      return `${prefix} — a kulcs változtatás nélkül a \`${config.auth.headerName || 'X-Api-Key'}\` fejlécbe kerül; ellenőrizd a fejléc nevét és a kulcs alakját. Ha a szerver \`Bearer\`-t vár, a tárolt értéknek is \`Bearer <kulcs>\`-nek kell lennie.`
+    case 'basic':
+      return `${prefix} — Basic auth; a tárolt értéknek a base64(\`felhasználó:jelszó\`) alaknak kell lennie.`
+    default:
+      return `${prefix} — ellenőrizd a kulcs formátumát, a \`Bearer\` előtagot és a hitelesítő fejléc nevét.`
+  }
+}
+
 export class HttpSandboxConnectionTester implements SandboxConnectionTester {
   constructor(private deps: HttpSandboxConnectionTesterDeps) {}
 
@@ -173,12 +193,18 @@ export class HttpSandboxConnectionTester implements SandboxConnectionTester {
       if (res.type === 'opaqueredirect' || (res.status >= 300 && res.status < 400)) {
         return { ok: false, statusCode: res.status, detail: 'redirect_blocked' }
       }
-      // 401/403 = "reachable_auth_required": a szerver elért, az endpoint létezik,
-      // az auth a secret-alias rendszeren keresztül kerül bekonfigurálásra
-      // (az aktiválás és az agent-hozzárendelés lépéseiben). A 403-at is idesoroljuk,
-      // mert több vendor (pl. Google API-k) hitelesítés hiányában 401 helyett 403-at ad
-      // vissza — token nélküli próbahívásnál ez ugyanaz a "elért, hitelesítés kell" jel.
+      // 401/403 kétféle jelentésű:
+      //  - TOKEN NÉLKÜLI próbahívásnál "reachable_auth_required": a szerver elért, az
+      //    endpoint létezik, az auth később, a secret-alias rendszeren keresztül kerül be
+      //    (aktiválás / agent-hozzárendelés). A 403-at is idesoroljuk, mert több vendor
+      //    (pl. Google) hitelesítés hiányában 403-at ad vissza — ez ugyanaz a jel.
+      //  - Ha a sandbox VALÓDI (non-prod) tokent küldött, és mégis 401/403 jön, az egy
+      //    tényleges auth-formátum hiba (WP-1/B1 "Bearer-csapda"): explicit, cselekvésre
+      //    váltó üzenetet adunk, nem tüntetjük el zöldként.
       if (res.status === 401 || res.status === 403) {
+        if (token) {
+          return { ok: false, statusCode: res.status, detail: authFailureDetail(config, res.status) }
+        }
         return { ok: true, statusCode: res.status, detail: 'reachable_auth_required' }
       }
       const ok = res.status >= 200 && res.status < 300

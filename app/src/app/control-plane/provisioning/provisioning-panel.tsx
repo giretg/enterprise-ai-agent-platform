@@ -335,6 +335,19 @@ function reviewTone(s: string): 'neutral' | 'success' | 'warning' | 'danger' {
   if (s === 'changes_requested') return 'warning'
   return 'neutral'
 }
+/**
+ * WP-7 (B5): kliens-oldali alias-forma ellenőrzés — a szerver
+ * `isResolvableSecretAlias` tükre. Csak feloldható formák: env:NÉV,
+ * secret-manager:projects/…, secret-ref:<id>. Bare név NEM elfogadott.
+ */
+function isResolvableSecretAliasClient(value: string): boolean {
+  return (
+    /^env:[A-Za-z_][A-Za-z0-9_]*$/.test(value) ||
+    value.startsWith('secret-manager:projects/') ||
+    value.startsWith('secret-ref:')
+  )
+}
+
 function lifecycleTone(s: string): 'neutral' | 'success' | 'warning' | 'danger' {
   if (s === 'active') return 'success'
   if (s === 'blocked' || s === 'archived') return 'danger'
@@ -2296,7 +2309,7 @@ function DraftCard({
                 </p>
               ) : null}
               <div className="grid gap-2 sm:grid-cols-2">
-                <label className="text-xs">
+                <label className="text-xs sm:col-span-2">
                   <span className="mb-1 block text-ink-soft">
                     {isUserDelegated ? 'OAuth client secret' : 'API kulcs'}
                   </span>
@@ -2307,23 +2320,44 @@ function DraftCard({
                     onChange={(e) => setApiKey(e.target.value)}
                     placeholder={
                       isUserDelegated
-                        ? 'Client secret megadása → secret-ref'
-                        : 'Kulcs megadása → auto secret-ref'
+                        ? 'A szolgáltatónál regisztrált OAuth-app client secret-je'
+                        : 'A külső rendszerben generált nyers kulcs'
                     }
                   />
-                </label>
-                <label className="text-xs">
-                  <span className="mb-1 block text-ink-soft">
-                    Secret-alias{apiKey.trim() ? ' (felülírva, ha kulcsot adsz meg)' : ''}
+                  <span className="mt-1 block text-ink/50">
+                    {isUserDelegated
+                      ? 'A client secret a menedzselt titok-tárba kerül (secret-ref). '
+                      : 'Csak a nyers kulcsot írd be — a „Bearer " előtagot a rendszer adja hozzá (bearer sémánál). '}
+                    A kulcs titkosítva tárolódik, sosem kerül az adatbázisba.
                   </span>
-                  <input
-                    className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5 disabled:opacity-40"
-                    value={secretAlias}
-                    onChange={(e) => setSecretAlias(e.target.value)}
-                    placeholder="acme-crm-service-key"
-                    disabled={!!apiKey.trim()}
-                  />
                 </label>
+                <details className="text-xs sm:col-span-2">
+                  <summary className="cursor-pointer text-ink-soft">
+                    Meglévő titok hivatkozása (haladó)
+                  </summary>
+                  <div className="mt-2 rounded-md border border-ink/12 bg-wash/40 p-2">
+                    <p className="mb-2 text-ink/60">
+                      Ha a titkot már máshol tárolod, itt hivatkozhatsz rá kulcs beírása helyett.
+                      Elfogadott formák: <code>env:NÉV</code>,{' '}
+                      <code>secret-manager:projects/…/secrets/&lt;id&gt;</code>,{' '}
+                      <code>secret-ref:&lt;id&gt;</code>. Egyébként hagyd üresen és írd be fent a kulcsot.
+                    </p>
+                    <input
+                      className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5 disabled:opacity-40"
+                      value={secretAlias}
+                      onChange={(e) => setSecretAlias(e.target.value)}
+                      placeholder="env:ACME_CRM_API_KEY"
+                      disabled={!!apiKey.trim()}
+                    />
+                    {!apiKey.trim() && secretAlias.trim() && !isResolvableSecretAliasClient(secretAlias.trim()) ? (
+                      <p className="mt-1 text-coral">
+                        Nem elfogadott alias-forma. Használj <code>env:</code>,{' '}
+                        <code>secret-manager:</code> vagy <code>secret-ref:</code> előtagot — vagy hagyd
+                        üresen és írd be fent a kulcsot.
+                      </p>
+                    ) : null}
+                  </div>
+                </details>
                 {isUserDelegated ? (
                   <div className="text-xs sm:col-span-2">
                     <span className="mb-1 block text-ink-soft">
@@ -2390,7 +2424,14 @@ function DraftCard({
               <div className="mt-2 flex flex-wrap gap-2">
                 <button
                   type="button"
-                  disabled={pending || !activationReady || (!apiKey.trim() && !secretAlias.trim())}
+                  disabled={
+                    pending ||
+                    !activationReady ||
+                    (!apiKey.trim() && !secretAlias.trim()) ||
+                    (!apiKey.trim() &&
+                      !!secretAlias.trim() &&
+                      !isResolvableSecretAliasClient(secretAlias.trim()))
+                  }
                   onClick={() =>
                     run(
                       () =>
@@ -2413,7 +2454,14 @@ function DraftCard({
                 {isUserDelegated ? (
                   <button
                     type="button"
-                    disabled={pending || !activationReady || (!apiKey.trim() && !secretAlias.trim())}
+                    disabled={
+                    pending ||
+                    !activationReady ||
+                    (!apiKey.trim() && !secretAlias.trim()) ||
+                    (!apiKey.trim() &&
+                      !!secretAlias.trim() &&
+                      !isResolvableSecretAliasClient(secretAlias.trim()))
+                  }
                     onClick={() =>
                       run(async () => {
                         const activated = await activateConnector({

@@ -682,10 +682,19 @@ function templateValue(key: string, context: HttpApiTemplateContext): string | n
   return values[key]
 }
 
-/** Egyszerű path-egyezés `:param` placeholderekkel (pl. /banks/:bankId/crm). */
+/**
+ * Egyszerű path-egyezés placeholderekkel. Kétféle jelölést fogadunk el, mert a
+ * kézi „API-kapcsolat" a `:param` alakot használja (pl. /banks/:bankId/crm), a
+ * sablonból materializált configok viszont a `{param}` alakot (pl. /accounts/{id}).
+ * Mindkét forma egyetlen path-szegmensre illeszkedő joker.
+ */
 function pathMatches(template: string, actual: string): boolean {
   const t = template.split('/').filter(Boolean)
   const a = actual.split('/').filter(Boolean)
   if (t.length !== a.length) return false
-  return t.every((seg, i) => seg.startsWith(':') || seg === a[i])
+  return t.every((seg, i) => isPathParamSegment(seg) || seg === a[i])
+}
+
+function isPathParamSegment(segment: string): boolean {
+  return segment.startsWith(':') || (segment.startsWith('{') && segment.endsWith('}'))
 }

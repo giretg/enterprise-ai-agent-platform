@@ -1060,6 +1060,40 @@ async function run() {
     assert.equal(r.detail, 'reachable')
   })
 
+  await test('SBX: token NÉLKÜLI 401 → reachable_auth_required (elért, auth később)', async () => {
+    const { fn } = recordingFetch({ status: 401 })
+    const tester = new HttpSandboxConnectionTester({
+      resolveEgressAllowlist: async () => ALLOWLIST,
+      fetchImpl: fn,
+    })
+    const r = await tester.test({
+      config: cleanConfig() as unknown as ConnectorConfig,
+      secretAlias: null,
+      tenantId: TENANT,
+    })
+    assert.equal(r.ok, true)
+    assert.equal(r.detail, 'reachable_auth_required')
+  })
+
+  await test('SBX: VALÓDI tokennel 401 → ok=false, explicit auth-formátum üzenet (WP-1)', async () => {
+    const { fn } = recordingFetch({ status: 401 })
+    const tester = new HttpSandboxConnectionTester({
+      resolveEgressAllowlist: async () => ALLOWLIST,
+      resolveSandboxToken: async () => 'np-token-should-not-leak',
+      fetchImpl: fn,
+    })
+    const r = await tester.test({
+      // bearer séma → az üzenet a Bearer-csapdára figyelmeztet
+      config: { ...cleanConfig(), auth: { type: 'bearer_token' } } as unknown as ConnectorConfig,
+      secretAlias: 'env:ACME_CRM_SERVICE_KEY',
+      tenantId: TENANT,
+    })
+    assert.equal(r.ok, false)
+    assert.equal(r.statusCode, 401)
+    assert.ok(/Bearer/.test(r.detail ?? ''), 'üzenet említse a Bearer előtagot')
+    assert.ok(!JSON.stringify(r).includes('np-token-should-not-leak'))
+  })
+
   await test('SBX: fetch dob (hálózati hiba) → request_failed, sanitizált detail', async () => {
     const tester = new HttpSandboxConnectionTester({
       resolveEgressAllowlist: async () => ALLOWLIST,

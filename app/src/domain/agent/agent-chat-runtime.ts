@@ -18,6 +18,7 @@ import {
   resolveChatTriggerInputPayload,
 } from '@/lib/playbook-v2/trigger-input'
 import type { ModelGateway } from '../gateway/model-gateway'
+import { redactSensitiveText } from '../gateway/sensitivity-router'
 import type { ConversationService } from '../conversation/conversation-service'
 import {
   assembleContext,
@@ -326,6 +327,12 @@ export class AgentChatRuntime {
     private processService?: ProcessService,
     private skills?: SkillService,
     private memoryRetrieval?: MemoryRetrievalService,
+    /**
+     * Chat "thinking-trace" spec §D7/WP-6 — tenant-szintű kapcsoló (fail-closed,
+     * alapból kikapcsolva). Ha nincs injektálva vagy false-t ad, reasoning-esemény
+     * sem generálódik (E4 — nem csak UI-szűrés, a bridge/loop szintjén sem).
+     */
+    private isThinkingTraceEnabled?: (tenantId: string | null) => Promise<boolean>,
   ) {}
 
   /**
@@ -675,6 +682,7 @@ export class AgentChatRuntime {
     | { type: 'meta'; conversationId: string; userMessageId: string }
     | { type: 'activity'; activity: ToolLoopActivityEvent }
     | { type: 'memory_candidate'; candidate: ToolLoopMemoryCandidateEvent }
+    | { type: 'thinking'; turnId: string; delta: string }
     | { type: 'token'; chunk: string }
     | { type: 'done'; conversationId: string; messageId: string; ticketRefId?: string | null }
     | { type: 'cancelled'; conversationId: string; messageId: string }
@@ -894,9 +902,13 @@ export class AgentChatRuntime {
         skillBinding.loadSkill ||
         slashResolved.preloadedSkillPrompts.length > 0
       ) {
+        const thinkingEnabled = this.isThinkingTraceEnabled
+          ? await this.isThinkingTraceEnabled(params.tenantId ?? null)
+          : false
         type SideEvent =
           | { kind: 'activity'; activity: ToolLoopActivityEvent }
           | { kind: 'memory_candidate'; candidate: ToolLoopMemoryCandidateEvent }
+          | { kind: 'thinking'; turnId: string; delta: string }
         const sideEventQueue: SideEvent[] = []
         let wakeSideEvent: (() => void) | null = null
         const pushSideEvent = (event: SideEvent) => {
@@ -915,6 +927,8 @@ export class AgentChatRuntime {
             if (event.kind === 'activity') {
               activeTurn.activities = upsertToolLoopActivity(activeTurn.activities, event.activity)
               yield { type: 'activity' as const, activity: event.activity }
+            } else if (event.kind === 'thinking') {
+              yield { type: 'thinking' as const, turnId: event.turnId, delta: event.delta }
             } else {
               yield { type: 'memory_candidate' as const, candidate: event.candidate }
             }
@@ -944,6 +958,12 @@ export class AgentChatRuntime {
             turn!.activities = upsertToolLoopActivity(turn!.activities, activity)
             pushSideEvent({ kind: 'activity', activity })
           },
+          ...(thinkingEnabled
+            ? {
+                onReasoning: (turnId: string, delta: string) =>
+                  pushSideEvent({ kind: 'thinking', turnId, delta }),
+              }
+            : {}),
           onMemoryCandidate: (candidate) => pushSideEvent({ kind: 'memory_candidate', candidate }),
         }).then(
           (result) => ({ ok: true as const, result }),
@@ -989,6 +1009,37 @@ export class AgentChatRuntime {
         }
       } else {
         try {
+          // Chat "thinking-trace" (tool nélküli ág): a reasoning-summary deltákat
+          // sorpuffer + tartalom-őr (D5) mögött gyűjtjük, és a következő token-yield
+          // előtt ürítjük ki `thinking` eseményként (a generátorból callbackből nem
+          // lehet yield-elni). turnId egyetlen körre `reasoning-0`.
+          const thinkingEnabled = this.isThinkingTraceEnabled
+            ? await this.isThinkingTraceEnabled(params.tenantId ?? null)
+            : false
+          const pendingThinking: string[] = []
+          let reasoningPending = ''
+          const guardReasoning = (chunk: string) => {
+            if (!chunk) return
+            const { text } = redactSensitiveText(chunk)
+            if (text) pendingThinking.push(text)
+          }
+          const onReasoningDelta = thinkingEnabled
+            ? (delta: string) => {
+                reasoningPending += delta
+                let nl: number
+                while ((nl = reasoningPending.indexOf('\n')) >= 0) {
+                  guardReasoning(reasoningPending.slice(0, nl + 1))
+                  reasoningPending = reasoningPending.slice(nl + 1)
+                }
+                if (reasoningPending.length > 600) {
+                  const cut = reasoningPending.lastIndexOf(' ')
+                  if (cut > 0) {
+                    guardReasoning(reasoningPending.slice(0, cut + 1))
+                    reasoningPending = reasoningPending.slice(cut + 1)
+                  }
+                }
+              }
+            : undefined
           const gatewayInput = {
             agentId: params.agentId,
             agentVersion: agentDetails.agent.currentVersion,
@@ -996,6 +1047,7 @@ export class AgentChatRuntime {
             actingUserId: params.createdById,
             messages: assembleGatewayMessages(gatewayPrompt),
             modelConfig,
+            ...(onReasoningDelta ? { onReasoningDelta } : {}),
           }
           let accumulated = ''
           for await (const chunk of this.gateway.callStream(gatewayInput)) {
@@ -1004,8 +1056,15 @@ export class AgentChatRuntime {
               yield { type: 'cancelled', conversationId, messageId: cancelledId }
               return
             }
+            while (pendingThinking.length > 0) {
+              yield { type: 'thinking', turnId: 'reasoning-0', delta: pendingThinking.shift()! }
+            }
             accumulated += chunk
             yield { type: 'token', chunk }
+          }
+          if (reasoningPending) guardReasoning(reasoningPending)
+          while (pendingThinking.length > 0) {
+            yield { type: 'thinking', turnId: 'reasoning-0', delta: pendingThinking.shift()! }
           }
           reply = accumulated
           turn.completedReply = reply

@@ -191,12 +191,19 @@ export interface ModelProvider {
     modelConfig: ModelConfig
     /** Natív tool use definíciók — ha megadva, a provider function callingot kér. */
     tools?: ToolDefinition[]
+    /**
+     * Chat "thinking-trace" spec — a modell gondolkodási (reasoning-summary)
+     * deltáit oldalcsatornán adja tovább, ahol a provider ezt szolgáltatja. A
+     * hívó felelős a tartalom-őrért (D5), mielőtt a kliensre kerül.
+     */
+    onReasoningDelta?: (delta: string) => void
   }): Promise<ModelProviderResult>
   chatStream?(input: {
     agentId: string
     ticketId?: string
     messages: GatewayMessage[]
     modelConfig: ModelConfig
+    onReasoningDelta?: (delta: string) => void
   }): AsyncGenerator<string, void, unknown>
 }
 
@@ -407,6 +414,7 @@ export class ChatGptOAuthProvider implements ModelProvider {
     messages: GatewayMessage[]
     modelConfig: ModelConfig
     tools?: ToolDefinition[]
+    onReasoningDelta?: (delta: string) => void
   }): Promise<ModelProviderResult> {
     const providerUrl = process.env.CHATGPT_OAUTH_PROVIDER_URL
     const internalKey = process.env.CHATGPT_OAUTH_PROVIDER_KEY
@@ -427,6 +435,7 @@ export class ChatGptOAuthProvider implements ModelProvider {
         messages: input.messages,
         model: input.modelConfig.model,
         tools: input.tools,
+        onReasoningDelta: input.onReasoningDelta,
       })
       return {
         content: result.content,
@@ -478,6 +487,7 @@ export class ChatGptOAuthProvider implements ModelProvider {
     ticketId?: string
     messages: GatewayMessage[]
     modelConfig: ModelConfig
+    onReasoningDelta?: (delta: string) => void
   }): AsyncGenerator<string, void, unknown> {
     const providerUrl = process.env.CHATGPT_OAUTH_PROVIDER_URL
 
@@ -494,6 +504,7 @@ export class ChatGptOAuthProvider implements ModelProvider {
         tokens,
         messages: input.messages,
         model: input.modelConfig.model,
+        onReasoningDelta: input.onReasoningDelta,
       })
       return
     }
@@ -520,7 +531,13 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     private options: {
       apiKeyRequired?: boolean
       extraHeaders?: () => Record<string, string>
-      extraBody?: () => Record<string, unknown>
+      /**
+       * A request-body kiegészítése. A `reasoningRequested` jelzi, hogy a hívó
+       * kért-e thinking-trace-t (a runtime csak akkor köti be az
+       * `onReasoningDelta`-t, ha a tenant D7-kapcsolója engedélyezi) — így az
+       * OpenRouter `reasoning.exclude`-ja (WP-7) csak akkor oldódik fel.
+       */
+      extraBody?: (ctx: { reasoningRequested: boolean }) => Record<string, unknown>
     } = {},
   ) {}
 
@@ -530,6 +547,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     messages: GatewayMessage[]
     modelConfig: ModelConfig
     tools?: ToolDefinition[]
+    onReasoningDelta?: (delta: string) => void
   }): Promise<ModelProviderResult> {
     const baseUrl = (process.env[this.baseUrlEnvVar] || this.defaultBaseUrl)?.replace(/\/+$/, '')
     if (!baseUrl) {
@@ -563,7 +581,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
               tool_choice: 'auto',
             }
           : {}),
-        ...this.options.extraBody?.(),
+        ...this.options.extraBody?.({ reasoningRequested: typeof input.onReasoningDelta === 'function' }),
       }),
     })
 
@@ -574,6 +592,19 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     const data = (await response.json()) as OpenAiCompatibleResponse
     const content = extractOpenAiCompatibleContent(data)
     const toolCalls = extractOpenAiToolCalls(data)
+
+    // Chat "thinking-trace" (WP-7) nem-streamelő ág: ha a hívó kért reasoning-et
+    // és a modell külön `message.reasoning`-et adott vissza (nem a content
+    // fallbackje), egyetlen deltaként továbbadjuk. A tartalom-őr (D5) a hívónál fut.
+    const rawReasoning = data.choices?.[0]?.message?.reasoning
+    if (
+      input.onReasoningDelta &&
+      typeof rawReasoning === 'string' &&
+      rawReasoning.trim() &&
+      rawReasoning !== content
+    ) {
+      input.onReasoningDelta(rawReasoning)
+    }
 
     // Tool-only válasznál a content üres — csak akkor hiba, ha sem szöveg, sem
     // tool hívás nem jött vissza.
@@ -601,6 +632,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     ticketId?: string
     messages: GatewayMessage[]
     modelConfig: ModelConfig
+    onReasoningDelta?: (delta: string) => void
   }): AsyncGenerator<string, void, unknown> {
     const baseUrl = (process.env[this.baseUrlEnvVar] || this.defaultBaseUrl)?.replace(/\/+$/, '')
     if (!baseUrl) {
@@ -624,7 +656,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
         temperature: input.modelConfig.temperature,
         max_tokens: input.modelConfig.maxTokens,
         stream: true,
-        ...this.options.extraBody?.(),
+        ...this.options.extraBody?.({ reasoningRequested: typeof input.onReasoningDelta === 'function' }),
       }),
     })
 
@@ -655,8 +687,16 @@ export class OpenAiCompatibleProvider implements ModelProvider {
           const data = trimmed.slice(6)
           if (data === '[DONE]') return
           try {
-            const parsed = JSON.parse(data) as { choices?: Array<{ delta?: { content?: string } }> }
-            const chunk = parsed.choices?.[0]?.delta?.content
+            const parsed = JSON.parse(data) as {
+              choices?: Array<{ delta?: { content?: string; reasoning?: string } }>
+            }
+            const delta = parsed.choices?.[0]?.delta
+            // OpenRouter/kompatibilis reasoning-csatorna (WP-7): csak akkor jön, ha a
+            // provider a `reasoning.exclude:false`-t kapta és a modell szolgáltatja.
+            if (input.onReasoningDelta && typeof delta?.reasoning === 'string' && delta.reasoning) {
+              input.onReasoningDelta(delta.reasoning)
+            }
+            const chunk = delta?.content
             if (typeof chunk === 'string' && chunk) yield chunk
           } catch {
             // ignore malformed SSE JSON lines
@@ -691,7 +731,10 @@ export function createDefaultProviders(): Map<string, ModelProvider> {
             ? { 'X-OpenRouter-Title': process.env.OPENROUTER_APP_TITLE }
             : {}),
         }),
-        extraBody: () => ({ reasoning: { exclude: true } }),
+        // WP-7: a reasoning-csatorna alapból kizárt (költség + válaszméret), és
+        // csak akkor oldjuk fel, ha a hívó kért thinking-trace-t — azaz a tenant
+        // D7-kapcsolója engedélyezte és a runtime bekötötte az `onReasoningDelta`-t.
+        extraBody: ({ reasoningRequested }) => ({ reasoning: { exclude: !reasoningRequested } }),
       },
     ),
   ]
@@ -991,6 +1034,11 @@ export class ModelGateway {
     tools?: ToolDefinition[]
     /** Explicit human review for narrowly scoped, audited sensitivity overrides. */
     sensitivityOverride?: SensitivityOverride
+    /**
+     * Chat "thinking-trace" spec — reasoning-summary delta oldalcsatorna. A hívó
+     * (chat-tool-loop) tartalom-őrön (D5) engedi át, mielőtt a kliensre kerül.
+     */
+    onReasoningDelta?: (delta: string) => void
   }): Promise<{
     content: string
     toolCalls?: GatewayToolCall[]
@@ -1112,6 +1160,7 @@ export class ModelGateway {
           messages: params.messages,
           modelConfig: { ...resolvedConfig, model },
           tools: params.tools,
+          onReasoningDelta: params.onReasoningDelta,
         }),
       )
 
@@ -1269,6 +1318,8 @@ export class ModelGateway {
     modelConfig: ModelConfig
     modelOverrideHint?: ModelOverrideHint
     sensitivityOverride?: SensitivityOverride
+    /** Chat "thinking-trace" spec — reasoning-summary delta oldalcsatorna (tool nélküli ág). */
+    onReasoningDelta?: (delta: string) => void
   }): AsyncGenerator<string, void, unknown> {
     const agentVersion = params.agentVersion ?? null
 
@@ -1381,6 +1432,9 @@ export class ModelGateway {
             ticketId: params.ticketId,
             messages: params.messages,
             modelConfig: { ...resolvedConfig, model },
+            // Thinking-trace (WP-8): a nem-streamelő providerek (pl. Gemini) a
+            // reasoning-et egyetlen deltaként adják vissza ezen a callbacken.
+            onReasoningDelta: params.onReasoningDelta,
           }),
         )
         content = result.content
@@ -1466,6 +1520,7 @@ export class ModelGateway {
         ticketId: params.ticketId,
         messages: params.messages,
         modelConfig: { ...resolvedConfig, model },
+        onReasoningDelta: params.onReasoningDelta,
       })) {
         content += chunk
         yield chunk

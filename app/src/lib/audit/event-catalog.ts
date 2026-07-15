@@ -73,6 +73,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'connector.grant.refresh',
   'connector.grant.revoke',
   'connector.update',
+  'connector.binding.update',
   'provisioning.access_denied',
   'provisioning.connector.activate',
   'provisioning.connector.assign',

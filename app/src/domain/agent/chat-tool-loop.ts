@@ -7,6 +7,7 @@ import type {
   ModelGateway,
   ToolDefinition,
 } from '@/domain/gateway/model-gateway'
+import { redactSensitiveText } from '@/domain/gateway/sensitivity-router'
 import type { ToolBrokerRepository } from '@/repositories/interfaces'
 import type { XlsxRow, XlsxSheetSpec, CellStyle, XlsxCellChange } from '@/domain/file-editor/adapters/xlsx-adapter'
 import type { PptxSlideSpec } from '@/domain/file-editor/adapters/pptx-adapter'
@@ -1598,6 +1599,12 @@ export async function runAgentToolLoop(params: {
   loadSkill?: LoadSkillFn
   archiveLargeToolResult?: (input: LargeToolResultArchiveInput) => Promise<LargeToolResultArchive | null>
   onActivity?: (event: ToolLoopActivityEvent) => void | Promise<void>
+  /**
+   * Chat "thinking-trace" spec (§5, WP-3) — a modell reasoning-summary deltái,
+   * MÁR a tartalom-őrön (D5) átengedve, `turnId`-vel a UI élő bejegyzéséhez. Ha
+   * nincs megadva (D7 kikapcsolva vagy tool nélküli ág), reasoning sem generálódik.
+   */
+  onReasoning?: (turnId: string, delta: string) => void
   /** WP-5 — sikeres `memory_propose` hívás után a chat-kártyához (§6.2). */
   onMemoryCandidate?: (event: ToolLoopMemoryCandidateEvent) => void | Promise<void>
   /** Kooperatív leállítás (pl. chat Stop) — kör- és tool-hívás-határon ellenőrizve. */
@@ -1692,23 +1699,71 @@ export async function runAgentToolLoop(params: {
       throw new AgentToolLoopCancelledError()
     }
     let webSearchCallsThisTurn = 0
+    const reasoningTurnId = `reasoning-${turn}`
+    const placeholderTitle = turn === 0 ? 'Üzenet feldolgozása' : 'Tool eredmények kiértékelése'
     await emitActivity({
-      id: `reasoning-${turn}`,
+      id: reasoningTurnId,
       kind: 'reasoning',
-      title: turn === 0 ? 'Üzenet feldolgozása' : 'Tool eredmények kiértékelése',
+      title: placeholderTitle,
       status: 'running',
     })
+
+    // Chat "thinking-trace" (§5, WP-3): a provider reasoning-summary deltáit
+    // sorpufferrel, a tartalom-őrön (D5) átengedve továbbítjuk. A sorpuffer
+    // garantálja, hogy egy összefüggő titok/PAN token ne szakadjon két redakciós
+    // szegmens közé; a hosszú, újsor nélküli gondolatot szóhatáron flush-oljuk.
+    let reasoningPending = ''
+    let reasoningGuarded = ''
+    const REASONING_SOFT_FLUSH = 600
+    const emitReasoningChunk = (chunk: string) => {
+      if (!chunk) return
+      const { text } = redactSensitiveText(chunk)
+      if (!text) return
+      reasoningGuarded += text
+      params.onReasoning?.(reasoningTurnId, text)
+    }
+    const onReasoningDelta = params.onReasoning
+      ? (delta: string) => {
+          reasoningPending += delta
+          let nl: number
+          while ((nl = reasoningPending.indexOf('\n')) >= 0) {
+            emitReasoningChunk(reasoningPending.slice(0, nl + 1))
+            reasoningPending = reasoningPending.slice(nl + 1)
+          }
+          if (reasoningPending.length > REASONING_SOFT_FLUSH) {
+            const cut = reasoningPending.lastIndexOf(' ')
+            if (cut > 0) {
+              emitReasoningChunk(reasoningPending.slice(0, cut + 1))
+              reasoningPending = reasoningPending.slice(cut + 1)
+            }
+          }
+        }
+      : undefined
+
     const { content, toolCalls } = await params.gateway.call({
       agentId: params.agentId,
       ...params.context,
       messages,
       modelConfig: params.modelConfig,
       ...(tools.length ? { tools } : {}),
+      ...(onReasoningDelta ? { onReasoningDelta } : {}),
     })
+
+    // Forduló-végi flush + összefoglaló (D3): ahol volt valódi reasoning, a
+    // placeholder-cím "Gondolkodás"-ra vált és a rövidített, redaktált szöveg a
+    // detail; ahol nem volt, a statikus placeholder marad fallbackként.
+    if (reasoningPending) {
+      emitReasoningChunk(reasoningPending)
+      reasoningPending = ''
+    }
+    const reasoningSummary = reasoningGuarded.trim()
     await emitActivity({
-      id: `reasoning-${turn}`,
+      id: reasoningTurnId,
       kind: 'reasoning',
-      title: turn === 0 ? 'Üzenet feldolgozása' : 'Tool eredmények kiértékelése',
+      title: reasoningSummary ? 'Gondolkodás' : placeholderTitle,
+      ...(reasoningSummary
+        ? { detail: reasoningSummary.length > 240 ? `${reasoningSummary.slice(0, 240)}…` : reasoningSummary }
+        : {}),
       status: 'done',
     })
 
@@ -2118,6 +2173,7 @@ async function describeHttpApiConnectors(
     const config = (connector.config ?? {}) as {
       baseUrl?: string
       description?: string
+      restrictToEndpoints?: boolean
       endpoints?: Array<{ method?: string; path?: string; description?: string; name?: string }>
       proposedTools?: Array<{ method?: string; path?: string; description?: string; name?: string }>
     }
@@ -2135,6 +2191,11 @@ async function describeHttpApiConnectors(
         const endpointDescription = e.description ?? e.name
         const desc = endpointDescription ? ` — ${endpointDescription}` : ''
         lines.push(`- ${e.method ?? 'GET'} ${e.path ?? ''}${desc}`)
+      }
+      // WP-3 (B3): ha az endpoint-korlát aktív, a modell tudja, hogy listán kívülit
+      // hiába próbál — a rendszer a külső rendszer megkérdezése nélkül elutasítja.
+      if (config.restrictToEndpoints === true) {
+        lines.push('Csak az itt felsorolt végpontok hívhatók — minden más hívást a rendszer elutasít (endpoint_not_allowed), mielőtt a külső rendszert megkeresné.')
       }
     }
     return lines.join('\n')

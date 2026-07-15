@@ -1227,6 +1227,11 @@ export const setTenantWebSearchControlsSchema = z.object({
   killSwitch: z.boolean(),
 })
 
+/** Chat "thinking-trace" spec §D7/WP-6 — tenant-szintű reasoning-megjelenítés kapcsoló. */
+export const setTenantThinkingTraceControlsSchema = z.object({
+  enabled: z.boolean(),
+})
+
 /** Web Fetch (WS-D) platform-tool vezérlés (WebFetch-Egress §14). Legalább az egyik mező. */
 export const setWebFetchControlsSchema = z
   .object({

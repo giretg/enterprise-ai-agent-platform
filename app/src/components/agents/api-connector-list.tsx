@@ -2,7 +2,7 @@
 
 import { useRouter } from 'next/navigation'
 import { useState, useTransition } from 'react'
-import { updateHttpApiConnectorForAgent } from '@/app/actions/platform'
+import { updateHttpApiConnectorForAgent, updateAgentConnectorBinding } from '@/app/actions/platform'
 import { unassignConnectorFromAgent } from '@/app/actions/provisioning'
 import { startConnectorOAuth } from '@/app/actions/connector-grants'
 import {
@@ -31,9 +31,14 @@ type ConnectorItem = {
     scope: string
     secretAlias: string | null
     config: unknown
+    authMode?: string
   }
   accessMode: 'read' | 'write'
+  /** Per-agent kulcs alias (kötés-szint). Jelenléte = az agentnek saját kulcsa van. */
+  agentSecretAlias?: string | null
 }
+
+const KEY_STORAGE_NOTE = 'A kulcs titkosítva tárolódik, sosem kerül az adatbázisba.'
 
 const METHODS = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'] as const
 const INPUT = 'mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm'
@@ -173,6 +178,133 @@ function readInitialConfig(config: unknown) {
         ? endpoints
         : [{ method: 'GET', path: '', description: '', idempotent: false, profile: '' }],
   }
+}
+
+/**
+ * WP-5 (B4) — KÖTÉS-szerkesztő: az egyetlen biztonságos agent-szintű művelet. Csak a
+ * hozzáférést és az opcionális per-agent kulcsot állítja (az `AgentConnector` sort), a
+ * connector strukturális configját SOHA nem érinti. Így egy „csak új kulcs" mentés
+ * semmi mást nem változtat, és a módosítás nem hat ki a connectort osztó többi agentre.
+ */
+function BindingEditor({
+  agentId,
+  item,
+  onSaved,
+}: {
+  agentId: string
+  item: ConnectorItem
+  onSaved: () => void
+}) {
+  const router = useRouter()
+  const [pending, startTransition] = useTransition()
+  const [error, setError] = useState<string | null>(null)
+  const [done, setDone] = useState<string | null>(null)
+  const [accessMode, setAccessMode] = useState<'read' | 'write'>(item.accessMode)
+  const [apiKey, setApiKey] = useState('')
+  const [clearApiKey, setClearApiKey] = useState(false)
+  const hasPerAgentKey = Boolean(item.agentSecretAlias)
+  const isDelegated = item.connector.authMode === 'user_delegated'
+
+  function submit() {
+    startTransition(async () => {
+      setError(null)
+      setDone(null)
+      const res = await updateAgentConnectorBinding({
+        agentId,
+        connectorId: item.connector.id,
+        accessMode,
+        ...(clearApiKey ? { clearApiKey: true } : apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
+      })
+      if (res.success) {
+        setDone('Kötés mentve.')
+        setApiKey('')
+        setClearApiKey(false)
+        router.refresh()
+        onSaved()
+      } else {
+        setError(res.error)
+      }
+    })
+  }
+
+  return (
+    <form
+      className="mt-4 space-y-3 rounded-xl border border-line/80 bg-night/40 p-4"
+      onSubmit={(e) => {
+        e.preventDefault()
+        submit()
+      }}
+    >
+      <p className="text-xs font-semibold uppercase tracking-wide text-ink-faint">
+        Kötés — csak erre az agentre
+      </p>
+      <label className="block text-sm">
+        <span className="text-ink-soft">Hozzáférés</span>
+        <select
+          value={accessMode}
+          onChange={(e) => setAccessMode(e.target.value as 'read' | 'write')}
+          className={INPUT}
+        >
+          <option value="write">Olvasás + írás</option>
+          <option value="read">Csak olvasás</option>
+        </select>
+      </label>
+
+      {isDelegated ? (
+        <p className="rounded-lg border border-line/60 bg-night-2/60 px-3 py-2 text-xs text-ink-faint">
+          Ez egy automatikus-hozzájárulású (user-delegált) kapcsolat — a hitelesítés per-felhasználó
+          történik, per-agent kulcs itt nem adható meg. A fiókot az „Összekötött fiókok&rdquo; oldalon
+          kösd össze.
+        </p>
+      ) : (
+        <label className="block text-sm">
+          <span className="text-ink-soft">
+            Per-agent API kulcs {hasPerAgentKey ? '(be van állítva)' : '(nincs beállítva)'}
+          </span>
+          <input
+            type="password"
+            value={apiKey}
+            onChange={(e) => {
+              setApiKey(e.target.value)
+              if (e.target.value) setClearApiKey(false)
+            }}
+            placeholder={hasPerAgentKey ? 'Üresen hagyva marad a jelenlegi' : 'Üresen hagyva a közös (tenant) kulcs marad'}
+            autoComplete="off"
+            disabled={clearApiKey}
+            className={INPUT}
+          />
+          <span className="mt-1 block text-xs text-ink-faint">
+            Csak ehhez az agenthez tartozó kulcs. Üresen hagyva az agent a kapcsolat közös
+            (tenant-szintű) kulcsát használja. {KEY_STORAGE_NOTE}
+          </span>
+          {hasPerAgentKey && (
+            <label className="mt-2 flex items-center gap-2 text-xs text-ink-soft">
+              <input
+                type="checkbox"
+                checked={clearApiKey}
+                onChange={(e) => {
+                  setClearApiKey(e.target.checked)
+                  if (e.target.checked) setApiKey('')
+                }}
+              />
+              Per-agent kulcs törlése (visszaesés a közös tenant-kulcsra)
+            </label>
+          )}
+        </label>
+      )}
+
+      {error && <p className="text-sm text-coral">{error}</p>}
+      {done && <p className="text-sm text-sage">{done}</p>}
+
+      <button
+        type="submit"
+        disabled={pending}
+        className="rounded-full bg-coral/20 px-5 py-2 text-sm font-semibold text-coral disabled:opacity-50"
+      >
+        {pending ? 'Mentés...' : 'Kötés mentése'}
+      </button>
+    </form>
+  )
 }
 
 function EditApiConnectorForm({
@@ -394,6 +526,13 @@ function EditApiConnectorForm({
             <option value="oauth2">OAuth2 (kézi refresh_token grant)</option>
             <option value="oauth2_delegated">OAuth2 – automatikus hozzájárulás (user-delegált)</option>
           </select>
+          <span className="mt-1 block text-xs text-ink-faint">
+            {authScheme === 'bearer'
+              ? 'Bearer token: csak a nyers kulcsot írd be — a rendszer az Authorization: Bearer <kulcs> fejlécet automatikusan összeállítja.'
+              : authScheme === 'header'
+                ? 'Egyedi fejléc: a megadott érték változtatás nélkül kerül a fejlécbe. Ha a szerver Bearer-t vár, azt neked kell beleírnod (Bearer <kulcs>).'
+                : 'OAuth2: a rendszer a token-végponton szerez/frissít hozzáférési tokent.'}
+          </span>
         </label>
         {authScheme === 'header' && (
           <label className="block text-sm">
@@ -417,6 +556,11 @@ function EditApiConnectorForm({
               autoComplete="off"
               className={INPUT}
             />
+            <span className="mt-1 block text-xs text-ink-faint">
+              {authScheme === 'bearer'
+                ? `A külső rendszerben generált nyers kulcs. A „Bearer " előtagot ne írd bele — a rendszer hozzáadja. ${KEY_STORAGE_NOTE}`
+                : `A fejlécbe kerülő teljes érték. Ha a szerver Bearer-t vár, írd bele: „Bearer <kulcs>". ${KEY_STORAGE_NOTE}`}
+            </span>
           </label>
         )}
         {(authScheme === 'oauth2' || authScheme === 'oauth2_delegated') && (
@@ -629,6 +773,16 @@ function EditApiConnectorForm({
         </label>
       </div>
 
+      {authScheme === 'header' &&
+        authHeader.trim().toLowerCase() === 'authorization' &&
+        apiKey.trim().length > 0 &&
+        !/^bearer\s/i.test(apiKey.trim()) && (
+          <p className="rounded-lg border border-honey/30 bg-honey/10 px-3 py-2 text-xs text-honey">
+            Figyelem: az „Authorization&rdquo; fejléchez a legtöbb szerver „Bearer &lt;kulcs&gt;&rdquo;
+            alakot vár, a beírt érték viszont nem ezzel kezdődik. Ha a szerver Bearer-t vár, írd
+            elé: <code>Bearer </code>. (Ez csak figyelmeztetés — más séma is lehet.)
+          </p>
+        )}
       {error && <p className="text-sm text-coral">{error}</p>}
       {done && <p className="text-sm text-sage">{done}</p>}
 
@@ -772,12 +926,30 @@ export function ApiConnectorList({
               </div>
             )}
             {editing && (
-              <EditApiConnectorForm
-                agentId={agentId}
-                item={item}
-                onSaved={() => setEditingId(null)}
-                onCancel={() => setEditingId(null)}
-              />
+              <>
+                <BindingEditor
+                  agentId={agentId}
+                  item={item}
+                  onSaved={() => setEditingId(null)}
+                />
+                <details className="mt-3 rounded-xl border border-honey/30 bg-honey/5 p-3">
+                  <summary className="cursor-pointer text-xs font-semibold text-honey">
+                    Connector-beállítások — az egész tenantra hat (haladó)
+                  </summary>
+                  <p className="mt-2 text-xs text-ink-faint">
+                    Ez a beállítás a connector egészére (az egész tenantra) vonatkozik — a
+                    kapcsolatot használó összes agentre. A strukturális szerkesztés (baseUrl, auth,
+                    fejlécek, endpointok) helye a provisioning; itt csak akkor módosíts, ha tudatosan
+                    az egész tenantra szánod.
+                  </p>
+                  <EditApiConnectorForm
+                    agentId={agentId}
+                    item={item}
+                    onSaved={() => setEditingId(null)}
+                    onCancel={() => setEditingId(null)}
+                  />
+                </details>
+              </>
             )}
           </li>
         )

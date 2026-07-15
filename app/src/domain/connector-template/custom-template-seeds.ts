@@ -122,10 +122,10 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
     description:
       'Ertekesito neveben futo CRM kapcsolat: ugyfeladatok olvasasa, erdeklodesek, teendok, interakciok, ajanlatstatusz es dokumentum-draft muveletek. A CRM nem kuld ugyfelnek uzenetet; a javaslatok HITL jovahagyasra kerulnek. Kötelező fejlécek: X-Agent-Id, X-Acting-User, X-Connector-Call-Id. Író hívásoknál kötelező az Idempotency-Key. A CRM nem enged közvetlen ügyfélnek küldést és nem támogat végleges DELETE műveletet a connectoron.',
     activationHelp:
-      'Az API kulcs generálásához az Ostoros CRM Platform integráció menüpontjában kell API kulcsot létrehoznod (Sales delegated profil), majd az itt megadott API kulcs mezőbe a teljes fejlécértéket írd be, "Bearer " előtaggal együtt. A CRM host mezőbe a tényleges CRM szerver domainjét/portját add meg (a fejlesztői leírásban szereplő 0.0.0.0:8080 csak helyi teszt-placeholder).',
+      'Az API kulcs generálásához az Ostoros CRM Platform integráció menüpontjában kell API kulcsot létrehoznod (Sales delegated profil), majd az itt megadott API kulcs mezőbe CSAK a nyers kulcsot írd be — a "Bearer " előtagot és az Authorization fejlécet a rendszer automatikusan hozzáadja, neked nem kell beírnod. A CRM host mezőbe a tényleges CRM szerver domainjét/portját add meg (a fejlesztői leírásban szereplő 0.0.0.0:8080 csak helyi teszt-placeholder).',
     baseUrl: 'https://{crmHost}/api/connector/v1',
     egressHosts: ['{crmHost}'],
-    authMethods: [{ kind: 'api_key', header: 'Authorization' }],
+    authMethods: [{ kind: 'bearer' }],
     scopeCatalog: [],
     endpoints: [
       {
@@ -252,7 +252,7 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
       },
       {
         name: 'apiKey',
-        label: 'API kulcs (Authorization fejléc teljes értéke, "Bearer <kulcs>")',
+        label: 'API kulcs (a CRM integrációnál generált nyers kulcs — a "Bearer " előtagot a rendszer adja hozzá)',
         type: 'secret',
         required: true,
         secretAliasHint: 'ostorosbor-crm-sales-delegated-api-key',
@@ -267,10 +267,10 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
     description:
       'Service/monitoring kapcsolat: CRM adatok olvasasa, account agent mezok frissitese, insightok es heti osszefoglalo. Nem ertekesitoi muveletekre, hanem belso elemzesre es agent javaslatokra valo. Kötelező fejlécek: X-Agent-Id, X-Acting-User, X-Connector-Call-Id. Író hívásoknál kötelező az Idempotency-Key. A CRM nem enged közvetlen ügyfélnek küldést és nem támogat végleges DELETE műveletet a connectoron.',
     activationHelp:
-      'Az API kulcs generálásához az Ostoros CRM Platform integráció menüpontjában kell API kulcsot létrehoznod (Service insight profil), majd az itt megadott API kulcs mezőbe a teljes fejlécértéket írd be, "Bearer " előtaggal együtt. A CRM host mezőbe a tényleges CRM szerver domainjét/portját add meg (a fejlesztői leírásban szereplő 0.0.0.0:8080 csak helyi teszt-placeholder).',
+      'Az API kulcs generálásához az Ostoros CRM Platform integráció menüpontjában kell API kulcsot létrehoznod (Service insight profil), majd az itt megadott API kulcs mezőbe CSAK a nyers kulcsot írd be — a "Bearer " előtagot és az Authorization fejlécet a rendszer automatikusan hozzáadja, neked nem kell beírnod. A CRM host mezőbe a tényleges CRM szerver domainjét/portját add meg (a fejlesztői leírásban szereplő 0.0.0.0:8080 csak helyi teszt-placeholder).',
     baseUrl: 'https://{crmHost}/api/connector/v1',
     egressHosts: ['{crmHost}'],
-    authMethods: [{ kind: 'api_key', header: 'Authorization' }],
+    authMethods: [{ kind: 'bearer' }],
     scopeCatalog: [],
     endpoints: [
       {
@@ -357,7 +357,7 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
       },
       {
         name: 'apiKey',
-        label: 'API kulcs (Authorization fejléc teljes értéke, "Bearer <kulcs>")',
+        label: 'API kulcs (a CRM integrációnál generált nyers kulcs — a "Bearer " előtagot a rendszer adja hozzá)',
         type: 'secret',
         required: true,
         secretAliasHint: 'ostorosbor-crm-service-insight-api-key',
