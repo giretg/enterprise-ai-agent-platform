@@ -1,5 +1,5 @@
-import { SelfUpdatingConnectorsPanel } from './self-updating-connectors-panel'
+import { redirect } from 'next/navigation'
 
 export default function SelfUpdatingConnectorsPage() {
-  return <SelfUpdatingConnectorsPanel />
+  redirect('/control-plane/provisioning#onfrissito')
 }

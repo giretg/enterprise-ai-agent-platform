@@ -30,6 +30,7 @@ import {
   type SandboxConnectionTester,
 } from '../src/domain/provisioning/provisioning-service'
 import { ProvisioningError } from '../src/domain/provisioning/errors'
+import { isConnectorAssignableToAgent } from '../src/domain/connector-self-update/pinned-runtime-config'
 import { validateDraftConfig } from '../src/domain/provisioning/draft-validator'
 import {
   normalizeConnectorConfig,
@@ -262,6 +263,12 @@ class FakeDraftRepo implements ConnectorDraftRepository {
   async listActiveCatalog(tenantId: string | null) {
     return [...this.drafts.values()]
       .filter((d) => d.tenantId === tenantId && d.connector.lifecycleState === 'active')
+      .filter((d) =>
+        isConnectorAssignableToAgent(
+          d.connector.connectorMode,
+          (d.connector as Connector & { activeCapabilitySet?: unknown }).activeCapabilitySet ?? null,
+        ),
+      )
       .map((d) => ({ id: d.connectorId, type: d.connector.type, name: d.connector.name }))
   }
   async findConnectorById(connectorId: string) {
@@ -272,6 +279,10 @@ class FakeDraftRepo implements ConnectorDraftRepository {
       tenantId: draft.tenantId,
       lifecycleState: draft.connector.lifecycleState,
       secretAlias: draft.connector.secretAlias,
+      connectorMode: draft.connector.connectorMode,
+      activeCapabilitySet:
+        (draft.connector as Connector & { activeCapabilitySet?: unknown }).activeCapabilitySet ??
+        null,
     }
   }
 }
@@ -650,6 +661,48 @@ async function run() {
     assert.equal(res.connectorId, created.connectorId)
     assert.equal(drafts.agentConnectors.length, 1)
     assert.equal(audit.byAction('provisioning.connector.assign').length, 1)
+  })
+
+  await test('P7c: self_updating connector aktív snapshot nélkül nem rendelhető agenthez', async () => {
+    const { svc, drafts } = makeService()
+    const created = await draftToActivatable(svc)
+    await svc.activateConnector({ draftId: created.draftId, secretAlias: 'env:K' }, adminActor)
+    const draft = drafts.drafts.get(created.draftId)!
+    draft.connector.connectorMode = 'self_updating'
+    draft.connector.activeSpecVersionId = null
+    ;(draft.connector as Connector & { activeCapabilitySet?: unknown }).activeCapabilitySet = null
+
+    await expectError('CONNECTOR_NOT_ASSIGNABLE', () =>
+      svc.assignConnectorToAgent(
+        { connectorId: created.connectorId, agentId: 'agent-x', accessMode: 'read' },
+        adminActor,
+      ),
+    )
+    assert.equal(drafts.agentConnectors.length, 0)
+
+    const catalog = await svc.listCatalog(adminActor)
+    assert.equal(
+      catalog.some((c) => c.id === created.connectorId),
+      false,
+      'catalog must hide non-assignable self_updating connectors',
+    )
+  })
+
+  await test('P7d: self_updating connector érvényes aktív snapshottal hozzárendelhető', async () => {
+    const { svc, drafts } = makeService()
+    const created = await draftToActivatable(svc)
+    await svc.activateConnector({ draftId: created.draftId, secretAlias: 'env:K' }, adminActor)
+    const draft = drafts.drafts.get(created.draftId)!
+    draft.connector.connectorMode = 'self_updating'
+    ;(draft.connector as Connector & { activeCapabilitySet?: unknown }).activeCapabilitySet =
+      cleanConfig()
+
+    const res = await svc.assignConnectorToAgent(
+      { connectorId: created.connectorId, agentId: 'agent-x', accessMode: 'read' },
+      adminActor,
+    )
+    assert.equal(res.connectorId, created.connectorId)
+    assert.equal(drafts.agentConnectors.length, 1)
   })
 
   await test('P7b: unassignConnectorFromAgent emberi admin + provisioning.connector.unassign', async () => {

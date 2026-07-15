@@ -14,6 +14,7 @@ import { createHash } from 'crypto'
 import type { ConnectorAccessMode, ConnectorType, Prisma, UserRole } from '@prisma/client'
 import type { AuditRepository, ConnectorDraftRepository } from '@/repositories/interfaces'
 import type { ConnectorGrantService } from '@/domain/connector-grant/connector-grant-service'
+import { isConnectorAssignableToAgent } from '@/domain/connector-self-update/pinned-runtime-config'
 import {
   normalizeGmailConnectorConfig,
   type GmailConnectorConfig,
@@ -561,6 +562,20 @@ export class ProvisioningService {
     actor: ProvisioningActor,
   ): Promise<{ agentId: string; connectorId: string }> {
     this.requireHumanAdmin(actor, 'assignConnectorToAgent')
+
+    const connector = await this.loadConnectorForTenant(input.connectorId, actor)
+    if (connector.lifecycleState !== 'active') {
+      throw new ProvisioningError(
+        'CONNECTOR_NOT_ACTIVE',
+        'only an active connector can be assigned to an agent',
+      )
+    }
+    if (!isConnectorAssignableToAgent(connector.connectorMode, connector.activeCapabilitySet)) {
+      throw new ProvisioningError(
+        'CONNECTOR_NOT_ASSIGNABLE',
+        'Az önfrissítő kapcsolatnak előbb legyen jóváhagyott, aktív OpenAPI-verziója (Frissítés keresése → jóváhagyás).',
+      )
+    }
 
     // Ha per-agent API-kulcsot adtak meg, elmentjük a Secret Store-ba és az
     // agentConnector.secretAlias-ba a secret-ref-et írjuk. Ez agent_owned módban

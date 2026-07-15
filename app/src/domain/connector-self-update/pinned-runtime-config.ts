@@ -16,3 +16,16 @@ export function pinnedRuntimeConfig(
   if (!set) return null
   return { ...set, restrictToEndpoints: true, selfUpdatingPinned: true } as Prisma.JsonValue
 }
+
+/**
+ * Agenthez rendelhető-e a connector. Ugyanaz a fail-closed szabály, mint a runtime
+ * listázásnál: self_updating connector aktív, sémával validált snapshot nélkül
+ * futásidőben láthatatlan lenne — ezért hozzárendelni sem szabad.
+ */
+export function isConnectorAssignableToAgent(
+  connectorMode: 'fixed' | 'self_updating',
+  activeCapabilitySet: unknown,
+): boolean {
+  if (connectorMode === 'fixed') return true
+  return pinnedRuntimeConfig('self_updating', {}, activeCapabilitySet) !== null
+}

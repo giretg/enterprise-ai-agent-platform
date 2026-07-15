@@ -14,7 +14,7 @@ import {
   type UsedByResolver,
 } from '../src/domain/connector-self-update/spec-diff'
 import { SpecSyncService, specContentHash } from '../src/domain/connector-self-update/spec-sync'
-import { pinnedRuntimeConfig } from '../src/domain/connector-self-update/pinned-runtime-config'
+import { pinnedRuntimeConfig, isConnectorAssignableToAgent } from '../src/domain/connector-self-update/pinned-runtime-config'
 import { HttpApiClient, HttpApiError, parseHttpApiConfig } from '../src/domain/connector/http-api-client'
 
 // ── OpenAPI fixture-ök ──────────────────────────────────────────────────────
@@ -367,6 +367,13 @@ async function run() {
   await test('self_updating connector aktív snapshot nélkül fail-closed', () => {
     assert.equal(pinnedRuntimeConfig('self_updating', V1, null), null)
     assert.equal(pinnedRuntimeConfig('self_updating', V1, { malformed: true }), null)
+  })
+
+  await test('self_updating connector aktív snapshot nélkül nem assignolható', () => {
+    assert.equal(isConnectorAssignableToAgent('self_updating', null), false)
+    assert.equal(isConnectorAssignableToAgent('self_updating', { malformed: true }), false)
+    assert.equal(isConnectorAssignableToAgent('self_updating', V1), true)
+    assert.equal(isConnectorAssignableToAgent('fixed', null), true)
   })
 
   await test('a pinned snapshot endpoint-listája a kizárólagos runtime allowlist', async () => {

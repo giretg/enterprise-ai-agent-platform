@@ -29,7 +29,7 @@ import {
 import { startConnectorOAuth } from '@/app/actions/connector-grants'
 import { isResolvableSecretAlias } from '@/domain/provisioning/secret-alias'
 import { OSTOROSBOR_CRM_DEFAULT_INSTANCE_VALUES } from '@/domain/connector-template/custom-template-seeds'
-import Link from 'next/link'
+import { SelfUpdatingConnectorsPanel } from '@/app/control-plane/connectors/self-updating/self-updating-connectors-panel'
 
 // A listProvisioningDrafts visszaadott alakja (provisioning-service.listDrafts).
 type CheckStatus = 'passed' | 'warned' | 'failed'
@@ -719,18 +719,14 @@ export function ProvisioningPanel() {
         </p>
       </div>
 
-      <div className="rounded-lg border border-sage/35 bg-sage/8 p-4">
-        <p className="font-semibold">🔄 Kulcs + API-leírás linkje van?</p>
-        <p className="mt-1 text-sm text-ink-soft">Megbízható partnerhez választhatod az önfrissítő kapcsolatot; a későbbi képességeket diffként, külön jóváhagyással veheted át.</p>
-        <Link href="/control-plane/connectors/self-updating" className="mt-3 inline-block rounded-md bg-ink px-3 py-2 text-xs font-semibold text-card">Önfrissítő kapcsolat beállítása</Link>
-      </div>
-
       <ErrorDialog message={error} onClose={() => setError(null)} />
       {notice ? (
         <div className="rounded-lg border border-sage/40 bg-sage/10 px-4 py-3 text-sm text-sage">
           {notice}
         </div>
       ) : null}
+
+      <SelfUpdatingConnectorsPanel embedded />
 
       <Card title="Új draft connector">
         <div className="grid gap-5 lg:grid-cols-[15rem_1fr]">

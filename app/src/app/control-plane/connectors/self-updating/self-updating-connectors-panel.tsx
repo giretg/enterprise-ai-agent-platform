@@ -67,7 +67,7 @@ function DiffGroup({ title, tone, items }: { title: string; tone: 'success' | 'd
   )
 }
 
-export function SelfUpdatingConnectorsPanel() {
+export function SelfUpdatingConnectorsPanel({ embedded = false }: { embedded?: boolean }) {
   const [rows, setRows] = useState<ConnectorRow[]>([])
   const [tenantAuto, setTenantAuto] = useState(false)
   const [name, setName] = useState('')
@@ -120,32 +120,43 @@ export function SelfUpdatingConnectorsPanel() {
   }
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="font-display text-2xl font-semibold tracking-tight">Önfrissítő kapcsolatok</h1>
-        <p className="mt-1 text-sm text-ink-soft">
-          A partner új képességeit ellenőrzötten veheted át; az agent mindig az utoljára jóváhagyott állapotot használja.
-        </p>
-      </div>
+    <div id="onfrissito" className="space-y-6 scroll-mt-6">
+      {embedded ? (
+        <div>
+          <h2 className="font-display text-xl font-semibold tracking-tight">Önfrissítő kapcsolatok</h2>
+          <p className="mt-1 text-sm text-ink-soft">
+            Kulcs + API-leírás link. A partner új képességeit diffként, külön jóváhagyással veheted át; az agent mindig az utoljára jóváhagyott állapotot használja.
+          </p>
+        </div>
+      ) : (
+        <div>
+          <h1 className="font-display text-2xl font-semibold tracking-tight">Önfrissítő kapcsolatok</h1>
+          <p className="mt-1 text-sm text-ink-soft">
+            A partner új képességeit ellenőrzötten veheted át; az agent mindig az utoljára jóváhagyott állapotot használja.
+          </p>
+        </div>
+      )}
 
       {message ? <p className="rounded-md border border-sage/35 bg-sage/8 px-3 py-2 text-sm">{message}</p> : null}
       {error ? <p role="alert" className="rounded-md border border-coral/40 bg-coral/8 px-3 py-2 text-sm text-coral">{error}</p> : null}
 
-      <Card title="Kapcsolat típusa">
-        <div className="grid gap-3 md:grid-cols-2">
-          <Link href="/control-plane/provisioning" className="rounded-md border border-ink/15 p-4 hover:border-coral/35">
-            <span className="font-semibold">Rögzített kapcsolat</span>
-            <p className="mt-1 text-xs text-ink-soft">A képességeket a szokásos onboarding folyamatban állítod be.</p>
-          </Link>
-          <div className="rounded-md border border-sage/45 bg-sage/8 p-4">
-            <span className="font-semibold">🔄 Önfrissítő kapcsolat</span>
-            <p className="mt-1 text-xs text-ink-soft">
-              Egy kulcs és a partner API-leírásának linkje kell. A későbbi változásokat egy gombbal, átnézés után veheted át.
-            </p>
-            <p title="A link megmondja, mire képes a partner API-ja. Csak olyan partnernél használd, akiben megbízol." className="mt-2 text-xs font-semibold text-sage">Mit jelent ez? ⓘ</p>
+      {!embedded ? (
+        <Card title="Kapcsolat típusa">
+          <div className="grid gap-3 md:grid-cols-2">
+            <Link href="/control-plane/provisioning" className="rounded-md border border-ink/15 p-4 hover:border-coral/35">
+              <span className="font-semibold">Rögzített kapcsolat</span>
+              <p className="mt-1 text-xs text-ink-soft">A képességeket a szokásos onboarding folyamatban állítod be.</p>
+            </Link>
+            <div className="rounded-md border border-sage/45 bg-sage/8 p-4">
+              <span className="font-semibold">🔄 Önfrissítő kapcsolat</span>
+              <p className="mt-1 text-xs text-ink-soft">
+                Egy kulcs és a partner API-leírásának linkje kell. A későbbi változásokat egy gombbal, átnézés után veheted át.
+              </p>
+              <p title="A link megmondja, mire képes a partner API-ja. Csak olyan partnernél használd, akiben megbízol." className="mt-2 text-xs font-semibold text-sage">Mit jelent ez? ⓘ</p>
+            </div>
           </div>
-        </div>
-      </Card>
+        </Card>
+      ) : null}
 
       <Card title="Új önfrissítő kapcsolat">
         <div className="space-y-4">
@@ -186,7 +197,7 @@ export function SelfUpdatingConnectorsPanel() {
         </label>
       </Card>
 
-      <Card title={`Kapcsolatok (${rows.length})`}>
+      <Card title={`Önfrissítő kapcsolatok (${rows.length})`}>
         {rows.length === 0 ? <p className="text-sm text-ink-soft">Még nincs önfrissítő kapcsolat.</p> : (
           <div className="space-y-4">{rows.map((row) => <ConnectorCard key={row.id} row={row} pending={pending} run={run} onSync={syncOne} />)}</div>
         )}

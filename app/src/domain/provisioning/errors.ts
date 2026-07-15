@@ -21,6 +21,7 @@ export type ProvisioningErrorCode =
   | 'DRAFT_NOT_EDITABLE' // javítás: csak draft/validated config szerkeszthető
   | 'CONNECTOR_NOT_ACTIVE' // reopen/decommission: csak aktív connectorra
   | 'CONNECTOR_NOT_FOUND_OR_FORBIDDEN' // connector-hozzáférés: nem a tenant connectora
+  | 'CONNECTOR_NOT_ASSIGNABLE' // self_updating: nincs aktív/valid capability snapshot
   | 'DRAFT_ALREADY_ACTIVATED' // hard-delete: csak sosem aktivált draftra
 
 export class ProvisioningError extends Error {
