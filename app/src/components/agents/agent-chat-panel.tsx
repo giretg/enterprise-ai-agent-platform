@@ -504,12 +504,12 @@ function MessageBubble({
   return (
     <div className={`flex animate-rise ${isUser ? 'justify-end' : 'justify-start'}`}>
       <div
-        className={`group relative max-w-[85%] rounded-2xl px-4 py-3 shadow-sm ${
+        className={`group relative rounded-2xl px-4 py-3 shadow-sm ${
           isDeleted
-            ? 'border border-dashed border-line bg-night-2 text-ink-faint'
+            ? 'max-w-[85%] border border-dashed border-line bg-night-2 text-ink-faint'
             : isUser
-              ? 'rounded-br-md bg-coral text-card'
-              : 'rounded-bl-md border border-line bg-card text-ink-soft'
+              ? 'max-w-[85%] rounded-br-md bg-coral text-card'
+              : 'max-w-[85%] rounded-bl-md border border-line bg-card text-ink-soft lg:max-w-[min(90%,64rem)]'
         }`}
       >
         {isDeleted ? (
@@ -1493,7 +1493,7 @@ export function AgentChatPanel({
   if (!open || !mounted) return null
 
   return createPortal(
-    <div className="fixed inset-0 z-[200] flex items-end justify-center sm:items-center sm:p-4">
+    <div className="fixed inset-0 z-[200] flex items-end justify-center sm:items-center sm:p-3 lg:p-2">
       <button
         type="button"
         aria-label="Bezárás"
@@ -1505,7 +1505,7 @@ export function AgentChatPanel({
         role="dialog"
         aria-modal="true"
         aria-labelledby="agent-chat-title"
-        className="relative z-[1] flex h-[100dvh] w-full max-w-5xl flex-col overflow-hidden border border-line bg-card shadow-2xl sm:h-[min(88vh,820px)] sm:rounded-2xl"
+        className="relative z-[1] flex h-[100dvh] w-full flex-col overflow-hidden border border-line bg-card shadow-2xl sm:h-[min(calc(100dvh-1.5rem),calc(100vh-1.5rem))] sm:max-w-[min(calc(100vw-1.5rem),100rem)] sm:rounded-2xl lg:h-[min(calc(100dvh-1rem),calc(100vh-1rem))] lg:max-w-[min(calc(100vw-1rem),120rem)]"
       >
         <header className="flex shrink-0 items-center gap-3 border-b border-line px-4 py-3 sm:px-5">
           <button
@@ -1611,7 +1611,7 @@ export function AgentChatPanel({
           )}
 
           <div
-            className={`absolute inset-y-0 left-0 z-20 w-[min(88vw,17rem)] border-r border-line shadow-xl transition-transform sm:static sm:z-0 sm:w-56 sm:shrink-0 sm:translate-x-0 sm:shadow-none ${
+            className={`absolute inset-y-0 left-0 z-20 w-[min(88vw,17rem)] border-r border-line shadow-xl transition-transform sm:static sm:z-0 sm:w-56 sm:shrink-0 sm:translate-x-0 sm:shadow-none lg:w-64 xl:w-72 ${
               sessionsOpen ? 'translate-x-0' : '-translate-x-full sm:translate-x-0'
             }`}
           >

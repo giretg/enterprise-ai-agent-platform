@@ -2,8 +2,7 @@ import Link from 'next/link'
 import { listAgents } from '@/app/actions/platform'
 import { getAuthContext } from '@/auth/context'
 import { hasMinimumRole } from '@/auth/types'
-import { AgentRegistryCard } from '@/components/agents/agent-registry-card'
-import { Card } from '@/components/ui/shell'
+import { AgentRegistryList } from '@/components/agents/agent-registry-list'
 
 export default async function AgentRegistryPage() {
   const [res, ctx] = await Promise.all([listAgents(), getAuthContext()])
@@ -34,21 +33,7 @@ export default async function AgentRegistryPage() {
         )}
       </div>
 
-      <div className="grid gap-5 md:grid-cols-2">
-        {agents.map((agent) => (
-          <AgentRegistryCard key={agent.id} agent={agent} canDelete={canDelete} />
-        ))}
-        {agents.length === 0 && (
-          <Card className="md:col-span-2">
-            <p className="text-sm text-ink-faint">
-              Még nincs munkatárs a csapatban — futtasd:{' '}
-              <code className="rounded bg-night-2 px-1.5 py-0.5 font-mono text-xs">
-                npm run db:seed
-              </code>
-            </p>
-          </Card>
-        )}
-      </div>
+      <AgentRegistryList agents={agents} canDelete={canDelete} />
     </div>
   )
 }
