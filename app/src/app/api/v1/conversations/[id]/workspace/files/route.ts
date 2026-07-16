@@ -13,9 +13,9 @@ function getStorage() {
   return new WorkspaceStorage(process.env.WORKSPACE_BUCKET ?? 'platform-workspace-prod')
 }
 
-async function resolveConversation(conversationId: string) {
-  return prisma.conversation.findUnique({
-    where: { id: conversationId },
+async function resolveConversation(conversationId: string, tenantId: string) {
+  return prisma.conversation.findFirst({
+    where: { id: conversationId, tenantId },
     select: { id: true, tenantId: true, agentId: true, createdById: true },
   })
 }
@@ -32,7 +32,7 @@ export async function GET(
   if (!user) return jsonError('Unauthorized', 401)
 
   const { id: conversationId } = await params
-  const conversation = await resolveConversation(conversationId)
+  const conversation = await resolveConversation(conversationId, user.activeTenantId)
   if (!conversation) return jsonError('Conversation not found', 404)
   let tenantId: string
   try {
@@ -89,7 +89,7 @@ export async function POST(
   if (!user) return jsonError('Unauthorized', 401)
 
   const { id: conversationId } = await params
-  const conversation = await resolveConversation(conversationId)
+  const conversation = await resolveConversation(conversationId, user.activeTenantId)
   if (!conversation) return jsonError('Conversation not found', 404)
   let tenantId: string
   try {

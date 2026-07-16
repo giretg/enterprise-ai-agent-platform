@@ -316,12 +316,40 @@ async function main() {
     const ticket = await service.promoteToTicket({
       conversationId: conv.id,
       createdById: 'user-1',
+      tenantId: 'tenant-A',
       answerPayload: { question: 'Jóváhagyandó válasz', answer: 'OK' },
       agentMessageId: agentMessage.id,
     })
 
     assert.equal(ticket.conversationId, conv.id)
     assert.equal((await conversations.findMessageById(agentMessage.id))?.ticketRefId, ticket.id)
+  })
+
+  await test('promote cross-tenant deny — ticket nem nyílhat idegen conversationből', async () => {
+    const { service, tickets } = buildService()
+    const conv = await service.createConversation({
+      agentId: 'agent-1',
+      createdById: 'user-1',
+      tenantId: 'tenant-A',
+    })
+    const agentMessage = await service.appendMessage({
+      conversationId: conv.id,
+      role: 'agent',
+      content: JSON.stringify({ question: 'Más tenant válasza', answer: 'OK' }),
+    })
+
+    await assert.rejects(
+      () =>
+        service.promoteToTicket({
+          conversationId: conv.id,
+          createdById: 'user-2',
+          tenantId: 'tenant-B',
+          answerPayload: { question: 'Más tenant válasza', answer: 'OK' },
+          agentMessageId: agentMessage.id,
+        }),
+      /Conversation not found/,
+    )
+    assert.equal(tickets.tickets.length, 0)
   })
 
   await test('archive append deny — archived szálra append elutasítva', async () => {

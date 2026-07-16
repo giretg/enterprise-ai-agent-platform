@@ -13,9 +13,9 @@ function getStorage() {
   return new WorkspaceStorage(process.env.WORKSPACE_BUCKET ?? 'platform-workspace-prod')
 }
 
-async function resolveTicket(ticketId: string) {
-  return prisma.ticket.findUnique({
-    where: { id: ticketId },
+async function resolveTicket(ticketId: string, tenantId: string) {
+  return prisma.ticket.findFirst({
+    where: { id: ticketId, tenantId },
     select: { id: true, tenantId: true, agentId: true, createdById: true },
   })
 }
@@ -32,7 +32,7 @@ export async function GET(
   if (!user) return jsonError('Unauthorized', 401)
 
   const { id: ticketId } = await params
-  const ticket = await resolveTicket(ticketId)
+  const ticket = await resolveTicket(ticketId, user.activeTenantId)
   if (!ticket) return jsonError('Ticket not found', 404)
   let tenantId: string
   try {
@@ -89,7 +89,7 @@ export async function POST(
   if (!user) return jsonError('Unauthorized', 401)
 
   const { id: ticketId } = await params
-  const ticket = await resolveTicket(ticketId)
+  const ticket = await resolveTicket(ticketId, user.activeTenantId)
   if (!ticket) return jsonError('Ticket not found', 404)
   let tenantId: string
   try {

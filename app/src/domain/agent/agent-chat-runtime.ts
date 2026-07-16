@@ -12,6 +12,7 @@ import { composeSystemPrompt } from '@/lib/agent-prompt'
 import { formatOrgRoster } from '@/lib/agent-org-roster'
 import { buildRunAsAuthorization } from '@/lib/run-as-payload'
 import { formatHitsForPrompt, type KbHit } from '@/lib/kb-format'
+import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
 import {
   chatTriggerSlotDescriptors,
   missingRequiredTriggerSlots,
@@ -306,6 +307,20 @@ function encodeStoredMessage(text: string, attachmentIds: string[]): string {
   return JSON.stringify({ text, attachmentIds })
 }
 
+/**
+ * A chat a legérzékenyebb agent-felület: prompt-kontextus, memória és workspace is
+ * az agent tenantján fut. Idegen tenant agentje opak 'Agent not found'-ot kap, hogy
+ * az azonosító ismerete se legyen felderítési csatorna.
+ */
+function assertAgentReachableForChat(
+  agentTenantId: string | null,
+  actorTenantId: string | null,
+): void {
+  if (!isAgentReachableFromTenant(agentTenantId, actorTenantId)) {
+    throw new Error('Agent not found')
+  }
+}
+
 type ChatProcessReply = {
   text: string
   ticketRefId?: string | null
@@ -398,6 +413,7 @@ export class AgentChatRuntime {
 
     const agentDetails = await this.agents.findByIdWithDetails(params.agentId)
     if (!agentDetails) throw new Error('Agent not found')
+    assertAgentReachableForChat(agentDetails.agent.tenantId, params.tenantId ?? null)
 
     let conversationId = params.conversationId
     if (conversationId) {
@@ -703,6 +719,10 @@ export class AgentChatRuntime {
 
       const agentDetails = await this.agents.findByIdWithDetails(params.agentId)
       if (!agentDetails) {
+        yield { type: 'error', message: 'Agent not found' }
+        return
+      }
+      if (!isAgentReachableFromTenant(agentDetails.agent.tenantId, params.tenantId ?? null)) {
         yield { type: 'error', message: 'Agent not found' }
         return
       }
@@ -1084,6 +1104,7 @@ export class AgentChatRuntime {
 
     const agentDetails = await this.agents.findByIdWithDetails(params.agentId)
     if (!agentDetails) throw new Error('Agent not found')
+    assertAgentReachableForChat(agentDetails.agent.tenantId, params.tenantId ?? null)
 
     const attachmentDocs = await this.loadDocuments(attachmentIds)
     const modelConfig = agentDetails.agent.modelConfig as {
