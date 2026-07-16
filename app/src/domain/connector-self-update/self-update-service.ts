@@ -311,13 +311,18 @@ export class SelfUpdatingConnectorService {
     if (!ctx.source.trustedAt || !ctx.source.urlApprovedAt) {
       throw new SelfUpdateError('INVALID_STATE', 'A link és a partner jóváhagyása szükséges.')
     }
-    if (!ctx.activeVersion) {
-      this.requireDifferentActor(
-        ctx.source.createdById,
-        actor,
-        'Az első verziót nem hagyhatja jóvá a link beállítója.',
-      )
-    }
+    // T2 SoD: a link beállítója EGYETLEN capability-verziót sem élesíthet egyedül —
+    // sem az elsőt, sem a későbbi bővítéseket. A rendszer épp a kockázatos (pl. új
+    // írási) változásokat tartja vissza az automatikus átvételtől, hogy emberi kapun
+    // menjenek át; ez a kapu csak akkor ér valamit, ha a jóváhagyó más, mint a beállító.
+    // Superadmin (sodExempt) továbbra is kivétel — auditált `sod_bypass` metaadattal.
+    this.requireDifferentActor(
+      ctx.source.createdById,
+      actor,
+      ctx.activeVersion
+        ? 'A módosítást másik kollégának kell átvennie, mint aki a linket beállította.'
+        : 'Az első verziót nem hagyhatja jóvá a link beállítója.',
+    )
     const sod = this.sodMeta(actor, ctx.source.createdById)
     const version = await this.repo.activateVersion({
       connectorId,
