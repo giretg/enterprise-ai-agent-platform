@@ -1,4 +1,4 @@
-import type { PrismaClient, User, UserRole } from '@prisma/client'
+import type { PrismaClient, User } from '@prisma/client'
 import { ROLE_RANK, isEmailDomainAllowed } from '@/lib/iam-policy'
 import { repositories } from '@/repositories/postgres'
 
@@ -6,7 +6,6 @@ export type ClerkUserSyncInput = {
   externalAuthId: string
   email: string
   name: string
-  role: UserRole | null
 }
 
 /** §7/B: nem engedett domainnel érkező, teljesen új önregisztráció elutasítva. */
@@ -26,11 +25,13 @@ function pickBestEmailMatch(users: User[]): User | null {
   })[0]
 }
 
-function updateData(input: ClerkUserSyncInput, currentRole?: UserRole | null) {
+function updateData(input: ClerkUserSyncInput, currentRole?: User['role']) {
   return {
     email: input.email,
     name: input.name,
-    role: input.role ?? currentRole ?? null,
+    // The provider proves identity only. Authorization is granted exclusively
+    // by a locally validated invitation or an internal approval workflow.
+    role: currentRole ?? null,
   }
 }
 
@@ -99,24 +100,8 @@ export async function syncClerkUser(prisma: PrismaClient, input: ClerkUserSyncIn
     })
   }
 
-  // Teljesen új személy (nincs se authId, se email egyezés).
-  if (input.role) {
-    // A metadata szerepet hordoz ⇒ Clerk-natív meghívóval érkezett (a role a
-    // publicMetadata-ban, `inviteUser` állította be) — ez az admin-vezérelt út,
-    // nem önregisztráció, ezért azonnal aktív (§7/A).
-    return prisma.user.create({
-      data: {
-        externalAuthId: input.externalAuthId,
-        email: input.email,
-        name: input.name,
-        role: input.role,
-        status: 'active',
-        activatedAt: new Date(),
-      },
-    })
-  }
-
-  // Önregisztráció (§7/B): opcionális domain-allowlist, egyébként `pending` + `role = NULL`
+  // Új személy: opcionális domain-allowlist, egyébként `pending` + `role = NULL`
+  // (§7/B). A Clerk publicMetadata nem emelhet belső jogosultságot.
   // (deny-by-default, N-IAM-2/3) — csak admin-jóváhagyás után fér bármihez.
   const allowlist = process.env.IAM_SELF_REGISTER_ALLOWED_DOMAINS
   if (!isEmailDomainAllowed(input.email, allowlist)) {

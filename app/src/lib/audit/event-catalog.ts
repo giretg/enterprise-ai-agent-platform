@@ -27,6 +27,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'tenant.member.update',
   'tenant.member.role.change',
   'tenant.member.suspend',
+  'tenant.member.invite_accept',
   'tenant.oauth.google.update',
   'tenant.self_update.policy.update',
   'user.authz.deny',

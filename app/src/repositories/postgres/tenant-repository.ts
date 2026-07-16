@@ -145,6 +145,36 @@ export class PostgresTenantMembershipRepository implements TenantMembershipRepos
     })
   }
 
+  async upsert(data: {
+    tenantId: string
+    userId: string
+    role: UserRole
+    status?: TenantMembershipStatus
+    isDefault?: boolean
+    invitedById?: string | null
+  }) {
+    const status = data.status ?? 'pending'
+    const activatedAt = status === 'active' ? new Date() : null
+    return prisma.tenantMembership.upsert({
+      where: { tenantId_userId: { tenantId: data.tenantId, userId: data.userId } },
+      create: {
+        tenantId: data.tenantId,
+        userId: data.userId,
+        role: data.role,
+        status,
+        isDefault: data.isDefault ?? false,
+        invitedById: data.invitedById ?? null,
+        ...(activatedAt ? { activatedAt } : {}),
+      },
+      update: {
+        role: data.role,
+        status,
+        ...(data.isDefault !== undefined ? { isDefault: data.isDefault } : {}),
+        ...(activatedAt ? { activatedAt } : {}),
+      },
+    })
+  }
+
   async update(
     id: string,
     data: Partial<{
