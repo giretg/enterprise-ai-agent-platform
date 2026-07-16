@@ -108,6 +108,71 @@ check('assertAuditActionRegistered: ismeretlen típus elutasítva', () => {
   )
 })
 
+// ── v2 hash: lebegőpontos metaadat a DB-tárolt alakra normalizálva ─────────
+//
+// A Prisma a `Json` mezőt 16 értékes jegyre kerekítve írja, ezért a memóriabeli 17-jegyű
+// double sosem az kerül a DB-be, amit a hash látott → a verifyChain saját magára mondott
+// tampert (élesben a `memory.retrieve` sorok ~20%-ára). A hash a TÁROLT sor bizonyítéka,
+// ezért a kanonikalizálás mindkét oldalon 16 jegyre normalizál.
+
+const FLOAT_FIXTURE = {
+  seq: BigInt(42),
+  prevHash: '2:aaaa',
+  actorType: 'agent' as const,
+  actorId: 'a1',
+  agentVersion: 1,
+  action: 'memory.retrieve',
+  targetType: 'memory',
+  targetId: 't1',
+  modelUsed: null,
+  inputRef: 'project:__general__',
+  outputRef: 'chunks:1',
+  policyDecision: 'allowed',
+  tenantId: 'tn',
+  ticketId: null,
+  conversationId: 'cv',
+  createdAt: new Date('2026-07-09T08:47:00.083Z'),
+}
+
+check('v2 hash: a 17-jegyű double ugyanazt adja, mint a DB-be ténylegesen kerülő 16-jegyű', () => {
+  // A Prisma pontosan Number(v.toPrecision(16))-ot tárol ebből (élesben verifikálva, 10/10).
+  const inMemory = 0.13781565621305947
+  const asStored = 0.1378156562130595
+  assert.notEqual(inMemory, asStored, 'a fixtúra értelmét veszti, ha ez a két érték egyenlő')
+  assert.equal(
+    computeAuditHashV2({ ...FLOAT_FIXTURE, metadata: { scores: { c1: inMemory } } } as never),
+    computeAuditHashV2({ ...FLOAT_FIXTURE, metadata: { scores: { c1: asStored } } } as never),
+  )
+})
+
+check('v2 hash: a normalizálás mélyen fut (tömb + beágyazott objektum)', () => {
+  const inMemory = { a: [0.13781565621305947], b: { c: 0.47640028270553847 } }
+  const asStored = { a: [0.1378156562130595], b: { c: 0.4764002827055385 } }
+  assert.equal(
+    computeAuditHashV2({ ...FLOAT_FIXTURE, metadata: inMemory } as never),
+    computeAuditHashV2({ ...FLOAT_FIXTURE, metadata: asStored } as never),
+  )
+})
+
+check('v2 hash: ≤16 jegyű érték VÁLTOZATLAN — a meglévő lánc nem törik (nincs v3)', () => {
+  // Rögzített digest a normalizálás bevezetése ELŐTTI kódról. Ha ez elmozdul, a
+  // termelési lánc minden float-os sora egyszerre bukna → verziózott hash kellene.
+  assert.equal(
+    computeAuditHashV2({
+      ...FLOAT_FIXTURE,
+      metadata: { scores: { c1: 0.4161019569175269 }, contextTokens: 123, latencyMs: 1066, ok: true, s: 'é\n?' },
+    } as never),
+    '2:c90f262002098d7b4bf549830156d8abd31b54962ffc94eb9b794e0ec8cabec4',
+  )
+})
+
+check('v2 hash: eltérő számok TOVÁBBRA IS eltérő hash-t adnak (a normalizálás nem tompít)', () => {
+  assert.notEqual(
+    computeAuditHashV2({ ...FLOAT_FIXTURE, metadata: { s: 0.4161019569175269 } } as never),
+    computeAuditHashV2({ ...FLOAT_FIXTURE, metadata: { s: 0.4161019569175268 } } as never),
+  )
+})
+
 // ── explicit tenant/ticket/conversation attribúció (§3.1/§3.2) ─────────────
 
 check('deriveAuditAttribution: ticket targetType-ból derivál', () => {

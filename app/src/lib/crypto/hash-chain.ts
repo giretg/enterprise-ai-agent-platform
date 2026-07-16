@@ -69,14 +69,33 @@ export interface AuditHashV2Params {
 }
 
 /**
+ * A `metadata` double-jei NEM utaznak veszteségmentesen a DB-be: a Prisma a `Json` mező
+ * írásakor 16 értékes jegyre kerekít (0.13781565621305947 → 0.1378156562130595). A hash-t
+ * viszont a memóriabeli, teljes pontosságú értékre számoltuk, így a verifyChain a
+ * visszaolvasott (kerekített) értékből sosem kaphatta vissza az eredeti hash-t, és saját
+ * magára mondott tampert — a `memory.retrieve` sorokra, amik hasonlósági score-t tesznek a
+ * metaadatba (egy double ~30%-ának kell 17 jegy).
+ *
+ * A hash annak a sornak a bizonyítéka, ami a DB-ben ÁLL, ezért a normalizálás mindkét
+ * oldalon (íráskor és ellenőrzéskor) fut. Így a lánc konzisztens marad attól függetlenül,
+ * hogy a szerializáló kerekít-e — egy jövőbeli Prisma, ami pontosan írna, sem törné el.
+ * ≤16 jegyű értékekre identitás, ezért a MEGLÉVŐ sorok hash-e változatlan (nincs v3/migráció).
+ */
+const AUDIT_NUMBER_PRECISION = 16
+
+function normalizeNumber(value: number): number {
+  // A nem-véges értékeket (NaN/Infinity) a JSON.stringify amúgy is null-ra viszi.
+  return Number.isFinite(value) ? Number(value.toPrecision(AUDIT_NUMBER_PRECISION)) : value
+}
+
+/**
  * Determinisztikus, kulcs-sorrendtől független kanonikalizálás. A `metadata` a DB-ben
  * `jsonb`, ami NEM őrzi meg a kulcs-sorrendet; a rekurzív kulcsrendezés biztosítja, hogy
  * az írás-idejű (JS objektum) és az ellenőrzés-idejű (jsonb-ból visszaolvasott) forma
- * ugyanazt a kanonikus stringet adja. A payload-guard (assertAuditMetadataSafe) eleve
- * skalár/korlátozott alakra szűkíti a metaadatot, így a jsonb érték-normalizálása
- * (szám/whitespace) nem okoz eltérést.
+ * ugyanazt a kanonikus stringet adja.
  */
 function canonicalizeJson(value: unknown): unknown {
+  if (typeof value === 'number') return normalizeNumber(value)
   if (value === null || typeof value !== 'object') return value
   if (Array.isArray(value)) return value.map(canonicalizeJson)
   const obj = value as Record<string, unknown>
