@@ -27,6 +27,34 @@
   - D1 — Két MEGLÉVŐ inline timing-safe hely (`oauth-state.ts`, `preview-token.ts`) nem lett a közös helperre migrálva; a `preview-token.ts` előre dekódolt Buffert hasonlít, tehát Buffer-elfogadó overload kellene. Külön, scope-tartó follow-up (érinti az OAuth- és sandbox-preview aláírás-ellenőrzést).
   - D2 — A teszt a helper szintjén fedez; a route-bekötést (negálás, rövidzár) nem gyakorolja end-to-end. Egy jövőbeli route-szintű integrációs teszt szorosabbra húzná.
 
+## 2026-07-16 - Önfrissítő connector: capability-verzió jóváhagyás Separation of Duties
+
+- Reviewed modules:
+  - `app/src/domain/connector-self-update/self-update-service.ts` (a domain-seam: create / approveUrl / markTrusted / updatePolicy / sync / approveVersion / rejectVersion / rollback, tenant-, SoD-, trust-, diff- és auto-approve kapuk)
+  - `app/src/domain/connector-self-update/spec-sync.ts` (letöltő + OpenAPI-parse; A4 egress-guard host-pinning, redirect-pinning, méret/időkorlát, content-type szűrő, fail-closed)
+  - `app/src/domain/connector-self-update/spec-diff.ts` (kategorizált capability-diff + `isAutoApprovable` auto-jóváhagyási kapu)
+  - `app/src/domain/connector-self-update/pinned-runtime-config.ts` + `capability-set.ts` (A3: futásidőben csak az AKTÍV, sémával validált snapshot hívható; `restrictToEndpoints` mindig true; fail-closed null)
+  - `app/src/repositories/postgres/self-updating-connector-repository.ts` (atomi állapotváltások, tranzakción belüli audit, auto-approve dupla-ellenőrzés)
+  - `app/src/app/actions/self-updating-connectors.ts` (belépő server actionök: `requireTenantRole`, https-only zod, superadmin `sodExempt`)
+  - `app/src/repositories/postgres/tool-broker-repository.ts` + `app/src/domain/connector/http-api-client.ts` (runtime endpoint-allowlist és pinned egress-újraellenőrzés)
+- Result:
+  - A feature enterprise-helyes formájú: az SSRF-védelem valódi DNS-resolverrel van bekötve (`domain/index.ts`), a `sync` KIZÁRÓLAG emberi operátor server-actionből hívható (nincs agent/prompt-injektálható út), a YAML-parse a js-yaml biztonságos `load`-ja (nincs RCE), a runtime csak az aktív snapshot endpointjait engedi (`endpoint_not_allowed`) és pinned connectornál hívásidőben újraellenőrzi a hostot + tiltja a redirectet, az auth/base_url/egress-host változás mindig magas kockázatú emberi kapu, az auto-approve háromszorosan kapuzott (tenant opt-in + forrás-policy + tisztán read-only additív diff), a `access` mező metódus-alapú (POST/PUT/PATCH/DELETE → write), így új írási végpont sosem auto-jóváhagyható.
+  - Találtam egy Separation-of-Duties (T2) rést a capability-verzió jóváhagyásban. Az `approveVersion` a "más kolléga hagyja jóvá, mint aki a linket beállította" kaput CSAK az ELSŐ verziónál kényszerítette ki (`if (!ctx.activeVersion)`). Minden KÉSŐBBI verziót a beállító (aki a spec-URL-t választotta ÉS az API-kulcsot birtokolja) egyedül élesíthetett — épp azokat a kockázatos változásokat (pl. új írási végpont), amelyeket a rendszer szándékosan visszatart az automatikus átvételtől, hogy emberi kapun menjenek át. A kettős kontroll így pont a legkockázatosabb inkrementális bővítéseknél lyukadt ki.
+- Fix applied:
+  - Az `approveVersion` a `requireDifferentActor(source.createdById, actor)` kaput MINDEN verzióra kikényszeríti (nem csak az elsőre); a hibaüzenet verzió-állapottól függ, a logika egységes. A superadmin (`sodExempt`) kivétel változatlanul megmarad, auditált `sod_bypass` metaadattal.
+  - Új regressziós teszt (`self-updating-connector-lifecycle.test.ts`): v1-et másik kolléga hagyja jóvá; egy új `POST /customers` írási végpontot hozó v2-t a beállító NEM élesíthet (`SEPARATION_OF_DUTIES`), superadmin beállító viszont igen.
+- Business impact:
+  - Az önfrissítő connector lényege, hogy egy partner API-képességei emberi felügyelet mellett, biztonságosan követhessék a partner változásait. Ha a connectort beállító személy egyedül élesíthet minden későbbi képesség-bővítést, akkor egyetlen belső szereplő — miután egy kolléga egyszer megbízhatónak minősítette a partnert — önállóan kiterjesztheti a connector írási hatókörét (adatmódosítás, kifizetés-jellegű hívások) egy második jóváhagyó nélkül. A javítás a négy-szem-elvet a teljes életciklusra kiterjeszti, összhangban a platform többi SoD-invariánsával (approver ≠ requester), a superadmin vészkijárat auditált megtartásával.
+- Verification:
+  - `npm run test:self-updating-connector-lifecycle` (új SoD-regresszióval) és `npm run test:self-updating-connector` from `app/`
+  - `npx tsc --noEmit` from `app/`
+  - `npx eslint src/domain/connector-self-update/self-update-service.ts scripts/self-updating-connector-lifecycle.test.ts` from `app/`
+  - `/code-review` skill (Standards + Spec, két párhuzamos ügynök): mindkét tengely tiszta; nincs hard violation, nincs spec-defektus.
+- Decisions raised (not auto-fixed):
+  - D1 — A `rollback` egy KORÁBBAN jóváhagyott (már vetett) verziót állít vissza, és jelenleg nincs rajta SoD-kapu. Alacsony kockázatú (nincs új capability), de a teljes szimmetriához megfontolható ugyanaz a `requireDifferentActor`.
+  - D2 — Az untrusted, partner-hoszttolt OpenAPI-spec YAML-parse-a méret-cap (5 MiB) alatt is ki van téve a "billion-laughs" alias-expanziós memória/CPU-terhelésnek (js-yaml nem korlátozza az alias-mélységet). Emberi triggerű, megbízhatónak minősített URL-en, ezért alacsony súlyú, de egy alias/anchor-számláló előszűrő olcsó keményítés lenne a megosztott `openapi-config-extractor`-ban.
+  - D3 — Az auto-approve út (tenant opt-in + read-only additív diff) szándékosan a beállító egyedüli, `approvedById: null` élesítését is megengedi — ez a feature dokumentált tervezése; a kockázatos (write/breaking/auth) változások továbbra is az emberi SoD-kapun mennek át.
+
 ## 2026-07-14 - Agent API-kulcs hitelesítés skálázhatósága és O(n) bcrypt-DoS
 
 - Reviewed modules:
