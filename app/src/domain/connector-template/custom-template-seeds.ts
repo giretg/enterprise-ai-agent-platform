@@ -1,6 +1,18 @@
 import type { TemplateDescriptor } from './template-descriptor'
 import { GITHUB_REPOSITORY_LIST_PATTERN_SOURCE } from '@/domain/connector/github-repository-access'
 
+/** Demo CRM host — provisioning UI alapértelmezett kitöltéshez. */
+export const OSTOROSBOR_CRM_DEFAULT_INSTANCE_VALUES: Record<string, string> = {
+  crmHost: 'ostorosbor-crm--enterprise-ai-demo.europe-west4.hosted.app',
+}
+
+/** Kötelező CRM audit/trace fejlécek — a sablon materializáláskor a connector configba kerülnek. */
+export const OSTOROSBOR_CRM_REQUEST_HEADERS = {
+  'X-Agent-Id': '{{agent.id}}',
+  'X-Acting-User': '{{actingUser.email}}',
+  'X-Connector-Call-Id': '{{call.id}}',
+} as const
+
 /**
  * Globális custom connector-sablonok seedje.
  *
@@ -122,10 +134,11 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
     description:
       'Ertekesito neveben futo CRM kapcsolat: ugyfeladatok olvasasa, erdeklodesek, teendok, interakciok, ajanlatstatusz es dokumentum-draft muveletek. A CRM nem kuld ugyfelnek uzenetet; a javaslatok HITL jovahagyasra kerulnek. Kötelező fejlécek: X-Agent-Id, X-Acting-User, X-Connector-Call-Id. Író hívásoknál kötelező az Idempotency-Key. A CRM nem enged közvetlen ügyfélnek küldést és nem támogat végleges DELETE műveletet a connectoron.',
     activationHelp:
-      'Az API kulcs generálásához az Ostoros CRM Platform integráció menüpontjában kell API kulcsot létrehoznod (Sales delegated profil), majd az itt megadott API kulcs mezőbe a teljes fejlécértéket írd be, "Bearer " előtaggal együtt. A CRM host mezőbe a tényleges CRM szerver domainjét/portját add meg (a fejlesztői leírásban szereplő 0.0.0.0:8080 csak helyi teszt-placeholder).',
+      'Az API kulcs generálásához az Ostoros CRM Platform integráció menüpontjában kell API kulcsot létrehoznod (Sales delegated profil), majd az itt megadott API kulcs mezőbe CSAK a nyers kulcsot írd be — a "Bearer " előtagot és az Authorization fejlécet a rendszer automatikusan hozzáadja, neked nem kell beírnod. A CRM host mezőbe a tényleges CRM szerver domainjét/portját add meg (a fejlesztői leírásban szereplő 0.0.0.0:8080 csak helyi teszt-placeholder). Az „Acting user e-mail” mezőbe olyan címet adj meg, amely a CRM-ben regisztrált és aktív felhasználó — a kulcsos teszt és az agent hívások ehhez kötődnek (X-Acting-User fejléc).',
     baseUrl: 'https://{crmHost}/api/connector/v1',
     egressHosts: ['{crmHost}'],
-    authMethods: [{ kind: 'api_key', header: 'Authorization' }],
+    authMethods: [{ kind: 'bearer' }],
+    requestHeaders: { ...OSTOROSBOR_CRM_REQUEST_HEADERS },
     scopeCatalog: [],
     endpoints: [
       {
@@ -251,8 +264,15 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
         target: 'egressHosts',
       },
       {
+        name: 'actingUserEmail',
+        label: 'Acting user e-mail (CRM-ben regisztrált, aktív felhasználó — X-Acting-User fejléc)',
+        type: 'string',
+        required: true,
+        target: 'defaultActingUserEmail',
+      },
+      {
         name: 'apiKey',
-        label: 'API kulcs (Authorization fejléc teljes értéke, "Bearer <kulcs>")',
+        label: 'API kulcs (a CRM integrációnál generált nyers kulcs — a "Bearer " előtagot a rendszer adja hozzá)',
         type: 'secret',
         required: true,
         secretAliasHint: 'ostorosbor-crm-sales-delegated-api-key',
@@ -267,10 +287,11 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
     description:
       'Service/monitoring kapcsolat: CRM adatok olvasasa, account agent mezok frissitese, insightok es heti osszefoglalo. Nem ertekesitoi muveletekre, hanem belso elemzesre es agent javaslatokra valo. Kötelező fejlécek: X-Agent-Id, X-Acting-User, X-Connector-Call-Id. Író hívásoknál kötelező az Idempotency-Key. A CRM nem enged közvetlen ügyfélnek küldést és nem támogat végleges DELETE műveletet a connectoron.',
     activationHelp:
-      'Az API kulcs generálásához az Ostoros CRM Platform integráció menüpontjában kell API kulcsot létrehoznod (Service insight profil), majd az itt megadott API kulcs mezőbe a teljes fejlécértéket írd be, "Bearer " előtaggal együtt. A CRM host mezőbe a tényleges CRM szerver domainjét/portját add meg (a fejlesztői leírásban szereplő 0.0.0.0:8080 csak helyi teszt-placeholder).',
+      'Az API kulcs generálásához az Ostoros CRM Platform integráció menüpontjában kell API kulcsot létrehoznod (Service insight profil), majd az itt megadott API kulcs mezőbe CSAK a nyers kulcsot írd be — a "Bearer " előtagot és az Authorization fejlécet a rendszer automatikusan hozzáadja, neked nem kell beírnod. A CRM host mezőbe a tényleges CRM szerver domainjét/portját add meg (a fejlesztői leírásban szereplő 0.0.0.0:8080 csak helyi teszt-placeholder). Az „Acting user e-mail” mezőbe olyan címet adj meg, amely a CRM-ben regisztrált és aktív felhasználó — a kulcsos teszt és az agent hívások ehhez kötődnek (X-Acting-User fejléc).',
     baseUrl: 'https://{crmHost}/api/connector/v1',
     egressHosts: ['{crmHost}'],
-    authMethods: [{ kind: 'api_key', header: 'Authorization' }],
+    authMethods: [{ kind: 'bearer' }],
+    requestHeaders: { ...OSTOROSBOR_CRM_REQUEST_HEADERS },
     scopeCatalog: [],
     endpoints: [
       {
@@ -356,8 +377,15 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
         target: 'egressHosts',
       },
       {
+        name: 'actingUserEmail',
+        label: 'Acting user e-mail (CRM-ben regisztrált, aktív felhasználó — X-Acting-User fejléc)',
+        type: 'string',
+        required: true,
+        target: 'defaultActingUserEmail',
+      },
+      {
         name: 'apiKey',
-        label: 'API kulcs (Authorization fejléc teljes értéke, "Bearer <kulcs>")',
+        label: 'API kulcs (a CRM integrációnál generált nyers kulcs — a "Bearer " előtagot a rendszer adja hozzá)',
         type: 'secret',
         required: true,
         secretAliasHint: 'ostorosbor-crm-service-insight-api-key',

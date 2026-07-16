@@ -7,6 +7,7 @@
  */
 import type { NextRequest } from 'next/server'
 import { registry } from '@/lib/observability'
+import { safeSecretEquals } from '@/lib/crypto/timing-safe'
 
 export const dynamic = 'force-dynamic'
 
@@ -15,7 +16,7 @@ export function GET(req: NextRequest): Response {
   if (expected) {
     const auth = req.headers.get('authorization') ?? ''
     const provided = auth.startsWith('Bearer ') ? auth.slice('Bearer '.length) : ''
-    if (provided !== expected) {
+    if (!safeSecretEquals(provided, expected)) {
       return new Response('unauthorized', { status: 401 })
     }
   }

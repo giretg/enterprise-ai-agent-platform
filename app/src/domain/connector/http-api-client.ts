@@ -11,7 +11,9 @@
  * a tool loopban kerül a modell elé.
  */
 import { createHash } from 'node:crypto'
+import { lookup } from 'node:dns/promises'
 import { getCloudRunAccessToken } from '@/domain/dispatcher/cloud-run-auth'
+import { guardEgressUrl } from '@/domain/net/egress-guard'
 import {
   GITHUB_REPOSITORY_PATTERN,
   parseGitHubRepositoryAccessConfig,
@@ -41,6 +43,7 @@ export type HttpApiEndpoint = {
   profile?: string
   idempotent?: boolean
   headers?: Record<string, string>
+  headerParams?: Array<{ name: string; required: boolean }>
 }
 
 export type HttpApiAuthProfile = {
@@ -57,6 +60,8 @@ export type HttpApiConfig = {
   defaultAuthProfile?: string
   /** Minden hívásra injektált, sablonozható fejlécek. */
   requestHeaders?: Record<string, string>
+  /** Acting user fallback, ha a chat actingUser.email hiányzik (Ostorosbor CRM). */
+  defaultActingUserEmail?: string
   /** Csak író hívásokra injektált, sablonozható fejlécek. */
   writeHeaders?: Record<string, string>
   /** Emberi nyelvű API-leírás — a modell elé kerül a tool loopban. */
@@ -69,6 +74,8 @@ export type HttpApiConfig = {
   githubRepositoryAccess?: GitHubRepositoryAccess
   /** Maximális válasz-méret karakterben (alap: 20000). */
   maxResponseChars?: number
+  /** Önfrissítő snapshotból materializált config: minden hívásnál egress-őr. */
+  selfUpdatingPinned?: boolean
 }
 
 const READ_METHODS = new Set(['GET', 'HEAD'])
@@ -162,6 +169,11 @@ export function parseHttpApiConfig(raw: unknown): HttpApiConfig {
           profile: typeof e.profile === 'string' && e.profile.trim() ? e.profile.trim() : undefined,
           idempotent: e.idempotent === true,
           headers: parseHeaderTemplates(e.headers, 'endpoint.headers'),
+          headerParams: Array.isArray(e.parameters)
+            ? e.parameters
+                .filter((param): param is Record<string, unknown> => isRecord(param) && param.in === 'header' && typeof param.name === 'string')
+                .map((param) => ({ name: String(param.name), required: param.required === true }))
+            : undefined,
         }))
         .filter((e) => e.method && e.path)
     : undefined
@@ -179,6 +191,10 @@ export function parseHttpApiConfig(raw: unknown): HttpApiConfig {
         : undefined,
     requestHeaders: parseHeaderTemplates(raw.requestHeaders, 'requestHeaders'),
     writeHeaders: parseHeaderTemplates(raw.writeHeaders, 'writeHeaders'),
+    defaultActingUserEmail:
+      typeof raw.defaultActingUserEmail === 'string' && raw.defaultActingUserEmail.trim()
+        ? raw.defaultActingUserEmail.trim()
+        : undefined,
     description: typeof raw.description === 'string' ? raw.description : undefined,
     endpoints,
     restrictToEndpoints: raw.restrictToEndpoints === true,
@@ -187,6 +203,7 @@ export function parseHttpApiConfig(raw: unknown): HttpApiConfig {
       typeof raw.maxResponseChars === 'number' && raw.maxResponseChars > 0
         ? raw.maxResponseChars
         : DEFAULT_MAX_RESPONSE_CHARS,
+    selfUpdatingPinned: raw.selfUpdatingPinned === true,
   }
 }
 
@@ -316,6 +333,7 @@ export type HttpApiRequestParams = {
   method: string
   path: string
   query?: Record<string, string | number | boolean>
+  headers?: Record<string, string>
   body?: unknown
   context?: HttpApiTemplateContext
 }
@@ -340,6 +358,8 @@ export type HttpApiTemplateContext = {
   agent: { id: string; version?: number }
   connector: { id: string; name: string }
   actingUser?: { id: string; email: string; tenantId: string | null } | null
+  /** Connector config fallback — pl. Ostorosbor CRM sandbox/legacy hívások. */
+  defaultActingUserEmail?: string
   tenant?: { id: string } | null
   call: { id: string; idempotencyKey: string }
   now: { iso: string }
@@ -479,12 +499,40 @@ export class HttpApiClient {
     return headers
   }
 
+  private buildParameterHeaders(
+    endpoint: HttpApiEndpoint | undefined,
+    provided: Record<string, string> | undefined,
+  ): Record<string, string> {
+    const declared = new Map((endpoint?.headerParams ?? []).map((param) => [param.name.toLowerCase(), param]))
+    const values = new Map<string, string>()
+    const authHeader = this.config.auth.scheme === 'header' ? this.config.auth.header.toLowerCase() : 'authorization'
+    for (const [name, value] of Object.entries(provided ?? {})) {
+      const normalized = name.toLowerCase()
+      const param = declared.get(normalized)
+      if (!param) throw new HttpApiError(`header not allowed by active snapshot: ${name}`, 'header_not_allowed')
+      if (normalized === authHeader || ['authorization', 'host', 'content-length', 'content-type'].includes(normalized)) {
+        throw new HttpApiError(`protected header cannot be supplied by the caller: ${name}`, 'header_not_allowed')
+      }
+      values.set(normalized, value)
+    }
+    for (const param of declared.values()) {
+      const normalized = param.name.toLowerCase()
+      // A hitelesítési fejlécet mindig a platform injektálja a Secret Store-ból.
+      if (normalized === authHeader || normalized === 'authorization') continue
+      if (param.required && !values.has(normalized)) {
+        throw new HttpApiError(`required header missing: ${param.name}`, 'required_header_missing')
+      }
+    }
+    return Object.fromEntries([...values].map(([name, value]) => [declared.get(name)!.name, value]))
+  }
+
   async request(params: HttpApiRequestParams): Promise<HttpApiResponse> {
     const method = params.method.toUpperCase()
     if (!READ_METHODS.has(method) && !WRITE_METHODS.has(method)) {
       throw new HttpApiError(`unsupported HTTP method: ${method}`, 'invalid_method')
     }
     const endpoint = this.selectEndpoint(method, params.path)
+    const parameterHeaders = this.buildParameterHeaders(endpoint, params.headers)
 
     if (this.isStub()) {
       return {
@@ -501,6 +549,7 @@ export class HttpApiClient {
       headers: {
         accept: 'application/json',
         ...this.buildTemplateHeaders(method, endpoint, params.context),
+        ...parameterHeaders,
         ...(await this.authHeaders(endpoint)),
         ...(hasBody ? { 'content-type': 'application/json' } : {}),
       },
@@ -526,9 +575,24 @@ export class HttpApiClient {
   }
 
   private async fetchWithBackoff(input: URL, init: RequestInit): Promise<Response> {
+    if (this.config.selfUpdatingPinned) {
+      const pinnedHost = new URL(this.config.baseUrl).hostname.toLowerCase()
+      const guard = await guardEgressUrl({
+        url: input.toString(),
+        allowlistHosts: [pinnedHost],
+        resolveHostIps: async (host) => (await lookup(host, { all: true })).map((entry) => entry.address),
+      })
+      if (!guard.ok || guard.host !== pinnedHost) {
+        throw new HttpApiError(`runtime egress blocked: ${guard.ok ? 'host_mismatch' : guard.reason}`, 'egress_blocked')
+      }
+    }
+    const guardedInit = this.config.selfUpdatingPinned ? { ...init, redirect: 'manual' as const } : init
     const delays = [250, 750]
     for (let attempt = 0; attempt <= delays.length; attempt += 1) {
-      const res = await fetch(input, init)
+      const res = await fetch(input, guardedInit)
+      if (this.config.selfUpdatingPinned && res.status >= 300 && res.status < 400) {
+        throw new HttpApiError('runtime redirect blocked for pinned connector', 'egress_blocked')
+      }
       // 429 / 5xx → korlátozott backoff; minden mást (a 4xx-eket is) felfelé adunk
       // strukturált válaszként, hogy a modell reagálhasson rá.
       if (![429, 500, 502, 503, 504].includes(res.status) || attempt === delays.length) {
@@ -672,7 +736,7 @@ function templateValue(key: string, context: HttpApiTemplateContext): string | n
     'connector.id': context.connector.id,
     'connector.name': context.connector.name,
     'actingUser.id': context.actingUser?.id,
-    'actingUser.email': context.actingUser?.email,
+    'actingUser.email': context.actingUser?.email ?? context.defaultActingUserEmail,
     'actingUser.tenantId': context.actingUser?.tenantId,
     'tenant.id': context.tenant?.id,
     'call.id': context.call.id,
@@ -682,10 +746,19 @@ function templateValue(key: string, context: HttpApiTemplateContext): string | n
   return values[key]
 }
 
-/** Egyszerű path-egyezés `:param` placeholderekkel (pl. /banks/:bankId/crm). */
+/**
+ * Egyszerű path-egyezés placeholderekkel. Kétféle jelölést fogadunk el, mert a
+ * kézi „API-kapcsolat" a `:param` alakot használja (pl. /banks/:bankId/crm), a
+ * sablonból materializált configok viszont a `{param}` alakot (pl. /accounts/{id}).
+ * Mindkét forma egyetlen path-szegmensre illeszkedő joker.
+ */
 function pathMatches(template: string, actual: string): boolean {
   const t = template.split('/').filter(Boolean)
   const a = actual.split('/').filter(Boolean)
   if (t.length !== a.length) return false
-  return t.every((seg, i) => seg.startsWith(':') || seg === a[i])
+  return t.every((seg, i) => isPathParamSegment(seg) || seg === a[i])
+}
+
+function isPathParamSegment(segment: string): boolean {
+  return segment.startsWith(':') || (segment.startsWith('{') && segment.endsWith('}'))
 }

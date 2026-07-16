@@ -80,6 +80,8 @@ export const templateDescriptorSchema = z.object({
   endpoints: z.array(templateEndpointSchema).default([]),
   scopeCatalog: z.array(scopeDescriptorSchema).default([]),
   rateLimit: z.object({ rps: z.number().nonnegative(), burst: z.number().nonnegative() }).optional(),
+  /** Minden hívásra injektált sablonfejlécek (pl. CRM audit/trace fejlécek). */
+  requestHeaders: z.record(z.string(), z.string()).optional(),
   instanceFields: z.array(instanceFieldSchema).default([]),
 })
 export type TemplateDescriptor = z.infer<typeof templateDescriptorSchema>

@@ -30,6 +30,7 @@ import { PostgresToolBrokerRepository } from './tool-broker-repository'
 
 import { PostgresConnectorGrantRepository } from './connector-grant-repository'
 import { PostgresConnectorRepository } from './connector-repository'
+import { PostgresSelfUpdatingConnectorRepository } from './self-updating-connector-repository'
 import { PostgresConnectorDraftRepository } from './connector-draft-repository'
 import { PostgresConnectorTemplateRepository } from './connector-template-repository'
 import { PostgresMonitorRepository } from './monitor-repository'
@@ -75,6 +76,7 @@ export const repositories = {
   conversations: new PostgresConversationRepository(),
   connectorGrants: new PostgresConnectorGrantRepository(),
   connectors: new PostgresConnectorRepository(),
+  selfUpdatingConnectors: new PostgresSelfUpdatingConnectorRepository(),
   connectorDrafts: new PostgresConnectorDraftRepository(),
   connectorTemplates: new PostgresConnectorTemplateRepository(),
   monitors: new PostgresMonitorRepository(),

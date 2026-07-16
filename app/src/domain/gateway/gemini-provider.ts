@@ -75,6 +75,24 @@ function buildGeminiRequest(messages: GatewayMessage[]) {
   }
 }
 
+/**
+ * A "thinking-trace" (WP-8) thought-részeit szedi ki a Gemini válaszból. A
+ * `thinkingConfig.includeThoughts:true` esetén a modell külön, `thought:true`
+ * jelölésű text-partokat ad vissza (thought summary); ezeket összefűzzük. A
+ * `response.text` már eleve KIZÁRJA ezeket, így a végső válasz tiszta marad.
+ */
+export function extractGeminiThoughtText(response: {
+  candidates?: Array<{ content?: { parts?: Array<{ text?: string; thought?: boolean }> } }>
+}): string {
+  const parts = response.candidates?.[0]?.content?.parts
+  if (!Array.isArray(parts)) return ''
+  return parts
+    .filter((p) => p.thought === true && typeof p.text === 'string')
+    .map((p) => p.text ?? '')
+    .join('')
+    .trim()
+}
+
 export class GeminiProvider implements ModelProvider {
   readonly name = 'gemini'
   private client: GoogleGenAI | null = null
@@ -96,6 +114,7 @@ export class GeminiProvider implements ModelProvider {
     messages: GatewayMessage[]
     modelConfig: ModelConfig
     tools?: ToolDefinition[]
+    onReasoningDelta?: (delta: string) => void
   }): Promise<ModelProviderResult> {
     if (isGeminiStubConfigured()) {
       return stubGeminiAnswer(input.messages)
@@ -112,6 +131,12 @@ export class GeminiProvider implements ModelProvider {
         ...(systemInstruction ? { systemInstruction } : {}),
         ...(input.modelConfig.temperature != null ? { temperature: input.modelConfig.temperature } : {}),
         ...(input.modelConfig.maxTokens != null ? { maxOutputTokens: input.modelConfig.maxTokens } : {}),
+        // Chat "thinking-trace" (WP-8): thought summary bekérése csak akkor, ha a
+        // hívó kért reasoning-et (a runtime a tenant D7-kapcsolójától teszi függővé).
+        // A `thinkingBudget:-1` dinamikus keret — a modell dönt a gondolkodás mélységéről.
+        ...(input.onReasoningDelta
+          ? { thinkingConfig: { includeThoughts: true, thinkingBudget: -1 } }
+          : {}),
         ...(input.tools?.length
           ? {
               tools: [
@@ -139,6 +164,13 @@ export class GeminiProvider implements ModelProvider {
     // tool hívás nem jött vissza.
     if (!content && toolCalls.length === 0) {
       throw new Error('Gemini provider returned empty content')
+    }
+
+    // Chat "thinking-trace" (WP-8): a thought summary egyetlen deltaként (a
+    // generateContent nem streamel). A tartalom-őr (D5) a hívó oldalán fut.
+    if (input.onReasoningDelta) {
+      const thought = extractGeminiThoughtText(response)
+      if (thought) input.onReasoningDelta(thought)
     }
 
     return {

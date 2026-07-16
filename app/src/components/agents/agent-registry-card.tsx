@@ -50,7 +50,15 @@ export function AgentRegistryCard({
         </Link>
         <div className="flex shrink-0 flex-col items-end gap-2">
           <Badge tone={agent.status === 'active' ? 'success' : 'neutral'}>
-            {agent.status === 'active' ? 'aktív' : 'pihen'}
+            {agent.status === 'active'
+              ? 'aktív'
+              : agent.status === 'retired'
+                ? 'nyugdíjazva'
+                : agent.status === 'suspended'
+                  ? 'felfüggesztve'
+                  : agent.status === 'draft'
+                    ? 'vázlat'
+                    : 'pihen'}
           </Badge>
           {canDelete && <DeleteAgentButton agentId={agent.id} agentName={agent.name} compact />}
         </div>

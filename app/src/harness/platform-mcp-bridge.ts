@@ -738,12 +738,13 @@ export const PLATFORM_BROKER_TOOLS = [
   {
     name: 'http_api_get',
     description:
-      'Read (GET) from the external REST API connector assigned to this agent. path is relative to the connector base URL (e.g. "/banks" or "/banks/{id}/crm"). The API key is injected by the platform.',
+      'Read (GET) from the assigned REST API. path is relative; headers may contain only names declared by the approved snapshot. The API key is injected by the platform.',
     inputSchema: {
       type: 'object',
       properties: {
         path: { type: 'string', description: 'Path relative to the connector base URL' },
         query: { type: 'object', description: 'Query parameters (scalar values)' },
+        headers: { type: 'object', description: 'Only headers declared by the approved API snapshot' },
       },
       required: ['path'],
     },
@@ -775,13 +776,14 @@ export const PLATFORM_BROKER_TOOLS = [
   {
     name: 'http_api_request',
     description:
-      'Write (POST/PUT/PATCH/DELETE) to the external REST API connector assigned to this agent. Only call for operations that change state. The API key is injected by the platform.',
+      'Write (POST/PUT/PATCH/DELETE) to the assigned REST API. headers may contain only names declared by the approved snapshot. The API key is injected by the platform.',
     inputSchema: {
       type: 'object',
       properties: {
         method: { type: 'string', enum: ['POST', 'PUT', 'PATCH', 'DELETE'] },
         path: { type: 'string', description: 'Path relative to the connector base URL' },
         query: { type: 'object', description: 'Query parameters (scalar values)' },
+        headers: { type: 'object', description: 'Only headers declared by the approved API snapshot' },
         body: { type: 'object', description: 'JSON request body' },
       },
       required: ['method', 'path'],

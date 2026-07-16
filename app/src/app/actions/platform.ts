@@ -72,7 +72,6 @@ import {
   updateAgentSelfEvolutionProfileSchema,
   updateAgentSensitivityPolicySchema,
   createHttpApiConnectorSchema,
-  updateHttpApiConnectorSchema,
   createTrainingSchema,
   askWikiSchema,
   generateReportSchema,
@@ -1254,160 +1253,96 @@ export async function createHttpApiConnectorForAgent(input: {
   }
 }
 
-export async function updateHttpApiConnectorForAgent(input: {
+/**
+ * WP-5 (B4) — KÖTÉS-szintű (agent↔connector) szerkesztés. Ez az egyetlen biztonságos
+ * agent-szintű művelet a külső kapcsolatokon: CSAK az `AgentConnector` sort érinti
+ * (hozzáférés + opcionális per-agent kulcs), a connector strukturális configját (baseUrl,
+ * auth, fejlécek, endpointok) SOHA nem írja — azt a provisioning kezeli (WP-4). Így az
+ * agent-nézetből egy „csak új kulcs" mentés semmi mást nem változtat, és a módosítás
+ * nem hat ki a connectort osztó többi agentre.
+ */
+export async function updateAgentConnectorBinding(input: {
   agentId: string
   connectorId: string
-  name: string
-  baseUrl: string
-  authScheme: 'header' | 'bearer' | 'oauth2' | 'oauth2_delegated'
-  authHeader?: string
-  tokenUrl?: string
-  clientId?: string
-  scope?: string
-  authUrl?: string
-  userInfoUrl?: string
+  accessMode: 'read' | 'write'
+  /** Per-agent kulcs (opcionális). Üresen hagyva a jelenlegi marad. */
   apiKey?: string
-  clientSecret?: string
-  refreshToken?: string
-  description?: string
-  authProfiles?: Record<
-    string,
-    {
-      secretAlias: string
-      auth?: { scheme: 'bearer' } | { scheme: 'header'; header: string }
-    }
-  >
-  defaultAuthProfile?: string
-  requestHeaders?: Record<string, string>
-  writeHeaders?: Record<string, string>
-  accessMode?: 'read' | 'write'
-  restrictToEndpoints?: boolean
-  githubRepositoryAccess?: GitHubRepositoryAccess
-  endpoints?: Array<{
-    method: string
-    path: string
-    description?: string
-    idempotent?: boolean
-    profile?: string
-  }>
+  /** Ha true: a per-agent kulcs törlődik, az agent a tenant-szintű kulcsra esik vissza. */
+  clearApiKey?: boolean
 }) {
   try {
     const user = await requireTenantRole('admin')
-    const parsed = updateHttpApiConnectorSchema.parse(input)
-
-    const agent = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
-    if (!agent) return fail('Agent not found')
-    if (agent.role === 'orchestrator') {
-      return fail('Orchestrator agent nem kaphat HTTP API connectort vagy Tool Broker capability-t.')
-    }
+    const accessMode = input.accessMode === 'write' ? 'write' : 'read'
 
     const link = await prisma.agentConnector.findUnique({
       where: {
-        agentId_connectorId: { agentId: parsed.agentId, connectorId: parsed.connectorId },
+        agentId_connectorId: { agentId: input.agentId, connectorId: input.connectorId },
       },
-      include: { connector: true },
+      include: { connector: true, agent: true },
     })
     if (!link) return fail('API-kapcsolat nincs ehhez az agenthez rendelve.')
-    if (link.connector.type !== 'http_api') return fail('Csak API-kapcsolat szerkeszthető itt.')
-
-    // Egy már user_delegated (auto-consent) connectort nem szabad némán service
-    // módra visszaállítani egy generikus szerkesztéssel — az eltörné a per-user
-    // grant-feloldást és eldobná a config.oauth blokkot.
-    if (link.connector.authMode === 'user_delegated' && parsed.authScheme !== 'oauth2_delegated') {
-      return fail(
-        'Ez egy automatikus-hozzájárulású (user-delegált) kapcsolat — a hitelesítést az „Összekötött fiókok" oldalon kezeld, vagy válaszd az „OAuth2 – automatikus hozzájárulás" módot.',
-      )
+    if (link.connector.type !== 'http_api') return fail('Csak API-kapcsolat köthető itt.')
+    // Tenant-izoláció: az agentnek (és így a kötésnek) az aktív tenantban kell lennie.
+    if (link.agent.tenantId !== (user.activeTenantId ?? null)) {
+      return fail('Az agent nem érhető el ebben a tenantban.')
     }
 
-    const existing = await prisma.connector.findFirst({
-      where: { type: 'http_api', name: parsed.name, tenantId: user.activeTenantId ?? null },
-    })
-    if (existing && existing.id !== parsed.connectorId) {
-      return fail(`Már létezik „${parsed.name}" nevű API-kapcsolat — adj egyedi nevet.`)
-    }
+    // Per-agent kulcs kezelése. user_delegated (auto-consent) connectoron a per-agent
+    // kulcs futásidőben NEM érvényesül (a per-user grant token megy ki) — ezért nem
+    // engedjük megadni (csendes elnyelés tilos, WP-2 közös követelmény).
+    let nextSecretAlias: string | null | undefined // undefined = változatlan
+    const { saveConnectorApiKey, buildConnectorSecretRef, deleteConnectorApiKey, isConnectorSecretRef } =
+      await import('@/domain/connector/connector-secret-store')
+    const scopedSecretId = `${input.agentId}_ac_${input.connectorId}`
 
-    const isDelegated = parsed.authScheme === 'oauth2_delegated'
-    const wasDelegated = link.connector.authMode === 'user_delegated'
-    const config = httpApiConnectorConfig(parsed)
-
-    // oauth2_delegated átállásnál a store mögé PLAIN client_secret kell (a consent
-    // token-cseréhez). Ha nincs új secret megadva és a connector eddig NEM volt
-    // delegált, a régi {clientSecret,refreshToken} blobból kinyerjük a client_secretet,
-    // hogy az admin ne kényszerüljön újra beírni a már tárolt titkot.
-    let delegatedSecret = parsed.clientSecret
-    if (isDelegated && !delegatedSecret && !wasDelegated && link.connector.secretAlias) {
-      const { resolveConnectorApiKey } = await import('@/domain/connector/http-api-client')
-      try {
-        const existing = await resolveConnectorApiKey(link.connector.secretAlias)
-        const blob = JSON.parse(existing) as { clientSecret?: unknown }
-        if (typeof blob.clientSecret === 'string' && blob.clientSecret.trim()) {
-          delegatedSecret = blob.clientSecret.trim()
-        }
-      } catch {
-        /* nem JSON-blob (pl. már plain) — hagyjuk a meglévőt */
+    if (input.clearApiKey) {
+      if (link.secretAlias && isConnectorSecretRef(link.secretAlias)) {
+        await deleteConnectorApiKey(scopedSecretId).catch(() => {})
       }
+      nextSecretAlias = null
+    } else if (input.apiKey?.trim()) {
+      if (link.connector.authMode === 'user_delegated') {
+        return fail(
+          'Ez egy automatikus-hozzájárulású (user-delegált) kapcsolat — a per-agent kulcs futásidőben nem érvényesül. A hitelesítést az „Összekötött fiókok" oldalon kezeld.',
+        )
+      }
+      await saveConnectorApiKey(scopedSecretId, input.apiKey.trim())
+      nextSecretAlias = buildConnectorSecretRef(scopedSecretId)
     }
-
-    // oauth2 rotáláshoz mindkét titok kell (a séma ezt kikényszeríti); a JSON blob
-    // formátum megegyezik a create-tel, hogy a http_api runtime egységesen olvassa.
-    // oauth2_delegated: csak a client_secret kerül a store mögé (plain).
-    const rotatedSecret =
-      parsed.authScheme === 'oauth2' && parsed.clientSecret && parsed.refreshToken
-        ? JSON.stringify({ clientSecret: parsed.clientSecret, refreshToken: parsed.refreshToken })
-        : isDelegated
-          ? delegatedSecret
-          : parsed.authScheme !== 'oauth2'
-            ? parsed.apiKey
-            : undefined
-    if (rotatedSecret) {
-      const { saveConnectorApiKey } = await import('@/domain/connector/connector-secret-store')
-      await saveConnectorApiKey(parsed.connectorId, rotatedSecret)
-    }
-    const { buildConnectorSecretRef } = await import('@/domain/connector/connector-secret-store')
-
-    const connector = await prisma.connector.update({
-      where: { id: parsed.connectorId },
-      data: {
-        name: parsed.name,
-        authMode: isDelegated ? 'user_delegated' : 'service',
-        config: config as Prisma.InputJsonValue,
-        secretAlias: link.connector.secretAlias ?? buildConnectorSecretRef(parsed.connectorId),
-        version: { increment: 1 },
-      },
-    })
 
     await prisma.agentConnector.update({
       where: {
-        agentId_connectorId: { agentId: parsed.agentId, connectorId: parsed.connectorId },
+        agentId_connectorId: { agentId: input.agentId, connectorId: input.connectorId },
       },
-      data: { accessMode: parsed.accessMode },
+      data: {
+        accessMode,
+        ...(nextSecretAlias !== undefined ? { secretAlias: nextSecretAlias } : {}),
+      },
     })
 
-    await syncHttpApiCapabilities(parsed.agentId, parsed.connectorId, parsed.accessMode)
+    await syncHttpApiCapabilities(input.agentId, input.connectorId, accessMode)
 
     await repositories.audit.append({
       actorType: 'human',
       actorId: user.user.id,
-      agentVersion: agent.currentVersion,
-      action: 'connector.update',
+      agentVersion: link.agent.currentVersion,
+      action: 'connector.binding.update',
       targetType: 'connector',
-      targetId: connector.id,
+      targetId: input.connectorId,
       modelUsed: null,
-      inputRef: parsed.agentId,
-      outputRef: parsed.name,
+      inputRef: input.agentId,
+      outputRef: link.connector.name,
       policyDecision: 'allowed',
       metadata: {
-        type: 'http_api',
-        baseUrl: config.baseUrl,
-        accessMode: parsed.accessMode,
-        endpointCount: parsed.endpoints?.length ?? 0,
-        apiKeyRotated: Boolean(rotatedSecret),
+        accessMode,
+        perAgentKeyRotated: Boolean(input.apiKey?.trim()),
+        perAgentKeyCleared: Boolean(input.clearApiKey),
       },
     })
 
-    return ok({ connectorId: connector.id, name: connector.name })
+    return ok({ connectorId: input.connectorId, name: link.connector.name })
   } catch (e) {
-    return fail(e instanceof Error ? e.message : 'Failed to update API connector')
+    return fail(e instanceof Error ? e.message : 'Failed to update connector binding')
   }
 }
 

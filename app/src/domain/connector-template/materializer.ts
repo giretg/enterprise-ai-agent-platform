@@ -46,6 +46,7 @@ export function materializeConnectorConfig(
     scopesSuggested: selectedScopes,
     ...(descriptor.rateLimit ? { rateLimit: descriptor.rateLimit } : {}),
     proposedTools: chooseEndpoints(descriptor, chosen.selectedEndpoints),
+    ...(descriptor.requestHeaders ? { requestHeaders: { ...descriptor.requestHeaders } } : {}),
     provenance: {
       templateKey: provenance?.templateKey ?? descriptor.key,
       templateVersion: provenance?.templateVersion ?? 1,
@@ -65,11 +66,22 @@ export function materializeConnectorConfig(
           ),
         }
       : withFields
+
+  // WP-3 (B3): a sablonból materializált, endpoint-listával rendelkező http_api
+  // connector alapból endpoint-korlátozott — a runtime CSAK a felsorolt (method+path)
+  // hívásokat engedi, a listán kívülit a külső rendszer megkérdezése nélkül elutasítja
+  // (`endpoint_not_allowed`). Kivétel a GitHub repo-scope connector: azt a saját
+  // repository-határ őrzi, és a katalógusa szándékosan tágabb, ezért nem korlátozzuk.
+  const isGithubRepoScoped = Boolean(scopedConfig.githubRepositoryAccess)
+  const restrictedConfig: ConnectorConfig =
+    !isGithubRepoScoped && scopedConfig.proposedTools.length > 0
+      ? { ...scopedConfig, restrictToEndpoints: true }
+      : scopedConfig
   const normalized = normalizeConnectorConfig({
-    ...scopedConfig,
+    ...restrictedConfig,
     egressHosts: normalizeHosts([
-      ...scopedConfig.egressHosts,
-      ...hostsFromConfig(scopedConfig),
+      ...restrictedConfig.egressHosts,
+      ...hostsFromConfig(restrictedConfig),
     ]),
   })
 
@@ -303,6 +315,10 @@ function assignTarget(
   }
   if (target === 'github.repositoryAccess') {
     config.githubRepositoryAccess = gitHubRepositoryAccessFromText(interpolated)
+    return
+  }
+  if (target === 'defaultActingUserEmail') {
+    config.defaultActingUserEmail = interpolated
     return
   }
   throw new ConnectorTemplateMaterializationError(`unsupported template target: ${target}`)

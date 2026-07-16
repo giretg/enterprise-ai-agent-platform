@@ -607,6 +607,7 @@ export function argsMeta(
       method: 'GET',
       path: input.args.path,
       queryKeys: Object.keys(input.args.query ?? {}).sort(),
+      headerKeys: Object.keys(input.args.headers ?? {}).map((name) => name.toLowerCase()).sort(),
     }
   }
 
@@ -617,6 +618,7 @@ export function argsMeta(
       method: input.args.method,
       path: input.args.path,
       queryKeys: Object.keys(input.args.query ?? {}).sort(),
+      headerKeys: Object.keys(input.args.headers ?? {}).map((name) => name.toLowerCase()).sort(),
       hasBody: input.args.body !== undefined,
     }
   }
@@ -922,4 +924,3 @@ export async function systemUserId(): Promise<string> {
   if (!user) throw new Error('No system user configured')
   return user.id
 }
-

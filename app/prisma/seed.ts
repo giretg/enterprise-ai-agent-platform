@@ -304,19 +304,28 @@ async function ensureBuiltinConnectorTemplates() {
 async function ensureGlobalCustomConnectorTemplates() {
   for (const descriptor of GLOBAL_CUSTOM_CONNECTOR_TEMPLATES) {
     const existing = await prisma.connectorTemplate.findFirst({
-      where: { key: descriptor.key, tenantId: null, origin: 'custom' },
-      orderBy: [{ version: 'desc' }],
+      where: { key: descriptor.key, version: 1, tenantId: null, origin: 'custom' },
     })
-    if (existing) continue
-
-    await prisma.connectorTemplate.create({
+    if (!existing) {
+      await prisma.connectorTemplate.create({
+        data: {
+          key: descriptor.key,
+          version: 1,
+          origin: 'custom',
+          displayName: descriptor.displayName,
+          description: descriptor.description ?? null,
+          tenantId: null,
+          descriptor,
+          status: 'active',
+        },
+      })
+      continue
+    }
+    await prisma.connectorTemplate.update({
+      where: { id: existing.id },
       data: {
-        key: descriptor.key,
-        version: 1,
-        origin: 'custom',
         displayName: descriptor.displayName,
         description: descriptor.description ?? null,
-        tenantId: null,
         descriptor,
         status: 'active',
       },

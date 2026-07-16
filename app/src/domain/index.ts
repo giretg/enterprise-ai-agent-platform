@@ -81,8 +81,34 @@ import { resolveTicketProcessRoute } from '@/lib/ticket-process-route'
 import { prisma } from '@/lib/db'
 import { createHash } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
+import { SpecSyncService } from '@/domain/connector-self-update/spec-sync'
+import { SelfUpdatingConnectorService } from '@/domain/connector-self-update/self-update-service'
 
 const playbookService = new PlaybookService(repositories.playbooks, repositories.audit)
+const selfUpdatingConnectorService = new SelfUpdatingConnectorService(
+  repositories.selfUpdatingConnectors,
+  new SpecSyncService({
+    resolveHostIps: async (host) => (await lookup(host, { all: true })).map((entry) => entry.address),
+  }),
+  {
+    append: async (event) => {
+      await repositories.audit.append({
+        actorType: event.actorId ? 'human' : 'system',
+        actorId: event.actorId,
+        agentVersion: null,
+        action: event.action,
+        targetType: 'connector',
+        targetId: event.connectorId,
+        modelUsed: null,
+        inputRef: null,
+        outputRef: null,
+        policyDecision: event.policyDecision,
+        metadata: (event.metadata ?? {}) as import('@prisma/client').Prisma.JsonValue,
+        tenantId: event.tenantId,
+      })
+    },
+  },
+)
 // Hibapolicy spec §4.2/WP-4 — a tenant-default lekérdezője function-ként injektált (mint a
 // `ticketService` ticket-type-config lekérdezője lejjebb), mert a `platformSettingsService`
 // csak KÉSŐBB (ebben a fájlban) épül fel — a closure csak publish-hívásnál fut le, akkorra
@@ -601,6 +627,7 @@ const agentChatRuntime = new AgentChatRuntime(
   processService,
   skillService,
   memoryRetrievalService,
+  (tenantId) => platformSettingsService.isChatThinkingTraceEnabledForTenant(tenantId),
 )
 const wikiRuntime = new WikiAgentRuntime(
   repositories.agents,
@@ -734,6 +761,7 @@ export const services = {
   iam: iamService,
   tenants: tenantService,
   provisioning: provisioningService,
+  selfUpdatingConnectors: selfUpdatingConnectorService,
   provisioningAssistant,
   playbookAuthorAgent,
   sandboxApps: sandboxAppService,

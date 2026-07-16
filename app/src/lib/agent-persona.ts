@@ -83,7 +83,17 @@ function basePersonaFor(name: string): AgentPersona {
 
 /** A warm, human reading of a machine status. */
 export function humanStatus(status: string): { label: string; mood: 'awake' | 'resting' } {
-  return status === 'active'
-    ? { label: 'Most épp dolgozik', mood: 'awake' }
-    : { label: 'Kávészünetet tart', mood: 'resting' }
+  if (status === 'active') {
+    return { label: 'Most épp dolgozik', mood: 'awake' }
+  }
+  if (status === 'retired') {
+    return { label: 'Nyugdíjazva', mood: 'resting' }
+  }
+  if (status === 'suspended') {
+    return { label: 'Felfüggesztve', mood: 'resting' }
+  }
+  if (status === 'draft') {
+    return { label: 'Még vázlat', mood: 'resting' }
+  }
+  return { label: 'Kávészünetet tart', mood: 'resting' }
 }

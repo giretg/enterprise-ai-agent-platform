@@ -295,12 +295,14 @@ export type GmailSendArgs = {
 }
 
 export type HttpApiQuery = Record<string, string | number | boolean>
-export type HttpApiGetArgs = { connectorId?: string; path: string; query?: HttpApiQuery }
+export type HttpApiHeaders = Record<string, string>
+export type HttpApiGetArgs = { connectorId?: string; path: string; query?: HttpApiQuery; headers?: HttpApiHeaders }
 export type HttpApiRequestArgs = {
   connectorId?: string
   method: 'POST' | 'PUT' | 'PATCH' | 'DELETE'
   path: string
   query?: HttpApiQuery
+  headers?: HttpApiHeaders
   body?: unknown
 }
 export type HttpApiCallResult = { status: number; ok: boolean; body: unknown }

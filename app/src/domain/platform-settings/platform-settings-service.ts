@@ -182,6 +182,20 @@ const EGRESS_GLOBAL_BUCKET = '__global__'
  * olvassa ki publish-időben, és a FELOLDOTT eredmény kerül a `compiled_spec`-be (TE-2).
  */
 export const PLAYBOOK_TENANT_DEFAULT_ERROR_POLICY_KEY = 'playbook.tenant_default_error_policy'
+
+/**
+ * Chat "thinking-trace" spec §D7/WP-6 — tenant-szintű kapcsoló a modell
+ * gondolkodási (reasoning) szövegének chat-megjelenítéséhez. ALAPBÓL KIKAPCSOLVA:
+ * amíg a D5 tartalom-őr-lefedettség nincs éles-verifikálva, ne menjen ki
+ * alapból nyers reasoning-szöveg. Egyetlen `PlatformSetting` sor, tenantId → bucket.
+ */
+export const CHAT_THINKING_TRACE_TENANT_KEY = 'chat.thinking_trace_tenant_controls'
+type ChatThinkingTraceControls = {
+  enabled: boolean
+  updatedById: string | null
+  updatedAt: string | null
+}
+type ChatThinkingTraceStore = Record<string, Partial<ChatThinkingTraceControls>>
 type EgressAllowlistStore = Record<string, string[]>
 
 /**
@@ -651,6 +665,69 @@ export class PlatformSettingsService {
       outputRef: null,
       policyDecision: next.killSwitch ? 'paused' : 'enabled',
       metadata: { tenantId, killSwitch: next.killSwitch },
+      tenantId,
+    })
+
+    return next
+  }
+
+  // ── Chat thinking-trace (§D7/WP-6) ─────────────────────────────────────────
+
+  async getTenantThinkingTraceControls(tenantId: string): Promise<ChatThinkingTraceControls> {
+    const raw = (await this.settings.get(CHAT_THINKING_TRACE_TENANT_KEY)) as ChatThinkingTraceStore | null
+    const bucket = raw?.[tenantId]
+    if (!bucket || typeof bucket !== 'object') {
+      return { enabled: false, updatedById: null, updatedAt: null }
+    }
+    return {
+      enabled: bucket.enabled === true,
+      updatedById: typeof bucket.updatedById === 'string' ? bucket.updatedById : null,
+      updatedAt: typeof bucket.updatedAt === 'string' ? bucket.updatedAt : null,
+    }
+  }
+
+  /**
+   * Fail-closed: alapból KIKAPCSOLVA. A tenant nélküli (system) agenteknél is
+   * kikapcsolt — a reasoning-megjelenítés kifejezetten tenant-admin opt-in.
+   */
+  async isChatThinkingTraceEnabledForTenant(tenantId: string | null): Promise<boolean> {
+    if (!tenantId) return false
+    return (await this.getTenantThinkingTraceControls(tenantId)).enabled
+  }
+
+  async setTenantThinkingTraceControls(
+    tenantId: string,
+    input: { enabled: boolean },
+    actorId: string,
+  ): Promise<ChatThinkingTraceControls> {
+    const raw = (await this.settings.get(CHAT_THINKING_TRACE_TENANT_KEY)) as ChatThinkingTraceStore | null
+    const store: ChatThinkingTraceStore = raw && typeof raw === 'object' ? { ...raw } : {}
+    const current = await this.getTenantThinkingTraceControls(tenantId)
+    const next: ChatThinkingTraceControls = {
+      enabled: input.enabled,
+      updatedById: actorId,
+      updatedAt: new Date().toISOString(),
+    }
+    store[tenantId] = next
+    await this.settings.set(CHAT_THINKING_TRACE_TENANT_KEY, store as unknown as Prisma.InputJsonObject, actorId)
+
+    await this.audit.append({
+      actorType: 'human',
+      actorId,
+      agentVersion: null,
+      action:
+        current.enabled !== next.enabled
+          ? next.enabled
+            ? 'chat.thinking_trace.enabled'
+            : 'chat.thinking_trace.disabled'
+          : 'chat.thinking_trace.config_changed',
+      targetType: 'platform_setting',
+      targetId: tenantId,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: null,
+      policyDecision: next.enabled ? 'enabled' : 'disabled',
+      metadata: { tenantId, enabled: next.enabled },
       tenantId,
     })
 

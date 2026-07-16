@@ -7,6 +7,7 @@ import type {
   ModelGateway,
   ToolDefinition,
 } from '@/domain/gateway/model-gateway'
+import { StreamingSensitiveTextRedactor } from '@/domain/gateway/sensitivity-router'
 import type { ToolBrokerRepository } from '@/repositories/interfaces'
 import type { XlsxRow, XlsxSheetSpec, CellStyle, XlsxCellChange } from '@/domain/file-editor/adapters/xlsx-adapter'
 import type { PptxSlideSpec } from '@/domain/file-editor/adapters/pptx-adapter'
@@ -254,21 +255,22 @@ const TOOL_SCHEMAS: Record<ChatPlatformToolName, ToolSchema> = {
   },
   http_api_get: {
     description:
-      'Olvasó (GET) hívás a hozzád rendelt külső REST API-n. A `connectorId` értékét a rendszerüzenetben látod. A `path` a connector baseUrl-jéhez relatív (pl. "/banks" vagy "/banks/{id}/crm"). A query paramétereket a `query` objektumban add meg.',
+      'Olvasó (GET) hívás a hozzád rendelt külső REST API-n. A `connectorId` értékét a rendszerüzenetben látod. A `path` a connector baseUrl-jéhez relatív. A query paramétereket a `query`, a jóváhagyott snapshotban deklarált fejléceket a `headers` objektumban add meg.',
     inputSchema: objectSchema(
-      { connectorId: STR, path: STR, query: { type: 'object', additionalProperties: true } },
+      { connectorId: STR, path: STR, query: { type: 'object', additionalProperties: true }, headers: { type: 'object', additionalProperties: { type: 'string' } } },
       ['path'],
     ),
   },
   http_api_request: {
     description:
-      'Író (POST/PUT/PATCH/DELETE) hívás a hozzád rendelt külső REST API-n. A `connectorId` értékét a rendszerüzenetben látod. A `path` a connector baseUrl-jéhez relatív; a kérés törzsét a `body` objektumban add meg. Csak akkor hívd, ha a művelet tényleges állapotváltozást igényel.',
+      'Író (POST/PUT/PATCH/DELETE) hívás a hozzád rendelt külső REST API-n. A `connectorId` értékét a rendszerüzenetben látod. A `path` relatív; a törzset a `body`, a jóváhagyott snapshotban deklarált fejléceket a `headers` objektumban add meg. Csak tényleges állapotváltozásnál hívd.',
     inputSchema: objectSchema(
       {
         connectorId: STR,
         method: { type: 'string', enum: ['POST', 'PUT', 'PATCH', 'DELETE'] },
         path: STR,
         query: { type: 'object', additionalProperties: true },
+        headers: { type: 'object', additionalProperties: { type: 'string' } },
         body: { type: 'object', additionalProperties: true },
       },
       ['method', 'path'],
@@ -985,6 +987,12 @@ function httpQueryArg(value: unknown): Record<string, string | number | boolean>
   return Object.keys(out).length > 0 ? out : undefined
 }
 
+function httpHeadersArg(value: unknown): Record<string, string> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined
+  const entries = Object.entries(value).filter((entry): entry is [string, string] => typeof entry[1] === 'string')
+  return entries.length > 0 ? Object.fromEntries(entries) : undefined
+}
+
 function httpMethodArg(value: unknown): 'POST' | 'PUT' | 'PATCH' | 'DELETE' {
   const m = typeof value === 'string' ? value.toUpperCase() : ''
   return m === 'PUT' || m === 'PATCH' || m === 'DELETE' ? m : 'POST'
@@ -1143,6 +1151,7 @@ function buildToolInvoke(
           connectorId: typeof args.connectorId === 'string' ? args.connectorId : undefined,
           path: strArg(args, 'path'),
           query: httpQueryArg(args.query),
+          headers: httpHeadersArg(args.headers),
         },
       }
 
@@ -1155,6 +1164,7 @@ function buildToolInvoke(
           method: httpMethodArg(args.method),
           path: strArg(args, 'path'),
           query: httpQueryArg(args.query),
+          headers: httpHeadersArg(args.headers),
           body: args.body,
         },
       }
@@ -1598,6 +1608,12 @@ export async function runAgentToolLoop(params: {
   loadSkill?: LoadSkillFn
   archiveLargeToolResult?: (input: LargeToolResultArchiveInput) => Promise<LargeToolResultArchive | null>
   onActivity?: (event: ToolLoopActivityEvent) => void | Promise<void>
+  /**
+   * Chat "thinking-trace" spec (§5, WP-3) — a modell reasoning-summary deltái,
+   * MÁR a tartalom-őrön (D5) átengedve, `turnId`-vel a UI élő bejegyzéséhez. Ha
+   * nincs megadva (D7 kikapcsolva vagy tool nélküli ág), reasoning sem generálódik.
+   */
+  onReasoning?: (turnId: string, delta: string) => void
   /** WP-5 — sikeres `memory_propose` hívás után a chat-kártyához (§6.2). */
   onMemoryCandidate?: (event: ToolLoopMemoryCandidateEvent) => void | Promise<void>
   /** Kooperatív leállítás (pl. chat Stop) — kör- és tool-hívás-határon ellenőrizve. */
@@ -1692,23 +1708,48 @@ export async function runAgentToolLoop(params: {
       throw new AgentToolLoopCancelledError()
     }
     let webSearchCallsThisTurn = 0
+    const reasoningTurnId = `reasoning-${turn}`
+    const placeholderTitle = turn === 0 ? 'Üzenet feldolgozása' : 'Tool eredmények kiértékelése'
     await emitActivity({
-      id: `reasoning-${turn}`,
+      id: reasoningTurnId,
       kind: 'reasoning',
-      title: turn === 0 ? 'Üzenet feldolgozása' : 'Tool eredmények kiértékelése',
+      title: placeholderTitle,
       status: 'running',
     })
+
+    // Chat "thinking-trace" (§5, WP-3): a provider reasoning-summary deltáit
+    // közös, stateful tartalom-őrön (D5) átengedve továbbítjuk. A guard a
+    // delta-határokat és a többsoros privátkulcs-blokkokat is egyben kezeli.
+    let reasoningGuarded = ''
+    const reasoningRedactor = new StreamingSensitiveTextRedactor((text) => {
+      reasoningGuarded += text
+      params.onReasoning?.(reasoningTurnId, text)
+    })
+    const onReasoningDelta = params.onReasoning
+      ? (delta: string) => reasoningRedactor.push(delta)
+      : undefined
+
     const { content, toolCalls } = await params.gateway.call({
       agentId: params.agentId,
       ...params.context,
       messages,
       modelConfig: params.modelConfig,
       ...(tools.length ? { tools } : {}),
+      ...(onReasoningDelta ? { onReasoningDelta } : {}),
     })
+
+    // Forduló-végi flush + összefoglaló (D3): ahol volt valódi reasoning, a
+    // placeholder-cím "Gondolkodás"-ra vált és a rövidített, redaktált szöveg a
+    // detail; ahol nem volt, a statikus placeholder marad fallbackként.
+    reasoningRedactor.finish()
+    const reasoningSummary = reasoningGuarded.trim()
     await emitActivity({
-      id: `reasoning-${turn}`,
+      id: reasoningTurnId,
       kind: 'reasoning',
-      title: turn === 0 ? 'Üzenet feldolgozása' : 'Tool eredmények kiértékelése',
+      title: reasoningSummary ? 'Gondolkodás' : placeholderTitle,
+      ...(reasoningSummary
+        ? { detail: reasoningSummary.length > 240 ? `${reasoningSummary.slice(0, 240)}…` : reasoningSummary }
+        : {}),
       status: 'done',
     })
 
@@ -2118,6 +2159,7 @@ async function describeHttpApiConnectors(
     const config = (connector.config ?? {}) as {
       baseUrl?: string
       description?: string
+      restrictToEndpoints?: boolean
       endpoints?: Array<{ method?: string; path?: string; description?: string; name?: string }>
       proposedTools?: Array<{ method?: string; path?: string; description?: string; name?: string }>
     }
@@ -2135,6 +2177,11 @@ async function describeHttpApiConnectors(
         const endpointDescription = e.description ?? e.name
         const desc = endpointDescription ? ` — ${endpointDescription}` : ''
         lines.push(`- ${e.method ?? 'GET'} ${e.path ?? ''}${desc}`)
+      }
+      // WP-3 (B3): ha az endpoint-korlát aktív, a modell tudja, hogy listán kívülit
+      // hiába próbál — a rendszer a külső rendszer megkérdezése nélkül elutasítja.
+      if (config.restrictToEndpoints === true) {
+        lines.push('Csak az itt felsorolt végpontok hívhatók — minden más hívást a rendszer elutasít (endpoint_not_allowed), mielőtt a külső rendszert megkeresné.')
       }
     }
     return lines.join('\n')

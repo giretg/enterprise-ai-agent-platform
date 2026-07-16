@@ -14,10 +14,12 @@ import { createHash } from 'crypto'
 import type { ConnectorAccessMode, ConnectorType, Prisma, UserRole } from '@prisma/client'
 import type { AuditRepository, ConnectorDraftRepository } from '@/repositories/interfaces'
 import type { ConnectorGrantService } from '@/domain/connector-grant/connector-grant-service'
+import { isConnectorAssignableToAgent } from '@/domain/connector-self-update/pinned-runtime-config'
 import {
   normalizeGmailConnectorConfig,
   type GmailConnectorConfig,
 } from '@/domain/connector-template/gmail-connector-config'
+import { enrichOstorosborConnectorConfig } from '@/domain/connector-template/ostorosbor-config-enrichment'
 import {
   normalizeConnectorConfig,
   ConnectorConfigParseError,
@@ -26,6 +28,7 @@ import {
 import { validateDraftConfig, type ValidationResult } from './draft-validator'
 import { validateGmailDraftConfig } from './gmail-draft-validator'
 import { ProvisioningError } from './errors'
+import { isResolvableSecretAlias } from './secret-alias'
 
 export type ProvisioningActor =
   | { type: 'user'; userId: string; role: UserRole; tenantId: string | null }
@@ -44,6 +47,7 @@ export interface SandboxConnectionTester {
     config: ConnectorConfig
     secretAlias: string | null
     tenantId: string | null
+    token?: string | null
   }): Promise<{ ok: boolean; statusCode?: number; detail?: string }>
 }
 
@@ -272,6 +276,42 @@ export class ProvisioningService {
     return result
   }
 
+  /** Aktiválás előtti kulcsos próbahívás — a megadott kulccsal/aliassal, nem a draft secret-ref-fel. */
+  async testConnectorDraftWithCredentials(
+    input: {
+      draftId: string
+      apiKey?: string
+      secretAlias?: string
+      defaultActingUserEmail?: string
+    },
+    actor: ProvisioningActor,
+  ): Promise<{ ok: boolean; statusCode?: number; detail?: string }> {
+    this.requireHumanAdmin(actor, 'testConnectorDraftWithCredentials')
+    const draft = await this.loadDraftForTenant(input.draftId, actor)
+
+    if (draft.connector.type === 'gmail') {
+      return { ok: false, detail: 'gmail_connector_no_http_auth_test' }
+    }
+    if (!this.deps.sandboxTester) {
+      return { ok: false, detail: 'sandbox_tester_not_configured' }
+    }
+
+    const token = await resolveActivationToken(input)
+    if (!token) {
+      return { ok: false, detail: 'no_credentials_provided' }
+    }
+
+    const config = parseStoredConfig(draft.connector.config, {
+      defaultActingUserEmail: input.defaultActingUserEmail,
+    })
+    return this.deps.sandboxTester.test({
+      config,
+      secretAlias: draft.connector.secretAlias,
+      tenantId: actor.tenantId,
+      token,
+    })
+  }
+
   // ── §8.5 activateConnector (EMBERI admin-aktus — agent NEM hívhatja) ──────
 
   async activateConnector(
@@ -283,6 +323,10 @@ export class ProvisioningService {
       approverId?: string
       criticality?: Criticality
       reason?: string
+      /** Kulcs/alias nélküli aktiválás explicit megerősítése. */
+      confirmKeyless?: boolean
+      /** Ostorosbor CRM: acting user e-mail a kulcsos teszthez / aktiváláshoz. */
+      defaultActingUserEmail?: string
     },
     actor: ProvisioningActor,
   ): Promise<{ connectorId: string; lifecycleState: 'active' }> {
@@ -305,30 +349,60 @@ export class ProvisioningService {
     if (draft.sandboxTestOk !== true) {
       throw new ProvisioningError('SANDBOX_TEST_FAILED', 'sandbox connection-test must pass first')
     }
-    if (!input.secretAlias?.trim() && !input.apiKey?.trim()) {
-      throw new ProvisioningError(
-        'SECRET_ALIAS_MISSING',
-        'secretAlias or apiKey is required',
-      )
+
+    const hasApiKey = Boolean(input.apiKey?.trim())
+    const hasSecretAlias = Boolean(input.secretAlias?.trim())
+    const hasResolvableAlias =
+      hasSecretAlias && isResolvableSecretAlias(input.secretAlias!.trim())
+    const hasCredentials = hasApiKey || hasResolvableAlias
+
+    if (!hasCredentials) {
+      if (!input.confirmKeyless) {
+        throw new ProvisioningError(
+          'ACTIVATION_KEYLESS_UNCONFIRMED',
+          'confirmKeyless is required to activate without apiKey or resolvable secretAlias',
+        )
+      }
+    } else if (!isGmail && this.deps.sandboxTester) {
+      const token = await resolveActivationToken(input)
+      if (!token) {
+        throw new ProvisioningError(
+          'ACTIVATION_AUTH_TEST_FAILED',
+          'could not resolve credentials for activation auth test',
+        )
+      }
+      const config = parseStoredConfig(draft.connector.config, {
+        defaultActingUserEmail: input.defaultActingUserEmail,
+      })
+      const authTest = await this.deps.sandboxTester.test({
+        config,
+        secretAlias: draft.connector.secretAlias,
+        tenantId: actor.tenantId,
+        token,
+      })
+      if (!authTest.ok) {
+        throw new ProvisioningError(
+          'ACTIVATION_AUTH_TEST_FAILED',
+          authTest.detail ?? 'authenticated sandbox test failed',
+          { statusCode: authTest.statusCode },
+        )
+      }
     }
 
     // Ha az admin API-kulcsot ad meg, elmentjük a Secret Store-ba és secret-ref-et kapunk.
     // Ha csak secretAlias-t ad meg, azt változatlanul eltároljuk (env / Secret Manager pointer).
     let resolvedAlias: string
-    if (input.apiKey?.trim()) {
+    if (hasApiKey) {
       const { saveConnectorApiKey, buildConnectorSecretRef } = await import(
         '@/domain/connector/connector-secret-store'
       )
-      await saveConnectorApiKey(draft.connectorId, input.apiKey.trim())
+      await saveConnectorApiKey(draft.connectorId, input.apiKey!.trim())
       resolvedAlias = buildConnectorSecretRef(draft.connectorId)
-    } else {
+    } else if (hasResolvableAlias) {
       resolvedAlias = input.secretAlias!.trim()
-      if (!isResolvableSecretAlias(resolvedAlias)) {
-        throw new ProvisioningError(
-          'SECRET_ALIAS_MISSING',
-          'secretAlias must be env:NAME, secret-manager:projects/.../secrets/<id>, or secret-ref:<id>; provide apiKey to create a managed secret-ref',
-        )
-      }
+    } else {
+      const { buildConnectorSecretRef } = await import('@/domain/connector/connector-secret-store')
+      resolvedAlias = buildConnectorSecretRef(draft.connectorId)
     }
 
     const trimmedClientId = input.clientId?.trim()
@@ -353,13 +427,27 @@ export class ProvisioningService {
         },
       } as unknown as Prisma.InputJsonValue
     } else {
-      const config = parseStoredConfig(draft.connector.config)
+      const config = parseStoredConfig(draft.connector.config, {
+        defaultActingUserEmail: input.defaultActingUserEmail,
+      })
       authMode = config.authMode
 
       // A nyers configra mergeljük (nem a parse-oltra) — így a séma által nem
       // modellezett kulcsokat (pl. delegált `oauth` blokk) nem tüntetjük el.
       const rawConfig = { ...((draft.connector.config as Record<string, unknown> | null) ?? {}) }
       let configMutated = false
+
+      const ostorosborEnrichment = enrichOstorosborConnectorConfig(config)
+      if (ostorosborEnrichment.changed) {
+        rawConfig.requestHeaders = ostorosborEnrichment.config.requestHeaders
+        configMutated = true
+      }
+      const actingEmail =
+        input.defaultActingUserEmail?.trim() || config.defaultActingUserEmail?.trim()
+      if (actingEmail && rawConfig.defaultActingUserEmail !== actingEmail) {
+        rawConfig.defaultActingUserEmail = actingEmail
+        configMutated = true
+      }
 
       const existingClientId =
         typeof config.auth.clientId === 'string' ? config.auth.clientId.trim() : ''
@@ -474,6 +562,20 @@ export class ProvisioningService {
     actor: ProvisioningActor,
   ): Promise<{ agentId: string; connectorId: string }> {
     this.requireHumanAdmin(actor, 'assignConnectorToAgent')
+
+    const connector = await this.loadConnectorForTenant(input.connectorId, actor)
+    if (connector.lifecycleState !== 'active') {
+      throw new ProvisioningError(
+        'CONNECTOR_NOT_ACTIVE',
+        'only an active connector can be assigned to an agent',
+      )
+    }
+    if (!isConnectorAssignableToAgent(connector.connectorMode, connector.activeCapabilitySet)) {
+      throw new ProvisioningError(
+        'CONNECTOR_NOT_ASSIGNABLE',
+        'Az önfrissítő kapcsolatnak előbb legyen jóváhagyott, aktív OpenAPI-verziója (Frissítés keresése → jóváhagyás).',
+      )
+    }
 
     // Ha per-agent API-kulcsot adtak meg, elmentjük a Secret Store-ba és az
     // agentConnector.secretAlias-ba a secret-ref-et írjuk. Ez agent_owned módban
@@ -961,14 +1063,6 @@ function normalizeSourceHash(value: string): string {
   return value.startsWith('sha256:') ? value : `sha256:${value}`
 }
 
-function isResolvableSecretAlias(value: string): boolean {
-  return (
-    /^env:[A-Za-z_][A-Za-z0-9_]*$/.test(value) ||
-    value.startsWith('secret-manager:projects/') ||
-    value.startsWith('secret-ref:')
-  )
-}
-
 function configToJson(config: ConnectorConfig): Prisma.InputJsonValue {
   return config as unknown as Prisma.InputJsonValue
 }
@@ -985,9 +1079,18 @@ function parseGmailStoredConfig(raw: unknown): GmailConnectorConfig {
   }
 }
 
-function parseStoredConfig(raw: unknown): ConnectorConfig {
+function parseStoredConfig(
+  raw: unknown,
+  overrides?: { defaultActingUserEmail?: string },
+): ConnectorConfig {
   try {
-    return normalizeConnectorConfig(raw)
+    let config = normalizeConnectorConfig(raw)
+    config = enrichOstorosborConnectorConfig(config).config
+    const actingEmail = overrides?.defaultActingUserEmail?.trim()
+    if (actingEmail) {
+      config = { ...config, defaultActingUserEmail: actingEmail }
+    }
+    return config
   } catch (e) {
     if (e instanceof ConnectorConfigParseError) {
       throw new ProvisioningError('PROVISIONING_INVALID_INPUT', 'stored config invalid', e.issues)
@@ -1078,4 +1181,15 @@ function safeHttpApiView(raw: unknown): HttpApiConfigView | null {
     : []
   if (!baseUrl && !authScheme && endpoints.length === 0) return null
   return { baseUrl, authScheme, isDelegated, endpoints }
+}
+
+async function resolveActivationToken(input: {
+  apiKey?: string
+  secretAlias?: string
+}): Promise<string | null> {
+  if (input.apiKey?.trim()) return input.apiKey.trim()
+  const alias = input.secretAlias?.trim()
+  if (!alias || !isResolvableSecretAlias(alias)) return null
+  const { resolveConnectorApiKey } = await import('@/domain/connector/http-api-client')
+  return resolveConnectorApiKey(alias)
 }

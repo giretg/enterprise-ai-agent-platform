@@ -273,6 +273,13 @@ export function AddApiConnectorForm({ agentId, bare = false }: { agentId: string
               <option value="oauth2">OAuth2 (kézi refresh_token grant)</option>
               <option value="oauth2_delegated">OAuth2 – automatikus hozzájárulás (user-delegált)</option>
             </select>
+            <span className="mt-1 block text-xs text-ink-faint">
+              {authScheme === 'bearer'
+                ? 'Bearer token: csak a nyers kulcsot írd be — a rendszer az Authorization: Bearer <kulcs> fejlécet automatikusan összeállítja.'
+                : authScheme === 'header'
+                  ? 'Egyedi fejléc: a megadott érték változtatás nélkül kerül a fejlécbe. Ha a szerver Bearer-t vár, azt neked kell beleírnod (Bearer <kulcs>).'
+                  : 'OAuth2: a rendszer a token-végponton szerez/frissít hozzáférési tokent.'}
+            </span>
           </label>
           {authScheme === 'header' && (
             <label className="block text-sm">
@@ -292,12 +299,27 @@ export function AddApiConnectorForm({ agentId, bare = false }: { agentId: string
                 type="password"
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
-                placeholder="pn_..."
+                placeholder={authScheme === 'bearer' ? 'A külső rendszer nyers kulcsa (Bearer nélkül)' : 'pl. pn_… vagy Bearer <kulcs>'}
                 autoComplete="off"
                 className={INPUT}
               />
+              <span className="mt-1 block text-xs text-ink-faint">
+                {authScheme === 'bearer'
+                  ? 'A nyers kulcs — a „Bearer " előtagot ne írd bele, a rendszer hozzáadja. A kulcs titkosítva tárolódik, sosem kerül az adatbázisba.'
+                  : 'A fejlécbe kerülő teljes érték. Ha a szerver Bearer-t vár, írd bele: „Bearer <kulcs>". A kulcs titkosítva tárolódik, sosem kerül az adatbázisba.'}
+              </span>
             </label>
           )}
+          {authScheme === 'header' &&
+            authHeader.trim().toLowerCase() === 'authorization' &&
+            apiKey.trim().length > 0 &&
+            !/^bearer\s/i.test(apiKey.trim()) && (
+              <p className="rounded-lg border border-honey/30 bg-honey/10 px-3 py-2 text-xs text-honey sm:col-span-2">
+                Figyelem: az „Authorization&rdquo; fejléchez a legtöbb szerver „Bearer &lt;kulcs&gt;&rdquo;
+                alakot vár, a beírt érték viszont nem ezzel kezdődik. Ha a szerver Bearer-t vár, írd
+                elé: <code>Bearer </code>. (Ez csak figyelmeztetés — más séma is lehet.)
+              </p>
+            )}
           {(authScheme === 'oauth2' || authScheme === 'oauth2_delegated') && (
             <>
               {authScheme === 'oauth2_delegated' && (

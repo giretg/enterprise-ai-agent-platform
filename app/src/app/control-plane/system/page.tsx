@@ -17,6 +17,7 @@ import {
   getTenantWebSearchControls,
   getWebSearchPolicy,
 } from '@/app/actions/web-search'
+import { getTenantThinkingTraceControls } from '@/app/actions/chat-thinking-trace'
 import { readDispatcherRuntime } from '@/lib/dispatcher-runtime'
 import { DatabaseControlPanel } from './database-control-panel'
 import { AutomationControlSection } from './automation-control-section'
@@ -25,6 +26,7 @@ import { ModelGatewayPanel } from './model-gateway-panel'
 import { ModelPolicyPanel } from './model-policy-panel'
 import { TicketTypeConfigPanel } from './ticket-type-config-panel'
 import { TenantWebSearchPolicyPanel } from './tenant-web-search-policy-panel'
+import { TenantThinkingTracePanel } from './tenant-thinking-trace-panel'
 import { MemoryObservabilityPanel } from './memory-observability-panel'
 
 export default async function SystemPage() {
@@ -39,6 +41,7 @@ export default async function SystemPage() {
     monitorControlsRes,
     tenantWebSearchPolicyRes,
     tenantWebSearchControlsRes,
+    tenantThinkingTraceControlsRes,
     gatewayStatsRes,
     routingPoliciesRes,
     budgetsRes,
@@ -55,6 +58,7 @@ export default async function SystemPage() {
     getMonitorControls(),
     getWebSearchPolicy(),
     getTenantWebSearchControls(),
+    getTenantThinkingTraceControls(),
     getModelCallsSummary(),
     listModelRoutingPolicies(),
     listModelBudgets(),
@@ -150,6 +154,13 @@ export default async function SystemPage() {
           canEdit={canEditTenantWebSearch}
         />
       )}
+
+      {tenantThinkingTraceControlsRes.success ? (
+        <TenantThinkingTracePanel
+          initialEnabled={tenantThinkingTraceControlsRes.data.enabled}
+          canEdit={canEditTenantWebSearch}
+        />
+      ) : null}
 
       {!ticketTypesRes.success ? (
         <div className="rounded-lg border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">

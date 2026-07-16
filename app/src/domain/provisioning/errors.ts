@@ -11,6 +11,8 @@ export type ProvisioningErrorCode =
   | 'DRAFT_VALIDATION_FAILED'
   | 'DRAFT_NOT_APPROVED'
   | 'SANDBOX_TEST_FAILED'
+  | 'ACTIVATION_AUTH_TEST_FAILED'
+  | 'ACTIVATION_KEYLESS_UNCONFIRMED'
   | 'SECRET_ALIAS_MISSING'
   | 'OAUTH_CLIENT_ID_MISSING' // service-oauth2: hiányzik a config.auth.clientId
   | 'APPROVAL_SAME_ACTOR' // dual-control: reviewer === approver
@@ -19,6 +21,7 @@ export type ProvisioningErrorCode =
   | 'DRAFT_NOT_EDITABLE' // javítás: csak draft/validated config szerkeszthető
   | 'CONNECTOR_NOT_ACTIVE' // reopen/decommission: csak aktív connectorra
   | 'CONNECTOR_NOT_FOUND_OR_FORBIDDEN' // connector-hozzáférés: nem a tenant connectora
+  | 'CONNECTOR_NOT_ASSIGNABLE' // self_updating: nincs aktív/valid capability snapshot
   | 'DRAFT_ALREADY_ACTIVATED' // hard-delete: csak sosem aktivált draftra
 
 export class ProvisioningError extends Error {

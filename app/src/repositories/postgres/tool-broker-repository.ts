@@ -7,6 +7,24 @@ import type {
 } from '@prisma/client'
 import { prisma } from '@/lib/db'
 import type { ToolBrokerRepository } from '../interfaces'
+import { pinnedRuntimeConfig } from '@/domain/connector-self-update/pinned-runtime-config'
+
+type ConnectorWithActiveSpec = Connector & {
+  activeSpecVersion: { capabilitySet: Prisma.JsonValue } | null
+}
+
+function toRuntimeConnector(row: ConnectorWithActiveSpec): Connector | null {
+  const config = pinnedRuntimeConfig(
+    row.connectorMode,
+    row.config,
+    row.activeSpecVersion?.capabilitySet ?? null,
+  )
+  if (!config) return null
+  const connector = Object.fromEntries(
+    Object.entries(row).filter(([key]) => key !== 'activeSpecVersion'),
+  ) as Connector
+  return { ...connector, config }
+}
 
 function connectorAccessModes(required: ConnectorAccessMode): ConnectorAccessMode[] {
   return required === 'read' ? ['read', 'write'] : ['write']
@@ -21,6 +39,32 @@ function connectorTenantScope(tenantId?: string | null) {
 }
 
 export class PostgresToolBrokerRepository implements ToolBrokerRepository {
+  private async findRuntimeConnectorForAgent(input: {
+    agentId: string
+    type: ConnectorType
+    accessMode: ConnectorAccessMode
+    tenantId?: string | null
+    connectorId?: string
+  }): Promise<{ connector: Connector; agentSecretAlias: string | null } | null> {
+    const connectorScope =
+      input.type === 'web_search' && input.tenantId
+        ? { type: input.type, tenantId: input.tenantId, ...(input.connectorId ? { id: input.connectorId } : {}) }
+        : { type: input.type, ...(input.connectorId ? { id: input.connectorId } : {}), ...connectorTenantScope(input.tenantId) }
+    const row = await prisma.agentConnector.findFirst({
+      where: {
+        agentId: input.agentId,
+        ...(input.connectorId ? { connectorId: input.connectorId } : {}),
+        accessMode: { in: connectorAccessModes(input.accessMode) },
+        connector: connectorScope,
+      },
+      include: { connector: { include: { activeSpecVersion: { select: { capabilitySet: true } } } } },
+      orderBy: { connector: { createdAt: 'asc' } },
+    })
+    if (!row) return null
+    const connector = toRuntimeConnector(row.connector)
+    return connector ? { connector, agentSecretAlias: row.secretAlias ?? null } : null
+  }
+
   async findCapability(agentId: string, toolName: string): Promise<{ allowed: boolean } | null> {
     return prisma.capability.findUnique({
       where: { agentId_toolName: { agentId, toolName } },
@@ -34,22 +78,7 @@ export class PostgresToolBrokerRepository implements ToolBrokerRepository {
     accessMode: ConnectorAccessMode,
     tenantId?: string | null,
   ): Promise<{ connector: Connector; agentSecretAlias: string | null } | null> {
-    const connectorScope =
-      type === 'web_search' && tenantId
-        ? { type, tenantId }
-        : { type, ...connectorTenantScope(tenantId) }
-
-    const agentConnector = await prisma.agentConnector.findFirst({
-      where: {
-        agentId,
-        accessMode: { in: connectorAccessModes(accessMode) },
-        connector: connectorScope,
-      },
-      include: { connector: true },
-      orderBy: { connector: { createdAt: 'asc' } },
-    })
-    if (!agentConnector) return null
-    return { connector: agentConnector.connector, agentSecretAlias: agentConnector.secretAlias ?? null }
+    return this.findRuntimeConnectorForAgent({ agentId, type, accessMode, tenantId })
   }
 
   async findConnectorForAgentById(
@@ -59,23 +88,7 @@ export class PostgresToolBrokerRepository implements ToolBrokerRepository {
     accessMode: ConnectorAccessMode,
     tenantId?: string | null,
   ): Promise<{ connector: Connector; agentSecretAlias: string | null } | null> {
-    const connectorScope =
-      type === 'web_search' && tenantId
-        ? { type, tenantId, id: connectorId }
-        : { type, id: connectorId, ...connectorTenantScope(tenantId) }
-
-    const agentConnector = await prisma.agentConnector.findFirst({
-      where: {
-        agentId,
-        connectorId,
-        accessMode: { in: connectorAccessModes(accessMode) },
-        connector: connectorScope,
-      },
-      include: { connector: true },
-      orderBy: { connector: { createdAt: 'asc' } },
-    })
-    if (!agentConnector) return null
-    return { connector: agentConnector.connector, agentSecretAlias: agentConnector.secretAlias ?? null }
+    return this.findRuntimeConnectorForAgent({ agentId, connectorId, type, accessMode, tenantId })
   }
 
   async findCapabilitiesForAgent(
@@ -93,10 +106,15 @@ export class PostgresToolBrokerRepository implements ToolBrokerRepository {
   ): Promise<{ connector: Connector; accessMode: ConnectorAccessMode; agentSecretAlias: string | null }[]> {
     const rows = await prisma.agentConnector.findMany({
       where: { agentId },
-      include: { connector: true },
+      include: { connector: { include: { activeSpecVersion: { select: { capabilitySet: true } } } } },
       orderBy: { connector: { name: 'asc' } },
     })
-    return rows.map((r) => ({ connector: r.connector, accessMode: r.accessMode, agentSecretAlias: r.secretAlias ?? null }))
+    return rows.flatMap((r) => {
+      const connector = toRuntimeConnector(r.connector)
+      return connector
+        ? [{ connector, accessMode: r.accessMode, agentSecretAlias: r.secretAlias ?? null }]
+        : []
+    })
   }
 
   async findDocumentsForConnector(

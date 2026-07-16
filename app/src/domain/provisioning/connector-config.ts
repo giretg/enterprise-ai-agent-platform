@@ -25,6 +25,20 @@ export const proposedToolSchema = z.object({
   path: z.string().min(1),
   access: z.enum(['read', 'write']),
   description: z.string().optional(),
+  /**
+   * Ha true: az endpoint írási hívásaihoz a futásidejű http-api-kliens automatikusan
+   * egyedi `Idempotency-Key` fejlécet injektál (lásd http-api-client.ts). Az OpenAPI-
+   * extractor akkor állítja be, ha a spec az operationön kötelező `Idempotency-Key`
+   * header-paramétert deklarál. Csak mutáló metódusokon van értelme.
+   */
+  idempotent: z.boolean().optional(),
+  /** Capability-diffhez megőrzött, titokmentes paraméter-kontraktus. */
+  parameters: z.array(z.object({
+    name: z.string().min(1),
+    in: z.enum(['path', 'query', 'header', 'cookie', 'body']),
+    required: z.boolean(),
+    type: z.string().min(1),
+  })).optional(),
 })
 export type ProposedTool = z.infer<typeof proposedToolSchema>
 
@@ -67,6 +81,17 @@ export const connectorConfigSchema = z.object({
     .object({ rps: z.number().nonnegative(), burst: z.number().nonnegative() })
     .optional(),
   proposedTools: z.array(proposedToolSchema).default([]),
+  /**
+   * Ha true: futásidőben CSAK a `proposedTools`-ban felsorolt (method+path) hívható
+   * (endpoint-allowlist, WP-3/B3). A runtime http-api-kliens ezt a `restrictToEndpoints`
+   * mezőt olvassa. GitHub repo-scope connectoron tudatosan nem állítjuk (a repo-határ
+   * saját őrrel véd), ezért opcionális.
+   */
+  restrictToEndpoints: z.boolean().optional(),
+  /** Sablonozható fejlécek minden hívásra (pl. X-Agent-Id, X-Connector-Call-Id). */
+  requestHeaders: z.record(z.string(), z.string()).optional(),
+  /** CRM acting user fallback, ha a runtime actingUser.email hiányzik (Ostorosbor). */
+  defaultActingUserEmail: z.string().email().optional(),
   githubRepositoryAccess: githubRepositoryAccessSchema.optional(),
   provenance: z
     .object({

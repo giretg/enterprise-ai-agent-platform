@@ -7,6 +7,7 @@ import type {
   ConnectorType,
 } from '@prisma/client'
 import { Prisma } from '@prisma/client'
+import { isConnectorAssignableToAgent } from '@/domain/connector-self-update/pinned-runtime-config'
 import { prisma } from '@/lib/db'
 import type {
   ConnectorDraftRepository,
@@ -235,10 +236,26 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
   }
 
   async findConnectorById(connectorId: string) {
-    return prisma.connector.findUnique({
+    const row = await prisma.connector.findUnique({
       where: { id: connectorId },
-      select: { id: true, tenantId: true, lifecycleState: true, secretAlias: true },
+      select: {
+        id: true,
+        tenantId: true,
+        lifecycleState: true,
+        secretAlias: true,
+        connectorMode: true,
+        activeSpecVersion: { select: { capabilitySet: true } },
+      },
     })
+    if (!row) return null
+    return {
+      id: row.id,
+      tenantId: row.tenantId,
+      lifecycleState: row.lifecycleState,
+      secretAlias: row.secretAlias,
+      connectorMode: row.connectorMode,
+      activeCapabilitySet: row.activeSpecVersion?.capabilitySet ?? null,
+    }
   }
 
   async decommission(params: {
@@ -307,10 +324,24 @@ export class PostgresConnectorDraftRepository implements ConnectorDraftRepositor
   async listActiveCatalog(
     tenantId: string | null,
   ): Promise<Array<{ id: string; type: ConnectorType; name: string }>> {
-    return prisma.connector.findMany({
+    const rows = await prisma.connector.findMany({
       where: { tenantId, lifecycleState: 'active' },
-      select: { id: true, type: true, name: true },
+      select: {
+        id: true,
+        type: true,
+        name: true,
+        connectorMode: true,
+        activeSpecVersion: { select: { capabilitySet: true } },
+      },
       orderBy: { name: 'asc' },
     })
+    return rows
+      .filter((row) =>
+        isConnectorAssignableToAgent(
+          row.connectorMode,
+          row.activeSpecVersion?.capabilitySet ?? null,
+        ),
+      )
+      .map(({ id, type, name }) => ({ id, type, name }))
   }
 }

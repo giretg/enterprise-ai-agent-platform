@@ -20,12 +20,16 @@ import {
   reopenConnector,
   reviewConnectorDraft,
   testConnectorDraft,
+  testConnectorDraftWithCredentials,
   updateConnectorDraftConfig,
   upsertConnectorTemplateAction,
   validateConnectorDraft,
   type FetchApiDocFromUrlData,
 } from '@/app/actions/provisioning'
 import { startConnectorOAuth } from '@/app/actions/connector-grants'
+import { isResolvableSecretAlias } from '@/domain/provisioning/secret-alias'
+import { OSTOROSBOR_CRM_DEFAULT_INSTANCE_VALUES } from '@/domain/connector-template/custom-template-seeds'
+import { SelfUpdatingConnectorsPanel } from '@/app/control-plane/connectors/self-updating/self-updating-connectors-panel'
 
 // A listProvisioningDrafts visszaadott alakja (provisioning-service.listDrafts).
 type CheckStatus = 'passed' | 'warned' | 'failed'
@@ -43,6 +47,7 @@ type ProposedTool = {
   path: string
   access: 'read' | 'write'
   description?: string
+  idempotent?: boolean
 }
 type DraftConfig = {
   provider: string
@@ -52,6 +57,7 @@ type DraftConfig = {
   auth: { type: string; headerName?: string; secretAliasSuggested?: string }
   scopesSuggested: string[]
   rateLimit?: { rps: number; burst: number }
+  defaultActingUserEmail?: string
   proposedTools: ProposedTool[]
   provenance?: {
     sourceHash?: string
@@ -121,7 +127,7 @@ type SensitivityReviewData = {
   findings: SensitivityFinding[]
 }
 type DraftConfigFromDocData =
-  | { config: DraftConfig; requiresSensitivityReview: false }
+  | { config: DraftConfig; requiresSensitivityReview: false; extractionMethod?: 'openapi' | 'llm' }
   | {
       requiresSensitivityReview: true
       sensitivity: SensitivityReviewData
@@ -391,7 +397,11 @@ export function ProvisioningPanel() {
     setTemplateAuthMethod(descriptor.authMethods[0]?.kind ?? 'api_key')
     setSelectedScopes(descriptor.scopeCatalog.filter((s) => s.default).map((s) => s.value))
     setSelectedEndpoints(descriptor.endpoints.filter((e) => e.default !== false).map((e) => e.name))
-    setTemplateValues({})
+    setTemplateValues(
+      template.key.startsWith('ostorosbor-crm')
+        ? { ...OSTOROSBOR_CRM_DEFAULT_INSTANCE_VALUES }
+        : {},
+    )
     setTemplateSecretAliases(
       descriptor.connectorType === 'gmail'
         ? {}
@@ -468,8 +478,13 @@ export function ProvisioningPanel() {
         if (!name.trim() && data.config?.provider) {
           setName(data.config.provider)
         }
+        if (data.extractionMethod === 'openapi') {
+          setSourceType('openapi')
+        }
         setNotice(
-          'Config-jelölt generálva. Nézd át, majd hozd létre a draftot — a validátor a létrehozás után dönt.',
+          data.extractionMethod === 'openapi'
+            ? 'OpenAPI spec felismerve — config-jelölt determinisztikusan kinyerve (LLM nélkül). Nézd át, majd hozd létre a draftot.'
+            : 'Config-jelölt generálva. Nézd át, majd hozd létre a draftot — a validátor a létrehozás után dönt.',
         )
         setCreateStep('review')
       } else {
@@ -710,6 +725,8 @@ export function ProvisioningPanel() {
           {notice}
         </div>
       ) : null}
+
+      <SelfUpdatingConnectorsPanel embedded />
 
       <Card title="Új draft connector">
         <div className="grid gap-5 lg:grid-cols-[15rem_1fr]">
@@ -1135,7 +1152,10 @@ export function ProvisioningPanel() {
                       </label>
                     </div>
                     <p className="mb-2 text-xs text-ink-soft">
-                      OpenAPI, Postman, RAML, GraphQL, WSDL/XML, HAR, Markdown/HTML/TXT.
+                      OpenAPI JSON/YAML automatikusan felismerésre kerül és determinisztikusan
+                      feldolgozódik; egyéb formátumoknál (Markdown, próza) az asszisztens LLM-et
+                      használ. Támogatott: OpenAPI, Postman, RAML, GraphQL, WSDL/XML, HAR,
+                      Markdown/HTML/TXT.
                     </p>
                     <textarea
                       className="h-40 w-full rounded-md border border-ink/15 bg-paper px-3 py-2 font-mono text-xs"
@@ -1567,9 +1587,11 @@ function DraftCard({
   const [decommApprover, setDecommApprover] = useState('')
   const [decommCriticality, setDecommCriticality] = useState<'L1' | 'L2' | 'L3'>('L1')
   const [confirmDecomm, setConfirmDecomm] = useState(false)
+  const [authTestDetail, setAuthTestDetail] = useState<string | null>(null)
 
   const v = draft.validationResult
   const cfg = draft.config
+  const [actingUserEmail, setActingUserEmail] = useState(() => cfg?.defaultActingUserEmail ?? '')
   const gmailView = draft.gmailView
   const provenance = cfg?.provenance ?? gmailView?.provenance
   const templateVersionKey = templateLineKey({
@@ -1612,6 +1634,44 @@ function DraftCard({
     isUserDelegated ||
     draft.httpApiView?.authScheme === 'oauth2' ||
     cfg?.auth?.type === 'oauth2'
+  const isOstorosborCrm =
+    provenance?.templateKey?.startsWith('ostorosbor-crm') === true ||
+    cfg?.provider?.startsWith('ostorosbor-crm') === true
+  const hasActivationCredentials =
+    !!apiKey.trim() ||
+    (!!secretAlias.trim() && isResolvableSecretAlias(secretAlias.trim()))
+  const hasInvalidSecretAlias =
+    !apiKey.trim() && !!secretAlias.trim() && !isResolvableSecretAlias(secretAlias.trim())
+
+  const buildActivationInput = (confirmKeyless?: boolean) => ({
+    draftId: draft.draftId,
+    ...(apiKey.trim()
+      ? { apiKey: apiKey.trim() }
+      : secretAlias.trim()
+        ? { secretAlias: secretAlias.trim() }
+        : {}),
+    ...(confirmKeyless ? { confirmKeyless: true as const } : {}),
+    ...(isOauth2 && clientId.trim() ? { clientId: clientId.trim() } : {}),
+    ...(isOstorosborCrm && actingUserEmail.trim()
+      ? { defaultActingUserEmail: actingUserEmail.trim() }
+      : {}),
+    criticality,
+    approverId: approverId.trim() || undefined,
+  })
+
+  const handleActivate = () => {
+    if (hasInvalidSecretAlias) return
+    if (!hasActivationCredentials) {
+      const confirmed = window.confirm(
+        'Nem adtál meg API-kulcsot vagy érvényes titok-hivatkozást. Biztosan kulcs nélkül aktiválod? Az agent hívásai addig auth hibát fognak adni.',
+      )
+      if (!confirmed) return
+      run(() => activateConnector(buildActivationInput(true)), 'Connector aktiválva (kulcs nélkül).')
+      return
+    }
+    run(() => activateConnector(buildActivationInput()), 'Connector aktiválva.')
+  }
+
   const writeTools = useMemo(
     () => (cfg?.proposedTools ?? []).filter((t) => t.access === 'write'),
     [cfg],
@@ -2296,7 +2356,7 @@ function DraftCard({
                 </p>
               ) : null}
               <div className="grid gap-2 sm:grid-cols-2">
-                <label className="text-xs">
+                <label className="text-xs sm:col-span-2">
                   <span className="mb-1 block text-ink-soft">
                     {isUserDelegated ? 'OAuth client secret' : 'API kulcs'}
                   </span>
@@ -2307,23 +2367,63 @@ function DraftCard({
                     onChange={(e) => setApiKey(e.target.value)}
                     placeholder={
                       isUserDelegated
-                        ? 'Client secret megadása → secret-ref'
-                        : 'Kulcs megadása → auto secret-ref'
+                        ? 'A szolgáltatónál regisztrált OAuth-app client secret-je'
+                        : 'A külső rendszerben generált nyers kulcs'
                     }
                   />
-                </label>
-                <label className="text-xs">
-                  <span className="mb-1 block text-ink-soft">
-                    Secret-alias{apiKey.trim() ? ' (felülírva, ha kulcsot adsz meg)' : ''}
+                  <span className="mt-1 block text-ink/50">
+                    {isUserDelegated
+                      ? 'A client secret a menedzselt titok-tárba kerül (secret-ref). '
+                      : 'Csak a nyers kulcsot írd be — a „Bearer " előtagot a rendszer adja hozzá (bearer sémánál). '}
+                    A kulcs titkosítva tárolódik, sosem kerül az adatbázisba.
                   </span>
-                  <input
-                    className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5 disabled:opacity-40"
-                    value={secretAlias}
-                    onChange={(e) => setSecretAlias(e.target.value)}
-                    placeholder="acme-crm-service-key"
-                    disabled={!!apiKey.trim()}
-                  />
                 </label>
+                <details className="text-xs sm:col-span-2">
+                  <summary className="cursor-pointer text-ink-soft">
+                    Meglévő titok hivatkozása (haladó)
+                  </summary>
+                  <div className="mt-2 rounded-md border border-ink/12 bg-wash/40 p-2">
+                    <p className="mb-2 text-ink/60">
+                      Ha a titkot már máshol tárolod, itt hivatkozhatsz rá kulcs beírása helyett.
+                      Elfogadott formák: <code>env:NÉV</code>,{' '}
+                      <code>secret-manager:projects/…/secrets/&lt;id&gt;</code>,{' '}
+                      <code>secret-ref:&lt;id&gt;</code>. Egyébként hagyd üresen és írd be fent a kulcsot.
+                    </p>
+                    <input
+                      className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5 disabled:opacity-40"
+                      value={secretAlias}
+                      onChange={(e) => setSecretAlias(e.target.value)}
+                      placeholder="env:ACME_CRM_API_KEY"
+                      disabled={!!apiKey.trim()}
+                    />
+                    {!apiKey.trim() && secretAlias.trim() && !isResolvableSecretAlias(secretAlias.trim()) ? (
+                      <p className="mt-1 text-coral">
+                        Nem elfogadott alias-forma. Használj <code>env:</code>,{' '}
+                        <code>secret-manager:</code> vagy <code>secret-ref:</code> előtagot — vagy hagyd
+                        üresen és írd be fent a kulcsot.
+                      </p>
+                    ) : null}
+                  </div>
+                </details>
+                {isOstorosborCrm ? (
+                  <label className="text-xs sm:col-span-2">
+                    <span className="mb-1 block text-ink-soft">
+                      Acting user e-mail (CRM-ben regisztrált — X-Acting-User fejléc)
+                    </span>
+                    <input
+                      type="email"
+                      className="w-full rounded-md border border-ink/15 bg-paper px-2 py-1.5"
+                      value={actingUserEmail}
+                      onChange={(e) => setActingUserEmail(e.target.value)}
+                      placeholder="pl. ertekesito@ceg.hu"
+                    />
+                    {!actingUserEmail.trim() ? (
+                      <p className="mt-1 text-honey">
+                        A kulcsos teszthez kötelező CRM-ben regisztrált acting user e-mail.
+                      </p>
+                    ) : null}
+                  </label>
+                ) : null}
                 {isUserDelegated ? (
                   <div className="text-xs sm:col-span-2">
                     <span className="mb-1 block text-ink-soft">
@@ -2387,25 +2487,50 @@ function DraftCard({
                   />
                 </label>
               </div>
+              {!hasActivationCredentials ? (
+                <p className="mt-2 text-xs text-honey">
+                  Kulcs nélkül is aktiválhatsz, de megerősítést kérünk — az agent addig nem fog
+                  sikeresen hívni.
+                </p>
+              ) : null}
+              {authTestDetail ? (
+                <p className="mt-2 text-xs text-ink-soft">Kulcsos teszt: {authTestDetail}</p>
+              ) : null}
               <div className="mt-2 flex flex-wrap gap-2">
+                {hasActivationCredentials && !isGmailConnector ? (
+                  <button
+                    type="button"
+                    disabled={
+                      pending ||
+                      !activationReady ||
+                      hasInvalidSecretAlias ||
+                      (isOstorosborCrm && !actingUserEmail.trim())
+                    }
+                    onClick={() =>
+                      run(async () => {
+                        const res = await testConnectorDraftWithCredentials(buildActivationInput())
+                        if (!res.success) return res
+                        const detail = res.data.detail ?? (res.data.ok ? 'ok' : 'fail')
+                        setAuthTestDetail(
+                          res.data.ok
+                            ? `sikeres (${res.data.statusCode ?? 200})`
+                            : `sikertelen — ${detail}`,
+                        )
+                        return {
+                          success: res.data.ok,
+                          error: res.data.ok ? undefined : detail,
+                        }
+                      }, 'Kulcsos teszt sikeres.')
+                    }
+                    className="rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold disabled:opacity-50"
+                  >
+                    Kulccsal teszt
+                  </button>
+                ) : null}
                 <button
                   type="button"
-                  disabled={pending || !activationReady || (!apiKey.trim() && !secretAlias.trim())}
-                  onClick={() =>
-                    run(
-                      () =>
-                        activateConnector({
-                          draftId: draft.draftId,
-                          ...(apiKey.trim()
-                            ? { apiKey: apiKey.trim() }
-                            : { secretAlias: secretAlias.trim() }),
-                          ...(isOauth2 && clientId.trim() ? { clientId: clientId.trim() } : {}),
-                          criticality,
-                          approverId: approverId.trim() || undefined,
-                        }),
-                      'Connector aktiválva.',
-                    )
-                  }
+                  disabled={pending || !activationReady || hasInvalidSecretAlias}
+                  onClick={handleActivate}
                   className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
                 >
                   Aktiválás
@@ -2413,18 +2538,18 @@ function DraftCard({
                 {isUserDelegated ? (
                   <button
                     type="button"
-                    disabled={pending || !activationReady || (!apiKey.trim() && !secretAlias.trim())}
-                    onClick={() =>
+                    disabled={pending || !activationReady || hasInvalidSecretAlias}
+                    onClick={() => {
+                      if (!hasActivationCredentials) {
+                        const confirmed = window.confirm(
+                          'Nem adtál meg API-kulcsot vagy érvényes titok-hivatkozást. Biztosan kulcs nélkül aktiválod?',
+                        )
+                        if (!confirmed) return
+                      }
                       run(async () => {
-                        const activated = await activateConnector({
-                          draftId: draft.draftId,
-                          ...(apiKey.trim()
-                            ? { apiKey: apiKey.trim() }
-                            : { secretAlias: secretAlias.trim() }),
-                          ...(isOauth2 && clientId.trim() ? { clientId: clientId.trim() } : {}),
-                          criticality,
-                          approverId: approverId.trim() || undefined,
-                        })
+                        const activated = await activateConnector(
+                          buildActivationInput(!hasActivationCredentials),
+                        )
                         if (!activated.success) return { success: false, error: activated.error }
 
                         const consent = await startConnectorOAuth({ connectorId: draft.connectorId })
@@ -2434,7 +2559,7 @@ function DraftCard({
                         }
                         return { success: true }
                       }, 'Connector aktiválva, consent-flow elindítva.')
-                    }
+                    }}
                     className="rounded-md border border-sage/40 bg-sage/10 px-3 py-1.5 text-xs font-semibold text-sage disabled:opacity-50"
                   >
                     Aktiválás és auto-consent indítása

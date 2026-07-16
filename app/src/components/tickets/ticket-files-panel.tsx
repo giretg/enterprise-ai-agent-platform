@@ -24,6 +24,7 @@ export function TicketFilesPanel({ ticketId, ticketState }: TicketFilesPanelProp
 
   const listUrl = ticketWorkspaceFilesUrl(ticketId)
   const isReadOnly = ['done', 'rejected', 'approved'].includes(ticketState)
+  const visibleFiles = files.filter((file) => !file.path.startsWith('.tool-results/'))
 
   const loadFiles = useCallback(async () => {
     setLoading(true)
@@ -100,11 +101,11 @@ export function TicketFilesPanel({ ticketId, ticketState }: TicketFilesPanelProp
         <p className="text-sm text-ink-faint">Betöltés...</p>
       ) : error ? (
         <p className="text-sm text-coral">{error}</p>
-      ) : files.length === 0 ? (
+      ) : visibleFiles.length === 0 ? (
         <p className="text-sm text-ink-faint">Nincs fájl a workspace-ben.</p>
       ) : (
         <ul className="divide-y divide-line">
-          {files.map((f) => (
+          {visibleFiles.map((f) => (
             <li key={f.path} className="flex items-center justify-between py-2">
               <span className="truncate text-sm text-ink" title={f.path}>
                 {f.path}
@@ -120,7 +121,7 @@ export function TicketFilesPanel({ ticketId, ticketState }: TicketFilesPanelProp
           ))}
         </ul>
       )}
-      {isReadOnly && files.length > 0 && (
+      {isReadOnly && visibleFiles.length > 0 && (
         <p className="mt-3 text-xs text-ink-faint">
           A ticket lezárva — a fájlok letölthetők (pre-signed URL), új feltöltés nem engedélyezett.
         </p>

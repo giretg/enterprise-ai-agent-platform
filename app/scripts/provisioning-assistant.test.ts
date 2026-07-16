@@ -30,6 +30,7 @@ import {
   type SandboxConnectionTester,
 } from '../src/domain/provisioning/provisioning-service'
 import { ProvisioningError } from '../src/domain/provisioning/errors'
+import { isConnectorAssignableToAgent } from '../src/domain/connector-self-update/pinned-runtime-config'
 import { validateDraftConfig } from '../src/domain/provisioning/draft-validator'
 import {
   normalizeConnectorConfig,
@@ -121,6 +122,8 @@ class FakeDraftRepo implements ConnectorDraftRepository {
       version: 1,
       config: input.config as Prisma.JsonValue,
       lifecycleState: 'draft',
+      connectorMode: 'fixed',
+      activeSpecVersionId: null,
       tenantId: input.tenantId,
       createdAt: new Date(),
     }
@@ -260,6 +263,12 @@ class FakeDraftRepo implements ConnectorDraftRepository {
   async listActiveCatalog(tenantId: string | null) {
     return [...this.drafts.values()]
       .filter((d) => d.tenantId === tenantId && d.connector.lifecycleState === 'active')
+      .filter((d) =>
+        isConnectorAssignableToAgent(
+          d.connector.connectorMode,
+          (d.connector as Connector & { activeCapabilitySet?: unknown }).activeCapabilitySet ?? null,
+        ),
+      )
       .map((d) => ({ id: d.connectorId, type: d.connector.type, name: d.connector.name }))
   }
   async findConnectorById(connectorId: string) {
@@ -270,6 +279,10 @@ class FakeDraftRepo implements ConnectorDraftRepository {
       tenantId: draft.tenantId,
       lifecycleState: draft.connector.lifecycleState,
       secretAlias: draft.connector.secretAlias,
+      connectorMode: draft.connector.connectorMode,
+      activeCapabilitySet:
+        (draft.connector as Connector & { activeCapabilitySet?: unknown }).activeCapabilitySet ??
+        null,
     }
   }
 }
@@ -282,6 +295,12 @@ const okTester: SandboxConnectionTester = {
 const failTester: SandboxConnectionTester = {
   async test() {
     return { ok: false, statusCode: 503, detail: 'sandbox unreachable' }
+  },
+}
+const authFailTester: SandboxConnectionTester = {
+  async test(input) {
+    if (input.token) return { ok: false, statusCode: 401, detail: 'bad token' }
+    return { ok: true, statusCode: 401, detail: 'reachable_auth_required' }
   },
 }
 
@@ -357,6 +376,10 @@ async function draftToActivatable(
 
 async function run() {
   console.log('Provisioning Assistant — determinisztikus teszt\n')
+  process.env.K = process.env.K ?? 'test-key'
+  process.env.ACME_CRM_SERVICE_KEY = process.env.ACME_CRM_SERVICE_KEY ?? 'test-key'
+  process.env.ACME_OAUTH_SECRET = process.env.ACME_OAUTH_SECRET ?? 'test-secret'
+  process.env.GSC_CLIENT_SECRET = process.env.GSC_CLIENT_SECRET ?? 'test-gsc-secret'
 
   // P1: admin draft generál connector_drafts + source_hash
   await test('P1: createConnectorDraft → draft + source_hash, lifecycle draft', async () => {
@@ -477,11 +500,19 @@ async function run() {
     )
   })
 
-  await test('P5-neg: aktiválás secret-alias nélkül → SECRET_ALIAS_MISSING', async () => {
+  await test('P5-neg: aktiválás kulcs/alias nélkül → ACTIVATION_KEYLESS_UNCONFIRMED', async () => {
     const { svc } = makeService()
     const created = await draftToActivatable(svc)
-    await expectError('SECRET_ALIAS_MISSING', () =>
+    await expectError('ACTIVATION_KEYLESS_UNCONFIRMED', () =>
       svc.activateConnector({ draftId: created.draftId, secretAlias: '  ' }, adminActor),
+    )
+  })
+
+  await test('P5-neg: kulcsos auth-teszt bukása → ACTIVATION_AUTH_TEST_FAILED', async () => {
+    const { svc } = makeService({ tester: authFailTester })
+    const created = await draftToActivatable(svc)
+    await expectError('ACTIVATION_AUTH_TEST_FAILED', () =>
+      svc.activateConnector({ draftId: created.draftId, apiKey: 'bad-key' }, adminActor),
     )
   })
 
@@ -630,6 +661,48 @@ async function run() {
     assert.equal(res.connectorId, created.connectorId)
     assert.equal(drafts.agentConnectors.length, 1)
     assert.equal(audit.byAction('provisioning.connector.assign').length, 1)
+  })
+
+  await test('P7c: self_updating connector aktív snapshot nélkül nem rendelhető agenthez', async () => {
+    const { svc, drafts } = makeService()
+    const created = await draftToActivatable(svc)
+    await svc.activateConnector({ draftId: created.draftId, secretAlias: 'env:K' }, adminActor)
+    const draft = drafts.drafts.get(created.draftId)!
+    draft.connector.connectorMode = 'self_updating'
+    draft.connector.activeSpecVersionId = null
+    ;(draft.connector as Connector & { activeCapabilitySet?: unknown }).activeCapabilitySet = null
+
+    await expectError('CONNECTOR_NOT_ASSIGNABLE', () =>
+      svc.assignConnectorToAgent(
+        { connectorId: created.connectorId, agentId: 'agent-x', accessMode: 'read' },
+        adminActor,
+      ),
+    )
+    assert.equal(drafts.agentConnectors.length, 0)
+
+    const catalog = await svc.listCatalog(adminActor)
+    assert.equal(
+      catalog.some((c) => c.id === created.connectorId),
+      false,
+      'catalog must hide non-assignable self_updating connectors',
+    )
+  })
+
+  await test('P7d: self_updating connector érvényes aktív snapshottal hozzárendelhető', async () => {
+    const { svc, drafts } = makeService()
+    const created = await draftToActivatable(svc)
+    await svc.activateConnector({ draftId: created.draftId, secretAlias: 'env:K' }, adminActor)
+    const draft = drafts.drafts.get(created.draftId)!
+    draft.connector.connectorMode = 'self_updating'
+    ;(draft.connector as Connector & { activeCapabilitySet?: unknown }).activeCapabilitySet =
+      cleanConfig()
+
+    const res = await svc.assignConnectorToAgent(
+      { connectorId: created.connectorId, agentId: 'agent-x', accessMode: 'read' },
+      adminActor,
+    )
+    assert.equal(res.connectorId, created.connectorId)
+    assert.equal(drafts.agentConnectors.length, 1)
   })
 
   await test('P7b: unassignConnectorFromAgent emberi admin + provisioning.connector.unassign', async () => {
@@ -1060,6 +1133,79 @@ async function run() {
     assert.equal(r.detail, 'reachable')
   })
 
+  await test('SBX: token NÉLKÜLI 401 → reachable_auth_required (elért, auth később)', async () => {
+    const { fn } = recordingFetch({ status: 401 })
+    const tester = new HttpSandboxConnectionTester({
+      resolveEgressAllowlist: async () => ALLOWLIST,
+      fetchImpl: fn,
+    })
+    const r = await tester.test({
+      config: cleanConfig() as unknown as ConnectorConfig,
+      secretAlias: null,
+      tenantId: TENANT,
+    })
+    assert.equal(r.ok, true)
+    assert.equal(r.detail, 'reachable_auth_required')
+  })
+
+  await test('SBX: VALÓDI tokennel 401 → ok=false, explicit auth-formátum üzenet (WP-1)', async () => {
+    const { fn } = recordingFetch({ status: 401 })
+    const tester = new HttpSandboxConnectionTester({
+      resolveEgressAllowlist: async () => ALLOWLIST,
+      resolveSandboxToken: async () => 'np-token-should-not-leak',
+      fetchImpl: fn,
+    })
+    const r = await tester.test({
+      // bearer séma → az üzenet a Bearer-csapdára figyelmeztet
+      config: { ...cleanConfig(), auth: { type: 'bearer_token' } } as unknown as ConnectorConfig,
+      secretAlias: 'env:ACME_CRM_SERVICE_KEY',
+      tenantId: TENANT,
+    })
+    assert.equal(r.ok, false)
+    assert.equal(r.statusCode, 401)
+    assert.ok(/Bearer/.test(r.detail ?? ''), 'üzenet említse a Bearer előtagot')
+    assert.ok(!JSON.stringify(r).includes('np-token-should-not-leak'))
+  })
+
+  await test('SBX: VALÓDI tokennel 403 → ok=true (kulcs elfogadva, scope korlátozott)', async () => {
+    const { fn } = recordingFetch({ status: 403 })
+    const tester = new HttpSandboxConnectionTester({
+      resolveEgressAllowlist: async () => ALLOWLIST,
+      fetchImpl: fn,
+    })
+    const r = await tester.test({
+      config: { ...cleanConfig(), auth: { type: 'bearer_token' } } as unknown as ConnectorConfig,
+      secretAlias: null,
+      tenantId: TENANT,
+      token: 'valid-token',
+    })
+    assert.equal(r.ok, true)
+    assert.equal(r.statusCode, 403)
+    assert.equal(r.detail, 'authenticated_scope_limited')
+  })
+
+  await test('SBX: VALÓDI tokennel 404 → acting user nem található üzenet', async () => {
+    const { fn } = recordingFetch({ status: 404 })
+    const tester = new HttpSandboxConnectionTester({
+      resolveEgressAllowlist: async () => ALLOWLIST,
+      fetchImpl: fn,
+    })
+    const r = await tester.test({
+      config: {
+        ...cleanConfig(),
+        auth: { type: 'bearer_token' },
+        defaultActingUserEmail: 'unknown@example.com',
+      } as unknown as ConnectorConfig,
+      secretAlias: null,
+      tenantId: TENANT,
+      token: 'valid-token',
+    })
+    assert.equal(r.ok, false)
+    assert.equal(r.statusCode, 404)
+    assert.ok(/acting user/i.test(r.detail ?? ''))
+    assert.ok(/unknown@example.com/.test(r.detail ?? ''))
+  })
+
   await test('SBX: fetch dob (hálózati hiba) → request_failed, sanitizált detail', async () => {
     const tester = new HttpSandboxConnectionTester({
       resolveEgressAllowlist: async () => ALLOWLIST,
@@ -1281,6 +1427,15 @@ async function run() {
     assert.ok(!msgs[0].content.includes('IGNORE ALL RULES'))
   })
 
+  await test('F2-P-F: a szerepprompt minden dokumentált HTTP metódus kivonatolását kéri', () => {
+    assert.match(
+      PROVISIONING_ASSISTANT_ROLE_INSTRUCTION,
+      /across all documented HTTP methods \(GET, POST, PUT, PATCH, DELETE\)/,
+    )
+    assert.match(PROVISIONING_ASSISTANT_ROLE_INSTRUCTION, /mutating operation.*access: "write"/)
+    assert.doesNotMatch(PROVISIONING_ASSISTANT_ROLE_INSTRUCTION, /Prefer read-only tools/i)
+  })
+
   // S-P1 spike: tiszta doksi → helyes draft generálódik és átmegy a validáción.
   await test('S-P1: tiszta doksiból a modell-jelölt draft VALID (validation != failed)', async () => {
     const model = fixedModel(JSON.stringify(cleanConfig()))
@@ -1335,6 +1490,36 @@ async function run() {
         svc.activateConnector({ draftId: created.draftId, secretAlias: 'env:K' }, agentActor),
       )
     }
+  })
+
+  await test('F2-P-F: OpenAPI spec → determinisztikus config, modell NEM hívódik', async () => {
+    const openApiDoc = JSON.stringify({
+      openapi: '3.0.3',
+      info: { title: 'Fold API', version: '1.0.0' },
+      servers: [{ url: 'https://fold.example/api/v1' }],
+      components: {
+        securitySchemes: {
+          ApiKeyAuth: { type: 'apiKey', in: 'header', name: 'X-API-Key' },
+        },
+      },
+      paths: {
+        '/partners': {
+          get: { operationId: 'listPartners', security: [{ ApiKeyAuth: ['partners:read'] }] },
+        },
+      },
+    })
+    const model = fixedModel('SHOULD NOT BE CALLED')
+    const assistant = new ProvisioningAssistant({ model })
+    const r = await assistant.draftConfigFromDoc({
+      agentId: 'agent-prov',
+      docText: openApiDoc,
+      providerHint: 'ostoros-fold',
+    })
+    assert.equal(r.ok, true)
+    if (!r.ok) return
+    assert.equal(r.extractionMethod, 'openapi')
+    assert.equal(r.config.provider, 'ostoros-fold')
+    assert.equal(model.lastMessages, undefined)
   })
 
   await test('S-P1: a modell szemét kimenete → PARSE_FAILED (nem keletkezik draft)', async () => {

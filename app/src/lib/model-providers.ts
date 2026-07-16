@@ -78,6 +78,11 @@ export const OPENROUTER_TEXT_MODELS: ModelOption[] = [
     label: 'OpenAI GPT latest',
     description: 'OpenRouter latest alias — gyors kísérleti baseline.',
   },
+  {
+    id: 'x-ai/grok-4.5',
+    label: 'Grok 4.5',
+    description: 'xAI frontier modell — kódolás, agentic feladatok, STEM (500K context).',
+  },
 ]
 
 export const MODEL_PROVIDERS: ModelProviderOption[] = [

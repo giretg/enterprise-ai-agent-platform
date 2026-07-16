@@ -42,6 +42,8 @@ import {
   parseHttpApiConfig,
   resolveConnectorApiKey,
 } from '@/domain/connector/http-api-client'
+import { enrichOstorosborConnectorConfig } from '@/domain/connector-template/ostorosbor-config-enrichment'
+import { normalizeConnectorConfig } from '@/domain/provisioning/connector-config'
 
 import {
   type WebSearchResult,
@@ -116,7 +118,15 @@ import type { ToolBrokerService } from './tool-broker-service'
 // A folyamat-ticket "agent-válasz kész" cél-állapotai (l. maybeRecordAgentAnswerComment).
 const AGENT_ANSWER_COMPLETION_STATES = new Set<string>(['done', 'awaiting_human'])
 
-export async function executeHttpApiTool(self: ToolBrokerService, 
+function resolveHttpApiConnectorConfig(raw: unknown): unknown {
+  try {
+    return enrichOstorosborConnectorConfig(normalizeConnectorConfig(raw)).config
+  } catch {
+    return raw
+  }
+}
+
+export async function executeHttpApiTool(self: ToolBrokerService,
     input: Extract<ToolBrokerInvokeInput, { tool: 'http_api_get' | 'http_api_request' }>,
     connector: Connector,
     actingTenantId: string | null,
@@ -124,16 +134,16 @@ export async function executeHttpApiTool(self: ToolBrokerService,
     agentSecretAlias?: string | null,
     delegatedAccessToken?: string,
   ): Promise<HttpApiCallResult> {
-    const config = parseHttpApiConfig(connector.config)
+    const config = parseHttpApiConfig(resolveHttpApiConnectorConfig(connector.config))
     // user_delegated (auto-consent oauth2): a per-user grant access token megy ki
     // Bearerként (config.auth = bearer). A connector secretAlias ilyenkor a
-    // client_secret-et rejti, ezt SOHA nem oldjuk fel apiKey-ként.
-    // agent_owned módban az agentConnector.secretAlias az irányadó (per-agent kulcs);
-    // egyébként a connector szintű megosztott kulcs kerül felhasználásra.
-    const effectiveAlias =
-      connector.authMode === 'agent_owned' && agentSecretAlias
-        ? agentSecretAlias
-        : connector.secretAlias
+    // client_secret-et rejti, ezt SOHA nem oldjuk fel apiKey-ként — ezt a delegált
+    // ág (delegatedAccessToken) rövidre zárja, így az alias-feloldás meg sem történik.
+    // WP-2 (B2, D-1/A): ha az agent-kötésen van per-agent kulcs (agentSecretAlias),
+    // azt használjuk az ÜZEMMÓDTÓL függetlenül (service/agent_owned egyaránt); ha
+    // nincs, a connector-szintű (tenant) megosztott kulcs a fallback. Így a UI-ban
+    // megadott per-agent kulcs valóban hat, nem nyelődik el csendben.
+    const effectiveAlias = agentSecretAlias ?? connector.secretAlias
     const defaultApiKey = delegatedAccessToken
       ? delegatedAccessToken
       : effectiveAlias
@@ -154,6 +164,7 @@ export async function executeHttpApiTool(self: ToolBrokerService,
       agent: { id: input.agentId, version: input.agentVersion },
       connector: { id: connector.id, name: connector.name },
       actingUser,
+      defaultActingUserEmail: config.defaultActingUserEmail,
       tenant: actingTenantId ? { id: actingTenantId } : null,
       call: { id: callId, idempotencyKey: callId },
       now: { iso: new Date().toISOString() },
@@ -164,6 +175,7 @@ export async function executeHttpApiTool(self: ToolBrokerService,
         method: 'GET',
         path: input.args.path,
         query: input.args.query,
+        headers: input.args.headers,
         context,
       })
     }
@@ -171,6 +183,7 @@ export async function executeHttpApiTool(self: ToolBrokerService,
       method: input.args.method,
       path: input.args.path,
       query: input.args.query,
+      headers: input.args.headers,
       body: input.args.body,
       context,
     })
@@ -1430,4 +1443,3 @@ async function resolveMemoryProjectKey(
   }
   return '__general__'
 }
-

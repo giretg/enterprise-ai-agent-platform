@@ -1639,12 +1639,15 @@ export interface ConnectorDraftRepository {
    * Visszaadja az érintett agentId-ket, hogy a hívó capability-syncet futtathasson.
    */
   decommission(params: { draftId: string }): Promise<{ connectorId: string; affectedAgentIds: string[] }>
-  /** Aktív connector metaadat draft nélkül (leszerelés / admin ellenőrzés). */
+  /** Aktív connector metaadat draft nélkül (leszerelés / admin ellenőrzés / assign-kapu). */
   findConnectorById(connectorId: string): Promise<{
     id: string
     tenantId: string | null
     lifecycleState: string
     secretAlias: string | null
+    connectorMode: 'fixed' | 'self_updating'
+    /** Aktív spec capability-set; self_updating assign-hoz kell. */
+    activeCapabilitySet: unknown | null
   } | null>
   /** Draft nélküli (pl. seed-ből jött) aktív connector leszerelése — ugyanaz a lifecycle/audit út. */
   decommissionByConnectorId(params: {

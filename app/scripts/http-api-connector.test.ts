@@ -94,6 +94,27 @@ async function main() {
     assert.equal(res.ok, true)
   })
 
+  await test('allowlist: {param} placeholder is illeszkedik (WP-3, sablon-alak)', async () => {
+    // A sablonból materializált configok `{id}` alakot használnak — a korlát ezekre
+    // is működik, nem csak a kézi form `:param` alakjára.
+    const config = parseHttpApiConfig({
+      baseUrl: 'https://crm.example/api/v1',
+      auth: { scheme: 'bearer' },
+      endpoints: [
+        { method: 'GET', path: '/accounts' },
+        { method: 'GET', path: '/accounts/{id}' },
+      ],
+      restrictToEndpoints: true,
+    })
+    const client = new HttpApiClient(config, 'stub-api-key')
+    const ok = await client.request({ method: 'GET', path: '/accounts/acc-42' })
+    assert.equal(ok.ok, true)
+    await assert.rejects(
+      client.request({ method: 'GET', path: '/customers' }),
+      (e: unknown) => e instanceof HttpApiError && e.code === 'endpoint_not_allowed',
+    )
+  })
+
   await test('GitHub repository scope: a kiválasztott owner/repo hívható', async () => {
     const config = parseHttpApiConfig({
       baseUrl: 'https://api.github.com',
