@@ -196,6 +196,60 @@ function monitor(overrides: Partial<MonitorDefinition> = {}): MonitorDefinition 
   } as MonitorDefinition
 }
 
+console.log('=== monitor admin tenant-határ teszt ===')
+
+checkAsync('a monitor admin műveletek csak az aktív tenant monitorát érik el', async () => {
+  const ownMonitor = monitor({ id: 'monitor-own', tenantId: 'tenant-a' })
+  const foreignMonitor = monitor({ id: 'monitor-foreign', tenantId: 'tenant-b' })
+  const calls: string[] = []
+  const monitorRepo = {
+    async findMany(filter: { tenantId?: string }) {
+      calls.push(`list:${filter.tenantId}`)
+      return filter.tenantId === 'tenant-a' ? [ownMonitor] : [foreignMonitor]
+    },
+    async findById(id: string) {
+      calls.push(`get:${id}`)
+      return id === ownMonitor.id ? ownMonitor : foreignMonitor
+    },
+    async update(id: string, data: Partial<MonitorDefinition>) {
+      calls.push(`update:${id}`)
+      return { ...ownMonitor, ...data }
+    },
+    async revoke(id: string) {
+      calls.push(`revoke:${id}`)
+      return { ...ownMonitor, status: 'revoked' as const }
+    },
+    async findRuns(id: string) {
+      calls.push(`runs:${id}`)
+      return []
+    },
+    async findSignalsByMonitor(id: string) {
+      calls.push(`signals:${id}`)
+      return []
+    },
+  } as unknown as MonitorRepository
+  const service = new MonitorService(
+    monitorRepo,
+    {} as TicketRepository,
+    {} as AuditRepository,
+  )
+
+  assert.deepEqual(await service.list('tenant-a'), [ownMonitor])
+  await assert.rejects(() => service.getById(foreignMonitor.id, 'tenant-a'), /Monitor not found/)
+  await assert.rejects(
+    () => service.update(foreignMonitor.id, 'tenant-a', { status: 'paused' }),
+    /Monitor not found/,
+  )
+  await assert.rejects(() => service.revoke(foreignMonitor.id, 'tenant-a'), /Monitor not found/)
+  await assert.rejects(() => service.listRuns(foreignMonitor.id, 'tenant-a'), /Monitor not found/)
+  await assert.rejects(() => service.listSignals(foreignMonitor.id, 'tenant-a'), /Monitor not found/)
+  await assert.rejects(() => service.dryRun(foreignMonitor.id, 'tenant-a', NOW), /Monitor not found/)
+
+  await service.update(ownMonitor.id, 'tenant-a', { status: 'paused' })
+  assert.equal(calls.includes(`update:${ownMonitor.id}`), true)
+  assert.equal(calls.some((call) => call.includes(foreignMonitor.id) && !call.startsWith('get:')), false)
+})
+
 check('normál eset: nextSweepAt + interval (+ jitter < 30s)', () => {
   const next = computeNextSweepAt(monitor(), NOW)
   const expected = NOW.getTime() + 3_600_000
@@ -376,6 +430,153 @@ checkAsync('eszkalált jel notifyChannel esetén értesítést és auditot kap',
   const ticketPayload = createdTickets[0].payload as Record<string, unknown>
   assert.equal(ticketPayload.monitorRunId, 'run-notify')
   assert.equal(ticketPayload.dedupKey, 'deadline:source-ticket-1')
+})
+
+checkAsync('idegen legacy eszkalációs agent mellett is emberi backlog ticket nyílik', async () => {
+  const definition = monitor({
+    id: 'monitor-legacy-agent',
+    tenantId: 'tenant-a',
+    escalateAgentId: 'agent-tenant-b',
+  })
+  const run = {
+    id: 'run-legacy-agent',
+    monitorId: definition.id,
+    outcome: 'quiet',
+    startedAt: NOW,
+    finishedAt: null,
+    scheduledFor: NOW,
+    signalCount: 0,
+    matchedCount: 0,
+    suppressedCount: 0,
+    openedTicketIds: [],
+    llmInvoked: false,
+    costUsd: null,
+    error: null,
+  } as MonitorRun
+  const createdTickets: Array<Partial<Ticket>> = []
+  const monitorRepo = {
+    async findDue() {
+      return [definition]
+    },
+    async claim() {
+      return definition
+    },
+    async createRun() {
+      return run
+    },
+    async upsertSignal() {
+      return { id: 'signal-legacy-agent', lastEscalatedAt: null } as MonitorSignal
+    },
+    async markSignalEscalated() {},
+    async updateRun(_id: string, data: Partial<MonitorRun>) {
+      Object.assign(run, data)
+      return run
+    },
+    async release() {},
+  } as unknown as MonitorRepository
+  const ticketRepo = {
+    async create(data: Partial<Ticket>) {
+      createdTickets.push(data)
+      return { ...data, id: 'ticket-legacy-agent', createdAt: NOW, updatedAt: NOW } as Ticket
+    },
+  } as unknown as TicketRepository
+  const auditRepo = {
+    async append() {
+      return {} as AuditLog
+    },
+  } as unknown as AuditRepository
+  const collector: MonitorCollector = {
+    kind: 'deadline',
+    async collect() {
+      return [signal({ title: 'Legacy agent monitor jel' })]
+    },
+  }
+  const agents = {
+    async findById() {
+      return { id: 'agent-tenant-b', tenantId: 'tenant-b' }
+    },
+  } as unknown as AgentRepository
+
+  const service = new MonitorService(
+    monitorRepo,
+    ticketRepo,
+    auditRepo,
+    [collector],
+    undefined,
+    undefined,
+    undefined,
+    agents,
+  )
+  const result = await service.sweepDue(NOW, 1)
+
+  assert.equal(result[0].outcome, 'escalated')
+  assert.equal(createdTickets.length, 1)
+  assert.equal(createdTickets[0].state, 'backlog')
+  assert.equal(createdTickets[0].agentId, null)
+  assert.equal(run.llmInvoked, false)
+})
+
+checkAsync('csendes sweep nem kérdezi le az eszkalációs agentet', async () => {
+  const definition = monitor({ id: 'monitor-quiet-agent', escalateAgentId: 'agent-unavailable' })
+  const run = {
+    id: 'run-quiet-agent',
+    monitorId: definition.id,
+    outcome: 'quiet',
+    startedAt: NOW,
+    finishedAt: null,
+    scheduledFor: NOW,
+    signalCount: 0,
+    matchedCount: 0,
+    suppressedCount: 0,
+    openedTicketIds: [],
+    llmInvoked: false,
+    costUsd: null,
+    error: null,
+  } as MonitorRun
+  let agentLookups = 0
+  const monitorRepo = {
+    async findDue() {
+      return [definition]
+    },
+    async claim() {
+      return definition
+    },
+    async createRun() {
+      return run
+    },
+    async updateRun(_id: string, data: Partial<MonitorRun>) {
+      Object.assign(run, data)
+      return run
+    },
+    async release() {},
+  } as unknown as MonitorRepository
+  const collector: MonitorCollector = {
+    kind: 'deadline',
+    async collect() {
+      return []
+    },
+  }
+  const agents = {
+    async findById() {
+      agentLookups += 1
+      throw new Error('agent repository unavailable')
+    },
+  } as unknown as AgentRepository
+  const service = new MonitorService(
+    monitorRepo,
+    {} as TicketRepository,
+    { async append() { return {} as AuditLog } } as unknown as AuditRepository,
+    [collector],
+    undefined,
+    undefined,
+    undefined,
+    agents,
+  )
+
+  const result = await service.sweepDue(NOW, 1)
+
+  assert.equal(result[0].outcome, 'quiet')
+  assert.equal(agentLookups, 0)
 })
 
 check('monitor_cron contextMap felold monitor/signal/payload mezőket', () => {

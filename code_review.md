@@ -104,6 +104,30 @@
   - D1 — A `/api/v1/internal/dispatch-cycle` route a `DISPATCHER_CONTROL_TOKEN` statikus titkot sima `!==`-vel hasonlítja (nem konstans idejű). Hálózaton át a timing-oracle gyakorlatilag nem kihasználható, de egy `crypto.timingSafeEqual`-ra váltás olcsó keményítés lenne.
   - D2 — A migrációt éles/teszt Neon adatbázisra még alkalmazni kell (`prisma migrate deploy`); a PR csak a migrációs fájlt tartalmazza, adatbázis-változtatást nem futtattam.
 
+## 2026-07-14 - Proactive monitor admin és background escalation tenant-határ
+
+- Reviewed modules:
+  - `app/src/app/actions/monitor.ts` monitor lista, részletek, szüneteltetés/folytatás/visszavonás, futásnapló, jelek és dry-run Server Action belépőpontjai
+  - `app/src/domain/monitor/monitor-service.ts` tenant-scope érvényesítés, monitor sweep, ticket-eszkaláció és connector-count collector belépési sorrendje
+  - `app/src/repositories/postgres/monitor-repository.ts`, `app/src/domain/monitor/collectors/*.ts`, `app/src/domain/dispatcher/dispatcher-service.ts`, `app/src/domain/playbook/process-definition-service.ts` és `app/prisma/schema.prisma` perzisztencia-, végrehajtás- és folyamat-trigger határai
+  - `docs/specs/AI-Agent-Platform-Feature-Spec-Proactive-Monitor-done.md` (§4, §5, §9) és a Next.js Server Action biztonsági útmutatója
+- Result:
+  - Találtam cross-tenant IDOR-osztályt a monitor admin felületen. A `listMonitors` nem adott tenant-szűrőt a repositorynak, az egyedi monitorra épülő actionök pedig a hívó szerepét ellenőrizték, de a globális `monitorId`-t nem kötötték az aktív tenanthez. Egy tenant viewer/admin/operator ismert idegen UUID-val olvashatta a másik tenant monitor-konfigurációját, jel-payloadjait és futásnaplóját, illetve admin joggal szüneteltethette, folytathatta, módosíthatta vagy visszavonhatta azt. A dry-run ráadásul tenant-specifikus ticket- és connector-jeleket számolhatott ki.
+  - Találtam egy background végrehajtási kockázatot is: létrehozáskor vagy módosításkor a `escalateAgentId` nem volt tenant-elérhetőséghez kötve. Egy másik tenant aktív agentjének ismert UUID-ja így egy saját tenant monitor ticketjét külső agenthez rendelhette; a dispatcher az agent tényleges tenantja szerinti model-budgetet és futtatási kontextust használja. Ez költség- és adatkezelési határátlépés lehetett.
+- Fix applied:
+  - A `MonitorService` minden emberi, azonosító-alapú művelete explicit `tenantId`-t kér, és a célmonitort fail-closed, opak `Monitor not found` választ adó domain-kapuval ellenőrzi. A listázás a repositoryig tenant-szűrt.
+  - A monitor actionök az aktív tenantot továbbítják minden olvasásnál és életciklus-változtatásnál. Létrehozás és eszkalációs-agent módosítás előtt kizárólag a saját vagy platform-szintű megosztott agent fogadható el.
+  - A workerben futó sweep is újraellenőrzi az eszkalációs agent elérhetőségét, ezért egy régi vagy közvetlenül betöltött hibás konfiguráció sem indíthat cross-tenant background agent-futást. A jel ettől még nem vész el: érvénytelen agentnél emberi backlog ticketként jön létre.
+  - A `monitor-engine.test.ts` új regressziós tesztje ellenőrzi, hogy idegen monitorhoz nem jut el update/revoke/run/signal/dry-run repository-hívás, míg azonos tenantnál az update működik; továbbá hibás agent-kapcsolatnál backlog fallbacket és csendes sweepnél felesleges agent-lookup hiányát is lefedi.
+- Business impact:
+  - A proaktív monitorok SLA-küszöböket, határidőket, ticket-állapotokat, connector-mennyiségeket és operációs értesítési konfigurációt tartalmazhatnak. A változtatás megakadályozza, hogy egy ügyfél betekintsen egy másik ügyfél ilyen üzemi adataiba vagy leállítsa a felügyeletét.
+  - Az eszkalációk csak az adott ügyfél által elérhető agentre futhatnak, így a feladatok, model-költségek és agent-képességek az arra jogosult szervezet határán maradnak — beleértve a régi hibás konfigurációk biztonságos kezelését is.
+- Verification:
+  - `npm run test:monitor` from `app/`
+  - `npx eslint src/domain/monitor/monitor-service.ts src/app/actions/monitor.ts src/domain/index.ts scripts/monitor-engine.test.ts` from `app/`
+  - `npx tsc --noEmit` from `app/`
+  - `git diff --check`
+
 ## 2026-07-13 - Persistent agent memory: tenant boundary / approval / rollback surface
 
 - Reviewed modules:
