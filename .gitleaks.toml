@@ -1,0 +1,17 @@
+# Gitleaks konfiguráció — a beépített szabálykészletre épül, nem helyettesíti azt.
+[extend]
+useDefault = true
+
+# A titok-detektor és a redakciós stream tesztjei szükségszerűen titoknak látszó
+# stringeket tartalmaznak: ezek a tesztvektorok, amikkel a guardot mérjük. Szintetikus
+# értékek (AWS dokumentált AKIAIOSFODNN7EXAMPLE példakulcsa, `0123456789...` minták,
+# 4 karakterre csonkolt `MIIE` kulcstörzs) — nem élő hitelesítő adatok.
+#
+# Kizárólag erre a két fájlra szűkítve; minden más útvonal szkennelése változatlan.
+# Ha ide valaha valódi titok kerülne, azt a kód-review-nak kell elkapnia.
+[allowlist]
+description = "Titok-detektor tesztek szintetikus fixture-jei"
+paths = [
+  '''app/scripts/memory-content-guard\.test\.ts''',
+  '''app/scripts/chat-thinking-trace\.test\.ts''',
+]
