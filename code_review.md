@@ -1,5 +1,32 @@
 # Enterprise code review log
 
+## 2026-07-16 - Dispatcher / harness-callback: privilegizált belső végpontok titok-hitelesítése
+
+- Reviewed modules:
+  - `app/src/domain/dispatcher/dispatcher-service.ts` (dispatchReadyBatch / dispatchTicket / completeHarnessRun / reclaimStaleDispatches — lock-token kötés, budget-kapu, efemer kulcs életciklus, agent-status kapu)
+  - `app/src/domain/dispatcher/run-dispatch-cycle.ts` (ciklus-orchestráció + `cycleInFlight` átfedés-védelem)
+  - `app/src/app/api/v1/internal/dispatch-cycle/route.ts` (Cloud Scheduler trigger, `DISPATCHER_CONTROL_TOKEN`)
+  - `app/src/app/api/v1/harness/tickets/[id]/complete/route.ts` és `.../process/route.ts` (harness visszahívó felület, `HARNESS_CALLBACK_TOKEN` + agent-API-kulcs)
+  - `app/src/app/api/metrics/route.ts` (`METRICS_TOKEN` scrape-kapu)
+  - `app/src/lib/validators/actions.ts` `harnessCompletionSchema`
+- Result:
+  - A dispatcher-mag enterprise-helyes: a completion a per-dispatch `lockToken`-hez kötött (kötelező UUID a sémában) a megosztott callback-titok MÖGÖTT (defense-in-depth), csak `active` agent dispatchelhető, a napi keret fail-closed (nincs keret nélküli állapot), az efemer agent-kulcs minden ágon visszavonásra kerül, a `process` route pedig agent-API-kulccsal + ticket→agent kötéssel véd. NEM találtam tenant-határ- vagy lock-megkerülési rést ezen a felületen.
+  - Találtam viszont egy keményítési hiányt: a HÁROM privilegizált belső végpont (dispatch-cycle trigger, harness completion callback, metrics scrape) mindegyike egyetlen megosztott titkot JavaScript `!==`-vel hasonlított — ez byte-onként, korai kilépéssel fut, tehát elvi timing-oracle (a válaszidőből a titok byte-onként kikövetkeztethető). Ezek a végpontok NEM a Clerk-felhasználói auth mögött ülnek, a megosztott titok az egyetlen kapu; a dispatch-cycle trigger a teljes agent-flotta munka-indítását, a completion callback a ticketek lezárását/hibára állítását vezérli. A kódbázis MÁS pontjai (`oauth-state.ts`, `preview-token.ts`) már konstans idejű `timingSafeEqual`-t használnak — ez a három hely eltért ettől a saját konvenciótól. (Ez a 2026-07-14 review D1 pontjának kiterjesztett, javított változata.)
+- Fix applied:
+  - Új megosztott primitív: `app/src/lib/crypto/timing-safe.ts` — `safeSecretEquals(provided, expected)` fail-closed (hiányzó/üres oldal → false), utf8-buffer + hossz-őr + `timingSafeEqual`, pontosan a meglévő `oauth-state.ts`/`preview-token.ts` minta szerint.
+  - Mindhárom route erre vált; a fail-closed rövidzár-logika (`!expectedToken`, `if (expected)`) változatlan, az elfogadott/elutasított bemenet-halmaz azonos a régi `!==`-ével (a spec-axis review megerősítette: nincs viselkedésbeli regresszió).
+  - Új determinisztikus, DB-mentes teszt: `scripts/timing-safe-token.test.ts` (9 eset: pontos egyezés, azonos hosszú eltérés, rövidebb/hosszabb bemenet, üres/null/undefined fail-closed, hiányzó titok, unicode), `test:timing-safe-token`.
+- Business impact:
+  - A dispatcher-trigger és a harness-callback a platform önvezérlő gerince: az egyik elindítja az autonóm agent-munkát, a másik lezárja azt. Ha a védő titok kiszivárogtatható (akár timing-csatornán), az illetéktelen munka-indítást vagy ticket-státusz-hamisítást tesz lehetővé. A javítás konstans idejűvé teszi mindhárom kapu titok-ellenőrzését, és egyetlen auditált primitívbe vonja össze őket, a fail-closed viselkedés csökkentése nélkül.
+- Verification:
+  - `npm run test:timing-safe-token` (9/9 zöld)
+  - `npx tsc --noEmit` from `app/`
+  - `npx eslint` a módosított route-okra + helperre + tesztre (tiszta)
+  - `/code-review` skill (Standards + Spec axis, párhuzamos): egyik axis sem talált blokkoló hibát; nincs viselkedésbeli regresszió.
+- Decisions raised (not auto-fixed):
+  - D1 — Két MEGLÉVŐ inline timing-safe hely (`oauth-state.ts`, `preview-token.ts`) nem lett a közös helperre migrálva; a `preview-token.ts` előre dekódolt Buffert hasonlít, tehát Buffer-elfogadó overload kellene. Külön, scope-tartó follow-up (érinti az OAuth- és sandbox-preview aláírás-ellenőrzést).
+  - D2 — A teszt a helper szintjén fedez; a route-bekötést (negálás, rövidzár) nem gyakorolja end-to-end. Egy jövőbeli route-szintű integrációs teszt szorosabbra húzná.
+
 ## 2026-07-14 - Agent API-kulcs hitelesítés skálázhatósága és O(n) bcrypt-DoS
 
 - Reviewed modules:
