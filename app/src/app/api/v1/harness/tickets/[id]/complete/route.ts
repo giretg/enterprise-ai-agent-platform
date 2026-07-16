@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { services } from '@/domain'
 import { harnessCompletionSchema } from '@/lib/validators/actions'
+import { safeSecretEquals } from '@/lib/crypto/timing-safe'
 
 function jsonError(message: string, status: number) {
   return NextResponse.json({ success: false, error: message }, { status })
@@ -20,7 +21,7 @@ export async function POST(
   if (!expectedToken) return jsonError('Harness callback token is not configured', 503)
 
   const token = readBearerToken(request.headers.get('authorization'))
-  if (token !== expectedToken) return jsonError('Unauthorized', 401)
+  if (!safeSecretEquals(token, expectedToken)) return jsonError('Unauthorized', 401)
 
   let body: unknown
   try {

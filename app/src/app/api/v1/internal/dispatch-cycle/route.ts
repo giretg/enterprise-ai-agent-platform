@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { runDispatchCycle } from '@/domain/dispatcher/run-dispatch-cycle'
+import { safeSecretEquals } from '@/lib/crypto/timing-safe'
 
 /**
  * Stateless dispatch-ciklus végpont (§5.7 költség-kiegészítés): ugyanazt a ciklust futtatja
@@ -19,7 +20,7 @@ function jsonError(message: string, status: number) {
 export async function POST(request: Request) {
   const expectedToken = process.env.DISPATCHER_CONTROL_TOKEN?.trim()
   const providedToken = request.headers.get('x-dispatcher-token')
-  if (!expectedToken || providedToken !== expectedToken) {
+  if (!expectedToken || !safeSecretEquals(providedToken, expectedToken)) {
     return jsonError('invalid or missing x-dispatcher-token', 401)
   }
 
