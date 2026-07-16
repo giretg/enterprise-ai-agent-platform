@@ -65,6 +65,46 @@ check('prod + beállított env → az env-értéket adja (nem dob)', () => {
   })
 })
 
+check('prod + publikált dev-placeholder env → dob (a "van env" nem elég)', () => {
+  withEnv(
+    { NODE_ENV: 'production', WRITE_GATE_SECRET: 'dev-write-gate-secret-change-in-prod' },
+    () => {
+      assert.throws(
+        () => resolveSecret(['WRITE_GATE_SECRET'], 'dev-write-gate-secret-change-in-prod'),
+        /publikált dev-placeholder/,
+      )
+    },
+  )
+})
+
+check('prod + placeholder a primer env-en → nem esik csendben a fallbackre, hanem dob', () => {
+  withEnv(
+    {
+      NODE_ENV: 'production',
+      OAUTH_STATE_SECRET: 'dev-oauth-state-secret-change-in-prod',
+      WRITE_GATE_SECRET: 'real-prod-secret',
+    },
+    () => {
+      assert.throws(
+        () => resolveSecret(['OAUTH_STATE_SECRET', 'WRITE_GATE_SECRET'], 'dev-default'),
+        /OAUTH_STATE_SECRET/,
+      )
+    },
+  )
+})
+
+check('dev + placeholder env → NEM dob (a lokális futás változatlan)', () => {
+  withEnv(
+    { NODE_ENV: 'development', WRITE_GATE_SECRET: 'dev-write-gate-secret-change-in-prod' },
+    () => {
+      assert.equal(
+        resolveSecret(['WRITE_GATE_SECRET'], 'dev-default'),
+        'dev-write-gate-secret-change-in-prod',
+      )
+    },
+  )
+})
+
 check('prod hibaüzenet felsorolja a teljes fallback-láncot', () => {
   withEnv(
     { NODE_ENV: 'production', OAUTH_STATE_SECRET: undefined, WRITE_GATE_SECRET: undefined },
