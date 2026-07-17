@@ -1,6 +1,9 @@
+import type { ScheduledTaskStatus } from '@prisma/client'
+
 export const RUN_AS_USER_ID = 'runAsUserId'
 export const RUN_AS_AUTHORIZED_AT = 'runAsAuthorizedAt'
 export const RUN_AS_AUTHORIZED_BY = 'runAsAuthorizedBy'
+export const SCHEDULED_TASK_ID = 'scheduledTaskId'
 
 export function readRunAsUserId(payload: Record<string, unknown> | null): string | null {
   if (!payload) return null
@@ -35,6 +38,33 @@ export function buildRunAsAuthorization(params: {
     [RUN_AS_AUTHORIZED_AT]: authorizedAt,
     [RUN_AS_AUTHORIZED_BY]: params.userId,
   }
+}
+
+/** Egy materializált scheduled ticket kizárólag ehhez a tartós granthez kötődhet. */
+export function isScheduledTaskRunAsAuthorized(params: {
+  ticketId: string
+  ticketTenantId: string | null
+  payload: Record<string, unknown> | null
+  scheduledTask: {
+    id: string
+    tenantId: string | null
+    status: ScheduledTaskStatus
+    materializedTicketId: string | null
+    runAsUserId: string | null
+    runAsAuthorizedAt: Date | null
+    runAsAuthorizedById: string | null
+  } | null
+}): boolean {
+  const taskId = params.payload?.[SCHEDULED_TASK_ID]
+  const actingUserId = readRunAsUserId(params.payload)
+  const task = params.scheduledTask
+  if (typeof taskId !== 'string' || !task || !actingUserId) return false
+  if (task.id !== taskId || task.tenantId !== params.ticketTenantId) return false
+  if (task.materializedTicketId !== params.ticketId) return false
+  if (task.status !== 'active' && task.status !== 'materialized') return false
+  if (task.runAsUserId !== actingUserId || task.runAsAuthorizedById !== actingUserId) return false
+  if (!task.runAsAuthorizedAt || !isRunAsAuthorized(params.payload)) return false
+  return task.runAsAuthorizedAt.toISOString() === params.payload?.[RUN_AS_AUTHORIZED_AT]
 }
 
 export function removeRunAsAuthorization(payload: Record<string, unknown>): Record<string, unknown> {

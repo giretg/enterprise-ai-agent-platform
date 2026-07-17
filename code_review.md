@@ -25,6 +25,31 @@
   - D2 — A `WriteGateTokenStatus` enumban ott a `revoked`, de egyetlen kód-út sem állít tokent `revoked`-ra (nincs revoke-metódus a service-en). A CAS-őr defenzíven ezt is elutasítaná; a tényleges visszavonhatóság külön, kis follow-up.
   - D3 — A `consume` a token consumed-ra állítását a hívó memória-írása ELŐTT végzi, és a kettő nincs egy tranzakcióban; egy consume utáni összeomlás „elégeti" a jóváhagyást nulla írással. Ez a fail-safe irány (soha nem két írás), de a teljes atomicitáshoz a fogyasztó-oldali írást is egy tranzakcióba lehetne vonni a consume-mal.
 
+## 2026-07-18 - Scheduled task: tenant-határ és atomi ticket-materializálás
+
+- Áttekintett modulok:
+  - `app/src/domain/scheduled-task/scheduled-task-service.ts` (scheduled agent-task létrehozás, run-as payload, recurrence és materializálás)
+  - `app/src/repositories/postgres/scheduled-task-repository.ts` és `app/src/repositories/interfaces/index.ts` (due-claim, revoke-verseny, ticket + task perzisztencia)
+  - `app/src/app/actions/platform.ts` scheduled-task Server Action belépők, `app/src/domain/dispatcher/run-dispatch-cycle.ts` worker-ciklus, `app/prisma/schema.prisma` ScheduledTask/Ticket állapot- és relációmodell
+  - `app/src/domain/agent/general-task-runtime.ts`, `app/src/domain/conversation/conversation-service.ts`, `app/src/lib/tenant-reachability.ts` (futáskori tenant-kapu és a csatolt kontextus útja)
+  - `docs/specs/AI-Agent-Platform-Feature-Spec-ToolBroker-done.md` §3.4 és `AI-Agent-Platform-Feature-Spec-PerUser-Connector-DONE.md` (autonóm run-as és tenant-scope követelmények)
+- Eredmény:
+  - Két éles, magas kockázatú hibát találtam. A scheduled task létrehozó domain-szolgáltatás csak a felület operator szerepére támaszkodott: nem ellenőrizte, hogy a megadott agent az aktív tenantból elérhető-e és aktív-e. Így ismert idegen agent UUID-val tenant A-ben olyan task jöhetett létre, amely tenant B agentjéhez és annak modell-/connector-környezetéhez kötődött.
+  - A due taskból ticketet létrehozó és a ScheduledTaskot `materialized`/következő futás állapotba író lépés két önálló adatbázis-művelet volt. Worker-leállás a kettő között tartós ready ticketet, de `materializing` taskot hagyott; a stale-reclaim ezt ismét aktiválta és új ticketet hozott létre. Ez egy feladat többszöri autonóm végrehajtását, duplázott költséget vagy ismételt külső hatást okozhatott.
+  - A záró spec-review egy harmadik P1-hiányt mutatott: materializálás után a ticket saját payloadjában tovább élt a run-as adat, miközben a taskot már nem lehetett visszavonni. Így a visszavont autonóm felhatalmazásból létrejött, még nem indult ticket további tool-hívásai megőrizhették az acting-user kontextust.
+- Javítás:
+  - `ScheduledTaskService` agent repositoryt kapott és create előtt fail-closed, opak `Agent not found` kapuval ellenőrzi: csak aktív, saját tenantbeli vagy platform-szintű megosztott agent ütemezhető.
+  - A ticket-létrehozás, task-állapotfrissítés és `pg_notify` egyetlen PostgreSQL tranzakcióba került. Visszagörgetéskor egyik írás sem marad meg; sikeres commit után a dispatcher csak konzisztens ticket–task párt láthat. A revoke compare-and-set lett, így a claimelt/materializált futást nem írhatja felül egy versenyző, korábban kiolvasott visszavonási kérés.
+  - A run-as grantet a Broker minden scheduled tool-híváskor a ScheduledTask aktuális sorához köti (azonos task, tenant, materializált ticket, actor és authorization timestamp; csak `active`/`materialized` állapot érvényes). A revoke már a materializált taskra is használható, az agent `board_write` pedig nem írhatja felül/nullra a scheduler bizalmi mezőit.
+  - Új determinisztikus `scheduled-task-enterprise.test.ts` regresszió fedi az idegen és inaktív agent elutasítását, saját/megosztott agent engedését, az egyetlen atomi materialize repository-hívást és a visszavont scheduled run-as deny-t.
+- Üzleti hatás:
+  - A scheduler a háttérben, emberi jelenlét nélkül indít agentet. A javítás garantálja, hogy egy ügyfél sem indíthatja el egy másik ügyfél agentjét vagy annak költség- és connector-környezetét, infrastruktúrahiba után sem ismétlődik meg egy már kiadott autonóm feladat, és a felhasználó a már kiadott tickethez kapcsolt run-as jogot is visszavonhatja, mielőtt további külső művelet történne. Ez csökkenti a cross-tenant adatkezelési, számlázási és jogosulatlan connector-használati kockázatot.
+- Ellenőrzés:
+  - `node --import tsx scripts/scheduled-task-enterprise.test.ts` (5/5 zöld; a `tsx` CLI a lokális sandbox IPC-korlátja miatt nem indul)
+  - `npx tsc --noEmit`, célzott `npx eslint`, `git diff --check`
+- Nyitott döntés (nem automatikusan javítva):
+  - D1 — A `Document` modellnek nincs saját `tenantId` attribútuma. A task attachment ID-k futáskor globális dokumentum-lookupra támaszkodnak; a chat/task útvonalon ez szélesebb, már ismert adatmodell-adósság. A teljes megoldás explicit dokumentum-tenant attribúciót és migrációt igényel, nem egy csak scheduler-oldali szűrést.
+
 ## 2026-07-16 - Dispatcher / harness-callback: privilegizált belső végpontok titok-hitelesítése
 
 - Reviewed modules:

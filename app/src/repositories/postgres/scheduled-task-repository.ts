@@ -4,8 +4,11 @@ import type {
   ScheduledTaskKind,
   ScheduledTaskRecurrence,
   ScheduledTaskStatus,
+  Ticket,
 } from '@prisma/client'
 import { prisma } from '@/lib/db'
+import { DISPATCH_NOTIFY_CHANNEL } from '@/lib/dispatch-notify'
+import { resolveTicketSource } from '@/lib/ticket-source'
 import type { ScheduledTaskRepository } from '../interfaces'
 
 export class PostgresScheduledTaskRepository implements ScheduledTaskRepository {
@@ -81,9 +84,24 @@ export class PostgresScheduledTaskRepository implements ScheduledTaskRepository 
     return this.findById(id)
   }
 
-  async markMaterialized(
+  async materializeTicket(
     id: string,
-    ticketId: string,
+    ticket: Pick<
+      Ticket,
+      | 'tenantId'
+      | 'type'
+      | 'title'
+      | 'state'
+      | 'assigneeType'
+      | 'assigneeId'
+      | 'agentId'
+      | 'sourceDocumentId'
+      | 'conversationId'
+      | 'executeAfter'
+      | 'dueBy'
+      | 'createdById'
+      | 'source'
+    > & { payload: Prisma.InputJsonValue },
     data: {
       status: ScheduledTaskStatus
       runCount: number
@@ -91,27 +109,48 @@ export class PostgresScheduledTaskRepository implements ScheduledTaskRepository 
       materializedAt: Date
       nextRunAt: Date
     },
-  ): Promise<ScheduledTask | null> {
+  ): Promise<{ scheduledTask: ScheduledTask; ticket: Ticket } | null> {
+    return prisma.$transaction(async (tx) => {
+      // Sorzárat veszünk és újraellenőrizzük a claimet. Ha közben egy másik
+      // worker visszavette a taskot, ticket sem jöhet létre.
+      const locked = await tx.scheduledTask.updateMany({
+        where: { id, status: 'materializing' },
+        data: { status: 'materializing' },
+      })
+      if (locked.count !== 1) return null
+
+      const materializedTicket = await tx.ticket.create({
+        data: {
+          ...ticket,
+          source: resolveTicketSource(ticket.source),
+        } as Prisma.TicketUncheckedCreateInput,
+      })
+      const scheduledTask = await tx.scheduledTask.update({
+        where: { id },
+        data: {
+          status: data.status,
+          materializedTicketId: materializedTicket.id,
+          materializedAt: data.materializedAt,
+          lastRunAt: data.lastRunAt,
+          nextRunAt: data.nextRunAt,
+          runCount: data.runCount,
+        },
+      })
+
+      // A PostgreSQL NOTIFY csak commit után kerül kézbesítésre, így a dispatcher
+      // sosem láthat olyan ready ticketet, amelyhez nincs tartós task-állapot.
+      await tx.$executeRaw`SELECT pg_notify(${DISPATCH_NOTIFY_CHANNEL}, ${materializedTicket.id})`
+      return { scheduledTask, ticket: materializedTicket }
+    })
+  }
+
+  async revoke(id: string): Promise<ScheduledTask | null> {
     const updated = await prisma.scheduledTask.updateMany({
-      where: { id, status: 'materializing' },
-      data: {
-        status: data.status,
-        materializedTicketId: ticketId,
-        materializedAt: data.materializedAt,
-        lastRunAt: data.lastRunAt,
-        nextRunAt: data.nextRunAt,
-        runCount: data.runCount,
-      },
+      where: { id, status: { in: ['active', 'materializing', 'materialized'] } },
+      data: { status: 'revoked' },
     })
     if (updated.count !== 1) return null
     return this.findById(id)
-  }
-
-  async revoke(id: string): Promise<ScheduledTask> {
-    return prisma.scheduledTask.update({
-      where: { id },
-      data: { status: 'revoked' },
-    })
   }
 
   async findById(id: string): Promise<ScheduledTask | null> {

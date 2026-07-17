@@ -58,6 +58,7 @@
     "sync:model-pricing": "tsx scripts/sync-model-pricing.ts",
     "test:dispatch-budget": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/dispatch-budget.test.ts",
     "test:monitor": "tsx scripts/monitor-engine.test.ts",
+    "test:scheduled-task-enterprise": "tsx scripts/scheduled-task-enterprise.test.ts",
     "test:provisioning": "tsx scripts/provisioning-assistant.test.ts",
     "test:openapi-extractor": "tsx scripts/openapi-config-extractor.test.ts",
     "test:self-updating-connector": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/self-updating-connector.test.ts",
