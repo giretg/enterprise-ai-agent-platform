@@ -29,7 +29,7 @@ export const NORMAL_TOOL_CAPABILITY_GROUPS = [
   },
   {
     label: 'Dokumentumok',
-    tools: ['docx_read', 'docx_create', 'pdf_read', 'pdf_create', 'create_html'],
+    tools: ['docx_read', 'docx_create', 'pdf_read', 'pdf_create', 'create_html', 'document_read'],
   },
   {
     label: 'Mini-app',

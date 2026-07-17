@@ -729,6 +729,16 @@ export function argsMeta(
     }
   }
 
+  if (input.tool === 'document_read') {
+    return {
+      ...base,
+      documentId: input.args.documentId,
+      hasPages: Boolean(input.args.pages),
+      hasQuery: Boolean(input.args.query),
+      maxChars: input.args.maxChars ?? null,
+    }
+  }
+
   return {
     ...base,
     ticketId: input.args.ticketId,
@@ -896,6 +906,15 @@ export function resultMeta(result: ToolExecutionResult): Record<string, unknown>
   if ('operations' in result) return { path: result.path, operations: result.operations }
   if ('sheets' in result) return { path: result.path, sheets: result.sheets }
   if ('numPages' in result) return { numPages: result.numPages, pagesRead: result.pagesRead, textLength: result.text.length }
+  if ('totalPages' in result && 'pages' in result && 'documentId' in result) {
+    return {
+      documentId: result.documentId,
+      totalPages: result.totalPages,
+      pagesReturned: Array.isArray(result.pages) ? result.pages.length : 0,
+      truncated: result.truncated ?? false,
+      matchCount: 'matchCount' in result ? result.matchCount : undefined,
+    }
+  }
   if ('text' in result && 'messages' in result) return { textLength: result.text.length, messages: result.messages.length }
 
   if ('previewUrl' in result) return { previewUrl: result.previewUrl, contentHash: result.contentHash }

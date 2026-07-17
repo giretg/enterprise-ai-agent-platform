@@ -599,6 +599,7 @@ async function ensureToolBrokerSeed(agentId: string) {
     'docx_create',
     'pdf_read',
     'pdf_create',
+    'document_read',
     'pptx_create',
   ]) {
     await prisma.capability.upsert({
@@ -1061,6 +1062,7 @@ async function ensureHSMOfficerAgent(adminId: string) {
     'docx_read',
     'docx_create',
     'pdf_read',
+    'document_read',
     'file_read',
     'file_write',
     'file_list',

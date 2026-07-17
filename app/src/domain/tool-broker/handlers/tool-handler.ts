@@ -33,6 +33,7 @@ import type {
   MemoryProposeResult,
   RepoOpenPullRequestResult,
   RepoPrepareResult,
+  DocumentReadResult,
   TicketCreateResult,
   ToolBrokerInvokeInput,
   UserDirectoryResult,
@@ -106,6 +107,10 @@ export interface HandlerContext {
     input: Extract<ToolBrokerInvokeInput, { tool: 'memory_propose' }>,
     actingTenantId: string | null,
   ): Promise<MemoryProposeResult>
+  documentRead(
+    input: Extract<ToolBrokerInvokeInput, { tool: 'document_read' }>,
+    actingUserId: string | null,
+  ): Promise<DocumentReadResult>
 }
 
 /** Minden handler-hívás egyetlen, immutábilis argumentum-csomagot kap. */

@@ -272,6 +272,25 @@ export type MemoryProposeResult =
   | { ok: true; candidateId: string; status: 'proposed' }
   | { ok: false; reason: string }
 
+/** Chat/ticket csatolmány oldal-/keresés-olvasás (extracted blocks). */
+export type DocumentReadArgs = {
+  documentId: string
+  pages?: string
+  query?: string
+  maxChars?: number
+  maxMatches?: number
+}
+
+export type DocumentReadResult = {
+  documentId: string
+  filename: string
+  totalPages: number
+  pages: Array<{ page?: number; heading: string; text: string }>
+  truncated: boolean
+  matchCount?: number
+  hint?: string
+}
+
 export type GmailSearchArgs = { query: string; maxResults?: number }
 export type GmailGetMessageArgs = { id: string }
 export type MailboxCountArgs = {
@@ -555,6 +574,7 @@ export type ToolBrokerInvokeInput =
   | (ToolInvokeBase & { tool: 'web_search'; args: WebSearchArgs })
   | (ToolInvokeBase & { tool: 'web_research_request'; args: WebResearchArgs })
   | (ToolInvokeBase & { tool: 'memory_propose'; args: MemoryProposeArgs })
+  | (ToolInvokeBase & { tool: 'document_read'; args: DocumentReadArgs })
 
 export type ToolBrokerInvokeResult =
   | {
@@ -611,6 +631,7 @@ export type ToolBrokerInvokeResult =
         | WebSearchResult
         | WebResearchDelegationResult
         | MemoryProposeResult
+        | DocumentReadResult
       resultMeta: Record<string, unknown>
       latencyMs: number
     }

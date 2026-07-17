@@ -21,6 +21,7 @@ import { sandboxAppHandler } from './sandbox-app.handler'
 import { sandboxVersioningHandler } from './sandbox-versioning.handler'
 import { gmailHandler } from './gmail.handler'
 import { memoryProposeHandler } from './memory.handler'
+import { documentReadHandler } from './document-read.handler'
 
 export const TOOL_HANDLERS: readonly ToolHandler[] = [
   kbHandler,
@@ -37,6 +38,7 @@ export const TOOL_HANDLERS: readonly ToolHandler[] = [
   sandboxVersioningHandler,
   gmailHandler,
   memoryProposeHandler,
+  documentReadHandler,
 ]
 
 export function resolveToolHandler(tool: string): ToolHandler | undefined {

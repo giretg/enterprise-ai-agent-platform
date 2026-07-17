@@ -12,6 +12,7 @@ import { composeSystemPrompt } from '@/lib/agent-prompt'
 import { formatOrgRoster } from '@/lib/agent-org-roster'
 import { buildRunAsAuthorization } from '@/lib/run-as-payload'
 import { formatHitsForPrompt, type KbHit } from '@/lib/kb-format'
+import { attachmentPageCount } from '@/lib/document-read'
 import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
 import {
   chatTriggerSlotDescriptors,
@@ -246,18 +247,35 @@ function isImageDocument(doc: { filename: string; extractedText: string | null }
 }
 
 export function formatAttachmentBlock(
-  docs: Array<{ id: string; filename: string; extractedText: string | null }>,
+  docs: Array<{
+    id: string
+    filename: string
+    extractedText: string | null
+    metadata?: unknown
+  }>,
 ): string {
   if (docs.length === 0) return ''
   const parts = docs.map((doc) => {
     if (isImageDocument(doc)) {
       return `[Csatolmány (kép): ${doc.filename}, documentId=${doc.id}]`
     }
-    const text = doc.extractedText?.trim()
-    if (text) {
-      return `[Csatolmány: ${doc.filename}]\n${text.slice(0, 4000)}`
+    const text = doc.extractedText?.trim() ?? ''
+    const pageCount = attachmentPageCount(doc.metadata, doc.extractedText)
+    const preview = text.slice(0, 600)
+    const pageLabel = pageCount > 0 ? `, ~${pageCount} oldal/blokk` : ''
+    const guidance =
+      `A teljes tartalom NEM a promptban van. Olvasd a document_read eszközzel:\n` +
+      `  document_read({ documentId: "${doc.id}", pages: "1-2" })\n` +
+      `  document_read({ documentId: "${doc.id}", query: "kulcsszó" })\n` +
+      `Ne próbáld a teljes fájlt file_read-del végigolvasni.`
+    if (preview) {
+      return (
+        `[Csatolmány: ${doc.filename}, documentId=${doc.id}${pageLabel}]\n` +
+        `${guidance}\n` +
+        `Előnézet (első ~600 kar):\n${preview}`
+      )
     }
-    return `[Csatolmány: ${doc.filename}, documentId=${doc.id}]`
+    return `[Csatolmány: ${doc.filename}, documentId=${doc.id}${pageLabel}]\n${guidance}`
   })
   return `\n\n--- Csatolmányok ---\n${parts.join('\n\n')}`
 }
@@ -1577,13 +1595,14 @@ export class AgentChatRuntime {
           `A beszélgetés munkaterületén jelenleg elérhető fájlok (pontos elérési utak):\n` +
           workspaceFiles.map((p) => `- ${p}`).join('\n') +
           `\n\nEzeket a file_read / xlsx_read_sheet / file_search stb. eszközökkel éred el a fenti pontos néven. ` +
+          `Csatolmány PDF/DOCX tartalmához (documentId a csatolmány-blokkban) a document_read eszközt használd oldalra vagy keresésre — ne a teljes .txt-t file_read-del. ` +
           `Ha a kért adat egy itt felsorolt fájlban van, onnan dolgozz. Új fájlt (pl. Excel → xlsx_create, prezentáció → pptx_create, Word → docx_create, egyéb → file_write) az eszközökkel hozz létre — a felhasználó a chat „Workspace fájlok" panelről tölti le.`,
       })
     } else {
       variableContext.push({
         role: 'system',
         content:
-          'A beszélgetés munkaterülete jelenleg üres (nincs feltöltött fájl). Ha a felhasználó létező fájlra hivatkozik, kérd meg, hogy csatolja (📎). Új fájlt (pl. Excel → xlsx_create, prezentáció → pptx_create, Word → docx_create, egyéb → file_write) az eszközökkel hozhatsz létre — a felhasználó a „Workspace fájlok" panelről tölti le.',
+          'A beszélgetés munkaterülete jelenleg üres (nincs feltöltött fájl). Ha a felhasználó létező fájlra hivatkozik, kérd meg, hogy csatolja (📎). Csatolt PDF/DOCX esetén a document_read eszközt használd (pages/query). Új fájlt (pl. Excel → xlsx_create, prezentáció → pptx_create, Word → docx_create, egyéb → file_write) az eszközökkel hozhatsz létre — a felhasználó a „Workspace fájlok" panelről tölti le.',
       })
     }
 

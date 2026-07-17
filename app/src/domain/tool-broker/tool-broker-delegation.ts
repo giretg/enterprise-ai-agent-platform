@@ -12,6 +12,7 @@
  */
 import type {
   Connector,
+  Document,
   Prisma,
   Ticket,
   TicketState,
@@ -73,6 +74,7 @@ import type {
   KbListIndexResult,
   KbSearchArgs,
   KbSearchResult,
+  DocumentReadResult,
   MemoryProposeResult,
   RepoOpenPullRequestResult,
   RepoPrepareResult,
@@ -81,6 +83,7 @@ import type {
   UserDirectoryResult,
   WebResearchDelegationResult,
 } from './tool-broker-types'
+import { blocksFromDocument, readDocumentPages } from '@/lib/document-read'
 // WP-8 — az authorizáció-koncern külön modulban (tool-broker-authorizer.ts);
 // a mag a szükséges lookupokat importálja, a publikus felületet re-exportálja.
 
@@ -1442,4 +1445,105 @@ async function resolveMemoryProjectKey(
     }
   }
   return '__general__'
+}
+
+/**
+ * document_read — csatolmány oldal/keresés. Capability-only auth a brokerben;
+ * itt a Document hozzáférés (uploader / beszélgetés-csatolmány / ticket / KB).
+ */
+export async function documentRead(
+  self: ToolBrokerService,
+  input: Extract<ToolBrokerInvokeInput, { tool: 'document_read' }>,
+  actingUserId: string | null,
+): Promise<DocumentReadResult> {
+  const doc = await prisma.document.findUnique({ where: { id: input.args.documentId } })
+  if (!doc) throw new Error('document_not_found')
+
+  const allowed = await canAccessDocument(self, input, doc, actingUserId)
+  if (!allowed) throw new Error('document_access_denied')
+
+  const blocks = blocksFromDocument(doc.metadata, doc.extractedText)
+  return readDocumentPages({
+    documentId: doc.id,
+    filename: doc.filename,
+    blocks,
+    pages: input.args.pages,
+    query: input.args.query,
+    maxChars: input.args.maxChars,
+    maxMatches: input.args.maxMatches,
+  })
+}
+
+async function canAccessDocument(
+  self: ToolBrokerService,
+  input: Extract<ToolBrokerInvokeInput, { tool: 'document_read' }>,
+  doc: Document,
+  actingUserId: string | null,
+): Promise<boolean> {
+  if (actingUserId && doc.uploadedById === actingUserId) return true
+
+  if (input.conversationId) {
+    if (await conversationReferencesDocument(input.conversationId, doc.id)) return true
+  }
+
+  if (input.ticketId) {
+    if (await ticketReferencesDocument(input.ticketId, doc.id)) return true
+  }
+
+  if (doc.connectorId) {
+    const link = await self.tools.findConnectorForAgentById(
+      input.agentId,
+      doc.connectorId,
+      'knowledge_base',
+      'read',
+      null,
+    )
+    if (link) return true
+  }
+
+  return false
+}
+
+async function conversationReferencesDocument(
+  conversationId: string,
+  documentId: string,
+): Promise<boolean> {
+  const messages = await prisma.message.findMany({
+    where: { conversationId, contentDeletedAt: null },
+    select: { contentRef: true },
+    orderBy: { seq: 'desc' },
+    take: 80,
+  })
+  for (const message of messages) {
+    if (!message.contentRef) continue
+    const raw = message.contentRef.startsWith('inline:')
+      ? message.contentRef.slice('inline:'.length)
+      : message.contentRef
+    try {
+      const parsed = JSON.parse(raw) as { attachmentIds?: unknown }
+      if (
+        Array.isArray(parsed.attachmentIds) &&
+        parsed.attachmentIds.some((id) => id === documentId)
+      ) {
+        return true
+      }
+    } catch {
+      if (raw.includes(documentId)) return true
+    }
+  }
+  return false
+}
+
+async function ticketReferencesDocument(ticketId: string, documentId: string): Promise<boolean> {
+  const ticket = await prisma.ticket.findUnique({
+    where: { id: ticketId },
+    select: { sourceDocumentId: true },
+  })
+  if (ticket?.sourceDocumentId === documentId) return true
+
+  const attachment = await prisma.ticketCommentAttachment.findFirst({
+    where: { documentId, comment: { ticketId } },
+    select: { id: true },
+  })
+  return Boolean(attachment)
 }

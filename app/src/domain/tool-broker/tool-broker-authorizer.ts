@@ -252,6 +252,12 @@ export class AllowlistAuthorizer implements Authorizer {
       return { allowed: true }
     }
 
+    // document_read — csatolmány / Document rekord; nincs connector. A tartalom-
+    // hozzáférést a handler ellenőrzi (uploader / conversation / ticket / KB link).
+    if (input.tool === 'document_read') {
+      return { allowed: true }
+    }
+
     const requirement = TOOL_REQUIREMENTS[input.tool]
     if (!requirement) {
       return { allowed: false, reason: 'tool_not_configured' }
