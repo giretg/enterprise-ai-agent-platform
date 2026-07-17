@@ -6,7 +6,7 @@ import type { ExtractedBlock } from './kb-v3'
  * Formátumfüggő kinyerés **forrás-provenance-szal**: minden extraction-szelet
  * (blokk) normalizált szöveget és a rá mutató, formátumfüggő forrás-refet hordoz
  * (§4.7):
- *   - PDF  → oldal-szint (`page`)      — `pdf-parse` `pagerender`,
+ *   - PDF  → oldal-szint (`page`)      — `pdf-parse` `getText()` oldal-tömbje,
  *   - DOCX → heading/section-út        — `mammoth` HTML + heading-szekciózás,
  *   - XLSX → cella-tartomány (`cell`)  — `exceljs`, `Sheet!A1:E20`,
  *   - MD/HTML/plain → section (heading) — direkt parser.
@@ -111,34 +111,30 @@ export function readExtractionBlocks(metadata: unknown): ExtractedBlock[] | null
 // ── PDF (oldal-szint) ────────────────────────────────────────────────────────
 
 async function extractPdf(buffer: Buffer): Promise<StructuredExtraction> {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let pdfParse: any
+  let PDFParse: typeof import('pdf-parse').PDFParse
   try {
-    pdfParse = await import('pdf-parse')
+    ;({ PDFParse } = await import('pdf-parse'))
   } catch {
     // A binárisadapter hiányában legalább üres, jól formált eredményt adunk.
     return { format: 'pdf', markdown: '', blocks: [] }
   }
 
-  const pages: string[] = []
-  const options = {
-    pagerender: (pageData: {
-      getTextContent: () => Promise<{ items: Array<{ str: string }> }>
-    }) =>
-      pageData.getTextContent().then((content) => {
-        const text = normalizeWhitespace(content.items.map((i) => i.str).join(' '))
-        pages.push(text)
-        return text
-      }),
+  const parser = new PDFParse({ data: buffer })
+  let pages: Array<{ num: number; text: string }>
+  try {
+    // A `pageJoiner` alapértelmezése oldaljelölőt (`-- 1 of 3 --`) fűzne a szövegbe;
+    // az oldalhatárt a `pages[].num` hordozza, a jelölő csak szennyezné a blokkokat.
+    ;({ pages } = await parser.getText({ pageJoiner: '' }))
+  } finally {
+    await parser.destroy()
   }
-  await pdfParse.default(buffer, options)
 
   const blocks: ExtractedBlock[] = []
-  pages.forEach((text, idx) => {
-    const page = idx + 1
-    if (!text.trim()) return
-    blocks.push({ heading: `Oldal ${page}`, text, sourceRef: { page } })
-  })
+  for (const { num, text: raw } of pages) {
+    const text = normalizeWhitespace(raw)
+    if (!text.trim()) continue
+    blocks.push({ heading: `Oldal ${num}`, text, sourceRef: { page: num } })
+  }
 
   const markdown = blocks.map((b) => `# ${b.heading}\n\n${b.text}`).join('\n\n')
   return { format: 'pdf', markdown, blocks }

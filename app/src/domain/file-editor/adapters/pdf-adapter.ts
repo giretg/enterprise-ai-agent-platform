@@ -1,9 +1,8 @@
 import { FileEditorError } from '../workspace-storage'
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-async function importPdfParse(): Promise<any> {
+async function importPdfParse(): Promise<typeof import('pdf-parse').PDFParse> {
   try {
-    return await import('pdf-parse')
+    return (await import('pdf-parse')).PDFParse
   } catch {
     throw new FileEditorError(
       'BINARY_ADAPTER_UNAVAILABLE',
@@ -24,40 +23,28 @@ export async function pdfRead(
   buffer: Buffer,
   pageRange?: string,
 ): Promise<{ text: string; numPages: number; pagesRead: string }> {
-  const pdfParse = await importPdfParse()
+  const PDFParse = await importPdfParse()
+  const range = pageRange ? parsePageRange(pageRange) : null
 
-  if (!pageRange) {
-    const result = await pdfParse.default(buffer)
-    const numPages = result.numpages as number
-    return {
-      text: (result.text as string).trim(),
-      numPages,
-      pagesRead: `1-${numPages}`,
-    }
+  const parser = new PDFParse({ data: buffer })
+  let text: string
+  let numPages: number
+  try {
+    // A `pageJoiner` alapértelmezése oldaljelölőt (`-- 1 of 3 --`) fűzne a szövegbe.
+    // A `first`+`last` együtt zárt oldal-tartományt jelent; a `total` a dokumentum
+    // teljes oldalszáma marad akkor is, ha csak egy részét olvassuk.
+    const result = await parser.getText(
+      range ? { pageJoiner: '', first: range.start, last: range.end } : { pageJoiner: '' },
+    )
+    text = result.text.trim()
+    numPages = result.total
+  } finally {
+    await parser.destroy()
   }
 
-  let currentPage = 0
-  const range = parsePageRange(pageRange)
+  if (!range) return { text, numPages, pagesRead: `1-${numPages}` }
 
-  const options = {
-    pagerender: (pageData: { getTextContent: () => Promise<{ items: Array<{ str: string }> }> }) => {
-      currentPage++
-      if (currentPage < range.start || currentPage > range.end) return Promise.resolve('')
-      return pageData.getTextContent().then((content: { items: Array<{ str: string }> }) =>
-        content.items.map((item) => item.str).join(' '),
-      )
-    },
-  }
-
-  const result = await pdfParse.default(buffer, options)
-  const numPages = result.numpages as number
-  const actualEnd = Math.min(range.end, numPages)
-
-  return {
-    text: (result.text as string).trim(),
-    numPages,
-    pagesRead: range.end === Infinity ? `1-${numPages}` : `${range.start}-${actualEnd}`,
-  }
+  return { text, numPages, pagesRead: `${range.start}-${Math.min(range.end, numPages)}` }
 }
 
 // ── PDF írás (táblázat) ─────────────────────────────────────────────────────
