@@ -9,6 +9,9 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: appDir,
   },
+  // pdf-parse v2 + pdfjs worker: ne bundle-ölje az SSR chunkokba, különben
+  // a pdf.worker.mjs path elromlik (Setting up fake worker failed).
+  serverExternalPackages: ['pdf-parse', '@napi-rs/canvas'],
   allowedDevOrigins: ['127.0.0.1', 'localhost'],
   experimental: {
     serverActions: {

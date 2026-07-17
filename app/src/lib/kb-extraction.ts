@@ -1,4 +1,5 @@
 import type { ExtractedBlock } from './kb-v3'
+import { loadPdfParse } from './pdf-parse'
 
 /**
  * KB-v3 Sprint 2 — Extraction pipeline (Knowledge-Base-v3-OKF-Spec §7.3/§7.4).
@@ -113,7 +114,7 @@ export function readExtractionBlocks(metadata: unknown): ExtractedBlock[] | null
 async function extractPdf(buffer: Buffer): Promise<StructuredExtraction> {
   let PDFParse: typeof import('pdf-parse').PDFParse
   try {
-    ;({ PDFParse } = await import('pdf-parse'))
+    PDFParse = await loadPdfParse()
   } catch {
     // A binárisadapter hiányában legalább üres, jól formált eredményt adunk.
     return { format: 'pdf', markdown: '', blocks: [] }

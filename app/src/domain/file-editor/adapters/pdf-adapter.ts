@@ -1,8 +1,9 @@
+import { loadPdfParse } from '@/lib/pdf-parse'
 import { FileEditorError } from '../workspace-storage'
 
 async function importPdfParse(): Promise<typeof import('pdf-parse').PDFParse> {
   try {
-    return (await import('pdf-parse')).PDFParse
+    return await loadPdfParse()
   } catch {
     throw new FileEditorError(
       'BINARY_ADAPTER_UNAVAILABLE',
