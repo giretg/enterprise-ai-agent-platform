@@ -1,5 +1,30 @@
 # Enterprise code review log
 
+## 2026-07-18 - Write-gate token: egyszer-használatos fogyasztás atomizálása
+
+- Áttekintett modulok:
+  - `app/src/domain/writegate/write-gate-service.ts` (a governance write-gate primitív: `issue` / `consume`, horgony-invariáns, TTL, státusz-életciklus)
+  - `app/src/lib/crypto/hash-chain.ts` write-gate kripto (`computeDiffHash`, `generateTokenPair`, `signWriteGateToken`/`verifyWriteGateSignature`, konstans idejű HMAC-összevetés) és `app/src/lib/crypto/secret-resolver.ts` (`WRITE_GATE_SECRET` fail-closed prod alatt)
+  - A két valódi fogyasztó: `app/src/domain/training/training-service.ts` (tanítási memória-írás) és `app/src/domain/memory/memory-approval-service.ts` (inline memória-jelölt jóváhagyás)
+  - `app/prisma/schema.prisma` `WriteGateToken` modell + `WriteGateTokenStatus` enum
+- Eredmény:
+  - Egy éles, latens biztonsági hibát találtam a primitívben. A `consume` read-check-then-update mintát követett: kiolvasta a sort, ellenőrizte `status === 'issued'`, majd FELTÉTEL NÉLKÜL `update`-tel `consumed`-ra állította. Ez klasszikus TOCTOU-ablak: két, a státusz-olvasáson egyszerre átjutó fogyasztó MINDKETTEN továbbmehetett az írásig, így EGY jóváhagyás KÉT írást hitelesíthetett — épp az az egyszer-használatos (single-use, nem visszajátszható) invariáns sérült, ami a governance-kapu értelme. A jelenlegi két hívó `issue`→`consume`-ot szinkron, egy kérésen belül végez, ezért ma nem triggerelt, de a `WriteGateService` exportált, újrafelhasználható primitív, amelynek dokumentált szerződése (§9.4: egy token = egy jóváhagyott diff, egyszer fogyasztva) csak a hívók gondosságára támaszkodott, nem a kapun magán. A kódbázis MÁS single-use/verseny-pontjai (`scheduled-task-repository.ts` revoke, `iam-repository.ts` meghívó-beváltás) már compare-and-set-tel védettek — ez a hely eltért ettől a saját konvenciótól.
+  - NEM találtam titok-kezelési rést: a `WRITE_GATE_SECRET` a közös `resolveSecret`-en át prod alatt fail-closed, az aláírás-ellenőrzés konstans idejű, a diff-hash egyszerű származtatott érték (nem titok), a „pontosan egy horgony" invariáns az `issue`-ban helyesen kikényszerül.
+- Javítás:
+  - A `consume` státusz-átmenete atomikus compare-and-set lett: `updateMany({ where: { id, status: 'issued' }, data: { status: 'consumed', … } })`; `count === 0` esetén a versenyben vesztett fogyasztó fail-closed elutasításba fut. Ugyanez a CAS-őr került a lejárat-átmenetre is, így az nem írhatja felül egy párhuzamosan már consumed sor állapotát. A visszaadott sort a győztes tranzakció ismert állapotából állítjuk elő (nincs fölösleges kör-út).
+  - A Prisma kliens konstruktor-injektálható lett (alapértelmezés a singleton), a codebase DI-mintája szerint — így az atomikus viselkedés injektált, in-memory klienssel determinisztikusan tesztelhető.
+  - Új `write-gate-single-use.test.ts` regresszió (8 eset): happy path, szekvenciális visszajátszás, a TOCTOU-verseny determinisztikus szimulációja (két `issued`-ot látó fogyasztóból csak egy nyer), hash-eltérés/aláírás-hamisítás/lejárat fail-closed, és a horgony-invariáns.
+- Üzleti hatás:
+  - A write-gate a memória- és tanítási írások emberi jóváhagyásának kriptográfiai bizonyítéka: egy jóváhagyás pontosan egy módosítást engedélyez, auditálhatóan és nem visszajátszhatóan. Ha ugyanaz a jóváhagyó token két írást hitelesíthet (verseny/újrapróbálkozás alatt), az megbontja az „egy jóváhagyás = egy változás" audit-invariánst, és egy jövőbeli out-of-band jóváhagyási folyamatnál duplázott vagy jogosulatlan memória-módosítást engedhet. A javítás a kapu saját szintjén garantálja az egyszer-használatot, összhangban a platform többi compare-and-set védelmével.
+- Ellenőrzés:
+  - `npm run test:write-gate-single-use` (8/8 zöld), `npm run test:memory-approval` (regresszió zöld)
+  - `npx tsc --noEmit` (app), célzott `npx eslint` (tiszta)
+  - `/code-review` skill (Standards + Spec, két párhuzamos ügynök): a Standards-tengely nem talált hard violationt (a CAS-, DI- és teszt-minták a repo konvencióit követik); a Spec-tengely megerősítette, hogy a mag-fix helyes.
+- Nyitott döntés (nem automatikusan javítva):
+  - D1 — A `consume` csak `tokenId`-vel hitelesít, nincs tenant/agent-scope kapu rajta (a jelenlegi hívók upstream kötik a scope-ot, pl. `memory-approval-service.ts` a cél-chunkot tenant/agent/projekt szerint; ezért ma nem IDOR). Egy explicit tenant-őr a `consume`-on mélységi védelem lenne egy jövőbeli out-of-band fogyasztóhoz.
+  - D2 — A `WriteGateTokenStatus` enumban ott a `revoked`, de egyetlen kód-út sem állít tokent `revoked`-ra (nincs revoke-metódus a service-en). A CAS-őr defenzíven ezt is elutasítaná; a tényleges visszavonhatóság külön, kis follow-up.
+  - D3 — A `consume` a token consumed-ra állítását a hívó memória-írása ELŐTT végzi, és a kettő nincs egy tranzakcióban; egy consume utáni összeomlás „elégeti" a jóváhagyást nulla írással. Ez a fail-safe irány (soha nem két írás), de a teljes atomicitáshoz a fogyasztó-oldali írást is egy tranzakcióba lehetne vonni a consume-mal.
+
 ## 2026-07-16 - Dispatcher / harness-callback: privilegizált belső végpontok titok-hitelesítése
 
 - Reviewed modules:
