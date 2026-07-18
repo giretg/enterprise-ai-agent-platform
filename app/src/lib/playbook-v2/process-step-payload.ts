@@ -10,7 +10,7 @@ import type {
   StepOutcomeStatus,
 } from '@/lib/playbook-v2/spec'
 import { STEP_OUTCOME_FIELD } from '@/lib/playbook-v2/spec'
-import { extractJsonObject } from '@/domain/provisioning/provisioning-assistant'
+import { extractJsonObject } from '@/lib/extract-json-object'
 import { stringifyValue } from '@/lib/playbook-v2/effective-prompt'
 
 /** Meta mezők, amelyek nem agent-válasz szöveg a ticket payloadban. */

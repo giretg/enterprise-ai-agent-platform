@@ -4,7 +4,7 @@
  * (vagy nem-config) kötelező input-réseiből következtetjük a kimeneti mezőket.
  */
 import type { PlaybookSpecV2, PlaybookStep } from '@/lib/playbook-v2/spec'
-import type { ContractField, ContractSource } from '@/domain/contract-runtime'
+import type { ContractField, ContractSource } from '@/domain/contract-runtime/types'
 
 /**
  * Egy lépés happy-path következő-step céljai. A Decision Step ágai (`branches` +
@@ -186,7 +186,7 @@ export function buildContractSource(
   }
 }
 
-import { HARD_MAX_REPAIR_ATTEMPTS } from '@/domain/contract-runtime'
+import { HARD_MAX_REPAIR_ATTEMPTS } from '@/domain/contract-runtime/types'
 
 /** Lépésszintű javítási próba-felülbírálás (0–2), ha a contract megadja. */
 export function readMaxRepairAttempts(

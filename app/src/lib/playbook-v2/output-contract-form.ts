@@ -6,8 +6,8 @@ import type {
   ContractContentCheck,
   ContractField,
   ContractFieldType,
-} from '@/domain/contract-runtime'
-import { HARD_MAX_REPAIR_ATTEMPTS } from '@/domain/contract-runtime'
+} from '@/domain/contract-runtime/types'
+import { HARD_MAX_REPAIR_ATTEMPTS } from '@/domain/contract-runtime/types'
 import type { PlaybookSpecV2 } from '@/lib/playbook-v2/spec'
 import {
   inferStepOutputFields,

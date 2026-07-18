@@ -16,8 +16,8 @@ import {
   tryParseOutputContractJson,
   type OutputContractFormField,
 } from '@/lib/playbook-v2/output-contract-form'
-import type { ContractFieldType } from '@/domain/contract-runtime'
-import { HARD_MAX_REPAIR_ATTEMPTS } from '@/domain/contract-runtime'
+import type { ContractFieldType } from '@/domain/contract-runtime/types'
+import { HARD_MAX_REPAIR_ATTEMPTS } from '@/domain/contract-runtime/types'
 
 const FIELD_CLASS = 'w-full rounded border border-ink/15 bg-transparent px-2 py-1 text-sm'
 const LABEL_CLASS = 'text-ink-soft mb-0.5 block'

@@ -1,4 +1,4 @@
-import { extractJsonObject } from '@/domain/provisioning/provisioning-assistant'
+import { extractJsonObject } from '@/lib/extract-json-object'
 
 /**
  * Laza mód: best-effort JSON-objektum kinyerés validáció és javítás nélkül.

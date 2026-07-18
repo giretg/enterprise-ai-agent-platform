@@ -1,4 +1,4 @@
-import { extractLoose } from '@/domain/contract-runtime'
+import { extractLoose } from '@/domain/contract-runtime/extract'
 
 function jsonObject(value: unknown): Record<string, unknown> {
   if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
