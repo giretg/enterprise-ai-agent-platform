@@ -108,17 +108,18 @@ export class WriteGateService {
     // írást hitelesít. A státusz-átmenetet atomikus compare-and-set-tel zárjuk, így
     // két párhuzamos `consume` közül csak az egyik nyerhet; a fenti státusz-olvasás
     // csak gyors, best-effort hibaüzenet. A `count === 0` a versenyben vesztett
-    // (időközben consumed/expired/revoked) tokent fail-closed elutasítja.
+    // (időközben már nem `issued`) tokent fail-closed elutasítja.
+    const consumedAt = new Date()
     const claim = await this.db.writeGateToken.updateMany({
       where: { id: token.id, status: 'issued' },
-      data: { status: 'consumed', consumedAt: new Date() },
+      data: { status: 'consumed', consumedAt },
     })
     if (claim.count === 0) {
       throw new Error('write_gate: token already consumed — concurrent use rejected')
     }
 
-    const consumed = await this.db.writeGateToken.findUnique({ where: { id: token.id } })
-    if (!consumed) throw new Error('write_gate: token not found after consume')
-    return consumed
+    // A frissen kiolvasott `token` a saját tranzakciónk győztes írásának állapotát
+    // tükrözi (csak ez az út mozdítja `issued`-ról); nincs szükség extra kör-útra.
+    return { ...token, status: 'consumed', consumedAt }
   }
 }
