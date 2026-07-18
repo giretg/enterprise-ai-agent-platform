@@ -1234,6 +1234,11 @@ export const setTenantThinkingTraceControlsSchema = z.object({
   enabled: z.boolean(),
 })
 
+/** Tenant kimeneti nyelv — skill/playbook desztilláló és szerző agentek. */
+export const setTenantLanguageSchema = z.object({
+  language: z.enum(['hu', 'en']),
+})
+
 /** Web Fetch (WS-D) platform-tool vezérlés (WebFetch-Egress §14). Legalább az egyik mező. */
 export const setWebFetchControlsSchema = z
   .object({

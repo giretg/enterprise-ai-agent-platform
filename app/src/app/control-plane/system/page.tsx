@@ -18,6 +18,7 @@ import {
   getWebSearchPolicy,
 } from '@/app/actions/web-search'
 import { getTenantThinkingTraceControls } from '@/app/actions/chat-thinking-trace'
+import { getTenantLanguage } from '@/app/actions/tenant-language'
 import { readDispatcherRuntime } from '@/lib/dispatcher-runtime'
 import { DatabaseControlPanel } from './database-control-panel'
 import { AutomationControlSection } from './automation-control-section'
@@ -27,6 +28,7 @@ import { ModelPolicyPanel } from './model-policy-panel'
 import { TicketTypeConfigPanel } from './ticket-type-config-panel'
 import { TenantWebSearchPolicyPanel } from './tenant-web-search-policy-panel'
 import { TenantThinkingTracePanel } from './tenant-thinking-trace-panel'
+import { TenantLanguagePanel } from './tenant-language-panel'
 import { MemoryObservabilityPanel } from './memory-observability-panel'
 
 export default async function SystemPage() {
@@ -42,6 +44,7 @@ export default async function SystemPage() {
     tenantWebSearchPolicyRes,
     tenantWebSearchControlsRes,
     tenantThinkingTraceControlsRes,
+    tenantLanguageRes,
     gatewayStatsRes,
     routingPoliciesRes,
     budgetsRes,
@@ -59,6 +62,7 @@ export default async function SystemPage() {
     getWebSearchPolicy(),
     getTenantWebSearchControls(),
     getTenantThinkingTraceControls(),
+    getTenantLanguage(),
     getModelCallsSummary(),
     listModelRoutingPolicies(),
     listModelBudgets(),
@@ -68,11 +72,12 @@ export default async function SystemPage() {
   // §9.2/§13/4: a platform-globális vezérlőket csak platform-szerep szerkesztheti;
   // a tenant-admin itt read-only nézetet kap (a WRITE-actionök platform-guard alatt).
   const canEdit = Boolean(ctx?.platformRoles.includes('superadmin'))
-  const canEditTenantWebSearch =
+  const canEditTenantSettings =
     Boolean(ctx?.kind === 'tenant' && ctx.activeTenantRole === 'admin') || canEdit
   // A napi model-keret a saját tenant erőforrása → tenant-admin állíthatja (a WRITE-action
   // maga is `requireTenantRole('admin')` alatt van, ez csak a felület elrejtése).
-  const canEditTenantBudget = canEditTenantWebSearch
+  const canEditTenantBudget = canEditTenantSettings
+  const canEditTenantWebSearch = canEditTenantSettings
 
   const settingsKey = [
     controlsRes.success ? controlsRes.data.updatedAt : '',
@@ -161,6 +166,17 @@ export default async function SystemPage() {
           canEdit={canEditTenantWebSearch}
         />
       ) : null}
+
+      {tenantLanguageRes.success ? (
+        <TenantLanguagePanel
+          initialLanguage={tenantLanguageRes.data.language}
+          canEdit={canEditTenantSettings}
+        />
+      ) : (
+        <div className="rounded-lg border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
+          {tenantLanguageRes.error}
+        </div>
+      )}
 
       {!ticketTypesRes.success ? (
         <div className="rounded-lg border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">

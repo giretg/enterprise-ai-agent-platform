@@ -144,6 +144,40 @@ async function main() {
     assert.equal(called, false)
   })
 
+  await test('draftSpec: üres leírás + existingSpec (auto-fix) → modell hívódik', async () => {
+    let called = false
+    const model: PlaybookDraftingModel = {
+      async call(params) {
+        called = true
+        ;(model as { lastMessages?: unknown }).lastMessages = params.messages
+        return { content: JSON.stringify(validRawSpec()) }
+      },
+    }
+    const agent = new PlaybookAuthorAgent({ model })
+    const result = await agent.draftSpec({
+      agentId: 'agent-author',
+      description: '',
+      existingSpec: validRawSpec(),
+      priorValidation: { valid: false, errors: [{ code: 'X', path: '', message: 'x' }], warnings: [] },
+    })
+    assert.equal(called, true)
+    assert.equal(result.ok, true)
+  })
+
+  await test('draftSpec: outputLanguage bekerül a system promptba', async () => {
+    const model = fixedModel(JSON.stringify(validRawSpec()))
+    const agent = new PlaybookAuthorAgent({ model })
+    await agent.draftSpec({
+      agentId: 'agent-author',
+      description: 'Készíts folyamatot.',
+      outputLanguage: 'en',
+    })
+    const messages = (model as { lastMessages?: unknown }).lastMessages as Array<{ role: string; content: string }>
+    const system = messages.find((m) => m.role === 'system')!
+    assert.ok(system.content.includes('OUTPUT LANGUAGE'))
+    assert.ok(system.content.includes('English'))
+  })
+
   await test('draftSpec: meglévő spec + előző validációs hiba bekerül a promptba', async () => {
     const model = fixedModel(JSON.stringify(validRawSpec()))
     const agent = new PlaybookAuthorAgent({ model })

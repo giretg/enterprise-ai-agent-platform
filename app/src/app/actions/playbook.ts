@@ -23,6 +23,7 @@ import {
 } from '@/lib/validators/actions'
 import { PlaybookV2Error } from '@/domain/playbook/playbook-v2-service'
 import { parsePlaybookSpecV2 } from '@/lib/playbook-v2/spec'
+import { readTenantLanguage } from '@/lib/tenant-language'
 import { PlaybookCompiler, type CompiledSpec } from '@/domain/playbook/playbook-compiler'
 import { PlaybookSimulator } from '@/domain/playbook/playbook-simulator'
 import { diffPlaybookSpecs } from '@/domain/playbook/playbook-diff'
@@ -256,6 +257,9 @@ export async function draftPlaybookFromDescription(input: unknown) {
     const permissions = await repositories.rolePermissions.findAll()
     const knownPermissions = permissions.map((p) => p.permissionKey)
 
+    const tenant = await repositories.tenants.findById(user.activeTenantId!)
+    const outputLanguage = readTenantLanguage(tenant?.settings)
+
     const agentInput = {
       agentId: author.id,
       agentVersion: author.currentVersion,
@@ -263,6 +267,7 @@ export async function draftPlaybookFromDescription(input: unknown) {
       tenantId: user.activeTenantId,
       knownCapabilities,
       knownPermissions,
+      outputLanguage,
     }
 
     // Első generálás

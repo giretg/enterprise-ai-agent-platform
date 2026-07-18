@@ -42,6 +42,7 @@ import {
   flattenToolCapabilityGroups,
   PLAYBOOK_CAPABILITY_GROUPS,
 } from '@/lib/tool-capability-catalog'
+import type { TenantLanguage } from '@/lib/tenant-language'
 
 /** A platform által ismert (connectorral kiépíthető) tool-nevek — readiness bázis. */
 const KNOWN_TOOL_NAMES = new Set<string>(flattenToolCapabilityGroups(PLAYBOOK_CAPABILITY_GROUPS))
@@ -228,6 +229,8 @@ export class SkillService {
     actor: ActorContext
     distiller: SkillDistillerAgent
     targetSkillId?: string
+    /** Tenant kimeneti nyelv — a desztillált skill emberi szövegei. */
+    outputLanguage?: TenantLanguage
   }): Promise<SkillDistillResult> {
     if (!this.conversations) {
       throw new Error('SkillService: conversation repository not configured')
@@ -262,6 +265,7 @@ export class SkillService {
       conversationId: input.conversationId,
       turns,
       usedTools,
+      outputLanguage: input.outputLanguage,
     })
     if (!distilled.ok) {
       return { ok: false, stage: 'distill', detail: distilled.detail }

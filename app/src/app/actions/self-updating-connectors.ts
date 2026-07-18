@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
 import { requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain'
+import { parseCapabilitySet } from '@/domain/connector-self-update/capability-set'
 import { SelfUpdateError } from '@/domain/connector-self-update/self-update-service'
 import {
   buildConnectorSecretRef,
@@ -42,6 +43,19 @@ function actor(ctx: Awaited<ReturnType<typeof requireTenantRole>>) {
   }
 }
 
+/** UI-nak: a capability-set funkciólistája (jogosultság + végpont), titok nélkül. */
+function capabilitiesFromSet(value: unknown) {
+  const set = parseCapabilitySet(value)
+  if (!set) return []
+  return (set.proposedTools ?? []).map((tool) => ({
+    name: tool.name,
+    method: tool.method,
+    path: tool.path,
+    access: tool.access,
+    description: tool.description ?? null,
+  }))
+}
+
 export async function listSelfUpdatingConnectors() {
   try {
     const ctx = await requireTenantRole('operator')
@@ -70,15 +84,20 @@ export async function listSelfUpdatingConnectors() {
         autoApproveEnabled: context.source.autoApprovePolicy?.enabled === true,
         lastSyncedAt: context.source.lastSyncedAt?.toISOString() ?? null,
         activeSpecVersionId: context.connector.activeSpecVersionId,
-        versions: versions.map((version) => ({
-          id: version.id,
-          versionNo: version.versionNo,
-          status: version.status,
-          diffSummary: version.diffSummary,
-          fetchedAt: version.fetchedAt.toISOString(),
-          approvedAt: version.approvedAt?.toISOString() ?? null,
-          approvedByName: version.approvedById ? approverNames.get(version.approvedById) ?? 'Ismeretlen kolléga' : 'Automatikus szabály',
-        })),
+        versions: versions.map((version) => {
+          const includeCapabilities =
+            version.id === context.connector.activeSpecVersionId || version.status === 'proposed'
+          return {
+            id: version.id,
+            versionNo: version.versionNo,
+            status: version.status,
+            diffSummary: version.diffSummary,
+            capabilities: includeCapabilities ? capabilitiesFromSet(version.capabilitySet) : [],
+            fetchedAt: version.fetchedAt.toISOString(),
+            approvedAt: version.approvedAt?.toISOString() ?? null,
+            approvedByName: version.approvedById ? approverNames.get(version.approvedById) ?? 'Ismeretlen kolléga' : 'Automatikus szabály',
+          }
+        }),
       })),
     })
   } catch (error) {

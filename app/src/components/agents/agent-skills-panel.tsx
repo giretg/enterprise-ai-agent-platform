@@ -11,6 +11,7 @@ import {
 } from '@/app/actions/skills'
 import { Badge, Card } from '@/components/ui/shell'
 import type { SkillReadinessColor } from '@/lib/skill/skill-readiness'
+import { formatToolUiName } from '@/lib/tool-ui-labels'
 
 const READINESS_TONE: Record<SkillReadinessColor, 'success' | 'warning' | 'danger'> = {
   green: 'success',
@@ -95,7 +96,7 @@ export function AgentSkillsPanel({
                 <ul className="mt-2 space-y-1">
                   {s.readiness.items.map((item) => (
                     <li key={item.toolName} className="flex items-center justify-between text-xs">
-                      <span className="font-mono text-ink-soft">{item.toolName}</span>
+                      <span className="text-ink-soft">{formatToolUiName(item.toolName)}</span>
                       <Badge
                         tone={
                           item.status === 'satisfied'

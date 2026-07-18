@@ -20,6 +20,11 @@ import {
   type TenantValidationContext,
 } from '@/domain/playbook/playbook-validator'
 import { PLAYBOOK_SCHEMA_VERSION } from '@/lib/playbook-v2/spec'
+import {
+  DEFAULT_TENANT_LANGUAGE,
+  outputLanguageInstruction,
+  type TenantLanguage,
+} from '@/lib/tenant-language'
 
 /**
  * A szerep-instrukció (system prompt). A Playbook-séma és a tipizált input-rés
@@ -128,7 +133,9 @@ export class PlaybookAuthorAgent {
     knownPermissions?: string[]
     existingSpec?: unknown
     priorValidation?: ValidationResult
+    outputLanguage?: TenantLanguage
   }): GatewayMessage[] {
+    const language = input.outputLanguage ?? DEFAULT_TENANT_LANGUAGE
     const parts: string[] = []
     if (input.knownCapabilities?.length) {
       parts.push(`Capability vocabulary (only use these for requiredCapabilities):\n${input.knownCapabilities.join(', ')}`)
@@ -161,7 +168,10 @@ export class PlaybookAuthorAgent {
     parts.push('Return ONLY the JSON descriptor.')
 
     return [
-      { role: 'system', content: PLAYBOOK_AUTHOR_ROLE_INSTRUCTION },
+      {
+        role: 'system',
+        content: `${PLAYBOOK_AUTHOR_ROLE_INSTRUCTION}\n\n${outputLanguageInstruction(language)}`,
+      },
       { role: 'user', content: parts.join('\n\n') },
     ]
   }
@@ -183,9 +193,11 @@ export class PlaybookAuthorAgent {
     existingSpec?: unknown
     priorValidation?: ValidationResult
     validationContext?: TenantValidationContext
+    /** Tenant kimeneti nyelv — playbook name/description/instructionTemplate. */
+    outputLanguage?: TenantLanguage
     sensitivityOverride?: SensitivityOverride
   }): Promise<PlaybookAuthorDraftResult> {
-    if (!input.description?.trim()) {
+    if (!input.description?.trim() && input.existingSpec == null) {
       return { ok: false, error: 'PARSE_FAILED', detail: 'empty description' }
     }
 
@@ -195,6 +207,7 @@ export class PlaybookAuthorAgent {
       knownPermissions: input.knownPermissions,
       existingSpec: input.existingSpec,
       priorValidation: input.priorValidation,
+      outputLanguage: input.outputLanguage,
     })
 
     const modelConfig = this.deps.modelConfig ?? resolvePlaybookAuthorModelConfig(input.agentModelConfig)

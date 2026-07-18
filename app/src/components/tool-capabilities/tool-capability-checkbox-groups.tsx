@@ -1,6 +1,7 @@
 'use client'
 
 import type { ToolCapabilityGroup } from '@/lib/tool-capability-catalog'
+import { getToolUiLabel } from '@/lib/tool-ui-labels'
 
 export function ToolCapabilityCheckboxGroups({
   groups,
@@ -62,9 +63,12 @@ export function ToolCapabilityCheckboxGroups({
             <div className="grid grid-cols-1 gap-1 pl-6 md:grid-cols-2 xl:grid-cols-3">
               {group.tools.map((tool) => {
                 const isDisabled = disabled(tool)
+                const { label, description } = getToolUiLabel(tool)
+                const hasCustomLabel = label !== tool
                 return (
                   <label
                     key={tool}
+                    title={description || undefined}
                     className={`flex min-w-0 items-center gap-2 rounded-lg px-2 py-1.5 ${
                       isDisabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer hover:bg-night-2'
                     }`}
@@ -76,8 +80,15 @@ export function ToolCapabilityCheckboxGroups({
                       disabled={isDisabled}
                       className="shrink-0 accent-sage"
                     />
-                    <span className="min-w-0 break-words font-mono text-xs text-ink-soft [overflow-wrap:anywhere]">
-                      {tool}
+                    <span className="min-w-0 break-words text-xs text-ink-soft [overflow-wrap:anywhere]">
+                      {hasCustomLabel ? (
+                        <>
+                          {label}{' '}
+                          <span className="font-mono text-ink-faint">({tool})</span>
+                        </>
+                      ) : (
+                        <span className="font-mono">{tool}</span>
+                      )}
                     </span>
                   </label>
                 )

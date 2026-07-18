@@ -19,8 +19,12 @@ import {
 type UsageRef = { type: string; name: string; id: string }
 type DiffItem = { op: string; risk: string; change?: string; usedBy?: UsageRef[] }
 type Diff = { added: DiffItem[]; breaking: DiffItem[]; narrowed: DiffItem[]; auth: DiffItem[] }
+type Capability = {
+  name: string; method: string; path: string; access: 'read' | 'write'; description: string | null
+}
 type Version = {
   id: string; versionNo: number; status: string; diffSummary: Diff | null
+  capabilities: Capability[]
   fetchedAt: string; approvedAt: string | null; approvedByName: string
 }
 type ConnectorRow = {
@@ -45,24 +49,107 @@ function friendlyChange(item: DiffItem) {
   return item.change ?? 'A képesség megváltozott.'
 }
 
-function DiffGroup({ title, tone, items }: { title: string; tone: 'success' | 'danger' | 'warning'; items: DiffItem[] }) {
+function capabilityTitle(op: string, capabilities: Capability[]): string | null {
+  const match = capabilities.find(
+    (cap) => `${cap.method.toUpperCase()} ${cap.path}` === op,
+  )
+  if (!match) return null
+  return match.description?.trim() || match.name
+}
+
+function DiffGroup({
+  title,
+  tone,
+  items,
+  capabilities = [],
+}: {
+  title: string
+  tone: 'success' | 'danger' | 'warning'
+  items: DiffItem[]
+  capabilities?: Capability[]
+}) {
   if (!items.length) return null
   const colors = tone === 'success' ? 'border-sage/35 bg-sage/8' : tone === 'danger' ? 'border-coral/40 bg-coral/8' : 'border-honey/40 bg-honey/8'
   return (
     <section className={`rounded-md border p-3 ${colors}`}>
       <h4 className="text-sm font-semibold">{title} ({items.length})</h4>
       <ul className="mt-2 space-y-2 text-sm">
-        {items.map((item, index) => (
-          <li key={`${item.op}-${index}`}>
-            <p>{friendlyChange(item)} <span title="Technikai részlet" className="font-mono text-xs text-ink-soft">ⓘ {item.op}</span></p>
-            {item.usedBy?.length ? (
-              <p className="mt-1 text-xs font-semibold text-coral">
-                Ezt használja: {item.usedBy.map((ref) => ref.name).join(', ')}. Jóváhagyás után frissítésre lehet szükség.
+        {items.map((item, index) => {
+          const label = capabilityTitle(item.op, capabilities)
+          return (
+            <li key={`${item.op}-${index}`}>
+              <p>
+                {label ? <span className="font-semibold">{label}</span> : null}
+                {label ? <span className="text-ink-soft"> — </span> : null}
+                {friendlyChange(item)}{' '}
+                <span title="Technikai részlet" className="font-mono text-xs text-ink-soft">
+                  ⓘ {item.op}
+                </span>
               </p>
-            ) : null}
-          </li>
-        ))}
+              {item.usedBy?.length ? (
+                <p className="mt-1 text-xs font-semibold text-coral">
+                  Ezt használja: {item.usedBy.map((ref) => ref.name).join(', ')}. Jóváhagyás után frissítésre lehet szükség.
+                </p>
+              ) : null}
+            </li>
+          )
+        })}
       </ul>
+    </section>
+  )
+}
+
+function CapabilityList({ title, capabilities, emptyHint }: {
+  title: string
+  capabilities: Capability[]
+  emptyHint?: string
+}) {
+  const reads = capabilities.filter((c) => c.access === 'read').length
+  const writes = capabilities.filter((c) => c.access === 'write').length
+  return (
+    <section className="rounded-md border border-ink/12 bg-paper p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <h4 className="text-sm font-semibold">{title}</h4>
+        {capabilities.length ? (
+          <>
+            <Badge tone="neutral">{reads} csak olvasás</Badge>
+            {writes > 0 ? <Badge tone="warning">{writes} írás</Badge> : null}
+          </>
+        ) : null}
+      </div>
+      {!capabilities.length ? (
+        <p className="mt-2 text-xs text-ink-soft">{emptyHint ?? 'Még nincs átvett képesség.'}</p>
+      ) : (
+        <div className="mt-3 overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <thead>
+              <tr className="text-ink-soft">
+                <th className="py-1.5 pr-3">Funkció</th>
+                <th className="pr-3">Jogosultság</th>
+                <th>Végpont</th>
+              </tr>
+            </thead>
+            <tbody>
+              {capabilities.map((cap) => (
+                <tr key={`${cap.method}-${cap.path}-${cap.name}`} className={`border-t border-ink/8 ${cap.access === 'write' ? 'bg-honey/10' : ''}`}>
+                  <td className="py-2 pr-3 align-top">
+                    <p className="font-semibold">{cap.description?.trim() || cap.name}</p>
+                    {cap.description?.trim() ? <p className="mt-0.5 font-mono text-[11px] text-ink-soft">{cap.name}</p> : null}
+                  </td>
+                  <td className="pr-3 align-top">
+                    <Badge tone={cap.access === 'write' ? 'warning' : 'neutral'}>
+                      {cap.access === 'write' ? 'írás' : 'csak olvasás'}
+                    </Badge>
+                  </td>
+                  <td className="align-top font-mono text-ink-soft" title="Technikai részlet">
+                    ⓘ {cap.method} {cap.path}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </section>
   )
 }
@@ -211,7 +298,19 @@ function ConnectorCard({ row, pending, run, onSync }: {
   run: (operation: () => Promise<{ success: boolean; error?: string }>, success: string) => void
   onSync: (connectorId: string) => void
 }) {
+  const [detailsOpen, setDetailsOpen] = useState(false)
   const proposal = row.versions.find((version) => version.status === 'proposed')
+  const active = row.versions.find((version) => version.id === row.activeSpecVersionId)
+  const detailsCapabilities = proposal?.capabilities?.length
+    ? proposal.capabilities
+    : active?.capabilities ?? []
+  const detailsTitle = proposal
+    ? `API részletei a javasolt frissítés után (v${proposal.versionNo})`
+    : active
+      ? `Jelenlegi API részletei (v${active.versionNo})`
+      : 'API részletei'
+  const diffCapabilities = [...(proposal?.capabilities ?? []), ...(active?.capabilities ?? [])]
+
   return (
     <article className="rounded-lg border border-ink/12 bg-paper p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -223,8 +322,27 @@ function ConnectorCard({ row, pending, run, onSync }: {
         {!row.urlApproved ? <button disabled={pending} className="rounded-md border border-sage/40 px-3 py-1.5 text-xs font-semibold" onClick={() => run(() => approveSelfUpdatingSource({ connectorId: row.id }), 'A link jóváhagyva.')}>Link jóváhagyása</button> : null}
         {!row.trusted ? <button disabled={pending} className="rounded-md border border-sage/40 px-3 py-1.5 text-xs font-semibold" onClick={() => run(() => trustSelfUpdatingPartner({ connectorId: row.id }), 'A partner megbízhatónak minősítve.')}>Megbízhatónak minősítem</button> : null}
         <button disabled={pending || !row.urlApproved || !row.trusted} className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50" onClick={() => onSync(row.id)}>🔄 Frissítés keresése</button>
+        <button
+          type="button"
+          disabled={!active && !proposal}
+          className="rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold disabled:opacity-50"
+          onClick={() => setDetailsOpen((open) => !open)}
+          aria-expanded={detailsOpen}
+        >
+          {detailsOpen ? 'API részletek elrejtése' : 'API részletei'}
+        </button>
       </div>
       <p className="mt-2 text-xs text-ink-soft">Megmutatjuk pontosan, mi változott. Amíg nem hagyod jóvá, minden a régiben marad.</p>
+
+      {detailsOpen ? (
+        <div className="mt-4">
+          <CapabilityList
+            title={detailsTitle}
+            capabilities={detailsCapabilities}
+            emptyHint="Ehhez a kapcsolathoz még nincs átvett vagy javasolt képességlista. Először keress frissítést."
+          />
+        </div>
+      ) : null}
 
       <label className="mt-4 flex items-start gap-2 border-t border-ink/10 pt-3 text-xs">
         <input type="checkbox" checked={row.autoApproveEnabled} disabled={pending} onChange={(e) => run(() => setSelfUpdatingAutoApprove({ connectorId: row.id, enabled: e.target.checked }), 'A kapcsolat automatikus átvételi szabálya frissült.')} />
@@ -234,10 +352,35 @@ function ConnectorCard({ row, pending, run, onSync }: {
       {proposal?.diffSummary ? (
         <div className="mt-4 space-y-3 border-t border-ink/10 pt-4">
           <h3 className="font-semibold">Változások a(z) „{row.name}” kapcsolatban</h3>
-          <DiffGroup title="🟢 Új képességek" tone="success" items={proposal.diffSummary.added} />
-          <DiffGroup title="🔴 Törésveszélyes változások" tone="danger" items={proposal.diffSummary.breaking} />
-          <DiffGroup title="🟠 Visszavont képességek" tone="warning" items={proposal.diffSummary.narrowed} />
-          <DiffGroup title="🔴 Beléptetési vagy kötelező fejléc-változások" tone="danger" items={proposal.diffSummary.auth} />
+          <DiffGroup
+            title="🟢 Új képességek"
+            tone="success"
+            items={proposal.diffSummary.added}
+            capabilities={diffCapabilities}
+          />
+          <DiffGroup
+            title="🔴 Törésveszélyes változások"
+            tone="danger"
+            items={proposal.diffSummary.breaking}
+            capabilities={diffCapabilities}
+          />
+          <DiffGroup
+            title="🟠 Visszavont képességek"
+            tone="warning"
+            items={proposal.diffSummary.narrowed}
+            capabilities={diffCapabilities}
+          />
+          <DiffGroup
+            title="🔴 Beléptetési vagy kötelező fejléc-változások"
+            tone="danger"
+            items={proposal.diffSummary.auth}
+            capabilities={diffCapabilities}
+          />
+          <CapabilityList
+            title="Teljes funkciólista a javasolt frissítés után"
+            capabilities={proposal.capabilities ?? []}
+            emptyHint="A javasolt verzióhoz nem sikerült kiolvasni a képességlistát."
+          />
           <div className="flex flex-wrap gap-2">
             <button disabled={pending} className="rounded-md border border-ink/20 px-3 py-2 text-xs font-semibold" onClick={() => run(() => rejectSelfUpdatingVersion({ connectorId: row.id, versionId: proposal.id }), 'A változásokat elutasítottad; minden a régiben maradt.')}>Mégse — minden marad a régiben</button>
             <button disabled={pending} className="rounded-md bg-coral px-3 py-2 text-xs font-semibold text-white" onClick={() => run(() => approveSelfUpdatingVersion({ connectorId: row.id, versionId: proposal.id }), 'A változások jóváhagyva és rögzítve.')}>Jóváhagyom ezeket a változásokat</button>

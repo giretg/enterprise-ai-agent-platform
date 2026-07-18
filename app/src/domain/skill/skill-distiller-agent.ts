@@ -26,6 +26,11 @@ import {
   SKILL_NAME_MAX,
   type SkillContent,
 } from '@/lib/skill/skill-content'
+import {
+  DEFAULT_TENANT_LANGUAGE,
+  outputLanguageInstruction,
+  type TenantLanguage,
+} from '@/lib/tenant-language'
 
 /** A desztilláló system-instrukció. A kimenet KIZÁRÓLAG a lenti JSON-alak lehet. */
 export const SKILL_DISTILLER_ROLE_INSTRUCTION = `You are a Skill Distillation Assistant. Your ONLY job is to read a completed conversation transcript between a user and an AI agent, and distill the reusable, generalizable working method into a DRAFT skill definition as structured JSON. You PROPOSE; you never apply, activate, assign, or publish anything.
@@ -132,7 +137,9 @@ export function buildTranscriptText(turns: DistillTranscriptTurn[], maxChars = 2
 export function buildDistillMessages(input: {
   transcript: string
   usedTools?: string[]
+  outputLanguage?: TenantLanguage
 }): GatewayMessage[] {
+  const language = input.outputLanguage ?? DEFAULT_TENANT_LANGUAGE
   const parts: string[] = []
   parts.push(
     'Distill a reusable skill from this completed conversation. Focus on the general method, not the specific facts of this run.',
@@ -145,7 +152,10 @@ export function buildDistillMessages(input: {
   parts.push(`Conversation transcript:\n${input.transcript}`)
   parts.push('Return ONLY the JSON descriptor.')
   return [
-    { role: 'system', content: SKILL_DISTILLER_ROLE_INSTRUCTION },
+    {
+      role: 'system',
+      content: `${SKILL_DISTILLER_ROLE_INSTRUCTION}\n\n${outputLanguageInstruction(language)}`,
+    },
     { role: 'user', content: parts.join('\n\n') },
   ]
 }
@@ -200,13 +210,19 @@ export class SkillDistillerAgent {
     conversationId?: string | null
     turns: DistillTranscriptTurn[]
     usedTools?: string[]
+    /** Tenant kimeneti nyelv — skill name/description/instructions. */
+    outputLanguage?: TenantLanguage
     sensitivityOverride?: SensitivityOverride
   }): Promise<SkillDistillResult> {
     const transcript = buildTranscriptText(input.turns)
     if (transcript.trim().length === 0) {
       return { ok: false, error: 'PARSE_FAILED', detail: 'empty transcript' }
     }
-    const messages = buildDistillMessages({ transcript, usedTools: input.usedTools })
+    const messages = buildDistillMessages({
+      transcript,
+      usedTools: input.usedTools,
+      outputLanguage: input.outputLanguage,
+    })
     const modelConfig = this.deps.modelConfig ?? resolveSkillDistillerModelConfig(input.agentModelConfig)
 
     const { content } = await this.deps.model.call({

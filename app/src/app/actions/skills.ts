@@ -22,6 +22,7 @@ import {
 import type { TenantAuthContext } from '@/auth/context'
 import type { SkillReadiness } from '@/lib/skill/skill-readiness'
 import type { SkillRiskTier } from '@prisma/client'
+import { readTenantLanguage } from '@/lib/tenant-language'
 
 /**
  * Skill-katalógus server actionök (skill-catalog-spec.md WP-4/6/7). Minden action
@@ -552,6 +553,9 @@ export async function distillSkillFromConversationAction(
     const agent = await repositories.agents.findById(parsed.agentId)
     if (!agent) return fail('Az agent nem található.')
 
+    const tenant = await repositories.tenants.findById(ctx.activeTenantId!)
+    const outputLanguage = readTenantLanguage(tenant?.settings)
+
     const result = await services.skills.distillFromConversation({
       conversationId: parsed.conversationId,
       agentId: parsed.agentId,
@@ -560,6 +564,7 @@ export async function distillSkillFromConversationAction(
       actor: actorFrom(ctx),
       distiller: services.skillDistillerAgent,
       targetSkillId: parsed.targetSkillId,
+      outputLanguage,
     })
 
     if (!result.ok) {

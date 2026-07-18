@@ -542,6 +542,23 @@ async function main() {
     assert.ok(user.includes('kb_search'))
   })
 
+  await check('buildDistillMessages: tenant nyelv bekerül a system promptba (hu alapértelmezés)', () => {
+    const msgs = buildDistillMessages({ transcript: 'User: hi\n\nAgent: hello' })
+    const system = msgs.find((m) => m.role === 'system')?.content ?? ''
+    assert.ok(system.includes('OUTPUT LANGUAGE'))
+    assert.ok(system.includes('Hungarian'))
+  })
+
+  await check('buildDistillMessages: en nyelv → English utasítás', () => {
+    const msgs = buildDistillMessages({
+      transcript: 'User: hi\n\nAgent: hello',
+      outputLanguage: 'en',
+    })
+    const system = msgs.find((m) => m.role === 'system')?.content ?? ''
+    assert.ok(system.includes('English'))
+    assert.ok(!system.includes('Hungarian'))
+  })
+
   console.log('')
   console.log('Skill-verzió diff (WP-7)')
 

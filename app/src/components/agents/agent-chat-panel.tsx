@@ -68,7 +68,6 @@ type ChatMessage = {
   contentDeletedAt?: string | null
   ticketRefId?: string | null
   activities?: AgentActivity[]
-  activitiesCollapsed?: boolean
   memoryCandidates?: MemoryCandidateCard[]
   /**
    * Chat "thinking-trace" spec §6 — élő, streamelt reasoning-szöveg körönként
@@ -231,18 +230,94 @@ function FieldHelp({ description }: { description: string }) {
   )
 }
 
+function activityLiveThinking(
+  activity: AgentActivity,
+  thinking?: Record<string, string>,
+): string | undefined {
+  // Chat "thinking-trace" (§6.1/D6): amíg a reasoning-kör fut, a szerverről
+  // streamelt (már redaktált) gondolkodás-szöveget élőben mutatjuk; lezáráskor
+  // az activity összefoglaló `detail`-je veszi át — vizuálisan dőlt/másodlagos.
+  if (activity.kind !== 'reasoning' || activity.status !== 'running') return undefined
+  return thinking?.[activity.id]?.trim() || undefined
+}
+
+function AgentActivityRow({
+  activity,
+  thinking,
+  prominent = false,
+}: {
+  activity: AgentActivity
+  thinking?: Record<string, string>
+  /** Collapsed preview of the running step — stronger motion + wash. */
+  prominent?: boolean
+}) {
+  const liveThinking = activityLiveThinking(activity, thinking)
+  const running = activity.status === 'running'
+
+  return (
+    <div
+      className={`flex min-w-0 items-start gap-2 rounded-md ${
+        prominent && running ? '-mx-1 px-1 py-1 animate-activity-run-row' : ''
+      }`}
+    >
+      <span
+        className={`mt-1.5 shrink-0 rounded-full ${activityDotClass(activity.status)} ${
+          running
+            ? prominent
+              ? 'h-2.5 w-2.5 animate-activity-run-dot'
+              : 'h-2 w-2 animate-pulse'
+            : 'h-2 w-2'
+        }`}
+        aria-hidden
+      />
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-baseline gap-2">
+          <span className="truncate font-medium text-ink">
+            {liveThinking ? 'Gondolkodás' : activity.title}
+          </span>
+          <span className="shrink-0 text-[10px] uppercase tracking-wide text-ink-faint">
+            {activityStatusLabel(activity.status)}
+          </span>
+        </div>
+        {liveThinking ? (
+          <p
+            className="mt-0.5 line-clamp-3 whitespace-pre-wrap text-[11px] italic text-ink-faint"
+            aria-live="polite"
+          >
+            {liveThinking}
+          </p>
+        ) : (
+          (activity.detail || activity.archivePath) && (
+            <p
+              className={`truncate text-[11px] text-ink-faint ${
+                activity.kind === 'reasoning' ? 'italic' : ''
+              }`}
+              title={activity.archivePath ?? activity.detail}
+            >
+              {activity.detail}
+              {activity.archivePath ? ` · ${activity.archivePath}` : ''}
+            </p>
+          )
+        )}
+      </div>
+    </div>
+  )
+}
+
 function AgentActivityPanel({
   activities,
-  collapsed,
   thinking,
 }: {
   activities: AgentActivity[]
-  collapsed: boolean
   thinking?: Record<string, string>
 }) {
+  // Alapból zárt — a teljes lista csak kattintásra nyílik; stream közben sem
+  // erőltetjük ki a nyitást, hogy a user választása megmaradjon.
+  const [open, setOpen] = useState(false)
   const running = activities.find((activity) => activity.status === 'running')
+  const latest = running ?? activities[activities.length - 1]
   const hasError = activities.some((activity) => activity.status === 'error')
-  const summary = running
+  const headerHint = running
     ? `${running.title} fut`
     : hasError
       ? 'Műveletek hibával'
@@ -250,69 +325,44 @@ function AgentActivityPanel({
 
   return (
     <details
-      open={!collapsed}
-      className="mb-3 rounded-lg border border-line bg-night-2/70 px-3 py-2 text-xs text-ink-soft"
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+      className={`mb-3 rounded-lg border px-3 py-2 text-xs text-ink-soft transition-colors ${
+        running
+          ? 'border-sky/35 bg-sky/5'
+          : 'border-line bg-night-2/70'
+      }`}
     >
-      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 font-medium text-ink">
-        <span className="min-w-0 truncate">
-          Agent aktivitás
-          <span className="ml-2 font-normal text-ink-faint">{summary}</span>
-        </span>
-        <span className="shrink-0 rounded-full bg-card px-1.5 py-0.5 text-[10px] font-semibold text-ink-faint">
-          {activities.length}
-        </span>
+      <summary className="cursor-pointer list-none">
+        <div className="flex items-center justify-between gap-3 font-medium text-ink">
+          <span className="min-w-0 truncate">
+            Agent aktivitás
+            {open ? (
+              <span className="ml-2 font-normal text-ink-faint">{headerHint}</span>
+            ) : null}
+          </span>
+          <span className="shrink-0 rounded-full bg-card px-1.5 py-0.5 text-[10px] font-semibold text-ink-faint">
+            {activities.length}
+          </span>
+        </div>
+        {!open && latest ? (
+          <div className="mt-2">
+            <AgentActivityRow activity={latest} thinking={thinking} prominent />
+          </div>
+        ) : null}
       </summary>
-      <div className="mt-2 space-y-1.5">
-        {activities.map((activity) => {
-          // Chat "thinking-trace" (§6.1/D6): amíg a reasoning-kör fut, a szerverről
-          // streamelt (már redaktált) gondolkodás-szöveget élőben mutatjuk; lezáráskor
-          // az activity összefoglaló `detail`-je veszi át — vizuálisan dőlt/másodlagos.
-          const liveThinking =
-            activity.kind === 'reasoning' && activity.status === 'running'
-              ? thinking?.[activity.id]?.trim()
-              : undefined
-          return (
-            <div key={activity.id} className="flex min-w-0 items-start gap-2">
-              <span
-                className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${activityDotClass(activity.status)} ${
-                  activity.status === 'running' ? 'animate-pulse' : ''
-                }`}
-                aria-hidden
-              />
-              <div className="min-w-0 flex-1">
-                <div className="flex min-w-0 items-baseline gap-2">
-                  <span className="truncate font-medium text-ink">
-                    {liveThinking ? 'Gondolkodás' : activity.title}
-                  </span>
-                  <span className="shrink-0 text-[10px] uppercase tracking-wide text-ink-faint">
-                    {activityStatusLabel(activity.status)}
-                  </span>
-                </div>
-                {liveThinking ? (
-                  <p
-                    className="mt-0.5 line-clamp-3 whitespace-pre-wrap text-[11px] italic text-ink-faint"
-                    aria-live="polite"
-                  >
-                    {liveThinking}
-                  </p>
-                ) : (
-                  (activity.detail || activity.archivePath) && (
-                    <p
-                      className={`truncate text-[11px] text-ink-faint ${
-                        activity.kind === 'reasoning' ? 'italic' : ''
-                      }`}
-                      title={activity.archivePath ?? activity.detail}
-                    >
-                      {activity.detail}
-                      {activity.archivePath ? ` · ${activity.archivePath}` : ''}
-                    </p>
-                  )
-                )}
-              </div>
-            </div>
-          )
-        })}
-      </div>
+      {open ? (
+        <div className="mt-2 space-y-1.5">
+          {activities.map((activity) => (
+            <AgentActivityRow
+              key={activity.id}
+              activity={activity}
+              thinking={thinking}
+              prominent={activity.status === 'running'}
+            />
+          ))}
+        </div>
+      ) : null}
     </details>
   )
 }
@@ -522,7 +572,6 @@ function MessageBubble({
             {!isUser && message.activities && message.activities.length > 0 && (
               <AgentActivityPanel
                 activities={message.activities}
-                collapsed={message.activitiesCollapsed ?? false}
                 thinking={message.thinking}
               />
             )}
@@ -1153,7 +1202,6 @@ export function AgentChatPanel({
       attachments: [],
       createdAt: new Date().toISOString(),
       activities: [],
-      activitiesCollapsed: false,
     }
 
     setMessages((prev) => [...prev, optimisticUserMessage, optimisticAgentMessage])
@@ -1195,7 +1243,6 @@ export function AgentChatPanel({
                 text:
                   partialText ||
                   '⏳ A válaszfolyam megszakadt — az alábbi lépések részben lefutottak.',
-                activitiesCollapsed: false,
               }
             })
             .filter(
@@ -1273,7 +1320,6 @@ export function AgentChatPanel({
                       ? {
                           ...m,
                           activities: upsertActivity(m.activities, event.activity),
-                          activitiesCollapsed: false,
                         }
                       : m,
                   ),
@@ -1296,7 +1342,6 @@ export function AgentChatPanel({
                             { turnId, delta },
                             thinkingTraceControls,
                           ),
-                          activitiesCollapsed: false,
                         }
                       : m,
                   ),
@@ -1337,7 +1382,6 @@ export function AgentChatPanel({
                         ...m,
                         id: event.messageId!,
                         ticketRefId: event.ticketRefId ?? m.ticketRefId,
-                        activitiesCollapsed: true,
                       }
                     : m,
                 ),

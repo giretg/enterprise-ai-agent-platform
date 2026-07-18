@@ -28,6 +28,7 @@ import { BehaviorProfileBox } from '@/components/agents/behavior-profile-box'
 import { MemoryPanel } from '@/components/agents/memory-panel'
 import { resolveSelfEvolutionProfile } from '@/lib/self-evolution-profile'
 import { resolveBehaviorOverlay } from '@/lib/behavior-profile'
+import { formatToolUiName } from '@/lib/tool-ui-labels'
 import {
   agentRoleLabel,
   modelConfigSummary,
@@ -335,7 +336,7 @@ export default async function AgentDetailPage({
                           key={cap.toolName}
                           className="flex items-center justify-between atelier-soft p-3"
                         >
-                          <span className="font-medium text-ink">{cap.toolName}</span>
+                          <span className="font-medium text-ink">{formatToolUiName(cap.toolName)}</span>
                           <Badge tone={cap.allowed ? 'success' : 'danger'}>
                             {cap.allowed ? 'engedélyezett' : 'tiltott'}
                           </Badge>
