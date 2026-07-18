@@ -19,6 +19,8 @@ export const MODEL_PRICING_SYNC_META_KEY = 'model.pricing.sync_meta' as const
 export const modelPriceSchema = z.object({
   inputPerMTokens: z.number().min(0),
   outputPerMTokens: z.number().min(0),
+  /** Kézi réteg: mikor írta az admin. A synced/builtin soroknál a view adja. */
+  updatedAt: z.string().optional(),
 })
 export type ModelPrice = z.infer<typeof modelPriceSchema>
 

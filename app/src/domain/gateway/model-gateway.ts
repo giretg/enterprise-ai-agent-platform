@@ -1020,40 +1020,32 @@ export class ModelGateway {
     )
   }
 
-  /** Cache-elt tarifa-betöltés (három réteg → merge; hiány/hiba → builtin). */
-  private cachedPricing: ModelPricingTable | null = null
+  /**
+   * Tarifa-betöltés hívásonként (három réteg → merge; hiány/hiba → builtin).
+   * Nincs process-lifetime cache: admin mentés / CLI szinkron a következő híváson él.
+   */
   private async loadPricing(): Promise<ModelPricingTable> {
-    if (this.cachedPricing) return this.cachedPricing
-    if (!this.pricingSettings) {
-      this.cachedPricing = DEFAULT_MODEL_PRICING
-      return this.cachedPricing
-    }
+    if (!this.pricingSettings) return DEFAULT_MODEL_PRICING
     try {
       const [manual, synced] = await Promise.all([
         this.pricingSettings.get(MODEL_PRICING_SETTING_KEY),
         this.pricingSettings.get(MODEL_PRICING_SYNCED_SETTING_KEY),
       ])
-      this.cachedPricing = resolvePricingFromSettings({ manual, synced })
+      return resolvePricingFromSettings({ manual, synced })
     } catch {
-      this.cachedPricing = DEFAULT_MODEL_PRICING
+      return DEFAULT_MODEL_PRICING
     }
-    return this.cachedPricing
   }
 
-  private cachedGlobalFallbacks: FallbackCandidate[] | null = null
+  /** Globális tartalék-lánc — szintén hívásonként friss (nincs örök cache). */
   private async loadGlobalFallbacks(): Promise<FallbackCandidate[]> {
-    if (this.cachedGlobalFallbacks) return this.cachedGlobalFallbacks
-    if (!this.pricingSettings) {
-      this.cachedGlobalFallbacks = []
-      return this.cachedGlobalFallbacks
-    }
+    if (!this.pricingSettings) return []
     try {
       const raw = await this.pricingSettings.get(FALLBACK_CHAIN_SETTING_KEY)
-      this.cachedGlobalFallbacks = parseFallbackChainSetting(raw)
+      return parseFallbackChainSetting(raw)
     } catch {
-      this.cachedGlobalFallbacks = []
+      return []
     }
-    return this.cachedGlobalFallbacks
   }
 
   /**
@@ -1681,6 +1673,8 @@ export class ModelGateway {
             latencyMs: result.latencyMs,
             status: 'ok',
           })
+          modelCallsTotal.inc({ provider: provider.name, status: 'ok' })
+          modelCallLatencyMs.observe(result.latencyMs, { provider: provider.name })
           await this.audit.append({
             actorType: 'agent',
             actorId: params.agentId,
@@ -1726,6 +1720,7 @@ export class ModelGateway {
           completionTokens,
           await this.loadPricing(),
         )
+        const streamLatencyMs = Date.now() - started
 
         await this.modelCalls.create({
           agentId: params.agentId,
@@ -1737,9 +1732,11 @@ export class ModelGateway {
           promptTokens,
           completionTokens,
           costEstimate: new Prisma.Decimal(costEstimate),
-          latencyMs: Date.now() - started,
+          latencyMs: streamLatencyMs,
           status: 'ok',
         })
+        modelCallsTotal.inc({ provider: provider.name, status: 'ok' })
+        modelCallLatencyMs.observe(streamLatencyMs, { provider: provider.name })
 
         await this.audit.append({
           actorType: 'agent',
@@ -1754,7 +1751,7 @@ export class ModelGateway {
           policyDecision: 'allowed',
           metadata: {
             costEstimate,
-            latencyMs: Date.now() - started,
+            latencyMs: streamLatencyMs,
             status: 'ok',
             sensitivity: sensitivity.level,
             attemptGroupId,
@@ -1788,6 +1785,51 @@ export class ModelGateway {
           status,
         })
 
+        modelCallsTotal.inc({ provider: provider.name, status })
+        modelCallLatencyMs.observe(latencyMs, { provider: provider.name })
+
+        const next = chain[attemptIndex + 1]
+        // Stream: csak az első token ELŐTT válthatunk.
+        const willFallback = !committed && isFallbackEligible(errorClass) && !!next
+
+        if (errorClass === 'auth_error') {
+          logger.error(
+            {
+              event: 'model.call.auth_fallback',
+              provider: provider.name,
+              model,
+              status,
+              latencyMs,
+              agentId: params.agentId,
+              ticketId: params.ticketId ?? null,
+              error: errorMessage,
+              attemptGroupId,
+              attemptIndex,
+              willFallback,
+              stream: true,
+            },
+            'model gateway AUTH error — fallback may hide a misconfiguration',
+          )
+        } else {
+          logger.warn(
+            {
+              event: 'model.call',
+              provider: provider.name,
+              model,
+              status,
+              latencyMs,
+              agentId: params.agentId,
+              ticketId: params.ticketId ?? null,
+              error: errorMessage,
+              attemptGroupId,
+              attemptIndex,
+              errorClass,
+              stream: true,
+            },
+            'model gateway call failed',
+          )
+        }
+
         await this.audit.append({
           actorType: 'agent',
           actorId: params.agentId,
@@ -1810,10 +1852,6 @@ export class ModelGateway {
             committed,
           },
         })
-
-        const next = chain[attemptIndex + 1]
-        // Stream: csak az első token ELŐTT válthatunk.
-        const willFallback = !committed && isFallbackEligible(errorClass) && !!next
 
         if (willFallback && next) {
           modelFallbackTotal.inc({

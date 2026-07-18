@@ -1574,6 +1574,9 @@ export async function updateAgentModelConfig(input: {
       parsed.modelConfig.provider,
       parsed.modelConfig.model,
     )
+    for (const fallback of parsed.modelConfig.fallbackModels ?? []) {
+      await services.platformSettings.assertModelAllowed(fallback.provider, fallback.model)
+    }
     const result = await repositories.agents.updateModelConfig(parsed)
 
     await repositories.audit.append({

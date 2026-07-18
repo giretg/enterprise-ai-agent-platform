@@ -422,6 +422,9 @@ function FallbackChainSection({ canEdit }: { canEdit: boolean }) {
           <br />
           <strong>Nem vált:</strong> keret kimerülés, érzékenységi blokk, tartalmi hiba (pl. túl hosszú kontextus).
         </p>
+        <p>
+          Minden tényleges próbálkozás beleszámít a ticket-guardrail hívásszámába — a tartalék nem „ingyenes”.
+        </p>
         <p>Érzékeny kérésnél a lánc csak helyi jelölteket tartalmazhat — adat nem hagyhatja el a platformot.</p>
       </ExplainBox>
 
@@ -574,7 +577,12 @@ function FallbackChainSection({ canEdit }: { canEdit: boolean }) {
 
 function PricingSection({ canEdit }: { canEdit: boolean }) {
   const [rows, setRows] = useState<
-    Array<{ model: string; price: { inputPerMTokens: number; outputPerMTokens: number }; source: string }>
+    Array<{
+      model: string
+      price: { inputPerMTokens: number; outputPerMTokens: number }
+      source: string
+      updatedAt: string | null
+    }>
   >([])
   const [syncMeta, setSyncMeta] = useState<{
     lastSyncedAt: string
@@ -641,6 +649,7 @@ function PricingSection({ canEdit }: { canEdit: boolean }) {
               <th className="pb-1 pr-3">Input €</th>
               <th className="pb-1 pr-3">Output €</th>
               <th className="pb-1 pr-3">Réteg</th>
+              <th className="pb-1 pr-3">Frissítve</th>
               {canEdit && <th className="pb-1">Művelet</th>}
             </tr>
           </thead>
@@ -651,6 +660,9 @@ function PricingSection({ canEdit }: { canEdit: boolean }) {
                 <td className="py-1 pr-3 text-ink">{row.price.inputPerMTokens}</td>
                 <td className="py-1 pr-3 text-ink">{row.price.outputPerMTokens}</td>
                 <td className="py-1 pr-3 text-ink-faint">{sourceLabel[row.source] ?? row.source}</td>
+                <td className="py-1 pr-3 text-ink-faint">
+                  {row.updatedAt ? new Date(row.updatedAt).toLocaleString('hu-HU') : '—'}
+                </td>
                 {canEdit && (
                   <td className="py-1">
                     {row.source === 'manual' && (

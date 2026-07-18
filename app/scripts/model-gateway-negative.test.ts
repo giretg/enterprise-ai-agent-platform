@@ -1357,6 +1357,123 @@ async function main() {
     assert.equal(afterToken.secondary, 0, 'első token után is váltott tartalékra')
   })
 
+  await check('MG-N9: platform-setting változás a következő híváson érvényesül (nincs örök cache)', async () => {
+    const { repo: auditRepo } = makeAuditRepo()
+    const { repo: modelCallRepo } = makeModelCallRepo(0)
+    const calls = { primary: 0, secondary: 0 }
+    const settingsMap: Record<string, unknown> = {
+      'model.fallback_chain': [],
+    }
+    const providers = new Map<string, ModelProvider>([
+      [
+        'chatgpt-oauth',
+        {
+          name: 'chatgpt-oauth',
+          async chat() {
+            calls.primary++
+            throw new Error('fetch failed')
+          },
+        },
+      ],
+      [
+        'gemini',
+        {
+          name: 'gemini',
+          async chat() {
+            calls.secondary++
+            return { content: 'uj-tartalek', latencyMs: 1, usage: { promptTokens: 1, completionTokens: 1 } }
+          },
+        },
+      ],
+    ])
+
+    const gw = new ModelGateway(
+      auditRepo,
+      modelCallRepo,
+      providers,
+      { maxCallsPerTicket: 30 },
+      undefined,
+      undefined,
+      undefined,
+      makeSettings(settingsMap),
+    )
+
+    await assert.rejects(
+      () =>
+        gw.call({
+          agentId: TEST_AGENT_ID,
+          messages: [{ role: 'user', content: 'Elso' }],
+          modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+        }),
+      /fetch failed/,
+    )
+    assert.equal(calls.secondary, 0, 'ures láncnál nem hívódhatott tartalék')
+
+    // Admin mentés a process élettartama alatt — a következő hívásnak már látnia kell.
+    settingsMap['model.fallback_chain'] = [{ provider: 'gemini', model: 'gemini-3.5-flash' }]
+    calls.primary = 0
+    calls.secondary = 0
+
+    const result = await gw.call({
+      agentId: TEST_AGENT_ID,
+      messages: [{ role: 'user', content: 'Masodik' }],
+      modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+    })
+    assert.equal(result.content, 'uj-tartalek')
+    assert.equal(result.provider, 'gemini')
+    assert.equal(calls.secondary, 1, 'a frissített tartalék-lánc nem lépett működésbe')
+  })
+
+  await check('MG-N10: kézi tarifa mentés után a következő hívás az új árat számolja', async () => {
+    const { repo: auditRepo } = makeAuditRepo()
+    const { repo: modelCallRepo, created } = makeModelCallRepo(0)
+    const settingsMap: Record<string, unknown> = {
+      'model.pricing': { 'gpt-4o': { inputPerMTokens: 1, outputPerMTokens: 2 } },
+    }
+    const providers = new Map<string, ModelProvider>([
+      [
+        'chatgpt-oauth',
+        {
+          name: 'chatgpt-oauth',
+          async chat() {
+            return {
+              content: 'ok',
+              latencyMs: 1,
+              usage: { promptTokens: 1_000_000, completionTokens: 0 },
+              model: 'gpt-4o',
+            }
+          },
+        },
+      ],
+    ])
+    const gw = new ModelGateway(
+      auditRepo,
+      modelCallRepo,
+      providers,
+      { maxCallsPerTicket: 30 },
+      undefined,
+      undefined,
+      undefined,
+      makeSettings(settingsMap),
+    )
+
+    await gw.call({
+      agentId: TEST_AGENT_ID,
+      messages: [{ role: 'user', content: 'Szia' }],
+      modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+    })
+    assert.equal(Number(created[0]?.costEstimate), 1)
+
+    settingsMap['model.pricing'] = { 'gpt-4o': { inputPerMTokens: 7, outputPerMTokens: 2 } }
+    created.length = 0
+    await gw.call({
+      agentId: TEST_AGENT_ID,
+      messages: [{ role: 'user', content: 'Szia' }],
+      modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+    })
+    assert.equal(Number(created[0]?.costEstimate), 7, 'kézi tarifa változás nem érvényesült')
+  })
+
   // ── MG-N10: Háromrétegű árazás (#43) ────────────────────────────────────
   await check('MG-N10: kézi > szinkronizált > beépített; ismeretlen modell nem nulla', async () => {
     const { repo: auditRepo } = makeAuditRepo()

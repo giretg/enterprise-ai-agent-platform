@@ -1149,6 +1149,7 @@ export class PlatformSettingsService {
       model: string
       price: import('@/lib/model-pricing').ModelPrice
       source: import('@/lib/model-pricing').PricingLayerSource
+      updatedAt: string | null
     }>
   }> {
     const {
@@ -1169,6 +1170,7 @@ export class PlatformSettingsService {
     ])
     const manual = parsePricingTableOrNull(manualRaw) ?? {}
     const synced = parsePricingTableOrNull(syncedRaw) ?? {}
+    const syncMeta = parseModelPricingSyncMeta(metaRaw)
     const effective = mergePricingLayers({
       builtin: DEFAULT_MODEL_PRICING,
       synced,
@@ -1177,17 +1179,31 @@ export class PlatformSettingsService {
     const layers = { builtin: DEFAULT_MODEL_PRICING, synced, manual }
     const rows = Object.keys(effective)
       .sort()
-      .map((model) => ({
-        model,
-        price: effective[model]!,
-        source: pricingLayerForKey(model, layers),
-      }))
+      .map((model) => {
+        const source = pricingLayerForKey(model, layers)
+        const price = effective[model]!
+        const updatedAt =
+          source === 'manual'
+            ? price.updatedAt ?? null
+            : source === 'synced'
+              ? syncMeta?.lastSyncedAt ?? null
+              : null
+        return {
+          model,
+          price: {
+            inputPerMTokens: price.inputPerMTokens,
+            outputPerMTokens: price.outputPerMTokens,
+          },
+          source,
+          updatedAt,
+        }
+      })
 
     return {
       effective,
       manual,
       synced,
-      syncMeta: parseModelPricingSyncMeta(metaRaw),
+      syncMeta,
       rows,
     }
   }
@@ -1202,7 +1218,10 @@ export class PlatformSettingsService {
       modelPriceSchema,
       parsePricingTableOrNull,
     } = await import('@/lib/model-pricing')
-    const parsedPrice = modelPriceSchema.parse(price)
+    const parsedPrice = modelPriceSchema.parse({
+      ...price,
+      updatedAt: new Date().toISOString(),
+    })
     const current = parsePricingTableOrNull(await this.settings.get(MODEL_PRICING_SETTING_KEY)) ?? {}
     const next = { ...current, [model]: parsedPrice }
     await this.settings.set(MODEL_PRICING_SETTING_KEY, next, actorId)

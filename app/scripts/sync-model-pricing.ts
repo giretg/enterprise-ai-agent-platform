@@ -3,6 +3,10 @@
  *
  *   npx tsx scripts/sync-model-pricing.ts
  *   npx tsx scripts/sync-model-pricing.ts --write
+ *
+ * Ütemezés: heti egyszer ajánlott (pl. cron / Cloud Scheduler), a frissített
+ * litellm-price-snapshot.json commitálása után. Nincs élő hálózati hívás —
+ * a pillanatkép a repóból jön, code review-n keresztül.
  */
 
 import { readFileSync } from 'node:fs'
