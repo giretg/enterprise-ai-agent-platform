@@ -3514,6 +3514,59 @@ export async function getMemoryObservabilityDashboard(input?: { sinceHours?: num
   }
 }
 
+/**
+ * #46 / #33 — contract megfigyelhetőség a rendszer-áttekintőn.
+ * Forrás: `contract.evaluate` + `process.blocked` audit jelek.
+ */
+export async function getContractObservabilityDashboard(input?: { sinceHours?: number }) {
+  try {
+    const ctx = await requireTenantRole('viewer')
+    const tenantId = ctx.activeTenantId
+    const sinceHours = input?.sinceHours ?? 720
+    const since = new Date(Date.now() - sinceHours * 60 * 60 * 1000)
+
+    const {
+      summarizeContractObservability,
+      evaluationFromAuditMetadata,
+      humanGateFromBlockedMetadata,
+      CONTRACT_OUTCOME_LABELS,
+    } = await import('@/domain/contract-runtime')
+
+    const [evaluateAudits, blockedAudits] = await Promise.all([
+      prisma.auditLog.findMany({
+        where: { tenantId, action: 'contract.evaluate', createdAt: { gte: since } },
+        select: { metadata: true },
+        orderBy: { createdAt: 'desc' },
+        take: 2000,
+      }),
+      prisma.auditLog.findMany({
+        where: { tenantId, action: 'process.blocked', createdAt: { gte: since } },
+        select: { metadata: true },
+        orderBy: { createdAt: 'desc' },
+        take: 2000,
+      }),
+    ])
+
+    const evaluations = evaluateAudits
+      .map((row) => evaluationFromAuditMetadata(row.metadata))
+      .filter((e): e is NonNullable<typeof e> => e != null)
+
+    const humanGates = blockedAudits
+      .map((row) => humanGateFromBlockedMetadata(row.metadata))
+      .filter((g): g is NonNullable<typeof g> => g != null)
+
+    const summary = summarizeContractObservability({ evaluations, humanGates })
+
+    return ok({
+      sinceHours,
+      ...summary,
+      outcomeLabels: CONTRACT_OUTCOME_LABELS,
+    })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to load contract observability dashboard')
+  }
+}
+
 // ── IAM / RBAC (Epik 2 + Feature-spec IAM-RBAC) ─────────────────────────────
 
 /** GET /me (§6) — a saját profil; `pending`/role=NULL esetén a hívó a "várj jóváhagyásra" nézetet rendereli. */

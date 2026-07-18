@@ -202,6 +202,11 @@ export type ModelProviderResult = {
 
 export interface ModelProvider {
   readonly name: string
+  /**
+   * Opcionális képességjelző (#33): a provider tud-e séma-kényszerített választ.
+   * Hiánya nem hiba — a runtime promptba fűzött sémával és közös beolvasóval megy.
+   */
+  readonly supportsStructuredOutput?: boolean
   chat(input: {
     agentId: string
     ticketId?: string
@@ -209,6 +214,11 @@ export interface ModelProvider {
     modelConfig: ModelConfig
     /** Natív tool use definíciók — ha megadva, a provider function callingot kér. */
     tools?: ToolDefinition[]
+    /**
+     * #33 — JSON Schema a válaszra (provider-natív séma-kényszer, ha támogatott).
+     * A kapu továbbítja; a provider figyelmen kívül hagyhatja.
+     */
+    responseJsonSchema?: Record<string, unknown>
     /**
      * Chat "thinking-trace" spec — a modell gondolkodási (reasoning-summary)
      * deltáit oldalcsatornán adja tovább, ahol a provider ezt szolgáltatja. A
@@ -432,6 +442,7 @@ export class ChatGptOAuthProvider implements ModelProvider {
     messages: GatewayMessage[]
     modelConfig: ModelConfig
     tools?: ToolDefinition[]
+    responseJsonSchema?: Record<string, unknown>
     onReasoningDelta?: (delta: string) => void
   }): Promise<ModelProviderResult> {
     const providerUrl = process.env.CHATGPT_OAUTH_PROVIDER_URL
@@ -541,6 +552,8 @@ export class ChatGptOAuthProvider implements ModelProvider {
  * (pl. `gemma-local`). A base URL env-ből jön (default Ollama: localhost:11434).
  */
 export class OpenAiCompatibleProvider implements ModelProvider {
+  readonly supportsStructuredOutput = true
+
   constructor(
     readonly name: string,
     private baseUrlEnvVar: string,
@@ -565,6 +578,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     messages: GatewayMessage[]
     modelConfig: ModelConfig
     tools?: ToolDefinition[]
+    responseJsonSchema?: Record<string, unknown>
     onReasoningDelta?: (delta: string) => void
   }): Promise<ModelProviderResult> {
     const baseUrl = (process.env[this.baseUrlEnvVar] || this.defaultBaseUrl)?.replace(/\/+$/, '')
@@ -597,6 +611,20 @@ export class OpenAiCompatibleProvider implements ModelProvider {
                 function: { name: t.name, description: t.description, parameters: t.inputSchema },
               })),
               tool_choice: 'auto',
+            }
+          : {}),
+        // #33 — provider-natív JSON Schema kényszer (OpenAI-kompatibilis response_format).
+        // Tool-hívással együtt nem kényszerítünk sémát (a tool_choice felülírná).
+        ...(input.responseJsonSchema && !input.tools?.length
+          ? {
+              response_format: {
+                type: 'json_schema',
+                json_schema: {
+                  name: 'structured_output',
+                  strict: true,
+                  schema: input.responseJsonSchema,
+                },
+              },
             }
           : {}),
         ...this.options.extraBody?.({ reasoningRequested: typeof input.onReasoningDelta === 'function' }),
@@ -1465,6 +1493,10 @@ export class ModelGateway {
     modelOverrideHint?: ModelOverrideHint
     /** Natív tool use definíciók — átadva a provider function callingot kér. */
     tools?: ToolDefinition[]
+    /**
+     * #33 — JSON Schema a válaszra; a provider kapja, ha támogatja a séma-kényszert.
+     */
+    responseJsonSchema?: Record<string, unknown>
     /** Explicit human review for narrowly scoped, audited sensitivity overrides. */
     sensitivityOverride?: SensitivityOverride
     /**
@@ -1476,6 +1508,8 @@ export class ModelGateway {
     content: string
     toolCalls?: GatewayToolCall[]
     usage: { promptTokens: number; completionTokens: number }
+    /** EUR becslés a háromrétegű tarifa-feloldásból. */
+    costEstimate: number
     provider: string
     model: string
   }> {
@@ -1515,6 +1549,7 @@ export class ModelGateway {
             messages: params.messages,
             modelConfig: attemptConfig,
             tools: params.tools,
+            responseJsonSchema: params.responseJsonSchema,
             onReasoningDelta: params.onReasoningDelta,
           }),
         )
@@ -1592,6 +1627,7 @@ export class ModelGateway {
           content,
           ...(result.toolCalls?.length ? { toolCalls: result.toolCalls } : {}),
           usage: { promptTokens, completionTokens },
+          costEstimate,
           provider: provider.name,
           model: usedModel,
         }

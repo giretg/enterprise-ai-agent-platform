@@ -2,6 +2,7 @@
 
 import type { RawStep } from '@/components/playbooks/playbook-flow-graph'
 import { PlaybookFieldHint } from '@/components/playbooks/playbook-field-hint'
+import { OutputContractEditor } from '@/components/playbooks/output-contract-editor'
 import { ToolCapabilityCheckboxGroups } from '@/components/tool-capabilities/tool-capability-checkbox-groups'
 import { syncInputSlotsWithTemplate } from '@/lib/playbook-v2/input-slots-sync'
 import { getRoleCapabilities, getRoleType, PLAYBOOK_ROLE_TYPE_OPTIONS, type PlaybookRoleType } from '@/lib/playbook-v2/role-sync'
@@ -409,6 +410,7 @@ export function PlaybookStepEditorForm({
   gateIds,
   roles,
   defaultErrorPolicy,
+  suggestedOutputFields,
 }: {
   form: StepFormState
   onChange: (next: StepFormState) => void
@@ -416,6 +418,8 @@ export function PlaybookStepEditorForm({
   gateIds: string[]
   roles?: PlaybookRole[]
   defaultErrorPolicy?: { onError?: ErrorPolicyTarget; onBlocked?: ErrorPolicyTarget }
+  /** Következő lépés kötelező input-réseiből származó mezőnév-javaslatok (#44). */
+  suggestedOutputFields?: string[]
 }) {
   function patch(partial: Partial<StepFormState>) {
     onChange({ ...form, ...partial })
@@ -886,38 +890,27 @@ export function PlaybookStepEditorForm({
         />
       </fieldset>
 
-      <div className="grid gap-2 lg:grid-cols-2">
-        <label className="block text-xs">
-          <span className={LABEL_CLASS}>Bemeneti szerződés (inputContract, JSON)</span>
-          <textarea
-            value={form.inputContractJson}
-            onChange={(e) => patch({ inputContractJson: e.target.value })}
-            rows={4}
-            spellCheck={false}
-            className={`${FIELD_CLASS} font-mono text-xs`}
-            placeholder="{}"
-          />
-          <PlaybookFieldHint>
-            Haladó: milyen mezőket vár el a lépés bemenetén (gépi validáció). Üresen hagyható, ha nem
-            kell szigorú séma.
-          </PlaybookFieldHint>
-        </label>
-        <label className="block text-xs">
-          <span className={LABEL_CLASS}>Kimeneti szerződés (outputContract, JSON)</span>
-          <textarea
-            value={form.outputContractJson}
-            onChange={(e) => patch({ outputContractJson: e.target.value })}
-            rows={4}
-            spellCheck={false}
-            className={`${FIELD_CLASS} font-mono text-xs`}
-            placeholder="{}"
-          />
-          <PlaybookFieldHint>
-            Haladó: milyen mezőket kell produkálnia a lépésnek befejezéskor. Segít ellenőrizni, hogy
-            a következő lépés megkapja-e a szükséges adatokat.
-          </PlaybookFieldHint>
-        </label>
-      </div>
+      <OutputContractEditor
+        valueJson={form.outputContractJson}
+        onChangeJson={(outputContractJson) => patch({ outputContractJson })}
+        suggestedFieldNames={suggestedOutputFields}
+      />
+
+      <label className="block text-xs">
+        <span className={LABEL_CLASS}>Bemeneti szerződés (inputContract, JSON)</span>
+        <textarea
+          value={form.inputContractJson}
+          onChange={(e) => patch({ inputContractJson: e.target.value })}
+          rows={4}
+          spellCheck={false}
+          className={`${FIELD_CLASS} font-mono text-xs`}
+          placeholder="{}"
+        />
+        <PlaybookFieldHint>
+          Haladó: milyen mezőket vár el a lépés bemenetén (gépi validáció). Üresen hagyható, ha nem
+          kell szigorú séma.
+        </PlaybookFieldHint>
+      </label>
     </div>
   )
 }

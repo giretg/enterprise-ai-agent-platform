@@ -95,6 +95,7 @@ export function extractGeminiThoughtText(response: {
 
 export class GeminiProvider implements ModelProvider {
   readonly name = 'gemini'
+  readonly supportsStructuredOutput = true
   private client: GoogleGenAI | null = null
 
   private getClient(): GoogleGenAI {
@@ -114,6 +115,7 @@ export class GeminiProvider implements ModelProvider {
     messages: GatewayMessage[]
     modelConfig: ModelConfig
     tools?: ToolDefinition[]
+    responseJsonSchema?: Record<string, unknown>
     onReasoningDelta?: (delta: string) => void
   }): Promise<ModelProviderResult> {
     if (isGeminiStubConfigured()) {
@@ -136,6 +138,13 @@ export class GeminiProvider implements ModelProvider {
         // A `thinkingBudget:-1` dinamikus keret — a modell dönt a gondolkodás mélységéről.
         ...(input.onReasoningDelta
           ? { thinkingConfig: { includeThoughts: true, thinkingBudget: -1 } }
+          : {}),
+        // #33 — Gemini natív JSON Schema kényszer (tool-hívással együtt nem).
+        ...(input.responseJsonSchema && !input.tools?.length
+          ? {
+              responseMimeType: 'application/json',
+              responseSchema: input.responseJsonSchema,
+            }
           : {}),
         ...(input.tools?.length
           ? {

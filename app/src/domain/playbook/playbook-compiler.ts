@@ -19,10 +19,14 @@ import type {
   ErrorPolicy,
 } from '@/lib/playbook-v2/spec'
 import { STEP_OUTCOME_STATUS_PATH, STEP_OUTCOME_REASON_PATH } from '@/lib/playbook-v2/spec'
+import type { ContractField, CriticalityLevel } from '@/domain/contract-runtime'
 import {
+  buildContractSource,
   inferStepOutputFields,
   mergeOutputRequiredFields,
+  readMaxRepairAttempts,
   readOutputContractFields,
+  readTypedOutputContractFields,
 } from '@/lib/playbook-v2/step-output-inference'
 
 export type CompiledTransition = {
@@ -179,6 +183,13 @@ export type CompiledTicketRule = {
   inputSlots: CompiledInputSlot[]
   /** Lépés szintű kötelező kimeneti mezők (outputContract + routing-következtetés). */
   outputRequiredFields: string[]
+  /**
+   * Tipizált contract-mezők (#33) — JSON-serializálható; a runtime ebből
+   * fordítja a Zod-validátort. Hiányzik → legacy mezőnév-lista szigorú szövegként.
+   */
+  outputContractFields?: ContractField[]
+  /** Lépésszintű javítási próba-felülbírálás (0–2), ha a contract megadta. */
+  maxRepairAttempts?: number
   /** §4.7b — a lépés valódi fájl-deliverable-t termel; undefined, ha nem. */
   deliverable?: PlaybookDeliverable
 }
@@ -220,6 +231,8 @@ export type CompiledSpec = {
   playbookVersionId: string | null
   entryStepId: string
   outputRequiredFields: string[]
+  /** Playbook-szintű kritikusság — L3 → nincs automatikus contract-javítás (#33). */
+  criticality?: CriticalityLevel
   ticketRules: CompiledTicketRule[]
   gates: CompiledGate[]
   routingRules: CompiledRoutingRule[]
@@ -308,6 +321,12 @@ export class PlaybookCompiler {
         readOutputContractFields(step.outputContract),
         inferredOutputs.get(step.id),
       ),
+      outputContractFields: (() => {
+        const source = buildContractSource(step.outputContract, inferredOutputs.get(step.id))
+        const typed = source.fields ?? readTypedOutputContractFields(step.outputContract)
+        return typed.length > 0 ? typed : undefined
+      })(),
+      maxRepairAttempts: readMaxRepairAttempts(step.outputContract),
       deliverable: step.deliverable,
       }
     })
@@ -443,6 +462,7 @@ export class PlaybookCompiler {
       playbookVersionId: opts.playbookVersionId ?? null,
       entryStepId: spec.entryStepId,
       outputRequiredFields: spec.outputContract?.requiredFields ?? [],
+      criticality: spec.criticality,
       ticketRules,
       gates,
       routingRules,

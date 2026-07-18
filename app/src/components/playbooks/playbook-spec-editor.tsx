@@ -34,6 +34,7 @@ import {
   type PlaybookValidationResult,
 } from '@/components/playbooks/playbook-spec-shared'
 import { upsertRoleType } from '@/lib/playbook-v2/role-sync'
+import { suggestedOutputFieldsForStep } from '@/lib/playbook-v2/output-contract-form'
 import type { PlaybookRole } from '@/lib/playbook-v2/spec'
 import { PlaybookCanvas, type CanvasStepTemplate } from '@/components/playbooks/playbook-canvas'
 import type { LayoutStore } from '@/lib/playbook-v2/canvas-mapping'
@@ -73,6 +74,11 @@ export function PlaybookSpecEditor({
   const [stepFormError, setStepFormError] = useState<string | null>(null)
   const [editingName, setEditingName] = useState(false)
   const [nameForm, setNameForm] = useState('')
+
+  const classicSuggestedOutputFields = useMemo(() => {
+    if (!editingNode || editingNode.type !== 'step') return []
+    return suggestedOutputFieldsForStep(spec, editingNode.id)
+  }, [spec, editingNode])
 
   useEffect(() => {
     onValidationChange?.(validation)
@@ -341,6 +347,7 @@ export function PlaybookSpecEditor({
                   gateIds={gateIds}
                   roles={spec.roles}
                   defaultErrorPolicy={readDefaultErrorPolicy(spec)}
+                  suggestedOutputFields={classicSuggestedOutputFields}
                 />
                 {stepFormError && <p className="text-xs text-coral">{stepFormError}</p>}
               </>

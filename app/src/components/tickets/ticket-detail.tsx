@@ -13,6 +13,7 @@ import { TICKET_STATE_LABELS, TICKET_STATE_TONE } from '@/lib/ticket-labels'
 import { formatTicketDateTime } from '@/lib/ticket-display'
 import { isRunAsAuthorized } from '@/lib/run-as-payload'
 import { resolveTicketTriggerInputPayload } from '@/lib/playbook-v2/trigger-input'
+import { readStepOutcome } from '@/lib/playbook-v2/process-step-payload'
 import type { ProcessStatus } from '@prisma/client'
 
 type TicketView = {
@@ -410,11 +411,31 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
   )
 }
 
+function contractReviewFromPayload(payload: Record<string, unknown> | null): {
+  message: string
+  answer: string | null
+} | null {
+  if (!payload) return null
+  const { message, reason } = readStepOutcome(payload)
+  const answer = typeof payload.answer === 'string' ? payload.answer.trim() : null
+  // Contract-sértésnél a közérthető message az elsődleges; ha az nincs, de
+  // output_contract_unmet + eredeti válasz van, azt is mutatjuk.
+  if (message) return { message, answer: answer || null }
+  if (reason === 'output_contract_unmet' && answer) {
+    return {
+      message: 'A lépés kimenete nem felel meg a várt szerkezetnek.',
+      answer,
+    }
+  }
+  return null
+}
+
 export function TicketMeta({ ticket, isAdmin = false }: { ticket: TicketView; isAdmin?: boolean }) {
   const payload = ticket.payload as Record<string, unknown> | null
   const proposal = payload?.proposal as Record<string, unknown> | undefined
   const diff = payload?.diff as Record<string, unknown> | undefined
   const assignee = ticket.assignee
+  const contractReview = contractReviewFromPayload(payload)
 
   return (
     <>
@@ -432,6 +453,22 @@ export function TicketMeta({ ticket, isAdmin = false }: { ticket: TicketView; is
           />
         )}
       </div>
+
+      {contractReview && (
+        <Card title="Miért állt meg a lépés" className="mt-4 border-coral/25 bg-coral/5">
+          <p className="whitespace-pre-wrap text-sm leading-relaxed text-ink">{contractReview.message}</p>
+          {contractReview.answer && (
+            <div className="mt-3 border-t border-ink/10 pt-3">
+              <p className="mb-1 text-xs font-semibold uppercase tracking-[0.14em] text-ink-faint">
+                Az agent eredeti válasza
+              </p>
+              <p className="whitespace-pre-wrap text-sm leading-relaxed text-ink-soft">
+                {contractReview.answer}
+              </p>
+            </div>
+          )}
+        </Card>
+      )}
 
       <Card title="Metaadatok" className="mt-4">
         <dl className="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">

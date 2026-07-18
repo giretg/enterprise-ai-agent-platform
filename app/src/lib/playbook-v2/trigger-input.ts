@@ -1,3 +1,5 @@
+import { extractLoose } from '@/domain/contract-runtime'
+
 function jsonObject(value: unknown): Record<string, unknown> {
   if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
     return value as Record<string, unknown>
@@ -57,8 +59,9 @@ export function resolveChatTriggerInputPayload(
   const map = jsonObject(inputMap)
   const slotNames = stringArray((map as { slotNames?: unknown }).slotNames)
   const aliases = jsonObject((map as { aliases?: unknown }).aliases)
+  // #41 — közös laza beolvasó; hiányzó/részleges szerkezet → üres, nem fail-closed.
   const parsed = {
-    ...extractJsonObject(message),
+    ...(extractLoose(message) ?? {}),
     ...extractKeyValueLines(message),
   }
   const out: Record<string, unknown> = {}
@@ -161,24 +164,6 @@ function getPath(value: unknown, path: string): unknown {
     }
     return undefined
   }, value)
-}
-
-function extractJsonObject(message: string): Record<string, unknown> {
-  const trimmed = message.trim()
-  const candidates = [
-    trimmed,
-    ...Array.from(trimmed.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)).map((m) => m[1]?.trim() ?? ''),
-  ].filter(Boolean)
-
-  for (const candidate of candidates) {
-    try {
-      const parsed = JSON.parse(candidate)
-      return jsonObject(parsed)
-    } catch {
-      // fall through to key-value parsing
-    }
-  }
-  return {}
 }
 
 function extractKeyValueLines(message: string): Record<string, unknown> {

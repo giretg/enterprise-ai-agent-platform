@@ -19,6 +19,13 @@ import { assembleContext, type ContextAssemblyMessage } from '../conversation/co
 import { TicketService } from '../ticket/ticket-service'
 import type { ReportTemplate } from '../report/report-templates'
 import { listAllowedChatTools, runAgentToolLoop, type ChatPlatformToolName } from './chat-tool-loop'
+import {
+  compileFromZod,
+  contractToJsonSchema,
+  runStrictContract,
+  structuringModelFromEnv,
+  toStructuringModelConfig,
+} from '@/domain/contract-runtime'
 
 // Re-export so callers don't need to import from kb-format separately.
 export type { KbHit }
@@ -45,11 +52,9 @@ const wikiAnswerSchema = z.object({
 
 export type WikiAnswer = z.infer<typeof wikiAnswerSchema>
 
-function extractJsonObject(content: string): unknown {
-  const jsonMatch = content.match(/\{[\s\S]*\}/)
-  if (!jsonMatch) throw new Error('Agent did not return valid wiki answer JSON')
-  return JSON.parse(jsonMatch[0])
-}
+const wikiAnswerContract = compileFromZod(
+  wikiAnswerSchema as z.ZodType<Record<string, unknown>>,
+)
 
 type AgentDetails = NonNullable<Awaited<ReturnType<AgentRepository['findByIdWithDetails']>>>
 
@@ -620,6 +625,7 @@ export class WikiAgentRuntime {
       ? { ...params.payload, question: threadPrompt }
       : params.payload
 
+    const responseJsonSchema = contractToJsonSchema(wikiAnswerContract)
     const { content } = await this.gateway.call({
       agentId: params.agentId,
       agentVersion: params.agentVersion,
@@ -637,9 +643,30 @@ export class WikiAgentRuntime {
         },
       ],
       modelConfig: params.modelConfig,
+      ...(responseJsonSchema ? { responseJsonSchema } : {}),
     })
 
-    const parsed = wikiAnswerSchema.parse(extractJsonObject(content))
+    const structuringModel = toStructuringModelConfig(
+      structuringModelFromEnv(),
+      params.modelConfig,
+    )
+    const strict = await runStrictContract({
+      gateway: this.gateway,
+      contract: wikiAnswerContract,
+      rawContent: content,
+      modelConfig: params.modelConfig,
+      structuringModel,
+      agentId: params.agentId,
+      agentVersion: params.agentVersion,
+      ticketId: 'ticketId' in params.context ? params.context.ticketId : undefined,
+      conversationId:
+        'conversationId' in params.context ? params.context.conversationId : undefined,
+      tenantId: params.tenantId ?? undefined,
+    })
+    if (!strict.ok) {
+      throw new Error(strict.humanSummary || 'Agent did not return valid wiki answer JSON')
+    }
+    const parsed = wikiAnswerSchema.parse(strict.value)
     const sources =
       parsed.sources.length > 0
         ? parsed.sources

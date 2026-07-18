@@ -13,7 +13,14 @@
  * eredményével együtt tér vissza, publikálhatóságra tekintet nélkül.
  */
 import type { GatewayMessage, ModelConfig, SensitivityOverride } from '@/domain/gateway/model-gateway'
-import { extractJsonObject } from '@/domain/provisioning/provisioning-assistant'
+import { z } from 'zod'
+import {
+  compileFromZod,
+  contractToJsonSchema,
+  runStrictContract,
+  structuringModelFromEnv,
+  toStructuringModelConfig,
+} from '@/domain/contract-runtime'
 import {
   PlaybookValidator,
   type ValidationResult,
@@ -104,8 +111,31 @@ export interface PlaybookDraftingModel {
     messages: GatewayMessage[]
     modelConfig: ModelConfig
     sensitivityOverride?: SensitivityOverride
+    responseJsonSchema?: Record<string, unknown>
   }): Promise<{ content: string }>
 }
+
+/**
+ * #33 — alak-contract a playbook-spec tetejére. A semantikát továbbra is a
+ * PlaybookValidator dönti el; ez csak a gépi-olvasható vázat kényszeríti.
+ */
+const playbookDraftShapeSchema = z
+  .object({
+    schemaVersion: z.string().min(1),
+    key: z.string().min(1),
+    name: z.string().min(1),
+    processType: z.string().min(1),
+    entryStepId: z.string().min(1),
+    roles: z.array(z.unknown()).min(1),
+    steps: z.array(z.unknown()).min(1),
+    gates: z.array(z.unknown()),
+    transitions: z.array(z.unknown()),
+  })
+  .passthrough()
+
+const playbookDraftContract = compileFromZod(
+  playbookDraftShapeSchema as z.ZodType<Record<string, unknown>>,
+)
 
 export type PlaybookAuthorDraftResult =
   | { ok: true; spec: unknown; validation: ValidationResult }
@@ -212,6 +242,7 @@ export class PlaybookAuthorAgent {
 
     const modelConfig = this.deps.modelConfig ?? resolvePlaybookAuthorModelConfig(input.agentModelConfig)
 
+    const responseJsonSchema = contractToJsonSchema(playbookDraftContract)
     const { content } = await this.deps.model.call({
       agentId: input.agentId,
       agentVersion: input.agentVersion,
@@ -220,12 +251,27 @@ export class PlaybookAuthorAgent {
       messages,
       modelConfig,
       sensitivityOverride: input.sensitivityOverride,
+      ...(responseJsonSchema ? { responseJsonSchema } : {}),
     })
 
-    const raw = extractJsonObject(content)
-    if (raw == null) {
-      return { ok: false, error: 'PARSE_FAILED', detail: 'no JSON object in model output' }
+    // #33 — alak-sértésnél javítási esély; tartósan hibás alak → PARSE_FAILED
+    // (többé nem térünk vissza ok:true-val érvénytelen alakú, de „sikeres” drafttal).
+    const structuringModel = toStructuringModelConfig(structuringModelFromEnv(), modelConfig)
+    const strict = await runStrictContract({
+      gateway: this.deps.model,
+      contract: playbookDraftContract,
+      rawContent: content,
+      modelConfig,
+      structuringModel,
+      agentId: input.agentId,
+      agentVersion: input.agentVersion,
+      tenantId: input.tenantId ?? undefined,
+      conversationId: input.conversationId ?? undefined,
+    })
+    if (!strict.ok) {
+      return { ok: false, error: 'PARSE_FAILED', detail: strict.humanSummary }
     }
+    const raw = strict.value
 
     const knownCapabilities =
       input.validationContext?.knownCapabilities ??

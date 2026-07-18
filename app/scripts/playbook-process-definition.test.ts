@@ -476,6 +476,29 @@ async function main() {
     assert.deepEqual(payload, { ceg: 'Acme Kft', prioritas: 3, sablon: 'vezetői' })
   })
 
+  // #41 — chat-trigger a contract-runtime laza módját használja (nem helyi JSON-másolatot)
+  await test('chat-trigger: beágyazott JSON a közös laza beolvasóval (nem fail-closed)', async () => {
+    const payload = resolveChatTriggerInputPayload(
+      { slotNames: ['ceg', 'sablon'] },
+      'Kérem indítsd el: {"ceg":"Acme Kft","sablon":"vezetői"} köszönöm',
+    )
+    assert.deepEqual(payload, { ceg: 'Acme Kft', sablon: 'vezetői' })
+  })
+
+  await test('chat-trigger: szerkezet hiánya / részleges payload nem dob hibát', async () => {
+    const empty = resolveChatTriggerInputPayload(
+      { slotNames: ['ceg', 'sablon'] },
+      'csak szabad szöveg, semmi JSON',
+    )
+    assert.deepEqual(empty, {})
+
+    const partial = resolveChatTriggerInputPayload(
+      { slotNames: ['ceg', 'sablon'] },
+      '```json\n{"ceg":"Acme Kft"}\n```',
+    )
+    assert.deepEqual(partial, { ceg: 'Acme Kft' })
+  })
+
   await test('chat trigger hiányzó kötelező slotokat név szerint jelzi', async () => {
     const s = makeStubs({})
     const missing = missingRequiredTriggerSlots(s.version.compiledSpec, {})

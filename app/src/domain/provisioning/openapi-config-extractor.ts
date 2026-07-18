@@ -11,6 +11,7 @@ import {
   type HttpMethod,
   type ProposedTool,
 } from './connector-config'
+import { extractLoose } from '@/domain/contract-runtime'
 
 const HTTP_METHODS = ['get', 'post', 'put', 'patch', 'delete'] as const
 
@@ -53,37 +54,13 @@ export function isOpenApiSpec(value: unknown): value is OpenApiSpec {
 }
 
 function extractJsonObject(text: string): unknown | null {
-  const trimmed = text.trim()
-  if (!trimmed) return null
+  // #33 — közös beolvasó (fence + balanced brace + control-char javítás).
+  const loose = extractLoose(text)
+  if (loose != null) return loose
+  // Teljes JSON dokumentum (nem csak beágyazott objektum) — pl. tiszta OpenAPI fájl.
   try {
-    return JSON.parse(trimmed)
+    return JSON.parse(text.trim())
   } catch {
-    const start = trimmed.indexOf('{')
-    if (start === -1) return null
-    let depth = 0
-    let inString = false
-    let escaped = false
-    for (let i = start; i < trimmed.length; i++) {
-      const ch = trimmed[i]
-      if (inString) {
-        if (escaped) escaped = false
-        else if (ch === '\\') escaped = true
-        else if (ch === '"') inString = false
-        continue
-      }
-      if (ch === '"') inString = true
-      else if (ch === '{') depth++
-      else if (ch === '}') {
-        depth--
-        if (depth === 0) {
-          try {
-            return JSON.parse(trimmed.slice(start, i + 1))
-          } catch {
-            return null
-          }
-        }
-      }
-    }
     return null
   }
 }

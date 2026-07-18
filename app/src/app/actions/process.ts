@@ -485,10 +485,22 @@ export async function getProcessDetail(input: unknown) {
         const metadata = event.metadata && typeof event.metadata === 'object'
           ? (event.metadata as Record<string, unknown>)
           : {}
+        // #33/#39 — preferáld a közérthető human_summary-t a technikai routing_reason helyett.
+        const humanSummary =
+          typeof metadata.human_summary === 'string' ? metadata.human_summary : null
+        const reason =
+          humanSummary ||
+          (typeof metadata.reason === 'string' ? metadata.reason : null) ||
+          'Ismeretlen blokk-ok.'
         return {
           createdAt: event.createdAt.toISOString(),
-          stepId: typeof metadata.step_id === 'string' ? metadata.step_id : null,
-          reason: typeof metadata.reason === 'string' ? metadata.reason : 'Ismeretlen blokk-ok.',
+          stepId:
+            typeof metadata.completed_step_id === 'string'
+              ? metadata.completed_step_id
+              : typeof metadata.step_id === 'string'
+                ? metadata.step_id
+                : null,
+          reason,
         }
       }),
       // WP-1 §4 — a PIN-elt authored spec a folyamat-trace SVG-gráfjához (read-only overlay).

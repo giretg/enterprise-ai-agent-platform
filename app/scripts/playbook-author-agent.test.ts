@@ -130,6 +130,26 @@ async function main() {
     assert.equal(result.error, 'PARSE_FAILED')
   })
 
+  await test('draftSpec/#33: hiányos alak (nincs steps) → PARSE_FAILED, nem ok:true', async () => {
+    const model = fixedModel(
+      JSON.stringify({
+        schemaVersion: PLAYBOOK_SCHEMA_VERSION,
+        key: 'broken',
+        name: 'Broken',
+        processType: 'x',
+        entryStepId: 's1',
+        roles: [{ key: 'r', type: 'agent_role' }],
+        // steps hiányzik — alak-sértés
+        gates: [],
+        transitions: [],
+      }),
+    )
+    const agent = new PlaybookAuthorAgent({ model })
+    const result = await agent.draftSpec({ agentId: 'agent-author', description: 'valami' })
+    assert.equal(result.ok, false)
+    if (!result.ok) assert.equal(result.error, 'PARSE_FAILED')
+  })
+
   await test('draftSpec: üres leírásra PARSE_FAILED, a modellt meg sem hívja', async () => {
     let called = false
     const model: PlaybookDraftingModel = {

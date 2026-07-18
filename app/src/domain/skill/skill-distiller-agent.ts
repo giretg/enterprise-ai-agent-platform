@@ -18,9 +18,20 @@
  *  - **Instrukció-only → T0/T1 → Fázis 1.** A modellt kód-kiemelés tiltására utasítjuk,
  *    a validátor pedig kód-jelenlét esetén elutasít (a T0/T1 kényszerítés teherhordója
  *    a determinista validátor, nem a prompt).
+ *
+ * #33 — a kimenet a contract-runtime szigorú módján megy át (javítási esély).
  */
+import { z } from 'zod'
 import type { GatewayMessage, ModelConfig, SensitivityOverride } from '@/domain/gateway/model-gateway'
-import { extractJsonObject } from '@/domain/provisioning/provisioning-assistant'
+import {
+  compileFromZod,
+  contractToJsonSchema,
+  extractLoose,
+  runStrictContract,
+  structuringModelFromEnv,
+  toStructuringModelConfig,
+  validateAgainstContract,
+} from '@/domain/contract-runtime'
 import {
   SKILL_DESCRIPTION_MAX,
   SKILL_NAME_MAX,
@@ -52,6 +63,17 @@ OUTPUT: a single JSON object only (no prose, no markdown fences) matching this s
   "triggerKeywords": string[] (optional, may be empty)
 }`
 
+const skillDistillSchema = z.object({
+  name: z.string().trim().min(1),
+  description: z.string().trim().min(1),
+  instructions: z.array(z.string().trim().min(1)).min(1),
+  triggerKeywords: z.array(z.string()).default([]),
+})
+
+const skillDistillContract = compileFromZod(
+  skillDistillSchema as z.ZodType<Record<string, unknown>>,
+)
+
 /** A desztillációhoz használt modell — a `ModelGateway` strukturálisan kielégíti. */
 export interface SkillDistillingModel {
   call(params: {
@@ -62,6 +84,7 @@ export interface SkillDistillingModel {
     messages: GatewayMessage[]
     modelConfig: ModelConfig
     sensitivityOverride?: SensitivityOverride
+    responseJsonSchema?: Record<string, unknown>
   }): Promise<{ content: string }>
 }
 
@@ -160,39 +183,40 @@ export function buildDistillMessages(input: {
   ]
 }
 
-/**
- * A modell nyers JSON kimenetének biztonságos parse-olása a `SkillDistillDraft`
- * alakra. Hibás/hiányzó mezőket tolerál (üresre esik), a méret-limiteket levágja —
- * a teherhordó validáció (`validateSkill`) a hívónál fut, ez csak alak-normalizálás.
- */
-export function parseDistillOutput(content: string): SkillDistillResult {
-  const raw = extractJsonObject(content)
-  if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) {
-    return { ok: false, error: 'PARSE_FAILED', detail: 'no JSON object in model output' }
-  }
-  const obj = raw as Record<string, unknown>
-  const name = typeof obj.name === 'string' ? obj.name.trim().slice(0, SKILL_NAME_MAX) : ''
-  const description =
-    typeof obj.description === 'string' ? obj.description.trim().slice(0, SKILL_DESCRIPTION_MAX) : ''
-  const instructions = Array.isArray(obj.instructions)
-    ? obj.instructions.filter((i): i is string => typeof i === 'string' && i.trim().length > 0).map((i) => i.trim())
-    : []
-  const triggerKeywords = Array.isArray(obj.triggerKeywords)
-    ? obj.triggerKeywords
-        .filter((k): k is string => typeof k === 'string' && k.trim().length > 0)
-        .map((k) => k.trim())
-    : []
-  if (!name || !description || instructions.length === 0) {
-    return { ok: false, error: 'PARSE_FAILED', detail: 'missing name/description/instructions' }
-  }
+function toDistillDraft(value: Record<string, unknown>): SkillDistillDraft {
+  const parsed = skillDistillSchema.parse(value)
   return {
-    ok: true,
-    draft: {
-      name,
-      description,
-      content: { instructions, triggerKeywords, parameters: [] },
+    name: parsed.name.slice(0, SKILL_NAME_MAX),
+    description: parsed.description.slice(0, SKILL_DESCRIPTION_MAX),
+    content: {
+      instructions: parsed.instructions.map((i) => i.trim()).filter(Boolean),
+      triggerKeywords: parsed.triggerKeywords
+        .filter((k): k is string => typeof k === 'string' && k.trim().length > 0)
+        .map((k) => k.trim()),
+      parameters: [],
     },
   }
+}
+
+/**
+ * A modell nyers JSON kimenetének biztonságos parse-olása a `SkillDistillDraft`
+ * alakra — javítás nélkül (teszt / sync). A teherhordó validáció (`validateSkill`)
+ * a hívónál fut.
+ */
+export function parseDistillOutput(content: string): SkillDistillResult {
+  const raw = extractLoose(content)
+  if (raw == null) {
+    return { ok: false, error: 'PARSE_FAILED', detail: 'no JSON object in model output' }
+  }
+  const validated = validateAgainstContract(skillDistillContract, raw)
+  if (!validated.ok) {
+    return {
+      ok: false,
+      error: 'PARSE_FAILED',
+      detail: validated.errors[0]?.message ?? 'missing name/description/instructions',
+    }
+  }
+  return { ok: true, draft: toDistillDraft(validated.value) }
 }
 
 /**
@@ -225,6 +249,7 @@ export class SkillDistillerAgent {
     })
     const modelConfig = this.deps.modelConfig ?? resolveSkillDistillerModelConfig(input.agentModelConfig)
 
+    const responseJsonSchema = contractToJsonSchema(skillDistillContract)
     const { content } = await this.deps.model.call({
       agentId: input.agentId,
       agentVersion: input.agentVersion,
@@ -233,8 +258,24 @@ export class SkillDistillerAgent {
       messages,
       modelConfig,
       sensitivityOverride: input.sensitivityOverride,
+      ...(responseJsonSchema ? { responseJsonSchema } : {}),
     })
 
-    return parseDistillOutput(content)
+    const structuringModel = toStructuringModelConfig(structuringModelFromEnv(), modelConfig)
+    const strict = await runStrictContract({
+      gateway: this.deps.model,
+      contract: skillDistillContract,
+      rawContent: content,
+      modelConfig,
+      structuringModel,
+      agentId: input.agentId,
+      agentVersion: input.agentVersion,
+      tenantId: input.tenantId ?? undefined,
+      conversationId: input.conversationId ?? undefined,
+    })
+    if (!strict.ok) {
+      return { ok: false, error: 'PARSE_FAILED', detail: strict.humanSummary }
+    }
+    return { ok: true, draft: toDistillDraft(strict.value) }
   }
 }

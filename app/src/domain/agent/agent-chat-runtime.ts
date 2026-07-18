@@ -22,6 +22,7 @@ import {
   missingRequiredTriggerSlots,
   resolveChatTriggerInputPayload,
 } from '@/lib/playbook-v2/trigger-input'
+import { extractLoose } from '@/domain/contract-runtime'
 import type { ModelGateway } from '../gateway/model-gateway'
 import { StreamingSensitiveTextRedactor } from '../gateway/sensitivity-router'
 import type { ConversationService } from '../conversation/conversation-service'
@@ -1405,11 +1406,9 @@ export class AgentChatRuntime {
         ],
         modelConfig: params.modelConfig,
       })
-      const jsonMatch = result.content.match(/\{[\s\S]*\}/)
-      if (!jsonMatch) return null
-      const parsed: unknown = JSON.parse(jsonMatch[0])
-      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null
-      return parsed as Record<string, unknown>
+      const parsed = extractLoose(result.content)
+      if (!parsed) return null
+      return parsed
     } catch {
       return null
     }

@@ -265,7 +265,8 @@ export function ProcessDetailView({ data, canAct }: { data: ProcessDetailData; c
             <dd className="mt-0.5 font-mono">{data.process.rootTicketId ?? '-'}</dd>
           </div>
         </dl>
-        {data.process.status === 'blocked' && data.blockedReasons.length > 0 && (
+        {(data.process.status === 'blocked' || data.process.status === 'awaiting_human') &&
+          data.blockedReasons.length > 0 && (
           <div className="mt-3 rounded-lg border border-coral/25 bg-coral/5 p-3 text-sm text-coral">
             <p className="font-semibold">Elakadás oka</p>
             <ul className="mt-1 space-y-1">

@@ -127,6 +127,8 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'model.call.sensitivity_agent_bypass',
   // Napi model-keret (összesített tenant + per-agent) átállítása a tenant admin felületről.
   'model.budget_changed',
+  'model.fallback_chain.set',
+  'model.structuring.set',
   'model_policy.upsert',
   // Cross-provider tartalék-lánc: a hívás átesett a következő providerre
   // (a `metadata` hordozza a kiesett/átvevő providert és a hiba-osztályt).
@@ -269,6 +271,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'process.step.complete',
   'process.step.create',
   'process.step.dispatch_deferred',
+  'contract.evaluate',
   'ticket.comment.add',
   'ticket.comment.attachment.uploaded',
   'ticket.handback',

@@ -15,7 +15,7 @@
  */
 import type { CompiledSpec, CompiledGate, CompiledRoutingRule } from '@/domain/playbook/playbook-compiler'
 import type { ConditionExpression, ConditionOp } from '@/lib/playbook-v2/spec'
-import { outputRequiredFieldsForStep } from '@/lib/playbook-v2/process-step-payload'
+import { isFilledOutputValue, outputRequiredFieldsForStep } from '@/lib/playbook-v2/process-step-payload'
 
 export type RuntimeActorType = 'user' | 'agent' | 'system'
 
@@ -201,10 +201,7 @@ function isErrorOutcomePayload(payload?: Record<string, unknown>): boolean {
 
 function missingOutputFields(required: string[], payload?: Record<string, unknown>): string[] {
   const data = payload ?? {}
-  return required.filter((field) => {
-    const value = readPath(data, field)
-    return value === undefined || value === null
-  })
+  return required.filter((field) => !isFilledOutputValue(readPath(data, field)))
 }
 
 // --- §7.3 process advance routing -----------------------------------------

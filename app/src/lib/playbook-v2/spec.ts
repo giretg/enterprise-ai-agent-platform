@@ -97,6 +97,8 @@ export const stepOutcomeSchema = z.object({
   status: stepOutcomeStatusSchema,
   reason: z.string().optional(),
   missing: z.array(z.string()).optional(),
+  /** Közérthető magyarázat (#33 contract-sértés) — nyers technikai hiba helyett. */
+  message: z.string().optional(),
 })
 export type StepOutcome = z.infer<typeof stepOutcomeSchema>
 

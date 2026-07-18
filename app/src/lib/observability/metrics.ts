@@ -260,4 +260,17 @@ export const memoryConflictsTotal = registry.counter(
   'Memory conflicts detected, by resolution',
 )
 
+// ── #46 / #33 — contract megfigyelhetőség ────────────────────────────────────
+
+/** Contract-értékelések száma kimenetel szerint (first_pass / repaired / failed). */
+export const contractEvaluationsTotal = registry.counter(
+  'contract_evaluations_total',
+  'Structured output contract evaluations by outcome',
+)
+/** Javító modellhívások becsült költsége (EUR) összesítve. */
+export const contractRepairCostEur = registry.counter(
+  'contract_repair_cost_eur_total',
+  'Estimated EUR cost of contract repair model calls',
+)
+
 export { Counter, Histogram, Gauge, Registry }
