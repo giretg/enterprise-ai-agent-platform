@@ -11,8 +11,10 @@
  * teljes integrációját.
  */
 import assert from 'node:assert/strict'
+import { z } from 'zod'
 import {
   compileContract,
+  compileFromZod,
   formatContractErrors,
   extractLoose,
   validateAgainstContract,
@@ -135,6 +137,21 @@ async function main() {
 
     const none = extractLoose('nincs itt objektum')
     assert.equal(none, null)
+  })
+
+  await check('CR-1f: compileFromZod — meglévő Zod-séma contracttá fordítható', () => {
+    const schema = z.object({
+      answer: z.string().min(1),
+      confidence: z.enum(['high', 'medium', 'low']),
+    })
+    const contract = compileFromZod(schema)
+    assert.deepEqual(contract.fieldNames.sort(), ['answer', 'confidence'])
+
+    const ok = validateAgainstContract(contract, { answer: 'igen', confidence: 'high' })
+    assert.equal(ok.ok, true)
+
+    const bad = validateAgainstContract(contract, { answer: '', confidence: 'high' })
+    assert.equal(bad.ok, false)
   })
 
   // --- CR-2: szigorú mód + javítási korlátok (gateway varrat) ----------------

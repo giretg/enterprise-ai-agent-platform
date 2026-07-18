@@ -1,7 +1,6 @@
 import type {
   GatewayMessage,
   ModelConfig,
-  ModelGateway,
 } from '@/domain/gateway/model-gateway'
 import { GatewaySensitivityError } from '@/domain/gateway/model-gateway'
 import { extractLoose } from './extract'
@@ -17,7 +16,19 @@ import {
 } from './types'
 
 export type RunStrictContractInput = {
-  gateway: Pick<ModelGateway, 'call'>
+  /** Minimális kapu-felület — a ModelGateway és a fogyasztók thin model interfészei is megfelelnek. */
+  gateway: {
+    call(params: {
+      agentId: string
+      agentVersion?: number
+      ticketId?: string
+      tenantId?: string
+      conversationId?: string
+      messages: GatewayMessage[]
+      modelConfig: ModelConfig
+      responseJsonSchema?: Record<string, unknown>
+    }): Promise<{ content: string }>
+  }
   contract: CompiledContract
   /** Az agent eddigi (szabad) válasza — ezt validáljuk először, modellhívás nélkül. */
   rawContent: string
@@ -29,6 +40,7 @@ export type RunStrictContractInput = {
   agentVersion?: number
   ticketId?: string
   tenantId?: string
+  conversationId?: string
   criticality?: CriticalityLevel
   /** Lépésszintű felülbírálás; a kritikusság és a kemény 2-es korlát szűkíti. */
   maxRepairAttempts?: number
@@ -121,13 +133,15 @@ export async function runStrictContract(
       fieldNames: input.contract.fieldNames,
     })
 
+    const responseJsonSchema = contractToJsonSchema(input.contract)
     const callArgs = {
       agentId: input.agentId,
       agentVersion: input.agentVersion,
       ticketId: input.ticketId,
       tenantId: input.tenantId,
+      conversationId: input.conversationId,
       messages: repairMessages,
-      responseJsonSchema: contractToJsonSchema(input.contract),
+      ...(responseJsonSchema ? { responseJsonSchema } : {}),
     }
 
     // Strukturáló modell a kapun át. Érzékeny tartalomnál fail-closed: a lépés

@@ -10,12 +10,21 @@
  * jön (`agentModelConfig`, `agentId`). A feladat-specifikus system prompt itt él
  * (`SKILL_REVIEW_ROLE_INSTRUCTION`) — nem a chat-agent `roleInstruction` mezője,
  * ahogy a connector-draft is külön promptot kap a beszélgetéstől.
+ *
+ * #33 — a kimenet a contract-runtime szigorú módján megy át (javítási esély).
  */
+import { z } from 'zod'
 import type { GatewayMessage, ModelConfig } from '@/domain/gateway/model-gateway'
 import {
-  extractJsonObject,
-  resolveProvisioningModelConfig,
-} from '@/domain/provisioning/provisioning-assistant'
+  compileFromZod,
+  contractToJsonSchema,
+  runStrictContract,
+  structuringModelFromEnv,
+  toStructuringModelConfig,
+  validateAgainstContract,
+  extractLoose,
+} from '@/domain/contract-runtime'
+import { resolveProvisioningModelConfig } from '@/domain/provisioning/provisioning-assistant'
 import type { SkillContent, SkillRequirement } from '@/lib/skill/skill-content'
 import type { SkillRiskTier } from '@prisma/client'
 
@@ -36,6 +45,24 @@ OUTPUT: a single JSON object only (no prose, no markdown fences):
   "suggestedRequires": [{ "toolName": string, "reason": string }] (advisory only — may differ from declared requires)
 }`
 
+const skillReviewSchema = z.object({
+  riskSummary: z.string().trim().min(1),
+  overallAssessment: z.enum(['low', 'medium', 'high']),
+  concerns: z.array(z.string()).default([]),
+  suggestedRequires: z
+    .array(
+      z.object({
+        toolName: z.string().trim().min(1),
+        reason: z.string().optional(),
+      }),
+    )
+    .default([]),
+})
+
+const skillReviewContract = compileFromZod(
+  skillReviewSchema as z.ZodType<Record<string, unknown>>,
+)
+
 export interface SkillReviewingModel {
   call(params: {
     agentId: string
@@ -43,6 +70,7 @@ export interface SkillReviewingModel {
     tenantId?: string
     messages: GatewayMessage[]
     modelConfig: ModelConfig
+    responseJsonSchema?: Record<string, unknown>
   }): Promise<{ content: string }>
 }
 
@@ -107,41 +135,34 @@ export function buildReviewMessages(input: SkillReviewInput): GatewayMessage[] {
   ]
 }
 
+function toAdvisoryReview(value: Record<string, unknown>): SkillAdvisoryReview {
+  const parsed = skillReviewSchema.parse(value)
+  return {
+    riskSummary: parsed.riskSummary,
+    overallAssessment: parsed.overallAssessment,
+    concerns: parsed.concerns.map((c) => c.trim()).filter(Boolean),
+    suggestedRequires: parsed.suggestedRequires.map((r) => ({
+      toolName: r.toolName.trim(),
+      reason: typeof r.reason === 'string' ? r.reason.trim() : '',
+    })),
+  }
+}
+
+/** Sync alak-ellenőrzés (teszt / best-effort) — javítás nélkül. */
 export function parseReviewOutput(content: string): SkillReviewResult {
-  const raw = extractJsonObject(content)
-  if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) {
+  const raw = extractLoose(content)
+  if (raw == null) {
     return { ok: false, error: 'PARSE_FAILED', detail: 'no JSON object in model output' }
   }
-  const obj = raw as Record<string, unknown>
-  const riskSummary = typeof obj.riskSummary === 'string' ? obj.riskSummary.trim() : ''
-  const overallAssessment =
-    obj.overallAssessment === 'low' || obj.overallAssessment === 'medium' || obj.overallAssessment === 'high'
-      ? obj.overallAssessment
-      : 'medium'
-  const concerns = Array.isArray(obj.concerns)
-    ? obj.concerns.filter((c): c is string => typeof c === 'string' && c.trim().length > 0).map((c) => c.trim())
-    : []
-  const suggestedRequires: SkillRequirement[] = Array.isArray(obj.suggestedRequires)
-    ? obj.suggestedRequires
-        .filter(
-          (r): r is { toolName: string; reason?: string } =>
-            typeof r === 'object' &&
-            r !== null &&
-            typeof (r as { toolName?: unknown }).toolName === 'string' &&
-            (r as { toolName: string }).toolName.trim().length > 0,
-        )
-        .map((r) => ({
-          toolName: r.toolName.trim(),
-          reason: typeof r.reason === 'string' ? r.reason.trim() : '',
-        }))
-    : []
-  if (!riskSummary) {
-    return { ok: false, error: 'PARSE_FAILED', detail: 'missing riskSummary' }
+  const validated = validateAgainstContract(skillReviewContract, raw)
+  if (!validated.ok) {
+    return {
+      ok: false,
+      error: 'PARSE_FAILED',
+      detail: validated.errors[0]?.message ?? 'schema mismatch',
+    }
   }
-  return {
-    ok: true,
-    review: { riskSummary, overallAssessment, concerns, suggestedRequires },
-  }
+  return { ok: true, review: toAdvisoryReview(validated.value) }
 }
 
 /** Tanácsadó review — SOSEM kapu, SOSEM ír a DB-be. */
@@ -158,13 +179,30 @@ export class SkillReviewAgent {
   ): Promise<SkillReviewResult> {
     const messages = buildReviewMessages(input)
     const modelConfig = this.deps.modelConfig ?? resolveSkillReviewModelConfig(input.agentModelConfig)
+    const responseJsonSchema = contractToJsonSchema(skillReviewContract)
     const { content } = await this.deps.model.call({
       agentId: input.agentId,
       agentVersion: input.agentVersion,
       tenantId: input.tenantId ?? undefined,
       messages,
       modelConfig,
+      ...(responseJsonSchema ? { responseJsonSchema } : {}),
     })
-    return parseReviewOutput(content)
+
+    const structuringModel = toStructuringModelConfig(structuringModelFromEnv(), modelConfig)
+    const strict = await runStrictContract({
+      gateway: this.deps.model,
+      contract: skillReviewContract,
+      rawContent: content,
+      modelConfig,
+      structuringModel,
+      agentId: input.agentId,
+      agentVersion: input.agentVersion,
+      tenantId: input.tenantId ?? undefined,
+    })
+    if (!strict.ok) {
+      return { ok: false, error: 'PARSE_FAILED', detail: strict.humanSummary }
+    }
+    return { ok: true, review: toAdvisoryReview(strict.value) }
   }
 }

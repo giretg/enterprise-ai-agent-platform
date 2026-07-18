@@ -16,7 +16,7 @@ export {
   HARD_MAX_REPAIR_ATTEMPTS,
   DEFAULT_REPAIR_ATTEMPTS,
 } from './types'
-export { compileContract, contractToJsonSchema } from './compile'
+export { compileContract, compileFromZod, contractToJsonSchema } from './compile'
 export { validateAgainstContract } from './validate'
 export { formatContractErrors } from './format-errors'
 export { extractLoose } from './extract'

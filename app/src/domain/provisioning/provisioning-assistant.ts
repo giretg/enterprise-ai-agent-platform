@@ -31,9 +31,18 @@ import type { WebFetchResult, WebFetchSourceType } from '@/domain/web-fetch/web-
 import {
   normalizeConnectorConfig,
   ConnectorConfigParseError,
+  connectorConfigSchema,
   type ConnectorConfig,
 } from './connector-config'
 import { tryExtractConnectorConfigFromOpenApiAsync } from './openapi-config-extractor'
+import {
+  compileFromZod,
+  contractToJsonSchema,
+  runStrictContract,
+  structuringModelFromEnv,
+  toStructuringModelConfig,
+} from '@/domain/contract-runtime'
+import { z } from 'zod'
 
 /**
  * A `provisioning.draft.*` capability-osztály — az asszisztens EGYETLEN író felülete a
@@ -108,7 +117,9 @@ export const PROVISIONING_ASSISTANT_TEMPLATE = {
   forbiddenTools: PROVISIONING_FORBIDDEN_TOOLS,
 } as const
 
-/** A doksi-parsinghoz használt modell — a `ModelGateway` strukturálisan kielégíti. */
+const connectorDraftContract = compileFromZod(
+  connectorConfigSchema as z.ZodType<Record<string, unknown>>,
+)
 export interface ConfigDraftingModel {
   call(params: {
     agentId: string
@@ -118,6 +129,7 @@ export interface ConfigDraftingModel {
     messages: GatewayMessage[]
     modelConfig: ModelConfig
     sensitivityOverride?: SensitivityOverride
+    responseJsonSchema?: Record<string, unknown>
   }): Promise<{ content: string }>
 }
 
@@ -349,6 +361,7 @@ export class ProvisioningAssistant {
     const modelConfig =
       this.deps.modelConfig ?? resolveProvisioningModelConfig(input.agentModelConfig)
 
+    const responseJsonSchema = contractToJsonSchema(connectorDraftContract)
     const { content } = await this.deps.model.call({
       agentId: input.agentId,
       agentVersion: input.agentVersion,
@@ -357,17 +370,34 @@ export class ProvisioningAssistant {
       messages,
       modelConfig,
       sensitivityOverride,
+      ...(responseJsonSchema ? { responseJsonSchema } : {}),
     })
 
-    const raw = extractJsonObject(content)
-    if (raw == null) {
-      return { ok: false, error: 'PARSE_FAILED', detail: 'no JSON object in model output' }
+    // #33 — contract-runtime szigorú mód: séma-eltérésnél egy javítási esély a kapun át.
+    const structuringModel = toStructuringModelConfig(structuringModelFromEnv(), modelConfig)
+    const strict = await runStrictContract({
+      gateway: this.deps.model,
+      contract: connectorDraftContract,
+      rawContent: content,
+      modelConfig,
+      structuringModel,
+      agentId: input.agentId,
+      agentVersion: input.agentVersion,
+      tenantId: input.tenantId ?? undefined,
+      conversationId: input.conversationId ?? undefined,
+    })
+    if (!strict.ok) {
+      return {
+        ok: false,
+        error: 'PARSE_FAILED',
+        detail: strict.humanSummary || 'schema mismatch',
+        issues: strict.errors,
+      }
     }
 
-    // DETERMINISZTIKUS séma-kapu: a modell kimenete csak akkor megy tovább, ha pontosan
-    // illeszkedik a ConnectorConfig sémára (és a mutáló metódusok write-ra normalizálódnak).
+    // DETERMINISZTIKUS séma-kapu + write-access normalizálás (mutáló metódus → write).
     try {
-      const config = normalizeConnectorConfig(raw)
+      const config = normalizeConnectorConfig(strict.value)
       return { ok: true, config, extractionMethod: 'llm' }
     } catch (e) {
       if (e instanceof ConnectorConfigParseError) {

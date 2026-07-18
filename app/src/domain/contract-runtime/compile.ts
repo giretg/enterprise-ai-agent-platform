@@ -101,7 +101,40 @@ export function compileContract(source: ContractSource): CompiledContract {
   }
 }
 
-/** Zod-séma → JSON Schema (provider-natív séma-kényszerhez). */
-export function contractToJsonSchema(contract: CompiledContract): Record<string, unknown> {
-  return z.toJSONSchema(contract.schema) as Record<string, unknown>
+/**
+ * Meglévő Zod-objektum-séma → CompiledContract (wiki, connector, skill review…).
+ * A mezőneveket a Zod shape-ből olvassuk, ha a hívó nem adja meg.
+ */
+export function compileFromZod(
+  schema: ZodType<Record<string, unknown>>,
+  options?: { fieldNames?: string[]; fields?: ContractField[] },
+): CompiledContract {
+  const shapeNames =
+    schema instanceof z.ZodObject ? Object.keys(schema.shape as Record<string, unknown>) : []
+  const fields =
+    options?.fields ??
+    (options?.fieldNames ?? shapeNames).map((name) => ({
+      name,
+      type: 'string' as const,
+      required: true,
+    }))
+  const fieldNames = options?.fieldNames ?? fields.map((f) => f.name)
+  return { schema, fields, fieldNames }
+}
+
+/** Zod-séma → JSON Schema (provider-natív séma-kényszerhez). Hibánál `null`. */
+export function contractToJsonSchema(
+  contract: CompiledContract,
+): Record<string, unknown> | null {
+  try {
+    // `io: 'input'` + `unrepresentable: 'any'`: a default/transform mezők (pl. connector
+    // config) ne dobjanak — a provider kapjon használható sémát.
+    return z.toJSONSchema(contract.schema, {
+      io: 'input',
+      unrepresentable: 'any',
+    }) as Record<string, unknown>
+  } catch {
+    // Képesség hiánya nem hibaág — a hívó a prompt + közös beolvasóra esik vissza.
+    return null
+  }
 }

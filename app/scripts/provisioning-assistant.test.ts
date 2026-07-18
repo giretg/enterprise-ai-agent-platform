@@ -1535,7 +1535,37 @@ async function run() {
     })
     const r = await assistant.draftConfigFromDoc({ agentId: 'agent-prov', docText: 'doc' })
     assert.equal(r.ok, false)
-    if (!r.ok) assert.equal(r.detail, 'schema mismatch')
+    if (!r.ok) {
+      assert.equal(r.error, 'PARSE_FAILED')
+      // #33: a detail közérthető contract-hiba (nem feltétlenül a régi "schema mismatch" literál)
+      assert.ok(typeof r.detail === 'string' && r.detail.length > 0)
+    }
+  })
+
+  await test('S-P1/#33: séma-eltérés után egy sikeres javító hívás → config', async () => {
+    let calls = 0
+    const model: ConfigDraftingModel = {
+      async call() {
+        calls++
+        if (calls === 1) {
+          // Első (draft) válasz: hiányos
+          return { content: '{"provider":"acme","baseUrl":"not-a-url"}' }
+        }
+        // Javító hívás: érvényes config
+        return { content: JSON.stringify(cleanConfig()) }
+      },
+    }
+    const assistant = new ProvisioningAssistant({ model })
+    const r = await assistant.draftConfigFromDoc({
+      agentId: 'agent-prov',
+      docText: 'Acme CRM API. Base https://api.acme.example ...',
+    })
+    assert.equal(r.ok, true)
+    if (r.ok) {
+      assert.equal(r.extractionMethod, 'llm')
+      assert.equal(r.config.provider, cleanConfig().provider)
+    }
+    assert.equal(calls, 2)
   })
 
   // ── Javítás + megszüntetés (edit / reopen / decommission / delete) ─────────
