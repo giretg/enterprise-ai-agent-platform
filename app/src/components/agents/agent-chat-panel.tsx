@@ -115,6 +115,11 @@ type MemoryCandidateCard = {
 }
 
 type AgentChatStreamEvent =
+  /**
+   * A stream legelső eseménye: a szerveren futó forduló azonosítója. A Stop és a
+   * visszacsatlakozás ehhez kötődik majd (#65/#67) — itt még csak a szerződés.
+   */
+  | { type: 'turn'; turnId: string }
   | { type: 'meta'; conversationId: string; userMessageId: string }
   | { type: 'activity'; activity: AgentActivity }
   | { type: 'memory_candidate'; candidate: Omit<MemoryCandidateCard, 'status' | 'resultMessage'> }

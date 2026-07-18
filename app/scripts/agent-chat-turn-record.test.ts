@@ -43,6 +43,15 @@ async function test(name: string, fn: () => void | Promise<void>) {
   }
 }
 
+/** Megvárja a leválasztott futás hatását (a futás nem a fogyasztóhoz kötött). */
+async function waitUntil(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (!predicate()) {
+    if (Date.now() > deadline) throw new Error('időtúllépés a futás bevárásakor')
+    await new Promise<void>((r) => setTimeout(r, 5))
+  }
+}
+
 function agentRow(): Agent {
   return {
     id: 'agent-1',
@@ -72,9 +81,10 @@ function agentRow(): Agent {
 }
 
 /** A `create`/`finalize` hívásokat rögzítő, memóriában élő forduló-tár. */
-function fakeTurnRepository(options: { failOnCreate?: Error } = {}) {
+function fakeTurnRepository(options: { failOnCreate?: Error; active?: AgentTurn } = {}) {
   const created: Array<Parameters<AgentTurnRepository['create']>[0]> = []
   const finalized: Array<{ id: string } & FinalizeAgentTurnInput> = []
+  const heartbeats: Array<{ id: string; lockToken: string }> = []
   const repo: AgentTurnRepository = {
     async create(data) {
       if (options.failOnCreate) throw options.failOnCreate
@@ -85,13 +95,14 @@ function fakeTurnRepository(options: { failOnCreate?: Error } = {}) {
       return null
     },
     async findActiveByConversation() {
-      return null
+      return options.active ?? null
     },
     async acquireLock() {
       return null
     },
     async releaseLock() {},
-    async heartbeat() {
+    async heartbeat(id, lockToken) {
+      heartbeats.push({ id, lockToken })
       return null
     },
     async finalize(id, data) {
@@ -102,13 +113,15 @@ function fakeTurnRepository(options: { failOnCreate?: Error } = {}) {
       return []
     },
   }
-  return { repo, created, finalized }
+  return { repo, created, finalized, heartbeats }
 }
 
 function buildRuntime(options: {
   turns?: AgentTurnRepository
   replyChunks?: string[]
   streamError?: Error
+  /** Engedélyezett capability → a forduló a tool-loop ágon fut. */
+  withTools?: boolean
 }) {
   const messages: Message[] = []
   let seq = 0
@@ -143,10 +156,18 @@ function buildRuntime(options: {
         yield chunk
       }
     },
+    async call() {
+      if (options.streamError) throw options.streamError
+      return {
+        content: (options.replyChunks ?? ['Szia! ', 'Miben segíthetek?']).join(''),
+        usage: { promptTokens: 1, completionTokens: 1 },
+      }
+    },
   } as unknown as ModelGateway
 
   const toolCaps = {
-    findCapabilitiesForAgent: async () => [],
+    findCapabilitiesForAgent: async () =>
+      options.withTools ? [{ allowed: true, toolName: 'file_read' }] : [],
     findCapability: async () => null,
     findConnectorsForAgent: async () => [],
     findDocumentsForConnector: async () => [],
@@ -250,26 +271,34 @@ async function main() {
     assert.equal(turns.finalized[0].error, 'gateway timeout')
   })
 
-  await test('eldobott stream: a rekord nem marad örökre aktívként nyitva', async () => {
+  await test('eldobott stream: a forduló befut és completed állapotra zárul (#60/E1)', async () => {
     const turns = fakeTurnRepository()
-    const { runtime } = buildRuntime({ turns: turns.repo })
+    const { runtime, messages } = buildRuntime({ turns: turns.repo })
 
-    // A kliens lecsatlakozása: a fogyasztó az első token után elhagyja a ciklust,
-    // ami a generátor `finally`-ágát futtatja.
+    // A kliens lecsatlakozása: a fogyasztó az első token után elhagyja a ciklust.
+    // A generátor `finally`-ága CSAK a feliratkozást bontja — a futás megy tovább.
+    const seen: string[] = []
     for await (const event of runtime.sendMessageStream(turnParams())) {
+      seen.push(event.type)
       if (event.type === 'token') break
     }
+    assert.equal(seen[0], 'turn', 'a stream első eseménye a forduló azonosítója')
+    await waitUntil(() => turns.finalized.length === 1)
 
     assert.equal(turns.created.length, 1)
-    assert.equal(turns.finalized.length, 1, 'a rekord a generátor eldobásakor is lezárul')
-    assert.equal(turns.finalized[0].status, 'failed')
-    // A §2.1/D2 rés: ma a válasz a lecsatlakozáskor tényleg elveszik. A rekord
-    // ezt őszintén rögzíti, ahelyett hogy „fut még" állapotban ragadna.
-    assert.equal(turns.finalized[0].reason, 'stream_abandoned')
-    assert.equal(turns.finalized[0].assistantMessageId, undefined)
+    assert.equal(turns.finalized.length, 1, 'a rekord pontosan egyszer zárul')
+    assert.equal(turns.finalized[0].status, 'completed')
+    assert.ok(
+      turns.finalized[0].assistantMessageId,
+      'a lezárt rekord a keletkezett agent-üzenetre mutat',
+    )
+    assert.ok(
+      messages.some((m) => m.role === 'agent'),
+      'a válasz a lecsatlakozás ellenére bekerül a beszélgetésbe',
+    )
   })
 
-  await test('FAIL-SOFT: a rekord létrehozásának hibája nem változtatja meg a chatet', async () => {
+  await test('ütköző lock: nem indul második futtatás', async () => {
     const turns = fakeTurnRepository({
       failOnCreate: new ActiveAgentTurnExistsError('conv-1'),
     })
@@ -278,11 +307,85 @@ async function main() {
     const events = []
     for await (const event of runtime.sendMessageStream(turnParams())) events.push(event)
 
-    // A forduló ugyanúgy végigfut és perzisztálja az agent-választ.
+    assert.ok(
+      !events.some((e) => e.type === 'done'),
+      'a forduló el sem indul, ha a tulajdonjogot nem sikerült megszerezni',
+    )
+    assert.ok(events.some((e) => e.type === 'error'))
+    assert.ok(
+      !messages.some((m) => m.role === 'agent'),
+      'nem keletkezik versengő agent-válasz',
+    )
+    assert.equal(turns.finalized.length, 0, 'nincs mit lezárni, ha a rekord nem jött létre')
+  })
+
+  await test('FAIL-SOFT: egyéb DB-hiba esetén a chat rekord nélkül fut tovább', async () => {
+    const turns = fakeTurnRepository({ failOnCreate: new Error('DB unavailable') })
+    const { runtime, messages } = buildRuntime({ turns: turns.repo })
+
+    const events = []
+    for await (const event of runtime.sendMessageStream(turnParams())) events.push(event)
+
+    // A forduló-rekord megfigyelhetőségi réteg: a hibája nem buktathatja a chatet.
     const doneEvent = events.find((e) => e.type === 'done')
     assert.ok(doneEvent, 'a chat a rekord nélkül is done-nal zárul')
     assert.ok(messages.some((m) => m.role === 'agent'))
     assert.equal(turns.finalized.length, 0, 'nincs mit lezárni, ha a rekord nem jött létre')
+  })
+
+  await test('a tool-loop körönként életjelet ír a forduló-rekordra', async () => {
+    const turns = fakeTurnRepository()
+    const { runtime } = buildRuntime({ turns: turns.repo, withTools: true })
+
+    for await (const _event of runtime.sendMessageStream(turnParams())) {
+      // végigfogyasztjuk
+    }
+
+    assert.ok(turns.heartbeats.length >= 1, 'legalább egy kör → legalább egy életjel')
+    assert.equal(turns.heartbeats[0].id, 'turn-1')
+    assert.equal(
+      turns.heartbeats[0].lockToken,
+      turns.created[0].lockToken,
+      'az életjel a saját lock-tokenjével megy — csak a tulajdonos frissíthet',
+    )
+  })
+
+  await test('D11: a nem-streamelő út UGYANAZON a lezáró ponton ír', async () => {
+    const turns = fakeTurnRepository()
+    const { runtime, messages } = buildRuntime({ turns: turns.repo })
+
+    const result = await runtime.sendMessage(turnParams())
+
+    assert.equal(result.reply, 'Szia! Miben segíthetek?')
+    assert.equal(turns.created.length, 1, 'a nem-streamelő út is nyit forduló-rekordot')
+    assert.equal(turns.finalized.length, 1)
+    assert.equal(turns.finalized[0].status, 'completed')
+    assert.equal(
+      turns.finalized[0].assistantMessageId,
+      result.messageId,
+      'a rekord a visszaadott agent-üzenetre mutat',
+    )
+    assert.equal(messages.filter((m) => m.role === 'agent').length, 1)
+  })
+
+  await test('elhalt forduló: az indítás visszaveszi a heartbeat nélkül maradt rekordot', async () => {
+    const stale = {
+      id: 'turn-stale',
+      status: 'running',
+      heartbeatAt: new Date(Date.now() - 10 * 60_000),
+    } as AgentTurn
+    const turns = fakeTurnRepository({ active: stale })
+    const { runtime } = buildRuntime({ turns: turns.repo })
+
+    const events = []
+    for await (const event of runtime.sendMessageStream(turnParams())) events.push(event)
+
+    // A crash-elt futás nem zárhatja be örökre a beszélgetést.
+    assert.ok(
+      turns.finalized.some((f) => f.id === 'turn-stale' && f.reason === 'watchdog'),
+      'a halott forduló lezárul',
+    )
+    assert.ok(events.some((e) => e.type === 'done'), 'az új forduló elindul és lefut')
   })
 
   await test('bekötetlen forduló-tár esetén a chat változatlanul működik', async () => {

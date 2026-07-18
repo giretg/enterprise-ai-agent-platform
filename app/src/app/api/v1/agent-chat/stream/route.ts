@@ -1,5 +1,7 @@
+import { after } from 'next/server'
 import { requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain'
+import { agentTurnRunner } from '@/domain/agent/agent-turn-runner'
 
 // SSE: dinamikus, Node runtime, ne bufferelődjön / cache-elődjön a stream.
 export const dynamic = 'force-dynamic'
@@ -43,6 +45,17 @@ export async function POST(request: Request) {
     return encoder.encode(`data: ${JSON.stringify(data)}\n\n`)
   }
 
+  // A forduló futása leválik erről a kérésről (chat-agent-turn-resilience-spec.md
+  // D3): a lecsatlakozás nem szakítja meg. Node-processben ehhez elég a runner
+  // saját promise-a, menedzselt futtatókörnyezetben viszont a válasz lezárása után
+  // az instance befagyasztható — az `after` tartja életben a futást a lezárásáig.
+  let releaseKeepAlive: () => void = () => {}
+  after(
+    new Promise<void>((resolve) => {
+      releaseKeepAlive = resolve
+    }),
+  )
+
   const stream = new ReadableStream({
     async start(controller) {
       const gen = services.agentChat.sendMessageStream({
@@ -56,8 +69,14 @@ export async function POST(request: Request) {
         processInputPayload,
       })
 
+      let turnCompletion: Promise<void> | null = null
       try {
         for await (const event of gen) {
+          // A forduló azonosítója a legelső esemény; innen ismerjük meg, melyik
+          // futást kell a válasz lezárása után is életben tartani.
+          if (event.type === 'turn') {
+            turnCompletion = agentTurnRunner.completionOf(event.turnId)
+          }
           if (request.signal.aborted) {
             break
           }
@@ -74,6 +93,13 @@ export async function POST(request: Request) {
           controller.close()
         } catch {
           // A kliens megszakítása után a stream már lehet zárt.
+        }
+        // A kliens lecsatlakozása NEM megszakítás (D5): a futást a lezárásáig
+        // megvárjuk, csak épp már nem küldünk neki semmit.
+        if (turnCompletion) {
+          void turnCompletion.finally(() => releaseKeepAlive())
+        } else {
+          releaseKeepAlive()
         }
       }
     },

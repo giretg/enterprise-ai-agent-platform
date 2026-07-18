@@ -1653,6 +1653,13 @@ export async function runAgentToolLoop(params: {
   archiveLargeToolResult?: (input: LargeToolResultArchiveInput) => Promise<LargeToolResultArchive | null>
   onActivity?: (event: ToolLoopActivityEvent) => void | Promise<void>
   /**
+   * Kör-eleji horog. A chat-forduló ezen ír életjelet (heartbeat) a perzisztált
+   * forduló-rekordra, hogy egy elhalt futás kívülről felismerhető legyen
+   * (chat-agent-turn-resilience-spec.md D8/D10). Fail-soft: a hívó feladata, hogy
+   * ne dobjon és ne lassítson.
+   */
+  onTurnStart?: (turnIndex: number) => void | Promise<void>
+  /**
    * Chat "thinking-trace" spec (§5, WP-3) — a modell reasoning-summary deltái,
    * MÁR a tartalom-őrön (D5) átengedve, `turnId`-vel a UI élő bejegyzéséhez. Ha
    * nincs megadva (D7 kikapcsolva vagy tool nélküli ág), reasoning sem generálódik.
@@ -1751,6 +1758,7 @@ export async function runAgentToolLoop(params: {
     if (params.shouldCancel?.()) {
       throw new AgentToolLoopCancelledError()
     }
+    await params.onTurnStart?.(turn)
     let webSearchCallsThisTurn = 0
     const reasoningTurnId = `reasoning-${turn}`
     const placeholderTitle = turn === 0 ? 'Üzenet feldolgozása' : 'Tool eredmények kiértékelése'

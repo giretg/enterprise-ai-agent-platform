@@ -206,6 +206,25 @@ részleges egyedi index vagy tranzakciós ellenőrzés a létrehozáskor.
   Ez a pont **kliens-független** → a válasz sosem vész el.
 - **Heartbeat (Tier-2, D10):** a loop minden kör elején `heartbeatAt = now()`.
 
+> **Állapot (2026-07-18, issue #60 — MEGÉPÜLT).** A futás leválik a kérésről:
+> `AgentTurnRunner` (`src/domain/agent/agent-turn-runner.ts`) tartja a futásonkénti
+> buszt, a `AgentChatRuntime.beginTurn` a kérés-scope-ban előkészít és **claimeli**
+> a fordulót (a rekord a `lockToken`-nel jön létre), majd a `executeTurn` a
+> kérés-scope-on KÍVÜL fut. A végleges assistant-üzenet írása és a rekord terminális
+> lezárása az `executeTurn` `finally`-ágában van — akkor is lefut, ha senki nem
+> olvassa a streamet (E1-regresszió: `scripts/agent-chat-turn-record.test.ts`).
+> A `sendMessage` (nem-stream) ugyanezen a ponton ír (D11). A stream legelső
+> eseménye `{ type:'turn', turnId }` (§6.1). A heartbeat a tool-loop új
+> `onTurnStart` horgán megy körönként.
+> Eltérések a fenti tervtől: (a) a szó-chunkolás a runtime-ban maradt (a runner
+> eseménytípus-agnosztikus busz, nem tud a tokenekről); (b) a `turnId` a
+> perzisztált rekordé, de ha a rekord nem jött létre (nincs bekötött tár vagy
+> DB-zavar), folyamat-lokális azonosítót kap, hogy a stream-szerződés alakja stabil
+> legyen; (c) a route `after()`-rel tartja életben a futást a válasz lezárása után
+> is, hogy menedzselt futtatókörnyezetben se fagyjon be az instance.
+> Nyitva marad: a köztes snapshot perzisztálása (#63), a watchdog-ciklus (#64), a
+> fordulóhoz kötött Stop (#65), a visszacsatlakozás (#66) és a kliens (#67).
+
 ### 5.3 Perzisztencia-granularitás (D9)
 
 - `activities`: minden `emitActivity`-nél upsert az `AgentTurn.activities`-be
@@ -354,8 +373,8 @@ A teljes D2/D4 (szerver-oldali `AgentTurn` + loop-finalizer + reconnect GET-SSE)
 **1. hullám — perzisztencia + no-loss (Tier-1)**
 - **WP-1** `AgentTurn` modell + migráció + repository. — **KÉSZ (#59)**
 - **WP-2** `AgentTurnRunner` (registry, busz, **finalizer** = D2 rés lezárása);
-  `sendMessageStream`/`sendMessage` átkötése a finalizerre.
-- **WP-3** `POST stream` átalakítás detached indításra + `turn` event.
+  `sendMessageStream`/`sendMessage` átkötése a finalizerre. — **KÉSZ (#60)**
+- **WP-3** `POST stream` átalakítás detached indításra + `turn` event. — **KÉSZ (#60)**
 
 **2. hullám — védelem**
 - **WP-4** `evaluateLoopContinuation` (wallclock + tool_budget + no_progress) a

@@ -211,6 +211,39 @@ async function main() {
     assert.equal(gwCalls[0].conversationId, undefined)
   })
 
+  await check('életjel: a loop MINDEN kör elején meghívja az onTurnStart horgot', async () => {
+    // chat-agent-turn-resilience-spec.md D8/D10 — erre épül a forduló-rekord
+    // heartbeatje, amiből egy elhalt futás kívülről felismerhető.
+    const gwCalls: GatewayCallArgs[] = []
+    const brokerCalls: ToolBrokerInvokeInput[] = []
+    const turnStarts: number[] = []
+    const result = await runAgentToolLoop({
+      gateway: fakeGateway(
+        [
+          { toolCalls: [{ id: 'c1', name: 'file_read', input: { path: 'a.txt' } }] },
+          { toolCalls: [{ id: 'c2', name: 'file_read', input: { path: 'b.txt' } }] },
+          { content: 'Kész.' },
+        ],
+        gwCalls,
+      ),
+      toolBroker: fakeToolBroker(brokerCalls),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 3,
+      context: { conversationId: 'conv-1' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'olvasd be a fájlokat' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: ['file_read'],
+      onTurnStart: (turnIndex) => {
+        turnStarts.push(turnIndex)
+      },
+    })
+
+    assert.equal(result.content, 'Kész.')
+    assert.deepEqual(turnStarts, [0, 1, 2], 'körönként pontosan egy életjel, a kör indexével')
+  })
+
   await check('prompt cache: a loop statikus prefixe a változó kontextus és előzmény elé kerül', async () => {
     const gwCalls: GatewayCallArgs[] = []
     await runAgentToolLoop({
