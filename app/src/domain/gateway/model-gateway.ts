@@ -1508,6 +1508,8 @@ export class ModelGateway {
     content: string
     toolCalls?: GatewayToolCall[]
     usage: { promptTokens: number; completionTokens: number }
+    /** EUR becslés a háromrétegű tarifa-feloldásból. */
+    costEstimate: number
     provider: string
     model: string
   }> {
@@ -1625,6 +1627,7 @@ export class ModelGateway {
           content,
           ...(result.toolCalls?.length ? { toolCalls: result.toolCalls } : {}),
           usage: { promptTokens, completionTokens },
+          costEstimate,
           provider: provider.name,
           model: usedModel,
         }

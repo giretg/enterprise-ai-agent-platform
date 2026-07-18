@@ -32,7 +32,12 @@ export type RunStrictContractInput = {
       messages: GatewayMessage[]
       modelConfig: ModelConfig
       responseJsonSchema?: Record<string, unknown>
-    }): Promise<{ content: string }>
+    }): Promise<{
+      content: string
+      usage?: { promptTokens: number; completionTokens: number }
+      /** EUR becslés, ha a kapu számolta. */
+      costEstimate?: number
+    }>
   }
   contract: CompiledContract
   /** Az agent eddigi (szabad) válasza — ezt validáljuk először, modellhívás nélkül. */
@@ -125,6 +130,7 @@ export async function runStrictContract(
 ): Promise<StrictContractResult> {
   const maxAttempts = resolveRepairAttempts(input.criticality, input.maxRepairAttempts)
   let repairAttempts = 0
+  let repairCostEstimate = 0
   let candidate = parseCandidate(input.rawContent)
   let validated = validateAgainstContract(input.contract, candidate)
 
@@ -135,6 +141,7 @@ export async function runStrictContract(
       ok: false,
       errors: validated.errors,
       repairAttempts: 0,
+      repairCostEstimate: 0,
       humanSummary: formatContractErrors(validated.errors),
     }
   }
@@ -182,6 +189,10 @@ export async function runStrictContract(
         })
       }
 
+      if (typeof response.costEstimate === 'number' && Number.isFinite(response.costEstimate)) {
+        repairCostEstimate += response.costEstimate
+      }
+
       candidate = parseCandidate(response.content)
       validated = validateAgainstContract(input.contract, candidate)
       if (validated.ok) break
@@ -196,6 +207,7 @@ export async function runStrictContract(
       ok: false,
       errors: lastErrors,
       repairAttempts,
+      repairCostEstimate,
       humanSummary: formatContractErrors(lastErrors),
     }
   }
@@ -219,10 +231,11 @@ export async function runStrictContract(
         ok: false,
         errors: judgmentIssues,
         repairAttempts,
+        repairCostEstimate,
         humanSummary: formatContractErrors(judgmentIssues),
       }
     }
   }
 
-  return { ok: true, value: validated.value, repairAttempts }
+  return { ok: true, value: validated.value, repairAttempts, repairCostEstimate }
 }

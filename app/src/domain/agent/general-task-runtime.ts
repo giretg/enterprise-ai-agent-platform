@@ -34,10 +34,13 @@ import {
   runStrictContract,
   structuringModelFromEnv,
   toStructuringModelConfig,
+  classifyContractOutcome,
+  buildContractEvaluateAuditMetadata,
   type ContractField,
   type CriticalityLevel,
   type StructuringModelSetting,
 } from '@/domain/contract-runtime'
+import { contractEvaluationsTotal, contractRepairCostEur } from '@/lib/observability/metrics'
 import { readTicketPromptText } from '@/lib/wiki-ticket-payload'
 import { formatHitsForPrompt, type KbHit } from '@/lib/kb-format'
 import { distillKbSearchQuery } from '@/lib/kb-query'
@@ -361,6 +364,41 @@ export class GeneralTaskRuntime {
           )
         }
         contractHumanSummary = strict.humanSummary
+      }
+
+      // #46 — contract megfigyelhetőség: audit + in-process metrika.
+      const outcome = classifyContractOutcome(strict)
+      contractEvaluationsTotal.inc({ outcome })
+      if (strict.repairCostEstimate > 0) {
+        contractRepairCostEur.inc({}, strict.repairCostEstimate)
+      }
+      if (this.audit) {
+        try {
+          await this.audit.append({
+            actorType: 'agent',
+            actorId: params.agentId,
+            agentVersion,
+            action: 'contract.evaluate',
+            targetType: 'ticket',
+            targetId: ticket.id,
+            tenantId: ticket.tenantId ?? null,
+            ticketId: ticket.id,
+            modelUsed: null,
+            inputRef: processStep.stepRule.stepId,
+            outputRef: outcome,
+            policyDecision: outcome,
+            metadata: buildContractEvaluateAuditMetadata({
+              outcome,
+              repairAttempts: strict.repairAttempts,
+              repairCostEstimate: strict.repairCostEstimate,
+              stepId: processStep.stepRule.stepId,
+              playbookRef: ticket.playbookRef ?? null,
+              errorCodes: strict.ok ? [] : strict.errors.map((e) => e.code),
+            }) as Prisma.JsonObject,
+          })
+        } catch {
+          // best-effort — a lépés lezárása fontosabb a telemetriánál
+        }
       }
     } else if (processStep) {
       structuredOutput = parseAgentStepOutput(answer, processStep.outputRequiredFields)

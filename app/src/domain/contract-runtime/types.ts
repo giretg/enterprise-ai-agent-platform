@@ -95,12 +95,15 @@ export type StrictContractSuccess = {
   ok: true
   value: Record<string, unknown>
   repairAttempts: number
+  /** Javító modellhívások becsült költsége (EUR); elsőre sikeresnél 0. */
+  repairCostEstimate: number
 }
 
 export type StrictContractFailure = {
   ok: false
   errors: ContractIssue[]
   repairAttempts: number
+  repairCostEstimate: number
   /** Közérthető magyar magyarázat emberi felülvizsgálathoz. */
   humanSummary: string
 }

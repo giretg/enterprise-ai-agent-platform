@@ -310,6 +310,11 @@ async function main() {
       },
     }
     const gateway = makeGateway(provider)
+    const origCall = gateway.call.bind(gateway)
+    gateway.call = async (params) => {
+      const r = await origCall(params)
+      return { ...r, costEstimate: 0.01 }
+    }
     const result = await runStrictContract({
       gateway,
       contract: priceContract,
@@ -324,6 +329,7 @@ async function main() {
     if (!result.ok) {
       assert.ok(result.errors.length > 0)
       assert.equal(result.repairAttempts, 1)
+      assert.equal(result.repairCostEstimate, 0.01)
     }
   })
 

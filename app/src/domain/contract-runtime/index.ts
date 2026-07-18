@@ -38,3 +38,16 @@ export {
   toStructuringModelConfig,
   type StructuringModelSetting,
 } from './structuring-model'
+export {
+  classifyContractOutcome,
+  summarizeContractObservability,
+  evaluationFromAuditMetadata,
+  humanGateFromBlockedMetadata,
+  humanGateReasonLabel,
+  buildContractEvaluateAuditMetadata,
+  CONTRACT_OUTCOME_LABELS,
+  type ContractEvaluationOutcome,
+  type ContractEvaluationRecord,
+  type ContractHumanGateRecord,
+  type ContractObservabilitySummary,
+} from './observability'

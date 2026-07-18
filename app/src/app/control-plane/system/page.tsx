@@ -4,6 +4,7 @@ import {
   getDatabaseMode,
   getDispatcherControls,
   getMemoryObservabilityDashboard,
+  getContractObservabilityDashboard,
   getModelCallsSummary,
   getModelPolicy,
   getTicketTypeConfigs,
@@ -30,6 +31,7 @@ import { TenantWebSearchPolicyPanel } from './tenant-web-search-policy-panel'
 import { TenantThinkingTracePanel } from './tenant-thinking-trace-panel'
 import { TenantLanguagePanel } from './tenant-language-panel'
 import { MemoryObservabilityPanel } from './memory-observability-panel'
+import { ContractObservabilityPanel } from './contract-observability-panel'
 
 export default async function SystemPage() {
   const [
@@ -49,6 +51,7 @@ export default async function SystemPage() {
     routingPoliciesRes,
     budgetsRes,
     memoryObservabilityRes,
+    contractObservabilityRes,
     dailyBudgetRes,
   ] = await Promise.all([
     getAuthContext(),
@@ -67,6 +70,7 @@ export default async function SystemPage() {
     listModelRoutingPolicies(),
     listModelBudgets(),
     getMemoryObservabilityDashboard(),
+    getContractObservabilityDashboard(),
     getDailyBudgetOverview(),
   ])
   // §9.2/§13/4: a platform-globális vezérlőket csak platform-szerep szerkesztheti;
@@ -204,6 +208,9 @@ export default async function SystemPage() {
       )}
 
       {memoryObservabilityRes.success && <MemoryObservabilityPanel data={memoryObservabilityRes.data} />}
+      {contractObservabilityRes.success && (
+        <ContractObservabilityPanel data={contractObservabilityRes.data} />
+      )}
     </div>
   )
 }

@@ -261,6 +261,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'process.step.complete',
   'process.step.create',
   'process.step.dispatch_deferred',
+  'contract.evaluate',
   'ticket.comment.add',
   'ticket.comment.attachment.uploaded',
   'ticket.handback',
