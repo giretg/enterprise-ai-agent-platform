@@ -6,9 +6,10 @@ import type {
 } from '@/repositories/interfaces'
 import {
   computeModelCostEur,
-  parseModelPricingSetting,
+  resolvePricingFromSettings,
   DEFAULT_MODEL_PRICING,
   MODEL_PRICING_SETTING_KEY,
+  MODEL_PRICING_SYNCED_SETTING_KEY,
   type ModelPricingTable,
 } from '@/lib/model-pricing'
 import { callChatGptOAuth, callChatGptOAuthStream, stubChatStream } from './chatgpt-oauth-bridge'
@@ -21,9 +22,20 @@ import {
   type SensitivityDecision,
   type SensitivityPolicy,
 } from './sensitivity-router'
+import {
+  buildEffectiveFallbackChain,
+  classifyProviderError,
+  extractAgentFallbackModels,
+  fallbackMaxAttemptsFromEnv,
+  FALLBACK_CHAIN_SETTING_KEY,
+  isFallbackEligible,
+  parseFallbackChainSetting,
+  type FallbackCandidate,
+  type FallbackErrorClass,
+} from './fallback-chain'
 import type { RoutingEngine } from './routing-engine'
 import type { BudgetEngine } from './budget-engine'
-import { logger, modelCallsTotal, modelCallLatencyMs } from '@/lib/observability'
+import { logger, modelCallsTotal, modelCallLatencyMs, modelFallbackTotal } from '@/lib/observability'
 
 /** OpenRouter / Ollama stb. provider fetch timeout (ms). Default: 120s. */
 const DEFAULT_MODEL_PROVIDER_FETCH_TIMEOUT_MS = 120_000
@@ -114,11 +126,11 @@ function isUuid(value: string): boolean {
 }
 
 function classifyError(error: unknown): ModelCallStatus {
-  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase()
-  if (message.includes('429') || message.includes('rate') || message.includes('quota')) {
-    return 'rate_limited'
-  }
-  return 'error'
+  return persistedStatusFromErrorClass(classifyProviderError(error))
+}
+
+function persistedStatusFromErrorClass(errorClass: FallbackErrorClass): ModelCallStatus {
+  return errorClass === 'rate_limited' ? 'rate_limited' : 'error'
 }
 
 export type ModelConfig = {
@@ -126,6 +138,12 @@ export type ModelConfig = {
   model: string
   temperature?: number
   maxTokens?: number
+  /**
+   * Agent-szintű tartalék-lista (admin konfiguráció, verziózott).
+   * Futásidőben sem a request, sem az agent nem írhatja felül másképp —
+   * csak ez a befagyasztott modelConfig mező.
+   */
+  fallbackModels?: FallbackCandidate[]
 }
 
 export type SensitivityOverride = {
@@ -1002,7 +1020,7 @@ export class ModelGateway {
     )
   }
 
-  /** Cache-elt tarifa-betöltés (setting → default fallback). */
+  /** Cache-elt tarifa-betöltés (három réteg → merge; hiány/hiba → builtin). */
   private cachedPricing: ModelPricingTable | null = null
   private async loadPricing(): Promise<ModelPricingTable> {
     if (this.cachedPricing) return this.cachedPricing
@@ -1011,12 +1029,86 @@ export class ModelGateway {
       return this.cachedPricing
     }
     try {
-      const raw = await this.pricingSettings.get(MODEL_PRICING_SETTING_KEY)
-      this.cachedPricing = parseModelPricingSetting(raw)
+      const [manual, synced] = await Promise.all([
+        this.pricingSettings.get(MODEL_PRICING_SETTING_KEY),
+        this.pricingSettings.get(MODEL_PRICING_SYNCED_SETTING_KEY),
+      ])
+      this.cachedPricing = resolvePricingFromSettings({ manual, synced })
     } catch {
       this.cachedPricing = DEFAULT_MODEL_PRICING
     }
     return this.cachedPricing
+  }
+
+  private cachedGlobalFallbacks: FallbackCandidate[] | null = null
+  private async loadGlobalFallbacks(): Promise<FallbackCandidate[]> {
+    if (this.cachedGlobalFallbacks) return this.cachedGlobalFallbacks
+    if (!this.pricingSettings) {
+      this.cachedGlobalFallbacks = []
+      return this.cachedGlobalFallbacks
+    }
+    try {
+      const raw = await this.pricingSettings.get(FALLBACK_CHAIN_SETTING_KEY)
+      this.cachedGlobalFallbacks = parseFallbackChainSetting(raw)
+    } catch {
+      this.cachedGlobalFallbacks = []
+    }
+    return this.cachedGlobalFallbacks
+  }
+
+  /**
+   * Effektív tartalék-lánc előnézet (admin UI). Ugyanaz a szűrés, mint a hívási úton.
+   * A `sensitiveBranch` a helyi-kényszerített ágat jelöli.
+   */
+  async previewEffectiveFallbackChain(input: {
+    primary: FallbackCandidate
+    agentModelConfig?: unknown
+    /** Ha true, az érzékeny ágat szimulálja (csak helyi jelöltek). */
+    simulateSensitive?: boolean
+  }): Promise<{
+    chain: FallbackCandidate[]
+    sensitiveBranch: boolean
+    localProvider: string
+  }> {
+    const forcedLocal = !!input.simulateSensitive && this.sensitivityPolicy.enforceLocalForSensitive
+    const chain = buildEffectiveFallbackChain({
+      primary: forcedLocal
+        ? {
+            provider: this.sensitivityPolicy.localProvider,
+            model: this.sensitivityPolicy.localModel,
+          }
+        : input.primary,
+      agentFallbacks: extractAgentFallbackModels(input.agentModelConfig),
+      globalFallbacks: await this.loadGlobalFallbacks(),
+      knownProviders: this.providers.keys(),
+      forcedLocal,
+      localProvider: this.sensitivityPolicy.localProvider,
+      maxAttempts: fallbackMaxAttemptsFromEnv(),
+    })
+    return {
+      chain,
+      sensitiveBranch: forcedLocal,
+      localProvider: this.sensitivityPolicy.localProvider,
+    }
+  }
+
+  private async resolveCallChain(input: {
+    resolvedConfig: ModelConfig
+    agentModelConfig: unknown
+    forcedLocal: boolean
+  }): Promise<FallbackCandidate[]> {
+    return buildEffectiveFallbackChain({
+      primary: {
+        provider: input.resolvedConfig.provider,
+        model: input.resolvedConfig.model || 'chatgpt-oauth-default',
+      },
+      agentFallbacks: extractAgentFallbackModels(input.agentModelConfig),
+      globalFallbacks: await this.loadGlobalFallbacks(),
+      knownProviders: this.providers.keys(),
+      forcedLocal: input.forcedLocal,
+      localProvider: this.sensitivityPolicy.localProvider,
+      maxAttempts: fallbackMaxAttemptsFromEnv(),
+    })
   }
 
   async call(params: {
@@ -1086,17 +1178,7 @@ export class ModelGateway {
     resolvedConfig = sensitivityRouting.resolvedConfig
     const forcedLocal = sensitivityRouting.forcedLocal
 
-    const provider = this.providers.get(resolvedConfig.provider)
-    if (!provider) {
-      throw new Error(
-        `Unsupported model provider: ${resolvedConfig.provider} (ismert: ${[...this.providers.keys()].join(', ')})`,
-      )
-    }
-
     const model = resolvedConfig.model || 'chatgpt-oauth-default'
-    const prompt = params.messages
-      .map((m) => `${m.role.toUpperCase()}: ${messageText(m)}`)
-      .join('\n\n')
 
     // ── Step 4a: Ticket-level guardrail ────────────────────────────────────
     if (params.ticketId && isUuid(params.ticketId)) {
@@ -1150,161 +1232,280 @@ export class ModelGateway {
       }
     }
 
-    // ── Steps 5-9: Secret injection, provider call, output guard, logging ────
-    const started = Date.now()
-    try {
-      const result = await withRetry(() =>
-        provider.chat({
-          agentId: params.agentId,
-          ticketId: params.ticketId,
-          messages: params.messages,
-          modelConfig: { ...resolvedConfig, model },
-          tools: params.tools,
-          onReasoningDelta: params.onReasoningDelta,
-        }),
+    // ── Steps 5-9: tartalék-lánc, provider hívás, napló, audit ───────────────
+    // A keret-kapu és a guardrail a hurok ELŐTT futott (egyszer). A láncot
+    // admin konfiguráció adja — a request nem írhatja felül.
+    const chain = await this.resolveCallChain({
+      resolvedConfig,
+      agentModelConfig: params.modelConfig,
+      forcedLocal,
+    })
+    if (chain.length === 0) {
+      throw new Error(
+        `Unsupported model provider: ${resolvedConfig.provider} (ismert: ${[...this.providers.keys()].join(', ')})`,
       )
+    }
 
-      const content = result.content
-      const promptTokens = result.usage?.promptTokens ?? Math.ceil(prompt.length / 4)
-      const completionTokens = result.usage?.completionTokens ?? Math.ceil(content.length / 4)
-      const usedModel = result.model || model
-      // §16.1 — valódi becslés a token-számokból (korábban fixen 0).
-      const costEstimate = computeModelCostEur(
-        usedModel,
-        promptTokens,
-        completionTokens,
-        await this.loadPricing(),
-      )
+    const attemptGroupId = crypto.randomUUID()
+    const prompt = params.messages
+      .map((m) => `${m.role.toUpperCase()}: ${messageText(m)}`)
+      .join('\n\n')
+    const targetType = params.ticketId ? 'ticket' : params.conversationId ? 'conversation' : 'agent'
+    const targetId = params.ticketId ?? params.conversationId ?? params.agentId
 
-      await this.modelCalls.create({
-        agentId: params.agentId,
-        agentVersion,
-        ticketId: params.ticketId ?? null,
-        conversationId: params.conversationId ?? null,
-        provider: provider.name,
-        model: usedModel,
-        promptTokens,
-        completionTokens,
-        costEstimate: new Prisma.Decimal(costEstimate),
-        latencyMs: result.latencyMs,
-        status: 'ok',
-      })
+    let lastError: unknown
+    let lastErrorClass: FallbackErrorClass = 'other'
 
-      // WP-6 (O2): gateway telemetria — hívásszám + latency + költség (metaadat).
-      modelCallsTotal.inc({ provider: provider.name, status: 'ok' })
-      modelCallLatencyMs.observe(result.latencyMs, { provider: provider.name })
-      logger.info(
-        {
-          event: 'model.call',
-          provider: provider.name,
-          model: usedModel,
-          status: 'ok',
-          latencyMs: result.latencyMs,
-          costEstimate,
+    for (let attemptIndex = 0; attemptIndex < chain.length; attemptIndex++) {
+      const candidate = chain[attemptIndex]!
+      const provider = this.providers.get(candidate.provider)
+      if (!provider) continue
+
+      const model = candidate.model
+      const attemptConfig: ModelConfig = {
+        ...resolvedConfig,
+        provider: candidate.provider,
+        model,
+      }
+      const started = Date.now()
+
+      try {
+        const result = await withRetry(() =>
+          provider.chat({
+            agentId: params.agentId,
+            ticketId: params.ticketId,
+            messages: params.messages,
+            modelConfig: attemptConfig,
+            tools: params.tools,
+            onReasoningDelta: params.onReasoningDelta,
+          }),
+        )
+
+        const content = result.content
+        const promptTokens = result.usage?.promptTokens ?? Math.ceil(prompt.length / 4)
+        const completionTokens = result.usage?.completionTokens ?? Math.ceil(content.length / 4)
+        const usedModel = result.model || model
+        const costEstimate = computeModelCostEur(
+          usedModel,
           promptTokens,
           completionTokens,
+          await this.loadPricing(),
+        )
+
+        await this.modelCalls.create({
           agentId: params.agentId,
+          agentVersion,
           ticketId: params.ticketId ?? null,
-        },
-        'model gateway call',
-      )
-
-      const targetType = params.ticketId ? 'ticket' : params.conversationId ? 'conversation' : 'agent'
-      const targetId = params.ticketId ?? params.conversationId ?? params.agentId
-
-      await this.audit.append({
-        actorType: 'agent',
-        actorId: params.agentId,
-        agentVersion,
-        action: 'model.call',
-        targetType,
-        targetId,
-        modelUsed: usedModel,
-        inputRef: `tokens:${promptTokens}`,
-        outputRef: `tokens:${completionTokens}`,
-        policyDecision: 'allowed',
-        metadata: {
-          costEstimate,
+          conversationId: params.conversationId ?? null,
+          provider: provider.name,
+          model: usedModel,
+          promptTokens,
+          completionTokens,
+          costEstimate: new Prisma.Decimal(costEstimate),
           latencyMs: result.latencyMs,
           status: 'ok',
-          sensitivity: sensitivity.level,
-        },
-      })
-
-      return {
-        content,
-        ...(result.toolCalls?.length ? { toolCalls: result.toolCalls } : {}),
-        usage: { promptTokens, completionTokens },
-        provider: provider.name,
-        model: usedModel,
-      }
-    } catch (error: unknown) {
-      if (error instanceof GatewayBudgetError) throw error
-      const status = classifyError(error)
-      const latencyMs = Date.now() - started
-      const message = error instanceof Error ? error.message : String(error)
-
-      await this.modelCalls.create({
-        agentId: params.agentId,
-        agentVersion,
-        ticketId: params.ticketId ?? null,
-        conversationId: params.conversationId ?? null,
-        provider: provider.name,
-        model,
-        promptTokens: 0,
-        completionTokens: 0,
-        costEstimate: new Prisma.Decimal(0),
-        latencyMs,
-        status,
-      })
-
-      // WP-6 (O2): hibás modellhívás telemetriája (rate_limited / error).
-      modelCallsTotal.inc({ provider: provider.name, status })
-      modelCallLatencyMs.observe(latencyMs, { provider: provider.name })
-      logger.warn(
-        {
-          event: 'model.call',
-          provider: provider.name,
-          model,
-          status,
-          latencyMs,
-          agentId: params.agentId,
-          ticketId: params.ticketId ?? null,
-          error: message,
-        },
-        'model gateway call failed',
-      )
-
-      const targetType = params.ticketId ? 'ticket' : params.conversationId ? 'conversation' : 'agent'
-      const targetId = params.ticketId ?? params.conversationId ?? params.agentId
-
-      await this.audit.append({
-        actorType: 'agent',
-        actorId: params.agentId,
-        agentVersion,
-        action: 'model.call',
-        targetType,
-        targetId,
-        modelUsed: model,
-        inputRef: 'error',
-        outputRef: status,
-        policyDecision: status,
-        metadata: { latencyMs, status, error: message },
-      })
-
-      // A helyi modell elérhetőnek volt jelölve, de a hívás mégis elhalt (pl. az
-      // Ollama nem fut). A nyers `fetch failed` semmit nem mond a felhasználónak.
-      if (forcedLocal) {
-        throw this.localSensitivityError({
-          sensitivity,
-          provider: provider.name,
-          model,
-          providerError: message,
         })
-      }
 
-      throw error
+        modelCallsTotal.inc({ provider: provider.name, status: 'ok' })
+        modelCallLatencyMs.observe(result.latencyMs, { provider: provider.name })
+        logger.info(
+          {
+            event: 'model.call',
+            provider: provider.name,
+            model: usedModel,
+            status: 'ok',
+            latencyMs: result.latencyMs,
+            costEstimate,
+            promptTokens,
+            completionTokens,
+            agentId: params.agentId,
+            ticketId: params.ticketId ?? null,
+            attemptGroupId,
+            attemptIndex,
+            chainLength: chain.length,
+          },
+          'model gateway call',
+        )
+
+        await this.audit.append({
+          actorType: 'agent',
+          actorId: params.agentId,
+          agentVersion,
+          action: 'model.call',
+          targetType,
+          targetId,
+          modelUsed: usedModel,
+          inputRef: `tokens:${promptTokens}`,
+          outputRef: `tokens:${completionTokens}`,
+          policyDecision: 'allowed',
+          metadata: {
+            costEstimate,
+            latencyMs: result.latencyMs,
+            status: 'ok',
+            sensitivity: sensitivity.level,
+            attemptGroupId,
+            attemptIndex,
+            chainLength: chain.length,
+            provider: provider.name,
+          },
+        })
+
+        return {
+          content,
+          ...(result.toolCalls?.length ? { toolCalls: result.toolCalls } : {}),
+          usage: { promptTokens, completionTokens },
+          provider: provider.name,
+          model: usedModel,
+        }
+      } catch (error: unknown) {
+        if (error instanceof GatewayBudgetError || error instanceof GatewaySensitivityError) {
+          throw error
+        }
+
+        lastError = error
+        lastErrorClass = classifyProviderError(error)
+        const status = persistedStatusFromErrorClass(lastErrorClass)
+        const latencyMs = Date.now() - started
+        const message = error instanceof Error ? error.message : String(error)
+
+        await this.modelCalls.create({
+          agentId: params.agentId,
+          agentVersion,
+          ticketId: params.ticketId ?? null,
+          conversationId: params.conversationId ?? null,
+          provider: provider.name,
+          model,
+          promptTokens: 0,
+          completionTokens: 0,
+          costEstimate: new Prisma.Decimal(0),
+          latencyMs,
+          status,
+        })
+
+        modelCallsTotal.inc({ provider: provider.name, status })
+        modelCallLatencyMs.observe(latencyMs, { provider: provider.name })
+
+        const next = chain[attemptIndex + 1]
+        const willFallback = isFallbackEligible(lastErrorClass) && !!next
+
+        if (lastErrorClass === 'auth_error') {
+          logger.error(
+            {
+              event: 'model.call.auth_fallback',
+              provider: provider.name,
+              model,
+              status,
+              latencyMs,
+              agentId: params.agentId,
+              ticketId: params.ticketId ?? null,
+              error: message,
+              attemptGroupId,
+              attemptIndex,
+              willFallback,
+            },
+            'model gateway AUTH error — fallback may hide a misconfiguration',
+          )
+        } else {
+          logger.warn(
+            {
+              event: 'model.call',
+              provider: provider.name,
+              model,
+              status,
+              latencyMs,
+              agentId: params.agentId,
+              ticketId: params.ticketId ?? null,
+              error: message,
+              attemptGroupId,
+              attemptIndex,
+              errorClass: lastErrorClass,
+            },
+            'model gateway call failed',
+          )
+        }
+
+        await this.audit.append({
+          actorType: 'agent',
+          actorId: params.agentId,
+          agentVersion,
+          action: 'model.call',
+          targetType,
+          targetId,
+          modelUsed: model,
+          inputRef: 'error',
+          outputRef: status,
+          policyDecision: status,
+          metadata: {
+            latencyMs,
+            status,
+            error: message,
+            errorClass: lastErrorClass,
+            attemptGroupId,
+            attemptIndex,
+            chainLength: chain.length,
+            provider: provider.name,
+          },
+        })
+
+        if (willFallback && next) {
+          modelFallbackTotal.inc({
+            from: provider.name,
+            to: next.provider,
+            reason: lastErrorClass,
+          })
+          await this.audit.append({
+            actorType: 'agent',
+            actorId: params.agentId,
+            agentVersion,
+            action: 'model.call.fallback',
+            targetType,
+            targetId,
+            modelUsed: next.model,
+            inputRef: `${provider.name}/${model}`,
+            outputRef: `${next.provider}/${next.model}`,
+            policyDecision: lastErrorClass,
+            metadata: {
+              attemptGroupId,
+              attemptIndex,
+              chainLength: chain.length,
+              fromProvider: provider.name,
+              fromModel: model,
+              toProvider: next.provider,
+              toModel: next.model,
+              reason: lastErrorClass,
+              error: message,
+            },
+          })
+          continue
+        }
+
+        if (forcedLocal) {
+          throw this.localSensitivityError({
+            sensitivity,
+            provider: provider.name,
+            model,
+            providerError: message,
+          })
+        }
+
+        throw error
+      }
     }
+
+    // Lánc kimerült (minden jelölt ismeretlen volt, vagy mind elbukott fallback nélkül)
+    if (forcedLocal) {
+      const last = chain[chain.length - 1]
+      throw this.localSensitivityError({
+        sensitivity,
+        provider: last?.provider ?? resolvedConfig.provider,
+        model: last?.model ?? resolvedConfig.model,
+        providerError:
+          lastError instanceof Error ? lastError.message : String(lastError ?? 'no candidates'),
+      })
+    }
+    throw lastError instanceof Error
+      ? lastError
+      : new Error(String(lastError ?? 'fallback chain exhausted'))
   }
 
   async *callStream(params: {
@@ -1360,18 +1561,6 @@ export class ModelGateway {
     resolvedConfig = sensitivityRouting.resolvedConfig
     const forcedLocal = sensitivityRouting.forcedLocal
 
-    const provider = this.providers.get(resolvedConfig.provider)
-    if (!provider) {
-      throw new Error(
-        `Unsupported model provider: ${resolvedConfig.provider} (ismert: ${[...this.providers.keys()].join(', ')})`,
-      )
-    }
-
-    const model = resolvedConfig.model || 'chatgpt-oauth-default'
-    const prompt = params.messages
-      .map((m) => `${m.role.toUpperCase()}: ${messageText(m)}`)
-      .join('\n\n')
-
     if (params.ticketId && isUuid(params.ticketId)) {
       const usage = await this.modelCalls.getUsageForTicket(params.ticketId)
       if (usage.calls >= this.guardrail.maxCallsPerTicket) {
@@ -1382,7 +1571,7 @@ export class ModelGateway {
           action: 'model.call.denied',
           targetType: 'ticket',
           targetId: params.ticketId,
-          modelUsed: model,
+          modelUsed: resolvedConfig.model,
           inputRef: `calls:${usage.calls}`,
           outputRef: `cap:${this.guardrail.maxCallsPerTicket}`,
           policyDecision: 'budget_blocked',
@@ -1410,7 +1599,7 @@ export class ModelGateway {
           action: 'model.call.denied',
           targetType,
           targetId,
-          modelUsed: model,
+          modelUsed: resolvedConfig.model,
           inputRef: 'budget_check',
           outputRef: 'denied',
           policyDecision: 'budget_blocked',
@@ -1420,48 +1609,138 @@ export class ModelGateway {
       }
     }
 
-    const started = Date.now()
-    let content = ''
+    const chain = await this.resolveCallChain({
+      resolvedConfig,
+      agentModelConfig: params.modelConfig,
+      forcedLocal,
+    })
+    if (chain.length === 0) {
+      throw new Error(
+        `Unsupported model provider: ${resolvedConfig.provider} (ismert: ${[...this.providers.keys()].join(', ')})`,
+      )
+    }
 
-    if (!provider.chatStream) {
-      // Fallback: call non-streaming and yield the full content as one chunk.
+    const attemptGroupId = crypto.randomUUID()
+    const prompt = params.messages
+      .map((m) => `${m.role.toUpperCase()}: ${messageText(m)}`)
+      .join('\n\n')
+    const targetType = params.ticketId ? 'ticket' : params.conversationId ? 'conversation' : 'agent'
+    const targetId = params.ticketId ?? params.conversationId ?? params.agentId
+
+    let lastError: unknown
+
+    for (let attemptIndex = 0; attemptIndex < chain.length; attemptIndex++) {
+      const candidate = chain[attemptIndex]!
+      const provider = this.providers.get(candidate.provider)
+      if (!provider) continue
+
+      const model = candidate.model
+      const attemptConfig: ModelConfig = {
+        ...resolvedConfig,
+        provider: candidate.provider,
+        model,
+      }
+      const started = Date.now()
+      let content = ''
+      /** Az első kiírt token elkötelezi a jelöltet — utána nincs fallback. */
+      let committed = false
+
       try {
-        const result = await withRetry(() =>
-          provider.chat({
+        if (!provider.chatStream) {
+          // Nem-streamelő provider: egyben hív, majd egy chunkként adja.
+          const result = await withRetry(() =>
+            provider.chat({
+              agentId: params.agentId,
+              ticketId: params.ticketId,
+              messages: params.messages,
+              modelConfig: attemptConfig,
+              onReasoningDelta: params.onReasoningDelta,
+            }),
+          )
+          content = result.content
+          committed = true
+          const promptTokens = result.usage?.promptTokens ?? Math.ceil(prompt.length / 4)
+          const completionTokens = result.usage?.completionTokens ?? Math.ceil(content.length / 4)
+          const usedModel = result.model || model
+          const costEstimate = computeModelCostEur(
+            usedModel,
+            promptTokens,
+            completionTokens,
+            await this.loadPricing(),
+          )
+          await this.modelCalls.create({
             agentId: params.agentId,
-            ticketId: params.ticketId,
-            messages: params.messages,
-            modelConfig: { ...resolvedConfig, model },
-            // Thinking-trace (WP-8): a nem-streamelő providerek (pl. Gemini) a
-            // reasoning-et egyetlen deltaként adják vissza ezen a callbacken.
-            onReasoningDelta: params.onReasoningDelta,
-          }),
-        )
-        content = result.content
-        const promptTokens = result.usage?.promptTokens ?? Math.ceil(prompt.length / 4)
-        const completionTokens = result.usage?.completionTokens ?? Math.ceil(content.length / 4)
-        const usedModel = result.model || model
+            agentVersion,
+            ticketId: params.ticketId ?? null,
+            conversationId: params.conversationId ?? null,
+            provider: provider.name,
+            model: usedModel,
+            promptTokens,
+            completionTokens,
+            costEstimate: new Prisma.Decimal(costEstimate),
+            latencyMs: result.latencyMs,
+            status: 'ok',
+          })
+          await this.audit.append({
+            actorType: 'agent',
+            actorId: params.agentId,
+            agentVersion,
+            action: 'model.call',
+            targetType,
+            targetId,
+            modelUsed: usedModel,
+            inputRef: `tokens:${promptTokens}`,
+            outputRef: `tokens:${completionTokens}`,
+            policyDecision: 'allowed',
+            metadata: {
+              costEstimate,
+              latencyMs: result.latencyMs,
+              status: 'ok',
+              sensitivity: sensitivity.level,
+              attemptGroupId,
+              attemptIndex,
+              chainLength: chain.length,
+            },
+          })
+          yield content
+          return
+        }
+
+        for await (const chunk of provider.chatStream({
+          agentId: params.agentId,
+          ticketId: params.ticketId,
+          messages: params.messages,
+          modelConfig: attemptConfig,
+          onReasoningDelta: params.onReasoningDelta,
+        })) {
+          if (!committed) committed = true
+          content += chunk
+          yield chunk
+        }
+
+        const promptTokens = Math.ceil(prompt.length / 4)
+        const completionTokens = Math.ceil(content.length / 4)
         const costEstimate = computeModelCostEur(
-          usedModel,
+          model,
           promptTokens,
           completionTokens,
           await this.loadPricing(),
         )
-        const targetType = params.ticketId ? 'ticket' : params.conversationId ? 'conversation' : 'agent'
-        const targetId = params.ticketId ?? params.conversationId ?? params.agentId
+
         await this.modelCalls.create({
           agentId: params.agentId,
           agentVersion,
           ticketId: params.ticketId ?? null,
           conversationId: params.conversationId ?? null,
           provider: provider.name,
-          model: usedModel,
+          model,
           promptTokens,
           completionTokens,
           costEstimate: new Prisma.Decimal(costEstimate),
-          latencyMs: result.latencyMs,
+          latencyMs: Date.now() - started,
           status: 'ok',
         })
+
         await this.audit.append({
           actorType: 'agent',
           actorId: params.agentId,
@@ -1469,20 +1748,32 @@ export class ModelGateway {
           action: 'model.call',
           targetType,
           targetId,
-          modelUsed: usedModel,
+          modelUsed: model,
           inputRef: `tokens:${promptTokens}`,
           outputRef: `tokens:${completionTokens}`,
           policyDecision: 'allowed',
-          metadata: { costEstimate, latencyMs: result.latencyMs, status: 'ok', sensitivity: sensitivity.level },
+          metadata: {
+            costEstimate,
+            latencyMs: Date.now() - started,
+            status: 'ok',
+            sensitivity: sensitivity.level,
+            attemptGroupId,
+            attemptIndex,
+            chainLength: chain.length,
+          },
         })
-        yield content
+        return
       } catch (error: unknown) {
-        if (error instanceof GatewayBudgetError) throw error
-        const status = classifyError(error)
+        if (error instanceof GatewayBudgetError || error instanceof GatewaySensitivityError) {
+          throw error
+        }
+
+        lastError = error
+        const errorClass = classifyProviderError(error)
+        const status = persistedStatusFromErrorClass(errorClass)
         const latencyMs = Date.now() - started
         const errorMessage = error instanceof Error ? error.message : String(error)
-        const targetType = params.ticketId ? 'ticket' : params.conversationId ? 'conversation' : 'agent'
-        const targetId = params.ticketId ?? params.conversationId ?? params.agentId
+
         await this.modelCalls.create({
           agentId: params.agentId,
           agentVersion,
@@ -1496,6 +1787,7 @@ export class ModelGateway {
           latencyMs,
           status,
         })
+
         await this.audit.append({
           actorType: 'agent',
           actorId: params.agentId,
@@ -1507,103 +1799,80 @@ export class ModelGateway {
           inputRef: 'error',
           outputRef: status,
           policyDecision: status,
-          metadata: { latencyMs, status, error: errorMessage },
+          metadata: {
+            latencyMs,
+            status,
+            error: errorMessage,
+            errorClass,
+            attemptGroupId,
+            attemptIndex,
+            chainLength: chain.length,
+            committed,
+          },
         })
+
+        const next = chain[attemptIndex + 1]
+        // Stream: csak az első token ELŐTT válthatunk.
+        const willFallback = !committed && isFallbackEligible(errorClass) && !!next
+
+        if (willFallback && next) {
+          modelFallbackTotal.inc({
+            from: provider.name,
+            to: next.provider,
+            reason: errorClass,
+          })
+          await this.audit.append({
+            actorType: 'agent',
+            actorId: params.agentId,
+            agentVersion,
+            action: 'model.call.fallback',
+            targetType,
+            targetId,
+            modelUsed: next.model,
+            inputRef: `${provider.name}/${model}`,
+            outputRef: `${next.provider}/${next.model}`,
+            policyDecision: errorClass,
+            metadata: {
+              attemptGroupId,
+              attemptIndex,
+              chainLength: chain.length,
+              fromProvider: provider.name,
+              fromModel: model,
+              toProvider: next.provider,
+              toModel: next.model,
+              reason: errorClass,
+              error: errorMessage,
+              stream: true,
+            },
+          })
+          continue
+        }
+
+        if (forcedLocal) {
+          throw this.localSensitivityError({
+            sensitivity,
+            provider: provider.name,
+            model,
+            providerError: errorMessage,
+          })
+        }
+
         throw error
       }
-      return
     }
 
-    try {
-      for await (const chunk of provider.chatStream({
-        agentId: params.agentId,
-        ticketId: params.ticketId,
-        messages: params.messages,
-        modelConfig: { ...resolvedConfig, model },
-        onReasoningDelta: params.onReasoningDelta,
-      })) {
-        content += chunk
-        yield chunk
-      }
-
-      const promptTokens = Math.ceil(prompt.length / 4)
-      const completionTokens = Math.ceil(content.length / 4)
-      const targetType = params.ticketId ? 'ticket' : params.conversationId ? 'conversation' : 'agent'
-      const targetId = params.ticketId ?? params.conversationId ?? params.agentId
-
-      await this.modelCalls.create({
-        agentId: params.agentId,
-        agentVersion,
-        ticketId: params.ticketId ?? null,
-        conversationId: params.conversationId ?? null,
-        provider: provider.name,
-        model,
-        promptTokens,
-        completionTokens,
-        costEstimate: new Prisma.Decimal(0),
-        latencyMs: Date.now() - started,
-        status: 'ok',
+    if (forcedLocal) {
+      const last = chain[chain.length - 1]
+      throw this.localSensitivityError({
+        sensitivity,
+        provider: last?.provider ?? resolvedConfig.provider,
+        model: last?.model ?? resolvedConfig.model,
+        providerError:
+          lastError instanceof Error ? lastError.message : String(lastError ?? 'no candidates'),
       })
-
-      await this.audit.append({
-        actorType: 'agent',
-        actorId: params.agentId,
-        agentVersion,
-        action: 'model.call',
-        targetType,
-        targetId,
-        modelUsed: model,
-        inputRef: `tokens:${promptTokens}`,
-        outputRef: `tokens:${completionTokens}`,
-        policyDecision: 'allowed',
-        metadata: { costEstimate: 0, latencyMs: Date.now() - started, status: 'ok', sensitivity: sensitivity.level },
-      })
-    } catch (error: unknown) {
-      if (error instanceof GatewayBudgetError) throw error
-      const status = classifyError(error)
-      const latencyMs = Date.now() - started
-      const errorMessage = error instanceof Error ? error.message : String(error)
-      const targetType = params.ticketId ? 'ticket' : params.conversationId ? 'conversation' : 'agent'
-      const targetId = params.ticketId ?? params.conversationId ?? params.agentId
-
-      await this.modelCalls.create({
-        agentId: params.agentId,
-        agentVersion,
-        ticketId: params.ticketId ?? null,
-        conversationId: params.conversationId ?? null,
-        provider: provider.name,
-        model,
-        promptTokens: 0,
-        completionTokens: 0,
-        costEstimate: new Prisma.Decimal(0),
-        latencyMs,
-        status,
-      })
-
-      await this.audit.append({
-        actorType: 'agent',
-        actorId: params.agentId,
-        agentVersion,
-        action: 'model.call',
-        targetType,
-        targetId,
-        modelUsed: model,
-        inputRef: 'error',
-        outputRef: status,
-        policyDecision: status,
-        metadata: { latencyMs, status, error: errorMessage },
-      })
-
-      if (forcedLocal) {
-        throw this.localSensitivityError({
-          sensitivity,
-          provider: provider.name,
-          model,
-          providerError: errorMessage,
-        })
-      }
-
-      throw error
     }
+    throw lastError instanceof Error
+      ? lastError
+      : new Error(String(lastError ?? 'fallback chain exhausted'))
   }
 }

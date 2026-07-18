@@ -838,6 +838,8 @@ export type ModelCallGovernanceSummary = {
   okCalls: number
   errorCalls: number
   rateLimitedCalls: number
+  /** Tartalékra váltások száma az időablakban (audit: model.call.fallback). */
+  fallbackSwitches?: number
 }
 
 export type ModelCallTicketBreakdown = {

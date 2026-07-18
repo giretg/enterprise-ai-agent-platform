@@ -190,6 +190,11 @@ export const modelCallLatencyMs = registry.histogram(
   'model_gateway_latency_ms',
   'Model gateway call latency in milliseconds',
 )
+/** Tartalékra váltások száma forrás/cél/ok bontásban. */
+export const modelFallbackTotal = registry.counter(
+  'model_gateway_fallback_total',
+  'Model gateway fallback switches by from/to provider and reason',
+)
 /** Tool-broker hívások száma tool + státusz + döntés szerint (deny-arány számításához). */
 export const toolBrokerCallsTotal = registry.counter(
   'tool_broker_calls_total',

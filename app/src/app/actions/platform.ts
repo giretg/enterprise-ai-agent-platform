@@ -1557,7 +1557,13 @@ export async function updateAgentAvatar(input: { agentId: string; avatarUrl: str
 
 export async function updateAgentModelConfig(input: {
   agentId: string
-  modelConfig: { provider: string; model: string; temperature?: number; maxTokens?: number }
+  modelConfig: {
+    provider: string
+    model: string
+    temperature?: number
+    maxTokens?: number
+    fallbackModels?: Array<{ provider: string; model: string }>
+  }
 }) {
   try {
     const user = await requireTenantRole('admin')
@@ -4977,12 +4983,121 @@ export async function getModelCallsSummary(input?: { sinceHours?: number }) {
     const since = input?.sinceHours
       ? new Date(Date.now() - input.sinceHours * 60 * 60 * 1000)
       : new Date(Date.now() - 7 * 24 * 60 * 60 * 1000)
-    const [summary, breakdown] = await Promise.all([
+    const [summary, breakdown, actionCounts] = await Promise.all([
       repositories.modelCalls.getGovernanceSummary(since),
       repositories.modelCalls.getPerTicketBreakdown(since, 20),
+      repositories.audit.getActionCounts({ actions: ['model.call.fallback'], since }),
     ])
-    return ok({ summary, breakdown, sinceHours: input?.sinceHours ?? 168 })
+    return ok({
+      summary: {
+        ...summary,
+        fallbackSwitches: actionCounts['model.call.fallback'] ?? 0,
+      },
+      breakdown,
+      sinceHours: input?.sinceHours ?? 168,
+    })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to load model calls summary')
+  }
+}
+
+// ── Model Gateway: tartalék-lánc + tarifa (#34) ─────────────────────────────
+
+export async function getFallbackChain() {
+  try {
+    await ensureActiveDatabaseMode()
+    await requireTenantRole('operator')
+    return ok(await services.platformSettings.getFallbackChain())
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to read fallback chain')
+  }
+}
+
+export async function setFallbackChain(input: {
+  chain: Array<{ provider: string; model: string }>
+}) {
+  try {
+    await ensureActiveDatabaseMode()
+    const user = await requirePlatformRole('superadmin')
+    const known = new Set(
+      (await import('@/lib/model-providers')).MODEL_PROVIDERS.map((p) => p.value),
+    )
+    const chain = await services.platformSettings.setFallbackChain(
+      input.chain,
+      user.user.id,
+      known,
+    )
+    return ok(chain)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to save fallback chain')
+  }
+}
+
+export async function previewEffectiveFallbackChain(input: {
+  agentId?: string
+  provider: string
+  model: string
+  simulateSensitive?: boolean
+}) {
+  try {
+    await ensureActiveDatabaseMode()
+    await requireTenantRole('operator')
+    let agentModelConfig: unknown
+    if (input.agentId) {
+      const user = await requireTenantRole('operator')
+      const agent = await repositories.agents.findById(input.agentId, user.activeTenantId)
+      agentModelConfig = agent?.modelConfig
+    }
+    const preview = await services.gateway.previewEffectiveFallbackChain({
+      primary: { provider: input.provider, model: input.model },
+      agentModelConfig,
+      simulateSensitive: input.simulateSensitive,
+    })
+    return ok(preview)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to preview fallback chain')
+  }
+}
+
+export async function getModelPricingView() {
+  try {
+    await ensureActiveDatabaseMode()
+    await requireTenantRole('operator')
+    return ok(await services.platformSettings.getModelPricingView())
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to read model pricing')
+  }
+}
+
+export async function setManualModelPrice(input: {
+  model: string
+  inputPerMTokens: number
+  outputPerMTokens: number
+}) {
+  try {
+    await ensureActiveDatabaseMode()
+    const user = await requirePlatformRole('superadmin')
+    await services.platformSettings.setManualModelPrice(
+      input.model,
+      {
+        inputPerMTokens: input.inputPerMTokens,
+        outputPerMTokens: input.outputPerMTokens,
+      },
+      user.user.id,
+    )
+    return ok(true)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to set manual price')
+  }
+}
+
+export async function clearManualModelPrice(input: { model: string }) {
+  try {
+    await ensureActiveDatabaseMode()
+    const user = await requirePlatformRole('superadmin')
+    await services.platformSettings.clearManualModelPrice(input.model, user.user.id)
+    return ok(true)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to clear manual price')
   }
 }

@@ -1,5 +1,5 @@
 /**
- * Model Gateway kötelező negatív tesztek (§10.2 MG-N1–MG-N8)
+ * Model Gateway kötelező negatív tesztek (§10.2 MG-N1–MG-N10)
  *
  * Futtatás: npx tsx scripts/model-gateway-negative.test.ts
  *
@@ -12,6 +12,8 @@
  * MG-N7: Request-szintű model override csak explicit routing policy alapján érvényesülhet.
  * MG-N8: Fail-closed routing, ha nincs helyi modell; per-agent felmentés csak a
  *        `sensitive` szintre hat; a tool-eredmény tartalma is osztályozódik.
+ * MG-N9: Tartalék-lánc (#42/#49): fallback, érzékenység∩tartalék, budget fail-fast, stream elköteleződés.
+ * MG-N10: Háromrétegű árazás (#43): kézi > szinkronizált > beépített; ismeretlen modell ≠ 0.
  */
 
 import assert from 'node:assert/strict'
@@ -839,6 +841,611 @@ async function main() {
         !/^fetch failed$/.test(e.message),
       'A nyers fetch failed jutott a hívóhoz',
     )
+  })
+
+  // ── MG-N9: Tartalék-lánc (#42 / #34) ─────────────────────────────────────
+  function makeSettings(map: Record<string, unknown> = {}) {
+    return {
+      async get(key: string) {
+        return Object.prototype.hasOwnProperty.call(map, key) ? map[key]! : null
+      },
+    }
+  }
+
+  await check('MG-N9: elsődleges kiesés → második jelölt szolgálja ki + mindkét kísérlet naplózva + közös attemptGroupId', async () => {
+    const { repo: auditRepo, events } = makeAuditRepo()
+    const { repo: modelCallRepo, created } = makeModelCallRepo(0)
+    const calls = { primary: 0, secondary: 0 }
+    const providers = new Map<string, ModelProvider>([
+      [
+        'chatgpt-oauth',
+        {
+          name: 'chatgpt-oauth',
+          async chat() {
+            calls.primary++
+            throw new Error('fetch failed')
+          },
+        },
+      ],
+      [
+        'gemini',
+        {
+          name: 'gemini',
+          async chat() {
+            calls.secondary++
+            return { content: 'tartalék ok', latencyMs: 2, usage: { promptTokens: 10, completionTokens: 5 } }
+          },
+        },
+      ],
+    ])
+
+    const gw = new ModelGateway(
+      auditRepo,
+      modelCallRepo,
+      providers,
+      { maxCallsPerTicket: 30 },
+      undefined,
+      undefined,
+      undefined,
+      makeSettings({
+        'model.fallback_chain': [{ provider: 'gemini', model: 'gemini-3.5-flash' }],
+      }),
+    )
+
+    const result = await gw.call({
+      agentId: TEST_AGENT_ID,
+      messages: [{ role: 'user', content: 'Szia' }],
+      modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+    })
+
+    assert.equal(result.content, 'tartalék ok')
+    assert.equal(result.provider, 'gemini')
+    assert.ok(calls.primary >= 1, 'elsődleges nem hívódott')
+    assert.equal(calls.secondary, 1)
+    assert.equal(created.length, 2, `várható 2 hívás-napló, kapott ${created.length}`)
+    assert.equal(created[0]?.status, 'error')
+    assert.equal(created[1]?.status, 'ok')
+
+    const fallbackEvt = events.find((e) => e.action === 'model.call.fallback')
+    assert.ok(fallbackEvt, 'model.call.fallback audit hiányzik')
+    const okEvt = events.find((e) => e.action === 'model.call' && e.policyDecision === 'allowed')
+    assert.ok(okEvt, 'sikeres model.call audit hiányzik')
+    const groupA = (fallbackEvt?.metadata as { attemptGroupId?: string } | null)?.attemptGroupId
+    const groupB = (okEvt?.metadata as { attemptGroupId?: string } | null)?.attemptGroupId
+    assert.ok(groupA, 'attemptGroupId hiányzik a fallback eseményen')
+    assert.equal(groupA, groupB, 'az audit események attemptGroupId-ja nem egyezik')
+  })
+
+  await check('MG-N9: érzékeny ∩ tartalék — külső jelölt soha nem hívódik (negatív)', async () => {
+    const { repo: auditRepo } = makeAuditRepo()
+    const { repo: modelCallRepo } = makeModelCallRepo(0)
+    const externalCalls = { n: 0 }
+    const localCalls = { n: 0 }
+    const providers = new Map<string, ModelProvider>([
+      [
+        'chatgpt-oauth',
+        {
+          name: 'chatgpt-oauth',
+          async chat() {
+            externalCalls.n++
+            return { content: 'külső', latencyMs: 1 }
+          },
+        },
+      ],
+      [
+        'gemini',
+        {
+          name: 'gemini',
+          async chat() {
+            externalCalls.n++
+            return { content: 'külső2', latencyMs: 1 }
+          },
+        },
+      ],
+      [
+        'ollama',
+        {
+          name: 'ollama',
+          async chat() {
+            localCalls.n++
+            throw new Error('fetch failed')
+          },
+        },
+      ],
+    ])
+
+    const gw = new ModelGateway(
+      auditRepo,
+      modelCallRepo,
+      providers,
+      { maxCallsPerTicket: 30 },
+      undefined,
+      undefined,
+      { enforceLocalForSensitive: true, localProvider: 'ollama', localModel: 'gemma-local', localModelAvailable: true },
+      makeSettings({
+        'model.fallback_chain': [
+          { provider: 'gemini', model: 'gemini-3.5-flash' },
+          { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+        ],
+      }),
+    )
+
+    await assert.rejects(
+      () =>
+        gw.call({
+          agentId: TEST_AGENT_ID,
+          messages: [{ role: 'user', content: 'A TAJ számom 123-456-789' }],
+          modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+        }),
+      (e: unknown) =>
+        e instanceof GatewaySensitivityError &&
+        /adat nem hagyta el a platformot/i.test(e.message),
+    )
+
+    assert.equal(externalCalls.n, 0, `külső provider hívódott: ${externalCalls.n}`)
+    assert.ok(localCalls.n >= 1, 'helyi provider nem hívódott')
+  })
+
+  await check('MG-N9: keret kimerülése → azonnal megszakít, második próbálkozás nélkül', async () => {
+    const { repo: auditRepo } = makeAuditRepo()
+    const { repo: modelCallRepo } = makeModelCallRepo(0)
+    const providerCalls = { n: 0 }
+    const providers = new Map<string, ModelProvider>([
+      ['chatgpt-oauth', { name: 'chatgpt-oauth', async chat() { providerCalls.n++; return { content: 'x', latencyMs: 1 } } }],
+      ['gemini', { name: 'gemini', async chat() { providerCalls.n++; return { content: 'y', latencyMs: 1 } } }],
+    ])
+
+    const budgetEngine = {
+      async check() {
+        return { allowed: false as const, reason: 'tenant weekly call limit exceeded', budget: {} as never, usage: { calls: 99, tokens: 0 } }
+      },
+      async statuses() {
+        return []
+      },
+    }
+
+    const gw = new ModelGateway(
+      auditRepo,
+      modelCallRepo,
+      providers,
+      { maxCallsPerTicket: 30 },
+      undefined,
+      budgetEngine as never,
+      undefined,
+      makeSettings({
+        'model.fallback_chain': [{ provider: 'gemini', model: 'gemini-3.5-flash' }],
+      }),
+    )
+
+    await assert.rejects(
+      () =>
+        gw.call({
+          agentId: TEST_AGENT_ID,
+          messages: [{ role: 'user', content: 'Szia' }],
+          modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+        }),
+      (e: unknown) => e instanceof GatewayBudgetError,
+    )
+    assert.equal(providerCalls.n, 0, 'budget deny után is hívódott provider')
+  })
+
+  await check('MG-N9: rate limit vált; tartalmi hiba nem vált', async () => {
+    const rateAudit = makeAuditRepo()
+    const rateCallsRepo = makeModelCallRepo(0)
+    const rateCalls = { primary: 0, secondary: 0 }
+    const rateProviders = new Map<string, ModelProvider>([
+      [
+        'chatgpt-oauth',
+        {
+          name: 'chatgpt-oauth',
+          async chat() {
+            rateCalls.primary++
+            throw new Error('429 Too Many Requests')
+          },
+        },
+      ],
+      [
+        'gemini',
+        {
+          name: 'gemini',
+          async chat() {
+            rateCalls.secondary++
+            return { content: 'ok rate', latencyMs: 1 }
+          },
+        },
+      ],
+    ])
+    const gwRate = new ModelGateway(
+      rateAudit.repo,
+      rateCallsRepo.repo,
+      rateProviders,
+      { maxCallsPerTicket: 30 },
+      undefined,
+      undefined,
+      undefined,
+      makeSettings({ 'model.fallback_chain': [{ provider: 'gemini', model: 'gemini-3.5-flash' }] }),
+    )
+    const rateResult = await gwRate.call({
+      agentId: TEST_AGENT_ID,
+      messages: [{ role: 'user', content: 'Szia' }],
+      modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+    })
+    assert.equal(rateResult.content, 'ok rate')
+    assert.equal(rateCalls.secondary, 1)
+
+    const contentAudit = makeAuditRepo()
+    const contentCallsRepo = makeModelCallRepo(0)
+    const contentCalls = { primary: 0, secondary: 0 }
+    const contentProviders = new Map<string, ModelProvider>([
+      [
+        'chatgpt-oauth',
+        {
+          name: 'chatgpt-oauth',
+          async chat() {
+            contentCalls.primary++
+            throw new Error('400 invalid_request: context length exceeded')
+          },
+        },
+      ],
+      [
+        'gemini',
+        {
+          name: 'gemini',
+          async chat() {
+            contentCalls.secondary++
+            return { content: 'should not', latencyMs: 1 }
+          },
+        },
+      ],
+    ])
+    const gwContent = new ModelGateway(
+      contentAudit.repo,
+      contentCallsRepo.repo,
+      contentProviders,
+      { maxCallsPerTicket: 30 },
+      undefined,
+      undefined,
+      undefined,
+      makeSettings({ 'model.fallback_chain': [{ provider: 'gemini', model: 'gemini-3.5-flash' }] }),
+    )
+    await assert.rejects(() =>
+      gwContent.call({
+        agentId: TEST_AGENT_ID,
+        messages: [{ role: 'user', content: 'Szia' }],
+        modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+      }),
+    )
+    assert.equal(contentCalls.secondary, 0, 'tartalmi hiba után is váltott tartalékra')
+  })
+
+  await check('MG-N9: auth hiba vált + hangsúlyos napló; agent tartalék a globális előtt', async () => {
+    const authAudit = makeAuditRepo()
+    const authCalls = makeModelCallRepo(0)
+    const authHits = { primary: 0, agentFb: 0, globalFb: 0 }
+    const authProviders = new Map<string, ModelProvider>([
+      [
+        'chatgpt-oauth',
+        {
+          name: 'chatgpt-oauth',
+          async chat() {
+            authHits.primary++
+            throw new Error('401 Unauthorized: invalid api key')
+          },
+        },
+      ],
+      [
+        'ollama',
+        {
+          name: 'ollama',
+          async chat() {
+            authHits.agentFb++
+            return { content: 'agent-fb', latencyMs: 1 }
+          },
+        },
+      ],
+      [
+        'gemini',
+        {
+          name: 'gemini',
+          async chat() {
+            authHits.globalFb++
+            return { content: 'global-fb', latencyMs: 1 }
+          },
+        },
+      ],
+    ])
+    const gw = new ModelGateway(
+      authAudit.repo,
+      authCalls.repo,
+      authProviders,
+      { maxCallsPerTicket: 30 },
+      undefined,
+      undefined,
+      undefined,
+      makeSettings({
+        'model.fallback_chain': [{ provider: 'gemini', model: 'gemini-3.5-flash' }],
+      }),
+    )
+    const result = await gw.call({
+      agentId: TEST_AGENT_ID,
+      messages: [{ role: 'user', content: 'Szia' }],
+      modelConfig: {
+        provider: 'chatgpt-oauth',
+        model: 'chatgpt-oauth-default',
+        fallbackModels: [{ provider: 'ollama', model: 'gemma-local' }],
+      },
+    })
+    assert.equal(result.content, 'agent-fb')
+    assert.equal(authHits.agentFb, 1)
+    assert.equal(authHits.globalFb, 0, 'globális a agent tartalék előtt hívódott')
+    assert.ok(
+      authAudit.events.some((e) => e.action === 'model.call.fallback'),
+      'auth fallback audit hiányzik',
+    )
+  })
+
+  await check('MG-N9: ismeretlen provider kiesik; duplikátum összevonódik; lánc kimerüléskor utolsó hiba', async () => {
+    const { repo: auditRepo } = makeAuditRepo()
+    const { repo: modelCallRepo, created } = makeModelCallRepo(0)
+    const providers = new Map<string, ModelProvider>([
+      [
+        'chatgpt-oauth',
+        {
+          name: 'chatgpt-oauth',
+          async chat() {
+            throw new Error('503 Service Unavailable')
+          },
+        },
+      ],
+      [
+        'gemini',
+        {
+          name: 'gemini',
+          async chat() {
+            throw new Error('502 Bad Gateway')
+          },
+        },
+      ],
+    ])
+
+    const previewGw = new ModelGateway(
+      auditRepo,
+      modelCallRepo,
+      providers,
+      { maxCallsPerTicket: 30 },
+      undefined,
+      undefined,
+      undefined,
+      makeSettings({
+        'model.fallback_chain': [
+          { provider: 'no-such-provider', model: 'x' },
+          { provider: 'gemini', model: 'gemini-3.5-flash' },
+          { provider: 'gemini', model: 'gemini-3.5-flash' },
+          { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+        ],
+      }),
+    )
+
+    const preview = await previewGw.previewEffectiveFallbackChain({
+      primary: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+    })
+    assert.deepEqual(
+      preview.chain.map((c) => `${c.provider}/${c.model}`),
+      [
+        'chatgpt-oauth/chatgpt-oauth-default',
+        'gemini/gemini-3.5-flash',
+        'chatgpt-oauth/chatgpt-oauth-default',
+      ],
+    )
+
+    await assert.rejects(
+      () =>
+        previewGw.call({
+          agentId: TEST_AGENT_ID,
+          messages: [{ role: 'user', content: 'Szia' }],
+          modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+        }),
+      (e: unknown) =>
+        e instanceof Error && (/502|503/.test(e.message)),
+    )
+    assert.ok(created.length >= 2)
+  })
+
+  await check('MG-N9: stream — első token előtt vált; utána nem', async () => {
+    const { repo: auditRepo } = makeAuditRepo()
+    const { repo: modelCallRepo } = makeModelCallRepo(0)
+    const beforeToken = { primary: 0, secondary: 0 }
+    const providersBefore = new Map<string, ModelProvider>([
+      [
+        'chatgpt-oauth',
+        {
+          name: 'chatgpt-oauth',
+          async chat() {
+            throw new Error('should use stream')
+          },
+          async *chatStream() {
+            beforeToken.primary++
+            throw new Error('503 before token')
+          },
+        },
+      ],
+      [
+        'gemini',
+        {
+          name: 'gemini',
+          async chat() {
+            return { content: 'full', latencyMs: 1 }
+          },
+          async *chatStream() {
+            beforeToken.secondary++
+            yield 'tartalék'
+          },
+        },
+      ],
+    ])
+    const gwBefore = new ModelGateway(
+      auditRepo,
+      modelCallRepo,
+      providersBefore,
+      { maxCallsPerTicket: 30 },
+      undefined,
+      undefined,
+      undefined,
+      makeSettings({ 'model.fallback_chain': [{ provider: 'gemini', model: 'g' }] }),
+    )
+    let collected = ''
+    for await (const chunk of gwBefore.callStream({
+      agentId: TEST_AGENT_ID,
+      messages: [{ role: 'user', content: 'Szia' }],
+      modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+    })) {
+      collected += chunk
+    }
+    assert.equal(collected, 'tartalék')
+    assert.equal(beforeToken.secondary, 1)
+
+    const afterAudit = makeAuditRepo()
+    const afterCallsRepo = makeModelCallRepo(0)
+    const afterToken = { secondary: 0 }
+    const providersAfter = new Map<string, ModelProvider>([
+      [
+        'chatgpt-oauth',
+        {
+          name: 'chatgpt-oauth',
+          async chat() {
+            throw new Error('should use stream')
+          },
+          async *chatStream() {
+            yield 'első'
+            throw new Error('503 after token')
+          },
+        },
+      ],
+      [
+        'gemini',
+        {
+          name: 'gemini',
+          async chat() {
+            return { content: 'x', latencyMs: 1 }
+          },
+          async *chatStream() {
+            afterToken.secondary++
+            yield 'második'
+          },
+        },
+      ],
+    ])
+    const gwAfter = new ModelGateway(
+      afterAudit.repo,
+      afterCallsRepo.repo,
+      providersAfter,
+      { maxCallsPerTicket: 30 },
+      undefined,
+      undefined,
+      undefined,
+      makeSettings({ 'model.fallback_chain': [{ provider: 'gemini', model: 'g' }] }),
+    )
+    await assert.rejects(async () => {
+      for await (const _ of gwAfter.callStream({
+        agentId: TEST_AGENT_ID,
+        messages: [{ role: 'user', content: 'Szia' }],
+        modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+      })) {
+        /* drain */
+      }
+    })
+    assert.equal(afterToken.secondary, 0, 'első token után is váltott tartalékra')
+  })
+
+  // ── MG-N10: Háromrétegű árazás (#43) ────────────────────────────────────
+  await check('MG-N10: kézi > szinkronizált > beépített; ismeretlen modell nem nulla', async () => {
+    const { repo: auditRepo } = makeAuditRepo()
+    const { repo: modelCallRepo, created } = makeModelCallRepo(0)
+    const providers = new Map<string, ModelProvider>([
+      [
+        'chatgpt-oauth',
+        {
+          name: 'chatgpt-oauth',
+          async chat() {
+            return {
+              content: 'ok',
+              latencyMs: 1,
+              usage: { promptTokens: 1_000_000, completionTokens: 0 },
+              model: 'custom-unknown-model-xyz',
+            }
+          },
+        },
+      ],
+    ])
+
+    // 1) Ismeretlen modell → builtin default (>0)
+    const gwDefault = new ModelGateway(auditRepo, modelCallRepo, providers, { maxCallsPerTicket: 30 })
+    await gwDefault.call({
+      agentId: TEST_AGENT_ID,
+      messages: [{ role: 'user', content: 'Szia' }],
+      modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+    })
+    const costDefault = Number(created[0]?.costEstimate)
+    assert.ok(costDefault > 0, `ismeretlen modell költsége 0: ${costDefault}`)
+
+    // 2) Szinkronizált felülírja a beépítettet
+    created.length = 0
+    const providers2 = new Map<string, ModelProvider>([
+      [
+        'chatgpt-oauth',
+        {
+          name: 'chatgpt-oauth',
+          async chat() {
+            return {
+              content: 'ok',
+              latencyMs: 1,
+              usage: { promptTokens: 1_000_000, completionTokens: 0 },
+              model: 'gpt-4o',
+            }
+          },
+        },
+      ],
+    ])
+    const gwSynced = new ModelGateway(
+      auditRepo,
+      modelCallRepo,
+      providers2,
+      { maxCallsPerTicket: 30 },
+      undefined,
+      undefined,
+      undefined,
+      makeSettings({
+        'model.pricing.synced': { 'gpt-4o': { inputPerMTokens: 10, outputPerMTokens: 20 } },
+      }),
+    )
+    await gwSynced.call({
+      agentId: TEST_AGENT_ID,
+      messages: [{ role: 'user', content: 'Szia' }],
+      modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+    })
+    assert.equal(Number(created[0]?.costEstimate), 10)
+
+    // 3) Kézi felülírja a szinkronizáltat
+    created.length = 0
+    const gwManual = new ModelGateway(
+      auditRepo,
+      modelCallRepo,
+      providers2,
+      { maxCallsPerTicket: 30 },
+      undefined,
+      undefined,
+      undefined,
+      makeSettings({
+        'model.pricing.synced': { 'gpt-4o': { inputPerMTokens: 10, outputPerMTokens: 20 } },
+        'model.pricing': { 'gpt-4o': { inputPerMTokens: 1, outputPerMTokens: 2 } },
+      }),
+    )
+    await gwManual.call({
+      agentId: TEST_AGENT_ID,
+      messages: [{ role: 'user', content: 'Szia' }],
+      modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+    })
+    assert.equal(Number(created[0]?.costEstimate), 1)
   })
 
   // ── Összesítés ────────────────────────────────────────────────────────────

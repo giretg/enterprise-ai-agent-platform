@@ -51,6 +51,8 @@
     "test:write-gate-single-use": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/write-gate-single-use.test.ts",
     "test:gateway-relay": "tsx scripts/text-tool-relay.test.ts",
     "test:gateway-negative": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/model-gateway-negative.test.ts",
+    "test:model-pricing-sync": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/model-pricing-sync.test.ts",
+    "sync:model-pricing": "tsx scripts/sync-model-pricing.ts",
     "test:dispatch-budget": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/dispatch-budget.test.ts",
     "test:monitor": "tsx scripts/monitor-engine.test.ts",
     "test:provisioning": "tsx scripts/provisioning-assistant.test.ts",

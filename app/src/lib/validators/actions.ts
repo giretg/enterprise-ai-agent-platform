@@ -691,6 +691,10 @@ export const updateAgentModelConfigSchema = z.object({
     model: z.string().min(1),
     temperature: z.number().min(0).max(2).optional(),
     maxTokens: z.number().int().positive().optional(),
+    /** Agent-szintű tartalék — a globális lánc előtt fut. */
+    fallbackModels: z
+      .array(z.object({ provider: modelProviderSchema, model: z.string().min(1) }))
+      .optional(),
   }),
 })
 

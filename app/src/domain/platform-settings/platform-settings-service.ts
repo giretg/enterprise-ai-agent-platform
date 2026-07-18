@@ -1096,4 +1096,153 @@ export class PlatformSettingsService {
 
     return validated
   }
+
+  // ── Model Gateway: tartalék-lánc + tarifa (#34) ───────────────────────────
+
+  async getFallbackChain(): Promise<import('@/domain/gateway/fallback-chain').FallbackCandidate[]> {
+    const {
+      parseFallbackChainSetting,
+      FALLBACK_CHAIN_SETTING_KEY,
+    } = await import('@/domain/gateway/fallback-chain')
+    return parseFallbackChainSetting(await this.settings.get(FALLBACK_CHAIN_SETTING_KEY))
+  }
+
+  async setFallbackChain(
+    chain: Array<{ provider: string; model: string }>,
+    actorId: string,
+    knownProviders: ReadonlySet<string>,
+  ): Promise<import('@/domain/gateway/fallback-chain').FallbackCandidate[]> {
+    const {
+      fallbackCandidateSchema,
+      FALLBACK_CHAIN_SETTING_KEY,
+    } = await import('@/domain/gateway/fallback-chain')
+    const { z } = await import('zod')
+    const parsed = z.array(fallbackCandidateSchema).parse(chain)
+    for (const c of parsed) {
+      if (!knownProviders.has(c.provider)) {
+        throw new Error(`Ismeretlen szolgáltató a tartalék-láncban: ${c.provider}`)
+      }
+    }
+    await this.settings.set(FALLBACK_CHAIN_SETTING_KEY, parsed, actorId)
+    await this.audit.append({
+      actorType: 'human',
+      actorId,
+      agentVersion: null,
+      action: 'model.fallback_chain.set',
+      targetType: 'platform_setting',
+      targetId: FALLBACK_CHAIN_SETTING_KEY,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: `len:${parsed.length}`,
+      policyDecision: 'allowed',
+      metadata: { chain: parsed },
+    })
+    return parsed
+  }
+
+  async getModelPricingView(): Promise<{
+    effective: import('@/lib/model-pricing').ModelPricingTable
+    manual: import('@/lib/model-pricing').ModelPricingTable
+    synced: import('@/lib/model-pricing').ModelPricingTable
+    syncMeta: import('@/lib/model-pricing').ModelPricingSyncMeta | null
+    rows: Array<{
+      model: string
+      price: import('@/lib/model-pricing').ModelPrice
+      source: import('@/lib/model-pricing').PricingLayerSource
+    }>
+  }> {
+    const {
+      DEFAULT_MODEL_PRICING,
+      MODEL_PRICING_SETTING_KEY,
+      MODEL_PRICING_SYNCED_SETTING_KEY,
+      MODEL_PRICING_SYNC_META_KEY,
+      mergePricingLayers,
+      parsePricingTableOrNull,
+      parseModelPricingSyncMeta,
+      pricingLayerForKey,
+    } = await import('@/lib/model-pricing')
+
+    const [manualRaw, syncedRaw, metaRaw] = await Promise.all([
+      this.settings.get(MODEL_PRICING_SETTING_KEY),
+      this.settings.get(MODEL_PRICING_SYNCED_SETTING_KEY),
+      this.settings.get(MODEL_PRICING_SYNC_META_KEY),
+    ])
+    const manual = parsePricingTableOrNull(manualRaw) ?? {}
+    const synced = parsePricingTableOrNull(syncedRaw) ?? {}
+    const effective = mergePricingLayers({
+      builtin: DEFAULT_MODEL_PRICING,
+      synced,
+      manual,
+    })
+    const layers = { builtin: DEFAULT_MODEL_PRICING, synced, manual }
+    const rows = Object.keys(effective)
+      .sort()
+      .map((model) => ({
+        model,
+        price: effective[model]!,
+        source: pricingLayerForKey(model, layers),
+      }))
+
+    return {
+      effective,
+      manual,
+      synced,
+      syncMeta: parseModelPricingSyncMeta(metaRaw),
+      rows,
+    }
+  }
+
+  async setManualModelPrice(
+    model: string,
+    price: { inputPerMTokens: number; outputPerMTokens: number },
+    actorId: string,
+  ): Promise<void> {
+    const {
+      MODEL_PRICING_SETTING_KEY,
+      modelPriceSchema,
+      parsePricingTableOrNull,
+    } = await import('@/lib/model-pricing')
+    const parsedPrice = modelPriceSchema.parse(price)
+    const current = parsePricingTableOrNull(await this.settings.get(MODEL_PRICING_SETTING_KEY)) ?? {}
+    const next = { ...current, [model]: parsedPrice }
+    await this.settings.set(MODEL_PRICING_SETTING_KEY, next, actorId)
+    await this.audit.append({
+      actorType: 'human',
+      actorId,
+      agentVersion: null,
+      action: 'model.pricing.manual_set',
+      targetType: 'platform_setting',
+      targetId: MODEL_PRICING_SETTING_KEY,
+      modelUsed: model,
+      inputRef: null,
+      outputRef: null,
+      policyDecision: 'allowed',
+      metadata: { model, price: parsedPrice },
+    })
+  }
+
+  async clearManualModelPrice(model: string, actorId: string): Promise<void> {
+    const {
+      MODEL_PRICING_SETTING_KEY,
+      parsePricingTableOrNull,
+    } = await import('@/lib/model-pricing')
+    const current = parsePricingTableOrNull(await this.settings.get(MODEL_PRICING_SETTING_KEY)) ?? {}
+    if (!Object.prototype.hasOwnProperty.call(current, model)) return
+    const next = { ...current }
+    delete next[model]
+    await this.settings.set(MODEL_PRICING_SETTING_KEY, next, actorId)
+    await this.audit.append({
+      actorType: 'human',
+      actorId,
+      agentVersion: null,
+      action: 'model.pricing.manual_clear',
+      targetType: 'platform_setting',
+      targetId: MODEL_PRICING_SETTING_KEY,
+      modelUsed: model,
+      inputRef: null,
+      outputRef: null,
+      policyDecision: 'allowed',
+      metadata: { model },
+    })
+  }
 }

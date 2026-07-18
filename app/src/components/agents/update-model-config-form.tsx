@@ -12,15 +12,23 @@ import {
   type ModelProviderOption,
 } from '@/lib/model-providers'
 
+type FallbackRow = { provider: string; model: string }
+
 // Admin agentenként módosíthatja a modell-konfigot (provider/model/temperature/
-// maxTokens). Minden mentés új agent-verziót fagyaszt be (reprodukálhatóság).
+// maxTokens/fallbackModels). Minden mentés új agent-verziót fagyaszt be.
 export function UpdateModelConfigForm({
   agentId,
   current,
   providers = MODEL_PROVIDERS,
 }: {
   agentId: string
-  current: { provider: string; model: string; temperature?: number; maxTokens?: number }
+  current: {
+    provider: string
+    model: string
+    temperature?: number
+    maxTokens?: number
+    fallbackModels?: FallbackRow[]
+  }
   providers?: ModelProviderOption[]
 }) {
   const router = useRouter()
@@ -29,6 +37,13 @@ export function UpdateModelConfigForm({
   const [done, setDone] = useState<string | null>(null)
   const [provider, setProvider] = useState(current.provider)
   const [model, setModel] = useState(current.model)
+  const [fallbacksOpen, setFallbacksOpen] = useState(
+    (current.fallbackModels?.length ?? 0) > 0,
+  )
+  const [fallbacks, setFallbacks] = useState<FallbackRow[]>(current.fallbackModels ?? [])
+  const [fbProvider, setFbProvider] = useState(MODEL_PROVIDERS[0]?.value ?? 'ollama')
+  const [fbModel, setFbModel] = useState(MODEL_PROVIDERS[0]?.defaultModel ?? '')
+
   const safeProviders = providers.length > 0 ? providers : MODEL_PROVIDERS
   const uniqueProviders = safeProviders.filter(
     (option, index, allProviders) =>
@@ -46,8 +61,10 @@ export function UpdateModelConfigForm({
       ]
 
   const selected = providerOption(provider, providerOptions)
+  const fallbacksEqual =
+    JSON.stringify(fallbacks) === JSON.stringify(current.fallbackModels ?? [])
   const unchanged =
-    provider === current.provider && model.trim() === current.model
+    provider === current.provider && model.trim() === current.model && fallbacksEqual
 
   return (
     <Card title="Gondolkodási motor beállítása">
@@ -68,6 +85,7 @@ export function UpdateModelConfigForm({
                 model: normalizeModelForProvider(provider, model, providerOptions),
                 ...(Number.isFinite(temperature) ? { temperature } : {}),
                 ...(Number.isFinite(maxTokens) && maxTokens > 0 ? { maxTokens } : {}),
+                ...(fallbacks.length > 0 ? { fallbackModels: fallbacks } : { fallbackModels: [] }),
               },
             })
             if (res.success) {
@@ -131,6 +149,72 @@ export function UpdateModelConfigForm({
           </label>
         </div>
         <p className="text-xs text-ink-faint">{selected.hint}</p>
+
+        <div className="rounded-lg border border-line/50 bg-night/30 p-3">
+          <button
+            type="button"
+            className="text-sm font-medium text-ink"
+            onClick={() => setFallbacksOpen((v) => !v)}
+          >
+            {fallbacksOpen ? '▾' : '▸'} Tartalék modellek (opcionális)
+          </button>
+          {fallbacksOpen && (
+            <div className="mt-3 space-y-2">
+              <p className="text-xs text-ink-soft">
+                Az agent-szintű tartalék a <strong>globális lánc előtt</strong> lép működésbe.
+                Mentéskor új agent-verzió fagy be. Futásidőben sem a kérés, sem az agent nem írhatja felül.
+              </p>
+              {fallbacks.map((f, i) => (
+                <div key={`${f.provider}/${f.model}/${i}`} className="flex items-center justify-between text-sm">
+                  <span className="text-ink">
+                    {i + 1}. {f.provider}/{f.model}
+                  </span>
+                  <button
+                    type="button"
+                    className="text-xs text-coral"
+                    onClick={() => setFallbacks((prev) => prev.filter((_, j) => j !== i))}
+                  >
+                    Töröl
+                  </button>
+                </div>
+              ))}
+              <div className="flex flex-wrap gap-2">
+                <select
+                  value={fbProvider}
+                  onChange={(e) => {
+                    const p = MODEL_PROVIDERS.find((x) => x.value === e.target.value)
+                    setFbProvider(e.target.value)
+                    if (p) setFbModel(p.defaultModel)
+                  }}
+                  className="rounded border border-line bg-night-2 px-2 py-1 text-xs"
+                >
+                  {MODEL_PROVIDERS.map((p) => (
+                    <option key={p.value} value={p.value}>
+                      {p.label}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  value={fbModel}
+                  onChange={(e) => setFbModel(e.target.value)}
+                  className="rounded border border-line bg-night-2 px-2 py-1 text-xs"
+                  placeholder="model"
+                />
+                <button
+                  type="button"
+                  className="rounded border border-line px-2 py-1 text-xs"
+                  onClick={() => {
+                    if (!fbModel.trim()) return
+                    setFallbacks((prev) => [...prev, { provider: fbProvider, model: fbModel.trim() }])
+                  }}
+                >
+                  Hozzáad
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
         {error && <p className="text-sm text-coral">{error}</p>}
         {done && (
           <p className="rounded-lg border border-sage/30 bg-sage/10 px-3 py-2 text-xs text-sage">

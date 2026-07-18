@@ -401,6 +401,16 @@ export default async function AgentDetailPage({
                       : undefined,
                   maxTokens:
                     typeof modelConfig.maxTokens === 'number' ? modelConfig.maxTokens : undefined,
+                  fallbackModels: Array.isArray(modelConfig.fallbackModels)
+                    ? (modelConfig.fallbackModels as Array<{ provider: string; model: string }>)
+                        .filter(
+                          (row) =>
+                            row &&
+                            typeof row.provider === 'string' &&
+                            typeof row.model === 'string',
+                        )
+                        .map((row) => ({ provider: row.provider, model: row.model }))
+                    : undefined,
                 }}
               />
 
