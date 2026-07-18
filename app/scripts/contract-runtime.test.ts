@@ -23,11 +23,18 @@ import {
   type CompiledContract,
 } from '../src/domain/contract-runtime'
 import { PlaybookCompiler } from '../src/domain/playbook/playbook-compiler'
+import {
+  humanReviewTicketTitle,
+  readStepOutcome,
+} from '../src/lib/playbook-v2/process-step-payload'
 import type {
   ModelConfig,
   ModelProvider,
 } from '../src/domain/gateway/model-gateway'
-import { ModelGateway } from '../src/domain/gateway/model-gateway'
+import {
+  GatewaySensitivityError,
+  ModelGateway,
+} from '../src/domain/gateway/model-gateway'
 import type { AuditRepository, ModelCallRepository } from '../src/repositories/interfaces'
 import type { AuditLog, ModelCall } from '@prisma/client'
 
@@ -375,6 +382,55 @@ async function main() {
     assert.equal(result.ok, false)
     assert.equal(chatCalls, 2)
     if (!result.ok) assert.equal(result.repairAttempts, 2)
+  })
+
+  await check('CR-2g: érzékeny tartalom → visszaesés a lépés jóváhagyott modelljére', async () => {
+    const modelsUsed: string[] = []
+    const gateway = {
+      async call(params: { modelConfig: ModelConfig }) {
+        modelsUsed.push(params.modelConfig.model)
+        if (params.modelConfig.model === 'stub-cheap') {
+          throw new GatewaySensitivityError(
+            'sensitive content blocked for structuring model',
+            'pii',
+            'local_model_unavailable',
+          )
+        }
+        return { content: '{"price":100,"vendor":"Acme"}' }
+      },
+    }
+    const result = await runStrictContract({
+      gateway,
+      contract: priceContract,
+      rawContent: '{"price":"","vendor":""}',
+      modelConfig: baseModel,
+      structuringModel: { provider: 'stub', model: 'stub-cheap' },
+      agentId: TEST_AGENT_ID,
+      criticality: 'L1',
+    })
+    assert.equal(result.ok, true)
+    assert.deepEqual(modelsUsed, ['stub-cheap', 'stub-main'])
+  })
+
+  await check('CR-2h: emberi felülvizsgálat cím közérthető, nem technikai unhandled_*', () => {
+    const summary = formatContractErrors([
+      { field: 'price', code: 'empty', message: 'A(z) «price» mező üres — kitöltött értéket vártunk.' },
+    ])
+    const title = humanReviewTicketTitle('quote_extract', summary)
+    assert.ok(title.includes('price') || title.includes('üres'))
+    assert.ok(!title.includes('unhandled_'))
+    assert.ok(!title.includes('output_contract_unmet'))
+
+    const fromPayload = readStepOutcome({
+      outcome: {
+        status: 'blocked',
+        reason: 'output_contract_unmet',
+        message: summary,
+      },
+      answer: 'Az agent eredeti válasza itt van.',
+    })
+    assert.equal(fromPayload.message, summary)
+    assert.equal(fromPayload.reason, 'output_contract_unmet')
   })
 
   await check('CR-2f: maxRepairAttempts nem lépheti túl a kemény 2-es korlátot', async () => {

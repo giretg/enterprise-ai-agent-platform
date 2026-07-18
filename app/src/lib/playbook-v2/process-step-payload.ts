@@ -313,15 +313,30 @@ export function withStepOutcome(
  */
 export function readStepOutcome(
   payload: Record<string, unknown> | undefined,
-): { status?: StepOutcomeStatus; reason?: string } {
+): { status?: StepOutcomeStatus; reason?: string; message?: string } {
   const outcome = (payload ?? {})[STEP_OUTCOME_FIELD]
   if (outcome == null || typeof outcome !== 'object') return {}
   const status = (outcome as Record<string, unknown>)['status']
   const reason = (outcome as Record<string, unknown>)['reason']
+  const message = (outcome as Record<string, unknown>)['message']
   return {
     status: status === 'ok' || status === 'blocked' || status === 'failed' ? status : undefined,
     reason: typeof reason === 'string' ? reason : undefined,
+    message: typeof message === 'string' && message.trim() ? message : undefined,
   }
+}
+
+/**
+ * #33 / #39 — emberi felülvizsgálat ticket címe: közérthető magyarázat,
+ * nem `unhandled_blocked` / nyers technikai kód.
+ */
+export function humanReviewTicketTitle(stepId: string, humanSummary?: string | null): string {
+  if (humanSummary && humanSummary.trim()) {
+    const oneLine = humanSummary.replace(/\s+/g, ' ').trim()
+    const short = oneLine.length > 100 ? `${oneLine.slice(0, 97)}…` : oneLine
+    return `Emberi felülvizsgálat: ${short}`
+  }
+  return `Emberi felülvizsgálat: ${stepId}`
 }
 
 export function outputRequiredFieldsForStep(

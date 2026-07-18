@@ -21,6 +21,7 @@ import type { CompiledSpec } from '@/domain/playbook/playbook-compiler'
 import { evaluateAdvance, type AdvanceDecision } from '@/lib/playbook-v2/runtime'
 import { stringifyValue } from '@/lib/playbook-v2/effective-prompt'
 import {
+  humanReviewTicketTitle,
   missingRequiredInputSlots,
   normalizeAgentStepResult,
   readStepOutcome,
@@ -484,7 +485,11 @@ export class ProcessService {
       : evaluateAdvance(compiled, input.completedStepId, input.resultPayload ?? {})
     // Hibakezelési policy spec §9 — a step gépi outcome-ja audit-visszakereshető legyen
     // minden ágon (miért ment arra a döntésre), routing-viselkedés módosítása nélkül.
-    const { status: outcomeStatus, reason: outcomeReason } = readStepOutcome(input.resultPayload)
+    const {
+      status: outcomeStatus,
+      reason: outcomeReason,
+      message: outcomeMessage,
+    } = readStepOutcome(input.resultPayload)
 
     if (decision.kind === 'complete') {
       const finalized = await this.processes.updateProcessIfStatusIn(
@@ -564,13 +569,16 @@ export class ProcessService {
     if (decision.kind === 'await_human') {
       // WP-7 §10.2 — kezeletlen blocked/failed step: implicit BPMN error boundary.
       // A tartalmi kudarc SOHA nem propagál sikerként; emberi felülvizsgálatra vár.
+      // #33/#39 — a felülvizsgáló közérthető magyarázatot kap (outcome.message), nem
+      // nyers `unhandled_blocked` címet.
       if (completedStep) {
         await this.processes.updateStep(completedStep.id, { status: 'awaiting_gate' })
       }
+      const displayReason = outcomeMessage ?? decision.reason
       const reviewTicket = await this.tickets.create({
         tenantId: input.tenantId,
         type: 'interaction',
-        title: `Emberi felülvizsgálat: ${input.completedStepId} (${decision.outcomeStatus})`,
+        title: humanReviewTicketTitle(input.completedStepId, outcomeMessage),
         state: 'awaiting_human',
         assigneeType: 'human',
         assigneeId: null,
@@ -596,7 +604,9 @@ export class ProcessService {
         metadata: {
           process_instance_id: process.id,
           completed_step_id: input.completedStepId,
-          reason: decision.reason,
+          reason: displayReason,
+          routing_reason: decision.reason,
+          human_summary: outcomeMessage ?? null,
           outcome_status: decision.outcomeStatus,
           outcome_reason: outcomeReason ?? null,
           error_route_source: errorRouteSourceOf(decision),
@@ -610,13 +620,13 @@ export class ProcessService {
             tenantId: input.tenantId,
             processInstanceId: process.id,
             stepId: input.completedStepId,
-            reason: decision.reason,
+            reason: displayReason,
           })
         } catch {
           // best-effort riasztás (§4.5) — a blokk tényét az audit már rögzítette.
         }
       }
-      return { kind: 'await_human', reason: decision.reason, ticketId: reviewTicket.id }
+      return { kind: 'await_human', reason: displayReason, ticketId: reviewTicket.id }
     }
 
     // decision.kind === 'next_step'
