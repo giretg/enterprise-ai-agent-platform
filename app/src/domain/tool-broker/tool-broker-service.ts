@@ -369,7 +369,10 @@ export class ToolBrokerService {
     const effectiveTicketId = input.tool === 'board_write' ? input.args.ticketId : input.ticketId
     if (effectiveTicketId) {
       const ticket = await this.tickets.findById(effectiveTicketId)
-      if (ticket) {
+      // A ticket ID-je kliens által befolyásolható az agent API-n. Csak a hívó
+      // agenthez rendelt ticket viheti tovább a tárolt, explicit run-as jogot;
+      // különben egy másik agent ticketjének user-grantját lehetne megszemélyesíteni.
+      if (ticket?.agentId === input.agentId) {
         const payload = isRecord(ticket.payload) ? ticket.payload : null
         if (isRunAsAuthorized(payload)) {
           // Materializált scheduled futásnál a ticket-payload csak hivatkozás;
@@ -395,11 +398,19 @@ export class ToolBrokerService {
     if (input.conversationId) {
       const conversation = await prisma.conversation.findUnique({
         where: { id: input.conversationId },
+        select: { agentId: true, createdById: true },
       })
-      if (conversation) return conversation.createdById
+      // A beszélgetéshez kötött user-grant is csak a saját agent beszélgetéséből
+      // származhat, sosem egy beküldött idegen conversationId-ból.
+      if (conversation?.agentId === input.agentId) return conversation.createdById
     }
 
-    if (input.actingUserId) return input.actingUserId
+    // Külső agent API-hívásban az actingUserId csak a kérés törzséből jöhetne,
+    // ami nem hitelesített felhatalmazás. A belső chat/harness útvonalak
+    // továbbra is explicit, szerveroldalról feloldott identitást adnak át.
+    if (input.actingUserSource !== 'external_agent_api' && input.actingUserId) {
+      return input.actingUserId
+    }
 
     return null
   }
@@ -425,15 +436,15 @@ export class ToolBrokerService {
     const effectiveTicketId = input.tool === 'board_write' ? input.args.ticketId : input.ticketId
     if (effectiveTicketId) {
       const ticket = await this.tickets.findById(effectiveTicketId)
-      if (ticket?.tenantId) return ticket.tenantId
+      if (ticket?.agentId === input.agentId && ticket.tenantId) return ticket.tenantId
     }
 
     if (input.conversationId) {
       const conversation = await prisma.conversation.findUnique({
         where: { id: input.conversationId },
-        select: { tenantId: true },
+        select: { agentId: true, tenantId: true },
       })
-      if (conversation?.tenantId) return conversation.tenantId
+      if (conversation?.agentId === input.agentId && conversation.tenantId) return conversation.tenantId
     }
 
     return null

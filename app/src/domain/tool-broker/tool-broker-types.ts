@@ -522,6 +522,11 @@ type ToolInvokeBase = {
   ticketId?: string
   conversationId?: string
   actingUserId?: string
+  /**
+   * Az `actingUserId` csak megbízható, szerveroldali futás-kontektsusból
+   * származhat. Az agent API-kulcs birtokosa nem választhat felhasználót.
+   */
+  actingUserSource?: 'trusted_internal' | 'external_agent_api'
 }
 
 export type ToolBrokerInvokeInput =

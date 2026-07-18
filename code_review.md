@@ -34,6 +34,33 @@
   - D1 — **SoD (kérelmező ≠ jóváhagyó) továbbra sincs kikényszerítve**: a training ticket beküldője saját maga jóváhagyhatja. Az Access-Policy spec D1 pontja ezt kemény invariánsként írja elő, de az még nem megvalósított feature; külön tiketet érdemel, nem ebbe a javításba tartozik.
   - D2 — **Megosztott (platform-szintű, `tenantId = null`) agent memóriája bármely tenant approvere által tanítható.** Ez a megosztott agentek eleve fennálló tulajdonsága (a `isAgentReachableFromTenant` egységes platform-szabálya), nem ez a rés hozta létre. Ha a platform-agentek tanítását platform-szerephez akarjuk kötni, az önálló döntés.
 
+## 2026-07-19 - Web Search / agent tool API: acting-user eredet és audit-metaadat tenant-határa
+
+- Áttekintett modulok:
+  - `app/src/domain/web-search/web-search-service.ts`, `web-search-policy-service.ts`, `web-search-connector-service.ts`, `search-provider-adapter.ts` és `web-search-types.ts` (provider-, domain-, query-safety-, rate-limit- és audit-kontrollok)
+  - `app/src/domain/tool-broker/tool-broker-service.ts` és `tool-broker-authorizer.ts` (Tool Broker belépési sorrend, acting-user / tenant-kontekstus, connector-grant feloldás)
+  - `app/src/app/api/v1/agent/tools/route.ts` (agent API-kulcsos, publikus tool-beléptető)
+  - `app/src/app/actions/web-search.ts` + `app/src/components/agents/web-search-policy-card.tsx` (agentenkénti web-search audit-kártya)
+  - Vonatkozó szerződések: `docs/specs/AI-Agent-Platform-Feature-Spec-WebSearchTool-done.md` §7.1 és `docs/specs/AI-Agent-Platform-Feature-Spec-PerUser-Connector-DONE.md` §6.1.
+- Eredmény:
+  - A web-search policy-mag megfelelően deny-by-default: capability + aktív connector kell, tenant connector nem örökölhet platform providert, a domain kérés csak szűkítheti az allowlistet, a tiltólistás provider-találat utólag is kiesik, a PII/secret query guard és a ticket/conversation + napi kvóta a provider előtt fut. A query auditja hash/korlátozott metaadat, nem nyers keresőkifejezés.
+  - Két éles határhibát találtam. (1) A `/api/v1/agent/tools` API az agent API-kulcsot ellenőrzi, de a request bodyból változtatás nélkül továbbadta az `actingUserId`-t. Ez user-delegated Gmail/HTTP connectornál azt jelentette, hogy egy kompromittált vagy rosszindulatú agent-key ismeretében a hívó bármely ismert aktív user ID-ját beküldhette, és az ő `connector_grant`-ját használhatta volna. A per-user connector specifikáció szerint az acting user interaktív sessionből vagy explicit, tárolt, visszavonható run-as felhatalmazásból jöhet, sosem az autonóm agent által választott értékből.
+  - (2) A Broker ticket- és conversation-kontekstusból akkor is feloldotta a run-as usert és tenantot, ha a megadott objektum más agenthez tartozott. Így egy külső agent API-hívó egy másik agent ticket-/conversation-ID-ját kontextus-injektálásra használhatta volna. Ugyanazon tenantban ez különösen veszélyes, mert a korábbi tenant-őr önmagában nem különíti el a két agent delegált felhatalmazását. Ezen felül a Web Search kártya Server Actionje csak a néző tenant-szerepét, nem a beküldött `agentId` tenantját ellenőrizte, így UUID-ismerettel a másik tenant keresési audit-metaadatai lekérhetők voltak.
+- Javítás:
+  - Az agent API route a bodyban érkező `actingUserId`-t eldobja, és a Brokernek explicit `external_agent_api` eredetet jelöl. Ilyen kérésből a broker sosem fogad el közvetlen acting-user identitást.
+  - A Broker csak akkor emeli át ticketből a run-as usert vagy a ticket tenantját, ha a ticket `agentId`-ja a tényleges hívó agent; conversationnél ugyanez a kötelező agent-kötés. Belső chat- és harness-hívások változatlanul adhatnak `trusted_internal` acting usert.
+  - A Web Search agent-kártya csak az aktív tenantban látható agent audit-hívásait olvassa; idegen agentre opak `Agent not found` válasz jön.
+  - Új regressziók a `tool-broker-tenant-isolation.test.ts`-ben: más agent ticketjének run-as grantja elutasított, külső agent API nem választhat acting usert, belső megbízható út továbbra is működik.
+- Üzleti hatás:
+  - A felhasználó által adott OAuth-jogosultság nem "agent-jogosultság": csak az adott munkamenethez vagy előre jóváhagyott automatizmushoz kötve használható. A javítás megakadályozza, hogy egy agent API-kulcs incidense egy másik kolléga levelezésének vagy delegált üzleti connectorának hozzáférésévé váljon, és az audit is a valódi tenant/agent-határon marad. Ez a legkisebb jogosultság és a customer-tenantok közötti adatbizalom alapfeltétele.
+- Ellenőrzés:
+  - `DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub node --import tsx scripts/tool-broker-tenant-isolation.test.ts` (11/11 zöld)
+  - `DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub node --import tsx scripts/web-search-tool.test.ts` (zöld)
+  - `npx tsc --noEmit`, célzott `npx eslint`, `git diff --check` (zöld)
+  - A `per-user-connector.test.ts` teljes futása a már meglévő OAuth-fixture szakaszban nem futtatható ebben a lokális sandboxban, mert a script valós PostgreSQL-t kér a `127.0.0.1:5432` címen; a célzott, DB-mentes broker-regresszió és az authorizer korábbi tesztjei zöldek a hiba előtt.
+- Nyitott döntés (nem automatikusan javítva):
+  - D1 — A közvetlen agent API szándékosan nem kap user-delegated credentialet request bodyból. Ha később külső interactive clientnek mégis kell ilyen, külön, rövid életű, a sessionhez és a konkrét agenthez kötött delegation assertion szükséges; egy sima `actingUserId` mező erre nem biztonságos.
+
 ## 2026-07-18 - Write-gate token: egyszer-használatos fogyasztás atomizálása
 
 - Áttekintett modulok:
