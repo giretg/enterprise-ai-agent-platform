@@ -1357,6 +1357,90 @@ async function main() {
     assert.equal(afterToken.secondary, 0, 'első token után is váltott tartalékra')
   })
 
+  await check('MG-N9: érzékeny ∩ stream — külső jelölt soha nem hívódik (negatív)', async () => {
+    const { repo: auditRepo } = makeAuditRepo()
+    const { repo: modelCallRepo } = makeModelCallRepo(0)
+    const externalCalls = { chat: 0, stream: 0 }
+    const localCalls = { stream: 0 }
+    const providers = new Map<string, ModelProvider>([
+      [
+        'chatgpt-oauth',
+        {
+          name: 'chatgpt-oauth',
+          async chat() {
+            externalCalls.chat++
+            return { content: 'külső', latencyMs: 1 }
+          },
+          async *chatStream() {
+            externalCalls.stream++
+            yield 'külső-stream'
+          },
+        },
+      ],
+      [
+        'gemini',
+        {
+          name: 'gemini',
+          async chat() {
+            externalCalls.chat++
+            return { content: 'külső2', latencyMs: 1 }
+          },
+          async *chatStream() {
+            externalCalls.stream++
+            yield 'külső2-stream'
+          },
+        },
+      ],
+      [
+        'ollama',
+        {
+          name: 'ollama',
+          async chat() {
+            throw new Error('should use stream')
+          },
+          async *chatStream() {
+            localCalls.stream++
+            throw new Error('fetch failed')
+          },
+        },
+      ],
+    ])
+
+    const gw = new ModelGateway(
+      auditRepo,
+      modelCallRepo,
+      providers,
+      { maxCallsPerTicket: 30 },
+      undefined,
+      undefined,
+      { enforceLocalForSensitive: true, localProvider: 'ollama', localModel: 'gemma-local', localModelAvailable: true },
+      makeSettings({
+        'model.fallback_chain': [
+          { provider: 'gemini', model: 'gemini-3.5-flash' },
+          { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+        ],
+      }),
+    )
+
+    await assert.rejects(
+      async () => {
+        for await (const _ of gw.callStream({
+          agentId: TEST_AGENT_ID,
+          messages: [{ role: 'user', content: 'A TAJ számom 123-456-789' }],
+          modelConfig: { provider: 'chatgpt-oauth', model: 'chatgpt-oauth-default' },
+        })) {
+          /* drain */
+        }
+      },
+      (e: unknown) =>
+        e instanceof GatewaySensitivityError &&
+        /adat nem hagyta el a platformot/i.test(e.message),
+    )
+
+    assert.equal(externalCalls.chat + externalCalls.stream, 0, `külső provider hívódott stream ágon`)
+    assert.ok(localCalls.stream >= 1, 'helyi stream provider nem hívódott')
+  })
+
   await check('MG-N9: platform-setting változás a következő híváson érvényesül (nincs örök cache)', async () => {
     const { repo: auditRepo } = makeAuditRepo()
     const { repo: modelCallRepo } = makeModelCallRepo(0)
