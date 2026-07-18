@@ -13,33 +13,16 @@ import type {
   StepFormState,
 } from '@/components/playbooks/playbook-step-editor-form'
 import { PlaybookFieldHint } from '@/components/playbooks/playbook-field-hint'
+import {
+  ensureFieldInOutputContractJson,
+  outputContractJsonHasField,
+} from '@/lib/playbook-v2/output-contract-form'
 
 const FIELD_CLASS = 'w-full rounded border border-ink/15 bg-transparent px-2 py-1 text-sm'
 
 function detectDecisionField(rules: OnCompleteFormRule[]): string {
   const fieldRule = rules.find((r) => r.conditionKind === 'field' && r.field.trim())
   return fieldRule?.field.trim() || 'decision'
-}
-
-function outputContractHasDecision(json: string, field: string): boolean {
-  try {
-    const parsed = json.trim() ? (JSON.parse(json) as { requiredFields?: unknown }) : {}
-    return Array.isArray(parsed.requiredFields) && parsed.requiredFields.includes(field)
-  } catch {
-    return false
-  }
-}
-
-function ensureDecisionInOutputContract(json: string, field: string): string {
-  let parsed: { requiredFields?: unknown; [k: string]: unknown } = {}
-  try {
-    parsed = json.trim() ? (JSON.parse(json) as typeof parsed) : {}
-  } catch {
-    return json
-  }
-  const req = Array.isArray(parsed.requiredFields) ? [...(parsed.requiredFields as string[])] : []
-  if (!req.includes(field)) req.push(field)
-  return JSON.stringify({ ...parsed, requiredFields: req }, null, 2)
 }
 
 export function PlaybookDecisionEditor({
@@ -100,7 +83,7 @@ export function PlaybookDecisionEditor({
     ])
   }
 
-  const hasDecisionOutput = outputContractHasDecision(form.outputContractJson, decisionField)
+  const hasDecisionOutput = outputContractJsonHasField(form.outputContractJson, decisionField)
 
   return (
     <fieldset className="space-y-2 rounded-lg border border-grape/30 bg-grape/5 p-3">
@@ -128,7 +111,10 @@ export function PlaybookDecisionEditor({
             onClick={() =>
               onChange({
                 ...form,
-                outputContractJson: ensureDecisionInOutputContract(form.outputContractJson, decisionField),
+                outputContractJson: ensureFieldInOutputContractJson(
+                  form.outputContractJson,
+                  decisionField,
+                ),
               })
             }
             className="rounded border border-honey/50 px-1.5 py-0.5 font-medium hover:bg-honey/15"

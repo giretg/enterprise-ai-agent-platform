@@ -65,6 +65,7 @@ import {
 } from '@/components/playbooks/playbook-gate-editor-form'
 import { PlaybookDecisionEditor } from '@/components/playbooks/playbook-decision-editor'
 import { upsertRoleType } from '@/lib/playbook-v2/role-sync'
+import { suggestedOutputFieldsForStep } from '@/lib/playbook-v2/output-contract-form'
 import type { PlaybookRole } from '@/lib/playbook-v2/spec'
 import type { RawGate, RawStep } from '@/components/playbooks/playbook-flow-graph'
 
@@ -220,6 +221,10 @@ function StepInspector({
   const [error, setError] = useState<string | null>(null)
   const stepIds = (spec.steps ?? []).map((s) => s.id).filter((id): id is string => Boolean(id) && id !== step.id)
   const gateIds = (spec.gates ?? []).map((g) => g.id).filter((id): id is string => Boolean(id))
+  const suggestedOutputFields = useMemo(
+    () => suggestedOutputFieldsForStep(spec, typeof step.id === 'string' ? step.id : null),
+    [spec, step.id],
+  )
   const isDecision =
     form.onCompleteRules.length >= 2 ||
     form.onCompleteRules.some((r) => r.conditionKind === 'field') ||
@@ -274,6 +279,7 @@ function StepInspector({
         gateIds={gateIds}
         roles={spec.roles as PlaybookRole[] | undefined}
         defaultErrorPolicy={readDefaultErrorPolicy(spec)}
+        suggestedOutputFields={suggestedOutputFields}
       />
       {error ? (
         <p className="text-xs text-coral">⚠ {error} — a hibás mező mentése kimarad, a többi frissül.</p>

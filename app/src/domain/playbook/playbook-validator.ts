@@ -816,11 +816,11 @@ export class PlaybookValidator {
       const field = decision.field ?? 'decision'
 
       // OUTPUT_CONTRACT_HAS_DECISION — a döntési mező legyen kötelező kimenet.
-      const required = readRequiredFields(step.outputContract)
+      const required = readOutputContractFields(step.outputContract)
       if (!required.includes(field)) {
         errors.push({
           code: 'OUTPUT_CONTRACT_HAS_DECISION',
-          path: `steps[${i}].outputContract.requiredFields`,
+          path: `steps[${i}].outputContract`,
           message: `A(z) '${step.id}' Decision Step outputContract-jának tartalmaznia kell a(z) '${field}' döntési mezőt.`,
         })
       }
@@ -964,13 +964,6 @@ export class PlaybookValidator {
       }
     }
   }
-}
-
-/** Egy step outputContract.requiredFields listája (üres, ha nincs). */
-function readRequiredFields(outputContract?: Record<string, unknown>): string[] {
-  const fields = outputContract?.requiredFields
-  if (!Array.isArray(fields)) return []
-  return fields.filter((f): f is string => typeof f === 'string' && f.length > 0)
 }
 
 /** Terminális step: nincs sem happy-path routing (onComplete/decision), sem transition. */

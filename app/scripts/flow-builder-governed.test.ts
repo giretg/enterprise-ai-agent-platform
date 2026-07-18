@@ -49,7 +49,7 @@ type LooseStep = {
   name: string
   ticketType: string
   assignedRole: string
-  outputContract?: { requiredFields: string[] }
+  outputContract?: Record<string, unknown>
   decision?: {
     field?: string
     confidenceField?: string
@@ -260,6 +260,15 @@ check('OUTPUT_CONTRACT_HAS_DECISION — hiányzó decision mező az outputContra
   s.steps[0]!.outputContract = { requiredFields: ['confidence'] }
   const r = validator.validateSpec(s)
   assert.ok(r.errors.some((e) => e.code === 'OUTPUT_CONTRACT_HAS_DECISION'))
+})
+
+check('OUTPUT_CONTRACT_HAS_DECISION — tipizált fields.decision elfogadott (#44)', () => {
+  const s = decisionSpec()
+  s.steps[0]!.outputContract = {
+    fields: [{ name: 'decision', type: 'string', required: true }],
+  }
+  const r = validator.validateSpec(s)
+  assert.ok(!r.errors.some((e) => e.code === 'OUTPUT_CONTRACT_HAS_DECISION'), JSON.stringify(r.errors))
 })
 
 check('CRITICAL_BRANCH_GATE_REQUIRED — L2 branch közvetlen stepre (gate nélkül)', () => {
