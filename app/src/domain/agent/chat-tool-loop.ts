@@ -13,6 +13,14 @@ import type { XlsxRow, XlsxSheetSpec, CellStyle, XlsxCellChange } from '@/domain
 import type { PptxSlideSpec } from '@/domain/file-editor/adapters/pptx-adapter'
 import type { DocxBlockSpec } from '@/domain/file-editor/adapters/docx-adapter'
 import { assembleGatewayMessages, type PromptSegments } from './prompt-assembler'
+import {
+  describeLoopStop,
+  evaluateLoopContinuation,
+  resolveLoopGuardLimits,
+  trackTurnProgress,
+  type LoopGuardLimits,
+  type LoopStopReason,
+} from './loop-stop-decision'
 
 /** Chatben hívható platform toolok (capability + connector alapján szűrve).
  *  A `kb_search` a runtime elején egyszer előre is lefut (a találatok a promptba
@@ -80,6 +88,8 @@ export type ToolLoopContext =
   | { ticketId: string; conversationId?: never }
 
 export type ToolLoopMode = 'chat' | 'task'
+/** A loop leállási indokai (a `cancelled` külön, kivétel-ágon megy — spec §7). */
+export type ToolLoopStopReason = Exclude<LoopStopReason, 'cancelled'>
 export type ToolLoopResult =
   | { content: string; toolCallCount: number; deniedCount: number; status: 'completed'; reason?: undefined }
   | {
@@ -87,7 +97,7 @@ export type ToolLoopResult =
       toolCallCount: number
       deniedCount: number
       status: 'exhausted'
-      reason: 'max_turns_exhausted'
+      reason: ToolLoopStopReason
     }
 
 export const TOOL_LOOP_EXHAUSTED_MESSAGE =
@@ -1662,8 +1672,17 @@ export async function runAgentToolLoop(params: {
   onMemoryCandidate?: (event: ToolLoopMemoryCandidateEvent) => void | Promise<void>
   /** Kooperatív leállítás (pl. chat Stop) — kör- és tool-hívás-határon ellenőrizve. */
   shouldCancel?: () => boolean
+  /** Tesztelhetőség: injektálható óra a faliórai korláthoz (default `Date.now`). */
+  now?: () => number
 }): Promise<ToolLoopResult> {
   const maxTurns = params.maxTurns ?? 20
+  // Spec §7 — a leállási döntéshozó küszöbei és a hozzá tartozó állapot.
+  const now = params.now ?? Date.now
+  const startedAt = now()
+  const guardLimits: LoopGuardLimits = resolveLoopGuardLimits(
+    params.modelConfig as unknown as Record<string, unknown>,
+    maxTurns,
+  )
   const modeNote =
     params.mode === 'task'
       ? 'Ez egy aszinkron feladat — a végeredményed visszakerül a ticketbe. Dolgozz végig minden szükséges eszközhívást, majd add meg a kész választ természetes magyar szövegként (NE JSON).'
@@ -1737,8 +1756,11 @@ export async function runAgentToolLoop(params: {
   }
 
   // Egy tool-hívás kihagyása: tool-üzenet a modellnek + 'skipped' activity a UI-nak.
+  // A kihagyás is „eredmény" az előrehaladás-figyelés szemszögéből: stabil
+  // ujjlenyomattal megy be, hogy a csupa-kihagyott kör zsákutcának számítson.
   const skipToolCall = async (call: GatewayToolCall, content: string, detail: string) => {
     messages.push({ role: 'tool', toolCallId: call.id, toolName: call.name, content })
+    noteToolResult(call.name, 'SKIPPED')
     await emitActivity({ id: `tool-${call.id}`, kind: 'tool', title: call.name, detail, status: 'skipped' })
   }
 
@@ -1747,11 +1769,45 @@ export async function runAgentToolLoop(params: {
   const REPEAT_LIMIT = 3
   const webSearchGuard: WebSearchGuard = { webSearchRateLimited: false }
 
-  for (let turn = 0; turn < maxTurns; turn++) {
-    if (params.shouldCancel?.()) {
-      throw new AgentToolLoopCancelledError()
+  // Előrehaladás-figyelés (spec §7/5): a már látott tool-eredmények ujjlenyomatai
+  // és az egymást követő, előrehaladás nélküli körök száma.
+  const seenToolResults = new Set<string>()
+  let noProgressTurns = 0
+  // Az aktuális kör mérlege (a kör elején nullázva, a végén kiértékelve).
+  let turnToolResultCount = 0
+  let turnNewToolResultCount = 0
+  const noteToolResult = (toolName: string, content: string) => {
+    turnToolResultCount += 1
+    const fingerprint = toolResultFingerprint(toolName, content)
+    if (!seenToolResults.has(fingerprint)) {
+      seenToolResults.add(fingerprint)
+      turnNewToolResultCount += 1
+    }
+  }
+  // A tényleges leállási ok; `max_turns_exhausted` a loop természetes kifutása.
+  let stopReason: ToolLoopStopReason = 'max_turns_exhausted'
+
+  /** A döntéshozó megkérdezése az aktuális állapottal (kör eleje / tool-hívás előtt). */
+  const decideContinuation = (turn: number) =>
+    evaluateLoopContinuation({
+      turn,
+      elapsedMs: now() - startedAt,
+      toolCallCount,
+      noProgressTurns,
+      cancelRequested: params.shouldCancel?.() === true,
+      limits: guardLimits,
+    })
+
+  turnLoop: for (let turn = 0; turn < maxTurns; turn++) {
+    const turnDecision = decideContinuation(turn)
+    if (!turnDecision.continue) {
+      if (turnDecision.reason === 'cancelled') throw new AgentToolLoopCancelledError()
+      stopReason = turnDecision.reason
+      break
     }
     let webSearchCallsThisTurn = 0
+    turnToolResultCount = 0
+    turnNewToolResultCount = 0
     const reasoningTurnId = `reasoning-${turn}`
     const placeholderTitle = turn === 0 ? 'Üzenet feldolgozása' : 'Tool eredmények kiértékelése'
     await emitActivity({
@@ -1856,9 +1912,22 @@ export async function runAgentToolLoop(params: {
       toolCalls: calls,
     })
 
-    for (const call of calls) {
-      if (params.shouldCancel?.()) {
-        throw new AgentToolLoopCancelledError()
+    for (const [callIndex, call] of calls.entries()) {
+      // Spec §7 — minden tool-hívás ELŐTT ugyanaz a döntéshozó. Leálláskor a már
+      // kiadott tool-hívásokra kötelező tool-üzenetet adni (különben a modellnek
+      // küldött előzmény inkonzisztens lenne), majd gráceful finalizálunk.
+      const callDecision = decideContinuation(turn)
+      if (!callDecision.continue) {
+        if (callDecision.reason === 'cancelled') throw new AgentToolLoopCancelledError()
+        stopReason = callDecision.reason
+        for (const pending of calls.slice(callIndex)) {
+          await skipToolCall(
+            pending,
+            `[LEÁLLÁS] A futás leállt (${callDecision.reason}) — ez az eszközhívás már nem futott le.`,
+            'a futás leállt — kimaradt',
+          )
+        }
+        break turnLoop
       }
       if (call.name === TOOL_RESULT_READ) {
         const path = typeof call.input.path === 'string' ? call.input.path : ''
@@ -2009,6 +2078,9 @@ export async function runAgentToolLoop(params: {
       const repeatCount = (callRepeatTracker.get(repeatKey) ?? 0) + 1
       callRepeatTracker.set(repeatKey, repeatCount)
       if (repeatCount > REPEAT_LIMIT) {
+        // A guard által blokkolt hívás sem hoz új információt — az előrehaladás-
+        // figyelés így a csupa-blokkolt köröket is zsákutcaként látja.
+        noteToolResult(toolName, 'REPEAT_GUARD')
         messages.push({
           role: 'tool',
           toolCallId: call.id,
@@ -2043,6 +2115,10 @@ export async function runAgentToolLoop(params: {
         const result = await params.toolBroker.invoke(invokeInput)
         toolCallCount += 1
         if (result.denied) deniedCount += 1
+        noteToolResult(
+          toolName,
+          result.denied ? `DENIED:${result.reason ?? ''}` : JSON.stringify(result.result),
+        )
         if (
           toolName === 'web_search' &&
           result.denied &&
@@ -2144,6 +2220,7 @@ export async function runAgentToolLoop(params: {
         }
       } catch (e) {
         const message = e instanceof Error ? e.message : 'tool_call_failed'
+        noteToolResult(toolName, `ERROR:${message}`)
         if (toolName === 'web_search' && isWebSearchProviderRateLimited(message)) {
           markWebSearchRateLimited(webSearchGuard, messages)
         }
@@ -2162,6 +2239,13 @@ export async function runAgentToolLoop(params: {
         })
       }
     }
+
+    // Kör lezárása: az előrehaladás-mérleg alapján léptetjük a zsákutca-számlálót.
+    noProgressTurns = trackTurnProgress(noProgressTurns, {
+      hadAssistantText: assistantText.trim().length > 0,
+      toolResultCount: turnToolResultCount,
+      newToolResultCount: turnNewToolResultCount,
+    })
   }
 
   messages.push({
@@ -2169,6 +2253,15 @@ export async function runAgentToolLoop(params: {
     content:
       'Fogalmazd meg a felhasználónak magyarul. agent_ask: completed:true + answer → fogalmazd át; completed:false → mondd el hogy nem sikerült. Gmail/file eszköz: csak a tool eredményére támaszkodj, ne találj ki adatot. connector_grant_missing esetén jelezd hogy csatlakoztasd a fiókot. Ne használj JSON tool blokkot. FONTOS: ha valamelyik feladatot (pl. Excel vagy prezentáció létrehozása) NEM hajtottad végre (mert elfogytak a körök vagy nem hívtad meg az eszközt), NE állítsd hogy kész — mondd el őszintén, hogy mi maradt el és miért.',
   })
+  // Az új leállási okoknál a záró prózát is a valós okhoz igazítjuk (a
+  // `max_turns_exhausted` szövege szándékosan változatlan marad).
+  const stopNotice = describeLoopStop(stopReason, guardLimits)
+  if (stopNotice) {
+    messages.push({
+      role: 'system',
+      content: `A futás idő előtt leállt (${stopReason}). Foglald össze RÖVIDEN, mit sikerült elvégezni és mi maradt hátra. Ne kezdj új eszközhívásba, és ne állítsd késznek azt, ami nem készült el.`,
+    })
+  }
 
   const { content: finalContent } = await params.gateway.call({
     agentId: params.agentId,
@@ -2178,13 +2271,28 @@ export async function runAgentToolLoop(params: {
   })
 
   const stripped = stripToolArtifacts(finalContent) || finalContent.trim()
+  // A részeredmény MEGŐRZŐDIK; a leállás okát hétköznapi nyelvű jelölés kíséri.
+  const body = stripped || (stopNotice ? '' : TOOL_LOOP_EXHAUSTED_MESSAGE)
   return {
-    content: stripped || TOOL_LOOP_EXHAUSTED_MESSAGE,
+    content: stopNotice ? [body, stopNotice].filter(Boolean).join('\n\n---\n\n') : body,
     toolCallCount,
     deniedCount,
     status: 'exhausted',
-    reason: 'max_turns_exhausted',
+    reason: stopReason,
   }
+}
+
+/**
+ * Egy tool-eredmény ujjlenyomata az előrehaladás-figyeléshez. Nem kriptográfiai
+ * célú — csak azt kell eldöntenie, hogy ugyanazt kaptuk-e vissza megint, ezért
+ * a hosszú eredményeket a hosszukkal és egy olcsó hash-sel azonosítjuk.
+ */
+function toolResultFingerprint(toolName: string, content: string): string {
+  let hash = 0
+  for (let i = 0; i < content.length; i++) {
+    hash = (Math.imul(hash, 31) + content.charCodeAt(i)) | 0
+  }
+  return `${toolName}:${content.length}:${hash}`
 }
 
 /**

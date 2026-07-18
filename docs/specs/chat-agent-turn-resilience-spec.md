@@ -273,6 +273,34 @@ válasz + állapot-jelölő (pl. „⏹️ Leállítva — a részeredmény meg�
 kimerülésnél a meglévő `TOOL_LOOP_EXHAUSTED_MESSAGE`), és a `reason` az
 `AgentTurn`-re íródik.
 
+### 7.1 Megvalósítva (2026-07-19, issue #62)
+
+- Döntéshozó: `app/src/domain/agent/loop-stop-decision.ts` —
+  `evaluateLoopContinuation` (tiszta függvény: nincs I/O, nincs `Date.now()`),
+  mellette `trackTurnProgress` az előrehaladás-mérleghez és `describeLoopStop`
+  a hétköznapi nyelvű jelöléshez.
+- A loop (`chat-tool-loop.ts`) a **kör elején** és **minden tool-hívás előtt**
+  megkérdezi. Tool-hívás közbeni leálláskor a már kiadott, de le nem futott
+  hívásokra kimaradás-jelző tool-üzenet megy (a modell-előzmény konzisztens marad).
+- Leálláskor gráceful finalizálás: záró modellhívás → a részválasz **megmarad**,
+  és alá kerül az önmagyarázó jelölés (mi ért véget, mi maradt, hogyan tovább).
+  A `max_turns_exhausted` ág szövege és viselkedése **változatlan**.
+- A leállás indoka a forduló-rekordra (`AgentTurn.status='exhausted'` +
+  `reason`) íródik az `agent-chat-runtime`-ból; a ticket-ág a meglévő
+  `TOOL_LOOP_EXHAUSTED` hibakódot kapja a pontosabb `reason`-nel.
+- Küszöbök (agent-szintű `modelConfig` mező → env → alapérték, clamp-elve):
+
+  | Küszöb | `modelConfig` | Env | Alapérték |
+  |---|---|---|---|
+  | faliórai idő | `maxToolWallClockMs` | `AGENT_LOOP_MAX_WALLCLOCK_MS` | 180 000 ms |
+  | tool-büdzsé | `maxToolCalls` | `AGENT_LOOP_MAX_TOOL_CALLS` | 60 hívás |
+  | előrehaladás-hiány | `maxNoProgressTurns` | `AGENT_LOOP_MAX_NO_PROGRESS_TURNS` | 3 kör |
+
+- Teszt: `npm run test:loop-stop` (`scripts/loop-stop-decision.test.ts`) —
+  determinisztikus, hamis modell-kapuval és injektált órával, mindhárom új
+  feltételre plusz a változatlan kör-limit ágra. CI-ben fut.
+- **Nyitva marad:** a `cost_budget` (opcionális 6. feltétel) és a D10 watchdog.
+
 **Watchdog (D10):** külön ciklus/cron (a meglévő dispatcher-ütem mellé) az
 `AgentTurn` táblát nézi: `status ∈ {running,streaming}` ÉS
 `heartbeatAt < now() - staleMs` (default ~120_000 ms) → `failed`,

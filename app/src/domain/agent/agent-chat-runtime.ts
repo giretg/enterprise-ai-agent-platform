@@ -50,6 +50,7 @@ import {
   type LoadSkillFn,
   type ToolLoopActivityEvent,
   type ToolLoopMemoryCandidateEvent,
+  type ToolLoopStopReason,
 } from './chat-tool-loop'
 import type { SkillService } from '../skill/skill-service'
 import { assembleGatewayMessages, type PromptSegments } from './prompt-assembler'
@@ -805,6 +806,9 @@ export class AgentChatRuntime {
     // ponton záruljon. A default a lecsatlakozás: ma a stream eldobásakor a
     // válasz tényleg elveszik — ezt a §2.1/D2 rés zárja majd le külön tiketben.
     let turnOutcome: FinalizeAgentTurnInput = { status: 'failed', reason: 'stream_abandoned' }
+    // Spec §7 — ha a tool-loop idő/büdzsé/előrehaladás miatt állt le, az indok a
+    // forduló-rekordra kerül (a válasz maga a `messages`-be, jelöléssel együtt).
+    let loopStopReason: ToolLoopStopReason | null = null
 
     try {
       const text = params.content.trim()
@@ -1137,6 +1141,9 @@ export class AgentChatRuntime {
           return
         }
         reply = result.result.content
+        if (result.result.status === 'exhausted') {
+          loopStopReason = result.result.reason
+        }
         turn.completedReply = reply
         for (const chunk of chunkForStreaming(reply)) {
           const cancelledId = await this.cancelTurnIfRequested(turn, conversationId)
@@ -1212,7 +1219,9 @@ export class AgentChatRuntime {
       const messageId = await this.finalizeAgentTurn(turn, reply)
       if (!messageId) return
       turn.finalized = true
-      turnOutcome = { status: 'completed', assistantMessageId: messageId }
+      turnOutcome = loopStopReason
+        ? { status: 'exhausted', reason: loopStopReason, assistantMessageId: messageId }
+        : { status: 'completed', assistantMessageId: messageId }
       yield { type: 'done', conversationId, messageId }
     } finally {
       if (activeConversationId) {
