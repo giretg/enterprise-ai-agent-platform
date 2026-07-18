@@ -553,18 +553,26 @@ function FallbackChainSection({ canEdit }: { canEdit: boolean }) {
           </button>
         </div>
         {preview && (
-          <ol className="list-decimal space-y-1 pl-4 text-xs text-ink">
-            {preview.chain.map((c, i) => (
-              <li key={`${c.provider}/${c.model}/${i}`}>
-                {c.provider}/{c.model}
-                {preview.sensitiveBranch ? ' · érzékeny (helyi)' : ''}
-                <span className="ml-1 text-ink-faint">
-                  ({isLocalProvider(c.provider) ? 'helyi' : 'külső'})
-                </span>
-              </li>
-            ))}
-            {preview.chain.length === 0 && <li className="list-none text-coral">Üres lánc — a hívás elbukik.</li>}
-          </ol>
+          <div className="space-y-1">
+            {preview.sensitiveBranch && (
+              <p className="text-xs text-amber-200">
+                Érzékeny ág: csak helyi jelöltek — külső szolgáltató kiesik a láncból.
+              </p>
+            )}
+            <ol className="list-decimal space-y-1 pl-4 text-xs text-ink">
+              {preview.chain.map((c, i) => (
+                <li key={`${c.provider}/${c.model}/${i}`}>
+                  {c.provider}/{c.model}
+                  <span className="ml-1 text-ink-faint">
+                    ({isLocalProvider(c.provider) ? 'helyi' : 'külső'})
+                  </span>
+                </li>
+              ))}
+              {preview.chain.length === 0 && (
+                <li className="list-none text-coral">Üres lánc — a hívás elbukik.</li>
+              )}
+            </ol>
+          </div>
         )}
       </div>
 

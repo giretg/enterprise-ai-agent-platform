@@ -56,7 +56,9 @@ export function extractAgentFallbackModels(modelConfig: unknown): FallbackCandid
 }
 
 export function classifyProviderError(error: unknown): FallbackErrorClass {
-  const message = error instanceof Error ? error.message.toLowerCase() : String(error).toLowerCase()
+  const err = error instanceof Error ? error : null
+  const message = (err?.message ?? String(error)).toLowerCase()
+  const name = (err?.name ?? '').toLowerCase()
 
   if (
     message.includes('401') ||
@@ -104,10 +106,14 @@ export function classifyProviderError(error: unknown): FallbackErrorClass {
 
   // 5xx, network, timeout, fetch failed, AbortError → provider_unavailable
   if (
-    message.includes('500') ||
-    message.includes('502') ||
-    message.includes('503') ||
-    message.includes('504') ||
+    name === 'aborterror' ||
+    message.includes('aborted') ||
+    message.includes('abort') ||
+    message.includes('internal server error') ||
+    message.includes('bad gateway') ||
+    message.includes('service unavailable') ||
+    message.includes('gateway timeout') ||
+    /\b5\d\d\b/.test(message) ||
     message.includes('timed out') ||
     message.includes('timeout') ||
     message.includes('fetch failed') ||

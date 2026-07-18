@@ -26,6 +26,10 @@ import {
   type AgentSensitivityPolicyReader,
   type ModelProvider,
 } from '../src/domain/gateway/model-gateway'
+import {
+  classifyProviderError,
+  isFallbackEligible,
+} from '../src/domain/gateway/fallback-chain'
 import { RoutingEngine } from '../src/domain/gateway/routing-engine'
 import {
   classifyPrompt,
@@ -1116,6 +1120,15 @@ async function main() {
       }),
     )
     assert.equal(contentCalls.secondary, 0, 'tartalmi hiba után is váltott tartalékra')
+  })
+
+  await check('MG-N9: Internal Server Error / AbortError → provider_unavailable (vált)', () => {
+    assert.equal(classifyProviderError(new Error('Internal Server Error')), 'provider_unavailable')
+    assert.equal(isFallbackEligible(classifyProviderError(new Error('Internal Server Error'))), true)
+    const abort = new Error('This operation was aborted')
+    abort.name = 'AbortError'
+    assert.equal(classifyProviderError(abort), 'provider_unavailable')
+    assert.equal(isFallbackEligible(classifyProviderError(abort)), true)
   })
 
   await check('MG-N9: auth hiba vált + hangsúlyos napló; agent tartalék a globális előtt', async () => {

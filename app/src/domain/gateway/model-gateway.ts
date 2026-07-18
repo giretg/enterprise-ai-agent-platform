@@ -1049,11 +1049,14 @@ export class ModelGateway {
   }
 
   /**
-   * Effektív tartalék-lánc előnézet (admin UI). Ugyanaz a szűrés, mint a hívási úton.
+   * Effektív tartalék-lánc előnézet (admin UI). Ugyanaz a feloldás + szűrés, mint a hívási úton
+   * (routing → érzékeny helyi kényszer → agent/globális tartalék).
    * A `sensitiveBranch` a helyi-kényszerített ágat jelöli.
    */
   async previewEffectiveFallbackChain(input: {
     primary: FallbackCandidate
+    agentId?: string
+    tenantId?: string
     agentModelConfig?: unknown
     /** Ha true, az érzékeny ágat szimulálja (csak helyi jelöltek). */
     simulateSensitive?: boolean
@@ -1062,6 +1065,26 @@ export class ModelGateway {
     sensitiveBranch: boolean
     localProvider: string
   }> {
+    let primary = input.primary
+    const agentModelConfig: ModelConfig = {
+      provider: primary.provider,
+      model: primary.model,
+      ...(input.agentModelConfig &&
+      typeof input.agentModelConfig === 'object' &&
+      !Array.isArray(input.agentModelConfig)
+        ? (input.agentModelConfig as ModelConfig)
+        : {}),
+    }
+
+    if (this.routingEngine && input.agentId) {
+      const decision = await this.routingEngine.resolve({
+        agentId: input.agentId,
+        tenantId: input.tenantId,
+        agentModelConfig,
+      })
+      primary = { provider: decision.provider, model: decision.model }
+    }
+
     const forcedLocal = !!input.simulateSensitive && this.sensitivityPolicy.enforceLocalForSensitive
     const chain = buildEffectiveFallbackChain({
       primary: forcedLocal
@@ -1069,8 +1092,8 @@ export class ModelGateway {
             provider: this.sensitivityPolicy.localProvider,
             model: this.sensitivityPolicy.localModel,
           }
-        : input.primary,
-      agentFallbacks: extractAgentFallbackModels(input.agentModelConfig),
+        : primary,
+      agentFallbacks: extractAgentFallbackModels(input.agentModelConfig ?? agentModelConfig),
       globalFallbacks: await this.loadGlobalFallbacks(),
       knownProviders: this.providers.keys(),
       forcedLocal,

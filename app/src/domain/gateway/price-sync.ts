@@ -202,7 +202,8 @@ export async function syncModelPricing(input: {
     if (model === 'default') continue
     const after = proposed[model]
     if (!after) continue
-    const before = currentSynced[model] ?? null
+    // Effektív „előtte” ár (builtin ∪ synced) — ne tűnjön nullának, ha csak a beépített van.
+    const before = effectiveBefore[model] ?? currentSynced[model] ?? null
     diffs.push({
       model,
       before,

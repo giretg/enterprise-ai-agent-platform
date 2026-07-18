@@ -93,6 +93,11 @@ async function main() {
     assert.equal(result.dryRun, true)
     assert.equal(result.written, 0)
     assert.ok(result.diffs.length >= 1)
+    const gpt = result.diffs.find((d) => d.model === 'gpt-4o')
+    assert.ok(gpt, 'gpt-4o diff hiányzik')
+    // Nincs synced réteg → before a beépített effektív ár, ne null
+    assert.ok(gpt!.before, 'before ne legyen null, ha van beépített tarifa')
+    assert.equal(gpt!.before!.inputPerMTokens, 2.3)
     assert.equal(settings.store[MODEL_PRICING_SYNCED_SETTING_KEY], undefined)
   })
 

@@ -5044,15 +5044,16 @@ export async function previewEffectiveFallbackChain(input: {
 }) {
   try {
     await ensureActiveDatabaseMode()
-    await requireTenantRole('operator')
+    const user = await requireTenantRole('operator')
     let agentModelConfig: unknown
     if (input.agentId) {
-      const user = await requireTenantRole('operator')
       const agent = await repositories.agents.findById(input.agentId, user.activeTenantId)
       agentModelConfig = agent?.modelConfig
     }
     const preview = await services.gateway.previewEffectiveFallbackChain({
       primary: { provider: input.provider, model: input.model },
+      agentId: input.agentId,
+      tenantId: user.activeTenantId,
       agentModelConfig,
       simulateSensitive: input.simulateSensitive,
     })
