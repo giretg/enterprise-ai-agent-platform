@@ -127,6 +127,8 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'model.call.sensitivity_agent_bypass',
   // Napi model-keret (összesített tenant + per-agent) átállítása a tenant admin felületről.
   'model.budget_changed',
+  'model.fallback_chain.set',
+  'model.structuring.set',
   'model_policy.upsert',
 
   // Tool Broker

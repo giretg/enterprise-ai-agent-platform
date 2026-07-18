@@ -1107,6 +1107,51 @@ export class PlatformSettingsService {
     return parseFallbackChainSetting(await this.settings.get(FALLBACK_CHAIN_SETTING_KEY))
   }
 
+  /** #33 — platform-szintű olcsó strukturáló modell a contract-javításhoz. */
+  async getStructuringModel(): Promise<
+    import('@/domain/contract-runtime').StructuringModelSetting | null
+  > {
+    const {
+      parseStructuringModelSetting,
+      structuringModelFromEnv,
+      STRUCTURING_MODEL_SETTING_KEY,
+    } = await import('@/domain/contract-runtime')
+    return (
+      parseStructuringModelSetting(await this.settings.get(STRUCTURING_MODEL_SETTING_KEY)) ??
+      structuringModelFromEnv()
+    )
+  }
+
+  async setStructuringModel(
+    model: { provider: string; model: string },
+    actorId: string,
+    knownProviders: ReadonlySet<string>,
+  ): Promise<import('@/domain/contract-runtime').StructuringModelSetting> {
+    const {
+      structuringModelSchema,
+      STRUCTURING_MODEL_SETTING_KEY,
+    } = await import('@/domain/contract-runtime')
+    const parsed = structuringModelSchema.parse(model)
+    if (!knownProviders.has(parsed.provider)) {
+      throw new Error(`Ismeretlen szolgáltató a strukturáló modellhez: ${parsed.provider}`)
+    }
+    await this.settings.set(STRUCTURING_MODEL_SETTING_KEY, parsed, actorId)
+    await this.audit.append({
+      actorType: 'human',
+      actorId,
+      agentVersion: null,
+      action: 'model.structuring.set',
+      targetType: 'platform_setting',
+      targetId: STRUCTURING_MODEL_SETTING_KEY,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: `${parsed.provider}/${parsed.model}`,
+      policyDecision: 'allowed',
+      metadata: { structuringModel: parsed },
+    })
+    return parsed
+  }
+
   async setFallbackChain(
     chain: Array<{ provider: string; model: string }>,
     actorId: string,

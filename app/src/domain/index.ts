@@ -654,6 +654,7 @@ const generalTaskRuntime = new GeneralTaskRuntime(
   skillService,
   repositories.audit,
   memoryRetrievalService,
+  () => platformSettingsService.getStructuringModel(),
 )
 toolBrokerService.setDelegationProcessor(async ({ ticketId, targetAgentId }) => {
   await wikiRuntime.processTicket({ ticketId, agentId: targetAgentId })

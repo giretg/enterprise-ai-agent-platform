@@ -118,6 +118,14 @@ function slotValuePresent(value: unknown): boolean {
   return value !== undefined && value !== null && value !== ''
 }
 
+/** #33 — kimeneti mező kitöltött-e (üres string / üres tömb ≠ kitöltött). */
+export function isFilledOutputValue(value: unknown): boolean {
+  if (value === undefined || value === null) return false
+  if (typeof value === 'string' && value.trim() === '') return false
+  if (Array.isArray(value) && value.length === 0) return false
+  return true
+}
+
 /**
  * Egy lépés ticket-inputját állítja össze a compiled inputSlots forrása szerint.
  * - `config` / `trigger` → processInput
@@ -216,9 +224,8 @@ export function parseAgentStepOutput(
     for (const field of requiredFields) {
       const direct = record[field]
       const value = direct !== undefined && direct !== null ? direct : normalizedIndex.get(normalizeKey(field))
-      if (value !== undefined && value !== null) {
-        out[field] = value
-      }
+      if (!isFilledOutputValue(value)) continue
+      out[field] = value
     }
     if (requiredFields.every((f) => out[f] !== undefined)) return out
     if (Object.keys(out).length > 0) return { ...out, answer: trimmed }
@@ -258,6 +265,8 @@ export type StepOutcomeSignals = {
    * `evaluateTicketTransition` `OUTPUT_CONTRACT_VIOLATION` DENY-jébe futna.
    */
   missingOutputFields?: string[]
+  /** #33 — közérthető contract-hiba magyarázat az outcome.message-hez. */
+  contractErrorMessage?: string
 }
 
 /**
@@ -276,7 +285,14 @@ export function computeStepOutcome(signals: StepOutcomeSignals): StepOutcome {
     return { status: 'failed', reason: 'tool_denied' }
   }
   if (signals.missingOutputFields && signals.missingOutputFields.length > 0) {
-    return { status: 'blocked', reason: 'output_contract_unmet', missing: signals.missingOutputFields }
+    return {
+      status: 'blocked',
+      reason: 'output_contract_unmet',
+      missing: signals.missingOutputFields,
+      ...(signals.contractErrorMessage
+        ? { message: signals.contractErrorMessage }
+        : {}),
+    }
   }
   return { status: 'ok' }
 }

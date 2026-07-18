@@ -4,6 +4,7 @@
  * (vagy nem-config) kötelező input-réseiből következtetjük a kimeneti mezőket.
  */
 import type { PlaybookSpecV2, PlaybookStep } from '@/lib/playbook-v2/spec'
+import type { ContractField, ContractSource } from '@/domain/contract-runtime'
 
 /**
  * Egy lépés happy-path következő-step céljai. A Decision Step ágai (`branches` +
@@ -78,9 +79,95 @@ export function mergeOutputRequiredFields(
   return [...new Set([...(explicit ?? []), ...(inferred ?? [])])]
 }
 
+const CONTRACT_FIELD_TYPES = new Set([
+  'string',
+  'number',
+  'boolean',
+  'date',
+  'enum',
+  'array',
+  'object',
+])
+
+function readTypedField(raw: unknown): ContractField | null {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
+  const o = raw as Record<string, unknown>
+  if (typeof o.name !== 'string' || !o.name.trim()) return null
+  if (typeof o.type !== 'string' || !CONTRACT_FIELD_TYPES.has(o.type)) return null
+  const field: ContractField = {
+    name: o.name.trim(),
+    type: o.type as ContractField['type'],
+  }
+  if (typeof o.required === 'boolean') field.required = o.required
+  if (typeof o.description === 'string') field.description = o.description
+  if (Array.isArray(o.enumValues)) {
+    field.enumValues = o.enumValues.filter((v): v is string => typeof v === 'string')
+  }
+  if (
+    typeof o.itemType === 'string' &&
+    CONTRACT_FIELD_TYPES.has(o.itemType) &&
+    o.itemType !== 'array' &&
+    o.itemType !== 'object' &&
+    o.itemType !== 'enum'
+  ) {
+    field.itemType = o.itemType as NonNullable<ContractField['itemType']>
+  }
+  if (Array.isArray(o.fields)) {
+    field.fields = o.fields.map(readTypedField).filter((f): f is ContractField => f != null)
+  }
+  return field
+}
+
+/** Tipizált mezőlista a lazán tárolt outputContract-ból. */
+export function readTypedOutputContractFields(
+  outputContract?: Record<string, unknown>,
+): ContractField[] {
+  const fields = outputContract?.fields
+  if (!Array.isArray(fields)) return []
+  return fields.map(readTypedField).filter((f): f is ContractField => f != null)
+}
+
 /** Egy step `outputContract.requiredFields`-je (lazán tárolt JSON-ból, típusőrizve). */
 export function readOutputContractFields(outputContract?: Record<string, unknown>): string[] {
+  const typed = readTypedOutputContractFields(outputContract)
+  if (typed.length > 0) {
+    const required = typed.filter((f) => f.required !== false).map((f) => f.name)
+    const legacy = readLegacyRequiredFields(outputContract)
+    return [...new Set([...required, ...legacy])]
+  }
+  return readLegacyRequiredFields(outputContract)
+}
+
+function readLegacyRequiredFields(outputContract?: Record<string, unknown>): string[] {
   const fields = outputContract?.requiredFields
   if (!Array.isArray(fields)) return []
   return fields.filter((f): f is string => typeof f === 'string' && f.length > 0)
+}
+
+/** ContractSource a lépés outputContract-jából (+ routing-inferred mezőnevek). */
+export function buildContractSource(
+  outputContract: Record<string, unknown> | undefined,
+  inferredFields: string[] | undefined,
+): ContractSource {
+  const typed = readTypedOutputContractFields(outputContract)
+  const legacy = readLegacyRequiredFields(outputContract)
+  const inferred = inferredFields ?? []
+  const known = new Set([...typed.map((f) => f.name), ...legacy])
+  const extraLegacy = inferred.filter((name) => !known.has(name))
+  return {
+    fields: typed.length > 0 ? typed : undefined,
+    requiredFields: [...new Set([...legacy, ...extraLegacy])],
+  }
+}
+
+import { HARD_MAX_REPAIR_ATTEMPTS } from '@/domain/contract-runtime'
+
+/** Lépésszintű javítási próba-felülbírálás (0–2), ha a contract megadja. */
+export function readMaxRepairAttempts(
+  outputContract?: Record<string, unknown>,
+): number | undefined {
+  const raw = outputContract?.maxRepairAttempts
+  if (typeof raw !== 'number' || !Number.isInteger(raw)) return undefined
+  if (raw < 0) return 0
+  return Math.min(raw, HARD_MAX_REPAIR_ATTEMPTS)
 }

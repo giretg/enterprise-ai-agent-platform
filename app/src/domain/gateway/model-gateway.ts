@@ -202,6 +202,11 @@ export type ModelProviderResult = {
 
 export interface ModelProvider {
   readonly name: string
+  /**
+   * Opcionális képességjelző (#33): a provider tud-e séma-kényszerített választ.
+   * Hiánya nem hiba — a runtime promptba fűzött sémával és közös beolvasóval megy.
+   */
+  readonly supportsStructuredOutput?: boolean
   chat(input: {
     agentId: string
     ticketId?: string
@@ -209,6 +214,11 @@ export interface ModelProvider {
     modelConfig: ModelConfig
     /** Natív tool use definíciók — ha megadva, a provider function callingot kér. */
     tools?: ToolDefinition[]
+    /**
+     * #33 — JSON Schema a válaszra (provider-natív séma-kényszer, ha támogatott).
+     * A kapu továbbítja; a provider figyelmen kívül hagyhatja.
+     */
+    responseJsonSchema?: Record<string, unknown>
     /**
      * Chat "thinking-trace" spec — a modell gondolkodási (reasoning-summary)
      * deltáit oldalcsatornán adja tovább, ahol a provider ezt szolgáltatja. A
@@ -1465,6 +1475,10 @@ export class ModelGateway {
     modelOverrideHint?: ModelOverrideHint
     /** Natív tool use definíciók — átadva a provider function callingot kér. */
     tools?: ToolDefinition[]
+    /**
+     * #33 — JSON Schema a válaszra; a provider kapja, ha támogatja a séma-kényszert.
+     */
+    responseJsonSchema?: Record<string, unknown>
     /** Explicit human review for narrowly scoped, audited sensitivity overrides. */
     sensitivityOverride?: SensitivityOverride
     /**
@@ -1515,6 +1529,7 @@ export class ModelGateway {
             messages: params.messages,
             modelConfig: attemptConfig,
             tools: params.tools,
+            responseJsonSchema: params.responseJsonSchema,
             onReasoningDelta: params.onReasoningDelta,
           }),
         )

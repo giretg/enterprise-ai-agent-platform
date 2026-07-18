@@ -22,12 +22,22 @@ import {
   extractAgentAnswerDisplayBody,
   formatDeliverableInstruction,
   formatOutputContractInstruction,
+  isFilledOutputValue,
   outputRequiredFieldsForStep,
   parseAgentStepOutput,
   pickDeliverableFile,
   playbookSlotValuesFromTicketPayload,
   requireDeliverableFile,
 } from '@/lib/playbook-v2/process-step-payload'
+import {
+  compileContract,
+  runStrictContract,
+  structuringModelFromEnv,
+  toStructuringModelConfig,
+  type ContractField,
+  type CriticalityLevel,
+  type StructuringModelSetting,
+} from '@/domain/contract-runtime'
 import { readTicketPromptText } from '@/lib/wiki-ticket-payload'
 import { formatHitsForPrompt, type KbHit } from '@/lib/kb-format'
 import { distillKbSearchQuery } from '@/lib/kb-query'
@@ -81,6 +91,9 @@ type ProcessStepContext = {
   compiled: CompiledSpec
   stepRule: CompiledSpec['ticketRules'][number]
   outputRequiredFields: string[]
+  outputContractFields?: ContractField[]
+  maxRepairAttempts?: number
+  criticality?: CriticalityLevel
 }
 
 /**
@@ -123,6 +136,8 @@ export class GeneralTaskRuntime {
     private skills?: SkillService,
     private audit?: AuditRepository,
     private memoryRetrieval?: MemoryRetrievalService,
+    /** #33 — platform-szintű strukturáló modell felolvasó (settings / env). */
+    private getStructuringModel?: () => Promise<StructuringModelSetting | null>,
   ) {}
 
   async processTicket(params: { ticketId: string; agentId: string }) {
@@ -303,42 +318,52 @@ export class GeneralTaskRuntime {
       }
     }
 
-    // Hibapolicy spec §5.1/WP-3 — a lépés outputContract-ja is hard-signal: ha a kötelező
-    // mezők hiányoznak a parse-olt kimenetből, a step NEM zárható néma `ok`-ként (különben a
-    // `done`-ra írás az evaluateTicketTransition OUTPUT_CONTRACT_VIOLATION DENY-jébe futna).
-    const structuredOutput = processStep
-      ? parseAgentStepOutput(answer, processStep.outputRequiredFields)
-      : null
-    let missingOutputFields = processStep
-      ? processStep.outputRequiredFields.filter(
-          (field) => structuredOutput![field] === undefined || structuredOutput![field] === null,
-        )
-      : []
+    // Hibapolicy spec §5.1/WP-3 + Contract Runtime (#33): a lépés kimenetét a
+    // lefordított contract ellen validáljuk. Érvényes első válasz → nincs extra
+    // modellhívás; bukásnál kötött javító próba a kapun át; korlát után blocked.
+    let structuredOutput: Record<string, unknown> | null = null
+    let missingOutputFields: string[] = []
+    let contractHumanSummary: string | undefined
 
-    // Sok modell a tool-loop UTÁN nem teszi vissza a kért záró JSON-blokkot, pedig a
-    // tényleges tartalmi válasz (`answer`) helyes — ilyenkor a hibás formázás miatt NE
-    // essen a step azonnal await_human-ra: egyetlen, célzott (tool nélküli) "strukturálj
-    // JSON-ra" javító hívással próbáljuk a már meglévő szöveges válaszból kinyerni a
-    // hiányzó mezőket, mielőtt hard-signal `blocked`-nek minősítenénk a lépést.
-    if (processStep && missingOutputFields.length > 0 && answer.trim()) {
-      const repaired = await this.repairStructuredOutput({
+    if (processStep && processStep.outputRequiredFields.length > 0) {
+      const contract = compileContract({
+        fields: processStep.outputContractFields,
+        requiredFields: processStep.outputRequiredFields,
+      })
+      const structuringModel = toStructuringModelConfig(
+        (await this.getStructuringModel?.()) ?? structuringModelFromEnv(),
+        modelConfig,
+      )
+      const strict = await runStrictContract({
+        gateway: this.gateway,
+        contract,
+        rawContent: answer,
+        modelConfig,
+        structuringModel,
         agentId: params.agentId,
         agentVersion,
         ticketId: ticket.id,
-        modelConfig,
-        answer,
-        requiredFields: missingOutputFields,
+        tenantId: ticket.tenantId ?? undefined,
+        criticality: processStep.criticality,
+        maxRepairAttempts: processStep.maxRepairAttempts,
       })
-      if (repaired) {
-        for (const field of missingOutputFields) {
-          if (repaired[field] !== undefined && repaired[field] !== null) {
-            structuredOutput![field] = repaired[field]
-          }
+      if (strict.ok) {
+        structuredOutput = strict.value
+        missingOutputFields = []
+      } else {
+        structuredOutput = parseAgentStepOutput(answer, processStep.outputRequiredFields)
+        missingOutputFields = strict.errors
+          .map((e) => e.field)
+          .filter((f, i, arr) => f && arr.indexOf(f) === i)
+        if (missingOutputFields.length === 0) {
+          missingOutputFields = processStep.outputRequiredFields.filter(
+            (field) => !isFilledOutputValue(structuredOutput![field]),
+          )
         }
-        missingOutputFields = processStep.outputRequiredFields.filter(
-          (field) => structuredOutput![field] === undefined || structuredOutput![field] === null,
-        )
+        contractHumanSummary = strict.humanSummary
       }
+    } else if (processStep) {
+      structuredOutput = parseAgentStepOutput(answer, processStep.outputRequiredFields)
     }
 
     // WP-7 / §10.1 — determinisztikus step-outcome hard runtime hibákból és az
@@ -354,12 +379,16 @@ export class GeneralTaskRuntime {
       toolDenied: loopResult.deniedCount > 0,
       kbZeroHit: kbSearch.enabled && kbSearch.hits.length === 0,
       missingOutputFields,
+      contractErrorMessage: contractHumanSummary,
     })
 
     // Process-lépésnél a nem-`ok` outcome SOHA nem lesz happy-path `done`-ként némán
     // elfogadva: a hibapolicy spec (§4/§7) útján a step.onError/onBlocked / Playbook-default
     // hibaágra (vagy végső háló esetén emberi felülvizsgálatra) tereljük.
     if (processStep && stepOutcome.status !== 'ok') {
+      const reviewNote =
+        contractHumanSummary ??
+        `step outcome ${stepOutcome.status} (${stepOutcome.reason ?? 'n/a'}); human review required`
       const updated = await this.routeNonOkStepOutcome({
         ticket,
         processStep,
@@ -372,7 +401,7 @@ export class GeneralTaskRuntime {
         memoryVersion: agentDetails.memoryVersion,
         payload,
         stepOutcome,
-        note: `step outcome ${stepOutcome.status} (${stepOutcome.reason ?? 'n/a'}); human review required`,
+        note: reviewNote,
       })
       return {
         ticketId: ticket.id,
@@ -571,54 +600,6 @@ export class GeneralTaskRuntime {
     })
   }
 
-  /**
-   * Egyetlen, tool nélküli javító hívás: a modell saját (már megszületett) szöveges
-   * válaszát térképezi le a hiányzó outputContract mezőkre. Nem a fő feladatot ismétli
-   * meg — csak formázási/kinyerési feladat, ezért megbízhatóbban betartja a szigorú
-   * JSON-only elvárást, mint a fő (tool-loopos) válasz. Ha ez a hívás is hibázik vagy
-   * hiányos, a hívó a normál hard-signal `blocked`/`await_human` útra esik — nincs
-   * végtelen retry, legfeljebb egy plusz modellhívás történik lépésenként.
-   */
-  private async repairStructuredOutput(input: {
-    agentId: string
-    agentVersion: number
-    ticketId: string
-    modelConfig: ModelConfig
-    answer: string
-    requiredFields: string[]
-  }): Promise<Record<string, unknown> | null> {
-    try {
-      const keys = input.requiredFields.join(', ')
-      const result = await this.gateway.call({
-        agentId: input.agentId,
-        agentVersion: input.agentVersion,
-        ticketId: input.ticketId,
-        messages: [
-          {
-            role: 'system',
-            content: [
-              'Kizárólag adat-strukturáló feladatod van, ne végezz semmilyen új kutatást vagy eszközhívást.',
-              `A user üzenete egy korábbi agent-válasz. Alakítsd át EGYETLEN JSON objektummá, PONTOSAN ezekkel a kulcsokkal: ${keys}.`,
-              'A válaszod KIZÁRÓLAG a JSON objektum legyen, más szöveg, magyarázat vagy code fence nélkül.',
-              'Ha egy kulcs értékét nem találod a szövegben, az adott kulcs értéke legyen üres string.',
-            ].join('\n'),
-          },
-          { role: 'user', content: input.answer },
-        ],
-        modelConfig: input.modelConfig,
-      })
-      const parsed = parseAgentStepOutput(result.content, input.requiredFields)
-      const hasAny = input.requiredFields.some(
-        (field) => parsed[field] !== undefined && parsed[field] !== null,
-      )
-      return hasAny ? parsed : null
-    } catch {
-      // A javító hívás hibája nem eshet vissza a fő lépés kimenetére — a hívó
-      // egyszerűen a hiányzó mezőkkel, hard-signal `blocked`-ként folytatja.
-      return null
-    }
-  }
-
   private async loadProcessStepContext(
     ticket: NonNullable<Awaited<ReturnType<TicketRepository['findById']>>>,
   ): Promise<ProcessStepContext | null> {
@@ -642,6 +623,9 @@ export class GeneralTaskRuntime {
       compiled,
       stepRule,
       outputRequiredFields: outputRequiredFieldsForStep(stepRule, compiled.outputRequiredFields),
+      outputContractFields: stepRule.outputContractFields,
+      maxRepairAttempts: stepRule.maxRepairAttempts,
+      criticality: compiled.criticality,
     }
   }
 
