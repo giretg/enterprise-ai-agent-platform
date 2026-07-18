@@ -1,4 +1,5 @@
 import { PostgresAgentRepository, PostgresDocumentRepository } from './agent-repository'
+import { PostgresAgentTurnRepository } from './agent-turn-repository'
 import { PostgresBehaviorProfileRepository } from './behavior-profile-repository'
 import {
   PostgresAuditRepository,
@@ -74,6 +75,7 @@ export const repositories = {
   sandboxVersioning: new PostgresSandboxVersioningRepository(),
   scheduledTasks: new PostgresScheduledTaskRepository(),
   conversations: new PostgresConversationRepository(),
+  agentTurns: new PostgresAgentTurnRepository(),
   connectorGrants: new PostgresConnectorGrantRepository(),
   connectors: new PostgresConnectorRepository(),
   selfUpdatingConnectors: new PostgresSelfUpdatingConnectorRepository(),

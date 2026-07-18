@@ -1,5 +1,7 @@
 import type {
   Agent,
+  AgentTurn,
+  AgentTurnStatus,
   AuditActorType,
   AuditLog,
   Connector,
@@ -1392,6 +1394,82 @@ export interface ConversationRepository {
     deletedCount: number
     conversationIds: string[]
   }>
+}
+
+/**
+ * chat-agent-turn-resilience-spec.md §4 — az aktív (még nem terminális)
+ * forduló-státuszok. Az aktív-forduló invariáns (D7) ezen a halmazon áll, és a
+ * `0009_agent_turn` migráció részleges egyedi indexe ugyanezt a hármast szűri.
+ */
+export const ACTIVE_AGENT_TURN_STATUSES = ['queued', 'running', 'streaming'] as const
+
+export type ActiveAgentTurnStatus = (typeof ACTIVE_AGENT_TURN_STATUSES)[number]
+
+export type TerminalAgentTurnStatus = Exclude<AgentTurnStatus, ActiveAgentTurnStatus>
+
+/**
+ * Az aktív-forduló invariáns (D7) megsértése. A DB részleges egyedi indexe a
+ * végső kényszer; a repository ezt fordítja tipizált hibára, hogy a hívó
+ * megkülönböztethesse a valódi DB-hibától (és később 409-cel válaszolhasson).
+ */
+export class ActiveAgentTurnExistsError extends Error {
+  constructor(readonly conversationId: string) {
+    super(`A beszélgetésnek már van aktív agent-fordulója: ${conversationId}`)
+    this.name = 'ActiveAgentTurnExistsError'
+  }
+}
+
+export type CreateAgentTurnInput = {
+  conversationId: string
+  tenantId: string | null
+  agentId: string
+  agentVersion: number
+  createdById: string
+  userMessageId: string
+  status?: ActiveAgentTurnStatus
+  lockToken?: string | null
+  lockedAt?: Date | null
+}
+
+export type FinalizeAgentTurnInput = {
+  status: TerminalAgentTurnStatus
+  assistantMessageId?: string | null
+  partialText?: string
+  activities?: Prisma.InputJsonValue
+  turnCount?: number
+  toolCallCount?: number
+  deniedCount?: number
+  reason?: string | null
+  error?: string | null
+  finishedAt?: Date
+}
+
+/**
+ * A perzisztált chat-agent-forduló tára (spec §4/§5). A lock+heartbeat rész a
+ * `TicketRepository` dispatch-lock konvencióját követi: a lock megszerzése és
+ * elengedése is feltételes `updateMany`, hogy két futó ne írhassa felül egymást.
+ */
+export interface AgentTurnRepository {
+  create(data: CreateAgentTurnInput): Promise<AgentTurn>
+  findById(id: string): Promise<AgentTurn | null>
+  /** Az invariáns szerint legfeljebb egy ilyen sor létezhet. */
+  findActiveByConversation(conversationId: string): Promise<AgentTurn | null>
+  /**
+   * Lock megszerzése csak akkor, ha a forduló még aktív és nincs más birtokosa.
+   * `null` = a lockot valaki más tartja, vagy a forduló már terminális.
+   */
+  acquireLock(id: string, lockToken: string, now: Date): Promise<AgentTurn | null>
+  /** Csak a lock birtokosa engedheti el; a státuszt nem érinti. */
+  releaseLock(id: string, lockToken: string): Promise<void>
+  /** Csak a lock birtokosa üthet szívet — a stale-reclaim így nem írható vissza. */
+  heartbeat(id: string, lockToken: string, now: Date): Promise<AgentTurn | null>
+  /**
+   * Terminális lezárás: a lock elengedésével együtt, egyetlen feltételes
+   * írásban. `null` = a forduló már terminális volt (a lezárás idempotens).
+   */
+  finalize(id: string, data: FinalizeAgentTurnInput): Promise<AgentTurn | null>
+  /** Watchdog: aktív, de a `heartbeatAt`-je a küszöbnél régebbi fordulók. */
+  findStale(cutoff: Date, limit: number): Promise<AgentTurn[]>
 }
 
 export type SandboxAppWithLatestVersion = SandboxApp & {

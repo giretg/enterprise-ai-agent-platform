@@ -82,6 +82,8 @@
     "test:agent-chat-tenant-boundary": "tsx scripts/agent-chat-tenant-boundary.test.ts",
     "test:user-directory": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/user-directory-tool.test.ts",
     "test:conversation-session": "tsx scripts/conversation-session.test.ts",
+    "test:agent-turn": "tsx scripts/agent-turn-repository.test.ts",
+    "test:agent-turn-record": "tsx scripts/agent-chat-turn-record.test.ts",
     "test:agent-registry": "tsx scripts/agent-registry-lifecycle.test.ts",
     "test:dispatcher-retry-loop": "tsx scripts/dispatcher-retry-loop.test.ts",
     "test:iam-policy": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/iam-policy.test.ts",

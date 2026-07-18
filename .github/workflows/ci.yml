@@ -72,6 +72,7 @@ jobs:
           npm run test:memory-content-guard
           npm run test:memory-maintenance-rollback
           npm run test:chat-thinking-trace
+          npm run test:agent-turn-record
           npm run test:http-api
           npm run test:http-api-per-agent-key
           npm run test:connector-template
@@ -123,6 +124,12 @@ jobs:
       # A DB sémája megegyezik a migrációk által leírttal (nincs pending / nincs eltérés).
       - name: Prisma migrate status
         run: npx prisma migrate status
+
+      # Az aktív-forduló invariánst (chat-agent-turn-resilience-spec.md D7) egy
+      # RÉSZLEGES EGYEDI INDEX kényszeríti ki — ezt csak valódi Postgres ellen
+      # lehet bizonyítani, ezért a stub-DB-s suite helyett itt fut.
+      - name: Agent-forduló repository tesztek
+        run: npm run test:agent-turn
 
   security-scan:
     name: Titok-szkennelés + CodeQL

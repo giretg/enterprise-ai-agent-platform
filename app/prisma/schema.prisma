@@ -489,6 +489,19 @@ enum MessageRole {
   tool
 }
 
+/// chat-agent-turn-resilience-spec.md §4 (D1) — a chat-agent-forduló életciklus-státusza.
+/// A `queued|running|streaming` az aktív halmaz (l. az aktív-forduló invariánst),
+/// a többi terminális.
+enum AgentTurnStatus {
+  queued
+  running
+  streaming
+  completed
+  exhausted
+  cancelled
+  failed
+}
+
 enum MessageCriticality {
   L0
   L1
@@ -1732,6 +1745,7 @@ model Conversation {
   tickets         Ticket[]
   modelCalls      ModelCall[]
   toolCalls       ToolCall[]
+  agentTurns      AgentTurn[]
 
   @@index([tenantId, agentId, lastMessageAt])
   @@index([tenantId, createdById])
@@ -1763,6 +1777,60 @@ model Message {
   @@index([conversationId, createdAt])
   @@index([contentDeletedAt])
   @@map("messages")
+}
+
+/// chat-agent-turn-resilience-spec.md §4 (D1/D7/D8-Tier-2) — a chat-agent-forduló
+/// első osztályú, perzisztált rekordja. A `messages` a végállapot; ez a köztes,
+/// élő rekord, ami a haladást (részszöveg, aktivitások), az elszámolókat és a
+/// futtatás-tulajdonlást (lock + heartbeat, a `Ticket` dispatcher-konvenciója
+/// szerint) hordozza. Lezáráskor `assistantMessageId`-vel mutat a keletkezett
+/// agent-üzenetre.
+///
+/// Aktív-forduló invariáns (D7): egy `conversationId`-hez legfeljebb EGY
+/// `queued|running|streaming` sor lehet. Ezt a `0009_agent_turn` migráció
+/// részleges egyedi indexe kényszeríti ki (Prisma-sémában nem kifejezhető).
+model AgentTurn {
+  id                 String          @id @default(uuid()) @db.Uuid
+  conversationId     String          @map("conversation_id") @db.Uuid
+  tenantId           String?         @map("tenant_id") @db.Uuid
+  agentId            String          @map("agent_id") @db.Uuid
+  agentVersion       Int             @map("agent_version")
+  createdById        String          @map("created_by") @db.Uuid
+  status             AgentTurnStatus @default(queued)
+  userMessageId      String          @map("user_message_id") @db.Uuid
+  assistantMessageId String?         @map("assistant_message_id") @db.Uuid
+
+  // Haladás / reconnect-snapshot (§5.3)
+  partialText String @default("") @map("partial_text")
+  activities  Json   @default("[]")
+
+  // Loop-elszámolók (§7)
+  turnCount     Int @default(0) @map("turn_count")
+  toolCallCount Int @default(0) @map("tool_call_count")
+  deniedCount   Int @default(0) @map("denied_count")
+
+  // Kontroll (D6)
+  cancelRequested     Boolean   @default(false) @map("cancel_requested")
+  cancelRequestedById String?   @map("cancel_requested_by") @db.Uuid
+  cancelRequestedAt   DateTime? @map("cancel_requested_at") @db.Timestamptz
+
+  // Életciklus / lock (Tier-2, D8/D10)
+  lockToken   String?   @map("lock_token")
+  lockedAt    DateTime? @map("locked_at") @db.Timestamptz
+  heartbeatAt DateTime  @default(now()) @map("heartbeat_at") @db.Timestamptz
+  startedAt   DateTime  @default(now()) @map("started_at") @db.Timestamptz
+  finishedAt  DateTime? @map("finished_at") @db.Timestamptz
+  reason      String?
+  error       String?
+
+  createdAt DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, status])
+  @@index([status, heartbeatAt])
+  @@map("agent_turns")
 }
 
 model RetentionPolicy {

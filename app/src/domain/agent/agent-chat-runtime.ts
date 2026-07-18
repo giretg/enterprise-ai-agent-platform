@@ -1,8 +1,11 @@
-import type { Message, ToolCall } from '@prisma/client'
+import { randomUUID } from 'node:crypto'
+import type { Message, Prisma, ToolCall } from '@prisma/client'
 import type {
   AgentRepository,
+  AgentTurnRepository,
   AuditRepository,
   DocumentRepository,
+  FinalizeAgentTurnInput,
   PlaybookV2Repository,
   ProcessDefinitionRepository,
   TicketRepository,
@@ -176,6 +179,15 @@ type StreamTurnContext = {
   activities: ToolLoopActivityEvent[]
   completedReply: string | null
   finalized: boolean
+  /**
+   * A perzisztált `AgentTurn` rekord azonosítója (spec §4). `null`, ha a rekord
+   * nem jött létre — a forduló-perzisztencia megfigyelési réteg, nem szabad
+   * miatta elbukni a chatnek (l. `openTurnRecord`).
+   */
+  turnRecordId: string | null
+  /** A rekordot az indító process claimeli azonnal (Tier-2, §10-kiegészítés). */
+  turnRecordLockToken: string | null
+  turnRecordClosed: boolean
 }
 
 /**
@@ -366,7 +378,68 @@ export class AgentChatRuntime {
      * sem generálódik (E4 — nem csak UI-szűrés, a bridge/loop szintjén sem).
      */
     private isThinkingTraceEnabled?: (tenantId: string | null) => Promise<boolean>,
+    /**
+     * chat-agent-turn-resilience-spec.md §4 — a perzisztált forduló-rekord tára.
+     * Opcionális: ha nincs bekötve (unit-tesztek, régi hívók), a chat pontosan
+     * ugyanúgy működik, csak nem keletkezik forduló-rekord.
+     */
+    private agentTurns?: AgentTurnRepository,
   ) {}
+
+  /**
+   * Forduló-rekord nyitása (spec §5.1/4–5). Szándékosan **fail-soft**: ez a
+   * ticket még csak megfigyelhetőséget szállít, a chat viselkedése nem változhat
+   * tőle. Ha az aktív-forduló invariáns (D7) elbukik — például egy korábbi,
+   * crash miatt nyitva maradt forduló miatt —, a chat rekord nélkül fut tovább;
+   * a nyitva ragadt sort a watchdog zárja le (§7/D10). A 409-es elutasítás a
+   * lánc későbbi tiketjének a dolga.
+   */
+  private async openTurnRecord(
+    turn: StreamTurnContext,
+    params: { tenantId: string | null; userMessageId: string },
+  ): Promise<void> {
+    if (!this.agentTurns) return
+    const lockToken = randomUUID()
+    try {
+      const record = await this.agentTurns.create({
+        conversationId: turn.conversationId,
+        tenantId: params.tenantId,
+        agentId: turn.agentId,
+        agentVersion: turn.agentVersion,
+        createdById: turn.createdById,
+        userMessageId: params.userMessageId,
+        status: 'running',
+        lockToken,
+        lockedAt: new Date(),
+      })
+      turn.turnRecordId = record.id
+      turn.turnRecordLockToken = lockToken
+    } catch (error) {
+      console.error('[agent-chat] forduló-rekord létrehozása sikertelen', error)
+    }
+  }
+
+  /**
+   * Forduló-rekord terminális lezárása. Idempotens: a repository csak aktív
+   * fordulót zár, és a `turnRecordClosed` flag megakadályozza a dupla hívást a
+   * `finally`-ág felől. Szintén fail-soft.
+   */
+  private async closeTurnRecord(
+    turn: StreamTurnContext | null,
+    data: FinalizeAgentTurnInput,
+  ): Promise<void> {
+    if (!this.agentTurns || !turn?.turnRecordId || turn.turnRecordClosed) return
+    turn.turnRecordClosed = true
+    try {
+      await this.agentTurns.finalize(turn.turnRecordId, {
+        ...data,
+        partialText: data.partialText ?? turn.completedReply ?? '',
+        activities: data.activities ?? (turn.activities as unknown as Prisma.InputJsonValue),
+      })
+    } catch (error) {
+      console.error('[agent-chat] forduló-rekord lezárása sikertelen', error)
+    }
+  }
 
   /**
    * Level-0 skill-index + `load_skill` végrehajtó összeállítása egy futáshoz
@@ -726,6 +799,11 @@ export class AgentChatRuntime {
   > {
     let turn: StreamTurnContext | null = null
     let activeConversationId: string | null = null
+    // A forduló-rekord terminális állapotát a `finally` írja ki, hogy MINDEN
+    // kilépési út (return, throw, és a generátor eldobása = `gen.return()`) egy
+    // ponton záruljon. A default a lecsatlakozás: ma a stream eldobásakor a
+    // válasz tényleg elveszik — ezt a §2.1/D2 rés zárja majd le külön tiketben.
+    let turnOutcome: FinalizeAgentTurnInput = { status: 'failed', reason: 'stream_abandoned' }
 
     try {
       const text = params.content.trim()
@@ -818,9 +896,16 @@ export class AgentChatRuntime {
         activities: [],
         completedReply: null,
         finalized: false,
+        turnRecordId: null,
+        turnRecordLockToken: null,
+        turnRecordClosed: false,
       }
       activeConversationId = conversationId
       registerActiveChatTurn(conversationId)
+      await this.openTurnRecord(turn, {
+        tenantId: params.tenantId ?? null,
+        userMessageId: userMessage.id,
+      })
 
       // Persist-ACK: a kliens csak ettől a ponttól tarthatja meg hiba esetén az
       // optimista user-buborékot. Az id-val rögtön a perzisztált rekordra vált.
@@ -842,6 +927,11 @@ export class AgentChatRuntime {
         for (const chunk of chunkForStreaming(processReply.text)) {
           const cancelledId = await this.cancelTurnIfRequested(turn, conversationId)
           if (cancelledId) {
+            turnOutcome = {
+              status: 'cancelled',
+              reason: 'cancelled',
+              assistantMessageId: cancelledId,
+            }
             yield { type: 'cancelled', conversationId, messageId: cancelledId }
             return
           }
@@ -853,6 +943,7 @@ export class AgentChatRuntime {
         })
         if (!messageId) return
         turn.finalized = true
+        turnOutcome = { status: 'completed', assistantMessageId: messageId }
         yield {
           type: 'done',
           conversationId,
@@ -1012,6 +1103,11 @@ export class AgentChatRuntime {
         while (!result) {
           const cancelledId = await this.cancelTurnIfRequested(turn, conversationId)
           if (cancelledId) {
+            turnOutcome = {
+              status: 'cancelled',
+              reason: 'cancelled',
+              assistantMessageId: cancelledId,
+            }
             yield { type: 'cancelled', conversationId, messageId: cancelledId }
             return
           }
@@ -1023,15 +1119,20 @@ export class AgentChatRuntime {
         if (!result.ok) {
           if (result.error instanceof AgentToolLoopCancelledError) {
             const cancelledId = await this.cancelTurnIfRequested(turn, conversationId)
+            turnOutcome = {
+              status: 'cancelled',
+              reason: 'cancelled',
+              assistantMessageId: cancelledId,
+            }
             if (cancelledId) {
               yield { type: 'cancelled', conversationId, messageId: cancelledId }
             }
             return
           }
-          yield {
-            type: 'error',
-            message: result.error instanceof Error ? result.error.message : 'Tool loop failed',
-          }
+          const message =
+            result.error instanceof Error ? result.error.message : 'Tool loop failed'
+          turnOutcome = { status: 'failed', reason: 'error', error: message }
+          yield { type: 'error', message }
           return
         }
         reply = result.result.content
@@ -1039,6 +1140,11 @@ export class AgentChatRuntime {
         for (const chunk of chunkForStreaming(reply)) {
           const cancelledId = await this.cancelTurnIfRequested(turn, conversationId)
           if (cancelledId) {
+            turnOutcome = {
+              status: 'cancelled',
+              reason: 'cancelled',
+              assistantMessageId: cancelledId,
+            }
             yield { type: 'cancelled', conversationId, messageId: cancelledId }
             return
           }
@@ -1074,6 +1180,11 @@ export class AgentChatRuntime {
           for await (const chunk of this.gateway.callStream(gatewayInput)) {
             const cancelledId = await this.cancelTurnIfRequested(turn, conversationId)
             if (cancelledId) {
+              turnOutcome = {
+                status: 'cancelled',
+                reason: 'cancelled',
+                assistantMessageId: cancelledId,
+              }
               yield { type: 'cancelled', conversationId, messageId: cancelledId }
               return
             }
@@ -1090,7 +1201,9 @@ export class AgentChatRuntime {
           reply = accumulated
           turn.completedReply = reply
         } catch (err) {
-          yield { type: 'error', message: err instanceof Error ? err.message : 'Model call failed' }
+          const message = err instanceof Error ? err.message : 'Model call failed'
+          turnOutcome = { status: 'failed', reason: 'error', error: message }
+          yield { type: 'error', message }
           return
         }
       }
@@ -1098,11 +1211,13 @@ export class AgentChatRuntime {
       const messageId = await this.finalizeAgentTurn(turn, reply)
       if (!messageId) return
       turn.finalized = true
+      turnOutcome = { status: 'completed', assistantMessageId: messageId }
       yield { type: 'done', conversationId, messageId }
     } finally {
       if (activeConversationId) {
         unregisterActiveChatTurn(activeConversationId)
       }
+      await this.closeTurnRecord(turn, turnOutcome)
     }
   }
 

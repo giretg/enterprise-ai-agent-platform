@@ -153,6 +153,16 @@ model AgentTurn {
 }
 ```
 
+> **Állapot (2026-07-18, issue #59 — MEGÉPÜLT).** A modell, a
+> `0009_agent_turn` migráció, az `AgentTurnRepository` (létrehozás, lock,
+> heartbeat, terminális lezárás, stale-lekérdezés) és a chat-runtime rekord-írása
+> kész. Az aktív-forduló invariánst a migráció `agent_turns_active_per_conversation_key`
+> RÉSZLEGES EGYEDI INDEXE kényszeríti ki (valódi Postgres ellen tesztelve:
+> `scripts/agent-turn-repository.test.ts`, a CI `migrations` jobjában).
+> A forduló-rekord írása **fail-soft**: ez a lépés megfigyelhetőséget szállít, a
+> chat viselkedése változatlan — a 409-es elutasítás (D7 kikényszerítése a
+> kérés-úton), a finalizer (D2) és a reconnect (D4) a lánc további tiketjei.
+
 Kapcsolódás: `Conversation` kap egy `agentTurns AgentTurn[]` relációt.
 A `messages` tábla változatlan; a `Message` a végállapot, az `AgentTurn` a
 lezáráskor `assistantMessageId`-vel mutat rá.
@@ -342,7 +352,7 @@ A teljes D2/D4 (szerver-oldali `AgentTurn` + loop-finalizer + reconnect GET-SSE)
 ## 11. Munkacsomagok
 
 **1. hullám — perzisztencia + no-loss (Tier-1)**
-- **WP-1** `AgentTurn` modell + migráció + repository.
+- **WP-1** `AgentTurn` modell + migráció + repository. — **KÉSZ (#59)**
 - **WP-2** `AgentTurnRunner` (registry, busz, **finalizer** = D2 rés lezárása);
   `sendMessageStream`/`sendMessage` átkötése a finalizerre.
 - **WP-3** `POST stream` átalakítás detached indításra + `turn` event.
