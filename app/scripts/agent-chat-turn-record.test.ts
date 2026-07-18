@@ -71,21 +71,47 @@ function agentRow(): Agent {
   } as Agent
 }
 
-/** A `create`/`finalize` hívásokat rögzítő, memóriában élő forduló-tár. */
+/**
+ * A `create`/`finalize` hívásokat rögzítő, memóriában élő forduló-tár. A DB
+ * részleges egyedi indexét utánozza: beszélgetésenként legfeljebb egy aktív
+ * forduló, a másodikra `ActiveAgentTurnExistsError` (D7) — így az E5 eset
+ * (párhuzamos küldés) valódi Postgres nélkül is végigjátszható.
+ */
 function fakeTurnRepository(options: { failOnCreate?: Error } = {}) {
   const created: Array<Parameters<AgentTurnRepository['create']>[0]> = []
   const finalized: Array<{ id: string } & FinalizeAgentTurnInput> = []
+  const activeByConversation = new Map<string, AgentTurn>()
+  const inputById = new Map<string, Parameters<AgentTurnRepository['create']>[0]>()
   const repo: AgentTurnRepository = {
     async create(data) {
       if (options.failOnCreate) throw options.failOnCreate
+      if (activeByConversation.has(data.conversationId)) {
+        throw new ActiveAgentTurnExistsError(data.conversationId)
+      }
       created.push(data)
-      return { id: `turn-${created.length}`, status: data.status ?? 'running' } as AgentTurn
+      const id = `turn-${created.length}`
+      inputById.set(id, data)
+      const row = {
+        id,
+        conversationId: data.conversationId,
+        status: data.status ?? 'running',
+        userMessageId: data.userMessageId ?? null,
+      } as AgentTurn
+      activeByConversation.set(data.conversationId, row)
+      return row
     },
     async findById() {
       return null
     },
-    async findActiveByConversation() {
-      return null
+    async findActiveByConversation(conversationId) {
+      return activeByConversation.get(conversationId) ?? null
+    },
+    async attachUserMessage(id, userMessageId) {
+      const input = inputById.get(id)
+      if (input) input.userMessageId = userMessageId
+      for (const row of activeByConversation.values()) {
+        if (row.id === id) Object.assign(row, { userMessageId })
+      }
     },
     async acquireLock() {
       return null
@@ -96,6 +122,9 @@ function fakeTurnRepository(options: { failOnCreate?: Error } = {}) {
     },
     async finalize(id, data) {
       finalized.push({ id, ...data })
+      for (const [conversationId, row] of activeByConversation) {
+        if (row.id === id) activeByConversation.delete(conversationId)
+      }
       return null
     },
     async findStale() {
@@ -269,9 +298,51 @@ async function main() {
     assert.equal(turns.finalized[0].assistantMessageId, undefined)
   })
 
+  await test('E5: két párhuzamos küldés — pontosan egy indul el, a másik ütközést kap', async () => {
+    const turns = fakeTurnRepository()
+    const { runtime, messages } = buildRuntime({ turns: turns.repo })
+
+    const drain = async () => {
+      const events = []
+      for await (const event of runtime.sendMessageStream(turnParams())) events.push(event)
+      return events
+    }
+    const [a, b] = await Promise.all([drain(), drain()])
+
+    const conflicts = [...a, ...b].filter((e) => e.type === 'conflict')
+    const dones = [...a, ...b].filter((e) => e.type === 'done')
+    assert.equal(dones.length, 1, 'pontosan egy forduló fut le')
+    assert.equal(conflicts.length, 1, 'a másik küldés ütközést kap')
+    // A kliens az azonosítóval találja meg a már futó fordulót (D7 / §6.3).
+    assert.equal(conflicts[0].activeTurnId, 'turn-1')
+    assert.equal(conflicts[0].conversationId, 'conv-1')
+
+    // Az elutasított küldés nem hagy árva felhasználói üzenetet a beszélgetésben.
+    assert.equal(
+      messages.filter((m) => m.role === 'user').length,
+      1,
+      'csak a nyertes küldés user-üzenete perzisztálódik',
+    )
+    assert.equal(turns.created.length, 1, 'egyetlen forduló-rekord keletkezik')
+  })
+
+  await test('terminális forduló után az új küldés normálisan indul', async () => {
+    const turns = fakeTurnRepository()
+    const { runtime } = buildRuntime({ turns: turns.repo })
+
+    for await (const _ of runtime.sendMessageStream(turnParams())) void _
+    const events = []
+    for await (const event of runtime.sendMessageStream(turnParams())) events.push(event)
+
+    assert.ok(!events.some((e) => e.type === 'conflict'), 'a felszabadult hely újra foglalható')
+    assert.ok(events.some((e) => e.type === 'done'))
+    assert.equal(turns.created.length, 2)
+  })
+
   await test('FAIL-SOFT: a rekord létrehozásának hibája nem változtatja meg a chatet', async () => {
+    // Nem ütközés, hanem elérhetetlen rekord-tár: a chatnek ettől mennie kell.
     const turns = fakeTurnRepository({
-      failOnCreate: new ActiveAgentTurnExistsError('conv-1'),
+      failOnCreate: new Error('agent_turns tábla elérhetetlen'),
     })
     const { runtime, messages } = buildRuntime({ turns: turns.repo })
 

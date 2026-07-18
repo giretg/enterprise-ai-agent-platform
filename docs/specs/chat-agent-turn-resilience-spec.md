@@ -116,7 +116,7 @@ model AgentTurn {
   createdById        String   @map("created_by") @db.Uuid
 
   status             AgentTurnStatus @default(queued)
-  userMessageId      String   @map("user_message_id") @db.Uuid
+  userMessageId      String?  @map("user_message_id") @db.Uuid  // foglaláskor még üres (#61)
   assistantMessageId String?  @map("assistant_message_id") @db.Uuid
 
   // Progress / reconnect-snapshot
@@ -160,8 +160,20 @@ model AgentTurn {
 > RÉSZLEGES EGYEDI INDEXE kényszeríti ki (valódi Postgres ellen tesztelve:
 > `scripts/agent-turn-repository.test.ts`, a CI `migrations` jobjában).
 > A forduló-rekord írása **fail-soft**: ez a lépés megfigyelhetőséget szállít, a
-> chat viselkedése változatlan — a 409-es elutasítás (D7 kikényszerítése a
-> kérés-úton), a finalizer (D2) és a reconnect (D4) a lánc további tiketjei.
+> chat viselkedése változatlan — a finalizer (D2) és a reconnect (D4) a lánc
+> további tiketjei.
+>
+> **Állapot (2026-07-18, issue #61 — MEGÉPÜLT).** A D7 kikényszerítése a
+> kérés-úton kész. A forduló-rekord létrehozása FELCSERÉLŐDÖTT a user-üzenet
+> perzisztálásával: előbb a foglalás (ezen csattan a részleges egyedi index),
+> csak utána az üzenet, amit a `attachUserMessage` köt a rekordhoz — így az
+> elutasított küldés nem hagy árva üzenetet. Az `agent_turns.user_message_id`
+> ezért NULLABLE lett (`0010_agent_turn_reservation`). Ütközéskor a runtime
+> `conflict` eseményt ad, amit a stream-route a SSE-válasz megnyitása ELŐTT
+> (a generátor első eseményét lehúzva) `409 { activeTurnId, conversationId }`-ra
+> fordít. A NEM-ütközéses rekord-hibák továbbra is fail-softak.
+> Tesztek: E5 párhuzamos küldés a stub-suite-ban (`agent-chat-turn-record.test.ts`)
+> és valódi Postgres ellen (`agent-turn-repository.test.ts`, `Promise.allSettled`).
 
 Kapcsolódás: `Conversation` kap egy `agentTurns AgentTurn[]` relációt.
 A `messages` tábla változatlan; a `Message` a végállapot, az `AgentTurn` a
@@ -178,14 +190,17 @@ részleges egyedi index vagy tranzakciós ellenőrzés a létrehozáskor.
 ### 5.1 Indítás — `POST /api/v1/agent-chat/stream` (módosított)
 
 1. Auth (mint ma).
-2. `AgentChatRuntime`: user üzenet perzisztálása (mint ma).
-3. **Aktív-forduló ellenőrzés (D7):** ha van futó forduló → `409` +
-   `{ activeTurnId }` (a kliens erre reattach-el, l. 6.3).
-4. `AgentTurn` létrehozása (`status: running`), `userMessageId` bekötve.
-5. **Detached indítás:** a `AgentTurnRunner.start(turnId)` beteszi a futást egy
+2. **Aktív-forduló ellenőrzés = FOGLALÁS (D7):** az `AgentTurn` létrehozása
+   (`status: running`) MAGA az ellenőrzés — a részleges egyedi index dönt, nem egy
+   előzetes lekérdezés. Ütközésnél `409` + `{ activeTurnId }` (a kliens erre
+   reattach-el, l. 6.3).
+3. `AgentChatRuntime`: user üzenet perzisztálása, majd `userMessageId` bekötése a
+   lefoglalt fordulóhoz. A sorrend (foglalás → üzenet) szándékos: az elutasított
+   küldés így nem hagy árva felhasználói üzenetet a beszélgetésben.
+4. **Detached indítás:** a `AgentTurnRunner.start(turnId)` beteszi a futást egy
    in-process registrybe (`Map<turnId, RunHandle>`), és **nem** `await`-eli a
    loop teljes lefutását a kérés-scope-ban.
-6. A POST-válasz SSE **feliratkozik** a futás in-process event-buszára és relézi
+5. A POST-válasz SSE **feliratkozik** a futás in-process event-buszára és relézi
    az eventeket (`activity`/`token`/`done`/`error`). Ha a kliens lecsatlakozik,
    a feliratkozás megszűnik, **de a futás megy tovább** (D3/D5).
 

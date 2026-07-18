@@ -11,6 +11,7 @@ import type {
   TicketRepository,
   ToolBrokerRepository,
 } from '@/repositories/interfaces'
+import { ActiveAgentTurnExistsError } from '@/repositories/interfaces'
 import { composeSystemPrompt } from '@/lib/agent-prompt'
 import { formatOrgRoster } from '@/lib/agent-org-roster'
 import { buildRunAsAuthorization } from '@/lib/run-as-payload'
@@ -170,6 +171,20 @@ export function buildCancelledTurnMessage(snapshot: CancelledTurnSnapshot): stri
   return parts.join('\n')
 }
 
+/**
+ * A perzisztált `AgentTurn` rekord fogója. Külön él a `StreamTurnContext`-től,
+ * mert a forduló-hely FOGLALÁSA (D7) megelőzi a user-üzenet perzisztálását —
+ * így a rekord már azelőtt lezárható a generátor `finally`-ágából, hogy a
+ * forduló-kontextus egyáltalán összeállt volna.
+ */
+type TurnRecordHandle = {
+  /** `null`, ha a rekord nem jött létre — a perzisztencia megfigyelési réteg. */
+  id: string | null
+  /** A rekordot az indító process claimeli azonnal (Tier-2, §10-kiegészítés). */
+  lockToken: string | null
+  closed: boolean
+}
+
 type StreamTurnContext = {
   conversationId: string
   userMessageCreatedAt: Date
@@ -180,15 +195,6 @@ type StreamTurnContext = {
   activities: ToolLoopActivityEvent[]
   completedReply: string | null
   finalized: boolean
-  /**
-   * A perzisztált `AgentTurn` rekord azonosítója (spec §4). `null`, ha a rekord
-   * nem jött létre — a forduló-perzisztencia megfigyelési réteg, nem szabad
-   * miatta elbukni a chatnek (l. `openTurnRecord`).
-   */
-  turnRecordId: string | null
-  /** A rekordot az indító process claimeli azonnal (Tier-2, §10-kiegészítés). */
-  turnRecordLockToken: string | null
-  turnRecordClosed: boolean
 }
 
 /**
@@ -388,54 +394,105 @@ export class AgentChatRuntime {
   ) {}
 
   /**
-   * Forduló-rekord nyitása (spec §5.1/4–5). Szándékosan **fail-soft**: ez a
-   * ticket még csak megfigyelhetőséget szállít, a chat viselkedése nem változhat
-   * tőle. Ha az aktív-forduló invariáns (D7) elbukik — például egy korábbi,
-   * crash miatt nyitva maradt forduló miatt —, a chat rekord nélkül fut tovább;
-   * a nyitva ragadt sort a watchdog zárja le (§7/D10). A 409-es elutasítás a
-   * lánc későbbi tiketjének a dolga.
+   * A forduló-hely FOGLALÁSA (spec §5.1/3–4, D7). Ez a művelet kényszeríti ki az
+   * „egy beszélgetés = egy aktív forduló" invariánst: nem előzetes lekérdezéssel,
+   * hanem a beszúrásra csattanó részleges egyedi indexszel, így két párhuzamos
+   * küldésből pontosan egy nyer.
+   *
+   * A foglalás MEGELŐZI a user-üzenet perzisztálását — az elutasított küldés így
+   * nem hagy árva üzenetet a beszélgetésben.
+   *
+   * A NEM-ütközéses hibák továbbra is **fail-softak**: ha a rekord-tár elérhetetlen,
+   * a chat rekord nélkül fut tovább, mert a perzisztencia megfigyelési réteg.
+   * Az ütközés viszont már nem az — abból `409` lesz a kérés-úton.
    */
-  private async openTurnRecord(
-    turn: StreamTurnContext,
-    params: { tenantId: string | null; userMessageId: string },
-  ): Promise<void> {
-    if (!this.agentTurns) return
+  private async reserveTurnRecord(
+    record: TurnRecordHandle,
+    params: {
+      conversationId: string
+      tenantId: string | null
+      agentId: string
+      agentVersion: number
+      createdById: string
+    },
+  ): Promise<{ ok: true } | { ok: false; activeTurnId: string | null }> {
+    if (!this.agentTurns) return { ok: true }
+    const turns = this.agentTurns
     const lockToken = randomUUID()
-    try {
-      const record = await this.agentTurns.create({
-        conversationId: turn.conversationId,
+    const attempt = async () => {
+      const created = await turns.create({
+        conversationId: params.conversationId,
         tenantId: params.tenantId,
-        agentId: turn.agentId,
-        agentVersion: turn.agentVersion,
-        createdById: turn.createdById,
-        userMessageId: params.userMessageId,
+        agentId: params.agentId,
+        agentVersion: params.agentVersion,
+        createdById: params.createdById,
         status: 'running',
         lockToken,
         lockedAt: new Date(),
       })
-      turn.turnRecordId = record.id
-      turn.turnRecordLockToken = lockToken
+      record.id = created.id
+      record.lockToken = lockToken
+    }
+
+    try {
+      await attempt()
+      return { ok: true }
     } catch (error) {
-      console.error('[agent-chat] forduló-rekord létrehozása sikertelen', error)
+      if (!(error instanceof ActiveAgentTurnExistsError)) {
+        console.error('[agent-chat] forduló-rekord létrehozása sikertelen', error)
+        return { ok: true }
+      }
+      const active = await turns.findActiveByConversation(params.conversationId).catch(() => null)
+      if (active) return { ok: false, activeTurnId: active.id }
+
+      // A blokkoló forduló az ütközés és a lekérdezés között lezárult: a hely
+      // felszabadult, ilyenkor ne dobjunk hamis 409-et a felhasználó arcába.
+      try {
+        await attempt()
+        return { ok: true }
+      } catch (retryError) {
+        if (!(retryError instanceof ActiveAgentTurnExistsError)) {
+          console.error('[agent-chat] forduló-rekord létrehozása sikertelen', retryError)
+          return { ok: true }
+        }
+        const retried = await turns
+          .findActiveByConversation(params.conversationId)
+          .catch(() => null)
+        return { ok: false, activeTurnId: retried?.id ?? null }
+      }
+    }
+  }
+
+  /** A lefoglalt fordulóhoz utólag köti a perzisztált user-üzenetet. Fail-soft. */
+  private async attachUserMessageToTurnRecord(
+    record: TurnRecordHandle,
+    userMessageId: string,
+  ): Promise<void> {
+    if (!this.agentTurns || !record.id) return
+    try {
+      await this.agentTurns.attachUserMessage(record.id, userMessageId)
+    } catch (error) {
+      console.error('[agent-chat] forduló-rekord user-üzenet bekötése sikertelen', error)
     }
   }
 
   /**
    * Forduló-rekord terminális lezárása. Idempotens: a repository csak aktív
-   * fordulót zár, és a `turnRecordClosed` flag megakadályozza a dupla hívást a
+   * fordulót zár, és a `closed` flag megakadályozza a dupla hívást a
    * `finally`-ág felől. Szintén fail-soft.
    */
   private async closeTurnRecord(
-    turn: StreamTurnContext | null,
+    record: TurnRecordHandle,
     data: FinalizeAgentTurnInput,
+    turn: StreamTurnContext | null,
   ): Promise<void> {
-    if (!this.agentTurns || !turn?.turnRecordId || turn.turnRecordClosed) return
-    turn.turnRecordClosed = true
+    if (!this.agentTurns || !record.id || record.closed) return
+    record.closed = true
     try {
-      await this.agentTurns.finalize(turn.turnRecordId, {
+      await this.agentTurns.finalize(record.id, {
         ...data,
-        partialText: data.partialText ?? turn.completedReply ?? '',
-        activities: data.activities ?? (turn.activities as unknown as Prisma.InputJsonValue),
+        partialText: data.partialText ?? turn?.completedReply ?? '',
+        activities: data.activities ?? (turn?.activities as unknown as Prisma.InputJsonValue),
       })
     } catch (error) {
       console.error('[agent-chat] forduló-rekord lezárása sikertelen', error)
@@ -788,6 +845,12 @@ export class AgentChatRuntime {
     },
   ): AsyncGenerator<
     | { type: 'meta'; conversationId: string; userMessageId: string }
+    /**
+     * Aktív-forduló ütközés (D7/E5). MINDIG a stream első eseménye, ha egyáltalán
+     * bekövetkezik — a kérés-út ebből csinál `409`-et, mielőtt SSE-választ nyitna,
+     * a kliens pedig az `activeTurnId`-vel a már futó fordulóra csatlakozhat rá.
+     */
+    | { type: 'conflict'; conversationId: string; activeTurnId: string | null }
     | { type: 'activity'; activity: ToolLoopActivityEvent }
     | { type: 'memory_candidate'; candidate: ToolLoopMemoryCandidateEvent }
     | { type: 'thinking'; turnId: string; delta: string }
@@ -800,6 +863,10 @@ export class AgentChatRuntime {
   > {
     let turn: StreamTurnContext | null = null
     let activeConversationId: string | null = null
+    // A rekord-fogó a forduló-kontextus előtt jön létre: a helyfoglalás megelőzi
+    // a user-üzenetet, így a `finally` akkor is le tudja zárni a rekordot, ha a
+    // forduló összeállítása előtt szállunk ki.
+    const turnRecord: TurnRecordHandle = { id: null, lockToken: null, closed: false }
     // A forduló-rekord terminális állapotát a `finally` írja ki, hogy MINDEN
     // kilépési út (return, throw, és a generátor eldobása = `gen.return()`) egy
     // ponton záruljon. A default a lecsatlakozás: ma a stream eldobásakor a
@@ -847,6 +914,25 @@ export class AgentChatRuntime {
           title,
         })
         conversationId = created.id
+      }
+
+      // Aktív-forduló ellenőrzés (§5.1/3, D7). Szándékosan MINDEN további munka
+      // — csatolmány-betöltés, workspace-tükrözés, user-üzenet — előtt: ha a
+      // beszélgetésen már fut forduló, ez a küldés semmilyen nyomot nem hagy.
+      const reservation = await this.reserveTurnRecord(turnRecord, {
+        conversationId,
+        tenantId: params.tenantId ?? null,
+        agentId: params.agentId,
+        agentVersion: agentDetails.agent.currentVersion,
+        createdById: params.createdById,
+      })
+      if (!reservation.ok) {
+        yield {
+          type: 'conflict',
+          conversationId,
+          activeTurnId: reservation.activeTurnId,
+        }
+        return
       }
 
       const attachmentDocs = await this.loadDocuments(attachmentIds)
@@ -897,16 +983,10 @@ export class AgentChatRuntime {
         activities: [],
         completedReply: null,
         finalized: false,
-        turnRecordId: null,
-        turnRecordLockToken: null,
-        turnRecordClosed: false,
       }
       activeConversationId = conversationId
       registerActiveChatTurn(conversationId)
-      await this.openTurnRecord(turn, {
-        tenantId: params.tenantId ?? null,
-        userMessageId: userMessage.id,
-      })
+      await this.attachUserMessageToTurnRecord(turnRecord, userMessage.id)
 
       // Persist-ACK: a kliens csak ettől a ponttól tarthatja meg hiba esetén az
       // optimista user-buborékot. Az id-val rögtön a perzisztált rekordra vált.
@@ -1218,7 +1298,7 @@ export class AgentChatRuntime {
       if (activeConversationId) {
         unregisterActiveChatTurn(activeConversationId)
       }
-      await this.closeTurnRecord(turn, turnOutcome)
+      await this.closeTurnRecord(turnRecord, turnOutcome, turn)
     }
   }
 

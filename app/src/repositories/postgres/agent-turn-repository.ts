@@ -42,7 +42,7 @@ export class PostgresAgentTurnRepository implements AgentTurnRepository {
           agentId: data.agentId,
           agentVersion: data.agentVersion,
           createdById: data.createdById,
-          userMessageId: data.userMessageId,
+          userMessageId: data.userMessageId ?? null,
           status: data.status ?? 'running',
           lockToken: data.lockToken ?? null,
           lockedAt: data.lockedAt ?? null,
@@ -65,6 +65,10 @@ export class PostgresAgentTurnRepository implements AgentTurnRepository {
       where: { conversationId, status: { in: [...ACTIVE_AGENT_TURN_STATUSES] } },
       orderBy: { startedAt: 'desc' },
     })
+  }
+
+  async attachUserMessage(id: string, userMessageId: string): Promise<void> {
+    await prisma.agentTurn.update({ where: { id }, data: { userMessageId } })
   }
 
   async acquireLock(id: string, lockToken: string, now: Date): Promise<AgentTurn | null> {

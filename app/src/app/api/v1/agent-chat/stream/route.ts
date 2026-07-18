@@ -43,20 +43,60 @@ export async function POST(request: Request) {
     return encoder.encode(`data: ${JSON.stringify(data)}\n\n`)
   }
 
+  const gen = services.agentChat.sendMessageStream({
+    agentId,
+    content,
+    createdById: user.user.id,
+    tenantId: user.activeTenantId,
+    conversationId,
+    attachmentDocumentIds,
+    processDefinitionId,
+    processInputPayload,
+  })
+
+  // Az aktív-forduló ütközést (D7/E5) még a SSE-válasz megnyitása ELŐTT kell
+  // eldönteni, különben csak egy 200-as streamben tudnánk hibát jelezni. Ezért a
+  // generátor első eseményét itt húzzuk le: ütközésnél `409` + az aktív forduló
+  // azonosítója (a kliens erre csatlakozik rá), minden más esetben ez lesz a
+  // stream első kimenő eseménye.
+  let first: Awaited<ReturnType<typeof gen.next>> | null = null
+  let firstError: unknown = null
+  try {
+    first = await gen.next()
+  } catch (err) {
+    // A váratlan hiba ugyanúgy SSE `error` eseményként megy ki, mint eddig — a
+    // kliens stream-parsere ne egy nem várt státuszkódon akadjon el.
+    firstError = err
+  }
+
+  if (first && !first.done && first.value.type === 'conflict') {
+    // A generátor már visszatért, de a `finally`-ága csak a lezárással fut le.
+    await gen.return(undefined)
+    return Response.json(
+      {
+        error: 'active_turn_exists',
+        message: 'Ehhez a beszélgetéshez már fut egy válasz.',
+        conversationId: first.value.conversationId,
+        activeTurnId: first.value.activeTurnId,
+      },
+      { status: 409 },
+    )
+  }
+
   const stream = new ReadableStream({
     async start(controller) {
-      const gen = services.agentChat.sendMessageStream({
-        agentId,
-        content,
-        createdById: user.user.id,
-        tenantId: user.activeTenantId,
-        conversationId,
-        attachmentDocumentIds,
-        processDefinitionId,
-        processInputPayload,
-      })
-
       try {
+        if (firstError) throw firstError
+        if (first && !first.done) {
+          controller.enqueue(sseEvent(first.value))
+          if (
+            first.value.type === 'done' ||
+            first.value.type === 'cancelled' ||
+            first.value.type === 'error'
+          ) {
+            return
+          }
+        }
         for await (const event of gen) {
           if (request.signal.aborted) {
             break

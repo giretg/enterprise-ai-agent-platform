@@ -166,6 +166,52 @@ async function main() {
     }
   })
 
+  await check('E5: PÁRHUZAMOS foglalás — pontosan egy nyer, a másik az aktív azonosítót kapja', async () => {
+    const fixture = await seedFixture()
+    try {
+      // Az előzetes lekérdezés itt mit sem érne: mindkét hívó „szabad"-ot látna.
+      // A döntést a beszúrásra csattanó részleges egyedi index hozza meg.
+      const results = await Promise.allSettled([
+        repo.create({ ...createInput(fixture), userMessageId: null }),
+        repo.create({ ...createInput(fixture), userMessageId: null }),
+      ])
+
+      const winners = results.filter((r) => r.status === 'fulfilled')
+      const losers = results.filter((r) => r.status === 'rejected')
+      assert.equal(winners.length, 1, 'pontosan egy foglalás sikerül')
+      assert.equal(losers.length, 1, 'a másik elutasításra kerül')
+      assert.ok(
+        losers[0].reason instanceof ActiveAgentTurnExistsError,
+        `várt ActiveAgentTurnExistsError, kapott: ${String(losers[0].reason)}`,
+      )
+
+      // A vesztes hívó ebből az azonosítóból építi a 409-es választ.
+      const active = await repo.findActiveByConversation(fixture.conversationId)
+      assert.equal(active?.id, (winners[0] as PromiseFulfilledResult<{ id: string }>).value.id)
+
+      const rows = await prisma.agentTurn.count({ where: { conversationId: fixture.conversationId } })
+      assert.equal(rows, 1, 'nem keletkezik árva második sor')
+    } finally {
+      await cleanup(fixture)
+    }
+  })
+
+  await check('foglalás user-üzenet nélkül, majd utólagos bekötés', async () => {
+    const fixture = await seedFixture()
+    try {
+      // A forduló-hely a user-üzenet perzisztálása ELŐTT foglalódik (#61), hogy
+      // az elutasított küldés ne hagyjon árva üzenetet.
+      const reserved = await repo.create({ ...createInput(fixture), userMessageId: null })
+      assert.equal(reserved.userMessageId, null)
+
+      await repo.attachUserMessage(reserved.id, fixture.userMessageId)
+      const attached = await repo.findById(reserved.id)
+      assert.equal(attached?.userMessageId, fixture.userMessageId)
+    } finally {
+      await cleanup(fixture)
+    }
+  })
+
   await check('a lezárás felszabadítja az aktív helyet — új forduló indulhat', async () => {
     const fixture = await seedFixture()
     try {

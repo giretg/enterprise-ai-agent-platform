@@ -1270,6 +1270,17 @@ export function AgentChatPanel({
           }),
         })
 
+        // Aktív-forduló ütközés (D7): a beszélgetésen már fut egy válasz. Nem
+        // néma hiba — a szerver az aktív forduló azonosítóját is visszaadja; a
+        // tényleges rácsatlakozás külön tiket, addig érthető üzenetet mutatunk.
+        if (response.status === 409) {
+          removeFailedOptimisticMessages()
+          setStatusMessage(
+            'Ebben a beszélgetésben már készül egy válasz. Várd meg, amíg elkészül, vagy állítsd le a Stop gombbal.',
+          )
+          return
+        }
+
         if (!response.ok || !response.body) {
           removeFailedOptimisticMessages()
           setStatusMessage(`Küldés sikertelen (${response.status})`)

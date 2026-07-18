@@ -1797,7 +1797,12 @@ model AgentTurn {
   agentVersion       Int             @map("agent_version")
   createdById        String          @map("created_by") @db.Uuid
   status             AgentTurnStatus @default(queued)
-  userMessageId      String          @map("user_message_id") @db.Uuid
+  /**
+   * A forduló-helyet a user-üzenet perzisztálása ELŐTT foglaljuk (D7/#61), hogy
+   * az elutasított küldés ne hagyjon árva üzenetet — a foglalás és a bekötés
+   * közötti pillanatban ezért üres.
+   */
+  userMessageId      String?         @map("user_message_id") @db.Uuid
   assistantMessageId String?         @map("assistant_message_id") @db.Uuid
 
   // Haladás / reconnect-snapshot (§5.3)
