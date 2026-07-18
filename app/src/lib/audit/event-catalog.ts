@@ -128,6 +128,16 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   // Napi model-keret (összesített tenant + per-agent) átállítása a tenant admin felületről.
   'model.budget_changed',
   'model_policy.upsert',
+  // Cross-provider tartalék-lánc: a hívás átesett a következő providerre
+  // (a `metadata` hordozza a kiesett/átvevő providert és a hiba-osztályt).
+  'model.call.fallback',
+  // Modell-árazás: a LiteLLM ár-térkép szinkronja, illetve a kézi felülírás
+  // beállítása/törlése az admin felületről.
+  'model.pricing.sync',
+  'model.pricing.manual_set',
+  'model.pricing.manual_clear',
+  // A globális tartalék-lánc konfigurációjának mentése.
+  'model.fallback_chain.set',
 
   // Tool Broker
   'tool.authorize_denied_orchestrator',
