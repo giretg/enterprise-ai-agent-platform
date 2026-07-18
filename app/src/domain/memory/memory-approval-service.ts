@@ -423,13 +423,25 @@ export class MemoryApprovalService {
       }
     }
 
+    // Az inline jóváhagyás write-gate eseményei a jóváhagyó emberhez és a candidate
+    // tenantjához kötődnek — ez a governance-lánc "ki engedélyezte az írást" horgonya.
+    const gateContext = {
+      tenantId: candidate.tenantId,
+      actorType: 'human' as const,
+      actorId,
+    }
     const gateToken = await this.writeGate.issue({
       memoryCandidateId: candidate.id,
       agentId: candidate.agentId,
       targetMemoryId: candidate.memoryId,
       proposedContent: canonicalContent,
+      context: gateContext,
     })
-    await this.writeGate.consume({ tokenId: gateToken.id, actualProposedContent: canonicalContent })
+    await this.writeGate.consume({
+      tokenId: gateToken.id,
+      actualProposedContent: canonicalContent,
+      context: gateContext,
+    })
 
     let resultChunkId: string
     const now = new Date()

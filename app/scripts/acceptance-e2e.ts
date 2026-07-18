@@ -1038,16 +1038,32 @@ async function scenario8_writeGateNegative(operatorId: string, agentId: string) 
 
   const content = 'Write-gate token kötési tartalom.'
 
+  // A write-gate audit-sorok hívói kontextusa (tenant + kérő aktor).
+  const gateContext = {
+    tenantId: agent.tenantId,
+    actorType: 'human' as const,
+    actorId: operatorId,
+  }
+
   // (a) Replay: kétszeres consume tiltott
   const replayToken = await services.writeGate.issue({
     trainingTicketId: trainingTicket.id,
     agentId,
     targetMemoryId: agent.memoryId,
     proposedContent: content,
+    context: gateContext,
   })
-  await services.writeGate.consume({ tokenId: replayToken.id, actualProposedContent: content })
+  await services.writeGate.consume({
+    tokenId: replayToken.id,
+    actualProposedContent: content,
+    context: gateContext,
+  })
   try {
-    await services.writeGate.consume({ tokenId: replayToken.id, actualProposedContent: content })
+    await services.writeGate.consume({
+      tokenId: replayToken.id,
+      actualProposedContent: content,
+      context: gateContext,
+    })
     fail('Replay tiltás', 'a már felhasznált token újra consume-olható volt')
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
@@ -1069,7 +1085,11 @@ async function scenario8_writeGateNegative(operatorId: string, agentId: string) 
     },
   })
   try {
-    await services.writeGate.consume({ tokenId: expiredToken.id, actualProposedContent: content })
+    await services.writeGate.consume({
+      tokenId: expiredToken.id,
+      actualProposedContent: content,
+      context: gateContext,
+    })
     fail('Lejárat tiltás', 'lejárt token consume-olható volt')
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
@@ -1084,13 +1104,18 @@ async function scenario8_writeGateNegative(operatorId: string, agentId: string) 
     agentId,
     targetMemoryId: agent.memoryId,
     proposedContent: content,
+    context: gateContext,
   })
   await prisma.writeGateToken.update({
     where: { id: tamperToken.id },
     data: { signature: 'ff'.repeat(32) },
   })
   try {
-    await services.writeGate.consume({ tokenId: tamperToken.id, actualProposedContent: content })
+    await services.writeGate.consume({
+      tokenId: tamperToken.id,
+      actualProposedContent: content,
+      context: gateContext,
+    })
     fail('Aláírás-hamisítás tiltás', 'hamisított aláírású token consume-olható volt')
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)

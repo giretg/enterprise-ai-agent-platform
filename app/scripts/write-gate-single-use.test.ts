@@ -16,11 +16,14 @@
  * Futtatás: npm run test:write-gate-single-use
  */
 import assert from 'node:assert/strict'
-import type { WriteGateToken } from '@prisma/client'
+import type { AuditLog, WriteGateToken } from '@prisma/client'
 import {
   WriteGateService,
   type WriteGateTokenClient,
 } from '../src/domain/writegate/write-gate-service'
+import type { AuditRepository } from '../src/repositories/interfaces'
+import { REGISTERED_AUDIT_ACTIONS } from '../src/lib/audit/event-catalog'
+import { assertAuditMetadataSafe } from '../src/lib/audit/payload-guard'
 
 let passed = 0
 let failed = 0
@@ -94,7 +97,39 @@ function makeFakeDb() {
   return { db: db as unknown as WriteGateTokenClient, rows, state }
 }
 
+/**
+ * Minimál audit-repository. A valódi `append()` két dolgot kényszerít ki, amit itt is
+ * lemodellezünk, hogy a teszt ne csak "elhangzott-e az esemény"-t nézze: az action a
+ * katalógusban regisztrált kell legyen, a metadata pedig át kell menjen a content-guardon.
+ */
+function makeFakeAudit() {
+  const entries: Array<Record<string, unknown>> = []
+  const audit = {
+    async append(data: Record<string, unknown>) {
+      assert.ok(
+        REGISTERED_AUDIT_ACTIONS.has(String(data.action)),
+        `unregistered audit action: ${String(data.action)}`,
+      )
+      assertAuditMetadataSafe(data.metadata)
+      entries.push(data)
+      return {} as AuditLog
+    },
+  }
+  return { audit: audit as unknown as AuditRepository, entries }
+}
+
+function makeService(db: WriteGateTokenClient) {
+  const { audit, entries } = makeFakeAudit()
+  return { service: new WriteGateService(audit, db), auditEntries: entries }
+}
+
 const CONTENT = 'memória-diff: az ügyfél neve Excellence Kft.'
+
+const CTX = {
+  tenantId: 'tenant-1',
+  actorType: 'human' as const,
+  actorId: 'user-1',
+}
 
 async function issueValid(service: WriteGateService) {
   return service.issue({
@@ -102,16 +137,17 @@ async function issueValid(service: WriteGateService) {
     agentId: 'agent-1',
     targetMemoryId: 'mem-1',
     proposedContent: CONTENT,
+    context: CTX,
   })
 }
 
 async function main() {
   await check('happy path — issue → consume egyszer sikeres, státusz consumed', async () => {
     const { db, rows } = makeFakeDb()
-    const service = new WriteGateService(db)
+    const { service } = makeService(db)
     const token = await issueValid(service)
     assert.equal(token.status, 'issued')
-    const consumed = await service.consume({ tokenId: token.id, actualProposedContent: CONTENT })
+    const consumed = await service.consume({ tokenId: token.id, actualProposedContent: CONTENT, context: CTX })
     assert.equal(consumed.status, 'consumed')
     assert.ok(consumed.consumedAt)
     assert.equal(rows.get(token.id)!.status, 'consumed')
@@ -119,22 +155,22 @@ async function main() {
 
   await check('szekvenciális visszajátszás — a második consume elutasít', async () => {
     const { db } = makeFakeDb()
-    const service = new WriteGateService(db)
+    const { service } = makeService(db)
     const token = await issueValid(service)
-    await service.consume({ tokenId: token.id, actualProposedContent: CONTENT })
+    await service.consume({ tokenId: token.id, actualProposedContent: CONTENT, context: CTX })
     await assert.rejects(
-      () => service.consume({ tokenId: token.id, actualProposedContent: CONTENT }),
+      () => service.consume({ tokenId: token.id, actualProposedContent: CONTENT, context: CTX }),
       /already consumed/,
     )
   })
 
   await check('TOCTOU verseny — két „issued”-ot látó fogyasztóból csak egy nyer', async () => {
     const { db, state, rows } = makeFakeDb()
-    const service = new WriteGateService(db)
+    const { service } = makeService(db)
     const token = await issueValid(service)
 
     // Az első fogyasztó rendes úton nyer: a token consumed lesz.
-    const first = await service.consume({ tokenId: token.id, actualProposedContent: CONTENT })
+    const first = await service.consume({ tokenId: token.id, actualProposedContent: CONTENT, context: CTX })
     assert.equal(first.status, 'consumed')
 
     // A második fogyasztó a TOCTOU-versenyt szimulálja: mintha még az első ÍRÁSA
@@ -144,7 +180,7 @@ async function main() {
     // consumed, ezért 0 sort érint → fail-closed elutasítás.
     state.freezeFindUniqueToIssued = true
     await assert.rejects(
-      () => service.consume({ tokenId: token.id, actualProposedContent: CONTENT }),
+      () => service.consume({ tokenId: token.id, actualProposedContent: CONTENT, context: CTX }),
       /already consumed — concurrent use rejected/,
     )
     // A tábla EGYSZER lett consumed; nincs második írás.
@@ -153,10 +189,10 @@ async function main() {
 
   await check('tartalom-hash eltérés — elutasít, a token issued marad', async () => {
     const { db, rows } = makeFakeDb()
-    const service = new WriteGateService(db)
+    const { service } = makeService(db)
     const token = await issueValid(service)
     await assert.rejects(
-      () => service.consume({ tokenId: token.id, actualProposedContent: CONTENT + ' HAMISÍTVA' }),
+      () => service.consume({ tokenId: token.id, actualProposedContent: CONTENT + ' HAMISÍTVA', context: CTX }),
       /content hash mismatch/,
     )
     assert.equal(rows.get(token.id)!.status, 'issued')
@@ -164,11 +200,11 @@ async function main() {
 
   await check('hamisított aláírás — elutasít, a token issued marad', async () => {
     const { db, rows } = makeFakeDb()
-    const service = new WriteGateService(db)
+    const { service } = makeService(db)
     const token = await issueValid(service)
     rows.get(token.id)!.signature = 'deadbeef'.repeat(8)
     await assert.rejects(
-      () => service.consume({ tokenId: token.id, actualProposedContent: CONTENT }),
+      () => service.consume({ tokenId: token.id, actualProposedContent: CONTENT, context: CTX }),
       /signature invalid/,
     )
     assert.equal(rows.get(token.id)!.status, 'issued')
@@ -176,11 +212,11 @@ async function main() {
 
   await check('lejárt token — elutasít és expired-re állít (CAS csak issued-ról)', async () => {
     const { db, rows } = makeFakeDb()
-    const service = new WriteGateService(db)
+    const { service } = makeService(db)
     const token = await issueValid(service)
     rows.get(token.id)!.expiresAt = new Date(Date.now() - 1000)
     await assert.rejects(
-      () => service.consume({ tokenId: token.id, actualProposedContent: CONTENT }),
+      () => service.consume({ tokenId: token.id, actualProposedContent: CONTENT, context: CTX }),
       /token expired/,
     )
     assert.equal(rows.get(token.id)!.status, 'expired')
@@ -188,13 +224,14 @@ async function main() {
 
   await check('issue invariáns — pontosan egy horgony kell (egyik sem → dob)', async () => {
     const { db } = makeFakeDb()
-    const service = new WriteGateService(db)
+    const { service } = makeService(db)
     await assert.rejects(
       () =>
         service.issue({
           agentId: 'agent-1',
           targetMemoryId: 'mem-1',
           proposedContent: CONTENT,
+          context: CTX,
         }),
       /exactly one of/,
     )
@@ -202,7 +239,7 @@ async function main() {
 
   await check('issue invariáns — mindkét horgony → dob', async () => {
     const { db } = makeFakeDb()
-    const service = new WriteGateService(db)
+    const { service } = makeService(db)
     await assert.rejects(
       () =>
         service.issue({
@@ -211,8 +248,173 @@ async function main() {
           agentId: 'agent-1',
           targetMemoryId: 'mem-1',
           proposedContent: CONTENT,
+          context: CTX,
         }),
       /exactly one of/,
+    )
+  })
+
+  // ── Audit-lánc lefedettség (WP-A4) ───────────────────────────────────────
+  // A write-gate a governance-lánc kapuja: az írás-engedély kiadása és
+  // felhasználása nem maradhat kizárólag a token-táblában, mert onnan csak
+  // pont-lekérdezéssel derül ki — a hash-láncból hiányzó esemény vakfolt.
+
+  await check('audit pozitív — issue + sikeres consume auditált, token-érték nélkül', async () => {
+    const { db } = makeFakeDb()
+    const { service, auditEntries } = makeService(db)
+    const token = await issueValid(service)
+    await service.consume({ tokenId: token.id, actualProposedContent: CONTENT, context: CTX })
+
+    assert.deepEqual(
+      auditEntries.map((e) => e.action),
+      ['write_gate.issued', 'write_gate.consumed'],
+    )
+    for (const entry of auditEntries) {
+      assert.equal(entry.tenantId, CTX.tenantId, 'a tenant a soron van')
+      assert.equal(entry.actorType, CTX.actorType)
+      assert.equal(entry.actorId, CTX.actorId, 'a kérő aktor a soron van')
+      assert.equal(entry.targetType, 'write_gate_token')
+      assert.equal(entry.targetId, token.id, 'a token azonosítója a soron van')
+      const metadata = entry.metadata as Record<string, unknown>
+      assert.equal(metadata.writeGateTokenId, token.id)
+      assert.equal(metadata.targetMemoryId, 'mem-1', 'a cél-erőforrás a metaadatban van')
+      assert.equal(metadata.memoryCandidateId, 'cand-1')
+
+      // A nyers token-érték SOHA nem szivároghat auditba. A `tokenHash`/`signature`
+      // sem: azok a kapu kriptográfiai anyagai, az audit-sornak nincs rájuk szüksége.
+      const serialized = JSON.stringify(entry)
+      assert.ok(!serialized.includes(token.tokenHash), 'a tokenHash nem kerül auditba')
+      assert.ok(!serialized.includes(token.signature), 'az aláírás nem kerül auditba')
+    }
+  })
+
+  await check('audit negatív — dupla felhasználás write_gate.replay_denied-ot auditál', async () => {
+    const { db } = makeFakeDb()
+    const { service, auditEntries } = makeService(db)
+    const token = await issueValid(service)
+    await service.consume({ tokenId: token.id, actualProposedContent: CONTENT, context: CTX })
+    await assert.rejects(
+      () => service.consume({ tokenId: token.id, actualProposedContent: CONTENT, context: CTX }),
+      /already consumed/,
+    )
+
+    assert.deepEqual(
+      auditEntries.map((e) => e.action),
+      ['write_gate.issued', 'write_gate.consumed', 'write_gate.replay_denied'],
+    )
+    const denied = auditEntries.at(-1)!
+    assert.equal(denied.targetId, token.id)
+    assert.equal(denied.policyDecision, 'write_gate_replay_denied:consumed')
+  })
+
+  await check('audit negatív — a CAS-versenyben vesztes fogyasztó is replay_denied', async () => {
+    const { db, state } = makeFakeDb()
+    const { service, auditEntries } = makeService(db)
+    const token = await issueValid(service)
+    await service.consume({ tokenId: token.id, actualProposedContent: CONTENT, context: CTX })
+
+    // A vesztes átjut a korai státusz-ellenőrzésen (issued-ot lát), így csak a CAS
+    // fogja meg — ez az ág külön audit-kibocsátási pont.
+    state.freezeFindUniqueToIssued = true
+    await assert.rejects(
+      () => service.consume({ tokenId: token.id, actualProposedContent: CONTENT, context: CTX }),
+      /concurrent use rejected/,
+    )
+    const denied = auditEntries.at(-1)!
+    assert.equal(denied.action, 'write_gate.replay_denied')
+    assert.equal(denied.policyDecision, 'write_gate_replay_denied:concurrent')
+  })
+
+  await check('audit — lejárt token write_gate.expired-ot auditál', async () => {
+    const { db, rows } = makeFakeDb()
+    const { service, auditEntries } = makeService(db)
+    const token = await issueValid(service)
+    rows.get(token.id)!.expiresAt = new Date(Date.now() - 1000)
+    await assert.rejects(
+      () => service.consume({ tokenId: token.id, actualProposedContent: CONTENT, context: CTX }),
+      /token expired/,
+    )
+    assert.deepEqual(
+      auditEntries.map((e) => e.action),
+      ['write_gate.issued', 'write_gate.expired'],
+    )
+  })
+
+  // A §9.4 invariáns két fele — "nem ismételhető" ÉS "nem hamisítható". A replay-ágak
+  // fentebb; itt a hamisítás-jelzések, amelyek a legbeszédesebb támadás-nyomok.
+
+  await check('audit — tartalom-hash eltérés write_gate.rejected-et auditál', async () => {
+    const { db } = makeFakeDb()
+    const { service, auditEntries } = makeService(db)
+    const token = await issueValid(service)
+    await assert.rejects(
+      () =>
+        service.consume({
+          tokenId: token.id,
+          actualProposedContent: CONTENT + ' HAMISÍTVA',
+          context: CTX,
+        }),
+      /content hash mismatch/,
+    )
+    const denied = auditEntries.at(-1)!
+    assert.equal(denied.action, 'write_gate.rejected')
+    assert.equal(denied.policyDecision, 'write_gate_rejected:content_hash_mismatch')
+    assert.equal(denied.targetId, token.id)
+  })
+
+  await check('audit — hamisított aláírás write_gate.rejected-et auditál', async () => {
+    const { db, rows } = makeFakeDb()
+    const { service, auditEntries } = makeService(db)
+    const token = await issueValid(service)
+    rows.get(token.id)!.signature = 'deadbeef'.repeat(8)
+    await assert.rejects(
+      () => service.consume({ tokenId: token.id, actualProposedContent: CONTENT, context: CTX }),
+      /signature invalid/,
+    )
+    const denied = auditEntries.at(-1)!
+    assert.equal(denied.action, 'write_gate.rejected')
+    assert.equal(denied.policyDecision, 'write_gate_rejected:signature_invalid')
+  })
+
+  await check('lejárt token CAS-vesztesként nem ír hamis expired láncsort', async () => {
+    const { db, rows, state } = makeFakeDb()
+    const { service, auditEntries } = makeService(db)
+    const token = await issueValid(service)
+    // A token lejárt, de egy párhuzamos fogyasztó már elvitte: a valós terminál
+    // státusz `consumed`. Az expiry-CAS 0 sort érint → replay, NEM expired.
+    await service.consume({ tokenId: token.id, actualProposedContent: CONTENT, context: CTX })
+    rows.get(token.id)!.expiresAt = new Date(Date.now() - 1000)
+    state.freezeFindUniqueToIssued = true
+    await assert.rejects(
+      () => service.consume({ tokenId: token.id, actualProposedContent: CONTENT, context: CTX }),
+      /concurrent use rejected/,
+    )
+    assert.equal(rows.get(token.id)!.status, 'consumed', 'a consumed státusz nem íródik felül')
+    assert.ok(
+      !auditEntries.some((e) => e.action === 'write_gate.expired'),
+      'nem születik hamis expired láncsor egy már felhasznált tokenre',
+    )
+    assert.equal(auditEntries.at(-1)!.action, 'write_gate.replay_denied')
+  })
+
+  await check('elutasítási ágon az audit-hiba NEM nyomja el a biztonsági hibaokot', async () => {
+    const { db, rows } = makeFakeDb()
+    const brokenAudit = {
+      async append() {
+        throw new Error('audit chain unavailable')
+      },
+    } as unknown as AuditRepository
+    // Az issue-hoz még ép audit kell, utána rontjuk el.
+    const { audit } = makeFakeAudit()
+    const service = new WriteGateService(audit, db)
+    const token = await issueValid(service)
+    const denyingService = new WriteGateService(brokenAudit, db)
+    rows.get(token.id)!.signature = 'deadbeef'.repeat(8)
+    // A hívónak a hamisítást kell látnia, nem az audit-alrendszer hibáját.
+    await assert.rejects(
+      () =>
+        denyingService.consume({ tokenId: token.id, actualProposedContent: CONTENT, context: CTX }),
+      /signature invalid/,
     )
   })
 

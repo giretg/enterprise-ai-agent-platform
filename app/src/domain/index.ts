@@ -234,7 +234,7 @@ const bookkeeperRuntime = new BookkeeperAgentRuntime(
   repositories.audit,
   memoryRetrievalService,
 )
-const writeGateService = new WriteGateService()
+const writeGateService = new WriteGateService(repositories.audit)
 const evalService = new EvalService()
 const selfEvolutionGuard = new SelfEvolutionGuard(repositories.audit)
 const trainingService = new TrainingService(

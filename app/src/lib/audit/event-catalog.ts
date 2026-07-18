@@ -159,6 +159,15 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'memory.write.eval_override',
   'memory.write_denied',
   'training.capability_escalation_denied',
+  // Write-gate token életciklus (§9.4) — a következményes memória-írás engedélye
+  // és felhasználása a hash-láncban is nyomon követhető, nem csak a token-táblában.
+  // A nyers token-érték SOHA nem kerül auditba, csak a token azonosítója.
+  'write_gate.issued',
+  'write_gate.consumed',
+  'write_gate.replay_denied',
+  'write_gate.expired',
+  // Hamisítás-jelzés: rossz diff-hash, hiányzó horgony vagy hamisított aláírás.
+  'write_gate.rejected',
   // Tartós agent-memória (agent-memory-persistent-cross-conversation-spec.md WP-3/WP-4)
   'memory.retrieve',
   'memory.propose',

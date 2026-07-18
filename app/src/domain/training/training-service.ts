@@ -253,18 +253,26 @@ export class TrainingService {
       }
     }
 
-    // 2. Write-gate token kiállítás
+    // 2. Write-gate token kiállítás — a gate-események a jóváhagyó emberhez kötődnek.
+    const gateContext = {
+      tenantId: agent.tenantId,
+      actorType: 'human' as const,
+      actorId: approverId,
+      agentVersion: agent.currentVersion,
+    }
     const gateToken = await this.writeGate.issue({
       trainingTicketId: ticketId,
       agentId: agent.id,
       targetMemoryId: agent.memoryId,
       proposedContent: payload.proposedContent,
+      context: gateContext,
     })
 
     // 3. Write-gate token consume (diffHash-ellenőrzés + aláírás-verifikáció)
     await this.writeGate.consume({
       tokenId: gateToken.id,
       actualProposedContent: payload.proposedContent,
+      context: gateContext,
     })
 
     // §4.4: a kiállított token referenciája a training_tickets soron (nyers token sosem tárolt).
