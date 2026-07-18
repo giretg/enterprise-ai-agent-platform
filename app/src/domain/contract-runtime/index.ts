@@ -1,6 +1,7 @@
 export type {
   ContractField,
   ContractFieldType,
+  ContractContentCheck,
   ContractSource,
   ContractIssue,
   CompiledContract,
@@ -18,6 +19,10 @@ export {
 } from './types'
 export { compileContract, compileFromZod, contractToJsonSchema } from './compile'
 export { validateAgainstContract } from './validate'
+export {
+  collectJudgmentContentIssues,
+  contractHasJudgmentChecks,
+} from './content-check'
 export { formatContractErrors } from './format-errors'
 export { extractLoose } from './extract'
 export {

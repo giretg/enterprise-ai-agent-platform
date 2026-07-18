@@ -530,6 +530,268 @@ async function main() {
     assert.equal(empty.ok, false)
   })
 
+  // --- CR-4: opcionális tartalmi ellenőrzés (#45) ---------------------------
+
+  await check('CR-4a: deklaráció nélkül → pattern/ítélet sem fut (nulla költség)', async () => {
+    let chatCalls = 0
+    const provider: ModelProvider = {
+      name: 'stub',
+      async chat() {
+        chatCalls++
+        return {
+          content: '{}',
+          usage: { promptTokens: 1, completionTokens: 1 },
+          latencyMs: 1,
+        }
+      },
+    }
+    const gateway = makeGateway(provider)
+    const contract = compileContract({
+      fields: [{ name: 'note', type: 'string', required: true }],
+    })
+    const result = await runStrictContract({
+      gateway,
+      contract,
+      rawContent: '{"note":"hello"}',
+      modelConfig: baseModel,
+      structuringModel: { provider: 'stub', model: 'stub-cheap' },
+      agentId: TEST_AGENT_ID,
+      criticality: 'L1',
+    })
+    assert.equal(result.ok, true)
+    assert.equal(chatCalls, 0, 'tartalmi szabály nélkül tilos a modellhívás')
+  })
+
+  await check('CR-4b: pattern mustNotMatch → sértés fail-closed (ingyenes)', () => {
+    const contract = compileContract({
+      fields: [
+        {
+          name: 'note',
+          type: 'string',
+          required: true,
+          contentCheck: {
+            kind: 'pattern',
+            regex: String.raw`\d{3}-\d{2}-\d{4}`,
+            expect: 'notMatch',
+            message: 'Ne tartalmazzon személyi számot.',
+          },
+        },
+      ],
+    })
+    const ok = validateAgainstContract(contract, { note: 'rendben, nincs azonosító' })
+    assert.equal(ok.ok, true)
+
+    const bad = validateAgainstContract(contract, { note: 'azonosító: 123-45-6789' })
+    assert.equal(bad.ok, false)
+    if (!bad.ok) {
+      assert.ok(bad.errors.some((e) => e.code === 'content' && e.field === 'note'))
+      const text = formatContractErrors(bad.errors)
+      assert.ok(text.includes('személyi') || text.includes('note'))
+    }
+  })
+
+  await check('CR-4c: pattern mustMatch → hiányzó minta fail-closed', () => {
+    const contract = compileContract({
+      fields: [
+        {
+          name: 'iban',
+          type: 'string',
+          required: true,
+          contentCheck: {
+            kind: 'pattern',
+            regex: String.raw`^HU\d{2}`,
+            expect: 'match',
+            message: 'Magyar IBAN-nel kell kezdődnie (HU…).',
+          },
+        },
+      ],
+    })
+    assert.equal(validateAgainstContract(contract, { iban: 'HU42117730161111111111111111' }).ok, true)
+    const bad = validateAgainstContract(contract, { iban: 'DE89370400440532013000' })
+    assert.equal(bad.ok, false)
+    if (!bad.ok) {
+      assert.equal(bad.errors[0]?.code, 'content')
+    }
+  })
+
+  await check('CR-4d: ítélet jellegű ellenőrzés a kapun át; bukás → fail-closed', async () => {
+    let chatCalls = 0
+    let lastSystem = ''
+    const provider: ModelProvider = {
+      name: 'stub',
+      async chat(input) {
+        chatCalls++
+        const system = input.messages.find((m) => m.role === 'system')
+        lastSystem = typeof system?.content === 'string' ? system.content : ''
+        return {
+          content: '{"pass":false,"reason":"Személynevet tartalmaz."}',
+          usage: { promptTokens: 1, completionTokens: 1 },
+          latencyMs: 1,
+        }
+      },
+    }
+    const gateway = makeGateway(provider)
+    const contract = compileContract({
+      fields: [
+        {
+          name: 'summary',
+          type: 'string',
+          required: true,
+          contentCheck: {
+            kind: 'judgment',
+            criterion: 'Ne tartalmazzon személyes adatot (név, cím).',
+          },
+        },
+      ],
+    })
+    const result = await runStrictContract({
+      gateway,
+      contract,
+      rawContent: '{"summary":"Kiss János budapesti címe…"}',
+      modelConfig: baseModel,
+      structuringModel: { provider: 'stub', model: 'stub-cheap' },
+      agentId: TEST_AGENT_ID,
+      criticality: 'L1',
+    })
+    assert.equal(result.ok, false)
+    assert.equal(chatCalls, 1, 'ítélet → pontosan egy kapu-hívás')
+    assert.ok(lastSystem.includes('személyes') || lastSystem.includes('Né'), 'kritérium a promptra kerül')
+    if (!result.ok) {
+      assert.ok(result.errors.some((e) => e.code === 'content'))
+      assert.ok(result.humanSummary.length > 0)
+    }
+  })
+
+  await check('CR-4e: ítélet pass → siker, alaki után fut', async () => {
+    let chatCalls = 0
+    const provider: ModelProvider = {
+      name: 'stub',
+      async chat() {
+        chatCalls++
+        return {
+          content: '{"pass":true}',
+          usage: { promptTokens: 1, completionTokens: 1 },
+          latencyMs: 1,
+        }
+      },
+    }
+    const gateway = makeGateway(provider)
+    const contract = compileContract({
+      fields: [
+        {
+          name: 'summary',
+          type: 'string',
+          required: true,
+          contentCheck: {
+            kind: 'judgment',
+            criterion: 'A szöveg üzleti összefoglaló, nem személyes adat.',
+          },
+        },
+      ],
+    })
+    const result = await runStrictContract({
+      gateway,
+      contract,
+      rawContent: '{"summary":"Q2 bevétel nőtt."}',
+      modelConfig: baseModel,
+      structuringModel: { provider: 'stub', model: 'stub-cheap' },
+      agentId: TEST_AGENT_ID,
+      criticality: 'L1',
+    })
+    assert.equal(result.ok, true)
+    assert.equal(chatCalls, 1)
+  })
+
+  await check('CR-4f: tipizált contentCheck megmarad a fordítóban', () => {
+    const spec = {
+      schemaVersion: '1.0' as const,
+      key: 'content-check',
+      name: 'Content check',
+      processType: 'demo',
+      entryStepId: 's1',
+      roles: [{ key: 'worker', type: 'agent_role' as const, requiredCapabilities: [] as string[] }],
+      steps: [
+        {
+          id: 's1',
+          name: 'S1',
+          ticketType: 't',
+          assignedRole: 'worker',
+          outputContract: {
+            fields: [
+              {
+                name: 'note',
+                type: 'string',
+                required: true,
+                contentCheck: {
+                  kind: 'pattern',
+                  regex: 'secret',
+                  expect: 'notMatch',
+                },
+              },
+            ],
+          },
+        },
+      ],
+      gates: [],
+      transitions: [],
+    }
+    const compiled = new PlaybookCompiler().compile(spec as never)
+    const field = compiled.ticketRules[0]!.outputContractFields?.find((f) => f.name === 'note')
+    assert.ok(field?.contentCheck?.kind === 'pattern')
+    if (field?.contentCheck?.kind === 'pattern') {
+      assert.equal(field.contentCheck.regex, 'secret')
+      assert.equal(field.contentCheck.expect, 'notMatch')
+    }
+  })
+
+  await check('CR-4g: pattern-sértés → fail-closed javítás nélkül (nincs modellköltség)', async () => {
+    let chatCalls = 0
+    const provider: ModelProvider = {
+      name: 'stub',
+      async chat() {
+        chatCalls++
+        return {
+          content: '{"note":"clean"}',
+          usage: { promptTokens: 1, completionTokens: 1 },
+          latencyMs: 1,
+        }
+      },
+    }
+    const gateway = makeGateway(provider)
+    const contract = compileContract({
+      fields: [
+        {
+          name: 'note',
+          type: 'string',
+          required: true,
+          contentCheck: {
+            kind: 'pattern',
+            regex: String.raw`\d{3}-\d{2}-\d{4}`,
+            expect: 'notMatch',
+            message: 'Ne tartalmazzon személyi számot.',
+          },
+        },
+      ],
+    })
+    const result = await runStrictContract({
+      gateway,
+      contract,
+      rawContent: '{"note":"azonosító 123-45-6789"}',
+      modelConfig: baseModel,
+      structuringModel: { provider: 'stub', model: 'stub-cheap' },
+      agentId: TEST_AGENT_ID,
+      criticality: 'L1',
+      maxRepairAttempts: 2,
+    })
+    assert.equal(result.ok, false)
+    assert.equal(chatCalls, 0, 'minta-sértésnél tilos a javító modellhívás')
+    if (!result.ok) {
+      assert.equal(result.repairAttempts, 0)
+      assert.ok(result.errors.every((e) => e.code === 'content'))
+      assert.ok(result.humanSummary.includes('személyi') || result.humanSummary.includes('note'))
+    }
+  })
+
   console.log(`\n${failures === 0 ? 'PASS' : 'FAIL'}: ${failures} failure(s)`)
   process.exit(failures > 0 ? 1 : 0)
 }

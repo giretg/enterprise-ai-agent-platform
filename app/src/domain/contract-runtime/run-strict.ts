@@ -3,6 +3,10 @@ import type {
   ModelConfig,
 } from '@/domain/gateway/model-gateway'
 import { GatewaySensitivityError } from '@/domain/gateway/model-gateway'
+import {
+  collectJudgmentContentIssues,
+  contractHasJudgmentChecks,
+} from './content-check'
 import { extractLoose } from './extract'
 import { formatContractErrors } from './format-errors'
 import { validateAgainstContract } from './validate'
@@ -11,6 +15,7 @@ import {
   DEFAULT_REPAIR_ATTEMPTS,
   HARD_MAX_REPAIR_ATTEMPTS,
   type CompiledContract,
+  type ContractIssue,
   type CriticalityLevel,
   type StrictContractResult,
 } from './types'
@@ -72,6 +77,11 @@ function parseCandidate(raw: string): unknown {
   }
 }
 
+/** Tartalmi-only hiba → nincs javító modellhívás (#45: modell csak ítéletnél). */
+function isContentOnlyFailure(errors: ContractIssue[]): boolean {
+  return errors.length > 0 && errors.every((e) => e.code === 'content')
+}
+
 function buildRepairMessages(input: {
   rawContent: string
   errorText: string
@@ -118,66 +128,101 @@ export async function runStrictContract(
   let candidate = parseCandidate(input.rawContent)
   let validated = validateAgainstContract(input.contract, candidate)
 
-  if (validated.ok) {
-    return { ok: true, value: validated.value, repairAttempts: 0 }
+  let lastErrors = validated.ok ? [] : validated.errors
+
+  if (!validated.ok && isContentOnlyFailure(validated.errors)) {
+    return {
+      ok: false,
+      errors: validated.errors,
+      repairAttempts: 0,
+      humanSummary: formatContractErrors(validated.errors),
+    }
   }
 
-  let lastErrors = validated.errors
+  if (!validated.ok) {
+    while (repairAttempts < maxAttempts) {
+      repairAttempts++
+      const errorText = formatContractErrors(lastErrors)
+      const repairMessages = buildRepairMessages({
+        rawContent: input.rawContent,
+        errorText,
+        fieldNames: input.contract.fieldNames,
+      })
 
-  while (repairAttempts < maxAttempts) {
-    repairAttempts++
-    const errorText = formatContractErrors(lastErrors)
-    const repairMessages = buildRepairMessages({
-      rawContent: input.rawContent,
-      errorText,
-      fieldNames: input.contract.fieldNames,
-    })
+      const responseJsonSchema = contractToJsonSchema(input.contract)
+      const callArgs = {
+        agentId: input.agentId,
+        agentVersion: input.agentVersion,
+        ticketId: input.ticketId,
+        tenantId: input.tenantId,
+        conversationId: input.conversationId,
+        messages: repairMessages,
+        ...(responseJsonSchema ? { responseJsonSchema } : {}),
+      }
 
-    const responseJsonSchema = contractToJsonSchema(input.contract)
-    const callArgs = {
+      // Strukturáló modell a kapun át. Érzékeny tartalomnál fail-closed: a lépés
+      // már jóváhagyott modelljére esünk vissza (ne olcsó/külső strukturálóhoz).
+      let response
+      try {
+        response = await input.gateway.call({
+          ...callArgs,
+          modelConfig: {
+            ...input.structuringModel,
+            fallbackModels: [
+              ...(input.structuringModel.fallbackModels ?? []),
+              { provider: input.modelConfig.provider, model: input.modelConfig.model },
+            ],
+          },
+        })
+      } catch (error) {
+        if (!(error instanceof GatewaySensitivityError)) throw error
+        response = await input.gateway.call({
+          ...callArgs,
+          modelConfig: input.modelConfig,
+        })
+      }
+
+      candidate = parseCandidate(response.content)
+      validated = validateAgainstContract(input.contract, candidate)
+      if (validated.ok) break
+      lastErrors = validated.errors
+      // Javítás után csak tartalmi hiba → ne pazaroljunk további modellhívást.
+      if (isContentOnlyFailure(validated.errors)) break
+    }
+  }
+
+  if (!validated.ok) {
+    return {
+      ok: false,
+      errors: lastErrors,
+      repairAttempts,
+      humanSummary: formatContractErrors(lastErrors),
+    }
+  }
+
+  // #45 — ítélet jellegű tartalmi kapu csak explicit mező-deklarációnál (kapun át).
+  if (contractHasJudgmentChecks(input.contract.fields)) {
+    const judgmentIssues = await collectJudgmentContentIssues({
+      gateway: input.gateway,
+      contract: input.contract,
+      value: validated.value,
+      modelConfig: input.modelConfig,
+      structuringModel: input.structuringModel,
       agentId: input.agentId,
       agentVersion: input.agentVersion,
       ticketId: input.ticketId,
       tenantId: input.tenantId,
       conversationId: input.conversationId,
-      messages: repairMessages,
-      ...(responseJsonSchema ? { responseJsonSchema } : {}),
+    })
+    if (judgmentIssues.length > 0) {
+      return {
+        ok: false,
+        errors: judgmentIssues,
+        repairAttempts,
+        humanSummary: formatContractErrors(judgmentIssues),
+      }
     }
-
-    // Strukturáló modell a kapun át. Érzékeny tartalomnál fail-closed: a lépés
-    // már jóváhagyott modelljére esünk vissza (ne olcsó/külső strukturálóhoz).
-    let response
-    try {
-      response = await input.gateway.call({
-        ...callArgs,
-        modelConfig: {
-          ...input.structuringModel,
-          fallbackModels: [
-            ...(input.structuringModel.fallbackModels ?? []),
-            { provider: input.modelConfig.provider, model: input.modelConfig.model },
-          ],
-        },
-      })
-    } catch (error) {
-      if (!(error instanceof GatewaySensitivityError)) throw error
-      response = await input.gateway.call({
-        ...callArgs,
-        modelConfig: input.modelConfig,
-      })
-    }
-
-    candidate = parseCandidate(response.content)
-    validated = validateAgainstContract(input.contract, candidate)
-    if (validated.ok) {
-      return { ok: true, value: validated.value, repairAttempts }
-    }
-    lastErrors = validated.errors
   }
 
-  return {
-    ok: false,
-    errors: lastErrors,
-    repairAttempts,
-    humanSummary: formatContractErrors(lastErrors),
-  }
+  return { ok: true, value: validated.value, repairAttempts }
 }

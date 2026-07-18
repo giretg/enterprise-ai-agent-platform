@@ -9,6 +9,7 @@
 import assert from 'node:assert/strict'
 import {
   applySuggestedOutputFields,
+  emptyOutputContractFormField,
   ensureFieldInOutputContractJson,
   formFieldsToOutputContract,
   outputContractHasField,
@@ -104,34 +105,27 @@ function main() {
 
   check('OC-1d: lista + összetett mező round-trip', () => {
     const form: OutputContractFormField[] = [
-      {
+      emptyOutputContractFormField({
         name: 'items',
         type: 'array',
         required: true,
         description: 'Tételek',
-        enumValuesText: '',
         itemType: 'string',
-        nestedFields: [],
-      },
-      {
+      }),
+      emptyOutputContractFormField({
         name: 'supplier',
         type: 'object',
         required: true,
         description: 'Szállító',
-        enumValuesText: '',
-        itemType: 'string',
         nestedFields: [
-          {
+          emptyOutputContractFormField({
             name: 'name',
             type: 'string',
             required: true,
             description: 'Név',
-            enumValuesText: '',
-            itemType: 'string',
-            nestedFields: [],
-          },
+          }),
         ],
-      },
+      }),
     ]
     const stored = formFieldsToOutputContract(form)
     assert.deepEqual(stored?.fields, [
@@ -156,15 +150,7 @@ function main() {
 
   check('OC-1e: mentett alak compile+validate-dal működik', () => {
     const stored = formFieldsToOutputContract([
-      {
-        name: 'price',
-        type: 'number',
-        required: true,
-        description: '',
-        enumValuesText: '',
-        itemType: 'string',
-        nestedFields: [],
-      },
+      emptyOutputContractFormField({ name: 'price', type: 'number', required: true }),
     ])
     const contract = compileContract(stored!)
     const ok = validateAgainstContract(contract, { price: 1200 })
@@ -214,6 +200,61 @@ function main() {
 
     const again = ensureFieldInOutputContractJson(json, 'decision')
     assert.equal(again, json)
+  })
+
+  check('OC-4a: contentCheck pattern round-trip + validáció (#45)', () => {
+    const form: OutputContractFormField[] = [
+      emptyOutputContractFormField({
+        name: 'note',
+        type: 'string',
+        required: true,
+        contentCheckKind: 'pattern',
+        contentPattern: String.raw`\d{3}-\d{2}-\d{4}`,
+        contentExpect: 'notMatch',
+        contentMessage: 'Ne tartalmazzon személyi számot.',
+      }),
+    ]
+    const stored = formFieldsToOutputContract(form)
+    assert.deepEqual(stored, {
+      fields: [
+        {
+          name: 'note',
+          type: 'string',
+          required: true,
+          contentCheck: {
+            kind: 'pattern',
+            regex: String.raw`\d{3}-\d{2}-\d{4}`,
+            expect: 'notMatch',
+            message: 'Ne tartalmazzon személyi számot.',
+          },
+        },
+      ],
+    })
+    const back = outputContractToFormFields(stored)
+    assert.equal(back[0]?.contentCheckKind, 'pattern')
+    assert.equal(back[0]?.contentExpect, 'notMatch')
+
+    const contract = compileContract({ fields: stored!.fields as never })
+    assert.equal(validateAgainstContract(contract, { note: 'ok' }).ok, true)
+    assert.equal(validateAgainstContract(contract, { note: '123-45-6789' }).ok, false)
+  })
+
+  check('OC-4b: contentCheckKind none → nincs contentCheck a tárolásban', () => {
+    const form: OutputContractFormField[] = [
+      emptyOutputContractFormField({
+        name: 'note',
+        type: 'string',
+        required: true,
+        contentCheckKind: 'none',
+        contentPattern: 'ignored',
+        contentExpect: 'match',
+        contentCriterion: 'ignored',
+      }),
+    ]
+    const stored = formFieldsToOutputContract(form)
+    assert.deepEqual(stored, {
+      fields: [{ name: 'note', type: 'string', required: true }],
+    })
   })
 
   if (failures > 0) {

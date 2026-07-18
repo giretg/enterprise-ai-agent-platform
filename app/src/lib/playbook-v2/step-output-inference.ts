@@ -89,6 +89,30 @@ const CONTRACT_FIELD_TYPES = new Set([
   'object',
 ])
 
+function readContentCheck(raw: unknown): ContractField['contentCheck'] | undefined {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const o = raw as Record<string, unknown>
+  if (o.kind === 'pattern' && typeof o.regex === 'string' && o.regex.length > 0) {
+    const check: NonNullable<ContractField['contentCheck']> = {
+      kind: 'pattern',
+      regex: o.regex,
+    }
+    if (typeof o.flags === 'string') check.flags = o.flags
+    if (o.expect === 'match' || o.expect === 'notMatch') check.expect = o.expect
+    if (typeof o.message === 'string' && o.message.trim()) check.message = o.message.trim()
+    return check
+  }
+  if (o.kind === 'judgment' && typeof o.criterion === 'string' && o.criterion.trim()) {
+    const check: NonNullable<ContractField['contentCheck']> = {
+      kind: 'judgment',
+      criterion: o.criterion.trim(),
+    }
+    if (typeof o.message === 'string' && o.message.trim()) check.message = o.message.trim()
+    return check
+  }
+  return undefined
+}
+
 function readTypedField(raw: unknown): ContractField | null {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null
   const o = raw as Record<string, unknown>
@@ -115,6 +139,8 @@ function readTypedField(raw: unknown): ContractField | null {
   if (Array.isArray(o.fields)) {
     field.fields = o.fields.map(readTypedField).filter((f): f is ContractField => f != null)
   }
+  const contentCheck = readContentCheck(o.contentCheck)
+  if (contentCheck) field.contentCheck = contentCheck
   return field
 }
 

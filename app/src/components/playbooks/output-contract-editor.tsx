@@ -179,6 +179,89 @@ function FieldRowEditor({
           </button>
         </div>
       )}
+
+      {depth === 0 && (
+        <details className="rounded border border-dashed border-ink/15 px-2 py-1.5">
+          <summary className="cursor-pointer text-[11px] font-medium text-ink-soft">
+            Tartalmi ellenőrzés (opcionális)
+          </summary>
+          <div className="mt-1.5 space-y-1.5">
+            <PlaybookFieldHint>
+              Csak ha bekapcsolod, fut bármi — különben nulla költség. Mintaillesztés ingyenes;
+              „ítélet” egy rövid modellhívás a kapun át.
+            </PlaybookFieldHint>
+            <label className="block text-xs">
+              <span className={LABEL_CLASS}>Milyen ellenőrzés?</span>
+              <select
+                value={field.contentCheckKind}
+                onChange={(e) =>
+                  onChange({
+                    ...field,
+                    contentCheckKind: e.target.value as OutputContractFormField['contentCheckKind'],
+                  })
+                }
+                className={FIELD_CLASS}
+              >
+                <option value="none">Nincs</option>
+                <option value="pattern">Minta (szabályos kifejezés)</option>
+                <option value="judgment">Ítélet (modell dönt)</option>
+              </select>
+            </label>
+            {field.contentCheckKind === 'pattern' && (
+              <>
+                <label className="block text-xs">
+                  <span className={LABEL_CLASS}>Minta (pl. személyi szám formátum)</span>
+                  <input
+                    value={field.contentPattern}
+                    onChange={(e) => onChange({ ...field, contentPattern: e.target.value })}
+                    className={`${FIELD_CLASS} font-mono text-xs`}
+                    placeholder={String.raw`\d{3}-\d{2}-\d{4}`}
+                    spellCheck={false}
+                  />
+                </label>
+                <label className="block text-xs">
+                  <span className={LABEL_CLASS}>Elvárás</span>
+                  <select
+                    value={field.contentExpect}
+                    onChange={(e) =>
+                      onChange({
+                        ...field,
+                        contentExpect: e.target.value as 'match' | 'notMatch',
+                      })
+                    }
+                    className={FIELD_CLASS}
+                  >
+                    <option value="notMatch">Ne illeszkedjen (tiltott minta)</option>
+                    <option value="match">Illeszkedjen (kötelező minta)</option>
+                  </select>
+                </label>
+              </>
+            )}
+            {field.contentCheckKind === 'judgment' && (
+              <label className="block text-xs">
+                <span className={LABEL_CLASS}>Mit döntsön el a modell?</span>
+                <input
+                  value={field.contentCriterion}
+                  onChange={(e) => onChange({ ...field, contentCriterion: e.target.value })}
+                  className={FIELD_CLASS}
+                  placeholder="pl. Ne tartalmazzon személyes adatot"
+                />
+              </label>
+            )}
+            {field.contentCheckKind !== 'none' && (
+              <label className="block text-xs">
+                <span className={LABEL_CLASS}>Üzenet, ha nem felel meg (opcionális)</span>
+                <input
+                  value={field.contentMessage}
+                  onChange={(e) => onChange({ ...field, contentMessage: e.target.value })}
+                  className={FIELD_CLASS}
+                  placeholder="Közérthető magyarázat a felülvizsgálónak"
+                />
+              </label>
+            )}
+          </div>
+        </details>
+      )}
     </div>
   )
 }

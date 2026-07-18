@@ -1,4 +1,5 @@
 import type { ZodError } from 'zod'
+import { collectPatternContentIssues } from './content-check'
 import type {
   CompiledContract,
   ContractIssue,
@@ -87,8 +88,15 @@ export function validateAgainstContract(
   }
 
   const parsed = contract.schema.safeParse(value)
-  if (parsed.success) {
-    return { ok: true, value: parsed.data }
+  if (!parsed.success) {
+    return { ok: false, errors: issueFromZod(parsed.error, contract.fields) }
   }
-  return { ok: false, errors: issueFromZod(parsed.error, contract.fields) }
+
+  // #45 — alaki siker után determinisztikus tartalmi minták (deklaráció nélkül üres).
+  const contentIssues = collectPatternContentIssues(contract.fields, parsed.data)
+  if (contentIssues.length > 0) {
+    return { ok: false, errors: contentIssues }
+  }
+
+  return { ok: true, value: parsed.data }
 }

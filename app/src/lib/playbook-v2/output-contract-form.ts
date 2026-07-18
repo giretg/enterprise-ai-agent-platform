@@ -1,11 +1,18 @@
 /**
- * Közérthető kimeneti-contract szerkesztő form-állapota (#44).
+ * Közérthető kimeneti-contract szerkesztő form-állapota (#44 / #45).
  * Tiszta függvények: form ↔ tipizált tárolási alak (#37).
  */
-import type { ContractField, ContractFieldType } from '@/domain/contract-runtime'
+import type {
+  ContractContentCheck,
+  ContractField,
+  ContractFieldType,
+} from '@/domain/contract-runtime'
 import { HARD_MAX_REPAIR_ATTEMPTS } from '@/domain/contract-runtime'
 import type { PlaybookSpecV2 } from '@/lib/playbook-v2/spec'
-import { inferStepOutputFields } from '@/lib/playbook-v2/step-output-inference'
+import {
+  inferStepOutputFields,
+  readTypedOutputContractFields,
+} from '@/lib/playbook-v2/step-output-inference'
 
 /** Következő lépés igényei alapján javasolt kimeneti mezőnevek (#44). */
 export function suggestedOutputFieldsForStep(
@@ -19,7 +26,6 @@ export function suggestedOutputFieldsForStep(
     return []
   }
 }
-import { readTypedOutputContractFields } from '@/lib/playbook-v2/step-output-inference'
 
 const FIELD_TYPES = new Set<ContractFieldType>([
   'string',
@@ -33,6 +39,8 @@ const FIELD_TYPES = new Set<ContractFieldType>([
 
 const SCALAR_ITEM_TYPES = new Set(['string', 'number', 'boolean', 'date'] as const)
 
+export type ContentCheckKind = 'none' | 'pattern' | 'judgment'
+
 export type OutputContractFormField = {
   name: string
   type: ContractFieldType
@@ -42,6 +50,12 @@ export type OutputContractFormField = {
   enumValuesText: string
   itemType: Exclude<ContractFieldType, 'array' | 'object' | 'enum'>
   nestedFields: OutputContractFormField[]
+  /** #45 — tartalmi kapu opt-in. */
+  contentCheckKind: ContentCheckKind
+  contentPattern: string
+  contentExpect: 'match' | 'notMatch'
+  contentCriterion: string
+  contentMessage: string
 }
 
 export type OutputContractFormMeta = {
@@ -78,8 +92,68 @@ export function emptyOutputContractFormField(
     enumValuesText: '',
     itemType: 'string',
     nestedFields: [],
+    contentCheckKind: 'none',
+    contentPattern: '',
+    contentExpect: 'notMatch',
+    contentCriterion: '',
+    contentMessage: '',
     ...partial,
   }
+}
+
+function contentCheckToForm(check: ContractContentCheck | undefined): Pick<
+  OutputContractFormField,
+  'contentCheckKind' | 'contentPattern' | 'contentExpect' | 'contentCriterion' | 'contentMessage'
+> {
+  if (!check) {
+    return {
+      contentCheckKind: 'none',
+      contentPattern: '',
+      contentExpect: 'notMatch',
+      contentCriterion: '',
+      contentMessage: '',
+    }
+  }
+  if (check.kind === 'pattern') {
+    return {
+      contentCheckKind: 'pattern',
+      contentPattern: check.regex,
+      contentExpect: check.expect ?? 'match',
+      contentCriterion: '',
+      contentMessage: check.message ?? '',
+    }
+  }
+  return {
+    contentCheckKind: 'judgment',
+    contentPattern: '',
+    contentExpect: 'notMatch',
+    contentCriterion: check.criterion,
+    contentMessage: check.message ?? '',
+  }
+}
+
+function formContentCheck(field: OutputContractFormField): ContractContentCheck | undefined {
+  if (field.contentCheckKind === 'pattern') {
+    const regex = field.contentPattern.trim()
+    if (!regex) return undefined
+    const check: ContractContentCheck = {
+      kind: 'pattern',
+      regex,
+      expect: field.contentExpect,
+    }
+    const message = field.contentMessage.trim()
+    if (message) check.message = message
+    return check
+  }
+  if (field.contentCheckKind === 'judgment') {
+    const criterion = field.contentCriterion.trim()
+    if (!criterion) return undefined
+    const check: ContractContentCheck = { kind: 'judgment', criterion }
+    const message = field.contentMessage.trim()
+    if (message) check.message = message
+    return check
+  }
+  return undefined
 }
 
 function typedFieldToForm(field: ContractField): OutputContractFormField {
@@ -92,6 +166,7 @@ function typedFieldToForm(field: ContractField): OutputContractFormField {
     itemType:
       field.itemType && SCALAR_ITEM_TYPES.has(field.itemType) ? field.itemType : 'string',
     nestedFields: (field.fields ?? []).map(typedFieldToForm),
+    ...contentCheckToForm(field.contentCheck),
   }
 }
 
@@ -152,6 +227,8 @@ function formFieldToTyped(field: OutputContractFormField): ContractField | null 
       .filter((f): f is ContractField => f != null)
     if (nested.length > 0) typed.fields = nested
   }
+  const contentCheck = formContentCheck(field)
+  if (contentCheck) typed.contentCheck = contentCheck
   return typed
 }
 

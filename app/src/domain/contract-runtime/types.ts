@@ -13,6 +13,28 @@ export type ContractFieldType =
   | 'array'
   | 'object'
 
+/**
+ * Mezőszintű opcionális tartalmi (szemantikus) kapu (#45).
+ * Deklaráció hiányában semmi nem fut és nem kerül semmibe.
+ */
+export type ContractContentCheck =
+  | {
+      kind: 'pattern'
+      /** JS RegExp forrás. */
+      regex: string
+      flags?: string
+      /** Alap: `match`. `notMatch` = a minta tilos (pl. személyi szám). */
+      expect?: 'match' | 'notMatch'
+      /** Közérthető magyarázat sértéskor. */
+      message?: string
+    }
+  | {
+      kind: 'judgment'
+      /** Hétköznapi kritérium a modellnek (kapun át). */
+      criterion: string
+      message?: string
+    }
+
 /** Tipizált contract-mező a folyamat-definícióból. */
 export type ContractField = {
   name: string
@@ -25,6 +47,8 @@ export type ContractField = {
   itemType?: Exclude<ContractFieldType, 'array' | 'object' | 'enum'>
   /** Beágyazott mezők `object` típusnál. */
   fields?: ContractField[]
+  /** Opt-in tartalmi ellenőrzés (#45). */
+  contentCheck?: ContractContentCheck
 }
 
 /** Contract forrás: tipizált mezőlista és/vagy legacy mezőnév-lista. */
@@ -36,7 +60,7 @@ export type ContractSource = {
 
 export type ContractIssue = {
   field: string
-  code: 'missing' | 'empty' | 'type' | 'enum' | 'invalid'
+  code: 'missing' | 'empty' | 'type' | 'enum' | 'invalid' | 'content'
   message: string
 }
 
