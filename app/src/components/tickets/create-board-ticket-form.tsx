@@ -2,21 +2,28 @@
 
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { useMemo, useState, useTransition } from 'react'
+import { useEffect, useMemo, useState, useTransition } from 'react'
 import { createBoardTicket, dispatchBoardTicket } from '@/app/actions/platform'
+import { getAgentSkillsAction } from '@/app/actions/skills'
 import { TicketWorkspaceFileDropzone } from '@/components/tickets/ticket-workspace-file-dropzone'
 import { Badge, Card } from '@/components/ui/shell'
 import { personaFor } from '@/lib/agent-persona'
 import { uploadTicketWorkspaceFiles } from '@/lib/ticket-workspace-files-client'
 
 type AssigneeOptions = {
-  agents: { id: string; name: string }[]
+  agents: { id: string; name: string; personaNickname?: string | null }[]
   users: { id: string; name: string; role: string }[]
 }
 
 type PendingFile = {
   id: string
   file: File
+}
+
+type SkillOption = {
+  skillVersionId: string
+  name: string
+  description: string
 }
 
 function makePendingFile(file: File): PendingFile {
@@ -31,6 +38,11 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
   const [description, setDescription] = useState('')
   const [assigneeType, setAssigneeType] = useState<'agent' | 'human'>('agent')
   const [assigneeId, setAssigneeId] = useState('')
+  const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([])
+  /** Agenthez kötött cache — a UI ebből vezet le, így assignee váltáskor nincs sync setState az effectben. */
+  const [skillsCache, setSkillsCache] = useState<{ agentId: string; skills: SkillOption[] } | null>(
+    null,
+  )
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([])
   const [message, setMessage] = useState<string | null>(null)
   const [lastTicketId, setLastTicketId] = useState<string | null>(null)
@@ -39,8 +51,7 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
     if (assigneeType === 'agent') {
       return assigneeOptions.agents.map((agent) => ({
         id: agent.id,
-        label: personaFor(agent.name).nickname,
-        detail: agent.name,
+        label: personaFor(agent.name, { personaNickname: agent.personaNickname }).nickname,
       }))
     }
     return assigneeOptions.users.map((user) => ({
@@ -50,12 +61,55 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
     }))
   }, [assigneeOptions, assigneeType])
 
+  const agentSkills =
+    assigneeType === 'agent' && assigneeId && skillsCache?.agentId === assigneeId
+      ? skillsCache.skills
+      : []
+  const skillsLoading =
+    assigneeType === 'agent' && Boolean(assigneeId) && skillsCache?.agentId !== assigneeId
+
+  useEffect(() => {
+    if (assigneeType !== 'agent' || !assigneeId) return
+    const agentId = assigneeId
+    let cancelled = false
+    void getAgentSkillsAction(agentId).then((res) => {
+      if (cancelled) return
+      if (!res.success) {
+        setSkillsCache({ agentId, skills: [] })
+        return
+      }
+      const enabledBySkill = new Map<string, SkillOption>()
+      for (const row of res.data) {
+        if (!row.enabled || enabledBySkill.has(row.skillId)) continue
+        enabledBySkill.set(row.skillId, {
+          skillVersionId: row.skillVersionId,
+          name: row.name,
+          description: row.description,
+        })
+      }
+      setSkillsCache({ agentId, skills: [...enabledBySkill.values()] })
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [assigneeType, assigneeId])
+
   const resetForm = () => {
     setTitle('')
     setDescription('')
     setAssigneeType('agent')
     setAssigneeId('')
+    setSelectedSkillIds([])
+    setSkillsCache(null)
     setPendingFiles([])
+  }
+
+  const toggleSkill = (skillVersionId: string) => {
+    setSelectedSkillIds((prev) =>
+      prev.includes(skillVersionId)
+        ? prev.filter((id) => id !== skillVersionId)
+        : [...prev, skillVersionId],
+    )
   }
 
   const addPendingFile = (file: File) => {
@@ -93,6 +147,8 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
           description: description.trim() || undefined,
           assigneeType,
           assigneeId,
+          skillVersionIds:
+            assigneeType === 'agent' && selectedSkillIds.length > 0 ? selectedSkillIds : undefined,
           deferDispatch: shouldDeferDispatch,
         })
         if (!res.success) {
@@ -181,6 +237,91 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
   return (
     <Card title="Új ticket" className="!p-5">
       <div className="space-y-4">
+        <div className="flex flex-wrap gap-4">
+          <fieldset>
+            <legend className="text-sm font-medium text-ink-soft">Hozzárendelve</legend>
+            <div className="mt-2 flex gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setAssigneeType('agent')
+                  setAssigneeId('')
+                  setSelectedSkillIds([])
+                }}
+                className={`rounded-lg border px-3 py-1.5 text-sm transition ${
+                  assigneeType === 'agent'
+                    ? 'border-sky/50 bg-sky/10 text-ink'
+                    : 'border-line text-ink-soft hover:border-sky/30'
+                }`}
+              >
+                AI agent
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setAssigneeType('human')
+                  setAssigneeId('')
+                  setSelectedSkillIds([])
+                }}
+                className={`rounded-lg border px-3 py-1.5 text-sm transition ${
+                  assigneeType === 'human'
+                    ? 'border-coral/50 bg-coral/10 text-ink'
+                    : 'border-line text-ink-soft hover:border-coral/30'
+                }`}
+              >
+                Ember
+              </button>
+            </div>
+          </fieldset>
+
+          <div className="min-w-[220px] flex-1">
+            <label htmlFor="board-ticket-assignee" className="text-sm font-medium text-ink-soft">
+              {assigneeType === 'agent' ? 'Agent' : 'Felhasználó'}
+            </label>
+            <select
+              id="board-ticket-assignee"
+              value={assigneeId}
+              onChange={(e) => {
+                setAssigneeId(e.target.value)
+                setSelectedSkillIds([])
+              }}
+              className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm text-ink"
+            >
+              <option value="">Válassz…</option>
+              {assigneeChoices.map((choice) => (
+                <option key={choice.id} value={choice.id}>
+                  {choice.label}
+                  {'detail' in choice && choice.detail && choice.detail !== choice.label
+                    ? ` (${choice.detail})`
+                    : ''}
+                </option>
+              ))}
+            </select>
+            {assigneeType === 'agent' && assigneeOptions.agents.length === 0 && (
+              <p className="mt-1 text-xs text-coral">Nincs aktív agent.</p>
+            )}
+            {assigneeType === 'human' && assigneeOptions.users.length === 0 && (
+              <p className="mt-1 text-xs text-coral">Nincs aktív felhasználó.</p>
+            )}
+          </div>
+        </div>
+
+        {assigneeType === 'agent' && assigneeId && (
+          <p className="text-xs text-ink-faint">
+            AI-hoz rendelve a ticket feldolgozásra kerül (local dev: azonnal; production: dispatcher
+            worker). Ha csak a cím van megadva leírás nélkül, a cím lesz a feladat szövege.
+            {pendingFiles.length > 0
+              ? ' Csatolt fájl esetén előbb feltöltjük a workspace-be, utána indul a feldolgozás.'
+              : ''}
+          </p>
+        )}
+        {assigneeType === 'human' && assigneeId && (
+          <p className="text-xs text-ink-faint">
+            A ticket az <Badge tone="warning">awaiting_human</Badge> oszlopba kerül — emberi döntésre vár.
+            {pendingFiles.length > 0 ? ' A csatolt fájlok a ticket workspace-ében lesznek elérhetők.' : ''}
+          </p>
+        )}
+
         <div>
           <label htmlFor="board-ticket-title" className="text-sm font-medium text-ink-soft">
             Cím
@@ -194,6 +335,48 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
             className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm text-ink"
           />
         </div>
+
+        {assigneeType === 'agent' && assigneeId && (
+          <div>
+            <p className="text-sm font-medium text-ink-soft">
+              Skillek <span className="font-normal text-ink-faint">(opcionális)</span>
+            </p>
+            <p className="mt-1 text-xs text-ink-faint">
+              A kiválasztott skillek a feldolgozás elején betöltődnek — az agent ezeket követi.
+            </p>
+            {skillsLoading ? (
+              <p className="mt-2 text-sm text-ink-faint">Skillek betöltése…</p>
+            ) : agentSkills.length === 0 ? (
+              <p className="mt-2 text-sm text-ink-faint">Ehhez az agenthez nincs engedélyezett skill.</p>
+            ) : (
+              <ul className="mt-2 max-h-40 space-y-1 overflow-y-auto rounded-lg border border-line p-2">
+                {agentSkills.map((skill) => {
+                  const checked = selectedSkillIds.includes(skill.skillVersionId)
+                  return (
+                    <li key={skill.skillVersionId}>
+                      <label className="flex cursor-pointer items-start gap-2 rounded-md px-2 py-1.5 hover:bg-night-2">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => toggleSkill(skill.skillVersionId)}
+                          className="mt-0.5"
+                        />
+                        <span className="min-w-0">
+                          <span className="block text-sm text-ink">{skill.name}</span>
+                          {skill.description ? (
+                            <span className="block truncate text-xs text-ink-faint" title={skill.description}>
+                              {skill.description}
+                            </span>
+                          ) : null}
+                        </span>
+                      </label>
+                    </li>
+                  )
+                })}
+              </ul>
+            )}
+          </div>
+        )}
 
         <div>
           <label htmlFor="board-ticket-description" className="text-sm font-medium text-ink-soft">
@@ -247,84 +430,6 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
             <p className="mt-2 text-sm text-ink-faint">Még nincs csatolt fájl.</p>
           )}
         </div>
-
-        <div className="flex flex-wrap gap-4">
-          <fieldset>
-            <legend className="text-sm font-medium text-ink-soft">Hozzárendelve</legend>
-            <div className="mt-2 flex gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  setAssigneeType('agent')
-                  setAssigneeId('')
-                }}
-                className={`rounded-lg border px-3 py-1.5 text-sm transition ${
-                  assigneeType === 'agent'
-                    ? 'border-sky/50 bg-sky/10 text-ink'
-                    : 'border-line text-ink-soft hover:border-sky/30'
-                }`}
-              >
-                AI agent
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setAssigneeType('human')
-                  setAssigneeId('')
-                }}
-                className={`rounded-lg border px-3 py-1.5 text-sm transition ${
-                  assigneeType === 'human'
-                    ? 'border-coral/50 bg-coral/10 text-ink'
-                    : 'border-line text-ink-soft hover:border-coral/30'
-                }`}
-              >
-                Ember
-              </button>
-            </div>
-          </fieldset>
-
-          <div className="min-w-[220px] flex-1">
-            <label htmlFor="board-ticket-assignee" className="text-sm font-medium text-ink-soft">
-              {assigneeType === 'agent' ? 'Agent' : 'Felhasználó'}
-            </label>
-            <select
-              id="board-ticket-assignee"
-              value={assigneeId}
-              onChange={(e) => setAssigneeId(e.target.value)}
-              className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm text-ink"
-            >
-              <option value="">Válassz…</option>
-              {assigneeChoices.map((choice) => (
-                <option key={choice.id} value={choice.id}>
-                  {choice.label}
-                  {choice.detail && choice.detail !== choice.label ? ` (${choice.detail})` : ''}
-                </option>
-              ))}
-            </select>
-            {assigneeType === 'agent' && assigneeOptions.agents.length === 0 && (
-              <p className="mt-1 text-xs text-coral">Nincs aktív agent.</p>
-            )}
-            {assigneeType === 'human' && assigneeOptions.users.length === 0 && (
-              <p className="mt-1 text-xs text-coral">Nincs aktív felhasználó.</p>
-            )}
-          </div>
-        </div>
-
-        {assigneeType === 'agent' && assigneeId && (
-          <p className="text-xs text-ink-faint">
-            AI-hoz rendelve a ticket feldolgozásra kerül (local dev: azonnal; production: dispatcher
-            worker). Ha csak a cím van megadva leírás nélkül, a cím lesz a feladat szövege.
-            {pendingFiles.length > 0
-              ? ' Csatolt fájl esetén előbb feltöltjük a workspace-be, utána indul a feldolgozás.'
-              : ''}
-          </p>
-        )}
-        {assigneeType === 'human' && assigneeId && (
-          <p className="text-xs text-ink-faint">
-            A ticket az <Badge tone="warning">awaiting_human</Badge> oszlopba kerül — emberi döntésre vár.
-            {pendingFiles.length > 0 ? ' A csatolt fájlok a ticket workspace-ében lesznek elérhetők.' : ''}
-          </p>
-        )}
 
         {message && (
           <p

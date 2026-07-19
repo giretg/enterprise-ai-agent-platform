@@ -65,7 +65,7 @@ function buildAssigneeFilterOptions(
     const key = `agent:${agent.id}`
     if (seen.has(key)) continue
     seen.add(key)
-    options.push({ key, label: personaFor(agent.name).nickname })
+    options.push({ key, label: personaFor(agent.name, agent).nickname })
   }
 
   for (const ticket of tickets) {

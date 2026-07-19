@@ -728,6 +728,42 @@ export class SkillService {
   }
 
   /**
+   * Explicit skill-verzió-id-k Level-1 előtöltése (board ticket / slash közös út).
+   * Csak hozzárendelt, enabled skillek tölthetők — ismeretlen/deny id kimarad.
+   */
+  async preloadSkillsByVersionIds(input: {
+    agentId: string
+    skillVersionIds: string[]
+    actor: ActorContext
+    reason?: string
+  }): Promise<{ preloadedPrompts: string[]; loadedSkillNames: string[] }> {
+    if (input.skillVersionIds.length === 0) {
+      return { preloadedPrompts: [], loadedSkillNames: [] }
+    }
+    const index = await this.getAssignedSkillIndex(input.agentId)
+    const reason =
+      input.reason ??
+      'A felhasználó explicit módon kérte ennek a skillnek a betöltését. Kövesd az alábbi instrukciót:'
+    const preloadedPrompts: string[] = []
+    const loadedSkillNames: string[] = []
+    const seen = new Set<string>()
+    for (const skillVersionId of input.skillVersionIds) {
+      if (seen.has(skillVersionId)) continue
+      seen.add(skillVersionId)
+      const loaded = await this.loadSkillForAgent({
+        agentId: input.agentId,
+        skillVersionId,
+        actor: input.actor,
+      })
+      if (!loaded.ok) continue
+      const entry = index.find((row) => row.skillVersionId === skillVersionId)
+      if (entry) loadedSkillNames.push(entry.name)
+      preloadedPrompts.push(`${reason}\n\n${loaded.instructions}`)
+    }
+    return { preloadedPrompts, loadedSkillNames }
+  }
+
+  /**
    * `/skill-token` slash-parancsok feloldása és Level-1 előtöltése (chat UX).
    * Csak hozzárendelt, enabled skillek tölthetők be — ismeretlen token marad a szövegben.
    */
@@ -749,23 +785,18 @@ export class SkillService {
       return { modelFacingText: input.messageText, preloadedPrompts: [], loadedSkillNames: [] }
     }
 
-    const preloadedPrompts: string[] = []
-    const loadedSkillNames: string[] = []
-    for (const skillVersionId of parsed.skillVersionIds) {
-      const loaded = await this.loadSkillForAgent({
-        agentId: input.agentId,
-        skillVersionId,
-        actor: input.actor,
-      })
-      if (loaded.ok) {
-        const entry = index.find((row) => row.skillVersionId === skillVersionId)
-        if (entry) loadedSkillNames.push(entry.name)
-        preloadedPrompts.push(
-          `A felhasználó explicit módon kérte ennek a skillnek a betöltését (/slash parancs). Kövesd az alábbi instrukciót:\n\n${loaded.instructions}`,
-        )
-      }
+    const preloaded = await this.preloadSkillsByVersionIds({
+      agentId: input.agentId,
+      skillVersionIds: parsed.skillVersionIds,
+      actor: input.actor,
+      reason:
+        'A felhasználó explicit módon kérte ennek a skillnek a betöltését (/slash parancs). Kövesd az alábbi instrukciót:',
+    })
+    return {
+      modelFacingText: parsed.modelFacingText,
+      preloadedPrompts: preloaded.preloadedPrompts,
+      loadedSkillNames: preloaded.loadedSkillNames,
     }
-    return { modelFacingText: parsed.modelFacingText, preloadedPrompts, loadedSkillNames }
   }
 
   /**

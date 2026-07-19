@@ -17,6 +17,9 @@ function num(value: unknown, fallback: number): number {
  * LLM-token. A `severity` a hátralévő időből származik (közelebbi határidő → magasabb).
  *
  * Tenant-izolált: csak a monitor tenantjához tartozó ticketeket olvassa.
+ *
+ * Megjegyzés: a sweep a `deadline` kindnél már NEM nyit második board-ticketet;
+ * e-mail figyelmeztetés TODO — lásd MonitorService.runSweep.
  */
 export class DeadlineCollector implements MonitorCollector {
   readonly kind = 'deadline' as const

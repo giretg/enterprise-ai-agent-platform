@@ -71,6 +71,17 @@ function readAttachmentIds(payload: Record<string, unknown>): string[] {
   return ids.filter((id): id is string => typeof id === 'string')
 }
 
+function readPreferredSkillVersionIds(payload: Record<string, unknown>): string[] {
+  const ids = payload.preferredSkillVersionIds
+  if (!Array.isArray(ids)) return []
+  return [...new Set(ids.filter((id): id is string => typeof id === 'string' && id.length > 0))]
+}
+
+function formatDueByPrompt(dueBy: Date | null | undefined): string | null {
+  if (!dueBy || Number.isNaN(dueBy.getTime())) return null
+  return `Határidő: ${dueBy.toISOString()}. A feladatot a határidő figyelembevételével tervezd és hajtsd végre.`
+}
+
 function safeToolResultName(value: string): string {
   const cleaned = value.replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '')
   return cleaned.slice(0, 80) || 'tool-result'
@@ -199,6 +210,24 @@ export class GeneralTaskRuntime {
       taskPrompt,
     })
 
+    const dueByPrompt = formatDueByPrompt(ticket.dueBy)
+    const preferredSkillVersionIds = readPreferredSkillVersionIds(payload)
+    let preloadedSkillPrompts: string[] = []
+    if (this.skills && preferredSkillVersionIds.length > 0) {
+      const preloaded = await this.skills.preloadSkillsByVersionIds({
+        agentId: params.agentId,
+        skillVersionIds: preferredSkillVersionIds,
+        actor: {
+          actorId: null,
+          actorTenantId: ticket.tenantId ?? null,
+          isPlatformAdmin: false,
+        },
+        reason:
+          'A ticket létrehozója explicit módon kérte ennek a skillnek a betöltését. Kövesd az alábbi instrukciót:',
+      })
+      preloadedSkillPrompts = preloaded.preloadedPrompts
+    }
+
     const messages = await this.buildTaskMessages({
       agentDetails,
       question: taskPrompt,
@@ -207,6 +236,7 @@ export class GeneralTaskRuntime {
       processStep,
       conversationContext,
       memoryContextBlock: memoryContext.block,
+      dueByPrompt,
     })
 
     const allowedTools = await listAllowedChatTools(this.toolCaps, params.agentId)
@@ -263,6 +293,7 @@ export class GeneralTaskRuntime {
       allowedTools,
       maxTurns: resolveToolLoopMaxTurns(modelConfig, allowedTools),
       skillIndexPrompt,
+      preloadedSkillPrompts,
       loadSkill,
       archiveLargeToolResult: (input) =>
         this.archiveLargeToolResult(wsTenant, ticket.id, input),
@@ -798,6 +829,7 @@ export class GeneralTaskRuntime {
     processStep: ProcessStepContext | null
     conversationContext: string | null
     memoryContextBlock?: string | null
+    dueByPrompt?: string | null
   }) {
     const allAgents = await this.agents.findMany()
     const orgRoster = formatOrgRoster(allAgents)
@@ -817,6 +849,10 @@ export class GeneralTaskRuntime {
       if (capturePolicy) stablePostamble.push(capturePolicy)
       stablePostamble.push({ role: 'system', content: MEMORY_RETRIEVAL_USAGE_PROMPT })
       if (memoryData) variableContext.push(memoryData)
+    }
+
+    if (params.dueByPrompt) {
+      variableContext.push({ role: 'system', content: params.dueByPrompt })
     }
 
     if (params.conversationContext) {

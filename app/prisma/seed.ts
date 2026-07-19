@@ -1491,9 +1491,9 @@ async function main() {
   await ensureDemoTenant(admin, approver, operator)
 
   // Minta proaktív monitor (Feature-spec — Proactive Monitor, PM-A DoD).
-  // LLM-mentes deadline-figyelő: a 24 órán belül esedékes, le nem zárt due_by
-  // ticketekre nyit monitor_alert tickettet a boardon. escalateAgentId=null →
-  // nulla token; a 2. lépcső csak ticket-nyitás.
+  // Deadline-figyelő: a 24 órán belül esedékes, le nem zárt due_by ticketeket
+  // gyűjti. Második monitor_alert ticketet NEM nyit (lásd MonitorService TODO
+  // deadline-email); a sweep jelenleg suppresseli ezeket a jeleket.
   const existingMonitor = await prisma.monitorDefinition.findFirst({
     where: { title: 'Határidő-figyelő (24h)' },
   })
@@ -1503,7 +1503,8 @@ async function main() {
         tenantId: DEMO_TENANT_ID,
         kind: 'deadline',
         title: 'Határidő-figyelő (24h)',
-        description: 'Közelgő (24h-n belüli), le nem zárt határidős ticketek figyelése.',
+        description:
+          'Közelgő (24h-n belüli), le nem zárt határidős ticketek figyelése. E-mail figyelmeztetés TODO — nem nyit második ticketet.',
         intervalSeconds: 3600,
         nextSweepAt: new Date(),
         collectorConfig: { windowHours: 24 },
