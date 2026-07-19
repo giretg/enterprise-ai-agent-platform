@@ -6,6 +6,7 @@ import { useState, useTransition } from 'react'
 import type { ScheduledTaskRecurrence, ScheduledTaskStatus } from '@prisma/client'
 import { revokeScheduledTask } from '@/app/actions/platform'
 import { Badge, Card } from '@/components/ui/shell'
+import { agentDisplayName } from '@/lib/agent-persona'
 
 export type ScheduledTaskView = {
   id: string
@@ -24,6 +25,7 @@ export type ScheduledTaskView = {
 export type ScheduledTaskAgentView = {
   id: string
   name: string
+  personaNickname?: string | null
 }
 
 const statusLabel: Record<ScheduledTaskStatus, string> = {
@@ -78,7 +80,9 @@ export function ScheduledTaskList({
   const [pendingId, setPendingId] = useState<string | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
-  const agentNames = new Map(agents.map((agent) => [agent.id, agent.name]))
+  const agentLabels = new Map(
+    agents.map((agent) => [agent.id, agentDisplayName(agent.name, agent)]),
+  )
 
   const revoke = (id: string) => {
     setPendingId(id)
@@ -129,7 +133,7 @@ export function ScheduledTaskList({
                     {task.runAsUserId && <Badge tone="success">run-as</Badge>}
                   </div>
                   <p className="mt-1 text-sm text-ink-faint">
-                    {agentNames.get(task.agentId) ?? task.agentId} · következő futás:{' '}
+                    {agentLabels.get(task.agentId) ?? task.agentId} · következő futás:{' '}
                     {formatDate(task.nextRunAt)}
                     {task.recurrence !== 'none' && (
                       <>

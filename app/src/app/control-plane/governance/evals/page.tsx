@@ -85,7 +85,11 @@ export default async function GovernanceEvalsPage({
         <p className="text-sm text-ink-faint">Nincs agent. Előbb hozz létre egyet az Agent Registry-ben.</p>
       ) : (
         <EvalWorkspace
-          agents={agents.map((agent) => ({ id: agent.id, name: agent.name }))}
+          agents={agents.map((agent) => ({
+            id: agent.id,
+            name: agent.name,
+            personaNickname: agent.personaNickname,
+          }))}
           evals={evals}
           selectedAgentId={selectedAgentId}
         />

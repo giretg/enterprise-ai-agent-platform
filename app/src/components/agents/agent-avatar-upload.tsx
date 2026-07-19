@@ -48,11 +48,13 @@ export function AgentAvatarUpload({
   name,
   status,
   avatarUrl,
+  personaNickname,
 }: {
   agentId: string
   name: string
   status: string
   avatarUrl: string | null
+  personaNickname?: string | null
 }) {
   const router = useRouter()
   const inputRef = useRef<HTMLInputElement>(null)
@@ -100,7 +102,13 @@ export function AgentAvatarUpload({
         törlöd, visszaáll a színes emoji-arc.
       </p>
       <div className="flex items-center gap-5">
-        <AgentAvatar name={name} status={status} size="lg" avatarUrl={preview} />
+        <AgentAvatar
+          name={name}
+          status={status}
+          size="lg"
+          avatarUrl={preview}
+          personaNickname={personaNickname}
+        />
         <div className="flex flex-col gap-2">
           <input
             ref={inputRef}

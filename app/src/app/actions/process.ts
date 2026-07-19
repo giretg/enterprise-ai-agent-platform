@@ -30,6 +30,7 @@ import {
 import { reconstructActualFlow } from '@/lib/playbook-v2/runtime'
 import { parsePlaybookSpecV2 } from '@/lib/playbook-v2/spec'
 import { chatTriggerSlotDescriptors, resolveTicketTriggerInputPayload } from '@/lib/playbook-v2/trigger-input'
+import { agentDisplayName } from '@/lib/agent-persona'
 import { isAgentSuitable } from '@/domain/playbook/suitability'
 import type { CompiledSpec } from '@/domain/playbook/playbook-compiler'
 import {
@@ -331,7 +332,13 @@ export async function listSuitableAgents(input: unknown) {
         { requiredCapabilities: role.requiredCapabilities },
         registryTenantId,
       )
-      if (result.ok) suitable.push({ id: agent.id, name: agent.name, status: agent.status, role: agent.role })
+      if (result.ok) suitable.push({
+        id: agent.id,
+        name: agent.name,
+        personaNickname: agent.personaNickname,
+        status: agent.status,
+        role: agent.role,
+      })
     }
     return ok(suitable)
   } catch (e) {
@@ -419,13 +426,18 @@ export async function getProcessDetail(input: unknown) {
       : []
 
     const agentIds = new Set(detail.steps.map((s) => s.assignedAgentId).filter((id): id is string => !!id))
-    const agentNameById = new Map<string, string>()
+    const agentLabelById = new Map<string, string>()
     if (agentIds.size > 0) {
       const agentRecords = await Promise.all(
         [...agentIds].map((id) => repositories.agents.findById(id, tenantId)),
       )
       for (const agent of agentRecords) {
-        if (agent) agentNameById.set(agent.id, agent.name)
+        if (agent) {
+          agentLabelById.set(
+            agent.id,
+            agentDisplayName(agent.name, { personaNickname: agent.personaNickname }),
+          )
+        }
       }
     }
 
@@ -450,7 +462,7 @@ export async function getProcessDetail(input: unknown) {
         status: s.status,
         assignedRole: s.assignedRole,
         assignedAgentId: s.assignedAgentId,
-        assignedAgentName: s.assignedAgentId ? agentNameById.get(s.assignedAgentId) ?? null : null,
+        assignedAgentName: s.assignedAgentId ? agentLabelById.get(s.assignedAgentId) ?? null : null,
         ticketId: s.ticketId,
         startedAt: s.startedAt?.toISOString() ?? null,
         completedAt: s.completedAt?.toISOString() ?? null,

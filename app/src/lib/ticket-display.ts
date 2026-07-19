@@ -1,10 +1,15 @@
 import type { AssigneeType, ProcessStatus, Ticket } from '@prisma/client'
-import { personaFor } from '@/lib/agent-persona'
+import { agentDisplayName } from '@/lib/agent-persona'
 
 export type TicketProcessBadgeInfo = {
   id: string
   processType: string
   status: ProcessStatus
+}
+
+export type AgentLabelInfo = {
+  name: string
+  personaNickname?: string | null
 }
 
 export function readTicketPayload(payload: unknown): Record<string, unknown> | null {
@@ -34,12 +39,14 @@ export type AssigneeDisplay = {
   detail: string | null
 }
 
-export function formatAgentAssignee(agentName: string): AssigneeDisplay {
-  const persona = personaFor(agentName)
+export function formatAgentAssignee(
+  agentName: string,
+  personaNickname?: string | null,
+): AssigneeDisplay {
   return {
     type: 'agent',
-    label: persona.nickname,
-    detail: agentName,
+    label: agentDisplayName(agentName, { personaNickname }),
+    detail: null,
   }
 }
 
@@ -56,18 +63,20 @@ export function formatTicketAssignee(input: {
   assigneeId: string | null
   agentId: string | null
   assigneeAgentName?: string | null
+  assigneeAgentNickname?: string | null
   assigneeUserName?: string | null
   responsibleAgentName?: string | null
+  responsibleAgentNickname?: string | null
 }): AssigneeDisplay {
   if (input.assigneeType === 'agent' && input.assigneeId && input.assigneeAgentName) {
-    return formatAgentAssignee(input.assigneeAgentName)
+    return formatAgentAssignee(input.assigneeAgentName, input.assigneeAgentNickname)
   }
 
   if (input.assigneeType === 'agent' && input.assigneeId) {
     return {
       type: 'agent',
       label: 'AI agent',
-      detail: `Agent ID: ${input.assigneeId}`,
+      detail: null,
     }
   }
 
@@ -76,11 +85,7 @@ export function formatTicketAssignee(input: {
   }
 
   if (input.agentId && input.responsibleAgentName) {
-    const persona = formatAgentAssignee(input.responsibleAgentName)
-    return {
-      ...persona,
-      detail: `${input.responsibleAgentName} (felelős agent)`,
-    }
+    return formatAgentAssignee(input.responsibleAgentName, input.responsibleAgentNickname)
   }
 
   return {
@@ -99,8 +104,10 @@ export function buildTicketDisplayExtras(
   ticket: Pick<Ticket, 'payload' | 'assigneeType' | 'assigneeId' | 'agentId'>,
   names: {
     assigneeAgentName?: string | null
+    assigneeAgentNickname?: string | null
     assigneeUserName?: string | null
     responsibleAgentName?: string | null
+    responsibleAgentNickname?: string | null
   } = {},
 ): TicketDisplayExtras {
   return {
@@ -136,16 +143,16 @@ export function extractCreatorAgentId(payload: unknown): string | null {
 export function formatTicketCreator(input: {
   createdById: string
   payload: unknown
-  agentNames: Map<string, string>
+  agents: Map<string, AgentLabelInfo>
   userNames: Map<string, string>
 }): TicketCreatorDisplay {
   const creatorAgentId = extractCreatorAgentId(input.payload)
   if (creatorAgentId) {
-    const agentName = input.agentNames.get(creatorAgentId)
-    if (agentName) {
+    const agent = input.agents.get(creatorAgentId)
+    if (agent) {
       return {
         id: creatorAgentId,
-        label: personaFor(agentName).nickname,
+        label: agentDisplayName(agent.name, agent),
         type: 'agent',
       }
     }
@@ -212,22 +219,27 @@ export function matchesAssigneeFilter(
 export function enrichTicketsForBoard(
   tickets: Ticket[],
   names: {
-    agents: Map<string, string>
+    agents: Map<string, AgentLabelInfo>
     users: Map<string, string>
     processes?: Map<string, { processType: string; status: ProcessStatus }>
   },
 ): EnrichedBoardTicket[] {
   return tickets.map((ticket) => {
+    const assigneeAgent =
+      ticket.assigneeType === 'agent' && ticket.assigneeId
+        ? names.agents.get(ticket.assigneeId)
+        : undefined
+    const responsibleAgent = ticket.agentId ? names.agents.get(ticket.agentId) : undefined
+
     const display = buildTicketDisplayExtras(ticket, {
-      assigneeAgentName:
-        ticket.assigneeType === 'agent' && ticket.assigneeId
-          ? (names.agents.get(ticket.assigneeId) ?? null)
-          : null,
+      assigneeAgentName: assigneeAgent?.name ?? null,
+      assigneeAgentNickname: assigneeAgent?.personaNickname ?? null,
       assigneeUserName:
         ticket.assigneeType === 'human' && ticket.assigneeId
           ? (names.users.get(ticket.assigneeId) ?? null)
           : null,
-      responsibleAgentName: ticket.agentId ? (names.agents.get(ticket.agentId) ?? null) : null,
+      responsibleAgentName: responsibleAgent?.name ?? null,
+      responsibleAgentNickname: responsibleAgent?.personaNickname ?? null,
     })
 
     const process = ticket.processInstanceId
@@ -255,7 +267,7 @@ export function enrichTicketsForBoard(
       creator: formatTicketCreator({
         createdById: ticket.createdById,
         payload: ticket.payload,
-        agentNames: names.agents,
+        agents: names.agents,
         userNames: names.users,
       }),
       process,

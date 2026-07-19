@@ -11,6 +11,7 @@ import {
   listSuitableAgents,
   updateProcessDefinitionBindings,
 } from '@/app/actions/process'
+import { agentDisplayName } from '@/lib/agent-persona'
 
 export type ProcessBuilderPlaybookVersion = {
   playbookId: string
@@ -27,6 +28,7 @@ export type ProcessBuilderPlaybookVersion = {
 type SuitableAgent = {
   id: string
   name: string
+  personaNickname?: string | null
   status: string
   role: string
 }
@@ -314,7 +316,7 @@ export function ProcessDefinitionBuilder({
                       <option value="">Válassz agentet</option>
                       {agents.map((agent) => (
                         <option key={agent.id} value={agent.id}>
-                          {agent.name} - {agent.role}
+                          {agentDisplayName(agent.name, agent)} - {agent.role}
                         </option>
                       ))}
                     </select>

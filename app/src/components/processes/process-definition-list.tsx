@@ -11,6 +11,7 @@ import {
   replaceActiveProcessDefinition,
   updateProcessDefinitionBindings,
 } from '@/app/actions/process'
+import { agentDisplayName } from '@/lib/agent-persona'
 import type { ProcessBuilderPlaybookVersion } from './process-definition-builder'
 
 export type ProcessDefinitionListItem = {
@@ -147,7 +148,9 @@ function ProcessDefinitionEditForm({
   const [pending, startTransition] = useTransition()
   const existingBindings = definition.roleBindings as Record<string, string>
   const [roleBindings, setRoleBindings] = useState<Record<string, string>>(existingBindings ?? {})
-  const [suitableAgents, setSuitableAgents] = useState<Record<string, { id: string; name: string; role: string }[]>>(
+  const [suitableAgents, setSuitableAgents] = useState<
+    Record<string, { id: string; name: string; personaNickname?: string | null; role: string }[]>
+  >(
     {},
   )
   const [assignableUsers, setAssignableUsers] = useState<{ id: string; name: string; email: string; role: string }[]>(
@@ -282,7 +285,7 @@ function ProcessDefinitionEditForm({
               <option value="">Válassz agentet</option>
               {(suitableAgents[role.key] ?? []).map((agent) => (
                 <option key={agent.id} value={agent.id}>
-                  {agent.name} - {agent.role}
+                  {agentDisplayName(agent.name, agent)} - {agent.role}
                 </option>
               ))}
             </select>

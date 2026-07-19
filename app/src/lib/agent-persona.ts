@@ -66,6 +66,11 @@ export function personaFor(name: string, overrides?: PersonaOverrides): AgentPer
   }
 }
 
+/** Human-facing agent label — always the display nickname, never the registry name. */
+export function agentDisplayName(name: string, overrides?: PersonaOverrides): string {
+  return personaFor(name, overrides).nickname
+}
+
 function basePersonaFor(name: string): AgentPersona {
   if (PERSONAS[name]) return PERSONAS[name]
 

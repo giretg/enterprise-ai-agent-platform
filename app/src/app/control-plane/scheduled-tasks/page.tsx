@@ -23,7 +23,11 @@ export default async function ScheduledTasksPage() {
       }))
     : []
   const agents: ScheduledTaskAgentView[] = agentsRes.success
-    ? agentsRes.data.map((agent) => ({ id: agent.id, name: agent.name }))
+    ? agentsRes.data.map((agent) => ({
+        id: agent.id,
+        name: agent.name,
+        personaNickname: agent.personaNickname,
+      }))
     : []
 
   return (

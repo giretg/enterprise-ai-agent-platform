@@ -1576,19 +1576,24 @@ export function AgentChatPanel({
           >
             Előzmények
           </button>
-          <AgentAvatar name={agent.name} status={agent.status} size="sm" avatarUrl={agent.avatarUrl} />
+          <AgentAvatar
+            name={agent.name}
+            status={agent.status}
+            size="sm"
+            avatarUrl={agent.avatarUrl}
+            personaNickname={agent.personaNickname}
+          />
           <div className="min-w-0 flex-1">
             <h2 id="agent-chat-title" className="truncate font-display text-lg font-semibold">
               {persona.nickname}
             </h2>
-            <p className="truncate text-xs text-ink-faint">
-              {agent.name}
-              {conversationId && (
-                <span className="ml-2 rounded-full border border-line px-2 py-0.5">
+            {conversationId ? (
+              <p className="truncate text-xs text-ink-faint">
+                <span className="rounded-full border border-line px-2 py-0.5">
                   {conversationStatus === 'archived' ? 'archivált szál' : 'aktív szál'}
                 </span>
-              )}
-            </p>
+              </p>
+            ) : null}
             {connectableUserConnectorsLoading ? (
               <p className="mt-2 text-[11px] text-ink-faint">Kapcsolatok betöltése…</p>
             ) : connectableUserConnectors.length > 0 ? (

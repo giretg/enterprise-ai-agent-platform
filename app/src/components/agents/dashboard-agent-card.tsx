@@ -15,10 +15,15 @@ export function DashboardAgentCard({ agent }: { agent: Agent }) {
   return (
     <Card className="h-full transition-transform duration-200 hover:-translate-y-1">
       <Link href={`/control-plane/agents/${agent.id}`} className="flex items-center gap-4">
-        <AgentAvatar name={agent.name} status={agent.status} size="md" avatarUrl={agent.avatarUrl} />
+        <AgentAvatar
+          name={agent.name}
+          status={agent.status}
+          size="md"
+          avatarUrl={agent.avatarUrl}
+          personaNickname={agent.personaNickname}
+        />
         <div className="min-w-0">
           <p className="font-display text-xl font-semibold leading-tight">{p.nickname}</p>
-          <p className="truncate text-xs text-ink-faint">{agent.name}</p>
           <p className="mt-1 text-xs font-medium text-sage">{mood.label}</p>
         </div>
       </Link>

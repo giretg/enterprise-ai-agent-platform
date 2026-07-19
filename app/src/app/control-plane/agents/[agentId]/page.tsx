@@ -125,7 +125,13 @@ export default async function AgentDetailPage({
 
       <Card className="animate-rise">
         <div className="flex flex-wrap items-start gap-5">
-          <AgentAvatar name={agent.name} status={agent.status} size="lg" avatarUrl={agent.avatarUrl} />
+          <AgentAvatar
+            name={agent.name}
+            status={agent.status}
+            size="lg"
+            avatarUrl={agent.avatarUrl}
+            personaNickname={agent.personaNickname}
+          />
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-3">
               <h1 className="font-display text-[2.2rem] font-semibold leading-none">
@@ -136,7 +142,6 @@ export default async function AgentDetailPage({
               </span>
               <Badge tone={agent.status === 'active' ? 'success' : 'neutral'}>{mood.label}</Badge>
             </div>
-            <p className="mt-2 text-sm text-ink-faint">{agent.name}</p>
             <p className="mt-2 max-w-2xl text-base italic text-ink-soft">&quot;{persona.greeting}&quot;</p>
           </div>
           {delegatedConnectors.length > 0 ? (
@@ -219,7 +224,7 @@ export default async function AgentDetailPage({
           <div className="lg:col-span-2">
             <AgentKnowledgeBasePanel
               agentId={agent.id}
-              agentName={agent.name}
+              agentName={persona.nickname}
               isOrchestrator={agent.role === 'orchestrator'}
               canUpload={canManageKb}
               canApprove={canApproveKb}
@@ -372,6 +377,7 @@ export default async function AgentDetailPage({
                 name={agent.name}
                 status={agent.status}
                 avatarUrl={agent.avatarUrl}
+                personaNickname={agent.personaNickname}
               />
 
               <UpdatePersonaForm

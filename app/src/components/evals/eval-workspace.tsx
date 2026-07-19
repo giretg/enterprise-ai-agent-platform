@@ -4,12 +4,14 @@ import { useRouter } from 'next/navigation'
 import { useMemo, useState, useTransition } from 'react'
 import { createEval, runEval } from '@/app/actions/platform'
 import { Badge, Card } from '@/components/ui/shell'
+import { agentDisplayName } from '@/lib/agent-persona'
 
 type AssertionType = 'contains' | 'not_contains' | 'min_length'
 
 type AgentOption = {
   id: string
   name: string
+  personaNickname?: string | null
 }
 
 type AssertionDraft = {
@@ -124,7 +126,7 @@ export function EvalWorkspace({
           >
             {agents.map((agent) => (
               <option key={agent.id} value={agent.id}>
-                {agent.name}
+                {agentDisplayName(agent.name, agent)}
               </option>
             ))}
           </select>

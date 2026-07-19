@@ -2,6 +2,7 @@ import Link from 'next/link'
 import { listSandboxApps, getSandboxAppRegistryMetrics, getAgent } from '@/app/actions/platform'
 import { Badge, Card } from '@/components/ui/shell'
 import { CreateSandboxAppToggle } from '@/components/sandbox/create-sandbox-app-toggle'
+import { agentDisplayName } from '@/lib/agent-persona'
 
 function statusTone(status: string): 'neutral' | 'success' | 'warning' | 'danger' {
   if (status === 'active') return 'success'
@@ -33,7 +34,9 @@ export default async function AppRegistryPage({
   ])
   const apps = res.success ? res.data.apps : []
   const metrics = metricsRes.success ? metricsRes.data : null
-  const agentName = agentRes?.success ? agentRes.data.agent.name : null
+  const agentLabel = agentRes?.success
+    ? agentDisplayName(agentRes.data.agent.name, agentRes.data.agent)
+    : null
 
   return (
     <div className="space-y-6">
@@ -43,10 +46,10 @@ export default async function AppRegistryPage({
             Sandbox Plane
           </p>
           <h1 className="mt-2 font-display text-3xl font-semibold">
-            {agentName ? `${agentName} mini-appjai` : 'Mini-appok'}
+            {agentLabel ? `${agentLabel} mini-appjai` : 'Mini-appok'}
           </h1>
           <p className="mt-1 max-w-2xl text-ink-soft">
-            {agentName
+            {agentLabel
               ? 'Az agent által létrehozott, böngészőben megnyitható mini-appok (A0 single-file HTML).'
               : 'Agent (vagy ember) által készített, verziózott mini-appok (A0 single-file HTML). Izolált preview, export, rollback — platform session és hálózat nélkül.'}
           </p>

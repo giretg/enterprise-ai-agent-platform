@@ -16,6 +16,7 @@ import {
 } from '@/app/actions/platform'
 import { Badge, Card } from '@/components/ui/shell'
 import type { AgentSandboxKind } from '@/lib/agent-kind'
+import { agentDisplayName } from '@/lib/agent-persona'
 
 export type AgentSandboxAppSummary = {
   appId: string
@@ -44,6 +45,7 @@ type ReportTemplateOption = { id: string; name: string; description: string }
 type AgentSummary = {
   id: string
   name: string
+  personaNickname?: string | null
   roleInstruction: string
 }
 
@@ -63,7 +65,7 @@ export function AgentSandboxWorkspace({
     <div className="space-y-6">
       <SandboxHeader
         eyebrow="Sandbox"
-        title={`${agent.name} munkatér`}
+        title={`${agentDisplayName(agent.name, agent)} munkatér`}
         description="Ehhez az agenthez még nincs dedikált sandbox felület bekötve. A Control Plane-ben a konfiguráció, ticketek, audit és tanítás ettől függetlenül elérhető."
       />
       <AgentSandboxApps apps={apps} />
@@ -328,7 +330,7 @@ function WikiSandbox({ agent, apps }: { agent: AgentSummary; apps: AgentSandboxA
     <div className="space-y-6">
       <SandboxHeader
         eyebrow="Wiki sandbox"
-        title={`${agent.name} tudásbázis`}
+        title={`${agentDisplayName(agent.name, agent)} tudásbázis`}
         description="Tölts fel dokumentumokat ehhez az agenthez, majd kérdezz rájuk. A válasz beszélgetésben jön — ticket csak jóváhagyásra küldéskor."
       />
 
@@ -521,7 +523,7 @@ function BookkeeperSandbox({ agent, apps }: { agent: AgentSummary; apps: AgentSa
     <div className="space-y-6">
       <SandboxHeader
         eyebrow="Könyvelő sandbox"
-        title={`${agent.name} számlafeldolgozás`}
+        title={`${agentDisplayName(agent.name, agent)} számlafeldolgozás`}
         description="Tölts fel számlaszöveget vagy fájlt. Az agent mezőket nyer ki, könyvelési javaslatot készít, majd jóváhagyási ticketet hoz létre."
       />
 

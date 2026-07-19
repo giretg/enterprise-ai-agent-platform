@@ -13,13 +13,15 @@ export function AgentAvatar({
   status = 'active',
   size = 'md',
   avatarUrl,
+  personaNickname,
 }: {
   name: string
   status?: string
   size?: keyof typeof SIZES
   avatarUrl?: string | null
+  personaNickname?: string | null
 }) {
-  const persona = personaFor(name)
+  const persona = personaFor(name, { personaNickname })
   const { mood } = humanStatus(status)
   const s = SIZES[size]
 

@@ -582,7 +582,7 @@ export async function listBoardTickets() {
       agentIds.size > 0
         ? prisma.agent.findMany({
             where: { id: { in: [...agentIds] } },
-            select: { id: true, name: true },
+            select: { id: true, name: true, personaNickname: true },
           })
         : Promise.resolve([]),
       userIds.size > 0
@@ -600,7 +600,12 @@ export async function listBoardTickets() {
     ])
 
     const enriched = enrichTicketsForBoard(tickets, {
-      agents: new Map(agents.map((agent) => [agent.id, agent.name])),
+      agents: new Map(
+        agents.map((agent) => [
+          agent.id,
+          { name: agent.name, personaNickname: agent.personaNickname },
+        ]),
+      ),
       users: new Map(users.map((u) => [u.id, u.name])),
       processes: new Map(processes.map((p) => [p.id, { processType: p.processType, status: p.status }])),
     })
@@ -691,15 +696,25 @@ export async function getTicket(input: { id: string }) {
 
     const display = buildTicketDisplayExtras(ticket, {
       assigneeAgentName: assigneeAgent?.name ?? null,
+      assigneeAgentNickname: assigneeAgent?.personaNickname ?? null,
       assigneeUserName: assigneeUser?.name ?? null,
       responsibleAgentName:
         responsibleAgent && responsibleAgent.id !== ticket.assigneeId
           ? responsibleAgent.name
           : assigneeAgent?.name ?? responsibleAgent?.name ?? null,
+      responsibleAgentNickname:
+        responsibleAgent && responsibleAgent.id !== ticket.assigneeId
+          ? responsibleAgent.personaNickname
+          : assigneeAgent?.personaNickname ?? responsibleAgent?.personaNickname ?? null,
     })
 
-    const agentNames = new Map<string, string>()
-    if (creatorAgent) agentNames.set(creatorAgent.id, creatorAgent.name)
+    const agents = new Map<string, { name: string; personaNickname?: string | null }>()
+    if (creatorAgent) {
+      agents.set(creatorAgent.id, {
+        name: creatorAgent.name,
+        personaNickname: creatorAgent.personaNickname,
+      })
+    }
 
     return ok({
       ...ticket,
@@ -709,7 +724,7 @@ export async function getTicket(input: { id: string }) {
       creator: formatTicketCreator({
         createdById: ticket.createdById,
         payload: ticket.payload,
-        agentNames,
+        agents,
         userNames: new Map([[ticket.createdById, creatorUser?.name ?? 'Ismeretlen']]),
       }),
     })

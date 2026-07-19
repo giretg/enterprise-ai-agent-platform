@@ -10,7 +10,7 @@ export type OrgAgentSummary = {
 }
 
 export function summarizeAgent(agent: Agent): OrgAgentSummary {
-  const persona = personaFor(agent.name)
+  const persona = personaFor(agent.name, agent)
   return {
     agentId: agent.id,
     name: agent.name,

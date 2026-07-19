@@ -27,7 +27,7 @@ export async function buildAgentCatalogEntry(
   const detail = await agents.findByIdWithDetails(agentId)
   if (!detail) throw new Error('Agent not found')
 
-  const persona = personaFor(detail.agent.name)
+  const persona = personaFor(detail.agent.name, detail.agent)
   const [capabilities, connectorRows] = await Promise.all([
     toolBroker.findCapabilitiesForAgent(agentId),
     toolBroker.findConnectorsForAgent(agentId),
@@ -80,10 +80,17 @@ function normalizeText(value: string): string {
 }
 
 export function scoreAgentForCatalogQuery(
-  agent: { name: string; roleInstruction: string; status: string },
+  agent: {
+    name: string
+    roleInstruction: string
+    status: string
+    personaNickname?: string | null
+    personaGreeting?: string | null
+    personaTrait?: string | null
+  },
   query: string,
 ): number {
-  const persona = personaFor(agent.name)
+  const persona = personaFor(agent.name, agent)
   const q = normalizeText(query.trim())
   if (!q) return 1
 

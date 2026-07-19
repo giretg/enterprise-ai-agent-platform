@@ -33,7 +33,13 @@ export function AgentRegistryCard({
     <Card className="h-full transition-transform duration-200 hover:-translate-y-1">
       <div className="flex items-start gap-4">
         <Link href={`/control-plane/agents/${agent.id}`} className="flex min-w-0 flex-1 items-start gap-4">
-          <AgentAvatar name={agent.name} status={agent.status} size="lg" avatarUrl={agent.avatarUrl} />
+          <AgentAvatar
+            name={agent.name}
+            status={agent.status}
+            size="lg"
+            avatarUrl={agent.avatarUrl}
+            personaNickname={agent.personaNickname}
+          />
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2">
               <h2 className="font-display text-2xl font-semibold leading-none">{p.nickname}</h2>
@@ -41,7 +47,6 @@ export function AgentRegistryCard({
                 {p.emoji}
               </span>
             </div>
-            <p className="mt-1 text-sm text-ink-faint">{agent.name}</p>
             <p className="mt-1 text-xs font-medium text-sage">
               {mood.label}
               {brainLabel && ` (Agy: ${brainLabel})`}
@@ -60,7 +65,7 @@ export function AgentRegistryCard({
                     ? 'vázlat'
                     : 'pihen'}
           </Badge>
-          {canDelete && <DeleteAgentButton agentId={agent.id} agentName={agent.name} compact />}
+          {canDelete && <DeleteAgentButton agentId={agent.id} agentName={p.nickname} compact />}
         </div>
       </div>
 
