@@ -49,6 +49,7 @@ import {
   runAgentToolLoop,
   type LoadSkillFn,
   type ToolLoopActivityEvent,
+  type ToolLoopStopReason,
 } from './chat-tool-loop'
 import type { SkillService } from '../skill/skill-service'
 import { assembleGatewayMessages, type PromptSegments } from './prompt-assembler'
@@ -954,6 +955,9 @@ export class AgentChatRuntime {
     let reply = ''
     let messageId: string | null = null
     let ticketRefId: string | null = null
+    // A tool-loop erőforrás-alapú leállásának indoka (#62). `null`, ha a loop
+    // normálisan futott végig — ilyenkor a forduló `completed`.
+    let loopStopReason: ToolLoopStopReason | null = null
 
     const runBody = async (): Promise<void> => {
       const processReply = await this.tryStartChatTriggeredProcess({
@@ -1146,6 +1150,9 @@ export class AgentChatRuntime {
           return
         }
         reply = result.value.content
+        if (result.value.status === 'exhausted') {
+          loopStopReason = result.value.reason
+        }
         turn.completedReply = reply
         for (const chunk of chunkForStreaming(reply)) {
           const cancelledId = await this.cancelTurnIfRequested(turn, conversationId)
@@ -1215,7 +1222,11 @@ export class AgentChatRuntime {
       const persistedId = await this.finalizeAgentTurn(turn, reply)
       turn.finalized = true
       messageId = persistedId
-      outcome = { status: 'completed', assistantMessageId: persistedId }
+      // A loop erőforrás-korlát miatti leállása a rekordon is látszik (#62): a
+      // válasz megvan, de a forduló nem futott végig — ezt `exhausted` jelöli.
+      outcome = loopStopReason
+        ? { status: 'exhausted', reason: loopStopReason, assistantMessageId: persistedId }
+        : { status: 'completed', assistantMessageId: persistedId }
       emit({ type: 'done', conversationId, messageId: persistedId })
     }
 

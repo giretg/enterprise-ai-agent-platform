@@ -486,9 +486,8 @@ async function main() {
     const turns = fakeTurnRepository()
     const { runtime } = buildRuntime({ turns: turns.repo, withTools: true })
 
-    for await (const _event of runtime.sendMessageStream(turnParams())) {
-      // végigfogyasztjuk
-    }
+    // végigfogyasztjuk a streamet, hogy a loop minden köre lefusson
+    for await (const _event of runtime.sendMessageStream(turnParams())) void _event
 
     assert.ok(turns.heartbeats.length >= 1, 'legalább egy kör → legalább egy életjel')
     assert.equal(turns.heartbeats[0].id, 'turn-1')
