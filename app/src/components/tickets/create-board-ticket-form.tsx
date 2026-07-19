@@ -308,8 +308,10 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
 
         {assigneeType === 'agent' && assigneeId && (
           <p className="text-xs text-ink-faint">
-            AI-hoz rendelve a ticket feldolgozásra kerül (local dev: azonnal; production: dispatcher
-            worker). Ha csak a cím van megadva leírás nélkül, a cím lesz a feladat szövege.
+            AI-hoz rendelve a ticket feldolgozása elindul (local: beépített háttérfutás;
+            production: dispatcher / harness). A létrehozás a futás indulása után kész —
+            nem várja meg a végét. Ha csak a cím van megadva leírás nélkül, a cím lesz a
+            feladat szövege.
             {pendingFiles.length > 0
               ? ' Csatolt fájl esetén előbb feltöltjük a workspace-be, utána indul a feldolgozás.'
               : ''}

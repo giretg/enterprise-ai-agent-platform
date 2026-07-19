@@ -1,3 +1,5 @@
+'use client'
+
 import { Badge, Card } from '@/components/ui/shell'
 import { TICKET_STATE_LABELS, TICKET_STATE_TONE } from '@/lib/ticket-labels'
 import { formatTicketDateTime } from '@/lib/ticket-display'

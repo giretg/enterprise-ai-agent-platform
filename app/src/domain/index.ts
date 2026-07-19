@@ -28,6 +28,7 @@ import {
   DockerLocalHarnessLauncher,
   dockerLocalConfigFromEnv,
 } from '@/domain/dispatcher/docker-local-harness-launcher'
+import { LocalWikiHarnessLauncher } from '@/domain/dispatcher/local-wiki-harness-launcher'
 import { AllowlistAuthorizer, ToolBrokerService } from '@/domain/tool-broker/tool-broker-service'
 import { WebSearchPolicyService } from '@/domain/web-search/web-search-policy-service'
 import { WebSearchService } from '@/domain/web-search/web-search-service'
@@ -77,7 +78,6 @@ import {
 import { WebhookChatNotifier } from '@/lib/notify/webhook-chat-notifier'
 import { repositories } from '@/repositories/postgres'
 import { resolveConnectorApiKey } from '@/domain/connector/http-api-client'
-import { resolveTicketProcessRoute } from '@/lib/ticket-process-route'
 import { prisma } from '@/lib/db'
 import { createHash } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
@@ -686,31 +686,62 @@ const monitorService = new MonitorService(
   processService,
   repositories.agents,
 )
-const localWikiHarnessLauncher: HarnessLauncher = {
-  mode: 'local-wiki',
-  async launch(input) {
-    const ticket = await repositories.tickets.findById(input.ticketId)
-    // Process-instance ticketek (processInstanceId != null) a generalTaskRuntime-on futnak:
-    // a wikiRuntime `question` mezőt vár a payloadban, de a process ticketek csak
-    // `title`-t és inputSlot-okat tartalmaznak — a generalTaskRuntime már kezeli ezt
-    // (readTicketPromptText(payload) || ticket.title fallback, general-task-runtime.ts:55).
-    const isProcessTicket = Boolean(ticket?.processInstanceId)
-    const route = isProcessTicket ? 'general' : resolveTicketProcessRoute(ticket?.payload)
-    if (route === 'general') {
-      await generalTaskRuntime.processTicket({
-        ticketId: input.ticketId,
-        agentId: input.agentId,
-      })
-    } else {
-      await wikiRuntime.processTicket({
-        ticketId: input.ticketId,
-        agentId: input.agentId,
-      })
+// local-wiki: fire-and-forget (mint docker-local / cloud-run-job) — a UI create /
+// handback nem várja meg a teljes agent-futást. Hiba esetén a ticketet
+// `in_progress` → `ready`-re visszük, ha még ott van (stale reclaim safety-net).
+const localWikiHarnessLauncher = new LocalWikiHarnessLauncher({
+  findTicket: async (ticketId) => {
+    const ticket = await repositories.tickets.findById(ticketId)
+    if (!ticket) return null
+    return {
+      processInstanceId: ticket.processInstanceId,
+      payload: ticket.payload,
+      state: ticket.state,
     }
-    await repositories.tickets.releaseDispatchLock(input.ticketId, input.lockToken)
-    return { jobId: `local-wiki-${input.ticketId}` }
   },
-}
+  processGeneral: async (input) => {
+    await generalTaskRuntime.processTicket(input)
+  },
+  processWiki: async (input) => {
+    await wikiRuntime.processTicket(input)
+  },
+  releaseDispatchLock: (ticketId, lockToken) =>
+    repositories.tickets.releaseDispatchLock(ticketId, lockToken),
+  recoverLaunchFailure: async ({ ticketId, lockToken, error }) => {
+    const current = await repositories.tickets.findById(ticketId)
+    if (!current) return
+    await repositories.tickets.releaseDispatchLock(ticketId, lockToken)
+    if (current.state !== 'in_progress') return
+    await repositories.tickets.update(ticketId, { state: 'ready' })
+    await repositories.tickets.recordTransition({
+      ticketId,
+      fromState: 'in_progress',
+      toState: 'ready',
+      actorType: 'system',
+      actorId: null,
+      agentVersion: null,
+      note: 'dispatcher launch failed',
+    })
+    await repositories.audit.append({
+      actorType: 'system',
+      actorId: null,
+      agentVersion: null,
+      action: 'dispatch.error',
+      targetType: 'ticket',
+      targetId: ticketId,
+      modelUsed: null,
+      inputRef: current.agentId,
+      outputRef: null,
+      policyDecision: 'error',
+      metadata: {
+        error: error instanceof Error ? error.message : String(error),
+        launcherMode: 'local-wiki',
+      },
+      tenantId: current.tenantId,
+      ticketId,
+    })
+  },
+})
 
 function createHarnessLauncher(): HarnessLauncher {
   const mode = process.env.HARNESS_LAUNCHER_MODE ?? 'local-wiki'

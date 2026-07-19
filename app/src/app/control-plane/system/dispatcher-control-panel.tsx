@@ -19,7 +19,7 @@ const MODE_INFO: Record<HarnessLauncherMode, { label: string; summary: string }>
   'local-wiki': {
     label: 'Beépített futtatás — a webapp saját folyamatában',
     summary:
-      'Az agent ugyanabban a szerverben fut, amelyik ezt a felületet is kiszolgálja. Nincs külön konténer és nincs extra felhőköltség; cserébe a szerver a ticket teljes futása alatt foglalt.',
+      'Az agent ugyanabban a szerverben fut, amelyik ezt a felületet is kiszolgálja. A board create / visszaadás a futás indulása után azonnal visszatér; a feldolgozás a háttérben folytatódik. Nincs külön konténer.',
   },
   'cloud-run-job': {
     label: 'Cloud Run Job — külön konténer ticketenként',

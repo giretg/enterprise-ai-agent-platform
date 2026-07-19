@@ -317,9 +317,9 @@ async function runAgentTicketDispatch(
   ticketId: string,
   agentId: string,
 ): Promise<{ warning?: string; error?: string }> {
-  // Azonnali dispatch minden launcher módban (§5.7 kiegészítés): a launch() docker-local
-  // és cloud-run-job esetén is fire-and-forget (konténer/Job indul, az eredmény külön
-  // harness-callbacken jön vissza) — nincs ok itt megvárni egy külön dispatcher-workert.
+  // Azonnali dispatch minden launcher módban (§5.7): a launch() docker-local,
+  // cloud-run-job ÉS local-wiki esetén is fire-and-forget (a futás a háttérben
+  // folytatódik) — a UI create / pontosítás-visszaadás nem várja meg a végét.
   try {
     const dispatchResult = await services.dispatcher.dispatchTicket(ticketId)
     if (dispatchResult.status === 'budget_blocked') {

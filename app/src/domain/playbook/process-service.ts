@@ -142,8 +142,8 @@ export class ProcessService {
     // Azonnali dispatch-gyorsítóút (§5.7 kiegészítés): a belépő/soron következő
     // agent-step ticketjét ugyanabban a kérésben elindítja, ahelyett hogy a
     // NOTIFY/cron-safety-net külön workerére várna. Launcher-mód-független —
-    // docker-local/cloud-run-job esetén a launch() már ma is fire-and-forget,
-    // a tényleges eredmény a harness-callbacken jön vissza. Ha hiányzik (pl.
+    // docker-local/cloud-run-job/local-wiki esetén a launch() fire-and-forget,
+    // a tényleges eredmény a harness-callbacken / háttérfutáson jön vissza. Ha hiányzik (pl.
     // tesztekben), a ticket a régi módon 'ready'-ben marad a worker/cron számára.
     private readonly dispatchTicket?: (ticketId: string) => Promise<unknown>,
   ) {}
