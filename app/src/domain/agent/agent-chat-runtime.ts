@@ -63,6 +63,18 @@ import {
 const IMAGE_EXT = /\.(jpg|jpeg|png|gif|webp)$/i
 const IMAGE_MARKER = /^(\[image:([^\]]+)\])([\s\S]*)$/
 
+/**
+ * Ennyi életjel-szünet után tekintünk egy aktív forduló-rekordot elhaltnak
+ * (spec §7 watchdog-küszöb).
+ *
+ * A D7 invariáns egy zár, és zár nem létezik lejárat nélkül: e nélkül egy
+ * crash-elt vagy deploy közben elvágott futás `running` állapotban hagyná a
+ * sort, és a részleges egyedi index a beszélgetést VÉGLEG bezárná — minden
+ * további küldés 409-et kapna. A teljes watchdog-ciklus külön tiket (#64); itt
+ * az indítási út javítja magát.
+ */
+const STALE_TURN_RECLAIM_MS = 120_000
+
 function safeToolResultName(value: string): string {
   const cleaned = value.replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '')
   return cleaned.slice(0, 80) || 'tool-result'
@@ -419,47 +431,91 @@ export class AgentChatRuntime {
     if (!this.agentTurns) return { ok: true }
     const turns = this.agentTurns
     const lockToken = randomUUID()
-    const attempt = async () => {
-      const created = await turns.create({
-        conversationId: params.conversationId,
-        tenantId: params.tenantId,
-        agentId: params.agentId,
-        agentVersion: params.agentVersion,
-        createdById: params.createdById,
-        status: 'running',
-        lockToken,
-        lockedAt: new Date(),
-      })
-      record.id = created.id
-      record.lockToken = lockToken
+
+    /**
+     * Egy foglalási kísérlet. `unavailable` = a rekord nem jött létre valamilyen
+     * DB-zavar miatt; ez fail-soft, a chat rekord NÉLKÜL fut tovább — a
+     * forduló-rekord megfigyelhetőségi réteg, nem buktathatja a beszélgetést.
+     */
+    const attempt = async (): Promise<'reserved' | 'conflict' | 'unavailable'> => {
+      try {
+        const created = await turns.create({
+          conversationId: params.conversationId,
+          tenantId: params.tenantId,
+          agentId: params.agentId,
+          agentVersion: params.agentVersion,
+          createdById: params.createdById,
+          status: 'running',
+          lockToken,
+          lockedAt: new Date(),
+        })
+        record.id = created.id
+        record.lockToken = lockToken
+        return 'reserved'
+      } catch (error) {
+        if (error instanceof ActiveAgentTurnExistsError) return 'conflict'
+        console.error('[agent-chat] forduló-rekord létrehozása sikertelen', error)
+        return 'unavailable'
+      }
     }
 
-    try {
-      await attempt()
-      return { ok: true }
-    } catch (error) {
-      if (!(error instanceof ActiveAgentTurnExistsError)) {
-        console.error('[agent-chat] forduló-rekord létrehozása sikertelen', error)
-        return { ok: true }
-      }
-      const active = await turns.findActiveByConversation(params.conversationId).catch(() => null)
-      if (active) return { ok: false, activeTurnId: active.id }
+    if ((await attempt()) !== 'conflict') return { ok: true }
 
-      // A blokkoló forduló az ütközés és a lekérdezés között lezárult: a hely
-      // felszabadult, ilyenkor ne dobjunk hamis 409-et a felhasználó arcába.
+    // Ütközés: vagy tényleg fut egy forduló, vagy egy ELHALT rekord blokkol.
+    const active = await turns.findActiveByConversation(params.conversationId).catch(() => null)
+    if (active) {
+      // Ha az életjel ideje hiányzik vagy értelmezhetetlen, a fordulót ÉLŐNEK
+      // tekintjük. Egy téves 409-et a felhasználó és a watchdog (#64) is orvosol;
+      // egy téves visszavétel viszont két párhuzamos futást engedne ugyanarra a
+      // beszélgetésre — pont azt, amit a D7 kizár.
+      const heartbeatAt = active.heartbeatAt?.getTime?.()
+      const alive =
+        typeof heartbeatAt !== 'number' ||
+        Number.isNaN(heartbeatAt) ||
+        heartbeatAt > Date.now() - STALE_TURN_RECLAIM_MS
+      if (alive) return { ok: false, activeTurnId: active.id }
+      // Életjel nélkül maradt futás: visszavesszük, különben a beszélgetés
+      // örökre zárva maradna (l. STALE_TURN_RECLAIM_MS).
+      console.warn(
+        '[agent-chat] elhalt forduló visszavétele a beszélgetésen',
+        params.conversationId,
+        active.id,
+      )
       try {
-        await attempt()
-        return { ok: true }
-      } catch (retryError) {
-        if (!(retryError instanceof ActiveAgentTurnExistsError)) {
-          console.error('[agent-chat] forduló-rekord létrehozása sikertelen', retryError)
-          return { ok: true }
-        }
-        const retried = await turns
-          .findActiveByConversation(params.conversationId)
-          .catch(() => null)
-        return { ok: false, activeTurnId: retried?.id ?? null }
+        // A `null` visszatérés is rendben van: azt jelenti, más már lezárta —
+        // a hely mindkét esetben felszabadult.
+        await turns.finalize(active.id, {
+          status: 'failed',
+          reason: 'watchdog',
+          error: 'A futtató process leállt a forduló közben (heartbeat elmaradt).',
+        })
+      } catch (error) {
+        console.error('[agent-chat] elhalt forduló visszavétele sikertelen', error)
+        return { ok: false, activeTurnId: active.id }
       }
+    }
+
+    // A hely felszabadult — a blokkoló forduló közben lezárult, vagy most vettük
+    // vissza. Pontosan EGY újrapróba: ha erre is ütközünk, valaki megelőzött.
+    if ((await attempt()) !== 'conflict') return { ok: true }
+    const retried = await turns.findActiveByConversation(params.conversationId).catch(() => null)
+    return { ok: false, activeTurnId: retried?.id ?? null }
+  }
+
+  /**
+   * Körönkénti életjel (D8/D10) — ettől ismerhető fel kívülről az elhalt futás,
+   * és ez teszi a D7-foglalást biztonságossá: életjel nélkül egy crash-elt futás
+   * véglegesen bezárná a beszélgetést (l. `reserveTurnRecord` stale-ága).
+   * Egy kör egy modellhívás, tehát ez másodperces nagyságrendű, elsődleges kulcs
+   * szerinti UPDATE — nem indokolt tovább ritkítani. Fail-soft: a heartbeat
+   * hibája nem buktathatja a futást.
+   */
+  private async heartbeatTurnRecord(record: TurnRecordHandle): Promise<void> {
+    if (!this.agentTurns || !record.id || !record.lockToken || record.closed) return
+    try {
+      await this.agentTurns.heartbeat(record.id, record.lockToken, new Date())
+    } catch (error) {
+      console.error('[agent-chat] forduló-heartbeat sikertelen', error)
     }
   }
 
@@ -581,6 +637,70 @@ export class AgentChatRuntime {
       conversationId = created.id
     }
 
+    // Aktív-forduló foglalás (D7) a nem-streamelő úton is. E nélkül az invariáns
+    // megkerülhető lenne: a stream-út 409-et adna, ez az út viszont párhuzamosan
+    // elindítana egy második fordulót ugyanarra a beszélgetésre.
+    const turnRecord: TurnRecordHandle = { id: null, lockToken: null, closed: false }
+    const reservation = await this.reserveTurnRecord(turnRecord, {
+      conversationId,
+      tenantId: params.tenantId ?? null,
+      agentId: params.agentId,
+      agentVersion: agentDetails.agent.currentVersion,
+      createdById: params.createdById,
+    })
+    if (!reservation.ok) throw new ActiveAgentTurnExistsError(conversationId)
+
+    try {
+      const result = await this.runSendMessageTurn(params, agentDetails, conversationId, turnRecord)
+      // Nincs `StreamTurnContext` ezen az úton (nincs élő aktivitás-lista), ezért
+      // a snapshot-mezőket itt közvetlenül adjuk meg.
+      await this.closeTurnRecord(
+        turnRecord,
+        {
+          status: 'completed',
+          assistantMessageId: result.messageId,
+          partialText: result.reply,
+        },
+        null,
+      )
+      return result
+    } catch (error) {
+      await this.closeTurnRecord(
+        turnRecord,
+        {
+          status: 'failed',
+          reason: 'error',
+          error: error instanceof Error ? error.message : 'Agent turn failed',
+        },
+        null,
+      )
+      throw error
+    }
+  }
+
+  /**
+   * A nem-streamelő forduló törzse. Külön metódus, hogy a `sendMessage` a
+   * foglalás/lezárás életciklusát egyetlen try/catch-ben tartsa — a rekord így
+   * minden kilépési ágon terminális állapotra zárul.
+   */
+  private async runSendMessageTurn(
+    params: {
+      agentId: string
+      content: string
+      createdById: string
+      tenantId?: string | null
+      conversationId?: string
+      attachmentDocumentIds?: string[]
+      processDefinitionId?: string
+      processInputPayload?: Record<string, unknown>
+    },
+    agentDetails: NonNullable<Awaited<ReturnType<AgentRepository['findByIdWithDetails']>>>,
+    conversationId: string,
+    turnRecord: TurnRecordHandle,
+  ): Promise<{ conversationId: string; messageId: string; reply: string }> {
+    const text = params.content.trim()
+    const attachmentIds = params.attachmentDocumentIds ?? []
+
     const attachmentDocs = await this.loadDocuments(attachmentIds)
     const attachmentBlock = formatAttachmentBlock(attachmentDocs)
     const userFacingText = text || '(csatolmányok)'
@@ -597,7 +717,7 @@ export class AgentChatRuntime {
     await this.materializeDocumentsToWorkspace(tenantKey, conversationId, knowledgeDocs, presentFiles)
     const workspaceFiles = await this.listWorkspaceFiles(tenantKey, conversationId)
 
-    await this.conversations.appendMessage({
+    const userMessage = await this.conversations.appendMessage({
       conversationId,
       role: 'user',
       content: encodeStoredMessage(userFacingText, attachmentIds),
@@ -605,6 +725,9 @@ export class AgentChatRuntime {
       actorType: 'human',
       actorId: params.createdById,
     })
+    // A foglalás a user-üzenet ELŐTT történt (D7), így a rekord csak most kapja
+    // meg a hivatkozást — ugyanaz a sorrend, mint a stream-úton.
+    await this.attachUserMessageToTurnRecord(turnRecord, userMessage.id)
 
     const processReply = await this.tryStartChatTriggeredProcess({
       tenantId: params.tenantId ?? null,
@@ -734,6 +857,7 @@ export class AgentChatRuntime {
           loadSkill: skillBinding.loadSkill,
           archiveLargeToolResult: (input) =>
             this.archiveLargeToolResult(tenantKey, conversationId, input),
+          onTurnStart: () => this.heartbeatTurnRecord(turnRecord),
         })
       ).content
     } else {
@@ -1164,6 +1288,7 @@ export class AgentChatRuntime {
           archiveLargeToolResult: (input) =>
             this.archiveLargeToolResult(tenantKey, conversationId, input),
           shouldCancel: () => isChatTurnCancelRequested(conversationId),
+          onTurnStart: () => this.heartbeatTurnRecord(turnRecord),
           onActivity: (activity) => {
             turn!.activities = upsertToolLoopActivity(turn!.activities, activity)
             pushSideEvent({ kind: 'activity', activity })

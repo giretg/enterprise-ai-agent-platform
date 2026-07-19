@@ -96,6 +96,9 @@ function fakeTurnRepository(options: { failOnCreate?: Error } = {}) {
         conversationId: data.conversationId,
         status: data.status ?? 'running',
         userMessageId: data.userMessageId ?? null,
+        // A séma szerint NOT NULL, `now()` alapértékkel — a foglalás
+        // stale-ellenőrzése ezt olvassa, ezért a fake-ben is jelen kell lennie.
+        heartbeatAt: new Date(),
       } as AgentTurn
       activeByConversation.set(data.conversationId, row)
       return row
@@ -117,7 +120,10 @@ function fakeTurnRepository(options: { failOnCreate?: Error } = {}) {
       return null
     },
     async releaseLock() {},
-    async heartbeat() {
+    async heartbeat(id, _lockToken, now) {
+      for (const row of activeByConversation.values()) {
+        if (row.id === id) Object.assign(row, { heartbeatAt: now })
+      }
       return null
     },
     async finalize(id, data) {
@@ -131,7 +137,12 @@ function fakeTurnRepository(options: { failOnCreate?: Error } = {}) {
       return []
     },
   }
-  return { repo, created, finalized }
+  /** Az aktív forduló életjelét `ms` ezredmásodperccel korábbra állítja. */
+  const ageActiveTurn = (conversationId: string, ms: number) => {
+    const row = activeByConversation.get(conversationId)
+    if (row) Object.assign(row, { heartbeatAt: new Date(Date.now() - ms) })
+  }
+  return { repo, created, finalized, ageActiveTurn }
 }
 
 function buildRuntime(options: {
@@ -171,6 +182,11 @@ function buildRuntime(options: {
       for (const chunk of options.replyChunks ?? ['Szia! ', 'Miben segíthetek?']) {
         yield chunk
       }
+    },
+    // A nem-streamelő `sendMessage` út ezt hívja (D7 itt is érvényes).
+    async call() {
+      if (options.streamError) throw options.streamError
+      return { content: (options.replyChunks ?? ['Szia! ', 'Miben segíthetek?']).join('') }
     },
   } as unknown as ModelGateway
 
@@ -337,6 +353,91 @@ async function main() {
     assert.ok(!events.some((e) => e.type === 'conflict'), 'a felszabadult hely újra foglalható')
     assert.ok(events.some((e) => e.type === 'done'))
     assert.equal(turns.created.length, 2)
+  })
+
+  await test('elhalt forduló: az életjel nélkül maradt rekordot a foglalás visszaveszi', async () => {
+    // A D7 egy zár, és zár nem létezik lejárat nélkül: ha egy futás crash/deploy
+    // miatt `running` állapotban ragad, e nélkül a beszélgetés VÉGLEG zárva
+    // maradna — minden további küldés ütközést kapna.
+    const turns = fakeTurnRepository()
+    const { runtime } = buildRuntime({ turns: turns.repo })
+
+    // Egy „félbemaradt" forduló: a rekord aktív, de rég nem adott életjelet.
+    await turns.repo.create({
+      conversationId: 'conv-1',
+      tenantId: null,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      createdById: 'user-1',
+      status: 'running',
+    })
+    turns.ageActiveTurn('conv-1', 10 * 60_000)
+
+    const events = []
+    for await (const event of runtime.sendMessageStream(turnParams())) events.push(event)
+
+    assert.ok(!events.some((e) => e.type === 'conflict'), 'az elhalt forduló nem blokkolhat')
+    assert.ok(events.some((e) => e.type === 'done'), 'az új forduló lefut')
+    const reclaimed = turns.finalized.find((f) => f.id === 'turn-1')
+    assert.equal(reclaimed?.status, 'failed')
+    assert.equal(reclaimed?.reason, 'watchdog', 'a visszavétel őszintén jelölve van')
+  })
+
+  await test('friss életjelű forduló NEM vehető vissza', async () => {
+    // A stale-ág ellenpróbája: ami él, azt nem szabad kiütni — különben két
+    // párhuzamos futás írna ugyanabba a beszélgetésbe.
+    const turns = fakeTurnRepository()
+    const { runtime } = buildRuntime({ turns: turns.repo })
+
+    await turns.repo.create({
+      conversationId: 'conv-1',
+      tenantId: null,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      createdById: 'user-1',
+      status: 'running',
+    })
+    turns.ageActiveTurn('conv-1', 5_000)
+
+    const events = []
+    for await (const event of runtime.sendMessageStream(turnParams())) events.push(event)
+
+    assert.ok(events.some((e) => e.type === 'conflict'), 'az élő forduló ütközést ad')
+    assert.equal(turns.finalized.length, 0, 'élő fordulót nem zárunk le')
+  })
+
+  await test('D7 a nem-streamelő úton is érvényes', async () => {
+    // E nélkül az invariáns megkerülhető: a stream-út elutasít, ez az út viszont
+    // párhuzamos második fordulót indítana ugyanarra a beszélgetésre.
+    const turns = fakeTurnRepository()
+    const { runtime } = buildRuntime({ turns: turns.repo })
+
+    await turns.repo.create({
+      conversationId: 'conv-1',
+      tenantId: null,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      createdById: 'user-1',
+      status: 'running',
+    })
+
+    await assert.rejects(
+      () => runtime.sendMessage(turnParams()),
+      (error: Error) => error.name === 'ActiveAgentTurnExistsError',
+      'aktív forduló mellett a nem-streamelő küldés is elutasít',
+    )
+  })
+
+  await test('a nem-streamelő út lezárja a saját forduló-rekordját', async () => {
+    const turns = fakeTurnRepository()
+    const { runtime } = buildRuntime({ turns: turns.repo })
+
+    const result = await runtime.sendMessage(turnParams())
+
+    assert.equal(turns.created.length, 1, 'a nem-streamelő út is foglal fordulót')
+    assert.equal(turns.finalized.length, 1, 'és terminális állapotra zárja')
+    assert.equal(turns.finalized[0].status, 'completed')
+    assert.equal(turns.finalized[0].assistantMessageId, result.messageId)
   })
 
   await test('FAIL-SOFT: a rekord létrehozásának hibája nem változtatja meg a chatet', async () => {
