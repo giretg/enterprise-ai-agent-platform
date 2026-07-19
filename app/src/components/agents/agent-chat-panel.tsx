@@ -115,6 +115,11 @@ type MemoryCandidateCard = {
 }
 
 type AgentChatStreamEvent =
+  /**
+   * A stream legelső eseménye: a szerveren futó forduló azonosítója. A Stop és a
+   * visszacsatlakozás ehhez kötődik majd (#65/#67) — itt még csak a szerződés.
+   */
+  | { type: 'turn'; turnId: string }
   | { type: 'meta'; conversationId: string; userMessageId: string }
   | { type: 'activity'; activity: AgentActivity }
   | { type: 'memory_candidate'; candidate: Omit<MemoryCandidateCard, 'status' | 'resultMessage'> }
@@ -1269,6 +1274,17 @@ export function AgentChatPanel({
             processDefinitionId: selectedProcessDefId ?? undefined,
           }),
         })
+
+        // Aktív-forduló ütközés (D7): a beszélgetésen már fut egy válasz. Nem
+        // néma hiba — a szerver az aktív forduló azonosítóját is visszaadja; a
+        // tényleges rácsatlakozás külön tiket, addig érthető üzenetet mutatunk.
+        if (response.status === 409) {
+          removeFailedOptimisticMessages()
+          setStatusMessage(
+            'Ebben a beszélgetésben már készül egy válasz. Várd meg, amíg elkészül, vagy állítsd le a Stop gombbal.',
+          )
+          return
+        }
 
         if (!response.ok || !response.body) {
           removeFailedOptimisticMessages()

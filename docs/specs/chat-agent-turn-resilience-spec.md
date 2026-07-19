@@ -87,7 +87,7 @@ beragadt futásra.
 | **D8** | Deployment-topológia | **Tier-1 (in-process)** először, **Tier-2 (dispatcher-birtokolt, DB-lock+heartbeat)** a robusztus célállapot | Fázisozható; a Tier-2 tükrözi a meglévő ticket-dispatchert (lock_token+stale reclaim). |
 | **D9** | Token-perzisztencia granularitás | Throttle-flush (`partialText` ~1 mp / N token), activity-nként upsert, terminálkor teljes írás | Reconnect-snapshot DB-túlterhelés nélkül. |
 | **D10** | Beragadt futás | **Watchdog**: `heartbeatAt` régebbi a küszöbnél → `failed`/`exhausted` + finalizálás | Infra-szintű végtelen-ciklus / crash-védelem. |
-| **D11** | Visszamenőleges kompatibilitás | A `sendMessage` (nem-stream) útvonal is a finalizeren keresztül ír | Egységes írási pont, ne duplázódjon a logika. |
+| **D11** | Visszamenőleges kompatibilitás | ~~A `sendMessage` (nem-stream) útvonal is a finalizeren keresztül ír~~ → **a `sendMessage` út törölve** (2026-07-18) | Egységes írási pont, ne duplázódjon a logika. A felülvizsgálat kimutatta, hogy a nem-stream útnak *soha* nem volt hívója (se UI, se API route — csak a hálózatról elérhető `sendAgentMessage` server action és egy teszt), viszont párhuzamos életciklust tartott életben. A törlés a D11 célját közvetlenebbül éri el. |
 
 ---
 
@@ -116,7 +116,7 @@ model AgentTurn {
   createdById        String   @map("created_by") @db.Uuid
 
   status             AgentTurnStatus @default(queued)
-  userMessageId      String   @map("user_message_id") @db.Uuid
+  userMessageId      String?  @map("user_message_id") @db.Uuid  // foglaláskor még üres (#61)
   assistantMessageId String?  @map("assistant_message_id") @db.Uuid
 
   // Progress / reconnect-snapshot
@@ -160,8 +160,20 @@ model AgentTurn {
 > RÉSZLEGES EGYEDI INDEXE kényszeríti ki (valódi Postgres ellen tesztelve:
 > `scripts/agent-turn-repository.test.ts`, a CI `migrations` jobjában).
 > A forduló-rekord írása **fail-soft**: ez a lépés megfigyelhetőséget szállít, a
-> chat viselkedése változatlan — a 409-es elutasítás (D7 kikényszerítése a
-> kérés-úton), a finalizer (D2) és a reconnect (D4) a lánc további tiketjei.
+> chat viselkedése változatlan — a finalizer (D2) és a reconnect (D4) a lánc
+> további tiketjei.
+>
+> **Állapot (2026-07-18, issue #61 — MEGÉPÜLT).** A D7 kikényszerítése a
+> kérés-úton kész. A forduló-rekord létrehozása FELCSERÉLŐDÖTT a user-üzenet
+> perzisztálásával: előbb a foglalás (ezen csattan a részleges egyedi index),
+> csak utána az üzenet, amit a `attachUserMessage` köt a rekordhoz — így az
+> elutasított küldés nem hagy árva üzenetet. Az `agent_turns.user_message_id`
+> ezért NULLABLE lett (`0010_agent_turn_reservation`). Ütközéskor a runtime
+> `conflict` eseményt ad, amit a stream-route a SSE-válasz megnyitása ELŐTT
+> (a generátor első eseményét lehúzva) `409 { activeTurnId, conversationId }`-ra
+> fordít. A NEM-ütközéses rekord-hibák továbbra is fail-softak.
+> Tesztek: E5 párhuzamos küldés a stub-suite-ban (`agent-chat-turn-record.test.ts`)
+> és valódi Postgres ellen (`agent-turn-repository.test.ts`, `Promise.allSettled`).
 
 Kapcsolódás: `Conversation` kap egy `agentTurns AgentTurn[]` relációt.
 A `messages` tábla változatlan; a `Message` a végállapot, az `AgentTurn` a
@@ -178,14 +190,17 @@ részleges egyedi index vagy tranzakciós ellenőrzés a létrehozáskor.
 ### 5.1 Indítás — `POST /api/v1/agent-chat/stream` (módosított)
 
 1. Auth (mint ma).
-2. `AgentChatRuntime`: user üzenet perzisztálása (mint ma).
-3. **Aktív-forduló ellenőrzés (D7):** ha van futó forduló → `409` +
-   `{ activeTurnId }` (a kliens erre reattach-el, l. 6.3).
-4. `AgentTurn` létrehozása (`status: running`), `userMessageId` bekötve.
-5. **Detached indítás:** a `AgentTurnRunner.start(turnId)` beteszi a futást egy
+2. **Aktív-forduló ellenőrzés = FOGLALÁS (D7):** az `AgentTurn` létrehozása
+   (`status: running`) MAGA az ellenőrzés — a részleges egyedi index dönt, nem egy
+   előzetes lekérdezés. Ütközésnél `409` + `{ activeTurnId }` (a kliens erre
+   reattach-el, l. 6.3).
+3. `AgentChatRuntime`: user üzenet perzisztálása, majd `userMessageId` bekötése a
+   lefoglalt fordulóhoz. A sorrend (foglalás → üzenet) szándékos: az elutasított
+   küldés így nem hagy árva felhasználói üzenetet a beszélgetésben.
+4. **Detached indítás:** a `AgentTurnRunner.start(turnId)` beteszi a futást egy
    in-process registrybe (`Map<turnId, RunHandle>`), és **nem** `await`-eli a
    loop teljes lefutását a kérés-scope-ban.
-6. A POST-válasz SSE **feliratkozik** a futás in-process event-buszára és relézi
+5. A POST-válasz SSE **feliratkozik** a futás in-process event-buszára és relézi
    az eventeket (`activity`/`token`/`done`/`error`). Ha a kliens lecsatlakozik,
    a feliratkozás megszűnik, **de a futás megy tovább** (D3/D5).
 
@@ -205,6 +220,25 @@ részleges egyedi index vagy tranzakciós ellenőrzés a létrehozáskor.
   4. registry-ből törlés.
   Ez a pont **kliens-független** → a válasz sosem vész el.
 - **Heartbeat (Tier-2, D10):** a loop minden kör elején `heartbeatAt = now()`.
+
+> **Állapot (2026-07-18, issue #60 — MEGÉPÜLT).** A futás leválik a kérésről:
+> `AgentTurnRunner` (`src/domain/agent/agent-turn-runner.ts`) tartja a futásonkénti
+> buszt, a `AgentChatRuntime.beginTurn` a kérés-scope-ban előkészít és **claimeli**
+> a fordulót (a rekord a `lockToken`-nel jön létre), majd a `executeTurn` a
+> kérés-scope-on KÍVÜL fut. A végleges assistant-üzenet írása és a rekord terminális
+> lezárása az `executeTurn` `finally`-ágában van — akkor is lefut, ha senki nem
+> olvassa a streamet (E1-regresszió: `scripts/agent-chat-turn-record.test.ts`).
+> A `sendMessage` (nem-stream) ugyanezen a ponton ír (D11). A stream legelső
+> eseménye `{ type:'turn', turnId }` (§6.1). A heartbeat a tool-loop új
+> `onTurnStart` horgán megy körönként.
+> Eltérések a fenti tervtől: (a) a szó-chunkolás a runtime-ban maradt (a runner
+> eseménytípus-agnosztikus busz, nem tud a tokenekről); (b) a `turnId` a
+> perzisztált rekordé, de ha a rekord nem jött létre (nincs bekötött tár vagy
+> DB-zavar), folyamat-lokális azonosítót kap, hogy a stream-szerződés alakja stabil
+> legyen; (c) a route `after()`-rel tartja életben a futást a válasz lezárása után
+> is, hogy menedzselt futtatókörnyezetben se fagyjon be az instance.
+> Nyitva marad: a köztes snapshot perzisztálása (#63), a watchdog-ciklus (#64), a
+> fordulóhoz kötött Stop (#65), a visszacsatlakozás (#66) és a kliens (#67).
 
 ### 5.3 Perzisztencia-granularitás (D9)
 
@@ -272,6 +306,34 @@ Leálláskor a loop **gráceful finalizál**: a `messages` közé kerül a rész
 válasz + állapot-jelölő (pl. „⏹️ Leállítva — a részeredmény megőrizve", ill.
 kimerülésnél a meglévő `TOOL_LOOP_EXHAUSTED_MESSAGE`), és a `reason` az
 `AgentTurn`-re íródik.
+
+### 7.1 Megvalósítva (2026-07-19, issue #62)
+
+- Döntéshozó: `app/src/domain/agent/loop-stop-decision.ts` —
+  `evaluateLoopContinuation` (tiszta függvény: nincs I/O, nincs `Date.now()`),
+  mellette `trackTurnProgress` az előrehaladás-mérleghez és `describeLoopStop`
+  a hétköznapi nyelvű jelöléshez.
+- A loop (`chat-tool-loop.ts`) a **kör elején** és **minden tool-hívás előtt**
+  megkérdezi. Tool-hívás közbeni leálláskor a már kiadott, de le nem futott
+  hívásokra kimaradás-jelző tool-üzenet megy (a modell-előzmény konzisztens marad).
+- Leálláskor gráceful finalizálás: záró modellhívás → a részválasz **megmarad**,
+  és alá kerül az önmagyarázó jelölés (mi ért véget, mi maradt, hogyan tovább).
+  A `max_turns_exhausted` ág szövege és viselkedése **változatlan**.
+- A leállás indoka a forduló-rekordra (`AgentTurn.status='exhausted'` +
+  `reason`) íródik az `agent-chat-runtime`-ból; a ticket-ág a meglévő
+  `TOOL_LOOP_EXHAUSTED` hibakódot kapja a pontosabb `reason`-nel.
+- Küszöbök (agent-szintű `modelConfig` mező → env → alapérték, clamp-elve):
+
+  | Küszöb | `modelConfig` | Env | Alapérték |
+  |---|---|---|---|
+  | faliórai idő | `maxToolWallClockMs` | `AGENT_LOOP_MAX_WALLCLOCK_MS` | 180 000 ms |
+  | tool-büdzsé | `maxToolCalls` | `AGENT_LOOP_MAX_TOOL_CALLS` | 60 hívás |
+  | előrehaladás-hiány | `maxNoProgressTurns` | `AGENT_LOOP_MAX_NO_PROGRESS_TURNS` | 3 kör |
+
+- Teszt: `npm run test:loop-stop` (`scripts/loop-stop-decision.test.ts`) —
+  determinisztikus, hamis modell-kapuval és injektált órával, mindhárom új
+  feltételre plusz a változatlan kör-limit ágra. CI-ben fut.
+- **Nyitva marad:** a `cost_budget` (opcionális 6. feltétel) és a D10 watchdog.
 
 **Watchdog (D10):** külön ciklus/cron (a meglévő dispatcher-ütem mellé) az
 `AgentTurn` táblát nézi: `status ∈ {running,streaming}` ÉS
@@ -354,8 +416,8 @@ A teljes D2/D4 (szerver-oldali `AgentTurn` + loop-finalizer + reconnect GET-SSE)
 **1. hullám — perzisztencia + no-loss (Tier-1)**
 - **WP-1** `AgentTurn` modell + migráció + repository. — **KÉSZ (#59)**
 - **WP-2** `AgentTurnRunner` (registry, busz, **finalizer** = D2 rés lezárása);
-  `sendMessageStream`/`sendMessage` átkötése a finalizerre.
-- **WP-3** `POST stream` átalakítás detached indításra + `turn` event.
+  `sendMessageStream` átkötése a finalizerre (a `sendMessage` út törölve — lásd D11). — **KÉSZ (#60)**
+- **WP-3** `POST stream` átalakítás detached indításra + `turn` event. — **KÉSZ (#60)**
 
 **2. hullám — védelem**
 - **WP-4** `evaluateLoopContinuation` (wallclock + tool_budget + no_progress) a

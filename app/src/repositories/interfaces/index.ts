@@ -1425,7 +1425,12 @@ export type CreateAgentTurnInput = {
   agentId: string
   agentVersion: number
   createdById: string
-  userMessageId: string
+  /**
+   * A foglaláskor (§5.1/3, D7) még nincs user-üzenet: a rekord előbb jön létre,
+   * hogy a részleges egyedi index dönthessen, és csak utána íródik az üzenet.
+   * A bekötés `attachUserMessage`-dzsel történik.
+   */
+  userMessageId?: string | null
   status?: ActiveAgentTurnStatus
   lockToken?: string | null
   lockedAt?: Date | null
@@ -1454,6 +1459,11 @@ export interface AgentTurnRepository {
   findById(id: string): Promise<AgentTurn | null>
   /** Az invariáns szerint legfeljebb egy ilyen sor létezhet. */
   findActiveByConversation(conversationId: string): Promise<AgentTurn | null>
+  /**
+   * A lefoglalt fordulóhoz utólag köti a most perzisztált user-üzenetet
+   * (l. `CreateAgentTurnInput.userMessageId`).
+   */
+  attachUserMessage(id: string, userMessageId: string): Promise<void>
   /**
    * Lock megszerzése csak akkor, ha a forduló még aktív és nincs más birtokosa.
    * `null` = a lockot valaki más tartja, vagy a forduló már terminális.

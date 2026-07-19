@@ -77,7 +77,6 @@ import {
   createTrainingSchema,
   askWikiSchema,
   generateReportSchema,
-  sendAgentMessageSchema,
   createAgentTaskTicketSchema,
   createScheduledAgentTaskSchema,
   loadAgentChatSchema,
@@ -2746,25 +2745,6 @@ export async function getConversation(input: { conversationId: string }) {
   }
 }
 
-export async function sendAgentMessage(input: {
-  agentId: string
-  content: string
-  conversationId?: string
-  attachmentDocumentIds?: string[]
-}) {
-  try {
-    const user = await requireTenantRole('operator')
-    const parsed = sendAgentMessageSchema.parse(input)
-    const result = await services.agentChat.sendMessage({
-      ...parsed,
-      createdById: user.user.id,
-      tenantId: user.activeTenantId,
-    })
-    return ok(result)
-  } catch (e) {
-    return fail(e instanceof Error ? e.message : 'Agent message failed')
-  }
-}
 
 export async function createAgentTaskTicket(input: {
   agentId: string

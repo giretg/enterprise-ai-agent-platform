@@ -244,14 +244,6 @@ export const generateReportSchema = z.object({
   templateId: z.string().trim().min(1).max(64),
 })
 
-export const sendAgentMessageSchema = z.object({
-  agentId: z.string().uuid(),
-  content: z.string().trim().max(8000).default(''),
-  conversationId: z.string().uuid().optional(),
-  attachmentDocumentIds: z.array(z.string().uuid()).max(8).optional(),
-}).refine((v) => v.content.length > 0 || (v.attachmentDocumentIds?.length ?? 0) > 0, {
-  message: 'Az üzenet vagy legalább egy csatolmány kötelező',
-})
 
 export const createAgentTaskTicketSchema = z.object({
   agentId: z.string().uuid(),
