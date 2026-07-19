@@ -247,6 +247,18 @@ részleges egyedi index vagy tranzakciós ellenőrzés a létrehozáskor.
 - `partialText`: throttle-flush — max ~1 mp-enként vagy ~200 karakterenként.
 - Terminálkor: teljes `partialText` + `messages` írás.
 
+> **Állapot (2026-07-19, issue #63 — MEGÉPÜLT).** A futó forduló köztes
+> snapshotja innentől DB-ből visszaolvasható. `TurnSnapshotFlusher`
+> (`agent-turn-snapshot.ts`) tartja a fojtást (`PARTIAL_TEXT_FLUSH_INTERVAL_MS=1000`,
+> `PARTIAL_TEXT_FLUSH_CHARS=200`) és a tartalom-őrt (`guardTurnPartialText` =
+> `redactSensitiveText`, Q4). Az `AgentTurnRepository.updateProgress` a lock
+> birtokosának ír aktív fordulóra; a runtime az aktivitásokat eseményenként, a
+> részszöveget fojtva, terminálkor a teljes őrizett szöveget írja. A
+> visszacsatlakozó felület (#66) még nyitott — ez a tiket a visszaolvasható
+> állapotot szállítja.
+> Tesztek: `npm run test:agent-turn-snapshot`, bővített
+> `test:agent-turn-record` (mid-run visszaolvasás, PAN-őr, írási frekvencia).
+
 ---
 
 ## 6. SSE / API felület
@@ -462,3 +474,5 @@ A teljes D2/D4 (szerver-oldali `AgentTurn` + loop-finalizer + reconnect GET-SSE)
 - **Q4:** A `partialText` perzisztálás alóli kivétel — tartalom-guard /
   redakció (a `messages` content-store úton megy; a `partial_text` nyers). Kell-e
   ugyanaz a content-guard a köztes snapshotra is?
+  → **LEZÁRVA (issue #63):** igen — `guardTurnPartialText` / `redactSensitiveText`
+  a köztes és a terminális `partialText` íráson is.

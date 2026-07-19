@@ -74,6 +74,7 @@ jobs:
           npm run test:memory-maintenance-rollback
           npm run test:chat-thinking-trace
           npm run test:agent-turn-record
+          npm run test:agent-turn-snapshot
           npm run test:loop-stop
           npm run test:http-api
           npm run test:http-api-per-agent-key

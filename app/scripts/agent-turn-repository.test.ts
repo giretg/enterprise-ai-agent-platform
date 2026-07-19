@@ -313,6 +313,39 @@ async function main() {
     }
   })
 
+  await check('updateProgress: a lock birtokosa írhat részszöveget és aktivitást', async () => {
+    const fixture = await seedFixture()
+    try {
+      const owner = randomUUID()
+      const turn = await repo.create({ ...createInput(fixture), lockToken: owner, lockedAt: new Date() })
+
+      const activities = [{ id: 't1', kind: 'tool', title: 'Olvasás', status: 'running' }]
+      const updated = await repo.updateProgress(turn.id, owner, {
+        partialText: 'részleges válasz…',
+        activities,
+      })
+      assert.equal(updated?.partialText, 'részleges válasz…')
+      assert.deepEqual(updated?.activities, activities)
+
+      // Idegen token nem írhat.
+      assert.equal(
+        await repo.updateProgress(turn.id, randomUUID(), { partialText: 'hack' }),
+        null,
+      )
+      assert.equal((await repo.findById(turn.id))?.partialText, 'részleges válasz…')
+
+      // Terminális után sem.
+      await repo.finalize(turn.id, { status: 'completed', partialText: 'kész' })
+      assert.equal(
+        await repo.updateProgress(turn.id, owner, { partialText: 'késő' }),
+        null,
+      )
+      assert.equal((await repo.findById(turn.id))?.partialText, 'kész')
+    } finally {
+      await cleanup(fixture)
+    }
+  })
+
   console.log(failures === 0 ? '\nMinden teszt zöld.' : `\n${failures} teszt bukott.`)
   await prisma.$disconnect()
   process.exit(failures === 0 ? 0 : 1)

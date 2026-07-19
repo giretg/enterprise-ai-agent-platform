@@ -7,6 +7,7 @@ import {
   type AgentTurnRepository,
   type CreateAgentTurnInput,
   type FinalizeAgentTurnInput,
+  type UpdateAgentTurnProgressInput,
 } from '../interfaces'
 
 /**
@@ -91,6 +92,25 @@ export class PostgresAgentTurnRepository implements AgentTurnRepository {
     const result = await prisma.agentTurn.updateMany({
       where: { id, lockToken, status: { in: [...ACTIVE_AGENT_TURN_STATUSES] } },
       data: { heartbeatAt: now },
+    })
+    if (result.count !== 1) return null
+    return this.findById(id)
+  }
+
+  async updateProgress(
+    id: string,
+    lockToken: string,
+    data: UpdateAgentTurnProgressInput,
+  ): Promise<AgentTurn | null> {
+    if (data.partialText === undefined && data.activities === undefined) {
+      return this.findById(id)
+    }
+    const result = await prisma.agentTurn.updateMany({
+      where: { id, lockToken, status: { in: [...ACTIVE_AGENT_TURN_STATUSES] } },
+      data: {
+        ...(data.partialText !== undefined ? { partialText: data.partialText } : {}),
+        ...(data.activities !== undefined ? { activities: data.activities } : {}),
+      },
     })
     if (result.count !== 1) return null
     return this.findById(id)

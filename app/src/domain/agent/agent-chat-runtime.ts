@@ -64,6 +64,11 @@ import {
   type AgentTurnEmit,
   type AgentTurnRunHandle,
 } from './agent-turn-runner'
+import {
+  TurnSnapshotFlusher,
+  guardTurnPartialText,
+  type TurnSnapshotFlush,
+} from './agent-turn-snapshot'
 
 /**
  * Ennyi életjel-szünet után tekintünk egy aktív forduló-rekordot elhaltnak
@@ -643,9 +648,33 @@ export class AgentChatRuntime {
   }
 
   /**
+   * Köztes snapshot a futó fordulóra (spec §5.3 / D9, #63). Fail-soft: a
+   * snapshot hibája nem buktathatja a futást. Csak a lock birtokosa ír.
+   */
+  private async persistTurnProgress(
+    turn: StreamTurnContext,
+    flush: TurnSnapshotFlush | null,
+  ): Promise<void> {
+    if (!flush || !this.agentTurns || !turn.turnRecordId || !turn.turnRecordLockToken) return
+    if (turn.turnRecordClosed) return
+    if (flush.partialText === undefined && flush.activities === undefined) return
+    try {
+      await this.agentTurns.updateProgress(turn.turnRecordId, turn.turnRecordLockToken, {
+        ...(flush.partialText !== undefined ? { partialText: flush.partialText } : {}),
+        ...(flush.activities !== undefined
+          ? { activities: flush.activities as unknown as Prisma.InputJsonValue }
+          : {}),
+      })
+    } catch (error) {
+      console.error('[agent-chat] forduló-snapshot írás sikertelen', error)
+    }
+  }
+
+  /**
    * Forduló-rekord terminális lezárása. Idempotens: a repository csak aktív
    * fordulót zár, és a `turnRecordClosed` flag megakadályozza a dupla hívást a
-   * `finally`-ág felől. Szintén fail-soft.
+   * `finally`-ág felől. Szintén fail-soft. A részszöveg tartalom-őrön megy át
+   * (Q4), ugyanúgy, mint a köztes snapshot.
    */
   private async closeTurnRecord(
     turn: StreamTurnContext | null,
@@ -654,9 +683,10 @@ export class AgentChatRuntime {
     if (!this.agentTurns || !turn?.turnRecordId || turn.turnRecordClosed) return
     turn.turnRecordClosed = true
     try {
+      const rawPartial = data.partialText ?? turn.completedReply ?? ''
       await this.agentTurns.finalize(turn.turnRecordId, {
         ...data,
-        partialText: data.partialText ?? turn.completedReply ?? '',
+        partialText: guardTurnPartialText(rawPartial),
         activities: data.activities ?? (turn.activities as unknown as Prisma.InputJsonValue),
       })
     } catch (error) {
@@ -936,6 +966,18 @@ export class AgentChatRuntime {
     // A tool-loop erőforrás-alapú leállásának indoka (#62). `null`, ha a loop
     // normálisan futott végig — ilyenkor a forduló `completed`.
     let loopStopReason: ToolLoopStopReason | null = null
+    // Köztes snapshot fojtás + tartalom-őr (#63 / D9 / Q4).
+    const snapshot = new TurnSnapshotFlusher()
+
+    const emitToken = async (chunk: string) => {
+      emit({ type: 'token', chunk })
+      await this.persistTurnProgress(turn, snapshot.pushToken(chunk))
+    }
+    const emitActivity = async (activity: ToolLoopActivityEvent) => {
+      turn.activities = upsertToolLoopActivity(turn.activities, activity)
+      emit({ type: 'activity', activity })
+      await this.persistTurnProgress(turn, snapshot.pushActivity(activity))
+    }
 
     const runBody = async (): Promise<void> => {
       const processReply = await this.tryStartChatTriggeredProcess({
@@ -964,7 +1006,7 @@ export class AgentChatRuntime {
             emit({ type: 'cancelled', conversationId, messageId: cancelledId })
             return
           }
-          emit({ type: 'token', chunk })
+          await emitToken(chunk)
           await new Promise<void>((r) => setTimeout(r, 12))
         }
         const persistedId = await this.finalizeAgentTurn(turn, processReply.text, {
@@ -1056,8 +1098,7 @@ export class AgentChatRuntime {
           detail: 'Felhasználói /slash parancs alapján',
           status: 'done',
         }
-        turn.activities = upsertToolLoopActivity(turn.activities, activity)
-        emit({ type: 'activity', activity })
+        await emitActivity(activity)
       }
 
       // A tool-loop akkor is fut, ha nincs capability-tool, de van hozzárendelt skill
@@ -1092,10 +1133,7 @@ export class AgentChatRuntime {
           shouldCancel: () => isChatTurnCancelRequested(conversationId),
           // Körönkénti életjel: ettől ismerhető fel kívülről az elhalt futás (D10).
           onTurnStart: () => this.heartbeatTurnRecord(turn),
-          onActivity: (activity) => {
-            turn.activities = upsertToolLoopActivity(turn.activities, activity)
-            emit({ type: 'activity', activity })
-          },
+          onActivity: (activity) => emitActivity(activity),
           ...(thinkingEnabled
             ? {
                 onReasoning: (turnId: string, delta: string) =>
@@ -1144,7 +1182,7 @@ export class AgentChatRuntime {
             emit({ type: 'cancelled', conversationId, messageId: cancelledId })
             return
           }
-          emit({ type: 'token', chunk })
+          await emitToken(chunk)
           await new Promise<void>((r) => setTimeout(r, 12))
         }
       } else {
@@ -1187,7 +1225,7 @@ export class AgentChatRuntime {
             emit({ type: 'thinking', turnId: 'reasoning-0', delta: pendingThinking.shift()! })
           }
           accumulated += chunk
-          emit({ type: 'token', chunk })
+          await emitToken(chunk)
         }
         reasoningRedactor.finish()
         while (pendingThinking.length > 0) {
@@ -1216,7 +1254,12 @@ export class AgentChatRuntime {
       emit({ type: 'error', message })
     } finally {
       unregisterActiveChatTurn(conversationId)
-      await this.closeTurnRecord(turn, outcome)
+      // Terminális teljes részszöveg (§5.3): completedReply, vagy ami a flusherben
+      // már összegyűlt (pl. stream közbeni hiba / cancel, mielőtt a reply kész).
+      await this.closeTurnRecord(turn, {
+        ...outcome,
+        partialText: turn.completedReply ?? snapshot.partialText,
+      })
     }
 
     return { outcome, reply, messageId, ticketRefId }

@@ -72,9 +72,12 @@ function agentRow(): Agent {
 }
 
 /** Megvárja a leválasztott futás hatását (a futás nem a fogyasztóhoz kötött). */
-async function waitUntil(predicate: () => boolean, timeoutMs = 2000): Promise<void> {
+async function waitUntil(
+  predicate: () => boolean | Promise<boolean>,
+  timeoutMs = 2000,
+): Promise<void> {
   const deadline = Date.now() + timeoutMs
-  while (!predicate()) {
+  while (!(await predicate())) {
     if (Date.now() > deadline) throw new Error('időtúllépés a futás bevárásakor')
     await new Promise<void>((r) => setTimeout(r, 5))
   }
@@ -89,7 +92,14 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 2000): Promise<vo
 function fakeTurnRepository(options: { failOnCreate?: Error } = {}) {
   const created: Array<Parameters<AgentTurnRepository['create']>[0]> = []
   const finalized: Array<{ id: string } & FinalizeAgentTurnInput> = []
+  const progress: Array<{
+    id: string
+    lockToken: string
+    partialText?: string
+    activities?: unknown
+  }> = []
   const activeByConversation = new Map<string, AgentTurn>()
+  const rowsById = new Map<string, AgentTurn>()
   const inputById = new Map<string, Parameters<AgentTurnRepository['create']>[0]>()
   const heartbeats: Array<{ id: string; lockToken: string }> = []
   const repo: AgentTurnRepository = {
@@ -106,15 +116,19 @@ function fakeTurnRepository(options: { failOnCreate?: Error } = {}) {
         conversationId: data.conversationId,
         status: data.status ?? 'running',
         userMessageId: data.userMessageId ?? null,
+        lockToken: data.lockToken ?? null,
+        partialText: '',
+        activities: [],
         // A séma szerint NOT NULL, `now()` alapértékkel — a foglalás
         // stale-ellenőrzése ezt olvassa, ezért a fake-ben is jelen kell lennie.
         heartbeatAt: new Date(),
-      } as AgentTurn
+      } as unknown as AgentTurn
       activeByConversation.set(data.conversationId, row)
+      rowsById.set(id, row)
       return row
     },
-    async findById() {
-      return null
+    async findById(id) {
+      return rowsById.get(id) ?? null
     },
     async findActiveByConversation(conversationId) {
       return activeByConversation.get(conversationId) ?? null
@@ -122,9 +136,8 @@ function fakeTurnRepository(options: { failOnCreate?: Error } = {}) {
     async attachUserMessage(id, userMessageId) {
       const input = inputById.get(id)
       if (input) input.userMessageId = userMessageId
-      for (const row of activeByConversation.values()) {
-        if (row.id === id) Object.assign(row, { userMessageId })
-      }
+      const row = rowsById.get(id)
+      if (row) Object.assign(row, { userMessageId })
     },
     async acquireLock() {
       return null
@@ -132,17 +145,33 @@ function fakeTurnRepository(options: { failOnCreate?: Error } = {}) {
     async releaseLock() {},
     async heartbeat(id, lockToken, now) {
       heartbeats.push({ id, lockToken })
-      for (const row of activeByConversation.values()) {
-        if (row.id === id) Object.assign(row, { heartbeatAt: now })
-      }
-      return null
+      const row = rowsById.get(id)
+      if (row) Object.assign(row, { heartbeatAt: now })
+      return row ?? null
+    },
+    async updateProgress(id, lockToken, data) {
+      const row = rowsById.get(id)
+      if (!row || row.lockToken !== lockToken) return null
+      if (!activeByConversation.has(row.conversationId)) return null
+      progress.push({ id, lockToken, ...data })
+      if (data.partialText !== undefined) Object.assign(row, { partialText: data.partialText })
+      if (data.activities !== undefined) Object.assign(row, { activities: data.activities })
+      return row
     },
     async finalize(id, data) {
       finalized.push({ id, ...data })
-      for (const [conversationId, row] of activeByConversation) {
-        if (row.id === id) activeByConversation.delete(conversationId)
+      const row = rowsById.get(id)
+      if (row) {
+        Object.assign(row, {
+          status: data.status,
+          partialText: data.partialText ?? row.partialText,
+          activities: data.activities ?? row.activities,
+          assistantMessageId: data.assistantMessageId ?? null,
+          lockToken: null,
+        })
+        activeByConversation.delete(row.conversationId)
       }
-      return null
+      return row ?? null
     },
     async findStale() {
       return []
@@ -153,7 +182,7 @@ function fakeTurnRepository(options: { failOnCreate?: Error } = {}) {
     const row = activeByConversation.get(conversationId)
     if (row) Object.assign(row, { heartbeatAt: new Date(Date.now() - ms) })
   }
-  return { repo, created, finalized, ageActiveTurn, heartbeats }
+  return { repo, created, finalized, progress, ageActiveTurn, heartbeats }
 }
 
 function buildRuntime(options: {
@@ -462,6 +491,87 @@ async function main() {
       turns.heartbeats[0].lockToken,
       turns.created[0].lockToken,
       'az életjel a saját lock-tokenjével megy — csak a tulajdonos frissíthet',
+    )
+  })
+
+  await test('#63: futó forduló mellett a rekord részszöveget és aktivitást tükröz', async () => {
+    const turns = fakeTurnRepository()
+    // Hosszú válasz → karakter-küszöb feletti flush a stream közben.
+    const longReply = `Első szó ${'x'.repeat(220)} utolsó.`
+    const { runtime } = buildRuntime({
+      turns: turns.repo,
+      withTools: true,
+      replyChunks: [longReply],
+    })
+
+    // A fogyasztó csak az első activity-ig olvas — a futás megy tovább.
+    for await (const event of runtime.sendMessageStream(turnParams())) {
+      if (event.type === 'activity') break
+    }
+
+    await waitUntil(() =>
+      turns.progress.some((p) => Array.isArray(p.activities) && (p.activities as unknown[]).length > 0),
+    )
+
+    const mid = await turns.repo.findById('turn-1')
+    assert.ok(mid, 'a futó forduló rekordja visszaolvasható')
+    assert.ok(Array.isArray(mid!.activities) && (mid!.activities as unknown[]).length > 0,
+      'aktivitások a rekordon vannak futás közben')
+
+    await waitUntil(async () => {
+      const row = await turns.repo.findById('turn-1')
+      return Boolean(row?.partialText && row.partialText.length > 0)
+    })
+    const withText = await turns.repo.findById('turn-1')
+    assert.ok(
+      (withText?.partialText?.length ?? 0) > 0,
+      'a részszöveg a rekordon van a stream közben',
+    )
+
+    await waitUntil(() => turns.finalized.length === 1)
+  })
+
+  await test('#63: szűrendő tartalom nem kerül nyersen a rekordra', async () => {
+    const turns = fakeTurnRepository()
+    const pan = '4111 1111 1111 1111'
+    const { runtime } = buildRuntime({
+      turns: turns.repo,
+      replyChunks: [`A kártyaszám ${pan} — ${'y'.repeat(200)}`],
+    })
+
+    for await (const _ of runtime.sendMessageStream(turnParams())) void _
+
+    assert.equal(turns.finalized.length, 1)
+    const closed = turns.finalized[0]
+    assert.equal(closed.partialText?.includes(pan), false, 'nyers PAN nem a rekordon')
+    assert.ok(closed.partialText?.includes('«redaktált:'), 'redakciós jelölő a lezárt rekordon')
+
+    for (const write of turns.progress) {
+      if (write.partialText === undefined) continue
+      assert.equal(
+        write.partialText.includes(pan),
+        false,
+        'köztes snapshot sem tartalmaz nyers PAN-t',
+      )
+    }
+  })
+
+  await test('#63: hosszú válasznál a snapshot-írások a küszöb nagyságrendje', async () => {
+    const turns = fakeTurnRepository()
+    // ~10 szó × ~40 karakter → ~400 karakter, szó-chunkolással több flush.
+    const words = Array.from({ length: 40 }, (_, i) => `szó${i}${'z'.repeat(30)}`)
+    const { runtime } = buildRuntime({
+      turns: turns.repo,
+      replyChunks: [words.join(' ')],
+    })
+
+    for await (const _ of runtime.sendMessageStream(turnParams())) void _
+
+    const partialWrites = turns.progress.filter((p) => p.partialText !== undefined).length
+    const tokenEvents = 40 // chunkForStreaming szóhatáronként
+    assert.ok(
+      partialWrites > 0 && partialWrites < tokenEvents,
+      `írások (${partialWrites}) a tokenek (${tokenEvents}) alatt, küszöb-nagyságrend`,
     )
   })
 

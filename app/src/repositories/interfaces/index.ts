@@ -1472,6 +1472,12 @@ export type FinalizeAgentTurnInput = {
   finishedAt?: Date
 }
 
+/** Futó forduló köztes snapshotja (spec §5.3 / D9, issue #63). */
+export type UpdateAgentTurnProgressInput = {
+  partialText?: string
+  activities?: Prisma.InputJsonValue
+}
+
 /**
  * A perzisztált chat-agent-forduló tára (spec §4/§5). A lock+heartbeat rész a
  * `TicketRepository` dispatch-lock konvencióját követi: a lock megszerzése és
@@ -1496,6 +1502,15 @@ export interface AgentTurnRepository {
   releaseLock(id: string, lockToken: string): Promise<void>
   /** Csak a lock birtokosa üthet szívet — a stale-reclaim így nem írható vissza. */
   heartbeat(id: string, lockToken: string, now: Date): Promise<AgentTurn | null>
+  /**
+   * Köztes snapshot (részszöveg / aktivitások). Csak a lock birtokosa írhat
+   * aktív fordulóra — idegen token vagy terminális státusz → `null`.
+   */
+  updateProgress(
+    id: string,
+    lockToken: string,
+    data: UpdateAgentTurnProgressInput,
+  ): Promise<AgentTurn | null>
   /**
    * Terminális lezárás: a lock elengedésével együtt, egyetlen feltételes
    * írásban. `null` = a forduló már terminális volt (a lezárás idempotens).
