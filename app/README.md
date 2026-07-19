@@ -194,6 +194,9 @@ npm run harness:egress-probe
 # Beragadt dispatch lock watchdog (dispatcher worker-ben is fut)
 HARNESS_DISPATCH_TIMEOUT_MS=1800000
 
+# Chat AgentTurn watchdog — elavult heartbeatű fordulók lezárása (~120 mp)
+AGENT_TURN_STALE_MS=120000
+
 # Docker completion smoke (platform dev szerver kell host.docker.internal:3000)
 docker build -f Dockerfile.harness -t wiki-harness:local .
 npm run harness:docker-smoke

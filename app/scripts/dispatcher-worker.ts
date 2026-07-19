@@ -86,6 +86,11 @@ async function runDispatchCycle(ticketId?: string) {
         `[dispatcher] reclaimed ${summary.reclaimedScheduledTasks} stale materializing scheduled task(s)`,
       )
     }
+    if (summary.reclaimedAgentTurns > 0) {
+      console.log(
+        `[dispatcher] watchdog closed ${summary.reclaimedAgentTurns} stale agent turn(s)`,
+      )
+    }
     if (summary.materializedScheduledTasks > 0) {
       console.log(`[dispatcher] materialized ${summary.materializedScheduledTasks} scheduled task(s)`)
     }

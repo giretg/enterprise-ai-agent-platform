@@ -92,6 +92,7 @@
     "test:agent-turn-record": "tsx scripts/agent-chat-turn-record.test.ts",
     "test:loop-stop": "tsx scripts/loop-stop-decision.test.ts",
     "test:agent-turn-snapshot": "tsx scripts/agent-turn-snapshot.test.ts",
+    "test:agent-turn-watchdog": "tsx scripts/agent-turn-watchdog.test.ts",
     "test:agent-registry": "tsx scripts/agent-registry-lifecycle.test.ts",
     "test:dispatcher-retry-loop": "tsx scripts/dispatcher-retry-loop.test.ts",
     "test:iam-policy": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/iam-policy.test.ts",

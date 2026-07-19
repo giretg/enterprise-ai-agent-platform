@@ -88,6 +88,8 @@ export type DispatchCycleRunRecord = {
   error: string | null
   reclaimedDispatches: number
   reclaimedScheduledTasks: number
+  /** Watchdog: elavult heartbeatű chat-fordulók (issue #64). Hiányzó régi lenyomat → 0. */
+  reclaimedAgentTurns: number
   materializedScheduledTasks: number
   monitorSweepRan: boolean
   monitorEscalated: number
@@ -400,6 +402,8 @@ export class PlatformSettingsService {
       reclaimedDispatches: typeof raw.reclaimedDispatches === 'number' ? raw.reclaimedDispatches : 0,
       reclaimedScheduledTasks:
         typeof raw.reclaimedScheduledTasks === 'number' ? raw.reclaimedScheduledTasks : 0,
+      reclaimedAgentTurns:
+        typeof raw.reclaimedAgentTurns === 'number' ? raw.reclaimedAgentTurns : 0,
       materializedScheduledTasks:
         typeof raw.materializedScheduledTasks === 'number' ? raw.materializedScheduledTasks : 0,
       monitorSweepRan: typeof raw.monitorSweepRan === 'boolean' ? raw.monitorSweepRan : false,
