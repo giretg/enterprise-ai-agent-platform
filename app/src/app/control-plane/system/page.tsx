@@ -21,10 +21,17 @@ import {
 import { getTenantThinkingTraceControls } from '@/app/actions/chat-thinking-trace'
 import { getTenantLanguage } from '@/app/actions/tenant-language'
 import { readDispatcherRuntime } from '@/lib/dispatcher-runtime'
+import { enabledModelProviders } from '@/lib/model-policy'
 import { DatabaseControlPanel } from './database-control-panel'
 import { AutomationControlSection } from './automation-control-section'
 import { DailyBudgetPanel } from './daily-budget-panel'
-import { ModelGatewayPanel } from './model-gateway-panel'
+import {
+  FallbackChainPanel,
+  ModelBudgetsPanel,
+  ModelGatewayObservabilityPanel,
+  ModelPricingPanel,
+  ModelRoutingPanel,
+} from './model-gateway-panel'
 import { ModelPolicyPanel } from './model-policy-panel'
 import { TicketTypeConfigPanel } from './ticket-type-config-panel'
 import { TenantWebSearchPolicyPanel } from './tenant-web-search-policy-panel'
@@ -32,6 +39,7 @@ import { TenantThinkingTracePanel } from './tenant-thinking-trace-panel'
 import { TenantLanguagePanel } from './tenant-language-panel'
 import { MemoryObservabilityPanel } from './memory-observability-panel'
 import { ContractObservabilityPanel } from './contract-observability-panel'
+import { SystemSettingsShell } from './system-settings-shell'
 
 export default async function SystemPage() {
   const [
@@ -93,124 +101,187 @@ export default async function SystemPage() {
     idleSnapshotRes.success ? idleSnapshotRes.data?.savedAt : '',
   ].join('|')
 
+  const enabledProviders = modelPolicyRes.success
+    ? enabledModelProviders(modelPolicyRes.data)
+    : undefined
+
+  const errorBox = (message: string) => (
+    <div className="rounded-lg border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
+      {message}
+    </div>
+  )
+
   return (
     <div className="space-y-6">
       <div>
         <p className="text-sm font-medium uppercase tracking-[0.2em] text-coral">Rendszer</p>
         <h1 className="mt-2 font-display text-3xl font-semibold">Üzemeltetés</h1>
         <p className="mt-1 max-w-2xl text-ink-soft">
-          Itt látod, mi fut a háttérben és mennyibe kerülhet. A ticketek többsége keletkezéskor azonnal
-          indul — a panelek az <em>automatikus</em> folyamatokat szabályozzák: agent-indítás, ütemezett
-          karbantartó körök (Neon ébresztés), proaktív monitor-söprés.
+          Itt látod, mi fut a háttérben és mennyibe kerülhet. Válassz témát a bal oldalon — egyszerre
+          egy terület jelenik meg.
         </p>
       </div>
 
-      {!dbModeRes.success ? (
-        <div className="rounded-lg border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
-          {dbModeRes.error}
-        </div>
-      ) : (
-        <DatabaseControlPanel initial={dbModeRes.data} canEdit={canEdit} />
-      )}
-
-      {controlsRes.success && workerProcessesRes.success && monitorControlsRes.success ? (
-        <AutomationControlSection
-          dispatcher={controlsRes.data}
-          runtime={readDispatcherRuntime()}
-          workerStatus={workerProcessesRes.data}
-          monitor={monitorControlsRes.data}
-          idleSnapshot={idleSnapshotRes.success ? idleSnapshotRes.data : null}
-          canEdit={canEdit}
-          settingsKey={settingsKey}
-        />
-      ) : (
-        <>
-          {!controlsRes.success ? (
-            <div className="rounded-lg border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
-              {controlsRes.error}
-            </div>
-          ) : null}
-          {!workerProcessesRes.success ? (
-            <div className="rounded-lg border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
-              {workerProcessesRes.error}
-            </div>
-          ) : null}
-          {!monitorControlsRes.success ? (
-            <div className="rounded-lg border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
-              {monitorControlsRes.error}
-            </div>
-          ) : null}
-        </>
-      )}
-
-      {dailyBudgetRes.success ? (
-        <DailyBudgetPanel overview={dailyBudgetRes.data} canEdit={canEditTenantBudget} />
-      ) : (
-        <div className="rounded-lg border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
-          {dailyBudgetRes.error}
-        </div>
-      )}
-
-      {!tenantWebSearchControlsRes.success ? (
-        <div className="rounded-lg border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
-          {tenantWebSearchControlsRes.error}
-        </div>
-      ) : (
-        <TenantWebSearchPolicyPanel
-          initialPolicy={tenantWebSearchPolicyRes.success ? tenantWebSearchPolicyRes.data : null}
-          initialTenantControls={tenantWebSearchControlsRes.data}
-          policyError={!tenantWebSearchPolicyRes.success ? tenantWebSearchPolicyRes.error : null}
-          canEdit={canEditTenantWebSearch}
-        />
-      )}
-
-      {tenantThinkingTraceControlsRes.success ? (
-        <TenantThinkingTracePanel
-          initialEnabled={tenantThinkingTraceControlsRes.data.enabled}
-          canEdit={canEditTenantWebSearch}
-        />
-      ) : null}
-
-      {tenantLanguageRes.success ? (
-        <TenantLanguagePanel
-          initialLanguage={tenantLanguageRes.data.language}
-          canEdit={canEditTenantSettings}
-        />
-      ) : (
-        <div className="rounded-lg border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
-          {tenantLanguageRes.error}
-        </div>
-      )}
-
-      {!ticketTypesRes.success ? (
-        <div className="rounded-lg border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
-          {ticketTypesRes.error}
-        </div>
-      ) : (
-        <TicketTypeConfigPanel initial={ticketTypesRes.data} canEdit={canEdit} />
-      )}
-
-      {!modelPolicyRes.success ? (
-        <div className="rounded-lg border border-coral/35 bg-coral/10 p-4 text-sm text-coral-deep">
-          {modelPolicyRes.error}
-        </div>
-      ) : (
-        <ModelPolicyPanel initial={modelPolicyRes.data} canEdit={canEdit} />
-      )}
-
-      {gatewayStatsRes.success && (
-        <ModelGatewayPanel
-          stats={gatewayStatsRes.data}
-          routingPolicies={routingPoliciesRes.success ? routingPoliciesRes.data : []}
-          budgets={budgetsRes.success ? budgetsRes.data : []}
-          canEdit={canEdit}
-        />
-      )}
-
-      {memoryObservabilityRes.success && <MemoryObservabilityPanel data={memoryObservabilityRes.data} />}
-      {contractObservabilityRes.success && (
-        <ContractObservabilityPanel data={contractObservabilityRes.data} />
-      )}
+      <SystemSettingsShell
+        sections={[
+          {
+            id: 'adatbazis',
+            label: 'Adatbázis',
+            description: 'Éles / teszt adatbázis váltás (Neon).',
+            content: !dbModeRes.success
+              ? errorBox(dbModeRes.error)
+              : <DatabaseControlPanel initial={dbModeRes.data} canEdit={canEdit} />,
+          },
+          {
+            id: 'automatizmus',
+            label: 'Automatizmus',
+            description: 'Dispatcher, háttérfolyamatok, monitor és költségkontroll.',
+            content:
+              controlsRes.success && workerProcessesRes.success && monitorControlsRes.success ? (
+                <AutomationControlSection
+                  dispatcher={controlsRes.data}
+                  runtime={readDispatcherRuntime()}
+                  workerStatus={workerProcessesRes.data}
+                  monitor={monitorControlsRes.data}
+                  idleSnapshot={idleSnapshotRes.success ? idleSnapshotRes.data : null}
+                  canEdit={canEdit}
+                  settingsKey={settingsKey}
+                />
+              ) : (
+                <div className="space-y-3">
+                  {!controlsRes.success ? errorBox(controlsRes.error) : null}
+                  {!workerProcessesRes.success ? errorBox(workerProcessesRes.error) : null}
+                  {!monitorControlsRes.success ? errorBox(monitorControlsRes.error) : null}
+                </div>
+              ),
+          },
+          {
+            id: 'napi-keret',
+            label: 'Napi model-keret',
+            description: 'Tenant- és agent-szintű napi hívás/token plafon.',
+            content: dailyBudgetRes.success
+              ? <DailyBudgetPanel overview={dailyBudgetRes.data} canEdit={canEditTenantBudget} />
+              : errorBox(dailyBudgetRes.error),
+          },
+          {
+            id: 'web-search',
+            label: 'Web Search',
+            description: 'Tenant webkeresési policy.',
+            content: !tenantWebSearchControlsRes.success
+              ? errorBox(tenantWebSearchControlsRes.error)
+              : (
+                <TenantWebSearchPolicyPanel
+                  initialPolicy={tenantWebSearchPolicyRes.success ? tenantWebSearchPolicyRes.data : null}
+                  initialTenantControls={tenantWebSearchControlsRes.data}
+                  policyError={!tenantWebSearchPolicyRes.success ? tenantWebSearchPolicyRes.error : null}
+                  canEdit={canEditTenantWebSearch}
+                />
+              ),
+          },
+          {
+            id: 'thinking-trace',
+            label: 'Gondolkodási szöveg',
+            description: 'Chat thinking-trace megjelenítése a tenantnél.',
+            content: tenantThinkingTraceControlsRes.success ? (
+              <TenantThinkingTracePanel
+                initialEnabled={tenantThinkingTraceControlsRes.data.enabled}
+                canEdit={canEditTenantWebSearch}
+              />
+            ) : (
+              errorBox('Nem sikerült betölteni a thinking-trace beállítást.')
+            ),
+          },
+          {
+            id: 'nyelv',
+            label: 'Tenant nyelv',
+            content: tenantLanguageRes.success
+              ? (
+                <TenantLanguagePanel
+                  initialLanguage={tenantLanguageRes.data.language}
+                  canEdit={canEditTenantSettings}
+                />
+              )
+              : errorBox(tenantLanguageRes.error),
+          },
+          {
+            id: 'ticket-tipusok',
+            label: 'Tickettípusok',
+            description: 'Engedélyezett állapotátmenetek típusonként.',
+            content: !ticketTypesRes.success
+              ? errorBox(ticketTypesRes.error)
+              : <TicketTypeConfigPanel initial={ticketTypesRes.data} canEdit={canEdit} />,
+          },
+          {
+            id: 'modell-engedelyezes',
+            label: 'Modell engedélyezés',
+            description: 'Mely provider/modell párok választhatók agenthez.',
+            content: !modelPolicyRes.success
+              ? errorBox(modelPolicyRes.error)
+              : <ModelPolicyPanel initial={modelPolicyRes.data} canEdit={canEdit} />,
+          },
+          {
+            id: 'model-gateway',
+            label: 'Model Gateway',
+            description: 'Hívásstatisztika és top ticket felhasználás.',
+            content: gatewayStatsRes.success
+              ? <ModelGatewayObservabilityPanel stats={gatewayStatsRes.data} />
+              : errorBox('Nem sikerült betölteni a Model Gateway statisztikát.'),
+          },
+          {
+            id: 'kiesesvedelem',
+            label: 'Kiesésvédelem',
+            description: 'Globális tartalék-lánc szolgáltatói hibákra.',
+            content: (
+              <FallbackChainPanel canEdit={canEdit} providers={enabledProviders} />
+            ),
+          },
+          {
+            id: 'modellarazas',
+            label: 'Modellárazás',
+            description: '€ / 1M token tarifák — beleértve az engedélyezett modelleket.',
+            content: <ModelPricingPanel canEdit={canEdit} />,
+          },
+          {
+            id: 'routing',
+            label: 'Routing',
+            description: 'Scope-alapú provider/modell irányítás.',
+            content: (
+              <ModelRoutingPanel
+                initial={routingPoliciesRes.success ? routingPoliciesRes.data : []}
+                canEdit={canEdit}
+                providers={enabledProviders}
+              />
+            ),
+          },
+          {
+            id: 'budget',
+            label: 'Budget szabályok',
+            description: 'Tenant / agent / ticket-típus hívás- és token-korlátok.',
+            content: (
+              <ModelBudgetsPanel
+                initial={budgetsRes.success ? budgetsRes.data : []}
+                canEdit={canEdit}
+              />
+            ),
+          },
+          {
+            id: 'memoria',
+            label: 'Memória',
+            description: 'Memória-javaslatok és retrieval megfigyelhetőség.',
+            content: memoryObservabilityRes.success
+              ? <MemoryObservabilityPanel data={memoryObservabilityRes.data} />
+              : errorBox('Nem sikerült betölteni a memória dashboardot.'),
+          },
+          {
+            id: 'strukturalt-kimenet',
+            label: 'Strukturált kimenet',
+            description: 'Lépés-kimenetek formátum-ellenőrzése és javítása.',
+            content: contractObservabilityRes.success
+              ? <ContractObservabilityPanel data={contractObservabilityRes.data} />
+              : errorBox('Nem sikerült betölteni a strukturált kimenet dashboardot.'),
+          },
+        ]}
+      />
     </div>
   )
 }

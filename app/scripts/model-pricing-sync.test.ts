@@ -17,6 +17,8 @@ import {
   MODEL_PRICING_SYNCED_SETTING_KEY,
   MODEL_PRICING_SYNC_META_KEY,
   resolvePricingFromSettings,
+  buildModelPricingViewRows,
+  DEFAULT_MODEL_PRICING,
 } from '../src/lib/model-pricing'
 import type { AuditLog } from '@prisma/client'
 
@@ -154,6 +156,31 @@ async function main() {
       { model: 'unknown-xyz', inputCostPerToken: 0.001, outputCostPerToken: 0.002 },
     ])
     assert.deepEqual(table, {})
+  })
+
+  await check('árazási view: engedélyezett modellek is megjelennek (örökölt árral)', () => {
+    const rows = buildModelPricingViewRows({
+      effective: {
+        ...DEFAULT_MODEL_PRICING,
+        'x-ai/grok-4.5': { inputPerMTokens: 1, outputPerMTokens: 2 },
+      },
+      layers: {
+        builtin: DEFAULT_MODEL_PRICING,
+        synced: {},
+        manual: { 'x-ai/grok-4.5': { inputPerMTokens: 1, outputPerMTokens: 2 } },
+      },
+      syncMeta: null,
+      configuredModels: ['gemini-3.5-flash', 'x-ai/grok-4.5'],
+    })
+    const gemini = rows.find((r) => r.model === 'gemini-3.5-flash')
+    assert.ok(gemini)
+    assert.equal(gemini.configured, true)
+    assert.equal(gemini.resolvedFrom, 'default')
+    const grok = rows.find((r) => r.model === 'x-ai/grok-4.5')
+    assert.ok(grok)
+    assert.equal(grok.source, 'manual')
+    assert.equal(grok.resolvedFrom, null)
+    assert.equal(rows.some((r) => r.model === 'default'), false)
   })
 
   console.log(`\n=== Összesítés ===`)

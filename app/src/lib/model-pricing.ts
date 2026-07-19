@@ -167,3 +167,89 @@ export function parseModelPricingSyncMeta(raw: unknown): ModelPricingSyncMeta | 
   const parsed = modelPricingSyncMetaSchema.safeParse(raw)
   return parsed.success ? parsed.data : null
 }
+
+export type ModelPricingViewRow = {
+  model: string
+  price: { inputPerMTokens: number; outputPerMTokens: number }
+  source: PricingLayerSource
+  /** true, ha a modell a policy-ben engedélyezett / kiválasztható. */
+  configured: boolean
+  /** Ha nincs saját kulcs, melyik tarifakulcsról öröklődött (pl. `default`). */
+  resolvedFrom: string | null
+  updatedAt: string | null
+}
+
+/**
+ * Árazási tábla sorok: a tarifakulcsok + az alkalmazásban kiválasztható modellek uniója.
+ * A policy-ben engedélyezett, de még nem tarifázott modellek a feloldott (örökölt) árat kapják.
+ */
+export function buildModelPricingViewRows(input: {
+  effective: ModelPricingTable
+  layers: {
+    builtin: ModelPricingTable
+    synced?: ModelPricingTable | null
+    manual?: ModelPricingTable | null
+  }
+  syncMeta: ModelPricingSyncMeta | null
+  configuredModels: string[]
+}): ModelPricingViewRow[] {
+  const configured = new Set(
+    input.configuredModels.map((model) => model.trim()).filter(Boolean),
+  )
+  const keys = new Set<string>([
+    ...Object.keys(input.effective).filter((key) => key !== 'default'),
+    ...configured,
+  ])
+
+  return [...keys]
+    .sort((a, b) => a.localeCompare(b))
+    .map((model) => {
+      const exact = Object.prototype.hasOwnProperty.call(input.effective, model)
+      if (exact) {
+        const source = pricingLayerForKey(model, {
+          builtin: input.layers.builtin,
+          synced: input.layers.synced,
+          manual: input.layers.manual,
+        })
+        const price = input.effective[model]!
+        const updatedAt =
+          source === 'manual'
+            ? price.updatedAt ?? null
+            : source === 'synced'
+              ? input.syncMeta?.lastSyncedAt ?? null
+              : null
+        return {
+          model,
+          price: {
+            inputPerMTokens: price.inputPerMTokens,
+            outputPerMTokens: price.outputPerMTokens,
+          },
+          source,
+          configured: configured.has(model),
+          resolvedFrom: null,
+          updatedAt,
+        }
+      }
+
+      const resolved = resolveModelPriceWithSource(model, input.effective)
+      const source =
+        resolved.matchedKey === 'default'
+          ? ('builtin' as const)
+          : pricingLayerForKey(resolved.matchedKey, {
+              builtin: input.layers.builtin,
+              synced: input.layers.synced,
+              manual: input.layers.manual,
+            })
+      return {
+        model,
+        price: {
+          inputPerMTokens: resolved.price.inputPerMTokens,
+          outputPerMTokens: resolved.price.outputPerMTokens,
+        },
+        source,
+        configured: configured.has(model),
+        resolvedFrom: resolved.matchedKey,
+        updatedAt: null,
+      }
+    })
+}

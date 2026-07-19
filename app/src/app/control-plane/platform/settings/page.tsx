@@ -15,6 +15,7 @@ import {
   getPlatformWebSearchPolicy,
 } from '@/app/actions/web-search'
 import { readDispatcherRuntime } from '@/lib/dispatcher-runtime'
+import { enabledModelProviders } from '@/lib/model-policy'
 import { DatabaseControlPanel } from '@/app/control-plane/system/database-control-panel'
 import { AutomationSettingsLinkPanel } from '@/app/control-plane/system/automation-settings-link-panel'
 import { ModelGatewayPanel } from '@/app/control-plane/system/model-gateway-panel'
@@ -57,6 +58,9 @@ export default async function PlatformSettingsPage() {
     ctx && (ctx.platformRoles.includes('superadmin') || ctx.platformRoles.includes('platform_operator')),
   )
   const canEdit = Boolean(ctx?.platformRoles.includes('superadmin'))
+  const enabledProviders = modelPolicyRes.success
+    ? enabledModelProviders(modelPolicyRes.data)
+    : undefined
 
   if (!isPlatform) {
     return (
@@ -115,6 +119,7 @@ export default async function PlatformSettingsPage() {
           routingPolicies={routingPoliciesRes.success ? routingPoliciesRes.data : []}
           budgets={budgetsRes.success ? budgetsRes.data : []}
           canEdit={canEdit}
+          providers={enabledProviders}
         />
       )}
     </div>

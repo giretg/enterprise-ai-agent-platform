@@ -1190,12 +1190,7 @@ export class PlatformSettingsService {
     manual: import('@/lib/model-pricing').ModelPricingTable
     synced: import('@/lib/model-pricing').ModelPricingTable
     syncMeta: import('@/lib/model-pricing').ModelPricingSyncMeta | null
-    rows: Array<{
-      model: string
-      price: import('@/lib/model-pricing').ModelPrice
-      source: import('@/lib/model-pricing').PricingLayerSource
-      updatedAt: string | null
-    }>
+    rows: import('@/lib/model-pricing').ModelPricingViewRow[]
   }> {
     const {
       DEFAULT_MODEL_PRICING,
@@ -1205,13 +1200,14 @@ export class PlatformSettingsService {
       mergePricingLayers,
       parsePricingTableOrNull,
       parseModelPricingSyncMeta,
-      pricingLayerForKey,
+      buildModelPricingViewRows,
     } = await import('@/lib/model-pricing')
 
-    const [manualRaw, syncedRaw, metaRaw] = await Promise.all([
+    const [manualRaw, syncedRaw, metaRaw, policy] = await Promise.all([
       this.settings.get(MODEL_PRICING_SETTING_KEY),
       this.settings.get(MODEL_PRICING_SYNCED_SETTING_KEY),
       this.settings.get(MODEL_PRICING_SYNC_META_KEY),
+      this.getModelPolicy(),
     ])
     const manual = parsePricingTableOrNull(manualRaw) ?? {}
     const synced = parsePricingTableOrNull(syncedRaw) ?? {}
@@ -1221,28 +1217,15 @@ export class PlatformSettingsService {
       synced,
       manual,
     })
-    const layers = { builtin: DEFAULT_MODEL_PRICING, synced, manual }
-    const rows = Object.keys(effective)
-      .sort()
-      .map((model) => {
-        const source = pricingLayerForKey(model, layers)
-        const price = effective[model]!
-        const updatedAt =
-          source === 'manual'
-            ? price.updatedAt ?? null
-            : source === 'synced'
-              ? syncMeta?.lastSyncedAt ?? null
-              : null
-        return {
-          model,
-          price: {
-            inputPerMTokens: price.inputPerMTokens,
-            outputPerMTokens: price.outputPerMTokens,
-          },
-          source,
-          updatedAt,
-        }
-      })
+    const configuredModels = policy.entries
+      .filter((entry) => entry.enabled)
+      .map((entry) => entry.model)
+    const rows = buildModelPricingViewRows({
+      effective,
+      layers: { builtin: DEFAULT_MODEL_PRICING, synced, manual },
+      syncMeta,
+      configuredModels,
+    })
 
     return {
       effective,

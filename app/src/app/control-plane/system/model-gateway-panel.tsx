@@ -1,5 +1,6 @@
 'use client'
 
+import Link from 'next/link'
 import { useEffect, useState, useTransition } from 'react'
 import { Card } from '@/components/ui/shell'
 import type { ModelRoutingPolicy, ModelBudget } from '@prisma/client'
@@ -16,8 +17,15 @@ import {
   clearManualModelPrice,
   listAgents,
 } from '@/app/actions/platform'
+import { ModelSelectField } from '@/components/agents/model-select-field'
 import type { ModelCallGovernanceSummary, ModelCallTicketBreakdown } from '@/repositories/interfaces'
-import { MODEL_PROVIDERS } from '@/lib/model-providers'
+import {
+  MODEL_PROVIDERS,
+  normalizeModelForProvider,
+  providerOption,
+  type ModelProviderOption,
+} from '@/lib/model-providers'
+import type { ModelPricingViewRow } from '@/lib/model-pricing'
 
 type GatewaySummaryData = {
   summary: ModelCallGovernanceSummary
@@ -26,6 +34,12 @@ type GatewaySummaryData = {
 }
 
 type FallbackCandidate = { provider: string; model: string }
+
+function resolveProviders(providers?: ModelProviderOption[]): ModelProviderOption[] {
+  // `undefined` = nincs policy-szűrés (pl. platform settings régi hívás).
+  // Üres tömb = tényleg nincs engedélyezett modell.
+  return providers === undefined ? MODEL_PROVIDERS : providers
+}
 
 function StatBox({ label, value }: { label: string; value: string | number }) {
   return (
@@ -51,16 +65,19 @@ function isLocalProvider(provider: string): boolean {
 function RoutingPoliciesSection({
   initial,
   canEdit,
+  providers,
 }: {
   initial: ModelRoutingPolicy[]
   canEdit: boolean
+  providers?: ModelProviderOption[]
 }) {
+  const providerOptions = resolveProviders(providers)
   const [policies, setPolicies] = useState(initial)
   const [pending, startTransition] = useTransition()
   const [newScope, setNewScope] = useState<'global' | 'agent' | 'ticket_type'>('global')
   const [newScopeRef, setNewScopeRef] = useState('')
-  const [newProvider, setNewProvider] = useState('chatgpt-oauth')
-  const [newModel, setNewModel] = useState('chatgpt-oauth-default')
+  const [newProvider, setNewProvider] = useState(providerOptions[0]?.value ?? 'chatgpt-oauth')
+  const [newModel, setNewModel] = useState(providerOptions[0]?.defaultModel ?? 'chatgpt-oauth-default')
   const [newPriority, setNewPriority] = useState(100)
   const [msg, setMsg] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null)
 
@@ -132,7 +149,14 @@ function RoutingPoliciesSection({
         ))}
       </div>
 
-      {canEdit && (
+      {canEdit && providerOptions.length === 0 ? (
+        <p className="rounded-md border border-amber-700/40 bg-amber-100 px-3 py-2 text-sm font-medium text-amber-950">
+          Nincs engedélyezett modell — a routing szabályhoz előbb engedélyezz legalább egy
+          provider/modell párt a „Modell engedélyezés” témában.
+        </p>
+      ) : null}
+
+      {canEdit && providerOptions.length > 0 && (
         <div className="grid grid-cols-2 gap-2 rounded-md border border-line/40 bg-panel/20 p-3 md:grid-cols-4">
           <select
             value={newScope}
@@ -149,17 +173,27 @@ function RoutingPoliciesSection({
             onChange={(e) => setNewScopeRef(e.target.value)}
             className="rounded border border-line/50 bg-night/60 px-2 py-1 text-xs text-ink placeholder:text-ink-faint"
           />
-          <input
-            placeholder="provider (chatgpt-oauth)"
+          <select
             value={newProvider}
-            onChange={(e) => setNewProvider(e.target.value)}
-            className="rounded border border-line/50 bg-night/60 px-2 py-1 text-xs text-ink placeholder:text-ink-faint"
-          />
-          <input
-            placeholder="model"
-            value={newModel}
-            onChange={(e) => setNewModel(e.target.value)}
-            className="rounded border border-line/50 bg-night/60 px-2 py-1 text-xs text-ink placeholder:text-ink-faint"
+            onChange={(e) => {
+              const next = providerOption(e.target.value, providerOptions)
+              setNewProvider(next.value)
+              setNewModel(next.defaultModel)
+            }}
+            className="rounded border border-line/50 bg-night/60 px-2 py-1 text-xs text-ink"
+          >
+            {providerOptions.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+          <ModelSelectField
+            provider={newProvider}
+            model={newModel}
+            onModelChange={setNewModel}
+            providers={providerOptions}
+            className="rounded border border-line/50 bg-night/60 px-2 py-1 text-xs text-ink"
           />
           <input
             type="number"
@@ -336,13 +370,20 @@ function BudgetsSection({
   )
 }
 
-function FallbackChainSection({ canEdit }: { canEdit: boolean }) {
+function FallbackChainSection({
+  canEdit,
+  providers,
+}: {
+  canEdit: boolean
+  providers?: ModelProviderOption[]
+}) {
+  const providerOptions = resolveProviders(providers)
   const [chain, setChain] = useState<FallbackCandidate[]>([])
   const [loaded, setLoaded] = useState(false)
   const [pending, startTransition] = useTransition()
   const [msg, setMsg] = useState<{ tone: 'ok' | 'err'; text: string } | null>(null)
-  const [newProvider, setNewProvider] = useState(MODEL_PROVIDERS[0]?.value ?? 'chatgpt-oauth')
-  const [newModel, setNewModel] = useState(MODEL_PROVIDERS[0]?.defaultModel ?? '')
+  const [newProvider, setNewProvider] = useState(providerOptions[0]?.value ?? 'chatgpt-oauth')
+  const [newModel, setNewModel] = useState(providerOptions[0]?.defaultModel ?? '')
   const [agents, setAgents] = useState<Array<{ id: string; name: string; modelConfig: unknown }>>([])
   const [previewAgentId, setPreviewAgentId] = useState('')
   const [previewSensitive, setPreviewSensitive] = useState(false)
@@ -431,7 +472,7 @@ function FallbackChainSection({ canEdit }: { canEdit: boolean }) {
       {!loaded ? (
         <p className="text-sm text-ink-faint">Betöltés…</p>
       ) : chain.length === 0 ? (
-        <p className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-200">
+        <p className="rounded-md border border-amber-700/40 bg-amber-100 px-3 py-2 text-sm font-medium text-amber-950">
           Nincs beállítva tartalék-lista — szolgáltatói kieséskor a hívás hibára fut (nincs automatikus kitérő).
         </p>
       ) : (
@@ -478,37 +519,59 @@ function FallbackChainSection({ canEdit }: { canEdit: boolean }) {
         </div>
       )}
 
+      {canEdit && providerOptions.length === 0 ? (
+        <p className="rounded-md border border-amber-700/40 bg-amber-100 px-3 py-2 text-sm font-medium text-amber-950">
+          Nincs engedélyezett modell a „Modell engedélyezés” szekcióban — előbb engedélyezz legalább
+          egy provider/modell párt.
+        </p>
+      ) : null}
+
       {canEdit && (
         <div className="grid grid-cols-2 gap-2 rounded-md border border-line/40 bg-panel/20 p-3 md:grid-cols-4">
-          <select
-            value={newProvider}
-            onChange={(e) => {
-              const p = MODEL_PROVIDERS.find((x) => x.value === e.target.value)
-              setNewProvider(e.target.value)
-              if (p) setNewModel(p.defaultModel)
-            }}
-            className="rounded border border-line/50 bg-night/60 px-2 py-1 text-xs text-ink"
-          >
-            {MODEL_PROVIDERS.map((p) => (
-              <option key={p.value} value={p.value}>
-                {p.label}
-              </option>
-            ))}
-          </select>
-          <input
-            value={newModel}
-            onChange={(e) => setNewModel(e.target.value)}
-            placeholder="model"
-            className="rounded border border-line/50 bg-night/60 px-2 py-1 text-xs text-ink"
-          />
-          <button
-            type="button"
-            disabled={pending || !newModel}
-            onClick={() => setChain((prev) => [...prev, { provider: newProvider, model: newModel.trim() }])}
-            className="rounded-md border border-line/50 px-3 py-1 text-xs text-ink disabled:opacity-50"
-          >
-            Hozzáad
-          </button>
+          {providerOptions.length > 0 ? (
+            <>
+              <select
+                value={newProvider}
+                onChange={(e) => {
+                  const next = providerOption(e.target.value, providerOptions)
+                  setNewProvider(next.value)
+                  setNewModel(next.defaultModel)
+                }}
+                className="rounded border border-line/50 bg-night/60 px-2 py-1 text-xs text-ink"
+              >
+                {providerOptions.map((p) => (
+                  <option key={p.value} value={p.value}>
+                    {p.label}
+                  </option>
+                ))}
+              </select>
+              <ModelSelectField
+                provider={newProvider}
+                model={newModel}
+                onModelChange={setNewModel}
+                providers={providerOptions}
+                className="rounded border border-line/50 bg-night/60 px-2 py-1 text-xs text-ink"
+              />
+              <button
+                type="button"
+                disabled={pending || !newModel}
+                onClick={() =>
+                  setChain((prev) => [
+                    ...prev,
+                    {
+                      provider: newProvider,
+                      model: normalizeModelForProvider(newProvider, newModel, providerOptions),
+                    },
+                  ])
+                }
+                className="rounded-md border border-line/50 px-3 py-1 text-xs text-ink disabled:opacity-50"
+              >
+                Hozzáad
+              </button>
+            </>
+          ) : (
+            <div className="col-span-2 md:col-span-3" />
+          )}
           <button
             type="button"
             disabled={pending}
@@ -584,14 +647,7 @@ function FallbackChainSection({ canEdit }: { canEdit: boolean }) {
 }
 
 function PricingSection({ canEdit }: { canEdit: boolean }) {
-  const [rows, setRows] = useState<
-    Array<{
-      model: string
-      price: { inputPerMTokens: number; outputPerMTokens: number }
-      source: string
-      updatedAt: string | null
-    }>
-  >([])
+  const [rows, setRows] = useState<ModelPricingViewRow[]>([])
   const [syncMeta, setSyncMeta] = useState<{
     lastSyncedAt: string
     sourceFingerprint: string
@@ -617,7 +673,6 @@ function PricingSection({ canEdit }: { canEdit: boolean }) {
 
   useEffect(() => {
     reload()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   const sourceLabel: Record<string, string> = {
@@ -632,6 +687,10 @@ function PricingSection({ canEdit }: { canEdit: boolean }) {
       <ExplainBox>
         <p>
           Három réteg: beépített alap → szinkronizált (CLI) → kézi felülírás. A felső réteg mindig nyer.
+          A listában a tarifakulcsok mellett megjelennek az alkalmazásban engedélyezett / kiválasztható
+          modellek is — ha még nincs saját tarifa, az örökölt (pl. default) ár látszik.
+        </p>
+        <p>
           A szinkron parancssorból fut (<code className="text-ink">npx tsx scripts/sync-model-pricing.ts</code>),
           innen csak a státusz látszik — böngészőből nincs indító gomb.
         </p>
@@ -664,7 +723,19 @@ function PricingSection({ canEdit }: { canEdit: boolean }) {
           <tbody>
             {rows.map((row) => (
               <tr key={row.model} className="border-t border-line/30">
-                <td className="py-1 pr-3 font-mono text-ink">{row.model}</td>
+                <td className="py-1 pr-3 font-mono text-ink">
+                  {row.model}
+                  {row.configured ? (
+                    <span className="ml-2 rounded bg-sage/15 px-1.5 py-0.5 text-[10px] uppercase text-sage">
+                      engedélyezett
+                    </span>
+                  ) : null}
+                  {row.resolvedFrom ? (
+                    <span className="mt-0.5 block text-[10px] text-ink-faint">
+                      örökölt: {row.resolvedFrom}
+                    </span>
+                  ) : null}
+                </td>
                 <td className="py-1 pr-3 text-ink">{row.price.inputPerMTokens}</td>
                 <td className="py-1 pr-3 text-ink">{row.price.outputPerMTokens}</td>
                 <td className="py-1 pr-3 text-ink-faint">{sourceLabel[row.source] ?? row.source}</td>
@@ -673,7 +744,7 @@ function PricingSection({ canEdit }: { canEdit: boolean }) {
                 </td>
                 {canEdit && (
                   <td className="py-1">
-                    {row.source === 'manual' && (
+                    {row.source === 'manual' && !row.resolvedFrom && (
                       <button
                         type="button"
                         disabled={pending}
@@ -758,25 +829,16 @@ function PricingSection({ canEdit }: { canEdit: boolean }) {
   )
 }
 
-export function ModelGatewayPanel({
-  stats,
-  routingPolicies,
-  budgets,
-  canEdit,
-}: {
-  stats: GatewaySummaryData
-  routingPolicies: ModelRoutingPolicy[]
-  budgets: ModelBudget[]
-  canEdit: boolean
-}) {
+export function ModelGatewayObservabilityPanel({ stats }: { stats: GatewaySummaryData }) {
   const { summary, breakdown, sinceHours } = stats
 
   return (
-    <Card title="Model Gateway — megfigyelhetőség és routing">
+    <Card title="Model Gateway — megfigyelhetőség">
       <div className="space-y-6">
         <div>
           <p className="mb-3 text-xs text-ink-soft">
-            Utolsó {sinceHours >= 24 ? `${Math.round(sinceHours / 24)} nap` : `${sinceHours} óra`}
+            Utolsó {sinceHours >= 24 ? `${Math.round(sinceHours / 24)} nap` : `${sinceHours} óra`} — hívások,
+            hibák, tartalék-váltások és becsült költség.
           </p>
           <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
             <StatBox label="Összes hívás" value={summary.calls} />
@@ -803,7 +865,7 @@ export function ModelGatewayPanel({
               <table className="w-full text-xs">
                 <thead>
                   <tr className="text-left text-ink-faint">
-                    <th className="pb-1 pr-4">Ticket ID</th>
+                    <th className="pb-1 pr-4">Ticket</th>
                     <th className="pb-1 pr-4">Hívások</th>
                     <th className="pb-1 pr-4">Tokenek</th>
                     <th className="pb-1">Avg latency</th>
@@ -812,7 +874,14 @@ export function ModelGatewayPanel({
                 <tbody>
                   {breakdown.map((row) => (
                     <tr key={row.ticketId} className="border-t border-line/30">
-                      <td className="py-1 pr-4 font-mono text-ink-faint">{row.ticketId.slice(0, 8)}…</td>
+                      <td className="py-1 pr-4 text-ink">
+                        <Link
+                          href={`/control-plane/tickets/${row.ticketId}`}
+                          className="text-accent hover:underline"
+                        >
+                          {row.ticketTitle?.trim() || `Ticket ${row.ticketId.slice(0, 8)}…`}
+                        </Link>
+                      </td>
                       <td className="py-1 pr-4 text-ink">{row.calls}</td>
                       <td className="py-1 pr-4 text-ink">{row.tokens.toLocaleString('hu-HU')}</td>
                       <td className="py-1 text-ink">{row.avgLatencyMs} ms</td>
@@ -823,16 +892,84 @@ export function ModelGatewayPanel({
             </div>
           </div>
         )}
-
-        <hr className="border-line/40" />
-        <FallbackChainSection canEdit={canEdit} />
-        <hr className="border-line/40" />
-        <PricingSection canEdit={canEdit} />
-        <hr className="border-line/40" />
-        <RoutingPoliciesSection initial={routingPolicies} canEdit={canEdit} />
-        <hr className="border-line/40" />
-        <BudgetsSection initial={budgets} canEdit={canEdit} />
       </div>
     </Card>
+  )
+}
+
+export function FallbackChainPanel({
+  canEdit,
+  providers,
+}: {
+  canEdit: boolean
+  providers?: ModelProviderOption[]
+}) {
+  return (
+    <Card title="Kiesés elleni védelem">
+      <FallbackChainSection canEdit={canEdit} providers={providers} />
+    </Card>
+  )
+}
+
+export function ModelPricingPanel({ canEdit }: { canEdit: boolean }) {
+  return (
+    <Card title="Modellárazás">
+      <PricingSection canEdit={canEdit} />
+    </Card>
+  )
+}
+
+export function ModelRoutingPanel({
+  initial,
+  canEdit,
+  providers,
+}: {
+  initial: ModelRoutingPolicy[]
+  canEdit: boolean
+  providers?: ModelProviderOption[]
+}) {
+  return (
+    <Card title="Routing szabályok">
+      <RoutingPoliciesSection initial={initial} canEdit={canEdit} providers={providers} />
+    </Card>
+  )
+}
+
+export function ModelBudgetsPanel({
+  initial,
+  canEdit,
+}: {
+  initial: ModelBudget[]
+  canEdit: boolean
+}) {
+  return (
+    <Card title="Budget szabályok">
+      <BudgetsSection initial={initial} canEdit={canEdit} />
+    </Card>
+  )
+}
+
+/** Visszafelé kompatibilis összetett panel (platform settings oldal). */
+export function ModelGatewayPanel({
+  stats,
+  routingPolicies,
+  budgets,
+  canEdit,
+  providers,
+}: {
+  stats: GatewaySummaryData
+  routingPolicies: ModelRoutingPolicy[]
+  budgets: ModelBudget[]
+  canEdit: boolean
+  providers?: ModelProviderOption[]
+}) {
+  return (
+    <div className="space-y-6">
+      <ModelGatewayObservabilityPanel stats={stats} />
+      <FallbackChainPanel canEdit={canEdit} providers={providers} />
+      <ModelPricingPanel canEdit={canEdit} />
+      <ModelRoutingPanel initial={routingPolicies} canEdit={canEdit} providers={providers} />
+      <ModelBudgetsPanel initial={budgets} canEdit={canEdit} />
+    </div>
   )
 }
