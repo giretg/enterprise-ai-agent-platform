@@ -109,19 +109,30 @@ function parseA1Cell(a1: string): { col: number; row: number } {
   return { col: columnLettersToNumber(match[1]), row: Number(match[2]) }
 }
 
-function parseA1Range(range: string): { c1: number; r1: number; c2: number; r2: number } {
-  const [from, to] = range.split(':')
-  if (!from || !to) {
+/** Egyetlen cella ("A1") vagy tartomány ("A1:E1") — a single-cell Excel UX miatt. */
+export function parseA1Range(range: string): { c1: number; r1: number; c2: number; r2: number } {
+  const trimmed = range.trim()
+  const [from, to] = trimmed.split(':')
+  if (!from) {
     throw new FileEditorError('INVALID_RANGE', `Invalid A1 range: ${range}`)
   }
   const start = parseA1Cell(from)
-  const end = parseA1Cell(to)
+  const end = to ? parseA1Cell(to) : start
   return {
     c1: Math.min(start.col, end.col),
     r1: Math.min(start.row, end.row),
     c2: Math.max(start.col, end.col),
     r2: Math.max(start.row, end.row),
   }
+}
+
+function sheetNotFoundError(sheetName: string | undefined, workbook: { worksheets: Array<{ name: string }> }) {
+  const available = workbook.worksheets.map((ws) => ws.name)
+  const availableLabel = available.length > 0 ? available.join(', ') : '(nincs lap)'
+  return new FileEditorError(
+    'SHEET_NOT_FOUND',
+    `Sheet "${sheetName ?? 'first'}" not found. Available sheets: ${availableLabel}`,
+  )
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -159,7 +170,7 @@ export async function xlsxReadSheet(
     : workbook.worksheets[0]
 
   if (!worksheet) {
-    throw new FileEditorError('SHEET_NOT_FOUND', `Sheet "${sheetName ?? 'first'}" not found`)
+    throw sheetNotFoundError(sheetName, workbook)
   }
 
   const headers: string[] = []
@@ -237,7 +248,7 @@ export async function xlsxWriteCells(
     : workbook.worksheets[0]
 
   if (!worksheet) {
-    throw new FileEditorError('SHEET_NOT_FOUND', `Sheet "${sheetName ?? 'first'}" not found`)
+    throw sheetNotFoundError(sheetName, workbook)
   }
 
   for (const change of changes) {
@@ -267,7 +278,7 @@ export async function xlsxFormatRange(
 
   const worksheet = sheetName ? workbook.getWorksheet(sheetName) : workbook.worksheets[0]
   if (!worksheet) {
-    throw new FileEditorError('SHEET_NOT_FOUND', `Sheet "${sheetName ?? 'first'}" not found`)
+    throw sheetNotFoundError(sheetName, workbook)
   }
 
   const { c1, r1, c2, r2 } = parseA1Range(range)
@@ -292,7 +303,7 @@ export async function xlsxApplyLayout(
 
   const worksheet = sheetName ? workbook.getWorksheet(sheetName) : workbook.worksheets[0]
   if (!worksheet) {
-    throw new FileEditorError('SHEET_NOT_FOUND', `Sheet "${sheetName ?? 'first'}" not found`)
+    throw sheetNotFoundError(sheetName, workbook)
   }
 
   for (const merge of layout.mergeCells ?? []) {
@@ -349,7 +360,7 @@ export async function xlsxAppendRows(
     : workbook.worksheets[0]
 
   if (!worksheet) {
-    throw new FileEditorError('SHEET_NOT_FOUND', `Sheet "${sheetName ?? 'first'}" not found`)
+    throw sheetNotFoundError(sheetName, workbook)
   }
 
   for (const row of newRows) {

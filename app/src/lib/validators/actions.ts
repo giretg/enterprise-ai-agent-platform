@@ -983,6 +983,7 @@ export const toolInvokeSchema = z.discriminatedUnion('tool', [
     ...toolInvokeBaseSchema,
     args: z.object({
       path: z.string().min(1).max(500),
+      confirm: z.boolean().optional(),
     }),
   }),
   z.object({

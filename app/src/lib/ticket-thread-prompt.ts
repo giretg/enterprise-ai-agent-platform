@@ -44,27 +44,50 @@ export function latestHumanTicketComment(comments: TicketCommentWithAttachments[
   return null
 }
 
+/** Soft-resume szabályok handback / „folytasd” esetén — checkpoint a szál szövegéből. */
+export const TICKET_CONTINUE_RULES = [
+  'Ez FOLYTATÁS, nem új feladat: a legutóbbi agent-válasz „Elkészült / Nem készült el” részei a checkpointod.',
+  'NE kezdd előlről a teljes discovery-t (teljes PDF újraolvasás, ugyanazok az API-lekérések), ha a checkpoint már tartalmazza az eredményt.',
+  'A munkaterületen lévő deliverable fájlokat (xlsx/docx/pptx) NE töröld „újraépítéshez” — javítsd/bővítsd őket. Törléshez confirm:true kell.',
+  'Nagy PDF-nél mindig page_range-dzsel dolgozz; ne olvasd be egyszerre a teljes dokumentumot.',
+  'A „Nem készült el” listából vedd a következő konkrét lépést, és azzal folytasd.',
+].join('\n')
+
 export function buildThreadContextPrompt(input: {
   comments: TicketCommentWithAttachments[]
   originalTask: string
   maxChars?: number
+  workspaceFiles?: string[]
 }): string {
-  const maxChars = input.maxChars ?? 12000
+  const maxChars = input.maxChars ?? 14000
   const relevant = input.comments.filter((comment) =>
     ['human_comment', 'agent_answer', 'system_note'].includes(comment.kind),
   )
   const lastHuman = [...relevant].reverse().find((comment) => comment.kind === 'human_comment')
   const lastAgent = [...relevant].reverse().find((comment) => comment.kind === 'agent_answer')
+  const isContinuation = Boolean(lastAgent)
   const tail = relevant.slice(-10)
 
   const sections: string[] = [
     `Eredeti feladat:\n${clip(input.originalTask.trim(), 2400)}`,
   ]
+  if (isContinuation) {
+    sections.push(`Folytatasi szabalyok (kotelezo):\n${TICKET_CONTINUE_RULES}`)
+  }
   if (lastHuman) {
     sections.push(`A felhasznalo legutobbi pontositasat most kulonosen vedd figyelembe:\n${renderComment(lastHuman, 1800)}`)
   }
   if (lastAgent) {
-    sections.push(`Legutobbi agent-valasz, amit ne torolj, hanem folytass/javits:\n${renderComment(lastAgent, 1800)}`)
+    sections.push(`Legutobbi agent-valasz (CHECKPOINT — ne torold, hanem folytass/javits):\n${renderComment(lastAgent, 3200)}`)
+  }
+  const deliverables = (input.workspaceFiles ?? []).filter((path) =>
+    /\.(xlsx|xlsm|docx|pptx)$/i.test(path) && !path.startsWith('.tool-results/'),
+  )
+  if (deliverables.length > 0) {
+    sections.push(
+      `Meglevo deliverable fajlok a munkateruleten (NE torold oket ujraepiteshez):\n` +
+        deliverables.map((path) => `- ${path}`).join('\n'),
+    )
   }
   if (tail.length > 0) {
     sections.push(`Idorendi ticket-szal lenyomat:\n${tail.map((comment) => renderComment(comment, 1200)).join('\n\n')}`)
