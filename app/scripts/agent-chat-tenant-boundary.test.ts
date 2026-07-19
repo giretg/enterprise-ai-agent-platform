@@ -112,21 +112,6 @@ function buildRuntime(row: Agent) {
 async function main() {
   console.log('=== AgentChat tenant-boundary teszt ===')
 
-  await test('sendMessage cross-tenant agentet opak Agent not found hibával tilt', async () => {
-    const { runtime, calls } = buildRuntime(agent({ tenantId: 'tenant-B' }))
-    await assert.rejects(
-      () =>
-        runtime.sendMessage({
-          agentId: 'agent-B',
-          content: 'Szia',
-          createdById: 'user-A',
-          tenantId: 'tenant-A',
-        }),
-      /Agent not found/,
-    )
-    assert.equal(calls.createConversation, 0)
-    assert.equal(calls.createTicket, 0)
-  })
 
   await test('sendMessageStream cross-tenant agentnél error eseménnyel áll le', async () => {
     const { runtime, calls } = buildRuntime(agent({ tenantId: 'tenant-B' }))

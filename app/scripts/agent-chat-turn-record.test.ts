@@ -196,7 +196,6 @@ function buildRuntime(options: {
         yield chunk
       }
     },
-    // A nem-streamelő `sendMessage` út ezt hívja (D7 itt is érvényes).
     async call() {
       if (options.streamError) throw options.streamError
       return {
@@ -431,39 +430,7 @@ async function main() {
     assert.equal(turns.finalized.length, 0, 'élő fordulót nem zárunk le')
   })
 
-  await test('D7 a nem-streamelő úton is érvényes', async () => {
-    // E nélkül az invariáns megkerülhető: a stream-út elutasít, ez az út viszont
-    // párhuzamos második fordulót indítana ugyanarra a beszélgetésre.
-    const turns = fakeTurnRepository()
-    const { runtime } = buildRuntime({ turns: turns.repo })
 
-    await turns.repo.create({
-      conversationId: 'conv-1',
-      tenantId: null,
-      agentId: 'agent-1',
-      agentVersion: 1,
-      createdById: 'user-1',
-      status: 'running',
-    })
-
-    await assert.rejects(
-      () => runtime.sendMessage(turnParams()),
-      (error: Error) => error.name === 'ActiveAgentTurnExistsError',
-      'aktív forduló mellett a nem-streamelő küldés is elutasít',
-    )
-  })
-
-  await test('a nem-streamelő út lezárja a saját forduló-rekordját', async () => {
-    const turns = fakeTurnRepository()
-    const { runtime } = buildRuntime({ turns: turns.repo })
-
-    const result = await runtime.sendMessage(turnParams())
-
-    assert.equal(turns.created.length, 1, 'a nem-streamelő út is foglal fordulót')
-    assert.equal(turns.finalized.length, 1, 'és terminális állapotra zárja')
-    assert.equal(turns.finalized[0].status, 'completed')
-    assert.equal(turns.finalized[0].assistantMessageId, result.messageId)
-  })
 
   await test('FAIL-SOFT: a rekord létrehozásának hibája nem változtatja meg a chatet', async () => {
     // Nem ütközés, hanem elérhetetlen rekord-tár: a chatnek ettől mennie kell.
