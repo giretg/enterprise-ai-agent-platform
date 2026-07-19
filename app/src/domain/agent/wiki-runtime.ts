@@ -361,6 +361,30 @@ export class WikiAgentRuntime {
     if (ticket.agentId !== params.agentId) throw new Error('Ticket not assigned to this agent')
     if (ticket.type !== 'interaction') throw new Error('Wiki runtime only handles interaction tickets')
 
+    if (ticket.cancelRequested) {
+      await this.tickets.update(ticket.id, {
+        state: 'awaiting_human',
+        lockToken: null,
+        lockedAt: null,
+        cancelRequested: false,
+      })
+      await this.tickets.recordTransition({
+        ticketId: ticket.id,
+        fromState: ticket.state,
+        toState: 'awaiting_human',
+        actorType: 'human',
+        actorId: ticket.cancelRequestedById ?? ticket.createdById,
+        agentVersion: null,
+        note: 'Wiki feldolgozás leállítva (emergency stop).',
+      })
+      return {
+        ticketId: ticket.id,
+        answer: null,
+        ticket: await this.tickets.findById(ticket.id),
+        cancelled: true,
+      }
+    }
+
     const rawPayload =
       typeof ticket.payload === 'object' && ticket.payload !== null && !Array.isArray(ticket.payload)
         ? (ticket.payload as Record<string, unknown>)

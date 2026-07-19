@@ -947,6 +947,32 @@ export class AgentChatRuntime {
     // normálisan futott végig — ilyenkor a forduló `completed`.
     let loopStopReason: ToolLoopStopReason | null = null
     // Köztes snapshot fojtás + tartalom-őr (#63 / D9 / Q4).
+    // DB-backed cancel cache: in-memory flag VAGY periodikus DB-olvasás (D6 / multi-instance).
+    let dbCancelRequested = false
+    let lastDbCancelCheckAt = 0
+    const CANCEL_DB_POLL_MS = 1_000
+
+    const refreshCancelFromDb = async (): Promise<boolean> => {
+      if (!turn.turnRecordId || !this.agentTurns) return dbCancelRequested
+      const now = Date.now()
+      if (now - lastDbCancelCheckAt < CANCEL_DB_POLL_MS && lastDbCancelCheckAt > 0) {
+        return dbCancelRequested
+      }
+      lastDbCancelCheckAt = now
+      try {
+        dbCancelRequested = await this.agentTurns.isCancelRequested(turn.turnRecordId)
+      } catch {
+        // Fail-soft: a DB-olvasás hibája ne állítsa le a loopot; az in-memory jelzés marad.
+      }
+      return dbCancelRequested
+    }
+
+    const isCancelRequestedNow = (): boolean => {
+      if (isChatTurnCancelRequested(conversationId) || dbCancelRequested) return true
+      // Async refresh kick — a következő checkpointon érvényesül.
+      void refreshCancelFromDb()
+      return dbCancelRequested
+    }
     const snapshot = new TurnSnapshotFlusher()
 
     const emitToken = async (chunk: string) => {
@@ -976,7 +1002,8 @@ export class AgentChatRuntime {
         reply = processReply.text
         turn.completedReply = processReply.text
         for (const chunk of chunkForStreaming(processReply.text)) {
-          const cancelledId = await this.cancelTurnIfRequested(turn, conversationId)
+          await refreshCancelFromDb()
+          const cancelledId = await this.cancelTurnIfRequested(turn, conversationId, isCancelRequestedNow())
           if (cancelledId) {
             messageId = cancelledId
             outcome = {
@@ -1111,9 +1138,12 @@ export class AgentChatRuntime {
           loadSkill: skillBinding.loadSkill,
           archiveLargeToolResult: (input) =>
             this.archiveLargeToolResult(tenantKey, conversationId, input),
-          shouldCancel: () => isChatTurnCancelRequested(conversationId),
+          shouldCancel: () => isCancelRequestedNow(),
           // Körönkénti életjel: ettől ismerhető fel kívülről az elhalt futás (D10).
-          onTurnStart: () => this.heartbeatTurnRecord(turn),
+          onTurnStart: async () => {
+            await this.heartbeatTurnRecord(turn)
+            await refreshCancelFromDb()
+          },
           onActivity: (activity) => emitActivity(activity),
           ...(thinkingEnabled
             ? {
@@ -1129,7 +1159,12 @@ export class AgentChatRuntime {
 
         if (!result.ok) {
           if (result.error instanceof AgentToolLoopCancelledError) {
-            const cancelledId = await this.cancelTurnIfRequested(turn, conversationId)
+            await refreshCancelFromDb()
+            const cancelledId = await this.cancelTurnIfRequested(
+              turn,
+              conversationId,
+              true,
+            )
             messageId = cancelledId
             outcome = {
               status: 'cancelled',
@@ -1152,7 +1187,8 @@ export class AgentChatRuntime {
         }
         turn.completedReply = reply
         for (const chunk of chunkForStreaming(reply)) {
-          const cancelledId = await this.cancelTurnIfRequested(turn, conversationId)
+          await refreshCancelFromDb()
+          const cancelledId = await this.cancelTurnIfRequested(turn, conversationId, isCancelRequestedNow())
           if (cancelledId) {
             messageId = cancelledId
             outcome = {
@@ -1191,7 +1227,8 @@ export class AgentChatRuntime {
         }
         let accumulated = ''
         for await (const chunk of this.gateway.callStream(gatewayInput)) {
-          const cancelledId = await this.cancelTurnIfRequested(turn, conversationId)
+          await refreshCancelFromDb()
+          const cancelledId = await this.cancelTurnIfRequested(turn, conversationId, isCancelRequestedNow())
           if (cancelledId) {
             messageId = cancelledId
             outcome = {
@@ -1312,8 +1349,11 @@ export class AgentChatRuntime {
   private async cancelTurnIfRequested(
     turn: StreamTurnContext,
     conversationId: string,
+    cancelRequested?: boolean,
   ): Promise<string | null> {
-    if (turn.finalized || !isChatTurnCancelRequested(conversationId)) return null
+    const requested =
+      cancelRequested ?? isChatTurnCancelRequested(conversationId)
+    if (turn.finalized || !requested) return null
     const messageId = await this.persistCancelledTurn(turn)
     if (messageId) turn.finalized = true
     return messageId

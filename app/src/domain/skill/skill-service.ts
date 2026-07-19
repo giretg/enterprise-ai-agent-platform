@@ -1,6 +1,7 @@
 import type { Prisma, Skill, SkillCatalogScope, SkillRiskTier, SkillSourceType } from '@prisma/client'
 import type {
   AuditRepository,
+  AgentSkillMigration,
   ConversationRepository,
   SkillRepository,
   SkillWithVersions,
@@ -484,7 +485,7 @@ export class SkillService {
       contentHash: target.contentHash,
       approverId: input.actor.actorId,
     })
-    const version = await this.skills.approveVersion(input.versionId, {
+    const { version, agentMigrations } = await this.skills.approveVersion(input.versionId, {
       approverId: input.actor.actorId,
       signature,
     })
@@ -502,6 +503,16 @@ export class SkillService {
       policyDecision: 'active',
       tenantId: target.skill.tenantId,
       metadata: { skillVersionId: version.id, contentHash: target.contentHash, signature },
+    })
+
+    await this.recordAgentSkillMigrations({
+      skillId: target.skillId,
+      skillVersionId: version.id,
+      version: version.version,
+      tenantId: target.skill.tenantId,
+      trigger: 'approve',
+      actorId: input.actor.actorId,
+      agentMigrations,
     })
 
     return { versionId: version.id, version: version.version }
@@ -535,7 +546,7 @@ export class SkillService {
       contentHash: target.contentHash,
       approverId: input.actor.actorId,
     })
-    const version = await this.skills.rollbackToVersion(input.versionId, {
+    const { version, agentMigrations } = await this.skills.rollbackToVersion(input.versionId, {
       approverId: input.actor.actorId,
       signature,
     })
@@ -555,12 +566,22 @@ export class SkillService {
       metadata: { skillVersionId: version.id },
     })
 
+    await this.recordAgentSkillMigrations({
+      skillId: target.skillId,
+      skillVersionId: version.id,
+      version: version.version,
+      tenantId: target.skill.tenantId,
+      trigger: 'rollback',
+      actorId: input.actor.actorId,
+      agentMigrations,
+    })
+
     return { versionId: version.id, version: version.version }
   }
 
   /**
    * Aktív verzió visszavonása — a skill nem lesz újra hozzárendelhető; a meglévő
-   * agent-hozzárendelések (verzió-pin) érintetlenek maradnak.
+   * agent-hozzárendelések érintetlenek maradnak (nincs új aktív verzió).
    */
   async deactivateSkill(input: {
     skillId: string
@@ -659,11 +680,32 @@ export class SkillService {
       throw new SkillAccessError('Only an active skill version can be assigned')
     }
 
-    await this.skills.assign({
+    const { replacedVersionIds } = await this.skills.assign({
       agentId: input.agentId,
       skillVersionId: input.skillVersionId,
       assignedById: input.actor.actorId,
     })
+
+    for (const replacedVersionId of replacedVersionIds) {
+      await this.audit.append({
+        actorType: input.actor.actorId ? 'human' : 'system',
+        actorId: input.actor.actorId,
+        agentVersion: null,
+        action: 'skill.unassigned',
+        targetType: 'agent',
+        targetId: input.agentId,
+        modelUsed: null,
+        inputRef: target.skillId,
+        outputRef: replacedVersionId,
+        policyDecision: 'active',
+        tenantId: input.actor.actorTenantId,
+        metadata: {
+          skillVersionId: replacedVersionId,
+          skillId: target.skillId,
+          reason: 'replaced_by_newer_version',
+        },
+      })
+    }
 
     await this.audit.append({
       actorType: input.actor.actorId ? 'human' : 'system',
@@ -677,7 +719,11 @@ export class SkillService {
       outputRef: input.skillVersionId,
       policyDecision: 'active',
       tenantId: input.actor.actorTenantId,
-      metadata: { skillId: target.skillId, skillVersionId: input.skillVersionId },
+      metadata: {
+        skillId: target.skillId,
+        skillVersionId: input.skillVersionId,
+        replacedVersionIds,
+      },
     })
   }
 
@@ -706,6 +752,40 @@ export class SkillService {
 
   setEnabled(input: { agentId: string; skillVersionId: string; enabled: boolean }) {
     return this.skills.setEnabled(input.agentId, input.skillVersionId, input.enabled)
+  }
+
+  private async recordAgentSkillMigrations(input: {
+    skillId: string
+    skillVersionId: string
+    version: number
+    tenantId: string | null
+    trigger: 'approve' | 'rollback'
+    actorId: string
+    agentMigrations: AgentSkillMigration[]
+  }): Promise<void> {
+    if (input.agentMigrations.length === 0) return
+
+    const agentIds = [...new Set(input.agentMigrations.map((m) => m.agentId))]
+    await this.audit.append({
+      actorType: 'human',
+      actorId: input.actorId,
+      agentVersion: null,
+      action: 'skill.version.agents_migrated',
+      targetType: 'skill',
+      targetId: input.skillId,
+      modelUsed: null,
+      inputRef: input.skillVersionId,
+      outputRef: `${agentIds.length} agent`,
+      policyDecision: 'active',
+      tenantId: input.tenantId,
+      metadata: {
+        skillVersionId: input.skillVersionId,
+        version: input.version,
+        trigger: input.trigger,
+        agentCount: agentIds.length,
+        migrations: input.agentMigrations,
+      },
+    })
   }
 
   // ── Context-assembler (progresszív betöltés, WP-5) ────────────────────────

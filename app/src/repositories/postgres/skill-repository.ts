@@ -1,12 +1,79 @@
-import type { AgentSkill, Skill, SkillVersion } from '@prisma/client'
+import type { AgentSkill, Prisma, Skill, SkillVersion } from '@prisma/client'
 import { prisma } from '@/lib/db'
+import {
+  dedupeAgentSkillAssignments,
+  mergedEnabledForAgent,
+  planAgentSkillMigrations,
+} from '@/lib/skill/skill-agent-migration'
 import type {
   AddSkillVersionInput,
+  AgentSkillMigration,
   AgentSkillWithVersion,
   CreateSkillInput,
   SkillRepository,
+  SkillVersionActivationResult,
   SkillWithVersions,
 } from '../interfaces'
+
+async function migrateAgentAssignmentsToVersion(
+  tx: Prisma.TransactionClient,
+  skillId: string,
+  activeVersionId: string,
+  assignedById: string,
+): Promise<AgentSkillMigration[]> {
+  const stale = await tx.agentSkill.findMany({
+    where: {
+      skillVersion: { skillId },
+      NOT: { skillVersionId: activeVersionId },
+    },
+    select: { agentId: true, skillVersionId: true, enabled: true },
+  })
+  const plan = planAgentSkillMigrations(stale, activeVersionId)
+  if (plan.length === 0) return []
+
+  const byAgent = new Map<string, { enabled: boolean; fromVersionIds: string[] }>()
+  for (const row of stale) {
+    const cur = byAgent.get(row.agentId) ?? { enabled: false, fromVersionIds: [] }
+    cur.enabled = cur.enabled || row.enabled
+    cur.fromVersionIds.push(row.skillVersionId)
+    byAgent.set(row.agentId, cur)
+  }
+
+  const migrations: AgentSkillMigration[] = []
+  for (const [agentId, { enabled, fromVersionIds }] of byAgent) {
+    const existing = await tx.agentSkill.findUnique({
+      where: { agentId_skillVersionId: { agentId, skillVersionId: activeVersionId } },
+      select: { enabled: true },
+    })
+    const finalEnabled = mergedEnabledForAgent(existing?.enabled, enabled)
+
+    await tx.agentSkill.upsert({
+      where: { agentId_skillVersionId: { agentId, skillVersionId: activeVersionId } },
+      create: {
+        agentId,
+        skillVersionId: activeVersionId,
+        enabled: finalEnabled,
+        assignedById,
+      },
+      update: { enabled: finalEnabled, assignedById },
+    })
+
+    await tx.agentSkill.deleteMany({
+      where: { agentId, skillVersionId: { in: fromVersionIds } },
+    })
+
+    for (const fromVersionId of fromVersionIds) {
+      migrations.push({
+        agentId,
+        fromVersionId,
+        toVersionId: activeVersionId,
+        enabled: finalEnabled,
+      })
+    }
+  }
+
+  return migrations
+}
 
 export class PostgresSkillRepository implements SkillRepository {
   async listForTenant(actorTenantId: string | null): Promise<SkillWithVersions[]> {
@@ -96,7 +163,7 @@ export class PostgresSkillRepository implements SkillRepository {
   async approveVersion(
     versionId: string,
     params: { approverId: string; signature: string },
-  ): Promise<SkillVersion> {
+  ): Promise<SkillVersionActivationResult> {
     return prisma.$transaction(async (tx) => {
       const target = await tx.skillVersion.findUnique({ where: { id: versionId } })
       if (!target) throw new Error('Skill version not found')
@@ -106,17 +173,26 @@ export class PostgresSkillRepository implements SkillRepository {
         data: { status: 'retired' },
       })
 
-      return tx.skillVersion.update({
+      const version = await tx.skillVersion.update({
         where: { id: versionId },
         data: { status: 'active', approvedById: params.approverId, signature: params.signature },
       })
+
+      const agentMigrations = await migrateAgentAssignmentsToVersion(
+        tx,
+        target.skillId,
+        versionId,
+        params.approverId,
+      )
+
+      return { version, agentMigrations }
     })
   }
 
   async rollbackToVersion(
     versionId: string,
     params: { approverId: string; signature: string },
-  ): Promise<SkillVersion> {
+  ): Promise<SkillVersionActivationResult> {
     return prisma.$transaction(async (tx) => {
       const target = await tx.skillVersion.findUnique({ where: { id: versionId } })
       if (!target) throw new Error('Skill version not found')
@@ -128,10 +204,19 @@ export class PostgresSkillRepository implements SkillRepository {
         data: { status: 'rolled_back' },
       })
 
-      return tx.skillVersion.update({
+      const version = await tx.skillVersion.update({
         where: { id: versionId },
         data: { status: 'active', approvedById: params.approverId, signature: params.signature },
       })
+
+      const agentMigrations = await migrateAgentAssignmentsToVersion(
+        tx,
+        target.skillId,
+        versionId,
+        params.approverId,
+      )
+
+      return { version, agentMigrations }
     })
   }
 
@@ -161,25 +246,76 @@ export class PostgresSkillRepository implements SkillRepository {
     await prisma.skill.delete({ where: { id: skillId } })
   }
 
+  private async listAgentSkillRows(
+    agentId: string,
+    enabledOnly: boolean,
+  ): Promise<AgentSkillWithVersion[]> {
+    const rows = await prisma.agentSkill.findMany({
+      where: { agentId, ...(enabledOnly ? { enabled: true } : {}) },
+      orderBy: { createdAt: enabledOnly ? 'asc' : 'desc' },
+      include: { skillVersion: { include: { skill: true } } },
+    })
+    const deduped = dedupeAgentSkillAssignments(rows)
+    if (deduped.length < rows.length) {
+      const keptIds = new Set(deduped.map((row) => row.skillVersionId))
+      const pruneIds = rows
+        .filter((row) => !keptIds.has(row.skillVersionId))
+        .map((row) => row.skillVersionId)
+      await prisma.agentSkill.deleteMany({
+        where: { agentId, skillVersionId: { in: pruneIds } },
+      })
+    }
+    return deduped
+  }
+
   async assign(input: {
     agentId: string
     skillVersionId: string
     assignedById: string | null
-  }): Promise<AgentSkill> {
-    return prisma.agentSkill.upsert({
-      where: {
-        agentId_skillVersionId: {
+  }): Promise<{ assignment: AgentSkill; replacedVersionIds: string[] }> {
+    return prisma.$transaction(async (tx) => {
+      const target = await tx.skillVersion.findUnique({
+        where: { id: input.skillVersionId },
+        select: { skillId: true },
+      })
+      if (!target) throw new Error('Skill version not found')
+
+      const stale = await tx.agentSkill.findMany({
+        where: {
+          agentId: input.agentId,
+          skillVersion: { skillId: target.skillId },
+          NOT: { skillVersionId: input.skillVersionId },
+        },
+        select: { skillVersionId: true },
+      })
+      const replacedVersionIds = stale.map((row) => row.skillVersionId)
+
+      if (replacedVersionIds.length > 0) {
+        await tx.agentSkill.deleteMany({
+          where: {
+            agentId: input.agentId,
+            skillVersionId: { in: replacedVersionIds },
+          },
+        })
+      }
+
+      const assignment = await tx.agentSkill.upsert({
+        where: {
+          agentId_skillVersionId: {
+            agentId: input.agentId,
+            skillVersionId: input.skillVersionId,
+          },
+        },
+        create: {
           agentId: input.agentId,
           skillVersionId: input.skillVersionId,
+          assignedById: input.assignedById,
+          enabled: true,
         },
-      },
-      create: {
-        agentId: input.agentId,
-        skillVersionId: input.skillVersionId,
-        assignedById: input.assignedById,
-        enabled: true,
-      },
-      update: { enabled: true, assignedById: input.assignedById },
+        update: { enabled: true, assignedById: input.assignedById },
+      })
+
+      return { assignment, replacedVersionIds }
     })
   }
 
@@ -195,19 +331,11 @@ export class PostgresSkillRepository implements SkillRepository {
   }
 
   async listAgentSkills(agentId: string): Promise<AgentSkillWithVersion[]> {
-    return prisma.agentSkill.findMany({
-      where: { agentId },
-      orderBy: { createdAt: 'desc' },
-      include: { skillVersion: { include: { skill: true } } },
-    })
+    return this.listAgentSkillRows(agentId, false)
   }
 
   async listEnabledForAgent(agentId: string): Promise<AgentSkillWithVersion[]> {
-    return prisma.agentSkill.findMany({
-      where: { agentId, enabled: true },
-      orderBy: { createdAt: 'asc' },
-      include: { skillVersion: { include: { skill: true } } },
-    })
+    return this.listAgentSkillRows(agentId, true)
   }
 
   async findAssignment(

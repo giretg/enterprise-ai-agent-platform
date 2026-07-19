@@ -38,6 +38,7 @@ function formatSessionTime(iso: string): string {
 export function AgentChatSessionSidebar({
   sessions,
   activeConversationId,
+  runningConversationIds = [],
   statusFilter = 'active',
   loading,
   loadingMore = false,
@@ -51,6 +52,8 @@ export function AgentChatSessionSidebar({
 }: {
   sessions: ChatSession[]
   activeConversationId: string | null
+  /** Beszélgetések, ahol háttérben fut agent-forduló. */
+  runningConversationIds?: string[]
   statusFilter?: ChatSessionStatusFilter
   loading: boolean
   loadingMore?: boolean
@@ -115,6 +118,7 @@ export function AgentChatSessionSidebar({
               {sessions.map((session) => {
                 const active = session.id === activeConversationId
                 const archived = session.status === 'archived'
+                const running = runningConversationIds.includes(session.id)
                 return (
                   <li key={session.id}>
                     <button
@@ -138,6 +142,11 @@ export function AgentChatSessionSidebar({
                           {session.title}
                         </span>
                         <span className="flex shrink-0 items-center gap-1 text-[10px] text-ink-faint">
+                          {running && (
+                            <span className="rounded-full border border-sky/40 bg-sky/10 px-1.5 py-0.5 font-semibold text-sky">
+                              fut
+                            </span>
+                          )}
                           {archived && (
                             <span className="rounded-full border border-line px-1.5 py-0.5">
                               archív

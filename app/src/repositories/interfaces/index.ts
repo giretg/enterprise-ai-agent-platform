@@ -147,6 +147,9 @@ export interface TicketRepository {
       | 'playbookVersionId'
       | 'playbookStepId'
       | 'requiredGateId'
+      | 'cancelRequested'
+      | 'cancelRequestedById'
+      | 'cancelRequestedAt'
     > &
       Partial<
         Pick<
@@ -161,6 +164,9 @@ export interface TicketRepository {
           | 'playbookVersionId'
           | 'playbookStepId'
           | 'requiredGateId'
+          | 'cancelRequested'
+          | 'cancelRequestedById'
+          | 'cancelRequestedAt'
         >
       >,
   ): Promise<Ticket>
@@ -182,9 +188,15 @@ export interface TicketRepository {
         | 'playbookVersionId'
         | 'playbookStepId'
         | 'requiredGateId'
+        | 'cancelRequested'
+        | 'cancelRequestedById'
+        | 'cancelRequestedAt'
       >
     >,
   ): Promise<Ticket>
+  /** Explicit Stop: cancelRequested flag in_progress ticketen. */
+  requestCancel(id: string, byUserId: string, now?: Date): Promise<Ticket | null>
+  isCancelRequested(id: string): Promise<boolean>
   acquireDispatchLock(id: string, lockToken: string, now: Date): Promise<Ticket | null>
   releaseDispatchLock(id: string, lockToken: string): Promise<void>
   completeDispatchLock(id: string, lockToken: string): Promise<Ticket | null>
@@ -1029,6 +1041,18 @@ export interface AddSkillVersionInput {
   contentHash: string
 }
 
+export type AgentSkillMigration = {
+  agentId: string
+  fromVersionId: string
+  toVersionId: string
+  enabled: boolean
+}
+
+export type SkillVersionActivationResult = {
+  version: SkillVersion
+  agentMigrations: AgentSkillMigration[]
+}
+
 export interface SkillRepository {
   /** Global (tenantId null) + a megadott tenant skilljei — fail-closed olvasás. */
   listForTenant(actorTenantId: string | null): Promise<SkillWithVersions[]>
@@ -1038,13 +1062,16 @@ export interface SkillRepository {
   findVersionById(versionId: string): Promise<(SkillVersion & { skill: Skill }) | null>
   createSkill(input: CreateSkillInput): Promise<{ skill: Skill; version: SkillVersion }>
   addVersion(input: AddSkillVersionInput): Promise<SkillVersion>
-  /** Jóváhagyás: az adott verzió `active`, az addigi aktív `retired`. */
-  approveVersion(versionId: string, params: { approverId: string; signature: string }): Promise<SkillVersion>
-  /** Rollback: egy korábban aktív (`retired` / `rolled_back`) verzió újraaktiválása. */
+  /** Jóváhagyás: az adott verzió `active`, az addigi aktív `retired`, agentek átkötése. */
+  approveVersion(
+    versionId: string,
+    params: { approverId: string; signature: string },
+  ): Promise<SkillVersionActivationResult>
+  /** Rollback: egy korábban aktív (`retired` / `rolled_back`) verzió újraaktiválása + agent migráció. */
   rollbackToVersion(
     versionId: string,
     params: { approverId: string; signature: string },
-  ): Promise<SkillVersion>
+  ): Promise<SkillVersionActivationResult>
   /** Az aktív verzió `retired` — a skill nem hozzárendelhető, meglévő hozzárendelések megmaradnak. */
   retireActiveVersion(skillId: string): Promise<SkillVersion | null>
   getActiveVersion(skillId: string): Promise<SkillVersion | null>
@@ -1052,7 +1079,11 @@ export interface SkillRepository {
   deleteSkill(skillId: string): Promise<void>
 
   // Hozzárendelés (AgentSkill)
-  assign(input: { agentId: string; skillVersionId: string; assignedById: string | null }): Promise<AgentSkill>
+  assign(input: {
+    agentId: string
+    skillVersionId: string
+    assignedById: string | null
+  }): Promise<{ assignment: AgentSkill; replacedVersionIds: string[] }>
   unassign(agentId: string, skillVersionId: string): Promise<void>
   setEnabled(agentId: string, skillVersionId: string, enabled: boolean): Promise<AgentSkill>
   listAgentSkills(agentId: string): Promise<AgentSkillWithVersion[]>
@@ -1489,6 +1520,14 @@ export interface AgentTurnRepository {
   /** Az invariáns szerint legfeljebb egy ilyen sor létezhet. */
   findActiveByConversation(conversationId: string): Promise<AgentTurn | null>
   /**
+   * Tenant-szintű aktív fordulók (Aktív futások panel / lista API).
+   * `createdById` megadása esetén csak a felhasználó saját futásai.
+   */
+  listActiveByTenant(
+    tenantId: string | null,
+    options?: { createdById?: string; limit?: number },
+  ): Promise<AgentTurn[]>
+  /**
    * A lefoglalt fordulóhoz utólag köti a most perzisztált user-üzenetet
    * (l. `CreateAgentTurnInput.userMessageId`).
    */
@@ -1511,6 +1550,13 @@ export interface AgentTurnRepository {
     lockToken: string,
     data: UpdateAgentTurnProgressInput,
   ): Promise<AgentTurn | null>
+  /**
+   * Explicit Stop (D6): `cancelRequested` flag a DB-ben. Csak aktív fordulóra.
+   * `null` = a forduló már terminális vagy nem található.
+   */
+  requestCancel(id: string, byUserId: string, now?: Date): Promise<AgentTurn | null>
+  /** Gyors cancel-ellenőrzés a loop checkpointjaihoz. */
+  isCancelRequested(id: string): Promise<boolean>
   /**
    * Terminális lezárás: a lock elengedésével együtt, egyetlen feltételes
    * írásban. `null` = a forduló már terminális volt (a lezárás idempotens).

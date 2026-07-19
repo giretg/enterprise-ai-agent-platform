@@ -97,6 +97,7 @@
     "test:ticket-thread-prompt": "tsx scripts/ticket-thread-prompt.test.ts",
     "test:agent-turn-snapshot": "tsx scripts/agent-turn-snapshot.test.ts",
     "test:agent-turn-watchdog": "tsx scripts/agent-turn-watchdog.test.ts",
+    "test:active-runs": "tsx scripts/active-runs.test.ts",
     "test:agent-registry": "tsx scripts/agent-registry-lifecycle.test.ts",
     "test:dispatcher-retry-loop": "tsx scripts/dispatcher-retry-loop.test.ts",
     "test:iam-policy": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/iam-policy.test.ts",

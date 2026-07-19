@@ -2,7 +2,7 @@
 
 import { usePathname } from 'next/navigation'
 import { AppShell, type NavEntry } from '@/components/ui/shell'
-import { TenantSwitcher } from '@/components/tenant/tenant-switcher'
+import { ControlPlaneHeaderExtras } from '@/components/active-runs/control-plane-header-extras'
 
 const navItems: NavEntry[] = [
   { href: '/control-plane', label: 'Dashboard', exact: true },
@@ -59,7 +59,7 @@ export default function ControlPlaneLayout({ children }: { children: React.React
       navItems={navItems}
       accentColor="slate"
       pathname={pathname}
-      headerExtra={<TenantSwitcher />}
+      headerExtra={<ControlPlaneHeaderExtras />}
     >
       {children}
     </AppShell>

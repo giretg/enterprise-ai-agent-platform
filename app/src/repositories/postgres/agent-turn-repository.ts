@@ -68,6 +68,21 @@ export class PostgresAgentTurnRepository implements AgentTurnRepository {
     })
   }
 
+  async listActiveByTenant(
+    tenantId: string | null,
+    options?: { createdById?: string; limit?: number },
+  ): Promise<AgentTurn[]> {
+    return prisma.agentTurn.findMany({
+      where: {
+        tenantId,
+        status: { in: [...ACTIVE_AGENT_TURN_STATUSES] },
+        ...(options?.createdById ? { createdById: options.createdById } : {}),
+      },
+      orderBy: { startedAt: 'desc' },
+      take: options?.limit ?? 50,
+    })
+  }
+
   async attachUserMessage(id: string, userMessageId: string): Promise<void> {
     await prisma.agentTurn.update({ where: { id }, data: { userMessageId } })
   }
@@ -114,6 +129,29 @@ export class PostgresAgentTurnRepository implements AgentTurnRepository {
     })
     if (result.count !== 1) return null
     return this.findById(id)
+  }
+
+  async requestCancel(id: string, byUserId: string, now: Date = new Date()): Promise<AgentTurn | null> {
+    const result = await prisma.agentTurn.updateMany({
+      where: { id, status: { in: [...ACTIVE_AGENT_TURN_STATUSES] } },
+      data: {
+        cancelRequested: true,
+        cancelRequestedById: byUserId,
+        cancelRequestedAt: now,
+      },
+    })
+    if (result.count !== 1) return null
+    return this.findById(id)
+  }
+
+  async isCancelRequested(id: string): Promise<boolean> {
+    const turn = await prisma.agentTurn.findUnique({
+      where: { id },
+      select: { cancelRequested: true, status: true },
+    })
+    if (!turn) return false
+    if (!(ACTIVE_AGENT_TURN_STATUSES as readonly string[]).includes(turn.status)) return false
+    return turn.cancelRequested
   }
 
   async finalize(id: string, data: FinalizeAgentTurnInput): Promise<AgentTurn | null> {

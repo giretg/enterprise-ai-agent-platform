@@ -246,12 +246,12 @@ function mapAgentSkillRows(
 
 function mapAssignableSkills(
   catalog: Awaited<ReturnType<typeof services.skills.listForActor>>,
-  assignedVersionIds: Set<string>,
+  assignedSkillIds: Set<string>,
 ): AgentDetailAssignableSkill[] {
   const rows: AgentDetailAssignableSkill[] = []
   for (const skill of catalog) {
     const active = skill.versions.find((v) => v.status === 'active')
-    if (!active || assignedVersionIds.has(active.id)) continue
+    if (!active || assignedSkillIds.has(skill.id)) continue
     rows.push({
       skillId: skill.id,
       name: skill.name,
@@ -326,8 +326,8 @@ export async function loadAgentDetailPageData(
     }))
 
     agentSkills = mapAgentSkillRows(assignedWithReadiness)
-    const assignedVersionIds = new Set(assignedWithReadiness.map((a) => a.skillVersionId))
-    assignableSkills = mapAssignableSkills(skillCatalog, assignedVersionIds)
+    const assignedSkillIds = new Set(assignedWithReadiness.map((a) => a.skillId))
+    assignableSkills = mapAssignableSkills(skillCatalog, assignedSkillIds)
 
     const memoryId = detail.agent.memoryId
     const [projectKeys, initialOverview] = await Promise.all([

@@ -109,11 +109,11 @@ export async function listAssignableSkillsAction(
       services.skills.listForActor(ctx.activeTenantId),
       services.skills.listAgentSkillsWithReadiness(agentId),
     ])
-    const assignedVersionIds = new Set(assigned.map((a) => a.skillVersionId))
+    const assignedSkillIds = new Set(assigned.map((a) => a.skillId))
     const rows: AssignableSkill[] = []
     for (const skill of catalog) {
       const active = skill.versions.find((v) => v.status === 'active')
-      if (!active || assignedVersionIds.has(active.id)) continue
+      if (!active || assignedSkillIds.has(skill.id)) continue
       rows.push({
         skillId: skill.id,
         name: skill.name,

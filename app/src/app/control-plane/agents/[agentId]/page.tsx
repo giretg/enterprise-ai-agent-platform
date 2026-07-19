@@ -68,10 +68,13 @@ function ProseBlock({ text, empty }: { text: string | null | undefined; empty: s
 
 export default async function AgentDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ agentId: string }>
+  searchParams: Promise<{ conversation?: string; openChat?: string }>
 }) {
   const { agentId } = await params
+  const query = await searchParams
   const res = await getAgentDetailPageData({ id: agentId })
   if (!res.success) notFound()
 
@@ -96,6 +99,9 @@ export default async function AgentDetailPage({
     memoryPanel,
     knowledgeBase,
   } = res.data
+
+  const openChat = query.openChat === '1' || Boolean(query.conversation)
+  const initialConversationId = query.conversation ?? null
 
   const assignedConnectorIds = new Set(
     governance?.connectors.map((item) => item.connector.id) ?? [],
@@ -162,6 +168,8 @@ export default async function AgentDetailPage({
               personaTrait: agent.personaTrait,
             }}
             canDistillSkill={isAdmin}
+            initialConversationId={initialConversationId}
+            autoOpen={openChat}
           />
           <AgentMiniAppsLink agentId={agent.id} />
           <span className="text-sm text-ink-faint">

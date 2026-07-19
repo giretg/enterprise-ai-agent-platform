@@ -39,6 +39,11 @@ import {
   deriveRequiresFromToolCalls,
 } from '../src/lib/skill/skill-distill-transcript'
 import { diffSkillVersions } from '../src/lib/skill/skill-diff'
+import {
+  dedupeAgentSkillAssignments,
+  mergedEnabledForAgent,
+  planAgentSkillMigrations,
+} from '../src/lib/skill/skill-agent-migration'
 import { normalizeSkillName, skillNamesEqual } from '../src/lib/skill/skill-name'
 import {
   filterSkillsForSlashQuery,
@@ -601,6 +606,64 @@ async function main() {
     const diff = diffSkillVersions(payload, payload)
     assert.equal(diff.changes.length, 0)
     assert.equal(diff.highestRisk, 'none')
+  })
+
+  console.log('Agent skill auto-migráció (verzió aktiválás)')
+
+  await check('planAgentSkillMigrations: minden régi verzió átkötése az aktívra', () => {
+    const migrations = planAgentSkillMigrations(
+      [
+        { agentId: 'a1', skillVersionId: 'v1', enabled: true },
+        { agentId: 'a2', skillVersionId: 'v1', enabled: false },
+        { agentId: 'a1', skillVersionId: 'v0', enabled: false },
+      ],
+      'v2',
+    )
+    assert.equal(migrations.length, 3)
+    assert.ok(migrations.every((m) => m.toVersionId === 'v2'))
+    assert.deepEqual(
+      migrations.filter((m) => m.agentId === 'a1').map((m) => m.fromVersionId).sort(),
+      ['v0', 'v1'],
+    )
+    const a1 = migrations.find((m) => m.agentId === 'a1' && m.fromVersionId === 'v1')
+    assert.equal(a1?.enabled, true, 'enabled OR a régi hozzárendeléseken')
+  })
+
+  await check('planAgentSkillMigrations: már aktív verzió → nincs migráció', () => {
+    const migrations = planAgentSkillMigrations(
+      [{ agentId: 'a1', skillVersionId: 'v2', enabled: true }],
+      'v2',
+    )
+    assert.equal(migrations.length, 0)
+  })
+
+  await check('mergedEnabledForAgent: meglévő enabled megőrzése', () => {
+    assert.equal(mergedEnabledForAgent(true, false), true)
+    assert.equal(mergedEnabledForAgent(false, true), true)
+    assert.equal(mergedEnabledForAgent(undefined, false), false)
+  })
+
+  await check('dedupeAgentSkillAssignments: skillenként csak a legmagasabb verzió marad', () => {
+    const rows = dedupeAgentSkillAssignments([
+      {
+        agentId: 'a1',
+        skillVersionId: 'v2',
+        skillVersion: { version: 2, skill: { id: 's1' } },
+      },
+      {
+        agentId: 'a1',
+        skillVersionId: 'v3',
+        skillVersion: { version: 3, skill: { id: 's1' } },
+      },
+      {
+        agentId: 'a1',
+        skillVersionId: 'v1',
+        skillVersion: { version: 1, skill: { id: 's2' } },
+      },
+    ])
+    assert.equal(rows.length, 2)
+    assert.equal(rows.find((r) => r.skillVersion.skill.id === 's1')?.skillVersionId, 'v3')
+    assert.equal(rows.find((r) => r.skillVersion.skill.id === 's2')?.skillVersionId, 'v1')
   })
 
   console.log('Skill-név egyediség')

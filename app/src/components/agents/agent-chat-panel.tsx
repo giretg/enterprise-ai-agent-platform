@@ -78,6 +78,11 @@ type ChatMessage = {
   thinking?: Record<string, string>
 }
 
+/** Spec §8.3 — optimista/reconnect buborék azonosító a fordulóhoz kötve. */
+function agentBubbleIdForTurn(turnId: string): string {
+  return `turn-agent-${turnId}`
+}
+
 type ScheduledTaskRecurrence = 'none' | 'daily' | 'weekly' | 'monthly'
 
 type ChatProcessDefinition = {
@@ -117,9 +122,18 @@ type MemoryCandidateCard = {
 type AgentChatStreamEvent =
   /**
    * A stream legelső eseménye: a szerveren futó forduló azonosítója. A Stop és a
-   * visszacsatlakozás ehhez kötődik majd (#65/#67) — itt még csak a szerződés.
+   * visszacsatlakozás ehhez kötődik.
    */
   | { type: 'turn'; turnId: string }
+  | {
+      type: 'snapshot'
+      turnId: string
+      status: string
+      partialText: string
+      activities: unknown
+      conversationId: string
+      userMessageId: string | null
+    }
   | { type: 'meta'; conversationId: string; userMessageId: string }
   | { type: 'activity'; activity: AgentActivity }
   | { type: 'memory_candidate'; candidate: Omit<MemoryCandidateCard, 'status' | 'resultMessage'> }
@@ -675,12 +689,15 @@ export function AgentChatPanel({
   open,
   onClose,
   canDistillSkill = false,
+  initialConversationId = null,
 }: {
   agent: ChatAgent
   open: boolean
   onClose: () => void
   /** Admin: D14 skill-desztilláció a beszélgetésből (skill-catalog-spec §WP-6). */
   canDistillSkill?: boolean
+  /** Deep-link / Aktív futások: nyitáskor ezt a beszélgetést tölti be + reattach. */
+  initialConversationId?: string | null
 }) {
   const persona = personaFor(agent.name, agent)
   const [input, setInput] = useState('')
@@ -695,6 +712,8 @@ export function AgentChatPanel({
   const [ticketAuthorizeRunAs, setTicketAuthorizeRunAs] = useState(false)
   const [isAgentTyping, setIsAgentTyping] = useState(false)
   const [stopPending, setStopPending] = useState(false)
+  const [activeTurnId, setActiveTurnId] = useState<string | null>(null)
+  const [runningConversationIds, setRunningConversationIds] = useState<string[]>([])
   const [sessions, setSessions] = useState<ChatSession[]>([])
   const [sessionsLoading, setSessionsLoading] = useState(false)
   const [sessionsLoadingMore, setSessionsLoadingMore] = useState(false)
@@ -720,6 +739,7 @@ export function AgentChatPanel({
   const filesRef = useRef<ConversationFilesPanelHandle>(null)
   const streamAbortRef = useRef<AbortController | null>(null)
   const streamConversationIdRef = useRef<string | null>(null)
+  const activeTurnIdRef = useRef<string | null>(null)
   const [mounted, setMounted] = useState(false)
   const [connectableUserConnectors, setConnectableUserConnectors] = useState<
     AgentDelegatedConnectorRow[]
@@ -727,6 +747,18 @@ export function AgentChatPanel({
   const [connectableUserConnectorsLoading, setConnectableUserConnectorsLoading] = useState(false)
   const [thinkingTraceControls, setThinkingTraceControls] =
     useState<ThinkingTraceControlState>('loading')
+
+  useEffect(() => {
+    activeTurnIdRef.current = activeTurnId
+  }, [activeTurnId])
+
+  const markConversationRunning = useCallback((convId: string | null, running: boolean) => {
+    if (!convId) return
+    setRunningConversationIds((prev) => {
+      if (running) return prev.includes(convId) ? prev : [...prev, convId]
+      return prev.filter((id) => id !== convId)
+    })
+  }, [])
 
   useEffect(() => {
     const timer = window.setTimeout(() => setMounted(true), 0)
@@ -852,36 +884,6 @@ export function AgentChatPanel({
     setSessionsOpen(false)
     setSelectedProcessDefId(null)
   }, [isAgentTyping])
-
-  const selectSession = useCallback(
-    async (id: string) => {
-      if (isAgentTyping || id === conversationId) {
-        setSessionsOpen(false)
-        return
-      }
-
-      setConversationId(id)
-      setStatusMessage(null)
-      setLastTicketId(null)
-      setSessionsOpen(false)
-      setSelectedProcessDefId(null)
-      setConversationStatus(sessions.find((session) => session.id === id)?.status ?? 'active')
-
-      const res = await loadAgentChatMessages({ conversationId: id, agentId: agent.id })
-      if (res.success) {
-        setConversationStatus(res.data.conversation.status)
-        setMessages(
-          res.data.messages.map((m) => ({
-            ...m,
-            createdAt: new Date(m.createdAt).toISOString(),
-          })),
-        )
-      } else {
-        setStatusMessage(res.error)
-      }
-    },
-    [agent.id, conversationId, isAgentTyping, sessions],
-  )
 
   useEffect(() => {
     if (open) {
@@ -1153,18 +1155,275 @@ export function AgentChatPanel({
     [agent.id, refreshSessions],
   )
 
+  const consumeReattachStream = useCallback(
+    async (params: {
+      turnId: string
+      conversationId: string
+      agentMessageId: string
+      signal: AbortSignal
+    }) => {
+      const response = await fetch(`/api/v1/agent-chat/turns/${params.turnId}/stream`, {
+        signal: params.signal,
+      })
+      if (!response.ok || !response.body) {
+        setStatusMessage(`Visszacsatlakozás sikertelen (${response.status})`)
+        setIsAgentTyping(false)
+        setStopPending(false)
+        setActiveTurnId(null)
+        markConversationRunning(params.conversationId, false)
+        return
+      }
+
+      const reader = response.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let accumulatedReply = ''
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          buffer += decoder.decode(value, { stream: true })
+          const lines = buffer.split('\n')
+          buffer = lines.pop() ?? ''
+
+          for (const line of lines) {
+            const trimmed = line.trim()
+            if (!trimmed.startsWith('data: ')) continue
+            let event: AgentChatStreamEvent
+            try {
+              event = JSON.parse(trimmed.slice(6)) as AgentChatStreamEvent
+            } catch {
+              continue
+            }
+
+            if (event.type === 'snapshot') {
+              const activities = Array.isArray(event.activities)
+                ? (event.activities as AgentActivity[])
+                : []
+              accumulatedReply = event.partialText ?? ''
+              setActiveTurnId(event.turnId)
+              flushSync(() => {
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === params.agentMessageId
+                      ? {
+                          ...m,
+                          text: accumulatedReply,
+                          activities,
+                        }
+                      : m,
+                  ),
+                )
+              })
+            } else if (event.type === 'activity') {
+              flushSync(() => {
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === params.agentMessageId
+                      ? { ...m, activities: upsertActivity(m.activities, event.activity) }
+                      : m,
+                  ),
+                )
+              })
+            } else if (
+              event.type === 'thinking' &&
+              typeof event.delta === 'string' &&
+              thinkingTraceControls === 'enabled'
+            ) {
+              const { turnId, delta } = event
+              flushSync(() => {
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === params.agentMessageId
+                      ? {
+                          ...m,
+                          thinking: appendThinkingDelta(
+                            m.thinking,
+                            { turnId, delta },
+                            thinkingTraceControls,
+                          ),
+                        }
+                      : m,
+                  ),
+                )
+              })
+            } else if (event.type === 'token') {
+              accumulatedReply += event.chunk
+              flushSync(() => {
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === params.agentMessageId ? { ...m, text: accumulatedReply } : m,
+                  ),
+                )
+              })
+            } else if (
+              (event.type === 'done' || event.type === 'cancelled') &&
+              event.conversationId &&
+              event.messageId
+            ) {
+              await reloadConversationMessages(event.conversationId)
+              setIsAgentTyping(false)
+              setStopPending(false)
+              setActiveTurnId(null)
+              markConversationRunning(event.conversationId, false)
+              return
+            } else if (event.type === 'error') {
+              setStatusMessage(event.message ?? 'A válasz hibával zárult.')
+              setIsAgentTyping(false)
+              setStopPending(false)
+              setActiveTurnId(null)
+              markConversationRunning(params.conversationId, false)
+              return
+            }
+          }
+        }
+      } finally {
+        setIsAgentTyping(false)
+        setStopPending(false)
+      }
+    },
+    [markConversationRunning, reloadConversationMessages, thinkingTraceControls],
+  )
+
+  const reattachToConversation = useCallback(
+    async (convId: string) => {
+      try {
+        const res = await fetch(
+          `/api/v1/agent-chat/turns?conversationId=${encodeURIComponent(convId)}&active=1`,
+        )
+        if (!res.ok) return false
+        const data = (await res.json()) as {
+          active: boolean
+          turn: {
+            id: string
+            partialText: string
+            activities: unknown
+            userMessageId: string | null
+          } | null
+        }
+        if (!data.active || !data.turn) return false
+
+        streamAbortRef.current?.abort()
+        const abortController = new AbortController()
+        streamAbortRef.current = abortController
+        streamConversationIdRef.current = convId
+
+        const agentMessageId = agentBubbleIdForTurn(data.turn.id)
+        const activities = Array.isArray(data.turn.activities)
+          ? (data.turn.activities as AgentActivity[])
+          : []
+
+        setActiveTurnId(data.turn.id)
+        setIsAgentTyping(true)
+        setStopPending(false)
+        markConversationRunning(convId, true)
+        setMessages((prev) => {
+          const withoutOptimistic = prev.filter((m) => m.id !== agentMessageId)
+          const last = withoutOptimistic[withoutOptimistic.length - 1]
+          if (last?.role === 'agent' && !last.text.trim() && (last.activities?.length ?? 0) === 0) {
+            return withoutOptimistic.map((m, i) =>
+              i === withoutOptimistic.length - 1
+                ? {
+                    ...m,
+                    id: agentMessageId,
+                    text: data.turn!.partialText ?? '',
+                    activities,
+                  }
+                : m,
+            )
+          }
+          return [
+            ...withoutOptimistic,
+            {
+              id: agentMessageId,
+              role: 'agent' as const,
+              text: data.turn!.partialText ?? '',
+              attachments: [],
+              createdAt: new Date().toISOString(),
+              activities,
+            },
+          ]
+        })
+
+        void consumeReattachStream({
+          turnId: data.turn.id,
+          conversationId: convId,
+          agentMessageId,
+          signal: abortController.signal,
+        })
+        return true
+      } catch {
+        return false
+      }
+    },
+    [consumeReattachStream, markConversationRunning],
+  )
+
+  const selectSession = useCallback(
+    async (id: string) => {
+      if (id === conversationId && !isAgentTyping) {
+        setSessionsOpen(false)
+        return
+      }
+      if (isAgentTyping && id === conversationId) {
+        setSessionsOpen(false)
+        return
+      }
+
+      // Más beszélgetésre váltáskor a helyi stream-olvasást megszakítjuk (a szerver fut tovább).
+      streamAbortRef.current?.abort()
+      setIsAgentTyping(false)
+      setStopPending(false)
+      setActiveTurnId(null)
+
+      setConversationId(id)
+      setStatusMessage(null)
+      setLastTicketId(null)
+      setSessionsOpen(false)
+      setSelectedProcessDefId(null)
+      setConversationStatus(sessions.find((session) => session.id === id)?.status ?? 'active')
+
+      const res = await loadAgentChatMessages({ conversationId: id, agentId: agent.id })
+      if (res.success) {
+        setConversationStatus(res.data.conversation.status)
+        setMessages(
+          res.data.messages.map((m) => ({
+            ...m,
+            createdAt: new Date(m.createdAt).toISOString(),
+          })),
+        )
+        void reattachToConversation(id)
+      } else {
+        setStatusMessage(res.error)
+      }
+    },
+    [agent.id, conversationId, isAgentTyping, reattachToConversation, sessions],
+  )
+
+  // Deep-link: panel nyitáskor betölti az initialConversationId-t és reattach-el.
+  useEffect(() => {
+    if (!open || !initialConversationId) return
+    void selectSession(initialConversationId)
+    // Csak nyitáskor / initialConversationId változáskor.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, initialConversationId])
+
   const handleStop = () => {
     const convId = streamConversationIdRef.current ?? conversationId
-    if (!convId || stopPending) return
+    const turnId = activeTurnIdRef.current
+    if ((!convId && !turnId) || stopPending) return
     setStopPending(true)
     setStatusMessage(null)
     void (async () => {
       try {
-        const response = await fetch('/api/v1/agent-chat/cancel', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ conversationId: convId }),
-        })
+        const response = turnId
+          ? await fetch(`/api/v1/agent-chat/turns/${turnId}/cancel`, { method: 'POST' })
+          : await fetch('/api/v1/agent-chat/cancel', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ conversationId: convId }),
+            })
         if (!response.ok) {
           setStopPending(false)
           setStatusMessage(
@@ -1185,7 +1444,7 @@ export function AgentChatPanel({
     const text = input.trim()
     const localAttachments = [...pendingAttachments]
     const optimisticUserId = `optimistic-user-${Date.now()}`
-    const optimisticAgentId = `optimistic-agent-${Date.now()}`
+    let agentBubbleMessageId = `optimistic-agent-pending-${Date.now()}`
 
     const optimisticUserMessage: ChatMessage = {
       id: optimisticUserId,
@@ -1201,7 +1460,7 @@ export function AgentChatPanel({
     }
 
     const optimisticAgentMessage: ChatMessage = {
-      id: optimisticAgentId,
+      id: agentBubbleMessageId,
       role: 'agent',
       text: '',
       attachments: [],
@@ -1215,6 +1474,7 @@ export function AgentChatPanel({
     setLastTicketId(null)
     setIsAgentTyping(true)
     streamConversationIdRef.current = conversationId
+    if (conversationId) markConversationRunning(conversationId, true)
 
     let accumulatedReply = ''
 
@@ -1228,7 +1488,7 @@ export function AgentChatPanel({
         setMessages((prev) =>
           prev.filter(
             (message) =>
-              message.id !== optimisticAgentId &&
+              message.id !== agentBubbleMessageId &&
               (persistedUserMessageId !== null || message.id !== optimisticUserId),
           ),
         )
@@ -1240,7 +1500,7 @@ export function AgentChatPanel({
         setMessages((prev) =>
           prev
             .map((message) => {
-              if (message.id !== optimisticAgentId) return message
+              if (message.id !== agentBubbleMessageId) return message
               const partialText = accumulatedReply.trim()
               if (!hasContent(message.activities?.length ?? 0, partialText)) return message
               return {
@@ -1252,7 +1512,7 @@ export function AgentChatPanel({
             })
             .filter(
               (message) =>
-                message.id !== optimisticAgentId ||
+                message.id !== agentBubbleMessageId ||
                 hasContent(message.activities?.length ?? 0, message.text),
             ),
         )
@@ -1277,12 +1537,35 @@ export function AgentChatPanel({
 
         // Aktív-forduló ütközés (D7): a beszélgetésen már fut egy válasz. Nem
         // néma hiba — a szerver az aktív forduló azonosítóját is visszaadja; a
-        // tényleges rácsatlakozás külön tiket, addig érthető üzenetet mutatunk.
+        // Aktív forduló ütközés: reattach az activeTurnId-re, ne új küldés.
         if (response.status === 409) {
           removeFailedOptimisticMessages()
+          let activeTurnIdFromConflict: string | null = null
+          let conflictConversationId = conversationId
+          try {
+            const body = (await response.json()) as {
+              activeTurnId?: string | null
+              conversationId?: string
+            }
+            activeTurnIdFromConflict = body.activeTurnId ?? null
+            conflictConversationId = body.conversationId ?? conversationId
+          } catch {
+            // ignore
+          }
+          if (conflictConversationId) {
+            setConversationId(conflictConversationId)
+            const attached = await reattachToConversation(conflictConversationId)
+            if (attached) {
+              setStatusMessage('Már fut egy válasz — visszacsatlakoztál hozzá.')
+              return
+            }
+          }
           setStatusMessage(
-            'Ebben a beszélgetésben már készül egy válasz. Várd meg, amíg elkészül, vagy állítsd le a Stop gombbal.',
+            activeTurnIdFromConflict
+              ? 'Ebben a beszélgetésben már készül egy válasz. Próbáld újra a megnyitást, vagy állítsd le.'
+              : 'Ebben a beszélgetésben már készül egy válasz. Várd meg, amíg elkészül, vagy állítsd le a Stop gombbal.',
           )
+          setIsAgentTyping(false)
           return
         }
 
@@ -1316,9 +1599,17 @@ export function AgentChatPanel({
               continue
             }
 
-            if (event.type === 'meta' && event.conversationId) {
+            if (event.type === 'turn' && event.turnId) {
+              const turnBubbleId = agentBubbleIdForTurn(event.turnId)
+              setActiveTurnId(event.turnId)
+              setMessages((prev) =>
+                prev.map((m) => (m.id === agentBubbleMessageId ? { ...m, id: turnBubbleId } : m)),
+              )
+              agentBubbleMessageId = turnBubbleId
+            } else if (event.type === 'meta' && event.conversationId) {
               persistedUserMessageId = event.userMessageId
               streamConversationIdRef.current = event.conversationId
+              markConversationRunning(event.conversationId, true)
               setConversationId(event.conversationId)
               setConversationStatus('active')
               setMessages((prev) =>
@@ -1332,7 +1623,7 @@ export function AgentChatPanel({
               flushSync(() => {
                 setMessages((prev) =>
                   prev.map((m) =>
-                    m.id === optimisticAgentId
+                    m.id === agentBubbleMessageId
                       ? {
                           ...m,
                           activities: upsertActivity(m.activities, event.activity),
@@ -1350,7 +1641,7 @@ export function AgentChatPanel({
               flushSync(() => {
                 setMessages((prev) =>
                   prev.map((m) =>
-                    m.id === optimisticAgentId
+                    m.id === agentBubbleMessageId
                       ? {
                           ...m,
                           thinking: appendThinkingDelta(
@@ -1367,7 +1658,7 @@ export function AgentChatPanel({
               flushSync(() => {
                 setMessages((prev) =>
                   prev.map((m) =>
-                    m.id === optimisticAgentId
+                    m.id === agentBubbleMessageId
                       ? {
                           ...m,
                           memoryCandidates: upsertMemoryCandidate(m.memoryCandidates, {
@@ -1384,16 +1675,18 @@ export function AgentChatPanel({
               flushSync(() => {
                 setMessages((prev) =>
                   prev.map((m) =>
-                    m.id === optimisticAgentId ? { ...m, text: m.text + event.chunk! } : m,
+                    m.id === agentBubbleMessageId ? { ...m, text: m.text + event.chunk! } : m,
                   ),
                 )
               })
             } else if (event.type === 'done' && event.conversationId && event.messageId) {
               setConversationId(event.conversationId)
               setConversationStatus('active')
+              markConversationRunning(event.conversationId, false)
+              setActiveTurnId(null)
               setMessages((prev) =>
                 prev.map((m) =>
-                  m.id === optimisticAgentId
+                  m.id === agentBubbleMessageId
                     ? {
                         ...m,
                         id: event.messageId!,
@@ -1412,6 +1705,8 @@ export function AgentChatPanel({
               streamTerminalEvent = true
               break
             } else if (event.type === 'cancelled' && event.conversationId && event.messageId) {
+              markConversationRunning(event.conversationId, false)
+              setActiveTurnId(null)
               await reloadConversationMessages(event.conversationId)
               setStatusMessage('Agent válasz megszakítva — részeredmény mentve.')
               streamTerminalEvent = true
@@ -1683,6 +1978,7 @@ export function AgentChatPanel({
             <AgentChatSessionSidebar
               sessions={sessions}
               activeConversationId={conversationId}
+              runningConversationIds={runningConversationIds}
               statusFilter={sessionsFilter}
               loading={sessionsLoading}
               loadingMore={sessionsLoadingMore}
@@ -2015,13 +2311,21 @@ export function AgentChatButton({
   className = '',
   compact = false,
   canDistillSkill = false,
+  initialConversationId = null,
+  autoOpen = false,
 }: {
   agent: ChatAgent
   className?: string
   compact?: boolean
   canDistillSkill?: boolean
+  initialConversationId?: string | null
+  autoOpen?: boolean
 }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(autoOpen)
+
+  useEffect(() => {
+    if (autoOpen) setOpen(true)
+  }, [autoOpen])
 
   return (
     <>
@@ -2047,6 +2351,7 @@ export function AgentChatButton({
           open
           onClose={() => setOpen(false)}
           canDistillSkill={canDistillSkill}
+          initialConversationId={initialConversationId}
         />
       )}
     </>

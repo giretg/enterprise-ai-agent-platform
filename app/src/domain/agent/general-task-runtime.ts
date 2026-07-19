@@ -57,10 +57,14 @@ import type { ModelGateway, ModelConfig } from '../gateway/model-gateway'
 import type { ToolBrokerService } from '../tool-broker/tool-broker-service'
 import type { WorkspaceStorage } from '../file-editor/workspace-storage'
 import { formatAttachmentBlock } from './agent-chat-runtime'
-import { listAllowedChatTools, resolveToolLoopMaxTurns, runAgentToolLoop, type LoadSkillFn } from './chat-tool-loop'
+import { listAllowedChatTools, resolveToolLoopMaxTurns, runAgentToolLoop, AgentToolLoopCancelledError, type LoadSkillFn } from './chat-tool-loop'
 import { formatTaskWorkspaceFilesPrompt } from '@/lib/task-workspace-prompt'
 import type { SkillService } from '../skill/skill-service'
 import type { PromptSegments } from './prompt-assembler'
+import {
+  TicketProgressFlusher,
+  mergeRuntimeProgressIntoPayload,
+} from './ticket-runtime-progress'
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -288,24 +292,111 @@ export class GeneralTaskRuntime {
       })
     }
 
-    const loopResult = await runAgentToolLoop({
-      gateway: this.gateway,
-      toolBroker: this.toolBroker,
-      toolCaps: this.toolCaps,
-      agentId: params.agentId,
-      agentVersion,
-      context: { ticketId: ticket.id },
-      mode: 'task',
-      promptSegments: messages,
-      modelConfig,
-      allowedTools,
-      maxTurns: resolveToolLoopMaxTurns(modelConfig, allowedTools, 'task'),
-      skillIndexPrompt,
-      preloadedSkillPrompts,
-      loadSkill,
-      archiveLargeToolResult: (input) =>
-        this.archiveLargeToolResult(wsTenant, ticket.id, input),
-    })
+    const progress = new TicketProgressFlusher()
+    let dbCancelRequested = false
+    let lastCancelCheckAt = 0
+    const refreshCancel = async () => {
+      const now = Date.now()
+      if (now - lastCancelCheckAt < 1000 && lastCancelCheckAt > 0) return dbCancelRequested
+      lastCancelCheckAt = now
+      try {
+        dbCancelRequested = await this.tickets.isCancelRequested(ticket.id)
+      } catch {
+        // fail-soft
+      }
+      return dbCancelRequested
+    }
+    const persistProgress = async (force = false) => {
+      const snap = force ? progress.takeSnapshot() : progress.snapshotIfDue()
+      if (!snap) return
+      const current = await this.tickets.findById(ticket.id)
+      const base =
+        current && isRecord(current.payload)
+          ? (current.payload as Record<string, unknown>)
+          : payload
+      await this.tickets.update(ticket.id, {
+        payload: mergeRuntimeProgressIntoPayload(base, snap) as Prisma.JsonValue,
+      })
+    }
+
+    let loopResult: Awaited<ReturnType<typeof runAgentToolLoop>>
+    try {
+      loopResult = await runAgentToolLoop({
+        gateway: this.gateway,
+        toolBroker: this.toolBroker,
+        toolCaps: this.toolCaps,
+        agentId: params.agentId,
+        agentVersion,
+        context: { ticketId: ticket.id },
+        mode: 'task',
+        promptSegments: messages,
+        modelConfig,
+        allowedTools,
+        maxTurns: resolveToolLoopMaxTurns(modelConfig, allowedTools, 'task'),
+        skillIndexPrompt,
+        preloadedSkillPrompts,
+        loadSkill,
+        archiveLargeToolResult: (input) =>
+          this.archiveLargeToolResult(wsTenant, ticket.id, input),
+        shouldCancel: () => {
+          if (dbCancelRequested) return true
+          void refreshCancel()
+          return dbCancelRequested
+        },
+        onTurnStart: async () => {
+          await refreshCancel()
+        },
+        onActivity: async (activity) => {
+          const due = progress.pushActivity(activity)
+          if (due) await persistProgress(false)
+        },
+      })
+    } catch (error) {
+      await persistProgress(true)
+      if (error instanceof AgentToolLoopCancelledError) {
+        const current = await this.tickets.findById(ticket.id)
+        const base =
+          current && isRecord(current.payload)
+            ? (current.payload as Record<string, unknown>)
+            : payload
+        const cancelledPayload = {
+          ...base,
+          cancelled: true,
+          cancelNote: 'Felhasználói leállítás — a részeredmény megőrizve.',
+        }
+        await this.tickets.update(ticket.id, {
+          state: 'awaiting_human',
+          payload: cancelledPayload as Prisma.JsonValue,
+          lockToken: null,
+          lockedAt: null,
+          cancelRequested: false,
+        })
+        await this.tickets.recordTransition({
+          ticketId: ticket.id,
+          fromState: ticket.state,
+          toState: 'awaiting_human',
+          actorType: 'human',
+          actorId: ticket.cancelRequestedById ?? ticket.createdById,
+          agentVersion,
+          note: 'Agent futás leállítva (emergency stop).',
+        })
+        await this.tickets.appendComment({
+          ticketId: ticket.id,
+          kind: 'system_note',
+          authorType: 'human',
+          authorUserId: ticket.cancelRequestedById ?? ticket.createdById,
+          body: '⏹️ A ticket feldolgozása le lett állítva. A részeredmény megőrződött; folytathatod vagy újraindíthatod.',
+        })
+        return {
+          ticketId: ticket.id,
+          ticket: await this.tickets.findById(ticket.id),
+          cancelled: true,
+        }
+      }
+      throw error
+    }
+
+    await persistProgress(true)
     const { content: answer, toolCallCount } = loopResult
 
     if (loopResult.status === 'exhausted') {

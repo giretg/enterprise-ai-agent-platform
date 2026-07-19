@@ -296,6 +296,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'skill.version.proposed',
   'skill.version.reviewed',
   'skill.version.approved',
+  'skill.version.agents_migrated',
   'skill.assigned',
   'skill.unassigned',
   'skill.loaded',

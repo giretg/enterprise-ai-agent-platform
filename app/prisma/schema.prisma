@@ -1872,6 +1872,10 @@ model Ticket {
   dueBy             DateTime?     @map("due_by") @db.Timestamptz
   lockToken         String?       @map("lock_token")
   lockedAt          DateTime?     @map("locked_at") @db.Timestamptz
+  /** Kooperatív emergency stop a futó agent loopra (Aktív futások UI). */
+  cancelRequested     Boolean   @default(false) @map("cancel_requested")
+  cancelRequestedById String?   @map("cancel_requested_by") @db.Uuid
+  cancelRequestedAt   DateTime? @map("cancel_requested_at") @db.Timestamptz
   playbookRef       String?       @map("playbook_ref")
   processInstanceId String?       @map("process_instance_id") @db.Uuid
   playbookVersionId String?       @map("playbook_version_id") @db.Uuid

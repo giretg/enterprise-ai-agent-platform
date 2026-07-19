@@ -133,6 +133,9 @@ function fakeTurnRepository(options: { failOnCreate?: Error } = {}) {
     async findActiveByConversation(conversationId) {
       return activeByConversation.get(conversationId) ?? null
     },
+    async listActiveByTenant() {
+      return [...activeByConversation.values()]
+    },
     async attachUserMessage(id, userMessageId) {
       const input = inputById.get(id)
       if (input) input.userMessageId = userMessageId
@@ -157,6 +160,20 @@ function fakeTurnRepository(options: { failOnCreate?: Error } = {}) {
       if (data.partialText !== undefined) Object.assign(row, { partialText: data.partialText })
       if (data.activities !== undefined) Object.assign(row, { activities: data.activities })
       return row
+    },
+    async requestCancel(id, byUserId, now = new Date()) {
+      const row = rowsById.get(id)
+      if (!row || !activeByConversation.has(row.conversationId)) return null
+      Object.assign(row, {
+        cancelRequested: true,
+        cancelRequestedById: byUserId,
+        cancelRequestedAt: now,
+      })
+      return row
+    },
+    async isCancelRequested(id) {
+      const row = rowsById.get(id)
+      return Boolean(row?.cancelRequested && activeByConversation.has(row.conversationId))
     },
     async finalize(id, data) {
       finalized.push({ id, ...data })

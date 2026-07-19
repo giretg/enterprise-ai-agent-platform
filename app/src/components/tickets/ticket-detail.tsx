@@ -1,7 +1,7 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
-import { useState, useTransition } from 'react'
+import { useEffect, useState, useTransition } from 'react'
 import Link from 'next/link'
 import { transitionTicket } from '@/app/actions/platform'
 import { startProcessFromTicket } from '@/app/actions/process'
@@ -14,7 +14,7 @@ import { formatTicketDateTime } from '@/lib/ticket-display'
 import { isRunAsAuthorized } from '@/lib/run-as-payload'
 import { resolveTicketTriggerInputPayload } from '@/lib/playbook-v2/trigger-input'
 import { readStepOutcome } from '@/lib/playbook-v2/process-step-payload'
-import type { ProcessStatus } from '@prisma/client'
+import { readTicketRuntimeProgress } from '@/domain/agent/ticket-runtime-progress'
 
 type TicketView = {
   id: string
@@ -311,6 +311,7 @@ export function TicketProcessStartPanel({
 export function TicketActions({ ticket }: { ticket: TicketView }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
+  const [stopPending, setStopPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [note, setNote] = useState('')
 
@@ -318,8 +319,19 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
   const canApprove = ticket.state === 'awaiting_human'
   const canReject = REJECTABLE_STATES.has(ticket.state)
   const canRerun = ticket.state === 'rejected'
-  const hasActions = canApprove || canReject || canRerun
+  const canStop = ticket.state === 'in_progress'
+  const hasActions = canApprove || canReject || canRerun || canStop
   const isWikiFollowUp = hasWikiAnswer(ticket.payload)
+
+  const runtimeProgress = readTicketRuntimeProgress(ticket.payload)
+
+  useEffect(() => {
+    if (!canStop) return
+    const timer = window.setInterval(() => {
+      router.refresh()
+    }, 2000)
+    return () => window.clearInterval(timer)
+  }, [canStop, router])
 
   const act = (toState: string) => {
     if (toState === 'rejected' && isWikiFollowUp && !note.trim()) {
@@ -339,6 +351,29 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
     })
   }
 
+  const stopProcessing = () => {
+    if (stopPending) return
+    setStopPending(true)
+    setError(null)
+    void (async () => {
+      try {
+        const res = await fetch(`/api/v1/tickets/${ticket.id}/cancel`, { method: 'POST' })
+        if (!res.ok) {
+          setError(
+            res.status === 404
+              ? 'A ticket már nem fut — lehet, hogy befejeződött.'
+              : 'Leállítás sikertelen.',
+          )
+        }
+        router.refresh()
+      } catch {
+        setError('Leállítás sikertelen.')
+      } finally {
+        setStopPending(false)
+      }
+    })()
+  }
+
   if (!hasActions) {
     return (
       <Card title="Műveletek">
@@ -353,6 +388,42 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
   return (
     <Card title="Műveletek">
       {error && <p className="mb-3 text-sm text-coral">{error}</p>}
+      {canStop && (
+        <div className="mb-4 rounded-xl border border-sky/30 bg-sky/5 px-3 py-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <p className="text-sm font-semibold text-ink">Feldolgozás folyamatban</p>
+              <p className="text-xs text-ink-faint">
+                Az agent a háttérben dolgozik. Beragadás esetén leállíthatod.
+              </p>
+            </div>
+            <button
+              type="button"
+              disabled={stopPending}
+              onClick={stopProcessing}
+              className="rounded-full border border-coral/40 bg-coral/15 px-4 py-2 text-sm font-semibold text-coral-deep hover:bg-coral/25 disabled:opacity-50"
+            >
+              {stopPending ? 'Leállítás…' : 'Feldolgozás leállítása'}
+            </button>
+          </div>
+          {runtimeProgress?.activities && runtimeProgress.activities.length > 0 && (
+            <ul className="mt-3 space-y-1.5 border-t border-sky/20 pt-3">
+              {runtimeProgress.activities.slice(-8).map((activity, index) => (
+                <li
+                  key={activity.id ?? `${activity.title ?? 'a'}-${index}`}
+                  className="flex items-center gap-2 text-xs text-ink-soft"
+                >
+                  <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-sky" />
+                  <span className="truncate">
+                    {activity.title ?? activity.kind ?? 'Aktivitás'}
+                    {activity.status ? ` · ${activity.status}` : ''}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
       <textarea
         className="mb-3 w-full rounded-lg border border-line bg-night-2 p-3 text-sm text-ink"
         placeholder={

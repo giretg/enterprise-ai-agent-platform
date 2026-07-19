@@ -24,6 +24,16 @@ import type { ToolLoopActivityEvent, ToolLoopMemoryCandidateEvent } from './chat
 export type AgentChatStreamEvent =
   /** Mindig a legelső esemény: a forduló azonosítója (Stop + visszacsatlakozás, §6.1). */
   | { type: 'turn'; turnId: string }
+  /** Reconnect első eseménye (spec §6.3): perzisztált snapshot a DB-ből. */
+  | {
+      type: 'snapshot'
+      turnId: string
+      status: string
+      partialText: string
+      activities: unknown
+      conversationId: string
+      userMessageId: string | null
+    }
   | { type: 'meta'; conversationId: string; userMessageId: string }
   | { type: 'activity'; activity: ToolLoopActivityEvent }
   | { type: 'memory_candidate'; candidate: ToolLoopMemoryCandidateEvent }
@@ -132,20 +142,36 @@ export class AgentTurnRunner {
     return {
       turnId,
       completion,
-      subscribe: async function* () {
-        let index = 0
-        for (;;) {
-          while (index < state.events.length) {
-            yield state.events[index]
-            index += 1
-          }
-          if (state.finished) return
-          await new Promise<void>((resolve) => {
-            state.waiters.push(resolve)
-          })
-        }
-      },
+      subscribe: () => this.subscribeToState(state),
     }
+  }
+
+  /**
+   * Feliratkozás egy már futó fordulóra (reconnect, Tier-1).
+   * `null`, ha ebben a processben nem fut.
+   */
+  subscribe(turnId: string): AsyncGenerator<AgentChatStreamEvent, void, unknown> | null {
+    const state = this.runs.get(turnId)
+    if (!state) return null
+    return this.subscribeToState(state)
+  }
+
+  private subscribeToState(
+    state: RunState,
+  ): AsyncGenerator<AgentChatStreamEvent, void, unknown> {
+    return (async function* () {
+      let index = 0
+      for (;;) {
+        while (index < state.events.length) {
+          yield state.events[index]
+          index += 1
+        }
+        if (state.finished) return
+        await new Promise<void>((resolve) => {
+          state.waiters.push(resolve)
+        })
+      }
+    })()
   }
 }
 

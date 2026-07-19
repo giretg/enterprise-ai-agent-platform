@@ -95,6 +95,9 @@ export class PostgresTicketRepository implements TicketRepository {
       | 'playbookVersionId'
       | 'playbookStepId'
       | 'requiredGateId'
+      | 'cancelRequested'
+      | 'cancelRequestedById'
+      | 'cancelRequestedAt'
     > &
       Partial<
         Pick<
@@ -109,6 +112,9 @@ export class PostgresTicketRepository implements TicketRepository {
           | 'playbookVersionId'
           | 'playbookStepId'
           | 'requiredGateId'
+          | 'cancelRequested'
+          | 'cancelRequestedById'
+          | 'cancelRequestedAt'
         >
       >,
   ): Promise<Ticket> {
@@ -140,6 +146,9 @@ export class PostgresTicketRepository implements TicketRepository {
         | 'playbookVersionId'
         | 'playbookStepId'
         | 'requiredGateId'
+        | 'cancelRequested'
+        | 'cancelRequestedById'
+        | 'cancelRequestedAt'
       >
     >,
   ): Promise<Ticket> {
@@ -151,10 +160,37 @@ export class PostgresTicketRepository implements TicketRepository {
     return ticket
   }
 
+  async requestCancel(id: string, byUserId: string, now: Date = new Date()): Promise<Ticket | null> {
+    const result = await prisma.ticket.updateMany({
+      where: { id, state: 'in_progress' },
+      data: {
+        cancelRequested: true,
+        cancelRequestedById: byUserId,
+        cancelRequestedAt: now,
+      },
+    })
+    if (result.count !== 1) return null
+    return this.findById(id)
+  }
+
+  async isCancelRequested(id: string): Promise<boolean> {
+    const ticket = await prisma.ticket.findUnique({
+      where: { id },
+      select: { cancelRequested: true, state: true },
+    })
+    return Boolean(ticket?.cancelRequested && ticket.state === 'in_progress')
+  }
+
   async acquireDispatchLock(id: string, lockToken: string, now: Date): Promise<Ticket | null> {
     const result = await prisma.ticket.updateMany({
       where: { id, state: 'ready', lockToken: null },
-      data: { lockToken, lockedAt: now },
+      data: {
+        lockToken,
+        lockedAt: now,
+        cancelRequested: false,
+        cancelRequestedById: null,
+        cancelRequestedAt: null,
+      },
     })
     if (result.count !== 1) return null
     return this.findById(id)
