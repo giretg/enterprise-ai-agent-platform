@@ -8,7 +8,9 @@ import { clerkClient } from '@clerk/nextjs/server'
 import { getCurrentUser } from '@/auth'
 import { hasMinimumRole } from '@/auth/types'
 import { requirePlatformRole, requireTenantPermission, requireTenantRole } from '@/auth/tenant-context'
+import type { TenantAuthContext } from '@/auth/context'
 import { services } from '@/domain'
+import type { TrainingActor } from '@/domain/training/training-service'
 import type { GitHubRepositoryAccess } from '@/domain/connector/github-repository-access'
 import { buildTenantAccessAuditFilter } from '@/domain/iam/access-audit'
 import { SandboxAppError } from '@/domain/sandbox/errors'
@@ -374,11 +376,7 @@ function assertAgentTenantReachable(
  * forrása, nem a legacy `User.role`. A `TrainingService` ebből dönti el, hogy a
  * cél-agent egyáltalán elérhető-e a hívó tenantjából.
  */
-function trainingActor(user: {
-  user: { id: string }
-  activeTenantId: string | null
-  activeTenantRole: UserRole
-}) {
+function trainingActor(user: TenantAuthContext): TrainingActor {
   return { id: user.user.id, tenantId: user.activeTenantId, role: user.activeTenantRole }
 }
 

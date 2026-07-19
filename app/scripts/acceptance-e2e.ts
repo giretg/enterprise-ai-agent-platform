@@ -137,9 +137,12 @@ function actor(role: UserRole, userId: string) {
  * futásban a tenantot magáról a vizsgált agentről olvassuk, hogy a happy-path
  * forgatókönyvek a valós tenant-határon belül maradjanak.
  */
-async function trainingActor(agentId: string, userId: string, role: UserRole = 'approver') {
+async function trainingActorForAgent(agentId: string, userId: string, role: UserRole = 'approver') {
   const agent = await prisma.agent.findUnique({ where: { id: agentId } })
-  return { id: userId, tenantId: agent?.tenantId ?? null, role }
+  // A `TrainingActor.tenantId` fail-closed (nem nullable): a seedelt acceptance
+  // agentek tenanthoz kötöttek, megosztott agenten ez a forgatókönyv nem fut.
+  if (!agent?.tenantId) throw new Error(`acceptance: agent ${agentId} has no tenant`)
+  return { id: userId, tenantId: agent.tenantId, role }
 }
 
 /** 1. Wiki path smoke: kérdés → retrieval → LLM → jóváhagyás/done → audit (CR-MVP-003: beszélgetés-elsődleges) */
@@ -340,7 +343,7 @@ async function scenario3_training(operatorId: string, approverId: string, agentI
     agentId,
     proposedContent,
     source: 'acceptance-test',
-    actor: await trainingActor(agentId, operatorId, 'operator'),
+    actor: await trainingActorForAgent(agentId, operatorId, 'operator'),
   })
 
   if (trainingTicket.state === 'awaiting_human') {
@@ -357,7 +360,7 @@ async function scenario3_training(operatorId: string, approverId: string, agentI
   }
 
   try {
-    const result = await services.training.approveTraining(trainingTicket.id, await trainingActor(agentId, approverId))
+    const result = await services.training.approveTraining(trainingTicket.id, await trainingActorForAgent(agentId, approverId))
     pass('Tanítás jóváhagyva', `memory v${result.memoryVersion.version}`)
   } catch (e) {
     fail('approveTraining', e instanceof Error ? e.message : String(e))
@@ -391,7 +394,7 @@ async function scenario4_rollback(approverId: string, agentId: string, rollbackT
   }
 
   try {
-    await services.training.rollbackMemory(agentId, rollbackToVersion, await trainingActor(agentId, approverId))
+    await services.training.rollbackMemory(agentId, rollbackToVersion, await trainingActorForAgent(agentId, approverId))
     pass(`Memória visszagörgetve v${rollbackToVersion}-re`)
   } catch (e) {
     fail('rollbackMemory', e instanceof Error ? e.message : String(e))
@@ -972,12 +975,12 @@ async function scenario7_governance(operatorId: string, approverId: string, agen
     agentId,
     proposedContent,
     source: 'acceptance-governance',
-    actor: await trainingActor(agentId, operatorId, 'operator'),
+    actor: await trainingActorForAgent(agentId, operatorId, 'operator'),
   })
 
   let blocked = false
   try {
-    await services.training.approveTraining(trainingTicket.id, await trainingActor(agentId, approverId))
+    await services.training.approveTraining(trainingTicket.id, await trainingActorForAgent(agentId, approverId))
   } catch (e) {
     blocked = true
     const msg = e instanceof Error ? e.message : String(e)
@@ -997,7 +1000,7 @@ async function scenario7_governance(operatorId: string, approverId: string, agen
   else fail('Audit eval_blocked', 'nincs bejegyzés')
 
   try {
-    const result = await services.training.approveTraining(trainingTicket.id, await trainingActor(agentId, approverId), {
+    const result = await services.training.approveTraining(trainingTicket.id, await trainingActorForAgent(agentId, approverId), {
       overrideEval: true,
     })
     pass('Eval override + jóváhagyás', `memory v${result.memoryVersion.version}`)
@@ -1035,7 +1038,7 @@ async function scenario8_writeGateNegative(operatorId: string, agentId: string) 
     agentId,
     proposedContent: 'Write-gate negatív teszt — javasolt tartalom.',
     source: 'acceptance-writegate',
-    actor: await trainingActor(agentId, operatorId, 'operator'),
+    actor: await trainingActorForAgent(agentId, operatorId, 'operator'),
   })
 
   // §4.4: training_tickets sor ellenőrzése
@@ -3177,9 +3180,12 @@ async function scenario27_crMvp002(createdById: string, operatorId: string, agen
         agentId,
         proposedContent: 'CR-MVP-002 human gate probe',
         source: 'acceptance',
-        actor: await trainingActor(agentId, operatorId, 'operator'),
+        actor: await trainingActorForAgent(agentId, operatorId, 'operator'),
       })
-      await services.training.promoteMemoryWithoutHumanApproval(training.id)
+      await services.training.promoteMemoryWithoutHumanApproval(
+        training.id,
+        await trainingActorForAgent(agentId, operatorId, 'operator'),
+      )
     } catch (e) {
       if (e instanceof Error && e.message === 'human_approval_required') humanBlocked = true
     }

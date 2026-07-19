@@ -45,6 +45,8 @@ const AGENT_B = 'b1b1b1b1-b1b1-4b1b-8b1b-b1b1b1b1b1b1'
 const AGENT_SHARED = 'c1c1c1c1-c1c1-4c1c-8c1c-c1c1c1c1c1c1'
 
 const TICKET_B = 'dddddddd-0000-4000-8000-00000000000b'
+/** Tenant-bélyeg NÉLKÜLI, legacy training ticket a B tenant agentjén. */
+const TICKET_LEGACY_B = 'dddddddd-0000-4000-8000-00000000000c'
 const APPROVER_A = 'eeeeeeee-0000-4000-8000-00000000000a'
 
 /** Az A tenant approvere — minden negatív esetben ő a támadó. */
@@ -55,15 +57,20 @@ function agentRow(id: string, tenantId: string | null): Agent {
 }
 
 /** A B tenant tanítási ticketje, jóváhagyásra várva. */
-function ticketRow(): Ticket {
+function ticketRow(id: string, tenantId: string | null): Ticket {
   return {
-    id: TICKET_B,
-    tenantId: TENANT_B,
+    id,
+    tenantId,
     type: 'training',
     state: 'awaiting_human',
     agentId: AGENT_B,
     payload: { proposedContent: 'IDEGEN TENANT MEMÓRIÁJA', source: 'attack' },
   } as unknown as Ticket
+}
+
+const tickets: Record<string, Ticket> = {
+  [TICKET_B]: ticketRow(TICKET_B, TENANT_B),
+  [TICKET_LEGACY_B]: ticketRow(TICKET_LEGACY_B, null),
 }
 
 const agents: Record<string, Agent> = {
@@ -82,7 +89,7 @@ function makeService() {
   } as unknown as AgentRepository
 
   const ticketRepo = {
-    findById: async (id: string) => (id === TICKET_B ? ticketRow() : null),
+    findById: async (id: string) => tickets[id] ?? null,
     create: async () => {
       throw new Error('BOUNDARY_ESCAPED: tickets.create')
     },
@@ -140,6 +147,16 @@ async function main() {
     )
   })
 
+  // A legacy (tenant-bélyeg nélküli) ticketet a MÖGÖTTES AGENT tenantja horgonyozza:
+  // a ticket-scope átengedi, de az agent-guard elutasítja. Enélkül minden régi
+  // training ticket bármely tenant approverének kezébe kerülne.
+  await test('approveTraining: legacy tenant-nélküli ticketet az agent tenantja horgonyoz', async () => {
+    await assert.rejects(
+      () => makeService().approveTraining(TICKET_LEGACY_B, actorA),
+      /Agent not found/,
+    )
+  })
+
   await test('approveTraining: a saját tenantban ismeretlen ticket opak hibát ad', async () => {
     await assert.rejects(
       () => makeService().approveTraining('00000000-0000-4000-8000-000000000000', actorA),
@@ -180,6 +197,9 @@ async function main() {
     )
   })
 
+  // I8 dokumentált korlát: a MEGOSZTOTT (tenantId === null) agent minden tenantból
+  // elérhető — ez a platform-szintű agentek tudatos tulajdonsága, l. a PR nyitott
+  // döntését. A teszt ezt RÖGZÍTI, hogy a viselkedés ne csússzon el észrevétlenül.
   await test('rollbackMemory: megosztott (platform) agent elérhető marad', async () => {
     await assert.rejects(
       () => makeService().rollbackMemory(AGENT_SHARED, 1, actorA),
