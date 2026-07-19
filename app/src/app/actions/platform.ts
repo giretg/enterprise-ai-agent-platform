@@ -368,6 +368,20 @@ function assertAgentTenantReachable(
   if (!isAgentReachableFromTenant(agent.tenantId, tenantId)) throw new Error('Agent not found')
 }
 
+/**
+ * A tanítási / memória-írási útvonal aktora (MemoryTraining spec I8). Mindig az
+ * AKTÍV tenant-kontextusból épül: a tenant-tagsághoz tartozó szerep az igazság
+ * forrása, nem a legacy `User.role`. A `TrainingService` ebből dönti el, hogy a
+ * cél-agent egyáltalán elérhető-e a hívó tenantjából.
+ */
+function trainingActor(user: {
+  user: { id: string }
+  activeTenantId: string | null
+  activeTenantRole: UserRole
+}) {
+  return { id: user.user.id, tenantId: user.activeTenantId, role: user.activeTenantRole }
+}
+
 function canWriteTicketComment(
   ticket: { createdById: string },
   user: { user: { id: string }; activeTenantRole: UserRole },
@@ -939,7 +953,7 @@ export async function transitionTicket(input: {
       if (!hasMinimumRole(user.activeTenantRole, 'approver')) {
         return fail('Tanítás jóváhagyása approver jogosultságot igényel')
       }
-      const result = await services.training.approveTraining(parsed.id, user.user.id)
+      const result = await services.training.approveTraining(parsed.id, trainingActor(user))
       return ok(result)
     }
 
@@ -3117,7 +3131,7 @@ export async function createTrainingTicket(input: {
     const parsed = createTrainingSchema.parse(input)
     const ticket = await services.training.createTrainingTicket({
       ...parsed,
-      createdById: user.user.id,
+      actor: trainingActor(user),
     })
     return ok(ticket)
   } catch (e) {
@@ -3129,7 +3143,7 @@ export async function approveTraining(input: { ticketId: string; overrideEval?: 
   try {
     const user = await requireTenantRole('approver')
     const parsed = approveTrainingSchema.parse(input)
-    const result = await services.training.approveTraining(parsed.ticketId, user.user.id, {
+    const result = await services.training.approveTraining(parsed.ticketId, trainingActor(user), {
       overrideEval: parsed.overrideEval,
     })
     return ok(result)
@@ -3893,7 +3907,7 @@ export async function rollbackMemory(input: { agentId: string; toVersion: number
     const memoryVersion = await services.training.rollbackMemory(
       parsed.agentId,
       parsed.toVersion,
-      user.user.id,
+      trainingActor(user),
     )
     return ok(memoryVersion)
   } catch (e) {

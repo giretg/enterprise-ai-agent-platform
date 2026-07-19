@@ -132,6 +132,16 @@ function actor(role: UserRole, userId: string) {
   return { type: 'human' as const, userId, role }
 }
 
+/**
+ * A `TrainingService` tenant-scoped aktora (MemoryTraining spec I8). Az acceptance
+ * futásban a tenantot magáról a vizsgált agentről olvassuk, hogy a happy-path
+ * forgatókönyvek a valós tenant-határon belül maradjanak.
+ */
+async function trainingActor(agentId: string, userId: string, role: UserRole = 'approver') {
+  const agent = await prisma.agent.findUnique({ where: { id: agentId } })
+  return { id: userId, tenantId: agent?.tenantId ?? null, role }
+}
+
 /** 1. Wiki path smoke: kérdés → retrieval → LLM → jóváhagyás/done → audit (CR-MVP-003: beszélgetés-elsődleges) */
 async function scenario1_e2e(operatorId: string, approverId: string, agentId: string) {
   console.log('\n[1] Wiki kérdés flow smoke')
@@ -330,7 +340,7 @@ async function scenario3_training(operatorId: string, approverId: string, agentI
     agentId,
     proposedContent,
     source: 'acceptance-test',
-    createdById: operatorId,
+    actor: await trainingActor(agentId, operatorId, 'operator'),
   })
 
   if (trainingTicket.state === 'awaiting_human') {
@@ -347,7 +357,7 @@ async function scenario3_training(operatorId: string, approverId: string, agentI
   }
 
   try {
-    const result = await services.training.approveTraining(trainingTicket.id, approverId)
+    const result = await services.training.approveTraining(trainingTicket.id, await trainingActor(agentId, approverId))
     pass('Tanítás jóváhagyva', `memory v${result.memoryVersion.version}`)
   } catch (e) {
     fail('approveTraining', e instanceof Error ? e.message : String(e))
@@ -381,7 +391,7 @@ async function scenario4_rollback(approverId: string, agentId: string, rollbackT
   }
 
   try {
-    await services.training.rollbackMemory(agentId, rollbackToVersion, approverId)
+    await services.training.rollbackMemory(agentId, rollbackToVersion, await trainingActor(agentId, approverId))
     pass(`Memória visszagörgetve v${rollbackToVersion}-re`)
   } catch (e) {
     fail('rollbackMemory', e instanceof Error ? e.message : String(e))
@@ -962,12 +972,12 @@ async function scenario7_governance(operatorId: string, approverId: string, agen
     agentId,
     proposedContent,
     source: 'acceptance-governance',
-    createdById: operatorId,
+    actor: await trainingActor(agentId, operatorId, 'operator'),
   })
 
   let blocked = false
   try {
-    await services.training.approveTraining(trainingTicket.id, approverId)
+    await services.training.approveTraining(trainingTicket.id, await trainingActor(agentId, approverId))
   } catch (e) {
     blocked = true
     const msg = e instanceof Error ? e.message : String(e)
@@ -987,7 +997,7 @@ async function scenario7_governance(operatorId: string, approverId: string, agen
   else fail('Audit eval_blocked', 'nincs bejegyzés')
 
   try {
-    const result = await services.training.approveTraining(trainingTicket.id, approverId, {
+    const result = await services.training.approveTraining(trainingTicket.id, await trainingActor(agentId, approverId), {
       overrideEval: true,
     })
     pass('Eval override + jóváhagyás', `memory v${result.memoryVersion.version}`)
@@ -1025,7 +1035,7 @@ async function scenario8_writeGateNegative(operatorId: string, agentId: string) 
     agentId,
     proposedContent: 'Write-gate negatív teszt — javasolt tartalom.',
     source: 'acceptance-writegate',
-    createdById: operatorId,
+    actor: await trainingActor(agentId, operatorId, 'operator'),
   })
 
   // §4.4: training_tickets sor ellenőrzése
@@ -3167,7 +3177,7 @@ async function scenario27_crMvp002(createdById: string, operatorId: string, agen
         agentId,
         proposedContent: 'CR-MVP-002 human gate probe',
         source: 'acceptance',
-        createdById: operatorId,
+        actor: await trainingActor(agentId, operatorId, 'operator'),
       })
       await services.training.promoteMemoryWithoutHumanApproval(training.id)
     } catch (e) {

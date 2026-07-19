@@ -1,14 +1,31 @@
+import type { Agent, Ticket, UserRole } from '@prisma/client'
 import { prisma } from '@/lib/db'
+import { hasMinimumRole } from '@/lib/iam-policy'
 import {
   requiresEvalGate,
   requiresHumanApproval,
   resolveSelfEvolutionProfile,
 } from '@/lib/self-evolution-profile'
+import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
 import type { AgentRepository, AuditRepository, TicketRepository } from '@/repositories/interfaces'
 import type { TicketService } from '../ticket/ticket-service'
 import type { WriteGateService } from '../writegate/write-gate-service'
 import type { EvalService } from '../eval/eval-service'
 import type { SelfEvolutionGuard } from './self-evolution-guard'
+
+/**
+ * A tanítási / önfejlesztési útvonal hívói kontextusa (MemoryTraining spec I8 + T11).
+ *
+ * A `tenantId` és a `role` MINDIG a request AKTÍV tenant-kontextusából jön
+ * (`requireTenantRole`), sosem a legacy `User.tenantId` / `User.role` oszlopból:
+ * egy felhasználó több tenantnak is tagja lehet, eltérő szereppel. Ugyanaz az
+ * invariáns, amit a `MemoryApprovalService` (WP-6, S6) is követ.
+ */
+export type TrainingActor = {
+  id: string
+  tenantId: string | null
+  role: UserRole
+}
 
 function computeDiff(before: string, after: string) {
   return {
@@ -28,6 +45,35 @@ export class TrainingService {
     private agents: AgentRepository,
     private selfEvolutionGuard: SelfEvolutionGuard,
   ) {}
+
+  /**
+   * MemoryTraining spec I8/T11 — cross-tenant memória-olvasás/írás tiltott.
+   *
+   * A tenant-határ a SERVICE-ben is invariáns, nem csak a hívó Server Actionben:
+   * a szerep-kapu (`requireTenantRole`) csak azt mondja meg, MILYEN JOGA van a
+   * hívónak a SAJÁT tenantjában — azt nem, hogy a cél-agent egyáltalán az ő
+   * tenantjához tartozik-e. A hibaüzenet szándékosan opak (`Agent not found`),
+   * hogy egy másik tenant agentjének létezését se szivárogtassa.
+   */
+  private async requireReachableAgent(agentId: string, actor: TrainingActor): Promise<Agent> {
+    const agent = await this.agents.findById(agentId)
+    if (!agent || !isAgentReachableFromTenant(agent.tenantId, actor.tenantId)) {
+      throw new Error('Agent not found')
+    }
+    return agent
+  }
+
+  /**
+   * A training-ticket tenant-határa. A `tenantId === null` sorok a tenant-bélyegzés
+   * bevezetése ELŐTT keletkezett tanítási ticketek; ezeket az agent tenantja
+   * horgonyozza le (l. {@link requireReachableAgent}), különben a meglévő, még
+   * jóváhagyásra váró ticketek eldobhatatlanná válnának.
+   */
+  private assertTicketTenantScope(ticket: Pick<Ticket, 'tenantId'>, actor: TrainingActor) {
+    if (ticket.tenantId !== null && ticket.tenantId !== actor.tenantId) {
+      throw new Error('Training ticket not found')
+    }
+  }
 
   /** N6 / §4.6: önfejlesztési útvonal soha nem bővíthet capability-t. */
   async attemptCapabilityEscalation(params: {
@@ -66,8 +112,11 @@ export class TrainingService {
     agentId: string
     proposedContent: string
     source: string
-    createdById: string
+    actor: TrainingActor
   }) {
+    // I8: a tenant-határ MINDEN prisma-érintés előtt dől el.
+    await this.requireReachableAgent(params.agentId, params.actor)
+
     const agent = await prisma.agent.findUnique({
       where: { id: params.agentId },
       include: { memory: { include: { currentVersion: true } } },
@@ -90,6 +139,11 @@ export class TrainingService {
     const targetMemoryVersion = (maxVersionRow._max.version ?? 0) + 1
 
     const ticket = await this.tickets.create({
+      // I8: a training ticket tenant-bélyeget kap, különben tenant-nélküli sorként
+      // BÁRMELY tenant approvere feloldhatná és jóváhagyhatná. Megosztott
+      // (platform-szintű) agentnél a ticket ahhoz a tenanthoz tartozik, amelyik
+      // a tanítást kezdeményezte.
+      tenantId: agent.tenantId ?? params.actor.tenantId,
       type: 'training',
       title: `Tanítás: ${agent.name}`,
       state: 'backlog',
@@ -100,7 +154,7 @@ export class TrainingService {
       sourceDocumentId: null,
       executeAfter: null,
       dueBy: null,
-      createdById: params.createdById,
+      createdById: params.actor.id,
     })
 
     // §4.4: first-class training_tickets sor — a proposed diff és a cél-verzió
@@ -161,11 +215,18 @@ export class TrainingService {
 
   async approveTraining(
     ticketId: string,
-    approverId: string,
+    actor: TrainingActor,
     opts: { overrideEval?: boolean } = {},
   ) {
+    const approverId = actor.id
     const ticket = await this.tickets.findById(ticketId)
     if (!ticket || ticket.type !== 'training') throw new Error('Training ticket not found')
+    // I8/T11: a ticket és a mögötte lévő agent is az aktív tenantból kell látszódjon.
+    // Ez a `tickets.findById` tenant-szűrő hiányának a kapuja — enélkül egy másik
+    // tenant approvere egy ismert ticket-UUID-vel idegen agent memóriáját írná át.
+    this.assertTicketTenantScope(ticket, actor)
+    if (!ticket.agentId) throw new Error('Training ticket has no agent')
+    await this.requireReachableAgent(ticket.agentId, actor)
     if (ticket.state !== 'awaiting_human') throw new Error('Ticket not awaiting approval')
 
     // KB-dokumentum tanítási ticket: külön útvonalon (KnowledgeBaseService) megy,
@@ -178,9 +239,11 @@ export class TrainingService {
       throw new Error('Use the knowledge base approval flow for KB document tickets')
     }
 
+    // A jóváhagyó létezését továbbra is ellenőrizzük (a `memory_versions.approved_by`
+    // FK-ja rá mutat), de a JOGOSULTSÁGI döntés az AKTÍV tenant-szerepre épül,
+    // nem a legacy `User.role` oszlopra — l. `TrainingActor`.
     const approver = await prisma.user.findUnique({ where: { id: approverId } })
     if (!approver) throw new Error('Approver not found')
-    if (!approver.role) throw new Error('Approver has no role assigned')
 
     const payload = ticket.payload as { proposedContent: string; source?: string }
 
@@ -191,7 +254,10 @@ export class TrainingService {
     if (!agent) throw new Error('Agent not found')
 
     const profile = resolveSelfEvolutionProfile(agent.selfEvolutionProfile)
-    if (requiresHumanApproval(profile) && approver.role === 'operator') {
+    // §5.12.2 `human` / `higher_role` mód: legalább approver tenant-szerep kell.
+    // Rangsor-alapú ellenőrzés (nem `=== 'operator'`), hogy új, alacsonyabb jogú
+    // szerep bevezetése se nyisson rést a kapun (deny-by-default).
+    if (requiresHumanApproval(profile) && !hasMinimumRole(actor.role, 'approver')) {
       throw new Error('higher_role_approval_required')
     }
 
@@ -318,7 +384,7 @@ export class TrainingService {
     await this.ticketService.transition({
       ticketId,
       toState: 'approved',
-      actor: { type: 'human', userId: approverId, role: approver.role },
+      actor: { type: 'human', userId: approverId, role: actor.role },
       agentVersion: agent.currentVersion,
     })
     await this.ticketService.transition({
@@ -346,7 +412,13 @@ export class TrainingService {
     return { memoryVersion, writeGateTokenId: gateToken.id, evalRun }
   }
 
-  async rollbackMemory(agentId: string, toVersion: number, actorId: string) {
+  async rollbackMemory(agentId: string, toVersion: number, actor: TrainingActor) {
+    const actorId = actor.id
+    // I8: a rollback a memória TARTALMÁT írja felül (visszaállít egy korábbi
+    // agent-utasításkészletet), ezért ugyanaz a tenant-határ vonatkozik rá, mint
+    // az előre-írásra. A `rollbackMemoryVersion` (WP-8) útvonal ezt már betartja.
+    await this.requireReachableAgent(agentId, actor)
+
     const agent = await prisma.agent.findUnique({
       where: { id: agentId },
       include: { memory: true },
