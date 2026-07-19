@@ -1,10 +1,17 @@
+import { after } from 'next/server'
 import { requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain'
+import { agentTurnRunner, type AgentChatStreamEvent } from '@/domain/agent/agent-turn-runner'
 
 // SSE: dinamikus, Node runtime, ne bufferelődjön / cache-elődjön a stream.
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
 export const fetchCache = 'force-no-store'
+
+/** A stream lezárását kiváltó események (a `turn`/`token`/… folytatódik). */
+function isTerminalEvent(event: AgentChatStreamEvent): boolean {
+  return event.type === 'done' || event.type === 'cancelled' || event.type === 'error'
+}
 
 export async function POST(request: Request) {
   let user: Awaited<ReturnType<typeof requireTenantRole>>
@@ -43,6 +50,18 @@ export async function POST(request: Request) {
     return encoder.encode(`data: ${JSON.stringify(data)}\n\n`)
   }
 
+  // A forduló futása leválik erről a kérésről (chat-agent-turn-resilience-spec.md
+  // D3): a lecsatlakozás nem szakítja meg. Node-processben ehhez elég a runner
+  // saját promise-a, menedzselt futtatókörnyezetben viszont a válasz lezárása után
+  // az instance befagyasztható — az `after` tartja életben a futást a lezárásáig.
+  // MINDEN kilépési ágnak el kell engednie, különben az ígéret sosem rendeződik.
+  let releaseKeepAlive: () => void = () => {}
+  after(
+    new Promise<void>((resolve) => {
+      releaseKeepAlive = resolve
+    }),
+  )
+
   const gen = services.agentChat.sendMessageStream({
     agentId,
     content,
@@ -72,6 +91,9 @@ export async function POST(request: Request) {
   if (first && !first.done && first.value.type === 'conflict') {
     // A generátor már visszatért, de a `finally`-ága csak a lezárással fut le.
     await gen.return(undefined)
+    // Ezen az ágon nem nyílik stream, tehát a keep-alive-ot ITT kell elengedni:
+    // nincs futás, amit életben kellene tartani.
+    releaseKeepAlive()
     return Response.json(
       {
         error: 'active_turn_exists',
@@ -85,24 +107,28 @@ export async function POST(request: Request) {
 
   const stream = new ReadableStream({
     async start(controller) {
+      // Objektumban tartva, mert az értékadás closure-ben történik — egy sima
+      // `let`-et a szűkítés a `finally`-ban `never`-re vinne.
+      const run: { completion: Promise<void> | null } = { completion: null }
+      /** Egy esemény kiküldése; `true`, ha ezzel a stream le is zárul. */
+      const emit = (event: AgentChatStreamEvent): boolean => {
+        // A forduló azonosítója a legelső esemény — és azt a 409-döntés miatt
+        // már kihúztuk a ciklus elől, ezért a kezelése NEM élhet a `for await`
+        // törzsében, különben pont az elsőre nem kapnánk `completion`-t.
+        if (event.type === 'turn') {
+          run.completion = agentTurnRunner.completionOf(event.turnId)
+        }
+        controller.enqueue(sseEvent(event))
+        return isTerminalEvent(event)
+      }
+
       try {
         if (firstError) throw firstError
-        if (first && !first.done) {
-          controller.enqueue(sseEvent(first.value))
-          if (
-            first.value.type === 'done' ||
-            first.value.type === 'cancelled' ||
-            first.value.type === 'error'
-          ) {
-            return
-          }
-        }
+        if (first && !first.done && emit(first.value)) return
+
         for await (const event of gen) {
-          if (request.signal.aborted) {
-            break
-          }
-          controller.enqueue(sseEvent(event))
-          if (event.type === 'done' || event.type === 'cancelled' || event.type === 'error') break
+          if (request.signal.aborted) break
+          if (emit(event)) break
         }
       } catch (err) {
         if (!request.signal.aborted) {
@@ -114,6 +140,13 @@ export async function POST(request: Request) {
           controller.close()
         } catch {
           // A kliens megszakítása után a stream már lehet zárt.
+        }
+        // A kliens lecsatlakozása NEM megszakítás (D5): a futást a lezárásáig
+        // megvárjuk, csak épp már nem küldünk neki semmit.
+        if (run.completion) {
+          void run.completion.finally(() => releaseKeepAlive())
+        } else {
+          releaseKeepAlive()
         }
       }
     },

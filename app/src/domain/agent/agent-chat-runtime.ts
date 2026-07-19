@@ -1,17 +1,17 @@
 import { randomUUID } from 'node:crypto'
 import type { Message, Prisma, ToolCall } from '@prisma/client'
-import type {
-  AgentRepository,
-  AgentTurnRepository,
-  AuditRepository,
-  DocumentRepository,
-  FinalizeAgentTurnInput,
-  PlaybookV2Repository,
-  ProcessDefinitionRepository,
-  TicketRepository,
-  ToolBrokerRepository,
+import {
+  ActiveAgentTurnExistsError,
+  type AgentRepository,
+  type AgentTurnRepository,
+  type AuditRepository,
+  type DocumentRepository,
+  type FinalizeAgentTurnInput,
+  type PlaybookV2Repository,
+  type ProcessDefinitionRepository,
+  type TicketRepository,
+  type ToolBrokerRepository,
 } from '@/repositories/interfaces'
-import { ActiveAgentTurnExistsError } from '@/repositories/interfaces'
 import { composeSystemPrompt } from '@/lib/agent-prompt'
 import { formatOrgRoster } from '@/lib/agent-org-roster'
 import { buildRunAsAuthorization } from '@/lib/run-as-payload'
@@ -23,7 +23,6 @@ import {
   missingRequiredTriggerSlots,
   resolveChatTriggerInputPayload,
 } from '@/lib/playbook-v2/trigger-input'
-import { extractLoose } from '@/domain/contract-runtime'
 import type { ModelGateway } from '../gateway/model-gateway'
 import { StreamingSensitiveTextRedactor } from '../gateway/sensitivity-router'
 import type { ConversationService } from '../conversation/conversation-service'
@@ -50,7 +49,6 @@ import {
   runAgentToolLoop,
   type LoadSkillFn,
   type ToolLoopActivityEvent,
-  type ToolLoopMemoryCandidateEvent,
 } from './chat-tool-loop'
 import type { SkillService } from '../skill/skill-service'
 import { assembleGatewayMessages, type PromptSegments } from './prompt-assembler'
@@ -59,9 +57,12 @@ import {
   registerActiveChatTurn,
   unregisterActiveChatTurn,
 } from '@/lib/agent-chat-active-turn-registry'
-
-const IMAGE_EXT = /\.(jpg|jpeg|png|gif|webp)$/i
-const IMAGE_MARKER = /^(\[image:([^\]]+)\])([\s\S]*)$/
+import {
+  agentTurnRunner,
+  type AgentChatStreamEvent,
+  type AgentTurnEmit,
+  type AgentTurnRunHandle,
+} from './agent-turn-runner'
 
 /**
  * Ennyi életjel-szünet után tekintünk egy aktív forduló-rekordot elhaltnak
@@ -74,6 +75,17 @@ const IMAGE_MARKER = /^(\[image:([^\]]+)\])([\s\S]*)$/
  * az indítási út javítja magát.
  */
 const STALE_TURN_RECLAIM_MS = 120_000
+
+/**
+ * Ugyanarra a forduló-azonosítóra már fut futtatás EBBEN a processben. Ez a
+ * runner process-lokális védelme; a beszélgetés-szintű „egy aktív forduló"
+ * invariánst (D7) a küldés elején álló foglalás intézi (#61).
+ */
+const DUPLICATE_RUN_MESSAGE =
+  'Ez a forduló már fut. Várd meg, amíg elkészül, vagy állítsd le, mielőtt újat küldesz.'
+
+const IMAGE_EXT = /\.(jpg|jpeg|png|gif|webp)$/i
+const IMAGE_MARKER = /^(\[image:([^\]]+)\])([\s\S]*)$/
 
 function safeToolResultName(value: string): string {
   const cleaned = value.replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '')
@@ -183,20 +195,6 @@ export function buildCancelledTurnMessage(snapshot: CancelledTurnSnapshot): stri
   return parts.join('\n')
 }
 
-/**
- * A perzisztált `AgentTurn` rekord fogója. Külön él a `StreamTurnContext`-től,
- * mert a forduló-hely FOGLALÁSA (D7) megelőzi a user-üzenet perzisztálását —
- * így a rekord már azelőtt lezárható a generátor `finally`-ágából, hogy a
- * forduló-kontextus egyáltalán összeállt volna.
- */
-type TurnRecordHandle = {
-  /** `null`, ha a rekord nem jött létre — a perzisztencia megfigyelési réteg. */
-  id: string | null
-  /** A rekordot az indító process claimeli azonnal (Tier-2, §10-kiegészítés). */
-  lockToken: string | null
-  closed: boolean
-}
-
 type StreamTurnContext = {
   conversationId: string
   userMessageCreatedAt: Date
@@ -207,6 +205,17 @@ type StreamTurnContext = {
   activities: ToolLoopActivityEvent[]
   completedReply: string | null
   finalized: boolean
+  /**
+   * A perzisztált `AgentTurn` rekord azonosítója (spec §4). `null`, ha a rekord
+   * nem jött létre — a forduló-perzisztencia megfigyelési réteg, nem szabad
+   * miatta elbukni a chatnek (l. `openTurnRecord`).
+   */
+  turnRecordId: string | null
+  /** A rekordot az indító process claimeli azonnal (Tier-2, §10-kiegészítés). */
+  turnRecordLockToken: string | null
+  turnRecordClosed: boolean
+  /** Utolsó kiírt heartbeat ideje (ritkításhoz). */
+  lastHeartbeatAt: number
 }
 
 /**
@@ -375,6 +384,90 @@ type ChatProcessReply = {
   ticketRefId?: string | null
 }
 
+export type AgentChatSendParams = {
+  agentId: string
+  content: string
+  createdById: string
+  tenantId?: string | null
+  conversationId?: string
+  attachmentDocumentIds?: string[]
+  processDefinitionId?: string
+  processInputPayload?: Record<string, unknown>
+}
+
+type ChatModelConfig = {
+  provider: string
+  model: string
+  temperature?: number
+  maxTokens?: number
+}
+
+type AgentDetails = NonNullable<Awaited<ReturnType<AgentRepository['findByIdWithDetails']>>>
+
+/**
+ * Minden, amit a kérés-scope-ban elő KELL készíteni (auth, beszélgetés,
+ * csatolmányok, a user-üzenet perzisztálása, a forduló tulajdonjoga), hogy a
+ * tényleges futás már kérés nélkül is elmehessen.
+ */
+type PreparedTurn = {
+  params: AgentChatSendParams
+  turn: StreamTurnContext
+  agentDetails: AgentDetails
+  modelConfig: ChatModelConfig
+  conversationId: string
+  text: string
+  tenantKey: string
+  attachmentBlock: string
+  attachmentDocs: Array<{
+    id: string
+    filename: string
+    extractedText: string | null
+    metadata?: unknown
+  }>
+  workspaceFiles: string[]
+}
+
+/** A detached futás eredménye — a lezáró pont kimenete (D2/D11). */
+type TurnExecutionResult = {
+  outcome: FinalizeAgentTurnInput
+  reply: string
+  messageId: string | null
+  ticketRefId?: string | null
+}
+
+/**
+ * A lefoglalt forduló-hely fogantyúja (D7). A foglalás MEGELŐZI a user-üzenet
+ * perzisztálását, tehát a `StreamTurnContext` létrejöttekor a rekord már áll —
+ * ezért kell külön objektumban élnie.
+ */
+type TurnRecordHandle = {
+  /** `null`, ha a rekord nem jött létre — a perzisztencia megfigyelési réteg. */
+  id: string | null
+  lockToken: string | null
+}
+
+type BeginTurnResult =
+  | {
+      kind: 'error'
+      error: Error
+      /** Ha a user-üzenet már perzisztálódott, a kliensnek ACK-ot kell kapnia róla. */
+      meta?: { conversationId: string; userMessageId: string }
+    }
+  | {
+      /** Már fut forduló a beszélgetésre (D7) — a kérés-úton ebből `409` lesz. */
+      kind: 'conflict'
+      conversationId: string
+      activeTurnId: string | null
+    }
+  | {
+      kind: 'started'
+      turnId: string
+      conversationId: string
+      userMessageId: string
+      handle: AgentTurnRunHandle
+      result: { current: TurnExecutionResult | null }
+    }
+
 export class AgentChatRuntime {
   constructor(
     private agents: AgentRepository,
@@ -414,9 +507,9 @@ export class AgentChatRuntime {
    * A foglalás MEGELŐZI a user-üzenet perzisztálását — az elutasított küldés így
    * nem hagy árva üzenetet a beszélgetésben.
    *
-   * A NEM-ütközéses hibák továbbra is **fail-softak**: ha a rekord-tár elérhetetlen,
-   * a chat rekord nélkül fut tovább, mert a perzisztencia megfigyelési réteg.
-   * Az ütközés viszont már nem az — abból `409` lesz a kérés-úton.
+   * A NEM-ütközéses hibák fail-softak: ha a rekord-tár elérhetetlen, a chat
+   * rekord nélkül fut tovább, mert a perzisztencia megfigyelési réteg. Az
+   * ütközés viszont már nem az — abból `409` lesz a kérés-úton.
    */
   private async reserveTurnRecord(
     record: TurnRecordHandle,
@@ -434,8 +527,7 @@ export class AgentChatRuntime {
 
     /**
      * Egy foglalási kísérlet. `unavailable` = a rekord nem jött létre valamilyen
-     * DB-zavar miatt; ez fail-soft, a chat rekord NÉLKÜL fut tovább — a
-     * forduló-rekord megfigyelhetőségi réteg, nem buktathatja a beszélgetést.
+     * DB-zavar miatt; ez fail-soft, a chat rekord NÉLKÜL fut tovább.
      */
     const attempt = async (): Promise<'reserved' | 'conflict' | 'unavailable'> => {
       try {
@@ -474,8 +566,7 @@ export class AgentChatRuntime {
         Number.isNaN(heartbeatAt) ||
         heartbeatAt > Date.now() - STALE_TURN_RECLAIM_MS
       if (alive) return { ok: false, activeTurnId: active.id }
-      // Életjel nélkül maradt futás: visszavesszük, különben a beszélgetés
-      // örökre zárva maradna (l. STALE_TURN_RECLAIM_MS).
+
       console.warn(
         '[agent-chat] elhalt forduló visszavétele a beszélgetésen',
         params.conversationId,
@@ -502,23 +593,6 @@ export class AgentChatRuntime {
     return { ok: false, activeTurnId: retried?.id ?? null }
   }
 
-  /**
-   * Körönkénti életjel (D8/D10) — ettől ismerhető fel kívülről az elhalt futás,
-   * és ez teszi a D7-foglalást biztonságossá: életjel nélkül egy crash-elt futás
-   * véglegesen bezárná a beszélgetést (l. `reserveTurnRecord` stale-ága).
-   * Egy kör egy modellhívás, tehát ez másodperces nagyságrendű, elsődleges kulcs
-   * szerinti UPDATE — nem indokolt tovább ritkítani. Fail-soft: a heartbeat
-   * hibája nem buktathatja a futást.
-   */
-  private async heartbeatTurnRecord(record: TurnRecordHandle): Promise<void> {
-    if (!this.agentTurns || !record.id || !record.lockToken || record.closed) return
-    try {
-      await this.agentTurns.heartbeat(record.id, record.lockToken, new Date())
-    } catch (error) {
-      console.error('[agent-chat] forduló-heartbeat sikertelen', error)
-    }
-  }
-
   /** A lefoglalt fordulóhoz utólag köti a perzisztált user-üzenetet. Fail-soft. */
   private async attachUserMessageToTurnRecord(
     record: TurnRecordHandle,
@@ -533,22 +607,56 @@ export class AgentChatRuntime {
   }
 
   /**
+   * Egy már LEFOGLALT, de futásba sosem induló rekord elengedése. E nélkül a
+   * foglalás megmaradna, és a részleges egyedi index a beszélgetést lezárná —
+   * pont az a befagyás, ami ellen a lejárat való. Fail-soft.
+   */
+  private async releaseReservedTurnRecord(
+    record: TurnRecordHandle,
+    error: string,
+  ): Promise<void> {
+    if (!this.agentTurns || !record.id) return
+    try {
+      await this.agentTurns.finalize(record.id, { status: 'failed', reason: 'error', error })
+    } catch (e) {
+      console.error('[agent-chat] lefoglalt forduló elengedése sikertelen', e)
+    }
+  }
+
+  /**
+   * Körönkénti életjel (D8/D10): ettől ismerhető fel kívülről az elhalt futás.
+   * Egy kör egy modellhívás, tehát ez másodperces nagyságrendű, elsődleges kulcs
+   * szerinti UPDATE — nem indokolt tovább ritkítani. Fail-soft: a heartbeat hibája
+   * nem buktathatja a futást.
+   */
+  private async heartbeatTurnRecord(turn: StreamTurnContext): Promise<void> {
+    if (!this.agentTurns || !turn.turnRecordId || !turn.turnRecordLockToken) return
+    if (turn.turnRecordClosed) return
+    const now = new Date()
+    turn.lastHeartbeatAt = now.getTime()
+    try {
+      await this.agentTurns.heartbeat(turn.turnRecordId, turn.turnRecordLockToken, now)
+    } catch (error) {
+      console.error('[agent-chat] forduló-heartbeat sikertelen', error)
+    }
+  }
+
+  /**
    * Forduló-rekord terminális lezárása. Idempotens: a repository csak aktív
-   * fordulót zár, és a `closed` flag megakadályozza a dupla hívást a
+   * fordulót zár, és a `turnRecordClosed` flag megakadályozza a dupla hívást a
    * `finally`-ág felől. Szintén fail-soft.
    */
   private async closeTurnRecord(
-    record: TurnRecordHandle,
-    data: FinalizeAgentTurnInput,
     turn: StreamTurnContext | null,
+    data: FinalizeAgentTurnInput,
   ): Promise<void> {
-    if (!this.agentTurns || !record.id || record.closed) return
-    record.closed = true
+    if (!this.agentTurns || !turn?.turnRecordId || turn.turnRecordClosed) return
+    turn.turnRecordClosed = true
     try {
-      await this.agentTurns.finalize(record.id, {
+      await this.agentTurns.finalize(turn.turnRecordId, {
         ...data,
-        partialText: data.partialText ?? turn?.completedReply ?? '',
-        activities: data.activities ?? (turn?.activities as unknown as Prisma.InputJsonValue),
+        partialText: data.partialText ?? turn.completedReply ?? '',
+        activities: data.activities ?? (turn.activities as unknown as Prisma.InputJsonValue),
       })
     } catch (error) {
       console.error('[agent-chat] forduló-rekord lezárása sikertelen', error)
@@ -602,29 +710,64 @@ export class AgentChatRuntime {
     }
   }
 
-  async sendMessage(params: {
-    agentId: string
-    content: string
-    createdById: string
-    tenantId?: string | null
-    conversationId?: string
-    attachmentDocumentIds?: string[]
-    processDefinitionId?: string
-    processInputPayload?: Record<string, unknown>
-  }) {
+  /**
+   * Nem-streamelő küldés. Ugyanazon az előkészítő és **ugyanazon a lezáró
+   * ponton** megy át, mint a stream (D11): a különbség csak annyi, hogy nincs
+   * feliratkozó, és megvárjuk a futás végét, hogy szinkron választ adhassunk.
+   */
+  async sendMessage(params: AgentChatSendParams) {
+    const begun = await this.beginTurn(params)
+    // A D7 ezen az úton is érvényes: a közös `beginTurn` foglal, tehát az
+    // invariáns nem kerülhető meg a nem-streamelő hívással.
+    if (begun.kind === 'conflict') throw new ActiveAgentTurnExistsError(begun.conversationId)
+    if (begun.kind === 'error') throw begun.error
+
+    await begun.handle.completion
+    const result = begun.result.current
+    if (!result || !result.messageId) {
+      throw new Error(result?.outcome.error ?? 'Agent turn failed')
+    }
+    if (result.outcome.status === 'failed') {
+      throw new Error(result.outcome.error ?? 'Agent turn failed')
+    }
+    return {
+      conversationId: begun.conversationId,
+      messageId: result.messageId,
+      reply: result.reply,
+    }
+  }
+
+  /**
+   * A forduló előkészítése a kérés-scope-ban, majd a futás **leválasztott**
+   * indítása (spec §5.1, D3). Ami ide tartozik: jogosultság, a beszélgetés
+   * feloldása, a csatolmányok munkaterületre tükrözése, a felhasználói üzenet
+   * perzisztálása és a forduló **tulajdonjogának** megszerzése. Ami már NEM:
+   * a prompt összeállítása, a tool-loop és a válasz — az a detached futásban
+   * megy, és a kérés lezárása nem szakítja meg.
+   */
+  private async beginTurn(params: AgentChatSendParams): Promise<BeginTurnResult> {
     const text = params.content.trim()
     const attachmentIds = params.attachmentDocumentIds ?? []
-    if (!text && attachmentIds.length === 0) throw new Error('Message is required')
+    if (!text && attachmentIds.length === 0) {
+      return { kind: 'error', error: new Error('Message is required') }
+    }
 
     const agentDetails = await this.agents.findByIdWithDetails(params.agentId)
-    if (!agentDetails) throw new Error('Agent not found')
-    assertAgentReachableForChat(agentDetails.agent.tenantId, params.tenantId ?? null)
+    if (!agentDetails) return { kind: 'error', error: new Error('Agent not found') }
+    if (!isAgentReachableFromTenant(agentDetails.agent.tenantId, params.tenantId ?? null)) {
+      return { kind: 'error', error: new Error('Agent not found') }
+    }
+
+    const modelConfig = agentDetails.agent.modelConfig as ChatModelConfig
 
     let conversationId = params.conversationId
     if (conversationId) {
-      const existing = await this.conversations.getConversation(conversationId, params.tenantId ?? null)
+      const existing = await this.conversations.getConversation(
+        conversationId,
+        params.tenantId ?? null,
+      )
       if (existing.conversation.agentId !== params.agentId) {
-        throw new Error('Conversation agent mismatch')
+        return { kind: 'error', error: new Error('Conversation agent mismatch') }
       }
     } else {
       const title = (text || 'Új beszélgetés').slice(0, 80)
@@ -637,10 +780,10 @@ export class AgentChatRuntime {
       conversationId = created.id
     }
 
-    // Aktív-forduló foglalás (D7) a nem-streamelő úton is. E nélkül az invariáns
-    // megkerülhető lenne: a stream-út 409-et adna, ez az út viszont párhuzamosan
-    // elindítana egy második fordulót ugyanarra a beszélgetésre.
-    const turnRecord: TurnRecordHandle = { id: null, lockToken: null, closed: false }
+    // Aktív-forduló foglalás (§5.1/3, D7). Szándékosan MINDEN további munka —
+    // csatolmány-betöltés, workspace-tükrözés, user-üzenet — előtt: ha a
+    // beszélgetésen már fut forduló, ez a küldés semmilyen nyomot nem hagy.
+    const turnRecord: TurnRecordHandle = { id: null, lockToken: null }
     const reservation = await this.reserveTurnRecord(turnRecord, {
       conversationId,
       tenantId: params.tenantId ?? null,
@@ -648,58 +791,9 @@ export class AgentChatRuntime {
       agentVersion: agentDetails.agent.currentVersion,
       createdById: params.createdById,
     })
-    if (!reservation.ok) throw new ActiveAgentTurnExistsError(conversationId)
-
-    try {
-      const result = await this.runSendMessageTurn(params, agentDetails, conversationId, turnRecord)
-      // Nincs `StreamTurnContext` ezen az úton (nincs élő aktivitás-lista), ezért
-      // a snapshot-mezőket itt közvetlenül adjuk meg.
-      await this.closeTurnRecord(
-        turnRecord,
-        {
-          status: 'completed',
-          assistantMessageId: result.messageId,
-          partialText: result.reply,
-        },
-        null,
-      )
-      return result
-    } catch (error) {
-      await this.closeTurnRecord(
-        turnRecord,
-        {
-          status: 'failed',
-          reason: 'error',
-          error: error instanceof Error ? error.message : 'Agent turn failed',
-        },
-        null,
-      )
-      throw error
+    if (!reservation.ok) {
+      return { kind: 'conflict', conversationId, activeTurnId: reservation.activeTurnId }
     }
-  }
-
-  /**
-   * A nem-streamelő forduló törzse. Külön metódus, hogy a `sendMessage` a
-   * foglalás/lezárás életciklusát egyetlen try/catch-ben tartsa — a rekord így
-   * minden kilépési ágon terminális állapotra zárul.
-   */
-  private async runSendMessageTurn(
-    params: {
-      agentId: string
-      content: string
-      createdById: string
-      tenantId?: string | null
-      conversationId?: string
-      attachmentDocumentIds?: string[]
-      processDefinitionId?: string
-      processInputPayload?: Record<string, unknown>
-    },
-    agentDetails: NonNullable<Awaited<ReturnType<AgentRepository['findByIdWithDetails']>>>,
-    conversationId: string,
-    turnRecord: TurnRecordHandle,
-  ): Promise<{ conversationId: string; messageId: string; reply: string }> {
-    const text = params.content.trim()
-    const attachmentIds = params.attachmentDocumentIds ?? []
 
     const attachmentDocs = await this.loadDocuments(attachmentIds)
     const attachmentBlock = formatAttachmentBlock(attachmentDocs)
@@ -712,410 +806,156 @@ export class AgentChatRuntime {
     // szemben, és a korábbi körök / agent által írt fájlokat nem írjuk felül.
     const tenantKey = params.tenantId ?? 'global'
     const presentFiles = new Set(await this.listWorkspaceFiles(tenantKey, conversationId))
-    await this.materializeDocumentsToWorkspace(tenantKey, conversationId, attachmentDocs, presentFiles)
+    await this.materializeDocumentsToWorkspace(
+      tenantKey,
+      conversationId,
+      attachmentDocs,
+      presentFiles,
+    )
     const knowledgeDocs = await this.loadAgentKnowledgeDocuments(params.agentId)
     await this.materializeDocumentsToWorkspace(tenantKey, conversationId, knowledgeDocs, presentFiles)
     const workspaceFiles = await this.listWorkspaceFiles(tenantKey, conversationId)
 
-    const userMessage = await this.conversations.appendMessage({
+    let persistedUserMessage: Message | null = null
+    let userMessage: Message
+    try {
+      userMessage = await this.conversations.appendMessage({
+        conversationId,
+        role: 'user',
+        content: encodeStoredMessage(userFacingText, attachmentIds),
+        actingUserId: params.createdById,
+        actorType: 'human',
+        actorId: params.createdById,
+        onPersisted: (message) => {
+          persistedUserMessage = message
+        },
+      })
+    } catch (error) {
+      // Az üzenet commitja után az audit/ref frissítés még hibázhat. Ilyenkor az
+      // ACK-nak meg kell előznie a hibát, különben a kliens egy DB-ben lévő sort törölne.
+      // A már lefoglalt helyet MINDENKÉPP el kell engedni, különben a beszélgetés
+      // a foglalással együtt bezárul.
+      await this.releaseReservedTurnRecord(
+        turnRecord,
+        error instanceof Error ? error.message : 'Message persist failed',
+      )
+      return {
+        kind: 'error',
+        error: error instanceof Error ? error : new Error('Message persist failed'),
+        ...(persistedUserMessage
+          ? {
+              meta: {
+                conversationId,
+                userMessageId: (persistedUserMessage as Message).id,
+              },
+            }
+          : {}),
+      }
+    }
+
+    const turn: StreamTurnContext = {
       conversationId,
-      role: 'user',
-      content: encodeStoredMessage(userFacingText, attachmentIds),
-      actingUserId: params.createdById,
-      actorType: 'human',
-      actorId: params.createdById,
-    })
-    // A foglalás a user-üzenet ELŐTT történt (D7), így a rekord csak most kapja
-    // meg a hivatkozást — ugyanaz a sorrend, mint a stream-úton.
+      userMessageCreatedAt: userMessage.createdAt,
+      agentId: params.agentId,
+      agentVersion: agentDetails.agent.currentVersion,
+      createdById: params.createdById,
+      model: modelConfig.model,
+      activities: [],
+      completedReply: null,
+      finalized: false,
+      // A rekord már ÁLL — a foglalás a user-üzenet előtt megtörtént (D7).
+      turnRecordId: turnRecord.id,
+      turnRecordLockToken: turnRecord.lockToken,
+      turnRecordClosed: false,
+      lastHeartbeatAt: Date.now(),
+    }
+
+    // A foglalás a user-üzenet ELŐTT történt, így a rekord csak most kapja meg
+    // a hivatkozást.
     await this.attachUserMessageToTurnRecord(turnRecord, userMessage.id)
 
-    const processReply = await this.tryStartChatTriggeredProcess({
-      tenantId: params.tenantId ?? null,
-      processDefinitionId: params.processDefinitionId,
-      message: text,
-      explicitPayload: params.processInputPayload,
+    registerActiveChatTurn(conversationId)
+
+    const prepared: PreparedTurn = {
+      params,
+      turn,
+      agentDetails,
+      modelConfig,
       conversationId,
-      startedByUserId: params.createdById,
-      agentId: params.agentId,
-      agentVersion: agentDetails.agent.currentVersion,
-      modelConfig: agentDetails.agent.modelConfig as {
-        provider: string
-        model: string
-        temperature?: number
-        maxTokens?: number
-      },
+      text,
+      tenantKey,
+      attachmentBlock,
+      attachmentDocs,
+      workspaceFiles,
+    }
+
+    // A futás azonosítója a perzisztált forduló-rekordé. Ha a rekord nem jött
+    // létre (nincs bekötött tár vagy DB-zavar — l. `openTurnRecord` fail-soft
+    // ága), egy folyamat-lokális azonosítót adunk, hogy a stream-szerződés
+    // (`turn` esemény, Stop, visszacsatlakozás) alakja akkor is ugyanaz legyen.
+    const turnId = turn.turnRecordId ?? randomUUID()
+    const result: { current: TurnExecutionResult | null } = { current: null }
+    const handle = agentTurnRunner.start(turnId, async (emit) => {
+      result.current = await this.executeTurn(prepared, emit)
     })
-    if (processReply) {
-      const agentMessage = await this.conversations.appendMessage({
-        conversationId,
-        role: 'agent',
-        content: processReply.text,
-        actingUserId: params.createdById,
-        agentVersion: agentDetails.agent.currentVersion,
-        actorType: 'agent',
-        actorId: params.agentId,
-        ticketRefId: processReply.ticketRefId ?? null,
+    if (!handle) {
+      // Ugyanarra a fordulóra már fut futtatás ebben a processben: nem indítunk
+      // másodikat (a lock-tulajdonos az első). Ez a runner process-lokális
+      // védelme — a beszélgetés-szintű D7-et a foglalás intézi (#61).
+      unregisterActiveChatTurn(conversationId)
+      // A futás el sem indult, tehát a rekordot senki sem fogja lezárni.
+      await this.closeTurnRecord(turn, {
+        status: 'failed',
+        reason: 'error',
+        error: DUPLICATE_RUN_MESSAGE,
       })
       return {
-        conversationId,
-        messageId: agentMessage.id,
-        reply: processReply.text,
+        kind: 'error',
+        error: new Error(DUPLICATE_RUN_MESSAGE),
+        meta: { conversationId, userMessageId: userMessage.id },
       }
     }
-
-    const slashResolved = await this.resolveSlashSkillsForMessage(
-      params.agentId,
-      params.tenantId ?? null,
-      text,
-    )
-    const latestUserTextOverride =
-      slashResolved.modelFacingText !== text ? slashResolved.modelFacingText : undefined
-    const kbSearch = await this.fetchKbSearchContext({
-      agentId: params.agentId,
-      agentVersion: agentDetails.agent.currentVersion,
-      conversationId,
-      actingUserId: params.createdById,
-      query: slashResolved.modelFacingText || text,
-    })
-    const history = await this.conversations.getConversation(conversationId, params.tenantId ?? null)
-    const modelConfig = agentDetails.agent.modelConfig as {
-      provider: string
-      model: string
-      temperature?: number
-      maxTokens?: number
-    }
-    const memoryContext = await this.retrieveProjectMemoryContext({
-      agentDetails,
-      projectKey: history.conversation.projectKey,
-      query: buildMemoryRetrievalQuery({
-        queryKind: 'chat',
-        latestUserMessage: slashResolved.modelFacingText || text,
-        recentMessages: history.messages,
-      }),
-      tenantId: params.tenantId ?? null,
-      conversationId,
-    })
-    const assembledContext = await assembleContext({
-      audit: this.audit,
-      conversationId,
-      agentId: params.agentId,
-      agentVersion: agentDetails.agent.currentVersion,
-      actingUserId: params.createdById,
-      messages: history.messages,
-      memoryVersion: agentDetails.memoryVersion,
-      memoryContextTokens: memoryContext.tokens,
-      documentAliases: this.contextDocumentAliases(attachmentDocs, workspaceFiles, kbSearch.hits),
-    })
-    const priorToolCalls = await this.toolCaps.listToolCallsForConversation(conversationId)
-    const gatewayPrompt = await this.buildGatewayMessages(
-      agentDetails,
-      assembledContext.messages,
-      attachmentBlock,
-      kbSearch,
-      workspaceFiles,
-      priorToolCalls,
-      latestUserTextOverride,
-      memoryContext.block,
-    )
-
-    const allowedChatTools = await listAllowedChatTools(this.toolCaps, params.agentId)
-    const maxTurns = resolveToolLoopMaxTurns(modelConfig, allowedChatTools)
-    const skillBinding = await this.buildSkillBinding(params.agentId, params.tenantId ?? null)
-    // Futásidejű skill-snapshot perzisztálás a reprodukálhatósághoz (WP-5/D9/D12):
-    // a conversationhoz kötve rögzítjük, mely skill-verziók voltak élők a futáskor.
-    if (this.skills && skillBinding.loadSkill) {
-      await this.skills.recordRunSkillSnapshot({
-        agentId: params.agentId,
-        context: { conversationId },
-        actorTenantId: params.tenantId ?? null,
-      })
-    }
-    let reply: string
-    // A tool-loop akkor is fut, ha nincs capability-tool, de van hozzárendelt skill
-    // (a load_skill elérhetőségéhez), különben az index behúzhatatlan lenne (WP-5).
-    if (
-      allowedChatTools.length > 0 ||
-      skillBinding.loadSkill ||
-      slashResolved.preloadedSkillPrompts.length > 0
-    ) {
-      reply = (
-        await runAgentToolLoop({
-          gateway: this.gateway,
-          toolBroker: this.toolBroker,
-          toolCaps: this.toolCaps,
-          agentId: params.agentId,
-          agentVersion: agentDetails.agent.currentVersion,
-          context: { conversationId },
-          mode: 'chat',
-          actingUserId: params.createdById,
-          promptSegments: gatewayPrompt,
-          modelConfig,
-          allowedTools: allowedChatTools,
-          maxTurns,
-          skillIndexPrompt: skillBinding.skillIndexPrompt,
-          preloadedSkillPrompts: slashResolved.preloadedSkillPrompts,
-          loadSkill: skillBinding.loadSkill,
-          archiveLargeToolResult: (input) =>
-            this.archiveLargeToolResult(tenantKey, conversationId, input),
-          onTurnStart: () => this.heartbeatTurnRecord(turnRecord),
-        })
-      ).content
-    } else {
-      const gatewayInput = {
-        agentId: params.agentId,
-        agentVersion: agentDetails.agent.currentVersion,
-        conversationId,
-        actingUserId: params.createdById,
-        messages: assembleGatewayMessages(gatewayPrompt),
-        modelConfig,
-      }
-      reply = (await this.gateway.call(gatewayInput)).content
-    }
-
-    const agentMessage = await this.conversations.appendMessage({
-      conversationId,
-      role: 'agent',
-      content: reply.trim(),
-      actingUserId: params.createdById,
-      agentVersion: agentDetails.agent.currentVersion,
-      model: modelConfig.model,
-      actorType: 'agent',
-      actorId: params.agentId,
-    })
 
     return {
+      kind: 'started',
+      turnId,
       conversationId,
-      messageId: agentMessage.id,
-      reply: reply.trim(),
+      userMessageId: userMessage.id,
+      handle,
+      result,
     }
   }
 
-  private async findAgentReplyAfterTurn(turn: StreamTurnContext): Promise<string | null> {
-    const { messages } = await this.conversations.getConversation(turn.conversationId)
-    const existing = messages.find(
-      (message) => message.role === 'agent' && message.createdAt > turn.userMessageCreatedAt,
-    )
-    return existing?.id ?? null
-  }
+  /**
+   * A forduló tényleges végrehajtása — **ez a kliens-független lezáró pont** (D2).
+   * A hívója a runner, nem a HTTP-kérés: az események egy buszra mennek, amire
+   * feliratkozó lehet, de nem kötelező. A végleges assistant-üzenet írása és a
+   * forduló-rekord terminális lezárása minden kilépési úton itt, a `finally`-ban
+   * történik — akkor is, ha közben senki nem olvas.
+   */
+  private async executeTurn(
+    prepared: PreparedTurn,
+    emit: AgentTurnEmit,
+  ): Promise<TurnExecutionResult> {
+    const {
+      params,
+      turn,
+      agentDetails,
+      modelConfig,
+      conversationId,
+      text,
+      tenantKey,
+      attachmentBlock,
+      attachmentDocs,
+      workspaceFiles,
+    } = prepared
 
-  private async persistCancelledTurn(turn: StreamTurnContext): Promise<string | null> {
-    if (await this.findAgentReplyAfterTurn(turn)) return null
+    let outcome: FinalizeAgentTurnInput = { status: 'failed', reason: 'error' }
+    let reply = ''
+    let messageId: string | null = null
+    let ticketRefId: string | null = null
 
-    const toolCalls = await this.toolCaps.listToolCallsForConversation(turn.conversationId)
-    const turnToolCalls = toolCalls.filter(
-      (call) => call.createdAt > turn.userMessageCreatedAt,
-    )
-    const content = buildCancelledTurnMessage({
-      completedReply: turn.completedReply,
-      activities: turn.activities,
-      turnToolCalls,
-    })
-
-    const agentMessage = await this.conversations.appendMessage({
-      conversationId: turn.conversationId,
-      role: 'agent',
-      content,
-      actingUserId: turn.createdById,
-      agentVersion: turn.agentVersion,
-      model: turn.model,
-      actorType: 'agent',
-      actorId: turn.agentId,
-    })
-    return agentMessage.id
-  }
-
-  private async finalizeAgentTurn(
-    turn: StreamTurnContext,
-    content: string,
-    extras?: { ticketRefId?: string | null },
-  ): Promise<string | null> {
-    const existingId = await this.findAgentReplyAfterTurn(turn)
-    if (existingId) return existingId
-
-    const agentMessage = await this.conversations.appendMessage({
-      conversationId: turn.conversationId,
-      role: 'agent',
-      content: content.trim(),
-      actingUserId: turn.createdById,
-      agentVersion: turn.agentVersion,
-      model: turn.model,
-      actorType: 'agent',
-      actorId: turn.agentId,
-      ticketRefId: extras?.ticketRefId ?? null,
-    })
-    return agentMessage.id
-  }
-
-  private async cancelTurnIfRequested(
-    turn: StreamTurnContext,
-    conversationId: string,
-  ): Promise<string | null> {
-    if (turn.finalized || !isChatTurnCancelRequested(conversationId)) return null
-    const messageId = await this.persistCancelledTurn(turn)
-    if (messageId) turn.finalized = true
-    return messageId
-  }
-
-  async *sendMessageStream(
-    params: {
-      agentId: string
-      content: string
-      createdById: string
-      tenantId?: string | null
-      conversationId?: string
-      attachmentDocumentIds?: string[]
-      processDefinitionId?: string
-      processInputPayload?: Record<string, unknown>
-    },
-  ): AsyncGenerator<
-    | { type: 'meta'; conversationId: string; userMessageId: string }
-    /**
-     * Aktív-forduló ütközés (D7/E5). MINDIG a stream első eseménye, ha egyáltalán
-     * bekövetkezik — a kérés-út ebből csinál `409`-et, mielőtt SSE-választ nyitna,
-     * a kliens pedig az `activeTurnId`-vel a már futó fordulóra csatlakozhat rá.
-     */
-    | { type: 'conflict'; conversationId: string; activeTurnId: string | null }
-    | { type: 'activity'; activity: ToolLoopActivityEvent }
-    | { type: 'memory_candidate'; candidate: ToolLoopMemoryCandidateEvent }
-    | { type: 'thinking'; turnId: string; delta: string }
-    | { type: 'token'; chunk: string }
-    | { type: 'done'; conversationId: string; messageId: string; ticketRefId?: string | null }
-    | { type: 'cancelled'; conversationId: string; messageId: string }
-    | { type: 'error'; message: string },
-    void,
-    unknown
-  > {
-    let turn: StreamTurnContext | null = null
-    let activeConversationId: string | null = null
-    // A rekord-fogó a forduló-kontextus előtt jön létre: a helyfoglalás megelőzi
-    // a user-üzenetet, így a `finally` akkor is le tudja zárni a rekordot, ha a
-    // forduló összeállítása előtt szállunk ki.
-    const turnRecord: TurnRecordHandle = { id: null, lockToken: null, closed: false }
-    // A forduló-rekord terminális állapotát a `finally` írja ki, hogy MINDEN
-    // kilépési út (return, throw, és a generátor eldobása = `gen.return()`) egy
-    // ponton záruljon. A default a lecsatlakozás: ma a stream eldobásakor a
-    // válasz tényleg elveszik — ezt a §2.1/D2 rés zárja majd le külön tiketben.
-    let turnOutcome: FinalizeAgentTurnInput = { status: 'failed', reason: 'stream_abandoned' }
-
-    try {
-      const text = params.content.trim()
-      const attachmentIds = params.attachmentDocumentIds ?? []
-      if (!text && attachmentIds.length === 0) {
-        yield { type: 'error', message: 'Message is required' }
-        return
-      }
-
-      const agentDetails = await this.agents.findByIdWithDetails(params.agentId)
-      if (!agentDetails) {
-        yield { type: 'error', message: 'Agent not found' }
-        return
-      }
-      if (!isAgentReachableFromTenant(agentDetails.agent.tenantId, params.tenantId ?? null)) {
-        yield { type: 'error', message: 'Agent not found' }
-        return
-      }
-
-      const modelConfig = agentDetails.agent.modelConfig as {
-        provider: string
-        model: string
-        temperature?: number
-        maxTokens?: number
-      }
-
-      let conversationId = params.conversationId
-      if (conversationId) {
-        const existing = await this.conversations.getConversation(conversationId, params.tenantId ?? null)
-        if (existing.conversation.agentId !== params.agentId) {
-          yield { type: 'error', message: 'Conversation agent mismatch' }
-          return
-        }
-      } else {
-        const title = (text || 'Új beszélgetés').slice(0, 80)
-        const created = await this.conversations.createConversation({
-          agentId: params.agentId,
-          createdById: params.createdById,
-          tenantId: params.tenantId ?? null,
-          title,
-        })
-        conversationId = created.id
-      }
-
-      // Aktív-forduló ellenőrzés (§5.1/3, D7). Szándékosan MINDEN további munka
-      // — csatolmány-betöltés, workspace-tükrözés, user-üzenet — előtt: ha a
-      // beszélgetésen már fut forduló, ez a küldés semmilyen nyomot nem hagy.
-      const reservation = await this.reserveTurnRecord(turnRecord, {
-        conversationId,
-        tenantId: params.tenantId ?? null,
-        agentId: params.agentId,
-        agentVersion: agentDetails.agent.currentVersion,
-        createdById: params.createdById,
-      })
-      if (!reservation.ok) {
-        yield {
-          type: 'conflict',
-          conversationId,
-          activeTurnId: reservation.activeTurnId,
-        }
-        return
-      }
-
-      const attachmentDocs = await this.loadDocuments(attachmentIds)
-      const attachmentBlock = formatAttachmentBlock(attachmentDocs)
-      const userFacingText = text || '(csatolmányok)'
-
-      const tenantKey = params.tenantId ?? 'global'
-      const presentFiles = new Set(await this.listWorkspaceFiles(tenantKey, conversationId))
-      await this.materializeDocumentsToWorkspace(tenantKey, conversationId, attachmentDocs, presentFiles)
-      const knowledgeDocs = await this.loadAgentKnowledgeDocuments(params.agentId)
-      await this.materializeDocumentsToWorkspace(tenantKey, conversationId, knowledgeDocs, presentFiles)
-      const workspaceFiles = await this.listWorkspaceFiles(tenantKey, conversationId)
-
-      let persistedUserMessage: Message | null = null
-      let userMessage: Message
-      try {
-        userMessage = await this.conversations.appendMessage({
-          conversationId,
-          role: 'user',
-          content: encodeStoredMessage(userFacingText, attachmentIds),
-          actingUserId: params.createdById,
-          actorType: 'human',
-          actorId: params.createdById,
-          onPersisted: (message) => {
-            persistedUserMessage = message
-          },
-        })
-      } catch (error) {
-        // Az üzenet commitja után az audit/ref frissítés még hibázhat. Ilyenkor az
-        // ACK-nak meg kell előznie a hibát, különben a kliens egy DB-ben lévő sort törölne.
-        if (persistedUserMessage) {
-          yield {
-            type: 'meta',
-            conversationId,
-            userMessageId: (persistedUserMessage as Message).id,
-          }
-        }
-        throw error
-      }
-
-      turn = {
-        conversationId,
-        userMessageCreatedAt: userMessage.createdAt,
-        agentId: params.agentId,
-        agentVersion: agentDetails.agent.currentVersion,
-        createdById: params.createdById,
-        model: modelConfig.model,
-        activities: [],
-        completedReply: null,
-        finalized: false,
-      }
-      activeConversationId = conversationId
-      registerActiveChatTurn(conversationId)
-      await this.attachUserMessageToTurnRecord(turnRecord, userMessage.id)
-
-      // Persist-ACK: a kliens csak ettől a ponttól tarthatja meg hiba esetén az
-      // optimista user-buborékot. Az id-val rögtön a perzisztált rekordra vált.
-      yield { type: 'meta', conversationId, userMessageId: userMessage.id }
-
+    const runBody = async (): Promise<void> => {
       const processReply = await this.tryStartChatTriggeredProcess({
         tenantId: params.tenantId ?? null,
         processDefinitionId: params.processDefinitionId,
@@ -1128,33 +968,36 @@ export class AgentChatRuntime {
         modelConfig,
       })
       if (processReply) {
+        reply = processReply.text
         turn.completedReply = processReply.text
         for (const chunk of chunkForStreaming(processReply.text)) {
           const cancelledId = await this.cancelTurnIfRequested(turn, conversationId)
           if (cancelledId) {
-            turnOutcome = {
+            messageId = cancelledId
+            outcome = {
               status: 'cancelled',
               reason: 'cancelled',
               assistantMessageId: cancelledId,
             }
-            yield { type: 'cancelled', conversationId, messageId: cancelledId }
+            emit({ type: 'cancelled', conversationId, messageId: cancelledId })
             return
           }
-          yield { type: 'token', chunk }
+          emit({ type: 'token', chunk })
           await new Promise<void>((r) => setTimeout(r, 12))
         }
-        const messageId = await this.finalizeAgentTurn(turn, processReply.text, {
+        const persistedId = await this.finalizeAgentTurn(turn, processReply.text, {
           ticketRefId: processReply.ticketRefId ?? null,
         })
-        if (!messageId) return
         turn.finalized = true
-        turnOutcome = { status: 'completed', assistantMessageId: messageId }
-        yield {
+        messageId = persistedId
+        ticketRefId = processReply.ticketRefId ?? null
+        outcome = { status: 'completed', assistantMessageId: persistedId }
+        emit({
           type: 'done',
           conversationId,
-          messageId,
+          messageId: persistedId,
           ticketRefId: processReply.ticketRefId ?? null,
-        }
+        })
         return
       }
 
@@ -1172,7 +1015,10 @@ export class AgentChatRuntime {
         actingUserId: params.createdById,
         query: slashResolved.modelFacingText || text,
       })
-      const history = await this.conversations.getConversation(conversationId, params.tenantId ?? null)
+      const history = await this.conversations.getConversation(
+        conversationId,
+        params.tenantId ?? null,
+      )
       const memoryContext = await this.retrieveProjectMemoryContext({
         agentDetails,
         projectKey: history.conversation.projectKey,
@@ -1210,6 +1056,8 @@ export class AgentChatRuntime {
       const allowedChatTools = await listAllowedChatTools(this.toolCaps, params.agentId)
       const maxTurns = resolveToolLoopMaxTurns(modelConfig, allowedChatTools)
       const skillBinding = await this.buildSkillBinding(params.agentId, params.tenantId ?? null)
+      // Futásidejű skill-snapshot perzisztálás a reprodukálhatósághoz (WP-5/D9/D12):
+      // a conversationhoz kötve rögzítjük, mely skill-verziók voltak élők a futáskor.
       if (this.skills && skillBinding.loadSkill) {
         await this.skills.recordRunSkillSnapshot({
           agentId: params.agentId,
@@ -1227,10 +1075,11 @@ export class AgentChatRuntime {
           status: 'done',
         }
         turn.activities = upsertToolLoopActivity(turn.activities, activity)
-        yield { type: 'activity', activity }
+        emit({ type: 'activity', activity })
       }
 
-      let reply: string
+      // A tool-loop akkor is fut, ha nincs capability-tool, de van hozzárendelt skill
+      // (a load_skill elérhetőségéhez), különben az index behúzhatatlan lenne (WP-5).
       if (
         allowedChatTools.length > 0 ||
         skillBinding.loadSkill ||
@@ -1239,37 +1088,8 @@ export class AgentChatRuntime {
         const thinkingEnabled = this.isThinkingTraceEnabled
           ? await this.isThinkingTraceEnabled(params.tenantId ?? null)
           : false
-        type SideEvent =
-          | { kind: 'activity'; activity: ToolLoopActivityEvent }
-          | { kind: 'memory_candidate'; candidate: ToolLoopMemoryCandidateEvent }
-          | { kind: 'thinking'; turnId: string; delta: string }
-        const sideEventQueue: SideEvent[] = []
-        let wakeSideEvent: (() => void) | null = null
-        const pushSideEvent = (event: SideEvent) => {
-          sideEventQueue.push(event)
-          wakeSideEvent?.()
-          wakeSideEvent = null
-        }
-        const waitForSideEvent = () =>
-          new Promise<null>((resolve) => {
-            wakeSideEvent = () => resolve(null)
-          })
-        const drainSideEvents = function* (activeTurn: StreamTurnContext) {
-          while (sideEventQueue.length > 0) {
-            const event = sideEventQueue.shift()
-            if (!event) continue
-            if (event.kind === 'activity') {
-              activeTurn.activities = upsertToolLoopActivity(activeTurn.activities, event.activity)
-              yield { type: 'activity' as const, activity: event.activity }
-            } else if (event.kind === 'thinking') {
-              yield { type: 'thinking' as const, turnId: event.turnId, delta: event.delta }
-            } else {
-              yield { type: 'memory_candidate' as const, candidate: event.candidate }
-            }
-          }
-        }
 
-        const resultPromise = runAgentToolLoop({
+        const result = await runAgentToolLoop({
           gateway: this.gateway,
           toolBroker: this.toolBroker,
           toolCaps: this.toolCaps,
@@ -1288,143 +1108,242 @@ export class AgentChatRuntime {
           archiveLargeToolResult: (input) =>
             this.archiveLargeToolResult(tenantKey, conversationId, input),
           shouldCancel: () => isChatTurnCancelRequested(conversationId),
-          onTurnStart: () => this.heartbeatTurnRecord(turnRecord),
+          // Körönkénti életjel: ettől ismerhető fel kívülről az elhalt futás (D10).
+          onTurnStart: () => this.heartbeatTurnRecord(turn),
           onActivity: (activity) => {
-            turn!.activities = upsertToolLoopActivity(turn!.activities, activity)
-            pushSideEvent({ kind: 'activity', activity })
+            turn.activities = upsertToolLoopActivity(turn.activities, activity)
+            emit({ type: 'activity', activity })
           },
           ...(thinkingEnabled
             ? {
                 onReasoning: (turnId: string, delta: string) =>
-                  pushSideEvent({ kind: 'thinking', turnId, delta }),
+                  emit({ type: 'thinking', turnId, delta }),
               }
             : {}),
-          onMemoryCandidate: (candidate) => pushSideEvent({ kind: 'memory_candidate', candidate }),
+          onMemoryCandidate: (candidate) => emit({ type: 'memory_candidate', candidate }),
         }).then(
-          (result) => ({ ok: true as const, result }),
+          (value) => ({ ok: true as const, value }),
           (error: unknown) => ({ ok: false as const, error }),
         )
-
-        let result: Awaited<typeof resultPromise> | null = null
-        while (!result) {
-          const cancelledId = await this.cancelTurnIfRequested(turn, conversationId)
-          if (cancelledId) {
-            turnOutcome = {
-              status: 'cancelled',
-              reason: 'cancelled',
-              assistantMessageId: cancelledId,
-            }
-            yield { type: 'cancelled', conversationId, messageId: cancelledId }
-            return
-          }
-          yield* drainSideEvents(turn)
-          result = await Promise.race([resultPromise, waitForSideEvent()])
-        }
-        yield* drainSideEvents(turn)
 
         if (!result.ok) {
           if (result.error instanceof AgentToolLoopCancelledError) {
             const cancelledId = await this.cancelTurnIfRequested(turn, conversationId)
-            turnOutcome = {
+            messageId = cancelledId
+            outcome = {
               status: 'cancelled',
               reason: 'cancelled',
               assistantMessageId: cancelledId,
             }
             if (cancelledId) {
-              yield { type: 'cancelled', conversationId, messageId: cancelledId }
+              emit({ type: 'cancelled', conversationId, messageId: cancelledId })
             }
             return
           }
-          const message =
-            result.error instanceof Error ? result.error.message : 'Tool loop failed'
-          turnOutcome = { status: 'failed', reason: 'error', error: message }
-          yield { type: 'error', message }
+          const message = result.error instanceof Error ? result.error.message : 'Tool loop failed'
+          outcome = { status: 'failed', reason: 'error', error: message }
+          emit({ type: 'error', message })
           return
         }
-        reply = result.result.content
+        reply = result.value.content
         turn.completedReply = reply
         for (const chunk of chunkForStreaming(reply)) {
           const cancelledId = await this.cancelTurnIfRequested(turn, conversationId)
           if (cancelledId) {
-            turnOutcome = {
+            messageId = cancelledId
+            outcome = {
               status: 'cancelled',
               reason: 'cancelled',
               assistantMessageId: cancelledId,
             }
-            yield { type: 'cancelled', conversationId, messageId: cancelledId }
+            emit({ type: 'cancelled', conversationId, messageId: cancelledId })
             return
           }
-          yield { type: 'token', chunk }
+          emit({ type: 'token', chunk })
           await new Promise<void>((r) => setTimeout(r, 12))
         }
       } else {
-        try {
-          // Chat "thinking-trace" (tool nélküli ág): a reasoning-summary deltákat
-          // közös stateful tartalom-őr (D5) mögött gyűjtjük, és a következő token-yield
-          // előtt ürítjük ki `thinking` eseményként (a generátorból callbackből nem
-          // lehet yield-elni). turnId egyetlen körre `reasoning-0`.
-          const thinkingEnabled = this.isThinkingTraceEnabled
-            ? await this.isThinkingTraceEnabled(params.tenantId ?? null)
-            : false
-          const pendingThinking: string[] = []
-          const reasoningRedactor = new StreamingSensitiveTextRedactor((text) =>
-            pendingThinking.push(text),
-          )
-          const onReasoningDelta = thinkingEnabled
-            ? (delta: string) => reasoningRedactor.push(delta)
-            : undefined
-          const gatewayInput = {
-            agentId: params.agentId,
-            agentVersion: agentDetails.agent.currentVersion,
-            conversationId,
-            actingUserId: params.createdById,
-            messages: assembleGatewayMessages(gatewayPrompt),
-            modelConfig,
-            ...(onReasoningDelta ? { onReasoningDelta } : {}),
-          }
-          let accumulated = ''
-          for await (const chunk of this.gateway.callStream(gatewayInput)) {
-            const cancelledId = await this.cancelTurnIfRequested(turn, conversationId)
-            if (cancelledId) {
-              turnOutcome = {
-                status: 'cancelled',
-                reason: 'cancelled',
-                assistantMessageId: cancelledId,
-              }
-              yield { type: 'cancelled', conversationId, messageId: cancelledId }
-              return
-            }
-            while (pendingThinking.length > 0) {
-              yield { type: 'thinking', turnId: 'reasoning-0', delta: pendingThinking.shift()! }
-            }
-            accumulated += chunk
-            yield { type: 'token', chunk }
-          }
-          reasoningRedactor.finish()
-          while (pendingThinking.length > 0) {
-            yield { type: 'thinking', turnId: 'reasoning-0', delta: pendingThinking.shift()! }
-          }
-          reply = accumulated
-          turn.completedReply = reply
-        } catch (err) {
-          const message = err instanceof Error ? err.message : 'Model call failed'
-          turnOutcome = { status: 'failed', reason: 'error', error: message }
-          yield { type: 'error', message }
-          return
+        // Chat "thinking-trace" (tool nélküli ág): a reasoning-summary deltákat
+        // közös stateful tartalom-őr (D5) mögött gyűjtjük, és a következő token
+        // előtt ürítjük ki `thinking` eseményként. turnId egyetlen körre `reasoning-0`.
+        const thinkingEnabled = this.isThinkingTraceEnabled
+          ? await this.isThinkingTraceEnabled(params.tenantId ?? null)
+          : false
+        const pendingThinking: string[] = []
+        const reasoningRedactor = new StreamingSensitiveTextRedactor((value) =>
+          pendingThinking.push(value),
+        )
+        const onReasoningDelta = thinkingEnabled
+          ? (delta: string) => reasoningRedactor.push(delta)
+          : undefined
+        const gatewayInput = {
+          agentId: params.agentId,
+          agentVersion: agentDetails.agent.currentVersion,
+          conversationId,
+          actingUserId: params.createdById,
+          messages: assembleGatewayMessages(gatewayPrompt),
+          modelConfig,
+          ...(onReasoningDelta ? { onReasoningDelta } : {}),
         }
+        let accumulated = ''
+        for await (const chunk of this.gateway.callStream(gatewayInput)) {
+          const cancelledId = await this.cancelTurnIfRequested(turn, conversationId)
+          if (cancelledId) {
+            messageId = cancelledId
+            outcome = {
+              status: 'cancelled',
+              reason: 'cancelled',
+              assistantMessageId: cancelledId,
+            }
+            emit({ type: 'cancelled', conversationId, messageId: cancelledId })
+            return
+          }
+          while (pendingThinking.length > 0) {
+            emit({ type: 'thinking', turnId: 'reasoning-0', delta: pendingThinking.shift()! })
+          }
+          accumulated += chunk
+          emit({ type: 'token', chunk })
+        }
+        reasoningRedactor.finish()
+        while (pendingThinking.length > 0) {
+          emit({ type: 'thinking', turnId: 'reasoning-0', delta: pendingThinking.shift()! })
+        }
+        reply = accumulated
+        turn.completedReply = reply
       }
 
-      const messageId = await this.finalizeAgentTurn(turn, reply)
-      if (!messageId) return
+      const persistedId = await this.finalizeAgentTurn(turn, reply)
       turn.finalized = true
-      turnOutcome = { status: 'completed', assistantMessageId: messageId }
-      yield { type: 'done', conversationId, messageId }
-    } finally {
-      if (activeConversationId) {
-        unregisterActiveChatTurn(activeConversationId)
-      }
-      await this.closeTurnRecord(turnRecord, turnOutcome, turn)
+      messageId = persistedId
+      outcome = { status: 'completed', assistantMessageId: persistedId }
+      emit({ type: 'done', conversationId, messageId: persistedId })
     }
+
+    try {
+      await runBody()
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Agent turn failed'
+      outcome = { status: 'failed', reason: 'error', error: message }
+      emit({ type: 'error', message })
+    } finally {
+      unregisterActiveChatTurn(conversationId)
+      await this.closeTurnRecord(turn, outcome)
+    }
+
+    return { outcome, reply, messageId, ticketRefId }
+  }
+
+  private async findAgentReplyAfterTurn(turn: StreamTurnContext): Promise<string | null> {
+    const { messages } = await this.conversations.getConversation(turn.conversationId)
+    const existing = messages.find(
+      (message) => message.role === 'agent' && message.createdAt > turn.userMessageCreatedAt,
+    )
+    return existing?.id ?? null
+  }
+
+  private async persistCancelledTurn(turn: StreamTurnContext): Promise<string | null> {
+    if (await this.findAgentReplyAfterTurn(turn)) return null
+
+    const toolCalls = await this.toolCaps.listToolCallsForConversation(turn.conversationId)
+    const turnToolCalls = toolCalls.filter(
+      (call) => call.createdAt > turn.userMessageCreatedAt,
+    )
+    const content = buildCancelledTurnMessage({
+      completedReply: turn.completedReply,
+      activities: turn.activities,
+      turnToolCalls,
+    })
+
+    const agentMessage = await this.conversations.appendMessage({
+      conversationId: turn.conversationId,
+      role: 'agent',
+      content,
+      actingUserId: turn.createdById,
+      agentVersion: turn.agentVersion,
+      model: turn.model,
+      actorType: 'agent',
+      actorId: turn.agentId,
+    })
+    return agentMessage.id
+  }
+
+  /**
+   * A forduló válaszának perzisztálása. MINDIG azonosítót ad: vagy a már meglévő
+   * agent-üzenetét, vagy a most beszúrtét. Szándékosan nem `string | null` — egy
+   * `null` ág a hívóknál csendes `return`-t jelentene, ami a forduló-rekordot a
+   * kezdeti `failed` állapotban hagyná, holott a válasz létezik. Ha a beszúrás
+   * nem megy, az dobjon: azt a hívó `catch`-e kezeli valódi hibaként.
+   */
+  private async finalizeAgentTurn(
+    turn: StreamTurnContext,
+    content: string,
+    extras?: { ticketRefId?: string | null },
+  ): Promise<string> {
+    const existingId = await this.findAgentReplyAfterTurn(turn)
+    if (existingId) return existingId
+
+    const agentMessage = await this.conversations.appendMessage({
+      conversationId: turn.conversationId,
+      role: 'agent',
+      content: content.trim(),
+      actingUserId: turn.createdById,
+      agentVersion: turn.agentVersion,
+      model: turn.model,
+      actorType: 'agent',
+      actorId: turn.agentId,
+      ticketRefId: extras?.ticketRefId ?? null,
+    })
+    return agentMessage.id
+  }
+
+  private async cancelTurnIfRequested(
+    turn: StreamTurnContext,
+    conversationId: string,
+  ): Promise<string | null> {
+    if (turn.finalized || !isChatTurnCancelRequested(conversationId)) return null
+    const messageId = await this.persistCancelledTurn(turn)
+    if (messageId) turn.finalized = true
+    return messageId
+  }
+
+  /**
+   * A streamelő küldés — innentől **nézet a futás fölött**, nem a futás hajtóereje
+   * (spec §5.1/6, D3/D5). Előkészít, elindítja a leválasztott futást, majd
+   * feliratkozik az eseményeire. Ha a fogyasztó eldobja ezt a generátort
+   * (ablakbezárás, hard-refresh, abort), az CSAK a feliratkozást szünteti meg:
+   * a forduló fut tovább, és a válasz a lezáráskor bekerül a beszélgetésbe.
+   */
+  async *sendMessageStream(
+    params: AgentChatSendParams,
+  ): AsyncGenerator<AgentChatStreamEvent, void, unknown> {
+    const begun = await this.beginTurn(params)
+    // Az ütközés az ELSŐ esemény, még a `turn` előtt — a kérés-út ebből dönti el,
+    // hogy SSE helyett `409`-et ad (D7/E5).
+    if (begun.kind === 'conflict') {
+      yield {
+        type: 'conflict',
+        conversationId: begun.conversationId,
+        activeTurnId: begun.activeTurnId,
+      }
+      return
+    }
+    if (begun.kind === 'error') {
+      // Persist-ACK: ha a felhasználói üzenet már a DB-ben van, a kliens ne dobja el.
+      if (begun.meta) {
+        yield { type: 'meta', ...begun.meta }
+      }
+      yield { type: 'error', message: begun.error.message }
+      return
+    }
+
+    // A forduló azonosítója a legelső esemény (§6.1): a Stop és a
+    // visszacsatlakozás ehhez kötődik.
+    yield { type: 'turn', turnId: begun.turnId }
+    // Persist-ACK: a kliens csak ettől a ponttól tarthatja meg hiba esetén az
+    // optimista user-buborékot. Az id-val rögtön a perzisztált rekordra vált.
+    yield { type: 'meta', conversationId: begun.conversationId, userMessageId: begun.userMessageId }
+
+    yield* begun.handle.subscribe()
   }
 
   async createTaskTicket(params: {
@@ -1611,9 +1530,11 @@ export class AgentChatRuntime {
         ],
         modelConfig: params.modelConfig,
       })
-      const parsed = extractLoose(result.content)
-      if (!parsed) return null
-      return parsed
+      const jsonMatch = result.content.match(/\{[\s\S]*\}/)
+      if (!jsonMatch) return null
+      const parsed: unknown = JSON.parse(jsonMatch[0])
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null
+      return parsed as Record<string, unknown>
     } catch {
       return null
     }
