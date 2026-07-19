@@ -890,7 +890,6 @@ export class AgentChatRuntime {
         const persistedId = await this.finalizeAgentTurn(turn, processReply.text, {
           ticketRefId: processReply.ticketRefId ?? null,
         })
-        if (!persistedId) return
         turn.finalized = true
         messageId = persistedId
         ticketRefId = processReply.ticketRefId ?? null
@@ -1116,7 +1115,6 @@ export class AgentChatRuntime {
       }
 
       const persistedId = await this.finalizeAgentTurn(turn, reply)
-      if (!persistedId) return
       turn.finalized = true
       messageId = persistedId
       outcome = { status: 'completed', assistantMessageId: persistedId }
@@ -1171,11 +1169,18 @@ export class AgentChatRuntime {
     return agentMessage.id
   }
 
+  /**
+   * A forduló válaszának perzisztálása. MINDIG azonosítót ad: vagy a már meglévő
+   * agent-üzenetét, vagy a most beszúrtét. Szándékosan nem `string | null` — egy
+   * `null` ág a hívóknál csendes `return`-t jelentene, ami a forduló-rekordot a
+   * kezdeti `failed` állapotban hagyná, holott a válasz létezik. Ha a beszúrás
+   * nem megy, az dobjon: azt a hívó `catch`-e kezeli valódi hibaként.
+   */
   private async finalizeAgentTurn(
     turn: StreamTurnContext,
     content: string,
     extras?: { ticketRefId?: string | null },
-  ): Promise<string | null> {
+  ): Promise<string> {
     const existingId = await this.findAgentReplyAfterTurn(turn)
     if (existingId) return existingId
 

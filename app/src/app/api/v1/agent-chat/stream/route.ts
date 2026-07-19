@@ -58,19 +58,22 @@ export async function POST(request: Request) {
 
   const stream = new ReadableStream({
     async start(controller) {
-      const gen = services.agentChat.sendMessageStream({
-        agentId,
-        content,
-        createdById: user.user.id,
-        tenantId: user.activeTenantId,
-        conversationId,
-        attachmentDocumentIds,
-        processDefinitionId,
-        processInputPayload,
-      })
-
       let turnCompletion: Promise<void> | null = null
       try {
+        // A generátor létrehozása is a `try`-on BELÜL van: ha itt szinkron hiba
+        // csúszna ki, a `finally` nélkül a keep-alive ígéret sosem rendeződne, és
+        // az `after` a futtatókörnyezetet határtalanul életben tartaná.
+        const gen = services.agentChat.sendMessageStream({
+          agentId,
+          content,
+          createdById: user.user.id,
+          tenantId: user.activeTenantId,
+          conversationId,
+          attachmentDocumentIds,
+          processDefinitionId,
+          processInputPayload,
+        })
+
         for await (const event of gen) {
           // A forduló azonosítója a legelső esemény; innen ismerjük meg, melyik
           // futást kell a válasz lezárása után is életben tartani.
