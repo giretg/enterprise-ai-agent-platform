@@ -34,11 +34,21 @@ export type LoopGuardLimits = {
 /**
  * Dokumentált alapértékek (spec §7). Környezeti változóval és agent-szintű
  * `modelConfig` mezőkkel is felülírhatók — lásd {@link resolveLoopGuardLimits}.
+ *
+ * A chat (interaktív) szándékosan szűkebb wallclockot kap; a ticket/task futás
+ * hosszabb, mert aszinkron és nagy doksi + sok tool-kör kellhet hozzá.
  */
 export const LOOP_GUARD_DEFAULTS = {
   maxWallClockMs: 180_000,
   maxToolCalls: 60,
   maxNoProgressTurns: 3,
+} as const
+
+/** Ticket / aszinkron task futások alapértelmezett falióra-kerete (15 perc). */
+export const TASK_LOOP_GUARD_DEFAULTS = {
+  maxWallClockMs: 900_000,
+  maxToolCalls: 120,
+  maxNoProgressTurns: 4,
 } as const
 
 /** Épeszű tartományok — a konfiguráció nem tudja kikapcsolni a védelmet. */
@@ -47,6 +57,8 @@ const LIMIT_RANGES = {
   maxToolCalls: { min: 5, max: 500 },
   maxNoProgressTurns: { min: 2, max: 20 },
 } as const
+
+export type LoopGuardMode = 'chat' | 'task'
 
 export type LoopGuardState = {
   /** A most következő kör 0-alapú indexe. */
@@ -134,38 +146,41 @@ function readEnvNumber(key: string): number | undefined {
 
 /**
  * A küszöbök feloldása. Precedencia: agent-szintű `modelConfig` mező →
- * platform-szintű környezeti változó → {@link LOOP_GUARD_DEFAULTS}. Minden
- * érték clamp-elve az épeszű tartományra.
+ * platform-szintű környezeti változó → mód szerinti default
+ * ({@link LOOP_GUARD_DEFAULTS} chathez, {@link TASK_LOOP_GUARD_DEFAULTS} taskhoz).
+ * Minden érték clamp-elve az épeszű tartományra.
  *
- * | Küszöb | modelConfig mező | Env változó | Alapérték |
- * |---|---|---|---|
- * | faliórai idő | `maxToolWallClockMs` | `AGENT_LOOP_MAX_WALLCLOCK_MS` | 180 000 ms |
- * | tool-büdzsé | `maxToolCalls` | `AGENT_LOOP_MAX_TOOL_CALLS` | 60 hívás |
- * | előrehaladás-hiány | `maxNoProgressTurns` | `AGENT_LOOP_MAX_NO_PROGRESS_TURNS` | 3 kör |
+ * | Küszöb | modelConfig mező | Env változó | Chat alap | Task alap |
+ * |---|---|---|---|---|
+ * | faliórai idő | `maxToolWallClockMs` | `AGENT_LOOP_MAX_WALLCLOCK_MS` | 180s | 900s |
+ * | tool-büdzsé | `maxToolCalls` | `AGENT_LOOP_MAX_TOOL_CALLS` | 60 | 120 |
+ * | előrehaladás-hiány | `maxNoProgressTurns` | `AGENT_LOOP_MAX_NO_PROGRESS_TURNS` | 3 | 4 |
  */
 export function resolveLoopGuardLimits(
   modelConfig: Record<string, unknown> | undefined,
   maxTurns: number,
+  mode: LoopGuardMode = 'chat',
 ): LoopGuardLimits {
   const cfg = modelConfig ?? {}
+  const defaults = mode === 'task' ? TASK_LOOP_GUARD_DEFAULTS : LOOP_GUARD_DEFAULTS
   const pick = (configKey: string, envKey: string, fallback: number) =>
     readNumber(cfg, configKey) ?? readEnvNumber(envKey) ?? fallback
 
   return {
     maxTurns,
     maxWallClockMs: clampLimit(
-      pick('maxToolWallClockMs', 'AGENT_LOOP_MAX_WALLCLOCK_MS', LOOP_GUARD_DEFAULTS.maxWallClockMs),
+      pick('maxToolWallClockMs', 'AGENT_LOOP_MAX_WALLCLOCK_MS', defaults.maxWallClockMs),
       LIMIT_RANGES.maxWallClockMs,
     ),
     maxToolCalls: clampLimit(
-      pick('maxToolCalls', 'AGENT_LOOP_MAX_TOOL_CALLS', LOOP_GUARD_DEFAULTS.maxToolCalls),
+      pick('maxToolCalls', 'AGENT_LOOP_MAX_TOOL_CALLS', defaults.maxToolCalls),
       LIMIT_RANGES.maxToolCalls,
     ),
     maxNoProgressTurns: clampLimit(
       pick(
         'maxNoProgressTurns',
         'AGENT_LOOP_MAX_NO_PROGRESS_TURNS',
-        LOOP_GUARD_DEFAULTS.maxNoProgressTurns,
+        defaults.maxNoProgressTurns,
       ),
       LIMIT_RANGES.maxNoProgressTurns,
     ),

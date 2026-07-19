@@ -185,9 +185,18 @@ export class GeneralTaskRuntime {
     const attachmentDocs = await this.loadDocuments(attachmentIds)
     const attachmentBlock = formatAttachmentBlock(attachmentDocs)
     const conversationContext = await this.loadConversationContext(ticket)
+    const wsTenant = ticket.tenantId ?? 'global'
+    const workspaceFiles = await this.workspaceStorage
+      .list(wsTenant, ticket.id)
+      .catch(() => [] as string[])
+
     const threadComments = await this.tickets.listComments(ticket.id)
     const threadPrompt = threadComments.length > 0
-      ? buildThreadContextPrompt({ comments: threadComments, originalTask: question })
+      ? buildThreadContextPrompt({
+          comments: threadComments,
+          originalTask: question,
+          workspaceFiles,
+        })
       : null
     const taskPrompt = threadPrompt ?? question
     const kbQuery = [question, latestHumanTicketComment(threadComments)]
@@ -228,11 +237,6 @@ export class GeneralTaskRuntime {
       })
       preloadedSkillPrompts = preloaded.preloadedPrompts
     }
-
-    const wsTenant = ticket.tenantId ?? 'global'
-    const workspaceFiles = await this.workspaceStorage
-      .list(wsTenant, ticket.id)
-      .catch(() => [] as string[])
 
     const messages = await this.buildTaskMessages({
       agentDetails,
@@ -295,7 +299,7 @@ export class GeneralTaskRuntime {
       promptSegments: messages,
       modelConfig,
       allowedTools,
-      maxTurns: resolveToolLoopMaxTurns(modelConfig, allowedTools),
+      maxTurns: resolveToolLoopMaxTurns(modelConfig, allowedTools, 'task'),
       skillIndexPrompt,
       preloadedSkillPrompts,
       loadSkill,

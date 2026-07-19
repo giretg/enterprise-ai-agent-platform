@@ -25,12 +25,20 @@ check('lists visible workspace files with exact paths', () => {
   assert.doesNotMatch(prompt, /\.tool-results/)
   assert.match(prompt, /pdf_read/)
   assert.match(prompt, /NE találj ki documentId-t/)
+  assert.match(prompt, /page_range/)
 })
 
 check('empty workspace tells the agent to ask for an attachment', () => {
   const prompt = formatTaskWorkspaceFilesPrompt([])
   assert.match(prompt, /üres/)
   assert.match(prompt, /Fájlok/)
+})
+
+check('existing deliverables warn against delete-and-rebuild', () => {
+  const prompt = formatTaskWorkspaceFilesPrompt(['audit.xlsx', 'source.pdf'])
+  assert.match(prompt, /audit\.xlsx/)
+  assert.match(prompt, /confirm:true/)
+  assert.match(prompt, /NE töröld/)
 })
 
 if (failures > 0) {

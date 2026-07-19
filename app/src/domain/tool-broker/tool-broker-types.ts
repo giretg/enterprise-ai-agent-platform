@@ -416,7 +416,7 @@ export type FileEditArgs = { path: string; old_string: string; new_string: strin
 export type FileListArgs = { path?: string; recursive?: boolean }
 export type FileGlobArgs = { pattern: string }
 export type FileSearchArgs = { pattern: string; path?: string; glob?: string; ignore_case?: boolean; max_results?: number }
-export type FileDeleteArgs = { path: string }
+export type FileDeleteArgs = { path: string; confirm?: boolean }
 export type RepoPrepareArgs = {
   repoUrl?: string
   owner?: string

@@ -10,6 +10,7 @@
 import assert from 'node:assert/strict'
 import {
   LOOP_GUARD_DEFAULTS,
+  TASK_LOOP_GUARD_DEFAULTS,
   describeLoopStop,
   evaluateLoopContinuation,
   resolveLoopGuardLimits,
@@ -232,6 +233,14 @@ async function main() {
     assert.equal(limits.maxToolCalls, LOOP_GUARD_DEFAULTS.maxToolCalls)
     assert.equal(limits.maxNoProgressTurns, LOOP_GUARD_DEFAULTS.maxNoProgressTurns)
     assert.equal(limits.maxTurns, 20)
+  })
+
+  await check('task mód hosszabb wallclockot és tool-büdzsét kap', () => {
+    const limits = resolveLoopGuardLimits(undefined, 40, 'task')
+    assert.equal(limits.maxWallClockMs, TASK_LOOP_GUARD_DEFAULTS.maxWallClockMs)
+    assert.equal(limits.maxToolCalls, TASK_LOOP_GUARD_DEFAULTS.maxToolCalls)
+    assert.equal(limits.maxNoProgressTurns, TASK_LOOP_GUARD_DEFAULTS.maxNoProgressTurns)
+    assert.equal(limits.maxTurns, 40)
   })
 
   await check('modelConfig felülírja az alapértéket, clamp-elve', () => {

@@ -1,5 +1,12 @@
 import { loadPdfParse } from '@/lib/pdf-parse'
 import { FileEditorError } from '../workspace-storage'
+import { resolvePdfReadWindow } from './pdf-read-policy'
+
+export {
+  PDF_READ_MAX_PAGES_PER_CALL,
+  PDF_READ_UNRANGED_PAGE_CAP,
+  resolvePdfReadWindow,
+} from './pdf-read-policy'
 
 async function importPdfParse(): Promise<typeof import('pdf-parse').PDFParse> {
   try {
@@ -12,40 +19,57 @@ async function importPdfParse(): Promise<typeof import('pdf-parse').PDFParse> {
   }
 }
 
-function parsePageRange(pageRange?: string, totalPages?: number): { start: number; end: number } {
-  if (!pageRange) return { start: 1, end: totalPages ?? Infinity }
-  const [startStr, endStr] = pageRange.split('-')
-  const start = Math.max(1, parseInt(startStr ?? '1', 10))
-  const end = endStr ? parseInt(endStr, 10) : start
-  return { start, end: Math.min(end, totalPages ?? end) }
+export type PdfReadAdapterResult = {
+  text: string
+  numPages: number
+  pagesRead: string
+  truncated: boolean
+  notice: string | null
 }
 
 export async function pdfRead(
   buffer: Buffer,
   pageRange?: string,
-): Promise<{ text: string; numPages: number; pagesRead: string }> {
+): Promise<PdfReadAdapterResult> {
   const PDFParse = await importPdfParse()
-  const range = pageRange ? parsePageRange(pageRange) : null
-
   const parser = new PDFParse({ data: buffer })
-  let text: string
-  let numPages: number
   try {
+    // Először csak az oldalszám kell — így a policy full-read nélkül dönthet.
+    const probe = await parser.getText({ pageJoiner: '', first: 1, last: 1 })
+    const numPages = probe.total
+    const window = resolvePdfReadWindow({ numPages, pageRange })
+    if (window.end < window.start) {
+      return {
+        text: '',
+        numPages,
+        pagesRead: '0-0',
+        truncated: false,
+        notice: null,
+      }
+    }
+
     // A `pageJoiner` alapértelmezése oldaljelölőt (`-- 1 of 3 --`) fűzne a szövegbe.
     // A `first`+`last` együtt zárt oldal-tartományt jelent; a `total` a dokumentum
     // teljes oldalszáma marad akkor is, ha csak egy részét olvassuk.
-    const result = await parser.getText(
-      range ? { pageJoiner: '', first: range.start, last: range.end } : { pageJoiner: '' },
-    )
-    text = result.text.trim()
-    numPages = result.total
+    const result =
+      window.start === 1 && window.end === 1
+        ? probe
+        : await parser.getText({
+            pageJoiner: '',
+            first: window.start,
+            last: window.end,
+          })
+
+    return {
+      text: result.text.trim(),
+      numPages,
+      pagesRead: `${window.start}-${window.end}`,
+      truncated: window.truncated,
+      notice: window.notice,
+    }
   } finally {
     await parser.destroy()
   }
-
-  if (!range) return { text, numPages, pagesRead: `1-${numPages}` }
-
-  return { text, numPages, pagesRead: `${range.start}-${Math.min(range.end, numPages)}` }
 }
 
 // ── PDF írás (táblázat) ─────────────────────────────────────────────────────

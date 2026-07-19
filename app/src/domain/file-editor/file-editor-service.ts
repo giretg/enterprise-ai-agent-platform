@@ -1,4 +1,5 @@
 import { FileEditorError, WorkspaceStorage } from './workspace-storage'
+import { requiresDeleteConfirm } from './delete-confirm-policy'
 import {
   xlsxReadSheet,
   xlsxWriteCells,
@@ -158,6 +159,8 @@ export type PdfReadResult = {
   text: string
   numPages: number
   pagesRead: string
+  truncated: boolean
+  notice: string | null
 }
 
 export type PdfCreateResult = {
@@ -354,9 +357,15 @@ export class FileEditorService {
   async deleteFile(
     tenantId: string,
     ticketId: string,
-    args: { path: string },
+    args: { path: string; confirm?: boolean },
   ): Promise<FileDeleteResult> {
     const safePath = resolveSafePath(args.path)
+    if (requiresDeleteConfirm(safePath) && args.confirm !== true) {
+      throw new FileEditorError(
+        'CONFIRM_REQUIRED',
+        `A(z) ${safePath} deliverable/fájl törléséhez confirm:true kell. Folytatáskor inkább javítsd vagy bővítsd a meglévő fájlt — ne töröld és építsd újra, különben elveszik a korábbi haladás.`,
+      )
+    }
     await this.storage.delete(tenantId, ticketId, safePath)
     return { deleted: true, path: safePath }
   }
