@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation'
 import { createMonitor, updateMonitor } from '@/app/actions/monitor'
 
 const KIND_OPTIONS = [
-  { value: 'deadline', label: 'Határidő — közelgő due_by ticketek' },
+  { value: 'deadline', label: 'Határidő — közelgő due_by (e-mail TODO, nem nyit ticketet)' },
   { value: 'board_backlog', label: 'Board elakadás — awaiting_human / ready > N óra' },
   { value: 'connector_count', label: 'Connector-számlálás — postafiók-darabszám' },
 ]

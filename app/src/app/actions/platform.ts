@@ -296,7 +296,11 @@ export async function listBoardAssignees() {
     return ok({
       agents: agents
         .filter((agent) => agent.status === 'active')
-        .map((agent) => ({ id: agent.id, name: agent.name })),
+        .map((agent) => ({
+          id: agent.id,
+          name: agent.name,
+          personaNickname: agent.personaNickname,
+        })),
       users: memberships.map((membership) => ({
         id: membership.user.id,
         name: membership.user.name,
@@ -422,6 +426,8 @@ export async function createBoardTicket(input: {
   description?: string
   assigneeType: 'human' | 'agent'
   assigneeId: string
+  skillVersionIds?: string[]
+  dueBy?: string | null
   deferDispatch?: boolean
 }) {
   try {
@@ -429,11 +435,23 @@ export async function createBoardTicket(input: {
     const parsed = createBoardTicketSchema.parse(input)
 
     const promptText = parsed.description?.trim() || parsed.title.trim()
+    const dueBy = parsed.dueBy ? new Date(parsed.dueBy) : null
+    if (dueBy && Number.isNaN(dueBy.getTime())) return fail('Invalid dueBy')
 
     if (parsed.assigneeType === 'agent') {
       const agentDetails = await repositories.agents.findByIdWithDetails(parsed.assigneeId, user.activeTenantId)
       if (!agentDetails) return fail('Agent not found')
       if (agentDetails.agent.status !== 'active') return fail('Agent is not active')
+
+      const requestedSkillIds = [...new Set(parsed.skillVersionIds ?? [])]
+      if (requestedSkillIds.length > 0) {
+        const enabled = await services.skills.getAssignedSkillIndex(parsed.assigneeId)
+        const enabledIds = new Set(enabled.map((row) => row.skillVersionId))
+        const invalid = requestedSkillIds.filter((id) => !enabledIds.has(id))
+        if (invalid.length > 0) {
+          return fail('One or more selected skills are not enabled for this agent')
+        }
+      }
 
       const modelConfig = agentDetails.agent.modelConfig as {
         provider: string
@@ -450,6 +468,9 @@ export async function createBoardTicket(input: {
         model: modelConfig.model,
         memoryVersion: agentDetails.memoryVersion,
       }
+      if (requestedSkillIds.length > 0) {
+        payload.preferredSkillVersionIds = requestedSkillIds
+      }
 
       const ticket = await repositories.tickets.create({
         tenantId: user.activeTenantId,
@@ -462,7 +483,7 @@ export async function createBoardTicket(input: {
         payload: payload as Prisma.JsonValue,
         sourceDocumentId: null,
         executeAfter: null,
-        dueBy: null,
+        dueBy,
         createdById: user.user.id,
       })
 
@@ -503,7 +524,7 @@ export async function createBoardTicket(input: {
       payload: payload as Prisma.JsonValue,
       sourceDocumentId: null,
       executeAfter: null,
-      dueBy: null,
+      dueBy,
       createdById: user.user.id,
     })
 

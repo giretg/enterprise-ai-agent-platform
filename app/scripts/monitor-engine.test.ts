@@ -319,15 +319,16 @@ checkAsync('eszkalált jel notifyChannel esetén értesítést és auditot kap',
   const escalatedSignal = signal({
     dedupKeyParts: { ticketId: 'source-ticket-1' },
     severity: 91,
-    title: 'Kritikus határidő',
+    title: 'Kritikus elakadás',
     dueBy: new Date(NOW.getTime() + 3_600_000),
     payload: { ticketId: 'source-ticket-1' },
   })
   const definition = monitor({
     id: 'monitor-notify',
+    kind: 'board_backlog',
     notifyChannel: 'email:ops@example.com',
     filterConfig: { field: 'severity', cmp: '>=', value: 80 },
-    dedupKeyTemplate: 'deadline:{ticketId}',
+    dedupKeyTemplate: 'backlog:{ticketId}',
   })
   const run: MonitorRun = {
     id: 'run-notify',
@@ -347,7 +348,7 @@ checkAsync('eszkalált jel notifyChannel esetén értesítést és auditot kap',
   const storedSignal: MonitorSignal = {
     id: 'signal-notify',
     monitorId: definition.id,
-    dedupKey: 'deadline:source-ticket-1',
+    dedupKey: 'backlog:source-ticket-1',
     firstSeenAt: NOW,
     lastSeenAt: NOW,
     lastEscalatedAt: null,
@@ -406,7 +407,7 @@ checkAsync('eszkalált jel notifyChannel esetén értesítést és auditot kap',
   } as unknown as AuditRepository
 
   const collector: MonitorCollector = {
-    kind: 'deadline',
+    kind: 'board_backlog',
     async collect() {
       return [escalatedSignal]
     },
@@ -425,16 +426,100 @@ checkAsync('eszkalált jel notifyChannel esetén értesítést és auditot kap',
   assert.equal(result[0].outcome, 'escalated')
   assert.equal(notifications.length, 1)
   assert.equal(notifications[0].channel, 'email:ops@example.com')
-  assert.equal(notifications[0].dedupKey, 'deadline:source-ticket-1')
+  assert.equal(notifications[0].dedupKey, 'backlog:source-ticket-1')
   assert.equal(auditEvents.some((e) => e.action === 'monitor.notify.sent'), true)
   const ticketPayload = createdTickets[0].payload as Record<string, unknown>
   assert.equal(ticketPayload.monitorRunId, 'run-notify')
-  assert.equal(ticketPayload.dedupKey, 'deadline:source-ticket-1')
+  assert.equal(ticketPayload.dedupKey, 'backlog:source-ticket-1')
+})
+
+checkAsync('deadline kind nem nyit második figyelmeztető ticketet', async () => {
+  const escalatedSignal = signal({
+    dedupKeyParts: { ticketId: 'source-ticket-deadline' },
+    severity: 91,
+    title: 'Közelgő határidő: eredeti',
+    dueBy: new Date(NOW.getTime() + 3_600_000),
+    payload: { ticketId: 'source-ticket-deadline', ticketTitle: 'eredeti' },
+  })
+  const definition = monitor({
+    id: 'monitor-deadline-no-ticket',
+    kind: 'deadline',
+    notifyChannel: 'email:ops@example.com',
+    filterConfig: { field: 'severity', cmp: '>=', value: 80 },
+    dedupKeyTemplate: 'deadline:{ticketId}',
+  })
+  const run: MonitorRun = {
+    id: 'run-deadline-no-ticket',
+    monitorId: definition.id,
+    outcome: 'quiet',
+    startedAt: NOW,
+    finishedAt: null,
+    scheduledFor: definition.nextSweepAt,
+    signalCount: 0,
+    matchedCount: 0,
+    suppressedCount: 0,
+    openedTicketIds: [],
+    llmInvoked: false,
+    costUsd: null,
+    error: null,
+  }
+  const createdTickets: Array<Partial<Ticket>> = []
+  const notifications: MonitorNotificationInput[] = []
+  const monitorRepo = {
+    async findDue() {
+      return [definition]
+    },
+    async claim() {
+      return definition
+    },
+    async createRun() {
+      return run
+    },
+    async upsertSignal() {
+      return {
+        id: 'signal-deadline-no-ticket',
+        lastEscalatedAt: null,
+      } as MonitorSignal
+    },
+    async markSignalEscalated() {
+      throw new Error('deadline kind must not mark escalation via ticket path')
+    },
+    async updateRun(_id: string, data: Partial<MonitorRun>) {
+      Object.assign(run, data)
+      return run
+    },
+    async release() {},
+  } as unknown as MonitorRepository
+  const ticketRepo = {
+    async create(data: Partial<Ticket>) {
+      createdTickets.push(data)
+      return { ...data, id: 'should-not-exist', createdAt: NOW, updatedAt: NOW } as Ticket
+    },
+  } as unknown as TicketRepository
+  const service = new MonitorService(
+    monitorRepo,
+    ticketRepo,
+    { async append() { return {} as AuditLog } } as unknown as AuditRepository,
+    [{ kind: 'deadline', async collect() { return [escalatedSignal] } }],
+    {
+      async send(input) {
+        notifications.push(input)
+        return { provider: 'email', messageId: 'msg-x' }
+      },
+    },
+  )
+  const result = await service.sweepDue(NOW, 1)
+  assert.equal(result[0].outcome, 'suppressed')
+  assert.deepEqual(result[0].openedTicketIds, [])
+  assert.equal(createdTickets.length, 0)
+  assert.equal(notifications.length, 0)
+  assert.equal(run.suppressedCount, 1)
 })
 
 checkAsync('idegen legacy eszkalációs agent mellett is emberi backlog ticket nyílik', async () => {
   const definition = monitor({
     id: 'monitor-legacy-agent',
+    kind: 'board_backlog',
     tenantId: 'tenant-a',
     escalateAgentId: 'agent-tenant-b',
   })
@@ -486,7 +571,7 @@ checkAsync('idegen legacy eszkalációs agent mellett is emberi backlog ticket n
     },
   } as unknown as AuditRepository
   const collector: MonitorCollector = {
-    kind: 'deadline',
+    kind: 'board_backlog',
     async collect() {
       return [signal({ title: 'Legacy agent monitor jel' })]
     },

@@ -276,6 +276,14 @@ export class MonitorService {
           if (processIds.length > 0) {
             startedProcessIds.push(...processIds)
             await this.monitors.markSignalEscalated(sig.id, null, now)
+          } else if (monitor.kind === 'deadline') {
+            // TODO(deadline-email): Ide kell majd e-mail figyelmeztetést küldeni az
+            // érintett (eredeti) ticket `dueBy` határidőjéről — pl. a létrehozónak /
+            // assignee-nak, a jel payloadjában lévő `ticketId` + `ticketTitle` + `dueBy`
+            // alapján. Második `monitor_alert` ticketet szándékosan NEM nyitunk: egy
+            // párhuzamos figyelmeztető kártyának a boardon nincs értelme.
+            suppressedCount += 1
+            continue
           } else {
             const ticketId = await this.openTicket(
               monitor,
