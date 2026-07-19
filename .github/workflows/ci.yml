@@ -65,6 +65,7 @@ jobs:
           npm run test:tool-broker-tenant
           npm run test:provisioning-errors
           npm run test:dispatch-budget
+          npm run test:dispatch-board-ticket-schema
           npm run test:playbook-v2-process
           npm run test:iam-policy
           npm run test:memory-approval

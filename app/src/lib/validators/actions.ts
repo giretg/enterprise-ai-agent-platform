@@ -209,6 +209,11 @@ export const createBoardTicketSchema = z
     { message: 'skillVersionIds only allowed when assigneeType is agent' },
   )
 
+/** Board ticket deferred dispatch — a form `{ ticketId }` kulccsal hívja (nem `{ id }`). */
+export const dispatchBoardTicketSchema = z.object({
+  ticketId: z.string().uuid(),
+})
+
 export const processDocumentSchema = z.object({
   documentId: z.string().uuid(),
   agentId: z.string().uuid(),

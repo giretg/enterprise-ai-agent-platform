@@ -107,6 +107,7 @@ import {
   listTicketCommentsSchema,
   modelPolicyEntrySchema,
   createBoardTicketSchema,
+  dispatchBoardTicketSchema,
   inviteUserSchema,
   redeemInvitationSchema,
   revokeInvitationSchema,
@@ -537,7 +538,7 @@ export async function createBoardTicket(input: {
 export async function dispatchBoardTicket(input: { ticketId: string }) {
   try {
     const user = await requireTenantRole('operator')
-    const { id: ticketId } = ticketIdSchema.parse(input)
+    const { ticketId } = dispatchBoardTicketSchema.parse(input)
     const ticket = await repositories.tickets.findById(ticketId)
     if (!ticket) return fail('Ticket not found')
     assertTicketTenantScope(ticket, user.activeTenantId)
