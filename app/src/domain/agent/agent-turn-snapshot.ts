@@ -37,7 +37,8 @@ export function guardTurnPartialText(text: string): string {
   return redactSensitiveText(text).text
 }
 
-function upsertActivity(
+/** Azonos `id`-jú aktivitás felülírása / új hozzáadása — egy forrás a runtime-nak is. */
+export function upsertToolLoopActivity(
   activities: ToolLoopActivityEvent[],
   event: ToolLoopActivityEvent,
 ): ToolLoopActivityEvent[] {
@@ -94,7 +95,7 @@ export class TurnSnapshotFlusher {
    * partial is együtt megy (egy DB-írás).
    */
   pushActivity(event: ToolLoopActivityEvent): TurnSnapshotFlush {
-    this.activities = upsertActivity(this.activities, event)
+    this.activities = upsertToolLoopActivity(this.activities, event)
     const flush: TurnSnapshotFlush = { activities: this.activities }
     if (this.charsSinceFlush > 0 && this.shouldFlushPartial()) {
       flush.partialText = guardTurnPartialText(this.rawText)

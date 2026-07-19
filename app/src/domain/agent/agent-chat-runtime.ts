@@ -137,15 +137,6 @@ function formatToolCallSynopsisBlock(calls: ToolCall[]): string {
   return `\n\n[Ebben a körben lefutott eszközhívások]\n${calls.map(formatToolCallSynopsisLine).join('\n')}`
 }
 
-function upsertToolLoopActivity(
-  activities: ToolLoopActivityEvent[],
-  next: ToolLoopActivityEvent,
-): ToolLoopActivityEvent[] {
-  const index = activities.findIndex((activity) => activity.id === next.id)
-  if (index < 0) return [...activities, next]
-  return activities.map((activity, i) => (i === index ? { ...activity, ...next } : activity))
-}
-
 export type CancelledTurnSnapshot = {
   completedReply?: string | null
   activities?: ToolLoopActivityEvent[]
@@ -974,9 +965,10 @@ export class AgentChatRuntime {
       await this.persistTurnProgress(turn, snapshot.pushToken(chunk))
     }
     const emitActivity = async (activity: ToolLoopActivityEvent) => {
-      turn.activities = upsertToolLoopActivity(turn.activities, activity)
+      const flush = snapshot.pushActivity(activity)
+      turn.activities = snapshot.activityList
       emit({ type: 'activity', activity })
-      await this.persistTurnProgress(turn, snapshot.pushActivity(activity))
+      await this.persistTurnProgress(turn, flush)
     }
 
     const runBody = async (): Promise<void> => {

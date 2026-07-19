@@ -44,14 +44,14 @@ async function main() {
   })
 
   await check('token: küszöb alatt nincs flush', () => {
-    let now = 1_000
+    const now = 1_000
     const flusher = new TurnSnapshotFlusher({ now: () => now })
     assert.equal(flusher.pushToken('hello'), null)
     assert.equal(flusher.pushToken(' world'), null)
   })
 
   await check('token: karakter-küszöb felett flushol, redaktált szöveggel', () => {
-    let now = 1_000
+    const now = 1_000
     const flusher = new TurnSnapshotFlusher({ now: () => now })
     const chunk = 'a'.repeat(PARTIAL_TEXT_FLUSH_CHARS)
     const flush = flusher.pushToken(chunk)
@@ -87,7 +87,7 @@ async function main() {
   })
 
   await check('tartalom-őr: PAN nem kerül nyersen a flusholt részszövegbe', () => {
-    let now = 1_000
+    const now = 1_000
     const flusher = new TurnSnapshotFlusher({ now: () => now })
     const raw = `A kártyaszám 4111 1111 1111 1111 — ${'x'.repeat(PARTIAL_TEXT_FLUSH_CHARS)}`
     const flush = flusher.pushToken(raw)
@@ -103,7 +103,7 @@ async function main() {
   })
 
   await check('flushFinal: a teljes aktuális részszöveget kiírja (őrizve)', () => {
-    let now = 1_000
+    const now = 1_000
     const flusher = new TurnSnapshotFlusher({ now: () => now })
     flusher.pushToken('rövid')
     flusher.pushActivity(activity('t1', 'done'))
@@ -113,7 +113,7 @@ async function main() {
   })
 
   await check('hosszú válasz: az írások száma a küszöb nagyságrendje', () => {
-    let now = 1_000
+    const now = 1_000
     const flusher = new TurnSnapshotFlusher({ now: () => now })
     // A chunk pontosan osztja a küszöböt → minden N. tokennél flush, idő nélkül.
     const chunkSize = 40
