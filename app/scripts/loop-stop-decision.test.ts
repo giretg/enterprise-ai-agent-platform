@@ -91,6 +91,7 @@ function runLoop(params: {
   maxTurns?: number
   modelConfig?: ModelConfig
   now?: () => number
+  finalizeGraceMs?: number
 }) {
   return runAgentToolLoop({
     gateway: params.gateway,
@@ -105,6 +106,7 @@ function runLoop(params: {
     allowedTools: ALLOWED_TOOLS,
     maxTurns: params.maxTurns ?? 10,
     ...(params.now ? { now: params.now } : {}),
+    ...(params.finalizeGraceMs !== undefined ? { finalizeGraceMs: params.finalizeGraceMs } : {}),
   })
 }
 
@@ -373,6 +375,101 @@ async function main() {
       const notice = describeLoopStop(reason, LIMITS)
       assert.ok(notice && notice.length > 40, `${reason}: van önmagyarázó szöveg`)
     }
+  })
+
+  // --- 6. Regressziók (code review, 2026-07-19) ---
+
+  await check('a blokkolt ismétlés NEM nullázza a zsákutca-sorozatot', async () => {
+    // Regresszió: a guard-blokkolt hívás korábban `REPEAT_GUARD` ujjlenyomattal
+    // ment be, ami az ELSŐ alkalommal „új eredménynek" számított és nullázta a
+    // sorozatot — pont azt a kört mosta tisztára, amit meg kell fognia.
+    //
+    // Azonos argumentum, maxNoProgressTurns = 3 (alapérték). A REPEAT_LIMIT 3
+    // valódi hívást enged, a 4. körtől minden hívás blokkolt:
+    //   0. kör: új eredmény            → streak 0
+    //   1. kör: már látott             → streak 1
+    //   2. kör: már látott             → streak 2
+    //   3. kör: blokkolt (terméketlen) → streak 3 → a 4. kör elején leáll
+    // A hibás viselkedéssel a 3. kör NULLÁZOTT, és a leállás csak a 7. körben
+    // következett be — a különbség a lefutott körök számában látszik.
+    const brokerCalls: ToolBrokerInvokeInput[] = []
+    let toolTurns = 0
+    const gateway = {
+      call: async (args: GatewayCallArgs) => {
+        if (!args.tools) return { content: 'Nem jutottam tovább.' }
+        toolTurns += 1
+        return {
+          content: '',
+          toolCalls: [{ id: 'same', name: 'kb_search', input: { query: 'ugyanaz' } }],
+        }
+      },
+    } as unknown as ModelGateway
+
+    const result = await runLoop({
+      gateway,
+      toolBroker: constantResultBroker(brokerCalls),
+      maxTurns: 30,
+    })
+    assert.equal(result.reason, 'no_progress')
+    assert.equal(brokerCalls.length, 3, 'a REPEAT_LIMIT változatlanul 3 valódi hívást enged')
+    assert.equal(
+      toolTurns,
+      4,
+      'a blokkolt kör terméketlen: a 4. kör elején le kell állni (a hibás ág 7 kört futott)',
+    )
+  })
+
+  await check('a kör-limitet a döntéshozó tartja számon, nem a for-fej', async () => {
+    // Regresszió: a `for (turn < maxTurns)` mellett a döntéshozó
+    // `max_turns_exhausted` ága holt kód volt. A limit most egyetlen helyen él.
+    const observed: number[] = []
+    for (const turn of [0, 4, 5, 6]) {
+      const decision = evaluateLoopContinuation({
+        turn,
+        elapsedMs: 0,
+        toolCallCount: 0,
+        noProgressTurns: 0,
+        cancelRequested: false,
+        limits: { ...LIMITS, maxTurns: 5 },
+      })
+      if (!decision.continue) observed.push(turn)
+    }
+    assert.deepEqual(observed, [5, 6], 'a döntéshozó a maxTurns elérésekor áll le')
+  })
+
+  await check('erőforrás-leállás után a záró hívás nem várható korlátlanul', async () => {
+    // Regresszió: `wallclock_timeout` után a záró összefoglaló `gateway.call`
+    // korlátlan ideig futhatott — a büdzsén kívül. Most türelmi idő van rá, és
+    // a részeredmény (az utolsó asszisztens-szöveg) megy ki helyette.
+    let clock = 0
+    const gateway = {
+      call: async (args: GatewayCallArgs) => {
+        if (!args.tools) {
+          // A záró hívás soha nem tér vissza — a türelmi időnek kell mentenie.
+          return new Promise<{ content: string }>(() => {})
+        }
+        clock += 500_000 // az első kör után azonnal túllépjük a faliórai korlátot
+        return {
+          content: 'Idáig jutottam: megvan a szabályzat első fele.',
+          toolCalls: [{ id: 'c1', name: 'kb_search', input: { query: 'szabályzat' } }],
+        }
+      },
+    } as unknown as ModelGateway
+
+    const result = await runLoop({
+      gateway,
+      toolBroker: constantResultBroker([]),
+      maxTurns: 30,
+      now: () => clock,
+      finalizeGraceMs: 50,
+    })
+    assert.equal(result.reason, 'wallclock_timeout')
+    assert.match(
+      result.content,
+      /Idáig jutottam/,
+      'a részeredmény megmarad, ha a záró hívás nem fér bele',
+    )
+    assert.match(result.content, /időkorlátot/, 'a leállás oka is kimegy')
   })
 
   if (failures > 0) {
