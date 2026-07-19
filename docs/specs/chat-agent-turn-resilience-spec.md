@@ -87,7 +87,7 @@ beragadt futásra.
 | **D8** | Deployment-topológia | **Tier-1 (in-process)** először, **Tier-2 (dispatcher-birtokolt, DB-lock+heartbeat)** a robusztus célállapot | Fázisozható; a Tier-2 tükrözi a meglévő ticket-dispatchert (lock_token+stale reclaim). |
 | **D9** | Token-perzisztencia granularitás | Throttle-flush (`partialText` ~1 mp / N token), activity-nként upsert, terminálkor teljes írás | Reconnect-snapshot DB-túlterhelés nélkül. |
 | **D10** | Beragadt futás | **Watchdog**: `heartbeatAt` régebbi a küszöbnél → `failed`/`exhausted` + finalizálás | Infra-szintű végtelen-ciklus / crash-védelem. |
-| **D11** | Visszamenőleges kompatibilitás | A `sendMessage` (nem-stream) útvonal is a finalizeren keresztül ír | Egységes írási pont, ne duplázódjon a logika. |
+| **D11** | Visszamenőleges kompatibilitás | ~~A `sendMessage` (nem-stream) útvonal is a finalizeren keresztül ír~~ → **a `sendMessage` út törölve** (2026-07-18) | Egységes írási pont, ne duplázódjon a logika. A felülvizsgálat kimutatta, hogy a nem-stream útnak *soha* nem volt hívója (se UI, se API route — csak a hálózatról elérhető `sendAgentMessage` server action és egy teszt), viszont párhuzamos életciklust tartott életben. A törlés a D11 célját közvetlenebbül éri el. |
 
 ---
 
@@ -416,7 +416,7 @@ A teljes D2/D4 (szerver-oldali `AgentTurn` + loop-finalizer + reconnect GET-SSE)
 **1. hullám — perzisztencia + no-loss (Tier-1)**
 - **WP-1** `AgentTurn` modell + migráció + repository. — **KÉSZ (#59)**
 - **WP-2** `AgentTurnRunner` (registry, busz, **finalizer** = D2 rés lezárása);
-  `sendMessageStream`/`sendMessage` átkötése a finalizerre. — **KÉSZ (#60)**
+  `sendMessageStream` átkötése a finalizerre (a `sendMessage` út törölve — lásd D11). — **KÉSZ (#60)**
 - **WP-3** `POST stream` átalakítás detached indításra + `turn` event. — **KÉSZ (#60)**
 
 **2. hullám — védelem**

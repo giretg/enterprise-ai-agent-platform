@@ -716,28 +716,6 @@ export class AgentChatRuntime {
    * ponton** megy át, mint a stream (D11): a különbség csak annyi, hogy nincs
    * feliratkozó, és megvárjuk a futás végét, hogy szinkron választ adhassunk.
    */
-  async sendMessage(params: AgentChatSendParams) {
-    const begun = await this.beginTurn(params)
-    // A D7 ezen az úton is érvényes: a közös `beginTurn` foglal, tehát az
-    // invariáns nem kerülhető meg a nem-streamelő hívással.
-    if (begun.kind === 'conflict') throw new ActiveAgentTurnExistsError(begun.conversationId)
-    if (begun.kind === 'error') throw begun.error
-
-    await begun.handle.completion
-    const result = begun.result.current
-    if (!result || !result.messageId) {
-      throw new Error(result?.outcome.error ?? 'Agent turn failed')
-    }
-    if (result.outcome.status === 'failed') {
-      throw new Error(result.outcome.error ?? 'Agent turn failed')
-    }
-    return {
-      conversationId: begun.conversationId,
-      messageId: result.messageId,
-      reply: result.reply,
-    }
-  }
-
   /**
    * A forduló előkészítése a kérés-scope-ban, majd a futás **leválasztott**
    * indítása (spec §5.1, D3). Ami ide tartozik: jogosultság, a beszélgetés
