@@ -39,8 +39,10 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
   const [assigneeType, setAssigneeType] = useState<'agent' | 'human'>('agent')
   const [assigneeId, setAssigneeId] = useState('')
   const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([])
-  const [agentSkills, setAgentSkills] = useState<SkillOption[]>([])
-  const [skillsLoading, setSkillsLoading] = useState(false)
+  /** Agenthez kötött cache — a UI ebből vezet le, így assignee váltáskor nincs sync setState az effectben. */
+  const [skillsCache, setSkillsCache] = useState<{ agentId: string; skills: SkillOption[] } | null>(
+    null,
+  )
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([])
   const [message, setMessage] = useState<string | null>(null)
   const [lastTicketId, setLastTicketId] = useState<string | null>(null)
@@ -59,22 +61,21 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
     }))
   }, [assigneeOptions, assigneeType])
 
-  useEffect(() => {
-    if (assigneeType !== 'agent' || !assigneeId) {
-      setAgentSkills([])
-      setSelectedSkillIds([])
-      setSkillsLoading(false)
-      return
-    }
+  const agentSkills =
+    assigneeType === 'agent' && assigneeId && skillsCache?.agentId === assigneeId
+      ? skillsCache.skills
+      : []
+  const skillsLoading =
+    assigneeType === 'agent' && Boolean(assigneeId) && skillsCache?.agentId !== assigneeId
 
+  useEffect(() => {
+    if (assigneeType !== 'agent' || !assigneeId) return
+    const agentId = assigneeId
     let cancelled = false
-    setSkillsLoading(true)
-    setSelectedSkillIds([])
-    void getAgentSkillsAction(assigneeId).then((res) => {
+    void getAgentSkillsAction(agentId).then((res) => {
       if (cancelled) return
       if (!res.success) {
-        setAgentSkills([])
-        setSkillsLoading(false)
+        setSkillsCache({ agentId, skills: [] })
         return
       }
       const enabledBySkill = new Map<string, SkillOption>()
@@ -86,10 +87,8 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
           description: row.description,
         })
       }
-      setAgentSkills([...enabledBySkill.values()])
-      setSkillsLoading(false)
+      setSkillsCache({ agentId, skills: [...enabledBySkill.values()] })
     })
-
     return () => {
       cancelled = true
     }
@@ -101,7 +100,7 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
     setAssigneeType('agent')
     setAssigneeId('')
     setSelectedSkillIds([])
-    setAgentSkills([])
+    setSkillsCache(null)
     setPendingFiles([])
   }
 
@@ -247,6 +246,7 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
                 onClick={() => {
                   setAssigneeType('agent')
                   setAssigneeId('')
+                  setSelectedSkillIds([])
                 }}
                 className={`rounded-lg border px-3 py-1.5 text-sm transition ${
                   assigneeType === 'agent'
@@ -261,6 +261,7 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
                 onClick={() => {
                   setAssigneeType('human')
                   setAssigneeId('')
+                  setSelectedSkillIds([])
                 }}
                 className={`rounded-lg border px-3 py-1.5 text-sm transition ${
                   assigneeType === 'human'
@@ -280,7 +281,10 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
             <select
               id="board-ticket-assignee"
               value={assigneeId}
-              onChange={(e) => setAssigneeId(e.target.value)}
+              onChange={(e) => {
+                setAssigneeId(e.target.value)
+                setSelectedSkillIds([])
+              }}
               className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm text-ink"
             >
               <option value="">Válassz…</option>
