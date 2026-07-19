@@ -237,8 +237,7 @@ részleges egyedi index vagy tranzakciós ellenőrzés a létrehozáskor.
 > DB-zavar), folyamat-lokális azonosítót kap, hogy a stream-szerződés alakja stabil
 > legyen; (c) a route `after()`-rel tartja életben a futást a válasz lezárása után
 > is, hogy menedzselt futtatókörnyezetben se fagyjon be az instance.
-> Nyitva marad: a köztes snapshot perzisztálása (#63), a watchdog-ciklus (#64), a
-> fordulóhoz kötött Stop (#65), a visszacsatlakozás (#66) és a kliens (#67).
+> Nyitva marad: a fordulóhoz kötött Stop (#65), a visszacsatlakozás (#66) és a kliens (#67).
 
 ### 5.3 Perzisztencia-granularitás (D9)
 
@@ -345,13 +344,21 @@ kimerülésnél a meglévő `TOOL_LOOP_EXHAUSTED_MESSAGE`), és a `reason` az
 - Teszt: `npm run test:loop-stop` (`scripts/loop-stop-decision.test.ts`) —
   determinisztikus, hamis modell-kapuval és injektált órával, mindhárom új
   feltételre plusz a változatlan kör-limit ágra. CI-ben fut.
-- **Nyitva marad:** a `cost_budget` (opcionális 6. feltétel) és a D10 watchdog.
+- **Nyitva marad:** a `cost_budget` (opcionális 6. feltétel).
 
-**Watchdog (D10):** külön ciklus/cron (a meglévő dispatcher-ütem mellé) az
-`AgentTurn` táblát nézi: `status ∈ {running,streaming}` ÉS
-`heartbeatAt < now() - staleMs` (default ~120_000 ms) → `failed`,
-`reason:'watchdog'`, `finishedAt=now()`, és lezáró rendszerüzenet a
-beszélgetésbe. Ez fogja a crash-elt / valóban beragadt futásokat.
+**Watchdog (D10):** a meglévő dispatch-ciklus reclaim-fázisa az
+`AgentTurn` táblát is nézi: `status ∈ {queued,running,streaming}` ÉS
+`heartbeatAt < now() - staleMs` → `failed`, `reason:'watchdog'`,
+`finishedAt=now()`, lock elengedés, és lezáró agent-üzenet a beszélgetésbe
+(részszöveg megőrzésével). Küszöb: `AGENT_TURN_STALE_MS` (alapértelmezés
+120_000 ms). A ciklus-összegzés `reclaimedAgentTurns` mezője az admin
+dispatcher-felületen látszik.
+
+> **Állapot (2026-07-19, issue #64 — MEGÉPÜLT).** `reclaimStaleAgentTurns`
+> (`agent-turn-watchdog.ts`) a `runDispatchCycle` reclaim-fázisában fut
+> (ticket- és scheduled-task reclaim után). A lazy reclaim az indítási úton
+> (`agent-chat-runtime`) ugyanazt a `resolveStaleTurnMs()` küszöböt használja.
+> Teszt: `npm run test:agent-turn-watchdog` (E6 + friss heartbeat ellenpróba).
 
 ---
 
@@ -434,7 +441,7 @@ A teljes D2/D4 (szerver-oldali `AgentTurn` + loop-finalizer + reconnect GET-SSE)
 **2. hullám — védelem**
 - **WP-4** `evaluateLoopContinuation` (wallclock + tool_budget + no_progress) a
   meglévő maxTurns/REPEAT_LIMIT mellé.
-- **WP-5** Watchdog (stale `AgentTurn` reclaim) + gráceful finalize.
+- **WP-5** Watchdog (stale `AgentTurn` reclaim) + gráceful finalize. — **KÉSZ (#64)**
 
 **3. hullám — kontroll + reconnect UI**
 - **WP-6** `cancel` végpont + loop cancel-ellenőrzés (D6).

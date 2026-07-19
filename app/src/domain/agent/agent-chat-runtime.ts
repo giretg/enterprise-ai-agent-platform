@@ -69,18 +69,7 @@ import {
   guardTurnPartialText,
   type TurnSnapshotFlush,
 } from './agent-turn-snapshot'
-
-/**
- * Ennyi életjel-szünet után tekintünk egy aktív forduló-rekordot elhaltnak
- * (spec §7 watchdog-küszöb).
- *
- * A D7 invariáns egy zár, és zár nem létezik lejárat nélkül: e nélkül egy
- * crash-elt vagy deploy közben elvágott futás `running` állapotban hagyná a
- * sort, és a részleges egyedi index a beszélgetést VÉGLEG bezárná — minden
- * további küldés 409-et kapna. A teljes watchdog-ciklus külön tiket (#64); itt
- * az indítási út javítja magát.
- */
-const STALE_TURN_RECLAIM_MS = 120_000
+import { resolveStaleTurnMs, closeTurnAsWatchdog } from './agent-turn-watchdog'
 
 /**
  * Ugyanarra a forduló-azonosítóra már fut futtatás EBBEN a processben. Ez a
@@ -561,7 +550,7 @@ export class AgentChatRuntime {
       const alive =
         typeof heartbeatAt !== 'number' ||
         Number.isNaN(heartbeatAt) ||
-        heartbeatAt > Date.now() - STALE_TURN_RECLAIM_MS
+        heartbeatAt > Date.now() - resolveStaleTurnMs()
       if (alive) return { ok: false, activeTurnId: active.id }
 
       console.warn(
@@ -570,13 +559,13 @@ export class AgentChatRuntime {
         active.id,
       )
       try {
-        // A `null` visszatérés is rendben van: azt jelenti, más már lezárta —
-        // a hely mindkét esetben felszabadult.
-        await turns.finalize(active.id, {
-          status: 'failed',
-          reason: 'watchdog',
-          error: 'A futtató process leállt a forduló közben (heartbeat elmaradt).',
-        })
+        // A `null`/`skipped` is rendben van: azt jelenti, más már lezárta —
+        // a hely mindkét esetben felszabadult. Ugyanaz a lezárás, mint a
+        // ciklusos watchdogé (üzenet + failed/watchdog).
+        await closeTurnAsWatchdog(
+          { turns, conversations: this.conversations },
+          active,
+        )
       } catch (error) {
         console.error('[agent-chat] elhalt forduló visszavétele sikertelen', error)
         return { ok: false, activeTurnId: active.id }

@@ -1,5 +1,7 @@
 import { services } from '@/domain'
+import { reclaimStaleAgentTurns } from '@/domain/agent/agent-turn-watchdog'
 import { ensureActiveDatabaseMode } from '@/lib/db'
+import { repositories } from '@/repositories/postgres'
 
 const DEFAULT_BATCH_LIMIT = Number(process.env.DISPATCHER_BATCH_LIMIT ?? 10)
 
@@ -8,6 +10,8 @@ export type DispatchCycleSummary = {
   skipped: boolean
   reclaimedDispatches: number
   reclaimedScheduledTasks: number
+  /** Watchdog: elavult heartbeatű chat-fordulók lezárása (issue #64 / D10). */
+  reclaimedAgentTurns: number
   materializedScheduledTasks: number
   monitorSweep: { ran: boolean; escalated: number; openedTickets: number }
   workspacePurge: { purgedTickets: number; deletedObjects: number }
@@ -33,6 +37,7 @@ const EMPTY_SUMMARY: DispatchCycleSummary = {
   skipped: true,
   reclaimedDispatches: 0,
   reclaimedScheduledTasks: 0,
+  reclaimedAgentTurns: 0,
   materializedScheduledTasks: 0,
   monitorSweep: { ran: false, escalated: 0, openedTickets: 0 },
   workspacePurge: { purgedTickets: 0, deletedObjects: 0 },
@@ -44,9 +49,10 @@ let cycleInFlight = false
 export type DispatchCycleTrigger = 'worker' | 'scheduler' | 'manual'
 
 /**
- * A dispatcher egy ciklusa (§5.7): stale-reclaim, ütemezett task materializálás,
- * proaktív monitor söprés, workspace-purge, majd a ready ticketek (vagy egy adott
- * ticket) dispatchelése.
+ * A dispatcher egy ciklusa (§5.7): stale-reclaim (ticket + ütemezett task +
+ * chat AgentTurn watchdog), ütemezett task materializálás, proaktív monitor
+ * söprés, workspace-purge, majd a ready ticketek (vagy egy adott ticket)
+ * dispatchelése.
  *
  * Ugyanez a logika hívható egy hosszan futó workerből (LISTEN/NOTIFY + belső cron —
  * lásd `scripts/dispatcher-worker.ts`), egyetlen stateless HTTP-hívásból (Cloud
@@ -71,6 +77,14 @@ export async function runDispatchCycle(
 
     const reclaimedTasks = await services.scheduledTasks.reclaimStaleMaterializations()
     const reclaimedScheduledTasks = reclaimedTasks.filter((r) => r.status === 'reclaimed').length
+
+    // Chat AgentTurn watchdog (D10 / #64): crash/deploy alatt elvágott fordulók
+    // ne maradjanak örökre „gépel" állapotban. A küszöb: AGENT_TURN_STALE_MS (~120s).
+    const reclaimedTurns = await reclaimStaleAgentTurns({
+      turns: repositories.agentTurns,
+      conversations: services.conversations,
+    })
+    const reclaimedAgentTurns = reclaimedTurns.filter((r) => r.status === 'reclaimed').length
 
     const materialized = await services.scheduledTasks.materializeDue(new Date(), batchLimit)
     const materializedScheduledTasks = materialized.filter((r) => r.status === 'materialized').length
@@ -141,6 +155,7 @@ export async function runDispatchCycle(
       skipped: false,
       reclaimedDispatches,
       reclaimedScheduledTasks,
+      reclaimedAgentTurns,
       materializedScheduledTasks,
       monitorSweep,
       workspacePurge,
@@ -153,6 +168,7 @@ export async function runDispatchCycle(
         error: null,
         reclaimedDispatches,
         reclaimedScheduledTasks,
+        reclaimedAgentTurns,
         materializedScheduledTasks,
         monitorSweepRan: monitorSweep.ran,
         monitorEscalated: monitorSweep.escalated,
@@ -171,6 +187,7 @@ export async function runDispatchCycle(
         error: error instanceof Error ? error.message : String(error),
         reclaimedDispatches: 0,
         reclaimedScheduledTasks: 0,
+        reclaimedAgentTurns: 0,
         materializedScheduledTasks: 0,
         monitorSweepRan: false,
         monitorEscalated: 0,

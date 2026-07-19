@@ -37,6 +37,7 @@ function formatLastCycleDetails(cycle: DispatchCycleRunRecord): string {
   return [
     `${cycle.reclaimedDispatches} elakadt futás visszavéve`,
     `${cycle.reclaimedScheduledTasks} ütemezett task reclaim`,
+    `${cycle.reclaimedAgentTurns} chat-forduló watchdog-lezárás`,
     `${cycle.materializedScheduledTasks} ütemezett task materializálva`,
     monitorPart,
     `${cycle.workspacePurgedTickets} workspace takarítva`,
@@ -68,6 +69,7 @@ function formatSkipReasons(skipReasons: Record<string, number>): string | null {
  */
 function formatCycleRunMessage(summary: {
   reclaimedDispatches: number
+  reclaimedAgentTurns: number
   materializedScheduledTasks: number
   monitorSweep: { ran: boolean; escalated: number; openedTickets: number }
   workspacePurge: { purgedTickets: number }
@@ -98,6 +100,7 @@ function formatCycleRunMessage(summary: {
 
   return [
     `${summary.reclaimedDispatches} elakadt futás visszavéve`,
+    `${summary.reclaimedAgentTurns} chat-forduló watchdog-lezárás`,
     `${summary.materializedScheduledTasks} ütemezett task materializálva`,
     monitorPart,
     `${summary.workspacePurge.purgedTickets} workspace takarítva`,
