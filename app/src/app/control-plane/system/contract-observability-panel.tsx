@@ -45,9 +45,15 @@ export function ContractObservabilityPanel({ data }: { data: DashboardData }) {
     <Card title="Strukturált kimenet — megfigyelhetőség">
       <div className="space-y-6">
         <p className="text-xs text-ink-soft">
-          Utolsó {sinceHours >= 24 ? `${Math.round(sinceHours / 24)} nap` : `${sinceHours} óra`} — a
-          lépések várt kimeneti szerkezetének elsőre sikerülése, automatikus javításai és az emiatt
-          emberi felülvizsgálatra kerülések.
+          Utolsó {sinceHours >= 24 ? `${Math.round(sinceHours / 24)} nap` : `${sinceHours} óra`}{' '}
+          — mennyire sikerül az agent lépéseinek a várt formátumot (JSON mezők, kötelező kulcsok)
+          elsőre kiadnia.
+          <br />
+          <span className="mt-1 block">
+            Példa: egy lépés „összeg” és „deviza” mezőt vár. Ha a modell helyesen adja vissza →
+            elsőre siker. Ha rossz a szerkezet, a rendszer automatikusan javít (ez költség) — ha
+            az sem elég, emberi felülvizsgálatra kerül a folyamat.
+          </span>
         </p>
 
         <div>

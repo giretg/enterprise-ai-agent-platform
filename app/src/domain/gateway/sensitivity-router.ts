@@ -336,8 +336,8 @@ export function formatSensitivityBlockMessage(category?: string): string {
   const label = category ? (FORBIDDEN_CATEGORY_LABELS[category] ?? category) : 'tiltott tartalom'
   return (
     `A modellhívás tiltva: ${label} észlelhető a promptban (kategória: ${category ?? 'ismeretlen'}). ` +
-    `Ez tiltott tartalom. Ha ideiglenesen teljesen ki kell kapcsolni az agent sensitivity blokkolását, ` +
-    `engedélyezd az „Érzékeny tartalom külső modellnek is küldhető” kapcsolót. Ha hamis riasztásnak tűnik, nézd meg az audit log sensitivity sorát.`
+    `Ez tiltott tartalom — az agent „Érzékeny tartalom külső modellnek is küldhető” kapcsolója csak email/TAJ/adószám esetén segít, ` +
+    `bankkártyára, IBAN-ra és privát kulcsra nem. Ha hamis riasztásnak tűnik, nézd meg az audit log sensitivity sorát.`
   )
 }
 

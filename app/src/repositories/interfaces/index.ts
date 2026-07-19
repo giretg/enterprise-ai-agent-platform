@@ -867,6 +867,8 @@ export type ModelCallGovernanceSummary = {
 
 export type ModelCallTicketBreakdown = {
   ticketId: string
+  /** Ticket cím — UI-hoz; hiányzik, ha a ticket már törölve. */
+  ticketTitle: string | null
   calls: number
   tokens: number
   cost: number

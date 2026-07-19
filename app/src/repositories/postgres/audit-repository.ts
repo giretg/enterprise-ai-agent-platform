@@ -327,16 +327,28 @@ export class PostgresModelCallRepository implements ModelCallRepository {
       byTicket.set(id, entry)
     }
 
-    return Array.from(byTicket.entries())
+    const ranked = Array.from(byTicket.entries())
       .sort((a, b) => b[1].lastSeen.getTime() - a[1].lastSeen.getTime())
       .slice(0, limit)
-      .map(([ticketId, e]) => ({
-        ticketId,
-        calls: e.calls,
-        tokens: e.tokens,
-        cost: e.cost,
-        avgLatencyMs: e.calls > 0 ? Math.round(e.latencyTotal / e.calls) : 0,
-      }))
+
+    const ticketIds = ranked.map(([ticketId]) => ticketId)
+    const tickets =
+      ticketIds.length === 0
+        ? []
+        : await prisma.ticket.findMany({
+            where: { id: { in: ticketIds } },
+            select: { id: true, title: true },
+          })
+    const titleById = new Map(tickets.map((ticket) => [ticket.id, ticket.title]))
+
+    return ranked.map(([ticketId, e]) => ({
+      ticketId,
+      ticketTitle: titleById.get(ticketId) ?? null,
+      calls: e.calls,
+      tokens: e.tokens,
+      cost: e.cost,
+      avgLatencyMs: e.calls > 0 ? Math.round(e.latencyTotal / e.calls) : 0,
+    }))
   }
 }
 

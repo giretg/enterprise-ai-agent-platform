@@ -57,8 +57,15 @@ export function MemoryObservabilityPanel({ data }: { data: DashboardData }) {
     <Card title="Memória — megfigyelhetőség (§14)">
       <div className="space-y-6">
         <p className="text-xs text-ink-soft">
-          Utolsó {sinceHours >= 24 ? `${Math.round(sinceHours / 24)} nap` : `${sinceHours} óra`} — candidate-átfutás,
-          jóváhagyási elágazás, memória-méret és retrieval-jelek.
+          Utolsó {sinceHours >= 24 ? `${Math.round(sinceHours / 24)} nap` : `${sinceHours} óra`}{' '}
+          áttekintése: milyen memória-javaslatok születtek, hol tart a jóváhagyásuk, és mennyire
+            mennyire hatékony a visszakeresés.
+          <br />
+          <span className="mt-1 block">
+            Példa: az agent egy beszélgetés után feljegyzést javasol („az ügyfél preferált nyelve:
+            magyar”) → itt látod, hogy hány ilyen javaslat vár döntésre, mennyi ment át azonnal,
+            mennyi került ticketre, és a visszakeresés átlagosan mennyi tokent / időt fogyaszt.
+          </span>
         </p>
 
         <div>
