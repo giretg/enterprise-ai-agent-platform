@@ -27,6 +27,7 @@ import {
 import { readDelegationPayload, shouldCompleteDelegation } from '@/lib/delegation-payload'
 
 import { isAgentReachableFromTenant, filterAgentsByTenant } from '@/lib/tenant-reachability'
+import { resolveToolWorkspaceTenantKey } from '@/lib/workspace-resource-access'
 import {
   agentAnswerStructuredFromPayload,
   extractAgentAnswerDisplayBody,
@@ -219,7 +220,12 @@ export async function repoPrepare(self: ToolBrokerService,
     const commitSha = commit.sha
     const treeSha = commit.commit?.tree?.sha ?? commitSha
 
-    const tenantId = actingTenantId ?? workspaceConnector.tenantId ?? 'global'
+    const tenantId = await resolveWorkspaceStorageTenantId(
+      self,
+      input,
+      actingTenantId,
+      workspaceConnector.tenantId,
+    )
     const existingMetadata = decodeRepoMetadata(
       await self.fileEditor.readTextFileOrNull(tenantId, workspaceId, { path: REPO_METADATA_PATH }),
     )
@@ -361,7 +367,12 @@ export async function repoOpenPullRequest(self: ToolBrokerService,
     const workspaceId = input.ticketId ?? input.conversationId
     if (!workspaceId) throw new Error('repo_open_pull_request requires a ticketId or conversationId')
 
-    const tenantId = actingTenantId ?? workspaceConnector.tenantId ?? 'global'
+    const tenantId = await resolveWorkspaceStorageTenantId(
+      self,
+      input,
+      actingTenantId,
+      workspaceConnector.tenantId,
+    )
     const metadata = decodeRepoMetadata(
       await self.fileEditor.readTextFileOrNull(tenantId, workspaceId, { path: REPO_METADATA_PATH }),
     )
@@ -590,6 +601,34 @@ export async function resolveCallerTenantId(self: ToolBrokerService,
     const agent = await self.agents.findById(input.agentId)
     return agent?.tenantId ?? null
   }
+
+/**
+ * Workspace storage tenant a file/repo toolökhöz: ticket/conversation tenant
+ * elsőbbség (feltöltési úttal egyező), majd acting / connector / `global`.
+ */
+export async function resolveWorkspaceStorageTenantId(
+  self: ToolBrokerService,
+  input: Pick<ToolBrokerInvokeInput, 'ticketId' | 'conversationId'>,
+  actingTenantId: string | null,
+  connectorTenantId: string | null | undefined,
+): Promise<string> {
+  let resourceTenantId: string | null = null
+  if (input.ticketId) {
+    const ticket = await self.tickets.findById(input.ticketId)
+    resourceTenantId = ticket?.tenantId ?? null
+  } else if (input.conversationId) {
+    const conversation = await prisma.conversation.findUnique({
+      where: { id: input.conversationId },
+      select: { tenantId: true },
+    })
+    resourceTenantId = conversation?.tenantId ?? null
+  }
+  return resolveToolWorkspaceTenantKey({
+    resourceTenantId,
+    actingTenantId,
+    connectorTenantId,
+  })
+}
 
   /**
    * §4.9.1 / D-B: az agenthez kötött ÖSSZES knowledge_base connector a scope —
@@ -1333,7 +1372,7 @@ export async function agentResolve(self: ToolBrokerService,
     const scored = all
       .filter((agent) => agent.status === 'active')
       .map((agent) => {
-        const persona = personaFor(agent.name)
+        const persona = personaFor(agent.name, agent)
         const score = scoreAgentForCatalogQuery(agent, args.query)
         return { agent, persona, score }
       })

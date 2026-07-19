@@ -58,6 +58,7 @@ import type { ToolBrokerService } from '../tool-broker/tool-broker-service'
 import type { WorkspaceStorage } from '../file-editor/workspace-storage'
 import { formatAttachmentBlock } from './agent-chat-runtime'
 import { listAllowedChatTools, resolveToolLoopMaxTurns, runAgentToolLoop, type LoadSkillFn } from './chat-tool-loop'
+import { formatTaskWorkspaceFilesPrompt } from '@/lib/task-workspace-prompt'
 import type { SkillService } from '../skill/skill-service'
 import type { PromptSegments } from './prompt-assembler'
 
@@ -228,10 +229,16 @@ export class GeneralTaskRuntime {
       preloadedSkillPrompts = preloaded.preloadedPrompts
     }
 
+    const wsTenant = ticket.tenantId ?? 'global'
+    const workspaceFiles = await this.workspaceStorage
+      .list(wsTenant, ticket.id)
+      .catch(() => [] as string[])
+
     const messages = await this.buildTaskMessages({
       agentDetails,
       question: taskPrompt,
       attachmentBlock,
+      workspaceFiles,
       kbSearch,
       processStep,
       conversationContext,
@@ -245,7 +252,6 @@ export class GeneralTaskRuntime {
     // agentnek nincs grantolva, a fájl nem jöhet létre → a lépés hangosan bukjon,
     // ne néma szöveg-kimenettel záruljon (opt-in lépés, tudatos konfig-hiba).
     const deliverable = processStep?.stepRule.deliverable
-    const wsTenant = ticket.tenantId ?? 'global'
     if (deliverable) {
       const requiredTool = DELIVERABLE_TOOL_BY_FORMAT[deliverable.format]
       if (!allowedTools.includes(requiredTool as (typeof allowedTools)[number])) {
@@ -254,9 +260,7 @@ export class GeneralTaskRuntime {
         )
       }
     }
-    const filesBefore = deliverable
-      ? await this.workspaceStorage.list(wsTenant, ticket.id).catch(() => [] as string[])
-      : null
+    const filesBefore = deliverable ? workspaceFiles : null
 
     // Level-0 skill-index + load_skill a task-ághoz is (WP-5/D9).
     const skillIndexPrompt = this.skills
@@ -825,6 +829,7 @@ export class GeneralTaskRuntime {
     agentDetails: NonNullable<Awaited<ReturnType<AgentRepository['findByIdWithDetails']>>>
     question: string
     attachmentBlock: string
+    workspaceFiles: string[]
     kbSearch: { enabled: boolean; hits: KbHit[] }
     processStep: ProcessStepContext | null
     conversationContext: string | null
@@ -891,6 +896,11 @@ export class GeneralTaskRuntime {
         content: `Tudásbázis találatok (kb_search):\n${formatHitsForPrompt(params.kbSearch.hits)}`,
       })
     }
+
+    variableContext.push({
+      role: 'system',
+      content: formatTaskWorkspaceFilesPrompt(params.workspaceFiles),
+    })
 
     const userContent = params.attachmentBlock
       ? `${params.question || '(csatolmányok)'}${params.attachmentBlock}`.trim()

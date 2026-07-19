@@ -3,7 +3,10 @@
  * Run: npm run test:workspace-resource-access
  */
 import assert from 'node:assert/strict'
-import { resolveWorkspaceTenantKey } from '../src/lib/workspace-resource-access'
+import {
+  resolveToolWorkspaceTenantKey,
+  resolveWorkspaceTenantKey,
+} from '../src/lib/workspace-resource-access'
 
 let failures = 0
 function check(name: string, fn: () => void) {
@@ -31,6 +34,50 @@ check('tenantless legacy resource is denied from tenant HTTP access', () => {
   assert.throws(
     () => resolveWorkspaceTenantKey({ tenantId: null }, 'tenant-a'),
     /Workspace resource not found/,
+  )
+})
+
+check('tool workspace prefers ticket/conversation tenant over acting and connector', () => {
+  assert.equal(
+    resolveToolWorkspaceTenantKey({
+      resourceTenantId: 'tenant-ticket',
+      actingTenantId: 'tenant-acting',
+      connectorTenantId: 'tenant-connector',
+    }),
+    'tenant-ticket',
+  )
+})
+
+check('tool workspace uses acting tenant when resource tenant is missing', () => {
+  assert.equal(
+    resolveToolWorkspaceTenantKey({
+      resourceTenantId: null,
+      actingTenantId: 'tenant-acting',
+      connectorTenantId: 'tenant-connector',
+    }),
+    'tenant-acting',
+  )
+})
+
+check('board task without acting user still hits ticket tenant, not global', () => {
+  assert.equal(
+    resolveToolWorkspaceTenantKey({
+      resourceTenantId: 'tenant-ticket',
+      actingTenantId: null,
+      connectorTenantId: null,
+    }),
+    'tenant-ticket',
+  )
+})
+
+check('tool workspace falls back to global only when every tenant key is missing', () => {
+  assert.equal(
+    resolveToolWorkspaceTenantKey({
+      resourceTenantId: null,
+      actingTenantId: null,
+      connectorTenantId: null,
+    }),
+    'global',
   )
 })
 

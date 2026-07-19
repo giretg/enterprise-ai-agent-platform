@@ -85,6 +85,7 @@ import {
   repoPrepare,
   resolveCallerTenantId,
   resolveDelegatedAccessToken,
+  resolveWorkspaceStorageTenantId,
   ticketCreate,
   userDirectory,
   webResearchRequest,
@@ -149,6 +150,8 @@ export class ToolBrokerService {
         resolveDelegatedAccessToken(this, input, authorization),
       resolveCallerTenantId: (input, actingTenantId) =>
         resolveCallerTenantId(this, input, actingTenantId),
+      resolveWorkspaceStorageTenantId: (input, actingTenantId, connectorTenantId) =>
+        resolveWorkspaceStorageTenantId(this, input, actingTenantId, connectorTenantId),
       kbSearch: (agentId, args, connector) => kbSearch(this, agentId, args, connector),
       kbListIndex: (agentId, args, connector) => kbListIndex(this, agentId, args, connector),
       kbGetPage: (agentId, args, connector) => kbGetPage(this, agentId, args, connector),

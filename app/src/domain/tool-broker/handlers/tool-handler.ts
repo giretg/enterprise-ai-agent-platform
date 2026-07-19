@@ -63,6 +63,11 @@ export interface HandlerContext {
     input: ToolBrokerInvokeInput,
     actingTenantId: string | null,
   ): Promise<string | null>
+  resolveWorkspaceStorageTenantId(
+    input: Pick<ToolBrokerInvokeInput, 'ticketId' | 'conversationId'>,
+    actingTenantId: string | null,
+    connectorTenantId: string | null | undefined,
+  ): Promise<string>
 
   kbSearch(agentId: string, args: KbSearchArgs, connector: Connector): Promise<KbSearchResult>
   kbListIndex(agentId: string, args: KbListIndexArgs, connector: Connector): Promise<KbListIndexResult>

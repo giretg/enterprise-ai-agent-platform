@@ -12,10 +12,10 @@ const FILE_TOOLS = new Set([
 
 /**
  * Fájl-munkaterület eszközök (file_*, xlsx_*, pdf_*, docx_read/docx_create, pptx_create,
- * create_html). A munkaterület tenant-kulcsa a cselekvő felhasználó tenantja —
- * ez egyezik a feltöltési úttal (route + chat-bridge); fallback a connector
- * tenantra, majd 'global'-ra. A `FileEditorError` domain-hiba felszíni
- * `code: message` alakra normalizálva bukik (változatlan a korábbi brokerrel).
+ * create_html). A munkaterület tenant-kulcsa a ticket/conversation tenantja
+ * (feltöltési úttal egyező); fallback: acting → connector → `global`.
+ * A `FileEditorError` domain-hiba felszíni `code: message` alakra normalizálva
+ * bukik (változatlan a korábbi brokerrel).
  */
 export const fileToolHandler: ToolHandler = {
   id: 'file',
@@ -33,7 +33,11 @@ export const fileToolHandler: ToolHandler = {
 
     const workspaceId = input.ticketId ?? input.conversationId
     if (!workspaceId) throw new Error('file tools require a ticketId or conversationId')
-    const tenantId = actingTenantId ?? connector.tenantId ?? 'global'
+    const tenantId = await ctx.resolveWorkspaceStorageTenantId(
+      input,
+      actingTenantId,
+      connector.tenantId,
+    )
     const fe = ctx.fileEditor
 
     try {
