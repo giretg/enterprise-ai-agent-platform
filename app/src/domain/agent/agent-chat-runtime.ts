@@ -65,18 +65,12 @@ import {
 } from './agent-turn-runner'
 
 /**
- * Ennyi idő után tekintünk egy aktív forduló-rekordot elhaltnak (spec §7
- * watchdog-küszöb). A teljes watchdog-ciklus külön tiket (#64); itt csak az
- * indítási úton veszünk vissza egy nyilvánvalóan halott fordulót, hogy egy
- * crash-elt futás ne zárja be a beszélgetést örökre.
+ * Ugyanarra a forduló-azonosítóra már fut futtatás EBBEN a processben. Ez a
+ * runner process-lokális védelme; a beszélgetés-szintű „egy aktív forduló"
+ * invariánst (D7) a küldés elején álló foglalás intézi (#61).
  */
-const STALE_TURN_RECLAIM_MS = 120_000
-/**
- * Hétköznapi nyelvű üzenet arra, hogy a beszélgetésben már fut egy forduló (D7).
- * A HTTP-szintű 409 + a futóra való rácsatlakozás külön tiket (#61/#67).
- */
-const ACTIVE_TURN_CONFLICT_MESSAGE =
-  'Ebben a beszélgetésben már készül egy válasz. Várd meg, amíg elkészül, vagy állítsd le, mielőtt újat küldesz.'
+const DUPLICATE_RUN_MESSAGE =
+  'Ez a forduló már fut. Várd meg, amíg elkészül, vagy állítsd le, mielőtt újat küldesz.'
 
 const IMAGE_EXT = /\.(jpg|jpeg|png|gif|webp)$/i
 const IMAGE_MARKER = /^(\[image:([^\]]+)\])([\s\S]*)$/
@@ -476,39 +470,22 @@ export class AgentChatRuntime {
   ) {}
 
   /**
-   * Egy már halott (crash-elt, heartbeat nélkül maradt) aktív forduló visszavétele,
-   * hogy egy elszállt futás ne zárja be a beszélgetést örökre. A teljes watchdog
-   * (#64) a dispatch-cikluson fut majd; ez itt csak az indítási út önjavítása.
-   * `true`, ha a beszélgetésben most már nincs élő forduló.
-   */
-  private async reclaimStaleTurn(conversationId: string): Promise<boolean> {
-    if (!this.agentTurns) return true
-    const active = await this.agentTurns.findActiveByConversation(conversationId)
-    if (!active) return true
-    if (active.heartbeatAt.getTime() > Date.now() - STALE_TURN_RECLAIM_MS) return false
-    await this.agentTurns.finalize(active.id, {
-      status: 'failed',
-      reason: 'watchdog',
-      error: 'A futtató process leállt a forduló közben (heartbeat elmaradt).',
-    })
-    return true
-  }
-
-  /**
    * Forduló-rekord nyitása = a futás **tulajdonjogának megszerzése** (spec §5.1/4–5,
    * D3/D8). A rekord a `lockToken`-nel jön létre: az indító process innentől a
    * forduló kizárólagos gazdája, és csak ezután indul a detached futás.
    *
-   * A hibakezelés kétféle:
-   *  - **ütközés** (D7 — már fut forduló a beszélgetésre): NEM indul második
-   *    futtatás. Előtte megpróbáljuk visszavenni a nyilvánvalóan halott fordulót.
-   *  - **egyéb hiba** (pl. DB-zavar): fail-soft, a chat rekord nélkül fut tovább —
-   *    a forduló-rekord megfigyelhetőségi réteg, nem buktathatja a beszélgetést.
+   * Hiba esetén fail-soft: a chat rekord nélkül fut tovább — a forduló-rekord
+   * megfigyelhetőségi réteg, nem buktathatja a beszélgetést.
+   *
+   * A D7 invariáns (egy beszélgetés, egy aktív forduló) kikényszerítése NEM itt
+   * történik: azt a küldés elején álló forduló-foglalás végzi (#61), még a
+   * felhasználói üzenet leírása előtt. Ide már csak akkor jutunk el, ha a
+   * foglalás sikerült — egy ütközés itt ezért adat-anomália, nem normál ág.
    */
   private async openTurnRecord(
     turn: StreamTurnContext,
     params: { tenantId: string | null; userMessageId: string },
-  ): Promise<'opened' | 'unavailable' | 'conflict'> {
+  ): Promise<'opened' | 'unavailable'> {
     if (!this.agentTurns) return 'unavailable'
     const lockToken = randomUUID()
     try {
@@ -529,8 +506,10 @@ export class AgentChatRuntime {
       return 'opened'
     } catch (error) {
       if (error instanceof ActiveAgentTurnExistsError) {
+        // A foglalás (#61) már átengedett minket, mégis ütközünk: a rekord-réteg
+        // és a foglalás széttartott. Naplózzuk, de a chatet nem buktatjuk el.
         console.warn('[agent-chat] aktív forduló már fut a beszélgetésre', turn.conversationId)
-        return 'conflict'
+        return 'unavailable'
       }
       console.error('[agent-chat] forduló-rekord létrehozása sikertelen', error)
       return 'unavailable'
@@ -691,18 +670,6 @@ export class AgentChatRuntime {
       conversationId = created.id
     }
 
-    // Elő-ellenőrzés a tulajdonjogra: ha már fut forduló erre a beszélgetésre,
-    // ne írjunk be egy megválaszolatlan felhasználói üzenetet sem. Az igazi
-    // arbitrázs a rekord létrehozásának részleges egyedi indexe (l. lentebb).
-    try {
-      if (!(await this.reclaimStaleTurn(conversationId))) {
-        return { kind: 'error', error: new Error(ACTIVE_TURN_CONFLICT_MESSAGE) }
-      }
-    } catch (error) {
-      // Az elő-ellenőrzés csak kényelmi lépés; a hibája nem buktathatja a chatet.
-      console.error('[agent-chat] aktív-forduló elő-ellenőrzés sikertelen', error)
-    }
-
     const attachmentDocs = await this.loadDocuments(attachmentIds)
     const attachmentBlock = formatAttachmentBlock(attachmentDocs)
     const userFacingText = text || '(csatolmányok)'
@@ -771,17 +738,10 @@ export class AgentChatRuntime {
       lastHeartbeatAt: 0,
     }
 
-    const claim = await this.openTurnRecord(turn, {
+    await this.openTurnRecord(turn, {
       tenantId: params.tenantId ?? null,
       userMessageId: userMessage.id,
     })
-    if (claim === 'conflict') {
-      return {
-        kind: 'error',
-        error: new Error(ACTIVE_TURN_CONFLICT_MESSAGE),
-        meta: { conversationId, userMessageId: userMessage.id },
-      }
-    }
 
     registerActiveChatTurn(conversationId)
 
@@ -809,11 +769,12 @@ export class AgentChatRuntime {
     })
     if (!handle) {
       // Ugyanarra a fordulóra már fut futtatás ebben a processben: nem indítunk
-      // másodikat (a lock-tulajdonos az első).
+      // másodikat (a lock-tulajdonos az első). Ez a runner process-lokális
+      // védelme — a beszélgetés-szintű D7-et a foglalás intézi (#61).
       unregisterActiveChatTurn(conversationId)
       return {
         kind: 'error',
-        error: new Error(ACTIVE_TURN_CONFLICT_MESSAGE),
+        error: new Error(DUPLICATE_RUN_MESSAGE),
         meta: { conversationId, userMessageId: userMessage.id },
       }
     }

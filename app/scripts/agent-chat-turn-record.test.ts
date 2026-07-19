@@ -298,26 +298,10 @@ async function main() {
     )
   })
 
-  await test('ütköző lock: nem indul második futtatás', async () => {
-    const turns = fakeTurnRepository({
-      failOnCreate: new ActiveAgentTurnExistsError('conv-1'),
-    })
-    const { runtime, messages } = buildRuntime({ turns: turns.repo })
-
-    const events = []
-    for await (const event of runtime.sendMessageStream(turnParams())) events.push(event)
-
-    assert.ok(
-      !events.some((e) => e.type === 'done'),
-      'a forduló el sem indul, ha a tulajdonjogot nem sikerült megszerezni',
-    )
-    assert.ok(events.some((e) => e.type === 'error'))
-    assert.ok(
-      !messages.some((m) => m.role === 'agent'),
-      'nem keletkezik versengő agent-válasz',
-    )
-    assert.equal(turns.finalized.length, 0, 'nincs mit lezárni, ha a rekord nem jött létre')
-  })
+  // Az aktív-forduló ütközés (D7) és az elhalt forduló visszavétele NEM ennek a
+  // tiketnek a hatóköre: azt a küldés elején álló forduló-foglalás intézi (#61),
+  // a felhasználói üzenet leírása előtt. A hozzájuk tartozó tesztek ott élnek
+  // („E5: két párhuzamos küldés…", „elhalt forduló: … a foglalás visszaveszi").
 
   await test('FAIL-SOFT: egyéb DB-hiba esetén a chat rekord nélkül fut tovább', async () => {
     const turns = fakeTurnRepository({ failOnCreate: new Error('DB unavailable') })
@@ -366,26 +350,6 @@ async function main() {
       'a rekord a visszaadott agent-üzenetre mutat',
     )
     assert.equal(messages.filter((m) => m.role === 'agent').length, 1)
-  })
-
-  await test('elhalt forduló: az indítás visszaveszi a heartbeat nélkül maradt rekordot', async () => {
-    const stale = {
-      id: 'turn-stale',
-      status: 'running',
-      heartbeatAt: new Date(Date.now() - 10 * 60_000),
-    } as AgentTurn
-    const turns = fakeTurnRepository({ active: stale })
-    const { runtime } = buildRuntime({ turns: turns.repo })
-
-    const events = []
-    for await (const event of runtime.sendMessageStream(turnParams())) events.push(event)
-
-    // A crash-elt futás nem zárhatja be örökre a beszélgetést.
-    assert.ok(
-      turns.finalized.some((f) => f.id === 'turn-stale' && f.reason === 'watchdog'),
-      'a halott forduló lezárul',
-    )
-    assert.ok(events.some((e) => e.type === 'done'), 'az új forduló elindul és lefut')
   })
 
   await test('bekötetlen forduló-tár esetén a chat változatlanul működik', async () => {
