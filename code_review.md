@@ -1,5 +1,39 @@
 # Enterprise code review log
 
+## 2026-07-19 - Tanítás / önfejlesztés (agent-memória): tenant-határ és jóváhagyói szerep
+
+- Áttekintett modulok:
+  - `app/src/domain/training/training-service.ts` (createTrainingTicket / approveTraining / rollbackMemory / promoteMemoryWithoutHumanApproval / attemptUngatedMemoryWrite)
+  - `app/src/domain/training/self-evolution-guard.ts` (N6 capability-escalation padló)
+  - `app/src/lib/self-evolution-profile.ts` (scope + approval_mode feloldás)
+  - `app/src/app/actions/platform.ts` — a tanítási Server Actionök (`createTrainingTicket`, `approveTraining`, `rollbackMemory`) és a `transitionTicket` training-ága
+  - `app/src/domain/scheduled-task/scheduled-task-service.ts` (autonóm, felügyelet nélküli futás — run-as és tenant-kezelés)
+  - Összevetés a már megerősített testvér-implementációval: `app/src/domain/memory/memory-approval-service.ts` (WP-6, S6) és a `rollbackMemoryVersion` action (WP-8)
+  - Vonatkozó szerződés: `docs/specs/AI-Agent-Platform-Feature-Spec-MemoryTraining.md` I8, T11, §5.12.2, §7, §9
+- Eredmény:
+  - A `SelfEvolutionGuard` (capability-escalation tiltás), a write-gate token-protokoll, az eval-kapu és a `ScheduledTaskService` (tenant-szűrt revoke, önmagára korlátozott run-as, CAS-claim) rendben van.
+  - **Kritikus: cross-tenant memória-írás.** A `TrainingService` mindhárom belépési pontja csak a hívó SAJÁT tenantjában vett szerepét ellenőrizte (`requireTenantRole`), a CÉL-agentet és a CÉL-ticketet viszont szűretlen `findById`-dal oldotta fel. Így az A tenant approvere egy ismert agent-/ticket-UUID-vel a B tenant agentjének memóriáját — azaz az agent tartós utasításkészletét — átírhatta (`approveTraining`), visszagörgethette (`rollbackMemory`), vagy tanítási javaslatot injektálhatott a B tenant jóváhagyási sorába (`createTrainingTicket`). A spec I8 ("minden tábla tenant_id-scoped; cross-tenant olvasás/írás tiltott") és T11 explicit tiltja. A szomszédos, később épült `rollbackMemoryVersion` útvonal már helyesen hívta az `assertAgentTenantReachable`-t — a legacy útvonal kimaradt a megerősítésből.
+  - **Gyökérok: a training ticket tenant-bélyeg nélkül jött létre.** A `tickets.create` hívás nem adott `tenantId`-t, így minden tanítási ticket `tenantId = null` sorként keletkezett — eleve feloldhatatlan bármely tenant-szűrő számára.
+  - **Jogosultsági döntés a legacy globális szerepből.** A `higher_role` kapu a `prisma.user.findUnique(...).role` (legacy `User.role`) oszlopra döntött, nem az aktív tenant-tagság szerepére — szemben a `requireTenantPermission` dokumentált invariánsával ("az AKTÍV tenant-szerep az igazság forrása").
+  - **Néma elutasítás + létezés-orákulum.** A tenant-sértés nem hagyott audit-nyomot (spec §7: minden hard-guard bukás → `write_denied`), a memória-események pedig `tenant_id` nélkül íródtak (spec §9). A `promoteMemoryWithoutHumanApproval` eltérő hibaüzenetei idegen tenant ticketjének önfejlesztési profilját szivárogtatták.
+- Javítás:
+  - Explicit `TrainingActor` (`id` / `tenantId` / `role`) a tanítási útvonalon, mindig az AKTÍV tenant-kontextusból; a `tenantId` szándékosan **nem** nullable (fail-closed, mint a `MemoryApprovalActor`).
+  - Tenant-guard a SERVICE-ben (defense-in-depth), minden `prisma`-érintés ELŐTT; opak `Agent not found` / `Training ticket not found` — idegen tenant agentjének létezését sem szivárogtatja.
+  - A training ticket tenant-bélyeget kap; a bélyeg nélküli legacy sorokat a mögöttes agent tenantja horgonyozza le.
+  - A `higher_role` kapu rangsor-alapú (`hasMinimumRole`) és az aktív tenant-szerepre dönt.
+  - Tenant-sértés `memory.write_denied` / `tenant_mismatch` audit-sort ír; a `memory.update`, `memory.rollback`, `eval_blocked`, `eval_override` események megkapják a `tenant_id`-t.
+  - Új regresszió: `scripts/training-tenant-boundary.test.ts` (8 eset, DB nélkül), CI-be kötve.
+- Üzleti hatás:
+  - Az agent tartós memóriája a viselkedését vezérli — aki írja, az irányítja, mit tesz és mond az agent a másik ügyfél nevében. A rés lehetővé tette, hogy az egyik ügyfél jóváhagyója egy másik ügyfél agentjének utasításait írja át; ez egyszerre integritási és prompt-injekciós kockázat, és a több-ügyfeles üzemeltetés alapfeltételét sérti. A javítás után a tenant-határ a szolgáltatás-rétegben is invariáns, a próbálkozás pedig auditált — nem csak megakadályozott, hanem látható is.
+- Ellenőrzés:
+  - `npm run test:training-tenant` (8/8 zöld); mutációs próba: a guardok kivétele után 5 eset bukik, azaz a teszt valóban rögzíti az invariánst
+  - `npm run test:memory-approval`, `test:tool-broker-tenant`, `test:kb-tenant-boundary`, `test:iam-policy`, `test:audit-log` (zöld)
+  - `npx tsc --noEmit`, célzott `npx eslint`, `git diff --check` (zöld)
+  - Az `acceptance-e2e.ts` teljes futása valós PostgreSQL-t igényel, ebben a sandboxban nem futott; a hívási helyei a típusellenőrzésen átmennek.
+- Nyitott döntések (nem automatikusan javítva):
+  - D1 — **SoD (kérelmező ≠ jóváhagyó) továbbra sincs kikényszerítve**: a training ticket beküldője saját maga jóváhagyhatja. Az Access-Policy spec D1 pontja ezt kemény invariánsként írja elő, de az még nem megvalósított feature; külön tiketet érdemel, nem ebbe a javításba tartozik.
+  - D2 — **Megosztott (platform-szintű, `tenantId = null`) agent memóriája bármely tenant approvere által tanítható.** Ez a megosztott agentek eleve fennálló tulajdonsága (a `isAgentReachableFromTenant` egységes platform-szabálya), nem ez a rés hozta létre. Ha a platform-agentek tanítását platform-szerephez akarjuk kötni, az önálló döntés.
+
 ## 2026-07-18 - Write-gate token: egyszer-használatos fogyasztás atomizálása
 
 - Áttekintett modulok:
