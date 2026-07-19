@@ -34,10 +34,16 @@ export async function POST(request: Request) {
     const agent = await repositories.agents.findById(auth.agentId)
     if (!agent) return jsonError('Agent not found', 404)
 
+    // Az API-kulcs csak az agentet hitelesíti, felhasználót nem. Az
+    // actingUserId ezért kizárólag a szerveroldal által létrehozott chat- vagy
+    // futási kontextusból érkezhet, nem az agent által beküldött JSON-ból.
+    const toolInput = { ...parsed.data }
+    delete toolInput.actingUserId
     const result = await services.toolBroker.invoke({
       agentId: auth.agentId,
       agentVersion: agent.currentVersion,
-      ...parsed.data,
+      ...toolInput,
+      actingUserSource: 'external_agent_api',
     })
 
     if (result.denied) {

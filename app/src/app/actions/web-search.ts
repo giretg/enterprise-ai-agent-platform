@@ -91,8 +91,13 @@ async function resolveTenantWebSearchConnectorForContext(tenantId: string) {
 /** Agent detail capability kártya (Feature-spec — WebSearchTool §7.1). */
 export async function getAgentWebSearchCalls(input: { agentId: string }) {
   try {
-    await requireTenantRole('viewer')
+    const ctx = await requireTenantRole('viewer')
     const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
+    // A Server Action közvetlen HTTP-belépő is: az agentId nem az UI-ból
+    // érkező megbízható azonosító. Előbb az aktív tenantból oldjuk fel, és csak
+    // utána kérjük le az audit-metaadatot.
+    const agent = await repositories.agents.findById(agentId, ctx.activeTenantId)
+    if (!agent) return fail('Agent not found')
     const rows = await repositories.toolBroker.listToolCallsByName('web_search', { agentId }, 10)
     return ok(rows.map(toCallView))
   } catch (e) {

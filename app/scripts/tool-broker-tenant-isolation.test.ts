@@ -96,8 +96,24 @@ const ticketA = {
   state: 'in_progress',
 } as unknown as Ticket
 
+const ticketBWithRunAs = {
+  id: 'ticket-B',
+  tenantId: TENANT_A,
+  agentId: ALFA,
+  payload: {
+    runAsUserId: 'human-user-A',
+    runAsAuthorizedBy: 'human-user-A',
+    runAsAuthorizedAt: '2026-07-19T10:00:00.000Z',
+  },
+  state: 'in_progress',
+} as unknown as Ticket
+
 const fakeTickets = {
-  findById: async (id: string) => (id === 'ticket-A' ? ticketA : null),
+  findById: async (id: string) => {
+    if (id === ticketA.id) return ticketA
+    if (id === ticketBWithRunAs.id) return ticketBWithRunAs
+    return null
+  },
 } as unknown as TicketRepository
 
 const toolCalls: Array<{ toolName: string; status: string }> = []
@@ -230,6 +246,45 @@ async function main() {
         }),
       /not reachable from this tenant/,
     )
+  })
+
+  // ── Külső agent API: acting-user / kontextus eredete ──────────────────────
+  await test('más agent ticketjének run-as grantját nem fogadja el', async () => {
+    const broker = makeBroker()
+    const actingUserId = await broker.resolveActingUserId({
+      agentId: CALLER,
+      agentVersion: 1,
+      ticketId: ticketBWithRunAs.id,
+      tool: 'gmail_search',
+      args: { query: 'bizalmas' },
+    })
+    assert.equal(actingUserId, null)
+  })
+
+  await test('külső agent API nem választhat acting usert a kérés törzséből', async () => {
+    const broker = makeBroker()
+    const actingUserId = await broker.resolveActingUserId({
+      agentId: CALLER,
+      agentVersion: 1,
+      tool: 'gmail_search',
+      args: { query: 'bizalmas' },
+      actingUserId: 'human-user-A',
+      actingUserSource: 'external_agent_api',
+    })
+    assert.equal(actingUserId, null)
+  })
+
+  await test('belső, szerveroldali acting user továbbra is használható', async () => {
+    const broker = makeBroker()
+    const actingUserId = await broker.resolveActingUserId({
+      agentId: CALLER,
+      agentVersion: 1,
+      tool: 'gmail_search',
+      args: { query: 'bizalmas' },
+      actingUserId: 'human-user-A',
+      actingUserSource: 'trusted_internal',
+    })
+    assert.equal(actingUserId, 'human-user-A')
   })
 
   if (failures > 0) {
