@@ -245,9 +245,30 @@ export interface ScheduledTaskRepository {
     maxRuns?: number | null
   }): Promise<ScheduledTask>
   claimDue(id: string, now: Date): Promise<ScheduledTask | null>
-  markMaterialized(
+  /**
+   * Atomikusan létrehozza a materializált ticketet és lezárja (vagy újraütemezi)
+   * a már claimelt scheduled taskot. Egy worker-leállás nem hagyhat maga után
+   * ticketet a task állapotváltozása nélkül, mert az ismételt reclaim duplikált
+   * autonóm futást indítana.
+   */
+  materializeTicket(
     id: string,
-    ticketId: string,
+    ticket: Pick<
+      Ticket,
+      | 'tenantId'
+      | 'type'
+      | 'title'
+      | 'state'
+      | 'assigneeType'
+      | 'assigneeId'
+      | 'agentId'
+      | 'sourceDocumentId'
+      | 'conversationId'
+      | 'executeAfter'
+      | 'dueBy'
+      | 'createdById'
+      | 'source'
+    > & { payload: Prisma.InputJsonValue },
     data: {
       status: ScheduledTaskStatus
       runCount: number
@@ -255,8 +276,8 @@ export interface ScheduledTaskRepository {
       materializedAt: Date
       nextRunAt: Date
     },
-  ): Promise<ScheduledTask | null>
-  revoke(id: string): Promise<ScheduledTask>
+  ): Promise<{ scheduledTask: ScheduledTask; ticket: Ticket } | null>
+  revoke(id: string): Promise<ScheduledTask | null>
   findById(id: string): Promise<ScheduledTask | null>
   findStaleMaterializing(cutoff: Date, limit: number): Promise<ScheduledTask[]>
   reclaimMaterializing(id: string): Promise<ScheduledTask | null>

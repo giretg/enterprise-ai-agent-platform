@@ -667,7 +667,7 @@ const auditChainService = new AuditChainService(repositories.audit)
 const recipeService = new RecipeService(repositories.recipes, repositories.audit)
 const scheduledTaskService = new ScheduledTaskService(
   repositories.scheduledTasks,
-  repositories.tickets,
+  repositories.agents,
   repositories.audit,
 )
 const monitorService = new MonitorService(

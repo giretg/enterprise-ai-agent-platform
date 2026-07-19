@@ -36,6 +36,8 @@ import {
   readRunAsUserId,
   RUN_AS_AUTHORIZED_AT,
   RUN_AS_AUTHORIZED_BY,
+  RUN_AS_USER_ID,
+  SCHEDULED_TASK_ID,
 } from '@/lib/run-as-payload'
 
 import {
@@ -671,6 +673,15 @@ export async function boardWrite(self: ToolBrokerService,
     const mergedPayload: Record<string, unknown> = isRecord(ticket.payload) ? { ...ticket.payload } : {}
     if (input.args.patch.payload) {
       Object.assign(mergedPayload, input.args.patch.payload)
+    }
+    // A scheduled run-as hivatkozás bizalmi adat, nem agent-módosítható output.
+    // Enélkül egy board_write nullra írhatná a task-ID-t, és megkerülhetné a
+    // Broker futáskori, visszavonható grant-ellenőrzését.
+    const originalPayload = isRecord(ticket.payload) ? ticket.payload : null
+    if (typeof originalPayload?.[SCHEDULED_TASK_ID] === 'string') {
+      for (const key of [SCHEDULED_TASK_ID, RUN_AS_USER_ID, RUN_AS_AUTHORIZED_AT, RUN_AS_AUTHORIZED_BY]) {
+        mergedPayload[key] = originalPayload[key]
+      }
     }
 
     if (

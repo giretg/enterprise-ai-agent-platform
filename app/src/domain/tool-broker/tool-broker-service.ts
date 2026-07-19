@@ -6,7 +6,9 @@ import { prisma } from '@/lib/db'
 
 import {
   isRunAsAuthorized,
+  isScheduledTaskRunAsAuthorized,
   readRunAsUserId,
+  SCHEDULED_TASK_ID,
 } from '@/lib/run-as-payload'
 import { GmailApiAuthError } from '@/domain/connector-grant/gmail-api-client'
 
@@ -370,6 +372,20 @@ export class ToolBrokerService {
       if (ticket) {
         const payload = isRecord(ticket.payload) ? ticket.payload : null
         if (isRunAsAuthorized(payload)) {
+          // Materializált scheduled futásnál a ticket-payload csak hivatkozás;
+          // a tényleges, visszavonható felhatalmazás a ScheduledTask sor. Egy
+          // visszavont vagy más tickethez kötött task sosem ad acting-user jogot.
+          if (typeof payload?.[SCHEDULED_TASK_ID] === 'string') {
+            const scheduledTask = await prisma.scheduledTask.findUnique({
+              where: { id: payload[SCHEDULED_TASK_ID] },
+            })
+            if (!isScheduledTaskRunAsAuthorized({
+              ticketId: ticket.id,
+              ticketTenantId: ticket.tenantId,
+              payload,
+              scheduledTask,
+            })) return null
+          }
           return readRunAsUserId(payload)
         }
         return null

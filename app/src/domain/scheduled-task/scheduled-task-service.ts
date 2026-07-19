@@ -6,11 +6,12 @@ import type {
   ScheduledTaskStatus,
 } from '@prisma/client'
 import type {
+  AgentRepository,
   AuditRepository,
   ScheduledTaskRepository,
-  TicketRepository,
 } from '@/repositories/interfaces'
 import { buildRunAsAuthorization } from '@/lib/run-as-payload'
+import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
 
 type MaterializeResult =
   | { scheduledTaskId: string; status: 'materialized'; ticketId: string }
@@ -105,7 +106,7 @@ function materializedTaskState(
 export class ScheduledTaskService {
   constructor(
     private scheduledTasks: ScheduledTaskRepository,
-    private tickets: TicketRepository,
+    private agents: AgentRepository,
     private audit: AuditRepository,
   ) {}
 
@@ -122,6 +123,7 @@ export class ScheduledTaskService {
     const content = params.content.trim()
     if (!title) throw new Error('Scheduled task title is required')
     if (!content) throw new Error('Scheduled task content is required')
+    await this.requireReachableActiveAgent(params.agentId, params.tenantId)
 
     const authorizedAt = params.authorizeRunAs ? new Date() : null
     const task = await this.scheduledTasks.create({
@@ -188,11 +190,12 @@ export class ScheduledTaskService {
     if (params.tenantId !== undefined && task.tenantId !== params.tenantId) {
       throw new Error('Scheduled task not found')
     }
-    if (task.status !== 'active') {
-      throw new Error('Only active scheduled tasks can be revoked')
+    if (task.status !== 'active' && task.status !== 'materializing' && task.status !== 'materialized') {
+      throw new Error('Only scheduled tasks with a revocable run can be revoked')
     }
 
     const revoked = await this.scheduledTasks.revoke(task.id)
+    if (!revoked) throw new Error('Only scheduled tasks with a revocable run can be revoked')
     await this.audit.append({
       actorType: 'human',
       actorId: params.actorId,
@@ -274,7 +277,8 @@ export class ScheduledTaskService {
         ...scheduledTaskRunAsPayload(claimed),
       }
 
-      const ticket = await this.tickets.create({
+      const nextTaskState = materializedTaskState(claimed, now)
+      const materialized = await this.scheduledTasks.materializeTicket(claimed.id, {
         tenantId: claimed.tenantId,
         type: 'interaction',
         title: claimed.title,
@@ -289,21 +293,16 @@ export class ScheduledTaskService {
         dueBy: null,
         createdById: claimed.createdById,
         source: 'system',
-      })
-
-      const nextState = materializedTaskState(claimed, now)
-      const materialized = await this.scheduledTasks.markMaterialized(claimed.id, ticket.id, {
-        status: nextState.status,
-        runCount: nextState.runCount,
+      }, {
+        ...nextTaskState,
         lastRunAt: now,
         materializedAt: now,
-        nextRunAt: nextState.nextRunAt,
       })
       if (!materialized) {
         results.push({ scheduledTaskId: claimed.id, status: 'skipped' })
         continue
       }
-
+      const ticket = materialized.ticket
       await this.audit.append({
         actorType: 'system',
         actorId: null,
@@ -319,8 +318,8 @@ export class ScheduledTaskService {
           ticketId: ticket.id,
           runAsUserId: claimed.runAsUserId ?? null,
           recurrence: recurrenceLabels[claimed.recurrence],
-          runCount: nextState.runCount,
-          nextRunAt: nextState.status === 'active' ? nextState.nextRunAt.toISOString() : null,
+          runCount: nextTaskState.runCount,
+          nextRunAt: nextTaskState.status === 'active' ? nextTaskState.nextRunAt.toISOString() : null,
         } as Prisma.JsonValue,
       })
 
@@ -332,5 +331,14 @@ export class ScheduledTaskService {
     }
 
     return results
+  }
+
+  /** A tenant a scheduled task életciklusában is domain-szintű határ. */
+  private async requireReachableActiveAgent(agentId: string, tenantId: string | null): Promise<void> {
+    const agent = await this.agents.findById(agentId)
+    if (!agent || agent.status !== 'active' || !isAgentReachableFromTenant(agent.tenantId, tenantId)) {
+      // Opak hiba: más tenant agentjének létezése nem szivároghat a scheduler felületén.
+      throw new Error('Agent not found')
+    }
   }
 }

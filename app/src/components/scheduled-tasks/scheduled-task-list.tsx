@@ -155,7 +155,7 @@ export function ScheduledTaskList({
                       Ticket
                     </Link>
                   )}
-                  {task.status === 'active' && (
+                  {(task.status === 'active' || task.status === 'materialized') && (
                     <button
                       type="button"
                       onClick={() => revoke(task.id)}
