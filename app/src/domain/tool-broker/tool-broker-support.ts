@@ -742,7 +742,8 @@ export function argsMeta(
   if (input.tool === 'tulajdoni_lap_parse') {
     return {
       ...base,
-      documentId: input.args.documentId,
+      documentId: input.args.documentId ?? null,
+      path: input.args.path ?? null,
       nezet: input.args.nezet ?? 'osszefoglalo',
       csakHatalyos: input.args.csakHatalyos ?? true,
       limit: input.args.limit ?? null,

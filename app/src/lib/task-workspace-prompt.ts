@@ -18,6 +18,8 @@ export function formatTaskWorkspaceFilesPrompt(workspaceFiles: string[]): string
       visible.map((path) => `- ${path}`).join('\n'),
     `Ezeket a file_read / pdf_read / xlsx_read_sheet / file_search stb. eszközökkel éred el a fenti pontos néven. ` +
       `Workspace PDF/DOCX-hez NE találj ki documentId-t — a document_read csak a csatolmány-blokkban megadott documentId-kre való. ` +
+      `Tulajdoni lap (földhivatali TULLAP/INYER PDF) esetén NE pdf_read-del lapozz: hívd a tulajdoni_lap_parse-t path-hal ` +
+      `(pl. tulajdoni_lap_parse({ path: "fajl.pdf" })) — a path a fenti listából. ` +
       `Ha a kért adat egy itt felsorolt fájlban van, onnan dolgozz.`,
   ]
 

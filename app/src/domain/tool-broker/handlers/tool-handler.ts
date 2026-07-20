@@ -120,6 +120,10 @@ export interface HandlerContext {
   tulajdoniLapParse(
     input: Extract<ToolBrokerInvokeInput, { tool: 'tulajdoni_lap_parse' }>,
     actingUserId: string | null,
+    extras?: {
+      authorization: AllowedAuthorization
+      actingTenantId: string | null
+    },
   ): Promise<TulajdoniLapParseResult>
 }
 

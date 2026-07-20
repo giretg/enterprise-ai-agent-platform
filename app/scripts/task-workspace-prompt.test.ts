@@ -24,6 +24,8 @@ check('lists visible workspace files with exact paths', () => {
   assert.match(prompt, /043_15 2026\.07\.16\.pdf/)
   assert.doesNotMatch(prompt, /\.tool-results/)
   assert.match(prompt, /pdf_read/)
+  assert.match(prompt, /tulajdoni_lap_parse/)
+  assert.match(prompt, /path/)
   assert.match(prompt, /NE találj ki documentId-t/)
   assert.match(prompt, /page_range/)
 })

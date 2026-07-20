@@ -525,8 +525,12 @@ const TOOL_SCHEMAS: Record<ChatPlatformToolName, ToolSchema> = {
   tulajdoni_lap_parse: {
     description:
       'Magyar e-hiteles TULAJDONI LAP (földhivatali TULLAP/INYER PDF) strukturált kinyerése. ' +
-      'Ha egy csatolmány tulajdoni lap, MINDIG ezt hívd — ne document_read-del lapozd végig. ' +
+      'Ha egy fájl tulajdoni lap, MINDIG ezt hívd — ne document_read/pdf_read-del lapozd végig. ' +
       'Egy lap 100-300 oldal, aminek a nagy része ismétlődő fejléc és MÁR TÖRÖLT bejegyzés.\n' +
+      'Forrás (EGYIK kötelező):\n' +
+      '- path: ticket/chat MUNKATERÜLET PDF (a fájllistában látott pontos név, pl. "043_15 2026.07.16.pdf") — board ticket feltöltéshez EZT használd;\n' +
+      '- documentId: UUID csatolmány (csak a csatolmány-blokkban megadott documentId).\n' +
+      'NE add a fájlnevet documentId-nek — az UUID; fájlnévhez path kell.\n' +
       'FONTOS: a tulajdoni lap nem pillanatfelvétel, hanem teljes történeti napló — egy eladott ' +
       'hányad bejegyzése nem tűnik el, csak „Törlő határozat" mezőt kap. A sorok 70-80%-a jellemzően ' +
       'már NEM hatályos, ezért a lap naiv olvasása súlyosan téves képet ad.\n' +
@@ -538,13 +542,14 @@ const TOOL_SCHEMAS: Record<ChatPlatformToolName, ToolSchema> = {
     inputSchema: objectSchema(
       {
         documentId: STR,
+        path: STR,
         nezet: STR,
         csakHatalyos: { type: 'boolean' },
         limit: NUM,
         offset: NUM,
         raw: { type: 'boolean' },
       },
-      ['documentId'],
+      [],
     ),
   },
   pptx_create: {
@@ -1001,9 +1006,11 @@ function describeToolCall(tool: string, args: Record<string, unknown>): string |
       return docId
     }
     case 'tulajdoni_lap_parse': {
-      const docId = typeof args.documentId === 'string' ? shortText(args.documentId, 36) : '?'
+      const path = typeof args.path === 'string' ? shortText(args.path, 48) : null
+      const docId = typeof args.documentId === 'string' ? shortText(args.documentId, 36) : null
       const nezet = isTulajdoniLapNezet(args.nezet) ? args.nezet : 'osszefoglalo'
-      return `${docId} — ${nezet}`
+      const src = path ? `path=${path}` : docId ? `doc=${docId}` : '?'
+      return `${src} — ${nezet}`
     }
     case 'agent_catalog':
     case 'agent_resolve':
@@ -1535,7 +1542,8 @@ function buildToolInvoke(
         ...common,
         tool: 'tulajdoni_lap_parse',
         args: {
-          documentId: strArg(args, 'documentId'),
+          documentId: typeof args.documentId === 'string' ? args.documentId : undefined,
+          path: typeof args.path === 'string' ? args.path : undefined,
           // Ismeretlen nezet-értéket nem erőltetünk: a view-réteg az alapértelmezésre esik.
           nezet: isTulajdoniLapNezet(args.nezet) ? args.nezet : undefined,
           csakHatalyos: boolArg(args, 'csakHatalyos'),

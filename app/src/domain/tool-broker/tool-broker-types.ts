@@ -295,10 +295,14 @@ export type DocumentReadResult = {
 
 /**
  * Magyar e-hiteles tulajdoni lap strukturált kinyerése egy feltöltött PDF-ből.
+ * Chat csatolmány: `documentId` (UUID). Board/ticket workspace: `path` (fájlnév).
  * A `nezet` a kimenet méretét szabja: alapból összefoglaló, részletet külön kérni kell.
  */
 export type TulajdoniLapParseArgs = {
-  documentId: string
+  /** Document UUID — chat/csatolmány. Workspace fájlnévhez használd a `path`-ot. */
+  documentId?: string
+  /** Ticket/chat workspace PDF elérési út (pl. a Fájlok panelen feltöltött név). */
+  path?: string
   nezet?: TulajdoniLapNezet
   csakHatalyos?: boolean
   limit?: number
@@ -307,7 +311,8 @@ export type TulajdoniLapParseArgs = {
 }
 
 export type TulajdoniLapParseResult = TulajdoniLapView & {
-  documentId: string
+  documentId: string | null
+  path?: string
   filename: string
 }
 

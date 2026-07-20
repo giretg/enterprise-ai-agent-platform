@@ -29,6 +29,7 @@ import type {
   ToolName,
   UserDirectoryEntry,
 } from './tool-broker-types'
+import { resolveTulajdoniLapParseSource } from '@/lib/tulajdoni-lap-source'
 
 export const TOOL_REQUIREMENTS: Partial<Record<
   ToolName,
@@ -70,6 +71,8 @@ export const TOOL_REQUIREMENTS: Partial<Record<
   docx_create: { connectorType: 'workspace', accessMode: 'write' },
   pdf_read: { connectorType: 'workspace', accessMode: 'read' },
   pdf_create: { connectorType: 'workspace', accessMode: 'write' },
+  /** Csak workspace-path ágon (documentId UUID esetén az authorizer korán kilép). */
+  tulajdoni_lap_parse: { connectorType: 'workspace', accessMode: 'read' },
   pptx_create: { connectorType: 'workspace', accessMode: 'write' },
   'sandbox_app.create': { connectorType: 'board', accessMode: 'write' },
   'sandbox_app.update_artifact': { connectorType: 'board', accessMode: 'write' },
@@ -252,11 +255,24 @@ export class AllowlistAuthorizer implements Authorizer {
       return { allowed: true }
     }
 
-    // document_read / tulajdoni_lap_parse — csatolmány / Document rekord; nincs
-    // connector. A tartalom-hozzáférést a handler ellenőrzi, mindkettő UGYANAZON
-    // a `canAccessDocument` kapun (uploader / conversation / ticket / KB link).
-    if (input.tool === 'document_read' || input.tool === 'tulajdoni_lap_parse') {
+    // document_read — csatolmány / Document rekord; nincs connector.
+    // tulajdoni_lap_parse documentId (UUID) ágon ugyanez; workspace path ágon
+    // viszont workspace connector kell (pdf_read-hez hasonlóan) — lásd TOOL_REQUIREMENTS.
+    if (input.tool === 'document_read') {
       return { allowed: true }
+    }
+    if (input.tool === 'tulajdoni_lap_parse') {
+      try {
+        const source = resolveTulajdoniLapParseSource({
+          documentId:
+            typeof input.args?.documentId === 'string' ? input.args.documentId : undefined,
+          path: typeof input.args?.path === 'string' ? input.args.path : undefined,
+        })
+        if (source.kind === 'document') return { allowed: true }
+      } catch {
+        return { allowed: false, reason: 'missing_parse_source' }
+      }
+      // workspace path → fall through connector feloldásra
     }
 
     const requirement = TOOL_REQUIREMENTS[input.tool]

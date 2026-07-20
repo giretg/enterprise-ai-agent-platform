@@ -23,7 +23,8 @@ import nodePath from 'node:path'
 import { prisma } from '@/lib/db'
 import { loadPdfParse } from '@/lib/pdf-parse'
 import { buildTulajdoniLapView, parseTulajdoniLap } from '@/lib/tulajdoni-lap'
-import type { TulajdoniLapParseResult } from './tool-broker-types'
+import { resolveTulajdoniLapParseSource } from '@/lib/tulajdoni-lap-source'
+import { FileEditorError } from '@/domain/file-editor/workspace-storage'
 import { personaFor } from '@/lib/agent-persona'
 import {
   buildAgentCatalogEntry,
@@ -88,6 +89,7 @@ import type {
   RepoPrepareResult,
   TicketCreateResult,
   ToolBrokerInvokeInput,
+  TulajdoniLapParseResult,
   UserDirectoryResult,
   WebResearchDelegationResult,
 } from './tool-broker-types'
@@ -1612,24 +1614,68 @@ async function ticketReferencesDocument(ticketId: string, documentId: string): P
 
 /**
  * tulajdoni_lap_parse — magyar e-hiteles tulajdoni lap (TULLAP/INYER PDF)
- * strukturált kinyerése egy már feltöltött csatolmányból.
+ * strukturált kinyerése Document csatolmányból VAGY ticket/chat workspace PDF-ből.
  *
- * A hozzáférés-ellenőrzés SZÁNDÉKOSAN ugyanaz a `canAccessDocument`, mint a
- * `document_read`-nél: ez a tool nem nyit új utat a dokumentumokhoz, csak
- * másképp olvassa ugyanazt, amit az agent amúgy is olvashatna.
+ * Document UUID → `canAccessDocument` (mint document_read).
+ * Workspace path (vagy fájlnév documentId-ként) → workspace connector + FileEditor.
  */
 export async function tulajdoniLapParse(
   self: ToolBrokerService,
   input: Extract<ToolBrokerInvokeInput, { tool: 'tulajdoni_lap_parse' }>,
   actingUserId: string | null,
+  extras?: {
+    authorization: Extract<AuthorizationResult, { allowed: true }>
+    actingTenantId: string | null
+  },
 ): Promise<TulajdoniLapParseResult> {
-  const doc = await prisma.document.findUnique({ where: { id: input.args.documentId } })
-  if (!doc) throw new Error('document_not_found')
+  const source = resolveTulajdoniLapParseSource(input.args)
 
-  const allowed = await canAccessDocument(self, input, doc, actingUserId)
-  if (!allowed) throw new Error('document_access_denied')
+  let pages: string[]
+  let filename: string
+  let documentId: string | null = null
+  let path: string | undefined
 
-  const pages = await readPdfPageTexts(doc.storageRef)
+  if (source.kind === 'document') {
+    const doc = await prisma.document.findUnique({ where: { id: source.documentId } })
+    if (!doc) throw new Error('document_not_found')
+
+    const allowed = await canAccessDocument(self, input, doc, actingUserId)
+    if (!allowed) throw new Error('document_access_denied')
+
+    pages = await readPdfPageTextsFromStorageRef(doc.storageRef)
+    filename = doc.filename
+    documentId = doc.id
+  } else {
+    const connector = extras?.authorization.connector
+    if (!connector) {
+      throw new Error(
+        'tulajdoni_lap_parse workspace path requires workspace connector authorization',
+      )
+    }
+    const workspaceId = input.ticketId ?? input.conversationId
+    if (!workspaceId) {
+      throw new Error('tulajdoni_lap_parse path requires ticketId or conversationId')
+    }
+    const tenantId = await resolveWorkspaceStorageTenantId(
+      self,
+      input,
+      extras.actingTenantId,
+      connector.tenantId,
+    )
+    let buffer: Buffer
+    try {
+      buffer = await self.fileEditor.readBinary(tenantId, workspaceId, source.path)
+    } catch (error) {
+      if (error instanceof FileEditorError) {
+        throw new Error(`${error.code}: ${error.message}`)
+      }
+      throw error
+    }
+    pages = await readPdfPageTextsFromBuffer(buffer)
+    filename = source.path.split('/').filter(Boolean).pop() ?? source.path
+    path = source.path
+  }
+
   const parsed = parseTulajdoniLap(pages)
   const view = buildTulajdoniLapView(parsed, {
     nezet: input.args.nezet,
@@ -1639,17 +1685,13 @@ export async function tulajdoniLapParse(
     raw: input.args.raw,
   })
 
-  return { documentId: doc.id, filename: doc.filename, ...view }
+  return { documentId, path, filename, ...view }
 }
 
 /**
- * A feltöltött PDF oldalankénti nyers szövege.
- *
- * A tárolt `extractedText`/blokkok helyett ÚJRA olvassuk az eredeti fájlt: a
- * KB-kinyerés normalizálása és blokkolása a tulajdoni lap sor-szerkezetét
- * megbontaná, amin viszont az egész szakasz- és bejegyzés-bontás áll.
+ * A feltöltött PDF oldalankénti nyers szövege (Document storageRef → uploads/).
  */
-async function readPdfPageTexts(storageRef: string): Promise<string[]> {
+async function readPdfPageTextsFromStorageRef(storageRef: string): Promise<string[]> {
   const absolutePath = nodePath.resolve(process.cwd(), storageRef)
   const uploadRoot = nodePath.resolve(process.cwd(), 'uploads')
   const uploadRootPrefix = uploadRoot.endsWith(nodePath.sep)
@@ -1667,6 +1709,10 @@ async function readPdfPageTexts(storageRef: string): Promise<string[]> {
     throw new Error('document_file_unavailable')
   }
 
+  return readPdfPageTextsFromBuffer(buffer)
+}
+
+async function readPdfPageTextsFromBuffer(buffer: Buffer): Promise<string[]> {
   const PDFParse = await loadPdfParse()
   const parser = new PDFParse({ data: new Uint8Array(buffer) })
   try {

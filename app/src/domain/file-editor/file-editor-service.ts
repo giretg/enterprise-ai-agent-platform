@@ -535,6 +535,14 @@ export class FileEditorService {
     return pdfRead(buf, args.page_range)
   }
 
+  /** Nyers workspace-fájl (pl. teljes PDF a tulajdoni_lap_parse-hoz). */
+  async readBinary(tenantId: string, ticketId: string, path: string): Promise<Buffer> {
+    const safePath = resolveSafePath(path)
+    const buf = await this.storage.read(tenantId, ticketId, safePath)
+    if (!buf) throw new FileEditorError('FILE_NOT_FOUND', `File not found: ${safePath}`)
+    return buf
+  }
+
   /**
    * Táblázatos PDF létrehozása. Forrás vagy egy meglévő XLSX (`source_xlsx`),
    * vagy közvetlenül megadott `headers` + `rows`. Ezzel az agent valódi .pdf-et

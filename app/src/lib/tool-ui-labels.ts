@@ -125,7 +125,7 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
     label: 'Tulajdoni lap feldolgozása',
     description:
       'Magyar e-hiteles tulajdoni lap (földhivatali PDF) strukturált kinyerése: hatályos ' +
-      'tulajdonosok és hányadok, terhek, széljegyek — a törölt bejegyzések kiszűrésével.',
+      'tulajdonosok és hányadok, terhek, széljegyek — Document UUID vagy workspace path alapján.',
   },
 
   // Mini-app
