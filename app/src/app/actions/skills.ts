@@ -8,17 +8,17 @@ import { repositories } from '@/repositories/postgres'
 import { fail, ok, type ActionResult } from '@/lib/result'
 import { SkillAccessError, type ActorContext } from '@/domain/skill/skill-service'
 import {
+  SKILL_DESCRIPTION_MAX,
+  SKILL_NAME_MAX,
+  parseSkillContent,
+  parseSkillRequires,
   skillContentSchema,
   skillRequiresSchema,
+  type SkillContent,
 } from '@/lib/skill/skill-content'
 import { validateSkill } from '@/lib/skill/skill-validator'
 import { diffSkillVersions } from '@/lib/skill/skill-diff'
 import { PROVISIONING_ASSISTANT_TEMPLATE } from '@/domain/provisioning/provisioning-assistant'
-import {
-  parseSkillContent,
-  parseSkillRequires,
-  type SkillContent,
-} from '@/lib/skill/skill-content'
 import type { TenantAuthContext } from '@/auth/context'
 import type { SkillReadiness } from '@/lib/skill/skill-readiness'
 import type { SkillRiskTier } from '@prisma/client'
@@ -269,8 +269,8 @@ export async function importSkillMdAction(
 }
 
 const createSchema = z.object({
-  name: z.string().min(1).max(120),
-  description: z.string().min(1).max(500),
+  name: z.string().min(1).max(SKILL_NAME_MAX),
+  description: z.string().min(1).max(SKILL_DESCRIPTION_MAX),
   scope: z.enum(['tenant', 'global']).default('tenant'),
   content: skillContentSchema,
   requires: skillRequiresSchema,
