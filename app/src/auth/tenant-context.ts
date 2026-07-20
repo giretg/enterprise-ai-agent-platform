@@ -47,6 +47,20 @@ export class PlatformAuthError extends Error {
   }
 }
 
+/**
+ * §7.3: suspended/offboarding/archived tenantban nincs tenant-művelet.
+ *
+ * Fail-closed: a hiányzó tenant-sor is tiltás. Korábban a `tenant &&` alak miatt egy
+ * fel nem oldható tenant-azonosító ÁTENGEDTE a kaput — a lekérdezés bizonytalansága
+ * engedélyre fordult. Egy helyen él, hogy a két guard ne tudjon szétcsúszni.
+ */
+async function assertTenantOperable(tenantId: string): Promise<void> {
+  const tenant = await getTenantById(tenantId)
+  if (!tenant || !tenantStatusAllowsOperations(tenant.status)) {
+    throw new TenantAuthError('TENANT_NOT_ACTIVE')
+  }
+}
+
 export async function requireTenantRoleFromContext(
   ctx: AuthContext | null,
   minimum: UserRole | UserRole[],
@@ -56,11 +70,7 @@ export async function requireTenantRoleFromContext(
     throw new TenantAuthError('NO_TENANT')
   }
 
-  // §7.3: suspended/offboarding/archived tenantban nincs tenant-művelet.
-  const tenant = await getTenantById(ctx.activeTenantId)
-  if (tenant && !tenantStatusAllowsOperations(tenant.status)) {
-    throw new TenantAuthError('TENANT_NOT_ACTIVE')
-  }
+  await assertTenantOperable(ctx.activeTenantId)
 
   if (!hasMinimumRole(ctx.activeTenantRole, minimum)) {
     throw new TenantAuthError('INSUFFICIENT_ROLE')
@@ -91,11 +101,7 @@ export async function requireTenantPermission(
     throw new TenantAuthError('NO_TENANT')
   }
 
-  // §7.3: suspended/offboarding/archived tenantban nincs tenant-művelet.
-  const tenant = await getTenantById(ctx.activeTenantId)
-  if (tenant && !tenantStatusAllowsOperations(tenant.status)) {
-    throw new TenantAuthError('TENANT_NOT_ACTIVE')
-  }
+  await assertTenantOperable(ctx.activeTenantId)
 
   const entry = await repositories.rolePermissions.findByKey(permissionKey)
   // Az aktív tenant-szerep az igazság forrása; a status itt definíció szerint 'active'
