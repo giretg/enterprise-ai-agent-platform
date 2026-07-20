@@ -585,10 +585,17 @@ export class DispatcherService {
     // `tenantStatusAllowsOperations` eddig csak az emberi guardokban élt
     // (`requireTenantRole` / `requireTenantPermission`), a dispatcher megkerülte —
     // így egy felfüggesztett/offboardolt tenant agentjei tovább futottak, tovább
-    // égették a modell-keretet és tovább hívták a connectorokat. A platform-szintű
-    // (tenant nélküli) agentekre a kapu definíció szerint nem vonatkozik.
-    if (this.tenants && agent?.tenantId) {
-      const tenant = await this.tenants.findById(agent.tenantId)
+    // égették a modell-keretet és tovább hívták a connectorokat.
+    //
+    // A kapu a MUNKA tulajdonosára kulcsol, nem az agent tulajdonosára: egy
+    // megosztott, platform-szintű agent (`tenantId === null`) az
+    // `isAgentReachableFromTenant` szerint MINDEN tenantból elérhető, így az
+    // agentre kulcsolás lyukat hagyna — a felfüggesztett tenant tickete egy közös
+    // agenthez rendelve simán lefutna, a tenant adatán dolgozva. Csak akkor nincs
+    // kapu, ha maga a ticket is platform-szintű.
+    const gateTenantId = ticket.tenantId ?? agent?.tenantId ?? null
+    if (this.tenants && gateTenantId) {
+      const tenant = await this.tenants.findById(gateTenantId)
       // Fail-closed: nem-létező tenant-sor is tiltás (nem "ismeretlen ⇒ engedd").
       if (!tenant || !tenantStatusAllowsOperations(tenant.status)) {
         await this.audit.append({
@@ -604,10 +611,10 @@ export class DispatcherService {
           policyDecision: 'denied',
           metadata: {
             ticketId: ticket.id,
-            tenantId: agent.tenantId,
+            tenantId: gateTenantId,
             tenantStatus: tenant?.status ?? 'missing',
           },
-          tenantId: agent.tenantId,
+          tenantId: gateTenantId,
         })
         dispatchTotal.inc({ result: 'denied_tenant_inactive' })
         return this.skip(ticket, 'tenant_inactive', { silent: true })

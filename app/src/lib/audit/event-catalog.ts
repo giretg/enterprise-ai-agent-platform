@@ -159,6 +159,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'dispatch.notify.failed',
   'dispatch.notify.sent',
   'dispatch.start',
+  'dispatch.tenant_inactive',
   'dispatch.timeout',
   'dispatcher.config_changed',
   'dispatcher.paused',

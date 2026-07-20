@@ -13,7 +13,10 @@
  * TS-3: `offboarding` / `archived` tenant → ugyanúgy tilt.
  * TS-4: a tiltás auditált (`dispatch.tenant_inactive`), a tenant-státusszal együtt.
  * TS-5: hiányzó tenant-sor → fail-closed (nem "ismeretlen ⇒ engedd").
- * TS-6: platform-szintű (tenant nélküli) agentre a kapu nem vonatkozik.
+ * TS-6: valóban platform-szintű munka (ticket ÉS agent tenant nélkül) fut.
+ * TS-7: a kapu a MUNKA tulajdonosára kulcsol — suspended tenant tickete megosztott
+ *       platform-agenthez rendelve is tilt (különben a megosztott agent kiskapu lenne).
+ * TS-8: a kiírt audit-action regisztrálva van az esemény-katalógusban (élesben dobna).
  */
 
 import assert from 'node:assert/strict'
@@ -241,17 +244,42 @@ async function main() {
     assert.equal(denied?.outputRef, 'missing')
   })
 
-  await check('TS-6: platform-szintű (tenant nélküli) agentre a kapu nem vonatkozik', async () => {
+  await check('TS-6: valóban platform-szintű munka (ticket + agent tenant nélkül) fut', async () => {
     const { dispatcher, launched } = makeDispatcher({
       ticket: makeTicket({ tenantId: null }),
       agent: makeAgent({ tenantId: null }),
-      // A tenant-repo `suspended`-et adna vissza — de tenant nélküli agentnél meg sem kérdezzük.
+      // A tenant-repo `suspended`-et adna vissza — de tenant nélküli munkánál meg sem kérdezzük.
       tenant: makeTenant('suspended'),
     })
 
     const [result] = await dispatcher.dispatchReadyBatch()
     assert.equal(result.status, 'started')
     assert.equal(launched.length, 1)
+  })
+
+  await check('TS-7: suspended tenant tickete MEGOSZTOTT platform-agenthez rendelve is tilt', async () => {
+    // A megosztott agent (`tenantId === null`) az `isAgentReachableFromTenant` szerint
+    // minden tenantból elérhető. Ha a kapu az agent tulajdonosára kulcsolna, ez a
+    // konfiguráció megkerülné a felfüggesztést — a munka a tenant adatán dolgozna.
+    const { dispatcher, events, launched } = makeDispatcher({
+      ticket: makeTicket({ tenantId: TENANT_A }),
+      agent: makeAgent({ tenantId: null }),
+      tenant: makeTenant('suspended'),
+    })
+
+    const [result] = await dispatcher.dispatchReadyBatch()
+    assert.equal(result.status, 'skipped')
+    assert.equal(result.reason, 'tenant_inactive')
+    assert.equal(launched.length, 0)
+    const denied = events.find((e) => e.action === 'dispatch.tenant_inactive')
+    assert.equal(denied?.tenantId, TENANT_A)
+  })
+
+  await check('TS-8: minden kiírt audit-action szerepel az esemény-katalógusban', async () => {
+    // A tesztek hamis AuditRepositoryt használnak, ami NEM validál — élesben viszont a
+    // `PostgresAuditRepository` dob a nem regisztrált actionre. Ez a teszt zárja a rést.
+    const { assertAuditActionRegistered } = await import('../src/lib/audit/event-catalog')
+    assert.doesNotThrow(() => assertAuditActionRegistered('dispatch.tenant_inactive'))
   })
 
   console.log(

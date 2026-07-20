@@ -200,7 +200,10 @@ export const toolBrokerCallsTotal = registry.counter(
   'tool_broker_calls_total',
   'Tool broker invocations by tool, status and policy decision',
 )
-/** Dispatch-események száma kimenet szerint (dispatched / budget_blocked / denied_inactive / error). */
+/**
+ * Dispatch-események száma kimenet szerint
+ * (dispatched / budget_blocked / denied_inactive / denied_tenant_inactive / error).
+ */
 export const dispatchTotal = registry.counter(
   'dispatcher_events_total',
   'Dispatcher outcomes by result',
