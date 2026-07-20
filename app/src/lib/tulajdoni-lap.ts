@@ -126,9 +126,18 @@ export type TulajdoniLapIngatlan = {
   akOsszesen?: string
 }
 
+/**
+ * A másolat fajtája. A `teljes` VALAMENNYI bejegyzést tartalmazza (a törölteket
+ * is), a `szemle` csak a fennállókat — más a szerkezete és a mezőcímkéi is.
+ * Ma kizárólag a `teljes` feldolgozása támogatott; a többit néven nevezve
+ * utasítjuk vissza, hogy a felhasználó tudja, mit tegyen.
+ */
+export type TulajdoniLapTipus = 'teljes' | 'szemle' | 'ismeretlen'
+
 export type TulajdoniLapResult = {
   meta: {
     oldalak: number
+    tipus: TulajdoniLapTipus
     ugyazonosito?: string
     kelt?: string
     ingatlanMegnevezes?: string
@@ -285,24 +294,65 @@ const FIELD_ALIASES: Record<string, string[]> = {
 }
 
 const HANYAD_RE = /(\d[\d\s]*)\s*\/\s*(\d[\d\s]*)/
-const NEV_RE = new RegExp(
-  'Név:\\s*(?<nev>[^,\\n]+?)' +
-    '(?:,\\s*Születési név:\\s*(?<szuletesiNev>[^,\\n]+?))?' +
-    '(?:,\\s*Születési év:\\s*(?<szuletesiEv>\\d{4}))?' +
-    '(?:,\\s*Anyja neve:\\s*(?<anyjaNeve>[^,\\n]+?))?' +
-    '[^\\S\\n]*$',
-  'm',
-)
+/**
+ * A jogosult személy-azonosító mezői.
+ *
+ * MIÉRT mezőnként és nem egyetlen összefüggő mintával: a PDF vizuális tördelése
+ * dönti el, hogy ezek egy sorba kerülnek-e vesszővel elválasztva, vagy külön
+ * sorokba törnek — és a kettő keveredhet is egyetlen bejegyzésen belül. Egy
+ * összefüggő, vesszőre épülő minta a sortörésnél elhasal, és onnantól NÉMÁN
+ * elhagyja a maradék mezőt.
+ *
+ * Ez a legveszélyesebb hibamód az egész kinyerésben: a `szuletesiEv` és az
+ * `anyjaNeve` a tulajdonos-azonosítás kulcsa, a hányadösszeg-validáció pedig
+ * NEM fogja meg a hiányukat (a hányadok akkor is 1-re jönnek ki). Az eredmény
+ * névre szűkült párosítás lenne — épp ott, ahol apa és fia összekeverhető.
+ *
+ * A `(?:^|,)` horgony miatt a `Név` címke nem illeszkedik a `Születési név`
+ * végére: ott a címke előtt betű áll, nem sorkezdet vagy vessző.
+ */
+const PERSON_FIELD_PATTERNS: Array<[key: string, label: string, value: string]> = [
+  ['nev', 'Név', '[^,\\n]+'],
+  ['szuletesiNev', 'Születési név', '[^,\\n]+'],
+  ['szuletesiEv', 'Születési év', '\\d{4}'],
+  ['anyjaNeve', 'Anyja neve', '[^,\\n]+'],
+]
+
+function extractPersonFields(body: string): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const [key, label, value] of PERSON_FIELD_PATTERNS) {
+    const re = new RegExp(`(?:^|,)[^\\S\\n]*${escapeRe(label)}:[^\\S\\n]*(${value})`, 'm')
+    const m = re.exec(body)
+    if (m) {
+      const v = m[1].trim()
+      if (v && !isPlaceholderValue(v)) out[key] = v
+    }
+  }
+  return out
+}
 
 function escapeRe(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/**
+ * A lap a kitöltetlen mezőt nem hagyja üresen, hanem kötőjellel jelöli
+ * (`cím: -`, `Anyja neve: - -`). Ha ezt értékként vennénk át, egy „- -" kerülne
+ * a tulajdonos-azonosító kulcsba, és két különböző, anyja-név nélküli személy
+ * tévesen EGY vödörbe esne. Hiányzó adat = hiányzó adat, nem érték.
+ */
+function isPlaceholderValue(value: string): boolean {
+  return /^[-–—.\s]*$/.test(value)
 }
 
 /** Egy mező értéke a bejegyzés szövegéből, az összes ismert címke-variánssal. */
 function findField(block: string, key: string): string | null {
   for (const label of FIELD_ALIASES[key]) {
     const m = new RegExp(`^${escapeRe(label)}:\\s*(.+)$`, 'm').exec(block)
-    if (m) return m[1].trim()
+    if (m) {
+      const value = m[1].trim()
+      if (!isPlaceholderValue(value)) return value
+    }
   }
   return null
 }
@@ -357,11 +407,8 @@ export function parseEntries(sectionText: string, sectionName: 'II' | 'III'): Tu
       entry.nevezo = parseInt(hm[2].replace(/\s/g, ''), 10)
     }
 
-    const nm = NEV_RE.exec(body)
-    if (nm?.groups) {
-      for (const [k, v] of Object.entries(nm.groups)) {
-        if (v) (entry as Record<string, unknown>)[k] = v.trim()
-      }
+    for (const [k, v] of Object.entries(extractPersonFields(body))) {
+      ;(entry as Record<string, unknown>)[k] = v
     }
 
     entries.push(entry)
@@ -520,7 +567,7 @@ export function summarizeOwners(entries: TulajdoniLapEntry[]): TulajdoniLapOwner
     if (e.szamlalo === undefined || e.nevezo === undefined || !e.nev) continue
     if (isNonOwnerJogallas(e.jogallas)) continue
 
-    const key = [normName(e.nev), e.szuletesiEv ?? '', normName(e.anyjaNeve)].join(' ')
+    const key = [normName(e.nev), e.szuletesiEv ?? '', normName(e.anyjaNeve)].join('\0')
     let b = buckets.get(key)
     if (!b) {
       b = {
@@ -560,7 +607,33 @@ export function summarizeOwners(entries: TulajdoniLapEntry[]): TulajdoniLapOwner
   return owners
 }
 
-function validate(entries: TulajdoniLapEntry[]) {
+/**
+ * A hibaüzenetnek meg kell mondania, MIT tegyen a felhasználó.
+ *
+ * Ha egyetlen bejegyzést sem sikerült kiolvasni, akkor nem „különleges a lap",
+ * hanem nem ismertük fel a szerkezetét — jellemzően azért, mert nem teljes
+ * másolat. A generikus „a kinyerés hibás" üzenet ilyenkor félrevezet: azt
+ * sugallja, hogy az adattal van baj, pedig a dokumentumtípus a gond.
+ */
+function magyarazat(tipus: TulajdoniLapTipus, entryCount: number, valid: boolean): string {
+  if (valid) return 'A hatályos tulajdoni hányadok összege pontosan 1 — a kinyerés konzisztens.'
+
+  if (entryCount === 0) {
+    if (tipus === 'szemle') {
+      return 'Ez SZEMLE másolat, aminek a feldolgozása jelenleg nem támogatott — ' +
+        'a szemle más szerkezetű és más mezőcímkéket használ, mint a teljes másolat. ' +
+        'Kérj a földhivataltól TELJES másolatot, és azt töltsd fel.'
+    }
+    return 'A dokumentumban egyetlen tulajdoni bejegyzést sem sikerült felismerni. ' +
+      'Vagy nem e-hiteles tulajdoni lap, vagy nem szöveges (beszkennelt) a PDF, ' +
+      'vagy olyan formátum, amit még nem ismerünk. Ellenőrizd, hogy TELJES másolatot töltöttél-e fel.'
+  }
+
+  return 'FIGYELEM: a hatályos hányadok összege nem 1. A kinyerés hibás, vagy a lap különleges ' +
+    '(pl. haszonélvezet/joggyakorló besorolás). Ne dolgozz tovább, amíg nem tisztázott.'
+}
+
+function validate(entries: TulajdoniLapEntry[], tipus: TulajdoniLapTipus) {
   let total = new Fraction(ZERO)
   for (const e of entries) {
     if (!e.hatalyos) continue
@@ -573,10 +646,7 @@ function validate(entries: TulajdoniLapEntry[]) {
     hatalyosHanyadOsszeg: total.toString(),
     hatalyosHanyadOsszegSzazalek: roundTo(total.toNumber() * 100, 9),
     valid,
-    megjegyzes: valid
-      ? 'A hatályos tulajdoni hányadok összege pontosan 1 — a kinyerés konzisztens.'
-      : 'FIGYELEM: az összeg nem 1. A kinyerés hibás, vagy a lap különleges ' +
-        '(pl. haszonélvezet/joggyakorló besorolás). Ne dolgozz tovább, amíg nem tisztázott.',
+    megjegyzes: magyarazat(tipus, entries.length, valid),
   }
 }
 
@@ -587,6 +657,26 @@ const META_PATTERNS: Array<[keyof TulajdoniLapResult['meta'], RegExp]> = [
   ['kelt', /\n(\d{4}\.\d{2}\.\d{2})\n/],
   ['ingatlanMegnevezes', /\n([^\n]*helyrajzi szám)\n/],
 ]
+
+/**
+ * A másolat fajtájának felismerése a dokumentum saját típusjelöléséből.
+ *
+ * A jelölés a lap elején és/vagy végén áll, és stabil: a földhivatal minden
+ * kiadványon feltünteti. Ezért erre támaszkodunk, nem a szerkezetből
+ * következtetünk vissza.
+ */
+export function detectLapTipus(pages: string[]): TulajdoniLapTipus {
+  const text = pages.join('\n')
+
+  // A típusjelölés ÖNÁLLÓ CÍMSOR, ezért sorra horgonyzunk. Szabad szavas keresés
+  // itt téved: mindkét fajta lap alján ott a magyarázó mondat — „A szemle másolat
+  // a fennálló bejegyzéseket, a teljes másolat valamennyi bejegyzést tartalmazza"
+  // —, amitől a teljes lap is „szemlének" látszana.
+  if (/^[^\n]*Tulajdonilap-másolat[^\n]*$/im.test(text)) return 'teljes'
+  if (/^[^\S\n]*\(teljes\)[^\S\n]*$/im.test(text)) return 'teljes'
+  if (/^[^\n]*[-–—][^\S\n]*Szemle másolat[^\S\n]*$/im.test(text)) return 'szemle'
+  return 'ismeretlen'
+}
 
 /** PDF oldalankénti nyers szövege → strukturált, validált tulajdoni lap.
  *
@@ -606,7 +696,10 @@ export function parseTulajdoniLap(rawPages: string[]): TulajdoniLapResult {
   const owners = summarizeOwners(resz2)
   const szeljegyek = parseSzeljegyek(sections.szeljegyzek ?? '')
 
-  const meta: TulajdoniLapResult['meta'] = { oldalak: pages.length }
+  const meta: TulajdoniLapResult['meta'] = {
+    oldalak: pages.length,
+    tipus: detectLapTipus(pages),
+  }
   for (const [key, pat] of META_PATTERNS) {
     const m = pat.exec(rawFirst)
     if (m) (meta as Record<string, unknown>)[key] = m[1].trim()
@@ -627,7 +720,7 @@ export function parseTulajdoniLap(rawPages: string[]): TulajdoniLapResult {
       resz3Hatalyos: resz3.filter((e) => e.hatalyos).length,
       szeljegyDb: szeljegyek.length,
       egyediTulajdonos: owners.length,
-      ...validate(resz2),
+      ...validate(resz2, meta.tipus),
     },
   }
 }

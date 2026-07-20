@@ -9,6 +9,8 @@
 import assert from 'node:assert/strict'
 import {
   buildTulajdoniLapView,
+  detectLapTipus,
+  parseEntries,
   parseTulajdoniLap,
   splitSections,
   stripFurniture,
@@ -254,6 +256,115 @@ check('kinyerő-függetlenség: extra szóközök nem változtatják az eredmén
   const b = parseTulajdoniLap(tagolt)
   assert.deepEqual(b.tulajdonosok, a.tulajdonosok)
   assert.deepEqual(b.osszesites, a.osszesites)
+})
+
+// A jogosult személy-mezői a PDF vizuális tördelésétől függően egy sorba
+// kerülhetnek vesszővel, külön sorokba, vagy vegyesen. A `szuletesiEv` és az
+// `anyjaNeve` a tulajdonos-azonosítás kulcsa; ha tördelés miatt kiesik, a
+// hányadösszeg-validáció NEM veszi észre (a hányadok akkor is 1-re jönnek ki).
+const SZEMELY_FEJ =
+  'Bejegyző határozat, érkezési idő:\n11111/2010.01.01\n1.\n' +
+  'Tulajdonjog\nJogállás: TULAJDONOS\nTulajdoni hányad: 1/1\n'
+
+const TORDELESEK: Array<[string, string]> = [
+  ['egy soron, vesszővel', 'Név: Kovács Béla, Születési név: Nagy Anna, Születési év: 1980, Anyja neve: Szabó Mária'],
+  ['külön sorokban, sorvégi vesszővel', 'Név: Kovács Béla,\nSzületési név: Nagy Anna,\nSzületési év: 1980,\nAnyja neve: Szabó Mária'],
+  ['külön sorokban, vessző nélkül', 'Név: Kovács Béla\nSzületési név: Nagy Anna\nSzületési év: 1980\nAnyja neve: Szabó Mária'],
+  ['vegyes tördelés', 'Név: Kovács Béla, Születési név: Nagy Anna\nSzületési év: 1980, Anyja neve: Szabó Mária'],
+]
+
+for (const [nev, blokk] of TORDELESEK) {
+  check(`személy-mezők tördeléstől függetlenül: ${nev}`, () => {
+    const e = parseEntries(`${SZEMELY_FEJ}${blokk}\nJogosult címe: 1111 Budapest`, 'II')[0]
+    assert.equal(e.nev, 'Kovács Béla')
+    assert.equal(e.szuletesiNev, 'Nagy Anna')
+    assert.equal(e.szuletesiEv, '1980', 'a születési év a párosítási kulcs része')
+    assert.equal(e.anyjaNeve, 'Szabó Mária', 'az anyja neve a párosítási kulcs része')
+    assert.equal(e.cim, '1111 Budapest')
+  })
+}
+
+check('személy-mezők: szervezetnél nincs születési év, és ez nem hiba', () => {
+  const e = parseEntries(`${SZEMELY_FEJ}Név: EGYETÉRTÉS MGTSZ\nJogosult címe: 3326 OSTOROS`, 'II')[0]
+  assert.equal(e.nev, 'EGYETÉRTÉS MGTSZ')
+  assert.equal(e.szuletesiEv, undefined)
+  assert.equal(e.anyjaNeve, undefined)
+})
+
+check('a „Név" címke nem illeszkedik a „Születési név" végére', () => {
+  const e = parseEntries(`${SZEMELY_FEJ}Születési név: Nagy Anna\nNév: Kovács Béla`, 'II')[0]
+  assert.equal(e.nev, 'Kovács Béla')
+  assert.equal(e.szuletesiNev, 'Nagy Anna')
+})
+
+// A lap a kitöltetlen mezőt kötőjellel jelöli, nem üresen hagyva. Ha ezt
+// értékként vennénk át, a „- -" bekerülne a tulajdonos-azonosító kulcsba, és két
+// különböző, anyja-név nélküli személy egy vödörbe esne.
+check('kitöltetlen mező (kötőjel) hiányzó adat, nem érték', () => {
+  const e = parseEntries(
+    `${SZEMELY_FEJ}Név: Bögös László, Anyja neve: - -\nJogosult címe: -`,
+    'II',
+  )[0]
+  assert.equal(e.nev, 'Bögös László')
+  assert.equal(e.anyjaNeve, undefined, 'a „- -" nem anyja neve')
+  assert.equal(e.cim, undefined, 'a „-" nem cím')
+})
+
+check('két anyja-név nélküli, azonos nevű személy NEM olvad össze', () => {
+  // Eltérő születési év → két külön tulajdonos, akkor is, ha az anyja neve
+  // mindkettőnél kitöltetlen.
+  const lap = [
+    'II. RÉSZ',
+    'Bejegyző határozat, érkezési idő:\n1/2000\n1.\nTulajdonjog\nJogállás: TULAJDONOS',
+    'Tulajdoni hányad: 1/2\nNév: Kiss János, Születési év: 1950, Anyja neve: -',
+    'Bejegyző határozat, érkezési idő:\n2/2000\n2.\nTulajdonjog\nJogállás: TULAJDONOS',
+    'Tulajdoni hányad: 1/2\nNév: Kiss János, Születési év: 1975, Anyja neve: -',
+  ].join('\n')
+  const r = parseTulajdoniLap([lap])
+  assert.equal(r.osszesites.egyediTulajdonos, 2, 'apa és fia külön tulajdonos')
+  assert.equal(r.osszesites.valid, true)
+})
+
+// Mindkét fajta lap alján ott a magyarázó mondat, ami MINDKÉT szót tartalmazza.
+// Szabad szavas kereséssel a teljes lap is „szemlének" látszik — ez valódi hiba
+// volt, ezért kap külön tesztet.
+const BOILERPLATE =
+  'Az E-hiteles tulajdoni lap másolat tartalma a kiadást megelőző napig megegyezik az\n' +
+  'ingatlan-nyilvántartásban szereplő adatokkal. A szemle másolat a fennálló bejegyzéseket,\n' +
+  'a teljes másolat valamennyi bejegyzést tartalmazza.'
+
+check('laptípus: a magyarázó szöveg nem téveszti meg a felismerést', () => {
+  assert.equal(detectLapTipus([`Tulajdonilap-másolat\n(teljes)\n${BOILERPLATE}`]), 'teljes')
+  assert.equal(
+    detectLapTipus([`${BOILERPLATE}\nE-hiteles tulajdoni lap - Szemle másolat`]),
+    'szemle',
+  )
+  assert.equal(detectLapTipus([BOILERPLATE]), 'ismeretlen', 'csak a magyarázat nem típusjelölés')
+})
+
+check('laptípus felismerése és a hibaüzenet konkrét', () => {
+  assert.equal(detectLapTipus(['Tulajdonilap-másolat\n(teljes)']), 'teljes')
+  assert.equal(detectLapTipus(['E-hiteles tulajdoni lap - Szemle másolat']), 'szemle')
+  assert.equal(detectLapTipus(['valami más']), 'ismeretlen')
+
+  // Szemle: felismerhető bejegyzés nélkül konkrét, cselekvésre váltható üzenet.
+  const szemle = parseTulajdoniLap(['E-hiteles tulajdoni lap - Szemle másolat\nnév: MAGYAR ÁLLAM'])
+  assert.equal(szemle.meta.tipus, 'szemle')
+  assert.equal(szemle.osszesites.valid, false)
+  assert.match(szemle.osszesites.megjegyzes, /SZEMLE/)
+  assert.match(szemle.osszesites.megjegyzes, /TELJES másolatot/)
+
+  // Ismeretlen dokumentum: szintén konkrét, nem „különleges a lap".
+  const ismeretlen = parseTulajdoniLap(['Számla\nÖsszeg: 1000 Ft'])
+  assert.equal(ismeretlen.meta.tipus, 'ismeretlen')
+  assert.match(ismeretlen.osszesites.megjegyzes, /egyetlen tulajdoni bejegyzést sem/)
+})
+
+check('a valódi teljes lap típusa felismerhető és a régi üzenet marad', () => {
+  const r = parseTulajdoniLap(PAGES.map((p) => `${p}\nTulajdonilap-másolat\n(teljes)`))
+  assert.equal(r.meta.tipus, 'teljes')
+  assert.equal(r.osszesites.valid, true)
+  assert.match(r.osszesites.megjegyzes, /pontosan 1/)
 })
 
 console.log(failures === 0 ? '\n✅ minden teszt zöld' : `\n❌ ${failures} teszt bukott`)
