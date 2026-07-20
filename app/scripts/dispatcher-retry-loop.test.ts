@@ -413,6 +413,40 @@ async function testLaunchFailurePermanentBlocksTicket() {
   assert.equal(alerts.blocked.length, 1)
 }
 
+/** Config/policy hiba (board_write grant hiány) — ne retry-olja Ready-re. */
+async function testLaunchFailureCapabilityDeniedBlocksTicket() {
+  const tickets = new FakeTickets(cloneTicket())
+  const audit = new FakeAudit()
+  const agents = new FakeAgents()
+  const alerts = new FakeDispatchAlerts()
+  const dispatcher = new DispatcherService(
+    tickets as unknown as TicketRepository,
+    audit as unknown as AuditRepository,
+    modelCalls,
+    {
+      mode: 'docker-local',
+      async launch() {
+        throw new Error('board_write denied: capability_not_allowed')
+      },
+    },
+    undefined,
+    async () => true,
+    agents as unknown as AgentRepository,
+    alerts,
+  )
+
+  const result = await dispatcher.dispatchTicket(tickets.ticket.id)
+
+  assert.equal(result.status, 'blocked')
+  assert.equal(tickets.ticket.state, 'awaiting_human')
+  assert.match(
+    tickets.transitions[1]?.note ?? '',
+    /dispatcher launch failed \(permanent, attempt 1\/3\).*capability_not_allowed/,
+  )
+  assert.ok(audit.events.some((event) => event.action === 'dispatch.blocked'))
+  assert.equal(alerts.blocked.length, 1)
+}
+
 async function testRecoverLaunchFailureBlocksOnTicketCallCap() {
   const previous = process.env.GATEWAY_MAX_CALLS_PER_TICKET
   process.env.GATEWAY_MAX_CALLS_PER_TICKET = '30'
@@ -606,6 +640,7 @@ async function main() {
   await testStaleReclaimRevokesEphemeralKey()
   await testLaunchFailureRevokesEphemeralKeyAndReleasesTicket()
   await testLaunchFailurePermanentBlocksTicket()
+  await testLaunchFailureCapabilityDeniedBlocksTicket()
   await testRecoverLaunchFailureBlocksOnTicketCallCap()
   await testDispatchPrecheckBlocksTicketCallCap()
   await testLauncherResolutionFailureReleasesReadyLock()

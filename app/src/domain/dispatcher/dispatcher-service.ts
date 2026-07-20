@@ -184,7 +184,11 @@ function classifyHarnessError(input: {
     /missing harness env/i.test(error) ||
     /unauthorized/i.test(error) ||
     /forbidden/i.test(error) ||
-    /budget.?blocked/i.test(error)
+    /budget.?blocked/i.test(error) ||
+    // Konfig-/policy-hiba: retry magától sosem oldja meg (pl. LACI board_write grant hiány).
+    /capability_not_allowed/i.test(error) ||
+    /board_write denied/i.test(error) ||
+    /TRANSITION_NOT_ALLOWED/i.test(error)
   ) {
     return 'permanent'
   }
