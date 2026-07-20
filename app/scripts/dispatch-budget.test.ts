@@ -22,6 +22,7 @@ import type {
   AuditRepository,
   ModelBudgetRepository,
   ModelCallRepository,
+  TenantRepository,
   TicketRepository,
 } from '../src/repositories/interfaces'
 
@@ -183,6 +184,14 @@ function makeDispatcher(input: {
     async findMany() { return input.agent ? [input.agent] : [] },
   } as unknown as AgentRepository
 
+  const tenants = {
+    async findById(id: string) {
+      return id === TENANT_A
+        ? ({ id: TENANT_A, status: 'active' } as never)
+        : null
+    },
+  } as unknown as TenantRepository
+
   const launcher: HarnessLauncher = {
     mode: 'local-wiki',
     async launch({ ticketId }) {
@@ -206,6 +215,7 @@ function makeDispatcher(input: {
     undefined,
     undefined,
     engine,
+    tenants,
   )
 
   return { dispatcher, events, launched }

@@ -139,8 +139,13 @@ type AgentChatStreamEvent =
   | { type: 'memory_candidate'; candidate: Omit<MemoryCandidateCard, 'status' | 'resultMessage'> }
   | { type: 'thinking'; turnId: string; delta: string }
   | { type: 'token'; chunk: string }
-  | { type: 'done'; conversationId: string; messageId: string; ticketRefId?: string | null }
-  | { type: 'cancelled'; conversationId: string; messageId: string }
+  | {
+      type: 'done'
+      conversationId: string
+      messageId: string
+      ticketRefId?: string | null
+      reason?: 'cancelled'
+    }
   | { type: 'error'; message?: string }
 
 const CHAT_SESSIONS_PAGE_SIZE = 10
@@ -1258,10 +1263,18 @@ export function AgentChatPanel({
                 )
               })
             } else if (
-              (event.type === 'done' || event.type === 'cancelled') &&
+              event.type === 'done' &&
+              event.reason === 'cancelled' &&
               event.conversationId &&
               event.messageId
             ) {
+              await reloadConversationMessages(event.conversationId)
+              setIsAgentTyping(false)
+              setStopPending(false)
+              setActiveTurnId(null)
+              markConversationRunning(event.conversationId, false)
+              return
+            } else if (event.type === 'done' && event.conversationId && event.messageId) {
               await reloadConversationMessages(event.conversationId)
               setIsAgentTyping(false)
               setStopPending(false)
@@ -1682,6 +1695,18 @@ export function AgentChatPanel({
                   ),
                 )
               })
+            } else if (
+              event.type === 'done' &&
+              event.reason === 'cancelled' &&
+              event.conversationId &&
+              event.messageId
+            ) {
+              markConversationRunning(event.conversationId, false)
+              setActiveTurnId(null)
+              await reloadConversationMessages(event.conversationId)
+              setStatusMessage('Agent válasz megszakítva — részeredmény mentve.')
+              streamTerminalEvent = true
+              break
             } else if (event.type === 'done' && event.conversationId && event.messageId) {
               setConversationId(event.conversationId)
               setConversationStatus('active')
@@ -1705,13 +1730,6 @@ export function AgentChatPanel({
                 setSelectedProcessDefId(null)
               }
               startTransition(() => { void refreshSessions() })
-              streamTerminalEvent = true
-              break
-            } else if (event.type === 'cancelled' && event.conversationId && event.messageId) {
-              markConversationRunning(event.conversationId, false)
-              setActiveTurnId(null)
-              await reloadConversationMessages(event.conversationId)
-              setStatusMessage('Agent válasz megszakítva — részeredmény mentve.')
               streamTerminalEvent = true
               break
             } else if (event.type === 'error') {

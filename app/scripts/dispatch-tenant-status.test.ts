@@ -17,6 +17,7 @@
  * TS-7: a kapu a MUNKA tulajdonosára kulcsol — suspended tenant tickete megosztott
  *       platform-agenthez rendelve is tilt (különben a megosztott agent kiskapu lenne).
  * TS-8: a kiírt audit-action regisztrálva van az esemény-katalógusban (élesben dobna).
+ * TS-9: tenant-repo nélkül a kapu fail-closed (nem engedi át a lyukat).
  */
 
 import assert from 'node:assert/strict'
@@ -280,6 +281,48 @@ async function main() {
     // `PostgresAuditRepository` dob a nem regisztrált actionre. Ez a teszt zárja a rést.
     const { assertAuditActionRegistered } = await import('../src/lib/audit/event-catalog')
     assert.doesNotThrow(() => assertAuditActionRegistered('dispatch.tenant_inactive'))
+  })
+
+  await check('TS-9: tenant-repo nélkül a kapu fail-closed (nem engedi át a lyukat)', async () => {
+    const { repo: audit, events } = makeAudit()
+    const ticket = makeTicket()
+    const agent = makeAgent()
+    const tickets = {
+      async findReadyForDispatch() { return [ticket] },
+      async findById() { return ticket },
+      async acquireDispatchLock() { return ticket },
+      async releaseDispatchLock() {},
+      async update() { return ticket },
+      async recordTransition() {},
+      async findStaleInProgressDispatches() { return [] },
+    } as unknown as TicketRepository
+    const agents = {
+      async findById() { return agent },
+      async findMany() { return [agent] },
+    } as unknown as AgentRepository
+    const launched: string[] = []
+    const dispatcher = new DispatcherService(
+      tickets,
+      audit,
+      { async getUsageForAgentSince() { return { calls: 0, tokens: 0 } } } as never,
+      {
+        mode: 'test',
+        async launch({ ticketId }) {
+          launched.push(ticketId)
+          return { jobId: `job-${ticketId}` }
+        },
+      },
+      { maxCallsPerDay: 100, maxTokensPerDay: 100_000 },
+      async () => true,
+      agents,
+      // tenants szándékosan hiányzik
+    )
+    const [result] = await dispatcher.dispatchReadyBatch()
+    assert.equal(result.status, 'skipped')
+    assert.equal(result.reason, 'tenant_inactive')
+    assert.equal(launched.length, 0)
+    const denied = events.find((e) => e.action === 'dispatch.tenant_inactive')
+    assert.equal((denied?.metadata as { tenantStatus?: string } | undefined)?.tenantStatus, 'repo_missing')
   })
 
   console.log(

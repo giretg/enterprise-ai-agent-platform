@@ -3,6 +3,7 @@ import { authenticateAgentRequest, requireAgentScope } from '@/auth/agent-api-ke
 import { services } from '@/domain'
 import { buildStubOpenAiCompletion } from '@/domain/gateway/stub-openai-completion'
 import { relayTextToolCall } from '@/domain/gateway/text-tool-relay'
+import { assertAgentWorkTenantOperable } from '@/lib/agent-work-tenant-gate'
 import { resolveGatewayRequestModel } from '@/lib/harness-model-config'
 import { repositories } from '@/repositories/postgres'
 import { openAiChatCompletionSchema } from '@/lib/validators/gateway'
@@ -42,6 +43,17 @@ export async function POST(request: Request) {
   const ticketId = request.headers.get('x-ticket-id')?.trim() || undefined
   const agentVersionHeader = request.headers.get('x-agent-version')?.trim()
   const agentVersion = agentVersionHeader ? Number.parseInt(agentVersionHeader, 10) : undefined
+
+  const tenantGate = await assertAgentWorkTenantOperable({
+    agentId: auth.agentId,
+    ticketId,
+  })
+  if (!tenantGate.ok) {
+    return jsonError(
+      `Tenant is not operable (${tenantGate.tenantStatus})`,
+      403,
+    )
+  }
 
   const agent = await repositories.agents.findById(auth.agentId)
   if (!agent) return jsonError('Agent not found', 404)

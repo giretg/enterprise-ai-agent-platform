@@ -39,8 +39,14 @@ export type AgentChatStreamEvent =
   | { type: 'memory_candidate'; candidate: ToolLoopMemoryCandidateEvent }
   | { type: 'thinking'; turnId: string; delta: string }
   | { type: 'token'; chunk: string }
-  | { type: 'done'; conversationId: string; messageId: string; ticketRefId?: string | null }
-  | { type: 'cancelled'; conversationId: string; messageId: string }
+  | {
+      type: 'done'
+      conversationId: string
+      messageId: string
+      ticketRefId?: string | null
+      /** Spec §6.2: Stop után `reason: 'cancelled'`. */
+      reason?: 'cancelled'
+    }
   | { type: 'error'; message: string }
   /**
    * Már fut forduló a beszélgetésre (D7). Kizárólag a `sendMessageStream` első

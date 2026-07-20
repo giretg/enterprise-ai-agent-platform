@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server'
 import { authenticateAgentRequest, requireAgentScope } from '@/auth/agent-api-key'
 import { services } from '@/domain'
+import { assertAgentWorkTenantOperable } from '@/lib/agent-work-tenant-gate'
 import { repositories } from '@/repositories/postgres'
 import { toolInvokeSchema } from '@/lib/validators/actions'
 
@@ -33,6 +34,14 @@ export async function POST(request: Request) {
   try {
     const agent = await repositories.agents.findById(auth.agentId)
     if (!agent) return jsonError('Agent not found', 404)
+
+    const tenantGate = await assertAgentWorkTenantOperable({
+      agentId: auth.agentId,
+      ticketId: parsed.data.ticketId,
+    })
+    if (!tenantGate.ok) {
+      return jsonError(`Tenant is not operable (${tenantGate.tenantStatus})`, 403, tenantGate)
+    }
 
     // Az API-kulcs csak az agentet hitelesíti, felhasználót nem. Az
     // actingUserId ezért kizárólag a szerveroldal által létrehozott chat- vagy

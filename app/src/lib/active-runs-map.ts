@@ -1,5 +1,6 @@
 import type { AgentTurn, Ticket } from '@prisma/client'
 import type { ActiveRun } from '@/lib/active-runs'
+import { readTicketRuntimeProgress } from '@/domain/agent/ticket-runtime-progress'
 
 function summarizeActivities(activities: unknown): string | null {
   if (!Array.isArray(activities) || activities.length === 0) return null
@@ -12,15 +13,15 @@ function summarizeActivities(activities: unknown): string | null {
   return null
 }
 
-function summarizeTicketProgress(payload: unknown): string | null {
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null
-  const progress = (payload as Record<string, unknown>).runtimeProgress
-  if (!progress || typeof progress !== 'object' || Array.isArray(progress)) return null
-  const activities = (progress as Record<string, unknown>).activities
-  return summarizeActivities(activities)
+export type ActiveRunViewer = {
+  userId: string
 }
 
-export function activeRunFromChatTurn(turn: AgentTurn): ActiveRun {
+/**
+ * E9: chat-forduló Stop csak a létrehozónak (tenant+createdById).
+ * Ticket Stop: bármely tenant-operator (a cancel route tenant-szintű).
+ */
+export function activeRunFromChatTurn(turn: AgentTurn, viewer: ActiveRunViewer): ActiveRun {
   return {
     kind: 'chat_turn',
     id: turn.id,
@@ -29,20 +30,21 @@ export function activeRunFromChatTurn(turn: AgentTurn): ActiveRun {
     status: turn.status,
     latestActivity: summarizeActivities(turn.activities),
     startedAt: turn.startedAt.toISOString(),
-    canStop: true,
+    canStop: turn.createdById === viewer.userId,
     targetId: turn.conversationId,
     agentId: turn.agentId,
   }
 }
 
 export function activeRunFromTicket(ticket: Ticket): ActiveRun {
+  const progress = readTicketRuntimeProgress(ticket.payload)
   return {
     kind: 'ticket',
     id: ticket.id,
     title: ticket.title || `Ticket ${ticket.id.slice(0, 8)}…`,
     href: `/control-plane/tickets/${ticket.id}`,
     status: ticket.state,
-    latestActivity: summarizeTicketProgress(ticket.payload),
+    latestActivity: progress ? summarizeActivities(progress.activities) : null,
     startedAt: (ticket.lockedAt ?? ticket.updatedAt).toISOString(),
     canStop: true,
     targetId: ticket.id,

@@ -18,6 +18,7 @@ import { buildRunAsAuthorization } from '@/lib/run-as-payload'
 import { formatHitsForPrompt, type KbHit } from '@/lib/kb-format'
 import { attachmentPageCount } from '@/lib/document-read'
 import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
+import { pollCancelRequested } from '@/lib/cancel-flag-poll'
 import {
   chatTriggerSlotDescriptors,
   missingRequiredTriggerSlots,
@@ -959,11 +960,10 @@ export class AgentChatRuntime {
         return dbCancelRequested
       }
       lastDbCancelCheckAt = now
-      try {
-        dbCancelRequested = await this.agentTurns.isCancelRequested(turn.turnRecordId)
-      } catch {
-        // Fail-soft: a DB-olvasás hibája ne állítsa le a loopot; az in-memory jelzés marad.
-      }
+      dbCancelRequested = await pollCancelRequested({
+        read: () => this.agentTurns!.isCancelRequested(turn.turnRecordId!),
+        previous: dbCancelRequested,
+      })
       return dbCancelRequested
     }
 
@@ -1012,7 +1012,12 @@ export class AgentChatRuntime {
               reason: 'cancelled',
               assistantMessageId: cancelledId,
             }
-            emit({ type: 'cancelled', conversationId, messageId: cancelledId })
+            emit({
+              type: 'done',
+              conversationId,
+              messageId: cancelledId,
+              reason: 'cancelled',
+            })
             return
           }
           await emitToken(chunk)
@@ -1169,7 +1174,12 @@ export class AgentChatRuntime {
               assistantMessageId: cancelledId,
             }
             if (cancelledId) {
-              emit({ type: 'cancelled', conversationId, messageId: cancelledId })
+              emit({
+                type: 'done',
+                conversationId,
+                messageId: cancelledId,
+                reason: 'cancelled',
+              })
             }
             return
           }
@@ -1193,7 +1203,12 @@ export class AgentChatRuntime {
               reason: 'cancelled',
               assistantMessageId: cancelledId,
             }
-            emit({ type: 'cancelled', conversationId, messageId: cancelledId })
+            emit({
+              type: 'done',
+              conversationId,
+              messageId: cancelledId,
+              reason: 'cancelled',
+            })
             return
           }
           await emitToken(chunk)
@@ -1233,7 +1248,12 @@ export class AgentChatRuntime {
               reason: 'cancelled',
               assistantMessageId: cancelledId,
             }
-            emit({ type: 'cancelled', conversationId, messageId: cancelledId })
+            emit({
+              type: 'done',
+              conversationId,
+              messageId: cancelledId,
+              reason: 'cancelled',
+            })
             return
           }
           while (pendingThinking.length > 0) {

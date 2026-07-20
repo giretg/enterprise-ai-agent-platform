@@ -56,7 +56,7 @@ export function ActiveRunsPanel() {
           : await fetch(`/api/v1/tickets/${run.id}/cancel`, { method: 'POST' })
       if (!response.ok) {
         setError(
-          response.status === 404
+          response.status === 404 || response.status === 409
             ? 'A futás már nem aktív.'
             : 'Leállítás sikertelen.',
         )

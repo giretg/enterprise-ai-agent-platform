@@ -1,5 +1,5 @@
-import { requireTenantRole } from '@/auth/tenant-context'
 import { agentTurnRunner, type AgentChatStreamEvent } from '@/domain/agent/agent-turn-runner'
+import { requireTenantApiUser } from '@/lib/api-tenant-auth'
 import { isAgentTurnAccessible } from '@/lib/agent-turn-access'
 import { repositories } from '@/repositories/postgres'
 import { ACTIVE_AGENT_TURN_STATUSES } from '@/repositories/interfaces'
@@ -15,7 +15,7 @@ function isTerminalStatus(status: string): boolean {
 }
 
 function isTerminalEvent(event: AgentChatStreamEvent): boolean {
-  return event.type === 'done' || event.type === 'cancelled' || event.type === 'error'
+  return event.type === 'done' || event.type === 'error'
 }
 
 function sseEncode(encoder: TextEncoder, data: unknown): Uint8Array {
@@ -32,9 +32,10 @@ function terminalEventForTurn(turn: {
 }): AgentChatStreamEvent {
   if (turn.status === 'cancelled' && turn.assistantMessageId) {
     return {
-      type: 'cancelled',
+      type: 'done',
       conversationId: turn.conversationId,
       messageId: turn.assistantMessageId,
+      reason: 'cancelled',
     }
   }
   if (turn.assistantMessageId) {
@@ -54,6 +55,7 @@ function terminalEventForTurn(turn: {
     type: 'done',
     conversationId: turn.conversationId,
     messageId: turn.assistantMessageId ?? turn.id,
+    ...(turn.status === 'cancelled' ? { reason: 'cancelled' as const } : {}),
   }
 }
 
@@ -65,12 +67,9 @@ export async function GET(
   request: Request,
   context: { params: Promise<{ turnId: string }> },
 ) {
-  let user: Awaited<ReturnType<typeof requireTenantRole>>
-  try {
-    user = await requireTenantRole('operator')
-  } catch {
-    return new Response('Unauthorized', { status: 401 })
-  }
+  const auth = await requireTenantApiUser('operator')
+  if (!auth.ok) return auth.response
+  const { user } = auth
 
   const { turnId } = await context.params
   const turn = await repositories.agentTurns.findById(turnId)

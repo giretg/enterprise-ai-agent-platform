@@ -1,4 +1,4 @@
-import { requireTenantRole } from '@/auth/tenant-context'
+import { requireTenantApiUser } from '@/lib/api-tenant-auth'
 import { repositories } from '@/repositories/postgres'
 
 export const dynamic = 'force-dynamic'
@@ -12,12 +12,9 @@ export async function POST(
   _request: Request,
   context: { params: Promise<{ id: string }> },
 ) {
-  let user: Awaited<ReturnType<typeof requireTenantRole>>
-  try {
-    user = await requireTenantRole('operator')
-  } catch {
-    return new Response('Unauthorized', { status: 401 })
-  }
+  const auth = await requireTenantApiUser('operator')
+  if (!auth.ok) return auth.response
+  const { user } = auth
 
   const { id } = await context.params
   const ticket = await repositories.tickets.findById(id)
@@ -28,12 +25,12 @@ export async function POST(
     return new Response('Forbidden', { status: 403 })
   }
   if (ticket.state !== 'in_progress') {
-    return new Response('Ticket is not in progress', { status: 404 })
+    return new Response('Ticket is not in progress', { status: 409 })
   }
 
   const cancelled = await repositories.tickets.requestCancel(id, user.user.id)
   if (!cancelled) {
-    return new Response('Ticket is not in progress', { status: 404 })
+    return new Response('Ticket is not in progress', { status: 409 })
   }
 
   return new Response(null, { status: 202 })

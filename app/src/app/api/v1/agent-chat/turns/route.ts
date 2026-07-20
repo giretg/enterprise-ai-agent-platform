@@ -1,4 +1,4 @@
-import { requireTenantRole } from '@/auth/tenant-context'
+import { requireTenantApiUser } from '@/lib/api-tenant-auth'
 import { services } from '@/domain'
 import { isAgentTurnAccessible } from '@/lib/agent-turn-access'
 import { repositories } from '@/repositories/postgres'
@@ -11,12 +11,9 @@ export const runtime = 'nodejs'
  * (spec §6.4)
  */
 export async function GET(request: Request) {
-  let user: Awaited<ReturnType<typeof requireTenantRole>>
-  try {
-    user = await requireTenantRole('operator')
-  } catch {
-    return new Response('Unauthorized', { status: 401 })
-  }
+  const auth = await requireTenantApiUser('operator')
+  if (!auth.ok) return auth.response
+  const { user } = auth
 
   const url = new URL(request.url)
   const conversationId = url.searchParams.get('conversationId')

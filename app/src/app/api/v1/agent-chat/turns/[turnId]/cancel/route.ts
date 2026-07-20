@@ -1,4 +1,4 @@
-import { requireTenantRole } from '@/auth/tenant-context'
+import { requireTenantApiUser } from '@/lib/api-tenant-auth'
 import { repositories } from '@/repositories/postgres'
 import { agentTurnRunner } from '@/domain/agent/agent-turn-runner'
 import { isAgentTurnAccessible } from '@/lib/agent-turn-access'
@@ -18,12 +18,9 @@ export async function POST(
   _request: Request,
   context: { params: Promise<{ turnId: string }> },
 ) {
-  let user: Awaited<ReturnType<typeof requireTenantRole>>
-  try {
-    user = await requireTenantRole('operator')
-  } catch {
-    return new Response('Unauthorized', { status: 401 })
-  }
+  const auth = await requireTenantApiUser('operator')
+  if (!auth.ok) return auth.response
+  const { user } = auth
 
   const { turnId } = await context.params
   if (!turnId) {

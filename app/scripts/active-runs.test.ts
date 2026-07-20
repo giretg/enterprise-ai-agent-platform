@@ -54,22 +54,26 @@ check('mergeRuntimeProgressIntoPayload preserves other fields', () => {
   assert.ok(merged.runtimeProgress)
 })
 
-check('activeRunFromChatTurn builds href and canStop', () => {
+check('activeRunFromChatTurn builds href; canStop only for creator (E9)', () => {
   const turn = {
     id: 'turn-1',
     conversationId: 'conv-1',
     agentId: 'agent-1',
+    createdById: 'user-owner',
     status: 'running',
     activities: [{ id: 'x', kind: 'tool', title: 'file_read', status: 'done' }],
     startedAt: new Date('2026-07-19T10:00:00.000Z'),
     cancelRequested: false,
   } as unknown as AgentTurn
-  const run = activeRunFromChatTurn(turn)
-  assert.equal(run.kind, 'chat_turn')
-  assert.equal(run.canStop, true)
-  assert.ok(run.href.includes('/control-plane/agents/agent-1'))
-  assert.ok(run.href.includes('conversation=conv-1'))
-  assert.ok(run.latestActivity?.includes('file_read'))
+  const own = activeRunFromChatTurn(turn, { userId: 'user-owner' })
+  assert.equal(own.kind, 'chat_turn')
+  assert.equal(own.canStop, true)
+  assert.ok(own.href.includes('/control-plane/agents/agent-1'))
+  assert.ok(own.href.includes('conversation=conv-1'))
+  assert.ok(own.latestActivity?.includes('file_read'))
+
+  const other = activeRunFromChatTurn(turn, { userId: 'user-other' })
+  assert.equal(other.canStop, false)
 })
 
 check('activeRunFromTicket reads runtimeProgress', () => {

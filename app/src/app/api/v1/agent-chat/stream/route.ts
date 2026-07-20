@@ -1,7 +1,7 @@
 import { after } from 'next/server'
-import { requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain'
 import { agentTurnRunner, type AgentChatStreamEvent } from '@/domain/agent/agent-turn-runner'
+import { requireTenantApiUser } from '@/lib/api-tenant-auth'
 
 // SSE: dinamikus, Node runtime, ne bufferelődjön / cache-elődjön a stream.
 export const dynamic = 'force-dynamic'
@@ -10,16 +10,13 @@ export const fetchCache = 'force-no-store'
 
 /** A stream lezárását kiváltó események (a `turn`/`token`/… folytatódik). */
 function isTerminalEvent(event: AgentChatStreamEvent): boolean {
-  return event.type === 'done' || event.type === 'cancelled' || event.type === 'error'
+  return event.type === 'done' || event.type === 'error'
 }
 
 export async function POST(request: Request) {
-  let user: Awaited<ReturnType<typeof requireTenantRole>>
-  try {
-    user = await requireTenantRole('operator')
-  } catch {
-    return new Response('Unauthorized', { status: 401 })
-  }
+  const auth = await requireTenantApiUser('operator')
+  if (!auth.ok) return auth.response
+  const { user } = auth
 
   let body: unknown
   try {

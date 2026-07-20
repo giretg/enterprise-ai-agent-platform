@@ -12,6 +12,7 @@ import type { CompiledSpec } from '@/domain/playbook/playbook-compiler'
 import type { ConversationService, ConversationMessageView } from '@/domain/conversation/conversation-service'
 import type { StepOutcome } from '@/lib/playbook-v2/spec'
 import { composeSystemPrompt } from '@/lib/agent-prompt'
+import { pollCancelRequested } from '@/lib/cancel-flag-poll'
 import { formatOrgRoster } from '@/lib/agent-org-roster'
 import { buildEffectivePrompt } from '@/lib/playbook-v2/effective-prompt'
 import {
@@ -299,11 +300,10 @@ export class GeneralTaskRuntime {
       const now = Date.now()
       if (now - lastCancelCheckAt < 1000 && lastCancelCheckAt > 0) return dbCancelRequested
       lastCancelCheckAt = now
-      try {
-        dbCancelRequested = await this.tickets.isCancelRequested(ticket.id)
-      } catch {
-        // fail-soft
-      }
+      dbCancelRequested = await pollCancelRequested({
+        read: () => this.tickets.isCancelRequested(ticket.id),
+        previous: dbCancelRequested,
+      })
       return dbCancelRequested
     }
     const persistProgress = async (force = false) => {

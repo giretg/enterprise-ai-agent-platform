@@ -8,7 +8,10 @@ import type {
   TenantRepository,
   TicketRepository,
 } from '@/repositories/interfaces'
-import { tenantStatusAllowsOperations } from '@/lib/tenant-policy'
+import {
+  evaluateTenantOperationGate,
+  resolveWorkOwnerTenantId,
+} from '@/lib/tenant-operation-gate'
 import {
   ADVANCEABLE_PROCESS_STATUSES,
   TERMINAL_PROCESS_STATUSES,
@@ -199,8 +202,8 @@ export class DispatcherService {
      */
     private budgetEngine?: BudgetEngine,
     /**
-     * A tenant-státusz kapuhoz (§7.3). Ha hiányzik, a kapu kimarad — a meglévő
-     * hívók (tesztek, szűk hatókörű wiring) viselkedése változatlan marad.
+     * A tenant-státusz kapuhoz (§7.3). Ha hiányzik ÉS a munkának van
+     * tulajdonos-tenantja, a kapu fail-closed tilt (nem engedi át a lyukat).
      */
     private tenants?: TenantRepository,
   ) {}
@@ -592,33 +595,34 @@ export class DispatcherService {
     // `isAgentReachableFromTenant` szerint MINDEN tenantból elérhető, így az
     // agentre kulcsolás lyukat hagyna — a felfüggesztett tenant tickete egy közös
     // agenthez rendelve simán lefutna, a tenant adatán dolgozva. Csak akkor nincs
-    // kapu, ha maga a ticket is platform-szintű.
-    const gateTenantId = ticket.tenantId ?? agent?.tenantId ?? null
-    if (this.tenants && gateTenantId) {
-      const tenant = await this.tenants.findById(gateTenantId)
-      // Fail-closed: nem-létező tenant-sor is tiltás (nem "ismeretlen ⇒ engedd").
-      if (!tenant || !tenantStatusAllowsOperations(tenant.status)) {
-        await this.audit.append({
-          actorType: 'system',
-          actorId: null,
-          agentVersion: null,
-          action: 'dispatch.tenant_inactive',
-          targetType: 'ticket',
-          targetId: ticket.id,
-          modelUsed: null,
-          inputRef: ticket.agentId,
-          outputRef: tenant?.status ?? 'missing',
-          policyDecision: 'denied',
-          metadata: {
-            ticketId: ticket.id,
-            tenantId: gateTenantId,
-            tenantStatus: tenant?.status ?? 'missing',
-          },
-          tenantId: gateTenantId,
-        })
-        dispatchTotal.inc({ result: 'denied_tenant_inactive' })
-        return this.skip(ticket, 'tenant_inactive', { silent: true })
-      }
+    // kapu, ha maga a ticket is platform-szintű. Ha van tulajdonos-tenant, de a
+    // tenant-repo nincs bekötve → fail-closed tiltás.
+    const gateTenantId = resolveWorkOwnerTenantId(ticket.tenantId, agent?.tenantId)
+    const tenantGate = await evaluateTenantOperationGate({
+      tenants: this.tenants,
+      gateTenantId,
+    })
+    if (!tenantGate.allowed) {
+      await this.audit.append({
+        actorType: 'system',
+        actorId: null,
+        agentVersion: null,
+        action: 'dispatch.tenant_inactive',
+        targetType: 'ticket',
+        targetId: ticket.id,
+        modelUsed: null,
+        inputRef: ticket.agentId,
+        outputRef: tenantGate.tenantStatus,
+        policyDecision: 'denied',
+        metadata: {
+          ticketId: ticket.id,
+          tenantId: tenantGate.tenantId,
+          tenantStatus: tenantGate.tenantStatus,
+        },
+        tenantId: tenantGate.tenantId,
+      })
+      dispatchTotal.inc({ result: 'denied_tenant_inactive' })
+      return this.skip(ticket, 'tenant_inactive', { silent: true })
     }
 
     const breach = await this.checkBudget(ticket, agent?.tenantId ?? null, now)

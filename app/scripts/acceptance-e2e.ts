@@ -2950,6 +2950,13 @@ async function scenario27_crMvp002(createdById: string, operatorId: string, agen
           return { jobId: `acceptance-scheduled-${input.ticketId}` }
         },
       },
+      undefined,
+      async () => true,
+      repositories.agents,
+      undefined,
+      undefined,
+      undefined,
+      repositories.tenants,
     )
     const beforeSchedule = await scheduledDispatcher.dispatchTicket(
       scheduledTicket.id,
@@ -4520,6 +4527,13 @@ async function scenarioPerUserConnector(operatorId: string, agentId: string, age
         return { jobId: `acceptance-run-as-${input.ticketId}` }
       },
     },
+    undefined,
+    async () => true,
+    repositories.agents,
+    undefined,
+    undefined,
+    undefined,
+    repositories.tenants,
   )
   const runAsDispatch = await runAsDispatcher.dispatchTicket(runTicket.id)
   if (runAsDispatch.status === 'started' && launchedActingUserId === operatorId) {
