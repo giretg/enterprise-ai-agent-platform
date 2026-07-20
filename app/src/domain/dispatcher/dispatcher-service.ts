@@ -5,8 +5,10 @@ import type {
   AuditRepository,
   ModelCallRepository,
   ProcessRepository,
+  TenantRepository,
   TicketRepository,
 } from '@/repositories/interfaces'
+import { tenantStatusAllowsOperations } from '@/lib/tenant-policy'
 import {
   ADVANCEABLE_PROCESS_STATUSES,
   TERMINAL_PROCESS_STATUSES,
@@ -38,6 +40,7 @@ export const DEFAULT_DISPATCH_BUDGET: DispatchBudget = {
 export type DispatchSkipReason =
   | 'no_agent'
   | 'agent_inactive'
+  | 'tenant_inactive'
   | 'process_terminal'
   | 'lock_lost'
 
@@ -195,6 +198,11 @@ export class DispatcherService {
      * per-agent kerete dönt.
      */
     private budgetEngine?: BudgetEngine,
+    /**
+     * A tenant-státusz kapuhoz (§7.3). Ha hiányzik, a kapu kimarad — a meglévő
+     * hívók (tesztek, szűk hatókörű wiring) viselkedése változatlan marad.
+     */
+    private tenants?: TenantRepository,
   ) {}
 
   private async resolveHarnessGooseModel(
@@ -571,6 +579,39 @@ export class DispatcherService {
       })
       dispatchTotal.inc({ result: 'denied_inactive' })
       return this.skip(ticket, 'agent_inactive', { silent: true })
+    }
+
+    // I2 (§7.3): a tenant-státusz kapu az AUTOMATA úton is érvényes. A
+    // `tenantStatusAllowsOperations` eddig csak az emberi guardokban élt
+    // (`requireTenantRole` / `requireTenantPermission`), a dispatcher megkerülte —
+    // így egy felfüggesztett/offboardolt tenant agentjei tovább futottak, tovább
+    // égették a modell-keretet és tovább hívták a connectorokat. A platform-szintű
+    // (tenant nélküli) agentekre a kapu definíció szerint nem vonatkozik.
+    if (this.tenants && agent?.tenantId) {
+      const tenant = await this.tenants.findById(agent.tenantId)
+      // Fail-closed: nem-létező tenant-sor is tiltás (nem "ismeretlen ⇒ engedd").
+      if (!tenant || !tenantStatusAllowsOperations(tenant.status)) {
+        await this.audit.append({
+          actorType: 'system',
+          actorId: null,
+          agentVersion: null,
+          action: 'dispatch.tenant_inactive',
+          targetType: 'ticket',
+          targetId: ticket.id,
+          modelUsed: null,
+          inputRef: ticket.agentId,
+          outputRef: tenant?.status ?? 'missing',
+          policyDecision: 'denied',
+          metadata: {
+            ticketId: ticket.id,
+            tenantId: agent.tenantId,
+            tenantStatus: tenant?.status ?? 'missing',
+          },
+          tenantId: agent.tenantId,
+        })
+        dispatchTotal.inc({ result: 'denied_tenant_inactive' })
+        return this.skip(ticket, 'tenant_inactive', { silent: true })
+      }
     }
 
     const breach = await this.checkBudget(ticket, agent?.tenantId ?? null, now)

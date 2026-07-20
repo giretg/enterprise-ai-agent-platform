@@ -331,24 +331,29 @@ export class TenantService {
     return this.platformMemberships.findAll()
   }
 
-  async grantPlatformRole(params: { userId: string; role: PlatformRole; actorId?: string }) {
+  /**
+   * Platform-jogosultság adása. Az `actorId` KÖTELEZŐ: a superadmin-jog kiosztása a
+   * platform legmagasabb tétű aktusa, nem maradhat audit-nyom nélkül. Korábban az
+   * `actorId` opcionális volt, és hiányában a service csendben, auditálatlanul adott
+   * jogot — pont az a művelet csúszott ki a naplóból, amit egy incidens-vizsgálat
+   * elsőként keresne.
+   */
+  async grantPlatformRole(params: { userId: string; role: PlatformRole; actorId: string }) {
     const membership = await this.platformMemberships.upsert({ userId: params.userId, role: params.role })
-    if (params.actorId) {
-      await this.audit.append({
-        actorType: 'human',
-        actorId: params.actorId,
-        agentVersion: null,
-        action: 'platform.role.grant',
-        targetType: 'platform_membership',
-        targetId: membership.id,
-        modelUsed: null,
-        inputRef: params.userId,
-        outputRef: params.role,
-        policyDecision: 'granted',
-        metadata: null,
-        tenantId: null,
-      })
-    }
+    await this.audit.append({
+      actorType: 'human',
+      actorId: params.actorId,
+      agentVersion: null,
+      action: 'platform.role.grant',
+      targetType: 'platform_membership',
+      targetId: membership.id,
+      modelUsed: null,
+      inputRef: params.userId,
+      outputRef: params.role,
+      policyDecision: 'granted',
+      metadata: null,
+      tenantId: null,
+    })
     return membership
   }
 

@@ -762,6 +762,7 @@ const dispatcherService = new DispatcherService(
   new MonitorDispatchAlertNotifier(monitorNotifier, { platformSettings: platformSettingsService }),
   repositories.processes,
   budgetEngine,
+  repositories.tenants,
 )
 
 export const services = {

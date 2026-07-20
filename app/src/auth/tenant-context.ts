@@ -57,8 +57,10 @@ export async function requireTenantRoleFromContext(
   }
 
   // §7.3: suspended/offboarding/archived tenantban nincs tenant-művelet.
+  // Fail-closed: a hiányzó tenant-sor is tiltás. Korábban a `tenant &&` miatt
+  // egy fel nem oldható tenant-azonosító ÁTENGEDTE a kaput.
   const tenant = await getTenantById(ctx.activeTenantId)
-  if (tenant && !tenantStatusAllowsOperations(tenant.status)) {
+  if (!tenant || !tenantStatusAllowsOperations(tenant.status)) {
     throw new TenantAuthError('TENANT_NOT_ACTIVE')
   }
 
@@ -92,8 +94,10 @@ export async function requireTenantPermission(
   }
 
   // §7.3: suspended/offboarding/archived tenantban nincs tenant-művelet.
+  // Fail-closed: a hiányzó tenant-sor is tiltás. Korábban a `tenant &&` miatt
+  // egy fel nem oldható tenant-azonosító ÁTENGEDTE a kaput.
   const tenant = await getTenantById(ctx.activeTenantId)
-  if (tenant && !tenantStatusAllowsOperations(tenant.status)) {
+  if (!tenant || !tenantStatusAllowsOperations(tenant.status)) {
     throw new TenantAuthError('TENANT_NOT_ACTIVE')
   }
 
