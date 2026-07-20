@@ -1,10 +1,15 @@
-import { guardrailFromEnv } from '@/domain/gateway/model-gateway'
-
 /** Payload `error.code` / audit reason — ticketenkénti modellhívás-plafon. */
 export const TICKET_CALL_CAP_ERROR_CODE = 'TICKET_CALL_CAP'
 
 /** `DispatchOutcome.reason` prefix a ticket call-cap ághoz. */
 export const TICKET_CALL_CAP_REASON_PREFIX = 'ticket_call_cap:'
+
+/**
+ * Alapértelmezett ticket-plafon — tartsd szinkronban
+ * `model-gateway.DEFAULT_MAX_CALLS_PER_TICKET`-tel.
+ * Szándékosan NEM a gateway modulból importáljuk (kliens UI is használja ezt a fájlt).
+ */
+const DEFAULT_MAX_CALLS_PER_TICKET = 30
 
 export function ticketCallCapReason(calls: number, maxCalls: number): string {
   return `${TICKET_CALL_CAP_REASON_PREFIX}${calls}/${maxCalls}`
@@ -51,7 +56,9 @@ export function isTicketCallCapErrorMessage(error: string | undefined | null): b
 export function currentTicketCallCapLimit(
   env: Record<string, string | undefined> = process.env,
 ): number {
-  return guardrailFromEnv(env).maxCallsPerTicket
+  const raw = env.GATEWAY_MAX_CALLS_PER_TICKET?.trim()
+  const parsed = raw ? Number.parseInt(raw, 10) : NaN
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : DEFAULT_MAX_CALLS_PER_TICKET
 }
 
 /** Ha a ticket túllépte a plafont, user-facing üzenet; különben `null`. */
