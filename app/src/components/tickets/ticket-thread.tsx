@@ -10,6 +10,7 @@ import {
   agentAnswerStructuredFromPayload,
   extractAgentAnswerDisplayBody,
 } from '@/lib/playbook-v2/process-step-payload'
+import { readTicketCallCapMessageFromPayload } from '@/lib/ticket-call-cap'
 
 type ThreadAttachment = {
   id: string
@@ -95,9 +96,11 @@ function AttachmentList({ attachments }: { attachments: ThreadAttachment[] }) {
 function TicketCommentComposer({
   ticketId,
   canHandBack,
+  handBackBlockedReason,
 }: {
   ticketId: string
   canHandBack: boolean
+  handBackBlockedReason?: string | null
 }) {
   const router = useRouter()
   const [body, setBody] = useState('')
@@ -234,7 +237,7 @@ function TicketCommentComposer({
         >
           Komment hozzáadása
         </button>
-        {canHandBack && (
+        {canHandBack && !handBackBlockedReason && (
           <button
             type="button"
             disabled={disabled}
@@ -245,6 +248,11 @@ function TicketCommentComposer({
           </button>
         )}
       </div>
+      {canHandBack && handBackBlockedReason && (
+        <p className="mt-3 whitespace-pre-wrap rounded-lg border border-coral/25 bg-coral/5 px-3 py-2 text-sm leading-relaxed text-coral">
+          {handBackBlockedReason}
+        </p>
+      )}
     </div>
   )
 }
@@ -272,6 +280,7 @@ export function TicketThread({
   const canHandBack = Boolean(
     ticket.agentId && !ticket.processInstanceId && ['done', 'awaiting_human'].includes(ticket.state),
   )
+  const handBackBlockedReason = readTicketCallCapMessageFromPayload(ticket.payload)
   const sorted = useMemo(() => [...comments].sort((a, b) => a.seq - b.seq), [comments])
   const payloadRecord = useMemo(() => structuredRecord(ticket.payload), [ticket.payload])
   const hasAgentComment = sorted.some((comment) => comment.kind === 'agent_answer')
@@ -356,7 +365,11 @@ export function TicketThread({
           </article>
         )}
 
-        <TicketCommentComposer ticketId={ticket.id} canHandBack={canHandBack} />
+        <TicketCommentComposer
+          ticketId={ticket.id}
+          canHandBack={canHandBack}
+          handBackBlockedReason={handBackBlockedReason}
+        />
       </div>
     </Card>
   )

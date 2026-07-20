@@ -146,7 +146,15 @@ class FakeDispatchAlerts implements DispatchAlertNotifier {
 
 const modelCalls = {
   getUsageForAgentSince: async () => ({ calls: 0, tokens: 0 }),
+  getUsageForTicket: async () => ({ calls: 0, tokens: 0 }),
 } as unknown as ModelCallRepository
+
+function modelCallsWithTicketUsage(usage: { calls: number; tokens: number }): ModelCallRepository {
+  return {
+    getUsageForAgentSince: async () => ({ calls: 0, tokens: 0 }),
+    getUsageForTicket: async () => usage,
+  } as unknown as ModelCallRepository
+}
 
 async function testEphemeralKeyAndPermanentBlock() {
   const tickets = new FakeTickets(cloneTicket())
@@ -364,13 +372,130 @@ async function testLaunchFailureRevokesEphemeralKeyAndReleasesTicket() {
 
   assert.equal(tickets.ticket.state, 'ready')
   assert.equal(tickets.ticket.lockToken, null)
-  assert.deepEqual(tickets.ticket.payload, {})
+  assert.deepEqual(tickets.ticket.payload, { dispatch: { failureCount: 1 } })
   assert.deepEqual(agents.revoked, [`key-${baseTicket.agentId}`])
-  assert.deepEqual(tickets.transitions, [
-    { toState: 'in_progress', note: 'dispatcher start' },
-    { toState: 'ready', note: 'dispatcher launch failed' },
-  ])
+  assert.equal(tickets.transitions.length, 2)
+  assert.equal(tickets.transitions[0].toState, 'in_progress')
+  assert.equal(tickets.transitions[0].note, 'dispatcher start')
+  assert.equal(tickets.transitions[1].toState, 'ready')
+  assert.match(tickets.transitions[1].note ?? '', /dispatcher launch failed \(transient, attempt 1\/3\)/)
   assert.ok(audit.events.some((event) => event.action === 'dispatch.error'))
+}
+
+async function testLaunchFailurePermanentBlocksTicket() {
+  const tickets = new FakeTickets(cloneTicket())
+  const audit = new FakeAudit()
+  const agents = new FakeAgents()
+  const alerts = new FakeDispatchAlerts()
+  const dispatcher = new DispatcherService(
+    tickets as unknown as TicketRepository,
+    audit as unknown as AuditRepository,
+    modelCalls,
+    {
+      mode: 'docker-local',
+      async launch() {
+        throw new Error('Agent mismatch for harness process')
+      },
+    },
+    undefined,
+    async () => true,
+    agents as unknown as AgentRepository,
+    alerts,
+  )
+
+  const result = await dispatcher.dispatchTicket(tickets.ticket.id)
+
+  assert.equal(result.status, 'blocked')
+  assert.equal(tickets.ticket.state, 'awaiting_human')
+  assert.equal(tickets.ticket.lockToken, null)
+  assert.deepEqual(agents.revoked, [`key-${baseTicket.agentId}`])
+  assert.ok(audit.events.some((event) => event.action === 'dispatch.blocked'))
+  assert.equal(alerts.blocked.length, 1)
+}
+
+async function testRecoverLaunchFailureBlocksOnTicketCallCap() {
+  const previous = process.env.GATEWAY_MAX_CALLS_PER_TICKET
+  process.env.GATEWAY_MAX_CALLS_PER_TICKET = '30'
+  try {
+    const tickets = new FakeTickets(
+      cloneTicket({
+        state: 'in_progress',
+        lockToken: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+        payload: { dispatch: { ephemeralKeyId: 'key-cap' } },
+      }),
+    )
+    const audit = new FakeAudit()
+    const agents = new FakeAgents()
+    const alerts = new FakeDispatchAlerts()
+    const dispatcher = new DispatcherService(
+      tickets as unknown as TicketRepository,
+      audit as unknown as AuditRepository,
+      modelCallsWithTicketUsage({ calls: 30, tokens: 1000 }),
+      { mode: 'docker-local', launch: async () => ({ jobId: 'unused' }) },
+      undefined,
+      async () => true,
+      agents as unknown as AgentRepository,
+      alerts,
+    )
+
+    const result = await dispatcher.recoverLaunchFailure({
+      ticketId: tickets.ticket.id,
+      lockToken: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      error: new Error('Gateway guardrail: ticket x reached 30 model calls'),
+    })
+
+    assert.equal(result.blocked, true)
+    assert.equal(tickets.ticket.state, 'awaiting_human')
+    assert.equal(tickets.ticket.lockToken, null)
+    assert.deepEqual(agents.revoked, ['key-cap'])
+    const payload = tickets.ticket.payload as {
+      error?: { code?: string }
+      outcome?: { reason?: string }
+    }
+    assert.equal(payload.error?.code, 'TICKET_CALL_CAP')
+    assert.equal(payload.outcome?.reason, 'ticket_call_cap')
+    assert.ok(audit.events.some((event) => event.action === 'dispatch.blocked'))
+    assert.equal(alerts.blocked.length, 1)
+  } finally {
+    if (previous === undefined) delete process.env.GATEWAY_MAX_CALLS_PER_TICKET
+    else process.env.GATEWAY_MAX_CALLS_PER_TICKET = previous
+  }
+}
+
+async function testDispatchPrecheckBlocksTicketCallCap() {
+  const previous = process.env.GATEWAY_MAX_CALLS_PER_TICKET
+  process.env.GATEWAY_MAX_CALLS_PER_TICKET = '30'
+  try {
+    const tickets = new FakeTickets(cloneTicket())
+    const audit = new FakeAudit()
+    const agents = new FakeAgents()
+    const alerts = new FakeDispatchAlerts()
+    const dispatcher = new DispatcherService(
+      tickets as unknown as TicketRepository,
+      audit as unknown as AuditRepository,
+      modelCallsWithTicketUsage({ calls: 30, tokens: 50_000 }),
+      { mode: 'docker-local', launch: async () => ({ jobId: 'should-not-run' }) },
+      undefined,
+      async () => true,
+      agents as unknown as AgentRepository,
+      alerts,
+    )
+
+    const result = await dispatcher.dispatchTicket(tickets.ticket.id)
+
+    assert.equal(result.status, 'budget_blocked')
+    assert.match(result.reason ?? '', /^ticket_call_cap:/)
+    assert.equal(tickets.ticket.state, 'awaiting_human')
+    assert.equal(tickets.ticket.lockToken, null)
+    const payload = tickets.ticket.payload as { error?: { code?: string } }
+    assert.equal(payload.error?.code, 'TICKET_CALL_CAP')
+    assert.ok(audit.events.some((event) => event.action === 'dispatch.budget_blocked'))
+    assert.ok(audit.events.some((event) => event.action === 'dispatch.blocked'))
+    assert.equal(alerts.blocked.length, 1)
+  } finally {
+    if (previous === undefined) delete process.env.GATEWAY_MAX_CALLS_PER_TICKET
+    else process.env.GATEWAY_MAX_CALLS_PER_TICKET = previous
+  }
 }
 
 async function testLauncherResolutionFailureReleasesReadyLock() {
@@ -394,12 +519,13 @@ async function testLauncherResolutionFailureReleasesReadyLock() {
     /launcher config invalid/,
   )
 
+  // A launcher a dispatch elején (mode check) dől el — lock még nincs, audit sem.
   assert.equal(tickets.ticket.state, 'ready')
   assert.equal(tickets.ticket.lockToken, null)
   assert.equal(tickets.ticket.lockedAt, null)
   assert.deepEqual(tickets.ticket.payload, {})
   assert.deepEqual(agents.revoked, [])
-  assert.ok(audit.events.some((event) => event.action === 'dispatch.error'))
+  assert.equal(audit.events.length, 0)
 }
 
 async function testSuccessClearsDispatchFailurePayload() {
@@ -479,6 +605,9 @@ async function main() {
   await testTransientRetryLimit()
   await testStaleReclaimRevokesEphemeralKey()
   await testLaunchFailureRevokesEphemeralKeyAndReleasesTicket()
+  await testLaunchFailurePermanentBlocksTicket()
+  await testRecoverLaunchFailureBlocksOnTicketCallCap()
+  await testDispatchPrecheckBlocksTicketCallCap()
   await testLauncherResolutionFailureReleasesReadyLock()
   await testSuccessClearsDispatchFailurePayload()
   await testDispatchAlertNotifierReadsPersistedChannel()

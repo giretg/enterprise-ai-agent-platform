@@ -687,8 +687,8 @@ const monitorService = new MonitorService(
   repositories.agents,
 )
 // local-wiki: fire-and-forget (mint docker-local / cloud-run-job) — a UI create /
-// handback nem várja meg a teljes agent-futást. Hiba esetén a ticketet
-// `in_progress` → `ready`-re visszük, ha még ott van (stale reclaim safety-net).
+// handback nem várja meg a teljes agent-futást. Hiba esetén a dispatcher
+// retry/block politikája érvényesül (nem vak `ready` reset).
 const localWikiHarnessLauncher = new LocalWikiHarnessLauncher({
   findTicket: async (ticketId) => {
     const ticket = await repositories.tickets.findById(ticketId)
@@ -707,39 +707,8 @@ const localWikiHarnessLauncher = new LocalWikiHarnessLauncher({
   },
   releaseDispatchLock: (ticketId, lockToken) =>
     repositories.tickets.releaseDispatchLock(ticketId, lockToken),
-  recoverLaunchFailure: async ({ ticketId, lockToken, error }) => {
-    const current = await repositories.tickets.findById(ticketId)
-    if (!current) return
-    await repositories.tickets.releaseDispatchLock(ticketId, lockToken)
-    if (current.state !== 'in_progress') return
-    await repositories.tickets.update(ticketId, { state: 'ready' })
-    await repositories.tickets.recordTransition({
-      ticketId,
-      fromState: 'in_progress',
-      toState: 'ready',
-      actorType: 'system',
-      actorId: null,
-      agentVersion: null,
-      note: 'dispatcher launch failed',
-    })
-    await repositories.audit.append({
-      actorType: 'system',
-      actorId: null,
-      agentVersion: null,
-      action: 'dispatch.error',
-      targetType: 'ticket',
-      targetId: ticketId,
-      modelUsed: null,
-      inputRef: current.agentId,
-      outputRef: null,
-      policyDecision: 'error',
-      metadata: {
-        error: error instanceof Error ? error.message : String(error),
-        launcherMode: 'local-wiki',
-      },
-      tenantId: current.tenantId,
-      ticketId,
-    })
+  recoverLaunchFailure: async (input) => {
+    await dispatcherService.recoverLaunchFailure(input)
   },
 })
 

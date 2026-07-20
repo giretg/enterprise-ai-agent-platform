@@ -15,6 +15,7 @@ import { formatTicketDateTime } from '@/lib/ticket-display'
 import { isRunAsAuthorized } from '@/lib/run-as-payload'
 import { resolveTicketTriggerInputPayload } from '@/lib/playbook-v2/trigger-input'
 import { readStepOutcome } from '@/lib/playbook-v2/process-step-payload'
+import { readTicketCallCapMessageFromPayload } from '@/lib/ticket-call-cap'
 import { readTicketRuntimeProgress } from '@/domain/agent/ticket-runtime-progress'
 
 type TicketView = {
@@ -319,9 +320,12 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
   const isTrainingTicket = ticket.type === 'training'
   const canApprove = ticket.state === 'awaiting_human'
   const canReject = REJECTABLE_STATES.has(ticket.state)
-  const canRerun = ticket.state === 'rejected'
+  const callCapMessage = readTicketCallCapMessageFromPayload(ticket.payload)
+  const canRerun = ticket.state === 'rejected' && !callCapMessage
   const canStop = ticket.state === 'in_progress'
-  const hasActions = canApprove || canReject || canRerun || canStop
+  // Call-cap rejected: nincs újraindítás, de a panel kell az üzenethez.
+  const showRejectedCallCapNotice = ticket.state === 'rejected' && Boolean(callCapMessage)
+  const hasActions = canApprove || canReject || canRerun || canStop || showRejectedCallCapNotice
   const isWikiFollowUp = hasWikiAnswer(ticket.payload)
 
   const runtimeProgress = readTicketRuntimeProgress(ticket.payload)
@@ -468,6 +472,9 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
           </button>
         )}
       </div>
+      {ticket.state === 'rejected' && callCapMessage && (
+        <p className="mt-3 whitespace-pre-wrap text-sm leading-relaxed text-coral">{callCapMessage}</p>
+      )}
       <p className="mt-3 text-xs text-ink-faint">
         {canApprove &&
           isTrainingTicket &&
@@ -476,6 +483,7 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
           !isTrainingTicket &&
           'Jóváhagyás után a szerver automatikusan: approved → done. '}
         {canReject &&
+          !callCapMessage &&
           'Visszadobás után az «Újra feldolgozás» gombbal indíthatod újra az agentet — a pontosító kérdés bekerül a kontextusba. '}
         {canRerun && 'Újra feldolgozás után a ticket ready állapotba kerül, és a dispatcher újraindítja az agentet.'}
       </p>
@@ -486,10 +494,15 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
 function contractReviewFromPayload(payload: Record<string, unknown> | null): {
   message: string
   answer: string | null
+  title?: string
 } | null {
   if (!payload) return null
-  const { message, reason } = readStepOutcome(payload)
+  const callCapMessage = readTicketCallCapMessageFromPayload(payload)
   const answer = typeof payload.answer === 'string' ? payload.answer.trim() : null
+  if (callCapMessage) {
+    return { message: callCapMessage, answer: answer || null, title: 'Keret kimerült' }
+  }
+  const { message, reason } = readStepOutcome(payload)
   // Contract-sértésnél a közérthető message az elsődleges; ha az nincs, de
   // output_contract_unmet + eredeti válasz van, azt is mutatjuk.
   if (message) return { message, answer: answer || null }
@@ -527,7 +540,7 @@ export function TicketMeta({ ticket, isAdmin = false }: { ticket: TicketView; is
       </div>
 
       {contractReview && (
-        <Card title="Miért állt meg a lépés" className="mt-4 border-coral/25 bg-coral/5">
+        <Card title={contractReview.title ?? 'Miért állt meg a lépés'} className="mt-4 border-coral/25 bg-coral/5">
           <p className="whitespace-pre-wrap text-sm leading-relaxed text-ink">{contractReview.message}</p>
           {contractReview.answer && (
             <div className="mt-3 border-t border-ink/10 pt-3">

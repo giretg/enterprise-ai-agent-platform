@@ -16,6 +16,12 @@ import { buildTenantAccessAuditFilter } from '@/domain/iam/access-audit'
 import { SandboxAppError } from '@/domain/sandbox/errors'
 import { dispatchBudgetFromEnv } from '@/domain/dispatcher/dispatcher-service'
 import {
+  currentTicketCallCapLimit,
+  formatTicketCallCapUserMessage,
+  isTicketCallCapReason,
+  ticketCallCapExceededMessage,
+} from '@/lib/ticket-call-cap'
+import {
   getSchedulerJobStatus,
   setSchedulerJobIntervalMinutes,
   setSchedulerJobPaused,
@@ -323,6 +329,17 @@ async function runAgentTicketDispatch(
   try {
     const dispatchResult = await services.dispatcher.dispatchTicket(ticketId)
     if (dispatchResult.status === 'budget_blocked') {
+      if (isTicketCallCapReason(dispatchResult.reason)) {
+        const usage = await repositories.modelCalls.getUsageForTicket(ticketId)
+        return {
+          warning:
+            ticketCallCapExceededMessage(usage) ??
+            formatTicketCallCapUserMessage({
+              calls: usage.calls,
+              maxCalls: currentTicketCallCapLimit(),
+            }),
+        }
+      }
       const since = new Date()
       since.setHours(0, 0, 0, 0)
       const usage = await repositories.modelCalls.getUsageForAgentSince(agentId, since)
@@ -330,7 +347,14 @@ async function runAgentTicketDispatch(
       return {
         warning:
           `Ticket létrejött (ready), de a napi keret betelt: ${usage.tokens.toLocaleString('hu-HU')}/${budget.maxTokensPerDay.toLocaleString('hu-HU')} token, ${usage.calls}/${budget.maxCallsPerDay} hívás. ` +
-          'Emeld a DISPATCH_MAX_TOKENS_PER_DAY értékét, vagy várd meg a holnapi resetet.',
+          'Emeld a keretet a System → Napi keret / Model Gateway panelen, vagy a DISPATCH_MAX_* env-eken — vagy várd meg a holnapi resetet.',
+      }
+    }
+    if (dispatchResult.status === 'blocked') {
+      return {
+        warning:
+          `Feldolgozás leállítva (permanens hiba): ${dispatchResult.reason ?? 'ismeretlen hiba'}. ` +
+          'A ticket emberi válaszra vár — javítsd a konfigurációt, majd próbáld újra, vagy nyiss új ticketet.',
       }
     }
     if (dispatchResult.status === 'paused') {
@@ -923,6 +947,13 @@ export async function addTicketComment(input: {
 
     let warning: string | undefined
     if (parsed.handBackToAgent) {
+      const callCapWarning = ticketCallCapExceededMessage(
+        await repositories.modelCalls.getUsageForTicket(ticket.id),
+      )
+      if (callCapWarning) {
+        return ok({ comment, warning: callCapWarning })
+      }
+
       await services.tickets.transition({
         ticketId: ticket.id,
         toState: 'needs_info',
@@ -989,6 +1020,13 @@ export async function transitionTicket(input: {
       }
       const result = await services.training.approveTraining(parsed.id, trainingActor(user))
       return ok(result)
+    }
+
+    if (parsed.toState === 'ready' && existing.agentId) {
+      const callCapError = ticketCallCapExceededMessage(
+        await repositories.modelCalls.getUsageForTicket(existing.id),
+      )
+      if (callCapError) return fail(callCapError)
     }
 
     const ticket = await services.tickets.transition({

@@ -21,6 +21,13 @@ import { isRunAsAuthorized, readRunAsUserId } from '@/lib/run-as-payload'
 import { wikiSearchQuery } from '@/lib/wiki-ticket-payload'
 import { logger, dispatchTotal, dispatchLagMs } from '@/lib/observability'
 import { exceedsHardCap, type BudgetEngine, type BudgetUsage } from '@/domain/gateway/budget-engine'
+import { guardrailFromEnv } from '@/domain/gateway/model-gateway'
+import {
+  TICKET_CALL_CAP_ERROR_CODE,
+  formatTicketCallCapUserMessage,
+  isTicketCallCapErrorMessage,
+  ticketCallCapReason,
+} from '@/lib/ticket-call-cap'
 import type { DispatchAlertNotifier } from './dispatch-alert-notifier'
 
 export type DispatchBudget = {
@@ -49,8 +56,8 @@ export type DispatchSkipReason =
 
 export type DispatchOutcome = {
   ticketId: string
-  status: 'started' | 'skipped' | 'budget_blocked' | 'paused'
-  /** `skipped` esetén a konkrét ág; `budget_blocked` esetén a keret indoklása. */
+  status: 'started' | 'skipped' | 'budget_blocked' | 'paused' | 'blocked'
+  /** `skipped` esetén a konkrét ág; `budget_blocked`/`blocked` esetén a keret vagy hiba indoklása. */
   reason?: DispatchSkipReason | string
 }
 
@@ -169,18 +176,38 @@ function classifyHarnessError(input: {
 
   const error = input.error ?? ''
   if (
+    isTicketCallCapErrorMessage(error) ||
     /\b4\d\d\b/.test(error) ||
     /agent mismatch/i.test(error) ||
     /not assigned/i.test(error) ||
     /missing scope/i.test(error) ||
     /missing harness env/i.test(error) ||
     /unauthorized/i.test(error) ||
-    /forbidden/i.test(error)
+    /forbidden/i.test(error) ||
+    /budget.?blocked/i.test(error)
   ) {
     return 'permanent'
   }
 
   return 'transient'
+}
+
+function withTicketCallCapPayload(
+  payload: Prisma.JsonValue,
+  message: string,
+): Prisma.JsonValue {
+  const base = ticketPayloadObject(payload)
+  base.error = {
+    code: TICKET_CALL_CAP_ERROR_CODE,
+    reason: 'max_calls_per_ticket',
+    message,
+  }
+  base.outcome = {
+    status: 'blocked',
+    reason: 'ticket_call_cap',
+    message,
+  }
+  return base as Prisma.JsonObject
 }
 
 export class DispatcherService {
@@ -391,84 +418,16 @@ export class DispatcherService {
         }),
       })
     } else if (input.status === 'failed' && unlocked.state === 'in_progress') {
-      const category = classifyHarnessError(input)
-      const previousFailureCount =
-        typeof unlockedDispatch.failureCount === 'number' && unlockedDispatch.failureCount > 0
-          ? Math.floor(unlockedDispatch.failureCount)
-          : 0
-      const failureCount = previousFailureCount + 1
-      const maxRetries = readPositiveInt(process.env.HARNESS_MAX_RETRIES, DEFAULT_HARNESS_MAX_RETRIES)
-      const blocked = category === 'permanent' || failureCount >= maxRetries
-      const toState = blocked ? 'awaiting_human' : 'ready'
-
-      final = await this.tickets.update(input.ticketId, {
-        state: toState,
-        payload: withDispatchPayload(unlocked.payload, {
-          ephemeralKeyId: undefined,
-          failureCount,
-        }),
-      })
-      await this.tickets.recordTransition({
-        ticketId: input.ticketId,
+      const failed = await this.applyDispatchFailure({
+        ticket: unlocked,
         fromState: unlocked.state,
-        toState,
-        actorType: 'system',
-        actorId: null,
-        agentVersion: null,
-        note: input.error
-          ? `harness failed (${category}, attempt ${failureCount}/${maxRetries}): ${input.error}`
-          : `harness failed (${category}, attempt ${failureCount}/${maxRetries})`,
+        error: input.error,
+        errorCategory: input.errorCategory,
+        noteKind: 'harness',
+        jobId: input.jobId,
+        executionName: input.executionName,
       })
-      await this.audit.append({
-        actorType: 'system',
-        actorId: null,
-        agentVersion: null,
-        action: 'dispatch.error',
-        targetType: 'ticket',
-        targetId: input.ticketId,
-        modelUsed: null,
-        inputRef: input.jobId ?? input.executionName ?? null,
-        outputRef: toState,
-        policyDecision: blocked ? 'blocked' : 'failed',
-        metadata: {
-          ...this.completionMetadata(input),
-          category,
-          failureCount,
-          maxRetries,
-          keyId: keyId ?? null,
-        },
-      })
-
-      if (blocked) {
-        await this.audit.append({
-          actorType: 'system',
-          actorId: null,
-          agentVersion: null,
-          action: 'dispatch.blocked',
-          targetType: 'ticket',
-          targetId: input.ticketId,
-          modelUsed: null,
-          inputRef: input.jobId ?? input.executionName ?? null,
-          outputRef: toState,
-          policyDecision: 'blocked',
-          metadata: {
-            ...this.completionMetadata(input),
-            category,
-            failureCount,
-            maxRetries,
-            keyId: keyId ?? null,
-          },
-        })
-        await this.notifyDispatchBlocked({
-          ticket: final,
-          category,
-          failureCount,
-          maxRetries,
-          error: input.error ?? null,
-          jobId: input.jobId,
-          executionName: input.executionName,
-        })
-      }
+      final = failed.ticket
     }
 
     await this.audit.append({
@@ -486,6 +445,263 @@ export class DispatcherService {
     })
 
     return { ticketId: input.ticketId, status: 'completed' }
+  }
+
+  /**
+   * Local-wiki (és hasonló fire-and-forget) háttérfutás hibája: a ticket már
+   * `in_progress`, a launch sync catch nem futott. Ugyanaz a retry/block politika,
+   * mint a harness complete failed ágon — ne vakon `ready`-re tegye vissza.
+   */
+  async recoverLaunchFailure(input: {
+    ticketId: string
+    lockToken: string
+    error: unknown
+  }): Promise<{ ticketId: string; blocked: boolean }> {
+    const current = await this.tickets.findById(input.ticketId)
+    if (!current) return { ticketId: input.ticketId, blocked: false }
+
+    const keyId = dispatchPayload(ticketPayloadObject(current.payload)).ephemeralKeyId
+    if (keyId && this.agents?.revokeKey) {
+      await this.agents.revokeKey(keyId)
+    }
+    await this.tickets.releaseDispatchLock(input.ticketId, input.lockToken)
+    if (current.state !== 'in_progress') {
+      return { ticketId: input.ticketId, blocked: false }
+    }
+
+    const error = input.error instanceof Error ? input.error.message : String(input.error)
+    const result = await this.applyDispatchFailure({
+      ticket: current,
+      fromState: 'in_progress',
+      error,
+      noteKind: 'launch',
+    })
+    return { ticketId: input.ticketId, blocked: result.blocked }
+  }
+
+  /**
+   * Közös retry/block politika launch- és harness-hibákra.
+   * Permanent vagy max-retry után → `awaiting_human` + `dispatch.blocked` + notify.
+   */
+  private async applyDispatchFailure(input: {
+    ticket: Ticket
+    fromState: Ticket['state']
+    error?: string
+    errorCategory?: HarnessErrorCategory
+    noteKind: 'harness' | 'launch'
+    jobId?: string
+    executionName?: string
+  }): Promise<{
+    ticket: Ticket
+    blocked: boolean
+    category: HarnessErrorCategory
+    failureCount: number
+    maxRetries: number
+  }> {
+    const category = classifyHarnessError(input)
+    const currentDispatch = dispatchPayload(ticketPayloadObject(input.ticket.payload))
+    const previousFailureCount =
+      typeof currentDispatch.failureCount === 'number' && currentDispatch.failureCount > 0
+        ? Math.floor(currentDispatch.failureCount)
+        : 0
+    const failureCount = previousFailureCount + 1
+    const maxRetries = readPositiveInt(process.env.HARNESS_MAX_RETRIES, DEFAULT_HARNESS_MAX_RETRIES)
+    const blocked = category === 'permanent' || failureCount >= maxRetries
+    const toState = blocked ? 'awaiting_human' : 'ready'
+
+    let nextPayload: Prisma.JsonValue = withDispatchPayload(input.ticket.payload, {
+      ephemeralKeyId: undefined,
+      failureCount,
+    })
+    if (isTicketCallCapErrorMessage(input.error)) {
+      const usage = await this.modelCalls.getUsageForTicket(input.ticket.id)
+      const maxCalls = guardrailFromEnv().maxCallsPerTicket
+      nextPayload = withTicketCallCapPayload(
+        nextPayload,
+        formatTicketCallCapUserMessage({ calls: usage.calls, maxCalls }),
+      )
+    }
+
+    const updated = await this.tickets.update(input.ticket.id, {
+      state: toState,
+      payload: nextPayload,
+    })
+
+    const noteBase =
+      input.noteKind === 'launch' ? 'dispatcher launch failed' : 'harness failed'
+    await this.tickets.recordTransition({
+      ticketId: input.ticket.id,
+      fromState: input.fromState,
+      toState,
+      actorType: 'system',
+      actorId: null,
+      agentVersion: null,
+      note: input.error
+        ? `${noteBase} (${category}, attempt ${failureCount}/${maxRetries}): ${input.error}`
+        : `${noteBase} (${category}, attempt ${failureCount}/${maxRetries})`,
+    })
+    await this.audit.append({
+      actorType: 'system',
+      actorId: null,
+      agentVersion: null,
+      action: 'dispatch.error',
+      targetType: 'ticket',
+      targetId: input.ticket.id,
+      modelUsed: null,
+      inputRef: input.jobId ?? input.executionName ?? input.ticket.agentId,
+      outputRef: toState,
+      policyDecision: blocked ? 'blocked' : 'failed',
+      metadata: {
+        ...this.completionMetadata({
+          status: 'failed',
+          jobId: input.jobId,
+          executionName: input.executionName,
+          error: input.error,
+          errorCategory: category,
+        }),
+        category,
+        failureCount,
+        maxRetries,
+        noteKind: input.noteKind,
+        keyId: currentDispatch.ephemeralKeyId ?? null,
+      },
+      tenantId: input.ticket.tenantId,
+      ticketId: input.ticket.id,
+    })
+
+    if (blocked) {
+      await this.audit.append({
+        actorType: 'system',
+        actorId: null,
+        agentVersion: null,
+        action: 'dispatch.blocked',
+        targetType: 'ticket',
+        targetId: input.ticket.id,
+        modelUsed: null,
+        inputRef: input.jobId ?? input.executionName ?? input.ticket.agentId,
+        outputRef: toState,
+        policyDecision: 'blocked',
+        metadata: {
+          category,
+          failureCount,
+          maxRetries,
+          error: input.error ?? null,
+          noteKind: input.noteKind,
+          keyId: currentDispatch.ephemeralKeyId ?? null,
+        },
+        tenantId: input.ticket.tenantId,
+        ticketId: input.ticket.id,
+      })
+      await this.notifyDispatchBlocked({
+        ticket: updated,
+        category,
+        failureCount,
+        maxRetries,
+        error: input.error ?? null,
+        jobId: input.jobId,
+        executionName: input.executionName,
+      })
+    }
+
+    return { ticket: updated, blocked, category, failureCount, maxRetries }
+  }
+
+  private async blockForTicketCallCap(
+    ticket: Ticket,
+    usage: { calls: number; tokens: number },
+    maxCalls: number,
+  ): Promise<DispatchOutcome> {
+    const message = formatTicketCallCapUserMessage({ calls: usage.calls, maxCalls })
+    const reason = ticketCallCapReason(usage.calls, maxCalls)
+    const fromState = ticket.state
+    const keyId = dispatchPayload(ticketPayloadObject(ticket.payload)).ephemeralKeyId ?? null
+    const nextPayload = withTicketCallCapPayload(
+      withDispatchPayload(ticket.payload, { ephemeralKeyId: undefined }),
+      message,
+    )
+
+    let updated = ticket
+    if (ticket.state === 'ready' || ticket.state === 'in_progress') {
+      updated = await this.tickets.update(ticket.id, {
+        state: 'awaiting_human',
+        payload: nextPayload,
+      })
+      await this.tickets.recordTransition({
+        ticketId: ticket.id,
+        fromState,
+        toState: 'awaiting_human',
+        actorType: 'system',
+        actorId: null,
+        agentVersion: null,
+        note: `ticket call cap reached (${usage.calls}/${maxCalls})`,
+      })
+    } else {
+      updated = await this.tickets.update(ticket.id, { payload: nextPayload })
+    }
+
+    await this.audit.append({
+      actorType: 'system',
+      actorId: null,
+      agentVersion: null,
+      action: 'dispatch.budget_blocked',
+      targetType: 'ticket',
+      targetId: ticket.id,
+      modelUsed: null,
+      inputRef: ticket.agentId,
+      outputRef: 'ticket_call_cap',
+      policyDecision: 'budget_blocked',
+      metadata: {
+        scope: 'ticket_call_cap',
+        reason,
+        calls: usage.calls,
+        tokens: usage.tokens,
+        maxCallsPerTicket: maxCalls,
+      },
+      tenantId: ticket.tenantId,
+      ticketId: ticket.id,
+    })
+    await this.audit.append({
+      actorType: 'system',
+      actorId: null,
+      agentVersion: null,
+      action: 'dispatch.blocked',
+      targetType: 'ticket',
+      targetId: ticket.id,
+      modelUsed: null,
+      inputRef: ticket.agentId,
+      outputRef: 'awaiting_human',
+      policyDecision: 'blocked',
+      metadata: {
+        category: 'permanent',
+        scope: 'ticket_call_cap',
+        reason,
+        calls: usage.calls,
+        maxCallsPerTicket: maxCalls,
+        keyId,
+      },
+      tenantId: ticket.tenantId,
+      ticketId: ticket.id,
+    })
+    dispatchTotal.inc({ result: 'budget_blocked' })
+    logger.warn(
+      {
+        event: 'dispatch',
+        result: 'budget_blocked',
+        ticketId: ticket.id,
+        agentId: ticket.agentId,
+        scope: 'ticket_call_cap',
+        reason,
+      },
+      'dispatch ticket call cap blocked',
+    )
+    await this.notifyDispatchBlocked({
+      ticket: updated,
+      category: 'permanent',
+      failureCount: usage.calls,
+      maxRetries: maxCalls,
+      error: message,
+    })
+    return { ticketId: ticket.id, status: 'budget_blocked', reason }
   }
 
   /**
@@ -655,6 +871,14 @@ export class DispatcherService {
       return { ticketId: ticket.id, status: 'budget_blocked', reason: breach.reason }
     }
 
+    // Ticketenkénti modellhívás-plafon (Gateway guardrail) — élettartam, nem napi.
+    // Ha már kimerült, ne induljon Ready↔Feldolgozás ping-pong.
+    const maxCallsPerTicket = guardrailFromEnv().maxCallsPerTicket
+    const ticketUsage = await this.modelCalls.getUsageForTicket(ticket.id)
+    if (ticketUsage.calls >= maxCallsPerTicket) {
+      return this.blockForTicketCallCap(ticket, ticketUsage, maxCallsPerTicket)
+    }
+
     const lockToken = randomUUID()
     const lockedTicket = await this.tickets.acquireDispatchLock(ticket.id, lockToken, now)
     if (!lockedTicket) {
@@ -723,21 +947,47 @@ export class DispatcherService {
         await this.agents.revokeKey(ephemeralKey.id)
       }
       await this.tickets.releaseDispatchLock(ticket.id, lockToken)
+      const errorMessage = error instanceof Error ? error.message : String(error)
+
+      if (started) {
+        const current = (await this.tickets.findById(ticket.id)) ?? started
+        const failed = await this.applyDispatchFailure({
+          ticket: current.state === 'in_progress' ? current : { ...current, state: 'in_progress' },
+          fromState: 'in_progress',
+          error: errorMessage,
+          noteKind: 'launch',
+        })
+        dispatchTotal.inc({ result: 'error' })
+        logger.error(
+          {
+            event: 'dispatch',
+            result: 'error',
+            ticketId: ticket.id,
+            agentId: ticket.agentId,
+            error: errorMessage,
+            blocked: failed.blocked,
+          },
+          'dispatch failed',
+        )
+        if (failed.blocked) {
+          return {
+            ticketId: ticket.id,
+            status: isTicketCallCapErrorMessage(errorMessage) ? 'budget_blocked' : 'blocked',
+            reason: isTicketCallCapErrorMessage(errorMessage)
+              ? ticketCallCapReason(
+                  (await this.modelCalls.getUsageForTicket(ticket.id)).calls,
+                  guardrailFromEnv().maxCallsPerTicket,
+                )
+              : errorMessage,
+          }
+        }
+        throw error
+      }
+
       await this.tickets.update(ticket.id, {
         state: 'ready',
         payload: withDispatchPayload(lockedTicket.payload, { ephemeralKeyId: undefined }),
       })
-      if (started) {
-        await this.tickets.recordTransition({
-          ticketId: ticket.id,
-          fromState: started.state,
-          toState: 'ready',
-          actorType: 'system',
-          actorId: null,
-          agentVersion: null,
-          note: 'dispatcher launch failed',
-        })
-      }
       await this.audit.append({
         actorType: 'system',
         actorId: null,
@@ -750,7 +1000,7 @@ export class DispatcherService {
         outputRef: null,
         policyDecision: 'error',
         metadata: {
-          error: error instanceof Error ? error.message : String(error),
+          error: errorMessage,
           keyId: ephemeralKey?.id ?? null,
         },
       })
@@ -761,7 +1011,7 @@ export class DispatcherService {
           result: 'error',
           ticketId: ticket.id,
           agentId: ticket.agentId,
-          error: error instanceof Error ? error.message : String(error),
+          error: errorMessage,
         },
         'dispatch failed',
       )

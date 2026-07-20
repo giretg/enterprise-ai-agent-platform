@@ -27,8 +27,8 @@ export type DispatchCycleSummary = {
      */
     skipReasons: Record<string, number>
     /** Csak input.ticketId esetén: a konkrét ticket dispatch-eredménye. */
-    ticketStatus?: 'started' | 'skipped' | 'budget_blocked' | 'paused'
-    /** Csak input.ticketId esetén: a `skipped`/`budget_blocked` indoklása. */
+    ticketStatus?: 'started' | 'skipped' | 'budget_blocked' | 'paused' | 'blocked'
+    /** Csak input.ticketId esetén: a `skipped`/`budget_blocked`/`blocked` indoklása. */
     ticketReason?: string
   }
 }
@@ -127,9 +127,12 @@ export async function runDispatchCycle(
         scanned: result.status === 'paused' ? 0 : 1,
         started: result.status === 'started' ? 1 : 0,
         budgetBlocked: result.status === 'budget_blocked' ? 1 : 0,
-        skipped: result.status === 'skipped' ? 1 : 0,
+        skipped: result.status === 'skipped' || result.status === 'blocked' ? 1 : 0,
         paused: result.status === 'paused',
-        skipReasons: result.status === 'skipped' && result.reason ? { [result.reason]: 1 } : {},
+        skipReasons:
+          (result.status === 'skipped' || result.status === 'blocked') && result.reason
+            ? { [result.reason]: 1 }
+            : {},
         ticketStatus: result.status,
         ticketReason: result.reason,
       }
@@ -138,14 +141,14 @@ export async function runDispatchCycle(
       const paused = results.some((r) => r.status === 'paused')
       const skipReasons: Record<string, number> = {}
       for (const r of results) {
-        if (r.status !== 'skipped' || !r.reason) continue
+        if ((r.status !== 'skipped' && r.status !== 'blocked') || !r.reason) continue
         skipReasons[r.reason] = (skipReasons[r.reason] ?? 0) + 1
       }
       dispatch = {
         scanned: paused ? 0 : results.length,
         started: results.filter((r) => r.status === 'started').length,
         budgetBlocked: results.filter((r) => r.status === 'budget_blocked').length,
-        skipped: results.filter((r) => r.status === 'skipped').length,
+        skipped: results.filter((r) => r.status === 'skipped' || r.status === 'blocked').length,
         paused,
         skipReasons,
       }
