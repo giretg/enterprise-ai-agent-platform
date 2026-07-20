@@ -3,6 +3,7 @@
 import { useRouter } from 'next/navigation'
 import { useEffect, useState, useTransition } from 'react'
 import Link from 'next/link'
+import type { ProcessStatus } from '@prisma/client'
 import { transitionTicket } from '@/app/actions/platform'
 import { startProcessFromTicket } from '@/app/actions/process'
 import { authorizeTicketRunAs, revokeTicketRunAs } from '@/app/actions/connector-grants'

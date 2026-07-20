@@ -2,17 +2,26 @@
 
 import { useRef, useState } from 'react'
 
-type TicketWorkspaceFileDropzoneProps = {
+/**
+ * Workspace fájlfeltöltés (húzd-ide vagy tallózás). Ticket- és beszélgetés-
+ * munkaterülethez egyaránt — a hívó dönti el, hova tölt fel.
+ *
+ * A `compact` a chat oldalpanel sűrűbb elrendezéséhez való, ahol a teljes méretű
+ * dobozdoboz kilógna a listából.
+ */
+type WorkspaceFileDropzoneProps = {
   disabled?: boolean
   uploading?: boolean
+  compact?: boolean
   onFileSelected: (file: File) => void
 }
 
-export function TicketWorkspaceFileDropzone({
+export function WorkspaceFileDropzone({
   disabled = false,
   uploading = false,
+  compact = false,
   onFileSelected,
-}: TicketWorkspaceFileDropzoneProps) {
+}: WorkspaceFileDropzoneProps) {
   const [dragActive, setDragActive] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
@@ -51,11 +60,13 @@ export function TicketWorkspaceFileDropzone({
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
-      className={`rounded-xl border border-dashed px-4 py-6 text-center transition-colors ${
-        dragActive ? 'border-sky bg-sky/10' : 'border-line bg-card/30'
-      } ${disabled ? 'opacity-60' : ''}`}
+      className={`rounded-xl border border-dashed text-center transition-colors ${
+        compact ? 'px-3 py-3' : 'px-4 py-6'
+      } ${dragActive ? 'border-sky bg-sky/10' : 'border-line bg-card/30'} ${
+        disabled ? 'opacity-60' : ''
+      }`}
     >
-      <p className="text-sm text-ink-soft">
+      <p className={compact ? 'text-xs text-ink-soft' : 'text-sm text-ink-soft'}>
         Húzd ide a fájlt, vagy{' '}
         <button
           type="button"

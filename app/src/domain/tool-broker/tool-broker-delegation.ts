@@ -18,7 +18,12 @@ import type {
   TicketState,
 } from '@prisma/client'
 import { createHash, randomUUID } from 'node:crypto'
+import { readFile as nodeReadFile } from 'node:fs/promises'
+import nodePath from 'node:path'
 import { prisma } from '@/lib/db'
+import { loadPdfParse } from '@/lib/pdf-parse'
+import { buildTulajdoniLapView, parseTulajdoniLap } from '@/lib/tulajdoni-lap'
+import type { TulajdoniLapParseResult } from './tool-broker-types'
 import { personaFor } from '@/lib/agent-persona'
 import {
   buildAgentCatalogEntry,
@@ -1524,9 +1529,16 @@ export async function documentRead(
   })
 }
 
+/**
+ * Csatolmány-hozzáférés: uploader / beszélgetés / ticket / KB-connector út.
+ *
+ * A bemenet szándékosan SZŰK (nem a teljes invoke-input), hogy több tool
+ * használhassa ugyanazt a kaput — ma a `document_read` és a
+ * `tulajdoni_lap_parse`. Így egy új olvasó-tool sem nyithat kerülőutat.
+ */
 async function canAccessDocument(
   self: ToolBrokerService,
-  input: Extract<ToolBrokerInvokeInput, { tool: 'document_read' }>,
+  input: { agentId: string; conversationId?: string | null; ticketId?: string | null },
   doc: Document,
   actingUserId: string | null,
 ): Promise<boolean> {
@@ -1596,4 +1608,73 @@ async function ticketReferencesDocument(ticketId: string, documentId: string): P
     select: { id: true },
   })
   return Boolean(attachment)
+}
+
+/**
+ * tulajdoni_lap_parse — magyar e-hiteles tulajdoni lap (TULLAP/INYER PDF)
+ * strukturált kinyerése egy már feltöltött csatolmányból.
+ *
+ * A hozzáférés-ellenőrzés SZÁNDÉKOSAN ugyanaz a `canAccessDocument`, mint a
+ * `document_read`-nél: ez a tool nem nyit új utat a dokumentumokhoz, csak
+ * másképp olvassa ugyanazt, amit az agent amúgy is olvashatna.
+ */
+export async function tulajdoniLapParse(
+  self: ToolBrokerService,
+  input: Extract<ToolBrokerInvokeInput, { tool: 'tulajdoni_lap_parse' }>,
+  actingUserId: string | null,
+): Promise<TulajdoniLapParseResult> {
+  const doc = await prisma.document.findUnique({ where: { id: input.args.documentId } })
+  if (!doc) throw new Error('document_not_found')
+
+  const allowed = await canAccessDocument(self, input, doc, actingUserId)
+  if (!allowed) throw new Error('document_access_denied')
+
+  const pages = await readPdfPageTexts(doc.storageRef)
+  const parsed = parseTulajdoniLap(pages)
+  const view = buildTulajdoniLapView(parsed, {
+    nezet: input.args.nezet,
+    csakHatalyos: input.args.csakHatalyos,
+    limit: input.args.limit,
+    offset: input.args.offset,
+    raw: input.args.raw,
+  })
+
+  return { documentId: doc.id, filename: doc.filename, ...view }
+}
+
+/**
+ * A feltöltött PDF oldalankénti nyers szövege.
+ *
+ * A tárolt `extractedText`/blokkok helyett ÚJRA olvassuk az eredeti fájlt: a
+ * KB-kinyerés normalizálása és blokkolása a tulajdoni lap sor-szerkezetét
+ * megbontaná, amin viszont az egész szakasz- és bejegyzés-bontás áll.
+ */
+async function readPdfPageTexts(storageRef: string): Promise<string[]> {
+  const absolutePath = nodePath.resolve(process.cwd(), storageRef)
+  const uploadRoot = nodePath.resolve(process.cwd(), 'uploads')
+  const uploadRootPrefix = uploadRoot.endsWith(nodePath.sep)
+    ? uploadRoot
+    : `${uploadRoot}${nodePath.sep}`
+  // Path-traversal zár: a storageRef csak az uploads gyökér alá mutathat.
+  if (!absolutePath.startsWith(uploadRootPrefix)) {
+    throw new Error('document_storage_out_of_root')
+  }
+
+  let buffer: Buffer
+  try {
+    buffer = await nodeReadFile(absolutePath)
+  } catch {
+    throw new Error('document_file_unavailable')
+  }
+
+  const PDFParse = await loadPdfParse()
+  const parser = new PDFParse({ data: new Uint8Array(buffer) })
+  try {
+    // `pageJoiner: ''` — az alapértelmezett oldaljelölő (`-- 1 of 3 --`) beszennyezné
+    // a szöveget; az oldalhatárt a `pages[].num` hordozza.
+    const { pages } = await parser.getText({ pageJoiner: '' })
+    return pages.map((p) => p.text)
+  } finally {
+    await parser.destroy()
+  }
 }

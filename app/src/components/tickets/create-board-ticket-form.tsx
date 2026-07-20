@@ -5,7 +5,7 @@ import { useRouter } from 'next/navigation'
 import { useEffect, useMemo, useState, useTransition } from 'react'
 import { createBoardTicket, dispatchBoardTicket } from '@/app/actions/platform'
 import { getAgentSkillsAction } from '@/app/actions/skills'
-import { TicketWorkspaceFileDropzone } from '@/components/tickets/ticket-workspace-file-dropzone'
+import { WorkspaceFileDropzone } from '@/components/workspace/workspace-file-dropzone'
 import { Badge, Card } from '@/components/ui/shell'
 import { personaFor } from '@/lib/agent-persona'
 import { uploadTicketWorkspaceFiles } from '@/lib/ticket-workspace-files-client'
@@ -404,7 +404,7 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
             eléri őket (file_list, file_read, xlsx_read_sheet, pptx_create, stb.).
           </p>
           <div className="mt-2">
-            <TicketWorkspaceFileDropzone
+            <WorkspaceFileDropzone
               disabled={pending}
               uploading={pending}
               onFileSelected={addPendingFile}

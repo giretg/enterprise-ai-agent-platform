@@ -1,13 +1,18 @@
 import { requireTenantRole } from '@/auth/tenant-context'
 import { repositories } from '@/repositories/postgres'
-import { requestChatTurnCancel } from '@/lib/agent-chat-active-turn-registry'
+import { agentTurnRunner } from '@/domain/agent/agent-turn-runner'
 import { isAgentTurnAccessible } from '@/lib/agent-turn-access'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
 
 /**
- * Turn-scoped Stop (spec §6.2 / D6): DB `cancelRequested` + in-memory jelzés.
+ * Stop a perzisztált fordulóra (spec §6.2 / D6, issue #65).
+ *
+ * A megszakítás a FORDULÓ azonosítójára hivatkozik, nem a beszélgetésére: a
+ * kérés a rekordra írja a kérést (ki és mikor), és a futó loop ezt olvassa a
+ * leállási döntéshozón át — akkor is, ha a Stop másik instance-re érkezett.
+ * A helyi runner-jelzés csak gyorsítás, nem az igazság forrása.
  */
 export async function POST(
   _request: Request,
@@ -36,9 +41,17 @@ export async function POST(
 
   const cancelled = await repositories.agentTurns.requestCancel(turn.id, user.user.id)
   if (!cancelled) {
-    return new Response('Turn is not active', { status: 404 })
+    // A forduló már terminális. Ez NEM hiba: a Stop és a saját lezárás
+    // versenye normális, és a felhasználó szempontjából a kívánt állapot már
+    // beállt. Ilyenkor a részeredmény már a beszélgetésben van.
+    return Response.json(
+      { status: 'already_finished', turnStatus: turn.status },
+      { status: 200 },
+    )
   }
 
-  requestChatTurnCancel(turn.conversationId)
+  // Tier-1 gyorsút: ha a futás helyben van, azonnal jelzünk neki. Ha nincs, a
+  // futó instance a DB-flagből veszi észre a következő checkpointon.
+  agentTurnRunner.requestCancel(turn.id)
   return new Response(null, { status: 202 })
 }

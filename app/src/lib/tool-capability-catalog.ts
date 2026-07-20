@@ -32,6 +32,10 @@ export const NORMAL_TOOL_CAPABILITY_GROUPS = [
     tools: ['docx_read', 'docx_create', 'pdf_read', 'pdf_create', 'create_html', 'document_read'],
   },
   {
+    label: 'Ingatlan-nyilvántartás',
+    tools: ['tulajdoni_lap_parse'],
+  },
+  {
     label: 'Mini-app',
     tools: [
       'sandbox_app.create', 'sandbox_app.update_artifact',

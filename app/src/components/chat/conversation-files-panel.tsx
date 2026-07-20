@@ -1,7 +1,11 @@
 'use client'
 
-import { useCallback, useEffect, useImperativeHandle, useState } from 'react'
-import { conversationWorkspaceFilesUrl } from '@/lib/conversation-workspace-files-client'
+import { useCallback, useEffect, useImperativeHandle, useState, useTransition } from 'react'
+import { WorkspaceFileDropzone } from '@/components/workspace/workspace-file-dropzone'
+import {
+  conversationWorkspaceFilesUrl,
+  uploadConversationWorkspaceFile,
+} from '@/lib/conversation-workspace-files-client'
 
 export type ConversationFilesPanelHandle = {
   refresh: () => void
@@ -18,6 +22,8 @@ export function ConversationFilesPanel({ conversationId, panelRef }: Props) {
   const [files, setFiles] = useState<WorkspaceFile[]>([])
   const [loading, setLoading] = useState(false)
   const [open, setOpen] = useState(false)
+  const [uploading, startUpload] = useTransition()
+  const [uploadError, setUploadError] = useState<string | null>(null)
 
   const listUrl = conversationWorkspaceFilesUrl(conversationId)
 
@@ -77,6 +83,19 @@ export function ConversationFilesPanel({ conversationId, panelRef }: Props) {
     document.body.removeChild(a)
   }
 
+  function uploadFile(file: File) {
+    setUploadError(null)
+    startUpload(async () => {
+      try {
+        await uploadConversationWorkspaceFile(conversationId, file)
+        await loadFiles(true)
+        setOpen(true)
+      } catch (err) {
+        setUploadError(err instanceof Error ? err.message : 'Feltöltés sikertelen')
+      }
+    })
+  }
+
   if (loading && files.length === 0) return null
 
   return (
@@ -99,6 +118,12 @@ export function ConversationFilesPanel({ conversationId, panelRef }: Props) {
 
       {open && (
         <div className="max-h-[33vh] overflow-y-auto px-4 pb-3">
+          <div className="mb-2">
+            <WorkspaceFileDropzone compact uploading={uploading} onFileSelected={uploadFile} />
+          </div>
+
+          {uploadError && <p className="mb-2 text-xs text-coral">{uploadError}</p>}
+
           {visibleFiles.length === 0 ? (
             <p className="text-xs text-ink-faint">Nincs fájl a workspace-ben.</p>
           ) : (

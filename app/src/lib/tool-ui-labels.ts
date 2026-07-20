@@ -121,6 +121,12 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
     label: 'Csatolmány olvasása',
     description: 'Feltöltött dokumentum célzott olvasása (oldal / keresés) documentId alapján.',
   },
+  tulajdoni_lap_parse: {
+    label: 'Tulajdoni lap feldolgozása',
+    description:
+      'Magyar e-hiteles tulajdoni lap (földhivatali PDF) strukturált kinyerése: hatályos ' +
+      'tulajdonosok és hányadok, terhek, széljegyek — a törölt bejegyzések kiszűrésével.',
+  },
 
   // Mini-app
   'sandbox_app.create': {

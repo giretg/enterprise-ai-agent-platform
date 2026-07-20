@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useState, useTransition } from 'react'
-import { TicketWorkspaceFileDropzone } from '@/components/tickets/ticket-workspace-file-dropzone'
+import { WorkspaceFileDropzone } from '@/components/workspace/workspace-file-dropzone'
 import { Card } from '@/components/ui/shell'
 import {
   ticketWorkspaceFilesUrl,
@@ -87,7 +87,7 @@ export function TicketFilesPanel({ ticketId, ticketState }: TicketFilesPanelProp
     <Card title="Fájlok">
       {!isReadOnly && (
         <div className="mb-3">
-          <TicketWorkspaceFileDropzone
+          <WorkspaceFileDropzone
             disabled={isReadOnly}
             uploading={uploading}
             onFileSelected={uploadFile}

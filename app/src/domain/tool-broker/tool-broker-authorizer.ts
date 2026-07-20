@@ -252,9 +252,10 @@ export class AllowlistAuthorizer implements Authorizer {
       return { allowed: true }
     }
 
-    // document_read — csatolmány / Document rekord; nincs connector. A tartalom-
-    // hozzáférést a handler ellenőrzi (uploader / conversation / ticket / KB link).
-    if (input.tool === 'document_read') {
+    // document_read / tulajdoni_lap_parse — csatolmány / Document rekord; nincs
+    // connector. A tartalom-hozzáférést a handler ellenőrzi, mindkettő UGYANAZON
+    // a `canAccessDocument` kapun (uploader / conversation / ticket / KB link).
+    if (input.tool === 'document_read' || input.tool === 'tulajdoni_lap_parse') {
       return { allowed: true }
     }
 

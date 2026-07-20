@@ -9,7 +9,13 @@ import type {
 } from '@/domain/gateway/model-gateway'
 import { StreamingSensitiveTextRedactor } from '@/domain/gateway/sensitivity-router'
 import type { ToolBrokerRepository } from '@/repositories/interfaces'
-import type { XlsxRow, XlsxSheetSpec, CellStyle, XlsxCellChange } from '@/domain/file-editor/adapters/xlsx-adapter'
+import type {
+  XlsxRow,
+  XlsxSheetSpec,
+  CellStyle,
+  XlsxCellChange,
+  XlsxDataValidation,
+} from '@/domain/file-editor/adapters/xlsx-adapter'
 import type { PptxSlideSpec } from '@/domain/file-editor/adapters/pptx-adapter'
 import type { DocxBlockSpec } from '@/domain/file-editor/adapters/docx-adapter'
 import { assembleGatewayMessages, type PromptSegments } from './prompt-assembler'
@@ -74,6 +80,7 @@ export const CHAT_PLATFORM_TOOLS = [
   'web_research_request',
   'memory_propose',
   'document_read',
+  'tulajdoni_lap_parse',
 ] as const
 
 export type ChatPlatformToolName = (typeof CHAT_PLATFORM_TOOLS)[number]
@@ -413,7 +420,11 @@ const TOOL_SCHEMAS: Record<ChatPlatformToolName, ToolSchema> = {
     ),
   },
   xlsx_layout: {
-    description: 'Munkalap-elrendezés: cellaegyesítés, oszlopszélesség, sormagasság, rögzítés, autoszűrő.',
+    description:
+      'Munkalap-elrendezés: cellaegyesítés, oszlopszélesség, sormagasság, rögzítés, autoszűrő, legördülő választólista. ' +
+      'A `dataValidations` egy A1-tartományra korlátozza a bevihető értékeket (pl. státusz-oszlop): ' +
+      'ilyen oszlopot NE szövegként tölts ki minden sorban — add meg egyszer a tartományra. ' +
+      'Az értékek nem tartalmazhatnak vesszőt vagy idézőjelet, és a lista együtt max 255 karakter lehet.',
     inputSchema: objectSchema(
       {
         path: STR,
@@ -423,6 +434,19 @@ const TOOL_SCHEMAS: Record<ChatPlatformToolName, ToolSchema> = {
         rowHeights: { type: 'array', items: objectSchema({ row: NUM, height: NUM }, ['row', 'height']) },
         freeze: objectSchema({ rows: NUM, columns: NUM }),
         autoFilter: STR,
+        dataValidations: {
+          type: 'array',
+          items: objectSchema(
+            {
+              range: STR,
+              values: { type: 'array', items: STR },
+              allowBlank: { type: 'boolean' },
+              errorTitle: STR,
+              error: STR,
+            },
+            ['range', 'values'],
+          ),
+        },
       },
       ['path'],
     ),
@@ -494,6 +518,31 @@ const TOOL_SCHEMAS: Record<ChatPlatformToolName, ToolSchema> = {
         query: STR,
         maxChars: NUM,
         maxMatches: NUM,
+      },
+      ['documentId'],
+    ),
+  },
+  tulajdoni_lap_parse: {
+    description:
+      'Magyar e-hiteles TULAJDONI LAP (földhivatali TULLAP/INYER PDF) strukturált kinyerése. ' +
+      'Ha egy csatolmány tulajdoni lap, MINDIG ezt hívd — ne document_read-del lapozd végig. ' +
+      'Egy lap 100-300 oldal, aminek a nagy része ismétlődő fejléc és MÁR TÖRÖLT bejegyzés.\n' +
+      'FONTOS: a tulajdoni lap nem pillanatfelvétel, hanem teljes történeti napló — egy eladott ' +
+      'hányad bejegyzése nem tűnik el, csak „Törlő határozat" mezőt kap. A sorok 70-80%-a jellemzően ' +
+      'már NEM hatályos, ezért a lap naiv olvasása súlyosan téves képet ad.\n' +
+      'A tool a hatályos hányadok összegét ellenőrzi: ha `osszesites.valid` HAMIS, a `figyelmeztetes` ' +
+      'meződ ki van töltve — ilyenkor NE válaszolj tulajdoni adatot, hanem jelezd a bizonytalanságot.\n' +
+      'nezet: "osszefoglalo" (alap — ingatlan, top tulajdonosok, széljegyek, ellenőrzés), ' +
+      '"tulajdonosok" (teljes, lapozható tulajdonoslista), "bejegyzesek" (II. rész), "terhek" (III. rész). ' +
+      'csakHatalyos alapból igaz; a raw (szó szerinti szöveg) alapból kimarad, mert nagy.',
+    inputSchema: objectSchema(
+      {
+        documentId: STR,
+        nezet: STR,
+        csakHatalyos: { type: 'boolean' },
+        limit: NUM,
+        offset: NUM,
+        raw: { type: 'boolean' },
       },
       ['documentId'],
     ),
@@ -834,6 +883,12 @@ function boolArg(args: Record<string, unknown>, key: string): boolean | undefine
   return typeof args[key] === 'boolean' ? args[key] : undefined
 }
 
+const TULAJDONI_LAP_NEZETEK = ['osszefoglalo', 'tulajdonosok', 'bejegyzesek', 'terhek'] as const
+
+function isTulajdoniLapNezet(value: unknown): value is (typeof TULAJDONI_LAP_NEZETEK)[number] {
+  return typeof value === 'string' && TULAJDONI_LAP_NEZETEK.includes(value as never)
+}
+
 function stringArrayArg(args: Record<string, unknown>, key: string): string[] | undefined {
   const value = args[key]
   if (!Array.isArray(value)) return undefined
@@ -944,6 +999,11 @@ function describeToolCall(tool: string, args: Record<string, unknown>): string |
       if (pages) return `${docId} pages=${pages}`
       if (query) return `${docId} q=${query}`
       return docId
+    }
+    case 'tulajdoni_lap_parse': {
+      const docId = typeof args.documentId === 'string' ? shortText(args.documentId, 36) : '?'
+      const nezet = isTulajdoniLapNezet(args.nezet) ? args.nezet : 'osszefoglalo'
+      return `${docId} — ${nezet}`
     }
     case 'agent_catalog':
     case 'agent_resolve':
@@ -1405,6 +1465,9 @@ function buildToolInvoke(
               ? (args.freeze as { rows?: number; columns?: number })
               : undefined,
           autoFilter: typeof args.autoFilter === 'string' ? args.autoFilter : undefined,
+          dataValidations: Array.isArray(args.dataValidations)
+            ? (args.dataValidations as XlsxDataValidation[])
+            : undefined,
         },
       }
 
@@ -1464,6 +1527,21 @@ function buildToolInvoke(
           query: typeof args.query === 'string' ? args.query : undefined,
           maxChars: numArg(args, 'maxChars'),
           maxMatches: numArg(args, 'maxMatches'),
+        },
+      }
+
+    case 'tulajdoni_lap_parse':
+      return {
+        ...common,
+        tool: 'tulajdoni_lap_parse',
+        args: {
+          documentId: strArg(args, 'documentId'),
+          // Ismeretlen nezet-értéket nem erőltetünk: a view-réteg az alapértelmezésre esik.
+          nezet: isTulajdoniLapNezet(args.nezet) ? args.nezet : undefined,
+          csakHatalyos: boolArg(args, 'csakHatalyos'),
+          limit: numArg(args, 'limit'),
+          offset: numArg(args, 'offset'),
+          raw: boolArg(args, 'raw'),
         },
       }
 

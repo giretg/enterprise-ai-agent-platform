@@ -739,6 +739,17 @@ export function argsMeta(
     }
   }
 
+  if (input.tool === 'tulajdoni_lap_parse') {
+    return {
+      ...base,
+      documentId: input.args.documentId,
+      nezet: input.args.nezet ?? 'osszefoglalo',
+      csakHatalyos: input.args.csakHatalyos ?? true,
+      limit: input.args.limit ?? null,
+      offset: input.args.offset ?? null,
+    }
+  }
+
   return {
     ...base,
     ticketId: input.args.ticketId,

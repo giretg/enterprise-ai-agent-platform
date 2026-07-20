@@ -44,6 +44,65 @@ export type XlsxLayout = {
   rowHeights?: Array<{ row: number; height: number }>
   freeze?: { rows?: number; columns?: number }
   autoFilter?: string
+  dataValidations?: XlsxDataValidation[]
+}
+
+/**
+ * Legördülő (választólista) egy A1-tartományra.
+ *
+ * Tartomány-szintű szerkezeti tulajdonság — ezért az `XlsxLayout`-ban van, nem a
+ * `CellStyle`-ban: különben ugyanazt a listát cellánként kellene ismételni.
+ */
+export type XlsxDataValidation = {
+  /** A1-tartomány, pl. "K2:K500". */
+  range: string
+  /** A választható értékek. Vessző nem lehet bennük (ld. `dataValidationFormula`). */
+  values: string[]
+  /** Engedett-e az üres cella (alap: igen — a kitöltetlen sor nem hibás). */
+  allowBlank?: boolean
+  /** Hibaüzenet fejléce érvénytelen bevitelnél. */
+  errorTitle?: string
+  /** Hibaüzenet szövege érvénytelen bevitelnél. */
+  error?: string
+}
+
+/**
+ * Az Excel inline választólistája `"a,b,c"` alakú, EGYETLEN stringbe zárva.
+ * Ebből két kemény korlát következik, amit némán elrontott fájl helyett inkább
+ * hibával jelzünk:
+ *
+ *  - vesszőt tartalmazó érték kettészakadna két külön opcióra,
+ *  - a teljes formula legfeljebb 255 karakter lehet (Excel-korlát).
+ *
+ * Hosszabb vagy vesszős lista esetén segédmunkalapra kell tenni az értékeket és
+ * tartomány-hivatkozással megadni — azt ez a szint ma nem építi fel.
+ */
+export const XLSX_DATA_VALIDATION_MAX_FORMULA = 255
+
+export function dataValidationFormula(values: string[]): string {
+  if (values.length === 0) {
+    throw new FileEditorError('INVALID_RANGE', 'A választólista nem lehet üres.')
+  }
+  const offender = values.find((v) => v.includes(','))
+  if (offender) {
+    throw new FileEditorError(
+      'INVALID_RANGE',
+      `A választólista értéke nem tartalmazhat vesszőt: "${offender}". ` +
+        'Az Excel inline listája vessző mentén bontja az opciókat.',
+    )
+  }
+  if (values.some((v) => v.includes('"'))) {
+    throw new FileEditorError('INVALID_RANGE', 'A választólista értéke nem tartalmazhat idézőjelet.')
+  }
+  const formula = `"${values.join(',')}"`
+  if (formula.length > XLSX_DATA_VALIDATION_MAX_FORMULA) {
+    throw new FileEditorError(
+      'INVALID_RANGE',
+      `A választólista túl hosszú (${formula.length} karakter, max ${XLSX_DATA_VALIDATION_MAX_FORMULA}). ` +
+        'Rövidítsd az értékeket, vagy tedd őket segédmunkalapra.',
+    )
+  }
+  return formula
 }
 
 export type XlsxSheetSpec = {
@@ -326,6 +385,24 @@ export async function xlsxApplyLayout(
   }
   if (layout.autoFilter) {
     worksheet.autoFilter = layout.autoFilter
+  }
+  for (const dv of layout.dataValidations ?? []) {
+    // A formulát a tartomány bejárása ELŐTT állítjuk elő: ha érvénytelen a lista,
+    // a hiba a munkafüzet módosítása előtt jöjjön (ne maradjon félig felírt lap).
+    const formula = dataValidationFormula(dv.values)
+    const { c1, r1, c2, r2 } = parseA1Range(dv.range)
+    for (let r = r1; r <= r2; r++) {
+      for (let c = c1; c <= c2; c++) {
+        worksheet.getCell(r, c).dataValidation = {
+          type: 'list',
+          allowBlank: dv.allowBlank ?? true,
+          formulae: [formula],
+          showErrorMessage: true,
+          ...(dv.errorTitle ? { errorTitle: dv.errorTitle } : {}),
+          ...(dv.error ? { error: dv.error } : {}),
+        }
+      }
+    }
   }
 
   const buf = await workbook.xlsx.writeBuffer()

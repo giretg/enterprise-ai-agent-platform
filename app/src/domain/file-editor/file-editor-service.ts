@@ -443,8 +443,15 @@ export class FileEditorService {
   ): Promise<XlsxLayoutResult> {
     const safePath = resolveSafePath(args.path)
     const buf = await this.readOrInitXlsx(tenantId, ticketId, safePath, args.sheet)
-    const { mergeCells, columnWidths, rowHeights, freeze, autoFilter } = args
-    const layout: XlsxLayout = { mergeCells, columnWidths, rowHeights, freeze, autoFilter }
+    const { mergeCells, columnWidths, rowHeights, freeze, autoFilter, dataValidations } = args
+    const layout: XlsxLayout = {
+      mergeCells,
+      columnWidths,
+      rowHeights,
+      freeze,
+      autoFilter,
+      dataValidations,
+    }
     const updated = await xlsxApplyLayout(buf, layout, args.sheet)
     await this.storage.write(tenantId, ticketId, safePath, updated)
     const operations =
@@ -452,7 +459,8 @@ export class FileEditorService {
       (layout.columnWidths?.length ?? 0) +
       (layout.rowHeights?.length ?? 0) +
       (layout.freeze ? 1 : 0) +
-      (layout.autoFilter ? 1 : 0)
+      (layout.autoFilter ? 1 : 0) +
+      (layout.dataValidations?.length ?? 0)
     return { path: safePath, operations }
   }
 

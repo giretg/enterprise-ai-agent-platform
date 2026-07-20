@@ -12,8 +12,14 @@ import { computeDiffHash } from '@/lib/crypto/hash-chain'
  */
 
 // Level-0 index leírás méret-limit (token-ökonómia, spec §5). A description a
-// promptban MINDIG jelen van minden hozzárendelt skillre, ezért kordában tartjuk.
-export const SKILL_DESCRIPTION_MAX = 500
+// promptban MINDIG jelen van minden hozzárendelt skillre, ezért kordában tartjuk —
+// a törzs ezzel szemben csak `load_skill`-re töltődik (§D7).
+//
+// Az érték a kanonikus `SKILL.md` formátum leírás-limitje (1024). Korábban 500 volt,
+// ami a szabvány ALATT vágott: érvényes, trigger-gazdag leírású skilleket utasított
+// vissza pusztán azért, mert felsorolták, mikor kell őket előhívni. Egy interop
+// formátumot implementálunk — nem vághatunk szűkebben nála.
+export const SKILL_DESCRIPTION_MAX = 1024
 // Egy skill teljes instrukció-törzsének (Level-1) méret-limitje karakterben.
 export const SKILL_INSTRUCTIONS_MAX = 20_000
 export const SKILL_NAME_MAX = 120

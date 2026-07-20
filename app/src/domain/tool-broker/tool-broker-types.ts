@@ -13,6 +13,7 @@ import type {
   TicketState,
 } from '@prisma/client'
 import type { AgentCatalogEntry } from '@/lib/agent-catalog'
+import type { TulajdoniLapNezet, TulajdoniLapView } from '@/lib/tulajdoni-lap'
 import type {
   FileReadResult,
   FileWriteResult,
@@ -36,6 +37,7 @@ import type {
   XlsxRow,
   XlsxCellChange,
   CellStyle,
+  XlsxDataValidation,
   XlsxSheetSpec,
 } from '@/domain/file-editor/adapters/xlsx-adapter'
 import type { PptxSlideSpec } from '@/domain/file-editor/adapters/pptx-adapter'
@@ -291,6 +293,24 @@ export type DocumentReadResult = {
   hint?: string
 }
 
+/**
+ * Magyar e-hiteles tulajdoni lap strukturált kinyerése egy feltöltött PDF-ből.
+ * A `nezet` a kimenet méretét szabja: alapból összefoglaló, részletet külön kérni kell.
+ */
+export type TulajdoniLapParseArgs = {
+  documentId: string
+  nezet?: TulajdoniLapNezet
+  csakHatalyos?: boolean
+  limit?: number
+  offset?: number
+  raw?: boolean
+}
+
+export type TulajdoniLapParseResult = TulajdoniLapView & {
+  documentId: string
+  filename: string
+}
+
 export type GmailSearchArgs = { query: string; maxResults?: number }
 export type GmailGetMessageArgs = { id: string }
 export type MailboxCountArgs = {
@@ -485,6 +505,7 @@ export type XlsxLayoutArgs = {
   rowHeights?: Array<{ row: number; height: number }>
   freeze?: { rows?: number; columns?: number }
   autoFilter?: string
+  dataValidations?: XlsxDataValidation[]
 }
 export type XlsxCreateArgs = {
   path: string
@@ -580,6 +601,7 @@ export type ToolBrokerInvokeInput =
   | (ToolInvokeBase & { tool: 'web_research_request'; args: WebResearchArgs })
   | (ToolInvokeBase & { tool: 'memory_propose'; args: MemoryProposeArgs })
   | (ToolInvokeBase & { tool: 'document_read'; args: DocumentReadArgs })
+  | (ToolInvokeBase & { tool: 'tulajdoni_lap_parse'; args: TulajdoniLapParseArgs })
 
 export type ToolBrokerInvokeResult =
   | {
@@ -637,6 +659,7 @@ export type ToolBrokerInvokeResult =
         | WebResearchDelegationResult
         | MemoryProposeResult
         | DocumentReadResult
+        | TulajdoniLapParseResult
       resultMeta: Record<string, unknown>
       latencyMs: number
     }

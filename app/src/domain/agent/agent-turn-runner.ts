@@ -68,6 +68,7 @@ type RunState = {
   waiters: Array<() => void>
   finished: boolean
   completion: Promise<void>
+  cancelRequested: boolean
 }
 
 export class AgentTurnRunner {
@@ -76,6 +77,26 @@ export class AgentTurnRunner {
   /** Fut-e éppen az adott forduló ebben a processben? */
   isRunning(turnId: string): boolean {
     return this.runs.has(turnId)
+  }
+
+  /**
+   * Megszakítás-kérés jelzése a HELYBEN futó fordulónak (#65). Ez csak
+   * *gyorsítás*: az igazság forrása a perzisztált rekord `cancelRequested`
+   * mezője, amit a loop a DB-ből is olvas. Ha a Stop-kérés másik instance-re
+   * érkezett, itt `false`-t kapunk — a futás akkor a DB-jelen keresztül áll le.
+   *
+   * `false` = ebben a processben nem fut ez a forduló (nem hiba).
+   */
+  requestCancel(turnId: string): boolean {
+    const state = this.runs.get(turnId)
+    if (!state) return false
+    state.cancelRequested = true
+    return true
+  }
+
+  /** A helyi megszakítás-jel olvasása a loop checkpointjain. */
+  isCancelRequested(turnId: string): boolean {
+    return this.runs.get(turnId)?.cancelRequested ?? false
   }
 
   /**
@@ -105,6 +126,7 @@ export class AgentTurnRunner {
       // A tényleges promise-t alább kötjük be — a beállítás és az indítás között
       // nincs await, tehát kívülről nem figyelhető meg a köztes állapot.
       completion: Promise.resolve(),
+      cancelRequested: false,
     }
     this.runs.set(turnId, state)
 

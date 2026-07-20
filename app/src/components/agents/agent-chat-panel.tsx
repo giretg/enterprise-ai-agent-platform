@@ -1409,21 +1409,24 @@ export function AgentChatPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, initialConversationId])
 
+  // A Stop a FUTÓ FORDULÓ azonosítójára hivatkozik (#65). Amíg nincs turnId — a
+  // `turn` esemény a stream legelső eseménye —, nincs mit megállítani.
   const handleStop = () => {
-    const convId = streamConversationIdRef.current ?? conversationId
     const turnId = activeTurnIdRef.current
-    if ((!convId && !turnId) || stopPending) return
+    if (!turnId || stopPending) return
     setStopPending(true)
     setStatusMessage(null)
     void (async () => {
       try {
-        const response = turnId
-          ? await fetch(`/api/v1/agent-chat/turns/${turnId}/cancel`, { method: 'POST' })
-          : await fetch('/api/v1/agent-chat/cancel', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ conversationId: convId }),
-            })
+        const response = await fetch(`/api/v1/agent-chat/turns/${turnId}/cancel`, {
+          method: 'POST',
+        })
+        if (response.status === 200) {
+          // Már lezárult, mire a Stop odaért — nem hiba, csak nincs mit megállítani.
+          setStopPending(false)
+          setStatusMessage('A válasz már befejeződött.')
+          return
+        }
         if (!response.ok) {
           setStopPending(false)
           setStatusMessage(

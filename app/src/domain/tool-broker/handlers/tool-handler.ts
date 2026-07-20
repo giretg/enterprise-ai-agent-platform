@@ -34,6 +34,7 @@ import type {
   RepoOpenPullRequestResult,
   RepoPrepareResult,
   DocumentReadResult,
+  TulajdoniLapParseResult,
   TicketCreateResult,
   ToolBrokerInvokeInput,
   UserDirectoryResult,
@@ -116,6 +117,10 @@ export interface HandlerContext {
     input: Extract<ToolBrokerInvokeInput, { tool: 'document_read' }>,
     actingUserId: string | null,
   ): Promise<DocumentReadResult>
+  tulajdoniLapParse(
+    input: Extract<ToolBrokerInvokeInput, { tool: 'tulajdoni_lap_parse' }>,
+    actingUserId: string | null,
+  ): Promise<TulajdoniLapParseResult>
 }
 
 /** Minden handler-hívás egyetlen, immutábilis argumentum-csomagot kap. */
