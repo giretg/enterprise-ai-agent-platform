@@ -28,6 +28,7 @@ import {
   isTicketCallCapErrorMessage,
   ticketCallCapReason,
 } from '@/lib/ticket-call-cap'
+import { readPositiveInt } from '@/lib/read-positive-int'
 import type { DispatchAlertNotifier } from './dispatch-alert-notifier'
 
 export type DispatchBudget = {
@@ -121,11 +122,6 @@ export type HarnessLauncher = {
     harnessAgentApiKey?: string
     ephemeralKeyId?: string
   }): Promise<{ jobId: string; executionName?: string }>
-}
-
-function readPositiveInt(value: string | undefined, fallback: number): number {
-  const parsed = Number.parseInt(value ?? '', 10)
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
 }
 
 function ticketPayloadObject(payload: Prisma.JsonValue): TicketPayloadObject {

@@ -1,11 +1,12 @@
 /**
- * chat-agent-turn-resilience-spec.md §6.3–6.4 / E2 / E8 / E9 / E10 (issue #66) —
+ * chat-agent-turn-resilience-spec.md §6.3–6.4 / E2 / E8 / E10 (issue #66) —
  * a visszacsatlakozó stream magja élő DB és HTTP nélkül.
  *
- * Injektált `findById` + azonnal feloldó `sleep` + `subscribe: () => null`
- * (másik process futtatja, E10) mellett igazolja, hogy a snapshot után a helyes
- * delták, majd a lezáró esemény érkezik (E2), a terminális forduló azonnal zár
- * (E8), és hogy a snapshot részszövege nem duplázódik az első token-deltában.
+ * Poll-út (subscribe → null = E10) és élő busz-út (Tier-1) mellett igazolja,
+ * hogy a snapshot után a helyes delták, majd a lezáró esemény érkezik (E2), a
+ * terminális forduló azonnal zár (E8), és hogy a snapshot tartalma nem
+ * duplázódik az első token-/activity-deltában. Az E9 (403) a route auth
+ * rétegében él — ez a mag-teszt azt nem fedi.
  *
  * Futtatás: npm run test:agent-turn-reconnect
  */
@@ -219,6 +220,93 @@ async function main() {
       events.map((e) => e.type),
       ['snapshot', 'token', 'activity', 'done'],
     )
+  })
+
+  await check('E2 live-út (Tier-1): snapshot után csak delta, nincs szöveg-/activity-dupla', async () => {
+    // A busz nulláról játssza vissza a buffert; a snapshot már tartalmazza a
+    // „Hello” + a1 állapotot — ezeket nem szabad újraküldeni.
+    async function* liveEvents(): AsyncGenerator<AgentChatStreamEvent, void, unknown> {
+      yield { type: 'turn', turnId: 'turn-1' }
+      yield { type: 'token', chunk: 'Hel' }
+      yield { type: 'token', chunk: 'lo' }
+      yield { type: 'activity', activity: activity('a1') as never }
+      yield { type: 'token', chunk: ' world' }
+      yield { type: 'activity', activity: activity('a2') as never }
+      yield { type: 'done', conversationId: 'conv-1', messageId: 'msg-live' }
+    }
+    const events: AgentChatStreamEvent[] = []
+    const gen = streamTurnReconnect(
+      makeTurn({ status: 'streaming', partialText: 'Hello', activities: [activity('a1')] }),
+      {
+        findById: async () => null,
+        subscribe: () => liveEvents(),
+        signal: new AbortController().signal,
+        sleep: async () => {},
+      },
+    )
+    for await (const event of gen) events.push(event)
+
+    assert.deepEqual(
+      events.map((e) => e.type),
+      ['snapshot', 'token', 'activity', 'done'],
+    )
+    assert.equal((events[0] as { partialText: string }).partialText, 'Hello')
+    assert.equal((events[1] as { chunk: string }).chunk, ' world')
+    assert.equal((events[2] as { activity: { id: string } }).activity.id, 'a2')
+    assert.deepEqual(events[3], {
+      type: 'done',
+      conversationId: 'conv-1',
+      messageId: 'msg-live',
+    })
+  })
+
+  await check('E2 live-út: token catch-up részleges chunk határán is helyes', async () => {
+    // Snapshot „Hello” — a buszon egyetlen „Hello!” chunk; csak a „!” jöhet ki.
+    async function* liveEvents(): AsyncGenerator<AgentChatStreamEvent, void, unknown> {
+      yield { type: 'token', chunk: 'Hello!' }
+      yield { type: 'done', conversationId: 'conv-1', messageId: 'msg-1' }
+    }
+    const events: AgentChatStreamEvent[] = []
+    const gen = streamTurnReconnect(makeTurn({ partialText: 'Hello' }), {
+      findById: async () => null,
+      subscribe: () => liveEvents(),
+      signal: new AbortController().signal,
+      sleep: async () => {},
+    })
+    for await (const event of gen) events.push(event)
+
+    assert.deepEqual(
+      events.map((e) => e.type),
+      ['snapshot', 'token', 'done'],
+    )
+    assert.equal((events[1] as { chunk: string }).chunk, '!')
+  })
+
+  await check('E2 live-út: snapshot activity későbbi státusz-frissítése átmegy', async () => {
+    const a1Running = activity('a1')
+    const a1Done = { ...activity('a1'), status: 'done' as const }
+    async function* liveEvents(): AsyncGenerator<AgentChatStreamEvent, void, unknown> {
+      yield { type: 'activity', activity: a1Running as never }
+      yield { type: 'activity', activity: a1Done as never }
+      yield { type: 'done', conversationId: 'conv-1', messageId: 'msg-1' }
+    }
+    const events: AgentChatStreamEvent[] = []
+    const gen = streamTurnReconnect(
+      makeTurn({ partialText: '', activities: [a1Running] }),
+      {
+        findById: async () => null,
+        subscribe: () => liveEvents(),
+        signal: new AbortController().signal,
+        sleep: async () => {},
+      },
+    )
+    for await (const event of gen) events.push(event)
+
+    assert.deepEqual(
+      events.map((e) => e.type),
+      ['snapshot', 'activity', 'done'],
+    )
+    assert.equal((events[1] as { activity: { status: string } }).activity.status, 'done')
   })
 
   console.log(failures === 0 ? '\nAll passed' : `\n${failures} FAILED`)
