@@ -1,5 +1,5 @@
 import type { PrismaClient, User } from '@prisma/client'
-import { ROLE_RANK, isEmailDomainAllowed } from '@/lib/iam-policy'
+import { ROLE_RANK, isEmailDomainAllowed, isPreProvisionedAuthId } from '@/lib/iam-policy'
 import { repositories } from '@/repositories/postgres'
 
 export type ClerkUserSyncInput = {
@@ -19,6 +19,11 @@ export class DomainNotAllowedError extends Error {
 function pickBestEmailMatch(users: User[]): User | null {
   if (users.length === 0) return null
   return [...users].sort((a, b) => {
+    // Prefer pre-provisioned rows so first login claims the admin-prepared account
+    // instead of a stale duplicate (email is not unique in the schema).
+    const aPre = isPreProvisionedAuthId(a.externalAuthId) ? 1 : 0
+    const bPre = isPreProvisionedAuthId(b.externalAuthId) ? 1 : 0
+    if (bPre !== aPre) return bPre - aPre
     const roleDelta = ROLE_RANK[b.role ?? 'viewer'] - ROLE_RANK[a.role ?? 'viewer']
     if (roleDelta !== 0) return roleDelta
     return a.createdAt.getTime() - b.createdAt.getTime()
@@ -63,6 +68,9 @@ async function findBestUserByEmail(prisma: PrismaClient, email: string): Promise
  * Clerk IDs differ between local/dev seeds and the hosted Clerk user. When the
  * email already belongs to an in-app account, attach that account to Clerk
  * instead of creating a fresh viewer row and hiding admin-only controls.
+ *
+ * Pre-provisioned users (`preprovisioned:…`) are claimed on first verified login:
+ * Clerk subject is linked and pending tenant memberships become active.
  */
 export async function syncClerkUser(prisma: PrismaClient, input: ClerkUserSyncInput): Promise<User> {
   const existingByAuthId = await prisma.user.findUnique({
@@ -84,6 +92,16 @@ export async function syncClerkUser(prisma: PrismaClient, input: ClerkUserSyncIn
   const existingByEmail = await findBestUserByEmail(prisma, input.email)
 
   if (existingByEmail) {
+    if (isPreProvisionedAuthId(existingByEmail.externalAuthId)) {
+      // Lazy import: avoids auth ↔ domain circular init at module load.
+      const { services } = await import('@/domain')
+      return services.iam.claimPreProvisionedUser({
+        user: existingByEmail,
+        externalAuthId: input.externalAuthId,
+        name: input.name,
+      })
+    }
+
     const data = {
       externalAuthId: input.externalAuthId,
       ...updateData(input, existingByEmail.role),

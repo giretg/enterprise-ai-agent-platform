@@ -4,6 +4,8 @@ export const ACCESS_AUDIT_ACTIONS = [
   'user.invite.issue',
   'user.invite.redeem',
   'user.invite.revoke',
+  'user.provision.create',
+  'user.provision.claim',
   'user.selfregister',
   'user.role.assign',
   'user.role.change',

@@ -36,6 +36,8 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'user.invite.revoke',
   'user.permission.update',
   'user.profile.update',
+  'user.provision.claim',
+  'user.provision.create',
   'user.reactivate',
   'user.role.assign',
   'user.role.change',

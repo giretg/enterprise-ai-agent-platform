@@ -8,6 +8,7 @@ import {
   approveUser,
   changeUserRole,
   inviteUser,
+  provisionUser,
   reactivateUser,
   revokeInvitation,
   setUserJobDescription,
@@ -15,6 +16,7 @@ import {
   updateRolePermission,
 } from '@/app/actions/platform'
 import { Badge, Card } from '@/components/ui/shell'
+import { isPreProvisionedAuthId } from '@/lib/iam-policy'
 
 const ROLES: UserRole[] = ['viewer', 'operator', 'approver', 'admin']
 
@@ -69,6 +71,10 @@ export function IamAdminPanel({
   const [issuedToken, setIssuedToken] = useState<string | null>(null)
   const [clerkInvited, setClerkInvited] = useState(false)
 
+  const [provisionEmail, setProvisionEmail] = useState('')
+  const [provisionRole, setProvisionRole] = useState<UserRole>('operator')
+  const [provisionMessage, setProvisionMessage] = useState<string | null>(null)
+
   const pendingInvitations = useMemo(
     () => invitations.filter((invitation) => invitation.status === 'pending').length,
     [invitations],
@@ -108,7 +114,64 @@ export function IamAdminPanel({
         </Card>
 
         <div className="space-y-6">
+          <Card title="Felhasználó előkészítése">
+            <p className="mb-3 text-xs text-ink-faint">
+              Email + szerep, meghívó email nélkül. Az első Google/Clerk belépéskor az email alapján
+              automatikusan aktiválódik.
+            </p>
+            <div className="space-y-3">
+              <label className="block text-sm text-ink-soft">
+                Email
+                <input
+                  value={provisionEmail}
+                  onChange={(event) => setProvisionEmail(event.target.value)}
+                  type="email"
+                  className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm text-ink"
+                  placeholder="kollega@ceg.hu"
+                />
+              </label>
+              <label className="block text-sm text-ink-soft">
+                Szerep
+                <select
+                  value={provisionRole}
+                  onChange={(event) => setProvisionRole(event.target.value as UserRole)}
+                  className="mt-1 w-full rounded-lg border border-line bg-night-2 px-3 py-2 text-sm text-ink"
+                >
+                  {ROLES.map((option) => (
+                    <option key={option} value={option}>
+                      {roleLabel[option]}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                disabled={pending || !provisionEmail.trim()}
+                className="w-full rounded-full bg-coral px-4 py-2.5 text-sm font-semibold text-card shadow-[0_10px_24px_-12px_rgba(178,58,85,0.7)] disabled:opacity-50"
+                onClick={() => {
+                  startTransition(async () => {
+                    const result = await provisionUser({ email: provisionEmail, role: provisionRole })
+                    if (result.success) {
+                      setProvisionEmail('')
+                      setProvisionMessage('Felhasználó előkészítve — vár első belépésre.')
+                      router.refresh()
+                    } else {
+                      setProvisionMessage(result.error)
+                    }
+                  })
+                }}
+              >
+                Előkészítés
+              </button>
+            </div>
+            {provisionMessage && <p className="mt-3 text-sm text-ink-soft">{provisionMessage}</p>}
+          </Card>
+
           <Card title="Új meghívó">
+            <p className="mb-3 text-xs text-ink-faint">
+              Meghívó token / Clerk invitation email. Később, ha az email-küldés kész, ez lesz az
+              alapértelmezett onboarding.
+            </p>
             <div className="space-y-3">
               <label className="block text-sm text-ink-soft">
                 Email
@@ -137,7 +200,7 @@ export function IamAdminPanel({
               <button
                 type="button"
                 disabled={pending || !email.trim()}
-                className="w-full rounded-full bg-coral px-4 py-2.5 text-sm font-semibold text-card shadow-[0_10px_24px_-12px_rgba(178,58,85,0.7)] disabled:opacity-50"
+                className="w-full rounded-full border border-line bg-night-2 px-4 py-2.5 text-sm font-semibold text-ink disabled:opacity-50"
                 onClick={() => {
                   startTransition(async () => {
                     setIssuedToken(null)
@@ -279,6 +342,8 @@ function UserRow({ user, disabled }: { user: User; disabled: boolean }) {
   const [message, setMessage] = useState<string | null>(null)
   const isDisabled = disabled || pending
   const isPendingApproval = user.status === 'pending' && user.role === null
+  const isAwaitingFirstLogin =
+    user.status === 'pending' && user.role !== null && isPreProvisionedAuthId(user.externalAuthId)
   const jobDescriptionDirty = jobDescription.trim() !== (user.jobDescription ?? '').trim()
 
   return (
@@ -363,7 +428,9 @@ function UserRow({ user, disabled }: { user: User; disabled: boolean }) {
       </td>
       <td className="py-3 pr-4">
         <div className="flex flex-col gap-2">
-          <Badge tone={userStatusTone(user.status)}>{statusLabel[user.status]}</Badge>
+          <Badge tone={userStatusTone(user.status)}>
+            {isAwaitingFirstLogin ? 'Vár első belépésre' : statusLabel[user.status]}
+          </Badge>
           {user.status === 'active' && (
             <div className="flex items-center gap-2">
               <input

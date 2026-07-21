@@ -408,6 +408,12 @@ export const inviteUserSchema = z.object({
   role: userRoleSchema,
 })
 
+/** Csendes előkészítés: email + szerep, meghívó email nélkül. */
+export const provisionUserSchema = z.object({
+  email: z.string().trim().email(),
+  role: userRoleSchema,
+})
+
 export const redeemInvitationSchema = z.object({
   token: z.string().trim().min(1),
   name: z.string().trim().min(1).optional(),

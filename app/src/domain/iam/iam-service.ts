@@ -7,7 +7,14 @@ import type {
   TenantMembershipRepository,
 } from '@/repositories/interfaces'
 import { generateTokenPair, hashOpaqueToken } from '@/lib/crypto/hash-chain'
-import { checkInvitationRedeemable, checkLastAdminLock, isSelfModification } from '@/lib/iam-policy'
+import {
+  ROLE_RANK,
+  checkInvitationRedeemable,
+  checkLastAdminLock,
+  isPreProvisionedAuthId,
+  isSelfModification,
+  makePreProvisionedAuthId,
+} from '@/lib/iam-policy'
 
 const INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1000 // 7 nap
 
@@ -15,6 +22,8 @@ const INVITATION_TTL_MS = 7 * 24 * 60 * 60 * 1000 // 7 nap
  * IAM / RBAC domain (Feature-spec IAM-RBAC §4, §6, §7, §8).
  *
  * - Admin-meghívás lejáró, egyszer beváltható, hashelt tokennel (a nyers token CSAK egyszer látszik).
+ * - Csendes előkészítés (`provisionUser`): User + TenantMembership email+szereppel, meghívó email nélkül;
+ *   első verified Clerk/Google login email-egyeztetéssel aktivál (`claimPreProvisionedUser`).
  * - Utolsó aktív admin nem zárható ki (sem felfüggesztés, sem visszaminősítés) — tenant-szinten.
  * - Admin a saját szerepét/státuszát nem írhatja át.
  * - Minden hozzáférési esemény auditba kerül (§8.5 esemény-nevek).
@@ -64,6 +73,134 @@ export class IamService {
 
     // A nyers token CSAK most látszik — innentől csak a hash tárolt.
     return { invitation, rawToken }
+  }
+
+  /**
+   * Csendes előkészítés: User + TenantMembership email+szereppel, meghívó email / token nélkül.
+   * Az első verified Clerk login (`claimPreProvisionedUser`) aktiválja a fiókot.
+   */
+  async provisionUser(params: {
+    email: string
+    role: UserRole
+    createdById: string
+    tenantId: string
+  }) {
+    if (!this.memberships) throw new Error('provision: tenant membership repository unavailable')
+
+    const email = params.email.trim().toLowerCase()
+    const existingUsers = await this.users.findManyByEmail(email)
+
+    let user = existingUsers.find((candidate) => isPreProvisionedAuthId(candidate.externalAuthId)) ?? null
+
+    for (const candidate of existingUsers) {
+      if (isPreProvisionedAuthId(candidate.externalAuthId)) continue
+      throw new Error('user: email already registered')
+    }
+
+    if (user) {
+      const existingMembership = await this.memberships.findByTenantAndUser(params.tenantId, user.id)
+      if (existingMembership) {
+        throw new Error('user: already provisioned for this tenant')
+      }
+      // Multi-tenant re-provision: never demote the global user.role below an
+      // already-assigned pending role; elevate when the new tenant asks higher.
+      if (user.role && ROLE_RANK[params.role] > ROLE_RANK[user.role]) {
+        user = await this.users.update(user.id, { role: params.role })
+      } else if (!user.role) {
+        user = await this.users.update(user.id, { role: params.role })
+      }
+    } else {
+      user = await this.users.create({
+        externalAuthId: makePreProvisionedAuthId(),
+        email,
+        name: email,
+        role: params.role,
+        status: 'pending',
+        tenantId: params.tenantId,
+        invitedById: params.createdById,
+      })
+    }
+
+    const membership = await this.memberships.create({
+      tenantId: params.tenantId,
+      userId: user.id,
+      role: params.role,
+      status: 'pending',
+      invitedById: params.createdById,
+    })
+
+    await this.audit.append({
+      actorType: 'human',
+      actorId: params.createdById,
+      agentVersion: null,
+      action: 'user.provision.create',
+      targetType: 'user',
+      targetId: user.id,
+      modelUsed: null,
+      inputRef: email,
+      outputRef: params.role,
+      policyDecision: 'provisioned',
+      metadata: { membershipId: membership.id, tenantId: params.tenantId },
+      tenantId: params.tenantId,
+    })
+
+    return { user, membership }
+  }
+
+  /**
+   * Első verified login: placeholder externalAuthId → Clerk subject, user + pending memberships active.
+   * Nem pre-provisioned userre no-op (visszaadja a bemeneti usert).
+   */
+  async claimPreProvisionedUser(params: { user: User; externalAuthId: string; name?: string }) {
+    if (!isPreProvisionedAuthId(params.user.externalAuthId)) {
+      return params.user
+    }
+
+    // Clerk retries / concurrent request-time sync: ha már átkötötték, ne dobjon hibát.
+    const alreadyLinked = await this.users.findByExternalAuthId(params.externalAuthId)
+    if (alreadyLinked && alreadyLinked.id === params.user.id) {
+      return alreadyLinked
+    }
+    if (alreadyLinked && alreadyLinked.id !== params.user.id) {
+      throw new Error('user: external auth id already linked')
+    }
+
+    const name = params.name?.trim() || params.user.name
+    const user = await this.users.update(params.user.id, {
+      externalAuthId: params.externalAuthId,
+      name,
+      email: params.user.email,
+      status: 'active',
+      activatedAt: new Date(),
+    })
+
+    if (this.memberships) {
+      const memberships = await this.memberships.findByUser(params.user.id)
+      for (const membership of memberships) {
+        if (membership.status !== 'pending') continue
+        await this.memberships.update(membership.id, {
+          status: 'active',
+          activatedAt: new Date(),
+        })
+      }
+    }
+
+    await this.audit.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: null,
+      action: 'user.provision.claim',
+      targetType: 'user',
+      targetId: user.id,
+      modelUsed: null,
+      inputRef: params.user.externalAuthId,
+      outputRef: user.role,
+      policyDecision: 'claimed',
+      metadata: { email: user.email },
+      tenantId: user.tenantId,
+    })
+
+    return user
   }
 
   async revokeInvitation(params: { invitationId: string; actorId: string; actorTenantId: string | null }) {

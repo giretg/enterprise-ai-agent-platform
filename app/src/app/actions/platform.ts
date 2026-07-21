@@ -115,6 +115,7 @@ import {
   createBoardTicketSchema,
   dispatchBoardTicketSchema,
   inviteUserSchema,
+  provisionUserSchema,
   redeemInvitationSchema,
   revokeInvitationSchema,
   approveUserSchema,
@@ -3717,6 +3718,29 @@ export async function inviteUser(input: { email: string; role: string }) {
     return ok({ invitationId: result.invitation.id, token: result.rawToken, clerkInvited })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to invite user')
+  }
+}
+
+/**
+ * Csendes előkészítés: User + TenantMembership email+szereppel, meghívó email nélkül.
+ * Az első verified Google/Clerk belépés email alapján aktiválja a fiókot.
+ */
+export async function provisionUser(input: { email: string; role: string }) {
+  try {
+    const ctx = await requireTenantPermission('user.invite')
+    if (!ctx.activeTenantId) {
+      return fail('provision: active tenant required')
+    }
+    const parsed = provisionUserSchema.parse(input)
+    const result = await services.iam.provisionUser({
+      email: parsed.email,
+      role: parsed.role,
+      createdById: ctx.user.id,
+      tenantId: ctx.activeTenantId,
+    })
+    return ok({ userId: result.user.id, membershipId: result.membership.id })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to provision user')
   }
 }
 

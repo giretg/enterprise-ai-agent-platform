@@ -1851,6 +1851,8 @@ export type TransitionActor =
 export interface UserRepository {
   findById(id: string): Promise<User | null>
   findByExternalAuthId(externalAuthId: string): Promise<User | null>
+  /** Case-insensitive email lookup (pre-provision conflict checks). */
+  findManyByEmail(email: string): Promise<User[]>
   findMany(filter?: { tenantId?: string | null; status?: UserStatus; role?: UserRole }): Promise<User[]>
   countActiveAdmins(tenantId: string | null, excludeUserId?: string): Promise<number>
   create(data: {
@@ -1860,10 +1862,12 @@ export interface UserRepository {
     role?: UserRole | null
     status?: UserStatus
     tenantId?: string | null
+    invitedById?: string | null
   }): Promise<User>
   update(
     id: string,
     data: Partial<{
+      externalAuthId: string
       role: UserRole | null
       status: UserStatus
       tenantId: string | null

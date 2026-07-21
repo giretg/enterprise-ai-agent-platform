@@ -16,6 +16,17 @@ export const ROLE_RANK: Record<UserRole, number> = {
   admin: 3,
 }
 
+/** Placeholder Clerk subject for admin-pre-provisioned users awaiting first login. */
+export const PREPROVISIONED_AUTH_PREFIX = 'preprovisioned:'
+
+export function isPreProvisionedAuthId(externalAuthId: string): boolean {
+  return externalAuthId.startsWith(PREPROVISIONED_AUTH_PREFIX)
+}
+
+export function makePreProvisionedAuthId(): string {
+  return `${PREPROVISIONED_AUTH_PREFIX}${globalThis.crypto.randomUUID()}`
+}
+
 /** N-IAM-2: `role = NULL` soha nem éri el egyetlen minimum-szerepet sem. */
 export function meetsMinRole(role: UserRole | null | undefined, minRole: UserRole): boolean {
   if (!role) return false

@@ -15,6 +15,18 @@ export class PostgresUserRepository implements UserRepository {
     return prisma.user.findUnique({ where: { externalAuthId } })
   }
 
+  async findManyByEmail(email: string) {
+    return prisma.user.findMany({
+      where: {
+        email: {
+          equals: email,
+          mode: 'insensitive',
+        },
+      },
+      orderBy: { createdAt: 'asc' },
+    })
+  }
+
   async findMany(filter?: { tenantId?: string | null; status?: UserStatus; role?: UserRole }) {
     return prisma.user.findMany({
       where: {
@@ -44,6 +56,7 @@ export class PostgresUserRepository implements UserRepository {
     role?: UserRole | null
     status?: UserStatus
     tenantId?: string | null
+    invitedById?: string | null
   }) {
     return prisma.user.create({
       data: {
@@ -53,6 +66,7 @@ export class PostgresUserRepository implements UserRepository {
         role: data.role ?? null,
         status: data.status ?? 'pending',
         tenantId: data.tenantId ?? null,
+        invitedById: data.invitedById ?? null,
       },
     })
   }
@@ -60,6 +74,7 @@ export class PostgresUserRepository implements UserRepository {
   async update(
     id: string,
     data: Partial<{
+      externalAuthId: string
       role: UserRole | null
       status: UserStatus
       tenantId: string | null
