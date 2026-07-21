@@ -7,8 +7,10 @@
  * és HTTP nélkül is tesztelhető legyen (E2), és hogy a figyelési frekvencia egy
  * helyen, dokumentált alapértékkel legyen konfigurálható.
  */
+import type { ToolLoopActivityEvent } from './chat-tool-loop'
 import type { AgentChatStreamEvent } from './agent-turn-runner'
 import { ACTIVE_AGENT_TURN_STATUSES } from '@/repositories/interfaces'
+import { readPositiveInt } from '@/lib/read-positive-int'
 
 /**
  * A DB-figyelés dokumentált alapértéke (spec §6.3, ~750 ms). Csak akkor lép
@@ -22,13 +24,12 @@ export const AGENT_TURN_RECONNECT_POLL_ENV = 'AGENT_TURN_RECONNECT_POLL_MS'
 
 /**
  * A konfigurált figyelési frekvencia ms-ben. Érvénytelen / nem pozitív érték
- * esetén a dokumentált alapértékre esik vissza (a `readPositiveInt` mintája).
+ * esetén a dokumentált alapértékre esik vissza.
  */
 export function resolveReconnectPollMs(
   env: Record<string, string | undefined> = process.env,
 ): number {
-  const parsed = Number.parseInt(env[AGENT_TURN_RECONNECT_POLL_ENV] ?? '', 10)
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : AGENT_TURN_RECONNECT_POLL_DEFAULT_MS
+  return readPositiveInt(env[AGENT_TURN_RECONNECT_POLL_ENV], AGENT_TURN_RECONNECT_POLL_DEFAULT_MS)
 }
 
 /**
@@ -149,6 +150,58 @@ export async function* streamTurnReconnect(
   yield* subscribeOrPoll(turn, deps)
 }
 
+function snapshotActivityIds(activities: unknown): Set<string> {
+  const ids = new Set<string>()
+  if (!Array.isArray(activities)) return ids
+  for (const item of activities) {
+    if (item && typeof item === 'object' && 'id' in item && typeof item.id === 'string') {
+      ids.add(item.id)
+    }
+  }
+  return ids
+}
+
+/**
+ * Élő busz: a runner nulláról játssza vissza a buffert, a kliens viszont már
+ * megkapta a DB-snapshotot. A snapshotban lévő részszöveget / activity-ket
+ * elnyeljük (mint a poll-út lastPartial baseline-ja), hogy ne duplázódjanak;
+ * a snapshot activity id-k első előfordulása utáni frissítések átmennek.
+ */
+async function* filterLiveAfterSnapshot(
+  turn: ReconnectTurnState,
+  live: AsyncGenerator<AgentChatStreamEvent, void, unknown>,
+  signal: AbortSignal,
+): AsyncGenerator<AgentChatStreamEvent, void, unknown> {
+  let skipChars = turn.partialText.length
+  const skipActivityIds = snapshotActivityIds(turn.activities)
+
+  for await (const event of live) {
+    if (signal.aborted) return
+    // A busz belső eseményei (forduló-azonosító, meta, ütközés) nem tartoznak
+    // a visszacsatlakozó nézethez — a delta/lezáró eseményeket továbbküldjük.
+    if (event.type === 'turn' || event.type === 'meta' || event.type === 'conflict') continue
+
+    if (event.type === 'token' && skipChars > 0) {
+      if (event.chunk.length <= skipChars) {
+        skipChars -= event.chunk.length
+        continue
+      }
+      const rest = event.chunk.slice(skipChars)
+      skipChars = 0
+      yield { type: 'token', chunk: rest }
+      continue
+    }
+
+    if (event.type === 'activity' && skipActivityIds.has(event.activity.id)) {
+      skipActivityIds.delete(event.activity.id)
+      continue
+    }
+
+    yield event
+    if (event.type === 'done' || event.type === 'error') return
+  }
+}
+
 async function* subscribeOrPoll(
   turn: ReconnectTurnState,
   deps: ReconnectDeps,
@@ -159,14 +212,7 @@ async function* subscribeOrPoll(
 
   const live = deps.subscribe(turnId)
   if (live) {
-    for await (const event of live) {
-      if (signal.aborted) return
-      // A busz belső eseményei (forduló-azonosító, meta, ütközés) nem tartoznak
-      // a visszacsatlakozó nézethez — a delta/lezáró eseményeket továbbküldjük.
-      if (event.type === 'turn' || event.type === 'meta' || event.type === 'conflict') continue
-      yield event
-      if (event.type === 'done' || event.type === 'error') return
-    }
+    yield* filterLiveAfterSnapshot(turn, live, signal)
     return
   }
 
@@ -196,7 +242,7 @@ async function* subscribeOrPoll(
     const activities = Array.isArray(current.activities) ? current.activities : []
     if (activities.length > lastActivityCount) {
       for (const activity of activities.slice(lastActivityCount)) {
-        yield { type: 'activity', activity: activity as never }
+        yield { type: 'activity', activity: activity as ToolLoopActivityEvent }
       }
       lastActivityCount = activities.length
     }
