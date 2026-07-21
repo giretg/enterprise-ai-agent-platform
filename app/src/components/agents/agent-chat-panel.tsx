@@ -1499,6 +1499,10 @@ export function AgentChatPanel({
 
     void (async () => {
       let persistedUserMessageId: string | null = null
+      // Ha a megszakadt olvasás után visszacsatlakozunk a futó fordulóra, a
+      // háttér-stream (consumeReattachStream) veszi át a buborék és a
+      // „gépel" jelző életciklusát — a lezáró `finally` ilyenkor nem nullázhat.
+      let handedOffToReattach = false
 
       function removeFailedOptimisticMessages() {
         setMessages((prev) =>
@@ -1507,30 +1511,6 @@ export function AgentChatPanel({
               message.id !== agentBubbleMessageId &&
               (persistedUserMessageId !== null || message.id !== optimisticUserId),
           ),
-        )
-      }
-
-      function finalizeInterruptedStream() {
-        const hasContent = (activitiesLen: number, text: string) =>
-          activitiesLen > 0 || text.trim().length > 0
-        setMessages((prev) =>
-          prev
-            .map((message) => {
-              if (message.id !== agentBubbleMessageId) return message
-              const partialText = accumulatedReply.trim()
-              if (!hasContent(message.activities?.length ?? 0, partialText)) return message
-              return {
-                ...message,
-                text:
-                  partialText ||
-                  '⏳ A válaszfolyam megszakadt — az alábbi lépések részben lefutottak.',
-              }
-            })
-            .filter(
-              (message) =>
-                message.id !== agentBubbleMessageId ||
-                hasContent(message.activities?.length ?? 0, message.text),
-            ),
         )
       }
 
@@ -1746,11 +1726,27 @@ export function AgentChatPanel({
 
         if (!streamTerminalEvent) {
           if (persistedUserMessageId) {
-            finalizeInterruptedStream()
+            // A helyi olvasás lezáró esemény nélkül szakadt meg, de a forduló a
+            // szerveren perzisztált és (D3) tovább futhat — a régi kliens-oldali
+            // áthidalás helyett visszacsatlakozunk. Ha még fut, a snapshot + élő
+            // delta folytatja a helyes buborékban; ha közben lezárult, a
+            // perzisztált végállapotot töltjük vissza. Így a részeredmény hard-
+            // refresh nélkül sem vész el.
+            const convId = streamConversationIdRef.current ?? conversationId
+            if (convId) {
+              const attached = await reattachToConversation(convId)
+              if (attached) {
+                handedOffToReattach = true
+              } else {
+                await reloadConversationMessages(convId)
+              }
+            } else {
+              setStatusMessage('A válaszfolyam váratlanul megszakadt')
+            }
           } else {
             removeFailedOptimisticMessages()
+            setStatusMessage('A válaszfolyam váratlanul megszakadt')
           }
-          setStatusMessage('A válaszfolyam váratlanul megszakadt')
         }
 
         if (streamTerminalEvent) {
@@ -1770,9 +1766,13 @@ export function AgentChatPanel({
         if (streamAbortRef.current === abortController) {
           streamAbortRef.current = null
         }
-        streamConversationIdRef.current = null
+        // Visszacsatlakozás után a háttér-stream birtokolja a buborékot, a
+        // stream-konverzáció-ref-et és a „gépel" jelzőt — ezeket nem bántjuk.
+        if (!handedOffToReattach) {
+          streamConversationIdRef.current = null
+          setIsAgentTyping(false)
+        }
         setStopPending(false)
-        setIsAgentTyping(false)
         filesRef.current?.refresh()
       }
     })()
