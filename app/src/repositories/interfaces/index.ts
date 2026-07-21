@@ -1854,6 +1854,8 @@ export interface UserRepository {
   /** Case-insensitive email lookup (pre-provision conflict checks). */
   findManyByEmail(email: string): Promise<User[]>
   findMany(filter?: { tenantId?: string | null; status?: UserStatus; role?: UserRole }): Promise<User[]>
+  /** Batch lookup for membership → user join (IAM tenant member list). */
+  findManyByIds(ids: string[]): Promise<User[]>
   countActiveAdmins(tenantId: string | null, excludeUserId?: string): Promise<number>
   create(data: {
     externalAuthId: string

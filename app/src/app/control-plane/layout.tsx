@@ -1,67 +1,13 @@
-'use client'
+import { getAuthContext } from '@/auth/context'
+import { buildControlPlaneNav } from '@/lib/control-plane-nav'
+import { ControlPlaneShell } from './control-plane-shell'
 
-import { usePathname } from 'next/navigation'
-import { AppShell, type NavEntry } from '@/components/ui/shell'
-import { ControlPlaneHeaderExtras } from '@/components/active-runs/control-plane-header-extras'
+export default async function ControlPlaneLayout({ children }: { children: React.ReactNode }) {
+  const ctx = await getAuthContext()
+  const navItems = buildControlPlaneNav({
+    tenantRole: ctx?.activeTenantRole ?? null,
+    platformRoles: ctx?.platformRoles ?? [],
+  })
 
-const navItems: NavEntry[] = [
-  { href: '/control-plane', label: 'Dashboard', exact: true },
-  { href: '/control-plane/board', label: 'Board' },
-  {
-    label: 'Munkatársak',
-    children: [
-      { href: '/control-plane/agents', label: 'Munkatársak' },
-      { href: '/control-plane/behavior-profiles', label: 'Viselkedés-profilok' },
-      { href: '/control-plane/skills', label: 'Skill-katalógus' },
-      { href: '/control-plane/apps', label: 'Mini-appok' },
-      { href: '/control-plane/sandbox-versions', label: 'Sandbox verziók' },
-    ],
-  },
-  {
-    label: 'Automatizálás',
-    children: [
-      { href: '/control-plane/playbooks', label: 'Playbookok' },
-      { href: '/control-plane/step-templates', label: 'Lépés-sablonok' },
-      { href: '/control-plane/processes', label: 'Folyamatok' },
-    ],
-  },
-  {
-    label: 'Üzemeltetés',
-    children: [
-      { href: '/control-plane/scheduled-tasks', label: 'Ütemezés' },
-      { href: '/control-plane/monitors', label: 'Monitorok' },
-      { href: '/control-plane/training', label: 'Tanítás' },
-    ],
-  },
-  {
-    label: 'Adminisztráció',
-    children: [
-      { href: '/control-plane/connectors', label: 'Fiókok' },
-      { href: '/control-plane/provisioning', label: 'Provisioning' },
-      { href: '/control-plane/iam', label: 'IAM' },
-      { href: '/control-plane/platform/tenants', label: 'Platform · Tenantok' },
-      { href: '/control-plane/platform/iam', label: 'Platform · IAM' },
-      { href: '/control-plane/platform/settings', label: 'Platform · Beállítások' },
-      { href: '/control-plane/governance', label: 'Governance' },
-      { href: '/control-plane/system', label: 'Rendszer' },
-      { href: '/control-plane/audit', label: 'Audit' },
-    ],
-  },
-]
-
-export default function ControlPlaneLayout({ children }: { children: React.ReactNode }) {
-  const pathname = usePathname()
-
-  return (
-    <AppShell
-      appName="E-AI"
-      appSubtitle="Control Plane"
-      navItems={navItems}
-      accentColor="slate"
-      pathname={pathname}
-      headerExtra={<ControlPlaneHeaderExtras />}
-    >
-      {children}
-    </AppShell>
-  )
+  return <ControlPlaneShell navItems={navItems}>{children}</ControlPlaneShell>
 }

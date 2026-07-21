@@ -38,6 +38,14 @@ export class PostgresUserRepository implements UserRepository {
     })
   }
 
+  async findManyByIds(ids: string[]) {
+    if (ids.length === 0) return []
+    return prisma.user.findMany({
+      where: { id: { in: ids } },
+      orderBy: { createdAt: 'asc' },
+    })
+  }
+
   async countActiveAdmins(tenantId: string | null, excludeUserId?: string) {
     return prisma.user.count({
       where: {

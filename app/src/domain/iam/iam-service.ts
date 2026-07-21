@@ -1,4 +1,4 @@
-import type { Invitation, User, UserRole } from '@prisma/client'
+import type { Invitation, TenantMembership, User, UserRole, UserStatus } from '@prisma/client'
 import type {
   AuditRepository,
   UserRepository,
@@ -440,7 +440,10 @@ export class IamService {
 
   /** §7/B: pending + role=NULL önregisztrált fiók jóváhagyása szerepkör-kiosztással. */
   async approveUser(params: { targetUserId: string; role: UserRole; actorId: string; actorTenantId: string | null }) {
-    const target = await this.loadTenantScopedUser(params.targetUserId, params.actorTenantId)
+    const { user: target, membership } = await this.loadTenantScopedTarget(
+      params.targetUserId,
+      params.actorTenantId,
+    )
     if (target.status !== 'pending' || target.role !== null) {
       throw new Error('user: not pending approval')
     }
@@ -451,6 +454,22 @@ export class IamService {
       activatedAt: new Date(),
       invitedById: params.actorId,
     })
+
+    if (membership) {
+      await this.memberships!.update(membership.id, {
+        role: params.role,
+        status: 'active',
+        activatedAt: new Date(),
+      })
+    } else if (params.actorTenantId && this.memberships) {
+      await this.memberships.create({
+        tenantId: params.actorTenantId,
+        userId: target.id,
+        role: params.role,
+        status: 'active',
+        invitedById: params.actorId,
+      })
+    }
 
     await this.audit.append({
       actorType: 'human',
@@ -466,7 +485,7 @@ export class IamService {
       metadata: null,
     })
 
-    return updated
+    return this.withMembershipView(updated, params.role, 'active', params.actorTenantId)
   }
 
   async changeRole(params: { targetUserId: string; newRole: UserRole; actorId: string; actorTenantId: string | null }) {
@@ -474,13 +493,22 @@ export class IamService {
       throw new Error('self_modification_forbidden: admin cannot change own role')
     }
 
-    const target = await this.loadTenantScopedUser(params.targetUserId, params.actorTenantId)
+    const { user: target, membership } = await this.loadTenantScopedTarget(
+      params.targetUserId,
+      params.actorTenantId,
+    )
 
     if (target.role === 'admin' && params.newRole !== 'admin' && target.status === 'active') {
       await this.assertNotLastActiveAdmin(params.actorTenantId, target.id)
     }
 
-    const updated = await this.users.update(target.id, { role: params.newRole })
+    let updated: User
+    if (membership) {
+      await this.memberships!.update(membership.id, { role: params.newRole })
+      updated = target
+    } else {
+      updated = await this.users.update(target.id, { role: params.newRole })
+    }
 
     await this.audit.append({
       actorType: 'human',
@@ -496,7 +524,7 @@ export class IamService {
       metadata: null,
     })
 
-    return updated
+    return this.withMembershipView(updated, params.newRole, target.status, params.actorTenantId)
   }
 
   async suspendUser(params: { targetUserId: string; reason: string; actorId: string; actorTenantId: string | null }) {
@@ -504,20 +532,38 @@ export class IamService {
       throw new Error('self_modification_forbidden: admin cannot suspend own account')
     }
 
-    const target = await this.loadTenantScopedUser(params.targetUserId, params.actorTenantId)
+    const { user: target, membership } = await this.loadTenantScopedTarget(
+      params.targetUserId,
+      params.actorTenantId,
+    )
 
     if (target.role === 'admin' && target.status === 'active') {
       await this.assertNotLastActiveAdmin(params.actorTenantId, target.id)
     }
 
-    const updated = await this.users.update(target.id, {
-      status: 'suspended',
-      suspendedAt: new Date(),
-      suspendedById: params.actorId,
-      suspendedReason: params.reason,
-    })
+    if (membership) {
+      await this.memberships!.update(membership.id, { status: 'suspended' })
+    }
 
-    if (this.connectorGrants) {
+    const otherActive =
+      this.memberships && membership
+        ? (await this.memberships.findByUser(target.id)).some(
+            (m) => m.id !== membership.id && m.status === 'active',
+          )
+        : false
+
+    const updated = otherActive
+      ? target
+      : await this.users.update(target.id, {
+          status: 'suspended',
+          suspendedAt: new Date(),
+          suspendedById: params.actorId,
+          suspendedReason: params.reason,
+        })
+
+    // Globális grant-revok csak akkor, ha a fiók minden tenantről kiesett.
+    // Egyetlen tenant tagság felfüggesztése ne törölje a többi tenant grantjeit.
+    if (!otherActive && this.connectorGrants) {
       await this.connectorGrants.revokeAllForUser(target.id, params.actorId)
     }
 
@@ -535,19 +581,42 @@ export class IamService {
       metadata: { reason: params.reason },
     })
 
-    return updated
+    return this.withMembershipView(
+      otherActive ? { ...updated, status: 'suspended' as UserStatus } : updated,
+      target.role,
+      'suspended',
+      params.actorTenantId,
+    )
   }
 
   async reactivateUser(params: { targetUserId: string; actorId: string; actorTenantId: string | null }) {
-    const target = await this.loadTenantScopedUser(params.targetUserId, params.actorTenantId)
-    if (target.status !== 'suspended') throw new Error('user: not suspended')
+    const { user: target, membership } = await this.loadTenantScopedTarget(
+      params.targetUserId,
+      params.actorTenantId,
+    )
+    // Overlay-elt státusz: membership-only suspend esetén a User.active maradhat.
+    const effectiveStatus = membership?.status ?? target.status
+    if (effectiveStatus !== 'suspended') throw new Error('user: not suspended')
 
-    const updated = await this.users.update(target.id, {
-      status: 'active',
-      suspendedAt: null,
-      suspendedById: null,
-      suspendedReason: null,
-    })
+    if (membership) {
+      await this.memberships!.update(membership.id, {
+        status: 'active',
+        activatedAt: membership.activatedAt ?? new Date(),
+      })
+    }
+
+    const rawUser = await this.users.findById(target.id)
+    if (!rawUser) throw new Error('user: not found')
+
+    const updated =
+      rawUser.status === 'suspended'
+        ? await this.users.update(target.id, {
+            status: 'active',
+            suspendedAt: null,
+            suspendedById: null,
+            suspendedReason: null,
+          })
+        : rawUser
 
     await this.audit.append({
       actorType: 'human',
@@ -563,7 +632,7 @@ export class IamService {
       metadata: null,
     })
 
-    return updated
+    return this.withMembershipView(updated, target.role, 'active', params.actorTenantId)
   }
 
   /**
@@ -577,7 +646,7 @@ export class IamService {
     actorId: string
     actorTenantId: string | null
   }) {
-    const target = await this.loadTenantScopedUser(params.targetUserId, params.actorTenantId)
+    const { user: target } = await this.loadTenantScopedTarget(params.targetUserId, params.actorTenantId)
     const next = params.jobDescription?.trim() ? params.jobDescription.trim() : null
 
     const updated = await this.users.update(target.id, { jobDescription: next })
@@ -600,6 +669,29 @@ export class IamService {
   }
 
   async listUsers(tenantId: string | null) {
+    if (tenantId && this.memberships) {
+      const memberships = await this.memberships.findByTenant(tenantId)
+      const users = await this.users.findManyByIds(memberships.map((m) => m.userId))
+      const byId = new Map(users.map((user) => [user.id, user]))
+
+      const fromMembership = memberships.flatMap((membership) => {
+        const user = byId.get(membership.userId)
+        if (!user) return []
+        return [this.withMembershipView(user, membership.role, membership.status, tenantId)]
+      })
+
+      // Legacy egytenantos rekordok: User.tenantId kitöltve, membership sor még nincs.
+      const legacy = await this.users.findMany({ tenantId })
+      const merged = new Map(legacy.map((user) => [user.id, user]))
+      for (const user of fromMembership) {
+        merged.set(user.id, user)
+      }
+
+      return [...merged.values()].sort(
+        (a, b) => a.createdAt.getTime() - b.createdAt.getTime(),
+      )
+    }
+
     return this.users.findMany({ tenantId })
   }
 
@@ -641,16 +733,51 @@ export class IamService {
   /**
    * N-IAM-6: minden cél-alapú User-műveletnek ezen kell átmennie — cross-tenant
    * célpontra "not found"-ot ad, nem szivárogtatja, hogy a rekord létezik-e (§8.8).
+   * Membership jelenlétében a tenant-tagság az igazság; legacy fallback: User.tenantId.
    */
-  private async loadTenantScopedUser(userId: string, actorTenantId: string | null) {
+  private async loadTenantScopedTarget(userId: string, actorTenantId: string | null) {
     const target = await this.users.findById(userId)
-    if (!target || target.tenantId !== actorTenantId) throw new Error('user: not found')
-    return target
+    if (!target) throw new Error('user: not found')
+
+    if (actorTenantId && this.memberships) {
+      const membership = await this.memberships.findByTenantAndUser(actorTenantId, userId)
+      if (membership) {
+        return {
+          user: this.withMembershipView(target, membership.role, membership.status, actorTenantId),
+          membership,
+        }
+      }
+      // Legacy fallback: még nincs membership sor, de User.tenantId egyezik.
+      if (target.tenantId === actorTenantId) {
+        return { user: target, membership: null as TenantMembership | null }
+      }
+      throw new Error('user: not found')
+    }
+
+    if (target.tenantId !== actorTenantId) throw new Error('user: not found')
+    return { user: target, membership: null as TenantMembership | null }
+  }
+
+  private withMembershipView(
+    user: User,
+    role: UserRole | null,
+    status: UserStatus | TenantMembership['status'],
+    tenantId: string | null,
+  ): User {
+    return {
+      ...user,
+      role,
+      status: status as UserStatus,
+      tenantId,
+    }
   }
 
   /** §8/N-IAM-5: legalább egy aktív adminnak mindig maradnia kell — tenant-szinten. */
   private async assertNotLastActiveAdmin(tenantId: string | null, excludeUserId: string) {
-    const otherActiveAdmins = await this.users.countActiveAdmins(tenantId, excludeUserId)
+    const otherActiveAdmins =
+      tenantId && this.memberships
+        ? await this.memberships.countActiveAdmins(tenantId, excludeUserId)
+        : await this.users.countActiveAdmins(tenantId, excludeUserId)
     const check = checkLastAdminLock(otherActiveAdmins, true)
     if (check.blocked) {
       throw new Error('lockout: last active admin cannot be removed')
