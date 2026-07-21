@@ -413,7 +413,11 @@ export type TransitionStats = {
 }
 
 export interface AgentRepository {
-  findMany(filter?: { tenantId?: string | null }): Promise<Agent[]>
+  findMany(filter?: {
+    tenantId?: string | null
+    /** Ha true, kihagyja a `hiddenFromOperators` agenteket (non-admin listázás). */
+    excludeHiddenFromOperators?: boolean
+  }): Promise<Agent[]>
   findById(id: string, tenantId?: string | null): Promise<Agent | null>
   findByIdWithDetails(id: string, tenantId?: string | null): Promise<{
     agent: Agent

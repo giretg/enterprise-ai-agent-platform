@@ -4,6 +4,7 @@ import { apiError, apiOk } from '@/lib/api-response'
 import { suitableAgentsSchema } from '@/lib/validators/actions'
 import { parsePlaybookSpecV2 } from '@/lib/playbook-v2/spec'
 import { isAgentSuitable } from '@/domain/playbook/suitability'
+import { shouldExcludeHiddenAgents } from '@/lib/agent-operator-visibility'
 
 export async function GET(request: Request) {
   try {
@@ -25,7 +26,10 @@ export async function GET(request: Request) {
     const role = parsePlaybookSpecV2(version.spec).roles.find((r) => r.key === parsed.data.roleKey)
     if (!role || role.type !== 'agent_role') return apiError('A megadott agent-szerep nem található.', 404)
 
-    const agents = await repositories.agents.findMany({ tenantId: registryTenantId })
+    const agents = await repositories.agents.findMany({
+      tenantId: registryTenantId,
+      excludeHiddenFromOperators: shouldExcludeHiddenAgents(user.activeTenantRole),
+    })
     const suitable = []
     for (const agent of agents) {
       const capabilities = await repositories.toolBroker.findCapabilitiesForAgent(agent.id)

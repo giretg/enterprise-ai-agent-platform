@@ -34,6 +34,10 @@ import { prisma, ensureActiveDatabaseMode } from '@/lib/db'
 import { logger } from '@/lib/observability'
 import { ensureAgentKnowledgeBase } from '@/lib/agent-knowledge-base'
 import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
+import {
+  canViewAgent,
+  shouldExcludeHiddenAgents,
+} from '@/lib/agent-operator-visibility'
 import { getReportTemplate, listReportTemplates } from '@/domain/report/report-templates'
 import { computePlaybookGovernance } from '@/domain/governance/measurement-report'
 import {
@@ -79,6 +83,7 @@ import {
   updateAgentAvatarSchema,
   updateAgentSelfEvolutionProfileSchema,
   updateAgentSensitivityPolicySchema,
+  updateAgentOperatorVisibilitySchema,
   createHttpApiConnectorSchema,
   createTrainingSchema,
   askWikiSchema,
@@ -289,7 +294,10 @@ export async function listBoardAssignees() {
   try {
     const user = await requireTenantRole('operator')
     const [agents, memberships] = await Promise.all([
-      repositories.agents.findMany({ tenantId: user.activeTenantId }),
+      repositories.agents.findMany({
+        tenantId: user.activeTenantId,
+        excludeHiddenFromOperators: shouldExcludeHiddenAgents(user.activeTenantRole),
+      }),
       prisma.tenantMembership.findMany({
         where: {
           tenantId: user.activeTenantId,
@@ -1070,7 +1078,12 @@ export async function transitionTicket(input: {
 export async function listAgents() {
   try {
     const user = await requireTenantRole('viewer')
-    return ok(await repositories.agents.findMany({ tenantId: user.activeTenantId }))
+    return ok(
+      await repositories.agents.findMany({
+        tenantId: user.activeTenantId,
+        excludeHiddenFromOperators: shouldExcludeHiddenAgents(user.activeTenantRole),
+      }),
+    )
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list agents')
   }
@@ -1082,6 +1095,7 @@ export async function getAgent(input: { id: string }) {
     const { id } = agentIdSchema.parse(input)
     const detail = await repositories.agents.findByIdWithDetails(id, user.activeTenantId)
     if (!detail) return fail('Agent not found')
+    if (!canViewAgent(user.activeTenantRole, detail.agent)) return fail('Agent not found')
     return ok(detail)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to get agent')
@@ -1094,6 +1108,7 @@ export async function getAgentGovernance(input: { agentId: string }) {
     const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
     const agent = await repositories.agents.findById(agentId, user.activeTenantId)
     if (!agent) return fail('Agent not found')
+    if (!canViewAgent(user.activeTenantRole, agent)) return fail('Agent not found')
     const [capabilities, connectors] = await Promise.all([
       repositories.toolBroker.findCapabilitiesForAgent(agentId),
       repositories.toolBroker.findConnectorsForAgent(agentId),
@@ -1560,6 +1575,47 @@ export async function updateAgentSensitivityPolicy(input: {
     return ok(updated)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to update agent sensitivity policy')
+  }
+}
+
+/**
+ * Operator-láthatóság. Tenant admin elrejtheti az agentet az operátorok elől;
+ * a futás/dispatch nem függ ettől — csak a UI/API listázás és detail hozzáférés.
+ */
+export async function updateAgentOperatorVisibility(input: {
+  agentId: string
+  hiddenFromOperators: boolean
+}) {
+  try {
+    const user = await requireTenantRole('admin')
+    const parsed = updateAgentOperatorVisibilitySchema.parse(input)
+    const agent = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
+    if (!agent) return fail('Agent not found')
+    if (agent.hiddenFromOperators === parsed.hiddenFromOperators) {
+      return ok({ hiddenFromOperators: agent.hiddenFromOperators })
+    }
+
+    const updated = await repositories.agents.updateOperatorVisibility(parsed)
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.user.id,
+      agentVersion: agent.currentVersion,
+      action: 'agent.operator_visibility',
+      targetType: 'agent',
+      targetId: parsed.agentId,
+      modelUsed: null,
+      inputRef: `from:${agent.hiddenFromOperators}`,
+      outputRef: `to:${updated.hiddenFromOperators}`,
+      policyDecision: 'allowed',
+      metadata: {
+        hiddenFromOperators: updated.hiddenFromOperators,
+      },
+    })
+
+    return ok(updated)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update agent operator visibility')
   }
 }
 
@@ -2696,7 +2752,10 @@ export async function promoteConversationWithAi(input: { conversationId: string 
     if (!agentDetails) return fail('Agent not found')
 
     const [agents, users] = await Promise.all([
-      repositories.agents.findMany({ tenantId: user.activeTenantId }),
+      repositories.agents.findMany({
+        tenantId: user.activeTenantId,
+        excludeHiddenFromOperators: shouldExcludeHiddenAgents(user.activeTenantRole),
+      }),
       prisma.user.findMany({
         where: { tenantId: user.activeTenantId, status: 'active' },
         select: { id: true, name: true, role: true, jobDescription: true },
@@ -4988,7 +5047,10 @@ export async function getDailyBudgetOverview(): Promise<ActionResult<DailyBudget
     const [tenantUsage, byAgent, agents] = await Promise.all([
       repositories.modelCalls.getUsageForTenant(tenantId, 'day'),
       repositories.modelCalls.getUsageByAgent(tenantId, 'day'),
-      repositories.agents.findMany({ tenantId }),
+      repositories.agents.findMany({
+        tenantId,
+        excludeHiddenFromOperators: shouldExcludeHiddenAgents(ctx.activeTenantRole),
+      }),
     ])
 
     const nameById = new Map(agents.map((a) => [a.id, a.name]))

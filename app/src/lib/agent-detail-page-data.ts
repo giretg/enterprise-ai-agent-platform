@@ -5,6 +5,7 @@ import { services } from '@/domain'
 import type { ProvisioningActor } from '@/domain/provisioning/provisioning-service'
 import { loadAgentDelegatedConnectors } from '@/lib/agent-delegated-connectors-server'
 import { ensureAgentKnowledgeBase } from '@/lib/agent-knowledge-base'
+import { canViewAgent, shouldExcludeHiddenAgents } from '@/lib/agent-operator-visibility'
 import { prisma } from '@/lib/db'
 import type { SkillReadiness } from '@/lib/skill/skill-readiness'
 import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
@@ -213,7 +214,10 @@ async function loadKnowledgeBaseInitial(
       orderBy: { agent: { name: 'asc' } },
     }),
     includeAgentOptions
-      ? repositories.agents.findMany({ tenantId: ctx.activeTenantId })
+      ? repositories.agents.findMany({
+          tenantId: ctx.activeTenantId,
+          excludeHiddenFromOperators: shouldExcludeHiddenAgents(ctx.activeTenantRole),
+        })
       : Promise.resolve([]),
   ])
 
@@ -283,6 +287,7 @@ export async function loadAgentDetailPageData(
 
   const detail = await repositories.agents.findByIdWithDetails(agentId, ctx.activeTenantId)
   if (!detail) throw new Error('Agent not found')
+  if (!canViewAgent(ctx.activeTenantRole, detail.agent)) throw new Error('Agent not found')
 
   const delegatedConnectors = await loadAgentDelegatedConnectors(
     agentId,

@@ -2,6 +2,8 @@ import Link from 'next/link'
 import { redirect } from 'next/navigation'
 import { getDashboardStats, listAgents, listTickets } from '@/app/actions/platform'
 import { getCurrentUser } from '@/auth'
+import { getAuthContext } from '@/auth/context'
+import { hasMinimumRole } from '@/auth/types'
 import { Badge, Card } from '@/components/ui/shell'
 import { DashboardAgentCard } from '@/components/agents/dashboard-agent-card'
 import { TICKET_STATE_LABELS, TICKET_STATE_TONE } from '@/lib/ticket-labels'
@@ -18,6 +20,9 @@ export default async function DashboardPage() {
   if (me && (me.status !== 'active' || !me.role)) {
     redirect('/control-plane/pending')
   }
+
+  const ctx = await getAuthContext()
+  const isAdmin = hasMinimumRole(ctx?.activeTenantRole, 'admin')
 
   const [statsRes, agentsRes, ticketsRes] = await Promise.all([
     getDashboardStats(),
@@ -111,48 +116,50 @@ export default async function DashboardPage() {
         </div>
       </section>
 
-      <div className="grid gap-6 lg:grid-cols-3">
-        <Card title="Hogy állunk?" className="lg:col-span-1">
-          <ul className="space-y-3 text-sm">
-            <li className="flex items-center justify-between atelier-soft p-3">
-              <span>Audit napló</span>
-              <Badge tone="success">Aktív</Badge>
-            </li>
-            <li className="flex items-center justify-between atelier-soft p-3">
-              <span>Emberi jóváhagyás</span>
-              <Badge tone="success">Aktív</Badge>
-            </li>
-            <li className="flex items-center justify-between atelier-soft p-3">
-              <span>Guardrail / PII</span>
-              <Badge tone="warning">Fázis 2</Badge>
-            </li>
-            <li className="flex items-center justify-between atelier-soft p-3">
-              <span>Hash-lánc audit</span>
-              <Badge tone="success">Aktív</Badge>
-            </li>
-          </ul>
-        </Card>
-
-        <Card title="Nézzünk körül együtt" className="lg:col-span-2">
-          <ol className="space-y-2.5 text-sm text-ink-soft">
-            {[
-              { href: '/control-plane/apps', label: 'Mini-appok → böngészőben megnyitható agent-felületek' },
-              { href: '/control-plane/board', label: 'Tábla → nézd át és hagyd jóvá a választ' },
-              { href: '/control-plane/audit', label: 'Audit → minden lépés visszakövethető' },
-              { href: '/control-plane/training', label: 'Tanítás → finomítsd a munkatársaid' },
-            ].map((step, i) => (
-              <li key={step.href} className="flex items-center gap-3">
-                <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-coral/12 font-display text-sm font-semibold text-coral-deep">
-                  {i + 1}
-                </span>
-                <Link href={step.href} className="hover:text-coral-deep">
-                  {step.label}
-                </Link>
+      {isAdmin && (
+        <div className="grid gap-6 lg:grid-cols-3">
+          <Card title="Hogy állunk?" className="lg:col-span-1">
+            <ul className="space-y-3 text-sm">
+              <li className="flex items-center justify-between atelier-soft p-3">
+                <span>Audit napló</span>
+                <Badge tone="success">Aktív</Badge>
               </li>
-            ))}
-          </ol>
-        </Card>
-      </div>
+              <li className="flex items-center justify-between atelier-soft p-3">
+                <span>Emberi jóváhagyás</span>
+                <Badge tone="success">Aktív</Badge>
+              </li>
+              <li className="flex items-center justify-between atelier-soft p-3">
+                <span>Guardrail / PII</span>
+                <Badge tone="warning">Fázis 2</Badge>
+              </li>
+              <li className="flex items-center justify-between atelier-soft p-3">
+                <span>Hash-lánc audit</span>
+                <Badge tone="success">Aktív</Badge>
+              </li>
+            </ul>
+          </Card>
+
+          <Card title="Nézzünk körül együtt" className="lg:col-span-2">
+            <ol className="space-y-2.5 text-sm text-ink-soft">
+              {[
+                { href: '/control-plane/apps', label: 'Mini-appok → böngészőben megnyitható agent-felületek' },
+                { href: '/control-plane/board', label: 'Tábla → nézd át és hagyd jóvá a választ' },
+                { href: '/control-plane/audit', label: 'Audit → minden lépés visszakövethető' },
+                { href: '/control-plane/training', label: 'Tanítás → finomítsd a munkatársaid' },
+              ].map((step, i) => (
+                <li key={step.href} className="flex items-center gap-3">
+                  <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-coral/12 font-display text-sm font-semibold text-coral-deep">
+                    {i + 1}
+                  </span>
+                  <Link href={step.href} className="hover:text-coral-deep">
+                    {step.label}
+                  </Link>
+                </li>
+              ))}
+            </ol>
+          </Card>
+        </div>
+      )}
 
       <Card title="Legutóbbi ügyek">
         <ul className="divide-y divide-line">

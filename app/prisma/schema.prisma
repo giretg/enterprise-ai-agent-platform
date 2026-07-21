@@ -727,6 +727,10 @@ model Agent {
   // vagy tereli helyi modellre az agent hívását. Az osztályozás és auditálás aktív
   // marad. Csak tenant admin / superadmin írhatja, minden váltás auditált.
   allowSensitiveExternalModel   Boolean     @default(false) @map("allow_sensitive_external_model")
+  // Operator-láthatóság: ha true, non-admin szerepek (operator/approver/viewer)
+  // nem látják az agentet a listákban és a detail oldalon. A futás/dispatch
+  // NEM függ ettől — csak a UI/API láthatóság. Csak tenant admin írhatja.
+  hiddenFromOperators           Boolean     @default(false) @map("hidden_from_operators")
   selfEvolutionProfile          Json?       @map("self_evolution_profile")
   memoryId                      String      @unique @map("memory_id") @db.Uuid
   createdAt                     DateTime    @default(now()) @map("created_at") @db.Timestamptz

@@ -11,6 +11,7 @@ import { hasMinimumRole } from '@/auth/types'
 import { services } from '@/domain'
 import { repositories } from '@/repositories/postgres'
 import { fail, ok } from '@/lib/result'
+import { shouldExcludeHiddenAgents } from '@/lib/agent-operator-visibility'
 import {
   startProcessSchema,
   processIdSchema,
@@ -321,7 +322,10 @@ export async function listSuitableAgents(input: unknown) {
     const role = parsePlaybookSpecV2(version.spec).roles.find((r) => r.key === parsed.roleKey)
     if (!role || role.type !== 'agent_role') return fail('A megadott agent-szerep nem található.')
 
-    const agents = await repositories.agents.findMany({ tenantId: registryTenantId })
+    const agents = await repositories.agents.findMany({
+      tenantId: registryTenantId,
+      excludeHiddenFromOperators: shouldExcludeHiddenAgents(user.activeTenantRole),
+    })
     const capabilitySets = await Promise.all(
       agents.map((agent) => repositories.toolBroker.findCapabilitiesForAgent(agent.id)),
     )

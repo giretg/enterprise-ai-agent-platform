@@ -664,6 +664,12 @@ export const updateAgentSensitivityPolicySchema = z.object({
   allowSensitiveExternalModel: z.boolean(),
 })
 
+/** Operator-láthatóság: admin elrejtheti az agentet az operátorok elől. */
+export const updateAgentOperatorVisibilitySchema = z.object({
+  agentId: z.string().uuid(),
+  hiddenFromOperators: z.boolean(),
+})
+
 export const updateAgentPersonaSchema = z
   .object({
     agentId: z.string().uuid(),

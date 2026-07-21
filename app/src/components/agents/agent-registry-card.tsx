@@ -65,6 +65,7 @@ export function AgentRegistryCard({
                     ? 'vázlat'
                     : 'pihen'}
           </Badge>
+          {agent.hiddenFromOperators && <Badge tone="neutral">operátoroktól rejtett</Badge>}
           {canDelete && <DeleteAgentButton agentId={agent.id} agentName={p.nickname} compact />}
         </div>
       </div>

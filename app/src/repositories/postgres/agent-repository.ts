@@ -20,9 +20,15 @@ function serviceAccountScopesForRole(role: Agent['role']): string[] {
 }
 
 export class PostgresAgentRepository implements AgentRepository {
-  async findMany(filter?: { tenantId?: string | null }): Promise<Agent[]> {
+  async findMany(filter?: {
+    tenantId?: string | null
+    excludeHiddenFromOperators?: boolean
+  }): Promise<Agent[]> {
+    const where: Prisma.AgentWhereInput = {}
+    if (filter?.tenantId !== undefined) where.tenantId = filter.tenantId
+    if (filter?.excludeHiddenFromOperators) where.hiddenFromOperators = false
     return prisma.agent.findMany({
-      where: filter?.tenantId !== undefined ? { tenantId: filter.tenantId } : undefined,
+      where: Object.keys(where).length > 0 ? where : undefined,
       orderBy: { createdAt: 'desc' },
     })
   }
@@ -345,6 +351,22 @@ export class PostgresAgentRepository implements AgentRepository {
       where: { id: input.agentId },
       data: { allowSensitiveExternalModel: input.allowSensitiveExternalModel },
       select: { allowSensitiveExternalModel: true },
+    })
+    return updated
+  }
+
+  /**
+   * Operator-láthatóság. Nem emel agent-verziót és nem befolyásolja a dispatch-et —
+   * csak azt, hogy non-admin szerepek látják-e az agentet a UI/API listákban.
+   */
+  async updateOperatorVisibility(input: {
+    agentId: string
+    hiddenFromOperators: boolean
+  }): Promise<{ hiddenFromOperators: boolean }> {
+    const updated = await prisma.agent.update({
+      where: { id: input.agentId },
+      data: { hiddenFromOperators: input.hiddenFromOperators },
+      select: { hiddenFromOperators: true },
     })
     return updated
   }

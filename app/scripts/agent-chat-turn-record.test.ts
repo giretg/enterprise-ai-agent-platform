@@ -63,6 +63,7 @@ function agentRow(): Agent {
     currentBehaviorProfileId: null,
     role: 'worker',
     allowSensitiveExternalModel: false,
+    hiddenFromOperators: false,
     selfEvolutionProfile: null,
     memoryId: 'memory-1',
     createdAt: new Date('2026-07-18T08:00:00Z'),

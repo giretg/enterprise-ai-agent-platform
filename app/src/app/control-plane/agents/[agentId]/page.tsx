@@ -12,6 +12,7 @@ import { AgentMiniAppsLink } from '@/components/agents/agent-mini-apps-link'
 import { UpdateInstructionForm } from '@/components/agents/update-instruction-form'
 import { UpdatePersonaForm } from '@/components/agents/update-persona-form'
 import { SensitivityPolicyForm } from '@/components/agents/sensitivity-policy-form'
+import { OperatorVisibilityForm } from '@/components/agents/operator-visibility-form'
 import { AgentAvatarUpload } from '@/components/agents/agent-avatar-upload'
 import { UpdateModelConfigForm } from '@/components/agents/update-model-config-form'
 import { UpdateSelfEvolutionProfileForm } from '@/components/agents/update-self-evolution-profile-form'
@@ -401,6 +402,11 @@ export default async function AgentDetailPage({
               <SensitivityPolicyForm
                 agentId={agent.id}
                 allowSensitiveExternalModel={agent.allowSensitiveExternalModel}
+              />
+
+              <OperatorVisibilityForm
+                agentId={agent.id}
+                hiddenFromOperators={agent.hiddenFromOperators}
               />
 
               <UpdateModelConfigForm
