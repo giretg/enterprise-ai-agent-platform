@@ -128,6 +128,14 @@ export class IamService {
     }
 
     const alreadyLinked = !isPreProvisionedAuthId(user.externalAuthId)
+    // Admin előkészítés meglévő Clerk-fiókon = jóváhagyás: azonnal active.
+    if (alreadyLinked && user.status === 'pending') {
+      user = await this.users.update(user.id, {
+        status: 'active',
+        activatedAt: new Date(),
+      })
+    }
+
     const membershipStatus = alreadyLinked && user.status === 'active' ? 'active' : 'pending'
 
     const membership = await this.memberships.create({
@@ -183,16 +191,7 @@ export class IamService {
       activatedAt: new Date(),
     })
 
-    if (this.memberships) {
-      const memberships = await this.memberships.findByUser(params.user.id)
-      for (const membership of memberships) {
-        if (membership.status !== 'pending') continue
-        await this.memberships.update(membership.id, {
-          status: 'active',
-          activatedAt: new Date(),
-        })
-      }
-    }
+    await this.activatePendingMemberships(user.id)
 
     await this.audit.append({
       actorType: 'human',
@@ -210,6 +209,68 @@ export class IamService {
     })
 
     return user
+  }
+
+  /**
+   * Admin csendes előkészítés meglévő Clerk-fiókon: pending + szerep → active + active memberships.
+   * (Önregisztráció után előkészítés, vagy korábban beragadt fiók belépéskor.)
+   */
+  async activateProvisionedUser(params: { user: User; externalAuthId?: string; name?: string }) {
+    if (isPreProvisionedAuthId(params.user.externalAuthId)) {
+      if (!params.externalAuthId) return params.user
+      return this.claimPreProvisionedUser({
+        user: params.user,
+        externalAuthId: params.externalAuthId,
+        name: params.name,
+      })
+    }
+
+    if (params.user.status === 'active') {
+      await this.activatePendingMemberships(params.user.id)
+      return params.user
+    }
+
+    if (params.user.status !== 'pending' || params.user.role === null) {
+      return params.user
+    }
+
+    const user = await this.users.update(params.user.id, {
+      ...(params.externalAuthId ? { externalAuthId: params.externalAuthId } : {}),
+      ...(params.name?.trim() ? { name: params.name.trim() } : {}),
+      status: 'active',
+      activatedAt: new Date(),
+    })
+
+    await this.activatePendingMemberships(user.id)
+
+    await this.audit.append({
+      actorType: 'human',
+      actorId: user.id,
+      agentVersion: null,
+      action: 'user.provision.claim',
+      targetType: 'user',
+      targetId: user.id,
+      modelUsed: null,
+      inputRef: params.user.email,
+      outputRef: user.role,
+      policyDecision: 'activated',
+      metadata: { email: user.email },
+      tenantId: user.tenantId,
+    })
+
+    return user
+  }
+
+  private async activatePendingMemberships(userId: string) {
+    if (!this.memberships) return
+    const memberships = await this.memberships.findByUser(userId)
+    for (const membership of memberships) {
+      if (membership.status !== 'pending') continue
+      await this.memberships.update(membership.id, {
+        status: 'active',
+        activatedAt: new Date(),
+      })
+    }
   }
 
   async revokeInvitation(params: { invitationId: string; actorId: string; actorTenantId: string | null }) {

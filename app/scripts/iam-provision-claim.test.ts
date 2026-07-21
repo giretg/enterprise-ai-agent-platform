@@ -226,6 +226,81 @@ async function main() {
     assert.equal(auditEvents.length, 0)
   })
 
+  await check('provisionUser activates pending Clerk-linked user + active membership', async () => {
+    const existing = {
+      id: 'user-self-reg',
+      externalAuthId: 'user_clerk_self_reg',
+      email: 'selfreg@example.com',
+      name: 'Self Reg',
+      role: null,
+      status: 'pending',
+      tenantId: null,
+      invitedById: null,
+      jobDescription: null,
+      activatedAt: null,
+      suspendedAt: null,
+      suspendedById: null,
+      suspendedReason: null,
+      lastLoginAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as StoredUser
+    const { service, getUsers, getMemberships } = fixture([existing])
+    const result = await service.provisionUser({
+      email: 'selfreg@example.com',
+      role: 'operator',
+      createdById: 'admin-1',
+      tenantId: 'tenant-a',
+    })
+
+    assert.equal(getUsers().length, 1)
+    assert.equal(result.user.status, 'active')
+    assert.equal(result.user.role, 'operator')
+    assert.equal(result.membership.status, 'active')
+    assert.equal(getMemberships().length, 1)
+  })
+
+  await check('activateProvisionedUser activates pending user with role on login', async () => {
+    const stuck = {
+      id: 'user-stuck',
+      externalAuthId: 'user_clerk_stuck',
+      email: 'stuck@example.com',
+      name: 'Stuck',
+      role: 'operator',
+      status: 'pending',
+      tenantId: 'tenant-a',
+      invitedById: 'admin-1',
+      jobDescription: null,
+      activatedAt: null,
+      suspendedAt: null,
+      suspendedById: null,
+      suspendedReason: null,
+      lastLoginAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as StoredUser
+    const { service, auditEvents, getUsers, getMemberships } = fixture([stuck])
+    getMemberships().push({
+      id: 'membership-stuck',
+      tenantId: 'tenant-a',
+      userId: 'user-stuck',
+      role: 'operator',
+      status: 'pending',
+      invitedById: 'admin-1',
+      activatedAt: null,
+    })
+
+    const activated = await service.activateProvisionedUser({
+      user: stuck,
+      name: 'Stuck User',
+    })
+
+    assert.equal(activated.status, 'active')
+    assert.equal(activated.name, 'Stuck User')
+    assert.equal(getMemberships()[0]?.status, 'active')
+    assert.equal(auditEvents.some((e) => e.action === 'user.provision.claim'), true)
+  })
+
   await check('provisionUser adds active membership when user already active in another tenant', async () => {
     const existing = {
       id: 'user-existing',

@@ -78,6 +78,18 @@ export async function syncClerkUser(prisma: PrismaClient, input: ClerkUserSyncIn
   })
 
   if (existingByAuthId) {
+    if (
+      existingByAuthId.status === 'pending' &&
+      existingByAuthId.role !== null &&
+      !isPreProvisionedAuthId(existingByAuthId.externalAuthId)
+    ) {
+      const { services } = await import('@/domain')
+      return services.iam.activateProvisionedUser({
+        user: existingByAuthId,
+        name: input.name,
+      })
+    }
+
     const existingByEmail = await findBestUserByEmail(prisma, input.email)
     const data = updateData(input, existingByEmail?.role ?? existingByAuthId.role)
     if (userMatchesSyncData(existingByAuthId, data)) {
@@ -96,6 +108,15 @@ export async function syncClerkUser(prisma: PrismaClient, input: ClerkUserSyncIn
       // Lazy import: avoids auth ↔ domain circular init at module load.
       const { services } = await import('@/domain')
       return services.iam.claimPreProvisionedUser({
+        user: existingByEmail,
+        externalAuthId: input.externalAuthId,
+        name: input.name,
+      })
+    }
+
+    if (existingByEmail.status === 'pending' && existingByEmail.role !== null) {
+      const { services } = await import('@/domain')
+      return services.iam.activateProvisionedUser({
         user: existingByEmail,
         externalAuthId: input.externalAuthId,
         name: input.name,
