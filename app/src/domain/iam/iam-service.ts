@@ -77,7 +77,8 @@ export class IamService {
 
   /**
    * Csendes előkészítés: User + TenantMembership email+szereppel, meghívó email / token nélkül.
-   * Az első verified Clerk login (`claimPreProvisionedUser`) aktiválja a fiókot.
+   * Új email → pending User + pending membership; első login claimeli (`claimPreProvisionedUser`).
+   * Már létező (más tenantben aktív) User → csak új membership; aktív usernél azonnal active.
    */
   async provisionUser(params: {
     email: string
@@ -90,12 +91,17 @@ export class IamService {
     const email = params.email.trim().toLowerCase()
     const existingUsers = await this.users.findManyByEmail(email)
 
-    let user = existingUsers.find((candidate) => isPreProvisionedAuthId(candidate.externalAuthId)) ?? null
-
-    for (const candidate of existingUsers) {
-      if (isPreProvisionedAuthId(candidate.externalAuthId)) continue
-      throw new Error('user: email already registered')
-    }
+    let user =
+      existingUsers.length > 0
+        ? [...existingUsers].sort((a, b) => {
+            const aPre = isPreProvisionedAuthId(a.externalAuthId) ? 1 : 0
+            const bPre = isPreProvisionedAuthId(b.externalAuthId) ? 1 : 0
+            if (bPre !== aPre) return bPre - aPre
+            const roleDelta = ROLE_RANK[b.role ?? 'viewer'] - ROLE_RANK[a.role ?? 'viewer']
+            if (roleDelta !== 0) return roleDelta
+            return a.createdAt.getTime() - b.createdAt.getTime()
+          })[0]
+        : null
 
     if (user) {
       const existingMembership = await this.memberships.findByTenantAndUser(params.tenantId, user.id)
@@ -121,11 +127,14 @@ export class IamService {
       })
     }
 
+    const alreadyLinked = !isPreProvisionedAuthId(user.externalAuthId)
+    const membershipStatus = alreadyLinked && user.status === 'active' ? 'active' : 'pending'
+
     const membership = await this.memberships.create({
       tenantId: params.tenantId,
       userId: user.id,
       role: params.role,
-      status: 'pending',
+      status: membershipStatus,
       invitedById: params.createdById,
     })
 

@@ -226,7 +226,42 @@ async function main() {
     assert.equal(auditEvents.length, 0)
   })
 
-  await check('provisionUser rejects email already registered (non-preprovisioned)', async () => {
+  await check('provisionUser adds active membership when user already active in another tenant', async () => {
+    const existing = {
+      id: 'user-existing',
+      externalAuthId: 'user_clerk_existing',
+      email: 'taken@example.com',
+      name: 'Taken',
+      role: 'viewer',
+      status: 'active',
+      tenantId: 'tenant-a',
+      invitedById: null,
+      jobDescription: null,
+      activatedAt: new Date(),
+      suspendedAt: null,
+      suspendedById: null,
+      suspendedReason: null,
+      lastLoginAt: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    } as StoredUser
+    const { service, getUsers, getMemberships } = fixture([existing])
+    const result = await service.provisionUser({
+      email: 'taken@example.com',
+      role: 'operator',
+      createdById: 'admin-1',
+      tenantId: 'tenant-b',
+    })
+
+    assert.equal(getUsers().length, 1)
+    assert.equal(result.user.id, 'user-existing')
+    assert.equal(result.membership.tenantId, 'tenant-b')
+    assert.equal(result.membership.role, 'operator')
+    assert.equal(result.membership.status, 'active')
+    assert.equal(getMemberships().length, 1)
+  })
+
+  await check('provisionUser rejects duplicate provision for same tenant (active user)', async () => {
     const existing = {
       id: 'user-existing',
       externalAuthId: 'user_clerk_existing',
@@ -246,15 +281,21 @@ async function main() {
       updatedAt: new Date(),
     } as StoredUser
     const { service } = fixture([existing])
+    await service.provisionUser({
+      email: 'taken@example.com',
+      role: 'operator',
+      createdById: 'admin-1',
+      tenantId: 'tenant-a',
+    })
     await assert.rejects(
       () =>
         service.provisionUser({
           email: 'taken@example.com',
-          role: 'operator',
+          role: 'admin',
           createdById: 'admin-1',
           tenantId: 'tenant-a',
         }),
-      /email already registered/,
+      /already provisioned for this tenant/,
     )
   })
 
