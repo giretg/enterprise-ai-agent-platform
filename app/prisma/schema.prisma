@@ -248,6 +248,14 @@ enum ToolCallStatus {
   error
 }
 
+// issue #97 — bizalmi osztály minden eszköz-eredményen. Determinisztikus,
+// tool-nevenkénti besorolás (tool-trust-registry.ts); indexelt audit-oszlop.
+enum TrustClass {
+  trusted
+  internal
+  external_untrusted
+}
+
 enum ModelCallStatus {
   ok
   error
@@ -2393,6 +2401,10 @@ model ToolCall {
   resultMeta     Json?          @map("result_meta")
   latencyMs      Int            @map("latency_ms")
   policyDecision String?        @map("policy_decision")
+  // issue #97 — a hívás bizalmi osztálya (dedikált, indexelt oszlop a gyors
+  // audit-lekérdezéshez: „mely futásokat befolyásolt külső tartalom?"). A
+  // bevezetés utáni hívásokra töltődik; meglévő rekordokon null.
+  trustClass     TrustClass?    @map("trust_class")
   createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz
 
   agent        Agent         @relation(fields: [agentId], references: [id])
@@ -2400,6 +2412,7 @@ model ToolCall {
   conversation Conversation? @relation(fields: [conversationId], references: [id])
   connector    Connector?    @relation(fields: [connectorId], references: [id])
 
+  @@index([trustClass, createdAt])
   @@map("tool_calls")
 }
 

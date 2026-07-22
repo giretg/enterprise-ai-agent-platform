@@ -11,8 +11,9 @@ import type { Prisma, ToolCallStatus } from '@prisma/client'
 import { logger, toolBrokerCallsTotal } from '@/lib/observability'
 import { TOOL_REQUIREMENTS } from './tool-broker-authorizer'
 import { argsMeta } from './tool-broker-support'
+import { resolveTrustClass } from './tool-trust-registry'
 import type { WebSearchEffectiveQuery } from '@/domain/web-search/web-search-types'
-import type { ToolBrokerInvokeInput, ToolBrokerInvokeResult } from './tool-broker-types'
+import type { ToolBrokerInvokeInput, ToolBrokerInvokeResult, TrustClass } from './tool-broker-types'
 import type { ToolBrokerService } from './tool-broker-service'
 
 export async function recordDenied(
@@ -54,11 +55,18 @@ export async function recordCall(
     actingUserId?: string | null
     grantId?: string | null
     webSearchEffective?: WebSearchEffectiveQuery
+    /**
+     * A hívás bizalmi osztálya (issue #97). Ha nincs megadva, a tool-nevenkénti
+     * regiszterből oldjuk fel (fail-safe: ismeretlen → external_untrusted), hogy
+     * a `ToolCall.trustClass` audit-oszlop minden ágon (ok/denied/error) töltődjön.
+     */
+    trustClass?: TrustClass
   },
 ) {
   const requirement = TOOL_REQUIREMENTS[params.input.tool]
   const connectorType = requirement?.connectorType ?? null
   const accessMode = requirement?.accessMode ?? null
+  const trustClass = params.trustClass ?? resolveTrustClass(params.input.tool)
   const sanitizedArgsMeta = {
     ...argsMeta(params.input, params.webSearchEffective),
     acting_user_id: params.actingUserId ?? params.input.actingUserId ?? null,
@@ -73,6 +81,7 @@ export async function recordCall(
     connector_id: params.connectorId,
     connector_type: connectorType,
     access_mode: accessMode,
+    trust_class: trustClass,
     argsMeta: sanitizedArgsMeta,
     resultMeta: params.resultMeta,
     acting_user_id: params.actingUserId ?? params.input.actingUserId ?? null,
@@ -90,6 +99,7 @@ export async function recordCall(
     resultMeta: params.resultMeta as Prisma.JsonValue,
     latencyMs: params.latencyMs,
     policyDecision: params.policyDecision,
+    trustClass,
   })
 
   const targetType = params.ticketId ? 'ticket' : params.input.conversationId ? 'conversation' : 'tool'

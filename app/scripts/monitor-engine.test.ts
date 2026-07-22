@@ -278,6 +278,7 @@ checkAsync('connector-count collector mailbox_count capability-n át ad jelet', 
         calls.push(input)
         return {
           denied: false,
+          trust: 'external_untrusted',
           result: { count: 12, query: 'is:unread' },
           resultMeta: { count: 12 },
           latencyMs: 1,

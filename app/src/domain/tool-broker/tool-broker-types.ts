@@ -608,6 +608,21 @@ export type ToolBrokerInvokeInput =
   | (ToolInvokeBase & { tool: 'document_read'; args: DocumentReadArgs })
   | (ToolInvokeBase & { tool: 'tulajdoni_lap_parse'; args: TulajdoniLapParseArgs })
 
+/**
+ * Bizalmi osztály MINDEN eszköz-eredményen (issue #97). Determinisztikus, a
+ * tool-nevenkénti regiszter (`tool-trust-registry.ts`) adja, NEM az agent és nem
+ * a hívási hely választja. Erős union a Tool Broker publikus felületén, hogy egy
+ * fogyasztó kihagyása fordításidőben kiderüljön.
+ *   - `trusted`            — platform-determinisztikus eredmény (pl. board_write
+ *                            visszaigazolás, sandbox commit-eredmény).
+ *   - `internal`           — a tenant belső rendszeréből (pl. tudásbázis, user
+ *                            directory) — nem szigorú kezelés, de a különbség rögzített.
+ *   - `external_untrusted` — kívülről beszedett adat (bejövő levél, webtartalom,
+ *                            ügyfél-feltöltés, harmadik fél API-ja). ADAT marad,
+ *                            sosem utasítás.
+ */
+export type TrustClass = 'trusted' | 'internal' | 'external_untrusted'
+
 export type ToolBrokerInvokeResult =
   | {
       denied: true
@@ -616,6 +631,12 @@ export type ToolBrokerInvokeResult =
     }
   | {
       denied: false
+      /**
+       * A tool-eredmény bizalmi osztálya (issue #97). Kötelező mező: minden
+       * fogyasztónak (chat-tool-loop, wiki/general-task/agent-chat runtime, agent
+       * tools API) kezelnie kell, mielőtt az eredmény a modell elé kerül.
+       */
+      trust: TrustClass
       result:
         | KbSearchResult
         | KbListIndexResult
