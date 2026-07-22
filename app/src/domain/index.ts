@@ -44,6 +44,7 @@ import { WorkspaceLifecycleService } from '@/domain/file-editor/workspace-lifecy
 import { RecipeService } from '@/domain/recipe/recipe-service'
 import { SkillService } from '@/domain/skill/skill-service'
 import { ConversationService } from '@/domain/conversation/conversation-service'
+import { ChannelBotService } from '@/domain/channel/channel-bot-service'
 import { PlaybookService } from '@/domain/playbook/playbook-service'
 import { PlaybookV2Service } from '@/domain/playbook/playbook-v2-service'
 import { ProcessService } from '@/domain/playbook/process-service'
@@ -181,6 +182,10 @@ const conversationService = new ConversationService(
   repositories.audit,
   playbookService,
 )
+const channelBotService = new ChannelBotService({
+  bots: repositories.channelBots,
+  audit: repositories.audit,
+})
 const connectorGrantService = new ConnectorGrantService(repositories.connectorGrants, repositories.audit)
 const workspaceBucket = process.env.WORKSPACE_BUCKET ?? 'platform-workspace-prod'
 const workspaceStorage = new WorkspaceStorage(workspaceBucket)
@@ -762,6 +767,7 @@ export const services = {
   processDefinitions: processDefinitionService,
   ticketStateMachine,
   conversations: conversationService,
+  channelBots: channelBotService,
   iam: iamService,
   tenants: tenantService,
   provisioning: provisioningService,

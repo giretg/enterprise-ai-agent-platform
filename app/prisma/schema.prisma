@@ -482,6 +482,39 @@ enum ConversationStatus {
   archived
 }
 
+// ── Csatorna-réteg (Telegram feature-spec #70, D14) ─────────────────────────
+// Az általános Csatorna (Channel) réteg típus-diszkriminátora. Ma egyetlen tag
+// (telegram); a WhatsApp/Slack/SMS adapterek KÍVÜL esnek a hatókörön (Out of Scope),
+// de az enum és a séma előre felkészül rájuk.
+enum ChannelType {
+  telegram
+}
+
+/// A regisztrált csatorna-bot állapota. `disabled` esetén a csatorna némán zárva —
+/// incidens esetén a platform-admin egy lépésben elzárhatja a kimenő/bejövő utat.
+enum ChannelBotStatus {
+  active
+  disabled
+}
+
+/// A csatorna-identitás (külső fiók ↔ platform-felhasználó kötés) állapota.
+/// `revoked` = a felhasználó/admin megszüntette; `blocked` = a külső oldal jelezte,
+/// hogy a felhasználó letiltotta a botot (D15 — a küldés abbamarad). SZEREPKÖRT nem tárol.
+enum ChannelIdentityStatus {
+  active
+  revoked
+  blocked
+}
+
+/// A worker második munkatípusának (D8) sor-állapota. A forduló túléli a webhook-kérést,
+/// újrapróbálható és mérhető.
+enum ChannelTurnStatus {
+  queued
+  running
+  done
+  failed
+}
+
 enum MessageRole {
   user
   agent
@@ -559,6 +592,7 @@ model User {
   membershipsInvited            TenantMembership[]   @relation("MembershipInvitedBy")
   platformMemberships           PlatformMembership[] @relation("PlatformMembershipUser")
   tenantsCreated                Tenant[]             @relation("TenantCreatedBy")
+  channelIdentities             ChannelIdentity[]    @relation("ChannelIdentityUser")
 
   @@index([tenantId, status])
   @@index([tenantId, role])
@@ -758,6 +792,7 @@ model Agent {
   monitorDefinitions MonitorDefinition[]
   conversations      Conversation[]
   retentionPolicies  RetentionPolicy[]
+  channelAgentGrants ChannelAgentGrant[] @relation("ChannelAgentGrantAgent")
 
   @@index([tenantId, status])
   @@index([tenantId, role])
@@ -1742,6 +1777,12 @@ model Conversation {
   updatedAt         DateTime           @updatedAt @map("updated_at") @db.Timestamptz
   lastMessageAt     DateTime           @default(now()) @map("last_message_at") @db.Timestamptz
 
+  // Csatorna-megjelölés (Telegram feature-spec #70, D14): ha a beszélgetés egy
+  // csatorna-adapteren (pl. Telegram) keresztül él, ez jelöli a csatorna típusát és
+  // a külső szál-azonosítót. Webes beszélgetésnél mindkettő null.
+  channel           ChannelType?       @map("channel")
+  channelExternalId String?            @map("channel_external_id")
+
   agent           Agent            @relation(fields: [agentId], references: [id], onDelete: Cascade)
   createdBy       User             @relation("ConversationCreatedBy", fields: [createdById], references: [id])
   retentionPolicy RetentionPolicy? @relation(fields: [retentionPolicyId], references: [id])
@@ -1750,10 +1791,12 @@ model Conversation {
   modelCalls      ModelCall[]
   toolCalls       ToolCall[]
   agentTurns      AgentTurn[]
+  channelSessions ChannelSession[]
 
   @@index([tenantId, agentId, lastMessageAt])
   @@index([tenantId, createdById])
   @@index([retainUntil, legalHold])
+  @@index([channel, channelExternalId])
   @@map("conversations")
 }
 
@@ -1840,6 +1883,131 @@ model AgentTurn {
   @@index([conversationId, status])
   @@index([status, heartbeatAt])
   @@map("agent_turns")
+}
+
+// ── Csatorna-réteg entitások (Telegram feature-spec #70, D14) ───────────────
+// Ez a slice CSAK az adatmodellt és a platform-bot regisztrációját hozza; a
+// bejövő webhook, az összekötés és a futásidő későbbi ticketek. A cél, hogy a
+// későbbi szeleteknek legyen mire épülniük.
+
+/// Regisztrált csatorna-bot (D3/D14). A `tenantId` üresen hagyható = platform-szintű
+/// bot (a connectoroknál bevált platform-vs-szervezet minta szerint). A hozzáférési
+/// kulcs és a webhook titkos fejléc SOHA nem nyersen, csak TITOK-REFERENCIAKÉNT
+/// tárolódik (`accessKeySecretRef` / `webhookSecretRef` — pl. `env:...`,
+/// `secret-manager:...`), és a felületen sosem olvasható vissza. Egyetlen platform-bot
+/// él csatorna-típusonként (részleges egyedi index, `tenant_id IS NULL`).
+model ChannelBot {
+  id                 String           @id @default(uuid()) @db.Uuid
+  channelType        ChannelType      @map("channel_type")
+  tenantId           String?          @map("tenant_id") @db.Uuid
+  name               String
+  accessKeySecretRef String           @map("access_key_secret_ref")
+  webhookSecretRef   String           @map("webhook_secret_ref")
+  status             ChannelBotStatus @default(active)
+  createdById        String?          @map("created_by") @db.Uuid
+  createdAt          DateTime         @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt          DateTime         @updatedAt @map("updated_at") @db.Timestamptz
+
+  sessions ChannelSession[]
+
+  // Szervezeti bot egyediség típusonként; a platform-bot (tenant_id IS NULL)
+  // egyediségét a migráció részleges egyedi indexe kényszeríti ki (Prisma-sémában
+  // a NULL-ok külön értékek, ezért ott nem kifejezhető).
+  @@unique([channelType, tenantId])
+  @@index([channelType, status])
+  @@map("channel_bots")
+}
+
+/// Külső fiók ↔ platform-felhasználó kötés (D2/D14). A `tenantId` a kötéskor RÖGZÍTETT
+/// szervezet. A `lookupHash` a külső azonosító determinisztikus, egyedi kereső-hashe
+/// (a nyers külső azonosító csak titkosítva, `externalUserIdEnc`). SZEREPKÖRT NEM tárol —
+/// az minden üzenetnél élőben oldódik fel a tagságból (D2).
+model ChannelIdentity {
+  id                String                @id @default(uuid()) @db.Uuid
+  channelType       ChannelType           @map("channel_type")
+  externalUserIdEnc String                @map("external_user_id_enc")
+  lookupHash        String                @map("lookup_hash")
+  tenantId          String?               @map("tenant_id") @db.Uuid
+  userId            String                @map("user_id") @db.Uuid
+  status            ChannelIdentityStatus @default(active)
+  linkedAt          DateTime              @default(now()) @map("linked_at") @db.Timestamptz
+  createdAt         DateTime              @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt         DateTime              @updatedAt @map("updated_at") @db.Timestamptz
+
+  user     User                @relation("ChannelIdentityUser", fields: [userId], references: [id], onDelete: Cascade)
+  grants   ChannelAgentGrant[]
+  sessions ChannelSession[]
+
+  @@unique([channelType, lookupHash])
+  @@index([userId, status])
+  @@index([tenantId, status])
+  @@map("channel_identities")
+}
+
+/// Melyik agent érhető el a csatornán, kinek, melyik projekttel (D5/D9/D14). Nem új
+/// jogosultság-forrás, hanem SZŰKÍTÉS: a platform-oldali hozzáféréssel vett metszet.
+/// A `projectKey` alapértéke a gyűjtő (`__general__`).
+model ChannelAgentGrant {
+  id          String   @id @default(uuid()) @db.Uuid
+  identityId  String   @map("identity_id") @db.Uuid
+  agentId     String   @map("agent_id") @db.Uuid
+  projectKey  String   @default("__general__") @map("project_key")
+  grantedById String?  @map("granted_by") @db.Uuid
+  grantedAt   DateTime @default(now()) @map("granted_at") @db.Timestamptz
+  createdAt   DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  identity ChannelIdentity @relation(fields: [identityId], references: [id], onDelete: Cascade)
+  agent    Agent           @relation("ChannelAgentGrantAgent", fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@unique([identityId, agentId])
+  @@index([agentId])
+  @@map("channel_agent_grants")
+}
+
+/// Külső szál ↔ beszélgetés összerendelés (D8/D9/D14). Az `updateWatermark` a Telegram
+/// monoton növekvő frissítés-azonosítójának munkamenetenkénti vízjele (D15 duplikáció-
+/// védelem). A `lastActivityAt` a 24 órás gördülő beszélgetéshez (D9).
+model ChannelSession {
+  id               String   @id @default(uuid()) @db.Uuid
+  botId            String   @map("bot_id") @db.Uuid
+  externalThreadId String   @map("external_thread_id")
+  conversationId   String?  @map("conversation_id") @db.Uuid
+  identityId       String?  @map("identity_id") @db.Uuid
+  activeAgentId    String?  @map("active_agent_id") @db.Uuid
+  updateWatermark  BigInt?  @map("update_watermark")
+  lastActivityAt   DateTime @default(now()) @map("last_activity_at") @db.Timestamptz
+  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  bot          ChannelBot       @relation(fields: [botId], references: [id], onDelete: Cascade)
+  conversation Conversation?    @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  identity     ChannelIdentity? @relation(fields: [identityId], references: [id], onDelete: SetNull)
+  turns        ChannelTurn[]
+
+  @@unique([botId, externalThreadId])
+  @@index([identityId])
+  @@index([lastActivityAt])
+  @@map("channel_sessions")
+}
+
+/// A worker munkasora — a második munkatípus (D8/D14). Egy bejövő üzenet egy sor;
+/// a forduló túléli a webhook-kérést, `attempts` szerint újrapróbálható, `lastError`
+/// diagnosztizálható.
+model ChannelTurn {
+  id         String            @id @default(uuid()) @db.Uuid
+  sessionId  String            @map("session_id") @db.Uuid
+  inboundRef String?           @map("inbound_ref")
+  status     ChannelTurnStatus @default(queued)
+  attempts   Int               @default(0)
+  lastError  String?           @map("last_error")
+  createdAt  DateTime          @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt  DateTime          @updatedAt @map("updated_at") @db.Timestamptz
+
+  session ChannelSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, status])
+  @@index([status, createdAt])
+  @@map("channel_turns")
 }
 
 model RetentionPolicy {
