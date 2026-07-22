@@ -91,6 +91,8 @@
     "test:conversation-session": "tsx scripts/conversation-session.test.ts",
     "test:channel-transport": "tsx scripts/channel-outbound-transport.test.ts",
     "test:channel-bot": "tsx scripts/channel-bot-service.test.ts",
+    "test:channel-link-token": "tsx scripts/channel-link-token.test.ts",
+    "test:channel-linking": "tsx scripts/channel-linking-service.test.ts",
     "test:agent-turn": "tsx scripts/agent-turn-repository.test.ts",
     "test:agent-turn-record": "tsx scripts/agent-chat-turn-record.test.ts",
     "test:loop-stop": "tsx scripts/loop-stop-decision.test.ts",

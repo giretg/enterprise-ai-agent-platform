@@ -367,6 +367,14 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'channel.bot.update',
   'channel.message.sent',
   'channel.message.blocked',
+  // Összekötés és visszavonás (#72, D12): token kiadása, kötés létrejötte/elutasítása,
+  // visszavonás (saját/admin), és a bekötetlen küldő EGYSZERI semleges válasza. Az
+  // azonosítók ÁLNEVESÍTVE (kereső-hash prefix), nyers külső id sosem kerül auditba.
+  'channel.link.token_issued',
+  'channel.link.established',
+  'channel.link.rejected',
+  'channel.identity.revoked',
+  'channel.link.unlinked_notice',
 
   // Platform / DB mode
   'database.mode_changed',

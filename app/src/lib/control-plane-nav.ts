@@ -30,6 +30,7 @@ export function buildControlPlaneNav(ctx: ControlPlaneNavContext): ControlPlaneN
 
   // Saját OAuth / connector grant — operator+ (viewer is láthatja a saját fiókjait).
   if (canViewer) {
+    adminChildren.push({ href: '/control-plane/account', label: 'Fiókom' })
     adminChildren.push({ href: '/control-plane/connectors', label: 'Fiókok' })
   }
   if (canTenantAdmin) {

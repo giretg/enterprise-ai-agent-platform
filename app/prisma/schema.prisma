@@ -593,6 +593,8 @@ model User {
   platformMemberships           PlatformMembership[] @relation("PlatformMembershipUser")
   tenantsCreated                Tenant[]             @relation("TenantCreatedBy")
   channelIdentities             ChannelIdentity[]    @relation("ChannelIdentityUser")
+  channelLinkTokens             ChannelLinkToken[]   @relation("ChannelLinkTokenUser")
+  userNotifications             UserNotification[]   @relation("UserNotificationUser")
 
   @@index([tenantId, status])
   @@index([tenantId, role])
@@ -1972,12 +1974,16 @@ model ChannelSession {
   botId            String   @map("bot_id") @db.Uuid
   externalThreadId String   @map("external_thread_id")
   conversationId   String?  @map("conversation_id") @db.Uuid
-  identityId       String?  @map("identity_id") @db.Uuid
-  activeAgentId    String?  @map("active_agent_id") @db.Uuid
-  updateWatermark  BigInt?  @map("update_watermark")
-  lastActivityAt   DateTime @default(now()) @map("last_activity_at") @db.Timestamptz
-  createdAt        DateTime @default(now()) @map("created_at") @db.Timestamptz
-  updatedAt        DateTime @updatedAt @map("updated_at") @db.Timestamptz
+  identityId       String?   @map("identity_id") @db.Uuid
+  activeAgentId    String?   @map("active_agent_id") @db.Uuid
+  updateWatermark  BigInt?   @map("update_watermark")
+  // D12 — a bekötetlen küldő EGYETLEN semleges választ kap, utána csend ugyanabban a
+  // szálban. Ez a bélyeg jelöli, hogy a semleges válasz már kiment; ha ki van töltve,
+  // a további bekötetlen üzenetek némán elnyelődnek (nem generálnak kimenő hívást).
+  unlinkedNoticeAt DateTime? @map("unlinked_notice_at") @db.Timestamptz
+  lastActivityAt   DateTime  @default(now()) @map("last_activity_at") @db.Timestamptz
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt        DateTime  @updatedAt @map("updated_at") @db.Timestamptz
 
   bot          ChannelBot       @relation(fields: [botId], references: [id], onDelete: Cascade)
   conversation Conversation?    @relation(fields: [conversationId], references: [id], onDelete: SetNull)
@@ -2008,6 +2014,62 @@ model ChannelTurn {
   @@index([sessionId, status])
   @@index([status, createdAt])
   @@map("channel_turns")
+}
+
+/// Deep-link összekötő token (Telegram feature-spec #70/#72, D12). A webes „Telegram
+/// összekötése" gomb egy RÖVID ÉLETTARTAMÚ, EGYSZER FELHASZNÁLHATÓ tokent állít elő,
+/// amibe bele van kötve a SZERVEZET, a FELHASZNÁLÓ és a LEJÁRAT — aláírva
+/// (`signature`, HMAC a `jti`+szervezet+felhasználó+lejárat felett; a beváltás konstans
+/// idővel ellenőrzi). A Telegram `start` paramétere legfeljebb 64 karakter, ezért a
+/// mélylink CSAK a rövid `jti`-t hordozza; az aláírt kötés (mezők + `signature`) itt,
+/// szerveroldalon él (a write-gate token `tokenHash`+`signature` mintáját követve).
+/// Az egyszer-használatot a `consumedAt` atomi billentése kényszeríti (verseny-biztos).
+model ChannelLinkToken {
+  id                   String      @id @default(uuid()) @db.Uuid
+  channelType          ChannelType @map("channel_type")
+  /// A mélylink `start` paramétere — rövid, kitalálhatatlan, egyedi (nem a nyers azonosító).
+  jti                  String      @unique
+  /// HMAC-aláírás a kötött mezők felett (integritás + hamisítás-detektálás, konstans idejű vetés).
+  signature            String
+  userId               String      @map("user_id") @db.Uuid
+  /// A kötéskor RÖGZÍTETT szervezet (D2). Üres = platform-szintű felhasználó.
+  tenantId             String?     @map("tenant_id") @db.Uuid
+  expiresAt            DateTime    @map("expires_at") @db.Timestamptz
+  /// Beváltáskor töltődik ki (egyszer-használat). A második beváltás nem hoz létre kötést.
+  consumedAt           DateTime?   @map("consumed_at") @db.Timestamptz
+  /// A beváltó külső fiók kereső-hashe — a kettős-koppintás idempotens sikeréhez
+  /// (ugyanaz a fiók) vs. a továbbküldött-link elutasításához (más fiók).
+  consumedByLookupHash String?     @map("consumed_by_lookup_hash")
+  createdById          String?     @map("created_by") @db.Uuid
+  createdAt            DateTime    @default(now()) @map("created_at") @db.Timestamptz
+
+  user User @relation("ChannelLinkTokenUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("channel_link_tokens")
+}
+
+/// Platform-oldali felhasználói értesítés (Telegram feature-spec #70/#72, D12 story 3).
+/// Egyelőre az összekötés tényéről szól — ha nem a felhasználó kötött, azonnal lássa és
+/// megszüntethesse. Szándékosan általános (kind + title + body + metadata), hogy később más
+/// események is ide írhassanak. A `readAt` az „elolvasva" jelölés.
+model UserNotification {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  tenantId  String?   @map("tenant_id") @db.Uuid
+  kind      String
+  title     String
+  body      String
+  metadata  Json      @default("{}")
+  readAt    DateTime? @map("read_at") @db.Timestamptz
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  user User @relation("UserNotificationUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, readAt])
+  @@index([userId, createdAt])
+  @@map("user_notifications")
 }
 
 model RetentionPolicy {
