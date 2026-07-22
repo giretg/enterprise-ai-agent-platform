@@ -3,6 +3,9 @@ import type {
   AgentTurn,
   AgentTurnStatus,
   AuditActorType,
+  ChannelBot,
+  ChannelBotStatus,
+  ChannelType,
   AuditLog,
   Connector,
   ConnectorAccessMode,
@@ -2151,4 +2154,35 @@ export interface SandboxVersioningRepository {
       completedAt: Date | null
     }>,
   ): Promise<SandboxExport>
+}
+
+/**
+ * Csatorna-bot tár (Telegram feature-spec #70/#71, D3/D14). A platform-bot a `tenantId = null`
+ * sor; egyetlen platform-bot él csatorna-típusonként (a migráció részleges egyedi indexe
+ * kényszeríti). A titok-referenciák (`accessKeySecretRef` / `webhookSecretRef`) NYERSEN sosem
+ * hagyják el a szervert.
+ */
+export type CreateChannelBotInput = {
+  channelType: ChannelType
+  tenantId: string | null
+  name: string
+  accessKeySecretRef: string
+  webhookSecretRef: string
+  status?: ChannelBotStatus
+  createdById: string | null
+}
+
+export type UpdateChannelBotInput = Partial<{
+  name: string
+  accessKeySecretRef: string
+  webhookSecretRef: string
+  status: ChannelBotStatus
+}>
+
+export interface ChannelBotRepository {
+  /** A platform-szintű bot (tenantId IS NULL) az adott csatorna-típusra, vagy `null`. */
+  findPlatformBot(channelType: ChannelType): Promise<ChannelBot | null>
+  findById(id: string): Promise<ChannelBot | null>
+  create(input: CreateChannelBotInput): Promise<ChannelBot>
+  update(id: string, input: UpdateChannelBotInput): Promise<ChannelBot>
 }

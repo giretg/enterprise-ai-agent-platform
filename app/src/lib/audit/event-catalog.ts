@@ -360,6 +360,14 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'agent.web_research.completed',
   'agent.web_research.blocked',
 
+  // Csatorna-réteg (Telegram feature-spec #70/#71, D14). A platform-bot regisztráció/
+  // frissítés és a kimenő üzenet ki-/blokk-eseményei — a titok NYERSEN sosem kerül
+  // auditba, csak a titok-referencia (maga a mutató).
+  'channel.bot.register',
+  'channel.bot.update',
+  'channel.message.sent',
+  'channel.message.blocked',
+
   // Platform / DB mode
   'database.mode_changed',
   'database.test_synced_from_production',
