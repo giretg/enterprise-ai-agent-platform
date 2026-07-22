@@ -93,6 +93,8 @@ import {
 } from './tool-broker-delegation'
 // WP-8 — az audit/telemetria choke-point külön modulban (tool-broker-audit.ts).
 import { recordCall, recordDenied } from './tool-broker-audit'
+// issue #97 — bizalmi regiszter (tool-nevenkénti TrustClass leképezés).
+import { resolveTrustClass } from './tool-trust-registry'
 export { AllowlistAuthorizer } from './tool-broker-authorizer'
 export type {
   Authorizer,
@@ -285,6 +287,9 @@ export class ToolBrokerService {
       )
       const latencyMs = Date.now() - startedAt
       const meta = resultMeta(result)
+      // issue #97 — bizalmi osztály a tool-nevenkénti regiszterből (determinisztikus,
+      // args-független, az agent által nem befolyásolható).
+      const trust = resolveTrustClass(input.tool)
 
       await recordCall(this, {
         input,
@@ -297,10 +302,12 @@ export class ToolBrokerService {
         actingUserId,
         grantId: authorization.grant?.id ?? null,
         webSearchEffective,
+        trustClass: trust,
       })
 
       return {
         denied: false,
+        trust,
         result,
         resultMeta: meta,
         latencyMs,
@@ -468,6 +475,28 @@ export class ToolBrokerService {
     const approvedRef = payload.gmailSendApproved
     if (typeof approvedRef !== 'string' || !approvedRef) return false
     return approvedRef === (args.draftId ?? args.to ?? '')
+  }
+
+  /**
+   * Következmény-kapu kiváltásának rögzítése (issue #97). Ha egy „tainted"
+   * fordulóban (külső, nem megbízható tartalom került a fordulóba) egy mellékhatásos
+   * eszközhívás emberi jóváhagyást igényel, a tool-loop NEM a `invoke`-ot hívja,
+   * hanem ezt: a blokkolt hívás bekerül a meglévő audit-láncba (`tool.call.denied`
+   * + `ToolCall` sor `trustClass`-szal), hogy egy incidensnél végigkövethető legyen.
+   */
+  async recordConsequenceGateBlock(input: ToolBrokerInvokeInput): Promise<void> {
+    const startedAt = Date.now()
+    const ticketId = input.tool === 'board_write' ? input.args.ticketId : input.ticketId ?? null
+    await recordCall(this, {
+      input,
+      ticketId,
+      connectorId: null,
+      status: 'denied',
+      latencyMs: Date.now() - startedAt,
+      policyDecision: 'consequence_gate_external_content',
+      resultMeta: { denied: true, reason: 'external_content_requires_approval' },
+      trustClass: resolveTrustClass(input.tool),
+    })
   }
 
 }
