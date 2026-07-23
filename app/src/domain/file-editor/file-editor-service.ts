@@ -1,6 +1,12 @@
 import { FileEditorError, WorkspaceStorage } from './workspace-storage'
 import { requiresDeleteConfirm } from './delete-confirm-policy'
 import {
+  buildUserRegex,
+  MAX_LINE_SCAN_LENGTH,
+  MAX_PATTERN_LENGTH,
+  MAX_SEARCH_FILES,
+} from './safe-pattern'
+import {
   xlsxReadSheet,
   xlsxWriteCells,
   xlsxAppendRows,
@@ -50,13 +56,31 @@ function resolveDirPath(userPath?: string): string | undefined {
 }
 
 function globToRegex(pattern: string): RegExp {
+  // A glob-fordítás minden regex-metakaraktert escapel, csak a `*`/`**`/`?`
+  // glob-jelekből képez `[^/]*` / `.*` / `[^/]` mintát — így a KIMENET nem
+  // tartalmazhat beágyazott kvantort (nincs exponenciális ReDoS). A bemenet
+  // hosszát viszont korlátozzuk, hogy a sok `*`-ból adódó szekvenciális `.*`
+  // se okozzon polinomiális berobbanást.
+  if (pattern.length > MAX_PATTERN_LENGTH) {
+    throw new FileEditorError(
+      'PATTERN_TOO_LONG',
+      `A glob-minta túl hosszú (max ${MAX_PATTERN_LENGTH} karakter).`,
+    )
+  }
   const escaped = pattern
     .replace(/[.+^${}()|[\]\\]/g, '\\$&')
     .replace(/\*\*/g, '\x00')
     .replace(/\*/g, '[^/]*')
     .replace(/\x00/g, '.*')
     .replace(/\?/g, '[^/]')
-  return new RegExp(`^${escaped}$`)
+  try {
+    return new RegExp(`^${escaped}$`)
+  } catch (e) {
+    throw new FileEditorError(
+      'INVALID_PATTERN',
+      `Érvénytelen glob-minta: ${e instanceof Error ? e.message : String(e)}`,
+    )
+  }
 }
 
 function addLineNumbers(text: string): string {
@@ -330,19 +354,31 @@ export class FileEditorService {
     const searchPath = resolveDirPath(args.path)
     const all = await this.storage.list(tenantId, ticketId, searchPath)
 
-    const files = args.glob ? all.filter((p) => globToRegex(args.glob!).test(p)) : all
-    const regex = new RegExp(args.pattern, args.ignore_case ? 'i' : '')
+    // Az agent-vezérelt minta NYERS regexként fut minden soron: star-height
+    // ellenőrzéssel és fordítási hibakezeléssel védünk a ReDoS/összeomlás ellen.
+    const globRegex = args.glob ? globToRegex(args.glob) : null
+    const regex = buildUserRegex(args.pattern, args.ignore_case ? 'i' : '')
     const maxResults = Math.min(args.max_results ?? 100, MAX_SEARCH_RESULTS)
     const matches: FileSearchMatch[] = []
     let truncated = false
+
+    // Fájlszám-plafon: nagyon nagy workspace-en se olvassunk be korlátlanul.
+    let files = globRegex ? all.filter((p) => globRegex.test(p)) : all
+    if (files.length > MAX_SEARCH_FILES) {
+      files = files.slice(0, MAX_SEARCH_FILES)
+      truncated = true
+    }
 
     outer: for (const filePath of files) {
       const buf = await this.storage.read(tenantId, ticketId, filePath)
       if (!buf) continue
       const lines = buf.toString('utf8').split('\n')
       for (let i = 0; i < lines.length; i++) {
-        if (regex.test(lines[i])) {
-          matches.push({ path: filePath, lineNumber: i + 1, line: lines[i] })
+        // Sor-hossz plafon: a maradék (polinomiális) visszalépést is behatárolja.
+        const line = lines[i]
+        const scanned = line.length > MAX_LINE_SCAN_LENGTH ? line.slice(0, MAX_LINE_SCAN_LENGTH) : line
+        if (regex.test(scanned)) {
+          matches.push({ path: filePath, lineNumber: i + 1, line })
           if (matches.length >= maxResults) {
             truncated = true
             break outer

@@ -343,6 +343,8 @@ function makeService(opts?: {
   drafts?: FakeDraftRepo
   allowlist?: string[]
   agentCapabilities?: readonly string[]
+  /** Négy-szem jóváhagyó-hitelesítés felülbírálása; alap: az azonos-tenant jóváhagyó admin. */
+  verifyApprover?: (input: { approverId: string; tenantId: string | null }) => Promise<boolean>
 }) {
   const audit = opts?.audit ?? new FakeAudit()
   const drafts = opts?.drafts ?? new FakeDraftRepo()
@@ -353,6 +355,10 @@ function makeService(opts?: {
     resolveBankPreset: async () => opts?.bankPreset ?? false,
     sandboxTester: opts?.tester ?? okTester,
     resolveAgentCapabilities: async () => opts?.agentCapabilities ?? [],
+    // A dual-control jóváhagyót hitelesíteni KELL (négy-szem): alapból az aktor
+    // tenantjának bármely (aktivátortól különböző) jóváhagyója érvényes adminnak számít.
+    verifyDualControlApprover:
+      opts?.verifyApprover ?? (async ({ tenantId }) => tenantId === TENANT),
   })
   return { svc, audit, drafts }
 }
@@ -647,6 +653,23 @@ async function run() {
       adminActor,
     )
     assert.equal(res.lifecycleState, 'active')
+  })
+
+  // P6b: a második jóváhagyó HITELESÍTVE van — tetszőleges (nem admin / nem létező)
+  // approverId NEM elég a négy-szemhez (a régi kódban elég volt).
+  await test('P6b: bank preset → hitelesítetlen jóváhagyó → APPROVER_NOT_AUTHORIZED', async () => {
+    const { svc } = makeService({
+      bankPreset: true,
+      // Csak a valós admin ('user-admin-2') fogadható el; más nem.
+      verifyApprover: async ({ approverId }) => approverId === 'user-admin-2',
+    })
+    const created = await draftToActivatable(svc)
+    await expectError('APPROVER_NOT_AUTHORIZED', () =>
+      svc.activateConnector(
+        { draftId: created.draftId, secretAlias: 'env:K', approverId: 'nem-letezo-user' },
+        adminActor,
+      ),
+    )
   })
 
   // P7: connector → agent hozzárendelés külön emberi admin-aktus, auditált
