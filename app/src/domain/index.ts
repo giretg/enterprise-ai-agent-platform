@@ -46,7 +46,9 @@ import { SkillService } from '@/domain/skill/skill-service'
 import { ConversationService } from '@/domain/conversation/conversation-service'
 import { ChannelBotService } from '@/domain/channel/channel-bot-service'
 import { ChannelLinkingService } from '@/domain/channel/channel-linking-service'
+import { ChannelNotificationService } from '@/domain/channel/channel-notification-service'
 import { TelegramOutboundTransport } from '@/domain/channel/channel-outbound-transport'
+import { TelegramMonitorNotifier } from '@/lib/notify/telegram-monitor-notifier'
 import { PlaybookService } from '@/domain/playbook/playbook-service'
 import { PlaybookV2Service } from '@/domain/playbook/playbook-v2-service'
 import { ProcessService } from '@/domain/playbook/process-service'
@@ -121,8 +123,29 @@ const playbookV2Service = new PlaybookV2Service(
   repositories.audit,
   (tenantId) => platformSettingsService.getTenantDefaultErrorPolicy(tenantId),
 )
+// Proaktív értesítés Telegramra (#77, D7/D11): a Monitor-riasztás a csatorna HARMADIK bejáratán
+// (ChannelNotificationService) megy ki — a Monitor sosem hívja közvetlenül a Telegramot. A kimenő
+// átvitel UGYANAZ a deny-by-default Telegram-adapter, mint az összekötésé; a bot-token a
+// platform-bot titok-referenciájából oldódik fel, a hívás pillanatában.
+const channelNotificationService = new ChannelNotificationService({
+  bots: repositories.channelBots,
+  identities: repositories.channelIdentities,
+  transport: new TelegramOutboundTransport({
+    resolveBotToken: async () => {
+      const bot = await repositories.channelBots.findPlatformBot('telegram')
+      if (!bot) throw new Error('no platform telegram bot registered')
+      return resolveConnectorApiKey(bot.accessKeySecretRef)
+    },
+    resolveHostIps: async (host) => (await lookup(host, { all: true })).map((e) => e.address),
+  }),
+  audit: repositories.audit,
+})
 const monitorNotifier = new RoutingMonitorNotifier(
-  { chat: new WebhookChatNotifier() },
+  {
+    chat: new WebhookChatNotifier(),
+    // `telegram:<userId>` → az adott platform-felhasználó AKTÍV, azonos szervezetű kötése.
+    telegram: new TelegramMonitorNotifier({ notifications: channelNotificationService }),
+  },
   new AuditOnlyMonitorNotifier(),
 )
 // Lazy referencia: a `dispatcherService` lejjebb, ProcessService-en TÚL épül fel (a
