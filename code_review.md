@@ -1,5 +1,37 @@
 # Enterprise code review log
 
+## 2026-07-23 - Fájl-munkaterület eszközök: agent-vezérelt regex ReDoS (file_search / file_glob)
+
+- Áttekintett modulok:
+  - `app/src/domain/file-editor/file-editor-service.ts` (a teljes agent-facing fájl-eszköz felület: read/write/edit/list/glob/search/delete + xlsx/docx/pdf/pptx/html; path-traversal kapu, regex-alapú keresés)
+  - `app/src/domain/file-editor/workspace-storage.ts` (tenant-kulcsolt tároló-réteg — korábban külön áttekintve, itt a keresési belépőpontok határaként)
+  - `app/src/domain/tool-broker/handlers/file.handler.ts` és `tool-broker-types.ts` (hogyan jutnak az agent-tool argumentumok a szolgáltatásba — validáció-lánc)
+  - Kontextusban átnézve, de külön leletet nem adott: `dispatcher/harness-run-env.ts`, `dispatcher/cloud-run-auth.ts`, a harness `complete`/`process` callback-útvonalak, `connector/connector-secret-store.ts`, `gateway/oauth-token-store.ts`, `gateway/chatgpt-oauth-bridge.ts`.
+- Kiinduló állapot (fontos — NEM védtelen a nulláról):
+  - A `file_search` / `file_glob` ReDoS-védelmét részben MÁR bevezette a nemrég mergelt **PR #102** (`7f8ce0d1 "fix(file-editor): block ReDoS in agent-driven file_search patterns"`, 2026-07-21). Ez létrehozta a `safe-pattern.ts`-t, a bemeneti korlátokat (minta-/sor-/fájlszám-plafon) és a tipizált hibákat. A `code_review.md` naplóban viszont NEM szerepelt — ezért került most átfogó, célzott felülvizsgálat alá.
+  - A meglévő kapu (`hasNestedUnboundedQuantifier`) KIZÁRÓLAG a beágyazott, nem-korlátos kvantort (`(a+)+`, star height ≥ 2) fogta.
+- Eredmény:
+  - A fájl-eszközök tenant-izolációja és path-traversal védelme rendben: a `resolveSafePath` elutasítja a `..` szegmenseket, a tároló tenant+ticket kulccsal particionál, a broker-handler a munka tenantjára old fel. A törlés-megerősítés és a deliverable-védelmek megvannak. A PR #102 bemeneti korlátai és tipizált hibái is helyükön.
+  - **Maradék kritikus rés (CWE-1333, ReDoS-bypass):** az exponenciális visszalépésnek KÉT gyakorlati családja van, a meglévő kapu csak az egyiket zárta. A beágyazott kvantor (`(a+)+`) MELLETT az ismételt, átfedő alternáció (`(a|a)+`, `(a|ab)+`) is 2^n — ez star height 1, ezért a régi `hasNestedUnboundedQuantifier` ÁTENGEDTE, egyenesen a `new RegExp`-be. A bemeneti korlátok itt NEM segítenek: az alternáció-átfedés már ~30 karakteren berobban, jóval a sor-hossz plafon (20000) alatt.
+  - **Empirikusan mérve** a régi úton: a `(a|a)+$` minta 24 karakteren 2,2 s, 30-on 12 s, **32-on ~51 s** (kétszereződés 2 karakterenként) — egy ~40 karakteres input több perces teljes befagyást okoz. Az argumentumok az LLM tool-hívásából jönnek, amit részben megbízhatatlan ticket-/dokumentumtartalom (prompt-injection) befolyásolhat; a worker EGYSZÁLÚ és több tenant futásait szolgálja ki, tehát a befagyás cross-tenant DoS.
+  - A rést a `/code-review` MINDKÉT ága (Standards és Spec) egymástól függetlenül, konkrét trace-szel feltárta — ez adta a megerősítést, hogy nem elméleti.
+- Javítás (a meglévő kapu KITERJESZTÉSE, nem újraírása):
+  - `safe-pattern.ts`: a `hasNestedUnboundedQuantifier` helyére `hasCatastrophicQuantifier` lép, ami a paren-stack bejárás közben csoportonként azt is számon tartja, hogy a csoport tartalmaz-e top-level alternációt (`|`), és tiltja a nem-korlátos kvantort egy ILYEN csoporton is. Így most MINDKÉT exponenciális családot zárja.
+  - A parser char-class kezelése javítva: az escapelt `\]`-t a karakterosztályon belül helyesen kezeli (a régi `indexOf(']')` idő előtt lezárta volna).
+  - Duplikáció megszüntetve: kiemelt `assertPatternLength` + `compileRegex` helper, amit a `buildUserRegex` és a `globToRegex` is használ (a Standards-ág jelezte a `globToRegex`↔`safe-pattern` duplikációt).
+  - `scripts/file-search-safe-pattern.test.ts` bővítve 13→19 esetre: az alternáció-átfedéses család (`(a|a)+`, `(a|ab)+`, `(?:x|x)*`, `((a|a)+)+`) most tiltott; a jogos minták (`a+`, `[a-z]+`, `(abc)+`, `a{2,5}`, `foo.*bar`, `foo|bar` kvantor nélkül, `*.txt` glob, escapelt `\]`) átmennek; időzített eset bizonyítja, hogy a katasztrofális minta most < 500 ms alatt (a futtatás ELŐTT) bukik.
+- Üzleti hatás:
+  - A ReDoS-védelmet PR #102 elkezdte, de egy fél lyukat hagyott: az alternáció-átfedéses minta (`(a|a)+`) továbbra is percekre megbéníthatta a feldolgozó workert — és vele MÁS ügyfelek futásait is, mert a worker közös és egyszálú. Ez pont az a fajta „majdnem kész" biztonsági javítás, ami hamis biztonságérzetet ad: a nyilvánvaló mintát fogja, a majdnem-ugyanolyat nem. A mostani PR bezárja a második exponenciális családot is, így a védelem teljes a két gyakorlati DoS-vektorra.
+  - A tipizált hibaüzenet a közérthető-UI alapelvet is szolgálja: az agent (és a naplót néző ember) azt látja, „a minta veszélyes, egyszerűsítsd", nem egy néma időtúllépést.
+- Tudott, dokumentált korlát (nem-cél ebben a PR-ben):
+  - A kvantorozott alternációt AKKOR is tiltjuk, ha az ágak nem fednek át (`(foo|bar)+`) — konzervatív hamis pozitív. A fájl-keresésnél ez elfogadható ár a biztos védelemért; a pontos átfedés-analízis külön feladat.
+  - A magas fokú, tisztán polinomiális minták (sok interleaved `.*…a`) nincsenek statikusan tiltva; ellenük a sor-hossz plafon véd. A teljes körű megoldás (linear-idejű RE2 motor, vagy a match futtatása worker-threadben wall-clock időzárral) külön, nagyobb feladat — a jelen PR a két gyakorlati, exponenciális családot zárja le.
+- Ellenőrzés:
+  - `npx tsx scripts/file-search-safe-pattern.test.ts` — 19/19 zöld.
+  - `npx tsc --noEmit` — az érintett fájlokra nincs hiba.
+  - Regresszió: `scripts/xlsx-range-and-delete-confirm.test.ts` zöld (a fájl-eszköz réteg többi része érintetlen).
+  - Empirikus ReDoS-mérés a régi úton: `(a|a)+$` 32 karakteren ~51 s → a javított úton azonnal `UNSAFE_PATTERN`.
+
 ## 2026-07-20 - Platform control plane: tenant-életciklus betartatása az automata úton
 
 - Áttekintett modulok:

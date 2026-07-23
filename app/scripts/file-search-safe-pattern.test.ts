@@ -70,6 +70,35 @@ async function run() {
     assert.throws(() => assertSafeUserRegex('([a-z]+)*'), (e) => isFileEditorError(e, 'UNSAFE_PATTERN')),
   )
 
+  // Alternáció-átfedés (star height 1, mégis exponenciális) — a sor-hossz plafon
+  // NEM véd ellene, mert már ~30 karakteren berobban.
+  await check('unsafe: (a|a)+ (alternáció-átfedés) elutasítva', () =>
+    assert.throws(() => assertSafeUserRegex('(a|a)+$'), (e) => isFileEditorError(e, 'UNSAFE_PATTERN')),
+  )
+  await check('unsafe: (a|ab)+ elutasítva', () =>
+    assert.throws(() => assertSafeUserRegex('(a|ab)+'), (e) => isFileEditorError(e, 'UNSAFE_PATTERN')),
+  )
+  await check('unsafe: (?:x|x)* (non-capturing) elutasítva', () =>
+    assert.throws(() => assertSafeUserRegex('(?:x|x)*y'), (e) => isFileEditorError(e, 'UNSAFE_PATTERN')),
+  )
+  await check('unsafe: ((a|a)+)+ (beágyazott alternáció) elutasítva', () =>
+    assert.throws(() => assertSafeUserRegex('((a|a)+)+'), (e) => isFileEditorError(e, 'UNSAFE_PATTERN')),
+  )
+
+  // Nem-ismételt / korlátosan ismételt alternáció NEM tiltott.
+  await check('safe: alternáció kvantor nélkül átmegy', () => {
+    assertSafeUserRegex('foo|bar')
+    assertSafeUserRegex('(foo|bar)')
+    assertSafeUserRegex('(foo|bar){1,3}')
+    assertSafeUserRegex('[(]a[|]b[)]') // karakterosztályba zárt |, ( ) → nem strukturális
+    assertSafeUserRegex('a[\\]b]+c') // escapelt ] a karakterosztályon belül
+  })
+
+  // Tudott, dokumentált konzervativizmus: a NEM átfedő (foo|bar)+ is elutasítva.
+  await check('conservative: (foo|bar)+ elutasítva (dokumentált hamis pozitív)', () =>
+    assert.throws(() => assertSafeUserRegex('(foo|bar)+'), (e) => isFileEditorError(e, 'UNSAFE_PATTERN')),
+  )
+
   await check('túl hosszú minta elutasítva', () =>
     assert.throws(
       () => assertSafeUserRegex('a'.repeat(MAX_PATTERN_LENGTH + 1)),
