@@ -4,6 +4,8 @@ import { ensureActiveDatabaseMode } from '@/lib/db'
 import { repositories } from '@/repositories/postgres'
 
 const DEFAULT_BATCH_LIMIT = Number(process.env.DISPATCHER_BATCH_LIMIT ?? 10)
+/** Ennyi ms `running` után egy csatorna-forduló crash-elakadtnak számít és visszakerül a sorba. */
+const CHANNEL_TURN_STALE_MS = Number(process.env.CHANNEL_TURN_STALE_MS ?? 120_000)
 
 export type DispatchCycleSummary = {
   /** Igaz, ha egy másik ciklus még folyamatban volt ugyanebben a process-ben (nincs átfedés). */
@@ -12,6 +14,11 @@ export type DispatchCycleSummary = {
   reclaimedScheduledTasks: number
   /** Watchdog: elavult heartbeatű chat-fordulók lezárása (issue #64 / D10). */
   reclaimedAgentTurns: number
+  /**
+   * A worker MÁSODIK munkatípusa (#73, D8): a bekötött Telegram-üzenetek forduló-sora. A
+   * `reclaimed` a crash-elakadt `running` sorok visszatétele, a `processed` a lezavart fordulók.
+   */
+  channelTurns: { reclaimed: number; processed: number }
   materializedScheduledTasks: number
   monitorSweep: { ran: boolean; escalated: number; openedTickets: number }
   workspacePurge: { purgedTickets: number; deletedObjects: number }
@@ -38,6 +45,7 @@ const EMPTY_SUMMARY: DispatchCycleSummary = {
   reclaimedDispatches: 0,
   reclaimedScheduledTasks: 0,
   reclaimedAgentTurns: 0,
+  channelTurns: { reclaimed: 0, processed: 0 },
   materializedScheduledTasks: 0,
   monitorSweep: { ran: false, escalated: 0, openedTickets: 0 },
   workspacePurge: { purgedTickets: 0, deletedObjects: 0 },
@@ -85,6 +93,21 @@ export async function runDispatchCycle(
       conversations: services.conversations,
     })
     const reclaimedAgentTurns = reclaimedTurns.filter((r) => r.status === 'reclaimed').length
+
+    // Csatorna-forduló sor (#73 / D8): a worker második munkatípusa. Előbb a crash-elakadt
+    // `running` sorokat tesszük vissza `queued`-ba (a chat-watchdog mintája), majd egy adagot
+    // lezavarunk. Fail-soft: egy hiba itt nem buktatja a ticket-dispatch-et.
+    let channelTurns: DispatchCycleSummary['channelTurns'] = { reclaimed: 0, processed: 0 }
+    try {
+      const reclaimedChannelTurns = await services.channelTurns.reclaimStale(CHANNEL_TURN_STALE_MS)
+      const processedChannelTurns = await services.channelTurns.processQueuedBatch(batchLimit)
+      channelTurns = { reclaimed: reclaimedChannelTurns, processed: processedChannelTurns.claimed }
+    } catch (error) {
+      console.error(
+        '[dispatch-cycle] channel-turn drain error:',
+        error instanceof Error ? error.message : error,
+      )
+    }
 
     const materialized = await services.scheduledTasks.materializeDue(new Date(), batchLimit)
     const materializedScheduledTasks = materialized.filter((r) => r.status === 'materialized').length
@@ -159,6 +182,7 @@ export async function runDispatchCycle(
       reclaimedDispatches,
       reclaimedScheduledTasks,
       reclaimedAgentTurns,
+      channelTurns,
       materializedScheduledTasks,
       monitorSweep,
       workspacePurge,

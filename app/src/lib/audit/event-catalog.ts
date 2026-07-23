@@ -375,6 +375,10 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'channel.link.rejected',
   'channel.identity.revoked',
   'channel.link.unlinked_notice',
+  // Bejövő forduló-sor + worker második munkatípus (#73, D8): a bekötött üzenet sorba
+  // kerülése (megbízható, újrapróbálható út) és az agent-engedély nélküli útmutató válasz.
+  'channel.turn.enqueued',
+  'channel.turn.no_agent',
 
   // Platform / DB mode
   'database.mode_changed',

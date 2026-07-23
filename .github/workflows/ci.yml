@@ -85,6 +85,8 @@ jobs:
           npm run test:connector-template
           npm run test:provisioning
           npm run test:file-search-safe
+          npm run test:channel-linking
+          npm run test:channel-turn
 
   migrations:
     name: Prisma migrate deploy (ephemeral Postgres)
