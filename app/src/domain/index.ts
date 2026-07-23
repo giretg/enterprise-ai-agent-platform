@@ -45,6 +45,8 @@ import { RecipeService } from '@/domain/recipe/recipe-service'
 import { SkillService } from '@/domain/skill/skill-service'
 import { ConversationService } from '@/domain/conversation/conversation-service'
 import { ChannelBotService } from '@/domain/channel/channel-bot-service'
+import { ChannelLinkingService } from '@/domain/channel/channel-linking-service'
+import { TelegramOutboundTransport } from '@/domain/channel/channel-outbound-transport'
 import { PlaybookService } from '@/domain/playbook/playbook-service'
 import { PlaybookV2Service } from '@/domain/playbook/playbook-v2-service'
 import { ProcessService } from '@/domain/playbook/process-service'
@@ -185,6 +187,48 @@ const conversationService = new ConversationService(
 const channelBotService = new ChannelBotService({
   bots: repositories.channelBots,
   audit: repositories.audit,
+})
+// Csatorna összekötés/visszavonás (#72, D12). A varrat kimenete a befecskendezett kimenő
+// átvitel (Telegram vagy teszt-dublőr); a webhook titkos fejléc a bot referenciájából oldódik
+// fel; a deep-link a platform-bot Telegram-felhasználónevéből épül (env). A platform-oldali
+// értesítés a `user_notifications` sorba kerül (D12 story 3).
+const telegramBotUsername = process.env.TELEGRAM_BOT_USERNAME?.trim() || 'YourPlatformBot'
+const channelLinkingService = new ChannelLinkingService({
+  bots: repositories.channelBots,
+  identities: repositories.channelIdentities,
+  sessions: repositories.channelSessions,
+  linkTokens: repositories.channelLinkTokens,
+  transport: new TelegramOutboundTransport({
+    resolveBotToken: async () => {
+      const bot = await repositories.channelBots.findPlatformBot('telegram')
+      if (!bot) throw new Error('no platform telegram bot registered')
+      return resolveConnectorApiKey(bot.accessKeySecretRef)
+    },
+    resolveHostIps: async (host) => (await lookup(host, { all: true })).map((e) => e.address),
+  }),
+  audit: repositories.audit,
+  notifier: {
+    async linkEstablished({ userId, tenantId, orgName, channelType }) {
+      const org = orgName?.trim() ? `„${orgName.trim()}"` : 'a szervezeted'
+      await repositories.userNotifications.create({
+        userId,
+        tenantId,
+        kind: 'channel.link.established',
+        title: 'Telegram-fiók összekötve',
+        body:
+          `A(z) ${org} szervezethez most egy Telegram-fiók lett összekötve a nevedben. ` +
+          'Ha nem te voltál, a Fiókom oldalon azonnal szüntesd meg az összekötést.',
+        metadata: { channelType },
+      })
+    },
+  },
+  resolveOrgName: async (tenantId) => {
+    if (!tenantId) return null
+    const tenant = await repositories.tenants.findById(tenantId)
+    return tenant?.displayName ?? null
+  },
+  resolveWebhookSecret: async (bot) => resolveConnectorApiKey(bot.webhookSecretRef),
+  buildDeepLink: (jti) => `https://t.me/${telegramBotUsername}?start=${jti}`,
 })
 const connectorGrantService = new ConnectorGrantService(repositories.connectorGrants, repositories.audit)
 const workspaceBucket = process.env.WORKSPACE_BUCKET ?? 'platform-workspace-prod'
@@ -768,6 +812,7 @@ export const services = {
   ticketStateMachine,
   conversations: conversationService,
   channelBots: channelBotService,
+  channelLinking: channelLinkingService,
   iam: iamService,
   tenants: tenantService,
   provisioning: provisioningService,

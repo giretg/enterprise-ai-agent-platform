@@ -6,6 +6,11 @@ import type {
   ChannelBot,
   ChannelBotStatus,
   ChannelType,
+  ChannelIdentity,
+  ChannelIdentityStatus,
+  ChannelSession,
+  ChannelLinkToken,
+  UserNotification,
   AuditLog,
   Connector,
   ConnectorAccessMode,
@@ -2185,4 +2190,101 @@ export interface ChannelBotRepository {
   findById(id: string): Promise<ChannelBot | null>
   create(input: CreateChannelBotInput): Promise<ChannelBot>
   update(id: string, input: UpdateChannelBotInput): Promise<ChannelBot>
+}
+
+/**
+ * Csatorna-identitás tár (Telegram feature-spec #70/#72, D2/D14). A külső fiók ↔ platform-
+ * felhasználó kötés. A `lookupHash` a külső azonosító determinisztikus, egyedi kereső-hashe;
+ * a nyers azonosító csak titkosítva (`externalUserIdEnc`). SZEREPKÖRT NEM tárol.
+ */
+export type CreateChannelIdentityInput = {
+  channelType: ChannelType
+  externalUserIdEnc: string
+  lookupHash: string
+  tenantId: string | null
+  userId: string
+}
+
+export interface ChannelIdentityRepository {
+  /** A (típus, kereső-hash) párra tartozó identitás bármely státusszal, vagy `null`. */
+  findByLookupHash(channelType: ChannelType, lookupHash: string): Promise<ChannelIdentity | null>
+  findById(id: string): Promise<ChannelIdentity | null>
+  /** Egy felhasználó összes csatorna-kötése (profil-nézethez). */
+  listByUser(userId: string): Promise<ChannelIdentity[]>
+  /** Egy szervezet aktív kötései a tagok user-mezőivel (admin-nézethez). */
+  listByTenantWithUsers(tenantId: string): Promise<Array<ChannelIdentity & { user: Pick<User, 'id' | 'name' | 'email'> }>>
+  create(input: CreateChannelIdentityInput): Promise<ChannelIdentity>
+  updateStatus(id: string, status: ChannelIdentityStatus): Promise<ChannelIdentity>
+  /**
+   * Re-link: egy korábban `revoked`/`blocked` (vagy más felhasználóhoz kötött) sor
+   * újraaktiválása az új felhasználóra/szervezetre. A `(channelType, lookupHash)` egyedi,
+   * ezért ugyanaz a külső fiók egyetlen sorként él tovább.
+   */
+  reactivate(
+    id: string,
+    input: { userId: string; tenantId: string | null; linkedAt: Date },
+  ): Promise<ChannelIdentity>
+}
+
+/**
+ * Csatorna-munkamenet tár (Telegram feature-spec #70/#72, D8/D9/D15). A külső szál ↔
+ * beszélgetés összerendelés; a `updateWatermark` a duplikáció-védelemhez, az
+ * `unlinkedNoticeAt` a bekötetlen „egyszer válaszol, aztán csend" viselkedéshez.
+ */
+export type ChannelSessionUpdate = Partial<{
+  identityId: string | null
+  activeAgentId: string | null
+  conversationId: string | null
+  updateWatermark: bigint
+  unlinkedNoticeAt: Date | null
+  lastActivityAt: Date
+}>
+
+export interface ChannelSessionRepository {
+  findById(id: string): Promise<ChannelSession | null>
+  findByBotAndThread(botId: string, externalThreadId: string): Promise<ChannelSession | null>
+  create(input: { botId: string; externalThreadId: string }): Promise<ChannelSession>
+  update(id: string, data: ChannelSessionUpdate): Promise<ChannelSession>
+}
+
+/**
+ * Deep-link összekötő token tár (Telegram feature-spec #70/#72, D12). Egyszer-használatos:
+ * a `consume` atomi billentés (verseny-biztos), a második beváltás nem hoz létre kötést.
+ */
+export type CreateChannelLinkTokenInput = {
+  channelType: ChannelType
+  jti: string
+  signature: string
+  userId: string
+  tenantId: string | null
+  expiresAt: Date
+  createdById: string | null
+}
+
+export interface ChannelLinkTokenRepository {
+  create(input: CreateChannelLinkTokenInput): Promise<ChannelLinkToken>
+  findByJti(jti: string): Promise<ChannelLinkToken | null>
+  /**
+   * Atomi egyszer-használat: CSAK akkor jelöli elhasználtnak (és rögzíti a beváltó
+   * kereső-hashét), ha még nincs elhasználva. `null` = már elhasznált / nem létezik.
+   */
+  consume(jti: string, consumedByLookupHash: string, now: Date): Promise<ChannelLinkToken | null>
+}
+
+/**
+ * Platform-oldali felhasználói értesítés tár (Telegram feature-spec #70/#72, D12 story 3).
+ */
+export type CreateUserNotificationInput = {
+  userId: string
+  tenantId: string | null
+  kind: string
+  title: string
+  body: string
+  metadata?: Prisma.InputJsonValue
+}
+
+export interface UserNotificationRepository {
+  create(input: CreateUserNotificationInput): Promise<UserNotification>
+  listForUser(userId: string, limit?: number): Promise<UserNotification[]>
+  markRead(id: string, userId: string, now: Date): Promise<UserNotification | null>
 }

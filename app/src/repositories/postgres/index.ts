@@ -7,7 +7,13 @@ import {
   PostgresModelCallRepository,
   PostgresModelRoutingPolicyRepository,
 } from './audit-repository'
-import { PostgresChannelBotRepository } from './channel-repository'
+import {
+  PostgresChannelBotRepository,
+  PostgresChannelIdentityRepository,
+  PostgresChannelLinkTokenRepository,
+  PostgresChannelSessionRepository,
+} from './channel-repository'
+import { PostgresUserNotificationRepository } from './user-notification-repository'
 import { PostgresConversationRepository } from './conversation-repository'
 import {
   PostgresKnowledgeArtifactRepository,
@@ -78,6 +84,10 @@ export const repositories = {
   conversations: new PostgresConversationRepository(),
   agentTurns: new PostgresAgentTurnRepository(),
   channelBots: new PostgresChannelBotRepository(),
+  channelIdentities: new PostgresChannelIdentityRepository(),
+  channelSessions: new PostgresChannelSessionRepository(),
+  channelLinkTokens: new PostgresChannelLinkTokenRepository(),
+  userNotifications: new PostgresUserNotificationRepository(),
   connectorGrants: new PostgresConnectorGrantRepository(),
   connectors: new PostgresConnectorRepository(),
   selfUpdatingConnectors: new PostgresSelfUpdatingConnectorRepository(),

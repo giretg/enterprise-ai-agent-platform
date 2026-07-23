@@ -32,7 +32,19 @@ export const CHANNEL_AUDIT_ACTIONS = {
   botUpdate: 'channel.bot.update',
   messageSent: 'channel.message.sent',
   messageBlocked: 'channel.message.blocked',
+  // Összekötés és visszavonás (#72, D12).
+  linkTokenIssued: 'channel.link.token_issued',
+  linkEstablished: 'channel.link.established',
+  linkRejected: 'channel.link.rejected',
+  identityRevoked: 'channel.identity.revoked',
+  unlinkedNotice: 'channel.link.unlinked_notice',
 } as const
+
+/**
+ * A platform-oldali felhasználói értesítés típusa az összekötésről (D12 story 3) — ha nem a
+ * felhasználó kötött, azonnal lássa és megszüntethesse.
+ */
+export const CHANNEL_LINK_NOTIFICATION_KIND = 'channel.link.established' as const
 
 export type ChannelAuditAction =
   (typeof CHANNEL_AUDIT_ACTIONS)[keyof typeof CHANNEL_AUDIT_ACTIONS]
