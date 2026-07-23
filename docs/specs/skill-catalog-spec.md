@@ -219,3 +219,5 @@ Enumok: `SkillCatalogScope { global, tenant }`, `SkillSourceType { authored, imp
 - Level-2 mellékletek (scriptek, dokumentumok).
 - Upstream-frissítés jelzés / re-import diff.
 - Forrás-átírásra épített biztonság — **véglegesen elvetve** (D13).
+
+> **Fázis 2 spec (tervezet, nincs grillezve):** `skill-catalog-phase2-spec.md`. Fontos korrekció benne: a fenti §0.1-ben Fázis 2 alapkőnek jelölt `Eval`/`EvalRun` és `docker-local-harness-launcher.ts` élesben mást csinál, mint amit a D13 feltételez — egyik sem nyújt ma valódi OS-szintű izolációt vagy skillre kötött eval-kaput. Lásd a Fázis 2 spec §0.2-t.
