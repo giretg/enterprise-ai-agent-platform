@@ -64,6 +64,7 @@ jobs:
           npm run test:health-endpoints
           npm run test:tool-broker-tenant
           npm run test:provisioning-errors
+          npm run test:provisioning-governance
           npm run test:dispatch-budget
           npm run test:dispatch-board-ticket-schema
           npm run test:playbook-v2-process

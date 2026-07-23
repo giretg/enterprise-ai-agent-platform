@@ -511,6 +511,23 @@ const provisioningService = new ProvisioningService({
     )
     return checks.filter((c) => c.allowed).map((c) => c.cap)
   },
+  // Négy-szem (§7.3, §14/4): a második jóváhagyó CSAK aktív `admin` tag lehet az aktor
+  // tenantjában. `tenantId === null` (platform-szintű aktor) → nem hitelesíthető tenant-
+  // tagságként → elutasítás (fail-closed).
+  verifyDualControlApprover: async ({ approverId, tenantId }) => {
+    if (!tenantId) return false
+    const membership = await repositories.tenantMemberships.findByTenantAndUser(
+      tenantId,
+      approverId,
+    )
+    return membership?.status === 'active' && membership.role === 'admin'
+  },
+  // Defense-in-depth tenant-határ a connector-agent kötéshez (§7.5): a cél-agent valós
+  // tenantja (tenant-szűrő NÉLKÜLI lookup) kerül összevetésre az aktor tenantjával.
+  resolveAgentTenantId: async (agentId) => {
+    const agent = await repositories.agents.findById(agentId)
+    return agent ? { found: true, tenantId: agent.tenantId } : { found: false, tenantId: null }
+  },
 })
 // Web Fetch (WS-D) platform-tool (WebFetch-Egress §7): deny-by-default, defense-in-depth.
 // A DNS-feloldó a rebinding-ellenőrzést (§7.2/4) köti be; a limitek env-vezéreltek (§14).

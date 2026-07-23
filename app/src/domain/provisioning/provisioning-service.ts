@@ -68,6 +68,27 @@ export interface ProvisioningDeps {
   resolveAgentCapabilities?: (agentId: string) => Promise<readonly string[]>
   /** Per-user grantek visszavonása, ha a connector offline/archivált lesz. */
   connectorGrants?: ConnectorGrantService
+  /**
+   * Dual-control (négy-szem) jóváhagyó-hitelesítés. A megadott `approverId` CSAK akkor
+   * érvényes második jóváhagyó, ha AKTÍV `admin` tag az aktor tenantjában (§7.3, §14/4).
+   * Ha egy dual-control-köteles aktus (banki preset / L2–L3) fut és ez nincs bekötve,
+   * a service fail-closed → nem lehet négy-szemre hivatkozni a negyedik szem ellenőrzése
+   * nélkül. `true` → érvényes jóváhagyó; `false`/`null` → elutasítás.
+   */
+  verifyDualControlApprover?: (input: {
+    approverId: string
+    tenantId: string | null
+  }) => Promise<boolean>
+  /**
+   * A cél-agent tenantjának feloldása a connector-agent kötés tenant-határához
+   * (defense-in-depth, §7.5). `found:false` → az agent nem létezik / nem látható;
+   * `tenantId` → az agent tenantja (megosztott platform-agentnél `null`). Ha nincs
+   * bekötve, a service a hívó (action-réteg) ellenőrzésére hagyatkozik.
+   */
+  resolveAgentTenantId?: (agentId: string) => Promise<{
+    found: boolean
+    tenantId: string | null
+  }>
 }
 
 function sha256Hex(content: string): string {
@@ -533,6 +554,7 @@ export class ProvisioningService {
           'second approver must differ from reviewer/activator (four-eyes)',
         )
       }
+      await this.assertVerifiedApprover(input.approverId, actor)
     }
 
     const connector = await this.deps.drafts.activate({
@@ -563,6 +585,7 @@ export class ProvisioningService {
   ): Promise<{ agentId: string; connectorId: string }> {
     this.requireHumanAdmin(actor, 'assignConnectorToAgent')
 
+    await this.assertAgentInActorTenant(input.agentId, actor)
     const connector = await this.loadConnectorForTenant(input.connectorId, actor)
     if (connector.lifecycleState !== 'active') {
       throw new ProvisioningError(
@@ -613,6 +636,13 @@ export class ProvisioningService {
     actor: ProvisioningActor,
   ): Promise<{ agentId: string; connectorId: string; removed: boolean }> {
     this.requireHumanAdmin(actor, 'unassignConnectorFromAgent')
+
+    // Defense-in-depth tenant-határ: a connectornak ÉS a cél-agentnek is az aktor
+    // tenantjához kell tartoznia — különben egy tenant admin idegen tenant agentjéről
+    // (ID-alapon) leszedhetné a connectort (integritás/DoS). Az action-réteg ma fedezi,
+    // a service itt maga is kikényszeríti (§7.5).
+    await this.loadConnectorForTenant(input.connectorId, actor)
+    await this.assertAgentInActorTenant(input.agentId, actor)
 
     const res = await this.deps.drafts.unassignFromAgent({
       connectorId: input.connectorId,
@@ -822,8 +852,73 @@ export class ProvisioningService {
           'second approver must differ from the decommissioning admin (four-eyes)',
         )
       }
+      await this.assertVerifiedApprover(input.approverId, actor)
     }
     return { criticality, dualControlRequired }
+  }
+
+  /**
+   * Négy-szem kikényszerítése: a második jóváhagyó CSAK akkor fogadható el, ha AKTÍV
+   * `admin` tag az aktor tenantjában. Fail-closed: ha az ellenőrző nincs bekötve, egy
+   * dual-control-köteles aktus nem futhat le (nem lehet négy-szemre hivatkozni a negyedik
+   * szem hitelesítése nélkül). A hívó a distinctness-t (approver ≠ activator/reviewer)
+   * már ellenőrizte; itt a JOGOSULTSÁG dől el.
+   */
+  private async assertVerifiedApprover(
+    approverId: string,
+    actor: ProvisioningActor,
+  ): Promise<void> {
+    if (!this.deps.verifyDualControlApprover) {
+      void this.appendAudit(actor, 'provisioning.access_denied', null, {
+        attempted_action: 'dual_control_approver_verify',
+        reason: 'verifier_not_configured',
+        policyDecision: 'denied',
+      })
+      throw new ProvisioningError(
+        'DUAL_CONTROL_NOT_CONFIGURED',
+        'dual-control approver verification is not configured (fail-closed)',
+      )
+    }
+    const authorized = await this.deps.verifyDualControlApprover({
+      approverId,
+      tenantId: actor.tenantId,
+    })
+    if (!authorized) {
+      void this.appendAudit(actor, 'provisioning.access_denied', null, {
+        attempted_action: 'dual_control_approver_verify',
+        reason: 'approver_not_active_admin',
+        policyDecision: 'denied',
+      })
+      throw new ProvisioningError(
+        'APPROVER_NOT_AUTHORIZED',
+        'the second approver must be an active admin of the same tenant (four-eyes)',
+      )
+    }
+  }
+
+  /**
+   * Defense-in-depth tenant-határ a connector-agent kötésnél (§7.5): a cél-agentnek az
+   * aktor tenantjához kell tartoznia. Ha a feloldó nincs bekötve, a service a hívó
+   * (action-réteg) ellenőrzésére hagyatkozik (nem-törő, opcionális dep).
+   */
+  private async assertAgentInActorTenant(
+    agentId: string,
+    actor: ProvisioningActor,
+  ): Promise<void> {
+    if (!this.deps.resolveAgentTenantId) return
+    const resolved = await this.deps.resolveAgentTenantId(agentId)
+    if (!resolved.found || resolved.tenantId !== actor.tenantId) {
+      void this.appendAudit(actor, 'provisioning.access_denied', null, {
+        attempted_action: 'bind_agent',
+        agent_id: agentId,
+        policyDecision: 'denied',
+      })
+      throw new ProvisioningError(
+        'AGENT_NOT_IN_TENANT',
+        // Nem szivárogtatjuk az idegen agent létezését.
+        'agent not found in tenant',
+      )
+    }
   }
 
   private async finalizeDecommission(params: {

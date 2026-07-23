@@ -17,6 +17,9 @@ export type ProvisioningErrorCode =
   | 'OAUTH_CLIENT_ID_MISSING' // service-oauth2: hiányzik a config.auth.clientId
   | 'APPROVAL_SAME_ACTOR' // dual-control: reviewer === approver
   | 'DUAL_CONTROL_REQUIRED'
+  | 'APPROVER_NOT_AUTHORIZED' // dual-control: a második jóváhagyó nem aktív, azonos-tenant admin
+  | 'DUAL_CONTROL_NOT_CONFIGURED' // dual-control kötelező, de a jóváhagyó-ellenőrző nincs bekötve (fail-closed)
+  | 'AGENT_NOT_IN_TENANT' // connector-agent kötés: a cél-agent nem az aktor tenantjáé
   | 'CONNECTOR_NOT_DRAFT'
   | 'DRAFT_NOT_EDITABLE' // javítás: csak draft/validated config szerkeszthető
   | 'CONNECTOR_NOT_ACTIVE' // reopen/decommission: csak aktív connectorra
