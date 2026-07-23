@@ -1,0 +1,390 @@
+diff --git a/app/package.json b/app/package.json
+index 91afafe0..da26c91f 100644
+--- a/app/package.json
++++ b/app/package.json
+@@ -107,6 +107,8 @@
+     "test:dispatcher-retry-loop": "tsx scripts/dispatcher-retry-loop.test.ts",
+     "test:iam-policy": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/iam-policy.test.ts",
+     "test:iam-tenant-boundary": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/iam-tenant-boundary.test.ts",
++    "test:iam-membership-scope": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/iam-membership-scope.test.ts",
++    "test:control-plane-nav": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/control-plane-nav.test.ts",
+     "test:clerk-invitation-membership": "tsx scripts/clerk-invitation-membership.test.ts",
+     "test:tenant-management": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/tenant-management.test.ts",
+     "test:tenant-isolation": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/tenant-isolation.test.ts",
+diff --git a/app/src/app/control-plane/layout.tsx b/app/src/app/control-plane/layout.tsx
+index 7e9c9da7..14a70c4b 100644
+--- a/app/src/app/control-plane/layout.tsx
++++ b/app/src/app/control-plane/layout.tsx
+@@ -1,67 +1,13 @@
+-'use client'
+-
+-import { usePathname } from 'next/navigation'
+-import { AppShell, type NavEntry } from '@/components/ui/shell'
+-import { ControlPlaneHeaderExtras } from '@/components/active-runs/control-plane-header-extras'
+-
+-const navItems: NavEntry[] = [
+-  { href: '/control-plane', label: 'Dashboard', exact: true },
+-  { href: '/control-plane/board', label: 'Board' },
+-  {
+-    label: 'Munkatársak',
+-    children: [
+-      { href: '/control-plane/agents', label: 'Munkatársak' },
+-      { href: '/control-plane/behavior-profiles', label: 'Viselkedés-profilok' },
+-      { href: '/control-plane/skills', label: 'Skill-katalógus' },
+-      { href: '/control-plane/apps', label: 'Mini-appok' },
+-      { href: '/control-plane/sandbox-versions', label: 'Sandbox verziók' },
+-    ],
+-  },
+-  {
+-    label: 'Automatizálás',
+-    children: [
+-      { href: '/control-plane/playbooks', label: 'Playbookok' },
+-      { href: '/control-plane/step-templates', label: 'Lépés-sablonok' },
+-      { href: '/control-plane/processes', label: 'Folyamatok' },
+-    ],
+-  },
+-  {
+-    label: 'Üzemeltetés',
+-    children: [
+-      { href: '/control-plane/scheduled-tasks', label: 'Ütemezés' },
+-      { href: '/control-plane/monitors', label: 'Monitorok' },
+-      { href: '/control-plane/training', label: 'Tanítás' },
+-    ],
+-  },
+-  {
+-    label: 'Adminisztráció',
+-    children: [
+-      { href: '/control-plane/connectors', label: 'Fiókok' },
+-      { href: '/control-plane/provisioning', label: 'Provisioning' },
+-      { href: '/control-plane/iam', label: 'IAM' },
+-      { href: '/control-plane/platform/tenants', label: 'Platform · Tenantok' },
+-      { href: '/control-plane/platform/iam', label: 'Platform · IAM' },
+-      { href: '/control-plane/platform/settings', label: 'Platform · Beállítások' },
+-      { href: '/control-plane/governance', label: 'Governance' },
+-      { href: '/control-plane/system', label: 'Rendszer' },
+-      { href: '/control-plane/audit', label: 'Audit' },
+-    ],
+-  },
+-]
+-
+-export default function ControlPlaneLayout({ children }: { children: React.ReactNode }) {
+-  const pathname = usePathname()
+-
+-  return (
+-    <AppShell
+-      appName="E-AI"
+-      appSubtitle="Control Plane"
+-      navItems={navItems}
+-      accentColor="slate"
+-      pathname={pathname}
+-      headerExtra={<ControlPlaneHeaderExtras />}
+-    >
+-      {children}
+-    </AppShell>
+-  )
++import { getAuthContext } from '@/auth/context'
++import { buildControlPlaneNav } from '@/lib/control-plane-nav'
++import { ControlPlaneShell } from './control-plane-shell'
++
++export default async function ControlPlaneLayout({ children }: { children: React.ReactNode }) {
++  const ctx = await getAuthContext()
++  const navItems = buildControlPlaneNav({
++    tenantRole: ctx?.activeTenantRole ?? null,
++    platformRoles: ctx?.platformRoles ?? [],
++  })
++
++  return <ControlPlaneShell navItems={navItems}>{children}</ControlPlaneShell>
+ }
+diff --git a/app/src/domain/iam/iam-service.ts b/app/src/domain/iam/iam-service.ts
+index 0ecf7ad0..f0b7739e 100644
+--- a/app/src/domain/iam/iam-service.ts
++++ b/app/src/domain/iam/iam-service.ts
+@@ -1,4 +1,4 @@
+-import type { Invitation, User, UserRole } from '@prisma/client'
++import type { Invitation, TenantMembership, User, UserRole, UserStatus } from '@prisma/client'
+ import type {
+   AuditRepository,
+   UserRepository,
+@@ -440,7 +440,10 @@ export class IamService {
+ 
+   /** §7/B: pending + role=NULL önregisztrált fiók jóváhagyása szerepkör-kiosztással. */
+   async approveUser(params: { targetUserId: string; role: UserRole; actorId: string; actorTenantId: string | null }) {
+-    const target = await this.loadTenantScopedUser(params.targetUserId, params.actorTenantId)
++    const { user: target, membership } = await this.loadTenantScopedTarget(
++      params.targetUserId,
++      params.actorTenantId,
++    )
+     if (target.status !== 'pending' || target.role !== null) {
+       throw new Error('user: not pending approval')
+     }
+@@ -452,6 +455,22 @@ export class IamService {
+       invitedById: params.actorId,
+     })
+ 
++    if (membership) {
++      await this.memberships!.update(membership.id, {
++        role: params.role,
++        status: 'active',
++        activatedAt: new Date(),
++      })
++    } else if (params.actorTenantId && this.memberships) {
++      await this.memberships.create({
++        tenantId: params.actorTenantId,
++        userId: target.id,
++        role: params.role,
++        status: 'active',
++        invitedById: params.actorId,
++      })
++    }
++
+     await this.audit.append({
+       actorType: 'human',
+       actorId: params.actorId,
+@@ -466,7 +485,7 @@ export class IamService {
+       metadata: null,
+     })
+ 
+-    return updated
++    return this.withMembershipView(updated, params.role, 'active', params.actorTenantId)
+   }
+ 
+   async changeRole(params: { targetUserId: string; newRole: UserRole; actorId: string; actorTenantId: string | null }) {
+@@ -474,12 +493,19 @@ export class IamService {
+       throw new Error('self_modification_forbidden: admin cannot change own role')
+     }
+ 
+-    const target = await this.loadTenantScopedUser(params.targetUserId, params.actorTenantId)
++    const { user: target, membership } = await this.loadTenantScopedTarget(
++      params.targetUserId,
++      params.actorTenantId,
++    )
+ 
+     if (target.role === 'admin' && params.newRole !== 'admin' && target.status === 'active') {
+       await this.assertNotLastActiveAdmin(params.actorTenantId, target.id)
+     }
+ 
++    if (membership) {
++      await this.memberships!.update(membership.id, { role: params.newRole })
++    }
++
+     const updated = await this.users.update(target.id, { role: params.newRole })
+ 
+     await this.audit.append({
+@@ -496,7 +522,7 @@ export class IamService {
+       metadata: null,
+     })
+ 
+-    return updated
++    return this.withMembershipView(updated, params.newRole, target.status, params.actorTenantId)
+   }
+ 
+   async suspendUser(params: { targetUserId: string; reason: string; actorId: string; actorTenantId: string | null }) {
+@@ -504,18 +530,34 @@ export class IamService {
+       throw new Error('self_modification_forbidden: admin cannot suspend own account')
+     }
+ 
+-    const target = await this.loadTenantScopedUser(params.targetUserId, params.actorTenantId)
++    const { user: target, membership } = await this.loadTenantScopedTarget(
++      params.targetUserId,
++      params.actorTenantId,
++    )
+ 
+     if (target.role === 'admin' && target.status === 'active') {
+       await this.assertNotLastActiveAdmin(params.actorTenantId, target.id)
+     }
+ 
+-    const updated = await this.users.update(target.id, {
+-      status: 'suspended',
+-      suspendedAt: new Date(),
+-      suspendedById: params.actorId,
+-      suspendedReason: params.reason,
+-    })
++    if (membership) {
++      await this.memberships!.update(membership.id, { status: 'suspended' })
++    }
++
++    const otherActive =
++      this.memberships && membership
++        ? (await this.memberships.findByUser(target.id)).some(
++            (m) => m.id !== membership.id && m.status === 'active',
++          )
++        : false
++
++    const updated = otherActive
++      ? target
++      : await this.users.update(target.id, {
++          status: 'suspended',
++          suspendedAt: new Date(),
++          suspendedById: params.actorId,
++          suspendedReason: params.reason,
++        })
+ 
+     if (this.connectorGrants) {
+       await this.connectorGrants.revokeAllForUser(target.id, params.actorId)
+@@ -535,13 +577,28 @@ export class IamService {
+       metadata: { reason: params.reason },
+     })
+ 
+-    return updated
++    return this.withMembershipView(
++      otherActive ? { ...updated, status: 'suspended' as UserStatus } : updated,
++      target.role,
++      'suspended',
++      params.actorTenantId,
++    )
+   }
+ 
+   async reactivateUser(params: { targetUserId: string; actorId: string; actorTenantId: string | null }) {
+-    const target = await this.loadTenantScopedUser(params.targetUserId, params.actorTenantId)
++    const { user: target, membership } = await this.loadTenantScopedTarget(
++      params.targetUserId,
++      params.actorTenantId,
++    )
+     if (target.status !== 'suspended') throw new Error('user: not suspended')
+ 
++    if (membership) {
++      await this.memberships!.update(membership.id, {
++        status: 'active',
++        activatedAt: membership.activatedAt ?? new Date(),
++      })
++    }
++
+     const updated = await this.users.update(target.id, {
+       status: 'active',
+       suspendedAt: null,
+@@ -563,7 +620,7 @@ export class IamService {
+       metadata: null,
+     })
+ 
+-    return updated
++    return this.withMembershipView(updated, target.role, 'active', params.actorTenantId)
+   }
+ 
+   /**
+@@ -577,7 +634,7 @@ export class IamService {
+     actorId: string
+     actorTenantId: string | null
+   }) {
+-    const target = await this.loadTenantScopedUser(params.targetUserId, params.actorTenantId)
++    const { user: target } = await this.loadTenantScopedTarget(params.targetUserId, params.actorTenantId)
+     const next = params.jobDescription?.trim() ? params.jobDescription.trim() : null
+ 
+     const updated = await this.users.update(target.id, { jobDescription: next })
+@@ -600,6 +657,29 @@ export class IamService {
+   }
+ 
+   async listUsers(tenantId: string | null) {
++    if (tenantId && this.memberships) {
++      const memberships = await this.memberships.findByTenant(tenantId)
++      const users = await this.users.findManyByIds(memberships.map((m) => m.userId))
++      const byId = new Map(users.map((user) => [user.id, user]))
++
++      const fromMembership = memberships.flatMap((membership) => {
++        const user = byId.get(membership.userId)
++        if (!user) return []
++        return [this.withMembershipView(user, membership.role, membership.status, tenantId)]
++      })
++
++      // Legacy egytenantos rekordok: User.tenantId kitöltve, membership sor még nincs.
++      const legacy = await this.users.findMany({ tenantId })
++      const merged = new Map(legacy.map((user) => [user.id, user]))
++      for (const user of fromMembership) {
++        merged.set(user.id, user)
++      }
++
++      return [...merged.values()].sort(
++        (a, b) => a.createdAt.getTime() - b.createdAt.getTime(),
++      )
++    }
++
+     return this.users.findMany({ tenantId })
+   }
+ 
+@@ -641,16 +721,51 @@ export class IamService {
+   /**
+    * N-IAM-6: minden cél-alapú User-műveletnek ezen kell átmennie — cross-tenant
+    * célpontra "not found"-ot ad, nem szivárogtatja, hogy a rekord létezik-e (§8.8).
++   * Membership jelenlétében a tenant-tagság az igazság; legacy fallback: User.tenantId.
+    */
+-  private async loadTenantScopedUser(userId: string, actorTenantId: string | null) {
++  private async loadTenantScopedTarget(userId: string, actorTenantId: string | null) {
+     const target = await this.users.findById(userId)
+-    if (!target || target.tenantId !== actorTenantId) throw new Error('user: not found')
+-    return target
++    if (!target) throw new Error('user: not found')
++
++    if (actorTenantId && this.memberships) {
++      const membership = await this.memberships.findByTenantAndUser(actorTenantId, userId)
++      if (membership) {
++        return {
++          user: this.withMembershipView(target, membership.role, membership.status, actorTenantId),
++          membership,
++        }
++      }
++      // Legacy fallback: még nincs membership sor, de User.tenantId egyezik.
++      if (target.tenantId === actorTenantId) {
++        return { user: target, membership: null as TenantMembership | null }
++      }
++      throw new Error('user: not found')
++    }
++
++    if (target.tenantId !== actorTenantId) throw new Error('user: not found')
++    return { user: target, membership: null as TenantMembership | null }
++  }
++
++  private withMembershipView(
++    user: User,
++    role: UserRole | null,
++    status: UserStatus | TenantMembership['status'],
++    tenantId: string | null,
++  ): User {
++    return {
++      ...user,
++      role,
++      status: status as UserStatus,
++      tenantId,
++    }
+   }
+ 
+   /** §8/N-IAM-5: legalább egy aktív adminnak mindig maradnia kell — tenant-szinten. */
+   private async assertNotLastActiveAdmin(tenantId: string | null, excludeUserId: string) {
+-    const otherActiveAdmins = await this.users.countActiveAdmins(tenantId, excludeUserId)
++    const otherActiveAdmins =
++      tenantId && this.memberships
++        ? await this.memberships.countActiveAdmins(tenantId, excludeUserId)
++        : await this.users.countActiveAdmins(tenantId, excludeUserId)
+     const check = checkLastAdminLock(otherActiveAdmins, true)
+     if (check.blocked) {
+       throw new Error('lockout: last active admin cannot be removed')
+diff --git a/app/src/repositories/interfaces/index.ts b/app/src/repositories/interfaces/index.ts
+index a10d8337..35627215 100644
+--- a/app/src/repositories/interfaces/index.ts
++++ b/app/src/repositories/interfaces/index.ts
+@@ -1854,6 +1854,8 @@ export interface UserRepository {
+   /** Case-insensitive email lookup (pre-provision conflict checks). */
+   findManyByEmail(email: string): Promise<User[]>
+   findMany(filter?: { tenantId?: string | null; status?: UserStatus; role?: UserRole }): Promise<User[]>
++  /** Batch lookup for membership → user join (IAM tenant member list). */
++  findManyByIds(ids: string[]): Promise<User[]>
+   countActiveAdmins(tenantId: string | null, excludeUserId?: string): Promise<number>
+   create(data: {
+     externalAuthId: string
+diff --git a/app/src/repositories/postgres/iam-repository.ts b/app/src/repositories/postgres/iam-repository.ts
+index c45826fd..a44bd1a5 100644
+--- a/app/src/repositories/postgres/iam-repository.ts
++++ b/app/src/repositories/postgres/iam-repository.ts
+@@ -38,6 +38,14 @@ export class PostgresUserRepository implements UserRepository {
+     })
+   }
+ 
++  async findManyByIds(ids: string[]) {
++    if (ids.length === 0) return []
++    return prisma.user.findMany({
++      where: { id: { in: ids } },
++      orderBy: { createdAt: 'asc' },
++    })
++  }
++
+   async countActiveAdmins(tenantId: string | null, excludeUserId?: string) {
+     return prisma.user.count({
+       where: {

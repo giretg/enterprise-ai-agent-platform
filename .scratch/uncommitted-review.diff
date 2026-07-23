@@ -1,0 +1,1130 @@
+diff --git a/app/scripts/dispatcher-retry-loop.test.ts b/app/scripts/dispatcher-retry-loop.test.ts
+index f605fe68..acf9fb3c 100644
+--- a/app/scripts/dispatcher-retry-loop.test.ts
++++ b/app/scripts/dispatcher-retry-loop.test.ts
+@@ -146,8 +146,16 @@ class FakeDispatchAlerts implements DispatchAlertNotifier {
+ 
+ const modelCalls = {
+   getUsageForAgentSince: async () => ({ calls: 0, tokens: 0 }),
++  getUsageForTicket: async () => ({ calls: 0, tokens: 0 }),
+ } as unknown as ModelCallRepository
+ 
++function modelCallsWithTicketUsage(usage: { calls: number; tokens: number }): ModelCallRepository {
++  return {
++    getUsageForAgentSince: async () => ({ calls: 0, tokens: 0 }),
++    getUsageForTicket: async () => usage,
++  } as unknown as ModelCallRepository
++}
++
+ async function testEphemeralKeyAndPermanentBlock() {
+   const tickets = new FakeTickets(cloneTicket())
+   const audit = new FakeAudit()
+@@ -364,15 +372,132 @@ async function testLaunchFailureRevokesEphemeralKeyAndReleasesTicket() {
+ 
+   assert.equal(tickets.ticket.state, 'ready')
+   assert.equal(tickets.ticket.lockToken, null)
+-  assert.deepEqual(tickets.ticket.payload, {})
++  assert.deepEqual(tickets.ticket.payload, { dispatch: { failureCount: 1 } })
+   assert.deepEqual(agents.revoked, [`key-${baseTicket.agentId}`])
+-  assert.deepEqual(tickets.transitions, [
+-    { toState: 'in_progress', note: 'dispatcher start' },
+-    { toState: 'ready', note: 'dispatcher launch failed' },
+-  ])
++  assert.equal(tickets.transitions.length, 2)
++  assert.equal(tickets.transitions[0].toState, 'in_progress')
++  assert.equal(tickets.transitions[0].note, 'dispatcher start')
++  assert.equal(tickets.transitions[1].toState, 'ready')
++  assert.match(tickets.transitions[1].note ?? '', /dispatcher launch failed \(transient, attempt 1\/3\)/)
+   assert.ok(audit.events.some((event) => event.action === 'dispatch.error'))
+ }
+ 
++async function testLaunchFailurePermanentBlocksTicket() {
++  const tickets = new FakeTickets(cloneTicket())
++  const audit = new FakeAudit()
++  const agents = new FakeAgents()
++  const alerts = new FakeDispatchAlerts()
++  const dispatcher = new DispatcherService(
++    tickets as unknown as TicketRepository,
++    audit as unknown as AuditRepository,
++    modelCalls,
++    {
++      mode: 'docker-local',
++      async launch() {
++        throw new Error('Agent mismatch for harness process')
++      },
++    },
++    undefined,
++    async () => true,
++    agents as unknown as AgentRepository,
++    alerts,
++  )
++
++  const result = await dispatcher.dispatchTicket(tickets.ticket.id)
++
++  assert.equal(result.status, 'blocked')
++  assert.equal(tickets.ticket.state, 'awaiting_human')
++  assert.equal(tickets.ticket.lockToken, null)
++  assert.deepEqual(agents.revoked, [`key-${baseTicket.agentId}`])
++  assert.ok(audit.events.some((event) => event.action === 'dispatch.blocked'))
++  assert.equal(alerts.blocked.length, 1)
++}
++
++async function testRecoverLaunchFailureBlocksOnTicketCallCap() {
++  const previous = process.env.GATEWAY_MAX_CALLS_PER_TICKET
++  process.env.GATEWAY_MAX_CALLS_PER_TICKET = '30'
++  try {
++    const tickets = new FakeTickets(
++      cloneTicket({
++        state: 'in_progress',
++        lockToken: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
++        payload: { dispatch: { ephemeralKeyId: 'key-cap' } },
++      }),
++    )
++    const audit = new FakeAudit()
++    const agents = new FakeAgents()
++    const alerts = new FakeDispatchAlerts()
++    const dispatcher = new DispatcherService(
++      tickets as unknown as TicketRepository,
++      audit as unknown as AuditRepository,
++      modelCallsWithTicketUsage({ calls: 30, tokens: 1000 }),
++      { mode: 'docker-local', launch: async () => ({ jobId: 'unused' }) },
++      undefined,
++      async () => true,
++      agents as unknown as AgentRepository,
++      alerts,
++    )
++
++    const result = await dispatcher.recoverLaunchFailure({
++      ticketId: tickets.ticket.id,
++      lockToken: 'ffffffff-ffff-4fff-8fff-ffffffffffff',
++      error: new Error('Gateway guardrail: ticket x reached 30 model calls'),
++    })
++
++    assert.equal(result.blocked, true)
++    assert.equal(tickets.ticket.state, 'awaiting_human')
++    assert.equal(tickets.ticket.lockToken, null)
++    assert.deepEqual(agents.revoked, ['key-cap'])
++    const payload = tickets.ticket.payload as {
++      error?: { code?: string }
++      outcome?: { reason?: string }
++    }
++    assert.equal(payload.error?.code, 'TICKET_CALL_CAP')
++    assert.equal(payload.outcome?.reason, 'ticket_call_cap')
++    assert.ok(audit.events.some((event) => event.action === 'dispatch.blocked'))
++    assert.equal(alerts.blocked.length, 1)
++  } finally {
++    if (previous === undefined) delete process.env.GATEWAY_MAX_CALLS_PER_TICKET
++    else process.env.GATEWAY_MAX_CALLS_PER_TICKET = previous
++  }
++}
++
++async function testDispatchPrecheckBlocksTicketCallCap() {
++  const previous = process.env.GATEWAY_MAX_CALLS_PER_TICKET
++  process.env.GATEWAY_MAX_CALLS_PER_TICKET = '30'
++  try {
++    const tickets = new FakeTickets(cloneTicket())
++    const audit = new FakeAudit()
++    const agents = new FakeAgents()
++    const alerts = new FakeDispatchAlerts()
++    const dispatcher = new DispatcherService(
++      tickets as unknown as TicketRepository,
++      audit as unknown as AuditRepository,
++      modelCallsWithTicketUsage({ calls: 30, tokens: 50_000 }),
++      { mode: 'docker-local', launch: async () => ({ jobId: 'should-not-run' }) },
++      undefined,
++      async () => true,
++      agents as unknown as AgentRepository,
++      alerts,
++    )
++
++    const result = await dispatcher.dispatchTicket(tickets.ticket.id)
++
++    assert.equal(result.status, 'budget_blocked')
++    assert.match(result.reason ?? '', /^ticket_call_cap:/)
++    assert.equal(tickets.ticket.state, 'awaiting_human')
++    assert.equal(tickets.ticket.lockToken, null)
++    const payload = tickets.ticket.payload as { error?: { code?: string } }
++    assert.equal(payload.error?.code, 'TICKET_CALL_CAP')
++    assert.ok(audit.events.some((event) => event.action === 'dispatch.budget_blocked'))
++    assert.ok(audit.events.some((event) => event.action === 'dispatch.blocked'))
++    assert.equal(alerts.blocked.length, 1)
++  } finally {
++    if (previous === undefined) delete process.env.GATEWAY_MAX_CALLS_PER_TICKET
++    else process.env.GATEWAY_MAX_CALLS_PER_TICKET = previous
++  }
++}
++
+ async function testLauncherResolutionFailureReleasesReadyLock() {
+   const tickets = new FakeTickets(cloneTicket())
+   const audit = new FakeAudit()
+@@ -394,12 +519,13 @@ async function testLauncherResolutionFailureReleasesReadyLock() {
+     /launcher config invalid/,
+   )
+ 
++  // A launcher a dispatch elején (mode check) dől el — lock még nincs, audit sem.
+   assert.equal(tickets.ticket.state, 'ready')
+   assert.equal(tickets.ticket.lockToken, null)
+   assert.equal(tickets.ticket.lockedAt, null)
+   assert.deepEqual(tickets.ticket.payload, {})
+   assert.deepEqual(agents.revoked, [])
+-  assert.ok(audit.events.some((event) => event.action === 'dispatch.error'))
++  assert.equal(audit.events.length, 0)
+ }
+ 
+ async function testSuccessClearsDispatchFailurePayload() {
+@@ -479,6 +605,9 @@ async function main() {
+   await testTransientRetryLimit()
+   await testStaleReclaimRevokesEphemeralKey()
+   await testLaunchFailureRevokesEphemeralKeyAndReleasesTicket()
++  await testLaunchFailurePermanentBlocksTicket()
++  await testRecoverLaunchFailureBlocksOnTicketCallCap()
++  await testDispatchPrecheckBlocksTicketCallCap()
+   await testLauncherResolutionFailureReleasesReadyLock()
+   await testSuccessClearsDispatchFailurePayload()
+   await testDispatchAlertNotifierReadsPersistedChannel()
+diff --git a/app/src/app/actions/platform.ts b/app/src/app/actions/platform.ts
+index b570ae59..56944903 100644
+--- a/app/src/app/actions/platform.ts
++++ b/app/src/app/actions/platform.ts
+@@ -15,6 +15,11 @@ import type { GitHubRepositoryAccess } from '@/domain/connector/github-repositor
+ import { buildTenantAccessAuditFilter } from '@/domain/iam/access-audit'
+ import { SandboxAppError } from '@/domain/sandbox/errors'
+ import { dispatchBudgetFromEnv } from '@/domain/dispatcher/dispatcher-service'
++import {
++  currentTicketCallCapLimit,
++  formatTicketCallCapUserMessage,
++  isTicketCallCapReason,
++} from '@/lib/ticket-call-cap'
+ import {
+   getSchedulerJobStatus,
+   setSchedulerJobIntervalMinutes,
+@@ -323,6 +328,15 @@ async function runAgentTicketDispatch(
+   try {
+     const dispatchResult = await services.dispatcher.dispatchTicket(ticketId)
+     if (dispatchResult.status === 'budget_blocked') {
++      if (isTicketCallCapReason(dispatchResult.reason)) {
++        const usage = await repositories.modelCalls.getUsageForTicket(ticketId)
++        return {
++          warning: formatTicketCallCapUserMessage({
++            calls: usage.calls,
++            maxCalls: currentTicketCallCapLimit(),
++          }),
++        }
++      }
+       const since = new Date()
+       since.setHours(0, 0, 0, 0)
+       const usage = await repositories.modelCalls.getUsageForAgentSince(agentId, since)
+@@ -330,7 +344,14 @@ async function runAgentTicketDispatch(
+       return {
+         warning:
+           `Ticket létrejött (ready), de a napi keret betelt: ${usage.tokens.toLocaleString('hu-HU')}/${budget.maxTokensPerDay.toLocaleString('hu-HU')} token, ${usage.calls}/${budget.maxCallsPerDay} hívás. ` +
+-          'Emeld a DISPATCH_MAX_TOKENS_PER_DAY értékét, vagy várd meg a holnapi resetet.',
++          'Emeld a keretet a System → Napi keret / Model Gateway panelen, vagy a DISPATCH_MAX_* env-eken — vagy várd meg a holnapi resetet.',
++      }
++    }
++    if (dispatchResult.status === 'blocked') {
++      return {
++        warning:
++          `Feldolgozás leállítva (permanens hiba): ${dispatchResult.reason ?? 'ismeretlen hiba'}. ` +
++          'A ticket emberi válaszra vár — javítsd a konfigurációt, majd próbáld újra, vagy nyiss új ticketet.',
+       }
+     }
+     if (dispatchResult.status === 'paused') {
+@@ -923,6 +944,15 @@ export async function addTicketComment(input: {
+ 
+     let warning: string | undefined
+     if (parsed.handBackToAgent) {
++      const usage = await repositories.modelCalls.getUsageForTicket(ticket.id)
++      const maxCalls = currentTicketCallCapLimit()
++      if (usage.calls >= maxCalls) {
++        return ok({
++          comment,
++          warning: formatTicketCallCapUserMessage({ calls: usage.calls, maxCalls }),
++        })
++      }
++
+       await services.tickets.transition({
+         ticketId: ticket.id,
+         toState: 'needs_info',
+@@ -991,6 +1021,14 @@ export async function transitionTicket(input: {
+       return ok(result)
+     }
+ 
++    if (parsed.toState === 'ready' && existing.agentId) {
++      const usage = await repositories.modelCalls.getUsageForTicket(existing.id)
++      const maxCalls = currentTicketCallCapLimit()
++      if (usage.calls >= maxCalls) {
++        return fail(formatTicketCallCapUserMessage({ calls: usage.calls, maxCalls }))
++      }
++    }
++
+     const ticket = await services.tickets.transition({
+       ticketId: parsed.id,
+       toState: parsed.toState,
+diff --git a/app/src/components/tickets/ticket-detail.tsx b/app/src/components/tickets/ticket-detail.tsx
+index 51886cc0..3b5f6bbd 100644
+--- a/app/src/components/tickets/ticket-detail.tsx
++++ b/app/src/components/tickets/ticket-detail.tsx
+@@ -15,6 +15,7 @@ import { formatTicketDateTime } from '@/lib/ticket-display'
+ import { isRunAsAuthorized } from '@/lib/run-as-payload'
+ import { resolveTicketTriggerInputPayload } from '@/lib/playbook-v2/trigger-input'
+ import { readStepOutcome } from '@/lib/playbook-v2/process-step-payload'
++import { readTicketCallCapMessageFromPayload } from '@/lib/ticket-call-cap'
+ import { readTicketRuntimeProgress } from '@/domain/agent/ticket-runtime-progress'
+ 
+ type TicketView = {
+@@ -319,9 +320,10 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
+   const isTrainingTicket = ticket.type === 'training'
+   const canApprove = ticket.state === 'awaiting_human'
+   const canReject = REJECTABLE_STATES.has(ticket.state)
+-  const canRerun = ticket.state === 'rejected'
++  const callCapMessage = readTicketCallCapMessageFromPayload(ticket.payload)
++  const canRerun = ticket.state === 'rejected' && !callCapMessage
+   const canStop = ticket.state === 'in_progress'
+-  const hasActions = canApprove || canReject || canRerun || canStop
++  const hasActions = canApprove || canReject || canRerun || canStop || Boolean(callCapMessage && ticket.state === 'rejected')
+   const isWikiFollowUp = hasWikiAnswer(ticket.payload)
+ 
+   const runtimeProgress = readTicketRuntimeProgress(ticket.payload)
+@@ -468,6 +470,9 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
+           </button>
+         )}
+       </div>
++      {ticket.state === 'rejected' && callCapMessage && (
++        <p className="mt-3 whitespace-pre-wrap text-sm leading-relaxed text-coral">{callCapMessage}</p>
++      )}
+       <p className="mt-3 text-xs text-ink-faint">
+         {canApprove &&
+           isTrainingTicket &&
+@@ -476,6 +481,7 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
+           !isTrainingTicket &&
+           'Jóváhagyás után a szerver automatikusan: approved → done. '}
+         {canReject &&
++          !callCapMessage &&
+           'Visszadobás után az «Újra feldolgozás» gombbal indíthatod újra az agentet — a pontosító kérdés bekerül a kontextusba. '}
+         {canRerun && 'Újra feldolgozás után a ticket ready állapotba kerül, és a dispatcher újraindítja az agentet.'}
+       </p>
+@@ -486,10 +492,15 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
+ function contractReviewFromPayload(payload: Record<string, unknown> | null): {
+   message: string
+   answer: string | null
++  title?: string
+ } | null {
+   if (!payload) return null
+-  const { message, reason } = readStepOutcome(payload)
++  const callCapMessage = readTicketCallCapMessageFromPayload(payload)
+   const answer = typeof payload.answer === 'string' ? payload.answer.trim() : null
++  if (callCapMessage) {
++    return { message: callCapMessage, answer: answer || null, title: 'Keret kimerült' }
++  }
++  const { message, reason } = readStepOutcome(payload)
+   // Contract-sértésnél a közérthető message az elsődleges; ha az nincs, de
+   // output_contract_unmet + eredeti válasz van, azt is mutatjuk.
+   if (message) return { message, answer: answer || null }
+@@ -527,7 +538,7 @@ export function TicketMeta({ ticket, isAdmin = false }: { ticket: TicketView; is
+       </div>
+ 
+       {contractReview && (
+-        <Card title="Miért állt meg a lépés" className="mt-4 border-coral/25 bg-coral/5">
++        <Card title={contractReview.title ?? 'Miért állt meg a lépés'} className="mt-4 border-coral/25 bg-coral/5">
+           <p className="whitespace-pre-wrap text-sm leading-relaxed text-ink">{contractReview.message}</p>
+           {contractReview.answer && (
+             <div className="mt-3 border-t border-ink/10 pt-3">
+diff --git a/app/src/components/tickets/ticket-thread.tsx b/app/src/components/tickets/ticket-thread.tsx
+index 3517dca8..84cc2fa3 100644
+--- a/app/src/components/tickets/ticket-thread.tsx
++++ b/app/src/components/tickets/ticket-thread.tsx
+@@ -10,6 +10,7 @@ import {
+   agentAnswerStructuredFromPayload,
+   extractAgentAnswerDisplayBody,
+ } from '@/lib/playbook-v2/process-step-payload'
++import { readTicketCallCapMessageFromPayload } from '@/lib/ticket-call-cap'
+ 
+ type ThreadAttachment = {
+   id: string
+@@ -95,9 +96,11 @@ function AttachmentList({ attachments }: { attachments: ThreadAttachment[] }) {
+ function TicketCommentComposer({
+   ticketId,
+   canHandBack,
++  handBackBlockedReason,
+ }: {
+   ticketId: string
+   canHandBack: boolean
++  handBackBlockedReason?: string | null
+ }) {
+   const router = useRouter()
+   const [body, setBody] = useState('')
+@@ -234,7 +237,7 @@ function TicketCommentComposer({
+         >
+           Komment hozzáadása
+         </button>
+-        {canHandBack && (
++        {canHandBack && !handBackBlockedReason && (
+           <button
+             type="button"
+             disabled={disabled}
+@@ -245,6 +248,11 @@ function TicketCommentComposer({
+           </button>
+         )}
+       </div>
++      {canHandBack && handBackBlockedReason && (
++        <p className="mt-3 whitespace-pre-wrap rounded-lg border border-coral/25 bg-coral/5 px-3 py-2 text-sm leading-relaxed text-coral">
++          {handBackBlockedReason}
++        </p>
++      )}
+     </div>
+   )
+ }
+@@ -272,6 +280,7 @@ export function TicketThread({
+   const canHandBack = Boolean(
+     ticket.agentId && !ticket.processInstanceId && ['done', 'awaiting_human'].includes(ticket.state),
+   )
++  const handBackBlockedReason = readTicketCallCapMessageFromPayload(ticket.payload)
+   const sorted = useMemo(() => [...comments].sort((a, b) => a.seq - b.seq), [comments])
+   const payloadRecord = useMemo(() => structuredRecord(ticket.payload), [ticket.payload])
+   const hasAgentComment = sorted.some((comment) => comment.kind === 'agent_answer')
+@@ -356,7 +365,11 @@ export function TicketThread({
+           </article>
+         )}
+ 
+-        <TicketCommentComposer ticketId={ticket.id} canHandBack={canHandBack} />
++        <TicketCommentComposer
++          ticketId={ticket.id}
++          canHandBack={canHandBack}
++          handBackBlockedReason={handBackBlockedReason}
++        />
+       </div>
+     </Card>
+   )
+diff --git a/app/src/domain/dispatcher/dispatcher-service.ts b/app/src/domain/dispatcher/dispatcher-service.ts
+index 9d04c7af..743a207e 100644
+--- a/app/src/domain/dispatcher/dispatcher-service.ts
++++ b/app/src/domain/dispatcher/dispatcher-service.ts
+@@ -21,6 +21,13 @@ import { isRunAsAuthorized, readRunAsUserId } from '@/lib/run-as-payload'
+ import { wikiSearchQuery } from '@/lib/wiki-ticket-payload'
+ import { logger, dispatchTotal, dispatchLagMs } from '@/lib/observability'
+ import { exceedsHardCap, type BudgetEngine, type BudgetUsage } from '@/domain/gateway/budget-engine'
++import { guardrailFromEnv } from '@/domain/gateway/model-gateway'
++import {
++  TICKET_CALL_CAP_ERROR_CODE,
++  formatTicketCallCapUserMessage,
++  isTicketCallCapErrorMessage,
++  ticketCallCapReason,
++} from '@/lib/ticket-call-cap'
+ import type { DispatchAlertNotifier } from './dispatch-alert-notifier'
+ 
+ export type DispatchBudget = {
+@@ -49,8 +56,8 @@ export type DispatchSkipReason =
+ 
+ export type DispatchOutcome = {
+   ticketId: string
+-  status: 'started' | 'skipped' | 'budget_blocked' | 'paused'
+-  /** `skipped` esetén a konkrét ág; `budget_blocked` esetén a keret indoklása. */
++  status: 'started' | 'skipped' | 'budget_blocked' | 'paused' | 'blocked'
++  /** `skipped` esetén a konkrét ág; `budget_blocked`/`blocked` esetén a keret vagy hiba indoklása. */
+   reason?: DispatchSkipReason | string
+ }
+ 
+@@ -169,13 +176,15 @@ function classifyHarnessError(input: {
+ 
+   const error = input.error ?? ''
+   if (
++    isTicketCallCapErrorMessage(error) ||
+     /\b4\d\d\b/.test(error) ||
+     /agent mismatch/i.test(error) ||
+     /not assigned/i.test(error) ||
+     /missing scope/i.test(error) ||
+     /missing harness env/i.test(error) ||
+     /unauthorized/i.test(error) ||
+-    /forbidden/i.test(error)
++    /forbidden/i.test(error) ||
++    /budget.?blocked/i.test(error)
+   ) {
+     return 'permanent'
+   }
+@@ -183,6 +192,24 @@ function classifyHarnessError(input: {
+   return 'transient'
+ }
+ 
++function withTicketCallCapPayload(
++  payload: Prisma.JsonValue,
++  message: string,
++): Prisma.JsonValue {
++  const base = ticketPayloadObject(payload)
++  base.error = {
++    code: TICKET_CALL_CAP_ERROR_CODE,
++    reason: 'max_calls_per_ticket',
++    message,
++  }
++  base.outcome = {
++    status: 'blocked',
++    reason: 'ticket_call_cap',
++    message,
++  }
++  return base as Prisma.JsonObject
++}
++
+ export class DispatcherService {
+   constructor(
+     private tickets: TicketRepository,
+@@ -391,104 +418,290 @@ export class DispatcherService {
+         }),
+       })
+     } else if (input.status === 'failed' && unlocked.state === 'in_progress') {
+-      const category = classifyHarnessError(input)
+-      const previousFailureCount =
+-        typeof unlockedDispatch.failureCount === 'number' && unlockedDispatch.failureCount > 0
+-          ? Math.floor(unlockedDispatch.failureCount)
+-          : 0
+-      const failureCount = previousFailureCount + 1
+-      const maxRetries = readPositiveInt(process.env.HARNESS_MAX_RETRIES, DEFAULT_HARNESS_MAX_RETRIES)
+-      const blocked = category === 'permanent' || failureCount >= maxRetries
+-      const toState = blocked ? 'awaiting_human' : 'ready'
+-
+-      final = await this.tickets.update(input.ticketId, {
+-        state: toState,
+-        payload: withDispatchPayload(unlocked.payload, {
+-          ephemeralKeyId: undefined,
+-          failureCount,
+-        }),
+-      })
+-      await this.tickets.recordTransition({
+-        ticketId: input.ticketId,
++      const failed = await this.applyDispatchFailure({
++        ticket: unlocked,
+         fromState: unlocked.state,
+-        toState,
+-        actorType: 'system',
+-        actorId: null,
+-        agentVersion: null,
+-        note: input.error
+-          ? `harness failed (${category}, attempt ${failureCount}/${maxRetries}): ${input.error}`
+-          : `harness failed (${category}, attempt ${failureCount}/${maxRetries})`,
++        error: input.error,
++        errorCategory: input.errorCategory,
++        noteKind: 'harness',
++        jobId: input.jobId,
++        executionName: input.executionName,
+       })
++      final = failed.ticket
++    }
++
++    await this.audit.append({
++      actorType: 'system',
++      actorId: null,
++      agentVersion: null,
++      action: 'dispatch.complete',
++      targetType: 'ticket',
++      targetId: input.ticketId,
++      modelUsed: null,
++      inputRef: input.jobId ?? input.executionName ?? null,
++      outputRef: final.state,
++      policyDecision: input.status,
++      metadata: this.completionMetadata(input),
++    })
++
++    return { ticketId: input.ticketId, status: 'completed' }
++  }
++
++  /**
++   * Local-wiki (és hasonló fire-and-forget) háttérfutás hibája: a ticket már
++   * `in_progress`, a launch sync catch nem futott. Ugyanaz a retry/block politika,
++   * mint a harness complete failed ágon — ne vakon `ready`-re tegye vissza.
++   */
++  async recoverLaunchFailure(input: {
++    ticketId: string
++    lockToken: string
++    error: unknown
++  }): Promise<{ ticketId: string; blocked: boolean }> {
++    const current = await this.tickets.findById(input.ticketId)
++    if (!current) return { ticketId: input.ticketId, blocked: false }
++
++    const keyId = dispatchPayload(ticketPayloadObject(current.payload)).ephemeralKeyId
++    if (keyId && this.agents?.revokeKey) {
++      await this.agents.revokeKey(keyId)
++    }
++    await this.tickets.releaseDispatchLock(input.ticketId, input.lockToken)
++    if (current.state !== 'in_progress') {
++      return { ticketId: input.ticketId, blocked: false }
++    }
++
++    const error = input.error instanceof Error ? input.error.message : String(input.error)
++    const result = await this.applyDispatchFailure({
++      ticket: current,
++      fromState: 'in_progress',
++      error,
++      noteKind: 'launch',
++    })
++    return { ticketId: input.ticketId, blocked: result.blocked }
++  }
++
++  /**
++   * Közös retry/block politika launch- és harness-hibákra.
++   * Permanent vagy max-retry után → `awaiting_human` + `dispatch.blocked` + notify.
++   */
++  private async applyDispatchFailure(input: {
++    ticket: Ticket
++    fromState: Ticket['state']
++    error?: string
++    errorCategory?: HarnessErrorCategory
++    noteKind: 'harness' | 'launch'
++    jobId?: string
++    executionName?: string
++  }): Promise<{
++    ticket: Ticket
++    blocked: boolean
++    category: HarnessErrorCategory
++    failureCount: number
++    maxRetries: number
++  }> {
++    const category = classifyHarnessError(input)
++    const currentDispatch = dispatchPayload(ticketPayloadObject(input.ticket.payload))
++    const previousFailureCount =
++      typeof currentDispatch.failureCount === 'number' && currentDispatch.failureCount > 0
++        ? Math.floor(currentDispatch.failureCount)
++        : 0
++    const failureCount = previousFailureCount + 1
++    const maxRetries = readPositiveInt(process.env.HARNESS_MAX_RETRIES, DEFAULT_HARNESS_MAX_RETRIES)
++    const blocked = category === 'permanent' || failureCount >= maxRetries
++    const toState = blocked ? 'awaiting_human' : 'ready'
++
++    let nextPayload: Prisma.JsonValue = withDispatchPayload(input.ticket.payload, {
++      ephemeralKeyId: undefined,
++      failureCount,
++    })
++    if (isTicketCallCapErrorMessage(input.error)) {
++      const usage = await this.modelCalls.getUsageForTicket(input.ticket.id)
++      const maxCalls = guardrailFromEnv().maxCallsPerTicket
++      nextPayload = withTicketCallCapPayload(
++        nextPayload,
++        formatTicketCallCapUserMessage({ calls: usage.calls, maxCalls }),
++      )
++    }
++
++    const updated = await this.tickets.update(input.ticket.id, {
++      state: toState,
++      payload: nextPayload,
++    })
++
++    const noteBase =
++      input.noteKind === 'launch' ? 'dispatcher launch failed' : 'harness failed'
++    await this.tickets.recordTransition({
++      ticketId: input.ticket.id,
++      fromState: input.fromState,
++      toState,
++      actorType: 'system',
++      actorId: null,
++      agentVersion: null,
++      note: input.error
++        ? `${noteBase} (${category}, attempt ${failureCount}/${maxRetries}): ${input.error}`
++        : `${noteBase} (${category}, attempt ${failureCount}/${maxRetries})`,
++    })
++    await this.audit.append({
++      actorType: 'system',
++      actorId: null,
++      agentVersion: null,
++      action: 'dispatch.error',
++      targetType: 'ticket',
++      targetId: input.ticket.id,
++      modelUsed: null,
++      inputRef: input.jobId ?? input.executionName ?? input.ticket.agentId,
++      outputRef: toState,
++      policyDecision: blocked ? 'blocked' : 'failed',
++      metadata: {
++        ...this.completionMetadata({
++          status: 'failed',
++          jobId: input.jobId,
++          executionName: input.executionName,
++          error: input.error,
++          errorCategory: category,
++        }),
++        category,
++        failureCount,
++        maxRetries,
++        noteKind: input.noteKind,
++        keyId: currentDispatch.ephemeralKeyId ?? null,
++      },
++      tenantId: input.ticket.tenantId,
++      ticketId: input.ticket.id,
++    })
++
++    if (blocked) {
+       await this.audit.append({
+         actorType: 'system',
+         actorId: null,
+         agentVersion: null,
+-        action: 'dispatch.error',
++        action: 'dispatch.blocked',
+         targetType: 'ticket',
+-        targetId: input.ticketId,
++        targetId: input.ticket.id,
+         modelUsed: null,
+-        inputRef: input.jobId ?? input.executionName ?? null,
++        inputRef: input.jobId ?? input.executionName ?? input.ticket.agentId,
+         outputRef: toState,
+-        policyDecision: blocked ? 'blocked' : 'failed',
++        policyDecision: 'blocked',
+         metadata: {
+-          ...this.completionMetadata(input),
+           category,
+           failureCount,
+           maxRetries,
+-          keyId: keyId ?? null,
++          error: input.error ?? null,
++          noteKind: input.noteKind,
+         },
++        tenantId: input.ticket.tenantId,
++        ticketId: input.ticket.id,
++      })
++      await this.notifyDispatchBlocked({
++        ticket: updated,
++        category,
++        failureCount,
++        maxRetries,
++        error: input.error ?? null,
++        jobId: input.jobId,
++        executionName: input.executionName,
+       })
++    }
+ 
+-      if (blocked) {
+-        await this.audit.append({
+-          actorType: 'system',
+-          actorId: null,
+-          agentVersion: null,
+-          action: 'dispatch.blocked',
+-          targetType: 'ticket',
+-          targetId: input.ticketId,
+-          modelUsed: null,
+-          inputRef: input.jobId ?? input.executionName ?? null,
+-          outputRef: toState,
+-          policyDecision: 'blocked',
+-          metadata: {
+-            ...this.completionMetadata(input),
+-            category,
+-            failureCount,
+-            maxRetries,
+-            keyId: keyId ?? null,
+-          },
+-        })
+-        await this.notifyDispatchBlocked({
+-          ticket: final,
+-          category,
+-          failureCount,
+-          maxRetries,
+-          error: input.error ?? null,
+-          jobId: input.jobId,
+-          executionName: input.executionName,
+-        })
+-      }
++    return { ticket: updated, blocked, category, failureCount, maxRetries }
++  }
++
++  private async blockForTicketCallCap(
++    ticket: Ticket,
++    usage: { calls: number; tokens: number },
++    maxCalls: number,
++  ): Promise<DispatchOutcome> {
++    const message = formatTicketCallCapUserMessage({ calls: usage.calls, maxCalls })
++    const reason = ticketCallCapReason(usage.calls, maxCalls)
++    const fromState = ticket.state
++    const nextPayload = withTicketCallCapPayload(
++      withDispatchPayload(ticket.payload, { ephemeralKeyId: undefined }),
++      message,
++    )
++
++    let updated = ticket
++    if (ticket.state === 'ready' || ticket.state === 'in_progress') {
++      updated = await this.tickets.update(ticket.id, {
++        state: 'awaiting_human',
++        payload: nextPayload,
++      })
++      await this.tickets.recordTransition({
++        ticketId: ticket.id,
++        fromState,
++        toState: 'awaiting_human',
++        actorType: 'system',
++        actorId: null,
++        agentVersion: null,
++        note: `ticket call cap reached (${usage.calls}/${maxCalls})`,
++      })
++    } else {
++      updated = await this.tickets.update(ticket.id, { payload: nextPayload })
+     }
+ 
+     await this.audit.append({
+       actorType: 'system',
+       actorId: null,
+       agentVersion: null,
+-      action: 'dispatch.complete',
++      action: 'dispatch.budget_blocked',
+       targetType: 'ticket',
+-      targetId: input.ticketId,
++      targetId: ticket.id,
+       modelUsed: null,
+-      inputRef: input.jobId ?? input.executionName ?? null,
+-      outputRef: final.state,
+-      policyDecision: input.status,
+-      metadata: this.completionMetadata(input),
++      inputRef: ticket.agentId,
++      outputRef: 'ticket_call_cap',
++      policyDecision: 'budget_blocked',
++      metadata: {
++        scope: 'ticket_call_cap',
++        reason,
++        calls: usage.calls,
++        tokens: usage.tokens,
++        maxCallsPerTicket: maxCalls,
++      },
++      tenantId: ticket.tenantId,
++      ticketId: ticket.id,
+     })
+-
+-    return { ticketId: input.ticketId, status: 'completed' }
++    await this.audit.append({
++      actorType: 'system',
++      actorId: null,
++      agentVersion: null,
++      action: 'dispatch.blocked',
++      targetType: 'ticket',
++      targetId: ticket.id,
++      modelUsed: null,
++      inputRef: ticket.agentId,
++      outputRef: 'awaiting_human',
++      policyDecision: 'blocked',
++      metadata: {
++        category: 'permanent',
++        scope: 'ticket_call_cap',
++        reason,
++        calls: usage.calls,
++        maxCallsPerTicket: maxCalls,
++      },
++      tenantId: ticket.tenantId,
++      ticketId: ticket.id,
++    })
++    dispatchTotal.inc({ result: 'budget_blocked' })
++    logger.warn(
++      {
++        event: 'dispatch',
++        result: 'budget_blocked',
++        ticketId: ticket.id,
++        agentId: ticket.agentId,
++        scope: 'ticket_call_cap',
++        reason,
++      },
++      'dispatch ticket call cap blocked',
++    )
++    await this.notifyDispatchBlocked({
++      ticket: updated,
++      category: 'permanent',
++      failureCount: usage.calls,
++      maxRetries: maxCalls,
++      error: message,
++    })
++    return { ticketId: ticket.id, status: 'budget_blocked', reason }
+   }
+ 
+-  /**
++    /**
+    * Minden kihagyás hagyjon nyomot. Korábban a `process_terminal` és a `lock_lost` ág
+    * némán tűnt el — se log, se metrika, se audit —, így egy be nem induló ticketnél nem
+    * lehetett megmondani, melyik kapu fogta meg. A `silent` csak a metrikát hallgattatja el
+@@ -655,6 +868,14 @@ export class DispatcherService {
+       return { ticketId: ticket.id, status: 'budget_blocked', reason: breach.reason }
+     }
+ 
++    // Ticketenkénti modellhívás-plafon (Gateway guardrail) — élettartam, nem napi.
++    // Ha már kimerült, ne induljon Ready↔Feldolgozás ping-pong.
++    const maxCallsPerTicket = guardrailFromEnv().maxCallsPerTicket
++    const ticketUsage = await this.modelCalls.getUsageForTicket(ticket.id)
++    if (ticketUsage.calls >= maxCallsPerTicket) {
++      return this.blockForTicketCallCap(ticket, ticketUsage, maxCallsPerTicket)
++    }
++
+     const lockToken = randomUUID()
+     const lockedTicket = await this.tickets.acquireDispatchLock(ticket.id, lockToken, now)
+     if (!lockedTicket) {
+@@ -723,21 +944,47 @@ export class DispatcherService {
+         await this.agents.revokeKey(ephemeralKey.id)
+       }
+       await this.tickets.releaseDispatchLock(ticket.id, lockToken)
++      const errorMessage = error instanceof Error ? error.message : String(error)
++
++      if (started) {
++        const current = (await this.tickets.findById(ticket.id)) ?? started
++        const failed = await this.applyDispatchFailure({
++          ticket: current.state === 'in_progress' ? current : { ...current, state: 'in_progress' },
++          fromState: 'in_progress',
++          error: errorMessage,
++          noteKind: 'launch',
++        })
++        dispatchTotal.inc({ result: 'error' })
++        logger.error(
++          {
++            event: 'dispatch',
++            result: 'error',
++            ticketId: ticket.id,
++            agentId: ticket.agentId,
++            error: errorMessage,
++            blocked: failed.blocked,
++          },
++          'dispatch failed',
++        )
++        if (failed.blocked) {
++          return {
++            ticketId: ticket.id,
++            status: isTicketCallCapErrorMessage(errorMessage) ? 'budget_blocked' : 'blocked',
++            reason: isTicketCallCapErrorMessage(errorMessage)
++              ? ticketCallCapReason(
++                  (await this.modelCalls.getUsageForTicket(ticket.id)).calls,
++                  guardrailFromEnv().maxCallsPerTicket,
++                )
++              : errorMessage,
++          }
++        }
++        throw error
++      }
++
+       await this.tickets.update(ticket.id, {
+         state: 'ready',
+         payload: withDispatchPayload(lockedTicket.payload, { ephemeralKeyId: undefined }),
+       })
+-      if (started) {
+-        await this.tickets.recordTransition({
+-          ticketId: ticket.id,
+-          fromState: started.state,
+-          toState: 'ready',
+-          actorType: 'system',
+-          actorId: null,
+-          agentVersion: null,
+-          note: 'dispatcher launch failed',
+-        })
+-      }
+       await this.audit.append({
+         actorType: 'system',
+         actorId: null,
+@@ -750,7 +997,7 @@ export class DispatcherService {
+         outputRef: null,
+         policyDecision: 'error',
+         metadata: {
+-          error: error instanceof Error ? error.message : String(error),
++          error: errorMessage,
+           keyId: ephemeralKey?.id ?? null,
+         },
+       })
+@@ -761,7 +1008,7 @@ export class DispatcherService {
+           result: 'error',
+           ticketId: ticket.id,
+           agentId: ticket.agentId,
+-          error: error instanceof Error ? error.message : String(error),
++          error: errorMessage,
+         },
+         'dispatch failed',
+       )
+diff --git a/app/src/domain/dispatcher/run-dispatch-cycle.ts b/app/src/domain/dispatcher/run-dispatch-cycle.ts
+index e1f681b0..893b9b87 100644
+--- a/app/src/domain/dispatcher/run-dispatch-cycle.ts
++++ b/app/src/domain/dispatcher/run-dispatch-cycle.ts
+@@ -27,8 +27,8 @@ export type DispatchCycleSummary = {
+      */
+     skipReasons: Record<string, number>
+     /** Csak input.ticketId esetén: a konkrét ticket dispatch-eredménye. */
+-    ticketStatus?: 'started' | 'skipped' | 'budget_blocked' | 'paused'
+-    /** Csak input.ticketId esetén: a `skipped`/`budget_blocked` indoklása. */
++    ticketStatus?: 'started' | 'skipped' | 'budget_blocked' | 'paused' | 'blocked'
++    /** Csak input.ticketId esetén: a `skipped`/`budget_blocked`/`blocked` indoklása. */
+     ticketReason?: string
+   }
+ }
+@@ -127,9 +127,12 @@ export async function runDispatchCycle(
+         scanned: result.status === 'paused' ? 0 : 1,
+         started: result.status === 'started' ? 1 : 0,
+         budgetBlocked: result.status === 'budget_blocked' ? 1 : 0,
+-        skipped: result.status === 'skipped' ? 1 : 0,
++        skipped: result.status === 'skipped' || result.status === 'blocked' ? 1 : 0,
+         paused: result.status === 'paused',
+-        skipReasons: result.status === 'skipped' && result.reason ? { [result.reason]: 1 } : {},
++        skipReasons:
++          (result.status === 'skipped' || result.status === 'blocked') && result.reason
++            ? { [result.reason]: 1 }
++            : {},
+         ticketStatus: result.status,
+         ticketReason: result.reason,
+       }
+@@ -138,14 +141,14 @@ export async function runDispatchCycle(
+       const paused = results.some((r) => r.status === 'paused')
+       const skipReasons: Record<string, number> = {}
+       for (const r of results) {
+-        if (r.status !== 'skipped' || !r.reason) continue
++        if ((r.status !== 'skipped' && r.status !== 'blocked') || !r.reason) continue
+         skipReasons[r.reason] = (skipReasons[r.reason] ?? 0) + 1
+       }
+       dispatch = {
+         scanned: paused ? 0 : results.length,
+         started: results.filter((r) => r.status === 'started').length,
+         budgetBlocked: results.filter((r) => r.status === 'budget_blocked').length,
+-        skipped: results.filter((r) => r.status === 'skipped').length,
++        skipped: results.filter((r) => r.status === 'skipped' || r.status === 'blocked').length,
+         paused,
+         skipReasons,
+       }
+diff --git a/app/src/domain/index.ts b/app/src/domain/index.ts
+index 9b3030ae..4c916c51 100644
+--- a/app/src/domain/index.ts
++++ b/app/src/domain/index.ts
+@@ -687,8 +687,8 @@ const monitorService = new MonitorService(
+   repositories.agents,
+ )
+ // local-wiki: fire-and-forget (mint docker-local / cloud-run-job) — a UI create /
+-// handback nem várja meg a teljes agent-futást. Hiba esetén a ticketet
+-// `in_progress` → `ready`-re visszük, ha még ott van (stale reclaim safety-net).
++// handback nem várja meg a teljes agent-futást. Hiba esetén a dispatcher
++// retry/block politikája érvényesül (nem vak `ready` reset).
+ const localWikiHarnessLauncher = new LocalWikiHarnessLauncher({
+   findTicket: async (ticketId) => {
+     const ticket = await repositories.tickets.findById(ticketId)
+@@ -707,39 +707,8 @@ const localWikiHarnessLauncher = new LocalWikiHarnessLauncher({
+   },
+   releaseDispatchLock: (ticketId, lockToken) =>
+     repositories.tickets.releaseDispatchLock(ticketId, lockToken),
+-  recoverLaunchFailure: async ({ ticketId, lockToken, error }) => {
+-    const current = await repositories.tickets.findById(ticketId)
+-    if (!current) return
+-    await repositories.tickets.releaseDispatchLock(ticketId, lockToken)
+-    if (current.state !== 'in_progress') return
+-    await repositories.tickets.update(ticketId, { state: 'ready' })
+-    await repositories.tickets.recordTransition({
+-      ticketId,
+-      fromState: 'in_progress',
+-      toState: 'ready',
+-      actorType: 'system',
+-      actorId: null,
+-      agentVersion: null,
+-      note: 'dispatcher launch failed',
+-    })
+-    await repositories.audit.append({
+-      actorType: 'system',
+-      actorId: null,
+-      agentVersion: null,
+-      action: 'dispatch.error',
+-      targetType: 'ticket',
+-      targetId: ticketId,
+-      modelUsed: null,
+-      inputRef: current.agentId,
+-      outputRef: null,
+-      policyDecision: 'error',
+-      metadata: {
+-        error: error instanceof Error ? error.message : String(error),
+-        launcherMode: 'local-wiki',
+-      },
+-      tenantId: current.tenantId,
+-      ticketId,
+-    })
++  recoverLaunchFailure: async (input) => {
++    await dispatcherService.recoverLaunchFailure(input)
+   },
+ })
+ 
+===== NEW FILES =====
+diff --git a/app/src/lib/ticket-call-cap.ts b/app/src/lib/ticket-call-cap.ts
+new file mode 100644
+index 00000000..84998a67
+--- /dev/null
++++ b/app/src/lib/ticket-call-cap.ts
+@@ -0,0 +1,55 @@
++import { guardrailFromEnv } from '@/domain/gateway/model-gateway'
++
++/** Payload `error.code` / audit reason — ticketenkénti modellhívás-plafon. */
++export const TICKET_CALL_CAP_ERROR_CODE = 'TICKET_CALL_CAP'
++
++/** `DispatchOutcome.reason` prefix a ticket call-cap ághoz. */
++export const TICKET_CALL_CAP_REASON_PREFIX = 'ticket_call_cap:'
++
++export function ticketCallCapReason(calls: number, maxCalls: number): string {
++  return `${TICKET_CALL_CAP_REASON_PREFIX}${calls}/${maxCalls}`
++}
++
++export function isTicketCallCapReason(reason: string | undefined | null): boolean {
++  return typeof reason === 'string' && reason.startsWith(TICKET_CALL_CAP_REASON_PREFIX)
++}
++
++/**
++ * Felhasználói üzenet: a ticket call-cap élettartam-limit (nem napi),
++ * holnapi várakozás nem segít.
++ */
++export function formatTicketCallCapUserMessage(input: {
++  calls: number
++  maxCalls: number
++}): string {
++  return (
++    `Keret kimerült — ez a ticket nem indítható újra (${input.calls}/${input.maxCalls} modellhívás). ` +
++    `Ez a plafon ticketenként érvényes, és NEM áll vissza holnap. ` +
++    `Mit tehetsz: (1) nyiss új ticketet a folytatáshoz, vagy (2) szólj az adminnak, hogy emelje a GATEWAY_MAX_CALLS_PER_TICKET környezeti változót, majd próbáld újra.`
++  )
++}
++
++export function readTicketCallCapMessageFromPayload(payload: unknown): string | null {
++  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null
++  const error = (payload as Record<string, unknown>).error
++  if (!error || typeof error !== 'object' || Array.isArray(error)) return null
++  const record = error as Record<string, unknown>
++  if (record.code !== TICKET_CALL_CAP_ERROR_CODE) return null
++  if (typeof record.message === 'string' && record.message.trim()) return record.message.trim()
++  return null
++}
++
++export function isTicketCallCapErrorMessage(error: string | undefined | null): boolean {
++  if (!error) return false
++  return (
++    /gateway guardrail/i.test(error) ||
++    /reached \d+ model calls/i.test(error) ||
++    /max_calls_per_ticket/i.test(error)
++  )
++}
++
++export function currentTicketCallCapLimit(
++  env: Record<string, string | undefined> = process.env,
++): number {
++  return guardrailFromEnv(env).maxCallsPerTicket
++}
+diff --git a/app/scripts/ticket-call-cap.test.ts b/app/scripts/ticket-call-cap.test.ts
+new file mode 100644
+index 00000000..230613b4
+--- /dev/null
++++ b/app/scripts/ticket-call-cap.test.ts
+@@ -0,0 +1,35 @@
++import assert from 'node:assert/strict'
++import {
++  TICKET_CALL_CAP_ERROR_CODE,
++  formatTicketCallCapUserMessage,
++  isTicketCallCapErrorMessage,
++  isTicketCallCapReason,
++  readTicketCallCapMessageFromPayload,
++  ticketCallCapReason,
++} from '../src/lib/ticket-call-cap'
++
++assert.equal(ticketCallCapReason(30, 30), 'ticket_call_cap:30/30')
++assert.equal(isTicketCallCapReason('ticket_call_cap:30/30'), true)
++assert.equal(isTicketCallCapReason('Call limit exceeded'), false)
++
++const message = formatTicketCallCapUserMessage({ calls: 30, maxCalls: 30 })
++assert.match(message, /Keret kimerült/)
++assert.match(message, /NEM áll vissza holnap/)
++assert.match(message, /GATEWAY_MAX_CALLS_PER_TICKET/)
++assert.match(message, /új ticketet/)
++
++assert.equal(
++  isTicketCallCapErrorMessage('Gateway guardrail: ticket x reached 30 model calls'),
++  true,
++)
++assert.equal(isTicketCallCapErrorMessage('temporary network timeout'), false)
++
++assert.equal(
++  readTicketCallCapMessageFromPayload({
++    error: { code: TICKET_CALL_CAP_ERROR_CODE, message },
++  }),
++  message,
++)
++assert.equal(readTicketCallCapMessageFromPayload({ error: { code: 'OTHER' } }), null)
++
++console.log('ticket-call-cap helper tests passed')
