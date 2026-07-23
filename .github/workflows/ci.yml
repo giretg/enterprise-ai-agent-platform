@@ -84,6 +84,7 @@ jobs:
           npm run test:http-api-per-agent-key
           npm run test:connector-template
           npm run test:provisioning
+          npm run test:file-search-safe
 
   migrations:
     name: Prisma migrate deploy (ephemeral Postgres)

@@ -104,6 +104,7 @@
     "test:pdf-read-policy": "tsx scripts/pdf-read-policy.test.ts",
     "test:tulajdoni-lap": "tsx scripts/tulajdoni-lap.test.ts",
     "test:xlsx-range-delete": "tsx scripts/xlsx-range-and-delete-confirm.test.ts",
+    "test:file-search-safe": "tsx scripts/file-search-safe-pattern.test.ts",
     "test:xlsx-data-validation": "tsx scripts/xlsx-data-validation.test.ts",
     "test:ticket-thread-prompt": "tsx scripts/ticket-thread-prompt.test.ts",
     "test:agent-turn-snapshot": "tsx scripts/agent-turn-snapshot.test.ts",
