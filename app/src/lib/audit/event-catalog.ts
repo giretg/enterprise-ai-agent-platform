@@ -55,6 +55,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'agent.create',
   'agent.delete',
   'agent.dispatch_denied_inactive',
+  'agent.operator_visibility',
   'agent.persona',
   'agent.resumed',
   'agent.retired',
@@ -375,6 +376,14 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'channel.link.rejected',
   'channel.identity.revoked',
   'channel.link.unlinked_notice',
+  // Agent-engedélyek, projektkötés és szervezeti kill-switch (#75, D5/D9/D13/D54): az admin
+  // agentenként engedélyez/visszavon, a felhasználó projektkulcsot állít, a tenant-admin a
+  // szervezeti kapcsolóval azonnal elzárja a csatornát. Azonosítók álnevesítve.
+  'channel.agent.granted',
+  'channel.agent.revoked',
+  'channel.agent.project_set',
+  'channel.tenant.disabled',
+  'channel.tenant.enabled',
 
   // Platform / DB mode
   'database.mode_changed',

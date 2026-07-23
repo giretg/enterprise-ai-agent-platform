@@ -8,6 +8,7 @@ import {
   PostgresModelRoutingPolicyRepository,
 } from './audit-repository'
 import {
+  PostgresChannelAgentGrantRepository,
   PostgresChannelBotRepository,
   PostgresChannelIdentityRepository,
   PostgresChannelLinkTokenRepository,
@@ -85,6 +86,7 @@ export const repositories = {
   agentTurns: new PostgresAgentTurnRepository(),
   channelBots: new PostgresChannelBotRepository(),
   channelIdentities: new PostgresChannelIdentityRepository(),
+  channelAgentGrants: new PostgresChannelAgentGrantRepository(),
   channelSessions: new PostgresChannelSessionRepository(),
   channelLinkTokens: new PostgresChannelLinkTokenRepository(),
   userNotifications: new PostgresUserNotificationRepository(),

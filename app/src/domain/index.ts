@@ -46,6 +46,7 @@ import { SkillService } from '@/domain/skill/skill-service'
 import { ConversationService } from '@/domain/conversation/conversation-service'
 import { ChannelBotService } from '@/domain/channel/channel-bot-service'
 import { ChannelLinkingService } from '@/domain/channel/channel-linking-service'
+import { ChannelAgentAccessService } from '@/domain/channel/channel-agent-access-service'
 import { TelegramOutboundTransport } from '@/domain/channel/channel-outbound-transport'
 import { PlaybookService } from '@/domain/playbook/playbook-service'
 import { PlaybookV2Service } from '@/domain/playbook/playbook-v2-service'
@@ -229,6 +230,26 @@ const channelLinkingService = new ChannelLinkingService({
   },
   resolveWebhookSecret: async (bot) => resolveConnectorApiKey(bot.webhookSecretRef),
   buildDeepLink: (jti) => `https://t.me/${telegramBotUsername}?start=${jti}`,
+})
+// Csatorna-agent-hozzáférés (#75, D5/D9/D13/D54). A metszet bal oldala (platform-jog) az
+// agent-registry szervezeti szűrése (a per-felhasználó dedikálás élesítésekor magától
+// szigorodik — #70 Further Notes 1); a kill-switch a szervezeti Telegram-kapcsoló.
+const channelAgentAccessService = new ChannelAgentAccessService({
+  grants: repositories.channelAgentGrants,
+  identities: repositories.channelIdentities,
+  agents: {
+    async listForTenant(tenantId) {
+      const agents = await repositories.agents.findMany({ tenantId })
+      return agents.map((a) => ({ id: a.id, name: a.name, usable: a.status === 'active' }))
+    },
+    async findInTenant(agentId, tenantId) {
+      const agent = await repositories.agents.findById(agentId, tenantId)
+      if (!agent) return null
+      return { id: agent.id, name: agent.name, usable: agent.status === 'active' }
+    },
+  },
+  isChannelEnabled: (tenantId) => platformSettingsService.isChannelEnabledForTenant(tenantId),
+  audit: repositories.audit,
 })
 const connectorGrantService = new ConnectorGrantService(repositories.connectorGrants, repositories.audit)
 const workspaceBucket = process.env.WORKSPACE_BUCKET ?? 'platform-workspace-prod'
@@ -830,6 +851,7 @@ export const services = {
   conversations: conversationService,
   channelBots: channelBotService,
   channelLinking: channelLinkingService,
+  channelAgentAccess: channelAgentAccessService,
   iam: iamService,
   tenants: tenantService,
   provisioning: provisioningService,

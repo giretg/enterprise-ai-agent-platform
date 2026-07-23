@@ -8,6 +8,7 @@ import type {
   ChannelType,
   ChannelIdentity,
   ChannelIdentityStatus,
+  ChannelAgentGrant,
   ChannelSession,
   ChannelLinkToken,
   UserNotification,
@@ -2224,6 +2225,29 @@ export interface ChannelIdentityRepository {
     id: string,
     input: { userId: string; tenantId: string | null; linkedAt: Date },
   ): Promise<ChannelIdentity>
+}
+
+/**
+ * Csatorna-agent-engedély tár (Telegram feature-spec #70/#75, D5/D9/D13/D14). Egy sor = „ez a
+ * kötött identitás elérheti ezt az agentet a csatornán, ezzel a projektkulccsal". Az admin
+ * hozza létre / vonja vissza; a projektkulcsot a felhasználó állítja a weben. A `(identityId,
+ * agentId)` egyedi — ugyanahhoz az agenthez egyetlen engedély tartozik identitásonként.
+ */
+export type CreateChannelAgentGrantInput = {
+  identityId: string
+  agentId: string
+  projectKey?: string
+  grantedById: string | null
+}
+
+export interface ChannelAgentGrantRepository {
+  listByIdentity(identityId: string): Promise<ChannelAgentGrant[]>
+  /** Egy szervezet összes kötésének engedélyei (admin-nézet, batch). */
+  listByIdentityIds(identityIds: string[]): Promise<ChannelAgentGrant[]>
+  findByIdentityAndAgent(identityId: string, agentId: string): Promise<ChannelAgentGrant | null>
+  create(input: CreateChannelAgentGrantInput): Promise<ChannelAgentGrant>
+  updateProjectKey(id: string, projectKey: string): Promise<ChannelAgentGrant>
+  deleteById(id: string): Promise<void>
 }
 
 /**
