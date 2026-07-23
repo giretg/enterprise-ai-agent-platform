@@ -375,6 +375,11 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'channel.link.rejected',
   'channel.identity.revoked',
   'channel.link.unlinked_notice',
+  // 1:1 agent-chat (#73/#74, D8): a bejövő forduló-sor és a worker-feldolgozás eseményei.
+  'channel.turn.enqueued',
+  'channel.turn.completed',
+  'channel.turn.retry',
+  'channel.turn.failed',
 
   // Platform / DB mode
   'database.mode_changed',

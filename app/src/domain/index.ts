@@ -46,6 +46,8 @@ import { SkillService } from '@/domain/skill/skill-service'
 import { ConversationService } from '@/domain/conversation/conversation-service'
 import { ChannelBotService } from '@/domain/channel/channel-bot-service'
 import { ChannelLinkingService } from '@/domain/channel/channel-linking-service'
+import { ChannelTurnService } from '@/domain/channel/channel-turn-service'
+import { AgentChatChannelRuntime } from '@/domain/channel/channel-agent-runtime-adapter'
 import { TelegramOutboundTransport } from '@/domain/channel/channel-outbound-transport'
 import { PlaybookService } from '@/domain/playbook/playbook-service'
 import { PlaybookV2Service } from '@/domain/playbook/playbook-v2-service'
@@ -188,6 +190,10 @@ const channelBotService = new ChannelBotService({
   bots: repositories.channelBots,
   audit: repositories.audit,
 })
+// A chat-futásidőt a linking-szolgáltatás egy sink-en át éri el (a bekötött üzenet forduló-sorba
+// írása, D8). A `ChannelTurnService` az `AgentChatRuntime` UTÁN épül (az függ tőle), ezért a
+// sink egy késleltetett referencián keresztül delegál — a bejövő üzenet csak futásidőben ér ide.
+let channelTurnServiceRef: ChannelTurnService | null = null
 // Csatorna összekötés/visszavonás (#72, D12). A varrat kimenete a befecskendezett kimenő
 // átvitel (Telegram vagy teszt-dublőr); a webhook titkos fejléc a bot referenciájából oldódik
 // fel; a deep-link a platform-bot Telegram-felhasználónevéből épül (env). A platform-oldali
@@ -229,6 +235,12 @@ const channelLinkingService = new ChannelLinkingService({
   },
   resolveWebhookSecret: async (bot) => resolveConnectorApiKey(bot.webhookSecretRef),
   buildDeepLink: (jti) => `https://t.me/${telegramBotUsername}?start=${jti}`,
+  linkedMessageSink: {
+    enqueueInbound: (input) => {
+      if (!channelTurnServiceRef) throw new Error('channel turn service not initialized')
+      return channelTurnServiceRef.enqueueInbound(input)
+    },
+  },
 })
 const connectorGrantService = new ConnectorGrantService(repositories.connectorGrants, repositories.audit)
 const workspaceBucket = process.env.WORKSPACE_BUCKET ?? 'platform-workspace-prod'
@@ -696,6 +708,64 @@ const agentChatRuntime = new AgentChatRuntime(
   (tenantId) => platformSettingsService.isChatThinkingTraceEnabledForTenant(tenantId),
   repositories.agentTurns,
 )
+// 1:1 agent-chat a csatornán (#74, D8/D9/D10/D11). A worker második munkatípusa: a bejövő
+// Telegram-fordulót a MEGLÉVŐ webes chat-futásidőre képezzük (ugyanabba a beszélgetésbe, így a
+// weben is látszik), majd a választ CÍMKÉZVE, DARABOLVA, az érzékenységi kapun át küldjük ki. A
+// kimenő átvitel ugyanaz a befecskendezhető adapter, mint a linking-oldalon (D11 — egy varrat).
+const channelTurnService = new ChannelTurnService({
+  sessions: repositories.channelSessions,
+  identities: repositories.channelIdentities,
+  grants: repositories.channelAgentGrants,
+  turns: repositories.channelTurns,
+  agents: {
+    findById: async (id) => {
+      const agent = await repositories.agents.findById(id)
+      if (!agent) return null
+      return {
+        id: agent.id,
+        name: agent.name,
+        tenantId: agent.tenantId,
+        personaNickname: agent.personaNickname,
+      }
+    },
+  },
+  conversations: {
+    findById: async (id) => {
+      const conv = await repositories.conversations.findById(id)
+      if (!conv) return null
+      return {
+        id: conv.id,
+        agentId: conv.agentId,
+        tenantId: conv.tenantId,
+        lastMessageAt: conv.lastMessageAt,
+        retainUntil: conv.retainUntil,
+      }
+    },
+    create: async (input) => {
+      const conv = await conversationService.createConversation({
+        agentId: input.agentId,
+        createdById: input.createdById,
+        tenantId: input.tenantId,
+        title: input.title,
+        projectKey: input.projectKey,
+        channel: input.channel,
+        channelExternalId: input.channelExternalId,
+      })
+      return { id: conv.id, retainUntil: conv.retainUntil }
+    },
+  },
+  runtime: new AgentChatChannelRuntime(agentChatRuntime),
+  transport: new TelegramOutboundTransport({
+    resolveBotToken: async () => {
+      const bot = await repositories.channelBots.findPlatformBot('telegram')
+      if (!bot) throw new Error('no platform telegram bot registered')
+      return resolveConnectorApiKey(bot.accessKeySecretRef)
+    },
+    resolveHostIps: async (host) => (await lookup(host, { all: true })).map((e) => e.address),
+  }),
+  audit: repositories.audit,
+})
+channelTurnServiceRef = channelTurnService
 const wikiRuntime = new WikiAgentRuntime(
   repositories.agents,
   repositories.tickets,
@@ -830,6 +900,7 @@ export const services = {
   conversations: conversationService,
   channelBots: channelBotService,
   channelLinking: channelLinkingService,
+  channelTurns: channelTurnService,
   iam: iamService,
   tenants: tenantService,
   provisioning: provisioningService,

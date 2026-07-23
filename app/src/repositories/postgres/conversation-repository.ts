@@ -1,6 +1,7 @@
 import { createHash } from 'crypto'
 import { Prisma } from '@prisma/client'
 import type {
+  ChannelType,
   Conversation,
   Message,
   MessageCriticality,
@@ -86,6 +87,9 @@ export class PostgresConversationRepository implements ConversationRepository {
     createdById: string
     retentionPolicyId?: string | null
     legalHold?: boolean
+    projectKey?: string | null
+    channel?: ChannelType | null
+    channelExternalId?: string | null
   }): Promise<Conversation> {
     return prisma.$transaction(async (tx) => {
       const now = new Date()
@@ -100,6 +104,11 @@ export class PostgresConversationRepository implements ConversationRepository {
           retainUntil: policy ? addDays(now, policy.ttlDays) : null,
           legalHold: data.legalHold ?? false,
           lastMessageAt: now,
+          // D9 — a projekt a memória-hatókör; alap a gyűjtő (a séma default-ja is `__general__`).
+          ...(data.projectKey != null ? { projectKey: data.projectKey } : {}),
+          // D14 — csatorna-megjelölés, hogy a webes felület tudja, ez egy Telegram-szál.
+          ...(data.channel != null ? { channel: data.channel } : {}),
+          ...(data.channelExternalId != null ? { channelExternalId: data.channelExternalId } : {}),
         },
       })
     })

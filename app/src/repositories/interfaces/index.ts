@@ -9,6 +9,9 @@ import type {
   ChannelIdentity,
   ChannelIdentityStatus,
   ChannelSession,
+  ChannelAgentGrant,
+  ChannelTurn,
+  ChannelTurnStatus,
   ChannelLinkToken,
   UserNotification,
   AuditLog,
@@ -1406,6 +1409,11 @@ export interface ConversationRepository {
     createdById: string
     retentionPolicyId?: string | null
     legalHold?: boolean
+    /** Memória-hatókör projektkulcsa (D9). Alap: gyűjtő (`__general__`). */
+    projectKey?: string | null
+    /** Csatorna-megjelölés (D14): ha a beszélgetés egy csatorna-adapteren (pl. Telegram) él. */
+    channel?: ChannelType | null
+    channelExternalId?: string | null
   }): Promise<Conversation>
   findById(id: string): Promise<Conversation | null>
   findByIdForTenant(id: string, tenantId: string | null): Promise<Conversation | null>
@@ -2245,6 +2253,49 @@ export interface ChannelSessionRepository {
   findByBotAndThread(botId: string, externalThreadId: string): Promise<ChannelSession | null>
   create(input: { botId: string; externalThreadId: string }): Promise<ChannelSession>
   update(id: string, data: ChannelSessionUpdate): Promise<ChannelSession>
+}
+
+/**
+ * Csatorna-agent-engedély tár (Telegram feature-spec #70/#74, D5/D9/D14). Melyik agent
+ * érhető el a csatornán az adott identitásnak, és melyik projektkulccsal (alap: gyűjtő).
+ * NEM új jogosultság-forrás, hanem SZŰKÍTÉS: a platform-oldali hozzáféréssel vett metszet
+ * (D5). A `projectKey` a beszélgetés memória-hatóköre (D9).
+ */
+export interface ChannelAgentGrantRepository {
+  /** Az identitáshoz tartozó, adott agentre szóló engedély (vagy `null`, ha nincs). */
+  findForIdentityAgent(identityId: string, agentId: string): Promise<ChannelAgentGrant | null>
+  /** Az identitás összes csatorna-engedélye (agent-váltáshoz / alapértelmezett kiválasztáshoz). */
+  listForIdentity(identityId: string): Promise<ChannelAgentGrant[]>
+}
+
+/**
+ * Csatorna-forduló (worker-munkasor) tár — a worker MÁSODIK munkatípusa (D8/D14). A bejövő
+ * üzenet tartós sorba kerül, túléli a webhook-kérést, `attempts` szerint újrapróbálható és
+ * `lastError` diagnosztizálható. A `claimNextBatch` atomi (a `queued` sorokat `running`-ra
+ * billenti és megnöveli az `attempts`-et), így egyszerre több worker sem dolgoz fel egy sort
+ * kétszer.
+ */
+export type EnqueueChannelTurnInput = {
+  sessionId: string
+  inboundRef?: string | null
+  inboundText: string | null
+  inboundKind: 'text' | 'unsupported'
+}
+
+export interface ChannelTurnRepository {
+  enqueue(input: EnqueueChannelTurnInput): Promise<ChannelTurn>
+  findById(id: string): Promise<ChannelTurn | null>
+  /**
+   * Legfeljebb `limit` `queued` (vagy elavultan `running`) fordulót foglal le: `running`-ra
+   * billenti, megnöveli az `attempts`-et. A visszaadott sorok e worker tulajdonában vannak.
+   * A `staleRunningBefore` előtt frissült `running` sorokat is visszaveszi (elszállt worker).
+   */
+  claimNextBatch(input: { limit: number; now: Date; staleRunningBefore: Date }): Promise<ChannelTurn[]>
+  markDone(id: string): Promise<ChannelTurn>
+  /** Újrapróbálható hiba: `queued`-re állítja vissza (a worker legközelebb újra felveszi). */
+  markRetry(id: string, error: string): Promise<ChannelTurn>
+  /** Végleges hiba (kimerült próbálkozások): `failed`. */
+  markFailed(id: string, error: string): Promise<ChannelTurn>
 }
 
 /**

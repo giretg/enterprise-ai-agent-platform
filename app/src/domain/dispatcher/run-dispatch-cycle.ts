@@ -15,6 +15,8 @@ export type DispatchCycleSummary = {
   materializedScheduledTasks: number
   monitorSweep: { ran: boolean; escalated: number; openedTickets: number }
   workspacePurge: { purgedTickets: number; deletedObjects: number }
+  /** A worker MÁSODIK munkatípusa (D8): feldolgozott Telegram-csatorna-fordulók száma. */
+  channelTurns: { processed: number }
   dispatch: {
     scanned: number
     started: number
@@ -41,6 +43,7 @@ const EMPTY_SUMMARY: DispatchCycleSummary = {
   materializedScheduledTasks: 0,
   monitorSweep: { ran: false, escalated: 0, openedTickets: 0 },
   workspacePurge: { purgedTickets: 0, deletedObjects: 0 },
+  channelTurns: { processed: 0 },
   dispatch: { scanned: 0, started: 0, budgetBlocked: 0, skipped: 0, paused: false, skipReasons: {} },
 }
 
@@ -119,6 +122,15 @@ export async function runDispatchCycle(
       deletedObjects: workspacePurgeResult.deletedObjects,
     }
 
+    // A worker MÁSODIK munkatípusa (D8): a bejövő Telegram-csatorna-fordulók feldolgozása. Best-
+    // effort — egy csatorna-hiba NEM buktathatja el a ticket-dispatch-et (a forduló újrapróbálható).
+    let channelTurns: DispatchCycleSummary['channelTurns'] = { processed: 0 }
+    try {
+      channelTurns = await services.channelTurns.processQueued({ limit: batchLimit })
+    } catch {
+      // A hiba a soron marad (`markRetry`/`markFailed` a szolgáltatásban) — a ciklus megy tovább.
+    }
+
     let dispatch: DispatchCycleSummary['dispatch']
     if (input.ticketId) {
       const result = await services.dispatcher.dispatchTicket(input.ticketId)
@@ -162,6 +174,7 @@ export async function runDispatchCycle(
       materializedScheduledTasks,
       monitorSweep,
       workspacePurge,
+      channelTurns,
       dispatch,
     }
     await services.platformSettings

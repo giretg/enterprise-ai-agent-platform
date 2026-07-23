@@ -38,6 +38,12 @@ export const CHANNEL_AUDIT_ACTIONS = {
   linkRejected: 'channel.link.rejected',
   identityRevoked: 'channel.identity.revoked',
   unlinkedNotice: 'channel.link.unlinked_notice',
+  // 1:1 agent-chat forduló-sor és feldolgozás (#73/#74, D8): sor-írás, sikeres feldolgozás,
+  // újrapróbálás (elszállt futás) és végleges hiba. Az azonosítók ÁLNEVESÍTVE.
+  turnEnqueued: 'channel.turn.enqueued',
+  turnCompleted: 'channel.turn.completed',
+  turnRetry: 'channel.turn.retry',
+  turnFailed: 'channel.turn.failed',
 } as const
 
 /**

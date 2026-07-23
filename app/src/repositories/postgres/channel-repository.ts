@@ -1,21 +1,26 @@
 import type {
+  ChannelAgentGrant,
   ChannelBot,
   ChannelIdentity,
   ChannelIdentityStatus,
   ChannelLinkToken,
   ChannelSession,
+  ChannelTurn,
   ChannelType,
 } from '@prisma/client'
 import { prisma } from '@/lib/db'
 import type {
+  ChannelAgentGrantRepository,
   ChannelBotRepository,
   ChannelIdentityRepository,
   ChannelLinkTokenRepository,
   ChannelSessionRepository,
   ChannelSessionUpdate,
+  ChannelTurnRepository,
   CreateChannelBotInput,
   CreateChannelIdentityInput,
   CreateChannelLinkTokenInput,
+  EnqueueChannelTurnInput,
   UpdateChannelBotInput,
 } from '../interfaces'
 
@@ -210,5 +215,100 @@ export class PostgresChannelLinkTokenRepository implements ChannelLinkTokenRepos
     })
     if (res.count === 0) return null
     return prisma.channelLinkToken.findUnique({ where: { jti } })
+  }
+}
+
+/**
+ * Csatorna-agent-engedély tár (Telegram feature-spec #70/#74, D5/D9/D14). Az `(identityId,
+ * agentId)` egyedi — egy identitás egy agentre egyetlen engedéllyel. A `projectKey` a
+ * beszélgetés memória-hatóköre (D9); alapja a gyűjtő.
+ */
+export class PostgresChannelAgentGrantRepository implements ChannelAgentGrantRepository {
+  async findForIdentityAgent(
+    identityId: string,
+    agentId: string,
+  ): Promise<ChannelAgentGrant | null> {
+    return prisma.channelAgentGrant.findUnique({
+      where: { identityId_agentId: { identityId, agentId } },
+    })
+  }
+
+  async listForIdentity(identityId: string): Promise<ChannelAgentGrant[]> {
+    return prisma.channelAgentGrant.findMany({
+      where: { identityId },
+      orderBy: { grantedAt: 'asc' },
+    })
+  }
+}
+
+/**
+ * Csatorna-forduló (worker-munkasor) tár — a worker MÁSODIK munkatípusa (D8/D14). A
+ * `claimNextBatch` egy tranzakcióban foglalja le a sorokat (`queued` → `running`, `attempts++`),
+ * hogy egy forduló ne induljon el kétszer még párhuzamos workereknél sem. Az elavult `running`
+ * sorokat (elszállt worker) a `staleRunningBefore` alapján visszaveszi, így a forduló
+ * újrapróbálható (D8 — túléli a webhook-kérést).
+ */
+export class PostgresChannelTurnRepository implements ChannelTurnRepository {
+  async enqueue(input: EnqueueChannelTurnInput): Promise<ChannelTurn> {
+    return prisma.channelTurn.create({
+      data: {
+        sessionId: input.sessionId,
+        inboundRef: input.inboundRef ?? null,
+        inboundText: input.inboundText,
+        inboundKind: input.inboundKind,
+        status: 'queued',
+      },
+    })
+  }
+
+  async findById(id: string): Promise<ChannelTurn | null> {
+    return prisma.channelTurn.findUnique({ where: { id } })
+  }
+
+  async claimNextBatch(input: {
+    limit: number
+    now: Date
+    staleRunningBefore: Date
+  }): Promise<ChannelTurn[]> {
+    return prisma.$transaction(async (tx) => {
+      // `FOR UPDATE SKIP LOCKED`: a párhuzamos workerek nem ütköznek — mindegyik más sorokat
+      // foglal. A `queued` és az elavult `running` (elszállt worker) sorok is jogosultak.
+      const candidates = await tx.$queryRaw<Array<{ id: string }>>`
+        SELECT "id" FROM "channel_turns"
+        WHERE "status" = 'queued'
+           OR ("status" = 'running' AND "updated_at" < ${input.staleRunningBefore})
+        ORDER BY "created_at" ASC
+        LIMIT ${input.limit}
+        FOR UPDATE SKIP LOCKED
+      `
+      const ids = candidates.map((c) => c.id)
+      if (ids.length === 0) return []
+      await tx.channelTurn.updateMany({
+        where: { id: { in: ids } },
+        data: { status: 'running', attempts: { increment: 1 }, updatedAt: input.now },
+      })
+      return tx.channelTurn.findMany({
+        where: { id: { in: ids } },
+        orderBy: { createdAt: 'asc' },
+      })
+    })
+  }
+
+  async markDone(id: string): Promise<ChannelTurn> {
+    return prisma.channelTurn.update({ where: { id }, data: { status: 'done', lastError: null } })
+  }
+
+  async markRetry(id: string, error: string): Promise<ChannelTurn> {
+    return prisma.channelTurn.update({
+      where: { id },
+      data: { status: 'queued', lastError: error.slice(0, 500) },
+    })
+  }
+
+  async markFailed(id: string, error: string): Promise<ChannelTurn> {
+    return prisma.channelTurn.update({
+      where: { id },
+      data: { status: 'failed', lastError: error.slice(0, 500) },
+    })
   }
 }
