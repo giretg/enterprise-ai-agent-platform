@@ -375,6 +375,10 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'channel.link.rejected',
   'channel.identity.revoked',
   'channel.link.unlinked_notice',
+  // Üzemeltetés (#78, D4): a bot SAJÁT kimenő üzeneteinek megőrzési takarítása. Az
+  // azonosítók ÁLNEVESÍTVE (kereső-hash prefix / szál-pszeudonim), nyers tartalom sosem.
+  'channel.message.purged',
+  'channel.retention.swept',
 
   // Platform / DB mode
   'database.mode_changed',

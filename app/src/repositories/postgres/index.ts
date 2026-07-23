@@ -11,6 +11,8 @@ import {
   PostgresChannelBotRepository,
   PostgresChannelIdentityRepository,
   PostgresChannelLinkTokenRepository,
+  PostgresChannelMetricsRepository,
+  PostgresChannelOutboundMessageRepository,
   PostgresChannelSessionRepository,
 } from './channel-repository'
 import { PostgresUserNotificationRepository } from './user-notification-repository'
@@ -87,6 +89,8 @@ export const repositories = {
   channelIdentities: new PostgresChannelIdentityRepository(),
   channelSessions: new PostgresChannelSessionRepository(),
   channelLinkTokens: new PostgresChannelLinkTokenRepository(),
+  channelOutboundMessages: new PostgresChannelOutboundMessageRepository(),
+  channelMetrics: new PostgresChannelMetricsRepository(),
   userNotifications: new PostgresUserNotificationRepository(),
   connectorGrants: new PostgresConnectorGrantRepository(),
   connectors: new PostgresConnectorRepository(),
