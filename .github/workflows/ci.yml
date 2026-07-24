@@ -151,6 +151,10 @@ jobs:
       contents: read
       security-events: write
       actions: read
+      # A gitleaks-action pull_request eseménynél a PR commitjait listázza
+      # (GET /pulls/{n}/commits) — ehhez pull-requests:read kell, különben 403
+      # („Resource not accessible by integration") és elbukik a titok-szkennelés.
+      pull-requests: read
     steps:
       - uses: actions/checkout@v7
         with:
