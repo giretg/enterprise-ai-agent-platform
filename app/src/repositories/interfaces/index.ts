@@ -1409,6 +1409,11 @@ export interface ConversationRepository {
     createdById: string
     retentionPolicyId?: string | null
     legalHold?: boolean
+    /** Memória-hatókör projektkulcsa (D9). Alap: gyűjtő (`__general__`). */
+    projectKey?: string | null
+    /** Csatorna-megjelölés (D14): ha a beszélgetés egy csatorna-adapteren (pl. Telegram) él. */
+    channel?: ChannelType | null
+    channelExternalId?: string | null
   }): Promise<Conversation>
   findById(id: string): Promise<Conversation | null>
   findByIdForTenant(id: string, tenantId: string | null): Promise<Conversation | null>
@@ -2252,6 +2257,16 @@ export interface ChannelAgentGrantRepository {
   create(input: CreateChannelAgentGrantInput): Promise<ChannelAgentGrant>
   updateProjectKey(id: string, projectKey: string): Promise<ChannelAgentGrant>
   deleteById(id: string): Promise<void>
+  /**
+   * Az identitáshoz tartozó, adott agentre szóló engedély (vagy `null`, ha nincs) — a #74
+   * agent-chat forduló-feldolgozó alias-neve `findByIdentityAndAgent`-re.
+   */
+  findForIdentityAgent(identityId: string, agentId: string): Promise<ChannelAgentGrant | null>
+  /**
+   * Az identitás összes csatorna-engedélye (agent-váltáshoz / alapértelmezett kiválasztáshoz) —
+   * a #74 agent-chat forduló-feldolgozó alias-neve `listByIdentity`-re.
+   */
+  listForIdentity(identityId: string): Promise<ChannelAgentGrant[]>
 }
 
 /**
@@ -2276,39 +2291,34 @@ export interface ChannelSessionRepository {
 }
 
 /**
- * Csatorna-forduló sor (Telegram feature-spec #70/#73, D8/D14). A worker MÁSODIK munkatípusa:
- * egy bejövő üzenet EGY sor, ami TÚLÉLI a webhook-kérést és `attempts` szerint ÚJRAPRÓBÁLHATÓ.
- *
- * A sor egyszerű állapotgép: `queued` → `running` (atomi kivétel, `attempts++`) → `done`
- * (siker) VAGY vissza `queued`-ba (átmeneti hiba, újrapróba) VAGY `failed` (kimerült
- * újrapróbák — dead-letter, `lastError`-ral). A crash-elakadt `running` sorokat egy watchdog
- * teszi vissza `queued`-ba (mint a chat AgentTurn-nél, D10).
+ * Csatorna-forduló (worker-munkasor) tár — a worker MÁSODIK munkatípusa (Telegram feature-spec
+ * #70/#73/#74, D8/D14). A bejövő üzenet tartós sorba kerül, túléli a webhook-kérést, `attempts`
+ * szerint újrapróbálható és `lastError` diagnosztizálható. A `claimNextBatch` atomi (a `queued`
+ * sorokat `running`-ra billenti és megnöveli az `attempts`-et, a `staleRunningBefore`-nál régebbi
+ * elszállt `running` sorokat is visszaveszi), így egyszerre több worker sem dolgoz fel egy sort
+ * kétszer, és egy crash-elakadt sor sem ragad örökre `running`-ban.
  */
+export type EnqueueChannelTurnInput = {
+  sessionId: string
+  inboundRef?: string | null
+  inboundText: string | null
+  inboundKind: 'text' | 'unsupported'
+}
+
 export interface ChannelTurnRepository {
-  /** Új forduló a sorba (`queued`). Az `inboundRef` a bejövő üzenet payloadja (későbbi agent-futáshoz). */
-  enqueue(input: { sessionId: string; inboundRef: string | null }): Promise<ChannelTurn>
+  enqueue(input: EnqueueChannelTurnInput): Promise<ChannelTurn>
+  findById(id: string): Promise<ChannelTurn | null>
   /**
-   * A legrégebbi `queued` forduló ATOMI kivétele: `running`-ra billenti és `attempts`-ot növeli,
-   * majd visszaadja. Egyidejű workerek nem kapják ugyanazt (`FOR UPDATE SKIP LOCKED`). `null`,
-   * ha nincs több várakozó.
+   * Legfeljebb `limit` `queued` (vagy elavultan `running`) fordulót foglal le: `running`-ra
+   * billenti, megnöveli az `attempts`-et. A visszaadott sorok e worker tulajdonában vannak.
+   * A `staleRunningBefore` előtt frissült `running` sorokat is visszaveszi (elszállt worker).
    */
-  claimNextQueued(now: Date): Promise<ChannelTurn | null>
-  /** Sikeres feldolgozás → `done`. */
-  markDone(id: string, now: Date): Promise<void>
-  /**
-   * Átmeneti hiba → vissza `queued`-ba (újrapróbálható), a `lastError` rögzítésével — KIVÉVE ha
-   * az `attempts` elérte a `maxAttempts` küszöböt, akkor `failed` (dead-letter). A visszatérés
-   * jelzi, melyik ág futott.
-   */
-  failOrRequeue(
-    id: string,
-    input: { error: string; maxAttempts: number; now: Date },
-  ): Promise<'requeued' | 'failed'>
-  /**
-   * Crash-watchdog: a `staleBefore`-nál régebben `running` sorokat visszateszi `queued`-ba, hogy
-   * egy elszállt/leállított worker ne hagyjon örökre „fut" fordulót. A visszatett sorok száma.
-   */
-  reclaimStaleRunning(staleBefore: Date, now: Date): Promise<number>
+  claimNextBatch(input: { limit: number; now: Date; staleRunningBefore: Date }): Promise<ChannelTurn[]>
+  markDone(id: string): Promise<ChannelTurn>
+  /** Újrapróbálható hiba: `queued`-re állítja vissza (a worker legközelebb újra felveszi). */
+  markRetry(id: string, error: string): Promise<ChannelTurn>
+  /** Végleges hiba (kimerült próbálkozások): `failed`. */
+  markFailed(id: string, error: string): Promise<ChannelTurn>
 }
 
 /**

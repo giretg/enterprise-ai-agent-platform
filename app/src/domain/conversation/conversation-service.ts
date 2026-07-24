@@ -1,5 +1,6 @@
 import type {
   AuditActorType,
+  ChannelType,
   Conversation,
   Message,
   MessageCriticality,
@@ -83,6 +84,11 @@ export class ConversationService {
     title?: string | null
     retentionPolicyId?: string | null
     legalHold?: boolean
+    /** Memória-hatókör projektkulcsa (D9). Alap: gyűjtő. Csatorna-beszélgetésnél az engedélyről. */
+    projectKey?: string | null
+    /** Csatorna-megjelölés (D14): Telegram-szál esetén a webes felület ebből tudja, honnan jön. */
+    channel?: ChannelType | null
+    channelExternalId?: string | null
   }) {
     const conversation = await this.conversations.create({
       tenantId: params.tenantId ?? null,
@@ -91,6 +97,9 @@ export class ConversationService {
       createdById: params.createdById,
       retentionPolicyId: params.retentionPolicyId ?? null,
       legalHold: params.legalHold ?? false,
+      projectKey: params.projectKey ?? null,
+      channel: params.channel ?? null,
+      channelExternalId: params.channelExternalId ?? null,
     })
 
     await this.audit.append({

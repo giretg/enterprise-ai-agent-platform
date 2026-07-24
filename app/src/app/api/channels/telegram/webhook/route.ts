@@ -35,6 +35,16 @@ type TelegramUpdate = {
     text?: string
     chat?: { id?: number | string }
     from?: { id?: number | string }
+    // Nem-szöveges tartalmak (fájl/kép/hang) — ezekre a bot érthetően „még nem tudom kezelni"
+    // választ ad (spec §27 / Out of Scope). A jelenlétüket detektáljuk, a tartalmukat nem.
+    document?: unknown
+    photo?: unknown
+    voice?: unknown
+    audio?: unknown
+    video?: unknown
+    video_note?: unknown
+    sticker?: unknown
+    animation?: unknown
   }
 }
 
@@ -43,15 +53,32 @@ function extractMessage(update: TelegramUpdate | null): {
   externalThreadId: string
   externalUserId: string
   text: string | null
+  kind: 'text' | 'unsupported'
 } | null {
   if (!update || typeof update.update_id !== 'number') return null
-  const chatId = update.message?.chat?.id
-  const fromId = update.message?.from?.id
+  const message = update.message
+  const chatId = message?.chat?.id
+  const fromId = message?.from?.id
   if (chatId == null || fromId == null) return null
+  const text = typeof message?.text === 'string' ? message.text : null
+  const hasAttachment =
+    message?.document != null ||
+    message?.photo != null ||
+    message?.voice != null ||
+    message?.audio != null ||
+    message?.video != null ||
+    message?.video_note != null ||
+    message?.sticker != null ||
+    message?.animation != null
+  // Fájl/kép/hang → `unsupported` (akkor is, ha van képaláírás — egyelőre nem dolgozzuk fel);
+  // különben ha van szöveg → `text`; egyébként nem feldolgozható frissítés.
+  const kind: 'text' | 'unsupported' = hasAttachment ? 'unsupported' : text != null ? 'text' : 'unsupported'
+  if (!hasAttachment && text == null) return null
   return {
     updateId: update.update_id,
     externalThreadId: String(chatId),
     externalUserId: String(fromId),
-    text: typeof update.message?.text === 'string' ? update.message.text : null,
+    text,
+    kind,
   }
 }

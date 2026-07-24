@@ -19,9 +19,12 @@ import type {
 } from '@prisma/client'
 import {
   ChannelLinkingService,
+  type ChannelLinkedMessageSink,
   type ChannelLinkNotifier,
 } from '../src/domain/channel/channel-linking-service'
 import { RecordingChannelTransport } from '../src/domain/channel/channel-outbound-transport'
+import { pseudonymFromLookupHash } from '../src/domain/channel/channel-identity-crypto'
+import { CHANNEL_AUDIT_ACTIONS } from '../src/domain/channel/channel-types'
 import { assertAuditActionRegistered } from '../src/lib/audit/event-catalog'
 import type {
   ChannelBotRepository,
@@ -251,16 +254,29 @@ function makeHarness(opts?: { botStatus?: 'active' | 'disabled'; noBot?: boolean
 
   const transport = new RecordingChannelTransport()
 
-  // Forduló-sor fake (#73): csak az `enqueue`-t használja a linking-varrat; a claim/reclaim a
-  // worker-varrat teszté. A rögzített sorokból a teszt ellenőrzi a bekötött → sorba-írás utat.
+  // Forduló-sor sink-fake (#73/#74): a linking-varrat a `linkedMessageSink.enqueueInbound`-on
+  // (a valós `ChannelTurnService.enqueueInbound`-ot helyettesítve) ír sorba és auditál — a
+  // claim/reclaim/agent-futás a worker-varrat teszté. A rögzített sorokból a teszt ellenőrzi a
+  // bekötött → sorba-írás utat.
   const turnRows: Array<{ id: string; sessionId: string; inboundRef: string | null }> = []
   let turnSeq = 0
   const enqueuedNotifications: string[] = []
-  const turns = {
-    async enqueue(input: { sessionId: string; inboundRef: string | null }) {
-      const row = { id: `turn-${++turnSeq}`, sessionId: input.sessionId, inboundRef: input.inboundRef }
+  const linkedMessageSink: ChannelLinkedMessageSink = {
+    async enqueueInbound(input) {
+      const row = { id: `turn-${++turnSeq}`, sessionId: input.sessionId, inboundRef: input.message.text }
       turnRows.push(row)
-      return { ...row, status: 'queued', attempts: 0, lastError: null, createdAt: clock, updatedAt: clock } as never
+      await audit.append({
+        action: CHANNEL_AUDIT_ACTIONS.turnEnqueued,
+        targetType: 'channel_turn',
+        policyDecision: 'queued',
+        metadata: {
+          channelType: input.identity.channelType,
+          inboundKind: input.message.kind,
+          pseudonym: pseudonymFromLookupHash(input.identity.lookupHash),
+          tenantId: input.identity.tenantId,
+        },
+      })
+      return { id: row.id }
     },
   }
 
@@ -269,7 +285,7 @@ function makeHarness(opts?: { botStatus?: 'active' | 'disabled'; noBot?: boolean
     identities,
     sessions,
     linkTokens,
-    turns,
+    linkedMessageSink,
     onTurnEnqueued: async (turnId: string) => {
       enqueuedNotifications.push(turnId)
     },

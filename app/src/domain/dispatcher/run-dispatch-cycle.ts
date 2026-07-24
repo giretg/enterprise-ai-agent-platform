@@ -4,8 +4,6 @@ import { ensureActiveDatabaseMode } from '@/lib/db'
 import { repositories } from '@/repositories/postgres'
 
 const DEFAULT_BATCH_LIMIT = Number(process.env.DISPATCHER_BATCH_LIMIT ?? 10)
-/** Ennyi ms `running` után egy csatorna-forduló crash-elakadtnak számít és visszakerül a sorba. */
-const CHANNEL_TURN_STALE_MS = Number(process.env.CHANNEL_TURN_STALE_MS ?? 120_000)
 
 export type DispatchCycleSummary = {
   /** Igaz, ha egy másik ciklus még folyamatban volt ugyanebben a process-ben (nincs átfedés). */
@@ -94,14 +92,17 @@ export async function runDispatchCycle(
     })
     const reclaimedAgentTurns = reclaimedTurns.filter((r) => r.status === 'reclaimed').length
 
-    // Csatorna-forduló sor (#73 / D8): a worker második munkatípusa. Előbb a crash-elakadt
-    // `running` sorokat tesszük vissza `queued`-ba (a chat-watchdog mintája), majd egy adagot
-    // lezavarunk. Fail-soft: egy hiba itt nem buktatja a ticket-dispatch-et.
+    // Csatorna-forduló sor (#73/#74, D8): a worker második munkatípusa — a bejövő Telegram-
+    // csatorna-fordulók 1:1 agent-chat feldolgozása. A crash-elakadt `running` sorok visszavétele
+    // (`staleRunningBefore`) a `processQueued` HÍVÁSÁN belül, atomi kivétellel történik (nincs
+    // külön megfigyelhető számláló) — a `reclaimed` mező itt ezért mindig 0, csak a
+    // `DispatchCycleSummary` alak-kompatibilitását tartja fenn (l. `dispatcher-worker.ts` log).
+    // Fail-soft: egy csatorna-hiba NEM buktathatja el a ticket-dispatch-et (a forduló
+    // újrapróbálható, `markRetry`/`markFailed` a szolgáltatásban).
     let channelTurns: DispatchCycleSummary['channelTurns'] = { reclaimed: 0, processed: 0 }
     try {
-      const reclaimedChannelTurns = await services.channelTurns.reclaimStale(CHANNEL_TURN_STALE_MS)
-      const processedChannelTurns = await services.channelTurns.processQueuedBatch(batchLimit)
-      channelTurns = { reclaimed: reclaimedChannelTurns, processed: processedChannelTurns.claimed }
+      const processed = await services.channelTurns.processQueued({ limit: batchLimit })
+      channelTurns = { reclaimed: 0, processed: processed.processed }
     } catch (error) {
       console.error(
         '[dispatch-cycle] channel-turn drain error:',

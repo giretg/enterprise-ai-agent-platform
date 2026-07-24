@@ -46,11 +46,12 @@ import { SkillService } from '@/domain/skill/skill-service'
 import { ConversationService } from '@/domain/conversation/conversation-service'
 import { ChannelBotService } from '@/domain/channel/channel-bot-service'
 import { ChannelLinkingService } from '@/domain/channel/channel-linking-service'
+import { ChannelTurnService } from '@/domain/channel/channel-turn-service'
+import { AgentChatChannelRuntime } from '@/domain/channel/channel-agent-runtime-adapter'
 import { ChannelNotificationService } from '@/domain/channel/channel-notification-service'
 import { ChannelAgentAccessService } from '@/domain/channel/channel-agent-access-service'
 import { ChannelMetricsService } from '@/domain/channel/channel-metrics-service'
 import { ChannelRetentionService } from '@/domain/channel/channel-retention-service'
-import { ChannelTurnService } from '@/domain/channel/channel-turn-service'
 import { TelegramOutboundTransport } from '@/domain/channel/channel-outbound-transport'
 import { TelegramMonitorNotifier } from '@/lib/notify/telegram-monitor-notifier'
 import { notifyChannelTurnReady } from '@/lib/channel-notify'
@@ -216,6 +217,10 @@ const channelBotService = new ChannelBotService({
   bots: repositories.channelBots,
   audit: repositories.audit,
 })
+// A chat-futásidőt a linking-szolgáltatás egy sink-en át éri el (a bekötött üzenet forduló-sorba
+// írása, D8). A `ChannelTurnService` az `AgentChatRuntime` UTÁN épül (az függ tőle), ezért a
+// sink egy késleltetett referencián keresztül delegál — a bejövő üzenet csak futásidőben ér ide.
+let channelTurnServiceRef: ChannelTurnService | null = null
 // Csatorna összekötés/visszavonás (#72, D12). A varrat kimenete a befecskendezett kimenő
 // átvitel (Telegram vagy teszt-dublőr); a webhook titkos fejléc a bot referenciájából oldódik
 // fel; a deep-link a platform-bot Telegram-felhasználónevéből épül (env). A platform-oldali
@@ -236,7 +241,6 @@ const channelLinkingService = new ChannelLinkingService({
   identities: repositories.channelIdentities,
   sessions: repositories.channelSessions,
   linkTokens: repositories.channelLinkTokens,
-  turns: repositories.channelTurns,
   onTurnEnqueued: notifyChannelTurnReady,
   transport: telegramOutboundTransport,
   // A bot saját kimenő üzeneteit rögzítjük a megőrzési takarításhoz (D4/#78).
@@ -264,17 +268,15 @@ const channelLinkingService = new ChannelLinkingService({
   },
   resolveWebhookSecret: async (bot) => resolveConnectorApiKey(bot.webhookSecretRef),
   buildDeepLink: (jti) => `https://t.me/${telegramBotUsername}?start=${jti}`,
+  linkedMessageSink: {
+    enqueueInbound: (input) => {
+      if (!channelTurnServiceRef) throw new Error('channel turn service not initialized')
+      return channelTurnServiceRef.enqueueInbound(input)
+    },
+  },
 })
-// A worker MÁSODIK munkatípusa (#73, D8): a bekötött üzenetek forduló-sorát zavarja le. A
-// kimenő átvitel ugyanaz a Telegram-példány, mint a linking-varraté (egyetlen kijárat).
-const channelTurnService = new ChannelTurnService({
-  turns: repositories.channelTurns,
-  sessions: repositories.channelSessions,
-  identities: repositories.channelIdentities,
-  grants: repositories.channelAgentGrants,
-  transport: telegramOutboundTransport,
-  audit: repositories.audit,
-})
+// A `ChannelTurnService` (a worker MÁSODIK munkatípusa, #73/#74, D8) az `AgentChatRuntime` UTÁN
+// épül fel lejjebb (az agent-futáshoz szüksége van rá) — l. `channelTurnServiceRef` fent.
 // Üzemeltetői metrikák (#78, story 59) — az audit-láncból és a csatorna-táblák állapotából.
 const channelMetricsService = new ChannelMetricsService({
   audit: repositories.audit,
@@ -773,6 +775,64 @@ const agentChatRuntime = new AgentChatRuntime(
   (tenantId) => platformSettingsService.isChatThinkingTraceEnabledForTenant(tenantId),
   repositories.agentTurns,
 )
+// 1:1 agent-chat a csatornán (#74, D8/D9/D10/D11). A worker második munkatípusa: a bejövő
+// Telegram-fordulót a MEGLÉVŐ webes chat-futásidőre képezzük (ugyanabba a beszélgetésbe, így a
+// weben is látszik), majd a választ CÍMKÉZVE, DARABOLVA, az érzékenységi kapun át küldjük ki. A
+// kimenő átvitel ugyanaz a befecskendezhető adapter, mint a linking-oldalon (D11 — egy varrat).
+const channelTurnService = new ChannelTurnService({
+  sessions: repositories.channelSessions,
+  identities: repositories.channelIdentities,
+  grants: repositories.channelAgentGrants,
+  turns: repositories.channelTurns,
+  agents: {
+    findById: async (id) => {
+      const agent = await repositories.agents.findById(id)
+      if (!agent) return null
+      return {
+        id: agent.id,
+        name: agent.name,
+        tenantId: agent.tenantId,
+        personaNickname: agent.personaNickname,
+      }
+    },
+  },
+  conversations: {
+    findById: async (id) => {
+      const conv = await repositories.conversations.findById(id)
+      if (!conv) return null
+      return {
+        id: conv.id,
+        agentId: conv.agentId,
+        tenantId: conv.tenantId,
+        lastMessageAt: conv.lastMessageAt,
+        retainUntil: conv.retainUntil,
+      }
+    },
+    create: async (input) => {
+      const conv = await conversationService.createConversation({
+        agentId: input.agentId,
+        createdById: input.createdById,
+        tenantId: input.tenantId,
+        title: input.title,
+        projectKey: input.projectKey,
+        channel: input.channel,
+        channelExternalId: input.channelExternalId,
+      })
+      return { id: conv.id, retainUntil: conv.retainUntil }
+    },
+  },
+  runtime: new AgentChatChannelRuntime(agentChatRuntime),
+  transport: new TelegramOutboundTransport({
+    resolveBotToken: async () => {
+      const bot = await repositories.channelBots.findPlatformBot('telegram')
+      if (!bot) throw new Error('no platform telegram bot registered')
+      return resolveConnectorApiKey(bot.accessKeySecretRef)
+    },
+    resolveHostIps: async (host) => (await lookup(host, { all: true })).map((e) => e.address),
+  }),
+  audit: repositories.audit,
+})
+channelTurnServiceRef = channelTurnService
 const wikiRuntime = new WikiAgentRuntime(
   repositories.agents,
   repositories.tickets,

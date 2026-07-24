@@ -112,6 +112,15 @@ function makeHarness() {
     async deleteById(id) {
       grants.delete(id)
     },
+    async findForIdentityAgent(identityId, agentId) {
+      return (
+        [...grants.values()].find((g) => g.identityId === identityId && g.agentId === agentId) ??
+        null
+      )
+    },
+    async listForIdentity(identityId) {
+      return [...grants.values()].filter((g) => g.identityId === identityId)
+    },
   }
 
   type AgentRow = { id: string; name: string; tenantId: string | null; usable: boolean }

@@ -38,6 +38,16 @@ export const CHANNEL_AUDIT_ACTIONS = {
   linkRejected: 'channel.link.rejected',
   identityRevoked: 'channel.identity.revoked',
   unlinkedNotice: 'channel.link.unlinked_notice',
+  // 1:1 agent-chat forduló-sor és feldolgozás (#73/#74, D8): sor-írás, sikeres feldolgozás,
+  // újrapróbálás (elszállt futás) és végleges hiba. Az azonosítók ÁLNEVESÍTVE.
+  turnEnqueued: 'channel.turn.enqueued',
+  turnCompleted: 'channel.turn.completed',
+  turnRetry: 'channel.turn.retry',
+  turnFailed: 'channel.turn.failed',
+  // Bejövő forduló-sor + worker második munkatípus (#73, D8) korábbi szeletének maradék
+  // eseménye (agent-engedély nélküli útmutató válasz) — a #74 óta `turnCompleted` alá esik,
+  // de a konstans megmarad visszafelé-kompatibilitásért / esetleges régi audit-sorokért.
+  turnNoAgent: 'channel.turn.no_agent',
   // Proaktív értesítés (#77, D7/D11/D15) — a Monitor-riasztás a csatorna harmadik bejáratán.
   // A `sent` a kiment értesítés, a `skipped` a nincs-küldés (nem összekötött címzett / nincs
   // bot), a `failed` a best-effort küldési hiba (a Monitor-futás NEM bukik el), a
@@ -46,10 +56,6 @@ export const CHANNEL_AUDIT_ACTIONS = {
   notificationSkipped: 'channel.notification.skipped',
   notificationFailed: 'channel.notification.failed',
   identityBlocked: 'channel.identity.blocked',
-  // Bejövő forduló-sor + worker második munkatípus (#73, D8): a bekötött üzenet sorba
-  // kerülése (megbízható, újrapróbálható út) és az agent-engedély nélküli útmutató válasz.
-  turnEnqueued: 'channel.turn.enqueued',
-  turnNoAgent: 'channel.turn.no_agent',
   // Üzemeltetés (#78, D4): a bot saját kimenő üzeneteinek megőrzési takarítása.
   messagePurged: 'channel.message.purged',
   retentionSwept: 'channel.retention.swept',

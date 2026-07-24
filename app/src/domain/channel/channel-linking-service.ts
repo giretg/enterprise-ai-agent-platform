@@ -28,7 +28,6 @@ import type {
   ChannelLinkTokenRepository,
   ChannelOutboundMessageRepository,
   ChannelSessionRepository,
-  ChannelTurnRepository,
 } from '@/repositories/interfaces'
 import type { ChannelOutboundTransport } from './channel-outbound-transport'
 import {
@@ -91,6 +90,31 @@ export type ChannelInboundMessage = {
   externalThreadId: string
   externalUserId: string
   text: string | null
+  /**
+   * A tartalom fajtája: `text` = feldolgozható szöveg; `unsupported` = fájl/kép/hang (a bot
+   * érthetően megmondja, hogy ezt még nem tudja kezelni, §27). Hiányában a `text` megléte dönt.
+   */
+  kind?: 'text' | 'unsupported'
+}
+
+/**
+ * Egy összekötött felhasználó privát üzenetének átadása a chat-futásidőnek (D8). A linking-
+ * szolgáltatás a bekötött, nem-`/start` üzenetet ennek a portnak adja át; a valós wiring a
+ * `ChannelTurnService.enqueueInbound`-hoz köti (tartós forduló-sor, a worker veszi fel). Ha
+ * nincs beállítva (pl. a #72 slice tesztjeiben), a bekötött üzenet `linked_no_runtime` marad.
+ */
+export interface ChannelLinkedMessageSink {
+  enqueueInbound(input: {
+    sessionId: string
+    identity: ChannelIdentity
+    message: {
+      updateId: number
+      externalThreadId: string
+      externalUserId: string
+      text: string | null
+      kind: 'text' | 'unsupported'
+    }
+  }): Promise<{ id: string }>
 }
 
 export type ChannelLinkingDeps = {
@@ -98,8 +122,6 @@ export type ChannelLinkingDeps = {
   identities: ChannelIdentityRepository
   sessions: ChannelSessionRepository
   linkTokens: ChannelLinkTokenRepository
-  /** A bekötött üzenet TARTÓS forduló-sorba írása (#73, D8) — a worker második munkatípusa. */
-  turns: Pick<ChannelTurnRepository, 'enqueue'>
   /**
    * A sorba írás után hívott, hibatűrő értesítő (Postgres NOTIFY) — a worker azonnal ébred a
    * cron-háló bevárása helyett. Alapból nincs (a cron-söprés így is felveszi a fordulót).
@@ -120,6 +142,8 @@ export type ChannelLinkingDeps = {
   resolveWebhookSecret: (bot: ChannelBot) => Promise<string>
   /** A `jti`-ből deep-link (t.me/<bot>?start=<jti>). */
   buildDeepLink: (jti: string) => string
+  /** Bekötött, nem-`/start` üzenet átadása a chat-futásidőnek (D8). Opcionális (#72 back-compat). */
+  linkedMessageSink?: ChannelLinkedMessageSink
   token?: ChannelLinkTokenPort
   crypto?: ChannelIdentityCryptoPort
   now?: () => Date
@@ -140,6 +164,7 @@ export type InboundOutcome =
   | 'bad_secret'
   | 'unsupported_update'
   | 'duplicate'
+  | 'linked_no_runtime'
   | 'linked_enqueued'
   | 'unlinked_notice_sent'
   | 'unlinked_silenced'
@@ -290,60 +315,55 @@ export class ChannelLinkingService {
       })
     }
 
-    // Nincs `/start <token>`: bekötött → tartós forduló-sorba (a worker veszi fel); bekötetlen
-    // → semleges válasz egyszer.
+    // Nincs `/start <token>`: bekötött → chat-futásidő (D8, forduló-sor); bekötetlen → semleges egyszer.
     const identity = await this.deps.identities.findByLookupHash(channelType, lookupHash)
     if (identity && identity.status === 'active') {
       if (session.identityId !== identity.id) {
         await this.deps.sessions.update(session.id, { identityId: identity.id })
       }
-      return this.enqueueLinkedTurn({
-        channelType,
-        sessionId: session.id,
-        lookupHash,
-        tenantId: identity.tenantId,
-        inboundRef: msg.text,
-      })
+      if (this.deps.linkedMessageSink) {
+        const kind: 'text' | 'unsupported' =
+          msg.kind ?? (typeof msg.text === 'string' && msg.text.length > 0 ? 'text' : 'unsupported')
+        return this.enqueueLinkedTurn({
+          sessionId: session.id,
+          identity,
+          message: {
+            updateId: msg.updateId,
+            externalThreadId: msg.externalThreadId,
+            externalUserId: msg.externalUserId,
+            text: msg.text,
+            kind,
+          },
+        })
+      }
+      return { handled: true, outcome: 'linked_no_runtime' }
     }
 
     return this.handleUnlinked({ bot, channelType, sessionId: session.id, lookupHash, now })
   }
 
   /**
-   * A bekötött felhasználó üzenetét TARTÓS forduló-sorba írja (#73, D8). A sor túléli a
-   * webhook-kérést; a worker második munkatípusként veszi fel. A `NOTIFY` (ha van) csak
-   * gyorsítás — hibája nem buktathatja a sorba írást (a cron-háló akkor is felveszi).
+   * A bekötött felhasználó üzenetét a chat-futásidő sink-jén (`ChannelTurnService.enqueueInbound`)
+   * TARTÓS forduló-sorba írja (#73/#74, D8). A sor túléli a webhook-kérést; a worker második
+   * munkatípusként veszi fel. A `NOTIFY` (ha van) csak gyorsítás — hibája nem buktathatja a
+   * sorba írást (a cron-háló akkor is felveszi). Az audit-bejegyzést maga a sink
+   * (`ChannelTurnService.enqueueInbound`) írja, hogy egyetlen helyen szülessen.
    */
   private async enqueueLinkedTurn(input: {
-    channelType: ChannelType
     sessionId: string
-    lookupHash: string
-    tenantId: string | null
-    inboundRef: string | null
+    identity: ChannelIdentity
+    message: {
+      updateId: number
+      externalThreadId: string
+      externalUserId: string
+      text: string | null
+      kind: 'text' | 'unsupported'
+    }
   }): Promise<HandleInboundResult> {
-    const turn = await this.deps.turns.enqueue({
+    const turn = await this.deps.linkedMessageSink!.enqueueInbound({
       sessionId: input.sessionId,
-      inboundRef: input.inboundRef,
-    })
-
-    await this.deps.audit.append({
-      actorType: 'system',
-      actorId: null,
-      agentVersion: null,
-      action: CHANNEL_AUDIT_ACTIONS.turnEnqueued,
-      targetType: 'channel_turn',
-      targetId: turn.id,
-      modelUsed: null,
-      inputRef: null,
-      outputRef: null,
-      policyDecision: 'queued',
-      // Az üzenet TARTALMA sosem kerül auditba — csak a tény, hogy sorba került (álnevesített id).
-      metadata: {
-        channelType: input.channelType,
-        tenantId: input.tenantId,
-        pseudonym: pseudonymFromLookupHash(input.lookupHash),
-      },
-      tenantId: input.tenantId,
+      identity: input.identity,
+      message: input.message,
     })
 
     if (this.deps.onTurnEnqueued) {
