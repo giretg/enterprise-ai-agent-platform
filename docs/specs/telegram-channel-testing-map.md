@@ -13,11 +13,16 @@ hívásokat** és **audit-bejegyzéseket** nézi — sosem hív külön belső e
 
 - ✅ **Lefedett** — van rá varrat-teszt ebben a repóban (a hivatkozott `npm` szkripttel futtatva).
 - 🔗 **Regresszió** — egy korábbi slice tesztje fedi (a #78 nem duplikálja).
-- ⏳ **Függőben** — a futásidő-szeletet egy még nyitott, a #78-at **blokkoló** ticket hozza
-  (#74 admin agent-engedélyek + chat-forduló futásidő, #76 eseményvezérelt jóváhagyás,
-  #77 proaktív értesítés). A séma és az audit-katalógus már ma viszi; a viselkedés-teszt a
-  megfelelő slice-szal érkezik. Itt **explicit regresszió-hivatkozásként** soroljuk fel, a #78
-  AC-nek megfelelően („lefedettek vagy explicit regresszióként hivatkozottak").
+- ⏳ **Függőben** — a futásidő-szeletet egy még nyitott ticket hozza (#74 admin agent-engedélyek +
+  chat-forduló futásidő, #76 eseményvezérelt jóváhagyás, #77 proaktív értesítés). A séma és az
+  audit-katalógus már ma viszi; a viselkedés-teszt a megfelelő slice-szal érkezik. Itt **explicit
+  regresszió-hivatkozásként** soroljuk fel, a #78 AC-nek megfelelően („lefedettek vagy explicit
+  regresszióként hivatkozottak").
+
+> **Frissítés:** a #73 (bejövő forduló-sor + worker második munkatípus) időközben **mergelődött a
+> main-be**, így a worker-tartósság (21) már lefedett (`test:channel-turn`), és a bekötött üzenet
+> sorba-kerülési útja is létezik. A többi runtime-eset (10, 12, 13, 14–19) a saját nyitott
+> ticketjével élesedik.
 
 | # | Testing Decision (#70) | Állapot | Fedő teszt / hivatkozás |
 |---|---|---|---|
@@ -41,7 +46,7 @@ hívásokat** és **audit-bejegyzéseket** nézi — sosem hív külön belső e
 | 18 | Darabolás: hosszú válasz több érvényes üzenetre, sorrendhelyesen | ⏳ #74 | Kimenő chat-út — #74 |
 | 19 | Proaktív értesítés: nem regisztrált címzett → nincs küldés; küldési hiba → a Monitor-futás nem bukik | ⏳ #77 | #77 |
 | 20 | Bot letiltva: letiltás után a küldés abbamarad, a kötés jelölődik | 🔗 / ⏳ #74 | A letiltás **detektálása** (`blocked_by_user`): `test:channel-transport` (CT). A kötés jelölése + küldés-leállítás a küldő-út slice (#74) |
-| 21 | Worker-tartósság: a forduló-sor megmarad és újrapróbálható | ⏳ #74 | A `channel_turns` sor-séma megvan; a worker második munkatípusa a #74 slice. (A #78 megőrzési takarítója maga is sor-alapú, újrapróbálható — l. CR-4) |
+| 21 | Worker-tartósság: a forduló-sor megmarad és újrapróbálható | 🔗 #73 | `test:channel-turn` (#73 — a bejövő forduló-sor `claim`/`failOrRequeue`/`reclaimStaleRunning` tartóssága). A #78 megőrzési takarítója maga is sor-alapú, újrapróbálható — l. CR-4 |
 | 22 | Audit: minden eset determinisztikus, **álnevesített** azonosítójú audit-bejegyzést ír | ✅ | **#78 új:** `test:channel-retention` (CR-1 — a takarítás álnevesített, nyers chat id nélküli auditja; CR-5 összegző). **Regresszió:** `test:channel-linking` (minden CL-hatás álnevesített audit). A `pseudonymFromLookupHash` / `pseudonymFromExternalThreadId` egy helyen tartja az álnevesítést |
 
 ## A #78 által ADOTT új lefedettség (üzemeltetés)
