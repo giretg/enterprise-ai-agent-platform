@@ -354,7 +354,7 @@ export class ChannelTurnService {
     await this.deps.transport.send({
       channelType: TELEGRAM,
       method: 'sendChatAction',
-      // Dupla idézőjel: az audit-katalógus szkenner (`action: '…'`) ne vegye literálnak.
+      // Dupla idézőjel: az audit-katalógus szkenner ne vegye literálnak a ChatAction payloadot.
       payload: { chat_id: session.externalThreadId, action: "typing" },
     })
 
