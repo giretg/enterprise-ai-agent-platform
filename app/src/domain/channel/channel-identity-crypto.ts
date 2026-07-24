@@ -89,3 +89,16 @@ export const defaultChannelIdentityCryptoPort: ChannelIdentityCryptoPort = {
   encryptExternalId,
   deriveLookupHash: deriveChannelLookupHash,
 }
+
+/**
+ * A proaktív értesítéshez (#77) a KIMENŐ cél-azonosító (Telegram chat_id = a privát chatben a
+ * felhasználó numerikus id-je) a kötés titkosított `externalUserIdEnc` mezőjéből oldódik fel —
+ * szerveroldalon, a hívás pillanatában. A nyers azonosító sosem naplózódik és sosem kerül auditba.
+ */
+export type ChannelNotifyCryptoPort = {
+  decryptExternalId: (enc: string) => string
+}
+
+export const defaultChannelNotifyCryptoPort: ChannelNotifyCryptoPort = {
+  decryptExternalId,
+}

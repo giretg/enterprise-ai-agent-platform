@@ -376,6 +376,14 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'channel.link.rejected',
   'channel.identity.revoked',
   'channel.link.unlinked_notice',
+  // Proaktív értesítés (#77, D7/D11/D15): a Monitor-riasztás a csatorna harmadik bejáratán
+  // Telegramra megy. A küldési hiba best-effort (`failed`, a Monitor-futás nem bukik el);
+  // a bot-letiltás a kötést `blocked`-ra jelöli (`channel.identity.blocked`), és a küldés
+  // abbamarad. Az azonosítók ÁLNEVESÍTVE, nyers külső id sosem kerül auditba.
+  'channel.notification.sent',
+  'channel.notification.skipped',
+  'channel.notification.failed',
+  'channel.identity.blocked',
   // Bejövő forduló-sor + worker második munkatípus (#73, D8): a bekötött üzenet sorba
   // kerülése (megbízható, újrapróbálható út) és az agent-engedély nélküli útmutató válasz.
   'channel.turn.enqueued',

@@ -38,6 +38,14 @@ export const CHANNEL_AUDIT_ACTIONS = {
   linkRejected: 'channel.link.rejected',
   identityRevoked: 'channel.identity.revoked',
   unlinkedNotice: 'channel.link.unlinked_notice',
+  // Proaktív értesítés (#77, D7/D11/D15) — a Monitor-riasztás a csatorna harmadik bejáratán.
+  // A `sent` a kiment értesítés, a `skipped` a nincs-küldés (nem összekötött címzett / nincs
+  // bot), a `failed` a best-effort küldési hiba (a Monitor-futás NEM bukik el), a
+  // `identity.blocked` pedig a bot-letiltás jelölése (a kötés `blocked`, a küldés abbamarad).
+  notificationSent: 'channel.notification.sent',
+  notificationSkipped: 'channel.notification.skipped',
+  notificationFailed: 'channel.notification.failed',
+  identityBlocked: 'channel.identity.blocked',
   // Bejövő forduló-sor + worker második munkatípus (#73, D8): a bekötött üzenet sorba
   // kerülése (megbízható, újrapróbálható út) és az agent-engedély nélküli útmutató válasz.
   turnEnqueued: 'channel.turn.enqueued',
