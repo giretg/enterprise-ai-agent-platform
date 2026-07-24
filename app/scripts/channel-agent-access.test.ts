@@ -77,6 +77,9 @@ function makeHarness() {
     async listByIdentity(identityId) {
       return [...grants.values()].filter((g) => g.identityId === identityId)
     },
+    async hasAnyGrant(identityId) {
+      return [...grants.values()].some((g) => g.identityId === identityId)
+    },
     async listByIdentityIds(ids) {
       return [...grants.values()].filter((g) => ids.includes(g.identityId))
     },
