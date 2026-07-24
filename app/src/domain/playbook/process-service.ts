@@ -92,6 +92,26 @@ export interface ProcessAlertNotifier {
   }): Promise<void>
 }
 
+/**
+ * Eseményvezérelt jóváhagyás előfeltétele (Telegram feature-spec #70/#76, prefactor): amikor egy
+ * ticket `awaiting_human`-ba lép, a runtime CSAK ESEMÉNYT jelez — NEM hív közvetlenül semmilyen
+ * csatornát (D11). Az esemény felvevője (pl. a Telegram jóváhagyó-szolgáltatás) dönti el, kinek és
+ * hogyan küld jogosultság-tudatos gombokat. A kibocsátás BEST-EFFORT: a hibája nem buktathatja a
+ * folyamat-léptetést (az `awaiting_human` tényét az audit már rögzítette), és a négyórás
+ * elakadás-figyelő biztonsági hálóként FÜGGETLENÜL megmarad. Alapból nincs bekötve (a régi
+ * viselkedés változatlan) — a setter köti be.
+ */
+export interface AwaitingHumanEventSink {
+  awaitingHuman(event: {
+    ticketId: string
+    tenantId: string | null
+    processInstanceId: string
+    stepId: string
+    /** A kötelező kapu azonosítója, ha kapu-ághoz tartozik (különben `null` = általános review). */
+    gateId: string | null
+  }): Promise<void>
+}
+
 /** A szerep→agent feloldás kontextusa egy Folyamatból indított Futáshoz. */
 type RoleResolution = {
   roleBindings: Record<string, string>
@@ -147,6 +167,37 @@ export class ProcessService {
     // tesztekben), a ticket a régi módon 'ready'-ben marad a worker/cron számára.
     private readonly dispatchTicket?: (ticketId: string) => Promise<unknown>,
   ) {}
+
+  /**
+   * Az `awaiting_human` esemény felvevője (#76 prefactor). Setter-injektálás (mint a
+   * `toolBrokerService.setPlaybookTransitioner`), hogy a késői wiring ne bővítse a pozicionális
+   * konstruktort. Alapból nincs — a régi viselkedés változatlan.
+   */
+  private awaitingHumanSink?: AwaitingHumanEventSink
+
+  setAwaitingHumanSink(sink: AwaitingHumanEventSink): void {
+    this.awaitingHumanSink = sink
+  }
+
+  /**
+   * Az `awaiting_human` esemény BEST-EFFORT kibocsátása. A runtime NEM hív közvetlenül csatornát
+   * (D11) — csak jelez; a hiba nem buktathatja a folyamat-léptetést.
+   */
+  private async emitAwaitingHuman(event: {
+    ticketId: string
+    tenantId: string | null
+    processInstanceId: string
+    stepId: string
+    gateId: string | null
+  }): Promise<void> {
+    if (!this.awaitingHumanSink) return
+    try {
+      await this.awaitingHumanSink.awaitingHuman(event)
+    } catch {
+      // best-effort — az `awaiting_human` tényét az audit már rögzítette; a négyórás
+      // elakadás-figyelő biztonsági hálóként úgyis felveszi.
+    }
+  }
 
   /** Best-effort azonnali dispatch — bukása nem hiúsíthatja meg a step/ticket létrehozását. */
   private async triggerImmediateDispatch(tenantId: string | null, ticketId: string): Promise<void> {
@@ -563,6 +614,15 @@ export class ProcessService {
           error_route_source: errorRouteSourceOf(decision),
         },
       })
+      // #76 prefactor — eseményvezérelt jóváhagyás: a kapu-ticket `awaiting_human`-ba lépett,
+      // jelezzük (NEM hívunk közvetlenül csatornát, D11).
+      await this.emitAwaitingHuman({
+        ticketId: gateTicket.id,
+        tenantId: input.tenantId,
+        processInstanceId: process.id,
+        stepId: input.completedStepId,
+        gateId: decision.gateId,
+      })
       return { kind: 'await_gate', gateId: decision.gateId, ticketId: gateTicket.id }
     }
 
@@ -626,6 +686,15 @@ export class ProcessService {
           // best-effort riasztás (§4.5) — a blokk tényét az audit már rögzítette.
         }
       }
+      // #76 prefactor — a review-ticket `awaiting_human`-ba lépett; eseményt jelzünk (a felvevő
+      // dönti el, kap-e valaki jogosultság-tudatos gombot; általános review-nál nincs kapu → null).
+      await this.emitAwaitingHuman({
+        ticketId: reviewTicket.id,
+        tenantId: input.tenantId,
+        processInstanceId: process.id,
+        stepId: input.completedStepId,
+        gateId: null,
+      })
       return { kind: 'await_human', reason: displayReason, ticketId: reviewTicket.id }
     }
 

@@ -9,6 +9,7 @@ import {
 } from './audit-repository'
 import {
   PostgresChannelAgentGrantRepository,
+  PostgresChannelApprovalPromptRepository,
   PostgresChannelBotRepository,
   PostgresChannelIdentityRepository,
   PostgresChannelLinkTokenRepository,
@@ -94,6 +95,7 @@ export const repositories = {
   channelTurns: new PostgresChannelTurnRepository(),
   channelLinkTokens: new PostgresChannelLinkTokenRepository(),
   channelOutboundMessages: new PostgresChannelOutboundMessageRepository(),
+  channelApprovalPrompts: new PostgresChannelApprovalPromptRepository(),
   channelMetrics: new PostgresChannelMetricsRepository(),
   userNotifications: new PostgresUserNotificationRepository(),
   connectorGrants: new PostgresConnectorGrantRepository(),

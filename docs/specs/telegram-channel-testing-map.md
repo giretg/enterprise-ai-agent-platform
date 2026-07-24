@@ -13,11 +13,16 @@ hívásokat** és **audit-bejegyzéseket** nézi — sosem hív külön belső e
 
 - ✅ **Lefedett** — van rá varrat-teszt ebben a repóban (a hivatkozott `npm` szkripttel futtatva).
 - 🔗 **Regresszió** — egy korábbi slice tesztje fedi (a #78 nem duplikálja).
-- ⏳ **Függőben** — a futásidő-szeletet egy még nyitott ticket hozza (#74 admin agent-engedélyek +
-  chat-forduló futásidő, #76 eseményvezérelt jóváhagyás, #77 proaktív értesítés). A séma és az
-  audit-katalógus már ma viszi; a viselkedés-teszt a megfelelő slice-szal érkezik. Itt **explicit
-  regresszió-hivatkozásként** soroljuk fel, a #78 AC-nek megfelelően („lefedettek vagy explicit
-  regresszióként hivatkozottak").
+- ⏳ **Függőben** — a futásidő-szeletet egy még nyitott ticket hozza (#77 proaktív értesítés). A
+  séma és az audit-katalógus már ma viszi; a viselkedés-teszt a megfelelő slice-szal érkezik. Itt
+  **explicit regresszió-hivatkozásként** soroljuk fel, a #78 AC-nek megfelelően („lefedettek vagy
+  explicit regresszióként hivatkozottak").
+
+> **Frissítés (#76 mergelve):** az eseményvezérelt jóváhagyás gombokkal (14–17) mostantól
+> **lefedett** — `test:channel-approval` (CA-1…CA-12). A ticket-állapotgép `awaiting_human`
+> átmenetkor CSAK eseményt jelez (`AwaitingHumanEventSink`, prefactor), közvetlen Telegram-hívás
+> nélkül (D11); a jóváhagyó-szolgáltatás küld jogosultság-tudatos, aláírt, egyszer-használatos
+> gombokat, és a döntés a KÖZÖS állapotgépet lépteti.
 
 > **Frissítés:** a #73 (bejövő forduló-sor + worker második munkatípus) időközben **mergelődött a
 > main-be**, így a worker-tartósság (21) már lefedett (`test:channel-turn`), és a bekötött üzenet
@@ -39,10 +44,10 @@ hívásokat** és **audit-bejegyzéseket** nézi — sosem hív külön belső e
 | 11 | Gördülő beszélgetés: 24 órán belül ugyanaz, utána új (saját megőrzési határidővel) | ⏳ #74 | `channel_sessions.last_activity_at` megvan; a gördülés a #74 futásidő |
 | 12 | Projekt-hatókör: a forduló a grant projektkulcsával fut | ⏳ #74 | A grant `project_key` séma megvan; a futtatás a #74 slice |
 | 13 | Érzékenységi kapu: tiltott/érzékeny válasz nyers szövege sehol a kimenő hívásokban | ⏳ #74/#75 | A `channel.message.blocked` audit-akció megvan; a kimenő kapu a chat-forduló slice |
-| 14 | Jóváhagyás — kapuk külön-külön (nem-jogosult / saját kérés / visszavont jog / visszajátszás / már eldöntött) | ⏳ #76 | Eseményvezérelt jóváhagyás gombokkal — #76 |
-| 15 | Gombok jogosultság-tudata | ⏳ #76 | #76 |
-| 16 | Kettős koppintás → nyugtázás, nem hiba, nincs kettős hatás | 🔗 / ⏳ #76 | **Összekötési** kettős koppintás idempotens sikere: `test:channel-linking` (CL). **Jóváhagyási** kettős koppintás: #76 |
-| 17 | Eseményvezérelt kiváltás: `awaiting_human` → azonnali értesítés | ⏳ #76 | #76 |
+| 14 | Jóváhagyás — kapuk külön-külön (nem-jogosult / saját kérés / visszavont jog / visszajátszás / már eldöntött) | ✅ #76 | `test:channel-approval` (CA-5 saját kérés, CA-6 visszajátszás/hamis aláírás, CA-7 visszavont jog/inaktív kötés, CA-8 nem-a-címzett, CA-9 már eldöntött, CA-11 közös gép elutasít) |
+| 15 | Gombok jogosultság-tudata | ✅ #76 | `test:channel-approval` (CA-1 — csak a jogosult döntés jelenik meg, a kezdeményező nem kap „Jóváhagyom"-ot, a `needs_info` sosem gomb) |
+| 16 | Kettős koppintás → nyugtázás, nem hiba, nincs kettős hatás | 🔗 / ✅ #76 | **Összekötési** kettős koppintás idempotens sikere: `test:channel-linking` (CL). **Jóváhagyási** kettős koppintás: `test:channel-approval` (CA-4 — nyugtázás, nincs második állapotgép-lépés) |
+| 17 | Eseményvezérelt kiváltás: `awaiting_human` → azonnali értesítés | ✅ #76 | `test:channel-approval` (CA-1/CA-2/CA-12 — a state-machine `AwaitingHumanEventSink` eseménye a felelősnek/körnek; CA-3 boldog út a KÖZÖS állapotgépen). A négyórás elakadás-figyelő biztonsági hálóként FÜGGETLENÜL megmarad. |
 | 18 | Darabolás: hosszú válasz több érvényes üzenetre, sorrendhelyesen | ⏳ #74 | Kimenő chat-út — #74 |
 | 19 | Proaktív értesítés: nem regisztrált címzett → nincs küldés; küldési hiba → a Monitor-futás nem bukik | ⏳ #77 | #77 |
 | 20 | Bot letiltva: letiltás után a küldés abbamarad, a kötés jelölődik | 🔗 / ⏳ #74 | A letiltás **detektálása** (`blocked_by_user`): `test:channel-transport` (CT). A kötés jelölése + küldés-leállítás a küldő-út slice (#74) |

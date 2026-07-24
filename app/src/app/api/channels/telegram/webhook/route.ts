@@ -17,11 +17,19 @@ export async function POST(request: Request) {
     const secretHeader = request.headers.get('x-telegram-bot-api-secret-token')
     const body = (await request.json().catch(() => null)) as TelegramUpdate | null
 
-    const message = extractMessage(body)
-    if (message) {
-      // Fire-and-await: az összekötés/semleges-válasz gyors; a bekötött chat-forduló későbbi
-      // szelet (D8), az majd sort ír és a workerre bízza.
-      await services.channelLinking.handleInboundUpdate({ message, secretHeader })
+    const callback = extractCallbackQuery(body)
+    if (callback) {
+      // Jóváhagyó-gomb koppintása (#76, D5/D6): aláírás/kötés-ellenőrzés, ÉLŐ jogosultság,
+      // saját-kérés kapu, kettős-koppintás nyugtázás, majd a KÖZÖS állapotgép léptetése — mind a
+      // csatorna-szolgáltatásban (a HTTP-réteg vékony marad). A titkos fejléc vetése is ott van.
+      await services.channelApproval.handleApprovalCallback({ ...callback, secretHeader })
+    } else {
+      const message = extractMessage(body)
+      if (message) {
+        // Fire-and-await: az összekötés/semleges-válasz gyors; a bekötött chat-forduló későbbi
+        // szelet (D8), az majd sort ír és a workerre bízza.
+        await services.channelLinking.handleInboundUpdate({ message, secretHeader })
+      }
     }
   } catch {
     // A bejövő út SOHA nem szivárogtat hibát a Telegramnak — mindig nyugtázunk.
@@ -45,6 +53,35 @@ type TelegramUpdate = {
     video_note?: unknown
     sticker?: unknown
     animation?: unknown
+  }
+  // Jóváhagyó-gomb koppintása (#76). A `data` a rövid, aláírt `callback_data`; a `message` a
+  // gombot hordozó üzenet (a döntés utáni szerkesztéshez kell a `message_id`).
+  callback_query?: {
+    id?: string
+    data?: string
+    from?: { id?: number | string }
+    message?: { message_id?: number; chat?: { id?: number | string } }
+  }
+}
+
+function extractCallbackQuery(update: TelegramUpdate | null): {
+  externalUserId: string
+  externalThreadId: string
+  callbackQueryId: string
+  callbackData: string | null
+  messageId: string | number | null
+} | null {
+  const cb = update?.callback_query
+  if (!cb || typeof cb.id !== 'string') return null
+  const fromId = cb.from?.id
+  const chatId = cb.message?.chat?.id
+  if (fromId == null || chatId == null) return null
+  return {
+    externalUserId: String(fromId),
+    externalThreadId: String(chatId),
+    callbackQueryId: cb.id,
+    callbackData: typeof cb.data === 'string' ? cb.data : null,
+    messageId: cb.message?.message_id ?? null,
   }
 }
 

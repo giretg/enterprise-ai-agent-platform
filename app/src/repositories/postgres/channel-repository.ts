@@ -1,5 +1,6 @@
 import type {
   ChannelAgentGrant,
+  ChannelApprovalPrompt,
   ChannelBot,
   ChannelIdentity,
   ChannelIdentityStatus,
@@ -12,6 +13,7 @@ import type {
 import { prisma } from '@/lib/db'
 import type {
   ChannelAgentGrantRepository,
+  ChannelApprovalPromptRepository,
   ChannelBotRepository,
   ChannelIdentityRepository,
   ChannelLinkTokenRepository,
@@ -21,6 +23,7 @@ import type {
   ChannelSessionUpdate,
   ChannelTurnRepository,
   CreateChannelAgentGrantInput,
+  CreateChannelApprovalPromptInput,
   CreateChannelBotInput,
   CreateChannelIdentityInput,
   CreateChannelLinkTokenInput,
@@ -441,5 +444,64 @@ export class PostgresChannelMetricsRepository implements ChannelMetricsRepositor
       }),
     ])
     return { pending, oldestSentAt: oldest?.sentAt ?? null }
+  }
+}
+
+/**
+ * Eseményvezérelt jóváhagyás gombokkal — a kiküldött gombüzenetek tára (Telegram feature-spec
+ * #70/#76, D5/D6/D14). Az egyszer-használatot a `consume` atomi `updateMany where prompt_id AND
+ * status = 'pending'` billentése kényszeríti (verseny-biztos; a kettős koppintás második ága
+ * nem billent, `null`-t kap vissza), a `supersedeOthers` pedig a többi címzett még nyitott
+ * gombjait érvényteleníti, ha valaki már döntött.
+ */
+export class PostgresChannelApprovalPromptRepository implements ChannelApprovalPromptRepository {
+  async create(input: CreateChannelApprovalPromptInput): Promise<ChannelApprovalPrompt> {
+    return prisma.channelApprovalPrompt.create({
+      data: {
+        promptId: input.promptId,
+        channelType: input.channelType,
+        ticketId: input.ticketId,
+        tenantId: input.tenantId,
+        gateId: input.gateId,
+        stepId: input.stepId,
+        requiredActorRole: input.requiredActorRole,
+        recipientIdentityId: input.recipientIdentityId,
+        recipientUserId: input.recipientUserId,
+        initiatorUserId: input.initiatorUserId,
+        allowedActions: input.allowedActions,
+        externalThreadId: input.externalThreadId,
+      },
+    })
+  }
+
+  async findByPromptId(promptId: string): Promise<ChannelApprovalPrompt | null> {
+    return prisma.channelApprovalPrompt.findUnique({ where: { promptId } })
+  }
+
+  async setProviderMessageId(id: string, providerMessageId: string): Promise<void> {
+    await prisma.channelApprovalPrompt.update({ where: { id }, data: { providerMessageId } })
+  }
+
+  async consume(
+    promptId: string,
+    action: string,
+    decidedByLookupHash: string,
+    now: Date,
+  ): Promise<ChannelApprovalPrompt | null> {
+    // Atomi egyszer-használat: csak akkor billent, ha még `pending`. A count-alapú updateMany a
+    // versenyt zárja; a nyertes utána visszaolvassa a sort.
+    const res = await prisma.channelApprovalPrompt.updateMany({
+      where: { promptId, status: 'pending' },
+      data: { status: 'decided', decidedAction: action, decidedByLookupHash, decidedAt: now },
+    })
+    if (res.count === 0) return null
+    return prisma.channelApprovalPrompt.findUnique({ where: { promptId } })
+  }
+
+  async supersedeOthers(ticketId: string, exceptPromptId: string): Promise<void> {
+    await prisma.channelApprovalPrompt.updateMany({
+      where: { ticketId, status: 'pending', promptId: { not: exceptPromptId } },
+      data: { status: 'superseded' },
+    })
   }
 }
