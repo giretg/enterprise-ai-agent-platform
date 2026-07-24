@@ -1,9 +1,10 @@
 import { FileEditorError, WorkspaceStorage } from './workspace-storage'
 import { requiresDeleteConfirm } from './delete-confirm-policy'
 import {
+  assertPatternLength,
   buildUserRegex,
+  compileRegex,
   MAX_LINE_SCAN_LENGTH,
-  MAX_PATTERN_LENGTH,
   MAX_SEARCH_FILES,
 } from './safe-pattern'
 import {
@@ -58,29 +59,17 @@ function resolveDirPath(userPath?: string): string | undefined {
 function globToRegex(pattern: string): RegExp {
   // A glob-fordítás minden regex-metakaraktert escapel, csak a `*`/`**`/`?`
   // glob-jelekből képez `[^/]*` / `.*` / `[^/]` mintát — így a KIMENET nem
-  // tartalmazhat beágyazott kvantort (nincs exponenciális ReDoS). A bemenet
-  // hosszát viszont korlátozzuk, hogy a sok `*`-ból adódó szekvenciális `.*`
-  // se okozzon polinomiális berobbanást.
-  if (pattern.length > MAX_PATTERN_LENGTH) {
-    throw new FileEditorError(
-      'PATTERN_TOO_LONG',
-      `A glob-minta túl hosszú (max ${MAX_PATTERN_LENGTH} karakter).`,
-    )
-  }
+  // tartalmazhat beágyazott kvantort vagy alternációt (nincs exponenciális
+  // ReDoS). A bemenet hosszát viszont korlátozzuk, hogy a sok `*`-ból adódó
+  // szekvenciális `.*` se okozzon polinomiális berobbanást.
+  assertPatternLength(pattern, 'glob')
   const escaped = pattern
     .replace(/[.+^${}()|[\]\\]/g, '\\$&')
     .replace(/\*\*/g, '\x00')
     .replace(/\*/g, '[^/]*')
     .replace(/\x00/g, '.*')
     .replace(/\?/g, '[^/]')
-  try {
-    return new RegExp(`^${escaped}$`)
-  } catch (e) {
-    throw new FileEditorError(
-      'INVALID_PATTERN',
-      `Érvénytelen glob-minta: ${e instanceof Error ? e.message : String(e)}`,
-    )
-  }
+  return compileRegex(`^${escaped}$`, '', 'glob')
 }
 
 function addLineNumbers(text: string): string {

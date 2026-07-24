@@ -7,20 +7,25 @@ import { FileEditorError } from './workspace-storage'
  * minden során (`new RegExp(pattern)`), a `file_glob` mintája pedig glob→regex
  * fordításon megy át. Mindkettő az LLM (végső soron részben megbízhatatlan
  * ticket-/dokumentumtartalomból származó) tool-hívásából jön. Egy „katasztrofális
- * visszalépésű" minta (pl. `(a+)+$`) egyetlen elég hosszú soron megakasztja a
- * Node event-loopját — az pedig egyszálú, így az egész worker (és vele a
- * multi-tenant platform más tenantjainak futásai is) befagynak. Ez CWE-1333
- * (Inefficient Regular Expression Complexity) → rendelkezésre-állási kockázat.
+ * visszalépésű" minta megakasztja a Node event-loopját — az pedig egyszálú, így
+ * az egész worker (és vele a multi-tenant platform más tenantjainak futásai is)
+ * befagynak. Ez CWE-1333 (Inefficient Regular Expression Complexity) →
+ * rendelkezésre-állási kockázat.
  *
- * Kétrétegű, függőség nélküli védelem:
- *  1. A minta hossza korlátozott (`MAX_PATTERN_LENGTH`).
- *  2. Elutasítjuk a beágyazott, nem-korlátos kvantorokat (star height ≥ 2), mert
- *     az exponenciális visszalépés kizárólag ilyenkor lép fel. A korlátos
- *     kvantor (`?`, `{n}`, `{n,m}`) NEM tiltott — így a jogos minták túlnyomó
- *     része átmegy.
+ * Az EXPONENCIÁLIS visszalépésnek két gyakorlati, könnyen kiváltható családja van;
+ * a statikus ellenőrzés MINDKETTŐT elutasítja a regex FUTTATÁSA ELŐTT:
+ *  1. Beágyazott, nem-korlátos kvantor (star height ≥ 2), pl. `(a+)+`, `((a)+)+`.
+ *  2. Nem-korlátos kvantorral ismételt, alternációt tartalmazó csoport, pl.
+ *     `(a|a)+`, `(a|ab)+` — ez star height 1, de átfedő ágakon szintén 2^n.
  *
- * A hívó ezen felül korlátozza a beolvasott bemenet méretét (sor-hossz, fájlszám),
- * ami a maradék polinomiális visszalépést is behatárolja.
+ * Emellett a bemenet mérete is korlátozott (minta-hossz, sor-hossz, fájlszám),
+ * ami a MARADÉK, polinomiális visszalépést is behatárolja.
+ *
+ * Tudott korlát (szándékos, dokumentált): a `(foo|bar)+` alakú, NEM átfedő
+ * alternációt is elutasítjuk (konzervatív, hamis pozitív) — a fájl-keresésnél ez
+ * elfogadható ár a biztos védelemért. A magas fokú polinomiális minták (sok
+ * egymás utáni `.*…a.*…a`) nincsenek statikusan tiltva; ezek ellen a sor-hossz
+ * plafon véd. Teljes körű megoldás (RE2 vagy worker-thread időzár) külön feladat.
  */
 
 export const MAX_PATTERN_LENGTH = 1000
@@ -45,57 +50,74 @@ function readBraceQuantifier(source: string, at: number): { length: number; unbo
   return { length: close - at + 1, unbounded }
 }
 
+/** Egy `[...]` karakterosztály végének indexe (az escapelt `\]`-t tiszteletben tartva). */
+function endOfCharClass(source: string, openAt: number): number {
+  let i = openAt + 1
+  if (source[i] === '^') i++
+  while (i < source.length && source[i] !== ']') {
+    if (source[i] === '\\') i++ // escapelt karakter (pl. `\]`) átugrása
+    i++
+  }
+  return i // a `]`-en áll, vagy a string végén (nem lezárt osztály)
+}
+
+type GroupFrame = { containsUnbounded: boolean; hasAlternation: boolean }
+
 /**
- * Star height ≤ 1 ellenőrzés: `true`, ha a minta tartalmaz egy nem-korlátos
- * kvantort (`*`, `+`, `{n,}`), amely egy olyan csoportra vonatkozik, aminek a
- * TARTALMA maga is tartalmaz nem-korlátos kvantort. Ez a klasszikus,
- * exponenciális ReDoS-aláírás (`(a+)+`, `(a*)*`, `((a)+)+`, `(a{1,}b)+` …).
+ * `true`, ha a minta katasztrofális (exponenciális) visszalépést okozhat:
+ *  - nem-korlátos kvantor egy olyan csoporton, aminek a TARTALMA maga is
+ *    tartalmaz nem-korlátos kvantort (star height ≥ 2), VAGY
+ *  - nem-korlátos kvantor egy olyan csoporton, ami top-level alternációt (`|`)
+ *    tartalmaz (átfedő ágak → 2^n).
  */
-function hasNestedUnboundedQuantifier(source: string): boolean {
-  // Csoport-mélységenként: tartalmaz-e nem-korlátos kvantort a szint tartalma.
-  const containsUnbounded: boolean[] = [false]
-  // Az előző atom egy most bezárt csoport volt-e, és volt-e benne nem-korlátos kvantor.
+function hasCatastrophicQuantifier(source: string): boolean {
+  const stack: GroupFrame[] = [{ containsUnbounded: false, hasAlternation: false }]
+  // Az előző atom egy most bezárt csoport volt-e, és milyen kockázatot hordozott.
   let prevGroupClose = false
   let prevGroupUnbounded = false
+  let prevGroupAlternation = false
+
+  const top = () => stack[stack.length - 1]
 
   const applyUnboundedQuantifier = (): boolean => {
-    // A jelenlegi szinten megjelent egy nem-korlátos kvantor.
-    containsUnbounded[containsUnbounded.length - 1] = true
-    // Ha épp egy „belül kvantoros" csoportra alkalmazzuk → star height ≥ 2.
-    return prevGroupClose && prevGroupUnbounded
+    top().containsUnbounded = true // a jelen szinten megjelent egy nem-korlátos kvantor
+    // Ha egy „belül kockázatos" csoportra alkalmazzuk → exponenciális ReDoS.
+    return prevGroupClose && (prevGroupUnbounded || prevGroupAlternation)
   }
 
   for (let i = 0; i < source.length; i++) {
     const ch = source[i]
 
     if (ch === '\\') {
-      // Escapelt karakter → literál atom, a strukturális jelentés kimarad.
-      i++
+      i++ // escapelt karakter → literál atom
       prevGroupClose = false
       continue
     }
 
     if (ch === '[') {
-      // Karakterosztály: a `]`-ig minden literál, kvantor nem lehet benne.
-      const close = source.indexOf(']', ch === '[' && source[i + 1] === ']' ? i + 2 : i + 1)
-      i = close === -1 ? source.length : close
+      i = endOfCharClass(source, i) // a `]`-ig minden literál, kvantor nem lehet benne
       prevGroupClose = false
       continue
     }
 
     if (ch === '(') {
-      containsUnbounded.push(false)
+      stack.push({ containsUnbounded: false, hasAlternation: false })
       prevGroupClose = false
       continue
     }
 
     if (ch === ')') {
-      const closed = containsUnbounded.pop() ?? false
-      if (containsUnbounded.length === 0) containsUnbounded.push(false) // védőháló hibás mintára
-      // A csoport tartalma felbukik a szülőbe (a szülő tartalma is tartalmazza).
-      if (closed) containsUnbounded[containsUnbounded.length - 1] = true
+      const closed = stack.length > 1 ? stack.pop()! : top() // védőháló hibás mintára
+      if (closed.containsUnbounded) top().containsUnbounded = true // felbukik a szülőbe
       prevGroupClose = true
-      prevGroupUnbounded = closed
+      prevGroupUnbounded = closed.containsUnbounded
+      prevGroupAlternation = closed.hasAlternation
+      continue
+    }
+
+    if (ch === '|') {
+      top().hasAlternation = true
+      prevGroupClose = false
       continue
     }
 
@@ -114,59 +136,62 @@ function hasNestedUnboundedQuantifier(source: string): boolean {
         prevGroupClose = false
         continue
       }
-      // literál `{`
-      prevGroupClose = false
+      prevGroupClose = false // literál `{`
       continue
     }
 
-    if (ch === '?') {
-      // Korlátos kvantor / lazy jelölő — nem „expanding".
-      prevGroupClose = false
-      continue
-    }
-
-    // Bármely más atom (literál, `.`, `|`, `^`, `$`) lezárja az „előző csoport" állapotot.
+    // `?` (korlátos/lazy) és minden más atom (literál, `.`, `^`, `$`) lezárja az
+    // „előző csoport" állapotot, de nem „expanding".
     prevGroupClose = false
   }
 
   return false
 }
 
-/**
- * Ellenőrzi, hogy az agent-vezérelt regex-forrás biztonságosan futtatható-e.
- * Dob `FileEditorError`-t (`PATTERN_TOO_LONG` / `UNSAFE_PATTERN`), amit a Tool
- * Broker felszíni `code: message` alakra normalizál — így az agent cselekvésre
- * okító hibaüzenetet kap a néma befagyás helyett.
- */
-export function assertSafeUserRegex(source: string): void {
+/** A minta hossz-korlátja; tipizált `PATTERN_TOO_LONG` FileEditorError-ral bukik. */
+export function assertPatternLength(source: string, label = 'keresési'): void {
   if (source.length > MAX_PATTERN_LENGTH) {
     throw new FileEditorError(
       'PATTERN_TOO_LONG',
-      `A keresési minta túl hosszú (max ${MAX_PATTERN_LENGTH} karakter).`,
-    )
-  }
-  if (hasNestedUnboundedQuantifier(source)) {
-    throw new FileEditorError(
-      'UNSAFE_PATTERN',
-      'A keresési minta beágyazott, nem-korlátos ismétlést tartalmaz (pl. `(a+)+`), ' +
-        'ami befagyaszthatja a keresést. Egyszerűsítsd a mintát.',
+      `A ${label} minta túl hosszú (max ${MAX_PATTERN_LENGTH} karakter).`,
     )
   }
 }
 
 /**
- * Biztonságos regex-építés az agent mintájából: előbb star-height ellenőrzés,
- * majd fordítás. Az érvénytelen regex nyers `SyntaxError` helyett tipizált
- * `INVALID_PATTERN` FileEditorError-ként bukik.
+ * Biztonságos regex-fordítás: a nyers `SyntaxError` helyett tipizált
+ * `INVALID_PATTERN` FileEditorError-ként bukik (a Tool Broker `code: message`
+ * alakra normalizálja, így az agent cselekvésre okító üzenetet kap).
  */
-export function buildUserRegex(source: string, flags = ''): RegExp {
-  assertSafeUserRegex(source)
+export function compileRegex(source: string, flags: string, label = 'keresési'): RegExp {
   try {
     return new RegExp(source, flags)
   } catch (e) {
     throw new FileEditorError(
       'INVALID_PATTERN',
-      `Érvénytelen keresési minta: ${e instanceof Error ? e.message : String(e)}`,
+      `Érvénytelen ${label} minta: ${e instanceof Error ? e.message : String(e)}`,
     )
   }
+}
+
+/**
+ * Ellenőrzi, hogy az agent-vezérelt NYERS regex-forrás biztonságosan
+ * futtatható-e (hossz + katasztrofális-visszalépés). Dob `FileEditorError`-t
+ * (`PATTERN_TOO_LONG` / `UNSAFE_PATTERN`).
+ */
+export function assertSafeUserRegex(source: string): void {
+  assertPatternLength(source)
+  if (hasCatastrophicQuantifier(source)) {
+    throw new FileEditorError(
+      'UNSAFE_PATTERN',
+      'A keresési minta olyan ismétlést tartalmaz, ami befagyaszthatja a keresést ' +
+        '(pl. beágyazott `(a+)+`, vagy ismételt alternáció `(a|a)+`). Egyszerűsítsd a mintát.',
+    )
+  }
+}
+
+/** Biztonságos regex-építés az agent NYERS mintájából (star-height + fordítás). */
+export function buildUserRegex(source: string, flags = ''): RegExp {
+  assertSafeUserRegex(source)
+  return compileRegex(source, flags)
 }

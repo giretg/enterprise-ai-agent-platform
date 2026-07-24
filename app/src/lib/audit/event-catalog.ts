@@ -55,6 +55,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'agent.create',
   'agent.delete',
   'agent.dispatch_denied_inactive',
+  'agent.operator_visibility',
   'agent.persona',
   'agent.resumed',
   'agent.retired',
@@ -383,6 +384,22 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'channel.notification.skipped',
   'channel.notification.failed',
   'channel.identity.blocked',
+  // Bejövő forduló-sor + worker második munkatípus (#73, D8): a bekötött üzenet sorba
+  // kerülése (megbízható, újrapróbálható út) és az agent-engedély nélküli útmutató válasz.
+  'channel.turn.enqueued',
+  'channel.turn.no_agent',
+  // Üzemeltetés (#78, D4): a bot SAJÁT kimenő üzeneteinek megőrzési takarítása. Az
+  // azonosítók ÁLNEVESÍTVE (kereső-hash prefix / szál-pszeudonim), nyers tartalom sosem.
+  'channel.message.purged',
+  'channel.retention.swept',
+  // Agent-engedélyek, projektkötés és szervezeti kill-switch (#75, D5/D9/D13/D54): az admin
+  // agentenként engedélyez/visszavon, a felhasználó projektkulcsot állít, a tenant-admin a
+  // szervezeti kapcsolóval azonnal elzárja a csatornát. Azonosítók álnevesítve.
+  'channel.agent.granted',
+  'channel.agent.revoked',
+  'channel.agent.project_set',
+  'channel.tenant.disabled',
+  'channel.tenant.enabled',
 
   // Platform / DB mode
   'database.mode_changed',

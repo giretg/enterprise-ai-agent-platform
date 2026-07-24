@@ -39,6 +39,9 @@ export function ActiveRunsPanel() {
   }, [])
 
   useEffect(() => {
+    // Szándékos: felcsatoláskor azonnal töltünk, majd 2,5 mp-enként pollozunk. A `refresh`
+    // elején a betöltés-jelző beállítása a mount-kori adatlekérés természetes velejárója.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void refresh()
     const timer = window.setInterval(() => {
       void refresh()

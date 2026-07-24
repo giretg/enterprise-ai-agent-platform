@@ -8,8 +8,11 @@ import type {
   ChannelType,
   ChannelIdentity,
   ChannelIdentityStatus,
+  ChannelAgentGrant,
   ChannelSession,
+  ChannelTurn,
   ChannelLinkToken,
+  ChannelOutboundMessage,
   UserNotification,
   AuditLog,
   Connector,
@@ -2227,6 +2230,31 @@ export interface ChannelIdentityRepository {
 }
 
 /**
+ * Csatorna-agent-engedély tár (Telegram feature-spec #70/#75, D5/D9/D13/D14). Egy sor = „ez a
+ * kötött identitás elérheti ezt az agentet a csatornán, ezzel a projektkulccsal". Az admin
+ * hozza létre / vonja vissza; a projektkulcsot a felhasználó állítja a weben. A `(identityId,
+ * agentId)` egyedi — ugyanahhoz az agenthez egyetlen engedély tartozik identitásonként.
+ */
+export type CreateChannelAgentGrantInput = {
+  identityId: string
+  agentId: string
+  projectKey?: string
+  grantedById: string | null
+}
+
+export interface ChannelAgentGrantRepository {
+  listByIdentity(identityId: string): Promise<ChannelAgentGrant[]>
+  /** Egy szervezet összes kötésének engedélyei (admin-nézet, batch). */
+  listByIdentityIds(identityIds: string[]): Promise<ChannelAgentGrant[]>
+  /** Gyors kapu-kérdés (#73): van-e LEGALÁBB egy engedélyezett agent ehhez az identitáshoz? */
+  hasAnyGrant(identityId: string): Promise<boolean>
+  findByIdentityAndAgent(identityId: string, agentId: string): Promise<ChannelAgentGrant | null>
+  create(input: CreateChannelAgentGrantInput): Promise<ChannelAgentGrant>
+  updateProjectKey(id: string, projectKey: string): Promise<ChannelAgentGrant>
+  deleteById(id: string): Promise<void>
+}
+
+/**
  * Csatorna-munkamenet tár (Telegram feature-spec #70/#72, D8/D9/D15). A külső szál ↔
  * beszélgetés összerendelés; a `updateWatermark` a duplikáció-védelemhez, az
  * `unlinkedNoticeAt` a bekötetlen „egyszer válaszol, aztán csend" viselkedéshez.
@@ -2245,6 +2273,42 @@ export interface ChannelSessionRepository {
   findByBotAndThread(botId: string, externalThreadId: string): Promise<ChannelSession | null>
   create(input: { botId: string; externalThreadId: string }): Promise<ChannelSession>
   update(id: string, data: ChannelSessionUpdate): Promise<ChannelSession>
+}
+
+/**
+ * Csatorna-forduló sor (Telegram feature-spec #70/#73, D8/D14). A worker MÁSODIK munkatípusa:
+ * egy bejövő üzenet EGY sor, ami TÚLÉLI a webhook-kérést és `attempts` szerint ÚJRAPRÓBÁLHATÓ.
+ *
+ * A sor egyszerű állapotgép: `queued` → `running` (atomi kivétel, `attempts++`) → `done`
+ * (siker) VAGY vissza `queued`-ba (átmeneti hiba, újrapróba) VAGY `failed` (kimerült
+ * újrapróbák — dead-letter, `lastError`-ral). A crash-elakadt `running` sorokat egy watchdog
+ * teszi vissza `queued`-ba (mint a chat AgentTurn-nél, D10).
+ */
+export interface ChannelTurnRepository {
+  /** Új forduló a sorba (`queued`). Az `inboundRef` a bejövő üzenet payloadja (későbbi agent-futáshoz). */
+  enqueue(input: { sessionId: string; inboundRef: string | null }): Promise<ChannelTurn>
+  /**
+   * A legrégebbi `queued` forduló ATOMI kivétele: `running`-ra billenti és `attempts`-ot növeli,
+   * majd visszaadja. Egyidejű workerek nem kapják ugyanazt (`FOR UPDATE SKIP LOCKED`). `null`,
+   * ha nincs több várakozó.
+   */
+  claimNextQueued(now: Date): Promise<ChannelTurn | null>
+  /** Sikeres feldolgozás → `done`. */
+  markDone(id: string, now: Date): Promise<void>
+  /**
+   * Átmeneti hiba → vissza `queued`-ba (újrapróbálható), a `lastError` rögzítésével — KIVÉVE ha
+   * az `attempts` elérte a `maxAttempts` küszöböt, akkor `failed` (dead-letter). A visszatérés
+   * jelzi, melyik ág futott.
+   */
+  failOrRequeue(
+    id: string,
+    input: { error: string; maxAttempts: number; now: Date },
+  ): Promise<'requeued' | 'failed'>
+  /**
+   * Crash-watchdog: a `staleBefore`-nál régebben `running` sorokat visszateszi `queued`-ba, hogy
+   * egy elszállt/leállított worker ne hagyjon örökre „fut" fordulót. A visszatett sorok száma.
+   */
+  reclaimStaleRunning(staleBefore: Date, now: Date): Promise<number>
 }
 
 /**
@@ -2287,4 +2351,41 @@ export interface UserNotificationRepository {
   create(input: CreateUserNotificationInput): Promise<UserNotification>
   listForUser(userId: string, limit?: number): Promise<UserNotification[]>
   markRead(id: string, userId: string, now: Date): Promise<UserNotification | null>
+}
+
+/**
+ * A bot SAJÁT kimenő üzeneteinek nyilvántartása a megőrzési takarításhoz (Telegram
+ * feature-spec #70/#78, D4). CSAK a bot által küldött üzenetek `providerMessageId`-ját
+ * tartja (nyers tartalom NÉLKÜL) — privát chatben a bot csak a magáét tudja törölni.
+ */
+export type RecordChannelOutboundInput = {
+  sessionId: string
+  channelType: ChannelType
+  externalThreadId: string
+  providerMessageId: string
+  kind?: string | null
+  sentAt?: Date
+}
+
+export interface ChannelOutboundMessageRepository {
+  /** Egy elküldött bot-üzenet rögzítése (a `providerMessageId` a későbbi `deleteMessage`-hez). */
+  record(input: RecordChannelOutboundInput): Promise<ChannelOutboundMessage>
+  /**
+   * A megőrzési horizonton túli, még NEM takarított kimenő üzenetek (sentAt < cutoff,
+   * purgedAt IS NULL), a legrégebbitől, legfeljebb `limit` darab.
+   */
+  listExpired(cutoff: Date, limit: number): Promise<ChannelOutboundMessage[]>
+  /** Takarítottnak jelöli az üzenetet (idempotens — a `deleteMessage` után vagy ha már nincs meg). */
+  markPurged(id: string, purgedAt: Date): Promise<void>
+}
+
+/**
+ * A csatorna-táblák állapot-olvasásai az üzemeltetői metrikákhoz (Telegram feature-spec
+ * #70/#78, story 59). CSAK aggregáló olvasások — nyers külső azonosítót nem adnak vissza.
+ */
+export interface ChannelMetricsRepository {
+  countTurnsByStatus(since?: Date): Promise<Record<string, number>>
+  countSessions(): Promise<{ total: number; linked: number }>
+  countIdentitiesByStatus(): Promise<Record<string, number>>
+  countPendingOutbound(): Promise<{ pending: number; oldestSentAt: Date | null }>
 }

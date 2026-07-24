@@ -14,6 +14,7 @@ import {
   listModelRoutingPolicies,
 } from '@/app/actions/platform'
 import { getMonitorControls } from '@/app/actions/monitor'
+import { getChannelOpsMetrics } from '@/app/actions/channel-ops'
 import {
   getTenantWebSearchControls,
   getWebSearchPolicy,
@@ -39,6 +40,7 @@ import { TenantThinkingTracePanel } from './tenant-thinking-trace-panel'
 import { TenantLanguagePanel } from './tenant-language-panel'
 import { MemoryObservabilityPanel } from './memory-observability-panel'
 import { ContractObservabilityPanel } from './contract-observability-panel'
+import { ChannelOpsPanel } from './channel-ops-panel'
 import { SystemSettingsShell } from './system-settings-shell'
 
 export default async function SystemPage() {
@@ -61,6 +63,7 @@ export default async function SystemPage() {
     memoryObservabilityRes,
     contractObservabilityRes,
     dailyBudgetRes,
+    channelOpsRes,
   ] = await Promise.all([
     getAuthContext(),
     getDispatcherControls(),
@@ -80,6 +83,7 @@ export default async function SystemPage() {
     getMemoryObservabilityDashboard(),
     getContractObservabilityDashboard(),
     getDailyBudgetOverview(),
+    getChannelOpsMetrics({ windowDays: 7 }),
   ])
   // §9.2/§13/4: a platform-globális vezérlőket csak platform-szerep szerkesztheti;
   // a tenant-admin itt read-only nézetet kap (a WRITE-actionök platform-guard alatt).
@@ -280,6 +284,19 @@ export default async function SystemPage() {
               ? <ContractObservabilityPanel data={contractObservabilityRes.data} />
               : errorBox('Nem sikerült betölteni a strukturált kimenet dashboardot.'),
           },
+          // A csatorna platform-szintű erőforrás → a metrika superadmin-only (mint a bot-regisztráció).
+          ...(canEdit
+            ? [
+                {
+                  id: 'csatorna',
+                  label: 'Csatorna (Telegram)',
+                  description: 'Forgalmi/hibametrikák és a bot kimenő üzeneteinek megőrzési takarítása.',
+                  content: channelOpsRes.success
+                    ? <ChannelOpsPanel initial={channelOpsRes.data} canEdit={canEdit} />
+                    : errorBox(channelOpsRes.error),
+                },
+              ]
+            : []),
         ]}
       />
     </div>

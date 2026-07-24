@@ -85,6 +85,11 @@ jobs:
           npm run test:connector-template
           npm run test:provisioning
           npm run test:file-search-safe
+          npm run test:channel-linking
+          npm run test:channel-turn
+          npm run test:channel-metrics
+          npm run test:channel-retention
+          npm run test:channel-agent-access
 
   migrations:
     name: Prisma migrate deploy (ephemeral Postgres)
@@ -146,6 +151,10 @@ jobs:
       contents: read
       security-events: write
       actions: read
+      # A gitleaks-action pull_request eseménynél a PR commitjait listázza
+      # (GET /pulls/{n}/commits) — ehhez pull-requests:read kell, különben 403
+      # („Resource not accessible by integration") és elbukik a titok-szkennelés.
+      pull-requests: read
     steps:
       - uses: actions/checkout@v7
         with:
@@ -156,12 +165,19 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # A CodeQL végigfut, de a SARIF-eredmény feltöltése CSAK akkor sikeres, ha a repóban
+      # be van kapcsolva a Code scanning (Settings → Code security & analysis). Amíg nincs,
+      # a feltöltés „configuration error"-t ad. Ezért a CodeQL lépések NEM blokkolják a CI-t
+      # (continue-on-error) — a gitleaks titok-szkennelés éles marad. Ha a Code scanning
+      # bekapcsol, a continue-on-error eltávolítható, és a CodeQL-eredmények bekerülnek.
       - name: CodeQL init
         uses: github/codeql-action/init@v4
+        continue-on-error: true
         with:
           languages: typescript
 
       - name: CodeQL analyze
         uses: github/codeql-action/analyze@v4
+        continue-on-error: true
         with:
           category: /language:typescript

@@ -34,8 +34,8 @@ type StoredMembership = {
 }
 
 function fixture(seedUsers: StoredUser[] = [], seedMemberships: StoredMembership[] = []) {
-  let users = [...seedUsers]
-  let memberships = [...seedMemberships]
+  const users = [...seedUsers]
+  const memberships = [...seedMemberships]
   let membershipSeq = seedMemberships.length
 
   const service = new IamService(

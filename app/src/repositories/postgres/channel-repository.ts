@@ -1,21 +1,30 @@
 import type {
+  ChannelAgentGrant,
   ChannelBot,
   ChannelIdentity,
   ChannelIdentityStatus,
   ChannelLinkToken,
+  ChannelOutboundMessage,
   ChannelSession,
+  ChannelTurn,
   ChannelType,
 } from '@prisma/client'
 import { prisma } from '@/lib/db'
 import type {
+  ChannelAgentGrantRepository,
   ChannelBotRepository,
   ChannelIdentityRepository,
   ChannelLinkTokenRepository,
+  ChannelMetricsRepository,
+  ChannelOutboundMessageRepository,
   ChannelSessionRepository,
   ChannelSessionUpdate,
+  ChannelTurnRepository,
+  CreateChannelAgentGrantInput,
   CreateChannelBotInput,
   CreateChannelIdentityInput,
   CreateChannelLinkTokenInput,
+  RecordChannelOutboundInput,
   UpdateChannelBotInput,
 } from '../interfaces'
 
@@ -135,6 +144,60 @@ export class PostgresChannelIdentityRepository implements ChannelIdentityReposit
 }
 
 /**
+ * Csatorna-agent-engedély tár (Telegram feature-spec #70/#75, D5/D9/D13/D14). A `(identityId,
+ * agentId)` egyedi, ezért az ismételt engedélyezés ugyanazt a sort érinti — nem keletkezik két
+ * engedély ugyanahhoz az agenthez. A projektkulcsot külön billenti (a felhasználó állítja).
+ */
+export class PostgresChannelAgentGrantRepository implements ChannelAgentGrantRepository {
+  async listByIdentity(identityId: string): Promise<ChannelAgentGrant[]> {
+    return prisma.channelAgentGrant.findMany({
+      where: { identityId },
+      orderBy: { grantedAt: 'asc' },
+    })
+  }
+
+  async hasAnyGrant(identityId: string): Promise<boolean> {
+    return (await prisma.channelAgentGrant.count({ where: { identityId } })) > 0
+  }
+
+  async listByIdentityIds(identityIds: string[]): Promise<ChannelAgentGrant[]> {
+    if (identityIds.length === 0) return []
+    return prisma.channelAgentGrant.findMany({
+      where: { identityId: { in: identityIds } },
+      orderBy: { grantedAt: 'asc' },
+    })
+  }
+
+  async findByIdentityAndAgent(
+    identityId: string,
+    agentId: string,
+  ): Promise<ChannelAgentGrant | null> {
+    return prisma.channelAgentGrant.findUnique({
+      where: { identityId_agentId: { identityId, agentId } },
+    })
+  }
+
+  async create(input: CreateChannelAgentGrantInput): Promise<ChannelAgentGrant> {
+    return prisma.channelAgentGrant.create({
+      data: {
+        identityId: input.identityId,
+        agentId: input.agentId,
+        ...(input.projectKey !== undefined ? { projectKey: input.projectKey } : {}),
+        grantedById: input.grantedById,
+      },
+    })
+  }
+
+  async updateProjectKey(id: string, projectKey: string): Promise<ChannelAgentGrant> {
+    return prisma.channelAgentGrant.update({ where: { id }, data: { projectKey } })
+  }
+
+  async deleteById(id: string): Promise<void> {
+    await prisma.channelAgentGrant.delete({ where: { id } })
+  }
+}
+
+/**
  * Csatorna-munkamenet tár (Telegram feature-spec #70/#72, D8/D9/D15). A `(botId,
  * externalThreadId)` egyedi — szálanként egyetlen munkamenet.
  */
@@ -210,5 +273,157 @@ export class PostgresChannelLinkTokenRepository implements ChannelLinkTokenRepos
     })
     if (res.count === 0) return null
     return prisma.channelLinkToken.findUnique({ where: { jti } })
+  }
+}
+
+/**
+ * A bot SAJÁT kimenő üzeneteinek tára a megőrzési takarításhoz (Telegram feature-spec
+ * #70/#78, D4). Csak a `providerMessageId`-t és a törléshez kellő szál-azonosítót tartja —
+ * nyers üzenettartalmat SOHA. A takarító a `listExpired`-del olvassa a horizonton túli,
+ * még nem takarított sorokat, majd `markPurged`-del idempotensen lezárja őket.
+ */
+export class PostgresChannelOutboundMessageRepository
+  implements ChannelOutboundMessageRepository
+{
+  async record(input: RecordChannelOutboundInput): Promise<ChannelOutboundMessage> {
+    return prisma.channelOutboundMessage.create({
+      data: {
+        sessionId: input.sessionId,
+        channelType: input.channelType,
+        externalThreadId: input.externalThreadId,
+        providerMessageId: input.providerMessageId,
+        kind: input.kind ?? null,
+        ...(input.sentAt ? { sentAt: input.sentAt } : {}),
+      },
+    })
+  }
+
+  async listExpired(cutoff: Date, limit: number): Promise<ChannelOutboundMessage[]> {
+    return prisma.channelOutboundMessage.findMany({
+      where: { purgedAt: null, sentAt: { lt: cutoff } },
+      orderBy: { sentAt: 'asc' },
+      take: limit,
+    })
+  }
+
+  async markPurged(id: string, purgedAt: Date): Promise<void> {
+    await prisma.channelOutboundMessage.update({ where: { id }, data: { purgedAt } })
+  }
+}
+
+/**
+ * Csatorna-forduló sor tár (Telegram feature-spec #70/#73, D8/D14) — a worker MÁSODIK
+ * munkatípusának perzisztens sora. A `claimNextQueued` atomi `FOR UPDATE SKIP LOCKED`
+ * kivétellel biztosítja, hogy egyidejű workerek NE kapják ugyanazt a fordulót, és a forduló
+ * túléljen egy webhook-kérést. A visszapróbálhatóság az `attempts` számlálón és a `failed`
+ * dead-letteren nyugszik.
+ */
+export class PostgresChannelTurnRepository implements ChannelTurnRepository {
+  async enqueue(input: { sessionId: string; inboundRef: string | null }): Promise<ChannelTurn> {
+    return prisma.channelTurn.create({
+      data: { sessionId: input.sessionId, inboundRef: input.inboundRef },
+    })
+  }
+
+  async claimNextQueued(now: Date): Promise<ChannelTurn | null> {
+    // Atomi kivétel: a beágyazott `FOR UPDATE SKIP LOCKED` egyetlen utasításon belül zárja a
+    // sort, így két worker sosem kap ugyanabból. A legrégebbi `queued` fordulót billenti
+    // `running`-ra és növeli az `attempts`-ot.
+    const rows = await prisma.$queryRaw<{ id: string }[]>`
+      UPDATE channel_turns
+      SET status = 'running'::"ChannelTurnStatus", attempts = attempts + 1, updated_at = ${now}
+      WHERE id = (
+        SELECT id FROM channel_turns
+        WHERE status = 'queued'::"ChannelTurnStatus"
+        ORDER BY created_at ASC
+        FOR UPDATE SKIP LOCKED
+        LIMIT 1
+      )
+      RETURNING id
+    `
+    if (rows.length === 0) return null
+    return prisma.channelTurn.findUnique({ where: { id: rows[0].id } })
+  }
+
+  async markDone(id: string): Promise<void> {
+    await prisma.channelTurn.update({ where: { id }, data: { status: 'done' } })
+  }
+
+  async failOrRequeue(
+    id: string,
+    input: { error: string; maxAttempts: number; now: Date },
+  ): Promise<'requeued' | 'failed'> {
+    // Az `attempts` a kivételkor már nőtt. Ha elérte a küszöböt → `failed` (dead-letter),
+    // különben vissza `queued`-ba (újrapróbálható). Egyetlen atomi utasítás.
+    const rows = await prisma.$queryRaw<{ status: string }[]>`
+      UPDATE channel_turns
+      SET status = CASE WHEN attempts >= ${input.maxAttempts}
+                        THEN 'failed'::"ChannelTurnStatus"
+                        ELSE 'queued'::"ChannelTurnStatus" END,
+          last_error = ${input.error},
+          updated_at = ${input.now}
+      WHERE id = ${id}::uuid
+      RETURNING status
+    `
+    return rows[0]?.status === 'failed' ? 'failed' : 'requeued'
+  }
+
+  async reclaimStaleRunning(staleBefore: Date, now: Date): Promise<number> {
+    // Crash-watchdog: egy elszállt/leállított worker `running` fordulói ne ragadjanak be —
+    // a küszöbnél régebbieket visszatesszük `queued`-ba (a chat AgentTurn-watchdog mintája).
+    const rows = await prisma.$queryRaw<{ id: string }[]>`
+      UPDATE channel_turns
+      SET status = 'queued'::"ChannelTurnStatus", updated_at = ${now}
+      WHERE status = 'running'::"ChannelTurnStatus" AND updated_at < ${staleBefore}
+      RETURNING id
+    `
+    return rows.length
+  }
+}
+
+/**
+ * A csatorna-táblák állapot-olvasásai az üzemeltetői metrikákhoz (Telegram feature-spec
+ * #70/#78, story 59). CSAK aggregáló `groupBy`/`count` — nyers külső azonosítót nem ad vissza.
+ */
+export class PostgresChannelMetricsRepository implements ChannelMetricsRepository {
+  async countTurnsByStatus(since?: Date): Promise<Record<string, number>> {
+    const rows = await prisma.channelTurn.groupBy({
+      by: ['status'],
+      _count: { _all: true },
+      ...(since ? { where: { createdAt: { gte: since } } } : {}),
+    })
+    const out: Record<string, number> = {}
+    for (const r of rows) out[r.status] = r._count._all
+    return out
+  }
+
+  async countSessions(): Promise<{ total: number; linked: number }> {
+    const [total, linked] = await Promise.all([
+      prisma.channelSession.count(),
+      prisma.channelSession.count({ where: { identityId: { not: null } } }),
+    ])
+    return { total, linked }
+  }
+
+  async countIdentitiesByStatus(): Promise<Record<string, number>> {
+    const rows = await prisma.channelIdentity.groupBy({
+      by: ['status'],
+      _count: { _all: true },
+    })
+    const out: Record<string, number> = {}
+    for (const r of rows) out[r.status] = r._count._all
+    return out
+  }
+
+  async countPendingOutbound(): Promise<{ pending: number; oldestSentAt: Date | null }> {
+    const [pending, oldest] = await Promise.all([
+      prisma.channelOutboundMessage.count({ where: { purgedAt: null } }),
+      prisma.channelOutboundMessage.findFirst({
+        where: { purgedAt: null },
+        orderBy: { sentAt: 'asc' },
+        select: { sentAt: true },
+      }),
+    ])
+    return { pending, oldestSentAt: oldest?.sentAt ?? null }
   }
 }

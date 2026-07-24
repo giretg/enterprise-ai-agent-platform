@@ -21,6 +21,7 @@ import { services } from '../src/domain'
 import { ensureActiveDatabaseMode } from '../src/lib/db'
 import { getActiveDatabaseMode } from '../src/lib/database-mode'
 import { DISPATCH_NOTIFY_CHANNEL } from '../src/lib/dispatch-notify'
+import { CHANNEL_TURN_NOTIFY_CHANNEL } from '../src/lib/channel-notify'
 import { runDispatchCycle as runSharedDispatchCycle } from '../src/domain/dispatcher/run-dispatch-cycle'
 
 const POLL_INTERVAL_MS = Number(process.env.DISPATCHER_POLL_INTERVAL_MS ?? 30_000)
@@ -91,6 +92,12 @@ async function runDispatchCycle(ticketId?: string) {
         `[dispatcher] watchdog closed ${summary.reclaimedAgentTurns} stale agent turn(s)`,
       )
     }
+    if (summary.channelTurns.reclaimed > 0) {
+      console.log(`[dispatcher] reclaimed ${summary.channelTurns.reclaimed} stale channel turn(s)`)
+    }
+    if (summary.channelTurns.processed > 0) {
+      console.log(`[dispatcher] processed ${summary.channelTurns.processed} channel turn(s)`)
+    }
     if (summary.materializedScheduledTasks > 0) {
       console.log(`[dispatcher] materialized ${summary.materializedScheduledTasks} scheduled task(s)`)
     }
@@ -148,10 +155,19 @@ async function main() {
   const client = new Client({ connectionString })
   await client.connect()
   await client.query(`LISTEN ${DISPATCH_NOTIFY_CHANNEL}`)
+  // A worker MÁSODIK munkatípusa (#73, D8): a bekötött Telegram-üzenetek forduló-sora. Külön
+  // NOTIFY-csatorna, hogy a chat-forgalom azonnal ébressze a workert, ne a cron-hálót várja.
+  await client.query(`LISTEN ${CHANNEL_TURN_NOTIFY_CHANNEL}`)
   health.listening = true
-  console.log(`[dispatcher] LISTEN ${DISPATCH_NOTIFY_CHANNEL}`)
+  console.log(`[dispatcher] LISTEN ${DISPATCH_NOTIFY_CHANNEL}, ${CHANNEL_TURN_NOTIFY_CHANNEL}`)
 
   client.on('notification', (msg) => {
+    // Csatorna-forduló ébresztő: a payload a turnId, de a feldolgozás a soron megy (nem
+    // turnId-alapú), ezért egy sima ciklust indítunk, ami lezavarja a queued fordulókat.
+    if (msg.channel === CHANNEL_TURN_NOTIFY_CHANNEL) {
+      void runDispatchCycle()
+      return
+    }
     const ticketId = msg.payload?.trim()
     if (!ticketId) return
     void runDispatchCycle(ticketId)
