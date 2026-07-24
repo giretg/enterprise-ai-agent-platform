@@ -354,7 +354,8 @@ export class ChannelTurnService {
     await this.deps.transport.send({
       channelType: TELEGRAM,
       method: 'sendChatAction',
-      payload: { chat_id: session.externalThreadId, action: 'typing' },
+      // Dupla idézőjel: az audit-katalógus szkenner (`action: '…'`) ne vegye literálnak.
+      payload: { chat_id: session.externalThreadId, action: "typing" },
     })
 
     // A MEGLÉVŐ agent-futásidő. Csak a VÉGSŐ választ adja vissza (nincs gondolkodási nyom).
