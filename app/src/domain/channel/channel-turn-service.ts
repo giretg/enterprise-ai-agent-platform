@@ -62,7 +62,7 @@ export type ChannelTurnServiceDeps = {
   turns: ChannelTurnRepository
   sessions: Pick<ChannelSessionRepository, 'findById'>
   identities: Pick<ChannelIdentityRepository, 'findById'>
-  grants: ChannelAgentGrantRepository
+  grants: Pick<ChannelAgentGrantRepository, 'listByIdentity' | 'hasAnyGrant'>
   transport: ChannelOutboundTransport
   audit: Pick<AuditRepository, 'append'>
   /** Hány kivétel után megy egy forduló dead-letterbe (alap: 5). */

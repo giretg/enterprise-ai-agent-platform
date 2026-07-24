@@ -8,9 +8,9 @@ import type {
   ChannelType,
   ChannelIdentity,
   ChannelIdentityStatus,
+  ChannelAgentGrant,
   ChannelSession,
   ChannelTurn,
-  ChannelAgentGrant,
   ChannelLinkToken,
   ChannelOutboundMessage,
   UserNotification,
@@ -2230,6 +2230,31 @@ export interface ChannelIdentityRepository {
 }
 
 /**
+ * Csatorna-agent-engedély tár (Telegram feature-spec #70/#75, D5/D9/D13/D14). Egy sor = „ez a
+ * kötött identitás elérheti ezt az agentet a csatornán, ezzel a projektkulccsal". Az admin
+ * hozza létre / vonja vissza; a projektkulcsot a felhasználó állítja a weben. A `(identityId,
+ * agentId)` egyedi — ugyanahhoz az agenthez egyetlen engedély tartozik identitásonként.
+ */
+export type CreateChannelAgentGrantInput = {
+  identityId: string
+  agentId: string
+  projectKey?: string
+  grantedById: string | null
+}
+
+export interface ChannelAgentGrantRepository {
+  listByIdentity(identityId: string): Promise<ChannelAgentGrant[]>
+  /** Egy szervezet összes kötésének engedélyei (admin-nézet, batch). */
+  listByIdentityIds(identityIds: string[]): Promise<ChannelAgentGrant[]>
+  /** Gyors kapu-kérdés (#73): van-e LEGALÁBB egy engedélyezett agent ehhez az identitáshoz? */
+  hasAnyGrant(identityId: string): Promise<boolean>
+  findByIdentityAndAgent(identityId: string, agentId: string): Promise<ChannelAgentGrant | null>
+  create(input: CreateChannelAgentGrantInput): Promise<ChannelAgentGrant>
+  updateProjectKey(id: string, projectKey: string): Promise<ChannelAgentGrant>
+  deleteById(id: string): Promise<void>
+}
+
+/**
  * Csatorna-munkamenet tár (Telegram feature-spec #70/#72, D8/D9/D15). A külső szál ↔
  * beszélgetés összerendelés; a `updateWatermark` a duplikáció-védelemhez, az
  * `unlinkedNoticeAt` a bekötetlen „egyszer válaszol, aztán csend" viselkedéshez.
@@ -2284,18 +2309,6 @@ export interface ChannelTurnRepository {
    * egy elszállt/leállított worker ne hagyjon örökre „fut" fordulót. A visszatett sorok száma.
    */
   reclaimStaleRunning(staleBefore: Date, now: Date): Promise<number>
-}
-
-/**
- * Csatorna agent-engedély tár (Telegram feature-spec #70/#73). Egy összekötött identitáshoz
- * rendelt agent-engedélyek — a védelmi rend (hozzáférés > kormányzás > tartalom) HOZZÁFÉRÉS
- * kapuja: engedély nélkül a bot nem futtat agentet, hanem „szólj az adminodnak" választ ad.
- */
-export interface ChannelAgentGrantRepository {
-  /** Az identitáshoz tartozó összes agent-engedély (üres = nincs engedélyezett agent). */
-  listByIdentity(identityId: string): Promise<ChannelAgentGrant[]>
-  /** Gyors kapu-kérdés: van-e LEGALÁBB egy engedélyezett agent ehhez az identitáshoz? */
-  hasAnyGrant(identityId: string): Promise<boolean>
 }
 
 /**

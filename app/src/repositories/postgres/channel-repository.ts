@@ -20,6 +20,7 @@ import type {
   ChannelSessionRepository,
   ChannelSessionUpdate,
   ChannelTurnRepository,
+  CreateChannelAgentGrantInput,
   CreateChannelBotInput,
   CreateChannelIdentityInput,
   CreateChannelLinkTokenInput,
@@ -139,6 +140,60 @@ export class PostgresChannelIdentityRepository implements ChannelIdentityReposit
         linkedAt: input.linkedAt,
       },
     })
+  }
+}
+
+/**
+ * Csatorna-agent-engedély tár (Telegram feature-spec #70/#75, D5/D9/D13/D14). A `(identityId,
+ * agentId)` egyedi, ezért az ismételt engedélyezés ugyanazt a sort érinti — nem keletkezik két
+ * engedély ugyanahhoz az agenthez. A projektkulcsot külön billenti (a felhasználó állítja).
+ */
+export class PostgresChannelAgentGrantRepository implements ChannelAgentGrantRepository {
+  async listByIdentity(identityId: string): Promise<ChannelAgentGrant[]> {
+    return prisma.channelAgentGrant.findMany({
+      where: { identityId },
+      orderBy: { grantedAt: 'asc' },
+    })
+  }
+
+  async hasAnyGrant(identityId: string): Promise<boolean> {
+    return (await prisma.channelAgentGrant.count({ where: { identityId } })) > 0
+  }
+
+  async listByIdentityIds(identityIds: string[]): Promise<ChannelAgentGrant[]> {
+    if (identityIds.length === 0) return []
+    return prisma.channelAgentGrant.findMany({
+      where: { identityId: { in: identityIds } },
+      orderBy: { grantedAt: 'asc' },
+    })
+  }
+
+  async findByIdentityAndAgent(
+    identityId: string,
+    agentId: string,
+  ): Promise<ChannelAgentGrant | null> {
+    return prisma.channelAgentGrant.findUnique({
+      where: { identityId_agentId: { identityId, agentId } },
+    })
+  }
+
+  async create(input: CreateChannelAgentGrantInput): Promise<ChannelAgentGrant> {
+    return prisma.channelAgentGrant.create({
+      data: {
+        identityId: input.identityId,
+        agentId: input.agentId,
+        ...(input.projectKey !== undefined ? { projectKey: input.projectKey } : {}),
+        grantedById: input.grantedById,
+      },
+    })
+  }
+
+  async updateProjectKey(id: string, projectKey: string): Promise<ChannelAgentGrant> {
+    return prisma.channelAgentGrant.update({ where: { id }, data: { projectKey } })
+  }
+
+  async deleteById(id: string): Promise<void> {
+    await prisma.channelAgentGrant.delete({ where: { id } })
   }
 }
 
@@ -370,19 +425,5 @@ export class PostgresChannelMetricsRepository implements ChannelMetricsRepositor
       }),
     ])
     return { pending, oldestSentAt: oldest?.sentAt ?? null }
-  }
-}
-
-/**
- * Csatorna agent-engedély tár (Telegram feature-spec #70/#73). A HOZZÁFÉRÉS kapu olvasója:
- * engedély-sor létezése = az identitás futtathat agentet; üres = „szólj az adminodnak".
- */
-export class PostgresChannelAgentGrantRepository implements ChannelAgentGrantRepository {
-  async listByIdentity(identityId: string): Promise<ChannelAgentGrant[]> {
-    return prisma.channelAgentGrant.findMany({ where: { identityId } })
-  }
-
-  async hasAnyGrant(identityId: string): Promise<boolean> {
-    return (await prisma.channelAgentGrant.count({ where: { identityId } })) > 0
   }
 }

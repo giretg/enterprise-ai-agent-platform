@@ -46,6 +46,7 @@ import { SkillService } from '@/domain/skill/skill-service'
 import { ConversationService } from '@/domain/conversation/conversation-service'
 import { ChannelBotService } from '@/domain/channel/channel-bot-service'
 import { ChannelLinkingService } from '@/domain/channel/channel-linking-service'
+import { ChannelAgentAccessService } from '@/domain/channel/channel-agent-access-service'
 import { ChannelMetricsService } from '@/domain/channel/channel-metrics-service'
 import { ChannelRetentionService } from '@/domain/channel/channel-retention-service'
 import { ChannelTurnService } from '@/domain/channel/channel-turn-service'
@@ -261,6 +262,26 @@ const channelMetricsService = new ChannelMetricsService({
 const channelRetentionService = new ChannelRetentionService({
   outbound: repositories.channelOutboundMessages,
   transport: telegramOutboundTransport,
+  audit: repositories.audit,
+})
+// Csatorna-agent-hozzáférés (#75, D5/D9/D13/D54). A metszet bal oldala (platform-jog) az
+// agent-registry szervezeti szűrése (a per-felhasználó dedikálás élesítésekor magától
+// szigorodik — #70 Further Notes 1); a kill-switch a szervezeti Telegram-kapcsoló.
+const channelAgentAccessService = new ChannelAgentAccessService({
+  grants: repositories.channelAgentGrants,
+  identities: repositories.channelIdentities,
+  agents: {
+    async listForTenant(tenantId) {
+      const agents = await repositories.agents.findMany({ tenantId })
+      return agents.map((a) => ({ id: a.id, name: a.name, usable: a.status === 'active' }))
+    },
+    async findInTenant(agentId, tenantId) {
+      const agent = await repositories.agents.findById(agentId, tenantId)
+      if (!agent) return null
+      return { id: agent.id, name: agent.name, usable: agent.status === 'active' }
+    },
+  },
+  isChannelEnabled: (tenantId) => platformSettingsService.isChannelEnabledForTenant(tenantId),
   audit: repositories.audit,
 })
 const connectorGrantService = new ConnectorGrantService(repositories.connectorGrants, repositories.audit)
@@ -866,6 +887,7 @@ export const services = {
   channelTurns: channelTurnService,
   channelMetrics: channelMetricsService,
   channelRetention: channelRetentionService,
+  channelAgentAccess: channelAgentAccessService,
   iam: iamService,
   tenants: tenantService,
   provisioning: provisioningService,

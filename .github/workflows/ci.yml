@@ -89,6 +89,7 @@ jobs:
           npm run test:channel-turn
           npm run test:channel-metrics
           npm run test:channel-retention
+          npm run test:channel-agent-access
 
   migrations:
     name: Prisma migrate deploy (ephemeral Postgres)

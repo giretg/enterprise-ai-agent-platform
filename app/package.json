@@ -96,6 +96,7 @@
     "test:channel-bot": "tsx scripts/channel-bot-service.test.ts",
     "test:channel-link-token": "tsx scripts/channel-link-token.test.ts",
     "test:channel-linking": "tsx scripts/channel-linking-service.test.ts",
+    "test:channel-agent-access": "tsx scripts/channel-agent-access.test.ts",
     "test:channel-metrics": "tsx scripts/channel-metrics-service.test.ts",
     "test:channel-retention": "tsx scripts/channel-retention-service.test.ts",
     "test:channel-turn": "tsx scripts/channel-turn-worker.test.ts",
