@@ -16,6 +16,11 @@ type GrantRow = ConnectorGrant & {
   connector: { id: string; name: string; type: string; lifecycleState: string }
 }
 
+type GoogleOAuthSummary = {
+  clientId: string
+  redirectUri: string
+}
+
 const GMAIL_SCOPE_PROFILES = [
   {
     id: 'modify',
@@ -82,7 +87,8 @@ export function ConnectorsPanel() {
   const [googleClientId, setGoogleClientId] = useState('')
   const [googleClientSecret, setGoogleClientSecret] = useState('')
   const [googleRedirectUri, setGoogleRedirectUri] = useState('')
-  const [googleConfigured, setGoogleConfigured] = useState(false)
+  const [googleConfig, setGoogleConfig] = useState<GoogleOAuthSummary | null>(null)
+  const [googleEditing, setGoogleEditing] = useState(false)
   const [selectedScopes, setSelectedScopes] = useState<Record<string, string[]>>({})
   const [error, setError] = useState<string | null>(() => {
     const err = searchParams.get('error')
@@ -102,8 +108,17 @@ export function ConnectorsPanel() {
       setGrants(res.data.grants as GrantRow[])
       setConnectors(res.data.connectors)
       setIsAdmin(res.data.isAdmin)
-      setGoogleConfigured(Boolean(res.data.googleOauth?.configured))
-      setGoogleRedirectUri(res.data.googleOauth?.redirectUri ?? '')
+      const google = res.data.googleOauth
+      setGoogleConfig(
+        google?.configured
+          ? {
+              clientId: google.clientId ?? google.clientIdHint ?? '',
+              redirectUri: google.redirectUri ?? '',
+            }
+          : null,
+      )
+      setGoogleClientId(google?.clientId ?? '')
+      setGoogleRedirectUri(google?.redirectUri ?? '')
       setSelectedScopes((prev) => {
         const next = { ...prev }
         for (const connector of res.data.connectors) {
@@ -136,63 +151,128 @@ export function ConnectorsPanel() {
 
       {isAdmin ? (
         <Card title="Tenant Google OAuth (admin)">
-          <div className="space-y-3">
-            <p className="text-sm text-ink-soft">
-              Egyszeri tenant-szintű beállítás. Ezt használja minden Google connector, utána a
-              felhasználóknak csak a saját OAuth belépés kell.
-            </p>
-            {googleConfigured ? (
-              <p className="text-xs text-emerald-300">
-                Beállítva. Új secret mentése felülírja a korábbit.
+          {googleConfig && !googleEditing ? (
+            <div className="space-y-3">
+              <p className="flex items-center gap-2 text-sm text-emerald-300">
+                <span aria-hidden className="h-2 w-2 rounded-full bg-emerald-400" />
+                Be van állítva — a Google connectorok ezt használják.
               </p>
-            ) : null}
-            <div className="grid gap-3 md:grid-cols-2">
-              <input
-                value={googleClientId}
-                onChange={(e) => setGoogleClientId(e.target.value)}
-                placeholder="Google OAuth Client ID"
-                className="rounded-lg border border-line bg-panel px-3 py-2 text-sm"
-              />
-              <input
-                type="password"
-                value={googleClientSecret}
-                onChange={(e) => setGoogleClientSecret(e.target.value)}
-                placeholder="Google OAuth Client Secret"
-                className="rounded-lg border border-line bg-panel px-3 py-2 text-sm"
-              />
-            </div>
-            <input
-              value={googleRedirectUri}
-              onChange={(e) => setGoogleRedirectUri(e.target.value)}
-              placeholder="Redirect URI (opcionális)"
-              className="w-full rounded-lg border border-line bg-panel px-3 py-2 text-sm"
-            />
-            <div className="flex items-center gap-2">
+              <dl className="space-y-1 text-xs text-ink-soft">
+                <div className="flex flex-wrap gap-x-2">
+                  <dt className="text-ink-soft/70">Client ID:</dt>
+                  <dd className="break-all font-mono text-ink">{googleConfig.clientId || '—'}</dd>
+                </div>
+                <div className="flex flex-wrap gap-x-2">
+                  <dt className="text-ink-soft/70">Client Secret:</dt>
+                  <dd className="text-ink">Mentve (nem jelenítjük meg)</dd>
+                </div>
+                <div className="flex flex-wrap gap-x-2">
+                  <dt className="text-ink-soft/70">Redirect URI:</dt>
+                  <dd className="break-all text-ink">
+                    {googleConfig.redirectUri || 'Nincs megadva — az alkalmazás alapértelmezett callback címe érvényes.'}
+                  </dd>
+                </div>
+              </dl>
+              <p className="text-xs text-ink-soft">
+                A felhasználóknak innentől csak a saját Google belépésük kell az „Elérhető
+                connectorok” listában.
+              </p>
               <button
                 type="button"
-                disabled={pending || !googleClientId.trim() || !googleClientSecret.trim()}
-                className="rounded-lg bg-accent px-3 py-1.5 text-sm text-white disabled:opacity-50"
-                onClick={() =>
-                  startTransition(async () => {
-                    const res = await upsertTenantGoogleOAuth({
-                      clientId: googleClientId.trim(),
-                      clientSecret: googleClientSecret.trim(),
-                      ...(googleRedirectUri.trim() ? { redirectUri: googleRedirectUri.trim() } : {}),
-                    })
-                    if (res.success) {
-                      setGoogleConfigured(true)
-                      setGoogleClientSecret('')
-                      setMessage('Tenant Google OAuth config mentve.')
-                    } else {
-                      setError(res.error)
-                    }
-                  })
-                }
+                className="rounded-lg border border-line px-3 py-1.5 text-sm text-ink"
+                onClick={() => {
+                  setGoogleClientId(googleConfig.clientId)
+                  setGoogleRedirectUri(googleConfig.redirectUri)
+                  setGoogleClientSecret('')
+                  setGoogleEditing(true)
+                }}
               >
-                Mentés
+                Szerkesztés
               </button>
             </div>
-          </div>
+          ) : (
+            <div className="space-y-3">
+              <p className="text-sm text-ink-soft">
+                Egyszeri tenant-szintű beállítás. Ezt használja minden Google connector, utána a
+                felhasználóknak csak a saját OAuth belépés kell.
+              </p>
+              <div className="grid gap-3 md:grid-cols-2">
+                <input
+                  value={googleClientId}
+                  onChange={(e) => setGoogleClientId(e.target.value)}
+                  placeholder="Google OAuth Client ID"
+                  className="rounded-lg border border-line bg-panel px-3 py-2 text-sm"
+                />
+                <input
+                  type="password"
+                  value={googleClientSecret}
+                  onChange={(e) => setGoogleClientSecret(e.target.value)}
+                  placeholder={
+                    googleConfig
+                      ? 'Client Secret — üresen hagyva marad a mostani'
+                      : 'Google OAuth Client Secret'
+                  }
+                  className="rounded-lg border border-line bg-panel px-3 py-2 text-sm"
+                />
+              </div>
+              <input
+                value={googleRedirectUri}
+                onChange={(e) => setGoogleRedirectUri(e.target.value)}
+                placeholder="Redirect URI (opcionális)"
+                className="w-full rounded-lg border border-line bg-panel px-3 py-2 text-sm"
+              />
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  disabled={
+                    pending ||
+                    !googleClientId.trim() ||
+                    (!googleConfig && !googleClientSecret.trim())
+                  }
+                  className="rounded-lg bg-accent px-3 py-1.5 text-sm text-white disabled:opacity-50"
+                  onClick={() =>
+                    startTransition(async () => {
+                      const clientId = googleClientId.trim()
+                      const redirectUri = googleRedirectUri.trim()
+                      const res = await upsertTenantGoogleOAuth({
+                        clientId,
+                        ...(googleClientSecret.trim()
+                          ? { clientSecret: googleClientSecret.trim() }
+                          : {}),
+                        redirectUri,
+                      })
+                      if (res.success) {
+                        setGoogleConfig({ clientId, redirectUri })
+                        setGoogleClientSecret('')
+                        setGoogleEditing(false)
+                        setError(null)
+                        setMessage('Tenant Google OAuth beállítás mentve.')
+                      } else {
+                        setError(res.error)
+                      }
+                    })
+                  }
+                >
+                  Mentés
+                </button>
+                {googleConfig ? (
+                  <button
+                    type="button"
+                    disabled={pending}
+                    className="rounded-lg border border-line px-3 py-1.5 text-sm text-ink-soft"
+                    onClick={() => {
+                      setGoogleEditing(false)
+                      setGoogleClientSecret('')
+                      setGoogleClientId(googleConfig.clientId)
+                      setGoogleRedirectUri(googleConfig.redirectUri)
+                    }}
+                  >
+                    Mégse
+                  </button>
+                ) : null}
+              </div>
+            </div>
+          )}
         </Card>
       ) : null}
 

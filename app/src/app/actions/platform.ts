@@ -8,7 +8,8 @@ import { clerkClient } from '@clerk/nextjs/server'
 import { getCurrentUser } from '@/auth'
 import { hasMinimumRole } from '@/auth/types'
 import { requirePlatformRole, requireTenantPermission, requireTenantRole } from '@/auth/tenant-context'
-import type { TenantAuthContext } from '@/auth/context'
+import { getAuthContext, type TenantAuthContext } from '@/auth/context'
+import { isSuperadmin } from '@/lib/tenant-policy'
 import { services } from '@/domain'
 import type { TrainingActor } from '@/domain/training/training-service'
 import type { GitHubRepositoryAccess } from '@/domain/connector/github-repository-access'
@@ -4649,6 +4650,23 @@ export async function getAutomationIdleSnapshot(): Promise<
     return ok(snapshot)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to read idle snapshot')
+  }
+}
+
+/** Fejléc kapcsoló: csak platform-superadminnak, tenant nélkül is olvasható. */
+export async function getAutomationModeToggleState(): Promise<
+  ActionResult<{ canToggle: boolean; idle: boolean }>
+> {
+  try {
+    const ctx = await getAuthContext()
+    if (!ctx || !isSuperadmin(ctx.platformRoles)) {
+      return ok({ canToggle: false, idle: false })
+    }
+    await ensureActiveDatabaseMode()
+    const snapshot = await services.platformSettings.getAutomationIdleSnapshot()
+    return ok({ canToggle: true, idle: snapshot !== null })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to read automation mode')
   }
 }
 

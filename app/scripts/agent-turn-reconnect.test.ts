@@ -309,6 +309,40 @@ async function main() {
     assert.equal((events[1] as { activity: { status: string } }).activity.status, 'done')
   })
 
+  await check('live-út: busz terminális nélkül → DB-poll fallback done', async () => {
+    // A registryből kikerült futás done nélkül zárulhat; a kliensnek nem szabad
+    // üres buborékkal maradnia — a DB terminális állapotából zárunk.
+    async function* liveEvents(): AsyncGenerator<AgentChatStreamEvent, void, unknown> {
+      yield { type: 'token', chunk: 'rész' }
+      // done nélkül vége
+    }
+    const events: AgentChatStreamEvent[] = []
+    const gen = streamTurnReconnect(makeTurn({ status: 'streaming', partialText: '' }), {
+      findById: async () =>
+        makeTurn({
+          status: 'completed',
+          partialText: 'rész kész',
+          assistantMessageId: 'msg-fallback',
+        }),
+      subscribe: () => liveEvents(),
+      signal: new AbortController().signal,
+      sleep: async () => {},
+    })
+    for await (const event of gen) events.push(event)
+
+    assert.deepEqual(
+      events.map((e) => e.type),
+      ['snapshot', 'token', 'token', 'done'],
+    )
+    assert.equal((events[1] as { chunk: string }).chunk, 'rész')
+    assert.equal((events[2] as { chunk: string }).chunk, ' kész')
+    assert.deepEqual(events[3], {
+      type: 'done',
+      conversationId: 'conv-1',
+      messageId: 'msg-fallback',
+    })
+  })
+
   console.log(failures === 0 ? '\nAll passed' : `\n${failures} FAILED`)
   if (failures > 0) process.exitCode = 1
 }

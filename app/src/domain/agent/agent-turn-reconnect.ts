@@ -212,23 +212,74 @@ async function* subscribeOrPoll(
 
   const live = deps.subscribe(turnId)
   if (live) {
-    yield* filterLiveAfterSnapshot(turn, live, signal)
+    let sawTerminal = false
+    let lastPartial = turn.partialText
+    const snapshotActivities = Array.isArray(turn.activities) ? turn.activities : []
+    let lastActivityCount = snapshotActivities.length
+
+    for await (const event of filterLiveAfterSnapshot(turn, live, signal)) {
+      if (event.type === 'token') lastPartial += event.chunk
+      if (event.type === 'activity') lastActivityCount += 1
+      yield event
+      if (event.type === 'done' || event.type === 'error') {
+        sawTerminal = true
+        break
+      }
+    }
+
+    if (sawTerminal || signal.aborted) return
+
+    // Az élő busz lezárulhat terminális esemény nélkül (pl. a futás a done
+    // elküldése előtt kikerült a registryből, vagy a feliratkozás elszakadt).
+    // Ilyenkor a DB-poll fallback zárja a streamet — különben a kliens üres
+    // buborékkal marad, miközben a válasz már perzisztálva van.
+    yield* pollUntilTerminal(
+      {
+        turnId,
+        conversationId,
+        lastPartial,
+        lastActivityCount,
+      },
+      deps,
+    )
     return
   }
 
+  const snapshotActivities = Array.isArray(turn.activities) ? turn.activities : []
+  yield* pollUntilTerminal(
+    {
+      turnId,
+      conversationId,
+      lastPartial: turn.partialText,
+      lastActivityCount: snapshotActivities.length,
+    },
+    deps,
+  )
+}
+
+async function* pollUntilTerminal(
+  baseline: {
+    turnId: string
+    conversationId: string
+    lastPartial: string
+    lastActivityCount: number
+  },
+  deps: ReconnectDeps,
+): AsyncGenerator<AgentChatStreamEvent, void, unknown> {
+  const { signal } = deps
   const pollMs = deps.pollMs ?? resolveReconnectPollMs()
   const sleep = deps.sleep ?? defaultReconnectSleep
 
-  // A poll-delta a MÁR kiküldött pillanatképhez képest számol: a snapshot
-  // részszövege a kliens kiindulópontja, a token-eseményeket ő ehhez fűzi. Ha
+  // A poll-delta a MÁR kiküldött pillanatképhez / live-deltához képest számol:
+  // a kliens kiindulópontja a lastPartial; a token-eseményeket ő ehhez fűzi. Ha
   // itt üresről indulnánk, az első poll a teljes részszöveget újraküldené, és a
-  // kliens megduplázná (snapshot + ugyanaz tokenként). Az aktivitások id-alapú
-  // upsertje idempotens, de a már látott elemeket sem küldjük újra.
-  let lastPartial = turn.partialText
-  const snapshotActivities = Array.isArray(turn.activities) ? turn.activities : []
-  let lastActivityCount = snapshotActivities.length
+  // kliens megduplázná. Az aktivitások id-alapú upsertje idempotens, de a már
+  // látott elemeket sem küldjük újra.
+  let lastPartial = baseline.lastPartial
+  let lastActivityCount = baseline.lastActivityCount
+
   while (!signal.aborted) {
-    const current = await deps.findById(turnId)
+    const current = await deps.findById(baseline.turnId)
     if (!current) {
       yield { type: 'error', message: 'Turn disappeared' }
       return
@@ -248,7 +299,7 @@ async function* subscribeOrPoll(
     }
 
     if (isTerminalTurnStatus(current.status)) {
-      yield terminalEventForTurn({ ...current, conversationId })
+      yield terminalEventForTurn({ ...current, conversationId: baseline.conversationId })
       return
     }
 

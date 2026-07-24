@@ -55,6 +55,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'agent.create',
   'agent.delete',
   'agent.dispatch_denied_inactive',
+  // Tenant admin: agent elrejtése / megjelenítése az operátorok listájából.
   'agent.operator_visibility',
   'agent.persona',
   'agent.resumed',

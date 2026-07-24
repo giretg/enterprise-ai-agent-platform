@@ -1176,6 +1176,9 @@ export function AgentChatPanel({
         setStopPending(false)
         setActiveTurnId(null)
         markConversationRunning(params.conversationId, false)
+        // A forduló közben / után is perzisztálódhatott a válasz — üres buborék
+        // helyett a DB végállapotot töltjük.
+        await reloadConversationMessages(params.conversationId)
         return
       }
 
@@ -1183,6 +1186,7 @@ export function AgentChatPanel({
       const decoder = new TextDecoder()
       let buffer = ''
       let accumulatedReply = ''
+      let sawTerminalEvent = false
 
       try {
         while (true) {
@@ -1268,32 +1272,33 @@ export function AgentChatPanel({
               event.conversationId &&
               event.messageId
             ) {
+              sawTerminalEvent = true
               await reloadConversationMessages(event.conversationId)
-              setIsAgentTyping(false)
-              setStopPending(false)
-              setActiveTurnId(null)
-              markConversationRunning(event.conversationId, false)
               return
             } else if (event.type === 'done' && event.conversationId && event.messageId) {
+              sawTerminalEvent = true
               await reloadConversationMessages(event.conversationId)
-              setIsAgentTyping(false)
-              setStopPending(false)
-              setActiveTurnId(null)
-              markConversationRunning(event.conversationId, false)
               return
             } else if (event.type === 'error') {
+              sawTerminalEvent = true
               setStatusMessage(event.message ?? 'A válasz hibával zárult.')
-              setIsAgentTyping(false)
-              setStopPending(false)
-              setActiveTurnId(null)
-              markConversationRunning(params.conversationId, false)
+              await reloadConversationMessages(params.conversationId)
               return
             }
           }
         }
+
+        // Stream lezárult done/error nélkül (proxy timeout, élő busz elszakadás).
+        // Ha a válasz közben elkészült, a DB-ből kell visszatölteni — különben
+        // üres agent-buborék marad a UI-on.
+        if (!sawTerminalEvent && !params.signal.aborted) {
+          await reloadConversationMessages(params.conversationId)
+        }
       } finally {
         setIsAgentTyping(false)
         setStopPending(false)
+        setActiveTurnId(null)
+        markConversationRunning(params.conversationId, false)
       }
     },
     [markConversationRunning, reloadConversationMessages, thinkingTraceControls],
@@ -1695,24 +1700,16 @@ export function AgentChatPanel({
               setConversationStatus('active')
               markConversationRunning(event.conversationId, false)
               setActiveTurnId(null)
-              setMessages((prev) =>
-                prev.map((m) =>
-                  m.id === agentBubbleMessageId
-                    ? {
-                        ...m,
-                        id: event.messageId!,
-                        ticketRefId: event.ticketRefId ?? m.ticketRefId,
-                      }
-                    : m,
-                ),
-              )
               // A Folyamat-választás csak addig marad rögzítve, amíg a Futás
               // ténylegesen el nem indul (§4.4) — utána a chat visszaáll
               // normál beszélgetésre, hogy ne próbálja újraindítani.
               if (accumulatedReply.includes('Futás elindítva a(z)')) {
                 setSelectedProcessDefId(null)
               }
-              startTransition(() => { void refreshSessions() })
+              // Mindig a DB végállapotot töltjük: hosszú tool-körök / proxy
+              // timeout után a token-stream hiányos lehet, miközben a válasz
+              // már perzisztálva van — különben üres agent-buborék marad.
+              await reloadConversationMessages(event.conversationId)
               streamTerminalEvent = true
               break
             } else if (event.type === 'error') {

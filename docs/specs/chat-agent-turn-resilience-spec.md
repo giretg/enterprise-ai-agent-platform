@@ -276,8 +276,10 @@ ismerje a `turnId`-t (a Stop és a reconnect ehhez kell).
 
 ### 6.3 `GET /api/v1/agent-chat/turns/[turnId]/stream` — reconnect (D4)
 - Első event: **snapshot** — `{ type:'snapshot', status, partialText, activities }`.
-- Ha a forduló még aktív: feliratkozás az élő buszra (Tier-1), vagy DB-poll
-  ~750 ms-enként a `partialText`/`activities`/`status` deltájára (Tier-2).
+- Ha a forduló még aktív: feliratkozás az élő buszra (Tier-1), majd ha az élő
+  stream terminális `done`/`error` nélkül zárul, DB-poll fallback a
+  `partialText`/`activities`/`status` deltájára (~750 ms). Tier-2-ben a
+  reconnect közvetlenül DB-pollból indul.
 - Ha már terminál: snapshot + `done`, majd zárás.
 
 ### 6.4 `GET /api/v1/agent-chat/turns?conversationId=…&active=1` — van-e futó?
