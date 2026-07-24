@@ -27,6 +27,7 @@ import type {
   ChannelIdentityRepository,
   ChannelLinkTokenRepository,
   ChannelSessionRepository,
+  ChannelTurnRepository,
 } from '@/repositories/interfaces'
 import type { ChannelOutboundTransport } from './channel-outbound-transport'
 import {
@@ -96,6 +97,13 @@ export type ChannelLinkingDeps = {
   identities: ChannelIdentityRepository
   sessions: ChannelSessionRepository
   linkTokens: ChannelLinkTokenRepository
+  /** A bekötött üzenet TARTÓS forduló-sorba írása (#73, D8) — a worker második munkatípusa. */
+  turns: Pick<ChannelTurnRepository, 'enqueue'>
+  /**
+   * A sorba írás után hívott, hibatűrő értesítő (Postgres NOTIFY) — a worker azonnal ébred a
+   * cron-háló bevárása helyett. Alapból nincs (a cron-söprés így is felveszi a fordulót).
+   */
+  onTurnEnqueued?: (turnId: string) => Promise<void>
   transport: ChannelOutboundTransport
   audit: Pick<AuditRepository, 'append'>
   notifier: ChannelLinkNotifier
@@ -125,7 +133,7 @@ export type InboundOutcome =
   | 'bad_secret'
   | 'unsupported_update'
   | 'duplicate'
-  | 'linked_no_runtime'
+  | 'linked_enqueued'
   | 'unlinked_notice_sent'
   | 'unlinked_silenced'
   | 'link_established'
@@ -136,6 +144,8 @@ export type HandleInboundResult = {
   outcome: InboundOutcome
   /** Az összekötés eredménye — csak `link_established`-nél. */
   identityId?: string
+  /** A sorba írt forduló azonosítója — csak `linked_enqueued`-nál (a worker ezt veszi fel). */
+  turnId?: string
   /** Az elutasítás oka — csak `link_rejected`-nél (diagnosztika, nem megy ki Telegramra). */
   rejectReason?: 'not_found' | 'bad_signature' | 'expired' | 'already_used'
 }
@@ -215,8 +225,10 @@ export class ChannelLinkingService {
   /**
    * A bejövő frissítés feldolgozása. Az EGYETLEN szinkron kapu a nyugtázás előtt a titkos
    * fejléc konstans idejű ellenőrzése (D15). Duplikáció-védelem munkamenetenkénti vízjellel.
-   * Ez a slice CSAK az összekötő ágat és a bekötetlen semleges választ kezeli; a bekötött
-   * felhasználó chat-fordulója későbbi szelet (D8), ezért itt kimenő hívás nélkül tér vissza.
+   * Az összekötő ágat, a bekötetlen semleges választ ÉS a bekötött felhasználó üzenetének
+   * TARTÓS forduló-sorba írását (#73, D8) kezeli — ez utóbbi a webhook-kérésen túl él, és a
+   * worker második munkatípusként veszi fel. Az agent-futás maga későbbi szelet (#74): itt
+   * a sorba írás a szállított érték (megbízható, újrapróbálható bejövő út).
    */
   async handleInboundUpdate(input: {
     message: ChannelInboundMessage
@@ -271,16 +283,68 @@ export class ChannelLinkingService {
       })
     }
 
-    // Nincs `/start <token>`: bekötött → (chat runtime későbbi szelet); bekötetlen → semleges egyszer.
+    // Nincs `/start <token>`: bekötött → tartós forduló-sorba (a worker veszi fel); bekötetlen
+    // → semleges válasz egyszer.
     const identity = await this.deps.identities.findByLookupHash(channelType, lookupHash)
     if (identity && identity.status === 'active') {
       if (session.identityId !== identity.id) {
         await this.deps.sessions.update(session.id, { identityId: identity.id })
       }
-      return { handled: true, outcome: 'linked_no_runtime' }
+      return this.enqueueLinkedTurn({
+        channelType,
+        sessionId: session.id,
+        lookupHash,
+        tenantId: identity.tenantId,
+        inboundRef: msg.text,
+      })
     }
 
     return this.handleUnlinked({ bot, channelType, sessionId: session.id, lookupHash, now })
+  }
+
+  /**
+   * A bekötött felhasználó üzenetét TARTÓS forduló-sorba írja (#73, D8). A sor túléli a
+   * webhook-kérést; a worker második munkatípusként veszi fel. A `NOTIFY` (ha van) csak
+   * gyorsítás — hibája nem buktathatja a sorba írást (a cron-háló akkor is felveszi).
+   */
+  private async enqueueLinkedTurn(input: {
+    channelType: ChannelType
+    sessionId: string
+    lookupHash: string
+    tenantId: string | null
+    inboundRef: string | null
+  }): Promise<HandleInboundResult> {
+    const turn = await this.deps.turns.enqueue({
+      sessionId: input.sessionId,
+      inboundRef: input.inboundRef,
+    })
+
+    await this.deps.audit.append({
+      actorType: 'system',
+      actorId: null,
+      agentVersion: null,
+      action: CHANNEL_AUDIT_ACTIONS.turnEnqueued,
+      targetType: 'channel_turn',
+      targetId: turn.id,
+      modelUsed: null,
+      inputRef: null,
+      outputRef: null,
+      policyDecision: 'queued',
+      // Az üzenet TARTALMA sosem kerül auditba — csak a tény, hogy sorba került (álnevesített id).
+      metadata: {
+        channelType: input.channelType,
+        tenantId: input.tenantId,
+        pseudonym: pseudonymFromLookupHash(input.lookupHash),
+      },
+      tenantId: input.tenantId,
+    })
+
+    if (this.deps.onTurnEnqueued) {
+      // A NOTIFY tisztán gyorsítás — a hibája NEM buktathatja a (már perzisztált) fordulót.
+      await this.deps.onTurnEnqueued(turn.id).catch(() => {})
+    }
+
+    return { handled: true, outcome: 'linked_enqueued', turnId: turn.id }
   }
 
   private async handleUnlinked(input: {
