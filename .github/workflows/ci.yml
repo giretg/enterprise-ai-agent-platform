@@ -165,12 +165,19 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # A CodeQL végigfut, de a SARIF-eredmény feltöltése CSAK akkor sikeres, ha a repóban
+      # be van kapcsolva a Code scanning (Settings → Code security & analysis). Amíg nincs,
+      # a feltöltés „configuration error"-t ad. Ezért a CodeQL lépések NEM blokkolják a CI-t
+      # (continue-on-error) — a gitleaks titok-szkennelés éles marad. Ha a Code scanning
+      # bekapcsol, a continue-on-error eltávolítható, és a CodeQL-eredmények bekerülnek.
       - name: CodeQL init
         uses: github/codeql-action/init@v4
+        continue-on-error: true
         with:
           languages: typescript
 
       - name: CodeQL analyze
         uses: github/codeql-action/analyze@v4
+        continue-on-error: true
         with:
           category: /language:typescript
