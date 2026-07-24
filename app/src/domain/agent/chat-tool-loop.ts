@@ -532,8 +532,8 @@ const TOOL_SCHEMAS: Record<ChatPlatformToolName, ToolSchema> = {
       'Ha egy fájl tulajdoni lap, MINDIG ezt hívd — ne document_read/pdf_read-del lapozd végig. ' +
       'Egy lap 100-300 oldal, aminek a nagy része ismétlődő fejléc és MÁR TÖRÖLT bejegyzés.\n' +
       'Forrás (EGYIK kötelező):\n' +
-      '- path: ticket/chat MUNKATERÜLET PDF (a fájllistában látott pontos név, pl. "043_15 2026.07.16.pdf") — board ticket feltöltéshez EZT használd;\n' +
-      '- documentId: UUID csatolmány (csak a csatolmány-blokkban megadott documentId).\n' +
+      '- documentId: UUID csatolmány (chat/board csatolmány-blokkban megadott documentId) — chat PDF-nél EZT használd;\n' +
+      '- path: ticket/chat MUNKATERÜLET fájl (pontos név a listából: "fajl.pdf" VAGY materializált "fajl.pdf.txt").\n' +
       'NE add a fájlnevet documentId-nek — az UUID; fájlnévhez path kell.\n' +
       'FONTOS: a tulajdoni lap nem pillanatfelvétel, hanem teljes történeti napló — egy eladott ' +
       'hányad bejegyzése nem tűnik el, csak „Törlő határozat" mezőt kap. A sorok 70-80%-a jellemzően ' +

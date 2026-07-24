@@ -191,6 +191,8 @@ async function main() {
     assert.equal(claimed.name, 'Claim Me')
     assert.equal(claimed.role, 'approver')
     assert.equal(isPreProvisionedAuthId(claimed.externalAuthId), false)
+    assert.ok(claimed.activatedAt)
+    assert.ok(claimed.lastLoginAt)
     assert.equal(getMemberships()[0]?.status, 'active')
     assert.ok(getMemberships()[0]?.activatedAt)
     assert.equal(getUsers()[0]?.status, 'active')

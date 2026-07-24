@@ -1,7 +1,7 @@
 'use client'
 
 import Link from 'next/link'
-import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react'
+import { useCallback, useEffect, useId, useMemo, useRef, useState, useTransition } from 'react'
 import { createPortal, flushSync } from 'react-dom'
 import {
   approveMemoryCandidate,
@@ -24,7 +24,18 @@ import { getTenantThinkingTraceControls } from '@/app/actions/chat-thinking-trac
 import { AgentDelegatedConnectorsBar } from '@/components/agents/agent-delegated-connectors-bar'
 import type { AgentDelegatedConnectorRow } from '@/lib/agent-delegated-connectors'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
+import {
+  removeAgentChatDockEntry,
+  upsertAgentChatDockEntry,
+} from '@/components/agents/agent-chat-dock-store'
+import { openAgentChat } from '@/components/agents/agent-chat-session-store'
 import { ChatMarkdown, TypingIndicator } from '@/components/chat/chat-markdown'
+import {
+  chatMessageShowsAgentActivity,
+  mergeTurnProgressIntoMessages,
+  type ChatTurnActivity,
+} from '@/lib/chat-turn-progress'
+import { AGENT_TURN_RECONNECT_POLL_DEFAULT_MS } from '@/domain/agent/agent-turn-reconnect'
 import {
   AgentChatSessionSidebar,
   type ChatSession,
@@ -695,6 +706,7 @@ export function AgentChatPanel({
   onClose,
   canDistillSkill = false,
   initialConversationId = null,
+  restoreSignal = 0,
 }: {
   agent: ChatAgent
   open: boolean
@@ -703,8 +715,11 @@ export function AgentChatPanel({
   canDistillSkill?: boolean
   /** Deep-link / Aktív futások: nyitáskor ezt a beszélgetést tölti be + reattach. */
   initialConversationId?: string | null
+  /** Növekvő jel: újboli megnyitáskor leveszi a tálcáról. */
+  restoreSignal?: number
 }) {
   const persona = personaFor(agent.name, agent)
+  const dockId = useId()
   const [input, setInput] = useState('')
   const [conversationId, setConversationId] = useState<string | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
@@ -746,6 +761,7 @@ export function AgentChatPanel({
   const streamConversationIdRef = useRef<string | null>(null)
   const activeTurnIdRef = useRef<string | null>(null)
   const [mounted, setMounted] = useState(false)
+  const [minimized, setMinimized] = useState(false)
   const [connectableUserConnectors, setConnectableUserConnectors] = useState<
     AgentDelegatedConnectorRow[]
   >([])
@@ -756,6 +772,101 @@ export function AgentChatPanel({
   useEffect(() => {
     activeTurnIdRef.current = activeTurnId
   }, [activeTurnId])
+
+  useEffect(() => {
+    // Bezáráskor a következő nyitás ne tálcán induljon.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (!open) setMinimized(false)
+  }, [open])
+
+  useEffect(() => {
+    if (restoreSignal <= 0) return
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setMinimized(false)
+  }, [restoreSignal])
+
+  useEffect(() => {
+    if (!open || !minimized) {
+      removeAgentChatDockEntry(dockId)
+      return
+    }
+    upsertAgentChatDockEntry({
+      id: dockId,
+      agentName: agent.name,
+      agentStatus: agent.status,
+      avatarUrl: agent.avatarUrl,
+      personaNickname: agent.personaNickname,
+      displayName: persona.nickname,
+      isTyping: isAgentTyping,
+      onRestore: () => setMinimized(false),
+      onClose,
+    })
+  }, [
+    open,
+    minimized,
+    dockId,
+    agent.name,
+    agent.status,
+    agent.avatarUrl,
+    agent.personaNickname,
+    persona.nickname,
+    isAgentTyping,
+    onClose,
+  ])
+
+  useEffect(() => {
+    return () => removeAgentChatDockEntry(dockId)
+  }, [dockId])
+
+  // Tool-körök alatt a POST SSE gyakran csak `activity` eseményeket küld; ha a
+  // proxy/runtime buffereli a streamet, a buborék üres + „…” marad, miközben a
+  // DB-ben már ott van az aktivitás. Periodikus active-turn poll zárja a rést.
+  useEffect(() => {
+    if (!isAgentTyping || !conversationId || !activeTurnId) return
+    let cancelled = false
+
+    const pullProgress = async () => {
+      try {
+        const res = await fetch(
+          `/api/v1/agent-chat/turns?conversationId=${encodeURIComponent(conversationId)}&active=1`,
+        )
+        if (!res.ok || cancelled) return
+        const data = (await res.json()) as {
+          active: boolean
+          turn: {
+            id: string
+            partialText?: string
+            activities?: unknown
+          } | null
+        }
+        if (!data.active || !data.turn || cancelled) return
+        const activities = Array.isArray(data.turn.activities)
+          ? (data.turn.activities as ChatTurnActivity[])
+          : []
+        const partialText = data.turn.partialText ?? ''
+        if (activities.length === 0 && !partialText) return
+        const agentMessageId = agentBubbleIdForTurn(data.turn.id)
+        flushSync(() => {
+          setMessages((prev) =>
+            mergeTurnProgressIntoMessages(prev, {
+              agentMessageId,
+              activities,
+              partialText,
+            }),
+          )
+        })
+      } catch {
+        // Hálózati / abort hiba: a következő tick újrapróbál.
+      }
+    }
+
+    void pullProgress()
+    const timer = window.setInterval(() => void pullProgress(), AGENT_TURN_RECONNECT_POLL_DEFAULT_MS)
+    return () => {
+      cancelled = true
+      window.clearInterval(timer)
+    }
+  }, [isAgentTyping, conversationId, activeTurnId])
 
   const markConversationRunning = useCallback((convId: string | null, running: boolean) => {
     if (!convId) return
@@ -910,11 +1021,12 @@ export function AgentChatPanel({
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent) {
-      if (e.key === 'Escape' && open) onClose()
+      if (e.key !== 'Escape' || !open || minimized) return
+      onClose()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [open, onClose])
+  }, [open, minimized, onClose])
 
   const resetComposer = () => {
     setInput('')
@@ -1339,7 +1451,7 @@ export function AgentChatPanel({
         setMessages((prev) => {
           const withoutOptimistic = prev.filter((m) => m.id !== agentMessageId)
           const last = withoutOptimistic[withoutOptimistic.length - 1]
-          if (last?.role === 'agent' && !last.text.trim() && (last.activities?.length ?? 0) === 0) {
+          if (last?.role === 'agent' && !last.text.trim() && !chatMessageShowsAgentActivity(last)) {
             return withoutOptimistic.map((m, i) =>
               i === withoutOptimistic.length - 1
                 ? {
@@ -1606,9 +1718,13 @@ export function AgentChatPanel({
             if (event.type === 'turn' && event.turnId) {
               const turnBubbleId = agentBubbleIdForTurn(event.turnId)
               setActiveTurnId(event.turnId)
-              setMessages((prev) =>
-                prev.map((m) => (m.id === agentBubbleMessageId ? { ...m, id: turnBubbleId } : m)),
-              )
+              // flushSync: a rákövetkező activity upsert már a turn-id-s buborékot
+              // találja meg, ne az optimistic id-t (ugyanabban a SSE chunkban).
+              flushSync(() => {
+                setMessages((prev) =>
+                  prev.map((m) => (m.id === agentBubbleMessageId ? { ...m, id: turnBubbleId } : m)),
+                )
+              })
               agentBubbleMessageId = turnBubbleId
             } else if (event.type === 'meta' && event.conversationId) {
               persistedUserMessageId = event.userMessageId
@@ -1869,19 +1985,26 @@ export function AgentChatPanel({
   if (!open || !mounted) return null
 
   return createPortal(
-    <div className="fixed inset-0 z-[200] flex items-end justify-center sm:items-center sm:p-3 lg:p-2">
+    <div
+      className={`fixed inset-0 z-[200] flex items-end justify-center sm:items-center sm:p-6 lg:p-4 ${
+        minimized ? 'pointer-events-none invisible' : ''
+      }`}
+      aria-hidden={minimized}
+      {...(minimized ? { inert: true } : {})}
+    >
       <button
         type="button"
         aria-label="Bezárás"
         className="absolute inset-0 bg-ink/40 backdrop-blur-sm"
         onClick={onClose}
+        tabIndex={minimized ? -1 : undefined}
       />
 
       <div
         role="dialog"
-        aria-modal="true"
+        aria-modal={!minimized}
         aria-labelledby="agent-chat-title"
-        className="relative z-[1] flex h-[100dvh] w-full flex-col overflow-hidden border border-line bg-card shadow-2xl sm:h-[min(calc(100dvh-1.5rem),calc(100vh-1.5rem))] sm:max-w-[min(calc(100vw-1.5rem),100rem)] sm:rounded-2xl lg:h-[min(calc(100dvh-1rem),calc(100vh-1rem))] lg:max-w-[min(calc(100vw-1rem),120rem)]"
+        className="relative z-[1] flex h-[100dvh] w-full flex-col overflow-hidden border border-line bg-card shadow-2xl sm:h-[min(calc(100dvh-3rem),calc(100vh-3rem))] sm:max-w-[min(calc(100vw-3rem),100rem)] sm:rounded-2xl lg:h-[min(calc(100dvh-2rem),calc(100vh-2rem))] lg:max-w-[min(calc(100vw-2rem),120rem)]"
       >
         <header className="flex shrink-0 items-center gap-3 border-b border-line px-4 py-3 sm:px-5">
           <button
@@ -1973,6 +2096,15 @@ export function AgentChatPanel({
           </div>
           <button
             type="button"
+            onClick={() => setMinimized(true)}
+            className="rounded-full p-2 text-ink-faint transition-colors hover:bg-night-2 hover:text-ink"
+            aria-label="Beszélgetés tálcára rakása"
+            title="Tálcára rakás"
+          >
+            −
+          </button>
+          <button
+            type="button"
             onClick={onClose}
             className="rounded-full p-2 text-ink-faint transition-colors hover:bg-night-2 hover:text-ink"
             aria-label="Beszélgetés bezárása"
@@ -2038,7 +2170,7 @@ export function AgentChatPanel({
                   ))}
                   {isAgentTyping &&
                     !messages[messages.length - 1]?.text &&
-                    !(messages[messages.length - 1]?.activities?.length) && (
+                    !chatMessageShowsAgentActivity(messages[messages.length - 1]) && (
                     <TypingIndicator agentName={persona.nickname} />
                   )}
                 </div>
@@ -2342,42 +2474,37 @@ export function AgentChatButton({
   initialConversationId?: string | null
   autoOpen?: boolean
 }) {
-  const [open, setOpen] = useState(autoOpen)
-
   useEffect(() => {
-    // Szándékos: az `autoOpen` prop igazra váltása nyissa ki a panelt, de a felhasználó utána
-    // manuálisan bezárhatja (ezért nem tisztán származtatott, hanem reteszelő állapot).
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    if (autoOpen) setOpen(true)
-  }, [autoOpen])
+    if (!autoOpen) return
+    openAgentChat({
+      agent,
+      canDistillSkill,
+      initialConversationId,
+    })
+    // Szándékos: autoOpen / deep-link változáskor nyissa (vagy hozza elő) a panelt.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoOpen, agent.id, initialConversationId, canDistillSkill])
 
   return (
-    <>
-      <button
-        type="button"
-        onClick={(e) => {
-          e.preventDefault()
-          e.stopPropagation()
-          setOpen(true)
-        }}
-        className={
-          className ||
-          (compact
-            ? 'rounded-full border border-line bg-card px-3 py-1.5 text-xs font-semibold text-ink-soft transition-colors hover:border-coral/40 hover:text-coral-deep'
-            : 'rounded-full bg-sage px-4 py-2 text-sm font-semibold text-card shadow-[0_8px_20px_-12px_rgba(93,138,79,0.7)] transition-transform hover:-translate-y-0.5')
-        }
-      >
-        💬 {compact ? 'Beszél' : 'Beszélgetés'}
-      </button>
-      {open && (
-        <AgentChatPanel
-          agent={agent}
-          open
-          onClose={() => setOpen(false)}
-          canDistillSkill={canDistillSkill}
-          initialConversationId={initialConversationId}
-        />
-      )}
-    </>
+    <button
+      type="button"
+      onClick={(e) => {
+        e.preventDefault()
+        e.stopPropagation()
+        openAgentChat({
+          agent,
+          canDistillSkill,
+          initialConversationId,
+        })
+      }}
+      className={
+        className ||
+        (compact
+          ? 'rounded-full border border-line bg-card px-3 py-1.5 text-xs font-semibold text-ink-soft transition-colors hover:border-coral/40 hover:text-coral-deep'
+          : 'rounded-full bg-sage px-4 py-2 text-sm font-semibold text-card shadow-[0_8px_20px_-12px_rgba(93,138,79,0.7)] transition-transform hover:-translate-y-0.5')
+      }
+    >
+      💬 {compact ? 'Beszél' : 'Beszélgetés'}
+    </button>
   )
 }

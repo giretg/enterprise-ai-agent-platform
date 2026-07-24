@@ -23,6 +23,10 @@ import nodePath from 'node:path'
 import { prisma } from '@/lib/db'
 import { loadPdfParse } from '@/lib/pdf-parse'
 import { buildTulajdoniLapView, parseTulajdoniLap } from '@/lib/tulajdoni-lap'
+import {
+  bufferLooksLikePdf,
+  pagesFromDocumentExtraction,
+} from '@/lib/tulajdoni-lap-pages'
 import { resolveTulajdoniLapParseSource } from '@/lib/tulajdoni-lap-source'
 import { FileEditorError } from '@/domain/file-editor/workspace-storage'
 import { personaFor } from '@/lib/agent-persona'
@@ -1614,10 +1618,11 @@ async function ticketReferencesDocument(ticketId: string, documentId: string): P
 
 /**
  * tulajdoni_lap_parse — magyar e-hiteles tulajdoni lap (TULLAP/INYER PDF)
- * strukturált kinyerése Document csatolmányból VAGY ticket/chat workspace PDF-ből.
+ * strukturált kinyerése. Document UUID (chat/board csatolmány) vagy workspace path.
  *
- * Document UUID → `canAccessDocument` (mint document_read).
- * Workspace path (vagy fájlnév documentId-ként) → workspace connector + FileEditor.
+ * Chat feltöltéskor az eredeti PDF bináris nincs eltárolva — a Document
+ * `metadata.extraction` / `extractedText` a forrás. Workspace ágon valódi PDF
+ * VAGY a materializált `.pdf.txt` markdown is megy.
  */
 export async function tulajdoniLapParse(
   self: ToolBrokerService,
@@ -1642,7 +1647,14 @@ export async function tulajdoniLapParse(
     const allowed = await canAccessDocument(self, input, doc, actingUserId)
     if (!allowed) throw new Error('document_access_denied')
 
-    pages = await readPdfPageTextsFromStorageRef(doc.storageRef)
+    pages = pagesFromDocumentExtraction(doc.metadata, doc.extractedText)
+    if (pages.length === 0) {
+      // Régi / kézi feltöltés: ha van még fájl a storageRef-en (PDF vagy markdown).
+      pages = await readPagesFromStorageRef(doc.storageRef)
+    }
+    if (pages.length === 0) {
+      throw new Error('document_extraction_unavailable')
+    }
     filename = doc.filename
     documentId = doc.id
   } else {
@@ -1671,7 +1683,10 @@ export async function tulajdoniLapParse(
       }
       throw error
     }
-    pages = await readPdfPageTextsFromBuffer(buffer)
+    pages = await readPagesFromBuffer(buffer)
+    if (pages.length === 0) {
+      throw new Error('tulajdoni_lap_parse: üres vagy nem értelmezhető forrás')
+    }
     filename = source.path.split('/').filter(Boolean).pop() ?? source.path
     path = source.path
   }
@@ -1689,9 +1704,10 @@ export async function tulajdoniLapParse(
 }
 
 /**
- * A feltöltött PDF oldalankénti nyers szövege (Document storageRef → uploads/).
+ * Document storageRef → oldalak. Chat feltöltéskor ez gyakran markdown
+ * (extractedText), nem PDF — mindkettőt kezeljük.
  */
-async function readPdfPageTextsFromStorageRef(storageRef: string): Promise<string[]> {
+async function readPagesFromStorageRef(storageRef: string): Promise<string[]> {
   const absolutePath = nodePath.resolve(process.cwd(), storageRef)
   const uploadRoot = nodePath.resolve(process.cwd(), 'uploads')
   const uploadRootPrefix = uploadRoot.endsWith(nodePath.sep)
@@ -1709,7 +1725,15 @@ async function readPdfPageTextsFromStorageRef(storageRef: string): Promise<strin
     throw new Error('document_file_unavailable')
   }
 
-  return readPdfPageTextsFromBuffer(buffer)
+  return readPagesFromBuffer(buffer)
+}
+
+async function readPagesFromBuffer(buffer: Buffer): Promise<string[]> {
+  if (bufferLooksLikePdf(buffer)) {
+    return readPdfPageTextsFromBuffer(buffer)
+  }
+  // Workspace `.pdf.txt` / storageRef markdown (chat csatolmány).
+  return pagesFromDocumentExtraction(null, buffer.toString('utf8'))
 }
 
 async function readPdfPageTextsFromBuffer(buffer: Buffer): Promise<string[]> {

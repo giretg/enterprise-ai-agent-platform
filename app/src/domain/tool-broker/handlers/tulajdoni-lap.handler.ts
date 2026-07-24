@@ -2,7 +2,8 @@ import type { ToolHandler, ToolHandlerArgs } from './tool-handler'
 
 /**
  * tulajdoni_lap_parse — magyar e-hiteles tulajdoni lap (TULLAP/INYER PDF)
- * strukturált kinyerése. Document UUID vagy workspace path; a tartalom a
+ * strukturált kinyerése. Document UUID (extraction / extractedText) vagy
+ * workspace path (PDF bináris vagy materializált `.pdf.txt`); a tartalom a
  * `tulajdoniLapParse` delegációban él.
  */
 export const tulajdoniLapHandler: ToolHandler = {

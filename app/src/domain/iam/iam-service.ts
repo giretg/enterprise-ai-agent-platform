@@ -183,12 +183,14 @@ export class IamService {
     }
 
     const name = params.name?.trim() || params.user.name
+    const now = new Date()
     const user = await this.users.update(params.user.id, {
       externalAuthId: params.externalAuthId,
       name,
       email: params.user.email,
       status: 'active',
-      activatedAt: new Date(),
+      activatedAt: now,
+      lastLoginAt: now,
     })
 
     await this.activatePendingMemberships(user.id)
@@ -234,11 +236,13 @@ export class IamService {
       return params.user
     }
 
+    const now = new Date()
     const user = await this.users.update(params.user.id, {
       ...(params.externalAuthId ? { externalAuthId: params.externalAuthId } : {}),
       ...(params.name?.trim() ? { name: params.name.trim() } : {}),
       status: 'active',
-      activatedAt: new Date(),
+      activatedAt: now,
+      lastLoginAt: now,
     })
 
     await this.activatePendingMemberships(user.id)

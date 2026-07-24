@@ -54,6 +54,15 @@ function userStatusTone(status: UserStatus): 'neutral' | 'success' | 'warning' |
   return 'warning'
 }
 
+function isAwaitingFirstLogin(user: User): boolean {
+  return user.status === 'pending' && user.role !== null && isPreProvisionedAuthId(user.externalAuthId)
+}
+
+/** Első auth-claim megtörtént (nem pre-provisioned externalAuthId). */
+function hasCompletedFirstLogin(user: User): boolean {
+  return !isPreProvisionedAuthId(user.externalAuthId)
+}
+
 export function IamAdminPanel({
   users,
   invitations,
@@ -80,27 +89,43 @@ export function IamAdminPanel({
     [invitations],
   )
 
+  const sortedUsers = useMemo(() => {
+    return [...users].sort((a, b) => {
+      const rank = (user: User) => {
+        if (isAwaitingFirstLogin(user)) return 0
+        if (user.status === 'pending' && user.role === null) return 1
+        if (user.status === 'pending') return 2
+        if (user.status === 'suspended') return 3
+        return 4
+      }
+      const delta = rank(a) - rank(b)
+      if (delta !== 0) return delta
+      return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    })
+  }, [users])
+
   return (
     <div className="space-y-6">
       <div className="grid gap-6 lg:grid-cols-[minmax(0,1.4fr)_minmax(320px,0.8fr)]">
         <Card title="Felhasználók">
-          {users.length === 0 ? (
+          {sortedUsers.length === 0 ? (
             <p className="text-sm text-ink-faint">Nincs felhasználó.</p>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[760px] text-left text-sm">
+              <table className="w-full min-w-[820px] text-left text-sm">
                 <thead className="border-b border-line text-xs uppercase tracking-[0.14em] text-ink-faint">
                   <tr>
                     <th className="pb-3 font-semibold">Név</th>
                     <th className="pb-3 font-semibold">Email</th>
-                    <th className="pb-3 font-semibold">Szerep leírás</th>
-                    <th className="pb-3 font-semibold">Szerep</th>
+                    <th className="pb-3 font-semibold">Belépés</th>
                     <th className="pb-3 font-semibold">Státusz</th>
+                    <th className="pb-3 font-semibold">Szerep</th>
+                    <th className="pb-3 font-semibold">Szerep leírás</th>
                     <th className="pb-3 font-semibold">Létrehozva</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-line">
-                  {users.map((user) => (
+                  {sortedUsers.map((user) => (
                     <UserRow
                       key={`${user.id}-${new Date(user.updatedAt).getTime()}`}
                       user={user}
@@ -116,8 +141,9 @@ export function IamAdminPanel({
         <div className="space-y-6">
           <Card title="Felhasználó előkészítése">
             <p className="mb-3 text-xs text-ink-faint">
-              Email + szerep, meghívó email nélkül. Az első Google/Clerk belépéskor az email alapján
-              automatikusan aktiválódik.
+              Email + szerep, meghívó email nélkül. Az előkészített felhasználó azonnal megjelenik a
+              listában „Nem lépett be” státusszal; az első Google/Clerk belépéskor automatikusan
+              aktiválódik.
             </p>
             <div className="space-y-3">
               <label className="block text-sm text-ink-soft">
@@ -342,9 +368,10 @@ function UserRow({ user, disabled }: { user: User; disabled: boolean }) {
   const [message, setMessage] = useState<string | null>(null)
   const isDisabled = disabled || pending
   const isPendingApproval = user.status === 'pending' && user.role === null
-  const isAwaitingFirstLogin =
-    user.status === 'pending' && user.role !== null && isPreProvisionedAuthId(user.externalAuthId)
+  const awaitingFirstLogin = isAwaitingFirstLogin(user)
+  const loggedIn = hasCompletedFirstLogin(user)
   const jobDescriptionDirty = jobDescription.trim() !== (user.jobDescription ?? '').trim()
+  const loginAt = user.lastLoginAt ?? user.activatedAt
 
   return (
     <tr className="align-top">
@@ -355,81 +382,19 @@ function UserRow({ user, disabled }: { user: User; disabled: boolean }) {
       </td>
       <td className="py-3 pr-4 text-ink-soft">{user.email}</td>
       <td className="py-3 pr-4">
-        <div className="flex items-start gap-2">
-          <textarea
-            value={jobDescription}
-            disabled={isDisabled}
-            onChange={(event) => setJobDescription(event.target.value)}
-            rows={2}
-            maxLength={280}
-            placeholder="pl. marketing vezető"
-            className="w-48 rounded-lg border border-line bg-night-2 px-2 py-1.5 text-xs"
-          />
-          <button
-            type="button"
-            disabled={isDisabled || !jobDescriptionDirty}
-            className="rounded-full bg-sky/15 px-3 py-1.5 text-xs font-semibold text-sky disabled:opacity-50"
-            onClick={() => {
-              startTransition(async () => {
-                const result = await setUserJobDescription({
-                  targetUserId: user.id,
-                  jobDescription: jobDescription.trim() || null,
-                })
-                if (result.success) {
-                  setMessage(null)
-                  router.refresh()
-                } else {
-                  setMessage(result.error)
-                  setJobDescription(user.jobDescription ?? '')
-                }
-              })
-            }}
-          >
-            Mentés
-          </button>
-        </div>
-      </td>
-      <td className="py-3 pr-4">
-        <div className="flex items-center gap-2">
-          <select
-            value={role}
-            disabled={isDisabled}
-            onChange={(event) => setRole(event.target.value as UserRole)}
-            className="rounded-lg border border-line bg-night-2 px-2 py-1.5 text-sm"
-          >
-            {ROLES.map((option) => (
-              <option key={option} value={option}>
-                {roleLabel[option]}
-              </option>
-            ))}
-          </select>
-          <button
-            type="button"
-            disabled={isDisabled || (!isPendingApproval && role === user.role)}
-            className="rounded-full bg-sky/15 px-3 py-1.5 text-xs font-semibold text-sky disabled:opacity-50"
-            onClick={() => {
-              startTransition(async () => {
-                const result = isPendingApproval
-                  ? await approveUser({ targetUserId: user.id, role })
-                  : await changeUserRole({ targetUserId: user.id, newRole: role })
-                if (result.success) {
-                  setMessage(null)
-                  router.refresh()
-                } else {
-                  setMessage(result.error)
-                  setRole(user.role ?? 'viewer')
-                }
-              })
-            }}
-          >
-            {isPendingApproval ? 'Jóváhagyás' : 'Mentés'}
-          </button>
+        <div className="flex flex-col gap-1">
+          <Badge tone={loggedIn ? 'success' : 'warning'}>
+            {loggedIn ? 'Belépett' : 'Nem lépett be'}
+          </Badge>
+          {loggedIn && loginAt ? (
+            <p className="text-[11px] text-ink-faint">{formatDate(loginAt)}</p>
+          ) : null}
         </div>
       </td>
       <td className="py-3 pr-4">
         <div className="flex flex-col gap-2">
           <Badge tone={userStatusTone(user.status)}>
-            {isAwaitingFirstLogin ? 'Vár első belépésre' : statusLabel[user.status]}
+            {awaitingFirstLogin ? 'Vár első belépésre' : statusLabel[user.status]}
           </Badge>
           {user.status === 'active' && (
             <div className="flex items-center gap-2">
@@ -481,6 +446,78 @@ function UserRow({ user, disabled }: { user: User; disabled: boolean }) {
               Visszaállítás
             </button>
           )}
+        </div>
+      </td>
+      <td className="py-3 pr-4">
+        <div className="flex items-center gap-2">
+          <select
+            value={role}
+            disabled={isDisabled}
+            onChange={(event) => setRole(event.target.value as UserRole)}
+            className="rounded-lg border border-line bg-night-2 px-2 py-1.5 text-sm"
+          >
+            {ROLES.map((option) => (
+              <option key={option} value={option}>
+                {roleLabel[option]}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            disabled={isDisabled || (!isPendingApproval && role === user.role)}
+            className="rounded-full bg-sky/15 px-3 py-1.5 text-xs font-semibold text-sky disabled:opacity-50"
+            onClick={() => {
+              startTransition(async () => {
+                const result = isPendingApproval
+                  ? await approveUser({ targetUserId: user.id, role })
+                  : await changeUserRole({ targetUserId: user.id, newRole: role })
+                if (result.success) {
+                  setMessage(null)
+                  router.refresh()
+                } else {
+                  setMessage(result.error)
+                  setRole(user.role ?? 'viewer')
+                }
+              })
+            }}
+          >
+            {isPendingApproval ? 'Jóváhagyás' : 'Mentés'}
+          </button>
+        </div>
+      </td>
+      <td className="py-3 pr-4">
+        <div className="flex items-start gap-2">
+          <textarea
+            value={jobDescription}
+            disabled={isDisabled}
+            onChange={(event) => setJobDescription(event.target.value)}
+            rows={2}
+            maxLength={280}
+            placeholder="pl. marketing vezető"
+            className="w-48 rounded-lg border border-line bg-night-2 px-2 py-1.5 text-xs"
+          />
+          <button
+            type="button"
+            disabled={isDisabled || !jobDescriptionDirty}
+            className="rounded-full bg-sky/15 px-3 py-1.5 text-xs font-semibold text-sky disabled:opacity-50"
+            onClick={() => {
+              startTransition(async () => {
+                const result = await setUserJobDescription({
+                  targetUserId: user.id,
+                  jobDescription: jobDescription.trim() || null,
+                })
+                if (result.success) {
+                  setMessage(null)
+                  router.refresh()
+                } else {
+                  setMessage(result.error)
+                  setJobDescription(user.jobDescription ?? '')
+                }
+              })
+            }}
+          >
+            Mentés
+          </button>
         </div>
       </td>
       <td className="py-3 text-ink-faint">{formatDate(user.createdAt)}</td>

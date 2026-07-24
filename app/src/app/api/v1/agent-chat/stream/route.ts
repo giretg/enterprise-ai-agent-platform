@@ -2,6 +2,7 @@ import { after } from 'next/server'
 import { services } from '@/domain'
 import { agentTurnRunner, type AgentChatStreamEvent } from '@/domain/agent/agent-turn-runner'
 import { requireTenantApiUser } from '@/lib/api-tenant-auth'
+import { startSseCommentHeartbeat } from '@/lib/sse-comment-heartbeat'
 
 // SSE: dinamikus, Node runtime, ne bufferelődjön / cache-elődjön a stream.
 export const dynamic = 'force-dynamic'
@@ -119,6 +120,8 @@ export async function POST(request: Request) {
         return isTerminalEvent(event)
       }
 
+      const heartbeat = startSseCommentHeartbeat(controller, encoder)
+
       try {
         if (firstError) throw firstError
         if (first && !first.done && emit(first.value)) return
@@ -133,6 +136,7 @@ export async function POST(request: Request) {
           controller.enqueue(sseEvent({ type: 'error', message }))
         }
       } finally {
+        clearInterval(heartbeat)
         try {
           controller.close()
         } catch {

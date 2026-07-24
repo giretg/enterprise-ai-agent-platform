@@ -5,6 +5,7 @@ import {
 } from '@/domain/agent/agent-turn-reconnect'
 import { requireTenantApiUser } from '@/lib/api-tenant-auth'
 import { isAgentTurnAccessible } from '@/lib/agent-turn-access'
+import { startSseCommentHeartbeat } from '@/lib/sse-comment-heartbeat'
 import { repositories } from '@/repositories/postgres'
 
 export const dynamic = 'force-dynamic'
@@ -42,6 +43,7 @@ export async function GET(
 
   const stream = new ReadableStream({
     async start(controller) {
+      const heartbeat = startSseCommentHeartbeat(controller, encoder)
       try {
         const events = streamTurnReconnect(turn, {
           findById: (id) => repositories.agentTurns.findById(id),
@@ -60,6 +62,7 @@ export async function GET(
           controller.enqueue(sseEncode(encoder, errorEvent))
         }
       } finally {
+        clearInterval(heartbeat)
         try {
           controller.close()
         } catch {
