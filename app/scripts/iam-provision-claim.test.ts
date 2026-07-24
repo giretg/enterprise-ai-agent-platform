@@ -39,8 +39,8 @@ type StoredMembership = {
 }
 
 function fixture(seedUsers: StoredUser[] = []) {
-  let users = [...seedUsers]
-  let memberships: StoredMembership[] = []
+  const users = [...seedUsers]
+  const memberships: StoredMembership[] = []
   const auditEvents: Array<{ action: string; policyDecision?: string | null }> = []
   let userSeq = 0
   let membershipSeq = 0

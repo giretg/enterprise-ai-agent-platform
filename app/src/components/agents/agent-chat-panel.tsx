@@ -1417,6 +1417,9 @@ export function AgentChatPanel({
   // Deep-link: panel nyitáskor betölti az initialConversationId-t és reattach-el.
   useEffect(() => {
     if (!open || !initialConversationId) return
+    // Szándékos: nyitáskor aszinkron beszélgetés-betöltést indítunk (a setState a fetch UTÁN
+    // fut, nem szinkron az effekt törzsében) — a deep-link-nyitás nem fejezhető ki render alatt.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     void selectSession(initialConversationId)
     // Csak nyitáskor / initialConversationId változáskor.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2345,6 +2348,9 @@ export function AgentChatButton({
   const [open, setOpen] = useState(autoOpen)
 
   useEffect(() => {
+    // Szándékos: az `autoOpen` prop igazra váltása nyissa ki a panelt, de a felhasználó utána
+    // manuálisan bezárhatja (ezért nem tisztán származtatott, hanem reteszelő állapot).
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (autoOpen) setOpen(true)
   }, [autoOpen])
 
