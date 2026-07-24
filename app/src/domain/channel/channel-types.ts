@@ -42,7 +42,22 @@ export const CHANNEL_AUDIT_ACTIONS = {
   // kerülése (megbízható, újrapróbálható út) és az agent-engedély nélküli útmutató válasz.
   turnEnqueued: 'channel.turn.enqueued',
   turnNoAgent: 'channel.turn.no_agent',
+  // Üzemeltetés (#78, D4): a bot saját kimenő üzeneteinek megőrzési takarítása.
+  messagePurged: 'channel.message.purged',
+  retentionSwept: 'channel.retention.swept',
 } as const
+
+/**
+ * A bot SAJÁT kimenő üzeneteinek megőrzési horizontja napokban (D4/#78). A hiteles példány a
+ * miénk; a Telegram csak kézbesítési csatorna, ezért a bot a horizonton túl törli a saját
+ * kimenő üzeneteit. Alapérték; a takarító hívása felül tudja írni (pl. szervezeti policy).
+ * (A privát chat korlátja: a bot CSAK a magáét tudja törölni — a felhasználóét nem, ez
+ * tudatosan félmegoldás.)
+ */
+export const CHANNEL_OUTBOUND_RETENTION_DAYS = 30
+
+/** Egy megőrzési-takarító futás felső korlátja (egy körben ennyi üzenetet dolgoz fel). */
+export const CHANNEL_RETENTION_SWEEP_LIMIT = 500
 
 /**
  * A platform-oldali felhasználói értesítés típusa az összekötésről (D12 story 3) — ha nem a

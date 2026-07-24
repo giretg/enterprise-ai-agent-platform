@@ -12,6 +12,8 @@ import {
   PostgresChannelBotRepository,
   PostgresChannelIdentityRepository,
   PostgresChannelLinkTokenRepository,
+  PostgresChannelMetricsRepository,
+  PostgresChannelOutboundMessageRepository,
   PostgresChannelSessionRepository,
   PostgresChannelTurnRepository,
 } from './channel-repository'
@@ -91,6 +93,8 @@ export const repositories = {
   channelTurns: new PostgresChannelTurnRepository(),
   channelAgentGrants: new PostgresChannelAgentGrantRepository(),
   channelLinkTokens: new PostgresChannelLinkTokenRepository(),
+  channelOutboundMessages: new PostgresChannelOutboundMessageRepository(),
+  channelMetrics: new PostgresChannelMetricsRepository(),
   userNotifications: new PostgresUserNotificationRepository(),
   connectorGrants: new PostgresConnectorGrantRepository(),
   connectors: new PostgresConnectorRepository(),

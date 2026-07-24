@@ -379,6 +379,10 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   // kerülése (megbízható, újrapróbálható út) és az agent-engedély nélküli útmutató válasz.
   'channel.turn.enqueued',
   'channel.turn.no_agent',
+  // Üzemeltetés (#78, D4): a bot SAJÁT kimenő üzeneteinek megőrzési takarítása. Az
+  // azonosítók ÁLNEVESÍTVE (kereső-hash prefix / szál-pszeudonim), nyers tartalom sosem.
+  'channel.message.purged',
+  'channel.retention.swept',
 
   // Platform / DB mode
   'database.mode_changed',

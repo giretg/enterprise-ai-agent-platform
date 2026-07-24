@@ -12,6 +12,7 @@ import type {
   ChannelTurn,
   ChannelAgentGrant,
   ChannelLinkToken,
+  ChannelOutboundMessage,
   UserNotification,
   AuditLog,
   Connector,
@@ -2337,4 +2338,41 @@ export interface UserNotificationRepository {
   create(input: CreateUserNotificationInput): Promise<UserNotification>
   listForUser(userId: string, limit?: number): Promise<UserNotification[]>
   markRead(id: string, userId: string, now: Date): Promise<UserNotification | null>
+}
+
+/**
+ * A bot SAJÁT kimenő üzeneteinek nyilvántartása a megőrzési takarításhoz (Telegram
+ * feature-spec #70/#78, D4). CSAK a bot által küldött üzenetek `providerMessageId`-ját
+ * tartja (nyers tartalom NÉLKÜL) — privát chatben a bot csak a magáét tudja törölni.
+ */
+export type RecordChannelOutboundInput = {
+  sessionId: string
+  channelType: ChannelType
+  externalThreadId: string
+  providerMessageId: string
+  kind?: string | null
+  sentAt?: Date
+}
+
+export interface ChannelOutboundMessageRepository {
+  /** Egy elküldött bot-üzenet rögzítése (a `providerMessageId` a későbbi `deleteMessage`-hez). */
+  record(input: RecordChannelOutboundInput): Promise<ChannelOutboundMessage>
+  /**
+   * A megőrzési horizonton túli, még NEM takarított kimenő üzenetek (sentAt < cutoff,
+   * purgedAt IS NULL), a legrégebbitől, legfeljebb `limit` darab.
+   */
+  listExpired(cutoff: Date, limit: number): Promise<ChannelOutboundMessage[]>
+  /** Takarítottnak jelöli az üzenetet (idempotens — a `deleteMessage` után vagy ha már nincs meg). */
+  markPurged(id: string, purgedAt: Date): Promise<void>
+}
+
+/**
+ * A csatorna-táblák állapot-olvasásai az üzemeltetői metrikákhoz (Telegram feature-spec
+ * #70/#78, story 59). CSAK aggregáló olvasások — nyers külső azonosítót nem adnak vissza.
+ */
+export interface ChannelMetricsRepository {
+  countTurnsByStatus(since?: Date): Promise<Record<string, number>>
+  countSessions(): Promise<{ total: number; linked: number }>
+  countIdentitiesByStatus(): Promise<Record<string, number>>
+  countPendingOutbound(): Promise<{ pending: number; oldestSentAt: Date | null }>
 }

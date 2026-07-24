@@ -4,6 +4,7 @@ import type {
   ChannelIdentity,
   ChannelIdentityStatus,
   ChannelLinkToken,
+  ChannelOutboundMessage,
   ChannelSession,
   ChannelTurn,
   ChannelType,
@@ -14,12 +15,15 @@ import type {
   ChannelBotRepository,
   ChannelIdentityRepository,
   ChannelLinkTokenRepository,
+  ChannelMetricsRepository,
+  ChannelOutboundMessageRepository,
   ChannelSessionRepository,
   ChannelSessionUpdate,
   ChannelTurnRepository,
   CreateChannelBotInput,
   CreateChannelIdentityInput,
   CreateChannelLinkTokenInput,
+  RecordChannelOutboundInput,
   UpdateChannelBotInput,
 } from '../interfaces'
 
@@ -218,6 +222,41 @@ export class PostgresChannelLinkTokenRepository implements ChannelLinkTokenRepos
 }
 
 /**
+ * A bot SAJÁT kimenő üzeneteinek tára a megőrzési takarításhoz (Telegram feature-spec
+ * #70/#78, D4). Csak a `providerMessageId`-t és a törléshez kellő szál-azonosítót tartja —
+ * nyers üzenettartalmat SOHA. A takarító a `listExpired`-del olvassa a horizonton túli,
+ * még nem takarított sorokat, majd `markPurged`-del idempotensen lezárja őket.
+ */
+export class PostgresChannelOutboundMessageRepository
+  implements ChannelOutboundMessageRepository
+{
+  async record(input: RecordChannelOutboundInput): Promise<ChannelOutboundMessage> {
+    return prisma.channelOutboundMessage.create({
+      data: {
+        sessionId: input.sessionId,
+        channelType: input.channelType,
+        externalThreadId: input.externalThreadId,
+        providerMessageId: input.providerMessageId,
+        kind: input.kind ?? null,
+        ...(input.sentAt ? { sentAt: input.sentAt } : {}),
+      },
+    })
+  }
+
+  async listExpired(cutoff: Date, limit: number): Promise<ChannelOutboundMessage[]> {
+    return prisma.channelOutboundMessage.findMany({
+      where: { purgedAt: null, sentAt: { lt: cutoff } },
+      orderBy: { sentAt: 'asc' },
+      take: limit,
+    })
+  }
+
+  async markPurged(id: string, purgedAt: Date): Promise<void> {
+    await prisma.channelOutboundMessage.update({ where: { id }, data: { purgedAt } })
+  }
+}
+
+/**
  * Csatorna-forduló sor tár (Telegram feature-spec #70/#73, D8/D14) — a worker MÁSODIK
  * munkatípusának perzisztens sora. A `claimNextQueued` atomi `FOR UPDATE SKIP LOCKED`
  * kivétellel biztosítja, hogy egyidejű workerek NE kapják ugyanazt a fordulót, és a forduló
@@ -284,6 +323,53 @@ export class PostgresChannelTurnRepository implements ChannelTurnRepository {
       RETURNING id
     `
     return rows.length
+  }
+}
+
+/**
+ * A csatorna-táblák állapot-olvasásai az üzemeltetői metrikákhoz (Telegram feature-spec
+ * #70/#78, story 59). CSAK aggregáló `groupBy`/`count` — nyers külső azonosítót nem ad vissza.
+ */
+export class PostgresChannelMetricsRepository implements ChannelMetricsRepository {
+  async countTurnsByStatus(since?: Date): Promise<Record<string, number>> {
+    const rows = await prisma.channelTurn.groupBy({
+      by: ['status'],
+      _count: { _all: true },
+      ...(since ? { where: { createdAt: { gte: since } } } : {}),
+    })
+    const out: Record<string, number> = {}
+    for (const r of rows) out[r.status] = r._count._all
+    return out
+  }
+
+  async countSessions(): Promise<{ total: number; linked: number }> {
+    const [total, linked] = await Promise.all([
+      prisma.channelSession.count(),
+      prisma.channelSession.count({ where: { identityId: { not: null } } }),
+    ])
+    return { total, linked }
+  }
+
+  async countIdentitiesByStatus(): Promise<Record<string, number>> {
+    const rows = await prisma.channelIdentity.groupBy({
+      by: ['status'],
+      _count: { _all: true },
+    })
+    const out: Record<string, number> = {}
+    for (const r of rows) out[r.status] = r._count._all
+    return out
+  }
+
+  async countPendingOutbound(): Promise<{ pending: number; oldestSentAt: Date | null }> {
+    const [pending, oldest] = await Promise.all([
+      prisma.channelOutboundMessage.count({ where: { purgedAt: null } }),
+      prisma.channelOutboundMessage.findFirst({
+        where: { purgedAt: null },
+        orderBy: { sentAt: 'asc' },
+        select: { sentAt: true },
+      }),
+    ])
+    return { pending, oldestSentAt: oldest?.sentAt ?? null }
   }
 }
 

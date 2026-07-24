@@ -87,6 +87,8 @@ jobs:
           npm run test:file-search-safe
           npm run test:channel-linking
           npm run test:channel-turn
+          npm run test:channel-metrics
+          npm run test:channel-retention
 
   migrations:
     name: Prisma migrate deploy (ephemeral Postgres)

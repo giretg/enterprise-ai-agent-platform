@@ -46,6 +46,8 @@ import { SkillService } from '@/domain/skill/skill-service'
 import { ConversationService } from '@/domain/conversation/conversation-service'
 import { ChannelBotService } from '@/domain/channel/channel-bot-service'
 import { ChannelLinkingService } from '@/domain/channel/channel-linking-service'
+import { ChannelMetricsService } from '@/domain/channel/channel-metrics-service'
+import { ChannelRetentionService } from '@/domain/channel/channel-retention-service'
 import { ChannelTurnService } from '@/domain/channel/channel-turn-service'
 import { TelegramOutboundTransport } from '@/domain/channel/channel-outbound-transport'
 import { notifyChannelTurnReady } from '@/lib/channel-notify'
@@ -195,8 +197,8 @@ const channelBotService = new ChannelBotService({
 // fel; a deep-link a platform-bot Telegram-felhasználónevéből épül (env). A platform-oldali
 // értesítés a `user_notifications` sorba kerül (D12 story 3).
 const telegramBotUsername = process.env.TELEGRAM_BOT_USERNAME?.trim() || 'YourPlatformBot'
-// A kimenő átvitel (D11) EGYETLEN példány — a linking-varrat és a worker-varrat is ezen küld,
-// hogy ne legyen második, dublőrözhetetlen kijárat a Telegram felé.
+// A kimenő átvitel (D11) EGYETLEN példány — a linking-varrat, a worker-varrat ÉS a megőrzési
+// takarítás is ezen küld, hogy ne legyen második, dublőrözhetetlen kijárat a Telegram felé.
 const telegramOutboundTransport = new TelegramOutboundTransport({
   resolveBotToken: async () => {
     const bot = await repositories.channelBots.findPlatformBot('telegram')
@@ -213,6 +215,8 @@ const channelLinkingService = new ChannelLinkingService({
   turns: repositories.channelTurns,
   onTurnEnqueued: notifyChannelTurnReady,
   transport: telegramOutboundTransport,
+  // A bot saját kimenő üzeneteit rögzítjük a megőrzési takarításhoz (D4/#78).
+  outboundLog: repositories.channelOutboundMessages,
   audit: repositories.audit,
   notifier: {
     async linkEstablished({ userId, tenantId, orgName, channelType }) {
@@ -244,6 +248,18 @@ const channelTurnService = new ChannelTurnService({
   sessions: repositories.channelSessions,
   identities: repositories.channelIdentities,
   grants: repositories.channelAgentGrants,
+  transport: telegramOutboundTransport,
+  audit: repositories.audit,
+})
+// Üzemeltetői metrikák (#78, story 59) — az audit-láncból és a csatorna-táblák állapotából.
+const channelMetricsService = new ChannelMetricsService({
+  audit: repositories.audit,
+  metrics: repositories.channelMetrics,
+  bots: repositories.channelBots,
+})
+// A bot saját kimenő üzeneteinek megőrzési takarítása (#78, D4) — a közös kimenő átvitelen.
+const channelRetentionService = new ChannelRetentionService({
+  outbound: repositories.channelOutboundMessages,
   transport: telegramOutboundTransport,
   audit: repositories.audit,
 })
@@ -848,6 +864,8 @@ export const services = {
   channelBots: channelBotService,
   channelLinking: channelLinkingService,
   channelTurns: channelTurnService,
+  channelMetrics: channelMetricsService,
+  channelRetention: channelRetentionService,
   iam: iamService,
   tenants: tenantService,
   provisioning: provisioningService,

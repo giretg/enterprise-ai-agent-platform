@@ -26,6 +26,7 @@ import type {
   ChannelBotRepository,
   ChannelIdentityRepository,
   ChannelLinkTokenRepository,
+  ChannelOutboundMessageRepository,
   ChannelSessionRepository,
   ChannelTurnRepository,
 } from '@/repositories/interfaces'
@@ -107,6 +108,12 @@ export type ChannelLinkingDeps = {
   transport: ChannelOutboundTransport
   audit: Pick<AuditRepository, 'append'>
   notifier: ChannelLinkNotifier
+  /**
+   * A bot SAJÁT kimenő üzeneteinek nyilvántartása a megőrzési takarításhoz (D4/#78).
+   * OPCIONÁLIS: ha meg van adva, minden sikeresen kiment bot-üzenet `providerMessageId`-ja
+   * rögzül, hogy a takarító a horizonton törölhesse. Ha nincs megadva, a küldés változatlan.
+   */
+  outboundLog?: Pick<ChannelOutboundMessageRepository, 'record'>
   /** A kötéskor rögzített szervezet megnevezése a Telegram-visszaigazoláshoz (D2). */
   resolveOrgName: (tenantId: string | null) => Promise<string | null>
   /** A bot webhook titkos fejlécének feloldása (referenciából) — konstans idejű vetéshez. */
@@ -361,7 +368,7 @@ export class ChannelLinkingService {
       return { handled: true, outcome: 'unlinked_silenced' }
     }
 
-    await this.sendToThread(input.bot, input.channelType, input.sessionId, UNLINKED_NEUTRAL_TEXT)
+    await this.sendToThread(input.bot, input.channelType, input.sessionId, UNLINKED_NEUTRAL_TEXT, 'unlinked_notice')
     await this.deps.sessions.update(input.sessionId, { unlinkedNoticeAt: input.now })
 
     await this.deps.audit.append({
@@ -392,7 +399,7 @@ export class ChannelLinkingService {
     const reject = async (
       reason: NonNullable<HandleInboundResult['rejectReason']>,
     ): Promise<HandleInboundResult> => {
-      await this.sendToThread(input.bot, input.channelType, input.sessionId, LINK_REJECTED_TEXT)
+      await this.sendToThread(input.bot, input.channelType, input.sessionId, LINK_REJECTED_TEXT, 'link_rejected')
       await this.deps.audit.append({
         actorType: 'system',
         actorId: null,
@@ -481,7 +488,7 @@ export class ChannelLinkingService {
     })
 
     const orgName = await this.deps.resolveOrgName(tenantId)
-    await this.sendToThread(input.bot, input.channelType, input.sessionId, linkEstablishedText(orgName))
+    await this.sendToThread(input.bot, input.channelType, input.sessionId, linkEstablishedText(orgName), 'link_established')
 
     // A kettős-koppintás idempotens ága NEM ír új értesítést és NEM ismétli az audit-established-et
     // — a kötés már megvolt, csak a visszaigazolást küldjük újra.
@@ -524,14 +531,27 @@ export class ChannelLinkingService {
     channelType: ChannelType,
     sessionId: string,
     text: string,
+    kind: string,
   ): Promise<void> {
     const session = await this.deps.sessions.findById(sessionId)
     if (!session) return
-    await this.deps.transport.send({
+    const result = await this.deps.transport.send({
       channelType,
       method: 'sendMessage',
       payload: { chat_id: session.externalThreadId, text },
     })
+    // A bot SAJÁT kimenő üzenetének rögzítése a megőrzési takarításhoz (D4/#78). Csak sikeres,
+    // provider-azonosítóval bíró küldést tartunk nyilván — azt lehet később törölni.
+    if (result.ok && result.providerMessageId && this.deps.outboundLog) {
+      await this.deps.outboundLog.record({
+        sessionId: session.id,
+        channelType,
+        externalThreadId: session.externalThreadId,
+        providerMessageId: result.providerMessageId,
+        kind,
+        sentAt: this.now(),
+      })
+    }
   }
 
   // ── 3. bejárat: visszavonás (saját + admin) ─────────────────────────────────
