@@ -38,6 +38,10 @@ export const CHANNEL_AUDIT_ACTIONS = {
   linkRejected: 'channel.link.rejected',
   identityRevoked: 'channel.identity.revoked',
   unlinkedNotice: 'channel.link.unlinked_notice',
+  // Bejövő forduló-sor + worker második munkatípus (#73, D8): a bekötött üzenet sorba
+  // kerülése (megbízható, újrapróbálható út) és az agent-engedély nélküli útmutató válasz.
+  turnEnqueued: 'channel.turn.enqueued',
+  turnNoAgent: 'channel.turn.no_agent',
   // Üzemeltetés (#78, D4): a bot saját kimenő üzeneteinek megőrzési takarítása.
   messagePurged: 'channel.message.purged',
   retentionSwept: 'channel.retention.swept',

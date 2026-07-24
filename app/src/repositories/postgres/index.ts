@@ -8,12 +8,14 @@ import {
   PostgresModelRoutingPolicyRepository,
 } from './audit-repository'
 import {
+  PostgresChannelAgentGrantRepository,
   PostgresChannelBotRepository,
   PostgresChannelIdentityRepository,
   PostgresChannelLinkTokenRepository,
   PostgresChannelMetricsRepository,
   PostgresChannelOutboundMessageRepository,
   PostgresChannelSessionRepository,
+  PostgresChannelTurnRepository,
 } from './channel-repository'
 import { PostgresUserNotificationRepository } from './user-notification-repository'
 import { PostgresConversationRepository } from './conversation-repository'
@@ -88,6 +90,8 @@ export const repositories = {
   channelBots: new PostgresChannelBotRepository(),
   channelIdentities: new PostgresChannelIdentityRepository(),
   channelSessions: new PostgresChannelSessionRepository(),
+  channelTurns: new PostgresChannelTurnRepository(),
+  channelAgentGrants: new PostgresChannelAgentGrantRepository(),
   channelLinkTokens: new PostgresChannelLinkTokenRepository(),
   channelOutboundMessages: new PostgresChannelOutboundMessageRepository(),
   channelMetrics: new PostgresChannelMetricsRepository(),

@@ -9,6 +9,8 @@ import type {
   ChannelIdentity,
   ChannelIdentityStatus,
   ChannelSession,
+  ChannelTurn,
+  ChannelAgentGrant,
   ChannelLinkToken,
   ChannelOutboundMessage,
   UserNotification,
@@ -2246,6 +2248,54 @@ export interface ChannelSessionRepository {
   findByBotAndThread(botId: string, externalThreadId: string): Promise<ChannelSession | null>
   create(input: { botId: string; externalThreadId: string }): Promise<ChannelSession>
   update(id: string, data: ChannelSessionUpdate): Promise<ChannelSession>
+}
+
+/**
+ * Csatorna-forduló sor (Telegram feature-spec #70/#73, D8/D14). A worker MÁSODIK munkatípusa:
+ * egy bejövő üzenet EGY sor, ami TÚLÉLI a webhook-kérést és `attempts` szerint ÚJRAPRÓBÁLHATÓ.
+ *
+ * A sor egyszerű állapotgép: `queued` → `running` (atomi kivétel, `attempts++`) → `done`
+ * (siker) VAGY vissza `queued`-ba (átmeneti hiba, újrapróba) VAGY `failed` (kimerült
+ * újrapróbák — dead-letter, `lastError`-ral). A crash-elakadt `running` sorokat egy watchdog
+ * teszi vissza `queued`-ba (mint a chat AgentTurn-nél, D10).
+ */
+export interface ChannelTurnRepository {
+  /** Új forduló a sorba (`queued`). Az `inboundRef` a bejövő üzenet payloadja (későbbi agent-futáshoz). */
+  enqueue(input: { sessionId: string; inboundRef: string | null }): Promise<ChannelTurn>
+  /**
+   * A legrégebbi `queued` forduló ATOMI kivétele: `running`-ra billenti és `attempts`-ot növeli,
+   * majd visszaadja. Egyidejű workerek nem kapják ugyanazt (`FOR UPDATE SKIP LOCKED`). `null`,
+   * ha nincs több várakozó.
+   */
+  claimNextQueued(now: Date): Promise<ChannelTurn | null>
+  /** Sikeres feldolgozás → `done`. */
+  markDone(id: string, now: Date): Promise<void>
+  /**
+   * Átmeneti hiba → vissza `queued`-ba (újrapróbálható), a `lastError` rögzítésével — KIVÉVE ha
+   * az `attempts` elérte a `maxAttempts` küszöböt, akkor `failed` (dead-letter). A visszatérés
+   * jelzi, melyik ág futott.
+   */
+  failOrRequeue(
+    id: string,
+    input: { error: string; maxAttempts: number; now: Date },
+  ): Promise<'requeued' | 'failed'>
+  /**
+   * Crash-watchdog: a `staleBefore`-nál régebben `running` sorokat visszateszi `queued`-ba, hogy
+   * egy elszállt/leállított worker ne hagyjon örökre „fut" fordulót. A visszatett sorok száma.
+   */
+  reclaimStaleRunning(staleBefore: Date, now: Date): Promise<number>
+}
+
+/**
+ * Csatorna agent-engedély tár (Telegram feature-spec #70/#73). Egy összekötött identitáshoz
+ * rendelt agent-engedélyek — a védelmi rend (hozzáférés > kormányzás > tartalom) HOZZÁFÉRÉS
+ * kapuja: engedély nélkül a bot nem futtat agentet, hanem „szólj az adminodnak" választ ad.
+ */
+export interface ChannelAgentGrantRepository {
+  /** Az identitáshoz tartozó összes agent-engedély (üres = nincs engedélyezett agent). */
+  listByIdentity(identityId: string): Promise<ChannelAgentGrant[]>
+  /** Gyors kapu-kérdés: van-e LEGALÁBB egy engedélyezett agent ehhez az identitáshoz? */
+  hasAnyGrant(identityId: string): Promise<boolean>
 }
 
 /**
