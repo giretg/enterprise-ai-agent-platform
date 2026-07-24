@@ -65,6 +65,15 @@ export const CHANNEL_AUDIT_ACTIONS = {
   agentProjectSet: 'channel.agent.project_set',
   tenantDisabled: 'channel.tenant.disabled',
   tenantEnabled: 'channel.tenant.enabled',
+  // Eseményvezérelt jóváhagyás Telegram-gombokkal (#76, D5/D6/D14). A `notified` a kiment
+  // (jogosultság-tudatos) gombüzenet, a `decided` a koppintással meghozott döntés (a közös
+  // állapotgépet lépteti), a `rejected` a KAPUKON elakadt koppintás (nem-jogosult / visszavont
+  // jog / visszajátszás / hamis aláírás / saját kérés / már eldöntött), az `acknowledged` a
+  // kettős koppintás idempotens nyugtázása. Az azonosítók ÁLNEVESÍTVE, nyers külső id sosem.
+  approvalNotified: 'channel.approval.notified',
+  approvalDecided: 'channel.approval.decided',
+  approvalRejected: 'channel.approval.rejected',
+  approvalAcknowledged: 'channel.approval.acknowledged',
 } as const
 
 /**

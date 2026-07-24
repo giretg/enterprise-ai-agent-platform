@@ -2095,6 +2095,53 @@ model ChannelLinkToken {
   @@map("channel_link_tokens")
 }
 
+/// Eseményvezérelt jóváhagyás Telegram-gombokkal (Telegram feature-spec #70/#76, D5/D6/D14).
+/// Amikor egy ticket `awaiting_human`-ba lép, a felelős / jóváhagyói kör jogosultság-tudatos
+/// gombokat kap; EGY sor = EGY címzettnek kiküldött gombüzenet. A sor hordozza a KÖTÉST
+/// (ticket, kapu, címzett-identitás, kezdeményező, kért szerepkör) és a megengedett döntéseket,
+/// hogy a koppintáskor a szerver élőben újra tudja ellenőrizni a jogosultságot, és az
+/// EGYSZER-használatot atomian (a `status` `pending`→`decided` billentése, verseny-biztos)
+/// kikényszerítse. A gomb-payload aláírása a kötött mezők felett képződik (l.
+/// `channel-approval-token.ts`); a nyers külső azonosító SOHA nem kerül ide (csak a
+/// `recipientIdentityId` és a döntéskor a beváltó kereső-hashe a kettős-koppintás idempotenciához).
+model ChannelApprovalPrompt {
+  id                  String      @id @default(uuid()) @db.Uuid
+  /// A `callback_data` rövid, kitalálhatatlan kulcsa (nem a nyers azonosító).
+  promptId            String      @unique @map("prompt_id")
+  channelType         ChannelType @map("channel_type")
+  ticketId            String      @map("ticket_id") @db.Uuid
+  /// A kötéskor rögzített szervezet (D2). Üres = platform-szintű.
+  tenantId            String?     @map("tenant_id") @db.Uuid
+  /// A kötelező kapu azonosítója (ha van); a döntés a kapun keresztül lépteti az állapotgépet.
+  gateId              String?     @map("gate_id")
+  stepId              String?     @map("step_id")
+  /// A kért jóváhagyói szerepkör — a koppintáskori ÉLŐ jogosultság-ellenőrzéshez.
+  requiredActorRole   String?     @map("required_actor_role")
+  /// A CÍMZETT csatorna-identitása — a gomb ehhez a címzetthez van kötve (más fiók nem váltja be).
+  recipientIdentityId String      @map("recipient_identity_id") @db.Uuid
+  recipientUserId     String      @map("recipient_user_id") @db.Uuid
+  /// A kezdeményező — a „saját kérés jóváhagyása tiltott" élő ellenőrzéséhez.
+  initiatorUserId     String?     @map("initiator_user_id") @db.Uuid
+  /// A ténylegesen megjelenített (jogosultság-tudatos) döntések: az `approve`/`reject` részhalmaza.
+  allowedActions      String[]    @map("allowed_actions")
+  /// A cél-chat külső azonosítója (a döntés utáni `editMessageReplyMarkup` chat_id-ja).
+  externalThreadId    String      @map("external_thread_id")
+  /// A kiküldött gombüzenet provider-azonosítója (a döntés utáni szerkesztéshez/gombeltüntetéshez).
+  providerMessageId   String?     @map("provider_message_id")
+  /// pending | decided | superseded. A `decided` billentés atomi és verseny-biztos (egyszer-használat).
+  status              String      @default("pending")
+  decidedAction       String?     @map("decided_action")
+  /// A beváltó külső fiók kereső-hashe — a kettős-koppintás idempotens nyugtázásához.
+  decidedByLookupHash String?     @map("decided_by_lookup_hash")
+  decidedAt           DateTime?   @map("decided_at") @db.Timestamptz
+  createdAt           DateTime    @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt           DateTime    @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@index([ticketId, status])
+  @@index([recipientIdentityId])
+  @@map("channel_approval_prompts")
+}
+
 /// Platform-oldali felhasználói értesítés (Telegram feature-spec #70/#72, D12 story 3).
 /// Egyelőre az összekötés tényéről szól — ha nem a felhasználó kötött, azonnal lássa és
 /// megszüntethesse. Szándékosan általános (kind + title + body + metadata), hogy később más

@@ -50,6 +50,16 @@ import { ChannelTurnService } from '@/domain/channel/channel-turn-service'
 import { AgentChatChannelRuntime } from '@/domain/channel/channel-agent-runtime-adapter'
 import { ChannelNotificationService } from '@/domain/channel/channel-notification-service'
 import { ChannelAgentAccessService } from '@/domain/channel/channel-agent-access-service'
+import {
+  ChannelApprovalService,
+  type ApprovalInitiatorNotifier,
+  type ApprovalRecipientDirectory,
+  type ApprovalTicketReader,
+  type ApprovalTransitioner,
+} from '@/domain/channel/channel-approval-service'
+import type { ApprovalAction } from '@/domain/channel/channel-approval-token'
+import type { CompiledSpec } from '@/domain/playbook/playbook-compiler'
+import { meetsMinRole } from '@/lib/iam-policy'
 import { ChannelMetricsService } from '@/domain/channel/channel-metrics-service'
 import { ChannelRetentionService } from '@/domain/channel/channel-retention-service'
 import { TelegramOutboundTransport } from '@/domain/channel/channel-outbound-transport'
@@ -309,6 +319,126 @@ const channelAgentAccessService = new ChannelAgentAccessService({
   isChannelEnabled: (tenantId) => platformSettingsService.isChannelEnabledForTenant(tenantId),
   audit: repositories.audit,
 })
+
+// Eseményvezérelt jóváhagyás Telegram-gombokkal (#76, D5/D6/D11/D14). A ticket-állapotgép
+// `awaiting_human` eseményére (l. `processService.setAwaitingHumanSink` lentebb) a felelős /
+// jóváhagyói kör jogosultság-tudatos gombokat kap; a koppintás a KÖZÖS állapotgépet lépteti.
+// A jogosultsági modell TÜKRÖZI a webes utat (`transitionProcessTicket`): a jóváhagyó jogot a
+// tenant-szerep (`operator`+) képviseli, és ugyanaz a `roles:[tenant-szerep]` megy az állapotgépnek.
+const approvalTicketReader: ApprovalTicketReader = {
+  async load({ ticketId, tenantId }) {
+    const ticket = await repositories.tickets.findById(ticketId)
+    if (!ticket || ticket.tenantId !== tenantId) return null
+    let requiredActorRole: string | null = null
+    let allowedActions: ApprovalAction[] = ['approve', 'reject']
+    if (ticket.playbookVersionId && ticket.playbookStepId) {
+      const version = await repositories.playbooksV2.findVersion(tenantId, ticket.playbookVersionId)
+      const compiled = version?.compiledSpec as CompiledSpec | undefined
+      if (compiled) {
+        if (ticket.requiredGateId) {
+          const gate = compiled.gates.find((g) => g.gateId === ticket.requiredGateId)
+          requiredActorRole = gate?.requiredActorRole ?? null
+        }
+        const rule = compiled.ticketRules.find((r) => r.stepId === ticket.playbookStepId)
+        if (rule) {
+          // Csak azok az egy-koppintásos döntések, amelyekre van `awaiting_human`→X átmenet
+          // a compiled specben (a `needs_info` szerkezetileg kizárt — nem egy-koppintásos).
+          const toStates = new Set(
+            rule.allowedTransitions.filter((t) => t.fromState === 'awaiting_human').map((t) => t.toState),
+          )
+          const filtered = (['approve', 'reject'] as ApprovalAction[]).filter((a) =>
+            toStates.has(a === 'approve' ? 'approved' : 'rejected'),
+          )
+          if (filtered.length > 0) allowedActions = filtered
+        }
+      }
+    }
+    return {
+      ticketId: ticket.id,
+      tenantId: ticket.tenantId,
+      state: ticket.state,
+      gateId: ticket.requiredGateId,
+      stepId: ticket.playbookStepId,
+      requiredActorRole,
+      // A gate-ticketet a rendszer hozza létre (createdById = rendszer-user); nem-rendszer ticketnél
+      // a valós kezdeményező. A „saját kérés jóváhagyása tiltott" élő kapu ehhez méri a koppintót.
+      initiatorUserId: ticket.createdById,
+      assigneeUserId: ticket.assigneeType === 'human' ? ticket.assigneeId : null,
+      title: ticket.title,
+      detailUrl: null,
+      allowedActions,
+    }
+  },
+}
+const approvalRecipientDirectory: ApprovalRecipientDirectory = {
+  async listApprovers({ tenantId }) {
+    if (!tenantId) return []
+    const members = await repositories.tenantMemberships.findByTenant(tenantId, { status: 'active' })
+    // A jóváhagyói kör: az `operator`+ (rank ≥ operator) tagok — mint a webes jóváhagyó-kapu.
+    return members
+      .filter((m) => meetsMinRole(m.role, 'operator'))
+      .map((m) => ({ userId: m.userId, roles: [m.role] }))
+  },
+  async rolesForUser({ userId, tenantId }) {
+    if (!tenantId) return []
+    const m = await repositories.tenantMemberships.findByTenantAndUser(tenantId, userId)
+    return m && m.status === 'active' ? [m.role] : []
+  },
+}
+const approvalTransitioner: ApprovalTransitioner = {
+  async decide({ ticketId, tenantId, toState, actorUserId, roles, gateId }) {
+    try {
+      await ticketStateMachine.transitionTicket({
+        tenantId,
+        ticketId,
+        toState,
+        actor: { type: 'user', id: actorUserId, roles },
+        // Kapu-ághoz a jóváhagyási bizonyíték a döntés csatornája (evidenceRequired kapu esetén kell).
+        approvalEvidence: gateId ? { channel: 'telegram', decidedVia: 'button' } : undefined,
+      })
+      return { ok: true }
+    } catch (e) {
+      return { ok: false, reason: e instanceof Error ? e.message : 'transition_failed' }
+    }
+  },
+}
+const approvalInitiatorNotifier: ApprovalInitiatorNotifier = {
+  async decisionMade({ initiatorUserId, tenantId, ticketId, decision, title }) {
+    const approved = decision === 'approve'
+    await repositories.userNotifications.create({
+      userId: initiatorUserId,
+      tenantId,
+      kind: 'channel.approval.decided',
+      title: approved ? 'Kérésedet jóváhagyták' : 'Kérésedet elutasították',
+      body: `A(z) „${title}" kérésről döntöttek Telegramon: ${approved ? 'Jóváhagyva' : 'Elutasítva'}.`,
+      metadata: { ticketId, decision },
+    })
+  },
+}
+const channelApprovalService = new ChannelApprovalService({
+  bots: repositories.channelBots,
+  identities: repositories.channelIdentities,
+  prompts: repositories.channelApprovalPrompts,
+  tickets: approvalTicketReader,
+  recipients: approvalRecipientDirectory,
+  transitioner: approvalTransitioner,
+  transport: telegramOutboundTransport,
+  audit: repositories.audit,
+  resolveWebhookSecret: async (bot) => resolveConnectorApiKey(bot.webhookSecretRef),
+  initiatorNotifier: approvalInitiatorNotifier,
+})
+// #76 prefactor — a ProcessService `awaiting_human` eseménye a jóváhagyó-szolgáltatáshoz köt
+// (a runtime NEM hív közvetlenül Telegramot, D11). Best-effort: a `notifyAwaitingHuman` sosem dob,
+// és a négyórás elakadás-figyelő biztonsági hálóként FÜGGETLENÜL megmarad.
+processService.setAwaitingHumanSink({
+  awaitingHuman: async (event) => {
+    await channelApprovalService.notifyAwaitingHuman({
+      ticketId: event.ticketId,
+      tenantId: event.tenantId,
+    })
+  },
+})
+
 const connectorGrantService = new ConnectorGrantService(repositories.connectorGrants, repositories.audit)
 const workspaceBucket = process.env.WORKSPACE_BUCKET ?? 'platform-workspace-prod'
 const workspaceStorage = new WorkspaceStorage(workspaceBucket)
@@ -971,6 +1101,7 @@ export const services = {
   channelMetrics: channelMetricsService,
   channelRetention: channelRetentionService,
   channelAgentAccess: channelAgentAccessService,
+  channelApproval: channelApprovalService,
   iam: iamService,
   tenants: tenantService,
   provisioning: provisioningService,

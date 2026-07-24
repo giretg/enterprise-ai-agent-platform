@@ -13,6 +13,7 @@ import type {
   ChannelTurn,
   ChannelLinkToken,
   ChannelOutboundMessage,
+  ChannelApprovalPrompt,
   UserNotification,
   AuditLog,
   Connector,
@@ -2387,6 +2388,48 @@ export interface ChannelOutboundMessageRepository {
   listExpired(cutoff: Date, limit: number): Promise<ChannelOutboundMessage[]>
   /** Takarítottnak jelöli az üzenetet (idempotens — a `deleteMessage` után vagy ha már nincs meg). */
   markPurged(id: string, purgedAt: Date): Promise<void>
+}
+
+/**
+ * Eseményvezérelt jóváhagyás gombokkal — a kiküldött gombüzenetek tára (Telegram feature-spec
+ * #70/#76, D5/D6/D14). EGY sor = EGY címzettnek kiküldött gombüzenet. A `consume` atomi
+ * `pending`→`decided` billentése kényszeríti az EGYSZER-használatot (verseny-biztos): a
+ * kettős koppintás második ága nem billent, `null`-t kap vissza. A `supersedeOthers` a többi
+ * címzett még nyitott gombjait érvényteleníti, ha valaki már döntött (a többi koppintás így
+ * „már eldöntötte valaki" tájékoztatást kap, nem kettős hatást).
+ */
+export type CreateChannelApprovalPromptInput = {
+  promptId: string
+  channelType: ChannelType
+  ticketId: string
+  tenantId: string | null
+  gateId: string | null
+  stepId: string | null
+  requiredActorRole: string | null
+  recipientIdentityId: string
+  recipientUserId: string
+  initiatorUserId: string | null
+  allowedActions: string[]
+  externalThreadId: string
+}
+
+export interface ChannelApprovalPromptRepository {
+  create(input: CreateChannelApprovalPromptInput): Promise<ChannelApprovalPrompt>
+  findByPromptId(promptId: string): Promise<ChannelApprovalPrompt | null>
+  /** A kiküldött gombüzenet provider-azonosítójának rögzítése (a döntés utáni szerkesztéshez). */
+  setProviderMessageId(id: string, providerMessageId: string): Promise<void>
+  /**
+   * Atomi egyszer-használat: CSAK akkor billenti `decided`-re (és rögzíti a döntést + a beváltó
+   * kereső-hashét), ha még `pending`. `null` = már nem `pending` (kettős koppintás / verseny).
+   */
+  consume(
+    promptId: string,
+    action: string,
+    decidedByLookupHash: string,
+    now: Date,
+  ): Promise<ChannelApprovalPrompt | null>
+  /** A ticket többi, még `pending` gombját `superseded`-re állítja (kivéve a megadott promptId-t). */
+  supersedeOthers(ticketId: string, exceptPromptId: string): Promise<void>
 }
 
 /**

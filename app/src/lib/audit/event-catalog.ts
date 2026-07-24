@@ -405,6 +405,15 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'channel.agent.project_set',
   'channel.tenant.disabled',
   'channel.tenant.enabled',
+  // Eseményvezérelt jóváhagyás Telegram-gombokkal (#76, D5/D6/D14): a ticket-állapotgép
+  // `awaiting_human` eseményére a felelős / jóváhagyói kör jogosultság-tudatos gombokat kap;
+  // a koppintás élő jogosultság-ellenőrzés + aláírt, egyszer-használatos payload után a KÖZÖS
+  // állapotgépet lépteti. A kapukon elakadt koppintás `rejected`, a kettős koppintás
+  // `acknowledged` (nyugtázás, nem hiba). Az azonosítók ÁLNEVESÍTVE, nyers külső id sosem.
+  'channel.approval.notified',
+  'channel.approval.decided',
+  'channel.approval.rejected',
+  'channel.approval.acknowledged',
 
   // Platform / DB mode
   'database.mode_changed',
