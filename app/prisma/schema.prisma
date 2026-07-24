@@ -1997,6 +1997,7 @@ model ChannelSession {
   conversation Conversation?    @relation(fields: [conversationId], references: [id], onDelete: SetNull)
   identity     ChannelIdentity? @relation(fields: [identityId], references: [id], onDelete: SetNull)
   turns        ChannelTurn[]
+  outboundMessages ChannelOutboundMessage[]
 
   @@unique([botId, externalThreadId])
   @@index([identityId])
@@ -2029,6 +2030,35 @@ model ChannelTurn {
   @@index([sessionId, status])
   @@index([status, createdAt])
   @@map("channel_turns")
+}
+
+/// A bot SAJÁT kimenő üzeneteinek nyilvántartása a megőrzési takarításhoz (D4/#78).
+/// A hiteles példány a MIÉNK; a Telegram csak kézbesítési csatorna. A bot a megőrzési
+/// horizonton takarítja a saját kimenő üzeneteit — privát chatben CSAK a magáéit tudja
+/// törölni (a felhasználóét nem), ezért ez a tábla KIZÁRÓLAG a bot által küldött
+/// üzenetek `providerMessageId`-ját tárolja (nyers tartalom NÉLKÜL), hogy a takarító a
+/// `deleteMessage` hívásokhoz tudja a (chat, message) párost. A `purgedAt` billen, amint
+/// a törlés megtörtént (vagy a provider szerint az üzenet már nem létezik) — idempotens.
+model ChannelOutboundMessage {
+  id                String      @id @default(uuid()) @db.Uuid
+  sessionId         String      @map("session_id") @db.Uuid
+  channelType       ChannelType @map("channel_type")
+  /// A cél-chat külső azonosítója (a `deleteMessage` chat_id-ja). Nem tartalom.
+  externalThreadId  String      @map("external_thread_id")
+  /// A provider által adott üzenet-azonosító (a `deleteMessage` message_id-ja).
+  providerMessageId String      @map("provider_message_id")
+  /// Diagnosztikai kategória a kimenő üzenetről (pl. `link_established`) — NEM a szöveg.
+  kind              String?
+  sentAt            DateTime    @default(now()) @map("sent_at") @db.Timestamptz
+  /// Kitöltve, amint a megőrzési takarítás törölte (vagy a provider szerint már nincs meg).
+  purgedAt          DateTime?   @map("purged_at") @db.Timestamptz
+
+  session ChannelSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  // A takarító a régi, még nem takarított sorokat kéri le (sentAt szerint, purgedAt IS NULL).
+  @@index([purgedAt, sentAt])
+  @@index([sessionId])
+  @@map("channel_outbound_messages")
 }
 
 /// Deep-link összekötő token (Telegram feature-spec #70/#72, D12). A webes „Telegram

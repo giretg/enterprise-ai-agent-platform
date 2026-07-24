@@ -40,6 +40,11 @@ import {
   WEB_SEARCH_TENANT_CONTROLS_KEY,
 } from '@/domain/web-search/web-search-types'
 import { WEB_FETCH_CONTROLS_KEY } from '@/domain/web-fetch/web-fetch-types'
+import {
+  CHANNEL_AUDIT_ACTIONS,
+  CHANNEL_TENANT_CONTROLS_KEY,
+  type ChannelTenantControls,
+} from '@/domain/channel/channel-types'
 import { matchForbiddenHost } from '@/domain/net/egress-guard'
 import { errorPolicySchema, type ErrorPolicy } from '@/lib/playbook-v2/spec'
 
@@ -139,6 +144,9 @@ export type WebSearchControls = {
 export type WebSearchTenantControls = WebSearchControls
 
 type WebSearchTenantControlsStore = Record<string, Partial<WebSearchTenantControls>>
+
+/** Tenantonként tárolt Telegram-csatorna kapcsoló (`CHANNEL_TENANT_CONTROLS_KEY`, D54/#75). */
+type ChannelTenantControlsStore = Record<string, Partial<ChannelTenantControls>>
 
 const DEFAULT_WEB_SEARCH_CONTROLS: WebSearchControls = {
   killSwitch: false,
@@ -671,6 +679,74 @@ export class PlatformSettingsService {
       metadata: { tenantId, killSwitch: next.killSwitch },
       tenantId,
     })
+
+    return next
+  }
+
+  // ── Telegram-csatorna szervezeti kill-switch (D54, #75) ────────────────────
+
+  /**
+   * Egy szervezet Telegram-csatorna kapcsolójának állapota. Alapból BE (killSwitch=false) —
+   * a csatorna a metszet és az admin-engedélyek mentén szűkít, a kill-switch az azonnali
+   * elzárás incidens esetén.
+   */
+  async getTenantChannelControls(tenantId: string): Promise<ChannelTenantControls> {
+    const raw = (await this.settings.get(CHANNEL_TENANT_CONTROLS_KEY)) as ChannelTenantControlsStore | null
+    const bucket = raw?.[tenantId]
+    if (!bucket || typeof bucket !== 'object') {
+      return { killSwitch: false, updatedById: null, updatedAt: null }
+    }
+    return {
+      killSwitch: bucket.killSwitch === true,
+      updatedById: typeof bucket.updatedById === 'string' ? bucket.updatedById : null,
+      updatedAt: typeof bucket.updatedAt === 'string' ? bucket.updatedAt : null,
+    }
+  }
+
+  /**
+   * Fail-closed csatorna-kapu: a csatorna CSAK akkor él egy fordulóhoz, ha van szervezet ÉS a
+   * szervezeti kapcsoló nincs elzárva. Szervezet nélküli (rögzítetlen) identitásnál a csatorna
+   * zárva — a teljes kormányzási modell szervezeti identitásra épül (D2). Olcsó, nem auditál.
+   */
+  async isChannelEnabledForTenant(tenantId: string | null): Promise<boolean> {
+    if (!tenantId) return false
+    return !(await this.getTenantChannelControls(tenantId)).killSwitch
+  }
+
+  async setTenantChannelControls(
+    tenantId: string,
+    input: { killSwitch: boolean },
+    actorId: string,
+  ): Promise<ChannelTenantControls> {
+    const raw = (await this.settings.get(CHANNEL_TENANT_CONTROLS_KEY)) as ChannelTenantControlsStore | null
+    const store: ChannelTenantControlsStore = raw && typeof raw === 'object' ? { ...raw } : {}
+    const current = await this.getTenantChannelControls(tenantId)
+    const next: ChannelTenantControls = {
+      killSwitch: input.killSwitch,
+      updatedById: actorId,
+      updatedAt: new Date().toISOString(),
+    }
+    store[tenantId] = next
+    await this.settings.set(CHANNEL_TENANT_CONTROLS_KEY, store as unknown as Prisma.InputJsonObject, actorId)
+
+    // Csak a tényleges váltást auditáljuk „elzárás"/„bekapcsolás" néven; a nem-változó mentés
+    // (idempotens) nem kap külön eseményt.
+    if (current.killSwitch !== next.killSwitch) {
+      await this.audit.append({
+        actorType: 'human',
+        actorId,
+        agentVersion: null,
+        action: next.killSwitch ? CHANNEL_AUDIT_ACTIONS.tenantDisabled : CHANNEL_AUDIT_ACTIONS.tenantEnabled,
+        targetType: 'platform_setting',
+        targetId: tenantId,
+        modelUsed: null,
+        inputRef: null,
+        outputRef: null,
+        policyDecision: next.killSwitch ? 'disabled' : 'enabled',
+        metadata: { tenantId, killSwitch: next.killSwitch },
+        tenantId,
+      })
+    }
 
     return next
   }

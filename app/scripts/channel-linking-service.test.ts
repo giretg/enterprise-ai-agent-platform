@@ -19,9 +19,12 @@ import type {
 } from '@prisma/client'
 import {
   ChannelLinkingService,
+  type ChannelLinkedMessageSink,
   type ChannelLinkNotifier,
 } from '../src/domain/channel/channel-linking-service'
 import { RecordingChannelTransport } from '../src/domain/channel/channel-outbound-transport'
+import { pseudonymFromLookupHash } from '../src/domain/channel/channel-identity-crypto'
+import { CHANNEL_AUDIT_ACTIONS } from '../src/domain/channel/channel-types'
 import { assertAuditActionRegistered } from '../src/lib/audit/event-catalog'
 import type {
   ChannelBotRepository,
@@ -251,11 +254,41 @@ function makeHarness(opts?: { botStatus?: 'active' | 'disabled'; noBot?: boolean
 
   const transport = new RecordingChannelTransport()
 
+  // Forduló-sor sink-fake (#73/#74): a linking-varrat a `linkedMessageSink.enqueueInbound`-on
+  // (a valós `ChannelTurnService.enqueueInbound`-ot helyettesítve) ír sorba és auditál — a
+  // claim/reclaim/agent-futás a worker-varrat teszté. A rögzített sorokból a teszt ellenőrzi a
+  // bekötött → sorba-írás utat.
+  const turnRows: Array<{ id: string; sessionId: string; inboundRef: string | null }> = []
+  let turnSeq = 0
+  const enqueuedNotifications: string[] = []
+  const linkedMessageSink: ChannelLinkedMessageSink = {
+    async enqueueInbound(input) {
+      const row = { id: `turn-${++turnSeq}`, sessionId: input.sessionId, inboundRef: input.message.text }
+      turnRows.push(row)
+      await audit.append({
+        action: CHANNEL_AUDIT_ACTIONS.turnEnqueued,
+        targetType: 'channel_turn',
+        policyDecision: 'queued',
+        metadata: {
+          channelType: input.identity.channelType,
+          inboundKind: input.message.kind,
+          pseudonym: pseudonymFromLookupHash(input.identity.lookupHash),
+          tenantId: input.identity.tenantId,
+        },
+      })
+      return { id: row.id }
+    },
+  }
+
   const svc = new ChannelLinkingService({
     bots,
     identities,
     sessions,
     linkTokens,
+    linkedMessageSink,
+    onTurnEnqueued: async (turnId: string) => {
+      enqueuedNotifications.push(turnId)
+    },
     transport,
     audit: audit as never,
     notifier,
@@ -274,6 +307,8 @@ function makeHarness(opts?: { botStatus?: 'active' | 'disabled'; noBot?: boolean
     identityRows,
     sessionRows,
     tokenRows,
+    turnRows,
+    enqueuedNotifications,
     setClock,
     advanceMs,
     clockNow: () => clock,
@@ -509,6 +544,46 @@ async function main() {
     assert.equal(rev.ok, true)
     const audit = h.audits.find((a) => a.action === 'channel.identity.revoked')!
     assert.equal(audit.metadata.scope, 'admin')
+  })
+
+  await test('CL-15 bekötött felhasználó üzenete → TARTÓS forduló-sorba kerül (nem néma, nincs kimenő hívás)', async () => {
+    const h = makeHarness()
+    const issued = await h.svc.issueLinkToken({ userId: USER_1, tenantId: TENANT_A })
+    const jti = issued.ok ? jtiFromDeepLink(issued.deepLink) : ''
+    await h.svc.handleInboundUpdate(startUpdate(1, '900015', jti))
+    const outboundAfterLink = h.transport.calls.length
+
+    // A bekötött fiók egy sima üzenete → sorba írás (a worker veszi fel), NEM azonnali kimenő hívás.
+    const res = await h.svc.handleInboundUpdate(textUpdate(2, '900015', 'kérlek nézd meg a jelentést'))
+    assert.equal(res.outcome, 'linked_enqueued')
+    assert.ok(res.turnId, 'visszaadja a sorba írt forduló azonosítóját')
+    assert.equal(h.turnRows.length, 1, 'pontosan egy forduló került a sorba')
+    assert.equal(h.transport.calls.length, outboundAfterLink, 'a sorba írás nem küld azonnali kimenő hívást')
+
+    // A worker-ébresztő NOTIFY elsült, a fordulóra hivatkozva.
+    assert.deepEqual(h.enqueuedNotifications, [res.turnId])
+
+    // Audit: a sorba kerülés determinisztikus, álnevesített nyommal — az üzenet TARTALMA nélkül.
+    const enq = h.audits.find((a) => a.action === 'channel.turn.enqueued')
+    assert.ok(enq, 'van channel.turn.enqueued audit')
+    assert.ok(typeof enq!.metadata.pseudonym === 'string')
+    assert.ok(!JSON.stringify(h.audits).includes('jelentést'), 'az üzenet tartalma nem kerül auditba')
+    assert.ok(!JSON.stringify(h.audits).includes('900015'), 'a nyers Telegram-id nem kerül auditba')
+  })
+
+  await test('CL-16 duplikált frissítés a bekötött úton → egy forduló (vízjel)', async () => {
+    const h = makeHarness()
+    const issued = await h.svc.issueLinkToken({ userId: USER_1, tenantId: TENANT_A })
+    const jti = issued.ok ? jtiFromDeepLink(issued.deepLink) : ''
+    await h.svc.handleInboundUpdate(startUpdate(1, '900016', jti))
+
+    const u = textUpdate(5, '900016', 'szia')
+    const r1 = await h.svc.handleInboundUpdate(u)
+    assert.equal(r1.outcome, 'linked_enqueued')
+    // Ugyanaz az update_id újraküldve → duplikáció, NINCS második forduló.
+    const r2 = await h.svc.handleInboundUpdate(u)
+    assert.equal(r2.outcome, 'duplicate')
+    assert.equal(h.turnRows.length, 1, 'a duplikált frissítés nem indít második fordulót')
   })
 
   if (failures > 0) {

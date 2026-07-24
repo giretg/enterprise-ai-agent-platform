@@ -48,7 +48,13 @@ import { ChannelBotService } from '@/domain/channel/channel-bot-service'
 import { ChannelLinkingService } from '@/domain/channel/channel-linking-service'
 import { ChannelTurnService } from '@/domain/channel/channel-turn-service'
 import { AgentChatChannelRuntime } from '@/domain/channel/channel-agent-runtime-adapter'
+import { ChannelNotificationService } from '@/domain/channel/channel-notification-service'
+import { ChannelAgentAccessService } from '@/domain/channel/channel-agent-access-service'
+import { ChannelMetricsService } from '@/domain/channel/channel-metrics-service'
+import { ChannelRetentionService } from '@/domain/channel/channel-retention-service'
 import { TelegramOutboundTransport } from '@/domain/channel/channel-outbound-transport'
+import { TelegramMonitorNotifier } from '@/lib/notify/telegram-monitor-notifier'
+import { notifyChannelTurnReady } from '@/lib/channel-notify'
 import { PlaybookService } from '@/domain/playbook/playbook-service'
 import { PlaybookV2Service } from '@/domain/playbook/playbook-v2-service'
 import { ProcessService } from '@/domain/playbook/process-service'
@@ -123,8 +129,29 @@ const playbookV2Service = new PlaybookV2Service(
   repositories.audit,
   (tenantId) => platformSettingsService.getTenantDefaultErrorPolicy(tenantId),
 )
+// Proaktív értesítés Telegramra (#77, D7/D11): a Monitor-riasztás a csatorna HARMADIK bejáratán
+// (ChannelNotificationService) megy ki — a Monitor sosem hívja közvetlenül a Telegramot. A kimenő
+// átvitel UGYANAZ a deny-by-default Telegram-adapter, mint az összekötésé; a bot-token a
+// platform-bot titok-referenciájából oldódik fel, a hívás pillanatában.
+const channelNotificationService = new ChannelNotificationService({
+  bots: repositories.channelBots,
+  identities: repositories.channelIdentities,
+  transport: new TelegramOutboundTransport({
+    resolveBotToken: async () => {
+      const bot = await repositories.channelBots.findPlatformBot('telegram')
+      if (!bot) throw new Error('no platform telegram bot registered')
+      return resolveConnectorApiKey(bot.accessKeySecretRef)
+    },
+    resolveHostIps: async (host) => (await lookup(host, { all: true })).map((e) => e.address),
+  }),
+  audit: repositories.audit,
+})
 const monitorNotifier = new RoutingMonitorNotifier(
-  { chat: new WebhookChatNotifier() },
+  {
+    chat: new WebhookChatNotifier(),
+    // `telegram:<userId>` → az adott platform-felhasználó AKTÍV, azonos szervezetű kötése.
+    telegram: new TelegramMonitorNotifier({ notifications: channelNotificationService }),
+  },
   new AuditOnlyMonitorNotifier(),
 )
 // Lazy referencia: a `dispatcherService` lejjebb, ProcessService-en TÚL épül fel (a
@@ -199,19 +226,25 @@ let channelTurnServiceRef: ChannelTurnService | null = null
 // fel; a deep-link a platform-bot Telegram-felhasználónevéből épül (env). A platform-oldali
 // értesítés a `user_notifications` sorba kerül (D12 story 3).
 const telegramBotUsername = process.env.TELEGRAM_BOT_USERNAME?.trim() || 'YourPlatformBot'
+// A kimenő átvitel (D11) EGYETLEN példány — a linking-varrat, a worker-varrat ÉS a megőrzési
+// takarítás is ezen küld, hogy ne legyen második, dublőrözhetetlen kijárat a Telegram felé.
+const telegramOutboundTransport = new TelegramOutboundTransport({
+  resolveBotToken: async () => {
+    const bot = await repositories.channelBots.findPlatformBot('telegram')
+    if (!bot) throw new Error('no platform telegram bot registered')
+    return resolveConnectorApiKey(bot.accessKeySecretRef)
+  },
+  resolveHostIps: async (host) => (await lookup(host, { all: true })).map((e) => e.address),
+})
 const channelLinkingService = new ChannelLinkingService({
   bots: repositories.channelBots,
   identities: repositories.channelIdentities,
   sessions: repositories.channelSessions,
   linkTokens: repositories.channelLinkTokens,
-  transport: new TelegramOutboundTransport({
-    resolveBotToken: async () => {
-      const bot = await repositories.channelBots.findPlatformBot('telegram')
-      if (!bot) throw new Error('no platform telegram bot registered')
-      return resolveConnectorApiKey(bot.accessKeySecretRef)
-    },
-    resolveHostIps: async (host) => (await lookup(host, { all: true })).map((e) => e.address),
-  }),
+  onTurnEnqueued: notifyChannelTurnReady,
+  transport: telegramOutboundTransport,
+  // A bot saját kimenő üzeneteit rögzítjük a megőrzési takarításhoz (D4/#78).
+  outboundLog: repositories.channelOutboundMessages,
   audit: repositories.audit,
   notifier: {
     async linkEstablished({ userId, tenantId, orgName, channelType }) {
@@ -241,6 +274,40 @@ const channelLinkingService = new ChannelLinkingService({
       return channelTurnServiceRef.enqueueInbound(input)
     },
   },
+})
+// A `ChannelTurnService` (a worker MÁSODIK munkatípusa, #73/#74, D8) az `AgentChatRuntime` UTÁN
+// épül fel lejjebb (az agent-futáshoz szüksége van rá) — l. `channelTurnServiceRef` fent.
+// Üzemeltetői metrikák (#78, story 59) — az audit-láncból és a csatorna-táblák állapotából.
+const channelMetricsService = new ChannelMetricsService({
+  audit: repositories.audit,
+  metrics: repositories.channelMetrics,
+  bots: repositories.channelBots,
+})
+// A bot saját kimenő üzeneteinek megőrzési takarítása (#78, D4) — a közös kimenő átvitelen.
+const channelRetentionService = new ChannelRetentionService({
+  outbound: repositories.channelOutboundMessages,
+  transport: telegramOutboundTransport,
+  audit: repositories.audit,
+})
+// Csatorna-agent-hozzáférés (#75, D5/D9/D13/D54). A metszet bal oldala (platform-jog) az
+// agent-registry szervezeti szűrése (a per-felhasználó dedikálás élesítésekor magától
+// szigorodik — #70 Further Notes 1); a kill-switch a szervezeti Telegram-kapcsoló.
+const channelAgentAccessService = new ChannelAgentAccessService({
+  grants: repositories.channelAgentGrants,
+  identities: repositories.channelIdentities,
+  agents: {
+    async listForTenant(tenantId) {
+      const agents = await repositories.agents.findMany({ tenantId })
+      return agents.map((a) => ({ id: a.id, name: a.name, usable: a.status === 'active' }))
+    },
+    async findInTenant(agentId, tenantId) {
+      const agent = await repositories.agents.findById(agentId, tenantId)
+      if (!agent) return null
+      return { id: agent.id, name: agent.name, usable: agent.status === 'active' }
+    },
+  },
+  isChannelEnabled: (tenantId) => platformSettingsService.isChannelEnabledForTenant(tenantId),
+  audit: repositories.audit,
 })
 const connectorGrantService = new ConnectorGrantService(repositories.connectorGrants, repositories.audit)
 const workspaceBucket = process.env.WORKSPACE_BUCKET ?? 'platform-workspace-prod'
@@ -901,6 +968,9 @@ export const services = {
   channelBots: channelBotService,
   channelLinking: channelLinkingService,
   channelTurns: channelTurnService,
+  channelMetrics: channelMetricsService,
+  channelRetention: channelRetentionService,
+  channelAgentAccess: channelAgentAccessService,
   iam: iamService,
   tenants: tenantService,
   provisioning: provisioningService,

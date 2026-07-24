@@ -55,6 +55,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'agent.create',
   'agent.delete',
   'agent.dispatch_denied_inactive',
+  'agent.operator_visibility',
   'agent.persona',
   'agent.resumed',
   'agent.retired',
@@ -380,6 +381,29 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'channel.turn.completed',
   'channel.turn.retry',
   'channel.turn.failed',
+  // A #73 szelet korábbi, agent-engedély nélküli útmutató válasza — a #74 óta `turn.completed`
+  // alá esik, a konstans visszafelé-kompatibilitásért marad.
+  'channel.turn.no_agent',
+  // Proaktív értesítés (#77, D7/D11/D15): a Monitor-riasztás a csatorna harmadik bejáratán
+  // Telegramra megy. A küldési hiba best-effort (`failed`, a Monitor-futás nem bukik el);
+  // a bot-letiltás a kötést `blocked`-ra jelöli (`channel.identity.blocked`), és a küldés
+  // abbamarad. Az azonosítók ÁLNEVESÍTVE, nyers külső id sosem kerül auditba.
+  'channel.notification.sent',
+  'channel.notification.skipped',
+  'channel.notification.failed',
+  'channel.identity.blocked',
+  // Üzemeltetés (#78, D4): a bot SAJÁT kimenő üzeneteinek megőrzési takarítása. Az
+  // azonosítók ÁLNEVESÍTVE (kereső-hash prefix / szál-pszeudonim), nyers tartalom sosem.
+  'channel.message.purged',
+  'channel.retention.swept',
+  // Agent-engedélyek, projektkötés és szervezeti kill-switch (#75, D5/D9/D13/D54): az admin
+  // agentenként engedélyez/visszavon, a felhasználó projektkulcsot állít, a tenant-admin a
+  // szervezeti kapcsolóval azonnal elzárja a csatornát. Azonosítók álnevesítve.
+  'channel.agent.granted',
+  'channel.agent.revoked',
+  'channel.agent.project_set',
+  'channel.tenant.disabled',
+  'channel.tenant.enabled',
 
   // Platform / DB mode
   'database.mode_changed',

@@ -2,9 +2,11 @@
  * 1:1 agent-chat a csatornán — a csatorna-forduló feldolgozója (Telegram feature-spec
  * #70/#73/#74, D5/D8/D9/D10/D11/D13).
  *
- * Ez a modul a #74 szelet magja: az összekötött felhasználó privát üzenete a MEGLÉVŐ
- * agent-futásidőt hívja, és a válasz — CÍMKÉZVE (agent + projekt), DARABOLVA, az érzékenységi
- * kapun átvezetve — a csatornára megy ki. Két bejárata van, egyetlen varraton keresztül:
+ * Ez a modul a #73 megbízható bejövő-sor szeletét (fail-closed identitás-ellenőrzés,
+ * agent-engedély kapu) építi tovább a #74 szeletre: az összekötött felhasználó privát
+ * üzenete a MEGLÉVŐ agent-futásidőt hívja, és a válasz — CÍMKÉZVE (agent + projekt),
+ * DARABOLVA, az érzékenységi kapun átvezetve — a csatornára megy ki. Két bejárata van,
+ * egyetlen varraton keresztül:
  *
  *  1. `enqueueInbound` — a bejövő webhook (a linking-szolgáltatáson át) egy TARTÓS forduló-sort
  *     ír; a webhook azonnal nyugtáz, a forduló túléli a kérést (D8).

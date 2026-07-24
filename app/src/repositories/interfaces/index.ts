@@ -8,11 +8,11 @@ import type {
   ChannelType,
   ChannelIdentity,
   ChannelIdentityStatus,
-  ChannelSession,
   ChannelAgentGrant,
+  ChannelSession,
   ChannelTurn,
-  ChannelTurnStatus,
   ChannelLinkToken,
+  ChannelOutboundMessage,
   UserNotification,
   AuditLog,
   Connector,
@@ -2235,6 +2235,41 @@ export interface ChannelIdentityRepository {
 }
 
 /**
+ * Csatorna-agent-engedély tár (Telegram feature-spec #70/#75, D5/D9/D13/D14). Egy sor = „ez a
+ * kötött identitás elérheti ezt az agentet a csatornán, ezzel a projektkulccsal". Az admin
+ * hozza létre / vonja vissza; a projektkulcsot a felhasználó állítja a weben. A `(identityId,
+ * agentId)` egyedi — ugyanahhoz az agenthez egyetlen engedély tartozik identitásonként.
+ */
+export type CreateChannelAgentGrantInput = {
+  identityId: string
+  agentId: string
+  projectKey?: string
+  grantedById: string | null
+}
+
+export interface ChannelAgentGrantRepository {
+  listByIdentity(identityId: string): Promise<ChannelAgentGrant[]>
+  /** Egy szervezet összes kötésének engedélyei (admin-nézet, batch). */
+  listByIdentityIds(identityIds: string[]): Promise<ChannelAgentGrant[]>
+  /** Gyors kapu-kérdés (#73): van-e LEGALÁBB egy engedélyezett agent ehhez az identitáshoz? */
+  hasAnyGrant(identityId: string): Promise<boolean>
+  findByIdentityAndAgent(identityId: string, agentId: string): Promise<ChannelAgentGrant | null>
+  create(input: CreateChannelAgentGrantInput): Promise<ChannelAgentGrant>
+  updateProjectKey(id: string, projectKey: string): Promise<ChannelAgentGrant>
+  deleteById(id: string): Promise<void>
+  /**
+   * Az identitáshoz tartozó, adott agentre szóló engedély (vagy `null`, ha nincs) — a #74
+   * agent-chat forduló-feldolgozó alias-neve `findByIdentityAndAgent`-re.
+   */
+  findForIdentityAgent(identityId: string, agentId: string): Promise<ChannelAgentGrant | null>
+  /**
+   * Az identitás összes csatorna-engedélye (agent-váltáshoz / alapértelmezett kiválasztáshoz) —
+   * a #74 agent-chat forduló-feldolgozó alias-neve `listByIdentity`-re.
+   */
+  listForIdentity(identityId: string): Promise<ChannelAgentGrant[]>
+}
+
+/**
  * Csatorna-munkamenet tár (Telegram feature-spec #70/#72, D8/D9/D15). A külső szál ↔
  * beszélgetés összerendelés; a `updateWatermark` a duplikáció-védelemhez, az
  * `unlinkedNoticeAt` a bekötetlen „egyszer válaszol, aztán csend" viselkedéshez.
@@ -2256,24 +2291,12 @@ export interface ChannelSessionRepository {
 }
 
 /**
- * Csatorna-agent-engedély tár (Telegram feature-spec #70/#74, D5/D9/D14). Melyik agent
- * érhető el a csatornán az adott identitásnak, és melyik projektkulccsal (alap: gyűjtő).
- * NEM új jogosultság-forrás, hanem SZŰKÍTÉS: a platform-oldali hozzáféréssel vett metszet
- * (D5). A `projectKey` a beszélgetés memória-hatóköre (D9).
- */
-export interface ChannelAgentGrantRepository {
-  /** Az identitáshoz tartozó, adott agentre szóló engedély (vagy `null`, ha nincs). */
-  findForIdentityAgent(identityId: string, agentId: string): Promise<ChannelAgentGrant | null>
-  /** Az identitás összes csatorna-engedélye (agent-váltáshoz / alapértelmezett kiválasztáshoz). */
-  listForIdentity(identityId: string): Promise<ChannelAgentGrant[]>
-}
-
-/**
- * Csatorna-forduló (worker-munkasor) tár — a worker MÁSODIK munkatípusa (D8/D14). A bejövő
- * üzenet tartós sorba kerül, túléli a webhook-kérést, `attempts` szerint újrapróbálható és
- * `lastError` diagnosztizálható. A `claimNextBatch` atomi (a `queued` sorokat `running`-ra
- * billenti és megnöveli az `attempts`-et), így egyszerre több worker sem dolgoz fel egy sort
- * kétszer.
+ * Csatorna-forduló (worker-munkasor) tár — a worker MÁSODIK munkatípusa (Telegram feature-spec
+ * #70/#73/#74, D8/D14). A bejövő üzenet tartós sorba kerül, túléli a webhook-kérést, `attempts`
+ * szerint újrapróbálható és `lastError` diagnosztizálható. A `claimNextBatch` atomi (a `queued`
+ * sorokat `running`-ra billenti és megnöveli az `attempts`-et, a `staleRunningBefore`-nál régebbi
+ * elszállt `running` sorokat is visszaveszi), így egyszerre több worker sem dolgoz fel egy sort
+ * kétszer, és egy crash-elakadt sor sem ragad örökre `running`-ban.
  */
 export type EnqueueChannelTurnInput = {
   sessionId: string
@@ -2338,4 +2361,41 @@ export interface UserNotificationRepository {
   create(input: CreateUserNotificationInput): Promise<UserNotification>
   listForUser(userId: string, limit?: number): Promise<UserNotification[]>
   markRead(id: string, userId: string, now: Date): Promise<UserNotification | null>
+}
+
+/**
+ * A bot SAJÁT kimenő üzeneteinek nyilvántartása a megőrzési takarításhoz (Telegram
+ * feature-spec #70/#78, D4). CSAK a bot által küldött üzenetek `providerMessageId`-ját
+ * tartja (nyers tartalom NÉLKÜL) — privát chatben a bot csak a magáét tudja törölni.
+ */
+export type RecordChannelOutboundInput = {
+  sessionId: string
+  channelType: ChannelType
+  externalThreadId: string
+  providerMessageId: string
+  kind?: string | null
+  sentAt?: Date
+}
+
+export interface ChannelOutboundMessageRepository {
+  /** Egy elküldött bot-üzenet rögzítése (a `providerMessageId` a későbbi `deleteMessage`-hez). */
+  record(input: RecordChannelOutboundInput): Promise<ChannelOutboundMessage>
+  /**
+   * A megőrzési horizonton túli, még NEM takarított kimenő üzenetek (sentAt < cutoff,
+   * purgedAt IS NULL), a legrégebbitől, legfeljebb `limit` darab.
+   */
+  listExpired(cutoff: Date, limit: number): Promise<ChannelOutboundMessage[]>
+  /** Takarítottnak jelöli az üzenetet (idempotens — a `deleteMessage` után vagy ha már nincs meg). */
+  markPurged(id: string, purgedAt: Date): Promise<void>
+}
+
+/**
+ * A csatorna-táblák állapot-olvasásai az üzemeltetői metrikákhoz (Telegram feature-spec
+ * #70/#78, story 59). CSAK aggregáló olvasások — nyers külső azonosítót nem adnak vissza.
+ */
+export interface ChannelMetricsRepository {
+  countTurnsByStatus(since?: Date): Promise<Record<string, number>>
+  countSessions(): Promise<{ total: number; linked: number }>
+  countIdentitiesByStatus(): Promise<Record<string, number>>
+  countPendingOutbound(): Promise<{ pending: number; oldestSentAt: Date | null }>
 }

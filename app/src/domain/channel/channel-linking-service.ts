@@ -26,6 +26,7 @@ import type {
   ChannelBotRepository,
   ChannelIdentityRepository,
   ChannelLinkTokenRepository,
+  ChannelOutboundMessageRepository,
   ChannelSessionRepository,
 } from '@/repositories/interfaces'
 import type { ChannelOutboundTransport } from './channel-outbound-transport'
@@ -113,7 +114,7 @@ export interface ChannelLinkedMessageSink {
       text: string | null
       kind: 'text' | 'unsupported'
     }
-  }): Promise<unknown>
+  }): Promise<{ id: string }>
 }
 
 export type ChannelLinkingDeps = {
@@ -121,9 +122,20 @@ export type ChannelLinkingDeps = {
   identities: ChannelIdentityRepository
   sessions: ChannelSessionRepository
   linkTokens: ChannelLinkTokenRepository
+  /**
+   * A sorba írás után hívott, hibatűrő értesítő (Postgres NOTIFY) — a worker azonnal ébred a
+   * cron-háló bevárása helyett. Alapból nincs (a cron-söprés így is felveszi a fordulót).
+   */
+  onTurnEnqueued?: (turnId: string) => Promise<void>
   transport: ChannelOutboundTransport
   audit: Pick<AuditRepository, 'append'>
   notifier: ChannelLinkNotifier
+  /**
+   * A bot SAJÁT kimenő üzeneteinek nyilvántartása a megőrzési takarításhoz (D4/#78).
+   * OPCIONÁLIS: ha meg van adva, minden sikeresen kiment bot-üzenet `providerMessageId`-ja
+   * rögzül, hogy a takarító a horizonton törölhesse. Ha nincs megadva, a küldés változatlan.
+   */
+  outboundLog?: Pick<ChannelOutboundMessageRepository, 'record'>
   /** A kötéskor rögzített szervezet megnevezése a Telegram-visszaigazoláshoz (D2). */
   resolveOrgName: (tenantId: string | null) => Promise<string | null>
   /** A bot webhook titkos fejlécének feloldása (referenciából) — konstans idejű vetéshez. */
@@ -164,6 +176,8 @@ export type HandleInboundResult = {
   outcome: InboundOutcome
   /** Az összekötés eredménye — csak `link_established`-nél. */
   identityId?: string
+  /** A sorba írt forduló azonosítója — csak `linked_enqueued`-nál (a worker ezt veszi fel). */
+  turnId?: string
   /** Az elutasítás oka — csak `link_rejected`-nél (diagnosztika, nem megy ki Telegramra). */
   rejectReason?: 'not_found' | 'bad_signature' | 'expired' | 'already_used'
 }
@@ -243,8 +257,10 @@ export class ChannelLinkingService {
   /**
    * A bejövő frissítés feldolgozása. Az EGYETLEN szinkron kapu a nyugtázás előtt a titkos
    * fejléc konstans idejű ellenőrzése (D15). Duplikáció-védelem munkamenetenkénti vízjellel.
-   * Ez a slice CSAK az összekötő ágat és a bekötetlen semleges választ kezeli; a bekötött
-   * felhasználó chat-fordulója későbbi szelet (D8), ezért itt kimenő hívás nélkül tér vissza.
+   * Az összekötő ágat, a bekötetlen semleges választ ÉS a bekötött felhasználó üzenetének
+   * TARTÓS forduló-sorba írását (#73, D8) kezeli — ez utóbbi a webhook-kérésen túl él, és a
+   * worker második munkatípusként veszi fel. Az agent-futás maga későbbi szelet (#74): itt
+   * a sorba írás a szállított érték (megbízható, újrapróbálható bejövő út).
    */
   async handleInboundUpdate(input: {
     message: ChannelInboundMessage
@@ -308,7 +324,7 @@ export class ChannelLinkingService {
       if (this.deps.linkedMessageSink) {
         const kind: 'text' | 'unsupported' =
           msg.kind ?? (typeof msg.text === 'string' && msg.text.length > 0 ? 'text' : 'unsupported')
-        await this.deps.linkedMessageSink.enqueueInbound({
+        return this.enqueueLinkedTurn({
           sessionId: session.id,
           identity,
           message: {
@@ -319,12 +335,43 @@ export class ChannelLinkingService {
             kind,
           },
         })
-        return { handled: true, outcome: 'linked_enqueued' }
       }
       return { handled: true, outcome: 'linked_no_runtime' }
     }
 
     return this.handleUnlinked({ bot, channelType, sessionId: session.id, lookupHash, now })
+  }
+
+  /**
+   * A bekötött felhasználó üzenetét a chat-futásidő sink-jén (`ChannelTurnService.enqueueInbound`)
+   * TARTÓS forduló-sorba írja (#73/#74, D8). A sor túléli a webhook-kérést; a worker második
+   * munkatípusként veszi fel. A `NOTIFY` (ha van) csak gyorsítás — hibája nem buktathatja a
+   * sorba írást (a cron-háló akkor is felveszi). Az audit-bejegyzést maga a sink
+   * (`ChannelTurnService.enqueueInbound`) írja, hogy egyetlen helyen szülessen.
+   */
+  private async enqueueLinkedTurn(input: {
+    sessionId: string
+    identity: ChannelIdentity
+    message: {
+      updateId: number
+      externalThreadId: string
+      externalUserId: string
+      text: string | null
+      kind: 'text' | 'unsupported'
+    }
+  }): Promise<HandleInboundResult> {
+    const turn = await this.deps.linkedMessageSink!.enqueueInbound({
+      sessionId: input.sessionId,
+      identity: input.identity,
+      message: input.message,
+    })
+
+    if (this.deps.onTurnEnqueued) {
+      // A NOTIFY tisztán gyorsítás — a hibája NEM buktathatja a (már perzisztált) fordulót.
+      await this.deps.onTurnEnqueued(turn.id).catch(() => {})
+    }
+
+    return { handled: true, outcome: 'linked_enqueued', turnId: turn.id }
   }
 
   private async handleUnlinked(input: {
@@ -341,7 +388,7 @@ export class ChannelLinkingService {
       return { handled: true, outcome: 'unlinked_silenced' }
     }
 
-    await this.sendToThread(input.bot, input.channelType, input.sessionId, UNLINKED_NEUTRAL_TEXT)
+    await this.sendToThread(input.bot, input.channelType, input.sessionId, UNLINKED_NEUTRAL_TEXT, 'unlinked_notice')
     await this.deps.sessions.update(input.sessionId, { unlinkedNoticeAt: input.now })
 
     await this.deps.audit.append({
@@ -372,7 +419,7 @@ export class ChannelLinkingService {
     const reject = async (
       reason: NonNullable<HandleInboundResult['rejectReason']>,
     ): Promise<HandleInboundResult> => {
-      await this.sendToThread(input.bot, input.channelType, input.sessionId, LINK_REJECTED_TEXT)
+      await this.sendToThread(input.bot, input.channelType, input.sessionId, LINK_REJECTED_TEXT, 'link_rejected')
       await this.deps.audit.append({
         actorType: 'system',
         actorId: null,
@@ -461,7 +508,7 @@ export class ChannelLinkingService {
     })
 
     const orgName = await this.deps.resolveOrgName(tenantId)
-    await this.sendToThread(input.bot, input.channelType, input.sessionId, linkEstablishedText(orgName))
+    await this.sendToThread(input.bot, input.channelType, input.sessionId, linkEstablishedText(orgName), 'link_established')
 
     // A kettős-koppintás idempotens ága NEM ír új értesítést és NEM ismétli az audit-established-et
     // — a kötés már megvolt, csak a visszaigazolást küldjük újra.
@@ -504,14 +551,27 @@ export class ChannelLinkingService {
     channelType: ChannelType,
     sessionId: string,
     text: string,
+    kind: string,
   ): Promise<void> {
     const session = await this.deps.sessions.findById(sessionId)
     if (!session) return
-    await this.deps.transport.send({
+    const result = await this.deps.transport.send({
       channelType,
       method: 'sendMessage',
       payload: { chat_id: session.externalThreadId, text },
     })
+    // A bot SAJÁT kimenő üzenetének rögzítése a megőrzési takarításhoz (D4/#78). Csak sikeres,
+    // provider-azonosítóval bíró küldést tartunk nyilván — azt lehet később törölni.
+    if (result.ok && result.providerMessageId && this.deps.outboundLog) {
+      await this.deps.outboundLog.record({
+        sessionId: session.id,
+        channelType,
+        externalThreadId: session.externalThreadId,
+        providerMessageId: result.providerMessageId,
+        kind,
+        sentAt: this.now(),
+      })
+    }
   }
 
   // ── 3. bejárat: visszavonás (saját + admin) ─────────────────────────────────

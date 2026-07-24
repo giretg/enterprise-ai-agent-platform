@@ -69,6 +69,16 @@ export function pseudonymFromLookupHash(lookupHash: string): string {
   return lookupHash.slice(0, 16)
 }
 
+/**
+ * Álnevesített SZÁL-azonosító az audithoz (D4/#78 megőrzési takarítás). A külső chat-azonosító
+ * determinisztikus, nem visszafejthető prefix-álneve — a nyers `externalThreadId` SOHA nem kerül
+ * auditba (§64). A megőrzési takarítás nem igényel kereshetőséget a szálra, csak stabil álnevet,
+ * ezért itt a `channelType`-pal kevert SHA-256 rövid prefixe elég (nem kell hozzá a titok).
+ */
+export function pseudonymFromExternalThreadId(channelType: string, externalThreadId: string): string {
+  return createHash('sha256').update(`${channelType}:${externalThreadId}`).digest('hex').slice(0, 16)
+}
+
 /** Az injektálható identitás-kripto port a linking-szolgáltatásnak (teszt felülírhatja). */
 export type ChannelIdentityCryptoPort = {
   encryptExternalId: (rawExternalId: string) => string
@@ -78,4 +88,17 @@ export type ChannelIdentityCryptoPort = {
 export const defaultChannelIdentityCryptoPort: ChannelIdentityCryptoPort = {
   encryptExternalId,
   deriveLookupHash: deriveChannelLookupHash,
+}
+
+/**
+ * A proaktív értesítéshez (#77) a KIMENŐ cél-azonosító (Telegram chat_id = a privát chatben a
+ * felhasználó numerikus id-je) a kötés titkosított `externalUserIdEnc` mezőjéből oldódik fel —
+ * szerveroldalon, a hívás pillanatában. A nyers azonosító sosem naplózódik és sosem kerül auditba.
+ */
+export type ChannelNotifyCryptoPort = {
+  decryptExternalId: (enc: string) => string
+}
+
+export const defaultChannelNotifyCryptoPort: ChannelNotifyCryptoPort = {
+  decryptExternalId,
 }

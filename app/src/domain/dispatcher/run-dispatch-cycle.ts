@@ -12,11 +12,14 @@ export type DispatchCycleSummary = {
   reclaimedScheduledTasks: number
   /** Watchdog: elavult heartbeatű chat-fordulók lezárása (issue #64 / D10). */
   reclaimedAgentTurns: number
+  /**
+   * A worker MÁSODIK munkatípusa (#73, D8): a bekötött Telegram-üzenetek forduló-sora. A
+   * `reclaimed` a crash-elakadt `running` sorok visszatétele, a `processed` a lezavart fordulók.
+   */
+  channelTurns: { reclaimed: number; processed: number }
   materializedScheduledTasks: number
   monitorSweep: { ran: boolean; escalated: number; openedTickets: number }
   workspacePurge: { purgedTickets: number; deletedObjects: number }
-  /** A worker MÁSODIK munkatípusa (D8): feldolgozott Telegram-csatorna-fordulók száma. */
-  channelTurns: { processed: number }
   dispatch: {
     scanned: number
     started: number
@@ -40,10 +43,10 @@ const EMPTY_SUMMARY: DispatchCycleSummary = {
   reclaimedDispatches: 0,
   reclaimedScheduledTasks: 0,
   reclaimedAgentTurns: 0,
+  channelTurns: { reclaimed: 0, processed: 0 },
   materializedScheduledTasks: 0,
   monitorSweep: { ran: false, escalated: 0, openedTickets: 0 },
   workspacePurge: { purgedTickets: 0, deletedObjects: 0 },
-  channelTurns: { processed: 0 },
   dispatch: { scanned: 0, started: 0, budgetBlocked: 0, skipped: 0, paused: false, skipReasons: {} },
 }
 
@@ -89,6 +92,24 @@ export async function runDispatchCycle(
     })
     const reclaimedAgentTurns = reclaimedTurns.filter((r) => r.status === 'reclaimed').length
 
+    // Csatorna-forduló sor (#73/#74, D8): a worker második munkatípusa — a bejövő Telegram-
+    // csatorna-fordulók 1:1 agent-chat feldolgozása. A crash-elakadt `running` sorok visszavétele
+    // (`staleRunningBefore`) a `processQueued` HÍVÁSÁN belül, atomi kivétellel történik (nincs
+    // külön megfigyelhető számláló) — a `reclaimed` mező itt ezért mindig 0, csak a
+    // `DispatchCycleSummary` alak-kompatibilitását tartja fenn (l. `dispatcher-worker.ts` log).
+    // Fail-soft: egy csatorna-hiba NEM buktathatja el a ticket-dispatch-et (a forduló
+    // újrapróbálható, `markRetry`/`markFailed` a szolgáltatásban).
+    let channelTurns: DispatchCycleSummary['channelTurns'] = { reclaimed: 0, processed: 0 }
+    try {
+      const processed = await services.channelTurns.processQueued({ limit: batchLimit })
+      channelTurns = { reclaimed: 0, processed: processed.processed }
+    } catch (error) {
+      console.error(
+        '[dispatch-cycle] channel-turn drain error:',
+        error instanceof Error ? error.message : error,
+      )
+    }
+
     const materialized = await services.scheduledTasks.materializeDue(new Date(), batchLimit)
     const materializedScheduledTasks = materialized.filter((r) => r.status === 'materialized').length
 
@@ -120,15 +141,6 @@ export async function runDispatchCycle(
     const workspacePurge = {
       purgedTickets: workspacePurgeResult.purgedTickets,
       deletedObjects: workspacePurgeResult.deletedObjects,
-    }
-
-    // A worker MÁSODIK munkatípusa (D8): a bejövő Telegram-csatorna-fordulók feldolgozása. Best-
-    // effort — egy csatorna-hiba NEM buktathatja el a ticket-dispatch-et (a forduló újrapróbálható).
-    let channelTurns: DispatchCycleSummary['channelTurns'] = { processed: 0 }
-    try {
-      channelTurns = await services.channelTurns.processQueued({ limit: batchLimit })
-    } catch {
-      // A hiba a soron marad (`markRetry`/`markFailed` a szolgáltatásban) — a ciklus megy tovább.
     }
 
     let dispatch: DispatchCycleSummary['dispatch']
@@ -171,10 +183,10 @@ export async function runDispatchCycle(
       reclaimedDispatches,
       reclaimedScheduledTasks,
       reclaimedAgentTurns,
+      channelTurns,
       materializedScheduledTasks,
       monitorSweep,
       workspacePurge,
-      channelTurns,
       dispatch,
     }
     await services.platformSettings
