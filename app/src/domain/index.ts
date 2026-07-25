@@ -1016,6 +1016,9 @@ const channelTurnService = new ChannelTurnService({
     const tenant = await repositories.tenants.findById(tenantId)
     return tenant?.displayName ?? null
   },
+  memberships: repositories.tenantMemberships,
+  tenants: repositories.tenants,
+  isChannelEnabled: (tenantId) => platformSettingsService.isChannelEnabledForTenant(tenantId),
 })
 channelTurnServiceRef = channelTurnService
 const wikiRuntime = new WikiAgentRuntime(

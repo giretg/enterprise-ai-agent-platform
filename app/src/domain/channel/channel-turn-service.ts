@@ -35,6 +35,7 @@ import type {
   ChannelType,
 } from '@prisma/client'
 import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
+import { evaluateTenantOperationGate } from '@/lib/tenant-operation-gate'
 import { classifyPrompt } from '@/domain/gateway/sensitivity-router'
 import type {
   AuditRepository,
@@ -42,6 +43,8 @@ import type {
   ChannelIdentityRepository,
   ChannelSessionRepository,
   ChannelTurnRepository,
+  TenantMembershipRepository,
+  TenantRepository,
 } from '@/repositories/interfaces'
 import type { ChannelOutboundTransport } from './channel-outbound-transport'
 import { CHANNEL_AUDIT_ACTIONS } from './channel-types'
@@ -178,8 +181,16 @@ export type ChannelTurnServiceDeps = {
    * A kötéskor rögzített szervezet megnevezése a `/szervezet` parancshoz (story 14). Több
    * szervezetben is tag felhasználónak Telegramon nincs szervezet-váltó, ezért meg kell tudnia
    * kérdezni, kinek a nevében beszél. Opcionális: hiányában a parancs a nevet nem tudja kiírni.
-   */
+  */
   resolveOrgName?: (tenantId: string | null) => Promise<string | null>
+  /**
+   * Élő hozzáférési kapuk minden feldolgozott üzenet előtt. Ezek szándékosan a workerben
+   * vannak: a már sorba állított Telegram-üzenet sem futhat le egy azóta visszavont tagság,
+   * tenant-felfüggesztés vagy csatorna-kill-switch után.
+   */
+  memberships: Pick<TenantMembershipRepository, 'findByTenantAndUser'>
+  tenants: Pick<TenantRepository, 'findById'>
+  isChannelEnabled: (tenantId: string | null) => Promise<boolean>
   now?: () => Date
   /** A címke-prefixszel csökkentett hasznos darab-hossz. Alap: Telegram-korlát − tartalék. */
   chunkLimit?: number
@@ -313,6 +324,22 @@ export class ChannelTurnService {
       await this.deps.turns.markDone(turn.id)
       await this.auditTurn(turn, 'completed', 'fail_closed', {
         pseudonym: identity ? pseudonymFromLookupHash(identity.lookupHash) : null,
+      })
+      return 'fail_closed'
+    }
+
+    // A Telegram-kötés csak a külső fiókot azonosítja; NEM helyettesíti az élő platform-
+    // jogosultságot. A queued üzenet később fut, ezért minden alkalommal újraellenőrizzük a
+    // tagságot, a tenant életciklusát és a tenant-szintű Telegram kill-switch-et. Hiba vagy
+    // hiányzó rekord is tiltás (fail-closed), és nincs kimenő üzenet, nehogy a leállított
+    // csatorna adatot szivárogtasson.
+    const access = await this.authorizeIdentity(identity)
+    if (!access.allowed) {
+      await this.deps.turns.markDone(turn.id)
+      await this.auditTurn(turn, 'completed', 'fail_closed', {
+        reason: access.reason,
+        pseudonym: pseudonymFromLookupHash(identity.lookupHash),
+        tenantId: identity.tenantId,
       })
       return 'fail_closed'
     }
@@ -548,6 +575,35 @@ export class ChannelTurnService {
   }
 
   // ── Segédek ────────────────────────────────────────────────────────────────
+
+  private async authorizeIdentity(identity: ChannelIdentity): Promise<
+    | { allowed: true }
+    | {
+        allowed: false
+        reason: 'tenant_missing' | 'membership_inactive' | 'tenant_inactive' | 'channel_disabled'
+      }
+  > {
+    if (!identity.tenantId) return { allowed: false, reason: 'tenant_missing' }
+
+    const membership = await this.deps.memberships.findByTenantAndUser(
+      identity.tenantId,
+      identity.userId,
+    )
+    if (!membership || membership.status !== 'active') {
+      return { allowed: false, reason: 'membership_inactive' }
+    }
+
+    const tenantGate = await evaluateTenantOperationGate({
+      tenants: this.deps.tenants,
+      gateTenantId: identity.tenantId,
+    })
+    if (!tenantGate.allowed) return { allowed: false, reason: 'tenant_inactive' }
+
+    if (!(await this.deps.isChannelEnabled(identity.tenantId))) {
+      return { allowed: false, reason: 'channel_disabled' }
+    }
+    return { allowed: true }
+  }
 
   /**
    * A 24 órás gördülő beszélgetés feloldása (D9). Ha van élő (ugyanahhoz az agenthez tartozó,

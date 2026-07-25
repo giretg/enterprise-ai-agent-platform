@@ -22,6 +22,7 @@
  *   CT-12 bot letiltva: a küldés hibája után a kötés `blocked` (D15/#20)
  *   CT-13 tenant-határ: másik szervezet agentje nem oldódik fel (D2/#2)
  *   CT-14 sor-írás: a linking-sink bekötött üzenete tartós forduló-sort ír (D8/#73)
+ *   CT-15 élő kapuk: tagság-visszavonás, tenant-felfüggesztés és kill-switch leállítja a queued futást
  *
  * Futtatás: npm run test:channel-turn
  */
@@ -32,6 +33,8 @@ import type {
   ChannelIdentityStatus,
   ChannelSession,
   ChannelTurn,
+  TenantMembershipStatus,
+  TenantStatus,
 } from '@prisma/client'
 import {
   ChannelTurnService,
@@ -83,6 +86,9 @@ function makeHarness(opts?: {
   grants?: Array<{ agentId: string; projectKey: string }>
   agentTenantId?: string | null
   runtime?: ChannelAgentRuntime
+  membershipStatus?: TenantMembershipStatus | null
+  tenantStatus?: TenantStatus | null
+  channelEnabled?: boolean
 }) {
   let clock = new Date('2026-07-22T10:00:00Z')
   const setClock = (d: Date) => {
@@ -112,6 +118,19 @@ function makeHarness(opts?: {
     async updateStatus(id: string, status: ChannelIdentityStatus) {
       if (id === identity.id) identityStatus = status
       return { ...identity, status: identityStatus }
+    },
+  }
+
+  const memberships = {
+    async findByTenantAndUser(tenantId: string, userId: string) {
+      if (tenantId !== TENANT_A || userId !== USER_1 || opts?.membershipStatus === null) return null
+      return { status: opts?.membershipStatus ?? 'active' }
+    },
+  }
+  const tenants = {
+    async findById(tenantId: string) {
+      if (tenantId !== TENANT_A || opts?.tenantStatus === null) return null
+      return { status: opts?.tenantStatus ?? 'active' }
     },
   }
 
@@ -303,6 +322,9 @@ function makeHarness(opts?: {
     transport,
     audit: audit as never,
     resolveOrgName: async () => 'Excellence Kft.',
+    memberships: memberships as never,
+    tenants: tenants as never,
+    isChannelEnabled: async () => opts?.channelEnabled ?? true,
     now: () => clock,
   })
 
@@ -582,7 +604,30 @@ async function main() {
     assert.ok(String(enq!.metadata.pseudonym ?? '').length > 0, 'álnevesített azonosító az auditban')
   })
 
-  await test('CT-15 audit-katalógus: az új forduló-események regisztráltak', () => {
+  await test('CT-15 élő kapuk: a visszavont tagság, inaktív tenant és kill-switch sem futtat queued üzenetet', async () => {
+    for (const [name, options, expectedReason] of [
+      ['tagság felfüggesztve', { membershipStatus: 'suspended' as const }, 'membership_inactive'],
+      ['tenant felfüggesztve', { tenantStatus: 'suspended' as const }, 'tenant_inactive'],
+      ['Telegram kill-switch', { channelEnabled: false }, 'channel_disabled'],
+    ] as const) {
+      let ran = false
+      const runtime: ChannelAgentRuntime = {
+        async runTurn(): Promise<ChannelAgentRuntimeResult> {
+          ran = true
+          return { ok: true, text: 'nem szabadna' }
+        },
+      }
+      const h = makeHarness({ ...options, runtime })
+      await enqueueAndProcess(h, 'bizalmas kérdés')
+      assert.equal(ran, false, `${name}: a futásidő NEM hívódott`)
+      assert.equal(sentTexts(h.transport).length, 0, `${name}: nincs kimenő adat`)
+      const completed = h.audits.find((a) => a.action === 'channel.turn.completed')
+      assert.equal(completed?.policyDecision, 'fail_closed', `${name}: auditált fail-closed`)
+      assert.equal(completed?.metadata.reason, expectedReason, `${name}: auditált tiltási ok`)
+    }
+  })
+
+  await test('CT-16 audit-katalógus: az új forduló-események regisztráltak', () => {
     for (const a of [
       'channel.turn.enqueued',
       'channel.turn.completed',
