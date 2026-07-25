@@ -828,10 +828,25 @@ export class PostgresDocumentRepository implements DocumentRepository {
   }
 
   async findByConnectorId(connectorId: string): Promise<Document[]> {
-    return prisma.document.findMany({
+    // KB lista / UI: extractedText nélkül — a teljes szöveg csak findById / search úton kell.
+    const rows = await prisma.document.findMany({
       where: { connectorId },
       orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        filename: true,
+        storageRef: true,
+        status: true,
+        connectorId: true,
+        uploadedById: true,
+        createdAt: true,
+        mimeType: true,
+        contentHash: true,
+        processingMode: true,
+        metadata: true,
+      },
     })
+    return rows.map((row) => ({ ...row, extractedText: null }))
   }
 
   async create(

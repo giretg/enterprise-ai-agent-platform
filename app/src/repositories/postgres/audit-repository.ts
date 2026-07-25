@@ -142,58 +142,23 @@ export class PostgresModelCallRepository implements ModelCallRepository {
   }
 
   async getCostSummary(since?: Date) {
-    const rows = await prisma.modelCall.findMany({
-      where: since ? { createdAt: { gte: since } } : undefined,
-      select: {
-        promptTokens: true,
-        completionTokens: true,
-        costEstimate: true,
-      },
+    const where = since ? { createdAt: { gte: since } } : undefined
+    const agg = await prisma.modelCall.aggregate({
+      where,
+      _sum: { promptTokens: true, completionTokens: true, costEstimate: true },
     })
-
-    return rows.reduce(
-      (acc, row) => ({
-        tokens: acc.tokens + row.promptTokens + row.completionTokens,
-        cost: acc.cost + Number(row.costEstimate),
-      }),
-      { tokens: 0, cost: 0 },
-    )
+    return {
+      tokens: (agg._sum.promptTokens ?? 0) + (agg._sum.completionTokens ?? 0),
+      cost: Number(agg._sum.costEstimate ?? 0),
+    }
   }
 
   async getUsageForAgentSince(agentId: string, since: Date) {
-    const rows = await prisma.modelCall.findMany({
-      where: { agentId, createdAt: { gte: since } },
-      select: {
-        promptTokens: true,
-        completionTokens: true,
-      },
-    })
-
-    return rows.reduce(
-      (acc, row) => ({
-        calls: acc.calls + 1,
-        tokens: acc.tokens + row.promptTokens + row.completionTokens,
-      }),
-      { calls: 0, tokens: 0 },
-    )
+    return this.sumUsage({ agentId, createdAt: { gte: since } })
   }
 
   async getUsageForTicket(ticketId: string) {
-    const rows = await prisma.modelCall.findMany({
-      where: { ticketId },
-      select: {
-        promptTokens: true,
-        completionTokens: true,
-      },
-    })
-
-    return rows.reduce(
-      (acc, row) => ({
-        calls: acc.calls + 1,
-        tokens: acc.tokens + row.promptTokens + row.completionTokens,
-      }),
-      { calls: 0, tokens: 0 },
-    )
+    return this.sumUsage({ ticketId })
   }
 
   /**
@@ -253,85 +218,68 @@ export class PostgresModelCallRepository implements ModelCallRepository {
   }
 
   async getGovernanceSummary(since?: Date) {
-    const rows = await prisma.modelCall.findMany({
-      where: since ? { createdAt: { gte: since } } : undefined,
-      select: {
-        promptTokens: true,
-        completionTokens: true,
-        costEstimate: true,
-        latencyMs: true,
-        status: true,
-      },
-    })
+    const where = since ? { createdAt: { gte: since } } : undefined
+    const [agg, byStatus] = await Promise.all([
+      prisma.modelCall.aggregate({
+        where,
+        _count: { _all: true },
+        _sum: {
+          promptTokens: true,
+          completionTokens: true,
+          costEstimate: true,
+          latencyMs: true,
+        },
+      }),
+      prisma.modelCall.groupBy({
+        by: ['status'],
+        where,
+        _count: { _all: true },
+      }),
+    ])
 
-    const acc = rows.reduce(
-      (a, row) => {
-        a.tokens += row.promptTokens + row.completionTokens
-        a.cost += Number(row.costEstimate)
-        a.latencyTotal += row.latencyMs
-        if (row.status === 'ok') a.okCalls += 1
-        else if (row.status === 'error') a.errorCalls += 1
-        else if (row.status === 'rate_limited') a.rateLimitedCalls += 1
-        return a
-      },
-      { tokens: 0, cost: 0, latencyTotal: 0, okCalls: 0, errorCalls: 0, rateLimitedCalls: 0 },
-    )
+    const calls = agg._count._all
+    const statusCounts = Object.fromEntries(byStatus.map((row) => [row.status, row._count._all])) as Record<
+      string,
+      number
+    >
 
-    const calls = rows.length
     return {
       calls,
-      tokens: acc.tokens,
-      cost: acc.cost,
-      avgLatencyMs: calls > 0 ? Math.round(acc.latencyTotal / calls) : 0,
-      okCalls: acc.okCalls,
-      errorCalls: acc.errorCalls,
-      rateLimitedCalls: acc.rateLimitedCalls,
+      tokens: (agg._sum.promptTokens ?? 0) + (agg._sum.completionTokens ?? 0),
+      cost: Number(agg._sum.costEstimate ?? 0),
+      avgLatencyMs: calls > 0 ? Math.round((agg._sum.latencyMs ?? 0) / calls) : 0,
+      okCalls: statusCounts.ok ?? 0,
+      errorCalls: statusCounts.error ?? 0,
+      rateLimitedCalls: statusCounts.rate_limited ?? 0,
     }
   }
 
   async getPerTicketBreakdown(since?: Date, limit = 50) {
-    const rows = await prisma.modelCall.findMany({
+    const grouped = await prisma.modelCall.groupBy({
+      by: ['ticketId'],
       where: {
         ticketId: { not: null },
         ...(since ? { createdAt: { gte: since } } : {}),
       },
-      select: {
-        ticketId: true,
+      _count: { _all: true },
+      _sum: {
         promptTokens: true,
         completionTokens: true,
         costEstimate: true,
         latencyMs: true,
-        createdAt: true,
       },
-      orderBy: { createdAt: 'desc' },
+      _max: { createdAt: true },
     })
 
-    const byTicket = new Map<
-      string,
-      { calls: number; tokens: number; cost: number; latencyTotal: number; lastSeen: Date }
-    >()
-    for (const row of rows) {
-      const id = row.ticketId as string
-      const entry = byTicket.get(id) ?? {
-        calls: 0,
-        tokens: 0,
-        cost: 0,
-        latencyTotal: 0,
-        lastSeen: row.createdAt,
-      }
-      entry.calls += 1
-      entry.tokens += row.promptTokens + row.completionTokens
-      entry.cost += Number(row.costEstimate)
-      entry.latencyTotal += row.latencyMs
-      if (row.createdAt > entry.lastSeen) entry.lastSeen = row.createdAt
-      byTicket.set(id, entry)
-    }
-
-    const ranked = Array.from(byTicket.entries())
-      .sort((a, b) => b[1].lastSeen.getTime() - a[1].lastSeen.getTime())
+    const ranked = grouped
+      .filter((row): row is typeof row & { ticketId: string } => Boolean(row.ticketId))
+      .sort(
+        (a, b) =>
+          (b._max.createdAt?.getTime() ?? 0) - (a._max.createdAt?.getTime() ?? 0),
+      )
       .slice(0, limit)
 
-    const ticketIds = ranked.map(([ticketId]) => ticketId)
+    const ticketIds = ranked.map((row) => row.ticketId)
     const tickets =
       ticketIds.length === 0
         ? []
@@ -341,14 +289,17 @@ export class PostgresModelCallRepository implements ModelCallRepository {
           })
     const titleById = new Map(tickets.map((ticket) => [ticket.id, ticket.title]))
 
-    return ranked.map(([ticketId, e]) => ({
-      ticketId,
-      ticketTitle: titleById.get(ticketId) ?? null,
-      calls: e.calls,
-      tokens: e.tokens,
-      cost: e.cost,
-      avgLatencyMs: e.calls > 0 ? Math.round(e.latencyTotal / e.calls) : 0,
-    }))
+    return ranked.map((row) => {
+      const calls = row._count._all
+      return {
+        ticketId: row.ticketId,
+        ticketTitle: titleById.get(row.ticketId) ?? null,
+        calls,
+        tokens: (row._sum.promptTokens ?? 0) + (row._sum.completionTokens ?? 0),
+        cost: Number(row._sum.costEstimate ?? 0),
+        avgLatencyMs: calls > 0 ? Math.round((row._sum.latencyMs ?? 0) / calls) : 0,
+      }
+    })
   }
 }
 

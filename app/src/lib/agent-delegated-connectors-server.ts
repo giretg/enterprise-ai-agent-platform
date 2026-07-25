@@ -8,8 +8,10 @@ export async function loadAgentDelegatedConnectors(
   userId: string,
   tenantId: string | null,
 ): Promise<AgentDelegatedConnectorRow[]> {
-  await services.connectorGrants.revokeGrantsForNonActiveConnectors(userId, tenantId, userId)
-
+  // Szándékosan NINCS revoke az olvasási útvonalon: az agent detail / chat panel
+  // SSR-t ne blokkolja Secret Manager + audit írás. A stale grant-ek takarítása
+  // a connectors panel listázásakor fut (`listConnectorsPanelContext` /
+  // `listMyConnectorGrants`). Az inaktív grant-eket alább amúgy is kiszűrjük.
   const [links, grants] = await Promise.all([
     repositories.toolBroker.findConnectorsForAgent(agentId),
     services.connectorGrants.listForUser(userId, tenantId),

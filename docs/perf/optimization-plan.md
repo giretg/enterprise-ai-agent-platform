@@ -107,6 +107,45 @@ A javítások a kódban vannak, a `DATABASE_URL` secretet **nem kell** hozzány�
 
 ---
 
+## P1 — Olvasási útvonalon írás — **JAVÍTVA**
+
+**Hol:** `app/src/lib/agent-delegated-connectors-server.ts`
+
+A `revokeGrantsForNonActiveConnectors` kikerült az agent detail / chat panel
+olvasási útvonaláról. A stale grant takarítás a connectors panel listázásakor
+marad (`listConnectorsPanelContext` / `listMyConnectorGrants`). Az UI továbbra
+is kiszűri az inaktív grant-eket megjelenítéskor.
+
+---
+
+## P1 — Memória-overview lekérdezések — **JAVÍTVA**
+
+**Hol:** `app/src/lib/agent-detail-page-data.ts`, `memory-repository.ts`, `platform.ts`
+
+- `listByRun` bővült `projectKey` + `statuses` szűrővel → 3 query → 1
+- `loadMemoryProjectKeys` egyetlen `UNION ALL` raw query
+
+---
+
+## P1 — Dashboard / governance aggregációk — **JAVÍTVA**
+
+**Hol:** `audit-repository.ts`, `tool-broker-repository.ts`, `ticket-repository.ts`
+
+`getCostSummary`, `getGovernanceSummary`, `getPerTicketBreakdown`, `getToolSummary`,
+`getTransitionStats` DB-oldali `aggregate` / `groupBy` — nem tölti be az összes sort
+Node-ba. Indexek: `0018_hot_path_indexes` (`model_calls`, `tool_calls`, `documents`).
+
+---
+
+## P1 — KB / sandbox over-fetch — **JAVÍTVA**
+
+- KB lista (`findByConnectorId`): `extractedText` nélkül
+- `kbSearch`: batch `findDocumentsForConnectors` + superseded kizárás + `take: 200`
+- Sandbox lista: csak az aktív verzió, nem az összes verziótörténet
+- Sandbox registry metrics: `groupBy` a teljes app-lista helyett
+
+---
+
 ## P1 — Architektúra: az UI konténer futtatja az agent runtime-ot
 
 **Hol:** `app/src/app/api/v1/internal/dispatch-cycle/route.ts`,
@@ -133,63 +172,15 @@ prioritása csökken.
 
 ---
 
-## P1 — Olvasási útvonalon írás
+## P1 — `findByIdWithDetails` szétbontása (nyitott)
 
-**Hol:** `app/src/lib/agent-delegated-connectors-server.ts:11`
-
-```ts
-await services.connectorGrants.revokeGrantsForNonActiveConnectors(userId, tenantId, userId)
-```
-
-Minden `loadAgentDelegatedConnectors` hívás — tehát minden agent detail SSR és minden
-chat-panel nyitás — szekvenciálisan lefuttat egy grant-revoke ciklust, benne
-audit-írással és Secret Manager törléssel grantenként. Ez blokkolja a renderelést
-és írási terhelést tesz olvasási útvonalra.
-
-**Javaslat:** háttér job (dispatch-ciklus meglévő söprései közé), vagy lazy futtatás
-a connectors oldal megnyitásakor. Az olvasási útvonal szűrjön kliens-oldali logika
-nélkül a már meglévő `lifecycleState !== 'active'` feltételre — amit egyébként a
-függvény **már megtesz** a `activeGrantsByConnectorId` építésekor, tehát a revoke
-a helyes megjelenítéshez nem is szükséges.
-
----
-
-## P1 — Memória-overview lekérdezések
-
-**Hol:** `app/src/lib/agent-detail-page-data.ts:179`, `repositories/postgres/memory-repository.ts:368`
-
-```ts
-const [proposed, modified, ticketed] = await Promise.all([
-  repositories.memoryCandidates.listByRun({ memoryId, status: 'proposed' }),
-  ...
-])
-const pending = [...].filter((c) => c.projectKey === projectKey)   // ← app-oldali szűrés
-```
-
-A `listByRun` nem tud `projectKey`-re szűrni, így három teljes kandidátus-lista
-átjön a huzalon, hogy aztán memóriában dobjuk el a nagy részét. Ugyanez a minta a
-`loadMemoryProjectKeys` négy `distinct` lekérdezésénél.
-
-**Javaslat:**
-- `listByRun` bővítése `projectKey` szűrővel, a három státusz egy `status: { in: [...] }`
-  lekérdezésbe vonva (3 → 1 kör);
-- composite index: `MemoryChunk(memoryId, projectKey, status)`,
-  `MemoryCandidate(memoryId, projectKey, status)`;
-- `loadMemoryProjectKeys` egyetlen `UNION ALL` aggregátumba.
-
----
-
-## P1 — `findByIdWithDetails` szétbontása
-
-**Hol:** `app/src/repositories/postgres/agent-repository.ts:33`
+**Hol:** `app/src/repositories/postgres/agent-repository.ts`
 
 Az `include` mindenkinek betölti a `memory.versions take: 5` sorokat és az admin-only
-mezőket (`apiKeys`), akkor is, ha viewer szerepkör néz rá. A detail-oldal a
-`versions` tömböt nem is használja.
+mezőket (`apiKeys`), akkor is, ha viewer szerepkör néz rá / runtime csak a
+memória-tartalmat kéri.
 
-**Javaslat:** `findByIdForDisplay` (memória-tartalom + recipe + resources) vs
-`findByIdForAdmin` (a teljes kép). A `loadAgentDetailPageData` már ismeri az
-`isAdmin` flaget a hívás előtt.
+**Javaslat:** `findByIdForDisplay` vs `findByIdForRuntime` (memory current + model only).
 
 ---
 

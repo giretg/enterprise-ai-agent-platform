@@ -3459,12 +3459,11 @@ export async function getAgentMemoryOverview(input: { agentId: string; projectKe
       repositories.memoryVersions.listForScope({ memoryId, projectKey: parsed.projectKey, workstreamKey, limit: 20 }),
     ])
 
-    const [proposed, modified, ticketed] = await Promise.all([
-      repositories.memoryCandidates.listByRun({ memoryId, status: 'proposed' }),
-      repositories.memoryCandidates.listByRun({ memoryId, status: 'modified' }),
-      repositories.memoryCandidates.listByRun({ memoryId, status: 'ticketed' }),
-    ])
-    const pending = [...proposed, ...modified, ...ticketed].filter((c) => c.projectKey === parsed.projectKey)
+    const pending = await repositories.memoryCandidates.listByRun({
+      memoryId,
+      projectKey: parsed.projectKey,
+      statuses: ['proposed', 'modified', 'ticketed'],
+    })
     const candidateQueue = pending.filter((c) => c.proposedBy !== 'maintenance_job')
     const maintenanceProposals = pending.filter((c) => c.proposedBy === 'maintenance_job')
 

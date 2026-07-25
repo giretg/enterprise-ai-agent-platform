@@ -665,11 +665,17 @@ export async function kbSearch(self: ToolBrokerService,
 
     const connectorIds = await resolveKbConnectorScope(self, agentId, connector)
 
-    const [okfChunkHits, supersededList, documentLists] = await Promise.all([
+    const [okfChunkHits, supersededList] = await Promise.all([
       self.knowledgeChunks.searchChunks({ connectorIds, query: args.query, limit: k }),
       self.knowledgeArtifacts.publishedSourceDocumentIds(connectorIds),
-      Promise.all(connectorIds.map((id) => self.tools.findDocumentsForConnector(id))),
     ])
+
+    // Legacy docs: egy batch query, a published OKF forrásdokumentumok kihagyásával
+    // (nincs nyers+parafrázis dupla betöltés), hard cap a stem-scoring CPU/IO miatt.
+    const docs = await self.tools.findDocumentsForConnectors(connectorIds, {
+      excludeIds: supersededList,
+      take: 200,
+    })
 
     const hits = assembleKbHits({
       query: args.query,
@@ -678,7 +684,7 @@ export async function kbSearch(self: ToolBrokerService,
       memoryId: detail.agent.memoryId,
       memoryVersion: detail.memoryVersion,
       okfChunkHits,
-      docs: documentLists.flat(),
+      docs,
       supersededDocIds: new Set(supersededList),
     })
 

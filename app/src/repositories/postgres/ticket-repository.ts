@@ -290,24 +290,38 @@ export class PostgresTicketRepository implements TicketRepository {
   }
 
   async getTransitionStats(since?: Date) {
-    const rows = await prisma.ticketTransition.findMany({
-      where: since ? { ts: { gte: since } } : undefined,
-      select: { toState: true, actorType: true },
-    })
+    const where = since ? { ts: { gte: since } } : undefined
+    const [total, byActor, byState] = await Promise.all([
+      prisma.ticketTransition.count({ where }),
+      prisma.ticketTransition.groupBy({
+        by: ['actorType'],
+        where,
+        _count: { _all: true },
+      }),
+      prisma.ticketTransition.groupBy({
+        by: ['toState'],
+        where,
+        _count: { _all: true },
+      }),
+    ])
 
-    const stats = {
-      total: rows.length,
-      byActor: { human: 0, agent: 0, system: 0 },
-      toApproved: 0,
-      toRejected: 0,
-      toDone: 0,
+    const actorCounts = Object.fromEntries(
+      byActor.map((row) => [row.actorType, row._count._all]),
+    ) as Record<string, number>
+    const stateCounts = Object.fromEntries(
+      byState.map((row) => [row.toState, row._count._all]),
+    ) as Record<string, number>
+
+    return {
+      total,
+      byActor: {
+        human: actorCounts.human ?? 0,
+        agent: actorCounts.agent ?? 0,
+        system: actorCounts.system ?? 0,
+      },
+      toApproved: stateCounts.approved ?? 0,
+      toRejected: stateCounts.rejected ?? 0,
+      toDone: stateCounts.done ?? 0,
     }
-    for (const row of rows) {
-      stats.byActor[row.actorType] += 1
-      if (row.toState === 'approved') stats.toApproved += 1
-      else if (row.toState === 'rejected') stats.toRejected += 1
-      else if (row.toState === 'done') stats.toDone += 1
-    }
-    return stats
   }
 }

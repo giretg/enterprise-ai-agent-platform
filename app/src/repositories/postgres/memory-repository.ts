@@ -370,13 +370,21 @@ export class PostgresMemoryCandidateRepository implements MemoryCandidateReposit
     proposedByRunId?: string | null
     proposedInThreadId?: string | null
     status?: string
+    statuses?: string[]
+    projectKey?: string
   }): Promise<MemoryCandidate[]> {
+    const statusFilter = params.statuses?.length
+      ? { status: { in: params.statuses } }
+      : params.status
+        ? { status: params.status }
+        : {}
     return prisma.memoryCandidate.findMany({
       where: {
         memoryId: params.memoryId,
         ...(params.proposedByRunId ? { proposedByRunId: params.proposedByRunId } : {}),
         ...(params.proposedInThreadId ? { proposedInThreadId: params.proposedInThreadId } : {}),
-        ...(params.status ? { status: params.status } : {}),
+        ...(params.projectKey ? { projectKey: params.projectKey } : {}),
+        ...statusFilter,
       },
       orderBy: { createdAt: 'asc' },
     })

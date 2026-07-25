@@ -175,41 +175,61 @@ export class PostgresSandboxAppRepository implements SandboxAppRepository {
       orderBy: { updatedAt: 'desc' },
       take: limit + 1,
       ...(filter.cursor ? { cursor: { id: filter.cursor }, skip: 1 } : {}),
-      include: { versions: true },
     })
 
     const hasMore = rows.length > limit
     const page = hasMore ? rows.slice(0, limit) : rows
-    const items: SandboxAppListItem[] = page.map((app) => {
-      const { versions, ...rest } = app
-      const activeVersion =
-        versions.find((v) => v.id === app.activeVersionId) ?? null
-      return { ...rest, activeVersion }
-    })
+    const activeVersionIds = page
+      .map((app) => app.activeVersionId)
+      .filter((id): id is string => Boolean(id))
+    const activeVersions =
+      activeVersionIds.length === 0
+        ? []
+        : await prisma.sandboxAppVersion.findMany({
+            where: { id: { in: activeVersionIds } },
+          })
+    const activeById = new Map(activeVersions.map((version) => [version.id, version]))
+
+    const items: SandboxAppListItem[] = page.map((app) => ({
+      ...app,
+      activeVersion: app.activeVersionId ? (activeById.get(app.activeVersionId) ?? null) : null,
+    }))
 
     return { items, nextCursor: hasMore ? page[page.length - 1]?.id : undefined }
   }
 
   async getRegistryMetrics(tenantId: string | null): Promise<SandboxAppRegistryMetrics> {
-    const apps = await prisma.sandboxApp.findMany({
-      where: { tenantId },
-      select: { id: true, status: true, createdByType: true },
-    })
+    const [apps, byStatus, byCreator, versionAgg] = await Promise.all([
+      prisma.sandboxApp.findMany({
+        where: { tenantId },
+        select: { id: true },
+      }),
+      prisma.sandboxApp.groupBy({
+        by: ['status'],
+        where: { tenantId },
+        _count: { _all: true },
+      }),
+      prisma.sandboxApp.groupBy({
+        by: ['createdByType'],
+        where: { tenantId },
+        _count: { _all: true },
+      }),
+      prisma.sandboxAppVersion.aggregate({
+        where: { tenantId },
+        _count: { _all: true },
+        _avg: { artifactSizeBytes: true },
+      }),
+    ])
 
     const appsByStatus: Record<string, number> = {}
+    for (const row of byStatus) appsByStatus[row.status] = row._count._all
+
     let agent = 0
     let user = 0
-    for (const a of apps) {
-      appsByStatus[a.status] = (appsByStatus[a.status] ?? 0) + 1
-      if (a.createdByType === 'agent') agent += 1
-      else user += 1
+    for (const row of byCreator) {
+      if (row.createdByType === 'agent') agent = row._count._all
+      else user += row._count._all
     }
-
-    const versionAgg = await prisma.sandboxAppVersion.aggregate({
-      where: { tenantId },
-      _count: { _all: true },
-      _avg: { artifactSizeBytes: true },
-    })
 
     const appsTotal = apps.length
     const versionsTotal = versionAgg._count._all

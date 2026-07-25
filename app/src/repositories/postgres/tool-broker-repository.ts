@@ -120,10 +120,31 @@ export class PostgresToolBrokerRepository implements ToolBrokerRepository {
   async findDocumentsForConnector(
     connectorId: string,
   ): Promise<{ id: string; filename: string; extractedText: string | null }[]> {
+    // Legacy stem-scoring fallback — hard cap, hogy egy nagy KB ne húzza be
+    // a teljes extractedText korpuszt minden kb_search hívásra.
     return prisma.document.findMany({
       where: { connectorId, status: 'processed' },
       select: { id: true, filename: true, extractedText: true },
       orderBy: { createdAt: 'desc' },
+      take: 200,
+    })
+  }
+
+  async findDocumentsForConnectors(
+    connectorIds: string[],
+    opts?: { excludeIds?: string[]; take?: number },
+  ): Promise<{ id: string; filename: string; extractedText: string | null }[]> {
+    if (connectorIds.length === 0) return []
+    const excludeIds = opts?.excludeIds?.filter(Boolean) ?? []
+    return prisma.document.findMany({
+      where: {
+        connectorId: { in: connectorIds },
+        status: 'processed',
+        ...(excludeIds.length > 0 ? { id: { notIn: excludeIds } } : {}),
+      },
+      select: { id: true, filename: true, extractedText: true },
+      orderBy: { createdAt: 'desc' },
+      take: opts?.take ?? 200,
     })
   }
 
@@ -132,16 +153,17 @@ export class PostgresToolBrokerRepository implements ToolBrokerRepository {
   }
 
   async getToolSummary(since?: Date): Promise<{ calls: number; denied: number; errors: number }> {
-    const rows = await prisma.toolCall.findMany({
+    const grouped = await prisma.toolCall.groupBy({
+      by: ['status'],
       where: since ? { createdAt: { gte: since } } : undefined,
-      select: { status: true },
+      _count: { _all: true },
     })
 
-    return rows.reduce(
+    return grouped.reduce(
       (acc, row) => ({
-        calls: acc.calls + 1,
-        denied: acc.denied + (row.status === 'denied' ? 1 : 0),
-        errors: acc.errors + (row.status === 'error' ? 1 : 0),
+        calls: acc.calls + row._count._all,
+        denied: acc.denied + (row.status === 'denied' ? row._count._all : 0),
+        errors: acc.errors + (row.status === 'error' ? row._count._all : 0),
       }),
       { calls: 0, denied: 0, errors: 0 },
     )

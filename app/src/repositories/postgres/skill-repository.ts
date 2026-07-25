@@ -98,11 +98,13 @@ export class PostgresSkillRepository implements SkillRepository {
   async findByNameInScope(name: string, tenantId: string | null): Promise<Skill | null> {
     const normalized = name.trim().toLowerCase()
     if (!normalized) return null
-    const candidates = await prisma.skill.findMany({
-      where: { tenantId },
-      select: { id: true, name: true, description: true, catalogScope: true, tenantId: true, sourceType: true, provenance: true, license: true, riskTier: true, createdAt: true },
+    // DB-oldali case-insensitive egyezés — ne töltsük be a tenant összes skilljét JS-be.
+    return prisma.skill.findFirst({
+      where: {
+        tenantId,
+        name: { equals: normalized, mode: 'insensitive' },
+      },
     })
-    return candidates.find((s) => s.name.trim().toLowerCase() === normalized) ?? null
   }
 
   async findVersionById(versionId: string): Promise<(SkillVersion & { skill: Skill }) | null> {

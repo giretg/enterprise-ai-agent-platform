@@ -1712,6 +1712,7 @@ model Document {
   artifacts                KnowledgeArtifact[]
   ticketCommentAttachments TicketCommentAttachment[]
 
+  @@index([connectorId, status])
   @@map("documents")
 }
 
@@ -2519,6 +2520,10 @@ model ModelCall {
   ticket       Ticket?       @relation(fields: [ticketId], references: [id])
   conversation Conversation? @relation(fields: [conversationId], references: [id])
 
+  @@index([createdAt])
+  @@index([agentId, createdAt])
+  @@index([ticketId])
+  @@index([conversationId])
   @@map("model_calls")
 }
 
@@ -2605,6 +2610,10 @@ model ToolCall {
   connector    Connector?    @relation(fields: [connectorId], references: [id])
 
   @@index([trustClass, createdAt])
+  @@index([createdAt])
+  @@index([agentId, createdAt])
+  @@index([ticketId])
+  @@index([conversationId])
   @@map("tool_calls")
 }
 

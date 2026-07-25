@@ -93,31 +93,22 @@ function assertAgentReachable(agent: { tenantId: string | null }, tenantId: stri
 async function loadMemoryProjectKeys(agentId: string, memoryId: string): Promise<string[]> {
   const keys = new Set<string>([DEFAULT_MEMORY_PROJECT_KEY])
 
-  const [convRows, chunkRows, candidateRows, versionRows] = await Promise.all([
-    prisma.conversation.findMany({
-      where: { agentId },
-      distinct: ['projectKey'],
-      select: { projectKey: true },
-    }),
-    prisma.memoryChunk.findMany({
-      where: { memoryId },
-      distinct: ['projectKey'],
-      select: { projectKey: true },
-    }),
-    prisma.memoryCandidate.findMany({
-      where: { memoryId },
-      distinct: ['projectKey'],
-      select: { projectKey: true },
-    }),
-    prisma.memoryVersion.findMany({
-      where: { memoryId },
-      distinct: ['projectKey'],
-      select: { projectKey: true },
-    }),
-  ])
+  // Egy körös UNION a négy distinct findMany helyett — kevesebb round-trip, ugyanaz a kulcshalmaz.
+  const rows = await prisma.$queryRaw<Array<{ project_key: string | null }>>`
+    SELECT DISTINCT project_key FROM (
+      SELECT project_key FROM conversations WHERE agent_id = ${agentId}::uuid
+      UNION ALL
+      SELECT project_key FROM memory_chunks WHERE memory_id = ${memoryId}::uuid
+      UNION ALL
+      SELECT project_key FROM memory_candidates WHERE memory_id = ${memoryId}::uuid
+      UNION ALL
+      SELECT project_key FROM memory_versions WHERE memory_id = ${memoryId}::uuid
+    ) AS keys
+    WHERE project_key IS NOT NULL AND btrim(project_key) <> ''
+  `
 
-  for (const row of [...convRows, ...chunkRows, ...candidateRows, ...versionRows]) {
-    const key = row.projectKey?.trim()
+  for (const row of rows) {
+    const key = row.project_key?.trim()
     if (key) keys.add(key)
   }
 
@@ -176,12 +167,12 @@ async function loadMemoryOverview(memoryId: string, projectKey: string) {
       }),
     ])
 
-  const [proposed, modified, ticketed] = await Promise.all([
-    repositories.memoryCandidates.listByRun({ memoryId, status: 'proposed' }),
-    repositories.memoryCandidates.listByRun({ memoryId, status: 'modified' }),
-    repositories.memoryCandidates.listByRun({ memoryId, status: 'ticketed' }),
-  ])
-  const pending = [...proposed, ...modified, ...ticketed].filter((c) => c.projectKey === projectKey)
+  // Egy lekérdezés projectKey + status IN — a korábbi 3×listByRun + app-oldali filter helyett.
+  const pending = await repositories.memoryCandidates.listByRun({
+    memoryId,
+    projectKey,
+    statuses: ['proposed', 'modified', 'ticketed'],
+  })
 
   return {
     projectState: { focus, decisions, openTasks, constraints, artifacts },

@@ -783,6 +783,9 @@ export interface MemoryCandidateRepository {
     proposedByRunId?: string | null
     proposedInThreadId?: string | null
     status?: string
+    /** Több státusz egy körben (`status` helyett / mellett). */
+    statuses?: string[]
+    projectKey?: string
   }): Promise<MemoryCandidate[]>
   /** WP-6 — jóváhagyás/elutasítás/módosítás/ticketesítés állapotváltása. */
   updateStatus(
@@ -1017,6 +1020,11 @@ export interface ToolBrokerRepository {
   findConnectorsForAgent(agentId: string): Promise<{ connector: Connector; accessMode: ConnectorAccessMode; agentSecretAlias: string | null }[]>
   findDocumentsForConnector(
     connectorId: string,
+  ): Promise<{ id: string; filename: string; extractedText: string | null }[]>
+  /** Batch KB legacy-doc load: egy kör, superseded kizárás, hard cap. */
+  findDocumentsForConnectors(
+    connectorIds: string[],
+    opts?: { excludeIds?: string[]; take?: number },
   ): Promise<{ id: string; filename: string; extractedText: string | null }[]>
   createToolCall(data: Omit<ToolCall, 'id' | 'createdAt'>): Promise<ToolCall>
   getToolSummary(since?: Date): Promise<{ calls: number; denied: number; errors: number }>
