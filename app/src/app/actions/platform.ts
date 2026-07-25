@@ -106,6 +106,7 @@ import {
   kbArtifactReviewSchema,
   rollbackMemorySchema,
   memoryCandidateIdSchema,
+  consequenceApprovalIdSchema,
   rejectMemoryCandidateSchema,
   modifyMemoryCandidateSchema,
   approveMemoryCandidateTicketSchema,
@@ -3299,6 +3300,37 @@ export async function rejectMemoryCandidate(input: { candidateId: string; reason
     return result.ok ? ok(result) : fail(result.reason)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to reject memory candidate')
+  }
+}
+
+/** issue #97 — következmény-kapu: mellékhatásos tool jóváhagyása (szerveroldali invoke). */
+export async function approveConsequenceApproval(input: { approvalId: string }) {
+  try {
+    const user = await requireTenantRole('operator')
+    const parsed = consequenceApprovalIdSchema.parse(input)
+    const result = await services.consequenceApproval.approve(parsed.approvalId, {
+      id: user.user.id,
+      tenantId: user.activeTenantId,
+      role: user.activeTenantRole,
+    })
+    return result.ok ? ok(result) : fail(result.reason)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to approve consequence action')
+  }
+}
+
+export async function rejectConsequenceApproval(input: { approvalId: string }) {
+  try {
+    const user = await requireTenantRole('operator')
+    const parsed = consequenceApprovalIdSchema.parse(input)
+    const result = await services.consequenceApproval.reject(parsed.approvalId, {
+      id: user.user.id,
+      tenantId: user.activeTenantId,
+      role: user.activeTenantRole,
+    })
+    return result.ok ? ok(result) : fail(result.reason)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to reject consequence action')
   }
 }
 

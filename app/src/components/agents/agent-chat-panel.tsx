@@ -4,6 +4,7 @@ import Link from 'next/link'
 import { useCallback, useEffect, useId, useMemo, useRef, useState, useTransition } from 'react'
 import { createPortal, flushSync } from 'react-dom'
 import {
+  approveConsequenceApproval,
   approveMemoryCandidate,
   archiveConversation,
   createAgentTaskTicket,
@@ -13,6 +14,7 @@ import {
   loadAgentChatMessages,
   modifyMemoryCandidate,
   promoteConversationWithAi,
+  rejectConsequenceApproval,
   rejectMemoryCandidate,
   ticketMemoryCandidate,
   uploadDocument,
@@ -52,11 +54,13 @@ import {
   type ThinkingTraceControlState,
 } from '@/lib/chat-thinking-trace'
 import {
+  appendSkillSlashToken,
   filterSkillsForSlashQuery,
   getActiveSlashQuery,
   insertSkillSlashToken,
   skillNameToSlashToken,
 } from '@/lib/skill/skill-slash-command'
+import { getToolUiLabel } from '@/lib/tool-ui-labels'
 
 type PendingAttachment = {
   id: string
@@ -80,6 +84,7 @@ type ChatMessage = {
   ticketRefId?: string | null
   activities?: AgentActivity[]
   memoryCandidates?: MemoryCandidateCard[]
+  consequenceApprovals?: ConsequenceApprovalCard[]
   /**
    * Chat "thinking-trace" spec §6 — élő, streamelt reasoning-szöveg körönként
    * (turnId → felhalmozott szöveg). Csak a folyamat alatti megjelenítésre; nem
@@ -130,6 +135,16 @@ type MemoryCandidateCard = {
   resultMessage?: string
 }
 
+/** issue #97 — következmény-kapu pending mellékhatás a chat-kártyán. */
+type ConsequenceApprovalCard = {
+  approvalId: string
+  toolName: string
+  summary: string
+  expiresAt: string
+  status: 'pending' | 'approved' | 'rejected'
+  resultMessage?: string
+}
+
 type AgentChatStreamEvent =
   /**
    * A stream legelső eseménye: a szerveren futó forduló azonosítója. A Stop és a
@@ -148,6 +163,10 @@ type AgentChatStreamEvent =
   | { type: 'meta'; conversationId: string; userMessageId: string }
   | { type: 'activity'; activity: AgentActivity }
   | { type: 'memory_candidate'; candidate: Omit<MemoryCandidateCard, 'status' | 'resultMessage'> }
+  | {
+      type: 'consequence_approval'
+      approval: Omit<ConsequenceApprovalCard, 'status' | 'resultMessage'>
+    }
   | { type: 'thinking'; turnId: string; delta: string }
   | { type: 'token'; chunk: string }
   | {
@@ -230,6 +249,16 @@ function upsertMemoryCandidate(
   return current.map((c, i) => (i === index ? { ...c, ...next } : c))
 }
 
+function upsertConsequenceApproval(
+  approvals: ConsequenceApprovalCard[] | undefined,
+  next: ConsequenceApprovalCard,
+): ConsequenceApprovalCard[] {
+  const current = approvals ?? []
+  const index = current.findIndex((a) => a.approvalId === next.approvalId)
+  if (index < 0) return [...current, next]
+  return current.map((a, i) => (i === index ? { ...a, ...next } : a))
+}
+
 const MEMORY_CANDIDATE_TYPE_LABEL: Record<string, string> = {
   focus: 'Fókusz',
   decision: 'Döntés',
@@ -276,6 +305,11 @@ function activityLiveThinking(
   return thinking?.[activity.id]?.trim() || undefined
 }
 
+function activityDisplayTitle(activity: AgentActivity): string {
+  if (activity.kind === 'tool') return getToolUiLabel(activity.title).label
+  return activity.title
+}
+
 function AgentActivityRow({
   activity,
   thinking,
@@ -288,6 +322,7 @@ function AgentActivityRow({
 }) {
   const liveThinking = activityLiveThinking(activity, thinking)
   const running = activity.status === 'running'
+  const title = liveThinking ? 'Gondolkodás' : activityDisplayTitle(activity)
 
   return (
     <div
@@ -307,8 +342,8 @@ function AgentActivityRow({
       />
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-baseline gap-2">
-          <span className="truncate font-medium text-ink">
-            {liveThinking ? 'Gondolkodás' : activity.title}
+          <span className="truncate font-medium text-ink" title={activity.title}>
+            {title}
           </span>
           <span className="shrink-0 text-[10px] uppercase tracking-wide text-ink-faint">
             {activityStatusLabel(activity.status)}
@@ -353,7 +388,7 @@ function AgentActivityPanel({
   const latest = running ?? activities[activities.length - 1]
   const hasError = activities.some((activity) => activity.status === 'error')
   const headerHint = running
-    ? `${running.title} fut`
+    ? `${activityDisplayTitle(running)} fut`
     : hasError
       ? 'Műveletek hibával'
       : 'Műveletek kész'
@@ -572,16 +607,125 @@ function MemoryCandidatesPanel({
   )
 }
 
+/**
+ * issue #97 — következmény-kapu kártya: külső tartalom után blokkolt mellékhatás
+ * (xlsx/file/email/…). Jóváhagyáskor a szerver lefuttatja a toolt — az agent
+ * nem indul újra.
+ */
+function ConsequenceApprovalsPanel({
+  approvals,
+  onUpdate,
+}: {
+  approvals: ConsequenceApprovalCard[]
+  onUpdate: (approvalId: string, patch: Partial<ConsequenceApprovalCard>) => void
+}) {
+  const [pending, startTransition] = useTransition()
+  const openCount = approvals.filter((a) => a.status === 'pending').length
+
+  const runApprove = (approvalId: string) => {
+    startTransition(async () => {
+      const res = await approveConsequenceApproval({ approvalId })
+      if (!res.success) {
+        onUpdate(approvalId, { resultMessage: res.error })
+        return
+      }
+      onUpdate(approvalId, { status: 'approved', resultMessage: undefined })
+    })
+  }
+
+  const runReject = (approvalId: string) => {
+    startTransition(async () => {
+      const res = await rejectConsequenceApproval({ approvalId })
+      onUpdate(approvalId, {
+        status: res.success ? 'rejected' : 'pending',
+        resultMessage: res.success ? undefined : res.error,
+      })
+    })
+  }
+
+  return (
+    <div className="mb-3 rounded-lg border border-honey/40 bg-honey/10 px-3 py-2 text-xs text-ink-soft">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <span className="font-medium text-ink">
+          Jóváhagyásra váró művelet{approvals.length > 1 ? `ek (${approvals.length})` : ''}
+        </span>
+        {openCount > 1 && (
+          <button
+            type="button"
+            disabled={pending}
+            className="rounded-full bg-sage/20 px-3 py-1 text-[11px] font-semibold text-sage disabled:opacity-50"
+            onClick={() =>
+              approvals.filter((a) => a.status === 'pending').forEach((a) => runApprove(a.approvalId))
+            }
+          >
+            Jóváhagyom mind
+          </button>
+        )}
+      </div>
+      <p className="mb-2 text-[11px] text-ink-faint">
+        Külső forrás miatt a platform nem futtatta le automatikusan. A gomb lefuttatja a műveletet —
+        nem kell újraírnod a chatben.
+      </p>
+      <div className="space-y-2">
+        {approvals.map((a) => (
+          <div key={a.approvalId} className="rounded-md border border-line/70 bg-card/40 px-2.5 py-2">
+            <div className="flex flex-wrap items-baseline gap-2">
+              <span className="rounded-full bg-card px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-faint">
+                {getToolUiLabel(a.toolName).label}
+              </span>
+              <span className="font-medium text-ink">{a.summary}</span>
+              <span className="text-[10px] text-ink-faint">
+                {a.status === 'pending'
+                  ? 'Jóváhagyásra vár'
+                  : a.status === 'approved'
+                    ? 'Jóváhagyva — lefuttatva'
+                    : 'Elutasítva'}
+              </span>
+            </div>
+            {a.resultMessage && <p className="mt-1 text-[11px] text-coral">{a.resultMessage}</p>}
+            {a.status === 'pending' && (
+              <div className="mt-2 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  disabled={pending}
+                  className="rounded-full bg-sage/20 px-2.5 py-1 text-[11px] font-semibold text-sage disabled:opacity-50"
+                  onClick={() => runApprove(a.approvalId)}
+                >
+                  Jóváhagyom
+                </button>
+                <button
+                  type="button"
+                  disabled={pending}
+                  className="rounded-full bg-card px-2.5 py-1 text-[11px] font-semibold text-ink-faint disabled:opacity-50"
+                  onClick={() => runReject(a.approvalId)}
+                >
+                  Elutasítom
+                </button>
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function MessageBubble({
   message,
   isBusy,
   onDeleteContent,
   onMemoryCandidateUpdate,
+  onConsequenceApprovalUpdate,
 }: {
   message: ChatMessage
   isBusy: boolean
   onDeleteContent: (messageId: string) => void
   onMemoryCandidateUpdate: (messageId: string, candidateId: string, patch: Partial<MemoryCandidateCard>) => void
+  onConsequenceApprovalUpdate: (
+    messageId: string,
+    approvalId: string,
+    patch: Partial<ConsequenceApprovalCard>,
+  ) => void
 }) {
   const isUser = message.role === 'user'
   const isDeleted = Boolean(message.contentDeletedAt)
@@ -614,6 +758,14 @@ function MessageBubble({
               <MemoryCandidatesPanel
                 candidates={message.memoryCandidates}
                 onUpdate={(candidateId, patch) => onMemoryCandidateUpdate(message.id, candidateId, patch)}
+              />
+            )}
+            {!isUser && message.consequenceApprovals && message.consequenceApprovals.length > 0 && (
+              <ConsequenceApprovalsPanel
+                approvals={message.consequenceApprovals}
+                onUpdate={(approvalId, patch) =>
+                  onConsequenceApprovalUpdate(message.id, approvalId, patch)
+                }
               />
             )}
             {message.text &&
@@ -882,13 +1034,14 @@ export function AgentChatPanel({
   }, [])
 
   useEffect(() => {
-    if (!open) return
+    // Tálcán (minimized) a háttéroldal görgethető maradjon — lock csak nyitott ablaknál.
+    if (!open || minimized) return
     const prevOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
     return () => {
       document.body.style.overflow = prevOverflow
     }
-  }, [open])
+  }, [open, minimized])
 
   useEffect(() => {
     if (!open) streamAbortRef.current?.abort()
@@ -1125,6 +1278,26 @@ export function AgentChatPanel({
     [input, inputCursor, slashContext],
   )
 
+  const insertSkillFromPicker = useCallback(
+    (skill: ChatSkillOption) => {
+      const next = appendSkillSlashToken({
+        text: input,
+        cursorPos: inputCursor,
+        token: skillNameToSlashToken(skill.name),
+      })
+      setInput(next.text)
+      setInputCursor(next.cursorPos)
+      setSlashSelectedIndex(0)
+      requestAnimationFrame(() => {
+        const textarea = textareaRef.current
+        if (!textarea) return
+        textarea.focus()
+        textarea.setSelectionRange(next.cursorPos, next.cursorPos)
+      })
+    },
+    [input, inputCursor],
+  )
+
   const syncInputCursor = useCallback((target: HTMLTextAreaElement) => {
     setInputCursor(target.selectionStart ?? 0)
   }, [])
@@ -1166,6 +1339,24 @@ export function AgentChatPanel({
                 ...m,
                 memoryCandidates: m.memoryCandidates?.map((c) =>
                   c.candidateId === candidateId ? { ...c, ...patch } : c,
+                ),
+              }
+            : m,
+        ),
+      )
+    },
+    [],
+  )
+
+  const handleConsequenceApprovalUpdate = useCallback(
+    (messageId: string, approvalId: string, patch: Partial<ConsequenceApprovalCard>) => {
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === messageId
+            ? {
+                ...m,
+                consequenceApprovals: m.consequenceApprovals?.map((a) =>
+                  a.approvalId === approvalId ? { ...a, ...patch } : a,
                 ),
               }
             : m,
@@ -1790,6 +1981,22 @@ export function AgentChatPanel({
                   ),
                 )
               })
+            } else if (event.type === 'consequence_approval' && event.approval) {
+              flushSync(() => {
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === agentBubbleMessageId
+                      ? {
+                          ...m,
+                          consequenceApprovals: upsertConsequenceApproval(m.consequenceApprovals, {
+                            ...event.approval,
+                            status: 'pending',
+                          }),
+                        }
+                      : m,
+                  ),
+                )
+              })
             } else if (event.type === 'token' && typeof event.chunk === 'string') {
               accumulatedReply += event.chunk
               flushSync(() => {
@@ -2166,6 +2373,7 @@ export function AgentChatPanel({
                       isBusy={controlsBusy}
                       onDeleteContent={handleDeleteMessageContent}
                       onMemoryCandidateUpdate={handleMemoryCandidateUpdate}
+                      onConsequenceApprovalUpdate={handleConsequenceApprovalUpdate}
                     />
                   ))}
                   {isAgentTyping &&
@@ -2277,6 +2485,33 @@ export function AgentChatPanel({
           )}
 
           <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-ink-soft">
+            <label className="flex min-w-[10rem] items-center gap-2">
+              <span className="inline-flex shrink-0 items-center gap-1.5">
+                Skill
+                <FieldHelp description="Skill kiválasztásával a /skill-név token bekerül az üzenetbe — ugyanúgy, mintha / -tel írtad volna be." />
+              </span>
+              <select
+                value=""
+                onChange={(e) => {
+                  const versionId = e.target.value
+                  if (!versionId) return
+                  const skill = agentSkills.find((s) => s.skillVersionId === versionId)
+                  if (skill) insertSkillFromPicker(skill)
+                }}
+                disabled={composerDisabled || agentSkills.length === 0}
+                className="min-w-[9rem] max-w-[14rem] rounded-lg border border-line bg-night-2 px-2 py-1.5 text-xs text-ink"
+                aria-label="Skill beszúrása"
+              >
+                <option value="">
+                  {agentSkills.length === 0 ? 'Nincs skill' : 'Válassz…'}
+                </option>
+                {agentSkills.map((skill) => (
+                  <option key={skill.skillVersionId} value={skill.skillVersionId}>
+                    /{skillNameToSlashToken(skill.name)}
+                  </option>
+                ))}
+              </select>
+            </label>
             <label className="flex min-w-[13rem] flex-1 items-center gap-2">
               <span className="inline-flex shrink-0 items-center gap-1.5">
                 Ütemezés

@@ -35,6 +35,8 @@ import type {
   MemoryChunk,
   MemoryCandidate,
   MemoryVersion,
+  ConsequenceApproval,
+  ConsequenceApprovalStatus,
   Message,
   MessageCriticality,
   MessageRole,
@@ -796,6 +798,31 @@ export interface MemoryCandidateRepository {
       payload?: unknown
     },
   ): Promise<MemoryCandidate>
+}
+
+/** Következmény-kapu (issue #97) — mellékhatásos tool pending jóváhagyásai. */
+export interface ConsequenceApprovalRepository {
+  create(
+    data: Omit<ConsequenceApproval, 'id' | 'createdAt' | 'updatedAt'>,
+  ): Promise<ConsequenceApproval>
+  findById(id: string): Promise<ConsequenceApproval | null>
+  /**
+   * CAS állapotváltás: csak akkor sikerül, ha a sor még `expectedStatus`.
+   * Concurrent approve/reject ellen — a vesztes null-t kap.
+   */
+  casUpdateStatus(
+    id: string,
+    expectedStatus: ConsequenceApprovalStatus,
+    patch: {
+      status: ConsequenceApprovalStatus
+      approvedBy?: string | null
+      approvedAt?: Date | null
+      rejectedBy?: string | null
+      rejectedAt?: Date | null
+      resultMeta?: unknown
+      blockedToolCallId?: string | null
+    },
+  ): Promise<ConsequenceApproval | null>
 }
 
 /**

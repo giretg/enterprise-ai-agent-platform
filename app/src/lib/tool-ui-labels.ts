@@ -216,6 +216,16 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
     description: 'Ticket eredményének / állapotának visszaírása a Kanban táblára.',
   },
 
+  // Belső / meta eszközök (chat aktivitás)
+  tool_result_read: {
+    label: 'Eszköz-eredmény olvasása',
+    description: 'Korábbi eszközhívás archivált eredményének beolvasása.',
+  },
+  load_skill: {
+    label: 'Skill betöltése',
+    description: 'Hozzárendelt skill promptjának betöltése a beszélgetésbe.',
+  },
+
   // HTTP API
   http_api_get: {
     label: 'API olvasás (GET)',

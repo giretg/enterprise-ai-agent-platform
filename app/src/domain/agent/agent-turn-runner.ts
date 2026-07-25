@@ -18,7 +18,11 @@
  * a lánc további tiketjeié (#63/#66); a lock-tulajdonjog viszont már itt a
  * perzisztált forduló-rekordé.
  */
-import type { ToolLoopActivityEvent, ToolLoopMemoryCandidateEvent } from './chat-tool-loop'
+import type {
+  ToolLoopActivityEvent,
+  ToolLoopConsequenceApprovalEvent,
+  ToolLoopMemoryCandidateEvent,
+} from './chat-tool-loop'
 
 /** A chat-stream eseményei — a POST SSE és a nem-streamelő út közös nyelve. */
 export type AgentChatStreamEvent =
@@ -37,6 +41,7 @@ export type AgentChatStreamEvent =
   | { type: 'meta'; conversationId: string; userMessageId: string }
   | { type: 'activity'; activity: ToolLoopActivityEvent }
   | { type: 'memory_candidate'; candidate: ToolLoopMemoryCandidateEvent }
+  | { type: 'consequence_approval'; approval: ToolLoopConsequenceApprovalEvent }
   | { type: 'thinking'; turnId: string; delta: string }
   | { type: 'token'; chunk: string }
   | {

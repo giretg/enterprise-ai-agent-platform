@@ -248,6 +248,17 @@ enum ToolCallStatus {
   error
 }
 
+/// Következmény-kapu (issue #97) — külső tartalom után mellékhatásos tool
+/// emberi jóváhagyásra vár. A teljes tool-args itt él (az argsMeta csak összefoglaló).
+enum ConsequenceApprovalStatus {
+  pending
+  approved
+  rejected
+  expired
+
+  @@map("consequence_approval_status")
+}
+
 // issue #97 — bizalmi osztály minden eszköz-eredményen. Determinisztikus,
 // tool-nevenkénti besorolás (tool-trust-registry.ts); indexelt audit-oszlop.
 enum TrustClass {
@@ -796,13 +807,14 @@ model Agent {
   toolCalls          ToolCall[]
   writeGateTokens    WriteGateToken[]
   memoryChunks       MemoryChunk[]       @relation("MemoryChunkAgent")
-  memoryCandidates   MemoryCandidate[]   @relation("MemoryCandidateAgent")
-  evals              Eval[]
-  scheduledTasks     ScheduledTask[]
-  monitorDefinitions MonitorDefinition[]
-  conversations      Conversation[]
-  retentionPolicies  RetentionPolicy[]
-  channelAgentGrants ChannelAgentGrant[] @relation("ChannelAgentGrantAgent")
+  memoryCandidates        MemoryCandidate[]        @relation("MemoryCandidateAgent")
+  consequenceApprovals    ConsequenceApproval[]    @relation("ConsequenceApprovalAgent")
+  evals                   Eval[]
+  scheduledTasks          ScheduledTask[]
+  monitorDefinitions      MonitorDefinition[]
+  conversations           Conversation[]
+  retentionPolicies       RetentionPolicy[]
+  channelAgentGrants      ChannelAgentGrant[]      @relation("ChannelAgentGrantAgent")
 
   @@index([tenantId, status])
   @@index([tenantId, role])
@@ -1796,18 +1808,52 @@ model Conversation {
   agent           Agent            @relation(fields: [agentId], references: [id], onDelete: Cascade)
   createdBy       User             @relation("ConversationCreatedBy", fields: [createdById], references: [id])
   retentionPolicy RetentionPolicy? @relation(fields: [retentionPolicyId], references: [id])
-  messages        Message[]
-  tickets         Ticket[]
-  modelCalls      ModelCall[]
-  toolCalls       ToolCall[]
-  agentTurns      AgentTurn[]
-  channelSessions ChannelSession[]
+  messages             Message[]
+  tickets              Ticket[]
+  modelCalls           ModelCall[]
+  toolCalls            ToolCall[]
+  agentTurns           AgentTurn[]
+  channelSessions      ChannelSession[]
+  consequenceApprovals ConsequenceApproval[]
 
   @@index([tenantId, agentId, lastMessageAt])
   @@index([tenantId, createdById])
   @@index([retainUntil, legalHold])
   @@index([channel, channelExternalId])
   @@map("conversations")
+}
+
+/// Következmény-kapu pending jóváhagyás — a blokkolt mellékhatásos tool teljes
+/// args-ával. Jóváhagyáskor a szerver egyszer lefuttatja a toolt (agent újraindítás nélkül).
+model ConsequenceApproval {
+  id             String                     @id @default(uuid()) @db.Uuid
+  conversationId String                     @map("conversation_id") @db.Uuid
+  agentId        String                     @map("agent_id") @db.Uuid
+  agentVersion   Int                        @map("agent_version")
+  tenantId       String?                    @map("tenant_id") @db.Uuid
+  actingUserId   String?                    @map("acting_user_id") @db.Uuid
+  ticketId       String?                    @map("ticket_id") @db.Uuid
+  toolName       String                     @map("tool_name")
+  /// Teljes tool-args a broker.invoke újrafuttatásához (NEM a sanitizált argsMeta).
+  args           Json
+  status         ConsequenceApprovalStatus  @default(pending)
+  blockedToolCallId String?                 @map("blocked_tool_call_id") @db.Uuid
+  resultMeta     Json?                      @map("result_meta")
+  approvedBy     String?                    @map("approved_by") @db.Uuid
+  approvedAt     DateTime?                  @map("approved_at") @db.Timestamptz
+  rejectedBy     String?                    @map("rejected_by") @db.Uuid
+  rejectedAt     DateTime?                  @map("rejected_at") @db.Timestamptz
+  expiresAt      DateTime                   @map("expires_at") @db.Timestamptz
+  createdAt      DateTime                   @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt      DateTime                   @updatedAt @map("updated_at") @db.Timestamptz
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  agent        Agent        @relation("ConsequenceApprovalAgent", fields: [agentId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, status])
+  @@index([agentId, status])
+  @@index([expiresAt, status])
+  @@map("consequence_approvals")
 }
 
 model Message {

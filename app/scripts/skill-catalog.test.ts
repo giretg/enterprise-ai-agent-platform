@@ -46,6 +46,7 @@ import {
 } from '../src/lib/skill/skill-agent-migration'
 import { normalizeSkillName, skillNamesEqual } from '../src/lib/skill/skill-name'
 import {
+  appendSkillSlashToken,
   filterSkillsForSlashQuery,
   getActiveSlashQuery,
   insertSkillSlashToken,
@@ -342,6 +343,20 @@ async function main() {
     )
     assert.equal(filtered.length, 1)
     assert.equal(filtered[0]?.name, 'Beta')
+  })
+
+  await check('skill picker: /token beszúrása a kurzorhoz', () => {
+    const empty = appendSkillSlashToken({ text: '', cursorPos: 0, token: 'alpha' })
+    assert.equal(empty.text, '/alpha')
+    assert.equal(empty.cursorPos, 6)
+
+    const mid = appendSkillSlashToken({ text: 'hello world', cursorPos: 5, token: 'beta' })
+    assert.equal(mid.text, 'hello /beta world')
+    assert.equal(mid.cursorPos, 11)
+
+    const end = appendSkillSlashToken({ text: 'hello', cursorPos: 5, token: 'gamma' })
+    assert.equal(end.text, 'hello /gamma')
+    assert.equal(end.cursorPos, 12)
   })
 
   console.log('Live runtime-bekötés / load_skill tool (§WP-5)')

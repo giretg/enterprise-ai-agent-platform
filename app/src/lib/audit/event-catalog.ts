@@ -149,6 +149,9 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'tool.authorize_denied_orchestrator',
   'tool.call',
   'tool.call.denied',
+  'consequence.approval.pending',
+  'consequence.approval.approved',
+  'consequence.approval.rejected',
 
   // Delegation
   'delegation.create',

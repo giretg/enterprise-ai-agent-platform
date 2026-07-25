@@ -29,6 +29,7 @@ import {
   PostgresMemoryCandidateRepository,
   PostgresMemoryVersionRepository,
 } from './memory-repository'
+import { PostgresConsequenceApprovalRepository } from './consequence-approval-repository'
 import { PostgresRecipeRepository } from './recipe-repository'
 import { PostgresSkillRepository } from './skill-repository'
 import { PostgresPlaybookRepository } from './playbook-repository'
@@ -110,4 +111,5 @@ export const repositories = {
   memoryChunks: new PostgresMemoryChunkRepository(),
   memoryCandidates: new PostgresMemoryCandidateRepository(),
   memoryVersions: new PostgresMemoryVersionRepository(),
+  consequenceApprovals: new PostgresConsequenceApprovalRepository(),
 }

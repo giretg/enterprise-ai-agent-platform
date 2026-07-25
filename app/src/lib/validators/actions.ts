@@ -352,6 +352,10 @@ export const memoryCandidateIdSchema = z.object({
   candidateId: z.string().uuid(),
 })
 
+export const consequenceApprovalIdSchema = z.object({
+  approvalId: z.string().uuid(),
+})
+
 export const rejectMemoryCandidateSchema = z.object({
   candidateId: z.string().uuid(),
   reason: z.string().optional(),

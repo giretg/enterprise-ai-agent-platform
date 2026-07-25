@@ -483,6 +483,8 @@ export class AgentChatRuntime {
      * ugyanúgy működik, csak nem keletkezik forduló-rekord.
      */
     private agentTurns?: AgentTurnRepository,
+    /** issue #97 — következmény-kapu pending jóváhagyások. */
+    private consequenceApprovals?: import('../tool-broker/consequence-approval-service').ConsequenceApprovalService,
   ) {}
 
   /**
@@ -1158,6 +1160,17 @@ export class AgentChatRuntime {
               }
             : {}),
           onMemoryCandidate: (candidate) => emit({ type: 'memory_candidate', candidate }),
+          ...(this.consequenceApprovals
+            ? {
+                createConsequenceApproval: async (invoke) =>
+                  this.consequenceApprovals!.createFromBlocked({
+                    invoke,
+                    tenantId: params.tenantId ?? null,
+                  }),
+                onConsequenceApproval: (approval) =>
+                  emit({ type: 'consequence_approval', approval }),
+              }
+            : {}),
         }).then(
           (value) => ({ ok: true as const, value }),
           (error: unknown) => ({ ok: false as const, error }),

@@ -75,6 +75,22 @@ export function insertSkillSlashToken(input: {
   return { text, cursorPos }
 }
 
+/** Skill választóból: `/token` beszúrása a kurzorhoz (mintha a user begépelte volna). */
+export function appendSkillSlashToken(input: {
+  text: string
+  cursorPos: number
+  token: string
+}): { text: string; cursorPos: number } {
+  const before = input.text.slice(0, input.cursorPos)
+  const after = input.text.slice(input.cursorPos)
+  const needsLeadingSpace = before.length > 0 && !/\s$/.test(before)
+  const insertion = `${needsLeadingSpace ? ' ' : ''}/${input.token}`
+  const needsTrailingSpace = after.length > 0 && !/^\s/.test(after)
+  const text = before + insertion + (needsTrailingSpace ? ' ' : '') + after
+  const cursorPos = before.length + insertion.length + (needsTrailingSpace ? 1 : 0)
+  return { text, cursorPos }
+}
+
 export function filterSkillsForSlashQuery<
   T extends { name: string; description?: string },
 >(skills: T[], query: string): T[] {

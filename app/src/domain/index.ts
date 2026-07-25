@@ -30,6 +30,7 @@ import {
 } from '@/domain/dispatcher/docker-local-harness-launcher'
 import { LocalWikiHarnessLauncher } from '@/domain/dispatcher/local-wiki-harness-launcher'
 import { AllowlistAuthorizer, ToolBrokerService } from '@/domain/tool-broker/tool-broker-service'
+import { ConsequenceApprovalService } from '@/domain/tool-broker/consequence-approval-service'
 import { WebSearchPolicyService } from '@/domain/web-search/web-search-policy-service'
 import { WebSearchService } from '@/domain/web-search/web-search-service'
 import { HttpSearchProviderAdapter, StubSearchProviderAdapter } from '@/domain/web-search/search-provider-adapter'
@@ -652,6 +653,13 @@ const toolBrokerService = new ToolBrokerService(
   (tenantId) => platformSettingsService.isWebSearchEnabledForTenant(tenantId),
   () => platformSettingsService.isWebFetchEnabled(),
 )
+const consequenceApprovalService = new ConsequenceApprovalService(
+  repositories.consequenceApprovals,
+  repositories.conversations,
+  repositories.agents,
+  repositories.audit,
+  toolBrokerService,
+)
 const knowledgeBaseService = new KnowledgeBaseService(
   repositories.tickets,
   repositories.documents,
@@ -926,6 +934,7 @@ const agentChatRuntime = new AgentChatRuntime(
   memoryRetrievalService,
   (tenantId) => platformSettingsService.isChatThinkingTraceEnabledForTenant(tenantId),
   repositories.agentTurns,
+  consequenceApprovalService,
 )
 // 1:1 agent-chat a csatornán (#74, D8/D9/D10/D11). A worker második munkatípusa: a bejövő
 // Telegram-fordulót a MEGLÉVŐ webes chat-futásidőre képezzük (ugyanabba a beszélgetésbe, így a
@@ -1099,6 +1108,7 @@ export const services = {
   bookkeeper: bookkeeperRuntime,
   training: trainingService,
   memoryApproval: memoryApprovalService,
+  consequenceApproval: consequenceApprovalService,
   memoryRollback: memoryRollbackService,
   memoryMaintenance: memoryMaintenanceService,
   knowledgeBase: knowledgeBaseService,
