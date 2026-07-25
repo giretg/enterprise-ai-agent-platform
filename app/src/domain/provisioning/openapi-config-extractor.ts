@@ -46,10 +46,31 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+/**
+ * js-yaml v5 CORE_SCHEMA számmá parse-olja a idézetlen `3.0` / `2.0` alakokat.
+ * Az OpenAPI spec viszont string verziómezőt vár — visszaállítjuk a szokásos major.minor formát.
+ */
+function coerceYamlOpenApiVersion(value: unknown): string | undefined {
+  if (typeof value === 'string') return value
+  if (typeof value !== 'number' || !Number.isFinite(value)) return undefined
+  if (Number.isInteger(value)) return `${value}.0`
+  return String(value)
+}
+
+function normalizeYamlOpenApiDocument(doc: unknown): unknown {
+  if (!isRecord(doc)) return doc
+  const openapi = coerceYamlOpenApiVersion(doc.openapi)
+  if (openapi !== undefined) doc.openapi = openapi
+  const swagger = coerceYamlOpenApiVersion(doc.swagger)
+  if (swagger !== undefined) doc.swagger = swagger
+  return doc
+}
+
 export function isOpenApiSpec(value: unknown): value is OpenApiSpec {
   if (!isRecord(value)) return false
-  if (typeof value.openapi === 'string' && value.openapi.startsWith('3.')) return true
-  if (value.swagger === '2.0') return true
+  const openapi = coerceYamlOpenApiVersion(value.openapi)
+  if (openapi !== undefined && openapi.startsWith('3.')) return true
+  if (coerceYamlOpenApiVersion(value.swagger) === '2.0') return true
   return false
 }
 
@@ -72,7 +93,7 @@ function looksLikeOpenApiYaml(text: string): boolean {
 async function loadYamlDocument(text: string): Promise<unknown | null> {
   try {
     const { load } = await import('js-yaml')
-    return load(text)
+    return normalizeYamlOpenApiDocument(load(text))
   } catch {
     return null
   }
@@ -504,6 +525,7 @@ export function extractConnectorConfigFromOpenApiSpec(
   spec: OpenApiSpec,
   providerHint?: string,
 ): OpenApiExtractResult {
+  normalizeYamlOpenApiDocument(spec)
   const serverUrls = resolveServerUrls(spec)
   const baseUrlRaw = serverUrls[0]
   if (!baseUrlRaw) {

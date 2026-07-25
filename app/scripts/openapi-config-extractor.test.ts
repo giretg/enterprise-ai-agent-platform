@@ -7,8 +7,10 @@ import { readFileSync } from 'node:fs'
 import {
   extractConnectorConfigFromOpenApiSpec,
   isOpenApiSpec,
+  parseOpenApiDocument,
   parseOpenApiDocumentSync,
   tryExtractConnectorConfigFromOpenApi,
+  tryExtractConnectorConfigFromOpenApiAsync,
 } from '../src/domain/provisioning/openapi-config-extractor'
 
 const MINIMAL_OPENAPI = {
@@ -131,6 +133,63 @@ async function run() {
     const spec = parseOpenApiDocumentSync(JSON.stringify(MINIMAL_OPENAPI))
     assert.ok(spec)
     assert.equal(spec?.info && (spec.info as { title?: string }).title, 'Acme CRM API')
+  })
+
+  await test('parseOpenApiDocument YAML — idézetlen openapi: 3.0 (js-yaml v5 number) felismerése', async () => {
+    const yaml = [
+      'openapi: 3.0',
+      'info:',
+      '  title: Acme YAML API',
+      '  version: 1.0.0',
+      'servers:',
+      '  - url: https://api.acme-yaml.example/v1',
+      'components:',
+      '  securitySchemes:',
+      '    ApiKeyAuth:',
+      '      type: apiKey',
+      '      in: header',
+      '      name: X-Api-Key',
+      'security:',
+      '  - ApiKeyAuth: []',
+      'paths:',
+      '  /ping:',
+      '    get:',
+      '      operationId: ping',
+      '      summary: Health',
+    ].join('\n')
+    const spec = await parseOpenApiDocument(yaml)
+    assert.ok(spec)
+    assert.equal(spec?.openapi, '3.0')
+    const result = await tryExtractConnectorConfigFromOpenApiAsync(yaml, 'acme-yaml')
+    assert.equal(result.ok, true)
+    if (!result.ok) return
+    assert.equal(result.config.baseUrl, 'https://api.acme-yaml.example/v1')
+  })
+
+  await test('parseOpenApiDocument YAML — idézetlen swagger: 2.0 felismerése', async () => {
+    const yaml = [
+      'swagger: 2.0',
+      'info:',
+      '  title: Legacy API',
+      '  version: 1.0.0',
+      'host: api.legacy.example',
+      'basePath: /v1',
+      'schemes:',
+      '  - https',
+      'paths:',
+      '  /ping:',
+      '    get:',
+      '      operationId: ping',
+    ].join('\n')
+    const spec = await parseOpenApiDocument(yaml)
+    assert.ok(spec)
+    assert.equal(spec?.swagger, '2.0')
+  })
+
+  await test('isOpenApiSpec elfogadja a YAML-ből jövő numerikus verziómezőket is', () => {
+    assert.equal(isOpenApiSpec({ openapi: 3.0, paths: {} }), true)
+    assert.equal(isOpenApiSpec({ openapi: 3.1, paths: {} }), true)
+    assert.equal(isOpenApiSpec({ swagger: 2.0, paths: {} }), true)
   })
 
   await test('tryExtractConnectorConfigFromOpenApi — minimál spec → ConnectorConfig', () => {
