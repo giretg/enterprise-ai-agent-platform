@@ -2,30 +2,11 @@ import { clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server'
 import { NextResponse } from 'next/server'
 import { isClerkEnabled, isDevAuthAllowed } from '@/lib/clerk-config'
 import { REQUEST_ID_HEADER, resolveRequestId } from '@/lib/observability/request-context'
+import { PUBLIC_ROUTE_PATTERNS } from '@/lib/auth/public-routes'
 
-const isPublicRoute = createRouteMatcher([
-  '/sign-in(.*)',
-  '/sign-up(.*)',
-  '/api/v1/agent(.*)',
-  '/api/v1/gateway(.*)',
-  '/api/v1/harness(.*)',
-  // Cloud Scheduler → token auth a route handlerben (x-dispatcher-token), nem Clerk.
-  '/api/v1/internal/dispatch-cycle(.*)',
-  '/api/webhooks(.*)',
-  // Bejövő csatorna-webhook (Telegram): a Clerk-munkamenet HELYETT a route saját, konstans
-  // idejű megosztott-titok fejléce hitelesít (`x-telegram-bot-api-secret-token`). Ha ez NEM
-  // publikus route, a Clerk `auth.protect()` élesben MINDEN bejövő Telegram-hívást elutasít
-  // (user-üzenetek ÉS jóváhagyó-gomb döntések) — a bejövő csatorna és a Telegram-jóváhagyás
-  // némán halott lenne. (Ugyanaz a minta, mint a Clerk-webhook és a harness token-auth útjai.)
-  // SZŰKEN a `.../webhook` végpontra (és annak alútjaira) — így egy jövőbeli
-  // `.../webhook-admin` vagy `.../config` csatorna-route NEM válik véletlenül publikussá.
-  '/api/channels/(.*)/webhook',
-  '/api/channels/(.*)/webhook/(.*)',
-  // WP-6/WP-7: operatív endpointok auth nélkül (uptime-monitor / scrape).
-  '/api/healthz(.*)',
-  '/api/readyz(.*)',
-  '/api/metrics(.*)',
-])
+// A minták (és a felvételük szabálya) a `public-routes.ts`-ben laknak, hogy regressziós
+// teszt rögzíthesse őket — a middleware-fájl maga egyetlen függvényt exportálhat.
+const isPublicRoute = createRouteMatcher([...PUBLIC_ROUTE_PATTERNS])
 
 /**
  * WP-6 (O2): minden kérés kap `x-request-id`-t (a bejövot átvesszük, vagy

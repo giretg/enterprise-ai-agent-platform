@@ -241,7 +241,19 @@ const telegramBotUsername = process.env.TELEGRAM_BOT_USERNAME?.trim() || 'YourPl
 // a `ttl-secret-cache.ts` modul-dokumentációjában). Azért ITT, wiring-szinten képződik, hogy a
 // linking- ÉS a jóváhagyó-belépő UGYANAZT a cache-példányt ossza (a `webhookSecretRef` kulcson):
 // az egyik úton bemelegített titok a másikat is kiszolgálja. TTL env-ből hangolható.
-const webhookSecretTtlMs = Number(process.env.CHANNEL_WEBHOOK_SECRET_TTL_MS) || 60_000
+//
+// A `0` ÉRVÉNYES beállítás: azt jelenti, hogy "ne cache-elj" (minden kérés újra feloldja a
+// titkot) — ez az üzemeltető kikapcsoló kapcsolója, ha egy rotációnak azonnal érvényesülnie
+// kell. Ezért NEM `Number(...) || 60_000`: az a `0`-t némán 60 mp-re írná át, és a kikapcsolás
+// hatástalan maradna. Csak a hiányzó/értelmezhetetlen/negatív érték esik vissza az alapra.
+// (Az ÜRES env-érték — `CHANNEL_WEBHOOK_SECRET_TTL_MS=` egy .env-ben — "nincs beállítva",
+// nem `0`: különben egy odaírt, de kitöltetlen sor kapcsolná ki csendben a cache-t.)
+const rawWebhookSecretTtl = process.env.CHANNEL_WEBHOOK_SECRET_TTL_MS?.trim()
+const parsedWebhookSecretTtl = rawWebhookSecretTtl ? Number(rawWebhookSecretTtl) : Number.NaN
+const webhookSecretTtlMs =
+  Number.isFinite(parsedWebhookSecretTtl) && parsedWebhookSecretTtl >= 0
+    ? parsedWebhookSecretTtl
+    : 60_000
 const resolveWebhookSecretCached = createTtlSecretCache(
   (secretRef) => resolveConnectorApiKey(secretRef),
   webhookSecretTtlMs,

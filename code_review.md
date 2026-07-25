@@ -28,6 +28,24 @@
   - A webhook-útnak nincs saját rate-limitje; a titok-cache a fő költséget levágja, de egy tényleges volumetrikus DoS ellen (a fejléc-vetés + DB-lookup önmagában is CPU/kapcsolat) hálózati/edge rate-limit lenne a teljes védelem.
   - A duplikáció-vízjel a tartós forduló-sorba írás ELŐTT lép; egy pontosan időzített crash a vízjel-billentés és az enqueue között elveszíthet egy bekötött üzenetet (Telegram-újraküldés ekkor „duplikátumként" eldobná). Alacsony valószínűség, de a #73 tartóssági ígéretét gyengíti — atomizálás külön feladat.
 
+### 2026-07-25 (második kör) - A javítás felülvizsgálata merge előtt
+
+- Áttekintve a fenti javítás TELJES diffje (`main...review/telegram-webhook-trust-boundary`): `middleware.ts`, `lib/crypto/ttl-secret-cache.ts`, `domain/index.ts` wiring, `scripts/ttl-secret-cache.test.ts`.
+- Megerősítve (nem csak kódolvasással):
+  - A `'/api/channels/(.*)/webhook'` minta a Clerk SAJÁT `createRouteMatcher`-ével kiértékelve tényleg illeszkedik a `/api/channels/telegram/webhook`-ra, és tényleg NEM illeszkedik a `webhook-admin` / `config` / csupasz `/api/channels/telegram` utakra — vagyis a szűkítő szándék valóban teljesül (a Clerk 7 mid-path `(.*)` csoportot még támogat).
+  - A titok-cache fail-closed marad: `webhookSecretRef` a sémában `String` (nem nullable), a hiba nem cache-elődik, a párhuzamos miss-ek osztoznak.
+- **Lelet #3 (közepes, folyamat — a javítás nem volt őrizve):** a PR HÁROM tesztje közül EGYIK sem futott volna a CI-ban — a `test:ttl-secret-cache` bekerült a `package.json`-ba, de a `ci.yml`-be nem; a `test:channel-approval` pedig már korábban is kimaradt (a jóváhagyó-út varrat-tesztje évek óta csak lokálisan futott). Egy zöld CI így hamis biztonságot adott volna.
+- **Lelet #4 (magas, folyamat — a P0 megismételhető):** a #1 lelet (némán halott csatorna) az az osztály, ami se tesztben, se kódolvasáskor nem látszik, csak élesben, elveszett üzenetek formájában — és a javítás után SEMMI nem akadályozta meg, hogy egy következő route ugyanígy kimaradjon vagy a minta véletlenül kitáguljon.
+- **Lelet #5 (alacsony, üzemeltetői footgun):** a `Number(process.env.CHANNEL_WEBHOOK_SECRET_TTL_MS) || 60_000` a `0`-t némán 60 mp-re írta volna át. A `0` viszont értelmes üzemeltetői szándék („ne cache-elj, a rotáció azonnal érvényesüljön") — a kikapcsoló kapcsoló hatástalan lett volna, ráadásul némán.
+- Javítás (második kör):
+  - `lib/auth/public-routes.ts` (ÚJ): a publikus route-minták egyetlen, exportált forrása, a felvétel szabályával. A `middleware.ts` innen olvas. (Külön modul, mert a Next 16 a middleware/proxy fájlból EGYETLEN függvény-exportot vár — a listát a helyén hagyva nem lenne tesztelhető.)
+  - `scripts/public-routes.test.ts` (ÚJ, 6 teszt): a Clerk saját matcherével rögzíti, hogy minden saját hitelesítésű gépi belépő publikus, a szomszédos kezelői route-ok védettek, és az alkalmazás-felület védett marad. **Mutációval ellenőrizve:** a webhook-minta eltávolításakor a teszt pontosan a P0-forgatókönyvre bukik.
+  - `ci.yml`: `test:channel-approval` + `test:ttl-secret-cache` + `test:public-routes` bekötve.
+  - `domain/index.ts`: a TTL-parsz `0`-t elfogad (= nincs cache), és az ÜRES env-értéket „nincs beállítva"-ként kezeli (nem `0`-ként).
+- Üzleti hatás: a #4 javítása a lényegi hozadék — nem egy hibát javít, hanem egy hibaosztályt zár le. A „publikus vagy védett ez a végpont?" kérdés eddig egy kommentelt tömbben élt, ahol a tévedés két irányba is csendes: vagy egy funkció hal meg élesben szó nélkül, vagy egy védendő végpont nyílik meg. Mostantól mindkét irányt CI-ban futó assert őrzi.
+- Ellenőrzés: `npx tsc --noEmit` zöld; `eslint` az érintett fájlokra zöld; `test:public-routes` 6/6, `test:ttl-secret-cache` 5/5, `test:channel-linking` / `channel-approval` / `channel-turn` / `channel-metrics` / `channel-retention` / `channel-agent-access` mind zöld.
+- Nyitott (változatlanul, nem-cél): webhook rate-limit; a vízjel-billentés és az enqueue közötti atomizálás. **Új megfigyelés:** a `middleware.ts` konvenció a Next 16-ban deprecated (`proxy.ts` a neve), a Clerk 7.5 pedig a `createRouteMatcher`-t jelöli elavultnak (erőforrás-szintű auth-ellenőrzés javasolt helyette) — mindkettő külön migrációs feladat, és a most bevezetett `public-routes.test.ts` pont az a háló, ami egy ilyen migrációt biztonságossá tesz.
+
 ## 2026-07-23 - Fájl-munkaterület eszközök: agent-vezérelt regex ReDoS (file_search / file_glob)
 
 - Áttekintett modulok:
