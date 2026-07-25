@@ -99,6 +99,7 @@ import {
 import { WebhookChatNotifier } from '@/lib/notify/webhook-chat-notifier'
 import { repositories } from '@/repositories/postgres'
 import { resolveConnectorApiKey } from '@/domain/connector/http-api-client'
+import { createTtlSecretCache } from '@/lib/crypto/ttl-secret-cache'
 import { prisma } from '@/lib/db'
 import { createHash } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
@@ -236,6 +237,15 @@ let channelTurnServiceRef: ChannelTurnService | null = null
 // fel; a deep-link a platform-bot Telegram-felhasználónevéből épül (env). A platform-oldali
 // értesítés a `user_notifications` sorba kerül (D12 story 3).
 const telegramBotUsername = process.env.TELEGRAM_BOT_USERNAME?.trim() || 'YourPlatformBot'
+// A bejövő webhook titok-feloldását EGYETLEN, megosztott TTL-cache fedi (a részletes indoklás
+// a `ttl-secret-cache.ts` modul-dokumentációjában). Azért ITT, wiring-szinten képződik, hogy a
+// linking- ÉS a jóváhagyó-belépő UGYANAZT a cache-példányt ossza (a `webhookSecretRef` kulcson):
+// az egyik úton bemelegített titok a másikat is kiszolgálja. TTL env-ből hangolható.
+const webhookSecretTtlMs = Number(process.env.CHANNEL_WEBHOOK_SECRET_TTL_MS) || 60_000
+const resolveWebhookSecretCached = createTtlSecretCache(
+  (secretRef) => resolveConnectorApiKey(secretRef),
+  webhookSecretTtlMs,
+)
 // A kimenő átvitel (D11) EGYETLEN példány — a linking-varrat, a worker-varrat ÉS a megőrzési
 // takarítás is ezen küld, hogy ne legyen második, dublőrözhetetlen kijárat a Telegram felé.
 const telegramOutboundTransport = new TelegramOutboundTransport({
@@ -276,7 +286,7 @@ const channelLinkingService = new ChannelLinkingService({
     const tenant = await repositories.tenants.findById(tenantId)
     return tenant?.displayName ?? null
   },
-  resolveWebhookSecret: async (bot) => resolveConnectorApiKey(bot.webhookSecretRef),
+  resolveWebhookSecret: (bot) => resolveWebhookSecretCached(bot.webhookSecretRef),
   buildDeepLink: (jti) => `https://t.me/${telegramBotUsername}?start=${jti}`,
   linkedMessageSink: {
     enqueueInbound: (input) => {
@@ -424,7 +434,7 @@ const channelApprovalService = new ChannelApprovalService({
   transitioner: approvalTransitioner,
   transport: telegramOutboundTransport,
   audit: repositories.audit,
-  resolveWebhookSecret: async (bot) => resolveConnectorApiKey(bot.webhookSecretRef),
+  resolveWebhookSecret: (bot) => resolveWebhookSecretCached(bot.webhookSecretRef),
   initiatorNotifier: approvalInitiatorNotifier,
 })
 // #76 prefactor — a ProcessService `awaiting_human` eseménye a jóváhagyó-szolgáltatáshoz köt

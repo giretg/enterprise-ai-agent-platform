@@ -1,5 +1,33 @@
 # Enterprise code review log
 
+## 2026-07-25 - Bejövő Telegram-csatorna webhook: bizalmi határ (auth-gate + pre-auth titok-feloldás)
+
+- Áttekintett modulok (a bejövő webhook TELJES külső támadási felülete — ez volt az egyetlen, még nem naplózott, külső, nem-megbízható bemenetet fogadó belépő):
+  - `app/src/app/api/channels/telegram/webhook/route.ts` (a publikus HTTP-belépő: message + callback_query kivonat)
+  - `app/src/middleware.ts` (Clerk auth-gate / public-route allowlist)
+  - `app/src/domain/channel/channel-linking-service.ts` (bejövő frissítés: fejléc-vetés, összekötés, bekötetlen semleges válasz, forduló-sorba írás)
+  - `app/src/domain/channel/channel-approval-service.ts` (jóváhagyó-gomb callback: aláírás, címzett-kötés, élő jogosultság, SoD, atomi egyszer-használat)
+  - `app/src/domain/channel/channel-link-token.ts`, `channel-identity-crypto.ts` (deep-link token aláírás + AES-GCM/HMAC identitás-kripto)
+  - `app/src/domain/channel/channel-outbound-transport.ts` (kimenő egress-őr, deny-by-default a Telegram hostra)
+  - Kontextusban átnézve, külön leletet nem adott: `channel-bot-service.ts` (titok-referencia validáció, nyers titok sosem a nézetben), `channel-turn-service.ts` (fail-closed hozzáférés-kapu, dead-letter), `crypto/timing-safe.ts`, `crypto/secret-resolver.ts`, `connector/connector-secret-store.ts`.
+- Eredmény — ami RENDBEN van (nem a nulláról védtelen):
+  - A titkos fejléc vetése KONSTANS IDEJŰ és fail-closed (`safeSecretEquals`: üres/hiányzó várt titok → `false`, nincs bypass). A deep-link token rövid TTL + egyszer-használat + `consumedByLookupHash`-kötés. A jóváhagyó-callback autorizációja alapos: aláírás a kötött mezők felett, címzett-kötés, identitás aktív+tenant-egyezés, ÉLŐ jogosultság-újraellenőrzés, SoD (saját-kérés jóváhagyás tiltva), atomi consume + a KÖZÖS állapotgép policy-kapuja. Az egress deny-by-default. A nyers titkok sosem kerülnek auditba/naplóba (álnevesített id).
+- **Lelet #1 (kritikus, funkcionális — a feature élesben NÉMÁN HALOTT):** a webhook útvonala `/api/channels/telegram/webhook`, de a middleware `isPublicRoute` allowlistje csak `/api/webhooks(.*)`-t tartalmazott — a `/api/channels/...`-t NEM. Prod-ban (Clerk bekapcsolva) így `auth.protect()` fut rá, és a Clerk-munkamenet NÉLKÜLI Telegram-POST-okat elutasítja, MIELŐTT a handlerhez érnének. Következmény: a teljes bejövő csatorna (user-üzenetek) ÉS a Telegram-alapú jóváhagyás (governance-döntések) sosem fut le élesben; a Telegram néhány újraküldés után letiltja a webhookot. Azért csúszott át, mert a route szándékosan „vékony adapter, nincs külön tesztje", a service-tesztek pedig nem a HTTP/middleware rétegen át hajtanak.
+- **Lelet #2 (közepes, biztonsági/skálázhatóság — DoS/költség-amplifikáció):** a bejövő webhook mindkét belépője (linking + approval) minden kérésnél újra-feloldja a bot webhook-titkát (`resolveConnectorApiKey`), ami élesben (Secret Manager backend) egy HTTPS-körforduló CACHE NÉLKÜL — és ez a KONSTANS IDEJŰ összehasonlítás ELŐTT, a publikus, hitelesítés-ELŐTTI úton történik. Egy hamis-kérés-özön így kérésenként egy Secret Manager-hívást + egy DB-lekérdezést vált ki: költség-amplifikáció, a projekt SM-kvótájának kimerítése (429), és ezen keresztül ÖN-DoS a platform ÖSSZES connector-titok-feloldására. Ugyanaz az osztály, mint a korábban naplózott agent-API-kulcs O(n) bcrypt-DoS: drága művelet a pre-auth úton.
+- Javítás:
+  - `middleware.ts`: az `isPublicRoute` allowlist kiegészítve a `'/api/channels/(.*)/webhook'` és `'/api/channels/(.*)/webhook/(.*)'` mintákkal — SZŰKEN csak a csatorna-webhook végpontra és alútjaira (a saját, konstans idejű megosztott-titok fejlécük hitelesít), a többi `/api/channels` admin-útvonal (és egy jövőbeli `.../webhook-admin`) Clerk-védett marad. A trailing `(.*)` szándékosan KIMARADT (a /code-review mindkét ága jelezte, hogy az véletlenül publikussá tenné a `webhook`-előtagú testvér-route-okat).
+  - `lib/crypto/ttl-secret-cache.ts` (ÚJ): rövid TTL-es (alap 60 mp, `CHANNEL_WEBHOOK_SECRET_TTL_MS`) in-memory titok-cache; CSAK a sikert cache-eli (a hibát sosem → fail-closed marad), az egyidejű miss-eket megosztja (nincs thundering herd). `domain/index.ts`: EGYETLEN megosztott cache-példány fedi mindkét belépőt (linking + approval), a konstans idejű vetés és a fail-closed viselkedés változatlan.
+- Üzleti hatás:
+  - #1 nélkül a Telegram-csatorna és a mobil jóváhagyás élesben egyszerűen NEM MŰKÖDIK — egy jóváhagyásra váró governed action sosem kapná meg a döntést Telegramon, a folyamat csendben elakadna. Egysoros, jól körülhatárolt middleware-javítás oldja fel, a biztonsági modell gyengítése nélkül (a route továbbra is a saját titkával hitelesít).
+  - #2 a „menjünk élesbe enterprise platformként" küszöb valódi költség/rendelkezésre-állási kockázata: egy publikus végpont, aminek minden hamis kérése pénzbe kerül és a közös titok-infrastruktúrát terheli. A cache a forró utat egy SM-körfordulóra szűkíti időablakonként.
+- Ellenőrzés:
+  - `npm run test:ttl-secret-cache` — 5/5 zöld (TTL-hit, TTL-lejárat/rotáció, kulcs-szeparáció, párhuzamos miss-megosztás, hiba-nem-cache-elés).
+  - `npm run test:channel-linking` és `test:channel-approval` — zöld (a titok-feloldó port cseréje nem tört varratot).
+  - `npx tsc --noEmit` — az érintett fájlokra nincs hiba.
+- Nyitott / követendő (nem-cél ebben a PR-ben):
+  - A webhook-útnak nincs saját rate-limitje; a titok-cache a fő költséget levágja, de egy tényleges volumetrikus DoS ellen (a fejléc-vetés + DB-lookup önmagában is CPU/kapcsolat) hálózati/edge rate-limit lenne a teljes védelem.
+  - A duplikáció-vízjel a tartós forduló-sorba írás ELŐTT lép; egy pontosan időzített crash a vízjel-billentés és az enqueue között elveszíthet egy bekötött üzenetet (Telegram-újraküldés ekkor „duplikátumként" eldobná). Alacsony valószínűség, de a #73 tartóssági ígéretét gyengíti — atomizálás külön feladat.
+
 ## 2026-07-23 - Fájl-munkaterület eszközök: agent-vezérelt regex ReDoS (file_search / file_glob)
 
 - Áttekintett modulok:

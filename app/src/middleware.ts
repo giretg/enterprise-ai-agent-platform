@@ -12,6 +12,15 @@ const isPublicRoute = createRouteMatcher([
   // Cloud Scheduler → token auth a route handlerben (x-dispatcher-token), nem Clerk.
   '/api/v1/internal/dispatch-cycle(.*)',
   '/api/webhooks(.*)',
+  // Bejövő csatorna-webhook (Telegram): a Clerk-munkamenet HELYETT a route saját, konstans
+  // idejű megosztott-titok fejléce hitelesít (`x-telegram-bot-api-secret-token`). Ha ez NEM
+  // publikus route, a Clerk `auth.protect()` élesben MINDEN bejövő Telegram-hívást elutasít
+  // (user-üzenetek ÉS jóváhagyó-gomb döntések) — a bejövő csatorna és a Telegram-jóváhagyás
+  // némán halott lenne. (Ugyanaz a minta, mint a Clerk-webhook és a harness token-auth útjai.)
+  // SZŰKEN a `.../webhook` végpontra (és annak alútjaira) — így egy jövőbeli
+  // `.../webhook-admin` vagy `.../config` csatorna-route NEM válik véletlenül publikussá.
+  '/api/channels/(.*)/webhook',
+  '/api/channels/(.*)/webhook/(.*)',
   // WP-6/WP-7: operatív endpointok auth nélkül (uptime-monitor / scrape).
   '/api/healthz(.*)',
   '/api/readyz(.*)',
