@@ -6,6 +6,7 @@ import { assertAgentWorkTenantOperable } from '@/lib/agent-work-tenant-gate'
 import {
   buildAgentInteractionTicketInput,
   resolveInteractionTicketCreatorId,
+  type TicketCreatorRole,
 } from '@/lib/agent-interaction-ticket'
 import { repositories } from '@/repositories/postgres'
 import { createInteractionTicketSchema } from '@/lib/validators/actions'
@@ -15,13 +16,13 @@ function jsonError(message: string, status: number, data?: unknown) {
 }
 
 /** A `resolveInteractionTicketCreatorId` prisma-hátterű portjai (lásd ott az invariánst). */
-async function findTenantMember(args: { tenantId: string; adminOnly: boolean }) {
+async function findTenantMember(args: { tenantId: string; role: TicketCreatorRole }) {
   const membership = await prisma.tenantMembership.findFirst({
     where: {
       tenantId: args.tenantId,
       status: 'active',
       user: { status: 'active' },
-      ...(args.adminOnly ? { role: 'admin' } : {}),
+      role: args.role,
     },
     orderBy: { createdAt: 'asc' },
     select: { userId: true },
