@@ -451,8 +451,20 @@ export class ConversationService {
     return ticket
   }
 
+  /**
+   * Megőrzési takarítás a MI tárolónkban (#117): a lejárt `retainUntil`-ú beszélgetések
+   * üzenet-tartalmát ürítjük (a metaadat és az audit-nyom marad). A takarító a dispatcher
+   * ciklusából fut (`run-dispatch-cycle.ts`), körönként `limit` darabbal — így egy nagy
+   * hátralék sem fogja meg a kört, a maradékot a következő kör viszi tovább.
+   *
+   * ÜRES futásra NEM írunk audit-sort: minden `audit.append` globális advisory lockot vesz a
+   * hash-láncra, tehát a percenkénti „nem volt mit takarítani" bejegyzés zajjal töltené a
+   * láncot és sorosítaná az írásokat. Ami nem történt, az nem esemény.
+   */
   async retentionSweep(params?: { now?: Date; actorId?: string | null; limit?: number }) {
     const result = await this.conversations.retentionSweep(params?.now ?? new Date(), params?.limit)
+    if (result.sweptCount === 0) return result
+
     await this.audit.append({
       actorType: 'system',
       actorId: params?.actorId ?? null,

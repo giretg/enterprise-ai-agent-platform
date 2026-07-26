@@ -73,6 +73,7 @@ function formatCycleRunMessage(summary: {
   materializedScheduledTasks: number
   monitorSweep: { ran: boolean; escalated: number; openedTickets: number }
   workspacePurge: { purgedTickets: number }
+  conversationRetention: { sweptConversations: number; deletedMessages: number }
   dispatch: {
     scanned: number
     started: number
@@ -104,6 +105,7 @@ function formatCycleRunMessage(summary: {
     `${summary.materializedScheduledTasks} ütemezett task materializálva`,
     monitorPart,
     `${summary.workspacePurge.purgedTickets} workspace takarítva`,
+    `megőrzés: ${summary.conversationRetention.sweptConversations} beszélgetés ürítve (${summary.conversationRetention.deletedMessages} üzenet)`,
     dispatchPart,
   ].join(' · ')
 }

@@ -98,6 +98,11 @@ async function runDispatchCycle(ticketId?: string) {
     if (summary.channelTurns.processed > 0) {
       console.log(`[dispatcher] processed ${summary.channelTurns.processed} channel turn(s)`)
     }
+    if (summary.conversationRetention.sweptConversations > 0) {
+      console.log(
+        `[dispatcher] retention: swept ${summary.conversationRetention.sweptConversations} conversation(s), ${summary.conversationRetention.deletedMessages} message(s) cleared`,
+      )
+    }
     if (summary.materializedScheduledTasks > 0) {
       console.log(`[dispatcher] materialized ${summary.materializedScheduledTasks} scheduled task(s)`)
     }

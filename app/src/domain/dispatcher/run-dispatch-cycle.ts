@@ -5,6 +5,22 @@ import { repositories } from '@/repositories/postgres'
 
 const DEFAULT_BATCH_LIMIT = Number(process.env.DISPATCHER_BATCH_LIMIT ?? 10)
 
+/**
+ * Egy körben ennyi lejárt beszélgetést takarítunk (#117). A ciklus percenként fut, tehát ez
+ * bőven elég átbocsátás; a darabolás célja, hogy egy nagy hátralék (pl. első éles futás vagy
+ * megőrzési szabály szigorítása) ne fogja meg a kör többi munkáját.
+ */
+const CONVERSATION_RETENTION_SWEEP_LIMIT = positiveIntEnv(
+  process.env.CONVERSATION_RETENTION_SWEEP_LIMIT,
+  100,
+)
+
+/** Elgépelt/üres env-érték ne buktassa a takarítást — ilyenkor a beépített alapérték áll. */
+function positiveIntEnv(raw: string | undefined, fallback: number): number {
+  const parsed = Number(raw)
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback
+}
+
 export type DispatchCycleSummary = {
   /** Igaz, ha egy másik ciklus még folyamatban volt ugyanebben a process-ben (nincs átfedés). */
   skipped: boolean
@@ -17,6 +33,12 @@ export type DispatchCycleSummary = {
    * `reclaimed` a crash-elakadt `running` sorok visszatétele, a `processed` a lezavart fordulók.
    */
   channelTurns: { reclaimed: number; processed: number }
+  /**
+   * Beszélgetés-megőrzés (#117): a lejárt `retainUntil`-ú beszélgetések tartalmának ürítése a
+   * MI tárolónkban. `sweptConversations` az érintett beszélgetés, `deletedMessages` a ténylegesen
+   * kiürített üzenet darabszáma.
+   */
+  conversationRetention: { sweptConversations: number; deletedMessages: number }
   materializedScheduledTasks: number
   monitorSweep: { ran: boolean; escalated: number; openedTickets: number }
   workspacePurge: { purgedTickets: number; deletedObjects: number }
@@ -44,6 +66,7 @@ const EMPTY_SUMMARY: DispatchCycleSummary = {
   reclaimedScheduledTasks: 0,
   reclaimedAgentTurns: 0,
   channelTurns: { reclaimed: 0, processed: 0 },
+  conversationRetention: { sweptConversations: 0, deletedMessages: 0 },
   materializedScheduledTasks: 0,
   monitorSweep: { ran: false, escalated: 0, openedTickets: 0 },
   workspacePurge: { purgedTickets: 0, deletedObjects: 0 },
@@ -124,6 +147,31 @@ export async function runDispatchCycle(
       )
     }
 
+    // Beszélgetés-megőrzés (#117, D4): a MI tárolónkban lejárt (`retainUntil` a múltban)
+    // beszélgetések tartalmának ürítése. Eddig a `retainUntil` beállt, de a takarítót senki nem
+    // hívta — így az „X nap után töröljük" ígéret a gyakorlatban nem teljesült sem a webes
+    // chatre, sem a Telegram-forgalomra (#70/65. story). Innentől a worker ciklusa hajtja.
+    // Fail-soft: a takarítás hibája nem buktathatja a ciklus többi munkáját; ami most nem
+    // sikerült, azt a következő kör újra megkísérli (a `retainUntil` a sorokon marad).
+    let conversationRetention: DispatchCycleSummary['conversationRetention'] = {
+      sweptConversations: 0,
+      deletedMessages: 0,
+    }
+    try {
+      const swept = await services.conversations.retentionSweep({
+        limit: CONVERSATION_RETENTION_SWEEP_LIMIT,
+      })
+      conversationRetention = {
+        sweptConversations: swept.sweptCount,
+        deletedMessages: swept.deletedCount,
+      }
+    } catch (error) {
+      console.error(
+        '[dispatch-cycle] conversation-retention sweep error:',
+        error instanceof Error ? error.message : error,
+      )
+    }
+
     const materialized = await services.scheduledTasks.materializeDue(new Date(), batchLimit)
     const materializedScheduledTasks = materialized.filter((r) => r.status === 'materialized').length
 
@@ -198,6 +246,7 @@ export async function runDispatchCycle(
       reclaimedScheduledTasks,
       reclaimedAgentTurns,
       channelTurns,
+      conversationRetention,
       materializedScheduledTasks,
       monitorSweep,
       workspacePurge,
