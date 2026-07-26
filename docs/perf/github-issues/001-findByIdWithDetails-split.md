@@ -1,5 +1,8 @@
 # perf: `findByIdWithDetails` szétbontása runtime vs display loaderre
 
+> **Státusz: implementálva** (2026-07-26) — `findByIdForRuntime` / `findByIdForDisplay`,
+> hot path átvezetve; regresszió: `npm run test:agent-runtime-display-loader`.
+
 ## Üzleti / UX hatás
 
 Az agent detail oldal, a chat és a `kb_search` ugyanazt a „teljes” agent-lekérdezést használja: betölti a memória verziókat, API kulcs előnézetet, resource-okat és recipe-t akkor is, ha a hívónak csak a memória-tartalom / model config kell. Nagyobb agent-állománynál ez **lassabb chat-fordulókat**, lassabb tudásbázis-keresést és felesleges Neon IO/költséget okoz.
@@ -8,7 +11,7 @@ Az agent detail oldal, a chat és a `kb_search` ugyanazt a „teljes” agent-le
 
 - Hol: `app/src/repositories/postgres/agent-repository.ts` (`findByIdWithDetails`)
 - Hívók: agent detail SSR, `kbSearch`, wiki/chat/general-task runtime
-- Kapcsolódó: `docs/perf/optimization-plan.md` (P1 — nyitott)
+- Kapcsolódó: `docs/perf/optimization-plan.md` (P1 — kész)
 
 A 2026-07-25-ös perf kör (grant-revoke, aggregációk, indexek, KB/sandbox over-fetch) után ez a következő legnagyobb kódoldali nyereség.
 
@@ -21,10 +24,10 @@ A 2026-07-25-ös perf kör (grant-revoke, aggregációk, indexek, KB/sandbox ove
 
 ## Elfogadási kritériumok
 
-- [ ] Runtime útvonal nem tölti a `memory.versions` listát és az `apiKeys` include-ot.
-- [ ] Agent detail UI funkcionálisan változatlan (admin és viewer nézet).
-- [ ] `kb_search` és chat path kevesebb Prisma include-dal fut (mérhető / logolható).
-- [ ] Nincs behavior regresszió a meglévő acceptance / smoke teszteken.
+- [x] Runtime útvonal nem tölti a `memory.versions` listát és az `apiKeys` include-ot.
+- [x] Agent detail UI funkcionálisan változatlan (admin és viewer nézet).
+- [x] `kb_search` és chat path kevesebb Prisma include-dal fut (mérhető / logolható).
+- [x] Nincs behavior regresszió a meglévő acceptance / smoke teszteken.
 
 ## Becsült méret
 

@@ -65,17 +65,13 @@ function agentDetails(row: Agent) {
     agent: row,
     memoryContent: null,
     memoryVersion: null,
-    recipe: null,
-    resources: [],
-    apiKeyPreview: null,
-    behaviorProfileLink: null,
   }
 }
 
 function buildRuntime(row: Agent) {
   const calls = { createConversation: 0, createTicket: 0 }
   const agents = {
-    findByIdWithDetails: async () => agentDetails(row),
+    findByIdForRuntime: async () => agentDetails(row),
   } as unknown as AgentRepository
   const conversations = {
     createConversation: async () => {

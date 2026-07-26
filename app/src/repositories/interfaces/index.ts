@@ -426,6 +426,27 @@ export type TransitionStats = {
   toDone: number
 }
 
+/** Futásidejű útvonalak (chat, task, kb_search): agent + aktuális memória, overfetch nélkül. */
+export type AgentRuntimeDetails = {
+  agent: Agent
+  memoryContent: string | null
+  memoryVersion: number | null
+}
+
+/** UI / katalógus: recipe, resources, apiKeyPreview, viselkedés-profil link. */
+export type AgentDisplayDetails = AgentRuntimeDetails & {
+  recipe: { name: string; ticketType: string; version: number; status: string } | null
+  resources: { id: string; name: string; type: string; scope: string; version: number; accessMode: string }[]
+  apiKeyPreview: string | null
+  behaviorProfileLink: {
+    id: string
+    name: string
+    currentVersion: number
+    pinnedVersion: number | null
+    pinnedBody: string
+  } | null
+}
+
 export interface AgentRepository {
   findMany(filter?: {
     tenantId?: string | null
@@ -433,14 +454,17 @@ export interface AgentRepository {
     excludeHiddenFromOperators?: boolean
   }): Promise<Agent[]>
   findById(id: string, tenantId?: string | null): Promise<Agent | null>
-  findByIdWithDetails(id: string, tenantId?: string | null): Promise<{
-    agent: Agent
-    memoryContent: string | null
-    memoryVersion: number | null
-    recipe: { name: string; ticketType: string; version: number; status: string } | null
-    resources: { id: string; name: string; type: string; scope: string; version: number; accessMode: string }[]
-    apiKeyPreview: string | null
-  } | null>
+  /**
+   * Futásidejű loader: csak az agent + aktuális memória tartalom/verzió.
+   * Nem tölti a `memory.versions` listát, apiKeys-t, resources-t, recipe-t.
+   */
+  findByIdForRuntime(id: string, tenantId?: string | null): Promise<AgentRuntimeDetails | null>
+  /**
+   * UI detail / katalógus loader: recipe, resources, apiKeyPreview, behavior profile.
+   */
+  findByIdForDisplay(id: string, tenantId?: string | null): Promise<AgentDisplayDetails | null>
+  /** @deprecated Használd `findByIdForDisplay`-t; kompat alias. */
+  findByIdWithDetails(id: string, tenantId?: string | null): Promise<AgentDisplayDetails | null>
   findVersionSnapshot(
     agentId: string,
     version: number,

@@ -384,7 +384,7 @@ type ChatModelConfig = {
   maxTokens?: number
 }
 
-type AgentDetails = NonNullable<Awaited<ReturnType<AgentRepository['findByIdWithDetails']>>>
+type AgentDetails = NonNullable<Awaited<ReturnType<AgentRepository['findByIdForRuntime']>>>
 
 /**
  * Minden, amit a kérés-scope-ban elő KELL készíteni (auth, beszélgetés,
@@ -744,7 +744,7 @@ export class AgentChatRuntime {
       return { kind: 'error', error: new Error('Message is required') }
     }
 
-    const agentDetails = await this.agents.findByIdWithDetails(params.agentId)
+    const agentDetails = await this.agents.findByIdForRuntime(params.agentId)
     if (!agentDetails) return { kind: 'error', error: new Error('Agent not found') }
     if (!isAgentReachableFromTenant(agentDetails.agent.tenantId, params.tenantId ?? null)) {
       return { kind: 'error', error: new Error('Agent not found') }
@@ -1444,7 +1444,7 @@ export class AgentChatRuntime {
     const attachmentIds = params.attachmentDocumentIds ?? []
     if (!text && attachmentIds.length === 0) throw new Error('Task description is required')
 
-    const agentDetails = await this.agents.findByIdWithDetails(params.agentId)
+    const agentDetails = await this.agents.findByIdForRuntime(params.agentId)
     if (!agentDetails) throw new Error('Agent not found')
     assertAgentReachableForChat(agentDetails.agent.tenantId, params.tenantId ?? null)
 
@@ -1835,7 +1835,7 @@ export class AgentChatRuntime {
 
   /** agent-memory-persistent-cross-conversation-spec.md §10.3 — retrieval-only memória-blokk chatben. */
   private async retrieveProjectMemoryContext(params: {
-    agentDetails: NonNullable<Awaited<ReturnType<AgentRepository['findByIdWithDetails']>>>
+    agentDetails: NonNullable<Awaited<ReturnType<AgentRepository['findByIdForRuntime']>>>
     projectKey: string
     query: string
     tenantId: string | null
@@ -1861,7 +1861,7 @@ export class AgentChatRuntime {
   }
 
   private async buildGatewayMessages(
-    agentDetails: NonNullable<Awaited<ReturnType<AgentRepository['findByIdWithDetails']>>>,
+    agentDetails: NonNullable<Awaited<ReturnType<AgentRepository['findByIdForRuntime']>>>,
     historyMessages: ContextAssemblyMessage[],
     latestAttachmentBlock: string,
     kbSearch: { enabled: boolean; hits: KbHit[] },

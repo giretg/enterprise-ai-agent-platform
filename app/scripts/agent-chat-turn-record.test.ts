@@ -263,14 +263,10 @@ function buildRuntime(options: {
 
   const runtime = new AgentChatRuntime(
     {
-      findByIdWithDetails: async () => ({
+      findByIdForRuntime: async () => ({
         agent: agentRow(),
         memoryContent: null,
         memoryVersion: null,
-        recipe: null,
-        resources: [],
-        apiKeyPreview: null,
-        behaviorProfileLink: null,
       }),
       findMany: async () => [],
     } as unknown as AgentRepository,

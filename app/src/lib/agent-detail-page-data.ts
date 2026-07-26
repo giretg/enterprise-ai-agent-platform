@@ -48,14 +48,14 @@ export type AgentDetailPageData = {
   isAdmin: boolean
   canManageKb: boolean
   canApproveKb: boolean
-  agent: NonNullable<Awaited<ReturnType<typeof repositories.agents.findByIdWithDetails>>>['agent']
+  agent: NonNullable<Awaited<ReturnType<typeof repositories.agents.findByIdForDisplay>>>['agent']
   memoryContent: string | null
   memoryVersion: number | null
-  recipe: NonNullable<Awaited<ReturnType<typeof repositories.agents.findByIdWithDetails>>>['recipe']
-  resources: NonNullable<Awaited<ReturnType<typeof repositories.agents.findByIdWithDetails>>>['resources']
+  recipe: NonNullable<Awaited<ReturnType<typeof repositories.agents.findByIdForDisplay>>>['recipe']
+  resources: NonNullable<Awaited<ReturnType<typeof repositories.agents.findByIdForDisplay>>>['resources']
   apiKeyPreview: string | null
   behaviorProfileLink: NonNullable<
-    Awaited<ReturnType<typeof repositories.agents.findByIdWithDetails>>
+    Awaited<ReturnType<typeof repositories.agents.findByIdForDisplay>>
   >['behaviorProfileLink']
   delegatedConnectors: Awaited<ReturnType<typeof loadAgentDelegatedConnectors>>
   governance: {
@@ -276,7 +276,7 @@ export async function loadAgentDetailPageData(
   const canManageKb = hasMinimumRole(ctx.activeTenantRole, 'operator')
   const canApproveKb = hasMinimumRole(ctx.activeTenantRole, 'approver')
 
-  const detail = await repositories.agents.findByIdWithDetails(agentId, ctx.activeTenantId)
+  const detail = await repositories.agents.findByIdForDisplay(agentId, ctx.activeTenantId)
   if (!detail) throw new Error('Agent not found')
   if (!canViewAgent(ctx.activeTenantRole, detail.agent)) throw new Error('Agent not found')
 

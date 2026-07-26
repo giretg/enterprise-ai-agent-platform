@@ -181,7 +181,7 @@ export class GeneralTaskRuntime {
       throw new Error('Ticket payload is missing question')
     }
 
-    const agentDetails = await this.agents.findByIdWithDetails(params.agentId)
+    const agentDetails = await this.agents.findByIdForRuntime(params.agentId)
     if (!agentDetails) throw new Error('Agent not found')
 
     const modelConfig = agentDetails.agent.modelConfig as ModelConfig
@@ -843,7 +843,7 @@ export class GeneralTaskRuntime {
 
   /** agent-memory-persistent-cross-conversation-spec.md §10.3 — retrieval-only memória-blokk task-ágon. */
   private async retrieveProjectMemoryContext(params: {
-    agentDetails: NonNullable<Awaited<ReturnType<AgentRepository['findByIdWithDetails']>>>
+    agentDetails: NonNullable<Awaited<ReturnType<AgentRepository['findByIdForRuntime']>>>
     ticket: NonNullable<Awaited<ReturnType<TicketRepository['findById']>>>
     taskPrompt: string
   }) {
@@ -921,7 +921,7 @@ export class GeneralTaskRuntime {
   }
 
   private async buildTaskMessages(params: {
-    agentDetails: NonNullable<Awaited<ReturnType<AgentRepository['findByIdWithDetails']>>>
+    agentDetails: NonNullable<Awaited<ReturnType<AgentRepository['findByIdForRuntime']>>>
     question: string
     attachmentBlock: string
     workspaceFiles: string[]

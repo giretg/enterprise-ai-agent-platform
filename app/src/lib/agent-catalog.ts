@@ -24,7 +24,7 @@ export async function buildAgentCatalogEntry(
   agents: AgentRepository,
   toolBroker: ToolBrokerRepository,
 ): Promise<AgentCatalogEntry> {
-  const detail = await agents.findByIdWithDetails(agentId)
+  const detail = await agents.findByIdForDisplay(agentId)
   if (!detail) throw new Error('Agent not found')
 
   const persona = personaFor(detail.agent.name, detail.agent)
