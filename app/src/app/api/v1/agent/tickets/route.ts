@@ -1,22 +1,41 @@
 import { NextResponse } from 'next/server'
-import type { Prisma } from '@prisma/client'
 import { authenticateAgentRequest, requireAgentScope } from '@/auth/agent-api-key'
 import { services } from '@/domain'
 import { prisma } from '@/lib/db'
+import { assertAgentWorkTenantOperable } from '@/lib/agent-work-tenant-gate'
+import {
+  buildAgentInteractionTicketInput,
+  resolveInteractionTicketCreatorId,
+} from '@/lib/agent-interaction-ticket'
 import { repositories } from '@/repositories/postgres'
 import { createInteractionTicketSchema } from '@/lib/validators/actions'
 
-function jsonError(message: string, status: number) {
-  return NextResponse.json({ success: false, error: message }, { status })
+function jsonError(message: string, status: number, data?: unknown) {
+  return NextResponse.json({ success: false, error: message, data }, { status })
 }
 
-async function systemUserId() {
+/** A `resolveInteractionTicketCreatorId` prisma-hátterű portjai (lásd ott az invariánst). */
+async function findTenantMember(args: { tenantId: string; adminOnly: boolean }) {
+  const membership = await prisma.tenantMembership.findFirst({
+    where: {
+      tenantId: args.tenantId,
+      status: 'active',
+      user: { status: 'active' },
+      ...(args.adminOnly ? { role: 'admin' } : {}),
+    },
+    orderBy: { createdAt: 'asc' },
+    select: { userId: true },
+  })
+  return membership?.userId ?? null
+}
+
+async function findGlobalAdmin() {
   const user = await prisma.user.findFirst({
     where: { role: 'admin' },
     orderBy: { createdAt: 'asc' },
+    select: { id: true },
   })
-  if (!user) throw new Error('No system user configured')
-  return user.id
+  return user?.id ?? null
 }
 
 export async function POST(request: Request) {
@@ -49,19 +68,25 @@ export async function POST(request: Request) {
     const agent = await repositories.agents.findById(auth.agentId)
     if (!agent) return jsonError('Agent not found', 404)
 
-    const ticket = await repositories.tickets.create({
-      type: 'interaction',
-      title: parsed.data.title,
-      state: 'in_progress',
-      assigneeType: 'human',
-      assigneeId: null,
-      agentId: auth.agentId,
-      payload: parsed.data.payload as Prisma.JsonValue,
-      sourceDocumentId: parsed.data.sourceDocumentId ?? null,
-      executeAfter: null,
-      dueBy: null,
-      createdById: await systemUserId(),
+    // A felfüggesztett / offboardolt / archivált tenant automata útjai sem
+    // hozhatnak létre ticketet (ugyanaz a kapu, mint a tool-invoke úton).
+    const tenantGate = await assertAgentWorkTenantOperable({ agentId: auth.agentId })
+    if (!tenantGate.ok) {
+      return jsonError(`Tenant is not operable (${tenantGate.tenantStatus})`, 403, tenantGate)
+    }
+
+    const createdById = await resolveInteractionTicketCreatorId(agent.tenantId, {
+      findTenantMember,
+      findGlobalAdmin,
     })
+
+    const ticket = await repositories.tickets.create(
+      buildAgentInteractionTicketInput({
+        agent: { id: auth.agentId, tenantId: agent.tenantId },
+        data: parsed.data,
+        createdById,
+      }),
+    )
 
     const awaiting = await services.tickets.transition({
       ticketId: ticket.id,

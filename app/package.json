@@ -105,6 +105,7 @@
     "test:channel-approval": "tsx scripts/channel-approval.test.ts",
     "test:ttl-secret-cache": "tsx scripts/ttl-secret-cache.test.ts",
     "test:public-routes": "tsx scripts/public-routes.test.ts",
+    "test:agent-interaction-ticket": "tsx scripts/agent-interaction-ticket.test.ts",
     "test:agent-turn": "tsx scripts/agent-turn-repository.test.ts",
     "test:agent-turn-record": "tsx scripts/agent-chat-turn-record.test.ts",
     "test:loop-stop": "tsx scripts/loop-stop-decision.test.ts",

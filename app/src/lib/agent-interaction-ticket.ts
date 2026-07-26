@@ -1,0 +1,85 @@
+import type { Prisma } from '@prisma/client'
+
+/**
+ * Az agent REST API (`POST /api/v1/agent/tickets`) által létrehozott interakciós
+ * ticket összeállításának TESZTELHETŐ magja. A route maga vékony adapter (nincs
+ * saját HTTP-teszt), ezért a két tenant-invariánst itt, kiemelt egységként
+ * rögzítjük — ugyanaz a minta, mint a webhook publikus-route allowlistjénél.
+ *
+ * Invariáns #1: a ticket tenantId-ja MINDIG az agent tenantja. Enélkül a ticket
+ *   `tenantId = null`-lal jönne létre, és a tenant táblája (ami tenantId-re szűr)
+ *   sosem mutatná — az agent emberi jóváhagyást/választ kérő interakciója némán
+ *   elveszne.
+ * Invariáns #2: a ticket „létrehozója" az agent SAJÁT tenantjának egy tagja, sosem
+ *   egy globális, akár másik tenanthoz tartozó admin (cross-tenant attribúció).
+ */
+
+export type TenantMemberFinder = (args: {
+  tenantId: string
+  adminOnly: boolean
+}) => Promise<string | null>
+
+export type GlobalAdminFinder = () => Promise<string | null>
+
+/**
+ * A létrehozó user feloldása fail-closed módon az agent tenantjában. Elsőként egy
+ * aktív admin, tartalékként a tenant bármely aktív tagja. Platform-szintű
+ * (tenant nélküli) agentnél nincs tenant-board, ezért ott a globális rendszer-admin
+ * a végső tartalék. Ha egy tenanthoz egyetlen aktív tag sincs, inkább hibázunk,
+ * mintsem idegen tenant adminját tüntessük fel létrehozóként.
+ */
+export async function resolveInteractionTicketCreatorId(
+  tenantId: string | null,
+  ports: { findTenantMember: TenantMemberFinder; findGlobalAdmin: GlobalAdminFinder },
+): Promise<string> {
+  if (tenantId) {
+    const admin = await ports.findTenantMember({ tenantId, adminOnly: true })
+    if (admin) return admin
+    const anyMember = await ports.findTenantMember({ tenantId, adminOnly: false })
+    if (anyMember) return anyMember
+    throw new Error('A tenantnak nincs aktív tagja a ticket létrehozásához')
+  }
+  const globalAdmin = await ports.findGlobalAdmin()
+  if (!globalAdmin) throw new Error('No system user configured')
+  return globalAdmin
+}
+
+export type AgentInteractionTicketInput = {
+  tenantId: string | null
+  type: 'interaction'
+  title: string
+  state: 'in_progress'
+  assigneeType: 'human'
+  assigneeId: null
+  agentId: string
+  payload: Prisma.JsonValue
+  sourceDocumentId: string | null
+  executeAfter: null
+  dueBy: null
+  createdById: string
+}
+
+/**
+ * Az interakciós ticket create-inputja. A tenantId MINDIG az agent tenantjából
+ * származik — nincs csendes visszaesés „platform" (null tenant) ticketre.
+ */
+export function buildAgentInteractionTicketInput(params: {
+  agent: { id: string; tenantId: string | null }
+  data: { title: string; payload: Record<string, unknown>; sourceDocumentId?: string }
+  createdById: string
+}): AgentInteractionTicketInput {
+  return {
+    tenantId: params.agent.tenantId,
+    type: 'interaction',
+    title: params.data.title,
+    state: 'in_progress',
+    assigneeType: 'human',
+    assigneeId: null,
+    agentId: params.agent.id,
+    payload: params.data.payload as Prisma.JsonValue,
+    sourceDocumentId: params.data.sourceDocumentId ?? null,
+    executeAfter: null,
+    dueBy: null,
+    createdById: params.createdById,
+  }
+}
