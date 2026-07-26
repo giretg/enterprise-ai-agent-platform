@@ -104,6 +104,14 @@ jobs:
           npm run test:consequence-approval
           npm run test:skill-catalog
 
+      # Prompt-eval A fázis — piros vonalak (issue #35). SZÁNDÉKOSAN külön lépés:
+      # ez biztonsági kapu, nem funkcionális teszt. Ha elbukik, egy prompt-módosítás
+      # áttört egy invariánst (hurok / tenant-határ / SoD / írás-engedély /
+      # szenzitív-kiszivárgás) — nem felülbírálható, a változás így nem élesíthető.
+      # Nem hív modellt és nem kerül tokenbe: a költségkeret nem tudja kiéheztetni.
+      - name: Piros vonalak (prompt-eval, blokkoló)
+        run: npm run test:prompt-eval
+
   migrations:
     name: Prisma migrate deploy (ephemeral Postgres)
     runs-on: ubuntu-latest

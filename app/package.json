@@ -155,6 +155,7 @@
     "test:document-read": "tsx scripts/document-read.test.ts",
     "test:kb-validator": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/kb-validator.test.ts",
     "test:kb-eval": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/kb-eval.test.ts",
+    "test:prompt-eval": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/prompt-eval.test.ts",
     "test:skill-catalog": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/skill-catalog.test.ts",
     "smoke:kb-nav": "tsx scripts/kb-nav-live-smoke.ts",
     "test:acceptance": "tsx scripts/acceptance-e2e.ts",
