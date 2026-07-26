@@ -63,6 +63,7 @@ const TENANT_A = '11111111-1111-1111-1111-111111111111'
 const TENANT_B = '22222222-2222-2222-2222-222222222222'
 const USER_1 = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
 const AGENT_1 = 'cccccccc-cccc-cccc-cccc-cccccccccccc'
+const AGENT_2 = 'eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee'
 const AGENT_B = 'dddddddd-dddd-dddd-dddd-dddddddddddd'
 const THREAD = '9001'
 
@@ -162,6 +163,9 @@ function makeHarness(opts?: {
     async findById(id: string) {
       if (id === AGENT_1) {
         return { id: AGENT_1, name: 'Könyvelő', tenantId: opts?.agentTenantId ?? TENANT_A, personaNickname: null }
+      }
+      if (id === AGENT_2) {
+        return { id: AGENT_2, name: 'Beszerző', tenantId: opts?.agentTenantId ?? TENANT_A, personaNickname: null }
       }
       if (id === AGENT_B) {
         return { id: AGENT_B, name: 'Idegen', tenantId: TENANT_B, personaNickname: null }
@@ -298,6 +302,7 @@ function makeHarness(opts?: {
     runtime: opts?.runtime ?? defaultRuntime,
     transport,
     audit: audit as never,
+    resolveOrgName: async () => 'Excellence Kft.',
     now: () => clock,
   })
 
@@ -586,6 +591,97 @@ async function main() {
     ]) {
       assertAuditActionRegistered(a)
     }
+  })
+
+  await test('CT-16 /agentek: az elérhető agentek listája, jelölve, melyikkel beszélsz', async () => {
+    const h = makeHarness({
+      grants: [
+        { agentId: AGENT_1, projectKey: '__general__' },
+        { agentId: AGENT_2, projectKey: 'beszerzes-2026' },
+      ],
+    })
+    await enqueueAndProcess(h, '/agentek')
+    const texts = sentTexts(h.transport)
+    assert.equal(texts.length, 1)
+    assert.ok(texts[0].includes('1. Könyvelő — Általános'), `lista számozva: ${texts[0]}`)
+    assert.ok(texts[0].includes('2. Beszerző — beszerzes-2026'))
+    assert.ok(texts[0].includes('most ezzel beszélsz'), 'jelöli az aktívat')
+    assert.equal(
+      h.transport.calls.filter((c) => c.method === 'sendChatAction').length,
+      0,
+      'parancsnál nem hívjuk a modellt, nincs gépel-jelzés',
+    )
+  })
+
+  await test('CT-17 /valt: sorszámmal és névvel is vált, és új beszélgetést nyit', async () => {
+    const h = makeHarness({
+      grants: [
+        { agentId: AGENT_1, projectKey: '__general__' },
+        { agentId: AGENT_2, projectKey: '__general__' },
+      ],
+    })
+    await enqueueAndProcess(h, 'Szia')
+    assert.equal(h.conversationRows.size, 1)
+
+    await enqueueAndProcess(h, '/valt 2')
+    assert.equal(h.session.activeAgentId, AGENT_2, 'sorszámra váltott')
+    assert.ok(sentTexts(h.transport).at(-1)!.includes('Beszerző'))
+
+    // A váltás után a következő üzenet MÁSIK beszélgetésbe megy (nem örökli az előző szálat).
+    await enqueueAndProcess(h, 'Új kérdés')
+    assert.equal(h.conversationRows.size, 2, 'agent-váltás után új beszélgetés')
+
+    await enqueueAndProcess(h, '/valt könyv')
+    assert.equal(h.session.activeAgentId, AGENT_1, 'név-előtagra is vált')
+  })
+
+  await test('CT-18 /valt ismeretlen névre: érthető magyar válasz, az aktív agent marad', async () => {
+    const h = makeHarness({
+      grants: [
+        { agentId: AGENT_1, projectKey: '__general__' },
+        { agentId: AGENT_2, projectKey: '__general__' },
+      ],
+    })
+    await enqueueAndProcess(h, '/valt Marketinges')
+    assert.equal(h.session.activeAgentId, null, 'nem váltott ismeretlenre')
+    const text = sentTexts(h.transport).at(-1)!
+    assert.ok(text.includes('Nem találtam'), text)
+    assert.ok(text.includes('/agentek'), 'megmondja, hogyan kérje le a listát')
+  })
+
+  await test('CT-19 /szervezet: kimondja, melyik szervezet nevében beszél (story 14)', async () => {
+    const h = makeHarness()
+    await enqueueAndProcess(h, '/szervezet')
+    const text = sentTexts(h.transport).at(-1)!
+    assert.ok(text.includes('Excellence Kft.'), text)
+    assert.ok(text.includes('nem váltható'), 'kimondja, hogy Telegramon nincs szervezet-váltás')
+  })
+
+  await test('CT-20 /segitseg: felsorolja a parancsokat, modellhívás nélkül', async () => {
+    const runtime: ChannelAgentRuntime = {
+      async runTurn() {
+        throw new Error('a parancs NEM hívhatja a modellt')
+      },
+    }
+    const h = makeHarness({ runtime })
+    await enqueueAndProcess(h, '/segitseg')
+    const text = sentTexts(h.transport).at(-1)!
+    for (const cmd of ['/agentek', '/valt', '/szervezet']) {
+      assert.ok(text.includes(cmd), `${cmd} szerepel a súgóban`)
+    }
+  })
+
+  await test('CT-21 a parancs-felismerés nem nyeli el a sima üzenetet', async () => {
+    const h = makeHarness()
+    await enqueueAndProcess(h, 'Mi a /valt jelentése a könyvelésben?')
+    const text = sentTexts(h.transport).at(-1)!
+    assert.ok(text.includes('Szia! Miben segíthetek?'), 'a nem-parancs üzenet az agenthez ment')
+  })
+
+  await test('CT-22 visszavont kötés parancsnál is fail-closed', async () => {
+    const h = makeHarness({ identityStatus: 'revoked' })
+    await enqueueAndProcess(h, '/agentek')
+    assert.equal(sentTexts(h.transport).length, 0, 'visszavont kötésre parancs sem válaszol')
   })
 
   if (failures > 0) {

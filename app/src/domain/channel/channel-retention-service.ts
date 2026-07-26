@@ -105,6 +105,12 @@ export class ChannelRetentionService {
     }
 
     // Egy összegző audit a futásról (nem soronként) — az üzemeltetés ebből látja a takarítást.
+    // ÜRES futásra NEM írunk sort: a takarító a worker minden körében lefut, és minden
+    // `audit.append` globális advisory lockot vesz a hash-láncra — a percenkénti „nem volt mit
+    // takarítani" bejegyzés zajjal töltené a láncot és sorosítaná az írásokat. Ami nem történt,
+    // az nem esemény; a takarítási lemaradás a metrika-panel „Takarításra vár" számából látszik.
+    if (result.scanned === 0) return result
+
     await this.deps.audit.append({
       actorType: 'system',
       actorId: null,

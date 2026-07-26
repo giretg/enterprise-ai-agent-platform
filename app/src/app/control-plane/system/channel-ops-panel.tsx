@@ -226,8 +226,9 @@ export function ChannelOpsPanel({
           <p className="mt-1 text-xs text-ink-soft">
             A bot a megőrzési horizonton túl törli a <strong>saját</strong> kimenő üzeneteit a
             Telegram oldalán (a hiteles példány nálunk marad). Privát chatben a bot csak a saját
-            üzeneteit tudja törölni — a felhasználó üzeneteit nem. Éles üzemben ez ütemezetten fut;
-            innen kézzel is elindítható.
+            üzeneteit tudja törölni — a felhasználó üzeneteit nem. Ez a takarítás a háttérben
+            magától fut, amíg a feldolgozó szolgáltatás üzemel; az alábbi gomb csak akkor kell,
+            ha nem akarod megvárni a következő kört.
           </p>
           {canEdit ? (
             <button

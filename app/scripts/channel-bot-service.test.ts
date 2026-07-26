@@ -9,6 +9,7 @@
 import assert from 'node:assert/strict'
 import type { ChannelBot } from '@prisma/client'
 import { ChannelBotService } from '../src/domain/channel/channel-bot-service'
+import { RecordingChannelTransport } from '../src/domain/channel/channel-outbound-transport'
 import { assertAuditActionRegistered } from '../src/lib/audit/event-catalog'
 import type {
   AuditRepository,
@@ -100,7 +101,31 @@ function makeHarness() {
   }
 
   const svc = new ChannelBotService({ bots, audit: audit as AuditRepository })
-  return { svc, audits, rows }
+
+  // Beüzemelő harness: KÖZÖS kimenő dublőr + a három környezeti feltétel befecskendezve, hogy a
+  // `setWebhook` / `getMe` / `getWebhookInfo` út hálózat nélkül, determinisztikusan mérhető legyen.
+  const transport = new RecordingChannelTransport()
+  function setupSvc(opts?: {
+    botUsername?: string
+    botUsernameConfigured?: boolean
+    publicUrlConfigured?: boolean
+    webhookSecret?: string
+  }) {
+    return new ChannelBotService({
+      bots,
+      audit: audit as AuditRepository,
+      transport,
+      resolveWebhookSecret: async () => opts?.webhookSecret ?? 'nagyon-hosszu-titok',
+      resolveWebhookUrl: (channelType) => `https://platform.example/api/channels/${channelType}/webhook`,
+      resolveBotUsername: () => ({
+        username: opts?.botUsername ?? 'ceg_agent_bot',
+        configured: opts?.botUsernameConfigured ?? true,
+      }),
+      isPublicAppUrlConfigured: () => opts?.publicUrlConfigured ?? true,
+    })
+  }
+
+  return { svc, audits, rows, transport, setupSvc }
 }
 
 const VALID = {
@@ -224,6 +249,107 @@ async function main() {
     assert.ok(view)
     assert.equal(view!.isPlatformLevel, true)
     assert.ok(!JSON.stringify(view).includes('telegram-bot-token'))
+  })
+
+  await test('CB-11 setup-állapot: kimondja, ha a bot-felhasználónév vagy a publikus cím hiányzik', async () => {
+    const { setupSvc } = makeHarness()
+    const svc = setupSvc({ botUsernameConfigured: false, publicUrlConfigured: false })
+    const state = await svc.getSetupState('telegram')
+    assert.equal(state.bot, null)
+    assert.equal(state.botUsernameConfigured, false)
+    assert.equal(state.webhookUrlConfigured, false)
+    assert.match(state.webhookUrl, /\/api\/channels\/telegram\/webhook$/)
+  })
+
+  await test('CB-12 webhook bekötése: setWebhook a titkos fejléccel, auditált, a titok NEM auditálódik', async () => {
+    const { setupSvc, transport, audits } = makeHarness()
+    const svc = setupSvc({ webhookSecret: 'sup3r-titk0s-fejlec' })
+    await svc.registerPlatformBot(VALID, 'admin-1')
+    transport.reset()
+
+    const res = await svc.installWebhook('telegram', 'admin-1')
+    assert.equal(res.ok, true)
+    assert.equal(transport.calls.length, 1)
+    const call = transport.calls[0]!
+    assert.equal(call.method, 'setWebhook')
+    assert.equal(call.payload.secret_token, 'sup3r-titk0s-fejlec')
+    assert.deepEqual(call.payload.allowed_updates, ['message', 'callback_query'])
+    assert.match(String(call.payload.url), /^https:\/\/platform\.example\//)
+
+    const entry = audits.find((a) => a.action === 'channel.bot.webhook_installed')
+    assert.ok(entry, 'a bekötés auditálandó')
+    assert.ok(!JSON.stringify(entry!.metadata).includes('sup3r-titk0s-fejlec'))
+  })
+
+  await test('CB-13 webhook bekötése fail-closed: nincs bot / nincs publikus cím → nincs kimenő hívás', async () => {
+    const noBot = makeHarness()
+    const a = await noBot.setupSvc().installWebhook('telegram', 'admin-1')
+    assert.equal(a.ok === false && a.reason, 'not_found')
+    assert.equal(noBot.transport.calls.length, 0)
+
+    const noUrl = makeHarness()
+    const svc = noUrl.setupSvc({ publicUrlConfigured: false })
+    await svc.registerPlatformBot(VALID, 'admin-1')
+    noUrl.transport.reset()
+    const b = await svc.installWebhook('telegram', 'admin-1')
+    assert.equal(b.ok === false && b.reason, 'public_url_missing')
+    assert.equal(noUrl.transport.calls.length, 0)
+  })
+
+  await test('CB-14 kapcsolat-ellenőrzés: felismeri az idegen webhookot és a rossz felhasználónevet', async () => {
+    const { setupSvc, transport } = makeHarness()
+    const svc = setupSvc({ botUsername: 'elgepelt_bot' })
+    await svc.registerPlatformBot(VALID, 'admin-1')
+    transport.reset()
+    transport.queueResults(
+      { ok: true, providerMessageId: null, result: { username: 'ceg_agent_bot' } },
+      {
+        ok: true,
+        providerMessageId: null,
+        result: { url: 'https://masik-rendszer.example/hook', pending_update_count: 4 },
+      },
+    )
+
+    const check = await svc.checkConnection('telegram')
+    assert.equal(check.reachable, true)
+    assert.equal(check.botUsername, 'ceg_agent_bot')
+    assert.equal(check.webhookMatches, false, 'idegen webhook-cím nem számít egyezésnek')
+    assert.equal(check.usernameMatches, false, 'az elgépelt env rossz mélylinket adna')
+    assert.equal(check.pendingUpdateCount, 4)
+  })
+
+  await test('CB-15 kapcsolat-ellenőrzés: helyes beüzemelésnél minden egyezik', async () => {
+    const { setupSvc, transport } = makeHarness()
+    const svc = setupSvc()
+    await svc.registerPlatformBot(VALID, 'admin-1')
+    transport.reset()
+    transport.queueResults(
+      { ok: true, providerMessageId: null, result: { username: 'ceg_agent_bot' } },
+      {
+        ok: true,
+        providerMessageId: null,
+        result: {
+          url: 'https://platform.example/api/channels/telegram/webhook',
+          pending_update_count: 0,
+        },
+      },
+    )
+
+    const check = await svc.checkConnection('telegram')
+    assert.equal(check.webhookMatches, true)
+    assert.equal(check.usernameMatches, true)
+    assert.equal(check.failureReason, null)
+  })
+
+  await test('CB-16 kapcsolat-ellenőrzés: nem elérhető bot → reachable=false, nincs találgatás', async () => {
+    const { setupSvc, transport } = makeHarness()
+    const svc = setupSvc()
+    await svc.registerPlatformBot(VALID, 'admin-1')
+    transport.reset()
+    transport.queueResults({ ok: false, reason: 'provider_error', detail: 'status_401' })
+    const check = await svc.checkConnection('telegram')
+    assert.equal(check.reachable, false)
+    assert.equal(check.failureReason, 'provider_error')
   })
 
   if (failures > 0) {

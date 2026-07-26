@@ -370,6 +370,10 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   // auditba, csak a titok-referencia (maga a mutató).
   'channel.bot.register',
   'channel.bot.update',
+  // A bejövő webhook bekötése a providernél (`setWebhook`) — a Telegram oldalán ettől kezdve
+  // érkeznek hozzánk az üzenetek, ezért állapotváltozásként auditáljuk. A titkos fejléc NYERSEN
+  // itt sem szerepel, csak az, hogy be lett-e állítva.
+  'channel.bot.webhook_installed',
   'channel.message.sent',
   'channel.message.blocked',
   // Összekötés és visszavonás (#72, D12): token kiadása, kötés létrejötte/elutasítása,

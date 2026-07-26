@@ -33,9 +33,26 @@ export function MyChannelAgents({ initialView }: { initialView: MyChannelAgentsV
       <div className="space-y-4">
         <p className="text-sm text-ink-soft">
           Itt látod, mely agenteket éred el Telegramon, és beállíthatod, melyik projekthez
-          tartozzanak. Telefonon az agentek között paranccsal válthatsz, és minden válasz elején
-          ott lesz, melyik agent és melyik projekt válaszol.
+          tartozzanak. Minden válasz elején ott lesz, melyik agent és melyik projekt válaszol.
         </p>
+        <div className="rounded-lg border border-line bg-night-2 p-3 text-sm text-ink-soft">
+          <p className="font-medium text-ink">Amit a Telegramban írhatsz:</p>
+          <ul className="mt-1 space-y-0.5">
+            <li>
+              <code className="text-ink">/agentek</code> — kiket érsz el, és épp melyikkel beszélsz
+            </li>
+            <li>
+              <code className="text-ink">/valt</code> — váltás másik agentre (pl.{' '}
+              <code className="text-ink">/valt 2</code>)
+            </li>
+            <li>
+              <code className="text-ink">/szervezet</code> — melyik szervezet nevében beszélsz ott
+            </li>
+            <li>
+              <code className="text-ink">/segitseg</code> — rövid súgó a telefonon
+            </li>
+          </ul>
+        </div>
 
         {!channelEnabled && (
           <div className="rounded-lg border border-amber/40 bg-amber/10 p-3 text-sm text-ink-soft">

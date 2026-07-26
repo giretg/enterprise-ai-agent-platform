@@ -88,3 +88,64 @@ export async function getPlatformChannelBot(channelType: 'telegram' = 'telegram'
     return fail(e instanceof Error ? e.message : 'Nem sikerült lekérni a platform-botot.')
   }
 }
+
+/**
+ * A beüzemelő képernyő állapota: a bot-sor ÉS a három környezeti feltétel (bot-felhasználónév,
+ * publikus app-cím, webhook-cím). E nélkül a beüzemelés „mindent beírtam, mégsem működik" volt.
+ */
+export async function getTelegramChannelSetup(channelType: 'telegram' = 'telegram') {
+  try {
+    await requirePlatformRole('superadmin')
+    return ok(await services.channelBots.getSetupState(channelType))
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Nem sikerült lekérni a csatorna beállításait.')
+  }
+}
+
+/** Beüzemelő hibakód → hétköznapi magyar üzenet (NFR-1, D16). */
+function setupMessageFor(reason: string): string {
+  switch (reason) {
+    case 'not_found':
+      return 'Nincs regisztrált platform-bot — előbb regisztráld a botot fentebb.'
+    case 'public_url_missing':
+      return 'Nincs beállítva a platform publikus webcíme (NEXT_PUBLIC_APP_URL), ezért a Telegram nem tudná, hova küldje az üzeneteket. Állítsd be, indítsd újra az alkalmazást, majd próbáld újra.'
+    case 'secret_unresolvable':
+      return 'A webhook titkos fejlécét nem sikerült feloldani a megadott referenciából. Ellenőrizd, hogy a hivatkozott titok tényleg létezik és nem üres.'
+    case 'transport_unavailable':
+      return 'A kimenő Telegram-kapcsolat nincs beállítva ebben a környezetben.'
+    case 'egress_blocked':
+      return 'A kimenő hívást a hálózati őr blokkolta — a Telegram API nincs engedélyezve ebben a környezetben.'
+    case 'provider_error':
+      return 'A Telegram elutasította a kérést. A leggyakoribb ok: hibás bot-token, vagy a webcím nem érhető el kívülről HTTPS-en.'
+    case 'transport_error':
+      return 'Nem sikerült elérni a Telegramot (hálózati hiba vagy időtúllépés). Próbáld újra.'
+    default:
+      return 'A művelet nem sikerült.'
+  }
+}
+
+/**
+ * A bejövő webhook bekötése a Telegramnál. Ez az a lépés, ami nélkül a bot egyetlen üzenetet
+ * sem ad át nekünk — eddig csak kézi `curl`-lel volt elvégezhető, most egy gomb.
+ */
+export async function installTelegramWebhook(channelType: 'telegram' = 'telegram') {
+  try {
+    await ensureActiveDatabaseMode()
+    const actor = (await requirePlatformRole('superadmin')).user
+    const res = await services.channelBots.installWebhook(channelType, actor.id)
+    if (!res.ok) return fail(setupMessageFor(res.reason))
+    return ok(res.data)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Nem sikerült bekötni a webhookot.')
+  }
+}
+
+/** A beüzemelés ellenőrzése (csak olvas): válaszol-e a bot, és a mi végpontunkra van-e kötve. */
+export async function checkTelegramChannelConnection(channelType: 'telegram' = 'telegram') {
+  try {
+    await requirePlatformRole('superadmin')
+    return ok(await services.channelBots.checkConnection(channelType))
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Nem sikerült ellenőrizni a kapcsolatot.')
+  }
+}

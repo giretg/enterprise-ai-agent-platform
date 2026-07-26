@@ -45,6 +45,20 @@ export function TelegramLinkPanel({
             megadása nélkül. Egy összekötés mindig egyetlen szervezethez tartozik; a szerepköreid
             minden üzenetnél frissen érvényesülnek.
           </p>
+          {!activeTelegram && (
+            <div className="rounded-lg border border-line bg-night-2 p-3 text-sm text-ink-soft">
+              <p className="font-medium text-ink">Így fog menni:</p>
+              <ol className="mt-1 list-decimal space-y-0.5 pl-5">
+                <li>Rákattintasz az alábbi gombra, és elolvasod a figyelmeztetést.</li>
+                <li>Megnyílik a Telegram a mi botunkkal — ott a „Start&rdquo; gombra koppintasz.</li>
+                <li>A bot visszaigazolja az összekötést. Jelszót sehol nem adsz meg.</li>
+              </ol>
+              <p className="mt-2">
+                Ha elveszíted a telefonod, ezen az oldalon egy gombbal azonnal lezárhatod a
+                hozzáférést.
+              </p>
+            </div>
+          )}
 
           {activeTelegram ? (
             <div className="rounded-lg border border-sage/35 bg-sage/10 p-4">

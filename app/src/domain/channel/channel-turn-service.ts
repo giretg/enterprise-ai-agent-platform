@@ -174,6 +174,12 @@ export type ChannelTurnServiceDeps = {
   runtime: ChannelAgentRuntime
   transport: ChannelOutboundTransport
   audit: Pick<AuditRepository, 'append'>
+  /**
+   * A kötéskor rögzített szervezet megnevezése a `/szervezet` parancshoz (story 14). Több
+   * szervezetben is tag felhasználónak Telegramon nincs szervezet-váltó, ezért meg kell tudnia
+   * kérdezni, kinek a nevében beszél. Opcionális: hiányában a parancs a nevet nem tudja kiírni.
+   */
+  resolveOrgName?: (tenantId: string | null) => Promise<string | null>
   now?: () => Date
   /** A címke-prefixszel csökkentett hasznos darab-hossz. Alap: Telegram-korlát − tartalék. */
   chunkLimit?: number
@@ -194,6 +200,8 @@ export type ProcessTurnOutcome =
   | 'runtime_error'
   | 'retried'
   | 'failed'
+  /** Beépített parancs (agent-váltás, agent-lista, szervezet, súgó) — nem hívtuk a modellt. */
+  | 'command'
 
 const DEFAULT_CHUNK_LIMIT = TELEGRAM_MAX_MESSAGE_CHARS - 200
 const DEFAULT_MAX_ATTEMPTS = 5
@@ -316,6 +324,16 @@ export class ChannelTurnService {
       return 'unsupported'
     }
 
+    // Beépített parancsok (story 14/28): agent-váltás, agent-lista, szervezet, súgó. A modellt
+    // NEM hívjuk — ezek a csatorna saját, kormányzáson kívüli kényelmi válaszai, és a jogosultsági
+    // metszet itt is ÉLŐBEN dől el (a lista csak az engedélyezett agenteket mutatja).
+    const command = parseCommand(turn.inboundText)
+    if (command) {
+      await this.runCommand(session, identity, turn, command)
+      await this.deps.turns.markDone(turn.id)
+      return 'command'
+    }
+
     // Agent-metszet (D5): a csatorna-engedélyek adják az elérhető agenteket. Nincs engedély →
     // érthető útmutatás („szólj az adminodnak"), nem néma.
     const grants = await this.deps.grants.listForIdentity(identity.id)
@@ -430,6 +448,105 @@ export class ChannelTurnService {
     return 'answered'
   }
 
+  // ── Beépített parancsok (story 14/28) ──────────────────────────────────────
+
+  /**
+   * A jelenleg ELÉRHETŐ agentek: a csatorna-engedélyek metszete a tenant-határral, feloldott
+   * névvel. Ugyanaz a kapu, ami a fordulót is engedi — a lista nem mutathat többet, mint
+   * amivel a felhasználó tényleg beszélhet.
+   */
+  private async listAvailableAgents(identity: ChannelIdentity): Promise<
+    { agentId: string; name: string; projectKey: string }[]
+  > {
+    const grants = await this.deps.grants.listForIdentity(identity.id)
+    const out: { agentId: string; name: string; projectKey: string }[] = []
+    for (const grant of grants) {
+      const agent = await this.deps.agents.findById(grant.agentId)
+      if (!agent || !isAgentReachableFromTenant(agent.tenantId, identity.tenantId)) continue
+      out.push({
+        agentId: agent.id,
+        name: agent.personaNickname?.trim() || agent.name,
+        projectKey: grant.projectKey || GENERAL_PROJECT_KEY,
+      })
+    }
+    return out
+  }
+
+  private async runCommand(
+    session: ChannelSession,
+    identity: ChannelIdentity,
+    turn: ChannelTurn,
+    command: { name: string; argument: string },
+  ): Promise<void> {
+    const text = await this.commandReply(session, identity, command)
+    // A parancs NEVE auditálható (nem tartalom); az argumentum NEM — az felhasználói szöveg.
+    await this.sendFrame(session, text, identity, turn, 'command', { command: command.name })
+  }
+
+  private async commandReply(
+    session: ChannelSession,
+    identity: ChannelIdentity,
+    command: { name: string; argument: string },
+  ): Promise<string> {
+    if (command.name === 'szervezet') {
+      const orgName = (await this.deps.resolveOrgName?.(identity.tenantId)) ?? null
+      const org = orgName?.trim() ? `„${orgName.trim()}"` : 'a hozzád rendelt szervezet'
+      return (
+        `Itt ${org} nevében beszélsz. Ez az összekötéskor rögzült, és nem váltható Telegramon — ` +
+        'ha másik szervezetben szeretnél dolgozni, a webes felületen szüntesd meg az összekötést, ' +
+        'válts szervezetet, és kösd össze újra.'
+      )
+    }
+
+    const agents = await this.listAvailableAgents(identity)
+    if (agents.length === 0) return NO_AGENT_TEXT
+
+    if (command.name === 'agentek') {
+      const lines = agents.map((a, i) => {
+        const active = a.agentId === session.activeAgentId || (!session.activeAgentId && i === 0)
+        const project = a.projectKey === GENERAL_PROJECT_KEY ? GENERAL_PROJECT_LABEL : a.projectKey
+        return `${i + 1}. ${a.name} — ${project}${active ? ' (most ezzel beszélsz)' : ''}`
+      })
+      return (
+        'Ezeket az agenteket éred el Telegramon:\n' +
+        lines.join('\n') +
+        '\n\nVáltáshoz írd: /valt 2 — vagy /valt és az agent nevének eleje.'
+      )
+    }
+
+    if (command.name === 'valt') {
+      if (!command.argument) {
+        return 'Írd a parancs után, melyikre váltsak — például: /valt 2 — vagy az agent nevének elejét. A listát a /agentek paranccsal kéred le.'
+      }
+      const target = matchAgent(agents, command.argument)
+      if (!target) {
+        return `Nem találtam „${command.argument}" néven agentet azok között, amiket elérsz. Kérd le a listát: /agentek`
+      }
+      if (session.activeAgentId !== target.agentId) {
+        // Az agent-váltás ÚJ beszélgetést nyit (a `conversationId` nullázásával): a másik agent
+        // ne örökölje az előző agent beszélgetés-szálát.
+        await this.deps.sessions.update(session.id, {
+          activeAgentId: target.agentId,
+          conversationId: null,
+        })
+      }
+      const project =
+        target.projectKey === GENERAL_PROJECT_KEY ? GENERAL_PROJECT_LABEL : target.projectKey
+      return `Rendben, mostantól ${target.name} válaszol (projekt: ${project}). Új beszélgetést kezdtünk vele — írd le, miben segíthet.`
+    }
+
+    // `/segitseg` (és a `/start` paraméter nélküli alakja): mit lehet itt csinálni.
+    return (
+      'Itt az agentjeiddel beszélgethetsz — csak írd le a kérdésed hétköznapi nyelven.\n\n' +
+      'Amit még tudok:\n' +
+      '/agentek — kiket érsz el, és épp melyikkel beszélsz\n' +
+      '/valt — váltás másik agentre\n' +
+      '/szervezet — melyik szervezet nevében beszélsz itt\n\n' +
+      'Ha egy napig nem írsz, új beszélgetés indul, hogy a tegnapi téma ne keveredjen a maiba. ' +
+      'Fájlt és hangüzenetet egyelőre nem tudok feldolgozni.'
+    )
+  }
+
   // ── Segédek ────────────────────────────────────────────────────────────────
 
   /**
@@ -474,10 +591,12 @@ export class ChannelTurnService {
     identity: ChannelIdentity,
     turn: ChannelTurn,
     outcome: ProcessTurnOutcome,
+    extra?: Record<string, unknown>,
   ): Promise<void> {
     await this.sendToThread(session, text)
     await this.auditTurn(turn, 'completed', outcome, {
       pseudonym: pseudonymFromLookupHash(identity.lookupHash),
+      ...(extra ?? {}),
     })
   }
 
@@ -602,4 +721,49 @@ function errorText(reason: 'timeout' | 'model_error' | 'budget_exhausted' | 'unk
 
 function truncate(s: string): string {
   return s.length > 300 ? `${s.slice(0, 300)}…` : s
+}
+
+/**
+ * A beépített parancsok felismerése (story 14/28). Ékezet nélküli és angol alakot is elfogadunk,
+ * mert a telefonos billentyűzeten az ékezet gyakran elmarad; a Telegram `/parancs@botnév` alakját
+ * is kezeljük. Ami nem ismert parancs, az sima üzenet marad, és az agenthez megy.
+ */
+const COMMAND_ALIASES: Record<string, string> = {
+  agentek: 'agentek',
+  agents: 'agentek',
+  valt: 'valt',
+  vált: 'valt',
+  switch: 'valt',
+  szervezet: 'szervezet',
+  hol: 'szervezet',
+  org: 'szervezet',
+  segitseg: 'segitseg',
+  segítség: 'segitseg',
+  help: 'segitseg',
+  start: 'segitseg',
+}
+
+export function parseCommand(text: string | null): { name: string; argument: string } | null {
+  if (!text) return null
+  const trimmed = text.trim()
+  if (!trimmed.startsWith('/')) return null
+  const [head, ...rest] = trimmed.slice(1).split(/\s+/)
+  // A `/parancs@botnév` alakból a bot-nevet levágjuk.
+  const key = (head ?? '').split('@')[0]!.toLowerCase()
+  const name = COMMAND_ALIASES[key]
+  if (!name) return null
+  return { name, argument: rest.join(' ').trim() }
+}
+
+/** Agent-találat sorszám (1-alapú) vagy név-előtag alapján — ahogy a felhasználó gépeli. */
+function matchAgent<T extends { name: string }>(agents: T[], argument: string): T | null {
+  const index = Number.parseInt(argument, 10)
+  if (Number.isInteger(index) && index >= 1 && index <= agents.length) return agents[index - 1]!
+  const needle = argument.toLowerCase()
+  return (
+    agents.find((a) => a.name.toLowerCase() === needle) ??
+    agents.find((a) => a.name.toLowerCase().startsWith(needle)) ??
+    agents.find((a) => a.name.toLowerCase().includes(needle)) ??
+    null
+  )
 }

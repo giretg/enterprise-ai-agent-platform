@@ -30,6 +30,10 @@ export const CHANNEL_EGRESS_ALLOWLIST_HOSTS: readonly string[] = [TELEGRAM_API_H
 export const CHANNEL_AUDIT_ACTIONS = {
   botRegister: 'channel.bot.register',
   botUpdate: 'channel.bot.update',
+  // A bejövő webhook bekötése a providernél (`setWebhook`) — ez ÁLLAPOTVÁLTOZÁS a Telegram
+  // oldalán (innentől jönnek hozzánk az üzenetek), ezért auditálandó. A `getMe`/`getWebhookInfo`
+  // ellenőrzés CSAK olvas, azt nem auditáljuk.
+  botWebhookInstalled: 'channel.bot.webhook_installed',
   messageSent: 'channel.message.sent',
   messageBlocked: 'channel.message.blocked',
   // Összekötés és visszavonás (#72, D12).

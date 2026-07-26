@@ -110,6 +110,20 @@ export async function runDispatchCycle(
       )
     }
 
+    // Megőrzési takarítás (#78, D4): a bot a horizonton túli SAJÁT kimenő üzeneteit törli a
+    // Telegram oldalán. Eddig ez CSAK kézzel, a rendszer-felületről indult — miközben a felület
+    // azt ígérte, hogy „éles üzemben ütemezetten fut". Innentől a worker ciklusa hajtja.
+    // Fail-soft: a takarítás hibája nem buktathatja a ciklus többi munkáját; ami most nem
+    // sikerült, azt a következő kör újra megkísérli (a nyilvántartás megmarad).
+    try {
+      await services.channelRetention.purgeExpiredOutbound({})
+    } catch (error) {
+      console.error(
+        '[dispatch-cycle] channel-retention purge error:',
+        error instanceof Error ? error.message : error,
+      )
+    }
+
     const materialized = await services.scheduledTasks.materializeDue(new Date(), batchLimit)
     const materializedScheduledTasks = materialized.filter((r) => r.status === 'materialized').length
 

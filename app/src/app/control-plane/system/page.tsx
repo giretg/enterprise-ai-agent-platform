@@ -15,6 +15,7 @@ import {
 } from '@/app/actions/platform'
 import { getMonitorControls } from '@/app/actions/monitor'
 import { getChannelOpsMetrics } from '@/app/actions/channel-ops'
+import { getTelegramChannelSetup } from '@/app/actions/channel'
 import {
   getTenantWebSearchControls,
   getWebSearchPolicy,
@@ -41,6 +42,7 @@ import { TenantLanguagePanel } from './tenant-language-panel'
 import { MemoryObservabilityPanel } from './memory-observability-panel'
 import { ContractObservabilityPanel } from './contract-observability-panel'
 import { ChannelOpsPanel } from './channel-ops-panel'
+import { ChannelBotPanel } from './channel-bot-panel'
 import { SystemSettingsShell } from './system-settings-shell'
 
 export default async function SystemPage() {
@@ -64,6 +66,7 @@ export default async function SystemPage() {
     contractObservabilityRes,
     dailyBudgetRes,
     channelOpsRes,
+    channelSetupRes,
   ] = await Promise.all([
     getAuthContext(),
     getDispatcherControls(),
@@ -84,6 +87,7 @@ export default async function SystemPage() {
     getContractObservabilityDashboard(),
     getDailyBudgetOverview(),
     getChannelOpsMetrics({ windowDays: 7 }),
+    getTelegramChannelSetup(),
   ])
   // §9.2/§13/4: a platform-globális vezérlőket csak platform-szerep szerkesztheti;
   // a tenant-admin itt read-only nézetet kap (a WRITE-actionök platform-guard alatt).
@@ -290,10 +294,18 @@ export default async function SystemPage() {
                 {
                   id: 'csatorna',
                   label: 'Csatorna (Telegram)',
-                  description: 'Forgalmi/hibametrikák és a bot kimenő üzeneteinek megőrzési takarítása.',
-                  content: channelOpsRes.success
-                    ? <ChannelOpsPanel initial={channelOpsRes.data} canEdit={canEdit} />
-                    : errorBox(channelOpsRes.error),
+                  description:
+                    'A bot beüzemelése (bot, webhook, ellenőrzés), majd forgalmi/hibametrikák és megőrzési takarítás.',
+                  content: (
+                    <div className="space-y-6">
+                      {channelSetupRes.success
+                        ? <ChannelBotPanel initial={channelSetupRes.data} canEdit={canEdit} />
+                        : errorBox(channelSetupRes.error)}
+                      {channelOpsRes.success
+                        ? <ChannelOpsPanel initial={channelOpsRes.data} canEdit={canEdit} />
+                        : errorBox(channelOpsRes.error)}
+                    </div>
+                  ),
                 },
               ]
             : []),

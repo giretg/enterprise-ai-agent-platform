@@ -66,6 +66,7 @@ import { ChannelRetentionService } from '@/domain/channel/channel-retention-serv
 import { TelegramOutboundTransport } from '@/domain/channel/channel-outbound-transport'
 import { TelegramMonitorNotifier } from '@/lib/notify/telegram-monitor-notifier'
 import { notifyChannelTurnReady } from '@/lib/channel-notify'
+import { resolvePublicAppOrigin } from '@/lib/public-app-url'
 import { PlaybookService } from '@/domain/playbook/playbook-service'
 import { PlaybookV2Service } from '@/domain/playbook/playbook-v2-service'
 import { ProcessService } from '@/domain/playbook/process-service'
@@ -225,10 +226,8 @@ const conversationService = new ConversationService(
   repositories.audit,
   playbookService,
 )
-const channelBotService = new ChannelBotService({
-  bots: repositories.channelBots,
-  audit: repositories.audit,
-})
+// A `channelBotService` a kimenő átvitel UTÁN épül (a beüzemelő `setWebhook`/`getMe` hívások
+// ugyanazon az egress-őrzött kapun mennek ki) — l. lejjebb, a `telegramOutboundTransport` alatt.
 // A chat-futásidőt a linking-szolgáltatás egy sink-en át éri el (a bekötött üzenet forduló-sorba
 // írása, D8). A `ChannelTurnService` az `AgentChatRuntime` UTÁN épül (az függ tőle), ezért a
 // sink egy késleltetett referencián keresztül delegál — a bejövő üzenet csak futásidőben ér ide.
@@ -268,6 +267,23 @@ const telegramOutboundTransport = new TelegramOutboundTransport({
     return resolveConnectorApiKey(bot.accessKeySecretRef)
   },
   resolveHostIps: async (host) => (await lookup(host, { all: true })).map((e) => e.address),
+})
+// A platform-bot regisztrációja ÉS beüzemelése (#70/#71, D3/D14). A beüzemelő hívások
+// (`setWebhook`, `getMe`, `getWebhookInfo`) a KÖZÖS kimenő kapun mennek ki — nincs második,
+// egress-őr nélküli kijárat a Telegram felé. A webhook-cím a publikus app-címből épül: ha az
+// nincs beállítva, a beüzemelő képernyő ezt kimondja, ahelyett hogy egy localhost-címet kötne be.
+const channelBotService = new ChannelBotService({
+  bots: repositories.channelBots,
+  audit: repositories.audit,
+  transport: telegramOutboundTransport,
+  resolveWebhookSecret: (bot) => resolveWebhookSecretCached(bot.webhookSecretRef),
+  resolveWebhookUrl: (channelType) =>
+    `${resolvePublicAppOrigin()}/api/channels/${channelType}/webhook`,
+  resolveBotUsername: () => ({
+    username: telegramBotUsername,
+    configured: Boolean(process.env.TELEGRAM_BOT_USERNAME?.trim()),
+  }),
+  isPublicAppUrlConfigured: () => Boolean(process.env.NEXT_PUBLIC_APP_URL?.trim()),
 })
 const channelLinkingService = new ChannelLinkingService({
   bots: repositories.channelBots,
@@ -983,15 +999,16 @@ const channelTurnService = new ChannelTurnService({
     },
   },
   runtime: new AgentChatChannelRuntime(agentChatRuntime),
-  transport: new TelegramOutboundTransport({
-    resolveBotToken: async () => {
-      const bot = await repositories.channelBots.findPlatformBot('telegram')
-      if (!bot) throw new Error('no platform telegram bot registered')
-      return resolveConnectorApiKey(bot.accessKeySecretRef)
-    },
-    resolveHostIps: async (host) => (await lookup(host, { all: true })).map((e) => e.address),
-  }),
+  // A KÖZÖS kimenő kapu (D11) — ugyanaz a példány, mint a linking- és a takarítás-oldalon;
+  // nincs második, egress-őrön kívüli kijárat a Telegram felé.
+  transport: telegramOutboundTransport,
   audit: repositories.audit,
+  // A `/szervezet` parancshoz (story 14): melyik szervezet nevében beszél a felhasználó.
+  resolveOrgName: async (tenantId) => {
+    if (!tenantId) return null
+    const tenant = await repositories.tenants.findById(tenantId)
+    return tenant?.displayName ?? null
+  },
 })
 channelTurnServiceRef = channelTurnService
 const wikiRuntime = new WikiAgentRuntime(

@@ -210,13 +210,19 @@ async function main() {
     assert.equal(swept?.metadata.retentionDays, 30)
   })
 
-  // CR-6: üres futás (nincs horizonton túli üzenet) → nincs kimenő hívás, de van összegző audit.
-  await test('CR-6: üres futás — nincs deleteMessage, van összegző audit', async () => {
+  // CR-6: üres futás (nincs horizonton túli üzenet) → nincs kimenő hívás ÉS nincs audit-sor.
+  // A takarító a worker minden körében lefut; a „nem volt mit takarítani" bejegyzés percenként
+  // zajjal töltené a hash-láncot és sorosítaná az írásokat. Ami nem történt, az nem esemény.
+  await test('CR-6: üres futás — nincs deleteMessage és nincs audit-zaj', async () => {
     const { transport, audits, service } = makeHarness()
     const res = await service.purgeExpiredOutbound({ retentionDays: 30 })
     assert.equal(res.scanned, 0)
     assert.equal(transport.calls.length, 0)
-    assert.ok(audits.some((a) => a.action === CHANNEL_AUDIT_ACTIONS.retentionSwept))
+    assert.equal(
+      audits.filter((a) => a.action === CHANNEL_AUDIT_ACTIONS.retentionSwept).length,
+      0,
+      'üres futás nem ír összegző auditot',
+    )
   })
 
   // CR-7: a limit korlátozza egy futás munkáját (nagy hátralék biztonságos darabolása).

@@ -28,7 +28,18 @@ export type ChannelOutboundCall = {
 }
 
 export type ChannelOutboundResult =
-  | { ok: true; providerMessageId: string | null }
+  | {
+      ok: true
+      providerMessageId: string | null
+      /**
+       * A provider válaszának nyers `result` mezője. A ÜZENETKÜLDŐ utak nem használják (nekik a
+       * `providerMessageId` elég), de a BEÜZEMELŐ hívások (`getMe`, `setWebhook`,
+       * `getWebhookInfo`) ebből tudják megmondani a platform-adminnak, hogy a bot tényleg
+       * válaszol-e és tényleg a mi végpontunkra van-e bekötve. Opcionális: a teszt-dublőr és a
+       * régi hívók változatlanul működnek.
+       */
+      result?: unknown
+    }
   | { ok: false; reason: ChannelOutboundBlockReason; detail?: string }
 
 export type ChannelOutboundBlockReason =
@@ -147,7 +158,7 @@ export class TelegramOutboundTransport implements ChannelOutboundTransport {
         }
         return { ok: false, reason: 'provider_error', detail: `status_${res.status}` }
       }
-      return { ok: true, providerMessageId: extractMessageId(body) }
+      return { ok: true, providerMessageId: extractMessageId(body), result: body.result }
     } catch (error) {
       return {
         ok: false,
@@ -160,9 +171,13 @@ export class TelegramOutboundTransport implements ChannelOutboundTransport {
   }
 }
 
-type TelegramApiEnvelope = { ok?: boolean; result?: { message_id?: number } }
+// A `result` alakja metódusonként más (üzenetnél objektum, `setWebhook`-nál `true`), ezért
+// `unknown`; az üzenet-azonosítót óvatosan, típusvetéssel emeljük ki belőle.
+type TelegramApiEnvelope = { ok?: boolean; result?: unknown }
 
 function extractMessageId(body: TelegramApiEnvelope): string | null {
-  const id = body.result?.message_id
+  const result = body.result
+  if (typeof result !== 'object' || result === null) return null
+  const id = (result as { message_id?: unknown }).message_id
   return typeof id === 'number' ? String(id) : null
 }
