@@ -91,6 +91,7 @@
     "test:repo-pr": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/repo-open-pull-request.test.ts",
     "test:chat-tool-history": "tsx scripts/agent-chat-tool-history.test.ts",
     "test:agent-runtime-display-loader": "tsx scripts/agent-runtime-display-loader.test.ts",
+    "test:list-pagination": "tsx scripts/list-pagination.test.ts",
     "test:agent-chat-tenant-boundary": "tsx scripts/agent-chat-tenant-boundary.test.ts",
     "test:user-directory": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/user-directory-tool.test.ts",
     "test:conversation-session": "tsx scripts/conversation-session.test.ts",

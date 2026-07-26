@@ -11,6 +11,7 @@ import { hasMinimumRole } from '@/auth/types'
 import { services } from '@/domain'
 import { repositories } from '@/repositories/postgres'
 import { fail, ok } from '@/lib/result'
+import { DEFAULT_LIST_LIMIT } from '@/lib/list-pagination'
 import { shouldExcludeHiddenAgents } from '@/lib/agent-operator-visibility'
 import {
   startProcessSchema,
@@ -369,10 +370,13 @@ export async function listAssignableProcessUsers() {
   }
 }
 
-export async function listProcesses() {
+export async function listProcesses(input?: { limit?: number; offset?: number }) {
   try {
     const user = await requireTenantRole('viewer')
-    const processes = await services.processes.listProcesses(user.activeTenantId)
+    const processes = await services.processes.listProcesses(user.activeTenantId, {
+      limit: input?.limit ?? DEFAULT_LIST_LIMIT,
+      offset: input?.offset,
+    })
     return ok(
       processes.map((p) => ({
         id: p.id,

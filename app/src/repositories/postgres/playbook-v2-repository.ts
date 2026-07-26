@@ -1,9 +1,11 @@
 import type { PlaybookV2, PlaybookVersionV2, PlaybookAssignment, Prisma } from '@prisma/client'
 import { prisma } from '@/lib/db'
+import { prismaPageArgs, toListPage } from '@/lib/list-pagination'
 import type {
   CreatePlaybookAssignmentInput,
   CreatePlaybookV2Input,
   CreatePlaybookVersionV2Input,
+  PlaybookListOpts,
   PlaybookV2Repository,
   PlaybookV2WithVersions,
 } from '../interfaces'
@@ -30,11 +32,69 @@ export class PostgresPlaybookV2Repository implements PlaybookV2Repository {
     return prisma.playbookV2.findFirst({ where: { key, tenantId } })
   }
 
-  async listPlaybooks(tenantId: string | null): Promise<PlaybookV2WithVersions[]> {
-    return prisma.playbookV2.findMany({
+  async listPlaybooks(tenantId: string | null, opts?: PlaybookListOpts): Promise<PlaybookV2WithVersions[]> {
+    const includeVersions = opts?.includeVersions ?? 'none'
+    const { take, skip, pageLimit } = prismaPageArgs(
+      opts?.unbounded
+        ? { unbounded: true }
+        : opts?.limit !== undefined || opts?.offset !== undefined || opts?.includeVersions === 'all'
+          ? { limit: opts?.limit, offset: opts?.offset, unbounded: opts?.unbounded }
+          : { limit: opts?.limit, offset: opts?.offset },
+    )
+    const offset = skip ?? 0
+
+    if (includeVersions === 'all') {
+      const rows = await prisma.playbookV2.findMany({
+        where: { tenantId },
+        orderBy: { createdAt: 'desc' },
+        ...(take !== undefined ? { take, skip: offset } : {}),
+        include: { versions: { orderBy: { version: 'desc' } } },
+      })
+      return toListPage(
+        rows.map((row) => ({ ...row, versionCount: row.versions.length })),
+        pageLimit,
+        offset,
+      ).items
+    }
+
+    const rows = await prisma.playbookV2.findMany({
       where: { tenantId },
       orderBy: { createdAt: 'desc' },
-      include: { versions: { orderBy: { version: 'desc' } } },
+      ...(take !== undefined ? { take, skip: offset } : {}),
+      include: { _count: { select: { versions: true } } },
+    })
+    return toListPage(
+      rows.map(({ _count, ...row }) => ({
+        ...row,
+        versions: [] as PlaybookVersionV2[],
+        versionCount: _count.versions,
+      })),
+      pageLimit,
+      offset,
+    ).items
+  }
+
+  async listDefaultAssignments(
+    tenantId: string | null,
+    assignmentType: string,
+  ): Promise<PlaybookAssignment[]> {
+    return prisma.playbookAssignment.findMany({
+      where: { tenantId, assignmentType, isDefault: true, revokedAt: null },
+      orderBy: { createdAt: 'desc' },
+    })
+  }
+
+  async findVersionsByIds(tenantId: string | null, ids: string[]): Promise<PlaybookVersionV2[]> {
+    if (ids.length === 0) return []
+    return prisma.playbookVersionV2.findMany({
+      where: { tenantId, id: { in: ids } },
+    })
+  }
+
+  async findPlaybooksByIds(tenantId: string | null, ids: string[]): Promise<PlaybookV2[]> {
+    if (ids.length === 0) return []
+    return prisma.playbookV2.findMany({
+      where: { tenantId, id: { in: ids } },
     })
   }
 

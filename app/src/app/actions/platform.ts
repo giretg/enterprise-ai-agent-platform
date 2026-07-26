@@ -33,6 +33,7 @@ import { repositories } from '@/repositories/postgres'
 import { isClerkEnabled } from '@/lib/clerk-config'
 import { prisma, ensureActiveDatabaseMode } from '@/lib/db'
 import { logger } from '@/lib/observability'
+import { BOARD_LIST_LIMIT, DEFAULT_LIST_LIMIT } from '@/lib/list-pagination'
 import { ensureAgentKnowledgeBase } from '@/lib/agent-knowledge-base'
 import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
 import {
@@ -278,15 +279,17 @@ function buildTicketGenerationPrompt(input: {
   ].join('\n')
 }
 
-export async function listTickets(input?: { filter?: unknown }) {
+export async function listTickets(input?: { filter?: unknown; limit?: number; offset?: number }) {
   try {
     const user = await requireTenantRole('viewer')
     const filter = input?.filter ? ticketFilterSchema.parse(input.filter) : undefined
-    const tickets = await repositories.tickets.findMany({
+    const page = await repositories.tickets.listPage({
       ...(filter ?? {}),
       tenantId: user.activeTenantId,
+      limit: input?.limit,
+      offset: input?.offset,
     })
-    return ok(tickets)
+    return ok(page.items)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list tickets')
   }
@@ -598,10 +601,12 @@ export async function dispatchBoardTicket(input: { ticketId: string }) {
 export async function listBoardTickets() {
   try {
     const user = await requireTenantRole('viewer')
-    const tickets = await repositories.tickets.findMany({
+    const page = await repositories.tickets.listPage({
       excludeTest: true,
       tenantId: user.activeTenantId,
+      limit: BOARD_LIST_LIMIT,
     })
+    const tickets = page.items
 
     const agentIds = new Set<string>()
     const userIds = new Set<string>()
@@ -648,7 +653,7 @@ export async function listBoardTickets() {
       processes: new Map(processes.map((p) => [p.id, { processType: p.processType, status: p.status }])),
     })
 
-    return ok(enriched)
+    return ok({ tickets: enriched, hasMore: page.hasMore })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list board tickets')
   }
@@ -1080,15 +1085,16 @@ export async function transitionTicket(input: {
   }
 }
 
-export async function listAgents() {
+export async function listAgents(input?: { limit?: number; offset?: number }) {
   try {
     const user = await requireTenantRole('viewer')
-    return ok(
-      await repositories.agents.findMany({
-        tenantId: user.activeTenantId,
-        excludeHiddenFromOperators: shouldExcludeHiddenAgents(user.activeTenantRole),
-      }),
-    )
+    const page = await repositories.agents.listPage({
+      tenantId: user.activeTenantId,
+      excludeHiddenFromOperators: shouldExcludeHiddenAgents(user.activeTenantRole),
+      limit: input?.limit ?? DEFAULT_LIST_LIMIT,
+      offset: input?.offset,
+    })
+    return ok(page.items)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list agents')
   }
@@ -3745,7 +3751,7 @@ export async function getMe() {
 export async function listUsers() {
   try {
     const ctx = await requireTenantPermission('user.read')
-    const users = await services.iam.listUsers(ctx.activeTenantId)
+    const users = await services.iam.listUsers(ctx.activeTenantId, { limit: 100 })
     return ok(users)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list users')
@@ -3755,7 +3761,7 @@ export async function listUsers() {
 export async function listInvitations() {
   try {
     const ctx = await requireTenantPermission('user.read')
-    const invitations = await services.iam.listInvitations(ctx.activeTenantId)
+    const invitations = await services.iam.listInvitations(ctx.activeTenantId, { limit: 100 })
     return ok(invitations)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list invitations')
@@ -4215,12 +4221,18 @@ export async function purgeTenantWorkspaces(tenantId: string) {
 
 export async function getDashboardStats() {
   try {
-    await requireTenantRole('viewer')
+    const user = await requireTenantRole('viewer')
     const since = new Date(new Date().setHours(0, 0, 0, 0))
-    const [agents, tickets, cost, tools] = await Promise.all([
-      repositories.agents.findMany(),
-      repositories.tickets.findMany({
-        state: ['backlog', 'ready', 'approved', 'in_progress', 'awaiting_human'],
+    const openStates = ['backlog', 'ready', 'approved', 'in_progress', 'awaiting_human'] as const
+    const [activeAgents, openTickets, cost, tools] = await Promise.all([
+      repositories.agents.count({
+        tenantId: user.activeTenantId,
+        status: 'active',
+        excludeHiddenFromOperators: shouldExcludeHiddenAgents(user.activeTenantRole),
+      }),
+      repositories.tickets.count({
+        tenantId: user.activeTenantId,
+        state: [...openStates],
         excludeTest: true,
       }),
       repositories.modelCalls.getCostSummary(since),
@@ -4228,8 +4240,8 @@ export async function getDashboardStats() {
     ])
 
     return ok({
-      activeAgents: agents.filter((a) => a.status === 'active').length,
-      openTickets: tickets.length,
+      activeAgents,
+      openTickets,
       tokensToday: cost.tokens,
       costTodayEur: cost.cost,
       toolCallsToday: tools.calls,

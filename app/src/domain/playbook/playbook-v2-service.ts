@@ -501,12 +501,32 @@ export class PlaybookV2Service {
 
   // --- Olvasás ---------------------------------------------------------------
 
-  async listPlaybooks(tenantId: string | null) {
-    return this.repo.listPlaybooks(tenantId)
+  async listPlaybooks(tenantId: string | null, opts?: Parameters<PlaybookV2Repository['listPlaybooks']>[1]) {
+    return this.repo.listPlaybooks(tenantId, opts)
   }
 
   async listStartablePlaybooks(tenantId: string | null) {
-    const playbooks = await this.repo.listPlaybooks(tenantId)
+    const assignments = await this.repo.listDefaultAssignments(tenantId, 'process_type')
+    if (assignments.length === 0) return []
+
+    // Egy processType-hoz több történeti default lehet; a legfrissebb (createdAt desc) nyer.
+    const latestByKey = new Map<string, (typeof assignments)[number]>()
+    for (const assignment of assignments) {
+      if (!latestByKey.has(assignment.assignmentKey)) {
+        latestByKey.set(assignment.assignmentKey, assignment)
+      }
+    }
+    const chosen = [...latestByKey.values()]
+    const versionIds = [...new Set(chosen.map((a) => a.playbookVersionId))]
+    const playbookIds = [...new Set(chosen.map((a) => a.playbookId))]
+
+    const [versions, playbooks] = await Promise.all([
+      this.repo.findVersionsByIds(tenantId, versionIds),
+      this.repo.findPlaybooksByIds(tenantId, playbookIds),
+    ])
+    const versionById = new Map(versions.map((v) => [v.id, v]))
+    const playbookById = new Map(playbooks.map((p) => [p.id, p]))
+
     const startable: Array<{
       playbookId: string
       name: string
@@ -515,16 +535,11 @@ export class PlaybookV2Service {
       version: number
     }> = []
 
-    for (const playbook of playbooks) {
-      const assignment = await this.repo.findDefaultAssignment(
-        tenantId,
-        'process_type',
-        playbook.processType,
-      )
-      if (!assignment || assignment.playbookId !== playbook.id) continue
-
-      const version = playbook.versions.find((v) => v.id === assignment.playbookVersionId)
-      if (!version || version.status !== 'published') continue
+    for (const assignment of chosen) {
+      const playbook = playbookById.get(assignment.playbookId)
+      const version = versionById.get(assignment.playbookVersionId)
+      if (!playbook || !version || version.status !== 'published') continue
+      if (assignment.playbookId !== playbook.id) continue
 
       startable.push({
         playbookId: playbook.id,

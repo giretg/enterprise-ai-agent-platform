@@ -6,6 +6,7 @@ import type {
   Prisma,
 } from '@prisma/client'
 import { prisma } from '@/lib/db'
+import { prismaPageArgs, toListPage } from '@/lib/list-pagination'
 import type {
   CreateProcessInstanceInput,
   CreateProcessStepInput,
@@ -61,11 +62,31 @@ export class PostgresProcessRepository implements ProcessRepository {
     })
   }
 
-  async listProcesses(tenantId: string | null): Promise<ProcessInstance[]> {
-    return prisma.processInstance.findMany({
+  async listProcesses(
+    tenantId: string | null,
+    opts?: { limit?: number; offset?: number; unbounded?: boolean },
+  ): Promise<ProcessInstance[]> {
+    const page = await this.listProcessesPage(
+      tenantId,
+      opts?.limit !== undefined || opts?.offset !== undefined || opts?.unbounded
+        ? opts
+        : { unbounded: true },
+    )
+    return page.items
+  }
+
+  async listProcessesPage(
+    tenantId: string | null,
+    opts?: { limit?: number; offset?: number; unbounded?: boolean },
+  ) {
+    const { take, skip, pageLimit } = prismaPageArgs(opts)
+    const offset = skip ?? 0
+    const rows = await prisma.processInstance.findMany({
       where: { tenantId },
       orderBy: { startedAt: 'desc' },
+      ...(take !== undefined ? { take, skip: offset } : {}),
     })
+    return toListPage(rows, pageLimit, offset)
   }
 
   async updateProcess(

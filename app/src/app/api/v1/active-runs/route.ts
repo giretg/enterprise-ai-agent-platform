@@ -16,12 +16,13 @@ export async function GET() {
 
   const tenantId = user.activeTenantId
 
-  const [turns, tickets] = await Promise.all([
+  const [turns, ticketPage] = await Promise.all([
     repositories.agentTurns.listActiveByTenant(tenantId, { limit: 50 }),
-    repositories.tickets.findMany({
+    repositories.tickets.listPage({
       tenantId,
       state: 'in_progress',
       excludeTest: true,
+      limit: 50,
     }),
   ])
 
@@ -31,7 +32,7 @@ export async function GET() {
     title: turn.cancelRequested ? 'Leállítás folyamatban…' : 'Futó chat-válasz',
   }))
 
-  const ticketRuns = tickets.slice(0, 50).map((ticket) => activeRunFromTicket(ticket))
+  const ticketRuns = ticketPage.items.map((ticket) => activeRunFromTicket(ticket))
 
   const runs = [...chatRuns, ...ticketRuns].sort(
     (a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime(),
