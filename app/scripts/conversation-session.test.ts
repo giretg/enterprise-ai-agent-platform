@@ -33,6 +33,9 @@ function conversation(overrides: Partial<Conversation> = {}): Conversation {
     title: 'Conversation',
     status: 'active',
     createdById: 'user-1',
+    retentionPolicyId: null,
+    retainUntil: null,
+    legalHold: false,
     createdAt: new Date('2026-06-29T08:00:00.000Z'),
     updatedAt: new Date('2026-06-29T08:00:00.000Z'),
     lastMessageAt: new Date('2026-06-29T08:00:00.000Z'),
@@ -196,8 +199,38 @@ class MemoryConversationRepo {
     return null
   }
 
-  async retentionSweep() {
-    return { conversations: [], messagesDeleted: 0 }
+  /**
+   * A `PostgresConversationRepository.retentionSweep` szerződését tükrözi (#117): a lejárt
+   * (`retainUntil <= now`), jogi zár alatt NEM álló beszélgetések még élő üzenet-tartalmát
+   * üríti, a legrégebbi határidejűvel kezdve, `limit` darabig.
+   */
+  async retentionSweep(now: Date, limit?: number) {
+    const due = [...this.conversations.values()]
+      .filter((conv) => {
+        if (conv.legalHold) return false
+        if (!conv.retainUntil || conv.retainUntil.getTime() > now.getTime()) return false
+        return (this.messages.get(conv.id) ?? []).some(
+          (row) => row.contentDeletedAt == null && row.contentRef != null,
+        )
+      })
+      .sort((a, b) => (a.retainUntil?.getTime() ?? 0) - (b.retainUntil?.getTime() ?? 0))
+      .slice(0, Math.max(1, Math.min(limit ?? 50, 100)))
+
+    let deletedCount = 0
+    for (const conv of due) {
+      for (const row of this.messages.get(conv.id) ?? []) {
+        if (row.contentDeletedAt != null || row.contentRef == null) continue
+        row.contentRef = null
+        row.contentDeletedAt = now
+        deletedCount++
+      }
+    }
+
+    return {
+      sweptCount: due.length,
+      deletedCount,
+      conversationIds: due.map((conv) => conv.id),
+    }
   }
 }
 
@@ -422,6 +455,95 @@ async function main() {
 
     const after = await service.getConversation(conv.id, 'tenant-A')
     assert.deepEqual(after.messages.map((row) => row.actingUserId), ['user-1', 'user-1'])
+  })
+
+  // Megőrzési takarítás (#117): a takarító a dispatcher ciklusából fut, ezért itt a
+  // szolgáltatás-szerződést mérjük — mit ürít, mit hagy békén, és mikor NEM ír auditot.
+  const RETENTION_NOW = new Date('2026-07-01T10:00:00.000Z')
+
+  async function seedExpiredConversation(
+    service: ConversationService,
+    repo: MemoryConversationRepo,
+    params: { retainUntil: Date | null; legalHold?: boolean; content?: string },
+  ) {
+    const conv = await service.createConversation({
+      agentId: 'agent-1',
+      createdById: 'user-1',
+      tenantId: 'tenant-A',
+    })
+    await service.appendMessage({
+      conversationId: conv.id,
+      role: 'user',
+      content: params.content ?? 'megőrzési határidőn túli tartalom',
+    })
+    const stored = repo.conversations.get(conv.id)!
+    stored.retainUntil = params.retainUntil
+    stored.legalHold = params.legalHold ?? false
+    return conv
+  }
+
+  await test('retention sweep — lejárt szál tartalma ürül, a csontváz megmarad', async () => {
+    const { service, conversations, audit } = buildService()
+    const conv = await seedExpiredConversation(service, conversations, {
+      retainUntil: new Date('2026-06-30T10:00:00.000Z'),
+    })
+
+    const result = await service.retentionSweep({ now: RETENTION_NOW })
+
+    assert.equal(result.sweptCount, 1)
+    assert.equal(result.deletedCount, 1)
+    const after = await service.getConversation(conv.id, 'tenant-A')
+    assert.equal(after.messages.length, 1)
+    assert.equal(after.messages[0]?.content, null)
+    assert.ok(after.messages[0]?.contentDeletedAt)
+    assert.equal(audit.events.filter((e) => e.action === 'retention.sweep').length, 1)
+  })
+
+  await test('retention sweep — üres futásra NINCS audit-sor (nem terheljük a hash-láncot)', async () => {
+    const { service, conversations, audit } = buildService()
+    await seedExpiredConversation(service, conversations, {
+      retainUntil: new Date('2026-08-30T10:00:00.000Z'),
+    })
+    const auditCountBefore = audit.events.length
+
+    const result = await service.retentionSweep({ now: RETENTION_NOW })
+
+    assert.equal(result.sweptCount, 0)
+    assert.equal(result.deletedCount, 0)
+    assert.equal(audit.events.length, auditCountBefore)
+    assert.equal(audit.events.filter((e) => e.action === 'retention.sweep').length, 0)
+  })
+
+  await test('retention sweep — jogi zár alatti szálhoz nem nyúlunk', async () => {
+    const { service, conversations } = buildService()
+    const conv = await seedExpiredConversation(service, conversations, {
+      retainUntil: new Date('2026-06-30T10:00:00.000Z'),
+      legalHold: true,
+    })
+
+    const result = await service.retentionSweep({ now: RETENTION_NOW })
+
+    assert.equal(result.sweptCount, 0)
+    const after = await service.getConversation(conv.id, 'tenant-A')
+    assert.equal(after.messages[0]?.content, 'megőrzési határidőn túli tartalom')
+  })
+
+  await test('retention sweep — a limit darabol, a maradék a következő körre marad', async () => {
+    const { service, conversations } = buildService()
+    for (let i = 0; i < 3; i++) {
+      await seedExpiredConversation(service, conversations, {
+        retainUntil: new Date(`2026-06-2${i + 5}T10:00:00.000Z`),
+      })
+    }
+
+    const first = await service.retentionSweep({ now: RETENTION_NOW, limit: 2 })
+    assert.equal(first.sweptCount, 2)
+
+    const second = await service.retentionSweep({ now: RETENTION_NOW, limit: 2 })
+    assert.equal(second.sweptCount, 1)
+
+    const third = await service.retentionSweep({ now: RETENTION_NOW, limit: 2 })
+    assert.equal(third.sweptCount, 0)
   })
 
   if (failures > 0) {

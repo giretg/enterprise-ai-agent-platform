@@ -97,6 +97,7 @@ jobs:
           npm run test:channel-approval
           npm run test:ttl-secret-cache
           npm run test:public-routes
+          npm run test:conversation-session
           npm run test:agent-interaction-ticket
           npm run test:tool-trust
           npm run test:consequence-gate
