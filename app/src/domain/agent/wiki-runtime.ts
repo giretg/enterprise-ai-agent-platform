@@ -56,7 +56,7 @@ const wikiAnswerContract = compileFromZod(
   wikiAnswerSchema as z.ZodType<Record<string, unknown>>,
 )
 
-type AgentDetails = NonNullable<Awaited<ReturnType<AgentRepository['findByIdWithDetails']>>>
+type AgentDetails = NonNullable<Awaited<ReturnType<AgentRepository['findByIdForDisplay']>>>
 
 function assertAgentReachableForWiki(
   agentTenantId: string | null,
@@ -109,7 +109,7 @@ export class WikiAgentRuntime {
     const question = params.question.trim()
     if (!question) throw new Error('Question is required')
 
-    const agentDetails = await this.agents.findByIdWithDetails(params.agentId)
+    const agentDetails = await this.agents.findByIdForDisplay(params.agentId)
     if (!agentDetails) throw new Error('Agent not found')
     assertAgentReachableForWiki(agentDetails.agent.tenantId, params.tenantId ?? null)
 
@@ -164,7 +164,7 @@ export class WikiAgentRuntime {
     actingUserId?: string
     tenantId?: string | null
   }) {
-    const agentDetails = await this.agents.findByIdWithDetails(params.agentId)
+    const agentDetails = await this.agents.findByIdForDisplay(params.agentId)
     if (!agentDetails) throw new Error('Agent not found')
     assertAgentReachableForWiki(agentDetails.agent.tenantId, params.tenantId ?? null)
 
@@ -252,7 +252,7 @@ export class WikiAgentRuntime {
     tenantId?: string | null
   }) {
     const ticket = await this.createQuestionTicket(params)
-    const agentDetails = await this.agents.findByIdWithDetails(params.agentId)
+    const agentDetails = await this.agents.findByIdForDisplay(params.agentId)
     if (!agentDetails) throw new Error('Agent not found')
     assertAgentReachableForWiki(agentDetails.agent.tenantId, params.tenantId ?? null)
     await this.ticketService.transition({
@@ -277,7 +277,7 @@ export class WikiAgentRuntime {
     const question = params.question.trim()
     if (!question) throw new Error('Question is required')
 
-    const agentDetails = await this.agents.findByIdWithDetails(params.agentId)
+    const agentDetails = await this.agents.findByIdForDisplay(params.agentId)
     if (!agentDetails) throw new Error('Agent not found')
     assertAgentReachableForWiki(agentDetails.agent.tenantId, params.tenantId ?? null)
 
@@ -393,7 +393,7 @@ export class WikiAgentRuntime {
     const question = rawQuestion || ticket.title
     if (!question) throw new Error('Ticket payload is missing question')
 
-    const agentDetails = await this.agents.findByIdWithDetails(params.agentId)
+    const agentDetails = await this.agents.findByIdForDisplay(params.agentId)
     if (!agentDetails) throw new Error('Agent not found')
 
     const modelConfig = agentDetails.agent.modelConfig as ModelConfig

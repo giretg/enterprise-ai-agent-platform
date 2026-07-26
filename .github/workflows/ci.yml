@@ -76,6 +76,7 @@ jobs:
           npm run test:memory-maintenance-rollback
           npm run test:chat-thinking-trace
           npm run test:agent-turn-record
+          npm run test:agent-runtime-display-loader
           npm run test:agent-turn-snapshot
           npm run test:agent-turn-reconnect
           npm run test:agent-turn-watchdog

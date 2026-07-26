@@ -44,10 +44,9 @@ esetben azonos, mert a `legacyFallbackMembership` a `User.role`-ból szintetizá
 - **Hol:** `getAgentMemoryOverview` / `loadMemoryOverview` — `listByRun` nem szűr `projectKey`-re DB-ben.
 - **Javaslat:** composite index + DB-szintű filter; `listAgentMemoryProjectKeys` egy aggregált query.
 
-#### 9. `findByIdWithDetails` szétbontása
-- **Hol:** `repositories/postgres/agent-repository.ts`
-- **Probléma:** `memory.versions take: 5` felesleges a detail oldalon; admin-only mezők mindenkinél betöltődnek.
-- **Javaslat:** `findByIdForDisplay` vs `findByIdForAdmin`.
+#### ~~9. `findByIdWithDetails` szétbontása~~ — KÉSZ (2026-07-26)
+- `findByIdForRuntime` / `findByIdForDisplay`; hot path (chat, task, kb_search, bookkeeper) runtime;
+  detail / wiki / katalógus display. Regresszió: `test:agent-runtime-display-loader`.
 
 ### Közepes impact
 

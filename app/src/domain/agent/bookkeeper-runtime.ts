@@ -67,7 +67,7 @@ export class BookkeeperAgentRuntime {
       throw new Error('Document has no extracted text')
     }
 
-    const agentDetails = await this.agents.findByIdWithDetails(agentId)
+    const agentDetails = await this.agents.findByIdForRuntime(agentId)
     if (!agentDetails) throw new Error('Agent not found')
 
     await this.documents.update(documentId, { status: 'processing' })

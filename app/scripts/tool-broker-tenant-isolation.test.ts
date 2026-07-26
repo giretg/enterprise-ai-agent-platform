@@ -81,10 +81,36 @@ const AGENT_BY_ID = new Map(AGENTS.map((a) => [a.id, a]))
 const fakeAgents = {
   findMany: async () => AGENTS,
   findById: async (id: string) => AGENT_BY_ID.get(id) ?? null,
+  findByIdForRuntime: async (id: string) => {
+    const a = AGENT_BY_ID.get(id)
+    if (!a) return null
+    return { agent: a, memoryContent: null, memoryVersion: 1 }
+  },
+  findByIdForDisplay: async (id: string) => {
+    const a = AGENT_BY_ID.get(id)
+    if (!a) return null
+    return {
+      agent: a,
+      memoryContent: null,
+      memoryVersion: 1,
+      recipe: null,
+      resources: [],
+      apiKeyPreview: null,
+      behaviorProfileLink: null,
+    }
+  },
   findByIdWithDetails: async (id: string) => {
     const a = AGENT_BY_ID.get(id)
     if (!a) return null
-    return { agent: a, resources: [], memoryVersion: 1, recipe: null }
+    return {
+      agent: a,
+      memoryContent: null,
+      memoryVersion: 1,
+      recipe: null,
+      resources: [],
+      apiKeyPreview: null,
+      behaviorProfileLink: null,
+    }
   },
 } as unknown as AgentRepository
 

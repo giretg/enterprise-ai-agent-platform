@@ -475,7 +475,10 @@ export async function createBoardTicket(input: {
     if (dueBy && Number.isNaN(dueBy.getTime())) return fail('Invalid dueBy')
 
     if (parsed.assigneeType === 'agent') {
-      const agentDetails = await repositories.agents.findByIdWithDetails(parsed.assigneeId, user.activeTenantId)
+      const agentDetails = await repositories.agents.findByIdForRuntime(
+        parsed.assigneeId,
+        user.activeTenantId,
+      )
       if (!agentDetails) return fail('Agent not found')
       if (agentDetails.agent.status !== 'active') return fail('Agent is not active')
 
@@ -1095,7 +1098,7 @@ export async function getAgent(input: { id: string }) {
   try {
     const user = await requireTenantRole('viewer')
     const { id } = agentIdSchema.parse(input)
-    const detail = await repositories.agents.findByIdWithDetails(id, user.activeTenantId)
+    const detail = await repositories.agents.findByIdForDisplay(id, user.activeTenantId)
     if (!detail) return fail('Agent not found')
     if (!canViewAgent(user.activeTenantRole, detail.agent)) return fail('Agent not found')
     return ok(detail)
@@ -2750,8 +2753,8 @@ export async function promoteConversationWithAi(input: { conversationId: string 
     const user = await requireTenantRole('operator')
     const { conversationId } = conversationIdSchema.parse(input)
     const { conversation, messages } = await services.conversations.getConversation(conversationId, user.activeTenantId)
-    const agentDetails = await repositories.agents.findByIdWithDetails(conversation.agentId, user.activeTenantId)
-    if (!agentDetails) return fail('Agent not found')
+    const agentRow = await repositories.agents.findById(conversation.agentId, user.activeTenantId)
+    if (!agentRow) return fail('Agent not found')
 
     const [agents, users] = await Promise.all([
       repositories.agents.findMany({
@@ -2772,7 +2775,7 @@ export async function promoteConversationWithAi(input: { conversationId: string 
         .map((agent) => ({ id: agent.id, name: agent.name, role: agent.role })),
       users,
     })
-    const modelConfig = agentDetails.agent.modelConfig as {
+    const modelConfig = agentRow.modelConfig as {
       provider: string
       model: string
       temperature?: number
@@ -2780,7 +2783,7 @@ export async function promoteConversationWithAi(input: { conversationId: string 
     }
     const response = await services.gateway.call({
       agentId: conversation.agentId,
-      agentVersion: agentDetails.agent.currentVersion,
+      agentVersion: agentRow.currentVersion,
       tenantId: user.activeTenantId,
       conversationId,
       messages: [
@@ -2811,7 +2814,7 @@ export async function promoteConversationWithAi(input: { conversationId: string 
         role: 'agent',
         content: question,
         actingUserId: user.user.id,
-        agentVersion: agentDetails.agent.currentVersion,
+        agentVersion: agentRow.currentVersion,
         model: modelConfig.model,
         actorType: 'agent',
         actorId: conversation.agentId,
@@ -2852,7 +2855,7 @@ export async function promoteConversationWithAi(input: { conversationId: string 
       role: 'agent',
       content: responseText,
       actingUserId: user.user.id,
-      agentVersion: agentDetails.agent.currentVersion,
+      agentVersion: agentRow.currentVersion,
       model: modelConfig.model,
       ticketRefId: ticket.id,
       actorType: 'agent',

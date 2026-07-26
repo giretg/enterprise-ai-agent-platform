@@ -658,7 +658,7 @@ export async function kbSearch(self: ToolBrokerService,
     args: KbSearchArgs,
     connector: Connector,
   ): Promise<KbSearchResult> {
-    const detail = await self.agents.findByIdWithDetails(agentId)
+    const detail = await self.agents.findByIdForRuntime(agentId)
     if (!detail) throw new Error('Agent not found')
 
     const k = args.k ?? 5

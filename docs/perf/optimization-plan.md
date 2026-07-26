@@ -172,15 +172,14 @@ prioritása csökken.
 
 ---
 
-## P1 — `findByIdWithDetails` szétbontása (nyitott)
+## P1 — `findByIdWithDetails` szétbontása — **JAVÍTVA**
 
 **Hol:** `app/src/repositories/postgres/agent-repository.ts`
 
-Az `include` mindenkinek betölti a `memory.versions take: 5` sorokat és az admin-only
-mezőket (`apiKeys`), akkor is, ha viewer szerepkör néz rá / runtime csak a
-memória-tartalmat kéri.
-
-**Javaslat:** `findByIdForDisplay` vs `findByIdForRuntime` (memory current + model only).
+- `findByIdForRuntime` — agent + aktuális memória (nincs `versions` lista, apiKeys, resources, recipe)
+- `findByIdForDisplay` — UI detail (resources, recipe, apiKeyPreview, behavior profile)
+- `findByIdWithDetails` kompat alias → display
+- Hot path (chat / general-task / bookkeeper / `kb_search`) → runtime; detail / wiki / katalógus → display
 
 ---
 

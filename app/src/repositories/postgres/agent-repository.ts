@@ -37,7 +37,30 @@ export class PostgresAgentRepository implements AgentRepository {
     return prisma.agent.findFirst({ where: agentVisibilityWhere(id, tenantId) })
   }
 
-  async findByIdWithDetails(id: string, tenantId?: string | null) {
+  async findByIdForRuntime(id: string, tenantId?: string | null) {
+    // Chat / task / kb_search: csak az aktuális memória — nincs versions lista,
+    // apiKeys, resources, recipe (azok a display loaderben vannak).
+    const agent = await prisma.agent.findFirst({
+      where: agentVisibilityWhere(id, tenantId),
+      include: {
+        memory: {
+          include: {
+            currentVersion: true,
+          },
+        },
+      },
+    })
+
+    if (!agent) return null
+
+    return {
+      agent,
+      memoryContent: agent.memory.currentVersion?.content ?? null,
+      memoryVersion: agent.memory.currentVersion?.version ?? null,
+    }
+  }
+
+  async findByIdForDisplay(id: string, tenantId?: string | null) {
     const agent = await prisma.agent.findFirst({
       where: agentVisibilityWhere(id, tenantId),
       include: {
@@ -109,6 +132,11 @@ export class PostgresAgentRepository implements AgentRepository {
           }
         : null,
     }
+  }
+
+  /** @deprecated Kompat alias → `findByIdForDisplay`. */
+  async findByIdWithDetails(id: string, tenantId?: string | null) {
+    return this.findByIdForDisplay(id, tenantId)
   }
 
   async findVersionSnapshot(agentId: string, version: number) {
