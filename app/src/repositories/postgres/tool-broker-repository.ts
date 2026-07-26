@@ -72,6 +72,21 @@ export class PostgresToolBrokerRepository implements ToolBrokerRepository {
     })
   }
 
+  async findCapabilitiesForAgents(
+    agentIds: string[],
+    toolNames?: string[],
+  ): Promise<{ agentId: string; toolName: string; allowed: boolean }[]> {
+    if (agentIds.length === 0) return []
+    const uniqueIds = [...new Set(agentIds)]
+    return prisma.capability.findMany({
+      where: {
+        agentId: { in: uniqueIds },
+        ...(toolNames && toolNames.length > 0 ? { toolName: { in: [...new Set(toolNames)] } } : {}),
+      },
+      select: { agentId: true, toolName: true, allowed: true },
+    })
+  }
+
   async findConnectorForAgent(
     agentId: string,
     type: ConnectorType,

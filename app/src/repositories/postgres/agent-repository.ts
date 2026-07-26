@@ -855,6 +855,12 @@ export class PostgresDocumentRepository implements DocumentRepository {
     return prisma.document.findUnique({ where: { id } })
   }
 
+  async findByIds(ids: string[]): Promise<Document[]> {
+    if (ids.length === 0) return []
+    const unique = [...new Set(ids)]
+    return prisma.document.findMany({ where: { id: { in: unique } } })
+  }
+
   async findByConnectorId(connectorId: string): Promise<Document[]> {
     // KB lista / UI: extractedText nélkül — a teljes szöveg csak findById / search úton kell.
     const rows = await prisma.document.findMany({

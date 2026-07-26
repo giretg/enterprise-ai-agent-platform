@@ -28,7 +28,7 @@ gh issue create --title "$(head -n1 docs/perf/github-issues/004-fix-n-plus-one-q
 
 ## Issue-k
 
-1. `001-findByIdWithDetails-split.md` — runtime vs display loader
+1. `001-findByIdWithDetails-split.md` — runtime vs display loader (**kész**)
 2. `002-split-dispatcher-from-ui.md` — UI / dispatcher Cloud Run szétválasztás
 3. `003-paginate-unbounded-lists.md` — unbounded listák paginálása
-4. `004-fix-n-plus-one-queries.md` — N+1 lekérdezések
+4. `004-fix-n-plus-one-queries.md` — N+1 lekérdezések (**kész**, 2026-07-26)

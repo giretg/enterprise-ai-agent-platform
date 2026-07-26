@@ -26,6 +26,7 @@ import {
   detachProcessTriggerSchema,
   startProcessFromTicketSchema,
   suitableAgentsSchema,
+  suitableAgentsForVersionSchema,
   chatTriggerableProcessDefinitionsSchema,
 } from '@/lib/validators/actions'
 import { reconstructActualFlow } from '@/lib/playbook-v2/runtime'
@@ -326,13 +327,21 @@ export async function listSuitableAgents(input: unknown) {
       tenantId: registryTenantId,
       excludeHiddenFromOperators: shouldExcludeHiddenAgents(user.activeTenantRole),
     })
-    const capabilitySets = await Promise.all(
-      agents.map((agent) => repositories.toolBroker.findCapabilitiesForAgent(agent.id)),
-    )
+    const capabilityRows = await repositories.toolBroker.findCapabilitiesForAgents(agents.map((a) => a.id))
+    const capsByAgent = new Map<string, { toolName: string; allowed: boolean }[]>()
+    for (const row of capabilityRows) {
+      const list = capsByAgent.get(row.agentId) ?? []
+      list.push({ toolName: row.toolName, allowed: row.allowed })
+      capsByAgent.set(row.agentId, list)
+    }
     const suitable = []
-    for (const [i, agent] of agents.entries()) {
+    for (const agent of agents) {
       const result = isAgentSuitable(
-        { status: agent.status, tenantId: agent.tenantId, capabilities: capabilitySets[i] },
+        {
+          status: agent.status,
+          tenantId: agent.tenantId,
+          capabilities: capsByAgent.get(agent.id) ?? [],
+        },
         { requiredCapabilities: role.requiredCapabilities },
         registryTenantId,
       )
@@ -345,6 +354,63 @@ export async function listSuitableAgents(input: unknown) {
       })
     }
     return ok(suitable)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Nem sikerült betölteni az alkalmas agenteket')
+  }
+}
+
+/** Egy Playbook-verzió összes agent-szerepére alkalmas agentek — egy agents + egy capability query. */
+export async function listSuitableAgentsForVersion(input: unknown) {
+  try {
+    const user = await requireTenantRole('operator')
+    const parsed = suitableAgentsForVersionSchema.parse(input)
+    const processTenantId = user.activeTenantId
+    const registryTenantId: string | null = user.activeTenantId
+    const version = await repositories.playbooksV2.findVersion(processTenantId, parsed.playbookVersionId)
+    if (!version) return fail('A Playbook-verzió nem található.')
+
+    const agentRoles = parsePlaybookSpecV2(version.spec).roles.filter((r) => r.type === 'agent_role')
+    const agents = await repositories.agents.findMany({
+      tenantId: registryTenantId,
+      excludeHiddenFromOperators: shouldExcludeHiddenAgents(user.activeTenantRole),
+    })
+    const capabilityRows = await repositories.toolBroker.findCapabilitiesForAgents(agents.map((a) => a.id))
+    const capsByAgent = new Map<string, { toolName: string; allowed: boolean }[]>()
+    for (const row of capabilityRows) {
+      const list = capsByAgent.get(row.agentId) ?? []
+      list.push({ toolName: row.toolName, allowed: row.allowed })
+      capsByAgent.set(row.agentId, list)
+    }
+
+    const byRole: Record<
+      string,
+      { id: string; name: string; personaNickname?: string | null; status: string; role: string }[]
+    > = {}
+    for (const role of agentRoles) {
+      const suitable = []
+      for (const agent of agents) {
+        const result = isAgentSuitable(
+          {
+            status: agent.status,
+            tenantId: agent.tenantId,
+            capabilities: capsByAgent.get(agent.id) ?? [],
+          },
+          { requiredCapabilities: role.requiredCapabilities },
+          registryTenantId,
+        )
+        if (result.ok) {
+          suitable.push({
+            id: agent.id,
+            name: agent.name,
+            personaNickname: agent.personaNickname,
+            status: agent.status,
+            role: agent.role,
+          })
+        }
+      }
+      byRole[role.key] = suitable
+    }
+    return ok(byRole)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Nem sikerült betölteni az alkalmas agenteket')
   }

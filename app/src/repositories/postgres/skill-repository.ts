@@ -114,6 +114,15 @@ export class PostgresSkillRepository implements SkillRepository {
     })
   }
 
+  async findVersionsByIds(versionIds: string[]): Promise<(SkillVersion & { skill: Skill })[]> {
+    if (versionIds.length === 0) return []
+    const unique = [...new Set(versionIds)]
+    return prisma.skillVersion.findMany({
+      where: { id: { in: unique } },
+      include: { skill: true },
+    })
+  }
+
   async createSkill(input: CreateSkillInput): Promise<{ skill: Skill; version: SkillVersion }> {
     return prisma.$transaction(async (tx) => {
       const skill = await tx.skill.create({

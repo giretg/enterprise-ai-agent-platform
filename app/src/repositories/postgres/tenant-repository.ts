@@ -18,6 +18,12 @@ export class PostgresTenantRepository implements TenantRepository {
     return prisma.tenant.findUnique({ where: { id } })
   }
 
+  async findByIds(ids: string[]) {
+    if (ids.length === 0) return []
+    const unique = [...new Set(ids)]
+    return prisma.tenant.findMany({ where: { id: { in: unique } } })
+  }
+
   async findBySlug(slug: string) {
     return prisma.tenant.findUnique({ where: { slug } })
   }

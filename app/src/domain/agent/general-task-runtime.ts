@@ -821,8 +821,8 @@ export class GeneralTaskRuntime {
   }
 
   private async loadDocuments(ids: string[]) {
-    const docs = await Promise.all(ids.map((id) => this.documents.findById(id)))
-    return docs.filter((doc): doc is NonNullable<(typeof docs)[number]> => Boolean(doc))
+    if (ids.length === 0) return []
+    return this.documents.findByIds(ids)
   }
 
   /**

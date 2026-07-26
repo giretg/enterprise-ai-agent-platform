@@ -122,7 +122,7 @@ export async function getTenantSwitcherState() {
       })
     }
 
-    const tenants = await Promise.all([...membershipTenantIds].map((id) => repositories.tenants.findById(id)))
+    const tenants = await repositories.tenants.findByIds([...membershipTenantIds])
 
     return ok({
       activeTenantId: ctx.activeTenantId,
@@ -130,7 +130,6 @@ export async function getTenantSwitcherState() {
       kind: ctx.kind,
       isSuperadmin: false,
       tenants: tenants
-        .filter((t): t is NonNullable<typeof t> => t !== null)
         .map((t) => ({
           id: t.id,
           slug: t.slug,

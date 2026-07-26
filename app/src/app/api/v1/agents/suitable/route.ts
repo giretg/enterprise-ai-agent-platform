@@ -30,11 +30,21 @@ export async function GET(request: Request) {
       tenantId: registryTenantId,
       excludeHiddenFromOperators: shouldExcludeHiddenAgents(user.activeTenantRole),
     })
+    const capabilityRows = await repositories.toolBroker.findCapabilitiesForAgents(agents.map((a) => a.id))
+    const capsByAgent = new Map<string, { toolName: string; allowed: boolean }[]>()
+    for (const row of capabilityRows) {
+      const list = capsByAgent.get(row.agentId) ?? []
+      list.push({ toolName: row.toolName, allowed: row.allowed })
+      capsByAgent.set(row.agentId, list)
+    }
     const suitable = []
     for (const agent of agents) {
-      const capabilities = await repositories.toolBroker.findCapabilitiesForAgent(agent.id)
       const result = isAgentSuitable(
-        { status: agent.status, tenantId: agent.tenantId, capabilities },
+        {
+          status: agent.status,
+          tenantId: agent.tenantId,
+          capabilities: capsByAgent.get(agent.id) ?? [],
+        },
         { requiredCapabilities: role.requiredCapabilities },
         registryTenantId,
       )

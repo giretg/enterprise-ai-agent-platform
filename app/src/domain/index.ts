@@ -758,13 +758,13 @@ const provisioningService = new ProvisioningService({
   sandboxTester: provisioningSandboxTester,
   // F2-P-F: az agent-aktor draft-jogai deny-by-default a Capability táblából (§6.1/§9).
   resolveAgentCapabilities: async (agentId) => {
-    const checks = await Promise.all(
-      PROVISIONING_DRAFT_CAPABILITIES.map(async (cap) => ({
-        cap,
-        allowed: (await repositories.toolBroker.findCapability(agentId, cap))?.allowed === true,
-      })),
+    const rows = await repositories.toolBroker.findCapabilitiesForAgents(
+      [agentId],
+      [...PROVISIONING_DRAFT_CAPABILITIES],
     )
-    return checks.filter((c) => c.allowed).map((c) => c.cap)
+    return PROVISIONING_DRAFT_CAPABILITIES.filter((cap) =>
+      rows.some((row) => row.toolName === cap && row.allowed),
+    )
   },
   // Négy-szem (§7.3, §14/4): a második jóváhagyó CSAK aktív `admin` tag lehet az aktor
   // tenantjában. `tenantId === null` (platform-szintű aktor) → nem hitelesíthető tenant-

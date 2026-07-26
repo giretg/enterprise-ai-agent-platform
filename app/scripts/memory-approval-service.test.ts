@@ -161,6 +161,8 @@ function makeFakes(opts: { evalActive?: boolean; evalPasses?: boolean } = {}) {
   const rolePermissions: RolePermissionRepository = {
     findAll: async () => [...permissionsByKey.values()],
     findByKey: async (key: string) => permissionsByKey.get(key) ?? null,
+    findByKeys: async (keys: string[]) =>
+      keys.map((key) => permissionsByKey.get(key)).filter((p): p is RolePermission => Boolean(p)),
     upsert: async () => {
       throw new Error('not used')
     },

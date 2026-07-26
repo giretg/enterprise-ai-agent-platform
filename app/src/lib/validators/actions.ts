@@ -1448,6 +1448,10 @@ export const suitableAgentsSchema = z.object({
   roleKey: z.string().trim().min(1).max(120),
 })
 
+export const suitableAgentsForVersionSchema = z.object({
+  playbookVersionId: z.string().uuid(),
+})
+
 export const processIdSchema = z.object({
   id: z.string().uuid(),
 })

@@ -521,14 +521,16 @@ export class ConnectorGrantService {
     reason: string
   }): Promise<number> {
     const grants = await this.grants.findActiveByConnector(params.connectorId)
-    for (const grant of grants) {
-      await this.revokeGrant({
-        grantId: grant.id,
-        actorId: params.actorId,
-        actorType: params.actorType,
-        reason: params.reason,
-      })
-    }
+    await Promise.all(
+      grants.map((grant) =>
+        this.revokeGrant({
+          grantId: grant.id,
+          actorId: params.actorId,
+          actorType: params.actorType,
+          reason: params.reason,
+        }),
+      ),
+    )
     return grants.length
   }
 
@@ -538,37 +540,42 @@ export class ConnectorGrantService {
     actorId: string,
   ): Promise<number> {
     const stale = await this.grants.findActiveForInactiveConnectors(userId, tenantId)
-    for (const grant of stale) {
-      await this.revokeGrant({
-        grantId: grant.id,
-        actorId,
-        actorType: 'system',
-        reason: 'connector_not_active',
-      })
-    }
+    await Promise.all(
+      stale.map((grant) =>
+        this.revokeGrant({
+          grantId: grant.id,
+          actorId,
+          actorType: 'system',
+          reason: 'connector_not_active',
+        }),
+      ),
+    )
     return stale.length
   }
 
   async revokeAllForUser(userId: string, actorId: string) {
     const grants = await this.grants.findByUser(userId)
-    for (const grant of grants.filter((g) => g.status === 'active')) {
-      const store = createGrantTokenStore(grant.tokenRef)
-      await store.delete().catch(() => {})
-      await this.grants.updateStatus(grant.id, 'revoked', { revokedAt: new Date() })
-      await this.audit.append({
-        actorType: 'system',
-        actorId,
-        agentVersion: null,
-        action: 'connector.grant.revoke',
-        targetType: 'connector_grant',
-        targetId: grant.id,
-        modelUsed: null,
-        inputRef: grant.connectorId,
-        outputRef: userId,
-        policyDecision: 'offboarding',
-        metadata: { reason: 'user_suspended' } as Prisma.JsonValue,
-      })
-    }
+    const active = grants.filter((g) => g.status === 'active')
+    await Promise.all(
+      active.map(async (grant) => {
+        const store = createGrantTokenStore(grant.tokenRef)
+        await store.delete().catch(() => {})
+        await this.grants.updateStatus(grant.id, 'revoked', { revokedAt: new Date() })
+        await this.audit.append({
+          actorType: 'system',
+          actorId,
+          agentVersion: null,
+          action: 'connector.grant.revoke',
+          targetType: 'connector_grant',
+          targetId: grant.id,
+          modelUsed: null,
+          inputRef: grant.connectorId,
+          outputRef: userId,
+          policyDecision: 'offboarding',
+          metadata: { reason: 'user_suspended' } as Prisma.JsonValue,
+        })
+      }),
+    )
   }
 
   async markGrantExpired(params: {

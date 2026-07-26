@@ -515,12 +515,11 @@ export class PlaybookV2Service {
       version: number
     }> = []
 
+    const processTypes = [...new Set(playbooks.map((p) => p.processType))]
+    const assignments = await this.repo.findDefaultAssignments(tenantId, 'process_type', processTypes)
+
     for (const playbook of playbooks) {
-      const assignment = await this.repo.findDefaultAssignment(
-        tenantId,
-        'process_type',
-        playbook.processType,
-      )
+      const assignment = assignments.get(playbook.processType)
       if (!assignment || assignment.playbookId !== playbook.id) continue
 
       const version = playbook.versions.find((v) => v.id === assignment.playbookVersionId)

@@ -827,18 +827,64 @@ export class SkillService {
     const preloadedPrompts: string[] = []
     const loadedSkillNames: string[] = []
     const seen = new Set<string>()
+    const orderedIds: string[] = []
     for (const skillVersionId of input.skillVersionIds) {
       if (seen.has(skillVersionId)) continue
       seen.add(skillVersionId)
-      const loaded = await this.loadSkillForAgent({
-        agentId: input.agentId,
-        skillVersionId,
-        actor: input.actor,
+      orderedIds.push(skillVersionId)
+    }
+
+    const loadableIds = orderedIds.filter((id) => Boolean(resolveLoadableSkill(index, id)))
+    const deniedIds = orderedIds.filter((id) => !resolveLoadableSkill(index, id))
+
+    await Promise.all(
+      deniedIds.map((skillVersionId) =>
+        this.audit.append({
+          actorType: 'agent',
+          actorId: input.agentId,
+          agentVersion: null,
+          action: 'skill.access_denied',
+          targetType: 'agent',
+          targetId: input.agentId,
+          modelUsed: null,
+          inputRef: skillVersionId,
+          outputRef: 'denied',
+          policyDecision: 'deny',
+          tenantId: input.actor.actorTenantId,
+          metadata: { skillVersionId, reason: 'not_assigned' },
+        }),
+      ),
+    )
+
+    if (loadableIds.length === 0) {
+      return { preloadedPrompts: [], loadedSkillNames: [] }
+    }
+
+    const versions = await this.skills.findVersionsByIds(loadableIds)
+    const versionById = new Map(versions.map((v) => [v.id, v] as const))
+
+    for (const skillVersionId of loadableIds) {
+      const entry = resolveLoadableSkill(index, skillVersionId)
+      if (!entry) continue
+      const version = versionById.get(skillVersionId)
+      if (!version) continue
+      const content = parseSkillContent(version.content)
+      await this.audit.append({
+        actorType: 'agent',
+        actorId: input.agentId,
+        agentVersion: null,
+        action: 'skill.loaded',
+        targetType: 'skill',
+        targetId: entry.skillId,
+        modelUsed: null,
+        inputRef: skillVersionId,
+        outputRef: `v${entry.version}`,
+        policyDecision: 'allow',
+        tenantId: input.actor.actorTenantId,
+        metadata: { skillVersionId, skillId: entry.skillId },
       })
-      if (!loaded.ok) continue
-      const entry = index.find((row) => row.skillVersionId === skillVersionId)
-      if (entry) loadedSkillNames.push(entry.name)
-      preloadedPrompts.push(`${reason}\n\n${loaded.instructions}`)
+      loadedSkillNames.push(entry.name)
+      preloadedPrompts.push(`${reason}\n\n${buildLoadedSkillPrompt(entry, content)}`)
     }
     return { preloadedPrompts, loadedSkillNames }
   }
