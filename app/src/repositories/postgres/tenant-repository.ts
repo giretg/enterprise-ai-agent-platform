@@ -12,10 +12,18 @@ import type {
   TenantMembershipRepository,
   PlatformMembershipRepository,
 } from '@/repositories/interfaces'
+import { orderRowsByIds } from '@/repositories/order-by-ids'
 
 export class PostgresTenantRepository implements TenantRepository {
   async findById(id: string) {
     return prisma.tenant.findUnique({ where: { id } })
+  }
+
+  async findByIds(ids: string[]) {
+    if (ids.length === 0) return []
+    const unique = [...new Set(ids)]
+    const rows = await prisma.tenant.findMany({ where: { id: { in: unique } } })
+    return orderRowsByIds(ids, rows)
   }
 
   async findBySlug(slug: string) {

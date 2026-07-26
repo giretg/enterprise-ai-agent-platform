@@ -188,4 +188,28 @@ export class PostgresPlaybookV2Repository implements PlaybookV2Repository {
       orderBy: { createdAt: 'desc' },
     })
   }
+
+  async findDefaultAssignments(
+    tenantId: string | null,
+    assignmentType: string,
+    assignmentKeys: string[],
+  ): Promise<Map<string, PlaybookAssignment>> {
+    const result = new Map<string, PlaybookAssignment>()
+    if (assignmentKeys.length === 0) return result
+    const uniqueKeys = [...new Set(assignmentKeys)]
+    const rows = await prisma.playbookAssignment.findMany({
+      where: {
+        tenantId,
+        assignmentType,
+        assignmentKey: { in: uniqueKeys },
+        isDefault: true,
+        revokedAt: null,
+      },
+      orderBy: { createdAt: 'desc' },
+    })
+    for (const row of rows) {
+      if (!result.has(row.assignmentKey)) result.set(row.assignmentKey, row)
+    }
+    return result
+  }
 }

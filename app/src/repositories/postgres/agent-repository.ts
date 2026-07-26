@@ -8,6 +8,7 @@ import { selfEvolutionProfileSchema } from '@/lib/self-evolution-profile'
 import { assertTransition, isPhysicallyDeletable } from '@/lib/agent-lifecycle'
 import { deriveAgentApiKeyLookupHash, isAgentApiKeyFormat } from '@/lib/agent-api-key-hash'
 import type { AgentRepository, DocumentRepository } from '../interfaces'
+import { orderRowsByIds } from '../order-by-ids'
 
 function agentVisibilityWhere(id: string, tenantId?: string | null): Prisma.AgentWhereInput {
   return tenantId === undefined ? { id } : { id, tenantId }
@@ -853,6 +854,13 @@ export class PostgresAgentRepository implements AgentRepository {
 export class PostgresDocumentRepository implements DocumentRepository {
   async findById(id: string): Promise<Document | null> {
     return prisma.document.findUnique({ where: { id } })
+  }
+
+  async findByIds(ids: string[]): Promise<Document[]> {
+    if (ids.length === 0) return []
+    const unique = [...new Set(ids)]
+    const rows = await prisma.document.findMany({ where: { id: { in: unique } } })
+    return orderRowsByIds(ids, rows)
   }
 
   async findByConnectorId(connectorId: string): Promise<Document[]> {

@@ -8,7 +8,7 @@ import {
   attachProcessTrigger,
   createProcessDefinition,
   listAssignableProcessUsers,
-  listSuitableAgents,
+  listSuitableAgentsForVersion,
   updateProcessDefinitionBindings,
 } from '@/app/actions/process'
 import { agentDisplayName } from '@/lib/agent-persona'
@@ -116,19 +116,14 @@ export function ProcessDefinitionBuilder({
     async function loadSuitableAgents() {
       if (!selectedVersion) return
       setAgentLoadError(null)
-      const next: Record<string, SuitableAgent[]> = {}
-      for (const role of selectedVersion.agentRoles) {
-        const res = await listSuitableAgents({
-          playbookVersionId: selectedVersion.playbookVersionId,
-          roleKey: role.key,
-        })
-        if (!res.success) {
-          if (!cancelled) setAgentLoadError(res.error)
-          return
-        }
-        next[role.key] = res.data
+      const res = await listSuitableAgentsForVersion({
+        playbookVersionId: selectedVersion.playbookVersionId,
+      })
+      if (!res.success) {
+        if (!cancelled) setAgentLoadError(res.error)
+        return
       }
-      if (!cancelled) setSuitableAgents(next)
+      if (!cancelled) setSuitableAgents(res.data)
     }
     void loadSuitableAgents()
     return () => {

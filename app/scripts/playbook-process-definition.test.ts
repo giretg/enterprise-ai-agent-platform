@@ -149,12 +149,27 @@ function makeStubs(opts: {
   const rolePermissions = {
     findByKey: async (key: string) =>
       (opts.knownPermissions ?? []).includes(key) ? { permissionKey: key, minRole: 'approver' } : null,
+    findByKeys: async (keys: string[]) =>
+      keys
+        .filter((key) => (opts.knownPermissions ?? []).includes(key))
+        .map((key) => ({ permissionKey: key, minRole: 'approver' as const })),
   }
   const users = {
     findById: async (id: string) =>
       id === USER_ID
         ? { id: USER_ID, tenantId: TENANT, status: 'active', role: 'approver', name: 'Jóváhagyó', email: 'ok@example.com' }
         : null,
+    findManyByIds: async (ids: string[]) =>
+      ids
+        .filter((id) => id === USER_ID)
+        .map(() => ({
+          id: USER_ID,
+          tenantId: TENANT,
+          status: 'active' as const,
+          role: 'approver' as const,
+          name: 'Jóváhagyó',
+          email: 'ok@example.com',
+        })),
   }
   const audit = {
     append: async (e: { action: string; metadata?: Record<string, unknown> }) => {

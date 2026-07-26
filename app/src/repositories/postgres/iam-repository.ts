@@ -206,6 +206,12 @@ export class PostgresRolePermissionRepository implements RolePermissionRepositor
     return prisma.rolePermission.findUnique({ where: { permissionKey } })
   }
 
+  async findByKeys(permissionKeys: string[]) {
+    if (permissionKeys.length === 0) return []
+    const unique = [...new Set(permissionKeys)]
+    return prisma.rolePermission.findMany({ where: { permissionKey: { in: unique } } })
+  }
+
   async upsert(permissionKey: string, minRole: UserRole, description?: string | null) {
     return prisma.rolePermission.upsert({
       where: { permissionKey },

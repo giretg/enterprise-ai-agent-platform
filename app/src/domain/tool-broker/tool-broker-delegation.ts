@@ -1330,12 +1330,25 @@ export async function webResearchRequest(self: ToolBrokerService,
 
 export async function resolveWebEgressAgent(self: ToolBrokerService, tenantId: string | null) {
     const candidates = await self.agents.findMany({ tenantId })
-    for (const agent of candidates.filter((a) => a.status === 'active')) {
-      const [searchCap, fetchCap] = await Promise.all([
-        self.tools.findCapability(agent.id, 'web_search'),
-        self.tools.findCapability(agent.id, 'web_fetch'),
-      ])
-      if (searchCap?.allowed && fetchCap?.allowed) return agent
+    const active = candidates.filter((a) => a.status === 'active')
+    if (active.length === 0) return null
+
+    const caps = await self.tools.findCapabilitiesForAgents(
+      active.map((a) => a.id),
+      ['web_search', 'web_fetch'],
+    )
+    const byAgent = new Map<string, { web_search?: boolean; web_fetch?: boolean }>()
+    for (const row of caps) {
+      const entry = byAgent.get(row.agentId) ?? {}
+      if (row.toolName === 'web_search' || row.toolName === 'web_fetch') {
+        entry[row.toolName] = row.allowed
+      }
+      byAgent.set(row.agentId, entry)
+    }
+
+    for (const agent of active) {
+      const entry = byAgent.get(agent.id)
+      if (entry?.web_search && entry?.web_fetch) return agent
     }
     return null
   }

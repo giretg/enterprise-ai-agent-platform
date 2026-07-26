@@ -436,8 +436,27 @@ export class ProcessDefinitionService {
     }
 
     // §4.3, §4.8 — human-szerepek: kötött + aktív user + requiredPermissions.
-    for (const role of spec.roles) {
-      if (role.type !== 'human_role') continue
+    const humanRoles = spec.roles.filter((role) => role.type === 'human_role')
+    const humanUserIds = [
+      ...new Set(
+        humanRoles
+          .map((role) => roleBindings[role.key])
+          .filter((id): id is string => Boolean(id)),
+      ),
+    ]
+    const usersById = new Map(
+      (await this.users.findManyByIds(humanUserIds)).map((user) => [user.id, user] as const),
+    )
+    const permissionKeys = [
+      ...new Set(humanRoles.flatMap((role) => role.requiredPermissions ?? [])),
+    ]
+    const permissionsByKey = new Map(
+      (await this.rolePermissions.findByKeys(permissionKeys)).map(
+        (perm) => [perm.permissionKey, perm] as const,
+      ),
+    )
+
+    for (const role of humanRoles) {
       const userId = roleBindings[role.key]
       if (!userId) {
         violations.push({
@@ -446,7 +465,7 @@ export class ProcessDefinitionService {
         })
         continue
       }
-      const user = await this.users.findById(userId)
+      const user = usersById.get(userId)
       if (!user) {
         violations.push({
           code: 'HUMAN_USER_UNSUITABLE',
@@ -462,7 +481,7 @@ export class ProcessDefinitionService {
         continue
       }
       for (const perm of role.requiredPermissions ?? []) {
-        const known = await this.rolePermissions.findByKey(perm)
+        const known = permissionsByKey.get(perm)
         if (!known) {
           violations.push({
             code: 'UNKNOWN_PERMISSION',

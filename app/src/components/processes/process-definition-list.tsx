@@ -7,7 +7,7 @@ import {
   attachProcessTrigger,
   detachProcessTrigger,
   listAssignableProcessUsers,
-  listSuitableAgents,
+  listSuitableAgentsForVersion,
   replaceActiveProcessDefinition,
   updateProcessDefinitionBindings,
 } from '@/app/actions/process'
@@ -164,12 +164,8 @@ function ProcessDefinitionEditForm({
   useEffect(() => {
     let cancelled = false
     async function load() {
-      const next: Record<string, { id: string; name: string; role: string }[]> = {}
-      for (const role of version.agentRoles) {
-        const res = await listSuitableAgents({ playbookVersionId: version.playbookVersionId, roleKey: role.key })
-        if (res.success && !cancelled) next[role.key] = res.data
-      }
-      if (!cancelled) setSuitableAgents(next)
+      const res = await listSuitableAgentsForVersion({ playbookVersionId: version.playbookVersionId })
+      if (!cancelled && res.success) setSuitableAgents(res.data)
       const usersRes = await listAssignableProcessUsers()
       if (usersRes.success && !cancelled) setAssignableUsers(usersRes.data)
     }

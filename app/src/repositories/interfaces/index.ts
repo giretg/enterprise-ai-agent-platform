@@ -576,6 +576,8 @@ export interface AgentRepository {
 
 export interface DocumentRepository {
   findById(id: string): Promise<Document | null>
+  /** Batch betöltés `id IN (...)` — elkerüli a N× findById mintát. */
+  findByIds(ids: string[]): Promise<Document[]>
   findByConnectorId(connectorId: string): Promise<Document[]>
   create(
     data: Omit<
@@ -1027,6 +1029,14 @@ export { ModelBudgetPeriod, ModelBudgetScope, ModelRoutingScope }
 
 export interface ToolBrokerRepository {
   findCapability(agentId: string, toolName: string): Promise<{ allowed: boolean } | null>
+  /**
+   * Batch capability lekérdezés több agentre (opcionális toolName szűrővel).
+   * Egy `findMany` az N×`findCapability` / N×`findCapabilitiesForAgent` helyett.
+   */
+  findCapabilitiesForAgents(
+    agentIds: string[],
+    toolNames?: string[],
+  ): Promise<{ agentId: string; toolName: string; allowed: boolean }[]>
   findConnectorForAgent(
     agentId: string,
     type: ConnectorType,
@@ -1135,6 +1145,8 @@ export interface SkillRepository {
   /** Hatókörön belüli név-keresés (case-insensitive, trim) — egyediség-kapuhoz. */
   findByNameInScope(name: string, tenantId: string | null): Promise<Skill | null>
   findVersionById(versionId: string): Promise<(SkillVersion & { skill: Skill }) | null>
+  /** Batch skill-verzió betöltés — preload / slash path N+1 elkerülésére. */
+  findVersionsByIds(versionIds: string[]): Promise<(SkillVersion & { skill: Skill })[]>
   createSkill(input: CreateSkillInput): Promise<{ skill: Skill; version: SkillVersion }>
   addVersion(input: AddSkillVersionInput): Promise<SkillVersion>
   /** Jóváhagyás: az adott verzió `active`, az addigi aktív `retired`, agentek átkötése. */
@@ -1282,6 +1294,15 @@ export interface PlaybookV2Repository {
     assignmentType: string,
     assignmentKey: string,
   ): Promise<PlaybookAssignment | null>
+  /**
+   * Batch default assignment: egy query az összes `assignmentKey`-re.
+   * Kulcsonként a legfrissebb aktív defaultot adja vissza (ugyanaz a sematika, mint `findDefaultAssignment`).
+   */
+  findDefaultAssignments(
+    tenantId: string | null,
+    assignmentType: string,
+    assignmentKeys: string[],
+  ): Promise<Map<string, PlaybookAssignment>>
 }
 
 // --- Fázis 2 Playbook process runtime (Feature-spec — Playbook §4.5–4.7, §8.2) ---
@@ -2008,6 +2029,8 @@ export interface InvitationRepository {
 export interface RolePermissionRepository {
   findAll(): Promise<RolePermission[]>
   findByKey(permissionKey: string): Promise<RolePermission | null>
+  /** Batch permission lookup `permissionKey IN (...)`. */
+  findByKeys(permissionKeys: string[]): Promise<RolePermission[]>
   upsert(permissionKey: string, minRole: UserRole, description?: string | null): Promise<RolePermission>
 }
 
@@ -2015,6 +2038,8 @@ export interface RolePermissionRepository {
 
 export interface TenantRepository {
   findById(id: string): Promise<Tenant | null>
+  /** Batch tenant lookup — tenant-switcher N×`findById` helyett. */
+  findByIds(ids: string[]): Promise<Tenant[]>
   findBySlug(slug: string): Promise<Tenant | null>
   findMany(filter?: { status?: TenantStatus }): Promise<Tenant[]>
   create(data: {

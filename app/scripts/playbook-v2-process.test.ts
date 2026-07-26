@@ -297,6 +297,18 @@ class FakePlaybookV2Repository implements PlaybookV2Repository {
       ) ?? null
     )
   }
+  async findDefaultAssignments(
+    tenantId: string | null,
+    assignmentType: string,
+    assignmentKeys: string[],
+  ) {
+    const result = new Map<string, PlaybookAssignment>()
+    for (const key of assignmentKeys) {
+      const row = await this.findDefaultAssignment(tenantId, assignmentType, key)
+      if (row) result.set(key, row)
+    }
+    return result
+  }
 }
 
 class FakeProcessRepository implements ProcessRepository {
