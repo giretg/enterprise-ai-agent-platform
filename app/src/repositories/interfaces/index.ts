@@ -138,10 +138,23 @@ export type TicketFilter = {
   source?: TicketSource | TicketSource[]
   /** Board / dashboard: user + system ticketek, teszt kizárva. */
   excludeTest?: boolean
+  /** Ha megadott: take+1 pagináció. Üresen korlátlan (full dump / internal). */
+  limit?: number
+  offset?: number
+  unbounded?: boolean
+}
+
+export type ListPageResult<T> = {
+  items: T[]
+  hasMore: boolean
+  nextOffset?: number
 }
 
 export interface TicketRepository {
   findMany(filter?: TicketFilter): Promise<Ticket[]>
+  /** Control-plane listák: alapból limitált; full dump: `unbounded: true`. */
+  listPage(filter?: TicketFilter): Promise<ListPageResult<Ticket>>
+  count(filter?: TicketFilter): Promise<number>
   findReadyForDispatch(now: Date, limit: number): Promise<Ticket[]>
   findStaleInProgressDispatches(cutoff: Date, limit: number): Promise<Ticket[]>
   findById(id: string): Promise<Ticket | null>
@@ -447,12 +460,23 @@ export type AgentDisplayDetails = AgentRuntimeDetails & {
   } | null
 }
 
+export type AgentListFilter = {
+  tenantId?: string | null
+  /** Ha true, kihagyja a `hiddenFromOperators` agenteket (non-admin listázás). */
+  excludeHiddenFromOperators?: boolean
+  limit?: number
+  offset?: number
+  unbounded?: boolean
+}
+
 export interface AgentRepository {
-  findMany(filter?: {
+  findMany(filter?: AgentListFilter): Promise<Agent[]>
+  listPage(filter?: AgentListFilter): Promise<ListPageResult<Agent>>
+  count(filter?: {
     tenantId?: string | null
-    /** Ha true, kihagyja a `hiddenFromOperators` agenteket (non-admin listázás). */
+    status?: Agent['status']
     excludeHiddenFromOperators?: boolean
-  }): Promise<Agent[]>
+  }): Promise<number>
   findById(id: string, tenantId?: string | null): Promise<Agent | null>
   /**
    * Futásidejű loader: csak az agent + aktuális memória tartalom/verzió.
@@ -1084,8 +1108,16 @@ export interface ToolBrokerRepository {
 
 export type RecipeWithVersions = Recipe & { versions: RecipeVersion[] }
 
+export type RecipeListOpts = {
+  /** `latest` (default): csak a legújabb verzió; `all`: full dump. */
+  versions?: 'latest' | 'all'
+  limit?: number
+  offset?: number
+  unbounded?: boolean
+}
+
 export interface RecipeRepository {
-  list(): Promise<RecipeWithVersions[]>
+  list(opts?: RecipeListOpts): Promise<RecipeWithVersions[]>
   findById(id: string): Promise<RecipeWithVersions | null>
   createRecipe(input: {
     name: string
@@ -1201,7 +1233,19 @@ export interface PlaybookRepository {
 
 // --- Fázis 2 Playbook V2 (Feature-spec — Playbook §4, §8.1) ------------------
 
-export type PlaybookV2WithVersions = PlaybookV2 & { versions: PlaybookVersionV2[] }
+export type PlaybookV2WithVersions = PlaybookV2 & {
+  versions: PlaybookVersionV2[]
+  /** Katalógus listához; ha hiányzik, `versions.length` a forrás. */
+  versionCount?: number
+}
+
+export type PlaybookListOpts = {
+  /** `none` (default): üres versions + versionCount; `all`: full dump. */
+  includeVersions?: 'none' | 'all'
+  limit?: number
+  offset?: number
+  unbounded?: boolean
+}
 
 export type CreatePlaybookV2Input = {
   tenantId: string | null
@@ -1239,7 +1283,13 @@ export interface PlaybookV2Repository {
   createPlaybook(input: CreatePlaybookV2Input): Promise<PlaybookV2>
   findPlaybook(tenantId: string | null, id: string): Promise<PlaybookV2 | null>
   findPlaybookByKey(tenantId: string | null, key: string): Promise<PlaybookV2 | null>
-  listPlaybooks(tenantId: string | null): Promise<PlaybookV2WithVersions[]>
+  listPlaybooks(tenantId: string | null, opts?: PlaybookListOpts): Promise<PlaybookV2WithVersions[]>
+  listDefaultAssignments(
+    tenantId: string | null,
+    assignmentType: string,
+  ): Promise<PlaybookAssignment[]>
+  findVersionsByIds(tenantId: string | null, ids: string[]): Promise<PlaybookVersionV2[]>
+  findPlaybooksByIds(tenantId: string | null, ids: string[]): Promise<PlaybookV2[]>
   updatePlaybook(
     id: string,
     data: Partial<{
@@ -1362,7 +1412,14 @@ export interface ProcessRepository {
   createProcess(input: CreateProcessInstanceInput): Promise<ProcessInstance>
   findProcess(tenantId: string | null, id: string): Promise<ProcessInstance | null>
   findProcessDetail(tenantId: string | null, id: string): Promise<ProcessInstanceDetail | null>
-  listProcesses(tenantId: string | null): Promise<ProcessInstance[]>
+  listProcesses(
+    tenantId: string | null,
+    opts?: { limit?: number; offset?: number; unbounded?: boolean },
+  ): Promise<ProcessInstance[]>
+  listProcessesPage(
+    tenantId: string | null,
+    opts?: { limit?: number; offset?: number; unbounded?: boolean },
+  ): Promise<ListPageResult<ProcessInstance>>
   updateProcess(
     id: string,
     data: Partial<{
@@ -1954,7 +2011,14 @@ export interface UserRepository {
   findByExternalAuthId(externalAuthId: string): Promise<User | null>
   /** Case-insensitive email lookup (pre-provision conflict checks). */
   findManyByEmail(email: string): Promise<User[]>
-  findMany(filter?: { tenantId?: string | null; status?: UserStatus; role?: UserRole }): Promise<User[]>
+  findMany(filter?: {
+    tenantId?: string | null
+    status?: UserStatus
+    role?: UserRole
+    limit?: number
+    offset?: number
+    unbounded?: boolean
+  }): Promise<User[]>
   /** Batch lookup for membership → user join (IAM tenant member list). */
   findManyByIds(ids: string[]): Promise<User[]>
   countActiveAdmins(tenantId: string | null, excludeUserId?: string): Promise<number>
@@ -2007,7 +2071,13 @@ export interface UserRepository {
 export interface InvitationRepository {
   findById(id: string): Promise<Invitation | null>
   findByTokenHash(tokenHash: string): Promise<Invitation | null>
-  findMany(filter?: { tenantId?: string | null; status?: InvitationStatus }): Promise<Invitation[]>
+  findMany(filter?: {
+    tenantId?: string | null
+    status?: InvitationStatus
+    limit?: number
+    offset?: number
+    unbounded?: boolean
+  }): Promise<Invitation[]>
   /** Compare-and-set claim: exactly one concurrent redemption can win. */
   claimPendingRedemption(id: string, email: string, now: Date): Promise<Invitation | null>
   /** Compare-and-set revoke: never overwrite an already redeemed invitation. */

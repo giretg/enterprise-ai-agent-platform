@@ -44,6 +44,7 @@ function unused(): never {
 function makeRepo(hooks?: {
   onFindDefaultAssignment?: () => void
   onFindDefaultAssignments?: () => void
+  onListDefaultAssignments?: () => void
 }): PlaybookV2Repository {
   const playbooks: PlaybookV2[] = []
   const versions: PlaybookVersionV2[] = []
@@ -154,6 +155,26 @@ function makeRepo(hooks?: {
       }
       return result
     },
+    async listDefaultAssignments(tenantId, assignmentType) {
+      hooks?.onListDefaultAssignments?.()
+      return assignments
+        .filter(
+          (a) =>
+            a.tenantId === tenantId &&
+            a.assignmentType === assignmentType &&
+            a.isDefault &&
+            a.revokedAt === null,
+        )
+        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+    },
+    async findVersionsByIds(tenantId, ids) {
+      if (ids.length === 0) return []
+      return versions.filter((v) => v.tenantId === tenantId && ids.includes(v.id))
+    },
+    async findPlaybooksByIds(tenantId, ids) {
+      if (ids.length === 0) return []
+      return playbooks.filter((p) => p.tenantId === tenantId && ids.includes(p.id))
+    },
   }
 }
 
@@ -197,7 +218,12 @@ async function main() {
 
   await test('hot paths use batch APIs', () => {
     const startable = read('src/domain/playbook/playbook-v2-service.ts')
-    assert.match(startable, /findDefaultAssignments\(/)
+    // A startable lista assignment-vezérelt: egy default-assignment lekérdezés,
+    // majd batch version/playbook feloldás — playbookonkénti lookup nélkül (#003).
+    assert.match(startable, /listDefaultAssignments\(/)
+    assert.match(startable, /findVersionsByIds\(/)
+    assert.match(startable, /findPlaybooksByIds\(/)
+    assert.doesNotMatch(startable, /for \(const playbook of playbooks\)/)
 
     const tenantAction = read('src/app/actions/tenant.ts')
     assert.match(tenantAction, /tenants\.findByIds\(/)
@@ -234,6 +260,9 @@ async function main() {
         single++
       },
       onFindDefaultAssignments: () => {
+        batch++
+      },
+      onListDefaultAssignments: () => {
         batch++
       },
     })

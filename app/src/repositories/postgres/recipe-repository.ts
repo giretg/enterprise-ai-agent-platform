@@ -1,13 +1,27 @@
 import type { Prisma, Recipe, RecipeScope, RecipeTicketType, RecipeVersion } from '@prisma/client'
 import { prisma } from '@/lib/db'
-import type { RecipeRepository, RecipeWithVersions } from '../interfaces'
+import { prismaPageArgs, toListPage } from '@/lib/list-pagination'
+import type { RecipeListOpts, RecipeRepository, RecipeWithVersions } from '../interfaces'
 
 export class PostgresRecipeRepository implements RecipeRepository {
-  async list(): Promise<RecipeWithVersions[]> {
-    return prisma.recipe.findMany({
+  async list(opts?: RecipeListOpts): Promise<RecipeWithVersions[]> {
+    const versionsMode = opts?.versions ?? 'latest'
+    // Alap: limitált lista + legújabb verzió. Full dump: `unbounded: true` (+ opcionálisan versions:'all').
+    const { take, skip, pageLimit } = prismaPageArgs(
+      opts?.unbounded ? { unbounded: true } : { limit: opts?.limit, offset: opts?.offset },
+    )
+    const offset = skip ?? 0
+    const rows = await prisma.recipe.findMany({
       orderBy: { createdAt: 'desc' },
-      include: { versions: { orderBy: { version: 'desc' } } },
+      ...(take !== undefined ? { take, skip: offset } : {}),
+      include: {
+        versions: {
+          orderBy: { version: 'desc' },
+          ...(versionsMode === 'latest' ? { take: 1 } : {}),
+        },
+      },
     })
+    return toListPage(rows, pageLimit, offset).items
   }
 
   async findById(id: string): Promise<RecipeWithVersions | null> {
