@@ -14,13 +14,14 @@ export default async function BoardPage() {
     listBoardTickets(),
     listAgents(),
     canCreate ? listBoardAssignees() : Promise.resolve(null),
-    listProcesses(),
+    listProcesses({ limit: RECENT_PROCESS_LIMIT }),
   ])
-  const tickets = ticketsRes.success ? ticketsRes.data : []
+  const tickets = ticketsRes.success ? ticketsRes.data.tickets : []
+  const ticketsHasMore = ticketsRes.success ? ticketsRes.data.hasMore : false
   const agents = agentsRes.success ? agentsRes.data : []
   const assigneeOptions =
     assigneesRes && assigneesRes.success ? assigneesRes.data : undefined
-  const recentProcesses = processesRes.success ? processesRes.data.slice(0, RECENT_PROCESS_LIMIT) : []
+  const recentProcesses = processesRes.success ? processesRes.data : []
   const loadError = !ticketsRes.success ? ticketsRes.error : null
 
   return (
@@ -36,6 +37,13 @@ export default async function BoardPage() {
       {loadError && (
         <p className="rounded-lg border border-coral/30 bg-coral/10 px-4 py-2 text-sm text-coral">
           Nem sikerült betölteni a ticketeket: {loadError}
+        </p>
+      )}
+
+      {ticketsHasMore && (
+        <p className="rounded-lg border border-honey/40 bg-honey/10 px-4 py-2 text-sm text-ink-soft">
+          A tábla a legutóbb frissült ticketek egy oldalát mutatja. Régebbi elemekhez szűrj vagy
+          nyisd meg a ticket listát.
         </p>
       )}
 

@@ -44,6 +44,7 @@ function unused(): never {
 function makeRepo(hooks?: {
   onFindDefaultAssignment?: () => void
   onFindDefaultAssignments?: () => void
+  onListDefaultAssignments?: () => void
 }): PlaybookV2Repository {
   const playbooks: PlaybookV2[] = []
   const versions: PlaybookVersionV2[] = []
@@ -154,6 +155,26 @@ function makeRepo(hooks?: {
       }
       return result
     },
+    async listDefaultAssignments(tenantId, assignmentType) {
+      hooks?.onListDefaultAssignments?.()
+      return assignments
+        .filter(
+          (a) =>
+            a.tenantId === tenantId &&
+            a.assignmentType === assignmentType &&
+            a.isDefault &&
+            a.revokedAt === null,
+        )
+        .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+    },
+    async findVersionsByIds(tenantId, ids) {
+      if (ids.length === 0) return []
+      return versions.filter((v) => v.tenantId === tenantId && ids.includes(v.id))
+    },
+    async findPlaybooksByIds(tenantId, ids) {
+      if (ids.length === 0) return []
+      return playbooks.filter((p) => p.tenantId === tenantId && ids.includes(p.id))
+    },
   }
 }
 
@@ -197,7 +218,12 @@ async function main() {
 
   await test('hot paths use batch APIs', () => {
     const startable = read('src/domain/playbook/playbook-v2-service.ts')
-    assert.match(startable, /findDefaultAssignments\(/)
+    // A startable lista assignment-vezérelt: egy default-assignment lekérdezés,
+    // majd batch version/playbook feloldás — playbookonkénti lookup nélkül (#003).
+    assert.match(startable, /listDefaultAssignments\(/)
+    assert.match(startable, /findVersionsByIds\(/)
+    assert.match(startable, /findPlaybooksByIds\(/)
+    assert.doesNotMatch(startable, /for \(const playbook of playbooks\)/)
 
     const tenantAction = read('src/app/actions/tenant.ts')
     assert.match(tenantAction, /tenants\.findByIds\(/)
@@ -234,6 +260,9 @@ async function main() {
         single++
       },
       onFindDefaultAssignments: () => {
+        batch++
+      },
+      onListDefaultAssignments: () => {
         batch++
       },
     })
@@ -276,6 +305,51 @@ async function main() {
     assert.equal(rows.length, 4)
     assert.equal(batch, 1)
     assert.equal(single, 0)
+  })
+
+  await test('listStartablePlaybooks rejects a version assigned to a different playbook', async () => {
+    const repo = makeRepo()
+    const tenant = 'tenant-integrity'
+    const assignedPlaybook = await repo.createPlaybook({
+      tenantId: tenant,
+      key: 'assigned',
+      name: 'Assigned',
+      description: null,
+      processType: 'integrity-check',
+      ownerUserId: null,
+    })
+    const versionOwner = await repo.createPlaybook({
+      tenantId: tenant,
+      key: 'version-owner',
+      name: 'Version owner',
+      description: null,
+      processType: 'other-process',
+      ownerUserId: null,
+    })
+    const foreignVersion = await repo.createVersion({
+      tenantId: tenant,
+      playbookId: versionOwner.id,
+      version: 1,
+      spec: {},
+      validationResult: {},
+      changeSummary: 'x',
+      contentHash: 'integrity-hash',
+      createdById: 'u',
+    })
+    await repo.createAssignment({
+      tenantId: tenant,
+      playbookId: assignedPlaybook.id,
+      playbookVersionId: foreignVersion.id,
+      assignmentType: 'process_type',
+      assignmentKey: assignedPlaybook.processType,
+      isDefault: true,
+      createdById: 'u',
+    })
+
+    assert.deepEqual(await new PlaybookV2Service(
+      repo,
+      { append: async () => ({}) as never } as never,
+    ).listStartablePlaybooks(tenant), [])
   })
 
   if (failures > 0) {

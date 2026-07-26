@@ -7,7 +7,8 @@ import { composeBehaviorProfile } from '@/lib/behavior-profile'
 import { selfEvolutionProfileSchema } from '@/lib/self-evolution-profile'
 import { assertTransition, isPhysicallyDeletable } from '@/lib/agent-lifecycle'
 import { deriveAgentApiKeyLookupHash, isAgentApiKeyFormat } from '@/lib/agent-api-key-hash'
-import type { AgentRepository, DocumentRepository } from '../interfaces'
+import { prismaPageArgs, toListPage } from '@/lib/list-pagination'
+import type { AgentListFilter, AgentRepository, DocumentRepository, ListPageResult } from '../interfaces'
 import { orderRowsByIds } from '../order-by-ids'
 
 function agentVisibilityWhere(id: string, tenantId?: string | null): Prisma.AgentWhereInput {
@@ -20,17 +21,45 @@ function serviceAccountScopesForRole(role: Agent['role']): string[] {
     : ['ticket:read', 'ticket:create', 'tool:invoke']
 }
 
+function agentListWhere(filter?: AgentListFilter): Prisma.AgentWhereInput | undefined {
+  const where: Prisma.AgentWhereInput = {}
+  if (filter?.tenantId !== undefined) where.tenantId = filter.tenantId
+  if (filter?.excludeHiddenFromOperators) where.hiddenFromOperators = false
+  return Object.keys(where).length > 0 ? where : undefined
+}
+
 export class PostgresAgentRepository implements AgentRepository {
-  async findMany(filter?: {
+  async findMany(filter?: AgentListFilter): Promise<Agent[]> {
+    const page = await this.listPage(
+      filter?.limit !== undefined || filter?.offset !== undefined || filter?.unbounded
+        ? filter
+        : { ...filter, unbounded: true },
+    )
+    return page.items
+  }
+
+  async listPage(filter?: AgentListFilter): Promise<ListPageResult<Agent>> {
+    const { take, skip, pageLimit } = prismaPageArgs(filter)
+    const offset = skip ?? 0
+    const rows = await prisma.agent.findMany({
+      where: agentListWhere(filter),
+      orderBy: { createdAt: 'desc' },
+      ...(take !== undefined ? { take, skip: offset } : {}),
+    })
+    return toListPage(rows, pageLimit, offset)
+  }
+
+  async count(filter?: {
     tenantId?: string | null
+    status?: Agent['status']
     excludeHiddenFromOperators?: boolean
-  }): Promise<Agent[]> {
+  }): Promise<number> {
     const where: Prisma.AgentWhereInput = {}
     if (filter?.tenantId !== undefined) where.tenantId = filter.tenantId
+    if (filter?.status) where.status = filter.status
     if (filter?.excludeHiddenFromOperators) where.hiddenFromOperators = false
-    return prisma.agent.findMany({
+    return prisma.agent.count({
       where: Object.keys(where).length > 0 ? where : undefined,
-      orderBy: { createdAt: 'desc' },
     })
   }
 

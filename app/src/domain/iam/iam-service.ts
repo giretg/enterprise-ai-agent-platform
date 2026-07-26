@@ -672,7 +672,7 @@ export class IamService {
     return updated
   }
 
-  async listUsers(tenantId: string | null) {
+  async listUsers(tenantId: string | null, opts?: { limit?: number; offset?: number; unbounded?: boolean }) {
     if (tenantId && this.memberships) {
       const memberships = await this.memberships.findByTenant(tenantId)
       const users = await this.users.findManyByIds(memberships.map((m) => m.userId))
@@ -685,22 +685,38 @@ export class IamService {
       })
 
       // Legacy egytenantos rekordok: User.tenantId kitöltve, membership sor még nincs.
-      const legacy = await this.users.findMany({ tenantId })
+      const legacy = await this.users.findMany({
+        tenantId,
+        ...(opts?.unbounded ? { unbounded: true } : { limit: opts?.limit, offset: opts?.offset }),
+      })
       const merged = new Map(legacy.map((user) => [user.id, user]))
       for (const user of fromMembership) {
         merged.set(user.id, user)
       }
 
-      return [...merged.values()].sort(
+      const sorted = [...merged.values()].sort(
         (a, b) => a.createdAt.getTime() - b.createdAt.getTime(),
       )
+      if (opts?.unbounded) return sorted
+      const limit = opts?.limit ?? 100
+      const offset = opts?.offset ?? 0
+      return sorted.slice(offset, offset + limit)
     }
 
-    return this.users.findMany({ tenantId })
+    return this.users.findMany({
+      tenantId,
+      ...(opts?.unbounded ? { unbounded: true } : { limit: opts?.limit ?? 100, offset: opts?.offset }),
+    })
   }
 
-  async listInvitations(tenantId: string | null) {
-    return this.invitations.findMany({ tenantId })
+  async listInvitations(
+    tenantId: string | null,
+    opts?: { limit?: number; offset?: number; unbounded?: boolean },
+  ) {
+    return this.invitations.findMany({
+      tenantId,
+      ...(opts?.unbounded ? { unbounded: true } : { limit: opts?.limit ?? 100, offset: opts?.offset }),
+    })
   }
 
   async getPermissionMatrix() {

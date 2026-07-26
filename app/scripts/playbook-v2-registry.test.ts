@@ -109,7 +109,29 @@ class FakePlaybookV2Repository implements PlaybookV2Repository {
   async listPlaybooks(tenantId: string | null): Promise<PlaybookV2WithVersions[]> {
     return this.playbooks
       .filter((p) => p.tenantId === tenantId)
-      .map((p) => ({ ...p, versions: this.versions.filter((v) => v.playbookId === p.id) }))
+      .map((p) => {
+        const versions = this.versions.filter((v) => v.playbookId === p.id)
+        return { ...p, versions, versionCount: versions.length }
+      })
+  }
+  async listDefaultAssignments(tenantId: string | null, assignmentType: string) {
+    return this.assignments
+      .filter(
+        (a) =>
+          a.tenantId === tenantId &&
+          a.assignmentType === assignmentType &&
+          a.isDefault &&
+          a.revokedAt === null,
+      )
+      .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+  }
+  async findVersionsByIds(tenantId: string | null, ids: string[]) {
+    const idSet = new Set(ids)
+    return this.versions.filter((v) => v.tenantId === tenantId && idSet.has(v.id))
+  }
+  async findPlaybooksByIds(tenantId: string | null, ids: string[]) {
+    const idSet = new Set(ids)
+    return this.playbooks.filter((p) => p.tenantId === tenantId && idSet.has(p.id))
   }
   async updatePlaybook(id: string, data: Record<string, unknown>) {
     const pb = this.playbooks.find((p) => p.id === id)!
