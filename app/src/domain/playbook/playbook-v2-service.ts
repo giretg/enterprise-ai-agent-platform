@@ -539,7 +539,9 @@ export class PlaybookV2Service {
       const playbook = playbookById.get(assignment.playbookId)
       const version = versionById.get(assignment.playbookVersionId)
       if (!playbook || !version || version.status !== 'published') continue
-      if (assignment.playbookId !== playbook.id) continue
+      // Batch feloldásnál külön ellenőrizzük a relációt is: egy hibás/stale
+      // assignment nem indíthatja el egy másik playbook verzióját.
+      if (version.playbookId !== playbook.id) continue
 
       startable.push({
         playbookId: playbook.id,
