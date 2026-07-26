@@ -69,6 +69,7 @@ jobs:
           npm run test:dispatch-board-ticket-schema
           npm run test:playbook-v2-process
           npm run test:n-plus-one-batch
+          npm run test:list-pagination
           npm run test:playbook-v2-registry
           npm run test:playbook-process-def
           npm run test:iam-policy
