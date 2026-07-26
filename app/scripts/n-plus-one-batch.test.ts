@@ -307,6 +307,51 @@ async function main() {
     assert.equal(single, 0)
   })
 
+  await test('listStartablePlaybooks rejects a version assigned to a different playbook', async () => {
+    const repo = makeRepo()
+    const tenant = 'tenant-integrity'
+    const assignedPlaybook = await repo.createPlaybook({
+      tenantId: tenant,
+      key: 'assigned',
+      name: 'Assigned',
+      description: null,
+      processType: 'integrity-check',
+      ownerUserId: null,
+    })
+    const versionOwner = await repo.createPlaybook({
+      tenantId: tenant,
+      key: 'version-owner',
+      name: 'Version owner',
+      description: null,
+      processType: 'other-process',
+      ownerUserId: null,
+    })
+    const foreignVersion = await repo.createVersion({
+      tenantId: tenant,
+      playbookId: versionOwner.id,
+      version: 1,
+      spec: {},
+      validationResult: {},
+      changeSummary: 'x',
+      contentHash: 'integrity-hash',
+      createdById: 'u',
+    })
+    await repo.createAssignment({
+      tenantId: tenant,
+      playbookId: assignedPlaybook.id,
+      playbookVersionId: foreignVersion.id,
+      assignmentType: 'process_type',
+      assignmentKey: assignedPlaybook.processType,
+      isDefault: true,
+      createdById: 'u',
+    })
+
+    assert.deepEqual(await new PlaybookV2Service(
+      repo,
+      { append: async () => ({}) as never } as never,
+    ).listStartablePlaybooks(tenant), [])
+  })
+
   if (failures > 0) {
     console.error(`\n${failures} failed`)
     process.exit(1)
