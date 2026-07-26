@@ -12,18 +12,30 @@ import type { Prisma } from '@prisma/client'
  *   elveszne.
  * Invariáns #2: a ticket „létrehozója" az agent SAJÁT tenantjának egy tagja, sosem
  *   egy globális, akár másik tenanthoz tartozó admin (cross-tenant attribúció).
+ * Invariáns #3: a létrehozó a tenant LEGMAGASABB rangú aktív tagja. A `createdById`
+ *   nem csupán audit-mező: a `creator_or_operator` átmenet-szabály jogot is ad
+ *   neki a ticket állapotváltására. Egy tetszőlegesen kiválasztott tag (pl. egy
+ *   viewer) így operátori jogot kapna erre a ticketre — ezért a rangsor kötött.
  */
+
+/**
+ * A létrehozó-választás rangsora (a `UserRole` enum szerinti csökkenő jogosultság).
+ * Explicit lista, nem DB-oldali enum-rendezés: így a döntés itt, tesztelhetően él.
+ */
+export const TICKET_CREATOR_ROLE_PRECEDENCE = ['admin', 'approver', 'operator', 'viewer'] as const
+
+export type TicketCreatorRole = (typeof TICKET_CREATOR_ROLE_PRECEDENCE)[number]
 
 export type TenantMemberFinder = (args: {
   tenantId: string
-  adminOnly: boolean
+  role: TicketCreatorRole
 }) => Promise<string | null>
 
 export type GlobalAdminFinder = () => Promise<string | null>
 
 /**
- * A létrehozó user feloldása fail-closed módon az agent tenantjában. Elsőként egy
- * aktív admin, tartalékként a tenant bármely aktív tagja. Platform-szintű
+ * A létrehozó user feloldása fail-closed módon az agent tenantjában: a
+ * `TICKET_CREATOR_ROLE_PRECEDENCE` sorrendjében az első aktív tag. Platform-szintű
  * (tenant nélküli) agentnél nincs tenant-board, ezért ott a globális rendszer-admin
  * a végső tartalék. Ha egy tenanthoz egyetlen aktív tag sincs, inkább hibázunk,
  * mintsem idegen tenant adminját tüntessük fel létrehozóként.
@@ -33,10 +45,10 @@ export async function resolveInteractionTicketCreatorId(
   ports: { findTenantMember: TenantMemberFinder; findGlobalAdmin: GlobalAdminFinder },
 ): Promise<string> {
   if (tenantId) {
-    const admin = await ports.findTenantMember({ tenantId, adminOnly: true })
-    if (admin) return admin
-    const anyMember = await ports.findTenantMember({ tenantId, adminOnly: false })
-    if (anyMember) return anyMember
+    for (const role of TICKET_CREATOR_ROLE_PRECEDENCE) {
+      const member = await ports.findTenantMember({ tenantId, role })
+      if (member) return member
+    }
     // A hibaüzenet a gép-gép REST API válaszába kerül, ezért — a route többi
     // hibájával egyezően — angol.
     throw new Error('Tenant has no active member to attribute the ticket to')
