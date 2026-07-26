@@ -37,7 +37,9 @@ export async function resolveInteractionTicketCreatorId(
     if (admin) return admin
     const anyMember = await ports.findTenantMember({ tenantId, adminOnly: false })
     if (anyMember) return anyMember
-    throw new Error('A tenantnak nincs aktív tagja a ticket létrehozásához')
+    // A hibaüzenet a gép-gép REST API válaszába kerül, ezért — a route többi
+    // hibájával egyezően — angol.
+    throw new Error('Tenant has no active member to attribute the ticket to')
   }
   const globalAdmin = await ports.findGlobalAdmin()
   if (!globalAdmin) throw new Error('No system user configured')

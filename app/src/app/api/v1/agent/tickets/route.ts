@@ -31,7 +31,10 @@ async function findTenantMember(args: { tenantId: string; adminOnly: boolean }) 
 
 async function findGlobalAdmin() {
   const user = await prisma.user.findFirst({
-    where: { role: 'admin' },
+    // Csak AKTÍV admin — ugyanaz az elvárás, mint a tenant-oldali ágon. Egy
+    // felfüggesztett / még aktiválatlan admin neve alatt keletkező ticket
+    // félrevezető audit-nyomot hagyna.
+    where: { role: 'admin', status: 'active' },
     orderBy: { createdAt: 'asc' },
     select: { id: true },
   })

@@ -94,7 +94,7 @@ async function main() {
           // Ha ide visszaesne, cross-tenant attribúció lenne — a teszt bizonyítja, hogy NEM.
           findGlobalAdmin: async () => GLOBAL_ADMIN,
         }),
-      /nincs aktív tagja/,
+      /no active member/,
     )
   })
 
