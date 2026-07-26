@@ -18,6 +18,7 @@ import type {
   PlaybookV2WithVersions,
 } from '../src/repositories/interfaces'
 import { PlaybookV2Service } from '../src/domain/playbook/playbook-v2-service'
+import { orderRowsByIds } from '../src/repositories/order-by-ids'
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 
@@ -167,6 +168,22 @@ async function main() {
     assert.match(iface, /findByKeys\(permissionKeys/)
     assert.match(iface, /findByIds\(ids: string\[\]\): Promise<Document\[\]>/)
     assert.match(iface, /findVersionsByIds\(/)
+  })
+
+  await test('batch ID lookup preserves requested order, duplicates, and skips missing rows', () => {
+    const rows = [
+      { id: 'tenant-c', name: 'C' },
+      { id: 'tenant-a', name: 'A' },
+      { id: 'tenant-b', name: 'B' },
+    ]
+    const ordered = orderRowsByIds(
+      ['tenant-b', 'missing', 'tenant-a', 'tenant-b', 'tenant-c'],
+      rows,
+    )
+    assert.deepEqual(
+      ordered.map((row) => row.id),
+      ['tenant-b', 'tenant-a', 'tenant-b', 'tenant-c'],
+    )
   })
 
   await test('postgres repos implement batch helpers', () => {
