@@ -30,6 +30,7 @@ import type {
   UserDirectoryArgs,
   UserDirectoryEntry,
   UserDirectoryResult,
+  UserDirectorySearchEntry,
   WebResearchDelegationResult,
 } from './tool-broker-types'
 
@@ -38,27 +39,34 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * user_directory tiszta szűrője (DB-mentes, ezért determinisztikusan tesztelhető).
- * Az opcionális `query` a néven / szerepen (role + jobDescription) / e-mailen szűr,
- * ékezet- és kisbetű-függetlenül, ÉS-kapcsolt szótagokkal (minden keresőszónak
- * illeszkednie kell). A `limit` 1..100 közé szorítva (alapból 50).
+ * user_directory tiszta, fail-closed szűrője (DB-mentes, determinisztikusan
+ * tesztelhető). Érdemi query nélkül nem ad vissza névsort. A keresés belsőleg az
+ * e-mailt is használhatja, de a tool-válasz csak a feladatkiosztáshoz szükséges
+ * mezőket tartalmazza — az e-mail soha nem kerül modellkontextusba.
  */
 export function filterUserDirectory(
-  entries: UserDirectoryEntry[],
+  entries: UserDirectorySearchEntry[],
   args: UserDirectoryArgs,
 ): UserDirectoryResult {
   const query = normalizeText((args.query ?? '').trim())
-  const filtered = query
-    ? entries.filter((u) => {
-        const haystack = normalizeText(
-          [u.name, u.jobDescription ?? '', u.role ?? '', u.email].join(' '),
-        )
-        return query.split(/\s+/).every((term) => haystack.includes(term))
-      })
-    : entries
+  if (!query) return { users: [] }
+
+  const filtered = entries.filter((u) => {
+    const haystack = normalizeText(
+      [u.name, u.jobDescription ?? '', u.role ?? '', u.email].join(' '),
+    )
+    return query.split(/\s+/).every((term) => haystack.includes(term))
+  })
 
   const limit = Math.min(Math.max(args.limit ?? 50, 1), 100)
-  return { users: filtered.slice(0, limit) }
+  const users: UserDirectoryEntry[] = filtered.slice(0, limit).map((u) => ({
+    userId: u.userId,
+    name: u.name,
+    role: u.role,
+    jobDescription: u.jobDescription,
+    status: u.status,
+  }))
+  return { users }
 }
 
 export function normalizeText(value: string): string {
