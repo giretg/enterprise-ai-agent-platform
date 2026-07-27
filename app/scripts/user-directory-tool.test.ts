@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict'
 import {
   filterUserDirectory,
-  type UserDirectoryEntry,
+  type UserDirectorySearchEntry,
 } from '../src/domain/tool-broker/tool-broker-service'
 
 let failures = 0
@@ -24,7 +24,7 @@ function test(name: string, fn: () => void) {
   }
 }
 
-const DIR: UserDirectoryEntry[] = [
+const DIR: UserDirectorySearchEntry[] = [
   { userId: 'u1', name: 'Kovács Anna', email: 'anna@ceg.hu', role: 'operator', jobDescription: 'Marketing vezető', status: 'active' },
   { userId: 'u2', name: 'Nagy Béla', email: 'bela@ceg.hu', role: 'viewer', jobDescription: 'Copywriter', status: 'active' },
   { userId: 'u3', name: 'Szabó Csaba', email: 'csaba@ceg.hu', role: 'approver', jobDescription: null, status: 'active' },
@@ -33,9 +33,9 @@ const DIR: UserDirectoryEntry[] = [
 function main() {
   console.log('=== user_directory tool ===')
 
-  test('query nélkül minden felhasználót visszaad', () => {
-    const res = filterUserDirectory(DIR, {})
-    assert.equal(res.users.length, 3)
+  test('üres vagy hiányzó query fail-closed: nem kérhető le a teljes névsor', () => {
+    assert.deepEqual(filterUserDirectory(DIR, {}), { users: [] })
+    assert.deepEqual(filterUserDirectory(DIR, { query: '   ' }), { users: [] })
   })
 
   test('a jobDescription (szerep) alapján keres — "marketing" → a marketing vezető', () => {
@@ -53,9 +53,11 @@ function main() {
     assert.deepEqual(res.users.map((u) => u.userId), ['u3'])
   })
 
-  test('e-mail alapján is szűr', () => {
+  test('e-mail alapján kereshető, de az e-mail nem kerül az eredménybe', () => {
     const res = filterUserDirectory(DIR, { query: 'bela@ceg.hu' })
     assert.deepEqual(res.users.map((u) => u.userId), ['u2'])
+    assert.equal('email' in res.users[0], false)
+    assert.ok(!JSON.stringify(res).includes('bela@ceg.hu'))
   })
 
   test('több keresőszó ÉS-kapcsolt (minden szónak illeszkednie kell)', () => {
@@ -68,9 +70,9 @@ function main() {
   })
 
   test('limit korlátoz és 1..100 közé szorít', () => {
-    assert.equal(filterUserDirectory(DIR, { limit: 2 }).users.length, 2)
-    assert.equal(filterUserDirectory(DIR, { limit: 0 }).users.length, 1) // min 1
-    assert.equal(filterUserDirectory(DIR, { limit: 999 }).users.length, 3) // cap 100 → mind
+    assert.equal(filterUserDirectory(DIR, { query: 'ceg.hu', limit: 2 }).users.length, 2)
+    assert.equal(filterUserDirectory(DIR, { query: 'ceg.hu', limit: 0 }).users.length, 1) // min 1
+    assert.equal(filterUserDirectory(DIR, { query: 'ceg.hu', limit: 999 }).users.length, 3) // cap 100 → mind
   })
 
   test('a leírás nélküli user (null jobDescription) nem dob hibát keresésnél', () => {
