@@ -201,13 +201,14 @@ export const PLATFORM_BROKER_TOOLS = [
   {
     name: 'user_directory',
     description:
-      'List the human staff of the tenant — name, email, role and a free-text description (e.g. "marketing lead", "copywriter"). Use it to find who is responsible for a task, or to open a ticket for a specific person (pass the returned userId as ticket_create assigneeId with assigneeType="human"). The optional query filters by name/role/description.',
+      'Search the human staff of the tenant by name, role, or free-text description (e.g. "marketing lead", "copywriter"). Use the returned userId to open a ticket for a specific person. Query is required; the full directory and email addresses are never returned.',
     inputSchema: {
       type: 'object',
       properties: {
-        query: { type: 'string', description: 'Optional search by name, role, or description keyword' },
+        query: { type: 'string', description: 'Required search by name, role, or description keyword' },
         limit: { type: 'number', description: 'Max results (default 50)' },
       },
+      required: ['query'],
     },
   },
   ...GMAIL_TOOLS.map((name) => ({
@@ -997,7 +998,7 @@ export async function invokePlatformToolViaHttp(
       tool: 'user_directory',
       ticketId,
       args: {
-        query: typeof args.query === 'string' ? args.query : undefined,
+        query: String(args.query ?? ''),
         limit: typeof args.limit === 'number' ? args.limit : undefined,
       },
     }
