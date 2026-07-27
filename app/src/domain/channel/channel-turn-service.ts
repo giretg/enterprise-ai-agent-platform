@@ -333,16 +333,7 @@ export class ChannelTurnService {
     // tagságot, a tenant életciklusát és a tenant-szintű Telegram kill-switch-et. Hiba vagy
     // hiányzó rekord is tiltás (fail-closed), és nincs kimenő üzenet, nehogy a leállított
     // csatorna adatot szivárogtasson.
-    const access = await this.authorizeIdentity(identity)
-    if (!access.allowed) {
-      await this.deps.turns.markDone(turn.id)
-      await this.auditTurn(turn, 'completed', 'fail_closed', {
-        reason: access.reason,
-        pseudonym: pseudonymFromLookupHash(identity.lookupHash),
-        tenantId: identity.tenantId,
-      })
-      return 'fail_closed'
-    }
+    if (!(await this.authorizeQueuedTurn(turn, identity))) return 'fail_closed'
 
     // Fájl / hang → érthető elutasítás, agent-futás nélkül (§27).
     if (turn.inboundKind !== 'text' || turn.inboundText == null) {
@@ -386,6 +377,10 @@ export class ChannelTurnService {
 
     const projectKey = activeGrant.projectKey || GENERAL_PROJECT_KEY
 
+    // A beszélgetés létrehozása is tartós tenant-adatot ír. Ha a kapu az agent-feloldás alatt
+    // záródott be, még ezt a belső mellékhatást se végezzük el egy tiltott csatornafordulóhoz.
+    if (!(await this.authorizeQueuedTurn(turn, identity))) return 'fail_closed'
+
     // 24 órás gördülő beszélgetés (D9): a megőrzési határidő a létrehozáskor áll be. A user- és
     // agent-üzenetet a futásidő perzisztálja ebbe a beszélgetésbe (web-láthatóság, AC).
     const conversationId = await this.resolveConversation({
@@ -395,7 +390,10 @@ export class ChannelTurnService {
       projectKey,
     })
 
-    // „Gépel" jelzés a feldolgozás alatt (§20).
+    // „Gépel" jelzés a feldolgozás alatt (§20). A korábbi kapu és ez közé szándékosan nincs
+    // tartós futás, de az ellenőrzés közvetlenül a kimenet előtt van: kill-switch vagy
+    // visszavonás esetén még a jelzés se adjon életjelet a leállított csatornáról.
+    if (!(await this.authorizeQueuedTurn(turn, identity))) return 'fail_closed'
     await this.deps.transport.send({
       channelType: TELEGRAM,
       method: 'sendChatAction',
@@ -412,6 +410,10 @@ export class ChannelTurnService {
       projectKey,
       text: turn.inboundText,
     })
+
+    // A modellfutás hosszú lehet. Közben a tenant-admin visszavonhatja a tagságot vagy
+    // elzárhatja a Telegramot; a válasz ekkor NEM hagyhatja el a hiteles platformot.
+    if (!(await this.authorizeQueuedTurn(turn, identity))) return 'fail_closed'
 
     const label = buildLabel(agent, projectKey)
 
@@ -580,29 +582,56 @@ export class ChannelTurnService {
     | { allowed: true }
     | {
         allowed: false
-        reason: 'tenant_missing' | 'membership_inactive' | 'tenant_inactive' | 'channel_disabled'
+        reason:
+          | 'tenant_missing'
+          | 'membership_inactive'
+          | 'tenant_inactive'
+          | 'channel_disabled'
+          | 'access_check_failed'
       }
   > {
-    if (!identity.tenantId) return { allowed: false, reason: 'tenant_missing' }
+    try {
+      if (!identity.tenantId) return { allowed: false, reason: 'tenant_missing' }
 
-    const membership = await this.deps.memberships.findByTenantAndUser(
-      identity.tenantId,
-      identity.userId,
-    )
-    if (!membership || membership.status !== 'active') {
-      return { allowed: false, reason: 'membership_inactive' }
+      const membership = await this.deps.memberships.findByTenantAndUser(
+        identity.tenantId,
+        identity.userId,
+      )
+      if (!membership || membership.status !== 'active') {
+        return { allowed: false, reason: 'membership_inactive' }
+      }
+
+      const tenantGate = await evaluateTenantOperationGate({
+        tenants: this.deps.tenants,
+        gateTenantId: identity.tenantId,
+      })
+      if (!tenantGate.allowed) return { allowed: false, reason: 'tenant_inactive' }
+
+      if (!(await this.deps.isChannelEnabled(identity.tenantId))) {
+        return { allowed: false, reason: 'channel_disabled' }
+      }
+      return { allowed: true }
+    } catch {
+      // A jogosultság bizonytalansága sosem válhat újrapróbálható vagy kimenő hívássá.
+      return { allowed: false, reason: 'access_check_failed' }
     }
+  }
 
-    const tenantGate = await evaluateTenantOperationGate({
-      tenants: this.deps.tenants,
-      gateTenantId: identity.tenantId,
+  /**
+   * A sorba állított forduló élő, auditált fail-closed kapuja. Minden tartós mellékhatás és
+   * Telegram-kimenet előtt újra használjuk, mert a hozzáférés a worker várakozása vagy a
+   * modellfutás alatt is visszavonható.
+   */
+  private async authorizeQueuedTurn(turn: ChannelTurn, identity: ChannelIdentity): Promise<boolean> {
+    const access = await this.authorizeIdentity(identity)
+    if (access.allowed) return true
+    await this.deps.turns.markDone(turn.id)
+    await this.auditTurn(turn, 'completed', 'fail_closed', {
+      reason: access.reason,
+      pseudonym: pseudonymFromLookupHash(identity.lookupHash),
+      tenantId: identity.tenantId,
     })
-    if (!tenantGate.allowed) return { allowed: false, reason: 'tenant_inactive' }
-
-    if (!(await this.deps.isChannelEnabled(identity.tenantId))) {
-      return { allowed: false, reason: 'channel_disabled' }
-    }
-    return { allowed: true }
+    return false
   }
 
   /**

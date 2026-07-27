@@ -89,6 +89,9 @@ function makeHarness(opts?: {
   membershipStatus?: TenantMembershipStatus | null
   tenantStatus?: TenantStatus | null
   channelEnabled?: boolean
+  accessCheckThrows?: boolean
+  revokeMembershipWhenAgentResolved?: boolean
+  revokeMembershipDuringRuntime?: boolean
 }) {
   let clock = new Date('2026-07-22T10:00:00Z')
   const setClock = (d: Date) => {
@@ -121,10 +124,12 @@ function makeHarness(opts?: {
     },
   }
 
+  let membershipStatus: TenantMembershipStatus | null = opts?.membershipStatus ?? 'active'
   const memberships = {
     async findByTenantAndUser(tenantId: string, userId: string) {
-      if (tenantId !== TENANT_A || userId !== USER_1 || opts?.membershipStatus === null) return null
-      return { status: opts?.membershipStatus ?? 'active' }
+      if (opts?.accessCheckThrows) throw new Error('membership store unavailable')
+      if (tenantId !== TENANT_A || userId !== USER_1 || membershipStatus === null) return null
+      return { status: membershipStatus }
     },
   }
   const tenants = {
@@ -180,6 +185,7 @@ function makeHarness(opts?: {
 
   const agents = {
     async findById(id: string) {
+      if (opts?.revokeMembershipWhenAgentResolved) membershipStatus = 'suspended'
       if (id === AGENT_1) {
         return { id: AGENT_1, name: 'Könyvelő', tenantId: opts?.agentTenantId ?? TENANT_A, personaNickname: null }
       }
@@ -307,6 +313,7 @@ function makeHarness(opts?: {
 
   const defaultRuntime: ChannelAgentRuntime = {
     async runTurn() {
+      if (opts?.revokeMembershipDuringRuntime) membershipStatus = 'suspended'
       return { ok: true, text: 'Szia! Miben segíthetek?' }
     },
   }
@@ -627,7 +634,40 @@ async function main() {
     }
   })
 
-  await test('CT-16 audit-katalógus: az új forduló-események regisztráltak', () => {
+  await test('CT-16 hozzáférés-olvasási hiba: fail-closed, nincs retryből értesítés', async () => {
+    let ran = false
+    const runtime: ChannelAgentRuntime = {
+      async runTurn(): Promise<ChannelAgentRuntimeResult> {
+        ran = true
+        return { ok: true, text: 'nem szabadna' }
+      },
+    }
+    const h = makeHarness({ runtime, accessCheckThrows: true })
+    await enqueueAndProcess(h, 'bizalmas kérdés')
+    assert.equal(ran, false, 'a futásidő nem indul el')
+    assert.equal(sentTexts(h.transport).length, 0, 'nincs kimenő vagy hibaértesítés')
+    const completed = h.audits.find((a) => a.action === 'channel.turn.completed')
+    assert.equal(completed?.metadata.reason, 'access_check_failed', 'a bizonytalan kapu auditáltan tilt')
+  })
+
+  await test('CT-17 futás alatti tagság-visszavonás: a kész válasz sem megy ki', async () => {
+    const h = makeHarness({ revokeMembershipDuringRuntime: true })
+    await enqueueAndProcess(h, 'bizalmas kérdés')
+    assert.equal(sentTexts(h.transport).length, 0, 'a futás utáni újraellenőrzés blokkol')
+    const completed = h.audits.find((a) => a.action === 'channel.turn.completed')
+    assert.equal(completed?.metadata.reason, 'membership_inactive', 'a friss tagságállapot auditált')
+  })
+
+  await test('CT-18 agent-feloldás közbeni visszavonás: tiltás előtt beszélgetés sem jön létre', async () => {
+    const h = makeHarness({ revokeMembershipWhenAgentResolved: true })
+    await enqueueAndProcess(h, 'bizalmas kérdés')
+    assert.equal(h.conversationRows.size, 0, 'nincs új, tiltott csatornához kötött beszélgetés')
+    assert.equal(sentTexts(h.transport).length, 0, 'nincs Telegram-kimenet')
+    const completed = h.audits.find((a) => a.action === 'channel.turn.completed')
+    assert.equal(completed?.metadata.reason, 'membership_inactive', 'a kapu auditáltan tilt')
+  })
+
+  await test('CT-19 audit-katalógus: az új forduló-események regisztráltak', () => {
     for (const a of [
       'channel.turn.enqueued',
       'channel.turn.completed',
