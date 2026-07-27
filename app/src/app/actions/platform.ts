@@ -3006,6 +3006,15 @@ export async function loadAgentChatMessages(input: { conversationId: string; age
       })
     }
 
+    // issue #97 — a következmény-kapu függő jóváhagyásai. A stream-esemény
+    // efemer: enélkül a „Jóváhagyom" gomb a forduló végén (a chat ilyenkor a DB
+    // végállapotát tölti újra), lapfrissítéskor és visszacsatlakozáskor eltűnne,
+    // a művelet pedig némán ott ülne lejáratig.
+    const pendingConsequenceApprovals = await services.consequenceApproval.listOpenForConversation(
+      conversationId,
+      { id: user.user.id, tenantId: user.activeTenantId, role: user.activeTenantRole },
+    )
+
     return ok({
       conversationId,
       conversation: {
@@ -3015,6 +3024,7 @@ export async function loadAgentChatMessages(input: { conversationId: string; age
         lastMessageAt: conversation.lastMessageAt.toISOString(),
       },
       messages: views,
+      pendingConsequenceApprovals,
     })
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to load chat messages')
