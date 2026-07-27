@@ -19,6 +19,7 @@ import type {
 import type { PptxSlideSpec } from '@/domain/file-editor/adapters/pptx-adapter'
 import type { DocxBlockSpec } from '@/domain/file-editor/adapters/docx-adapter'
 import { assembleGatewayMessages, type PromptSegments } from './prompt-assembler'
+import { logger } from '@/lib/observability/logger'
 // issue #97 — egységes becsomagolás + következmény-kapu (mellékhatásos eszközök).
 import { envelopeToolResultForModel } from '@/domain/tool-broker/tool-result-envelope'
 import { isSideEffectingTool } from '@/domain/tool-broker/tool-trust-registry'
@@ -2291,8 +2292,21 @@ export async function runAgentToolLoop(params: {
             try {
               approvalCard = await params.createConsequenceApproval(invokeInput)
               await params.onConsequenceApproval?.(approvalCard)
-            } catch {
-              // Fail-soft: a kapu továbbra is blokkol; a UI-kártya elmaradhat.
+            } catch (error) {
+              // Fail-soft: a kapu továbbra is blokkol; a UI-kártya elmaradhat. DE ez
+              // némán elvitte a felhasználó EGYETLEN továbbjutási útját (nincs gomb,
+              // amit az agent ígér), ezért hangosan naplózzuk — pl. hiányzó migráció
+              // esetén különben csak a „nem történik semmi" tünet látszik.
+              logger.error(
+                {
+                  event: 'consequence_approval_create_failed',
+                  tool: toolName,
+                  agentId: params.agentId,
+                  conversationId: params.context.conversationId ?? null,
+                  error: error instanceof Error ? error.message : String(error),
+                },
+                'A következmény-kapu jóváhagyó kártyája nem jött létre — a felhasználónak nem lesz gombja.',
+              )
             }
           }
           consequenceGateTriggered = true

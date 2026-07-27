@@ -20,6 +20,15 @@ import type { ToolBrokerService } from './tool-broker-service'
 
 export const CONSEQUENCE_APPROVAL_TTL_MS = 60 * 60 * 1000
 
+/**
+ * Meddig mutatjuk még a MÁR LEJÁRT függő jóváhagyást a beszélgetésben?
+ *
+ * Nem a döntés miatt (lejárt kártyát nem lehet jóváhagyni), hanem hogy a
+ * felhasználó megértse, miért nem történt semmi. Ennél régebbi lejárt sor már
+ * csak zaj lenne a szálban.
+ */
+export const CONSEQUENCE_APPROVAL_VISIBILITY_MS = 24 * 60 * 60 * 1000
+
 export type ConsequenceApprovalActor = {
   id: string
   tenantId: string
@@ -31,6 +40,11 @@ export type ConsequenceApprovalCard = {
   toolName: string
   summary: string
   expiresAt: string
+  /**
+   * A szerver órája szerint lejárt-e. A kliens órájára nem bízzuk: egy elállított
+   * gép „még él" gombot mutatna egy halott jóváhagyáshoz.
+   */
+  expired?: boolean
 }
 
 export type ConsequenceApprovalResult =
@@ -110,6 +124,44 @@ export class ConsequenceApprovalService {
       summary: summarizeArgs(input.invoke.tool, input.invoke.args as Record<string, unknown>),
       expiresAt: expiresAt.toISOString(),
     }
+  }
+
+  /**
+   * Egy beszélgetés függő jóváhagyásai a chat ÚJRATÖLTÉSÉHEZ.
+   *
+   * A stream-esemény önmagában efemer: a forduló lezárultával (a chat a DB
+   * végállapotát tölti újra), lapfrissítéskor és visszacsatlakozáskor a kártya
+   * eltűnne, a művelet pedig némán ott ülne lejáratig. Ez a metódus a tartós
+   * forrás — ugyanazzal a tenant-határral, mint a döntés maga: idegen tenantból
+   * a pending jóváhagyás LÉTEZÉSE sem látszik.
+   */
+  async listOpenForConversation(
+    conversationId: string,
+    actor: ConsequenceApprovalActor,
+  ): Promise<ConsequenceApprovalCard[]> {
+    const access = await this.assertActorCanAccessConversation(conversationId, actor)
+    if (!access.ok) return []
+
+    const now = Date.now()
+    const rows = await this.approvals.listPendingByConversation(
+      conversationId,
+      new Date(now - CONSEQUENCE_APPROVAL_VISIBILITY_MS),
+    )
+
+    const cards: ConsequenceApprovalCard[] = []
+    for (const row of rows) {
+      // Defense-in-depth: az agentnek is elérhetőnek kell lennie a néző tenantjából.
+      const agent = await this.agents.findById(row.agentId)
+      if (!agent || !isAgentReachableFromTenant(agent.tenantId, actor.tenantId)) continue
+      cards.push({
+        approvalId: row.id,
+        toolName: row.toolName,
+        summary: summarizeArgs(row.toolName, (row.args ?? {}) as Record<string, unknown>),
+        expiresAt: row.expiresAt.toISOString(),
+        expired: row.expiresAt.getTime() <= now,
+      })
+    }
+    return cards
   }
 
   async approve(
@@ -226,18 +278,8 @@ export class ConsequenceApprovalService {
     row: ConsequenceApproval,
     actor: ConsequenceApprovalActor,
   ): Promise<{ ok: true } | { ok: false; reason: string }> {
-    // TENANT-HATÁR — ez az ELSŐ kapu, és szándékosan a beszélgetésre néz, nem az agentre.
-    // Az agent-elérhetőség önmagában NEM elég: egy PLATFORM-SZINTŰ agent (tenantId === null)
-    // minden tenantból elérhető, így pusztán arra támaszkodva egy „B" szervezet operátora
-    // jóváhagyhatná az „A" szervezet beszélgetésében függő mellékhatást — és a jóváhagyás
-    // szerveroldalon LE IS FUTTATJA a toolt (levélküldés, fájlírás) az „A" kontextusával.
-    // A tenant-szűkített keresés a nem-egyező tenantot „nincs ilyen"-né olvasztja, így a
-    // pending jóváhagyás LÉTEZÉSE sem szivárog ki (IDOR-próbálgatás ellen).
-    const conversation = await this.conversations.findByIdForTenant(
-      row.conversationId,
-      actor.tenantId,
-    )
-    if (!conversation) return { ok: false, reason: 'conversation_not_found' }
+    const access = await this.assertActorCanAccessConversation(row.conversationId, actor)
+    if (!access.ok) return access
 
     // Defense-in-depth: az agent is elérhető kell legyen a döntéshozó tenantjából.
     const agent = await this.agents.findById(row.agentId)
@@ -245,6 +287,22 @@ export class ConsequenceApprovalService {
     if (!isAgentReachableFromTenant(agent.tenantId, actor.tenantId)) {
       return { ok: false, reason: 'tenant_mismatch' }
     }
+    return { ok: true }
+  }
+
+  private async assertActorCanAccessConversation(
+    conversationId: string,
+    actor: ConsequenceApprovalActor,
+  ): Promise<{ ok: true } | { ok: false; reason: string }> {
+    // TENANT-HATÁR — ez az ELSŐ kapu, és szándékosan a beszélgetésre néz, nem az agentre.
+    // Az agent-elérhetőség önmagában NEM elég: egy PLATFORM-SZINTŰ agent (tenantId === null)
+    // minden tenantból elérhető, így pusztán arra támaszkodva egy „B" szervezet operátora
+    // jóváhagyhatná az „A" szervezet beszélgetésében függő mellékhatást — és a jóváhagyás
+    // szerveroldalon LE IS FUTTATJA a toolt (levélküldés, fájlírás) az „A" kontextusával.
+    // A tenant-szűkített keresés a nem-egyező tenantot „nincs ilyen"-né olvasztja, így a
+    // pending jóváhagyás LÉTEZÉSE sem szivárog ki (IDOR-próbálgatás ellen).
+    const conversation = await this.conversations.findByIdForTenant(conversationId, actor.tenantId)
+    if (!conversation) return { ok: false, reason: 'conversation_not_found' }
 
     // A beszélgetés létrehozója vagy operator+ dönthet — a chat user a tipikus döntéshozó.
     const isCreator = conversation.createdById === actor.id

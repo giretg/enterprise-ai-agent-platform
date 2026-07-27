@@ -860,6 +860,21 @@ export interface ConsequenceApprovalRepository {
   ): Promise<ConsequenceApproval>
   findById(id: string): Promise<ConsequenceApproval | null>
   /**
+   * Egy beszélgetés még FÜGGŐ jóváhagyásai, létrehozási sorrendben.
+   *
+   * A chat újratöltésekor ebből áll helyre a „Jóváhagyom" kártya: enélkül a
+   * kapu csak a stream élő pillanatában látszik, és a forduló lezárultával
+   * elérhetetlenné válik (a munka némán megáll).
+   *
+   * A `createdAfter` a MÁR LEJÁRT, de friss sorokat is beengedi, hogy a
+   * felhasználó legalább a magyarázatot lássa („lejárt, kérd újra"); a régi
+   * lejárt sorok nem szemetelik tele a beszélgetést.
+   */
+  listPendingByConversation(
+    conversationId: string,
+    createdAfter: Date,
+  ): Promise<ConsequenceApproval[]>
+  /**
    * CAS állapotváltás: csak akkor sikerül, ha a sor még `expectedStatus`.
    * Concurrent approve/reject ellen — a vesztes null-t kap.
    */

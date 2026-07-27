@@ -7,6 +7,7 @@ import type { ConsequenceApproval, ConsequenceApprovalStatus } from '@prisma/cli
 import {
   ConsequenceApprovalService,
   CONSEQUENCE_APPROVAL_TTL_MS,
+  CONSEQUENCE_APPROVAL_VISIBILITY_MS,
 } from '../src/domain/tool-broker/consequence-approval-service'
 import type { ToolBrokerInvokeInput } from '../src/domain/tool-broker/tool-broker-types'
 import type { ToolBrokerService } from '../src/domain/tool-broker/tool-broker-service'
@@ -28,10 +29,16 @@ async function test(name: string, fn: () => Promise<void> | void) {
   }
 }
 
-function memoryRepo(): ConsequenceApprovalRepository & { rows: Map<string, ConsequenceApproval> } {
+function memoryRepo(): ConsequenceApprovalRepository & {
+  rows: Map<string, ConsequenceApproval>
+  /** A lista-lekérdezésnek átadott láthatósági vágópont (a szolgáltatás számolja). */
+  lastCreatedAfter: { value: Date | null }
+} {
   const rows = new Map<string, ConsequenceApproval>()
+  const lastCreatedAfter: { value: Date | null } = { value: null }
   return {
     rows,
+    lastCreatedAfter,
     async create(data) {
       const row: ConsequenceApproval = {
         id: `appr-${rows.size + 1}`,
@@ -44,6 +51,17 @@ function memoryRepo(): ConsequenceApprovalRepository & { rows: Map<string, Conse
     },
     async findById(id) {
       return rows.get(id) ?? null
+    },
+    async listPendingByConversation(conversationId, createdAfter) {
+      lastCreatedAfter.value = createdAfter
+      return [...rows.values()]
+        .filter(
+          (row) =>
+            row.conversationId === conversationId &&
+            row.status === 'pending' &&
+            row.createdAt.getTime() > createdAfter.getTime(),
+        )
+        .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
     },
     async casUpdateStatus(id, expectedStatus, patch) {
       const row = rows.get(id)
@@ -243,6 +261,70 @@ async function main() {
     const result = await service.approve(card.approvalId, actor)
     assert.equal(result.ok, true)
     assert.equal(invoked.length, 1)
+  })
+
+  // ÚJRATÖLTÉS — a kapu üzleti értéke a GOMB. Ha az csak a stream élő pillanatában
+  // létezik, a forduló végén / lapfrissítéskor eltűnik, a művelet pedig némán lejár:
+  // a felhasználó számára az agent „hazudott", és a munka megáll.
+  await test('listOpenForConversation: a függő jóváhagyás újratöltéskor is visszajön', async () => {
+    const { service } = buildService()
+    const card = await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
+    const open = await service.listOpenForConversation('conv-1', actor)
+    assert.equal(open.length, 1)
+    assert.equal(open[0].approvalId, card.approvalId)
+    assert.equal(open[0].toolName, 'xlsx_create')
+    assert.equal(open[0].summary, 'xlsx_create → out.xlsx')
+    assert.equal(open[0].expired, false)
+  })
+
+  await test('listOpenForConversation: a lejárt sor NEM tűnik el némán (expired jelöléssel jön)', async () => {
+    const { service, repo } = buildService()
+    const card = await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
+    repo.rows.get(card.approvalId)!.expiresAt = new Date(Date.now() - 1000)
+    const open = await service.listOpenForConversation('conv-1', actor)
+    assert.equal(open.length, 1)
+    assert.equal(open[0].expired, true, 'a UI ebből tudja, hogy magyarázatot kell mutatnia gomb helyett')
+  })
+
+  await test('listOpenForConversation: a láthatósági ablak a szerver órájából számolódik', async () => {
+    const { service, repo } = buildService()
+    await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
+    const before = Date.now()
+    await service.listOpenForConversation('conv-1', actor)
+    const cutoff = repo.lastCreatedAfter.value
+    assert.ok(cutoff, 'a repository kapott vágópontot')
+    const delta = before - cutoff!.getTime()
+    assert.ok(
+      Math.abs(delta - CONSEQUENCE_APPROVAL_VISIBILITY_MS) < 5000,
+      `a vágópont ~${CONSEQUENCE_APPROVAL_VISIBILITY_MS} ms, kapott: ${delta}`,
+    )
+  })
+
+  await test('listOpenForConversation: az eldöntött jóváhagyás már nem jelenik meg', async () => {
+    const { service } = buildService()
+    const card = await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
+    await service.approve(card.approvalId, actor)
+    const open = await service.listOpenForConversation('conv-1', actor)
+    assert.equal(open.length, 0)
+  })
+
+  // TENANT-HATÁR a LISTÁN is: a döntés kapuja hiába szigorú, ha a lista kiszivárogtatja,
+  // MILYEN mellékhatás vár jóváhagyásra egy másik szervezet beszélgetésében.
+  await test('tenant-határ: idegen tenant NEM látja a függő jóváhagyást (platform-szintű agent mellett sem)', async () => {
+    const { service } = buildService({ conversationTenantId: 'tenant-1', agentTenantId: null })
+    await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
+    const foreign = { id: 'user-9', tenantId: 'tenant-2', role: 'admin' as const }
+    const open = await service.listOpenForConversation('conv-1', foreign)
+    assert.deepEqual(open, [], 'a pending LÉTEZÉSE sem szivároghat ki')
+  })
+
+  await test('listOpenForConversation: viewer-jogú idegen felhasználó sem lát bele', async () => {
+    const { service } = buildService()
+    await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
+    // Saját tenant, de nem a beszélgetés létrehozója és nem operator+.
+    const viewer = { id: 'user-7', tenantId: 'tenant-1', role: 'viewer' as const }
+    const open = await service.listOpenForConversation('conv-1', viewer)
+    assert.deepEqual(open, [])
   })
 
   if (failures > 0) {
