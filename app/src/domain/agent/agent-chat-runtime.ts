@@ -375,6 +375,13 @@ export type AgentChatSendParams = {
   attachmentDocumentIds?: string[]
   processDefinitionId?: string
   processInputPayload?: Record<string, unknown>
+  /**
+   * issue #97 — ez a forduló egy következmény-jóváhagyás FOLYTATÁSA: a külső,
+   * nem megbízható tartalom az előzményben már ott van, ezért a forduló már
+   * „tainted"-ként indul, és a hátralévő mellékhatásos lépések ismét kaput
+   * kapnak. Kizárólag szerveroldalról (a validált jóváhagyás után) állítható.
+   */
+  consequenceApprovalContinuation?: boolean
 }
 
 type ChatModelConfig = {
@@ -1160,6 +1167,7 @@ export class AgentChatRuntime {
               }
             : {}),
           onMemoryCandidate: (candidate) => emit({ type: 'memory_candidate', candidate }),
+          initialTainted: params.consequenceApprovalContinuation === true,
           ...(this.consequenceApprovals
             ? {
                 createConsequenceApproval: async (invoke) =>

@@ -15,7 +15,8 @@
  *  (e) az external_untrusted eredmény becsomagolva (figyelmeztetés + blokk) megy a modellnek;
  *  (f) pending approval event + createConsequenceApproval;
  *  (g) kapu után nincs újabb tool-kör (tokenégetés elkerülése);
- *  (h) xlsx_create is kapura esik (nem Excel-specifikus a kapu).
+ *  (h) xlsx_create is kapura esik (nem Excel-specifikus a kapu);
+ *  (i) jóváhagyás utáni folytatás (initialTainted) → a következő mellékhatás ismét kapura esik.
  */
 import assert from 'node:assert/strict'
 import { runAgentToolLoop, type ToolLoopConsequenceApprovalEvent } from '../src/domain/agent/chat-tool-loop'
@@ -93,6 +94,7 @@ async function runLoop(
       invoke: ToolBrokerInvokeInput,
     ) => Promise<ToolLoopConsequenceApprovalEvent>
     onConsequenceApproval?: (event: ToolLoopConsequenceApprovalEvent) => void | Promise<void>
+    initialTainted?: boolean
   },
 ) {
   const { broker, invoked, gated } = fakeToolBroker()
@@ -112,6 +114,7 @@ async function runLoop(
       ? { createConsequenceApproval: extras.createConsequenceApproval }
       : {}),
     ...(extras?.onConsequenceApproval ? { onConsequenceApproval: extras.onConsequenceApproval } : {}),
+    ...(extras?.initialTainted ? { initialTainted: true } : {}),
   })
   return { result, invoked, gated }
 }
@@ -305,6 +308,61 @@ async function main() {
     )
     assert.deepEqual(toolNames(invoked), ['document_read'])
     assert.deepEqual(toolNames(gated), ['xlsx_create'])
+  })
+
+  // (i) A jóváhagyás UTÁNI folytatás fordulója. A külső tartalom az előzményben
+  // van (abból született a terv), csak ebben a fordulóban nem olvassuk be újra —
+  // ha a folytatás „tisztának" indulna, a hátralévő mellékhatásos lépések kapu
+  // NÉLKÜL futnának le, azaz egy jóváhagyással az összes továbbit meg lehetne
+  // kerülni.
+  await test('(i) jóváhagyás utáni folytatás: a következő mellékhatás ismét kapura esik', async () => {
+    const gw: GatewayCallArgs[] = []
+    const approvals: ToolLoopConsequenceApprovalEvent[] = []
+    const { invoked, gated } = await runLoop(
+      [
+        {
+          toolCalls: [
+            { id: 'c1', name: 'xlsx_append_rows', input: { path: 'r.xlsx', rows: [['a']] } },
+          ],
+        },
+        { content: 'kész' },
+      ],
+      ['xlsx_append_rows'],
+      gw,
+      {
+        initialTainted: true,
+        createConsequenceApproval: async (invoke) => ({
+          approvalId: `appr-${invoke.tool}`,
+          toolName: invoke.tool,
+          summary: invoke.tool,
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        }),
+        onConsequenceApproval: (event) => {
+          approvals.push(event)
+        },
+      },
+    )
+    assert.equal(invoked.length, 0, 'a folytatásban sem fut le magától a mellékhatás')
+    assert.deepEqual(toolNames(gated), ['xlsx_append_rows'])
+    assert.equal(approvals.length, 1, 'a felhasználó kap gombot a következő lépéshez is')
+  })
+
+  await test('(i/2) folytatás-jelölés nélkül a mellékhatás továbbra is lefut (nincs mellékhatás a default-on)', async () => {
+    const gw: GatewayCallArgs[] = []
+    const { invoked, gated } = await runLoop(
+      [
+        {
+          toolCalls: [
+            { id: 'c1', name: 'xlsx_append_rows', input: { path: 'r.xlsx', rows: [['a']] } },
+          ],
+        },
+        { content: 'kész' },
+      ],
+      ['xlsx_append_rows'],
+      gw,
+    )
+    assert.deepEqual(toolNames(invoked), ['xlsx_append_rows'])
+    assert.equal(gated.length, 0)
   })
 
   if (failures > 0) {
