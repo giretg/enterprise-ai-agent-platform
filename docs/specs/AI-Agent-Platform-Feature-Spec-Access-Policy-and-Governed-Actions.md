@@ -111,7 +111,7 @@ enum AgentAccessSubjectType {
 model AgentAccessGrant {
   id             String                 @id @default(uuid()) @db.Uuid
   tenantId       String                 @map("tenant_id") @db.Uuid
-  subjectType    AgentAccessSubjectType
+  subjectType    AgentAccessSubjectType @map("subject_type")
   subjectUserId  String?                @map("subject_user_id") @db.Uuid
   subjectAgentId String?                @map("subject_agent_id") @db.Uuid
   targetAgentId  String                 @map("target_agent_id") @db.Uuid
@@ -225,6 +225,8 @@ A gráf-gate az agent megszólításának **további** feltétele: nem írja fel
 4. `canAccessAgent(..., "address")`;
 5. végrehajtás és audit.
 
+A meglévő `hiddenFromOperators` mező katalógus-alkalmassági szabály marad: non-admin user `view` listáján a gráf előtt szűr, és grant nem írja felül. Az `address` döntést nem befolyásolja, ezért egy agent továbbra is lehet nem listázható, de explicit módon megszólítható. Az admin org-ábra management felületként ettől függetlenül minden tenant-gráfcsomópontot megkap.
+
 #### Kikényszerítési chokepointok
 
 | Chokepoint | Subject → target | Ige | Lista vagy explicit próba |
@@ -267,7 +269,7 @@ Minden célzott hozzáférési döntés és minden policy-módosítás struktur�
 | `agent_access.grant.revoke` | admin szűkít vagy töröl egy élt | actor, subject, target, előző/új érték, grantId |
 | `agent_access.restriction.update` | admin kapcsolót vált | actor, agentId, inbound/outbound előző és új értéke |
 
-Az `agent.access.denied` `channel` értéke legalább `chat | agent_ask | ticket`; a `web_research_request` az `agent_ask`/delegációs csatorna részleteként vagy külön `web_research` értékkel bővíthető, de nem kap külön eseménynevet.
+Az `agent.access.denied` és `agent.access.granted` `channel` értéke `chat | agent_ask | ticket | web_research`; a `web_research_request` mindig `web_research`. A csatorna adat, ezért egyik út sem kap külön eseménynevet.
 
 A sikeres elérés naplózása az engedő éllel teszi utólag rekonstruálhatóvá a C1 szerinti confused-deputy láncot. A kezdeményező ember, ha feloldható, auditkorrelációként megőrzendő, de **nem** authorization subjectként öröklődik tovább.
 
@@ -308,6 +310,7 @@ Nincs tenantközi agent-él, ezért kétoldalú tenant-jóváhagyási protokoll 
 Az admin felület szabad vásznas, node-link szerkesztő:
 
 - felül külön user-sáv, alatta agent-csomópontok;
+- management felületként minden tenant-agentet mutat, beleértve a `hiddenFromOperators` és admin-only Web-Egress csomópontokat is;
 - kék `V` fogantyú hozza létre vagy kapcsolja be a `view` jogot;
 - bordó `A` fogantyú hozza létre vagy kapcsolja be az `address` jogot;
 - subject-target páronként legfeljebb két, párhuzamos sáv látszik; az irányt nyíl jelöli, nem négy átfedő él;
@@ -361,6 +364,7 @@ A futó delegáció maximális mélysége/időkerete nem hozzáférési él-szab
 - Panel-varázsló tool-úton nem érhető el; tenant Web-Egress csak explicit agent→agent `address` granttal.
 - Ciklusos gráf terminál, 5 hopnál UI-warning jelenik meg, de a policy nem vágja el az utat.
 - Restriction dry-run és megerősítés nélkül nem kapcsolható be az admin UI-ból.
+
 ## Rögzített invariánsok
 
 1. **SoD:** `approver ≠ createdById` — a kérelmező sosem hagyhatja jóvá a sajátját.
