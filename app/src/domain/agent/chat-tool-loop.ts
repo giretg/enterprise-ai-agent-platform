@@ -252,8 +252,8 @@ const TOOL_SCHEMAS: Record<ChatPlatformToolName, ToolSchema> = {
   },
   user_directory: {
     description:
-      'A szervezet (tenant) humán munkatársainak listája — név, e-mail, szerep és szabad szöveges leírás (pl. "marketing vezető", "copywriter"). Ezzel keresd ki, KI az illetékes egy feladathoz, vagy kinek nyiss ticketet (a userId-t add a ticket_create assigneeId mezőjébe assigneeType="human" mellett). Az opcionális query névre/szerepre/leírásra szűr.',
-    inputSchema: objectSchema({ query: STR, limit: NUM }),
+      'A szervezet (tenant) humán munkatársainak célzott keresése — név, szerep és szabad szöveges leírás (pl. "marketing vezető", "copywriter"). Ezzel keresd ki, KI az illetékes egy feladathoz, vagy kinek nyiss ticketet (a userId-t add a ticket_create assigneeId mezőjébe assigneeType="human" mellett). A query kötelező; teljes névsor nem kérhető le, e-mail nem kerül a válaszba.',
+    inputSchema: objectSchema({ query: STR, limit: NUM }, ['query']),
   },
   ticket_create: {
     description: 'Új Kanban ticket létrehozása (feladat humán vagy agent felelősnek).',
@@ -1206,7 +1206,7 @@ function buildToolInvoke(
         ...common,
         tool: 'user_directory',
         args: {
-          query: typeof args.query === 'string' ? args.query : undefined,
+          query: strArg(args, 'query'),
           limit: numArg(args, 'limit'),
         },
       }
