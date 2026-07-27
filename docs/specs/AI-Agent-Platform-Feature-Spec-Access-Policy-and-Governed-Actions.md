@@ -85,8 +85,11 @@ Az `Agent` két új kapcsolót kap:
 ```prisma
 model Agent {
   // ...
-  inboundRestricted  Boolean @default(false)
-  outboundRestricted Boolean @default(false)
+  inboundRestricted  Boolean @default(false) @map("inbound_restricted")
+  outboundRestricted Boolean @default(false) @map("outbound_restricted")
+
+  accessGrantsAsSubject AgentAccessGrant[] @relation("AgentAccessSubjectAgent")
+  accessGrantsAsTarget  AgentAccessGrant[] @relation("AgentAccessTarget")
 }
 ```
 
@@ -101,20 +104,22 @@ Az élek új, célzott táblában élnek:
 enum AgentAccessSubjectType {
   user
   agent
+
+  @@map("agent_access_subject_type")
 }
 
 model AgentAccessGrant {
-  id             String                 @id @default(cuid())
-  tenantId       String
+  id             String                 @id @default(uuid()) @db.Uuid
+  tenantId       String                 @map("tenant_id") @db.Uuid
   subjectType    AgentAccessSubjectType
-  subjectUserId  String?
-  subjectAgentId String?
-  targetAgentId  String
-  canView        Boolean                @default(false)
-  canAddress     Boolean                @default(false)
-  grantedById    String
-  grantedAt      DateTime               @default(now())
-  updatedAt      DateTime               @updatedAt
+  subjectUserId  String?                @map("subject_user_id") @db.Uuid
+  subjectAgentId String?                @map("subject_agent_id") @db.Uuid
+  targetAgentId  String                 @map("target_agent_id") @db.Uuid
+  canView        Boolean                @default(false) @map("can_view")
+  canAddress     Boolean                @default(false) @map("can_address")
+  grantedById    String                 @map("granted_by") @db.Uuid
+  grantedAt      DateTime               @default(now()) @map("granted_at") @db.Timestamptz
+  updatedAt      DateTime               @updatedAt @map("updated_at") @db.Timestamptz
 
   tenant       Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   subjectUser User?  @relation("AgentAccessSubjectUser", fields: [subjectUserId], references: [id], onDelete: Cascade)
@@ -126,17 +131,39 @@ model AgentAccessGrant {
   @@unique([tenantId, subjectAgentId, targetAgentId])
   @@index([tenantId, targetAgentId])
   @@index([tenantId, subjectAgentId])
+  @@map("agent_access_grants")
 }
 ```
 
-A migráció adatbázis-`CHECK` constraintjei és a domain service ugyanazokat az invariánsokat kényszerítik:
+A teljes Prisma-változás a fordított relációkat is hozzáadja:
+
+```prisma
+model User {
+  // ...
+  agentAccessGrantsAsSubject AgentAccessGrant[] @relation("AgentAccessSubjectUser")
+  agentAccessGrantsIssued    AgentAccessGrant[] @relation("AgentAccessGrantedBy")
+}
+
+model Tenant {
+  // ...
+  agentAccessGrants AgentAccessGrant[]
+}
+```
+
+A migráció adatbázis-`CHECK` constraintjei:
 
 - `subjectType=user` esetén `subjectUserId` kötelező és `subjectAgentId` null;
 - `subjectType=agent` esetén `subjectAgentId` kötelező és `subjectUserId` null;
-- a subject, a target és a grant `tenantId` mezője azonos tenantot jelöl;
 - `canView OR canAddress` igaz; mindkettő hamisra állítása a sor törlését jelenti;
 - self-edge nem szükséges és nem hozható létre;
 - egy subject→target párhoz legfeljebb egy sor tartozik; a két boolean együtt hordozza a két vizuális sávot.
+
+A cross-table tenant-invariánst PostgreSQL `CHECK` nem tudja kifejezni, ezért a grant domain service tranzakcióban ellenőrzi:
+
+- user subjectnél létezik aktív `TenantMembership(subjectUserId, tenantId)`;
+- agent subjectnél `subjectAgent.tenantId = tenantId`;
+- minden esetben `targetAgent.tenantId = tenantId`;
+- a cél nem gráfon kívüli panel-varázsló, és a Web-Egress-speciális szabályok teljesülnek.
 
 Nem a meglévő `ResourceGrant` táblát használjuk. Annak alanya csak user lehet, egyetlen `view | operate | approve` skála-igéje ütközik a két független booleannel, és az IAM/RBAC spec más erőforrásaira fenntartott, üres táblán fail-open horgony. A két tábla összevonása mindkettő szemantikáját elrontaná.
 
@@ -334,7 +361,6 @@ A futó delegáció maximális mélysége/időkerete nem hozzáférési él-szab
 - Panel-varázsló tool-úton nem érhető el; tenant Web-Egress csak explicit agent→agent `address` granttal.
 - Ciklusos gráf terminál, 5 hopnál UI-warning jelenik meg, de a policy nem vágja el az utat.
 - Restriction dry-run és megerősítés nélkül nem kapcsolható be az admin UI-ból.
-
 ## Rögzített invariánsok
 
 1. **SoD:** `approver ≠ createdById` — a kérelmező sosem hagyhatja jóvá a sajátját.
