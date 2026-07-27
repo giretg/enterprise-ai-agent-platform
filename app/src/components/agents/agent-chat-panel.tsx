@@ -638,24 +638,75 @@ function MemoryCandidatesPanel({
   )
 }
 
+/** Server-action / auth hibakód → olvasható visszajelzés a jóváhagyó kártyán. */
+function formatConsequenceApprovalError(error: string): string {
+  switch (error) {
+    case 'INSUFFICIENT_ROLE':
+      return 'Nincs jogosultságod a jóváhagyáshoz (legalább operátor kell).'
+    case 'NO_USER':
+      return 'Bejelentkezés szükséges a jóváhagyáshoz.'
+    case 'NO_TENANT':
+      return 'Nincs aktív szervezet kiválasztva.'
+    case 'TENANT_NOT_ACTIVE':
+      return 'A szervezet jelenleg nem fogad műveleteket.'
+    case 'approval_expired':
+      return 'A jóváhagyás lejárt.'
+    case 'approval_not_found':
+      return 'A jóváhagyás nem található.'
+    case 'approval_already_decided':
+      return 'Ezt a műveletet már eldöntötték.'
+    case 'forbidden':
+      return 'Nincs jogosultságod ehhez a művelethez.'
+    case 'conversation_not_found':
+      return 'A beszélgetés nem található.'
+    case 'agent_not_found':
+      return 'Az agent nem található.'
+    case 'tenant_mismatch':
+      return 'Szervezeti határon át nem hagyható jóvá.'
+    default:
+      return error
+  }
+}
+
 /**
  * issue #97 — következmény-kapu kártya: külső tartalom után blokkolt mellékhatás
  * (xlsx/file/email/…). Jóváhagyáskor a szerver lefuttatja a toolt — az agent
  * nem indul újra.
+ *
+ * Fontos: NEM `useTransition` + server action. React 19 / Next alatt a transition
+ * belsejében az `await` utáni setState gyakran nem commitolódik (Brave/mobilon
+ * különösen), ezért a „Jóváhagyom” látszólag semmit sem csinál: nincs loading,
+ * nincs „Jóváhagyva”, nincs hiba. Explicit busy-állapot + try/catch kell.
  */
 function ConsequenceApprovalsPanel({
   approvals,
   onUpdate,
+  onApproved,
 }: {
   approvals: ConsequenceApprovalCard[]
   onUpdate: (approvalId: string, patch: Partial<ConsequenceApprovalCard>) => void
+  onApproved?: (approval: ConsequenceApprovalCard) => void
 }) {
-  const [pending, startTransition] = useTransition()
+  const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(() => new Set())
   const isOpen = (a: ConsequenceApprovalCard) => a.status === 'pending' && !a.expired
   const openCount = approvals.filter(isOpen).length
+  const anyBusy = busyIds.size > 0
 
-  const runApprove = (approvalId: string) => {
-    startTransition(async () => {
+  const markBusy = (approvalId: string, busy: boolean) => {
+    setBusyIds((prev) => {
+      const next = new Set(prev)
+      if (busy) next.add(approvalId)
+      else next.delete(approvalId)
+      return next
+    })
+  }
+
+  const runApprove = async (approvalId: string) => {
+    if (busyIds.has(approvalId)) return
+    const card = approvals.find((a) => a.approvalId === approvalId)
+    markBusy(approvalId, true)
+    onUpdate(approvalId, { resultMessage: undefined })
+    try {
       const res = await approveConsequenceApproval({ approvalId })
       if (!res.success) {
         // A lejárat nem hiba, hanem végállapot: gomb helyett magyarázat járjon hozzá.
@@ -663,22 +714,44 @@ function ConsequenceApprovalsPanel({
           approvalId,
           res.error === 'approval_expired'
             ? { expired: true, resultMessage: undefined }
-            : { resultMessage: res.error },
+            : { resultMessage: formatConsequenceApprovalError(res.error) },
         )
         return
       }
       onUpdate(approvalId, { status: 'approved', resultMessage: undefined })
-    })
+      if (card) onApproved?.({ ...card, status: 'approved', resultMessage: undefined })
+    } catch (error) {
+      onUpdate(approvalId, {
+        resultMessage: formatConsequenceApprovalError(
+          error instanceof Error ? error.message : 'A jóváhagyás sikertelen',
+        ),
+      })
+    } finally {
+      markBusy(approvalId, false)
+    }
   }
 
-  const runReject = (approvalId: string) => {
-    startTransition(async () => {
+  const runReject = async (approvalId: string) => {
+    if (busyIds.has(approvalId)) return
+    markBusy(approvalId, true)
+    onUpdate(approvalId, { resultMessage: undefined })
+    try {
       const res = await rejectConsequenceApproval({ approvalId })
       onUpdate(approvalId, {
         status: res.success ? 'rejected' : 'pending',
-        resultMessage: res.success ? undefined : res.error,
+        resultMessage: res.success
+          ? undefined
+          : formatConsequenceApprovalError(res.error),
       })
-    })
+    } catch (error) {
+      onUpdate(approvalId, {
+        resultMessage: formatConsequenceApprovalError(
+          error instanceof Error ? error.message : 'Az elutasítás sikertelen',
+        ),
+      })
+    } finally {
+      markBusy(approvalId, false)
+    }
   }
 
   return (
@@ -690,11 +763,17 @@ function ConsequenceApprovalsPanel({
         {openCount > 1 && (
           <button
             type="button"
-            disabled={pending}
-            className="rounded-full bg-sage/20 px-3 py-1 text-[11px] font-semibold text-sage disabled:opacity-50"
-            onClick={() => approvals.filter(isOpen).forEach((a) => runApprove(a.approvalId))}
+            disabled={anyBusy}
+            className="min-h-10 rounded-full bg-sage/20 px-3 py-2 text-[11px] font-semibold text-sage disabled:opacity-50"
+            onClick={() => {
+              void (async () => {
+                for (const a of approvals.filter(isOpen)) {
+                  await runApprove(a.approvalId)
+                }
+              })()
+            }}
           >
-            Jóváhagyom mind
+            {anyBusy ? 'Jóváhagyás…' : 'Jóváhagyom mind'}
           </button>
         )}
       </div>
@@ -704,52 +783,91 @@ function ConsequenceApprovalsPanel({
           : 'Külső forrás miatt a platform nem futtatta le automatikusan, és a jóváhagyási idő letelt.'}
       </p>
       <div className="space-y-2">
-        {approvals.map((a) => (
-          <div key={a.approvalId} className="rounded-md border border-line/70 bg-card/40 px-2.5 py-2">
-            <div className="flex flex-wrap items-baseline gap-2">
-              <span className="rounded-full bg-card px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-faint">
-                {getToolUiLabel(a.toolName).label}
-              </span>
-              <span className="font-medium text-ink">{a.summary}</span>
-              <span className="text-[10px] text-ink-faint">
-                {a.status === 'pending'
-                  ? a.expired
-                    ? 'Lejárt'
-                    : 'Jóváhagyásra vár'
-                  : a.status === 'approved'
-                    ? 'Jóváhagyva — lefuttatva'
-                    : 'Elutasítva'}
-              </span>
-            </div>
-            {a.resultMessage && <p className="mt-1 text-[11px] text-coral">{a.resultMessage}</p>}
-            {a.status === 'pending' && a.expired && (
-              <p className="mt-1 text-[11px] text-ink-faint">
-                Ez a jóváhagyás lejárt, ezért már nem futtatható le. Írd meg a chatben az agentnek,
-                hogy próbálja újra — az új kéréshez új gomb jelenik meg.
-              </p>
-            )}
-            {isOpen(a) && (
-              <div className="mt-2 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  disabled={pending}
-                  className="rounded-full bg-sage/20 px-2.5 py-1 text-[11px] font-semibold text-sage disabled:opacity-50"
-                  onClick={() => runApprove(a.approvalId)}
+        {approvals.map((a) => {
+          const busy = busyIds.has(a.approvalId)
+          const statusLabel =
+            busy && a.status === 'pending'
+              ? 'Jóváhagyás folyamatban…'
+              : a.status === 'pending'
+                ? a.expired
+                  ? 'Lejárt'
+                  : 'Jóváhagyásra vár'
+                : a.status === 'approved'
+                  ? 'Jóváhagyva — lefuttatva'
+                  : 'Elutasítva'
+          return (
+            <div key={a.approvalId} className="rounded-md border border-line/70 bg-card/40 px-2.5 py-2">
+              <div className="flex flex-wrap items-baseline gap-2">
+                <span className="rounded-full bg-card px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-faint">
+                  {getToolUiLabel(a.toolName).label}
+                </span>
+                <span className="font-medium text-ink">{a.summary}</span>
+                <span
+                  className={`text-[10px] font-semibold ${
+                    a.status === 'approved'
+                      ? 'text-sage'
+                      : a.status === 'rejected' || a.expired
+                        ? 'text-ink-faint'
+                        : busy
+                          ? 'text-honey'
+                          : 'text-ink-faint'
+                  }`}
+                  aria-live="polite"
                 >
-                  Jóváhagyom
-                </button>
-                <button
-                  type="button"
-                  disabled={pending}
-                  className="rounded-full bg-card px-2.5 py-1 text-[11px] font-semibold text-ink-faint disabled:opacity-50"
-                  onClick={() => runReject(a.approvalId)}
-                >
-                  Elutasítom
-                </button>
+                  {statusLabel}
+                </span>
               </div>
-            )}
-          </div>
-        ))}
+              {a.resultMessage && (
+                <div className="mt-1.5 space-y-1.5">
+                  <p className="text-[11px] text-coral" role="alert">
+                    {a.resultMessage}
+                  </p>
+                  {isOpen(a) && !busy && (
+                    <button
+                      type="button"
+                      className="min-h-10 rounded-full border border-coral/40 bg-card px-3 py-2 text-[11px] font-semibold text-coral"
+                      onClick={() => void runApprove(a.approvalId)}
+                    >
+                      Újrapróbálom
+                    </button>
+                  )}
+                </div>
+              )}
+              {a.status === 'pending' && a.expired && (
+                <p className="mt-1 text-[11px] text-ink-faint">
+                  Ez a jóváhagyás lejárt, ezért már nem futtatható le. Írd meg a chatben az agentnek,
+                  hogy próbálja újra — az új kéréshez új gomb jelenik meg.
+                </p>
+              )}
+              {a.status === 'approved' && (
+                <p className="mt-1 text-[11px] text-sage">
+                  A művelet lefutott. Ha fájlt írt, a Workspace fájlok panelen megjelenik.
+                </p>
+              )}
+              {isOpen(a) && (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={busy || anyBusy}
+                    aria-busy={busy}
+                    className="min-h-10 rounded-full bg-sage/20 px-3 py-2 text-[11px] font-semibold text-sage disabled:opacity-50"
+                    onClick={() => void runApprove(a.approvalId)}
+                  >
+                    {busy ? 'Jóváhagyás…' : 'Jóváhagyom'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy || anyBusy}
+                    className="min-h-10 rounded-full bg-card px-3 py-2 text-[11px] font-semibold text-ink-faint disabled:opacity-50"
+                    onClick={() => void runReject(a.approvalId)}
+                  >
+                    Elutasítom
+                  </button>
+                </div>
+              )}
+            </div>
+          )
+        })}
       </div>
     </div>
   )
@@ -761,6 +879,7 @@ function MessageBubble({
   onDeleteContent,
   onMemoryCandidateUpdate,
   onConsequenceApprovalUpdate,
+  onConsequenceApproved,
 }: {
   message: ChatMessage
   isBusy: boolean
@@ -771,6 +890,7 @@ function MessageBubble({
     approvalId: string,
     patch: Partial<ConsequenceApprovalCard>,
   ) => void
+  onConsequenceApproved?: (approval: ConsequenceApprovalCard) => void
 }) {
   const isUser = message.role === 'user'
   const isDeleted = Boolean(message.contentDeletedAt)
@@ -811,6 +931,7 @@ function MessageBubble({
                 onUpdate={(approvalId, patch) =>
                   onConsequenceApprovalUpdate(message.id, approvalId, patch)
                 }
+                onApproved={onConsequenceApproved}
               />
             )}
             {message.text &&
@@ -856,7 +977,7 @@ function MessageBubble({
             type="button"
             onClick={() => onDeleteContent(message.id)}
             disabled={isBusy}
-            className={`absolute -top-2 ${isUser ? '-left-2' : '-right-2'} rounded-full border border-line bg-card px-2 py-1 text-[10px] font-semibold text-ink-faint opacity-0 shadow-sm transition-opacity hover:text-coral-deep group-hover:opacity-100 focus:opacity-100 disabled:opacity-40`}
+            className={`absolute -top-2 ${isUser ? '-left-2' : '-right-2'} rounded-full border border-line bg-card px-2 py-1 text-[10px] font-semibold text-ink-faint opacity-0 pointer-events-none shadow-sm transition-opacity hover:text-coral-deep group-hover:pointer-events-auto group-hover:opacity-100 focus:pointer-events-auto focus:opacity-100 disabled:opacity-40`}
             title="Üzenettartalom törlése"
             aria-label="Üzenettartalom törlése"
           >
@@ -1410,6 +1531,11 @@ export function AgentChatPanel({
     },
     [],
   )
+
+  const handleConsequenceApproved = useCallback((approval: ConsequenceApprovalCard) => {
+    filesRef.current?.refresh()
+    setStatusMessage(`Jóváhagyva — lefuttatva: ${approval.summary}`)
+  }, [])
 
   const handlePromoteConversation = useCallback(() => {
     if (!conversationId || controlsBusy) return
@@ -2449,6 +2575,7 @@ export function AgentChatPanel({
                       onDeleteContent={handleDeleteMessageContent}
                       onMemoryCandidateUpdate={handleMemoryCandidateUpdate}
                       onConsequenceApprovalUpdate={handleConsequenceApprovalUpdate}
+                      onConsequenceApproved={handleConsequenceApproved}
                     />
                   ))}
                   {isAgentTyping &&

@@ -87,10 +87,30 @@ function memoryRepo(): ConsequenceApprovalRepository & {
   }
 }
 
-function fakeBroker(invoked: ToolBrokerInvokeInput[]) {
+function fakeBroker(
+  invoked: ToolBrokerInvokeInput[],
+  opts?: { failTimes?: number; denyTimes?: number },
+) {
+  let failLeft = opts?.failTimes ?? 0
+  let denyLeft = opts?.denyTimes ?? 0
   return {
     invoke: async (input: ToolBrokerInvokeInput) => {
       invoked.push(input)
+      if (failLeft > 0) {
+        failLeft -= 1
+        throw new Error('broker_boom')
+      }
+      if (denyLeft > 0) {
+        denyLeft -= 1
+        return {
+          denied: true,
+          reason: 'policy_denied',
+          trust: 'trusted' as const,
+          result: null,
+          resultMeta: {},
+          latencyMs: 1,
+        }
+      }
       return {
         denied: false,
         trust: 'trusted' as const,
@@ -108,6 +128,8 @@ function buildService(opts?: {
   conversationTenantId?: string | null
   /** Az agent tenantja; `null` = platform-szintű, minden tenantból elérhető. */
   agentTenantId?: string | null
+  failTimes?: number
+  denyTimes?: number
 }) {
   const repo = memoryRepo()
   const invoked = opts?.invoked ?? []
@@ -142,7 +164,7 @@ function buildService(opts?: {
         return {} as never
       },
     } as unknown as AuditRepository,
-    fakeBroker(invoked),
+    fakeBroker(invoked, { failTimes: opts?.failTimes, denyTimes: opts?.denyTimes }),
   )
   return { service, repo, invoked, audits }
 }
@@ -194,6 +216,36 @@ async function main() {
     const second = await service.approve(card.approvalId, actor)
     assert.equal(second.ok, true)
     assert.equal(invoked.length, 1, 'csak egyszer futott le')
+  })
+
+  await test('approve invoke exception: hibát ad, resultMeta megmarad, Újrapróbálom újrafuttat', async () => {
+    const invoked: ToolBrokerInvokeInput[] = []
+    const { service, repo } = buildService({ invoked, failTimes: 1 })
+    const card = await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
+    const first = await service.approve(card.approvalId, actor)
+    assert.equal(first.ok, false)
+    if (!first.ok) assert.equal(first.reason, 'broker_boom')
+    assert.equal(repo.rows.get(card.approvalId)!.status, 'approved')
+    const meta = repo.rows.get(card.approvalId)!.resultMeta as { denied?: boolean; failed?: boolean }
+    assert.equal(meta.denied, true)
+    assert.equal(meta.failed, true)
+    assert.equal(invoked.length, 1)
+
+    const retry = await service.approve(card.approvalId, actor)
+    assert.equal(retry.ok, true, 'a második próbálkozásnak sikerülnie kell')
+    assert.equal(invoked.length, 2, 'Újrapróbálom ténylegesen újra hívja a brokert')
+  })
+
+  await test('approve deny: hiba + Újrapróbálom újrafuttat', async () => {
+    const invoked: ToolBrokerInvokeInput[] = []
+    const { service } = buildService({ invoked, denyTimes: 1 })
+    const card = await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
+    const first = await service.approve(card.approvalId, actor)
+    assert.equal(first.ok, false)
+    if (!first.ok) assert.equal(first.reason, 'policy_denied')
+    const retry = await service.approve(card.approvalId, actor)
+    assert.equal(retry.ok, true)
+    assert.equal(invoked.length, 2)
   })
 
   await test('reject: nem hív invoke-ot', async () => {
