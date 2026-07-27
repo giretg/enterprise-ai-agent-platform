@@ -27,7 +27,7 @@ import type {
 import type {
   AuthorizationResult,
   ToolName,
-  UserDirectoryEntry,
+  UserDirectorySearchEntry,
 } from './tool-broker-types'
 import { resolveTulajdoniLapParseSource } from '@/lib/tulajdoni-lap-source'
 
@@ -178,7 +178,7 @@ const prismaActingUserLookup: ActingUserLookup = async (userId) =>
  */
 export type TenantUserDirectoryLookup = (
   tenantId: string | null,
-) => Promise<UserDirectoryEntry[]>
+) => Promise<UserDirectorySearchEntry[]>
 
 export const prismaTenantUserDirectoryLookup: TenantUserDirectoryLookup = async (tenantId) => {
   const rows = await prisma.user.findMany({
