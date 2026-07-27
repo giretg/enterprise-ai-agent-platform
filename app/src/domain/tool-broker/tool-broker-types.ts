@@ -225,21 +225,23 @@ export type AgentCatalogResult = {
   agents: AgentCatalogEntry[]
 }
 
-// user_directory — a tenanthoz tartozó humán felhasználók listája az agentnek
-// (pl. a folyamat-agent innen keresi ki, ki az illetékes egy feladathoz, vagy
-// kinek nyisson ticketet). A `jobDescription` a humán szabad szöveges szerepe.
+// user_directory — célzott keresés a tenanthoz tartozó humán felhasználók között.
+// A query kötelező: a tool nem használható a teljes névsor lekérésére.
+// Az e-mail csak belső keresési mező, az agentnek visszaadott eredményből kimarad.
 export type UserDirectoryArgs = {
-  query?: string
+  query: string
   limit?: number
 }
 
 export type UserDirectoryEntry = {
   userId: string
   name: string
-  email: string
   role: string | null
   jobDescription: string | null
-  status: string
+}
+
+export type UserDirectoryLookupEntry = UserDirectoryEntry & {
+  email: string
 }
 
 export type UserDirectoryResult = {
