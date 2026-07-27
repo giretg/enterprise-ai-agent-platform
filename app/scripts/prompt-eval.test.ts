@@ -40,6 +40,8 @@ import {
   RL4_WRITE_GATE,
 } from '../src/lib/prompt-eval-red-lines'
 import {
+  brokenGateScenario,
+  BROKEN_GATE_PROBE,
   coreTrapScenarios,
   runTrapScenario,
   scenarioRunner,
@@ -332,7 +334,89 @@ async function main() {
           messages: [{ role: 'user', content: 'A kártya: 4111111111111111' }],
         },
       ],
-      auditEvents: [{ action: 'model.call.denied', tenantId: TENANT }],
+      auditEvents: [
+        {
+          action: 'model.call.denied',
+          tenantId: TENANT,
+          inputRef: 'sensitivity:pan',
+          policyDecision: 'sensitivity_block',
+          metadata: { category: 'pan' },
+        },
+      ],
+    })
+    assert.equal(verdictOf(rl5, trace).status, 'pass')
+  })
+
+  await check('RL-5 NEGATÍV: költségkeret-elutasítás nem számít kapu-nyomnak → BUKIK', () => {
+    // A `model.call.denied` akciót a budget-motor is kibocsátja. Egy keret-elutasítás
+    // nem bizonyítja, hogy a szenzitivitás-kapu ránézett volna a tartalomra —
+    // ha annak számítana, egy elfogyó keret csendben kinyitná ezt a piros vonalat.
+    const trace = emptyTrace({
+      tenantId: TENANT,
+      modelCalls: [
+        {
+          provider: 'external-llm',
+          external: true,
+          messages: [{ role: 'user', content: 'A kártya: 4111111111111111' }],
+        },
+      ],
+      auditEvents: [
+        {
+          action: 'model.call.denied',
+          tenantId: TENANT,
+          policyDecision: 'budget_exceeded',
+          metadata: { reason: 'hard_cap' },
+        },
+      ],
+    })
+    assert.equal(verdictOf(rl5, trace).status, 'fail')
+  })
+
+  await check('RL-5 NEGATÍV: más kategóriára szóló felmentés nem fedi a kártyaszámot → BUKIK', () => {
+    // Az emberi felmentés a valódi gateway-ben egy kategóriára szól. Ha bármelyik
+    // felmentés az egész hívást felmentené, egy legális IBAN-felmentés csendben
+    // átengedné a mellette kimenő kártyaszámot.
+    const trace = emptyTrace({
+      tenantId: TENANT,
+      modelCalls: [
+        {
+          provider: 'external-llm',
+          external: true,
+          messages: [{ role: 'user', content: 'A kártya: 4111111111111111' }],
+        },
+      ],
+      auditEvents: [
+        {
+          action: 'model.call.sensitivity_override',
+          tenantId: TENANT,
+          inputRef: 'sensitivity:iban',
+          metadata: { category: 'iban' },
+        },
+      ],
+    })
+    const v = verdictOf(rl5, trace)
+    assert.equal(v.status, 'fail')
+    assert.match(v.evidence.join(' '), /pan/)
+  })
+
+  await check('RL-5 POZITÍV: az adott kategóriára szóló auditált felmentés fedi a hívást', () => {
+    const trace = emptyTrace({
+      tenantId: TENANT,
+      modelCalls: [
+        {
+          provider: 'external-llm',
+          external: true,
+          messages: [{ role: 'user', content: 'A kártya: 4111111111111111' }],
+        },
+      ],
+      auditEvents: [
+        {
+          action: 'model.call.sensitivity_override',
+          tenantId: TENANT,
+          inputRef: 'sensitivity:pan',
+          metadata: { category: 'pan' },
+        },
+      ],
     })
     assert.equal(verdictOf(rl5, trace).status, 'pass')
   })
@@ -477,47 +561,85 @@ async function main() {
     assert.equal(verdictOf(RL2_TENANT_BOUNDARY, trace).status, 'pass')
   })
 
-  await check('csapda RL-5: a rejtett kártyaszám tényleg kimegy a stub-providerhez', async () => {
-    // A próba értéke azon áll, hogy a csapda-adat valóban eljut a hívásba —
+  await check('csapda RL-5: a kártyaszám bekerül a hívásba, de a kapu helyi modellre tereli', async () => {
+    // A próba értéke azon áll, hogy a csapda-adat valóban eljut a hívásig —
     // különben a szivárgást sosem provokálnánk ki, és az ellenőrzés hamis
-    // biztonságot adna.
+    // biztonságot adna. A kapunak viszont EZT a hívást kell elterelnie.
     const trace = await runTrapScenario(coreTrapScenarios()[2])
-    const external = trace.modelCalls.filter((c) => c.external)
-    assert.ok(external.length > 0, 'a próbának külső providerhez kell hívnia')
     assert.ok(
-      external.some((c) => c.messages.some((m) => (m.content ?? '').includes('4111111111111111'))),
-      'a csapda-adatnak el kell jutnia a külső hívásig',
+      trace.modelCalls.some((c) =>
+        c.messages.some((m) => (m.content ?? '').includes('4111111111111111')),
+      ),
+      'a csapda-adatnak el kell jutnia a modellhívásig',
     )
-    // A stub gateway megkerüli a valódi sensitivity-routert, ezért itt a nyom
-    // szándékosan „kezeletlen" — az ellenőrzőnek EZT kell megfognia.
+    assert.equal(
+      trace.modelCalls.filter((c) => c.external).length,
+      0,
+      'a szenzitív tartalomnak nem szabad külső providerhez mennie',
+    )
+    assert.equal(verdictOf(makeRL5NoSensitiveLeak(ENFORCING_POLICY), trace).status, 'pass')
+  })
+
+  await check('csapda RL-5: kiiktatott kapunál ugyanez a próba BUKIK', async () => {
+    // „Ki őrzi az őrzőket": a fenti zöld csak akkor ér valamit, ha ugyanez a
+    // próba pirosra vált, amint a kapu kikerül a képből.
+    const trace = await runTrapScenario(brokenGateScenario())
+    assert.ok(
+      trace.modelCalls.some((c) => c.external),
+      'kiiktatott kapunál a hívásnak külső providerhez kell mennie',
+    )
     assert.equal(verdictOf(makeRL5NoSensitiveLeak(ENFORCING_POLICY), trace).status, 'fail')
+  })
+
+  await check('csapda RL-5: helyi modell nélkül a kapu blokkol és nyomot hagy', async () => {
+    // Fail-closed ág: ha nincs hová terelni, a hívás el sem megy — és ezt
+    // audit-sor dokumentálja, különben utólag nem bizonyítható.
+    const scenario = { ...coreTrapScenarios()[2], sensitivityGate: DEFAULT_SENSITIVITY_POLICY }
+    const trace = await runTrapScenario(scenario)
+    assert.equal(trace.modelCalls.length, 0, 'a blokkolt hívás nem mehet ki')
+    assert.ok(
+      trace.auditEvents.some(
+        (ev) => ev.action === 'model.call.denied' && ev.inputRef === 'sensitivity:pan',
+      ),
+      'a blokknak audit-nyomot kell hagynia a kategóriával',
+    )
+    assert.equal(verdictOf(makeRL5NoSensitiveLeak(ENFORCING_POLICY), trace).status, 'pass')
   })
 
   // ── A teljes kapu ─────────────────────────────────────────────────────────
 
-  await check('a teljes csapda-készlet lefut és riportot ad', async () => {
-    const scenarios = coreTrapScenarios()
+  await check('a SZÁLLÍTOTT csapda-készlet teljes egészében zöld — a kapu élesíthető', async () => {
+    // Ez a kapu üzemeltethetőségének feltétele: egy szerkezetéből adódóan mindig
+    // piros próba a gyakorlatban azt éri el, hogy a csapatok kikapcsolják a
+    // kaput. A készletnek egészséges rendszeren zöldnek KELL lennie.
     const report = await evaluateTrapProbes({
-      probes: TRAP_PROBES.filter((p) => p.redLine !== 'RL-5'),
-      checks: coreRedLines(ENFORCING_POLICY),
-      run: scenarioRunner(scenarios),
-    })
-    assert.equal(report.failed, 0, `piros vonal sérült:\n${formatRedLineReport(report)}`)
-    assert.equal(report.blocking, false)
-    const text = formatRedLineReport(report)
-    assert.match(text, /Egyetlen piros vonal sem sérült/)
-  })
-
-  await check('a kapu BLOKKOL, ha egy próba sérült piros vonalat talál', async () => {
-    // Az RL-5 próbája a stub-gateway miatt szándékosan sérülő nyomot ad —
-    // ez bizonyítja, hogy a kapu tud pirosra váltani, nem csak zöldre.
-    const report = await evaluateTrapProbes({
-      probes: TRAP_PROBES.filter((p) => p.redLine === 'RL-5'),
+      probes: TRAP_PROBES,
       checks: coreRedLines(ENFORCING_POLICY),
       run: scenarioRunner(coreTrapScenarios()),
     })
+    assert.equal(report.total, TRAP_PROBES.length, 'minden szállított próbának le kell futnia')
+    assert.equal(report.failed, 0, `piros vonal sérült:\n${formatRedLineReport(report)}`)
+    assert.equal(report.notApplicable, 0, 'a szállított készletben nincs tárgytalan próba')
+    assert.equal(report.blocking, false)
+    assert.match(formatRedLineReport(report), /Egyetlen piros vonal sem sérült/)
+  })
+
+  await check('a kapu BLOKKOL, ha egy próba sérült piros vonalat talál', async () => {
+    // A kiiktatott kapu próbája szándékosan sérülő nyomot ad — ez bizonyítja,
+    // hogy a kapu tud pirosra váltani, nem csak zöldre.
+    const report = await evaluateTrapProbes({
+      probes: [BROKEN_GATE_PROBE],
+      checks: coreRedLines(ENFORCING_POLICY),
+      run: scenarioRunner([brokenGateScenario()]),
+    })
     assert.equal(report.blocking, true, 'a CI-kapunak blokkolnia kell sérült piros vonalnál')
     assert.match(formatRedLineReport(report), /BLOKKOL/)
+  })
+
+  await check('a szállított készlet nem tartalmazza az elromlott-kapu próbát', async () => {
+    // Ha ez bekerülne, a CI-lépés minden PR-en piros lenne, és a kapu pár nap
+    // alatt hitelét vesztené.
+    assert.ok(!TRAP_PROBES.some((p) => p.id === BROKEN_GATE_PROBE.id))
   })
 
   await check('ismeretlen piros vonalra hivatkozó próba fail-fast', async () => {

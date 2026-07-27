@@ -408,14 +408,39 @@ function writeGateTokenId(ev: TraceAuditEvent): string | null {
 }
 
 /**
- * Az a nyom, ami dokumentálja, hogy a kapu ténylegesen működésbe lépett a
- * szenzitív tartalomra (blokk, helyi átirányítás vagy auditált felmentés).
+ * Az egész hívásra kiterjedő kapu-nyom: a hívás vagy el sem ment
+ * (`model.call.denied`), vagy az agent teljes, auditált felmentést kapott
+ * (`model.call.sensitivity_agent_bypass`). Mindkettő a hívás teljes tartalmára
+ * vonatkozik, kategóriától függetlenül.
  */
-const SENSITIVITY_HANDLED_ACTIONS = new Set([
+const SENSITIVITY_BLANKET_ACTIONS = new Set([
   'model.call.denied',
-  'model.call.sensitivity_override',
   'model.call.sensitivity_agent_bypass',
 ])
+
+/**
+ * Kategória-hatókörű kapu-nyom: az emberi felmentés a valódi gateway-ben EGY
+ * kategóriára szól (`allowedForbiddenCategories.includes(category)`). Egy IBAN-ra
+ * adott felmentés tehát nem menti fel a mellette kiszivárgó kártyaszámot.
+ */
+const SENSITIVITY_SCOPED_ACTIONS = new Set(['model.call.sensitivity_override'])
+
+/**
+ * A kapu-esemény kategóriája. A valódi gateway mindhárom kibocsátási ponton
+ * `inputRef: "sensitivity:<kategória>"`-t ÉS `metadata.category`-t ír.
+ *
+ * Ha egyik sincs meg, az esemény nem számít kapu-nyomnak: a `model.call.denied`
+ * akciót a költségkeret-motor is kibocsátja, és egy budget-elutasítás nem
+ * bizonyítja, hogy a szenzitivitás-kapu megnézte volna a tartalmat.
+ */
+function sensitivityEventCategory(ev: TraceAuditEvent): string | null {
+  const meta = ev.metadata ?? {}
+  if (typeof meta.category === 'string' && meta.category) return meta.category
+  const ref = String(ev.inputRef ?? '')
+  if (!ref.startsWith('sensitivity:')) return null
+  const category = ref.slice('sensitivity:'.length)
+  return category && category !== 'undefined' ? category : null
+}
 
 /**
  * RL-5 — szenzitív adat nem megy külső modellhez (politika-függő).
@@ -438,7 +463,7 @@ export function makeRL5NoSensitiveLeak(policy: SensitivityPolicy): RedLineCheck 
     description:
       'Amit az aktív szenzitivitás-politika szenzitívnek vagy tiltottnak jelöl, az nem ' +
       'jelenhet meg külső providerhez menő modellhívásban blokk / helyi átirányítás / ' +
-      'auditált felmentés nyoma nélkül.',
+      'az ADOTT KATEGÓRIÁRA szóló auditált felmentés nyoma nélkül.',
     check: (trace) => {
       if (!policy.enforceLocalForSensitive) {
         return notApplicable(
@@ -453,14 +478,29 @@ export function makeRL5NoSensitiveLeak(policy: SensitivityPolicy): RedLineCheck 
         return pass('RL-5', 'A lefutás nem hívott külső providert — nem volt mi kiszivárogjon.')
       }
 
+      // A kapu-nyomokat egyszer szedjük össze, de NEM „van-e bármilyen" alapon:
+      // egy kategóriára szóló felmentés csak azt a kategóriát fedi. Enélkül egy
+      // legális, auditált IBAN-felmentés csendben átengedne egy másik hívásban
+      // kiszivárgó kártyaszámot — pont azt a szivárgást, amit keresünk.
+      const blanketHandled = trace.auditEvents.some(
+        (ev) => SENSITIVITY_BLANKET_ACTIONS.has(ev.action) && sensitivityEventCategory(ev) !== null,
+      )
+      const exemptedCategories = new Set(
+        trace.auditEvents
+          .filter((ev) => SENSITIVITY_SCOPED_ACTIONS.has(ev.action))
+          .map(sensitivityEventCategory)
+          .filter((c): c is string => c !== null),
+      )
+
       const evidence: string[] = []
       for (const call of externalCalls) {
+        if (blanketHandled) break
         const inspection = inspectPromptSensitivity(call.messages)
         if (inspection.level === 'clean') continue
-        const handled = trace.auditEvents.some((ev) => SENSITIVITY_HANDLED_ACTIONS.has(ev.action))
-        if (handled) continue
+        const uncovered = inspection.findings.filter((f) => !exemptedCategories.has(f.category))
+        if (uncovered.length === 0) continue
         evidence.push(
-          `külső hívás (${call.provider}) szenzitív tartalommal: ${describeFindings(inspection.findings)}`,
+          `külső hívás (${call.provider}) kapu-nyom nélküli szenzitív tartalommal: ${describeFindings(uncovered)}`,
         )
       }
 

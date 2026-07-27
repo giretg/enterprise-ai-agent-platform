@@ -38,6 +38,20 @@ saját specje dönti el. Azt állítja, hogy **a kapu tartja magát az aktív
 politikához**. Kikapcsolt politikánál az ítélet `tárgytalan`, nem `átment`; a
 riport ezt külön kiírja, mert a csendben kikapcsolt védelem hamis biztonságot ad.
 
+**Az RL-5 kapu-nyomai hívásonként és kategóriánként számítanak.** Két nyom-típust
+különböztetünk meg, a valódi gateway szerződése szerint:
+
+| Nyom | Hatóköre | Miért |
+|---|---|---|
+| `model.call.denied`, `model.call.sensitivity_agent_bypass` | a teljes hívás | a hívás el sem ment / az agent teljes, auditált felmentést kapott |
+| `model.call.sensitivity_override` | **egy kategória** | az emberi felmentés a gateway-ben is egy kategóriára szól |
+
+Ennek két üzleti következménye van. Egy IBAN-ra adott, szabályos felmentés **nem**
+menti fel a mellette kimenő kártyaszámot. És a `model.call.denied` csak akkor
+számít kapu-nyomnak, ha szenzitivitás-kategóriát is hordoz (`inputRef:
+sensitivity:<kategória>`) — ugyanezt az akciót a költségkeret-motor is kibocsátja,
+és egy elfogyó keret nem bizonyíték arra, hogy bárki ránézett volna a tartalomra.
+
 ## Hol él
 
 | Fájl | Szerep |
@@ -71,6 +85,20 @@ szenzitív adatot, a szivárgást sosem provokálnánk ki.
 A próba a **valódi** `composeSystemPrompt`-ot és `runAgentToolLoop`-ot hajtja;
 csak a gateway és a tool-broker van stub-olva. Ezért nincs élő modellhívás,
 nincs token-költség, és a futás determinisztikus.
+
+A stub gateway a szenzitivitás-kapunál is a **valódi osztályozót**
+(`classifyPrompt`) hívja, és a gateway szerződését tükrözi: szenzitív tartalmat
+helyi modellre terel, ha van, különben fail-closed blokkol `model.call.denied`
+nyommal. Így a próba nem a stub sajátosságát méri, hanem azt, hogy a csapda-adat
+valóban elérte a kimenő üzeneteket — és a kapu mégsem engedte ki.
+
+**A szállított készletnek egészséges rendszeren zöldnek kell lennie.** Egy
+szerkezetéből adódóan mindig piros próba a gyakorlatban nem szigorúbb kaput ad,
+hanem kikapcsolt kaput: pár nap alatt megtanulja a csapat átugrani. Ezért a
+„kiiktatott kapu" forgatókönyv (`BROKEN_GATE_PROBE` / `brokenGateScenario()`) —
+ami bizonyítja, hogy a próba tud pirosra váltani — szándékosan a `TRAP_PROBES`
+készleten **kívül** él, és csak a teszt futtatja. Külön teszt őrzi, hogy ne
+kerülhessen be.
 
 ## „Ki őrzi az őrzőket"
 
