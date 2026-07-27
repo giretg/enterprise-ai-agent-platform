@@ -15,6 +15,7 @@ import type {
   ConversationRepository,
 } from '@/repositories/interfaces'
 import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
+import { envelopeToolResultForModel } from './tool-result-envelope'
 import type { ToolBrokerInvokeInput } from './tool-broker-types'
 import type { ToolBrokerService } from './tool-broker-service'
 
@@ -71,21 +72,35 @@ export type ConsequenceApprovalContinuation = {
 
 /** Mennyi eredményszöveg mehet vissza a modellnek a folytatáskor. */
 const CONTINUATION_RESULT_MAX_CHARS = 600
+/** Egy argumentum-részlet (útvonal, címzett, tárgy) maximális hossza a kártyán/promptban. */
+const SUMMARY_ARG_MAX_CHARS = 200
+
+/**
+ * Hosszkorlát MINDEN modell/kártya felé menő részletre. A tool argumentumai és az
+ * eredménye is a modell által, külső tartalomból generált szöveg: korlát nélkül egy
+ * több tízezer karakteres „útvonal" vagy eredmény kiszorítaná a folytatás tényleges
+ * utasítását a kontextusból (és olvashatatlanná tenné a kártyát).
+ */
+function clip(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max)}… (rövidítve)` : text
+}
 
 function summarizeArgs(toolName: string, args: Record<string, unknown>): string {
   const path = typeof args.path === 'string' ? args.path : null
-  if (path) return `${toolName} → ${path}`
+  if (path) return `${toolName} → ${clip(path, SUMMARY_ARG_MAX_CHARS)}`
   const to = typeof args.to === 'string' ? args.to : null
-  if (to) return `${toolName} → ${to}`
+  if (to) return `${toolName} → ${clip(to, SUMMARY_ARG_MAX_CHARS)}`
   const title = typeof args.title === 'string' ? args.title : null
-  if (title) return `${toolName}: ${title}`
+  if (title) return `${toolName}: ${clip(title, SUMMARY_ARG_MAX_CHARS)}`
   return toolName
 }
 
 /** A broker eredményéből rövid, olvasható szöveg (a `resultMeta` tetszőleges JSON). */
 function describeResult(result: unknown): string {
   if (result === null || result === undefined) return 'kész'
-  if (typeof result === 'string') return result.trim() || 'kész'
+  // A sztring-eredményre UGYANAZ a korlát vonatkozik, mint a JSON-ra: egy hosszú
+  // szöveges tool-válasz enélkül teljes egészében a promptba/kártyára kerülne.
+  if (typeof result === 'string') return clip(result.trim(), CONTINUATION_RESULT_MAX_CHARS) || 'kész'
   let text: string
   try {
     text = JSON.stringify(result)
@@ -93,9 +108,7 @@ function describeResult(result: unknown): string {
     return 'kész'
   }
   if (!text || text === '{}' || text === 'null') return 'kész'
-  return text.length > CONTINUATION_RESULT_MAX_CHARS
-    ? `${text.slice(0, CONTINUATION_RESULT_MAX_CHARS)}… (rövidítve)`
-    : text
+  return clip(text, CONTINUATION_RESULT_MAX_CHARS)
 }
 
 /** A `resultMeta`-ból (perzisztált végállapot) ugyanaz a szöveg, mint frissen futtatva. */
@@ -341,8 +354,14 @@ export class ConsequenceApprovalService {
 
     if (!conversationId || !agentId) return { ok: false, reason: 'approval_not_found' }
 
+    // A sorok tartalma (útvonal, címzett, tárgy, eredmény) a modell által, KÜLSŐ
+    // tartalomból generált szöveg — épp azért esett kapura a hívás. Ez a szöveg egy
+    // user-szerepű üzenetbe kerül, ami a legmagasabb bizalmi szint: becsomagolás
+    // nélkül egy támadó által írt fájlnév/tárgy utasításnak látszana. Ugyanazon az
+    // egységes borítékon megy át, mint minden más külső eredmény (issue #97 §2).
     const prompt =
-      `[Jóváhagyás a felületen] Jóváhagytam az alábbi műveletet, a platform le is futtatta:\n${lines.join('\n')}\n\n` +
+      '[Jóváhagyás a felületen] Jóváhagytam az alábbi műveletet, a platform le is futtatta:\n' +
+      `${envelopeToolResultForModel('external_untrusted', lines.join('\n'))}\n\n` +
       'NE futtasd újra ezeket a lépéseket. Folytasd innen a hátralévő lépésekkel, ' +
       'majd foglald össze magyarul, mi készült el és mi maradt hátra. ' +
       'Ha egy hátralévő lépés újra jóváhagyásra vár, mondd el, hogy a chatben megjelenő gombbal engedélyezhető.'
