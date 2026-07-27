@@ -46,6 +46,11 @@ export type ConsequenceApprovalCard = {
    * gép „még él" gombot mutatna egy halott jóváhagyáshoz.
    */
   expired?: boolean
+  /**
+   * Ha a korábbi jóváhagyás után a tool-hívás elbukott: a hiba kódja. A kártya
+   * ebből írja ki, MIÉRT nem futott le a művelet, és emiatt kínál újrapróbálást.
+   */
+  failedReason?: string
 }
 
 export type ConsequenceApprovalResult =
@@ -117,6 +122,12 @@ function describeResultMeta(resultMeta: unknown): string {
     return describeResult((resultMeta as { result: unknown }).result)
   }
   return describeResult(resultMeta)
+}
+
+/** Korábbi approve után a tool invoke denied/exception-nel zárult-e. */
+function isFailedInvokeResultMeta(resultMeta: unknown): boolean {
+  if (!resultMeta || typeof resultMeta !== 'object' || Array.isArray(resultMeta)) return false
+  return (resultMeta as { denied?: unknown }).denied === true
 }
 
 export class ConsequenceApprovalService {
@@ -200,22 +211,34 @@ export class ConsequenceApprovalService {
     if (!access.ok) return []
 
     const now = Date.now()
-    const rows = await this.approvals.listPendingByConversation(
+    const rows = await this.approvals.listOpenByConversation(
       conversationId,
       new Date(now - CONSEQUENCE_APPROVAL_VISIBILITY_MS),
     )
 
     const cards: ConsequenceApprovalCard[] = []
     for (const row of rows) {
+      // A sikeresen lefutott jóváhagyás lezárt ügy — nem kérünk rá újra gombot.
+      // Az elbukott tool-hívás viszont igen: az emberi döntés megvan, a művelet
+      // nem futott le, ezért újratöltés után is kell hozzá „Újrapróbálom".
+      if (row.status === 'approved' && !isFailedInvokeResultMeta(row.resultMeta)) continue
       // Defense-in-depth: az agentnek is elérhetőnek kell lennie a néző tenantjából.
       const agent = await this.agents.findById(row.agentId)
       if (!agent || !isAgentReachableFromTenant(agent.tenantId, actor.tenantId)) continue
+      const failedReason =
+        row.status === 'approved'
+          ? ((row.resultMeta as { reason?: unknown } | null)?.reason ?? 'invoke_failed')
+          : null
       cards.push({
         approvalId: row.id,
         toolName: row.toolName,
         summary: summarizeArgs(row.toolName, (row.args ?? {}) as Record<string, unknown>),
         expiresAt: row.expiresAt.toISOString(),
-        expired: row.expiresAt.getTime() <= now,
+        // Egy elbukott hívás akkor is újrafuttatható, ha közben letelt a
+        // jóváhagyási ablak: a döntés már megszületett, csak a végrehajtás
+        // hiányzik — nem küldjük vissza a felhasználót új kört kérni.
+        expired: row.status === 'pending' && row.expiresAt.getTime() <= now,
+        ...(failedReason ? { failedReason: String(failedReason) } : {}),
       })
     }
     return cards
@@ -230,13 +253,20 @@ export class ConsequenceApprovalService {
     const access = await this.assertActorCanDecide(row, actor)
     if (!access.ok) return access
 
-    if (row.status === 'approved') {
+    const previouslyFailedInvoke = isFailedInvokeResultMeta(row.resultMeta)
+
+    if (row.status === 'approved' && !previouslyFailedInvoke) {
+      // Sikeres invoke utáni ismételt kattintás: ne futtassuk újra a toolt.
       return {
         ok: true,
         outcome: 'approved',
         result: row.resultMeta,
         resultSummary: describeResultMeta(row.resultMeta),
       }
+    }
+    if (row.status === 'approved' && previouslyFailedInvoke) {
+      // Emberi jóváhagyás megvan, a tool invoke bukott el — Újrapróbálom újrafuttat.
+      return this.invokeApproved(row, actor)
     }
     if (row.status !== 'pending') {
       return { ok: false, reason: `approval_${row.status}` }
@@ -255,6 +285,25 @@ export class ConsequenceApprovalService {
     })
     if (!claimed) return { ok: false, reason: 'approval_already_decided' }
 
+    return this.invokeApproved(
+      {
+        ...row,
+        status: 'approved',
+        approvedBy: actor.id,
+        approvedAt: new Date(),
+      },
+      actor,
+    )
+  }
+
+  /**
+   * Már approved sor tool-újrafuttatása (első approve után, vagy sikertelen
+   * invoke Újrapróbálom ágán). A döntés (approved) megmarad; csak a resultMeta frissül.
+   */
+  private async invokeApproved(
+    row: ConsequenceApproval,
+    actor: ConsequenceApprovalActor,
+  ): Promise<ConsequenceApprovalResult> {
     const invokeInput = {
       agentId: row.agentId,
       agentVersion: row.agentVersion,
@@ -265,7 +314,38 @@ export class ConsequenceApprovalService {
       args: row.args,
     } as ToolBrokerInvokeInput
 
-    const result = await this.toolBroker.invoke(invokeInput)
+    let result: Awaited<ReturnType<ToolBrokerService['invoke']>>
+    try {
+      result = await this.toolBroker.invoke(invokeInput)
+    } catch (error) {
+      // A CAS már approved-re állt — ne hagyjuk resultMeta nélkül, különben a
+      // második kattintás „sikeresnek" tűnik, miközben a tool soha nem futott.
+      const reason = error instanceof Error ? error.message : 'invoke_failed'
+      await this.approvals.casUpdateStatus(row.id, 'approved', {
+        status: 'approved',
+        resultMeta: { denied: true, reason, failed: true },
+      })
+      await this.audit.append({
+        actorType: 'human',
+        actorId: actor.id,
+        agentVersion: row.agentVersion,
+        action: 'consequence.approval.approved',
+        targetType: 'conversation',
+        targetId: row.conversationId,
+        modelUsed: null,
+        inputRef: row.toolName,
+        outputRef: row.id,
+        policyDecision: 'invoke_error',
+        metadata: {
+          approval_id: row.id,
+          tool: row.toolName,
+          denied: true,
+          reason,
+        },
+      })
+      return { ok: false, reason }
+    }
+
     const resultMeta = result.denied
       ? { denied: true, reason: result.reason ?? 'denied' }
       : { denied: false, result: result.result }

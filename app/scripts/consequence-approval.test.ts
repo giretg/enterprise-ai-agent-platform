@@ -52,13 +52,13 @@ function memoryRepo(): ConsequenceApprovalRepository & {
     async findById(id) {
       return rows.get(id) ?? null
     },
-    async listPendingByConversation(conversationId, createdAfter) {
+    async listOpenByConversation(conversationId, createdAfter) {
       lastCreatedAfter.value = createdAfter
       return [...rows.values()]
         .filter(
           (row) =>
             row.conversationId === conversationId &&
-            row.status === 'pending' &&
+            (row.status === 'pending' || row.status === 'approved') &&
             row.createdAt.getTime() > createdAfter.getTime(),
         )
         .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
@@ -87,10 +87,31 @@ function memoryRepo(): ConsequenceApprovalRepository & {
   }
 }
 
-function fakeBroker(invoked: ToolBrokerInvokeInput[], result?: unknown) {
+function fakeBroker(
+  invoked: ToolBrokerInvokeInput[],
+  opts?: { result?: unknown; failTimes?: number; denyTimes?: number },
+) {
+  const result = opts?.result
+  let failLeft = opts?.failTimes ?? 0
+  let denyLeft = opts?.denyTimes ?? 0
   return {
     invoke: async (input: ToolBrokerInvokeInput) => {
       invoked.push(input)
+      if (failLeft > 0) {
+        failLeft -= 1
+        throw new Error('broker_boom')
+      }
+      if (denyLeft > 0) {
+        denyLeft -= 1
+        return {
+          denied: true,
+          reason: 'policy_denied',
+          trust: 'trusted' as const,
+          result: null,
+          resultMeta: {},
+          latencyMs: 1,
+        }
+      }
       return {
         denied: false,
         trust: 'trusted' as const,
@@ -110,6 +131,10 @@ function buildService(opts?: {
   agentTenantId?: string | null
   /** A broker által visszaadott eredmény (a hossz-korlát teszteléséhez). */
   brokerResult?: unknown
+  /** Hányszor dobjon kivételt az invoke (az Újrapróbálom ág teszteléséhez). */
+  failTimes?: number
+  /** Hányszor adjon `denied` választ az invoke (policy-tiltás + újrapróbálás). */
+  denyTimes?: number
 }) {
   const repo = memoryRepo()
   const invoked = opts?.invoked ?? []
@@ -144,7 +169,11 @@ function buildService(opts?: {
         return {} as never
       },
     } as unknown as AuditRepository,
-    fakeBroker(invoked, opts?.brokerResult),
+    fakeBroker(invoked, {
+      result: opts?.brokerResult,
+      failTimes: opts?.failTimes,
+      denyTimes: opts?.denyTimes,
+    }),
   )
   return { service, repo, invoked, audits }
 }
@@ -196,6 +225,36 @@ async function main() {
     const second = await service.approve(card.approvalId, actor)
     assert.equal(second.ok, true)
     assert.equal(invoked.length, 1, 'csak egyszer futott le')
+  })
+
+  await test('approve invoke exception: hibát ad, resultMeta megmarad, Újrapróbálom újrafuttat', async () => {
+    const invoked: ToolBrokerInvokeInput[] = []
+    const { service, repo } = buildService({ invoked, failTimes: 1 })
+    const card = await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
+    const first = await service.approve(card.approvalId, actor)
+    assert.equal(first.ok, false)
+    if (!first.ok) assert.equal(first.reason, 'broker_boom')
+    assert.equal(repo.rows.get(card.approvalId)!.status, 'approved')
+    const meta = repo.rows.get(card.approvalId)!.resultMeta as { denied?: boolean; failed?: boolean }
+    assert.equal(meta.denied, true)
+    assert.equal(meta.failed, true)
+    assert.equal(invoked.length, 1)
+
+    const retry = await service.approve(card.approvalId, actor)
+    assert.equal(retry.ok, true, 'a második próbálkozásnak sikerülnie kell')
+    assert.equal(invoked.length, 2, 'Újrapróbálom ténylegesen újra hívja a brokert')
+  })
+
+  await test('approve deny: hiba + Újrapróbálom újrafuttat', async () => {
+    const invoked: ToolBrokerInvokeInput[] = []
+    const { service } = buildService({ invoked, denyTimes: 1 })
+    const card = await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
+    const first = await service.approve(card.approvalId, actor)
+    assert.equal(first.ok, false)
+    if (!first.ok) assert.equal(first.reason, 'policy_denied')
+    const retry = await service.approve(card.approvalId, actor)
+    assert.equal(retry.ok, true)
+    assert.equal(invoked.length, 2)
   })
 
   await test('reject: nem hív invoke-ot', async () => {
@@ -308,6 +367,34 @@ async function main() {
     await service.approve(card.approvalId, actor)
     const open = await service.listOpenForConversation('conv-1', actor)
     assert.equal(open.length, 0)
+  })
+
+  // ÜZLETI KOCKÁZAT: az elbukott tool-hívás után a sor `approved` marad. Ha a lista
+  // kihagyná, a felhasználó újratöltés után egy „elkészült" beszélgetést látna, pedig
+  // a fájl/levél SOHA nem jött létre — és nem is lenne mivel újrapróbálnia.
+  await test('listOpenForConversation: az elbukott jóváhagyás újratöltés után is visszajön', async () => {
+    const { service } = buildService({ failTimes: 1 })
+    const card = await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
+    const first = await service.approve(card.approvalId, actor)
+    assert.equal(first.ok, false)
+
+    const open = await service.listOpenForConversation('conv-1', actor)
+    assert.equal(open.length, 1, 'az elbukott sor nem tűnhet el némán')
+    assert.equal(open[0].approvalId, card.approvalId)
+    assert.equal(open[0].failedReason, 'broker_boom', 'a kártya kiírja, MIÉRT nem futott le')
+    assert.equal(open[0].expired, false, 'az elbukott hívás a jóváhagyási ablak után is újrafuttatható')
+  })
+
+  await test('listOpenForConversation: az elbukott sor a lejárati idő után is újrafuttatható', async () => {
+    const { service, repo } = buildService({ failTimes: 1 })
+    const card = await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
+    await service.approve(card.approvalId, actor)
+    repo.rows.get(card.approvalId)!.expiresAt = new Date(Date.now() - 1000)
+    const open = await service.listOpenForConversation('conv-1', actor)
+    assert.equal(open.length, 1)
+    assert.equal(open[0].expired, false, 'a döntés megvan — csak a végrehajtás hiányzik')
+    const retry = await service.approve(card.approvalId, actor)
+    assert.equal(retry.ok, true, 'a lejárat nem tilthatja le a MÁR jóváhagyott művelet újrafuttatását')
   })
 
   // TENANT-HATÁR a LISTÁN is: a döntés kapuja hiába szigorú, ha a lista kiszivárogtatja,
