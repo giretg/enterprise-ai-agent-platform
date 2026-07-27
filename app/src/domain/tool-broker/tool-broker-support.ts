@@ -28,7 +28,7 @@ import type {
   ToolBrokerInvokeInput,
   ToolExecutionResult,
   UserDirectoryArgs,
-  UserDirectoryEntry,
+  UserDirectoryLookupEntry,
   UserDirectoryResult,
   WebResearchDelegationResult,
 } from './tool-broker-types'
@@ -39,26 +39,35 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 
 /**
  * user_directory tiszta szűrője (DB-mentes, ezért determinisztikusan tesztelhető).
- * Az opcionális `query` a néven / szerepen (role + jobDescription) / e-mailen szűr,
+ * A kötelező `query` a néven / szerepen (role + jobDescription) / e-mailen szűr,
  * ékezet- és kisbetű-függetlenül, ÉS-kapcsolt szótagokkal (minden keresőszónak
- * illeszkednie kell). A `limit` 1..100 közé szorítva (alapból 50).
+ * illeszkednie kell). Üres keresés fail-closed: nem adja vissza a teljes névsort.
+ * Az e-mail csak a belső keresési korpusz része, az eredményből mindig kimarad.
+ * A `limit` 1..100 közé szorítva (alapból 50).
  */
 export function filterUserDirectory(
-  entries: UserDirectoryEntry[],
+  entries: UserDirectoryLookupEntry[],
   args: UserDirectoryArgs,
 ): UserDirectoryResult {
   const query = normalizeText((args.query ?? '').trim())
-  const filtered = query
-    ? entries.filter((u) => {
-        const haystack = normalizeText(
-          [u.name, u.jobDescription ?? '', u.role ?? '', u.email].join(' '),
-        )
-        return query.split(/\s+/).every((term) => haystack.includes(term))
-      })
-    : entries
+  if (!query) throw new Error('user_directory_query_required')
+
+  const filtered = entries.filter((u) => {
+    const haystack = normalizeText(
+      [u.name, u.jobDescription ?? '', u.role ?? '', u.email].join(' '),
+    )
+    return query.split(/\s+/).every((term) => haystack.includes(term))
+  })
 
   const limit = Math.min(Math.max(args.limit ?? 50, 1), 100)
-  return { users: filtered.slice(0, limit) }
+  return {
+    users: filtered.slice(0, limit).map((user) => ({
+      userId: user.userId,
+      name: user.name,
+      role: user.role,
+      jobDescription: user.jobDescription,
+    })),
+  }
 }
 
 export function normalizeText(value: string): string {
