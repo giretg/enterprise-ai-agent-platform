@@ -327,6 +327,62 @@ async function main() {
     assert.deepEqual(open, [])
   })
 
+  // FOLYTATÁS a jóváhagyás után — üzletileg ez a „megnyomtam a gombot, és
+  // láthatóan nem történt semmi" tünet gyógyszere: a gomb után az agent
+  // folytatja a szálat, a hátralévő lépésekkel együtt.
+  await test('approve: a kártyához visszajön a lefutott művelet eredménye', async () => {
+    const { service } = buildService()
+    const card = await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
+    const result = await service.approve(card.approvalId, actor)
+    assert.equal(result.ok, true)
+    if (result.ok && result.outcome === 'approved') {
+      assert.match(result.resultSummary, /out\.xlsx/)
+    }
+  })
+
+  await test('getApprovedContinuation: a jóváhagyott sorból szerveroldali folytatás-prompt lesz', async () => {
+    const { service } = buildService()
+    const card = await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
+    await service.approve(card.approvalId, actor)
+    const res = await service.getApprovedContinuation([card.approvalId], actor)
+    assert.equal(res.ok, true)
+    if (res.ok) {
+      assert.equal(res.continuation.conversationId, 'conv-1')
+      assert.equal(res.continuation.agentId, 'agent-1')
+      assert.match(res.continuation.prompt, /xlsx_create/)
+      assert.match(res.continuation.prompt, /out\.xlsx/)
+      // A modellnek szólnia kell, hogy NE futtassa újra ugyanazt.
+      assert.match(res.continuation.prompt, /NE futtasd újra/)
+    }
+  })
+
+  await test('getApprovedContinuation: MÉG NEM jóváhagyott sorra nem indul folytatás', async () => {
+    const { service } = buildService()
+    const card = await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
+    const res = await service.getApprovedContinuation([card.approvalId], actor)
+    assert.equal(res.ok, false)
+    if (!res.ok) assert.equal(res.reason, 'approval_pending')
+  })
+
+  // TENANT-HATÁR a folytatáson is: a prompt a másik szervezet műveletének
+  // paramétereit (fájlnév, címzett) tartalmazza — ez önmagában szivárgás lenne.
+  await test('tenant-határ: idegen tenant nem kaphat folytatás-promptot', async () => {
+    const { service } = buildService({ conversationTenantId: 'tenant-1', agentTenantId: null })
+    const card = await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
+    await service.approve(card.approvalId, actor)
+    const foreign = { id: 'user-9', tenantId: 'tenant-2', role: 'admin' as const }
+    const res = await service.getApprovedContinuation([card.approvalId], foreign)
+    assert.equal(res.ok, false)
+    if (!res.ok) assert.equal(res.reason, 'conversation_not_found')
+  })
+
+  await test('getApprovedContinuation: ismeretlen azonosítóra nem indul forduló', async () => {
+    const { service } = buildService()
+    const res = await service.getApprovedContinuation(['nincs-ilyen'], actor)
+    assert.equal(res.ok, false)
+    if (!res.ok) assert.equal(res.reason, 'approval_not_found')
+  })
+
   if (failures > 0) {
     console.error(`\n${failures} teszt elbukott.`)
     process.exit(1)

@@ -48,9 +48,29 @@ export type ConsequenceApprovalCard = {
 }
 
 export type ConsequenceApprovalResult =
-  | { ok: true; outcome: 'approved'; result: unknown }
+  | {
+      ok: true
+      outcome: 'approved'
+      result: unknown
+      /** Rövid, emberi mondat arról, MI futott le — a kártya ezt írja ki. */
+      resultSummary: string
+    }
   | { ok: true; outcome: 'rejected' }
   | { ok: false; reason: string }
+
+/**
+ * A jóváhagyás utáni FOLYTATÁS bemenete: a lefuttatott művelet(ek) eredménye
+ * és az a beszélgetés/agent, amelyben a folytatás fordulója elindulhat.
+ */
+export type ConsequenceApprovalContinuation = {
+  conversationId: string
+  agentId: string
+  /** A folytatás forduló user-üzenete — SZERVER oldalon áll össze, nem a kliens küldi. */
+  prompt: string
+}
+
+/** Mennyi eredményszöveg mehet vissza a modellnek a folytatáskor. */
+const CONTINUATION_RESULT_MAX_CHARS = 600
 
 function summarizeArgs(toolName: string, args: Record<string, unknown>): string {
   const path = typeof args.path === 'string' ? args.path : null
@@ -60,6 +80,30 @@ function summarizeArgs(toolName: string, args: Record<string, unknown>): string 
   const title = typeof args.title === 'string' ? args.title : null
   if (title) return `${toolName}: ${title}`
   return toolName
+}
+
+/** A broker eredményéből rövid, olvasható szöveg (a `resultMeta` tetszőleges JSON). */
+function describeResult(result: unknown): string {
+  if (result === null || result === undefined) return 'kész'
+  if (typeof result === 'string') return result.trim() || 'kész'
+  let text: string
+  try {
+    text = JSON.stringify(result)
+  } catch {
+    return 'kész'
+  }
+  if (!text || text === '{}' || text === 'null') return 'kész'
+  return text.length > CONTINUATION_RESULT_MAX_CHARS
+    ? `${text.slice(0, CONTINUATION_RESULT_MAX_CHARS)}… (rövidítve)`
+    : text
+}
+
+/** A `resultMeta`-ból (perzisztált végállapot) ugyanaz a szöveg, mint frissen futtatva. */
+function describeResultMeta(resultMeta: unknown): string {
+  if (resultMeta && typeof resultMeta === 'object' && 'result' in resultMeta) {
+    return describeResult((resultMeta as { result: unknown }).result)
+  }
+  return describeResult(resultMeta)
 }
 
 export class ConsequenceApprovalService {
@@ -174,7 +218,12 @@ export class ConsequenceApprovalService {
     if (!access.ok) return access
 
     if (row.status === 'approved') {
-      return { ok: true, outcome: 'approved', result: row.resultMeta }
+      return {
+        ok: true,
+        outcome: 'approved',
+        result: row.resultMeta,
+        resultSummary: describeResultMeta(row.resultMeta),
+      }
     }
     if (row.status !== 'pending') {
       return { ok: false, reason: `approval_${row.status}` }
@@ -235,7 +284,70 @@ export class ConsequenceApprovalService {
     if (result.denied) {
       return { ok: false, reason: result.reason ?? 'invoke_denied' }
     }
-    return { ok: true, outcome: 'approved', result: result.result }
+    return {
+      ok: true,
+      outcome: 'approved',
+      result: result.result,
+      resultSummary: describeResult(result.result),
+    }
+  }
+
+  /**
+   * A jóváhagyás utáni FOLYTATÁS forduló bemenete (issue #97 utókövetés).
+   *
+   * Üzletileg: a gomb megnyomása után a művelet lefut, de a felhasználó eddig
+   * ebből SEMMIT nem látott — se agent-választ, se a hátralévő lépéseket (egy
+   * xlsx-nél a fájl létrejött, a sorok viszont sosem íródtak be). Ez a metódus
+   * adja a folytatás fordulójának a szerver által összeállított szövegét: mi
+   * futott le és milyen eredménnyel. A prompt SOSEM a kliens szövege — a
+   * kliens csak az azonosítókat küldi.
+   *
+   * Csak MÁR jóváhagyott, egy beszélgetéshez tartozó sorokat fogad el, és
+   * ugyanazon a tenant-kapun megy át, mint maga a döntés.
+   */
+  async getApprovedContinuation(
+    approvalIds: string[],
+    actor: ConsequenceApprovalActor,
+  ): Promise<{ ok: true; continuation: ConsequenceApprovalContinuation } | { ok: false; reason: string }> {
+    const ids = [...new Set(approvalIds)].filter((id) => typeof id === 'string' && id.length > 0)
+    if (ids.length === 0) return { ok: false, reason: 'approval_not_found' }
+
+    const lines: string[] = []
+    let conversationId: string | null = null
+    let agentId: string | null = null
+
+    for (const id of ids) {
+      const row = await this.approvals.findById(id)
+      if (!row) return { ok: false, reason: 'approval_not_found' }
+      const access = await this.assertActorCanDecide(row, actor)
+      if (!access.ok) return access
+      if (row.status !== 'approved') return { ok: false, reason: `approval_${row.status}` }
+
+      // Egy folytatás EGY beszélgetést visz tovább — kevert szál nem értelmezhető.
+      if (conversationId && conversationId !== row.conversationId) {
+        return { ok: false, reason: 'approval_conversation_mismatch' }
+      }
+      conversationId = row.conversationId
+      agentId = row.agentId
+
+      const resultMeta = row.resultMeta as { denied?: boolean; reason?: string } | null
+      const outcome = resultMeta?.denied
+        ? `NEM futott le (${resultMeta.reason ?? 'denied'})`
+        : `lefutott — eredmény: ${describeResultMeta(row.resultMeta)}`
+      lines.push(
+        `- ${summarizeArgs(row.toolName, (row.args ?? {}) as Record<string, unknown>)} → ${outcome}`,
+      )
+    }
+
+    if (!conversationId || !agentId) return { ok: false, reason: 'approval_not_found' }
+
+    const prompt =
+      `[Jóváhagyás a felületen] Jóváhagytam az alábbi műveletet, a platform le is futtatta:\n${lines.join('\n')}\n\n` +
+      'NE futtasd újra ezeket a lépéseket. Folytasd innen a hátralévő lépésekkel, ' +
+      'majd foglald össze magyarul, mi készült el és mi maradt hátra. ' +
+      'Ha egy hátralévő lépés újra jóváhagyásra vár, mondd el, hogy a chatben megjelenő gombbal engedélyezhető.'
+
+    return { ok: true, continuation: { conversationId, agentId, prompt } }
   }
 
   async reject(

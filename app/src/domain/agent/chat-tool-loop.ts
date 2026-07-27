@@ -1802,6 +1802,16 @@ export async function runAgentToolLoop(params: {
   ) => Promise<ToolLoopConsequenceApprovalEvent>
   /** issue #97 — pending jóváhagyás stream-kártyához. */
   onConsequenceApproval?: (event: ToolLoopConsequenceApprovalEvent) => void | Promise<void>
+  /**
+   * issue #97 — a futás MÁR indulásakor „tainted".
+   *
+   * A jóváhagyás utáni FOLYTATÁS fordulója ilyen: a külső, nem megbízható tartalom
+   * a beszélgetés előzményében ott van (abból született a terv), csak ebben a
+   * fordulóban nem olvassuk be újra. Enélkül a folytatás „tisztának" látszana, és
+   * a hátralévő mellékhatásos lépések kapu NÉLKÜL futnának le — pont az a
+   * megkerülés, ami ellen a kapu véd.
+   */
+  initialTainted?: boolean
   /** Kooperatív leállítás (pl. chat Stop) — kör- és tool-hívás-határon ellenőrizve. */
   shouldCancel?: () => boolean
   /** Tesztelhetőség: injektálható óra a faliórai korláthoz (default `Date.now`). */
@@ -1888,7 +1898,7 @@ export async function runAgentToolLoop(params: {
   // kontextusába került, és minden későbbi döntését befolyásolhatja (nem csak a
   // vele egy batchben indított hívásokat). Egyetlen külső forrás is elég a
   // taint-hez, akkor is, ha egy fordulóban több, részben belső eredmény érkezik.
-  let runTainted = false
+  let runTainted = params.initialTainted ?? false
   // issue #97 — ha a kapu legalább egyszer blokkolt mellékhatást, ne indítsunk
   // újabb tool-körös modellhívást (tokenégetés elkerülése); záró összefoglaló jön.
   let consequenceGateTriggered = false
