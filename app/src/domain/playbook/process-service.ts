@@ -814,8 +814,11 @@ export class ProcessService {
     return detail
   }
 
-  async listProcesses(tenantId: string | null) {
-    return this.processes.listProcesses(tenantId)
+  async listProcesses(
+    tenantId: string | null,
+    opts?: { limit?: number; offset?: number; unbounded?: boolean },
+  ) {
+    return this.processes.listProcesses(tenantId, opts)
   }
 
   // --- Belső segédek ---------------------------------------------------------

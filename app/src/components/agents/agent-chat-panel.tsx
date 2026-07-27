@@ -142,6 +142,8 @@ type ConsequenceApprovalCard = {
   summary: string
   expiresAt: string
   status: 'pending' | 'approved' | 'rejected'
+  /** A SZERVER órája szerint lejárt-e — a kliens órájára ezt nem bízzuk. */
+  expired?: boolean
   resultMessage?: string
 }
 
@@ -257,6 +259,35 @@ function upsertConsequenceApproval(
   const index = current.findIndex((a) => a.approvalId === next.approvalId)
   if (index < 0) return [...current, next]
   return current.map((a, i) => (i === index ? { ...a, ...next } : a))
+}
+
+/**
+ * issue #97 — a DB-ből visszatöltött üzenetekre visszaakasztja a még FÜGGŐ
+ * jóváhagyásokat.
+ *
+ * A kapu az utolsó agent-buborékhoz tartozik: az agent ott mondja el, mire vár.
+ * Enélkül a forduló végén (a chat a DB végállapotát tölti újra) eltűnne a
+ * „Jóváhagyom" gomb, és a művelet némán lejárna.
+ */
+function attachPendingConsequenceApprovals(
+  messages: ChatMessage[],
+  pending: ConsequenceApprovalCard[] | undefined,
+): ChatMessage[] {
+  if (!pending || pending.length === 0) return messages
+  let anchorIndex = -1
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role !== 'user') {
+      anchorIndex = i
+      break
+    }
+  }
+  // Ha (még) nincs agent-üzenet, az utolsó buborékra tesszük — a gomb sosem
+  // veszhet el csak azért, mert a szál elején tartunk.
+  if (anchorIndex < 0) anchorIndex = messages.length - 1
+  if (anchorIndex < 0) return messages
+  return messages.map((m, i) =>
+    i === anchorIndex ? { ...m, consequenceApprovals: pending } : m,
+  )
 }
 
 const MEMORY_CANDIDATE_TYPE_LABEL: Record<string, string> = {
@@ -620,13 +651,20 @@ function ConsequenceApprovalsPanel({
   onUpdate: (approvalId: string, patch: Partial<ConsequenceApprovalCard>) => void
 }) {
   const [pending, startTransition] = useTransition()
-  const openCount = approvals.filter((a) => a.status === 'pending').length
+  const isOpen = (a: ConsequenceApprovalCard) => a.status === 'pending' && !a.expired
+  const openCount = approvals.filter(isOpen).length
 
   const runApprove = (approvalId: string) => {
     startTransition(async () => {
       const res = await approveConsequenceApproval({ approvalId })
       if (!res.success) {
-        onUpdate(approvalId, { resultMessage: res.error })
+        // A lejárat nem hiba, hanem végállapot: gomb helyett magyarázat járjon hozzá.
+        onUpdate(
+          approvalId,
+          res.error === 'approval_expired'
+            ? { expired: true, resultMessage: undefined }
+            : { resultMessage: res.error },
+        )
         return
       }
       onUpdate(approvalId, { status: 'approved', resultMessage: undefined })
@@ -654,17 +692,16 @@ function ConsequenceApprovalsPanel({
             type="button"
             disabled={pending}
             className="rounded-full bg-sage/20 px-3 py-1 text-[11px] font-semibold text-sage disabled:opacity-50"
-            onClick={() =>
-              approvals.filter((a) => a.status === 'pending').forEach((a) => runApprove(a.approvalId))
-            }
+            onClick={() => approvals.filter(isOpen).forEach((a) => runApprove(a.approvalId))}
           >
             Jóváhagyom mind
           </button>
         )}
       </div>
       <p className="mb-2 text-[11px] text-ink-faint">
-        Külső forrás miatt a platform nem futtatta le automatikusan. A gomb lefuttatja a műveletet —
-        nem kell újraírnod a chatben.
+        {openCount > 0
+          ? 'Külső forrás miatt a platform nem futtatta le automatikusan. A gomb lefuttatja a műveletet — nem kell újraírnod a chatben.'
+          : 'Külső forrás miatt a platform nem futtatta le automatikusan, és a jóváhagyási idő letelt.'}
       </p>
       <div className="space-y-2">
         {approvals.map((a) => (
@@ -676,14 +713,22 @@ function ConsequenceApprovalsPanel({
               <span className="font-medium text-ink">{a.summary}</span>
               <span className="text-[10px] text-ink-faint">
                 {a.status === 'pending'
-                  ? 'Jóváhagyásra vár'
+                  ? a.expired
+                    ? 'Lejárt'
+                    : 'Jóváhagyásra vár'
                   : a.status === 'approved'
                     ? 'Jóváhagyva — lefuttatva'
                     : 'Elutasítva'}
               </span>
             </div>
             {a.resultMessage && <p className="mt-1 text-[11px] text-coral">{a.resultMessage}</p>}
-            {a.status === 'pending' && (
+            {a.status === 'pending' && a.expired && (
+              <p className="mt-1 text-[11px] text-ink-faint">
+                Ez a jóváhagyás lejárt, ezért már nem futtatható le. Írd meg a chatben az agentnek,
+                hogy próbálja újra — az új kéréshez új gomb jelenik meg.
+              </p>
+            )}
+            {isOpen(a) && (
               <div className="mt-2 flex flex-wrap gap-2">
                 <button
                   type="button"
@@ -1380,10 +1425,16 @@ export function AgentChatPanel({
       if (refreshed.success) {
         setConversationStatus(refreshed.data.conversation.status)
         setMessages(
-          refreshed.data.messages.map((m) => ({
-            ...m,
-            createdAt: new Date(m.createdAt).toISOString(),
-          })),
+          attachPendingConsequenceApprovals(
+            refreshed.data.messages.map((m) => ({
+              ...m,
+              createdAt: new Date(m.createdAt).toISOString(),
+            })),
+            refreshed.data.pendingConsequenceApprovals?.map((a) => ({
+              ...a,
+              status: 'pending' as const,
+            })),
+          ),
         )
       }
       if ('ticketId' in res.data) {
@@ -1450,10 +1501,13 @@ export function AgentChatPanel({
       setConversationId(convId)
       setConversationStatus(res.data.conversation.status)
       setMessages(
-        res.data.messages.map((m) => ({
-          ...m,
-          createdAt: new Date(m.createdAt).toISOString(),
-        })),
+        attachPendingConsequenceApprovals(
+          res.data.messages.map((m) => ({
+            ...m,
+            createdAt: new Date(m.createdAt).toISOString(),
+          })),
+          res.data.pendingConsequenceApprovals?.map((a) => ({ ...a, status: 'pending' as const })),
+        ),
       )
       startTransition(() => {
         void refreshSessions()
@@ -1534,6 +1588,24 @@ export function AgentChatPanel({
                   prev.map((m) =>
                     m.id === params.agentMessageId
                       ? { ...m, activities: upsertActivity(m.activities, event.activity) }
+                      : m,
+                  ),
+                )
+              })
+            } else if (event.type === 'consequence_approval' && event.approval) {
+              // issue #97 — a visszacsatlakozó ág is megkapja a kaput: lecsatlakozás
+              // után is legyen gomb, ne csak a folyamatosan nézett fordulóban.
+              flushSync(() => {
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === params.agentMessageId
+                      ? {
+                          ...m,
+                          consequenceApprovals: upsertConsequenceApproval(m.consequenceApprovals, {
+                            ...event.approval,
+                            status: 'pending',
+                          }),
+                        }
                       : m,
                   ),
                 )
@@ -1709,10 +1781,13 @@ export function AgentChatPanel({
       if (res.success) {
         setConversationStatus(res.data.conversation.status)
         setMessages(
-          res.data.messages.map((m) => ({
-            ...m,
-            createdAt: new Date(m.createdAt).toISOString(),
-          })),
+          attachPendingConsequenceApprovals(
+            res.data.messages.map((m) => ({
+              ...m,
+              createdAt: new Date(m.createdAt).toISOString(),
+            })),
+            res.data.pendingConsequenceApprovals?.map((a) => ({ ...a, status: 'pending' as const })),
+          ),
         )
         void reattachToConversation(id)
       } else {

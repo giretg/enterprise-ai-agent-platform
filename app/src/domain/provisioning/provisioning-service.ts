@@ -29,6 +29,7 @@ import { validateDraftConfig, type ValidationResult } from './draft-validator'
 import { validateGmailDraftConfig } from './gmail-draft-validator'
 import { ProvisioningError } from './errors'
 import { isResolvableSecretAlias } from './secret-alias'
+import { isConnectorOwnedSecretRef } from './connector-secret-alias-policy'
 
 export type ProvisioningActor =
   | { type: 'user'; userId: string; role: UserRole; tenantId: string | null }
@@ -89,6 +90,11 @@ export interface ProvisioningDeps {
     found: boolean
     tenantId: string | null
   }>
+  /**
+   * Csak az üzemeltető által tenant-scope-pal engedélyezett külső aliasok használhatók.
+   * Hiányzó resolver = nincs külső alias (fail-closed).
+   */
+  isTrustedExternalSecretAlias?: (alias: string, tenantId: string | null) => boolean
 }
 
 function sha256Hex(content: string): string {
@@ -263,6 +269,15 @@ export class ProvisioningService {
   ): Promise<{ ok: boolean; statusCode?: number; detail?: string }> {
     this.requireHumanAdmin(actor, 'testConnectorDraft')
     const draft = await this.loadDraftForTenant(input.draftId, actor)
+    // A draftból jövő alias javaslat, tehát akár LLM-/dokumentum-influenced adat is
+    // lehet. A sandbox sem oldhat fel belőle titkot, kivéve az ugyanilyen tenant-scope
+    // policy által engedett aliasokat; különben a „teszt” exfiltrációs kerülőút lenne.
+    const sandboxSecretAlias = this.approvedConnectorSecretAlias(
+      draft.connector.secretAlias,
+      draft.connectorId,
+      actor.tenantId,
+      false,
+    )
 
     let result: { ok: boolean; statusCode?: number; detail?: string }
     if (draft.connector.type === 'gmail') {
@@ -280,7 +295,7 @@ export class ProvisioningService {
       const config = parseStoredConfig(draft.connector.config)
       result = await this.deps.sandboxTester.test({
         config,
-        secretAlias: draft.connector.secretAlias,
+        secretAlias: sandboxSecretAlias,
         tenantId: actor.tenantId,
       })
     } else {
@@ -317,7 +332,14 @@ export class ProvisioningService {
       return { ok: false, detail: 'sandbox_tester_not_configured' }
     }
 
-    const token = await resolveActivationToken(input)
+    const approvedAlias = this.approvedConnectorSecretAlias(
+      input.secretAlias,
+      draft.connectorId,
+      actor.tenantId,
+      true,
+    )
+
+    const token = await resolveActivationToken(input, approvedAlias)
     if (!token) {
       return { ok: false, detail: 'no_credentials_provided' }
     }
@@ -372,10 +394,14 @@ export class ProvisioningService {
     }
 
     const hasApiKey = Boolean(input.apiKey?.trim())
-    const hasSecretAlias = Boolean(input.secretAlias?.trim())
-    const hasResolvableAlias =
-      hasSecretAlias && isResolvableSecretAlias(input.secretAlias!.trim())
-    const hasCredentials = hasApiKey || hasResolvableAlias
+    const approvedAlias = this.approvedConnectorSecretAlias(
+      input.secretAlias,
+      draft.connectorId,
+      actor.tenantId,
+      true,
+    )
+
+    const hasCredentials = hasApiKey || Boolean(approvedAlias)
 
     if (!hasCredentials) {
       if (!input.confirmKeyless) {
@@ -385,7 +411,7 @@ export class ProvisioningService {
         )
       }
     } else if (!isGmail && this.deps.sandboxTester) {
-      const token = await resolveActivationToken(input)
+      const token = await resolveActivationToken(input, approvedAlias)
       if (!token) {
         throw new ProvisioningError(
           'ACTIVATION_AUTH_TEST_FAILED',
@@ -419,8 +445,8 @@ export class ProvisioningService {
       )
       await saveConnectorApiKey(draft.connectorId, input.apiKey!.trim())
       resolvedAlias = buildConnectorSecretRef(draft.connectorId)
-    } else if (hasResolvableAlias) {
-      resolvedAlias = input.secretAlias!.trim()
+    } else if (approvedAlias) {
+      resolvedAlias = approvedAlias
     } else {
       const { buildConnectorSecretRef } = await import('@/domain/connector/connector-secret-store')
       resolvedAlias = buildConnectorSecretRef(draft.connectorId)
@@ -575,6 +601,32 @@ export class ProvisioningService {
     })
 
     return { connectorId: connector.id, lifecycleState: 'active' }
+  }
+
+  /**
+   * A connector-saját ref vagy a tenant-scope-os platform-allowlist az EGYETLEN
+   * elfogadható feloldási út. `rejectUntrusted` a user által beadott aliasra igaz;
+   * draft-suggestionnél hamis, ott inkább token nélkül tesztelünk.
+   */
+  private approvedConnectorSecretAlias(
+    input: string | null | undefined,
+    connectorId: string,
+    tenantId: string | null,
+    rejectUntrusted: boolean,
+  ): string | null {
+    const alias = input?.trim() ?? ''
+    if (!alias || !isResolvableSecretAlias(alias)) return null
+    if (
+      isConnectorOwnedSecretRef(alias, connectorId) ||
+      this.deps.isTrustedExternalSecretAlias?.(alias, tenantId) === true
+    ) {
+      return alias
+    }
+    if (!rejectUntrusted) return null
+    throw new ProvisioningError(
+      'SECRET_ALIAS_NOT_TRUSTED',
+      'secretAlias must be this connector\'s managed secret-ref or an operator-approved alias for this tenant',
+    )
   }
 
   // ── §8.6 assignConnectorToAgent (EMBERI admin-aktus — agent NEM hívhatja) ──
@@ -1278,13 +1330,12 @@ function safeHttpApiView(raw: unknown): HttpApiConfigView | null {
   return { baseUrl, authScheme, isDelegated, endpoints }
 }
 
-async function resolveActivationToken(input: {
-  apiKey?: string
-  secretAlias?: string
-}): Promise<string | null> {
+async function resolveActivationToken(
+  input: { apiKey?: string },
+  approvedSecretAlias: string | null,
+): Promise<string | null> {
   if (input.apiKey?.trim()) return input.apiKey.trim()
-  const alias = input.secretAlias?.trim()
-  if (!alias || !isResolvableSecretAlias(alias)) return null
+  if (!approvedSecretAlias) return null
   const { resolveConnectorApiKey } = await import('@/domain/connector/http-api-client')
-  return resolveConnectorApiKey(alias)
+  return resolveConnectorApiKey(approvedSecretAlias)
 }

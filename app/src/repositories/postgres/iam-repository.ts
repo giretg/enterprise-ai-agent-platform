@@ -1,5 +1,6 @@
 import type { UserRole, UserStatus, InvitationStatus } from '@prisma/client'
 import { prisma } from '@/lib/db'
+import { prismaPageArgs, toListPage } from '@/lib/list-pagination'
 import type {
   UserRepository,
   InvitationRepository,
@@ -27,15 +28,31 @@ export class PostgresUserRepository implements UserRepository {
     })
   }
 
-  async findMany(filter?: { tenantId?: string | null; status?: UserStatus; role?: UserRole }) {
-    return prisma.user.findMany({
+  async findMany(filter?: {
+    tenantId?: string | null
+    status?: UserStatus
+    role?: UserRole
+    limit?: number
+    offset?: number
+    unbounded?: boolean
+  }) {
+    const { take, skip, pageLimit } = prismaPageArgs(
+      filter?.unbounded ||
+        (filter?.limit === undefined && filter?.offset === undefined)
+        ? { unbounded: true }
+        : filter,
+    )
+    const offset = skip ?? 0
+    const rows = await prisma.user.findMany({
       where: {
         ...(filter?.tenantId !== undefined ? { tenantId: filter.tenantId } : {}),
         ...(filter?.status ? { status: filter.status } : {}),
         ...(filter?.role ? { role: filter.role } : {}),
       },
       orderBy: { createdAt: 'asc' },
+      ...(take !== undefined ? { take, skip: offset } : {}),
     })
+    return toListPage(rows, pageLimit, offset).items
   }
 
   async findManyByIds(ids: string[]) {
@@ -135,14 +152,29 @@ export class PostgresInvitationRepository implements InvitationRepository {
     return prisma.invitation.findUnique({ where: { tokenHash } })
   }
 
-  async findMany(filter?: { tenantId?: string | null; status?: InvitationStatus }) {
-    return prisma.invitation.findMany({
+  async findMany(filter?: {
+    tenantId?: string | null
+    status?: InvitationStatus
+    limit?: number
+    offset?: number
+    unbounded?: boolean
+  }) {
+    const { take, skip, pageLimit } = prismaPageArgs(
+      filter?.unbounded ||
+        (filter?.limit === undefined && filter?.offset === undefined)
+        ? { unbounded: true }
+        : filter,
+    )
+    const offset = skip ?? 0
+    const rows = await prisma.invitation.findMany({
       where: {
         ...(filter?.tenantId !== undefined ? { tenantId: filter.tenantId } : {}),
         ...(filter?.status ? { status: filter.status } : {}),
       },
       orderBy: { createdAt: 'desc' },
+      ...(take !== undefined ? { take, skip: offset } : {}),
     })
+    return toListPage(rows, pageLimit, offset).items
   }
 
   async claimPendingRedemption(id: string, email: string, now: Date) {

@@ -1,5 +1,25 @@
 # Enterprise code review log
 
+## 2026-07-27 - Connector Provisioning: tenant-scope-os titok-alias bizalmi határ
+
+- Áttekintett modulok (a connector életciklus azon admin oldali része, amely külső rendszerhez való hitelesítést és agenthez rendelhető futásidejű kapcsolatot hoz létre — a korábbi napló a self-updating connector és a grant-vault részeit fedte, ezt a provisioning-belépőt nem):
+  - `app/src/domain/provisioning/provisioning-service.ts` (`testConnectorDraft`, `testConnectorDraftWithCredentials`, `activateConnector`, az admin-szintű secret-injektálási és sandbox-kapu)
+  - `app/src/domain/provisioning/secret-alias.ts`, `app/src/domain/connector/connector-secret-store.ts`, `app/src/domain/connector/http-api-client.ts` (alias-formátumok és a tényleges Secret Manager/env feloldás)
+  - `app/src/domain/index.ts` (a valódi provisioning sandbox token-resolver bekötése), `app/src/domain/provisioning/sandbox-connection-tester.ts` (mikor kerül a token a kifelé menő read-only próbába)
+  - Kontextusban: `app/src/app/actions/provisioning.ts`, `app/src/domain/provisioning/connector-config.ts`, a Provisioning Assistant feature-spec §3, §5, §7–8.
+- Eredmény — ami RENDBEN volt: a connector draft nem aktív, az agent nem aktiválhat és nem rendelhet connectort, az egress sandbox deny-by-default + SSRF-őrös, az aktiválás előtt admin-review/sandbox/dual-control kapu fut, a nyers secret nem kerül auditba vagy connector-configba.
+- **Lelet #1 (kritikus, biztonsági — tenant-admin titok-exfiltráció):** az `activateConnector` és a kulcsos sandbox-teszt bármilyen, feloldhatónak látszó `secretAlias`-t elfogadott: `env:WRITE_GATE_SECRET`, `secret-manager:projects/.../secrets/<bármi>`, illetve tetszőleges `secret-ref:`. A futó alkalmazás service accountja ezt feloldotta, majd az admin által konfigurált HTTP connector auth-fejlécében külső hostra küldhette. Ez a „connector beállítása” jogot a platform teljes Secret Manager-/környezeti titok-olvasási jogává emelte; egy tenant admin így potenciálisan governance-, OAuth- vagy más ügyfélhez tartozó secretet vihetett ki.
+- **Lelet #2 (kritikus, bypass — sandbox út):** a credential nélküli `testConnectorDraft` is a draftban lévő, külső dokumentum/LLM által befolyásolható `secretAliasSuggested` értéket adta a sandbox token-feloldónak. Ráadásul a resolver alias hiányában globális `PROVIDER_CRM_API_KEY` fallbacket adott. Egy allowlistolt célhosttal a „csak próba” gomb ugyanazt a titok-kiszivárogtatást tette volna lehetővé, aktiválás nélkül.
+- Javítás:
+  - Új, fail-closed tenant-policy: `CONNECTOR_TRUSTED_SECRET_ALIASES` JSON, tenant-ID → PONTOS aliaslista; `__platform__` külön scope és nem öröklődik tenantokra. Hibás/hiányzó konfiguráció = nincs külső alias. Példa: `{"tenant-uuid":["env:CUSTOMER_CRM_KEY"]}`.
+  - A connector saját, Secret Store-ba a platform által írt `secret-ref:<connectorId>` referenciája engedett; más connector `secret-ref`-je nem. Külső `env:` / Secret Manager alias csak a pontos tenant allowlistből használható.
+  - Ugyanaz a közös policy-helper védi az aktiválást, a megadott credentiales sandbox-tesztet ÉS a draft-alias sandbox-utóutat. A draftból jövő nem engedélyezett aliasnál a próba token nélkül fut; a globális `PROVIDER_CRM_API_KEY` fallback megszűnt.
+  - Új determinisztikus policy-teszt és CI-bekötés; a meglévő provisioning tesztben regresszió igazolja, hogy sem az aktiválás, sem a teszt-endpoint, sem a draft sandbox nem old fel `env:WRITE_GATE_SECRET`-et.
+- Üzleti hatás: egy connector-adminnak csak a saját külső rendszerének kulcsát szabad kezelnie, nem a platform futtatási identitásának teljes titoktárát. A javítás megakadályozza, hogy egy rosszindulatú vagy kompromittált tenant-admin egy „CRM kapcsolat tesztelése” művelettel governance titkot vagy más ügyfél credentialjét küldje ki. A platform-üzemeltető továbbra is felvehet szükséges, tenant-specifikus, előre ismert külső aliasokat; minden más connector-kulcs a connector saját menedzselt storage-ába kerül.
+- Ellenőrzés: `node --import tsx scripts/connector-secret-alias-policy.test.ts` (4/4 zöld), `node --import tsx scripts/provisioning-assistant.test.ts` (a teljes provisioning suite zöld, benne a 2 új bypass-regresszió), `npx tsc --noEmit`, célzott `npx eslint`, `git diff --check` zöld. A `tsx` CLI a sandbox IPC-korlátja miatt nem indítható, ezért az ekvivalens Node `--import tsx` futtató ment.
+- Kód-review: Standards — nincs hard violation; egy jelzett alias-policy duplikáció közös `approvedConnectorSecretAlias` helperrel megszűnt. Spec — nincs eltérés a Provisioning Assistant §3/§5/§7/§8 követelményeitől.
+- Üzemeltetési teendő: deploy előtt az eddig kézzel Secret Managerre/env-re mutató, tenant connector aliasokat pontos tenant-scope-pal fel kell venni a `CONNECTOR_TRUSTED_SECRET_ALIASES` konfigurációba, vagy a kulcsot az aktiváláskor kell megadni, hogy connector-owned `secret-ref` legyen.
+
 ## 2026-07-26 - Agent REST API: interakciós ticket tenant-bélyegzése (POST /api/v1/agent/tickets)
 
 - Áttekintett modulok (az agent-kulccsal hitelesített, gép-gép REST felület — eddig a naplóban a mögöttes szolgáltatások szerepeltek, de maga a HTTP-belépő réteg nem):

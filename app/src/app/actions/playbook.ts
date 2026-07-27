@@ -104,7 +104,10 @@ function toProcessBuilderPlaybookVersionView(
 export async function listPlaybooksV2() {
   try {
     const user = await requireTenantRole('viewer')
-    const playbooks = await services.playbooksV2.listPlaybooks(user.activeTenantId)
+    const playbooks = await services.playbooksV2.listPlaybooks(user.activeTenantId, {
+      includeVersions: 'none',
+      limit: 50,
+    })
     return ok(
       playbooks.map((p) => ({
         id: p.id,
@@ -113,7 +116,7 @@ export async function listPlaybooksV2() {
         processType: p.processType,
         status: p.status,
         currentPublishedVersionId: p.currentPublishedVersionId,
-        versionCount: p.versions.length,
+        versionCount: p.versionCount ?? p.versions.length,
         updatedAt: p.updatedAt.toISOString(),
       })),
     )
@@ -433,7 +436,10 @@ export async function listStartablePlaybooks() {
 export async function listPublishedPlaybookVersionsForProcessBuilder() {
   try {
     const user = await requireTenantRole('operator')
-    const playbooks = await services.playbooksV2.listPlaybooks(user.activeTenantId)
+    const playbooks = await services.playbooksV2.listPlaybooks(user.activeTenantId, {
+      includeVersions: 'all',
+      unbounded: true,
+    })
     return ok(
       playbooks.flatMap((playbook) =>
         playbook.versions

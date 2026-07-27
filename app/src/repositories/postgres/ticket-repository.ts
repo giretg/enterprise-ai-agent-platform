@@ -2,9 +2,11 @@ import { Prisma } from '@prisma/client'
 import type { Ticket, TicketTransition } from '@prisma/client'
 import { notifyTicketReady } from '@/lib/dispatch-notify'
 import { prisma } from '@/lib/db'
+import { prismaPageArgs, toListPage } from '@/lib/list-pagination'
 import { resolveTicketSource } from '@/lib/ticket-source'
 import type {
   AppendTicketCommentInput,
+  ListPageResult,
   TicketCommentWithAttachments,
   TicketFilter,
   TicketRepository,
@@ -16,26 +18,46 @@ function isUniqueCollision(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002'
 }
 
+function ticketWhere(filter?: TicketFilter): Prisma.TicketWhereInput {
+  const where: Prisma.TicketWhereInput = {}
+  if (filter && 'tenantId' in filter) where.tenantId = filter.tenantId
+  if (filter?.state) {
+    where.state = Array.isArray(filter.state) ? { in: filter.state } : filter.state
+  }
+  if (filter?.type) where.type = filter.type
+  if (filter?.agentId) where.agentId = filter.agentId
+  if (filter?.processInstanceId) where.processInstanceId = filter.processInstanceId
+  if (filter?.source) {
+    where.source = Array.isArray(filter.source) ? { in: filter.source } : filter.source
+  } else if (filter?.excludeTest) {
+    where.source = { not: 'test' }
+  }
+  return where
+}
+
 export class PostgresTicketRepository implements TicketRepository {
   async findMany(filter?: TicketFilter): Promise<Ticket[]> {
-    const where: Prisma.TicketWhereInput = {}
-    if (filter && 'tenantId' in filter) where.tenantId = filter.tenantId
-    if (filter?.state) {
-      where.state = Array.isArray(filter.state) ? { in: filter.state } : filter.state
-    }
-    if (filter?.type) where.type = filter.type
-    if (filter?.agentId) where.agentId = filter.agentId
-    if (filter?.processInstanceId) where.processInstanceId = filter.processInstanceId
-    if (filter?.source) {
-      where.source = Array.isArray(filter.source) ? { in: filter.source } : filter.source
-    } else if (filter?.excludeTest) {
-      where.source = { not: 'test' }
-    }
+    const page = await this.listPage(
+      filter?.limit !== undefined || filter?.offset !== undefined || filter?.unbounded
+        ? filter
+        : { ...filter, unbounded: true },
+    )
+    return page.items
+  }
 
-    return prisma.ticket.findMany({
-      where,
+  async listPage(filter?: TicketFilter): Promise<ListPageResult<Ticket>> {
+    const { take, skip, pageLimit } = prismaPageArgs(filter)
+    const offset = skip ?? 0
+    const rows = await prisma.ticket.findMany({
+      where: ticketWhere(filter),
       orderBy: { updatedAt: 'desc' },
+      ...(take !== undefined ? { take, skip: offset } : {}),
     })
+    return toListPage(rows, pageLimit, offset)
+  }
+
+  async count(filter?: TicketFilter): Promise<number> {
+    return prisma.ticket.count({ where: ticketWhere(filter) })
   }
 
   async findById(id: string): Promise<Ticket | null> {
