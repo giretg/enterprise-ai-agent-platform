@@ -27,7 +27,7 @@ import type {
 import type {
   AuthorizationResult,
   ToolName,
-  UserDirectoryEntry,
+  UserDirectoryLookupEntry,
 } from './tool-broker-types'
 import { resolveTulajdoniLapParseSource } from '@/lib/tulajdoni-lap-source'
 
@@ -178,12 +178,12 @@ const prismaActingUserLookup: ActingUserLookup = async (userId) =>
  */
 export type TenantUserDirectoryLookup = (
   tenantId: string | null,
-) => Promise<UserDirectoryEntry[]>
+) => Promise<UserDirectoryLookupEntry[]>
 
 export const prismaTenantUserDirectoryLookup: TenantUserDirectoryLookup = async (tenantId) => {
   const rows = await prisma.user.findMany({
     where: { tenantId, status: 'active' },
-    select: { id: true, name: true, email: true, role: true, jobDescription: true, status: true },
+    select: { id: true, name: true, email: true, role: true, jobDescription: true },
     orderBy: { name: 'asc' },
   })
   return rows.map((u) => ({
@@ -192,7 +192,6 @@ export const prismaTenantUserDirectoryLookup: TenantUserDirectoryLookup = async 
     email: u.email,
     role: u.role,
     jobDescription: u.jobDescription,
-    status: u.status,
   }))
 }
 
