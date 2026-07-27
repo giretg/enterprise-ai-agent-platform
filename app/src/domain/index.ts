@@ -88,6 +88,10 @@ import { KnowledgeBaseService } from '@/domain/knowledge-base/knowledge-base-ser
 import { ProvisioningService } from '@/domain/provisioning/provisioning-service'
 import { HttpSandboxConnectionTester } from '@/domain/provisioning/sandbox-connection-tester'
 import {
+  isTrustedExternalConnectorSecretAlias,
+  parseTrustedConnectorSecretAliasPolicy,
+} from '@/domain/provisioning/connector-secret-alias-policy'
+import {
   ProvisioningAssistant,
   PROVISIONING_DRAFT_CAPABILITIES,
 } from '@/domain/provisioning/provisioning-assistant'
@@ -708,6 +712,13 @@ const provisioningEgressAllowlist = (process.env.PROVISIONING_EGRESS_ALLOWLIST ?
   .map((h) => h.trim().toLowerCase())
   .filter(Boolean)
 const provisioningBankPreset = process.env.PROVISIONING_BANK_PRESET === 'true'
+// Tenant-admin által megadható külső secret-alias csak a platform által, PONTOSAN
+// erre a tenantra engedélyezett listából jöhet. Hiányzó/hibás JSON → üres lista,
+// azaz fail-closed. A connector-saját `secret-ref:<connectorId>` nem ebben a
+// konfigurációban, hanem a ProvisioningService-ben kap kivételt.
+const trustedConnectorSecretAliasPolicy = parseTrustedConnectorSecretAliasPolicy(
+  process.env.CONNECTOR_TRUSTED_SECRET_ALIASES,
+)
 
 // A tényleges egress-allowlist a fetch/validáció/sandbox pillanatában (§9): a statikus env-lista
 // MERGE-elve a futásidőben, auditált admin-aktussal bővített PlatformSetting-hostokkal
@@ -718,36 +729,30 @@ async function resolveEgressAllowlist(tenantId: string | null): Promise<string[]
   return [...new Set([...provisioningEgressAllowlist, ...persisted])]
 }
 
-async function resolveProvisioningSandboxToken(secretAlias: string | null): Promise<string | null> {
-  if (!secretAlias?.trim()) {
-    return process.env.PROVIDER_CRM_API_KEY?.trim() ?? null
-  }
+async function resolveProvisioningSandboxToken(
+  secretAlias: string | null,
+  tenantId: string | null,
+): Promise<string | null> {
+  if (!secretAlias?.trim()) return null
   const alias = secretAlias.trim()
-  const prefixed =
-    'PROVISIONING_SANDBOX_TOKEN_' + alias.toUpperCase().replace(/[^A-Z0-9]+/g, '_')
-  if (process.env[prefixed]?.trim()) return process.env[prefixed]!.trim()
-  if (process.env.PROVIDER_CRM_API_KEY?.trim()) return process.env.PROVIDER_CRM_API_KEY!.trim()
+  if (!isTrustedExternalConnectorSecretAlias(alias, tenantId, trustedConnectorSecretAliasPolicy)) {
+    return null
+  }
   try {
-    if (
-      alias.startsWith('env:') ||
-      alias.startsWith('secret-ref:') ||
-      alias.startsWith('secret-manager:')
-    ) {
-      return await resolveConnectorApiKey(alias)
-    }
-    return await resolveConnectorApiKey(`env:${alias}`)
+    return await resolveConnectorApiKey(alias)
   } catch {
     return null
   }
 }
 
 // F2-P-D sandbox connection-test (§8.4): valódi, szűk jogú read-only próbahívás
-// egress deny-by-default + SSRF-őrrel. A non-prod token feloldása env-vezérelt és
-// alias-szűkített (PROVISIONING_SANDBOX_TOKEN_<ALIAS-UPPER-SNAKE>); alapból tokenless.
+// egress deny-by-default + SSRF-őrrel. A sandbox KIZÁRÓLAG a tenant-scope-os,
+// platform által engedélyezett alias mögötti tokent oldhatja fel; alapból tokenless.
 const provisioningSandboxTester = new HttpSandboxConnectionTester({
   resolveEgressAllowlist: (tenantId) => resolveEgressAllowlist(tenantId),
   resolveBankPreset: async () => provisioningBankPreset,
-  resolveSandboxToken: async ({ secretAlias }) => resolveProvisioningSandboxToken(secretAlias),
+  resolveSandboxToken: async ({ secretAlias, tenantId }) =>
+    resolveProvisioningSandboxToken(secretAlias, tenantId),
 })
 const provisioningService = new ProvisioningService({
   drafts: repositories.connectorDrafts,
@@ -756,6 +761,8 @@ const provisioningService = new ProvisioningService({
   resolveEgressAllowlist: (tenantId) => resolveEgressAllowlist(tenantId),
   resolveBankPreset: async () => provisioningBankPreset,
   sandboxTester: provisioningSandboxTester,
+  isTrustedExternalSecretAlias: (alias, tenantId) =>
+    isTrustedExternalConnectorSecretAlias(alias, tenantId, trustedConnectorSecretAliasPolicy),
   // F2-P-F: az agent-aktor draft-jogai deny-by-default a Capability táblából (§6.1/§9).
   resolveAgentCapabilities: async (agentId) => {
     const rows = await repositories.toolBroker.findCapabilitiesForAgents(

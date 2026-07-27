@@ -345,6 +345,8 @@ function makeService(opts?: {
   agentCapabilities?: readonly string[]
   /** Négy-szem jóváhagyó-hitelesítés felülbírálása; alap: az azonos-tenant jóváhagyó admin. */
   verifyApprover?: (input: { approverId: string; tenantId: string | null }) => Promise<boolean>
+  /** A külső secret-alias platform-oldali, tenant-scope-os engedélyezésének fake-je. */
+  isTrustedExternalSecretAlias?: (alias: string, tenantId: string | null) => boolean
 }) {
   const audit = opts?.audit ?? new FakeAudit()
   const drafts = opts?.drafts ?? new FakeDraftRepo()
@@ -359,6 +361,7 @@ function makeService(opts?: {
     // tenantjának bármely (aktivátortól különböző) jóváhagyója érvényes adminnak számít.
     verifyDualControlApprover:
       opts?.verifyApprover ?? (async ({ tenantId }) => tenantId === TENANT),
+    isTrustedExternalSecretAlias: opts?.isTrustedExternalSecretAlias ?? (() => true),
   })
   return { svc, audit, drafts }
 }
@@ -491,6 +494,37 @@ async function run() {
     )
     assert.equal(res.lifecycleState, 'active')
     assert.equal(audit.byAction('provisioning.connector.activate').length, 1)
+  })
+
+  await test('P5-security: tenant-admin nem használhat tetszőleges runtime secret aliast', async () => {
+    const { svc } = makeService({ isTrustedExternalSecretAlias: () => false })
+    const created = await draftToActivatable(svc)
+    await expectError('SECRET_ALIAS_NOT_TRUSTED', () =>
+      svc.activateConnector({ draftId: created.draftId, secretAlias: 'env:WRITE_GATE_SECRET' }, adminActor),
+    )
+    await expectError('SECRET_ALIAS_NOT_TRUSTED', () =>
+      svc.testConnectorDraftWithCredentials(
+        { draftId: created.draftId, secretAlias: 'env:WRITE_GATE_SECRET' },
+        adminActor,
+      ),
+    )
+  })
+
+  await test('P5-security: nem engedélyezett draft aliasból a sandbox nem old fel titkot', async () => {
+    let seenSecretAlias: string | null | undefined
+    const tester: SandboxConnectionTester = {
+      async test(input) {
+        seenSecretAlias = input.secretAlias
+        return { ok: true }
+      },
+    }
+    const { svc } = makeService({ tester, isTrustedExternalSecretAlias: () => false })
+    const created = await svc.createConnectorDraft(
+      { name: 'Acme CRM', sourceType: 'api_doc', generatedConfig: cleanConfig() },
+      adminActor,
+    )
+    await svc.testConnectorDraft({ draftId: created.draftId }, adminActor)
+    assert.equal(seenSecretAlias, null)
   })
 
   await test('P5-neg: aktiválás approved review nélkül → DRAFT_NOT_APPROVED', async () => {
