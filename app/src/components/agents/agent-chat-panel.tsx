@@ -1159,6 +1159,22 @@ export function AgentChatPanel({
   const streamAbortRef = useRef<AbortController | null>(null)
   const streamConversationIdRef = useRef<string | null>(null)
   const activeTurnIdRef = useRef<string | null>(null)
+  /**
+   * Ha a user a futó forduló közben nyomja a „Jóváhagyom”-ot, a tool a szerveren
+   * már lefut, de a folytatás-forduló nem indítható (`isAgentTyping`). Ilyenkor
+   * ide kerülnek az approval-id-k; a gépelés végeztével automatikusan elindul
+   * a folytatás (különben a gomb eltűnik, Excel/munkafájl soha nem készül el).
+   */
+  const pendingConsequenceContinuationRef = useRef<string[] | null>(null)
+  const startAgentTurnRef = useRef<
+    | ((options: {
+        text: string
+        attachments: PendingAttachment[]
+        userBubbleText?: string
+        consequenceApprovalIds?: string[]
+      }) => void)
+    | null
+  >(null)
   const [mounted, setMounted] = useState(false)
   const [minimized, setMinimized] = useState(false)
   const [connectableUserConnectors, setConnectableUserConnectors] = useState<
@@ -1391,6 +1407,7 @@ export function AgentChatPanel({
 
   const startNewSession = useCallback(() => {
     if (isAgentTyping) return
+    pendingConsequenceContinuationRef.current = null
     setConversationId(null)
     setMessages([])
     setStatusMessage(null)
@@ -1967,7 +1984,10 @@ export function AgentChatPanel({
       }
 
       // Más beszélgetésre váltáskor a helyi stream-olvasást megszakítjuk (a szerver fut tovább).
+      // A sorban álló folytatást ELŐBB eldobjuk — különben a setIsAgentTyping(false)
+      // flushelná a régi approval-id-kat az új beszélgetésre.
       streamAbortRef.current?.abort()
+      pendingConsequenceContinuationRef.current = null
       setIsAgentTyping(false)
       setStopPending(false)
       setActiveTurnId(null)
@@ -2405,18 +2425,51 @@ export function AgentChatPanel({
     startAgentTurn({ text, attachments: localAttachments })
   }
 
+  // startAgentTurn a render törzsében van; a gépelés-vége flush refen keresztül hívja.
+  startAgentTurnRef.current = startAgentTurn
+
+  /**
+   * Futó forduló közbeni „Jóváhagyom" → folytatás sorba. A forduló végén
+   * (isAgentTyping false) automatikusan elindul, hogy ne vesszen el a lánc.
+   */
+  useEffect(() => {
+    if (isAgentTyping) return
+    const ids = pendingConsequenceContinuationRef.current
+    if (!ids || ids.length === 0) return
+    if (conversationStatus === 'archived') {
+      pendingConsequenceContinuationRef.current = null
+      return
+    }
+    pendingConsequenceContinuationRef.current = null
+    startAgentTurnRef.current?.({
+      text: '',
+      attachments: [],
+      userBubbleText: '✅ Jóváhagyva — a művelet lefutott, folytasd.',
+      consequenceApprovalIds: ids,
+    })
+  }, [isAgentTyping, conversationStatus])
+
   /**
    * A „Jóváhagyom" gomb után a művelet a szerveren MÁR lefutott — innen az agent
    * folytatja. Enélkül a felhasználó csak annyit lát, hogy „nem történik semmi":
    * nincs válasz, és a hátralévő lépések (pl. a sorok beírása a létrehozott
    * fájlba) sem futnak le.
+   *
+   * Ha a kapu-üzenet még streamel, miközben a user már approve-ol (gyakori race),
+   * a folytatást sorba tesszük — nem dobjuk el „írj üzenetet" státusszal.
    */
   const handleConsequenceApproved = (approvalIds: string[]) => {
     // A frissen írt fájl azonnal látszódjon a Workspace listában.
     filesRef.current?.refresh()
     if (approvalIds.length === 0) return
-    if (isAgentTyping || conversationStatus === 'archived') {
+    if (conversationStatus === 'archived') {
       setStatusMessage('A művelet lefutott. Az agent folytatásához írj egy üzenetet a chatben.')
+      return
+    }
+    if (isAgentTyping) {
+      const prev = pendingConsequenceContinuationRef.current ?? []
+      pendingConsequenceContinuationRef.current = [...new Set([...prev, ...approvalIds])]
+      setStatusMessage('A művelet lefutott — amint az agent befejezi a választ, folytatjuk.')
       return
     }
     startAgentTurn({
