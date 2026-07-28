@@ -51,7 +51,11 @@ const TENANT_A = '11111111-1111-1111-1111-111111111111'
 const TENANT_B = '22222222-2222-2222-2222-222222222222'
 const USER_1 = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa'
 
-function makeHarness(opts?: { botStatus?: 'active' | 'disabled'; noBot?: boolean }) {
+function makeHarness(opts?: {
+  botStatus?: 'active' | 'disabled'
+  noBot?: boolean
+  channelEnabled?: boolean
+}) {
   let clock = new Date('2026-07-22T10:00:00Z')
   const setClock = (d: Date) => {
     clock = d
@@ -59,6 +63,7 @@ function makeHarness(opts?: { botStatus?: 'active' | 'disabled'; noBot?: boolean
   const advanceMs = (ms: number) => {
     clock = new Date(clock.getTime() + ms)
   }
+  let channelEnabled = opts?.channelEnabled ?? true
 
   const bot: ChannelBot = {
     id: 'bot-1',
@@ -296,6 +301,7 @@ function makeHarness(opts?: { botStatus?: 'active' | 'disabled'; noBot?: boolean
       tenantId === TENANT_A ? 'Alfa Kft.' : tenantId === TENANT_B ? 'Beta Zrt.' : null,
     resolveWebhookSecret: async () => WEBHOOK_SECRET,
     buildDeepLink: (jti) => `https://t.me/PlatformBot?start=${jti}`,
+    isChannelEnabled: async () => channelEnabled,
     now: () => clock,
   })
 
@@ -311,6 +317,9 @@ function makeHarness(opts?: { botStatus?: 'active' | 'disabled'; noBot?: boolean
     enqueuedNotifications,
     setClock,
     advanceMs,
+    setChannelEnabled: (enabled: boolean) => {
+      channelEnabled = enabled
+    },
     clockNow: () => clock,
   }
 }
@@ -584,6 +593,28 @@ async function main() {
     const r2 = await h.svc.handleInboundUpdate(u)
     assert.equal(r2.outcome, 'duplicate')
     assert.equal(h.turnRows.length, 1, 'a duplikált frissítés nem indít második fordulót')
+  })
+
+  await test('CL-17 kill-switch: új kötés és a már kötött üzenet sorba írása is azonnal leáll', async () => {
+    const disabled = makeHarness({ channelEnabled: false })
+    const deniedIssue = await disabled.svc.issueLinkToken({ userId: USER_1, tenantId: TENANT_A })
+    assert.equal(deniedIssue.ok, false, 'leállított csatornára nem adunk ki deep-link tokent')
+    assert.equal(deniedIssue.ok === false && deniedIssue.reason, 'channel_disabled')
+
+    const h = makeHarness()
+    const issued = await h.svc.issueLinkToken({ userId: USER_1, tenantId: TENANT_A })
+    const jti = issued.ok ? jtiFromDeepLink(issued.deepLink) : ''
+    await h.svc.handleInboundUpdate(startUpdate(1, '900017', jti))
+    const outboundAfterLink = h.transport.calls.length
+    h.setChannelEnabled(false)
+
+    const linked = await h.svc.handleInboundUpdate(textUpdate(2, '900017', 'bizalmas üzleti adat'))
+    assert.equal(linked.outcome, 'channel_disabled', 'a leállított csatorna nem ír sort')
+    assert.equal(h.turnRows.length, 0, 'nem perzisztálódik a leállított csatorna üzenete')
+    assert.equal(h.transport.calls.length, outboundAfterLink, 'a leállított csatorna nem válaszol')
+
+    const laterToken = await h.svc.issueLinkToken({ userId: USER_1, tenantId: TENANT_A })
+    assert.equal(laterToken.ok, false, 'kikapcsolás után a webes kötésindítás is tiltott')
   })
 
   if (failures > 0) {

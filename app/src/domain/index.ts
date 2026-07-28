@@ -321,6 +321,7 @@ const channelLinkingService = new ChannelLinkingService({
   },
   resolveWebhookSecret: (bot) => resolveWebhookSecretCached(bot.webhookSecretRef),
   buildDeepLink: (jti) => `https://t.me/${telegramBotUsername}?start=${jti}`,
+  isChannelEnabled: (tenantId) => platformSettingsService.isChannelEnabledForTenant(tenantId),
   linkedMessageSink: {
     enqueueInbound: (input) => {
       if (!channelTurnServiceRef) throw new Error('channel turn service not initialized')

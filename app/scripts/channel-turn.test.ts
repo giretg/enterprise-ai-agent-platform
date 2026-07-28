@@ -92,6 +92,8 @@ function makeHarness(opts?: {
   accessCheckThrows?: boolean
   revokeMembershipWhenAgentResolved?: boolean
   revokeMembershipDuringRuntime?: boolean
+  revokeGrantDuringRuntime?: boolean
+  revokeGrantAfterFirstMessage?: boolean
 }) {
   let clock = new Date('2026-07-22T10:00:00Z')
   const setClock = (d: Date) => {
@@ -310,10 +312,21 @@ function makeHarness(opts?: {
   }
 
   const transport = new RecordingChannelTransport()
+  const send = transport.send.bind(transport)
+  let sentMessageCount = 0
+  transport.send = async (call) => {
+    const result = await send(call)
+    if (call.method === 'sendMessage') {
+      sentMessageCount += 1
+      if (opts?.revokeGrantAfterFirstMessage && sentMessageCount === 1) grantRows.splice(0)
+    }
+    return result
+  }
 
   const defaultRuntime: ChannelAgentRuntime = {
     async runTurn() {
       if (opts?.revokeMembershipDuringRuntime) membershipStatus = 'suspended'
+      if (opts?.revokeGrantDuringRuntime) grantRows.splice(0)
       return { ok: true, text: 'Szia! Miben segíthetek?' }
     },
   }
@@ -662,12 +675,34 @@ async function main() {
     const h = makeHarness({ revokeMembershipWhenAgentResolved: true })
     await enqueueAndProcess(h, 'bizalmas kérdés')
     assert.equal(h.conversationRows.size, 0, 'nincs új, tiltott csatornához kötött beszélgetés')
+    assert.equal(h.session.activeAgentId, null, 'nem marad tiltott fordulóból aktív-agent állapot')
     assert.equal(sentTexts(h.transport).length, 0, 'nincs Telegram-kimenet')
     const completed = h.audits.find((a) => a.action === 'channel.turn.completed')
     assert.equal(completed?.metadata.reason, 'membership_inactive', 'a kapu auditáltan tilt')
   })
 
-  await test('CT-19 audit-katalógus: az új forduló-események regisztráltak', () => {
+  await test('CT-19 futás alatti grant-visszavonás: a kész válasz sem megy ki', async () => {
+    const h = makeHarness({ revokeGrantDuringRuntime: true })
+    await enqueueAndProcess(h, 'bizalmas kérdés')
+    assert.equal(sentTexts(h.transport).length, 0, 'visszavont Telegram-agent engedélyre nincs válasz')
+    const completed = h.audits.find((a) => a.action === 'channel.turn.completed')
+    assert.equal(completed?.metadata.reason, 'agent_grant_revoked', 'a grant-visszavonás auditált')
+  })
+
+  await test('CT-20 darabolás közbeni grant-visszavonás: az első darab után leáll a küldés', async () => {
+    const runtime: ChannelAgentRuntime = {
+      async runTurn(): Promise<ChannelAgentRuntimeResult> {
+        return { ok: true, text: `ALFA ${'a'.repeat(3000)}\n\nBÉTA ${'b'.repeat(3000)}` }
+      },
+    }
+    const h = makeHarness({ runtime, revokeGrantAfterFirstMessage: true })
+    await enqueueAndProcess(h, 'bizalmas kérdés')
+    assert.equal(sentTexts(h.transport).length, 1, 'a visszavonás után a maradék darabok nem mennek ki')
+    const completed = h.audits.find((a) => a.action === 'channel.turn.completed')
+    assert.equal(completed?.metadata.reason, 'agent_grant_revoked', 'a köztes visszavonás auditált')
+  })
+
+  await test('CT-21 audit-katalógus: az új forduló-események regisztráltak', () => {
     for (const a of [
       'channel.turn.enqueued',
       'channel.turn.completed',

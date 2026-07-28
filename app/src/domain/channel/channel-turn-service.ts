@@ -371,6 +371,9 @@ export class ChannelTurnService {
       await this.deps.turns.markDone(turn.id)
       return 'agent_unavailable'
     }
+    // Az agent-feloldás is aszinkron: a közben visszavont jogosultság után még a session
+    // aktív-agent mutatóját sem írhatjuk át.
+    if (!(await this.authorizeQueuedTurn(turn, identity, agent.id))) return 'fail_closed'
     if (session.activeAgentId !== agent.id) {
       await this.deps.sessions.update(session.id, { activeAgentId: agent.id })
     }
@@ -379,7 +382,7 @@ export class ChannelTurnService {
 
     // A beszélgetés létrehozása is tartós tenant-adatot ír. Ha a kapu az agent-feloldás alatt
     // záródott be, még ezt a belső mellékhatást se végezzük el egy tiltott csatornafordulóhoz.
-    if (!(await this.authorizeQueuedTurn(turn, identity))) return 'fail_closed'
+    if (!(await this.authorizeQueuedTurn(turn, identity, agent.id))) return 'fail_closed'
 
     // 24 órás gördülő beszélgetés (D9): a megőrzési határidő a létrehozáskor áll be. A user- és
     // agent-üzenetet a futásidő perzisztálja ebbe a beszélgetésbe (web-láthatóság, AC).
@@ -393,7 +396,7 @@ export class ChannelTurnService {
     // „Gépel" jelzés a feldolgozás alatt (§20). A korábbi kapu és ez közé szándékosan nincs
     // tartós futás, de az ellenőrzés közvetlenül a kimenet előtt van: kill-switch vagy
     // visszavonás esetén még a jelzés se adjon életjelet a leállított csatornáról.
-    if (!(await this.authorizeQueuedTurn(turn, identity))) return 'fail_closed'
+    if (!(await this.authorizeQueuedTurn(turn, identity, agent.id))) return 'fail_closed'
     await this.deps.transport.send({
       channelType: TELEGRAM,
       method: 'sendChatAction',
@@ -413,16 +416,17 @@ export class ChannelTurnService {
 
     // A modellfutás hosszú lehet. Közben a tenant-admin visszavonhatja a tagságot vagy
     // elzárhatja a Telegramot; a válasz ekkor NEM hagyhatja el a hiteles platformot.
-    if (!(await this.authorizeQueuedTurn(turn, identity))) return 'fail_closed'
+    if (!(await this.authorizeQueuedTurn(turn, identity, agent.id))) return 'fail_closed'
 
     const label = buildLabel(agent, projectKey)
 
     if (!result.ok) {
       // Időtúllépés / modellhiba / keret elfogyott → hétköznapi magyar (§23/§24), nem néma.
       const text = errorText(result.reason)
-      await this.sendLabeled(session, label, [text], identity, turn, 'runtime_error', {
+      const delivered = await this.sendLabeled(session, label, [text], identity, turn, agent.id, 'runtime_error', {
         reason: result.reason,
       })
+      if (delivered === 'access_revoked') return 'fail_closed'
       await this.deps.turns.markDone(turn.id)
       return 'runtime_error'
     }
@@ -467,9 +471,11 @@ export class ChannelTurnService {
       chunks,
       identity,
       turn,
+      agent.id,
       'answered',
       { chunks: chunks.length },
     )
+    if (delivered === 'access_revoked') return 'fail_closed'
     if (delivered === 'blocked_by_user') {
       await this.deps.identities.updateStatus(identity.id, 'blocked')
     }
@@ -578,7 +584,7 @@ export class ChannelTurnService {
 
   // ── Segédek ────────────────────────────────────────────────────────────────
 
-  private async authorizeIdentity(identity: ChannelIdentity): Promise<
+  private async authorizeIdentity(identity: ChannelIdentity, agentId?: string): Promise<
     | { allowed: true }
     | {
         allowed: false
@@ -587,6 +593,7 @@ export class ChannelTurnService {
           | 'membership_inactive'
           | 'tenant_inactive'
           | 'channel_disabled'
+          | 'agent_grant_revoked'
           | 'access_check_failed'
       }
   > {
@@ -610,6 +617,9 @@ export class ChannelTurnService {
       if (!(await this.deps.isChannelEnabled(identity.tenantId))) {
         return { allowed: false, reason: 'channel_disabled' }
       }
+      if (agentId && !(await this.deps.grants.findForIdentityAgent(identity.id, agentId))) {
+        return { allowed: false, reason: 'agent_grant_revoked' }
+      }
       return { allowed: true }
     } catch {
       // A jogosultság bizonytalansága sosem válhat újrapróbálható vagy kimenő hívássá.
@@ -622,8 +632,12 @@ export class ChannelTurnService {
    * Telegram-kimenet előtt újra használjuk, mert a hozzáférés a worker várakozása vagy a
    * modellfutás alatt is visszavonható.
    */
-  private async authorizeQueuedTurn(turn: ChannelTurn, identity: ChannelIdentity): Promise<boolean> {
-    const access = await this.authorizeIdentity(identity)
+  private async authorizeQueuedTurn(
+    turn: ChannelTurn,
+    identity: ChannelIdentity,
+    agentId?: string,
+  ): Promise<boolean> {
+    const access = await this.authorizeIdentity(identity, agentId)
     if (access.allowed) return true
     await this.deps.turns.markDone(turn.id)
     await this.auditTurn(turn, 'completed', 'fail_closed', {
@@ -696,11 +710,13 @@ export class ChannelTurnService {
     chunks: string[],
     identity: ChannelIdentity,
     turn: ChannelTurn,
+    agentId: string,
     outcome: ProcessTurnOutcome,
     auditMeta: Record<string, unknown>,
-  ): Promise<'ok' | 'blocked_by_user'> {
+  ): Promise<'ok' | 'blocked_by_user' | 'access_revoked'> {
     const total = chunks.length
     for (let i = 0; i < total; i++) {
+      if (!(await this.authorizeQueuedTurn(turn, identity, agentId))) return 'access_revoked'
       const counter = chunkCounterLabel(i, total)
       const header = counter ? `${label} ${counter}` : label
       const res = await this.sendToThread(session, `${header}\n\n${chunks[i]}`)
