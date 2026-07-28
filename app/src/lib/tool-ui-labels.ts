@@ -127,6 +127,12 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
       'Magyar e-hiteles tulajdoni lap (földhivatali PDF) strukturált kinyerése: hatályos ' +
       'tulajdonosok és hányadok, terhek, széljegyek — Document UUID vagy workspace path alapján.',
   },
+  tulajdoni_lap_egyeztetes: {
+    label: 'Tulajdoni lap egyeztetése',
+    description:
+      'Egy lépésben összeveti a tulajdoni lapot a nyilvántartás soraival, és kész Excel ' +
+      'egyeztető táblát ír a munkaterületre (Rendben / Módosítás / Törlés / Új rekord).',
+  },
 
   // Mini-app
   'sandbox_app.create': {

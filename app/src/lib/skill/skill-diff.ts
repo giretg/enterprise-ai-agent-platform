@@ -2,7 +2,7 @@ import type { SkillContent, SkillRequirement } from '@/lib/skill/skill-content'
 
 /** Egy skill-verzió diff-változása (WP-7, playbook-diff mintára). */
 export type SkillDiffChange = {
-  category: 'instructions' | 'triggerKeywords' | 'parameters' | 'requires'
+  category: 'instructions' | 'triggerKeywords' | 'parameters' | 'requires' | 'runtimeHints'
   kind: 'added' | 'removed' | 'modified'
   detail: string
   risk: 'high' | 'medium' | 'low' | 'none'
@@ -121,6 +121,37 @@ function diffRequires(before: SkillRequirement[], after: SkillRequirement[]): Sk
   return changes
 }
 
+/**
+ * Futási keret változása. A jóváhagyó ezt LÁTNIA kell: a keret emelése több időt
+ * és több eszközhívást — tehát több költséget — enged egy fordulónak, a
+ * `preferredMode: task` pedig átteszi a futást a boardra.
+ */
+function diffRuntimeHints(
+  before: SkillContent['runtimeHints'],
+  after: SkillContent['runtimeHints'],
+): SkillDiffChange[] {
+  const changes: SkillDiffChange[] = []
+  const fields = ['maxWallClockMs', 'maxToolCalls', 'preferredMode'] as const
+  for (const field of fields) {
+    const a = before?.[field]
+    const b = after?.[field]
+    if (a === b) continue
+    const label = (value: string | number | undefined) =>
+      value === undefined
+        ? 'nincs megadva'
+        : field === 'maxWallClockMs'
+          ? `${Math.round(Number(value) / 1000)} mp`
+          : String(value)
+    changes.push({
+      category: 'runtimeHints',
+      kind: a === undefined ? 'added' : b === undefined ? 'removed' : 'modified',
+      detail: `${field}: ${label(a)} → ${label(b)}`,
+      risk: 'medium',
+    })
+  }
+  return changes
+}
+
 function truncate(text: string, max = 120): string {
   const oneLine = text.replace(/\s+/g, ' ').trim()
   return oneLine.length <= max ? oneLine : `${oneLine.slice(0, max - 1)}…`
@@ -135,6 +166,7 @@ export function diffSkillVersions(
     ...diffStringLists('instructions', base.content.instructions, target.content.instructions),
     ...diffStringLists('triggerKeywords', base.content.triggerKeywords, target.content.triggerKeywords),
     ...diffParameters(base.content.parameters, target.content.parameters),
+    ...diffRuntimeHints(base.content.runtimeHints, target.content.runtimeHints),
     ...diffRequires(base.requires, target.requires),
   ]
 

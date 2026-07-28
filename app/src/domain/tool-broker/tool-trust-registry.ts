@@ -34,6 +34,7 @@ export const TOOL_TRUST_REGISTRY: Record<ToolName, TrustClass> = {
   web_research_request: 'external_untrusted',
   document_read: 'external_untrusted',
   tulajdoni_lap_parse: 'external_untrusted',
+  tulajdoni_lap_egyeztetes: 'external_untrusted',
 
   // ── internal: a tenant belső rendszeréből ──────────────────────────────────
   kb_search: 'internal',
@@ -136,6 +137,8 @@ export const SIDE_EFFECTING_TOOLS: Record<ToolName, boolean> = {
   web_research_request: false,
   document_read: false,
   tulajdoni_lap_parse: false,
+  // Munkaterületre ír (egyeztető munkafüzet) — mellékhatásos.
+  tulajdoni_lap_egyeztetes: true,
   kb_search: false,
   kb_list_index: false,
   kb_get_page: false,

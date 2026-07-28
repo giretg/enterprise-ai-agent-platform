@@ -88,6 +88,7 @@ import {
   resolveDelegatedAccessToken,
   resolveWorkspaceStorageTenantId,
   ticketCreate,
+  tulajdoniLapEgyeztetes,
   userDirectory,
   webResearchRequest,
 } from './tool-broker-delegation'
@@ -175,6 +176,8 @@ export class ToolBrokerService {
       documentRead: (input, actingUserId) => documentRead(this, input, actingUserId),
       tulajdoniLapParse: (input, actingUserId, extras) =>
         tulajdoniLapParse(this, input, actingUserId, extras),
+      tulajdoniLapEgyeztetes: (input, actingUserId, extras) =>
+        tulajdoniLapEgyeztetes(this, input, actingUserId, extras),
     }
   }
 

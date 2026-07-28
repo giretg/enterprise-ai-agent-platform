@@ -73,6 +73,7 @@ export const TOOL_REQUIREMENTS: Partial<Record<
   pdf_create: { connectorType: 'workspace', accessMode: 'write' },
   /** Csak workspace-path ágon (documentId UUID esetén az authorizer korán kilép). */
   tulajdoni_lap_parse: { connectorType: 'workspace', accessMode: 'read' },
+  tulajdoni_lap_egyeztetes: { connectorType: 'workspace', accessMode: 'write' },
   pptx_create: { connectorType: 'workspace', accessMode: 'write' },
   'sandbox_app.create': { connectorType: 'board', accessMode: 'write' },
   'sandbox_app.update_artifact': { connectorType: 'board', accessMode: 'write' },
@@ -273,6 +274,20 @@ export class AllowlistAuthorizer implements Authorizer {
         return { allowed: false, reason: 'missing_parse_source' }
       }
       // workspace path → fall through connector feloldásra
+    }
+    // A `tulajdoni_lap_egyeztetes` ÍR is (munkafüzet a munkaterületre), ezért
+    // documentId-forrásnál sem kaphat rövidebb utat: mindig a workspace
+    // connector írás-jogán megy át. A forrás érvényességét a delegáció nézi.
+    if (input.tool === 'tulajdoni_lap_egyeztetes') {
+      try {
+        resolveTulajdoniLapParseSource({
+          documentId:
+            typeof input.args?.documentId === 'string' ? input.args.documentId : undefined,
+          path: typeof input.args?.path === 'string' ? input.args.path : undefined,
+        })
+      } catch {
+        return { allowed: false, reason: 'missing_parse_source' }
+      }
     }
 
     const requirement = TOOL_REQUIREMENTS[input.tool]

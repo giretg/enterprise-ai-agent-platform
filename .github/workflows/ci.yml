@@ -106,6 +106,9 @@ jobs:
           npm run test:consequence-gate
           npm run test:consequence-approval
           npm run test:skill-catalog
+          npm run test:turn-continuation
+          npm run test:skill-runtime-followup
+          npm run test:debug-log-export
 
       # Prompt-eval A fázis — piros vonalak (issue #35). SZÁNDÉKOSAN külön lépés:
       # ez biztonsági kapu, nem funkcionális teszt. Ha elbukik, egy prompt-módosítás

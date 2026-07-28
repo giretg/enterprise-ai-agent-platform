@@ -751,6 +751,20 @@ export function argsMeta(
     }
   }
 
+  if (input.tool === 'tulajdoni_lap_egyeztetes') {
+    return {
+      ...base,
+      documentId: input.args.documentId ?? null,
+      path: input.args.path ?? null,
+      // Csak a MÉRET megy az audit-metába, a névsor maga nem (tartalom-őr).
+      nyilvantartasSorok: Array.isArray(input.args.nyilvantartas)
+        ? input.args.nyilvantartas.length
+        : null,
+      nyilvantartasPath: input.args.nyilvantartasPath ?? null,
+      kimenet: input.args.kimenet ?? null,
+    }
+  }
+
   return {
     ...base,
     ticketId: input.args.ticketId,
