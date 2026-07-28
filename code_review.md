@@ -1,5 +1,14 @@
 # Enterprise code review log
 
+## 2026-07-28 - Telegram-csatorna: élő jogosultság- és kill-switch kapuk a sorba állítástól a válaszig
+
+- Áttekintett modulok: `channel-linking-service.ts`, `channel-turn-service.ts`, `channel-agent-access-service.ts`, az életciklus-gate és a kapcsolódó repository-k.
+- **Kritikus lelet:** a kill-switch, a tagság-/tenant-státusz és a Telegram-agent-grant visszavonása nem volt következetesen élő a már sorba állított üzenet teljes útján. Így egy régi üzenet még modellfutást vagy Telegram-választ indíthatott, és egy leállított csatorna új üzenetet is sorba írhatott.
+- Javítás: a linking út a tokenkiadás, tokenbeváltás és sorba írás előtt, a worker pedig minden tartós mellékhatás, modell utáni válasz és minden válasz-darab előtt újraellenőriz. Tiltáskor nincs kimenő adat, a forduló lezárul, az ok auditált.
+- Üzleti hatás: a Telegram kikapcsolása és az agent-hozzáférés visszavonása valóban azonnali incidenskezelő eszköz; távozó vagy kompromittált fiók már sorban lévő kérése sem kaphat később üzleti választ.
+- Ellenőrzés: `node --import tsx scripts/channel-turn.test.ts` (CT-1…CT-21), `node --import tsx scripts/channel-linking-service.test.ts` (CL-1…CL-17), teljes TypeScript, célzott ESLint és diff-check zöld.
+- Kód-review: Standards — nincs hard violation; a session-írás előtti versenyablak javítva. Spec — a grant-revoke és többdarabos kimenet két P1 rése javítva; scope creep nincs.
+
 ## 2026-07-27 - Connector Provisioning: tenant-scope-os titok-alias bizalmi határ
 
 - Áttekintett modulok (a connector életciklus azon admin oldali része, amely külső rendszerhez való hitelesítést és agenthez rendelhető futásidejű kapcsolatot hoz létre — a korábbi napló a self-updating connector és a grant-vault részeit fedte, ezt a provisioning-belépőt nem):
