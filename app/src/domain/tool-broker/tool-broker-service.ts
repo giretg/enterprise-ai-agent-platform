@@ -478,9 +478,8 @@ export class ToolBrokerService {
   }
 
   /**
-   * Következmény-kapu kiváltásának rögzítése (issue #97). Ha egy „tainted"
-   * fordulóban (külső, nem megbízható tartalom került a fordulóba) egy mellékhatásos
-   * eszközhívás emberi jóváhagyást igényel, a tool-loop NEM a `invoke`-ot hívja,
+   * Következmény-kapu kiváltásának rögzítése (risk-class). Magas kockázatú
+   * eszközhívás emberi jóváhagyást igényel: a tool-loop NEM a `invoke`-ot hívja,
    * hanem ezt: a blokkolt hívás bekerül a meglévő audit-láncba (`tool.call.denied`
    * + `ToolCall` sor `trustClass`-szal), hogy egy incidensnél végigkövethető legyen.
    */
@@ -493,8 +492,8 @@ export class ToolBrokerService {
       connectorId: null,
       status: 'denied',
       latencyMs: Date.now() - startedAt,
-      policyDecision: 'consequence_gate_external_content',
-      resultMeta: { denied: true, reason: 'external_content_requires_approval' },
+      policyDecision: 'consequence_gate_risk',
+      resultMeta: { denied: true, reason: 'risk_requires_approval' },
       trustClass: resolveTrustClass(input.tool),
     })
   }

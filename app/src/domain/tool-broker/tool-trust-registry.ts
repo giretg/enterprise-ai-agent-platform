@@ -93,11 +93,11 @@ export function resolveTrustClass(tool: string): TrustClass {
 }
 
 /**
- * A mellékhatásos (mutáló) eszközök explicit, KIMERÍTŐ halmaza (issue #97).
- * `Record<ToolName, boolean>` → egy új tool hozzáadása fordításidőben kikényszeríti
- * a „mutál-e?" döntést, hogy egy új mutáló tool ne maradjon ki a következmény-kapu
- * alól. A `true` = küldés / írás / jogosultság-változtatás / memória-módosítás.
- * Az olvasó eszközök `false`-ok — őket a kapu SOHA nem blokkolja.
+ * A mellékhatásos (mutáló) eszközök explicit, KIMERÍTŐ halmaza.
+ * Dokumentáció + fail-safe az ismeretlen toolokra; a következmény-kapu
+ * döntését a `consequence-gate-policy` risk-class listája hozza (nem ez a
+ * halmaz × taint). A `true` = küldés / írás / jogosultság-változtatás / memória.
+ * Az olvasó eszközök `false`-ok.
  */
 export const SIDE_EFFECTING_TOOLS: Record<ToolName, boolean> = {
   // ── mutáló: küldés / írás / jogosultság- vagy memória-változtatás ──────────

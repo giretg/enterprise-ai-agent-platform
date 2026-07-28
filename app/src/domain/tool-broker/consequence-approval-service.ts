@@ -178,7 +178,7 @@ export class ConsequenceApprovalService {
       modelUsed: null,
       inputRef: input.invoke.tool,
       outputRef: row.id,
-      policyDecision: 'consequence_gate_external_content',
+      policyDecision: 'consequence_gate_risk',
       metadata: {
         approval_id: row.id,
         tool: input.invoke.tool,

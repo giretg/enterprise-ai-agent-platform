@@ -842,8 +842,8 @@ function ConsequenceApprovalsPanel({
       </div>
       <p className="mb-2 text-[11px] text-ink-faint">
         {openCount > 0
-          ? 'Külső forrás miatt a platform nem futtatta le automatikusan. A gomb lefuttatja a műveletet, majd az agent folytatja a hátralévő lépéseket — nem kell újraírnod a chatben.'
-          : 'Külső forrás miatt a platform nem futtatta le automatikusan, és a jóváhagyási idő letelt.'}
+          ? 'Ez a művelet kockázatos (kilépő / visszafordíthatatlan / írási HTTP), ezért a platform nem futtatta le automatikusan. A gomb lefuttatja, majd az agent folytatja — nem kell újraírnod a chatben.'
+          : 'Ez a művelet kockázatos volt, és a jóváhagyási idő letelt.'}
       </p>
       <div className="space-y-2">
         {approvals.map((a) => {

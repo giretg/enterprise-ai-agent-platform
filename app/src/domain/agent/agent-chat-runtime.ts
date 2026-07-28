@@ -1167,6 +1167,9 @@ export class AgentChatRuntime {
               }
             : {}),
           onMemoryCandidate: (candidate) => emit({ type: 'memory_candidate', candidate }),
+          // Folytatás: a külső tartalom envelope továbbra is releváns a modellnek,
+          // de a consequence gate már risk-class (nem taint) alapú — initialTainted
+          // legacy jel, a kapu nem használja workspace-írás blokkolására.
           initialTainted: params.consequenceApprovalContinuation === true,
           ...(this.consequenceApprovals
             ? {

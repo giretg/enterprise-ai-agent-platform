@@ -22,7 +22,12 @@ import { assembleGatewayMessages, type PromptSegments } from './prompt-assembler
 import { logger } from '@/lib/observability/logger'
 // issue #97 — egységes becsomagolás + következmény-kapu (mellékhatásos eszközök).
 import { envelopeToolResultForModel } from '@/domain/tool-broker/tool-result-envelope'
-import { isSideEffectingTool } from '@/domain/tool-broker/tool-trust-registry'
+import {
+  consequenceGateReasonForModel,
+  requiresConsequenceApproval,
+  type HttpApiGateConnector,
+} from '@/domain/tool-broker/consequence-gate-policy'
+import { parseHttpApiConfig } from '@/domain/connector/http-api-client'
 import type { TrustClass } from '@/domain/tool-broker/tool-broker-types'
 import {
   describeLoopStop,
@@ -1855,9 +1860,12 @@ export async function runAgentToolLoop(params: {
 
   // Ha http_api eszköz engedélyezett, a hozzárendelt connector(ek)
   // endpoint-katalógusát a modell elé tesszük — így tudja, mit hívhat.
+  // Ugyanez a lista kell a következmény-kapu http_api_request döntéséhez.
+  let httpApiGateConnectors: HttpApiGateConnector[] = []
   if (allowedTools.some((t) => t === 'http_api_get' || t === 'http_api_request')) {
-    const spec = await describeHttpApiConnectors(params.toolCaps, params.agentId)
-    if (spec) loopStablePreamble.push({ role: 'system', content: spec })
+    const loaded = await loadHttpApiConnectorsForGate(params.toolCaps, params.agentId)
+    httpApiGateConnectors = loaded.gateConnectors
+    if (loaded.spec) loopStablePreamble.push({ role: 'system', content: loaded.spec })
   }
   if (allowedTools.includes('repo_prepare')) {
     loopStablePreamble.push({
@@ -1890,15 +1898,12 @@ export async function runAgentToolLoop(params: {
   // egy megtagadott képesség azt jelenti, hogy az agent NEM tudta elvégezni a rábízott műveletet,
   // még ha a záró prózája optimista is (§10.1 — az agent önbevallását felülírjuk).
   let deniedCount = 0
-  // issue #97 — következmény-kapu forduló-szintű „taint"-je. Amint a futásba
-  // BÁRMELY külső, nem megbízható (`external_untrusted`) eredmény bekerült, a
-  // futás „tainted": az ezt KÖVETŐEN indított MELLÉKHATÁSOS eszközhívás nem fut
-  // le automatikusan, hanem emberi jóváhagyást kér. A jelölés monoton (egyszer
-  // beállítva a futás hátralévő részére érvényes) — mert a külső tartalom a modell
-  // kontextusába került, és minden későbbi döntését befolyásolhatja (nem csak a
-  // vele egy batchben indított hívásokat). Egyetlen külső forrás is elég a
-  // taint-hez, akkor is, ha egy fordulóban több, részben belső eredmény érkezik.
-  let runTainted = params.initialTainted ?? false
+  // issue #97 / risk-class — a külső tartalom (taint) továbbra is envelope-olva
+  // megy a modellnek, de a következmény-kaput NEM a taint dönti el. A kapu csak
+  // ritka, magas kockázatú toolokra (küldés, törlés, promotion, write/danger HTTP)
+  // ugrik; a workspace-írás / Excel / ticket auto + audit.
+  // initialTainted: legacy param a folytatás-fordulóhoz — a kapu már nem használja.
+  void params.initialTainted
   // issue #97 — ha a kapu legalább egyszer blokkolt mellékhatást, ne indítsunk
   // újabb tool-körös modellhívást (tokenégetés elkerülése); záró összefoglaló jön.
   let consequenceGateTriggered = false
@@ -2288,12 +2293,14 @@ export async function runAgentToolLoop(params: {
           actingUserId: params.actingUserId,
         })
 
-        // issue #97 — következmény-kapu. „Tainted" futásban (korábban külső, nem
-        // megbízható tartalom került a kontextusba) egy MELLÉKHATÁSOS hívás NEM fut
-        // le automatikusan: emberi jóváhagyást kér. Az olvasó hívások átmennek, hogy
-        // a diagnózis/olvasás gördülékeny maradjon. A blokk a meglévő audit-láncba
-        // kerül (recordConsequenceGateBlock), a modell felé közérthető indoklással.
-        if (runTainted && isSideEffectingTool(toolName)) {
+        // Risk-class következmény-kapu: nem a taint, hanem a tool kockázata dönt.
+        // Workspace-írás / Excel / ticket auto; küldés / törlés / write-HTTP kapu.
+        const gate = requiresConsequenceApproval(
+          toolName,
+          call.input as Record<string, unknown>,
+          httpApiGateConnectors,
+        )
+        if (gate.required) {
           deniedCount += 1
           noteBarrenToolResult()
           await params.toolBroker.recordConsequenceGateBlock?.(invokeInput)
@@ -2320,24 +2327,23 @@ export async function runAgentToolLoop(params: {
             }
           }
           consequenceGateTriggered = true
+          const why = consequenceGateReasonForModel(gate.reason)
           const approvalHint = approvalCard
             ? `A művelet a felületen JÓVÁHAGYÁSRA VÁR (approvalId=${approvalCard.approvalId}). ` +
               'Mondd el a felhasználónak, hogy a chatben megjelenő „Jóváhagyom" gombbal engedélyezheti — ' +
               'NE kérj tőle szöveges „ok"/„jóváhagyom" választ, és NE indítsd újra a teljes folyamatot.'
             : 'Kérd meg a felhasználót, hogy a felületen hagyja jóvá a műveletet, ha van rá gomb; ' +
-              'addig NE indítsd újra a mellékhatásos lépést.'
+              'addig NE indítsd újra ezt a lépést.'
           messages.push({
             role: 'tool',
             toolCallId: call.id,
             toolName: call.name,
             content:
               `JÓVÁHAGYÁS SZÜKSÉGES: ezt a lépést (${call.name}) nem futtattam le automatikusan, ` +
-              'mert ebben a futásban külső, nem megbízható forrásból beérkezett tartalom (pl. bejövő ' +
-              'levél, webtartalom, ügyfél-feltöltés vagy harmadik fél API-ja) is szerepelt, és ez a ' +
-              'lépés mellékhatással jár (küldés / írás / jogosultság- vagy memória-változtatás). ' +
+              `mert ${why}. ` +
               approvalHint +
-              ' NE hívd újra ezt a mellékhatásos eszközt, és NE hívd újra a külső forrásokat csak azért, ' +
-              'hogy újra megpróbáld. Addig folytasd legfeljebb mellékhatás-mentes (olvasó) lépésekkel, ' +
+              ' NE hívd újra ezt az eszközt csak azért, hogy újra megpróbáld. ' +
+              'Addig folytasd legfeljebb alacsony kockázatú (olvasó / workspace-író) lépésekkel, ' +
               'majd foglald össze röviden, mi vár jóváhagyásra.',
           })
           await emitActivity({
@@ -2345,8 +2351,8 @@ export async function runAgentToolLoop(params: {
             kind: 'tool',
             title: call.name,
             detail: approvalCard
-              ? 'külső tartalom miatt emberi jóváhagyás szükséges (gomb a chatben)'
-              : 'külső tartalom miatt emberi jóváhagyás szükséges',
+              ? 'kockázatos művelet — emberi jóváhagyás szükséges (gomb a chatben)'
+              : 'kockázatos művelet — emberi jóváhagyás szükséges',
             status: 'skipped',
           })
           continue
@@ -2355,9 +2361,6 @@ export async function runAgentToolLoop(params: {
         const result = await params.toolBroker.invoke(invokeInput)
         toolCallCount += 1
         if (result.denied) deniedCount += 1
-        // A forduló „tainted" lesz, amint BÁRMELY sikeres eredmény külső, nem
-        // megbízható osztályú — a jelölés monoton a futás hátralévő részére.
-        if (!result.denied && result.trust === 'external_untrusted') runTainted = true
         noteToolResult(
           toolName,
           result.denied ? `DENIED:${result.reason ?? ''}` : JSON.stringify(result.result),
@@ -2625,54 +2628,104 @@ function toolResultFingerprint(toolName: string, content: string): string {
 }
 
 /**
- * A http_api connector(ek) emberi nyelvű leírása a modellnek: baseUrl,
- * leírás és endpoint-katalógus. Titkot (API-kulcs) SOHA nem tartalmaz.
+ * A http_api connector(ek) emberi nyelvű leírása a modellnek + structured
+ * config a következmény-kapuhoz. Titkot (API-kulcs) SOHA nem tartalmaz.
  */
-async function describeHttpApiConnectors(
+async function loadHttpApiConnectorsForGate(
   toolCaps: ToolBrokerRepository,
   agentId: string,
-): Promise<string | null> {
+): Promise<{ spec: string | null; gateConnectors: HttpApiGateConnector[] }> {
   const links = await toolCaps.findConnectorsForAgent(agentId)
   const apis = links.filter((l) => l.connector.type === 'http_api')
-  if (apis.length === 0) return null
+  if (apis.length === 0) return { spec: null, gateConnectors: [] }
 
+  const gateConnectors: HttpApiGateConnector[] = []
   const blocks = apis.map(({ connector, accessMode }) => {
-    const config = (connector.config ?? {}) as {
-      baseUrl?: string
-      description?: string
-      restrictToEndpoints?: boolean
-      endpoints?: Array<{ method?: string; path?: string; description?: string; name?: string }>
-      proposedTools?: Array<{ method?: string; path?: string; description?: string; name?: string }>
+    let parsed = null as ReturnType<typeof parseHttpApiConfig> | null
+    try {
+      parsed = parseHttpApiConfig(connector.config ?? {})
+      gateConnectors.push({ id: connector.id, config: parsed })
+    } catch {
+      // Hibás config: a modell-leírás fallback JSON-ból megy; a kapu fail-safe.
     }
-    const endpoints = Array.isArray(config.endpoints) && config.endpoints.length > 0
-      ? config.endpoints
-      : config.proposedTools
+
+    const config = parsed
+      ? {
+          baseUrl: parsed.baseUrl,
+          description: parsed.description,
+          restrictToEndpoints: parsed.restrictToEndpoints,
+          defaultRisk: parsed.defaultRisk,
+          endpoints: parsed.endpoints,
+        }
+      : ((connector.config ?? {}) as {
+          baseUrl?: string
+          description?: string
+          restrictToEndpoints?: boolean
+          defaultRisk?: string
+          endpoints?: Array<{
+            method?: string
+            path?: string
+            description?: string
+            name?: string
+            risk?: string
+            access?: string
+          }>
+          proposedTools?: Array<{
+            method?: string
+            path?: string
+            description?: string
+            name?: string
+            risk?: string
+            access?: string
+          }>
+        })
+
+    const endpoints =
+      Array.isArray(config.endpoints) && config.endpoints.length > 0
+        ? config.endpoints
+        : 'proposedTools' in config && Array.isArray(config.proposedTools)
+          ? config.proposedTools
+          : undefined
+
     const lines = [`### ${connector.name}`]
     lines.push(`connectorId: ${connector.id}`)
     lines.push(`Hozzáférés: ${accessMode === 'write' ? 'olvasás + írás' : 'csak olvasás'}`)
     if (config.baseUrl) lines.push(`Base URL: ${config.baseUrl}`)
     if (config.description) lines.push(config.description)
+    if (config.defaultRisk) lines.push(`Alap kockázat (defaultRisk): ${config.defaultRisk}`)
     if (Array.isArray(endpoints) && endpoints.length > 0) {
       lines.push('Endpointok:')
       for (const e of endpoints) {
-        const endpointDescription = e.description ?? e.name
+        const endpointDescription = e.description ?? ('name' in e ? e.name : undefined)
+        const riskHint =
+          'risk' in e && e.risk
+            ? ` [risk=${e.risk}]`
+            : 'access' in e && e.access
+              ? ` [access=${e.access}]`
+              : ''
         const desc = endpointDescription ? ` — ${endpointDescription}` : ''
-        lines.push(`- ${e.method ?? 'GET'} ${e.path ?? ''}${desc}`)
+        lines.push(`- ${e.method ?? 'GET'} ${e.path ?? ''}${riskHint}${desc}`)
       }
-      // WP-3 (B3): ha az endpoint-korlát aktív, a modell tudja, hogy listán kívülit
-      // hiába próbál — a rendszer a külső rendszer megkérdezése nélkül elutasítja.
       if (config.restrictToEndpoints === true) {
-        lines.push('Csak az itt felsorolt végpontok hívhatók — minden más hívást a rendszer elutasít (endpoint_not_allowed), mielőtt a külső rendszert megkeresné.')
+        lines.push(
+          'Csak az itt felsorolt végpontok hívhatók — minden más hívást a rendszer elutasít (endpoint_not_allowed), mielőtt a külső rendszert megkeresné.',
+        )
       }
+      lines.push(
+        'Író / danger végpont (risk=write|danger) vagy listán kívüli path → http_api_request emberi jóváhagyást kér.',
+      )
     }
     return lines.join('\n')
   })
 
-  return [
-    'A hozzád rendelt külső REST API(k) — olvasáshoz http_api_get, íráshoz http_api_request eszközt hívj. Ha több API-kapcsolat van, add meg a megfelelő connectorId-t. A path a Base URL-hez relatív; az API-kulcsot és a konfigurált fejléceket a rendszer injektálja, neked nem kell megadnod.',
-    'Hatékony lekérdezés: NE töltsd le a teljes listákat (pl. /accounts, /documents) szűrés nélkül. Ha van kereső/query paraméter (search, q, filter, helyrajzi szám, ügyfélnév), használd. Először a releváns egyedi rekordot keresd.',
-    ...blocks,
-  ].join('\n\n')
+  return {
+    gateConnectors,
+    spec: [
+      'A hozzád rendelt külső REST API(k) — olvasáshoz http_api_get, íráshoz http_api_request eszközt hívj. Ha több API-kapcsolat van, add meg a megfelelő connectorId-t. A path a Base URL-hez relatív; az API-kulcsot és a konfigurált fejléceket a rendszer injektálja, neked nem kell megadnod.',
+      'Hatékony lekérdezés: NE töltsd le a teljes listákat (pl. /accounts, /documents) szűrés nélkül. Ha van kereső/query paraméter (search, q, filter, helyrajzi szám, ügyfélnév), használd. Először a releváns egyedi rekordot keresd.',
+      ...blocks,
+    ].join('\n\n'),
+  }
 }
 
 export async function listAllowedChatTools(
