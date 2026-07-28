@@ -188,6 +188,38 @@ export function resolveLoopGuardLimits(
 }
 
 /**
+ * Skill `runtimeHints` alkalmazása a már feloldott guardokra.
+ * Csak emelhet (max) — a skill nem szűkítheti a chat/task/env/agent keretet.
+ * Clamp továbbra is érvényes.
+ */
+export function mergeSkillRuntimeHints(
+  limits: LoopGuardLimits,
+  hints:
+    | {
+        maxWallClockMs?: number
+        maxToolCalls?: number
+      }
+    | null
+    | undefined,
+): LoopGuardLimits {
+  if (!hints) return limits
+  const next = { ...limits }
+  if (typeof hints.maxWallClockMs === 'number' && Number.isFinite(hints.maxWallClockMs)) {
+    next.maxWallClockMs = clampLimit(
+      Math.max(limits.maxWallClockMs, hints.maxWallClockMs),
+      LIMIT_RANGES.maxWallClockMs,
+    )
+  }
+  if (typeof hints.maxToolCalls === 'number' && Number.isFinite(hints.maxToolCalls)) {
+    next.maxToolCalls = clampLimit(
+      Math.max(limits.maxToolCalls, hints.maxToolCalls),
+      LIMIT_RANGES.maxToolCalls,
+    )
+  }
+  return next
+}
+
+/**
  * Hétköznapi nyelvű, önmagyarázó jelölés a beszélgetésbe (közérthető-UI elv):
  * mi ért véget, miért, és hogy a részeredmény megmaradt. A `max_turns_exhausted`
  * szándékosan hiányzik — annak a meglévő üzenete és viselkedése változatlan.

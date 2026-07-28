@@ -32,6 +32,7 @@ import type { TrustClass } from '@/domain/tool-broker/tool-broker-types'
 import {
   describeLoopStop,
   evaluateLoopContinuation,
+  mergeSkillRuntimeHints,
   resolveLoopGuardLimits,
   trackTurnProgress,
   type LoopGuardLimits,
@@ -723,8 +724,18 @@ const LOAD_SKILL_TOOL = 'load_skill'
 /** A `load_skill` végrehajtó — a SkillService.loadSkillForAgent-re köt (D7). */
 export type LoadSkillFn = (
   skillVersionId: string,
-) => Promise<{ ok: true; instructions: string } | { ok: false; reason: string }>
-
+) => Promise<
+  | {
+      ok: true
+      instructions: string
+      runtimeHints?: {
+        maxWallClockMs?: number
+        maxToolCalls?: number
+        preferredMode?: 'chat' | 'task'
+      }
+    }
+  | { ok: false; reason: string }
+>
 const LOAD_SKILL_DEFINITION: ToolDefinition = {
   name: LOAD_SKILL_TOOL,
   description:
@@ -1780,6 +1791,14 @@ export async function runAgentToolLoop(params: {
   preloadedSkillPrompts?: string[]
   /** `load_skill` végrehajtó (fail-closed a SkillService-ben). Ha megadva, a tool elérhető. */
   loadSkill?: LoadSkillFn
+  /**
+   * Slash / előtöltött skillek runtimeHints-e — a loop indulásakor emeli a
+   * wallclock / tool-büdzsét (skill csak emelhet, lásd mergeSkillRuntimeHints).
+   */
+  initialSkillRuntimeHints?: {
+    maxWallClockMs?: number
+    maxToolCalls?: number
+  }
   archiveLargeToolResult?: (input: LargeToolResultArchiveInput) => Promise<LargeToolResultArchive | null>
   onActivity?: (event: ToolLoopActivityEvent) => void | Promise<void>
   /**
@@ -1828,11 +1847,14 @@ export async function runAgentToolLoop(params: {
   // Spec §7 — a leállási döntéshozó küszöbei és a hozzá tartozó állapot.
   const now = params.now ?? Date.now
   const startedAt = now()
-  const guardLimits: LoopGuardLimits = resolveLoopGuardLimits(
+  let guardLimits: LoopGuardLimits = resolveLoopGuardLimits(
     params.modelConfig as unknown as Record<string, unknown>,
     maxTurns,
     params.mode === 'task' ? 'task' : 'chat',
   )
+  if (params.initialSkillRuntimeHints) {
+    guardLimits = mergeSkillRuntimeHints(guardLimits, params.initialSkillRuntimeHints)
+  }
   const modeNote =
     params.mode === 'task'
       ? 'Ez egy aszinkron feladat — a végeredményed visszakerül a ticketbe. Dolgozz végig minden szükséges eszközhívást, majd add meg a kész választ természetes magyar szövegként (NE JSON).'
@@ -2173,6 +2195,9 @@ export async function runAgentToolLoop(params: {
           : ({ ok: false, reason: 'Hiányzó skillVersionId.' } as const)
         toolCallCount += 1
         if (!loaded.ok) deniedCount += 1
+        if (loaded.ok && loaded.runtimeHints) {
+          guardLimits = mergeSkillRuntimeHints(guardLimits, loaded.runtimeHints)
+        }
         messages.push({
           role: 'tool',
           toolCallId: call.id,
@@ -2183,7 +2208,11 @@ export async function runAgentToolLoop(params: {
           id: `tool-${call.id}`,
           kind: 'tool',
           title: LOAD_SKILL_TOOL,
-          detail: loaded.ok ? 'skill betöltve' : loaded.reason,
+          detail: loaded.ok
+            ? loaded.runtimeHints?.maxWallClockMs
+              ? `skill betöltve (keret ~${Math.round(loaded.runtimeHints.maxWallClockMs / 1000)}s)`
+              : 'skill betöltve'
+            : loaded.reason,
           status: loaded.ok ? 'done' : 'skipped',
         })
         continue

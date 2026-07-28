@@ -194,6 +194,9 @@ function fakeTurnRepository(options: { failOnCreate?: Error } = {}) {
     async findStale() {
       return []
     },
+    async findLatestTerminalByConversation() {
+      return null
+    },
   }
   /** Az aktív forduló életjelét `ms` ezredmásodperccel korábbra állítja. */
   const ageActiveTurn = (conversationId: string, ms: number) => {

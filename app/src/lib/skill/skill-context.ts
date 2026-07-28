@@ -60,6 +60,22 @@ export function buildLoadedSkillPrompt(
     content.triggerKeywords.length > 0
       ? `\nKulcsszavak: ${content.triggerKeywords.join(', ')}`
       : ''
+  const hints = content.runtimeHints
+  const hintLines: string[] = []
+  if (hints?.maxWallClockMs != null) {
+    hintLines.push(
+      `Futási keret: legfeljebb ~${Math.round(hints.maxWallClockMs / 1000)} s erre a skillre (a platform ennyire emeli a forduló időkorlátját).`,
+    )
+  }
+  if (hints?.maxToolCalls != null) {
+    hintLines.push(`Eszközhívási keret (skill): legfeljebb ${hints.maxToolCalls} hívás.`)
+  }
+  if (hints?.preferredMode === 'task') {
+    hintLines.push(
+      'Ez tipikusan hosszabb feladat — ha a chat kerete szűknek bizonyul, ticket/aszinkron futás a természetes mód.',
+    )
+  }
+  const hintBlock = hintLines.length > 0 ? `\n${hintLines.join('\n')}` : ''
   const body = content.instructions.join('\n\n')
-  return `${header}${keywords}\n\n${body}`.trim()
+  return `${header}${keywords}${hintBlock}\n\n${body}`.trim()
 }

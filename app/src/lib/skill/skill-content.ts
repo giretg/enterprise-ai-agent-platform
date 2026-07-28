@@ -29,10 +29,23 @@ export const skillParameterSchema = z.object({
   description: z.string().max(1_000).default(''),
 })
 
+/**
+ * Kemény runtime-hint a tool-loop guardokhoz (nem prompt-szöveg).
+ * Chat alap: 180s / 60 tool; hosszú skill felülírhatja — a loop clampeli.
+ * `preferredMode: 'task'` jelzés a jövőbeli auto-promote-hoz; ma csak a
+ * betöltött skill szövegében jelenik meg tanácsként.
+ */
+export const skillRuntimeHintsSchema = z.object({
+  maxWallClockMs: z.number().int().min(10_000).max(3_600_000).optional(),
+  maxToolCalls: z.number().int().min(5).max(500).optional(),
+  preferredMode: z.enum(['chat', 'task']).optional(),
+})
+
 export const skillContentSchema = z.object({
   instructions: z.array(z.string().min(1)).default([]),
   triggerKeywords: z.array(z.string().min(1)).default([]),
   parameters: z.array(skillParameterSchema).default([]),
+  runtimeHints: skillRuntimeHintsSchema.optional(),
 })
 
 export const skillRequirementSchema = z.object({
@@ -43,6 +56,7 @@ export const skillRequirementSchema = z.object({
 export const skillRequiresSchema = z.array(skillRequirementSchema).default([])
 
 export type SkillParameter = z.infer<typeof skillParameterSchema>
+export type SkillRuntimeHints = z.infer<typeof skillRuntimeHintsSchema>
 export type SkillContent = z.infer<typeof skillContentSchema>
 export type SkillRequirement = z.infer<typeof skillRequirementSchema>
 
@@ -70,6 +84,39 @@ export function parseSkillContent(value: unknown): SkillContent {
   return { instructions: [], triggerKeywords: [], parameters: [] }
 }
 
+/**
+ * Több skill hint aggregálása: wallclock / tool-büdzsé → maximum;
+ * preferredMode → 'task' nyer, ha bármelyik kéri.
+ */
+export function aggregateSkillRuntimeHints(
+  hintsList: Array<SkillRuntimeHints | null | undefined>,
+): SkillRuntimeHints | undefined {
+  let maxWallClockMs: number | undefined
+  let maxToolCalls: number | undefined
+  let preferredMode: 'chat' | 'task' | undefined
+  for (const hints of hintsList) {
+    if (!hints) continue
+    if (typeof hints.maxWallClockMs === 'number') {
+      maxWallClockMs =
+        maxWallClockMs == null
+          ? hints.maxWallClockMs
+          : Math.max(maxWallClockMs, hints.maxWallClockMs)
+    }
+    if (typeof hints.maxToolCalls === 'number') {
+      maxToolCalls =
+        maxToolCalls == null ? hints.maxToolCalls : Math.max(maxToolCalls, hints.maxToolCalls)
+    }
+    if (hints.preferredMode === 'task') preferredMode = 'task'
+    else if (hints.preferredMode === 'chat' && preferredMode == null) preferredMode = 'chat'
+  }
+  if (maxWallClockMs == null && maxToolCalls == null && preferredMode == null) return undefined
+  return {
+    ...(maxWallClockMs != null ? { maxWallClockMs } : {}),
+    ...(maxToolCalls != null ? { maxToolCalls } : {}),
+    ...(preferredMode != null ? { preferredMode } : {}),
+  }
+}
+
 export function parseSkillRequires(value: unknown): SkillRequirement[] {
   const parsed = skillRequiresSchema.safeParse(value)
   if (parsed.success) return parsed.data
@@ -87,6 +134,7 @@ export function computeSkillContentHash(content: SkillContent, requires: SkillRe
       instructions: content.instructions,
       triggerKeywords: content.triggerKeywords,
       parameters: content.parameters.map((p) => ({ name: p.name, description: p.description })),
+      runtimeHints: content.runtimeHints ?? null,
     },
     requires: [...requires]
       .map((r) => ({ toolName: r.toolName, reason: r.reason }))

@@ -1743,6 +1743,11 @@ export interface AgentTurnRepository {
   finalize(id: string, data: FinalizeAgentTurnInput): Promise<AgentTurn | null>
   /** Watchdog: aktív, de a `heartbeatAt`-je a küszöbnél régebbi fordulók. */
   findStale(cutoff: Date, limit: number): Promise<AgentTurn[]>
+  /**
+   * A beszélgetés legutóbbi terminális fordulója (folytatás-prompthoz).
+   * Aktív (queued/running/streaming) sorokat kihagyja.
+   */
+  findLatestTerminalByConversation(conversationId: string): Promise<AgentTurn | null>
 }
 
 export type SandboxAppWithLatestVersion = SandboxApp & {

@@ -55,6 +55,11 @@ import {
 import type { SkillService } from '../skill/skill-service'
 import { assembleGatewayMessages, type PromptSegments } from './prompt-assembler'
 import {
+  buildTurnContinuationPrompt,
+  shouldInjectTurnContinuation,
+  type ContinuationActivity,
+} from './turn-continuation'
+import {
   agentTurnRunner,
   type AgentChatStreamEvent,
   type AgentTurnEmit,
@@ -715,6 +720,11 @@ export class AgentChatRuntime {
     modelFacingText: string
     preloadedSkillPrompts: string[]
     loadedSkillNames: string[]
+    runtimeHints?: {
+      maxWallClockMs?: number
+      maxToolCalls?: number
+      preferredMode?: 'chat' | 'task'
+    }
   }> {
     if (!this.skills) {
       return { modelFacingText: messageText, preloadedSkillPrompts: [], loadedSkillNames: [] }
@@ -728,6 +738,7 @@ export class AgentChatRuntime {
       modelFacingText: resolved.modelFacingText,
       preloadedSkillPrompts: resolved.preloadedPrompts,
       loadedSkillNames: resolved.loadedSkillNames,
+      runtimeHints: resolved.runtimeHints,
     }
   }
 
@@ -1089,6 +1100,7 @@ export class AgentChatRuntime {
         documentAliases: this.contextDocumentAliases(attachmentDocs, workspaceFiles, kbSearch.hits),
       })
       const priorToolCalls = await this.toolCaps.listToolCallsForConversation(conversationId)
+      const continuationPrompt = await this.buildContinuationPrompt(conversationId, workspaceFiles)
       const gatewayPrompt = await this.buildGatewayMessages(
         agentDetails,
         assembledContext.messages,
@@ -1098,6 +1110,7 @@ export class AgentChatRuntime {
         priorToolCalls,
         latestUserTextOverride,
         memoryContext.block,
+        continuationPrompt,
       )
 
       const allowedChatTools = await listAllowedChatTools(this.toolCaps, params.agentId)
@@ -1151,6 +1164,7 @@ export class AgentChatRuntime {
           skillIndexPrompt: skillBinding.skillIndexPrompt,
           preloadedSkillPrompts: slashResolved.preloadedSkillPrompts,
           loadSkill: skillBinding.loadSkill,
+          initialSkillRuntimeHints: slashResolved.runtimeHints,
           archiveLargeToolResult: (input) =>
             this.archiveLargeToolResult(tenantKey, conversationId, input),
           shouldCancel: () => isCancelRequestedNow(),
@@ -1871,6 +1885,31 @@ export class AgentChatRuntime {
     })
   }
 
+  private async buildContinuationPrompt(
+    conversationId: string,
+    workspaceFiles: string[],
+  ): Promise<string | null> {
+    if (!this.agentTurns) return null
+    try {
+      const previous = await this.agentTurns.findLatestTerminalByConversation(conversationId)
+      if (!previous) return null
+      const activities = Array.isArray(previous.activities)
+        ? (previous.activities as ContinuationActivity[])
+        : []
+      const snapshot = {
+        status: previous.status,
+        reason: previous.reason,
+        activities,
+      }
+      if (!shouldInjectTurnContinuation(snapshot)) return null
+      const prompt = buildTurnContinuationPrompt(snapshot, workspaceFiles)
+      return prompt.trim() ? prompt : null
+    } catch (error) {
+      console.error('[agent-chat] continuation prompt összeállítás sikertelen', error)
+      return null
+    }
+  }
+
   private async buildGatewayMessages(
     agentDetails: NonNullable<Awaited<ReturnType<AgentRepository['findByIdForRuntime']>>>,
     historyMessages: ContextAssemblyMessage[],
@@ -1880,6 +1919,7 @@ export class AgentChatRuntime {
     toolCalls: ToolCall[] = [],
     latestUserTextOverride?: string,
     memoryContextBlock?: string | null,
+    continuationPrompt?: string | null,
   ) {
     const allAgents = await this.agents.findMany()
     const orgRoster = formatOrgRoster(allAgents)
@@ -1939,6 +1979,10 @@ export class AgentChatRuntime {
         content:
           'A beszélgetés munkaterülete jelenleg üres (nincs feltöltött fájl). Ha a felhasználó létező fájlra hivatkozik, kérd meg, hogy csatolja (📎). Csatolt PDF/DOCX esetén a document_read eszközt használd (pages/query). Új fájlt (pl. Excel → xlsx_create, prezentáció → pptx_create, Word → docx_create, egyéb → file_write) az eszközökkel hozhatsz létre — a felhasználó a „Workspace fájlok" panelről tölti le.',
       })
+    }
+
+    if (continuationPrompt && continuationPrompt.trim()) {
+      variableContext.push({ role: 'system', content: continuationPrompt })
     }
 
     return {
