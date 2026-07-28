@@ -524,7 +524,7 @@ export class ProcessDefinitionService {
   }
 
   private async checkBoundAgent(
-    _tenantId: string | null,
+    defTenantId: string | null,
     agentId: string,
     role: PlaybookRole,
   ): Promise<ReturnType<typeof isAgentSuitable>> {
@@ -532,12 +532,13 @@ export class ProcessDefinitionService {
     if (!agent) {
       return { ok: false, reason: 'a kötött agent nem található.', missing: [] }
     }
-    const registryTenantId = agent.tenantId ?? null
     const capabilities = await this.toolBroker.findCapabilitiesForAgent(agentId)
+    // A tenant-határt a Folyamat tenantjához (defTenantId) mérjük, NEM az agent saját
+    // tenantjához — különben a cross-tenant kötés önmagával egyezne és sosem bukna el.
     return isAgentSuitable(
       { status: agent.status, tenantId: agent.tenantId, capabilities },
       { requiredCapabilities: role.requiredCapabilities },
-      registryTenantId,
+      defTenantId,
     )
   }
 
