@@ -97,6 +97,38 @@ function asList(value: string | string[] | undefined): string[] {
   return []
 }
 
+function parseOptionalInt(value: string | string[] | undefined): number | undefined {
+  const raw = asString(value).trim()
+  if (!raw) return undefined
+  const n = Number(raw)
+  return Number.isFinite(n) ? Math.round(n) : undefined
+}
+
+/** Frontmatter → runtimeHints (`max-wall-clock-ms`, `max-tool-calls`, `preferred-mode`). */
+function parseRuntimeHints(
+  frontmatter: Record<string, string | string[]>,
+): import('./skill-content').SkillRuntimeHints | undefined {
+  const maxWallClockMs = parseOptionalInt(
+    frontmatter['max-wall-clock-ms'] ?? frontmatter.maxWallClockMs,
+  )
+  const maxToolCalls = parseOptionalInt(
+    frontmatter['max-tool-calls'] ?? frontmatter.maxToolCalls,
+  )
+  const modeRaw = asString(
+    frontmatter['preferred-mode'] ?? frontmatter.preferredMode,
+  )
+    .trim()
+    .toLowerCase()
+  const preferredMode =
+    modeRaw === 'task' || modeRaw === 'chat' ? (modeRaw as 'chat' | 'task') : undefined
+  if (maxWallClockMs == null && maxToolCalls == null && preferredMode == null) return undefined
+  return {
+    ...(maxWallClockMs != null ? { maxWallClockMs } : {}),
+    ...(maxToolCalls != null ? { maxToolCalls } : {}),
+    ...(preferredMode != null ? { preferredMode } : {}),
+  }
+}
+
 /**
  * A markdown törzset instrukció-blokkokra bontja a `##`/`#` fejlécek mentén.
  * Fejléc nélküli, összefüggő törzs egyetlen blokk marad.
@@ -132,11 +164,13 @@ export function parseSkillMd(raw: string, source?: { url?: string }): ParsedSkil
   const license = asString(frontmatter.license).trim() || null
   const triggerKeywords = asList(frontmatter['trigger-keywords'] ?? frontmatter.triggers)
   const allowedTools = asList(frontmatter['allowed-tools'] ?? frontmatter.tools)
+  const runtimeHints = parseRuntimeHints(frontmatter)
 
   const content: SkillContent = {
     instructions: splitInstructions(body),
     triggerKeywords,
     parameters: [],
+    ...(runtimeHints ? { runtimeHints } : {}),
   }
 
   const suggestedRequires: SkillRequirement[] = allowedTools.map((toolName) => ({

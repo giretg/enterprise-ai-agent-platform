@@ -13,6 +13,7 @@ import {
   TASK_LOOP_GUARD_DEFAULTS,
   describeLoopStop,
   evaluateLoopContinuation,
+  mergeSkillRuntimeHints,
   resolveLoopGuardLimits,
   trackTurnProgress,
   type LoopGuardLimits,
@@ -241,6 +242,52 @@ async function main() {
     assert.equal(limits.maxToolCalls, TASK_LOOP_GUARD_DEFAULTS.maxToolCalls)
     assert.equal(limits.maxNoProgressTurns, TASK_LOOP_GUARD_DEFAULTS.maxNoProgressTurns)
     assert.equal(limits.maxTurns, 40)
+  })
+
+  await check('skill runtimeHints csak emelheti a chat keretet', () => {
+    const base = resolveLoopGuardLimits(undefined, 20, 'chat')
+    const merged = mergeSkillRuntimeHints(base, {
+      maxWallClockMs: 900_000,
+      maxToolCalls: 120,
+    })
+    assert.equal(merged.maxWallClockMs, 900_000)
+    assert.equal(merged.maxToolCalls, 120)
+    const stillHigh = mergeSkillRuntimeHints(merged, { maxWallClockMs: 30_000 })
+    assert.equal(stillHigh.maxWallClockMs, 900_000)
+  })
+
+  await check('initialSkillRuntimeHints: 200s-nél még fut chat skill-kerettel', async () => {
+    let clock = 0
+    let calls = 0
+    const gateway = {
+      call: async (args: GatewayCallArgs) => {
+        if (!args.tools) return { content: 'Kész.' }
+        calls += 1
+        clock += 200_000 // 200s — chat default (180s) alatt megállna, skill 900s alatt nem
+        return {
+          content: '',
+          toolCalls: [{ id: `c${calls}`, name: 'kb_search', input: { query: `q${calls}` } }],
+        }
+      },
+    } as unknown as ModelGateway
+
+    const result = await runAgentToolLoop({
+      gateway,
+      toolBroker: constantResultBroker([]),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-skill-hint' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'Keresd.' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: ALLOWED_TOOLS,
+      maxTurns: 5,
+      initialSkillRuntimeHints: { maxWallClockMs: 900_000 },
+      now: () => clock,
+    })
+    assert.ok(calls >= 2, `legalább 2 tool-kör várt skill-kerettel, kapott: ${calls}`)
+    assert.notEqual(result.reason, 'wallclock_timeout')
   })
 
   await check('modelConfig felülírja az alapértéket, clamp-elve', () => {

@@ -188,4 +188,14 @@ export class PostgresAgentTurnRepository implements AgentTurnRepository {
       take: limit,
     })
   }
+
+  async findLatestTerminalByConversation(conversationId: string): Promise<AgentTurn | null> {
+    return prisma.agentTurn.findFirst({
+      where: {
+        conversationId,
+        status: { notIn: [...ACTIVE_AGENT_TURN_STATUSES] },
+      },
+      orderBy: [{ finishedAt: 'desc' }, { startedAt: 'desc' }],
+    })
+  }
 }
