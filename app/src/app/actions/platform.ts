@@ -36,10 +36,9 @@ import { logger } from '@/lib/observability'
 import { BOARD_LIST_LIMIT, DEFAULT_LIST_LIMIT } from '@/lib/list-pagination'
 import { ensureAgentKnowledgeBase } from '@/lib/agent-knowledge-base'
 import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
-import {
-  canViewAgent,
-  shouldExcludeHiddenAgents,
-} from '@/lib/agent-operator-visibility'
+import { shouldExcludeHiddenAgents } from '@/lib/agent-operator-visibility'
+import { isAgentAccessError } from '@/domain/agent-access/agent-access-errors'
+import { isTenantAdmin, tenantUserSubject } from '@/domain/agent-access/tenant-user-subject'
 import { getReportTemplate, listReportTemplates } from '@/domain/report/report-templates'
 import { computePlaybookGovernance } from '@/domain/governance/measurement-report'
 import {
@@ -298,11 +297,17 @@ export async function listTickets(input?: { filter?: unknown; limit?: number; of
 export async function listBoardAssignees() {
   try {
     const user = await requireTenantRole('operator')
+    // #142 — a felelős-választó `address` alapján szűr (nem `view`): a UI nem
+    // kínálhat olyan agentet, akit a rendszer a ticket felvételekor elutasítana.
+    // Ez az a hibaosztály, ahol a felhasználó „kiválaszt valakit, aztán nem megy".
+    const subject = tenantUserSubject(user)
     const [agents, memberships] = await Promise.all([
-      repositories.agents.findMany({
-        tenantId: user.activeTenantId,
-        excludeHiddenFromOperators: shouldExcludeHiddenAgents(user.activeTenantRole),
-      }),
+      subject
+        ? services.agentAccess.listAccessibleAgents(subject, 'address', {
+            subjectIsTenantAdmin: isTenantAdmin(user),
+            activeOnly: true,
+          })
+        : Promise.resolve([]),
       prisma.tenantMembership.findMany({
         where: {
           tenantId: user.activeTenantId,
@@ -478,6 +483,26 @@ export async function createBoardTicket(input: {
     if (dueBy && Number.isNaN(dueBy.getTime())) return fail('Invalid dueBy')
 
     if (parsed.assigneeType === 'agent') {
+      // #142 — a lista (listBoardAssignees) már `address`-szűrt, de a server action
+      // önmagában is kaput kell tegyen: kézzel megadott assigneeId ne kerülhesse meg.
+      const subject = tenantUserSubject(user)
+      if (!subject) return fail('Agent not found')
+      try {
+        await services.agentAccess.assertCanAccessAgent({
+          subject,
+          targetAgentId: parsed.assigneeId,
+          verb: 'address',
+          subjectIsTenantAdmin: isTenantAdmin(user),
+          audit: {
+            channel: 'ticket',
+            initiatingUserId: user.user.id,
+          },
+        })
+      } catch (error) {
+        if (isAgentAccessError(error)) return fail(error.message)
+        throw error
+      }
+
       const agentDetails = await repositories.agents.findByIdForRuntime(
         parsed.assigneeId,
         user.activeTenantId,
@@ -1088,9 +1113,19 @@ export async function transitionTicket(input: {
 export async function listAgents(input?: { limit?: number; offset?: number }) {
   try {
     const user = await requireTenantRole('viewer')
+    // #142 — az operátori agent-katalógus a felhasználó `view` jogán szűr. A
+    // `hiddenFromOperators` katalógus-szabály a gráf ELŐTT szűr (non-admin), és
+    // grant nem írja felül. Tenant-kontextus nélkül nincs gráf-alany → üres lista.
+    const subject = tenantUserSubject(user)
+    if (!subject) return ok([])
+    const accessible = await services.agentAccess.listAccessibleAgents(subject, 'view', {
+      subjectIsTenantAdmin: isTenantAdmin(user),
+    })
+    // A lapozás a gráf által ENGEDÉLYEZETT halmazon fut (DB-szintű `ids` szűrő), így
+    // egy oldal sem lesz „lyukas", és nem kell a teljes tenant-listát memóriába húzni.
     const page = await repositories.agents.listPage({
       tenantId: user.activeTenantId,
-      excludeHiddenFromOperators: shouldExcludeHiddenAgents(user.activeTenantRole),
+      ids: accessible.map((a) => a.id),
       limit: input?.limit ?? DEFAULT_LIST_LIMIT,
       offset: input?.offset,
     })
@@ -1104,9 +1139,17 @@ export async function getAgent(input: { id: string }) {
   try {
     const user = await requireTenantRole('viewer')
     const { id } = agentIdSchema.parse(input)
+    const subject = tenantUserSubject(user)
+    if (!subject) return fail('Agent not found')
+    // #142 — közvetlen URL ne fedje fel a gráf szerint elrejtett agentet.
+    // A `hiddenFromOperators` a view döntésben benne van; grant nem írja felül.
+    // Lista-szerű (nem explicit megszólítási) próba: nincs deny-audit.
+    const decision = await services.agentAccess.canAccessAgent(subject, id, 'view', {
+      subjectIsTenantAdmin: isTenantAdmin(user),
+    })
+    if (!decision.allowed) return fail('Agent not found')
     const detail = await repositories.agents.findByIdForDisplay(id, user.activeTenantId)
     if (!detail) return fail('Agent not found')
-    if (!canViewAgent(user.activeTenantRole, detail.agent)) return fail('Agent not found')
     return ok(detail)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to get agent')
@@ -1117,9 +1160,14 @@ export async function getAgentGovernance(input: { agentId: string }) {
   try {
     const user = await requireTenantRole('viewer')
     const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
+    const subject = tenantUserSubject(user)
+    if (!subject) return fail('Agent not found')
+    const decision = await services.agentAccess.canAccessAgent(subject, agentId, 'view', {
+      subjectIsTenantAdmin: isTenantAdmin(user),
+    })
+    if (!decision.allowed) return fail('Agent not found')
     const agent = await repositories.agents.findById(agentId, user.activeTenantId)
     if (!agent) return fail('Agent not found')
-    if (!canViewAgent(user.activeTenantRole, agent)) return fail('Agent not found')
     const [capabilities, connectors] = await Promise.all([
       repositories.toolBroker.findCapabilitiesForAgent(agentId),
       repositories.toolBroker.findConnectorsForAgent(agentId),
@@ -2767,11 +2815,17 @@ export async function promoteConversationWithAi(input: { conversationId: string 
     const agentRow = await repositories.agents.findById(conversation.agentId, user.activeTenantId)
     if (!agentRow) return fail('Agent not found')
 
+    // #142 — a ticket-generáló prompt is FELELŐS-jelölteket kínál a modellnek, ezért
+    // `address` alapján szűr: különben olyan agentet javasolna, akihez a ticket
+    // felvétele utána elbukna.
+    const promptSubject = tenantUserSubject(user)
     const [agents, users] = await Promise.all([
-      repositories.agents.findMany({
-        tenantId: user.activeTenantId,
-        excludeHiddenFromOperators: shouldExcludeHiddenAgents(user.activeTenantRole),
-      }),
+      promptSubject
+        ? services.agentAccess.listAccessibleAgents(promptSubject, 'address', {
+            subjectIsTenantAdmin: isTenantAdmin(user),
+            activeOnly: true,
+          })
+        : Promise.resolve([]),
       prisma.user.findMany({
         where: { tenantId: user.activeTenantId, status: 'active' },
         select: { id: true, name: true, role: true, jobDescription: true },
@@ -2939,6 +2993,25 @@ export async function createScheduledAgentTask(input: {
   try {
     const user = await requireTenantRole('operator')
     const parsed = createScheduledAgentTaskSchema.parse(input)
+    // #142 — ütemezett feladat is agent-megszólítás: `address` kell, különben
+    // tiltott agenthez materializálódó ticket kerülhet a boardra.
+    const subject = tenantUserSubject(user)
+    if (!subject) return fail('Agent not found')
+    try {
+      await services.agentAccess.assertCanAccessAgent({
+        subject,
+        targetAgentId: parsed.agentId,
+        verb: 'address',
+        subjectIsTenantAdmin: isTenantAdmin(user),
+        audit: {
+          channel: 'ticket',
+          initiatingUserId: user.user.id,
+        },
+      })
+    } catch (error) {
+      if (isAgentAccessError(error)) return fail(error.message)
+      throw error
+    }
     const scheduledTask = await services.scheduledTasks.createAgentTask({
       agentId: parsed.agentId,
       title: parsed.title,

@@ -10,6 +10,7 @@ import {
   PROVISIONING_DRAFT_CAPABILITIES,
 } from '../src/domain/provisioning/provisioning-assistant'
 import { PLAYBOOK_AUTHOR_TEMPLATE } from '../src/domain/playbook/playbook-author-agent'
+import { ensureTenantWebEgressAgent } from '../src/domain/agent-access/web-egress-materialization'
 import {
   WEB_EGRESS_ROLE_TEMPLATE,
   WEB_EGRESS_TOOL_CAPABILITIES,
@@ -340,6 +341,21 @@ async function ensureGlobalCustomConnectorTemplates() {
  * ALAPBÓL KI van kapcsolva (`web_fetch.enabled` / `web_discovery` flag false); az agent léte
  * önmagában semmit nem tesz elérhetővé — a discoverConfigFromName flag off esetén leáll.
  */
+/**
+ * #142 — tenantonkénti Web-Egress materializáció. A platform-szintű példány megmarad a
+ * platform-szintű felfedezéshez, de a tenant AD-HOC webes útja a saját példányán megy,
+ * ALAPBÓL ZÁRT restriction-kapcsolókkal.
+ */
+async function backfillTenantWebEgressAgents(adminId: string) {
+  const tenants = await prisma.tenant.findMany({
+    where: { status: { in: ['active', 'suspended', 'offboarding'] } },
+    select: { id: true },
+  })
+  for (const tenant of tenants) {
+    await ensureTenantWebEgressAgent({ tenantId: tenant.id, approvedById: adminId })
+  }
+}
+
 async function ensureWebEgressRoleAgent(adminId: string) {
   const t = WEB_EGRESS_ROLE_TEMPLATE
   const existing = await prisma.agent.findFirst({ where: { name: t.name } })
@@ -1626,6 +1642,8 @@ async function main() {
   await ensureBuiltinConnectorTemplates()
   await ensureGlobalCustomConnectorTemplates()
   await ensureStarterStepTemplates(prisma)
+  // #142 — minden tenant SAJÁT Web-Egress példányt kap (mindkét irányban zárva).
+  await backfillTenantWebEgressAgents(admin.id)
   const backfilled = await ensureAllTenantsHaveWebSearchConnector()
   if (backfilled > 0) {
     console.log(`  Web Search tenant connectors backfilled: ${backfilled}`)

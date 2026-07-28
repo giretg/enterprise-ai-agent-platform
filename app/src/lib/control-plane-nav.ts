@@ -57,6 +57,11 @@ export function buildControlPlaneNav(ctx: ControlPlaneNavContext): ControlPlaneN
       label: 'Munkatársak',
       children: [
         { href: '/control-plane/agents', label: 'Munkatársak' },
+        // #142 — az agent-hozzáférési gráf szerkesztője. Tenant admin jog: itt dől el,
+        // ki kit lát és ki kit szólíthat meg.
+        ...(canTenantAdmin
+          ? [{ href: '/control-plane/agent-access', label: 'Kapcsolatok' }]
+          : []),
         { href: '/control-plane/behavior-profiles', label: 'Viselkedés-profilok' },
         { href: '/control-plane/skills', label: 'Skill-katalógus' },
         { href: '/control-plane/apps', label: 'Mini-appok' },

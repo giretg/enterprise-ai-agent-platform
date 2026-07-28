@@ -3,9 +3,10 @@ import type { TenantAuthContext } from '@/auth/context'
 import { hasMinimumRole } from '@/auth/types'
 import { services } from '@/domain'
 import type { ProvisioningActor } from '@/domain/provisioning/provisioning-service'
+import { isTenantAdmin, tenantUserSubject } from '@/domain/agent-access/tenant-user-subject'
 import { loadAgentDelegatedConnectors } from '@/lib/agent-delegated-connectors-server'
 import { ensureAgentKnowledgeBase } from '@/lib/agent-knowledge-base'
-import { canViewAgent, shouldExcludeHiddenAgents } from '@/lib/agent-operator-visibility'
+import { shouldExcludeHiddenAgents } from '@/lib/agent-operator-visibility'
 import { prisma } from '@/lib/db'
 import type { SkillReadiness } from '@/lib/skill/skill-readiness'
 import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
@@ -278,7 +279,17 @@ export async function loadAgentDetailPageData(
 
   const detail = await repositories.agents.findByIdForDisplay(agentId, ctx.activeTenantId)
   if (!detail) throw new Error('Agent not found')
-  if (!canViewAgent(ctx.activeTenantRole, detail.agent)) throw new Error('Agent not found')
+  // #142 — a detail oldal a gráf `view` döntését használja (nem csak a régi
+  // hiddenFromOperators kaput), így közvetlen URL sem fed fel elrejtett agentet.
+  const subject = tenantUserSubject(ctx)
+  const viewAllowed = subject
+    ? (
+        await services.agentAccess.canAccessAgent(subject, agentId, 'view', {
+          subjectIsTenantAdmin: isTenantAdmin(ctx),
+        })
+      ).allowed
+    : false
+  if (!viewAllowed) throw new Error('Agent not found')
 
   const delegatedConnectors = await loadAgentDelegatedConnectors(
     agentId,

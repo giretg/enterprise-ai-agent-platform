@@ -31,6 +31,7 @@ import type { ConversationService } from '../src/domain/conversation/conversatio
 import type { ModelGateway } from '../src/domain/gateway/model-gateway'
 import type { ToolBrokerService } from '../src/domain/tool-broker/tool-broker-service'
 import type { WorkspaceStorage } from '../src/domain/file-editor/workspace-storage'
+import { AgentAccessService } from '../src/domain/agent-access/agent-access-service'
 
 let failures = 0
 async function test(name: string, fn: () => void | Promise<void>) {
@@ -41,6 +42,45 @@ async function test(name: string, fn: () => void | Promise<void>) {
     failures += 1
     console.log(`  FAIL ${name}: ${e instanceof Error ? e.message : String(e)}`)
   }
+}
+
+/**
+ * Korlátozás nélküli tenant-gráf a fókusztesztekhez (#142). A hozzáférési döntés
+ * saját, dedikált tesztje a `scripts/agent-access-graph.test.ts` — itt csak az a
+ * dolga, hogy a chat-út ne fail-closed módon álljon meg.
+ */
+function permissiveAgentAccess(): AgentAccessService {
+  return new AgentAccessService({
+    agents: {
+      findById: async (id) => ({
+        id,
+        name: 'Teszt agent',
+        personaNickname: null,
+        personaTrait: null,
+        role: 'worker',
+        status: 'active',
+        tenantId: 'tenant-1',
+        hiddenFromOperators: false,
+        inboundRestricted: false,
+        outboundRestricted: false,
+      }),
+      listForTenant: async () => [],
+      setRestrictions: async () => ({
+        previous: { inboundRestricted: false, outboundRestricted: false },
+        next: { inboundRestricted: false, outboundRestricted: false },
+      }),
+    },
+    grants: {
+      findEdge: async () => null,
+      listBySubject: async () => [],
+      listByTarget: async () => [],
+      listAgentEdgesForTenant: async () => [],
+      listForTenant: async () => [],
+      upsertEdge: async () => ({ ok: false, reason: 'no_verb' }) as never,
+      deleteEdge: async () => ({ ok: false, reason: 'not_found' }) as never,
+    },
+    audit: { append: async () => ({}) as never },
+  })
 }
 
 function agentRow(): Agent {
@@ -64,6 +104,8 @@ function agentRow(): Agent {
     role: 'worker',
     allowSensitiveExternalModel: false,
     hiddenFromOperators: false,
+    inboundRestricted: false,
+    outboundRestricted: false,
     selfEvolutionProfile: null,
     memoryId: 'memory-1',
     createdAt: new Date('2026-07-18T08:00:00Z'),
@@ -288,6 +330,11 @@ function buildRuntime(options: {
     undefined,
     undefined,
     options.turns,
+    undefined,
+    // #142 — a chat-indítás user→agent `address` kaput kap. Bekötetlen gráf-
+    // szolgáltatásnál a chat FAIL-CLOSED módon nem indul el, ezért a fókusztesztek
+    // egy korlátozás nélküli (C4 alapértékű) tenant-gráfot kapnak.
+    permissiveAgentAccess(),
   )
   return { runtime, messages }
 }

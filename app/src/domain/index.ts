@@ -108,6 +108,8 @@ import { repositories } from '@/repositories/postgres'
 import { resolveConnectorApiKey } from '@/domain/connector/http-api-client'
 import { createTtlSecretCache } from '@/lib/crypto/ttl-secret-cache'
 import { prisma } from '@/lib/db'
+import { AgentAccessService } from '@/domain/agent-access/agent-access-service'
+import { AGENT_GRAPH_NODE_SELECT } from '@/domain/agent-access/agent-graph-node-select'
 import { createHash } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
 import { SpecSyncService } from '@/domain/connector-self-update/spec-sync'
@@ -663,6 +665,40 @@ const webSearchAdapterResolver: WebSearchAdapterResolver = async (config, secret
 }
 const webSearchPolicyService = new WebSearchPolicyService()
 const webSearchService = new WebSearchService(webSearchAdapterResolver, webSearchPolicyService)
+/**
+ * Agent-hozzáférési gráf (Access-Policy §agent-scope, #142). Az agent-oldali olvasó
+ * SZÁNDÉKOSAN szűk: csak a döntéshez és az org-ábrához kellő mezőket adja, így a
+ * policy-mag nem függ az `AgentRepository` teljes felületétől, és nem overfetch-el.
+ */
+const agentAccessService = new AgentAccessService({
+  agents: {
+    findById: async (agentId) => {
+      const agent = await prisma.agent.findUnique({
+        where: { id: agentId },
+        select: AGENT_GRAPH_NODE_SELECT,
+      })
+      return agent ?? null
+    },
+    listForTenant: async (tenantId) =>
+      prisma.agent.findMany({
+        where: { tenantId },
+        select: AGENT_GRAPH_NODE_SELECT,
+        orderBy: { name: 'asc' },
+      }),
+    setRestrictions: (input) => repositories.agents.updateAccessRestrictions(input),
+  },
+  grants: repositories.agentAccessGrants,
+  audit: repositories.audit,
+})
+// A restriction dry-run user-oldali alanyai: a tenant AKTÍV tagjai.
+agentAccessService.tenantMemberReader = async (tenantId) => {
+  const rows = await prisma.tenantMembership.findMany({
+    where: { tenantId, status: 'active', user: { status: 'active' } },
+    select: { userId: true },
+  })
+  return rows.map((r) => r.userId)
+}
+
 const toolBrokerService = new ToolBrokerService(
   repositories.agents,
   repositories.tickets,
@@ -681,6 +717,9 @@ const toolBrokerService = new ToolBrokerService(
   memoryProposalService,
   (tenantId) => platformSettingsService.isWebSearchEnabledForTenant(tenantId),
   () => platformSettingsService.isWebFetchEnabled(),
+  undefined,
+  undefined,
+  agentAccessService,
 )
 const consequenceApprovalService = new ConsequenceApprovalService(
   repositories.consequenceApprovals,
@@ -712,6 +751,7 @@ const tenantService = new TenantService(
   repositories.platformMemberships,
   repositories.audit,
 )
+
 
 // Provisioning Assistant (§7.2/§14.2): a tenant egress-allowlist és a banki preset
 // a meglévő deny-by-default egress-policy kiterjesztése; jelenleg env-vezérelt
@@ -967,6 +1007,7 @@ const agentChatRuntime = new AgentChatRuntime(
   (tenantId) => platformSettingsService.isChatThinkingTraceEnabledForTenant(tenantId),
   repositories.agentTurns,
   consequenceApprovalService,
+  agentAccessService,
 )
 // 1:1 agent-chat a csatornán (#74, D8/D9/D10/D11). A worker második munkatípusa: a bejövő
 // Telegram-fordulót a MEGLÉVŐ webes chat-futásidőre képezzük (ugyanabba a beszélgetésbe, így a
@@ -1053,6 +1094,7 @@ const generalTaskRuntime = new GeneralTaskRuntime(
   repositories.audit,
   memoryRetrievalService,
   () => platformSettingsService.getStructuringModel(),
+  agentAccessService,
 )
 toolBrokerService.setDelegationProcessor(async ({ ticketId, targetAgentId }) => {
   await wikiRuntime.processTicket({ ticketId, agentId: targetAgentId })
@@ -1060,6 +1102,9 @@ toolBrokerService.setDelegationProcessor(async ({ ticketId, targetAgentId }) => 
 // Folyamat-ticket board_write állapotváltása a Playbook state machine-en át (kapuk +
 // output-szerződés + ProcessService.advance) — l. process-runtime-advance-gap.
 toolBrokerService.setPlaybookTransitioner(ticketStateMachine)
+// #142 — a folyamat-motor SHADOW ellenőrzése: a Playbook-út nem áll meg az ad-hoc gráf
+// deny döntésén, de `agent.access.bypass` eseményt ír, ha az ad-hoc út elutasítaná.
+processService.setAgentAccessService(agentAccessService)
 const auditChainService = new AuditChainService(repositories.audit)
 const recipeService = new RecipeService(repositories.recipes, repositories.audit)
 const scheduledTaskService = new ScheduledTaskService(
@@ -1083,6 +1128,8 @@ const monitorService = new MonitorService(
   processService,
   repositories.agents,
 )
+// #142 — a Monitor-cron eszkalációja is shadow-ellenőrzést kap (auditál, nem blokkol).
+monitorService.setAgentAccessService(agentAccessService)
 // local-wiki: fire-and-forget (mint docker-local / cloud-run-job) — a UI create /
 // handback nem várja meg a teljes agent-futást. Hiba esetén a dispatcher
 // retry/block politikája érvényesül (nem vak `ready` reset).
@@ -1168,6 +1215,7 @@ export const services = {
   channelRetention: channelRetentionService,
   channelAgentAccess: channelAgentAccessService,
   channelApproval: channelApprovalService,
+  agentAccess: agentAccessService,
   iam: iamService,
   tenants: tenantService,
   provisioning: provisioningService,

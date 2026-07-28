@@ -22,6 +22,10 @@ import {
 } from '@/domain/connector-template/template-descriptor'
 import { WEB_EGRESS_ROLE_TEMPLATE } from '@/domain/agents/web-egress-role'
 import {
+  ensureTenantWebEgressAgent,
+  findTenantWebEgressAgent,
+} from '@/domain/agent-access/web-egress-materialization'
+import {
   inspectPromptSensitivity,
   reviewableSensitivityFindings,
   type SensitivityFinding,
@@ -127,7 +131,29 @@ export type FetchApiDocFromUrlData = {
   truncated: boolean
 }
 
-async function resolveProvisioningEgressAgent() {
+/**
+ * A felfedezéshez használt Web-Egress példány (#142).
+ *
+ * A Web-Egress mostantól TENANTONKÉNT materializált, normál tenant-agent: a tenant
+ * SAJÁT web_search connectorán és kulcsán megy ki a forgalom, tehát a tenant példányát
+ * kell választani. A platform-szintű (`tenantId = null`) példány csak visszaesés a még
+ * nem migrált telepítéseken — a materializáció (`ensureTenantWebEgressAgent`) idempotens,
+ * ezért itt is megpróbáljuk pótolni.
+ *
+ * Ez NEM `address` grant: a „discover" az admin panel-actionjén fut, jogosultsággal
+ * védve — a gráf az AD-HOC utat köti, nem az admin kormányzási műveletet.
+ */
+async function resolveProvisioningEgressAgent(tenantId: string | null, actorUserId: string) {
+  if (tenantId) {
+    const tenantInstance = await findTenantWebEgressAgent(tenantId)
+    if (tenantInstance?.status === 'active') return tenantInstance
+    try {
+      const materialized = await ensureTenantWebEgressAgent({ tenantId, approvedById: actorUserId })
+      if (materialized.status === 'active') return materialized
+    } catch {
+      // Fail-soft: a platform-szintű visszaesésre megyünk tovább (lásd alább).
+    }
+  }
   const agents = await repositories.agents.findMany()
   const egressCandidates = agents.filter(
     (a) => a.name === WEB_EGRESS_ROLE_TEMPLATE.name && a.status === 'active',
@@ -440,7 +466,7 @@ export async function fetchApiDocFromUrl(input: unknown) {
     const user = await requireTenantRole('admin')
     const { url } = fetchApiDocUrlSchema.parse(input)
 
-    const egressAgent = await resolveProvisioningEgressAgent()
+    const egressAgent = await resolveProvisioningEgressAgent(user.activeTenantId, user.user.id)
     if (!egressAgent) {
       return fail(
         'A web-egress role agent nincs seedelve. Futtasd: npm run db:seed, majd kapcsold be a web_fetch platform-toolt.',
@@ -520,12 +546,11 @@ export async function discoverConnectorFromName(input: unknown) {
     // A seedelt web-egress role agent — audit-attribúció + a Registry modelConfig-je + a
     // web.fetch/discover capability-k hordozója. Ha nincs, a felfedezés nem elérhető.
     //
-    // A web-egress worker PLATFORM-SZINTŰ (system) agent: tenantId=null, és egy platform-szintű
-    // web_search connectort old fel (§8.1). Ezért TENANTFÜGGETLENÜL, a system példányt kell
-    // választani — különben egy tenanthoz kötött példány a SAJÁT tenantja search-connectorát
-    // (és kulcsát) használná minden más tenant felfedezésénél is. A tenant-kötött példány csak
-    // átmeneti visszaesés (még nem migrált seed), a system-szintűt preferáljuk.
-    const egressAgent = await resolveProvisioningEgressAgent()
+    // #142 — a Web-Egress TENANTONKÉNT materializált: a felfedezés a tenant SAJÁT
+    // példányán és search-connectorán fut, így a webes forgalom a tenant kulcsán és
+    // házirendjén megy ki. A platform-szintű példány csak visszaesés a még nem migrált
+    // telepítéseken.
+    const egressAgent = await resolveProvisioningEgressAgent(user.activeTenantId, user.user.id)
     if (!egressAgent) {
       return fail(
         'A web-egress role agent nincs seedelve. Futtasd: npm run db:seed (a felfedezés flag mögött).',

@@ -36,6 +36,7 @@ import type { ConnectorGrantService } from '../src/domain/connector-grant/connec
 import type { FileEditorService } from '../src/domain/file-editor/file-editor-service'
 import type { WebSearchService } from '../src/domain/web-search/web-search-service'
 import type { WebSearchPolicyService } from '../src/domain/web-search/web-search-policy-service'
+import { AgentAccessService } from '../src/domain/agent-access/agent-access-service'
 
 let failures = 0
 async function test(name: string, fn: () => void | Promise<void>) {
@@ -78,8 +79,33 @@ const AGENTS: Agent[] = [
 ]
 const AGENT_BY_ID = new Map(AGENTS.map((a) => [a.id, a]))
 
+/** A gráf-döntéshez szükséges szűk csomópont-alak a teljes `Agent` sorból. */
+function toGraphNode(a: Agent) {
+  return {
+    id: a.id,
+    name: a.name,
+    personaNickname: null,
+    personaTrait: null,
+    role: a.role as string,
+    status: a.status as string,
+    tenantId: a.tenantId,
+    hiddenFromOperators: false,
+    inboundRestricted: false,
+    outboundRestricted: false,
+  }
+}
+
+const fakeAccessAudit = { append: async () => ({}) as never }
+
 const fakeAgents = {
-  findMany: async () => AGENTS,
+  // A valódi tár tenant- és id-szűrést is végez; a dublőrnek ezt tükröznie kell,
+  // különben a teszt olyan hívási utat mérne, ami élesben nem létezik (#142).
+  findMany: async (filter?: { tenantId?: string | null; ids?: string[] }) =>
+    AGENTS.filter(
+      (a) =>
+        (filter?.tenantId === undefined || a.tenantId === filter.tenantId) &&
+        (filter?.ids === undefined || filter.ids.includes(a.id)),
+    ),
   findById: async (id: string) => AGENT_BY_ID.get(id) ?? null,
   findByIdForRuntime: async (id: string) => {
     const a = AGENT_BY_ID.get(id)
@@ -113,6 +139,39 @@ const fakeAgents = {
     }
   },
 } as unknown as AgentRepository
+
+/**
+ * #142 — az agent-hozzáférési gráf a felderítő és delegáló toolok TOVÁBBI kapuja.
+ * A brokernek be kell kötni, különben a gráf FAIL-CLOSED módon mindent elutasít
+ * (ez szándékos: egy elmaradt dependency-injection nem nyithat meg agent→agent utat).
+ *
+ * A teszt-példány korlátozás NÉLKÜLI tenant-gráfot modellez (C4 alapérték), így a
+ * tenant-izolációs állítások pontosan azt mérik, amit eddig: a tenant-határt.
+ */
+const fakeAgentAccess = new AgentAccessService({
+  agents: {
+    findById: async (id) => {
+      const a = AGENT_BY_ID.get(id)
+      return a ? toGraphNode(a) : null
+    },
+    listForTenant: async (tenantId) =>
+      AGENTS.filter((a) => a.tenantId === tenantId).map(toGraphNode),
+    setRestrictions: async () => ({
+      previous: { inboundRestricted: false, outboundRestricted: false },
+      next: { inboundRestricted: false, outboundRestricted: false },
+    }),
+  },
+  grants: {
+    findEdge: async () => null,
+    listBySubject: async () => [],
+    listByTarget: async () => [],
+    listAgentEdgesForTenant: async () => [],
+    listForTenant: async () => [],
+    upsertEdge: async () => ({ ok: false, reason: 'no_verb' }) as never,
+    deleteEdge: async () => ({ ok: false, reason: 'not_found' }) as never,
+  },
+  audit: fakeAccessAudit,
+})
 
 const ticketA = {
   id: 'ticket-A',
@@ -171,6 +230,11 @@ function makeBroker(): ToolBrokerService {
     null as never,
     null as never,
     null as never, // memoryProposal
+    undefined, // isWebSearchEnabled
+    undefined, // isWebFetchEnabled
+    undefined, // isWebResearchDelegationEnabled
+    undefined, // lookupTenantUserDirectory
+    fakeAgentAccess,
   )
 }
 
@@ -210,8 +274,12 @@ async function main() {
       (a) => a.agentId,
     )
     assert.ok(ids.includes(ALFA), 'saját tenant agentje látszik')
-    assert.ok(ids.includes(SHARED), 'megosztott agent látszik')
     assert.ok(!ids.includes(BRAVO), 'cross-tenant agent SOHA nem szivárog ki')
+    // #142 — a korábbi „`tenantId = null` minden tenantból elérhető" tool-kivétel
+    // MEGSZŰNT: a platform-szintű agent (panel-varázsló) nem gráfcsomópont, ezért a
+    // felderítésben sem jelenhet meg. Ez szándékos szigorítás, nem regresszió: a
+    // varázslókat kizárólag a saját, jogosultsággal védett admin paneljük indíthatja.
+    assert.ok(!ids.includes(SHARED), 'platform-szintű agent nem gráfcsomópont')
   })
 
   // ── agent_catalog (agentId direkt lookup) ─────────────────────────────────

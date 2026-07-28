@@ -14,6 +14,9 @@ import {
 } from '@/repositories/interfaces'
 import { composeSystemPrompt } from '@/lib/agent-prompt'
 import { formatOrgRoster } from '@/lib/agent-org-roster'
+import type { AgentAccessService } from '@/domain/agent-access/agent-access-service'
+import { resolveAddressableColleagues } from '@/domain/agent-access/addressable-colleagues'
+import { AgentAccessError } from '@/domain/agent-access/agent-access-errors'
 import { buildRunAsAuthorization } from '@/lib/run-as-payload'
 import { formatHitsForPrompt, type KbHit } from '@/lib/kb-format'
 import { attachmentPageCount } from '@/lib/document-read'
@@ -515,6 +518,12 @@ export class AgentChatRuntime {
     private agentTurns?: AgentTurnRepository,
     /** issue #97 — következmény-kapu pending jóváhagyások. */
     private consequenceApprovals?: import('../tool-broker/consequence-approval-service').ConsequenceApprovalService,
+    /**
+     * Agent-hozzáférési gráf (#142). A prompt-roster ezen keresztül szűr: csak
+     * MEGSZÓLÍTHATÓ, aktív, azonos tenantos kollégák kerülhetnek a system promptba.
+     * Ha nincs bekötve, a roster ÜRES (fail-closed) — nem a teljes agent-lista.
+     */
+    private agentAccess?: AgentAccessService,
   ) {}
 
   /**
@@ -869,6 +878,45 @@ export class AgentChatRuntime {
    * a prompt összeállítása, a tool-loop és a válasz — az a detached futásban
    * megy, és a kérés lezárása nem szakítja meg.
    */
+  /**
+   * Az agent-hozzáférési gráf user→agent kapuja a chat-indításnál (#142).
+   *
+   * `null`-t ad, ha a beszélgetés indítható; különben a KÉSZ hiba-eredményt, amit a
+   * hívó változtatás nélkül visszaad. A hibaszöveg a felfedési szintből következik:
+   * ha a felhasználó látja is az agentet, megtudja, hogy nincs joga megszólítani;
+   * ha nem látja, opak „Agent not found" — a cél létezése nem szivárog ki.
+   *
+   * FAIL-CLOSED: ha a gráf-szolgáltatás nincs bekötve, a chat nem indul el.
+   */
+  private async assertChatAddressAllowed(
+    params: AgentChatSendParams,
+  ): Promise<BeginTurnResult | null> {
+    if (!this.agentAccess) {
+      return { kind: 'error', error: new Error('Agent not found') }
+    }
+    if (!params.tenantId) {
+      return { kind: 'error', error: new Error('Agent not found') }
+    }
+    try {
+      await this.agentAccess.assertCanAccessAgent({
+        subject: { kind: 'user', userId: params.createdById, tenantId: params.tenantId },
+        targetAgentId: params.agentId,
+        verb: 'address',
+        audit: {
+          channel: 'chat',
+          conversationId: params.conversationId ?? null,
+          initiatingUserId: params.createdById,
+        },
+      })
+      return null
+    } catch (error) {
+      if (error instanceof AgentAccessError) {
+        return { kind: 'error', error: new Error(error.message) }
+      }
+      throw error
+    }
+  }
+
   private async beginTurn(params: AgentChatSendParams): Promise<BeginTurnResult> {
     const text = params.content.trim()
     const attachmentIds = params.attachmentDocumentIds ?? []
@@ -881,6 +929,11 @@ export class AgentChatRuntime {
     if (!isAgentReachableFromTenant(agentDetails.agent.tenantId, params.tenantId ?? null)) {
       return { kind: 'error', error: new Error('Agent not found') }
     }
+    // #142 — a chat-stream indítása user→agent `address` ige. A `view` jog
+    // függvényében determinisztikusan 403- vagy 404-jellegű hibát ad, és minden
+    // explicit próbát auditál (`agent.access.granted` / `agent.access.denied`).
+    const chatGate = await this.assertChatAddressAllowed(params)
+    if (chatGate) return chatGate
 
     const modelConfig = agentDetails.agent.modelConfig as ChatModelConfig
 
@@ -1620,6 +1673,19 @@ export class AgentChatRuntime {
     const agentDetails = await this.agents.findByIdForRuntime(params.agentId)
     if (!agentDetails) throw new Error('Agent not found')
     assertAgentReachableForChat(agentDetails.agent.tenantId, params.tenantId ?? null)
+    // #142 — a feladat-ticket felvétele ugyanaz az `address` ige, mint a chat; csak a
+    // CSATORNA más. Enélkül a chat-kaput meg lehetne kerülni egy feladat felvételével.
+    if (!this.agentAccess || !params.tenantId) throw new Error('Agent not found')
+    await this.agentAccess.assertCanAccessAgent({
+      subject: { kind: 'user', userId: params.createdById, tenantId: params.tenantId },
+      targetAgentId: params.agentId,
+      verb: 'address',
+      audit: {
+        channel: 'ticket',
+        conversationId: params.conversationId ?? null,
+        initiatingUserId: params.createdById,
+      },
+    })
 
     const attachmentDocs = await this.loadDocuments(attachmentIds)
     const modelConfig = agentDetails.agent.modelConfig as {
@@ -2069,8 +2135,12 @@ export class AgentChatRuntime {
     memoryContextBlock?: string | null,
     continuationPrompt?: string | null,
   ) {
-    const allAgents = await this.agents.findMany()
-    const orgRoster = formatOrgRoster(allAgents)
+    // #142: a roster a hívó agent SAJÁT `address` jogán szűrt lista. A korábbi
+    // szűretlen `findMany()` más tenant agentjeinek nevét, persona-traitjét és ID-ját
+    // is beírta a system promptba — ez tenantközi adatszivárgás volt.
+    const orgRoster = formatOrgRoster(
+      await resolveAddressableColleagues(this.agentAccess, agentDetails.agent),
+    )
 
     const stablePreamble: PromptSegments['stablePreamble'] = [
       { role: 'system', content: composeSystemPrompt(agentDetails.agent) },
