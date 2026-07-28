@@ -40,6 +40,7 @@ import {
   canViewAgent,
   shouldExcludeHiddenAgents,
 } from '@/lib/agent-operator-visibility'
+import { isTenantAdmin, tenantUserSubject } from '@/domain/agent-access/tenant-user-subject'
 import { getReportTemplate, listReportTemplates } from '@/domain/report/report-templates'
 import { computePlaybookGovernance } from '@/domain/governance/measurement-report'
 import {
@@ -298,11 +299,17 @@ export async function listTickets(input?: { filter?: unknown; limit?: number; of
 export async function listBoardAssignees() {
   try {
     const user = await requireTenantRole('operator')
+    // #142 — a felelős-választó `address` alapján szűr (nem `view`): a UI nem
+    // kínálhat olyan agentet, akit a rendszer a ticket felvételekor elutasítana.
+    // Ez az a hibaosztály, ahol a felhasználó „kiválaszt valakit, aztán nem megy".
+    const subject = tenantUserSubject(user)
     const [agents, memberships] = await Promise.all([
-      repositories.agents.findMany({
-        tenantId: user.activeTenantId,
-        excludeHiddenFromOperators: shouldExcludeHiddenAgents(user.activeTenantRole),
-      }),
+      subject
+        ? services.agentAccess.listAccessibleAgents(subject, 'address', {
+            subjectIsTenantAdmin: isTenantAdmin(user),
+            activeOnly: true,
+          })
+        : Promise.resolve([]),
       prisma.tenantMembership.findMany({
         where: {
           tenantId: user.activeTenantId,
@@ -1088,9 +1095,19 @@ export async function transitionTicket(input: {
 export async function listAgents(input?: { limit?: number; offset?: number }) {
   try {
     const user = await requireTenantRole('viewer')
+    // #142 — az operátori agent-katalógus a felhasználó `view` jogán szűr. A
+    // `hiddenFromOperators` katalógus-szabály a gráf ELŐTT szűr (non-admin), és
+    // grant nem írja felül. Tenant-kontextus nélkül nincs gráf-alany → üres lista.
+    const subject = tenantUserSubject(user)
+    if (!subject) return ok([])
+    const accessible = await services.agentAccess.listAccessibleAgents(subject, 'view', {
+      subjectIsTenantAdmin: isTenantAdmin(user),
+    })
+    // A lapozás a gráf által ENGEDÉLYEZETT halmazon fut (DB-szintű `ids` szűrő), így
+    // egy oldal sem lesz „lyukas", és nem kell a teljes tenant-listát memóriába húzni.
     const page = await repositories.agents.listPage({
       tenantId: user.activeTenantId,
-      excludeHiddenFromOperators: shouldExcludeHiddenAgents(user.activeTenantRole),
+      ids: accessible.map((a) => a.id),
       limit: input?.limit ?? DEFAULT_LIST_LIMIT,
       offset: input?.offset,
     })
@@ -2762,11 +2779,17 @@ export async function promoteConversationWithAi(input: { conversationId: string 
     const agentRow = await repositories.agents.findById(conversation.agentId, user.activeTenantId)
     if (!agentRow) return fail('Agent not found')
 
+    // #142 — a ticket-generáló prompt is FELELŐS-jelölteket kínál a modellnek, ezért
+    // `address` alapján szűr: különben olyan agentet javasolna, akihez a ticket
+    // felvétele utána elbukna.
+    const promptSubject = tenantUserSubject(user)
     const [agents, users] = await Promise.all([
-      repositories.agents.findMany({
-        tenantId: user.activeTenantId,
-        excludeHiddenFromOperators: shouldExcludeHiddenAgents(user.activeTenantRole),
-      }),
+      promptSubject
+        ? services.agentAccess.listAccessibleAgents(promptSubject, 'address', {
+            subjectIsTenantAdmin: isTenantAdmin(user),
+            activeOnly: true,
+          })
+        : Promise.resolve([]),
       prisma.user.findMany({
         where: { tenantId: user.activeTenantId, status: 'active' },
         select: { id: true, name: true, role: true, jobDescription: true },

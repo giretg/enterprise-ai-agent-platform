@@ -73,6 +73,7 @@ jobs:
           npm run test:playbook-v2-registry
           npm run test:playbook-process-def
           npm run test:iam-policy
+          npm run test:agent-access-graph
           npm run test:memory-approval
           npm run test:training-tenant
           npm run test:memory-conflicts
@@ -166,6 +167,13 @@ jobs:
       # lehet bizonyítani, ezért a stub-DB-s suite helyett itt fut.
       - name: Agent-forduló repository tesztek
         run: npm run test:agent-turn
+
+      # Az agent-hozzáférési gráf DB-szintű invariánsai (#142): a subject-alak, a
+      # „legalább egy ige", a self-edge és a subject→target egyediség CHECK/UNIQUE
+      # kényszereit, valamint a cross-table tenant-invariáns TRANZAKCIÓS ellenőrzését
+      # csak valódi Postgres ellen lehet bizonyítani.
+      - name: Agent-hozzáférési gráf DB-invariánsok
+        run: npm run test:agent-access-grant-db
 
   security-scan:
     name: Titok-szkennelés + CodeQL

@@ -48,3 +48,6 @@ export type WebResearchBlockedReason =
   | 'web_fetch_disabled'
   | 'requester_daily_limit'
   | 'web_egress_agent_missing'
+  // #142 — a tenant Web-Egress példánya `inboundRestricted`: hiányzik az explicit
+  // agent→Web-Egress `address` grant, ezért a kérő agent nem használhat webet.
+  | 'web_egress_access_denied'

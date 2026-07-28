@@ -1,5 +1,7 @@
 import type {
   Agent,
+  AgentAccessGrant,
+  AgentAccessSubjectType,
   AgentTurn,
   AgentTurnStatus,
   AuditActorType,
@@ -464,6 +466,14 @@ export type AgentListFilter = {
   tenantId?: string | null
   /** Ha true, kihagyja a `hiddenFromOperators` agenteket (non-admin listázás). */
   excludeHiddenFromOperators?: boolean
+  /**
+   * Szűkítés egy előre kiszámolt azonosító-halmazra (#142): az agent-hozzáférési
+   * gráf ENGEDÉLYEZETT céljai. Azért a DB-ben szűrünk, hogy a lapozás a szűrt
+   * halmazon fusson — különben egy oldal „lyukas" lenne (a gráf utólag kivenne
+   * belőle elemeket), vagy a teljes tenant-listát kellene memóriába húzni.
+   * Üres tömb = nincs találat (fail-closed), nem „nincs szűrés".
+   */
+  ids?: string[]
   limit?: number
   offset?: number
   unbounded?: boolean
@@ -2610,4 +2620,97 @@ export interface ChannelMetricsRepository {
   countSessions(): Promise<{ total: number; linked: number }>
   countIdentitiesByStatus(): Promise<Record<string, number>>
   countPendingOutbound(): Promise<{ pending: number; oldestSentAt: Date | null }>
+}
+
+// ── Agent-hozzáférési gráf (Access-Policy §agent-scope, issue #142) ──────────
+
+/** Egy él két igéje. A `canView` és a `canAddress` FÜGGETLEN boolean, nem skála. */
+export type AgentAccessVerbs = { canView: boolean; canAddress: boolean }
+
+/** Egy subject→target pár azonosítása (feloldás, bővítés, szűkítés, törlés). */
+export type AgentAccessGrantKey = {
+  tenantId: string
+  subjectType: AgentAccessSubjectType
+  subjectUserId?: string | null
+  subjectAgentId?: string | null
+  targetAgentId: string
+}
+
+/**
+ * A tenant-invariáns megsértésének tipizált okai. Ezt PostgreSQL `CHECK` nem tudja
+ * kifejezni (cross-table), ezért a tár TRANZAKCIÓBAN ellenőrzi — fail-closed: hibás
+ * vagy elavult bemenetnél nem jön létre él.
+ */
+export type AgentAccessGrantWriteFailure =
+  | 'subject_not_in_tenant'
+  | 'target_not_in_tenant'
+  | 'self_edge'
+  | 'no_verb'
+
+export type AgentAccessGrantWriteResult =
+  | {
+      ok: true
+      grant: AgentAccessGrant
+      previous: AgentAccessVerbs | null
+    }
+  | { ok: false; reason: AgentAccessGrantWriteFailure }
+
+export type AgentAccessGrantDeleteResult =
+  | { ok: true; previous: AgentAccessVerbs; grantId: string }
+  | { ok: false; reason: 'not_found' }
+
+/**
+ * Az él-írás audit-eseményét a HÍVÓ állítja össze, de a tár írja — ugyanabban a
+ * tranzakcióban, mint magát az élt (a spec „tranzakciós/outbox határ" követelménye).
+ * Így nincs olyan állapot, ahol a policy megváltozott, de nyoma nincs.
+ */
+export type AgentAccessAuditBuilder = (change: {
+  grantId: string
+  previous: AgentAccessVerbs | null
+  next: AgentAccessVerbs
+}) => Parameters<AuditRepository['append']>[0]
+
+export type UpsertAgentAccessGrantInput = AgentAccessGrantKey & {
+  canView: boolean
+  canAddress: boolean
+  grantedById: string
+  buildAudit: AgentAccessAuditBuilder
+}
+
+/**
+ * Az agent-hozzáférési gráf éleinek tára. MINDEN olvasás tenant-scope-olt — a
+ * tenant-határ abszolút (I7), ezért a tár szintjén sincs tenant nélküli lekérdezés.
+ *
+ * A batch-olvasások (`listBySubject`, `listAgentEdgesForTenant`) a listás
+ * chokepointok és az elérhetőségi kúp N+1-mentes kiszolgálásához vannak: egy
+ * tucat–pár száz agentes tenantnál a teljes gráf EGY indexelt lekérdezés.
+ */
+export interface AgentAccessGrantRepository {
+  /** Egy konkrét subject→target él, vagy `null`. */
+  findEdge(key: AgentAccessGrantKey): Promise<AgentAccessGrant | null>
+  /**
+   * Egy subject KIMENŐ élei a tenantban (lista-szűrés, Focus-panel): user alanynál a
+   * `subjectUserId`, agent alanynál a `subjectAgentId` szerint.
+   */
+  listBySubject(key: Omit<AgentAccessGrantKey, 'targetAgentId'>): Promise<AgentAccessGrant[]>
+  /** Egy cél BEJÖVŐ élei a tenantban (ki érheti el ezt az agentet). */
+  listByTarget(tenantId: string, targetAgentId: string): Promise<AgentAccessGrant[]>
+  /** A tenant MINDEN `agent` alanyú éle — az elérhetőségi kúp bejárásához. */
+  listAgentEdgesForTenant(tenantId: string): Promise<AgentAccessGrant[]>
+  /** A tenant MINDEN éle (admin org-ábra betöltés). */
+  listForTenant(tenantId: string): Promise<AgentAccessGrant[]>
+  /**
+   * Létrehozás vagy bővítés/szűkítés EGY sorban (subject→target páronként legfeljebb
+   * egy él), a cross-table tenant-invariáns tranzakciós ellenőrzésével és az audit
+   * atomi írásával. Visszaadja az előző értékeket, hogy az audit a „mi változott"-at
+   * pontosan rögzíthesse.
+   */
+  upsertEdge(input: UpsertAgentAccessGrantInput): Promise<AgentAccessGrantWriteResult>
+  /**
+   * Az él törlése (mindkét ige levétele) + audit ugyanabban a tranzakcióban.
+   * A `buildAudit` `next` értéke ilyenkor `{ canView: false, canAddress: false }`.
+   */
+  deleteEdge(
+    key: AgentAccessGrantKey & { buildAudit: AgentAccessAuditBuilder },
+  ): Promise<AgentAccessGrantDeleteResult>
 }

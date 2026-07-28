@@ -82,6 +82,16 @@ enum AgentRole {
   orchestrator
 }
 
+/// Agent-hozzáférési gráf (Access-Policy §agent-scope): az él ALANYA vagy egy konkrét
+/// user, vagy egy másik agent. Csoport/Team/OrgUnit alany szándékosan NEM tartozik ide —
+/// az külön domain-entitást és migrációt igényelne.
+enum AgentAccessSubjectType {
+  user
+  agent
+
+  @@map("agent_access_subject_type")
+}
+
 /// Konfigurálható szerep-sablon (Feature-spec §3.5) — a szerep ADAT-konfiguráció,
 /// nem beégetett típus. A `tool_access_allowed` runtime-invariánst a Tool Broker
 /// `authorize()` elsőként nézi (§6); orchestrator = FALSE (tool-less by design).
@@ -614,6 +624,8 @@ model User {
   channelIdentities             ChannelIdentity[]    @relation("ChannelIdentityUser")
   channelLinkTokens             ChannelLinkToken[]   @relation("ChannelLinkTokenUser")
   userNotifications             UserNotification[]   @relation("UserNotificationUser")
+  agentAccessGrantsAsSubject    AgentAccessGrant[]   @relation("AgentAccessSubjectUser")
+  agentAccessGrantsIssued       AgentAccessGrant[]   @relation("AgentAccessGrantedBy")
 
   @@index([tenantId, status])
   @@index([tenantId, role])
@@ -658,8 +670,9 @@ model Tenant {
   createdAt       DateTime     @default(now()) @map("created_at") @db.Timestamptz
   updatedAt       DateTime     @updatedAt @map("updated_at") @db.Timestamptz
 
-  createdBy   User?              @relation("TenantCreatedBy", fields: [createdById], references: [id])
-  memberships TenantMembership[]
+  createdBy         User?              @relation("TenantCreatedBy", fields: [createdById], references: [id])
+  memberships       TenantMembership[]
+  agentAccessGrants AgentAccessGrant[]
 
   @@index([status])
   @@map("tenants")
@@ -786,6 +799,14 @@ model Agent {
   // nem látják az agentet a listákban és a detail oldalon. A futás/dispatch
   // NEM függ ettől — csak a UI/API láthatóság. Csak tenant admin írhatja.
   hiddenFromOperators           Boolean     @default(false) @map("hidden_from_operators")
+  // Agent-hozzáférési gráf kapcsolói (Access-Policy §agent-scope, C4 kompatibilitási
+  // alapérték). `inboundRestricted`: az agent FELÉ tartó view/address kapcsolat csak
+  // explicit `AgentAccessGrant`-tal engedett. `outboundRestricted`: az agentBŐL induló
+  // agent→agent view/address kapcsolat csak explicit granttal engedett. Alapérték
+  // false/false → korlátozás nélkül a tenanton belüli kapcsolat grant nélkül engedett
+  // (nincs migrációs élgenerálás, nincs shadow rollout).
+  inboundRestricted             Boolean     @default(false) @map("inbound_restricted")
+  outboundRestricted            Boolean     @default(false) @map("outbound_restricted")
   selfEvolutionProfile          Json?       @map("self_evolution_profile")
   memoryId                      String      @unique @map("memory_id") @db.Uuid
   createdAt                     DateTime    @default(now()) @map("created_at") @db.Timestamptz
@@ -815,11 +836,50 @@ model Agent {
   conversations           Conversation[]
   retentionPolicies       RetentionPolicy[]
   channelAgentGrants      ChannelAgentGrant[]      @relation("ChannelAgentGrantAgent")
+  accessGrantsAsSubject   AgentAccessGrant[]       @relation("AgentAccessSubjectAgent")
+  accessGrantsAsTarget    AgentAccessGrant[]       @relation("AgentAccessTarget")
 
   @@index([tenantId, status])
   @@index([tenantId, role])
   @@index([currentBehaviorProfileId])
   @@map("agents")
+}
+
+/// Agent-hozzáférési gráf éle (Access-Policy §agent-scope). Explicit, IRÁNYÍTOTT
+/// allow-él: nincs címke-, szerep- vagy deny-szabály; A→B és B→A két külön sor.
+/// A `canView` (a subject megtudhatja, hogy a cél létezik) és a `canAddress`
+/// (chat/ticket/`agent_ask` indítható a cél felé) FÜGGETLEN boolean — egyik sem
+/// implikálja a másikat. Egy subject→target párhoz legfeljebb egy sor tartozik, a két
+/// boolean együtt hordozza a két vizuális sávot; ha mindkettő hamisra kerülne, a sor
+/// törlődik (DB CHECK kényszeríti).
+///
+/// SZÁNDÉKOSAN nem a `ResourceGrant` táblát használjuk: annak alanya csak user lehet,
+/// és az egyetlen `view | operate | approve` SKÁLA-igéje nem tudja kifejezni a két
+/// független booleant.
+model AgentAccessGrant {
+  id             String                 @id @default(uuid()) @db.Uuid
+  tenantId       String                 @map("tenant_id") @db.Uuid
+  subjectType    AgentAccessSubjectType @map("subject_type")
+  subjectUserId  String?                @map("subject_user_id") @db.Uuid
+  subjectAgentId String?                @map("subject_agent_id") @db.Uuid
+  targetAgentId  String                 @map("target_agent_id") @db.Uuid
+  canView        Boolean                @default(false) @map("can_view")
+  canAddress     Boolean                @default(false) @map("can_address")
+  grantedById    String                 @map("granted_by") @db.Uuid
+  grantedAt      DateTime               @default(now()) @map("granted_at") @db.Timestamptz
+  updatedAt      DateTime               @updatedAt @map("updated_at") @db.Timestamptz
+
+  tenant       Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  subjectUser  User?  @relation("AgentAccessSubjectUser", fields: [subjectUserId], references: [id], onDelete: Cascade)
+  subjectAgent Agent? @relation("AgentAccessSubjectAgent", fields: [subjectAgentId], references: [id], onDelete: Cascade)
+  targetAgent  Agent  @relation("AgentAccessTarget", fields: [targetAgentId], references: [id], onDelete: Cascade)
+  grantedBy    User   @relation("AgentAccessGrantedBy", fields: [grantedById], references: [id])
+
+  @@unique([tenantId, subjectUserId, targetAgentId])
+  @@unique([tenantId, subjectAgentId, targetAgentId])
+  @@index([tenantId, targetAgentId])
+  @@index([tenantId, subjectAgentId])
+  @@map("agent_access_grants")
 }
 
 /// Megosztott, újrahasznosítható viselkedés-profil ("hogyan") — több agent hivatkozhatja

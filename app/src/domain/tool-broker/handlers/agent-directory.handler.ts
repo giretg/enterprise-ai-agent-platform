@@ -14,10 +14,18 @@ export const agentDirectoryHandler: ToolHandler = {
   },
   async execute({ ctx, input, actingTenantId }: ToolHandlerArgs) {
     if (input.tool === 'agent_resolve') {
-      return ctx.agentResolve(input.args, await ctx.resolveCallerTenantId(input, actingTenantId))
+      return ctx.agentResolve(
+        input.args,
+        await ctx.resolveCallerTenantId(input, actingTenantId),
+        input.agentId,
+      )
     }
     if (input.tool === 'agent_catalog') {
-      return ctx.agentCatalog(input.args, await ctx.resolveCallerTenantId(input, actingTenantId))
+      return ctx.agentCatalog(
+        input.args,
+        await ctx.resolveCallerTenantId(input, actingTenantId),
+        input.agentId,
+      )
     }
     if (input.tool === 'user_directory') {
       return ctx.userDirectory(input, actingTenantId)

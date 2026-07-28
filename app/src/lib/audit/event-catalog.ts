@@ -55,6 +55,17 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'agent.create',
   'agent.delete',
   'agent.dispatch_denied_inactive',
+  // Agent-hozzáférési gráf (Access-Policy §agent-scope, #142). A `channel`
+  // (chat | agent_ask | ticket | web_research) ADAT a metadatában, nem külön
+  // eseménynév — így egy lekérdezés minden úton látja a döntéseket.
+  'agent.access.granted',
+  'agent.access.denied',
+  // A folyamat-motor shadow ellenőrzése: a Playbook/Monitor út ÁTMEGY, de az ad-hoc
+  // gráf elutasította volna. Auditál, nem blokkol.
+  'agent.access.bypass',
+  'agent_access.grant.create',
+  'agent_access.grant.revoke',
+  'agent_access.restriction.update',
   // Tenant admin: agent elrejtése / megjelenítése az operátorok listájából.
   'agent.operator_visibility',
   'agent.persona',

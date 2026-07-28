@@ -36,7 +36,10 @@ import {
 } from '@/lib/agent-catalog'
 import { readDelegationPayload, shouldCompleteDelegation } from '@/lib/delegation-payload'
 
-import { isAgentReachableFromTenant, filterAgentsByTenant } from '@/lib/tenant-reachability'
+import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
+import { AgentAccessError } from '@/domain/agent-access/agent-access-errors'
+import type { AgentAccessChannel } from '@/lib/agent-access-graph'
+import type { AgentGraphNode } from '@/domain/agent-access/agent-access-service'
 import { resolveToolWorkspaceTenantKey } from '@/lib/workspace-resource-access'
 import {
   agentAnswerStructuredFromPayload,
@@ -957,6 +960,19 @@ export async function ticketCreate(self: ToolBrokerService,
       if (!isAgentReachableFromTenant(assignee.tenantId, assigneeRefTenantId)) {
         throw new Error('Assignee agent is not reachable from this tenant')
       }
+      // #142 — a ticket agent-felelősre címzése ugyanaz az `address` ige, mint a chat
+      // vagy a delegálás; csak a CSATORNA más. Ha ez a kapu hiányozna, a gráfot meg
+      // lehetne kerülni egy ticket felvételével.
+      await assertAgentGraphAccess(self, {
+        callerAgentId: input.agentId,
+        callerAgentVersion: input.agentVersion,
+        targetAgentId: args.assigneeId,
+        effectiveTenantId: assigneeRefTenantId,
+        channel: 'ticket',
+        ticketId: input.ticketId ?? null,
+        conversationId: input.conversationId ?? null,
+        actingUserId: input.actingUserId ?? null,
+      })
     }
     // Humán felelős (a user_directory-ból): ha az agent egy konkrét humán
     // userId-t ad, validáljuk (létező, aktív, azonos tenant) és a ticketre
@@ -1034,7 +1050,71 @@ export async function ticketCreate(self: ToolBrokerService,
     }
   }
 
-export async function agentAsk(self: ToolBrokerService, 
+/**
+ * Az agent-hozzáférési gráf EXPLICIT kapuja a tool-úton (#142).
+ *
+ * A sorrend a specé: hitelesítés és tenant-kontextus → meglévő durva capability-check
+ * (`AllowlistAuthorizer`, a `invoke` keretben) → cél feloldása és csatorna-alkalmassága
+ * → EZ a kapu → végrehajtás és audit. A gráf-gate tehát TOVÁBBI feltétel: nem írja felül
+ * a capability-checket, az agent státuszát vagy az orchestrator-szabályt.
+ *
+ * FAIL-CLOSED: ha a gráf-szolgáltatás nincs bekötve, `AGENT_NOT_FOUND`-ot dobunk. Egy
+ * elmaradt dependency-injection sosem nyithat meg agent→agent utat.
+ */
+async function assertAgentGraphAccess(
+  self: ToolBrokerService,
+  params: {
+    callerAgentId: string
+    callerAgentVersion?: number | null
+    targetAgentId: string
+    effectiveTenantId: string | null
+    channel: AgentAccessChannel
+    ticketId?: string | null
+    conversationId?: string | null
+    actingUserId?: string | null
+  },
+): Promise<void> {
+  if (!self.agentAccess) throw AgentAccessError.notFound()
+  if (!params.effectiveTenantId) throw AgentAccessError.notFound('tenant_boundary')
+
+  await self.agentAccess.assertCanAccessAgent({
+    subject: {
+      kind: 'agent',
+      agentId: params.callerAgentId,
+      tenantId: params.effectiveTenantId,
+    },
+    targetAgentId: params.targetAgentId,
+    verb: 'address',
+    audit: {
+      channel: params.channel,
+      ticketId: params.ticketId ?? null,
+      conversationId: params.conversationId ?? null,
+      // A kezdeményező ember AUDIT-KORRELÁCIÓ, nem authorization subject (I1).
+      initiatingUserId: params.actingUserId ?? null,
+      agentVersion: params.callerAgentVersion ?? null,
+    },
+  })
+}
+
+/**
+ * A gráf szerint LÁTHATÓ (`view`) tenant-agentek listája a felderítő toolokhoz
+ * (`agent_catalog`, `agent_resolve`). Fail-closed: bekötetlen gráf-szolgáltatásnál
+ * üres lista — a felderítés inkább semmit ne adjon, mint idegen agenteket.
+ */
+async function listViewableAgents(
+  self: ToolBrokerService,
+  callerAgentId: string,
+  effectiveTenantId: string | null,
+): Promise<AgentGraphNode[]> {
+  if (!self.agentAccess || !effectiveTenantId) return []
+  return self.agentAccess.listAccessibleAgents(
+    { kind: 'agent', agentId: callerAgentId, tenantId: effectiveTenantId },
+    'view',
+    { activeOnly: true },
+  )
+}
+
+export async function agentAsk(self: ToolBrokerService,
     input: Extract<ToolBrokerInvokeInput, { tool: 'agent_ask' }>,
     actingTenantId: string | null,
   ): Promise<AgentAskResult> {
@@ -1060,6 +1140,20 @@ export async function agentAsk(self: ToolBrokerService,
     if (!isAgentReachableFromTenant(target.tenantId, effectiveTenantId)) {
       throw new Error('Target agent is not reachable from this tenant')
     }
+
+    // #142 — agent-hozzáférési gráf: a delegáció a HÍVÓ AGENT saját `address` jogán
+    // fut (I1), nem a kezdeményező emberén. A `view` jog függvényében 403- vagy
+    // 404-jellegű, determinisztikus elutasítást kap.
+    await assertAgentGraphAccess(self, {
+      callerAgentId: input.agentId,
+      callerAgentVersion: input.agentVersion,
+      targetAgentId: input.args.targetAgentId,
+      effectiveTenantId,
+      channel: 'agent_ask',
+      ticketId: input.ticketId ?? null,
+      conversationId: input.conversationId ?? null,
+      actingUserId: input.actingUserId ?? null,
+    })
 
     const payload: Record<string, unknown> = {
       delegation: true,
@@ -1190,6 +1284,29 @@ export async function webResearchRequest(self: ToolBrokerService,
     if (!egressAgent) {
       await auditWebResearchBlocked(self, input.agentId, requesterVersion, 'web_egress_agent_missing', { objectiveHash })
       return { ok: false, error: 'web_egress_agent_missing' }
+    }
+
+    // #142 — a tenant Web-Egress példánya teljes gráfcsomópont, `inboundRestricted=true`
+    // alapértékkel: CSAK explicit agent→Web-Egress `address` granttal hívható. Ez teszi
+    // a webes kimenetet tudatos, tenant-admin által engedélyezett opt-inné.
+    try {
+      await assertAgentGraphAccess(self, {
+        callerAgentId: input.agentId,
+        callerAgentVersion: requesterVersion,
+        targetAgentId: egressAgent.id,
+        effectiveTenantId: requester?.tenantId ?? null,
+        channel: 'web_research',
+        ticketId: input.ticketId ?? null,
+        conversationId: input.conversationId ?? null,
+        actingUserId: input.actingUserId ?? null,
+      })
+    } catch (error) {
+      if (!(error instanceof AgentAccessError)) throw error
+      await auditWebResearchBlocked(self, input.agentId, requesterVersion, 'web_egress_access_denied', {
+        objectiveHash,
+        accessErrorCode: error.code,
+      })
+      return { ok: false, error: 'web_egress_access_denied' }
     }
 
     const allowedSourceTypes = resolveResearchSourceTypes(self, input.args.allowedSourceTypes)
@@ -1388,19 +1505,25 @@ export async function auditWebResearchBlocked(self: ToolBrokerService,
     })
   }
 
-export async function agentResolve(self: ToolBrokerService, 
+export async function agentResolve(self: ToolBrokerService,
     args: AgentResolveArgs,
     effectiveTenantId: string | null,
+    callerAgentId: string,
   ): Promise<AgentResolveResult> {
     const query = normalizeText(args.query.trim())
     if (!query) throw new Error('Query is required')
 
     const limit = args.limit ?? 5
-    // Tenant-izoláció: cross-tenant agent SOHA nem szivárog ki a felderítésbe.
-    const all = filterAgentsByTenant(await self.agents.findMany(), effectiveTenantId)
+    // #142 — a találatok a hívó agent `view` jogán szűrt listából jönnek (a
+    // tenant-izoláció ennek része). Szűrt lista, ezért deny-esemény NEM keletkezik.
+    // A pontozás a teljes agent-soron dolgozik (szerep-instrukció is), ezért a gráf
+    // engedélyezett id-halmazát metsszük rá a tenant agent-listájára.
+    const viewableIds = (await listViewableAgents(self, callerAgentId, effectiveTenantId)).map(
+      (n) => n.id,
+    )
+    const all = await self.agents.findMany({ tenantId: effectiveTenantId, ids: viewableIds })
 
     const scored = all
-      .filter((agent) => agent.status === 'active')
       .map((agent) => {
         const persona = personaFor(agent.name, agent)
         const score = scoreAgentForCatalogQuery(agent, args.query)
@@ -1422,26 +1545,35 @@ export async function agentResolve(self: ToolBrokerService,
     }
   }
 
-export async function agentCatalog(self: ToolBrokerService, 
+export async function agentCatalog(self: ToolBrokerService,
     args: AgentCatalogArgs,
     effectiveTenantId: string | null,
+    callerAgentId: string,
   ): Promise<AgentCatalogResult> {
     const limitDefault = args.query?.trim() ? 5 : 25
 
     if (args.agentId) {
-      // Tenant-izoláció: cross-tenant agentet nem árulunk el (a teljes
-      // capability-/connector-katalógusát sem) — nem-elérhető id némán üres.
-      const agent = await self.agents.findById(args.agentId)
-      if (!agent || !isAgentReachableFromTenant(agent.tenantId, effectiveTenantId)) {
-        return { agents: [] }
-      }
+      // EXPLICIT egyedi feloldás → deny-szemantika (#142). A `view` jog hiánya
+      // 404-jellegű „nem található", hogy a cél LÉTEZÉSE se szivárogjon ki; a hívó
+      // nem tud id-találgatással feltérképezni rejtett agenteket.
+      if (!self.agentAccess || !effectiveTenantId) return { agents: [] }
+      const decision = await self.agentAccess.canAccessAgent(
+        { kind: 'agent', agentId: callerAgentId, tenantId: effectiveTenantId },
+        args.agentId,
+        'view',
+      )
+      if (!decision.allowed) return { agents: [] }
       const entry = await buildAgentCatalogEntry(args.agentId, self.agents, self.tools)
       return { agents: [entry] }
     }
 
-    // Tenant-izoláció: a katalógus csak a saját tenant + megosztott agenteket listázza.
-    const all = filterAgentsByTenant(await self.agents.findMany(), effectiveTenantId)
-    let candidates = all.filter((agent) => agent.status === 'active')
+    // #142 — szűrt lista a hívó agent `view` jogán (a tenant-izoláció ennek része).
+    // A pontozás a teljes agent-soron dolgozik (szerep-instrukció is), ezért a gráf
+    // ENGEDÉLYEZETT id-halmazát metsszük rá a tenant agent-listájára.
+    const viewableIds = (await listViewableAgents(self, callerAgentId, effectiveTenantId)).map(
+      (n) => n.id,
+    )
+    let candidates = await self.agents.findMany({ tenantId: effectiveTenantId, ids: viewableIds })
 
     if (args.query?.trim()) {
       candidates = candidates

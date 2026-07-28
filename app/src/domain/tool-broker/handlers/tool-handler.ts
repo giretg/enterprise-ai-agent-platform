@@ -85,8 +85,20 @@ export interface HandlerContext {
   webResearchRequest(
     input: Extract<ToolBrokerInvokeInput, { tool: 'web_research_request' }>,
   ): Promise<WebResearchDelegationResult>
-  agentResolve(args: AgentResolveArgs, tenantId: string | null): Promise<AgentResolveResult>
-  agentCatalog(args: AgentCatalogArgs, tenantId: string | null): Promise<AgentCatalogResult>
+  /**
+   * #142 — a felderítő toolok a HÍVÓ AGENT `view` jogán szűrnek, ezért a hívó
+   * azonosítója a szerződés része (nem elég a tenant).
+   */
+  agentResolve(
+    args: AgentResolveArgs,
+    tenantId: string | null,
+    callerAgentId: string,
+  ): Promise<AgentResolveResult>
+  agentCatalog(
+    args: AgentCatalogArgs,
+    tenantId: string | null,
+    callerAgentId: string,
+  ): Promise<AgentCatalogResult>
   userDirectory(
     input: Extract<ToolBrokerInvokeInput, { tool: 'user_directory' }>,
     actingTenantId: string | null,
