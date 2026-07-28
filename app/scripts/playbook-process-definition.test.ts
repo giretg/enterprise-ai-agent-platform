@@ -39,8 +39,14 @@ async function test(name: string, fn: () => void | Promise<void>) {
 // --- Fixtures --------------------------------------------------------------
 
 const TENANT = 't1'
+const OTHER_TENANT = 't2'
 const AGENT_ID = randomUUID()
 const USER_ID = randomUUID()
+// Más ALAP-tenantú, de a Folyamat (TENANT) AKTÍV tagja — legitim kötés (a naiv
+// `user.tenantId === defTenantId` fix HIBÁSAN kizárná).
+const MEMBER_DIFF_DEFAULT_ID = randomUUID()
+// Más tenanthoz tartozó user, a Folyamat tenantjában NINCS tagsága — cross-tenant kötés.
+const NON_MEMBER_ID = randomUUID()
 
 /** Egy agent belépő lépés trigger-réssel + egy config-rés a lépés-utasításban. */
 function specFixture(): PlaybookSpecV2 {
@@ -154,22 +160,36 @@ function makeStubs(opts: {
         .filter((key) => (opts.knownPermissions ?? []).includes(key))
         .map((key) => ({ permissionKey: key, minRole: 'approver' as const })),
   }
+  // A három ismert user: helyi tag, más-alap-tenantú TAG, és nem-tag (mind aktív+approver,
+  // hogy a status/role kapu ne fedje el a membership-kaput).
+  const userRows: Record<string, {
+    id: string
+    tenantId: string
+    status: 'active'
+    role: 'approver'
+    name: string
+    email: string
+  }> = {
+    [USER_ID]: { id: USER_ID, tenantId: TENANT, status: 'active', role: 'approver', name: 'Jóváhagyó', email: 'ok@example.com' },
+    [MEMBER_DIFF_DEFAULT_ID]: { id: MEMBER_DIFF_DEFAULT_ID, tenantId: OTHER_TENANT, status: 'active', role: 'approver', name: 'Vendég-tag', email: 'guest@example.com' },
+    [NON_MEMBER_ID]: { id: NON_MEMBER_ID, tenantId: OTHER_TENANT, status: 'active', role: 'approver', name: 'Idegen', email: 'foreign@example.com' },
+  }
   const users = {
-    findById: async (id: string) =>
-      id === USER_ID
-        ? { id: USER_ID, tenantId: TENANT, status: 'active', role: 'approver', name: 'Jóváhagyó', email: 'ok@example.com' }
+    findById: async (id: string) => userRows[id] ?? null,
+    findManyByIds: async (ids: string[]) => ids.map((id) => userRows[id]).filter(Boolean),
+  }
+  // Aktív TENANT-tagság csak a helyi és a "más-alap-tenantú TAG" usernek van; a nem-tagnak nincs.
+  const tenantMembers = new Set<string>([USER_ID, MEMBER_DIFF_DEFAULT_ID])
+  const tenantMemberships: {
+    findByTenantAndUser: (
+      tenantId: string,
+      userId: string,
+    ) => Promise<{ id: string; tenantId: string; userId: string; role: string; status: string } | null>
+  } = {
+    findByTenantAndUser: async (tenantId, userId) =>
+      tenantId === TENANT && tenantMembers.has(userId)
+        ? { id: randomUUID(), tenantId: TENANT, userId, role: 'approver', status: 'active' }
         : null,
-    findManyByIds: async (ids: string[]) =>
-      ids
-        .filter((id) => id === USER_ID)
-        .map(() => ({
-          id: USER_ID,
-          tenantId: TENANT,
-          status: 'active' as const,
-          role: 'approver' as const,
-          name: 'Jóváhagyó',
-          email: 'ok@example.com',
-        })),
   }
   const audit = {
     append: async (e: { action: string; metadata?: Record<string, unknown> }) => {
@@ -225,7 +245,7 @@ function makeStubs(opts: {
     deleteTrigger: async () => {},
   }
 
-  return { version, tickets, audits, processes, steps, defRow, playbooks, agents, toolBroker, rolePermissions, users, audit, processRepo, ticketRepo, defsRepo }
+  return { version, tickets, audits, processes, steps, defRow, playbooks, agents, toolBroker, rolePermissions, users, tenantMemberships, tenantMembers, audit, processRepo, ticketRepo, defsRepo }
 }
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -237,6 +257,7 @@ function makeDefService(s: ReturnType<typeof makeStubs>) {
     s.toolBroker as any,
     s.rolePermissions as any,
     s.users as any,
+    s.tenantMemberships as any,
     s.audit as any,
   )
 }
@@ -251,6 +272,7 @@ function makeProcessService(s: ReturnType<typeof makeStubs>) {
     s.agents as any,
     s.toolBroker as any,
     s.users as any,
+    s.tenantMemberships as any,
   )
 }
 /* eslint-enable @typescript-eslint/no-explicit-any */
@@ -300,6 +322,54 @@ async function main() {
     const svc = makeDefService(s)
     const violations = await svc.runActivationGate(s.defRow as never)
     assert.ok(violations.some((v) => v.code === 'HUMAN_ROLE_UNBOUND'))
+  })
+
+  // #153 emberi párja — cross-tenant: a user létezik és aktív+approver, de a Folyamat
+  // tenantjában NINCS tagsága. A naiv fix a `user.tenantId`-t nézné (ami OTHER_TENANT), a
+  // korrekt membership-kapu is elutasítja — de a következő teszt igazolja, hogy a
+  // membership-kapu az, ami dönt, nem a user.tenantId.
+  await test('human role idegen (nem-tag) userhez kötve → HUMAN_USER_UNSUITABLE (cross-tenant)', async () => {
+    const s = makeStubs({ knownPermissions: ['ticket:approve'] })
+    const humanSpec = humanEntrySpecFixture()
+    s.version.spec = humanSpec
+    s.version.compiledSpec = compiler.compile(humanSpec, { playbookVersionId: 'v1' })
+    s.defRow.roleBindings = { approver: NON_MEMBER_ID }
+    const svc = makeDefService(s)
+    const violations = await svc.runActivationGate(s.defRow as never)
+    assert.ok(
+      violations.some((v) => v.code === 'HUMAN_USER_UNSUITABLE'),
+      'a nem-tag idegen-tenant user kötése alkalmatlanságot kell adjon',
+    )
+  })
+
+  // A membership-kapu POZITÍV oldala: más ALAP-tenantú, de a Folyamat tenantjának
+  // AKTÍV tagja továbbra is köthető (a naiv `user.tenantId === defTenantId` HIBÁSAN kizárná).
+  await test('human role más-alap-tenantú, de TAG userhez kötve → nincs violation', async () => {
+    const s = makeStubs({ knownPermissions: ['ticket:approve'] })
+    const humanSpec = humanEntrySpecFixture()
+    s.version.spec = humanSpec
+    s.version.compiledSpec = compiler.compile(humanSpec, { playbookVersionId: 'v1' })
+    s.defRow.roleBindings = { approver: MEMBER_DIFF_DEFAULT_ID }
+    const svc = makeDefService(s)
+    const violations = await svc.runActivationGate(s.defRow as never)
+    assert.deepEqual(violations, [])
+  })
+
+  // A tagság státusza is számít: felfüggesztett tagság sem elég.
+  await test('human role kötött user tagsága nem aktív → HUMAN_USER_UNSUITABLE', async () => {
+    const s = makeStubs({ knownPermissions: ['ticket:approve'] })
+    const humanSpec = humanEntrySpecFixture()
+    s.version.spec = humanSpec
+    s.version.compiledSpec = compiler.compile(humanSpec, { playbookVersionId: 'v1' })
+    s.defRow.roleBindings = { approver: USER_ID }
+    // A helyi user tagságát felfüggesztjük (aktív helyett suspended).
+    s.tenantMemberships.findByTenantAndUser = async (tenantId: string, userId: string) =>
+      tenantId === TENANT && userId === USER_ID
+        ? { id: randomUUID(), tenantId: TENANT, userId, role: 'approver' as const, status: 'suspended' as const }
+        : null
+    const svc = makeDefService(s)
+    const violations = await svc.runActivationGate(s.defRow as never)
+    assert.ok(violations.some((v) => v.code === 'HUMAN_USER_UNSUITABLE'))
   })
 
   console.log('=== checkCronResolvability (§4.5, WP-6) ===')
@@ -426,6 +496,49 @@ async function main() {
     assert.equal(s.tickets[0].assigneeType, 'human')
     assert.equal(s.tickets[0].assigneeId, USER_ID)
     assert.equal(s.steps[0].assignedUserId, USER_ID)
+  })
+
+  // #153 emberi párja, futásidőben: cross-tenant user kötése → blocked + process.blocked,
+  // NINCS ticket (az idegen-tenant emberi ticket-kiosztás megelőzve).
+  await test('human belépő idegen (nem-tag) userhez → blocked, nincs ticket (cross-tenant)', async () => {
+    const s = makeStubs({ knownPermissions: ['ticket:approve'] })
+    const humanSpec = humanEntrySpecFixture()
+    s.version.spec = humanSpec
+    s.version.compiledSpec = compiler.compile(humanSpec, { playbookVersionId: 'v1' })
+    s.defRow.roleBindings = { approver: NON_MEMBER_ID }
+    const svc = makeProcessService(s)
+    const proc = await svc.startProcess({
+      tenantId: TENANT,
+      processDefinitionId: s.defRow.id,
+      triggerType: 'manual',
+      inputPayload: {},
+      startedBy: { type: 'user', id: randomUUID() },
+    })
+    assert.equal(proc.status, 'blocked')
+    assert.equal(s.tickets.length, 0)
+    assert.ok(s.audits.some((a) => a.action === 'process.blocked'))
+  })
+
+  // Pozitív oldal futásidőben: más ALAP-tenantú, de TAG user köthető, ticket hozzá jön létre.
+  await test('human belépő más-alap-tenantú TAG userhez → ticket a TAG userhez jön létre', async () => {
+    const s = makeStubs({ knownPermissions: ['ticket:approve'] })
+    const humanSpec = humanEntrySpecFixture()
+    s.version.spec = humanSpec
+    s.version.compiledSpec = compiler.compile(humanSpec, { playbookVersionId: 'v1' })
+    s.defRow.roleBindings = { approver: MEMBER_DIFF_DEFAULT_ID }
+    const svc = makeProcessService(s)
+    const proc = await svc.startProcess({
+      tenantId: TENANT,
+      processDefinitionId: s.defRow.id,
+      triggerType: 'manual',
+      inputPayload: {},
+      startedBy: { type: 'user', id: randomUUID() },
+    })
+    assert.equal(proc.status, 'running')
+    assert.equal(s.tickets.length, 1)
+    assert.equal(s.tickets[0].assigneeType, 'human')
+    assert.equal(s.tickets[0].assigneeId, MEMBER_DIFF_DEFAULT_ID)
+    assert.equal(s.steps[0].assignedUserId, MEMBER_DIFF_DEFAULT_ID)
   })
 
   console.log('=== ticket trigger input-feloldás (§4.4, WP-9) ===')

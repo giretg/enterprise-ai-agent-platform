@@ -30,12 +30,14 @@ import {
 import { ADVANCEABLE_PROCESS_STATUSES } from '@/lib/playbook-v2/process-status'
 import { formatPlaybookRefV2, parsePlaybookSpecV2, type PlaybookRole } from '@/lib/playbook-v2/spec'
 import { isAgentSuitable } from '@/domain/playbook/suitability'
+import { isHumanUserSuitable } from '@/domain/playbook/human-role-suitability'
 import type {
   AgentRepository,
   AuditRepository,
   PlaybookV2Repository,
   ProcessDefinitionRepository,
   ProcessRepository,
+  TenantMembershipRepository,
   TicketRepository,
   ToolBrokerRepository,
   UserRepository,
@@ -158,6 +160,11 @@ export class ProcessService {
     private readonly agents?: AgentRepository,
     private readonly toolBroker?: ToolBrokerRepository,
     private readonly users?: UserRepository,
+    // §4.3/§4.8 — az emberi (`human_role`) szereplő tenant-tagságát a membership-modell
+    // dönti el (nem a `user.tenantId`); enélkül a resolveUserForRole cross-tenant usert
+    // is felold. A #153 agent-oldali kapu emberi párja. Ha hiányzik és a Folyamatnak
+    // valós tenantja van, a feloldás fail-closed módon blokkol.
+    private readonly tenantMemberships?: TenantMembershipRepository,
     private readonly alertNotifier?: ProcessAlertNotifier,
     // Azonnali dispatch-gyorsítóút (§5.7 kiegészítés): a belépő/soron következő
     // agent-step ticketjét ugyanabban a kérésben elindítja, ahelyett hogy a
@@ -1051,8 +1058,23 @@ export class ProcessService {
     if (!user) {
       throw new ProcessBlockedError(stepId, `A(z) '${roleKey}' szerephez kötött user nem található.`)
     }
-    if (user.status !== 'active' || !user.role) {
-      throw new ProcessBlockedError(stepId, `A(z) '${roleKey}' szerephez kötött user nem aktív vagy nincs szerepe.`)
+    // §4.3/§4.8 — a tenant-határt a FOLYAMAT tenantjához mérjük (nem a user sajátjához),
+    // a valódi tagságot a membership-modell dönti el. Valós tenant → aktív tagság kötelező;
+    // null (platform) Folyamatnál nincs tagság-fogalom, csak a status/role kapu él. Membership-repo
+    // nélkül, valós tenantnál FAIL-CLOSED: nem oldunk fel ellenőrizetlenül cross-tenant usert.
+    let membership: { status: string } | null = null
+    if (tenantId) {
+      if (!this.tenantMemberships) {
+        throw new ProcessBlockedError(
+          stepId,
+          `A(z) '${roleKey}' emberi szerep tenant-tagsága nem ellenőrizhető (nincs membership-repository).`,
+        )
+      }
+      membership = await this.tenantMemberships.findByTenantAndUser(tenantId, userId)
+    }
+    const suitability = isHumanUserSuitable({ status: user.status, role: user.role }, membership, tenantId)
+    if (!suitability.ok) {
+      throw new ProcessBlockedError(stepId, `A(z) '${roleKey}' szerephez kötött ${suitability.reason}`)
     }
     return userId
   }
