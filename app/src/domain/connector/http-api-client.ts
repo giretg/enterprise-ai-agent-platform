@@ -36,12 +36,22 @@ export type HttpApiAuthConfig =
       scopeTransform?: 'none' | 'gmailAlias'
     }
 
+/** Következmény-kapu / dokumentáció: endpoint kockázati osztálya. */
+export type HttpApiRisk = 'read' | 'write' | 'danger'
+
 export type HttpApiEndpoint = {
   method: string
   path: string
   description?: string
   profile?: string
   idempotent?: boolean
+  /**
+   * Következmény-kapu jelölés. Ha hiányzik, a kapu a metódusból / legacy
+   * `access` mezőből vezeti le (`resolveHttpApiEndpointRisk`).
+   */
+  risk?: HttpApiRisk
+  /** Legacy sablon-mező (`proposedTools.access`) — a parse `risk`-re is leképezheti. */
+  access?: 'read' | 'write'
   headers?: Record<string, string>
   headerParams?: Array<{ name: string; required: boolean }>
 }
@@ -70,12 +80,51 @@ export type HttpApiConfig = {
   endpoints?: HttpApiEndpoint[]
   /** Ha true: csak az `endpoints` listában szereplő (method+path) hívható. */
   restrictToEndpoints?: boolean
+  /**
+   * Connector-szintű alap kockázat a következmény-kapuhoz. Ha `write`/`danger`,
+   * minden `http_api_request` kapuzott (még allowlistelt read végponton is).
+   */
+  defaultRisk?: HttpApiRisk
   /** GitHub connector repository-határa. Hiánya visszafelé kompatibilisen `any`. */
   githubRepositoryAccess?: GitHubRepositoryAccess
   /** Maximális válasz-méret karakterben (alap: 20000). */
   maxResponseChars?: number
   /** Önfrissítő snapshotból materializált config: minden hívásnál egress-őr. */
   selfUpdatingPinned?: boolean
+}
+
+const HTTP_API_RISKS = new Set<HttpApiRisk>(['read', 'write', 'danger'])
+
+function parseHttpApiRisk(raw: unknown): HttpApiRisk | undefined {
+  return typeof raw === 'string' && HTTP_API_RISKS.has(raw as HttpApiRisk)
+    ? (raw as HttpApiRisk)
+    : undefined
+}
+
+/**
+ * Endpoint kockázat feloldása a kapuhoz: explicit `risk` → legacy `access` →
+ * connector `defaultRisk` → HTTP metódus heurisztika (DELETE=danger, GET=read, egyéb=write).
+ */
+export function resolveHttpApiEndpointRisk(
+  endpoint: Pick<HttpApiEndpoint, 'risk' | 'access'>,
+  method: string,
+  connectorDefaultRisk?: HttpApiRisk,
+): HttpApiRisk {
+  if (endpoint.risk) return endpoint.risk
+  if (endpoint.access === 'read') return 'read'
+  if (endpoint.access === 'write') {
+    // access=write mellett a DELETE továbbra is danger (visszafordíthatatlan).
+    return method.toUpperCase() === 'DELETE' ? 'danger' : 'write'
+  }
+  if (connectorDefaultRisk) return connectorDefaultRisk
+  return riskFromHttpMethod(method)
+}
+
+export function riskFromHttpMethod(method: string): HttpApiRisk {
+  const m = method.toUpperCase()
+  if (m === 'GET' || m === 'HEAD') return 'read'
+  if (m === 'DELETE') return 'danger'
+  return 'write'
 }
 
 const READ_METHODS = new Set(['GET', 'HEAD'])
@@ -162,29 +211,42 @@ export function parseHttpApiConfig(raw: unknown): HttpApiConfig {
   const endpoints = Array.isArray(endpointSource)
     ? endpointSource
         .filter(isRecord)
-        .map((e) => ({
-          method: String(e.method ?? '').toUpperCase(),
-          path: String(e.path ?? ''),
-          description: typeof e.description === 'string' ? e.description : undefined,
-          profile: typeof e.profile === 'string' && e.profile.trim() ? e.profile.trim() : undefined,
-          idempotent: e.idempotent === true,
-          headers: parseHeaderTemplates(e.headers, 'endpoint.headers'),
-          headerParams: Array.isArray(e.parameters)
-            ? e.parameters
-                .filter((param): param is Record<string, unknown> => isRecord(param) && param.in === 'header' && typeof param.name === 'string')
-                .map((param) => ({ name: String(param.name), required: param.required === true }))
-            : undefined,
-        }))
+        .map((e) => {
+          const access =
+            e.access === 'read' || e.access === 'write' ? (e.access as 'read' | 'write') : undefined
+          const risk = parseHttpApiRisk(e.risk)
+          return {
+            method: String(e.method ?? '').toUpperCase(),
+            path: String(e.path ?? ''),
+            description: typeof e.description === 'string' ? e.description : undefined,
+            profile: typeof e.profile === 'string' && e.profile.trim() ? e.profile.trim() : undefined,
+            idempotent: e.idempotent === true,
+            ...(risk ? { risk } : {}),
+            ...(access ? { access } : {}),
+            headers: parseHeaderTemplates(e.headers, 'endpoint.headers'),
+            headerParams: Array.isArray(e.parameters)
+              ? e.parameters
+                  .filter(
+                    (param): param is Record<string, unknown> =>
+                      isRecord(param) && param.in === 'header' && typeof param.name === 'string',
+                  )
+                  .map((param) => ({ name: String(param.name), required: param.required === true }))
+              : undefined,
+          }
+        })
         .filter((e) => e.method && e.path)
     : undefined
 
   const authProfiles = parseAuthProfiles(raw.authProfiles)
   const githubRepositoryAccess = parseGitHubRepositoryAccessConfig(raw.githubRepositoryAccess)
 
+  const defaultRisk = parseHttpApiRisk(raw.defaultRisk)
+
   return {
     baseUrl: baseUrl.replace(/\/+$/, ''),
     auth,
     ...(authProfiles ? { authProfiles } : {}),
+    ...(defaultRisk ? { defaultRisk } : {}),
     defaultAuthProfile:
       typeof raw.defaultAuthProfile === 'string' && raw.defaultAuthProfile.trim()
         ? raw.defaultAuthProfile.trim()
@@ -409,7 +471,7 @@ export class HttpApiClient {
     this.assertGitHubRepositoryAllowed(path)
     const normalized = path.split('?')[0]
     const endpoint = (this.config.endpoints ?? []).find(
-      (e) => e.method === method && pathMatches(e.path, normalized),
+      (e) => e.method === method && httpApiPathMatches(e.path, normalized),
     )
     if (this.config.restrictToEndpoints) {
       if (!endpoint) {
@@ -752,7 +814,7 @@ function templateValue(key: string, context: HttpApiTemplateContext): string | n
  * sablonból materializált configok viszont a `{param}` alakot (pl. /accounts/{id}).
  * Mindkét forma egyetlen path-szegmensre illeszkedő joker.
  */
-function pathMatches(template: string, actual: string): boolean {
+export function httpApiPathMatches(template: string, actual: string): boolean {
   const t = template.split('/').filter(Boolean)
   const a = actual.split('/').filter(Boolean)
   if (t.length !== a.length) return false

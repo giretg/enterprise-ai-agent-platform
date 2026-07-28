@@ -20,6 +20,7 @@ import {
   uploadDocument,
 } from '@/app/actions/platform'
 import { distillSkillFromConversationAction, getAgentSkillsAction } from '@/app/actions/skills'
+import { exportConversationDebugLog } from '@/app/actions/debug-log'
 import { listChatTriggerableProcessDefinitions } from '@/app/actions/process'
 import { listAgentDelegatedConnectors } from '@/app/actions/connector-grants'
 import { getTenantThinkingTraceControls } from '@/app/actions/chat-thinking-trace'
@@ -38,6 +39,12 @@ import {
   type ChatTurnActivity,
 } from '@/lib/chat-turn-progress'
 import { AGENT_TURN_RECONNECT_POLL_DEFAULT_MS } from '@/domain/agent/agent-turn-reconnect'
+import {
+  decideChatStreamRecovery,
+  STREAM_RECOVERED_MESSAGE,
+  STREAM_RECOVERY_FAILED_MESSAGE,
+  type ChatStreamEnding,
+} from '@/lib/chat-stream-recovery'
 import {
   AgentChatSessionSidebar,
   type ChatSession,
@@ -145,6 +152,13 @@ type ConsequenceApprovalCard = {
   /** A SZERVER órája szerint lejárt-e — a kliens órájára ezt nem bízzuk. */
   expired?: boolean
   resultMessage?: string
+  /** Mi lett a lefuttatott művelet eredménye — enélkül a gomb „némán" tűnik el. */
+  resultSummary?: string
+  /**
+   * A SZERVERTŐL jövő korábbi hiba: a jóváhagyás megvolt, de a tool-hívás
+   * elbukott. Újratöltés után ebből tudjuk, hogy „Újrapróbálom" kell.
+   */
+  failedReason?: string
 }
 
 type AgentChatStreamEvent =
@@ -639,23 +653,109 @@ function MemoryCandidatesPanel({
 }
 
 /**
+ * Server-action / auth / broker hibakód → olvasható visszajelzés a jóváhagyó kártyán.
+ *
+ * Üzletileg: a jóváhagyás után a művelet a brokeren MÉG elbukhat (nincs connector,
+ * lejárt token, tiltott képesség). Nyers `connector_grant_missing` mellett a
+ * felhasználó nem tudja, mit tegyen — ezért itt mondjuk meg, hol a hiba.
+ */
+function formatConsequenceApprovalError(error: string): string {
+  switch (error) {
+    case 'INSUFFICIENT_ROLE':
+      return 'Nincs jogosultságod a jóváhagyáshoz (legalább operátor kell).'
+    case 'NO_USER':
+      return 'Bejelentkezés szükséges a jóváhagyáshoz.'
+    case 'NO_TENANT':
+      return 'Nincs aktív szervezet kiválasztva.'
+    case 'TENANT_NOT_ACTIVE':
+      return 'A szervezet jelenleg nem fogad műveleteket.'
+    case 'approval_expired':
+      return 'A jóváhagyás lejárt.'
+    case 'approval_not_found':
+      return 'A jóváhagyás nem található.'
+    case 'approval_already_decided':
+      return 'Ezt a műveletet már eldöntötték.'
+    case 'forbidden':
+      return 'Nincs jogosultságod ehhez a művelethez.'
+    case 'conversation_not_found':
+      return 'A beszélgetés nem található.'
+    case 'agent_not_found':
+      return 'Az agent nem található.'
+    case 'tenant_mismatch':
+    case 'tenant_isolation':
+      return 'Szervezeti határon át nem hagyható jóvá.'
+    case 'approval_rejected':
+      return 'Ezt a műveletet korábban elutasították.'
+    // A gomb megnyomása után a broker is elutasíthatja a hívást — ilyenkor a
+    // döntés megvan, csak a végrehajtás akadt el (konfiguráció / jogosultság).
+    case 'capability_not_allowed':
+      return 'Az agent nem futtathatja ezt a műveletet (a képesség nincs engedélyezve).'
+    case 'connector_grant_missing':
+      return 'Hiányzik a szükséges connector-hozzáférés — az adminnak engedélyeznie kell.'
+    case 'connector_not_active':
+      return 'A szükséges connector jelenleg nem aktív.'
+    case 'tool_not_configured':
+      return 'A művelethez tartozó eszköz nincs beállítva.'
+    case 'provider_auth_error':
+      return 'A külső szolgáltató elutasította a hitelesítést (lejárt vagy hibás hozzáférés).'
+    case 'gmail_scope_not_granted':
+      return 'A Gmail hozzáférés nem tartalmazza a szükséges jogosultságot.'
+    case 'acting_user_required':
+      return 'A művelethez a saját felhasználói hozzáférésed kell — jelentkezz be újra.'
+    case 'acting_user_suspended':
+      return 'A felhasználói hozzáférésed fel van függesztve.'
+    default:
+      return error
+  }
+}
+
+/**
  * issue #97 — következmény-kapu kártya: külső tartalom után blokkolt mellékhatás
- * (xlsx/file/email/…). Jóváhagyáskor a szerver lefuttatja a toolt — az agent
- * nem indul újra.
+ * (xlsx/file/email/…). Jóváhagyáskor a szerver lefuttatja a toolt, majd a szál
+ * FOLYTATÓDIK: a kártya kiírja az eredményt, és egy folytatás-forduló indul, hogy
+ * az agent elmondja mi történt és megcsinálja a hátralévő lépéseket. (Korábban a
+ * gomb után se válasz, se következő lépés nem jött — a felhasználónak úgy tűnt,
+ * hogy semmi nem történik.) A folytatás „tainted"-ként fut, így a következő
+ * mellékhatás ismét jóváhagyást kér.
+ *
+ * Fontos: NEM `useTransition` + server action. React 19 / Next alatt a transition
+ * belsejében az `await` utáni setState gyakran nem commitolódik (Brave/mobilon
+ * különösen), ezért a „Jóváhagyom” látszólag semmit sem csinál: nincs loading,
+ * nincs „Jóváhagyva”, nincs hiba. Explicit busy-állapot + try/catch kell.
  */
 function ConsequenceApprovalsPanel({
   approvals,
   onUpdate,
+  onApproved,
 }: {
   approvals: ConsequenceApprovalCard[]
   onUpdate: (approvalId: string, patch: Partial<ConsequenceApprovalCard>) => void
+  /** A sikeresen lefuttatott jóváhagyás(ok) — a szál innen folytatódik. */
+  onApproved: (approvalIds: string[]) => void
 }) {
-  const [pending, startTransition] = useTransition()
+  const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(() => new Set())
   const isOpen = (a: ConsequenceApprovalCard) => a.status === 'pending' && !a.expired
   const openCount = approvals.filter(isOpen).length
+  const anyBusy = busyIds.size > 0
 
-  const runApprove = (approvalId: string) => {
-    startTransition(async () => {
+  const markBusy = (approvalId: string, busy: boolean) => {
+    setBusyIds((prev) => {
+      const next = new Set(prev)
+      if (busy) next.add(approvalId)
+      else next.delete(approvalId)
+      return next
+    })
+  }
+
+  /**
+   * Egy sor jóváhagyása; `true`, ha a művelet le is futott. A busy-jelölés itt
+   * történik, hogy a gomb AZONNAL visszajelezzen (a szerver-hívás több másodperc
+   * is lehet — enélkül a felhasználó azt hiszi, a kattintás elveszett).
+   */
+  const approveOne = async (approvalId: string): Promise<boolean> => {
+    markBusy(approvalId, true)
+    onUpdate(approvalId, { resultMessage: undefined })
+    try {
       const res = await approveConsequenceApproval({ approvalId })
       if (!res.success) {
         // A lejárat nem hiba, hanem végállapot: gomb helyett magyarázat járjon hozzá.
@@ -663,26 +763,74 @@ function ConsequenceApprovalsPanel({
           approvalId,
           res.error === 'approval_expired'
             ? { expired: true, resultMessage: undefined }
-            : { resultMessage: res.error },
+            : { resultMessage: formatConsequenceApprovalError(res.error) },
         )
-        return
+        return false
       }
-      onUpdate(approvalId, { status: 'approved', resultMessage: undefined })
-    })
+      const resultSummary = (res.data as { resultSummary?: string }).resultSummary
+      onUpdate(approvalId, {
+        status: 'approved',
+        resultMessage: undefined,
+        ...(resultSummary ? { resultSummary } : {}),
+      })
+      return true
+    } catch (error) {
+      // Hálózati/futásidejű hiba sem nyelődhet el: enélkül a gomb „nem csinál
+      // semmit”, a felhasználó pedig újra és újra nyomkodja.
+      onUpdate(approvalId, {
+        resultMessage: formatConsequenceApprovalError(
+          error instanceof Error ? error.message : 'A jóváhagyás sikertelen',
+        ),
+      })
+      return false
+    } finally {
+      markBusy(approvalId, false)
+    }
   }
 
-  const runReject = (approvalId: string) => {
-    startTransition(async () => {
+  const runApprove = async (approvalId: string) => {
+    if (busyIds.has(approvalId)) return
+    if (await approveOne(approvalId)) onApproved([approvalId])
+  }
+
+  /**
+   * Több nyitott sornál egyetlen folytatás induljon (nem soronként egy) —
+   * párhuzamos indítás esetén a második ütközne a már futó fordulóval.
+   */
+  const runApproveAll = async () => {
+    if (anyBusy) return
+    const done: string[] = []
+    for (const a of approvals.filter(isOpen)) {
+      if (await approveOne(a.approvalId)) done.push(a.approvalId)
+    }
+    if (done.length > 0) onApproved(done)
+  }
+
+  const runReject = async (approvalId: string) => {
+    if (busyIds.has(approvalId)) return
+    markBusy(approvalId, true)
+    onUpdate(approvalId, { resultMessage: undefined })
+    try {
       const res = await rejectConsequenceApproval({ approvalId })
       onUpdate(approvalId, {
         status: res.success ? 'rejected' : 'pending',
-        resultMessage: res.success ? undefined : res.error,
+        resultMessage: res.success
+          ? undefined
+          : formatConsequenceApprovalError(res.error),
       })
-    })
+    } catch (error) {
+      onUpdate(approvalId, {
+        resultMessage: formatConsequenceApprovalError(
+          error instanceof Error ? error.message : 'Az elutasítás sikertelen',
+        ),
+      })
+    } finally {
+      markBusy(approvalId, false)
+    }
   }
 
   return (
-    <div className="mb-3 rounded-lg border border-honey/40 bg-honey/10 px-3 py-2 text-xs text-ink-soft">
+    <div className="mt-3 rounded-lg border border-honey/40 bg-honey/10 px-3 py-2 text-xs text-ink-soft">
       <div className="mb-2 flex items-center justify-between gap-3">
         <span className="font-medium text-ink">
           Jóváhagyásra váró művelet{approvals.length > 1 ? `ek (${approvals.length})` : ''}
@@ -690,66 +838,119 @@ function ConsequenceApprovalsPanel({
         {openCount > 1 && (
           <button
             type="button"
-            disabled={pending}
-            className="rounded-full bg-sage/20 px-3 py-1 text-[11px] font-semibold text-sage disabled:opacity-50"
-            onClick={() => approvals.filter(isOpen).forEach((a) => runApprove(a.approvalId))}
+            disabled={anyBusy}
+            aria-busy={anyBusy}
+            className="min-h-10 rounded-full bg-sage/20 px-3 py-2 text-[11px] font-semibold text-sage disabled:opacity-50"
+            onClick={() => void runApproveAll()}
           >
-            Jóváhagyom mind
+            {anyBusy ? 'Jóváhagyás…' : 'Jóváhagyom mind'}
           </button>
         )}
       </div>
       <p className="mb-2 text-[11px] text-ink-faint">
         {openCount > 0
-          ? 'Külső forrás miatt a platform nem futtatta le automatikusan. A gomb lefuttatja a műveletet — nem kell újraírnod a chatben.'
-          : 'Külső forrás miatt a platform nem futtatta le automatikusan, és a jóváhagyási idő letelt.'}
+          ? 'Ez a művelet kockázatos (kilépő / visszafordíthatatlan / írási HTTP), ezért a platform nem futtatta le automatikusan. A gomb lefuttatja, majd az agent folytatja — nem kell újraírnod a chatben.'
+          : 'Ez a művelet kockázatos volt, és a jóváhagyási idő letelt.'}
       </p>
       <div className="space-y-2">
-        {approvals.map((a) => (
-          <div key={a.approvalId} className="rounded-md border border-line/70 bg-card/40 px-2.5 py-2">
-            <div className="flex flex-wrap items-baseline gap-2">
-              <span className="rounded-full bg-card px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-faint">
-                {getToolUiLabel(a.toolName).label}
-              </span>
-              <span className="font-medium text-ink">{a.summary}</span>
-              <span className="text-[10px] text-ink-faint">
-                {a.status === 'pending'
-                  ? a.expired
-                    ? 'Lejárt'
+        {approvals.map((a) => {
+          const busy = busyIds.has(a.approvalId)
+          // A `failedReason` a SZERVERTŐL jön (újratöltés után): a jóváhagyás
+          // megvolt, a művelet viszont elbukott. Enélkül a felhasználó egy
+          // ártatlan „Jóváhagyásra vár" kártyát látna, hibaüzenet nélkül.
+          const errorMessage =
+            a.resultMessage ??
+            (a.failedReason ? formatConsequenceApprovalError(a.failedReason) : undefined)
+          const statusLabel =
+            busy && a.status === 'pending'
+              ? 'Jóváhagyás folyamatban…'
+              : a.status === 'pending'
+                ? a.expired
+                  ? 'Lejárt'
+                  : errorMessage
+                    ? 'Nem futott le — újrapróbálható'
                     : 'Jóváhagyásra vár'
-                  : a.status === 'approved'
-                    ? 'Jóváhagyva — lefuttatva'
-                    : 'Elutasítva'}
-              </span>
-            </div>
-            {a.resultMessage && <p className="mt-1 text-[11px] text-coral">{a.resultMessage}</p>}
-            {a.status === 'pending' && a.expired && (
-              <p className="mt-1 text-[11px] text-ink-faint">
-                Ez a jóváhagyás lejárt, ezért már nem futtatható le. Írd meg a chatben az agentnek,
-                hogy próbálja újra — az új kéréshez új gomb jelenik meg.
-              </p>
-            )}
-            {isOpen(a) && (
-              <div className="mt-2 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  disabled={pending}
-                  className="rounded-full bg-sage/20 px-2.5 py-1 text-[11px] font-semibold text-sage disabled:opacity-50"
-                  onClick={() => runApprove(a.approvalId)}
+                : a.status === 'approved'
+                  ? 'Jóváhagyva — lefuttatva'
+                  : 'Elutasítva'
+          return (
+            <div key={a.approvalId} className="rounded-md border border-line/70 bg-card/40 px-2.5 py-2">
+              <div className="flex flex-wrap items-baseline gap-2">
+                <span className="rounded-full bg-card px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-faint">
+                  {getToolUiLabel(a.toolName).label}
+                </span>
+                <span className="font-medium text-ink">{a.summary}</span>
+                <span
+                  className={`text-[10px] font-semibold ${
+                    a.status === 'approved'
+                      ? 'text-sage'
+                      : a.status === 'rejected' || a.expired
+                        ? 'text-ink-faint'
+                        : busy
+                          ? 'text-honey'
+                          : 'text-ink-faint'
+                  }`}
+                  aria-live="polite"
                 >
-                  Jóváhagyom
-                </button>
-                <button
-                  type="button"
-                  disabled={pending}
-                  className="rounded-full bg-card px-2.5 py-1 text-[11px] font-semibold text-ink-faint disabled:opacity-50"
-                  onClick={() => runReject(a.approvalId)}
-                >
-                  Elutasítom
-                </button>
+                  {statusLabel}
+                </span>
               </div>
-            )}
-          </div>
-        ))}
+              {errorMessage && (
+                <div className="mt-1.5 space-y-1.5">
+                  <p className="text-[11px] text-coral" role="alert">
+                    {errorMessage}
+                  </p>
+                  {isOpen(a) && !busy && (
+                    <button
+                      type="button"
+                      className="min-h-10 rounded-full border border-coral/40 bg-card px-3 py-2 text-[11px] font-semibold text-coral"
+                      onClick={() => void runApprove(a.approvalId)}
+                    >
+                      Újrapróbálom
+                    </button>
+                  )}
+                </div>
+              )}
+              {a.status === 'pending' && a.expired && (
+                <p className="mt-1 text-[11px] text-ink-faint">
+                  Ez a jóváhagyás lejárt, ezért már nem futtatható le. Írd meg a chatben az agentnek,
+                  hogy próbálja újra — az új kéréshez új gomb jelenik meg.
+                </p>
+              )}
+              {a.status === 'approved' &&
+                (a.resultSummary ? (
+                  <p className="mt-1 break-all text-[11px] text-ink-faint">
+                    Eredmény: {a.resultSummary}
+                  </p>
+                ) : (
+                  <p className="mt-1 text-[11px] text-sage">
+                    A művelet lefutott. Ha fájlt írt, a Workspace fájlok panelen megjelenik.
+                  </p>
+                ))}
+              {isOpen(a) && (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    disabled={busy || anyBusy}
+                    aria-busy={busy}
+                    className="min-h-10 rounded-full bg-sage/20 px-3 py-2 text-[11px] font-semibold text-sage disabled:opacity-50"
+                    onClick={() => void runApprove(a.approvalId)}
+                  >
+                    {busy ? 'Jóváhagyás…' : 'Jóváhagyom'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy || anyBusy}
+                    className="min-h-10 rounded-full bg-card px-3 py-2 text-[11px] font-semibold text-ink-faint disabled:opacity-50"
+                    onClick={() => void runReject(a.approvalId)}
+                  >
+                    Elutasítom
+                  </button>
+                </div>
+              )}
+            </div>
+          )
+        })}
       </div>
     </div>
   )
@@ -761,6 +962,7 @@ function MessageBubble({
   onDeleteContent,
   onMemoryCandidateUpdate,
   onConsequenceApprovalUpdate,
+  onConsequenceApproved,
 }: {
   message: ChatMessage
   isBusy: boolean
@@ -771,6 +973,7 @@ function MessageBubble({
     approvalId: string,
     patch: Partial<ConsequenceApprovalCard>,
   ) => void
+  onConsequenceApproved: (approvalIds: string[]) => void
 }) {
   const isUser = message.role === 'user'
   const isDeleted = Boolean(message.contentDeletedAt)
@@ -805,14 +1008,6 @@ function MessageBubble({
                 onUpdate={(candidateId, patch) => onMemoryCandidateUpdate(message.id, candidateId, patch)}
               />
             )}
-            {!isUser && message.consequenceApprovals && message.consequenceApprovals.length > 0 && (
-              <ConsequenceApprovalsPanel
-                approvals={message.consequenceApprovals}
-                onUpdate={(approvalId, patch) =>
-                  onConsequenceApprovalUpdate(message.id, approvalId, patch)
-                }
-              />
-            )}
             {message.text &&
               (isUser ? (
                 <div className="text-sm [&_a]:text-card [&_a]:underline [&_strong]:text-card">
@@ -821,6 +1016,20 @@ function MessageBubble({
               ) : (
                 <ChatMarkdown content={message.text} variant="agent" />
               ))}
+            {/*
+              A jóváhagyó kártya a SZÖVEG UTÁN áll: az agent a válasza végén mondja
+              el, hogy gombra vár — ha a kártya a hosszú szöveg fölött lenne, a
+              felhasználó pont ott nem látná, ahol keresi.
+            */}
+            {!isUser && message.consequenceApprovals && message.consequenceApprovals.length > 0 && (
+              <ConsequenceApprovalsPanel
+                approvals={message.consequenceApprovals}
+                onUpdate={(approvalId, patch) =>
+                  onConsequenceApprovalUpdate(message.id, approvalId, patch)
+                }
+                onApproved={onConsequenceApproved}
+              />
+            )}
           </>
         )}
         {!isDeleted && message.attachments.length > 0 && (
@@ -856,7 +1065,7 @@ function MessageBubble({
             type="button"
             onClick={() => onDeleteContent(message.id)}
             disabled={isBusy}
-            className={`absolute -top-2 ${isUser ? '-left-2' : '-right-2'} rounded-full border border-line bg-card px-2 py-1 text-[10px] font-semibold text-ink-faint opacity-0 shadow-sm transition-opacity hover:text-coral-deep group-hover:opacity-100 focus:opacity-100 disabled:opacity-40`}
+            className={`absolute -top-2 ${isUser ? '-left-2' : '-right-2'} rounded-full border border-line bg-card px-2 py-1 text-[10px] font-semibold text-ink-faint opacity-0 pointer-events-none shadow-sm transition-opacity hover:text-coral-deep group-hover:pointer-events-auto group-hover:opacity-100 focus:pointer-events-auto focus:opacity-100 disabled:opacity-40`}
             title="Üzenettartalom törlése"
             aria-label="Üzenettartalom törlése"
           >
@@ -945,6 +1154,7 @@ export function AgentChatPanel({
   const [ticketPending, startTicketTransition] = useTransition()
   const [archivePending, startArchiveTransition] = useTransition()
   const [distillPending, startDistillTransition] = useTransition()
+  const [debugLogPending, startDebugLogTransition] = useTransition()
   const [distillTargetSkillId, setDistillTargetSkillId] = useState<string>('')
   const [distillTargets, setDistillTargets] = useState<Array<{ id: string; name: string }>>([])
   const [agentSkills, setAgentSkills] = useState<ChatSkillOption[]>([])
@@ -957,6 +1167,22 @@ export function AgentChatPanel({
   const streamAbortRef = useRef<AbortController | null>(null)
   const streamConversationIdRef = useRef<string | null>(null)
   const activeTurnIdRef = useRef<string | null>(null)
+  /**
+   * Ha a user a futó forduló közben nyomja a „Jóváhagyom”-ot, a tool a szerveren
+   * már lefut, de a folytatás-forduló nem indítható (`isAgentTyping`). Ilyenkor
+   * ide kerülnek az approval-id-k; a gépelés végeztével automatikusan elindul
+   * a folytatás (különben a gomb eltűnik, Excel/munkafájl soha nem készül el).
+   */
+  const pendingConsequenceContinuationRef = useRef<string[] | null>(null)
+  const startAgentTurnRef = useRef<
+    | ((options: {
+        text: string
+        attachments: PendingAttachment[]
+        userBubbleText?: string
+        consequenceApprovalIds?: string[]
+      }) => void)
+    | null
+  >(null)
   const [mounted, setMounted] = useState(false)
   const [minimized, setMinimized] = useState(false)
   const [connectableUserConnectors, setConnectableUserConnectors] = useState<
@@ -1189,6 +1415,7 @@ export function AgentChatPanel({
 
   const startNewSession = useCallback(() => {
     if (isAgentTyping) return
+    pendingConsequenceContinuationRef.current = null
     setConversationId(null)
     setMessages([])
     setStatusMessage(null)
@@ -1260,7 +1487,8 @@ export function AgentChatPanel({
     !ticketPending &&
     !isAgentTyping &&
     canStartThinkingTraceStream(thinkingTraceControls)
-  const controlsBusy = pending || ticketPending || archivePending || distillPending || isAgentTyping
+  const controlsBusy =
+    pending || ticketPending || archivePending || distillPending || debugLogPending || isAgentTyping
 
   useEffect(() => {
     if (!open) return
@@ -1490,6 +1718,26 @@ export function AgentChatPanel({
       )
     })
   }, [agent.id, canDistillSkill, conversationId, controlsBusy, distillTargetSkillId, messages.length])
+
+  const handleExportDebugLog = useCallback(() => {
+    if (!conversationId || controlsBusy || !canDistillSkill) return
+    startDebugLogTransition(async () => {
+      setStatusMessage(null)
+      const res = await exportConversationDebugLog({ conversationId })
+      if (!res.success) {
+        setStatusMessage(res.error)
+        return
+      }
+      const blob = new Blob([res.data.content], { type: res.data.mediaType })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = res.data.filename
+      a.click()
+      URL.revokeObjectURL(url)
+      setStatusMessage(`Debug-log letöltve: ${res.data.filename}`)
+    })
+  }, [canDistillSkill, controlsBusy, conversationId])
 
   const reloadConversationMessages = useCallback(
     async (convId: string) => {
@@ -1765,7 +2013,10 @@ export function AgentChatPanel({
       }
 
       // Más beszélgetésre váltáskor a helyi stream-olvasást megszakítjuk (a szerver fut tovább).
+      // A sorban álló folytatást ELŐBB eldobjuk — különben a setIsAgentTyping(false)
+      // flushelná a régi approval-id-kat az új beszélgetésre.
       streamAbortRef.current?.abort()
+      pendingConsequenceContinuationRef.current = null
       setIsAgentTyping(false)
       setStopPending(false)
       setActiveTurnId(null)
@@ -1841,17 +2092,30 @@ export function AgentChatPanel({
     })()
   }
 
-  const handleSend = () => {
-    if (!canSubmit) return
-    const text = input.trim()
-    const localAttachments = [...pendingAttachments]
+  /**
+   * Egy agent-forduló elindítása és a SSE-stream feldolgozása.
+   *
+   * A szerkesztőmezőből küldött üzenet és a jóváhagyás utáni folytatás ugyanaz a
+   * folyamat: mindkettőnek buborék, „gépel" jelző, aktivitás-lista és lezáráskor
+   * DB-újratöltés jár. (A folytatásnál a forduló SZÖVEGÉT a szerver adja — a
+   * kliens csak a jóváhagyás-azonosítókat küldi.)
+   */
+  const startAgentTurn = (options: {
+    text: string
+    attachments: PendingAttachment[]
+    /** Amit a felhasználó a saját buborékában lát, amíg a DB-végállapot meg nem érkezik. */
+    userBubbleText?: string
+    consequenceApprovalIds?: string[]
+  }) => {
+    const text = options.text
+    const localAttachments = options.attachments
     const optimisticUserId = `optimistic-user-${Date.now()}`
     let agentBubbleMessageId = `optimistic-agent-pending-${Date.now()}`
 
     const optimisticUserMessage: ChatMessage = {
       id: optimisticUserId,
       role: 'user',
-      text: text || '(csatolmányok)',
+      text: options.userBubbleText ?? (text || '(csatolmányok)'),
       attachments: localAttachments.map((a) => ({
         documentId: a.id,
         filename: a.file.name,
@@ -1871,7 +2135,6 @@ export function AgentChatPanel({
     }
 
     setMessages((prev) => [...prev, optimisticUserMessage, optimisticAgentMessage])
-    resetComposer()
     setStatusMessage(null)
     setLastTicketId(null)
     setIsAgentTyping(true)
@@ -1900,6 +2163,41 @@ export function AgentChatPanel({
         )
       }
 
+      /**
+       * A forduló idő előtt megszakadt olvasásának EGYETLEN kezelője — mindegy,
+       * hogy a stream lezáró esemény nélkül ért véget, vagy a `reader.read()`
+       * dobott (elvágott válasz-törzs mobilhálón / proxy timeoutnál). A döntést
+       * a tiszta {@link decideChatStreamRecovery} hozza, itt csak végrehajtjuk.
+       */
+      async function recoverInterruptedStream(ending: ChatStreamEnding) {
+        const action = decideChatStreamRecovery({
+          ending,
+          userMessagePersisted: persistedUserMessageId !== null,
+          conversationId: streamConversationIdRef.current ?? conversationId,
+        })
+        if (action.kind === 'none') return
+        if (action.kind === 'discard') {
+          // A szerver még vissza sem igazolta a user-üzenetet: nincs mit
+          // visszaszerezni, a félkész buborékokat takarítjuk.
+          removeFailedOptimisticMessages()
+          setStatusMessage(action.message)
+          return
+        }
+        try {
+          const attached = await reattachToConversation(action.conversationId)
+          if (attached) {
+            handedOffToReattach = true
+            return
+          }
+          await reloadConversationMessages(action.conversationId)
+          setStatusMessage(STREAM_RECOVERED_MESSAGE)
+        } catch {
+          // A visszaszerzés maga is elbukhat (tartós hálózatkiesés). Ilyenkor is
+          // az a fontos üzenet, hogy a munka nem veszett el.
+          setStatusMessage(STREAM_RECOVERY_FAILED_MESSAGE)
+        }
+      }
+
       try {
         const documentIds = localAttachments.length > 0 ? await uploadAttachments(localAttachments) : []
         if (abortController.signal.aborted) return
@@ -1914,6 +2212,9 @@ export function AgentChatPanel({
             conversationId: conversationId ?? undefined,
             attachmentDocumentIds: documentIds,
             processDefinitionId: selectedProcessDefId ?? undefined,
+            ...(options.consequenceApprovalIds?.length
+              ? { consequenceApprovalIds: options.consequenceApprovalIds }
+              : {}),
           }),
         })
 
@@ -1953,7 +2254,11 @@ export function AgentChatPanel({
 
         if (!response.ok || !response.body) {
           removeFailedOptimisticMessages()
-          setStatusMessage(`Küldés sikertelen (${response.status})`)
+          setStatusMessage(
+            options.consequenceApprovalIds?.length
+              ? `A jóváhagyott művelet lefutott, de az agent folytatása nem indult el (${response.status}). Írd meg a chatben, hogy folytassa.`
+              : `Küldés sikertelen (${response.status})`,
+          )
           return
         }
 
@@ -2123,28 +2428,7 @@ export function AgentChatPanel({
         }
 
         if (!streamTerminalEvent) {
-          if (persistedUserMessageId) {
-            // A helyi olvasás lezáró esemény nélkül szakadt meg, de a forduló a
-            // szerveren perzisztált és (D3) tovább futhat — a régi kliens-oldali
-            // áthidalás helyett visszacsatlakozunk. Ha még fut, a snapshot + élő
-            // delta folytatja a helyes buborékban; ha közben lezárult, a
-            // perzisztált végállapotot töltjük vissza. Így a részeredmény hard-
-            // refresh nélkül sem vész el.
-            const convId = streamConversationIdRef.current ?? conversationId
-            if (convId) {
-              const attached = await reattachToConversation(convId)
-              if (attached) {
-                handedOffToReattach = true
-              } else {
-                await reloadConversationMessages(convId)
-              }
-            } else {
-              setStatusMessage('A válaszfolyam váratlanul megszakadt')
-            }
-          } else {
-            removeFailedOptimisticMessages()
-            setStatusMessage('A válaszfolyam váratlanul megszakadt')
-          }
+          await recoverInterruptedStream('closed_without_terminal')
         }
 
         if (streamTerminalEvent) {
@@ -2158,8 +2442,12 @@ export function AgentChatPanel({
         if (e instanceof DOMException && e.name === 'AbortError') {
           return
         }
-        removeFailedOptimisticMessages()
-        setStatusMessage(e instanceof Error ? e.message : 'Küldés sikertelen')
+        // A `reader.read()` a válasz-törzs elvágásakor hibát DOB (mobilhálón
+        // `TypeError: network error`), nem lezáró eseményt ad — ezért ugyanaz a
+        // visszaszerzés jár neki, mint a lezáró esemény nélküli végnek. Enélkül
+        // a felhasználó nyers hibaszöveget és üres választ kapott, miközben a
+        // forduló a szerveren tovább futott és az eredménye perzisztálódott.
+        await recoverInterruptedStream('read_threw')
       } finally {
         if (streamAbortRef.current === abortController) {
           streamAbortRef.current = null
@@ -2174,6 +2462,69 @@ export function AgentChatPanel({
         filesRef.current?.refresh()
       }
     })()
+  }
+
+  const handleSend = () => {
+    if (!canSubmit) return
+    const text = input.trim()
+    const localAttachments = [...pendingAttachments]
+    resetComposer()
+    startAgentTurn({ text, attachments: localAttachments })
+  }
+
+  // startAgentTurn a render törzsében van; a gépelés-vége flush refen keresztül hívja.
+  startAgentTurnRef.current = startAgentTurn
+
+  /**
+   * Futó forduló közbeni „Jóváhagyom" → folytatás sorba. A forduló végén
+   * (isAgentTyping false) automatikusan elindul, hogy ne vesszen el a lánc.
+   */
+  useEffect(() => {
+    if (isAgentTyping) return
+    const ids = pendingConsequenceContinuationRef.current
+    if (!ids || ids.length === 0) return
+    if (conversationStatus === 'archived') {
+      pendingConsequenceContinuationRef.current = null
+      return
+    }
+    pendingConsequenceContinuationRef.current = null
+    startAgentTurnRef.current?.({
+      text: '',
+      attachments: [],
+      userBubbleText: '✅ Jóváhagyva — a művelet lefutott, folytasd.',
+      consequenceApprovalIds: ids,
+    })
+  }, [isAgentTyping, conversationStatus])
+
+  /**
+   * A „Jóváhagyom" gomb után a művelet a szerveren MÁR lefutott — innen az agent
+   * folytatja. Enélkül a felhasználó csak annyit lát, hogy „nem történik semmi":
+   * nincs válasz, és a hátralévő lépések (pl. a sorok beírása a létrehozott
+   * fájlba) sem futnak le.
+   *
+   * Ha a kapu-üzenet még streamel, miközben a user már approve-ol (gyakori race),
+   * a folytatást sorba tesszük — nem dobjuk el „írj üzenetet" státusszal.
+   */
+  const handleConsequenceApproved = (approvalIds: string[]) => {
+    // A frissen írt fájl azonnal látszódjon a Workspace listában.
+    filesRef.current?.refresh()
+    if (approvalIds.length === 0) return
+    if (conversationStatus === 'archived') {
+      setStatusMessage('A művelet lefutott. Az agent folytatásához írj egy üzenetet a chatben.')
+      return
+    }
+    if (isAgentTyping) {
+      const prev = pendingConsequenceContinuationRef.current ?? []
+      pendingConsequenceContinuationRef.current = [...new Set([...prev, ...approvalIds])]
+      setStatusMessage('A művelet lefutott — amint az agent befejezi a választ, folytatjuk.')
+      return
+    }
+    startAgentTurn({
+      text: '',
+      attachments: [],
+      userBubbleText: '✅ Jóváhagyva — a művelet lefutott, folytasd.',
+      consequenceApprovalIds: approvalIds,
+    })
   }
 
   const handleCreateTicket = () => {
@@ -2360,6 +2711,15 @@ export function AgentChatPanel({
                     >
                       {distillPending ? 'Desztillálás…' : 'Skill desztillálása'}
                     </button>
+                    <button
+                      type="button"
+                      onClick={handleExportDebugLog}
+                      disabled={controlsBusy}
+                      className="rounded-xl border border-line px-3 py-1.5 text-xs font-semibold text-ink-soft transition-colors hover:border-honey/50 hover:bg-honey/10 hover:text-honey disabled:opacity-40"
+                      title="Teljes beszélgetés-telemetria letöltése elemzéshez (üzenetek, fordulók, model/tool, audit)"
+                    >
+                      {debugLogPending ? 'Log…' : 'Debug-log'}
+                    </button>
                   </>
                 )}
                 {conversationStatus !== 'archived' && (
@@ -2449,6 +2809,7 @@ export function AgentChatPanel({
                       onDeleteContent={handleDeleteMessageContent}
                       onMemoryCandidateUpdate={handleMemoryCandidateUpdate}
                       onConsequenceApprovalUpdate={handleConsequenceApprovalUpdate}
+                      onConsequenceApproved={handleConsequenceApproved}
                     />
                   ))}
                   {isAgentTyping &&

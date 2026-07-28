@@ -5,6 +5,7 @@ import { useEffect, useState, useTransition } from 'react'
 import Link from 'next/link'
 import type { ProcessStatus } from '@prisma/client'
 import { transitionTicket } from '@/app/actions/platform'
+import { exportTicketDebugLog } from '@/app/actions/debug-log'
 import { startProcessFromTicket } from '@/app/actions/process'
 import { authorizeTicketRunAs, revokeTicketRunAs } from '@/app/actions/connector-grants'
 import { ProposalCard } from '@/components/tickets/proposal-card'
@@ -25,6 +26,7 @@ type TicketView = {
   state: string
   payload: unknown
   sourceDocumentId: string | null
+  conversationId?: string | null
   createdAt: string | Date
   updatedAt: string | Date
   assigneeType?: string | null
@@ -521,6 +523,27 @@ export function TicketMeta({ ticket, isAdmin = false }: { ticket: TicketView; is
   const diff = payload?.diff as Record<string, unknown> | undefined
   const assignee = ticket.assignee
   const contractReview = contractReviewFromPayload(payload)
+  const [debugLogPending, startDebugLogTransition] = useTransition()
+  const [debugLogMessage, setDebugLogMessage] = useState<string | null>(null)
+
+  function handleExportDebugLog() {
+    startDebugLogTransition(async () => {
+      setDebugLogMessage(null)
+      const res = await exportTicketDebugLog({ id: ticket.id })
+      if (!res.success) {
+        setDebugLogMessage(res.error)
+        return
+      }
+      const blob = new Blob([res.data.content], { type: res.data.mediaType })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = res.data.filename
+      a.click()
+      URL.revokeObjectURL(url)
+      setDebugLogMessage(`Debug-log letöltve: ${res.data.filename}`)
+    })
+  }
 
   return (
     <>
@@ -537,7 +560,23 @@ export function TicketMeta({ ticket, isAdmin = false }: { ticket: TicketView; is
             status={ticket.process.status}
           />
         )}
+        {isAdmin && (
+          <button
+            type="button"
+            onClick={handleExportDebugLog}
+            disabled={debugLogPending}
+            className="rounded-xl border border-line px-3 py-1.5 text-xs font-semibold text-ink-soft transition-colors hover:border-honey/50 hover:bg-honey/10 hover:text-honey disabled:opacity-40"
+            title="Teljes ticket-telemetria letöltése elemzéshez (szál, model/tool, audit, kapcsolt beszélgetés)"
+          >
+            {debugLogPending ? 'Log…' : 'Debug-log'}
+          </button>
+        )}
       </div>
+      {debugLogMessage && (
+        <p className="mt-2 text-xs text-ink-soft" role="status">
+          {debugLogMessage}
+        </p>
+      )}
 
       {contractReview && (
         <Card title={contractReview.title ?? 'Miért állt meg a lépés'} className="mt-4 border-coral/25 bg-coral/5">

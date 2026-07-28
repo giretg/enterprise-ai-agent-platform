@@ -236,6 +236,10 @@ export class GeneralTaskRuntime {
     const dueByPrompt = formatDueByPrompt(ticket.dueBy)
     const preferredSkillVersionIds = readPreferredSkillVersionIds(payload)
     let preloadedSkillPrompts: string[] = []
+    // issue #161 — a ticketre kért skill futási kerete a task-ágon is éljen
+    // (a chat-promócióval idekerült hosszú skill különben az alap task-keretet
+    // kapná, épp azt veszítve el, amiért a boardra került).
+    let skillRuntimeHints: { maxWallClockMs?: number; maxToolCalls?: number } | undefined
     if (this.skills && preferredSkillVersionIds.length > 0) {
       const preloaded = await this.skills.preloadSkillsByVersionIds({
         agentId: params.agentId,
@@ -249,6 +253,7 @@ export class GeneralTaskRuntime {
           'A ticket létrehozója explicit módon kérte ennek a skillnek a betöltését. Kövesd az alábbi instrukciót:',
       })
       preloadedSkillPrompts = preloaded.preloadedPrompts
+      skillRuntimeHints = preloaded.runtimeHints
     }
 
     const messages = await this.buildTaskMessages({
@@ -343,6 +348,7 @@ export class GeneralTaskRuntime {
         maxTurns: resolveToolLoopMaxTurns(modelConfig, allowedTools, 'task'),
         skillIndexPrompt,
         preloadedSkillPrompts,
+        ...(skillRuntimeHints ? { initialSkillRuntimeHints: skillRuntimeHints } : {}),
         loadSkill,
         archiveLargeToolResult: (input) =>
           this.archiveLargeToolResult(wsTenant, ticket.id, input),

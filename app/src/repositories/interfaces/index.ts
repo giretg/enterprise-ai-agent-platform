@@ -870,17 +870,23 @@ export interface ConsequenceApprovalRepository {
   ): Promise<ConsequenceApproval>
   findById(id: string): Promise<ConsequenceApproval | null>
   /**
-   * Egy beszélgetés még FÜGGŐ jóváhagyásai, létrehozási sorrendben.
+   * Egy beszélgetés még LEZÁRATLAN jóváhagyásai, létrehozási sorrendben.
    *
    * A chat újratöltésekor ebből áll helyre a „Jóváhagyom" kártya: enélkül a
    * kapu csak a stream élő pillanatában látszik, és a forduló lezárultával
    * elérhetetlenné válik (a munka némán megáll).
    *
+   * `pending` MELLETT az `approved` sorokat is visszaadja: az emberi döntés
+   * megvan, a tool-hívás viszont elbukhatott (nincs connector, lejárt token).
+   * Az ilyen sor nélkül újratöltés után eltűnne az „Újrapróbálom" gomb, és a
+   * felhasználó abban a hitben maradna, hogy a művelet lefutott — pedig soha
+   * nem futott le. A sikeres sorokat a hívó szűri ki.
+   *
    * A `createdAfter` a MÁR LEJÁRT, de friss sorokat is beengedi, hogy a
    * felhasználó legalább a magyarázatot lássa („lejárt, kérd újra"); a régi
    * lejárt sorok nem szemetelik tele a beszélgetést.
    */
-  listPendingByConversation(
+  listOpenByConversation(
     conversationId: string,
     createdAfter: Date,
   ): Promise<ConsequenceApproval[]>
@@ -1747,6 +1753,11 @@ export interface AgentTurnRepository {
   finalize(id: string, data: FinalizeAgentTurnInput): Promise<AgentTurn | null>
   /** Watchdog: aktív, de a `heartbeatAt`-je a küszöbnél régebbi fordulók. */
   findStale(cutoff: Date, limit: number): Promise<AgentTurn[]>
+  /**
+   * A beszélgetés legutóbbi terminális fordulója (folytatás-prompthoz).
+   * Aktív (queued/running/streaming) sorokat kihagyja.
+   */
+  findLatestTerminalByConversation(conversationId: string): Promise<AgentTurn | null>
 }
 
 export type SandboxAppWithLatestVersion = SandboxApp & {

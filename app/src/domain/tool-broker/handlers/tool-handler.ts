@@ -35,6 +35,7 @@ import type {
   RepoPrepareResult,
   DocumentReadResult,
   TulajdoniLapParseResult,
+  TulajdoniLapEgyeztetesResult,
   TicketCreateResult,
   ToolBrokerInvokeInput,
   UserDirectoryResult,
@@ -137,6 +138,14 @@ export interface HandlerContext {
       actingTenantId: string | null
     },
   ): Promise<TulajdoniLapParseResult>
+  tulajdoniLapEgyeztetes(
+    input: Extract<ToolBrokerInvokeInput, { tool: 'tulajdoni_lap_egyeztetes' }>,
+    actingUserId: string | null,
+    extras?: {
+      authorization: AllowedAuthorization
+      actingTenantId: string | null
+    },
+  ): Promise<TulajdoniLapEgyeztetesResult>
 }
 
 /** Minden handler-hívás egyetlen, immutábilis argumentum-csomagot kap. */

@@ -58,6 +58,16 @@ import {
 import type { SkillService } from '../skill/skill-service'
 import { assembleGatewayMessages, type PromptSegments } from './prompt-assembler'
 import {
+  buildSkillTaskPromotionMessage,
+  buildSkillTaskTitle,
+  shouldPromoteSkillRunToTask,
+} from './skill-task-promotion'
+import {
+  buildTurnContinuationPrompt,
+  shouldInjectTurnContinuation,
+  type ContinuationActivity,
+} from './turn-continuation'
+import {
   agentTurnRunner,
   type AgentChatStreamEvent,
   type AgentTurnEmit,
@@ -378,6 +388,13 @@ export type AgentChatSendParams = {
   attachmentDocumentIds?: string[]
   processDefinitionId?: string
   processInputPayload?: Record<string, unknown>
+  /**
+   * issue #97 — ez a forduló egy következmény-jóváhagyás FOLYTATÁSA: a külső,
+   * nem megbízható tartalom az előzményben már ott van, ezért a forduló már
+   * „tainted"-ként indul, és a hátralévő mellékhatásos lépések ismét kaput
+   * kapnak. Kizárólag szerveroldalról (a validált jóváhagyás után) állítható.
+   */
+  consequenceApprovalContinuation?: boolean
 }
 
 type ChatModelConfig = {
@@ -388,6 +405,19 @@ type ChatModelConfig = {
 }
 
 type AgentDetails = NonNullable<Awaited<ReturnType<AgentRepository['findByIdForRuntime']>>>
+
+/** A `/slash` skill-feloldás eredménye a fordulóhoz (előtöltés + keret + promóció). */
+type SlashSkillResolution = {
+  modelFacingText: string
+  preloadedSkillPrompts: string[]
+  loadedSkillNames: string[]
+  loadedSkillVersionIds: string[]
+  runtimeHints?: {
+    maxWallClockMs?: number
+    maxToolCalls?: number
+    preferredMode?: 'chat' | 'task'
+  }
+}
 
 /**
  * Minden, amit a kérés-scope-ban elő KELL készíteni (auth, beszélgetés,
@@ -713,13 +743,14 @@ export class AgentChatRuntime {
     agentId: string,
     tenantId: string | null,
     messageText: string,
-  ): Promise<{
-    modelFacingText: string
-    preloadedSkillPrompts: string[]
-    loadedSkillNames: string[]
-  }> {
+  ): Promise<SlashSkillResolution> {
     if (!this.skills) {
-      return { modelFacingText: messageText, preloadedSkillPrompts: [], loadedSkillNames: [] }
+      return {
+        modelFacingText: messageText,
+        preloadedSkillPrompts: [],
+        loadedSkillNames: [],
+        loadedSkillVersionIds: [],
+      }
     }
     const resolved = await this.skills.resolveSlashSkillLoads({
       agentId,
@@ -730,6 +761,107 @@ export class AgentChatRuntime {
       modelFacingText: resolved.modelFacingText,
       preloadedSkillPrompts: resolved.preloadedPrompts,
       loadedSkillNames: resolved.loadedSkillNames,
+      loadedSkillVersionIds: resolved.loadedSkillVersionIds,
+      runtimeHints: resolved.runtimeHints,
+    }
+  }
+
+  /**
+   * issue #161 — `preferredMode: 'task'` board-promóció.
+   *
+   * A hosszú skillt nem a chat fordulójában nyújtjuk ki: ticketet nyitunk
+   * ugyanennek az agentnek, átvisszük a kérést, a csatolmányokat és a betöltött
+   * skill-verziókat, majd a dispatcher futtatja végig `task` módban (ott a
+   * keretek eleve tágabbak, és a részeredmény a ticketen marad).
+   *
+   * `null` → nincs promóció, a chat a szokásos módon fut. A ticket felvételének
+   * hibája NEM buktatja el a fordulót: ilyenkor is `null`-lal térünk vissza, és
+   * a chat végzi el a feladatot — a szűkebb kerettel, de elvégzi.
+   */
+  private async trySkillTaskPromotion(input: {
+    params: AgentChatSendParams
+    agentDetails: AgentDetails
+    conversationId: string
+    userText: string
+    slashResolved: SlashSkillResolution
+    attachmentDocs: PreparedTurn['attachmentDocs']
+  }): Promise<ChatProcessReply | null> {
+    const { slashResolved } = input
+    if (
+      !shouldPromoteSkillRunToTask({
+        runtimeHints: slashResolved.runtimeHints,
+        loadedSkillNames: slashResolved.loadedSkillNames,
+      })
+    ) {
+      return null
+    }
+
+    const question = (slashResolved.modelFacingText || input.userText).trim()
+    if (!question) return null
+
+    const title = buildSkillTaskTitle({
+      skillNames: slashResolved.loadedSkillNames,
+      userText: question,
+    })
+    const attachmentDocumentIds = input.attachmentDocs.map((doc) => doc.id)
+
+    try {
+      const ticket = await this.tickets.create({
+        tenantId: input.params.tenantId ?? null,
+        type: 'interaction',
+        title,
+        state: 'ready',
+        assigneeType: 'agent',
+        assigneeId: input.params.agentId,
+        agentId: input.params.agentId,
+        payload: {
+          question,
+          source: 'chat_skill_promotion',
+          conversationId: input.conversationId,
+          attachmentDocumentIds,
+          preferredSkillVersionIds: slashResolved.loadedSkillVersionIds,
+          promotedSkillNames: slashResolved.loadedSkillNames,
+        } as Prisma.JsonValue,
+        sourceDocumentId: null,
+        executeAfter: null,
+        dueBy: null,
+        createdById: input.params.createdById,
+      })
+
+      await this.audit.append({
+        actorType: 'human',
+        actorId: input.params.createdById,
+        agentVersion: input.agentDetails.agent.currentVersion,
+        action: 'skill.task_promoted',
+        targetType: 'ticket',
+        targetId: ticket.id,
+        modelUsed: null,
+        inputRef: null,
+        outputRef: null,
+        policyDecision: 'allowed',
+        tenantId: input.params.tenantId ?? null,
+        conversationId: input.conversationId,
+        ticketId: ticket.id,
+        metadata: {
+          skillNames: slashResolved.loadedSkillNames,
+          skillVersionIds: slashResolved.loadedSkillVersionIds,
+          attachmentCount: attachmentDocumentIds.length,
+        },
+      })
+
+      return {
+        text: buildSkillTaskPromotionMessage({
+          skillNames: slashResolved.loadedSkillNames,
+          ticketTitle: title,
+          attachmentCount: attachmentDocumentIds.length,
+        }),
+        ticketRefId: ticket.id,
+      }
+    } catch (error) {
+      // Fail-soft: a promóció kényelem, nem kapu. Ha a ticket nem jött létre,
+      // a chat futtatja a feladatot — inkább szűkebb kerettel, mint sehogy.
+      console.error('[agent-chat] skill → board promóció sikertelen', error)
+      return null
     }
   }
 
@@ -1042,6 +1174,50 @@ export class AgentChatRuntime {
       await this.persistTurnProgress(turn, flush)
     }
 
+    /**
+     * Modell-hívás NÉLKÜL előálló válasz kiadása (Folyamat-indítás, skill →
+     * board-promóció): ugyanaz a stream-szerződés, mint a modellezett fordulóé —
+     * darabolt tokenek, Stop-ellenőrzés minden darabnál, majd terminális lezárás.
+     */
+    const deliverPreparedReply = async (prepared: ChatProcessReply): Promise<void> => {
+      reply = prepared.text
+      turn.completedReply = prepared.text
+      for (const chunk of chunkForStreaming(prepared.text)) {
+        await refreshCancelFromDb()
+        const cancelledId = await this.cancelTurnIfRequested(turn, isCancelRequestedNow())
+        if (cancelledId) {
+          messageId = cancelledId
+          outcome = {
+            status: 'cancelled',
+            reason: 'cancelled',
+            assistantMessageId: cancelledId,
+          }
+          emit({
+            type: 'done',
+            conversationId,
+            messageId: cancelledId,
+            reason: 'cancelled',
+          })
+          return
+        }
+        await emitToken(chunk)
+        await new Promise<void>((r) => setTimeout(r, 12))
+      }
+      const persistedId = await this.finalizeAgentTurn(turn, prepared.text, {
+        ticketRefId: prepared.ticketRefId ?? null,
+      })
+      turn.finalized = true
+      messageId = persistedId
+      ticketRefId = prepared.ticketRefId ?? null
+      outcome = { status: 'completed', assistantMessageId: persistedId }
+      emit({
+        type: 'done',
+        conversationId,
+        messageId: persistedId,
+        ticketRefId: prepared.ticketRefId ?? null,
+      })
+    }
+
     const runBody = async (): Promise<void> => {
       const processReply = await this.tryStartChatTriggeredProcess({
         tenantId: params.tenantId ?? null,
@@ -1055,42 +1231,7 @@ export class AgentChatRuntime {
         modelConfig,
       })
       if (processReply) {
-        reply = processReply.text
-        turn.completedReply = processReply.text
-        for (const chunk of chunkForStreaming(processReply.text)) {
-          await refreshCancelFromDb()
-          const cancelledId = await this.cancelTurnIfRequested(turn, isCancelRequestedNow())
-          if (cancelledId) {
-            messageId = cancelledId
-            outcome = {
-              status: 'cancelled',
-              reason: 'cancelled',
-              assistantMessageId: cancelledId,
-            }
-            emit({
-              type: 'done',
-              conversationId,
-              messageId: cancelledId,
-              reason: 'cancelled',
-            })
-            return
-          }
-          await emitToken(chunk)
-          await new Promise<void>((r) => setTimeout(r, 12))
-        }
-        const persistedId = await this.finalizeAgentTurn(turn, processReply.text, {
-          ticketRefId: processReply.ticketRefId ?? null,
-        })
-        turn.finalized = true
-        messageId = persistedId
-        ticketRefId = processReply.ticketRefId ?? null
-        outcome = { status: 'completed', assistantMessageId: persistedId }
-        emit({
-          type: 'done',
-          conversationId,
-          messageId: persistedId,
-          ticketRefId: processReply.ticketRefId ?? null,
-        })
+        await deliverPreparedReply(processReply)
         return
       }
 
@@ -1099,6 +1240,31 @@ export class AgentChatRuntime {
         params.tenantId ?? null,
         text,
       )
+
+      // issue #161 — `preferredMode: 'task'`: a hosszú skillt nem a chatben
+      // nyújtjuk 15 percre, hanem ticketet nyitunk és a board futtatja végig.
+      // A chat rövid marad; a felhasználó a ticket hivatkozását kapja vissza.
+      const promotion = await this.trySkillTaskPromotion({
+        params,
+        agentDetails,
+        conversationId,
+        userText: text,
+        slashResolved,
+        attachmentDocs,
+      })
+      if (promotion) {
+        for (const skillName of slashResolved.loadedSkillNames) {
+          await emitActivity({
+            id: `skill-slash-${skillName}`,
+            kind: 'tool',
+            title: `Skill betöltve: ${skillName}`,
+            detail: 'Felhasználói /slash parancs alapján',
+            status: 'done',
+          })
+        }
+        await deliverPreparedReply(promotion)
+        return
+      }
       const latestUserTextOverride =
         slashResolved.modelFacingText !== text ? slashResolved.modelFacingText : undefined
       const kbSearch = await this.fetchKbSearchContext({
@@ -1135,6 +1301,7 @@ export class AgentChatRuntime {
         documentAliases: this.contextDocumentAliases(attachmentDocs, workspaceFiles, kbSearch.hits),
       })
       const priorToolCalls = await this.toolCaps.listToolCallsForConversation(conversationId)
+      const continuationPrompt = await this.buildContinuationPrompt(conversationId, workspaceFiles)
       const gatewayPrompt = await this.buildGatewayMessages(
         agentDetails,
         assembledContext.messages,
@@ -1144,6 +1311,7 @@ export class AgentChatRuntime {
         priorToolCalls,
         latestUserTextOverride,
         memoryContext.block,
+        continuationPrompt,
       )
 
       const allowedChatTools = await listAllowedChatTools(this.toolCaps, params.agentId)
@@ -1197,6 +1365,7 @@ export class AgentChatRuntime {
           skillIndexPrompt: skillBinding.skillIndexPrompt,
           preloadedSkillPrompts: slashResolved.preloadedSkillPrompts,
           loadSkill: skillBinding.loadSkill,
+          initialSkillRuntimeHints: slashResolved.runtimeHints,
           archiveLargeToolResult: (input) =>
             this.archiveLargeToolResult(tenantKey, conversationId, input),
           shouldCancel: () => isCancelRequestedNow(),
@@ -1213,6 +1382,10 @@ export class AgentChatRuntime {
               }
             : {}),
           onMemoryCandidate: (candidate) => emit({ type: 'memory_candidate', candidate }),
+          // Folytatás: a külső tartalom envelope továbbra is releváns a modellnek,
+          // de a consequence gate már risk-class (nem taint) alapú — initialTainted
+          // legacy jel, a kapu nem használja workspace-írás blokkolására.
+          initialTainted: params.consequenceApprovalContinuation === true,
           ...(this.consequenceApprovals
             ? {
                 createConsequenceApproval: async (invoke) =>
@@ -1926,6 +2099,31 @@ export class AgentChatRuntime {
     })
   }
 
+  private async buildContinuationPrompt(
+    conversationId: string,
+    workspaceFiles: string[],
+  ): Promise<string | null> {
+    if (!this.agentTurns) return null
+    try {
+      const previous = await this.agentTurns.findLatestTerminalByConversation(conversationId)
+      if (!previous) return null
+      const activities = Array.isArray(previous.activities)
+        ? (previous.activities as ContinuationActivity[])
+        : []
+      const snapshot = {
+        status: previous.status,
+        reason: previous.reason,
+        activities,
+      }
+      if (!shouldInjectTurnContinuation(snapshot)) return null
+      const prompt = buildTurnContinuationPrompt(snapshot, workspaceFiles)
+      return prompt.trim() ? prompt : null
+    } catch (error) {
+      console.error('[agent-chat] continuation prompt összeállítás sikertelen', error)
+      return null
+    }
+  }
+
   private async buildGatewayMessages(
     agentDetails: NonNullable<Awaited<ReturnType<AgentRepository['findByIdForRuntime']>>>,
     historyMessages: ContextAssemblyMessage[],
@@ -1935,6 +2133,7 @@ export class AgentChatRuntime {
     toolCalls: ToolCall[] = [],
     latestUserTextOverride?: string,
     memoryContextBlock?: string | null,
+    continuationPrompt?: string | null,
   ) {
     // #142: a roster a hívó agent SAJÁT `address` jogán szűrt lista. A korábbi
     // szűretlen `findMany()` más tenant agentjeinek nevét, persona-traitjét és ID-ját
@@ -1998,6 +2197,10 @@ export class AgentChatRuntime {
         content:
           'A beszélgetés munkaterülete jelenleg üres (nincs feltöltött fájl). Ha a felhasználó létező fájlra hivatkozik, kérd meg, hogy csatolja (📎). Csatolt PDF/DOCX esetén a document_read eszközt használd (pages/query). Új fájlt (pl. Excel → xlsx_create, prezentáció → pptx_create, Word → docx_create, egyéb → file_write) az eszközökkel hozhatsz létre — a felhasználó a „Workspace fájlok" panelről tölti le.',
       })
+    }
+
+    if (continuationPrompt && continuationPrompt.trim()) {
+      variableContext.push({ role: 'system', content: continuationPrompt })
     }
 
     return {

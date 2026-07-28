@@ -129,6 +129,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'conversation.archive',
   'conversation.content_deleted',
   'conversation.create',
+  'conversation.debug_log.export',
   'conversation.promote_to_ticket',
   'message.append',
   'message.content_deleted',
@@ -293,6 +294,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'contract.evaluate',
   'ticket.comment.add',
   'ticket.comment.attachment.uploaded',
+  'ticket.debug_log.export',
   'ticket.handback',
   'ticket.runas.authorize',
   'ticket.runas.revoke',
@@ -324,6 +326,8 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'skill.deleted',
   'skill.access_denied',
   'skill.run_snapshot',
+  // issue #161 — `preferredMode: 'task'`: a chat helyett a boardon fut végig.
+  'skill.task_promoted',
 
   // Sandbox App Registry
   'retention.sweep',

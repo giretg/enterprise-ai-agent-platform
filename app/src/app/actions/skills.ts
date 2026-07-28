@@ -190,6 +190,8 @@ export interface SkillCatalogEntry {
   sourceType: 'authored' | 'imported'
   riskTier: SkillRiskTier
   license: string | null
+  /** Az aktív verzió futási kerete — a listában olvasható jelzés (issue #161). */
+  runtimeHints: SkillContent['runtimeHints']
   versions: Array<{
     id: string
     version: number
@@ -213,6 +215,9 @@ export async function listSkillCatalogAction(): Promise<ActionResult<SkillCatalo
         sourceType: s.sourceType,
         riskTier: s.riskTier,
         license: s.license,
+        runtimeHints: parseSkillContent(
+          s.versions.find((v) => v.status === 'active')?.content,
+        ).runtimeHints,
         versions: [...s.versions]
           .sort((a, b) => b.version - a.version)
           .map((v) => ({

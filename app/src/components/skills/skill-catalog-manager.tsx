@@ -21,7 +21,11 @@ import { ToolCapabilityCheckboxGroups } from '@/components/tool-capabilities/too
 import { Badge, Card } from '@/components/ui/shell'
 import { Collapsible } from '@/components/ui/collapsible'
 import type { SkillDiff } from '@/lib/skill/skill-diff'
-import type { SkillParameter } from '@/lib/skill/skill-content'
+import type { SkillParameter, SkillRuntimeHints } from '@/lib/skill/skill-content'
+import {
+  SKILL_RUNTIME_HINT_LIMITS,
+  clampSkillRuntimeHints,
+} from '@/lib/skill/skill-content'
 import { NORMAL_TOOL_CAPABILITY_GROUPS } from '@/lib/tool-capability-catalog'
 
 const STATUS_TONE: Record<string, 'neutral' | 'success' | 'warning' | 'danger'> = {
@@ -75,6 +79,149 @@ function formatParameters(params: SkillParameter[]): string {
 
 function requiresFromTools(tools: Set<string>) {
   return [...tools].map((toolName) => ({ toolName, reason: '' }))
+}
+
+const WALL_CLOCK_SEC_MIN = Math.round(SKILL_RUNTIME_HINT_LIMITS.maxWallClockMs.min / 1000)
+const WALL_CLOCK_SEC_MAX = Math.round(SKILL_RUNTIME_HINT_LIMITS.maxWallClockMs.max / 1000)
+
+/** A három hint-mező nyers (szerkesztés alatti) szöveges állapota. */
+type RuntimeHintsDraft = {
+  wallClockSec: string
+  toolCalls: string
+  preferredMode: '' | 'chat' | 'task'
+}
+
+const EMPTY_RUNTIME_HINTS: RuntimeHintsDraft = {
+  wallClockSec: '',
+  toolCalls: '',
+  preferredMode: '',
+}
+
+function runtimeHintsToDraft(hints: SkillRuntimeHints | undefined): RuntimeHintsDraft {
+  return {
+    wallClockSec: hints?.maxWallClockMs != null ? String(Math.round(hints.maxWallClockMs / 1000)) : '',
+    toolCalls: hints?.maxToolCalls != null ? String(hints.maxToolCalls) : '',
+    preferredMode: hints?.preferredMode ?? '',
+  }
+}
+
+function draftToRuntimeHints(draft: RuntimeHintsDraft): SkillRuntimeHints | undefined {
+  const sec = Number(draft.wallClockSec.trim())
+  const calls = Number(draft.toolCalls.trim())
+  return clampSkillRuntimeHints({
+    maxWallClockMs: draft.wallClockSec.trim() && Number.isFinite(sec) ? sec * 1000 : null,
+    maxToolCalls: draft.toolCalls.trim() && Number.isFinite(calls) ? calls : null,
+    preferredMode: draft.preferredMode === '' ? null : draft.preferredMode,
+  })
+}
+
+/** Hétköznapi, egysoros összefoglaló a listához. Üres hint → nincs sor. */
+function describeRuntimeHints(hints: SkillRuntimeHints | undefined): string | null {
+  if (!hints) return null
+  const parts: string[] = []
+  if (hints.maxWallClockMs != null) parts.push(`${Math.round(hints.maxWallClockMs / 1000)} mp`)
+  if (hints.maxToolCalls != null) parts.push(`${hints.maxToolCalls} eszközhívás`)
+  if (hints.preferredMode === 'task') parts.push('a boardon fut')
+  else if (hints.preferredMode === 'chat') parts.push('chatben fut')
+  return parts.length > 0 ? parts.join(' · ') : null
+}
+
+/**
+ * Futási keret (`runtimeHints`) szerkesztő. Ugyanaz a három mező, amit a
+ * `SKILL.md` frontmatter is hoz (`max-wall-clock-ms`, `max-tool-calls`,
+ * `preferred-mode`) — importált skillnél itt válik láthatóvá és állíthatóvá.
+ * Az időt másodpercben kérjük, mert az ember percekben gondolkodik; a tárolás
+ * ezredmásodperc marad.
+ */
+function SkillRuntimeHintsFields({
+  draft,
+  onChange,
+  disabled,
+}: {
+  draft: RuntimeHintsDraft
+  onChange: (next: RuntimeHintsDraft) => void
+  disabled?: boolean
+}) {
+  const applied = draftToRuntimeHints(draft)
+  const clampedWallClock =
+    applied?.maxWallClockMs != null &&
+    draft.wallClockSec.trim() !== '' &&
+    Math.round(applied.maxWallClockMs / 1000) !== Number(draft.wallClockSec.trim())
+  const clampedToolCalls =
+    applied?.maxToolCalls != null &&
+    draft.toolCalls.trim() !== '' &&
+    applied.maxToolCalls !== Number(draft.toolCalls.trim())
+
+  return (
+    <div
+      className={`rounded-lg border border-ink-faint/30 p-3 ${disabled ? 'pointer-events-none opacity-50' : ''}`}
+    >
+      <p className="text-xs font-medium text-ink-soft">Futási keret (opcionális)</p>
+      <p className="mt-1 text-[11px] text-ink-faint">
+        Üresen hagyva a platform alapértéke érvényes (chatben ~180 mp / 60 eszközhívás). A skill
+        csak <em>emelheti</em> a keretet, szűkíteni nem tudja.
+      </p>
+      <div className="mt-3 grid gap-3 sm:grid-cols-3">
+        <label className="block text-[11px] text-ink-faint">
+          Legfeljebb ennyi ideig fusson (mp)
+          <input
+            type="number"
+            inputMode="numeric"
+            min={WALL_CLOCK_SEC_MIN}
+            max={WALL_CLOCK_SEC_MAX}
+            value={draft.wallClockSec}
+            onChange={(e) => onChange({ ...draft, wallClockSec: e.target.value })}
+            placeholder={`${WALL_CLOCK_SEC_MIN}–${WALL_CLOCK_SEC_MAX}`}
+            className="mt-1 w-full rounded-lg border border-ink-faint/30 bg-transparent px-2 py-1.5 text-sm text-ink"
+          />
+        </label>
+        <label className="block text-[11px] text-ink-faint">
+          Legfeljebb ennyi eszközhívás
+          <input
+            type="number"
+            inputMode="numeric"
+            min={SKILL_RUNTIME_HINT_LIMITS.maxToolCalls.min}
+            max={SKILL_RUNTIME_HINT_LIMITS.maxToolCalls.max}
+            value={draft.toolCalls}
+            onChange={(e) => onChange({ ...draft, toolCalls: e.target.value })}
+            placeholder={`${SKILL_RUNTIME_HINT_LIMITS.maxToolCalls.min}–${SKILL_RUNTIME_HINT_LIMITS.maxToolCalls.max}`}
+            className="mt-1 w-full rounded-lg border border-ink-faint/30 bg-transparent px-2 py-1.5 text-sm text-ink"
+          />
+        </label>
+        <label className="block text-[11px] text-ink-faint">
+          Hol fusson
+          <select
+            value={draft.preferredMode}
+            onChange={(e) =>
+              onChange({ ...draft, preferredMode: e.target.value as RuntimeHintsDraft['preferredMode'] })
+            }
+            className="mt-1 w-full rounded-lg border border-ink-faint/30 bg-transparent px-2 py-1.5 text-sm text-ink"
+          >
+            <option value="">Alapértelmezés (chatben)</option>
+            <option value="chat">Chatben</option>
+            <option value="task">Hosszú feladat — a boardon fusson</option>
+          </select>
+        </label>
+      </div>
+      {(clampedWallClock || clampedToolCalls) && (
+        <p className="mt-2 text-[11px] text-honey">
+          A megadott érték a megengedett tartományon kívül esik — mentéskor{' '}
+          {clampedWallClock && applied?.maxWallClockMs != null
+            ? `${Math.round(applied.maxWallClockMs / 1000)} mp`
+            : ''}
+          {clampedWallClock && clampedToolCalls ? ' · ' : ''}
+          {clampedToolCalls && applied?.maxToolCalls != null ? `${applied.maxToolCalls} hívás` : ''}{' '}
+          lesz belőle.
+        </p>
+      )}
+      {draft.preferredMode === 'task' && (
+        <p className="mt-2 text-[11px] text-ink-faint">
+          A chat ilyenkor nem futtatja végig a feladatot: ticketet nyit, és a munka a boardon
+          folytatódik — a felhasználó a chatben megkapja a ticket hivatkozását.
+        </p>
+      )}
+    </div>
+  )
 }
 
 function SkillRequiresToolPicker({
@@ -224,6 +371,11 @@ export function SkillCatalogManager({
                   </div>
                 </div>
                 <p className="mt-1 text-xs text-ink-soft">{s.description}</p>
+                {describeRuntimeHints(s.runtimeHints) && (
+                  <p className="mt-1 text-[11px] text-ink-faint">
+                    Futási keret: {describeRuntimeHints(s.runtimeHints)}
+                  </p>
+                )}
 
                 {isAdmin && editingSkillId === s.id && (
                   <EditSkillVersionForm
@@ -491,6 +643,7 @@ function EditSkillVersionForm({
   const [instructions, setInstructions] = useState('')
   const [triggerKeywordsRaw, setTriggerKeywordsRaw] = useState('')
   const [parametersRaw, setParametersRaw] = useState('')
+  const [runtimeHints, setRuntimeHints] = useState<RuntimeHintsDraft>(EMPTY_RUNTIME_HINTS)
   const [requiredTools, setRequiredTools] = useState<Set<string>>(() => new Set())
   const [loadError, setLoadError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -499,6 +652,7 @@ function EditSkillVersionForm({
     setInstructions(detail.content.instructions.join('\n\n'))
     setTriggerKeywordsRaw(formatTriggerKeywords(detail.content.triggerKeywords))
     setParametersRaw(formatParameters(detail.content.parameters))
+    setRuntimeHints(runtimeHintsToDraft(detail.content.runtimeHints))
     setRequiredTools(new Set(detail.requires.map((r) => r.toolName)))
   }
 
@@ -530,12 +684,14 @@ function EditSkillVersionForm({
       .map((s) => s.trim())
       .filter(Boolean)
     const requires = requiresFromTools(requiredTools)
+    const hints = draftToRuntimeHints(runtimeHints)
     return proposeSkillVersionAction({
       skillId: skill.id,
       content: {
         instructions: instructionBlocks,
         triggerKeywords: parseTriggerKeywords(triggerKeywordsRaw),
         parameters: parseParameters(parametersRaw),
+        ...(hints ? { runtimeHints: hints } : {}),
       },
       requires,
     })
@@ -592,6 +748,11 @@ function EditSkillVersionForm({
         rows={3}
         placeholder="parameters — soronként: név | leírás"
         className="w-full rounded-lg border border-ink-faint/30 bg-transparent px-3 py-2 font-mono text-xs"
+        disabled={loading}
+      />
+      <SkillRuntimeHintsFields
+        draft={runtimeHints}
+        onChange={setRuntimeHints}
         disabled={loading}
       />
       <SkillRequiresToolPicker
@@ -698,6 +859,7 @@ function CreateSkillForm({
   const [instructions, setInstructions] = useState('')
   const [triggerKeywordsRaw, setTriggerKeywordsRaw] = useState('')
   const [parametersRaw, setParametersRaw] = useState('')
+  const [runtimeHints, setRuntimeHints] = useState<RuntimeHintsDraft>(EMPTY_RUNTIME_HINTS)
   const [requiredTools, setRequiredTools] = useState<Set<string>>(() => new Set())
 
   function build() {
@@ -706,6 +868,7 @@ function CreateSkillForm({
       .map((s) => s.trim())
       .filter(Boolean)
     const requires = requiresFromTools(requiredTools)
+    const hints = draftToRuntimeHints(runtimeHints)
     return createSkillAction({
       name,
       description,
@@ -714,6 +877,7 @@ function CreateSkillForm({
         instructions: instructionBlocks,
         triggerKeywords: parseTriggerKeywords(triggerKeywordsRaw),
         parameters: parseParameters(parametersRaw),
+        ...(hints ? { runtimeHints: hints } : {}),
       },
       requires,
     })
@@ -757,6 +921,9 @@ function CreateSkillForm({
         placeholder="parameters — soronként: név | leírás (opcionális)"
         className="mt-2 w-full rounded-lg border border-ink-faint/30 bg-transparent px-3 py-2 font-mono text-xs"
       />
+      <div className="mt-2">
+        <SkillRuntimeHintsFields draft={runtimeHints} onChange={setRuntimeHints} />
+      </div>
       <div className="mt-2">
         <SkillRequiresToolPicker enabled={requiredTools} onChange={setRequiredTools} />
       </div>

@@ -1174,6 +1174,7 @@ function httpApiConnectorConfig(input: {
   requestHeaders?: Record<string, string>
   writeHeaders?: Record<string, string>
   restrictToEndpoints?: boolean
+  defaultRisk?: 'read' | 'write' | 'danger'
   githubRepositoryAccess?: GitHubRepositoryAccess
   endpoints?: Array<{
     method: string
@@ -1181,6 +1182,7 @@ function httpApiConnectorConfig(input: {
     description?: string
     idempotent?: boolean
     profile?: string
+    risk?: 'read' | 'write' | 'danger'
   }>
 }) {
   return {
@@ -1222,6 +1224,7 @@ function httpApiConnectorConfig(input: {
       ? { writeHeaders: input.writeHeaders }
       : {}),
     ...(input.endpoints && input.endpoints.length > 0 ? { endpoints: input.endpoints } : {}),
+    ...(input.defaultRisk ? { defaultRisk: input.defaultRisk } : {}),
     restrictToEndpoints: input.restrictToEndpoints,
     ...(input.githubRepositoryAccess ? { githubRepositoryAccess: input.githubRepositoryAccess } : {}),
   }
@@ -1286,6 +1289,7 @@ export async function createHttpApiConnectorForAgent(input: {
   writeHeaders?: Record<string, string>
   accessMode?: 'read' | 'write'
   restrictToEndpoints?: boolean
+  defaultRisk?: 'read' | 'write' | 'danger'
   githubRepositoryAccess?: GitHubRepositoryAccess
   endpoints?: Array<{
     method: string
@@ -1293,6 +1297,7 @@ export async function createHttpApiConnectorForAgent(input: {
     description?: string
     idempotent?: boolean
     profile?: string
+    risk?: 'read' | 'write' | 'danger'
   }>
 }) {
   try {
