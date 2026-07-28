@@ -315,6 +315,8 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'skill.deleted',
   'skill.access_denied',
   'skill.run_snapshot',
+  // issue #161 — `preferredMode: 'task'`: a chat helyett a boardon fut végig.
+  'skill.task_promoted',
 
   // Sandbox App Registry
   'retention.sweep',

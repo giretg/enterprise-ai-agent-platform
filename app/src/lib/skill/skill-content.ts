@@ -30,14 +30,33 @@ export const skillParameterSchema = z.object({
 })
 
 /**
+ * A runtime-hint megengedett tartományai — EGY forrás a sémának, a katalógus
+ * UI-nak és a loop-clampnek. Ha itt tágítunk, mindhárom helyen tágul.
+ */
+export const SKILL_RUNTIME_HINT_LIMITS = {
+  maxWallClockMs: { min: 10_000, max: 3_600_000 },
+  maxToolCalls: { min: 5, max: 500 },
+} as const
+
+/**
  * Kemény runtime-hint a tool-loop guardokhoz (nem prompt-szöveg).
  * Chat alap: 180s / 60 tool; hosszú skill felülírhatja — a loop clampeli.
- * `preferredMode: 'task'` jelzés a jövőbeli auto-promote-hoz; ma csak a
- * betöltött skill szövegében jelenik meg tanácsként.
+ * `preferredMode: 'task'` a hosszú futás board/ticket ágra terelését kéri
+ * (l. `resolveSkillTaskPromotion`).
  */
 export const skillRuntimeHintsSchema = z.object({
-  maxWallClockMs: z.number().int().min(10_000).max(3_600_000).optional(),
-  maxToolCalls: z.number().int().min(5).max(500).optional(),
+  maxWallClockMs: z
+    .number()
+    .int()
+    .min(SKILL_RUNTIME_HINT_LIMITS.maxWallClockMs.min)
+    .max(SKILL_RUNTIME_HINT_LIMITS.maxWallClockMs.max)
+    .optional(),
+  maxToolCalls: z
+    .number()
+    .int()
+    .min(SKILL_RUNTIME_HINT_LIMITS.maxToolCalls.min)
+    .max(SKILL_RUNTIME_HINT_LIMITS.maxToolCalls.max)
+    .optional(),
   preferredMode: z.enum(['chat', 'task']).optional(),
 })
 
@@ -82,6 +101,42 @@ export function parseSkillContent(value: unknown): SkillContent {
   const parsed = skillContentSchema.safeParse(value)
   if (parsed.success) return parsed.data
   return { instructions: [], triggerKeywords: [], parameters: [] }
+}
+
+function clampToRange(value: number, range: { min: number; max: number }): number {
+  return Math.min(range.max, Math.max(range.min, Math.round(value)))
+}
+
+/**
+ * Szerkesztői bemenet a megengedett tartományba húzása. A séma a tartományon
+ * KÍVÜLI értéket elutasítaná — a katalógus UI-ban ez nyers zod-hibaként érne
+ * földet; a clamp helyette a legközelebbi érvényes keretet adja, amit a
+ * szerkesztő azonnal lát a mezőben. Üres / értelmezhetetlen mező kimarad.
+ */
+export function clampSkillRuntimeHints(
+  input: {
+    maxWallClockMs?: number | null
+    maxToolCalls?: number | null
+    preferredMode?: 'chat' | 'task' | null
+  } | null
+  | undefined,
+): SkillRuntimeHints | undefined {
+  if (!input) return undefined
+  const maxWallClockMs =
+    typeof input.maxWallClockMs === 'number' && Number.isFinite(input.maxWallClockMs)
+      ? clampToRange(input.maxWallClockMs, SKILL_RUNTIME_HINT_LIMITS.maxWallClockMs)
+      : undefined
+  const maxToolCalls =
+    typeof input.maxToolCalls === 'number' && Number.isFinite(input.maxToolCalls)
+      ? clampToRange(input.maxToolCalls, SKILL_RUNTIME_HINT_LIMITS.maxToolCalls)
+      : undefined
+  const preferredMode = input.preferredMode ?? undefined
+  if (maxWallClockMs == null && maxToolCalls == null && preferredMode == null) return undefined
+  return {
+    ...(maxWallClockMs != null ? { maxWallClockMs } : {}),
+    ...(maxToolCalls != null ? { maxToolCalls } : {}),
+    ...(preferredMode != null ? { preferredMode } : {}),
+  }
 }
 
 /**

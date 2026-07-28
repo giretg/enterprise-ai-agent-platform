@@ -92,6 +92,7 @@ export const CHAT_PLATFORM_TOOLS = [
   'memory_propose',
   'document_read',
   'tulajdoni_lap_parse',
+  'tulajdoni_lap_egyeztetes',
 ] as const
 
 export type ChatPlatformToolName = (typeof CHAT_PLATFORM_TOOLS)[number]
@@ -571,6 +572,53 @@ const TOOL_SCHEMAS: Record<ChatPlatformToolName, ToolSchema> = {
       [],
     ),
   },
+  tulajdoni_lap_egyeztetes: {
+    description:
+      'Tulajdoni lap ↔ nyilvántartás EGYEZTETÉSE EGY hívásban: kiolvassa a lapot, párosítja a ' +
+      'nyilvántartás soraival, és kész Excel munkafüzetet ír a munkaterületre (Egyeztetés + Ingatlan lap, ' +
+      'legördülő státusz, összegsor).\n' +
+      'HA egyeztetni kell, EZT hívd — ne a tulajdoni_lap_parse-t lapozgatva, ne köztes JSON-nal, ' +
+      'ne cellánkénti xlsx-írással: az sokszoros költség és kifut a forduló keretéből.\n' +
+      'Lap-forrás (EGYIK kötelező): documentId (UUID csatolmány) VAGY path (munkaterület-fájl).\n' +
+      'Nyilvántartás oldal (EGYIK): nyilvantartas (sorok tömbje) VAGY nyilvantartasPath ' +
+      '(munkaterületre mentett JSON — nagy névsornál EZT használd, hogy ne menjen át a szövegen).\n' +
+      'Egy sor mezői: nev (kötelező), szuletesiEv, anyjaNeve, hanyad (TÖRT, pl. "3/4"), azonosito, megjegyzes.\n' +
+      'Ha a lap ellenőrzése bukik (hatályos hányadok összege ≠ 1), NEM készül tábla: ok=false és ' +
+      'figyelmeztetes jön vissza — ilyenkor a felhasználónak jelezd a bizonytalanságot, ne egyeztess tovább.\n' +
+      'A válasz összegzést és az ELTÉRŐ sorokat adja (nem a teljes táblát) — a részletek az Excelben vannak.',
+    inputSchema: objectSchema(
+      {
+        documentId: { type: 'string', description: 'A lap Document UUID-ja (chat csatolmány).' },
+        path: { type: 'string', description: 'A lap munkaterület-fájlneve (PDF vagy .pdf.txt).' },
+        nyilvantartas: {
+          type: 'array',
+          description: 'A nyilvántartás sorai közvetlenül (kis névsornál).',
+          items: {
+            type: 'object',
+            properties: {
+              nev: { type: 'string' },
+              szuletesiEv: { type: 'string' },
+              anyjaNeve: { type: 'string' },
+              hanyad: { type: 'string', description: 'Tört alak, pl. "3/4".' },
+              cim: { type: 'string' },
+              azonosito: { type: 'string' },
+              megjegyzes: { type: 'string' },
+            },
+            required: ['nev'],
+          },
+        },
+        nyilvantartasPath: {
+          type: 'string',
+          description: 'Munkaterületre mentett JSON (tömb vagy { "sorok": [...] }).',
+        },
+        kimenet: {
+          type: 'string',
+          description: 'A kimeneti munkafüzet neve. Alap: egyeztetes.xlsx',
+        },
+      },
+      [],
+    ),
+  },
   pptx_create: {
     description:
       'PowerPoint prezentáció (valódi .pptx, 16:9) létrehozása diákból. Bemutató / prezentáció / slide-deck készítéséhez EZT hívd — ne file_write-ot, HTML-t vagy PDF-et. ' +
@@ -1041,6 +1089,17 @@ function describeToolCall(tool: string, args: Record<string, unknown>): string |
       const src = path ? `path=${path}` : docId ? `doc=${docId}` : '?'
       return `${src} — ${nezet}`
     }
+    case 'tulajdoni_lap_egyeztetes': {
+      const path = typeof args.path === 'string' ? shortText(args.path, 48) : null
+      const docId = typeof args.documentId === 'string' ? shortText(args.documentId, 36) : null
+      const src = path ? `path=${path}` : docId ? `doc=${docId}` : '?'
+      const reg = Array.isArray(args.nyilvantartas)
+        ? `${args.nyilvantartas.length} nyilvántartási sor`
+        : typeof args.nyilvantartasPath === 'string'
+          ? shortText(args.nyilvantartasPath, 40)
+          : 'nyilvántartás nélkül'
+      return `${src} — ${reg}`
+    }
     case 'agent_catalog':
     case 'agent_resolve':
     case 'user_directory':
@@ -1056,9 +1115,22 @@ function describeToolCall(tool: string, args: Record<string, unknown>): string |
   }
 }
 
+function num(value: unknown): number {
+  return typeof value === 'number' ? value : 0
+}
+
 function describeToolResult(result: unknown): string {
   if (!result || typeof result !== 'object') return 'eredmény megérkezett'
   const record = result as Record<string, unknown>
+  // Egyeztetés: a státusz-bontás az érdekes, nem a sorok száma.
+  if (
+    record.egyeztetes &&
+    typeof record.egyeztetes === 'object' &&
+    typeof record.path === 'string'
+  ) {
+    const e = record.egyeztetes as Record<string, unknown>
+    return `${record.path} — ${num(e.rendben)} rendben, ${num(e.modositas)} módosítás, ${num(e.torles)} törlés, ${num(e.ujRekord)} új`
+  }
   if (Array.isArray(record.pages)) return `${record.pages.length} oldal`
   if (typeof record.found === 'boolean' && typeof record.path === 'string') {
     return record.found ? `oldal: ${shortText(record.path, 90)}` : 'nincs ilyen oldal'
@@ -1565,6 +1637,33 @@ function buildToolInvoke(
           query: typeof args.query === 'string' ? args.query : undefined,
           maxChars: numArg(args, 'maxChars'),
           maxMatches: numArg(args, 'maxMatches'),
+        },
+      }
+
+    case 'tulajdoni_lap_egyeztetes':
+      return {
+        ...common,
+        tool: 'tulajdoni_lap_egyeztetes',
+        args: {
+          documentId: typeof args.documentId === 'string' ? args.documentId : undefined,
+          path: typeof args.path === 'string' ? args.path : undefined,
+          nyilvantartas: Array.isArray(args.nyilvantartas)
+            ? (args.nyilvantartas as Array<Record<string, unknown>>).map((row) => ({
+                nev: typeof row?.nev === 'string' ? row.nev : '',
+                szuletesiEv:
+                  typeof row?.szuletesiEv === 'string' || typeof row?.szuletesiEv === 'number'
+                    ? row.szuletesiEv
+                    : null,
+                anyjaNeve: typeof row?.anyjaNeve === 'string' ? row.anyjaNeve : null,
+                hanyad: typeof row?.hanyad === 'string' ? row.hanyad : null,
+                cim: typeof row?.cim === 'string' ? row.cim : null,
+                azonosito: typeof row?.azonosito === 'string' ? row.azonosito : null,
+                megjegyzes: typeof row?.megjegyzes === 'string' ? row.megjegyzes : null,
+              }))
+            : undefined,
+          nyilvantartasPath:
+            typeof args.nyilvantartasPath === 'string' ? args.nyilvantartasPath : undefined,
+          kimenet: typeof args.kimenet === 'string' ? args.kimenet : undefined,
         },
       }
 

@@ -33,7 +33,7 @@ export const NORMAL_TOOL_CAPABILITY_GROUPS = [
   },
   {
     label: 'Ingatlan-nyilvántartás',
-    tools: ['tulajdoni_lap_parse'],
+    tools: ['tulajdoni_lap_parse', 'tulajdoni_lap_egyeztetes'],
   },
   {
     label: 'Mini-app',

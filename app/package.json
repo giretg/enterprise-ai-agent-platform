@@ -114,6 +114,7 @@
     "test:agent-turn-record": "tsx scripts/agent-chat-turn-record.test.ts",
     "test:loop-stop": "tsx scripts/loop-stop-decision.test.ts",
     "test:turn-continuation": "tsx scripts/turn-continuation.test.ts",
+    "test:skill-runtime-followup": "tsx scripts/skill-runtime-hints-followup.test.ts",
     "test:agent-turn-cancel": "tsx scripts/agent-turn-cancel.test.ts",
     "test:agent-turn-access": "tsx scripts/agent-turn-access.test.ts",
     "test:pdf-read-policy": "tsx scripts/pdf-read-policy.test.ts",
