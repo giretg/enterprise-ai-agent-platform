@@ -892,13 +892,17 @@ export class GeneralTaskRuntime {
   private async archiveLargeToolResult(
     tenantId: string,
     ticketId: string,
-    input: { toolName: string; callId: string; turn: number; content: string },
+    input: { toolName: string; callId: string; turn: number; content: string; path?: string },
   ): Promise<{ path: string; bytes: number } | null> {
     const bytes = Buffer.from(input.content, 'utf8')
-    const path = [
-      '.tool-results',
-      `${String(input.turn + 1).padStart(2, '0')}-${safeToolResultName(input.toolName)}-${safeToolResultName(input.callId)}.json`,
-    ].join('/')
+    // Kötött útvonal a kontextus-tömörítéstől: a modellnek adott stub már ezt
+    // az útvonalat nevezte meg, a fájlnak ott kell keletkeznie.
+    const path =
+      input.path ??
+      [
+        '.tool-results',
+        `${String(input.turn + 1).padStart(2, '0')}-${safeToolResultName(input.toolName)}-${safeToolResultName(input.callId)}.json`,
+      ].join('/')
 
     try {
       await this.workspaceStorage.write(tenantId, ticketId, path, bytes)
