@@ -20,6 +20,7 @@ import {
   uploadDocument,
 } from '@/app/actions/platform'
 import { distillSkillFromConversationAction, getAgentSkillsAction } from '@/app/actions/skills'
+import { exportConversationDebugLog } from '@/app/actions/debug-log'
 import { listChatTriggerableProcessDefinitions } from '@/app/actions/process'
 import { listAgentDelegatedConnectors } from '@/app/actions/connector-grants'
 import { getTenantThinkingTraceControls } from '@/app/actions/chat-thinking-trace'
@@ -1153,6 +1154,7 @@ export function AgentChatPanel({
   const [ticketPending, startTicketTransition] = useTransition()
   const [archivePending, startArchiveTransition] = useTransition()
   const [distillPending, startDistillTransition] = useTransition()
+  const [debugLogPending, startDebugLogTransition] = useTransition()
   const [distillTargetSkillId, setDistillTargetSkillId] = useState<string>('')
   const [distillTargets, setDistillTargets] = useState<Array<{ id: string; name: string }>>([])
   const [agentSkills, setAgentSkills] = useState<ChatSkillOption[]>([])
@@ -1485,7 +1487,8 @@ export function AgentChatPanel({
     !ticketPending &&
     !isAgentTyping &&
     canStartThinkingTraceStream(thinkingTraceControls)
-  const controlsBusy = pending || ticketPending || archivePending || distillPending || isAgentTyping
+  const controlsBusy =
+    pending || ticketPending || archivePending || distillPending || debugLogPending || isAgentTyping
 
   useEffect(() => {
     if (!open) return
@@ -1715,6 +1718,26 @@ export function AgentChatPanel({
       )
     })
   }, [agent.id, canDistillSkill, conversationId, controlsBusy, distillTargetSkillId, messages.length])
+
+  const handleExportDebugLog = useCallback(() => {
+    if (!conversationId || controlsBusy || !canDistillSkill) return
+    startDebugLogTransition(async () => {
+      setStatusMessage(null)
+      const res = await exportConversationDebugLog({ conversationId })
+      if (!res.success) {
+        setStatusMessage(res.error)
+        return
+      }
+      const blob = new Blob([res.data.content], { type: res.data.mediaType })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = res.data.filename
+      a.click()
+      URL.revokeObjectURL(url)
+      setStatusMessage(`Debug-log letöltve: ${res.data.filename}`)
+    })
+  }, [canDistillSkill, controlsBusy, conversationId])
 
   const reloadConversationMessages = useCallback(
     async (convId: string) => {
@@ -2687,6 +2710,15 @@ export function AgentChatPanel({
                       title="Skill draft készítése a beszélgetés módszeréből (proposed — jóváhagyás kell)"
                     >
                       {distillPending ? 'Desztillálás…' : 'Skill desztillálása'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleExportDebugLog}
+                      disabled={controlsBusy}
+                      className="rounded-xl border border-line px-3 py-1.5 text-xs font-semibold text-ink-soft transition-colors hover:border-honey/50 hover:bg-honey/10 hover:text-honey disabled:opacity-40"
+                      title="Teljes beszélgetés-telemetria letöltése elemzéshez (üzenetek, fordulók, model/tool, audit)"
+                    >
+                      {debugLogPending ? 'Log…' : 'Debug-log'}
                     </button>
                   </>
                 )}

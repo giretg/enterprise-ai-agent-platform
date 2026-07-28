@@ -45,6 +45,7 @@ import { WorkspaceLifecycleService } from '@/domain/file-editor/workspace-lifecy
 import { RecipeService } from '@/domain/recipe/recipe-service'
 import { SkillService } from '@/domain/skill/skill-service'
 import { ConversationService } from '@/domain/conversation/conversation-service'
+import { DebugLogExportService } from '@/domain/debug-log/debug-log-export-service'
 import { ChannelBotService } from '@/domain/channel/channel-bot-service'
 import { ChannelLinkingService } from '@/domain/channel/channel-linking-service'
 import { ChannelTurnService } from '@/domain/channel/channel-turn-service'
@@ -229,6 +230,14 @@ const conversationService = new ConversationService(
   repositories.tickets,
   repositories.audit,
   playbookService,
+)
+
+const debugLogExportService = new DebugLogExportService(
+  prisma,
+  conversationService,
+  repositories.tickets,
+  repositories.audit,
+  repositories.toolBroker,
 )
 // A `channelBotService` a kimenő átvitel UTÁN épül (a beüzemelő `setWebhook`/`getMe` hívások
 // ugyanazon az egress-őrzött kapun mennek ki) — l. lejjebb, a `telegramOutboundTransport` alatt.
@@ -1151,6 +1160,7 @@ export const services = {
   processDefinitions: processDefinitionService,
   ticketStateMachine,
   conversations: conversationService,
+  debugLogExport: debugLogExportService,
   channelBots: channelBotService,
   channelLinking: channelLinkingService,
   channelTurns: channelTurnService,
