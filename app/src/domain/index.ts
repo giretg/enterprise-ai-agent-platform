@@ -189,6 +189,8 @@ const processService = new ProcessService(
   repositories.agents,
   repositories.toolBroker,
   repositories.users,
+  // §4.3/§4.8 — emberi szerep tenant-tagság (membership-modell) a resolveUserForRole cross-tenant kapujához.
+  repositories.tenantMemberships,
   new MonitorProcessAlertNotifier(monitorNotifier),
   (ticketId: string) => dispatcherService.dispatchTicket(ticketId),
 )
@@ -199,6 +201,8 @@ const processDefinitionService = new ProcessDefinitionService(
   repositories.toolBroker,
   repositories.rolePermissions,
   repositories.users,
+  // §4.3/§4.8 — emberi szerep tenant-tagsági kapu az aktiváláskor.
+  repositories.tenantMemberships,
   repositories.audit,
 )
 const ticketStateMachine = new TicketStateMachine(
