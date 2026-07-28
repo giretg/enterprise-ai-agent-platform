@@ -83,6 +83,7 @@ jobs:
           npm run test:agent-runtime-display-loader
           npm run test:agent-turn-snapshot
           npm run test:agent-turn-reconnect
+          npm run test:chat-stream-recovery
           npm run test:agent-turn-watchdog
           npm run test:loop-stop
           npm run test:http-api

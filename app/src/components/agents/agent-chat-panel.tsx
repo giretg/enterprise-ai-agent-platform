@@ -39,6 +39,12 @@ import {
 } from '@/lib/chat-turn-progress'
 import { AGENT_TURN_RECONNECT_POLL_DEFAULT_MS } from '@/domain/agent/agent-turn-reconnect'
 import {
+  decideChatStreamRecovery,
+  STREAM_RECOVERED_MESSAGE,
+  STREAM_RECOVERY_FAILED_MESSAGE,
+  type ChatStreamEnding,
+} from '@/lib/chat-stream-recovery'
+import {
   AgentChatSessionSidebar,
   type ChatSession,
   type ChatSessionStatusFilter,
@@ -2134,6 +2140,41 @@ export function AgentChatPanel({
         )
       }
 
+      /**
+       * A forduló idő előtt megszakadt olvasásának EGYETLEN kezelője — mindegy,
+       * hogy a stream lezáró esemény nélkül ért véget, vagy a `reader.read()`
+       * dobott (elvágott válasz-törzs mobilhálón / proxy timeoutnál). A döntést
+       * a tiszta {@link decideChatStreamRecovery} hozza, itt csak végrehajtjuk.
+       */
+      async function recoverInterruptedStream(ending: ChatStreamEnding) {
+        const action = decideChatStreamRecovery({
+          ending,
+          userMessagePersisted: persistedUserMessageId !== null,
+          conversationId: streamConversationIdRef.current ?? conversationId,
+        })
+        if (action.kind === 'none') return
+        if (action.kind === 'discard') {
+          // A szerver még vissza sem igazolta a user-üzenetet: nincs mit
+          // visszaszerezni, a félkész buborékokat takarítjuk.
+          removeFailedOptimisticMessages()
+          setStatusMessage(action.message)
+          return
+        }
+        try {
+          const attached = await reattachToConversation(action.conversationId)
+          if (attached) {
+            handedOffToReattach = true
+            return
+          }
+          await reloadConversationMessages(action.conversationId)
+          setStatusMessage(STREAM_RECOVERED_MESSAGE)
+        } catch {
+          // A visszaszerzés maga is elbukhat (tartós hálózatkiesés). Ilyenkor is
+          // az a fontos üzenet, hogy a munka nem veszett el.
+          setStatusMessage(STREAM_RECOVERY_FAILED_MESSAGE)
+        }
+      }
+
       try {
         const documentIds = localAttachments.length > 0 ? await uploadAttachments(localAttachments) : []
         if (abortController.signal.aborted) return
@@ -2364,28 +2405,7 @@ export function AgentChatPanel({
         }
 
         if (!streamTerminalEvent) {
-          if (persistedUserMessageId) {
-            // A helyi olvasás lezáró esemény nélkül szakadt meg, de a forduló a
-            // szerveren perzisztált és (D3) tovább futhat — a régi kliens-oldali
-            // áthidalás helyett visszacsatlakozunk. Ha még fut, a snapshot + élő
-            // delta folytatja a helyes buborékban; ha közben lezárult, a
-            // perzisztált végállapotot töltjük vissza. Így a részeredmény hard-
-            // refresh nélkül sem vész el.
-            const convId = streamConversationIdRef.current ?? conversationId
-            if (convId) {
-              const attached = await reattachToConversation(convId)
-              if (attached) {
-                handedOffToReattach = true
-              } else {
-                await reloadConversationMessages(convId)
-              }
-            } else {
-              setStatusMessage('A válaszfolyam váratlanul megszakadt')
-            }
-          } else {
-            removeFailedOptimisticMessages()
-            setStatusMessage('A válaszfolyam váratlanul megszakadt')
-          }
+          await recoverInterruptedStream('closed_without_terminal')
         }
 
         if (streamTerminalEvent) {
@@ -2399,8 +2419,12 @@ export function AgentChatPanel({
         if (e instanceof DOMException && e.name === 'AbortError') {
           return
         }
-        removeFailedOptimisticMessages()
-        setStatusMessage(e instanceof Error ? e.message : 'Küldés sikertelen')
+        // A `reader.read()` a válasz-törzs elvágásakor hibát DOB (mobilhálón
+        // `TypeError: network error`), nem lezáró eseményt ad — ezért ugyanaz a
+        // visszaszerzés jár neki, mint a lezáró esemény nélküli végnek. Enélkül
+        // a felhasználó nyers hibaszöveget és üres választ kapott, miközben a
+        // forduló a szerveren tovább futott és az eredménye perzisztálódott.
+        await recoverInterruptedStream('read_threw')
       } finally {
         if (streamAbortRef.current === abortController) {
           streamAbortRef.current = null

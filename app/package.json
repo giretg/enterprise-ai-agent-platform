@@ -124,6 +124,7 @@
     "test:agent-turn-snapshot": "tsx scripts/agent-turn-snapshot.test.ts",
     "test:agent-turn-reconnect": "tsx scripts/agent-turn-reconnect.test.ts",
     "test:chat-turn-progress": "tsx scripts/chat-turn-progress.test.ts",
+    "test:chat-stream-recovery": "tsx scripts/chat-stream-recovery.test.ts",
     "test:agent-chat-dock": "tsx scripts/agent-chat-dock.test.ts",
     "test:agent-chat-session": "tsx scripts/agent-chat-session.test.ts",
     "test:agent-turn-watchdog": "tsx scripts/agent-turn-watchdog.test.ts",
