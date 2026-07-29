@@ -35,7 +35,7 @@ import { prisma, ensureActiveDatabaseMode } from '@/lib/db'
 import { logger } from '@/lib/observability'
 import { BOARD_LIST_LIMIT, DEFAULT_LIST_LIMIT } from '@/lib/list-pagination'
 import { ensureAgentKnowledgeBase } from '@/lib/agent-knowledge-base'
-import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
+import { assertAgentTenantReachable } from '@/lib/agent-tenant-access'
 import { shouldExcludeHiddenAgents } from '@/lib/agent-operator-visibility'
 import { isAgentAccessError } from '@/domain/agent-access/agent-access-errors'
 import { isTenantAdmin, tenantUserSubject } from '@/domain/agent-access/tenant-user-subject'
@@ -401,20 +401,6 @@ async function runAgentTicketDispatch(
 
 function assertTicketTenantScope(ticket: { tenantId: string | null }, tenantId: string | null) {
   if (ticket.tenantId !== tenantId) throw new Error('Ticket not found')
-}
-
-/**
- * Agent tenant-határ a KB-műveletekhez: a hívó AKTÍV tenantjából elérhető-e az
- * agent. Megosztott (tenantId === null) agent bárhonnan elérhető; cross-tenant
- * agent SOHA. Opak `Agent not found` — nem szivárogtatja egy másik tenant
- * agentjének létezését. (Ugyanaz az invariáns, mint a Tool Broker
- * `isAgentReachableFromTenant`-nél; a KB a legérzékenyebb ügyfél-tartalom.)
- */
-function assertAgentTenantReachable(
-  agent: { tenantId: string | null },
-  tenantId: string | null,
-) {
-  if (!isAgentReachableFromTenant(agent.tenantId, tenantId)) throw new Error('Agent not found')
 }
 
 /**
@@ -4128,9 +4114,26 @@ export async function createEval(input: {
   goldenSet: Array<{ description: string; type: string; value: string | number }>
 }) {
   try {
-    await requireTenantRole('admin')
+    const user = await requireTenantRole('admin')
     const parsed = createEvalSchema.parse(input)
+    const agent = await repositories.agents.findById(parsed.agentId)
+    if (!agent) return fail('Agent not found')
+    assertAgentTenantReachable(agent, user.activeTenantId)
     const evalDef = await services.eval.create(parsed)
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.user.id,
+      agentVersion: agent.currentVersion,
+      action: 'training.eval_created',
+      targetType: 'eval',
+      targetId: evalDef.id,
+      modelUsed: null,
+      inputRef: agent.id,
+      outputRef: evalDef.id,
+      policyDecision: 'allowed',
+      tenantId: user.activeTenantId,
+      metadata: { assertionCount: parsed.goldenSet.length, name: evalDef.name },
+    })
     return ok(evalDef)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to create eval')
@@ -4139,15 +4142,31 @@ export async function createEval(input: {
 
 export async function runEval(input: { evalId: string; agentId: string; proposedContent: string }) {
   try {
-    await requireTenantRole('approver')
+    const user = await requireTenantRole('approver')
     const parsed = runEvalSchema.parse(input)
     const agent = await repositories.agents.findById(parsed.agentId)
     if (!agent) return fail('Agent not found')
+    assertAgentTenantReachable(agent, user.activeTenantId)
     const evalRun = await services.eval.run({
       evalId: parsed.evalId,
+      agentId: agent.id,
       proposedContent: parsed.proposedContent,
       agentVersion: agent.currentVersion,
       trigger: 'manual',
+    })
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.user.id,
+      agentVersion: agent.currentVersion,
+      action: 'training.eval',
+      targetType: 'eval',
+      targetId: parsed.evalId,
+      modelUsed: null,
+      inputRef: agent.id,
+      outputRef: evalRun.id,
+      policyDecision: evalRun.passed ? 'passed' : 'failed',
+      tenantId: user.activeTenantId,
+      metadata: { trigger: 'manual', passed: evalRun.passed, score: evalRun.score },
     })
     return ok(evalRun)
   } catch (e) {
@@ -4157,8 +4176,26 @@ export async function runEval(input: { evalId: string; agentId: string; proposed
 
 export async function listEvalsForAgent(input: { agentId: string }) {
   try {
-    await requireTenantRole('viewer')
-    const evals = await services.eval.findAllForAgent(input.agentId)
+    const user = await requireTenantRole('viewer')
+    const { id: agentId } = agentIdSchema.parse({ id: input.agentId })
+    const agent = await repositories.agents.findById(agentId)
+    if (!agent) return fail('Agent not found')
+    assertAgentTenantReachable(agent, user.activeTenantId)
+    const evals = await services.eval.findAllForAgent(agent.id)
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.user.id,
+      agentVersion: agent.currentVersion,
+      action: 'training.eval_read',
+      targetType: 'agent',
+      targetId: agent.id,
+      modelUsed: null,
+      inputRef: agent.id,
+      outputRef: null,
+      policyDecision: 'allowed',
+      tenantId: user.activeTenantId,
+      metadata: { evalCount: evals.length },
+    })
     return ok(evals)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list evals')

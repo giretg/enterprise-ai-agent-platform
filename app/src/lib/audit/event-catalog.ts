@@ -190,6 +190,12 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'memory.write.eval_blocked',
   'memory.write.eval_override',
   'memory.write_denied',
+  // Control-plane eval műveletek: a golden set és futási eredmény tenant-/aktor-
+  // kötött kormányzási bizonyíték, ezért a létrehozás, futtatás és olvasás is
+  // append-only eseményként jelenik meg.
+  'training.eval_created',
+  'training.eval',
+  'training.eval_read',
   'training.capability_escalation_denied',
   // Write-gate token életciklus (§9.4) — a következményes memória-írás engedélye
   // és felhasználása a hash-láncban is nyomon követhető, nem csak a token-táblában.
