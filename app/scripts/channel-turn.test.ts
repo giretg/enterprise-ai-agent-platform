@@ -22,7 +22,10 @@
  *   CT-12 bot letiltva: a küldés hibája után a kötés `blocked` (D15/#20)
  *   CT-13 tenant-határ: másik szervezet agentje nem oldódik fel (D2/#2)
  *   CT-14 sor-írás: a linking-sink bekötött üzenete tartós forduló-sort ír (D8/#73)
- *   CT-15 élő kapuk: tagság-visszavonás, tenant-felfüggesztés és kill-switch leállítja a queued futást
+ *   CT-15 audit-katalógus: a forduló-események regisztráltak
+ *   CT-16…CT-22 beépített parancsok (agent-lista, váltás, szervezet, súgó) — story 14/28
+ *   CT-23…CT-28 élő hozzáférési kapuk: a queued forduló teljes útján újraellenőrzött tagság,
+ *     tenant-státusz, kill-switch és agent-grant; visszavonás után egyetlen darab sem megy ki
  *
  * Futtatás: npm run test:channel-turn
  */
@@ -94,6 +97,7 @@ function makeHarness(opts?: {
   revokeMembershipDuringRuntime?: boolean
   revokeGrantDuringRuntime?: boolean
   revokeGrantAfterFirstMessage?: boolean
+  maxAttempts?: number
 }) {
   let clock = new Date('2026-07-22T10:00:00Z')
   const setClock = (d: Date) => {
@@ -345,6 +349,7 @@ function makeHarness(opts?: {
     memberships: memberships as never,
     tenants: tenants as never,
     isChannelEnabled: async () => opts?.channelEnabled ?? true,
+    maxAttempts: opts?.maxAttempts,
     now: () => clock,
   })
 
@@ -624,85 +629,7 @@ async function main() {
     assert.ok(String(enq!.metadata.pseudonym ?? '').length > 0, 'álnevesített azonosító az auditban')
   })
 
-  await test('CT-15 élő kapuk: a visszavont tagság, inaktív tenant és kill-switch sem futtat queued üzenetet', async () => {
-    for (const [name, options, expectedReason] of [
-      ['tagság felfüggesztve', { membershipStatus: 'suspended' as const }, 'membership_inactive'],
-      ['tenant felfüggesztve', { tenantStatus: 'suspended' as const }, 'tenant_inactive'],
-      ['Telegram kill-switch', { channelEnabled: false }, 'channel_disabled'],
-    ] as const) {
-      let ran = false
-      const runtime: ChannelAgentRuntime = {
-        async runTurn(): Promise<ChannelAgentRuntimeResult> {
-          ran = true
-          return { ok: true, text: 'nem szabadna' }
-        },
-      }
-      const h = makeHarness({ ...options, runtime })
-      await enqueueAndProcess(h, 'bizalmas kérdés')
-      assert.equal(ran, false, `${name}: a futásidő NEM hívódott`)
-      assert.equal(sentTexts(h.transport).length, 0, `${name}: nincs kimenő adat`)
-      const completed = h.audits.find((a) => a.action === 'channel.turn.completed')
-      assert.equal(completed?.policyDecision, 'fail_closed', `${name}: auditált fail-closed`)
-      assert.equal(completed?.metadata.reason, expectedReason, `${name}: auditált tiltási ok`)
-    }
-  })
-
-  await test('CT-16 hozzáférés-olvasási hiba: fail-closed, nincs retryből értesítés', async () => {
-    let ran = false
-    const runtime: ChannelAgentRuntime = {
-      async runTurn(): Promise<ChannelAgentRuntimeResult> {
-        ran = true
-        return { ok: true, text: 'nem szabadna' }
-      },
-    }
-    const h = makeHarness({ runtime, accessCheckThrows: true })
-    await enqueueAndProcess(h, 'bizalmas kérdés')
-    assert.equal(ran, false, 'a futásidő nem indul el')
-    assert.equal(sentTexts(h.transport).length, 0, 'nincs kimenő vagy hibaértesítés')
-    const completed = h.audits.find((a) => a.action === 'channel.turn.completed')
-    assert.equal(completed?.metadata.reason, 'access_check_failed', 'a bizonytalan kapu auditáltan tilt')
-  })
-
-  await test('CT-17 futás alatti tagság-visszavonás: a kész válasz sem megy ki', async () => {
-    const h = makeHarness({ revokeMembershipDuringRuntime: true })
-    await enqueueAndProcess(h, 'bizalmas kérdés')
-    assert.equal(sentTexts(h.transport).length, 0, 'a futás utáni újraellenőrzés blokkol')
-    const completed = h.audits.find((a) => a.action === 'channel.turn.completed')
-    assert.equal(completed?.metadata.reason, 'membership_inactive', 'a friss tagságállapot auditált')
-  })
-
-  await test('CT-18 agent-feloldás közbeni visszavonás: tiltás előtt beszélgetés sem jön létre', async () => {
-    const h = makeHarness({ revokeMembershipWhenAgentResolved: true })
-    await enqueueAndProcess(h, 'bizalmas kérdés')
-    assert.equal(h.conversationRows.size, 0, 'nincs új, tiltott csatornához kötött beszélgetés')
-    assert.equal(h.session.activeAgentId, null, 'nem marad tiltott fordulóból aktív-agent állapot')
-    assert.equal(sentTexts(h.transport).length, 0, 'nincs Telegram-kimenet')
-    const completed = h.audits.find((a) => a.action === 'channel.turn.completed')
-    assert.equal(completed?.metadata.reason, 'membership_inactive', 'a kapu auditáltan tilt')
-  })
-
-  await test('CT-19 futás alatti grant-visszavonás: a kész válasz sem megy ki', async () => {
-    const h = makeHarness({ revokeGrantDuringRuntime: true })
-    await enqueueAndProcess(h, 'bizalmas kérdés')
-    assert.equal(sentTexts(h.transport).length, 0, 'visszavont Telegram-agent engedélyre nincs válasz')
-    const completed = h.audits.find((a) => a.action === 'channel.turn.completed')
-    assert.equal(completed?.metadata.reason, 'agent_grant_revoked', 'a grant-visszavonás auditált')
-  })
-
-  await test('CT-20 darabolás közbeni grant-visszavonás: az első darab után leáll a küldés', async () => {
-    const runtime: ChannelAgentRuntime = {
-      async runTurn(): Promise<ChannelAgentRuntimeResult> {
-        return { ok: true, text: `ALFA ${'a'.repeat(3000)}\n\nBÉTA ${'b'.repeat(3000)}` }
-      },
-    }
-    const h = makeHarness({ runtime, revokeGrantAfterFirstMessage: true })
-    await enqueueAndProcess(h, 'bizalmas kérdés')
-    assert.equal(sentTexts(h.transport).length, 1, 'a visszavonás után a maradék darabok nem mennek ki')
-    const completed = h.audits.find((a) => a.action === 'channel.turn.completed')
-    assert.equal(completed?.metadata.reason, 'agent_grant_revoked', 'a köztes visszavonás auditált')
-  })
-
-  await test('CT-21 audit-katalógus: az új forduló-események regisztráltak', () => {
+  await test('CT-15 audit-katalógus: az új forduló-események regisztráltak', () => {
     for (const a of [
       'channel.turn.enqueued',
       'channel.turn.completed',
@@ -802,6 +729,106 @@ async function main() {
     const h = makeHarness({ identityStatus: 'revoked' })
     await enqueueAndProcess(h, '/agentek')
     assert.equal(sentTexts(h.transport).length, 0, 'visszavont kötésre parancs sem válaszol')
+  })
+
+  await test('CT-23 élő kapuk: a visszavont tagság, inaktív tenant és kill-switch sem futtat queued üzenetet', async () => {
+    for (const [name, options, expectedReason] of [
+      ['tagság felfüggesztve', { membershipStatus: 'suspended' as const }, 'membership_inactive'],
+      ['tenant felfüggesztve', { tenantStatus: 'suspended' as const }, 'tenant_inactive'],
+      ['Telegram kill-switch', { channelEnabled: false }, 'channel_disabled'],
+    ] as const) {
+      let ran = false
+      const runtime: ChannelAgentRuntime = {
+        async runTurn(): Promise<ChannelAgentRuntimeResult> {
+          ran = true
+          return { ok: true, text: 'nem szabadna' }
+        },
+      }
+      const h = makeHarness({ ...options, runtime })
+      await enqueueAndProcess(h, 'bizalmas kérdés')
+      assert.equal(ran, false, `${name}: a futásidő NEM hívódott`)
+      assert.equal(sentTexts(h.transport).length, 0, `${name}: nincs kimenő adat`)
+      const completed = h.audits.find((a) => a.action === 'channel.turn.completed')
+      assert.equal(completed?.policyDecision, 'fail_closed', `${name}: auditált fail-closed`)
+      assert.equal(completed?.metadata.reason, expectedReason, `${name}: auditált tiltási ok`)
+    }
+  })
+
+  await test('CT-24 hozzáférés-olvasási hiba: néma, de újrapróbálható (nem vész el az üzenet)', async () => {
+    let ran = false
+    const runtime: ChannelAgentRuntime = {
+      async runTurn(): Promise<ChannelAgentRuntimeResult> {
+        ran = true
+        return { ok: true, text: 'nem szabadna' }
+      },
+    }
+    const h = makeHarness({ runtime, accessCheckThrows: true })
+    await enqueueAndProcess(h, 'bizalmas kérdés')
+    assert.equal(ran, false, 'a futásidő nem indul el')
+    assert.equal(sentTexts(h.transport).length, 0, 'nincs kimenő vagy hibaértesítés')
+    const turnId = [...h.turnRows.keys()][0]
+    // A BIZONYTALAN kapu (olvasási hiba) nem kimondott tiltás: a munkatárs üzenetét nem dobjuk
+    // el véglegesen, csak elhalasztjuk — egy pillanatnyi adatbázis-hiba ne nyeljen el üzenetet.
+    assert.equal(h.turnRows.get(turnId)!.status, 'queued', 'a forduló újrapróbálható marad')
+    const retry = h.audits.find((a) => a.action === 'channel.turn.retry')
+    assert.equal(retry?.policyDecision, 'fail_closed', 'auditáltan fail-closed halasztás')
+    assert.equal(retry?.metadata.reason, 'access_check_failed', 'a bizonytalan kapu auditált oka')
+    assert.equal(
+      h.audits.some((a) => a.action === 'channel.turn.completed'),
+      false,
+      'a bizonytalan kapu NEM zárja le késznek a fordulót',
+    )
+  })
+
+  await test('CT-24b tartós hozzáférés-olvasási hiba: kimerült próbálkozás után is néma marad', async () => {
+    const h = makeHarness({ accessCheckThrows: true, maxAttempts: 1 })
+    await enqueueAndProcess(h, 'bizalmas kérdés')
+    const turnId = [...h.turnRows.keys()][0]
+    assert.equal(h.turnRows.get(turnId)!.status, 'failed', 'a próbálkozások kimerülése után failed')
+    // A `tryNotifyFatal` értesítése itt SEM mehet ki: nem tudjuk, él-e még a csatorna.
+    assert.equal(sentTexts(h.transport).length, 0, 'bizonytalan jogosultságnál hibaértesítés sincs')
+    const failed = h.audits.find((a) => a.action === 'channel.turn.failed')
+    assert.equal(failed?.policyDecision, 'fail_closed', 'a végleges elakadás is fail-closed')
+    assert.equal(failed?.metadata.reason, 'access_check_failed', 'auditált ok a végleges elakadásnál')
+  })
+
+  await test('CT-25 futás alatti tagság-visszavonás: a kész válasz sem megy ki', async () => {
+    const h = makeHarness({ revokeMembershipDuringRuntime: true })
+    await enqueueAndProcess(h, 'bizalmas kérdés')
+    assert.equal(sentTexts(h.transport).length, 0, 'a futás utáni újraellenőrzés blokkol')
+    const completed = h.audits.find((a) => a.action === 'channel.turn.completed')
+    assert.equal(completed?.metadata.reason, 'membership_inactive', 'a friss tagságállapot auditált')
+  })
+
+  await test('CT-26 agent-feloldás közbeni visszavonás: tiltás előtt beszélgetés sem jön létre', async () => {
+    const h = makeHarness({ revokeMembershipWhenAgentResolved: true })
+    await enqueueAndProcess(h, 'bizalmas kérdés')
+    assert.equal(h.conversationRows.size, 0, 'nincs új, tiltott csatornához kötött beszélgetés')
+    assert.equal(h.session.activeAgentId, null, 'nem marad tiltott fordulóból aktív-agent állapot')
+    assert.equal(sentTexts(h.transport).length, 0, 'nincs Telegram-kimenet')
+    const completed = h.audits.find((a) => a.action === 'channel.turn.completed')
+    assert.equal(completed?.metadata.reason, 'membership_inactive', 'a kapu auditáltan tilt')
+  })
+
+  await test('CT-27 futás alatti grant-visszavonás: a kész válasz sem megy ki', async () => {
+    const h = makeHarness({ revokeGrantDuringRuntime: true })
+    await enqueueAndProcess(h, 'bizalmas kérdés')
+    assert.equal(sentTexts(h.transport).length, 0, 'visszavont Telegram-agent engedélyre nincs válasz')
+    const completed = h.audits.find((a) => a.action === 'channel.turn.completed')
+    assert.equal(completed?.metadata.reason, 'agent_grant_revoked', 'a grant-visszavonás auditált')
+  })
+
+  await test('CT-28 darabolás közbeni grant-visszavonás: az első darab után leáll a küldés', async () => {
+    const runtime: ChannelAgentRuntime = {
+      async runTurn(): Promise<ChannelAgentRuntimeResult> {
+        return { ok: true, text: `ALFA ${'a'.repeat(3000)}\n\nBÉTA ${'b'.repeat(3000)}` }
+      },
+    }
+    const h = makeHarness({ runtime, revokeGrantAfterFirstMessage: true })
+    await enqueueAndProcess(h, 'bizalmas kérdés')
+    assert.equal(sentTexts(h.transport).length, 1, 'a visszavonás után a maradék darabok nem mennek ki')
+    const completed = h.audits.find((a) => a.action === 'channel.turn.completed')
+    assert.equal(completed?.metadata.reason, 'agent_grant_revoked', 'a köztes visszavonás auditált')
   })
 
   if (failures > 0) {

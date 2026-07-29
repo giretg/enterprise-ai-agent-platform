@@ -181,7 +181,7 @@ export type ChannelTurnServiceDeps = {
    * A kötéskor rögzített szervezet megnevezése a `/szervezet` parancshoz (story 14). Több
    * szervezetben is tag felhasználónak Telegramon nincs szervezet-váltó, ezért meg kell tudnia
    * kérdezni, kinek a nevében beszél. Opcionális: hiányában a parancs a nevet nem tudja kiírni.
-  */
+   */
   resolveOrgName?: (tenantId: string | null) => Promise<string | null>
   /**
    * Élő hozzáférési kapuk minden feldolgozott üzenet előtt. Ezek szándékosan a workerben
@@ -217,6 +217,18 @@ export type ProcessTurnOutcome =
 const DEFAULT_CHUNK_LIMIT = TELEGRAM_MAX_MESSAGE_CHARS - 200
 const DEFAULT_MAX_ATTEMPTS = 5
 const DEFAULT_STALE_RUNNING_MS = 5 * 60 * 1000
+
+/**
+ * A hozzáférési kapu OLVASÁSA szállt el (nem tiltás született). Külön típus, mert a kezelése is
+ * más: kimenő hívás nélkül újrapróbálható forduló — se válasz, se hibaértesítés nem mehet ki,
+ * amíg a jogosultság bizonytalan.
+ */
+class ChannelAccessCheckError extends Error {
+  constructor(cause: unknown) {
+    super(`channel access check failed: ${cause instanceof Error ? cause.message : String(cause)}`)
+    this.name = 'ChannelAccessCheckError'
+  }
+}
 
 export class ChannelTurnService {
   private readonly now: () => Date
@@ -296,15 +308,22 @@ export class ChannelTurnService {
     } catch (error) {
       // Váratlan elszállás → a forduló ÚJRAPRÓBÁLHATÓ (D8). A próbálkozások kimerülésekor
       // véglegesen `failed`, és — best-effort — a felhasználó nem marad némán.
+      // KIVÉTEL: ha maga a hozzáférés-ellenőrzés szállt el, a jogosultság bizonytalan, ezért
+      // egyetlen kimenő hívás sem mehet ki (a hibaértesítés sem) — a leállított vagy visszavont
+      // csatorna még életjelet sem adhat.
+      const accessCheckFailed = error instanceof ChannelAccessCheckError
       const message = error instanceof Error ? error.message : String(error)
+      const meta = accessCheckFailed
+        ? { error: truncate(message), reason: 'access_check_failed' }
+        : { error: truncate(message) }
       if (turn.attempts >= this.maxAttempts) {
         await this.deps.turns.markFailed(turn.id, message)
-        await this.tryNotifyFatal(turn)
-        await this.auditTurn(turn, 'failed', 'error', { error: truncate(message) })
+        if (!accessCheckFailed) await this.tryNotifyFatal(turn)
+        await this.auditTurn(turn, 'failed', accessCheckFailed ? 'fail_closed' : 'error', meta)
         return 'failed'
       }
       await this.deps.turns.markRetry(turn.id, message)
-      await this.auditTurn(turn, 'retry', 'retry', { error: truncate(message) })
+      await this.auditTurn(turn, 'retry', accessCheckFailed ? 'fail_closed' : 'retry', meta)
       return 'retried'
     }
   }
@@ -594,37 +613,31 @@ export class ChannelTurnService {
           | 'tenant_inactive'
           | 'channel_disabled'
           | 'agent_grant_revoked'
-          | 'access_check_failed'
       }
   > {
-    try {
-      if (!identity.tenantId) return { allowed: false, reason: 'tenant_missing' }
+    if (!identity.tenantId) return { allowed: false, reason: 'tenant_missing' }
 
-      const membership = await this.deps.memberships.findByTenantAndUser(
-        identity.tenantId,
-        identity.userId,
-      )
-      if (!membership || membership.status !== 'active') {
-        return { allowed: false, reason: 'membership_inactive' }
-      }
-
-      const tenantGate = await evaluateTenantOperationGate({
-        tenants: this.deps.tenants,
-        gateTenantId: identity.tenantId,
-      })
-      if (!tenantGate.allowed) return { allowed: false, reason: 'tenant_inactive' }
-
-      if (!(await this.deps.isChannelEnabled(identity.tenantId))) {
-        return { allowed: false, reason: 'channel_disabled' }
-      }
-      if (agentId && !(await this.deps.grants.findForIdentityAgent(identity.id, agentId))) {
-        return { allowed: false, reason: 'agent_grant_revoked' }
-      }
-      return { allowed: true }
-    } catch {
-      // A jogosultság bizonytalansága sosem válhat újrapróbálható vagy kimenő hívássá.
-      return { allowed: false, reason: 'access_check_failed' }
+    const membership = await this.deps.memberships.findByTenantAndUser(
+      identity.tenantId,
+      identity.userId,
+    )
+    if (!membership || membership.status !== 'active') {
+      return { allowed: false, reason: 'membership_inactive' }
     }
+
+    const tenantGate = await evaluateTenantOperationGate({
+      tenants: this.deps.tenants,
+      gateTenantId: identity.tenantId,
+    })
+    if (!tenantGate.allowed) return { allowed: false, reason: 'tenant_inactive' }
+
+    if (!(await this.deps.isChannelEnabled(identity.tenantId))) {
+      return { allowed: false, reason: 'channel_disabled' }
+    }
+    if (agentId && !(await this.deps.grants.findForIdentityAgent(identity.id, agentId))) {
+      return { allowed: false, reason: 'agent_grant_revoked' }
+    }
+    return { allowed: true }
   }
 
   /**
@@ -637,7 +650,16 @@ export class ChannelTurnService {
     identity: ChannelIdentity,
     agentId?: string,
   ): Promise<boolean> {
-    const access = await this.authorizeIdentity(identity, agentId)
+    let access: Awaited<ReturnType<ChannelTurnService['authorizeIdentity']>>
+    try {
+      access = await this.authorizeIdentity(identity, agentId)
+    } catch (error) {
+      // A jogosultság BIZONYTALANSÁGA (pl. pillanatnyi adatbázis-hiba) más, mint egy kimondott
+      // tiltás: nem tudjuk, van-e joga a felhasználónak. Ilyenkor sem küldünk semmit — de a
+      // munkatárs üzenetét sem dobjuk el némán, véglegesen: a forduló újrapróbálható marad (D8),
+      // és csak a próbálkozások kimerülése után lesz `failed`, kimenő értesítés nélkül.
+      throw new ChannelAccessCheckError(error)
+    }
     if (access.allowed) return true
     await this.deps.turns.markDone(turn.id)
     await this.auditTurn(turn, 'completed', 'fail_closed', {
