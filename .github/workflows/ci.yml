@@ -110,6 +110,8 @@ jobs:
           npm run test:turn-continuation
           npm run test:skill-runtime-followup
           npm run test:debug-log-export
+          npm run test:prompt-assembler
+          npm run test:prompt-cache
 
       # Prompt-eval A fázis — piros vonalak (issue #35). SZÁNDÉKOSAN külön lépés:
       # ez biztonsági kapu, nem funkcionális teszt. Ha elbukik, egy prompt-módosítás
