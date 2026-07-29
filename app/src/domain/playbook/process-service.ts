@@ -1092,11 +1092,12 @@ export class ProcessService {
     }
     const capabilities = await this.toolBroker.findCapabilitiesForAgent(agentId)
     const role = resolution.roleByKey.get(roleKey)
-    const registryTenantId = agent.tenantId ?? null
+    // A tenant-határt a Futás (Folyamat) tenantjához mérjük, NEM az agent saját
+    // tenantjához — különben a cross-tenant kötés önmagával egyezne és sosem bukna el.
     const suitability = isAgentSuitable(
       { status: agent.status, tenantId: agent.tenantId, capabilities },
       { requiredCapabilities: role?.requiredCapabilities },
-      registryTenantId,
+      tenantId,
     )
     if (!suitability.ok) {
       throw new ProcessBlockedError(

@@ -41,6 +41,9 @@ async function test(name: string, fn: () => void | Promise<void>) {
 const TENANT = 't1'
 const AGENT_ID = randomUUID()
 const USER_ID = randomUUID()
+// Egy IDEGEN tenant aktív, capability-fedő agentje — csak a tenant-határon szabad elbuknia.
+const FOREIGN_TENANT = 't2'
+const FOREIGN_AGENT_ID = randomUUID()
 
 /** Egy agent belépő lépés trigger-réssel + egy config-rés a lépés-utasításban. */
 function specFixture(): PlaybookSpecV2 {
@@ -137,10 +140,13 @@ function makeStubs(opts: {
     findPlaybook: async () => playbook,
   }
   const agents = {
-    findById: async (id: string) =>
-      id === AGENT_ID
-        ? { id: AGENT_ID, tenantId: TENANT, status: opts.agentStatus ?? 'active' }
-        : null,
+    findById: async (id: string) => {
+      if (id === AGENT_ID) return { id: AGENT_ID, tenantId: TENANT, status: opts.agentStatus ?? 'active' }
+      // IDEGEN tenant agentje: aktív és (a toolBroker stub miatt) capability-fedő,
+      // hogy KIZÁRÓLAG a tenant-határ dönthesse el az alkalmasságot.
+      if (id === FOREIGN_AGENT_ID) return { id: FOREIGN_AGENT_ID, tenantId: FOREIGN_TENANT, status: 'active' }
+      return null
+    },
   }
   const toolBroker = {
     findCapabilitiesForAgent: async () =>
@@ -280,6 +286,18 @@ async function main() {
     assert.ok(violations.some((v) => v.code === 'AGENT_UNSUITABLE'))
   })
 
+  await test('IDEGEN tenant agentjéhez kötött agent-szerep → AGENT_UNSUITABLE (tenant-határ)', async () => {
+    // Az idegen agent aktív ÉS fedi a capability-t; csak a tenant-határon szabad elbuknia.
+    const s = makeStubs({})
+    s.defRow.roleBindings = { researcher: FOREIGN_AGENT_ID }
+    const svc = makeDefService(s)
+    const violations = await svc.runActivationGate(s.defRow as never)
+    assert.ok(
+      violations.some((v) => v.code === 'AGENT_UNSUITABLE'),
+      'a kapunak el kell buknia idegen-tenant agent kötésén',
+    )
+  })
+
   await test('human role kötött aktív, jogosult userhez → nincs violation', async () => {
     const s = makeStubs({ knownPermissions: ['ticket:approve'] })
     const humanSpec = humanEntrySpecFixture()
@@ -356,6 +374,22 @@ async function main() {
     })
     assert.equal(proc.status, 'blocked')
     assert.equal(s.tickets.length, 0)
+    assert.ok(s.audits.some((a) => a.action === 'process.blocked'))
+  })
+
+  await test('IDEGEN tenant agentjéhez kötött futás → blocked, NINCS cross-tenant ticket', async () => {
+    const s = makeStubs({})
+    s.defRow.roleBindings = { researcher: FOREIGN_AGENT_ID }
+    const svc = makeProcessService(s)
+    const proc = await svc.startProcess({
+      tenantId: TENANT,
+      processDefinitionId: s.defRow.id,
+      triggerType: 'manual',
+      inputPayload: { ceg: 'Acme Kft', sablon: 'vezetői' },
+      startedBy: { type: 'user', id: randomUUID() },
+    })
+    assert.equal(proc.status, 'blocked')
+    assert.equal(s.tickets.length, 0, 'nem jöhet létre ticket idegen-tenant agenthez')
     assert.ok(s.audits.some((a) => a.action === 'process.blocked'))
   })
 
