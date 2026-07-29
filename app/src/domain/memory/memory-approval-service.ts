@@ -174,6 +174,7 @@ export class MemoryApprovalService {
       const canonicalContent = buildCanonicalContent(candidate.operation, payload)
       const evalRun = await this.evalService.run({
         evalId: activeEval.id,
+        agentId: agent.id,
         proposedContent: canonicalContent,
         agentVersion: agent.currentVersion,
         trigger: 'pre_training_approval',

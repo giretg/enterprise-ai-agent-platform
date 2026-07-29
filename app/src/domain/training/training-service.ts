@@ -313,6 +313,7 @@ export class TrainingService {
       if (activeEval) {
       evalRun = await this.evalService.run({
         evalId: activeEval.id,
+        agentId: agent.id,
         proposedContent: payload.proposedContent,
         agentVersion: agent.currentVersion,
         trigger: 'pre_training_approval',
