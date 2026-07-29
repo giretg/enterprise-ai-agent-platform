@@ -80,6 +80,8 @@ jobs:
           npm run test:memory-content-guard
           npm run test:memory-maintenance-rollback
           npm run test:chat-thinking-trace
+          npm run test:chat-tool-history
+          npm run test:context-compactor
           npm run test:agent-turn-record
           npm run test:agent-runtime-display-loader
           npm run test:agent-turn-snapshot
@@ -110,6 +112,8 @@ jobs:
           npm run test:turn-continuation
           npm run test:skill-runtime-followup
           npm run test:debug-log-export
+          npm run test:prompt-assembler
+          npm run test:prompt-cache
 
       # Prompt-eval A fázis — piros vonalak (issue #35). SZÁNDÉKOSAN külön lépés:
       # ez biztonsági kapu, nem funkcionális teszt. Ha elbukik, egy prompt-módosítás

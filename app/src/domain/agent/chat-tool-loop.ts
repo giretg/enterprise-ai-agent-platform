@@ -19,6 +19,12 @@ import type {
 import type { PptxSlideSpec } from '@/domain/file-editor/adapters/pptx-adapter'
 import type { DocxBlockSpec } from '@/domain/file-editor/adapters/docx-adapter'
 import { assembleGatewayMessages, type PromptSegments } from './prompt-assembler'
+import {
+  compactToolResultHistory,
+  describeContextCompaction,
+  resolveContextCompactionLimits,
+  type ContextCompactionLimits,
+} from './context-compactor'
 import { logger } from '@/lib/observability/logger'
 // issue #97 — egységes becsomagolás + következmény-kapu (mellékhatásos eszközök).
 import { envelopeToolResultForModel } from '@/domain/tool-broker/tool-result-envelope'
@@ -156,6 +162,12 @@ type LargeToolResultArchiveInput = {
   turn: number
   content: string
   context: ToolLoopContext
+  /**
+   * Kötött célútvonal. A kontextus-tömörítés a stubban MÁR kiírta, hova mentette
+   * az eredményt, ezért a fájlnak pontosan ott kell keletkeznie — a hívó
+   * névkonvenciója ilyenkor nem érvényesülhet.
+   */
+  path?: string
 }
 export type ToolLoopActivityEvent = {
   id: string
@@ -211,6 +223,19 @@ const TOOL_RESULT_INLINE_LIMIT = 12_000
 const TOOL_RESULT_PREVIEW_CHARS = 10_000
 const TOOL_RESULT_READ_DEFAULT_LIMIT = 40_000
 const TOOL_RESULT_READ_MAX_LIMIT = 40_000
+
+/**
+ * A nagy tool-eredmény helyén álló előnézet archívum-mutatója. Ha egy ilyen
+ * előnézetet szervez ki a kontextus-tömörítés, a MEGLÉVŐ útvonalat kell
+ * továbbadnia — különben a teljes tartalmat felülírná a saját előnézetével.
+ */
+const ARCHIVED_TOOL_RESULT_POINTER = /^\[Nagy tool-eredmény\] A teljes eredmény elmentve: (\S+)/m
+
+/** Fájlnév-biztos szelet az archívum-útvonalhoz. */
+function safeArchiveSegment(value: string): string {
+  const cleaned = value.replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '')
+  return cleaned.slice(0, 80) || 'tool-result'
+}
 
 function objectSchema(
   properties: Record<string, unknown>,
@@ -1937,6 +1962,11 @@ export async function runAgentToolLoop(params: {
   initialTainted?: boolean
   /** Kooperatív leállítás (pl. chat Stop) — kör- és tool-hívás-határon ellenőrizve. */
   shouldCancel?: () => boolean
+  /**
+   * Kontextus-tömörítés küszöbei (default: `resolveContextCompactionLimits()`).
+   * Hosszú, sok tool-hívásos futásnál ez tartja korlátok között a promptot.
+   */
+  contextCompaction?: ContextCompactionLimits
   /** Tesztelhetőség: injektálható óra a faliórai korláthoz (default `Date.now`). */
   now?: () => number
   /** Tesztelhetőség: türelmi idő a záró összefoglaló hívásra (default {@link FINALIZE_GRACE_MS}). */
@@ -2038,6 +2068,115 @@ export async function runAgentToolLoop(params: {
     await params.onActivity?.(event)
   }
 
+  // ── Kontextus-tömörítés (hosszú futások token-költsége) ────────────────────
+  // Minden modellhívás a teljes addigi előzményt viszi, ezért a régi
+  // tool-eredményeket a hívás ELŐTT kiszervezzük az archívumba. A tartalom
+  // megmarad (`archivedToolResults` + workspace-fájl), a modell a
+  // `tool_result_read` eszközzel bármikor visszakérheti.
+  const compactionLimits = params.contextCompaction ?? resolveContextCompactionLimits()
+  const compactContext = async (turn: number): Promise<void> => {
+    const result = compactToolResultHistory(messages, {
+      limits: compactionLimits,
+      readableBack: Boolean(params.archiveLargeToolResult),
+      readMaxLimit: TOOL_RESULT_READ_MAX_LIMIT,
+      pathFor: ({ toolName, toolCallId, content }) =>
+        content.match(ARCHIVED_TOOL_RESULT_POINTER)?.[1] ??
+        `.tool-results/${safeArchiveSegment(toolName)}-${safeArchiveSegment(toolCallId)}.json`,
+    })
+    if (result.evicted.length === 0) return
+
+    const committed: typeof result.evicted = []
+    let restoredChars = 0
+    for (const item of result.evicted) {
+      // A már archivált nagy eredményt NEM írjuk felül a saját előnézetével —
+      // ott a teljes tartalom van, épp azt kell megőrizni.
+      if (archivedToolResults.has(item.path)) {
+        committed.push(item)
+        continue
+      }
+
+      let archiveBytes = Buffer.byteLength(item.content, 'utf8')
+      if (params.archiveLargeToolResult) {
+        let archive: LargeToolResultArchive | null = null
+        try {
+          archive = await params.archiveLargeToolResult({
+            toolName: item.toolName,
+            callId: item.toolCallId,
+            turn,
+            content: item.content,
+            context: params.context,
+            path: item.path,
+          })
+        } catch (error) {
+          logger.warn(
+            { toolName: item.toolName, toolCallId: item.toolCallId, path: item.path, error },
+            'agent.tool_loop.context_compaction_archive_failed',
+          )
+        }
+
+        // A stub csak akkor állíthatja, hogy az eredmény el lett mentve, ha a
+        // callback a kért útvonalat igazolta vissza. Hiba esetén az eredeti
+        // tool-tartalmat visszaállítjuk, így restart után sem hivatkozunk nem
+        // létező workspace-fájlra.
+        if (!archive || archive.path !== item.path) {
+          const messageIndex = messages.findIndex(
+            (message) =>
+              message.role === 'tool' &&
+              message.toolCallId === item.toolCallId &&
+              message.toolName === item.toolName,
+          )
+          if (messageIndex >= 0) {
+            const message = messages[messageIndex]
+            if (message.role === 'tool') {
+              restoredChars += item.content.length - message.content.length
+              messages[messageIndex] = { ...message, content: item.content }
+            }
+          }
+          logger.warn(
+            {
+              toolName: item.toolName,
+              toolCallId: item.toolCallId,
+              requestedPath: item.path,
+              returnedPath: archive?.path ?? null,
+            },
+            'agent.tool_loop.context_compaction_restored_after_archive_failure',
+          )
+          continue
+        }
+        archiveBytes = archive.bytes
+      }
+
+      archivedToolResults.set(item.path, {
+        content: item.content,
+        bytes: archiveBytes,
+        toolName: item.toolName,
+      })
+      committed.push(item)
+    }
+
+    if (committed.length === 0) return
+    const committedResult = {
+      evicted: committed,
+      freedChars: result.freedChars - restoredChars,
+      toolResultChars: result.toolResultChars + restoredChars,
+    }
+    logger.info(
+      {
+        evicted: committedResult.evicted.length,
+        freedChars: committedResult.freedChars,
+        toolResultChars: committedResult.toolResultChars,
+      },
+      'agent.tool_loop.context_compacted',
+    )
+    await emitActivity({
+      id: `context-compaction-${turn}`,
+      kind: 'reasoning',
+      title: 'Kontextus tömörítése',
+      detail: describeContextCompaction(committedResult),
+      status: 'done',
+    })
+  }
+
   // Előrehaladás-figyelés (spec §7/5): a már látott tool-eredmények ujjlenyomatai
   // és az egymást követő, előrehaladás nélküli körök száma.
   const seenToolResults = new Set<string>()
@@ -2129,6 +2268,10 @@ export async function runAgentToolLoop(params: {
     const onReasoningDelta = params.onReasoning
       ? (delta: string) => reasoningRedactor.push(delta)
       : undefined
+
+    // A prompt a teljes előzményt viszi — a régi tool-eredmények kiszervezése
+    // ITT, a hívás előtt történik, hogy a megtakarítás már ezt a hívást érintse.
+    await compactContext(turn)
 
     const { content, toolCalls } = await params.gateway.call({
       agentId: params.agentId,
