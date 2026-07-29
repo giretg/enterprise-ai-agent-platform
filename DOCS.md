@@ -200,6 +200,7 @@ Minden LLM-hívás egyetlen ponton megy át. Felelőssége:
 
 - **Provider routing**: `chatgpt-oauth`, `gemini`, `ollama`, `openrouter`
 - **Per-ticket guardrail**: `GATEWAY_MAX_CALLS_PER_TICKET` (alapértelmezés: 30) — egy elszabaduló loop nem fogyaszthatja el a napi budgetet
+- **Prompt-cache határ**: a prompt-assembler által megjelölt stabil prefix végére a Gateway `cache_control` breakpointot tesz azoknál a providereknél, amelyek explicit cache-API-t várnak (OpenRouter → Anthropic modellek). A többinél az automatikus prefix-cache él, ott a jelölés no-op. Ld. `docs/specs/AI-Agent-Platform-Feature-Spec-Prompt-Cache-Control-Breakpoints.md`
 - **Teljes naplózás**: minden hívás `ModelCall` rekordot kap (provider, model, tokens, cost, latency, status)
 - **Hibaosztályozás**: `rate_limited` vs. `error` állapot automatikusan felismert
 
@@ -812,6 +813,9 @@ Az agent képes egyszerű, egyfájlos HTML alkalmazásokat generálni (A0 szint)
 | `DISPATCH_MAX_CALLS_PER_DAY` | `100` | Napi dispatch call limit |
 | `DISPATCH_MAX_TOKENS_PER_DAY` | `100000` | Napi token limit |
 | `GATEWAY_MAX_CALLS_PER_TICKET` | `30` | Per-ticket modellhívás guardrail |
+| `GATEWAY_PROMPT_CACHE` | `on` | `off`/`false`/`0` → a Gateway nem küld `cache_control` breakpointot |
+| `GATEWAY_PROMPT_CACHE_MIN_TOKENS` | `1024` | Ennél rövidebb becsült prefixet nem jelölünk meg |
+| `GATEWAY_PROMPT_CACHE_TTL` | `5m` | `1h` esetén hosszú TTL-ű cache (drágább írás, ritkább forgalomhoz) |
 | `WORKSPACE_BUCKET` | `platform-workspace-prod` | GCS bucket neve (fájl workspace) |
 | `GCS_SERVICE_ACCOUNT_EMAIL` | — | GCS IAM service account |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Lokális Ollama végpont |

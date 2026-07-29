@@ -33,9 +33,22 @@ import {
   type FallbackCandidate,
   type FallbackErrorClass,
 } from './fallback-chain'
+import {
+  cacheControlPayload,
+  extractPromptCacheUsage,
+  promptCachePolicyFromEnv,
+  resolveCacheBreakpoints,
+  type CacheControlPayload,
+} from './prompt-cache'
 import type { RoutingEngine } from './routing-engine'
 import type { BudgetEngine } from './budget-engine'
-import { logger, modelCallsTotal, modelCallLatencyMs, modelFallbackTotal } from '@/lib/observability'
+import {
+  logger,
+  modelCallsTotal,
+  modelCallLatencyMs,
+  modelFallbackTotal,
+  modelPromptCacheTokensTotal,
+} from '@/lib/observability'
 
 /** OpenRouter / Ollama stb. provider fetch timeout (ms). Default: 120s. */
 const DEFAULT_MODEL_PROVIDER_FETCH_TIMEOUT_MS = 120_000
@@ -173,16 +186,26 @@ export type GatewayToolCall = {
 }
 
 /**
+ * Prompt-cache határ jelölése. A prompt-assembler teszi rá a stabil zóna utolsó
+ * üzenetére: „eddig (bezárólag) hívások közt bájt-azonos a prefix". A jelölés
+ * providerfüggetlen — a Gateway fordítja le annak, aki explicit cache-API-t vár
+ * (`cache_control`); a többinél no-op, mert ott az automatikus prefix-cache él.
+ */
+export type CacheBoundaryMarker = {
+  cacheBoundary?: boolean
+}
+
+/**
  * Gateway üzenet — diszkriminált unió, hogy a natív tool use protokoll-szinten
  * elférjen a szöveg mellett:
  * - `assistant`: a modell válasza, opcionális szöveggel ÉS/VAGY tool hívásokkal,
  * - `tool`: egy korábbi tool hívás eredménye (a `toolCallId` köti a híváshoz).
  */
 export type GatewayMessage =
-  | { role: 'system'; content: string }
-  | { role: 'user'; content: string }
-  | { role: 'assistant'; content?: string; toolCalls?: GatewayToolCall[] }
-  | { role: 'tool'; toolCallId: string; toolName: string; content: string }
+  | ({ role: 'system'; content: string } & CacheBoundaryMarker)
+  | ({ role: 'user'; content: string } & CacheBoundaryMarker)
+  | ({ role: 'assistant'; content?: string; toolCalls?: GatewayToolCall[] } & CacheBoundaryMarker)
+  | ({ role: 'tool'; toolCallId: string; toolName: string; content: string } & CacheBoundaryMarker)
 
 /** Egy üzenet szöveges reprezentációja (token-becsléshez / prompt-építéshez). */
 export function messageText(m: GatewayMessage): string {
@@ -194,7 +217,14 @@ export type ModelProviderResult = {
   content: string
   /** Natív tool hívások, ha a modell eszközt kért (szöveg helyett/mellett). */
   toolCalls?: GatewayToolCall[]
-  usage?: { promptTokens?: number; completionTokens?: number }
+  usage?: {
+    promptTokens?: number
+    completionTokens?: number
+    /** Prompt-cache-ből olvasott prompt-token (ahol a provider visszaadja). */
+    cachedPromptTokens?: number
+    /** Prompt-cache-be írt prompt-token (ahol a provider visszaadja). */
+    cacheWritePromptTokens?: number
+  }
   latencyMs: number
   /** A provider által ténylegesen használt modell (pl. a feloldott `gpt-5.5`). */
   model?: string
@@ -258,7 +288,14 @@ type OpenAiCompatibleChoice = {
 
 type OpenAiCompatibleResponse = {
   choices?: OpenAiCompatibleChoice[]
-  usage?: { prompt_tokens?: number; completion_tokens?: number }
+  usage?: {
+    prompt_tokens?: number
+    completion_tokens?: number
+    /** Prompt-cache telemetria — provideronként opcionális (ld. `extractPromptCacheUsage`). */
+    prompt_tokens_details?: { cached_tokens?: number; cache_creation_tokens?: number } | null
+    cache_read_input_tokens?: number
+    cache_creation_input_tokens?: number
+  }
   model?: string
 }
 
@@ -313,9 +350,16 @@ export function extractOpenAiToolCalls(data: OpenAiCompatibleResponse): GatewayT
   return calls
 }
 
+/** OpenAI-kompatibilis szöveg-rész, opcionális Anthropic-stílusú cache-jelöléssel. */
+type OpenAiTextPart = {
+  type: 'text'
+  text: string
+  cache_control?: CacheControlPayload
+}
+
 type OpenAiRequestMessage = {
   role: 'system' | 'user' | 'assistant' | 'tool'
-  content: string | null
+  content: string | OpenAiTextPart[] | null
   tool_call_id?: string
   tool_calls?: Array<{
     id: string
@@ -324,8 +368,30 @@ type OpenAiRequestMessage = {
   }>
 }
 
+/**
+ * Cache-határ rátétele egy kész üzenetre: a sima szöveges `content` egyetlen
+ * `text` részre bomlik, amin ott a `cache_control`. Ez az OpenAI-kompatibilis
+ * séma dokumentált módja az Anthropic-stílusú breakpoint átadására; a tartalom
+ * bájtra változatlan marad, csak a burkolat lesz tömb.
+ */
+function withCacheControl(
+  message: OpenAiRequestMessage,
+  cacheControl: CacheControlPayload,
+): OpenAiRequestMessage {
+  if (typeof message.content !== 'string' || !message.content) return message
+  return {
+    ...message,
+    content: [{ type: 'text', text: message.content, cache_control: cacheControl }],
+  }
+}
+
 /** Egy `GatewayMessage`-t OpenAI chat/completions üzenet-alakra fordít. */
-function toOpenAiMessage(m: GatewayMessage): OpenAiRequestMessage {
+function toOpenAiMessage(m: GatewayMessage, cacheControl?: CacheControlPayload): OpenAiRequestMessage {
+  const message = toOpenAiMessageBase(m)
+  return cacheControl ? withCacheControl(message, cacheControl) : message
+}
+
+function toOpenAiMessageBase(m: GatewayMessage): OpenAiRequestMessage {
   if (m.role === 'assistant') {
     return {
       role: 'assistant',
@@ -561,6 +627,12 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     private apiKeyEnvVar?: string,
     private options: {
       apiKeyRequired?: boolean
+      /**
+       * A provider átengedi-e az Anthropic-stílusú `cache_control` breakpointot
+       * (OpenRouter → Anthropic modellek). Ahol nincs explicit cache-API, ott
+       * a jelölést NEM küldjük ki — az automatikus prefix-cache úgyis él.
+       */
+      promptCache?: boolean
       extraHeaders?: () => Record<string, string>
       /**
        * A request-body kiegészítése. A `reasoningRequested` jelzi, hogy a hívó
@@ -571,6 +643,20 @@ export class OpenAiCompatibleProvider implements ModelProvider {
       extraBody?: (ctx: { reasoningRequested: boolean }) => Record<string, unknown>
     } = {},
   ) {}
+
+  /**
+   * Mely üzenetekre kerüljön `cache_control`. A határt a prompt-assembler jelöli
+   * ki a stabil zóna végén; itt már csak a provider-képesség és a politika
+   * (kill switch, minimum prefix-hossz, max 4 breakpoint) dönt.
+   */
+  private cacheBreakpoints(messages: GatewayMessage[]): {
+    indexes: Set<number>
+    cacheControl: CacheControlPayload
+  } {
+    const policy = promptCachePolicyFromEnv()
+    const indexes = this.options.promptCache ? resolveCacheBreakpoints(messages, policy) : []
+    return { indexes: new Set(indexes), cacheControl: cacheControlPayload(policy) }
+  }
 
   async chat(input: {
     agentId: string
@@ -591,6 +677,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     }
 
     const started = Date.now()
+    const { indexes: cacheIndexes, cacheControl } = this.cacheBreakpoints(input.messages)
     const response = await fetchWithProviderTimeout(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -600,7 +687,9 @@ export class OpenAiCompatibleProvider implements ModelProvider {
       },
       body: JSON.stringify({
         model: input.modelConfig.model,
-        messages: input.messages.map(toOpenAiMessage),
+        messages: input.messages.map((m, index) =>
+          toOpenAiMessage(m, cacheIndexes.has(index) ? cacheControl : undefined),
+        ),
         temperature: input.modelConfig.temperature,
         max_tokens: input.modelConfig.maxTokens,
         stream: false,
@@ -667,6 +756,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
       usage: {
         promptTokens: data.usage?.prompt_tokens,
         completionTokens: data.usage?.completion_tokens,
+        ...extractPromptCacheUsage(data.usage),
       },
       latencyMs: Date.now() - started,
       model: data.model,
@@ -689,6 +779,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
       throw new Error(`${this.name} provider API key not configured (${this.apiKeyEnvVar})`)
     }
 
+    const { indexes: cacheIndexes, cacheControl } = this.cacheBreakpoints(input.messages)
     const response = await fetchWithProviderTimeout(`${baseUrl}/chat/completions`, {
       method: 'POST',
       headers: {
@@ -698,7 +789,9 @@ export class OpenAiCompatibleProvider implements ModelProvider {
       },
       body: JSON.stringify({
         model: input.modelConfig.model,
-        messages: input.messages.map(toOpenAiMessage),
+        messages: input.messages.map((m, index) =>
+          toOpenAiMessage(m, cacheIndexes.has(index) ? cacheControl : undefined),
+        ),
         temperature: input.modelConfig.temperature,
         max_tokens: input.modelConfig.maxTokens,
         stream: true,
@@ -769,6 +862,10 @@ export function createDefaultProviders(): Map<string, ModelProvider> {
       'OPENROUTER_API_KEY',
       {
         apiKeyRequired: true,
+        // Az OpenRouter átengedi az Anthropic-stílusú `cache_control` breakpointot
+        // a mögöttes modellnek — ez a platform egyetlen olyan útja, ahol a stabil
+        // prefix csak explicit jelöléssel cache-elődik.
+        promptCache: true,
         extraHeaders: () => ({
           ...(process.env.OPENROUTER_HTTP_REFERER
             ? { 'HTTP-Referer': process.env.OPENROUTER_HTTP_REFERER }
@@ -785,6 +882,49 @@ export function createDefaultProviders(): Map<string, ModelProvider> {
     ),
   ]
   return new Map(providers.map((p) => [p.name, p]))
+}
+
+/**
+ * Prompt-cache mérés: metrikába írja a cache-ből olvasott / cache-be írt
+ * prompt-tokeneket, és visszaadja az audit-metadata mezőket. Csak számokat ad
+ * tovább, prompt-tartalmat soha (MG-N4). Ahol a provider nem jelent cache-adatot,
+ * a visszaadott objektum üres — nem szemeteljük tele az auditot nullákkal.
+ *
+ * A számokat a naplóba NEM tesszük: a logger a `prompt`/`token` kulcsneveket
+ * redaktálja (`REDACT_KEYS`), ott csak a `cacheHit` jelzés hasznos. A tényleges
+ * megtakarítást a `model_gateway_prompt_cache_tokens_total` metrikán mérjük.
+ */
+function recordPromptCacheUsage(
+  provider: string,
+  usage: ModelProviderResult['usage'],
+): { cachedPromptTokens?: number; cacheWritePromptTokens?: number } {
+  const cachedPromptTokens = usage?.cachedPromptTokens
+  const cacheWritePromptTokens = usage?.cacheWritePromptTokens
+  if (cachedPromptTokens) {
+    modelPromptCacheTokensTotal.inc({ provider, kind: 'read' }, cachedPromptTokens)
+  }
+  if (cacheWritePromptTokens) {
+    modelPromptCacheTokensTotal.inc({ provider, kind: 'write' }, cacheWritePromptTokens)
+  }
+  return {
+    ...(cachedPromptTokens !== undefined ? { cachedPromptTokens } : {}),
+    ...(cacheWritePromptTokens !== undefined ? { cacheWritePromptTokens } : {}),
+  }
+}
+
+/**
+ * Napló-jelzés a prompt-cache-ről: `true`, ha a provider cache-találatot
+ * jelentett. Ha a provider egyáltalán nem ad cache-telemetriát, a mező kimarad
+ * — a „nincs adat" és a „nem volt találat" nem ugyanaz.
+ */
+function promptCacheLogFields(cache: {
+  cachedPromptTokens?: number
+  cacheWritePromptTokens?: number
+}): { cacheHit?: boolean } {
+  if (cache.cachedPromptTokens === undefined && cache.cacheWritePromptTokens === undefined) {
+    return {}
+  }
+  return { cacheHit: (cache.cachedPromptTokens ?? 0) > 0 }
 }
 
 /** Maximum retry attempts for transient errors (5xx / network). */
@@ -1581,6 +1721,7 @@ export class ModelGateway {
 
         modelCallsTotal.inc({ provider: provider.name, status: 'ok' })
         modelCallLatencyMs.observe(result.latencyMs, { provider: provider.name })
+        const promptCache = recordPromptCacheUsage(provider.name, result.usage)
         logger.info(
           {
             event: 'model.call',
@@ -1591,6 +1732,7 @@ export class ModelGateway {
             costEstimate,
             promptTokens,
             completionTokens,
+            ...promptCacheLogFields(promptCache),
             agentId: params.agentId,
             ticketId: params.ticketId ?? null,
             attemptGroupId,
@@ -1620,6 +1762,7 @@ export class ModelGateway {
             attemptIndex,
             chainLength: chain.length,
             provider: provider.name,
+            ...promptCache,
           },
         })
 
@@ -1747,6 +1890,7 @@ export class ModelGateway {
           })
           modelCallsTotal.inc({ provider: provider.name, status: 'ok' })
           modelCallLatencyMs.observe(result.latencyMs, { provider: provider.name })
+          const promptCache = recordPromptCacheUsage(provider.name, result.usage)
           await this.audit.append({
             actorType: 'agent',
             actorId: params.agentId,
@@ -1766,6 +1910,7 @@ export class ModelGateway {
               attemptGroupId,
               attemptIndex,
               chainLength: chain.length,
+              ...promptCache,
             },
           })
           yield content
