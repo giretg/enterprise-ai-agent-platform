@@ -190,6 +190,86 @@ export function buildCancelledTurnMessage(snapshot: CancelledTurnSnapshot): stri
   return parts.join('\n')
 }
 
+/**
+ * Hibára futott forduló hétköznapi nyelvű magyarázata.
+ *
+ * ÜZLETI PROBLÉMA: a hibaág eddig csak egy röpke SSE `error` eseményt küldött és
+ * az `agent_turns.error` mezőbe írt. Aki nem nézte épp a képernyőt — vagy csak
+ * újratöltötte az oldalt —, az a beszélgetésben CSAK a saját üzenetét látta:
+ * mintha az agent szó nélkül megállt volna. A megcsinált munka (pl. egy már
+ * kitöltött Excel) ott volt a workspace-ben, de erről semmi nem szólt.
+ *
+ * A `budget` ág külön kezelendő, mert nem hiba, hanem üzemeltetési döntés
+ * (keret) — ezt a felhasználó máshogy kezeli, mint egy technikai hibát.
+ */
+export function describeTurnFailure(error: string): string {
+  const budget = error.match(
+    /budget gate: (Token|Call) limit exceeded: (\d+)\/(\d+) per (day|week|month) \(scope=(\w+)\)/,
+  )
+  if (budget) {
+    const [, kind, used, limit, period, scope] = budget
+    const periodLabel = period === 'day' ? 'napi' : period === 'week' ? 'heti' : 'havi'
+    const scopeLabel =
+      scope === 'agent' ? 'erre az agentre' : scope === 'tenant' ? 'a szervezetre' : `a(z) ${scope} keretre`
+    const kindLabel = kind === 'Token' ? 'token' : 'hívás'
+    const format = (value: string) => Number(value).toLocaleString('hu-HU')
+    return (
+      `⚠️ **Elfogytam a keretből — a válasz nem készült el.** ` +
+      `A(z) ${periodLabel} ${kindLabel}-keret ${scopeLabel} betelt ` +
+      `(${format(used)} / ${format(limit)}).\n\n` +
+      `A keret gördülő ${period === 'day' ? '24 órás' : period === 'week' ? '7 napos' : '30 napos'} ablakra vonatkozik, ` +
+      `így magától felszabadul, ahogy a régebbi hívások kiesnek belőle. Ha előbb kell, kérd meg az adminisztrátort a keret megemelésére.`
+    )
+  }
+  return `⚠️ **A válasz nem készült el — hiba történt a futás közben.**\n\nA hiba: ${error}`
+}
+
+export type FailedTurnSnapshot = CancelledTurnSnapshot & { error: string }
+
+/**
+ * Hibára futott chat-forduló DB-be menthető lezáró üzenete. Ugyanaz az elv, mint
+ * a megszakításnál: mondja meg, MI történt, MI maradt meg, és hogyan tovább.
+ */
+export function buildFailedTurnMessage(snapshot: FailedTurnSnapshot): string {
+  const completedReply = snapshot.completedReply?.trim() ?? ''
+  const turnToolCalls = snapshot.turnToolCalls ?? []
+  const activities = snapshot.activities ?? []
+
+  const parts: string[] = [describeTurnFailure(snapshot.error)]
+
+  const okTools = turnToolCalls.filter((call) => call.status === 'ok')
+  const deniedTools = turnToolCalls.filter((call) => call.status === 'denied')
+  if (okTools.length > 0 || deniedTools.length > 0) {
+    const labels = [
+      ...okTools.map((call) => call.toolName),
+      ...deniedTools.map((call) => `${call.toolName} (megtagadva)`),
+    ]
+    parts.push(`\n**Ami a leállásig lefutott:** ${labels.join(', ')}.`)
+    parts.push(
+      'Az elkészült fájlok és részeredmények a beszélgetés workspace-ében megmaradtak — nem kell elölről kezdeni.',
+    )
+  } else {
+    const doneToolActivities = activities.filter(
+      (activity) => activity.status === 'done' && activity.kind === 'tool',
+    )
+    if (doneToolActivities.length > 0) {
+      parts.push('\n**Ami a leállásig lefutott:**')
+      for (const activity of doneToolActivities) {
+        parts.push(`• ${activity.title}${activity.detail ? ` — ${activity.detail}` : ''}`)
+      }
+    }
+  }
+
+  if (completedReply) {
+    parts.push('\n**Az addig elkészült válasz:**')
+    parts.push(completedReply)
+  } else {
+    parts.push('\nFolytatáshoz írd: *folytasd*, vagy küldd el újra a kérést.')
+  }
+
+  return parts.join('\n')
+}
+
 type StreamTurnContext = {
   conversationId: string
   userMessageCreatedAt: Date
@@ -1425,6 +1505,7 @@ export class AgentChatRuntime {
           const message = result.error instanceof Error ? result.error.message : 'Tool loop failed'
           outcome = { status: 'failed', reason: 'error', error: message }
           emit({ type: 'error', message })
+          await this.persistFailedTurn(turn, message, snapshot.partialText)
           return
         }
         reply = result.value.content
@@ -1526,6 +1607,10 @@ export class AgentChatRuntime {
       const message = error instanceof Error ? error.message : 'Agent turn failed'
       outcome = { status: 'failed', reason: 'error', error: message }
       emit({ type: 'error', message })
+      // Az SSE `error` esemény múlékony: aki nem nézi épp a képernyőt, vagy
+      // újratölt, annak nyoma sem marad. A lezáró üzenet a beszélgetésbe kerül,
+      // így a leállás oka utólag is látszik (a watchdog-lezárás mintájára).
+      await this.persistFailedTurn(turn, message, snapshot.partialText)
     } finally {
       // Terminális teljes részszöveg (§5.3): completedReply, vagy ami a flusherben
       // már összegyűlt (pl. stream közbeni hiba / cancel, mielőtt a reply kész).
@@ -1544,6 +1629,47 @@ export class AgentChatRuntime {
       (message) => message.role === 'agent' && message.createdAt > turn.userMessageCreatedAt,
     )
     return existing?.id ?? null
+  }
+
+  /**
+   * Hibára futott forduló lezáró üzenete a beszélgetésbe. E nélkül a felhasználó
+   * újratöltés után csak a saját üzenetét látja — mintha az agent némán megállt
+   * volna (l. `buildFailedTurnMessage`). Fail-soft: az üzenet hiánya
+   * megfigyelhetőségi veszteség, nem állapot-hiba, a forduló attól még lezárul.
+   */
+  private async persistFailedTurn(
+    turn: StreamTurnContext,
+    error: string,
+    streamedPartialText = '',
+  ): Promise<void> {
+    if (turn.finalized) return
+    try {
+      if (await this.findAgentReplyAfterTurn(turn)) return
+      const toolCalls = await this.toolCaps.listToolCallsForConversation(turn.conversationId)
+      const content = buildFailedTurnMessage({
+        error,
+        // A tool-loop a teljes reply-t előre megadja, a streaming gateway viszont
+        // csak chunkonként építi fel. Stream közbeni hibánál ezért a snapshot az
+        // egyetlen forrás, ami a már megjelent részválaszt hiánytalanul őrzi.
+        completedReply:
+          turn.completedReply ?? guardTurnPartialText(streamedPartialText),
+        activities: turn.activities,
+        turnToolCalls: toolCalls.filter((call) => call.createdAt > turn.userMessageCreatedAt),
+      })
+      await this.conversations.appendMessage({
+        conversationId: turn.conversationId,
+        role: 'agent',
+        content,
+        actingUserId: turn.createdById,
+        agentVersion: turn.agentVersion,
+        model: turn.model,
+        actorType: 'agent',
+        actorId: turn.agentId,
+      })
+      turn.finalized = true
+    } catch (e) {
+      console.error('[agent-chat] hiba-lezáró üzenet írása sikertelen', turn.conversationId, e)
+    }
   }
 
   private async persistCancelledTurn(turn: StreamTurnContext): Promise<string | null> {
@@ -2016,13 +2142,17 @@ export class AgentChatRuntime {
   private async archiveLargeToolResult(
     tenantId: string,
     conversationId: string,
-    input: { toolName: string; callId: string; turn: number; content: string },
+    input: { toolName: string; callId: string; turn: number; content: string; path?: string },
   ): Promise<{ path: string; bytes: number } | null> {
     const bytes = Buffer.from(input.content, 'utf8')
-    const path = [
-      '.tool-results',
-      `${String(input.turn + 1).padStart(2, '0')}-${safeToolResultName(input.toolName)}-${safeToolResultName(input.callId)}.json`,
-    ].join('/')
+    // A kontextus-tömörítés kötött útvonalat ad: a stub már közölte a modellel,
+    // hol keresse az eredményt, ezért ott kell keletkeznie.
+    const path =
+      input.path ??
+      [
+        '.tool-results',
+        `${String(input.turn + 1).padStart(2, '0')}-${safeToolResultName(input.toolName)}-${safeToolResultName(input.callId)}.json`,
+      ].join('/')
 
     try {
       await this.workspaceStorage.write(tenantId, conversationId, path, bytes)

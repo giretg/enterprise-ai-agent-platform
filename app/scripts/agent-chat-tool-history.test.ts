@@ -14,7 +14,11 @@
  */
 import assert from 'node:assert/strict'
 import type { ToolCall } from '@prisma/client'
-import { buildCancelledTurnMessage, buildHistoryGatewayMessages } from '../src/domain/agent/agent-chat-runtime'
+import {
+  buildCancelledTurnMessage,
+  buildFailedTurnMessage,
+  buildHistoryGatewayMessages,
+} from '../src/domain/agent/agent-chat-runtime'
 import type { ContextAssemblyMessage } from '../src/domain/conversation/context-assembly'
 
 let failures = 0
@@ -184,6 +188,43 @@ async function main() {
     assert.ok(content.includes('[Válasz]'))
     assert.ok(content.includes(fullReply))
     assert.ok(!content.includes('félbemaradt'))
+  })
+
+  await test('keret-kifutás: érthető magyarázat + a lefutott munka megmarad', () => {
+    const content = buildFailedTurnMessage({
+      error: 'Gateway budget gate: Token limit exceeded: 10140654/10000000 per day (scope=agent)',
+      turnToolCalls: [
+        call({
+          toolName: 'xlsx_append_rows',
+          createdAt: new Date('2026-07-28T15:52:00Z'),
+          resultMeta: { file: 'egyeztetes.xlsx', rows: 182 },
+        }),
+      ],
+    })
+    // A felhasználó számára az a lényeg, hogy KERET fogyott el, nem "hiba" történt,
+    // és hogy az addigi munka (a kitöltött Excel) megvan.
+    assert.ok(content.includes('keret'))
+    assert.ok(content.includes((10140654).toLocaleString('hu-HU')), 'a konkrét számok látszanak')
+    assert.ok(content.includes('xlsx_append_rows'))
+    assert.ok(content.includes('megmaradtak'))
+    assert.ok(!content.includes('Gateway budget gate'), 'a nyers hibaszöveg ne szivárogjon ki')
+  })
+
+  await test('ismeretlen hiba: a nyers üzenet látszik, de értelmezhető keretben', () => {
+    const content = buildFailedTurnMessage({ error: 'provider timeout after 120s' })
+    assert.ok(content.includes('provider timeout after 120s'))
+    assert.ok(content.includes('folytasd'))
+  })
+
+  await test('hibaüzenet: a már elkészült részválasz nem vész el', () => {
+    const reply = 'A 182 tulajdonosból 176-ot sikerült párosítani.'
+    const content = buildFailedTurnMessage({
+      error: 'Gateway budget gate: Call limit exceeded: 101/100 per week (scope=tenant)',
+      completedReply: reply,
+    })
+    assert.ok(content.includes(reply))
+    assert.ok(content.includes('heti'))
+    assert.ok(content.includes('szervezetre'))
   })
 
   await test('megszakított forduló szinopszisa bekerül a következő kör promptjába', () => {
