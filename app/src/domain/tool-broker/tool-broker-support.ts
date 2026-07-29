@@ -30,6 +30,7 @@ import type {
   UserDirectoryArgs,
   UserDirectoryEntry,
   UserDirectoryResult,
+  UserDirectorySearchEntry,
   WebResearchDelegationResult,
 } from './tool-broker-types'
 
@@ -38,27 +39,51 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /**
- * user_directory tiszta szűrője (DB-mentes, ezért determinisztikusan tesztelhető).
- * Az opcionális `query` a néven / szerepen (role + jobDescription) / e-mailen szűr,
- * ékezet- és kisbetű-függetlenül, ÉS-kapcsolt szótagokkal (minden keresőszónak
- * illeszkednie kell). A `limit` 1..100 közé szorítva (alapból 50).
+ * user_directory tiszta, fail-closed szűrője (DB-mentes, determinisztikusan
+ * tesztelhető). Érdemi query nélkül nem ad vissza névsort. A keresés belsőleg az
+ * e-mailt is használhatja, de a tool-válasz csak a feladatkiosztáshoz szükséges
+ * mezőket tartalmazza — az e-mail soha nem kerül modellkontextusba.
+ *
+ * A fail-closed kapu a NORMALIZÁLT query-n áll: a `normalizeText` az írásjeleket
+ * szóközre cseréli, ezért a csupa írásjel query (pl. "@" vagy "...") üres
+ * keresésnek számít — különben üres szótagra illesztene, és pont a teljes
+ * névsort adná vissza.
+ *
+ * Az e-mail CSAK teljes címre illeszkedik (nem részstringre): a domain-részletre
+ * illesztés a tenant teljes névsorát visszaadná, ami ugyanaz a tömeges lekérés,
+ * amit ez a szűrő megakadályoz. Név / szerep / leírás továbbra is részstringre
+ * illeszkedik (ÉS-kapcsolt szótagokkal).
  */
 export function filterUserDirectory(
-  entries: UserDirectoryEntry[],
+  entries: UserDirectorySearchEntry[],
   args: UserDirectoryArgs,
 ): UserDirectoryResult {
-  const query = normalizeText((args.query ?? '').trim())
-  const filtered = query
-    ? entries.filter((u) => {
-        const haystack = normalizeText(
-          [u.name, u.jobDescription ?? '', u.role ?? '', u.email].join(' '),
-        )
-        return query.split(/\s+/).every((term) => haystack.includes(term))
-      })
-    : entries
+  const query = collapseSpaces(normalizeText(args.query ?? ''))
+  const terms = query.split(' ').filter(Boolean)
+  if (terms.length === 0) return { users: [] }
+
+  const filtered = entries.filter((u) => {
+    const haystack = normalizeText([u.name, u.jobDescription ?? '', u.role ?? ''].join(' '))
+    // A teljes query-t hasonlítjuk a címhez, mert a normalizálás az e-mailt is
+    // szótagokra bontja ("bela@ceg.hu" → "bela ceg hu").
+    const email = collapseSpaces(normalizeText(u.email))
+    if (query === email) return true
+    return terms.every((term) => haystack.includes(term))
+  })
 
   const limit = Math.min(Math.max(args.limit ?? 50, 1), 100)
-  return { users: filtered.slice(0, limit) }
+  const users: UserDirectoryEntry[] = filtered.slice(0, limit).map((u) => ({
+    userId: u.userId,
+    name: u.name,
+    role: u.role,
+    jobDescription: u.jobDescription,
+    status: u.status,
+  }))
+  return { users }
+}
+
+function collapseSpaces(value: string): string {
+  return value.trim().replace(/\s+/g, ' ')
 }
 
 export function normalizeText(value: string): string {

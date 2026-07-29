@@ -23,6 +23,7 @@ import {
   ToolBrokerService,
   isAgentReachableFromTenant,
   filterAgentsByTenant,
+  filterUserDirectory,
   type Authorizer,
 } from '../src/domain/tool-broker/tool-broker-service'
 import type {
@@ -37,6 +38,7 @@ import type { FileEditorService } from '../src/domain/file-editor/file-editor-se
 import type { WebSearchService } from '../src/domain/web-search/web-search-service'
 import type { WebSearchPolicyService } from '../src/domain/web-search/web-search-policy-service'
 import { AgentAccessService } from '../src/domain/agent-access/agent-access-service'
+import type { UserDirectorySearchEntry } from '../src/domain/tool-broker/tool-broker-types'
 
 let failures = 0
 async function test(name: string, fn: () => void | Promise<void>) {
@@ -258,6 +260,51 @@ async function main() {
     assert.ok(kept.includes(ALFA))
     assert.ok(kept.includes(SHARED))
     assert.ok(!kept.includes(BRAVO), 'más tenant agentje nem maradhat')
+  })
+
+  // ── user_directory adatminimalizálás (#80) ─────────────────────────────────
+  const directory: UserDirectorySearchEntry[] = [
+    {
+      userId: '11111111-1111-4111-8111-111111111111',
+      name: 'Kiss Anna',
+      email: 'anna@example.test',
+      role: 'member',
+      jobDescription: 'marketing vezető',
+      status: 'active',
+    },
+    {
+      userId: '22222222-2222-4222-8222-222222222222',
+      name: 'Nagy Béla',
+      email: 'bela@example.test',
+      role: 'member',
+      jobDescription: 'pénzügyi elemző',
+      status: 'active',
+    },
+  ]
+
+  await test('user_directory: üres vagy hiányzó query nem ad vissza teljes névsort', () => {
+    assert.deepEqual(filterUserDirectory(directory, {}), { users: [] })
+    assert.deepEqual(filterUserDirectory(directory, { query: '   ' }), { users: [] })
+  })
+
+  await test('user_directory: célzott keresés működik, de e-mail nem kerül a válaszba', () => {
+    const result = filterUserDirectory(directory, { query: 'marketing' })
+    assert.equal(result.users.length, 1)
+    assert.equal(result.users[0].userId, directory[0].userId)
+    assert.equal('email' in result.users[0], false)
+    assert.ok(!JSON.stringify(result).includes('anna@example.test'))
+  })
+
+  await test('user_directory: ismert e-mailre kereshet, de azt sem adja vissza', () => {
+    const result = filterUserDirectory(directory, { query: 'bela@example.test' })
+    assert.equal(result.users.length, 1)
+    assert.equal(result.users[0].userId, directory[1].userId)
+    assert.equal('email' in result.users[0], false)
+  })
+
+  await test('user_directory: e-mail-domainre nem enumerálható a névsor', () => {
+    assert.deepEqual(filterUserDirectory(directory, { query: 'example.test' }).users, [])
+    assert.deepEqual(filterUserDirectory(directory, { query: '@' }).users, [])
   })
 
   // ── agent_resolve ─────────────────────────────────────────────────────────
