@@ -144,6 +144,8 @@ export type ChannelLinkingDeps = {
   buildDeepLink: (jti: string) => string
   /** Bekötött, nem-`/start` üzenet átadása a chat-futásidőnek (D8). Opcionális (#72 back-compat). */
   linkedMessageSink?: ChannelLinkedMessageSink
+  /** Szervezeti Telegram-kill-switch. A bekötés és a sorba írás is csak élő csatornán engedett. */
+  isChannelEnabled: (tenantId: string | null) => Promise<boolean>
   token?: ChannelLinkTokenPort
   crypto?: ChannelIdentityCryptoPort
   now?: () => Date
@@ -164,6 +166,7 @@ export type InboundOutcome =
   | 'bad_secret'
   | 'unsupported_update'
   | 'duplicate'
+  | 'channel_disabled'
   | 'linked_no_runtime'
   | 'linked_enqueued'
   | 'unlinked_notice_sent'
@@ -211,6 +214,9 @@ export class ChannelLinkingService {
     const bot = await this.deps.bots.findPlatformBot(channelType)
     if (!bot) return { ok: false, reason: 'no_bot' }
     if (bot.status === 'disabled') return { ok: false, reason: 'channel_disabled' }
+    if (!(await this.deps.isChannelEnabled(input.tenantId))) {
+      return { ok: false, reason: 'channel_disabled' }
+    }
 
     const now = this.now()
     const jti = this.token.newJti()
@@ -318,6 +324,11 @@ export class ChannelLinkingService {
     // Nincs `/start <token>`: bekötött → chat-futásidő (D8, forduló-sor); bekötetlen → semleges egyszer.
     const identity = await this.deps.identities.findByLookupHash(channelType, lookupHash)
     if (identity && identity.status === 'active') {
+      // A kill-switch a sorba írás előtt zár: ne maradjon a leállított szervezet üzenetéből
+      // olyan tartós forduló, amit egy későbbi újraengedélyezés véletlenül feldolgozhat.
+      if (!(await this.deps.isChannelEnabled(identity.tenantId))) {
+        return { handled: true, outcome: 'channel_disabled' }
+      }
       if (session.identityId !== identity.id) {
         await this.deps.sessions.update(session.id, { identityId: identity.id })
       }
@@ -447,6 +458,9 @@ export class ChannelLinkingService {
     }
     if (!this.token.verify(claims, row.signature)) return reject('bad_signature')
     if (row.expiresAt.getTime() <= input.now.getTime()) return reject('expired')
+    if (!(await this.deps.isChannelEnabled(row.tenantId))) {
+      return { handled: true, outcome: 'channel_disabled' }
+    }
 
     if (row.consumedAt != null) {
       // Kettős koppintás UGYANAZZAL a fiókkal → idempotens siker (nem hibaüzenet). Más fiók

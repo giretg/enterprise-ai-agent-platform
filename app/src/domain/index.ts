@@ -336,6 +336,7 @@ const channelLinkingService = new ChannelLinkingService({
   },
   resolveWebhookSecret: (bot) => resolveWebhookSecretCached(bot.webhookSecretRef),
   buildDeepLink: (jti) => `https://t.me/${telegramBotUsername}?start=${jti}`,
+  isChannelEnabled: (tenantId) => platformSettingsService.isChannelEnabledForTenant(tenantId),
   linkedMessageSink: {
     enqueueInbound: (input) => {
       if (!channelTurnServiceRef) throw new Error('channel turn service not initialized')
@@ -1070,6 +1071,9 @@ const channelTurnService = new ChannelTurnService({
     const tenant = await repositories.tenants.findById(tenantId)
     return tenant?.displayName ?? null
   },
+  memberships: repositories.tenantMemberships,
+  tenants: repositories.tenants,
+  isChannelEnabled: (tenantId) => platformSettingsService.isChannelEnabledForTenant(tenantId),
 })
 channelTurnServiceRef = channelTurnService
 const wikiRuntime = new WikiAgentRuntime(
