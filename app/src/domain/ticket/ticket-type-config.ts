@@ -65,6 +65,19 @@ export const DEFAULT_TICKET_TRANSITIONS: TicketTransitionConfigRule[] = [
   { from: 'rejected', to: 'ready', allowed: 'operator' },
 ]
 
+/**
+ * Ezek nem admin-hangolható üzleti lépések: a rendszer által bizonyított hard
+ * governance-döntésekhez a system actor útja mindig megmarad. Jelenleg a
+ * kötelező eval-bukás zárja így a training ticketet (MemoryTraining §4.1/T7).
+ */
+const SYSTEM_REQUIRED_TRANSITION_ALLOWANCES = new Map<string, TransitionAllowedActor>([
+  ['awaiting_human:rejected', 'system_or_operator'],
+])
+
+function transitionKey(rule: Pick<TicketTransitionConfigRule, 'from' | 'to'>): string {
+  return `${rule.from}:${rule.to}`
+}
+
 export function defaultTicketTypeConfig(type: TicketType): TicketTypeConfig {
   return {
     type,
@@ -109,8 +122,12 @@ export function normalizeTicketTypeConfig(raw: unknown, type: TicketType): Ticke
       ? [...allowedTransitions]
       : defaultTicketTypeConfig(type).allowedTransitions
   for (const rule of DEFAULT_TICKET_TRANSITIONS) {
-    const key = `${rule.from}:${rule.to}`
-    if (!seen.has(key) && !mergedTransitions.some((candidate) => `${candidate.from}:${candidate.to}` === key)) {
+    const key = transitionKey(rule)
+    const existing = mergedTransitions.find((candidate) => transitionKey(candidate) === key)
+    const requiredAllowance = SYSTEM_REQUIRED_TRANSITION_ALLOWANCES.get(key)
+    if (existing && requiredAllowance) {
+      existing.allowed = requiredAllowance
+    } else if (!seen.has(key) && !existing) {
       mergedTransitions.push({ ...rule })
     }
   }
