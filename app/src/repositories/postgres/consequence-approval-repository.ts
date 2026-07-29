@@ -19,6 +19,25 @@ export class PostgresConsequenceApprovalRepository implements ConsequenceApprova
     return prisma.consequenceApproval.findUnique({ where: { id } })
   }
 
+  async listOpenByConversation(
+    conversationId: string,
+    createdAfter: Date,
+  ): Promise<ConsequenceApproval[]> {
+    // A `[conversationId, status]` index fedi (az `in` is index-barát); a
+    // beszélgetésenkénti darabszám természetesen kicsi, de a felső korlát
+    // megvéd egy elszabadult futástól. Az `approved` sorokra azért van szükség,
+    // mert az elbukott tool-hívás is approved státuszon marad — a hívó szűri.
+    return prisma.consequenceApproval.findMany({
+      where: {
+        conversationId,
+        status: { in: ['pending', 'approved'] },
+        createdAt: { gt: createdAfter },
+      },
+      orderBy: { createdAt: 'asc' },
+      take: 50,
+    })
+  }
+
   async casUpdateStatus(
     id: string,
     expectedStatus: ConsequenceApprovalStatus,

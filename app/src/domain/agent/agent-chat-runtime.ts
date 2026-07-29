@@ -14,6 +14,9 @@ import {
 } from '@/repositories/interfaces'
 import { composeSystemPrompt } from '@/lib/agent-prompt'
 import { formatOrgRoster } from '@/lib/agent-org-roster'
+import type { AgentAccessService } from '@/domain/agent-access/agent-access-service'
+import { resolveAddressableColleagues } from '@/domain/agent-access/addressable-colleagues'
+import { AgentAccessError } from '@/domain/agent-access/agent-access-errors'
 import { buildRunAsAuthorization } from '@/lib/run-as-payload'
 import { formatHitsForPrompt, type KbHit } from '@/lib/kb-format'
 import { attachmentPageCount } from '@/lib/document-read'
@@ -54,6 +57,16 @@ import {
 } from './chat-tool-loop'
 import type { SkillService } from '../skill/skill-service'
 import { assembleGatewayMessages, type PromptSegments } from './prompt-assembler'
+import {
+  buildSkillTaskPromotionMessage,
+  buildSkillTaskTitle,
+  shouldPromoteSkillRunToTask,
+} from './skill-task-promotion'
+import {
+  buildTurnContinuationPrompt,
+  shouldInjectTurnContinuation,
+  type ContinuationActivity,
+} from './turn-continuation'
 import {
   agentTurnRunner,
   type AgentChatStreamEvent,
@@ -172,6 +185,86 @@ export function buildCancelledTurnMessage(snapshot: CancelledTurnSnapshot): stri
     parts.push(
       '\nA válasz generálása még nem kezdődött el. Folytatáshoz ismételd meg a kérdést, vagy írd: *folytasd*.',
     )
+  }
+
+  return parts.join('\n')
+}
+
+/**
+ * Hibára futott forduló hétköznapi nyelvű magyarázata.
+ *
+ * ÜZLETI PROBLÉMA: a hibaág eddig csak egy röpke SSE `error` eseményt küldött és
+ * az `agent_turns.error` mezőbe írt. Aki nem nézte épp a képernyőt — vagy csak
+ * újratöltötte az oldalt —, az a beszélgetésben CSAK a saját üzenetét látta:
+ * mintha az agent szó nélkül megállt volna. A megcsinált munka (pl. egy már
+ * kitöltött Excel) ott volt a workspace-ben, de erről semmi nem szólt.
+ *
+ * A `budget` ág külön kezelendő, mert nem hiba, hanem üzemeltetési döntés
+ * (keret) — ezt a felhasználó máshogy kezeli, mint egy technikai hibát.
+ */
+export function describeTurnFailure(error: string): string {
+  const budget = error.match(
+    /budget gate: (Token|Call) limit exceeded: (\d+)\/(\d+) per (day|week|month) \(scope=(\w+)\)/,
+  )
+  if (budget) {
+    const [, kind, used, limit, period, scope] = budget
+    const periodLabel = period === 'day' ? 'napi' : period === 'week' ? 'heti' : 'havi'
+    const scopeLabel =
+      scope === 'agent' ? 'erre az agentre' : scope === 'tenant' ? 'a szervezetre' : `a(z) ${scope} keretre`
+    const kindLabel = kind === 'Token' ? 'token' : 'hívás'
+    const format = (value: string) => Number(value).toLocaleString('hu-HU')
+    return (
+      `⚠️ **Elfogytam a keretből — a válasz nem készült el.** ` +
+      `A(z) ${periodLabel} ${kindLabel}-keret ${scopeLabel} betelt ` +
+      `(${format(used)} / ${format(limit)}).\n\n` +
+      `A keret gördülő ${period === 'day' ? '24 órás' : period === 'week' ? '7 napos' : '30 napos'} ablakra vonatkozik, ` +
+      `így magától felszabadul, ahogy a régebbi hívások kiesnek belőle. Ha előbb kell, kérd meg az adminisztrátort a keret megemelésére.`
+    )
+  }
+  return `⚠️ **A válasz nem készült el — hiba történt a futás közben.**\n\nA hiba: ${error}`
+}
+
+export type FailedTurnSnapshot = CancelledTurnSnapshot & { error: string }
+
+/**
+ * Hibára futott chat-forduló DB-be menthető lezáró üzenete. Ugyanaz az elv, mint
+ * a megszakításnál: mondja meg, MI történt, MI maradt meg, és hogyan tovább.
+ */
+export function buildFailedTurnMessage(snapshot: FailedTurnSnapshot): string {
+  const completedReply = snapshot.completedReply?.trim() ?? ''
+  const turnToolCalls = snapshot.turnToolCalls ?? []
+  const activities = snapshot.activities ?? []
+
+  const parts: string[] = [describeTurnFailure(snapshot.error)]
+
+  const okTools = turnToolCalls.filter((call) => call.status === 'ok')
+  const deniedTools = turnToolCalls.filter((call) => call.status === 'denied')
+  if (okTools.length > 0 || deniedTools.length > 0) {
+    const labels = [
+      ...okTools.map((call) => call.toolName),
+      ...deniedTools.map((call) => `${call.toolName} (megtagadva)`),
+    ]
+    parts.push(`\n**Ami a leállásig lefutott:** ${labels.join(', ')}.`)
+    parts.push(
+      'Az elkészült fájlok és részeredmények a beszélgetés workspace-ében megmaradtak — nem kell elölről kezdeni.',
+    )
+  } else {
+    const doneToolActivities = activities.filter(
+      (activity) => activity.status === 'done' && activity.kind === 'tool',
+    )
+    if (doneToolActivities.length > 0) {
+      parts.push('\n**Ami a leállásig lefutott:**')
+      for (const activity of doneToolActivities) {
+        parts.push(`• ${activity.title}${activity.detail ? ` — ${activity.detail}` : ''}`)
+      }
+    }
+  }
+
+  if (completedReply) {
+    parts.push('\n**Az addig elkészült válasz:**')
+    parts.push(completedReply)
+  } else {
+    parts.push('\nFolytatáshoz írd: *folytasd*, vagy küldd el újra a kérést.')
   }
 
   return parts.join('\n')
@@ -375,6 +468,13 @@ export type AgentChatSendParams = {
   attachmentDocumentIds?: string[]
   processDefinitionId?: string
   processInputPayload?: Record<string, unknown>
+  /**
+   * issue #97 — ez a forduló egy következmény-jóváhagyás FOLYTATÁSA: a külső,
+   * nem megbízható tartalom az előzményben már ott van, ezért a forduló már
+   * „tainted"-ként indul, és a hátralévő mellékhatásos lépések ismét kaput
+   * kapnak. Kizárólag szerveroldalról (a validált jóváhagyás után) állítható.
+   */
+  consequenceApprovalContinuation?: boolean
 }
 
 type ChatModelConfig = {
@@ -385,6 +485,19 @@ type ChatModelConfig = {
 }
 
 type AgentDetails = NonNullable<Awaited<ReturnType<AgentRepository['findByIdForRuntime']>>>
+
+/** A `/slash` skill-feloldás eredménye a fordulóhoz (előtöltés + keret + promóció). */
+type SlashSkillResolution = {
+  modelFacingText: string
+  preloadedSkillPrompts: string[]
+  loadedSkillNames: string[]
+  loadedSkillVersionIds: string[]
+  runtimeHints?: {
+    maxWallClockMs?: number
+    maxToolCalls?: number
+    preferredMode?: 'chat' | 'task'
+  }
+}
 
 /**
  * Minden, amit a kérés-scope-ban elő KELL készíteni (auth, beszélgetés,
@@ -485,6 +598,12 @@ export class AgentChatRuntime {
     private agentTurns?: AgentTurnRepository,
     /** issue #97 — következmény-kapu pending jóváhagyások. */
     private consequenceApprovals?: import('../tool-broker/consequence-approval-service').ConsequenceApprovalService,
+    /**
+     * Agent-hozzáférési gráf (#142). A prompt-roster ezen keresztül szűr: csak
+     * MEGSZÓLÍTHATÓ, aktív, azonos tenantos kollégák kerülhetnek a system promptba.
+     * Ha nincs bekötve, a roster ÜRES (fail-closed) — nem a teljes agent-lista.
+     */
+    private agentAccess?: AgentAccessService,
   ) {}
 
   /**
@@ -704,13 +823,14 @@ export class AgentChatRuntime {
     agentId: string,
     tenantId: string | null,
     messageText: string,
-  ): Promise<{
-    modelFacingText: string
-    preloadedSkillPrompts: string[]
-    loadedSkillNames: string[]
-  }> {
+  ): Promise<SlashSkillResolution> {
     if (!this.skills) {
-      return { modelFacingText: messageText, preloadedSkillPrompts: [], loadedSkillNames: [] }
+      return {
+        modelFacingText: messageText,
+        preloadedSkillPrompts: [],
+        loadedSkillNames: [],
+        loadedSkillVersionIds: [],
+      }
     }
     const resolved = await this.skills.resolveSlashSkillLoads({
       agentId,
@@ -721,6 +841,107 @@ export class AgentChatRuntime {
       modelFacingText: resolved.modelFacingText,
       preloadedSkillPrompts: resolved.preloadedPrompts,
       loadedSkillNames: resolved.loadedSkillNames,
+      loadedSkillVersionIds: resolved.loadedSkillVersionIds,
+      runtimeHints: resolved.runtimeHints,
+    }
+  }
+
+  /**
+   * issue #161 — `preferredMode: 'task'` board-promóció.
+   *
+   * A hosszú skillt nem a chat fordulójában nyújtjuk ki: ticketet nyitunk
+   * ugyanennek az agentnek, átvisszük a kérést, a csatolmányokat és a betöltött
+   * skill-verziókat, majd a dispatcher futtatja végig `task` módban (ott a
+   * keretek eleve tágabbak, és a részeredmény a ticketen marad).
+   *
+   * `null` → nincs promóció, a chat a szokásos módon fut. A ticket felvételének
+   * hibája NEM buktatja el a fordulót: ilyenkor is `null`-lal térünk vissza, és
+   * a chat végzi el a feladatot — a szűkebb kerettel, de elvégzi.
+   */
+  private async trySkillTaskPromotion(input: {
+    params: AgentChatSendParams
+    agentDetails: AgentDetails
+    conversationId: string
+    userText: string
+    slashResolved: SlashSkillResolution
+    attachmentDocs: PreparedTurn['attachmentDocs']
+  }): Promise<ChatProcessReply | null> {
+    const { slashResolved } = input
+    if (
+      !shouldPromoteSkillRunToTask({
+        runtimeHints: slashResolved.runtimeHints,
+        loadedSkillNames: slashResolved.loadedSkillNames,
+      })
+    ) {
+      return null
+    }
+
+    const question = (slashResolved.modelFacingText || input.userText).trim()
+    if (!question) return null
+
+    const title = buildSkillTaskTitle({
+      skillNames: slashResolved.loadedSkillNames,
+      userText: question,
+    })
+    const attachmentDocumentIds = input.attachmentDocs.map((doc) => doc.id)
+
+    try {
+      const ticket = await this.tickets.create({
+        tenantId: input.params.tenantId ?? null,
+        type: 'interaction',
+        title,
+        state: 'ready',
+        assigneeType: 'agent',
+        assigneeId: input.params.agentId,
+        agentId: input.params.agentId,
+        payload: {
+          question,
+          source: 'chat_skill_promotion',
+          conversationId: input.conversationId,
+          attachmentDocumentIds,
+          preferredSkillVersionIds: slashResolved.loadedSkillVersionIds,
+          promotedSkillNames: slashResolved.loadedSkillNames,
+        } as Prisma.JsonValue,
+        sourceDocumentId: null,
+        executeAfter: null,
+        dueBy: null,
+        createdById: input.params.createdById,
+      })
+
+      await this.audit.append({
+        actorType: 'human',
+        actorId: input.params.createdById,
+        agentVersion: input.agentDetails.agent.currentVersion,
+        action: 'skill.task_promoted',
+        targetType: 'ticket',
+        targetId: ticket.id,
+        modelUsed: null,
+        inputRef: null,
+        outputRef: null,
+        policyDecision: 'allowed',
+        tenantId: input.params.tenantId ?? null,
+        conversationId: input.conversationId,
+        ticketId: ticket.id,
+        metadata: {
+          skillNames: slashResolved.loadedSkillNames,
+          skillVersionIds: slashResolved.loadedSkillVersionIds,
+          attachmentCount: attachmentDocumentIds.length,
+        },
+      })
+
+      return {
+        text: buildSkillTaskPromotionMessage({
+          skillNames: slashResolved.loadedSkillNames,
+          ticketTitle: title,
+          attachmentCount: attachmentDocumentIds.length,
+        }),
+        ticketRefId: ticket.id,
+      }
+    } catch (error) {
+      // Fail-soft: a promóció kényelem, nem kapu. Ha a ticket nem jött létre,
+      // a chat futtatja a feladatot — inkább szűkebb kerettel, mint sehogy.
+      console.error('[agent-chat] skill → board promóció sikertelen', error)
+      return null
     }
   }
 
@@ -737,6 +958,45 @@ export class AgentChatRuntime {
    * a prompt összeállítása, a tool-loop és a válasz — az a detached futásban
    * megy, és a kérés lezárása nem szakítja meg.
    */
+  /**
+   * Az agent-hozzáférési gráf user→agent kapuja a chat-indításnál (#142).
+   *
+   * `null`-t ad, ha a beszélgetés indítható; különben a KÉSZ hiba-eredményt, amit a
+   * hívó változtatás nélkül visszaad. A hibaszöveg a felfedési szintből következik:
+   * ha a felhasználó látja is az agentet, megtudja, hogy nincs joga megszólítani;
+   * ha nem látja, opak „Agent not found" — a cél létezése nem szivárog ki.
+   *
+   * FAIL-CLOSED: ha a gráf-szolgáltatás nincs bekötve, a chat nem indul el.
+   */
+  private async assertChatAddressAllowed(
+    params: AgentChatSendParams,
+  ): Promise<BeginTurnResult | null> {
+    if (!this.agentAccess) {
+      return { kind: 'error', error: new Error('Agent not found') }
+    }
+    if (!params.tenantId) {
+      return { kind: 'error', error: new Error('Agent not found') }
+    }
+    try {
+      await this.agentAccess.assertCanAccessAgent({
+        subject: { kind: 'user', userId: params.createdById, tenantId: params.tenantId },
+        targetAgentId: params.agentId,
+        verb: 'address',
+        audit: {
+          channel: 'chat',
+          conversationId: params.conversationId ?? null,
+          initiatingUserId: params.createdById,
+        },
+      })
+      return null
+    } catch (error) {
+      if (error instanceof AgentAccessError) {
+        return { kind: 'error', error: new Error(error.message) }
+      }
+      throw error
+    }
+  }
+
   private async beginTurn(params: AgentChatSendParams): Promise<BeginTurnResult> {
     const text = params.content.trim()
     const attachmentIds = params.attachmentDocumentIds ?? []
@@ -749,6 +1009,11 @@ export class AgentChatRuntime {
     if (!isAgentReachableFromTenant(agentDetails.agent.tenantId, params.tenantId ?? null)) {
       return { kind: 'error', error: new Error('Agent not found') }
     }
+    // #142 — a chat-stream indítása user→agent `address` ige. A `view` jog
+    // függvényében determinisztikusan 403- vagy 404-jellegű hibát ad, és minden
+    // explicit próbát auditál (`agent.access.granted` / `agent.access.denied`).
+    const chatGate = await this.assertChatAddressAllowed(params)
+    if (chatGate) return chatGate
 
     const modelConfig = agentDetails.agent.modelConfig as ChatModelConfig
 
@@ -989,6 +1254,50 @@ export class AgentChatRuntime {
       await this.persistTurnProgress(turn, flush)
     }
 
+    /**
+     * Modell-hívás NÉLKÜL előálló válasz kiadása (Folyamat-indítás, skill →
+     * board-promóció): ugyanaz a stream-szerződés, mint a modellezett fordulóé —
+     * darabolt tokenek, Stop-ellenőrzés minden darabnál, majd terminális lezárás.
+     */
+    const deliverPreparedReply = async (prepared: ChatProcessReply): Promise<void> => {
+      reply = prepared.text
+      turn.completedReply = prepared.text
+      for (const chunk of chunkForStreaming(prepared.text)) {
+        await refreshCancelFromDb()
+        const cancelledId = await this.cancelTurnIfRequested(turn, isCancelRequestedNow())
+        if (cancelledId) {
+          messageId = cancelledId
+          outcome = {
+            status: 'cancelled',
+            reason: 'cancelled',
+            assistantMessageId: cancelledId,
+          }
+          emit({
+            type: 'done',
+            conversationId,
+            messageId: cancelledId,
+            reason: 'cancelled',
+          })
+          return
+        }
+        await emitToken(chunk)
+        await new Promise<void>((r) => setTimeout(r, 12))
+      }
+      const persistedId = await this.finalizeAgentTurn(turn, prepared.text, {
+        ticketRefId: prepared.ticketRefId ?? null,
+      })
+      turn.finalized = true
+      messageId = persistedId
+      ticketRefId = prepared.ticketRefId ?? null
+      outcome = { status: 'completed', assistantMessageId: persistedId }
+      emit({
+        type: 'done',
+        conversationId,
+        messageId: persistedId,
+        ticketRefId: prepared.ticketRefId ?? null,
+      })
+    }
+
     const runBody = async (): Promise<void> => {
       const processReply = await this.tryStartChatTriggeredProcess({
         tenantId: params.tenantId ?? null,
@@ -1002,42 +1311,7 @@ export class AgentChatRuntime {
         modelConfig,
       })
       if (processReply) {
-        reply = processReply.text
-        turn.completedReply = processReply.text
-        for (const chunk of chunkForStreaming(processReply.text)) {
-          await refreshCancelFromDb()
-          const cancelledId = await this.cancelTurnIfRequested(turn, isCancelRequestedNow())
-          if (cancelledId) {
-            messageId = cancelledId
-            outcome = {
-              status: 'cancelled',
-              reason: 'cancelled',
-              assistantMessageId: cancelledId,
-            }
-            emit({
-              type: 'done',
-              conversationId,
-              messageId: cancelledId,
-              reason: 'cancelled',
-            })
-            return
-          }
-          await emitToken(chunk)
-          await new Promise<void>((r) => setTimeout(r, 12))
-        }
-        const persistedId = await this.finalizeAgentTurn(turn, processReply.text, {
-          ticketRefId: processReply.ticketRefId ?? null,
-        })
-        turn.finalized = true
-        messageId = persistedId
-        ticketRefId = processReply.ticketRefId ?? null
-        outcome = { status: 'completed', assistantMessageId: persistedId }
-        emit({
-          type: 'done',
-          conversationId,
-          messageId: persistedId,
-          ticketRefId: processReply.ticketRefId ?? null,
-        })
+        await deliverPreparedReply(processReply)
         return
       }
 
@@ -1046,6 +1320,31 @@ export class AgentChatRuntime {
         params.tenantId ?? null,
         text,
       )
+
+      // issue #161 — `preferredMode: 'task'`: a hosszú skillt nem a chatben
+      // nyújtjuk 15 percre, hanem ticketet nyitunk és a board futtatja végig.
+      // A chat rövid marad; a felhasználó a ticket hivatkozását kapja vissza.
+      const promotion = await this.trySkillTaskPromotion({
+        params,
+        agentDetails,
+        conversationId,
+        userText: text,
+        slashResolved,
+        attachmentDocs,
+      })
+      if (promotion) {
+        for (const skillName of slashResolved.loadedSkillNames) {
+          await emitActivity({
+            id: `skill-slash-${skillName}`,
+            kind: 'tool',
+            title: `Skill betöltve: ${skillName}`,
+            detail: 'Felhasználói /slash parancs alapján',
+            status: 'done',
+          })
+        }
+        await deliverPreparedReply(promotion)
+        return
+      }
       const latestUserTextOverride =
         slashResolved.modelFacingText !== text ? slashResolved.modelFacingText : undefined
       const kbSearch = await this.fetchKbSearchContext({
@@ -1082,6 +1381,7 @@ export class AgentChatRuntime {
         documentAliases: this.contextDocumentAliases(attachmentDocs, workspaceFiles, kbSearch.hits),
       })
       const priorToolCalls = await this.toolCaps.listToolCallsForConversation(conversationId)
+      const continuationPrompt = await this.buildContinuationPrompt(conversationId, workspaceFiles)
       const gatewayPrompt = await this.buildGatewayMessages(
         agentDetails,
         assembledContext.messages,
@@ -1091,6 +1391,7 @@ export class AgentChatRuntime {
         priorToolCalls,
         latestUserTextOverride,
         memoryContext.block,
+        continuationPrompt,
       )
 
       const allowedChatTools = await listAllowedChatTools(this.toolCaps, params.agentId)
@@ -1144,6 +1445,7 @@ export class AgentChatRuntime {
           skillIndexPrompt: skillBinding.skillIndexPrompt,
           preloadedSkillPrompts: slashResolved.preloadedSkillPrompts,
           loadSkill: skillBinding.loadSkill,
+          initialSkillRuntimeHints: slashResolved.runtimeHints,
           archiveLargeToolResult: (input) =>
             this.archiveLargeToolResult(tenantKey, conversationId, input),
           shouldCancel: () => isCancelRequestedNow(),
@@ -1160,6 +1462,10 @@ export class AgentChatRuntime {
               }
             : {}),
           onMemoryCandidate: (candidate) => emit({ type: 'memory_candidate', candidate }),
+          // Folytatás: a külső tartalom envelope továbbra is releváns a modellnek,
+          // de a consequence gate már risk-class (nem taint) alapú — initialTainted
+          // legacy jel, a kapu nem használja workspace-írás blokkolására.
+          initialTainted: params.consequenceApprovalContinuation === true,
           ...(this.consequenceApprovals
             ? {
                 createConsequenceApproval: async (invoke) =>
@@ -1199,6 +1505,7 @@ export class AgentChatRuntime {
           const message = result.error instanceof Error ? result.error.message : 'Tool loop failed'
           outcome = { status: 'failed', reason: 'error', error: message }
           emit({ type: 'error', message })
+          await this.persistFailedTurn(turn, message, snapshot.partialText)
           return
         }
         reply = result.value.content
@@ -1300,6 +1607,10 @@ export class AgentChatRuntime {
       const message = error instanceof Error ? error.message : 'Agent turn failed'
       outcome = { status: 'failed', reason: 'error', error: message }
       emit({ type: 'error', message })
+      // Az SSE `error` esemény múlékony: aki nem nézi épp a képernyőt, vagy
+      // újratölt, annak nyoma sem marad. A lezáró üzenet a beszélgetésbe kerül,
+      // így a leállás oka utólag is látszik (a watchdog-lezárás mintájára).
+      await this.persistFailedTurn(turn, message, snapshot.partialText)
     } finally {
       // Terminális teljes részszöveg (§5.3): completedReply, vagy ami a flusherben
       // már összegyűlt (pl. stream közbeni hiba / cancel, mielőtt a reply kész).
@@ -1318,6 +1629,47 @@ export class AgentChatRuntime {
       (message) => message.role === 'agent' && message.createdAt > turn.userMessageCreatedAt,
     )
     return existing?.id ?? null
+  }
+
+  /**
+   * Hibára futott forduló lezáró üzenete a beszélgetésbe. E nélkül a felhasználó
+   * újratöltés után csak a saját üzenetét látja — mintha az agent némán megállt
+   * volna (l. `buildFailedTurnMessage`). Fail-soft: az üzenet hiánya
+   * megfigyelhetőségi veszteség, nem állapot-hiba, a forduló attól még lezárul.
+   */
+  private async persistFailedTurn(
+    turn: StreamTurnContext,
+    error: string,
+    streamedPartialText = '',
+  ): Promise<void> {
+    if (turn.finalized) return
+    try {
+      if (await this.findAgentReplyAfterTurn(turn)) return
+      const toolCalls = await this.toolCaps.listToolCallsForConversation(turn.conversationId)
+      const content = buildFailedTurnMessage({
+        error,
+        // A tool-loop a teljes reply-t előre megadja, a streaming gateway viszont
+        // csak chunkonként építi fel. Stream közbeni hibánál ezért a snapshot az
+        // egyetlen forrás, ami a már megjelent részválaszt hiánytalanul őrzi.
+        completedReply:
+          turn.completedReply ?? guardTurnPartialText(streamedPartialText),
+        activities: turn.activities,
+        turnToolCalls: toolCalls.filter((call) => call.createdAt > turn.userMessageCreatedAt),
+      })
+      await this.conversations.appendMessage({
+        conversationId: turn.conversationId,
+        role: 'agent',
+        content,
+        actingUserId: turn.createdById,
+        agentVersion: turn.agentVersion,
+        model: turn.model,
+        actorType: 'agent',
+        actorId: turn.agentId,
+      })
+      turn.finalized = true
+    } catch (e) {
+      console.error('[agent-chat] hiba-lezáró üzenet írása sikertelen', turn.conversationId, e)
+    }
   }
 
   private async persistCancelledTurn(turn: StreamTurnContext): Promise<string | null> {
@@ -1447,6 +1799,19 @@ export class AgentChatRuntime {
     const agentDetails = await this.agents.findByIdForRuntime(params.agentId)
     if (!agentDetails) throw new Error('Agent not found')
     assertAgentReachableForChat(agentDetails.agent.tenantId, params.tenantId ?? null)
+    // #142 — a feladat-ticket felvétele ugyanaz az `address` ige, mint a chat; csak a
+    // CSATORNA más. Enélkül a chat-kaput meg lehetne kerülni egy feladat felvételével.
+    if (!this.agentAccess || !params.tenantId) throw new Error('Agent not found')
+    await this.agentAccess.assertCanAccessAgent({
+      subject: { kind: 'user', userId: params.createdById, tenantId: params.tenantId },
+      targetAgentId: params.agentId,
+      verb: 'address',
+      audit: {
+        channel: 'ticket',
+        conversationId: params.conversationId ?? null,
+        initiatingUserId: params.createdById,
+      },
+    })
 
     const attachmentDocs = await this.loadDocuments(attachmentIds)
     const modelConfig = agentDetails.agent.modelConfig as {
@@ -1777,13 +2142,17 @@ export class AgentChatRuntime {
   private async archiveLargeToolResult(
     tenantId: string,
     conversationId: string,
-    input: { toolName: string; callId: string; turn: number; content: string },
+    input: { toolName: string; callId: string; turn: number; content: string; path?: string },
   ): Promise<{ path: string; bytes: number } | null> {
     const bytes = Buffer.from(input.content, 'utf8')
-    const path = [
-      '.tool-results',
-      `${String(input.turn + 1).padStart(2, '0')}-${safeToolResultName(input.toolName)}-${safeToolResultName(input.callId)}.json`,
-    ].join('/')
+    // A kontextus-tömörítés kötött útvonalat ad: a stub már közölte a modellel,
+    // hol keresse az eredményt, ezért ott kell keletkeznie.
+    const path =
+      input.path ??
+      [
+        '.tool-results',
+        `${String(input.turn + 1).padStart(2, '0')}-${safeToolResultName(input.toolName)}-${safeToolResultName(input.callId)}.json`,
+      ].join('/')
 
     try {
       await this.workspaceStorage.write(tenantId, conversationId, path, bytes)
@@ -1860,6 +2229,31 @@ export class AgentChatRuntime {
     })
   }
 
+  private async buildContinuationPrompt(
+    conversationId: string,
+    workspaceFiles: string[],
+  ): Promise<string | null> {
+    if (!this.agentTurns) return null
+    try {
+      const previous = await this.agentTurns.findLatestTerminalByConversation(conversationId)
+      if (!previous) return null
+      const activities = Array.isArray(previous.activities)
+        ? (previous.activities as ContinuationActivity[])
+        : []
+      const snapshot = {
+        status: previous.status,
+        reason: previous.reason,
+        activities,
+      }
+      if (!shouldInjectTurnContinuation(snapshot)) return null
+      const prompt = buildTurnContinuationPrompt(snapshot, workspaceFiles)
+      return prompt.trim() ? prompt : null
+    } catch (error) {
+      console.error('[agent-chat] continuation prompt összeállítás sikertelen', error)
+      return null
+    }
+  }
+
   private async buildGatewayMessages(
     agentDetails: NonNullable<Awaited<ReturnType<AgentRepository['findByIdForRuntime']>>>,
     historyMessages: ContextAssemblyMessage[],
@@ -1869,9 +2263,14 @@ export class AgentChatRuntime {
     toolCalls: ToolCall[] = [],
     latestUserTextOverride?: string,
     memoryContextBlock?: string | null,
+    continuationPrompt?: string | null,
   ) {
-    const allAgents = await this.agents.findMany()
-    const orgRoster = formatOrgRoster(allAgents)
+    // #142: a roster a hívó agent SAJÁT `address` jogán szűrt lista. A korábbi
+    // szűretlen `findMany()` más tenant agentjeinek nevét, persona-traitjét és ID-ját
+    // is beírta a system promptba — ez tenantközi adatszivárgás volt.
+    const orgRoster = formatOrgRoster(
+      await resolveAddressableColleagues(this.agentAccess, agentDetails.agent),
+    )
 
     const stablePreamble: PromptSegments['stablePreamble'] = [
       { role: 'system', content: composeSystemPrompt(agentDetails.agent) },
@@ -1928,6 +2327,10 @@ export class AgentChatRuntime {
         content:
           'A beszélgetés munkaterülete jelenleg üres (nincs feltöltött fájl). Ha a felhasználó létező fájlra hivatkozik, kérd meg, hogy csatolja (📎). Csatolt PDF/DOCX esetén a document_read eszközt használd (pages/query). Új fájlt (pl. Excel → xlsx_create, prezentáció → pptx_create, Word → docx_create, egyéb → file_write) az eszközökkel hozhatsz létre — a felhasználó a „Workspace fájlok" panelről tölti le.',
       })
+    }
+
+    if (continuationPrompt && continuationPrompt.trim()) {
+      variableContext.push({ role: 'system', content: continuationPrompt })
     }
 
     return {

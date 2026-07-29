@@ -32,6 +32,7 @@ export default async function DashboardPage() {
 
   const stats = statsRes.success ? statsRes.data : null
   const agents = agentsRes.success ? agentsRes.data : []
+  const agentsLoadError = agentsRes.success ? null : agentsRes.error
   const tickets = ticketsRes.success ? ticketsRes.data : []
   const awaitingHuman = tickets.filter((t) => t.state === 'awaiting_human').length
   const activeCount = agents.filter((a) => a.status === 'active').length
@@ -103,14 +104,15 @@ export default async function DashboardPage() {
           {agents.slice(0, 3).map((agent) => (
             <DashboardAgentCard key={agent.id} agent={agent} />
           ))}
-          {agents.length === 0 && (
+          {agentsLoadError && (
+            <Card className="md:col-span-3 border-coral/40 bg-coral/5">
+              <p className="text-sm font-medium text-coral-deep">A csapat betöltése sikertelen</p>
+              <p className="mt-1 text-sm text-ink-soft">{agentsLoadError}</p>
+            </Card>
+          )}
+          {!agentsLoadError && agents.length === 0 && (
             <Card className="md:col-span-3">
-              <p className="text-sm text-ink-faint">
-                Még senki sincs a csapatban — futtasd:{' '}
-                <code className="rounded bg-night-2 px-1.5 py-0.5 font-mono text-xs">
-                  npm run db:seed
-                </code>
-              </p>
+              <p className="text-sm text-ink-faint">Még senki sincs a csapatban ebben a tenantban.</p>
             </Card>
           )}
         </div>

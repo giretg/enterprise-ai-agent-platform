@@ -44,14 +44,21 @@ A backend hozzáférést kap automatikusan az `apphosting.yaml`-ban felsorolt se
 
 ## 2. DB migráció (Neon)
 
-A deploy **előtt** futtasd lokálisan a séma szinkront, audit backfill-et és seed-et a Neon direct URL-lel:
+A deploy **előtt** futtasd lokálisan a pending Prisma migrációkat a Neon direct URL-lel.
+Ha a kód új oszlopokat/táblákat vár, de a migráció kimarad, a Control Plane listák
+(pl. munkatársak) elhasalnak — üresnek tűnnek, pedig az adat megvan.
 
 ```bash
 cd app
-npm run db:push          # Fázis 2 táblák: write_gate_tokens, evals, eval_runs + FK-k
-npm run db:backfill-audit # Fázis 1 audit sorok hash-lánc kitöltése
-npm run db:seed          # Könyvelő Agent + demo felhasználók
+npm run db:migrate:status   # mi van még hátra?
+npm run db:migrate:deploy   # éles: csak pending migrációk (pl. 0019_agent_access_graph)
+# Opcionális, csak új/üres környezetben:
+# npm run db:backfill-audit
+# npm run db:seed
 ```
+
+`db:push` csak ad-hoc/dev séma-szinkronra való — élesen **ne** ezt használd a
+verziózott migrációk helyett.
 
 ### Teszt adatbázis (Neon branch)
 

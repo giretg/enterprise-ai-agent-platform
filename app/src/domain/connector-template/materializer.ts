@@ -240,6 +240,7 @@ function chooseEndpoints(
     method: endpoint.method,
     path: endpoint.path,
     access: endpoint.access,
+    ...(endpoint.risk ? { risk: endpoint.risk } : {}),
     ...(endpoint.description ? { description: endpoint.description } : {}),
   }))
 }

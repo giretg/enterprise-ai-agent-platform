@@ -24,6 +24,8 @@ export const proposedToolSchema = z.object({
   method: z.enum(HTTP_METHODS),
   path: z.string().min(1),
   access: z.enum(['read', 'write']),
+  /** Következmény-kapu; hiányában access + metódus dönt. */
+  risk: z.enum(['read', 'write', 'danger']).optional(),
   description: z.string().optional(),
   /**
    * Ha true: az endpoint írási hívásaihoz a futásidejű http-api-kliens automatikusan

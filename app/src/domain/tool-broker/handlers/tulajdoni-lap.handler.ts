@@ -18,3 +18,21 @@ export const tulajdoniLapHandler: ToolHandler = {
     return ctx.tulajdoniLapParse(input, actingUserId, { authorization, actingTenantId })
   },
 }
+
+/**
+ * tulajdoni_lap_egyeztetes — egy hívásban parse + párosítás + munkafüzet
+ * (issue #161). Ugyanaz a forrás-feloldás, mint a parse-nál; a kimenet a
+ * munkaterületre íródik, ezért a jogosultsága workspace-írás.
+ */
+export const tulajdoniLapEgyeztetesHandler: ToolHandler = {
+  id: 'tulajdoni_lap_egyeztetes',
+  handles(tool) {
+    return tool === 'tulajdoni_lap_egyeztetes'
+  },
+  async execute({ ctx, input, authorization, actingUserId, actingTenantId }: ToolHandlerArgs) {
+    if (input.tool !== 'tulajdoni_lap_egyeztetes') {
+      throw new Error(`tulajdoni_lap_egyeztetes handler received ${input.tool}`)
+    }
+    return ctx.tulajdoniLapEgyeztetes(input, actingUserId, { authorization, actingTenantId })
+  },
+}

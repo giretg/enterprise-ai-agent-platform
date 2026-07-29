@@ -22,11 +22,13 @@ import {
 import { signSkillVersion } from '@/lib/crypto/hash-chain'
 import { normalizeSkillName } from '@/lib/skill/skill-name'
 import {
+  aggregateSkillRuntimeHints,
   computeSkillContentHash,
   parseSkillContent,
   parseSkillRequires,
   type SkillContent,
   type SkillRequirement,
+  type SkillRuntimeHints,
 } from '@/lib/skill/skill-content'
 import { isSkillReadableFromTenant, isSkillWritableFromTenant } from '@/lib/skill/skill-scope'
 import { parseSkillMd } from '@/lib/skill/skill-md-adapter'
@@ -816,9 +818,14 @@ export class SkillService {
     skillVersionIds: string[]
     actor: ActorContext
     reason?: string
-  }): Promise<{ preloadedPrompts: string[]; loadedSkillNames: string[] }> {
+  }): Promise<{
+    preloadedPrompts: string[]
+    loadedSkillNames: string[]
+    loadedSkillVersionIds: string[]
+    runtimeHints?: SkillRuntimeHints
+  }> {
     if (input.skillVersionIds.length === 0) {
-      return { preloadedPrompts: [], loadedSkillNames: [] }
+      return { preloadedPrompts: [], loadedSkillNames: [], loadedSkillVersionIds: [] }
     }
     const index = await this.getAssignedSkillIndex(input.agentId)
     const reason =
@@ -826,6 +833,8 @@ export class SkillService {
       'A felhasználó explicit módon kérte ennek a skillnek a betöltését. Kövesd az alábbi instrukciót:'
     const preloadedPrompts: string[] = []
     const loadedSkillNames: string[] = []
+    const loadedSkillVersionIds: string[] = []
+    const collectedHints: SkillRuntimeHints[] = []
     const seen = new Set<string>()
     const orderedIds: string[] = []
     for (const skillVersionId of input.skillVersionIds) {
@@ -857,7 +866,7 @@ export class SkillService {
     )
 
     if (loadableIds.length === 0) {
-      return { preloadedPrompts: [], loadedSkillNames: [] }
+      return { preloadedPrompts: [], loadedSkillNames: [], loadedSkillVersionIds: [] }
     }
 
     const versions = await this.skills.findVersionsByIds(loadableIds)
@@ -884,9 +893,16 @@ export class SkillService {
         metadata: { skillVersionId, skillId: entry.skillId },
       })
       loadedSkillNames.push(entry.name)
+      loadedSkillVersionIds.push(skillVersionId)
       preloadedPrompts.push(`${reason}\n\n${buildLoadedSkillPrompt(entry, content)}`)
+      if (content.runtimeHints) collectedHints.push(content.runtimeHints)
     }
-    return { preloadedPrompts, loadedSkillNames }
+    return {
+      preloadedPrompts,
+      loadedSkillNames,
+      loadedSkillVersionIds,
+      runtimeHints: aggregateSkillRuntimeHints(collectedHints),
+    }
   }
 
   /**
@@ -901,14 +917,27 @@ export class SkillService {
     modelFacingText: string
     preloadedPrompts: string[]
     loadedSkillNames: string[]
+    /** A ténylegesen betöltött verziók — a board-promóció ezt adja tovább (#161). */
+    loadedSkillVersionIds: string[]
+    runtimeHints?: SkillRuntimeHints
   }> {
     if (!input.messageText.includes('/')) {
-      return { modelFacingText: input.messageText, preloadedPrompts: [], loadedSkillNames: [] }
+      return {
+        modelFacingText: input.messageText,
+        preloadedPrompts: [],
+        loadedSkillNames: [],
+        loadedSkillVersionIds: [],
+      }
     }
     const index = await this.getAssignedSkillIndex(input.agentId)
     const parsed = parseSkillSlashCommands(input.messageText, index)
     if (parsed.skillVersionIds.length === 0) {
-      return { modelFacingText: input.messageText, preloadedPrompts: [], loadedSkillNames: [] }
+      return {
+        modelFacingText: input.messageText,
+        preloadedPrompts: [],
+        loadedSkillNames: [],
+        loadedSkillVersionIds: [],
+      }
     }
 
     const preloaded = await this.preloadSkillsByVersionIds({
@@ -922,6 +951,8 @@ export class SkillService {
       modelFacingText: parsed.modelFacingText,
       preloadedPrompts: preloaded.preloadedPrompts,
       loadedSkillNames: preloaded.loadedSkillNames,
+      loadedSkillVersionIds: preloaded.loadedSkillVersionIds,
+      runtimeHints: preloaded.runtimeHints,
     }
   }
 
@@ -935,7 +966,14 @@ export class SkillService {
     agentId: string
     skillVersionId: string
     actor: ActorContext
-  }): Promise<{ ok: true; instructions: string } | { ok: false; reason: string }> {
+  }): Promise<
+    | {
+        ok: true
+        instructions: string
+        runtimeHints?: SkillRuntimeHints
+      }
+    | { ok: false; reason: string }
+  > {
     const index = await this.getAssignedSkillIndex(input.agentId)
     const entry = resolveLoadableSkill(index, input.skillVersionId)
     if (!entry) {
@@ -975,7 +1013,11 @@ export class SkillService {
       metadata: { skillVersionId: input.skillVersionId, skillId: entry.skillId },
     })
 
-    return { ok: true, instructions: buildLoadedSkillPrompt(entry, content) }
+    return {
+      ok: true,
+      instructions: buildLoadedSkillPrompt(entry, content),
+      ...(content.runtimeHints ? { runtimeHints: content.runtimeHints } : {}),
+    }
   }
 
   /**

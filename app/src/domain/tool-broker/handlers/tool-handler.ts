@@ -35,6 +35,7 @@ import type {
   RepoPrepareResult,
   DocumentReadResult,
   TulajdoniLapParseResult,
+  TulajdoniLapEgyeztetesResult,
   TicketCreateResult,
   ToolBrokerInvokeInput,
   UserDirectoryResult,
@@ -85,8 +86,20 @@ export interface HandlerContext {
   webResearchRequest(
     input: Extract<ToolBrokerInvokeInput, { tool: 'web_research_request' }>,
   ): Promise<WebResearchDelegationResult>
-  agentResolve(args: AgentResolveArgs, tenantId: string | null): Promise<AgentResolveResult>
-  agentCatalog(args: AgentCatalogArgs, tenantId: string | null): Promise<AgentCatalogResult>
+  /**
+   * #142 — a felderítő toolok a HÍVÓ AGENT `view` jogán szűrnek, ezért a hívó
+   * azonosítója a szerződés része (nem elég a tenant).
+   */
+  agentResolve(
+    args: AgentResolveArgs,
+    tenantId: string | null,
+    callerAgentId: string,
+  ): Promise<AgentResolveResult>
+  agentCatalog(
+    args: AgentCatalogArgs,
+    tenantId: string | null,
+    callerAgentId: string,
+  ): Promise<AgentCatalogResult>
   userDirectory(
     input: Extract<ToolBrokerInvokeInput, { tool: 'user_directory' }>,
     actingTenantId: string | null,
@@ -125,6 +138,14 @@ export interface HandlerContext {
       actingTenantId: string | null
     },
   ): Promise<TulajdoniLapParseResult>
+  tulajdoniLapEgyeztetes(
+    input: Extract<ToolBrokerInvokeInput, { tool: 'tulajdoni_lap_egyeztetes' }>,
+    actingUserId: string | null,
+    extras?: {
+      authorization: AllowedAuthorization
+      actingTenantId: string | null
+    },
+  ): Promise<TulajdoniLapEgyeztetesResult>
 }
 
 /** Minden handler-hívás egyetlen, immutábilis argumentum-csomagot kap. */

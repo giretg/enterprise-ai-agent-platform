@@ -479,6 +479,8 @@ const httpApiEndpointSchema = z.object({
   description: z.string().trim().max(500).optional(),
   idempotent: z.boolean().optional(),
   profile: z.string().trim().max(80).optional(),
+  /** Következmény-kapu: read auto; write/danger → Jóváhagyom. */
+  risk: z.enum(['read', 'write', 'danger']).optional(),
 })
 
 const httpApiAuthProfileSchema = z.object({
@@ -519,6 +521,8 @@ const httpApiConnectorFields = {
   writeHeaders: z.record(z.string(), z.string()).optional(),
   accessMode: z.enum(['read', 'write']).default('write'),
   restrictToEndpoints: z.boolean().default(false),
+  /** Connector-szintű alap kockázat — write/danger → minden http_api_request kapuzott. */
+  defaultRisk: z.enum(['read', 'write', 'danger']).optional(),
   githubRepositoryAccess: githubRepositoryAccessSchema.optional(),
   endpoints: z.array(httpApiEndpointSchema).max(100).optional(),
 }

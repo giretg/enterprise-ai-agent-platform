@@ -4,7 +4,8 @@ import { apiError, apiOk } from '@/lib/api-response'
 import { suitableAgentsSchema } from '@/lib/validators/actions'
 import { parsePlaybookSpecV2 } from '@/lib/playbook-v2/spec'
 import { isAgentSuitable } from '@/domain/playbook/suitability'
-import { shouldExcludeHiddenAgents } from '@/lib/agent-operator-visibility'
+import { services } from '@/domain'
+import { isTenantAdmin, tenantUserSubject } from '@/domain/agent-access/tenant-user-subject'
 
 export async function GET(request: Request) {
   try {
@@ -26,9 +27,22 @@ export async function GET(request: Request) {
     const role = parsePlaybookSpecV2(version.spec).roles.find((r) => r.key === parsed.data.roleKey)
     if (!role || role.type !== 'agent_role') return apiError('A megadott agent-szerep nem található.', 404)
 
+    // #142 — a „suitable" ajánló `address` alapján szűr: a UI nem kínálhat olyan
+    // agentet, akit a folyamat indításakor a gráf elutasítana. A capability-alapú
+    // alkalmasság ettől FÜGGETLEN, további feltétel marad.
+    const subject = tenantUserSubject(user)
+    const addressableIds = new Set(
+      subject
+        ? (
+            await services.agentAccess.listAccessibleAgents(subject, 'address', {
+              subjectIsTenantAdmin: isTenantAdmin(user),
+            })
+          ).map((a) => a.id)
+        : [],
+    )
     const agents = await repositories.agents.findMany({
       tenantId: registryTenantId,
-      excludeHiddenFromOperators: shouldExcludeHiddenAgents(user.activeTenantRole),
+      ids: [...addressableIds],
     })
     const capabilityRows = await repositories.toolBroker.findCapabilitiesForAgents(agents.map((a) => a.id))
     const capsByAgent = new Map<string, { toolName: string; allowed: boolean }[]>()

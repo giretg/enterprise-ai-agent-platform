@@ -15,10 +15,20 @@ import type {
   ConversationRepository,
 } from '@/repositories/interfaces'
 import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
+import { envelopeToolResultForModel } from './tool-result-envelope'
 import type { ToolBrokerInvokeInput } from './tool-broker-types'
 import type { ToolBrokerService } from './tool-broker-service'
 
 export const CONSEQUENCE_APPROVAL_TTL_MS = 60 * 60 * 1000
+
+/**
+ * Meddig mutatjuk még a MÁR LEJÁRT függő jóváhagyást a beszélgetésben?
+ *
+ * Nem a döntés miatt (lejárt kártyát nem lehet jóváhagyni), hanem hogy a
+ * felhasználó megértse, miért nem történt semmi. Ennél régebbi lejárt sor már
+ * csak zaj lenne a szálban.
+ */
+export const CONSEQUENCE_APPROVAL_VISIBILITY_MS = 24 * 60 * 60 * 1000
 
 export type ConsequenceApprovalActor = {
   id: string
@@ -31,21 +41,93 @@ export type ConsequenceApprovalCard = {
   toolName: string
   summary: string
   expiresAt: string
+  /**
+   * A szerver órája szerint lejárt-e. A kliens órájára nem bízzuk: egy elállított
+   * gép „még él" gombot mutatna egy halott jóváhagyáshoz.
+   */
+  expired?: boolean
+  /**
+   * Ha a korábbi jóváhagyás után a tool-hívás elbukott: a hiba kódja. A kártya
+   * ebből írja ki, MIÉRT nem futott le a művelet, és emiatt kínál újrapróbálást.
+   */
+  failedReason?: string
 }
 
 export type ConsequenceApprovalResult =
-  | { ok: true; outcome: 'approved'; result: unknown }
+  | {
+      ok: true
+      outcome: 'approved'
+      result: unknown
+      /** Rövid, emberi mondat arról, MI futott le — a kártya ezt írja ki. */
+      resultSummary: string
+    }
   | { ok: true; outcome: 'rejected' }
   | { ok: false; reason: string }
 
+/**
+ * A jóváhagyás utáni FOLYTATÁS bemenete: a lefuttatott művelet(ek) eredménye
+ * és az a beszélgetés/agent, amelyben a folytatás fordulója elindulhat.
+ */
+export type ConsequenceApprovalContinuation = {
+  conversationId: string
+  agentId: string
+  /** A folytatás forduló user-üzenete — SZERVER oldalon áll össze, nem a kliens küldi. */
+  prompt: string
+}
+
+/** Mennyi eredményszöveg mehet vissza a modellnek a folytatáskor. */
+const CONTINUATION_RESULT_MAX_CHARS = 600
+/** Egy argumentum-részlet (útvonal, címzett, tárgy) maximális hossza a kártyán/promptban. */
+const SUMMARY_ARG_MAX_CHARS = 200
+
+/**
+ * Hosszkorlát MINDEN modell/kártya felé menő részletre. A tool argumentumai és az
+ * eredménye is a modell által, külső tartalomból generált szöveg: korlát nélkül egy
+ * több tízezer karakteres „útvonal" vagy eredmény kiszorítaná a folytatás tényleges
+ * utasítását a kontextusból (és olvashatatlanná tenné a kártyát).
+ */
+function clip(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max)}… (rövidítve)` : text
+}
+
 function summarizeArgs(toolName: string, args: Record<string, unknown>): string {
   const path = typeof args.path === 'string' ? args.path : null
-  if (path) return `${toolName} → ${path}`
+  if (path) return `${toolName} → ${clip(path, SUMMARY_ARG_MAX_CHARS)}`
   const to = typeof args.to === 'string' ? args.to : null
-  if (to) return `${toolName} → ${to}`
+  if (to) return `${toolName} → ${clip(to, SUMMARY_ARG_MAX_CHARS)}`
   const title = typeof args.title === 'string' ? args.title : null
-  if (title) return `${toolName}: ${title}`
+  if (title) return `${toolName}: ${clip(title, SUMMARY_ARG_MAX_CHARS)}`
   return toolName
+}
+
+/** A broker eredményéből rövid, olvasható szöveg (a `resultMeta` tetszőleges JSON). */
+function describeResult(result: unknown): string {
+  if (result === null || result === undefined) return 'kész'
+  // A sztring-eredményre UGYANAZ a korlát vonatkozik, mint a JSON-ra: egy hosszú
+  // szöveges tool-válasz enélkül teljes egészében a promptba/kártyára kerülne.
+  if (typeof result === 'string') return clip(result.trim(), CONTINUATION_RESULT_MAX_CHARS) || 'kész'
+  let text: string
+  try {
+    text = JSON.stringify(result)
+  } catch {
+    return 'kész'
+  }
+  if (!text || text === '{}' || text === 'null') return 'kész'
+  return clip(text, CONTINUATION_RESULT_MAX_CHARS)
+}
+
+/** A `resultMeta`-ból (perzisztált végállapot) ugyanaz a szöveg, mint frissen futtatva. */
+function describeResultMeta(resultMeta: unknown): string {
+  if (resultMeta && typeof resultMeta === 'object' && 'result' in resultMeta) {
+    return describeResult((resultMeta as { result: unknown }).result)
+  }
+  return describeResult(resultMeta)
+}
+
+/** Korábbi approve után a tool invoke denied/exception-nel zárult-e. */
+function isFailedInvokeResultMeta(resultMeta: unknown): boolean {
+  if (!resultMeta || typeof resultMeta !== 'object' || Array.isArray(resultMeta)) return false
+  return (resultMeta as { denied?: unknown }).denied === true
 }
 
 export class ConsequenceApprovalService {
@@ -96,7 +178,7 @@ export class ConsequenceApprovalService {
       modelUsed: null,
       inputRef: input.invoke.tool,
       outputRef: row.id,
-      policyDecision: 'consequence_gate_external_content',
+      policyDecision: 'consequence_gate_risk',
       metadata: {
         approval_id: row.id,
         tool: input.invoke.tool,
@@ -112,6 +194,56 @@ export class ConsequenceApprovalService {
     }
   }
 
+  /**
+   * Egy beszélgetés függő jóváhagyásai a chat ÚJRATÖLTÉSÉHEZ.
+   *
+   * A stream-esemény önmagában efemer: a forduló lezárultával (a chat a DB
+   * végállapotát tölti újra), lapfrissítéskor és visszacsatlakozáskor a kártya
+   * eltűnne, a művelet pedig némán ott ülne lejáratig. Ez a metódus a tartós
+   * forrás — ugyanazzal a tenant-határral, mint a döntés maga: idegen tenantból
+   * a pending jóváhagyás LÉTEZÉSE sem látszik.
+   */
+  async listOpenForConversation(
+    conversationId: string,
+    actor: ConsequenceApprovalActor,
+  ): Promise<ConsequenceApprovalCard[]> {
+    const access = await this.assertActorCanAccessConversation(conversationId, actor)
+    if (!access.ok) return []
+
+    const now = Date.now()
+    const rows = await this.approvals.listOpenByConversation(
+      conversationId,
+      new Date(now - CONSEQUENCE_APPROVAL_VISIBILITY_MS),
+    )
+
+    const cards: ConsequenceApprovalCard[] = []
+    for (const row of rows) {
+      // A sikeresen lefutott jóváhagyás lezárt ügy — nem kérünk rá újra gombot.
+      // Az elbukott tool-hívás viszont igen: az emberi döntés megvan, a művelet
+      // nem futott le, ezért újratöltés után is kell hozzá „Újrapróbálom".
+      if (row.status === 'approved' && !isFailedInvokeResultMeta(row.resultMeta)) continue
+      // Defense-in-depth: az agentnek is elérhetőnek kell lennie a néző tenantjából.
+      const agent = await this.agents.findById(row.agentId)
+      if (!agent || !isAgentReachableFromTenant(agent.tenantId, actor.tenantId)) continue
+      const failedReason =
+        row.status === 'approved'
+          ? ((row.resultMeta as { reason?: unknown } | null)?.reason ?? 'invoke_failed')
+          : null
+      cards.push({
+        approvalId: row.id,
+        toolName: row.toolName,
+        summary: summarizeArgs(row.toolName, (row.args ?? {}) as Record<string, unknown>),
+        expiresAt: row.expiresAt.toISOString(),
+        // Egy elbukott hívás akkor is újrafuttatható, ha közben letelt a
+        // jóváhagyási ablak: a döntés már megszületett, csak a végrehajtás
+        // hiányzik — nem küldjük vissza a felhasználót új kört kérni.
+        expired: row.status === 'pending' && row.expiresAt.getTime() <= now,
+        ...(failedReason ? { failedReason: String(failedReason) } : {}),
+      })
+    }
+    return cards
+  }
+
   async approve(
     approvalId: string,
     actor: ConsequenceApprovalActor,
@@ -121,8 +253,20 @@ export class ConsequenceApprovalService {
     const access = await this.assertActorCanDecide(row, actor)
     if (!access.ok) return access
 
-    if (row.status === 'approved') {
-      return { ok: true, outcome: 'approved', result: row.resultMeta }
+    const previouslyFailedInvoke = isFailedInvokeResultMeta(row.resultMeta)
+
+    if (row.status === 'approved' && !previouslyFailedInvoke) {
+      // Sikeres invoke utáni ismételt kattintás: ne futtassuk újra a toolt.
+      return {
+        ok: true,
+        outcome: 'approved',
+        result: row.resultMeta,
+        resultSummary: describeResultMeta(row.resultMeta),
+      }
+    }
+    if (row.status === 'approved' && previouslyFailedInvoke) {
+      // Emberi jóváhagyás megvan, a tool invoke bukott el — Újrapróbálom újrafuttat.
+      return this.invokeApproved(row, actor)
     }
     if (row.status !== 'pending') {
       return { ok: false, reason: `approval_${row.status}` }
@@ -141,6 +285,25 @@ export class ConsequenceApprovalService {
     })
     if (!claimed) return { ok: false, reason: 'approval_already_decided' }
 
+    return this.invokeApproved(
+      {
+        ...row,
+        status: 'approved',
+        approvedBy: actor.id,
+        approvedAt: new Date(),
+      },
+      actor,
+    )
+  }
+
+  /**
+   * Már approved sor tool-újrafuttatása (első approve után, vagy sikertelen
+   * invoke Újrapróbálom ágán). A döntés (approved) megmarad; csak a resultMeta frissül.
+   */
+  private async invokeApproved(
+    row: ConsequenceApproval,
+    actor: ConsequenceApprovalActor,
+  ): Promise<ConsequenceApprovalResult> {
     const invokeInput = {
       agentId: row.agentId,
       agentVersion: row.agentVersion,
@@ -151,7 +314,38 @@ export class ConsequenceApprovalService {
       args: row.args,
     } as ToolBrokerInvokeInput
 
-    const result = await this.toolBroker.invoke(invokeInput)
+    let result: Awaited<ReturnType<ToolBrokerService['invoke']>>
+    try {
+      result = await this.toolBroker.invoke(invokeInput)
+    } catch (error) {
+      // A CAS már approved-re állt — ne hagyjuk resultMeta nélkül, különben a
+      // második kattintás „sikeresnek" tűnik, miközben a tool soha nem futott.
+      const reason = error instanceof Error ? error.message : 'invoke_failed'
+      await this.approvals.casUpdateStatus(row.id, 'approved', {
+        status: 'approved',
+        resultMeta: { denied: true, reason, failed: true },
+      })
+      await this.audit.append({
+        actorType: 'human',
+        actorId: actor.id,
+        agentVersion: row.agentVersion,
+        action: 'consequence.approval.approved',
+        targetType: 'conversation',
+        targetId: row.conversationId,
+        modelUsed: null,
+        inputRef: row.toolName,
+        outputRef: row.id,
+        policyDecision: 'invoke_error',
+        metadata: {
+          approval_id: row.id,
+          tool: row.toolName,
+          denied: true,
+          reason,
+        },
+      })
+      return { ok: false, reason }
+    }
+
     const resultMeta = result.denied
       ? { denied: true, reason: result.reason ?? 'denied' }
       : { denied: false, result: result.result }
@@ -183,7 +377,76 @@ export class ConsequenceApprovalService {
     if (result.denied) {
       return { ok: false, reason: result.reason ?? 'invoke_denied' }
     }
-    return { ok: true, outcome: 'approved', result: result.result }
+    return {
+      ok: true,
+      outcome: 'approved',
+      result: result.result,
+      resultSummary: describeResult(result.result),
+    }
+  }
+
+  /**
+   * A jóváhagyás utáni FOLYTATÁS forduló bemenete (issue #97 utókövetés).
+   *
+   * Üzletileg: a gomb megnyomása után a művelet lefut, de a felhasználó eddig
+   * ebből SEMMIT nem látott — se agent-választ, se a hátralévő lépéseket (egy
+   * xlsx-nél a fájl létrejött, a sorok viszont sosem íródtak be). Ez a metódus
+   * adja a folytatás fordulójának a szerver által összeállított szövegét: mi
+   * futott le és milyen eredménnyel. A prompt SOSEM a kliens szövege — a
+   * kliens csak az azonosítókat küldi.
+   *
+   * Csak MÁR jóváhagyott, egy beszélgetéshez tartozó sorokat fogad el, és
+   * ugyanazon a tenant-kapun megy át, mint maga a döntés.
+   */
+  async getApprovedContinuation(
+    approvalIds: string[],
+    actor: ConsequenceApprovalActor,
+  ): Promise<{ ok: true; continuation: ConsequenceApprovalContinuation } | { ok: false; reason: string }> {
+    const ids = [...new Set(approvalIds)].filter((id) => typeof id === 'string' && id.length > 0)
+    if (ids.length === 0) return { ok: false, reason: 'approval_not_found' }
+
+    const lines: string[] = []
+    let conversationId: string | null = null
+    let agentId: string | null = null
+
+    for (const id of ids) {
+      const row = await this.approvals.findById(id)
+      if (!row) return { ok: false, reason: 'approval_not_found' }
+      const access = await this.assertActorCanDecide(row, actor)
+      if (!access.ok) return access
+      if (row.status !== 'approved') return { ok: false, reason: `approval_${row.status}` }
+
+      // Egy folytatás EGY beszélgetést visz tovább — kevert szál nem értelmezhető.
+      if (conversationId && conversationId !== row.conversationId) {
+        return { ok: false, reason: 'approval_conversation_mismatch' }
+      }
+      conversationId = row.conversationId
+      agentId = row.agentId
+
+      const resultMeta = row.resultMeta as { denied?: boolean; reason?: string } | null
+      const outcome = resultMeta?.denied
+        ? `NEM futott le (${resultMeta.reason ?? 'denied'})`
+        : `lefutott — eredmény: ${describeResultMeta(row.resultMeta)}`
+      lines.push(
+        `- ${summarizeArgs(row.toolName, (row.args ?? {}) as Record<string, unknown>)} → ${outcome}`,
+      )
+    }
+
+    if (!conversationId || !agentId) return { ok: false, reason: 'approval_not_found' }
+
+    // A sorok tartalma (útvonal, címzett, tárgy, eredmény) a modell által, KÜLSŐ
+    // tartalomból generált szöveg — épp azért esett kapura a hívás. Ez a szöveg egy
+    // user-szerepű üzenetbe kerül, ami a legmagasabb bizalmi szint: becsomagolás
+    // nélkül egy támadó által írt fájlnév/tárgy utasításnak látszana. Ugyanazon az
+    // egységes borítékon megy át, mint minden más külső eredmény (issue #97 §2).
+    const prompt =
+      '[Jóváhagyás a felületen] Jóváhagytam az alábbi műveletet, a platform le is futtatta:\n' +
+      `${envelopeToolResultForModel('external_untrusted', lines.join('\n'))}\n\n` +
+      'NE futtasd újra ezeket a lépéseket. Folytasd innen a hátralévő lépésekkel, ' +
+      'majd foglald össze magyarul, mi készült el és mi maradt hátra. ' +
+      'Ha egy hátralévő lépés újra jóváhagyásra vár, mondd el, hogy a chatben megjelenő gombbal engedélyezhető.'
+
+    return { ok: true, continuation: { conversationId, agentId, prompt } }
   }
 
   async reject(
@@ -226,18 +489,8 @@ export class ConsequenceApprovalService {
     row: ConsequenceApproval,
     actor: ConsequenceApprovalActor,
   ): Promise<{ ok: true } | { ok: false; reason: string }> {
-    // TENANT-HATÁR — ez az ELSŐ kapu, és szándékosan a beszélgetésre néz, nem az agentre.
-    // Az agent-elérhetőség önmagában NEM elég: egy PLATFORM-SZINTŰ agent (tenantId === null)
-    // minden tenantból elérhető, így pusztán arra támaszkodva egy „B" szervezet operátora
-    // jóváhagyhatná az „A" szervezet beszélgetésében függő mellékhatást — és a jóváhagyás
-    // szerveroldalon LE IS FUTTATJA a toolt (levélküldés, fájlírás) az „A" kontextusával.
-    // A tenant-szűkített keresés a nem-egyező tenantot „nincs ilyen"-né olvasztja, így a
-    // pending jóváhagyás LÉTEZÉSE sem szivárog ki (IDOR-próbálgatás ellen).
-    const conversation = await this.conversations.findByIdForTenant(
-      row.conversationId,
-      actor.tenantId,
-    )
-    if (!conversation) return { ok: false, reason: 'conversation_not_found' }
+    const access = await this.assertActorCanAccessConversation(row.conversationId, actor)
+    if (!access.ok) return access
 
     // Defense-in-depth: az agent is elérhető kell legyen a döntéshozó tenantjából.
     const agent = await this.agents.findById(row.agentId)
@@ -245,6 +498,22 @@ export class ConsequenceApprovalService {
     if (!isAgentReachableFromTenant(agent.tenantId, actor.tenantId)) {
       return { ok: false, reason: 'tenant_mismatch' }
     }
+    return { ok: true }
+  }
+
+  private async assertActorCanAccessConversation(
+    conversationId: string,
+    actor: ConsequenceApprovalActor,
+  ): Promise<{ ok: true } | { ok: false; reason: string }> {
+    // TENANT-HATÁR — ez az ELSŐ kapu, és szándékosan a beszélgetésre néz, nem az agentre.
+    // Az agent-elérhetőség önmagában NEM elég: egy PLATFORM-SZINTŰ agent (tenantId === null)
+    // minden tenantból elérhető, így pusztán arra támaszkodva egy „B" szervezet operátora
+    // jóváhagyhatná az „A" szervezet beszélgetésében függő mellékhatást — és a jóváhagyás
+    // szerveroldalon LE IS FUTTATJA a toolt (levélküldés, fájlírás) az „A" kontextusával.
+    // A tenant-szűkített keresés a nem-egyező tenantot „nincs ilyen"-né olvasztja, így a
+    // pending jóváhagyás LÉTEZÉSE sem szivárog ki (IDOR-próbálgatás ellen).
+    const conversation = await this.conversations.findByIdForTenant(conversationId, actor.tenantId)
+    if (!conversation) return { ok: false, reason: 'conversation_not_found' }
 
     // A beszélgetés létrehozója vagy operator+ dönthet — a chat user a tipikus döntéshozó.
     const isCreator = conversation.createdById === actor.id

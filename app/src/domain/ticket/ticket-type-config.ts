@@ -54,7 +54,9 @@ export const DEFAULT_TICKET_TRANSITIONS: TicketTransitionConfigRule[] = [
   { from: 'in_progress', to: 'rejected', allowed: 'operator' },
   { from: 'awaiting_human', to: 'approved', allowed: 'approver' },
   { from: 'awaiting_human', to: 'needs_info', allowed: 'creator_or_operator' },
-  { from: 'awaiting_human', to: 'rejected', allowed: 'operator' },
+  // Kötelező eval bukásakor a TrainingService rendszer-aktorral zárja le a
+  // ticketet (MemoryTraining §4.1/T7); manuális elutasítás továbbra is operator.
+  { from: 'awaiting_human', to: 'rejected', allowed: 'system_or_operator' },
   { from: 'approved', to: 'done', allowed: 'system' },
   { from: 'done', to: 'needs_info', allowed: 'creator_or_operator' },
   { from: 'done', to: 'rejected', allowed: 'operator' },
@@ -62,6 +64,19 @@ export const DEFAULT_TICKET_TRANSITIONS: TicketTransitionConfigRule[] = [
   { from: 'needs_info', to: 'rejected', allowed: 'operator' },
   { from: 'rejected', to: 'ready', allowed: 'operator' },
 ]
+
+/**
+ * Ezek nem admin-hangolható üzleti lépések: a rendszer által bizonyított hard
+ * governance-döntésekhez a system actor útja mindig megmarad. Jelenleg a
+ * kötelező eval-bukás zárja így a training ticketet (MemoryTraining §4.1/T7).
+ */
+const SYSTEM_REQUIRED_TRANSITION_ALLOWANCES = new Map<string, TransitionAllowedActor>([
+  ['awaiting_human:rejected', 'system_or_operator'],
+])
+
+function transitionKey(rule: Pick<TicketTransitionConfigRule, 'from' | 'to'>): string {
+  return `${rule.from}:${rule.to}`
+}
 
 export function defaultTicketTypeConfig(type: TicketType): TicketTypeConfig {
   return {
@@ -107,8 +122,12 @@ export function normalizeTicketTypeConfig(raw: unknown, type: TicketType): Ticke
       ? [...allowedTransitions]
       : defaultTicketTypeConfig(type).allowedTransitions
   for (const rule of DEFAULT_TICKET_TRANSITIONS) {
-    const key = `${rule.from}:${rule.to}`
-    if (!seen.has(key) && !mergedTransitions.some((candidate) => `${candidate.from}:${candidate.to}` === key)) {
+    const key = transitionKey(rule)
+    const existing = mergedTransitions.find((candidate) => transitionKey(candidate) === key)
+    const requiredAllowance = SYSTEM_REQUIRED_TRANSITION_ALLOWANCES.get(key)
+    if (existing && requiredAllowance) {
+      existing.allowed = requiredAllowance
+    } else if (!seen.has(key) && !existing) {
       mergedTransitions.push({ ...rule })
     }
   }

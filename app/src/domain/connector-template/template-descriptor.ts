@@ -35,6 +35,8 @@ export const templateEndpointSchema = z.object({
   method: z.enum(HTTP_METHODS),
   path: z.string().min(1),
   access: z.enum(['read', 'write']),
+  /** Opcionális következmény-kapu jelölés; hiányában access + metódus dönt. */
+  risk: z.enum(['read', 'write', 'danger']).optional(),
   description: z.string().optional(),
   default: z.boolean().default(true),
 })

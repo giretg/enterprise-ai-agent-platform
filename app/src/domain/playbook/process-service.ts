@@ -30,6 +30,7 @@ import {
 import { ADVANCEABLE_PROCESS_STATUSES } from '@/lib/playbook-v2/process-status'
 import { formatPlaybookRefV2, parsePlaybookSpecV2, type PlaybookRole } from '@/lib/playbook-v2/spec'
 import { isAgentSuitable } from '@/domain/playbook/suitability'
+import type { AgentAccessService } from '@/domain/agent-access/agent-access-service'
 import type {
   AgentRepository,
   AuditRepository,
@@ -177,6 +178,64 @@ export class ProcessService {
 
   setAwaitingHumanSink(sink: AwaitingHumanEventSink): void {
     this.awaitingHumanSink = sink
+  }
+
+  /**
+   * #142 — az agent-hozzáférési gráf SHADOW ellenőrzője. Setter-injektálás (mint az
+   * `awaitingHumanSink`), hogy a késői wiring ne bővítse a pozicionális konstruktort.
+   * Ha nincs bekötve, a folyamat pontosan úgy fut, mint eddig, csak nem keletkezik
+   * `agent.access.bypass` esemény.
+   */
+  private agentAccess?: AgentAccessService
+
+  setAgentAccessService(service: AgentAccessService): void {
+    this.agentAccess = service
+  }
+
+  /**
+   * A folyamat agent-elérésének SHADOW ellenőrzése (a spec „Playbook- és Monitor-
+   * megkerülő út" fejezete). A folyamat-definíció maga a runtime principal
+   * jogosítványa, ezért NEM blokkolunk — csak auditálunk, ha az ad-hoc gráf
+   * elutasítaná ezt az utat.
+   *
+   * Az alany a delegáló ELŐZŐ lépés agentje (agent→agent), különben a Futást indító
+   * ember (user→agent). Best-effort: a shadow-check hibája nem állíthatja meg a
+   * folyamatot — az megfordítaná a „auditál, nem blokkol" szabályt.
+   */
+  private async recordProcessAccessShadow(params: {
+    tenantId: string | null
+    process: ProcessInstance
+    delegationFrom?: { fromStepId: string; fromTicketId: string | null }
+    targetAgentId: string
+  }): Promise<void> {
+    if (!this.agentAccess || !params.tenantId) return
+    try {
+      const previousAgentId = params.delegationFrom
+        ? (await this.processes.findStep(params.process.id, params.delegationFrom.fromStepId))
+            ?.assignedAgentId ?? null
+        : null
+
+      const subject = previousAgentId
+        ? ({ kind: 'agent', agentId: previousAgentId, tenantId: params.tenantId } as const)
+        : params.process.startedByUserId
+          ? ({ kind: 'user', userId: params.process.startedByUserId, tenantId: params.tenantId } as const)
+          : params.process.startedByAgentId
+            ? ({ kind: 'agent', agentId: params.process.startedByAgentId, tenantId: params.tenantId } as const)
+            : null
+      if (!subject) return
+      if (subject.kind === 'agent' && subject.agentId === params.targetAgentId) return
+
+      await this.agentAccess.recordProcessBypass({
+        subject,
+        targetAgentId: params.targetAgentId,
+        verb: 'address',
+        processInstanceId: params.process.id,
+        processDefinitionId: params.process.processDefinitionId,
+        playbookVersionId: params.process.playbookVersionId,
+      })
+    } catch {
+      // Szándékosan néma: a shadow-audit sosem állíthat meg egy futó folyamatot.
+    }
   }
 
   /**
@@ -859,6 +918,20 @@ export class ProcessService {
       isHuman && resolution
         ? await this.resolveUserForRole(tenantId, resolution, rule.assignedRole, rule.stepId)
         : null
+
+    // #142 — SHADOW ellenőrzés. A folyamat-definíció MAGA a runtime principal
+    // jogosítványa, ezért a Playbook-út NEM áll meg az ad-hoc gráf deny döntésén; de
+    // ha az ad-hoc út elutasítaná ezt a lépést, `agent.access.bypass` eseményt írunk.
+    // Így a compliance-felelős látja, hol használ egy folyamat olyan agent-utat,
+    // amit egy ember vagy egy agent ad hoc nem járhatna be.
+    if (resolvedAgentId) {
+      await this.recordProcessAccessShadow({
+        tenantId,
+        process,
+        delegationFrom,
+        targetAgentId: resolvedAgentId,
+      })
+    }
 
     const step = await this.processes.createStep({
       tenantId,

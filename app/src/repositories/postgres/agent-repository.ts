@@ -25,6 +25,9 @@ function agentListWhere(filter?: AgentListFilter): Prisma.AgentWhereInput | unde
   const where: Prisma.AgentWhereInput = {}
   if (filter?.tenantId !== undefined) where.tenantId = filter.tenantId
   if (filter?.excludeHiddenFromOperators) where.hiddenFromOperators = false
+  // #142 — a gráf által engedélyezett azonosítók. Üres tömb fail-closed: nem
+  // „nincs szűrés", hanem „nincs találat".
+  if (filter?.ids !== undefined) where.id = { in: filter.ids }
   return Object.keys(where).length > 0 ? where : undefined
 }
 
@@ -427,6 +430,41 @@ export class PostgresAgentRepository implements AgentRepository {
       select: { hiddenFromOperators: true },
     })
     return updated
+  }
+
+  /**
+   * Agent-hozzáférési gráf kapcsolói (Access-Policy §agent-scope, #142). Nem emel
+   * agent-verziót és nem befolyásolja a dispatch-et — csak azt, hogy a gráf melyik
+   * irányban kér explicit élt. Az előző értéket is visszaadja, hogy az
+   * `agent_access.restriction.update` audit a „miről mire" változást rögzíthesse.
+   */
+  async updateAccessRestrictions(input: {
+    agentId: string
+    inboundRestricted?: boolean
+    outboundRestricted?: boolean
+  }): Promise<{
+    previous: { inboundRestricted: boolean; outboundRestricted: boolean }
+    next: { inboundRestricted: boolean; outboundRestricted: boolean }
+  }> {
+    return prisma.$transaction(async (tx) => {
+      const before = await tx.agent.findUniqueOrThrow({
+        where: { id: input.agentId },
+        select: { inboundRestricted: true, outboundRestricted: true },
+      })
+      const after = await tx.agent.update({
+        where: { id: input.agentId },
+        data: {
+          ...(input.inboundRestricted !== undefined
+            ? { inboundRestricted: input.inboundRestricted }
+            : {}),
+          ...(input.outboundRestricted !== undefined
+            ? { outboundRestricted: input.outboundRestricted }
+            : {}),
+        },
+        select: { inboundRestricted: true, outboundRestricted: true },
+      })
+      return { previous: before, next: after }
+    })
   }
 
   async updatePersona(input: {

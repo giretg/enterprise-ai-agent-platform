@@ -19,13 +19,26 @@ import type {
 import type { PptxSlideSpec } from '@/domain/file-editor/adapters/pptx-adapter'
 import type { DocxBlockSpec } from '@/domain/file-editor/adapters/docx-adapter'
 import { assembleGatewayMessages, type PromptSegments } from './prompt-assembler'
+import {
+  compactToolResultHistory,
+  describeContextCompaction,
+  resolveContextCompactionLimits,
+  type ContextCompactionLimits,
+} from './context-compactor'
+import { logger } from '@/lib/observability/logger'
 // issue #97 — egységes becsomagolás + következmény-kapu (mellékhatásos eszközök).
 import { envelopeToolResultForModel } from '@/domain/tool-broker/tool-result-envelope'
-import { isSideEffectingTool } from '@/domain/tool-broker/tool-trust-registry'
+import {
+  consequenceGateReasonForModel,
+  requiresConsequenceApproval,
+  type HttpApiGateConnector,
+} from '@/domain/tool-broker/consequence-gate-policy'
+import { parseHttpApiConfig } from '@/domain/connector/http-api-client'
 import type { TrustClass } from '@/domain/tool-broker/tool-broker-types'
 import {
   describeLoopStop,
   evaluateLoopContinuation,
+  mergeSkillRuntimeHints,
   resolveLoopGuardLimits,
   trackTurnProgress,
   type LoopGuardLimits,
@@ -85,6 +98,7 @@ export const CHAT_PLATFORM_TOOLS = [
   'memory_propose',
   'document_read',
   'tulajdoni_lap_parse',
+  'tulajdoni_lap_egyeztetes',
 ] as const
 
 export type ChatPlatformToolName = (typeof CHAT_PLATFORM_TOOLS)[number]
@@ -148,6 +162,12 @@ type LargeToolResultArchiveInput = {
   turn: number
   content: string
   context: ToolLoopContext
+  /**
+   * Kötött célútvonal. A kontextus-tömörítés a stubban MÁR kiírta, hova mentette
+   * az eredményt, ezért a fájlnak pontosan ott kell keletkeznie — a hívó
+   * névkonvenciója ilyenkor nem érvényesülhet.
+   */
+  path?: string
 }
 export type ToolLoopActivityEvent = {
   id: string
@@ -203,6 +223,19 @@ const TOOL_RESULT_INLINE_LIMIT = 12_000
 const TOOL_RESULT_PREVIEW_CHARS = 10_000
 const TOOL_RESULT_READ_DEFAULT_LIMIT = 40_000
 const TOOL_RESULT_READ_MAX_LIMIT = 40_000
+
+/**
+ * A nagy tool-eredmény helyén álló előnézet archívum-mutatója. Ha egy ilyen
+ * előnézetet szervez ki a kontextus-tömörítés, a MEGLÉVŐ útvonalat kell
+ * továbbadnia — különben a teljes tartalmat felülírná a saját előnézetével.
+ */
+const ARCHIVED_TOOL_RESULT_POINTER = /^\[Nagy tool-eredmény\] A teljes eredmény elmentve: (\S+)/m
+
+/** Fájlnév-biztos szelet az archívum-útvonalhoz. */
+function safeArchiveSegment(value: string): string {
+  const cleaned = value.replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '')
+  return cleaned.slice(0, 80) || 'tool-result'
+}
 
 function objectSchema(
   properties: Record<string, unknown>,
@@ -564,6 +597,53 @@ const TOOL_SCHEMAS: Record<ChatPlatformToolName, ToolSchema> = {
       [],
     ),
   },
+  tulajdoni_lap_egyeztetes: {
+    description:
+      'Tulajdoni lap ↔ nyilvántartás EGYEZTETÉSE EGY hívásban: kiolvassa a lapot, párosítja a ' +
+      'nyilvántartás soraival, és kész Excel munkafüzetet ír a munkaterületre (Egyeztetés + Ingatlan lap, ' +
+      'legördülő státusz, összegsor).\n' +
+      'HA egyeztetni kell, EZT hívd — ne a tulajdoni_lap_parse-t lapozgatva, ne köztes JSON-nal, ' +
+      'ne cellánkénti xlsx-írással: az sokszoros költség és kifut a forduló keretéből.\n' +
+      'Lap-forrás (EGYIK kötelező): documentId (UUID csatolmány) VAGY path (munkaterület-fájl).\n' +
+      'Nyilvántartás oldal (EGYIK): nyilvantartas (sorok tömbje) VAGY nyilvantartasPath ' +
+      '(munkaterületre mentett JSON — nagy névsornál EZT használd, hogy ne menjen át a szövegen).\n' +
+      'Egy sor mezői: nev (kötelező), szuletesiEv, anyjaNeve, hanyad (TÖRT, pl. "3/4"), azonosito, megjegyzes.\n' +
+      'Ha a lap ellenőrzése bukik (hatályos hányadok összege ≠ 1), NEM készül tábla: ok=false és ' +
+      'figyelmeztetes jön vissza — ilyenkor a felhasználónak jelezd a bizonytalanságot, ne egyeztess tovább.\n' +
+      'A válasz összegzést és az ELTÉRŐ sorokat adja (nem a teljes táblát) — a részletek az Excelben vannak.',
+    inputSchema: objectSchema(
+      {
+        documentId: { type: 'string', description: 'A lap Document UUID-ja (chat csatolmány).' },
+        path: { type: 'string', description: 'A lap munkaterület-fájlneve (PDF vagy .pdf.txt).' },
+        nyilvantartas: {
+          type: 'array',
+          description: 'A nyilvántartás sorai közvetlenül (kis névsornál).',
+          items: {
+            type: 'object',
+            properties: {
+              nev: { type: 'string' },
+              szuletesiEv: { type: 'string' },
+              anyjaNeve: { type: 'string' },
+              hanyad: { type: 'string', description: 'Tört alak, pl. "3/4".' },
+              cim: { type: 'string' },
+              azonosito: { type: 'string' },
+              megjegyzes: { type: 'string' },
+            },
+            required: ['nev'],
+          },
+        },
+        nyilvantartasPath: {
+          type: 'string',
+          description: 'Munkaterületre mentett JSON (tömb vagy { "sorok": [...] }).',
+        },
+        kimenet: {
+          type: 'string',
+          description: 'A kimeneti munkafüzet neve. Alap: egyeztetes.xlsx',
+        },
+      },
+      [],
+    ),
+  },
   pptx_create: {
     description:
       'PowerPoint prezentáció (valódi .pptx, 16:9) létrehozása diákból. Bemutató / prezentáció / slide-deck készítéséhez EZT hívd — ne file_write-ot, HTML-t vagy PDF-et. ' +
@@ -717,8 +797,18 @@ const LOAD_SKILL_TOOL = 'load_skill'
 /** A `load_skill` végrehajtó — a SkillService.loadSkillForAgent-re köt (D7). */
 export type LoadSkillFn = (
   skillVersionId: string,
-) => Promise<{ ok: true; instructions: string } | { ok: false; reason: string }>
-
+) => Promise<
+  | {
+      ok: true
+      instructions: string
+      runtimeHints?: {
+        maxWallClockMs?: number
+        maxToolCalls?: number
+        preferredMode?: 'chat' | 'task'
+      }
+    }
+  | { ok: false; reason: string }
+>
 const LOAD_SKILL_DEFINITION: ToolDefinition = {
   name: LOAD_SKILL_TOOL,
   description:
@@ -1024,6 +1114,17 @@ function describeToolCall(tool: string, args: Record<string, unknown>): string |
       const src = path ? `path=${path}` : docId ? `doc=${docId}` : '?'
       return `${src} — ${nezet}`
     }
+    case 'tulajdoni_lap_egyeztetes': {
+      const path = typeof args.path === 'string' ? shortText(args.path, 48) : null
+      const docId = typeof args.documentId === 'string' ? shortText(args.documentId, 36) : null
+      const src = path ? `path=${path}` : docId ? `doc=${docId}` : '?'
+      const reg = Array.isArray(args.nyilvantartas)
+        ? `${args.nyilvantartas.length} nyilvántartási sor`
+        : typeof args.nyilvantartasPath === 'string'
+          ? shortText(args.nyilvantartasPath, 40)
+          : 'nyilvántartás nélkül'
+      return `${src} — ${reg}`
+    }
     case 'agent_catalog':
     case 'agent_resolve':
     case 'user_directory':
@@ -1039,9 +1140,22 @@ function describeToolCall(tool: string, args: Record<string, unknown>): string |
   }
 }
 
+function num(value: unknown): number {
+  return typeof value === 'number' ? value : 0
+}
+
 function describeToolResult(result: unknown): string {
   if (!result || typeof result !== 'object') return 'eredmény megérkezett'
   const record = result as Record<string, unknown>
+  // Egyeztetés: a státusz-bontás az érdekes, nem a sorok száma.
+  if (
+    record.egyeztetes &&
+    typeof record.egyeztetes === 'object' &&
+    typeof record.path === 'string'
+  ) {
+    const e = record.egyeztetes as Record<string, unknown>
+    return `${record.path} — ${num(e.rendben)} rendben, ${num(e.modositas)} módosítás, ${num(e.torles)} törlés, ${num(e.ujRekord)} új`
+  }
   if (Array.isArray(record.pages)) return `${record.pages.length} oldal`
   if (typeof record.found === 'boolean' && typeof record.path === 'string') {
     return record.found ? `oldal: ${shortText(record.path, 90)}` : 'nincs ilyen oldal'
@@ -1551,6 +1665,33 @@ function buildToolInvoke(
         },
       }
 
+    case 'tulajdoni_lap_egyeztetes':
+      return {
+        ...common,
+        tool: 'tulajdoni_lap_egyeztetes',
+        args: {
+          documentId: typeof args.documentId === 'string' ? args.documentId : undefined,
+          path: typeof args.path === 'string' ? args.path : undefined,
+          nyilvantartas: Array.isArray(args.nyilvantartas)
+            ? (args.nyilvantartas as Array<Record<string, unknown>>).map((row) => ({
+                nev: typeof row?.nev === 'string' ? row.nev : '',
+                szuletesiEv:
+                  typeof row?.szuletesiEv === 'string' || typeof row?.szuletesiEv === 'number'
+                    ? row.szuletesiEv
+                    : null,
+                anyjaNeve: typeof row?.anyjaNeve === 'string' ? row.anyjaNeve : null,
+                hanyad: typeof row?.hanyad === 'string' ? row.hanyad : null,
+                cim: typeof row?.cim === 'string' ? row.cim : null,
+                azonosito: typeof row?.azonosito === 'string' ? row.azonosito : null,
+                megjegyzes: typeof row?.megjegyzes === 'string' ? row.megjegyzes : null,
+              }))
+            : undefined,
+          nyilvantartasPath:
+            typeof args.nyilvantartasPath === 'string' ? args.nyilvantartasPath : undefined,
+          kimenet: typeof args.kimenet === 'string' ? args.kimenet : undefined,
+        },
+      }
+
     case 'tulajdoni_lap_parse':
       return {
         ...common,
@@ -1774,6 +1915,14 @@ export async function runAgentToolLoop(params: {
   preloadedSkillPrompts?: string[]
   /** `load_skill` végrehajtó (fail-closed a SkillService-ben). Ha megadva, a tool elérhető. */
   loadSkill?: LoadSkillFn
+  /**
+   * Slash / előtöltött skillek runtimeHints-e — a loop indulásakor emeli a
+   * wallclock / tool-büdzsét (skill csak emelhet, lásd mergeSkillRuntimeHints).
+   */
+  initialSkillRuntimeHints?: {
+    maxWallClockMs?: number
+    maxToolCalls?: number
+  }
   archiveLargeToolResult?: (input: LargeToolResultArchiveInput) => Promise<LargeToolResultArchive | null>
   onActivity?: (event: ToolLoopActivityEvent) => void | Promise<void>
   /**
@@ -1801,8 +1950,23 @@ export async function runAgentToolLoop(params: {
   ) => Promise<ToolLoopConsequenceApprovalEvent>
   /** issue #97 — pending jóváhagyás stream-kártyához. */
   onConsequenceApproval?: (event: ToolLoopConsequenceApprovalEvent) => void | Promise<void>
+  /**
+   * issue #97 — a futás MÁR indulásakor „tainted".
+   *
+   * A jóváhagyás utáni FOLYTATÁS fordulója ilyen: a külső, nem megbízható tartalom
+   * a beszélgetés előzményében ott van (abból született a terv), csak ebben a
+   * fordulóban nem olvassuk be újra. Enélkül a folytatás „tisztának" látszana, és
+   * a hátralévő mellékhatásos lépések kapu NÉLKÜL futnának le — pont az a
+   * megkerülés, ami ellen a kapu véd.
+   */
+  initialTainted?: boolean
   /** Kooperatív leállítás (pl. chat Stop) — kör- és tool-hívás-határon ellenőrizve. */
   shouldCancel?: () => boolean
+  /**
+   * Kontextus-tömörítés küszöbei (default: `resolveContextCompactionLimits()`).
+   * Hosszú, sok tool-hívásos futásnál ez tartja korlátok között a promptot.
+   */
+  contextCompaction?: ContextCompactionLimits
   /** Tesztelhetőség: injektálható óra a faliórai korláthoz (default `Date.now`). */
   now?: () => number
   /** Tesztelhetőség: türelmi idő a záró összefoglaló hívásra (default {@link FINALIZE_GRACE_MS}). */
@@ -1812,11 +1976,14 @@ export async function runAgentToolLoop(params: {
   // Spec §7 — a leállási döntéshozó küszöbei és a hozzá tartozó állapot.
   const now = params.now ?? Date.now
   const startedAt = now()
-  const guardLimits: LoopGuardLimits = resolveLoopGuardLimits(
+  let guardLimits: LoopGuardLimits = resolveLoopGuardLimits(
     params.modelConfig as unknown as Record<string, unknown>,
     maxTurns,
     params.mode === 'task' ? 'task' : 'chat',
   )
+  if (params.initialSkillRuntimeHints) {
+    guardLimits = mergeSkillRuntimeHints(guardLimits, params.initialSkillRuntimeHints)
+  }
   const modeNote =
     params.mode === 'task'
       ? 'Ez egy aszinkron feladat — a végeredményed visszakerül a ticketbe. Dolgozz végig minden szükséges eszközhívást, majd add meg a kész választ természetes magyar szövegként (NE JSON).'
@@ -1844,9 +2011,12 @@ export async function runAgentToolLoop(params: {
 
   // Ha http_api eszköz engedélyezett, a hozzárendelt connector(ek)
   // endpoint-katalógusát a modell elé tesszük — így tudja, mit hívhat.
+  // Ugyanez a lista kell a következmény-kapu http_api_request döntéséhez.
+  let httpApiGateConnectors: HttpApiGateConnector[] = []
   if (allowedTools.some((t) => t === 'http_api_get' || t === 'http_api_request')) {
-    const spec = await describeHttpApiConnectors(params.toolCaps, params.agentId)
-    if (spec) loopStablePreamble.push({ role: 'system', content: spec })
+    const loaded = await loadHttpApiConnectorsForGate(params.toolCaps, params.agentId)
+    httpApiGateConnectors = loaded.gateConnectors
+    if (loaded.spec) loopStablePreamble.push({ role: 'system', content: loaded.spec })
   }
   if (allowedTools.includes('repo_prepare')) {
     loopStablePreamble.push({
@@ -1879,15 +2049,12 @@ export async function runAgentToolLoop(params: {
   // egy megtagadott képesség azt jelenti, hogy az agent NEM tudta elvégezni a rábízott műveletet,
   // még ha a záró prózája optimista is (§10.1 — az agent önbevallását felülírjuk).
   let deniedCount = 0
-  // issue #97 — következmény-kapu forduló-szintű „taint"-je. Amint a futásba
-  // BÁRMELY külső, nem megbízható (`external_untrusted`) eredmény bekerült, a
-  // futás „tainted": az ezt KÖVETŐEN indított MELLÉKHATÁSOS eszközhívás nem fut
-  // le automatikusan, hanem emberi jóváhagyást kér. A jelölés monoton (egyszer
-  // beállítva a futás hátralévő részére érvényes) — mert a külső tartalom a modell
-  // kontextusába került, és minden későbbi döntését befolyásolhatja (nem csak a
-  // vele egy batchben indított hívásokat). Egyetlen külső forrás is elég a
-  // taint-hez, akkor is, ha egy fordulóban több, részben belső eredmény érkezik.
-  let runTainted = false
+  // issue #97 / risk-class — a külső tartalom (taint) továbbra is envelope-olva
+  // megy a modellnek, de a következmény-kaput NEM a taint dönti el. A kapu csak
+  // ritka, magas kockázatú toolokra (küldés, törlés, promotion, write/danger HTTP)
+  // ugrik; a workspace-írás / Excel / ticket auto + audit.
+  // initialTainted: legacy param a folytatás-fordulóhoz — a kapu már nem használja.
+  void params.initialTainted
   // issue #97 — ha a kapu legalább egyszer blokkolt mellékhatást, ne indítsunk
   // újabb tool-körös modellhívást (tokenégetés elkerülése); záró összefoglaló jön.
   let consequenceGateTriggered = false
@@ -1899,6 +2066,115 @@ export async function runAgentToolLoop(params: {
   ]
   const emitActivity = async (event: ToolLoopActivityEvent) => {
     await params.onActivity?.(event)
+  }
+
+  // ── Kontextus-tömörítés (hosszú futások token-költsége) ────────────────────
+  // Minden modellhívás a teljes addigi előzményt viszi, ezért a régi
+  // tool-eredményeket a hívás ELŐTT kiszervezzük az archívumba. A tartalom
+  // megmarad (`archivedToolResults` + workspace-fájl), a modell a
+  // `tool_result_read` eszközzel bármikor visszakérheti.
+  const compactionLimits = params.contextCompaction ?? resolveContextCompactionLimits()
+  const compactContext = async (turn: number): Promise<void> => {
+    const result = compactToolResultHistory(messages, {
+      limits: compactionLimits,
+      readableBack: Boolean(params.archiveLargeToolResult),
+      readMaxLimit: TOOL_RESULT_READ_MAX_LIMIT,
+      pathFor: ({ toolName, toolCallId, content }) =>
+        content.match(ARCHIVED_TOOL_RESULT_POINTER)?.[1] ??
+        `.tool-results/${safeArchiveSegment(toolName)}-${safeArchiveSegment(toolCallId)}.json`,
+    })
+    if (result.evicted.length === 0) return
+
+    const committed: typeof result.evicted = []
+    let restoredChars = 0
+    for (const item of result.evicted) {
+      // A már archivált nagy eredményt NEM írjuk felül a saját előnézetével —
+      // ott a teljes tartalom van, épp azt kell megőrizni.
+      if (archivedToolResults.has(item.path)) {
+        committed.push(item)
+        continue
+      }
+
+      let archiveBytes = Buffer.byteLength(item.content, 'utf8')
+      if (params.archiveLargeToolResult) {
+        let archive: LargeToolResultArchive | null = null
+        try {
+          archive = await params.archiveLargeToolResult({
+            toolName: item.toolName,
+            callId: item.toolCallId,
+            turn,
+            content: item.content,
+            context: params.context,
+            path: item.path,
+          })
+        } catch (error) {
+          logger.warn(
+            { toolName: item.toolName, toolCallId: item.toolCallId, path: item.path, error },
+            'agent.tool_loop.context_compaction_archive_failed',
+          )
+        }
+
+        // A stub csak akkor állíthatja, hogy az eredmény el lett mentve, ha a
+        // callback a kért útvonalat igazolta vissza. Hiba esetén az eredeti
+        // tool-tartalmat visszaállítjuk, így restart után sem hivatkozunk nem
+        // létező workspace-fájlra.
+        if (!archive || archive.path !== item.path) {
+          const messageIndex = messages.findIndex(
+            (message) =>
+              message.role === 'tool' &&
+              message.toolCallId === item.toolCallId &&
+              message.toolName === item.toolName,
+          )
+          if (messageIndex >= 0) {
+            const message = messages[messageIndex]
+            if (message.role === 'tool') {
+              restoredChars += item.content.length - message.content.length
+              messages[messageIndex] = { ...message, content: item.content }
+            }
+          }
+          logger.warn(
+            {
+              toolName: item.toolName,
+              toolCallId: item.toolCallId,
+              requestedPath: item.path,
+              returnedPath: archive?.path ?? null,
+            },
+            'agent.tool_loop.context_compaction_restored_after_archive_failure',
+          )
+          continue
+        }
+        archiveBytes = archive.bytes
+      }
+
+      archivedToolResults.set(item.path, {
+        content: item.content,
+        bytes: archiveBytes,
+        toolName: item.toolName,
+      })
+      committed.push(item)
+    }
+
+    if (committed.length === 0) return
+    const committedResult = {
+      evicted: committed,
+      freedChars: result.freedChars - restoredChars,
+      toolResultChars: result.toolResultChars + restoredChars,
+    }
+    logger.info(
+      {
+        evicted: committedResult.evicted.length,
+        freedChars: committedResult.freedChars,
+        toolResultChars: committedResult.toolResultChars,
+      },
+      'agent.tool_loop.context_compacted',
+    )
+    await emitActivity({
+      id: `context-compaction-${turn}`,
+      kind: 'reasoning',
+      title: 'Kontextus tömörítése',
+      detail: describeContextCompaction(committedResult),
+      status: 'done',
+    })
   }
 
   // Előrehaladás-figyelés (spec §7/5): a már látott tool-eredmények ujjlenyomatai
@@ -1992,6 +2268,10 @@ export async function runAgentToolLoop(params: {
     const onReasoningDelta = params.onReasoning
       ? (delta: string) => reasoningRedactor.push(delta)
       : undefined
+
+    // A prompt a teljes előzményt viszi — a régi tool-eredmények kiszervezése
+    // ITT, a hívás előtt történik, hogy a megtakarítás már ezt a hívást érintse.
+    await compactContext(turn)
 
     const { content, toolCalls } = await params.gateway.call({
       agentId: params.agentId,
@@ -2157,6 +2437,9 @@ export async function runAgentToolLoop(params: {
           : ({ ok: false, reason: 'Hiányzó skillVersionId.' } as const)
         toolCallCount += 1
         if (!loaded.ok) deniedCount += 1
+        if (loaded.ok && loaded.runtimeHints) {
+          guardLimits = mergeSkillRuntimeHints(guardLimits, loaded.runtimeHints)
+        }
         messages.push({
           role: 'tool',
           toolCallId: call.id,
@@ -2167,7 +2450,11 @@ export async function runAgentToolLoop(params: {
           id: `tool-${call.id}`,
           kind: 'tool',
           title: LOAD_SKILL_TOOL,
-          detail: loaded.ok ? 'skill betöltve' : loaded.reason,
+          detail: loaded.ok
+            ? loaded.runtimeHints?.maxWallClockMs
+              ? `skill betöltve (keret ~${Math.round(loaded.runtimeHints.maxWallClockMs / 1000)}s)`
+              : 'skill betöltve'
+            : loaded.reason,
           status: loaded.ok ? 'done' : 'skipped',
         })
         continue
@@ -2277,12 +2564,14 @@ export async function runAgentToolLoop(params: {
           actingUserId: params.actingUserId,
         })
 
-        // issue #97 — következmény-kapu. „Tainted" futásban (korábban külső, nem
-        // megbízható tartalom került a kontextusba) egy MELLÉKHATÁSOS hívás NEM fut
-        // le automatikusan: emberi jóváhagyást kér. Az olvasó hívások átmennek, hogy
-        // a diagnózis/olvasás gördülékeny maradjon. A blokk a meglévő audit-láncba
-        // kerül (recordConsequenceGateBlock), a modell felé közérthető indoklással.
-        if (runTainted && isSideEffectingTool(toolName)) {
+        // Risk-class következmény-kapu: nem a taint, hanem a tool kockázata dönt.
+        // Workspace-írás / Excel / ticket auto; küldés / törlés / write-HTTP kapu.
+        const gate = requiresConsequenceApproval(
+          toolName,
+          call.input as Record<string, unknown>,
+          httpApiGateConnectors,
+        )
+        if (gate.required) {
           deniedCount += 1
           noteBarrenToolResult()
           await params.toolBroker.recordConsequenceGateBlock?.(invokeInput)
@@ -2291,29 +2580,41 @@ export async function runAgentToolLoop(params: {
             try {
               approvalCard = await params.createConsequenceApproval(invokeInput)
               await params.onConsequenceApproval?.(approvalCard)
-            } catch {
-              // Fail-soft: a kapu továbbra is blokkol; a UI-kártya elmaradhat.
+            } catch (error) {
+              // Fail-soft: a kapu továbbra is blokkol; a UI-kártya elmaradhat. DE ez
+              // némán elvitte a felhasználó EGYETLEN továbbjutási útját (nincs gomb,
+              // amit az agent ígér), ezért hangosan naplózzuk — pl. hiányzó migráció
+              // esetén különben csak a „nem történik semmi" tünet látszik.
+              logger.error(
+                {
+                  event: 'consequence_approval_create_failed',
+                  tool: toolName,
+                  agentId: params.agentId,
+                  conversationId: params.context.conversationId ?? null,
+                  error: error instanceof Error ? error.message : String(error),
+                },
+                'A következmény-kapu jóváhagyó kártyája nem jött létre — a felhasználónak nem lesz gombja.',
+              )
             }
           }
           consequenceGateTriggered = true
+          const why = consequenceGateReasonForModel(gate.reason)
           const approvalHint = approvalCard
             ? `A művelet a felületen JÓVÁHAGYÁSRA VÁR (approvalId=${approvalCard.approvalId}). ` +
               'Mondd el a felhasználónak, hogy a chatben megjelenő „Jóváhagyom" gombbal engedélyezheti — ' +
               'NE kérj tőle szöveges „ok"/„jóváhagyom" választ, és NE indítsd újra a teljes folyamatot.'
             : 'Kérd meg a felhasználót, hogy a felületen hagyja jóvá a műveletet, ha van rá gomb; ' +
-              'addig NE indítsd újra a mellékhatásos lépést.'
+              'addig NE indítsd újra ezt a lépést.'
           messages.push({
             role: 'tool',
             toolCallId: call.id,
             toolName: call.name,
             content:
               `JÓVÁHAGYÁS SZÜKSÉGES: ezt a lépést (${call.name}) nem futtattam le automatikusan, ` +
-              'mert ebben a futásban külső, nem megbízható forrásból beérkezett tartalom (pl. bejövő ' +
-              'levél, webtartalom, ügyfél-feltöltés vagy harmadik fél API-ja) is szerepelt, és ez a ' +
-              'lépés mellékhatással jár (küldés / írás / jogosultság- vagy memória-változtatás). ' +
+              `mert ${why}. ` +
               approvalHint +
-              ' NE hívd újra ezt a mellékhatásos eszközt, és NE hívd újra a külső forrásokat csak azért, ' +
-              'hogy újra megpróbáld. Addig folytasd legfeljebb mellékhatás-mentes (olvasó) lépésekkel, ' +
+              ' NE hívd újra ezt az eszközt csak azért, hogy újra megpróbáld. ' +
+              'Addig folytasd legfeljebb alacsony kockázatú (olvasó / workspace-író) lépésekkel, ' +
               'majd foglald össze röviden, mi vár jóváhagyásra.',
           })
           await emitActivity({
@@ -2321,8 +2622,8 @@ export async function runAgentToolLoop(params: {
             kind: 'tool',
             title: call.name,
             detail: approvalCard
-              ? 'külső tartalom miatt emberi jóváhagyás szükséges (gomb a chatben)'
-              : 'külső tartalom miatt emberi jóváhagyás szükséges',
+              ? 'kockázatos művelet — emberi jóváhagyás szükséges (gomb a chatben)'
+              : 'kockázatos művelet — emberi jóváhagyás szükséges',
             status: 'skipped',
           })
           continue
@@ -2331,9 +2632,6 @@ export async function runAgentToolLoop(params: {
         const result = await params.toolBroker.invoke(invokeInput)
         toolCallCount += 1
         if (result.denied) deniedCount += 1
-        // A forduló „tainted" lesz, amint BÁRMELY sikeres eredmény külső, nem
-        // megbízható osztályú — a jelölés monoton a futás hátralévő részére.
-        if (!result.denied && result.trust === 'external_untrusted') runTainted = true
         noteToolResult(
           toolName,
           result.denied ? `DENIED:${result.reason ?? ''}` : JSON.stringify(result.result),
@@ -2601,54 +2899,104 @@ function toolResultFingerprint(toolName: string, content: string): string {
 }
 
 /**
- * A http_api connector(ek) emberi nyelvű leírása a modellnek: baseUrl,
- * leírás és endpoint-katalógus. Titkot (API-kulcs) SOHA nem tartalmaz.
+ * A http_api connector(ek) emberi nyelvű leírása a modellnek + structured
+ * config a következmény-kapuhoz. Titkot (API-kulcs) SOHA nem tartalmaz.
  */
-async function describeHttpApiConnectors(
+async function loadHttpApiConnectorsForGate(
   toolCaps: ToolBrokerRepository,
   agentId: string,
-): Promise<string | null> {
+): Promise<{ spec: string | null; gateConnectors: HttpApiGateConnector[] }> {
   const links = await toolCaps.findConnectorsForAgent(agentId)
   const apis = links.filter((l) => l.connector.type === 'http_api')
-  if (apis.length === 0) return null
+  if (apis.length === 0) return { spec: null, gateConnectors: [] }
 
+  const gateConnectors: HttpApiGateConnector[] = []
   const blocks = apis.map(({ connector, accessMode }) => {
-    const config = (connector.config ?? {}) as {
-      baseUrl?: string
-      description?: string
-      restrictToEndpoints?: boolean
-      endpoints?: Array<{ method?: string; path?: string; description?: string; name?: string }>
-      proposedTools?: Array<{ method?: string; path?: string; description?: string; name?: string }>
+    let parsed = null as ReturnType<typeof parseHttpApiConfig> | null
+    try {
+      parsed = parseHttpApiConfig(connector.config ?? {})
+      gateConnectors.push({ id: connector.id, config: parsed })
+    } catch {
+      // Hibás config: a modell-leírás fallback JSON-ból megy; a kapu fail-safe.
     }
-    const endpoints = Array.isArray(config.endpoints) && config.endpoints.length > 0
-      ? config.endpoints
-      : config.proposedTools
+
+    const config = parsed
+      ? {
+          baseUrl: parsed.baseUrl,
+          description: parsed.description,
+          restrictToEndpoints: parsed.restrictToEndpoints,
+          defaultRisk: parsed.defaultRisk,
+          endpoints: parsed.endpoints,
+        }
+      : ((connector.config ?? {}) as {
+          baseUrl?: string
+          description?: string
+          restrictToEndpoints?: boolean
+          defaultRisk?: string
+          endpoints?: Array<{
+            method?: string
+            path?: string
+            description?: string
+            name?: string
+            risk?: string
+            access?: string
+          }>
+          proposedTools?: Array<{
+            method?: string
+            path?: string
+            description?: string
+            name?: string
+            risk?: string
+            access?: string
+          }>
+        })
+
+    const endpoints =
+      Array.isArray(config.endpoints) && config.endpoints.length > 0
+        ? config.endpoints
+        : 'proposedTools' in config && Array.isArray(config.proposedTools)
+          ? config.proposedTools
+          : undefined
+
     const lines = [`### ${connector.name}`]
     lines.push(`connectorId: ${connector.id}`)
     lines.push(`Hozzáférés: ${accessMode === 'write' ? 'olvasás + írás' : 'csak olvasás'}`)
     if (config.baseUrl) lines.push(`Base URL: ${config.baseUrl}`)
     if (config.description) lines.push(config.description)
+    if (config.defaultRisk) lines.push(`Alap kockázat (defaultRisk): ${config.defaultRisk}`)
     if (Array.isArray(endpoints) && endpoints.length > 0) {
       lines.push('Endpointok:')
       for (const e of endpoints) {
-        const endpointDescription = e.description ?? e.name
+        const endpointDescription = e.description ?? ('name' in e ? e.name : undefined)
+        const riskHint =
+          'risk' in e && e.risk
+            ? ` [risk=${e.risk}]`
+            : 'access' in e && e.access
+              ? ` [access=${e.access}]`
+              : ''
         const desc = endpointDescription ? ` — ${endpointDescription}` : ''
-        lines.push(`- ${e.method ?? 'GET'} ${e.path ?? ''}${desc}`)
+        lines.push(`- ${e.method ?? 'GET'} ${e.path ?? ''}${riskHint}${desc}`)
       }
-      // WP-3 (B3): ha az endpoint-korlát aktív, a modell tudja, hogy listán kívülit
-      // hiába próbál — a rendszer a külső rendszer megkérdezése nélkül elutasítja.
       if (config.restrictToEndpoints === true) {
-        lines.push('Csak az itt felsorolt végpontok hívhatók — minden más hívást a rendszer elutasít (endpoint_not_allowed), mielőtt a külső rendszert megkeresné.')
+        lines.push(
+          'Csak az itt felsorolt végpontok hívhatók — minden más hívást a rendszer elutasít (endpoint_not_allowed), mielőtt a külső rendszert megkeresné.',
+        )
       }
+      lines.push(
+        'Író / danger végpont (risk=write|danger) vagy listán kívüli path → http_api_request emberi jóváhagyást kér.',
+      )
     }
     return lines.join('\n')
   })
 
-  return [
-    'A hozzád rendelt külső REST API(k) — olvasáshoz http_api_get, íráshoz http_api_request eszközt hívj. Ha több API-kapcsolat van, add meg a megfelelő connectorId-t. A path a Base URL-hez relatív; az API-kulcsot és a konfigurált fejléceket a rendszer injektálja, neked nem kell megadnod.',
-    'Hatékony lekérdezés: NE töltsd le a teljes listákat (pl. /accounts, /documents) szűrés nélkül. Ha van kereső/query paraméter (search, q, filter, helyrajzi szám, ügyfélnév), használd. Először a releváns egyedi rekordot keresd.',
-    ...blocks,
-  ].join('\n\n')
+  return {
+    gateConnectors,
+    spec: [
+      'A hozzád rendelt külső REST API(k) — olvasáshoz http_api_get, íráshoz http_api_request eszközt hívj. Ha több API-kapcsolat van, add meg a megfelelő connectorId-t. A path a Base URL-hez relatív; az API-kulcsot és a konfigurált fejléceket a rendszer injektálja, neked nem kell megadnod.',
+      'Hatékony lekérdezés: NE töltsd le a teljes listákat (pl. /accounts, /documents) szűrés nélkül. Ha van kereső/query paraméter (search, q, filter, helyrajzi szám, ügyfélnév), használd. Először a releváns egyedi rekordot keresd.',
+      ...blocks,
+    ].join('\n\n'),
+  }
 }
 
 export async function listAllowedChatTools(

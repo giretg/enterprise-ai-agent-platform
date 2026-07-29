@@ -8,6 +8,7 @@ import type {
   UpdateMonitorInput,
 } from '@/repositories/interfaces'
 import type { ProcessService } from '@/domain/playbook/process-service'
+import type { AgentAccessService } from '@/domain/agent-access/agent-access-service'
 import { randomUUID } from 'crypto'
 import type { MonitorCollector, MonitorSignalDraft } from './collectors/types'
 import { evaluateFilter } from './filter-eval'
@@ -86,6 +87,18 @@ export class MonitorService {
     private agents?: AgentRepository,
   ) {
     this.collectors = new Map(collectors.map((c) => [c.kind, c]))
+  }
+
+  /**
+   * #142 — az agent-hozzáférési gráf SHADOW ellenőrzője. A Monitor-cron a definíció
+   * jogosítványán fut, ezért az eszkaláció NEM áll meg az ad-hoc gráf deny döntésén;
+   * de `agent.access.bypass` eseményt írunk, ha az ad-hoc út elutasítaná. Setter-
+   * injektálás, hogy a késői wiring ne bővítse a pozicionális konstruktort.
+   */
+  private agentAccess?: AgentAccessService
+
+  setAgentAccessService(service: AgentAccessService): void {
+    this.agentAccess = service
   }
 
   async list(tenantId: string) {
@@ -400,6 +413,22 @@ export class MonitorService {
     escalationAgentId: string | null,
   ): Promise<string> {
     const hasAgent = Boolean(escalationAgentId)
+    // #142 — SHADOW ellenőrzés: auditál, nem blokkol. A Monitor-definíciót csak szűk,
+    // dedikált jogosultsággal lehet szerkeszteni, ezért az eszkaláció a definíció
+    // jogán fut; de ha a monitor létrehozója ad hoc nem szólíthatná meg ezt az
+    // agentet, azt a compliance-felelősnek látnia kell.
+    if (escalationAgentId && this.agentAccess && monitor.tenantId) {
+      try {
+        await this.agentAccess.recordProcessBypass({
+          subject: { kind: 'user', userId: monitor.createdById, tenantId: monitor.tenantId },
+          targetAgentId: escalationAgentId,
+          verb: 'address',
+          monitorDefinitionId: monitor.id,
+        })
+      } catch {
+        // Szándékosan néma: a shadow-audit sosem akadályozhatja meg az eszkalációt.
+      }
+    }
     const ticket = await this.tickets.create({
       tenantId: monitor.tenantId,
       type: monitor.openTicketType,
