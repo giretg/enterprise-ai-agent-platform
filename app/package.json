@@ -88,6 +88,7 @@
     "test:eval-service": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/eval-service-agent-binding.test.ts",
     "test:memory-approval": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/memory-approval-service.test.ts",
     "test:training-tenant": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/training-tenant-boundary.test.ts",
+    "test:training-eval-policy": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/training-eval-policy.test.ts",
     "test:memory-conflicts": "tsx scripts/memory-conflict-detection.test.ts",
     "test:memory-content-guard": "tsx scripts/memory-content-guard.test.ts",
     "test:memory-maintenance-rollback": "tsx scripts/memory-maintenance-rollback.test.ts",

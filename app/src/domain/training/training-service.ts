@@ -5,6 +5,7 @@ import {
   requiresEvalGate,
   requiresHumanApproval,
   resolveSelfEvolutionProfile,
+  type SelfEvolutionProfile,
 } from '@/lib/self-evolution-profile'
 import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
 import type { AgentRepository, AuditRepository, TicketRepository } from '@/repositories/interfaces'
@@ -38,6 +39,15 @@ function computeDiff(before: string, after: string) {
     before,
     after,
   }
+}
+
+/**
+ * Az `eval_only` és `auto_after_eval` maga az automatikus minőségi kapu:
+ * sikertelen eredményét emberi „override" sem írhatja felül. A kevésbé szigorú
+ * profiloknál az override megmarad a dokumentált kivételkezelési útvonalnak.
+ */
+export function mayOverrideFailedEval(profile: SelfEvolutionProfile): boolean {
+  return !requiresEvalGate(profile)
 }
 
 export class TrainingService {
@@ -325,7 +335,7 @@ export class TrainingService {
         data: { evalResult: evalRun.details ?? { passed: evalRun.passed, score: evalRun.score } },
       })
 
-      if (!evalRun.passed && !opts.overrideEval) {
+      if (!evalRun.passed && (!opts.overrideEval || !mayOverrideFailedEval(profile))) {
         await this.audit.append({
           actorType: 'human',
           actorId: approverId,
@@ -336,12 +346,27 @@ export class TrainingService {
           modelUsed: null,
           inputRef: activeEval.id,
           outputRef: evalRun.id,
-          policyDecision: `eval_failed:score=${evalRun.score.toFixed(2)}`,
+          policyDecision: mayOverrideFailedEval(profile)
+            ? `eval_failed:score=${evalRun.score.toFixed(2)}`
+            : `eval_required_failed:score=${evalRun.score.toFixed(2)}`,
           tenantId: agent.tenantId,
-          metadata: evalRun.details,
+          metadata: { eval: evalRun.details, overrideRequested: opts.overrideEval ?? false },
         })
+        // MemoryTraining §4.1/T7: kötelező eval bukás után nincs újrapróbálható
+        // emberi override ugyanarra a ticketre; a ticket lezárt rejectiont kap.
+        if (!mayOverrideFailedEval(profile)) {
+          await this.ticketService.transition({
+            ticketId,
+            toState: 'rejected',
+            actor: { type: 'system' },
+            note: `eval_required_failed: score ${Math.round(evalRun.score * 100)}%`,
+            agentVersion: agent.currentVersion,
+          })
+        }
         throw new Error(
-          `eval_failed: score ${Math.round(evalRun.score * 100)}% — use overrideEval to proceed`,
+          mayOverrideFailedEval(profile)
+            ? `eval_failed: score ${Math.round(evalRun.score * 100)}% — use overrideEval to proceed`
+            : `eval_failed: score ${Math.round(evalRun.score * 100)}% — required eval cannot be overridden`,
         )
       }
 

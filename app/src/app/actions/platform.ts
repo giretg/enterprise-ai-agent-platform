@@ -4120,6 +4120,20 @@ export async function createEval(input: {
     if (!agent) return fail('Agent not found')
     assertAgentTenantReachable(agent, user.activeTenantId)
     const evalDef = await services.eval.create(parsed)
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.user.id,
+      agentVersion: agent.currentVersion,
+      action: 'training.eval_created',
+      targetType: 'eval',
+      targetId: evalDef.id,
+      modelUsed: null,
+      inputRef: agent.id,
+      outputRef: evalDef.id,
+      policyDecision: 'allowed',
+      tenantId: user.activeTenantId,
+      metadata: { assertionCount: parsed.goldenSet.length, name: evalDef.name },
+    })
     return ok(evalDef)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to create eval')
@@ -4140,6 +4154,20 @@ export async function runEval(input: { evalId: string; agentId: string; proposed
       agentVersion: agent.currentVersion,
       trigger: 'manual',
     })
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.user.id,
+      agentVersion: agent.currentVersion,
+      action: 'training.eval',
+      targetType: 'eval',
+      targetId: parsed.evalId,
+      modelUsed: null,
+      inputRef: agent.id,
+      outputRef: evalRun.id,
+      policyDecision: evalRun.passed ? 'passed' : 'failed',
+      tenantId: user.activeTenantId,
+      metadata: { trigger: 'manual', passed: evalRun.passed, score: evalRun.score },
+    })
     return ok(evalRun)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to run eval')
@@ -4154,6 +4182,20 @@ export async function listEvalsForAgent(input: { agentId: string }) {
     if (!agent) return fail('Agent not found')
     assertAgentTenantReachable(agent, user.activeTenantId)
     const evals = await services.eval.findAllForAgent(agent.id)
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.user.id,
+      agentVersion: agent.currentVersion,
+      action: 'training.eval_read',
+      targetType: 'agent',
+      targetId: agent.id,
+      modelUsed: null,
+      inputRef: agent.id,
+      outputRef: null,
+      policyDecision: 'allowed',
+      tenantId: user.activeTenantId,
+      metadata: { evalCount: evals.length },
+    })
     return ok(evals)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to list evals')

@@ -54,7 +54,9 @@ export const DEFAULT_TICKET_TRANSITIONS: TicketTransitionConfigRule[] = [
   { from: 'in_progress', to: 'rejected', allowed: 'operator' },
   { from: 'awaiting_human', to: 'approved', allowed: 'approver' },
   { from: 'awaiting_human', to: 'needs_info', allowed: 'creator_or_operator' },
-  { from: 'awaiting_human', to: 'rejected', allowed: 'operator' },
+  // Kötelező eval bukásakor a TrainingService rendszer-aktorral zárja le a
+  // ticketet (MemoryTraining §4.1/T7); manuális elutasítás továbbra is operator.
+  { from: 'awaiting_human', to: 'rejected', allowed: 'system_or_operator' },
   { from: 'approved', to: 'done', allowed: 'system' },
   { from: 'done', to: 'needs_info', allowed: 'creator_or_operator' },
   { from: 'done', to: 'rejected', allowed: 'operator' },
