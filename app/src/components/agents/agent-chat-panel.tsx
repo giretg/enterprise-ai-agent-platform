@@ -2472,8 +2472,12 @@ export function AgentChatPanel({
     startAgentTurn({ text, attachments: localAttachments })
   }
 
-  // startAgentTurn a render törzsében van; a gépelés-vége flush refen keresztül hívja.
-  startAgentTurnRef.current = startAgentTurn
+  // A gépelés-vége flush refen keresztül hívja az aktuális implementációt.
+  // A ref írása effectben történik: render közben a React 19 szerint nem
+  // módosítható, és ez az effect a lenti folytatás-effect előtt fut le.
+  useEffect(() => {
+    startAgentTurnRef.current = startAgentTurn
+  })
 
   /**
    * Futó forduló közbeni „Jóváhagyom" → folytatás sorba. A forduló végén

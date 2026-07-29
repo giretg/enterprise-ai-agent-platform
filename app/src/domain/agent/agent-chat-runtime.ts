@@ -1505,6 +1505,7 @@ export class AgentChatRuntime {
           const message = result.error instanceof Error ? result.error.message : 'Tool loop failed'
           outcome = { status: 'failed', reason: 'error', error: message }
           emit({ type: 'error', message })
+          await this.persistFailedTurn(turn, message, snapshot.partialText)
           return
         }
         reply = result.value.content
@@ -1609,7 +1610,7 @@ export class AgentChatRuntime {
       // Az SSE `error` esemény múlékony: aki nem nézi épp a képernyőt, vagy
       // újratölt, annak nyoma sem marad. A lezáró üzenet a beszélgetésbe kerül,
       // így a leállás oka utólag is látszik (a watchdog-lezárás mintájára).
-      await this.persistFailedTurn(turn, message)
+      await this.persistFailedTurn(turn, message, snapshot.partialText)
     } finally {
       // Terminális teljes részszöveg (§5.3): completedReply, vagy ami a flusherben
       // már összegyűlt (pl. stream közbeni hiba / cancel, mielőtt a reply kész).
@@ -1636,14 +1637,22 @@ export class AgentChatRuntime {
    * volna (l. `buildFailedTurnMessage`). Fail-soft: az üzenet hiánya
    * megfigyelhetőségi veszteség, nem állapot-hiba, a forduló attól még lezárul.
    */
-  private async persistFailedTurn(turn: StreamTurnContext, error: string): Promise<void> {
+  private async persistFailedTurn(
+    turn: StreamTurnContext,
+    error: string,
+    streamedPartialText = '',
+  ): Promise<void> {
     if (turn.finalized) return
     try {
       if (await this.findAgentReplyAfterTurn(turn)) return
       const toolCalls = await this.toolCaps.listToolCallsForConversation(turn.conversationId)
       const content = buildFailedTurnMessage({
         error,
-        completedReply: turn.completedReply,
+        // A tool-loop a teljes reply-t előre megadja, a streaming gateway viszont
+        // csak chunkonként építi fel. Stream közbeni hibánál ezért a snapshot az
+        // egyetlen forrás, ami a már megjelent részválaszt hiánytalanul őrzi.
+        completedReply:
+          turn.completedReply ?? guardTurnPartialText(streamedPartialText),
         activities: turn.activities,
         turnToolCalls: toolCalls.filter((call) => call.createdAt > turn.userMessageCreatedAt),
       })

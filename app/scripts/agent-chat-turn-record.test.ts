@@ -252,10 +252,12 @@ function buildRuntime(options: {
   turns?: AgentTurnRepository
   replyChunks?: string[]
   streamError?: Error
+  /** A megadott chunkok után dob — stream közbeni részválasz-vesztés regressziójához. */
+  streamErrorAfterChunks?: Error
   /** Engedélyezett capability → a forduló a tool-loop ágon fut. */
   withTools?: boolean
 }) {
-  const messages: Message[] = []
+  const messages: Array<Message & { content: string }> = []
   let seq = 0
   const conversations = {
     createConversation: async () => ({ id: 'conv-1' }),
@@ -265,6 +267,7 @@ function buildRuntime(options: {
     }),
     appendMessage: async (params: {
       role: string
+      content: string
       onPersisted?: (message: Message) => void
     }) => {
       seq += 1
@@ -273,8 +276,9 @@ function buildRuntime(options: {
         conversationId: 'conv-1',
         seq,
         role: params.role,
+        content: params.content,
         createdAt: new Date(Date.now() + seq * 1000),
-      } as unknown as Message
+      } as unknown as Message & { content: string }
       messages.push(message)
       params.onPersisted?.(message)
       return message
@@ -287,6 +291,7 @@ function buildRuntime(options: {
       for (const chunk of options.replyChunks ?? ['Szia! ', 'Miben segíthetek?']) {
         yield chunk
       }
+      if (options.streamErrorAfterChunks) throw options.streamErrorAfterChunks
     },
     async call() {
       if (options.streamError) throw options.streamError
@@ -386,7 +391,7 @@ async function main() {
 
   await test('modellhiba: a forduló failed állapotra zárul, a hibaüzenettel', async () => {
     const turns = fakeTurnRepository()
-    const { runtime } = buildRuntime({
+    const { runtime, messages } = buildRuntime({
       turns: turns.repo,
       streamError: new Error('gateway timeout'),
     })
@@ -402,6 +407,48 @@ async function main() {
     assert.equal(turns.finalized[0].status, 'failed')
     assert.equal(turns.finalized[0].reason, 'error')
     assert.equal(turns.finalized[0].error, 'gateway timeout')
+    assert.ok(
+      messages.some((message) => message.role === 'agent' && message.content.includes('gateway timeout')),
+      'a hiba lezáró üzenete a beszélgetésben is megmarad',
+    )
+  })
+
+  await test('stream közbeni hiba: a már megjelent részválasz bekerül a lezáró üzenetbe', async () => {
+    const turns = fakeTurnRepository()
+    const partial = 'A feldolgozásból eddig 176 sort sikerült párosítani.'
+    const { runtime, messages } = buildRuntime({
+      turns: turns.repo,
+      replyChunks: [partial],
+      streamErrorAfterChunks: new Error('provider stream interrupted'),
+    })
+
+    for await (const _ of runtime.sendMessageStream(turnParams())) void _
+
+    const failedMessage = messages.find((message) => message.role === 'agent')
+    assert.ok(failedMessage, 'hiba esetén lezáró agent-üzenet készül')
+    assert.ok(
+      failedMessage!.content.includes(partial),
+      'a felhasználó által már látott részválasz nem veszhet el újratöltéskor',
+    )
+    assert.equal(turns.finalized[0].partialText, partial)
+  })
+
+  await test('tool-loop hiba: nem marad néma a beszélgetés', async () => {
+    const turns = fakeTurnRepository()
+    const budgetError =
+      'Gateway budget gate: Token limit exceeded: 10140654/10000000 per day (scope=agent)'
+    const { runtime, messages } = buildRuntime({
+      turns: turns.repo,
+      withTools: true,
+      streamError: new Error(budgetError),
+    })
+
+    for await (const _ of runtime.sendMessageStream(turnParams())) void _
+
+    const failedMessage = messages.find((message) => message.role === 'agent')
+    assert.ok(failedMessage, 'a tool-loop hibaága is lezáró üzenetet ír')
+    assert.ok(failedMessage!.content.includes('keret'))
+    assert.ok(!failedMessage!.content.includes('Gateway budget gate'))
   })
 
   await test('eldobott stream: a forduló befut és completed állapotra zárul (#60/E1)', async () => {

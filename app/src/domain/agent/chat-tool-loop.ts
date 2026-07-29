@@ -2085,30 +2085,86 @@ export async function runAgentToolLoop(params: {
     })
     if (result.evicted.length === 0) return
 
+    const committed: typeof result.evicted = []
+    let restoredChars = 0
     for (const item of result.evicted) {
       // A már archivált nagy eredményt NEM írjuk felül a saját előnézetével —
       // ott a teljes tartalom van, épp azt kell megőrizni.
-      if (archivedToolResults.has(item.path)) continue
+      if (archivedToolResults.has(item.path)) {
+        committed.push(item)
+        continue
+      }
+
+      let archiveBytes = Buffer.byteLength(item.content, 'utf8')
+      if (params.archiveLargeToolResult) {
+        let archive: LargeToolResultArchive | null = null
+        try {
+          archive = await params.archiveLargeToolResult({
+            toolName: item.toolName,
+            callId: item.toolCallId,
+            turn,
+            content: item.content,
+            context: params.context,
+            path: item.path,
+          })
+        } catch (error) {
+          logger.warn(
+            { toolName: item.toolName, toolCallId: item.toolCallId, path: item.path, error },
+            'agent.tool_loop.context_compaction_archive_failed',
+          )
+        }
+
+        // A stub csak akkor állíthatja, hogy az eredmény el lett mentve, ha a
+        // callback a kért útvonalat igazolta vissza. Hiba esetén az eredeti
+        // tool-tartalmat visszaállítjuk, így restart után sem hivatkozunk nem
+        // létező workspace-fájlra.
+        if (!archive || archive.path !== item.path) {
+          const messageIndex = messages.findIndex(
+            (message) =>
+              message.role === 'tool' &&
+              message.toolCallId === item.toolCallId &&
+              message.toolName === item.toolName,
+          )
+          if (messageIndex >= 0) {
+            const message = messages[messageIndex]
+            if (message.role === 'tool') {
+              restoredChars += item.content.length - message.content.length
+              messages[messageIndex] = { ...message, content: item.content }
+            }
+          }
+          logger.warn(
+            {
+              toolName: item.toolName,
+              toolCallId: item.toolCallId,
+              requestedPath: item.path,
+              returnedPath: archive?.path ?? null,
+            },
+            'agent.tool_loop.context_compaction_restored_after_archive_failure',
+          )
+          continue
+        }
+        archiveBytes = archive.bytes
+      }
+
       archivedToolResults.set(item.path, {
         content: item.content,
-        bytes: Buffer.byteLength(item.content, 'utf8'),
+        bytes: archiveBytes,
         toolName: item.toolName,
       })
-      await params.archiveLargeToolResult?.({
-        toolName: item.toolName,
-        callId: item.toolCallId,
-        turn,
-        content: item.content,
-        context: params.context,
-        path: item.path,
-      })
+      committed.push(item)
     }
 
+    if (committed.length === 0) return
+    const committedResult = {
+      evicted: committed,
+      freedChars: result.freedChars - restoredChars,
+      toolResultChars: result.toolResultChars + restoredChars,
+    }
     logger.info(
       {
-        evicted: result.evicted.length,
-        freedChars: result.freedChars,
-        toolResultChars: result.toolResultChars,
+        evicted: committedResult.evicted.length,
+        freedChars: committedResult.freedChars,
+        toolResultChars: committedResult.toolResultChars,
       },
       'agent.tool_loop.context_compacted',
     )
@@ -2116,7 +2172,7 @@ export async function runAgentToolLoop(params: {
       id: `context-compaction-${turn}`,
       kind: 'reasoning',
       title: 'Kontextus tömörítése',
-      detail: describeContextCompaction(result),
+      detail: describeContextCompaction(committedResult),
       status: 'done',
     })
   }

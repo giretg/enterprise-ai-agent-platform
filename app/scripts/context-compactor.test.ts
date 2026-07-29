@@ -189,16 +189,24 @@ async function main() {
    * végén a modell VISSZAOLVASSA a legelső, addigra kiszervezett eredményt.
    * `limits: null` = gyakorlatilag kikapcsolt tömörítés (kontrollfutás).
    */
-  async function runLongScenario(limits: ContextCompactionLimits) {
+  async function runLongScenario(
+    limits: ContextCompactionLimits,
+    options: { archiveSucceeds?: boolean } = {},
+  ) {
     const TURNS = 8
     const promptSizes: number[] = []
     const archived = new Map<string, string>()
     const brokerCalls: ToolBrokerInvokeInput[] = []
     let readBack: string | null = null
+    let evictedStubSeen = false
     let call = 0
 
     const gateway = {
       call: async (args: { messages: GatewayMessage[] }) => {
+        evictedStubSeen ||= args.messages.some(
+          (message) =>
+            message.role === 'tool' && message.content.startsWith(EVICTED_TOOL_RESULT_MARKER),
+        )
         promptSizes.push(
           args.messages.reduce((sum, m) => sum + ((m as { content?: string }).content?.length ?? 0), 0),
         )
@@ -271,6 +279,7 @@ async function main() {
       contextCompaction: limits,
       archiveLargeToolResult: async ({ content, path, toolName, callId }) => {
         const target = path ?? `.tool-results/${toolName}-${callId}.json`
+        if (options.archiveSucceeds === false) return null
         archived.set(target, content)
         return { path: target, bytes: Buffer.byteLength(content) }
       },
@@ -281,6 +290,7 @@ async function main() {
       promptSizes,
       archived,
       readBack,
+      evictedStubSeen,
       totalPromptChars: promptSizes.reduce((a, b) => a + b, 0),
     }
   }
@@ -325,6 +335,23 @@ async function main() {
     const payload = JSON.parse(on.readBack) as { content: string; totalChars: number }
     assert.ok(payload.totalChars > 0)
     assert.match(payload.content, /Tulajdonos 1-/, 'az ELSŐ kör eredménye olvasható vissza')
+  })
+
+  await check('archiválási hiba után nem marad hamis elmentési stub a promptban', async () => {
+    const failed = await runLongScenario(
+      {
+        keepRecentToolResults: 2,
+        maxToolResultChars: 30_000,
+        minEvictableChars: 500,
+      },
+      { archiveSucceeds: false },
+    )
+    assert.equal(failed.archived.size, 0, 'a fake archiváló nem mentett tartalmat')
+    assert.equal(
+      failed.evictedStubSeen,
+      false,
+      'a modell nem kaphat olyan stubot, amely nem létező workspace-fájlra hivatkozik',
+    )
   })
 
   console.log(failures === 0 ? '\n✅ Minden teszt zöld\n' : `\n❌ ${failures} teszt bukott\n`)
