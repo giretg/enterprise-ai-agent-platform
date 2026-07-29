@@ -13,6 +13,13 @@ export type PromptSegments = {
   toolTail?: GatewayMessage[]
 }
 
+function withoutCacheBoundary(message: GatewayMessage): GatewayMessage {
+  if (message.cacheBoundary === undefined) return message
+  const unmarked = { ...message }
+  delete unmarked.cacheBoundary
+  return unmarked
+}
+
 /**
  * A stabil zóna utolsó üzenetére teszi a cache-határt. Ez a *jelölés*
  * providerfüggetlen és tartalom-semleges (a `content` bájtra változatlan): a
@@ -34,8 +41,10 @@ function markCacheBoundary(stable: GatewayMessage[]): GatewayMessage[] {
     boundary = i
     break
   }
-  if (boundary < 0) return stable
-  return stable.map((message, i) => (i === boundary ? { ...message, cacheBoundary: true } : message))
+  return stable.map((message, i) => {
+    const unmarked = withoutCacheBoundary(message)
+    return i === boundary ? { ...unmarked, cacheBoundary: true } : unmarked
+  })
 }
 
 /** I/O-mentes, közös prompt-összeállító a chat-, task- és tool-loop runtime-hoz. */
@@ -46,8 +55,8 @@ export function assembleGatewayMessages(segments: PromptSegments): GatewayMessag
   ])
   return [
     ...stable,
-    ...(segments.variableContext ?? []),
-    ...(segments.history ?? []),
-    ...(segments.toolTail ?? []),
+    ...(segments.variableContext ?? []).map(withoutCacheBoundary),
+    ...(segments.history ?? []).map(withoutCacheBoundary),
+    ...(segments.toolTail ?? []).map(withoutCacheBoundary),
   ]
 }

@@ -127,7 +127,11 @@ export type PromptCacheUsage = {
 }
 
 type RawUsage = {
-  prompt_tokens_details?: { cached_tokens?: unknown; cache_creation_tokens?: unknown } | null
+  prompt_tokens_details?: {
+    cached_tokens?: unknown
+    cache_write_tokens?: unknown
+    cache_creation_tokens?: unknown
+  } | null
   cache_read_input_tokens?: unknown
   cache_creation_input_tokens?: unknown
 }
@@ -153,6 +157,7 @@ export function extractPromptCacheUsage(usage: unknown): PromptCacheUsage {
     positiveInteger(details?.cached_tokens) ?? positiveInteger(raw.cache_read_input_tokens)
   const cacheWritePromptTokens =
     positiveInteger(raw.cache_creation_input_tokens) ??
+    positiveInteger(details?.cache_write_tokens) ??
     positiveInteger(details?.cache_creation_tokens)
 
   return {

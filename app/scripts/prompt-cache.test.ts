@@ -124,6 +124,31 @@ async function main() {
     )
   })
 
+  await check('assembler: előre jelölt bemenetből is pontosan egy, utolsó határ készül', () => {
+    const segments = fixture('A')
+    segments.stablePreamble[0] = {
+      ...segments.stablePreamble[0]!,
+      cacheBoundary: true,
+    }
+    segments.variableContext![0] = {
+      ...segments.variableContext![0]!,
+      cacheBoundary: true,
+    }
+    segments.history![0] = {
+      ...segments.history![0]!,
+      cacheBoundary: true,
+    }
+    segments.toolTail![0] = {
+      ...segments.toolTail![0]!,
+      cacheBoundary: true,
+    }
+    const messages = assembleGatewayMessages(segments)
+    const marked = messages
+      .map((m, i) => (m.cacheBoundary ? i : -1))
+      .filter((i) => i >= 0)
+    assert.deepEqual(marked, [2], 'a korábbi jelölést az assembler eltávolítja')
+  })
+
   await check('assembler: a változó adat nem mozdítja el a stabil prefixet és a határt', () => {
     const first = assembleGatewayMessages(fixture('A'))
     const second = assembleGatewayMessages(fixture('B'))
@@ -293,7 +318,19 @@ async function main() {
     assert.ok(request.url.includes('/chat/completions'))
   })
 
-  await check('gateway: a cache-telemetria auditba és metrikába kerül', async () => {
+  await check('usage: OpenRouter cache_write_tokens kiolvasása', () => {
+    assert.deepEqual(
+      extractPromptCacheUsage({
+        prompt_tokens_details: {
+          cached_tokens: 1300,
+          cache_write_tokens: 240,
+        },
+      }),
+      { cachedPromptTokens: 1300, cacheWritePromptTokens: 240 },
+    )
+  })
+
+  await check('gateway: a cache-telemetria normál és streaming ágon auditba és metrikába kerül', async () => {
     const events: AuditLog[] = []
     const audit: AuditRepository = {
       async append(data) {
@@ -357,6 +394,80 @@ async function main() {
     assert.ok(
       metrics.includes('model_gateway_prompt_cache_tokens_total{kind="write",provider="openrouter"} 200'),
       'metrika: írt prompt-tokenek',
+    )
+
+    const originalFetch = globalThis.fetch
+    const originalStdoutWrite = process.stdout.write
+    let streamBody: Record<string, unknown> | undefined
+    let streamLogOutput = ''
+    globalThis.fetch = (async (_url: string, init: RequestInit) => {
+      streamBody = JSON.parse(String(init.body))
+      return new Response(
+        [
+          'data: {"choices":[{"delta":{"content":"stream kész"}}]}',
+          '',
+          'data: {"choices":[],"usage":{"prompt_tokens":1500,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":1200,"cache_write_tokens":300}}}',
+          '',
+          'data: [DONE]',
+          '',
+        ].join('\n'),
+        { status: 200, headers: { 'content-type': 'text/event-stream' } },
+      )
+    }) as unknown as typeof fetch
+    process.stdout.write = ((chunk: string | Uint8Array) => {
+      streamLogOutput += String(chunk)
+      return true
+    }) as typeof process.stdout.write
+    try {
+      const streamProvider = createDefaultProviders().get('openrouter')!
+      const streamGateway = new ModelGateway(
+        audit,
+        modelCalls,
+        new Map([[streamProvider.name, streamProvider]]),
+      )
+      const chunks: string[] = []
+      for await (const chunk of streamGateway.callStream({
+        agentId: 'aaaaaaaa-bbbb-4000-8000-000000000009',
+        messages: assembleGatewayMessages(fixture('A')),
+        modelConfig: { provider: 'openrouter', model: 'anthropic/claude-x' },
+      })) {
+        chunks.push(chunk)
+      }
+      assert.deepEqual(chunks, ['stream kész'])
+    } finally {
+      globalThis.fetch = originalFetch
+      process.stdout.write = originalStdoutWrite
+    }
+
+    assert.deepEqual(
+      streamBody?.stream_options,
+      { include_usage: true },
+      'a streaming kérés usage blokkot kér a providertől',
+    )
+    const streamCall = events.filter((event) => event.action === 'model.call').at(-1)
+    const streamMetadata = streamCall?.metadata as Record<string, unknown> | undefined
+    assert.equal(streamMetadata?.cachedPromptTokens, 1200, 'stream audit: cache-olvasás')
+    assert.equal(streamMetadata?.cacheWritePromptTokens, 300, 'stream audit: cache-írás')
+    const streamLog = streamLogOutput
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .find((record) => record.event === 'model.call')
+    assert.equal(streamLog?.cacheHit, true, 'stream napló: cacheHit')
+
+    const streamMetrics = registry.render()
+    assert.ok(
+      streamMetrics.includes(
+        'model_gateway_prompt_cache_tokens_total{kind="read",provider="openrouter"} 2500',
+      ),
+      'stream metrika: olvasott prompt-tokenek',
+    )
+    assert.ok(
+      streamMetrics.includes(
+        'model_gateway_prompt_cache_tokens_total{kind="write",provider="openrouter"} 500',
+      ),
+      'stream metrika: írt prompt-tokenek',
     )
     registry.resetAll()
   })

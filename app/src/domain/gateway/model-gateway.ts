@@ -230,6 +230,8 @@ export type ModelProviderResult = {
   model?: string
 }
 
+export type ModelProviderUsage = NonNullable<ModelProviderResult['usage']>
+
 export interface ModelProvider {
   readonly name: string
   /**
@@ -262,6 +264,8 @@ export interface ModelProvider {
     messages: GatewayMessage[]
     modelConfig: ModelConfig
     onReasoningDelta?: (delta: string) => void
+    /** A streaming válasz végén érkező provider usage-blokk oldalcsatornája. */
+    onUsage?: (usage: ModelProviderUsage) => void
   }): AsyncGenerator<string, void, unknown>
 }
 
@@ -292,7 +296,11 @@ type OpenAiCompatibleResponse = {
     prompt_tokens?: number
     completion_tokens?: number
     /** Prompt-cache telemetria — provideronként opcionális (ld. `extractPromptCacheUsage`). */
-    prompt_tokens_details?: { cached_tokens?: number; cache_creation_tokens?: number } | null
+    prompt_tokens_details?: {
+      cached_tokens?: number
+      cache_write_tokens?: number
+      cache_creation_tokens?: number
+    } | null
     cache_read_input_tokens?: number
     cache_creation_input_tokens?: number
   }
@@ -583,6 +591,7 @@ export class ChatGptOAuthProvider implements ModelProvider {
     messages: GatewayMessage[]
     modelConfig: ModelConfig
     onReasoningDelta?: (delta: string) => void
+    onUsage?: (usage: ModelProviderUsage) => void
   }): AsyncGenerator<string, void, unknown> {
     const providerUrl = process.env.CHATGPT_OAUTH_PROVIDER_URL
 
@@ -769,6 +778,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
     messages: GatewayMessage[]
     modelConfig: ModelConfig
     onReasoningDelta?: (delta: string) => void
+    onUsage?: (usage: ModelProviderUsage) => void
   }): AsyncGenerator<string, void, unknown> {
     const baseUrl = (process.env[this.baseUrlEnvVar] || this.defaultBaseUrl)?.replace(/\/+$/, '')
     if (!baseUrl) {
@@ -795,6 +805,7 @@ export class OpenAiCompatibleProvider implements ModelProvider {
         temperature: input.modelConfig.temperature,
         max_tokens: input.modelConfig.maxTokens,
         stream: true,
+        ...(this.options.promptCache ? { stream_options: { include_usage: true } } : {}),
         ...this.options.extraBody?.({ reasoningRequested: typeof input.onReasoningDelta === 'function' }),
       }),
     })
@@ -828,6 +839,14 @@ export class OpenAiCompatibleProvider implements ModelProvider {
           try {
             const parsed = JSON.parse(data) as {
               choices?: Array<{ delta?: { content?: string; reasoning?: string } }>
+              usage?: OpenAiCompatibleResponse['usage']
+            }
+            if (parsed.usage) {
+              input.onUsage?.({
+                promptTokens: parsed.usage.prompt_tokens,
+                completionTokens: parsed.usage.completion_tokens,
+                ...extractPromptCacheUsage(parsed.usage),
+              })
             }
             const delta = parsed.choices?.[0]?.delta
             // OpenRouter/kompatibilis reasoning-csatorna (WP-7): csak akkor jön, ha a
@@ -1849,6 +1868,7 @@ export class ModelGateway {
       }
       const started = Date.now()
       let content = ''
+      let streamUsage: ModelProviderUsage | undefined
       /** Az első kiírt token elkötelezi a jelöltet — utána nincs fallback. */
       let committed = false
 
@@ -1923,14 +1943,17 @@ export class ModelGateway {
           messages: params.messages,
           modelConfig: attemptConfig,
           onReasoningDelta: params.onReasoningDelta,
+          onUsage: (usage) => {
+            streamUsage = usage
+          },
         })) {
           if (!committed) committed = true
           content += chunk
           yield chunk
         }
 
-        const promptTokens = Math.ceil(prompt.length / 4)
-        const completionTokens = Math.ceil(content.length / 4)
+        const promptTokens = streamUsage?.promptTokens ?? Math.ceil(prompt.length / 4)
+        const completionTokens = streamUsage?.completionTokens ?? Math.ceil(content.length / 4)
         const costEstimate = computeModelCostEur(
           model,
           promptTokens,
@@ -1954,6 +1977,27 @@ export class ModelGateway {
         })
         modelCallsTotal.inc({ provider: provider.name, status: 'ok' })
         modelCallLatencyMs.observe(streamLatencyMs, { provider: provider.name })
+        const promptCache = recordPromptCacheUsage(provider.name, streamUsage)
+        logger.info(
+          {
+            event: 'model.call',
+            provider: provider.name,
+            model,
+            status: 'ok',
+            latencyMs: streamLatencyMs,
+            costEstimate,
+            promptTokens,
+            completionTokens,
+            ...promptCacheLogFields(promptCache),
+            agentId: params.agentId,
+            ticketId: params.ticketId ?? null,
+            attemptGroupId,
+            attemptIndex,
+            chainLength: chain.length,
+            stream: true,
+          },
+          'model gateway call',
+        )
 
         await this.audit.append({
           actorType: 'agent',
@@ -1974,6 +2018,7 @@ export class ModelGateway {
             attemptGroupId,
             attemptIndex,
             chainLength: chain.length,
+            ...promptCache,
           },
         })
         return
