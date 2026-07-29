@@ -30,12 +30,15 @@ import {
 import { ADVANCEABLE_PROCESS_STATUSES } from '@/lib/playbook-v2/process-status'
 import { formatPlaybookRefV2, parsePlaybookSpecV2, type PlaybookRole } from '@/lib/playbook-v2/spec'
 import { isAgentSuitable } from '@/domain/playbook/suitability'
+import type { AgentAccessService } from '@/domain/agent-access/agent-access-service'
+import { isHumanUserSuitable } from '@/domain/playbook/human-role-suitability'
 import type {
   AgentRepository,
   AuditRepository,
   PlaybookV2Repository,
   ProcessDefinitionRepository,
   ProcessRepository,
+  TenantMembershipRepository,
   TicketRepository,
   ToolBrokerRepository,
   UserRepository,
@@ -158,6 +161,11 @@ export class ProcessService {
     private readonly agents?: AgentRepository,
     private readonly toolBroker?: ToolBrokerRepository,
     private readonly users?: UserRepository,
+    // §4.3/§4.8 — az emberi (`human_role`) szereplő tenant-tagságát a membership-modell
+    // dönti el (nem a `user.tenantId`); enélkül a resolveUserForRole cross-tenant usert
+    // is felold. A #153 agent-oldali kapu emberi párja. Ha hiányzik és a Folyamatnak
+    // valós tenantja van, a feloldás fail-closed módon blokkol.
+    private readonly tenantMemberships?: TenantMembershipRepository,
     private readonly alertNotifier?: ProcessAlertNotifier,
     // Azonnali dispatch-gyorsítóút (§5.7 kiegészítés): a belépő/soron következő
     // agent-step ticketjét ugyanabban a kérésben elindítja, ahelyett hogy a
@@ -177,6 +185,64 @@ export class ProcessService {
 
   setAwaitingHumanSink(sink: AwaitingHumanEventSink): void {
     this.awaitingHumanSink = sink
+  }
+
+  /**
+   * #142 — az agent-hozzáférési gráf SHADOW ellenőrzője. Setter-injektálás (mint az
+   * `awaitingHumanSink`), hogy a késői wiring ne bővítse a pozicionális konstruktort.
+   * Ha nincs bekötve, a folyamat pontosan úgy fut, mint eddig, csak nem keletkezik
+   * `agent.access.bypass` esemény.
+   */
+  private agentAccess?: AgentAccessService
+
+  setAgentAccessService(service: AgentAccessService): void {
+    this.agentAccess = service
+  }
+
+  /**
+   * A folyamat agent-elérésének SHADOW ellenőrzése (a spec „Playbook- és Monitor-
+   * megkerülő út" fejezete). A folyamat-definíció maga a runtime principal
+   * jogosítványa, ezért NEM blokkolunk — csak auditálunk, ha az ad-hoc gráf
+   * elutasítaná ezt az utat.
+   *
+   * Az alany a delegáló ELŐZŐ lépés agentje (agent→agent), különben a Futást indító
+   * ember (user→agent). Best-effort: a shadow-check hibája nem állíthatja meg a
+   * folyamatot — az megfordítaná a „auditál, nem blokkol" szabályt.
+   */
+  private async recordProcessAccessShadow(params: {
+    tenantId: string | null
+    process: ProcessInstance
+    delegationFrom?: { fromStepId: string; fromTicketId: string | null }
+    targetAgentId: string
+  }): Promise<void> {
+    if (!this.agentAccess || !params.tenantId) return
+    try {
+      const previousAgentId = params.delegationFrom
+        ? (await this.processes.findStep(params.process.id, params.delegationFrom.fromStepId))
+            ?.assignedAgentId ?? null
+        : null
+
+      const subject = previousAgentId
+        ? ({ kind: 'agent', agentId: previousAgentId, tenantId: params.tenantId } as const)
+        : params.process.startedByUserId
+          ? ({ kind: 'user', userId: params.process.startedByUserId, tenantId: params.tenantId } as const)
+          : params.process.startedByAgentId
+            ? ({ kind: 'agent', agentId: params.process.startedByAgentId, tenantId: params.tenantId } as const)
+            : null
+      if (!subject) return
+      if (subject.kind === 'agent' && subject.agentId === params.targetAgentId) return
+
+      await this.agentAccess.recordProcessBypass({
+        subject,
+        targetAgentId: params.targetAgentId,
+        verb: 'address',
+        processInstanceId: params.process.id,
+        processDefinitionId: params.process.processDefinitionId,
+        playbookVersionId: params.process.playbookVersionId,
+      })
+    } catch {
+      // Szándékosan néma: a shadow-audit sosem állíthat meg egy futó folyamatot.
+    }
   }
 
   /**
@@ -860,6 +926,20 @@ export class ProcessService {
         ? await this.resolveUserForRole(tenantId, resolution, rule.assignedRole, rule.stepId)
         : null
 
+    // #142 — SHADOW ellenőrzés. A folyamat-definíció MAGA a runtime principal
+    // jogosítványa, ezért a Playbook-út NEM áll meg az ad-hoc gráf deny döntésén; de
+    // ha az ad-hoc út elutasítaná ezt a lépést, `agent.access.bypass` eseményt írunk.
+    // Így a compliance-felelős látja, hol használ egy folyamat olyan agent-utat,
+    // amit egy ember vagy egy agent ad hoc nem járhatna be.
+    if (resolvedAgentId) {
+      await this.recordProcessAccessShadow({
+        tenantId,
+        process,
+        delegationFrom,
+        targetAgentId: resolvedAgentId,
+      })
+    }
+
     const step = await this.processes.createStep({
       tenantId,
       processInstanceId: process.id,
@@ -1019,11 +1099,12 @@ export class ProcessService {
     }
     const capabilities = await this.toolBroker.findCapabilitiesForAgent(agentId)
     const role = resolution.roleByKey.get(roleKey)
-    const registryTenantId = agent.tenantId ?? null
+    // A tenant-határt a Futás (Folyamat) tenantjához mérjük, NEM az agent saját
+    // tenantjához — különben a cross-tenant kötés önmagával egyezne és sosem bukna el.
     const suitability = isAgentSuitable(
       { status: agent.status, tenantId: agent.tenantId, capabilities },
       { requiredCapabilities: role?.requiredCapabilities },
-      registryTenantId,
+      tenantId,
     )
     if (!suitability.ok) {
       throw new ProcessBlockedError(
@@ -1051,8 +1132,23 @@ export class ProcessService {
     if (!user) {
       throw new ProcessBlockedError(stepId, `A(z) '${roleKey}' szerephez kötött user nem található.`)
     }
-    if (user.status !== 'active' || !user.role) {
-      throw new ProcessBlockedError(stepId, `A(z) '${roleKey}' szerephez kötött user nem aktív vagy nincs szerepe.`)
+    // §4.3/§4.8 — a tenant-határt a FOLYAMAT tenantjához mérjük (nem a user sajátjához),
+    // a valódi tagságot a membership-modell dönti el. Valós tenant → aktív tagság kötelező;
+    // null (platform) Folyamatnál nincs tagság-fogalom, csak a status/role kapu él. Membership-repo
+    // nélkül, valós tenantnál FAIL-CLOSED: nem oldunk fel ellenőrizetlenül cross-tenant usert.
+    let membership: { status: string } | null = null
+    if (tenantId) {
+      if (!this.tenantMemberships) {
+        throw new ProcessBlockedError(
+          stepId,
+          `A(z) '${roleKey}' emberi szerep tenant-tagsága nem ellenőrizhető (nincs membership-repository).`,
+        )
+      }
+      membership = await this.tenantMemberships.findByTenantAndUser(tenantId, userId)
+    }
+    const suitability = isHumanUserSuitable({ status: user.status, role: user.role }, membership, tenantId)
+    if (!suitability.ok) {
+      throw new ProcessBlockedError(stepId, `A(z) '${roleKey}' szerephez kötött ${suitability.reason}`)
     }
     return userId
   }

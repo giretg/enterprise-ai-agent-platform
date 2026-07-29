@@ -26,13 +26,22 @@ export async function POST(request: Request) {
     return new Response('Invalid JSON body', { status: 400 })
   }
 
-  const { agentId, content, conversationId, attachmentDocumentIds, processDefinitionId, processInputPayload } = body as {
+  const {
+    agentId,
+    content,
+    conversationId,
+    attachmentDocumentIds,
+    processDefinitionId,
+    processInputPayload,
+    consequenceApprovalIds,
+  } = body as {
     agentId?: string
     content?: string
     conversationId?: string
     attachmentDocumentIds?: string[]
     processDefinitionId?: string
     processInputPayload?: Record<string, unknown>
+    consequenceApprovalIds?: string[]
   }
 
   if (!agentId || typeof agentId !== 'string') {
@@ -40,6 +49,34 @@ export async function POST(request: Request) {
   }
   if (typeof content !== 'string') {
     return new Response('content is required', { status: 400 })
+  }
+
+  // issue #97 — jóváhagyás utáni FOLYTATÁS. A gomb megnyomása eddig lefuttatta a
+  // műveletet, de a felhasználó semmit nem látott belőle és a hátralévő lépések
+  // is elmaradtak. Itt a szerver állítja össze a forduló szövegét a MÁR
+  // jóváhagyott sorokból (a kliens csak azonosítót küld), és a forduló
+  // „tainted"-ként indul, hogy a következő mellékhatás megint kapura essen.
+  let continuationContent: string | null = null
+  let continuationConversationId: string | null = null
+  if (Array.isArray(consequenceApprovalIds) && consequenceApprovalIds.length > 0) {
+    const continuation = await services.consequenceApproval.getApprovedContinuation(
+      consequenceApprovalIds.filter((id): id is string => typeof id === 'string'),
+      { id: user.user.id, tenantId: user.activeTenantId, role: user.activeTenantRole },
+    )
+    if (!continuation.ok) {
+      return Response.json(
+        { error: continuation.reason, message: 'A jóváhagyás folytatása nem indítható.' },
+        { status: continuation.reason === 'approval_not_found' ? 404 : 400 },
+      )
+    }
+    if (conversationId && conversationId !== continuation.continuation.conversationId) {
+      return Response.json(
+        { error: 'approval_conversation_mismatch', message: 'A jóváhagyás nem ehhez a beszélgetéshez tartozik.' },
+        { status: 400 },
+      )
+    }
+    continuationContent = continuation.continuation.prompt
+    continuationConversationId = continuation.continuation.conversationId
   }
 
   const encoder = new TextEncoder()
@@ -62,13 +99,15 @@ export async function POST(request: Request) {
 
   const gen = services.agentChat.sendMessageStream({
     agentId,
-    content,
+    content: continuationContent ?? content,
     createdById: user.user.id,
     tenantId: user.activeTenantId,
-    conversationId,
-    attachmentDocumentIds,
-    processDefinitionId,
-    processInputPayload,
+    conversationId: continuationConversationId ?? conversationId,
+    // Folytatáskor a kliens csak azonosítót küld: se csatolmány, se folyamat-indítás
+    // nem utazhat vele — a forduló tartalmát teljes egészében a szerver adja.
+    ...(continuationContent
+      ? { consequenceApprovalContinuation: true }
+      : { attachmentDocumentIds, processDefinitionId, processInputPayload }),
   })
 
   // Az aktív-forduló ütközést (D7/E5) még a SSE-válasz megnyitása ELŐTT kell

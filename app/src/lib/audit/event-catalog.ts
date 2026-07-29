@@ -55,6 +55,17 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'agent.create',
   'agent.delete',
   'agent.dispatch_denied_inactive',
+  // Agent-hozzáférési gráf (Access-Policy §agent-scope, #142). A `channel`
+  // (chat | agent_ask | ticket | web_research) ADAT a metadatában, nem külön
+  // eseménynév — így egy lekérdezés minden úton látja a döntéseket.
+  'agent.access.granted',
+  'agent.access.denied',
+  // A folyamat-motor shadow ellenőrzése: a Playbook/Monitor út ÁTMEGY, de az ad-hoc
+  // gráf elutasította volna. Auditál, nem blokkol.
+  'agent.access.bypass',
+  'agent_access.grant.create',
+  'agent_access.grant.revoke',
+  'agent_access.restriction.update',
   // Tenant admin: agent elrejtése / megjelenítése az operátorok listájából.
   'agent.operator_visibility',
   'agent.persona',
@@ -118,6 +129,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'conversation.archive',
   'conversation.content_deleted',
   'conversation.create',
+  'conversation.debug_log.export',
   'conversation.promote_to_ticket',
   'message.append',
   'message.content_deleted',
@@ -178,6 +190,12 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'memory.write.eval_blocked',
   'memory.write.eval_override',
   'memory.write_denied',
+  // Control-plane eval műveletek: a golden set és futási eredmény tenant-/aktor-
+  // kötött kormányzási bizonyíték, ezért a létrehozás, futtatás és olvasás is
+  // append-only eseményként jelenik meg.
+  'training.eval_created',
+  'training.eval',
+  'training.eval_read',
   'training.capability_escalation_denied',
   // Write-gate token életciklus (§9.4) — a következményes memória-írás engedélye
   // és felhasználása a hash-láncban is nyomon követhető, nem csak a token-táblában.
@@ -282,6 +300,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'contract.evaluate',
   'ticket.comment.add',
   'ticket.comment.attachment.uploaded',
+  'ticket.debug_log.export',
   'ticket.handback',
   'ticket.runas.authorize',
   'ticket.runas.revoke',
@@ -313,6 +332,8 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'skill.deleted',
   'skill.access_denied',
   'skill.run_snapshot',
+  // issue #161 — `preferredMode: 'task'`: a chat helyett a boardon fut végig.
+  'skill.task_promoted',
 
   // Sandbox App Registry
   'retention.sweep',

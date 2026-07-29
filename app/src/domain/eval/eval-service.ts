@@ -1,6 +1,8 @@
 import { prisma } from '@/lib/db'
 import type { EvalRun } from '@prisma/client'
 
+type EvalPersistence = Pick<typeof prisma, 'eval' | 'evalRun'>
+
 export type GoldenSetAssertion = {
   description: string
   type: 'contains' | 'not_contains' | 'min_length'
@@ -33,22 +35,30 @@ function runAssertion(a: GoldenSetAssertion, content: string): AssertionResult {
 }
 
 export class EvalService {
+  constructor(private readonly db: EvalPersistence = prisma) {}
+
   async run(params: {
     evalId: string
+    /** Az eval mindig pontosan ennek az agentnek a minőségi kapuja. */
+    agentId: string
     proposedContent: string
     agentVersion: number
     memoryVersionId?: string
     trigger: 'pre_training_approval' | 'scheduled' | 'manual'
   }): Promise<EvalRun> {
-    const evalDef = await prisma.eval.findUnique({ where: { id: params.evalId } })
-    if (!evalDef) throw new Error('Eval not found')
+    const evalDef = await this.db.eval.findUnique({ where: { id: params.evalId } })
+    // A hívó által megadott agent-verzió csak akkor hiteles metaadat, ha az eval
+    // valóban ugyanahhoz az agenthez tartozik. Ellenkező esetben egy másik
+    // agent enyhébb golden setje hibásan a cél-agent minőségi kapujának
+    // eredményeként jelenhetne meg.
+    if (!evalDef || evalDef.agentId !== params.agentId) throw new Error('Eval not found')
 
     const assertions = evalDef.goldenSet as GoldenSetAssertion[]
     const results = assertions.map((a) => runAssertion(a, params.proposedContent))
     const passed = results.every((r) => r.passed)
     const score = assertions.length > 0 ? results.filter((r) => r.passed).length / assertions.length : 1
 
-    return prisma.evalRun.create({
+    return this.db.evalRun.create({
       data: {
         evalId: params.evalId,
         trigger: params.trigger,
@@ -62,11 +72,11 @@ export class EvalService {
   }
 
   async findActiveForAgent(agentId: string) {
-    return prisma.eval.findFirst({ where: { agentId, status: 'active' } })
+    return this.db.eval.findFirst({ where: { agentId, status: 'active' } })
   }
 
   async findAllForAgent(agentId: string) {
-    return prisma.eval.findMany({
+    return this.db.eval.findMany({
       where: { agentId },
       include: { runs: { orderBy: { createdAt: 'desc' }, take: 1 } },
     })
@@ -77,6 +87,6 @@ export class EvalService {
     name: string
     goldenSet: GoldenSetAssertion[]
   }) {
-    return prisma.eval.create({ data: params })
+    return this.db.eval.create({ data: params })
   }
 }

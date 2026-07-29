@@ -44,11 +44,13 @@ export class BudgetEngine {
 
   /** Minden alkalmazható keret a saját fogyasztásával — a kapu és az admin UI közös forrása. */
   async statuses(ctx: BudgetContext): Promise<BudgetStatus[]> {
-    const budgets = await this.budgetRepo.findApplicable({
-      tenantId: ctx.tenantId,
-      agentId: ctx.agentId,
-      ticketType: ctx.ticketType,
-    })
+    const budgets = applyBudgetPrecedence(
+      await this.budgetRepo.findApplicable({
+        tenantId: ctx.tenantId,
+        agentId: ctx.agentId,
+        ticketType: ctx.ticketType,
+      }),
+    )
 
     return Promise.all(
       budgets.map(async (budget) => {
@@ -79,6 +81,28 @@ export class BudgetEngine {
 
     return { allowed: true }
   }
+}
+
+/**
+ * Nevesített keret > alapértelmezés (azonos bucket + hatókör + periódus).
+ *
+ * ÜZLETI PROBLÉMA: a `scope=agent` + `scopeRef=null` sor a bucket MINDEN agentjére
+ * érvényes alapértelmezés. Mivel a kapu az összes alkalmazható keretet ÉS-ben
+ * értékeli, egy konkrét agentre adott — akár magasabb — keret eddig nem ért
+ * semmit: az alapértelmezés akkor is blokkolt. Így egyetlen, sok eszközhívást
+ * igénylő agent kedvéért az EGÉSZ szervezet keretét kellett megemelni, ami
+ * pontosan a költségkontrollt számolta fel.
+ *
+ * A precedencia ezt oldja fel: ha egy hatókör+periódus párosra van nevesített
+ * (`scopeRef` kitöltött) keret, akkor az ugyanahhoz a bucket-hez tartozó
+ * alapértelmezés (`scopeRef=null`) kimarad az értékelésből. A `tenantId` is
+ * kulcs, hogy egy szervezeti kivétel ne kapcsolja ki a platform-szintű korlátot.
+ */
+export function applyBudgetPrecedence(budgets: ModelBudget[]): ModelBudget[] {
+  const key = (budget: ModelBudget) =>
+    `${budget.tenantId ?? 'platform'}:${budget.scope}:${budget.period}`
+  const overridden = new Set(budgets.filter((b) => b.scopeRef !== null).map(key))
+  return budgets.filter((b) => b.scopeRef !== null || !overridden.has(key(b)))
 }
 
 /**

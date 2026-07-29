@@ -88,11 +88,13 @@ import {
   resolveDelegatedAccessToken,
   resolveWorkspaceStorageTenantId,
   ticketCreate,
+  tulajdoniLapEgyeztetes,
   userDirectory,
   webResearchRequest,
 } from './tool-broker-delegation'
 // WP-8 — az audit/telemetria choke-point külön modulban (tool-broker-audit.ts).
 import { recordCall, recordDenied } from './tool-broker-audit'
+import type { AgentAccessService } from '@/domain/agent-access/agent-access-service'
 // issue #97 — bizalmi regiszter (tool-nevenkénti TrustClass leképezés).
 import { resolveTrustClass } from './tool-trust-registry'
 export { AllowlistAuthorizer } from './tool-broker-authorizer'
@@ -140,6 +142,13 @@ export class ToolBrokerService {
     readonly isWebFetchEnabled: WebFetchEnabledLookup = prismaWebFetchEnabledLookup,
     readonly isWebResearchDelegationEnabled: WebResearchDelegationEnabledLookup = prismaWebResearchDelegationEnabledLookup,
     readonly lookupTenantUserDirectory: TenantUserDirectoryLookup = prismaTenantUserDirectoryLookup,
+    /**
+     * Agent-hozzáférési gráf (#142). A `agent_ask`, `ticket_create` (agent-felelős),
+     * `web_research_request`, `agent_catalog` és `agent_resolve` chokepointok ezen
+     * keresztül döntenek. Ha nincs bekötve, a gráf-kapu FAIL-CLOSED: az agent→agent
+     * elérés elutasításra kerül (`AGENT_NOT_FOUND`), nem nyílik meg korlátlanul.
+     */
+    readonly agentAccess?: AgentAccessService,
   ) {
     // WP-8: a handlerek felé kiajánlott broker-képességek. A tool-logika a keret
     // (invoke) authorize→gate→audit rétegén belül, változatlan viselkedéssel fut;
@@ -162,8 +171,8 @@ export class ToolBrokerService {
       ticketCreate: (input, actingTenantId) => ticketCreate(this, input, actingTenantId),
       agentAsk: (input, actingTenantId) => agentAsk(this, input, actingTenantId),
       webResearchRequest: (input) => webResearchRequest(this, input),
-      agentResolve: (args, tenantId) => agentResolve(this, args, tenantId),
-      agentCatalog: (args, tenantId) => agentCatalog(this, args, tenantId),
+      agentResolve: (args, tenantId, callerAgentId) => agentResolve(this, args, tenantId, callerAgentId),
+      agentCatalog: (args, tenantId, callerAgentId) => agentCatalog(this, args, tenantId, callerAgentId),
       userDirectory: (input, actingTenantId) => userDirectory(this, input, actingTenantId),
       executeHttpApiTool: (input, connector, actingTenantId, actingUserId, agentSecretAlias, delegatedAccessToken) =>
         executeHttpApiTool(this, input, connector, actingTenantId, actingUserId, agentSecretAlias, delegatedAccessToken),
@@ -175,6 +184,8 @@ export class ToolBrokerService {
       documentRead: (input, actingUserId) => documentRead(this, input, actingUserId),
       tulajdoniLapParse: (input, actingUserId, extras) =>
         tulajdoniLapParse(this, input, actingUserId, extras),
+      tulajdoniLapEgyeztetes: (input, actingUserId, extras) =>
+        tulajdoniLapEgyeztetes(this, input, actingUserId, extras),
     }
   }
 
@@ -478,9 +489,8 @@ export class ToolBrokerService {
   }
 
   /**
-   * Következmény-kapu kiváltásának rögzítése (issue #97). Ha egy „tainted"
-   * fordulóban (külső, nem megbízható tartalom került a fordulóba) egy mellékhatásos
-   * eszközhívás emberi jóváhagyást igényel, a tool-loop NEM a `invoke`-ot hívja,
+   * Következmény-kapu kiváltásának rögzítése (risk-class). Magas kockázatú
+   * eszközhívás emberi jóváhagyást igényel: a tool-loop NEM a `invoke`-ot hívja,
    * hanem ezt: a blokkolt hívás bekerül a meglévő audit-láncba (`tool.call.denied`
    * + `ToolCall` sor `trustClass`-szal), hogy egy incidensnél végigkövethető legyen.
    */
@@ -493,8 +503,8 @@ export class ToolBrokerService {
       connectorId: null,
       status: 'denied',
       latencyMs: Date.now() - startedAt,
-      policyDecision: 'consequence_gate_external_content',
-      resultMeta: { denied: true, reason: 'external_content_requires_approval' },
+      policyDecision: 'consequence_gate_risk',
+      resultMeta: { denied: true, reason: 'risk_requires_approval' },
       trustClass: resolveTrustClass(input.tool),
     })
   }

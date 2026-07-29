@@ -8,9 +8,12 @@ import { Card } from '@/components/ui/shell'
 export function AgentRegistryList({
   agents,
   canDelete,
+  loadError,
 }: {
   agents: Agent[]
   canDelete: boolean
+  /** Ha a lista lekérése elbukott — ne „üres csapat / seed” üzenetet mutassunk. */
+  loadError?: string | null
 }) {
   const [showRetired, setShowRetired] = useState(false)
 
@@ -26,6 +29,13 @@ export function AgentRegistryList({
 
   return (
     <div className="space-y-4">
+      {loadError && (
+        <Card className="border-coral/40 bg-coral/5">
+          <p className="text-sm font-medium text-coral-deep">A munkatársak betöltése sikertelen</p>
+          <p className="mt-1 text-sm text-ink-soft">{loadError}</p>
+        </Card>
+      )}
+
       {retiredCount > 0 && (
         <div className="flex flex-wrap items-center justify-between gap-3">
           <p className="text-sm text-ink-faint">
@@ -47,19 +57,12 @@ export function AgentRegistryList({
         {visibleAgents.map((agent) => (
           <AgentRegistryCard key={agent.id} agent={agent} canDelete={canDelete} />
         ))}
-        {visibleAgents.length === 0 && (
+        {!loadError && visibleAgents.length === 0 && (
           <Card className="md:col-span-2">
             <p className="text-sm text-ink-faint">
-              {agents.length === 0 ? (
-                <>
-                  Még nincs munkatárs a csapatban — futtasd:{' '}
-                  <code className="rounded bg-night-2 px-1.5 py-0.5 font-mono text-xs">
-                    npm run db:seed
-                  </code>
-                </>
-              ) : (
-                'Nincs megjeleníthető aktív munkatárs. Nyugdíjazottak megjelenítéséhez használd a fenti gombot.'
-              )}
+              {agents.length === 0
+                ? 'Még nincs munkatárs ebben a tenantban.'
+                : 'Nincs megjeleníthető aktív munkatárs. Nyugdíjazottak megjelenítéséhez használd a fenti gombot.'}
             </p>
           </Card>
         )}

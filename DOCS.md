@@ -200,6 +200,7 @@ Minden LLM-hívás egyetlen ponton megy át. Felelőssége:
 
 - **Provider routing**: `chatgpt-oauth`, `gemini`, `ollama`, `openrouter`
 - **Per-ticket guardrail**: `GATEWAY_MAX_CALLS_PER_TICKET` (alapértelmezés: 30) — egy elszabaduló loop nem fogyaszthatja el a napi budgetet
+- **Prompt-cache határ**: a prompt-assembler által megjelölt stabil prefix végére a Gateway `cache_control` breakpointot tesz azoknál a providereknél, amelyek explicit cache-API-t várnak (OpenRouter → Anthropic modellek). A többinél az automatikus prefix-cache él, ott a jelölés no-op. Ld. `docs/specs/AI-Agent-Platform-Feature-Spec-Prompt-Cache-Control-Breakpoints.md`
 - **Teljes naplózás**: minden hívás `ModelCall` rekordot kap (provider, model, tokens, cost, latency, status)
 - **Hibaosztályozás**: `rate_limited` vs. `error` állapot automatikusan felismert
 
@@ -428,6 +429,61 @@ A role rangsor: `viewer(0) < operator(1) < approver(2) < admin(3)`. A `requireRo
 
 Az `AgentRepository.authenticateApiKey()` bcrypt-tel hash-elt kulcsot validál. Az agentnek saját `apiKey` van, amellyel a `/api/v1/agent/*` és a harness callback végpontokat éri el.
 
+### Agent-hozzáférési gráf (ki kivel dolgozhat)
+
+**Fájlok:** `src/lib/agent-access-graph.ts` (tiszta policy-mag),
+`src/domain/agent-access/agent-access-service.ts` (feloldás + audit),
+`src/app/control-plane/agent-access` (admin felület)
+
+Az RBAC szerepek MELLETT egy külön, irányított gráf szabályozza az ad-hoc
+user→agent és agent→agent elérési utakat. Két **független** jogot ad:
+
+| Ige | Jelentés |
+|---|---|
+| `view` | A subject megtudhatja, hogy a célagent létezik, és látja a katalógusban. |
+| `address` | A subject chatet indíthat, ticketet címezhet vagy delegálhat a célagentnek. |
+
+Az `address` nem implikál `view`-t és fordítva sem. A chat, a ticket és az
+`agent_ask` külön csatorna, de ugyanannak az `address` igének a kikényszerítési
+pontjai.
+
+**Kompatibilitási alapérték:** minden agent `inbound_restricted = false` és
+`outbound_restricted = false` értékkel indul, tehát a tenanton belüli kapcsolat
+grant nélkül engedett — a meglévő telepítések viselkedése változatlan. Szűkíteni
+agentenként, az admin felületen lehet, kötelező hatás-előnézettel.
+
+**Normatív invariánsok:**
+
+1. Az agent önálló principal: A→B hívásnál A a saját jogán jár el; a kezdeményező
+   user joga nem metsződik és nem öröklődik. Ezért egy user→A grant A teljes
+   **elérhetőségi kúpjára** ad hozzáférést — ezt az admin UI ki is számolja.
+2. A tenant-határ abszolút: grant nem tehet elérhetővé más tenant agentjét.
+3. A `tenantId = null` platform-agentek (Playbook Author, Provisioning Assistant)
+   **nem gráfcsomópontok**: chatből, ticketből, katalógusból és `agent_ask`-ból
+   elérhetetlenek, csak a saját admin paneljük indítja őket.
+4. A Web-Egress **tenantonként materializált**, normál tenant-agent, provisioningkor
+   mindkét irányban zárva — a webes kutatás csak explicit agent→Web-Egress `address`
+   granttal indul.
+5. Az él csak elérést ad: nem ad tool capabilityt és nem kölcsönöz skillt.
+
+**Kikényszerítési pontok** (mind a közös `canAccessAgent` / `listAccessibleAgents`
+magot hívja, route-onként duplikált policy-logika nélkül): prompt-roster,
+`agent_catalog`, `agent_resolve`, `agent_ask`, `ticket_create` agent-felelőssel,
+`web_research_request`, agent-chat stream, operátori agent-katalógus,
+felelős-választó és a „suitable" ajánló.
+
+**Elutasítási szemantika:** ha a `view` engedett, de az `address` nem → 403; ha a
+`view` sem engedett → 404-jellegű „Agent nem található", hogy a cél létezése ne
+szivárogjon ki. A domain-hibák stabil kódot kapnak (`AGENT_ACCESS_FORBIDDEN`,
+`AGENT_NOT_FOUND`). Szűrt listából kimaradó agentre nem keletkezik deny-esemény.
+
+**Audit:** `agent.access.granted` / `agent.access.denied` (a `channel` mező
+`chat | agent_ask | ticket | web_research`, az engedés alapja `grantId` vagy
+`default-open`), `agent.access.bypass` (a Playbook/Monitor út átment, de az ad-hoc
+gráf elutasította volna — auditál, nem blokkol), valamint
+`agent_access.grant.create` / `.revoke` és `agent_access.restriction.update`.
+A grant-írás és az audit-esemény ugyanabban a tranzakcióban keletkezik.
+
 ### Middleware
 
 **Fájl:** `src/middleware.ts`
@@ -481,6 +537,21 @@ AllowlistAuthorizer.authorize(agentId, toolName, actingUserId?)
   3. Ha nincs grant → DENIED
 ```
 
+Az agentet CÉLZÓ toolokra (`agent_ask`, `agent_catalog`, `agent_resolve`,
+`ticket_create` agent-felelőssel, `web_research_request`) egy TOVÁBBI kapu is fut —
+az agent-hozzáférési gráf (7. fejezet). A sorrend kötött:
+
+```
+1. hitelesítés és tenant-kontextus
+2. durva capability-check (AllowlistAuthorizer, fent)
+3. cél feloldása és csatorna-alkalmassága
+4. canAccessAgent(hívó agent, cél, "address")
+5. végrehajtás és audit
+```
+
+A gráf-kapu nem írja felül a capability-checket, az agent státuszát vagy az
+orchestrator-szabályt — mindegyik feltétel önállóan is elutasíthat.
+
 ### Per-user connector grant flow (pl. Gmail)
 
 ```
@@ -494,6 +565,10 @@ AllowlistAuthorizer.authorize(agentId, toolName, actingUserId?)
 ### Delegálás
 
 Az agent `delegate` tool-t hív → `ToolBrokerService` új ticketet nyit a cél agentnek → `WikiAgentRuntime.processTicket()` (vagy a dispatcher veszi fel).
+
+A delegálás a HÍVÓ AGENT saját `address` jogán fut, nem a kezdeményező emberén: a
+user joga nem metsződik és nem öröklődik tovább a láncon. A kezdeményező embert az
+audit korrelációként megőrzi.
 
 ### Workspace fájlkezelés
 
@@ -697,6 +772,7 @@ Az agent képes egyszerű, egyfájlos HTML alkalmazásokat generálni (A0 szint)
 | `/control-plane/agents` | `agents/page.tsx` | Agent registry |
 | `/control-plane/agents/[id]` | `agents/[agentId]/page.tsx` | Agent részletek + chat |
 | `/control-plane/agents/new` | `agents/new/page.tsx` | Új agent létrehozása |
+| `/control-plane/agent-access` | `agent-access/page.tsx` | Kapcsolatok — ki kivel dolgozhat (admin) |
 | `/control-plane/audit` | `audit/page.tsx` | Audit lánc néző |
 | `/control-plane/connectors` | `connectors/page.tsx` | Connector kezelés |
 | `/control-plane/governance` | `governance/page.tsx` | Governance dashboard |
@@ -737,6 +813,9 @@ Az agent képes egyszerű, egyfájlos HTML alkalmazásokat generálni (A0 szint)
 | `DISPATCH_MAX_CALLS_PER_DAY` | `100` | Napi dispatch call limit |
 | `DISPATCH_MAX_TOKENS_PER_DAY` | `100000` | Napi token limit |
 | `GATEWAY_MAX_CALLS_PER_TICKET` | `30` | Per-ticket modellhívás guardrail |
+| `GATEWAY_PROMPT_CACHE` | `on` | `off`/`false`/`0` → a Gateway nem küld `cache_control` breakpointot |
+| `GATEWAY_PROMPT_CACHE_MIN_TOKENS` | `1024` | Ennél rövidebb becsült prefixet nem jelölünk meg |
+| `GATEWAY_PROMPT_CACHE_TTL` | `5m` | `1h` esetén hosszú TTL-ű cache (drágább írás, ritkább forgalomhoz) |
 | `WORKSPACE_BUCKET` | `platform-workspace-prod` | GCS bucket neve (fájl workspace) |
 | `GCS_SERVICE_ACCOUNT_EMAIL` | — | GCS IAM service account |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Lokális Ollama végpont |
@@ -775,7 +854,8 @@ Az agent képes egyszerű, egyfájlos HTML alkalmazásokat generálni (A0 szint)
 
 | Tábla | Leírás |
 |---|---|
-| `Agent` | Agent konfigurációk (instruction, behavior, model, role) |
+| `Agent` | Agent konfigurációk (instruction, behavior, model, role, hozzáférési kapcsolók) |
+| `AgentAccessGrant` | Agent-hozzáférési gráf élei (user→agent, agent→agent; `view` + `address`) |
 | `AgentVersion` | Agent verzió snapshotok (minden változásnál) |
 | `Ticket` | Feladatok / munka egységek |
 | `TicketTransition` | Állapotátmenet napló |
@@ -808,6 +888,11 @@ npm run db:seed
 
 # Audit hash-lánc visszatöltés (meglévő sorokhoz)
 npm run db:backfill-audit
+
+# Tenantonkénti Web-Egress példány pótlása (#142 után KÖTELEZŐ egyszeri lépés).
+# Idempotens; a létrejövő példány mindkét irányban ZÁRT, tehát önmagában semmit
+# nem tesz elérhetővé — a webes kutatást a tenant admin engedélyezi agentenként.
+npm run db:backfill-tenant-web-egress
 ```
 
 ---

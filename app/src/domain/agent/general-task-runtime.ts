@@ -14,6 +14,8 @@ import type { StepOutcome } from '@/lib/playbook-v2/spec'
 import { composeSystemPrompt } from '@/lib/agent-prompt'
 import { pollCancelRequested } from '@/lib/cancel-flag-poll'
 import { formatOrgRoster } from '@/lib/agent-org-roster'
+import type { AgentAccessService } from '@/domain/agent-access/agent-access-service'
+import { resolveAddressableColleagues } from '@/domain/agent-access/addressable-colleagues'
 import { buildEffectivePrompt } from '@/lib/playbook-v2/effective-prompt'
 import {
   agentAnswerStructuredFromPayload,
@@ -158,6 +160,12 @@ export class GeneralTaskRuntime {
     private memoryRetrieval?: MemoryRetrievalService,
     /** #33 — platform-szintű strukturáló modell felolvasó (settings / env). */
     private getStructuringModel?: () => Promise<StructuringModelSetting | null>,
+    /**
+     * Agent-hozzáférési gráf (#142). A prompt-roster ezen keresztül szűr: csak
+     * MEGSZÓLÍTHATÓ, aktív, azonos tenantos kollégák kerülhetnek a system promptba.
+     * Ha nincs bekötve, a roster ÜRES (fail-closed) — nem a teljes agent-lista.
+     */
+    private agentAccess?: AgentAccessService,
   ) {}
 
   async processTicket(params: { ticketId: string; agentId: string }) {
@@ -228,6 +236,10 @@ export class GeneralTaskRuntime {
     const dueByPrompt = formatDueByPrompt(ticket.dueBy)
     const preferredSkillVersionIds = readPreferredSkillVersionIds(payload)
     let preloadedSkillPrompts: string[] = []
+    // issue #161 — a ticketre kért skill futási kerete a task-ágon is éljen
+    // (a chat-promócióval idekerült hosszú skill különben az alap task-keretet
+    // kapná, épp azt veszítve el, amiért a boardra került).
+    let skillRuntimeHints: { maxWallClockMs?: number; maxToolCalls?: number } | undefined
     if (this.skills && preferredSkillVersionIds.length > 0) {
       const preloaded = await this.skills.preloadSkillsByVersionIds({
         agentId: params.agentId,
@@ -241,6 +253,7 @@ export class GeneralTaskRuntime {
           'A ticket létrehozója explicit módon kérte ennek a skillnek a betöltését. Kövesd az alábbi instrukciót:',
       })
       preloadedSkillPrompts = preloaded.preloadedPrompts
+      skillRuntimeHints = preloaded.runtimeHints
     }
 
     const messages = await this.buildTaskMessages({
@@ -335,6 +348,7 @@ export class GeneralTaskRuntime {
         maxTurns: resolveToolLoopMaxTurns(modelConfig, allowedTools, 'task'),
         skillIndexPrompt,
         preloadedSkillPrompts,
+        ...(skillRuntimeHints ? { initialSkillRuntimeHints: skillRuntimeHints } : {}),
         loadSkill,
         archiveLargeToolResult: (input) =>
           this.archiveLargeToolResult(wsTenant, ticket.id, input),
@@ -878,13 +892,17 @@ export class GeneralTaskRuntime {
   private async archiveLargeToolResult(
     tenantId: string,
     ticketId: string,
-    input: { toolName: string; callId: string; turn: number; content: string },
+    input: { toolName: string; callId: string; turn: number; content: string; path?: string },
   ): Promise<{ path: string; bytes: number } | null> {
     const bytes = Buffer.from(input.content, 'utf8')
-    const path = [
-      '.tool-results',
-      `${String(input.turn + 1).padStart(2, '0')}-${safeToolResultName(input.toolName)}-${safeToolResultName(input.callId)}.json`,
-    ].join('/')
+    // Kötött útvonal a kontextus-tömörítéstől: a modellnek adott stub már ezt
+    // az útvonalat nevezte meg, a fájlnak ott kell keletkeznie.
+    const path =
+      input.path ??
+      [
+        '.tool-results',
+        `${String(input.turn + 1).padStart(2, '0')}-${safeToolResultName(input.toolName)}-${safeToolResultName(input.callId)}.json`,
+      ].join('/')
 
     try {
       await this.workspaceStorage.write(tenantId, ticketId, path, bytes)
@@ -931,8 +949,11 @@ export class GeneralTaskRuntime {
     memoryContextBlock?: string | null
     dueByPrompt?: string | null
   }) {
-    const allAgents = await this.agents.findMany()
-    const orgRoster = formatOrgRoster(allAgents)
+    // #142: a roster a hívó agent SAJÁT `address` jogán szűrt lista (a korábbi
+    // szűretlen `findMany()` tenantközi neveket is a promptba írt).
+    const orgRoster = formatOrgRoster(
+      await resolveAddressableColleagues(this.agentAccess, params.agentDetails.agent),
+    )
 
     const stablePreamble: PromptSegments['stablePreamble'] = [
       { role: 'system', content: composeSystemPrompt(params.agentDetails.agent) },

@@ -195,6 +195,16 @@ export const modelFallbackTotal = registry.counter(
   'model_gateway_fallback_total',
   'Model gateway fallback switches by from/to provider and reason',
 )
+/**
+ * Prompt-cache prompt-tokenek provider és irány (read/write) szerint.
+ * A `read` a stabil prefix töredék áron számolt része — ez a megtakarítás mérőszáma;
+ * a `write` a cache feltöltése (egyszeri felár). Ha a `read` tartósan 0, valami
+ * megtöri a stabil prefixet (ld. prompt-assembler cache-határ).
+ */
+export const modelPromptCacheTokensTotal = registry.counter(
+  'model_gateway_prompt_cache_tokens_total',
+  'Model gateway prompt-cache tokens by provider and kind (read/write)',
+)
 /** Tool-broker hívások száma tool + státusz + döntés szerint (deny-arány számításához). */
 export const toolBrokerCallsTotal = registry.counter(
   'tool_broker_calls_total',

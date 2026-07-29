@@ -274,6 +274,39 @@ async function main() {
     assert.equal(result.allowed, false, 'a tenant-összeg (600) átlépte az 500-as keretet')
   })
 
+  await check('DB-4b: a NEVESÍTETT agent-keret felülírja az alapértelmezést (nem ÉS-ben értékel)', async () => {
+    // Üzleti eset: egy sok eszközhívást igénylő agent (nagy dokumentum-feldolgozás)
+    // magasabb keretet kap, a többi agent marad az alapértelmezésen. E nélkül az
+    // egész szervezet keretét kellene megemelni.
+    const modelCalls = makeModelCalls({ [AGENT_1]: { calls: 8, tokens: 800 }, [AGENT_2]: { calls: 8, tokens: 800 } })
+    const engine = new BudgetEngine(
+      makeBudgets([
+        budget({ scope: 'agent', scopeRef: null, tokenLimit: 500 }),
+        budget({ scope: 'agent', scopeRef: AGENT_1, tokenLimit: 2_000 }),
+      ]),
+      modelCalls,
+    )
+
+    const forAgent1 = await engine.check({ tenantId: TENANT_A, agentId: AGENT_1 })
+    const forAgent2 = await engine.check({ tenantId: TENANT_A, agentId: AGENT_2 })
+    assert.equal(forAgent1.allowed, true, 'a nevesített 2000-es keret alatt van (800)')
+    assert.equal(forAgent2.allowed, false, 'a többi agentre marad az 500-as alapértelmezés')
+  })
+
+  await check('DB-4c: a kivétel csak a saját hatókörét oldja fel — a tenant-keret marad', async () => {
+    const modelCalls = makeModelCalls({ [AGENT_1]: { calls: 8, tokens: 800 } })
+    const engine = new BudgetEngine(
+      makeBudgets([
+        budget({ scope: 'tenant', tokenLimit: 500 }),
+        budget({ scope: 'agent', scopeRef: null, tokenLimit: 500 }),
+        budget({ scope: 'agent', scopeRef: AGENT_1, tokenLimit: 2_000 }),
+      ]),
+      modelCalls,
+    )
+    const result = await engine.check({ tenantId: TENANT_A, agentId: AGENT_1 })
+    assert.equal(result.allowed, false, 'a szervezeti keret nem oldható fel per-agent kivétellel')
+  })
+
   await check('DB-5: hardCap=false keret nem blokkol', async () => {
     const modelCalls = makeModelCalls({ [AGENT_1]: { calls: 99, tokens: 99_000 } })
     const engine = new BudgetEngine(

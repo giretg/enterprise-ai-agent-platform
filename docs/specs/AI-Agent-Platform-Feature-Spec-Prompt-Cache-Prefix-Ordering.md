@@ -94,6 +94,7 @@ A megoldás magja egy **közös, tiszta prompt-összeállító függvény** (a t
 
 - **Provider-specifikus explicit caching.** A Gemini explicit context caching (CachedContent + TTL) és bármely provider explicit cache-API-ja külön, későbbi lépés — ez a spec csak a providerfüggetlen, automatikus prefix-cache kihasználását célozza a sorrenddel.
 - **`cache_control` / Anthropic-stílusú breakpointok.** A platform nem használ Anthropic providert; a `cache_control` mechanizmus nem alkalmazandó.
+  > **Utólagos helyesbítés (2026-07-29):** ez a feltevés nem áll — az `openrouter` provider Anthropic modelleket is kiszolgál, és ott a cache **csak** explicit breakpointtal él. A stabil prefix cache-határának megjelölését ezért külön fejlesztés pótolja: `AI-Agent-Platform-Feature-Spec-Prompt-Cache-Control-Breakpoints.md`.
 - **A prompt tartalmának megváltoztatása.** A system-blokkok szövege, a tool-sémák, a memória- és KB-formázás tartalma nem változik — csak a sorrend.
 - **Memória-visszakeresés és KB-keresés logikája.** A retrieval/keresés belső működése, relevancia-számítása változatlan.
 - **Sensitivity-routing és budget-guardrail.** A gateway érzékenység-osztályozó, routing és budget-kapui érintetlenek.

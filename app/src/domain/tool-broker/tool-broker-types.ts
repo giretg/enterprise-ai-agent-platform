@@ -15,6 +15,10 @@ import type {
 import type { AgentCatalogEntry } from '@/lib/agent-catalog'
 import type { TulajdoniLapNezet, TulajdoniLapView } from '@/lib/tulajdoni-lap'
 import type {
+  EgyeztetesNyilvantartasSor,
+  EgyeztetesOsszegzes,
+} from '@/lib/tulajdoni-lap-egyeztetes'
+import type {
   FileReadResult,
   FileWriteResult,
   HtmlCreateResult,
@@ -316,6 +320,40 @@ export type TulajdoniLapParseResult = TulajdoniLapView & {
   filename: string
 }
 
+/**
+ * Egy hívásos egyeztetés (issue #161): lap-parse → párosítás → kész Excel.
+ * A nyilvántartás oldala vagy közvetlenül jön (`nyilvantartas`), vagy egy
+ * munkaterület-beli JSON fájlból (`nyilvantartasPath`) — utóbbi a nagy
+ * névsoroknál kíméli a modell kontextusát.
+ */
+export type TulajdoniLapEgyeztetesArgs = {
+  documentId?: string
+  path?: string
+  nyilvantartas?: EgyeztetesNyilvantartasSor[]
+  nyilvantartasPath?: string
+  /** Kimeneti munkafüzet a munkaterületen. Alap: `egyeztetes.xlsx`. */
+  kimenet?: string
+}
+
+export type TulajdoniLapEgyeztetesResult = {
+  ok: boolean
+  /** A lap ellenőrzése bukott (hányadösszeg ≠ 1) — ilyenkor nem készül tábla. */
+  figyelmeztetes: string | null
+  path: string | null
+  meta: TulajdoniLapView['meta']
+  osszesites: TulajdoniLapView['osszesites']
+  egyeztetes: EgyeztetesOsszegzes | null
+  /** A beavatkozást igénylő sorok — a modell ezekből fogalmazza a választ. */
+  eltero: Array<{
+    nev: string
+    statusz: string
+    hanyadLap: string | null
+    hanyadNyilvantartas: string | null
+    megjegyzes: string
+  }>
+  szeljegyDb: number
+}
+
 export type GmailSearchArgs = { query: string; maxResults?: number }
 export type GmailGetMessageArgs = { id: string }
 export type MailboxCountArgs = {
@@ -607,6 +645,10 @@ export type ToolBrokerInvokeInput =
   | (ToolInvokeBase & { tool: 'memory_propose'; args: MemoryProposeArgs })
   | (ToolInvokeBase & { tool: 'document_read'; args: DocumentReadArgs })
   | (ToolInvokeBase & { tool: 'tulajdoni_lap_parse'; args: TulajdoniLapParseArgs })
+  | (ToolInvokeBase & {
+      tool: 'tulajdoni_lap_egyeztetes'
+      args: TulajdoniLapEgyeztetesArgs
+    })
 
 /**
  * Bizalmi osztály MINDEN eszköz-eredményen (issue #97). Determinisztikus, a

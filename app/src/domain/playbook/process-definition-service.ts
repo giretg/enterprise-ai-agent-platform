@@ -14,6 +14,7 @@ import type { Prisma, ProcessDefinition, ProcessTrigger } from '@prisma/client'
 import type { CompiledSpec, CompiledInputSlot } from '@/domain/playbook/playbook-compiler'
 import { parsePlaybookSpecV2, type PlaybookRole } from '@/lib/playbook-v2/spec'
 import { isAgentSuitable } from '@/domain/playbook/suitability'
+import { isHumanUserSuitable } from '@/domain/playbook/human-role-suitability'
 import { meetsMinRole } from '@/lib/iam-policy'
 import type {
   AgentRepository,
@@ -22,6 +23,7 @@ import type {
   ProcessDefinitionRepository,
   ProcessDefinitionWithTriggers,
   RolePermissionRepository,
+  TenantMembershipRepository,
   ToolBrokerRepository,
   UserRepository,
 } from '@/repositories/interfaces'
@@ -57,6 +59,9 @@ export class ProcessDefinitionService {
     private readonly toolBroker: ToolBrokerRepository,
     private readonly rolePermissions: RolePermissionRepository,
     private readonly users: UserRepository,
+    // §4.3/§4.8 — a human-szerep tenant-tagságát a membership-modell dönti el (nem a
+    // `user.tenantId` oszlop); a #153 agent-oldali kapu emberi párja az aktiváláskor.
+    private readonly tenantMemberships: TenantMembershipRepository,
     private readonly audit: AuditRepository,
   ) {}
 
@@ -447,6 +452,20 @@ export class ProcessDefinitionService {
     const usersById = new Map(
       (await this.users.findManyByIds(humanUserIds)).map((user) => [user.id, user] as const),
     )
+    // §4.3/§4.8 — tenant-tagság a Folyamat tenantjában (membership-modell, NEM user.tenantId).
+    // Null (platform) tenantnál nincs tagság-fogalom → nem kérdezünk membershipet.
+    const membershipByUserId = new Map<string, { status: string } | null>()
+    if (def.tenantId) {
+      const defTenantId = def.tenantId
+      const memberships = await Promise.all(
+        humanUserIds.map(async (userId) =>
+          [userId, await this.tenantMemberships.findByTenantAndUser(defTenantId, userId)] as const,
+        ),
+      )
+      for (const [userId, membership] of memberships) {
+        membershipByUserId.set(userId, membership)
+      }
+    }
     const permissionKeys = [
       ...new Set(humanRoles.flatMap((role) => role.requiredPermissions ?? [])),
     ]
@@ -473,10 +492,15 @@ export class ProcessDefinitionService {
         })
         continue
       }
-      if (user.status !== 'active' || !user.role) {
+      const suitability = isHumanUserSuitable(
+        { status: user.status, role: user.role },
+        def.tenantId ? (membershipByUserId.get(userId) ?? null) : null,
+        def.tenantId,
+      )
+      if (!suitability.ok) {
         violations.push({
           code: 'HUMAN_USER_UNSUITABLE',
-          message: `A(z) '${role.key}' szerephez kötött user nem aktív vagy nincs platform szerepe.`,
+          message: `A(z) '${role.key}' szerephez kötött ${suitability.reason}`,
         })
         continue
       }
@@ -524,7 +548,7 @@ export class ProcessDefinitionService {
   }
 
   private async checkBoundAgent(
-    _tenantId: string | null,
+    defTenantId: string | null,
     agentId: string,
     role: PlaybookRole,
   ): Promise<ReturnType<typeof isAgentSuitable>> {
@@ -532,12 +556,13 @@ export class ProcessDefinitionService {
     if (!agent) {
       return { ok: false, reason: 'a kötött agent nem található.', missing: [] }
     }
-    const registryTenantId = agent.tenantId ?? null
     const capabilities = await this.toolBroker.findCapabilitiesForAgent(agentId)
+    // A tenant-határt a Folyamat tenantjához (defTenantId) mérjük, NEM az agent saját
+    // tenantjához — különben a cross-tenant kötés önmagával egyezne és sosem bukna el.
     return isAgentSuitable(
       { status: agent.status, tenantId: agent.tenantId, capabilities },
       { requiredCapabilities: role.requiredCapabilities },
-      registryTenantId,
+      defTenantId,
     )
   }
 

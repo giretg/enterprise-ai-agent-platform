@@ -10,6 +10,7 @@ import {
   PROVISIONING_DRAFT_CAPABILITIES,
 } from '../src/domain/provisioning/provisioning-assistant'
 import { PLAYBOOK_AUTHOR_TEMPLATE } from '../src/domain/playbook/playbook-author-agent'
+import { ensureTenantWebEgressAgent } from '../src/domain/agent-access/web-egress-materialization'
 import {
   WEB_EGRESS_ROLE_TEMPLATE,
   WEB_EGRESS_TOOL_CAPABILITIES,
@@ -340,6 +341,21 @@ async function ensureGlobalCustomConnectorTemplates() {
  * ALAPBÓL KI van kapcsolva (`web_fetch.enabled` / `web_discovery` flag false); az agent léte
  * önmagában semmit nem tesz elérhetővé — a discoverConfigFromName flag off esetén leáll.
  */
+/**
+ * #142 — tenantonkénti Web-Egress materializáció. A platform-szintű példány megmarad a
+ * platform-szintű felfedezéshez, de a tenant AD-HOC webes útja a saját példányán megy,
+ * ALAPBÓL ZÁRT restriction-kapcsolókkal.
+ */
+async function backfillTenantWebEgressAgents(adminId: string) {
+  const tenants = await prisma.tenant.findMany({
+    where: { status: { in: ['active', 'suspended', 'offboarding'] } },
+    select: { id: true },
+  })
+  for (const tenant of tenants) {
+    await ensureTenantWebEgressAgent({ tenantId: tenant.id, approvedById: adminId })
+  }
+}
+
 async function ensureWebEgressRoleAgent(adminId: string) {
   const t = WEB_EGRESS_ROLE_TEMPLATE
   const existing = await prisma.agent.findFirst({ where: { name: t.name } })
@@ -618,19 +634,19 @@ async function ensureToolBrokerSeed(agentId: string) {
       'kapcsolattartók, megállapodások, szerződések, eseménynapló. Minden :bankId/:contactId/:agreementId/:contractId ' +
       'egy 24 hex karakteres MongoDB ObjectId. CRM státuszok: NEW, CONTACTED, MEETING_SCHEDULED, NEGOTIATING, ACTIVE, ON_HOLD, CLOSED_LOST.',
     endpoints: [
-      { method: 'GET', path: '/banks', description: 'Banklista CRM összefoglalóval (crm_status, kapcsolat/megállapodás/szerződés számok)' },
-      { method: 'GET', path: '/banks/:bankId/crm', description: 'Teljes CRM nézet: bank, contacts, agreements, contracts, utolsó 200 esemény' },
-      { method: 'PATCH', path: '/banks/:bankId/crm', description: 'Bank CRM mezők részleges frissítése: crm_status, crm_summary (max 4000), crm_next_action_at (ISO 8601 vagy null)' },
-      { method: 'POST', path: '/banks/:bankId/contacts', description: 'Új kapcsolat: name kötelező, email VAGY phone legalább egy; opc. role_title, is_primary, notes' },
-      { method: 'PATCH', path: '/banks/:bankId/contacts/:contactId', description: 'Kapcsolat módosítása (részleges)' },
-      { method: 'DELETE', path: '/banks/:bankId/contacts/:contactId', description: 'Kapcsolat törlése' },
-      { method: 'POST', path: '/banks/:bankId/agreements', description: 'Megállapodás: agreement_type (LEAD_GENERATING|MARKETING|OTHER), title, status (DRAFT|ACTIVE|PAUSED|ENDED)' },
-      { method: 'PATCH', path: '/banks/:bankId/agreements/:agreementId', description: 'Megállapodás módosítása' },
-      { method: 'DELETE', path: '/banks/:bankId/agreements/:agreementId', description: 'Megállapodás törlése' },
-      { method: 'POST', path: '/banks/:bankId/contracts', description: 'Szerződés: title, status (DRAFT|SENT|SIGNED|ACTIVE|EXPIRED|TERMINATED); opc. contract_number (bankon belül egyedi)' },
-      { method: 'PATCH', path: '/banks/:bankId/contracts/:contractId', description: 'Szerződés módosítása' },
-      { method: 'DELETE', path: '/banks/:bankId/contracts/:contractId', description: 'Szerződés törlése' },
-      { method: 'POST', path: '/banks/:bankId/events', description: 'Esemény hozzáfűzése (append-only): event_type, summary, actor_type (USER|API|SYSTEM); opc. actor_id, payload' },
+      { method: 'GET', path: '/banks', description: 'Banklista CRM összefoglalóval (crm_status, kapcsolat/megállapodás/szerződés számok)', risk: 'read' },
+      { method: 'GET', path: '/banks/:bankId/crm', description: 'Teljes CRM nézet: bank, contacts, agreements, contracts, utolsó 200 esemény', risk: 'read' },
+      { method: 'PATCH', path: '/banks/:bankId/crm', description: 'Bank CRM mezők részleges frissítése: crm_status, crm_summary (max 4000), crm_next_action_at (ISO 8601 vagy null)', risk: 'write' },
+      { method: 'POST', path: '/banks/:bankId/contacts', description: 'Új kapcsolat: name kötelező, email VAGY phone legalább egy; opc. role_title, is_primary, notes', risk: 'write' },
+      { method: 'PATCH', path: '/banks/:bankId/contacts/:contactId', description: 'Kapcsolat módosítása (részleges)', risk: 'write' },
+      { method: 'DELETE', path: '/banks/:bankId/contacts/:contactId', description: 'Kapcsolat törlése', risk: 'danger' },
+      { method: 'POST', path: '/banks/:bankId/agreements', description: 'Megállapodás: agreement_type (LEAD_GENERATING|MARKETING|OTHER), title, status (DRAFT|ACTIVE|PAUSED|ENDED)', risk: 'write' },
+      { method: 'PATCH', path: '/banks/:bankId/agreements/:agreementId', description: 'Megállapodás módosítása', risk: 'write' },
+      { method: 'DELETE', path: '/banks/:bankId/agreements/:agreementId', description: 'Megállapodás törlése', risk: 'danger' },
+      { method: 'POST', path: '/banks/:bankId/contracts', description: 'Szerződés: title, status (DRAFT|SENT|SIGNED|ACTIVE|EXPIRED|TERMINATED); opc. contract_number (bankon belül egyedi)', risk: 'write' },
+      { method: 'PATCH', path: '/banks/:bankId/contracts/:contractId', description: 'Szerződés módosítása', risk: 'write' },
+      { method: 'DELETE', path: '/banks/:bankId/contracts/:contractId', description: 'Szerződés törlése', risk: 'danger' },
+      { method: 'POST', path: '/banks/:bankId/events', description: 'Esemény hozzáfűzése (append-only): event_type, summary, actor_type (USER|API|SYSTEM); opc. actor_id, payload', risk: 'write' },
     ],
     restrictToEndpoints: true,
   }
@@ -1626,6 +1642,8 @@ async function main() {
   await ensureBuiltinConnectorTemplates()
   await ensureGlobalCustomConnectorTemplates()
   await ensureStarterStepTemplates(prisma)
+  // #142 — minden tenant SAJÁT Web-Egress példányt kap (mindkét irányban zárva).
+  await backfillTenantWebEgressAgents(admin.id)
   const backfilled = await ensureAllTenantsHaveWebSearchConnector()
   if (backfilled > 0) {
     console.log(`  Web Search tenant connectors backfilled: ${backfilled}`)

@@ -31,6 +31,7 @@ import type { ConversationService } from '../src/domain/conversation/conversatio
 import type { ModelGateway } from '../src/domain/gateway/model-gateway'
 import type { ToolBrokerService } from '../src/domain/tool-broker/tool-broker-service'
 import type { WorkspaceStorage } from '../src/domain/file-editor/workspace-storage'
+import { AgentAccessService } from '../src/domain/agent-access/agent-access-service'
 
 let failures = 0
 async function test(name: string, fn: () => void | Promise<void>) {
@@ -41,6 +42,45 @@ async function test(name: string, fn: () => void | Promise<void>) {
     failures += 1
     console.log(`  FAIL ${name}: ${e instanceof Error ? e.message : String(e)}`)
   }
+}
+
+/**
+ * Korlátozás nélküli tenant-gráf a fókusztesztekhez (#142). A hozzáférési döntés
+ * saját, dedikált tesztje a `scripts/agent-access-graph.test.ts` — itt csak az a
+ * dolga, hogy a chat-út ne fail-closed módon álljon meg.
+ */
+function permissiveAgentAccess(): AgentAccessService {
+  return new AgentAccessService({
+    agents: {
+      findById: async (id) => ({
+        id,
+        name: 'Teszt agent',
+        personaNickname: null,
+        personaTrait: null,
+        role: 'worker',
+        status: 'active',
+        tenantId: 'tenant-1',
+        hiddenFromOperators: false,
+        inboundRestricted: false,
+        outboundRestricted: false,
+      }),
+      listForTenant: async () => [],
+      setRestrictions: async () => ({
+        previous: { inboundRestricted: false, outboundRestricted: false },
+        next: { inboundRestricted: false, outboundRestricted: false },
+      }),
+    },
+    grants: {
+      findEdge: async () => null,
+      listBySubject: async () => [],
+      listByTarget: async () => [],
+      listAgentEdgesForTenant: async () => [],
+      listForTenant: async () => [],
+      upsertEdge: async () => ({ ok: false, reason: 'no_verb' }) as never,
+      deleteEdge: async () => ({ ok: false, reason: 'not_found' }) as never,
+    },
+    audit: { append: async () => ({}) as never },
+  })
 }
 
 function agentRow(): Agent {
@@ -64,6 +104,8 @@ function agentRow(): Agent {
     role: 'worker',
     allowSensitiveExternalModel: false,
     hiddenFromOperators: false,
+    inboundRestricted: false,
+    outboundRestricted: false,
     selfEvolutionProfile: null,
     memoryId: 'memory-1',
     createdAt: new Date('2026-07-18T08:00:00Z'),
@@ -194,6 +236,9 @@ function fakeTurnRepository(options: { failOnCreate?: Error } = {}) {
     async findStale() {
       return []
     },
+    async findLatestTerminalByConversation() {
+      return null
+    },
   }
   /** Az aktív forduló életjelét `ms` ezredmásodperccel korábbra állítja. */
   const ageActiveTurn = (conversationId: string, ms: number) => {
@@ -207,10 +252,12 @@ function buildRuntime(options: {
   turns?: AgentTurnRepository
   replyChunks?: string[]
   streamError?: Error
+  /** A megadott chunkok után dob — stream közbeni részválasz-vesztés regressziójához. */
+  streamErrorAfterChunks?: Error
   /** Engedélyezett capability → a forduló a tool-loop ágon fut. */
   withTools?: boolean
 }) {
-  const messages: Message[] = []
+  const messages: Array<Message & { content: string }> = []
   let seq = 0
   const conversations = {
     createConversation: async () => ({ id: 'conv-1' }),
@@ -220,6 +267,7 @@ function buildRuntime(options: {
     }),
     appendMessage: async (params: {
       role: string
+      content: string
       onPersisted?: (message: Message) => void
     }) => {
       seq += 1
@@ -228,8 +276,9 @@ function buildRuntime(options: {
         conversationId: 'conv-1',
         seq,
         role: params.role,
+        content: params.content,
         createdAt: new Date(Date.now() + seq * 1000),
-      } as unknown as Message
+      } as unknown as Message & { content: string }
       messages.push(message)
       params.onPersisted?.(message)
       return message
@@ -242,6 +291,7 @@ function buildRuntime(options: {
       for (const chunk of options.replyChunks ?? ['Szia! ', 'Miben segíthetek?']) {
         yield chunk
       }
+      if (options.streamErrorAfterChunks) throw options.streamErrorAfterChunks
     },
     async call() {
       if (options.streamError) throw options.streamError
@@ -285,6 +335,11 @@ function buildRuntime(options: {
     undefined,
     undefined,
     options.turns,
+    undefined,
+    // #142 — a chat-indítás user→agent `address` kaput kap. Bekötetlen gráf-
+    // szolgáltatásnál a chat FAIL-CLOSED módon nem indul el, ezért a fókusztesztek
+    // egy korlátozás nélküli (C4 alapértékű) tenant-gráfot kapnak.
+    permissiveAgentAccess(),
   )
   return { runtime, messages }
 }
@@ -336,7 +391,7 @@ async function main() {
 
   await test('modellhiba: a forduló failed állapotra zárul, a hibaüzenettel', async () => {
     const turns = fakeTurnRepository()
-    const { runtime } = buildRuntime({
+    const { runtime, messages } = buildRuntime({
       turns: turns.repo,
       streamError: new Error('gateway timeout'),
     })
@@ -352,6 +407,48 @@ async function main() {
     assert.equal(turns.finalized[0].status, 'failed')
     assert.equal(turns.finalized[0].reason, 'error')
     assert.equal(turns.finalized[0].error, 'gateway timeout')
+    assert.ok(
+      messages.some((message) => message.role === 'agent' && message.content.includes('gateway timeout')),
+      'a hiba lezáró üzenete a beszélgetésben is megmarad',
+    )
+  })
+
+  await test('stream közbeni hiba: a már megjelent részválasz bekerül a lezáró üzenetbe', async () => {
+    const turns = fakeTurnRepository()
+    const partial = 'A feldolgozásból eddig 176 sort sikerült párosítani.'
+    const { runtime, messages } = buildRuntime({
+      turns: turns.repo,
+      replyChunks: [partial],
+      streamErrorAfterChunks: new Error('provider stream interrupted'),
+    })
+
+    for await (const _ of runtime.sendMessageStream(turnParams())) void _
+
+    const failedMessage = messages.find((message) => message.role === 'agent')
+    assert.ok(failedMessage, 'hiba esetén lezáró agent-üzenet készül')
+    assert.ok(
+      failedMessage!.content.includes(partial),
+      'a felhasználó által már látott részválasz nem veszhet el újratöltéskor',
+    )
+    assert.equal(turns.finalized[0].partialText, partial)
+  })
+
+  await test('tool-loop hiba: nem marad néma a beszélgetés', async () => {
+    const turns = fakeTurnRepository()
+    const budgetError =
+      'Gateway budget gate: Token limit exceeded: 10140654/10000000 per day (scope=agent)'
+    const { runtime, messages } = buildRuntime({
+      turns: turns.repo,
+      withTools: true,
+      streamError: new Error(budgetError),
+    })
+
+    for await (const _ of runtime.sendMessageStream(turnParams())) void _
+
+    const failedMessage = messages.find((message) => message.role === 'agent')
+    assert.ok(failedMessage, 'a tool-loop hibaága is lezáró üzenetet ír')
+    assert.ok(failedMessage!.content.includes('keret'))
+    assert.ok(!failedMessage!.content.includes('Gateway budget gate'))
   })
 
   await test('eldobott stream: a forduló befut és completed állapotra zárul (#60/E1)', async () => {

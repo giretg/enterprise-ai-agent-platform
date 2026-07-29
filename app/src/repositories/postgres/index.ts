@@ -1,4 +1,5 @@
 import { PostgresAgentRepository, PostgresDocumentRepository } from './agent-repository'
+import { PostgresAgentAccessGrantRepository } from './agent-access-grant-repository'
 import { PostgresAgentTurnRepository } from './agent-turn-repository'
 import { PostgresBehaviorProfileRepository } from './behavior-profile-repository'
 import {
@@ -70,6 +71,7 @@ export const repositories = {
   platformMemberships: new PostgresPlatformMembershipRepository(),
   tickets: new PostgresTicketRepository(),
   agents: new PostgresAgentRepository(),
+  agentAccessGrants: new PostgresAgentAccessGrantRepository(),
   behaviorProfiles: new PostgresBehaviorProfileRepository(),
   roleTemplates: new PostgresRoleTemplateRepository(),
   documents: new PostgresDocumentRepository(),

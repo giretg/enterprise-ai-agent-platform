@@ -6,6 +6,7 @@ import type {
   PlatformMembershipRepository,
 } from '@/repositories/interfaces'
 import { ensureTenantWebSearchConnector } from '@/domain/web-search/web-search-connector-service'
+import { ensureTenantWebEgressAgent } from '@/domain/agent-access/web-egress-materialization'
 import {
   TENANT_AUDIT_ACTIONS,
   checkLastTenantAdminLock,
@@ -86,6 +87,33 @@ export class TenantService {
     }
 
     await ensureTenantWebSearchConnector(tenant.id)
+
+    // #142 — a Web-Egress TENANTONKÉNT materializált, normál tenant-agent és teljes
+    // gráfcsomópont. Provisioningkor mindkét irányban zárt (`inboundRestricted`,
+    // `outboundRestricted`): a webes kimenet csak explicit agent→Web-Egress `address`
+    // granttal nyílik meg. Fail-soft: ha a materializáció elbukik, a tenant létrejön —
+    // a web-egress példány a következő provisioning-futáskor pótlódik (idempotens).
+    try {
+      await ensureTenantWebEgressAgent({
+        tenantId: tenant.id,
+        approvedById: params.createdById,
+      })
+    } catch (error) {
+      await this.audit.append({
+        actorType: 'system',
+        actorId: 'tenant-provisioning',
+        agentVersion: null,
+        action: TENANT_AUDIT_ACTIONS.create,
+        targetType: 'tenant',
+        targetId: tenant.id,
+        modelUsed: null,
+        inputRef: 'web_egress_materialization',
+        outputRef: error instanceof Error ? error.message.slice(0, 200) : 'failed',
+        policyDecision: 'degraded',
+        metadata: { tenantId: tenant.id, step: 'web_egress_materialization' },
+        tenantId: tenant.id,
+      })
+    }
 
     return tenant
   }
