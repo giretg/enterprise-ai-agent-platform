@@ -7,6 +7,7 @@ import { AgentRegistryList } from '@/components/agents/agent-registry-list'
 export default async function AgentRegistryPage() {
   const [res, ctx] = await Promise.all([listAgents(), getAuthContext()])
   const agents = res.success ? res.data : []
+  const loadError = res.success ? null : res.error
   const canDelete = hasMinimumRole(ctx?.activeTenantRole, 'admin')
   const canCreate = canDelete
 
@@ -33,7 +34,7 @@ export default async function AgentRegistryPage() {
         )}
       </div>
 
-      <AgentRegistryList agents={agents} canDelete={canDelete} />
+      <AgentRegistryList agents={agents} canDelete={canDelete} loadError={loadError} />
     </div>
   )
 }
