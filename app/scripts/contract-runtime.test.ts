@@ -35,6 +35,7 @@ import {
   GatewaySensitivityError,
   ModelGateway,
 } from '../src/domain/gateway/model-gateway'
+import { safeParsePlaybookSpecV2 } from '../src/lib/playbook-v2/spec'
 import type { AuditRepository, ModelCallRepository } from '../src/repositories/interfaces'
 import type { AuditLog, ModelCall } from '@prisma/client'
 
@@ -796,6 +797,65 @@ async function main() {
       assert.ok(result.errors.every((e) => e.code === 'content'))
       assert.ok(result.humanSummary.includes('személyi') || result.humanSummary.includes('note'))
     }
+  })
+
+  await check('CR-4h: katasztrofális contentCheck minta fail-closed, modellhívás nélkül', async () => {
+    let chatCalls = 0
+    const contract = compileContract({
+      fields: [
+        {
+          name: 'note',
+          type: 'string',
+          required: true,
+          contentCheck: { kind: 'pattern', regex: '(a+)+$' },
+        },
+      ],
+    })
+    const result = await runStrictContract({
+      gateway: {
+        async call() {
+          chatCalls++
+          return { content: '{}' }
+        },
+      },
+      contract,
+      rawContent: JSON.stringify({ note: `${'a'.repeat(40)}!` }),
+      modelConfig: baseModel,
+      structuringModel: { provider: 'stub', model: 'stub-cheap' },
+      agentId: TEST_AGENT_ID,
+    })
+    assert.equal(result.ok, false)
+    assert.equal(chatCalls, 0)
+    if (!result.ok) assert.ok(result.errors[0]?.message.includes('biztonságosan'))
+  })
+
+  await check('CR-4i: veszélyes contentCheck nem menthető Playbook-specbe', () => {
+    const parsed = safeParsePlaybookSpecV2({
+      schemaVersion: '1.0',
+      key: 'unsafe-content-check',
+      name: 'Unsafe content check',
+      processType: 'demo',
+      entryStepId: 's1',
+      roles: [{ key: 'worker', type: 'agent_role' }],
+      steps: [
+        {
+          id: 's1',
+          name: 'S1',
+          ticketType: 't',
+          assignedRole: 'worker',
+          outputContract: {
+            fields: [
+              {
+                name: 'note',
+                type: 'string',
+                contentCheck: { kind: 'pattern', regex: '(a+)+$' },
+              },
+            ],
+          },
+        },
+      ],
+    })
+    assert.equal(parsed.success, false)
   })
 
   console.log(`\n${failures === 0 ? 'PASS' : 'FAIL'}: ${failures} failure(s)`)

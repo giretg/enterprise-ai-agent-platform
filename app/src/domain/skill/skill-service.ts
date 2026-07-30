@@ -31,6 +31,7 @@ import {
   type SkillRuntimeHints,
 } from '@/lib/skill/skill-content'
 import { isSkillReadableFromTenant, isSkillWritableFromTenant } from '@/lib/skill/skill-scope'
+import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
 import { parseSkillMd } from '@/lib/skill/skill-md-adapter'
 import { validateSkill, type SkillValidationResult } from '@/lib/skill/skill-validator'
 import { computeSkillReadiness, type SkillReadiness } from '@/lib/skill/skill-readiness'
@@ -64,6 +65,14 @@ export interface ActorContext {
 }
 
 /**
+ * Minimális agent-feloldó a skill→agent kötések tenant-határának betartatásához.
+ * A teljes {@link AgentRepository} helyett csak a `tenantId`-t igénylő olvasás kell.
+ */
+export interface SkillAgentLookup {
+  findById(id: string): Promise<{ tenantId: string | null } | null>
+}
+
+/**
  * Skill-katalógus domain-szolgáltatás (skill-catalog-spec.md). A meglévő
  * write-gate / audit / capability rétegek FÖLÉ épül. Minden cross-tenant felület
  * fail-closed (§D8): idegen tenant skillje sosem olvasható/írható.
@@ -85,8 +94,43 @@ export class SkillService {
     private skills: SkillRepository,
     private audit: AuditRepository,
     private toolBroker: ToolBrokerRepository,
+    private agents: SkillAgentLookup,
     private conversations?: ConversationRepository,
   ) {}
+
+  /**
+   * Tenant-határ egy agentet célzó skill-művelethez (hozzárendelés / levétel /
+   * engedélyezés). A megosztott (platform-szintű, `tenantId === null`) agent
+   * elérhető, más tenant agentje SOSEM — a hiba opak (`Agent not found`), hogy az
+   * idegen agent létezése ne váljon felderítési orákulummá. Ugyanaz a fail-closed
+   * határ, mint a Tool Broker / Eval / KB oldalon; itt eddig hiányzott, ezért egy
+   * tenant-admin idegen tenant agentjének futásidejű promptjába injektálhatott
+   * (vagy abból levehetett) skillt.
+   *
+   * A tenant-sértés NEM néma: a `training-service` mintáját követve `skill.access_denied`
+   * audit-sort hagy (`tenant_mismatch`), mert egy idegen agent-UUID-vel próbálkozó
+   * művelet a legerősebb korai jele egy cross-tenant szondázásnak.
+   */
+  private async assertAgentReachable(agentId: string, actor: ActorContext): Promise<void> {
+    const agent = await this.agents.findById(agentId)
+    if (!agent || !isAgentReachableFromTenant(agent.tenantId, actor.actorTenantId)) {
+      await this.audit.append({
+        actorType: actor.actorId ? 'human' : 'system',
+        actorId: actor.actorId,
+        agentVersion: null,
+        action: 'skill.access_denied',
+        targetType: 'agent',
+        targetId: agentId,
+        modelUsed: null,
+        inputRef: null,
+        outputRef: 'tenant_mismatch',
+        policyDecision: 'tenant_mismatch',
+        tenantId: actor.actorTenantId,
+        metadata: { agentId, activeTenantId: actor.actorTenantId },
+      })
+      throw new SkillAccessError('Agent not found')
+    }
+  }
 
   // ── Olvasás (fail-closed scope) ───────────────────────────────────────────
 
@@ -674,6 +718,9 @@ export class SkillService {
   }): Promise<void> {
     const target = await this.skills.findVersionById(input.skillVersionId)
     if (!target) throw new SkillAccessError('Skill version not found')
+    // A cél-agentnek is az actor tenantjából elérhetőnek kell lennie — különben
+    // egy tenant-admin idegen tenant agentjébe injektálhatna skillt.
+    await this.assertAgentReachable(input.agentId, input.actor)
     // Csak olvasható skill rendelhető hozzá (global vagy saját tenant).
     if (!isSkillReadableFromTenant(target.skill.tenantId, input.actor.actorTenantId)) {
       throw new SkillAccessError()
@@ -734,6 +781,7 @@ export class SkillService {
     skillVersionId: string
     actor: ActorContext
   }): Promise<void> {
+    await this.assertAgentReachable(input.agentId, input.actor)
     await this.skills.unassign(input.agentId, input.skillVersionId)
 
     await this.audit.append({
@@ -752,7 +800,13 @@ export class SkillService {
     })
   }
 
-  setEnabled(input: { agentId: string; skillVersionId: string; enabled: boolean }) {
+  async setEnabled(input: {
+    agentId: string
+    skillVersionId: string
+    enabled: boolean
+    actor: ActorContext
+  }) {
+    await this.assertAgentReachable(input.agentId, input.actor)
     return this.skills.setEnabled(input.agentId, input.skillVersionId, input.enabled)
   }
 

@@ -987,6 +987,7 @@ const skillService = new SkillService(
   repositories.skills,
   repositories.audit,
   repositories.toolBroker,
+  repositories.agents,
   repositories.conversations,
 )
 const agentChatRuntime = new AgentChatRuntime(

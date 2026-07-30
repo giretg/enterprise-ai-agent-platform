@@ -7,6 +7,7 @@ import type {
   ModelConfig,
 } from '@/domain/gateway/model-gateway'
 import { GatewaySensitivityError } from '@/domain/gateway/model-gateway'
+import { compileSafeRegex } from '@/lib/safe-regex'
 import { extractLoose } from './extract'
 import type {
   CompiledContract,
@@ -43,12 +44,12 @@ function evaluatePattern(
   const label = fieldLabel(field)
   let re: RegExp
   try {
-    re = new RegExp(check.regex, check.flags ?? '')
+    re = compileSafeRegex(check.regex, check.flags ?? '', 'tartalmi minta')
   } catch {
     return {
       field: field.name,
       code: 'content',
-      message: `A(z) «${label}» tartalmi szabálya érvénytelen (hibás minta).`,
+      message: `A(z) «${label}» tartalmi szabálya érvénytelen vagy nem futtatható biztonságosan.`,
     }
   }
 

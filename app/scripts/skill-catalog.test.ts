@@ -28,7 +28,7 @@ import {
   type AssignedSkillEntry,
 } from '../src/lib/skill/skill-context'
 import { runAgentToolLoop, type LoadSkillFn } from '../src/domain/agent/chat-tool-loop'
-import { SkillService } from '../src/domain/skill/skill-service'
+import { SkillService, type ActorContext } from '../src/domain/skill/skill-service'
 import {
   buildTranscriptText,
   buildDistillMessages,
@@ -465,7 +465,7 @@ async function main() {
         return data
       },
     }
-    const svc = new SkillService(skillsRepo as never, auditRepo as never, {} as never)
+    const svc = new SkillService(skillsRepo as never, auditRepo as never, {} as never, {} as never)
     const ids = await svc.recordRunSkillSnapshot({
       agentId: 'agent-1',
       context: { ticketId: 'ticket-9' },
@@ -490,7 +490,7 @@ async function main() {
         return d
       },
     }
-    const svc = new SkillService(skillsRepo as never, auditRepo as never, {} as never)
+    const svc = new SkillService(skillsRepo as never, auditRepo as never, {} as never, {} as never)
     const ids = await svc.recordRunSkillSnapshot({
       agentId: 'agent-1',
       context: { conversationId: 'conv-1' },
@@ -755,6 +755,117 @@ async function main() {
     const cfg = resolveSkillReviewModelConfig({ provider: 'unknown', model: 'x' })
     assert.equal(cfg.provider, 'chatgpt-oauth')
     assert.equal(cfg.model, 'chatgpt-oauth-default')
+  })
+
+  console.log('')
+  console.log('Agent-tenant határ a skill→agent kötésen (cross-tenant védelem)')
+
+  function makeAgentBoundSvc(opts: {
+    agentTenantId: string | null | 'missing'
+    skillTenantId?: string | null
+    status?: string
+  }) {
+    const calls: {
+      assign: string[]
+      unassign: string[]
+      setEnabled: string[]
+      audit: Array<Record<string, unknown>>
+    } = {
+      assign: [],
+      unassign: [],
+      setEnabled: [],
+      audit: [],
+    }
+    const skillsRepo = {
+      findVersionById: async (id: string) => ({
+        id,
+        skillId: 'skill-1',
+        status: opts.status ?? 'active',
+        contentHash: 'hash',
+        skill: { id: 'skill-1', tenantId: opts.skillTenantId ?? null, name: 'Global skill' },
+      }),
+      assign: async (i: { skillVersionId: string }) => {
+        calls.assign.push(i.skillVersionId)
+        return { replacedVersionIds: [] as string[] }
+      },
+      unassign: async (_agentId: string, v: string) => {
+        calls.unassign.push(v)
+      },
+      setEnabled: async (_agentId: string, v: string, enabled: boolean) => {
+        calls.setEnabled.push(`${v}:${enabled}`)
+      },
+    }
+    const auditRepo = {
+      append: async (d: Record<string, unknown>) => {
+        calls.audit.push(d)
+        return d
+      },
+    }
+    const agentsRepo = {
+      findById: async () =>
+        opts.agentTenantId === 'missing' ? null : { tenantId: opts.agentTenantId },
+    }
+    const svc = new SkillService(
+      skillsRepo as never,
+      auditRepo as never,
+      {} as never,
+      agentsRepo as never,
+    )
+    return { svc, calls }
+  }
+
+  const adminA: ActorContext = { actorId: 'user-a', actorTenantId: TENANT_A, isPlatformAdmin: false }
+
+  await check('assign IDEGEN tenant agentjére → Agent not found, nincs kötés', async () => {
+    const { svc, calls } = makeAgentBoundSvc({ agentTenantId: TENANT_B })
+    await assert.rejects(
+      () => svc.assign({ agentId: 'agent-b', skillVersionId: 'v1', actor: adminA }),
+      /Agent not found/,
+    )
+    assert.equal(calls.assign.length, 0, 'idegen agentre NEM keletkezik hozzárendelés')
+    const denied = calls.audit.find((a) => a.action === 'skill.access_denied')
+    assert.ok(denied, 'a cross-tenant kísérlet skill.access_denied audit-sort hagy')
+    assert.equal(denied?.policyDecision, 'tenant_mismatch')
+  })
+
+  await check('assign nem létező agentre → Agent not found (nincs orákulum)', async () => {
+    const { svc, calls } = makeAgentBoundSvc({ agentTenantId: 'missing' })
+    await assert.rejects(
+      () => svc.assign({ agentId: 'ghost', skillVersionId: 'v1', actor: adminA }),
+      /Agent not found/,
+    )
+    assert.equal(calls.assign.length, 0)
+  })
+
+  await check('assign SAJÁT tenant agentjére (global skill) → sikeres', async () => {
+    const { svc, calls } = makeAgentBoundSvc({ agentTenantId: TENANT_A, skillTenantId: null })
+    await svc.assign({ agentId: 'agent-a', skillVersionId: 'v1', actor: adminA })
+    assert.deepEqual(calls.assign, ['v1'], 'saját tenant agentjére létrejön a kötés')
+  })
+
+  await check('assign MEGOSZTOTT (platform) agentre → elérhető, sikeres', async () => {
+    const { svc, calls } = makeAgentBoundSvc({ agentTenantId: null, skillTenantId: null })
+    await svc.assign({ agentId: 'agent-shared', skillVersionId: 'v1', actor: adminA })
+    assert.deepEqual(calls.assign, ['v1'])
+  })
+
+  await check('unassign IDEGEN tenant agentjéről → elutasítva, nincs törlés', async () => {
+    const { svc, calls } = makeAgentBoundSvc({ agentTenantId: TENANT_B })
+    await assert.rejects(
+      () => svc.unassign({ agentId: 'agent-b', skillVersionId: 'v1', actor: adminA }),
+      /Agent not found/,
+    )
+    assert.equal(calls.unassign.length, 0, 'idegen agent skilljét NEM lehet levenni')
+  })
+
+  await check('setEnabled IDEGEN tenant agentjén → elutasítva, nincs állapotváltás', async () => {
+    const { svc, calls } = makeAgentBoundSvc({ agentTenantId: TENANT_B })
+    await assert.rejects(
+      () =>
+        svc.setEnabled({ agentId: 'agent-b', skillVersionId: 'v1', enabled: false, actor: adminA }),
+      /Agent not found/,
+    )
+    assert.equal(calls.setEnabled.length, 0, 'idegen agent skilljét NEM lehet ki/bekapcsolni')
   })
 
   console.log('')

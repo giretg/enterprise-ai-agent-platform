@@ -1,4 +1,10 @@
 import { FileEditorError } from './workspace-storage'
+import {
+  assertSafeRegex,
+  compileSafeRegex,
+  MAX_SAFE_REGEX_LENGTH,
+  SafeRegexError,
+} from '@/lib/safe-regex'
 
 /**
  * ReDoS-védelem az agent által vezérelt fájl-kereséshez (file_search / file_glob).
@@ -28,7 +34,7 @@ import { FileEditorError } from './workspace-storage'
  * plafon véd. Teljes körű megoldás (RE2 vagy worker-thread időzár) külön feladat.
  */
 
-export const MAX_PATTERN_LENGTH = 1000
+export const MAX_PATTERN_LENGTH = MAX_SAFE_REGEX_LENGTH
 
 /** Egy soron ekkora hosszig futtatunk regexet; a többit levágjuk (visszalépés-plafon). */
 export const MAX_LINE_SCAN_LENGTH = 20_000
@@ -41,120 +47,21 @@ export const MAX_SEARCH_FILES = 5_000
  * (`{n,}`). A korlátos formák (`{n}`, `{n,m}`, `{,m}`) nem okoznak exponenciális
  * blow-upot, a nem-numerikus `{…}` pedig literál — egyik sem „expanding".
  */
-function readBraceQuantifier(source: string, at: number): { length: number; unbounded: boolean } | null {
-  const close = source.indexOf('}', at)
-  if (close === -1) return null
-  const inner = source.slice(at + 1, close)
-  if (!/^\d*,?\d*$/.test(inner) || inner === '' || inner === ',') return null
-  const unbounded = /^\d+,$/.test(inner) // csak a {n,} nyitott felülről
-  return { length: close - at + 1, unbounded }
-}
-
-/** Egy `[...]` karakterosztály végének indexe (az escapelt `\]`-t tiszteletben tartva). */
-function endOfCharClass(source: string, openAt: number): number {
-  let i = openAt + 1
-  if (source[i] === '^') i++
-  while (i < source.length && source[i] !== ']') {
-    if (source[i] === '\\') i++ // escapelt karakter (pl. `\]`) átugrása
-    i++
+function toFileEditorError(error: unknown, label: string): never {
+  if (error instanceof SafeRegexError) {
+    throw new FileEditorError(error.code, error.message.replace('szabályos kifejezés', label))
   }
-  return i // a `]`-en áll, vagy a string végén (nem lezárt osztály)
-}
-
-type GroupFrame = { containsUnbounded: boolean; hasAlternation: boolean }
-
-/**
- * `true`, ha a minta katasztrofális (exponenciális) visszalépést okozhat:
- *  - nem-korlátos kvantor egy olyan csoporton, aminek a TARTALMA maga is
- *    tartalmaz nem-korlátos kvantort (star height ≥ 2), VAGY
- *  - nem-korlátos kvantor egy olyan csoporton, ami top-level alternációt (`|`)
- *    tartalmaz (átfedő ágak → 2^n).
- */
-function hasCatastrophicQuantifier(source: string): boolean {
-  const stack: GroupFrame[] = [{ containsUnbounded: false, hasAlternation: false }]
-  // Az előző atom egy most bezárt csoport volt-e, és milyen kockázatot hordozott.
-  let prevGroupClose = false
-  let prevGroupUnbounded = false
-  let prevGroupAlternation = false
-
-  const top = () => stack[stack.length - 1]
-
-  const applyUnboundedQuantifier = (): boolean => {
-    top().containsUnbounded = true // a jelen szinten megjelent egy nem-korlátos kvantor
-    // Ha egy „belül kockázatos" csoportra alkalmazzuk → exponenciális ReDoS.
-    return prevGroupClose && (prevGroupUnbounded || prevGroupAlternation)
-  }
-
-  for (let i = 0; i < source.length; i++) {
-    const ch = source[i]
-
-    if (ch === '\\') {
-      i++ // escapelt karakter → literál atom
-      prevGroupClose = false
-      continue
-    }
-
-    if (ch === '[') {
-      i = endOfCharClass(source, i) // a `]`-ig minden literál, kvantor nem lehet benne
-      prevGroupClose = false
-      continue
-    }
-
-    if (ch === '(') {
-      stack.push({ containsUnbounded: false, hasAlternation: false })
-      prevGroupClose = false
-      continue
-    }
-
-    if (ch === ')') {
-      const closed = stack.length > 1 ? stack.pop()! : top() // védőháló hibás mintára
-      if (closed.containsUnbounded) top().containsUnbounded = true // felbukik a szülőbe
-      prevGroupClose = true
-      prevGroupUnbounded = closed.containsUnbounded
-      prevGroupAlternation = closed.hasAlternation
-      continue
-    }
-
-    if (ch === '|') {
-      top().hasAlternation = true
-      prevGroupClose = false
-      continue
-    }
-
-    if (ch === '*' || ch === '+') {
-      if (applyUnboundedQuantifier()) return true
-      prevGroupClose = false
-      continue
-    }
-
-    if (ch === '{') {
-      const q = readBraceQuantifier(source, i)
-      if (q) {
-        i += q.length - 1
-        if (q.unbounded && applyUnboundedQuantifier()) return true
-        // korlátos `{…}`: nem állítja a szint „unbounded" flagjét
-        prevGroupClose = false
-        continue
-      }
-      prevGroupClose = false // literál `{`
-      continue
-    }
-
-    // `?` (korlátos/lazy) és minden más atom (literál, `.`, `^`, `$`) lezárja az
-    // „előző csoport" állapotot, de nem „expanding".
-    prevGroupClose = false
-  }
-
-  return false
+  throw error
 }
 
 /** A minta hossz-korlátja; tipizált `PATTERN_TOO_LONG` FileEditorError-ral bukik. */
 export function assertPatternLength(source: string, label = 'keresési'): void {
-  if (source.length > MAX_PATTERN_LENGTH) {
-    throw new FileEditorError(
-      'PATTERN_TOO_LONG',
-      `A ${label} minta túl hosszú (max ${MAX_PATTERN_LENGTH} karakter).`,
-    )
+  try {
+    assertSafeRegex(source, `${label} minta`)
+  } catch (error) {
+    if (error instanceof SafeRegexError && error.code === 'PATTERN_TOO_LONG') {
+      toFileEditorError(error, label)
+    }
   }
 }
 
@@ -165,12 +72,9 @@ export function assertPatternLength(source: string, label = 'keresési'): void {
  */
 export function compileRegex(source: string, flags: string, label = 'keresési'): RegExp {
   try {
-    return new RegExp(source, flags)
-  } catch (e) {
-    throw new FileEditorError(
-      'INVALID_PATTERN',
-      `Érvénytelen ${label} minta: ${e instanceof Error ? e.message : String(e)}`,
-    )
+    return compileSafeRegex(source, flags, `${label} minta`)
+  } catch (error) {
+    return toFileEditorError(error, label)
   }
 }
 
@@ -180,13 +84,10 @@ export function compileRegex(source: string, flags: string, label = 'keresési')
  * (`PATTERN_TOO_LONG` / `UNSAFE_PATTERN`).
  */
 export function assertSafeUserRegex(source: string): void {
-  assertPatternLength(source)
-  if (hasCatastrophicQuantifier(source)) {
-    throw new FileEditorError(
-      'UNSAFE_PATTERN',
-      'A keresési minta olyan ismétlést tartalmaz, ami befagyaszthatja a keresést ' +
-        '(pl. beágyazott `(a+)+`, vagy ismételt alternáció `(a|a)+`). Egyszerűsítsd a mintát.',
-    )
+  try {
+    assertSafeRegex(source, 'keresési minta')
+  } catch (error) {
+    toFileEditorError(error, 'keresési')
   }
 }
 
