@@ -200,29 +200,63 @@ async function main() {
 
   await check('új asszisztens-szöveg nullázza a zsákutca-számlálót', () => {
     assert.equal(
-      trackTurnProgress(2, { hadAssistantText: true, toolResultCount: 2, newToolResultCount: 0 }),
+      trackTurnProgress(2, {
+        hadAssistantText: true,
+        toolCallsIssued: 2,
+        toolResultCount: 2,
+        newToolResultCount: 0,
+      }),
       0,
     )
   })
 
   await check('új tool-eredmény nullázza a zsákutca-számlálót', () => {
     assert.equal(
-      trackTurnProgress(2, { hadAssistantText: false, toolResultCount: 2, newToolResultCount: 1 }),
+      trackTurnProgress(2, {
+        hadAssistantText: false,
+        toolCallsIssued: 2,
+        toolResultCount: 2,
+        newToolResultCount: 1,
+      }),
       0,
     )
   })
 
   await check('csak már látott eredmény → nő a számláló', () => {
     assert.equal(
-      trackTurnProgress(1, { hadAssistantText: false, toolResultCount: 2, newToolResultCount: 0 }),
+      trackTurnProgress(1, {
+        hadAssistantText: false,
+        toolCallsIssued: 2,
+        toolResultCount: 2,
+        newToolResultCount: 0,
+      }),
       2,
     )
   })
 
-  await check('tool nélküli kör nem számít zsákutcának', () => {
+  await check('tool-hívás nélküli kör nem számít zsákutcának', () => {
     assert.equal(
-      trackTurnProgress(1, { hadAssistantText: false, toolResultCount: 0, newToolResultCount: 0 }),
+      trackTurnProgress(1, {
+        hadAssistantText: false,
+        toolCallsIssued: 0,
+        toolResultCount: 0,
+        newToolResultCount: 0,
+      }),
       1,
+    )
+  })
+
+  await check('FAIL-SAFE: kiadott hívás könyvelt eredmény nélkül is zsákutca', () => {
+    // Ez a rés vitte 40 körön át a mért futást: a végrehajtási ág nem jelzett a
+    // kör mérlegébe, ezért a kör „nem történt meg", és a számláló befagyott.
+    assert.equal(
+      trackTurnProgress(1, {
+        hadAssistantText: false,
+        toolCallsIssued: 4,
+        toolResultCount: 0,
+        newToolResultCount: 0,
+      }),
+      2,
     )
   })
 

@@ -22,7 +22,9 @@ import { assembleGatewayMessages, type PromptSegments } from './prompt-assembler
 import {
   compactToolResultHistory,
   describeContextCompaction,
+  readBackPerTurnBudget,
   resolveContextCompactionLimits,
+  TOOL_RESULT_READ_TOOL_NAME,
   type ContextCompactionLimits,
 } from './context-compactor'
 import { logger } from '@/lib/observability/logger'
@@ -38,8 +40,12 @@ import type { TrustClass } from '@/domain/tool-broker/tool-broker-types'
 import {
   describeLoopStop,
   evaluateLoopContinuation,
+  isRedundantSourceIngest,
   mergeSkillRuntimeHints,
   resolveLoopGuardLimits,
+  resolveSourceIngestLimits,
+  sourceIngestBudget,
+  toolCallSourceKey,
   trackTurnProgress,
   type LoopGuardLimits,
   type LoopStopReason,
@@ -218,7 +224,7 @@ export function resolveToolLoopMaxTurns(
   return undefined
 }
 
-const TOOL_RESULT_READ = 'tool_result_read'
+const TOOL_RESULT_READ = TOOL_RESULT_READ_TOOL_NAME
 const TOOL_RESULT_INLINE_LIMIT = 12_000
 const TOOL_RESULT_PREVIEW_CHARS = 10_000
 const TOOL_RESULT_READ_DEFAULT_LIMIT = 40_000
@@ -2203,18 +2209,85 @@ export async function runAgentToolLoop(params: {
     turnToolResultCount += 1
   }
 
+  /**
+   * MINDEN tool-eredmény ezen megy a modellhez — és emiatt könyvelődik is.
+   *
+   * Miért helper és nem közvetlen `messages.push`: a kör előrehaladás-mérlege
+   * csak akkor mond igazat, ha egyetlen végrehajtási ág sem hagyja ki. A mért
+   * eset épp egy kihagyáson bukott (a visszaolvasás ága a számláló előtt lépett
+   * ki), és további három ág — belső skill-betöltés, nem engedélyezett eszköz,
+   * jóváhagyásra váró lépés — ugyanígy ki volt hagyva. Egy hívási pont
+   * megszünteti a hibalehetőséget: aki tool-üzenetet ad a modellnek, az könyvel.
+   *
+   * `progress: 'new'` → a tartalom ujjlenyomata dönt (hozott-e újat);
+   * `progress: 'barren'` → definíció szerint nem előrehaladás (kihagyott,
+   * blokkolt, elutasított hívás, vagy már látott forrás ismételt behozása).
+   */
+  const pushToolResult = (
+    call: GatewayToolCall,
+    content: string,
+    progress: 'new' | 'barren',
+    /**
+     * A mérleg finomhangolása. `fingerprintContent`: a NYERS eredmény, ha a
+     * modellnek menő szöveg már át van formálva (becsomagolás, archív-előnézet,
+     * csonkolás) — az ujjlenyomat különben a formázástól, nem az adattól függne.
+     */
+    accounting?: { toolName?: string; fingerprintContent?: string },
+  ) => {
+    messages.push({ role: 'tool', toolCallId: call.id, toolName: call.name, content })
+    if (progress === 'new') {
+      noteToolResult(accounting?.toolName ?? call.name, accounting?.fingerprintContent ?? content)
+    } else {
+      noteBarrenToolResult()
+    }
+  }
+
   // Egy tool-hívás kihagyása: tool-üzenet a modellnek + 'skipped' activity a UI-nak.
   // A kihagyás „eredménynek" számít a kör mérlegében, de nem előrehaladásnak —
   // így a csupa-kihagyott kör zsákutcaként viselkedik.
   const skipToolCall = async (call: GatewayToolCall, content: string, detail: string) => {
-    messages.push({ role: 'tool', toolCallId: call.id, toolName: call.name, content })
-    noteBarrenToolResult()
+    pushToolResult(call, content, 'barren')
     await emitActivity({ id: `tool-${call.id}`, kind: 'tool', title: call.name, detail, status: 'skipped' })
   }
 
   // Repeated-call guard: (toolName, stableArgsKey) → count
   const callRepeatTracker = new Map<string, number>()
   const REPEAT_LIMIT = 3
+
+  // ── Forrás-számvitel (ugyanabból a forrásból való újraolvasás) ──────────────
+  // Mért eset (2026-07-29): a modell 132 visszaolvasást futtatott ugyanabból a
+  // négy archívumból, a tömörítés ugyanazokat szervezte ki körönként, és a forduló
+  // 40 körön át egy helyben járt. A hívás argumentumai közben VÁLTOZTAK (más
+  // limit → más szelet), ezért sem az ismétlés-őr, sem a tartalom-ujjlenyomat nem
+  // fogta meg. A fék ezért tartalomfüggetlen és TOOL-FÜGGETLEN: forrásonként
+  // (fájl, dokumentum, archívum, oldal) számoljuk a behozott karaktereket.
+  const sourceIngestLimits = resolveSourceIngestLimits()
+  /** Forrás-kulcs → a futás alatt eddig ebből behozott karakterek. */
+  const ingestedCharsBySource = new Map<string, number>()
+  /** Az aktuális körben archívumból visszaolvasott karakterek (kör elején nullázva). */
+  let turnReadBackChars = 0
+  /** Ahány tool-hívást a modell ebben a körben kiadott (a kimaradtakat is). */
+  let turnToolCallsIssued = 0
+
+  /**
+   * Egy forrásból most behozott tartalom könyvelése. Visszaadja, hogy ez a
+   * behozás ismételt-e (azaz nem előrehaladás). A döntés a hívás ELŐTTI állapotra
+   * épül, így az első végigolvasás mindig teljes egészében legitim.
+   */
+  const noteSourceIngest = (
+    sourceKey: string | null,
+    addedChars: number,
+    sourceChars: number | null,
+  ): boolean => {
+    if (!sourceKey || addedChars <= 0) return false
+    const before = ingestedCharsBySource.get(sourceKey) ?? 0
+    ingestedCharsBySource.set(sourceKey, before + addedChars)
+    return isRedundantSourceIngest({
+      ingestedCharsBefore: before,
+      sourceChars,
+      limits: sourceIngestLimits,
+    })
+  }
   const webSearchGuard: WebSearchGuard = { webSearchRateLimited: false }
 
   // A tényleges leállási ok; `max_turns_exhausted` a loop természetes kifutása.
@@ -2248,6 +2321,8 @@ export async function runAgentToolLoop(params: {
     let webSearchCallsThisTurn = 0
     turnToolResultCount = 0
     turnNewToolResultCount = 0
+    turnReadBackChars = 0
+    turnToolCallsIssued = 0
     const reasoningTurnId = `reasoning-${turn}`
     const placeholderTitle = turn === 0 ? 'Üzenet feldolgozása' : 'Tool eredmények kiértékelése'
     await emitActivity({
@@ -2374,15 +2449,14 @@ export async function runAgentToolLoop(params: {
         }
         break turnLoop
       }
+      // A visszaolvasás ugyanolyan eszközhívás, mint a többi: BESZÁMÍT a
+      // tool-büdzsébe, átmegy az ismétlés-őrön, és a kör előrehaladás-mérlegébe is
+      // bekerül. Amíg ez az ág mindezt megkerülte, egy visszaolvasásba ragadt
+      // futást semmi nem állított meg a kör-limitig (mért eset: 40 kör, 2,8M token).
       if (call.name === TOOL_RESULT_READ) {
+        turnToolCallsIssued += 1
         const path = typeof call.input.path === 'string' ? call.input.path : ''
-        await emitActivity({
-          id: `tool-${call.id}`,
-          kind: 'tool',
-          title: 'tool_result_read',
-          detail: path ? shortText(path, 90) : undefined,
-          status: 'running',
-        })
+        const readSourceKey = toolCallSourceKey(call.name, call.input) ?? `${call.name}:path:${path}`
         const archived = archivedToolResults.get(path)
         const offset = clamp(numArg(call.input, 'offset') ?? 0, 0, archived?.content.length ?? 0)
         const limit = clamp(
@@ -2390,26 +2464,84 @@ export async function runAgentToolLoop(params: {
           1,
           TOOL_RESULT_READ_MAX_LIMIT,
         )
+
+        if (archived) {
+          // 1. fék — per-kör keret. Enélkül a védett ablak (keepRecentToolResults ×
+          // egy visszaolvasás) nagyobb lehet a tömörítés teljes kereténél, és a
+          // tömörítés matematikailag sosem ér a limit alá.
+          const perTurnBudget = readBackPerTurnBudget(compactionLimits)
+          if (turnReadBackChars >= perTurnBudget) {
+            await skipToolCall(
+              call,
+              `[LIMIT] Egy körben legfeljebb ${perTurnBudget} karakter olvasható vissza az archívumból, és ez a keret betelt. NE olvass tovább ebben a körben — amit eddig láttál, abból írd ki a szükséges kivonatot a munkaterületre (file_write, xlsx_append_rows), és a következő lépésben onnan dolgozz.`,
+              `kör-keret betelt (${perTurnBudget} karakter)`,
+            )
+            continue
+          }
+
+          // 2. fék — per-forrás kumulált keret (a közös, tool-független szabály):
+          // egy archívumot nagyjából egyszer lehet végigolvasni. Ami ezen túl van,
+          // az már látott adat. Itt KEMÉNY blokk, mert a teljes méretet ismerjük,
+          // tehát objektíven eldönthető, hogy a modell már végigolvasta.
+          const pathBudget = sourceIngestBudget(archived.content.length, sourceIngestLimits)
+          const readSoFar = ingestedCharsBySource.get(readSourceKey) ?? 0
+          if (readSoFar >= pathBudget) {
+            await skipToolCall(
+              call,
+              `[LOOP-GUARD] Ezt az archívumot (${path}) már végigolvastad ebben a futásban (${readSoFar} karakter, a teljes tartalom ${archived.content.length} karakter). Az újraolvasás nem hoz új információt. Írd ki a szükséges kivonatot a munkaterületre (file_write, xlsx_append_rows), és onnan dolgozz tovább — vagy foglald össze, amit eddig megtudtál.`,
+              'archívum már végigolvasva — kimaradt',
+            )
+            continue
+          }
+        }
+
+        // 3. fék — a közös ismétlés-őr: ugyanaz a (path, offset, limit) hármas.
+        const readRepeatKey = `${TOOL_RESULT_READ}:${path}:${offset}:${limit}`
+        const readRepeatCount = (callRepeatTracker.get(readRepeatKey) ?? 0) + 1
+        callRepeatTracker.set(readRepeatKey, readRepeatCount)
+        if (readRepeatCount > REPEAT_LIMIT) {
+          await skipToolCall(
+            call,
+            `[LOOP-GUARD] Ugyanezt a szeletet (${path}, offset=${offset}, limit=${limit}) már ${readRepeatCount - 1}x visszaolvastad, az eredmény nem változott. Ne ismételd — írd ki a szükséges kivonatot a munkaterületre, vagy foglald össze amit eddig megtudtál.`,
+            'ismételt visszaolvasás — kimaradt',
+          )
+          continue
+        }
+
+        await emitActivity({
+          id: `tool-${call.id}`,
+          kind: 'tool',
+          title: 'tool_result_read',
+          detail: path ? shortText(path, 90) : undefined,
+          status: 'running',
+        })
         const content = archived?.content ?? ''
         const chunk = content.slice(offset, offset + limit)
         const nextOffset = offset + chunk.length < content.length ? offset + chunk.length : null
-        messages.push({
-          role: 'tool',
-          toolCallId: call.id,
-          toolName: call.name,
-          content: archived
-            ? JSON.stringify({
-                path,
-                toolName: archived.toolName,
-                offset,
-                limit,
-                returnedChars: chunk.length,
-                totalChars: content.length,
-                nextOffset,
-                content: chunk,
-              })
-            : `HIBA: nincs ilyen elmentett tool-eredmény ebben a futásban: ${path}`,
-        })
+        const readContent = archived
+          ? JSON.stringify({
+              path,
+              toolName: archived.toolName,
+              offset,
+              limit,
+              returnedChars: chunk.length,
+              totalChars: content.length,
+              nextOffset,
+              content: chunk,
+            })
+          : `HIBA: nincs ilyen elmentett tool-eredmény ebben a futásban: ${path}`
+        toolCallCount += 1
+        if (archived) {
+          turnReadBackChars += chunk.length
+          const redundant = noteSourceIngest(readSourceKey, chunk.length, content.length)
+          // Ismételt behozás: a tartalom mehet, de a kört nem mossa tisztára.
+          pushToolResult(call, readContent, redundant ? 'barren' : 'new')
+        } else {
+          // Nem létező archívum: elpazarolt hívás. Ujjlenyomat NÉLKÜL könyveljük,
+          // különben az első ilyen hiba „új eredménynek" számítva nullázná a
+          // zsákutca-sorozatot — pont azt a kört mosná tisztára, amit fogni kell.
+          pushToolResult(call, readContent, 'barren')
+        }
         await emitActivity({
           id: `tool-${call.id}`,
           kind: 'tool',
@@ -2424,6 +2556,7 @@ export async function runAgentToolLoop(params: {
       // load_skill (D7): fail-closed betöltés a SkillService-en át. NEM megy a
       // capability-allowliston keresztül — az enforcement a hozzárendelés (deny-by-default).
       if (loadSkill && call.name === LOAD_SKILL_TOOL) {
+        turnToolCallsIssued += 1
         const skillVersionId = strArg(call.input, 'skillVersionId')
         await emitActivity({
           id: `tool-${call.id}`,
@@ -2440,12 +2573,16 @@ export async function runAgentToolLoop(params: {
         if (loaded.ok && loaded.runtimeHints) {
           guardLimits = mergeSkillRuntimeHints(guardLimits, loaded.runtimeHints)
         }
-        messages.push({
-          role: 'tool',
-          toolCallId: call.id,
-          toolName: call.name,
-          content: loaded.ok ? loaded.instructions : `ELUTASÍTVA: ${loaded.reason}`,
-        })
+        // Ugyanaz a skill újratöltése ugyanazt az instrukciót adja vissza: a
+        // forrás-számvitel ezt ismételt behozásnak látja, így a körönként
+        // újratöltő futás sem tudja tisztára mosni a zsákutca-sorozatot.
+        const skillContent = loaded.ok ? loaded.instructions : `ELUTASÍTVA: ${loaded.reason}`
+        const skillRedundant = noteSourceIngest(
+          toolCallSourceKey(call.name, call.input),
+          skillContent.length,
+          skillContent.length,
+        )
+        pushToolResult(call, skillContent, loaded.ok && !skillRedundant ? 'new' : 'barren')
         await emitActivity({
           id: `tool-${call.id}`,
           kind: 'tool',
@@ -2463,33 +2600,24 @@ export async function runAgentToolLoop(params: {
       // A modell a „wire" nevet adja vissza (pl. sandbox_app_create) — a belső
       // logika (guard, allowlist, invoke) a pontos belső nevet igényli.
       const toolName = fromWireToolName(call.name)
+      turnToolCallsIssued += 1
 
       if (!isChatPlatformTool(toolName) || !params.allowedTools.includes(toolName)) {
-        await emitActivity({
-          id: `tool-${call.id}`,
-          kind: 'tool',
-          title: call.name,
-          detail: 'nem engedélyezett eszköz',
-          status: 'skipped',
-        })
-        messages.push({
-          role: 'tool',
-          toolCallId: call.id,
-          toolName: call.name,
-          content: `ELUTASÍTVA: az eszköz „${call.name}" nem elérhető. Engedélyezett: ${params.allowedTools.join(', ')}`,
-        })
+        // Elutasítás: nem hoz új információt. Ha egy modell körönként ugyanazt a
+        // nem elérhető eszközt hívja, a kör zsákutcaként számoljon — enélkül a
+        // futás a kör-limitig pörögne.
+        await skipToolCall(
+          call,
+          `ELUTASÍTVA: az eszköz „${call.name}" nem elérhető. Engedélyezett: ${params.allowedTools.join(', ')}`,
+          'nem engedélyezett eszköz',
+        )
         continue
       }
 
       const pathArg = typeof call.input.path === 'string' ? call.input.path : ''
       if (WORKSPACE_PATH_TOOLS.has(toolName) && looksLikeKnowledgeRef(pathArg)) {
         const content = knowledgeRefWorkspaceToolMessage(toolName, pathArg)
-        messages.push({
-          role: 'tool',
-          toolCallId: call.id,
-          toolName: call.name,
-          content,
-        })
+        pushToolResult(call, content, 'barren')
         messages.push({
           role: 'system',
           content:
@@ -2573,7 +2701,6 @@ export async function runAgentToolLoop(params: {
         )
         if (gate.required) {
           deniedCount += 1
-          noteBarrenToolResult()
           await params.toolBroker.recordConsequenceGateBlock?.(invokeInput)
           let approvalCard: ToolLoopConsequenceApprovalEvent | null = null
           if (params.createConsequenceApproval) {
@@ -2605,18 +2732,17 @@ export async function runAgentToolLoop(params: {
               'NE kérj tőle szöveges „ok"/„jóváhagyom" választ, és NE indítsd újra a teljes folyamatot.'
             : 'Kérd meg a felhasználót, hogy a felületen hagyja jóvá a műveletet, ha van rá gomb; ' +
               'addig NE indítsd újra ezt a lépést.'
-          messages.push({
-            role: 'tool',
-            toolCallId: call.id,
-            toolName: call.name,
-            content:
-              `JÓVÁHAGYÁS SZÜKSÉGES: ezt a lépést (${call.name}) nem futtattam le automatikusan, ` +
+          // A jóváhagyásra várás nem előrehaladás: a lépés nem futott le.
+          pushToolResult(
+            call,
+            `JÓVÁHAGYÁS SZÜKSÉGES: ezt a lépést (${call.name}) nem futtattam le automatikusan, ` +
               `mert ${why}. ` +
               approvalHint +
               ' NE hívd újra ezt az eszközt csak azért, hogy újra megpróbáld. ' +
               'Addig folytasd legfeljebb alacsony kockázatú (olvasó / workspace-író) lépésekkel, ' +
               'majd foglald össze röviden, mi vár jóváhagyásra.',
-          })
+            'barren',
+          )
           await emitActivity({
             id: `tool-${call.id}`,
             kind: 'tool',
@@ -2632,10 +2758,17 @@ export async function runAgentToolLoop(params: {
         const result = await params.toolBroker.invoke(invokeInput)
         toolCallCount += 1
         if (result.denied) deniedCount += 1
-        noteToolResult(
-          toolName,
-          result.denied ? `DENIED:${result.reason ?? ''}` : JSON.stringify(result.result),
-        )
+        // Forrás-számvitel (tool-független): ha ez a hívás ugyanabból a forrásból
+        // (fájl, dokumentum, oldal, URL) hoz be tartalmat, amiből már nagyjából
+        // mindent behoztunk, akkor a TARTALOM lehet új, de a MUNKA nem haladt. Így
+        // fogja a rendszer a változó offsettel újraolvasó fájl-lapozást is, nem
+        // csak az archívum-visszaolvasást — a szabály egy helyen él mindkettőre.
+        const resultBody = result.denied
+          ? `DENIED:${result.reason ?? ''}`
+          : JSON.stringify(result.result)
+        const redundantIngest =
+          !result.denied &&
+          noteSourceIngest(toolCallSourceKey(toolName, call.input), resultBody.length, null)
         if (
           toolName === 'web_search' &&
           result.denied &&
@@ -2719,12 +2852,17 @@ export async function runAgentToolLoop(params: {
           }
         }
 
-        messages.push({
-          role: 'tool',
-          toolCallId: call.id,
-          toolName: call.name,
-          content: toolContent,
+        pushToolResult(call, toolContent, redundantIngest ? 'barren' : 'new', {
+          toolName,
+          fingerprintContent: resultBody,
         })
+        if (redundantIngest) {
+          messages.push({
+            role: 'system',
+            content:
+              'Ebből a forrásból már nagyjából mindent beolvastál ebben a futásban, ezért az újabb olvasás nem hoz új információt. Ha az adat kell a végeredményhez, a kivonatot írd ki a munkaterületre (file_write, xlsx_append_rows), és onnan dolgozz tovább — vagy zárd le, amit eddig megtudtál.',
+          })
+        }
 
         // KB-miss early guidance: ha kb_search 0 találatot adott, figyelmeztessük a modellt
         if ((toolName as string) === 'kb_search' && !result.denied) {
@@ -2743,7 +2881,6 @@ export async function runAgentToolLoop(params: {
         }
       } catch (e) {
         const message = e instanceof Error ? e.message : 'tool_call_failed'
-        noteToolResult(toolName, `ERROR:${message}`)
         if (toolName === 'web_search' && isWebSearchProviderRateLimited(message)) {
           markWebSearchRateLimited(webSearchGuard, messages)
         }
@@ -2754,11 +2891,9 @@ export async function runAgentToolLoop(params: {
           detail: message,
           status: 'error',
         })
-        messages.push({
-          role: 'tool',
-          toolCallId: call.id,
-          toolName: call.name,
-          content: `HIBA: ${message}`,
+        pushToolResult(call, `HIBA: ${message}`, 'new', {
+          toolName,
+          fingerprintContent: `ERROR:${message}`,
         })
       }
     }
@@ -2766,9 +2901,19 @@ export async function runAgentToolLoop(params: {
     // Kör lezárása: az előrehaladás-mérleg alapján léptetjük a zsákutca-számlálót.
     noProgressTurns = trackTurnProgress(noProgressTurns, {
       hadAssistantText: assistantText.trim().length > 0,
+      toolCallsIssued: turnToolCallsIssued,
       toolResultCount: turnToolResultCount,
       newToolResultCount: turnNewToolResultCount,
     })
+    // Fail-safe naplózás: ha a modell dolgozni próbált, de a kör mérlegébe nem
+    // került eredmény, akkor egy végrehajtási ág kihagyta a könyvelést. A
+    // zsákutca-őr ilyenkor is lép (trackTurnProgress), de a rést látni akarjuk.
+    if (turnToolCallsIssued > 0 && turnToolResultCount === 0) {
+      logger.warn(
+        { turn, toolCallsIssued: turnToolCallsIssued },
+        'agent.tool_loop.turn_balance_missing_tool_results',
+      )
+    }
 
     // issue #97 — következmény-kapu után ne égjünk újabb tool-köröket: záró
     // összefoglaló jön, a mellékhatás a UI-gombra vár.

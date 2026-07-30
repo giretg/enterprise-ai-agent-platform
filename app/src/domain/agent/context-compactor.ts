@@ -20,11 +20,28 @@
  * cseréljük — az üzenetszerkezet érintetlen marad.
  *
  * A modul I/O-mentes és determinisztikus: a hívó dönt az archiválásról.
+ *
+ * MIÉRT VAN A VISSZAOLVASÁSNAK KÜLÖN ÁGA: mérve (2026-07-29, Novaj-egyeztetés)
+ * a kiszervezés és a visszaolvasás körforgásba került. A modell körönként
+ * visszaolvasta ugyanazt a négy archívumot, a tömörítés két körrel később
+ * ugyanazokat szervezte ki, és a futás 40 körön át egy helyben járt — 5,4 millió
+ * token, kész eredmény nélkül. Két oka volt, és mindkettő itt látszik:
+ *  1. a visszaolvasás eredménye ÚJ archívumot kapott (archívum archívuma),
+ *  2. a helyére kerülő stub megint visszaolvasásra biztatott.
+ * Ezért a visszaolvasott szelet kiszervezése a FORRÁS útvonalára hivatkozik (így
+ * a hívó nem ír új archívumot), a stubja pedig kimondottan TILTJA az újraolvasást
+ * és a munkaterületre irányít. A hívó oldali karakter-plafonok ezt egészítik ki.
  */
 import type { GatewayMessage } from '@/domain/gateway/model-gateway'
 
 /** A kiszervezett tartalom helyén álló üzenet felismerhető előtagja. */
 export const EVICTED_TOOL_RESULT_MARKER = '[Kiszervezett tool-eredmény]'
+
+/**
+ * A visszaolvasó eszköz neve. Az igazság ITT él, a tool-loop innen veszi — a
+ * compactornak muszáj felismernie a saját stubjai miatt keletkezett eredményeket.
+ */
+export const TOOL_RESULT_READ_TOOL_NAME = 'tool_result_read'
 
 export type ContextCompactionLimits = {
   /** Ennyi legutóbbi tool-eredmény MINDIG teljes terjedelmében marad. */
@@ -76,6 +93,28 @@ export function resolveContextCompactionLimits(
       fallback.minEvictableChars,
     ),
   }
+}
+
+/**
+ * FONTOS: az „egy forrásból ennyit hozhatsz be" keret NEM itt él, hanem a
+ * `loop-stop-decision` modulban (`sourceIngestBudget`) — mert az nem a
+ * tömörítés sajátja, hanem minden olvasó eszközre érvényes (fájl-újraolvasás,
+ * dokumentum-lapozás, archívum-visszaolvasás). Itt csak a tömörítés kerete van.
+ */
+
+/**
+ * Egy KÖRBEN összesen visszaolvasható karakterek plafonja.
+ *
+ * INVARIÁNS, amiért ez a fék létezik: a tömörítés a `keepRecentToolResults`
+ * legutóbbi eredményt mindig védi, ezért ha egy kör annyit tud visszaszívni, hogy
+ * `keepRecentToolResults × egy visszaolvasás ≫ maxToolResultChars`, akkor a védett
+ * ablak maga nagyobb a keretnél — a tömörítés SOSEM ér a limit alá, és körönként
+ * mindent kiszervez, amit a modell körönként visszaolvas. A mért eset: 4 × 40 000
+ * = 160 000 karakter védett ablak 60 000-es keretnél. A per-kör plafon a keretre
+ * szorítja a visszaolvasást, így a védett ablak sem lépheti túl.
+ */
+export function readBackPerTurnBudget(limits: ContextCompactionLimits): number {
+  return limits.maxToolResultChars
 }
 
 /** Egy kiszervezett tool-eredmény — a hívó ezt teszi be a futás archívumába. */
@@ -174,19 +213,32 @@ export function compactToolResultHistory(
     if (message.content.length < limits.minEvictableChars) continue
     if (message.content.startsWith(EVICTED_TOOL_RESULT_MARKER)) continue
 
-    const path = options.pathFor({
-      toolName: message.toolName,
-      toolCallId: message.toolCallId,
-      index: order,
-      content: message.content,
-    })
-    const stub = buildEvictedToolResultStub({
-      toolName: message.toolName,
-      path,
-      chars: message.content.length,
-      readableBack: options.readableBack,
-      readMaxLimit: options.readMaxLimit,
-    })
+    // Visszaolvasott szelet: a tartalom NEM új — a forrás archívumban már megvan.
+    // Ezért a forrás útvonalára hivatkozunk (a hívó ott nem ír új archívumot), és
+    // a stub tiltja az újraolvasást. Ha a forrás nem olvasható ki (nem várt alak),
+    // fail-soft: a normál úton megy tovább.
+    const readBackSource =
+      message.toolName === TOOL_RESULT_READ_TOOL_NAME
+        ? extractReadBackSourcePath(message.content)
+        : null
+
+    const path =
+      readBackSource ??
+      options.pathFor({
+        toolName: message.toolName,
+        toolCallId: message.toolCallId,
+        index: order,
+        content: message.content,
+      })
+    const stub = readBackSource
+      ? buildReadBackEvictionStub({ sourcePath: readBackSource, chars: message.content.length })
+      : buildEvictedToolResultStub({
+          toolName: message.toolName,
+          path,
+          chars: message.content.length,
+          readableBack: options.readableBack,
+          readMaxLimit: options.readMaxLimit,
+        })
 
     evicted.push({
       path,
@@ -228,6 +280,38 @@ export function buildEvictedToolResultStub(input: {
     )
   }
   return lines.join('\n')
+}
+
+/**
+ * A visszaolvasás eredményének forrás-útvonala. A `tool_result_read` JSON-t ad
+ * vissza `path` mezővel; szándékosan regexszel olvassuk (nem `JSON.parse`), mert
+ * a tartalom lehet csonkolt vagy hibaszöveg, és egy dobás itt a teljes tömörítést
+ * buktatná.
+ */
+export function extractReadBackSourcePath(content: string): string | null {
+  const match = content.match(/"path"\s*:\s*"((?:[^"\\]|\\.)+)"/)
+  if (!match) return null
+  try {
+    return JSON.parse(`"${match[1]}"`) as string
+  } catch {
+    return match[1]
+  }
+}
+
+/**
+ * A már visszaolvasott szelet helyén álló szöveg. Két dolgot kell elérnie: a
+ * modell NE gondolja, hogy elveszett az adat, és NE olvassa vissza újra — mert a
+ * körforgás pontosan ebből lett. Ezért a kiút konkrét: írd ki, amire szükség van.
+ */
+export function buildReadBackEvictionStub(input: {
+  sourcePath: string
+  chars: number
+}): string {
+  return [
+    `${EVICTED_TOOL_RESULT_MARKER} Ezt a szeletet (${input.chars} karakter, forrás: ${input.sourcePath}) MÁR visszaolvastad ebben a futásban, ezért kikerült az aktív kontextusból.`,
+    'NE olvasd vissza újra ugyanezt — a visszaolvasás nem hoz új információt, csak a forduló keretét fogyasztja.',
+    'Ha az adat kell a végeredményhez, a szükséges kivonatot írd ki a munkaterületre (file_write, xlsx_append_rows), és onnan dolgozz tovább — a részeredmény így a következő fordulóban is megvan.',
+  ].join('\n')
 }
 
 /** Felhasználónak/naplónak szánt, rövid összefoglaló egy tömörítési lépésről. */

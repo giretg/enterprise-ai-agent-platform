@@ -108,6 +108,12 @@ export function evaluateLoopContinuation(state: LoopGuardState): LoopStopDecisio
 export type TurnProgressSummary = {
   /** Volt-e a körben nem üres asszisztens-szöveg. */
   hadAssistantText: boolean
+  /**
+   * Hány tool-hívást ADOTT KI a modell ebben a körben (a kimaradt/elutasított
+   * hívásokat is beleértve). Ez a fail-safe bemenete: ha a modell dolgozni
+   * próbált, a kör NEM lehet semleges, akármelyik ág kezelte a hívást.
+   */
+  toolCallsIssued: number
   /** Hány tool-hívás adott vissza eredményt (sikeres vagy hibás — de lefutott). */
   toolResultCount: number
   /** Ebből hány adott a korábbiakhoz képest ÚJ eredményt. */
@@ -116,16 +122,122 @@ export type TurnProgressSummary = {
 
 /**
  * A `noProgressTurns` számláló következő értéke. Előrehaladásnak számít bármi,
- * ami új információt hozott: új szöveg vagy új tool-eredmény. Ha a körben
- * egyáltalán nem futott tool és szöveg sem született (pl. üres modellválasz),
- * azt NEM számoljuk zsákutcának — arra a meglévő üres-válasz ág és a kör-limit
- * felel.
+ * ami új információt hozott: új szöveg vagy új tool-eredmény.
+ *
+ * A `toolResultCount === 0` ág FAIL-SAFE, és ez a lényege: ha a modell adott ki
+ * tool-hívást, de a kör mérlegébe egyetlen eredmény sem került, az zsákutca —
+ * nem semleges kör. Enélkül minden olyan végrehajtási ág, amely elfelejt a
+ * mérlegbe jelezni (belső eszköz, elutasított hívás, jóváhagyásra váró lépés),
+ * ÉSZREVÉTLENÜL kinyitja a zsákutca-őrt: a számláló befagy, és a futás a
+ * kör-limitig pörög. Mért eset (2026-07-29): 40 kör, 2,8M token, nulla eredmény.
+ * Tool-hívás nélküli kör (üres modellválasz) továbbra is semleges — arra az
+ * üres-válasz ág és a kör-limit felel.
  */
 export function trackTurnProgress(previousStreak: number, summary: TurnProgressSummary): number {
   if (summary.hadAssistantText) return 0
-  if (summary.toolResultCount === 0) return previousStreak
+  if (summary.toolResultCount === 0) {
+    return summary.toolCallsIssued > 0 ? previousStreak + 1 : previousStreak
+  }
   if (summary.newToolResultCount > 0) return 0
   return previousStreak + 1
+}
+
+/**
+ * ── Forrás-alapú előrehaladás ────────────────────────────────────────────────
+ *
+ * ÜZLETI PROBLÉMA: a „új eredmény = előrehaladás" szabály a tool-eredmény
+ * TARTALMÁT nézi. Egy modell viszont ugyanabból a forrásból (fájl, dokumentum,
+ * archívum, oldal) más-más szeletet kérve végtelen sok „új" tartalmat tud
+ * előállítani anélkül, hogy egy lépést is haladna: `offset`/`limit`
+ * változtatásával a tartalmi ujjlenyomat mindig más, a munka mégis ugyanaz.
+ * Mérve: 132 visszaolvasás ugyanabból a négy archívumból, 40 körön át.
+ *
+ * MEGOLDÁS: forrásonként számoljuk, összesen hány karaktert hoztunk be belőle. Ha
+ * ez meghaladja a forrás méretéből számított keretet (nagyjából „egyszer
+ * végigolvashatod"), a további behozás már NEM számít előrehaladásnak. A tartalom
+ * mehet a modellnek — csak a kört nem mossa tisztára. Tool-független: ugyanígy
+ * fogja a fájl-újraolvasást, a dokumentum-lapozást és az archívum-visszaolvasást.
+ */
+export type SourceIngestLimits = {
+  /** A forrás méretének ennyiszerese hozható be, mire redundánsnak számít. */
+  factor: number
+  /** Kis forrásnál a faktor túl szűk lenne; ennyi mindenképp behozható. */
+  minChars: number
+  /** Ismeretlen méretű forrás (pl. lapozott API) kerete. */
+  unknownSourceChars: number
+}
+
+export const SOURCE_INGEST_DEFAULTS: SourceIngestLimits = {
+  factor: 1.5,
+  minChars: 12_000,
+  unknownSourceChars: 200_000,
+}
+
+/**
+ * Env-felülbírálás: `AGENT_SOURCE_INGEST_FACTOR`,
+ * `AGENT_SOURCE_INGEST_MIN_CHARS`, `AGENT_SOURCE_INGEST_UNKNOWN_CHARS`.
+ * Érvénytelen vagy védelmet kikapcsoló érték → alapérték.
+ */
+export function resolveSourceIngestLimits(
+  env: NodeJS.ProcessEnv = process.env,
+  fallback: SourceIngestLimits = SOURCE_INGEST_DEFAULTS,
+): SourceIngestLimits {
+  const num = (raw: string | undefined, min: number, fb: number): number => {
+    const parsed = Number(raw)
+    return Number.isFinite(parsed) && parsed >= min ? parsed : fb
+  }
+  return {
+    factor: num(env.AGENT_SOURCE_INGEST_FACTOR, 1, fallback.factor),
+    minChars: num(env.AGENT_SOURCE_INGEST_MIN_CHARS, 1_000, fallback.minChars),
+    unknownSourceChars: num(
+      env.AGENT_SOURCE_INGEST_UNKNOWN_CHARS,
+      10_000,
+      fallback.unknownSourceChars,
+    ),
+  }
+}
+
+/**
+ * Egy forrásból a futás alatt behozható karakterek kerete. `sourceChars: null` =
+ * a méret nem ismert (lapozott végpont, streamelt tartalom).
+ */
+export function sourceIngestBudget(
+  sourceChars: number | null,
+  limits: SourceIngestLimits = SOURCE_INGEST_DEFAULTS,
+): number {
+  if (sourceChars === null) return limits.unknownSourceChars
+  return Math.max(Math.ceil(sourceChars * limits.factor), limits.minChars)
+}
+
+/**
+ * Ugyanabból a forrásból való ismételt behozás-e (azaz NEM előrehaladás).
+ * A döntés a MOSTANI hívás előtti állapotra épül, hogy az első végigolvasás
+ * mindig teljes egészében legitim maradjon.
+ */
+export function isRedundantSourceIngest(input: {
+  ingestedCharsBefore: number
+  sourceChars: number | null
+  limits?: SourceIngestLimits
+}): boolean {
+  return input.ingestedCharsBefore >= sourceIngestBudget(input.sourceChars, input.limits)
+}
+
+/**
+ * Egy eszközhívás stabil forrás-azonosítója az argumentumaiból. Szándékosan
+ * SZŰK a mezőlista: csak olyan argumentum jó, amely ugyanazt a tartalmat jelöli
+ * `offset`/`limit`/`page` változtatása mellett is. Ha nincs ilyen, `null` — akkor
+ * a hívás a tartalom-ujjlenyomatos úton mérődik, mint eddig.
+ */
+export function toolCallSourceKey(
+  toolName: string,
+  input: Record<string, unknown> | undefined,
+): string | null {
+  if (!input) return null
+  for (const field of ['path', 'documentId', 'url', 'pageId', 'skillVersionId', 'id'] as const) {
+    const value = input[field]
+    if (typeof value === 'string' && value.trim()) return `${toolName}:${field}:${value.trim()}`
+  }
+  return null
 }
 
 function clampLimit(value: number, range: { min: number; max: number }): number {
