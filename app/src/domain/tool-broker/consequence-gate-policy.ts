@@ -9,7 +9,11 @@
  * a connector endpoint-katalógusában (nem allowlistelt).
  */
 import type { HttpApiConfig, HttpApiEndpoint, HttpApiRisk } from '@/domain/connector/http-api-client'
-import { httpApiPathMatches, resolveHttpApiEndpointRisk } from '@/domain/connector/http-api-client'
+import {
+  canonicalizeHttpApiPath,
+  httpApiPathMatches,
+  resolveHttpApiEndpointRisk,
+} from '@/domain/connector/http-api-client'
 import { SIDE_EFFECTING_TOOLS } from '@/domain/tool-broker/tool-trust-registry'
 import type { ToolName } from '@/domain/tool-broker/tool-broker-types'
 
@@ -82,7 +86,12 @@ export function evaluateHttpApiRequestGate(
     return { required: true, reason: 'http_api_write_or_danger' }
   }
 
-  const normalizedPath = path.split('?')[0]
+  let normalizedPath: string
+  try {
+    normalizedPath = canonicalizeHttpApiPath(path)
+  } catch {
+    return { required: true, reason: 'http_api_not_allowlisted' }
+  }
   const endpoint = findHttpApiEndpoint(config.endpoints, method, normalizedPath)
   if (!endpoint) {
     return { required: true, reason: 'http_api_not_allowlisted' }

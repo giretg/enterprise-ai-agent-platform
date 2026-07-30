@@ -104,20 +104,31 @@ function parseHttpApiRisk(raw: unknown): HttpApiRisk | undefined {
 /**
  * Endpoint kockázat feloldása a kapuhoz: explicit `risk` → legacy `access` →
  * connector `defaultRisk` → HTTP metódus heurisztika (DELETE=danger, GET=read, egyéb=write).
+ *
+ * DELETE soha nem lehet `read`: a visszafordíthatatlan törlés mindig `danger`,
+ * még akkor is, ha a katalógus tévesen `risk: "read"`-et ad meg.
  */
 export function resolveHttpApiEndpointRisk(
   endpoint: Pick<HttpApiEndpoint, 'risk' | 'access'>,
   method: string,
   connectorDefaultRisk?: HttpApiRisk,
 ): HttpApiRisk {
-  if (endpoint.risk) return endpoint.risk
-  if (endpoint.access === 'read') return 'read'
-  if (endpoint.access === 'write') {
+  const upper = method.toUpperCase()
+  let risk: HttpApiRisk
+  if (endpoint.risk) {
+    risk = endpoint.risk
+  } else if (endpoint.access === 'read') {
+    risk = 'read'
+  } else if (endpoint.access === 'write') {
     // access=write mellett a DELETE továbbra is danger (visszafordíthatatlan).
-    return method.toUpperCase() === 'DELETE' ? 'danger' : 'write'
+    risk = upper === 'DELETE' ? 'danger' : 'write'
+  } else if (connectorDefaultRisk) {
+    risk = connectorDefaultRisk
+  } else {
+    risk = riskFromHttpMethod(method)
   }
-  if (connectorDefaultRisk) return connectorDefaultRisk
-  return riskFromHttpMethod(method)
+  if (upper === 'DELETE' && risk === 'read') return 'danger'
+  return risk
 }
 
 export function riskFromHttpMethod(method: string): HttpApiRisk {
@@ -469,7 +480,9 @@ export class HttpApiClient {
       throw new HttpApiError('path must be relative to the connector baseUrl', 'invalid_path')
     }
     this.assertGitHubRepositoryAllowed(path)
-    const normalized = path.split('?')[0]
+    // Dot-segment / %2e normalizálás AZ allowlist-egyezés ELŐTT — különben
+    // `/safe/:id` + `/safe/..` átengedné a kaput, miközben a URL `/`-re esik.
+    const normalized = canonicalizeHttpApiPath(path)
     const endpoint = (this.config.endpoints ?? []).find(
       (e) => e.method === method && httpApiPathMatches(e.path, normalized),
     )
@@ -517,8 +530,9 @@ export class HttpApiClient {
   }
 
   private buildUrl(path: string, query?: HttpApiRequestParams['query']): URL {
-    const rel = path.startsWith('/') ? path : `/${path}`
-    const url = new URL(`${this.config.baseUrl}${rel}`)
+    // A hívás is a kanonikus pathra megy — egyezzen az allowlist-ellenőrzéssel.
+    const canonical = canonicalizeHttpApiPath(path)
+    const url = new URL(`${this.config.baseUrl}${canonical}`)
     if (query) {
       for (const [k, v] of Object.entries(query)) {
         url.searchParams.set(k, String(v))
@@ -809,6 +823,21 @@ function templateValue(key: string, context: HttpApiTemplateContext): string | n
 }
 
 /**
+ * Path kanonizálás allowlist / kapu / fetch előtt: query levágva, `.` / `..`
+ * és percent-encoded változataik (`%2e`) feloldva. Így a wildcard-egyezés és a
+ * tényleges HTTP URL ugyanarra a célra vonatkozik.
+ */
+export function canonicalizeHttpApiPath(path: string): string {
+  const noQuery = path.split('?')[0] ?? ''
+  const rel = noQuery.startsWith('/') ? noQuery : `/${noQuery}`
+  try {
+    return new URL(rel, 'https://http-api.invalid').pathname || '/'
+  } catch {
+    throw new HttpApiError('path is invalid', 'invalid_path')
+  }
+}
+
+/**
  * Egyszerű path-egyezés placeholderekkel. Kétféle jelölést fogadunk el, mert a
  * kézi „API-kapcsolat" a `:param` alakot használja (pl. /banks/:bankId/crm), a
  * sablonból materializált configok viszont a `{param}` alakot (pl. /accounts/{id}).
@@ -816,7 +845,7 @@ function templateValue(key: string, context: HttpApiTemplateContext): string | n
  */
 export function httpApiPathMatches(template: string, actual: string): boolean {
   const t = template.split('/').filter(Boolean)
-  const a = actual.split('/').filter(Boolean)
+  const a = canonicalizeHttpApiPath(actual).split('/').filter(Boolean)
   if (t.length !== a.length) return false
   return t.every((seg, i) => isPathParamSegment(seg) || seg === a[i])
 }

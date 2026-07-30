@@ -340,6 +340,46 @@ async function main() {
     )
   })
 
+  await test('policy: dot-segment path nem illeszkedik allowlistelt read végpontra', async () => {
+    const connectors = [
+      {
+        id: 'conn-1',
+        config: {
+          baseUrl: 'https://api.example.com',
+          auth: { scheme: 'bearer' as const },
+          endpoints: [{ method: 'POST', path: '/safe/:id', risk: 'read' as const }],
+        },
+      },
+    ]
+    for (const path of ['/safe/..', '/safe/%2e%2e', '/safe/../admin']) {
+      const d = evaluateHttpApiRequestGate(
+        { connectorId: 'conn-1', method: 'POST', path },
+        connectors,
+      )
+      assert.equal(d.required, true, path)
+      assert.equal(d.reason, 'http_api_not_allowlisted', path)
+    }
+  })
+
+  await test('policy: DELETE explicit risk:read is danger (kapu)', async () => {
+    const connectors = [
+      {
+        id: 'conn-1',
+        config: {
+          baseUrl: 'https://api.example.com',
+          auth: { scheme: 'bearer' as const },
+          endpoints: [{ method: 'DELETE', path: '/records/:id', risk: 'read' as const }],
+        },
+      },
+    ]
+    const d = evaluateHttpApiRequestGate(
+      { connectorId: 'conn-1', method: 'DELETE', path: '/records/1' },
+      connectors,
+    )
+    assert.equal(d.required, true)
+    assert.equal(d.reason, 'http_api_write_or_danger')
+  })
+
   if (failures > 0) {
     console.error(`\n${failures} teszt elbukott.`)
     process.exit(1)
