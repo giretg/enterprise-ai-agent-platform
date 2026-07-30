@@ -19,6 +19,11 @@ import {
   parseGitHubRepositoryAccessConfig,
   type GitHubRepositoryAccess,
 } from './github-repository-access'
+import {
+  buildHttpApiClientErrorHint,
+  buildHttpApiOversizedResponseHint,
+  buildHttpApiTruncationBody,
+} from './http-api-prompt'
 
 export type HttpApiAuthConfig =
   | { scheme: 'header'; header: string }
@@ -39,6 +44,14 @@ export type HttpApiAuthConfig =
 /** Következmény-kapu / dokumentáció: endpoint kockázati osztálya. */
 export type HttpApiRisk = 'read' | 'write' | 'danger'
 
+/** OpenAPI / kézi config: query vagy path param a modell-katalógushoz. */
+export type HttpApiEndpointParam = {
+  name: string
+  required: boolean
+  type?: string
+  description?: string
+}
+
 export type HttpApiEndpoint = {
   method: string
   path: string
@@ -54,6 +67,10 @@ export type HttpApiEndpoint = {
   access?: 'read' | 'write'
   headers?: Record<string, string>
   headerParams?: Array<{ name: string; required: boolean }>
+  /** Dokumentált query paraméterek — a modell elé kerülnek a tool loopban. */
+  queryParams?: HttpApiEndpointParam[]
+  /** Dokumentált path paraméterek (template mellett). */
+  pathParams?: HttpApiEndpointParam[]
 }
 
 export type HttpApiAuthProfile = {
@@ -231,6 +248,8 @@ export function parseHttpApiConfig(raw: unknown): HttpApiConfig {
             platformHeaders.add(IDEMPOTENCY_HEADER_LOWER)
           }
           const headerParams = parseEndpointHeaderParams(e, platformHeaders)
+          const queryParams = parseEndpointLocationParams(e, 'query')
+          const pathParams = parseEndpointLocationParams(e, 'path')
           return {
             method,
             path: String(e.path ?? ''),
@@ -241,6 +260,8 @@ export function parseHttpApiConfig(raw: unknown): HttpApiConfig {
             ...(access ? { access } : {}),
             headers,
             ...(headerParams ? { headerParams } : {}),
+            ...(queryParams ? { queryParams } : {}),
+            ...(pathParams ? { pathParams } : {}),
           }
         })
         .filter((e) => e.method && e.path)
@@ -292,6 +313,56 @@ export function headerNameSet(
     for (const name of Object.keys(source)) names.add(name.toLowerCase())
   }
   return names
+}
+
+/**
+ * Query / path paramok OpenAPI `parameters` vagy kézi `queryParams`/`pathParams` mezőből.
+ * A modell-katalógus és a 4xx hint ezekre épül — header-eket nem ide gyűjtjük.
+ */
+function parseEndpointLocationParams(
+  endpoint: Record<string, unknown>,
+  location: 'query' | 'path',
+): HttpApiEndpointParam[] | undefined {
+  const explicitKey = location === 'query' ? 'queryParams' : 'pathParams'
+  const fromExplicit = Array.isArray(endpoint[explicitKey])
+    ? endpoint[explicitKey]
+        .filter(
+          (param): param is Record<string, unknown> => isRecord(param) && typeof param.name === 'string',
+        )
+        .map((param) => toEndpointParam(param, location === 'path'))
+    : []
+  const fromParameters = Array.isArray(endpoint.parameters)
+    ? endpoint.parameters
+        .filter(
+          (param): param is Record<string, unknown> =>
+            isRecord(param) && param.in === location && typeof param.name === 'string',
+        )
+        .map((param) => toEndpointParam(param, location === 'path'))
+    : []
+  const byName = new Map<string, HttpApiEndpointParam>()
+  for (const param of [...fromParameters, ...fromExplicit]) {
+    byName.set(param.name.toLowerCase(), param)
+  }
+  return byName.size > 0 ? [...byName.values()] : undefined
+}
+
+function toEndpointParam(param: Record<string, unknown>, pathDefaultRequired: boolean): HttpApiEndpointParam {
+  const type =
+    typeof param.type === 'string' && param.type.trim()
+      ? param.type.trim()
+      : isRecord(param.schema) && typeof param.schema.type === 'string'
+        ? String(param.schema.type)
+        : undefined
+  const description =
+    typeof param.description === 'string' && param.description.trim()
+      ? param.description.trim()
+      : undefined
+  return {
+    name: String(param.name),
+    required: pathDefaultRequired || param.required === true,
+    ...(type ? { type } : {}),
+    ...(description ? { description } : {}),
+  }
 }
 
 function parseEndpointHeaderParams(
@@ -457,6 +528,10 @@ export type HttpApiResponse = {
   status: number
   ok: boolean
   body: unknown
+  /** Modellnek szóló útmutató (4xx / truncate) — titkot nem tartalmaz. */
+  hint?: string
+  /** true, ha a body truncate-elt előnézet (maxResponseChars). */
+  truncated?: boolean
 }
 
 export class HttpApiError extends Error {
@@ -701,19 +776,71 @@ export class HttpApiClient {
     const res = await this.fetchWithBackoff(url, init)
     const text = await res.text()
     const max = this.config.maxResponseChars ?? DEFAULT_MAX_RESPONSE_CHARS
-    const truncated = text.length > max ? `${text.slice(0, max)}…[truncated]` : text
+    const overLimit = text.length > max
+    const previewText = overLimit ? `${text.slice(0, max)}…[truncated]` : text
 
-    let body: unknown = truncated
+    let body: unknown = previewText
+    let truncated = false
+    let oversizedSoftHint: string | undefined
     const contentType = res.headers.get('content-type') ?? ''
     if (contentType.includes('application/json')) {
+      // Sikeres / parse-olható JSON: a teljes body megmarad (get_all + archive + extract).
+      // A maxResponseChars soft jelzés: ne dumpold a modell kontextusába.
       try {
         body = JSON.parse(text)
+        if (overLimit) {
+          truncated = true
+          oversizedSoftHint = buildHttpApiOversizedResponseHint({
+            originalChars: text.length,
+            maxChars: max,
+          })
+        }
       } catch {
-        body = truncated
+        if (overLimit) {
+          truncated = true
+          body = buildHttpApiTruncationBody({
+            originalChars: text.length,
+            maxChars: max,
+            preview: text.slice(0, max),
+          })
+        } else {
+          body = previewText
+        }
       }
+    } else if (overLimit) {
+      truncated = true
     }
 
-    return { status: res.status, ok: res.ok, body }
+    const errorHint =
+      !res.ok
+        ? buildHttpApiClientErrorHint({
+            status: res.status,
+            endpoint: endpoint ?? null,
+            usedQueryKeys: params.query ? Object.keys(params.query) : [],
+          })
+        : undefined
+    const truncationHint =
+      truncated && typeof body === 'object' && body && 'hint' in (body as object)
+        ? String((body as { hint: string }).hint)
+        : oversizedSoftHint
+          ? oversizedSoftHint
+          : truncated
+            ? buildHttpApiTruncationBody({
+                originalChars: text.length,
+                maxChars: max,
+                preview: text.slice(0, Math.min(max, text.length)),
+              }).hint
+            : undefined
+
+    return {
+      status: res.status,
+      ok: res.ok,
+      body,
+      ...(truncated ? { truncated: true } : {}),
+      ...(errorHint || truncationHint
+        ? { hint: [errorHint, truncationHint].filter(Boolean).join(' ') }
+        : {}),
+    }
   }
 
   private async fetchWithBackoff(input: URL, init: RequestInit): Promise<Response> {

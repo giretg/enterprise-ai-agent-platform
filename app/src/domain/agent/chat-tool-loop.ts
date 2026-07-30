@@ -45,6 +45,10 @@ import {
   type HttpApiGateConnector,
 } from '@/domain/tool-broker/consequence-gate-policy'
 import { parseHttpApiConfig, resolveHttpApiEndpointRisk } from '@/domain/connector/http-api-client'
+import {
+  buildHttpApiEfficiencyGuidance,
+  formatHttpApiEndpointCatalogSuffix,
+} from '@/domain/connector/http-api-prompt'
 import type { TrustClass } from '@/domain/tool-broker/tool-broker-types'
 import {
   describeLoopStop,
@@ -161,6 +165,7 @@ Ha külső adatra (email, fájl, más agent) vagy ticketre / fájlműveletre van
 - Formátum-választás: ha valaki KIFEJEZETTEN „mini appot” / „mini-appot” kér, EGYÉRTELMŰ — ez mindig a sandbox_app.* eszközcsaládot jelenti, ne kérdezz vissza. Ugyanígy MINI-APP-ot készíts akkor is, ha önálló, böngészőben MEGNYITHATÓ nézetet / weboldalt / interaktív riportot / dashboardot vagy VIZUÁLIS bemutatót (pl. színpaletta, színezett/formázott HTML-táblázat) kérnek — a sandbox_app.* eszközökkel (sandbox_app.create → sandbox_app.update_artifact activate=true → sandbox_app.preview, a linket add vissza). A platform ezt a funkciót mindenütt „mini-app”-ként nevezi — a válaszodban is ezt a szót használd, ne „sandbox app”-ot vagy „appot” önmagában. Excelt (xlsx_*) CSAK akkor, ha kifejezetten Excel / xlsx / számolótábla a kérés; PDF-et (pdf_create) csak ha nyomtatható PDF a cél; PowerPoint prezentációt / bemutatót / slide-decket (pptx_create) ha diákból álló előadás a cél; Word dokumentumot / .docx-et (docx_create) ha szerkeszthető Word-fájl a cél. A puszta „táblázat" szó önmagában NEM jelent Excelt — a cél dönt (megjelenítés → mini-app, számolás/adatszerkesztés → xlsx, prezentáció → pptx, Word-dokumentum → docx).
 - Mini-appok kezelése: „milyen mini-appjaid vannak” / „listázd a mini-appjaidat” kérdésnél MINDIG hívd a sandbox_app.list-et — SOHA ne mondd, hogy nincs rá eszközöd. Ha egy MEGLÉVŐ mini-appot kell megnézni vagy módosítani, előbb a sandbox_app.list-tel (vagy ha az appId ismert, közvetlenül) azonosítsd, a sandbox_app.get-tel olvasd be a jelenlegi HTML-t, csak utána hívd a sandbox_app.update_artifact-ot a frissített, TELJES HTML-lel (ez felülír, nem foltoz). Új mini-app létrehozása előtt egy gyors sandbox_app.list-tel nézd meg, nincs-e már hasonló, hogy ne gyártsd le feleslegesen kétszer.
 - Linkek (pl. sandbox_app.preview previewUrl-je, ticket/dokumentum hivatkozás) SOSE nyers URL-ként jelenjenek meg a válaszban — mindig Markdown linkként add vissza, pl. \`[Mini-app megnyitása](https://...)\`, hogy a felület kattinthatóvá tudja alakítani.
+- HTTP API (http_api_get / http_api_get_all): a connector endpoint-katalógusában szereplő query/path paramétereket használd — ne találj ki mezőneveket. Nagy listához http_api_get_all; időszak/összehasonlítás/top-N: aggregált vagy report végpont + period paramok, ne dumpold a teljes listát és ne helyettesíts más proxy-metrikával. Nagy archive → tool_result_extract (ne chunkolt file_read).
 - Ha nincs több eszközszükséglet, válaszolj természetes magyar szöveggel.
 `
 
@@ -342,7 +347,7 @@ const TOOL_SCHEMAS: Record<ChatPlatformToolName, ToolSchema> = {
   },
   http_api_get: {
     description:
-      'Egyetlen oldal olvasó (GET) hívása a hozzád rendelt külső REST API-n. Lapozott listához (sok oldal, nagy névsor) használd az http_api_get_all-t — ne page=1,2,3… sorozatot. A `connectorId` értékét a rendszerüzenetben látod. A `path` a connector baseUrl-jéhez relatív.',
+      'Egyetlen oldal olvasó (GET) hívása a hozzád rendelt külső REST API-n. A query mezőben CSAK a connector endpoint-katalógusában felsorolt paramétereket add meg — ne találj ki mezőneveket. Lapozott listához (sok oldal, nagy névsor) használd az http_api_get_all-t — ne page=1,2,3… sorozatot. Időszak/összehasonlítás: aggregált vagy report végpont + dokumentált period paramok. A `connectorId` értékét a rendszerüzenetben látod. A `path` a connector baseUrl-jéhez relatív.',
     inputSchema: objectSchema(
       { connectorId: STR, path: STR, query: { type: 'object', additionalProperties: true }, headers: { type: 'object', additionalProperties: { type: 'string' } } },
       ['path'],
@@ -3532,27 +3537,12 @@ function toolResultFingerprint(toolName: string, content: string): string {
   return `${toolName}:${content.length}:${hash}`
 }
 
-function callerHeaderHint(endpoint: unknown): string {
-  if (typeof endpoint !== 'object' || endpoint === null || Array.isArray(endpoint)) return ''
-  const raw = endpoint as Record<string, unknown>
-  const source = Array.isArray(raw.headerParams)
-    ? raw.headerParams
-    : Array.isArray(raw.parameters)
-      ? raw.parameters.filter(
-          (param) =>
-            typeof param === 'object'
-            && param !== null
-            && !Array.isArray(param)
-            && (param as Record<string, unknown>).in === 'header',
-        )
-      : []
-  const headers = source.flatMap((param) => {
-    if (typeof param !== 'object' || param === null || Array.isArray(param)) return []
-    const item = param as Record<string, unknown>
-    if (typeof item.name !== 'string' || !item.name.trim()) return []
-    return [`${item.name}${item.required === true ? ' (kötelező)' : ' (opcionális)'}`]
-  })
-  return headers.length > 0 ? ` — Hívói fejlécek: ${headers.join(', ')}` : ''
+function endpointCatalogSuffix(endpoint: unknown): string {
+  return formatHttpApiEndpointCatalogSuffix(
+    typeof endpoint === 'object' && endpoint !== null && !Array.isArray(endpoint)
+      ? (endpoint as Parameters<typeof formatHttpApiEndpointCatalogSuffix>[0])
+      : {},
+  )
 }
 
 /**
@@ -3601,6 +3591,16 @@ async function loadHttpApiConnectorsForGate(
             name?: string
             risk?: string
             access?: string
+            queryParams?: Array<{ name: string; required: boolean; type?: string; description?: string }>
+            pathParams?: Array<{ name: string; required: boolean; type?: string; description?: string }>
+            headerParams?: Array<{ name: string; required: boolean }>
+            parameters?: Array<{
+              name?: string
+              in?: string
+              required?: boolean
+              type?: string
+              description?: string
+            }>
           }>
           proposedTools?: Array<{
             method?: string
@@ -3609,6 +3609,13 @@ async function loadHttpApiConnectorsForGate(
             name?: string
             risk?: string
             access?: string
+            parameters?: Array<{
+              name?: string
+              in?: string
+              required?: boolean
+              type?: string
+              description?: string
+            }>
           }>
         })
 
@@ -3666,8 +3673,8 @@ async function loadHttpApiConnectorsForGate(
             ? ' — NEM HÍVHATÓ (nincs írásjog)'
             : ''
         const desc = endpointDescription ? ` — ${endpointDescription}` : ''
-        const headers = callerHeaderHint(e)
-        lines.push(`- ${method} ${e.path ?? ''}${riskHint}${desc}${headers}${unavailable}`)
+        const catalogSuffix = endpointCatalogSuffix(e)
+        lines.push(`- ${method} ${e.path ?? ''}${riskHint}${desc}${catalogSuffix}${unavailable}`)
       }
       if (config.restrictToEndpoints === true) {
         lines.push(
@@ -3692,7 +3699,7 @@ async function loadHttpApiConnectorsForGate(
     spec: [
       'A hozzád rendelt külső REST API(k) — olvasáshoz http_api_get (egy oldal) vagy http_api_get_all (lapozott lista egy hívásban), íráshoz (csak ha a connector Hozzáférés sora „olvasás + írás”) http_api_request eszközt hívj. Ha több API-kapcsolat van, add meg a megfelelő connectorId-t. A path a Base URL-hez relatív; az API-kulcsot és a konfigurált fejléceket a rendszer injektálja, neked nem kell megadnod.',
       'A headers mezőben kizárólag az adott endpoint „Hívói fejlécek” listájában szereplő értékeket add meg. Ne találj ki auth-, trace- vagy idempotencia-fejlécet: amit a lista nem kér, azt a platform kezeli vagy tiltja.',
-      'Hatékony lekérdezés: lapozott nagy listához http_api_get_all (ne page=1,2,3…). Ha van kereső/query paraméter (search, q, filter), használd. Először a releváns egyedi rekordot keresd.',
+      buildHttpApiEfficiencyGuidance(),
       ...blocks,
     ].join('\n\n'),
   }

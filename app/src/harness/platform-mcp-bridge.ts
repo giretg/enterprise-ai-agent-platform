@@ -739,7 +739,7 @@ export const PLATFORM_BROKER_TOOLS = [
   {
     name: 'http_api_get',
     description:
-      'Read (GET) from the assigned REST API. path is relative; headers may contain only names declared by the approved snapshot. The API key is injected by the platform.',
+      'Read (GET) from the assigned REST API. path is relative; query must use only documented catalog params (do not invent field names). For large paginated lists prefer http_api_get_all. Headers may contain only names declared by the approved snapshot. The API key is injected by the platform.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -753,7 +753,7 @@ export const PLATFORM_BROKER_TOOLS = [
   {
     name: 'http_api_get_all',
     description:
-      'Paginated GET list in one call: server walks page/pageSize, merges record arrays, returns one result. Use for large lists instead of repeated http_api_get.',
+      'Paginated GET list in one call: server walks page/pageSize, merges record arrays, returns one result. Prefer this for large lists instead of repeated http_api_get. After a large archive, use tool_result_extract — do not chunk file_read.',
     inputSchema: {
       type: 'object',
       properties: {

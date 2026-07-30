@@ -31,6 +31,8 @@ export type HttpApiPaginatePageResult = {
   ok: boolean
   status: number
   body: unknown
+  /** 4xx / oversized soft hint a kliensről — failure errorbe kerül. */
+  hint?: string
 }
 
 export type HttpApiPaginateOutcome = {
@@ -144,9 +146,10 @@ export async function paginateHttpApiGet(input: {
     lastStatus = result.status
 
     if (!result.ok) {
+      const hint = typeof result.hint === 'string' && result.hint.trim() ? ` — ${result.hint.trim()}` : ''
       return {
         ok: false,
-        error: `HTTP ${result.status} a(z) ${page}. oldalon — a lapozás megszakadt`,
+        error: `HTTP ${result.status} a(z) ${page}. oldalon — a lapozás megszakadt${hint}`,
         pageCount,
         items,
         lastStatus,

@@ -219,12 +219,16 @@ export function formatLargeToolResultPreview(input: {
 }): string {
   // Az első „elmentve:" útvonal a rendszer-archívum — a tömörítés pointere erre épül.
   // A hétköznapi workspacePath a modellnek szóló elsődleges feldolgozási cél.
+  const shapeHint = arrayPathHintFromPreview(input.previewText)
   return [
     `[Nagy tool-eredmény] A teljes eredmény elmentve: ${input.archivePath}`,
     `Munkaterületi másolat (ezt használd tovább): ${input.workspacePath}`,
     `Méret: ${input.chars} karakter, ${input.bytes} bájt. Az alábbi csak előnézet.`,
     `NE olvasd vissza a teljes tartalmat a kontextusba (ne file_read chunkolás). A további feldolgozáshoz:`,
     `1) tool_result_extract — path="${input.archivePath}" VAGY path="${input.workspacePath}", fields=[…], outputPath="…" — mezőkivonat fájlba;`,
+    shapeHint
+      ? `   arrayPath tipp: ${shapeHint}`
+      : '   ha a gyökér nem tömb: add meg az arrayPath-ot (pl. data / items / body.data)',
     `2) két lista egyeztetéséhez: reconcile_records (vagy tulajdoni_lap_egyeztetes) — NE párosíts a modellben;`,
     `3) Excelhez: xlsx_append_rows a kivonat/egyeztető eredményből.`,
     'A teljes lista / pontos számítás a munkaterületi fájlból készüljön, ne a promptból.',
@@ -232,6 +236,51 @@ export function formatLargeToolResultPreview(input: {
     input.previewText,
     '--- előnézet vége ---',
   ].join('\n')
+}
+
+/** Preview JSON-ból rövid arrayPath tipp (extract elsőre sikerüljön). */
+function arrayPathHintFromPreview(previewText: string): string | null {
+  const parsed = tryParsePreviewJson(previewText)
+  if (parsed !== undefined) return firstArrayPath(parsed)
+
+  // Csonka előnézet (TOOL_RESULT_PREVIEW_CHARS): parse nélkül, gyakori `"key":[` minták.
+  const preferred = ['data', 'items', 'results', 'records', 'rows', 'ownerships']
+  const bodyIdx = previewText.indexOf('"body"')
+  for (const key of preferred) {
+    const keyIdx = previewText.indexOf(`"${key}":[`)
+    if (keyIdx < 0) continue
+    if (bodyIdx >= 0 && keyIdx > bodyIdx) return `body.${key}`
+    return key
+  }
+  if (previewText.includes('"body":[')) return 'body'
+  return null
+}
+
+function tryParsePreviewJson(previewText: string): unknown | undefined {
+  try {
+    return JSON.parse(previewText) as unknown
+  } catch {
+    return undefined
+  }
+}
+
+/** Struktúra-járás — nem a humán hint-string regexelése. */
+function firstArrayPath(value: unknown, prefix = ''): string | null {
+  if (Array.isArray(value)) return prefix || '(gyökér tömb — arrayPath nem kell)'
+  if (!value || typeof value !== 'object') return null
+  const obj = value as Record<string, unknown>
+  const preferred = ['data', 'items', 'results', 'records', 'rows', 'ownerships', 'body']
+  for (const key of preferred) {
+    if (!(key in obj)) continue
+    const path = prefix ? `${prefix}.${key}` : key
+    const found = firstArrayPath(obj[key], path)
+    if (found) return found
+  }
+  for (const [key, child] of Object.entries(obj)) {
+    if (preferred.includes(key)) continue
+    if (Array.isArray(child)) return prefix ? `${prefix}.${key}` : key
+  }
+  return null
 }
 
 /** Hétköznapi (látható) másolat útvonala az archívum basename-jéből. */

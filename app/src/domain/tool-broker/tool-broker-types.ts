@@ -443,7 +443,13 @@ export type HttpApiRequestArgs = {
   headers?: HttpApiHeaders
   body?: unknown
 }
-export type HttpApiCallResult = { status: number; ok: boolean; body: unknown }
+export type HttpApiCallResult = {
+  status: number
+  ok: boolean
+  body: unknown
+  hint?: string
+  truncated?: boolean
+}
 export type HttpApiGetAllResult = {
   ok: boolean
   path: string

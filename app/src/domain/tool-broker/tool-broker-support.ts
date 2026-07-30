@@ -852,7 +852,12 @@ export function resultMeta(result: ToolExecutionResult): Record<string, unknown>
     }
   }
   if ('status' in result && 'ok' in result && 'body' in result) {
-    return { status: result.status, ok: result.ok }
+    return {
+      status: result.status,
+      ok: result.ok,
+      ...('truncated' in result && result.truncated ? { truncated: true } : {}),
+      ...('hint' in result && typeof result.hint === 'string' ? { hasHint: true } : {}),
+    }
   }
 
   if ('repoPath' in result && 'commitSha' in result) {

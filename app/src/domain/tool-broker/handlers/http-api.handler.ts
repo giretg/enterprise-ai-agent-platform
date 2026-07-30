@@ -62,7 +62,7 @@ export const httpApiHandler: ToolHandler = {
             authorization.agentSecretAlias,
             delegatedAccessToken,
           )
-          return { ok: page.ok, status: page.status, body: page.body }
+          return { ok: page.ok, status: page.status, body: page.body, hint: page.hint }
         },
       })
       if (!outcome.ok) {
