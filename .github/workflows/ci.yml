@@ -95,6 +95,7 @@ jobs:
           npm run test:connector-template
           npm run test:provisioning
           npm run test:connector-secret-alias-policy
+          npm run test:connector-api-key-rotate
           npm run test:file-search-safe
           npm run test:channel-linking
           npm run test:channel-turn

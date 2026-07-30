@@ -95,6 +95,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'connector.self_update.source.approve',
   'connector.self_update.trust.approve',
   'connector.self_update.policy.update',
+  'connector.self_update.api_key.rotate',
   'connector.self_update.sync.failed',
   'connector.self_update.sync.no_change',
   'connector.self_update.sync.proposed',

@@ -14,6 +14,7 @@ import {
   setTenantSelfUpdatingAutoApprove,
   syncSelfUpdatingConnector,
   trustSelfUpdatingPartner,
+  updateSelfUpdatingConnectorApiKey,
 } from '@/app/actions/self-updating-connectors'
 
 type UsageRef = { type: string; name: string; id: string }
@@ -299,6 +300,7 @@ function ConnectorCard({ row, pending, run, onSync }: {
   onSync: (connectorId: string) => void
 }) {
   const [detailsOpen, setDetailsOpen] = useState(false)
+  const [newApiKey, setNewApiKey] = useState('')
   const proposal = row.versions.find((version) => version.status === 'proposed')
   const active = row.versions.find((version) => version.id === row.activeSpecVersionId)
   const detailsCapabilities = proposal?.capabilities?.length
@@ -343,6 +345,44 @@ function ConnectorCard({ row, pending, run, onSync }: {
           />
         </div>
       ) : null}
+
+      <div className="mt-4 space-y-2 border-t border-ink/10 pt-3">
+        <h4 className="text-sm font-semibold">Hozzáférési kulcs cseréje</h4>
+        <p className="text-xs text-ink-soft">
+          Az új kulcs azonnal felülírja a régit a titoktárolóban, és a következő hívástól ez lesz érvényben.
+          A képességlista és a verziók nem változnak. Mentés után a „Frissítés keresése” gombbal ellenőrizhető,
+          hogy a partner elfogadja-e az új kulcsot.
+        </p>
+        <div className="flex flex-wrap items-end gap-2">
+          <label className="min-w-[16rem] flex-1 text-xs">
+            <span className="mb-1 block font-semibold">Új hozzáférési kulcs</span>
+            <input
+              type="password"
+              value={newApiKey}
+              onChange={(e) => setNewApiKey(e.target.value)}
+              disabled={pending}
+              autoComplete="new-password"
+              placeholder="A partnertől kapott új kulcs"
+              className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2 text-sm disabled:opacity-50"
+            />
+          </label>
+          <button
+            type="button"
+            disabled={pending || !newApiKey.trim()}
+            className="rounded-md border border-ink/20 px-3 py-2 text-xs font-semibold disabled:opacity-50"
+            onClick={() => {
+              const apiKey = newApiKey.trim()
+              run(async () => {
+                const result = await updateSelfUpdatingConnectorApiKey({ connectorId: row.id, apiKey })
+                if (result.success) setNewApiKey('')
+                return result
+              }, 'A hozzáférési kulcs frissült.')
+            }}
+          >
+            Kulcs mentése
+          </button>
+        </div>
+      </div>
 
       <label className="mt-4 flex items-start gap-2 border-t border-ink/10 pt-3 text-xs">
         <input type="checkbox" checked={row.autoApproveEnabled} disabled={pending} onChange={(e) => run(() => setSelfUpdatingAutoApprove({ connectorId: row.id, enabled: e.target.checked }), 'A kapcsolat automatikus átvételi szabálya frissült.')} />

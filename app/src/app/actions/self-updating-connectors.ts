@@ -22,11 +22,13 @@ import {
 
 const connectorIdSchema = z.object({ connectorId: z.string().uuid() })
 const versionSchema = connectorIdSchema.extend({ versionId: z.string().uuid() })
+const apiKeyField = z.string().trim().min(1).max(10_000)
 const createSchema = z.object({
   name: z.string().trim().min(1).max(120),
-  apiKey: z.string().trim().min(1).max(10_000),
+  apiKey: apiKeyField,
   specUrl: z.string().url().refine((value) => new URL(value).protocol === 'https:', 'Csak https link használható.'),
 })
+const rotateApiKeySchema = connectorIdSchema.extend({ apiKey: apiKeyField })
 
 function actionError(error: unknown, fallback: string) {
   if (error instanceof SelfUpdateError) return fail(error.message)
@@ -211,4 +213,71 @@ export async function setTenantSelfUpdatingAutoApprove(input: unknown) {
     }, { timeout: 60_000 })
     return ok({ enabled })
   } catch (error) { return actionError(error, 'Nem sikerült módosítani a tenant beállítását.') }
+}
+
+/**
+ * A `secretAlias` FORMÁJA mehet az auditba, az ÉRTÉKE nem (egy `env:NÉV` alias a futó
+ * szolgáltatás konfigurációjára mutat — l. connector-secret-alias-policy).
+ */
+function secretAliasKind(alias: string | null): 'none' | 'connector_owned' | 'env' | 'secret_manager' | 'other' {
+  const value = alias?.trim()
+  if (!value) return 'none'
+  if (value.startsWith('secret-ref:')) return 'connector_owned'
+  if (value.startsWith('env:')) return 'env'
+  if (value.startsWith('secret-manager:')) return 'secret_manager'
+  return 'other'
+}
+
+/** Meglévő önfrissítő kapcsolat hozzáférési kulcsának cseréje (ugyanaz a secret-ref, mint létrehozáskor). */
+export async function updateSelfUpdatingConnectorApiKey(input: unknown) {
+  let apiKeySaved = false
+  try {
+    const ctx = await requireTenantRole('admin')
+    const parsed = rotateApiKeySchema.parse(input)
+    const connector = await prisma.connector.findFirst({
+      where: {
+        id: parsed.connectorId,
+        tenantId: ctx.activeTenantId,
+        connectorMode: 'self_updating',
+        // Forgalomból kivont (archived/blocked) kapcsolat nem kaphat friss, élő kulcsot:
+        // a Tool Broker sem oldja fel (tool-broker-authorizer `connector_not_active`).
+        lifecycleState: 'active',
+      },
+      select: { id: true, secretAlias: true },
+    })
+    if (!connector) return fail('Az önfrissítő kapcsolat nem található, vagy nincs aktív állapotban.')
+
+    const secretAlias = buildConnectorSecretRef(connector.id)
+    const aliasRepointed = connector.secretAlias !== secretAlias
+    // Előbb a titok kerül a saját slotba, utána vált át rá az alias: így egy félbeszakadt
+    // csere sosem hagy üres slotra mutató kapcsolatot.
+    await saveConnectorApiKey(connector.id, parsed.apiKey)
+    apiKeySaved = true
+
+    await prisma.$transaction(async (tx) => {
+      if (aliasRepointed) {
+        await tx.connector.update({ where: { id: connector.id }, data: { secretAlias } })
+      }
+      await appendAuditInTransaction(tx, {
+        actorType: 'human', actorId: ctx.user.id, agentVersion: null,
+        action: 'connector.self_update.api_key.rotate', targetType: 'connector', targetId: connector.id,
+        modelUsed: null, inputRef: null, outputRef: null, policyDecision: 'allowed',
+        // A puszta „kulcs cserélve" nem elég: az aliast a saját slotra átkötő csere leválasztja
+        // a kapcsolatot egy korábbi, tenantra engedélyezett külső titokról — ez külön nyom.
+        metadata: {
+          secret_alias_repointed: aliasRepointed,
+          previous_secret_alias_kind: secretAliasKind(connector.secretAlias),
+        },
+        tenantId: ctx.activeTenantId,
+      })
+    }, { timeout: 60_000 })
+    return ok({ connectorId: connector.id })
+  } catch (error) {
+    // A titok-tárolóba kiírt kulcs nem állítható vissza (a régit sosem olvassuk be). Ilyenkor
+    // NEM mondhatjuk, hogy nem történt csere: az admin újrapróbálna, és téves nyomon indulna.
+    if (apiKeySaved) {
+      return fail('Az új kulcs elmentve, de a naplózás nem sikerült — a csere audit-nyom nélkül maradt. Kérjük, jelezd az üzemeltetésnek.')
+    }
+    return actionError(error, 'Nem sikerült frissíteni a hozzáférési kulcsot.')
+  }
 }
