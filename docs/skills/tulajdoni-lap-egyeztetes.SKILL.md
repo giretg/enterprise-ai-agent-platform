@@ -4,7 +4,7 @@ description: Tulajdoni lap összevetése a saját tulajdonosi nyilvántartásunk
 max-wall-clock-ms: 900000
 max-tool-calls: 60
 preferred-mode: task
-allowed-tools: tulajdoni_lap_egyeztetes, tulajdoni_lap_parse, http_api_get, file_write, file_read
+allowed-tools: tulajdoni_lap_egyeztetes, tulajdoni_lap_parse, http_api_get, file_write, file_read, tool_result_extract, xlsx_append_rows
 ---
 
 # Mi a feladat
@@ -17,7 +17,7 @@ ellenőrzésre. Egy egyeztetés = egy tulajdoni lap = egy Excel fájl.
 
 **Ne írj vissza az adatbázisba.** Ez a skill kizárólag javaslatot állít elő. Az
 `http_api_request` (POST/PUT/PATCH/DELETE) eszközt ebben a feladatban ne
-használd, akkor sem, ha a felhasználó kéri — a javítást ember hagyja jóvá és
+használj, akkor sem, ha a felhasználó kéri — a javítást ember hagyja jóvá és
 hajtja végre. Ha közvetlen módosítást kérnek, mondd el, hogy a kimenet az
 egyeztető tábla, és kérdezd meg, továbbítsuk-e jóváhagyásra.
 
@@ -25,22 +25,52 @@ egyeztető tábla, és kérdezd meg, továbbítsuk-e jóváhagyásra.
 meg kérdezni, ha a lap ellenőrzése bukott, ha a nyilvántartás lekérdezése
 kétséges, vagy ha egy párosítás emberi döntést igényel.
 
-# A menet: három lépés, nem több
+**Ne gyűjts a kontextusba.** Nagy API-válasz / parse-eredmény SOHA ne kerüljön
+teljes egészében a promptba. Mentés a munkaterületre → kivonat / egyeztető
+eszköz → a modell csak a metaadatot és az összegzést látja.
 
-## 1. A nyilvántartás oldala
+# A menet: lapozás → azonnali kiírás → eldobás
+
+## 0. Checkpoint
+
+Minden lényeges lépés után frissítsd (vagy hozd létre) az
+`egyeztetes_progress.json` fájlt a munkaterületen:
+
+```json
+{
+  "hrsz": "043/15",
+  "nyilvantartasPath": "nyilvantartas.json",
+  "pagesFetched": 2,
+  "kimenet": "egyeztetes-043-15.xlsx",
+  "status": "nyilvantartas_partial"
+}
+```
+
+Ha a futás megszakad, a következő forduló EBBŐL indul — ne kezdd elölről.
+
+## 1. A nyilvántartás oldala — sok kis hívás, minden hívás után kiírás
 
 A tulajdonosi rekordokat az Ostoros Föld API-n keresztül éred el
-(`http_api_get`). A választ **mentsd le** a munkaterületre `file_write`-tal (pl.
-`nyilvantartas.json`) — így a következő lépés fájlból olvassa, és a több száz sor
-nem megy át fölöslegesen a szövegen.
+(`http_api_get`). **Ne próbálj mindent egy-két nagy hívásban összegyűjteni.**
+
+Minden oldal után azonnal:
+
+1. Ha a tool-eredmény nagy és archívumba került: `tool_result_extract` a
+   szükséges mezőkre (`nev`, `szuletesiEv`, `anyjaNeve`, `hanyad`, `cim`,
+   `azonosito`, `megjegyzes`) → pl. `nyilvantartas-page-N.json`.
+2. Illeszd / toldd a `nyilvantartas.json` munkaterületi fájlba (`file_write` /
+   összefűzés). A mezőnevek legyenek a fenti alakban.
+3. Frissítsd az `egyeztetes_progress.json`-t (`pagesFetched`).
+4. A teljes oldalt NE olvasd vissza `tool_result_read`-del a kontextusba.
 
 Ha a lekérdezés üres listát ad, az nem azt jelenti, hogy minden tulajdonos új.
 Előbb győződj meg róla, hogy a helyrajzi számot a végpont elvárt formátumában
 adtad át (pl. „43/15" vs „043/15" vs külön település és hrsz). Ha nem tudod
-eldönteni, kérdezz — ne tippelj: a rossz lekérdezésből az jönne ki, hogy az egész
-nyilvántartást újra kell rögzíteni.
+eldönteni, kérdezz — ne tippelj.
 
 ## 2. Az egyeztetés — EGY hívás
+
+Ha a `nyilvantartas.json` kész:
 
 ```
 tulajdoni_lap_egyeztetes({
@@ -52,17 +82,16 @@ tulajdoni_lap_egyeztetes({
 
 Ez a hívás elvégzi a lap kiolvasását, a párosítást és a kész munkafüzet
 megírását. **Ne bontsd szét**: ne lapozd végig a `tulajdoni_lap_parse`
-tulajdonos-nézetét, ne készíts köztes JSON-t a párosításról, és ne írj cellánként
-Excelt — az sokszoros költség, és rendszeresen kifut a forduló keretéből.
-
-A nyilvántartás sorainak mezői: `nev` (kötelező), `szuletesiEv`, `anyjaNeve`,
-`hanyad` (**tört**, pl. `3/4`), `cim`, `azonosito`, `megjegyzes`. Ha az API más
-néven adja ezeket, a `file_write` előtt képezd át erre az alakra.
+tulajdonos-nézetét a kontextusba, ne készíts köztes JSON-t a párosításról a
+promptban, és ne írj cellánként Excelt — az sokszoros költség, és rendszeresen
+kifut a forduló keretéből. A párosítás determinisztikus munka: a kód végzi.
 
 A `tulajdoni_lap_parse`-ot csak akkor hívd, ha az egyeztetésen túl kell
 magyaráznod valamit: pl. egy eltérés eredetét keresed a törölt bejegyzésekben
 (`csakHatalyos: false`, az `utalas` mezők adják a láncot), vagy a terhek
-részletét kérik.
+részletét kérik. Nagy parse-eredménynél is: extract / fájl, ne visszaolvasás.
+
+Frissítsd a checkpointot: `"status": "egyeztetes_done"`, `"kimenet": "…"`.
 
 ## 3. A válasz
 
@@ -119,7 +148,12 @@ Amit tudnod érdemes az eredményről:
 
 # Folytatás megszakadás után
 
-Ha a futás időkorlát vagy eszközkeret miatt leállt, **ne kezdd elölről**: nézd
-meg a munkaterület fájljait. Ha a `nyilvantartas.json` megvan, ne kérdezd le
-újra az API-t; ha az egyeztető Excel elkészült, ne futtasd újra az egyeztetést —
-csak a hiányzó lépést csináld meg (jellemzően a szöveges összefoglalót).
+Ha a futás időkorlát vagy eszközkeret miatt leállt, **ne kezdd elölről**: nyisd
+meg az `egyeztetes_progress.json`-t és a munkaterület fájljait.
+
+- Ha a `nyilvantartas.json` (vagy részei) megvannak: NE kérdezd le újra az API-t;
+  folytasd a hiányzó oldalaktól, vagy hívd az egyeztetést.
+- Ha az egyeztető Excel elkészült: ne futtasd újra az egyeztetést — csak a
+  hiányzó lépést csináld meg (jellemzően a szöveges összefoglalót).
+- A részeredmény a munkafüzetben / JSON-ban van; a kontextusban NEM kell
+  lennie a teljes adatnak.

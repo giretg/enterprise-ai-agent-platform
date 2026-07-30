@@ -480,6 +480,7 @@ async function main() {
       note: 'hosszú crm sor '.repeat(8),
     }))
     const archived: Array<{ path: string; content: string }> = []
+    const workspaceWrites = new Map<string, string>()
 
     const result = await runAgentToolLoop({
       gateway: fakeGateway(
@@ -502,16 +503,136 @@ async function main() {
         archived.push({ path: '.tool-results/01-http_api_get-crm-call.json', content })
         return { path: '.tool-results/01-http_api_get-crm-call.json', bytes: Buffer.byteLength(content) }
       },
+      writeWorkspaceFile: async (path, content) => {
+        workspaceWrites.set(path, content)
+        return { bytes: Buffer.byteLength(content) }
+      },
     })
 
     assert.equal(result.content, 'A teljes CRM eredményt feldolgoztam.')
     assert.equal(archived.length, 1)
     assert.match(archived[0].content, /Ügyfél 400/)
+    assert.ok(workspaceWrites.has('tool-outputs/01-http_api_get-crm-call.json'))
+    assert.match(workspaceWrites.get('tool-outputs/01-http_api_get-crm-call.json')!, /Ügyfél 400/)
     const toolMessage = gwCalls[1].messages.find((m) => m.role === 'tool')
     assert.ok(toolMessage)
     assert.match(toolMessage.content, /A teljes eredmény elmentve/)
-    assert.match(toolMessage.content, /tool_result_read/)
+    assert.match(toolMessage.content, /tool_result_extract/)
+    assert.match(toolMessage.content, /tool-outputs\//)
+    assert.doesNotMatch(toolMessage.content, /olvasd tovább a tool_result_read/)
     assert.ok(!toolMessage.content.includes('Ügyfél 400'))
+  })
+
+  await check('tool_result_extract: 300 sor × 3 mező egy hívásban, válasz < 2000 kar', async () => {
+    const gwCalls: GatewayCallArgs[] = []
+    const rows = Array.from({ length: 300 }, (_, i) => ({
+      id: i + 1,
+      nev: `Tulajdonos ${i + 1}`,
+      szuletesiEv: 1950 + (i % 50),
+      anyjaNeve: `Anyja ${i + 1}`,
+      zaj: 'x'.repeat(200),
+    }))
+    const archivePath = '.tool-results/01-http_api_get-page.json'
+    const archiveContent = JSON.stringify(rows)
+    const written = new Map<string, string>()
+
+    const result = await runAgentToolLoop({
+      gateway: fakeGateway(
+        [
+          {
+            toolCalls: [
+              {
+                id: 'extract-1',
+                name: 'tool_result_extract',
+                input: {
+                  path: archivePath,
+                  fields: ['nev', 'szuletesiEv', 'anyjaNeve'],
+                  outputPath: 'nyilvantartas-kivonat.json',
+                },
+              },
+            ],
+          },
+          { content: 'Kivonat kész.' },
+        ],
+        gwCalls,
+      ),
+      toolBroker: fakeToolBrokerResult([], {}),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-extract' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'nyerd ki a neveket' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: ['http_api_get'],
+      archiveLargeToolResult: async () => ({ path: archivePath, bytes: archiveContent.length }),
+      listWorkspaceFiles: async () => [archivePath],
+      readWorkspaceFile: async (path) => (path === archivePath ? archiveContent : null),
+      writeWorkspaceFile: async (path, content) => {
+        written.set(path, content)
+        return { bytes: Buffer.byteLength(content) }
+      },
+    })
+
+    assert.equal(result.content, 'Kivonat kész.')
+    assert.equal(written.size, 1)
+    const out = JSON.parse(written.get('nyilvantartas-kivonat.json')!)
+    assert.equal(out.length, 300)
+    assert.deepEqual(Object.keys(out[0]).sort(), ['anyjaNeve', 'nev', 'szuletesiEv'])
+    const toolMessage = gwCalls[1].messages.find((m) => m.role === 'tool')
+    assert.ok(toolMessage)
+    assert.ok(toolMessage.content.length < 2000, `összefoglaló túl hosszú: ${toolMessage.content.length}`)
+    assert.match(toolMessage.content, /300/)
+    assert.doesNotMatch(toolMessage.content, /Tulajdonos 50/)
+  })
+
+  await check('WP-3: folytatás-fordulóban a korábbi .tool-results archívum olvasható', async () => {
+    const gwCalls: GatewayCallArgs[] = []
+    const archivePath = '.tool-results/01-http_api_get-prev.json'
+    const archiveContent = JSON.stringify({ hello: 'from-previous-turn', pad: 'x'.repeat(100) })
+    let brokerHits = 0
+
+    const result = await runAgentToolLoop({
+      gateway: fakeGateway(
+        [
+          {
+            toolCalls: [
+              {
+                id: 'read-prev',
+                name: 'tool_result_read',
+                input: { path: archivePath, offset: 0, limit: 500 },
+              },
+            ],
+          },
+          { content: 'Megvan a korábbi eredmény.' },
+        ],
+        gwCalls,
+      ),
+      toolBroker: {
+        async invoke() {
+          brokerHits += 1
+          return { denied: false, trust: 'trusted', result: {} }
+        },
+      } as never,
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-hydrate' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'folytasd' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: ['http_api_get'],
+      archiveLargeToolResult: async () => ({ path: archivePath, bytes: archiveContent.length }),
+      listWorkspaceFiles: async () => [archivePath],
+      readWorkspaceFile: async (path) => (path === archivePath ? archiveContent : null),
+    })
+
+    assert.equal(result.content, 'Megvan a korábbi eredmény.')
+    assert.equal(brokerHits, 0, 'nem szabad újra letölteni a brokeren át')
+    const toolMessage = gwCalls[1].messages.find((m) => m.role === 'tool')
+    assert.ok(toolMessage)
+    assert.match(toolMessage.content, /from-previous-turn/)
+    assert.doesNotMatch(toolMessage.content, /nincs ilyen elmentett tool-eredmény/)
   })
 
   await check('task mód: max turn kimerülés explicit exhausted státuszt ad', async () => {

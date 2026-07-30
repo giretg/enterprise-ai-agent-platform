@@ -272,7 +272,8 @@ export function buildEvictedToolResultStub(input: {
   ]
   if (input.readableBack) {
     lines.push(
-      `Ha szükséged van rá, olvasd vissza a tool_result_read eszközzel: path="${input.path}", offset=0, limit=${Math.min(input.chars, input.readMaxLimit)} — NE futtasd újra az eredeti eszközt emiatt.`,
+      `Ha mezőkivonatra van szükséged, használd a tool_result_extract eszközt: path="${input.path}", fields=[…], outputPath="…" — a teljes tartalmat NE olvasd vissza a kontextusba.`,
+      `Szelet visszaolvasása (ritkán): tool_result_read path="${input.path}", offset=0, limit=${Math.min(input.chars, input.readMaxLimit)} — NE futtasd újra az eredeti eszközt emiatt.`,
     )
   } else {
     lines.push(

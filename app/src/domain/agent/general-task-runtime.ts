@@ -352,6 +352,30 @@ export class GeneralTaskRuntime {
         loadSkill,
         archiveLargeToolResult: (input) =>
           this.archiveLargeToolResult(wsTenant, ticket.id, input),
+        writeWorkspaceFile: async (path, content) => {
+          try {
+            const bytes = Buffer.from(content, 'utf8')
+            await this.workspaceStorage.write(wsTenant, ticket.id, path, bytes)
+            return { bytes: bytes.length }
+          } catch {
+            return null
+          }
+        },
+        listWorkspaceFiles: async () => {
+          try {
+            return await this.workspaceStorage.list(wsTenant, ticket.id)
+          } catch {
+            return []
+          }
+        },
+        readWorkspaceFile: async (path) => {
+          try {
+            const buf = await this.workspaceStorage.read(wsTenant, ticket.id, path)
+            return buf ? buf.toString('utf8') : null
+          } catch {
+            return null
+          }
+        },
         shouldCancel: () => {
           if (dbCancelRequested) return true
           void refreshCancel()

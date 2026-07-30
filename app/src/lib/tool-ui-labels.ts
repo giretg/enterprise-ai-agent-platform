@@ -227,6 +227,10 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
     label: 'Eszköz-eredmény olvasása',
     description: 'Korábbi eszközhívás archivált eredményének beolvasása.',
   },
+  tool_result_extract: {
+    label: 'Eszköz-eredmény kivonatolása',
+    description: 'Archivált eredményből mezőkivonat fájlba, a teljes tartalom nélkül.',
+  },
   load_skill: {
     label: 'Skill betöltése',
     description: 'Hozzárendelt skill promptjának betöltése a beszélgetésbe.',

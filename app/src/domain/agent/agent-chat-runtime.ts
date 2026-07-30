@@ -1448,6 +1448,24 @@ export class AgentChatRuntime {
           initialSkillRuntimeHints: slashResolved.runtimeHints,
           archiveLargeToolResult: (input) =>
             this.archiveLargeToolResult(tenantKey, conversationId, input),
+          writeWorkspaceFile: async (path, content) => {
+            try {
+              const bytes = Buffer.from(content, 'utf8')
+              await this.workspaceStorage.write(tenantKey, conversationId, path, bytes)
+              return { bytes: bytes.length }
+            } catch {
+              return null
+            }
+          },
+          listWorkspaceFiles: () => this.listWorkspaceFiles(tenantKey, conversationId),
+          readWorkspaceFile: async (path) => {
+            try {
+              const buf = await this.workspaceStorage.read(tenantKey, conversationId, path)
+              return buf ? buf.toString('utf8') : null
+            } catch {
+              return null
+            }
+          },
           shouldCancel: () => isCancelRequestedNow(),
           // Körönkénti életjel: ettől ismerhető fel kívülről az elhalt futás (D10).
           onTurnStart: async () => {

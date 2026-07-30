@@ -27,6 +27,13 @@ import {
   TOOL_RESULT_READ_TOOL_NAME,
   type ContextCompactionLimits,
 } from './context-compactor'
+import {
+  TOOL_RESULT_EXTRACT_TOOL_NAME,
+  buildExtractSummary,
+  extractToolResultRows,
+  formatLargeToolResultPreview,
+  workspaceCopyPathForArchive,
+} from './tool-result-extract'
 import { logger } from '@/lib/observability/logger'
 // issue #97 — egységes becsomagolás + következmény-kapu (mellékhatásos eszközök).
 import { envelopeToolResultForModel } from '@/domain/tool-broker/tool-result-envelope'
@@ -789,8 +796,24 @@ const TOOL_SCHEMAS: Record<ChatPlatformToolName, ToolSchema> = {
 const TOOL_RESULT_READ_DEFINITION: ToolDefinition = {
   name: TOOL_RESULT_READ,
   description:
-    'Korábban elmentett nagy tool-eredmény részletének visszaolvasása. Csak a rendszer által megadott path értékkel használd; offset karakter-alapú, limit karakterben értendő.',
+    'Korábban elmentett nagy tool-eredmény részletének visszaolvasása. Csak a rendszer által megadott path értékkel használd; offset karakter-alapú, limit karakterben értendő. Előnyben részesítsd a tool_result_extract-et, ha mezőkivonat kell.',
   inputSchema: objectSchema({ path: STR, offset: NUM, limit: NUM }, ['path']),
+}
+
+const TOOL_RESULT_EXTRACT = TOOL_RESULT_EXTRACT_TOOL_NAME
+const TOOL_RESULT_EXTRACT_DEFINITION: ToolDefinition = {
+  name: TOOL_RESULT_EXTRACT,
+  description:
+    'Nagy tool-eredményből mezőkivonat készítése a szerveren: a teljes tartalom NEM kerül a kontextusba. Add meg az archívum path-ját, a kinyerendő fields listát és az outputPath-ot; a válasz csak a sorok számát és néhány mintasort adja.',
+  inputSchema: objectSchema(
+    {
+      path: STR,
+      fields: { type: 'array', items: STR },
+      outputPath: STR,
+      arrayPath: STR,
+    },
+    ['path', 'fields', 'outputPath'],
+  ),
 }
 
 // ── Progresszív skill-betöltés (skill-catalog-spec.md §D7, WP-5) ────────────
@@ -1930,6 +1953,15 @@ export async function runAgentToolLoop(params: {
     maxToolCalls?: number
   }
   archiveLargeToolResult?: (input: LargeToolResultArchiveInput) => Promise<LargeToolResultArchive | null>
+  /**
+   * Workspace fájl írása (issue #179): hétköznapi másolat nagy eredményhez,
+   * illetve a `tool_result_extract` kimenete. Ha hiányzik, az extract hibázik.
+   */
+  writeWorkspaceFile?: (path: string, content: string) => Promise<{ bytes: number } | null>
+  /** Workspace fájllista — archívum-map hidratálásához forduló elején. */
+  listWorkspaceFiles?: () => Promise<string[]>
+  /** Workspace fájl olvasása — lusta betöltés a hidratált archívum-maphoz. */
+  readWorkspaceFile?: (path: string) => Promise<string | null>
   onActivity?: (event: ToolLoopActivityEvent) => void | Promise<void>
   /**
    * Kör-eleji horog. A chat-forduló ezen ír életjelet (heartbeat) a perzisztált
@@ -2064,14 +2096,83 @@ export async function runAgentToolLoop(params: {
   // issue #97 — ha a kapu legalább egyszer blokkolt mellékhatást, ne indítsunk
   // újabb tool-körös modellhívást (tokenégetés elkerülése); záró összefoglaló jön.
   let consequenceGateTriggered = false
-  const archivedToolResults = new Map<string, { content: string; bytes: number; toolName: string }>()
+  const archivedToolResults = new Map<
+    string,
+    { content: string | null; bytes: number; toolName: string }
+  >()
   const tools = [
     ...toToolDefinitions(allowedTools),
-    ...(params.archiveLargeToolResult ? [TOOL_RESULT_READ_DEFINITION] : []),
+    ...(params.archiveLargeToolResult
+      ? [TOOL_RESULT_READ_DEFINITION, TOOL_RESULT_EXTRACT_DEFINITION]
+      : []),
     ...(loadSkill ? [LOAD_SKILL_DEFINITION] : []),
   ]
   const emitActivity = async (event: ToolLoopActivityEvent) => {
     await params.onActivity?.(event)
+  }
+
+  // WP-3: fordulók közötti archívum-nyilvántartás. A `.tool-results/` (és a
+  // látható `tool-outputs/` másolat) a workspace-en megmarad, de a map eddig
+  // futásonként üresen indult — ezért a folytatás újra letöltötte ugyanazt.
+  // Itt csak az útvonalakat vesszük fel; a tartalom lusta betöltéssel jön.
+  if (params.listWorkspaceFiles) {
+    try {
+      const paths = await params.listWorkspaceFiles()
+      for (const path of paths) {
+        if (!path.startsWith('.tool-results/') && !path.startsWith('tool-outputs/')) continue
+        if (archivedToolResults.has(path)) continue
+        const base = path.split('/').pop() ?? 'tool-result'
+        // Basename minták: `01-http_api_get-crm-call.json` vagy `http_api_get-call-0.json`
+        const withoutExt = base.replace(/\.[^.]+$/, '')
+        const withoutTurn = withoutExt.replace(/^\d+-/, '')
+        const toolName = withoutTurn.replace(/-[^-]+$/, '') || 'archived'
+        archivedToolResults.set(path, { content: null, bytes: 0, toolName })
+      }
+    } catch (error) {
+      logger.warn({ error }, 'agent.tool_loop.archive_hydration_failed')
+    }
+  }
+
+  const rememberArchived = (
+    path: string,
+    entry: { content: string; bytes: number; toolName: string },
+  ) => {
+    archivedToolResults.set(path, entry)
+  }
+
+  const loadArchivedContent = async (
+    path: string,
+  ): Promise<{ content: string; bytes: number; toolName: string } | null> => {
+    const entry = archivedToolResults.get(path)
+    if (!entry) return null
+    if (entry.content != null) {
+      return { content: entry.content, bytes: entry.bytes, toolName: entry.toolName }
+    }
+    if (!params.readWorkspaceFile) return null
+    try {
+      const content = await params.readWorkspaceFile(path)
+      if (content == null) {
+        archivedToolResults.delete(path)
+        return null
+      }
+      const loaded = {
+        content,
+        bytes: Buffer.byteLength(content, 'utf8'),
+        toolName: entry.toolName,
+      }
+      archivedToolResults.set(path, loaded)
+      return loaded
+    } catch (error) {
+      logger.warn({ path, error }, 'agent.tool_loop.archive_lazy_load_failed')
+      return null
+    }
+  }
+
+  const isSafeWorkspaceRelativePath = (path: string): boolean => {
+    if (!path || path.includes('\0')) return false
+    if (path.startsWith('/') || /^[a-zA-Z]:[\\/]/.test(path)) return false
+    const parts = path.split(/[/\\]/)
+    return parts.every((part) => part !== '..' && part !== '')
   }
 
   // ── Kontextus-tömörítés (hosszú futások token-költsége) ────────────────────
@@ -2457,7 +2558,7 @@ export async function runAgentToolLoop(params: {
         turnToolCallsIssued += 1
         const path = typeof call.input.path === 'string' ? call.input.path : ''
         const readSourceKey = toolCallSourceKey(call.name, call.input) ?? `${call.name}:path:${path}`
-        const archived = archivedToolResults.get(path)
+        const archived = path ? await loadArchivedContent(path) : null
         const offset = clamp(numArg(call.input, 'offset') ?? 0, 0, archived?.content.length ?? 0)
         const limit = clamp(
           numArg(call.input, 'limit') ?? TOOL_RESULT_READ_DEFAULT_LIMIT,
@@ -2473,7 +2574,7 @@ export async function runAgentToolLoop(params: {
           if (turnReadBackChars >= perTurnBudget) {
             await skipToolCall(
               call,
-              `[LIMIT] Egy körben legfeljebb ${perTurnBudget} karakter olvasható vissza az archívumból, és ez a keret betelt. NE olvass tovább ebben a körben — amit eddig láttál, abból írd ki a szükséges kivonatot a munkaterületre (file_write, xlsx_append_rows), és a következő lépésben onnan dolgozz.`,
+              `[LIMIT] Egy körben legfeljebb ${perTurnBudget} karakter olvasható vissza az archívumból, és ez a keret betelt. NE olvass tovább ebben a körben — amit eddig láttál, abból írd ki a szükséges kivonatot a munkaterületre (tool_result_extract, file_write, xlsx_append_rows), és a következő lépésben onnan dolgozz.`,
               `kör-keret betelt (${perTurnBudget} karakter)`,
             )
             continue
@@ -2488,7 +2589,7 @@ export async function runAgentToolLoop(params: {
           if (readSoFar >= pathBudget) {
             await skipToolCall(
               call,
-              `[LOOP-GUARD] Ezt az archívumot (${path}) már végigolvastad ebben a futásban (${readSoFar} karakter, a teljes tartalom ${archived.content.length} karakter). Az újraolvasás nem hoz új információt. Írd ki a szükséges kivonatot a munkaterületre (file_write, xlsx_append_rows), és onnan dolgozz tovább — vagy foglald össze, amit eddig megtudtál.`,
+              `[LOOP-GUARD] Ezt az archívumot (${path}) már végigolvastad ebben a futásban (${readSoFar} karakter, a teljes tartalom ${archived.content.length} karakter). Az újraolvasás nem hoz új információt. Írd ki a szükséges kivonatot a munkaterületre (tool_result_extract, file_write, xlsx_append_rows), és onnan dolgozz tovább — vagy foglald össze, amit eddig megtudtál.`,
               'archívum már végigolvasva — kimaradt',
             )
             continue
@@ -2502,7 +2603,7 @@ export async function runAgentToolLoop(params: {
         if (readRepeatCount > REPEAT_LIMIT) {
           await skipToolCall(
             call,
-            `[LOOP-GUARD] Ugyanezt a szeletet (${path}, offset=${offset}, limit=${limit}) már ${readRepeatCount - 1}x visszaolvastad, az eredmény nem változott. Ne ismételd — írd ki a szükséges kivonatot a munkaterületre, vagy foglald össze amit eddig megtudtál.`,
+            `[LOOP-GUARD] Ugyanezt a szeletet (${path}, offset=${offset}, limit=${limit}) már ${readRepeatCount - 1}x visszaolvastad, az eredmény nem változott. Ne ismételd — írd ki a szükséges kivonatot a munkaterületre (tool_result_extract), vagy foglald össze amit eddig megtudtál.`,
             'ismételt visszaolvasás — kimaradt',
           )
           continue
@@ -2549,6 +2650,143 @@ export async function runAgentToolLoop(params: {
           detail: archived ? `${chunk.length} karakter visszaolvasva` : 'archívum nem található',
           status: archived ? 'done' : 'error',
           archivePath: path || undefined,
+        })
+        continue
+      }
+
+      if (call.name === TOOL_RESULT_EXTRACT) {
+        turnToolCallsIssued += 1
+        const path = strArg(call.input, 'path')
+        const outputPath = strArg(call.input, 'outputPath')
+        const arrayPath = strArg(call.input, 'arrayPath') || undefined
+        const fieldsRaw = call.input.fields
+        const fields = Array.isArray(fieldsRaw)
+          ? fieldsRaw.filter((f): f is string => typeof f === 'string' && f.trim().length > 0)
+          : []
+
+        await emitActivity({
+          id: `tool-${call.id}`,
+          kind: 'tool',
+          title: TOOL_RESULT_EXTRACT,
+          detail: path ? shortText(`${path} → ${outputPath}`, 90) : undefined,
+          status: 'running',
+        })
+
+        toolCallCount += 1
+
+        if (!path || fields.length === 0 || !outputPath) {
+          pushToolResult(
+            call,
+            'HIBA: path, fields (nem üres lista) és outputPath kötelező.',
+            'barren',
+          )
+          await emitActivity({
+            id: `tool-${call.id}`,
+            kind: 'tool',
+            title: TOOL_RESULT_EXTRACT,
+            detail: 'hiányzó argumentum',
+            status: 'error',
+          })
+          continue
+        }
+
+        if (!isSafeWorkspaceRelativePath(outputPath)) {
+          pushToolResult(
+            call,
+            `HIBA: az outputPath nem biztonságos relatív útvonal: ${outputPath}`,
+            'barren',
+          )
+          await emitActivity({
+            id: `tool-${call.id}`,
+            kind: 'tool',
+            title: TOOL_RESULT_EXTRACT,
+            detail: 'nem biztonságos outputPath',
+            status: 'error',
+          })
+          continue
+        }
+
+        if (!params.writeWorkspaceFile) {
+          pushToolResult(
+            call,
+            'HIBA: a tool_result_extract ebben a futásban nem tud fájlt írni (nincs workspace író).',
+            'barren',
+          )
+          await emitActivity({
+            id: `tool-${call.id}`,
+            kind: 'tool',
+            title: TOOL_RESULT_EXTRACT,
+            detail: 'nincs workspace író',
+            status: 'error',
+          })
+          continue
+        }
+
+        const archived = await loadArchivedContent(path)
+        if (!archived) {
+          pushToolResult(
+            call,
+            `HIBA: nincs ilyen elmentett tool-eredmény: ${path}. Ellenőrizd a path-ot, vagy futtasd újra az eredeti eszközt és mentsd a munkaterületre.`,
+            'barren',
+          )
+          await emitActivity({
+            id: `tool-${call.id}`,
+            kind: 'tool',
+            title: TOOL_RESULT_EXTRACT,
+            detail: 'archívum nem található',
+            status: 'error',
+            archivePath: path,
+          })
+          continue
+        }
+
+        const extracted = extractToolResultRows(archived.content, { fields, arrayPath })
+        if (!extracted.ok) {
+          pushToolResult(call, `HIBA: ${extracted.error}`, 'barren')
+          await emitActivity({
+            id: `tool-${call.id}`,
+            kind: 'tool',
+            title: TOOL_RESULT_EXTRACT,
+            detail: extracted.error,
+            status: 'error',
+            archivePath: path,
+          })
+          continue
+        }
+
+        const outContent = `${JSON.stringify(extracted.rows, null, 2)}\n`
+        const written = await params.writeWorkspaceFile(outputPath, outContent)
+        if (!written) {
+          pushToolResult(
+            call,
+            `HIBA: a kivonat fájlba írása sikertelen: ${outputPath}`,
+            'barren',
+          )
+          await emitActivity({
+            id: `tool-${call.id}`,
+            kind: 'tool',
+            title: TOOL_RESULT_EXTRACT,
+            detail: 'írás sikertelen',
+            status: 'error',
+          })
+          continue
+        }
+
+        const summary = buildExtractSummary({
+          outputPath,
+          fields,
+          rowCount: extracted.rowCount,
+          sampleRows: extracted.rows.slice(0, 3),
+          bytes: written.bytes,
+        })
+        pushToolResult(call, summary, 'new', { fingerprintContent: `${outputPath}:${extracted.rowCount}` })
+        await emitActivity({
+          id: `tool-${call.id}`,
+          kind: 'tool',
+          title: TOOL_RESULT_EXTRACT,
+          detail: `${extracted.rowCount} sor → ${outputPath}`,
+          status: 'done',
+          archivePath: path,
         })
         continue
       }
@@ -2821,11 +3059,29 @@ export async function runAgentToolLoop(params: {
             : null
 
           if (archive) {
-            archivedToolResults.set(archive.path, {
+            rememberArchived(archive.path, {
               content: toolContent,
               bytes: archive.bytes,
               toolName: call.name,
             })
+            const workspacePath = workspaceCopyPathForArchive(archive.path)
+            if (params.writeWorkspaceFile && workspacePath !== archive.path) {
+              try {
+                const copy = await params.writeWorkspaceFile(workspacePath, toolContent)
+                if (copy) {
+                  rememberArchived(workspacePath, {
+                    content: toolContent,
+                    bytes: copy.bytes,
+                    toolName: call.name,
+                  })
+                }
+              } catch (error) {
+                logger.warn(
+                  { path: workspacePath, error },
+                  'agent.tool_loop.workspace_copy_failed',
+                )
+              }
+            }
             await emitActivity({
               id: `tool-${call.id}`,
               kind: 'tool',
@@ -2835,16 +3091,13 @@ export async function runAgentToolLoop(params: {
               archivePath: archive.path,
             })
             const preview = toolContent.slice(0, TOOL_RESULT_PREVIEW_CHARS)
-            const remaining = toolContent.length - preview.length
-            const remainingLimit = Math.min(remaining, TOOL_RESULT_READ_MAX_LIMIT)
-            toolContent = [
-              `[Nagy tool-eredmény] A teljes eredmény elmentve: ${archive.path}`,
-              `Méret: ${toolContent.length} karakter, ${archive.bytes} bájt. Az alábbi csak előnézet.`,
-              `Ha a felhasználó teljes listát, pontos számítást vagy részletes elemzést kért, olvasd tovább a tool_result_read eszközzel: path="${archive.path}", offset=${preview.length}, limit=${remainingLimit} (a hátralévő ${remaining} karakter ${remaining <= TOOL_RESULT_READ_MAX_LIMIT ? 'egyben' : `az engedélyezett max (${TOOL_RESULT_READ_MAX_LIMIT}) miatt több hívásban`} olvasható vissza).`,
-              '--- előnézet ---',
-              preview,
-              '--- előnézet vége ---',
-            ].join('\n')
+            toolContent = formatLargeToolResultPreview({
+              archivePath: archive.path,
+              workspacePath,
+              chars: toolContent.length,
+              bytes: archive.bytes,
+              previewText: preview,
+            })
           } else {
             toolContent =
               toolContent.slice(0, TOOL_RESULT_INLINE_LIMIT) +
