@@ -317,6 +317,57 @@ async function main() {
     assert.equal(result.allowed, true, 'soft cap nem blokkolhat')
   })
 
+  await check('DB-5b: agent soft warning NEM engedi át a kimerült tenant hard capet', async () => {
+    // Agent soft küszöb aktív (850/1000), tenant hard cap viszont már kimerült (100/100).
+    // A soft warning korábban early-returnnal átengedte a hívást.
+    const modelCalls = makeModelCalls({
+      [AGENT_1]: { calls: 850, tokens: 0 },
+      [AGENT_2]: { calls: 0, tokens: 0 },
+    })
+    // Tenant összesen: getUsageForTenant visszaadja az összes agent összegét a makeModelCalls-ból.
+    // Állítsuk a tenant usage-t 100-ra a callLimit-hez: csak AGENT_1 850-et ad — ezért
+    // külön mock kell a tenant összeghez.
+    const totalTenant = { calls: 100, tokens: 0 }
+    const repo = makeModelCalls({ [AGENT_1]: { calls: 850, tokens: 0 } })
+    repo.getUsageForTenant = async () => totalTenant
+    const engine = new BudgetEngine(
+      makeBudgets([
+        budget({
+          scope: 'agent',
+          scopeRef: AGENT_1,
+          callLimit: 1000,
+          softThreshold: 800 as never,
+          hardCap: true,
+        }),
+        budget({ scope: 'tenant', callLimit: 100, hardCap: true }),
+      ]),
+      repo,
+    )
+    const result = await engine.check({ tenantId: TENANT_A, agentId: AGENT_1 })
+    assert.equal(result.allowed, false, 'a tenant hard capnek blokkolnia kell a soft warning ellenére')
+    if (!result.allowed) assert.match(result.reason, /100\/100/)
+  })
+
+  await check('DB-5c: soft warning megmarad, ha egyik hard cap sem sérül', async () => {
+    const modelCalls = makeModelCalls({ [AGENT_1]: { calls: 850, tokens: 0 } })
+    const engine = new BudgetEngine(
+      makeBudgets([
+        budget({
+          scope: 'agent',
+          scopeRef: AGENT_1,
+          callLimit: 1000,
+          softThreshold: 800 as never,
+          hardCap: true,
+        }),
+        budget({ scope: 'tenant', callLimit: 10_000, hardCap: true }),
+      ]),
+      modelCalls,
+    )
+    const result = await engine.check({ tenantId: TENANT_A, agentId: AGENT_1 })
+    assert.equal(result.allowed, true)
+    assert.ok(result.allowed && result.softWarning, 'soft warning várható')
+  })
+
   // ── DB-6..DB-7: dispatcher-kapu ──────────────────────────────────────────
   await check('DB-6: egyetlen keret sincs → env-mentsvár dönt (nincs keret nélküli állapot)', async () => {
     const { dispatcher, launched } = makeDispatcher({
