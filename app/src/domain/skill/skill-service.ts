@@ -1,5 +1,6 @@
 import type { Prisma, Skill, SkillCatalogScope, SkillRiskTier, SkillSourceType } from '@prisma/client'
 import type {
+  AgentRepository,
   AuditRepository,
   AgentSkillMigration,
   ConversationRepository,
@@ -7,6 +8,7 @@ import type {
   SkillWithVersions,
   ToolBrokerRepository,
 } from '@/repositories/interfaces'
+import { assertAgentTenantReachable } from '@/lib/agent-tenant-access'
 import {
   conversationMessagesToTurns,
   deriveRequiresFromToolCalls,
@@ -86,7 +88,24 @@ export class SkillService {
     private audit: AuditRepository,
     private toolBroker: ToolBrokerRepository,
     private conversations?: ConversationRepository,
+    private agents?: Pick<AgentRepository, 'findById'>,
   ) {}
+
+  /**
+   * Agent-tenant kapu a hozzárendelő műveletekhez: idegen tenant agentjére
+   * skill nem írható/olvasható felderítési orákulum nélkül (fail-closed).
+   */
+  private async requireReachableAgent(
+    agentId: string,
+    actorTenantId: string | null,
+  ): Promise<void> {
+    if (!this.agents) {
+      throw new Error('SkillService: agent repository not configured')
+    }
+    const agent = await this.agents.findById(agentId)
+    if (!agent) throw new SkillAccessError('Agent not found')
+    assertAgentTenantReachable(agent, actorTenantId)
+  }
 
   // ── Olvasás (fail-closed scope) ───────────────────────────────────────────
 
@@ -672,6 +691,7 @@ export class SkillService {
     skillVersionId: string
     actor: ActorContext
   }): Promise<void> {
+    await this.requireReachableAgent(input.agentId, input.actor.actorTenantId)
     const target = await this.skills.findVersionById(input.skillVersionId)
     if (!target) throw new SkillAccessError('Skill version not found')
     // Csak olvasható skill rendelhető hozzá (global vagy saját tenant).
@@ -734,6 +754,7 @@ export class SkillService {
     skillVersionId: string
     actor: ActorContext
   }): Promise<void> {
+    await this.requireReachableAgent(input.agentId, input.actor.actorTenantId)
     await this.skills.unassign(input.agentId, input.skillVersionId)
 
     await this.audit.append({
@@ -752,7 +773,13 @@ export class SkillService {
     })
   }
 
-  setEnabled(input: { agentId: string; skillVersionId: string; enabled: boolean }) {
+  async setEnabled(input: {
+    agentId: string
+    skillVersionId: string
+    enabled: boolean
+    actor: ActorContext
+  }) {
+    await this.requireReachableAgent(input.agentId, input.actor.actorTenantId)
     return this.skills.setEnabled(input.agentId, input.skillVersionId, input.enabled)
   }
 

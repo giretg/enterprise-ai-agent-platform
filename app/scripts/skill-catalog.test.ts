@@ -758,6 +758,117 @@ async function main() {
   })
 
   console.log('')
+  console.log('Agent-tenant kapu skill hozzárendelésnél (cross-tenant IDOR)')
+
+  await check('assign: idegen tenant agentjére nem ír skillt', async () => {
+    let assigned = false
+    const skillsRepo = {
+      findVersionById: async () => ({
+        id: 'ver-1',
+        skillId: 'skill-1',
+        status: 'active',
+        skill: { tenantId: TENANT_A, id: 'skill-1' },
+      }),
+      assign: async () => {
+        assigned = true
+        return { assignment: {}, replacedVersionIds: [] }
+      },
+    }
+    const agentsRepo = {
+      findById: async (id: string) =>
+        id === 'agent-b'
+          ? { id: 'agent-b', tenantId: TENANT_B }
+          : null,
+    }
+    const svc = new SkillService(
+      skillsRepo as never,
+      { append: async (d: unknown) => d } as never,
+      {} as never,
+      undefined,
+      agentsRepo as never,
+    )
+    await assert.rejects(
+      () =>
+        svc.assign({
+          agentId: 'agent-b',
+          skillVersionId: 'ver-1',
+          actor: { actorId: 'admin-a', actorTenantId: TENANT_A, isPlatformAdmin: false },
+        }),
+      (err: unknown) => err instanceof Error && err.message === 'Agent not found',
+    )
+    assert.equal(assigned, false, 'idegen agentre nem történhet assign')
+  })
+
+  await check('assign: saját tenant agentjére engedélyezett', async () => {
+    let assigned = false
+    const skillsRepo = {
+      findVersionById: async () => ({
+        id: 'ver-1',
+        skillId: 'skill-1',
+        status: 'active',
+        skill: { tenantId: TENANT_A, id: 'skill-1' },
+      }),
+      assign: async () => {
+        assigned = true
+        return { assignment: {}, replacedVersionIds: [] }
+      },
+    }
+    const agentsRepo = {
+      findById: async () => ({ id: 'agent-a', tenantId: TENANT_A }),
+    }
+    const auditRepo = { append: async (d: unknown) => d }
+    const svc = new SkillService(
+      skillsRepo as never,
+      auditRepo as never,
+      {} as never,
+      undefined,
+      agentsRepo as never,
+    )
+    await svc.assign({
+      agentId: 'agent-a',
+      skillVersionId: 'ver-1',
+      actor: { actorId: 'admin-a', actorTenantId: TENANT_A, isPlatformAdmin: false },
+    })
+    assert.equal(assigned, true)
+  })
+
+  await check('unassign/setEnabled: idegen tenant agent → SkillAccessError', async () => {
+    const agentsRepo = {
+      findById: async () => ({ id: 'agent-b', tenantId: TENANT_B }),
+    }
+    const skillsRepo = {
+      unassign: async () => {
+        throw new Error('unassign nem futhat')
+      },
+      setEnabled: async () => {
+        throw new Error('setEnabled nem futhat')
+      },
+    }
+    const svc = new SkillService(
+      skillsRepo as never,
+      { append: async (d: unknown) => d } as never,
+      {} as never,
+      undefined,
+      agentsRepo as never,
+    )
+    const actor = { actorId: 'admin-a', actorTenantId: TENANT_A, isPlatformAdmin: false }
+    await assert.rejects(
+      () => svc.unassign({ agentId: 'agent-b', skillVersionId: 'ver-1', actor }),
+      (err: unknown) => err instanceof Error && err.message === 'Agent not found',
+    )
+    await assert.rejects(
+      () =>
+        svc.setEnabled({
+          agentId: 'agent-b',
+          skillVersionId: 'ver-1',
+          enabled: false,
+          actor,
+        }),
+      (err: unknown) => err instanceof Error && err.message === 'Agent not found',
+    )
+  })
+
+  console.log('')
   if (failures > 0) {
     console.error(`❌ ${failures} teszt bukott`)
     process.exit(1)
