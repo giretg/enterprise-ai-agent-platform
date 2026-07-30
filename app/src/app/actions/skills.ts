@@ -5,6 +5,7 @@ import { z } from 'zod'
 import { requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain'
 import { repositories } from '@/repositories/postgres'
+import { assertAgentTenantReachable } from '@/lib/agent-tenant-access'
 import { fail, ok, type ActionResult } from '@/lib/result'
 import { SkillAccessError, type ActorContext } from '@/domain/skill/skill-service'
 import {
@@ -47,6 +48,19 @@ function messageFrom(err: unknown): string {
   return 'Ismeretlen hiba a skill-műveletben.'
 }
 
+/**
+ * Tenant-határ egy agent-célzó skill-olvasáshoz. A reachability-szabályt a közös
+ * {@link assertAgentTenantReachable} helper dönti el (egy forrás, egy igazság — a
+ * megosztott platform-agent elérhető, más tenant agentje sosem), így az olvasó és
+ * a SkillService write-útja nem tud eltérő határt kialakítani. Az idegen agent
+ * opak `Agent not found` — nem felderítési orákulum.
+ */
+async function assertAgentInTenant(agentId: string, activeTenantId: string | null): Promise<void> {
+  const agent = await repositories.agents.findById(agentId)
+  if (!agent) throw new SkillAccessError('Agent not found')
+  assertAgentTenantReachable(agent, activeTenantId)
+}
+
 // ── WP-4: agent-detail skill panel (readiness + hozzárendelés) ────────────────
 
 export interface AgentSkillRow {
@@ -66,7 +80,8 @@ export async function getAgentSkillsAction(
   agentId: string,
 ): Promise<ActionResult<AgentSkillRow[]>> {
   try {
-    await requireTenantRole('operator')
+    const ctx = await requireTenantRole('operator')
+    await assertAgentInTenant(agentId, ctx.activeTenantId)
     const rows = await services.skills.listAgentSkillsWithReadiness(agentId)
     return ok(
       rows.map((r) => ({
@@ -105,6 +120,7 @@ export async function listAssignableSkillsAction(
 ): Promise<ActionResult<AssignableSkill[]>> {
   try {
     const ctx = await requireTenantRole('admin')
+    await assertAgentInTenant(agentId, ctx.activeTenantId)
     const [catalog, assigned] = await Promise.all([
       services.skills.listForActor(ctx.activeTenantId),
       services.skills.listAgentSkillsWithReadiness(agentId),
@@ -171,8 +187,8 @@ export async function setSkillEnabledAction(input: {
   enabled: boolean
 }): Promise<ActionResult<null>> {
   try {
-    await requireTenantRole('admin')
-    await services.skills.setEnabled(input)
+    const ctx = await requireTenantRole('admin')
+    await services.skills.setEnabled({ ...input, actor: actorFrom(ctx) })
     revalidatePath(`/control-plane/agents/${input.agentId}`)
     return ok(null)
   } catch (err) {
