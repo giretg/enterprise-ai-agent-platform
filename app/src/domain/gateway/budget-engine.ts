@@ -62,24 +62,23 @@ export class BudgetEngine {
 
   async check(ctx: BudgetContext): Promise<BudgetCheckResult> {
     const statuses = await this.statuses(ctx)
+    // Soft warning NEM short-circuitelheti a későbbi hard capeket (pl. agent soft
+    // küszöb ne engedje át a kimerült tenant hard capet).
+    let softWarning: string | undefined
 
     for (const { budget, usage } of statuses) {
       const breach = exceedsHardCap(budget, usage)
       if (breach) return { allowed: false, reason: breach, budget, usage }
 
-      // Soft threshold: warn but don't block
       if (budget.softThreshold !== null && budget.callLimit !== null) {
         const softLimit = Number(budget.softThreshold)
         if (usage.calls >= softLimit && usage.calls < budget.callLimit) {
-          return {
-            allowed: true,
-            softWarning: `Approaching call limit: ${usage.calls}/${budget.callLimit}`,
-          }
+          softWarning ??= `Approaching call limit: ${usage.calls}/${budget.callLimit}`
         }
       }
     }
 
-    return { allowed: true }
+    return softWarning ? { allowed: true, softWarning } : { allowed: true }
   }
 }
 

@@ -5,6 +5,7 @@ import { z } from 'zod'
 import { requireTenantRole } from '@/auth/tenant-context'
 import { services } from '@/domain'
 import { repositories } from '@/repositories/postgres'
+import { assertAgentTenantReachable } from '@/lib/agent-tenant-access'
 import { fail, ok, type ActionResult } from '@/lib/result'
 import { SkillAccessError, type ActorContext } from '@/domain/skill/skill-service'
 import {
@@ -47,6 +48,14 @@ function messageFrom(err: unknown): string {
   return 'Ismeretlen hiba a skill-műveletben.'
 }
 
+/** Idegen tenant agentje ne legyen felderíthető / módosítható skill actionön át. */
+async function requireReachableAgent(agentId: string, tenantId: string | null) {
+  const agent = await repositories.agents.findById(agentId)
+  if (!agent) throw new SkillAccessError('Agent not found')
+  assertAgentTenantReachable(agent, tenantId)
+  return agent
+}
+
 // ── WP-4: agent-detail skill panel (readiness + hozzárendelés) ────────────────
 
 export interface AgentSkillRow {
@@ -66,7 +75,8 @@ export async function getAgentSkillsAction(
   agentId: string,
 ): Promise<ActionResult<AgentSkillRow[]>> {
   try {
-    await requireTenantRole('operator')
+    const ctx = await requireTenantRole('operator')
+    await requireReachableAgent(agentId, ctx.activeTenantId)
     const rows = await services.skills.listAgentSkillsWithReadiness(agentId)
     return ok(
       rows.map((r) => ({
@@ -105,6 +115,7 @@ export async function listAssignableSkillsAction(
 ): Promise<ActionResult<AssignableSkill[]>> {
   try {
     const ctx = await requireTenantRole('admin')
+    await requireReachableAgent(agentId, ctx.activeTenantId)
     const [catalog, assigned] = await Promise.all([
       services.skills.listForActor(ctx.activeTenantId),
       services.skills.listAgentSkillsWithReadiness(agentId),
@@ -135,6 +146,7 @@ export async function assignSkillAction(input: {
 }): Promise<ActionResult<null>> {
   try {
     const ctx = await requireTenantRole('admin')
+    await requireReachableAgent(input.agentId, ctx.activeTenantId)
     await services.skills.assign({
       agentId: input.agentId,
       skillVersionId: input.skillVersionId,
@@ -153,6 +165,7 @@ export async function unassignSkillAction(input: {
 }): Promise<ActionResult<null>> {
   try {
     const ctx = await requireTenantRole('admin')
+    await requireReachableAgent(input.agentId, ctx.activeTenantId)
     await services.skills.unassign({
       agentId: input.agentId,
       skillVersionId: input.skillVersionId,
@@ -171,8 +184,12 @@ export async function setSkillEnabledAction(input: {
   enabled: boolean
 }): Promise<ActionResult<null>> {
   try {
-    await requireTenantRole('admin')
-    await services.skills.setEnabled(input)
+    const ctx = await requireTenantRole('admin')
+    await requireReachableAgent(input.agentId, ctx.activeTenantId)
+    await services.skills.setEnabled({
+      ...input,
+      actor: actorFrom(ctx),
+    })
     revalidatePath(`/control-plane/agents/${input.agentId}`)
     return ok(null)
   } catch (err) {
@@ -555,8 +572,7 @@ export async function distillSkillFromConversationAction(
   try {
     const parsed = distillSchema.parse(input)
     const ctx = await requireTenantRole('admin')
-    const agent = await repositories.agents.findById(parsed.agentId)
-    if (!agent) return fail('Az agent nem található.')
+    const agent = await requireReachableAgent(parsed.agentId, ctx.activeTenantId)
 
     const tenant = await repositories.tenants.findById(ctx.activeTenantId!)
     const outputLanguage = readTenantLanguage(tenant?.settings)

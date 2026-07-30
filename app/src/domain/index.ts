@@ -993,6 +993,7 @@ const skillService = new SkillService(
   repositories.audit,
   repositories.toolBroker,
   repositories.conversations,
+  repositories.agents,
 )
 const agentChatRuntime = new AgentChatRuntime(
   repositories.agents,

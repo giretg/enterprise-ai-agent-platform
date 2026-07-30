@@ -10,8 +10,10 @@ import assert from 'node:assert/strict'
 import {
   HttpApiClient,
   HttpApiError,
+  canonicalizeHttpApiPath,
   parseHttpApiConfig,
   resolveConnectorApiKey,
+  resolveHttpApiEndpointRisk,
   type HttpApiConfig,
 } from '../src/domain/connector/http-api-client'
 
@@ -206,6 +208,41 @@ async function main() {
     await assert.rejects(
       client.request({ method: 'GET', path: 'https://evil.example/steal' }),
       (e: unknown) => e instanceof HttpApiError && e.code === 'invalid_path',
+    )
+  })
+
+  await test('dot-segment: restrictToEndpoints nem engedi /safe/.. → / bypass-t', async () => {
+    const config = parseHttpApiConfig({
+      baseUrl: 'https://api.example.com',
+      auth: { scheme: 'bearer' },
+      restrictToEndpoints: true,
+      endpoints: [{ method: 'POST', path: '/safe/:id', risk: 'read' }],
+    })
+    const client = new HttpApiClient(config, 'stub-api-key')
+    await assert.rejects(
+      client.request({ method: 'POST', path: '/safe/..', body: { x: 1 } }),
+      (e: unknown) => e instanceof HttpApiError && e.code === 'endpoint_not_allowed',
+    )
+    await assert.rejects(
+      client.request({ method: 'POST', path: '/safe/%2e%2e', body: { x: 1 } }),
+      (e: unknown) => e instanceof HttpApiError && e.code === 'endpoint_not_allowed',
+    )
+  })
+
+  await test('canonicalizeHttpApiPath feloldja a .. és %2e szegmenseket', () => {
+    assert.equal(canonicalizeHttpApiPath('/safe/..'), '/')
+    assert.equal(canonicalizeHttpApiPath('/safe/%2e%2e/admin'), '/admin')
+    assert.equal(canonicalizeHttpApiPath('/a/b/../c'), '/a/c')
+  })
+
+  await test('resolveHttpApiEndpointRisk: DELETE soha nem marad read', () => {
+    assert.equal(
+      resolveHttpApiEndpointRisk({ risk: 'read' }, 'DELETE'),
+      'danger',
+    )
+    assert.equal(
+      resolveHttpApiEndpointRisk({ access: 'read' }, 'DELETE', 'read'),
+      'danger',
     )
   })
 
