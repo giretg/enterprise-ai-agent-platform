@@ -11,6 +11,7 @@
  */
 import { createHash } from 'crypto'
 import { z } from 'zod'
+import { compileSafeRegex, SafeRegexError } from '@/lib/safe-regex'
 
 export const PLAYBOOK_SCHEMA_VERSION = '1.0' as const
 
@@ -248,6 +249,52 @@ export const playbookDeliverableSchema = z.object({
 })
 export type PlaybookDeliverable = z.infer<typeof playbookDeliverableSchema>
 
+/**
+ * A contentCheck admin által konfigurált, de a megosztott Node workerben fut.
+ * Hibás vagy ReDoS-veszélyes minta ezért nem kerülhet publikálható Playbookba.
+ */
+function validateOutputContractContentChecks(
+  outputContract: Record<string, unknown> | undefined,
+  ctx: z.RefinementCtx,
+): void {
+  const visit = (fields: unknown, path: (string | number)[]) => {
+    if (!Array.isArray(fields)) return
+    fields.forEach((rawField, index) => {
+      if (!rawField || typeof rawField !== 'object' || Array.isArray(rawField)) return
+      const field = rawField as Record<string, unknown>
+      const check = field.contentCheck
+      const checkPath = [...path, index, 'contentCheck']
+      if (check !== undefined) {
+        if (!check || typeof check !== 'object' || Array.isArray(check)) {
+          ctx.addIssue({ code: 'custom', path: checkPath, message: 'A tartalmi ellenőrzés formátuma érvénytelen.' })
+        } else {
+          const contentCheck = check as Record<string, unknown>
+          if (contentCheck.kind === 'pattern') {
+            if (typeof contentCheck.regex !== 'string' || contentCheck.regex.trim().length === 0) {
+              ctx.addIssue({ code: 'custom', path: checkPath, message: 'A mintás tartalmi ellenőrzéshez nem üres minta kell.' })
+            } else {
+              try {
+                compileSafeRegex(contentCheck.regex, typeof contentCheck.flags === 'string' ? contentCheck.flags : '', 'tartalmi minta')
+              } catch (error) {
+                const message = error instanceof SafeRegexError ? error.message : 'A tartalmi minta érvénytelen.'
+                ctx.addIssue({ code: 'custom', path: checkPath, message })
+              }
+            }
+          } else if (contentCheck.kind === 'judgment') {
+            if (typeof contentCheck.criterion !== 'string' || contentCheck.criterion.trim().length === 0) {
+              ctx.addIssue({ code: 'custom', path: checkPath, message: 'Az ítélet alapú ellenőrzéshez kritérium kell.' })
+            }
+          } else {
+            ctx.addIssue({ code: 'custom', path: checkPath, message: 'Ismeretlen tartalmi ellenőrzés típus.' })
+          }
+        }
+      }
+      visit(field.fields, [...path, index, 'fields'])
+    })
+  }
+  visit(outputContract?.fields, ['outputContract', 'fields'])
+}
+
 export const playbookStepSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
@@ -276,7 +323,7 @@ export const playbookStepSchema = z.object({
   decision: decisionSpecSchema.optional(),
   timeoutMinutes: z.number().int().positive().optional(),
   retryPolicy: retryPolicySchema.optional(),
-})
+}).superRefine((step, ctx) => validateOutputContractContentChecks(step.outputContract, ctx))
 export type PlaybookStep = z.infer<typeof playbookStepSchema>
 
 // --- Gate szerződés (§5.4) ------------------------------------------------

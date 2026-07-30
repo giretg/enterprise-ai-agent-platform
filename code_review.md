@@ -1,5 +1,27 @@
 # Enterprise code review log
 
+## 2026-07-30 - Contract Runtime: Playbook content-check ReDoS / fail-closed konfigurációs kapu
+
+- Áttekintett modulok (a strukturált AI-kimenet közös, több üzleti funkció által használt kontrollpontja — ezt a komponens-családot a napló korábban még nem fedte):
+  - `app/src/domain/contract-runtime/**` — contract-fordítás, alaki/tartalmi validáció, szigorú javító kör, modell-kapus ítélet és audit-metrikák.
+  - `app/src/lib/playbook-v2/spec.ts`, `step-output-inference.ts`, `output-contract-form.ts` — a Playbook-szerző által tárolt output-contract és annak futásidejű lefordítása.
+  - Hívói kontextusban: `general-task-runtime.ts`, `playbook-author-agent.ts`, `skill-distiller-agent.ts`, `skill-review-agent.ts`, `wiki-runtime.ts`, `provisioning-assistant.ts`.
+  - Összevetési minta: `app/src/domain/file-editor/safe-pattern.ts` és `file-search-safe-pattern.test.ts` (a már bevált, agent-bemenetű regex ReDoS-védelem).
+- Eredmény — ami rendben van: az alaki contract strict Zod-sémával zár, az L3 kritikus lépés nem kap automatikus javító modellhívást, a content-only hiba nem indít felesleges „javítást”, az érzékeny tartalom a jóváhagyott modellre esik vissza, és a Folyamat-runtime a tartós contract-sértést determinisztikusan emberi felülvizsgálatra tereli.
+- **Lelet #1 (magas, rendelkezésre állás — Playbookból indítható regex ReDoS):** a `contentCheck.kind = pattern` a Playbook admin által tárolt `regex` értéket közvetlenül `new RegExp(...).test(...)`-tel futtatta az agent kimenetén. Sem a Playbook-spec mentése/publikálása, sem a runtime nem korlátozta a mintát vagy tiltotta a katasztrofális visszalépést. A `'(a+)+$'` például egy `aaaa...!` kimeneten egyetlen Node eseményhurkot blokkolhat; a worker közös, ezért ez nem csak a saját folyamatát, hanem más tenantok futásait is késleltetheti (CWE-1333).
+- **Lelet #2 (integritás — hibás contentCheck némán kieshetett):** a laza output-contract beolvasó ismeretlen/hibás `contentCheck`-et eldobott. Mivel az output-contract Zod-szinten tetszőleges JSON-record volt, egy hibás mintaszabályból publikálható Playbookban ténylegesen „nincs tartalmi kapu” lehetett volna — nem közérthető konfigurációs hiba.
+- Javítás:
+  - Új közös `app/src/lib/safe-regex.ts` védi a konfigurációból futó regexeket: 1000 karakteres plafon, a beágyazott nyitott kvantor és az ismételt alternáció ReDoS-családjainak futás ELŐTTI elutasítása, egységes hibatípus.
+  - A Contract Runtime a minta futtatása előtt ugyanezt a védelmet hívja, és bármilyen régi/megkerülő konfigurációt fail-closed tartalmi hibává alakít — nincs modellhívás és nincs regex-végrehajtás.
+  - A Playbook-spec `superRefine` kaput kapott: hibás, üres vagy veszélyes `contentCheck` nem menthető/publikálható; a szerző rögtön a konkrét konfigurációs hibát kapja.
+  - A korábbi, fájlkeresési ReDoS-őr ugyanarra a közös policyre került, így a két agent-vezérelt regex-felület nem tud eltérő biztonsági szabályt kialakítani.
+- Üzleti hatás: a kimeneti contract arra szolgál, hogy egy AI-válasz biztonságosan automatikus üzleti lépéssé válhasson. E hiba mellett egy rosszul konfigurált vagy kompromittált Playbook ugyan nem adatot szivárogtatott volna, de az automatizált munkafolyamatok közös végrehajtását állíthatta volna meg — például jóváhagyási, számla- vagy ügyfélszolgálati folyamatokat. A javítás a konfiguráció elfogadásakor megállítja a veszélyes szabályt, futáskor pedig második védelmi vonalat ad a már létező adatokra.
+- Ellenőrzés:
+  - `DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub node --import tsx scripts/contract-runtime.test.ts` — zöld, 2 új regresszióval: a veszélyes minta gyorsan, modellhívás nélkül bukik; Playbook-specbe sem menthető.
+  - `node --import tsx scripts/output-contract-form.test.ts` és `node --import tsx scripts/file-search-safe-pattern.test.ts` — zöld.
+  - célzott `eslint` és `git diff --check` — zöld.
+  - `npx tsc --noEmit` a nem kapcsolódó, már meglévő Skill Catalog hibákon áll meg: `scripts/skill-catalog.test.ts` (2× argumentumszám) és `src/app/actions/skills.ts` (hiányzó `actor`).
+
 ## 2026-07-28 - Folyamat (Process) szerep→agent kötés: cross-tenant alkalmassági-kapu megkerülése
 
 - Áttekintett modulok (a Folyamat-feature 2. szintje — az automatizált, triggerelhető agent-munkafolyamat definíció és futásidő. A naplóban eddig a Governed Flow Builder / Playbook v2 *compile* útja szerepelt, de a Folyamat-definíció REST-belépője, az aktiválási kapu és a futásidejű szereplő-feloldás tenant-határa nem):
