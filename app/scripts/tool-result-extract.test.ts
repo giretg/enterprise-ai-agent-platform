@@ -80,6 +80,22 @@ check('objektum belsejében lévő tömböt arrayPath-tal találja meg', () => {
   assert.deepEqual(result.rows[2], { id: 2, name: 'C2' })
 })
 
+check('hiányzó tömb hibája tippel top-level kulcsokat / tömböket', () => {
+  // Két tömb → nem egyértelmű; arrayPath nélkül fail + tipp.
+  const payload = JSON.stringify({
+    meta: { ok: true },
+    owners: [{ nev: 'A' }],
+    partners: [{ nev: 'B' }],
+  })
+  const result = extractToolResultRows(payload, { fields: ['nev'] })
+  assert.equal(result.ok, false)
+  if (result.ok) return
+  assert.match(result.error, /arrayPath/)
+  assert.match(result.error, /owners\[1\]/)
+  assert.match(result.error, /partners\[1\]/)
+  assert.match(result.error, /meta/)
+})
+
 check('az összefoglaló < 2000 karakter 300 soros kivonatnál is', () => {
   const rows = Array.from({ length: 300 }, (_, i) => ({
     nev: `Tulajdonos ${i + 1}`,
@@ -110,6 +126,7 @@ check('nagy eredmény előnézete fájl-alapú továbbdolgozásra irányít, nem
   assert.match(preview, /\.tool-results\/01-http_api_get-crm\.json/)
   assert.match(preview, /tool-outputs\/01-http_api_get-crm\.json/)
   assert.match(preview, /tool_result_extract/)
+  assert.match(preview, /reconcile_records/)
   assert.doesNotMatch(preview, /olvasd tovább a tool_result_read/)
   assert.match(preview, /A teljes eredmény elmentve/)
 })

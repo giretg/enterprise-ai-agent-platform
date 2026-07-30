@@ -50,6 +50,7 @@ export const TOOL_REQUIREMENTS: Partial<Record<
   gmail_create_draft: { connectorType: 'gmail', accessMode: 'write' },
   gmail_send: { connectorType: 'gmail', accessMode: 'write' },
   http_api_get: { connectorType: 'http_api', accessMode: 'read' },
+  http_api_get_all: { connectorType: 'http_api', accessMode: 'read' },
   http_api_request: { connectorType: 'http_api', accessMode: 'write' },
   repo_prepare: { connectorType: 'workspace', accessMode: 'write' },
   repo_open_pull_request: { connectorType: 'workspace', accessMode: 'write' },
@@ -296,7 +297,10 @@ export class AllowlistAuthorizer implements Authorizer {
       return { allowed: false, reason: 'tool_not_configured' }
     }
     const requestedConnectorId =
-      (input.tool === 'http_api_get' || input.tool === 'http_api_request' || input.tool === 'mailbox_count') &&
+      (input.tool === 'http_api_get' ||
+        input.tool === 'http_api_get_all' ||
+        input.tool === 'http_api_request' ||
+        input.tool === 'mailbox_count') &&
       typeof input.args?.connectorId === 'string'
         ? input.args.connectorId
         : null

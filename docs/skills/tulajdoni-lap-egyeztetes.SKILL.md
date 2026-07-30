@@ -2,9 +2,9 @@
 name: tulajdoni-lap-egyeztetes
 description: Tulajdoni lap összevetése a saját tulajdonosi nyilvántartásunkkal, és a különbségek átadása Excel egyeztető táblában emberi ellenőrzésre. Használd, ha tulajdoni lapot kell a nyilvántartással egyeztetni, ha „mi változott a tulajdonosoknál", vagy ha egy hrsz-re kérnek egyeztetést.
 max-wall-clock-ms: 900000
-max-tool-calls: 60
+max-tool-calls: 40
 preferred-mode: task
-allowed-tools: tulajdoni_lap_egyeztetes, tulajdoni_lap_parse, http_api_get, file_write, file_read, tool_result_extract, reconcile_records, xlsx_append_rows
+allowed-tools: tulajdoni_lap_egyeztetes, http_api_get_all, http_api_get, tool_result_extract, file_write, reconcile_records, tulajdoni_lap_parse
 ---
 
 # Mi a feladat
@@ -25,11 +25,21 @@ egyeztető tábla, és kérdezd meg, továbbítsuk-e jóváhagyásra.
 meg kérdezni, ha a lap ellenőrzése bukott, ha a nyilvántartás lekérdezése
 kétséges, vagy ha egy párosítás emberi döntést igényel.
 
-**Ne gyűjts a kontextusba.** Nagy API-válasz / parse-eredmény SOHA ne kerüljön
-teljes egészében a promptba. Mentés a munkaterületre → kivonat / egyeztető
-eszköz → a modell csak a metaadatot és az összegzést látja.
+**Ne gyűjts a kontextusba. Ne párosíts a modellben.** Nagy API-válasz / parse-
+eredmény SOHA ne kerüljön teljes egészében a promptba, és 10+ soros listát NE
+olvass össze `file_read` chunkokkal. Mentés / kivonat → **egyeztető eszköz** →
+a modell csak a metaadatot és az összegzést látja.
 
-# A menet: lapozás → azonnali kiírás → eldobás
+# Tiltott anti-minta (budget-gyilkos)
+
+NE csináld:
+- `tulajdoni_lap_parse` tulajdonos-nézet lapozása a kontextusba
+- `http_api_get` page=1,2,3… sorozat (helyette `http_api_get_all`)
+- ugyanazt a JSON fájlt sokszor `file_read`-del offset/limit-tel
+- kézi párosítás / `xlsx_create` + `xlsx_append_rows` cellázás
+- `file_search` a teljes listán matchinghez
+
+# A menet: gyűjtés → EGY egyeztető hívás
 
 ## 0. Checkpoint
 
@@ -40,28 +50,28 @@ Minden lényeges lépés után frissítsd (vagy hozd létre) az
 {
   "hrsz": "043/15",
   "nyilvantartasPath": "nyilvantartas.json",
-  "pagesFetched": 2,
+  "pagesFetched": "all",
   "kimenet": "egyeztetes-043-15.xlsx",
-  "status": "nyilvantartas_partial"
+  "status": "nyilvantartas_ready"
 }
 ```
 
 Ha a futás megszakad, a következő forduló EBBŐL indul — ne kezdd elölről.
 
-## 1. A nyilvántartás oldala — sok kis hívás, minden hívás után kiírás
+## 1. A nyilvántartás — lehetőleg EGY lapozó hívás
 
-A tulajdonosi rekordokat az Ostoros Föld API-n keresztül éred el
-(`http_api_get`). **Ne próbálj mindent egy-két nagy hívásban összegyűjteni.**
+A tulajdonosi rekordokat az Ostoros Föld API-n keresztül éred el.
 
-Minden oldal után azonnal:
-
-1. Ha a tool-eredmény nagy és archívumba került: `tool_result_extract` a
-   szükséges mezőkre (`nev`, `szuletesiEv`, `anyjaNeve`, `hanyad`, `cim`,
-   `azonosito`, `megjegyzes`) → pl. `nyilvantartas-page-N.json`.
-2. Illeszd / toldd a `nyilvantartas.json` munkaterületi fájlba (`file_write` /
-   összefűzés). A mezőnevek legyenek a fenti alakban.
-3. Frissítsd az `egyeztetes_progress.json`-t (`pagesFetched`).
-4. A teljes oldalt NE olvasd vissza `tool_result_read`-del a kontextusba.
+1. Találd meg a parcel / coverage / ownership végpontot (ha kell, egy
+   `http_api_get` a konkrét hrsz-re).
+2. Nagy listához hívd az **`http_api_get_all`**-t (page/pageSize szerveroldalon
+   végigmegy). Egy oldal / egyedi rekord → elég a sima `http_api_get`.
+3. Ha a válasz archívumba került: `tool_result_extract` a szükséges mezőkre
+   (`nev`, `szuletesiEv`, `anyjaNeve`, `hanyad`, `cim`, `azonosito`, `megjegyzes`)
+   → `nyilvantartas.json`. Az extract path lehet az archívum **vagy** a
+   workspace másolat.
+4. Frissítsd az `egyeztetes_progress.json`-t.
+5. A teljes listát NE olvasd vissza `file_read` / `tool_result_read`-del.
 
 Ha a lekérdezés üres listát ad, az nem azt jelenti, hogy minden tulajdonos új.
 Előbb győződj meg róla, hogy a helyrajzi számot a végpont elvárt formátumában
@@ -81,20 +91,15 @@ tulajdoni_lap_egyeztetes({
 ```
 
 Ez a hívás elvégzi a lap kiolvasását, a párosítást és a kész munkafüzet
-megírását. **Ne bontsd szét**: ne lapozd végig a `tulajdoni_lap_parse`
-tulajdonos-nézetét a kontextusba, ne készíts köztes JSON-t a párosításról a
-promptban, és ne írj cellánként Excelt — az sokszoros költség, és rendszeresen
-kifut a forduló keretéből. A párosítás determinisztikus munka: a kód végzi.
+megírását. **Ne bontsd szét.** A párosítás determinisztikus munka: a kód végzi.
 
 Általános (nem tulajdoni-lap) listák egyeztetéséhez a platform
 `reconcile_records` eszközét használd: két workspace JSON + `keyFields` →
-státuszos unió fájlba, a modell csak az összegzést és a bizonytalan párokat
-kapja.
+státuszos unió fájlba.
 
 A `tulajdoni_lap_parse`-ot csak akkor hívd, ha az egyeztetésen túl kell
 magyaráznod valamit: pl. egy eltérés eredetét keresed a törölt bejegyzésekben
-(`csakHatalyos: false`, az `utalas` mezők adják a láncot), vagy a terhek
-részletét kérik. Nagy parse-eredménynél is: extract / fájl, ne visszaolvasás.
+(`csakHatalyos: false`), vagy a terhek részletét kérik.
 
 Frissítsd a checkpointot: `"status": "egyeztetes_done"`, `"kimenet": "…"`.
 
@@ -156,9 +161,9 @@ Amit tudnod érdemes az eredményről:
 Ha a futás időkorlát vagy eszközkeret miatt leállt, **ne kezdd elölről**: nyisd
 meg az `egyeztetes_progress.json`-t és a munkaterület fájljait.
 
-- Ha a `nyilvantartas.json` (vagy részei) megvannak: NE kérdezd le újra az API-t;
-  folytasd a hiányzó oldalaktól, vagy hívd az egyeztetést.
-- Ha az egyeztető Excel elkészült: ne futtasd újra az egyeztetést — csak a
-  hiányzó lépést csináld meg (jellemzően a szöveges összefoglalót).
-- A részeredmény a munkafüzetben / JSON-ban van; a kontextusban NEM kell
-  lennie a teljes adatnak.
+- Ha a `nyilvantartas.json` (vagy kivonat) megvan: NE kérdezd le újra az API-t;
+  hívd azonnal a `tulajdoni_lap_egyeztetes`-t.
+- Ha az egyeztető Excel elkészült: ne futtasd újra — csak a szöveges összefoglalót
+  add.
+- TILOS újra: parse a teljes lapra, `http_api_get_all` ugyanarra a pathra,
+  chunkolt `file_read` a már meglévő JSON-okon.

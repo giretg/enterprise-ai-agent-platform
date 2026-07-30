@@ -235,7 +235,7 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
   },
   tool_result_extract: {
     label: 'Eszköz-eredmény kivonatolása',
-    description: 'Archivált eredményből mezőkivonat fájlba, a teljes tartalom nélkül.',
+    description: 'Archívum vagy workspace JSON mezőkivonata fájlba, a teljes tartalom nélkül.',
   },
   load_skill: {
     label: 'Skill betöltése',
@@ -246,6 +246,10 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
   http_api_get: {
     label: 'API olvasás (GET)',
     description: 'Olvasó (GET) hívás a hozzárendelt külső REST API-n.',
+  },
+  http_api_get_all: {
+    label: 'API lista lapozva',
+    description: 'Lapozott GET lista egy hívásban — oldalak összevonása szerveroldalon.',
   },
   http_api_request: {
     label: 'API írás',

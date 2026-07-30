@@ -254,6 +254,11 @@ async function syncAssignedConnectorCapabilities(
     create: { agentId, toolName: 'http_api_get', allowed: true },
     update: { allowed: true },
   })
+  await prisma.capability.upsert({
+    where: { agentId_toolName: { agentId, toolName: 'http_api_get_all' } },
+    create: { agentId, toolName: 'http_api_get_all', allowed: true },
+    update: { allowed: true },
+  })
 
   if (accessMode === 'write') {
     await prisma.capability.upsert({
@@ -315,7 +320,7 @@ async function syncConnectorRemovalCapabilities(agentIds: string[]) {
     ])
     if (httpAnyActive === 0) {
       await prisma.capability.updateMany({
-        where: { agentId, toolName: 'http_api_get' },
+        where: { agentId, toolName: { in: ['http_api_get', 'http_api_get_all'] } },
         data: { allowed: false },
       })
     }

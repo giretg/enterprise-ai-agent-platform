@@ -64,7 +64,7 @@ export const NORMAL_TOOL_CAPABILITY_GROUPS = [
   },
   {
     label: 'HTTP API',
-    tools: ['http_api_get', 'http_api_request'],
+    tools: ['http_api_get', 'http_api_get_all', 'http_api_request'],
   },
   {
     label: 'Webes kutatás',

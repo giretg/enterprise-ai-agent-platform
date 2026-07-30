@@ -1248,11 +1248,13 @@ function httpApiConnectorConfig(input: {
 }
 
 async function syncHttpApiCapabilities(agentId: string, connectorId: string, accessMode: 'read' | 'write') {
-  await prisma.capability.upsert({
-    where: { agentId_toolName: { agentId, toolName: 'http_api_get' } },
-    create: { agentId, toolName: 'http_api_get', allowed: true },
-    update: { allowed: true },
-  })
+  for (const toolName of ['http_api_get', 'http_api_get_all'] as const) {
+    await prisma.capability.upsert({
+      where: { agentId_toolName: { agentId, toolName } },
+      create: { agentId, toolName, allowed: true },
+      update: { allowed: true },
+    })
+  }
 
   if (accessMode === 'write') {
     await prisma.capability.upsert({
@@ -4919,7 +4921,7 @@ const GMAIL_TOOLS = [
 
 const GMAIL_WRITE_TOOLS = ['gmail_create_draft', 'gmail_send'] as const
 
-const HTTP_API_TOOLS = ['http_api_get', 'http_api_request'] as const
+const HTTP_API_TOOLS = ['http_api_get', 'http_api_get_all', 'http_api_request'] as const
 
 const CONFIGURABLE_AGENT_TOOLS = NORMAL_TOOL_CAPABILITY_NAMES
 

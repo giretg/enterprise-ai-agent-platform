@@ -80,6 +80,7 @@ export const CHAT_PLATFORM_TOOLS = [
   'gmail_create_draft',
   'gmail_send',
   'http_api_get',
+  'http_api_get_all',
   'http_api_request',
   'repo_prepare',
   'repo_open_pull_request',
@@ -341,9 +342,30 @@ const TOOL_SCHEMAS: Record<ChatPlatformToolName, ToolSchema> = {
   },
   http_api_get: {
     description:
-      'Olvasó (GET) hívás a hozzád rendelt külső REST API-n. A `connectorId` értékét a rendszerüzenetben látod. A `path` a connector baseUrl-jéhez relatív. A query paramétereket a `query`, kizárólag az endpointnál „Hívói fejlécek” alatt felsorolt értékeket a `headers` objektumban add meg. A többi fejlécet a platform kezeli.',
+      'Egyetlen oldal olvasó (GET) hívása a hozzád rendelt külső REST API-n. Lapozott listához (sok oldal, nagy névsor) használd az http_api_get_all-t — ne page=1,2,3… sorozatot. A `connectorId` értékét a rendszerüzenetben látod. A `path` a connector baseUrl-jéhez relatív.',
     inputSchema: objectSchema(
       { connectorId: STR, path: STR, query: { type: 'object', additionalProperties: true }, headers: { type: 'object', additionalProperties: { type: 'string' } } },
+      ['path'],
+    ),
+  },
+  http_api_get_all: {
+    description:
+      'Lapozott GET lista EGY hívásban: a szerver végiglapozza az oldalakat (page/pageSize), összevonja a rekordtömböt, és EGY eredményt ad vissza. Nagy nyilvántartás / ownership / partner listához EZT hívd — ne http_api_get-tel oldalanként. ' +
+      'Opcionális: pageParam (alap: page), pageSizeParam (alap: pageSize), pageSize (alap: 100), maxPages (alap: 50), arrayPath (ha a tömb nestelt), startPage. ' +
+      'Nagy válasz archívumba kerül — utána tool_result_extract / reconcile_records / tulajdoni_lap_egyeztetes, NE chunkolt file_read.',
+    inputSchema: objectSchema(
+      {
+        connectorId: STR,
+        path: STR,
+        query: { type: 'object', additionalProperties: true },
+        headers: { type: 'object', additionalProperties: { type: 'string' } },
+        pageParam: STR,
+        pageSizeParam: STR,
+        pageSize: NUM,
+        startPage: NUM,
+        maxPages: NUM,
+        arrayPath: STR,
+      },
       ['path'],
     ),
   },
@@ -384,7 +406,10 @@ const TOOL_SCHEMAS: Record<ChatPlatformToolName, ToolSchema> = {
     ),
   },
   file_read: {
-    description: 'Munkaterület fájl beolvasása (opcionális offset/limit sorokkal).',
+    description:
+      'Munkaterület fájl beolvasása (opcionális offset/limit sorokkal). ' +
+      'Nagy JSON listához NE ezt használd chunkolva párosításhoz — tool_result_extract / reconcile_records / tulajdoni_lap_egyeztetes. ' +
+      'Ugyanazt a fájlt offset-változtatással újraolvasni pazarlás és kifut a tool-keretből.',
     inputSchema: objectSchema({ path: STR, offset: NUM, limit: NUM }, ['path']),
   },
   file_write: {
@@ -845,7 +870,10 @@ const TOOL_RESULT_EXTRACT = TOOL_RESULT_EXTRACT_TOOL_NAME
 const TOOL_RESULT_EXTRACT_DEFINITION: ToolDefinition = {
   name: TOOL_RESULT_EXTRACT,
   description:
-    'Nagy tool-eredményből mezőkivonat készítése a szerveren: a teljes tartalom NEM kerül a kontextusba. Add meg az archívum path-ját, a kinyerendő fields listát és az outputPath-ot; a válasz csak a sorok számát és néhány mintasort adja.',
+    'JSON listából mezőkivonat a szerveren (archívum VAGY munkaterületi fájl): a teljes tartalom NEM kerül a kontextusba. ' +
+    'path: `.tool-results/…`, `tool-outputs/…` VAGY tetszőleges workspace JSON (pl. nyilvantartas.json). ' +
+    'fields + outputPath kötelező; nestelt tömbhöz arrayPath. A válasz csak sorok számát + mintát adja. ' +
+    'Két lista egyeztetéséhez utána reconcile_records / tulajdoni_lap_egyeztetes — ne file_read chunkolás.',
   inputSchema: objectSchema(
     {
       path: STR,
@@ -1129,6 +1157,8 @@ function describeToolCall(tool: string, args: Record<string, unknown>): string |
       return typeof args.to === 'string' ? `címzett: ${shortText(args.to, 64)}` : undefined
     case 'http_api_get':
       return typeof args.path === 'string' ? `GET ${shortText(args.path, 80)}` : undefined
+    case 'http_api_get_all':
+      return typeof args.path === 'string' ? `GET-all ${shortText(args.path, 80)}` : undefined
     case 'http_api_request':
       return typeof args.path === 'string'
         ? `${httpMethodArg(args.method)} ${shortText(args.path, 80)}`
@@ -1475,6 +1505,24 @@ function buildToolInvoke(
           path: strArg(args, 'path'),
           query: httpQueryArg(args.query),
           headers: httpHeadersArg(args.headers),
+        },
+      }
+
+    case 'http_api_get_all':
+      return {
+        ...common,
+        tool: 'http_api_get_all',
+        args: {
+          connectorId: typeof args.connectorId === 'string' ? args.connectorId : undefined,
+          path: strArg(args, 'path'),
+          query: httpQueryArg(args.query),
+          headers: httpHeadersArg(args.headers),
+          pageParam: typeof args.pageParam === 'string' ? args.pageParam : undefined,
+          pageSizeParam: typeof args.pageSizeParam === 'string' ? args.pageSizeParam : undefined,
+          pageSize: numArg(args, 'pageSize'),
+          startPage: numArg(args, 'startPage'),
+          maxPages: numArg(args, 'maxPages'),
+          arrayPath: typeof args.arrayPath === 'string' ? args.arrayPath : undefined,
         },
       }
 
@@ -2138,7 +2186,7 @@ export async function runAgentToolLoop(params: {
   // endpoint-katalógusát a modell elé tesszük — így tudja, mit hívhat.
   // Ugyanez a lista kell a következmény-kapu http_api_request döntéséhez.
   let httpApiGateConnectors: HttpApiGateConnector[] = []
-  if (allowedTools.some((t) => t === 'http_api_get' || t === 'http_api_request')) {
+  if (allowedTools.some((t) => t === 'http_api_get' || t === 'http_api_get_all' || t === 'http_api_request')) {
     const loaded = await loadHttpApiConnectorsForGate(params.toolCaps, params.agentId)
     httpApiGateConnectors = loaded.gateConnectors
     if (loaded.spec) loopStablePreamble.push({ role: 'system', content: loaded.spec })
@@ -2441,6 +2489,9 @@ export async function runAgentToolLoop(params: {
   // Repeated-call guard: (toolName, stableArgsKey) → count
   const callRepeatTracker = new Map<string, number>()
   const REPEAT_LIMIT = 3
+  /** Ugyanarra a workspace path-ra hány file_read ment le — chunk-thrash ellen. */
+  const fileReadCallsByPath = new Map<string, number>()
+  const FILE_READ_PATH_CALL_LIMIT = 6
 
   // ── Forrás-számvitel (ugyanabból a forrásból való újraolvasás) ──────────────
   // Mért eset (2026-07-29): a modell 132 visszaolvasást futtatott ugyanabból a
@@ -2810,24 +2861,49 @@ export async function runAgentToolLoop(params: {
         }
 
         const archived = await loadArchivedContent(path)
-        if (!archived) {
+        let sourceContent = archived?.content ?? null
+        let sourceLabel = 'archívum'
+
+        // Workspace JSON fallback: a modell gyakran a kivonat/API eredmény
+        // hétköznapi path-ját adja (nyilvantartas.json), nem a `.tool-results/`
+        // archívumét. Korábban ez „archívum nem található” → kényszer-file_read.
+        if (!sourceContent && params.readWorkspaceFile && isSafeWorkspaceRelativePath(path)) {
+          try {
+            const workspaceContent = await params.readWorkspaceFile(path)
+            if (workspaceContent != null) {
+              sourceContent = workspaceContent
+              sourceLabel = 'munkaterület'
+              rememberArchived(path, {
+                content: workspaceContent,
+                bytes: Buffer.byteLength(workspaceContent, 'utf8'),
+                toolName: 'workspace_file',
+              })
+            }
+          } catch (error) {
+            logger.warn({ path, error }, 'agent.tool_loop.extract_workspace_fallback_failed')
+          }
+        }
+
+        if (!sourceContent) {
           pushToolResult(
             call,
-            `HIBA: nincs ilyen elmentett tool-eredmény: ${path}. Ellenőrizd a path-ot, vagy futtasd újra az eredeti eszközt és mentsd a munkaterületre.`,
+            `HIBA: nincs ilyen JSON forrás: ${path}. ` +
+              'Használhatsz `.tool-results/…` / `tool-outputs/…` archívumot VAGY közvetlen munkaterületi JSON path-ot. ' +
+              'Ha az eredeti API/parse eredmény még nincs fájlban, futtasd újra és extracteld az archívum path-ról.',
             'barren',
           )
           await emitActivity({
             id: `tool-${call.id}`,
             kind: 'tool',
             title: TOOL_RESULT_EXTRACT,
-            detail: 'archívum nem található',
+            detail: 'forrás nem található',
             status: 'error',
             archivePath: path,
           })
           continue
         }
 
-        const extracted = extractToolResultRows(archived.content, { fields, arrayPath })
+        const extracted = extractToolResultRows(sourceContent, { fields, arrayPath })
         if (!extracted.ok) {
           pushToolResult(call, `HIBA: ${extracted.error}`, 'barren')
           await emitActivity({
@@ -2866,7 +2942,9 @@ export async function runAgentToolLoop(params: {
           sampleRows: extracted.rows.slice(0, 3),
           bytes: written.bytes,
         })
-        pushToolResult(call, summary, 'new', { fingerprintContent: `${outputPath}:${extracted.rowCount}` })
+        pushToolResult(call, `${summary}\n(forrás: ${sourceLabel})`, 'new', {
+          fingerprintContent: `${outputPath}:${extracted.rowCount}`,
+        })
         await emitActivity({
           id: `tool-${call.id}`,
           kind: 'tool',
@@ -3002,6 +3080,38 @@ export async function runAgentToolLoop(params: {
         continue
       }
 
+      // Chunkolt file_read thrash: ugyanaz a path más offsettel is számít.
+      // Nagy JSON listához extract / reconcile kell, nem 10+ szelet.
+      if (toolName === 'file_read') {
+        const readPath =
+          typeof call.input?.path === 'string' ? call.input.path.trim() : ''
+        if (readPath) {
+          const reads = (fileReadCallsByPath.get(readPath) ?? 0) + 1
+          fileReadCallsByPath.set(readPath, reads)
+          if (reads > FILE_READ_PATH_CALL_LIMIT) {
+            noteBarrenToolResult()
+            toolCallCount += 1
+            messages.push({
+              role: 'tool',
+              toolCallId: call.id,
+              toolName: call.name,
+              content:
+                `[LOOP-GUARD] A(z) "${readPath}" fájlt már ${reads - 1}× olvastad ebben a futásban (különböző offset/limit is számít). ` +
+                'Ne chunkold tovább. Használd: tool_result_extract (mezőkivonat) → reconcile_records / tulajdoni_lap_egyeztetes / xlsx_append_rows. ' +
+                'A teljes listát NE hozd be a kontextusba.',
+            })
+            await emitActivity({
+              id: `tool-${call.id}`,
+              kind: 'tool',
+              title: call.name,
+              detail: `loop-guard: ugyanaz a path ${reads - 1}× — extract/reconcile`,
+              status: 'skipped',
+            })
+            continue
+          }
+        }
+      }
+
       try {
         await emitActivity({
           id: `tool-${call.id}`,
@@ -3117,9 +3227,22 @@ export async function runAgentToolLoop(params: {
         const resultBody = result.denied
           ? `DENIED:${result.reason ?? ''}`
           : JSON.stringify(result.result)
+        // file_read: a totalLines ismert → ne unknownSourceChars (200k) legyen a keret,
+        // különben a chunk-thrash sokáig „új eredménynek” számít.
+        let ingestSourceChars: number | null = null
+        if (!result.denied && toolName === 'file_read' && result.result && typeof result.result === 'object') {
+          const totalLines = (result.result as { totalLines?: unknown }).totalLines
+          if (typeof totalLines === 'number' && Number.isFinite(totalLines) && totalLines > 0) {
+            ingestSourceChars = Math.round(totalLines * 80)
+          }
+        }
         const redundantIngest =
           !result.denied &&
-          noteSourceIngest(toolCallSourceKey(toolName, call.input), resultBody.length, null)
+          noteSourceIngest(
+            toolCallSourceKey(toolName, call.input),
+            resultBody.length,
+            ingestSourceChars,
+          )
         if (
           toolName === 'web_search' &&
           result.denied &&
@@ -3502,7 +3625,7 @@ async function loadHttpApiConnectorsForGate(
     lines.push(`Hozzáférés: ${writeAllowed ? 'olvasás + írás' : 'csak olvasás'}`)
     if (!writeAllowed) {
       lines.push(
-        'ÍRÁSJOG NINCS: ezen a connectoron a http_api_request (POST/PUT/PATCH/DELETE) TILOS és jóváhagyással sem oldható fel. Csak http_api_get (GET/HEAD) hívható.',
+        'ÍRÁSJOG NINCS: ezen a connectoron a http_api_request (POST/PUT/PATCH/DELETE) TILOS és jóváhagyással sem oldható fel. Csak http_api_get / http_api_get_all (GET) hívható.',
       )
     }
     if (config.baseUrl) lines.push(`Base URL: ${config.baseUrl}`)
@@ -3557,7 +3680,7 @@ async function loadHttpApiConnectorsForGate(
         )
       } else {
         lines.push(
-          'Olvasó (risk=read / GET) végpont → http_api_get. A „NEM HÍVHATÓ” végpontokat ne próbáld http_api_request-tel.',
+          'Olvasó (risk=read / GET) végpont → http_api_get vagy lapozott listához http_api_get_all. A „NEM HÍVHATÓ” végpontokat ne próbáld http_api_request-tel.',
         )
       }
     }
@@ -3567,9 +3690,9 @@ async function loadHttpApiConnectorsForGate(
   return {
     gateConnectors,
     spec: [
-      'A hozzád rendelt külső REST API(k) — olvasáshoz http_api_get, íráshoz (csak ha a connector Hozzáférés sora „olvasás + írás”) http_api_request eszközt hívj. Ha több API-kapcsolat van, add meg a megfelelő connectorId-t. A path a Base URL-hez relatív; az API-kulcsot és a konfigurált fejléceket a rendszer injektálja, neked nem kell megadnod.',
+      'A hozzád rendelt külső REST API(k) — olvasáshoz http_api_get (egy oldal) vagy http_api_get_all (lapozott lista egy hívásban), íráshoz (csak ha a connector Hozzáférés sora „olvasás + írás”) http_api_request eszközt hívj. Ha több API-kapcsolat van, add meg a megfelelő connectorId-t. A path a Base URL-hez relatív; az API-kulcsot és a konfigurált fejléceket a rendszer injektálja, neked nem kell megadnod.',
       'A headers mezőben kizárólag az adott endpoint „Hívói fejlécek” listájában szereplő értékeket add meg. Ne találj ki auth-, trace- vagy idempotencia-fejlécet: amit a lista nem kér, azt a platform kezeli vagy tiltja.',
-      'Hatékony lekérdezés: NE töltsd le a teljes listákat (pl. /accounts, /documents) szűrés nélkül. Ha van kereső/query paraméter (search, q, filter, helyrajzi szám, ügyfélnév), használd. Először a releváns egyedi rekordot keresd.',
+      'Hatékony lekérdezés: lapozott nagy listához http_api_get_all (ne page=1,2,3…). Ha van kereső/query paraméter (search, q, filter), használd. Először a releváns egyedi rekordot keresd.',
       ...blocks,
     ].join('\n\n'),
   }

@@ -127,7 +127,7 @@ function findRecordArray(root: unknown, arrayPath?: string): unknown[] | null {
   if (Array.isArray(root)) return root
   if (root && typeof root === 'object') {
     // Gyakori burkolók — arrayPath nélkül is megtaláljuk a rekordtömböt.
-    for (const key of ['data', 'items', 'results', 'records', 'rows']) {
+    for (const key of ['data', 'items', 'results', 'records', 'rows', 'ownerships']) {
       const value = (root as Record<string, unknown>)[key]
       if (Array.isArray(value)) return value
     }
@@ -136,6 +136,25 @@ function findRecordArray(root: unknown, arrayPath?: string): unknown[] | null {
     if (arrays.length === 1) return arrays[0] as unknown[]
   }
   return null
+}
+
+/** Hibaszöveghez: top-level kulcsok + melyik tömbök találhatók. */
+export function describeJsonShapeHints(parsed: unknown): string {
+  if (Array.isArray(parsed)) return 'a gyökér tömb (arrayPath nem kell)'
+  if (!parsed || typeof parsed !== 'object') return 'nem objektum/tömb'
+  const entries = Object.entries(parsed as Record<string, unknown>)
+  const keys = entries.map(([k]) => k).slice(0, 12)
+  const arrayKeys = entries
+    .filter(([, v]) => Array.isArray(v))
+    .map(([k, v]) => `${k}[${(v as unknown[]).length}]`)
+    .slice(0, 8)
+  const parts = [`top-level kulcsok: ${keys.join(', ') || '(üres)'}`]
+  if (arrayKeys.length > 0) {
+    parts.push(`tömbök: ${arrayKeys.join(', ')} — arrayPath-nak ezek egyikét add meg`)
+  } else {
+    parts.push('nincs top-level tömb; nestelt tömbhöz add meg a pontos arrayPath-ot (pl. data.items)')
+  }
+  return parts.join('; ')
 }
 
 /** Mezőlista szerinti kivonat — tiszta függvény, I/O nélkül. */
@@ -150,16 +169,17 @@ export function extractToolResultRows(
 
   const parsed = parseToolResultJson(content)
   if (parsed == null) {
-    return { ok: false, error: 'az archívum tartalma nem érvényes JSON' }
+    return { ok: false, error: 'a forrás tartalma nem érvényes JSON' }
   }
 
   const array = findRecordArray(parsed, input.arrayPath)
   if (!array) {
+    const hints = describeJsonShapeHints(parsed)
     return {
       ok: false,
       error: input.arrayPath
-        ? `nem található tömb a(z) "${input.arrayPath}" útvonalon`
-        : 'nem található rekordtömb a JSON-ban (add meg az arrayPath-ot)',
+        ? `nem található tömb a(z) "${input.arrayPath}" útvonalon (${hints})`
+        : `nem található rekordtömb a JSON-ban — add meg az arrayPath-ot (${hints})`,
     }
   }
 
@@ -181,7 +201,8 @@ export function buildExtractSummary(input: {
     `Mezők: ${input.fields.join(', ')}.`,
     `Mintasorok (${samples.length}/${input.rowCount}):`,
     JSON.stringify(samples, null, 2),
-    'A teljes kivonat a munkaterületen van — NE olvasd vissza az eredeti archívumot. Dolgozz a kimeneti fájlból (file_read / file_write / xlsx_append_rows / egyeztető eszköz).',
+    'A teljes kivonat a munkaterületen van — NE olvasd vissza az eredeti forrást chunkolt file_read-del.',
+    'Tovább: reconcile_records / tulajdoni_lap_egyeztetes / xlsx_append_rows a kimeneti fájlból.',
   ].join('\n')
 }
 
@@ -202,9 +223,10 @@ export function formatLargeToolResultPreview(input: {
     `[Nagy tool-eredmény] A teljes eredmény elmentve: ${input.archivePath}`,
     `Munkaterületi másolat (ezt használd tovább): ${input.workspacePath}`,
     `Méret: ${input.chars} karakter, ${input.bytes} bájt. Az alábbi csak előnézet.`,
-    `NE olvasd vissza a teljes tartalmat a kontextusba. A további feldolgozáshoz:`,
-    `1) tool_result_extract — path="${input.archivePath}", fields=[…], outputPath="…" — mezőkivonat fájlba, a válasz csak a sorok számát adja;`,
-    `2) vagy dolgozz a munkaterületi másolatból (file_write / xlsx_append_rows / egyeztető eszköz).`,
+    `NE olvasd vissza a teljes tartalmat a kontextusba (ne file_read chunkolás). A további feldolgozáshoz:`,
+    `1) tool_result_extract — path="${input.archivePath}" VAGY path="${input.workspacePath}", fields=[…], outputPath="…" — mezőkivonat fájlba;`,
+    `2) két lista egyeztetéséhez: reconcile_records (vagy tulajdoni_lap_egyeztetes) — NE párosíts a modellben;`,
+    `3) Excelhez: xlsx_append_rows a kivonat/egyeztető eredményből.`,
     'A teljes lista / pontos számítás a munkaterületi fájlból készüljön, ne a promptból.',
     '--- előnézet ---',
     input.previewText,

@@ -423,6 +423,18 @@ export type GmailSendArgs = {
 export type HttpApiQuery = Record<string, string | number | boolean>
 export type HttpApiHeaders = Record<string, string>
 export type HttpApiGetArgs = { connectorId?: string; path: string; query?: HttpApiQuery; headers?: HttpApiHeaders }
+export type HttpApiGetAllArgs = {
+  connectorId?: string
+  path: string
+  query?: HttpApiQuery
+  headers?: HttpApiHeaders
+  pageParam?: string
+  pageSizeParam?: string
+  pageSize?: number
+  startPage?: number
+  maxPages?: number
+  arrayPath?: string
+}
 export type HttpApiRequestArgs = {
   connectorId?: string
   method: 'POST' | 'PUT' | 'PATCH' | 'DELETE'
@@ -432,6 +444,14 @@ export type HttpApiRequestArgs = {
   body?: unknown
 }
 export type HttpApiCallResult = { status: number; ok: boolean; body: unknown }
+export type HttpApiGetAllResult = {
+  ok: boolean
+  path: string
+  pageCount: number
+  itemCount: number
+  items: unknown[]
+  error?: string
+}
 
 export type GmailSearchResult = { messages: Array<Record<string, string>> }
 export type GmailGetMessageResult = Record<string, string>
@@ -653,6 +673,7 @@ export type ToolBrokerInvokeInput =
   | (ToolInvokeBase & { tool: 'gmail_create_draft'; args: GmailCreateDraftArgs })
   | (ToolInvokeBase & { tool: 'gmail_send'; args: GmailSendArgs })
   | (ToolInvokeBase & { tool: 'http_api_get'; args: HttpApiGetArgs })
+  | (ToolInvokeBase & { tool: 'http_api_get_all'; args: HttpApiGetAllArgs })
   | (ToolInvokeBase & { tool: 'http_api_request'; args: HttpApiRequestArgs })
   | (ToolInvokeBase & { tool: 'repo_prepare'; args: RepoPrepareArgs })
   | (ToolInvokeBase & { tool: 'repo_open_pull_request'; args: RepoOpenPullRequestArgs })

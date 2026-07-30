@@ -39,6 +39,21 @@ export const MAX_PATTERN_LENGTH = MAX_SAFE_REGEX_LENGTH
 /** Egy soron ekkora hosszig futtatunk regexet; a többit levágjuk (visszalépés-plafon). */
 export const MAX_LINE_SCAN_LENGTH = 20_000
 
+/**
+ * Hosszú (pl. minifikált JSON) sorokon a minta a 20k után is kereshető:
+ * átfedő ablakokkal scannelünk, ReDoS-plafon ablakonként megmarad.
+ */
+export function lineMatchesUserRegex(line: string, regex: RegExp, maxWindow = MAX_LINE_SCAN_LENGTH): boolean {
+  if (line.length <= maxWindow) return regex.test(line)
+  const overlap = Math.min(256, Math.floor(maxWindow / 4))
+  for (let start = 0; start < line.length; start += maxWindow - overlap) {
+    const slice = line.slice(start, start + maxWindow)
+    if (regex.test(slice)) return true
+    if (start + maxWindow >= line.length) break
+  }
+  return false
+}
+
 /** file_search: legfeljebb ennyi fájlt olvasunk be egy keresésre. */
 export const MAX_SEARCH_FILES = 5_000
 

@@ -934,6 +934,22 @@ export const toolInvokeSchema = z.discriminatedUnion('tool', [
     }),
   }),
   z.object({
+    tool: z.literal('http_api_get_all'),
+    ...toolInvokeBaseSchema,
+    args: z.object({
+      connectorId: z.string().uuid().optional(),
+      path: z.string().min(1).max(1000),
+      query: z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).optional(),
+      headers: z.record(z.string(), z.string().max(4000)).optional(),
+      pageParam: z.string().min(1).max(64).optional(),
+      pageSizeParam: z.string().min(1).max(64).optional(),
+      pageSize: z.number().int().min(1).max(500).optional(),
+      startPage: z.number().int().min(0).max(10_000).optional(),
+      maxPages: z.number().int().min(1).max(200).optional(),
+      arrayPath: z.string().min(1).max(200).optional(),
+    }),
+  }),
+  z.object({
     tool: z.literal('http_api_request'),
     ...toolInvokeBaseSchema,
     args: z.object({

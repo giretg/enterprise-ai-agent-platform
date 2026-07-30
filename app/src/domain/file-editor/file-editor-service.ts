@@ -4,6 +4,7 @@ import {
   assertPatternLength,
   buildUserRegex,
   compileRegex,
+  lineMatchesUserRegex,
   MAX_LINE_SCAN_LENGTH,
   MAX_SEARCH_FILES,
 } from './safe-pattern'
@@ -363,11 +364,10 @@ export class FileEditorService {
       if (!buf) continue
       const lines = buf.toString('utf8').split('\n')
       for (let i = 0; i < lines.length; i++) {
-        // Sor-hossz plafon: a maradék (polinomiális) visszalépést is behatárolja.
+        // Sor-hossz plafon ablakonként (ReDoS); hosszú JSON sorokon átfedő scan.
         const line = lines[i]
-        const scanned = line.length > MAX_LINE_SCAN_LENGTH ? line.slice(0, MAX_LINE_SCAN_LENGTH) : line
-        if (regex.test(scanned)) {
-          matches.push({ path: filePath, lineNumber: i + 1, line })
+        if (lineMatchesUserRegex(line, regex)) {
+          matches.push({ path: filePath, lineNumber: i + 1, line: line.slice(0, MAX_LINE_SCAN_LENGTH) })
           if (matches.length >= maxResults) {
             truncated = true
             break outer

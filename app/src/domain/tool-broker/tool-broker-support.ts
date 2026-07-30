@@ -636,6 +636,22 @@ export function argsMeta(
     }
   }
 
+  if (input.tool === 'http_api_get_all') {
+    return {
+      ...base,
+      connectorId: input.args.connectorId ?? null,
+      method: 'GET',
+      path: input.args.path,
+      queryKeys: Object.keys(input.args.query ?? {}).sort(),
+      headerKeys: Object.keys(input.args.headers ?? {}).map((name) => name.toLowerCase()).sort(),
+      pageParam: input.args.pageParam ?? 'page',
+      pageSizeParam: input.args.pageSizeParam ?? 'pageSize',
+      pageSize: input.args.pageSize ?? null,
+      maxPages: input.args.maxPages ?? null,
+      arrayPath: input.args.arrayPath ?? null,
+    }
+  }
+
   if (input.tool === 'http_api_request') {
     return {
       ...base,

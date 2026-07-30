@@ -672,7 +672,7 @@ async function ensureToolBrokerSeed(agentId: string) {
     update: { accessMode: 'write' },
   })
 
-  for (const toolName of ['http_api_get', 'http_api_request']) {
+  for (const toolName of ['http_api_get', 'http_api_get_all', 'http_api_request']) {
     await prisma.capability.upsert({
       where: { agentId_toolName: { agentId, toolName } },
       create: { agentId, toolName, allowed: true },

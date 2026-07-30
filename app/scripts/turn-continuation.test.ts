@@ -78,6 +78,7 @@ check('continuation prompt: ne kezdj elölről + aktivitások', () => {
     ['egyeztetes.xlsx'],
   )
   assert.match(prompt, /NE kezdd elölről/)
+  assert.match(prompt, /reconcile_records/)
   assert.match(prompt, /tulajdoni_lap_parse/)
   assert.match(prompt, /xlsx_append_rows/)
   assert.match(prompt, /egyeztetes\.xlsx/)
