@@ -35,6 +35,8 @@ export const TOOL_TRUST_REGISTRY: Record<ToolName, TrustClass> = {
   document_read: 'external_untrusted',
   tulajdoni_lap_parse: 'external_untrusted',
   tulajdoni_lap_egyeztetes: 'external_untrusted',
+  // Workspace fájlok determinisztikus átalakítása (mint file_write).
+  reconcile_records: 'trusted',
 
   // ── internal: a tenant belső rendszeréből ──────────────────────────────────
   kb_search: 'internal',
@@ -137,8 +139,9 @@ export const SIDE_EFFECTING_TOOLS: Record<ToolName, boolean> = {
   web_research_request: false,
   document_read: false,
   tulajdoni_lap_parse: false,
-  // Munkaterületre ír (egyeztető munkafüzet) — mellékhatásos.
+  // Munkaterületre ír — mellékhatásos.
   tulajdoni_lap_egyeztetes: true,
+  reconcile_records: true,
   kb_search: false,
   kb_list_index: false,
   kb_get_page: false,

@@ -74,6 +74,7 @@ export const TOOL_REQUIREMENTS: Partial<Record<
   /** Csak workspace-path ágon (documentId UUID esetén az authorizer korán kilép). */
   tulajdoni_lap_parse: { connectorType: 'workspace', accessMode: 'read' },
   tulajdoni_lap_egyeztetes: { connectorType: 'workspace', accessMode: 'write' },
+  reconcile_records: { connectorType: 'workspace', accessMode: 'write' },
   pptx_create: { connectorType: 'workspace', accessMode: 'write' },
   'sandbox_app.create': { connectorType: 'board', accessMode: 'write' },
   'sandbox_app.update_artifact': { connectorType: 'board', accessMode: 'write' },

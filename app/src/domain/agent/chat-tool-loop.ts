@@ -112,6 +112,7 @@ export const CHAT_PLATFORM_TOOLS = [
   'document_read',
   'tulajdoni_lap_parse',
   'tulajdoni_lap_egyeztetes',
+  'reconcile_records',
 ] as const
 
 export type ChatPlatformToolName = (typeof CHAT_PLATFORM_TOOLS)[number]
@@ -657,6 +658,44 @@ const TOOL_SCHEMAS: Record<ChatPlatformToolName, ToolSchema> = {
       [],
     ),
   },
+  reconcile_records: {
+    description:
+      'Két JSON-lista DETERMINISZTIKUS egyeztetése a munkaterületen: kulcsmezők alapján párosít, ' +
+      'státuszt ad (Rendben / Módosítás szükséges / Új rekord / Törlés szükséges), a teljes egyesített ' +
+      'listát fájlba írja. A válasz csak összegzést + bizonytalan párokat ad — NE olvasd vissza a ' +
+      'teljes listát a kontextusba.\n' +
+      'Használd bármilyen nagy adathalmazú egyeztetéshez (CRM, nyilvántartás, inventory), ne kézzel ' +
+      'párosíts a modellben.\n' +
+      'leftPath / rightPath: workspace JSON (tömb vagy { rows|sorok|items|data|records }).\n' +
+      'keyFields: azonosító mezők. normalize: mező→trim|lower|hu-name|year.\n' +
+      'compareFields: eltérés-vizsgálat (exact / number+epsilon / fraction). fractionFields / ' +
+      'numberTolerances gyorsítócímkék.',
+    inputSchema: objectSchema(
+      {
+        leftPath: STR,
+        rightPath: STR,
+        outputPath: STR,
+        keyFields: { type: 'array', items: STR },
+        normalize: { type: 'object', additionalProperties: { type: 'string' } },
+        compareFields: {
+          type: 'array',
+          items: {
+            oneOf: [
+              { type: 'string' },
+              objectSchema({
+                field: STR,
+                mode: { type: 'string', enum: ['exact', 'number', 'fraction'] },
+                epsilon: NUM,
+              }),
+            ],
+          },
+        },
+        fractionFields: { type: 'array', items: STR },
+        numberTolerances: { type: 'object', additionalProperties: NUM },
+      },
+      ['leftPath', 'rightPath', 'outputPath', 'keyFields'],
+    ),
+  },
   pptx_create: {
     description:
       'PowerPoint prezentáció (valódi .pptx, 16:9) létrehozása diákból. Bemutató / prezentáció / slide-deck készítéséhez EZT hívd — ne file_write-ot, HTML-t vagy PDF-et. ' +
@@ -1153,6 +1192,12 @@ function describeToolCall(tool: string, args: Record<string, unknown>): string |
           ? shortText(args.nyilvantartasPath, 40)
           : 'nyilvántartás nélkül'
       return `${src} — ${reg}`
+    }
+    case 'reconcile_records': {
+      const left = typeof args.leftPath === 'string' ? shortText(args.leftPath, 32) : '?'
+      const right = typeof args.rightPath === 'string' ? shortText(args.rightPath, 32) : '?'
+      const out = typeof args.outputPath === 'string' ? shortText(args.outputPath, 32) : '?'
+      return `${left} ↔ ${right} → ${out}`
     }
     case 'agent_catalog':
     case 'agent_resolve':
@@ -1720,6 +1765,46 @@ function buildToolInvoke(
           kimenet: typeof args.kimenet === 'string' ? args.kimenet : undefined,
         },
       }
+
+    case 'reconcile_records': {
+      const keyFields = Array.isArray(args.keyFields)
+        ? args.keyFields.filter((v): v is string => typeof v === 'string' && v.trim().length > 0)
+        : []
+      const normalize =
+        args.normalize && typeof args.normalize === 'object' && !Array.isArray(args.normalize)
+          ? (args.normalize as Record<string, 'trim' | 'lower' | 'hu-name' | 'year'>)
+          : undefined
+      const numberTolerances =
+        args.numberTolerances &&
+        typeof args.numberTolerances === 'object' &&
+        !Array.isArray(args.numberTolerances)
+          ? Object.fromEntries(
+              Object.entries(args.numberTolerances as Record<string, unknown>).filter(
+                (entry): entry is [string, number] => typeof entry[1] === 'number',
+              ),
+            )
+          : undefined
+      return {
+        ...common,
+        tool: 'reconcile_records',
+        args: {
+          leftPath: strArg(args, 'leftPath'),
+          rightPath: strArg(args, 'rightPath'),
+          outputPath: strArg(args, 'outputPath'),
+          keyFields,
+          normalize,
+          compareFields: Array.isArray(args.compareFields)
+            ? (args.compareFields as Array<
+                string | { field: string; mode?: 'exact' | 'number' | 'fraction'; epsilon?: number }
+              >)
+            : undefined,
+          fractionFields: Array.isArray(args.fractionFields)
+            ? args.fractionFields.filter((v): v is string => typeof v === 'string')
+            : undefined,
+          numberTolerances,
+        },
+      }
+    }
 
     case 'tulajdoni_lap_parse':
       return {

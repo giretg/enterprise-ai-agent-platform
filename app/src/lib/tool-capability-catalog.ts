@@ -14,6 +14,7 @@ export const NORMAL_TOOL_CAPABILITY_GROUPS = [
       'repo_prepare',
       'file_read', 'file_write', 'file_edit', 'file_list',
       'file_glob', 'file_search', 'file_delete',
+      'reconcile_records',
     ],
   },
   {

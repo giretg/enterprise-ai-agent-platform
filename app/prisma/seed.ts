@@ -617,6 +617,7 @@ async function ensureToolBrokerSeed(agentId: string) {
     'pdf_create',
     'document_read',
     'pptx_create',
+    'reconcile_records',
   ]) {
     await prisma.capability.upsert({
       where: { agentId_toolName: { agentId, toolName } },
@@ -1082,6 +1083,7 @@ async function ensureHSMOfficerAgent(adminId: string) {
     'file_read',
     'file_write',
     'file_list',
+    'reconcile_records',
   ]) {
     await prisma.capability.upsert({
       where: { agentId_toolName: { agentId: agent.id, toolName } },

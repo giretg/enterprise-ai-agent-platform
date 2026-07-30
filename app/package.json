@@ -64,6 +64,7 @@
     "test:scheduled-task-enterprise": "tsx scripts/scheduled-task-enterprise.test.ts",
     "test:provisioning": "tsx scripts/provisioning-assistant.test.ts",
     "test:connector-secret-alias-policy": "tsx scripts/connector-secret-alias-policy.test.ts",
+    "test:connector-api-key-rotate": "tsx scripts/connector-api-key-rotate.test.ts",
     "test:provisioning-governance": "tsx scripts/provisioning-governance.test.ts",
     "test:openapi-extractor": "tsx scripts/openapi-config-extractor.test.ts",
     "test:self-updating-connector": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/self-updating-connector.test.ts",
@@ -185,7 +186,8 @@
     "test:e2e": "playwright test",
     "test:e2e:ui": "playwright test --ui",
     "postinstall": "prisma generate",
-    "test:tool-result-extract": "tsx scripts/tool-result-extract.test.ts"
+    "test:tool-result-extract": "tsx scripts/tool-result-extract.test.ts",
+    "test:reconcile-records": "tsx scripts/reconcile-records.test.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

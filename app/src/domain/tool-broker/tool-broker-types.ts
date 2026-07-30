@@ -343,6 +343,42 @@ export type TulajdoniLapEgyeztetesArgs = {
   kimenet?: string
 }
 
+/** Két workspace JSON-lista determinisztikus egyeztetése (issue #179). */
+export type ReconcileRecordsArgs = {
+  leftPath: string
+  rightPath: string
+  outputPath: string
+  keyFields: string[]
+  /** Mező → normalizálás a kulcs-összehasonlításhoz. */
+  normalize?: Record<string, 'trim' | 'lower' | 'hu-name' | 'year'>
+  /** Összevetendő mezők (string = exact, vagy { field, mode, epsilon }). */
+  compareFields?: Array<string | { field: string; mode?: 'exact' | 'number' | 'fraction'; epsilon?: number }>
+  /** Gyorsítócímke: ezek fraction módú compareFields-ek. */
+  fractionFields?: string[]
+  /** Gyorsítócímke: mező → abszolút szám-tűrés. */
+  numberTolerances?: Record<string, number>
+}
+
+export type ReconcileRecordsResult = {
+  ok: boolean
+  outputPath: string
+  summary: {
+    total: number
+    rendben: number
+    modositas: number
+    ujRekord: number
+    torles: number
+    uncertain: number
+  }
+  uncertainCount: number
+  message: string
+  uncertain: Array<{
+    note: string
+    left: Record<string, unknown>
+    right: Record<string, unknown>
+  }>
+}
+
 export type TulajdoniLapEgyeztetesResult = {
   ok: boolean
   /** A lap ellenőrzése bukott (hányadösszeg ≠ 1) — ilyenkor nem készül tábla. */
@@ -657,6 +693,7 @@ export type ToolBrokerInvokeInput =
       tool: 'tulajdoni_lap_egyeztetes'
       args: TulajdoniLapEgyeztetesArgs
     })
+  | (ToolInvokeBase & { tool: 'reconcile_records'; args: ReconcileRecordsArgs })
 
 /**
  * Bizalmi osztály MINDEN eszköz-eredményen (issue #97). Determinisztikus, a

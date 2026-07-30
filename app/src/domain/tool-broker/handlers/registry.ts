@@ -23,6 +23,7 @@ import { gmailHandler } from './gmail.handler'
 import { memoryProposeHandler } from './memory.handler'
 import { documentReadHandler } from './document-read.handler'
 import { tulajdoniLapEgyeztetesHandler, tulajdoniLapHandler } from './tulajdoni-lap.handler'
+import { reconcileRecordsHandler } from './reconcile-records.handler'
 
 export const TOOL_HANDLERS: readonly ToolHandler[] = [
   kbHandler,
@@ -42,6 +43,7 @@ export const TOOL_HANDLERS: readonly ToolHandler[] = [
   documentReadHandler,
   tulajdoniLapHandler,
   tulajdoniLapEgyeztetesHandler,
+  reconcileRecordsHandler,
 ]
 
 export function resolveToolHandler(tool: string): ToolHandler | undefined {

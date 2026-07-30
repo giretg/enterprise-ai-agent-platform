@@ -4,7 +4,7 @@ description: Tulajdoni lap összevetése a saját tulajdonosi nyilvántartásunk
 max-wall-clock-ms: 900000
 max-tool-calls: 60
 preferred-mode: task
-allowed-tools: tulajdoni_lap_egyeztetes, tulajdoni_lap_parse, http_api_get, file_write, file_read, tool_result_extract, xlsx_append_rows
+allowed-tools: tulajdoni_lap_egyeztetes, tulajdoni_lap_parse, http_api_get, file_write, file_read, tool_result_extract, reconcile_records, xlsx_append_rows
 ---
 
 # Mi a feladat
@@ -85,6 +85,11 @@ megírását. **Ne bontsd szét**: ne lapozd végig a `tulajdoni_lap_parse`
 tulajdonos-nézetét a kontextusba, ne készíts köztes JSON-t a párosításról a
 promptban, és ne írj cellánként Excelt — az sokszoros költség, és rendszeresen
 kifut a forduló keretéből. A párosítás determinisztikus munka: a kód végzi.
+
+Általános (nem tulajdoni-lap) listák egyeztetéséhez a platform
+`reconcile_records` eszközét használd: két workspace JSON + `keyFields` →
+státuszos unió fájlba, a modell csak az összegzést és a bizonytalan párokat
+kapja.
 
 A `tulajdoni_lap_parse`-ot csak akkor hívd, ha az egyeztetésen túl kell
 magyaráznod valamit: pl. egy eltérés eredetét keresed a törölt bejegyzésekben

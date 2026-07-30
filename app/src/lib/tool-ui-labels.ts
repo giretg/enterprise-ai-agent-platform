@@ -133,6 +133,12 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
       'Egy lépésben összeveti a tulajdoni lapot a nyilvántartás soraival, és kész Excel ' +
       'egyeztető táblát ír a munkaterületre (Rendben / Módosítás / Törlés / Új rekord).',
   },
+  reconcile_records: {
+    label: 'Rekordok egyeztetése',
+    description:
+      'Két JSON-lista determinisztikus párosítása kulcsmezőkkel; az egyesített lista fájlba kerül, ' +
+      'a válasz csak összegzést és a bizonytalan párokat adja.',
+  },
 
   // Mini-app
   'sandbox_app.create': {

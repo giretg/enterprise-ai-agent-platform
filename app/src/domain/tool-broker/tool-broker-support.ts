@@ -790,6 +790,19 @@ export function argsMeta(
     }
   }
 
+  if (input.tool === 'reconcile_records') {
+    return {
+      ...base,
+      leftPath: input.args.leftPath,
+      rightPath: input.args.rightPath,
+      outputPath: input.args.outputPath,
+      keyFields: input.args.keyFields,
+      compareFieldCount: Array.isArray(input.args.compareFields)
+        ? input.args.compareFields.length
+        : 0,
+    }
+  }
+
   return {
     ...base,
     ticketId: input.args.ticketId,
