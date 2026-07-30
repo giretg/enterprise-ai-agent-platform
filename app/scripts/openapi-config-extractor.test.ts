@@ -247,6 +247,46 @@ async function run() {
     assert.equal(toolByName(result, 'listOrders').idempotent, undefined)
   })
 
+  await test('generikus extractor megőrzi a connector-konfig nélkül nem injektált fejléceket', () => {
+    const spec = {
+      openapi: '3.0.3',
+      info: { title: 'CRM', version: '1.0.0' },
+      servers: [{ url: 'https://crm.example/api/v1' }],
+      components: {
+        securitySchemes: {
+          BearerAuth: { type: 'http', scheme: 'bearer' },
+        },
+      },
+      security: [{ BearerAuth: [] }],
+      paths: {
+        '/orders': {
+          get: {
+            operationId: 'listOrders',
+            parameters: [
+              { name: 'X-Agent-Id', in: 'header', required: true, schema: { type: 'string' } },
+              { name: 'X-Acting-User', in: 'header', required: true, schema: { type: 'string' } },
+              { name: 'X-Connector-Call-Id', in: 'header', required: true, schema: { type: 'string' } },
+              { name: 'Idempotency-Key', in: 'header', required: true, schema: { type: 'string' } },
+              { name: 'period', in: 'query', required: true, schema: { type: 'string' } },
+              { name: 'X-Request-Id', in: 'header', required: false, schema: { type: 'string' } },
+            ],
+          },
+        },
+      },
+    }
+    const result = tryExtractConnectorConfigFromOpenApi(JSON.stringify(spec), 'crm')
+    assert.equal(result.ok, true)
+    if (!result.ok) return
+    const tool = result.config.proposedTools.find((t) => t.name === 'listOrders')
+    assert.ok(tool)
+    const params = tool.parameters ?? []
+    assert.ok(params.some((p) => p.in === 'query' && p.name === 'period'))
+    assert.ok(params.some((p) => p.in === 'header' && p.name === 'X-Request-Id'))
+    for (const name of ['X-Agent-Id', 'X-Acting-User', 'X-Connector-Call-Id', 'Idempotency-Key']) {
+      assert.ok(params.some((p) => p.in === 'header' && p.name === name), `${name} header hiányzik`)
+    }
+  })
+
   await test('próza doksi → not_openapi (LLM fallback)', () => {
     const result = tryExtractConnectorConfigFromOpenApi('Acme CRM API. GET /v1/contacts')
     assert.equal(result.ok, false)

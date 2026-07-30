@@ -37,6 +37,8 @@ export type ConsequenceGateDecision = {
 export type HttpApiGateConnector = {
   id: string
   config: HttpApiConfig
+  /** Agent–connector assignment: csak `write` mellett futhat `http_api_request`. */
+  accessMode: 'read' | 'write'
 }
 
 /**
@@ -59,6 +61,37 @@ export function requiresConsequenceApproval(
     return { required: true, reason: 'unknown_tool' }
   }
   return { required: false }
+}
+
+/**
+ * Írásjog-ellenőrzés a következmény-kapu ELŐTT.
+ * Read-only assignment mellett a POST/PUT/… ne nyisson jóváhagyási kártyát —
+ * az úgysem futna le (`missing_http_api_connector_write_*`).
+ *
+ * Ha a connector nincs a katalógusban, nem döntünk itt (a broker authorizer dönt).
+ */
+export function evaluateHttpApiWriteGrant(
+  args: Record<string, unknown>,
+  connectors: HttpApiGateConnector[],
+): { allowed: true } | { allowed: false; reason: string; connectorId: string } {
+  const connector = pickHttpApiConnector(args.connectorId, connectors)
+  if (!connector) return { allowed: true }
+  if (connector.accessMode === 'write') return { allowed: true }
+  return {
+    allowed: false,
+    reason: `missing_http_api_connector_write_${connector.id}`,
+    connectorId: connector.id,
+  }
+}
+
+/** Modellnek szóló, actionable denied szöveg read-only connector + http_api_request esetén. */
+export function httpApiWriteGrantDeniedMessage(reason: string, connectorId: string): string {
+  return (
+    `DENIED: ${reason}. Ehhez a connectorhoz (connectorId=${connectorId}) csak olvasási jogod van — ` +
+    `a http_api_request (POST/PUT/PATCH/DELETE) nem futtatható, és jóváhagyással sem oldható fel. ` +
+    `Használj http_api_get-et (GET) olvasáshoz, vagy kérd meg a felhasználót, hogy írási jogot rendeljen a connectorhoz. ` +
+    `NE indítsd újra ugyanezt a http_api_request hívást.`
+  )
 }
 
 export function evaluateHttpApiRequestGate(

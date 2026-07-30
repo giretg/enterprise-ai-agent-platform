@@ -441,6 +441,137 @@ async function main() {
     )
   })
 
+  const crmTraceContext = {
+    agent: { id: 'agent-trace', version: 1 },
+    connector: { id: 'connector-trace', name: 'CRM' },
+    actingUser: { id: 'u1', email: 'u@example.com', tenantId: 't1' },
+    tenant: { id: 't1' },
+    call: { id: 'call-trace', idempotencyKey: 'idem-trace' },
+    now: { iso: '2026-07-30T00:00:00.000Z' },
+  }
+
+  await test('parse: requestHeaders-ben lévő kötelező OpenAPI header nem kerül headerParams-ba', () => {
+    const config = parseHttpApiConfig({
+      baseUrl: 'https://crm.example/api/v1',
+      auth: { scheme: 'bearer' },
+      requestHeaders: {
+        'X-Agent-Id': '{{agent.id}}',
+        'X-Acting-User': '{{actingUser.email}}',
+        'X-Connector-Call-Id': '{{call.id}}',
+      },
+      endpoints: [
+        {
+          method: 'GET',
+          path: '/orders',
+          parameters: [
+            { name: 'X-Agent-Id', in: 'header', required: true },
+            { name: 'X-Acting-User', in: 'header', required: true },
+            { name: 'X-Connector-Call-Id', in: 'header', required: true },
+            { name: 'X-Request-Id', in: 'header', required: false },
+          ],
+        },
+      ],
+    })
+    const ep = config.endpoints?.[0]
+    assert.ok(ep)
+    assert.deepEqual(ep.headerParams, [{ name: 'X-Request-Id', required: false }])
+  })
+
+  await test('parse: csak az adott metóduson ténylegesen injektált fejléceket szűri', () => {
+    const sharedParameters = [
+      { name: 'X-Write-Token', in: 'header', required: true },
+      { name: 'Idempotency-Key', in: 'header', required: true },
+    ]
+    const config = parseHttpApiConfig({
+      baseUrl: 'https://crm.example/api/v1',
+      auth: { scheme: 'bearer' },
+      writeHeaders: { 'X-Write-Token': '{{call.id}}' },
+      endpoints: [
+        { method: 'GET', path: '/orders', parameters: sharedParameters },
+        { method: 'POST', path: '/orders', idempotent: true, parameters: sharedParameters },
+      ],
+    })
+    assert.deepEqual(config.endpoints?.[0].headerParams, [
+      { name: 'X-Write-Token', required: true },
+      { name: 'Idempotency-Key', required: true },
+    ])
+    assert.equal(config.endpoints?.[1].headerParams, undefined)
+  })
+
+  await test('runtime: sablon-fedett required header nélkül is sikerül a hívás', async () => {
+    const calls: Array<{ init: RequestInit }> = []
+    const fakeFetch: typeof fetch = async (_input, init) => {
+      calls.push({ init: init ?? {} })
+      return new Response(JSON.stringify({ ok: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = fakeFetch
+    try {
+      // Szándékosan headerParams-ban hagyjuk a platform fejléceket (régi snapshot
+      // szimulációja) — a runtime sablon alapján akkor sem követeli a hívótól.
+      const config: HttpApiConfig = {
+        ...parseHttpApiConfig({
+          baseUrl: 'https://crm.example/api/v1',
+          auth: { scheme: 'bearer' },
+          requestHeaders: {
+            'X-Agent-Id': '{{agent.id}}',
+            'X-Acting-User': '{{actingUser.email}}',
+            'X-Connector-Call-Id': '{{call.id}}',
+          },
+          endpoints: [{ method: 'GET', path: '/orders' }],
+          restrictToEndpoints: true,
+        }),
+        endpoints: [
+          {
+            method: 'GET',
+            path: '/orders',
+            headerParams: [
+              { name: 'X-Agent-Id', required: true },
+              { name: 'X-Acting-User', required: true },
+              { name: 'X-Connector-Call-Id', required: true },
+            ],
+          },
+        ],
+      }
+      const client = new HttpApiClient(config, 'crm_key')
+      const res = await client.request({
+        method: 'GET',
+        path: '/orders',
+        context: crmTraceContext,
+      })
+      assert.equal(res.ok, true)
+      const headers = calls[0].init.headers as Record<string, string>
+      assert.equal(headers['X-Agent-Id'], 'agent-trace')
+      assert.equal(headers['X-Acting-User'], 'u@example.com')
+      assert.equal(headers['X-Connector-Call-Id'], 'call-trace')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await test('runtime: hívó által beadott platform-injektált header → platform_injected_header', async () => {
+    const config = parseHttpApiConfig({
+      baseUrl: 'https://crm.example/api/v1',
+      auth: { scheme: 'bearer' },
+      requestHeaders: { 'X-Agent-Id': '{{agent.id}}' },
+      endpoints: [{ method: 'GET', path: '/orders' }],
+      restrictToEndpoints: true,
+    })
+    const client = new HttpApiClient(config, 'crm_key')
+    await assert.rejects(
+      client.request({
+        method: 'GET',
+        path: '/orders',
+        headers: { 'X-Agent-Id': 'spoofed-agent' },
+        context: crmTraceContext,
+      }),
+      (e: unknown) => e instanceof HttpApiError && e.code === 'platform_injected_header',
+    )
+  })
+
   if (failures > 0) {
     console.error(`\n${failures} teszt elbukott.`)
     process.exit(1)

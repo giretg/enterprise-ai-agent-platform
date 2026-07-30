@@ -12,13 +12,16 @@
  *  (g) kapu után nincs újabb tool-kör;
  *  (h) http_api_request write/danger / nem allowlistelt → kapu (policy unit);
  *  (i) http_api_request allowlistelt read → auto (policy unit);
- *  (j) initialTainted NEM kapuzza a workspace-írást.
+ *  (j) initialTainted NEM kapuzza a workspace-írást;
+ *  (k) read-only connector + http_api_request → denied a HITL előtt (nincs jóváhagyási kártya).
  */
 import assert from 'node:assert/strict'
 import { runAgentToolLoop, type ToolLoopConsequenceApprovalEvent } from '../src/domain/agent/chat-tool-loop'
 import { resolveTrustClass } from '../src/domain/tool-broker/tool-trust-registry'
 import {
   evaluateHttpApiRequestGate,
+  evaluateHttpApiWriteGrant,
+  httpApiWriteGrantDeniedMessage,
   requiresConsequenceApproval,
 } from '../src/domain/tool-broker/consequence-gate-policy'
 import { EXTERNAL_DATA_WARNING, EXTERNAL_DATA_OPEN } from '../src/domain/tool-broker/tool-result-envelope'
@@ -255,7 +258,7 @@ async function main() {
   })
 
   await test('(h) http_api_request: nem allowlistelt / write / danger → kapu', async () => {
-    const connectors = [{ id: 'conn-1', config: sampleHttpConfig }]
+    const connectors = [{ id: 'conn-1', config: sampleHttpConfig, accessMode: 'write' as const }]
     assert.equal(
       evaluateHttpApiRequestGate(
         { connectorId: 'conn-1', method: 'POST', path: '/unknown' },
@@ -280,7 +283,7 @@ async function main() {
   })
 
   await test('(i) http_api_request: allowlistelt read → auto', async () => {
-    const connectors = [{ id: 'conn-1', config: sampleHttpConfig }]
+    const connectors = [{ id: 'conn-1', config: sampleHttpConfig, accessMode: 'write' as const }]
     // http_api_request GET allowlistelt read végpontra — ritka, de nem kapu.
     const d = evaluateHttpApiRequestGate(
       { connectorId: 'conn-1', method: 'GET', path: '/parcels' },
@@ -329,6 +332,7 @@ async function main() {
       {
         id: 'conn-1',
         config: { ...sampleHttpConfig, defaultRisk: 'write' as const },
+        accessMode: 'write' as const,
       },
     ]
     assert.equal(
@@ -338,6 +342,130 @@ async function main() {
       ).required,
       true,
     )
+  })
+
+  await test('write-grant: read-only connector → http_api_request tiltva a HITL előtt', () => {
+    const connectors = [{ id: 'crm-ro', config: sampleHttpConfig, accessMode: 'read' as const }]
+    const denied = evaluateHttpApiWriteGrant(
+      { connectorId: 'crm-ro', method: 'POST', path: '/parcels' },
+      connectors,
+    )
+    assert.equal(denied.allowed, false)
+    if (denied.allowed) return
+    assert.equal(denied.reason, 'missing_http_api_connector_write_crm-ro')
+    assert.match(
+      httpApiWriteGrantDeniedMessage(denied.reason, denied.connectorId),
+      /csak olvasási jogod van/,
+    )
+  })
+
+  await test('write-grant: write assignment → engedélyezett (HITL külön dönt)', () => {
+    const connectors = [{ id: 'crm-rw', config: sampleHttpConfig, accessMode: 'write' as const }]
+    assert.deepEqual(
+      evaluateHttpApiWriteGrant(
+        { connectorId: 'crm-rw', method: 'POST', path: '/parcels' },
+        connectors,
+      ),
+      { allowed: true },
+    )
+  })
+
+  await test('loop: read-only CRM + http_api_request → denied, NINCS jóváhagyási kártya', async () => {
+    const gw: GatewayCallArgs[] = []
+    let approvals = 0
+    const { broker, invoked, gated } = fakeToolBroker()
+    const toolCaps = {
+      findConnectorsForAgent: async () => [
+        {
+          connector: {
+            id: 'fee173de-read-only',
+            name: 'CRM ReadOnly',
+            type: 'http_api',
+            config: {
+              baseUrl: 'https://crm.example/api/v1',
+              auth: { scheme: 'bearer' },
+              endpoints: [
+                {
+                  method: 'GET',
+                  path: '/orders',
+                  risk: 'read',
+                  parameters: [{ name: 'X-Partner-Scope', in: 'header', required: true }],
+                },
+                { method: 'POST', path: '/reports/query', risk: 'write' },
+              ],
+            },
+            tenantId: null,
+            lifecycleState: 'active',
+            authMode: 'service',
+          },
+          accessMode: 'read',
+          agentSecretAlias: null,
+        },
+      ],
+    } as unknown as ToolBrokerRepository
+
+    const result = await runAgentToolLoop({
+      gateway: fakeGateway(
+        [
+          {
+            toolCalls: [
+              {
+                id: 'c1',
+                name: 'http_api_request',
+                input: {
+                  connectorId: 'fee173de-read-only',
+                  method: 'POST',
+                  path: '/reports/query',
+                  body: { q: 'x' },
+                },
+              },
+            ],
+          },
+          { content: 'kész' },
+        ],
+        gw,
+      ),
+      toolBroker: broker,
+      toolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-ro' },
+      mode: 'chat',
+      actingUserId: 'user-1',
+      messages: [{ role: 'user', content: 'riport' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: ['http_api_get', 'http_api_request'] as never,
+      createConsequenceApproval: async () => {
+        approvals += 1
+        return {
+          approvalId: 'should-not-create',
+          toolName: 'http_api_request',
+          summary: 'nope',
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        }
+      },
+    })
+
+    assert.equal(approvals, 0, 'nem nyithat consequence-approvalt')
+    assert.equal(gated.length, 0, 'nem recordConsequenceGateBlock')
+    assert.equal(invoked.length, 0, 'broker.invoke nem fut')
+    assert.equal(result.deniedCount, 1)
+    const toolMsg = gw
+      .flatMap((c) => c.messages)
+      .find((m) => m.role === 'tool' && m.toolCallId === 'c1')
+    assert.match(
+      toolMsg!.content ?? '',
+      /DENIED: missing_http_api_connector_write_fee173de-read-only/,
+    )
+    assert.match(toolMsg!.content ?? '', /http_api_get/)
+    assert.doesNotMatch(toolMsg!.content ?? '', /JÓVÁHAGYÁS SZÜKSÉGES/)
+    const catalog = gw[0].messages.find(
+      (m) => m.role === 'system' && m.content?.includes('CRM ReadOnly'),
+    )
+    assert.ok(catalog)
+    assert.match(catalog.content ?? '', /ÍRÁSJOG NINCS/)
+    assert.match(catalog.content ?? '', /NEM HÍVHATÓ \(nincs írásjog\)/)
+    assert.match(catalog.content ?? '', /Hívói fejlécek: X-Partner-Scope \(kötelező\)/)
   })
 
   if (failures > 0) {

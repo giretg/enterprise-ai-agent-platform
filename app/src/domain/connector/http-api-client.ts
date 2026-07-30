@@ -130,6 +130,8 @@ export function riskFromHttpMethod(method: string): HttpApiRisk {
 const READ_METHODS = new Set(['GET', 'HEAD'])
 const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 const DEFAULT_MAX_RESPONSE_CHARS = 20_000
+/** Runtime által injektált idempotencia-fejléc (kisbetűs egyeztetéshez). */
+const IDEMPOTENCY_HEADER_LOWER = 'idempotency-key'
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -203,6 +205,9 @@ export function parseHttpApiConfig(raw: unknown): HttpApiConfig {
     throw new Error('http_api config.auth.scheme must be "header", "bearer", "basic" or "oauth2"')
   }
 
+  const requestHeaders = parseHeaderTemplates(raw.requestHeaders, 'requestHeaders')
+  const writeHeaders = parseHeaderTemplates(raw.writeHeaders, 'writeHeaders')
+
   const endpointSource = Array.isArray(raw.endpoints)
     ? raw.endpoints
     : Array.isArray(raw.proposedTools)
@@ -215,23 +220,27 @@ export function parseHttpApiConfig(raw: unknown): HttpApiConfig {
           const access =
             e.access === 'read' || e.access === 'write' ? (e.access as 'read' | 'write') : undefined
           const risk = parseHttpApiRisk(e.risk)
+          const method = String(e.method ?? '').toUpperCase()
+          const headers = parseHeaderTemplates(e.headers, 'endpoint.headers')
+          const platformHeaders = headerNameSet(
+            requestHeaders,
+            !READ_METHODS.has(method) ? writeHeaders : undefined,
+            headers,
+          )
+          if (e.idempotent === true && !READ_METHODS.has(method)) {
+            platformHeaders.add(IDEMPOTENCY_HEADER_LOWER)
+          }
+          const headerParams = parseEndpointHeaderParams(e, platformHeaders)
           return {
-            method: String(e.method ?? '').toUpperCase(),
+            method,
             path: String(e.path ?? ''),
             description: typeof e.description === 'string' ? e.description : undefined,
             profile: typeof e.profile === 'string' && e.profile.trim() ? e.profile.trim() : undefined,
             idempotent: e.idempotent === true,
             ...(risk ? { risk } : {}),
             ...(access ? { access } : {}),
-            headers: parseHeaderTemplates(e.headers, 'endpoint.headers'),
-            headerParams: Array.isArray(e.parameters)
-              ? e.parameters
-                  .filter(
-                    (param): param is Record<string, unknown> =>
-                      isRecord(param) && param.in === 'header' && typeof param.name === 'string',
-                  )
-                  .map((param) => ({ name: String(param.name), required: param.required === true }))
-              : undefined,
+            headers,
+            ...(headerParams ? { headerParams } : {}),
           }
         })
         .filter((e) => e.method && e.path)
@@ -251,8 +260,8 @@ export function parseHttpApiConfig(raw: unknown): HttpApiConfig {
       typeof raw.defaultAuthProfile === 'string' && raw.defaultAuthProfile.trim()
         ? raw.defaultAuthProfile.trim()
         : undefined,
-    requestHeaders: parseHeaderTemplates(raw.requestHeaders, 'requestHeaders'),
-    writeHeaders: parseHeaderTemplates(raw.writeHeaders, 'writeHeaders'),
+    requestHeaders,
+    writeHeaders,
     defaultActingUserEmail:
       typeof raw.defaultActingUserEmail === 'string' && raw.defaultActingUserEmail.trim()
         ? raw.defaultActingUserEmail.trim()
@@ -267,6 +276,50 @@ export function parseHttpApiConfig(raw: unknown): HttpApiConfig {
         : DEFAULT_MAX_RESPONSE_CHARS,
     selfUpdatingPinned: raw.selfUpdatingPinned === true,
   }
+}
+
+/** Kisbetűs fejlécnevek uniója — platform-sablon kulcsok gyűjtéséhez. */
+export function headerNameSet(
+  ...sources: Array<Record<string, string> | Set<string> | undefined | null>
+): Set<string> {
+  const names = new Set<string>()
+  for (const source of sources) {
+    if (!source) continue
+    if (source instanceof Set) {
+      for (const name of source) names.add(name.toLowerCase())
+      continue
+    }
+    for (const name of Object.keys(source)) names.add(name.toLowerCase())
+  }
+  return names
+}
+
+function parseEndpointHeaderParams(
+  endpoint: Record<string, unknown>,
+  platformHeaders: Set<string>,
+): Array<{ name: string; required: boolean }> | undefined {
+  const fromParameters = Array.isArray(endpoint.parameters)
+    ? endpoint.parameters
+        .filter(
+          (param): param is Record<string, unknown> =>
+            isRecord(param) && param.in === 'header' && typeof param.name === 'string',
+        )
+        .map((param) => ({ name: String(param.name), required: param.required === true }))
+    : []
+  const fromHeaderParams = Array.isArray(endpoint.headerParams)
+    ? endpoint.headerParams
+        .filter(
+          (param): param is Record<string, unknown> => isRecord(param) && typeof param.name === 'string',
+        )
+        .map((param) => ({ name: String(param.name), required: param.required === true }))
+    : []
+  const byName = new Map<string, { name: string; required: boolean }>()
+  for (const param of [...fromParameters, ...fromHeaderParams]) {
+    const lower = param.name.toLowerCase()
+    if (platformHeaders.has(lower)) continue
+    byName.set(lower, param)
+  }
+  return byName.size > 0 ? [...byName.values()] : undefined
 }
 
 function parseOptionalAbsoluteUrl(raw: unknown, field: string): string | undefined {
@@ -544,6 +597,21 @@ export class HttpApiClient {
     return buildAuthHeaders(this.config.auth, this.defaultApiKey)
   }
 
+  private platformInjectedHeaderNames(
+    method: string,
+    endpoint: HttpApiEndpoint | undefined,
+  ): Set<string> {
+    const names = headerNameSet(
+      this.config.requestHeaders,
+      !READ_METHODS.has(method) ? this.config.writeHeaders : undefined,
+      endpoint?.headers,
+    )
+    if (endpoint?.idempotent && !READ_METHODS.has(method)) {
+      names.add(IDEMPOTENCY_HEADER_LOWER)
+    }
+    return names
+  }
+
   private buildTemplateHeaders(
     method: string,
     endpoint: HttpApiEndpoint | undefined,
@@ -554,7 +622,7 @@ export class HttpApiClient {
     if (!READ_METHODS.has(method)) applyHeaderTemplates(headers, this.config.writeHeaders, context)
     applyHeaderTemplates(headers, endpoint?.headers, context)
 
-    if (endpoint?.idempotent && !READ_METHODS.has(method) && !hasHeader(headers, 'idempotency-key')) {
+    if (endpoint?.idempotent && !READ_METHODS.has(method) && !hasHeader(headers, IDEMPOTENCY_HEADER_LOWER)) {
       if (!context) throw new HttpApiError('idempotent endpoint requires call context', 'missing_context')
       headers['Idempotency-Key'] = context.call.idempotencyKey
     }
@@ -564,12 +632,19 @@ export class HttpApiClient {
   private buildParameterHeaders(
     endpoint: HttpApiEndpoint | undefined,
     provided: Record<string, string> | undefined,
+    platformInjected: Set<string>,
   ): Record<string, string> {
     const declared = new Map((endpoint?.headerParams ?? []).map((param) => [param.name.toLowerCase(), param]))
     const values = new Map<string, string>()
     const authHeader = this.config.auth.scheme === 'header' ? this.config.auth.header.toLowerCase() : 'authorization'
     for (const [name, value] of Object.entries(provided ?? {})) {
       const normalized = name.toLowerCase()
+      if (platformInjected.has(normalized)) {
+        throw new HttpApiError(
+          `platform-injected header cannot be supplied by the caller: ${name} — omit it from headers; the platform injects it`,
+          'platform_injected_header',
+        )
+      }
       const param = declared.get(normalized)
       if (!param) throw new HttpApiError(`header not allowed by active snapshot: ${name}`, 'header_not_allowed')
       if (normalized === authHeader || ['authorization', 'host', 'content-length', 'content-type'].includes(normalized)) {
@@ -581,6 +656,8 @@ export class HttpApiClient {
       const normalized = param.name.toLowerCase()
       // A hitelesítési fejlécet mindig a platform injektálja a Secret Store-ból.
       if (normalized === authHeader || normalized === 'authorization') continue
+      // Sablonból fedett fejlécek: a runtime küldi, a hívónak nem kell megadnia.
+      if (platformInjected.has(normalized)) continue
       if (param.required && !values.has(normalized)) {
         throw new HttpApiError(`required header missing: ${param.name}`, 'required_header_missing')
       }
@@ -594,7 +671,8 @@ export class HttpApiClient {
       throw new HttpApiError(`unsupported HTTP method: ${method}`, 'invalid_method')
     }
     const endpoint = this.selectEndpoint(method, params.path)
-    const parameterHeaders = this.buildParameterHeaders(endpoint, params.headers)
+    const platformInjected = this.platformInjectedHeaderNames(method, endpoint)
+    const parameterHeaders = this.buildParameterHeaders(endpoint, params.headers, platformInjected)
 
     if (this.isStub()) {
       return {
@@ -606,12 +684,14 @@ export class HttpApiClient {
 
     const url = this.buildUrl(params.path, params.query)
     const hasBody = params.body !== undefined && !READ_METHODS.has(method)
+    // Sorrend: caller paraméterek → platform sablon → auth. A sablon/auth soha
+    // nem írható felül a modell által beadott headers-szel.
     const init: RequestInit = {
       method,
       headers: {
         accept: 'application/json',
-        ...this.buildTemplateHeaders(method, endpoint, params.context),
         ...parameterHeaders,
+        ...this.buildTemplateHeaders(method, endpoint, params.context),
         ...(await this.authHeaders(endpoint)),
         ...(hasBody ? { 'content-type': 'application/json' } : {}),
       },

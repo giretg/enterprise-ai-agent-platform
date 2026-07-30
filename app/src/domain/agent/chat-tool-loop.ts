@@ -39,10 +39,12 @@ import { logger } from '@/lib/observability/logger'
 import { envelopeToolResultForModel } from '@/domain/tool-broker/tool-result-envelope'
 import {
   consequenceGateReasonForModel,
+  evaluateHttpApiWriteGrant,
+  httpApiWriteGrantDeniedMessage,
   requiresConsequenceApproval,
   type HttpApiGateConnector,
 } from '@/domain/tool-broker/consequence-gate-policy'
-import { parseHttpApiConfig } from '@/domain/connector/http-api-client'
+import { parseHttpApiConfig, resolveHttpApiEndpointRisk } from '@/domain/connector/http-api-client'
 import type { TrustClass } from '@/domain/tool-broker/tool-broker-types'
 import {
   describeLoopStop,
@@ -339,7 +341,7 @@ const TOOL_SCHEMAS: Record<ChatPlatformToolName, ToolSchema> = {
   },
   http_api_get: {
     description:
-      'Olvasó (GET) hívás a hozzád rendelt külső REST API-n. A `connectorId` értékét a rendszerüzenetben látod. A `path` a connector baseUrl-jéhez relatív. A query paramétereket a `query`, a jóváhagyott snapshotban deklarált fejléceket a `headers` objektumban add meg.',
+      'Olvasó (GET) hívás a hozzád rendelt külső REST API-n. A `connectorId` értékét a rendszerüzenetben látod. A `path` a connector baseUrl-jéhez relatív. A query paramétereket a `query`, kizárólag az endpointnál „Hívói fejlécek” alatt felsorolt értékeket a `headers` objektumban add meg. A többi fejlécet a platform kezeli.',
     inputSchema: objectSchema(
       { connectorId: STR, path: STR, query: { type: 'object', additionalProperties: true }, headers: { type: 'object', additionalProperties: { type: 'string' } } },
       ['path'],
@@ -347,7 +349,7 @@ const TOOL_SCHEMAS: Record<ChatPlatformToolName, ToolSchema> = {
   },
   http_api_request: {
     description:
-      'Író (POST/PUT/PATCH/DELETE) hívás a hozzád rendelt külső REST API-n. A `connectorId` értékét a rendszerüzenetben látod. A `path` relatív; a törzset a `body`, a jóváhagyott snapshotban deklarált fejléceket a `headers` objektumban add meg. Csak tényleges állapotváltozásnál hívd.',
+      'Író (POST/PUT/PATCH/DELETE) hívás a hozzád rendelt külső REST API-n. A `connectorId` értékét a rendszerüzenetben látod. A `path` relatív; a törzset a `body`, kizárólag az endpointnál „Hívói fejlécek” alatt felsorolt értékeket a `headers` objektumban add meg. A többi fejlécet a platform kezeli. Csak tényleges állapotváltozásnál hívd.',
     inputSchema: objectSchema(
       {
         connectorId: STR,
@@ -3017,6 +3019,32 @@ export async function runAgentToolLoop(params: {
 
         // Risk-class következmény-kapu: nem a taint, hanem a tool kockázata dönt.
         // Workspace-írás / Excel / ticket auto; küldés / törlés / write-HTTP kapu.
+        // Read-only http_api assignment: http_api_request NE nyisson HITL kártyát —
+        // a grant hiányzik, a jóváhagyás zsákutca lenne.
+        if (toolName === 'http_api_request') {
+          const writeGrant = evaluateHttpApiWriteGrant(
+            call.input as Record<string, unknown>,
+            httpApiGateConnectors,
+          )
+          if (!writeGrant.allowed) {
+            deniedCount += 1
+            noteBarrenToolResult()
+            pushToolResult(
+              call,
+              httpApiWriteGrantDeniedMessage(writeGrant.reason, writeGrant.connectorId),
+              'barren',
+            )
+            await emitActivity({
+              id: `tool-${call.id}`,
+              kind: 'tool',
+              title: call.name,
+              detail: `írásjog hiányzik — ${writeGrant.reason}`,
+              status: 'skipped',
+            })
+            continue
+          }
+        }
+
         const gate = requiresConsequenceApproval(
           toolName,
           call.input as Record<string, unknown>,
@@ -3381,6 +3409,29 @@ function toolResultFingerprint(toolName: string, content: string): string {
   return `${toolName}:${content.length}:${hash}`
 }
 
+function callerHeaderHint(endpoint: unknown): string {
+  if (typeof endpoint !== 'object' || endpoint === null || Array.isArray(endpoint)) return ''
+  const raw = endpoint as Record<string, unknown>
+  const source = Array.isArray(raw.headerParams)
+    ? raw.headerParams
+    : Array.isArray(raw.parameters)
+      ? raw.parameters.filter(
+          (param) =>
+            typeof param === 'object'
+            && param !== null
+            && !Array.isArray(param)
+            && (param as Record<string, unknown>).in === 'header',
+        )
+      : []
+  const headers = source.flatMap((param) => {
+    if (typeof param !== 'object' || param === null || Array.isArray(param)) return []
+    const item = param as Record<string, unknown>
+    if (typeof item.name !== 'string' || !item.name.trim()) return []
+    return [`${item.name}${item.required === true ? ' (kötelező)' : ' (opcionális)'}`]
+  })
+  return headers.length > 0 ? ` — Hívói fejlécek: ${headers.join(', ')}` : ''
+}
+
 /**
  * A http_api connector(ek) emberi nyelvű leírása a modellnek + structured
  * config a következmény-kapuhoz. Titkot (API-kulcs) SOHA nem tartalmaz.
@@ -3398,7 +3449,11 @@ async function loadHttpApiConnectorsForGate(
     let parsed = null as ReturnType<typeof parseHttpApiConfig> | null
     try {
       parsed = parseHttpApiConfig(connector.config ?? {})
-      gateConnectors.push({ id: connector.id, config: parsed })
+      gateConnectors.push({
+        id: connector.id,
+        config: parsed,
+        accessMode: accessMode === 'write' ? 'write' : 'read',
+      })
     } catch {
       // Hibás config: a modell-leírás fallback JSON-ból megy; a kapu fail-safe.
     }
@@ -3441,15 +3496,22 @@ async function loadHttpApiConnectorsForGate(
           ? config.proposedTools
           : undefined
 
+    const writeAllowed = accessMode === 'write'
     const lines = [`### ${connector.name}`]
     lines.push(`connectorId: ${connector.id}`)
-    lines.push(`Hozzáférés: ${accessMode === 'write' ? 'olvasás + írás' : 'csak olvasás'}`)
+    lines.push(`Hozzáférés: ${writeAllowed ? 'olvasás + írás' : 'csak olvasás'}`)
+    if (!writeAllowed) {
+      lines.push(
+        'ÍRÁSJOG NINCS: ezen a connectoron a http_api_request (POST/PUT/PATCH/DELETE) TILOS és jóváhagyással sem oldható fel. Csak http_api_get (GET/HEAD) hívható.',
+      )
+    }
     if (config.baseUrl) lines.push(`Base URL: ${config.baseUrl}`)
     if (config.description) lines.push(config.description)
     if (config.defaultRisk) lines.push(`Alap kockázat (defaultRisk): ${config.defaultRisk}`)
     if (Array.isArray(endpoints) && endpoints.length > 0) {
       lines.push('Endpointok:')
       for (const e of endpoints) {
+        const method = String(e.method ?? 'GET').toUpperCase()
         const endpointDescription = e.description ?? ('name' in e ? e.name : undefined)
         const riskHint =
           'risk' in e && e.risk
@@ -3457,17 +3519,47 @@ async function loadHttpApiConnectorsForGate(
             : 'access' in e && e.access
               ? ` [access=${e.access}]`
               : ''
+        const risk =
+          parsed != null
+            ? resolveHttpApiEndpointRisk(
+                {
+                  risk:
+                    'risk' in e && (e.risk === 'read' || e.risk === 'write' || e.risk === 'danger')
+                      ? e.risk
+                      : undefined,
+                  access:
+                    'access' in e && (e.access === 'read' || e.access === 'write')
+                      ? e.access
+                      : undefined,
+                },
+                method,
+                parsed.defaultRisk,
+              )
+            : method === 'GET' || method === 'HEAD'
+              ? 'read'
+              : 'write'
+        const unavailable =
+          !writeAllowed && risk !== 'read'
+            ? ' — NEM HÍVHATÓ (nincs írásjog)'
+            : ''
         const desc = endpointDescription ? ` — ${endpointDescription}` : ''
-        lines.push(`- ${e.method ?? 'GET'} ${e.path ?? ''}${riskHint}${desc}`)
+        const headers = callerHeaderHint(e)
+        lines.push(`- ${method} ${e.path ?? ''}${riskHint}${desc}${headers}${unavailable}`)
       }
       if (config.restrictToEndpoints === true) {
         lines.push(
           'Csak az itt felsorolt végpontok hívhatók — minden más hívást a rendszer elutasít (endpoint_not_allowed), mielőtt a külső rendszert megkeresné.',
         )
       }
-      lines.push(
-        'Író / danger végpont (risk=write|danger) vagy listán kívüli path → http_api_request emberi jóváhagyást kér.',
-      )
+      if (writeAllowed) {
+        lines.push(
+          'Író / danger végpont (risk=write|danger) vagy listán kívüli path → http_api_request emberi jóváhagyást kér.',
+        )
+      } else {
+        lines.push(
+          'Olvasó (risk=read / GET) végpont → http_api_get. A „NEM HÍVHATÓ” végpontokat ne próbáld http_api_request-tel.',
+        )
+      }
     }
     return lines.join('\n')
   })
@@ -3475,7 +3567,8 @@ async function loadHttpApiConnectorsForGate(
   return {
     gateConnectors,
     spec: [
-      'A hozzád rendelt külső REST API(k) — olvasáshoz http_api_get, íráshoz http_api_request eszközt hívj. Ha több API-kapcsolat van, add meg a megfelelő connectorId-t. A path a Base URL-hez relatív; az API-kulcsot és a konfigurált fejléceket a rendszer injektálja, neked nem kell megadnod.',
+      'A hozzád rendelt külső REST API(k) — olvasáshoz http_api_get, íráshoz (csak ha a connector Hozzáférés sora „olvasás + írás”) http_api_request eszközt hívj. Ha több API-kapcsolat van, add meg a megfelelő connectorId-t. A path a Base URL-hez relatív; az API-kulcsot és a konfigurált fejléceket a rendszer injektálja, neked nem kell megadnod.',
+      'A headers mezőben kizárólag az adott endpoint „Hívói fejlécek” listájában szereplő értékeket add meg. Ne találj ki auth-, trace- vagy idempotencia-fejlécet: amit a lista nem kér, azt a platform kezeli vagy tiltja.',
       'Hatékony lekérdezés: NE töltsd le a teljes listákat (pl. /accounts, /documents) szűrés nélkül. Ha van kereső/query paraméter (search, q, filter, helyrajzi szám, ügyfélnév), használd. Először a releváns egyedi rekordot keresd.',
       ...blocks,
     ].join('\n\n'),

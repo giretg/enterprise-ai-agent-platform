@@ -428,6 +428,7 @@ function operationParameters(
   spec: OpenApiSpec,
   pathItem: Record<string, unknown>,
   operation: Record<string, unknown>,
+  method: HttpMethod,
 ): NonNullable<ProposedTool['parameters']> {
   const byKey = new Map<string, NonNullable<ProposedTool['parameters']>[number]>()
   for (const group of [pathItem.parameters, operation.parameters]) {
@@ -436,8 +437,12 @@ function operationParameters(
       const param = resolveMaybeRef(spec, raw)
       if (!isRecord(param) || typeof param.name !== 'string' || typeof param.in !== 'string') continue
       if (!['path', 'query', 'header', 'cookie', 'body'].includes(param.in)) continue
-      // Az Idempotency-Key külön auth-kategóriaként jelenik meg, ne duplázzuk breakingként.
-      if (param.in === 'header' && param.name.toLowerCase() === IDEMPOTENCY_HEADER) continue
+      // Írásnál a runtime injektálja; read műveletnél a hívónak kell megadnia.
+      if (
+        param.in === 'header'
+        && WRITE_METHODS.has(method)
+        && param.name.toLowerCase() === IDEMPOTENCY_HEADER
+      ) continue
       const schema = isRecord(param.schema) ? param.schema : param
       const item = {
         name: param.name,
@@ -495,7 +500,7 @@ function extractProposedTools(spec: OpenApiSpec): ProposedTool[] {
       // Idempotencia csak mutáló metóduson értelmezett (a runtime is csak ott injektál).
       const idempotent =
         WRITE_METHODS.has(httpMethod) && operationRequiresIdempotencyKey(spec, pathItem, operation)
-      const parameters = operationParameters(spec, pathItem, operation)
+      const parameters = operationParameters(spec, pathItem, operation, httpMethod)
 
       tools.push({
         name,
