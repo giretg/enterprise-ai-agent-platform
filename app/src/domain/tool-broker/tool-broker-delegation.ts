@@ -1603,8 +1603,10 @@ export async function agentCatalog(self: ToolBrokerService,
    * user_directory — a hívó agent tenantjához tartozó AKTÍV humán felhasználók
    * listája a szabad szöveges szerepükkel (`jobDescription`). A tenant a hívó
    * kontextusából oldódik fel (acting-user tenant, különben az agent tenantja) —
-   * cross-tenant felhasználó SOHA nem szivárog ki. Az opcionális `query` a
-   * néven / szerepen / e-mailen szűr (ékezet- és kisbetű-független).
+   * cross-tenant felhasználó SOHA nem szivárog ki. A `query` KÖTELEZŐ és a
+   * néven / szerepen / e-mailen szűr (ékezet- és kisbetű-független): érdemi
+   * keresőkifejezés nélkül a szűrő fail-closed üres listát ad, teljes névsor
+   * tehát nem kérhető le. Az e-mail csak keresési kulcs — a válaszba nem kerül.
    */
 export async function userDirectory(self: ToolBrokerService, 
     input: Extract<ToolBrokerInvokeInput, { tool: 'user_directory' }>,

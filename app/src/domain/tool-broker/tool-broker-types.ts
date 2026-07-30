@@ -233,6 +233,10 @@ export type AgentCatalogResult = {
 // (pl. a folyamat-agent innen keresi ki, ki az illetékes egy feladathoz, vagy
 // kinek nyisson ticketet). A `jobDescription` a humán szabad szöveges szerepe.
 export type UserDirectoryArgs = {
+  /**
+   * A tool-sémában kötelező; opcionális marad a típusban a régi belső hívók
+   * kompatibilitásáért. A domain-szűrő üres/hiányzó értékre fail-closed.
+   */
   query?: string
   limit?: number
 }
@@ -240,10 +244,14 @@ export type UserDirectoryArgs = {
 export type UserDirectoryEntry = {
   userId: string
   name: string
-  email: string
   role: string | null
   jobDescription: string | null
   status: string
+}
+
+/** Belső keresési rekord; az e-mail soha nem kerülhet a tool-válaszba. */
+export type UserDirectorySearchEntry = UserDirectoryEntry & {
+  email: string
 }
 
 export type UserDirectoryResult = {

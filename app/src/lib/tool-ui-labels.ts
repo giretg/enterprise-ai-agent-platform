@@ -207,7 +207,7 @@ export const TOOL_UI_LABELS: Record<string, ToolUiLabel> = {
   },
   user_directory: {
     label: 'Munkatársak keresése',
-    description: 'Humán munkatársak listázása név, szerep vagy leírás alapján.',
+    description: 'Humán munkatársak célzott keresése név, szerep vagy leírás alapján (e-mail nélkül).',
   },
   agent_ask: {
     label: 'Kérdés agentnek',

@@ -189,6 +189,8 @@ const processService = new ProcessService(
   repositories.agents,
   repositories.toolBroker,
   repositories.users,
+  // §4.3/§4.8 — emberi szerep tenant-tagság (membership-modell) a resolveUserForRole cross-tenant kapujához.
+  repositories.tenantMemberships,
   new MonitorProcessAlertNotifier(monitorNotifier),
   (ticketId: string) => dispatcherService.dispatchTicket(ticketId),
 )
@@ -199,6 +201,8 @@ const processDefinitionService = new ProcessDefinitionService(
   repositories.toolBroker,
   repositories.rolePermissions,
   repositories.users,
+  // §4.3/§4.8 — emberi szerep tenant-tagsági kapu az aktiváláskor.
+  repositories.tenantMemberships,
   repositories.audit,
 )
 const ticketStateMachine = new TicketStateMachine(
@@ -332,6 +336,7 @@ const channelLinkingService = new ChannelLinkingService({
   },
   resolveWebhookSecret: (bot) => resolveWebhookSecretCached(bot.webhookSecretRef),
   buildDeepLink: (jti) => `https://t.me/${telegramBotUsername}?start=${jti}`,
+  isChannelEnabled: (tenantId) => platformSettingsService.isChannelEnabledForTenant(tenantId),
   linkedMessageSink: {
     enqueueInbound: (input) => {
       if (!channelTurnServiceRef) throw new Error('channel turn service not initialized')
@@ -1067,6 +1072,9 @@ const channelTurnService = new ChannelTurnService({
     const tenant = await repositories.tenants.findById(tenantId)
     return tenant?.displayName ?? null
   },
+  memberships: repositories.tenantMemberships,
+  tenants: repositories.tenants,
+  isChannelEnabled: (tenantId) => platformSettingsService.isChannelEnabledForTenant(tenantId),
 })
 channelTurnServiceRef = channelTurnService
 const wikiRuntime = new WikiAgentRuntime(
