@@ -3285,33 +3285,38 @@ export async function runAgentToolLoop(params: {
         // `external_untrusted` eredmény kerül határolt, figyelmeztetett blokkba; a
         // deny-üzenet platform-szöveg, azt nem csomagoljuk.
         const trust: TrustClass = result.denied ? 'trusted' : result.trust
-        let toolContent = result.denied
+        // A modell felé mehet envelope; a workspace/archívum viszont NYERS JSON legyen,
+        // különben a tulajdoni_lap_egyeztetes / reconcile_records JSON.parse-ja elbukik
+        // a <<<EXTERNAL_UNTRUSTED_DATA>>> burkolaton (182 „Új rekord", 0 párosítás).
+        const modelContent = result.denied
           ? rawContent
           : formatToolResultForModel(trust, rawContent)
-        if (toolContent.length > TOOL_RESULT_INLINE_LIMIT) {
+        let toolContent = modelContent
+        if (modelContent.length > TOOL_RESULT_INLINE_LIMIT) {
+          const archiveContent = rawContent
           const archive = params.archiveLargeToolResult
             ? await params.archiveLargeToolResult({
                 toolName: call.name,
                 callId: call.id,
                 turn,
-                content: toolContent,
+                content: archiveContent,
                 context: params.context,
               })
             : null
 
           if (archive) {
             rememberArchived(archive.path, {
-              content: toolContent,
+              content: archiveContent,
               bytes: archive.bytes,
               toolName: call.name,
             })
             const workspacePath = workspaceCopyPathForArchive(archive.path)
             if (params.writeWorkspaceFile && workspacePath !== archive.path) {
               try {
-                const copy = await params.writeWorkspaceFile(workspacePath, toolContent)
+                const copy = await params.writeWorkspaceFile(workspacePath, archiveContent)
                 if (copy) {
                   rememberArchived(workspacePath, {
-                    content: toolContent,
+                    content: archiveContent,
                     bytes: copy.bytes,
                     toolName: call.name,
                   })
@@ -3331,18 +3336,18 @@ export async function runAgentToolLoop(params: {
               status: 'done',
               archivePath: archive.path,
             })
-            const preview = toolContent.slice(0, TOOL_RESULT_PREVIEW_CHARS)
+            const preview = archiveContent.slice(0, TOOL_RESULT_PREVIEW_CHARS)
             toolContent = formatLargeToolResultPreview({
               archivePath: archive.path,
               workspacePath,
-              chars: toolContent.length,
+              chars: archiveContent.length,
               bytes: archive.bytes,
               previewText: preview,
             })
           } else {
             toolContent =
-              toolContent.slice(0, TOOL_RESULT_INLINE_LIMIT) +
-              `\n...[csonkítva — az eredmény ${toolContent.length} kar, limit ${TOOL_RESULT_INLINE_LIMIT}; teljes archívum nem készült]`
+              modelContent.slice(0, TOOL_RESULT_INLINE_LIMIT) +
+              `\n...[csonkítva — az eredmény ${modelContent.length} kar, limit ${TOOL_RESULT_INLINE_LIMIT}; teljes archívum nem készült]`
           }
         }
 

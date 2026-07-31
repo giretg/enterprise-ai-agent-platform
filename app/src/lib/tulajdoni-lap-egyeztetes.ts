@@ -26,6 +26,54 @@ export type EgyeztetesNyilvantartasSor = {
   megjegyzes?: string | null
 }
 
+function firstPresent(
+  row: Record<string, unknown>,
+  keys: string[],
+): string | number | null {
+  for (const key of keys) {
+    const value = row[key]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+    if (typeof value === 'number' && Number.isFinite(value)) return value
+  }
+  return null
+}
+
+function firstString(row: Record<string, unknown>, keys: string[]): string | null {
+  const value = firstPresent(row, keys)
+  return value == null ? null : String(value)
+}
+
+/**
+ * API / extract sor → kanonikus egyeztető mezők.
+ * Az Ostoros Föld ownership válasz gyakran `partnerNev` / `id` / `jogcim`
+ * alakú — ezeket elfogadjuk, hogy ne kelljen modelloldali mezőátnevezés.
+ */
+export function normalizeNyilvantartasRow(
+  row: Record<string, unknown>,
+): EgyeztetesNyilvantartasSor | null {
+  const nev = firstString(row, ['nev', 'partnerNev', 'partnerName', 'name', 'teljesNev', 'fullName'])
+  if (!nev) return null
+  return {
+    nev,
+    szuletesiEv: firstPresent(row, ['szuletesiEv', 'szuletesi_ev', 'birthYear', 'szulEv']),
+    anyjaNeve: firstString(row, ['anyjaNeve', 'anyja_neve', 'motherName', 'anyja']),
+    hanyad: firstString(row, ['hanyad', 'ownershipShare', 'share', 'tulajdoniHanyad']),
+    cim: firstString(row, ['cim', 'address', 'lakcim']),
+    azonosito: firstString(row, ['azonosito', 'id', 'partnerId', 'ownershipId', 'uuid']),
+    megjegyzes: firstString(row, ['megjegyzes', 'jogcim', 'note', 'title', 'jogallas']),
+  }
+}
+
+export function normalizeNyilvantartasRows(rows: unknown[]): EgyeztetesNyilvantartasSor[] {
+  const out: EgyeztetesNyilvantartasSor[] = []
+  for (const row of rows) {
+    if (!row || typeof row !== 'object' || Array.isArray(row)) continue
+    const normalized = normalizeNyilvantartasRow(row as Record<string, unknown>)
+    if (normalized) out.push(normalized)
+  }
+  return out
+}
+
 export type EgyeztetesStatusz =
   | 'Rendben'
   | 'Módosítás szükséges'

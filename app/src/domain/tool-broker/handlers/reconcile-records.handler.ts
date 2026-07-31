@@ -1,3 +1,4 @@
+import { unwrapExternalDataEnvelope } from '@/domain/tool-broker/tool-result-envelope'
 import { FileEditorError } from '@/domain/file-editor/file-editor-service'
 import {
   buildReconcileSummaryForModel,
@@ -59,7 +60,8 @@ async function readRecordList(
   }
   let parsed: unknown
   try {
-    parsed = JSON.parse(content)
+    // Legacy tool-outputs: korábban az envelope-olt modell-szöveg került fájlba.
+    parsed = JSON.parse(unwrapExternalDataEnvelope(content).trim())
   } catch {
     throw new Error(`reconcile_records: a(z) "${path}" fájl nem érvényes JSON`)
   }

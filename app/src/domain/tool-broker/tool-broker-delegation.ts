@@ -32,9 +32,12 @@ import {
   EGYEZTETES_STATUSZOK,
   buildEgyeztetesMunkafuzet,
   egyeztetesSorok,
+  normalizeNyilvantartasRows,
   type EgyeztetesNyilvantartasSor,
 } from '@/lib/tulajdoni-lap-egyeztetes'
+import { parseReconcileRecordList } from '@/lib/reconcile-records'
 import { FileEditorError } from '@/domain/file-editor/workspace-storage'
+import { unwrapExternalDataEnvelope } from '@/domain/tool-broker/tool-result-envelope'
 import { personaFor } from '@/lib/agent-persona'
 import {
   buildAgentCatalogEntry,
@@ -2090,50 +2093,38 @@ async function resolveEgyeztetesNyilvantartas(
   }
   if (!input.path) return []
 
-  const file = await self.fileEditor.readFile(input.tenantId, input.workspaceId, {
+  const content = await self.fileEditor.readTextFileOrNull(input.tenantId, input.workspaceId, {
     path: input.path,
   })
+  if (content == null) {
+    throw new Error(`tulajdoni_lap_egyeztetes: a(z) "${input.path}" fájl nem található`)
+  }
   let parsed: unknown
   try {
-    parsed = JSON.parse(file.content)
+    // Nyers szöveg kell — a readFile sortáblázott (1\t…) kimenete NEM érvényes JSON.
+    // Legacy tool-outputs: korábban a modellnek szánt EXTERNAL_UNTRUSTED burkolat
+    // került a fájlba; azt is elfogadjuk, hogy a régi futások újraegyeztethetők legyenek.
+    parsed = JSON.parse(unwrapExternalDataEnvelope(content).trim())
   } catch {
     throw new Error(
-      `tulajdoni_lap_egyeztetes: a(z) "${input.path}" fájl nem érvényes JSON (tömb vagy { sorok: [...] } kell)`,
+      `tulajdoni_lap_egyeztetes: a(z) "${input.path}" fájl nem érvényes JSON (tömb vagy { sorok|items|data|…: [...] } kell)`,
     )
   }
-  const rows = Array.isArray(parsed)
-    ? parsed
-    : isRecord(parsed) && Array.isArray(parsed.sorok)
-      ? parsed.sorok
-      : null
+  const rows = parseReconcileRecordList(parsed)
   if (!rows) {
     throw new Error(
-      `tulajdoni_lap_egyeztetes: a(z) "${input.path}" fájl nem tömb és nincs benne "sorok" tömb`,
+      `tulajdoni_lap_egyeztetes: a(z) "${input.path}" fájl nem tömb és nincs benne rows/sorok/items/data/records tömb`,
     )
   }
-  return normalizeNyilvantartasRows(rows)
-}
-
-function normalizeNyilvantartasRows(rows: unknown[]): EgyeztetesNyilvantartasSor[] {
-  const out: EgyeztetesNyilvantartasSor[] = []
-  for (const row of rows) {
-    if (!isRecord(row)) continue
-    const nev = typeof row.nev === 'string' ? row.nev.trim() : ''
-    if (!nev) continue
-    out.push({
-      nev,
-      szuletesiEv:
-        typeof row.szuletesiEv === 'string' || typeof row.szuletesiEv === 'number'
-          ? row.szuletesiEv
-          : null,
-      anyjaNeve: typeof row.anyjaNeve === 'string' ? row.anyjaNeve : null,
-      hanyad: typeof row.hanyad === 'string' ? row.hanyad : null,
-      cim: typeof row.cim === 'string' ? row.cim : null,
-      azonosito: typeof row.azonosito === 'string' ? row.azonosito : null,
-      megjegyzes: typeof row.megjegyzes === 'string' ? row.megjegyzes : null,
-    })
+  const normalized = normalizeNyilvantartasRows(rows)
+  if (normalized.length === 0) {
+    throw new Error(
+      `tulajdoni_lap_egyeztetes: a(z) "${input.path}" fájlból 0 nyilvántartási sor jött ki ` +
+        `(üres tömb, vagy hiányzik a névmező: nev/partnerNev/name). ` +
+        `Ne egyeztess üres nyilvántartással — ellenőrizd a forrásfájlt / http_api_get_all kimenetet.`,
+    )
   }
-  return out
+  return normalized
 }
 
 /**
