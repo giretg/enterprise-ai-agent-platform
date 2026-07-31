@@ -88,6 +88,45 @@ npx -y firebase-tools@latest deploy --only apphosting
 
 Vagy a repó gyökeréből: `npm run deploy`
 
+## 3.1 Dispatch-ciklus worker (dedikált Cloud Run szolgáltatás)
+
+A háttérciklus — stale-reclaim, ütemezett task materializálás, monitor-söprés,
+workspace-purge, channel-turn drain, channel-retention takarítás, ready ticketek
+biztonsági dispatch-e — **nem** az App Hosting UI konténerében fut, hanem egy külön Cloud
+Run szolgáltatásban (#114). Enélkül egy nehéz kör lassítja/OOM-olja az interaktív oldalakat,
+egy UI-forgalmi csúcs pedig eltolja a ticket-feldolgozást.
+
+A HTTP-szerződés mindkét oldalon azonos (`POST /api/v1/internal/dispatch-cycle` +
+`x-dispatcher-token`), csak a Cloud Scheduler célja más:
+
+```bash
+cd app
+
+# 1) Worker szolgáltatás (Dockerfile.dispatch-cycle → Cloud Run, --no-allow-unauthenticated)
+cp infra/gcp/dispatch-cycle-service.env.example infra/gcp/dispatch-cycle-service.env
+npm run dispatch-cycle:cloud-run-deploy      # a végén kiírja a worker URL-jét
+
+# 2) A Cloud Scheduler átirányítása a workerre
+cp infra/gcp/dispatch-cycle-scheduler.env.example infra/gcp/dispatch-cycle-scheduler.env
+#   DISPATCH_CYCLE_TARGET_URL=<a fenti worker URL>
+#   SCHEDULER_OIDC_SERVICE_ACCOUNT=<hívó SA, run.invoker joggal a workeren>
+#   PLATFORM_API_URL=<az App Hosting UI URL-je — ez a rollback célja>
+npm run dispatcher:cloud-scheduler-deploy
+
+# 3) Ellenőrzés
+DISPATCH_CYCLE_TARGET_URL=<worker URL> npm run dispatch-cycle:smoke
+```
+
+**Env-paritás:** a workernek ugyanaz a `DISPATCHER_CONTROL_TOKEN` és ugyanaz a Neon
+adatbázis kell, mint az UI-nak — különben 401, illetve a ciklus más tenant-adaton dolgozna.
+Részletek: `app/infra/gcp/CLOUD-RUN-DISPATCH-CYCLE-WORKER-SETUP.md`.
+
+**Rollback (egy lépés):** `npm run dispatcher:cloud-scheduler-deploy -- --rollback` — a
+Scheduler újra az UI-t hívja, a worker érintetlen marad.
+
+**Névzavar:** a `deploy-dispatcher-service.sh` / `Dockerfile.dispatcher` egy **másik**,
+legacy szolgáltatás (wiki-harness LISTEN/NOTIFY worker, `min-instances=1`) — nem ez.
+
 ## 4. Clerk webhook regisztrálás
 
 A deploy után a production URL ismert. A Clerk Dashboard-on:

@@ -1,5 +1,17 @@
 #!/usr/bin/env bash
-# GCP Cloud Run SERVICE deploy — production dispatcher worker (Epik 5 / §5.7, §15.3)
+# GCP Cloud Run SERVICE deploy — LEGACY wiki-harness dispatcher worker (Epik 5 / §5.7, §15.3)
+#
+# ⚠️ EZ NEM A DISPATCH-CIKLUS WORKER (#114). A repóban a „dispatcher" három közeli dolgot
+# jelent; ez a szkript a HARMADIKAT deployolja:
+#   1. domain `DispatcherService` / ticket claim — kód, nem szolgáltatás,
+#   2. stateless dispatch-ciklus HTTP + Cloud Scheduler → ezt a
+#      `deploy-dispatch-cycle-service.sh` (`Dockerfile.dispatch-cycle`,
+#      `npm run dispatch-cycle:cloud-run-deploy`) állítja fel,
+#   3. EZ: a legacy wiki-harness LISTEN/NOTIFY worker (`Dockerfile.dispatcher`).
+#
+# A (3) folyamatosan fut (`min-instances=1`, `--no-cpu-throttling`) és nyitva tartja a
+# Neon-kapcsolatot; az `enterprise-ai-demo` projektből törölve lett. Csak akkor deployold,
+# ha tudatosan a LISTEN/NOTIFY üzemmódot hozod vissza — a biztonsági hálóhoz NEM kell.
 #
 # A dispatcher egy nem-LLM, eseményvezérelt work-queue worker (LISTEN/NOTIFY + cron).
 # Folyamatos üzemhez Cloud Run service-ként fut min-instances ≥ 1 + always-on CPU

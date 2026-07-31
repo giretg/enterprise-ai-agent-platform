@@ -1,4 +1,13 @@
-# GCP Cloud Run dispatcher — production deploy (§5.7, §15.3)
+# GCP Cloud Run dispatcher — LEGACY wiki-harness worker (§5.7, §15.3)
+
+> ⚠️ **EZ NEM a dispatch-ciklus worker (#114).** Ez a jegyzet a régi, folyamatosan futó
+> `wiki-dispatcher` LISTEN/NOTIFY service-ről szól (`Dockerfile.dispatcher`,
+> `min-instances=1`, állandó Neon-kapcsolat), amit a `enterprise-ai-demo` projektből
+> töröltünk. A **ma élő** biztonsági háló egy stateless HTTP-ciklus, amit a Cloud Scheduler
+> hajt egy dedikált Cloud Run szolgáltatáson — annak a leírása:
+> `CLOUD-RUN-DISPATCH-CYCLE-WORKER-SETUP.md` és `CLOUD-SCHEDULER-DISPATCH-CYCLE-SETUP.md`.
+> Az itteni utat csak akkor élesztsd fel, ha tudatosan a LISTEN/NOTIFY üzemmódot hozod
+> vissza (perzisztens kapcsolat + állandóan futó instance költséggel).
 
 > Készült: session 13 (2026-06-18). A **production dispatcher** lépés (§15.3 / 1.)
 > implementációja: a nem-LLM `dispatcher-worker` Cloud Run **service**-ként, folyamatos

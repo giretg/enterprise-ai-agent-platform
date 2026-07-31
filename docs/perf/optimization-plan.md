@@ -146,7 +146,15 @@ Node-ba. Indexek: `0018_hot_path_indexes` (`model_calls`, `tool_calls`, `documen
 
 ---
 
-## P1 — Architektúra: az UI konténer futtatja az agent runtime-ot
+## P1 — Architektúra: az UI konténer futtatja az agent runtime-ot — **RÉSZBEN JAVÍTVA (#114)**
+
+> **Állapot:** a **dispatch-ciklus** leválasztva (#114): a Cloud Scheduler egy dedikált
+> Cloud Run szolgáltatást hív (`Dockerfile.dispatch-cycle`,
+> `infra/gcp/deploy-dispatch-cycle-service.sh`), nem az UI-t. A HTTP-szerződés és a
+> `runDispatchCycle` mag változatlan; a rollback a Scheduler target URI cseréje
+> (`npm run dispatcher:cloud-scheduler-deploy -- --rollback`).
+> **Hátra van:** a hosszú életű agent-chat SSE (3. pont) továbbra is az UI szolgáltatáson
+> fut — külön runtime-szolgáltatás, későbbi spec.
 
 **Hol:** `app/src/app/api/v1/internal/dispatch-cycle/route.ts`,
 `app/src/app/api/v1/agent-chat/stream/route.ts`
