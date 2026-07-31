@@ -51,6 +51,46 @@ source "$ENV_FILE"
 : "${DISPATCHER_CONTROL_TOKEN_SECRET:?DISPATCHER_CONTROL_TOKEN_SECRET required (Secret Manager név)}"
 : "${DATABASE_URL_SECRET:?DATABASE_URL_SECRET required (Secret Manager név a DB connection stringhez)}"
 
+# BOOT-KRITIKUS titkok — ezek nélkül a konténer EL SEM INDUL.
+#
+# Az UI-n a Next.js route-onként, lustán tölti be a modulokat, tehát egy hiányzó titok ott
+# legfeljebb egy oldalt/route-ot buktat. Ez a worker viszont a TELJES ciklus-gráfot
+# (`runDispatchCycle` → `@/domain` → …) importálja induláskor, és a `resolveSecret`
+# (src/lib/crypto/secret-resolver.ts) prod alatt IMPORT-IDŐBEN dob, ha a titok hiányzik.
+# Enélkül a Cloud Run revízió „container failed to start"-tal bukik — nem egy lépés hibázik
+# némán, hanem nincs ciklus egyáltalán.
+#
+# Ezért itt, a build ELŐTT állunk meg, egy listában az összes hiányzóval — nem a deploy
+# végén, egy Cloud Run crash-loop mögé rejtve. A titkok ÉRTÉKE egyezzen az UI-éval: ugyanazt
+# az audit hash-láncot / linket / tokent kell tudni ellenőrizni mindkét oldalon.
+BOOT_CRITICAL_SECRETS=(
+  "WRITE_GATE_SECRET:WRITE_GATE_SECRET_NAME"
+  "OAUTH_STATE_SECRET:OAUTH_STATE_SECRET_NAME"
+  "SANDBOX_PREVIEW_SECRET:SANDBOX_PREVIEW_SECRET_NAME"
+  "CHANNEL_LINK_TOKEN_SECRET:CHANNEL_LINK_TOKEN_SECRET_NAME"
+  "CHANNEL_IDENTITY_SECRET:CHANNEL_IDENTITY_SECRET_NAME"
+  "CHANNEL_APPROVAL_TOKEN_SECRET:CHANNEL_APPROVAL_TOKEN_SECRET_NAME"
+  "AGENT_API_KEY_LOOKUP_SECRET:AGENT_API_KEY_LOOKUP_SECRET_NAME"
+)
+
+MISSING_BOOT_SECRETS=()
+for entry in "${BOOT_CRITICAL_SECRETS[@]}"; do
+  var_name="${entry##*:}"
+  if [[ -z "${!var_name:-}" ]]; then MISSING_BOOT_SECRETS+=("$var_name"); fi
+done
+
+if (( ${#MISSING_BOOT_SECRETS[@]} > 0 )); then
+  {
+    echo "Hiányzó BOOT-KRITIKUS titok-nevek a(z) $ENV_FILE fájlból:"
+    for var_name in "${MISSING_BOOT_SECRETS[@]}"; do echo "  - $var_name"; done
+    echo ""
+    echo "A worker induláskor importálja a teljes ciklus-gráfot, és prod alatt a hiányzó"
+    echo "titok import-időben dob — a revízió el sem indulna. Töltsd ki őket a Secret Manager"
+    echo "nevekkel (lásd dispatch-cycle-service.env.example), az UI-jal AZONOS értékekkel."
+  } >&2
+  exit 1
+fi
+
 IMAGE_TAG="${IMAGE_TAG:-$(git -C "$ROOT_DIR" rev-parse --short HEAD 2>/dev/null || date +%Y%m%d%H%M)}"
 IMAGE="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${ARTIFACT_REGISTRY_REPO}/${DISPATCH_CYCLE_SERVICE_NAME}:${IMAGE_TAG}"
 
@@ -149,8 +189,11 @@ append_secret_if_set GEMINI_API_KEY GEMINI_API_KEY_SECRET
 append_secret_if_set OPENROUTER_API_KEY OPENROUTER_API_KEY_SECRET
 append_secret_if_set HARNESS_CALLBACK_TOKEN HARNESS_CALLBACK_TOKEN_SECRET
 append_secret_if_set HARNESS_AGENT_API_KEY HARNESS_AGENT_API_KEY_SECRET
-append_secret_if_set WRITE_GATE_SECRET WRITE_GATE_SECRET_NAME
-append_secret_if_set AGENT_API_KEY_LOOKUP_SECRET AGENT_API_KEY_LOOKUP_SECRET_NAME
+
+# A boot-kritikus titkok (a fenti kapu már ellenőrizte, hogy mind ki van töltve).
+for entry in "${BOOT_CRITICAL_SECRETS[@]}"; do
+  append_secret_if_set "${entry%%:*}" "${entry##*:}"
+done
 
 DEPLOY_ARGS+=(--set-secrets="$(IFS=,; echo "${SECRET_ARGS[*]}")")
 

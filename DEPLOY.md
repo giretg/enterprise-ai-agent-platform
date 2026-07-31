@@ -119,7 +119,11 @@ DISPATCH_CYCLE_TARGET_URL=<worker URL> npm run dispatch-cycle:smoke
 
 **Env-paritás:** a workernek ugyanaz a `DISPATCHER_CONTROL_TOKEN` és ugyanaz a Neon
 adatbázis kell, mint az UI-nak — különben 401, illetve a ciklus más tenant-adaton dolgozna.
-Részletek: `app/infra/gcp/CLOUD-RUN-DISPATCH-CYCLE-WORKER-SETUP.md`.
+Ezen felül van néhány **boot-kritikus** titok (`WRITE_GATE_SECRET`, `OAUTH_STATE_SECRET`,
+`SANDBOX_PREVIEW_SECRET`, `CHANNEL_*`, `AGENT_API_KEY_LOOKUP_SECRET`): az UI ezeket lustán,
+route-onként tölti be, a worker viszont a teljes ciklus-gráfot importálja induláskor, tehát
+hiányukban a Cloud Run revízió **el sem indul**. A deploy-szkript ezt a build előtt
+ellenőrzi. Részletek: `app/infra/gcp/CLOUD-RUN-DISPATCH-CYCLE-WORKER-SETUP.md` (4.1).
 
 **Rollback (egy lépés):** `npm run dispatcher:cloud-scheduler-deploy -- --rollback` — a
 Scheduler újra az UI-t hívja, a worker érintetlen marad.

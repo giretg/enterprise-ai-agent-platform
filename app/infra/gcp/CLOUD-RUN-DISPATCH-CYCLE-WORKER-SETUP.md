@@ -89,19 +89,58 @@ Az UI App Hosting profiljától **függetlenül** állítható (`dispatch-cycle-
 
 A worker ugyanazokat a futásidejű beállításokat igényli, mint amiket a ciklus alatti
 szolgáltatások használnak (dispatcher, ütemezett taskok, monitor, channel-turn,
-channel-retention, workspace purge). Ami itt hiányzik, az élesben **némán** hiányzik: a kör
-lefut, de az adott lépés hibára fut és a következő körre marad.
+channel-retention, workspace purge).
 
-Kötelező:
+### 4.1 Boot-kritikus titkok — enélkül a konténer el sem indul
 
-- `DISPATCHER_CONTROL_TOKEN` — a végpont kapuja (egyezzen a Scheduler fejlécével),
+Ez a worker **másképp viselkedik, mint az UI**. A Next.js route-onként, lustán tölti be a
+modulokat, tehát ott egy hiányzó titok legfeljebb egy oldalt buktat. A worker viszont a
+**teljes ciklus-gráfot** (`runDispatchCycle` → `@/domain` → …) importálja induláskor, a
+`resolveSecret` (`src/lib/crypto/secret-resolver.ts`) pedig prod alatt **import-időben dob**,
+ha a titok hiányzik. Következmény: a Cloud Run revízió `container failed to start`-tal bukik,
+és **nincs ciklus egyáltalán** — nem egy lépés hibázik némán.
+
+Ezért az alábbiak **kötelezők**, és a deploy-szkript a build **előtt** ellenőrzi őket
+(egyszerre listázza az összes hiányzót, nem egy Cloud Run crash-loop mögé rejtve):
+
+| Env | Secret Manager név (`dispatch-cycle-service.env`) |
+|---|---|
+| `WRITE_GATE_SECRET` | `WRITE_GATE_SECRET_NAME` |
+| `OAUTH_STATE_SECRET` | `OAUTH_STATE_SECRET_NAME` |
+| `SANDBOX_PREVIEW_SECRET` | `SANDBOX_PREVIEW_SECRET_NAME` |
+| `CHANNEL_LINK_TOKEN_SECRET` | `CHANNEL_LINK_TOKEN_SECRET_NAME` |
+| `CHANNEL_IDENTITY_SECRET` | `CHANNEL_IDENTITY_SECRET_NAME` |
+| `CHANNEL_APPROVAL_TOKEN_SECRET` | `CHANNEL_APPROVAL_TOKEN_SECRET_NAME` |
+| `AGENT_API_KEY_LOOKUP_SECRET` | `AGENT_API_KEY_LOOKUP_SECRET_NAME` |
+
+Az **értéküknek egyeznie kell az UI-éval** — különben a két szolgáltatás egymás
+audit-hash-láncát, csatorna-linkjeit és jóváhagyó tokenjeit nem tudja ellenőrizni. Amelyik
+titok még nem létezik a Secret Managerben (az `apphosting.yaml` nem mindet köti be), hozd
+létre az UI-n használt értékkel:
+
+```bash
+gcloud secrets create CHANNEL_LINK_TOKEN_SECRET --project=$GCP_PROJECT_ID --replication-policy=automatic
+printf '%s' "<az UI-n használt érték>" | gcloud secrets versions add CHANNEL_LINK_TOKEN_SECRET --data-file=-
+```
+
+Deploy előtti lokális ellenőrzés (ugyanazt a hibát adja, mint a Cloud Run indulása):
+
+```bash
+NODE_ENV=production DISPATCHER_CONTROL_TOKEN=… DATABASE_URL=… npm run dispatch-cycle:server
+# hiány esetén: "[secret-resolver] Kötelező titok hiányzik prod alatt: …"
+```
+
+### 4.2 A ciklus tartalmához kötődő beállítások (nem boot-kritikusak)
+
+Ezek nélkül a worker **elindul**, de az érintett lépés hibára fut és a következő körre marad:
+
+- `DISPATCHER_CONTROL_TOKEN` — a végpont kapuja (egyezzen a Scheduler fejlécével). Enélkül a
+  worker felmegy, de minden hívásra 401-et ad — a log induláskor figyelmeztet rá.
 - `DATABASE_URL` (+ `DIRECT_URL`) — **ugyanaz a Neon adatbázis**, amit az UI lát. A
   database-mode (éles/teszt) a `platform_settings`-ből jön, tehát a worker automatikusan
   követi az admin felületen beállított módot.
-
-Erősen ajánlott a ciklus tartalmától függően: modell-kulcsok (`GEMINI_API_KEY`,
-`OPENROUTER_API_KEY`), `HARNESS_CALLBACK_TOKEN`, `HARNESS_AGENT_API_KEY`,
-`WRITE_GATE_SECRET`, `AGENT_API_KEY_LOOKUP_SECRET`, `WORKSPACE_BUCKET`.
+- Modell-kulcsok (`GEMINI_API_KEY`, `OPENROUTER_API_KEY`), `HARNESS_CALLBACK_TOKEN`,
+  `HARNESS_AGENT_API_KEY`, `WORKSPACE_BUCKET`.
 
 ---
 

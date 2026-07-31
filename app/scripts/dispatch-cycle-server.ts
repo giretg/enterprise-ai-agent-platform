@@ -48,8 +48,14 @@ function readBody(req: IncomingMessage): Promise<string> {
     req.on('data', (chunk: Buffer) => {
       size += chunk.length
       if (size > MAX_BODY_BYTES) {
+        // Elengedjük a már beolvasott darabokat, és NEM pufferelünk tovább — a memória
+        // így korlátos marad. A kapcsolatot viszont nem szakítjuk meg (`req.destroy()`),
+        // különben a hívó egy TCP-resetet kapna a 400 helyett, és az üzemeltető a
+        // Scheduler-naplóban csak egy néma hálózati hibát látna. A választ a szerződés
+        // adja meg; a socketet a válasz lezárása után a Node bontja.
+        chunks.length = 0
+        req.pause()
         reject(new Error('request body too large'))
-        req.destroy()
         return
       }
       chunks.push(chunk)
