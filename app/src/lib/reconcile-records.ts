@@ -68,6 +68,31 @@ export type ReconcileRecordsResult = {
 
 const FRACTION_RE = /^\s*(\d+)\s*\/\s*(\d+)\s*$/
 
+/**
+ * Túl nagy bemenet elleni védelem. A párosítás természeténél fogva
+ * O(bal × jobb): egy nagyon nagy két lista (pl. tízezer × tízezer) másodpercekre–
+ * percekre BEFAGYASZTANÁ a feldolgozó szálat (event loop), amivel MINDEN más
+ * párhuzamos agent-forduló is elakadna ugyanazon a példányon. Inkább gyorsan,
+ * érthető és actionable hibával állunk le, mint hogy a worker némán megbénuljon.
+ */
+export const MAX_RECONCILE_ROWS_PER_SIDE = 20_000
+export const MAX_RECONCILE_PAIRS = 4_000_000
+
+export function assertReconcileSizeWithinLimit(leftCount: number, rightCount: number): void {
+  if (leftCount > MAX_RECONCILE_ROWS_PER_SIDE || rightCount > MAX_RECONCILE_ROWS_PER_SIDE) {
+    throw new Error(
+      `reconcile_records: túl sok sor (bal ${leftCount}, jobb ${rightCount}; oldalankénti felső határ ${MAX_RECONCILE_ROWS_PER_SIDE}). ` +
+        'Szűkítsd előbb a listákat (pl. szűrés kulcsmezőre vagy időszakra), vagy darabold több, kisebb egyeztetésre.',
+    )
+  }
+  if (leftCount * rightCount > MAX_RECONCILE_PAIRS) {
+    throw new Error(
+      `reconcile_records: az összevetés túl nagy (bal ${leftCount} × jobb ${rightCount} = ${leftCount * rightCount} pár; felső határ ${MAX_RECONCILE_PAIRS}). ` +
+        'Adj meg szűkebb kulcsmezőt, vagy darabold a listát egyértelmű csoportokra (pl. kezdőbetű/időszak szerint), és egyeztesd csoportonként.',
+    )
+  }
+}
+
 export function normalizeReconcileValue(
   value: unknown,
   mode: ReconcileNormalize = 'trim',
@@ -184,56 +209,95 @@ function compareFieldValues(
   return null
 }
 
+type ReconcileCandidate = { index: number; strength: Exclude<ReconcileMatchStrength, 'none'> }
+
 /** Két lista uniója státuszokkal. */
 export function reconcileRecords(input: ReconcileRecordsInput): ReconcileRecordsResult {
   const keyFields = input.keyFields.map((f) => f.trim()).filter(Boolean)
   const compareFields = input.compareFields ?? []
+  assertReconcileSizeWithinLimit(input.left.length, input.right.length)
+
+  // Jelöltek előszámítása egyszer: bal soronként az egyező jobb sorok + erősség.
+  const candidates: ReconcileCandidate[][] = input.left.map((left) => {
+    const row: ReconcileCandidate[] = []
+    for (let ri = 0; ri < input.right.length; ri++) {
+      const strength = keyMatchStrength(left, input.right[ri], keyFields, input.normalize)
+      if (strength !== 'none') row.push({ index: ri, strength })
+    }
+    return row
+  })
+
   const usedRight = new Set<number>()
+  const assignment = new Map<number, number>()
+
+  // 1. kör — a TELJES (full) egyezés globálisan előbbre való: egy későbbi bal sor
+  // pontos párját SOSEM viheti el egy korábbi bal sor részleges (partial) találata.
+  // (Enélkül egy valódi, minden kulcson egyező pár némán „Új rekordként" tűnt el.)
+  for (let li = 0; li < candidates.length; li++) {
+    const full = candidates[li].find((c) => c.strength === 'full' && !usedRight.has(c.index))
+    if (full) {
+      usedRight.add(full.index)
+      assignment.set(li, full.index)
+    }
+  }
+  // 2. kör — a maradék bal sorok a még szabad (részleges vagy full) párt kapják.
+  for (let li = 0; li < candidates.length; li++) {
+    if (assignment.has(li)) continue
+    const pick = candidates[li].find((c) => !usedRight.has(c.index))
+    if (pick) {
+      usedRight.add(pick.index)
+      assignment.set(li, pick.index)
+    }
+  }
+
   const rows: ReconcileRow[] = []
   const uncertain: ReconcileUncertain[] = []
 
   for (let li = 0; li < input.left.length; li++) {
     const left = input.left[li]
-    const candidates = input.right
-      .map((right, index) => ({
-        right,
-        index,
-        strength: keyMatchStrength(left, right, keyFields, input.normalize),
-      }))
-      .filter((c) => c.strength !== 'none' && !usedRight.has(c.index))
+    const rightIndex = assignment.get(li)
 
-    const full = candidates.find((c) => c.strength === 'full')
-    const pick = full ?? candidates[0]
-
-    if (!pick) {
-      rows.push({
-        status: 'Új rekord',
-        matchStrength: 'none',
-        left,
-        right: null,
-        differences: [],
-        note: 'Csak a bal oldalon szerepel.',
-      })
+    if (rightIndex === undefined) {
+      // Ha VOLT lehetséges párja, de azt egy másik, hasonló bal sorhoz rendeltük
+      // (verseny több hasonló rekordért), ezt NE némán „csak a bal oldalon szerepel"
+      // rekordként könyveljük el — jelezzük emberi ellenőrzésre, hogy ki ne essen.
+      const contested = candidates[li][0]
+      if (contested) {
+        const note =
+          'Lehetséges párja már egy másik, hasonló sorhoz lett rendelve — emberi ellenőrzés kell.'
+        rows.push({ status: 'Új rekord', matchStrength: 'none', left, right: null, differences: [], note })
+        uncertain.push({
+          leftIndex: li,
+          rightIndex: contested.index,
+          note,
+          left,
+          right: input.right[contested.index],
+        })
+      } else {
+        rows.push({
+          status: 'Új rekord',
+          matchStrength: 'none',
+          left,
+          right: null,
+          differences: [],
+          note: 'Csak a bal oldalon szerepel.',
+        })
+      }
       continue
     }
 
-    usedRight.add(pick.index)
+    const right = input.right[rightIndex]
+    const strength = candidates[li].find((c) => c.index === rightIndex)?.strength ?? 'partial'
     const differences = compareFields
-      .map((spec) => compareFieldValues(left, pick.right, spec))
+      .map((spec) => compareFieldValues(left, right, spec))
       .filter((d): d is string => Boolean(d))
 
     const notes: string[] = []
-    if (pick.strength === 'partial') {
+    if (strength === 'partial') {
       notes.push(
         'A párosítás részleges kulcson alapul (hiányzó azonosító mező) — emberi ellenőrzés kell.',
       )
-      uncertain.push({
-        leftIndex: li,
-        rightIndex: pick.index,
-        note: notes[0],
-        left,
-        right: pick.right,
-      })
+      uncertain.push({ leftIndex: li, rightIndex, note: notes[0], left, right })
     }
     if (differences.length > 0) {
       notes.push(`Eltérő mezők: ${differences.join('; ')}`)
@@ -241,9 +305,9 @@ export function reconcileRecords(input: ReconcileRecordsInput): ReconcileRecords
 
     rows.push({
       status: differences.length > 0 ? 'Módosítás szükséges' : 'Rendben',
-      matchStrength: pick.strength,
+      matchStrength: strength,
       left,
-      right: pick.right,
+      right,
       differences,
       note: notes.join(' '),
     })
