@@ -63,9 +63,11 @@ import {
   shouldPromoteSkillRunToTask,
 } from './skill-task-promotion'
 import {
+  buildReturnedDelegationPrompt,
   buildTurnContinuationPrompt,
   shouldInjectTurnContinuation,
   type ContinuationActivity,
+  type ReturnedDelegation,
 } from './turn-continuation'
 import {
   agentTurnRunner,
@@ -492,6 +494,10 @@ type SlashSkillResolution = {
   preloadedSkillPrompts: string[]
   loadedSkillNames: string[]
   loadedSkillVersionIds: string[]
+  /** A futásidejű readiness-kapun elakadt skillek (hiányzó capability-grant). */
+  blocked: Array<{ name: string; missingTools: string[]; reason: string }>
+  /** A betöltött skillek `allowed-tools` uniója — a forduló eszköz-hatóköre. */
+  requiredTools?: string[]
   runtimeHints?: {
     maxWallClockMs?: number
     maxToolCalls?: number
@@ -830,6 +836,7 @@ export class AgentChatRuntime {
         preloadedSkillPrompts: [],
         loadedSkillNames: [],
         loadedSkillVersionIds: [],
+        blocked: [],
       }
     }
     const resolved = await this.skills.resolveSlashSkillLoads({
@@ -842,6 +849,8 @@ export class AgentChatRuntime {
       preloadedSkillPrompts: resolved.preloadedPrompts,
       loadedSkillNames: resolved.loadedSkillNames,
       loadedSkillVersionIds: resolved.loadedSkillVersionIds,
+      blocked: resolved.blocked,
+      ...(resolved.requiredTools ? { requiredTools: resolved.requiredTools } : {}),
       runtimeHints: resolved.runtimeHints,
     }
   }
@@ -1214,6 +1223,15 @@ export class AgentChatRuntime {
     // A tool-loop erőforrás-alapú leállásának indoka (#62). `null`, ha a loop
     // normálisan futott végig — ilyenkor a forduló `completed`.
     let loopStopReason: ToolLoopStopReason | null = null
+    // A forduló-rekord számlálói. E nélkül a `finalize` alapértéken hagyja őket,
+    // és a lezárt forduló nullát mutat akkor is, ha tucatnyi eszközhívás futott —
+    // az üzemeltető a hibakereső exportban nem látja, min ment el a keret, a
+    // prompt-eval red-line pedig üres méréssel fut. A körszámot az `onTurnStart`
+    // adja (a loop kívülről csak ott jelzi a kör indulását), a tool-számlálókat
+    // a loop visszatérési értéke.
+    let loopTurnCount = 0
+    let loopToolCallCount = 0
+    let loopDeniedCount = 0
     // Köztes snapshot fojtás + tartalom-őr (#63 / D9 / Q4).
     // DB-backed cancel cache: in-memory flag VAGY periodikus DB-olvasás (D6 / multi-instance).
     let dbCancelRequested = false
@@ -1321,6 +1339,26 @@ export class AgentChatRuntime {
         text,
       )
 
+      // Futásidejű readiness-kapu: ha a kért skill hiányzó capability miatt nem
+      // tölthető be, NEM indítjuk el a fordulót „skill nélkül" — az pont az a
+      // csendes félrefutás, ami hiányos munkaterméket ad késznek. Helyette
+      // megmondjuk, mi hiányzik és ki tudja megadni.
+      if (slashResolved.blocked.length > 0) {
+        for (const b of slashResolved.blocked) {
+          await emitActivity({
+            id: `skill-blocked-${b.name}`,
+            kind: 'tool',
+            title: `Skill blokkolva: ${b.name}`,
+            detail: `hiányzó eszköz-jogosultság: ${b.missingTools.join(', ')}`,
+            status: 'skipped',
+          })
+        }
+        await deliverPreparedReply({
+          text: slashResolved.blocked.map((b) => b.reason).join('\n\n'),
+        })
+        return
+      }
+
       // issue #161 — `preferredMode: 'task'`: a hosszú skillt nem a chatben
       // nyújtjuk 15 percre, hanem ticketet nyitunk és a board futtatja végig.
       // A chat rövid marad; a felhasználó a ticket hivatkozását kapja vissza.
@@ -1382,6 +1420,7 @@ export class AgentChatRuntime {
       })
       const priorToolCalls = await this.toolCaps.listToolCallsForConversation(conversationId)
       const continuationPrompt = await this.buildContinuationPrompt(conversationId, workspaceFiles)
+      const delegationPrompt = await this.buildReturnedDelegationPrompt(conversationId)
       const gatewayPrompt = await this.buildGatewayMessages(
         agentDetails,
         assembledContext.messages,
@@ -1392,6 +1431,7 @@ export class AgentChatRuntime {
         latestUserTextOverride,
         memoryContext.block,
         continuationPrompt,
+        delegationPrompt,
       )
 
       const allowedChatTools = await listAllowedChatTools(this.toolCaps, params.agentId)
@@ -1446,6 +1486,9 @@ export class AgentChatRuntime {
           preloadedSkillPrompts: slashResolved.preloadedSkillPrompts,
           loadSkill: skillBinding.loadSkill,
           initialSkillRuntimeHints: slashResolved.runtimeHints,
+          ...(slashResolved.requiredTools
+            ? { initialSkillToolScope: slashResolved.requiredTools }
+            : {}),
           archiveLargeToolResult: (input) =>
             this.archiveLargeToolResult(tenantKey, conversationId, input),
           writeWorkspaceFile: async (path, content) => {
@@ -1468,7 +1511,10 @@ export class AgentChatRuntime {
           },
           shouldCancel: () => isCancelRequestedNow(),
           // Körönkénti életjel: ettől ismerhető fel kívülről az elhalt futás (D10).
-          onTurnStart: async () => {
+          // A `turnIndex` 0-alapú, tehát a MEGKEZDETT körök száma index+1 — így a
+          // rekord akkor is a valós körszámot mutatja, ha a loop kivétellel áll le.
+          onTurnStart: async (turnIndex: number) => {
+            loopTurnCount = turnIndex + 1
             await this.heartbeatTurnRecord(turn)
             await refreshCancelFromDb()
           },
@@ -1527,6 +1573,8 @@ export class AgentChatRuntime {
           return
         }
         reply = result.value.content
+        loopToolCallCount = result.value.toolCallCount
+        loopDeniedCount = result.value.deniedCount
         if (result.value.status === 'exhausted') {
           loopStopReason = result.value.reason
         }
@@ -1635,6 +1683,9 @@ export class AgentChatRuntime {
       await this.closeTurnRecord(turn, {
         ...outcome,
         partialText: turn.completedReply ?? snapshot.partialText,
+        turnCount: loopTurnCount,
+        toolCallCount: loopToolCallCount,
+        deniedCount: loopDeniedCount,
       })
     }
 
@@ -2272,6 +2323,60 @@ export class AgentChatRuntime {
     }
   }
 
+  /**
+   * Időközben megérkezett delegált válaszok beemelése a következő fordulóba (C1).
+   *
+   * Enélkül a felhasználó kérdésére csend a válasz: a delegált agent válasza egy
+   * lezárt ticketben landol, és semmi nem viszi vissza a beszélgetésbe. Ez akkor
+   * fordul elő, ha a szinkron várás határidőre futott (`deadline_exceeded`),
+   * vagy ha a ticketet a diszpécser futtatta le.
+   *
+   * A megjelenített válaszokat MEGJELÖLJÜK, hogy a következő fordulóban ne
+   * jelenjenek meg újra. Fail-soft: hiba esetén a forduló normálisan fut tovább.
+   */
+  private async buildReturnedDelegationPrompt(conversationId: string): Promise<string | null> {
+    try {
+      const tickets = await this.tickets.listReturnedDelegationsForConversation(conversationId)
+      if (tickets.length === 0) return null
+
+      const entries: ReturnedDelegation[] = []
+      const surfacedTicketIds: string[] = []
+      for (const ticket of tickets) {
+        const payload =
+          typeof ticket.payload === 'object' && ticket.payload !== null && !Array.isArray(ticket.payload)
+            ? (ticket.payload as Record<string, unknown>)
+            : {}
+        const answer = typeof payload.answer === 'string' ? payload.answer : ''
+        if (!answer.trim()) continue
+        const answeredById =
+          typeof payload.answeredByAgentId === 'string' ? payload.answeredByAgentId : null
+        const answeredByName = answeredById
+          ? (await this.agents.findById(answeredById).catch(() => null))?.name ?? null
+          : null
+        entries.push({
+          answeredBy: answeredByName ?? answeredById ?? 'másik agent',
+          question: typeof payload.question === 'string' ? payload.question : ticket.title,
+          answer,
+          confidence: typeof payload.confidence === 'string' ? payload.confidence : null,
+        })
+        surfacedTicketIds.push(ticket.id)
+      }
+
+      const prompt = buildReturnedDelegationPrompt(entries)
+      if (!prompt.trim()) return null
+
+      // Csak a ténylegesen megjelenített válaszokat jelöljük — ami kimaradt
+      // (üres válasz), az maradjon nyitva egy későbbi fordulóra.
+      for (const ticketId of surfacedTicketIds) {
+        await this.tickets.markDelegationSurfaced(ticketId).catch(() => {})
+      }
+      return prompt
+    } catch (error) {
+      console.error('[agent-chat] megérkezett delegációk beemelése sikertelen', error)
+      return null
+    }
+  }
+
   private async buildGatewayMessages(
     agentDetails: NonNullable<Awaited<ReturnType<AgentRepository['findByIdForRuntime']>>>,
     historyMessages: ContextAssemblyMessage[],
@@ -2282,6 +2387,7 @@ export class AgentChatRuntime {
     latestUserTextOverride?: string,
     memoryContextBlock?: string | null,
     continuationPrompt?: string | null,
+    returnedDelegationPrompt?: string | null,
   ) {
     // #142: a roster a hívó agent SAJÁT `address` jogán szűrt lista. A korábbi
     // szűretlen `findMany()` más tenant agentjeinek nevét, persona-traitjét és ID-ját
@@ -2349,6 +2455,12 @@ export class AgentChatRuntime {
 
     if (continuationPrompt && continuationPrompt.trim()) {
       variableContext.push({ role: 'system', content: continuationPrompt })
+    }
+
+    // A megérkezett delegált válasz a folytatás UTÁN áll: az előbbi azt mondja
+    // meg, hol tartunk, ez pedig azt, hogy egy hiányzó darab közben megjött.
+    if (returnedDelegationPrompt && returnedDelegationPrompt.trim()) {
+      variableContext.push({ role: 'system', content: returnedDelegationPrompt })
     }
 
     return {

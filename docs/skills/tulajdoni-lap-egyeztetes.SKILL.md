@@ -4,7 +4,7 @@ description: Tulajdoni lap összevetése a saját tulajdonosi nyilvántartásunk
 max-wall-clock-ms: 900000
 max-tool-calls: 40
 preferred-mode: task
-allowed-tools: tulajdoni_lap_egyeztetes, http_api_get_all, http_api_get, tool_result_extract, file_write, reconcile_records, tulajdoni_lap_parse
+allowed-tools: tulajdoni_lap_egyeztetes, http_api_get_all, http_api_get, file_write, reconcile_records, tulajdoni_lap_parse
 ---
 
 # Mi a feladat
@@ -66,10 +66,13 @@ A tulajdonosi rekordokat az Ostoros Föld API-n keresztül éred el.
    `http_api_get` a konkrét hrsz-re).
 2. Nagy listához hívd az **`http_api_get_all`**-t (page/pageSize szerveroldalon
    végigmegy). Egy oldal / egyedi rekord → elég a sima `http_api_get`.
-3. Ha a válasz archívumba került: `tool_result_extract` a szükséges mezőkre
-   (`nev`, `szuletesiEv`, `anyjaNeve`, `hanyad`, `cim`, `azonosito`, `megjegyzes`)
-   → `nyilvantartas.json`. Az extract path lehet az archívum **vagy** a
-   workspace másolat.
+3. Ha a válasz archívumba / `tool-outputs/…` fájlba került: **közvetlenül**
+   add át `nyilvantartasPath`-ként az egyeztetőnek — az elfogadja az
+   `{ items: [...] }` / `http_api_get_all` kimenetet, és a `partnerNev` /
+   `id` / `jogcim` mezőaliasokat kanonikus `nev` / `azonosito` / `megjegyzes`
+   mezőkre normalizálja. `tool_result_extract` csak akkor kell, ha a válasz
+   más alakú, és a forrásmezőneveket (pl. `partnerNev`, `hanyad`, `id`)
+   kéred ki — **ne** próbálj modellben `nev`-re átnevezni.
 4. Frissítsd az `egyeztetes_progress.json`-t.
 5. A teljes listát NE olvasd vissza `file_read` / `tool_result_read`-del.
 
@@ -80,12 +83,13 @@ eldönteni, kérdezz — ne tippelj.
 
 ## 2. Az egyeztetés — EGY hívás
 
-Ha a `nyilvantartas.json` kész:
+Ha a nyilvántartás fájl kész (akár a nyers `tool-outputs/…http_api_get_all…`,
+akár kivonat):
 
 ```
 tulajdoni_lap_egyeztetes({
   documentId: "…",                  // vagy path: "043_15 2026.07.16.pdf"
-  nyilvantartasPath: "nyilvantartas.json",
+  nyilvantartasPath: "tool-outputs/15-http_api_get_all-….json",
   kimenet: "egyeztetes-043-15.xlsx"
 })
 ```

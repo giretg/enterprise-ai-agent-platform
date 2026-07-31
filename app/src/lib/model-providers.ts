@@ -6,6 +6,42 @@ export type ModelOption = {
   description?: string
 }
 
+/** Ortogonális gondolkodási profil (Cursor-féle luna/terra/sol) — a modell ID mellett. */
+export type ModelType = 'luna' | 'terra' | 'sol'
+
+export const MODEL_TYPES: Array<{
+  id: ModelType
+  label: string
+  description: string
+}> = [
+  {
+    id: 'luna',
+    label: 'Luna',
+    description: 'Gyors, könnyű gondolkodás — rutin feladatokhoz.',
+  },
+  {
+    id: 'terra',
+    label: 'Terra',
+    description: 'Kiegyensúlyozott — a legtöbb agent munkához.',
+  },
+  {
+    id: 'sol',
+    label: 'Sol',
+    description: 'Mély gondolkodás — összetett, több lépéses feladatokhoz.',
+  },
+]
+
+export const DEFAULT_MODEL_TYPE: ModelType = 'terra'
+
+export function isModelType(value: unknown): value is ModelType {
+  return value === 'luna' || value === 'terra' || value === 'sol'
+}
+
+export function modelTypeLabel(modelType: string | undefined): string | null {
+  if (!modelType) return null
+  return MODEL_TYPES.find((t) => t.id === modelType)?.label ?? modelType
+}
+
 export type ModelProviderOption = {
   value: string
   label: string

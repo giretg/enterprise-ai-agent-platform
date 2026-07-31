@@ -8,10 +8,94 @@ import { upsertToolLoopActivity } from '@/domain/agent/agent-turn-snapshot'
 export const TICKET_PROGRESS_FLUSH_INTERVAL_MS = 1_000
 export const TICKET_PROGRESS_MAX_ACTIVITIES = 40
 
+/** Ennyi ideig „élőnek” számít a progress snapshot (modell-hívás közben is). */
+export const TICKET_PROGRESS_ACTIVE_MS = 45_000
+/** Ennyi után a UI „úgy tűnik megállt”-ot jelez. */
+export const TICKET_PROGRESS_STALL_MS = 120_000
+
 export type TicketRuntimeProgress = {
   updatedAt: string
   activities: ToolLoopActivityEvent[]
   partialText?: string
+}
+
+export type TicketRunLiveness =
+  | { kind: 'idle' }
+  | { kind: 'cancelling' }
+  | { kind: 'starting'; ageMs: number }
+  | { kind: 'active'; ageMs: number; currentStep: string | null }
+  | { kind: 'quiet'; ageMs: number; currentStep: string | null }
+  | { kind: 'stalled'; ageMs: number; currentStep: string | null }
+
+function activityStepLabel(activity: ToolLoopActivityEvent | undefined): string | null {
+  if (!activity) return null
+  return activity.title?.trim() || activity.kind || null
+}
+
+function latestActivityStep(activities: ToolLoopActivityEvent[]): string | null {
+  const running = activities.find((activity) => activity.status === 'running')
+  return activityStepLabel(running ?? activities[activities.length - 1])
+}
+
+/**
+ * Ticket futás élősége a UI számára: `in_progress` + progress `updatedAt` / lock.
+ * Nem állítja le a futást — csak jelzi, hogy van-e friss aktivitás.
+ */
+export function assessTicketRunLiveness(input: {
+  ticketState: string
+  cancelRequested?: boolean
+  lockedAt?: string | Date | null
+  progress: TicketRuntimeProgress | null
+  nowMs?: number
+}): TicketRunLiveness {
+  if (input.ticketState !== 'in_progress') return { kind: 'idle' }
+  if (input.cancelRequested) return { kind: 'cancelling' }
+
+  const now = input.nowMs ?? Date.now()
+  const activities = input.progress?.activities ?? []
+  const currentStep = latestActivityStep(activities)
+
+  const referenceMs = (() => {
+    if (input.progress?.updatedAt) {
+      const t = Date.parse(input.progress.updatedAt)
+      if (Number.isFinite(t)) return t
+    }
+    if (input.lockedAt) {
+      const t = new Date(input.lockedAt).getTime()
+      if (Number.isFinite(t)) return t
+    }
+    return null
+  })()
+
+  if (referenceMs === null) {
+    return { kind: 'starting', ageMs: 0 }
+  }
+
+  const ageMs = Math.max(0, now - referenceMs)
+
+  if (activities.length === 0) {
+    return ageMs >= TICKET_PROGRESS_STALL_MS
+      ? { kind: 'stalled', ageMs, currentStep: null }
+      : { kind: 'starting', ageMs }
+  }
+
+  if (ageMs < TICKET_PROGRESS_ACTIVE_MS) {
+    return { kind: 'active', ageMs, currentStep }
+  }
+  if (ageMs < TICKET_PROGRESS_STALL_MS) {
+    return { kind: 'quiet', ageMs, currentStep }
+  }
+  return { kind: 'stalled', ageMs, currentStep }
+}
+
+/** Relatív életkor mondatba illeszthetően: „45 másodperce”, „2 perce”. */
+export function formatTicketProgressAge(ageMs: number): string {
+  const seconds = Math.max(0, Math.floor(ageMs / 1000))
+  if (seconds < 60) return `${seconds} másodperce`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes} perce`
+  const hours = Math.floor(minutes / 60)
+  return `${hours} órája`
 }
 
 export function readTicketRuntimeProgress(payload: unknown): TicketRuntimeProgress | null {
@@ -48,12 +132,9 @@ export class TicketProgressFlusher {
     )
     this.dirty = true
     const t = this.now()
-    if (this.lastFlushAt === null || t - this.lastFlushAt >= this.intervalMs) {
-      this.lastFlushAt = t
-      this.dirty = false
-      return true
-    }
-    return false
+    // Ne fogyasszuk el a dirty flaget itt — a hívó snapshotIfDue/takeSnapshot
+    // írja ki. (Korábbi bug: true + dirty=false → snapshotIfDue mindig null.)
+    return this.lastFlushAt === null || t - this.lastFlushAt >= this.intervalMs
   }
 
   /** Terminális / kényszerített flush. */
@@ -63,7 +144,7 @@ export class TicketProgressFlusher {
     this.dirty = false
     return {
       updatedAt: new Date(this.lastFlushAt).toISOString(),
-      activities: this.activities,
+      activities: [...this.activities],
     }
   }
 

@@ -1508,6 +1508,7 @@ export async function createAgent(input: {
   modelConfig: {
     provider: string
     model: string
+    modelType?: 'luna' | 'terra' | 'sol'
     temperature?: number
     maxTokens?: number
   }
@@ -1755,6 +1756,7 @@ export async function updateAgentModelConfig(input: {
   modelConfig: {
     provider: string
     model: string
+    modelType?: 'luna' | 'terra' | 'sol'
     temperature?: number
     maxTokens?: number
     fallbackModels?: Array<{ provider: string; model: string }>

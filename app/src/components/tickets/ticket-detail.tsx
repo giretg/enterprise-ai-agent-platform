@@ -17,7 +17,11 @@ import { isRunAsAuthorized } from '@/lib/run-as-payload'
 import { resolveTicketTriggerInputPayload } from '@/lib/playbook-v2/trigger-input'
 import { readStepOutcome } from '@/lib/playbook-v2/process-step-payload'
 import { readTicketCallCapMessageFromPayload } from '@/lib/ticket-call-cap'
-import { readTicketRuntimeProgress } from '@/domain/agent/ticket-runtime-progress'
+import {
+  assessTicketRunLiveness,
+  formatTicketProgressAge,
+  readTicketRuntimeProgress,
+} from '@/domain/agent/ticket-runtime-progress'
 
 type TicketView = {
   id: string
@@ -29,6 +33,8 @@ type TicketView = {
   conversationId?: string | null
   createdAt: string | Date
   updatedAt: string | Date
+  lockedAt?: string | Date | null
+  cancelRequested?: boolean
   assigneeType?: string | null
   assigneeId?: string | null
   agentId?: string | null
@@ -331,6 +337,7 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
   const isWikiFollowUp = hasWikiAnswer(ticket.payload)
 
   const runtimeProgress = readTicketRuntimeProgress(ticket.payload)
+  const [nowMs, setNowMs] = useState(() => Date.now())
 
   useEffect(() => {
     if (!canStop) return
@@ -339,6 +346,20 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
     }, 2000)
     return () => window.clearInterval(timer)
   }, [canStop, router])
+
+  useEffect(() => {
+    if (!canStop) return
+    const tick = window.setInterval(() => setNowMs(Date.now()), 5_000)
+    return () => window.clearInterval(tick)
+  }, [canStop])
+
+  const runLiveness = assessTicketRunLiveness({
+    ticketState: ticket.state,
+    cancelRequested: ticket.cancelRequested,
+    lockedAt: ticket.lockedAt,
+    progress: runtimeProgress,
+    nowMs,
+  })
 
   const act = (toState: string) => {
     if (toState === 'rejected' && isWikiFollowUp && !note.trim()) {
@@ -396,12 +417,34 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
     <Card title="Műveletek">
       {error && <p className="mb-3 text-sm text-coral">{error}</p>}
       {canStop && (
-        <div className="mb-4 rounded-xl border border-sky/30 bg-sky/5 px-3 py-3">
+        <div
+          className={`mb-4 rounded-xl border px-3 py-3 ${
+            runLiveness.kind === 'stalled'
+              ? 'border-coral/40 bg-coral/5'
+              : runLiveness.kind === 'quiet' || runLiveness.kind === 'cancelling'
+                ? 'border-honey/40 bg-honey/5'
+                : 'border-sky/30 bg-sky/5'
+          }`}
+        >
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div>
-              <p className="text-sm font-semibold text-ink">Feldolgozás folyamatban</p>
+              <p className="text-sm font-semibold text-ink">
+                {runLiveness.kind === 'stalled'
+                  ? 'Feldolgozás — úgy tűnik megállt'
+                  : runLiveness.kind === 'cancelling'
+                    ? 'Feldolgozás — leállítás folyamatban'
+                    : runLiveness.kind === 'quiet'
+                      ? 'Feldolgozás — lassú jelzés'
+                      : 'Feldolgozás folyamatban'}
+              </p>
               <p className="text-xs text-ink-faint">
-                Az agent a háttérben dolgozik. Beragadás esetén leállíthatod.
+                {runLiveness.kind === 'stalled'
+                  ? `Nincs friss aktivitás ${formatTicketProgressAge(runLiveness.ageMs)}. Beragadás esetén leállíthatod.`
+                  : runLiveness.kind === 'active' && runLiveness.currentStep
+                    ? `Most: ${runLiveness.currentStep}`
+                    : runLiveness.kind === 'quiet' && runLiveness.currentStep
+                      ? `Utolsó lépés: ${runLiveness.currentStep} · ${formatTicketProgressAge(runLiveness.ageMs)}`
+                      : 'Az agent a háttérben dolgozik. A részletes lépések az Eseménytörténetben.'}
               </p>
             </div>
             <button
@@ -413,22 +456,6 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
               {stopPending ? 'Leállítás…' : 'Feldolgozás leállítása'}
             </button>
           </div>
-          {runtimeProgress?.activities && runtimeProgress.activities.length > 0 && (
-            <ul className="mt-3 space-y-1.5 border-t border-sky/20 pt-3">
-              {runtimeProgress.activities.slice(-8).map((activity, index) => (
-                <li
-                  key={activity.id ?? `${activity.title ?? 'a'}-${index}`}
-                  className="flex items-center gap-2 text-xs text-ink-soft"
-                >
-                  <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-sky" />
-                  <span className="truncate">
-                    {activity.title ?? activity.kind ?? 'Aktivitás'}
-                    {activity.status ? ` · ${activity.status}` : ''}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
         </div>
       )}
       <textarea

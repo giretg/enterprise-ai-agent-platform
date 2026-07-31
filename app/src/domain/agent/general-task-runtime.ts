@@ -240,6 +240,7 @@ export class GeneralTaskRuntime {
     // (a chat-promócióval idekerült hosszú skill különben az alap task-keretet
     // kapná, épp azt veszítve el, amiért a boardra került).
     let skillRuntimeHints: { maxWallClockMs?: number; maxToolCalls?: number } | undefined
+    let skillToolScope: string[] | undefined
     if (this.skills && preferredSkillVersionIds.length > 0) {
       const preloaded = await this.skills.preloadSkillsByVersionIds({
         agentId: params.agentId,
@@ -252,8 +253,15 @@ export class GeneralTaskRuntime {
         reason:
           'A ticket létrehozója explicit módon kérte ennek a skillnek a betöltését. Kövesd az alábbi instrukciót:',
       })
+      // Futásidejű readiness-kapu a board-ágon is: a `preferredMode: task`
+      // promóció miatt a hosszú skillek ITT futnak, tehát a néma félrefutást is
+      // itt kell megállítani. A ticket hangosan bukjon, ne adjon félkész eredményt.
+      if (preloaded.blocked.length > 0) {
+        throw new Error(preloaded.blocked.map((b) => b.reason).join(' '))
+      }
       preloadedSkillPrompts = preloaded.preloadedPrompts
       skillRuntimeHints = preloaded.runtimeHints
+      skillToolScope = preloaded.requiredTools
     }
 
     const messages = await this.buildTaskMessages({
@@ -322,14 +330,18 @@ export class GeneralTaskRuntime {
     const persistProgress = async (force = false) => {
       const snap = force ? progress.takeSnapshot() : progress.snapshotIfDue()
       if (!snap) return
-      const current = await this.tickets.findById(ticket.id)
-      const base =
-        current && isRecord(current.payload)
-          ? (current.payload as Record<string, unknown>)
-          : payload
-      await this.tickets.update(ticket.id, {
-        payload: mergeRuntimeProgressIntoPayload(base, snap) as Prisma.JsonValue,
-      })
+      try {
+        const current = await this.tickets.findById(ticket.id)
+        const base =
+          current && isRecord(current.payload)
+            ? (current.payload as Record<string, unknown>)
+            : payload
+        await this.tickets.update(ticket.id, {
+          payload: mergeRuntimeProgressIntoPayload(base, snap) as Prisma.JsonValue,
+        })
+      } catch {
+        // Telemetria soha ne törje el a futást.
+      }
     }
 
     let loopResult: Awaited<ReturnType<typeof runAgentToolLoop>>
@@ -349,6 +361,7 @@ export class GeneralTaskRuntime {
         skillIndexPrompt,
         preloadedSkillPrompts,
         ...(skillRuntimeHints ? { initialSkillRuntimeHints: skillRuntimeHints } : {}),
+        ...(skillToolScope ? { initialSkillToolScope: skillToolScope } : {}),
         loadSkill,
         archiveLargeToolResult: (input) =>
           this.archiveLargeToolResult(wsTenant, ticket.id, input),
@@ -385,8 +398,8 @@ export class GeneralTaskRuntime {
           await refreshCancel()
         },
         onActivity: async (activity) => {
-          const due = progress.pushActivity(activity)
-          if (due) await persistProgress(false)
+          // due=true → interval lejárt; snapshotIfDue a dirty flaget fogyasztja.
+          if (progress.pushActivity(activity)) await persistProgress(false)
         },
       })
     } catch (error) {
@@ -712,8 +725,13 @@ export class GeneralTaskRuntime {
     note: string
   }) {
     const { ticket, processStep, agentId, agentVersion, stepOutcome } = input
+    const current = await this.tickets.findById(ticket.id)
+    const basePayload =
+      current && isRecord(current.payload)
+        ? (current.payload as Record<string, unknown>)
+        : input.payload
     const outcomePayload = {
-      ...input.payload,
+      ...basePayload,
       answer: input.answer,
       outcome: stepOutcome,
       toolCallCount: input.toolCallCount,

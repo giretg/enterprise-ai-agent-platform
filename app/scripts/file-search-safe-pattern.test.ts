@@ -148,6 +148,20 @@ async function run() {
     const res = await svc.globFiles('t', 'w', { pattern: '*.txt' })
     assert.deepEqual(res.paths, ['a.txt'])
   })
+
+  // Regresszió: tulajdoni_lap_egyeztetes / reconcile_records JSON.parse-hoz
+  // readTextFileOrNull kell — a readFile sortáblázott kimenete soha nem JSON.
+  await check('readTextFileOrNull nyers JSON; readFile sortáblázott (nem parseolható)', async () => {
+    const raw = '[{"nev":"Teszt Elek","hanyad":"1/1"}]\n'
+    const jsonSvc = new FileEditorService(stubStorage({ 'nyilvantartas.json': raw }))
+    const text = await jsonSvc.readTextFileOrNull('t', 'w', { path: 'nyilvantartas.json' })
+    assert.equal(text, raw)
+    assert.ok(Array.isArray(JSON.parse(text!)))
+
+    const numbered = await jsonSvc.readFile('t', 'w', { path: 'nyilvantartas.json' })
+    assert.match(numbered.content, /^\s*1\t/)
+    assert.throws(() => JSON.parse(numbered.content))
+  })
 }
 
 run().then(() => {

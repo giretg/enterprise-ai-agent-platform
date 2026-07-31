@@ -176,6 +176,7 @@ export const listTicketCommentsSchema = z.object({
 })
 
 const modelProviderSchema = z.enum(['chatgpt-oauth', 'gemini', 'ollama', 'openrouter'])
+const modelTypeSchema = z.enum(['luna', 'terra', 'sol'])
 
 export const modelPolicyEntrySchema = z.object({
   provider: modelProviderSchema,
@@ -468,6 +469,7 @@ export const createAgentSchema = z.object({
   modelConfig: z.object({
     provider: modelProviderSchema,
     model: z.string().min(1),
+    modelType: modelTypeSchema.optional(),
     temperature: z.number().min(0).max(2).optional(),
     maxTokens: z.number().int().positive().optional(),
   }),
@@ -717,6 +719,7 @@ export const updateAgentModelConfigSchema = z.object({
   modelConfig: z.object({
     provider: modelProviderSchema,
     model: z.string().min(1),
+    modelType: modelTypeSchema.optional(),
     temperature: z.number().min(0).max(2).optional(),
     maxTokens: z.number().int().positive().optional(),
     /** Agent-szintű tartalék — a globális lánc előtt fut. */

@@ -37,9 +37,17 @@ export type LoopGuardLimits = {
  *
  * A chat (interaktív) szándékosan szűkebb wallclockot kap; a ticket/task futás
  * hosszabb, mert aszinkron és nagy doksi + sok tool-kör kellhet hozzá.
+ *
+ * A chat kerete 2026-07-31-én 180s → 360s. Indok (mért eset): egy valós CRM-
+ * elemzés három egymást követő fordulón futott időkorlátra, és a felhasználónak
+ * háromszor kellett „folytasd"-ot írnia ahhoz, hogy választ kapjon — 24 perc
+ * faliórában. Egyetlen modellhívás önmagában 5–14 s, egy delegáció 15–50 s, így
+ * 180 s alatt 10–12 lépésnyi munka fér el; ez egy több forrásból dolgozó
+ * elemzéshez kevés. A felső korlát nem védelmi vonal, hanem az elszabadult futás
+ * elleni végállás — a valódi féket a zsákutca- és tool-büdzsé-őr adja.
  */
 export const LOOP_GUARD_DEFAULTS = {
-  maxWallClockMs: 180_000,
+  maxWallClockMs: 360_000,
   maxToolCalls: 60,
   maxNoProgressTurns: 3,
 } as const
@@ -264,7 +272,7 @@ function readEnvNumber(key: string): number | undefined {
  *
  * | Küszöb | modelConfig mező | Env változó | Chat alap | Task alap |
  * |---|---|---|---|---|
- * | faliórai idő | `maxToolWallClockMs` | `AGENT_LOOP_MAX_WALLCLOCK_MS` | 180s | 900s |
+ * | faliórai idő | `maxToolWallClockMs` | `AGENT_LOOP_MAX_WALLCLOCK_MS` | 360s | 900s |
  * | tool-büdzsé | `maxToolCalls` | `AGENT_LOOP_MAX_TOOL_CALLS` | 60 | 120 |
  * | előrehaladás-hiány | `maxNoProgressTurns` | `AGENT_LOOP_MAX_NO_PROGRESS_TURNS` | 3 | 4 |
  */

@@ -12,7 +12,7 @@ import {
   MODEL_PRICING_SYNCED_SETTING_KEY,
   type ModelPricingTable,
 } from '@/lib/model-pricing'
-import { callChatGptOAuth, callChatGptOAuthStream, stubChatStream } from './chatgpt-oauth-bridge'
+import { callChatGptOAuth, callChatGptOAuthStream, resolveReasoningEffort, stubChatStream } from './chatgpt-oauth-bridge'
 import { GeminiProvider } from './gemini-provider'
 import { createTokenStoreFromEnv, ensureFreshTokens } from './oauth-token-store'
 import {
@@ -149,6 +149,12 @@ function persistedStatusFromErrorClass(errorClass: FallbackErrorClass): ModelCal
 export type ModelConfig = {
   provider: string
   model: string
+  /**
+   * Ortogonális gondolkodási profil (luna / terra / sol).
+   * A ChatGPT OAuth ágon `reasoningEffort`-re mapelődik; más providernél
+   * jelenleg no-op, de a konfigban megőrződik.
+   */
+  modelType?: 'luna' | 'terra' | 'sol'
   temperature?: number
   maxTokens?: number
   /**
@@ -538,6 +544,7 @@ export class ChatGptOAuthProvider implements ModelProvider {
         messages: input.messages,
         model: input.modelConfig.model,
         tools: input.tools,
+        reasoningEffort: resolveReasoningEffort(input.modelConfig.modelType),
         onReasoningDelta: input.onReasoningDelta,
       })
       return {
@@ -608,6 +615,7 @@ export class ChatGptOAuthProvider implements ModelProvider {
         tokens,
         messages: input.messages,
         model: input.modelConfig.model,
+        reasoningEffort: resolveReasoningEffort(input.modelConfig.modelType),
         onReasoningDelta: input.onReasoningDelta,
       })
       return

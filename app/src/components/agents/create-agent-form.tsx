@@ -5,15 +5,19 @@ import { useState, useTransition } from 'react'
 import { createAgent } from '@/app/actions/platform'
 import { Card } from '@/components/ui/shell'
 import { ModelSelectField } from '@/components/agents/model-select-field'
+import { ModelTypeSelectField } from '@/components/agents/model-type-select-field'
 import {
+  DEFAULT_MODEL_TYPE,
   MODEL_PROVIDERS,
   normalizeModelForProvider,
   type ModelProviderOption,
+  type ModelType,
 } from '@/lib/model-providers'
 
 const DEFAULT_MODEL = {
   provider: 'chatgpt-oauth',
   model: 'chatgpt-oauth-default',
+  modelType: DEFAULT_MODEL_TYPE,
   temperature: 0.2,
   maxTokens: 4096,
 }
@@ -31,6 +35,7 @@ export function CreateAgentForm({
   const safeProviders = providers.length > 0 ? providers : MODEL_PROVIDERS
   const [provider, setProvider] = useState(safeProviders[0].value)
   const [model, setModel] = useState(safeProviders[0].defaultModel)
+  const [modelType, setModelType] = useState<ModelType>(DEFAULT_MODEL_TYPE)
   const selectedProvider = safeProviders.find((p) => p.value === provider) ?? safeProviders[0]
 
   return (
@@ -51,6 +56,7 @@ export function CreateAgentForm({
                 ...DEFAULT_MODEL,
                 provider,
                 model: normalizeModelForProvider(provider, model, safeProviders),
+                modelType,
                 temperature: Number(fd.get('temperature') ?? DEFAULT_MODEL.temperature),
               },
             })
@@ -132,6 +138,10 @@ export function CreateAgentForm({
               onModelChange={setModel}
               providers={safeProviders}
             />
+          </label>
+          <label className="block text-sm sm:col-span-2">
+            <span className="text-ink-soft">Modell típus (gondolkodási profil)</span>
+            <ModelTypeSelectField modelType={modelType} onModelTypeChange={setModelType} />
           </label>
         </div>
         <p className="text-xs text-ink-soft">{selectedProvider.hint}</p>

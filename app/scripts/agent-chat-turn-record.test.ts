@@ -28,7 +28,7 @@ import type {
   ToolBrokerRepository,
 } from '../src/repositories/interfaces'
 import type { ConversationService } from '../src/domain/conversation/conversation-service'
-import type { ModelGateway } from '../src/domain/gateway/model-gateway'
+import type { GatewayToolCall, ModelGateway } from '../src/domain/gateway/model-gateway'
 import type { ToolBrokerService } from '../src/domain/tool-broker/tool-broker-service'
 import type { WorkspaceStorage } from '../src/domain/file-editor/workspace-storage'
 import { AgentAccessService } from '../src/domain/agent-access/agent-access-service'
@@ -256,6 +256,15 @@ function buildRuntime(options: {
   streamErrorAfterChunks?: Error
   /** Engedélyezett capability → a forduló a tool-loop ágon fut. */
   withTools?: boolean
+  /**
+   * Körönként kiadott tool-hívások (index = hányadik modellhívás). Ahol nincs
+   * bejegyzés, a modell sima szöveggel válaszol és a loop lezárul.
+   */
+  modelToolCalls?: Array<GatewayToolCall[] | undefined>
+  /** Ezekre a file_read path-okra a broker elutasítást ad — a deniedCount méréséhez. */
+  deniedPaths?: string[]
+  /** C1: időközben megérkezett, még meg nem jelenített delegációs ticketek. */
+  returnedDelegations?: Array<{ id: string; title: string; payload: Record<string, unknown> }>
 }) {
   const messages: Array<Message & { content: string }> = []
   let seq = 0
@@ -285,22 +294,39 @@ function buildRuntime(options: {
     },
   } as unknown as ConversationService
 
+  let modelCallIndex = 0
+  const gatewayCalls: Array<{ messages: Array<{ role: string; content?: string }> }> = []
   const gateway = {
-    async *callStream() {
+    async *callStream(args: { messages: Array<{ role: string; content?: string }> }) {
+      gatewayCalls.push({ messages: args?.messages ?? [] })
       if (options.streamError) throw options.streamError
       for (const chunk of options.replyChunks ?? ['Szia! ', 'Miben segíthetek?']) {
         yield chunk
       }
       if (options.streamErrorAfterChunks) throw options.streamErrorAfterChunks
     },
-    async call() {
+    async call(args: { messages: Array<{ role: string; content?: string }> }) {
+      gatewayCalls.push({ messages: args?.messages ?? [] })
       if (options.streamError) throw options.streamError
+      const scripted = options.modelToolCalls?.[modelCallIndex]
+      modelCallIndex += 1
+      if (scripted && scripted.length > 0) {
+        return { content: '', toolCalls: scripted, usage: { promptTokens: 1, completionTokens: 1 } }
+      }
       return {
         content: (options.replyChunks ?? ['Szia! ', 'Miben segíthetek?']).join(''),
         usage: { promptTokens: 1, completionTokens: 1 },
       }
     },
   } as unknown as ModelGateway
+
+  const deniedPaths = new Set(options.deniedPaths ?? [])
+  const toolBroker = {
+    invoke: async (input: { args?: { path?: string } }) =>
+      deniedPaths.has(input.args?.path ?? '')
+        ? { denied: true, reason: 'policy', resultMeta: {}, latencyMs: 1 }
+        : { denied: false, result: { ok: true }, resultMeta: {}, latencyMs: 1 },
+  } as unknown as ToolBrokerService
 
   const toolCaps = {
     findCapabilitiesForAgent: async () =>
@@ -311,6 +337,16 @@ function buildRuntime(options: {
     listToolCallsForConversation: async () => [],
   } as unknown as ToolBrokerRepository
 
+  // C1: megérkezett delegációk beemelése. A `surfaced` az idempotencia-jelölés —
+  // enélkül ugyanaz a válasz minden fordulóban újra a promptba kerülne.
+  const surfaced: string[] = []
+  const tickets = {
+    listReturnedDelegationsForConversation: async () => options.returnedDelegations ?? [],
+    markDelegationSurfaced: async (ticketId: string) => {
+      surfaced.push(ticketId)
+    },
+  } as unknown as TicketRepository
+
   const runtime = new AgentChatRuntime(
     {
       findByIdForRuntime: async () => ({
@@ -319,12 +355,13 @@ function buildRuntime(options: {
         memoryVersion: null,
       }),
       findMany: async () => [],
+      findById: async (id: string) => ({ id, name: 'Ákos' }),
     } as unknown as AgentRepository,
     { findById: async () => null } as unknown as DocumentRepository,
-    {} as TicketRepository,
+    tickets,
     gateway,
     conversations,
-    {} as ToolBrokerService,
+    toolBroker,
     toolCaps,
     { list: async () => [] } as unknown as WorkspaceStorage,
     { append: async () => ({ id: 'audit-1' }) } as unknown as AuditRepository,
@@ -341,7 +378,7 @@ function buildRuntime(options: {
     // egy korlátozás nélküli (C4 alapértékű) tenant-gráfot kapnak.
     permissiveAgentAccess(),
   )
-  return { runtime, messages }
+  return { runtime, messages, gatewayCalls, surfaced }
 }
 
 function turnParams() {
@@ -640,6 +677,131 @@ async function main() {
     )
 
     await waitUntil(() => turns.finalized.length === 1)
+  })
+
+  await test('a lezárt rekord a valós kör- és eszközhívás-számot mutatja', async () => {
+    const turns = fakeTurnRepository()
+    const { runtime } = buildRuntime({
+      turns: turns.repo,
+      withTools: true,
+      // 1. kör: két file_read (az egyiket a policy elutasítja), 2. kör: szöveges válasz.
+      modelToolCalls: [
+        [
+          { id: 'call-ok', name: 'file_read', input: { path: 'a.txt' } },
+          { id: 'call-denied', name: 'file_read', input: { path: 'b.txt' } },
+        ],
+      ],
+      deniedPaths: ['b.txt'],
+    })
+
+    for await (const _ of runtime.sendMessageStream(turnParams())) void _
+
+    assert.equal(turns.finalized.length, 1)
+    const closed = turns.finalized[0]
+    // E nélkül a rekord nullát mutatna: az üzemeltető a hibakereső exportban nem
+    // látja, mire ment el a forduló kerete, és a prompt-eval red-line üres
+    // méréssel fut.
+    assert.equal(closed.toolCallCount, 2, 'mindkét eszközhívás számít')
+    assert.equal(closed.deniedCount, 1, 'az elutasított hívás külön is látszik')
+    assert.equal(closed.turnCount, 2, 'két megkezdett kör: tool-kör + záró válasz')
+  })
+
+  await test('C1: időközben megérkezett delegált válasz bekerül a következő fordulóba', async () => {
+    const turns = fakeTurnRepository()
+    const { runtime, gatewayCalls, surfaced } = buildRuntime({
+      turns: turns.repo,
+      returnedDelegations: [
+        {
+          id: 'deleg-1',
+          title: 'Delegálás: riport formátum',
+          payload: {
+            delegation: true,
+            delegationReturned: true,
+            question: 'Milyen formátumú a /reports/query q paramétere?',
+            answer: 'base64url(JSON), period objektummal.',
+            answeredByAgentId: 'agent-2',
+            confidence: 'high',
+          },
+        },
+      ],
+    })
+
+    for await (const _ of runtime.sendMessageStream(turnParams())) void _
+
+    const systemText = gatewayCalls
+      .flatMap((call) => call.messages)
+      .filter((m) => m.role === 'system')
+      .map((m) => m.content ?? '')
+      .join('\n')
+    // Üzletileg ez a lényeg: a felhasználó kérdésére nem csend a válasz — a
+    // közben megérkezett delegált válasz eljut az agenthez.
+    assert.match(systemText, /base64url\(JSON\)/)
+    assert.match(systemText, /Ákos/, 'a megkérdezett agent neve is látszik')
+    assert.match(systemText, /NE kérdezd meg ugyanazt/)
+    // ...és pontosan egyszer: a megjelenítettet megjelöljük.
+    assert.deepEqual(surfaced, ['deleg-1'])
+  })
+
+  await test('C1: üres válaszú delegáció nem kerül a promptba', async () => {
+    const { runtime, gatewayCalls, surfaced } = buildRuntime({
+      turns: fakeTurnRepository().repo,
+      returnedDelegations: [
+        {
+          id: 'deleg-empty',
+          title: 'Delegálás: semmi',
+          payload: { delegation: true, delegationReturned: true, question: 'k', answer: '  ' },
+        },
+      ],
+    })
+
+    for await (const _ of runtime.sendMessageStream(turnParams())) void _
+
+    const systemText = gatewayCalls
+      .flatMap((call) => call.messages)
+      .filter((m) => m.role === 'system')
+      .map((m) => m.content ?? '')
+      .join('\n')
+    assert.doesNotMatch(systemText, /Időközben megérkezett válaszok/)
+    assert.deepEqual(surfaced, [], 'nem jelölünk meg olyat, ami meg sem jelent')
+  })
+
+  await test('C1: vegyes delegációknál csak a ténylegesen átadott válasz jelölhető meg', async () => {
+    const { runtime, gatewayCalls, surfaced } = buildRuntime({
+      turns: fakeTurnRepository().repo,
+      returnedDelegations: [
+        {
+          id: 'deleg-ready',
+          title: 'Delegálás: kész',
+          payload: { delegation: true, delegationReturned: true, question: 'kész?', answer: 'Igen.' },
+        },
+        {
+          id: 'deleg-empty',
+          title: 'Delegálás: még nincs válasz',
+          payload: { delegation: true, delegationReturned: true, question: 'később?', answer: '  ' },
+        },
+      ],
+    })
+
+    for await (const _ of runtime.sendMessageStream(turnParams())) void _
+
+    const systemText = gatewayCalls
+      .flatMap((call) => call.messages)
+      .filter((m) => m.role === 'system')
+      .map((m) => m.content ?? '')
+      .join('\n')
+    assert.match(systemText, /Igen\./)
+    assert.deepEqual(surfaced, ['deleg-ready'], 'a később érkező válasz maradjon megjeleníthető')
+  })
+
+  await test('tool nélküli forduló nulla számlálókkal zárul', async () => {
+    const turns = fakeTurnRepository()
+    const { runtime } = buildRuntime({ turns: turns.repo })
+
+    for await (const _ of runtime.sendMessageStream(turnParams())) void _
+
+    assert.equal(turns.finalized.length, 1)
+    assert.equal(turns.finalized[0].toolCallCount, 0)
+    assert.equal(turns.finalized[0].deniedCount, 0)
   })
 
   await test('#63: szűrendő tartalom nem kerül nyersen a rekordra', async () => {
