@@ -20,6 +20,8 @@ export type ReconcileStatus =
   | 'Módosítás szükséges'
   | 'Új rekord'
   | 'Törlés szükséges'
+  /** Párosítási verseny — volt jelölt, de másik sor vitte el; nem „új beszúrás”. */
+  | 'Ellenőrzés szükséges'
 
 export type ReconcileMatchStrength = 'full' | 'partial' | 'none'
 
@@ -57,6 +59,7 @@ export type ReconcileSummary = {
   modositas: number
   ujRekord: number
   torles: number
+  ellenorzes: number
   uncertain: number
 }
 
@@ -211,6 +214,17 @@ function compareFieldValues(
 
 type ReconcileCandidate = { index: number; strength: Exclude<ReconcileMatchStrength, 'none'> }
 
+/** A versenyben elvesztett bal sorhoz a ténylegesen lefoglalt (preferáltan full) jelölt. */
+function pickContestedCandidate(
+  leftCandidates: ReconcileCandidate[],
+  assignment: Map<number, number>,
+): ReconcileCandidate | undefined {
+  const assignedRights = new Set(assignment.values())
+  const taken = leftCandidates.filter((c) => assignedRights.has(c.index))
+  if (taken.length === 0) return leftCandidates[0]
+  return taken.find((c) => c.strength === 'full') ?? taken[0]
+}
+
 /** Két lista uniója státuszokkal. */
 export function reconcileRecords(input: ReconcileRecordsInput): ReconcileRecordsResult {
   const keyFields = input.keyFields.map((f) => f.trim()).filter(Boolean)
@@ -259,19 +273,27 @@ export function reconcileRecords(input: ReconcileRecordsInput): ReconcileRecords
 
     if (rightIndex === undefined) {
       // Ha VOLT lehetséges párja, de azt egy másik, hasonló bal sorhoz rendeltük
-      // (verseny több hasonló rekordért), ezt NE némán „csak a bal oldalon szerepel"
-      // rekordként könyveljük el — jelezzük emberi ellenőrzésre, hogy ki ne essen.
-      const contested = candidates[li][0]
+      // (verseny több hasonló rekordért), ezt NE némán „Új rekord"-ként könyveljük —
+      // külön státusz + uncertain, a ténylegesen lefoglalt jobb sorra mutatva.
+      const contested = pickContestedCandidate(candidates[li], assignment)
       if (contested) {
         const note =
           'Lehetséges párja már egy másik, hasonló sorhoz lett rendelve — emberi ellenőrzés kell.'
-        rows.push({ status: 'Új rekord', matchStrength: 'none', left, right: null, differences: [], note })
+        const right = input.right[contested.index]
+        rows.push({
+          status: 'Ellenőrzés szükséges',
+          matchStrength: contested.strength,
+          left,
+          right,
+          differences: [],
+          note,
+        })
         uncertain.push({
           leftIndex: li,
           rightIndex: contested.index,
           note,
           left,
-          right: input.right[contested.index],
+          right,
         })
       } else {
         rows.push({
@@ -331,6 +353,7 @@ export function reconcileRecords(input: ReconcileRecordsInput): ReconcileRecords
     modositas: rows.filter((r) => r.status === 'Módosítás szükséges').length,
     ujRekord: rows.filter((r) => r.status === 'Új rekord').length,
     torles: rows.filter((r) => r.status === 'Törlés szükséges').length,
+    ellenorzes: rows.filter((r) => r.status === 'Ellenőrzés szükséges').length,
     uncertain: uncertain.length,
   }
 
@@ -375,7 +398,7 @@ export function buildReconcileSummaryForModel(
 
   return [
     `Egyeztetés kész → ${opts.outputPath}`,
-    `Összesítés: ${result.summary.total} sor — Rendben ${result.summary.rendben}, Módosítás ${result.summary.modositas}, Új ${result.summary.ujRekord}, Törlés ${result.summary.torles}, Bizonytalan párosítás ${result.summary.uncertain}.`,
+    `Összesítés: ${result.summary.total} sor — Rendben ${result.summary.rendben}, Módosítás ${result.summary.modositas}, Új ${result.summary.ujRekord}, Törlés ${result.summary.torles}, Ellenőrzés ${result.summary.ellenorzes}, Bizonytalan párosítás ${result.summary.uncertain}.`,
     'A teljes egyesített lista a munkaterületen van; NE olvasd vissza egészben a kontextusba.',
     result.summary.uncertain > 0
       ? `Bizonytalan párok (első ${uncertainSample.length}/${result.summary.uncertain}) — ezeket emberi döntésre jelezd:\n${JSON.stringify(uncertainSample)}`

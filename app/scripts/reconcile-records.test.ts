@@ -166,9 +166,43 @@ check('teljes egyezés győz a részleges felett — a pontos pár NEM esik ki n
   assert.equal(fullRow!.status, 'Rendben')
   // R0-t a pontos pár vitte el → nincs „Törlés szükséges" (nem maradt pártalan jobb sor).
   assert.equal(result.summary.torles, 0)
-  // A párját vesztett, versengő bal sor NEM tűnik el némán: bizonytalanként jelezzük.
+  // A párját vesztett, versengő bal sor NEM „Új rekord" (az beszúrást sugallna),
+  // hanem külön ellenőrzési státusz + uncertain a lefoglalt jobb sorra.
+  assert.equal(result.summary.ujRekord, 0)
+  assert.equal(result.summary.ellenorzes, 1)
   assert.equal(result.summary.uncertain, 1)
+  const contested = result.rows.find((r) => r.status === 'Ellenőrzés szükséges')
+  assert.ok(contested)
+  assert.equal(contested!.right?.szuletesiEv, '1960')
   assert.ok(result.uncertain.some((u) => u.note.includes('emberi ellenőrzés')))
+  assert.equal(result.uncertain[0].rightIndex, 0)
+})
+
+check('versenyben elvesztett sor a ténylegesen lefoglalt jobb jelöltre mutat', () => {
+  // L2 jelöltjei: R0 (partial, lista elején) és R1 (full). Mindkettőt más bal sor
+  // viszi el — a régi kód candidates[0]=R0-t adta volna; a helyes uncertain a
+  // lefoglalt full R1-re mutat (preferált párosítási jelölt).
+  const result = reconcileRecords({
+    left: [
+      { nev: 'Kovács', y: '1960', i: 'A' }, // L0 → R1 full
+      { nev: 'Kovács', y: '', i: '' }, // L1 → R0 partial (2. kör)
+      { nev: 'Kovács', y: '1960', i: 'A' }, // L2 contested
+    ],
+    right: [
+      { nev: 'Kovács', y: '', i: '' }, // R0
+      { nev: 'Kovács', y: '1960', i: 'A' }, // R1
+    ],
+    keyFields: ['nev', 'y', 'i'],
+    normalize: { nev: 'hu-name', y: 'year', i: 'trim' },
+  })
+  assert.equal(result.summary.ellenorzes, 1)
+  assert.equal(result.summary.ujRekord, 0)
+  const u = result.uncertain.find((x) => x.leftIndex === 2)
+  assert.ok(u, 'L2 uncertain')
+  assert.equal(u!.rightIndex, 1)
+  assert.equal(u!.right.i, 'A')
+  // Régi bug regresszió: ne az első (R0) jelöltre mutasson.
+  assert.notEqual(u!.rightIndex, 0)
 })
 
 check('méret-kapu: túl nagy bemenet érthető hibával áll le (nem fagy be)', () => {
