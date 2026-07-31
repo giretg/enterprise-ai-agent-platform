@@ -7,8 +7,7 @@
  * promptba kerülne.
  */
 import {
-  EXTERNAL_DATA_CLOSE,
-  EXTERNAL_DATA_OPEN,
+  unwrapExternalDataEnvelope,
 } from '@/domain/tool-broker/tool-result-envelope'
 
 export const TOOL_RESULT_EXTRACT_TOOL_NAME = 'tool_result_extract'
@@ -85,15 +84,6 @@ export function parseToolResultJson(content: string): unknown {
     }
   }
   return null
-}
-
-function unwrapExternalDataEnvelope(content: string): string {
-  const open = content.indexOf(EXTERNAL_DATA_OPEN)
-  const close = content.indexOf(EXTERNAL_DATA_CLOSE)
-  if (open >= 0 && close > open) {
-    return content.slice(open + EXTERNAL_DATA_OPEN.length, close)
-  }
-  return content
 }
 
 function valueAtPath(root: unknown, path: string): unknown {

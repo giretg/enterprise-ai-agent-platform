@@ -46,3 +46,16 @@ export function envelopeToolResultForModel(trust: TrustClass, raw: string): stri
   if (trust !== 'external_untrusted') return raw
   return [EXTERNAL_DATA_WARNING, EXTERNAL_DATA_OPEN, escapeFenceSequences(raw), EXTERNAL_DATA_CLOSE].join('\n')
 }
+
+/**
+ * Modellnek szánt burkolat levétele — workspace / archívum gépi fogyasztóknak
+ * (egyeztetés, reconcile, extract). Ha nincs határoló, a szöveg változatlan.
+ */
+export function unwrapExternalDataEnvelope(content: string): string {
+  const open = content.indexOf(EXTERNAL_DATA_OPEN)
+  const close = content.indexOf(EXTERNAL_DATA_CLOSE)
+  if (open >= 0 && close > open) {
+    return content.slice(open + EXTERNAL_DATA_OPEN.length, close)
+  }
+  return content
+}

@@ -79,12 +79,14 @@ function fakeToolBroker(record: ToolBrokerInvokeInput[]): ToolBrokerService {
 function fakeToolBrokerResult(
   record: ToolBrokerInvokeInput[],
   result: Record<string, unknown>,
+  trust: 'trusted' | 'internal' | 'external_untrusted' = 'trusted',
 ): ToolBrokerService {
   return {
     invoke: async (input: ToolBrokerInvokeInput): Promise<ToolBrokerInvokeResult> => {
       record.push(input)
       return {
         denied: false,
+        trust,
         result,
         resultMeta: {},
         latencyMs: 1,
@@ -490,7 +492,7 @@ async function main() {
         ],
         gwCalls,
       ),
-      toolBroker: fakeToolBrokerResult(brokerCalls, { customers: largeRows }),
+      toolBroker: fakeToolBrokerResult(brokerCalls, { customers: largeRows }, 'external_untrusted'),
       toolCaps: fakeToolCaps,
       agentId: 'agent-1',
       agentVersion: 1,
@@ -512,8 +514,14 @@ async function main() {
     assert.equal(result.content, 'A teljes CRM eredményt feldolgoztam.')
     assert.equal(archived.length, 1)
     assert.match(archived[0].content, /Ügyfél 400/)
+    // Gépi fogyasztóknak (egyeztetés) nyers JSON kell — NEM EXTERNAL_UNTRUSTED burkolat.
+    assert.doesNotMatch(archived[0].content, /EXTERNAL_UNTRUSTED_DATA/)
+    assert.equal(archived[0].content.trim().startsWith('{'), true)
     assert.ok(workspaceWrites.has('tool-outputs/01-http_api_get-crm-call.json'))
-    assert.match(workspaceWrites.get('tool-outputs/01-http_api_get-crm-call.json')!, /Ügyfél 400/)
+    const workspaceCopy = workspaceWrites.get('tool-outputs/01-http_api_get-crm-call.json')!
+    assert.match(workspaceCopy, /Ügyfél 400/)
+    assert.doesNotMatch(workspaceCopy, /EXTERNAL_UNTRUSTED_DATA/)
+    assert.ok(JSON.parse(workspaceCopy).customers.length === 400)
     const toolMessage = gwCalls[1].messages.find((m) => m.role === 'tool')
     assert.ok(toolMessage)
     assert.match(toolMessage.content, /A teljes eredmény elmentve/)
