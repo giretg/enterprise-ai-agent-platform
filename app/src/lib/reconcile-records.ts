@@ -221,7 +221,9 @@ function pickContestedCandidate(
 ): ReconcileCandidate | undefined {
   const assignedRights = new Set(assignment.values())
   const taken = leftCandidates.filter((c) => assignedRights.has(c.index))
-  if (taken.length === 0) return leftCandidates[0]
+  // Ha nincs lefoglalt jelölt, ne találgassunk (pl. candidates[0]) — az uncertain
+  // pointer a PR fix-spec szerint a ténylegesen lefoglalt jobb sorra kell mutasson.
+  if (taken.length === 0) return undefined
   return taken.find((c) => c.strength === 'full') ?? taken[0]
 }
 

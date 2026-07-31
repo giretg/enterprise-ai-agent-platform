@@ -52,10 +52,14 @@ async function readRecordList(
   workspaceId: string,
   path: string,
 ): Promise<Record<string, unknown>[]> {
-  const file = await fe.readFile(tenantId, workspaceId, { path })
+  // Nyers szöveg kell — a readFile sortáblázott (1\t…) kimenete NEM érvényes JSON.
+  const content = await fe.readTextFileOrNull(tenantId, workspaceId, { path })
+  if (content == null) {
+    throw new Error(`reconcile_records: a(z) "${path}" fájl nem található`)
+  }
   let parsed: unknown
   try {
-    parsed = JSON.parse(file.content)
+    parsed = JSON.parse(content)
   } catch {
     throw new Error(`reconcile_records: a(z) "${path}" fájl nem érvényes JSON`)
   }
