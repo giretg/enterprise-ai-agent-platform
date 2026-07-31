@@ -1,7 +1,14 @@
 # GCP Cloud Scheduler — stateless dispatch-ciklus (§5.7 kiegészítés)
 
 > Kiváltja a `wiki-dispatcher` Cloud Run service `min-instances=1` üzemmódját. Kapcsolódó
-> jegyzet: `CLOUD-RUN-DISPATCHER-SETUP.md` (az eredeti, állandóan futó worker).
+> jegyzetek: `CLOUD-RUN-DISPATCH-CYCLE-WORKER-SETUP.md` (a **cél** worker szolgáltatás,
+> #114), `CLOUD-RUN-DISPATCHER-SETUP.md` (az eredeti, legacy állandóan futó worker).
+
+> **#114 óta a job a dedikált worker szolgáltatást hívja, nem a control-plane UI-t.** A
+> végpont és a hitelesítés változatlan (`POST /api/v1/internal/dispatch-cycle` +
+> `x-dispatcher-token`) — csak a cél-URL más. Üzleti ok: eddig a ciklus és az interaktív
+> oldalak ugyanabban a konténerben futottak, így egy nehéz kör lassította/OOM-olta a
+> felületet, egy UI-csúcs pedig eltolta a ticket-feldolgozást.
 
 ---
 
@@ -24,29 +31,42 @@ kellett tartania. Két változás miatt ez már nem szükséges:
 ```
 Cloud Scheduler (cron, pl. */2 * * * *)
    │  POST /api/v1/internal/dispatch-cycle
-   │  header: x-dispatcher-token: $DISPATCHER_CONTROL_TOKEN
+   │  header: x-dispatcher-token: $DISPATCHER_CONTROL_TOKEN   (+ OIDC token)
    ▼
-Platform webapp (App Hosting, minInstances=0 — csak a hívás idejére fut)
+platform-dispatch-cycle worker (Cloud Run, min-instances=0 — csak a hívás idejére fut)
    │
    ├─ stale-reclaim, ütemezett task materializálás, monitor-söprés, workspace-purge
+   ├─ channel-turn drain + channel-retention takarítás
    └─ dispatchReadyBatch (ha bármi kimaradt volna az azonnali útból)
 ```
+
+A control-plane UI ugyanezt a végpontot továbbra is kiszolgálja — az a **rollback-út** és
+a belső/kézi hívók címe —, csak a Scheduler forgalma nem ott megy át.
 
 ---
 
 ## 2. Előfeltételek
 
-- A platform már deployolva (Firebase App Hosting).
-- A `DISPATCHER_CONTROL_TOKEN` secret létrehozva és bekötve az `apphosting.yaml`-ba
-  (RUNTIME) — enélkül a végpont mindig 401-et ad:
+- A dedikált worker deployolva:
+  `npm run dispatch-cycle:cloud-run-deploy`
+  (lásd `CLOUD-RUN-DISPATCH-CYCLE-WORKER-SETUP.md`). A deploy kiírja a worker URL-jét —
+  ez megy a `DISPATCH_CYCLE_TARGET_URL`-be.
+- A hívó service account (`SCHEDULER_OIDC_SERVICE_ACCOUNT`) `roles/run.invoker` joggal a
+  worker szolgáltatáson — a worker `--no-allow-unauthenticated`, tehát enélkül minden futás
+  403-mal hal el, még helyes tokennel is.
+- A platform (UI) is deployolva (Firebase App Hosting) — ez a rollback célja.
+- A `DISPATCHER_CONTROL_TOKEN` secret létrehozva és bekötve **mindkét oldalon**, azonos
+  értékkel — enélkül a végpont 401-et ad:
 
   ```bash
+  # UI (App Hosting)
   npx -y firebase-tools@latest apphosting:secrets:set DISPATCHER_CONTROL_TOKEN
   npx -y firebase-tools@latest apphosting:secrets:grantaccess DISPATCHER_CONTROL_TOKEN
+  # Worker: ugyanaz a Secret Manager secret, a dispatch-cycle-service.env
+  # DISPATCHER_CONTROL_TOKEN_SECRET mezőjében hivatkozva.
   ```
 
-  Ugyanezt az értéket használd a `dispatch-cycle-scheduler.env`-ben is (lásd lent) — a
-  két oldalnak egyeznie kell.
+  Ugyanezt az értéket használd a `dispatch-cycle-scheduler.env`-ben is (lásd lent).
 
 - Cloud Scheduler API engedélyezve:
 
@@ -61,12 +81,24 @@ Platform webapp (App Hosting, minInstances=0 — csak a hívás idejére fut)
 ```bash
 cd app
 cp infra/gcp/dispatch-cycle-scheduler.env.example infra/gcp/dispatch-cycle-scheduler.env
-# töltsd ki (GCP_PROJECT_ID, PLATFORM_API_URL, DISPATCHER_CONTROL_TOKEN, …)
+# töltsd ki (GCP_PROJECT_ID, DISPATCH_CYCLE_TARGET_URL, SCHEDULER_OIDC_SERVICE_ACCOUNT,
+#            PLATFORM_API_URL [rollback cél], DISPATCHER_CONTROL_TOKEN, …)
 npm run dispatcher:cloud-scheduler-deploy
 ```
 
 A szkript (`infra/gcp/deploy-dispatch-cycle-scheduler.sh`) idempotens: ha a job már
-létezik, frissíti (`jobs update http`), egyébként létrehozza (`jobs create http`).
+létezik, frissíti (`jobs update http`), egyébként létrehozza (`jobs create http`). Futáskor
+kiírja, melyik célra állította a jobot.
+
+### Rollback (egy lépés)
+
+```bash
+npm run dispatcher:cloud-scheduler-deploy -- --rollback
+```
+
+A target visszaáll a `PLATFORM_API_URL`-re (control-plane UI); a ciklus onnantól újra az UI
+konténerében fut, a worker érintetlen marad. Nincs feature-flag a domain-kódban — a „flag"
+maga a Scheduler target URI. Visszakapcsolás: ugyanez a parancs kapcsoló nélkül.
 
 ---
 
@@ -76,6 +108,10 @@ létezik, frissíti (`jobs update http`), egyébként létrehozza (`jobs create 
 # Job állapot
 gcloud scheduler jobs describe dispatch-cycle-sweep --project=$GCP_PROJECT_ID --location=$GCP_REGION
 
+# A CÉL ellenőrzése — a workerre kell mutatnia, nem az UI-ra (#114)
+gcloud scheduler jobs describe dispatch-cycle-sweep --project=$GCP_PROJECT_ID --location=$GCP_REGION \
+  --format='value(httpTarget.uri)'
+
 # Azonnali kézi trigger (nem kell megvárni a cron-t)
 gcloud scheduler jobs run dispatch-cycle-sweep --project=$GCP_PROJECT_ID --location=$GCP_REGION
 
@@ -84,9 +120,22 @@ gcloud scheduler jobs describe dispatch-cycle-sweep --project=$GCP_PROJECT_ID --
   --format="value(status)"
 ```
 
+Végponti smoke (401 token nélkül, 200 + summary tokennel, és a `dispatcher.last_cycle`
+frissül ugyanabban az adatbázisban):
+
+```bash
+DISPATCH_CYCLE_TARGET_URL=<worker URL> npm run dispatch-cycle:smoke
+```
+
 Az admin UI-n (`control-plane/system` → „Worker-folyamatok” panel) az „Dispatch-ciklus”
-sor mindig mutatja az utolsó lefutást — függetlenül attól, hogy a Cloud Scheduler, a
-lokális worker, vagy a „Ciklus futtatása most” gomb indította.
+sor mindig mutatja az utolsó lefutást — függetlenül attól, hogy a Cloud Scheduler (akár az
+UI-n, akár a dedikált workeren keresztül), a lokális worker, vagy a „Ciklus futtatása most”
+gomb indította. A Schedulerről indított kör forrása mindkét szolgáltatásnál `scheduler`,
+mert a futást ugyanaz az ütemezés hajtja — csak a kiszolgáló konténer költözött.
+
+A Dispatcher kill-switch (`dispatcher.controls`) a workeren is érvényes: a kapcsoló a
+`platform_settings` táblából jön, amit mindkét szolgáltatás ugyanabból az (éles) branchből
+olvas — incidensnél az admin felületről kikapcsolva a következő kör már nem indít újat.
 
 ---
 

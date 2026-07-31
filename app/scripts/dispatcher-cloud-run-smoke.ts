@@ -1,5 +1,13 @@
 /**
- * Production dispatcher end-to-end smoke (§5.7, §15.3).
+ * LEGACY — wiki-harness LISTEN/NOTIFY dispatcher smoke (§5.7, §15.3).
+ *
+ * FIGYELEM: ez NEM a Cloud Scheduler által hajtott dispatch-ciklust méri. Ez a szkript a
+ * régi, folyamatosan futó `wiki-dispatcher` Cloud Run service-t igazolja (pg_notify →
+ * állandó Neon-kapcsolat), ami az `enterprise-ai-demo` projektből törölve lett. A ma élő
+ * biztonsági háló (#114) HTTP-n fut, dedikált worker szolgáltatáson — annak a smoke-ja:
+ * `scripts/dispatch-cycle-smoke.ts` (npm run dispatch-cycle:smoke).
+ *
+ * Production dispatcher end-to-end smoke.
  *
  * A harness-smoke-tól eltérően ez NEM közvetlenül indít Jobot: létrehoz egy `ready`
  * ticketet a közös DB-ben, és a FELHŐBEN futó wiki-dispatcher service-re bízza, hogy
