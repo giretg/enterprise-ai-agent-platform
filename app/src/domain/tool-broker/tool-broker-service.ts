@@ -3,6 +3,7 @@ import type {
 } from '@prisma/client'
 
 import { prisma } from '@/lib/db'
+import type { WebFetchResult, WebFetchSourceType } from '@/domain/web-fetch/web-fetch-types'
 
 import {
   isRunAsAuthorized,
@@ -149,6 +150,15 @@ export class ToolBrokerService {
      * elérés elutasításra kerül (`AGENT_NOT_FOUND`), nem nyílik meg korlátlanul.
      */
     readonly agentAccess?: AgentAccessService,
+    /** A web-kutatás kizárólag ezen a kontrollált fetch-kapun olvashat külső tartalmat. */
+    readonly webResearchFetch?: (input: {
+      agentId: string
+      tenantId: string | null
+      url: string
+      sourceType: WebFetchSourceType
+      allowedSourceUrls: string[]
+      fetchIndex: number
+    }) => Promise<WebFetchResult>,
   ) {
     // WP-8: a handlerek felé kiajánlott broker-képességek. A tool-logika a keret
     // (invoke) authorize→gate→audit rétegén belül, változatlan viselkedéssel fut;

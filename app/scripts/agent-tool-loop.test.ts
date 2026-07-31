@@ -643,6 +643,87 @@ async function main() {
     assert.doesNotMatch(toolMessage.content, /nincs ilyen elmentett tool-eredmény/)
   })
 
+  await check('file_read archívum-path esetén tool_result_read/extract felé irányít', async () => {
+    const gwCalls: GatewayCallArgs[] = []
+    const brokerCalls: ToolBrokerInvokeInput[] = []
+    // Az archívum néhány óriási sorból áll — pont ezért nem korlátoz a file_read
+    // soralapú `limit`-je: 20 sor kérése is a teljes tartalmat visszaadná.
+    const archivePath = 'tool-outputs/06-http_api_get-order-lines.json'
+    const archiveContent = JSON.stringify({ rows: Array.from({ length: 400 }, (_, i) => ({ i })) })
+
+    const result = await runAgentToolLoop({
+      gateway: fakeGateway(
+        [
+          {
+            toolCalls: [
+              { id: 'read-archive', name: 'file_read', input: { path: archivePath, limit: 20 } },
+            ],
+          },
+          { content: 'Rendben, kivonatot készítek.' },
+        ],
+        gwCalls,
+      ),
+      toolBroker: fakeToolBroker(brokerCalls),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-archive-file-read' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'folytasd' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: ['file_read'],
+      archiveLargeToolResult: async () => ({ path: archivePath, bytes: archiveContent.length }),
+      listWorkspaceFiles: async () => [archivePath],
+      readWorkspaceFile: async (path) => (path === archivePath ? archiveContent : null),
+    })
+
+    assert.equal(result.content, 'Rendben, kivonatot készítek.')
+    assert.equal(brokerCalls.length, 0, 'az archívumot nem szabad file_read-del beolvasni')
+    const toolMessage = gwCalls[1].messages.find((m) => m.role === 'tool')
+    assert.ok(toolMessage)
+    assert.match(toolMessage.content, /LOOP-GUARD/)
+    assert.match(toolMessage.content, /tool_result_read/)
+    assert.match(toolMessage.content, /tool_result_extract/)
+    // A tartalom NEM kerülhet a kontextusba — ez a fék egyetlen üzleti célja.
+    assert.doesNotMatch(toolMessage.content, /"i":399/)
+  })
+
+  await check('file_read sima munkaterületi fájlon változatlanul átmegy', async () => {
+    const gwCalls: GatewayCallArgs[] = []
+    const brokerCalls: ToolBrokerInvokeInput[] = []
+    const archivePath = 'tool-outputs/06-http_api_get-order-lines.json'
+
+    const result = await runAgentToolLoop({
+      gateway: fakeGateway(
+        [
+          {
+            toolCalls: [
+              { id: 'read-plain', name: 'file_read', input: { path: 'extract_2026h1.json' } },
+            ],
+          },
+          { content: 'Megvan.' },
+        ],
+        gwCalls,
+      ),
+      toolBroker: fakeToolBroker(brokerCalls),
+      toolCaps: fakeToolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-plain-file-read' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'olvasd be a kivonatot' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: ['file_read'],
+      archiveLargeToolResult: async () => ({ path: archivePath, bytes: 10 }),
+      listWorkspaceFiles: async () => [archivePath],
+      readWorkspaceFile: async () => null,
+    })
+
+    assert.equal(result.content, 'Megvan.')
+    assert.equal(brokerCalls.length, 1, 'a nem-archívum fájlt továbbra is a broker olvassa')
+    assert.equal(brokerCalls[0].tool, 'file_read')
+  })
+
   await check('task mód: max turn kimerülés explicit exhausted státuszt ad', async () => {
     const gwCalls: GatewayCallArgs[] = []
     const brokerCalls: ToolBrokerInvokeInput[] = []

@@ -44,6 +44,7 @@ import {
   scoreAgentForCatalogQuery,
 } from '@/lib/agent-catalog'
 import { readDelegationPayload, shouldCompleteDelegation } from '@/lib/delegation-payload'
+import { DELEGATION_DEADLINE, raceDelegationDeadline } from '@/lib/delegation-deadline'
 
 import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
 import { AgentAccessError } from '@/domain/agent-access/agent-access-errors'
@@ -1205,18 +1206,38 @@ export async function agentAsk(self: ToolBrokerService,
       return base
     }
 
-    try {
-      await self.delegationProcessor({
+    // A delegált agent futása a HÍVÓ fordulójának faliórájából fogy (mért eset
+    // 2026-07-31: négy kérdés 136 másodpercet vitt el egy 180 másodperces
+    // keretből, és két forduló emiatt futott ki idő előtt). A határidő nem
+    // szakítja meg a cél-agentet — csak elengedi a várást: a ticket megmarad, a
+    // válasz később a beszélgetésbe kerül (l. `listReturnedDelegationsForConversation`).
+    // A `.then(ok, err)` pár SZÁNDÉKOSAN a versenyeztetés ELŐTT áll: a határidő
+    // után az elengedett ág tovább fut, és ha ilyenkor dobna, kezeletlen
+    // promise-elutasítás lenne belőle (a processz szintjén). Így viszont a hiba
+    // már értékként van elnyelve — nincs mit kezeletlenül hagyni.
+    const running = self
+      .delegationProcessor({
         ticketId: ticket.id,
         targetAgentId: input.args.targetAgentId,
         requesterAgentId: input.agentId,
         actingUserId: input.actingUserId,
       })
-    } catch (error) {
+      .then(
+        () => ({ ok: true as const }),
+        (error: unknown) => ({ ok: false as const, error }),
+      )
+
+    const settled = await raceDelegationDeadline(running, input.deadlineAt)
+    if (settled === DELEGATION_DEADLINE) {
+      // A cél-agent tovább dolgozik, és a ticketbe beírja a válaszát; a
+      // beszélgetésbe a következő fordulóban kerül be.
+      return { ...base, completed: false, error: 'deadline_exceeded' }
+    }
+    if (!settled.ok) {
       return {
         ...base,
         completed: false,
-        error: error instanceof Error ? error.message : 'delegation_failed',
+        error: settled.error instanceof Error ? settled.error.message : 'delegation_failed',
       }
     }
 
@@ -1234,6 +1255,11 @@ export async function agentAsk(self: ToolBrokerService,
         error: 'delegation_not_completed',
       }
     }
+
+    // A válasz MOST kerül a modell elé tool-eredményként, tehát a beszélgetésbe
+    // már ne injektáljuk be még egyszer a következő fordulóban. Fail-soft: a
+    // jelölés hibája legfeljebb egy ismételt megjelenítést okoz, nem hibát.
+    await self.tickets.markDelegationSurfaced(ticket.id).catch(() => {})
 
     return {
       ...base,
@@ -1369,7 +1395,10 @@ export async function webResearchRequest(self: ToolBrokerService,
     const registry = new KnownUrlRegistry()
     const searchResult = search.result as WebSearchResult
     const usable = searchResult.results
-      .filter((r) => isResearchSourceType(self, r.sourceType) && allowedSourceTypes.includes(r.sourceType))
+      .filter((r) =>
+        (r.sourceType === 'official' || r.sourceType === 'vendor_doc') &&
+        allowedSourceTypes.includes(r.sourceType),
+      )
       .slice(0, maxSources)
     if (usable.length === 0) {
       await auditWebResearchBlocked(self, egressAgent.id, egressAgent.currentVersion, 'NO_TRUSTED_SOURCE', {
@@ -1379,20 +1408,42 @@ export async function webResearchRequest(self: ToolBrokerService,
       return { ok: false, error: 'NO_TRUSTED_SOURCE' }
     }
 
-    const fetchedAt = new Date().toISOString()
-    const sources = usable.map((source) => {
+    if (!self.webResearchFetch) {
+      throw new Error('web_research_fetch_not_configured')
+    }
+    const allowedSourceUrls = usable.map((source) => source.url)
+    const fetched = [] as Array<{ source: (typeof usable)[number]; text: string; host: string; contentHash: string }>
+    for (const [index, source] of usable.entries()) {
       registry.add(source.url, source.sourceType)
-      const statementSeed = `${source.title}\n${source.snippet}`
-      return {
-        urlHash: createHash('sha256').update(source.url).digest('hex').slice(0, 16),
-        host: source.domain.toLowerCase(),
-        sourceType: source.sourceType as WebResearchSourceType,
-        contentHash: createHash('sha256').update(statementSeed).digest('hex').slice(0, 16),
-        fetchedAt,
+      const result = await self.webResearchFetch({
+        agentId: egressAgent.id,
+        tenantId: requester?.tenantId ?? null,
+        url: source.url,
+        sourceType: source.sourceType as 'official' | 'vendor_doc',
+        allowedSourceUrls,
+        fetchIndex: index,
+      })
+      if (result.ok) {
+        fetched.push({ source, text: result.text, host: result.host, contentHash: result.contentHash })
       }
-    })
-    const facts = usable.map((source, index) => ({
-      statement: `${source.title}: ${source.snippet}`.replace(/\s+/g, ' ').trim().slice(0, 1000),
+    }
+    if (fetched.length === 0) {
+      await auditWebResearchBlocked(self, egressAgent.id, egressAgent.currentVersion, 'NO_TRUSTED_SOURCE', {
+        requesterAgentId: input.agentId,
+        objectiveHash,
+      })
+      return { ok: false, error: 'NO_TRUSTED_SOURCE' }
+    }
+    const fetchedAt = new Date().toISOString()
+    const sources = fetched.map(({ source, host, contentHash }) => ({
+      urlHash: createHash('sha256').update(source.url).digest('hex').slice(0, 16),
+      host: host.toLowerCase(),
+      sourceType: source.sourceType as WebResearchSourceType,
+      contentHash,
+      fetchedAt,
+    }))
+    const facts = fetched.map(({ source, text }, index) => ({
+      statement: `${source.title}: ${text}`.replace(/\s+/g, ' ').trim().slice(0, 1000),
       sourceIndices: [index],
       confidence: source.sourceType === 'official' || source.sourceType === 'vendor_doc' ? 'medium' as const : 'low' as const,
     }))

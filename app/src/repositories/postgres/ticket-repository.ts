@@ -88,6 +88,43 @@ export class PostgresTicketRepository implements TicketRepository {
     })
   }
 
+  /**
+   * Megválaszolt, de a beszélgetésben MÉG NEM megjelenített delegációk. Ezekre
+   * azért van szükség, mert a delegált válasz ma egy `done` ticketben landol, és
+   * ha a hívó fordulója közben lejárt (deadline) vagy a diszpécser futtatta le,
+   * a felhasználó soha nem látja meg — a kérdésére csend a válasz.
+   *
+   * A `@>` containment szándékos: a Prisma JSON-path szűrője hiányzó mezőnél
+   * NULL-t ad, és a tagadása kizárná a még nem jelölt sorokat is (l. a
+   * `findReadyForDispatch` fölötti megjegyzést).
+   */
+  async listReturnedDelegationsForConversation(conversationId: string): Promise<Ticket[]> {
+    const ids = await prisma.$queryRaw<{ id: string }[]>`
+      SELECT id
+      FROM tickets
+      WHERE payload @> '{"delegation": true, "delegationReturned": true}'
+        AND payload ->> 'conversationId' = ${conversationId}
+        AND NOT (payload @> '{"delegationSurfaced": true}')
+      ORDER BY updated_at ASC
+      LIMIT 20
+    `
+    if (ids.length === 0) return []
+    return prisma.ticket.findMany({
+      where: { id: { in: ids.map((r) => r.id) } },
+      orderBy: { updatedAt: 'asc' },
+    })
+  }
+
+  /** Idempotens jelölés: a delegált válasz megjelent a felhasználó előtt. */
+  async markDelegationSurfaced(ticketId: string): Promise<void> {
+    await prisma.$executeRaw`
+      UPDATE tickets
+      SET payload = payload || '{"delegationSurfaced": true}'::jsonb
+      WHERE id = ${ticketId}::uuid
+        AND jsonb_typeof(payload) = 'object'
+    `
+  }
+
   async findStaleInProgressDispatches(cutoff: Date, limit: number): Promise<Ticket[]> {
     return prisma.ticket.findMany({
       where: {

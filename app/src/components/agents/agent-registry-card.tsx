@@ -8,14 +8,17 @@ import { AgentChatButton } from '@/components/agents/agent-chat-panel'
 import { AgentMiniAppsLink } from '@/components/agents/agent-mini-apps-link'
 import { DeleteAgentButton } from '@/components/agents/delete-agent-button'
 import { personaFor, humanStatus } from '@/lib/agent-persona'
-import { modelLabel } from '@/lib/model-providers'
+import { modelLabel, modelTypeLabel } from '@/lib/model-providers'
 
 function agentBrainLabel(agent: Agent) {
   const modelConfig = agent.modelConfig as Record<string, unknown>
   const provider = typeof modelConfig.provider === 'string' ? modelConfig.provider : 'chatgpt-oauth'
   const model = typeof modelConfig.model === 'string' ? modelConfig.model : ''
-
-  return model ? modelLabel(provider, model) : null
+  if (!model) return null
+  const type = modelTypeLabel(
+    typeof modelConfig.modelType === 'string' ? modelConfig.modelType : undefined,
+  )
+  return type ? `${modelLabel(provider, model)} · ${type}` : modelLabel(provider, model)
 }
 
 export function AgentRegistryCard({

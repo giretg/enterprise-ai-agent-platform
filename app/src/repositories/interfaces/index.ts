@@ -159,6 +159,10 @@ export interface TicketRepository {
   count(filter?: TicketFilter): Promise<number>
   findReadyForDispatch(now: Date, limit: number): Promise<Ticket[]>
   findStaleInProgressDispatches(cutoff: Date, limit: number): Promise<Ticket[]>
+  /** Megválaszolt, de a beszélgetésben még nem megjelenített delegációk. */
+  listReturnedDelegationsForConversation(conversationId: string): Promise<Ticket[]>
+  /** Idempotens jelölés: a delegált válasz megjelent a felhasználó előtt. */
+  markDelegationSurfaced(ticketId: string): Promise<void>
   findById(id: string): Promise<Ticket | null>
   create(
     data: Omit<

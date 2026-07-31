@@ -13,6 +13,7 @@ import {
 import { TicketThread } from '@/components/tickets/ticket-thread'
 import { TicketFilesPanel } from '@/components/tickets/ticket-files-panel'
 import { TicketHistory } from '@/components/tickets/ticket-history'
+import { TicketActivityHistory } from '@/components/tickets/ticket-activity-history'
 
 export default async function TicketDetailPage({
   params,
@@ -62,6 +63,14 @@ export default async function TicketDetailPage({
       {canStartProcess && <TicketProcessStartPanel ticket={ticket} definitions={definitions} />}
       <TicketFilesPanel ticketId={ticket.id} ticketState={ticket.state} />
       <TicketActions ticket={ticket} />
+      <TicketActivityHistory
+        ticket={{
+          state: ticket.state,
+          payload: ticket.payload,
+          cancelRequested: ticket.cancelRequested,
+          lockedAt: ticket.lockedAt,
+        }}
+      />
       <TicketHistory transitions={transitions} />
     </div>
   )

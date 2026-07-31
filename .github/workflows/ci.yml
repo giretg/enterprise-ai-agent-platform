@@ -113,6 +113,7 @@ jobs:
           npm run test:consequence-approval
           npm run test:skill-catalog
           npm run test:turn-continuation
+          npm run test:agent-ask-deadline
           npm run test:skill-runtime-followup
           npm run test:debug-log-export
           npm run test:prompt-assembler

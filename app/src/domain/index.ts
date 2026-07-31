@@ -725,6 +725,21 @@ const toolBrokerService = new ToolBrokerService(
   undefined,
   undefined,
   agentAccessService,
+  async ({ agentId, tenantId, url, sourceType, allowedSourceUrls, fetchIndex }) => {
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000)
+    const perAgentDayUsed = await prisma.auditLog
+      .count({ where: { action: 'web_fetch.request', actorId: agentId, createdAt: { gte: since } } })
+      .catch(() => 0)
+    return webFetchService.fetch({
+      url,
+      sourceType,
+      allowedSourceUrls,
+      allowlistHosts: await resolveEgressAllowlist(tenantId),
+      enabled: await platformSettingsService.isWebFetchEnabled(),
+      maxContentChars: 20_000,
+      budget: { perDiscoveryUsed: fetchIndex, perDiscoveryMax: 8, perAgentDayUsed, perAgentDayMax: 50 },
+    })
+  },
 )
 const consequenceApprovalService = new ConsequenceApprovalService(
   repositories.consequenceApprovals,

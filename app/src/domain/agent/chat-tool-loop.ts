@@ -37,6 +37,7 @@ import {
 import { logger } from '@/lib/observability/logger'
 // issue #97 — egységes becsomagolás + következmény-kapu (mellékhatásos eszközök).
 import { envelopeToolResultForModel } from '@/domain/tool-broker/tool-result-envelope'
+import { normalizeNyilvantartasRow } from '@/lib/tulajdoni-lap-egyeztetes'
 import {
   consequenceGateReasonForModel,
   evaluateHttpApiWriteGrant,
@@ -245,6 +246,15 @@ const TOOL_RESULT_INLINE_LIMIT = 12_000
 const TOOL_RESULT_PREVIEW_CHARS = 10_000
 const TOOL_RESULT_READ_DEFAULT_LIMIT = 40_000
 const TOOL_RESULT_READ_MAX_LIMIT = 40_000
+
+/**
+ * Mennyi keretnek kell maradnia ahhoz, hogy egy delegáció (`agent_ask`)
+ * egyáltalán elinduljon. A cél-agent futása a hívó falióráját fogyasztja; mért
+ * értékek (2026-07-31): 16 / 21 / 46 / 52 másodperc. Ennél kevesebb maradéknál a
+ * kérdés szinte biztosan nem ér vissza időben — a keret elmenne rá, a
+ * felhasználó pedig válasz helyett egy megszakadt fordulót kapna.
+ */
+const AGENT_ASK_MIN_REMAINING_MS = 60_000
 
 /**
  * A nagy tool-eredmény helyén álló előnézet archívum-mutatója. Ha egy ilyen
@@ -652,8 +662,11 @@ const TOOL_SCHEMAS: Record<ChatPlatformToolName, ToolSchema> = {
       'ne cellánkénti xlsx-írással: az sokszoros költség és kifut a forduló keretéből.\n' +
       'Lap-forrás (EGYIK kötelező): documentId (UUID csatolmány) VAGY path (munkaterület-fájl).\n' +
       'Nyilvántartás oldal (EGYIK): nyilvantartas (sorok tömbje) VAGY nyilvantartasPath ' +
-      '(munkaterületre mentett JSON — nagy névsornál EZT használd, hogy ne menjen át a szövegen).\n' +
-      'Egy sor mezői: nev (kötelező), szuletesiEv, anyjaNeve, hanyad (TÖRT, pl. "3/4"), azonosito, megjegyzes.\n' +
+      '(munkaterület JSON — tömb VAGY { items|sorok|data|rows|records }. Az http_api_get_all ' +
+      'tool-outputs/… fájlja közvetlenül is jó; partnerNev/id/jogcim mezőaliasok elfogadottak).\n' +
+      'Egy sor mezői: nev (kötelező; alias: partnerNev), szuletesiEv, anyjaNeve, hanyad (TÖRT), ' +
+      'azonosito (alias: id), megjegyzes (alias: jogcim).\n' +
+      'NE olvasd vissza a nagy listát a kontextusba mezőátnevezéshez — az egyeztető normalizál.\n' +
       'Ha a lap ellenőrzése bukik (hatályos hányadok összege ≠ 1), NEM készül tábla: ok=false és ' +
       'figyelmeztetes jön vissza — ilyenkor a felhasználónak jelezd a bizonytalanságot, ne egyeztess tovább.\n' +
       'A válasz összegzést és az ELTÉRŐ sorokat adja (nem a teljes táblát) — a részletek az Excelben vannak.',
@@ -680,7 +693,9 @@ const TOOL_SCHEMAS: Record<ChatPlatformToolName, ToolSchema> = {
         },
         nyilvantartasPath: {
           type: 'string',
-          description: 'Munkaterületre mentett JSON (tömb vagy { "sorok": [...] }).',
+          description:
+            'Munkaterület JSON: tömb vagy { items|sorok|data|rows|records }. ' +
+            'http_api_get_all tool-outputs path is jó; partnerNev→nev aliasok automatikusak.',
         },
         kimenet: {
           type: 'string',
@@ -909,6 +924,8 @@ export type LoadSkillFn = (
         maxToolCalls?: number
         preferredMode?: 'chat' | 'task'
       }
+      /** A skill `allowed-tools`-a — betöltés után ERRE szűkül a forduló eszköz-hatóköre. */
+      requiredTools?: string[]
     }
   | { ok: false; reason: string }
 >
@@ -1364,6 +1381,8 @@ function buildToolInvoke(
     agentVersion: number
     context: ToolLoopContext
     actingUserId?: string
+    /** A hívó fordulójának abszolút határideje (epoch ms) — l. `ToolInvokeBase`. */
+    deadlineAt?: number
   },
 ): ToolBrokerInvokeInput {
   const common = {
@@ -1371,6 +1390,7 @@ function buildToolInvoke(
     agentVersion: base.agentVersion,
     ...base.context,
     ...(base.actingUserId ? { actingUserId: base.actingUserId } : {}),
+    ...(typeof base.deadlineAt === 'number' ? { deadlineAt: base.deadlineAt } : {}),
   }
 
   switch (tool) {
@@ -1802,18 +1822,9 @@ function buildToolInvoke(
           documentId: typeof args.documentId === 'string' ? args.documentId : undefined,
           path: typeof args.path === 'string' ? args.path : undefined,
           nyilvantartas: Array.isArray(args.nyilvantartas)
-            ? (args.nyilvantartas as Array<Record<string, unknown>>).map((row) => ({
-                nev: typeof row?.nev === 'string' ? row.nev : '',
-                szuletesiEv:
-                  typeof row?.szuletesiEv === 'string' || typeof row?.szuletesiEv === 'number'
-                    ? row.szuletesiEv
-                    : null,
-                anyjaNeve: typeof row?.anyjaNeve === 'string' ? row.anyjaNeve : null,
-                hanyad: typeof row?.hanyad === 'string' ? row.hanyad : null,
-                cim: typeof row?.cim === 'string' ? row.cim : null,
-                azonosito: typeof row?.azonosito === 'string' ? row.azonosito : null,
-                megjegyzes: typeof row?.megjegyzes === 'string' ? row.megjegyzes : null,
-              }))
+            ? (args.nyilvantartas as Array<Record<string, unknown>>)
+                .map((row) => normalizeNyilvantartasRow(row))
+                .filter((row): row is NonNullable<typeof row> => row != null)
             : undefined,
           nyilvantartasPath:
             typeof args.nyilvantartasPath === 'string' ? args.nyilvantartasPath : undefined,
@@ -2092,6 +2103,15 @@ export async function runAgentToolLoop(params: {
     maxWallClockMs?: number
     maxToolCalls?: number
   }
+  /**
+   * Az előtöltött skillek `allowed-tools` uniója. Ha meg van adva, a forduló
+   * eszköz-hatóköre ERRE szűkül: a listán kívüli eszközök definíciója ki sem
+   * megy a modellnek, és a hívásuk elutasításra kerül. Enélkül az `allowed-tools`
+   * puszta javaslat volt — a skill „ne cellázz Excelt" tiltása mellett a modell
+   * simán hívta az `xlsx_create`-et, és hiányos munkaterméket adott késznek.
+   * Undefined = nincs szűkítés (nincs betöltött skill, vagy nem deklarált eszközöket).
+   */
+  initialSkillToolScope?: string[]
   archiveLargeToolResult?: (input: LargeToolResultArchiveInput) => Promise<LargeToolResultArchive | null>
   /**
    * Workspace fájl írása (issue #179): hétköznapi másolat nagy eredményhez,
@@ -2187,6 +2207,19 @@ export async function runAgentToolLoop(params: {
     loopStablePreamble.push({ role: 'system', content: params.skillIndexPrompt })
   }
 
+  // Ha egy előtöltött skill hatóköre szűkít, mondjuk meg ELŐRE — különben a
+  // modell a szűkítést csak az első elutasításból tudná meg, és addigra már
+  // kerülőutat tervezett.
+  if (params.initialSkillToolScope && params.initialSkillToolScope.length > 0) {
+    loopStablePreamble.push({
+      role: 'system',
+      content:
+        `A betöltött skill eszköz-hatóköre szűkebb: ebben a feladatban KIZÁRÓLAG ezeket hívhatod — ` +
+        `${[...params.initialSkillToolScope].sort().join(', ')}. A többi eszköz hívását a platform elutasítja. ` +
+        `Ha a feladat ezekkel nem oldható meg, ne kerüld meg kézzel: állj meg, és mondd el a felhasználónak, mi hiányzik.`,
+    })
+  }
+
   // Ha http_api eszköz engedélyezett, a hozzárendelt connector(ek)
   // endpoint-katalógusát a modell elé tesszük — így tudja, mit hívhat.
   // Ugyanez a lista kell a következmény-kapu http_api_request döntéséhez.
@@ -2240,13 +2273,32 @@ export async function runAgentToolLoop(params: {
     string,
     { content: string | null; bytes: number; toolName: string }
   >()
-  const tools = [
-    ...toToolDefinitions(allowedTools),
-    ...(params.archiveLargeToolResult
-      ? [TOOL_RESULT_READ_DEFINITION, TOOL_RESULT_EXTRACT_DEFINITION]
-      : []),
-    ...(loadSkill ? [LOAD_SKILL_DEFINITION] : []),
-  ]
+  /**
+   * A betöltött skill(ek) `allowed-tools` hatóköre. `null` = nincs szűkítés.
+   * A `load_skill` sikeres hívása menet közben is beállíthatja/bővítheti.
+   */
+  let skillToolScope: Set<string> | null =
+    params.initialSkillToolScope && params.initialSkillToolScope.length > 0
+      ? new Set(params.initialSkillToolScope)
+      : null
+  /** A hatókört kiváltó skill neve(i) — az elutasító üzenet ezt nevezi meg. */
+  const skillScopeSources: string[] = []
+
+  const buildTools = (): ToolDefinition[] => {
+    const inScope = skillToolScope
+      ? allowedTools.filter((t) => skillToolScope!.has(t))
+      : allowedTools
+    return [
+      ...toToolDefinitions(inScope),
+      // Infrastruktúra-eszközök: nem capability-k, a skill nem is deklarálja őket,
+      // de nélkülük a nagy eredmények kezelése és a skill-betöltés lehetetlen.
+      ...(params.archiveLargeToolResult
+        ? [TOOL_RESULT_READ_DEFINITION, TOOL_RESULT_EXTRACT_DEFINITION]
+        : []),
+      ...(loadSkill ? [LOAD_SKILL_DEFINITION] : []),
+    ]
+  }
+  let tools = buildTools()
   const emitActivity = async (event: ToolLoopActivityEvent) => {
     await params.onActivity?.(event)
   }
@@ -2981,6 +3033,16 @@ export async function runAgentToolLoop(params: {
         if (loaded.ok && loaded.runtimeHints) {
           guardLimits = mergeSkillRuntimeHints(guardLimits, loaded.runtimeHints)
         }
+        // A betöltött skill `allowed-tools`-a szűkíti a további hívásokat. Több
+        // skill esetén a hatókör UNIÓ — egy második skill nem vághatja el az
+        // elsőt. A tool-definíciókat azonnal újraépítjük, hogy a következő
+        // modellhívás már a szűkített listát lássa.
+        if (loaded.ok && loaded.requiredTools && loaded.requiredTools.length > 0) {
+          skillToolScope = new Set([...(skillToolScope ?? []), ...loaded.requiredTools])
+          const skillTitle = skillVersionId ? shortText(skillVersionId, 24) : 'betöltött skill'
+          if (!skillScopeSources.includes(skillTitle)) skillScopeSources.push(skillTitle)
+          tools = buildTools()
+        }
         // Ugyanaz a skill újratöltése ugyanazt az instrukciót adja vissza: a
         // forrás-számvitel ezt ismételt behozásnak látja, így a körönként
         // újratöltő futás sem tudja tisztára mosni a zsákutca-sorozatot.
@@ -3018,6 +3080,26 @@ export async function runAgentToolLoop(params: {
           call,
           `ELUTASÍTVA: az eszköz „${call.name}" nem elérhető. Engedélyezett: ${params.allowedTools.join(', ')}`,
           'nem engedélyezett eszköz',
+        )
+        continue
+      }
+
+      // Skill-hatókör (allowed-tools): a betöltött skill által NEM deklarált
+      // eszköz nem hívható. Ez zárja azt a rést, amin át a modell a skill
+      // tiltása ellenére kézi kerülőutat épített (pl. cellánkénti Excel-írás a
+      // determinisztikus egyeztető eszköz helyett), és félkész eredményt adott
+      // késznek. Az üzenet megmondja, mi a helyes lépés — ne kerülőutat keressen.
+      if (skillToolScope && !skillToolScope.has(toolName)) {
+        // Policy-elutasítás — ugyanaz a kategória, mint az írásjog- vagy a
+        // következmény-kapu, ezért a denied számlálóban is meg kell jelennie.
+        deniedCount += 1
+        await skipToolCall(
+          call,
+          `ELUTASÍTVA: az eszköz „${call.name}" nincs a betöltött skill allowed-tools listájában, ezért ebben a ` +
+            `feladatban nem használható. A skill által engedélyezett eszközök: ` +
+            `${[...skillToolScope].sort().join(', ')}. Ne építs kézi kerülőutat: ha a feladat ezekkel nem oldható ` +
+            `meg, állj meg, és mondd el a felhasználónak, mi hiányzik.`,
+          'skill-hatókörön kívüli eszköz',
         )
         continue
       }
@@ -3090,6 +3172,29 @@ export async function runAgentToolLoop(params: {
       if (toolName === 'file_read') {
         const readPath =
           typeof call.input?.path === 'string' ? call.input.path.trim() : ''
+
+        // Archívum-visszaolvasás a MÁSIK tool nevén. A `tool_result_read` ágon
+        // három fék áll (kör-keret, forrás-keret, ismétlés-őr) — a `file_read`
+        // ugyanarra a fájlra egyiket sem látja. Mért eset (2026-07-31): három
+        // KÜLÖNBÖZŐ archívum egyszeri file_read-je 3×130 KB-ot emelt a
+        // kontextusba, mind „első olvasás", tehát a forrás-keret sem fogta. A
+        // `limit` itt SORBAN mér, az archívum viszont néhány óriási sorból áll,
+        // ezért egyetlen hívás sincs karakterben korlátozva. Üzletileg: ettől
+        // fut ki a forduló időből/keretből, és a felhasználó „folytasd"-ot ír
+        // ahelyett, hogy választ kapna. Az archívumnak saját, karakter-alapú
+        // olvasója van — oda irányítunk.
+        if (readPath && archivedToolResults.has(readPath) && params.archiveLargeToolResult) {
+          await skipToolCall(
+            call,
+            `[LOOP-GUARD] A(z) "${readPath}" egy archivált tool-eredmény, nem sima munkaterületi fájl — a file_read soralapú limitje itt nem korlátoz semmit (a fájl néhány óriási sorból áll), ezért a teljes tartalom a kontextusba kerülne. ` +
+              `Szerkezet megnézéséhez: ${TOOL_RESULT_READ} (path, offset, limit — karakterben mér). ` +
+              `Adatkinyeréshez: ${TOOL_RESULT_EXTRACT} (arrayPath + fields → munkaterületi kivonat), utána reconcile_records / xlsx_append_rows. ` +
+              'A teljes listát NE hozd be a kontextusba.',
+            'archívum — tool_result_read / tool_result_extract kell',
+          )
+          continue
+        }
+
         if (readPath) {
           const reads = (fileReadCallsByPath.get(readPath) ?? 0) + 1
           fileReadCallsByPath.set(readPath, reads)
@@ -3117,6 +3222,21 @@ export async function runAgentToolLoop(params: {
         }
       }
 
+      // Delegáció-kapu: a cél-agent futása a MI falióránkból fogy (mérve 16–52
+      // mp/kérdés). Ha ennyi már nem fér bele, a kérdés nem indul el — így a
+      // forduló nem üres kézzel fut ki az időből, hanem a meglévőkből válaszol.
+      if (toolName === 'agent_ask') {
+        const remainingMs = guardLimits.maxWallClockMs - (now() - startedAt)
+        if (remainingMs < AGENT_ASK_MIN_REMAINING_MS) {
+          await skipToolCall(
+            call,
+            `[LIMIT] Ehhez a fordulóhoz már csak ${Math.max(0, Math.round(remainingMs / 1000))} másodperc van hátra, egy másik agent megkérdezése pedig tipikusan ${Math.round(AGENT_ASK_MIN_REMAINING_MS / 1000)} másodpercnél is több. Ne kérdezz most agentet — vagy válaszolj abból, amit eddig összegyűjtöttél, vagy mondd meg a felhasználónak, mi hiányzik és kitől kérnéd meg.`,
+            'nincs elég keret a delegációhoz',
+          )
+          continue
+        }
+      }
+
       try {
         await emitActivity({
           id: `tool-${call.id}`,
@@ -3130,6 +3250,9 @@ export async function runAgentToolLoop(params: {
           agentVersion: params.agentVersion,
           context: params.context,
           actingUserId: params.actingUserId,
+          // A hívó maradék kerete: a szinkron delegáció eddig vár, utána a ticket
+          // a helyén marad és a válasz aszinkron érkezik.
+          deadlineAt: startedAt + guardLimits.maxWallClockMs,
         })
 
         // Risk-class következmény-kapu: nem a taint, hanem a tool kockázata dönt.

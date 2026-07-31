@@ -4,18 +4,22 @@ import { useRouter } from 'next/navigation'
 import { useState, useTransition } from 'react'
 import { updateAgentModelConfig } from '@/app/actions/platform'
 import { ModelSelectField } from '@/components/agents/model-select-field'
+import { ModelTypeSelectField } from '@/components/agents/model-type-select-field'
 import { Card } from '@/components/ui/shell'
 import {
+  DEFAULT_MODEL_TYPE,
   MODEL_PROVIDERS,
+  isModelType,
   normalizeModelForProvider,
   providerOption,
   type ModelProviderOption,
+  type ModelType,
 } from '@/lib/model-providers'
 
 type FallbackRow = { provider: string; model: string }
 
-// Admin agentenként módosíthatja a modell-konfigot (provider/model/temperature/
-// maxTokens/fallbackModels). Minden mentés új agent-verziót fagyaszt be.
+// Admin agentenként módosíthatja a modell-konfigot (provider/model/modelType/
+// temperature/maxTokens/fallbackModels). Minden mentés új agent-verziót fagyaszt be.
 export function UpdateModelConfigForm({
   agentId,
   current,
@@ -25,6 +29,7 @@ export function UpdateModelConfigForm({
   current: {
     provider: string
     model: string
+    modelType?: ModelType
     temperature?: number
     maxTokens?: number
     fallbackModels?: FallbackRow[]
@@ -37,6 +42,9 @@ export function UpdateModelConfigForm({
   const [done, setDone] = useState<string | null>(null)
   const [provider, setProvider] = useState(current.provider)
   const [model, setModel] = useState(current.model)
+  const [modelType, setModelType] = useState<ModelType>(
+    current.modelType && isModelType(current.modelType) ? current.modelType : DEFAULT_MODEL_TYPE,
+  )
   const [fallbacksOpen, setFallbacksOpen] = useState(
     (current.fallbackModels?.length ?? 0) > 0,
   )
@@ -63,8 +71,13 @@ export function UpdateModelConfigForm({
   const selected = providerOption(provider, providerOptions)
   const fallbacksEqual =
     JSON.stringify(fallbacks) === JSON.stringify(current.fallbackModels ?? [])
+  const currentType: ModelType =
+    current.modelType && isModelType(current.modelType) ? current.modelType : DEFAULT_MODEL_TYPE
   const unchanged =
-    provider === current.provider && model.trim() === current.model && fallbacksEqual
+    provider === current.provider &&
+    model.trim() === current.model &&
+    modelType === currentType &&
+    fallbacksEqual
 
   return (
     <Card title="Gondolkodási motor beállítása">
@@ -83,13 +96,16 @@ export function UpdateModelConfigForm({
               modelConfig: {
                 provider,
                 model: normalizeModelForProvider(provider, model, providerOptions),
+                modelType,
                 ...(Number.isFinite(temperature) ? { temperature } : {}),
                 ...(Number.isFinite(maxTokens) && maxTokens > 0 ? { maxTokens } : {}),
                 ...(fallbacks.length > 0 ? { fallbackModels: fallbacks } : { fallbackModels: [] }),
               },
             })
             if (res.success) {
-              setDone(`Agent v${res.data.agentVersion} — ${provider}/${model.trim() || selected.defaultModel}`)
+              setDone(
+                `Agent v${res.data.agentVersion} — ${provider}/${model.trim() || selected.defaultModel} · ${modelType}`,
+              )
               router.refresh()
             } else {
               setError(res.error)
@@ -124,6 +140,10 @@ export function UpdateModelConfigForm({
               onModelChange={setModel}
               providers={providerOptions}
             />
+          </label>
+          <label className="block text-sm sm:col-span-2">
+            <span className="text-ink-soft">Modell típus (gondolkodási profil)</span>
+            <ModelTypeSelectField modelType={modelType} onModelTypeChange={setModelType} />
           </label>
           <label className="block text-sm">
             <span className="text-ink-soft">Temperature</span>

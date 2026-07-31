@@ -58,6 +58,22 @@ export class SkillAccessError extends Error {
   }
 }
 
+/**
+ * Skill-előtöltés eredménye. A `blocked` a futásidejű readiness-kapun elakadt
+ * skilleket viszi vissza a hívónak — a chat ebből mond konkrét, cselekvésre
+ * fordítható hibaüzenetet ahelyett, hogy a skill nélkül, csendben elindulna.
+ * A `requiredTools` a betöltött skillek `allowed-tools` uniója: ez szűkíti a
+ * forduló eszköz-hatókörét (undefined = nincs szűkítés).
+ */
+export interface SkillPreloadResult {
+  preloadedPrompts: string[]
+  loadedSkillNames: string[]
+  loadedSkillVersionIds: string[]
+  blocked: Array<{ name: string; missingTools: string[]; reason: string }>
+  requiredTools?: string[]
+  runtimeHints?: SkillRuntimeHints
+}
+
 export interface ActorContext {
   actorId: string | null
   actorTenantId: string | null
@@ -872,14 +888,9 @@ export class SkillService {
     skillVersionIds: string[]
     actor: ActorContext
     reason?: string
-  }): Promise<{
-    preloadedPrompts: string[]
-    loadedSkillNames: string[]
-    loadedSkillVersionIds: string[]
-    runtimeHints?: SkillRuntimeHints
-  }> {
+  }): Promise<SkillPreloadResult> {
     if (input.skillVersionIds.length === 0) {
-      return { preloadedPrompts: [], loadedSkillNames: [], loadedSkillVersionIds: [] }
+      return { preloadedPrompts: [], loadedSkillNames: [], loadedSkillVersionIds: [], blocked: [] }
     }
     const index = await this.getAssignedSkillIndex(input.agentId)
     const reason =
@@ -889,6 +900,9 @@ export class SkillService {
     const loadedSkillNames: string[] = []
     const loadedSkillVersionIds: string[] = []
     const collectedHints: SkillRuntimeHints[] = []
+    const blocked: SkillPreloadResult['blocked'] = []
+    const requiredTools: string[] = []
+    let sawSkillWithoutRequires = false
     const seen = new Set<string>()
     const orderedIds: string[] = []
     for (const skillVersionId of input.skillVersionIds) {
@@ -920,7 +934,7 @@ export class SkillService {
     )
 
     if (loadableIds.length === 0) {
-      return { preloadedPrompts: [], loadedSkillNames: [], loadedSkillVersionIds: [] }
+      return { preloadedPrompts: [], loadedSkillNames: [], loadedSkillVersionIds: [], blocked: [] }
     }
 
     const versions = await this.skills.findVersionsByIds(loadableIds)
@@ -932,6 +946,29 @@ export class SkillService {
       const version = versionById.get(skillVersionId)
       if (!version) continue
       const content = parseSkillContent(version.content)
+
+      // Fail-closed readiness-kapu: hiányzó capability-nél nem töltjük be.
+      const readiness = await this.checkSkillToolReadiness(input.agentId, version.requires)
+      if (!readiness.ok) {
+        await this.auditSkillBlocked({
+          agentId: input.agentId,
+          skillId: entry.skillId,
+          skillVersionId,
+          version: entry.version,
+          missing: readiness.missing,
+          actorTenantId: input.actor.actorTenantId,
+        })
+        blocked.push({
+          name: entry.name,
+          missingTools: readiness.missing,
+          reason: SkillService.unreadySkillReason(entry.name, readiness.missing),
+        })
+        continue
+      }
+
+      const versionRequires = parseSkillRequires(version.requires)
+      if (versionRequires.length === 0) sawSkillWithoutRequires = true
+      requiredTools.push(...versionRequires.map((r) => r.toolName))
       await this.audit.append({
         actorType: 'agent',
         actorId: input.agentId,
@@ -955,8 +992,79 @@ export class SkillService {
       preloadedPrompts,
       loadedSkillNames,
       loadedSkillVersionIds,
+      blocked,
+      // A betöltött skillek `allowed-tools`-a = a forduló eszköz-hatóköre. Ha
+      // BÁRMELYIK betöltött skill üres requires-szel jön, nincs mit szűkíteni:
+      // ilyenkor a hatókört elhagyjuk (undefined), különben a listázatlan skill
+      // eszközeit vágnánk le.
+      ...(loadedSkillVersionIds.length > 0 && requiredTools.length > 0 && !sawSkillWithoutRequires
+        ? { requiredTools: [...new Set(requiredTools)] }
+        : {}),
       runtimeHints: aggregateSkillRuntimeHints(collectedHints),
     }
+  }
+
+  /**
+   * Futásidejű readiness-kapu (§D10 kiegészítés). A readiness eddig CSAK az
+   * agent-detail panelen jelent meg; futáskor semmi nem nézte, ezért egy hiányzó
+   * capability-grant mellett a skill elindult, a modell pedig a hiányzó eszközt
+   * kézi kerülőúttal pótolta — és a hiányos eredményt késznek jelentette. Üzleti
+   * hatás: a felhasználó egy hitelesnek látszó, valójában hiányos munkaterméket
+   * kap (pl. 182 sorból 10 az egyeztető Excelben), és nincs jelzés, hogy baj van.
+   *
+   * Ezért a betöltés fail-closed: ha a skill `requires` listájából bármi hiányzik
+   * az agent capability-i közül, a skill NEM töltődik be. Jobb nem elkezdeni,
+   * mint félkészen befejezni.
+   */
+  private async checkSkillToolReadiness(
+    agentId: string,
+    requiresJson: unknown,
+  ): Promise<{ ok: true } | { ok: false; missing: string[] }> {
+    const requires = parseSkillRequires(requiresJson)
+    if (requires.length === 0) return { ok: true }
+    const caps = await this.toolBroker.findCapabilitiesForAgent(agentId)
+    const allowedTools = new Set(caps.filter((c) => c.allowed).map((c) => c.toolName))
+    const missing = requires
+      .map((r) => r.toolName)
+      .filter((toolName) => !allowedTools.has(toolName))
+    return missing.length === 0 ? { ok: true } : { ok: false, missing }
+  }
+
+  /** Ember által olvasható indok a blokkolt skill-betöltéshez. */
+  private static unreadySkillReason(name: string, missing: string[]): string {
+    return (
+      `A(z) „${name}" skill nem futtatható, mert az agentnek hiányzik a következő eszköz-jogosultsága: ` +
+      `${missing.join(', ')}. Ezek nélkül a munka csak részben készülne el, ezért el sem kezdem. ` +
+      `Kérd meg az agent adminisztrátorát, hogy adja meg ezeket a capability-ket az agent adatlapján.`
+    )
+  }
+
+  private async auditSkillBlocked(input: {
+    agentId: string
+    skillId: string
+    skillVersionId: string
+    version: number
+    missing: string[]
+    actorTenantId: string | null
+  }): Promise<void> {
+    await this.audit.append({
+      actorType: 'agent',
+      actorId: input.agentId,
+      agentVersion: null,
+      action: 'skill.blocked_unready',
+      targetType: 'skill',
+      targetId: input.skillId,
+      modelUsed: null,
+      inputRef: input.skillVersionId,
+      outputRef: `v${input.version}`,
+      policyDecision: 'deny',
+      tenantId: input.actorTenantId,
+      metadata: {
+        skillVersionId: input.skillVersionId,
+        skillId: input.skillId,
+        missingTools: input.missing,
+      },
+    })
   }
 
   /**
@@ -967,20 +1075,14 @@ export class SkillService {
     agentId: string
     messageText: string
     actor: ActorContext
-  }): Promise<{
-    modelFacingText: string
-    preloadedPrompts: string[]
-    loadedSkillNames: string[]
-    /** A ténylegesen betöltött verziók — a board-promóció ezt adja tovább (#161). */
-    loadedSkillVersionIds: string[]
-    runtimeHints?: SkillRuntimeHints
-  }> {
+  }): Promise<SkillPreloadResult & { modelFacingText: string }> {
     if (!input.messageText.includes('/')) {
       return {
         modelFacingText: input.messageText,
         preloadedPrompts: [],
         loadedSkillNames: [],
         loadedSkillVersionIds: [],
+        blocked: [],
       }
     }
     const index = await this.getAssignedSkillIndex(input.agentId)
@@ -991,6 +1093,7 @@ export class SkillService {
         preloadedPrompts: [],
         loadedSkillNames: [],
         loadedSkillVersionIds: [],
+        blocked: [],
       }
     }
 
@@ -1001,13 +1104,7 @@ export class SkillService {
       reason:
         'A felhasználó explicit módon kérte ennek a skillnek a betöltését (/slash parancs). Kövesd az alábbi instrukciót:',
     })
-    return {
-      modelFacingText: parsed.modelFacingText,
-      preloadedPrompts: preloaded.preloadedPrompts,
-      loadedSkillNames: preloaded.loadedSkillNames,
-      loadedSkillVersionIds: preloaded.loadedSkillVersionIds,
-      runtimeHints: preloaded.runtimeHints,
-    }
+    return { ...preloaded, modelFacingText: parsed.modelFacingText }
   }
 
   /**
@@ -1025,6 +1122,8 @@ export class SkillService {
         ok: true
         instructions: string
         runtimeHints?: SkillRuntimeHints
+        /** A skill `allowed-tools`-a — a hívó ezzel szűkíti a forduló eszköz-hatókörét. */
+        requiredTools?: string[]
       }
     | { ok: false; reason: string }
   > {
@@ -1052,6 +1151,20 @@ export class SkillService {
     if (!version) return { ok: false, reason: 'A skill-verzió nem található.' }
     const content = parseSkillContent(version.content)
 
+    // Fail-closed readiness-kapu: hiányzó capability-nél a skill nem töltődik be.
+    const readiness = await this.checkSkillToolReadiness(input.agentId, version.requires)
+    if (!readiness.ok) {
+      await this.auditSkillBlocked({
+        agentId: input.agentId,
+        skillId: entry.skillId,
+        skillVersionId: input.skillVersionId,
+        version: entry.version,
+        missing: readiness.missing,
+        actorTenantId: input.actor.actorTenantId,
+      })
+      return { ok: false, reason: SkillService.unreadySkillReason(entry.name, readiness.missing) }
+    }
+
     await this.audit.append({
       actorType: 'agent',
       actorId: input.agentId,
@@ -1067,10 +1180,12 @@ export class SkillService {
       metadata: { skillVersionId: input.skillVersionId, skillId: entry.skillId },
     })
 
+    const requiredTools = parseSkillRequires(version.requires).map((r) => r.toolName)
     return {
       ok: true,
       instructions: buildLoadedSkillPrompt(entry, content),
       ...(content.runtimeHints ? { runtimeHints: content.runtimeHints } : {}),
+      ...(requiredTools.length > 0 ? { requiredTools } : {}),
     }
   }
 

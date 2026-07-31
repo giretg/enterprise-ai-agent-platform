@@ -415,6 +415,12 @@ export default async function AgentDetailPage({
                 current={{
                   provider: String(modelConfig.provider ?? 'chatgpt-oauth'),
                   model: String(modelConfig.model ?? ''),
+                  modelType:
+                    modelConfig.modelType === 'luna' ||
+                    modelConfig.modelType === 'terra' ||
+                    modelConfig.modelType === 'sol'
+                      ? modelConfig.modelType
+                      : undefined,
                   temperature:
                     typeof modelConfig.temperature === 'number'
                       ? modelConfig.temperature

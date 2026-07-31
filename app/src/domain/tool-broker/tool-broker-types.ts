@@ -662,6 +662,14 @@ type ToolInvokeBase = {
    * származhat. Az agent API-kulcs birtokosa nem választhat felhasználót.
    */
   actingUserSource?: 'trusted_internal' | 'external_agent_api'
+  /**
+   * Abszolút határidő (epoch ms), ameddig a hívónak MÉG van kerete. Ma csak a
+   * szinkron `agent_ask` figyeli: a delegált agent futása a hívó fordulójának
+   * faliórájából fogy, és határidő nélkül egyetlen kérdés elviheti a keret
+   * negyedét — a felhasználó ilyenkor válasz helyett „folytasd"-ot ír. A
+   * túllépés NEM hiba: a ticket megmarad, a válasz aszinkron érkezik meg.
+   */
+  deadlineAt?: number
 }
 
 export type ToolBrokerInvokeInput =

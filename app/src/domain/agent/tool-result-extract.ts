@@ -6,9 +6,7 @@
  * 250 KB-os API-válasz feldolgozható anélkül, hogy a teljes tartalom a
  * promptba kerülne.
  */
-import {
-  unwrapExternalDataEnvelope,
-} from '@/domain/tool-broker/tool-result-envelope'
+import { unwrapExternalDataEnvelope } from '@/domain/tool-broker/tool-result-envelope'
 
 export const TOOL_RESULT_EXTRACT_TOOL_NAME = 'tool_result_extract'
 

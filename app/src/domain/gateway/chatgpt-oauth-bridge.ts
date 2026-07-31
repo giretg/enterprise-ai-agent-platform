@@ -26,6 +26,22 @@ export function resolveModel(requested: string | undefined): string {
   return requested
 }
 
+export type ReasoningEffort = 'low' | 'medium' | 'high'
+
+/**
+ * Ortogonális modelType (luna/terra/sol) → ChatGPT reasoning effort.
+ * Hiányzó / ismeretlen érték: a régi alapértelmezés (`low`), hogy a meglévő
+ * agentek viselkedése ne változzon.
+ */
+export function resolveReasoningEffort(
+  modelType: string | undefined,
+): ReasoningEffort {
+  if (modelType === 'luna') return 'low'
+  if (modelType === 'terra') return 'medium'
+  if (modelType === 'sol') return 'high'
+  return 'low'
+}
+
 type ResponsesInputMessageContent = { type: 'input_text'; text: string }
 type ResponsesAssistantMessageContent =
   | { type: 'output_text'; text: string }
@@ -226,7 +242,7 @@ export async function* callChatGptOAuthStream(input: {
   tokens: ChatGptOAuthTokens
   messages: GatewayMessage[]
   model: string
-  reasoningEffort?: 'low' | 'medium' | 'high'
+  reasoningEffort?: ReasoningEffort
   onReasoningDelta?: (delta: string) => void
 }): AsyncGenerator<string, void, unknown> {
   const model = resolveModel(input.model)
@@ -308,7 +324,7 @@ export async function callChatGptOAuth(input: {
   messages: GatewayMessage[]
   model: string
   tools?: ToolDefinition[]
-  reasoningEffort?: 'low' | 'medium' | 'high'
+  reasoningEffort?: ReasoningEffort
   /**
    * Ha meg van adva, a reasoning-summary deltákat érkezéskor (a válasz-token/tool-hívás
    * ELŐTT) továbbadja — ez teszi lehetővé a "gondolkodás közben" streamelést a

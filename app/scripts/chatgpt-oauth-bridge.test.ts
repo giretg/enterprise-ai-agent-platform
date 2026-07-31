@@ -3,7 +3,10 @@
  * Futtatás: npx tsx scripts/chatgpt-oauth-bridge.test.ts
  */
 import assert from 'node:assert/strict'
-import { toResponsesRequest } from '../src/domain/gateway/chatgpt-oauth-bridge'
+import {
+  resolveReasoningEffort,
+  toResponsesRequest,
+} from '../src/domain/gateway/chatgpt-oauth-bridge'
 import type { GatewayMessage } from '../src/domain/gateway/model-gateway'
 
 let failures = 0
@@ -65,6 +68,14 @@ check('assistant tool call ures szoveggel csak function_call item', () => {
       arguments: '{"q":"sales"}',
     },
   ])
+})
+
+check('modelType luna/terra/sol → reasoningEffort', () => {
+  assert.equal(resolveReasoningEffort('luna'), 'low')
+  assert.equal(resolveReasoningEffort('terra'), 'medium')
+  assert.equal(resolveReasoningEffort('sol'), 'high')
+  assert.equal(resolveReasoningEffort(undefined), 'low')
+  assert.equal(resolveReasoningEffort('unknown'), 'low')
 })
 
 console.log(`\n=== Osszesites === ${failures === 0 ? 'MIND ZOLD' : `${failures} sikertelen`}`)

@@ -869,6 +869,218 @@ async function main() {
   })
 
   console.log('')
+  console.log('Futásidejű readiness-kapu + skill eszköz-hatókör')
+
+  /**
+   * Fixture a betöltési úthoz: egy hozzárendelt, enabled skill-verzió, megadott
+   * `requires`-szel, és egy agent megadott capability-készlettel.
+   */
+  const makeLoadSvc = (opts: { requires: string[]; caps: string[] }) => {
+    const appended: Array<Record<string, unknown>> = []
+    const version = {
+      id: 'sv-1',
+      skillId: 'sk-1',
+      version: 4,
+      content: { instructions: ['Csináld így.'], triggerKeywords: [], parameters: [] },
+      requires: opts.requires.map((toolName) => ({ toolName, reason: 'SKILL.md allowed-tools' })),
+    }
+    const skillsRepo = {
+      listEnabledForAgent: async () => [
+        {
+          skillVersionId: 'sv-1',
+          skillVersion: {
+            id: 'sv-1',
+            version: 4,
+            skillId: 'sk-1',
+            skill: { id: 'sk-1', name: 'Egyeztetés', description: 'teszt' },
+          },
+        },
+      ],
+      findVersionById: async () => version,
+      findVersionsByIds: async () => [version],
+    }
+    const auditRepo = {
+      append: async (d: Record<string, unknown>) => {
+        appended.push(d)
+        return d
+      },
+    }
+    const toolBroker = {
+      findCapabilitiesForAgent: async () => opts.caps.map((toolName) => ({ toolName, allowed: true })),
+    }
+    const svc = new SkillService(
+      skillsRepo as never,
+      auditRepo as never,
+      toolBroker as never,
+      {} as never,
+    )
+    return { svc, appended }
+  }
+  const actorX: ActorContext = { actorId: null, actorTenantId: TENANT_A, isPlatformAdmin: false }
+
+  await check('load_skill: hiányzó capability → NEM töltődik be, indok megnevezi az eszközt', async () => {
+    const { svc, appended } = makeLoadSvc({
+      requires: ['tulajdoni_lap_egyeztetes', 'http_api_get'],
+      caps: ['http_api_get', 'xlsx_create'],
+    })
+    const res = await svc.loadSkillForAgent({
+      agentId: 'agent-1',
+      skillVersionId: 'sv-1',
+      actor: actorX,
+    })
+    assert.equal(res.ok, false, 'a hiányos skill nem tölthető be')
+    assert.ok(
+      !res.ok && res.reason.includes('tulajdoni_lap_egyeztetes'),
+      'az indok megnevezi a hiányzó eszközt',
+    )
+    assert.ok(
+      !res.ok && !res.reason.includes('http_api_get,'),
+      'a meglévő eszközt nem sorolja hiányzóként',
+    )
+    assert.equal(
+      appended.filter((a) => a.action === 'skill.blocked_unready').length,
+      1,
+      'a blokkolás auditált',
+    )
+    assert.equal(
+      appended.filter((a) => a.action === 'skill.loaded').length,
+      0,
+      'blokkolt skillre NINCS skill.loaded',
+    )
+  })
+
+  await check('load_skill: minden capability megvan → betölt és visszaadja a hatókört', async () => {
+    const { svc, appended } = makeLoadSvc({
+      requires: ['tulajdoni_lap_egyeztetes', 'http_api_get'],
+      caps: ['tulajdoni_lap_egyeztetes', 'http_api_get', 'xlsx_create'],
+    })
+    const res = await svc.loadSkillForAgent({
+      agentId: 'agent-1',
+      skillVersionId: 'sv-1',
+      actor: actorX,
+    })
+    assert.equal(res.ok, true)
+    assert.deepEqual(
+      res.ok ? res.requiredTools : null,
+      ['tulajdoni_lap_egyeztetes', 'http_api_get'],
+      'a hatókör a skill allowed-tools listája — NEM az agent teljes capability-készlete',
+    )
+    assert.equal(appended.filter((a) => a.action === 'skill.loaded').length, 1)
+  })
+
+  await check('preload (/slash): hiányzó capability → blocked, üres prompt, nincs betöltés', async () => {
+    const { svc, appended } = makeLoadSvc({
+      requires: ['reconcile_records'],
+      caps: ['file_read'],
+    })
+    const res = await svc.preloadSkillsByVersionIds({
+      agentId: 'agent-1',
+      skillVersionIds: ['sv-1'],
+      actor: actorX,
+    })
+    assert.equal(res.blocked.length, 1)
+    assert.deepEqual(res.blocked[0].missingTools, ['reconcile_records'])
+    assert.equal(res.preloadedPrompts.length, 0, 'a skill szövege NEM megy a promptba')
+    assert.equal(res.loadedSkillNames.length, 0)
+    assert.equal(res.requiredTools, undefined, 'blokkolt skill nem ad hatókört')
+    assert.equal(appended.filter((a) => a.action === 'skill.blocked_unready').length, 1)
+  })
+
+  await check('preload: requires nélküli skill NEM szűkíti a hatókört', async () => {
+    const { svc } = makeLoadSvc({ requires: [], caps: ['file_read'] })
+    const res = await svc.preloadSkillsByVersionIds({
+      agentId: 'agent-1',
+      skillVersionIds: ['sv-1'],
+      actor: actorX,
+    })
+    assert.equal(res.blocked.length, 0, 'üres requires nem blokkol')
+    assert.equal(res.preloadedPrompts.length, 1)
+    assert.equal(res.requiredTools, undefined, 'nincs mit szűkíteni → nincs hatókör')
+  })
+
+  await check('a loop a skill-hatókörön kívüli eszközt ELUTASÍTJA (kézi kerülőút zárva)', async () => {
+    // Ez a regresszió: a skill tiltotta a cellánkénti Excel-írást, a modell mégis
+    // xlsx_create-tel épített félkész munkafüzetet, és késznek jelentette.
+    let turn = 0
+    const offeredToolNames: string[][] = []
+    const systemPrompts: string[] = []
+    const gateway = {
+      call: async (input: {
+        messages: Array<{ role: string; content?: string }>
+        tools?: Array<{ name?: string }>
+      }) => {
+        for (const m of input.messages) {
+          if (m.role === 'system' && typeof m.content === 'string') systemPrompts.push(m.content)
+        }
+        offeredToolNames.push((input.tools ?? []).map((t) => t.name ?? ''))
+        turn++
+        if (turn === 1) {
+          return {
+            content: '',
+            toolCalls: [{ id: 'c1', name: 'xlsx_create', input: { path: 'x.xlsx' } }],
+          }
+        }
+        return { content: 'Nem tudom elvégezni.', toolCalls: [] }
+      },
+    }
+
+    const result = await runAgentToolLoop({
+      gateway: gateway as never,
+      toolBroker: {} as never,
+      toolCaps: {} as never,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-1' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'Egyeztesd.' }],
+      modelConfig: { provider: 'stub', model: 'stub' } as never,
+      // Az agentnek VAN xlsx_create capability-je…
+      allowedTools: ['xlsx_create', 'tulajdoni_lap_egyeztetes'],
+      // …de a betöltött skill hatóköre nem tartalmazza.
+      initialSkillToolScope: ['tulajdoni_lap_egyeztetes'],
+    })
+
+    assert.ok(
+      !offeredToolNames[0].includes('xlsx_create'),
+      'a hatókörön kívüli eszköz definíciója KI SEM megy a modellnek',
+    )
+    assert.ok(
+      offeredToolNames[0].includes('tulajdoni_lap_egyeztetes'),
+      'a hatókörön belüli eszköz elérhető marad',
+    )
+    assert.ok(
+      systemPrompts.some((p) => p.includes('eszköz-hatóköre szűkebb')),
+      'a modell előre megkapja a szűkítést, nem csak az elutasításból tudja meg',
+    )
+    assert.equal(result.deniedCount, 1, 'a hívás elutasításra került')
+    assert.ok(result.content.includes('Nem tudom elvégezni.'))
+  })
+
+  await check('hatókör nélkül minden engedélyezett eszköz elérhető marad (nincs regresszió)', async () => {
+    const offeredToolNames: string[][] = []
+    const gateway = {
+      call: async (input: { tools?: Array<{ name?: string }> }) => {
+        offeredToolNames.push((input.tools ?? []).map((t) => t.name ?? ''))
+        return { content: 'Kész.', toolCalls: [] }
+      },
+    }
+    await runAgentToolLoop({
+      gateway: gateway as never,
+      toolBroker: {} as never,
+      toolCaps: {} as never,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-1' },
+      mode: 'chat',
+      messages: [{ role: 'user', content: 'Szia.' }],
+      modelConfig: { provider: 'stub', model: 'stub' } as never,
+      allowedTools: ['xlsx_create', 'tulajdoni_lap_egyeztetes'],
+    })
+    assert.ok(offeredToolNames[0].includes('xlsx_create'))
+    assert.ok(offeredToolNames[0].includes('tulajdoni_lap_egyeztetes'))
+  })
+
+  console.log('')
   if (failures > 0) {
     console.error(`❌ ${failures} teszt bukott`)
     process.exit(1)

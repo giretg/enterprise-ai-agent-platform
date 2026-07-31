@@ -161,6 +161,7 @@ export function SelfUpdatingConnectorsPanel({ embedded = false }: { embedded?: b
   const [name, setName] = useState('')
   const [apiKey, setApiKey] = useState('')
   const [specUrl, setSpecUrl] = useState('')
+  const [showCreateForm, setShowCreateForm] = useState(false)
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [pending, startTransition] = useTransition()
@@ -246,32 +247,62 @@ export function SelfUpdatingConnectorsPanel({ embedded = false }: { embedded?: b
         </Card>
       ) : null}
 
-      <Card title="Új önfrissítő kapcsolat">
-        <div className="space-y-4">
-          <label className="block text-sm"><span className="mb-1 block font-semibold">Kapcsolat neve</span>
-            <input value={name} onChange={(e) => setName(e.target.value)} className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2" placeholder="Partner CRM" />
-          </label>
-          <label className="block text-sm"><span className="mb-1 block font-semibold">Hozzáférési kulcs</span>
-            <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2" autoComplete="new-password" />
-            <span className="mt-1 block text-xs text-ink-soft">A partnertől kapott titkos kulcs. Biztonságos titoktárolóban marad; az adatbázisba soha nem kerül.</span>
-          </label>
-          <label className="block text-sm"><span className="mb-1 block font-semibold">API-leírás linkje</span>
-            <input value={specUrl} onChange={(e) => setSpecUrl(e.target.value)} className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2" placeholder="https://partner.example/openapi.json" />
-            <span className="mt-1 block text-xs text-ink-soft">Innen olvassuk ki a képességeket, de csak amikor megnyomod a Frissítés keresése gombot — sosem magától.</span>
-          </label>
-          <p className="rounded-md border border-honey/35 bg-honey/8 p-3 text-xs">
-            A linket általában egy másik kollégának kell jóváhagynia, mielőtt élesítjük — így biztos, hogy nem elgépelt vagy hamis címről olvasunk.
-            Platform-superadmin egyedül is jóváhagyhatja és élesítheti.
-          </p>
-          <button type="button" disabled={pending || !name.trim() || !apiKey.trim() || !specUrl.trim()} className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-card disabled:opacity-50" onClick={() => run(async () => {
-            const result = await createSelfUpdatingConnector({ name, apiKey, specUrl })
-            if (result.success) { setName(''); setApiKey(''); setSpecUrl('') }
-            return result
-          }, 'A kapcsolat létrejött. Jóvá kell hagyni a linket és a partner megbízhatóságát, mielőtt frissítést kereshetsz.')}>
-            Kapcsolat létrehozása
-          </button>
-        </div>
-      </Card>
+      {!showCreateForm ? (
+        <button
+          type="button"
+          className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-card"
+          onClick={() => setShowCreateForm(true)}
+        >
+          Új kapcsolat létrehozása
+        </button>
+      ) : (
+        <Card title="Új önfrissítő kapcsolat">
+          <div className="space-y-4">
+            <label className="block text-sm"><span className="mb-1 block font-semibold">Kapcsolat neve</span>
+              <input value={name} onChange={(e) => setName(e.target.value)} className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2" placeholder="Partner CRM" />
+            </label>
+            <label className="block text-sm"><span className="mb-1 block font-semibold">Hozzáférési kulcs</span>
+              <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2" autoComplete="new-password" />
+              <span className="mt-1 block text-xs text-ink-soft">A partnertől kapott titkos kulcs. Biztonságos titoktárolóban marad; az adatbázisba soha nem kerül.</span>
+            </label>
+            <label className="block text-sm"><span className="mb-1 block font-semibold">API-leírás linkje</span>
+              <input value={specUrl} onChange={(e) => setSpecUrl(e.target.value)} className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2" placeholder="https://partner.example/openapi.json" />
+              <span className="mt-1 block text-xs text-ink-soft">Innen olvassuk ki a képességeket, de csak amikor megnyomod a Frissítés keresése gombot — sosem magától.</span>
+            </label>
+            <p className="rounded-md border border-honey/35 bg-honey/8 p-3 text-xs">
+              A linket általában egy másik kollégának kell jóváhagynia, mielőtt élesítjük — így biztos, hogy nem elgépelt vagy hamis címről olvasunk.
+              Platform-superadmin egyedül is jóváhagyhatja és élesítheti.
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <button type="button" disabled={pending || !name.trim() || !apiKey.trim() || !specUrl.trim()} className="rounded-md bg-ink px-4 py-2 text-sm font-semibold text-card disabled:opacity-50" onClick={() => run(async () => {
+                const result = await createSelfUpdatingConnector({ name, apiKey, specUrl })
+                if (result.success) {
+                  setName('')
+                  setApiKey('')
+                  setSpecUrl('')
+                  setShowCreateForm(false)
+                }
+                return result
+              }, 'A kapcsolat létrejött. Jóvá kell hagyni a linket és a partner megbízhatóságát, mielőtt frissítést kereshetsz.')}>
+                Kapcsolat létrehozása
+              </button>
+              <button
+                type="button"
+                disabled={pending}
+                className="rounded-md border border-ink/20 px-4 py-2 text-sm font-semibold disabled:opacity-50"
+                onClick={() => {
+                  setShowCreateForm(false)
+                  setName('')
+                  setApiKey('')
+                  setSpecUrl('')
+                }}
+              >
+                Mégse
+              </button>
+            </div>
+          </div>
+        </Card>
+      )}
 
       <Card title="Tenant biztonsági kapcsoló">
         <label className="flex items-start gap-3 text-sm">

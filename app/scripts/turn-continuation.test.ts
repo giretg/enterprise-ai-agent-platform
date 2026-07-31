@@ -9,6 +9,7 @@ import {
   resolveLoopGuardLimits,
 } from '../src/domain/agent/loop-stop-decision'
 import {
+  buildReturnedDelegationPrompt,
   buildTurnContinuationPrompt,
   shouldInjectTurnContinuation,
 } from '../src/domain/agent/turn-continuation'
@@ -148,6 +149,39 @@ check('buildLoadedSkillPrompt említi a keretet', () => {
     },
   )
   assert.match(text, /900 s/)
+})
+
+check('megérkezett delegáció: a válasz bekerül és tiltja az újrakérdezést', () => {
+  const text = buildReturnedDelegationPrompt([
+    {
+      answeredBy: 'Ákos',
+      question: 'Milyen formátumú a /reports/query q paramétere?',
+      answer: 'base64url(JSON), a period objektummal.',
+      confidence: 'high',
+    },
+  ])
+  assert.match(text, /Ákos/)
+  assert.match(text, /base64url/)
+  assert.match(text, /NE kérdezd meg ugyanazt/)
+  assert.match(text, /magabiztosság: high/)
+})
+
+check('megérkezett delegáció: üres válasz nem ad blokkot', () => {
+  assert.equal(buildReturnedDelegationPrompt([]), '')
+  assert.equal(
+    buildReturnedDelegationPrompt([
+      { answeredBy: 'Ákos', question: 'kérdés', answer: '   ' },
+    ]),
+    '',
+  )
+})
+
+check('megérkezett delegáció: túl hosszú válasz levágva', () => {
+  const text = buildReturnedDelegationPrompt([
+    { answeredBy: 'Ákos', question: 'kérdés', answer: 'x'.repeat(6_000) },
+  ])
+  assert.match(text, /levágva/)
+  assert.ok(text.length < 6_000, 'a blokk nem viheti be a teljes választ')
 })
 
 if (failures > 0) {

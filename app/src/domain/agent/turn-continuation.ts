@@ -101,3 +101,55 @@ export function buildTurnContinuationPrompt(
 
   return lines.join('\n')
 }
+
+/**
+ * Időközben megérkezett delegált válasz (C1 — „behúzás a következő fordulóban").
+ *
+ * Ha a szinkron várás határidőre futott, vagy a delegációt a diszpécser
+ * futtatta le, a válasz egy lezárt ticketben landol, és ma SEMMI nem viszi
+ * vissza a beszélgetésbe: a felhasználó kérdésére csend a válasz. Ez a blokk a
+ * következő forduló promptjába emeli be, hogy az agent ne kérdezze meg
+ * ugyanazt még egyszer.
+ */
+export type ReturnedDelegation = {
+  /** A megkérdezett agent megjelenítendő neve (vagy az azonosítója, ha nincs). */
+  answeredBy: string
+  question: string
+  answer: string
+  confidence?: string | null
+}
+
+const MAX_DELEGATION_ANSWER_CHARS = 4_000
+
+/** System-prompt blokk a megérkezett delegált válaszokból. Üres, ha nincs egy sem. */
+export function buildReturnedDelegationPrompt(entries: readonly ReturnedDelegation[]): string {
+  const usable = entries.filter((entry) => entry.answer.trim().length > 0)
+  if (usable.length === 0) return ''
+
+  const lines = [
+    '## Időközben megérkezett válaszok',
+    'Ezeket egy korábbi fordulóban te kérdezted meg másik agenttől; a válasz akkor még nem ért vissza, most itt van.',
+    '',
+    'KÖTELEZŐ:',
+    '- NE kérdezd meg ugyanazt még egyszer — a válasz alább olvasható.',
+    '- Használd fel a válaszban, és ha ettől már meg tudod adni a végeredményt, add meg.',
+  ]
+
+  for (const entry of usable) {
+    const answer = entry.answer.trim()
+    const truncated =
+      answer.length > MAX_DELEGATION_ANSWER_CHARS
+        ? `${answer.slice(0, MAX_DELEGATION_ANSWER_CHARS)}\n[…a válasz többi része levágva]`
+        : answer
+    const confidence = entry.confidence ? ` (magabiztosság: ${entry.confidence})` : ''
+    lines.push(
+      '',
+      `### ${entry.answeredBy}${confidence}`,
+      `Kérdés: ${entry.question.trim()}`,
+      'Válasz:',
+      truncated,
+    )
+  }
+
+  return lines.join('\n')
+}
