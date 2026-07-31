@@ -693,7 +693,7 @@ const TOOL_SCHEMAS: Record<ChatPlatformToolName, ToolSchema> = {
   reconcile_records: {
     description:
       'Két JSON-lista DETERMINISZTIKUS egyeztetése a munkaterületen: kulcsmezők alapján párosít, ' +
-      'státuszt ad (Rendben / Módosítás szükséges / Új rekord / Törlés szükséges), a teljes egyesített ' +
+      'státuszt ad (Rendben / Módosítás szükséges / Új rekord / Törlés szükséges / Ellenőrzés szükséges), a teljes egyesített ' +
       'listát fájlba írja. A válasz csak összegzést + bizonytalan párokat ad — NE olvasd vissza a ' +
       'teljes listát a kontextusba.\n' +
       'Használd bármilyen nagy adathalmazú egyeztetéshez (CRM, nyilvántartás, inventory), ne kézzel ' +

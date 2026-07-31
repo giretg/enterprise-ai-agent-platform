@@ -368,6 +368,7 @@ export type ReconcileRecordsResult = {
     modositas: number
     ujRekord: number
     torles: number
+    ellenorzes: number
     uncertain: number
   }
   uncertainCount: number

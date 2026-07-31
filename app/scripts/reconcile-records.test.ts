@@ -8,7 +8,9 @@
  */
 import assert from 'node:assert/strict'
 import {
+  assertReconcileSizeWithinLimit,
   buildReconcileSummaryForModel,
+  MAX_RECONCILE_ROWS_PER_SIDE,
   reconcileRecords,
   type ReconcileRecordsInput,
 } from '../src/lib/reconcile-records'
@@ -143,6 +145,78 @@ check('modell-összefoglaló rövid, tartalmazza a bizonytalanokat, nem a teljes
   assert.match(summary, /egyeztetes\.json/)
   assert.match(summary, /Bizonytalan|bizonytalan/)
   assert.doesNotMatch(summary, /Személy 50/)
+})
+
+check('teljes egyezés győz a részleges felett — a pontos pár NEM esik ki némán', () => {
+  // Sorrend-csapda: az első bal sor csak részlegesen (hiányos kulcson) illik R0-ra,
+  // a MÁSODIK bal sor viszont minden kulcson pontosan. A régi mohó párosítás az
+  // elsőnek adta R0-t, a valódi pontos párt pedig „Új rekordként" némán elvesztette.
+  const result = reconcileRecords({
+    left: [
+      { nev: 'Kovács János', szuletesiEv: '', anyjaNeve: '' },
+      { nev: 'Kovács János', szuletesiEv: '1960', anyjaNeve: 'Nagy Mária' },
+    ],
+    right: [{ nev: 'Kovács János', szuletesiEv: '1960', anyjaNeve: 'Nagy Mária' }],
+    keyFields: ['nev', 'szuletesiEv', 'anyjaNeve'],
+    normalize: { nev: 'hu-name', szuletesiEv: 'year', anyjaNeve: 'hu-name' },
+  })
+  // A pontos pár (L1 ↔ R0) „Rendben", teljes kulcson.
+  const fullRow = result.rows.find((r) => r.matchStrength === 'full')
+  assert.ok(fullRow, 'a pontos párnak meg kell jelennie teljes (full) egyezésként')
+  assert.equal(fullRow!.status, 'Rendben')
+  // R0-t a pontos pár vitte el → nincs „Törlés szükséges" (nem maradt pártalan jobb sor).
+  assert.equal(result.summary.torles, 0)
+  // A párját vesztett, versengő bal sor NEM „Új rekord" (az beszúrást sugallna),
+  // hanem külön ellenőrzési státusz + uncertain a lefoglalt jobb sorra.
+  assert.equal(result.summary.ujRekord, 0)
+  assert.equal(result.summary.ellenorzes, 1)
+  assert.equal(result.summary.uncertain, 1)
+  const contested = result.rows.find((r) => r.status === 'Ellenőrzés szükséges')
+  assert.ok(contested)
+  assert.equal(contested!.right?.szuletesiEv, '1960')
+  assert.ok(result.uncertain.some((u) => u.note.includes('emberi ellenőrzés')))
+  assert.equal(result.uncertain[0].rightIndex, 0)
+})
+
+check('versenyben elvesztett sor a ténylegesen lefoglalt jobb jelöltre mutat', () => {
+  // L2 jelöltjei: R0 (partial, lista elején) és R1 (full). Mindkettőt más bal sor
+  // viszi el — a régi kód candidates[0]=R0-t adta volna; a helyes uncertain a
+  // lefoglalt full R1-re mutat (preferált párosítási jelölt).
+  const result = reconcileRecords({
+    left: [
+      { nev: 'Kovács', y: '1960', i: 'A' }, // L0 → R1 full
+      { nev: 'Kovács', y: '', i: '' }, // L1 → R0 partial (2. kör)
+      { nev: 'Kovács', y: '1960', i: 'A' }, // L2 contested
+    ],
+    right: [
+      { nev: 'Kovács', y: '', i: '' }, // R0
+      { nev: 'Kovács', y: '1960', i: 'A' }, // R1
+    ],
+    keyFields: ['nev', 'y', 'i'],
+    normalize: { nev: 'hu-name', y: 'year', i: 'trim' },
+  })
+  assert.equal(result.summary.ellenorzes, 1)
+  assert.equal(result.summary.ujRekord, 0)
+  const u = result.uncertain.find((x) => x.leftIndex === 2)
+  assert.ok(u, 'L2 uncertain')
+  assert.equal(u!.rightIndex, 1)
+  assert.equal(u!.right.i, 'A')
+  // Régi bug regresszió: ne az első (R0) jelöltre mutasson.
+  assert.notEqual(u!.rightIndex, 0)
+})
+
+check('méret-kapu: túl nagy bemenet érthető hibával áll le (nem fagy be)', () => {
+  assert.throws(
+    () => assertReconcileSizeWithinLimit(MAX_RECONCILE_ROWS_PER_SIDE + 1, 1),
+    /túl sok sor/,
+  )
+  // Pár-szorzat felső határ: 3000 × 3000 = 9M > 4M.
+  assert.throws(() => assertReconcileSizeWithinLimit(3000, 3000), /túl nagy/)
+  // A tényleges egyeztetés is fail-fast, mielőtt az O(n×m) hurok elindulna.
+  const big = Array.from({ length: MAX_RECONCILE_ROWS_PER_SIDE + 1 }, (_, i) => ({ id: String(i) }))
+  assert.throws(() => reconcileRecords({ left: big, right: [{ id: '1' }], keyFields: ['id'] }))
+  // A támogatott mérettartomány (a spec Novaj-esete: 182 × 249) változatlanul átmegy.
+  assert.doesNotThrow(() => assertReconcileSizeWithinLimit(182, 249))
 })
 
 if (failures > 0) {
