@@ -2,6 +2,13 @@ import type { MemoryRetrievalResult, RetrievedChunk } from '@/domain/memory/memo
 import { estimateTextTokens } from '@/domain/conversation/context-assembly'
 
 /**
+ * A Tanítás felület ezt a szöveget írja a `MemoryVersion.content`-be, ha a
+ * szabálylista üresre szerkesztődik — placeholder, nem szabály, ezért a promptba
+ * nem kerülhet be.
+ */
+export const EMPTY_TRAINED_MEMORY_PLACEHOLDER = '(nincs rögzített tapasztalat)'
+
+/**
  * agent-memory-persistent-cross-conversation-spec.md §2.3/§10.3 — a
  * `memory_propose` MECHANIZMUS mellett a "mit érdemes megjegyezni" POLICY a
  * rendszerprompt dedikált blokkjában él (nem konfig, nem gépi validáció).
@@ -104,5 +111,52 @@ export function formatProjectMemoryContextBlock(
 
 /** A ténylegesen beépített `Project memory context` blokk token-becslése (§10.3). */
 export function estimateMemoryContextTokens(block: string | null): number {
+  return block ? estimateTextTokens(block) + 8 : 0
+}
+
+/**
+ * A Tanítás felületen betanított, write-gate-tel jóváhagyott agent-szabályok
+ * (`MemoryVersion.content` — a UI-n "Amit eddig megtanult") felső mérethatára a
+ * promptban. Efölött vágunk, hogy egy elszabadult memória-tartalom ne egye meg
+ * a teljes kontextust.
+ */
+export const TRAINED_RULES_MAX_CHARS = 12000
+
+/**
+ * A betanított szabályok prompt-blokkja.
+ *
+ * A `Project memory context`-tel ELLENTÉTBEN ez szándékosan UTASÍTÁS, nem adat:
+ * a tartalmát nem a modell és nem külső forrás írja, hanem ember, a
+ * `WriteGateService` jóváhagyási útján (§4.4 — javaslat → tanítási ticket →
+ * jóváhagyás → új `MemoryVersion`). A §16 S4 prompt-injection elhatárolás ezért
+ * itt nem alkalmazandó, és a blokk a STABIL preamble-be való (ritkán változik,
+ * így a prompt-cache prefixet sem rontja).
+ *
+ * `null`, ha nincs mit betenni — a hívó ilyenkor egyáltalán nem szúr be üzenetet.
+ */
+export function formatTrainedRulesBlock(params: {
+  content: string | null | undefined
+  version?: number | null
+}): string | null {
+  const raw = (params.content ?? '').trim()
+  if (!raw || raw === EMPTY_TRAINED_MEMORY_PLACEHOLDER) return null
+
+  const body =
+    raw.length > TRAINED_RULES_MAX_CHARS
+      ? `${raw.slice(0, TRAINED_RULES_MAX_CHARS).trimEnd()}\n…(a szabálylista hossza miatt levágva)`
+      : raw
+
+  const header =
+    params.version != null
+      ? `Betanított munkaszabályok (${params.version}. frissítés)`
+      : 'Betanított munkaszabályok'
+
+  return `${header} — ezeket az operátor tanította be és hagyta jóvá. MINDEN feladatnál tartsd be őket, akkor is, ha a felhasználó nem hivatkozik rájuk külön. Ütközésnél a sorrend: biztonsági és rendszerszabály > a felhasználó aktuális, kifejezett kérése > az alábbi betanított szabályok. Ha egy szabály az adott feladatra nem alkalmazható, egyszerűen hagyd figyelmen kívül — ne magyarázd, és ne említsd meg.
+
+${body}`
+}
+
+/** A betanított szabály-blokk token-terhelése a kontextus-budgetben. */
+export function estimateTrainedRulesTokens(block: string | null): number {
   return block ? estimateTextTokens(block) + 8 : 0
 }

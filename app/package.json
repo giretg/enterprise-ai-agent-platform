@@ -195,7 +195,8 @@
     "postinstall": "prisma generate",
     "test:tool-result-extract": "tsx scripts/tool-result-extract.test.ts",
     "test:http-api-paginate": "tsx scripts/http-api-paginate.test.ts",
-    "test:reconcile-records": "tsx scripts/reconcile-records.test.ts"
+    "test:reconcile-records": "tsx scripts/reconcile-records.test.ts",
+    "test:trained-memory-prompt": "tsx scripts/trained-memory-prompt.test.ts"
   },
   "prisma": {
     "seed": "tsx prisma/seed.ts"

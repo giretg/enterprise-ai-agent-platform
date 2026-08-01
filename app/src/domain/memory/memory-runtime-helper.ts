@@ -2,7 +2,9 @@ import type { AuditRepository } from '@/repositories/interfaces'
 import {
   MEMORY_CAPTURE_POLICY_PROMPT,
   estimateMemoryContextTokens,
+  estimateTrainedRulesTokens,
   formatProjectMemoryContextBlock,
+  formatTrainedRulesBlock,
 } from '@/lib/memory-prompt'
 import {
   memoryConflictsTotal,
@@ -56,6 +58,31 @@ export function memoryContextSystemMessages(
     { role: 'system', content: MEMORY_CAPTURE_POLICY_PROMPT },
     { role: 'system', content: block },
   ]
+}
+
+/**
+ * A Tanítás felületen betanított szabályok stabil rendszer-üzenete, ha van
+ * betanított tartalom (különben üres tömb — nincs push).
+ *
+ * A `MemoryVersion.content` a chat- és task-runtime promptjából korábban
+ * teljesen kimaradt: a §10.3 "retrieval-only" váltás a legacy teljes-inject
+ * blokkot elhagyta, de a Tanítás írási útja soha nem hozott létre
+ * `MemoryChunk`-ot, így a retrieval sem találhatta meg. A betanított szabály
+ * ezért sosem ért el a modellhez — ezt a hidat pótolja ez a blokk.
+ *
+ * A `tokens` a hívónak kell: a kontextus-budget fix részébe be kell számítani,
+ * különben a beszélgetés-történet túlcsordul.
+ */
+export function trainedRulesSystemMessages(params: {
+  content: string | null | undefined
+  version?: number | null
+}): { messages: Array<{ role: 'system'; content: string }>; tokens: number } {
+  const block = formatTrainedRulesBlock(params)
+  if (!block) return { messages: [], tokens: 0 }
+  return {
+    messages: [{ role: 'system', content: block }],
+    tokens: estimateTrainedRulesTokens(block),
+  }
 }
 
 export type ProjectMemoryContext = {

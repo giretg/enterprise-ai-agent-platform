@@ -40,6 +40,7 @@ import {
   buildMemoryRetrievalRequest,
   loadProjectMemoryContext,
   memoryContextSystemMessages,
+  trainedRulesSystemMessages,
 } from '../memory/memory-runtime-helper'
 import type { MemoryRetrievalService } from '../memory/memory-retrieval-service'
 import type { ToolBrokerService } from '../tool-broker/tool-broker-service'
@@ -1407,6 +1408,13 @@ export class AgentChatRuntime {
         tenantId: params.tenantId ?? null,
         conversationId,
       })
+      // A betanított szabály-blokk ugyanúgy fix prompt-teher, mint a
+      // retrieval-blokk — a történet-budgetből le kell vonni, különben a
+      // beszélgetés-előzmény túlcsordítja a keretet.
+      const trainedRulesTokens = trainedRulesSystemMessages({
+        content: agentDetails.memoryContent,
+        version: agentDetails.memoryVersion,
+      }).tokens
       const assembledContext = await assembleContext({
         audit: this.audit,
         conversationId,
@@ -1415,7 +1423,7 @@ export class AgentChatRuntime {
         actingUserId: params.createdById,
         messages: history.messages,
         memoryVersion: agentDetails.memoryVersion,
-        memoryContextTokens: memoryContext.tokens,
+        memoryContextTokens: memoryContext.tokens + trainedRulesTokens,
         documentAliases: this.contextDocumentAliases(attachmentDocs, workspaceFiles, kbSearch.hits),
       })
       const priorToolCalls = await this.toolCaps.listToolCallsForConversation(conversationId)
@@ -2396,8 +2404,17 @@ export class AgentChatRuntime {
       await resolveAddressableColleagues(this.agentAccess, agentDetails.agent),
     )
 
+    // A Tanítás felületen betanított, jóváhagyott szabályok (`MemoryVersion.content`)
+    // közvetlenül a szerep- és viselkedés-prompt után, a STABIL preamble-ben: ez
+    // operátor által jóváhagyott utasítás, nem visszakeresett adat.
+    const trainedRules = trainedRulesSystemMessages({
+      content: agentDetails.memoryContent,
+      version: agentDetails.memoryVersion,
+    })
+
     const stablePreamble: PromptSegments['stablePreamble'] = [
       { role: 'system', content: composeSystemPrompt(agentDetails.agent) },
+      ...trainedRules.messages,
       { role: 'system', content: orgRoster },
       {
         role: 'system',

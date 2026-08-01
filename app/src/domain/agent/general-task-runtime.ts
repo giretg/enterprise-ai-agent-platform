@@ -54,6 +54,7 @@ import {
   buildMemoryRetrievalRequest,
   loadProjectMemoryContext,
   memoryContextSystemMessages,
+  trainedRulesSystemMessages,
 } from '../memory/memory-runtime-helper'
 import type { MemoryRetrievalService } from '../memory/memory-retrieval-service'
 import type { ModelGateway, ModelConfig } from '../gateway/model-gateway'
@@ -997,8 +998,17 @@ export class GeneralTaskRuntime {
       await resolveAddressableColleagues(this.agentAccess, params.agentDetails.agent),
     )
 
+    // A Tanítás felületen betanított, jóváhagyott szabályok (`MemoryVersion.content`)
+    // a szerep- és viselkedés-prompt után, a STABIL preamble-ben — ugyanaz a blokk,
+    // mint a chatben, hogy a tiketes/folyamat-úton se vesszen el a betanítás.
+    const trainedRules = trainedRulesSystemMessages({
+      content: params.agentDetails.memoryContent,
+      version: params.agentDetails.memoryVersion,
+    })
+
     const stablePreamble: PromptSegments['stablePreamble'] = [
       { role: 'system', content: composeSystemPrompt(params.agentDetails.agent) },
+      ...trainedRules.messages,
       { role: 'system', content: orgRoster },
     ]
     const stablePostamble: PromptSegments['stablePostamble'] = []
