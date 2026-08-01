@@ -70,4 +70,34 @@ export class PostgresConsequenceApprovalRepository implements ConsequenceApprova
     if (result.count === 0) return null
     return prisma.consequenceApproval.findUnique({ where: { id } })
   }
+
+  async casClaimRetry(id: string): Promise<ConsequenceApproval | null> {
+    // Egyszer-használatos claim az „Újrapróbálom" úthoz. A sor MÁR `approved`, a
+    // korábbi invoke pedig bukott (`result_meta.denied === true`). Az UPDATE egyetlen
+    // atomi lépésben ellenőrzi ezt a feltételt ÉS ráteszi a `retrying: true` jelzőt
+    // (a `denied` kulcsot MEGTARTVA, `||` merge), így két párhuzamos retry-kattintás
+    // közül csak egy győzhet — a vesztes 0 sort érint és `null`-t kap, tehát nem
+    // futtatja MÉGEGYSZER a mellékhatásos toolt (dupla e-mail / dupla POST).
+    //
+    // A `NOT jsonb_exists(..., 'retrying')` kizárja a MÁR lefoglalt (folyamatban lévő)
+    // sort — ez a fail-safe kizárólagosság. Fontos: a `denied` szándékosan `true`
+    // marad a jelző alatt is, hogy a sor SOHA ne essen az `approve()` siker-ágába
+    // (különben egy folyamatban lévő retry „lefutott"-ként jelenne meg).
+    //
+    // Raw SQL a `@>` containment és a `jsonb_exists` miatt: ezek az adatbázisban
+    // megbízhatóak és GIN-index-barátok (a Prisma JSON-path szűrő hiányzó mezőnél
+    // NULL-t ad, l. ticket-repository.ts). A `jsonb_exists` függvényforma szándékos:
+    // a `?` operátor a driverben paraméter-helyőrzővel ütközhet. A `@updatedAt`-et a
+    // raw UPDATE nem kezeli, ezért expliciten állítjuk.
+    const count = await prisma.$executeRaw`
+      UPDATE consequence_approvals
+      SET result_meta = result_meta || '{"retrying": true}'::jsonb, updated_at = now()
+      WHERE id = ${id}::uuid
+        AND status = 'approved'
+        AND result_meta @> '{"denied": true}'::jsonb
+        AND NOT jsonb_exists(result_meta, 'retrying')
+    `
+    if (count === 0) return null
+    return prisma.consequenceApproval.findUnique({ where: { id } })
+  }
 }

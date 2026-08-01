@@ -84,6 +84,24 @@ function memoryRepo(): ConsequenceApprovalRepository & {
       rows.set(id, next)
       return next
     },
+    async casClaimRetry(id) {
+      // A valódi repo atomi UPDATE-jét utánozza: csak akkor foglal, ha a sor
+      // `approved` ÉS a korábbi invoke bukott (`resultMeta.denied === true`) ÉS
+      // még nincs `retrying` jelző rajta. A jelzőt RÁTESSZÜK (denied megmarad),
+      // így egy párhuzamos második claim már nem talál rá.
+      const row = rows.get(id)
+      if (!row || row.status !== 'approved') return null
+      const meta = row.resultMeta as { denied?: unknown; retrying?: unknown } | null
+      if (!meta || typeof meta !== 'object') return null
+      if (meta.denied !== true || meta.retrying === true) return null
+      const next: ConsequenceApproval = {
+        ...row,
+        resultMeta: { ...(meta as object), retrying: true } as ConsequenceApproval['resultMeta'],
+        updatedAt: new Date(),
+      }
+      rows.set(id, next)
+      return next
+    },
   }
 }
 
@@ -255,6 +273,48 @@ async function main() {
     const retry = await service.approve(card.approvalId, actor)
     assert.equal(retry.ok, true)
     assert.equal(invoked.length, 2)
+  })
+
+  // Egyszer-használat a retry úton is: az első jóváhagyást a pending→approved CAS
+  // védi, DE egy elbukott invoke után a sor `approved` marad, és két PÁRHUZAMOS
+  // „Újrapróbálom" (dupla klikk / több szerver-instancia) korábban KÉTSZER futtatta
+  // a mellékhatásos toolt. A `casClaimRetry` atomi claimjével már csak az egyik győz.
+  await test('párhuzamos Újrapróbálom: a mellékhatásos tool NEM fut kétszer', async () => {
+    const invoked: ToolBrokerInvokeInput[] = []
+    // failTimes: 1 → az ELSŐ (initial) invoke bukik; utána minden retry sikeres lenne.
+    const { service } = buildService({ invoked, failTimes: 1 })
+    const card = await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
+    const first = await service.approve(card.approvalId, actor)
+    assert.equal(first.ok, false, 'az első invoke bukik (failTimes)')
+    assert.equal(invoked.length, 1)
+
+    // Két egyidejű retry ugyanarra a jóváhagyásra.
+    const [a, b] = await Promise.all([
+      service.approve(card.approvalId, actor),
+      service.approve(card.approvalId, actor),
+    ])
+    const oks = [a, b].filter((r) => r.ok)
+    const inflight = [a, b].filter((r) => !r.ok && r.reason === 'approval_retry_in_flight')
+    assert.equal(oks.length, 1, 'pontosan egy retry győz')
+    assert.equal(inflight.length, 1, 'a vesztes approval_retry_in_flight-ot kap')
+    assert.equal(invoked.length, 2, 'összesen egy initial + egy retry invoke — NEM kettő retry')
+  })
+
+  // A folyamatban lévő (retrying) jelzővel ellátott sor NEM eshet a siker-ágba:
+  // az `approve` ne jelentsen „lefutott"-at egy épp futó / soha-le-nem-futott toolra,
+  // és ne is futtassa újra. (Spec-review finding (c).)
+  await test('folyamatban lévő retry: approve nem jelent hamis sikert és nem futtat', async () => {
+    const invoked: ToolBrokerInvokeInput[] = []
+    const { service, repo } = buildService({ invoked })
+    const card = await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
+    // Kézzel az „approved + folyamatban lévő retry" állapotba állítjuk.
+    const row = repo.rows.get(card.approvalId)!
+    row.status = 'approved'
+    row.resultMeta = { denied: true, reason: 'broker_boom', failed: true, retrying: true } as never
+    const result = await service.approve(card.approvalId, actor)
+    assert.equal(result.ok, false)
+    if (!result.ok) assert.equal(result.reason, 'approval_retry_in_flight')
+    assert.equal(invoked.length, 0, 'folyamatban lévő retry alatt SOHA nem indul újabb invoke')
   })
 
   await test('reject: nem hív invoke-ot', async () => {
