@@ -130,6 +130,16 @@ function isFailedInvokeResultMeta(resultMeta: unknown): boolean {
   return (resultMeta as { denied?: unknown }).denied === true
 }
 
+/**
+ * A retry-claim átmeneti „folyamatban" jelzője (`casClaimRetry` állítja be, amíg
+ * a lefoglalt újrafuttatás fut). Ilyenkor a sor státusza `approved`, de a művelet
+ * még nem zárult le — nem szabad se „kész"-ként folytatni, se újra lefoglalni.
+ */
+function isRetryInFlightResultMeta(resultMeta: unknown): boolean {
+  if (!resultMeta || typeof resultMeta !== 'object' || Array.isArray(resultMeta)) return false
+  return (resultMeta as { retrying?: unknown }).retrying === true
+}
+
 export class ConsequenceApprovalService {
   constructor(
     private readonly approvals: ConsequenceApprovalRepository,
@@ -253,6 +263,15 @@ export class ConsequenceApprovalService {
     const access = await this.assertActorCanDecide(row, actor)
     if (!access.ok) return access
 
+    // Egy MÁR lefoglalt (folyamatban lévő) retry: a művelet se nem futott le, se
+    // nem bukott — csak fut. NEM szabad se „siker"-ként jelenteni (különben egy
+    // futó/soha-le-nem-futott toolt mutatnánk késznek), se újra lefoglalni. A
+    // felhasználó egy pillanat múlva újrapróbálhatja. Ez a kapu a `denied`-et
+    // megtartó jelző mellett is explicit védelmet ad a siker-ág ellen.
+    if (isRetryInFlightResultMeta(row.resultMeta)) {
+      return { ok: false, reason: 'approval_retry_in_flight' }
+    }
+
     const previouslyFailedInvoke = isFailedInvokeResultMeta(row.resultMeta)
 
     if (row.status === 'approved' && !previouslyFailedInvoke) {
@@ -266,7 +285,14 @@ export class ConsequenceApprovalService {
     }
     if (row.status === 'approved' && previouslyFailedInvoke) {
       // Emberi jóváhagyás megvan, a tool invoke bukott el — Újrapróbálom újrafuttat.
-      return this.invokeApproved(row, actor)
+      // Egyszer-használat a retry úton is: az első jóváhagyást a pending→approved
+      // CAS védi, a retry-t viszont eddig SEMMI — két párhuzamos kattintás (dupla
+      // klikk / több szerver-instancia) mindegyike ide esett be és KÉTSZER futtatta
+      // a mellékhatásos toolt (két e-mail, dupla POST, kétszeri törlés). A CAS-claim
+      // atomikusan lefoglalja a sort; a vesztes nem futtat semmit.
+      const claimed = await this.approvals.casClaimRetry(row.id)
+      if (!claimed) return { ok: false, reason: 'approval_retry_in_flight' }
+      return this.invokeApproved(claimed, actor)
     }
     if (row.status !== 'pending') {
       return { ok: false, reason: `approval_${row.status}` }
@@ -415,6 +441,11 @@ export class ConsequenceApprovalService {
       const access = await this.assertActorCanDecide(row, actor)
       if (!access.ok) return access
       if (row.status !== 'approved') return { ok: false, reason: `approval_${row.status}` }
+      // Egy épp lefoglalt (folyamatban lévő) újrafuttatás még nem zárult le — nem
+      // szabad „kész"-ként továbbvinni; a felhasználó egy pillanat múlva újrapróbálhat.
+      if (isRetryInFlightResultMeta(row.resultMeta)) {
+        return { ok: false, reason: 'approval_retry_in_flight' }
+      }
 
       // Egy folytatás EGY beszélgetést visz tovább — kevert szál nem értelmezhető.
       if (conversationId && conversationId !== row.conversationId) {

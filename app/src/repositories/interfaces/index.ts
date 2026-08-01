@@ -911,6 +911,18 @@ export interface ConsequenceApprovalRepository {
       blockedToolCallId?: string | null
     },
   ): Promise<ConsequenceApproval | null>
+  /**
+   * Egyszer-használatos CLAIM az „Újrapróbálom" (retry) úthoz.
+   *
+   * A sor MÁR `approved` (az emberi döntés megvan), de a korábbi tool-hívás
+   * elbukott (`resultMeta.denied === true`). Ez a metódus ATOMIKUSAN ráteszi a
+   * `retrying: true` jelzőt (a `denied`-et megtartva), és csak a győztes kap vissza
+   * sort — a MÁR folyamatban lévő (retrying) vagy nem-bukott sorra `null`. Így két
+   * párhuzamos retry-kattintás nem futtathatja KÉTSZER a mellékhatásos toolt
+   * (dupla e-mail / dupla POST). A pending→approved első jóváhagyást a
+   * `casUpdateStatus` védi; ez ugyanaz a garancia a retry ágon.
+   */
+  casClaimRetry(id: string): Promise<ConsequenceApproval | null>
 }
 
 /**
