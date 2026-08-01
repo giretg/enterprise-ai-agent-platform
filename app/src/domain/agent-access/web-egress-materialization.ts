@@ -36,12 +36,13 @@ const TENANT_WEB_EGRESS_CAPABILITIES: string[] = [
 ]
 
 /**
- * A tenant Web-Egress agentje, ha már létezik. Névre keres a tenanton belül — a
- * platform-szintű (`tenantId = null`) példány NEM számít találatnak.
+ * A tenant Web-Egress agentje, ha már létezik. A perzisztált rendszer-szerepre
+ * keresünk, nem névre: az agent név a tenant-admin által szerkeszthető UI-adat, nem
+ * biztonsági azonosító.
  */
 export async function findTenantWebEgressAgent(tenantId: string): Promise<Agent | null> {
   return prisma.agent.findFirst({
-    where: { tenantId, name: WEB_EGRESS_ROLE_TEMPLATE.name },
+    where: { tenantId, systemRole: 'web_egress' },
   })
 }
 
@@ -94,6 +95,7 @@ export async function ensureTenantWebEgressAgent(params: {
       modelConfig,
       status: 'active',
       role: t.role,
+      systemRole: 'web_egress',
       tenantId: params.tenantId,
       // A gráf lényege: a webes kimenet ALAPBÓL zárt, mindkét irányban. A tenant admin
       // agentenként, explicit `address` granttal nyitja meg.

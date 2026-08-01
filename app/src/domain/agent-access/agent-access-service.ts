@@ -158,7 +158,7 @@ export class AgentAccessService {
     // úton user→Web-Egress nem nyílik meg.
     if (
       subject.kind === 'user' &&
-      isWebEgressAgent({ name: target.name }) &&
+      isWebEgressAgent(target) &&
       options?.includeAdminOnly !== true
     ) {
       return { allowed: false, reason: 'missing_grant' }
@@ -169,7 +169,7 @@ export class AgentAccessService {
 
     // Web-Egress egyirányú szolgáltató: kimenő él nem hozható létre és nem is dönthet
     // engedésről — a Web-Egress agent nem szólíthat meg más tenant-agentet a gráfon.
-    if (source && isWebEgressAgent({ name: source.name })) {
+    if (source && isWebEgressAgent(source)) {
       return { allowed: false, reason: 'missing_grant' }
     }
 
@@ -222,7 +222,7 @@ export class AgentAccessService {
     const source =
       subject.kind === 'agent' ? all.find((a) => a.id === subject.agentId) ?? null : null
     // Web-Egress egyirányú szolgáltató: nincs kimenő éle, ezért üres listát ad.
-    if (source && isWebEgressAgent({ name: source.name })) return []
+    if (source && isWebEgressAgent(source)) return []
 
     const result: AgentGraphNode[] = []
     for (const candidate of all) {
@@ -235,7 +235,7 @@ export class AgentAccessService {
       if (
         subject.kind === 'user' &&
         !options?.includeAdminOnly &&
-        isAdminOnlyGraphNode({ name: candidate.name })
+        isAdminOnlyGraphNode(candidate)
       ) {
         continue
       }
@@ -449,10 +449,10 @@ export class AgentAccessService {
       if (isPanelWizardAgent({ name: source.name, tenantId: source.tenantId })) {
         return { ok: false, reason: 'panel_wizard_not_graph_node' }
       }
-      if (isWebEgressAgent({ name: source.name })) {
+      if (isWebEgressAgent(source)) {
         return { ok: false, reason: 'web_egress_is_one_way' }
       }
-    } else if (isWebEgressAgent({ name: target.name })) {
+    } else if (isWebEgressAgent(target)) {
       // user→Web-Egress nincs a napi felületeken: a webes kutatást agent kéri agenttől.
       return { ok: false, reason: 'web_egress_requires_agent_subject' }
     }

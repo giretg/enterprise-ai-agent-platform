@@ -82,6 +82,19 @@ enum AgentRole {
   orchestrator
 }
 
+/**
+ * Platform által kezelt, nem a felhasználó által adott agent-azonosságok.
+ *
+ * A `role` üzleti munkakört jelöl (worker/orchestrator); ez a mező viszont a
+ * biztonsági határral rendelkező rendszer-szerepet. A kettőt nem szabad név vagy
+ * prompt alapján összemosni, mert a név tenant-admin által is megváltoztatható.
+ */
+enum AgentSystemRole {
+  web_egress
+
+  @@map("agent_system_role")
+}
+
 /// Agent-hozzáférési gráf (Access-Policy §agent-scope): az él ALANYA vagy egy konkrét
 /// user, vagy egy másik agent. Csoport/Team/OrgUnit alany szándékosan NEM tartozik ide —
 /// az külön domain-entitást és migrációt igényelne.
@@ -791,6 +804,9 @@ model Agent {
   // és a `behavior_profile` szöveg az elfogadott profil-al-verzió másolata (kaszkád).
   currentBehaviorProfileId      String?     @map("current_behavior_profile_id") @db.Uuid
   role                          AgentRole   @default(worker)
+  // Biztonsági rendszer-szerep. A Web-Egress kiválasztása és a `web_fetch` kapu
+  // kizárólag ezt a perzisztált azonosítót fogadja el, sosem az agent megjelenített nevét.
+  systemRole                    AgentSystemRole? @map("system_role")
   // Sensitivity router (§4.7.2): ha true, egyik sensitivity szint sem blokkolja
   // vagy tereli helyi modellre az agent hívását. Az osztályozás és auditálás aktív
   // marad. Csak tenant admin / superadmin írhatja, minden váltás auditált.
@@ -841,6 +857,7 @@ model Agent {
 
   @@index([tenantId, status])
   @@index([tenantId, role])
+  @@unique([tenantId, systemRole])
   @@index([currentBehaviorProfileId])
   @@map("agents")
 }

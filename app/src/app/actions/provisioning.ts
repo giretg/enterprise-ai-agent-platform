@@ -20,11 +20,11 @@ import {
   parseTemplateDescriptor,
   templateDescriptorSchema,
 } from '@/domain/connector-template/template-descriptor'
-import { WEB_EGRESS_ROLE_TEMPLATE } from '@/domain/agents/web-egress-role'
 import {
   ensureTenantWebEgressAgent,
   findTenantWebEgressAgent,
 } from '@/domain/agent-access/web-egress-materialization'
+import { selectActiveTenantWebEgress } from '@/domain/agent-access/tenant-web-egress-selection'
 import {
   inspectPromptSensitivity,
   reviewableSensitivityFindings,
@@ -135,30 +135,28 @@ export type FetchApiDocFromUrlData = {
  * A felfedezéshez használt Web-Egress példány (#142).
  *
  * A Web-Egress mostantól TENANTONKÉNT materializált, normál tenant-agent: a tenant
- * SAJÁT web_search connectorán és kulcsán megy ki a forgalom, tehát a tenant példányát
- * kell választani. A platform-szintű (`tenantId = null`) példány csak visszaesés a még
- * nem migrált telepítéseken — a materializáció (`ensureTenantWebEgressAgent`) idempotens,
- * ezért itt is megpróbáljuk pótolni.
+ * SAJÁT web_search connectorán és kulcsán megy ki a forgalom, tehát kizárólag a tenant
+ * példányát választhatjuk. A materializáció (`ensureTenantWebEgressAgent`) idempotens,
+ * ezért itt megpróbáljuk pótolni, de hiba esetén nincs platform- vagy idegen-tenant
+ * fallback: az ilyen visszaesés a rossz tenant egress-kulcsát és házirendjét használná.
  *
  * Ez NEM `address` grant: a „discover" az admin panel-actionjén fut, jogosultsággal
  * védve — a gráf az AD-HOC utat köti, nem az admin kormányzási műveletet.
  */
 async function resolveProvisioningEgressAgent(tenantId: string | null, actorUserId: string) {
-  if (tenantId) {
-    const tenantInstance = await findTenantWebEgressAgent(tenantId)
-    if (tenantInstance?.status === 'active') return tenantInstance
-    try {
-      const materialized = await ensureTenantWebEgressAgent({ tenantId, approvedById: actorUserId })
-      if (materialized.status === 'active') return materialized
-    } catch {
-      // Fail-soft: a platform-szintű visszaesésre megyünk tovább (lásd alább).
-    }
+  if (!tenantId) return null
+
+  const tenantInstance = await findTenantWebEgressAgent(tenantId)
+  const existing = selectActiveTenantWebEgress(tenantId, tenantInstance ? [tenantInstance] : [])
+  if (existing) return existing
+
+  try {
+    const materialized = await ensureTenantWebEgressAgent({ tenantId, approvedById: actorUserId })
+    return selectActiveTenantWebEgress(tenantId, [materialized])
+  } catch {
+    // Fail-closed: a tenant saját egress-példánya nélkül a felfedezés nem futhat.
+    return null
   }
-  const agents = await repositories.agents.findMany()
-  const egressCandidates = agents.filter(
-    (a) => a.name === WEB_EGRESS_ROLE_TEMPLATE.name && a.status === 'active',
-  )
-  return egressCandidates.find((a) => a.tenantId === null) ?? egressCandidates[0] ?? null
 }
 
 const extendEgressSchema = z.object({

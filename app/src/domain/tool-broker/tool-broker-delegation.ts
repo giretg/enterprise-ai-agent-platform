@@ -48,6 +48,7 @@ import { DELEGATION_DEADLINE, raceDelegationDeadline } from '@/lib/delegation-de
 
 import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
 import { AgentAccessError } from '@/domain/agent-access/agent-access-errors'
+import { selectActiveTenantWebEgress } from '@/domain/agent-access/tenant-web-egress-selection'
 import type { AgentAccessChannel } from '@/lib/agent-access-graph'
 import type { AgentGraphNode } from '@/domain/agent-access/agent-access-service'
 import { resolveToolWorkspaceTenantKey } from '@/lib/workspace-resource-access'
@@ -1507,28 +1508,12 @@ export async function webResearchRequest(self: ToolBrokerService,
   }
 
 export async function resolveWebEgressAgent(self: ToolBrokerService, tenantId: string | null) {
+    // #142 fail-closed: csak a tenant saját, perzisztált systemRole=web_egress
+    // példánya. Capability vagy név alapján nem választunk — az adminisztrálható
+    // UI-adat / hibásan kiosztott tool-jog nem nyithat webes egress-utat.
+    if (!tenantId) return null
     const candidates = await self.agents.findMany({ tenantId })
-    const active = candidates.filter((a) => a.status === 'active')
-    if (active.length === 0) return null
-
-    const caps = await self.tools.findCapabilitiesForAgents(
-      active.map((a) => a.id),
-      ['web_search', 'web_fetch'],
-    )
-    const byAgent = new Map<string, { web_search?: boolean; web_fetch?: boolean }>()
-    for (const row of caps) {
-      const entry = byAgent.get(row.agentId) ?? {}
-      if (row.toolName === 'web_search' || row.toolName === 'web_fetch') {
-        entry[row.toolName] = row.allowed
-      }
-      byAgent.set(row.agentId, entry)
-    }
-
-    for (const agent of active) {
-      const entry = byAgent.get(agent.id)
-      if (entry?.web_search && entry?.web_fetch) return agent
-    }
-    return null
+    return selectActiveTenantWebEgress(tenantId, candidates)
   }
 
 export function resolveResearchSourceTypes(self: ToolBrokerService, requested?: WebResearchSourceType[]): WebResearchSourceType[] {

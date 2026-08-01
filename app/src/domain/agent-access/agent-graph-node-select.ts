@@ -12,6 +12,7 @@ export const AGENT_GRAPH_NODE_SELECT = {
   personaNickname: true,
   personaTrait: true,
   role: true,
+  systemRole: true,
   status: true,
   tenantId: true,
   hiddenFromOperators: true,

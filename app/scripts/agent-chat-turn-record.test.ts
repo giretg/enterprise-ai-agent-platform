@@ -102,6 +102,7 @@ function agentRow(): Agent {
     currentBehaviorProfileVersion: 1,
     currentBehaviorProfileId: null,
     role: 'worker',
+    systemRole: null,
     allowSensitiveExternalModel: false,
     hiddenFromOperators: false,
     inboundRestricted: false,

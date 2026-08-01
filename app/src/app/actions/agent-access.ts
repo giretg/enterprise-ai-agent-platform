@@ -76,7 +76,7 @@ export async function loadAgentAccessGraph() {
         hiddenFromOperators: node.hiddenFromOperators,
         inboundRestricted: node.inboundRestricted,
         outboundRestricted: node.outboundRestricted,
-        adminOnly: isAdminOnlyGraphNode({ name: node.name }),
+        adminOnly: isAdminOnlyGraphNode(node),
       })),
       users: memberships.map((m) => ({
         id: m.user.id,

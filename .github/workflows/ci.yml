@@ -65,6 +65,7 @@ jobs:
           npm run test:tool-broker-tenant
           npm run test:user-directory
           npm run test:provisioning-errors
+          npm run test:tenant-web-egress-selection
           npm run test:provisioning-governance
           npm run test:dispatch-budget
           npm run test:dispatch-board-ticket-schema
