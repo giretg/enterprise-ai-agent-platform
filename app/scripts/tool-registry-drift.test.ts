@@ -249,6 +249,44 @@ function main() {
     }
   })
 
+  // ── 5a. A generált séma wire-biztos a modell-providerek felé ─────────────
+  // Élő méréssel igazolt hibaosztály (2026-08-01, ChatGPT Responses backend):
+  // a Zod `max()` sanity-korlátokból képződő óriási `maxItems`, illetve a Zod
+  // `email()` lookaround-os `pattern`-je a providernél nem fordítható sémát ad.
+  // A tünet a felhasználónál „a szolgáltató nem elérhető" / a feladat visszaesik
+  // Ready-be — miközben a hiba a MI sémánkban van, és minden újrapróbálkozáskor
+  // ugyanígy jelentkezik. A lookaround-os pattern a forduló MINDEN eszközét
+  // megbuktatja (400), nem csak a hibás toolt.
+  test('a generált JSON Schema nem tartalmaz provider-ellenes kulcsokat', () => {
+    const LOOKAROUND = /\(\?=|\(\?!|\(\?<=|\(\?<!/
+    const WIRE_MAX_ITEMS = 1000
+    const offenders: string[] = []
+
+    const inspect = (node: unknown, where: string): void => {
+      if (Array.isArray(node)) {
+        node.forEach((item, index) => inspect(item, `${where}[${index}]`))
+        return
+      }
+      if (!node || typeof node !== 'object') return
+      for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+        if (key === 'maxItems' && typeof value === 'number' && value > WIRE_MAX_ITEMS) {
+          offenders.push(`${where}.maxItems=${value}`)
+        }
+        if (key === 'pattern' && typeof value === 'string' && LOOKAROUND.test(value)) {
+          offenders.push(`${where}.pattern lookaround`)
+        }
+        inspect(value, `${where}.${key}`)
+      }
+    }
+
+    for (const name of TOOL_NAMES) inspect(toolJsonSchema(name), name)
+    assert.deepEqual(
+      offenders,
+      [],
+      `provider-ellenes séma-kulcsok:\n      ${offenders.join('\n      ')}`,
+    )
+  })
+
   // ── 6. Grep-őr: nincs több kézzel írt tool-név tömb ──────────────────────
   test('nincs kézzel írt tool-név tömb a registryn kívül', () => {
     const srcRoot = path.resolve(__dirname, '../src')

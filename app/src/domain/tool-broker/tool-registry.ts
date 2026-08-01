@@ -1970,16 +1970,56 @@ export function toolCapabilityNames(tools: readonly ToolName[]): string[] {
 }
 
 /**
+ * A modellnek hirdethető legnagyobb elemszám-korlát. A Zod `max()` értékei
+ * SZERVEROLDALI sanity-korlátok (ne fusson el a payload), nem a modellnek szánt
+ * útmutatás — a provider viszont a séma alapján kényszerített dekódolót fordít.
+ */
+const WIRE_MAX_ITEMS = 1000
+
+/** Lookaround-t tartalmazó regex — a provider séma-validátora elutasítja. */
+const LOOKAROUND = /\(\?=|\(\?!|\(\?<=|\(\?<!/
+
+/**
+ * Wire-biztos alak: kiveszi azokat a JSON Schema kulcsokat, amelyeket a
+ * modell-providerek séma-fordítója nem tud feldolgozni. Élő próbával mérve
+ * (ChatGPT Responses backend, 2026-08-01):
+ * - `maxItems: 100000` (tulajdoni_lap_egyeztetes.nyilvantartas) → a hívás
+ *   pillanatában `response.failed / server_error`, azaz a feladat-futás
+ *   „szolgáltató kiesés"-ként hal el, holnap ugyanúgy;
+ * - lookaround-os `pattern` (a Zod `email()` alakja) → azonnali HTTP 400
+ *   `invalid_json_schema`, ami az ADOTT FORDULÓ MINDEN eszközét megbuktatja,
+ *   nem csak a hibás toolt.
+ * Az elvi korlát megmarad a validátorban; itt csak a hirdetett alak szűkül.
+ */
+function toWireSafeSchema(node: unknown): void {
+  if (Array.isArray(node)) {
+    for (const item of node) toWireSafeSchema(item)
+    return
+  }
+  if (!node || typeof node !== 'object') return
+  const record = node as Record<string, unknown>
+  if (typeof record.maxItems === 'number' && record.maxItems > WIRE_MAX_ITEMS) {
+    delete record.maxItems
+  }
+  if (typeof record.pattern === 'string' && LOOKAROUND.test(record.pattern)) {
+    delete record.pattern
+  }
+  for (const value of Object.values(record)) toWireSafeSchema(value)
+}
+
+/**
  * A modellnek küldött JSON Schema (D2). A Zod-alakból képződik; a `$schema`
  * kulcsot levágjuk, mert a function-calling felületek nem várják.
  */
 export function toolJsonSchema(name: ToolName): Record<string, unknown> {
   const descriptor = TOOL_REGISTRY[name]
-  if (descriptor.jsonSchemaOverride) return descriptor.jsonSchemaOverride
-  const generated = z.toJSONSchema(descriptor.argsSchema, {
-    io: 'input',
-    unrepresentable: 'any',
-  }) as Record<string, unknown>
-  delete generated.$schema
-  return generated
+  const schema = descriptor.jsonSchemaOverride
+    ? (structuredClone(descriptor.jsonSchemaOverride) as Record<string, unknown>)
+    : (z.toJSONSchema(descriptor.argsSchema, {
+        io: 'input',
+        unrepresentable: 'any',
+      }) as Record<string, unknown>)
+  delete schema.$schema
+  toWireSafeSchema(schema)
+  return schema
 }
