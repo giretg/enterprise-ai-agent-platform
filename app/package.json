@@ -98,6 +98,7 @@
     "test:training-eval-policy": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/training-eval-policy.test.ts",
     "test:memory-conflicts": "tsx scripts/memory-conflict-detection.test.ts",
     "test:memory-content-guard": "tsx scripts/memory-content-guard.test.ts",
+    "test:memory-items": "tsx scripts/memory-items.test.ts",
     "test:memory-maintenance-rollback": "tsx scripts/memory-maintenance-rollback.test.ts",
     "test:repo-pr": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/repo-open-pull-request.test.ts",
     "test:chat-tool-history": "tsx scripts/agent-chat-tool-history.test.ts",
