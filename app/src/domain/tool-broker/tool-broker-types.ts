@@ -656,7 +656,7 @@ export type PptxCreateArgs = {
   slides: PptxSlideSpec[]
 }
 
-type ToolInvokeBase = {
+export type ToolInvokeBase = {
   agentId: string
   agentVersion: number
   ticketId?: string
