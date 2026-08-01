@@ -79,6 +79,8 @@ export type EgyeztetesStatusz =
   | 'Módosítás szükséges'
   | 'Törlés szükséges'
   | 'Új rekord'
+  /** Párosítási verseny — volt jelölt, de másik sor vitte el; nem „új beszúrás”. */
+  | 'Ellenőrzés szükséges'
 
 export type EgyeztetesForras = 'Tulajdoni lap' | 'Nyilvántartás' | 'Mindkettő'
 
@@ -103,6 +105,8 @@ export type EgyeztetesOsszegzes = {
   modositas: number
   torles: number
   ujRekord: number
+  /** Párosítási verseny — nem „Új rekord”, emberi döntés kell. */
+  ellenorzes: number
   /** Nem teljes kulcson (hiányzó szül. év / anyja neve) alapuló párosítások. */
   bizonytalanParositas: number
   /** Emberi döntést igénylő tételek — a válaszban ezeket kell felsorolni. */
@@ -184,10 +188,31 @@ function formatSorszamok(sorszamok: number[]): string {
   return sorszamok.map((n) => `II/${n}`).join(' + ')
 }
 
+type EgyeztetesJelolt = {
+  index: number
+  strength: Exclude<MatchStrength, 'nincs'>
+}
+
+/** A versenyben elvesztett lap-tulajdonoshoz a ténylegesen lefoglalt (preferáltan teljes) jelölt. */
+function pickContestedEgyeztetesJelolt(
+  jeloltek: EgyeztetesJelolt[],
+  assignment: Map<number, number>,
+): EgyeztetesJelolt | undefined {
+  const assignedRights = new Set(assignment.values())
+  const taken = jeloltek.filter((c) => assignedRights.has(c.index))
+  if (taken.length === 0) return undefined
+  return taken.find((c) => c.strength === 'teljes') ?? taken[0]
+}
+
 /**
  * A két oldal UNIÓJA sorokká. Fontos, hogy unió: ha csak a lapból generálnánk,
  * a „Törlés szükséges" eset — jellemzően a legértékesebb találat — sosem
  * jelenhetne meg.
+ *
+ * A párosítás kétmenetes: a TELJES kulcsegyezés globálisan előbbre való, mint a
+ * részleges. Enélkül egy korábbi, hiányos kulcsú tulajdonos némán elviheti a
+ * későbbi pontos pár nyilvántartási sorát — a valódi egyezés „Új rekordként"
+ * tűnik el, a téves törlés/beszúrás ajánlás adatvesztéshez vezethet.
  */
 export function egyeztetesSorok(input: {
   lapTulajdonosok: TulajdoniLapOwner[];
@@ -197,19 +222,45 @@ export function egyeztetesSorok(input: {
 }): { sorok: EgyeztetesSor[]; osszegzes: EgyeztetesOsszegzes } {
   const sorok: EgyeztetesSor[] = []
   const figyelmet_igenyel: string[] = []
-  const parositottRegisztraciok = new Set<number>()
   let bizonytalanParositas = 0
 
   const szeljegyMegjegyzes = input.vanSzeljegy
     ? 'A lapon széljegy (folyamatban lévő ügy) van — az eltérés emiatt is lehet jogos.'
     : ''
 
-  for (const owner of input.lapTulajdonosok) {
-    const jeloltek = input.nyilvantartas
-      .map((reg, index) => ({ reg, index, strength: matchStrength(owner, reg) }))
-      .filter((c) => c.strength !== 'nincs' && !parositottRegisztraciok.has(c.index))
-    const teljes = jeloltek.find((c) => c.strength === 'teljes')
-    const parositott = teljes ?? jeloltek[0]
+  const jeloltek: EgyeztetesJelolt[][] = input.lapTulajdonosok.map((owner) => {
+    const row: EgyeztetesJelolt[] = []
+    for (let index = 0; index < input.nyilvantartas.length; index++) {
+      const strength = matchStrength(owner, input.nyilvantartas[index])
+      if (strength !== 'nincs') row.push({ index, strength })
+    }
+    return row
+  })
+
+  const usedRight = new Set<number>()
+  const assignment = new Map<number, number>()
+
+  // 1. kör — TELJES egyezés globálisan előbbre való.
+  for (let oi = 0; oi < jeloltek.length; oi++) {
+    const teljes = jeloltek[oi].find((c) => c.strength === 'teljes' && !usedRight.has(c.index))
+    if (teljes) {
+      usedRight.add(teljes.index)
+      assignment.set(oi, teljes.index)
+    }
+  }
+  // 2. kör — maradék tulajdonosok a még szabad (részleges vagy teljes) párt kapják.
+  for (let oi = 0; oi < jeloltek.length; oi++) {
+    if (assignment.has(oi)) continue
+    const pick = jeloltek[oi].find((c) => !usedRight.has(c.index))
+    if (pick) {
+      usedRight.add(pick.index)
+      assignment.set(oi, pick.index)
+    }
+  }
+
+  for (let oi = 0; oi < input.lapTulajdonosok.length; oi++) {
+    const owner = input.lapTulajdonosok[oi]
+    const regIndex = assignment.get(oi)
 
     const megjegyzesek: string[] = []
     if (owner.bejegyzesSorszamok.length > 1) {
@@ -217,7 +268,31 @@ export function egyeztetesSorok(input: {
     }
     if (szeljegyMegjegyzes) megjegyzesek.push(szeljegyMegjegyzes)
 
-    if (!parositott) {
+    if (regIndex === undefined) {
+      const contested = pickContestedEgyeztetesJelolt(jeloltek[oi], assignment)
+      if (contested) {
+        const reg = input.nyilvantartas[contested.index]
+        const note =
+          'Lehetséges párja már egy másik, hasonló sorhoz lett rendelve — emberi ellenőrzés kell.'
+        megjegyzesek.push(note)
+        if (reg.megjegyzes) megjegyzesek.push(reg.megjegyzes)
+        sorok.push({
+          forras: 'Mindkettő',
+          nev: owner.nev,
+          szuletesiEv: owner.szuletesiEv ?? normalizeEv(reg.szuletesiEv),
+          anyjaNeve: owner.anyjaNeve ?? reg.anyjaNeve ?? null,
+          jogallas: 'TULAJDONOS',
+          hanyadLap: owner.hanyad,
+          szazalekLap: owner.szazalek,
+          hanyadNyilvantartas: reg.hanyad ?? null,
+          statusz: 'Ellenőrzés szükséges',
+          megjegyzes: megjegyzesek.join(' '),
+          bejegyzesSorszamok: owner.bejegyzesSorszamok,
+        })
+        figyelmet_igenyel.push(`Ellenőrzés szükséges: ${owner.nev}`)
+        continue
+      }
+
       sorok.push({
         forras: 'Tulajdoni lap',
         nev: owner.nev,
@@ -235,7 +310,12 @@ export function egyeztetesSorok(input: {
       continue
     }
 
-    parositottRegisztraciok.add(parositott.index)
+    const parositott = {
+      index: regIndex,
+      reg: input.nyilvantartas[regIndex],
+      strength: jeloltek[oi].find((c) => c.index === regIndex)?.strength ?? 'részleges',
+    }
+
     if (parositott.strength === 'részleges') {
       bizonytalanParositas += 1
       megjegyzesek.push(
@@ -298,7 +378,7 @@ export function egyeztetesSorok(input: {
   }
 
   input.nyilvantartas.forEach((reg, index) => {
-    if (parositottRegisztraciok.has(index)) return
+    if (usedRight.has(index)) return
     sorok.push({
       forras: 'Nyilvántartás',
       nev: reg.nev,
@@ -327,6 +407,7 @@ export function egyeztetesSorok(input: {
     modositas: sorok.filter((r) => r.statusz === 'Módosítás szükséges').length,
     torles: sorok.filter((r) => r.statusz === 'Törlés szükséges').length,
     ujRekord: sorok.filter((r) => r.statusz === 'Új rekord').length,
+    ellenorzes: sorok.filter((r) => r.statusz === 'Ellenőrzés szükséges').length,
     bizonytalanParositas,
     figyelmet_igenyel,
   }
@@ -354,6 +435,7 @@ export const EGYEZTETES_STATUSZOK: EgyeztetesStatusz[] = [
   'Módosítás szükséges',
   'Törlés szükséges',
   'Új rekord',
+  'Ellenőrzés szükséges',
 ]
 
 type CellValue = string | number | null
