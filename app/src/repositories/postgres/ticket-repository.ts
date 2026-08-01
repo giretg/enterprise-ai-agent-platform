@@ -18,6 +18,36 @@ function isUniqueCollision(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002'
 }
 
+function buildTicketCommentCreateData(data: AppendTicketCommentInput, seq: number) {
+  if ((data.attachments?.length ?? 0) > 8) throw new Error('Too many attachments')
+  return {
+    ticketId: data.ticketId,
+    seq,
+    kind: data.kind,
+    authorType: data.authorType,
+    authorUserId: data.authorUserId ?? null,
+    authorAgentId: data.authorAgentId ?? null,
+    authorDisplayName: data.authorDisplayName ?? null,
+    agentVersion: data.agentVersion ?? null,
+    body: data.body,
+    structured: data.structured ?? undefined,
+    parentId: data.parentId ?? null,
+    transitionId: data.transitionId ?? null,
+    attachments: data.attachments?.length
+      ? {
+          create: data.attachments.map((attachment, index) => ({
+            documentId: attachment.documentId,
+            seq: index + 1,
+            kind: attachment.kind,
+            filename: attachment.filename,
+            mimeType: attachment.mimeType ?? null,
+            byteSize: attachment.byteSize ?? null,
+          })),
+        }
+      : undefined,
+  }
+}
+
 function ticketWhere(filter?: TicketFilter): Prisma.TicketWhereInput {
   const where: Prisma.TicketWhereInput = {}
   if (filter && 'tenantId' in filter) where.tenantId = filter.tenantId
@@ -138,50 +168,24 @@ export class PostgresTicketRepository implements TicketRepository {
     })
   }
 
-  async create(
-    data: Omit<
-      Ticket,
-      | 'id'
-      | 'createdAt'
-      | 'updatedAt'
-      | 'tenantId'
-      | 'lockToken'
-      | 'lockedAt'
-      | 'playbookRef'
-      | 'conversationId'
-      | 'source'
-      | 'processInstanceId'
-      | 'playbookVersionId'
-      | 'playbookStepId'
-      | 'requiredGateId'
-      | 'cancelRequested'
-      | 'cancelRequestedById'
-      | 'cancelRequestedAt'
-    > &
-      Partial<
-        Pick<
-          Ticket,
-          | 'tenantId'
-          | 'lockToken'
-          | 'lockedAt'
-          | 'playbookRef'
-          | 'conversationId'
-          | 'source'
-          | 'processInstanceId'
-          | 'playbookVersionId'
-          | 'playbookStepId'
-          | 'requiredGateId'
-          | 'cancelRequested'
-          | 'cancelRequestedById'
-          | 'cancelRequestedAt'
-        >
-      >,
-  ): Promise<Ticket> {
-    const ticket = await prisma.ticket.create({
-      data: {
-        ...data,
-        source: resolveTicketSource(data.source),
-      } as Prisma.TicketUncheckedCreateInput,
+  async create(data: Parameters<TicketRepository['create']>[0]): Promise<Ticket> {
+    const { initialComment, ...ticketData } = data
+
+    const ticket = await prisma.$transaction(async (tx) => {
+      const created = await tx.ticket.create({
+        data: {
+          ...ticketData,
+          source: resolveTicketSource(ticketData.source),
+        } as Prisma.TicketUncheckedCreateInput,
+      })
+
+      if (initialComment) {
+        await tx.ticketComment.create({
+          data: buildTicketCommentCreateData({ ticketId: created.id, ...initialComment }, 1),
+        })
+      }
+
+      return created
     })
     if (ticket.state === 'ready') await notifyTicketReady(ticket.id)
     return ticket
@@ -285,8 +289,6 @@ export class PostgresTicketRepository implements TicketRepository {
   }
 
   async appendComment(data: AppendTicketCommentInput): Promise<TicketCommentWithAttachments> {
-    if ((data.attachments?.length ?? 0) > 8) throw new Error('Too many attachments')
-
     for (let attempt = 0; attempt < MAX_COMMENT_APPEND_RETRIES; attempt += 1) {
       try {
         return await prisma.$transaction(async (tx) => {
@@ -300,32 +302,7 @@ export class PostgresTicketRepository implements TicketRepository {
           const seq = (last?.seq ?? 0) + 1
 
           const comment = await tx.ticketComment.create({
-            data: {
-              ticketId: data.ticketId,
-              seq,
-              kind: data.kind,
-              authorType: data.authorType,
-              authorUserId: data.authorUserId ?? null,
-              authorAgentId: data.authorAgentId ?? null,
-              authorDisplayName: data.authorDisplayName ?? null,
-              agentVersion: data.agentVersion ?? null,
-              body: data.body,
-              structured: data.structured ?? undefined,
-              parentId: data.parentId ?? null,
-              transitionId: data.transitionId ?? null,
-              attachments: data.attachments?.length
-                ? {
-                    create: data.attachments.map((attachment, index) => ({
-                      documentId: attachment.documentId,
-                      seq: index + 1,
-                      kind: attachment.kind,
-                      filename: attachment.filename,
-                      mimeType: attachment.mimeType ?? null,
-                      byteSize: attachment.byteSize ?? null,
-                    })),
-                  }
-                : undefined,
-            },
+            data: buildTicketCommentCreateData(data, seq),
             include: { attachments: { include: { document: true }, orderBy: { seq: 'asc' } } },
           })
 

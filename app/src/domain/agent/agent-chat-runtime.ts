@@ -59,6 +59,7 @@ import {
 import type { SkillService } from '../skill/skill-service'
 import { assembleGatewayMessages, type PromptSegments } from './prompt-assembler'
 import {
+  buildSkillTaskPromotionBinding,
   buildSkillTaskPromotionMessage,
   buildSkillTaskTitle,
   shouldPromoteSkillRunToTask,
@@ -533,6 +534,7 @@ type PreparedTurn = {
     id: string
     filename: string
     extractedText: string | null
+    mimeType: string | null
     metadata?: unknown
   }>
   workspaceFiles: string[]
@@ -897,7 +899,15 @@ export class AgentChatRuntime {
       skillNames: slashResolved.loadedSkillNames,
       userText: question,
     })
-    const attachmentDocumentIds = input.attachmentDocs.map((doc) => doc.id)
+    const binding = buildSkillTaskPromotionBinding({
+      conversationId: input.conversationId,
+      documents: input.attachmentDocs.map((doc) => ({
+        id: doc.id,
+        filename: doc.filename,
+        mimeType: doc.mimeType,
+        kind: isImageDocument(doc) ? 'screenshot' : 'file',
+      })),
+    })
 
     try {
       const ticket = await this.tickets.create({
@@ -911,15 +921,24 @@ export class AgentChatRuntime {
         payload: {
           question,
           source: 'chat_skill_promotion',
-          conversationId: input.conversationId,
-          attachmentDocumentIds,
+          conversationId: binding.conversationId,
+          attachmentDocumentIds: binding.attachmentDocumentIds,
           preferredSkillVersionIds: slashResolved.loadedSkillVersionIds,
           promotedSkillNames: slashResolved.loadedSkillNames,
         } as Prisma.JsonValue,
-        sourceDocumentId: null,
+        sourceDocumentId: binding.sourceDocumentId,
+        conversationId: binding.conversationId,
         executeAfter: null,
         dueBy: null,
         createdById: input.params.createdById,
+        initialComment: binding.ticketAttachments.length > 0
+          ? {
+              kind: 'system_note',
+              authorType: 'system',
+              body: 'A chatból a tickethez átvitt csatolmányok.',
+              attachments: binding.ticketAttachments,
+            }
+          : undefined,
       })
 
       await this.audit.append({
@@ -939,7 +958,7 @@ export class AgentChatRuntime {
         metadata: {
           skillNames: slashResolved.loadedSkillNames,
           skillVersionIds: slashResolved.loadedSkillVersionIds,
-          attachmentCount: attachmentDocumentIds.length,
+          attachmentCount: binding.attachmentDocumentIds.length,
         },
       })
 
@@ -947,7 +966,7 @@ export class AgentChatRuntime {
         text: buildSkillTaskPromotionMessage({
           skillNames: slashResolved.loadedSkillNames,
           ticketTitle: title,
-          attachmentCount: attachmentDocumentIds.length,
+          attachmentCount: binding.attachmentDocumentIds.length,
         }),
         ticketRefId: ticket.id,
       }

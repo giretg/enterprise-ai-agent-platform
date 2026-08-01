@@ -14,6 +14,49 @@ export type SkillTaskPromotionHints = {
   preferredMode?: 'chat' | 'task'
 } | null | undefined
 
+export type SkillTaskPromotionBinding = {
+  conversationId: string
+  sourceDocumentId: string | null
+  attachmentDocumentIds: string[]
+  ticketAttachments: Array<{
+    documentId: string
+    filename: string
+    mimeType: string | null
+    kind: 'file' | 'screenshot'
+  }>
+}
+
+/**
+ * A chatből promótált ticket erőforrás-kapcsolatai.
+ *
+ * Minden dokumentum explicit ticket-csatolmány lesz; az első emellett a
+ * ticket natív `sourceDocumentId` kapcsolatába is bekerül. A payload-lista
+ * promptolási adat marad; jogosultságot önmagában nem ad.
+ */
+export function buildSkillTaskPromotionBinding(input: {
+  conversationId: string
+  documents: Array<{
+    id: string
+    filename: string
+    mimeType: string | null
+    kind: 'file' | 'screenshot'
+  }>
+}): SkillTaskPromotionBinding {
+  const documents = [...new Map(input.documents.map((document) => [document.id, document])).values()]
+  const attachmentDocumentIds = documents.map((document) => document.id)
+  return {
+    conversationId: input.conversationId,
+    sourceDocumentId: attachmentDocumentIds[0] ?? null,
+    attachmentDocumentIds,
+    ticketAttachments: documents.map((document) => ({
+      documentId: document.id,
+      filename: document.filename,
+      mimeType: document.mimeType,
+      kind: document.kind,
+    })),
+  }
+}
+
 /** A promóció alapesetben a `/slash` úton betöltött skillre vonatkozik. */
 export function shouldPromoteSkillRunToTask(input: {
   runtimeHints: SkillTaskPromotionHints

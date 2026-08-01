@@ -201,7 +201,10 @@ export interface TicketRepository {
           | 'cancelRequestedById'
           | 'cancelRequestedAt'
         >
-      >,
+      > & {
+        /** A tickettel egy tranzakcióban létrehozott első komment és csatolmányai. */
+        initialComment?: Omit<AppendTicketCommentInput, 'ticketId'>
+      },
   ): Promise<Ticket>
   update(
     id: string,

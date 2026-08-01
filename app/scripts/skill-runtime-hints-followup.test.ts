@@ -15,6 +15,7 @@ import {
 } from '../src/lib/skill/skill-content'
 import { diffSkillVersions } from '../src/lib/skill/skill-diff'
 import {
+  buildSkillTaskPromotionBinding,
   buildSkillTaskPromotionMessage,
   buildSkillTaskTitle,
   shouldPromoteSkillRunToTask,
@@ -148,6 +149,38 @@ test('promóció-üzenet: elmondja, hol folytatódik és mi lett a csatolmánnya
   assert.ok(message.includes('boardra'))
   assert.ok(message.includes('2 fájl'))
   assert.ok(message.includes('tulajdoni-lap-egyeztetes: 043/15'))
+})
+
+test('promóció: a ticket a chathez és az első csatolmányhoz is tartósan kapcsolódik', () => {
+  assert.deepEqual(
+    buildSkillTaskPromotionBinding({
+      conversationId: 'conversation-1',
+      documents: [
+        { id: 'document-1', filename: 'lap.pdf', mimeType: 'application/pdf', kind: 'file' },
+        { id: 'document-2', filename: 'foto.png', mimeType: 'image/png', kind: 'screenshot' },
+        { id: 'document-1', filename: 'lap.pdf', mimeType: 'application/pdf', kind: 'file' },
+      ],
+    }),
+    {
+      conversationId: 'conversation-1',
+      sourceDocumentId: 'document-1',
+      attachmentDocumentIds: ['document-1', 'document-2'],
+      ticketAttachments: [
+        {
+          documentId: 'document-1',
+          filename: 'lap.pdf',
+          mimeType: 'application/pdf',
+          kind: 'file',
+        },
+        {
+          documentId: 'document-2',
+          filename: 'foto.png',
+          mimeType: 'image/png',
+          kind: 'screenshot',
+        },
+      ],
+    },
+  )
 })
 
 // ── 3. egyeztetés magja ─────────────────────────────────────────────────────
