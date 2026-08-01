@@ -279,6 +279,91 @@ test('bizonytalan párosítás jelölve van és számolódik', () => {
   assert.ok(sorok[0].megjegyzes.includes('nem teljes kulcson'))
 })
 
+test('teljes egyezés győz a részleges felett — a pontos pár NEM esik ki némán', () => {
+  // Sorrend-csapda: az első lap-tulajdonos csak részlegesen illik a nyilvántartási
+  // sorra (hiányos kulcs), a második viszont minden kulcson pontosan. A régi mohó
+  // párosítás az elsőnek adta a sort, a valódi pontos párt „Új rekordként" vesztette el.
+  const { sorok, osszegzes } = egyeztetesSorok({
+    lapTulajdonosok: [
+      owner({
+        nev: 'Kovács János',
+        szuletesiEv: null,
+        anyjaNeve: null,
+        hanyad: '1/2',
+        szazalek: 50,
+      }),
+      owner({
+        nev: 'Kovács János',
+        szuletesiEv: '1960',
+        anyjaNeve: 'Nagy Mária',
+        hanyad: '1/2',
+        szazalek: 50,
+      }),
+    ],
+    nyilvantartas: [
+      { nev: 'Kovács János', szuletesiEv: '1960', anyjaNeve: 'Nagy Mária', hanyad: '1/2' },
+    ],
+  })
+  const full = sorok.find(
+    (r) =>
+      r.statusz === 'Rendben' &&
+      r.szuletesiEv === '1960' &&
+      r.anyjaNeve === 'Nagy Mária' &&
+      r.forras === 'Mindkettő',
+  )
+  assert.ok(full, 'a pontos párnak teljes egyezésként meg kell jelennie')
+  assert.equal(osszegzes.torles, 0)
+  assert.equal(osszegzes.ujRekord, 0)
+  assert.equal(osszegzes.ellenorzes, 1)
+  const contested = sorok.find((r) => r.statusz === 'Ellenőrzés szükséges')
+  assert.ok(contested)
+  assert.equal(contested!.hanyadNyilvantartas, '1/2')
+  assert.ok(contested!.megjegyzes.includes('emberi ellenőrzés'))
+  assert.ok(osszegzes.figyelmet_igenyel.some((t) => t.includes('Ellenőrzés szükséges')))
+})
+
+test('versenyben elvesztett sor a ténylegesen lefoglalt (teljes) jelöltre mutat', () => {
+  // L2 jelöltjei: R0 (részleges, lista elején) és R1 (teljes). Mindkettőt más
+  // lap-sor viszi el — az uncertain/ellenőrzés a lefoglalt teljes R1-re kell
+  // mutasson, ne az első jelöltre.
+  const { sorok, osszegzes } = egyeztetesSorok({
+    lapTulajdonosok: [
+      owner({
+        nev: 'Kovács',
+        szuletesiEv: '1960',
+        anyjaNeve: 'A',
+        hanyad: '1/3',
+        szazalek: 33,
+      }),
+      owner({
+        nev: 'Kovács',
+        szuletesiEv: null,
+        anyjaNeve: null,
+        hanyad: '1/3',
+        szazalek: 33,
+      }),
+      owner({
+        nev: 'Kovács',
+        szuletesiEv: '1960',
+        anyjaNeve: 'A',
+        hanyad: '1/3',
+        szazalek: 34,
+      }),
+    ],
+    nyilvantartas: [
+      { nev: 'Kovács', szuletesiEv: null, anyjaNeve: null, hanyad: '1/3' },
+      { nev: 'Kovács', szuletesiEv: '1960', anyjaNeve: 'A', hanyad: '1/3' },
+    ],
+  })
+  assert.equal(osszegzes.ellenorzes, 1)
+  assert.equal(osszegzes.ujRekord, 0)
+  const contested = sorok.find((r) => r.statusz === 'Ellenőrzés szükséges')
+  assert.ok(contested)
+  // A lefoglalt teljes pár születési éve/anyja neve; ne az üres R0-ra mutasson.
+  assert.equal(contested!.szuletesiEv, '1960')
+  assert.equal(contested!.anyjaNeve, 'A')
+})
+
 test('több bejegyzés egy személyhez: a visszakereséshez a sorszámok bekerülnek', () => {
   const { sorok } = egyeztetesSorok({
     lapTulajdonosok: [
