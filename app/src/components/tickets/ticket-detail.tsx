@@ -1,7 +1,7 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
-import { useEffect, useState, useTransition } from 'react'
+import { useState, useTransition } from 'react'
 import Link from 'next/link'
 import type { ProcessStatus } from '@prisma/client'
 import { transitionTicket } from '@/app/actions/platform'
@@ -12,17 +12,17 @@ import { useTicketDispatch } from '@/components/tickets/ticket-dispatch-client'
 import { ProposalCard } from '@/components/tickets/proposal-card'
 import { Badge, Card } from '@/components/ui/shell'
 import { ProcessBadge } from '@/components/processes/process-badge'
-import { TICKET_STATE_LABELS, TICKET_STATE_TONE } from '@/lib/ticket-labels'
+import {
+  TICKET_STATE_HINTS,
+  TICKET_STATE_LABELS,
+  TICKET_STATE_TONE,
+  TICKET_TONE_DOT_CLASS,
+} from '@/lib/ticket-labels'
 import { formatTicketDateTime } from '@/lib/ticket-display'
 import { isRunAsAuthorized } from '@/lib/run-as-payload'
 import { resolveTicketTriggerInputPayload } from '@/lib/playbook-v2/trigger-input'
 import { readStepOutcome } from '@/lib/playbook-v2/process-step-payload'
 import { readTicketCallCapMessageFromPayload } from '@/lib/ticket-call-cap'
-import {
-  assessTicketRunLiveness,
-  formatTicketProgressAge,
-  readTicketRuntimeProgress,
-} from '@/domain/agent/ticket-runtime-progress'
 
 type TicketView = {
   id: string
@@ -322,7 +322,6 @@ export function TicketProcessStartPanel({
 export function TicketActions({ ticket }: { ticket: TicketView }) {
   const router = useRouter()
   const [pending, startTransition] = useTransition()
-  const [stopPending, setStopPending] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [note, setNote] = useState('')
 
@@ -331,36 +330,10 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
   const canReject = REJECTABLE_STATES.has(ticket.state)
   const callCapMessage = readTicketCallCapMessageFromPayload(ticket.payload)
   const canRerun = ticket.state === 'rejected' && !callCapMessage
-  const canStop = ticket.state === 'in_progress'
   // Call-cap rejected: nincs újraindítás, de a panel kell az üzenethez.
   const showRejectedCallCapNotice = ticket.state === 'rejected' && Boolean(callCapMessage)
-  const hasActions = canApprove || canReject || canRerun || canStop || showRejectedCallCapNotice
+  const hasActions = canApprove || canReject || canRerun || showRejectedCallCapNotice
   const isWikiFollowUp = hasWikiAnswer(ticket.payload)
-
-  const runtimeProgress = readTicketRuntimeProgress(ticket.payload)
-  const [nowMs, setNowMs] = useState(() => Date.now())
-
-  useEffect(() => {
-    if (!canStop) return
-    const timer = window.setInterval(() => {
-      router.refresh()
-    }, 2000)
-    return () => window.clearInterval(timer)
-  }, [canStop, router])
-
-  useEffect(() => {
-    if (!canStop) return
-    const tick = window.setInterval(() => setNowMs(Date.now()), 5_000)
-    return () => window.clearInterval(tick)
-  }, [canStop])
-
-  const runLiveness = assessTicketRunLiveness({
-    ticketState: ticket.state,
-    cancelRequested: ticket.cancelRequested,
-    lockedAt: ticket.lockedAt,
-    progress: runtimeProgress,
-    nowMs,
-  })
 
   const act = (toState: string) => {
     if (toState === 'rejected' && isWikiFollowUp && !note.trim()) {
@@ -380,85 +353,14 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
     })
   }
 
-  const stopProcessing = () => {
-    if (stopPending) return
-    setStopPending(true)
-    setError(null)
-    void (async () => {
-      try {
-        const res = await fetch(`/api/v1/tickets/${ticket.id}/cancel`, { method: 'POST' })
-        if (!res.ok) {
-          setError(
-            res.status === 404
-              ? 'A feladat már nem fut — lehet, hogy befejeződött.'
-              : 'Leállítás sikertelen.',
-          )
-        }
-        router.refresh()
-      } catch {
-        setError('Leállítás sikertelen.')
-      } finally {
-        setStopPending(false)
-      }
-    })()
-  }
-
-  if (!hasActions) {
-    return (
-      <Card title="Műveletek">
-        <p className="text-sm text-ink-soft">
-          Jelenleg nincs elvégezhető művelet ezen az állapoton ({TICKET_STATE_LABELS[ticket.state] ?? ticket.state}
-          ).
-        </p>
-      </Card>
-    )
-  }
+  if (!hasActions) return null
 
   return (
-    <Card title="Műveletek">
+    <Card title="Döntés">
+      <p className="-mt-2 mb-4 text-sm text-ink-soft">
+        {TICKET_STATE_HINTS[ticket.state] ?? 'Válaszd ki, hogyan folytatódjon a feladat.'}
+      </p>
       {error && <p className="mb-3 text-sm text-coral">{error}</p>}
-      {canStop && (
-        <div
-          className={`mb-4 rounded-xl border px-3 py-3 ${
-            runLiveness.kind === 'stalled'
-              ? 'border-coral/40 bg-coral/5'
-              : runLiveness.kind === 'quiet' || runLiveness.kind === 'cancelling'
-                ? 'border-honey/40 bg-honey/5'
-                : 'border-sky/30 bg-sky/5'
-          }`}
-        >
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <p className="text-sm font-semibold text-ink">
-                {runLiveness.kind === 'stalled'
-                  ? 'Feldolgozás — úgy tűnik megállt'
-                  : runLiveness.kind === 'cancelling'
-                    ? 'Feldolgozás — leállítás folyamatban'
-                    : runLiveness.kind === 'quiet'
-                      ? 'Feldolgozás — lassú jelzés'
-                      : 'Feldolgozás folyamatban'}
-              </p>
-              <p className="text-xs text-ink-faint">
-                {runLiveness.kind === 'stalled'
-                  ? `Nincs friss aktivitás ${formatTicketProgressAge(runLiveness.ageMs)}. Beragadás esetén leállíthatod.`
-                  : runLiveness.kind === 'active' && runLiveness.currentStep
-                    ? `Most: ${runLiveness.currentStep}`
-                    : runLiveness.kind === 'quiet' && runLiveness.currentStep
-                      ? `Utolsó lépés: ${runLiveness.currentStep} · ${formatTicketProgressAge(runLiveness.ageMs)}`
-                      : 'Az AI munkatárs a háttérben dolgozik. A részletes lépések az Eseménytörténetben.'}
-              </p>
-            </div>
-            <button
-              type="button"
-              disabled={stopPending}
-              onClick={stopProcessing}
-              className="rounded-full border border-coral/40 bg-coral/15 px-4 py-2 text-sm font-semibold text-coral-deep hover:bg-coral/25 disabled:opacity-50"
-            >
-              {stopPending ? 'Leállítás…' : 'Feldolgozás leállítása'}
-            </button>
-          </div>
-        </div>
-      )}
       <textarea
         className="mb-3 w-full rounded-lg border border-line bg-night-2 p-3 text-sm text-ink"
         placeholder={
@@ -476,7 +378,7 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
             type="button"
             disabled={pending}
             onClick={() => act('approved')}
-            className="rounded-full bg-sage/20 px-4 py-2 text-sm font-semibold text-sage hover:bg-sage/30 disabled:opacity-50"
+            className="rounded-full bg-sage px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:brightness-95 disabled:opacity-50"
           >
             {isTrainingTicket ? 'Tanítás jóváhagyása (write-gate)' : 'Jóváhagyás'}
           </button>
@@ -486,7 +388,7 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
             type="button"
             disabled={pending}
             onClick={() => act('rejected')}
-            className="rounded-full bg-coral/20 px-4 py-2 text-sm font-semibold text-coral hover:bg-coral/30 disabled:opacity-50"
+            className="rounded-full border border-coral/40 bg-coral/12 px-5 py-2.5 text-sm font-semibold text-coral-deep transition-colors hover:bg-coral/22 disabled:opacity-50"
           >
             Visszadobás
           </button>
@@ -496,7 +398,7 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
             type="button"
             disabled={pending}
             onClick={() => act('ready')}
-            className="rounded-full bg-honey/20 px-4 py-2 text-sm font-semibold text-honey disabled:opacity-50"
+            className="rounded-full border border-honey/40 bg-honey/15 px-5 py-2.5 text-sm font-semibold text-honey transition-colors hover:bg-honey/25 disabled:opacity-50"
           >
             Újra feldolgozás
           </button>
@@ -606,58 +508,122 @@ export function TicketMeta({
     })
   }
 
-  const headerButtonClass =
-    'rounded-xl border border-line px-3 py-1.5 text-xs font-semibold transition-colors disabled:opacity-40'
+  const stateTone = TICKET_STATE_TONE[ticket.state] ?? 'neutral'
+  const stateLabel = TICKET_STATE_LABELS[ticket.state] ?? ticket.state
+  const stateHint = TICKET_STATE_HINTS[ticket.state] ?? null
+  const typeLabel = ticket.type === 'training' ? 'Tanítás' : 'Interakció'
+  const assigneeHint =
+    assignee?.detail ??
+    (assignee?.type === 'agent'
+      ? ticket.state === 'in_progress'
+        ? 'AI munkatárs — most éppen ezen dolgozik'
+        : 'AI munkatárs a felelős'
+      : assignee?.type === 'human'
+        ? 'Emberi döntésre vár'
+        : 'Még senki nem kapta meg')
 
   return (
     <>
-      <div className="flex flex-wrap items-center gap-3">
-        <h1 className="font-display text-2xl font-semibold">{ticket.title}</h1>
-        <Badge tone={TICKET_STATE_TONE[ticket.state] ?? 'neutral'}>
-          {TICKET_STATE_LABELS[ticket.state] ?? ticket.state}
-        </Badge>
-        <Badge tone="neutral">{ticket.type === 'training' ? 'Tanítás' : 'Interakció'}</Badge>
-        {ticket.process && (
-          <ProcessBadge
-            processInstanceId={ticket.process.id}
-            processType={ticket.process.processType}
-            status={ticket.process.status}
-          />
-        )}
-        {canStartDispatch && (
-          <button
-            type="button"
-            onClick={handleStartDispatch}
-            disabled={dispatchPending}
-            className={`${headerButtonClass} text-ink-soft hover:border-accent/50 hover:bg-accent/10 hover:text-accent`}
-            title="Kézi feldolgozás indítása — függetlenül a dispatcher állapotától"
-          >
-            {dispatchPending ? 'Indítás…' : 'Feldolgozás indítása'}
-          </button>
-        )}
-        {isAdmin && (
-          <button
-            type="button"
-            onClick={handleExportDebugLog}
-            disabled={debugLogPending}
-            className={`${headerButtonClass} text-ink-soft hover:border-honey/50 hover:bg-honey/10 hover:text-honey`}
-            title="Teljes feladat-telemetria letöltése elemzéshez (szál, model/tool, audit, kapcsolt beszélgetés)"
-          >
-            {debugLogPending ? 'Log…' : 'Debug-log'}
-          </button>
-        )}
-      </div>
-      {headerMessage && (
-        <p
-          className={`mt-2 text-xs ${headerMessage.tone === 'ok' ? 'text-sage' : 'text-coral'}`}
-          role="status"
-        >
-          {headerMessage.text}
-        </p>
-      )}
+      <header className="atelier-card overflow-hidden">
+        <div className={`h-1 w-full bg-gradient-to-r ${HERO_ACCENT_CLASS[stateTone]}`} aria-hidden />
+        <div className="p-5 sm:p-6">
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-[0.16em] text-ink-faint">
+                <Link href="/control-plane/board" className="transition-colors hover:text-coral-deep">
+                  ← Board
+                </Link>
+                <span aria-hidden>·</span>
+                <span>Feladat #{ticket.id.slice(0, 8)}</span>
+              </div>
+              <h1 className="mt-2 font-display text-2xl font-semibold leading-tight sm:text-3xl">
+                {ticket.title}
+              </h1>
+              <div className="mt-3 flex flex-wrap items-center gap-2">
+                <span
+                  className={`inline-flex items-center gap-2 rounded-full px-3 py-1 text-xs font-semibold ${STATE_PILL_CLASS[stateTone]}`}
+                >
+                  <span
+                    className={`h-2 w-2 rounded-full ${TICKET_TONE_DOT_CLASS[stateTone]} ${
+                      ticket.state === 'in_progress' ? 'animate-soul' : ''
+                    }`}
+                    aria-hidden
+                  />
+                  {stateLabel}
+                </span>
+                <Badge tone="neutral">{typeLabel}</Badge>
+                {ticket.process && (
+                  <ProcessBadge
+                    processInstanceId={ticket.process.id}
+                    processType={ticket.process.processType}
+                    status={ticket.process.status}
+                  />
+                )}
+              </div>
+            </div>
+
+            <div className="flex shrink-0 flex-wrap items-center gap-2">
+              {canStartDispatch && (
+                <button
+                  type="button"
+                  onClick={handleStartDispatch}
+                  disabled={dispatchPending}
+                  className="rounded-full bg-coral px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-coral-deep disabled:opacity-40"
+                  title="Kézi feldolgozás indítása — függetlenül a dispatcher állapotától"
+                >
+                  {dispatchPending ? 'Indítás…' : 'Feldolgozás indítása'}
+                </button>
+              )}
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={handleExportDebugLog}
+                  disabled={debugLogPending}
+                  className="rounded-full border border-line bg-card px-4 py-2.5 text-sm font-semibold text-ink-soft transition-colors hover:border-honey/50 hover:text-honey disabled:opacity-40"
+                  title="Teljes feladat-telemetria letöltése elemzéshez (szál, model/tool, audit, kapcsolt beszélgetés)"
+                >
+                  {debugLogPending ? 'Log…' : 'Debug-log'}
+                </button>
+              )}
+            </div>
+          </div>
+
+          {headerMessage && (
+            <p
+              className={`mt-3 text-sm ${headerMessage.tone === 'ok' ? 'text-sage' : 'text-coral'}`}
+              role="status"
+            >
+              {headerMessage.text}
+            </p>
+          )}
+
+          <dl className="mt-5 grid gap-px overflow-hidden rounded-2xl border border-line bg-line/70 sm:grid-cols-2 xl:grid-cols-4">
+            <HeroFact label="Hol tart" value={stateLabel} hint={stateHint} dotClass={TICKET_TONE_DOT_CLASS[stateTone]} />
+            <HeroFact
+              label="Ki dolgozik rajta"
+              value={assignee?.label ?? 'Nincs hozzárendelve'}
+              hint={assigneeHint}
+            />
+            <HeroFact
+              label="Ki kérte"
+              value={ticket.creator?.label ?? 'Ismeretlen'}
+              hint={`Létrehozva: ${formatTicketDateTime(ticket.createdAt)}`}
+            />
+            <HeroFact
+              label="Utolsó mozgás"
+              value={formatTicketDateTime(ticket.updatedAt)}
+              hint={
+                ticket.state === 'in_progress'
+                  ? 'A lépések élőben frissülnek alább.'
+                  : `${typeLabel} típusú feladat`
+              }
+            />
+          </dl>
+        </div>
+      </header>
 
       {contractReview && (
-        <Card title={contractReview.title ?? 'Miért állt meg a lépés'} className="mt-4 border-coral/25 bg-coral/5">
+        <Card title={contractReview.title ?? 'Miért állt meg a lépés'} className="border-coral/25 bg-coral/5">
           <p className="whitespace-pre-wrap text-sm leading-relaxed text-ink">{contractReview.message}</p>
           {contractReview.answer && (
             <div className="mt-3 border-t border-ink/10 pt-3">
@@ -672,92 +638,132 @@ export function TicketMeta({
         </Card>
       )}
 
-      <Card title="Metaadatok" className="mt-4">
-        <dl className="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
-          {ticket.creator && (
-            <>
-              <dt className="text-ink-faint">Létrehozta</dt>
-              <dd className="text-ink">{ticket.creator.label}</dd>
-            </>
-          )}
-          <dt className="text-ink-faint">Létrehozva</dt>
-          <dd className="text-ink">{formatTicketDateTime(ticket.createdAt)}</dd>
-          <dt className="text-ink-faint">Utolsó módosítás</dt>
-          <dd className="text-ink">{formatTicketDateTime(ticket.updatedAt)}</dd>
-        </dl>
-      </Card>
-
-      <Card title="Hozzárendelve" className="mt-6">
-        <div className="flex flex-wrap items-baseline gap-2">
-          <span className="text-lg font-semibold text-ink">
-            {assignee?.label ?? 'Nincs hozzárendelve'}
-          </span>
-          {assignee?.type === 'agent' && <Badge tone="neutral">AI munkatárs</Badge>}
-          {assignee?.type === 'human' && <Badge tone="warning">Ember</Badge>}
-        </div>
-        {assignee?.detail && (
-          <p className="mt-2 text-sm leading-relaxed text-ink-soft">{assignee.detail}</p>
-        )}
-      </Card>
-
-      {proposal && <ProposalCard proposal={proposal} className="mt-6" />}
+      {proposal && <ProposalCard proposal={proposal} />}
 
       {diff && (
-        <Card title="Tanítási diff" className="mt-6">
+        <Card title="Tanítási diff">
           <pre className="overflow-x-auto text-xs text-ink-soft">{JSON.stringify(diff, null, 2)}</pre>
         </Card>
       )}
+    </>
+  )
+}
 
-      {(payload?.agentVersion != null ||
-        payload?.memoryVersion != null ||
-        payload?.model != null ||
-        payload?.recipeName != null ||
-        payload?.recipeVersion != null ||
-        ticket.reproduction?.recipe) && (
-        <Card title="AI munkatárs anatómia (reprodukálhatóság)" className="mt-6">
-          <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-3">
+const HERO_ACCENT_CLASS: Record<'neutral' | 'success' | 'warning' | 'danger', string> = {
+  neutral: 'from-sky via-sky/40 to-transparent',
+  success: 'from-sage via-sage/40 to-transparent',
+  warning: 'from-honey via-honey/40 to-transparent',
+  danger: 'from-coral via-coral/40 to-transparent',
+}
+
+const STATE_PILL_CLASS: Record<'neutral' | 'success' | 'warning' | 'danger', string> = {
+  neutral: 'bg-ink/8 text-ink-soft',
+  success: 'bg-sage/15 text-sage',
+  warning: 'bg-honey/15 text-honey',
+  danger: 'bg-coral/15 text-coral',
+}
+
+function HeroFact({
+  label,
+  value,
+  hint,
+  dotClass,
+}: {
+  label: string
+  value: string
+  hint?: string | null
+  dotClass?: string
+}) {
+  return (
+    <div className="bg-card px-4 py-3">
+      <dt className="text-[11px] font-semibold uppercase tracking-[0.14em] text-ink-faint">
+        {label}
+      </dt>
+      <dd className="mt-1 flex items-center gap-2 text-sm font-semibold text-ink">
+        {dotClass && <span className={`h-2 w-2 shrink-0 rounded-full ${dotClass}`} aria-hidden />}
+        <span className="truncate" title={value}>
+          {value}
+        </span>
+      </dd>
+      {hint && <p className="mt-1 text-xs leading-snug text-ink-soft">{hint}</p>}
+    </div>
+  )
+}
+
+/**
+ * Technikai kiegészítők (reprodukálhatóság, nyers payload) — az oldalsávban,
+ * hogy ne törjék meg a feladat olvasható fő sávját.
+ */
+export function TicketTechnicalPanels({
+  ticket,
+  isAdmin = false,
+}: {
+  ticket: TicketView
+  isAdmin?: boolean
+}) {
+  const payload = ticket.payload as Record<string, unknown> | null
+  const hasAnatomy =
+    payload?.agentVersion != null ||
+    payload?.memoryVersion != null ||
+    payload?.model != null ||
+    payload?.recipeName != null ||
+    payload?.recipeVersion != null ||
+    Boolean(ticket.reproduction?.recipe)
+
+  if (!hasAnatomy && !isAdmin) return null
+
+  return (
+    <>
+      {hasAnatomy && (
+        <Card title="Hogyan készült">
+          <p className="-mt-2 mb-3 text-xs leading-relaxed text-ink-soft">
+            Ezekkel a beállításokkal futott az AI munkatárs — ez teszi a futást reprodukálhatóvá.
+          </p>
+          <dl className="space-y-2 text-sm">
             {(payload?.agentVersion != null || ticket.reproduction?.agentVersion != null) && (
-              <>
+              <div className="flex items-baseline justify-between gap-3">
                 <dt className="text-ink-faint">AI munkatárs verzió</dt>
-                <dd className="col-span-1 font-mono text-ink sm:col-span-2">
+                <dd className="font-mono text-ink">
                   v{String(payload?.agentVersion ?? ticket.reproduction?.agentVersion)}
                 </dd>
-              </>
+              </div>
             )}
             {(payload?.memoryVersion != null || ticket.reproduction?.memoryVersion != null) && (
-              <>
+              <div className="flex items-baseline justify-between gap-3">
                 <dt className="text-ink-faint">Memória verzió</dt>
-                <dd className="col-span-1 font-mono text-ink sm:col-span-2">
+                <dd className="font-mono text-ink">
                   v{String(payload?.memoryVersion ?? ticket.reproduction?.memoryVersion)}
                 </dd>
-              </>
+              </div>
             )}
             {(payload?.recipeName != null || ticket.reproduction?.recipe?.name) && (
-              <>
-                <dt className="text-ink-faint">Recipe</dt>
-                <dd className="col-span-1 font-mono text-ink sm:col-span-2">
+              <div className="flex items-baseline justify-between gap-3">
+                <dt className="text-ink-faint">Recept</dt>
+                <dd className="truncate font-mono text-ink">
                   {String(payload?.recipeName ?? ticket.reproduction?.recipe?.name)} v
                   {String(payload?.recipeVersion ?? ticket.reproduction?.recipe?.version)}
                 </dd>
-              </>
+              </div>
             )}
             {payload?.model != null && (
-              <>
+              <div className="flex items-baseline justify-between gap-3">
                 <dt className="text-ink-faint">Modell</dt>
-                <dd className="col-span-1 font-mono text-ink sm:col-span-2">
-                  {String(payload.model as string)}
-                </dd>
-              </>
+                <dd className="truncate font-mono text-ink">{String(payload.model as string)}</dd>
+              </div>
             )}
           </dl>
         </Card>
       )}
 
       {isAdmin && (
-        <Card title="Payload (debug)" className="mt-6">
+        <Card title="Nyers adat (fejlesztői)">
           <details>
-            <summary className="cursor-pointer text-xs text-ink-faint">Raw JSON megjelenítése</summary>
-            <pre className="mt-3 overflow-x-auto text-xs text-ink-soft">{JSON.stringify(payload, null, 2)}</pre>
+            <summary className="cursor-pointer text-xs text-ink-faint">
+              Raw JSON megjelenítése
+            </summary>
+            <pre className="mt-3 max-h-96 overflow-auto text-xs text-ink-soft">
+              {JSON.stringify(payload, null, 2)}
+            </pre>
           </details>
         </Card>
       )}

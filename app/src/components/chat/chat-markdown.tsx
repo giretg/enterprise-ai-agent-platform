@@ -5,6 +5,7 @@ import type { Components } from 'react-markdown'
 import {
   linkWorkspaceFileReferences,
   workspaceFileLink,
+  workspaceFileLinkForReference,
 } from '@/lib/workspace-file-visibility'
 
 function MarkdownLink({
@@ -83,11 +84,20 @@ function agentComponentsFor(workspaceBaseUrl?: string, workspaceFilePaths: strin
   blockquote: ({ children }) => (
     <blockquote className="my-2 border-l-2 border-sage/50 pl-3 text-ink-soft italic">{children}</blockquote>
   ),
-  a: ({ href, children }) => (
-    <MarkdownLink href={href} className={linkClassName}>
-      {children}
-    </MarkdownLink>
-  ),
+  a: ({ href, children }) => {
+    const workspaceHref = workspaceBaseUrl
+      ? workspaceFileLinkForReference(href, workspaceFilePaths, workspaceBaseUrl)
+      : null
+    return (
+      <MarkdownLink
+        href={workspaceHref ?? href}
+        className={linkClassName}
+        forceExternal={Boolean(workspaceHref)}
+      >
+        {children}
+      </MarkdownLink>
+    )
+  },
   hr: () => <hr className="my-3 border-line" />,
   }
 }

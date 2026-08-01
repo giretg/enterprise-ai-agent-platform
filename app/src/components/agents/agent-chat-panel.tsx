@@ -1128,6 +1128,7 @@ export function AgentChatPanel({
   canDistillSkill = false,
   initialConversationId = null,
   restoreSignal = 0,
+  tileTarget = null,
 }: {
   agent: ChatAgent
   open: boolean
@@ -1138,6 +1139,8 @@ export function AgentChatPanel({
   initialConversationId?: string | null
   /** Növekvő jel: újboli megnyitáskor leveszi a tálcáról. */
   restoreSignal?: number
+  /** A közös session-host célpontja: itt a megnyitott panelek reszponzív rácsba kerülnek. */
+  tileTarget?: HTMLElement | null
 }) {
   const persona = personaFor(agent.name, agent)
   const dockId = useId()
@@ -1320,16 +1323,6 @@ export function AgentChatPanel({
     const timer = window.setTimeout(() => setMounted(true), 0)
     return () => window.clearTimeout(timer)
   }, [])
-
-  useEffect(() => {
-    // Tálcán (minimized) a háttéroldal görgethető maradjon — lock csak nyitott ablaknál.
-    if (!open || minimized) return
-    const prevOverflow = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
-    return () => {
-      document.body.style.overflow = prevOverflow
-    }
-  }, [open, minimized])
 
   useEffect(() => {
     if (!open) streamAbortRef.current?.abort()
@@ -2638,27 +2631,40 @@ export function AgentChatPanel({
 
   if (!open || !mounted) return null
 
+  const inSessionGrid = tileTarget !== null
+
   return createPortal(
     <div
-      className={`fixed inset-0 z-[200] flex items-end justify-center sm:items-center sm:p-6 lg:p-4 ${
-        minimized ? 'pointer-events-none invisible' : ''
-      }`}
+      className={
+        inSessionGrid
+          ? `pointer-events-auto relative flex h-[calc(100dvh-1.5rem)] min-h-[36rem] w-full flex-col overflow-hidden rounded-2xl border border-line bg-card shadow-2xl sm:h-full sm:min-h-0 ${
+              minimized ? 'hidden' : ''
+            }`
+          : `fixed inset-0 z-[200] flex items-end justify-center sm:items-center sm:p-6 lg:p-4 ${
+              minimized ? 'pointer-events-none invisible' : ''
+            }`
+      }
       aria-hidden={minimized}
       {...(minimized ? { inert: true } : {})}
     >
-      <button
-        type="button"
-        aria-label="Bezárás"
-        className="absolute inset-0 bg-ink/40 backdrop-blur-sm"
-        onClick={onClose}
-        tabIndex={minimized ? -1 : undefined}
-      />
-
+      {!inSessionGrid ? (
+        <button
+          type="button"
+          aria-label="Bezárás"
+          className="absolute inset-0 bg-ink/40 backdrop-blur-sm"
+          onClick={onClose}
+          tabIndex={minimized ? -1 : undefined}
+        />
+      ) : null}
       <div
         role="dialog"
-        aria-modal={!minimized}
+        aria-modal={inSessionGrid ? false : !minimized}
         aria-labelledby="agent-chat-title"
-        className="relative z-[1] flex h-[100dvh] w-full flex-col overflow-hidden border border-line bg-card shadow-2xl sm:h-[min(calc(100dvh-3rem),calc(100vh-3rem))] sm:max-w-[min(calc(100vw-3rem),100rem)] sm:rounded-2xl lg:h-[min(calc(100dvh-2rem),calc(100vh-2rem))] lg:max-w-[min(calc(100vw-2rem),120rem)]"
+        className={
+          inSessionGrid
+            ? 'flex h-full min-h-0 w-full flex-col'
+            : 'relative z-[1] flex h-[100dvh] w-full flex-col overflow-hidden border border-line bg-card shadow-2xl sm:h-[min(calc(100dvh-3rem),calc(100vh-3rem))] sm:max-w-[min(calc(100vw-3rem),100rem)] sm:rounded-2xl lg:h-[min(calc(100dvh-2rem),calc(100vh-2rem))] lg:max-w-[min(calc(100vw-2rem),120rem)]'
+        }
       >
         <header className="flex shrink-0 items-center gap-3 border-b border-line px-4 py-3 sm:px-5">
           <button
@@ -3156,7 +3162,7 @@ export function AgentChatPanel({
         </div>
       </div>
     </div>,
-    document.body,
+    tileTarget ?? document.body,
   )
 }
 

@@ -308,7 +308,7 @@ export function TicketThread({
   )
 
   return (
-    <Card title="Feladat-szál" className="mt-6">
+    <Card title="Feladat-szál">
       <div className="space-y-4">
         <article className="rounded-lg border border-line bg-night-2/60 p-4">
           <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-ink-faint">

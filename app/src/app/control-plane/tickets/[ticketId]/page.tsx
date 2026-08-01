@@ -8,6 +8,7 @@ import {
   TicketMeta,
   TicketProcessStartPanel,
   TicketRunAsAuthorization,
+  TicketTechnicalPanels,
   type TicketStartableProcessDefinition,
 } from '@/components/tickets/ticket-detail'
 import { TicketThread } from '@/components/tickets/ticket-thread'
@@ -58,20 +59,32 @@ export default async function TicketDetailPage({
   return (
     <div className="space-y-6">
       <TicketMeta ticket={ticket} isAdmin={isAdmin} canDispatch={canManageRunAs} />
-      <TicketThread ticket={ticket} comments={commentsRes.success ? commentsRes.data : []} />
-      <TicketRunAsAuthorization ticket={ticket} canManageRunAs={canManageRunAs} />
-      {canStartProcess && <TicketProcessStartPanel ticket={ticket} definitions={definitions} />}
-      <TicketFilesPanel ticketId={ticket.id} ticketState={ticket.state} />
-      <TicketActions ticket={ticket} />
-      <TicketActivityHistory
-        ticket={{
-          state: ticket.state,
-          payload: ticket.payload,
-          cancelRequested: ticket.cancelRequested,
-          lockedAt: ticket.lockedAt,
-        }}
-      />
-      <TicketHistory transitions={transitions} />
+
+      {/* Fő sáv: mi történik most → mit kell döntened → a beszélgetés.
+          Oldalsáv: kísérő adatok (fájlok, engedélyek, előzmények). */}
+      <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_21rem] xl:grid-cols-[minmax(0,1fr)_23rem]">
+        <div className="min-w-0 space-y-6">
+          <TicketActivityHistory
+            ticket={{
+              id: ticket.id,
+              state: ticket.state,
+              payload: ticket.payload,
+              cancelRequested: ticket.cancelRequested,
+              lockedAt: ticket.lockedAt,
+            }}
+          />
+          <TicketActions ticket={ticket} />
+          <TicketThread ticket={ticket} comments={commentsRes.success ? commentsRes.data : []} />
+        </div>
+
+        <aside className="min-w-0 space-y-6">
+          <TicketFilesPanel ticketId={ticket.id} ticketState={ticket.state} />
+          <TicketRunAsAuthorization ticket={ticket} canManageRunAs={canManageRunAs} />
+          {canStartProcess && <TicketProcessStartPanel ticket={ticket} definitions={definitions} />}
+          <TicketHistory transitions={transitions} />
+          <TicketTechnicalPanels ticket={ticket} isAdmin={isAdmin} />
+        </aside>
+      </div>
     </div>
   )
 }

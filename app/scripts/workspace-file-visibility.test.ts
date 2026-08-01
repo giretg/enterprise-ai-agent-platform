@@ -9,6 +9,7 @@ import {
   linkWorkspaceFileReferences,
   referencedWorkspaceFiles,
   workspaceFileLink,
+  workspaceFileLinkForReference,
 } from '../src/lib/workspace-file-visibility'
 import { WorkspaceStorage } from '../src/domain/file-editor/workspace-storage'
 
@@ -62,6 +63,20 @@ async function main() {
       linkWorkspaceFileReferences('Töltsd le az export.zip fájlt.', files, '/workspace'),
       'Töltsd le az [export.zip](/workspace?path=export.zip) fájlt.',
     )
+  })
+
+  await check('az agent saját Markdown-fájllinkje is a workspace megnyitási URL-jére mutat', () => {
+    const baseUrl = '/api/v1/tickets/t-1/workspace/files'
+    const files = ['ugyfelek_tavaly_vasarlas_iden_nincs_rendeles.html']
+    assert.equal(
+      workspaceFileLinkForReference('ugyfelek_tavaly_vasarlas_iden_nincs_rendeles.html', files, baseUrl),
+      `${baseUrl}?path=ugyfelek_tavaly_vasarlas_iden_nincs_rendeles.html&disposition=inline`,
+    )
+    assert.equal(
+      workspaceFileLinkForReference('./ugyfelek_tavaly_vasarlas_iden_nincs_rendeles.html', files, baseUrl),
+      `${baseUrl}?path=ugyfelek_tavaly_vasarlas_iden_nincs_rendeles.html&disposition=inline`,
+    )
+    assert.equal(workspaceFileLinkForReference('https://example.com/report.html', files, baseUrl), null)
   })
 
   await check('a workspace manifest külön kezeli a feltöltött és a belső azonos nevű JSON-okat', async () => {
