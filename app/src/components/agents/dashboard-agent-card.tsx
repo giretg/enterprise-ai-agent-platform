@@ -5,6 +5,7 @@ import type { Agent } from '@prisma/client'
 import { Card } from '@/components/ui/shell'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { AgentChatButton } from '@/components/agents/agent-chat-panel'
+import { AgentTaskButton } from '@/components/agents/agent-task-button'
 import { AgentMiniAppsLink } from '@/components/agents/agent-mini-apps-link'
 import { personaFor, humanStatus } from '@/lib/agent-persona'
 
@@ -32,18 +33,24 @@ export function DashboardAgentCard({ agent }: { agent: Agent }) {
           <p className="text-sm italic leading-relaxed text-ink-soft">“{p.greeting}”</p>
         </Link>
         <div className="flex shrink-0 flex-col items-end gap-2">
-          <AgentChatButton
-            agent={{
-              id: agent.id,
-              name: agent.name,
-              status: agent.status,
-              avatarUrl: agent.avatarUrl,
-              personaNickname: agent.personaNickname,
-              personaGreeting: agent.personaGreeting,
-              personaTrait: agent.personaTrait,
-            }}
-            compact
-          />
+          {/* #199 — korlátozott feladatkörű agentnél a chat helyett egyetlen
+              skill-kötött feladat-indító gomb jelenik meg. */}
+          {agent.taskOnly ? (
+            <AgentTaskButton agentId={agent.id} compact />
+          ) : (
+            <AgentChatButton
+              agent={{
+                id: agent.id,
+                name: agent.name,
+                status: agent.status,
+                avatarUrl: agent.avatarUrl,
+                personaNickname: agent.personaNickname,
+                personaGreeting: agent.personaGreeting,
+                personaTrait: agent.personaTrait,
+              }}
+              compact
+            />
+          )}
           <AgentMiniAppsLink agentId={agent.id} compact />
         </div>
       </div>

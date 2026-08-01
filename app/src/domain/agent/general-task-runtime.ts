@@ -63,6 +63,7 @@ import type { WorkspaceStorage } from '../file-editor/workspace-storage'
 import { formatAttachmentBlock } from './agent-chat-runtime'
 import { listAllowedChatTools, resolveToolLoopMaxTurns, runAgentToolLoop, AgentToolLoopCancelledError, type LoadSkillFn } from './chat-tool-loop'
 import { formatTaskWorkspaceFilesPrompt } from '@/lib/task-workspace-prompt'
+import { formatSkillParameterValuesPrompt } from '@/lib/skill/skill-context'
 import {
   isInternalWorkspaceFile,
   referencedWorkspaceFiles,
@@ -88,6 +89,21 @@ function readPreferredSkillVersionIds(payload: Record<string, unknown>): string[
   const ids = payload.preferredSkillVersionIds
   if (!Array.isArray(ids)) return []
   return [...new Set(ids.filter((id): id is string => typeof id === 'string' && id.length > 0))]
+}
+
+/**
+ * A feladat indításakor kitöltött skill-paraméter-értékek (#199). A kulcsok
+ * érvényességét a `createBoardTicket` már ellenőrizte a skill `parameters[]`
+ * neveihez képest; itt csak a tárolt alakot olvassuk vissza fail-safe módon.
+ */
+function readSkillParameterValues(payload: Record<string, unknown>): Record<string, string> {
+  const raw = payload.skillParameterValues
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+  const values: Record<string, string> = {}
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof value === 'string' && value.trim()) values[key] = value
+  }
+  return values
 }
 
 function formatDueByPrompt(dueBy: Date | null | undefined): string | null {
@@ -246,6 +262,11 @@ export class GeneralTaskRuntime {
     // kapná, épp azt veszítve el, amiért a boardra került).
     let skillRuntimeHints: { maxWallClockMs?: number; maxToolCalls?: number } | undefined
     let skillToolScope: string[] | undefined
+    // #199 — a korlátozott feladatkörű agentnél NINCS szabad szöveges leírás: a
+    // bemenetet a skill deklarált paraméterei és a csatolt fájlok adják. A megadott
+    // értékek külön, jól elkülönített blokkban mennek a modellhez, a paraméter
+    // leírásával együtt — enélkül a modell nem tudná, mit jelent az érték.
+    let skillParameterPrompt = ''
     if (this.skills && preferredSkillVersionIds.length > 0) {
       const preloaded = await this.skills.preloadSkillsByVersionIds({
         agentId: params.agentId,
@@ -267,6 +288,10 @@ export class GeneralTaskRuntime {
       preloadedSkillPrompts = preloaded.preloadedPrompts
       skillRuntimeHints = preloaded.runtimeHints
       skillToolScope = preloaded.requiredTools
+      skillParameterPrompt = formatSkillParameterValuesPrompt(
+        preloaded.parameters ?? [],
+        readSkillParameterValues(payload),
+      )
     }
 
     const messages = await this.buildTaskMessages({
@@ -279,6 +304,7 @@ export class GeneralTaskRuntime {
       conversationContext,
       memoryContextBlock: memoryContext.block,
       dueByPrompt,
+      skillParameterPrompt,
     })
 
     const allowedTools = await listAllowedChatTools(this.toolCaps, params.agentId)
@@ -1016,6 +1042,8 @@ export class GeneralTaskRuntime {
     conversationContext: string | null
     memoryContextBlock?: string | null
     dueByPrompt?: string | null
+    /** #199 — a feladat indításakor kitöltött skill-paraméter-értékek blokkja. */
+    skillParameterPrompt?: string
   }) {
     // #142: a roster a hívó agent SAJÁT `address` jogán szűrt lista (a korábbi
     // szűretlen `findMany()` tenantközi neveket is a promptba írt).
@@ -1094,6 +1122,10 @@ export class GeneralTaskRuntime {
       role: 'system',
       content: formatTaskWorkspaceFilesPrompt(params.workspaceFiles),
     })
+
+    if (params.skillParameterPrompt) {
+      variableContext.push({ role: 'system', content: params.skillParameterPrompt })
+    }
 
     const userContent = params.attachmentBlock
       ? `${params.question || '(csatolmányok)'}${params.attachmentBlock}`.trim()

@@ -89,12 +89,15 @@ type RuntimeHintsDraft = {
   wallClockSec: string
   toolCalls: string
   preferredMode: '' | 'chat' | 'task'
+  /** #199 — csatolható-e fájl a skillhez kötött feladathoz. Alapérték: igen. */
+  allowAttachments: boolean
 }
 
 const EMPTY_RUNTIME_HINTS: RuntimeHintsDraft = {
   wallClockSec: '',
   toolCalls: '',
   preferredMode: '',
+  allowAttachments: true,
 }
 
 function runtimeHintsToDraft(hints: SkillRuntimeHints | undefined): RuntimeHintsDraft {
@@ -102,6 +105,8 @@ function runtimeHintsToDraft(hints: SkillRuntimeHints | undefined): RuntimeHints
     wallClockSec: hints?.maxWallClockMs != null ? String(Math.round(hints.maxWallClockMs / 1000)) : '',
     toolCalls: hints?.maxToolCalls != null ? String(hints.maxToolCalls) : '',
     preferredMode: hints?.preferredMode ?? '',
+    // Hiányzó érték = engedett (visszafelé kompatibilitás a meglévő skillekkel).
+    allowAttachments: hints?.allowAttachments !== false,
   }
 }
 
@@ -112,6 +117,7 @@ function draftToRuntimeHints(draft: RuntimeHintsDraft): SkillRuntimeHints | unde
     maxWallClockMs: draft.wallClockSec.trim() && Number.isFinite(sec) ? sec * 1000 : null,
     maxToolCalls: draft.toolCalls.trim() && Number.isFinite(calls) ? calls : null,
     preferredMode: draft.preferredMode === '' ? null : draft.preferredMode,
+    allowAttachments: draft.allowAttachments ? null : false,
   })
 }
 
@@ -123,6 +129,7 @@ function describeRuntimeHints(hints: SkillRuntimeHints | undefined): string | nu
   if (hints.maxToolCalls != null) parts.push(`${hints.maxToolCalls} eszközhívás`)
   if (hints.preferredMode === 'task') parts.push('a boardon fut')
   else if (hints.preferredMode === 'chat') parts.push('chatben fut')
+  if (hints.allowAttachments === false) parts.push('nem csatolható fájl')
   return parts.length > 0 ? parts.join(' · ') : null
 }
 
@@ -220,6 +227,23 @@ function SkillRuntimeHintsFields({
           folytatódik — a felhasználó a chatben megkapja a ticket hivatkozását.
         </p>
       )}
+      {/* #199 — csatolmány-szabály. Bináris: a skill vagy fogad fájlt, vagy nem. */}
+      <label className="mt-3 flex items-start gap-2 text-[11px] text-ink-faint">
+        <input
+          type="checkbox"
+          checked={draft.allowAttachments}
+          onChange={(e) => onChange({ ...draft, allowAttachments: e.target.checked })}
+          className="mt-0.5"
+        />
+        <span>
+          <span className="text-ink-soft">Fájl csatolható a feladathoz</span>
+          <span className="mt-0.5 block">
+            Kikapcsolva a feladat-indító felületen nem jelenik meg fájlfeltöltés, és a
+            közvetlen feltöltést a szerver is elutasítja. Akkor kapcsold ki, ha a skill
+            bemenete kizárólag a paraméterekből jön.
+          </span>
+        </span>
+      </label>
     </div>
   )
 }

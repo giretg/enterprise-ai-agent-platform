@@ -105,6 +105,7 @@ function agentRow(): Agent {
     systemRole: null,
     allowSensitiveExternalModel: false,
     hiddenFromOperators: false,
+    taskOnly: false,
     inboundRestricted: false,
     outboundRestricted: false,
     selfEvolutionProfile: null,

@@ -117,6 +117,7 @@ jobs:
           npm run test:turn-continuation
           npm run test:agent-ask-deadline
           npm run test:skill-runtime-followup
+          npm run test:agent-task-only
           npm run test:debug-log-export
           npm run test:prompt-assembler
           npm run test:prompt-cache

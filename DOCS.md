@@ -484,6 +484,60 @@ gráf elutasította volna — auditál, nem blokkol), valamint
 `agent_access.grant.create` / `.revoke` és `agent_access.restriction.update`.
 A grant-írás és az audit-esemény ugyanabban a tranzakcióban keletkezik.
 
+### Feladatkör-korlátozás (taskOnly agent)
+
+**Fájlok:** `prisma/schema.prisma` (`Agent.taskOnly`),
+`src/lib/task-only-ticket.ts` (cím- és feladatszöveg-generálás + bemenet-validáció),
+`src/components/agents/task-only-form.tsx` (admin kapcsoló),
+`src/components/agents/agent-task-button.tsx` (feladat-gomb + indító modál)
+
+Ha egy agent egyetlen jól körülhatárolt célt szolgál (pl. számlafeldolgozás,
+tulajdoni lap egyeztetés), a tenant admin bekapcsolhatja rajta a
+**Feladatkör-korlátozást**. Ilyenkor az agent felületéről eltűnik a chat, és
+egyetlen gomb marad, ami egy előre kiválasztott, az agenten engedélyezett
+**skillhez kötött feladatot** indít.
+
+**Mit egyszerűsít:**
+
+- nincs chat-ablak és nincs szabad szöveges feladatleírás;
+- nincs cím-mező — a ticket címe szerveroldalon generált:
+  `<skill neve> — YYYY-MM-DD HH:mm`;
+- a bemenet legfeljebb a skill deklarált **paraméterei** (v1-ben mind opcionális)
+  és — ha a skill engedi — a **csatolt fájlok**;
+- a gomb felirata az egyetlen engedélyezett, futtatható skill neve; több skillnél
+  semleges „Feladat"; futtatható skill hiányában letiltott, magyarázó tooltippel.
+
+**Mit NEM garantál — ez UI-egyszerűsítés, nem jogosultsági korlát:**
+
+- az agent **képességei változatlanok**: amit egyébként megtehet, azt korlátozott
+  módban is megteheti; a Level-0 skill-index és a `load_skill` nem szűkül;
+- a nem-emberi belépési pontok **nyitva maradnak**: `agent_ask`, csatorna-integrációk
+  (pl. Telegram), agent API-kulcs, monitor-eszkaláció;
+- a **ticket-kommentek** változatlanul működnek — a cél a felület egyszerűsítése,
+  nem a kommunikáció ellehetetlenítése;
+- a bekapcsolás pillanatában **futó chat-forduló végigfut**, és az eredménye
+  megjelenik; a meglévő beszélgetések olvashatók maradnak. Csak ÚJ forduló nem
+  indítható (`POST /api/v1/agent-chat/stream` → `409 agent_task_only`).
+
+Ha valamit ténylegesen tiltani kell, azt a capability-grantoknál vagy a
+hozzáférési gráfban kell elvenni — erre a kapcsolóra compliance-garanciaként
+hivatkozni hiba.
+
+**Csatolmány-szabály (`SkillContent.runtimeHints.allowAttachments`):** bináris
+skill-tulajdonság; hiányzó érték = **engedett** (a meglévő skillek viselkedése
+változatlan). `SKILL.md` frontmatterből `allow-attachments: false` alakban jön, a
+katalógus szerkesztőjében pipával állítható. Több skill esetén a **legszigorúbb
+nyer**: egyetlen tiltó skill is letiltja a csatolást. A kapu **kemény** mindenütt,
+ahol a skillt explicit kiválasztják (korlátozott feladat + normál board-feladat) —
+és mivel a feltöltés külön hívás, a
+`POST /api/v1/tickets/[id]/workspace/files` végpont is ellenőriz (403), különben a
+tiltás egy közvetlen POST-tal megkerülhető lenne. Chatben a `/skill` parancsnál
+csak figyelmeztetés jelenik meg, a küldés nem törik meg.
+
+**Jogosultság és audit:** a kapcsolót kizárólag **tenant admin** állíthatja
+(`updateAgentTaskOnly`); minden váltás `agent.task_only` audit-eseményt ír a
+korábbi és az új értékkel.
+
 ### Middleware
 
 **Fájl:** `src/middleware.ts`

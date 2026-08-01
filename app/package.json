@@ -128,6 +128,7 @@
     "test:turn-continuation": "tsx scripts/turn-continuation.test.ts",
     "test:agent-ask-deadline": "tsx scripts/agent-ask-deadline.test.ts",
     "test:skill-runtime-followup": "tsx scripts/skill-runtime-hints-followup.test.ts",
+    "test:agent-task-only": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/agent-task-only.test.ts",
     "test:agent-turn-cancel": "tsx scripts/agent-turn-cancel.test.ts",
     "test:agent-turn-access": "tsx scripts/agent-turn-access.test.ts",
     "test:pdf-read-policy": "tsx scripts/pdf-read-policy.test.ts",

@@ -3,6 +3,7 @@ import { services } from '@/domain'
 import { agentTurnRunner, type AgentChatStreamEvent } from '@/domain/agent/agent-turn-runner'
 import { requireTenantApiUser } from '@/lib/api-tenant-auth'
 import { startSseCommentHeartbeat } from '@/lib/sse-comment-heartbeat'
+import { repositories } from '@/repositories/postgres'
 
 // SSE: dinamikus, Node runtime, ne bufferelődjön / cache-elődjön a stream.
 export const dynamic = 'force-dynamic'
@@ -49,6 +50,24 @@ export async function POST(request: Request) {
   }
   if (typeof content !== 'string') {
     return new Response('content is required', { status: 400 })
+  }
+
+  // Feladatkör-korlátozás (#199): korlátozott agentnél a WEBES chat-felületről nem
+  // indítható ÚJ forduló. Ez UI-egyszerűsítés, nem jogosultsági korlát: a már futó
+  // forduló végigfut (`/turns/[turnId]/stream`, `/cancel`), a meglévő beszélgetések
+  // olvashatók, és a nem-emberi belépési pontok (agent_ask, csatorna-integrációk,
+  // agent API-kulcs, monitor-eszkaláció) érintetlenül maradnak — ezért a kapu itt,
+  // a felhasználói kérés-úton áll, nem a chat-runtime-ban.
+  const targetAgent = await repositories.agents.findById(agentId, user.activeTenantId)
+  if (targetAgent?.taskOnly) {
+    return Response.json(
+      {
+        error: 'agent_task_only',
+        message:
+          'Ez az agent korlátozott feladatkörű — feladatot az agent oldalán lévő feladat-gombbal indíthatsz.',
+      },
+      { status: 409 },
+    )
   }
 
   // issue #97 — jóváhagyás utáni FOLYTATÁS. A gomb megnyomása eddig lefuttatta a

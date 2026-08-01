@@ -2,20 +2,16 @@
 
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import {
-  type RefObject,
-  useEffect,
-  useId,
-  useMemo,
-  useRef,
-  useState,
-  useTransition,
-} from 'react'
+import { useEffect, useMemo, useRef, useState, useTransition } from 'react'
 import { createBoardTicket } from '@/app/actions/platform'
 import { getAgentSkillsAction } from '@/app/actions/skills'
 import { AgentAssigneeSelect } from '@/components/agents/agent-assignee-select'
 import { WorkspaceFileDropzone } from '@/components/workspace/workspace-file-dropzone'
 import { useTicketDispatch } from '@/components/tickets/ticket-dispatch-client'
+import {
+  TicketDispatchPromptModal,
+  type DispatchPrompt,
+} from '@/components/tickets/ticket-dispatch-prompt-modal'
 import { Badge, Card } from '@/components/ui/shell'
 import { personaFor } from '@/lib/agent-persona'
 import { uploadTicketWorkspaceFiles } from '@/lib/ticket-workspace-files-client'
@@ -41,115 +37,12 @@ type SkillOption = {
   skillVersionId: string
   name: string
   description: string
+  /** #199 — csatolható-e fájl, ha ez a skill van kiválasztva. */
+  allowAttachments: boolean
 }
 
 function makePendingFile(file: File): PendingFile {
   return { id: `${file.name}-${file.size}-${file.lastModified}`, file }
-}
-
-function PlayIcon({ className }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden>
-      <path d="M8 5v14l11-7z" />
-    </svg>
-  )
-}
-
-type DispatchPrompt = {
-  ticketId: string
-  title: string
-} | null
-
-function TicketDispatchPromptModal({
-  prompt,
-  pending,
-  message,
-  returnFocusRef,
-  onStart,
-  onLater,
-}: {
-  prompt: NonNullable<DispatchPrompt>
-  pending: boolean
-  message: string | null
-  returnFocusRef: RefObject<HTMLButtonElement | null>
-  onStart: () => void
-  onLater: () => void
-}) {
-  const titleId = useId()
-  const descriptionId = useId()
-  const laterButtonRef = useRef<HTMLButtonElement>(null)
-  const startButtonRef = useRef<HTMLButtonElement>(null)
-
-  useEffect(() => {
-    const returnFocusTarget = returnFocusRef.current
-    startButtonRef.current?.focus()
-    return () => returnFocusTarget?.focus()
-  }, [returnFocusRef])
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4"
-      onClick={() => !pending && onLater()}
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby={titleId}
-        aria-describedby={descriptionId}
-        className="atelier-card w-full max-w-md p-5"
-        onClick={(e) => e.stopPropagation()}
-        onKeyDown={(event) => {
-          if (event.key === 'Escape' && !pending) {
-            event.preventDefault()
-            onLater()
-            return
-          }
-          if (event.key !== 'Tab') return
-          if (event.shiftKey && document.activeElement === laterButtonRef.current) {
-            event.preventDefault()
-            startButtonRef.current?.focus()
-          } else if (!event.shiftKey && document.activeElement === startButtonRef.current) {
-            event.preventDefault()
-            laterButtonRef.current?.focus()
-          }
-        }}
-      >
-        <h3 id={titleId} className="font-display text-lg font-semibold">
-          Feladat létrehozva
-        </h3>
-        <p id={descriptionId} className="mt-2 text-sm text-ink-soft">
-          <span className="font-medium text-ink">«{prompt.title}»</span> — kezdődjön a feladat
-          feldolgozása?
-        </p>
-        {message && (
-          <p className="mt-3 rounded-lg border border-honey/40 bg-honey/10 px-3 py-2 text-sm text-honey">
-            {message}
-          </p>
-        )}
-        <div className="mt-5 flex flex-wrap justify-end gap-2">
-          <button
-            ref={laterButtonRef}
-            type="button"
-            disabled={pending}
-            onClick={onLater}
-            className="rounded-lg border border-line px-4 py-2 text-sm text-ink-soft transition hover:bg-night-2 disabled:opacity-50"
-          >
-            Később
-          </button>
-          <button
-            ref={startButtonRef}
-            type="button"
-            disabled={pending}
-            onClick={onStart}
-            className="inline-flex items-center gap-2 rounded-lg bg-accent px-4 py-2 text-sm font-medium text-white transition hover:bg-accent/90 disabled:opacity-50"
-          >
-            <PlayIcon className="h-4 w-4" />
-            {pending ? 'Indítás…' : 'Indítás'}
-          </button>
-        </div>
-      </div>
-    </div>
-  )
 }
 
 export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: AssigneeOptions }) {
@@ -211,6 +104,7 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
           skillVersionId: row.skillVersionId,
           name: row.name,
           description: row.description,
+          allowAttachments: row.allowAttachments,
         })
       }
       setSkillsCache({ agentId, skills: [...enabledBySkill.values()] })
@@ -230,12 +124,26 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
     setPendingFiles([])
   }
 
+  // #199 — csatolmány-kapu az explicit skill-választás mellett. A szerver
+  // (createBoardTicket + a workspace-feltöltő endpoint) úgyis elutasítaná a
+  // feltöltést; itt azért tüntetjük el a dropzone-t, hogy a felhasználó ne
+  // töltsön fel előbb fájlt, és csak utána kapjon hibát.
+  const attachmentsBlockedBy = agentSkills
+    .filter((skill) => selectedSkillIds.includes(skill.skillVersionId) && !skill.allowAttachments)
+    .map((skill) => skill.name)
+  const attachmentsAllowed = attachmentsBlockedBy.length === 0
+
   const toggleSkill = (skillVersionId: string) => {
-    setSelectedSkillIds((prev) =>
-      prev.includes(skillVersionId)
-        ? prev.filter((id) => id !== skillVersionId)
-        : [...prev, skillVersionId],
+    const next = selectedSkillIds.includes(skillVersionId)
+      ? selectedSkillIds.filter((id) => id !== skillVersionId)
+      : [...selectedSkillIds, skillVersionId]
+    setSelectedSkillIds(next)
+    const blocks = agentSkills.some(
+      (skill) => next.includes(skill.skillVersionId) && !skill.allowAttachments,
     )
+    // A már kiválasztott fájlokat eldobjuk, különben a felhasználó azt hinné,
+    // hogy elmentek — a feltöltésük szerveroldalon 403-mal bukna.
+    if (blocks) setPendingFiles([])
   }
 
   const addPendingFile = (file: File) => {
@@ -553,18 +461,27 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
           <p className="text-sm font-medium text-ink-soft">
             Fájlok <span className="font-normal text-ink-faint">(opcionális)</span>
           </p>
-          <p className="mt-1 text-xs text-ink-faint">
-            A csatolt fájlok a feladat munkaterületére kerülnek — az AI munkatárs a feldolgozás során
-            eléri őket (file_list, file_read, xlsx_read_sheet, pptx_create, stb.).
-          </p>
-          <div className="mt-2">
-            <WorkspaceFileDropzone
-              disabled={pending}
-              uploading={pending}
-              onFileSelected={addPendingFile}
-            />
-          </div>
-          {pendingFiles.length > 0 ? (
+          {attachmentsAllowed ? (
+            <>
+              <p className="mt-1 text-xs text-ink-faint">
+                A csatolt fájlok a feladat munkaterületére kerülnek — az AI munkatárs a feldolgozás során
+                eléri őket (file_list, file_read, xlsx_read_sheet, pptx_create, stb.).
+              </p>
+              <div className="mt-2">
+                <WorkspaceFileDropzone
+                  disabled={pending}
+                  uploading={pending}
+                  onFileSelected={addPendingFile}
+                />
+              </div>
+            </>
+          ) : (
+            <p className="mt-2 rounded-lg border border-honey/40 bg-honey/10 px-3 py-2 text-sm text-honey">
+              A kiválasztott skill ({attachmentsBlockedBy.join(', ')}) nem enged fájlcsatolást — ehhez
+              a feladathoz nem tölthetsz fel fájlt.
+            </p>
+          )}
+          {attachmentsAllowed && pendingFiles.length > 0 ? (
             <ul className="mt-3 divide-y divide-line rounded-lg border border-line">
               {pendingFiles.map((item) => (
                 <li key={item.id} className="flex items-center justify-between gap-3 px-3 py-2">
@@ -582,9 +499,9 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
                 </li>
               ))}
             </ul>
-          ) : (
+          ) : attachmentsAllowed ? (
             <p className="mt-2 text-sm text-ink-faint">Még nincs csatolt fájl.</p>
-          )}
+          ) : null}
         </div>
 
         {message && (
