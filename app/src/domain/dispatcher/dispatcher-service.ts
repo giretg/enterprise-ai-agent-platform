@@ -16,7 +16,6 @@ import {
   ADVANCEABLE_PROCESS_STATUSES,
   TERMINAL_PROCESS_STATUSES,
 } from '@/lib/playbook-v2/process-status'
-import { parseAgentModelConfig } from '@/lib/harness-model-config'
 import { isRunAsAuthorized, readRunAsUserId } from '@/lib/run-as-payload'
 import { wikiSearchQuery } from '@/lib/wiki-ticket-payload'
 import { logger, dispatchTotal, dispatchLagMs } from '@/lib/observability'
@@ -118,7 +117,6 @@ export type HarnessLauncher = {
     agentVersion?: number
     actingUserId?: string
     question?: string
-    gooseModel?: string
     harnessAgentApiKey?: string
     ephemeralKeyId?: string
   }): Promise<{ jobId: string; executionName?: string }>
@@ -235,24 +233,6 @@ export class DispatcherService {
     private tenants?: TenantRepository,
   ) {}
 
-  private async resolveHarnessGooseModel(
-    agentId: string,
-    agentVersion?: number,
-  ): Promise<string | undefined> {
-    if (!this.agents) return undefined
-
-    if (agentVersion != null) {
-      const snapshot = await this.agents.findVersionSnapshot(agentId, agentVersion)
-      if (snapshot?.model) {
-        return parseAgentModelConfig(snapshot.model).model
-      }
-    }
-
-    const agent = await this.agents.findById(agentId)
-    if (!agent) return undefined
-    return parseAgentModelConfig(agent.modelConfig).model
-  }
-
   private get launcher(): HarnessLauncher {
     return typeof this.resolveLauncher === 'function' ? this.resolveLauncher() : this.resolveLauncher
   }
@@ -273,8 +253,17 @@ export class DispatcherService {
     return results
   }
 
-  async dispatchTicket(ticketId: string, now = new Date()): Promise<DispatchOutcome> {
-    if (!(await this.isDispatchEnabled(this.launcher.mode))) return { ticketId, status: 'paused' }
+  async dispatchTicket(
+    ticketId: string,
+    now = new Date(),
+    options?: { bypassEnabledCheck?: boolean },
+  ): Promise<DispatchOutcome> {
+    if (
+      !options?.bypassEnabledCheck &&
+      !(await this.isDispatchEnabled(this.launcher.mode))
+    ) {
+      return { ticketId, status: 'paused' }
+    }
     const ticket = await this.tickets.findById(ticketId)
     if (!ticket) return { ticketId, status: 'skipped', reason: 'no_agent' }
     if (ticket.state !== 'ready') return { ticketId, status: 'skipped', reason: 'not_ready' }
@@ -894,13 +883,10 @@ export class DispatcherService {
 
     let started: Ticket | null = null
     let launcher: HarnessLauncher | null = null
-    let gooseModel: string | undefined
     let job: { jobId: string; executionName?: string }
     let ephemeralKey: { id: string; rawKey: string; scopes: string[] } | null = null
     try {
       launcher = this.launcher
-      gooseModel = await this.resolveHarnessGooseModel(ticket.agentId, agentVersion)
-
       if (launcher.mode !== 'local-wiki') {
         if (!this.agents?.issueEphemeralKey) {
           throw new Error(
@@ -938,7 +924,6 @@ export class DispatcherService {
         agentVersion,
         actingUserId,
         question,
-        gooseModel,
         harnessAgentApiKey: ephemeralKey?.rawKey,
         ephemeralKeyId: ephemeralKey?.id,
       })

@@ -1,4 +1,5 @@
 import type { HarnessLauncher } from './dispatcher-service'
+import { parseHarnessMode, type HarnessMode } from '@/harness/harness-mode'
 import {
   buildHarnessContainerEnv,
   harnessEnvToCloudRunOverrides,
@@ -13,14 +14,12 @@ export type CloudRunJobLauncherConfig = {
   callbackUrl?: string
   callbackToken?: string
   commandJson?: string
-  harnessMode?: string
-  recipePath?: string
+  harnessMode?: HarnessMode
   modelGatewayUrl?: string
   toolBrokerMcpUrl?: string
   platformApiUrl?: string
   harnessAgentApiKey?: string
   egressEnforce?: boolean
-  stubBrokerFallback?: boolean
 }
 
 function requireConfigValue(name: string, value: string | undefined): string {
@@ -37,14 +36,12 @@ export function cloudRunConfigFromEnv(): CloudRunJobLauncherConfig {
     callbackUrl: process.env.HARNESS_CALLBACK_URL,
     callbackToken: process.env.HARNESS_CALLBACK_TOKEN,
     commandJson: process.env.HARNESS_COMMAND_JSON,
-    harnessMode: process.env.HARNESS_MODE,
-    recipePath: process.env.HARNESS_RECIPE_PATH,
+    harnessMode: parseHarnessMode(process.env.HARNESS_MODE),
     modelGatewayUrl: process.env.MODEL_GATEWAY_URL,
     toolBrokerMcpUrl: process.env.TOOL_BROKER_MCP_URL,
     platformApiUrl: process.env.PLATFORM_API_URL,
     harnessAgentApiKey: process.env.HARNESS_AGENT_API_KEY,
     egressEnforce: process.env.HARNESS_EGRESS_ENFORCE === 'true',
-    stubBrokerFallback: process.env.HARNESS_STUB_BROKER_FALLBACK === '1',
   }
 }
 
@@ -60,7 +57,6 @@ export class CloudRunJobHarnessLauncher implements HarnessLauncher {
     agentVersion?: number
     actingUserId?: string
     question?: string
-    gooseModel?: string
     harnessAgentApiKey?: string
     ephemeralKeyId?: string
   }): Promise<{ jobId: string; executionName?: string }> {
@@ -76,7 +72,6 @@ export class CloudRunJobHarnessLauncher implements HarnessLauncher {
       callbackToken: this.config.callbackToken,
       commandJson: this.config.commandJson,
       harnessMode: this.config.harnessMode,
-      recipePath: this.config.recipePath,
       modelGatewayUrl: this.config.modelGatewayUrl,
       toolBrokerMcpUrl: this.config.toolBrokerMcpUrl,
       platformApiUrl: this.config.platformApiUrl,
@@ -92,8 +87,6 @@ export class CloudRunJobHarnessLauncher implements HarnessLauncher {
           return fallback
         })(),
       egressEnforce: this.config.egressEnforce,
-      stubBrokerFallback:
-        this.config.stubBrokerFallback ?? this.config.harnessMode === 'goose',
     })
 
     const response = await fetch(`${endpoint}:run`, {

@@ -23,7 +23,7 @@ const TYPE_LABELS: Record<TicketType, string> = {
 
 const ACTOR_LABELS: Record<TransitionAllowedActor, string> = {
   system: 'Rendszer',
-  agent: 'Agent',
+  agent: 'AI munkatárs',
   approver: 'Jóváhagyó',
   operator: 'Operátor',
   admin: 'Admin',

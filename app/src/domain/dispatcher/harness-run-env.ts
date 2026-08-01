@@ -1,3 +1,5 @@
+import type { HarnessMode } from '@/harness/harness-mode'
+
 export type HarnessRunParams = {
   ticketId: string
   agentId: string
@@ -5,23 +7,19 @@ export type HarnessRunParams = {
   agentVersion?: number
   actingUserId?: string
   question?: string
-  /** Az agent snapshot / aktuális modelConfig.model — Goose GOOSE_MODEL env. */
-  gooseModel?: string
 }
 
 export type HarnessRunEnvConfig = {
   callbackUrl?: string
   callbackToken?: string
   commandJson?: string
-  harnessMode?: string
-  recipePath?: string
+  harnessMode?: HarnessMode
   modelGatewayUrl?: string
   toolBrokerMcpUrl?: string
   platformApiUrl?: string
   harnessAgentApiKey?: string
   egressEnforce?: boolean
   egressProbeUrl?: string
-  stubBrokerFallback?: boolean
 }
 
 function pushEnv(
@@ -53,14 +51,12 @@ export function buildHarnessContainerEnv(
   const callbackUrl = config.callbackUrl?.trim() || platformApiUrl
   const modelGatewayUrl = resolveModelGatewayUrl(config.modelGatewayUrl, platformApiUrl)
   const harnessMode = config.harnessMode?.trim() || 'wiki'
-  const recipePath = config.recipePath?.trim() || '/recipes/wiki-answer.yaml'
 
   const env: Array<{ name: string; value: string }> = [
     { name: 'TICKET_ID', value: input.ticketId },
     { name: 'AGENT_ID', value: input.agentId },
     { name: 'DISPATCH_LOCK_TOKEN', value: input.lockToken },
     { name: 'HARNESS_MODE', value: harnessMode },
-    { name: 'HARNESS_RECIPE_PATH', value: recipePath },
   ]
 
   if (input.agentVersion !== undefined) {
@@ -71,7 +67,6 @@ export function buildHarnessContainerEnv(
     env.push({ name: 'HARNESS_QUESTION', value: input.question.trim() })
   }
 
-  pushEnv(env, 'GOOSE_MODEL', input.gooseModel)
   pushEnv(env, 'ACTING_USER_ID', input.actingUserId)
   pushEnv(env, 'HARNESS_CALLBACK_URL', callbackUrl)
   pushEnv(env, 'HARNESS_CALLBACK_TOKEN', config.callbackToken)
@@ -84,10 +79,6 @@ export function buildHarnessContainerEnv(
   if (config.egressEnforce) {
     env.push({ name: 'HARNESS_EGRESS_ENFORCE', value: 'true' })
     pushEnv(env, 'HARNESS_EGRESS_PROBE_URL', config.egressProbeUrl ?? 'https://example.com')
-  }
-
-  if (config.stubBrokerFallback) {
-    env.push({ name: 'HARNESS_STUB_BROKER_FALLBACK', value: '1' })
   }
 
   return env

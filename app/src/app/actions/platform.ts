@@ -327,7 +327,10 @@ export async function listBoardAssignees() {
         .map((agent) => ({
           id: agent.id,
           name: agent.name,
+          avatarUrl: agent.avatarUrl,
           personaNickname: agent.personaNickname,
+          personaTrait: agent.personaTrait,
+          status: agent.status,
         })),
       users: memberships.map((membership) => ({
         id: membership.user.id,
@@ -343,12 +346,15 @@ export async function listBoardAssignees() {
 async function runAgentTicketDispatch(
   ticketId: string,
   agentId: string,
+  options?: { bypassDispatcherEnabledCheck?: boolean },
 ): Promise<{ warning?: string; error?: string }> {
   // Azonnali dispatch minden launcher módban (§5.7): a launch() docker-local,
   // cloud-run-job ÉS local-wiki esetén is fire-and-forget (a futás a háttérben
   // folytatódik) — a UI create / pontosítás-visszaadás nem várja meg a végét.
   try {
-    const dispatchResult = await services.dispatcher.dispatchTicket(ticketId)
+    const dispatchResult = await services.dispatcher.dispatchTicket(ticketId, new Date(), {
+      bypassEnabledCheck: options?.bypassDispatcherEnabledCheck,
+    })
     if (dispatchResult.status === 'budget_blocked') {
       if (isTicketCallCapReason(dispatchResult.reason)) {
         const usage = await repositories.modelCalls.getUsageForTicket(ticketId)
@@ -601,8 +607,26 @@ export async function dispatchBoardTicket(input: { ticketId: string }) {
     }
     if (ticket.state !== 'ready') return fail('Ticket is not in ready state')
 
-    const dispatchOutcome = await runAgentTicketDispatch(ticketId, ticket.assigneeId)
+    const dispatchOutcome = await runAgentTicketDispatch(ticketId, ticket.assigneeId, {
+      bypassDispatcherEnabledCheck: true,
+    })
     if (dispatchOutcome.error) return fail(dispatchOutcome.error)
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.user.id,
+      agentVersion: null,
+      action: 'dispatch.manual',
+      targetType: 'ticket',
+      targetId: ticketId,
+      modelUsed: null,
+      inputRef: ticket.assigneeId,
+      outputRef: dispatchOutcome.warning ? 'warning' : 'started',
+      policyDecision: 'allowed',
+      metadata: { warning: dispatchOutcome.warning ?? null },
+      tenantId: ticket.tenantId,
+      ticketId,
+    })
 
     const updated = await repositories.tickets.findById(ticketId)
     return ok({ ticket: updated ?? ticket, warning: dispatchOutcome.warning })

@@ -125,11 +125,11 @@ npm run harness:cloud-run-smoke
 
 **VPC egress (S4):** a deploy script `--vpc-connector` + `--vpc-egress=all-traffic` flaget ad át. A deny-by-default igazolásához a connector subnetjén firewall szabály kell: csak a platform/Gateway/Broker célok engedélyezettek, minden más outbound tiltva. A harness induláskor `HARNESS_EGRESS_ENFORCE=true` runtime probe-ot is futtat (`example.com` elérhetetlenség = N4).
 
-Lokális Goose E2E GCP nélkül (dispatcher → Docker harness → callback):
+Lokális Wiki E2E GCP nélkül (dispatcher → Docker harness → platform runtime → callback):
 
 ```bash
 HARNESS_LAUNCHER_MODE=docker-local
-HARNESS_MODE=goose
+HARNESS_MODE=wiki
 HARNESS_CALLBACK_TOKEN=shared-callback-secret   # .env.local-ben is
 HARNESS_CALLBACK_URL=http://host.docker.internal:3000
 docker build -f Dockerfile.harness -t wiki-harness:local .
@@ -152,26 +152,27 @@ Minimális harness image proof:
 docker build -f Dockerfile.harness -t wiki-harness:local .
 ```
 
-Alapértelmezésben a harness csak a completion szerződést bizonyítja. Goose mód:
+Alapértelmezésben a harness provider-független wiki-feldolgozást kér a platformtól:
 
 ```bash
-HARNESS_MODE=goose
-HARNESS_RECIPE_PATH=/recipes/wiki-answer.yaml
+HARNESS_MODE=wiki
+PLATFORM_API_URL=http://host.docker.internal:3000
+HARNESS_AGENT_API_KEY=<efemer vagy smoke agent kulcs>
 ```
 
-A `Dockerfile.harness` a Goose CLI-t és a `harness/recipes/wiki-answer.yaml` recipe-t tartalmazza (§6).
+A `Dockerfile.harness` csak a platform completion entrypointot tartalmazza; saját agent-loopot nem futtat.
 
-### S2/S3 spike — Gateway + MCP bridge
+### Gateway + Tool Broker
 
-A Goose harness a két átjárón keresztül kommunikál:
+A platform runtime a két kormányzott átjárón keresztül kommunikál:
 
 ```bash
-# OpenAI-kompatibilis belső gateway (Goose OPENAI_BASE_URL)
+# OpenAI-kompatibilis belső gateway
 MODEL_GATEWAY_URL=http://127.0.0.1:3000/api/v1/gateway/v1
-# Platform REST — az MCP stdio bridge a Tool Broker felé proxy-z
+# Platform REST
 PLATFORM_API_URL=http://127.0.0.1:3000
 HARNESS_AGENT_API_KEY=<seed .seed-demo-api-key>
-HARNESS_MODE=goose
+HARNESS_MODE=wiki
 ```
 
 ChatGPT OAuth stub (acceptance / lokális dev):
@@ -182,7 +183,7 @@ CHATGPT_OAUTH_PROVIDER_KEY=stub
 # vagy külön HTTP stub: npm run s2:stub
 ```
 
-A harness entrypoint `prepareGooseHarnessEnv()`-vel ephemeral Goose configot ír: developer extension kikapcsolva, `platform_broker` stdio bridge a `kb_search` + `board_write` eszközökhöz.
+A harness entrypoint a platform `/api/v1/harness/tickets/{id}/process` végpontját hívja; a modell- és tool-kormányzás a platform runtime-ban marad.
 
 S4 egress + timeout:
 
@@ -201,9 +202,6 @@ AGENT_TURN_STALE_MS=120000
 docker build -f Dockerfile.harness -t wiki-harness:local .
 npm run harness:docker-smoke
 
-# Teljes Goose run a két átjárón keresztül (Gateway + Tool Broker)
-# Stub provider mellett a harness stub agent loop-ot is futtat (HARNESS_STUB_BROKER_FALLBACK=1).
-npm run harness:docker-goose-smoke
 ```
 
 ## Dispatcher worker
@@ -216,10 +214,11 @@ npm run dispatcher:worker
 
 A `ready` ticket létrehozásakor / `rejected → ready` átmenetkor a repo `pg_notify('dispatch_ticket_ready', ticketId)` hívást küld.
 
-Később ugyanebből az entrypointból indítható explicit Goose parancs is:
+Izolált completion-contract proofhoz explicit parancs is indítható:
 
 ```bash
-HARNESS_COMMAND_JSON='["goose","run","--no-session","--recipe","/recipes/wiki-answer.yaml"]'
+HARNESS_MODE=callback-only
+HARNESS_COMMAND_JSON='["node","scripts/harness-proof.js"]'
 ```
 
 ## Deploy

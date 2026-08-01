@@ -59,17 +59,12 @@ DEPLOY_ARGS=(
   --cpu="${JOB_CPU:-1}"
   --memory="${JOB_MEMORY:-1Gi}"
   --set-env-vars="HARNESS_MODE=${HARNESS_MODE:-wiki}"
-  --set-env-vars="HARNESS_RECIPE_PATH=${HARNESS_RECIPE_PATH:-/recipes/wiki-answer.yaml}"
   --set-env-vars="PLATFORM_API_URL=${PLATFORM_API_URL}"
   --set-env-vars="MODEL_GATEWAY_URL=${MODEL_API_URL:-${PLATFORM_API_URL}/api/v1/gateway/v1}"
   --set-env-vars="HARNESS_CALLBACK_URL=${HARNESS_CALLBACK_URL:-${PLATFORM_API_URL}}"
   --set-env-vars="HARNESS_EGRESS_ENFORCE=${HARNESS_EGRESS_ENFORCE:-true}"
   --set-env-vars="HARNESS_EGRESS_PROBE_URL=${HARNESS_EGRESS_PROBE_URL:-https://example.com}"
 )
-
-if [[ -n "${HARNESS_STUB_BROKER_FALLBACK:-}" ]]; then
-  DEPLOY_ARGS+=(--set-env-vars="HARNESS_STUB_BROKER_FALLBACK=${HARNESS_STUB_BROKER_FALLBACK}")
-fi
 
 if [[ -n "${VPC_CONNECTOR:-}" ]]; then
   DEPLOY_ARGS+=(--vpc-connector="$VPC_CONNECTOR")

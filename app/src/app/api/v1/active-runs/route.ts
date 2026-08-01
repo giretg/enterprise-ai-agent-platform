@@ -2,6 +2,7 @@ import { requireTenantApiUser } from '@/lib/api-tenant-auth'
 import { activeRunFromChatTurn, activeRunFromTicket } from '@/lib/active-runs-map'
 import type { ActiveRunsResponse } from '@/lib/active-runs'
 import { shouldExcludeHiddenAgents } from '@/lib/agent-operator-visibility'
+import { agentDisplayName } from '@/lib/agent-persona'
 import { repositories } from '@/repositories/postgres'
 
 export const dynamic = 'force-dynamic'
@@ -54,7 +55,9 @@ export async function GET() {
           unbounded: true,
         })
       : []
-  const agentNameById = new Map(agents.map((agent) => [agent.id, agent.name]))
+  const agentNameById = new Map(
+    agents.map((agent) => [agent.id, agentDisplayName(agent.name, agent)]),
+  )
   const hidesRestrictedAgents = shouldExcludeHiddenAgents(user.activeTenantRole)
   const visibleAgentIds = new Set(agents.map((agent) => agent.id))
   const canShowRun = (agentId: string | null) =>

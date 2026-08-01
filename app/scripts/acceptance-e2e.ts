@@ -3,8 +3,8 @@
  * Futtatás: npm run test:acceptance (app/)
  */
 import { existsSync } from 'node:fs'
-import { readFile, mkdtemp, rm } from 'fs/promises'
-import { homedir, tmpdir } from 'node:os'
+import { readFile } from 'fs/promises'
+import { homedir } from 'node:os'
 import { config } from 'dotenv'
 import { join, resolve } from 'path'
 import { randomUUID } from 'crypto'
@@ -15,8 +15,6 @@ config({ path: resolve(process.cwd(), '.env') })
 import type { Prisma, UserRole } from '@prisma/client'
 import { services } from '../src/domain'
 import { runHarnessEntrypoint } from '../src/harness/job-entrypoint'
-import { buildGooseCommandJson } from '../src/harness/goose-command'
-import { prepareGooseHarnessEnv } from '../src/harness/goose-config'
 import { handleMcpRequest } from '../src/harness/platform-mcp-bridge'
 import {
   assertEgressDenyByDefault,
@@ -1880,6 +1878,7 @@ async function scenario12_harnessEntrypoint() {
       DISPATCH_LOCK_TOKEN: randomUUID(),
       HARNESS_CALLBACK_URL: 'https://platform.example.test',
       HARNESS_CALLBACK_TOKEN: 'callback-secret',
+      HARNESS_MODE: 'callback-only',
     },
     {
       fetch: successFetch,
@@ -1912,7 +1911,8 @@ async function scenario12_harnessEntrypoint() {
       DISPATCH_LOCK_TOKEN: randomUUID(),
       HARNESS_CALLBACK_URL: 'https://platform.example.test/complete/{ticketId}',
       HARNESS_CALLBACK_TOKEN: 'callback-secret',
-      HARNESS_COMMAND_JSON: '["goose","run","--no-session"]',
+      HARNESS_MODE: 'callback-only',
+      HARNESS_COMMAND_JSON: '["worker","run"]',
     },
     {
       fetch: failureFetch,
@@ -1930,127 +1930,40 @@ async function scenario12_harnessEntrypoint() {
   } else {
     fail('Harness entrypoint parancshiba', JSON.stringify({ failed, calls: failureCalls }))
   }
-}
 
-/** 14. Goose command builder — HARNESS_MODE=goose alapértelmezett parancs */
-async function scenario13_gooseCommandBuilder() {
-  console.log('\n[14] Goose command builder')
-
-  const ticketId = randomUUID()
-  const question = SAMPLE_WIKI_QUESTION
-  const built = buildGooseCommandJson({
-    HARNESS_MODE: 'goose',
-    TICKET_ID: ticketId,
-    AGENT_VERSION: '3',
-    HARNESS_RECIPE_PATH: '/recipes/wiki-answer.yaml',
-    HARNESS_QUESTION: question,
-  })
-
-  if (!built) {
-    fail('Goose command builder', 'null result')
-    return
-  }
-
-  const args = JSON.parse(built) as string[]
-  const expected = [
-    'goose',
-    'run',
-    '--no-session',
-    '--max-turns',
-    '12',
-    '--provider',
-    'openai',
-    '--model',
-    'chatgpt-oauth-default',
-    '--recipe',
-    '/recipes/wiki-answer.yaml',
-    '--params',
-    `ticket_id=${ticketId}`,
-    '--params',
-    'agent_version=3',
-    '--params',
-    `question=${question}`,
-  ]
-
-  if (JSON.stringify(args) === JSON.stringify(expected)) {
-    pass('Goose command JSON a wiki-answer recipe paraméterekkel')
-  } else {
-    fail('Goose command builder', JSON.stringify(args))
-  }
-
-  const geminiBuilt = buildGooseCommandJson({
-    HARNESS_MODE: 'goose',
-    TICKET_ID: ticketId,
-    AGENT_VERSION: '3',
-    HARNESS_RECIPE_PATH: '/recipes/wiki-answer.yaml',
-    HARNESS_QUESTION: question,
-    GOOSE_MODEL: 'gemini-2.5-flash',
-  })
-  const geminiArgs = JSON.parse(geminiBuilt!) as string[]
-  const modelFlagIndex = geminiArgs.indexOf('--model')
-  if (geminiArgs[modelFlagIndex + 1] === 'gemini-2.5-flash') {
-    pass('Goose command builder — GOOSE_MODEL env átadás')
-  } else {
-    fail('Goose command GOOSE_MODEL', JSON.stringify(geminiArgs))
-  }
-
-  const entry = await runHarnessEntrypoint(
+  const unsupportedCalls: Array<{ body: Record<string, unknown> }> = []
+  const unsupported = await runHarnessEntrypoint(
     {
-      TICKET_ID: ticketId,
+      TICKET_ID: randomUUID(),
       AGENT_ID: randomUUID(),
       DISPATCH_LOCK_TOKEN: randomUUID(),
       HARNESS_CALLBACK_URL: 'https://platform.example.test',
       HARNESS_CALLBACK_TOKEN: 'callback-secret',
       HARNESS_MODE: 'goose',
-      AGENT_VERSION: '2',
-      HARNESS_QUESTION: question,
     },
     {
-      fetch: async () => new Response(JSON.stringify({ success: true }), { status: 200 }),
-      spawnCommand: async (command, args) => {
-        if (command !== 'goose' || !args.includes('--recipe') || !args.includes('--provider')) {
-          throw new Error(`unexpected command: ${command} ${args.join(' ')}`)
-        }
-        return { exitCode: 0, signal: null }
+      fetch: async (_input, init) => {
+        unsupportedCalls.push({
+          body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>,
+        })
+        return new Response(JSON.stringify({ success: true }), { status: 200 })
       },
       log: { log() {}, error() {} },
     },
   )
 
-  if (entry.status === 'succeeded') pass('Harness entrypoint HARNESS_MODE=goose success path')
-  else fail('Harness entrypoint goose mode', entry.status)
-
-  const wikiEntry = await runHarnessEntrypoint(
-    {
-      TICKET_ID: ticketId,
-      AGENT_ID: randomUUID(),
-      DISPATCH_LOCK_TOKEN: randomUUID(),
-      HARNESS_CALLBACK_URL: 'https://platform.example.test',
-      HARNESS_CALLBACK_TOKEN: 'callback-secret',
-      HARNESS_MODE: 'wiki',
-      PLATFORM_API_URL: 'https://platform.example.test',
-      HARNESS_AGENT_API_KEY: 'cp_sk_acceptance',
-    },
-    {
-      fetch: async (input) => {
-        const url = String(input)
-        if (url.includes('/process')) {
-          return new Response(JSON.stringify({ success: true, data: { ticketId } }), { status: 200 })
-        }
-        if (url.includes('/complete')) {
-          return new Response(JSON.stringify({ success: true }), { status: 200 })
-        }
-        return new Response('not found', { status: 404 })
-      },
-      spawnCommand: async () => {
-        throw new Error('goose should not run in wiki mode')
-      },
-      log: { log() {}, error() {} },
-    },
-  )
-
-  if (wikiEntry.status === 'succeeded') pass('Harness entrypoint HARNESS_MODE=wiki success path')
-  else fail('Harness entrypoint wiki mode', wikiEntry.status)
+  if (
+    unsupported.status === 'failed' &&
+    unsupportedCalls[0]?.body.status === 'failed' &&
+    String(unsupportedCalls[0]?.body.error ?? '').includes('Unsupported HARNESS_MODE: goose')
+  ) {
+    pass('Harness entrypoint az eltávolított módot failed callbackkel elutasítja')
+  } else {
+    fail(
+      'Harness entrypoint eltávolított mód',
+      JSON.stringify({ unsupported, calls: unsupportedCalls }),
+    )
+  }
 }
 
 /** 16. OpenAI-kompatibilis Gateway API — agent kulcs + ModelGateway */
@@ -2134,45 +2047,6 @@ async function scenario15_gatewayOpenAI(agentId: string) {
     }
   } finally {
     await prisma.ticket.delete({ where: { id: ticket.id } })
-  }
-}
-
-/** 17. Goose harness config — provider→Gateway, extension→Broker bridge */
-async function scenario16_gooseHarnessConfig() {
-  console.log('\n[17] Goose harness config (S2/S3)')
-
-  const ticketId = randomUUID()
-  const tempRoot = await mkdtemp(join(tmpdir(), 'goose-config-acceptance-'))
-
-  try {
-    const env = await prepareGooseHarnessEnv({
-      HARNESS_MODE: 'goose',
-      TICKET_ID: ticketId,
-      AGENT_ID: randomUUID(),
-      DISPATCH_LOCK_TOKEN: randomUUID(),
-      HARNESS_CALLBACK_URL: 'http://127.0.0.1:3000',
-      HARNESS_CALLBACK_TOKEN: 'test',
-      MODEL_GATEWAY_URL: 'http://127.0.0.1:3000/api/v1/gateway/v1',
-      PLATFORM_API_URL: 'http://127.0.0.1:3000',
-      HARNESS_AGENT_API_KEY: 'cp_sk_test',
-      GOOSE_PATH_ROOT: tempRoot,
-      HARNESS_MCP_BRIDGE_SCRIPT: join(process.cwd(), 'scripts/platform-mcp-bridge.ts'),
-    })
-
-    const configYaml = await readFile(join(tempRoot, 'config', 'config.yaml'), 'utf8')
-    if (
-      env.OPENAI_BASE_URL?.includes('/api/v1/gateway/v1') &&
-      configYaml.includes('developer:') &&
-      configYaml.includes('enabled: false') &&
-      configYaml.includes('platform_broker:') &&
-      configYaml.includes('kb_search')
-    ) {
-      pass('Goose harness config — developer off + platform_broker stdio')
-    } else {
-      fail('Goose harness config', configYaml.slice(0, 300))
-    }
-  } finally {
-    await rm(tempRoot, { recursive: true, force: true })
   }
 }
 
@@ -2339,19 +2213,19 @@ async function scenario19_dockerLocalLauncher() {
     agentId: randomUUID(),
     lockToken: randomUUID(),
     agentVersion: 2,
-    harnessMode: 'goose',
+    harnessMode: 'wiki',
     callbackToken: 'acceptance-callback',
     extraEnv: { HARNESS_AGENT_API_KEY: 'cp_sk_acceptance' },
   })
 
   const envPairs = args.filter((_, index, arr) => arr[index - 1] === '-e')
-  const hasGoose = envPairs.some((pair) => pair === 'HARNESS_MODE=goose')
+  const hasWiki = envPairs.some((pair) => pair === 'HARNESS_MODE=wiki')
   const hasGateway = envPairs.some((pair) => pair.includes('/api/v1/gateway/v1'))
   const hasTicket = envPairs.some((pair) => pair === `TICKET_ID=${ticketId}`)
   const hasAgentVersion = envPairs.some((pair) => pair === 'AGENT_VERSION=2')
 
-  if (hasGoose && hasGateway && hasTicket && hasAgentVersion && args[0] === 'run') {
-    pass('Docker harness env — goose + gateway + ticket paraméterek')
+  if (hasWiki && hasGateway && hasTicket && hasAgentVersion && args[0] === 'run') {
+    pass('Docker harness env — wiki + gateway + ticket paraméterek')
   } else {
     fail('Docker harness env', JSON.stringify({ envPairs: envPairs.slice(0, 8) }))
   }
@@ -2468,9 +2342,8 @@ async function scenario23_cloudRunJobLauncher() {
       callbackUrl: 'https://platform.example.com',
       callbackToken: 'secret',
       platformApiUrl: 'https://platform.example.com',
-      harnessMode: 'goose',
+      harnessMode: 'wiki',
       egressEnforce: true,
-      stubBrokerFallback: true,
     },
   )
 
@@ -2485,22 +2358,6 @@ async function scenario23_cloudRunJobLauncher() {
     pass('Cloud Run harness env — gateway + egress + run-as + question')
   } else {
     fail('Cloud Run harness env', [...names].join(','))
-  }
-
-  const envWithModel = buildHarnessContainerEnv(
-    {
-      ticketId,
-      agentId: randomUUID(),
-      lockToken: randomUUID(),
-      gooseModel: 'gemini-2.5-flash',
-    },
-    { platformApiUrl: 'https://platform.example.com' },
-  )
-  const gooseModel = envWithModel.find((entry) => entry.name === 'GOOSE_MODEL')?.value
-  if (gooseModel === 'gemini-2.5-flash') {
-    pass('Cloud Run harness env — GOOSE_MODEL az agent snapshotból')
-  } else {
-    fail('Cloud Run harness GOOSE_MODEL', gooseModel ?? 'missing')
   }
 
   let capturedBody: unknown
@@ -3344,96 +3201,6 @@ async function scenarioN6_capabilityEscalationDenied(agentId: string) {
   )
   if (hasAudit) pass('Audit — training.capability_escalation_denied')
   else fail('N6 audit', agentId)
-}
-
-/** 21. Goose Docker E2E — opcionális, HARNESS_DOCKER_E2E=1 + image + platform */
-async function scenario20_dockerGooseE2E() {
-  console.log('\n[21] Goose Docker E2E (opcionális)')
-
-  if (process.env.HARNESS_DOCKER_E2E !== '1') {
-    skip('Goose Docker E2E', 'HARNESS_DOCKER_E2E=1 nincs beállítva')
-    return
-  }
-
-  const {
-    buildHarnessDockerArgs,
-    dockerImageExists,
-    isPlatformReachable,
-    platformBaseUrl,
-    readSeedApiKey,
-    runDocker,
-  } = await import('./harness-docker-shared')
-
-  const image = process.env.HARNESS_DOCKER_IMAGE ?? 'wiki-harness:local'
-  const platformUrl = platformBaseUrl()
-
-  if (!(await dockerImageExists(image))) {
-    skip('Goose Docker E2E', `image ${image} hiányzik`)
-    return
-  }
-  if (!(await isPlatformReachable(platformUrl))) {
-    skip('Goose Docker E2E', `platform nem elérhető: ${platformUrl}`)
-    return
-  }
-
-  const operator = await getUser('operator')
-  const agent = await getWikiAgent()
-  const ticketId = randomUUID()
-  const lockToken = randomUUID()
-  const agentApiKey = await readSeedApiKey()
-
-  await prisma.ticket.create({
-    data: {
-      id: ticketId,
-      type: 'interaction',
-      title: 'Acceptance: docker goose E2E',
-      state: 'in_progress',
-      assigneeType: 'agent',
-      assigneeId: agent.id,
-      agentId: agent.id,
-      payload: { question: SAMPLE_WIKI_QUESTION, agentVersion: agent.currentVersion },
-      lockToken,
-      lockedAt: new Date(),
-      createdById: operator.id,
-      source: 'test',
-    },
-  })
-
-  try {
-    const exitCode = await runDocker(
-      buildHarnessDockerArgs({
-        ticketId,
-        agentId: agent.id,
-        lockToken,
-        agentVersion: agent.currentVersion,
-        question: SAMPLE_WIKI_QUESTION,
-        harnessMode: 'goose',
-        extraEnv: { HARNESS_AGENT_API_KEY: agentApiKey },
-      }),
-    )
-
-    const ticket = await prisma.ticket.findUnique({ where: { id: ticketId } })
-    const payload = ticket?.payload as { answer?: string } | null
-    const modelCalls = await prisma.modelCall.count({ where: { ticketId } })
-    const toolCalls = await prisma.toolCall.count({ where: { ticketId } })
-
-    if (
-      exitCode === 0 &&
-      !ticket?.lockToken &&
-      modelCalls > 0 &&
-      toolCalls > 0 &&
-      payload?.answer?.trim()
-    ) {
-      pass('Goose Docker E2E — gateway + broker + board_write', `model=${modelCalls} tool=${toolCalls}`)
-    } else {
-      fail(
-        'Goose Docker E2E',
-        JSON.stringify({ exitCode, lock: ticket?.lockToken, modelCalls, toolCalls, answer: payload?.answer }),
-      )
-    }
-  } finally {
-    await prisma.ticket.delete({ where: { id: ticketId } }).catch(() => undefined)
-  }
 }
 
 /** 15. Dispatch NOTIFY — ready ticket pg_notify */
@@ -4712,17 +4479,14 @@ async function main() {
     await scenario10_sandboxAppRegistry(operator.id, agent.id)
     await scenario11_harnessCompletion(operator.id, agent.id)
     await scenario12_harnessEntrypoint()
-    await scenario13_gooseCommandBuilder()
     await scenario14_dispatchNotify(operator.id, agent.id)
     await scenario15_gatewayOpenAI(agent.id)
-    await scenario16_gooseHarnessConfig()
     await scenario17_mcpBridge(agent.id, agent.currentVersion)
     await scenario18_dispatchTimeout(operator.id, agent.id)
     await scenarioN4_egressGuard()
     await scenarioN1_viewerCannotApprove(operator.id, agent.id)
     await scenarioN2_unauthorizedTool(operator.id, agent.id, agent.currentVersion)
     await scenario19_dockerLocalLauncher()
-    await scenario20_dockerGooseE2E()
     await scenario22_dispatcherDockerPath(operator.id, agent.id)
     await scenario23_cloudRunJobLauncher()
     await scenario24_governanceReport()

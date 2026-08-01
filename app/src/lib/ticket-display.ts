@@ -75,7 +75,7 @@ export function formatTicketAssignee(input: {
   if (input.assigneeType === 'agent' && input.assigneeId) {
     return {
       type: 'agent',
-      label: 'AI agent',
+      label: 'AI munkatárs',
       detail: null,
     }
   }
@@ -158,7 +158,7 @@ export function formatTicketCreator(input: {
     }
     return {
       id: creatorAgentId,
-      label: 'AI agent',
+      label: 'AI munkatárs',
       type: 'agent',
     }
   }

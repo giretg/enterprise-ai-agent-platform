@@ -244,7 +244,7 @@ function TicketCommentComposer({
             onClick={() => submit(true)}
             className="rounded-lg bg-honey/20 px-4 py-2 text-sm font-semibold text-honey hover:bg-honey/30 disabled:opacity-50"
           >
-            Pontosítás + visszaadás az agentnek
+            Pontosítás + visszaadás az AI munkatársnak
           </button>
         )}
       </div>
@@ -308,7 +308,7 @@ export function TicketThread({
   )
 
   return (
-    <Card title="Ticket-szál" className="mt-6">
+    <Card title="Feladat-szál" className="mt-6">
       <div className="space-y-4">
         <article className="rounded-lg border border-line bg-night-2/60 p-4">
           <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-ink-faint">
@@ -336,9 +336,9 @@ export function TicketThread({
             >
               <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-ink-faint">
                 <Badge tone={isAgent ? 'success' : isSystem ? 'neutral' : 'warning'}>
-                  {isAgent ? 'AI agent' : isSystem ? 'Rendszer' : 'Ember'}
+                  {isAgent ? 'AI munkatárs' : isSystem ? 'Rendszer' : 'Ember'}
                 </Badge>
-                <span>{comment.authorDisplayName ?? (isAgent ? 'Agent' : isSystem ? 'Rendszer' : 'Felhasználó')}</span>
+                <span>{comment.authorDisplayName ?? (isAgent ? 'AI munkatárs' : isSystem ? 'Rendszer' : 'Felhasználó')}</span>
                 <span>{formatTicketDateTime(comment.createdAt)}</span>
                 {typeof structured.confidence === 'string' && (
                   <Badge tone={structured.confidence === 'high' ? 'success' : 'warning'}>
@@ -365,8 +365,8 @@ export function TicketThread({
         {payloadFallbackAnswer && (
           <article className="rounded-lg border border-sky/25 bg-sky/5 p-4">
             <div className="mb-2 flex flex-wrap items-center gap-2 text-xs text-ink-faint">
-              <Badge tone="success">AI agent</Badge>
-              <span>{ticket.assignee?.label ?? 'Agent'}</span>
+              <Badge tone="success">AI munkatárs</Badge>
+              <span>{ticket.assignee?.label ?? 'AI munkatárs'}</span>
               <span>{formatTicketDateTime(ticket.updatedAt ?? ticket.createdAt)}</span>
               {typeof payloadFallbackStructured.confidence === 'string' && (
                 <Badge

@@ -83,8 +83,8 @@ export type GatewayGuardrail = {
 }
 
 /**
- * A per-ticket guardrail alapértéke. A goose harness `--max-turns` (alap 12) a
- * tényleges konvergencia-szabályozó; ez a plafon a FÖLÖTT ül biztonsági hálóként,
+ * A per-ticket guardrail alapértéke. A runtime saját loop-szabályozása FÖLÖTT
+ * ül biztonsági hálóként,
  * hogy egy elszabaduló agent-loop ne fogyassza a teljes napi budget capet
  * (100 hívás/agent/nap, ld. DispatcherService). Env-ből felülírható.
  */

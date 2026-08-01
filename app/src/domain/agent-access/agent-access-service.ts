@@ -35,6 +35,7 @@ import { AgentAccessError } from './agent-access-errors'
 /** A gráf-döntéshez és a UI-hoz szükséges agent-adatok (nem a teljes `Agent`). */
 export type AgentGraphNode = AgentAccessTargetNode & {
   name: string
+  avatarUrl?: string | null
   personaNickname: string | null
   personaTrait: string | null
   role: string

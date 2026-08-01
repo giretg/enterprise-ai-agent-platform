@@ -59,7 +59,7 @@ function livenessCopy(liveness: TicketRunLiveness): {
     case 'cancelling':
       return {
         label: 'Leállítás folyamatban',
-        detail: 'A stop kérés megérkezett; az agent a következő biztonságos ponton kilép.',
+        detail: 'A stop kérés megérkezett; az AI munkatárs a következő biztonságos ponton kilép.',
         tone: 'honey',
       }
     case 'starting':

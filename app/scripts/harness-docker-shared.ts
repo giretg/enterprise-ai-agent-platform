@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { spawn } from 'node:child_process'
+import type { HarnessMode } from '../src/harness/harness-mode'
 import {
   buildHarnessContainerEnv,
   harnessEnvToDockerArgs,
@@ -12,7 +13,7 @@ export type HarnessDockerRunParams = {
   lockToken: string
   agentVersion?: number
   question?: string
-  harnessMode: 'callback-only' | 'goose' | 'wiki'
+  harnessMode: HarnessMode
   platformHost?: string
   platformPort?: string
   callbackToken?: string
@@ -56,11 +57,9 @@ export function buildHarnessDockerArgs(params: HarnessDockerRunParams): string[]
       callbackUrl: `${platformUrl}/api/v1/harness/tickets/{ticketId}/complete`,
       callbackToken,
       harnessMode: params.harnessMode,
-      recipePath: '/recipes/wiki-answer.yaml',
       platformApiUrl: platformUrl,
       harnessAgentApiKey:
         params.extraEnv?.HARNESS_AGENT_API_KEY ?? process.env.HARNESS_AGENT_API_KEY ?? '',
-      stubBrokerFallback: params.harnessMode === 'goose',
     },
   )
 

@@ -30,20 +30,20 @@ export default async function BoardPage() {
         <h1 className="font-display text-3xl font-semibold">Kanban Board</h1>
         <p className="mt-1 text-ink-soft">
           Húzd a kártyát oszlopok között — a szerver validálja az átmenetet
-          {canCreate ? ', vagy nyiss új ticketet hozzárendeléssel' : ''}
+          {canCreate ? ', vagy nyiss új feladatot hozzárendeléssel' : ''}
         </p>
       </div>
 
       {loadError && (
         <p className="rounded-lg border border-coral/30 bg-coral/10 px-4 py-2 text-sm text-coral">
-          Nem sikerült betölteni a ticketeket: {loadError}
+          Nem sikerült betölteni a feladatokat: {loadError}
         </p>
       )}
 
       {ticketsHasMore && (
         <p className="rounded-lg border border-honey/40 bg-honey/10 px-4 py-2 text-sm text-ink-soft">
-          A tábla a legutóbb frissült ticketek egy oldalát mutatja. Régebbi elemekhez szűrj vagy
-          nyisd meg a ticket listát.
+          A tábla a legutóbb frissült feladatok egy oldalát mutatja. Régebbi elemekhez szűrj vagy
+          nyisd meg a feladat részleteit.
         </p>
       )}
 

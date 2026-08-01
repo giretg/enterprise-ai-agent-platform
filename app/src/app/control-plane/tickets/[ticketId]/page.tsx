@@ -57,7 +57,7 @@ export default async function TicketDetailPage({
 
   return (
     <div className="space-y-6">
-      <TicketMeta ticket={ticket} isAdmin={isAdmin} />
+      <TicketMeta ticket={ticket} isAdmin={isAdmin} canDispatch={canManageRunAs} />
       <TicketThread ticket={ticket} comments={commentsRes.success ? commentsRes.data : []} />
       <TicketRunAsAuthorization ticket={ticket} canManageRunAs={canManageRunAs} />
       {canStartProcess && <TicketProcessStartPanel ticket={ticket} definitions={definitions} />}

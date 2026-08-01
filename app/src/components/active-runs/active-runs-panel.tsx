@@ -12,7 +12,7 @@ function formatStartedAt(iso: string): string {
 }
 
 function kindLabel(kind: ActiveRun['kind']): string {
-  return kind === 'chat_turn' ? 'Chat' : 'Ticket'
+  return kind === 'chat_turn' ? 'Chat' : 'Feladat'
 }
 
 function statusLabel(run: ActiveRun): string | null {
@@ -158,7 +158,7 @@ export function ActiveRunsPanel() {
               <div>
                 <p className="text-sm font-semibold text-ink">Futások</p>
                 <p className="text-[11px] text-ink-faint">
-                  Aktív és frissen lefutott chat-válaszok és ticketek
+                  Aktív és frissen lefutott chat-válaszok és feladatok
                 </p>
               </div>
               <button

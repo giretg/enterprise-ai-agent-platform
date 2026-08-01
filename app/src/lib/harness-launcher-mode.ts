@@ -8,7 +8,7 @@ export function getHarnessLauncherMode(): HarnessLauncherMode {
   throw new Error(`Unsupported HARNESS_LAUNCHER_MODE: ${mode}`)
 }
 
-/** Goose harness külön folyamatban fut — a válasz callback után érkezik. */
+/** A konténeres harness külön folyamatban fut — a válasz callback után érkezik. */
 export function isAsyncHarnessLauncher(mode = getHarnessLauncherMode()): boolean {
   return mode === 'docker-local' || mode === 'cloud-run-job'
 }

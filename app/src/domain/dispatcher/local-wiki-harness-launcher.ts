@@ -49,7 +49,6 @@ export class LocalWikiHarnessLauncher implements HarnessLauncher {
     agentVersion?: number
     actingUserId?: string
     question?: string
-    gooseModel?: string
     harnessAgentApiKey?: string
     ephemeralKeyId?: string
   }): Promise<{ jobId: string; executionName?: string }> {

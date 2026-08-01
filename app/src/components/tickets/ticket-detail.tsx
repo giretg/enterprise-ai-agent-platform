@@ -8,6 +8,7 @@ import { transitionTicket } from '@/app/actions/platform'
 import { exportTicketDebugLog } from '@/app/actions/debug-log'
 import { startProcessFromTicket } from '@/app/actions/process'
 import { authorizeTicketRunAs, revokeTicketRunAs } from '@/app/actions/connector-grants'
+import { useTicketDispatch } from '@/components/tickets/ticket-dispatch-client'
 import { ProposalCard } from '@/components/tickets/proposal-card'
 import { Badge, Card } from '@/components/ui/shell'
 import { ProcessBadge } from '@/components/processes/process-badge'
@@ -121,7 +122,7 @@ export function TicketRunAsAuthorization({
         setError(res.error)
         return
       }
-      setMessage('Run-as felhatalmazás rögzítve — az agent a te fiókoddal járhat el autonóm futásnál.')
+      setMessage('Run-as felhatalmazás rögzítve — az AI munkatárs a te fiókoddal járhat el autonóm futásnál.')
       router.refresh()
     })
   }
@@ -147,7 +148,7 @@ export function TicketRunAsAuthorization({
       {authorized ? (
         <>
           <p className="mb-3 text-sm text-ink-soft">
-            Autonóm futáshoz engedélyezve: a per-user connectorok a te fiókoddal futnak ezen a ticketen.
+            Autonóm futáshoz engedélyezve: a per-user connectorok a te fiókoddal futnak ezen a feladaton.
           </p>
           {canManageRunAs && (
             <button
@@ -163,7 +164,7 @@ export function TicketRunAsAuthorization({
       ) : (
         <>
           <p className="mb-3 text-sm text-ink-soft">
-            Ha az agent autonóm futáskor (pl. ütemezett feladat) a te Gmail-fiókodat használja, itt adhatod meg
+            Ha az AI munkatárs autonóm futáskor (pl. ütemezett feladat) a te Gmail-fiókodat használja, itt adhatod meg
             előre a felhatalmazást. Implicit öröklés nélkül — csak explicit, visszavonható engedély.
           </p>
           <button
@@ -219,7 +220,7 @@ export function TicketProcessStartPanel({
 
   const start = () => {
     if (!selectedDefinition || !selectedTrigger) {
-      setMessage({ tone: 'err', text: 'Válassz ticket-triggerrel rendelkező Folyamatot.' })
+      setMessage({ tone: 'err', text: 'Válassz feladat-triggerrel rendelkező Folyamatot.' })
       return
     }
 
@@ -234,13 +235,13 @@ export function TicketProcessStartPanel({
         setMessage({ tone: 'err', text: res.error })
         return
       }
-      setMessage({ tone: 'ok', text: 'Futás elindítva ticket-triggerből.', processId: res.data.id })
+      setMessage({ tone: 'ok', text: 'Futás elindítva feladat-triggerből.', processId: res.data.id })
       router.refresh()
     })
   }
 
   return (
-    <Card title="Futás indítása ticketből">
+    <Card title="Futás indítása feladatból">
       <div className="space-y-3">
         <label className="block text-sm">
           <span className="mb-1 block text-ink-soft">Folyamat</span>
@@ -267,7 +268,7 @@ export function TicketProcessStartPanel({
 
         {selectedDefinition && selectedDefinition.triggers.length > 1 && (
           <label className="block text-sm">
-            <span className="mb-1 block text-ink-soft">Ticket-trigger</span>
+            <span className="mb-1 block text-ink-soft">Feladat-trigger</span>
             <select
               value={selectedTrigger?.id ?? ''}
               onChange={(event) => {
@@ -389,7 +390,7 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
         if (!res.ok) {
           setError(
             res.status === 404
-              ? 'A ticket már nem fut — lehet, hogy befejeződött.'
+              ? 'A feladat már nem fut — lehet, hogy befejeződött.'
               : 'Leállítás sikertelen.',
           )
         }
@@ -444,7 +445,7 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
                     ? `Most: ${runLiveness.currentStep}`
                     : runLiveness.kind === 'quiet' && runLiveness.currentStep
                       ? `Utolsó lépés: ${runLiveness.currentStep} · ${formatTicketProgressAge(runLiveness.ageMs)}`
-                      : 'Az agent a háttérben dolgozik. A részletes lépések az Eseménytörténetben.'}
+                      : 'Az AI munkatárs a háttérben dolgozik. A részletes lépések az Eseménytörténetben.'}
               </p>
             </div>
             <button
@@ -507,14 +508,14 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
       <p className="mt-3 text-xs text-ink-faint">
         {canApprove &&
           isTrainingTicket &&
-          'Tanítási ticket: a jóváhagyás write-gate-en keresztül frissíti az agent memóriáját, majd done állapotba zár. '}
+          'Tanítási feladat: a jóváhagyás write-gate-en keresztül frissíti az AI munkatárs memóriáját, majd done állapotba zár. '}
         {canApprove &&
           !isTrainingTicket &&
           'Jóváhagyás után a szerver automatikusan: approved → done. '}
         {canReject &&
           !callCapMessage &&
-          'Visszadobás után az «Újra feldolgozás» gombbal indíthatod újra az agentet — a pontosító kérdés bekerül a kontextusba. '}
-        {canRerun && 'Újra feldolgozás után a ticket ready állapotba kerül, és a dispatcher újraindítja az agentet.'}
+          'Visszadobás után az «Újra feldolgozás» gombbal indíthatod újra az AI munkatársat — a pontosító kérdés bekerül a kontextusba. '}
+        {canRerun && 'Újra feldolgozás után a feladat ready állapotba kerül, és a dispatcher újraindítja az AI munkatársat.'}
       </p>
     </Card>
   )
@@ -544,21 +545,39 @@ function contractReviewFromPayload(payload: Record<string, unknown> | null): {
   return null
 }
 
-export function TicketMeta({ ticket, isAdmin = false }: { ticket: TicketView; isAdmin?: boolean }) {
+export function TicketMeta({
+  ticket,
+  isAdmin = false,
+  canDispatch = false,
+}: {
+  ticket: TicketView
+  isAdmin?: boolean
+  canDispatch?: boolean
+}) {
+  const dispatchTicket = useTicketDispatch()
   const payload = ticket.payload as Record<string, unknown> | null
   const proposal = payload?.proposal as Record<string, unknown> | undefined
   const diff = payload?.diff as Record<string, unknown> | undefined
   const assignee = ticket.assignee
   const contractReview = contractReviewFromPayload(payload)
   const [debugLogPending, startDebugLogTransition] = useTransition()
-  const [debugLogMessage, setDebugLogMessage] = useState<string | null>(null)
+  const [dispatchPending, startDispatchTransition] = useTransition()
+  const [headerMessage, setHeaderMessage] = useState<{ tone: 'ok' | 'err'; text: string } | null>(
+    null,
+  )
+
+  const canStartDispatch =
+    canDispatch &&
+    ticket.state === 'ready' &&
+    ticket.assigneeType === 'agent' &&
+    Boolean(ticket.assigneeId)
 
   function handleExportDebugLog() {
     startDebugLogTransition(async () => {
-      setDebugLogMessage(null)
+      setHeaderMessage(null)
       const res = await exportTicketDebugLog({ id: ticket.id })
       if (!res.success) {
-        setDebugLogMessage(res.error)
+        setHeaderMessage({ tone: 'err', text: res.error })
         return
       }
       const blob = new Blob([res.data.content], { type: res.data.mediaType })
@@ -568,9 +587,27 @@ export function TicketMeta({ ticket, isAdmin = false }: { ticket: TicketView; is
       a.download = res.data.filename
       a.click()
       URL.revokeObjectURL(url)
-      setDebugLogMessage(`Debug-log letöltve: ${res.data.filename}`)
+      setHeaderMessage({ tone: 'ok', text: `Debug-log letöltve: ${res.data.filename}` })
     })
   }
+
+  function handleStartDispatch() {
+    startDispatchTransition(async () => {
+      setHeaderMessage(null)
+      const res = await dispatchTicket(ticket.id)
+      if (!res.success) {
+        setHeaderMessage({ tone: 'err', text: res.error })
+        return
+      }
+      setHeaderMessage({
+        tone: res.warning ? 'err' : 'ok',
+        text: res.warning ?? 'Feldolgozás elindítva.',
+      })
+    })
+  }
+
+  const headerButtonClass =
+    'rounded-xl border border-line px-3 py-1.5 text-xs font-semibold transition-colors disabled:opacity-40'
 
   return (
     <>
@@ -587,21 +624,35 @@ export function TicketMeta({ ticket, isAdmin = false }: { ticket: TicketView; is
             status={ticket.process.status}
           />
         )}
+        {canStartDispatch && (
+          <button
+            type="button"
+            onClick={handleStartDispatch}
+            disabled={dispatchPending}
+            className={`${headerButtonClass} text-ink-soft hover:border-accent/50 hover:bg-accent/10 hover:text-accent`}
+            title="Kézi feldolgozás indítása — függetlenül a dispatcher állapotától"
+          >
+            {dispatchPending ? 'Indítás…' : 'Feldolgozás indítása'}
+          </button>
+        )}
         {isAdmin && (
           <button
             type="button"
             onClick={handleExportDebugLog}
             disabled={debugLogPending}
-            className="rounded-xl border border-line px-3 py-1.5 text-xs font-semibold text-ink-soft transition-colors hover:border-honey/50 hover:bg-honey/10 hover:text-honey disabled:opacity-40"
-            title="Teljes ticket-telemetria letöltése elemzéshez (szál, model/tool, audit, kapcsolt beszélgetés)"
+            className={`${headerButtonClass} text-ink-soft hover:border-honey/50 hover:bg-honey/10 hover:text-honey`}
+            title="Teljes feladat-telemetria letöltése elemzéshez (szál, model/tool, audit, kapcsolt beszélgetés)"
           >
             {debugLogPending ? 'Log…' : 'Debug-log'}
           </button>
         )}
       </div>
-      {debugLogMessage && (
-        <p className="mt-2 text-xs text-ink-soft" role="status">
-          {debugLogMessage}
+      {headerMessage && (
+        <p
+          className={`mt-2 text-xs ${headerMessage.tone === 'ok' ? 'text-sage' : 'text-coral'}`}
+          role="status"
+        >
+          {headerMessage.text}
         </p>
       )}
 
@@ -611,7 +662,7 @@ export function TicketMeta({ ticket, isAdmin = false }: { ticket: TicketView; is
           {contractReview.answer && (
             <div className="mt-3 border-t border-ink/10 pt-3">
               <p className="mb-1 text-xs font-semibold uppercase tracking-[0.14em] text-ink-faint">
-                Az agent eredeti válasza
+                Az AI munkatárs eredeti válasza
               </p>
               <p className="whitespace-pre-wrap text-sm leading-relaxed text-ink-soft">
                 {contractReview.answer}
@@ -641,7 +692,7 @@ export function TicketMeta({ ticket, isAdmin = false }: { ticket: TicketView; is
           <span className="text-lg font-semibold text-ink">
             {assignee?.label ?? 'Nincs hozzárendelve'}
           </span>
-          {assignee?.type === 'agent' && <Badge tone="neutral">AI agent</Badge>}
+          {assignee?.type === 'agent' && <Badge tone="neutral">AI munkatárs</Badge>}
           {assignee?.type === 'human' && <Badge tone="warning">Ember</Badge>}
         </div>
         {assignee?.detail && (
@@ -663,11 +714,11 @@ export function TicketMeta({ ticket, isAdmin = false }: { ticket: TicketView; is
         payload?.recipeName != null ||
         payload?.recipeVersion != null ||
         ticket.reproduction?.recipe) && (
-        <Card title="Agent anatómia (reprodukálhatóság)" className="mt-6">
+        <Card title="AI munkatárs anatómia (reprodukálhatóság)" className="mt-6">
           <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm sm:grid-cols-3">
             {(payload?.agentVersion != null || ticket.reproduction?.agentVersion != null) && (
               <>
-                <dt className="text-ink-faint">Agent verzió</dt>
+                <dt className="text-ink-faint">AI munkatárs verzió</dt>
                 <dd className="col-span-1 font-mono text-ink sm:col-span-2">
                   v{String(payload?.agentVersion ?? ticket.reproduction?.agentVersion)}
                 </dd>

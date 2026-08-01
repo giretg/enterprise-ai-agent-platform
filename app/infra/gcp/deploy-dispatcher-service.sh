@@ -93,7 +93,6 @@ DEPLOY_ARGS=(
   --set-env-vars="MODEL_GATEWAY_URL=${MODEL_API_URL:-${PLATFORM_API_URL}/api/v1/gateway/v1}"
   --set-env-vars="HARNESS_CALLBACK_URL=${HARNESS_CALLBACK_URL:-${PLATFORM_API_URL}}"
   --set-env-vars="HARNESS_MODE=${HARNESS_MODE:-wiki}"
-  --set-env-vars="HARNESS_RECIPE_PATH=${HARNESS_RECIPE_PATH:-/recipes/wiki-answer.yaml}"
   --set-env-vars="HARNESS_EGRESS_ENFORCE=${HARNESS_EGRESS_ENFORCE:-true}"
   --set-env-vars="DISPATCHER_POLL_INTERVAL_MS=${DISPATCHER_POLL_INTERVAL_MS:-30000}"
   --set-env-vars="DISPATCHER_BATCH_LIMIT=${DISPATCHER_BATCH_LIMIT:-10}"
@@ -108,17 +107,13 @@ if [[ -n "${HARNESS_CALLBACK_TOKEN_SECRET:-}" ]]; then
   SECRET_ARGS+=("HARNESS_CALLBACK_TOKEN=${HARNESS_CALLBACK_TOKEN_SECRET}:latest")
 fi
 
-# Agent API key — a goose harness ezzel hív vissza a platformra (Tool Broker + Gateway).
+# Agent API key — a harness ezzel hívja a platform feldolgozó API-ját.
 # A launcher process.env.HARNESS_AGENT_API_KEY-t ad tovább a Job-override-ban.
 if [[ -n "${HARNESS_AGENT_API_KEY_SECRET:-}" ]]; then
   SECRET_ARGS+=("HARNESS_AGENT_API_KEY=${HARNESS_AGENT_API_KEY_SECRET}:latest")
 fi
 
 DEPLOY_ARGS+=(--set-secrets="$(IFS=,; echo "${SECRET_ARGS[*]}")")
-
-if [[ "${STUB_BROKER_FALLBACK:-}" == "1" ]]; then
-  DEPLOY_ARGS+=(--set-env-vars="HARNESS_STUB_BROKER_FALLBACK=1")
-fi
 
 # VPC egress (opcionális — ha a DB / platform VPC-n belül érhető el).
 if [[ -n "${VPC_CONNECTOR:-}" ]]; then

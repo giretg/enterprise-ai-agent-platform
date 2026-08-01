@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import type { HarnessLauncher } from './dispatcher-service'
 import { buildHarnessContainerEnv, harnessEnvToDockerArgs } from './harness-run-env'
+import { parseHarnessMode, type HarnessMode } from '@/harness/harness-mode'
 
 export type DockerLocalHarnessConfig = {
   image: string
@@ -8,11 +9,9 @@ export type DockerLocalHarnessConfig = {
   platformPort: string
   callbackToken: string
   callbackUrl?: string
-  harnessMode: string
-  recipePath: string
+  harnessMode: HarnessMode
   agentApiKey?: string
   egressEnforce?: boolean
-  stubBrokerFallback?: boolean
 }
 
 function requireConfigValue(name: string, value: string | undefined): string {
@@ -27,11 +26,9 @@ export function dockerLocalConfigFromEnv(): DockerLocalHarnessConfig {
     platformPort: process.env.HARNESS_DOCKER_PLATFORM_PORT ?? '3000',
     callbackToken: requireConfigValue('HARNESS_CALLBACK_TOKEN', process.env.HARNESS_CALLBACK_TOKEN),
     callbackUrl: process.env.HARNESS_CALLBACK_URL,
-    harnessMode: process.env.HARNESS_MODE ?? 'wiki',
-    recipePath: process.env.HARNESS_RECIPE_PATH ?? '/recipes/wiki-answer.yaml',
+    harnessMode: parseHarnessMode(process.env.HARNESS_MODE),
     agentApiKey: process.env.HARNESS_AGENT_API_KEY,
     egressEnforce: process.env.HARNESS_EGRESS_ENFORCE === 'true',
-    stubBrokerFallback: process.env.HARNESS_STUB_BROKER_FALLBACK === '1',
   }
 }
 
@@ -47,7 +44,6 @@ export class DockerLocalHarnessLauncher implements HarnessLauncher {
     agentVersion?: number
     actingUserId?: string
     question?: string
-    gooseModel?: string
     harnessAgentApiKey?: string
     ephemeralKeyId?: string
   }): Promise<{ jobId: string; executionName?: string }> {
@@ -64,11 +60,9 @@ export class DockerLocalHarnessLauncher implements HarnessLauncher {
       callbackUrl: this.config.callbackUrl ?? `${platformUrl}/api/v1/harness/tickets/{ticketId}/complete`,
       callbackToken: this.config.callbackToken,
       harnessMode: this.config.harnessMode,
-      recipePath: this.config.recipePath,
       platformApiUrl: platformUrl,
       harnessAgentApiKey: agentApiKey,
       egressEnforce: this.config.egressEnforce,
-      stubBrokerFallback: this.config.stubBrokerFallback ?? this.config.harnessMode === 'goose',
     })
 
     const dockerArgs = ['run', '--rm', ...harnessEnvToDockerArgs(env), this.config.image]

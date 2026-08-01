@@ -90,7 +90,6 @@ async function main() {
     ...cloudRunConfigFromEnv(),
     platformApiUrl: platformUrl,
     harnessAgentApiKey: agentApiKey,
-    stubBrokerFallback: true,
   })
 
   let executionName: string | undefined

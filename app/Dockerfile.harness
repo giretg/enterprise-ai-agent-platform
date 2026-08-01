@@ -1,6 +1,7 @@
-# S1 harness image — Goose CLI + platform completion entrypoint (§5.6, §6)
-FROM ghcr.io/aaif-goose/goose:latest AS goose
-
+# Harness image — platform completion entrypoint (§5.6, §6).
+# A konténer nem futtat saját agent-loopot: `HARNESS_MODE=wiki` mellett a
+# platform `/api/v1/harness/tickets/{id}/process` végpontját hívja, és a
+# completion-callbackkel zár. Provider-független.
 FROM node:20-slim
 
 WORKDIR /app
@@ -9,17 +10,13 @@ RUN apt-get update \
   && apt-get install -y --no-install-recommends openssl ca-certificates \
   && rm -rf /var/lib/apt/lists/*
 
-COPY --from=goose /usr/local/bin/goose /usr/local/bin/goose
-
 COPY package.json package-lock.json ./
 COPY prisma ./prisma
 RUN npm ci
 
 COPY . .
-COPY harness/recipes /recipes
 
 ENV NODE_ENV=production
 ENV HARNESS_MODE=wiki
-ENV HARNESS_RECIPE_PATH=/recipes/wiki-answer.yaml
 
 CMD ["npm", "run", "harness:run"]

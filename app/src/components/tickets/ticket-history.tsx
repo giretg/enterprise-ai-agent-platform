@@ -6,7 +6,7 @@ import { formatTicketDateTime } from '@/lib/ticket-display'
 
 const ACTOR_LABELS: Record<string, string> = {
   human: 'Ember',
-  agent: 'Agent',
+  agent: 'AI munkatárs',
   system: 'Rendszer',
 }
 

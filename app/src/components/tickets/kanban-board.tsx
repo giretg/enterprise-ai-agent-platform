@@ -17,6 +17,7 @@ import { transitionTicket } from '@/app/actions/platform'
 import { Badge, Card } from '@/components/ui/shell'
 import { ProcessBadge } from '@/components/processes/process-badge'
 import { personaFor } from '@/lib/agent-persona'
+import { useTicketDispatch } from '@/components/tickets/ticket-dispatch-client'
 import { TICKET_STATE_LABELS } from '@/lib/ticket-labels'
 import {
   getAssigneeFilterKey,
@@ -32,6 +33,22 @@ export type RecentBoardProcess = {
 
 const COLUMN_VISIBLE_LIMIT = 10
 const COLUMN_WIDTH_CLASS = 'w-[280px] max-w-[280px]'
+
+function PlayIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden>
+      <path d="M8 5v14l11-7z" />
+    </svg>
+  )
+}
+
+function StopIcon({ className }: { className?: string }) {
+  return (
+    <svg viewBox="0 0 24 24" fill="currentColor" className={className} aria-hidden>
+      <rect x="6" y="6" width="12" height="12" rx="1.5" />
+    </svg>
+  )
+}
 
 const COLUMNS = [
   { key: 'backlog', label: TICKET_STATE_LABELS.backlog, accent: 'border-ink-faint/30' },
@@ -89,12 +106,16 @@ type KanbanColumnProps = {
   isTarget: boolean
   isExpanded: boolean
   draggingId: string | null
+  busyTicketId: string | null
+  canDispatch: boolean
   onToggleExpand: () => void
   onDragOver: (e: DragEvent) => void
   onDragLeave: () => void
   onDrop: (e: DragEvent) => void
   onDragStart: (ticketId: string) => void
   onDragEnd: () => void
+  onStartDispatch: (ticketId: string) => void
+  onStopDispatch: (ticketId: string) => void
 }
 
 function KanbanColumn({
@@ -103,12 +124,16 @@ function KanbanColumn({
   isTarget,
   isExpanded,
   draggingId,
+  busyTicketId,
+  canDispatch,
   onToggleExpand,
   onDragOver,
   onDragLeave,
   onDrop,
   onDragStart,
   onDragEnd,
+  onStartDispatch,
+  onStopDispatch,
 }: KanbanColumnProps) {
   const hasOverflow = tickets.length > COLUMN_VISIBLE_LIMIT
   const visibleTickets = isExpanded ? tickets : tickets.slice(0, COLUMN_VISIBLE_LIMIT)
@@ -135,7 +160,16 @@ function KanbanColumn({
             : ''
         }`}
       >
-        {visibleTickets.map((ticket) => (
+        {visibleTickets.map((ticket) => {
+          const canStart =
+            canDispatch &&
+            ticket.state === 'ready' &&
+            ticket.assigneeType === 'agent' &&
+            Boolean(ticket.assigneeId)
+          const canStop = canDispatch && ticket.state === 'in_progress'
+          const isBusy = busyTicketId === ticket.id
+
+          return (
           <div
             key={ticket.id}
             draggable
@@ -148,8 +182,34 @@ function KanbanColumn({
               draggingId === ticket.id ? 'opacity-40' : ''
             }`}
           >
-            <Link href={`/control-plane/tickets/${ticket.id}`} draggable={false} className="block min-w-0">
-              <Card className="!p-4 transition hover:border-coral/40">
+            <Card className="relative !p-4 transition hover:border-coral/40">
+              {(canStart || canStop) && (
+                <button
+                  type="button"
+                  draggable={false}
+                  disabled={isBusy}
+                  title={canStart ? 'Feldolgozás indítása' : 'Feldolgozás leállítása'}
+                  aria-label={canStart ? 'Feldolgozás indítása' : 'Feldolgozás leállítása'}
+                  onClick={(e) => {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    if (canStart) onStartDispatch(ticket.id)
+                    else onStopDispatch(ticket.id)
+                  }}
+                  className={`absolute right-2 top-2 rounded-lg border p-1.5 transition disabled:opacity-40 ${
+                    canStart
+                      ? 'border-accent/30 text-accent hover:border-accent/50 hover:bg-accent/10'
+                      : 'border-coral/30 text-coral hover:border-coral/50 hover:bg-coral/10'
+                  }`}
+                >
+                  {canStart ? <PlayIcon className="h-3.5 w-3.5" /> : <StopIcon className="h-3.5 w-3.5" />}
+                </button>
+              )}
+              <Link
+                href={`/control-plane/tickets/${ticket.id}`}
+                draggable={false}
+                className={`block min-w-0 ${canStart || canStop ? 'pr-8' : ''}`}
+              >
                 <div className="flex flex-wrap items-start justify-between gap-1.5">
                   <p className="break-words text-sm font-medium">{ticket.title}</p>
                   {ticket.process && (
@@ -175,10 +235,10 @@ function KanbanColumn({
                   <span>Létrehozva: {new Date(ticket.createdAt).toLocaleString('hu-HU', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
                   <span>Módosítva: {new Date(ticket.updatedAt).toLocaleString('hu-HU', { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })}</span>
                 </div>
-              </Card>
-            </Link>
+              </Link>
+            </Card>
           </div>
-        ))}
+        )})}
       </div>
 
       {hasOverflow && (
@@ -273,10 +333,12 @@ export function KanbanBoard({
   recentProcesses?: RecentBoardProcess[]
 }) {
   const router = useRouter()
+  const dispatchTicket = useTicketDispatch()
   const [pending, startTransition] = useTransition()
   const [draggingId, setDraggingId] = useState<string | null>(null)
   const [dropTarget, setDropTarget] = useState<ColumnKey | null>(null)
   const [message, setMessage] = useState<string | null>(null)
+  const [busyTicketId, setBusyTicketId] = useState<string | null>(null)
   const [expandedColumns, setExpandedColumns] = useState<Set<ColumnKey>>(new Set())
   const [assigneeFilter, setAssigneeFilter] = useState('all')
   const [processFilter, setProcessFilter] = useState('all')
@@ -307,6 +369,47 @@ export function KanbanBoard({
         setMessage(res.error ?? 'Átmenet elutasítva')
       }
     })
+  }
+
+  const handleStartDispatch = (ticketId: string) => {
+    if (busyTicketId) return
+    setBusyTicketId(ticketId)
+    setMessage(null)
+    void (async () => {
+      try {
+        const res = await dispatchTicket(ticketId)
+        if (!res.success) {
+          setMessage(res.error)
+        } else {
+          if (res.warning) setMessage(res.warning)
+        }
+      } finally {
+        setBusyTicketId(null)
+      }
+    })()
+  }
+
+  const handleStopDispatch = (ticketId: string) => {
+    if (busyTicketId) return
+    setBusyTicketId(ticketId)
+    setMessage(null)
+    void (async () => {
+      try {
+        const res = await fetch(`/api/v1/tickets/${ticketId}/cancel`, { method: 'POST' })
+        if (!res.ok) {
+          setMessage(
+            res.status === 404
+              ? 'A feladat már nem fut — lehet, hogy befejeződött.'
+              : 'Leállítás sikertelen.',
+          )
+        }
+        router.refresh()
+      } catch {
+        setMessage('Leállítás sikertelen.')
+      } finally {
+        setBusyTicketId(null)
+      }
+    })()
   }
 
   return (
@@ -376,6 +479,8 @@ export function KanbanBoard({
               isTarget={isTarget}
               isExpanded={expandedColumns.has(col.key)}
               draggingId={draggingId}
+              busyTicketId={busyTicketId}
+              canDispatch={canCreate}
               onToggleExpand={() => {
                 setExpandedColumns((prev) => {
                   const next = new Set(prev)
@@ -397,6 +502,8 @@ export function KanbanBoard({
               }}
               onDragStart={setDraggingId}
               onDragEnd={() => setDraggingId(null)}
+              onStartDispatch={handleStartDispatch}
+              onStopDispatch={handleStopDispatch}
             />
           )
         })}

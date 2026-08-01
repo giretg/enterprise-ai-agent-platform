@@ -93,12 +93,11 @@ printf '%s' "<új connection string>" | \
 > Az `enterprise-ai-demo`-ban a meglévő **`DIRECT_URL`** secretet használjuk újra (a Prisma
 > konvenció szerint ez a nem-pooler endpoint) — nem hoztunk létre külön secretet.
 
-### 2.3 Agent API key secret (KÖTELEZŐ goose módban)
+### 2.3 Agent API key secret
 
-A goose harness egy control-plane agent API kulccsal (`cp_sk_…`) hív vissza a platform
-Tool Broker + Gateway végpontjaira. A dispatcher ezt `process.env.HARNESS_AGENT_API_KEY`-ből
-adja tovább a Job-override-ban; ha hiányzik, a Job `exit(1)`:
-`Missing harness env for goose config: HARNESS_AGENT_API_KEY`.
+A harness egy control-plane agent API kulccsal (`cp_sk_…`) hívja a platform
+feldolgozó API-ját. A dispatcher normál futásnál efemer kulcsot ad át a
+Job-override-ban; külön smoke-futtatáshoz használható a secretből feloldott kulcs.
 
 ```bash
 # pl. a seed demo kulcsból (a közös Neon DB miatt élesben is érvényes):
@@ -184,36 +183,14 @@ Végponti proof: hozz létre egy `ready` ticketet, és nézd a harness Job új e
 **Igazolt a teljes production lánc** (audit-nyomból, friss `ready` ticketre):
 - `ready → in_progress` a NOTIFY-ra **0s-en belül** (LISTEN/NOTIFY él);
 - `dispatch.start/started` — a harness Job indítása a runtime SA-val (`run.jobs.runWithOverrides` működik, nincs 403);
-- a harness goose módban **valódi** model-hívásokat tesz a Gateway-en át (S2 ChatGPT OAuth út);
+- a harness a platform provider-független wiki-runtime-ját hívja, amely a kormányzott Gateway-en át fut;
 - **budget cap működik** (`dispatch.budget_blocked`, alap: 100 hívás / 100k token / agent / nap);
 - bukáskor a ticket vissza `ready`-be, a lock felszabadul (`dispatch.complete/failed`).
 
-**S6 konvergencia — gyökérok és javítás (2026-06-18, session 14):**
-
-A `wiki-answer` recipe + goose agent korábban **nem konvergált** válaszig (`reached 20 model
-calls`). A gyökérok **nem** recipe-/prompt-hatékonyság volt, hanem hogy a **valódi
-ChatGPT-OAuth Gateway-út nem ad vissza natív OpenAI `tool_calls`-t** (a Responses backend csak
-sima szöveget ad). A goose viszont natív `tool_calls`-ra vár, hogy az MCP eszközt
-(`kb_search` → `board_write`) lefuttassa — e nélkül sosem írt választ, és a loop a guardrailig
-pörgött. (Stub módban a Gateway ad `tool_calls`-t, ezért a lokális `harness:docker-goose-smoke`
-zölden konvergált — ez fedte el a hibát.)
-
-Javítás (három rész):
-1. **Szöveges tool-hívás relay** (`src/domain/gateway/text-tool-relay.ts`): a Gateway a modell
-   sima szövegéből kiolvassa a recipe-szabta `{"tool":…,"args":{…}}` JSON-t, és natív
-   `tool_calls` completionná alakítja a goose felé. A már bevált `chat-tool-loop` szöveg-tool
-   protokollt használja, ami a valódi ChatGPT-OAuth modellel működik.
-2. **`wiki-answer.yaml`** explicit kétlépéses, minimál-körös protokollra írva (kb_search → board_write).
-3. **Env-konfigolható guardrail** (`GATEWAY_MAX_CALLS_PER_TICKET`, alap 30) + alacsonyabb
-   `HARNESS_MAX_TURNS` (alap 12), így a goose körlimit a tényleges szabályozó, a Gateway-cap a
-   fölötti biztonsági háló.
-
-Determinisztikus parser-teszt: `npm run test:gateway-relay` (élő token nélkül igazolja a
-konverziót). Végpontig tartó igazolás (élő ChatGPT-OAuth token kell): `npm run s2:live-smoke`
-és `npm run dispatcher:cloud-run-smoke`.
-
-- Régi, kérdés nélküli teszt-ticketek a stub loopban `HARNESS_QUESTION` hiányra esnek — rossz
-  tesztadat, nem deploy-hiba.
+**Provider-független runtime:** a konténer nem futtat saját agent-loopot vagy recipe-t.
+`HARNESS_MODE=wiki` mellett a platform feldolgozó végpontját hívja, így a modell-, tool- és
+guardrail-szabályok egy helyen, a platform runtime-ban maradnak. Végpontig tartó igazolás:
+`npm run dispatcher:cloud-run-smoke`.
 
 > **Üzemi figyelmeztetés:** mivel a service `min-instances=1`, élesben minden `ready` ticketet
 > elindít, és valódi tokent fogyaszt. A `GATEWAY_MAX_CALLS_PER_TICKET` (per-ticket) és a napi

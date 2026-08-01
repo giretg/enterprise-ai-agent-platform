@@ -34,7 +34,6 @@
     "harness:run": "tsx scripts/harness-entrypoint.ts",
     "harness:egress-probe": "tsx scripts/harness-egress-probe.ts",
     "harness:docker-smoke": "tsx scripts/harness-docker-smoke.ts",
-    "harness:docker-goose-smoke": "tsx scripts/harness-docker-goose-smoke.ts",
     "harness:cloud-run-deploy": "bash infra/gcp/deploy-harness-job.sh",
     "harness:cloud-run-smoke": "tsx scripts/harness-cloud-run-smoke.ts",
     "dispatcher:worker": "tsx --import ./scripts/load-env.ts scripts/dispatcher-worker.ts",

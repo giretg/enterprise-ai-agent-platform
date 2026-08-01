@@ -112,7 +112,7 @@ export function TicketFilesPanel({ ticketId, ticketState }: TicketFilesPanelProp
       )}
       {isReadOnly && visibleFiles.length > 0 && (
         <p className="mt-3 text-xs text-ink-faint">
-          A ticket lezárva — a fájlok letölthetők (pre-signed URL), új feltöltés nem engedélyezett.
+          A feladat lezárva — a fájlok letölthetők (pre-signed URL), új feltöltés nem engedélyezett.
         </p>
       )}
     </Card>

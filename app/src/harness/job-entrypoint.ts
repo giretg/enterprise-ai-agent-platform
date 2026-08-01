@@ -1,8 +1,6 @@
 import { spawn } from 'node:child_process'
 import { assertEgressDenyByDefault } from './egress-guard'
-import { resolveHarnessCommandJson } from './goose-command'
-import { prepareGooseHarnessEnv } from './goose-config'
-import { runStubHarnessAgentLoop, shouldRunStubHarnessAgentLoop } from './stub-harness-agent-loop'
+import { parseHarnessMode } from './harness-mode'
 import {
   HarnessProcessError,
   runWikiTicketProcessViaPlatform,
@@ -53,7 +51,7 @@ function readContext(env: HarnessEnv): HarnessContext {
     lockToken: requiredEnv(env, 'DISPATCH_LOCK_TOKEN'),
     callbackUrl: requiredEnv(env, 'HARNESS_CALLBACK_URL'),
     callbackToken: requiredEnv(env, 'HARNESS_CALLBACK_TOKEN'),
-    commandJson: resolveHarnessCommandJson(env),
+    commandJson: env.HARNESS_COMMAND_JSON?.trim() || null,
     cloudRunJob: env.CLOUD_RUN_JOB ?? null,
     cloudRunExecution: env.CLOUD_RUN_EXECUTION ?? null,
   }
@@ -156,23 +154,18 @@ export async function runHarnessEntrypoint(
     ...deps,
   }
   const ctx = readContext(env)
-  const wikiMode = shouldRunWikiTicketProcess(env)
-  const runtimeEnv = wikiMode ? env : await prepareGooseHarnessEnv(env)
 
   let status: HarnessRunStatus = 'succeeded'
   let error: string | null = null
   let errorCategory: 'permanent' | 'transient' | null = null
   try {
-    await assertEgressDenyByDefault(runtimeEnv, resolvedDeps.fetch)
-    if (wikiMode) {
+    const mode = parseHarnessMode(env.HARNESS_MODE)
+    await assertEgressDenyByDefault(env, resolvedDeps.fetch)
+    if (mode === 'wiki' && shouldRunWikiTicketProcess(env)) {
       resolvedDeps.log.log('Running wiki ticket process via platform API (provider-agnostic).')
-      await runWikiTicketProcessViaPlatform(runtimeEnv, resolvedDeps.fetch)
+      await runWikiTicketProcessViaPlatform(env, resolvedDeps.fetch)
     } else {
-      await runConfiguredCommand(ctx, runtimeEnv, resolvedDeps)
-      if (shouldRunStubHarnessAgentLoop(runtimeEnv)) {
-        resolvedDeps.log.log('Running stub harness agent loop (Gateway tool_calls + MCP bridge fallback).')
-        await runStubHarnessAgentLoop(runtimeEnv, resolvedDeps.fetch)
-      }
+      await runConfiguredCommand(ctx, env, resolvedDeps)
     }
   } catch (e) {
     status = 'failed'

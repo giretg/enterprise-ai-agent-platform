@@ -1089,8 +1089,8 @@ function MessageBubble({
             }`}
           >
             {message.text.includes('Futás elindítva a(z)')
-              ? 'Belépő ticket megnyitása →'
-              : 'Ticket megnyitása →'}
+              ? 'Belépő feladat megnyitása →'
+              : 'Feladat megnyitása →'}
           </Link>
         )}
       </div>
@@ -1677,9 +1677,9 @@ export function AgentChatPanel({
       }
       if ('ticketId' in res.data) {
         setLastTicketId(res.data.ticketId)
-        setStatusMessage('A ticket elkészült és belinkeltem a beszélgetésbe.')
+        setStatusMessage('A feladat elkészült és belinkeltem a beszélgetésbe.')
       } else {
-        setStatusMessage('Az AI visszakérdezett a ticket létrehozása előtt.')
+        setStatusMessage('Az AI visszakérdezett a feladat létrehozása előtt.')
       }
       await refreshSessions()
     })
@@ -2578,7 +2578,7 @@ export function AgentChatPanel({
           resetComposer()
           setStatusMessage(
             ticketRecurrence === 'none'
-              ? 'Ütemezett task létrehozva — a worker a megadott időpontban ticketet készít belőle.'
+              ? 'Ütemezett task létrehozva — a worker a megadott időpontban feladatot készít belőle.'
               : 'Ismétlődő ütemezett task létrehozva.',
           )
           return
@@ -2597,9 +2597,9 @@ export function AgentChatPanel({
         }
         setLastTicketId(res.data.ticketId)
         resetComposer()
-        setStatusMessage('Ticket létrehozva — megjelenik a Kanban táblán.')
+        setStatusMessage('Feladat létrehozva — megjelenik a Kanban táblán.')
       } catch (e) {
-        setStatusMessage(e instanceof Error ? e.message : 'Ticket létrehozás sikertelen')
+        setStatusMessage(e instanceof Error ? e.message : 'Feladat létrehozás sikertelen')
       }
     })
   }
@@ -2694,9 +2694,9 @@ export function AgentChatPanel({
                   onClick={handlePromoteConversation}
                   disabled={controlsBusy || conversationStatus === 'archived'}
                   className="rounded-xl border border-line px-3 py-1.5 text-xs font-semibold text-ink-soft transition-colors hover:border-honey/50 hover:bg-honey/10 hover:text-honey disabled:opacity-40"
-                  title="AI ticket készítése a beszélgetésből"
+                  title="AI feladat készítése a beszélgetésből"
                 >
-                  {ticketPending ? 'Elemzés…' : 'Ticket készítése'}
+                  {ticketPending ? 'Elemzés…' : 'Feladat készítése'}
                 </button>
                 {canDistillSkill && (
                   <>
@@ -2902,7 +2902,7 @@ export function AgentChatPanel({
                     href={`/control-plane/tickets/${lastTicketId}`}
                     className="font-semibold text-coral hover:underline"
                   >
-                    Ticket megnyitása →
+                    Feladat megnyitása →
                   </Link>
                 </>
               )}
@@ -3030,7 +3030,7 @@ export function AgentChatPanel({
               />
               <span className="inline-flex items-center gap-1.5">
                 Run-as
-                <FieldHelp description="Engedélyezi, hogy a ticket végrehajtásakor a rendszer a nevedben futtathasson jogosultságot igénylő lépéseket." />
+                <FieldHelp description="Engedélyezi, hogy a feladat végrehajtásakor a rendszer a nevedben futtathasson jogosultságot igénylő lépéseket." />
               </span>
             </label>
           </div>
@@ -3044,7 +3044,7 @@ export function AgentChatPanel({
               >
                 {agentSkills.length === 0 ? (
                   <p className="px-3 py-2 text-xs text-ink-faint">
-                    Ehhez az agenthez nincs engedélyezett skill hozzárendelve.
+                    Ehhez az AI munkatárshoz nincs engedélyezett skill hozzárendelve.
                   </p>
                 ) : slashSkillOptions.length === 0 ? (
                   <p className="px-3 py-2 text-xs text-ink-faint">Nincs illeszkedő skill.</p>
@@ -3112,10 +3112,10 @@ export function AgentChatPanel({
               type="button"
               onClick={handleCreateTicket}
               disabled={!canSubmit}
-              title={ticketExecuteAfter ? 'Ütemezett task létrehozása' : 'Ticket létrehozása a Kanban táblán'}
+              title={ticketExecuteAfter ? 'Ütemezett task létrehozása' : 'Feladat létrehozása a Kanban táblán'}
               className="shrink-0 rounded-xl border border-line px-3 py-2.5 text-xs font-semibold text-ink-soft transition-colors hover:border-honey/50 hover:bg-honey/10 hover:text-honey disabled:opacity-40"
             >
-              {ticketPending ? '…' : ticketExecuteAfter ? 'Ütemezés' : 'Ticket'}
+              {ticketPending ? '…' : ticketExecuteAfter ? 'Ütemezés' : 'Feladat'}
             </button>
 
             {isAgentTyping ? (

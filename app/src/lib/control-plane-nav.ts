@@ -62,6 +62,7 @@ export function buildControlPlaneNav(ctx: ControlPlaneNavContext): ControlPlaneN
         ...(canTenantAdmin
           ? [{ href: '/control-plane/agent-access', label: 'Kapcsolatok' }]
           : []),
+        { href: '/control-plane/training', label: 'Tanítás' },
         { href: '/control-plane/behavior-profiles', label: 'Viselkedés-profilok' },
         { href: '/control-plane/skills', label: 'Skill-katalógus' },
         { href: '/control-plane/apps', label: 'Mini-appok' },
@@ -81,7 +82,6 @@ export function buildControlPlaneNav(ctx: ControlPlaneNavContext): ControlPlaneN
       children: [
         { href: '/control-plane/scheduled-tasks', label: 'Ütemezés' },
         { href: '/control-plane/monitors', label: 'Monitorok' },
-        { href: '/control-plane/training', label: 'Tanítás' },
       ],
     },
   ]

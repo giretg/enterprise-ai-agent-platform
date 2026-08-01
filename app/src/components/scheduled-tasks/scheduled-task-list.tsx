@@ -31,7 +31,7 @@ export type ScheduledTaskAgentView = {
 const statusLabel: Record<ScheduledTaskStatus, string> = {
   active: 'aktív',
   materializing: 'materializálás alatt',
-  materialized: 'ticket készült',
+  materialized: 'feladat készült',
   revoked: 'visszavonva',
 }
 

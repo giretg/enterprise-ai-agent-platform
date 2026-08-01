@@ -9,6 +9,7 @@
 export const AGENT_GRAPH_NODE_SELECT = {
   id: true,
   name: true,
+  avatarUrl: true,
   personaNickname: true,
   personaTrait: true,
   role: true,

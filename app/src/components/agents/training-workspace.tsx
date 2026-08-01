@@ -14,6 +14,7 @@ import {
   EMPTY_MEMORY_PLACEHOLDER,
   parseMemoryItems,
 } from '@/domain/training/memory-items'
+import { agentDisplayName } from '@/lib/agent-persona'
 
 type TrainingPayload = {
   diff?: { before?: string; after?: string; summary?: string }
@@ -114,7 +115,7 @@ export function TrainingWorkspace({
         setLastApprove(approved)
         setMessage(successMsg)
       } else {
-        setMessage(`${successMsg} — ticket létrehozva, jóváhagyásra vár.`)
+        setMessage(`${successMsg} — feladat létrehozva, jóváhagyásra vár.`)
       }
       setNewItem('')
       setEditingIndex(null)
@@ -127,7 +128,7 @@ export function TrainingWorkspace({
     <div className="space-y-6">
       <div className="flex flex-wrap items-center gap-3">
         <label className="text-sm text-ink-soft">
-          Agent:
+          AI munkatárs:
           <select
             value={agentId}
             onChange={(e) => {
@@ -148,7 +149,7 @@ export function TrainingWorkspace({
           >
             {agents.map((a) => (
               <option key={a.id} value={a.id}>
-                {a.name}
+                {agentDisplayName(a.name, a)}
               </option>
             ))}
           </select>
@@ -272,7 +273,7 @@ export function TrainingWorkspace({
         </button>
       </Card>
 
-      <Card title="Függőben lévő tanítási ticketek">
+      <Card title="Függőben lévő tanítási feladatok">
         {trainingTickets.length === 0 ? (
           <p className="text-sm text-ink-faint">Nincs aktív training ticket.</p>
         ) : (

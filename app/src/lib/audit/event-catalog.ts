@@ -176,6 +176,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'dispatch.complete',
   'dispatch.complete.denied',
   'dispatch.error',
+  'dispatch.manual',
   'dispatch.notify.failed',
   'dispatch.notify.sent',
   'dispatch.start',

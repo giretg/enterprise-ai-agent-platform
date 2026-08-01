@@ -103,7 +103,7 @@ export function AgentAccessGraphEditor({
     if (!selected) return null
     if (selected.kind === 'user') return users.find((u) => u.id === selected.id)?.name ?? 'Munkatárs'
     const agent = agents.find((a) => a.id === selected.id)
-    return agent ? agent.nickname : 'Agent'
+    return agent ? agent.nickname : 'AI munkatárs'
   }, [selected, users, agents])
 
   const cone = useMemo(() => {
