@@ -55,6 +55,7 @@ import {
 } from '@/lib/ticket-display'
 import { fail, ok, type ActionResult } from '@/lib/result'
 import { NORMAL_TOOL_CAPABILITY_NAMES } from '@/lib/tool-capability-catalog'
+import { toolsRequiringConnector } from '@/domain/tool-broker/tool-broker-authorizer'
 import {
   agentIdSchema,
   approveTrainingSchema,
@@ -4962,46 +4963,17 @@ export async function syncTestDatabaseFromProduction(input: { confirm: true }) {
   }
 }
 
-const KNOWLEDGE_BASE_TOOLS = ['kb_search', 'kb_list_index', 'kb_get_page'] as const
-
-const WORKSPACE_TOOLS = [
-  'repo_prepare',
-  'file_read', 'file_write', 'create_html', 'file_edit', 'file_list', 'file_glob',
-  'file_search', 'file_delete',
-  'xlsx_read_sheet', 'xlsx_write_cells', 'xlsx_append_rows',
-  'xlsx_create', 'xlsx_format_range', 'xlsx_layout',
-  'pptx_create',
-  'docx_read', 'docx_create', 'pdf_read', 'pdf_create',
-] as const
-
-const SANDBOX_APP_TOOLS = [
-  'sandbox_app.create',
-  'sandbox_app.update_artifact',
-  'sandbox_app.preview',
-  'sandbox_app.export',
-  'sandbox_app.list',
-  'sandbox_app.get',
-] as const
-
-const SANDBOX_VERSION_TOOLS = [
-  'sandbox.commit',
-  'sandbox.request_promotion',
-  'sandbox.snapshot',
-] as const
-
-const BOARD_TOOLS = ['ticket_create', 'board_write'] as const
-
-const GMAIL_TOOLS = [
-  'gmail_search',
-  'gmail_get_message',
-  'mailbox_count',
-  'gmail_create_draft',
-  'gmail_send',
-] as const
-
-const GMAIL_WRITE_TOOLS = ['gmail_create_draft', 'gmail_send'] as const
-
-const HTTP_API_TOOLS = ['http_api_get', 'http_api_get_all', 'http_api_request'] as const
+// Az automatikus connector-linkeléshez szükséges tool-halmazok a broker
+// `TOOL_REQUIREMENTS` mátrixából SZÁMOLNAK (issue #194): ami a brokernek
+// connectort igényel, arra a mentés connectort is linkel. A korábbi kézzel írt
+// listákból több workspace-es tool kimaradt, ezért a bepipált jog mellé nem
+// került connector, és az eszköz némán elhasalt.
+const KNOWLEDGE_BASE_TOOLS = toolsRequiringConnector('knowledge_base')
+const WORKSPACE_TOOLS = toolsRequiringConnector('workspace')
+const BOARD_TOOLS = toolsRequiringConnector('board')
+const GMAIL_TOOLS = toolsRequiringConnector('gmail')
+const GMAIL_WRITE_TOOLS = toolsRequiringConnector('gmail', 'write')
+const HTTP_API_TOOLS = toolsRequiringConnector('http_api')
 
 const CONFIGURABLE_AGENT_TOOLS = NORMAL_TOOL_CAPABILITY_NAMES
 
@@ -5082,9 +5054,7 @@ export async function updateAgentCapabilities(input: {
     // be cross-tenant. A konkrét connectort az adminnak explicit hozzá kell rendelnie.
     const needsHttpApi = HTTP_API_TOOLS.some((t) => enabledSet.has(t))
     const needsWebSearch = enabledSet.has('web_search')
-    const needsBoard = [...SANDBOX_APP_TOOLS, ...SANDBOX_VERSION_TOOLS, ...BOARD_TOOLS].some((t) =>
-      enabledSet.has(t),
-    )
+    const needsBoard = BOARD_TOOLS.some((t) => enabledSet.has(t))
 
     if (agent.role === 'orchestrator' && allTools.length > 0) {
       await repositories.audit.append({

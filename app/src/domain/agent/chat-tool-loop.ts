@@ -27,6 +27,7 @@ import {
 } from './tool-result-extract'
 import { logger } from '@/lib/observability/logger'
 import { isTulajdoniLapNezet } from '@/lib/tulajdoni-lap'
+import { toolsRequiringConnector } from '@/domain/tool-broker/tool-broker-authorizer'
 // issue #97 — egységes becsomagolás + következmény-kapu (mellékhatásos eszközök).
 import { envelopeToolResultForModel } from '@/domain/tool-broker/tool-result-envelope'
 import {
@@ -655,18 +656,18 @@ function formatToolResultForModel(trust: TrustClass, rawContent: string): string
   return envelopeToolResultForModel(trust, rawContent)
 }
 
-const WORKSPACE_PATH_TOOLS = new Set<ChatPlatformToolName>([
-  'file_read',
-  'file_edit',
-  'file_delete',
-  'xlsx_read_sheet',
-  'xlsx_write_cells',
-  'xlsx_append_rows',
-  'xlsx_format_range',
-  'xlsx_layout',
-  'docx_read',
-  'pdf_read',
-])
+/**
+ * Azok az eszközök, ahol a `path` MUNKATERÜLET-útvonal — a regiszterből számolva
+ * (issue #194): workspace-connectort igénylő tool, aminek a `path` kötelező
+ * argumentuma. Ha a modell ide tudásbázis-azonosítót (`doc:` / `kb:` / `okf:`)
+ * ad, a loop nem futtatja le a hívást, hanem megmondja, mit használjon helyette
+ * — különben a felhasználó csak egy értelmezhetetlen fájl-hibát látna.
+ */
+const WORKSPACE_PATH_TOOLS: ReadonlySet<ChatPlatformToolName> = new Set(
+  toolsRequiringConnector('workspace').filter((name) =>
+    ((toolJsonSchema(name).required ?? []) as string[]).includes('path'),
+  ),
+)
 
 function looksLikeKnowledgeRef(path: string): boolean {
   return /^(?:doc|kb|okf):/i.test(path.trim())
