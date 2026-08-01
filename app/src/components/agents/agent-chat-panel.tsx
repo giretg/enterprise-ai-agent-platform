@@ -963,6 +963,7 @@ function MessageBubble({
   message,
   isBusy,
   onDeleteContent,
+  onOpenTask,
   onMemoryCandidateUpdate,
   onConsequenceApprovalUpdate,
   onConsequenceApproved,
@@ -972,6 +973,7 @@ function MessageBubble({
   message: ChatMessage
   isBusy: boolean
   onDeleteContent: (messageId: string) => void
+  onOpenTask: () => void
   onMemoryCandidateUpdate: (messageId: string, candidateId: string, patch: Partial<MemoryCandidateCard>) => void
   onConsequenceApprovalUpdate: (
     messageId: string,
@@ -1087,6 +1089,7 @@ function MessageBubble({
         {message.ticketRefId && (
           <Link
             href={`/control-plane/tickets/${message.ticketRefId}`}
+            onClick={onOpenTask}
             className={`mt-2 inline-flex text-[11px] font-semibold hover:underline ${
               isUser ? 'text-card' : 'text-coral'
             }`}
@@ -1198,6 +1201,7 @@ export function AgentChatPanel({
   >(null)
   const [mounted, setMounted] = useState(false)
   const [minimized, setMinimized] = useState(false)
+  const handleMinimize = useCallback(() => setMinimized(true), [])
   const [connectableUserConnectors, setConnectableUserConnectors] = useState<
     AgentDelegatedConnectorRow[]
   >([])
@@ -2755,7 +2759,7 @@ export function AgentChatPanel({
           </div>
           <button
             type="button"
-            onClick={() => setMinimized(true)}
+            onClick={handleMinimize}
             className="rounded-full p-2 text-ink-faint transition-colors hover:bg-night-2 hover:text-ink"
             aria-label="Beszélgetés tálcára rakása"
             title="Tálcára rakás"
@@ -2824,6 +2828,7 @@ export function AgentChatPanel({
                       message={message}
                       isBusy={controlsBusy}
                       onDeleteContent={handleDeleteMessageContent}
+                      onOpenTask={handleMinimize}
                       onMemoryCandidateUpdate={handleMemoryCandidateUpdate}
                       onConsequenceApprovalUpdate={handleConsequenceApprovalUpdate}
                       onConsequenceApproved={handleConsequenceApproved}
@@ -2903,6 +2908,7 @@ export function AgentChatPanel({
                   {' '}
                   <Link
                     href={`/control-plane/tickets/${lastTicketId}`}
+                    onClick={handleMinimize}
                     className="font-semibold text-coral hover:underline"
                   >
                     Feladat megnyitása →
