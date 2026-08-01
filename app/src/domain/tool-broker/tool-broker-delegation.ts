@@ -39,7 +39,6 @@ import {
 } from '@/lib/tulajdoni-lap-egyeztetes'
 import { parseReconcileRecordList } from '@/lib/reconcile-records'
 import { FileEditorError } from '@/domain/file-editor/workspace-storage'
-import { unwrapExternalDataEnvelope } from '@/domain/tool-broker/tool-result-envelope'
 import { personaFor } from '@/lib/agent-persona'
 import {
   buildAgentCatalogEntry,
@@ -2168,12 +2167,13 @@ async function resolveEgyeztetesNyilvantartas(
   let parsed: unknown
   try {
     // Nyers szöveg kell — a readFile sortáblázott (1\t…) kimenete NEM érvényes JSON.
-    // Legacy tool-outputs: korábban a modellnek szánt EXTERNAL_UNTRUSTED burkolat
-    // került a fájlba; azt is elfogadjuk, hogy a régi futások újraegyeztethetők legyenek.
-    parsed = JSON.parse(unwrapExternalDataEnvelope(content).trim())
+    // issue #195 D5 — a munkaterületre már csak burkolat NÉLKÜLI gépi adat kerül,
+    // ezért itt nincs mit kicsomagolni; egy régi, burkolt fájl hangosan elbukik.
+    parsed = JSON.parse(content.trim())
   } catch {
     throw new Error(
-      `tulajdoni_lap_egyeztetes: a(z) "${input.path}" fájl nem érvényes JSON (tömb vagy { sorok|items|data|…: [...] } kell)`,
+      `tulajdoni_lap_egyeztetes: a(z) "${input.path}" fájl nem érvényes JSON (tömb vagy { sorok|items|data|…: [...] } kell). ` +
+        'Ha ez egy régi tool-eredmény fájl, futtasd újra a forrás-eszközt — az új futás nyers, gépi adatot ír ki.',
     )
   }
   const rows = parseReconcileRecordList(parsed)

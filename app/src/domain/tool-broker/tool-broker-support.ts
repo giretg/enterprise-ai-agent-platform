@@ -909,8 +909,11 @@ export function resultMeta(result: ToolExecutionResult): Record<string, unknown>
     return {
       hitCount: result.hits.length,
       // §13 — hány találat jött a published OKF-chunk indexből (path-szal) vs. legacy.
-      okfHitCount: result.hits.filter((hit) => typeof hit.path === 'string').length,
-      memoryVersions: [...new Set(result.hits.map((hit) => hit.memoryVersion))],
+      okfHitCount: result.hits.filter((hit: { path?: unknown }) => typeof hit.path === 'string')
+        .length,
+      memoryVersions: [
+        ...new Set(result.hits.map((hit: { memoryVersion?: unknown }) => hit.memoryVersion)),
+      ],
     }
   }
 
@@ -938,7 +941,7 @@ export function resultMeta(result: ToolExecutionResult): Record<string, unknown>
   if ('users' in result && Array.isArray(result.users)) {
     return {
       userCount: result.users.length,
-      roles: [...new Set(result.users.map((u) => u.role))],
+      roles: [...new Set(result.users.map((u: { role?: unknown }) => u.role))],
     }
   }
 

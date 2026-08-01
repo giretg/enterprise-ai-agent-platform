@@ -17,6 +17,7 @@ import type {
   ConsequenceApprovalRepository,
   ConversationRepository,
 } from '../src/repositories/interfaces'
+import { fakeToolBrokerDenied, fakeToolBrokerSuccess } from './fixtures/tool-broker-result'
 
 let failures = 0
 async function test(name: string, fn: () => Promise<void> | void) {
@@ -103,22 +104,15 @@ function fakeBroker(
       }
       if (denyLeft > 0) {
         denyLeft -= 1
-        return {
-          denied: true,
-          reason: 'policy_denied',
-          trust: 'trusted' as const,
-          result: null,
-          resultMeta: {},
-          latencyMs: 1,
-        }
+        return fakeToolBrokerDenied('policy_denied')
       }
-      return {
-        denied: false,
-        trust: 'trusted' as const,
-        result: result !== undefined ? result : { path: (input.args as { path?: string }).path ?? 'ok.xlsx' },
-        resultMeta: {},
-        latencyMs: 1,
-      }
+      // issue #195 — a dublőr a broker VALÓDI alakját adja. A `xlsx_create`
+      // szerződése a mért hatást (`sheets`) kéri, nem a puszta útvonalat.
+      const output =
+        result !== undefined
+          ? result
+          : { path: (input.args as { path?: string }).path ?? 'ok.xlsx', sheets: 1 }
+      return fakeToolBrokerSuccess(input.tool, output, 'trusted')
     },
   } as unknown as ToolBrokerService
 }
@@ -507,8 +501,13 @@ async function main() {
     assert.match(res.continuation.prompt, /NE futtasd újra/)
   })
 
-  await test('resultSummary: a hosszú SZÖVEGES eredmény is korlátozva kerül a kártyára', async () => {
-    const { service } = buildService({ brokerResult: 'x'.repeat(50_000) })
+  await test('resultSummary: a hosszú eredmény is korlátozva kerül a kártyára', async () => {
+    // issue #195 óta a broker kimeneti szerződése miatt egy `xlsx_create` NEM
+    // adhat vissza csupasz szöveget — a hosszú tartalom a szerződésnek megfelelő
+    // eredmény MEZŐJÉBEN érkezik. A kártya korlátozásának ugyanúgy állnia kell.
+    const { service } = buildService({
+      brokerResult: { path: `${'x'.repeat(50_000)}.xlsx`, sheets: 1 },
+    })
     const card = await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
     const result = await service.approve(card.approvalId, actor)
     assert.equal(result.ok, true)
@@ -516,6 +515,16 @@ async function main() {
       assert.ok(result.resultSummary.length < 1000, 'a kártya szövege korlátos marad')
       assert.match(result.resultSummary, /rövidítve/)
     }
+  })
+
+  await test('szerződés-sértő eszköz-kimenet a jóváhagyás után sem megy át némán', async () => {
+    // A jóváhagyott hívás sem kaphat érvénytelen eredményt: a szerződés-kapu
+    // `failed`-del bukik, és a kártya EZT mutatja — nem hamis sikert.
+    const { service } = buildService({ brokerResult: 'csupasz szöveg, nem xlsx_create eredmény' })
+    const card = await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
+    const result = await service.approve(card.approvalId, actor)
+    assert.equal(result.ok, false)
+    if (!result.ok) assert.match(result.reason, /kimeneti szerződés/)
   })
 
   await test('getApprovedContinuation: ismeretlen azonosítóra nem indul forduló', async () => {

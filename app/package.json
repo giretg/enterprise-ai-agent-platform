@@ -88,6 +88,7 @@
     "test:prompt-cache": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/prompt-cache.test.ts",
     "test:tool-broker-bridge": "tsx scripts/tool-broker-bridge.test.ts",
     "test:tool-trust": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/tool-trust-envelope.test.ts",
+    "test:tool-output-contract": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/tool-output-contract.test.ts",
     "test:consequence-gate": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/consequence-gate.test.ts",
     "test:consequence-approval": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/consequence-approval.test.ts",
     "test:tool-broker-tenant": "DATABASE_URL=postgresql://stub:stub@127.0.0.1:5432/stub tsx scripts/tool-broker-tenant-isolation.test.ts",

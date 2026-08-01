@@ -552,6 +552,46 @@ az agent-hozzáférési gráf (7. fejezet). A sorrend kötött:
 A gráf-kapu nem írja felül a capability-checket, az agent státuszát vagy az
 orchestrator-szabályt — mindegyik feltétel önállóan is elutasíthat.
 
+### Kimeneti szerződés — a néma eszköz-hibák ellen (issue #195)
+
+**Fájlok:** `src/domain/tool-broker/tool-output-contract.ts` (kapu),
+`tool-output-contracts.ts` (tool-onkénti szerződések).
+
+Amikor az agent „nem végzi el a feladatát", az esetek nagy részében nem a modell
+hibázott, hanem az eszköz csendben félrement: a rendszer sikert jelentett, de a
+végeredmény üres volt (üres Excel, hiányzó sorok), és a felhasználó csak a fájl
+megnyitásakor vette észre. Ezért MINDEN eszköz-eredmény átmegy egy kikényszerített
+kimeneti szerződésen a broker határán, az audit-rögzítés ELŐTT:
+
+```
+invoke()
+  1. bemeneti méret-kapu (D7)          → korlát fölött azonnal `failed`
+  2. handler végrehajtás
+  3. kimeneti séma (Zod, D2)           → sértés → tipizált `failed`, nem néma átengedés
+  4. mért mellékhatás (D4)             → „sikeresen írtam" állítás nem elég
+  5. üresség (D3) / részlegesség       → `empty` / `partial`
+  6. modellnek szánt szöveg (D5, D6)   → becsomagolás + méret-kapu jelölt csonkolással
+  7. audit + ToolCall (outcome, effect_summary)
+```
+
+**Kimenetel (`ToolOutcome`)** minden eredményen: `ok` · `empty` · `partial` ·
+`failed`. Az `empty` és a `partial` NEM hiba, hanem tény, amit a modell és a
+felhasználó is megkap — hétköznapi mondatként, nem gépi címkeként.
+
+**Két csatorna (D5)** — a `ToolBrokerInvokeResult` külön adja:
+
+| mező | kinek | burkolat |
+|------|-------|----------|
+| `modelText` | a modellnek | bizalmi osztály szerint BECSOMAGOLVA (issue #97) |
+| `machineData` | munkaterület, downstream tool, egyeztetés, export | SOHA nem burkolt |
+
+Így a védőburkolat elvi szinten nem kerülhet gépi útra, és nincs szükség utólagos
+kicsomagolásra. A régi `result` mező a `machineData` deprecated aliasa.
+
+**Megfigyelhetőség:** `ToolCall.outcome` + `ToolCall.effect_summary` (indexelt),
+és a `tool_broker_outcomes_total{tool,outcome}` metrika a `/api/metrics`
+végponton — ebből derül ki, melyik eszköz megy a leggyakrabban csendben félre.
+
 ### Per-user connector grant flow (pl. Gmail)
 
 ```

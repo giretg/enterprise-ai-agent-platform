@@ -12,6 +12,7 @@ import type {
   ConnectorGrant,
   TicketState,
 } from '@prisma/client'
+import type { SettledToolOutcome, ToolEffectSummary } from './tool-output-contract'
 import type { AgentCatalogEntry } from '@/lib/agent-catalog'
 import type { TulajdoniLapNezet, TulajdoniLapView } from '@/lib/tulajdoni-lap'
 import type {
@@ -36,6 +37,8 @@ import type {
   DocxReadResult,
   DocxCreateResult,
   PdfReadResult,
+  PdfCreateResult,
+  PptxCreateResult,
 } from '@/domain/file-editor/file-editor-service'
 import type {
   XlsxRow,
@@ -463,6 +466,12 @@ export type HttpApiGetAllResult = {
   itemCount: number
   items: unknown[]
   error?: string
+  /**
+   * Honnan jött a lista és teljes-e a lapozás. A csonka lista a legveszélyesebb
+   * csendes hiba (egy oldalnyi névsorból hamis „új rekord" egyeztetés lesz),
+   * ezért a kimeneti szerződés ebből ad `partial` kimenetelt (issue #195).
+   */
+  provenance?: { sourceTool: string; paginationComplete: boolean }
 }
 
 export type GmailSearchResult = { messages: Array<Record<string, string>> }
@@ -756,6 +765,12 @@ export type ToolBrokerInvokeResult =
       denied: true
       reason: string
       latencyMs: number
+      /**
+       * D1 (issue #195) — az elutasított hívás kimenetele mindig `failed`: nem
+       * futott le, tehát semmit nem végzett el. Így a fogyasztó egyetlen mezőből
+       * dönthet, anélkül hogy a `denied` ágat külön kellene kezelnie.
+       */
+      outcome: 'failed'
     }
   | {
       denied: false
@@ -765,6 +780,35 @@ export type ToolBrokerInvokeResult =
        * tools API) kezelnie kell, mielőtt az eredmény a modell elé kerül.
        */
       trust: TrustClass
+      /**
+       * D1 (issue #195) — KÖTELEZŐ kimenetel. Az `empty` és a `partial` nem hiba,
+       * hanem TÉNY: az agent és a felhasználó eddig épp azt nem tudta meg, hogy az
+       * eszköz „sikeresen semmit nem csinált". A `failed` kivételként bukik ki, ide
+       * nem jut el.
+       */
+      outcome: SettledToolOutcome
+      /** Miért `empty` / `partial` — hétköznapi magyarul. `ok`-nál `null`. */
+      outcomeReason: string | null
+      /** D4 — a MÉRT mellékhatás (olvasó toolnál `null`). */
+      effect: ToolEffectSummary | null
+      /**
+       * D5 — a MODELLNEK szánt csatorna: bizalmi osztály szerint BECSOMAGOLVA
+       * (`envelopeToolResultForModel`), méret-kapuval, és a kimenetel hétköznapi
+       * nyelvű közlésével. Aki a modellnek ad tool-eredményt, EZT adja.
+       */
+      modelText: string
+      /**
+       * D5 — a GÉPI csatorna: strukturált adat a munkaterületnek, downstream
+       * toolnak, egyeztetésnek, exportnak. SOHA nem burkolt, és soha nem megy
+       * közvetlenül a modellhez — így a burkolat elvi szinten nem kerülhet gépi
+       * útra (a korábbi `unwrapExternalDataEnvelope` folt szükségtelenné vált).
+       */
+      machineData: unknown
+      /**
+       * @deprecated WP-2 — a `machineData` alias-a, egy migrációs körig megtartva,
+       * hogy a fogyasztók átállítása ne legyen big-bang. Új kód a `machineData`
+       * (gépi) vagy a `modelText` (modell) mezőt használja.
+       */
       result:
         | KbSearchResult
         | KbListIndexResult
@@ -781,6 +825,7 @@ export type ToolBrokerInvokeResult =
         | GmailCreateDraftResult
         | GmailSendResult
         | HttpApiCallResult
+        | HttpApiGetAllResult
         | RepoPrepareResult
         | RepoOpenPullRequestResult
         | FileReadResult
@@ -800,6 +845,8 @@ export type ToolBrokerInvokeResult =
         | DocxReadResult
         | DocxCreateResult
         | PdfReadResult
+        | PdfCreateResult
+        | PptxCreateResult
         | SandboxCommitResult
         | SandboxRequestPromotionResult
         | SandboxSnapshotResult
@@ -814,6 +861,8 @@ export type ToolBrokerInvokeResult =
         | MemoryProposeResult
         | DocumentReadResult
         | TulajdoniLapParseResult
+        | TulajdoniLapEgyeztetesResult
+        | ReconcileRecordsResult
       resultMeta: Record<string, unknown>
       latencyMs: number
     }

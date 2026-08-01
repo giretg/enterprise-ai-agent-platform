@@ -211,6 +211,26 @@ export const toolBrokerCallsTotal = registry.counter(
   'Tool broker invocations by tool, status and policy decision',
 )
 /**
+ * Tool-broker KIMENETELEK tool-onként (issue #195 WP-6): `ok` / `empty` /
+ * `partial` / `failed`. Ez a bontás mondja meg, melyik eszköz megy a
+ * leggyakrabban csendben félre — vagyis melyiket kell javítani. Az `empty`-arány
+ * tartós megugrása egy eszköznél üzleti tünet: üres Excelt, hiányzó sorokat,
+ * „kész vagyok" válasz mögötti semmit jelent.
+ */
+export const toolBrokerOutcomesTotal = registry.counter(
+  'tool_broker_outcomes_total',
+  'Tool broker invocation outcomes by tool (ok/empty/partial/failed)',
+)
+/**
+ * Fordulónkénti archívum-visszaolvasás (issue #195 D6). A mért incidensben egy
+ * tömörítés ↔ visszaolvasás körforgás 7 futásból 0-t fejezett be és 5,4M tokent
+ * égetett el. A `chars` címke a becsült token-költség alapja (~4 kar/token).
+ */
+export const toolResultReadbackTotal = registry.counter(
+  'tool_result_readback_total',
+  'Archived tool-result readbacks by phase (allowed/blocked)',
+)
+/**
  * Dispatch-események száma kimenet szerint
  * (dispatched / budget_blocked / denied_inactive / denied_tenant_inactive / error).
  */
