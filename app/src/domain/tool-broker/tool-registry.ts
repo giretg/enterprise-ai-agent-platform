@@ -365,11 +365,14 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
 
   ticket_create: descriptor({
     description: 'Új Kanban ticket létrehozása (feladat humán vagy agent felelősnek).',
+    // A `payload` és az `assigneeType` szándékosan opcionális: a leképezés `{}`
+    // illetve `'human'` alapértéket ad. Kötelezővé tételük a modellnek hirdetett
+    // szerződést szigorítaná ott, ahol a tool ténylegesen működik nélkülük.
     argsSchema: z
       .object({
         title: z.string().min(1).max(200),
-        payload: z.record(z.string(), z.unknown()),
-        assigneeType: z.enum(['human', 'agent']),
+        payload: z.record(z.string(), z.unknown()).optional(),
+        assigneeType: z.enum(['human', 'agent']).optional(),
         assigneeId: z.string().uuid().optional(),
         sourceDocumentId: z.string().uuid().optional(),
       })
