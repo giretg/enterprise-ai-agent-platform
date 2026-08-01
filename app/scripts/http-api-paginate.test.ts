@@ -88,6 +88,61 @@ async function main() {
     assert.match(outcome.error, /500/)
   })
 
+  await check('paginate: maxPages tele oldalakkal → NEM csendes ok:true', async () => {
+    let calls = 0
+    const outcome = await paginateHttpApiGet({
+      plan: resolveHttpApiPaginatePlan({ pageSize: 10, maxPages: 3 }),
+      fetchPage: async () => {
+        calls += 1
+        return {
+          ok: true,
+          status: 200,
+          body: Array.from({ length: 10 }, (_, i) => ({ id: (calls - 1) * 10 + i })),
+        }
+      },
+    })
+    assert.equal(outcome.ok, false)
+    if (outcome.ok) return
+    assert.equal(calls, 3)
+    assert.equal(outcome.items.length, 30)
+    assert.match(outcome.error, /maxPages|csonka/i)
+  })
+
+  await check('paginate: upstream pageSize-cap (500→100) nem áll meg az 1. oldalnál', async () => {
+    const pages = [
+      Array.from({ length: 100 }, (_, i) => ({ id: i })),
+      Array.from({ length: 100 }, (_, i) => ({ id: 100 + i })),
+      Array.from({ length: 20 }, (_, i) => ({ id: 200 + i })),
+    ]
+    let calls = 0
+    const outcome = await paginateHttpApiGet({
+      plan: resolveHttpApiPaginatePlan({ pageSize: 500, maxPages: 10 }),
+      fetchPage: async () => {
+        const body = pages[calls] ?? []
+        calls += 1
+        return { ok: true, status: 200, body }
+      },
+    })
+    assert.equal(outcome.ok, true)
+    if (!outcome.ok) return
+    assert.equal(calls, 3)
+    assert.equal(outcome.items.length, 220)
+  })
+
+  await check('paginate: maxPages=1 + rövid első oldal → kész (nincs hamis csonka)', async () => {
+    const outcome = await paginateHttpApiGet({
+      plan: resolveHttpApiPaginatePlan({ pageSize: 100, maxPages: 1 }),
+      fetchPage: async () => ({
+        ok: true,
+        status: 200,
+        body: Array.from({ length: 47 }, (_, i) => ({ id: i })),
+      }),
+    })
+    assert.equal(outcome.ok, true)
+    if (!outcome.ok) return
+    assert.equal(outcome.items.length, 47)
+  })
+
   if (failures > 0) {
     console.error(`\n${failures} teszt bukott\n`)
     process.exit(1)

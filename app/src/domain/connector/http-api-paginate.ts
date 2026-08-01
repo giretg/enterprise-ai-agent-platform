@@ -128,6 +128,15 @@ export function resolveHttpApiPaginatePlan(
 /**
  * Lapozás egy fetch callback-kel. Üres oldal → stop. Hibás HTTP → fail
  * (eddig gyűjtött items megmaradnak a failure-ben debughoz).
+ *
+ * Fontos: a maxPages elérése NEM csendes siker. Ha az utolsó bekért oldal
+ * tele volt (effectivePageSize szerint), a lista nagyon valószínűleg csonka —
+ * ok:false-szal jelezzük, különben a reconcile/egyéb utófeldolgozás teljes
+ * adatként kezelné a hiányos uniót.
+ *
+ * A short-page heurisztika az upstream által visszakapott tényleges oldalhosszhoz
+ * igazodik: ha a szerver a kért pageSize-t lefelé limitálja (pl. 500→100), az
+ * első rövid oldal NEM zárja le a lapozást.
  */
 export async function paginateHttpApiGet(input: {
   plan: HttpApiPaginatePlan
@@ -138,6 +147,10 @@ export async function paginateHttpApiGet(input: {
   let pageCount = 0
   let emptyTrailingPages = 0
   let lastStatus: number | null = null
+  let lastPageItemCount = 0
+  /** A kért pageSize helyett az upstream által ténylegesen adott oldalhossz. */
+  let effectivePageSize = input.plan.pageSize
+  let stoppedEarly = false
 
   for (let page = input.plan.startPage; pageCount < input.plan.maxPages; page++) {
     const query = buildPageQuery(input.baseQuery, input.plan, page)
@@ -171,12 +184,45 @@ export async function paginateHttpApiGet(input: {
 
     if (pageItems.length === 0) {
       emptyTrailingPages += 1
+      stoppedEarly = true
       break
     }
 
+    lastPageItemCount = pageItems.length
     items.push(...pageItems)
-    // Ha az oldal rövidebb a pageSize-nál, tipikusan ez az utolsó.
-    if (pageItems.length < input.plan.pageSize) break
+
+    // Első nemüres oldal rövidebb a kért pageSize-nál: vagy ez az összes adat,
+    // vagy az upstream lefelé limitálta az oldalt. Ha van még maxPages keret,
+    // peek-elünk (effective méret = megfigyelt hossz); ha nincs, a legacy
+    // short-page stop érvényesül — ne jelentsünk hamis csonkolást.
+    if (pageCount === 1 && pageItems.length < input.plan.pageSize) {
+      effectivePageSize = pageItems.length
+      if (pageCount >= input.plan.maxPages) {
+        stoppedEarly = true
+        break
+      }
+      continue
+    }
+
+    // Rövid oldal (az effective mérethez képest) → tipikusan ez az utolsó.
+    if (pageItems.length < effectivePageSize) {
+      stoppedEarly = true
+      break
+    }
+  }
+
+  // maxPages kimerült tele utolsó oldallal → csonka lista, ne hazudjunk ok:true-t.
+  if (!stoppedEarly && lastPageItemCount >= effectivePageSize && pageCount >= input.plan.maxPages) {
+    return {
+      ok: false,
+      error:
+        `a lapozás a maxPages (${input.plan.maxPages}) limitnél megszakadt ` +
+        `${items.length} begyűjtött elemmel — a lista valószínűleg csonka; ` +
+        `növeld a maxPages értékét vagy szűkítsd a lekérdezést`,
+      pageCount,
+      items,
+      lastStatus,
+    }
   }
 
   return {
