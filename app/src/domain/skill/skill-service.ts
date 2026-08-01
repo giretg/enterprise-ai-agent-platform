@@ -26,7 +26,9 @@ import {
   computeSkillContentHash,
   parseSkillContent,
   parseSkillRequires,
+  skillAllowsAttachments,
   type SkillContent,
+  type SkillParameter,
   type SkillRequirement,
   type SkillRuntimeHints,
 } from '@/lib/skill/skill-content'
@@ -72,6 +74,12 @@ export interface SkillPreloadResult {
   blocked: Array<{ name: string; missingTools: string[]; reason: string }>
   requiredTools?: string[]
   runtimeHints?: SkillRuntimeHints
+  /**
+   * A ténylegesen betöltött skillek DEKLARÁLT paraméterei (#199), betöltési
+   * sorrendben, névre deduplikálva. Ebből köti a feladat-runtime a ticketen
+   * megadott paraméter-ÉRTÉKEKHEZ a leírásokat.
+   */
+  parameters?: SkillParameter[]
 }
 
 export interface ActorContext {
@@ -900,6 +908,7 @@ export class SkillService {
     const loadedSkillNames: string[] = []
     const loadedSkillVersionIds: string[] = []
     const collectedHints: SkillRuntimeHints[] = []
+    const collectedParameters: SkillParameter[] = []
     const blocked: SkillPreloadResult['blocked'] = []
     const requiredTools: string[] = []
     let sawSkillWithoutRequires = false
@@ -987,12 +996,17 @@ export class SkillService {
       loadedSkillVersionIds.push(skillVersionId)
       preloadedPrompts.push(`${reason}\n\n${buildLoadedSkillPrompt(entry, content)}`)
       if (content.runtimeHints) collectedHints.push(content.runtimeHints)
+      for (const parameter of content.parameters) {
+        if (collectedParameters.some((p) => p.name === parameter.name)) continue
+        collectedParameters.push(parameter)
+      }
     }
     return {
       preloadedPrompts,
       loadedSkillNames,
       loadedSkillVersionIds,
       blocked,
+      ...(collectedParameters.length > 0 ? { parameters: collectedParameters } : {}),
       // A betöltött skillek `allowed-tools`-a = a forduló eszköz-hatóköre. Ha
       // BÁRMELYIK betöltött skill üres requires-szel jön, nincs mit szűkíteni:
       // ilyenkor a hatókört elhagyjuk (undefined), különben a listázatlan skill
@@ -1229,6 +1243,40 @@ export class SkillService {
       metadata: { skillVersionIds },
     })
     return skillVersionIds
+  }
+
+  /**
+   * Egy skill-verzió kanonikus tartalma (#199). A hozzárendelés-ellenőrzés NEM
+   * ennek a dolga — a hívó (feladat-indítás, katalógus) előbb feloldja, hogy az
+   * agenten engedélyezett-e a verzió.
+   */
+  async getSkillContentForVersion(skillVersionId: string): Promise<SkillContent | null> {
+    const version = await this.skills.findVersionById(skillVersionId)
+    if (!version) return null
+    return parseSkillContent(version.content)
+  }
+
+  /**
+   * Csatolmány-kapu (#199): engedik-e a MEGADOTT skill-verziók a fájlcsatolást?
+   *
+   * EGY forrás mindkét kapuhoz — a `createBoardTicket` és a workspace-feltöltő
+   * endpoint is ezt hívja. A feltöltés ugyanis NEM a ticket létrehozásával egy
+   * hívásban történik: ha csak az egyik helyen ellenőriznénk, a kapu egy közvetlen
+   * POST-tal megkerülhető lenne.
+   *
+   * A legszigorúbb szabály nyer: egyetlen tiltó skill is letiltja a csatolást.
+   * Ismeretlen skill-verzió nem tilt (a hívó úgyis külön ellenőrzi a hozzárendelést).
+   */
+  async resolveAttachmentPolicy(skillVersionIds: string[]): Promise<{
+    allowAttachments: boolean
+    blockingSkillNames: string[]
+  }> {
+    if (skillVersionIds.length === 0) return { allowAttachments: true, blockingSkillNames: [] }
+    const versions = await this.skills.findVersionsByIds(skillVersionIds)
+    const blockingSkillNames = versions
+      .filter((v) => !skillAllowsAttachments(parseSkillContent(v.content).runtimeHints))
+      .map((v) => v.skill.name)
+    return { allowAttachments: blockingSkillNames.length === 0, blockingSkillNames }
   }
 
   /**

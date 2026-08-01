@@ -433,6 +433,23 @@ export class PostgresAgentRepository implements AgentRepository {
   }
 
   /**
+   * Feladatkör-korlátozás (#199). Nem emel agent-verziót és nem szűkíti a
+   * jogosultságokat — kizárólag azt, hogy az agent EMBERI felületén chat vagy
+   * egyetlen skill-kötött feladat-gomb jelenik-e meg.
+   */
+  async updateTaskOnly(input: {
+    agentId: string
+    taskOnly: boolean
+  }): Promise<{ taskOnly: boolean }> {
+    const updated = await prisma.agent.update({
+      where: { id: input.agentId },
+      data: { taskOnly: input.taskOnly },
+      select: { taskOnly: true },
+    })
+    return updated
+  }
+
+  /**
    * Agent-hozzáférési gráf kapcsolói (Access-Policy §agent-scope, #142). Nem emel
    * agent-verziót és nem befolyásolja a dispatch-et — csak azt, hogy a gráf melyik
    * irányban kér explicit élt. Az előző értéket is visszaadja, hogy az

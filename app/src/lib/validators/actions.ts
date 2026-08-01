@@ -200,6 +200,14 @@ export const createBoardTicketSchema = z
     dueBy: z.string().datetime().optional().nullable(),
     /** Ha true, a ticket ready marad, de a dispatcher nem indul — pl. workspace fájl feltöltés után. */
     deferDispatch: z.boolean().optional(),
+    /**
+     * Feladatkör-korlátozás (#199): a kiválasztott skill deklarált paramétereinek
+     * kitöltött értékei. A kulcsokat a szerver a skill `parameters[]` neveihez köti;
+     * ismeretlen kulcs hiba. v1-ben minden paraméter opcionális.
+     */
+    skillParameterValues: z
+      .record(z.string().min(1).max(120), z.string().max(2_000))
+      .optional(),
   })
   .refine((args) => args.assigneeType !== 'agent' || args.assigneeId, {
     message: 'assigneeId is required when assigneeType is agent',
@@ -211,6 +219,9 @@ export const createBoardTicketSchema = z
       args.skillVersionIds.length === 0,
     { message: 'skillVersionIds only allowed when assigneeType is agent' },
   )
+  .refine((args) => args.assigneeType === 'agent' || !args.skillParameterValues, {
+    message: 'skillParameterValues only allowed when assigneeType is agent',
+  })
 
 /** Board ticket deferred dispatch — a form `{ ticketId }` kulccsal hívja (nem `{ id }`). */
 export const dispatchBoardTicketSchema = z.object({
@@ -707,6 +718,15 @@ export const updateAgentSensitivityPolicySchema = z.object({
 export const updateAgentOperatorVisibilitySchema = z.object({
   agentId: z.string().uuid(),
   hiddenFromOperators: z.boolean(),
+})
+
+/**
+ * Feladatkör-korlátozás (#199). UI-egyszerűsítés, nem jogosultsági korlát —
+ * a kapcsolót kizárólag tenant admin állíthatja, minden váltás auditált.
+ */
+export const updateAgentTaskOnlySchema = z.object({
+  agentId: z.string().uuid(),
+  taskOnly: z.boolean(),
 })
 
 export const updateAgentPersonaSchema = z

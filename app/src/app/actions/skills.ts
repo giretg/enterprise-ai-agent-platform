@@ -13,6 +13,7 @@ import {
   SKILL_NAME_MAX,
   parseSkillContent,
   parseSkillRequires,
+  skillAllowsAttachments,
   skillContentSchema,
   skillRequiresSchema,
   type SkillContent,
@@ -74,6 +75,10 @@ export interface AgentSkillRow {
   riskTier: SkillRiskTier
   requires: Array<{ toolName: string; reason: string }>
   readiness: SkillReadiness
+  /** A skill deklarált paraméterei (#199) — a feladat-indító űrlap mezői. */
+  parameters: Array<{ name: string; description: string }>
+  /** Csatolható-e fájl a skillhez kötött feladathoz (#199). Hiányzó érték = engedett. */
+  allowAttachments: boolean
 }
 
 export async function getAgentSkillsAction(
@@ -95,6 +100,11 @@ export async function getAgentSkillsAction(
         riskTier: r.riskTier,
         requires: r.requires,
         readiness: r.readiness,
+        parameters: r.content.parameters.map((p) => ({
+          name: p.name,
+          description: p.description,
+        })),
+        allowAttachments: skillAllowsAttachments(r.content.runtimeHints),
       })),
     )
   } catch (err) {

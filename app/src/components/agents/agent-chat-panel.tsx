@@ -1109,6 +1109,8 @@ export type ChatSkillOption = {
   skillVersionId: string
   name: string
   description: string
+  /** #199 — enged-e a skill fájlcsatolást. Chatben CSAK figyelmeztetés (D6). */
+  allowAttachments: boolean
 }
 
 type ChatAgent = {
@@ -1524,6 +1526,7 @@ export function AgentChatPanel({
             skillVersionId: row.skillVersionId,
             name: row.name,
             description: row.description,
+            allowAttachments: row.allowAttachments,
           })
         }
       }
@@ -1545,6 +1548,22 @@ export function AgentChatPanel({
     () => (slashContext ? filterSkillsForSlashQuery(agentSkills, slashContext.query) : []),
     [agentSkills, slashContext],
   )
+
+  // #199/D6 — chatben a csatolmány-tiltás CSAK figyelmeztetés: a küldést nem
+  // törjük meg. A kemény kapu ott van, ahol a skillt explicit kiválasztják
+  // (korlátozott feladat + normál board-feladat); a chat szabad beszélgetés,
+  // ahol a felhasználó a csatolmányt más célra is szánhatja.
+  const attachmentWarningSkills = useMemo(() => {
+    if (pendingAttachments.length === 0) return []
+    const tokens = new Set<string>()
+    for (const match of input.matchAll(/(?:^|\s)\/([a-zA-Z0-9_-]+)/g)) {
+      tokens.add(match[1].toLowerCase())
+    }
+    if (tokens.size === 0) return []
+    return agentSkills
+      .filter((skill) => !skill.allowAttachments && tokens.has(skillNameToSlashToken(skill.name)))
+      .map((skill) => skill.name)
+  }, [agentSkills, input, pendingAttachments.length])
 
   const applySkillSlashSelection = useCallback(
     (skill: ChatSkillOption) => {
@@ -2915,6 +2934,14 @@ export function AgentChatPanel({
                   </Link>
                 </>
               )}
+            </p>
+          )}
+
+          {attachmentWarningSkills.length > 0 && (
+            <p className="mb-3 rounded-lg border border-honey/40 bg-honey/10 px-3 py-2 text-xs text-honey">
+              A(z) {attachmentWarningSkills.join(', ')} skill jellemzően nem fájlból dolgozik —
+              a csatolmányt lehet, hogy figyelmen kívül hagyja. Az üzenetet ettől még
+              elküldheted.
             </p>
           )}
 

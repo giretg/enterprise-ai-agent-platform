@@ -5,6 +5,7 @@ import type { Agent } from '@prisma/client'
 import { Badge, Card } from '@/components/ui/shell'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
 import { AgentChatButton } from '@/components/agents/agent-chat-panel'
+import { AgentTaskButton } from '@/components/agents/agent-task-button'
 import { AgentMiniAppsLink } from '@/components/agents/agent-mini-apps-link'
 import { DeleteAgentButton } from '@/components/agents/delete-agent-button'
 import { personaFor, humanStatus } from '@/lib/agent-persona'
@@ -69,6 +70,7 @@ export function AgentRegistryCard({
                     : 'pihen'}
           </Badge>
           {agent.hiddenFromOperators && <Badge tone="neutral">operátoroktól rejtett</Badge>}
+          {agent.taskOnly && <Badge tone="neutral">korlátozott feladatkör</Badge>}
           {canDelete && <DeleteAgentButton agentId={agent.id} agentName={p.nickname} compact />}
         </div>
       </div>
@@ -82,18 +84,23 @@ export function AgentRegistryCard({
           <p className="line-clamp-2 text-xs text-ink-faint">{agent.roleInstruction}</p>
         </Link>
         <div className="flex shrink-0 flex-col items-end gap-2">
-          <AgentChatButton
-            agent={{
-              id: agent.id,
-              name: agent.name,
-              status: agent.status,
-              avatarUrl: agent.avatarUrl,
-              personaNickname: agent.personaNickname,
-              personaGreeting: agent.personaGreeting,
-              personaTrait: agent.personaTrait,
-            }}
-            compact
-          />
+          {/* #199 — korlátozott feladatkörű agentnél nincs chat, csak feladat-gomb. */}
+          {agent.taskOnly ? (
+            <AgentTaskButton agentId={agent.id} compact />
+          ) : (
+            <AgentChatButton
+              agent={{
+                id: agent.id,
+                name: agent.name,
+                status: agent.status,
+                avatarUrl: agent.avatarUrl,
+                personaNickname: agent.personaNickname,
+                personaGreeting: agent.personaGreeting,
+                personaTrait: agent.personaTrait,
+              }}
+              compact
+            />
+          )}
           <AgentMiniAppsLink agentId={agent.id} compact />
         </div>
       </div>

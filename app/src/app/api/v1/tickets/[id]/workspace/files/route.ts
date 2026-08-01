@@ -1,10 +1,12 @@
 import { NextResponse } from 'next/server'
 import { requireTenantRole } from '@/auth/tenant-context'
+import { services } from '@/domain'
 import { prisma } from '@/lib/db'
 import { WorkspaceStorage } from '@/domain/file-editor/workspace-storage'
 import { FileEditorError } from '@/domain/file-editor/workspace-storage'
 import { resolveWorkspaceTenantKey } from '@/lib/workspace-resource-access'
 import { isHtmlWorkspaceFile } from '@/lib/workspace-file-visibility'
+import { readTicketPreferredSkillVersionIds } from '@/lib/task-only-ticket'
 
 function jsonError(message: string, status: number) {
   return NextResponse.json({ success: false, error: message }, { status })
@@ -17,7 +19,7 @@ function getStorage() {
 async function resolveTicket(ticketId: string, tenantId: string) {
   return prisma.ticket.findFirst({
     where: { id: ticketId, tenantId },
-    select: { id: true, tenantId: true, agentId: true, createdById: true },
+    select: { id: true, tenantId: true, agentId: true, createdById: true, payload: true },
   })
 }
 
@@ -109,6 +111,20 @@ export async function POST(
     tenantId = resolveWorkspaceTenantKey(ticket, user.activeTenantId)
   } catch {
     return jsonError('Ticket not found', 404)
+  }
+
+  // Csatolmány-kapu (#199). A feltöltés NEM a ticket létrehozásával egy hívásban
+  // történik, ezért ha csak a `createBoardTicket`-ben ellenőriznénk, egy közvetlen
+  // POST-tal meg lehetne kerülni a skillre beállított tiltást.
+  const preferredSkillVersionIds = readTicketPreferredSkillVersionIds(ticket.payload)
+  if (preferredSkillVersionIds.length > 0) {
+    const policy = await services.skills.resolveAttachmentPolicy(preferredSkillVersionIds)
+    if (!policy.allowAttachments) {
+      return jsonError(
+        `A feladathoz választott skill (${policy.blockingSkillNames.join(', ')}) nem enged fájlcsatolást.`,
+        403,
+      )
+    }
   }
 
   let formData: FormData
