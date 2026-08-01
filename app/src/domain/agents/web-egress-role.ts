@@ -11,13 +11,20 @@
  * tipizált, determinisztikusan validált/sanitizált értéket (provisioningnál: `ConnectorConfig`).
  */
 import type { ModelConfig } from '@/domain/gateway/model-gateway'
+import { toolCapabilityName } from '@/domain/tool-broker/tool-registry'
 
 /**
  * A web-egress felület broker-tool capability-jei (deny-by-default). Ezek a Tool Broker
  * `findCapability(agentId, tool)` sorai — a `web_fetch` KIZÁRÓLAG web-egress role agentnek
  * adható (§7.4). A `web_search` a meglévő tool.
  */
-export const WEB_EGRESS_TOOL_CAPABILITIES = ['web_search', 'web_fetch'] as const
+export const WEB_EGRESS_TOOL_CAPABILITIES = [
+  // A `web_search` broker-tool — a capability nevét a kanonikus regiszter adja
+  // (issue #194, D6), hogy egy átnevezés ne hagyjon árva jogosultsági sort.
+  toolCapabilityName('web_search'),
+  // A `web_fetch` NEM broker-tool: kizárólag Capability-sor a felfedező hurokhoz.
+  'web_fetch',
+] as const
 export type WebEgressToolCapability = (typeof WEB_EGRESS_TOOL_CAPABILITIES)[number]
 
 /**

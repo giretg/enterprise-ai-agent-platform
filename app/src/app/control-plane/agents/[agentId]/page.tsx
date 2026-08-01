@@ -21,6 +21,7 @@ import { AssignExistingConnectorForm } from '@/components/agents/assign-existing
 import { ApiConnectorList } from '@/components/agents/api-connector-list'
 import { AgentKnowledgeBasePanel } from '@/components/agents/agent-knowledge-base-panel'
 import { AgentCapabilitiesPanel } from '@/components/agents/agent-capabilities-panel'
+import { AgentToolAccessDiagnostics } from '@/components/agents/agent-tool-access-diagnostics'
 import { AgentSkillsPanel } from '@/components/agents/agent-skills-panel'
 import type { AgentSkillRow, AssignableSkill } from '@/app/actions/skills'
 import { WebSearchPolicyCard } from '@/components/agents/web-search-policy-card'
@@ -471,11 +472,14 @@ export default async function AgentDetailPage({
               </Card>
 
               {governance && (
-                <AgentCapabilitiesPanel
-                  agentId={agent.id}
-                  currentCapabilities={governance.capabilities}
-                  isOrchestrator={agent.role === 'orchestrator'}
-                />
+                <>
+                  <AgentToolAccessDiagnostics report={governance.toolAccess} />
+                  <AgentCapabilitiesPanel
+                    agentId={agent.id}
+                    currentCapabilities={governance.capabilities}
+                    isOrchestrator={agent.role === 'orchestrator'}
+                  />
+                </>
               )}
 
               {isAdmin && (

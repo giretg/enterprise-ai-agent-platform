@@ -109,6 +109,7 @@ jobs:
           npm run test:dispatch-cycle-endpoint
           npm run test:conversation-session
           npm run test:agent-interaction-ticket
+          npm run test:tool-registry-drift
           npm run test:tool-trust
           npm run test:consequence-gate
           npm run test:consequence-approval

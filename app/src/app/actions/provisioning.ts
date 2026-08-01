@@ -5,6 +5,7 @@ import { requirePlatformRole, requireTenantPermission, requireTenantRole } from 
 import { services } from '@/domain'
 import { repositories } from '@/repositories/postgres'
 import { prisma } from '@/lib/db'
+import { toolsRequiringConnector } from '@/domain/tool-broker/tool-broker-authorizer'
 import { fail, ok } from '@/lib/result'
 import { ProvisioningError } from '@/domain/provisioning/errors'
 import type { ProvisioningActor } from '@/domain/provisioning/provisioning-service'
@@ -211,8 +212,10 @@ async function syncAssignedConnectorCapabilities(
   connectorType: 'http_api' | 'gmail',
 ) {
   if (connectorType === 'gmail') {
-    const readTools = ['gmail_search', 'gmail_get_message', 'mailbox_count'] as const
-    const writeTools = ['gmail_create_draft', 'gmail_send'] as const
+    // A capability-nevek a broker connector-mátrixából jönnek (issue #194, D6),
+    // nem kézi listából: ami a brokernek gmail-connectort igényel, arra itt jog is jár.
+    const readTools = toolsRequiringConnector('gmail', 'read')
+    const writeTools = toolsRequiringConnector('gmail', 'write')
     for (const toolName of readTools) {
       await prisma.capability.upsert({
         where: { agentId_toolName: { agentId, toolName } },
@@ -290,8 +293,8 @@ async function syncAssignedConnectorCapabilities(
  * A megszüntetés ekkor már levette az agent_connectors kötést, ezért a count tükrözi a valóságot.
  */
 async function syncConnectorRemovalCapabilities(agentIds: string[]) {
-  const GMAIL_READ_TOOLS = ['gmail_search', 'gmail_get_message', 'mailbox_count'] as const
-  const GMAIL_WRITE_TOOLS = ['gmail_create_draft', 'gmail_send'] as const
+  const GMAIL_READ_TOOLS = toolsRequiringConnector('gmail', 'read')
+  const GMAIL_WRITE_TOOLS = toolsRequiringConnector('gmail', 'write')
 
   for (const agentId of agentIds) {
     const [httpAnyActive, httpWriteActive, gmailAnyActive, gmailWriteActive] = await Promise.all([

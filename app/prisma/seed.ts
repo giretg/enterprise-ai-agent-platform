@@ -21,6 +21,8 @@ import { ensureDefaultRolePermissions } from '../src/repositories/postgres/iam-r
 import { BUILTIN_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/builtin-templates'
 import { GLOBAL_CUSTOM_CONNECTOR_TEMPLATES } from '../src/domain/connector-template/custom-template-seeds'
 import { upsertConnectorByTypeName } from '../src/lib/connector-upsert'
+import type { ToolName } from '../src/domain/tool-broker/tool-broker-types'
+import { toolCapabilityNames } from '../src/domain/tool-broker/tool-registry'
 import {
   ensureAllTenantsHaveWebSearchConnector,
   ensurePlatformWebSearchConnector,
@@ -255,6 +257,21 @@ async function ensureProvisioningAssistantAgent(adminId: string) {
   return agent
 }
 
+/**
+ * Broker-tool jogosultságok kiadása a KANONIKUS regiszter capability-neveivel
+ * (issue #194, D6). A paraméter `ToolName[]`, tehát egy nem létező vagy
+ * átnevezett tool itt fordításidőben bukik, nem a futásban.
+ */
+async function grantToolCapabilities(agentId: string, tools: readonly ToolName[]) {
+  for (const toolName of toolCapabilityNames(tools)) {
+    await prisma.capability.upsert({
+      where: { agentId_toolName: { agentId, toolName } },
+      create: { agentId, toolName, allowed: true },
+      update: { allowed: true },
+    })
+  }
+}
+
 /** A `provisioning.draft.*` capability-seed (deny-by-default → itt kifejezetten allowed). */
 async function ensureProvisioningAssistantCapabilities(agentId: string) {
   for (const toolName of PROVISIONING_DRAFT_CAPABILITIES) {
@@ -453,13 +470,13 @@ async function ensureChatToolsForAgent(agentId: string) {
     })
   }
 
-  for (const toolName of ['ticket_create', 'agent_ask', 'agent_resolve', 'agent_catalog', 'user_directory']) {
-    await prisma.capability.upsert({
-      where: { agentId_toolName: { agentId, toolName } },
-      create: { agentId, toolName, allowed: true },
-      update: { allowed: true },
-    })
-  }
+  await grantToolCapabilities(agentId, [
+    'ticket_create',
+    'agent_ask',
+    'agent_resolve',
+    'agent_catalog',
+    'user_directory',
+  ])
 }
 
 async function linkGmailConnectorIfAvailable(agentId: string) {
@@ -512,58 +529,24 @@ async function ensureToolBrokerSeed(agentId: string) {
     update: { accessMode: 'write' },
   })
 
-  await prisma.capability.upsert({
-    where: { agentId_toolName: { agentId, toolName: 'board_write' } },
-    create: { agentId, toolName: 'board_write', allowed: true },
-    update: { allowed: true },
-  })
-
-  await prisma.capability.upsert({
-    where: { agentId_toolName: { agentId, toolName: 'ticket_create' } },
-    create: { agentId, toolName: 'ticket_create', allowed: true },
-    update: { allowed: true },
-  })
-
-  await prisma.capability.upsert({
-    where: { agentId_toolName: { agentId, toolName: 'agent_ask' } },
-    create: { agentId, toolName: 'agent_ask', allowed: true },
-    update: { allowed: true },
-  })
-
-  await prisma.capability.upsert({
-    where: { agentId_toolName: { agentId, toolName: 'agent_resolve' } },
-    create: { agentId, toolName: 'agent_resolve', allowed: true },
-    update: { allowed: true },
-  })
-
-  await prisma.capability.upsert({
-    where: { agentId_toolName: { agentId, toolName: 'agent_catalog' } },
-    create: { agentId, toolName: 'agent_catalog', allowed: true },
-    update: { allowed: true },
-  })
-
-  await prisma.capability.upsert({
-    where: { agentId_toolName: { agentId, toolName: 'user_directory' } },
-    create: { agentId, toolName: 'user_directory', allowed: true },
-    update: { allowed: true },
-  })
-
-  // agent-memory-persistent-cross-conversation-spec.md §6/§13 WP-1/WP-4: a
-  // capability itt csak a fail-closed tool-broker-őrt nyitja meg — a
-  // memory_propose handler maga a WP-4-ben kerül a registry-be.
-  await prisma.capability.upsert({
-    where: { agentId_toolName: { agentId, toolName: 'memory_propose' } },
-    create: { agentId, toolName: 'memory_propose', allowed: true },
-    update: { allowed: true },
-  })
-
-  for (const toolName of ['gmail_search', 'gmail_get_message', 'mailbox_count', 'gmail_create_draft', 'gmail_send']) {
-    await prisma.capability.upsert({
-      where: { agentId_toolName: { agentId, toolName } },
-      create: { agentId, toolName, allowed: true },
-      update: { allowed: true },
-    })
-  }
+  // A capability itt csak a fail-closed tool-broker-őrt nyitja meg. A NEVEKET a
+  // kanonikus regiszter adja (issue #194, D6): `ToolName`-ként tipizálva, így egy
+  // átnevezés fordítási hibát okoz, nem árva jogosultsági sorokat.
+  await grantToolCapabilities(agentId, [
+    'board_write',
+    'ticket_create',
+    'agent_ask',
+    'agent_resolve',
+    'agent_catalog',
+    'user_directory',
+    // agent-memory-persistent-cross-conversation-spec.md §6/§13 WP-1/WP-4
+    'memory_propose',
+    'gmail_search',
+    'gmail_get_message',
+    'mailbox_count',
+    'gmail_create_draft',
+    'gmail_send',
+  ])
 
   await linkGmailConnectorIfAvailable(agentId)
 

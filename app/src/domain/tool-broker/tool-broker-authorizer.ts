@@ -89,6 +89,32 @@ export const TOOL_REQUIREMENTS: Partial<Record<
   web_search: { connectorType: 'web_search', accessMode: 'read' },
 }
 
+/**
+ * Azok az eszközök, amelyek egy adott típusú connectort igényelnek — a
+ * `TOOL_REQUIREMENTS` mátrixból SZÁMOLVA (issue #194, WP-5).
+ *
+ * ÜZLETI JELENTŐSÉG: az eszközjog-mentés ebből dönti el, kell-e automatikusan
+ * connectort linkelni. Korábban ehhez külön, kézzel írt tool-listák éltek a
+ * szerver-akcióban, amikből több workspace-es tool (tulajdoni_lap_egyeztetes,
+ * reconcile_records, repo_open_pull_request) KIMARADT: az admin bepipálta a
+ * jogot, connector viszont nem került az agenthez, és a tool néma
+ * connector-hibára futott.
+ */
+export function toolsRequiringConnector(
+  connectorType: ConnectorType,
+  accessMode?: ConnectorAccessMode,
+): ToolName[] {
+  return (Object.entries(TOOL_REQUIREMENTS) as Array<
+    [ToolName, { connectorType: ConnectorType; accessMode: ConnectorAccessMode }]
+  >)
+    .filter(
+      ([, requirement]) =>
+        requirement.connectorType === connectorType &&
+        (accessMode === undefined || requirement.accessMode === accessMode),
+    )
+    .map(([tool]) => tool)
+}
+
 export interface Authorizer {
   authorize(input: {
     agentId: string
