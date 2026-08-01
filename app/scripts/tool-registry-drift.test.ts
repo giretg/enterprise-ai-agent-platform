@@ -155,6 +155,46 @@ function main() {
     }
   })
 
+  // ── 4a. Surfaces történeti pin ────────────────────────────────────────────
+  // A #196 refaktor `BOTH` defaultja némán kibővítette a felületeket (sandbox.*
+  // / mailbox_count a chatbe; memory_propose / repo_* / tulajdoni_* az MCP-be,
+  // ahol nincs consequence-kapu). Ez a pin megakadályozza, hogy egy későbbi
+  // „véletlen BOTH" újra átírja a korábbi allowlist-szándékot.
+  test('surfaces történeti pin: chat-only / mcp-only toolok nem csúsznak át', () => {
+    const mustBeMcpOnly = [
+      'board_write',
+      'mailbox_count',
+      'sandbox.commit',
+      'sandbox.request_promotion',
+      'sandbox.snapshot',
+    ] as const
+    const mustBeChatOnly = [
+      'document_read',
+      'memory_propose',
+      'reconcile_records',
+      'repo_open_pull_request',
+      'repo_prepare',
+      'tulajdoni_lap_egyeztetes',
+      'tulajdoni_lap_parse',
+      'web_research_request',
+    ] as const
+
+    for (const name of mustBeMcpOnly) {
+      assert.deepEqual(
+        [...TOOL_REGISTRY[name].surfaces].sort(),
+        ['mcp'],
+        `${name} csak MCP-en lehet (ne jelenjen meg a chatben)`,
+      )
+    }
+    for (const name of mustBeChatOnly) {
+      assert.deepEqual(
+        [...TOOL_REGISTRY[name].surfaces].sort(),
+        ['chat'],
+        `${name} csak chaten lehet (MCP-n nincs consequence-kapu)`,
+      )
+    }
+  })
+
   // ── 4b. A validátor- és a capability-vetület is teljes ───────────────────
   // A `toolInvokeSchema` korábban kézzel írt union volt, amiből 19 tool kimaradt:
   // az agent tools API 400-zal utasította vissza őket, hiába volt handlerük.
