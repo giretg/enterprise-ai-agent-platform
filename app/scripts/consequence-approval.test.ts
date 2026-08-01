@@ -87,13 +87,13 @@ function memoryRepo(): ConsequenceApprovalRepository & {
     async casClaimRetry(id) {
       // A valódi repo atomi UPDATE-jét utánozza: csak akkor foglal, ha a sor
       // `approved` ÉS a korábbi invoke bukott (`resultMeta.denied === true`) ÉS
-      // még nincs `retrying` jelző rajta. A jelzőt RÁTESSZÜK (denied megmarad),
-      // így egy párhuzamos második claim már nem talál rá.
+      // még NINCS `retrying` kulcs rajta (SQL: `jsonb_exists` — a kulcs léte tilt,
+      // nem csak a `true` érték). A jelzőt RÁTESSZÜK (denied megmarad).
       const row = rows.get(id)
       if (!row || row.status !== 'approved') return null
       const meta = row.resultMeta as { denied?: unknown; retrying?: unknown } | null
       if (!meta || typeof meta !== 'object') return null
-      if (meta.denied !== true || meta.retrying === true) return null
+      if (meta.denied !== true || 'retrying' in meta) return null
       const next: ConsequenceApproval = {
         ...row,
         resultMeta: { ...(meta as object), retrying: true } as ConsequenceApproval['resultMeta'],
@@ -294,9 +294,9 @@ async function main() {
       service.approve(card.approvalId, actor),
     ])
     const oks = [a, b].filter((r) => r.ok)
-    const inflight = [a, b].filter((r) => !r.ok && r.reason === 'approval_retry_in_flight')
+    const inflight = [a, b].filter((r) => !r.ok && r.reason === 'approval_in_flight')
     assert.equal(oks.length, 1, 'pontosan egy retry győz')
-    assert.equal(inflight.length, 1, 'a vesztes approval_retry_in_flight-ot kap')
+    assert.equal(inflight.length, 1, 'a vesztes approval_in_flight-ot kap')
     assert.equal(invoked.length, 2, 'összesen egy initial + egy retry invoke — NEM kettő retry')
   })
 
@@ -313,8 +313,107 @@ async function main() {
     row.resultMeta = { denied: true, reason: 'broker_boom', failed: true, retrying: true } as never
     const result = await service.approve(card.approvalId, actor)
     assert.equal(result.ok, false)
-    if (!result.ok) assert.equal(result.reason, 'approval_retry_in_flight')
+    if (!result.ok) assert.equal(result.reason, 'approval_in_flight')
     assert.equal(invoked.length, 0, 'folyamatban lévő retry alatt SOHA nem indul újabb invoke')
+  })
+
+  // Az ELSŐ approve úton is: amíg az invoke fut (`invoking` / null meta), a
+  // párhuzamos második katt NEM jelenthet hamis sikert — különben az agent
+  // úgy folytatná a szálat, mintha a mellékhatás már kész lenne.
+  await test('folyamatban lévő első invoke: approve nem jelent hamis sikert', async () => {
+    const invoked: ToolBrokerInvokeInput[] = []
+    const { service, repo } = buildService({ invoked })
+    const card = await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
+    const row = repo.rows.get(card.approvalId)!
+    row.status = 'approved'
+    row.resultMeta = { invoking: true } as never
+    const result = await service.approve(card.approvalId, actor)
+    assert.equal(result.ok, false)
+    if (!result.ok) assert.equal(result.reason, 'approval_in_flight')
+    assert.equal(invoked.length, 0)
+  })
+
+  await test('lezáratlan (null) resultMeta: approve nem jelent hamis sikert', async () => {
+    const invoked: ToolBrokerInvokeInput[] = []
+    const { service, repo } = buildService({ invoked })
+    const card = await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
+    const row = repo.rows.get(card.approvalId)!
+    row.status = 'approved'
+    row.resultMeta = null
+    const result = await service.approve(card.approvalId, actor)
+    assert.equal(result.ok, false)
+    if (!result.ok) assert.equal(result.reason, 'approval_in_flight')
+    assert.equal(invoked.length, 0)
+  })
+
+  await test('getApprovedContinuation: folyamatban lévő invoke-ra nem indul folytatás', async () => {
+    const { service, repo } = buildService()
+    const card = await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
+    const row = repo.rows.get(card.approvalId)!
+    row.status = 'approved'
+    row.resultMeta = { invoking: true } as never
+    const res = await service.getApprovedContinuation([card.approvalId], actor)
+    assert.equal(res.ok, false)
+    if (!res.ok) assert.equal(res.reason, 'approval_in_flight')
+  })
+
+  await test('approve: a pending→approved CAS invoking jelzőt ír (egyszer-használat az első úton)', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const invoked: ToolBrokerInvokeInput[] = []
+    const repo = memoryRepo()
+    const audits: Array<{ action: string }> = []
+    const slowBroker = {
+      invoke: async (input: ToolBrokerInvokeInput) => {
+        invoked.push(input)
+        await gate
+        return {
+          denied: false,
+          trust: 'trusted' as const,
+          result: { path: 'out.xlsx' },
+          resultMeta: {},
+          latencyMs: 1,
+        }
+      },
+    } as unknown as ToolBrokerService
+    const service = new ConsequenceApprovalService(
+      repo,
+      {
+        findByIdForTenant: async () =>
+          ({
+            id: 'conv-1',
+            tenantId: 'tenant-1',
+            createdById: 'user-1',
+            agentId: 'agent-1',
+          }) as never,
+      } as unknown as ConversationRepository,
+      {
+        findById: async () => ({ id: 'agent-1', tenantId: 'tenant-1' }) as never,
+      } as unknown as AgentRepository,
+      {
+        append: async (data: { action: string }) => {
+          audits.push(data)
+          return {} as never
+        },
+      } as unknown as AuditRepository,
+      slowBroker,
+    )
+    const card = await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
+    const firstPromise = service.approve(card.approvalId, actor)
+    // Amíg az első invoke a gate-en vár, a meta invoking kell legyen.
+    await new Promise((r) => setTimeout(r, 10))
+    const mid = repo.rows.get(card.approvalId)!
+    assert.equal(mid.status, 'approved')
+    assert.equal((mid.resultMeta as { invoking?: boolean }).invoking, true)
+    const second = await service.approve(card.approvalId, actor)
+    assert.equal(second.ok, false)
+    if (!second.ok) assert.equal(second.reason, 'approval_in_flight')
+    release()
+    const first = await firstPromise
+    assert.equal(first.ok, true)
+    assert.equal(invoked.length, 1)
   })
 
   await test('reject: nem hív invoke-ot', async () => {

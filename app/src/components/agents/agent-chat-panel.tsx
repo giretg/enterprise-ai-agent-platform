@@ -675,6 +675,9 @@ function formatConsequenceApprovalError(error: string): string {
       return 'A jóváhagyás nem található.'
     case 'approval_already_decided':
       return 'Ezt a műveletet már eldöntötték.'
+    case 'approval_in_flight':
+    case 'approval_retry_in_flight':
+      return 'A művelet épp fut — várj egy pillanatot, majd próbáld újra, ha nem zárul le.'
     case 'forbidden':
       return 'Nincs jogosultságod ehhez a művelethez.'
     case 'conversation_not_found':
