@@ -20,8 +20,10 @@ import {
   shouldPromoteSkillRunToTask,
 } from '../src/domain/agent/skill-task-promotion'
 import {
+  assessNyilvantartasCompleteness,
   buildEgyeztetesMunkafuzet,
   egyeztetesSorok,
+  hasCompleteHttpApiGetAllProvenance,
   matchStrength,
   normalizeNyilvantartasRows,
   parseHanyad,
@@ -303,6 +305,76 @@ test('széljegy esetén a sor megjegyzése figyelmeztet', () => {
     vanSzeljegy: true,
   })
   assert.ok(sorok[0].megjegyzes.includes('széljegy'))
+})
+
+test('csonka nyilvántartás: 50-ös oldal + sok Új rekord → block (Excel ne legyen késznek látszó)', () => {
+  // Regresszió a /tulajdoni-lap-egyeztetes futásra: http_api_get első oldala (50)
+  // extractelve → 137 „Új rekord" hamis pozitív.
+  const verdict = assessNyilvantartasCompleteness({
+    lapTulajdonosDb: 182,
+    nyilvantartasDb: 50,
+    ujRekordDb: 137,
+  })
+  assert.equal(verdict.block, true)
+  assert.ok(verdict.indok)
+  assert.match(verdict.indok!, /http_api_get_all/)
+  assert.match(verdict.indok!, /50/)
+})
+
+test('csonka nyilvántartás: http_api_get_all forrás → nem blockol, csak figyelmeztet', () => {
+  const verdict = assessNyilvantartasCompleteness({
+    lapTulajdonosDb: 182,
+    nyilvantartasDb: 50,
+    ujRekordDb: 137,
+    sourceLooksComplete: true,
+  })
+  assert.equal(verdict.block, false)
+  assert.equal(verdict.warn, true)
+  assert.ok(verdict.indok)
+})
+
+test('get_all teljes forrását strukturált meta igazolja, a fájlnév nem', () => {
+  assert.equal(
+    hasCompleteHttpApiGetAllProvenance({
+      items: [],
+      provenance: { sourceTool: 'http_api_get_all', paginationComplete: true },
+    }),
+    true,
+  )
+  assert.equal(hasCompleteHttpApiGetAllProvenance({ items: [] }), false)
+  assert.equal(hasCompleteHttpApiGetAllProvenance(['http_api_get_all']), false)
+})
+
+test('csonka nyilvántartás: confirm után enged', () => {
+  const verdict = assessNyilvantartasCompleteness({
+    lapTulajdonosDb: 182,
+    nyilvantartasDb: 50,
+    ujRekordDb: 137,
+    confirmedComplete: true,
+  })
+  assert.equal(verdict.block, false)
+  assert.equal(verdict.warn, false)
+})
+
+test('egészséges arány: nem gyanús', () => {
+  const verdict = assessNyilvantartasCompleteness({
+    lapTulajdonosDb: 100,
+    nyilvantartasDb: 95,
+    ujRekordDb: 8,
+  })
+  assert.equal(verdict.block, false)
+  assert.equal(verdict.warn, false)
+  assert.equal(verdict.indok, null)
+})
+
+test('üres nyilvántartás nagy lap mellett → block', () => {
+  const verdict = assessNyilvantartasCompleteness({
+    lapTulajdonosDb: 40,
+    nyilvantartasDb: 0,
+    ujRekordDb: 40,
+  })
+  assert.equal(verdict.block, true)
+  assert.match(verdict.indok!, /üres|0 sor/i)
 })
 
 test('munkafüzet: fejléc, képletek és összegsor egy menetben állnak elő', () => {

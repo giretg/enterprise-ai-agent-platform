@@ -357,7 +357,9 @@ const TOOL_SCHEMAS: Record<ChatPlatformToolName, ToolSchema> = {
   },
   http_api_get: {
     description:
-      'Egyetlen oldal olvasó (GET) hívása a hozzád rendelt külső REST API-n. A query mezőben CSAK a connector endpoint-katalógusában felsorolt paramétereket add meg — ne találj ki mezőneveket. Lapozott listához (sok oldal, nagy névsor) használd az http_api_get_all-t — ne page=1,2,3… sorozatot. Időszak/összehasonlítás: aggregált vagy report végpont + dokumentált period paramok. A `connectorId` értékét a rendszerüzenetben látod. A `path` a connector baseUrl-jéhez relatív.',
+      'Egyetlen oldal olvasó (GET) hívása a hozzád rendelt külső REST API-n. A query mezőben CSAK a connector endpoint-katalógusában felsorolt paramétereket add meg — ne találj ki mezőneveket. ' +
+      'TILOS ownerships / partner / nagy névsor listához: azokra http_api_get_all kell — a sima get gyakran csak az első oldalt (pl. 50 sort) adja, és az egyeztetés hamis „Új rekord" sorokat gyárt. ' +
+      'Lapozott listához használd az http_api_get_all-t — ne page=1,2,3… sorozatot. Időszak/összehasonlítás: aggregált vagy report végpont + dokumentált period paramok. A `connectorId` értékét a rendszerüzenetben látod. A `path` a connector baseUrl-jéhez relatív.',
     inputSchema: objectSchema(
       { connectorId: STR, path: STR, query: { type: 'object', additionalProperties: true }, headers: { type: 'object', additionalProperties: { type: 'string' } } },
       ['path'],
@@ -365,9 +367,10 @@ const TOOL_SCHEMAS: Record<ChatPlatformToolName, ToolSchema> = {
   },
   http_api_get_all: {
     description:
-      'Lapozott GET lista EGY hívásban: a szerver végiglapozza az oldalakat (page/pageSize), összevonja a rekordtömböt, és EGY eredményt ad vissza. Nagy nyilvántartás / ownership / partner listához EZT hívd — ne http_api_get-tel oldalanként. ' +
+      'Lapozott GET lista EGY hívásban: a szerver végiglapozza az oldalakat (page/pageSize), összevonja a rekordtömböt, és EGY eredményt ad vissza. ' +
+      'KÖTELEZŐ ownership / ownerships / partner / nagy nyilvántartás listához — ne http_api_get-tel oldalanként. ' +
       'Opcionális: pageParam (alap: page), pageSizeParam (alap: pageSize), pageSize (alap: 100), maxPages (alap: 50), arrayPath (ha a tömb nestelt), startPage. ' +
-      'Nagy válasz archívumba kerül — utána tool_result_extract / reconcile_records / tulajdoni_lap_egyeztetes, NE chunkolt file_read.',
+      'Nagy válasz archívumba kerül — tulajdoni_lap_egyeztetes-hez add át közvetlenül a tool-outputs/…http_api_get_all… path-ot nyilvantartasPath-ként (extract csak ha más a mezőalak).',
     inputSchema: objectSchema(
       {
         connectorId: STR,
@@ -667,8 +670,10 @@ const TOOL_SCHEMAS: Record<ChatPlatformToolName, ToolSchema> = {
       'Egy sor mezői: nev (kötelező; alias: partnerNev), szuletesiEv, anyjaNeve, hanyad (TÖRT), ' +
       'azonosito (alias: id), megjegyzes (alias: jogcim).\n' +
       'NE olvasd vissza a nagy listát a kontextusba mezőátnevezéshez — az egyeztető normalizál.\n' +
-      'Ha a lap ellenőrzése bukik (hatályos hányadok összege ≠ 1), NEM készül tábla: ok=false és ' +
-      'figyelmeztetes jön vissza — ilyenkor a felhasználónak jelezd a bizonytalanságot, ne egyeztess tovább.\n' +
+      'Ha a lap ellenőrzése bukik (hatályos hányadok összege ≠ 1), VAGY a nyilvántartás csonkának ' +
+      'tűnik (pl. 50 sor vs százas tulajdonosi lista — tipikus get első oldal), NEM készül tábla: ' +
+      'ok=false + figyelmeztetes. Ilyenkor http_api_get_all → újra egyeztetés; ' +
+      'confirmNyilvantartasComplete=true CSAK ha get_all után is ennyi a sor.\n' +
       'A válasz összegzést és az ELTÉRŐ sorokat adja (nem a teljes táblát) — a részletek az Excelben vannak.',
     inputSchema: objectSchema(
       {
@@ -696,6 +701,12 @@ const TOOL_SCHEMAS: Record<ChatPlatformToolName, ToolSchema> = {
           description:
             'Munkaterület JSON: tömb vagy { items|sorok|data|rows|records }. ' +
             'http_api_get_all tool-outputs path is jó; partnerNev→nev aliasok automatikusak.',
+        },
+        confirmNyilvantartasComplete: {
+          type: 'boolean',
+          description:
+            'Csak ha http_api_get_all után is ugyanez a sorok száma (tényleg ennyi a nyilvántartás). ' +
+            'Csonka-lista védelem felülírása.',
         },
         kimenet: {
           type: 'string',
@@ -1829,6 +1840,10 @@ function buildToolInvoke(
           nyilvantartasPath:
             typeof args.nyilvantartasPath === 'string' ? args.nyilvantartasPath : undefined,
           kimenet: typeof args.kimenet === 'string' ? args.kimenet : undefined,
+          confirmNyilvantartasComplete:
+            typeof args.confirmNyilvantartasComplete === 'boolean'
+              ? args.confirmNyilvantartasComplete
+              : undefined,
         },
       }
 

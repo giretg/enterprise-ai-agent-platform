@@ -1,12 +1,6 @@
 import type { MemoryRetrievalResult, RetrievedChunk } from '@/domain/memory/memory-types'
 import { estimateTextTokens } from '@/domain/conversation/context-assembly'
-
-/**
- * A Tanítás felület ezt a szöveget írja a `MemoryVersion.content`-be, ha a
- * szabálylista üresre szerkesztődik — placeholder, nem szabály, ezért a promptba
- * nem kerülhet be.
- */
-export const EMPTY_TRAINED_MEMORY_PLACEHOLDER = '(nincs rögzített tapasztalat)'
+import { EMPTY_MEMORY_PLACEHOLDER } from '@/domain/training/memory-items'
 
 /**
  * agent-memory-persistent-cross-conversation-spec.md §2.3/§10.3 — a
@@ -139,7 +133,7 @@ export function formatTrainedRulesBlock(params: {
   version?: number | null
 }): string | null {
   const raw = (params.content ?? '').trim()
-  if (!raw || raw === EMPTY_TRAINED_MEMORY_PLACEHOLDER) return null
+  if (!raw || raw === EMPTY_MEMORY_PLACEHOLDER) return null
 
   const body =
     raw.length > TRAINED_RULES_MAX_CHARS

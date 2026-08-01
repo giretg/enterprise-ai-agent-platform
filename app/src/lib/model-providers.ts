@@ -119,6 +119,11 @@ export const OPENROUTER_TEXT_MODELS: ModelOption[] = [
     label: 'Grok 4.5',
     description: 'xAI frontier modell — kódolás, agentic feladatok, STEM (500K context).',
   },
+  {
+    id: 'deepseek/deepseek-v4-flash-0731',
+    label: 'DeepSeek V4 Flash',
+    description: 'DeepSeek gyors kísérleti modell (0731) — alacsony latency, OpenRouteren át.',
+  },
 ]
 
 export const MODEL_PROVIDERS: ModelProviderOption[] = [

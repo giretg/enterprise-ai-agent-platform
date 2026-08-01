@@ -9,12 +9,12 @@
  */
 import assert from 'node:assert/strict'
 import {
-  EMPTY_TRAINED_MEMORY_PLACEHOLDER,
   TRAINED_RULES_MAX_CHARS,
   estimateTrainedRulesTokens,
   formatTrainedRulesBlock,
 } from '../src/lib/memory-prompt'
 import { trainedRulesSystemMessages } from '../src/domain/memory/memory-runtime-helper'
+import { EMPTY_MEMORY_PLACEHOLDER } from '../src/domain/training/memory-items'
 import { assembleGatewayMessages } from '../src/domain/agent/prompt-assembler'
 
 let failures = 0
@@ -45,8 +45,8 @@ async function main() {
   })
 
   await check('az üres-placeholder nem kerül a promptba', () => {
-    assert.equal(formatTrainedRulesBlock({ content: EMPTY_TRAINED_MEMORY_PLACEHOLDER }), null)
-    assert.equal(formatTrainedRulesBlock({ content: `\n${EMPTY_TRAINED_MEMORY_PLACEHOLDER}\n` }), null)
+    assert.equal(formatTrainedRulesBlock({ content: EMPTY_MEMORY_PLACEHOLDER }), null)
+    assert.equal(formatTrainedRulesBlock({ content: `\n${EMPTY_MEMORY_PLACEHOLDER}\n` }), null)
   })
 
   await check('a betanított szabályok szó szerint bekerülnek a blokkba', () => {
@@ -80,7 +80,7 @@ async function main() {
   })
 
   await check('trainedRulesSystemMessages: nincs üzenet, ha nincs betanított szabály', () => {
-    const result = trainedRulesSystemMessages({ content: EMPTY_TRAINED_MEMORY_PLACEHOLDER, version: 1 })
+    const result = trainedRulesSystemMessages({ content: EMPTY_MEMORY_PLACEHOLDER, version: 1 })
     assert.equal(result.messages.length, 0)
     assert.equal(result.tokens, 0)
   })

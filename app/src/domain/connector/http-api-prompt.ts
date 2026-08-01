@@ -3,6 +3,8 @@
  * Tiszta függvények — a chat-tool-loop és a HttpApiClient ezeket hívja.
  */
 
+import { COMMON_HTTP_PAGE_SIZES, requiresHttpApiGetAll } from '@/lib/http-api-pagination-signals'
+
 export type HttpApiCatalogParam = {
   name: string
   required: boolean
@@ -152,10 +154,58 @@ export function buildHttpApiEfficiencyGuidance(): string {
     'Hatékony HTTP API használat:',
     '- Először a connector endpoint-katalógus dokumentált query/path paramétereit használd — ne találj ki mezőneveket (422/400 után sem).',
     '- Lapozott nagy listához http_api_get_all (egy hívás), ne page=1,2,3… http_api_get sorozatot.',
+    '- Ownership / partner / ownerships / nagy névsor: KÖTELEZŐEN http_api_get_all — a sima get gyakran csak az első oldalt (pl. 50 sort) adja.',
     '- Időszak / összehasonlítás / top-N analitika: aggregált vagy report/query végpont + period paramok; NE dumpold a teljes order/account listát, és NE helyettesíts más proxy-metrikával (pl. rolling health), ha a kért periódus-adat hiányzik — mondd ki.',
     '- Szűretlen listázás után ne húzz végig tucatnyi egyedi részlet-endpointot; előbb top-N / search / filter.',
-    '- Nagy JSON archive után: tool_result_extract (arrayPath ha kell) → reconcile/xlsx; SOHA ne chunkold file_read-del ugyanazt a fájlt.',
+    '- Nagy JSON archive után: tool_result_extract (arrayPath ha kell) → reconcile/xlsx; SOHA ne chunkold file_read-del ugyanazt a fájlt. Ownership egyeztetéshez a get_all tool-outputs path közvetlenül is jó.',
   ].join('\n')
+}
+
+/**
+ * http_api_get után: ha a válasz úgy néz ki, mint egyetlen lapozott oldal,
+ * tereld a modellt get_all-ra (mielőtt extract→egyeztetés hamis „Új rekordokat" gyárt).
+ */
+export function buildHttpApiLikelyPaginatedHint(input: {
+  path: string
+  body: unknown
+  itemCount?: number | null
+}): string | null {
+  const path = (input.path ?? '').trim()
+  if (!path) return null
+
+  let count = typeof input.itemCount === 'number' ? input.itemCount : null
+  if (count == null) {
+    const items = extractRecordArray(input.body)
+    count = items?.length ?? null
+  }
+  if (count == null || count <= 0) return null
+
+  const listPath = requiresHttpApiGetAll(path)
+  const roundPage = COMMON_HTTP_PAGE_SIZES.has(count)
+  if (!listPath && !roundPage) return null
+  if (!listPath && count < 20) return null
+
+  if (listPath || roundPage) {
+    return (
+      `FIGYELEM: a(z) "${path}" válasz ${count} sort tartalmaz` +
+      (roundPage ? ` (gyakori pageSize: ${count})` : '') +
+      '. Ez gyakran CSAK az első oldal. Nagy névsor / ownership listához hívd ÚJRA ' +
+      'http_api_get_all-lal ugyanezzel a path-dal — ne tool_result_extract-eld ezt egyeztetéshez, ' +
+      'amíg a teljes lista nincs meg.'
+    )
+  }
+  return null
+}
+
+function extractRecordArray(body: unknown): unknown[] | null {
+  if (Array.isArray(body)) return body
+  if (!body || typeof body !== 'object') return null
+  for (const key of ['data', 'items', 'results', 'records', 'rows', 'ownerships', 'body']) {
+    const value = (body as Record<string, unknown>)[key]
+    if (Array.isArray(value)) return value
+  }
+  const arrays = Object.values(body as Record<string, unknown>).filter(Array.isArray)
+  return arrays.length === 1 ? (arrays[0] as unknown[]) : null
 }
 
 function resolveQueryParams(

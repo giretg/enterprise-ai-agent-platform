@@ -341,6 +341,11 @@ export type TulajdoniLapEgyeztetesArgs = {
   nyilvantartasPath?: string
   /** Kimeneti munkafüzet a munkaterületen. Alap: `egyeztetes.xlsx`. */
   kimenet?: string
+  /**
+   * Csonka-lista védelem felülírása. Csak akkor true, ha http_api_get_all után
+   * is ugyanez a sorok száma (a nyilvántartás tényleg ennyi).
+   */
+  confirmNyilvantartasComplete?: boolean
 }
 
 /** Két workspace JSON-lista determinisztikus egyeztetése (issue #179). */

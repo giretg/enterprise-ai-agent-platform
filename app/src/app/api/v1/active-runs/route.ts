@@ -1,13 +1,17 @@
 import { requireTenantApiUser } from '@/lib/api-tenant-auth'
 import { activeRunFromChatTurn, activeRunFromTicket } from '@/lib/active-runs-map'
 import type { ActiveRunsResponse } from '@/lib/active-runs'
+import { shouldExcludeHiddenAgents } from '@/lib/agent-operator-visibility'
 import { repositories } from '@/repositories/postgres'
 
 export const dynamic = 'force-dynamic'
 export const runtime = 'nodejs'
 
+const ACTIVE_TICKET_STATES = ['in_progress', 'awaiting_human', 'needs_info'] as const
+const COMPLETED_TICKET_STATES = ['done', 'rejected'] as const
+
 /**
- * Tenant-szintű aktív futások: chat AgentTurn + in_progress ticket.
+ * Tenant-szintű futások: aktív + friss lefutott chat-fordulók és ticketek.
  */
 export async function GET() {
   const auth = await requireTenantApiUser('operator')
@@ -16,26 +20,58 @@ export async function GET() {
 
   const tenantId = user.activeTenantId
 
-  const [turns, ticketPage] = await Promise.all([
+  const [activeTurns, terminalTurns, activeTicketPage, completedTicketPage] = await Promise.all([
     repositories.agentTurns.listActiveByTenant(tenantId, { limit: 50 }),
+    repositories.agentTurns.listRecentTerminalByTenant(tenantId, { limit: 30 }),
     repositories.tickets.listPage({
       tenantId,
-      state: 'in_progress',
+      state: [...ACTIVE_TICKET_STATES],
       excludeTest: true,
       limit: 50,
     }),
+    repositories.tickets.listPage({
+      tenantId,
+      state: [...COMPLETED_TICKET_STATES],
+      excludeTest: true,
+      limit: 30,
+    }),
   ])
 
-  const viewer = { userId: user.user.id }
-  const chatRuns = turns.map((turn) => ({
-    ...activeRunFromChatTurn(turn, viewer),
-    title: turn.cancelRequested ? 'Leállítás folyamatban…' : 'Futó chat-válasz',
-  }))
+  const agentIds = [
+    ...new Set(
+      [...activeTurns, ...terminalTurns, ...activeTicketPage.items, ...completedTicketPage.items]
+        .map((row) => row.agentId)
+        .filter((id): id is string => typeof id === 'string' && id.length > 0),
+    ),
+  ]
 
-  const ticketRuns = ticketPage.items.map((ticket) => activeRunFromTicket(ticket))
+  const agents =
+    agentIds.length > 0
+      ? await repositories.agents.findMany({
+          tenantId,
+          ids: agentIds,
+          excludeHiddenFromOperators: shouldExcludeHiddenAgents(user.activeTenantRole),
+          unbounded: true,
+        })
+      : []
+  const agentNameById = new Map(agents.map((agent) => [agent.id, agent.name]))
+  const hidesRestrictedAgents = shouldExcludeHiddenAgents(user.activeTenantRole)
+  const visibleAgentIds = new Set(agents.map((agent) => agent.id))
+  const canShowRun = (agentId: string | null) =>
+    !hidesRestrictedAgents || agentId == null || visibleAgentIds.has(agentId)
+
+  const viewer = { userId: user.user.id }
+  const chatRuns = [...activeTurns, ...terminalTurns]
+    .filter((turn) => canShowRun(turn.agentId))
+    .map((turn) => activeRunFromChatTurn(turn, viewer, agentNameById.get(turn.agentId) ?? null))
+  const ticketRuns = [...activeTicketPage.items, ...completedTicketPage.items]
+    .filter((ticket) => canShowRun(ticket.agentId))
+    .map((ticket) => activeRunFromTicket(ticket))
 
   const runs = [...chatRuns, ...ticketRuns].sort(
-    (a, b) => new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime(),
+    (a, b) =>
+      new Date(b.finishedAt ?? b.startedAt).getTime() -
+      new Date(a.finishedAt ?? a.startedAt).getTime(),
   )
 
   const body: ActiveRunsResponse = { runs }

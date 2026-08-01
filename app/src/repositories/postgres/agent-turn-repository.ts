@@ -83,6 +83,21 @@ export class PostgresAgentTurnRepository implements AgentTurnRepository {
     })
   }
 
+  async listRecentTerminalByTenant(
+    tenantId: string | null,
+    options?: { createdById?: string; limit?: number },
+  ): Promise<AgentTurn[]> {
+    return prisma.agentTurn.findMany({
+      where: {
+        tenantId,
+        status: { notIn: [...ACTIVE_AGENT_TURN_STATUSES] },
+        ...(options?.createdById ? { createdById: options.createdById } : {}),
+      },
+      orderBy: [{ finishedAt: 'desc' }, { startedAt: 'desc' }],
+      take: options?.limit ?? 30,
+    })
+  }
+
   async attachUserMessage(id: string, userMessageId: string): Promise<void> {
     await prisma.agentTurn.update({ where: { id }, data: { userMessageId } })
   }

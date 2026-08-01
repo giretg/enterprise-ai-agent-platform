@@ -180,6 +180,9 @@ function fakeTurnRepository(options: { failOnCreate?: Error } = {}) {
     async listActiveByTenant() {
       return [...activeByConversation.values()]
     },
+    async listRecentTerminalByTenant() {
+      return []
+    },
     async attachUserMessage(id, userMessageId) {
       const input = inputById.get(id)
       if (input) input.userMessageId = userMessageId

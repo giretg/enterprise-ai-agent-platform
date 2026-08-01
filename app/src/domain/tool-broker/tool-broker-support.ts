@@ -803,6 +803,7 @@ export function argsMeta(
         : null,
       nyilvantartasPath: input.args.nyilvantartasPath ?? null,
       kimenet: input.args.kimenet ?? null,
+      confirmNyilvantartasComplete: input.args.confirmNyilvantartasComplete === true,
     }
   }
 

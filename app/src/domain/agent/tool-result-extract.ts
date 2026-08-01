@@ -213,12 +213,13 @@ export function formatLargeToolResultPreview(input: {
     `Munkaterületi másolat (ezt használd tovább): ${input.workspacePath}`,
     `Méret: ${input.chars} karakter, ${input.bytes} bájt. Az alábbi csak előnézet.`,
     `NE olvasd vissza a teljes tartalmat a kontextusba (ne file_read chunkolás). A további feldolgozáshoz:`,
-    `1) tool_result_extract — path="${input.archivePath}" VAGY path="${input.workspacePath}", fields=[…], outputPath="…" — mezőkivonat fájlba;`,
+    `0) ha ez ownerships/névsor és http_api_get (NEM get_all) volt: ELŐBB http_api_get_all ugyanezzel a path-dal — egyetlen oldal (pl. 50 sor) extractje csonka egyeztetést ad;`,
+    `1) tulajdoni_lap_egyeztetes / reconcile_records: ha a forrás http_api_get_all archívum, add át közvetlenül nyilvantartasPath/leftPath-ként (extract nem kell);`,
+    `2) tool_result_extract — path="${input.archivePath}" VAGY path="${input.workspacePath}", fields=[…], outputPath="…" — csak ha más a mezőalak;`,
     shapeHint
       ? `   arrayPath tipp: ${shapeHint}`
       : '   ha a gyökér nem tömb: add meg az arrayPath-ot (pl. data / items / body.data)',
-    `2) két lista egyeztetéséhez: reconcile_records (vagy tulajdoni_lap_egyeztetes) — NE párosíts a modellben;`,
-    `3) Excelhez: xlsx_append_rows a kivonat/egyeztető eredményből.`,
+    `3) két lista egyeztetéséhez: reconcile_records (vagy tulajdoni_lap_egyeztetes) — NE párosíts a modellben;`,
     'A teljes lista / pontos számítás a munkaterületi fájlból készüljön, ne a promptból.',
     '--- előnézet ---',
     input.previewText,

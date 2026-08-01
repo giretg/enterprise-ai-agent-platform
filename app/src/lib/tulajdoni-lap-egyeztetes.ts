@@ -13,6 +13,7 @@
  */
 
 import type { TulajdoniLapEntry, TulajdoniLapOwner, TulajdoniLapResult } from './tulajdoni-lap'
+import { COMMON_HTTP_PAGE_SIZES } from './http-api-pagination-signals'
 
 /** A nyilvántartásunk egy tulajdonosi rekordja (a hívó tölti ki az API-válaszból). */
 export type EgyeztetesNyilvantartasSor = {
@@ -107,6 +108,95 @@ export type EgyeztetesOsszegzes = {
   bizonytalanParositas: number
   /** Emberi döntést igénylő tételek — a válaszban ezeket kell felsorolni. */
   figyelmet_igenyel: string[]
+}
+
+export type NyilvantartasCompletenessVerdict = {
+  /** true → ne készüljön Excel / ok:false (csonka lista gyanúja). */
+  block: boolean
+  /** true → Excel készülhet, de a válaszban kötelező jelezni. */
+  warn: boolean
+  indok: string | null
+}
+
+/**
+ * Csonka nyilvántartás-detektor (http_api_get első oldal anti-minta).
+ *
+ * Tipikus hiba: ownerships-re sima get → 50 sor → extract → egyeztetés →
+ * százas nagyságrendű hamis „Új rekord". A tábla hitelesnek látszana.
+ *
+ * `sourceLooksComplete`: a forrás http_api_get_all archívum (végiglapozott).
+ * `confirmedComplete`: a hívó tudatosan felülírja a védelmet.
+ */
+export function assessNyilvantartasCompleteness(input: {
+  lapTulajdonosDb: number
+  nyilvantartasDb: number
+  ujRekordDb: number
+  sourceLooksComplete?: boolean
+  confirmedComplete?: boolean
+}): NyilvantartasCompletenessVerdict {
+  if (input.confirmedComplete) {
+    return { block: false, warn: false, indok: null }
+  }
+
+  const lap = input.lapTulajdonosDb
+  const reg = input.nyilvantartasDb
+  const uj = input.ujRekordDb
+  if (lap < 10) {
+    return { block: false, warn: false, indok: null }
+  }
+
+  let gyanus = false
+  let indok: string | null = null
+
+  if (reg === 0) {
+    gyanus = true
+    indok =
+      `A nyilvántartás 0 sort tartalmaz, miközben a lapon ${lap} hatályos tulajdonos van. ` +
+      'Ez tipikusan rossz hrsz / üres lekérdezés — NE egyeztess így. ' +
+      'Hívd http_api_get_all-lal a helyes /ownerships (vagy ekvivalens) végpontot, ' +
+      'ellenőrizd a hrsz formátumát, majd futtasd újra. ' +
+      'Ha a lista tényleg üres: confirmNyilvantartasComplete=true.'
+  } else {
+    const ujArany = uj / lap
+    const looksLikeSinglePage = COMMON_HTTP_PAGE_SIZES.has(reg)
+    const registryMuchSmaller = reg < lap * 0.35
+    if (
+      (looksLikeSinglePage && ujArany >= 0.4 && uj > reg) ||
+      (registryMuchSmaller && ujArany >= 0.5)
+    ) {
+      gyanus = true
+      indok =
+        `A nyilvántartás csak ${reg} sort tartalmaz, a lapon ${lap} tulajdonos van ` +
+        `(Új rekord: ${uj}). Ez tipikusan egyetlen http_api_get oldal (gyakori pageSize: 10/25/50/100), ` +
+        'nem a teljes lista — a tábla hamis „Új rekord" sorokkal telne meg. ' +
+        'Hívd ÚJRA http_api_get_all-lal a /ownerships (vagy ekvivalens) path-ot, ' +
+        'add át a tool-outputs/…http_api_get_all… fájlt nyilvantartasPath-ként, ' +
+        'majd futtasd újra az egyeztetést. ' +
+        'Ha get_all után is ennyi a sor: confirmNyilvantartasComplete=true.'
+    }
+  }
+
+  if (!gyanus || !indok) {
+    return { block: false, warn: false, indok: null }
+  }
+
+  if (input.sourceLooksComplete) {
+    return { block: false, warn: true, indok }
+  }
+  return { block: true, warn: false, indok }
+}
+
+/**
+ * Csak a Tool Broker által az `http_api_get_all` válaszába tett struktúrált
+ * eredet-metaadat igazolja, hogy a lista végig lett lapozva. Fájlnév sosem
+ * bizonyíték: a munkaterületre tetszőleges nevű JSON kerülhet.
+ */
+export function hasCompleteHttpApiGetAllProvenance(value: unknown): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false
+  const provenance = (value as { provenance?: unknown }).provenance
+  if (!provenance || typeof provenance !== 'object' || Array.isArray(provenance)) return false
+  const record = provenance as { sourceTool?: unknown; paginationComplete?: unknown }
+  return record.sourceTool === 'http_api_get_all' && record.paginationComplete === true
 }
 
 const HANYAD_RE = /^\s*(\d+)\s*\/\s*(\d+)\s*$/

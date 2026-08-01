@@ -4,6 +4,8 @@ import {
   resolveHttpApiPaginatePlan,
   type HttpApiPaginateQuery,
 } from '@/domain/connector/http-api-paginate'
+import { buildHttpApiLikelyPaginatedHint } from '@/domain/connector/http-api-prompt'
+import { requiresHttpApiGetAll } from '@/lib/http-api-pagination-signals'
 
 const HTTP_TOOLS = new Set(['http_api_get', 'http_api_get_all', 'http_api_request'])
 
@@ -31,6 +33,20 @@ export const httpApiHandler: ToolHandler = {
       authorization.connector.authMode === 'user_delegated'
         ? await ctx.resolveDelegatedAccessToken(input, authorization)
         : undefined
+
+    // Tulajdonosi/partneri nyilvántartásból egyetlen oldal nem kész adat:
+    // ne csak hinteljünk, hanem még az első oldal lekérése előtt tereljük a
+    // végiglapozó eszközre. Így nem jöhet létre félrevezető egyeztetési Excel.
+    if (input.tool === 'http_api_get' && requiresHttpApiGetAll(input.args.path)) {
+      return {
+        ok: false,
+        status: 400,
+        body: null,
+        hint:
+          `A(z) "${input.args.path}" teljes nyilvántartásnak tűnik. ` +
+          'Ehhez kötelező a http_api_get_all; a sima http_api_get csak egy oldalt adhat vissza.',
+      }
+    }
 
     if (input.tool === 'http_api_get_all') {
       const plan = resolveHttpApiPaginatePlan({
@@ -81,10 +97,14 @@ export const httpApiHandler: ToolHandler = {
         pageCount: outcome.pageCount,
         itemCount: outcome.items.length,
         items: outcome.items,
+        provenance: {
+          sourceTool: 'http_api_get_all',
+          paginationComplete: outcome.paginationComplete,
+        },
       }
     }
 
-    return ctx.executeHttpApiTool(
+    const result = await ctx.executeHttpApiTool(
       input,
       authorization.connector,
       actingTenantId,
@@ -92,5 +112,23 @@ export const httpApiHandler: ToolHandler = {
       authorization.agentSecretAlias,
       delegatedAccessToken,
     )
+
+    // Sima get + ownership/névsor: ha egy oldalnyi kerek darabszám jön,
+    // tereld get_all-ra mielőtt a modell extract→egyeztetést futtatna.
+    if (input.tool === 'http_api_get' && result && typeof result === 'object') {
+      const record = result as { body?: unknown; hint?: string; ok?: boolean }
+      if (record.ok !== false) {
+        const pageHint = buildHttpApiLikelyPaginatedHint({
+          path: input.args.path,
+          body: record.body,
+        })
+        if (pageHint) {
+          const hint = [record.hint, pageHint].filter(Boolean).join(' ')
+          return { ...record, hint }
+        }
+      }
+    }
+
+    return result
   },
 }

@@ -30,7 +30,9 @@ import {
 import { resolveTulajdoniLapParseSource } from '@/lib/tulajdoni-lap-source'
 import {
   EGYEZTETES_STATUSZOK,
+  assessNyilvantartasCompleteness,
   buildEgyeztetesMunkafuzet,
+  hasCompleteHttpApiGetAllProvenance,
   egyeztetesSorok,
   normalizeNyilvantartasRows,
   type EgyeztetesNyilvantartasSor,
@@ -2027,18 +2029,42 @@ export async function tulajdoniLapEgyeztetes(
     }
   }
 
-  const nyilvantartas = await resolveEgyeztetesNyilvantartas(self, {
+  const nyilvantartasSource = await resolveEgyeztetesNyilvantartas(self, {
     tenantId,
     workspaceId,
     inline: input.args.nyilvantartas,
     path: input.args.nyilvantartasPath,
   })
+  const nyilvantartas = nyilvantartasSource.rows
 
   const { sorok, osszegzes } = egyeztetesSorok({
     lapTulajdonosok: parsed.tulajdonosok,
     nyilvantartas,
     vanSzeljegy: parsed.szeljegyek.length > 0,
   })
+
+  // Csonka nyilvántartás (tipikusan http_api_get első oldala) → ne legyen
+  // „kész" Excel. A modellnek újra kell kérnie get_all-lal.
+  const completeness = assessNyilvantartasCompleteness({
+    lapTulajdonosDb: parsed.tulajdonosok.length,
+    nyilvantartasDb: nyilvantartas.length,
+    ujRekordDb: osszegzes.ujRekord,
+    sourceLooksComplete: nyilvantartasSource.provenanceComplete,
+    confirmedComplete: input.args.confirmNyilvantartasComplete === true,
+  })
+  if (completeness.block) {
+    return {
+      ok: false,
+      figyelmeztetes: completeness.indok,
+      path: null,
+      meta: view.meta,
+      osszesites: view.osszesites,
+      egyeztetes: osszegzes,
+      eltero: [],
+      szeljegyDb: parsed.szeljegyek.length,
+    }
+  }
+
   const munkafuzet = buildEgyeztetesMunkafuzet({ sorok, parsed })
 
   const kimenet = (input.args.kimenet ?? 'egyeztetes.xlsx').trim() || 'egyeztetes.xlsx'
@@ -2099,9 +2125,13 @@ export async function tulajdoniLapEgyeztetes(
       megjegyzes: sor.megjegyzes,
     }))
 
+  const figyelmeztetes = [view.figyelmeztetes, completeness.warn ? completeness.indok : null]
+    .filter((part): part is string => Boolean(part?.trim()))
+    .join(' ') || null
+
   return {
     ok: true,
-    figyelmeztetes: view.figyelmeztetes,
+    figyelmeztetes,
     path,
     meta: view.meta,
     osszesites: view.osszesites,
@@ -2123,11 +2153,11 @@ async function resolveEgyeztetesNyilvantartas(
     inline?: EgyeztetesNyilvantartasSor[]
     path?: string
   },
-): Promise<EgyeztetesNyilvantartasSor[]> {
+): Promise<{ rows: EgyeztetesNyilvantartasSor[]; provenanceComplete: boolean }> {
   if (Array.isArray(input.inline) && input.inline.length > 0) {
-    return normalizeNyilvantartasRows(input.inline)
+    return { rows: normalizeNyilvantartasRows(input.inline), provenanceComplete: false }
   }
-  if (!input.path) return []
+  if (!input.path) return { rows: [], provenanceComplete: false }
 
   const content = await self.fileEditor.readTextFileOrNull(input.tenantId, input.workspaceId, {
     path: input.path,
@@ -2160,7 +2190,7 @@ async function resolveEgyeztetesNyilvantartas(
         `Ne egyeztess üres nyilvántartással — ellenőrizd a forrásfájlt / http_api_get_all kimenetet.`,
     )
   }
-  return normalized
+  return { rows: normalized, provenanceComplete: hasCompleteHttpApiGetAllProvenance(parsed) }
 }
 
 /**

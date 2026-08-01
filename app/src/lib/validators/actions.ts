@@ -319,6 +319,33 @@ export const createTrainingSchema = z.object({
   source: z.string().min(1),
 })
 
+export const proposeMemoryItemChangeSchema = z.discriminatedUnion('operation', [
+  z.object({
+    agentId: z.string().uuid(),
+    operation: z.literal('add'),
+    text: z.string().min(1),
+    apply: z.boolean().optional(),
+  }),
+  z.object({
+    agentId: z.string().uuid(),
+    operation: z.literal('update'),
+    itemIndex: z.number().int().nonnegative(),
+    text: z.string().min(1),
+    apply: z.boolean().optional(),
+  }),
+  z.object({
+    agentId: z.string().uuid(),
+    operation: z.literal('remove'),
+    itemIndex: z.number().int().nonnegative(),
+    apply: z.boolean().optional(),
+  }),
+])
+
+export const listTrainingMemoryVersionsSchema = z.object({
+  agentId: z.string().uuid(),
+  limit: z.number().int().positive().max(50).optional(),
+})
+
 export const goldenSetAssertionSchema = z.object({
   description: z.string().min(1),
   type: z.enum(['contains', 'not_contains', 'min_length']),

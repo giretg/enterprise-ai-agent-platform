@@ -1,4 +1,4 @@
-import { getAgent, listAgents, listTickets } from '@/app/actions/platform'
+import { getAgent, listAgents, listTickets, listTrainingMemoryVersions } from '@/app/actions/platform'
 import { TrainingWorkspace } from '@/components/agents/training-workspace'
 
 export default async function TrainingPage({
@@ -22,10 +22,29 @@ export default async function TrainingPage({
   )
 
   let currentVersion = 1
+  let memoryContent: string | null = null
+  let memoryVersions: {
+    id: string
+    version: number
+    content: string | null
+    status: string
+    createdAt: string | Date
+    source: string | null
+  }[] = []
+  let currentVersionId: string | null = null
+
   if (selectedAgentId) {
-    const agentRes = await getAgent({ id: selectedAgentId })
+    const [agentRes, versionsRes] = await Promise.all([
+      getAgent({ id: selectedAgentId }),
+      listTrainingMemoryVersions({ agentId: selectedAgentId, limit: 20 }),
+    ])
     if (agentRes.success) {
       currentVersion = agentRes.data.memoryVersion ?? 1
+      memoryContent = agentRes.data.memoryContent
+    }
+    if (versionsRes.success) {
+      currentVersionId = versionsRes.data.currentVersionId
+      memoryVersions = versionsRes.data.versions
     }
   }
 
@@ -34,7 +53,8 @@ export default async function TrainingPage({
       <div>
         <h1 className="font-display text-3xl font-semibold">Tanítás</h1>
         <p className="mt-1 text-ink-soft">
-          Memória-verziózás, diff-nézet, jóváhagyás és rollback — aktuális v{currentVersion}
+          Megtanult szabályok szerkesztése, hozzáadása, törlése és rollback — aktuális v
+          {currentVersion}
         </p>
       </div>
 
@@ -45,6 +65,9 @@ export default async function TrainingPage({
           agents={agents}
           trainingTickets={trainingTickets}
           selectedAgentId={selectedAgentId}
+          memoryContent={memoryContent}
+          memoryVersions={memoryVersions}
+          currentVersionId={currentVersionId}
         />
       )}
     </div>

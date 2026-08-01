@@ -218,14 +218,14 @@ export default async function AgentDetailPage({
         <Card>
           <h2 className="font-display text-xl font-semibold text-ink">Fejlődés</h2>
           <p className="mt-2 text-sm leading-relaxed text-ink-soft">
-            Itt tudod finomítani, mit tanult eddig, és visszaállítani korábbi állapotokat, ha
-            szükséges.
+            Itt tudod szerkeszteni vagy törölni a megtanult szabályokat, újakat hozzáadni, és
+            korábbi állapotokra visszaállítani.
           </p>
           <Link
             href={`/control-plane/training?agentId=${agent.id}`}
             className="mt-4 inline-block rounded-full bg-sky/20 px-4 py-2 text-sm font-semibold text-sky"
           >
-            Tanítás megnyitása →
+            Szabályok szerkesztése / törlése →
           </Link>
         </Card>
 

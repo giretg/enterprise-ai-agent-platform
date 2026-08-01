@@ -13,6 +13,10 @@ import type { TicketService } from '../ticket/ticket-service'
 import type { WriteGateService } from '../writegate/write-gate-service'
 import type { EvalService } from '../eval/eval-service'
 import type { SelfEvolutionGuard } from './self-evolution-guard'
+import {
+  applyMemoryItemChange,
+  type MemoryItemOperation,
+} from './memory-items'
 
 /**
  * A tanítási / önfejlesztési útvonal hívói kontextusa (MemoryTraining spec I8 + T11).
@@ -482,6 +486,66 @@ export class TrainingService {
     })
 
     return { memoryVersion, writeGateTokenId: gateToken.id, evalRun }
+  }
+
+  /**
+   * Tételes memória-módosítás: az aktuális contenten alkalmazza az add/update/remove
+   * műveletet, majd a meglévő write-gate útvonalon tanítási ticketet nyit.
+   */
+  async proposeMemoryItemChange(params: {
+    agentId: string
+    change: MemoryItemOperation
+    actor: TrainingActor
+  }) {
+    await this.requireReachableAgent(params.agentId, params.actor)
+
+    const agent = await prisma.agent.findUnique({
+      where: { id: params.agentId },
+      include: { memory: { include: { currentVersion: true } } },
+    })
+    if (!agent) throw new Error('Agent not found')
+
+    const proposedContent = applyMemoryItemChange(
+      agent.memory.currentVersion?.content,
+      params.change,
+    )
+
+    return this.createTrainingTicket({
+      agentId: params.agentId,
+      proposedContent,
+      source: `item_${params.change.operation}`,
+      actor: params.actor,
+    })
+  }
+
+  /** Legacy memória-verziók tartalommal — rollback előnézethez. */
+  async listMemoryVersionsForTraining(agentId: string, actor: TrainingActor, limit = 20) {
+    await this.requireReachableAgent(agentId, actor)
+
+    const agent = await prisma.agent.findUnique({
+      where: { id: agentId },
+      select: { memoryId: true, memory: { select: { currentVersionId: true } } },
+    })
+    if (!agent) throw new Error('Agent not found')
+
+    const versions = await prisma.memoryVersion.findMany({
+      where: { memoryId: agent.memoryId },
+      orderBy: { version: 'desc' },
+      take: limit,
+      select: {
+        id: true,
+        version: true,
+        content: true,
+        status: true,
+        createdAt: true,
+        source: true,
+      },
+    })
+
+    return {
+      currentVersionId: agent.memory.currentVersionId,
+      versions,
+    }
   }
 
   async rollbackMemory(agentId: string, toVersion: number, actor: TrainingActor) {

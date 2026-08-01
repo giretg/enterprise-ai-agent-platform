@@ -58,6 +58,7 @@ async function main() {
     if (!outcome.ok) return
     assert.equal(outcome.pageCount, 3)
     assert.equal(outcome.items.length, 247)
+    assert.equal(outcome.paginationComplete, true)
     assert.equal(calls, 3)
   })
 
@@ -70,6 +71,17 @@ async function main() {
     if (!outcome.ok) return
     assert.equal(outcome.pageCount, 1)
     assert.equal(outcome.items.length, 0)
+    assert.equal(outcome.paginationComplete, true)
+  })
+
+  await check('paginate: maxPages teljes lap után → nem igazoltan teljes', async () => {
+    const outcome = await paginateHttpApiGet({
+      plan: resolveHttpApiPaginatePlan({ pageSize: 2, maxPages: 1 }),
+      fetchPage: async () => ({ ok: true, status: 200, body: [{ id: 1 }, { id: 2 }] }),
+    })
+    assert.equal(outcome.ok, true)
+    if (!outcome.ok) return
+    assert.equal(outcome.paginationComplete, false)
   })
 
   await check('paginate: HTTP hiba → failure a gyűjtött items-szel', async () => {

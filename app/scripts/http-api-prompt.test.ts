@@ -6,12 +6,14 @@ import assert from 'node:assert/strict'
 import {
   buildHttpApiClientErrorHint,
   buildHttpApiEfficiencyGuidance,
+  buildHttpApiLikelyPaginatedHint,
   buildHttpApiTruncationBody,
   formatHttpApiEndpointCatalogSuffix,
   formatHttpApiQueryParamsHint,
 } from '../src/domain/connector/http-api-prompt'
 import { HttpApiClient, parseHttpApiConfig } from '../src/domain/connector/http-api-client'
 import { formatLargeToolResultPreview } from '../src/domain/agent/tool-result-extract'
+import { requiresHttpApiGetAll } from '../src/lib/http-api-pagination-signals'
 
 let failures = 0
 function check(name: string, fn: () => void | Promise<void>) {
@@ -119,10 +121,50 @@ async function main() {
   await check('hatékonysági guidance analitikus / get_all / extract utat ír', () => {
     const text = buildHttpApiEfficiencyGuidance()
     assert.match(text, /http_api_get_all/)
+    assert.match(text, /ownership/i)
     assert.match(text, /aggregált|report/i)
     assert.match(text, /tool_result_extract/)
     assert.match(text, /proxy-metrik/)
     assert.doesNotMatch(text, /CRM|Ostoros|HANSA/)
+  })
+
+  await check('likely-paginated hint: ownerships + 50 sor → get_all', () => {
+    const hint = buildHttpApiLikelyPaginatedHint({
+      path: '/parcels/seed-parcel-novaj-043-15/ownerships',
+      body: { ownerships: Array.from({ length: 50 }, (_, i) => ({ id: i })) },
+    })
+    assert.ok(hint)
+    assert.match(hint!, /http_api_get_all/)
+    assert.match(hint!, /50/)
+    assert.match(hint!, /első oldal|CSAK/i)
+  })
+
+  await check('ownerships és partner lista csak get_all-lal kérhető', () => {
+    assert.equal(requiresHttpApiGetAll('/parcels/seed-parcel-novaj-043-15/ownerships'), true)
+    assert.equal(requiresHttpApiGetAll('/partners'), true)
+    assert.equal(requiresHttpApiGetAll('/partners/123'), false)
+    assert.equal(requiresHttpApiGetAll('/accounts/acme'), false)
+    assert.equal(requiresHttpApiGetAll('/health'), false)
+  })
+
+  await check('likely-paginated hint: kis nem-lista path → nincs hint', () => {
+    const hint = buildHttpApiLikelyPaginatedHint({
+      path: '/health',
+      body: { status: 'ok' },
+    })
+    assert.equal(hint, null)
+  })
+
+  await check('large preview: ownership get után get_all-t javasol extract előtt', () => {
+    const text = formatLargeToolResultPreview({
+      archivePath: '.tool-results/03-http_api_get-call_x.json',
+      workspacePath: 'tool-outputs/03-http_api_get-call_x.json',
+      chars: 30_000,
+      bytes: 30_000,
+      previewText: '{"ownerships":[{"id":1}]}',
+    })
+    assert.match(text, /http_api_get_all/)
+    assert.match(text, /ownerships/i)
   })
 
   await check('JSON over maxResponseChars: soft hint, teljes body megmarad (get_all)', async () => {

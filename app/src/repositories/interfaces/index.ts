@@ -1721,6 +1721,14 @@ export interface AgentTurnRepository {
     options?: { createdById?: string; limit?: number },
   ): Promise<AgentTurn[]>
   /**
+   * Tenant-szintű friss terminális fordulók (Futások panel — lefutott lista).
+   * `finishedAt` szerint csökkenő; null finishedAt a végére kerül.
+   */
+  listRecentTerminalByTenant(
+    tenantId: string | null,
+    options?: { createdById?: string; limit?: number },
+  ): Promise<AgentTurn[]>
+  /**
    * A lefoglalt fordulóhoz utólag köti a most perzisztált user-üzenetet
    * (l. `CreateAgentTurnInput.userMessageId`).
    */

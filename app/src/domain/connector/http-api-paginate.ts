@@ -41,6 +41,8 @@ export type HttpApiPaginateOutcome = {
   pageCount: number
   emptyTrailingPages: number
   lastStatus: number
+  /** Csak üres vagy rövid utolsó oldal bizonyítja, hogy nem a maxPages-limit állított meg. */
+  paginationComplete: boolean
 }
 
 export type HttpApiPaginateFailure = {
@@ -138,6 +140,7 @@ export async function paginateHttpApiGet(input: {
   let pageCount = 0
   let emptyTrailingPages = 0
   let lastStatus: number | null = null
+  let paginationComplete = false
 
   for (let page = input.plan.startPage; pageCount < input.plan.maxPages; page++) {
     const query = buildPageQuery(input.baseQuery, input.plan, page)
@@ -171,12 +174,16 @@ export async function paginateHttpApiGet(input: {
 
     if (pageItems.length === 0) {
       emptyTrailingPages += 1
+      paginationComplete = true
       break
     }
 
     items.push(...pageItems)
     // Ha az oldal rövidebb a pageSize-nál, tipikusan ez az utolsó.
-    if (pageItems.length < input.plan.pageSize) break
+    if (pageItems.length < input.plan.pageSize) {
+      paginationComplete = true
+      break
+    }
   }
 
   return {
@@ -185,5 +192,6 @@ export async function paginateHttpApiGet(input: {
     pageCount,
     emptyTrailingPages,
     lastStatus: lastStatus ?? 200,
+    paginationComplete,
   }
 }

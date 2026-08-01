@@ -34,7 +34,9 @@ a modell csak a metaadatot és az összegzést látja.
 
 NE csináld:
 - `tulajdoni_lap_parse` tulajdonos-nézet lapozása a kontextusba
+- `http_api_get` az `/ownerships` (vagy partner/névsor) path-ra — **mindig** `http_api_get_all`
 - `http_api_get` page=1,2,3… sorozat (helyette `http_api_get_all`)
+- első get-oldal `tool_result_extract` → `nyilvantartas.json` (csonka lista)
 - ugyanazt a JSON fájlt sokszor `file_read`-del offset/limit-tel
 - kézi párosítás / `xlsx_create` + `xlsx_append_rows` cellázás
 - `file_search` a teljes listán matchinghez
@@ -58,21 +60,24 @@ Minden lényeges lépés után frissítsd (vagy hozd létre) az
 
 Ha a futás megszakad, a következő forduló EBBŐL indul — ne kezdd elölről.
 
-## 1. A nyilvántartás — lehetőleg EGY lapozó hívás
+## 1. A nyilvántartás — EGY `http_api_get_all` hívás
 
 A tulajdonosi rekordokat az Ostoros Föld API-n keresztül éred el.
 
-1. Találd meg a parcel / coverage / ownership végpontot (ha kell, egy
-   `http_api_get` a konkrét hrsz-re).
-2. Nagy listához hívd az **`http_api_get_all`**-t (page/pageSize szerveroldalon
-   végigmegy). Egy oldal / egyedi rekord → elég a sima `http_api_get`.
-3. Ha a válasz archívumba / `tool-outputs/…` fájlba került: **közvetlenül**
-   add át `nyilvantartasPath`-ként az egyeztetőnek — az elfogadja az
-   `{ items: [...] }` / `http_api_get_all` kimenetet, és a `partnerNev` /
-   `id` / `jogcim` mezőaliasokat kanonikus `nev` / `azonosito` / `megjegyzes`
-   mezőkre normalizálja. `tool_result_extract` csak akkor kell, ha a válasz
-   más alakú, és a forrásmezőneveket (pl. `partnerNev`, `hanyad`, `id`)
-   kéred ki — **ne** próbálj modellben `nev`-re átnevezni.
+1. Találd meg a parcel-t (ha kell: `http_api_get_all` `/parcels`, vagy egy
+   konkrét hrsz-szűrés). A parcel-lista rövid lehet; az **ownerships** lista
+   nem.
+2. Ownership / partner névsorhoz **KÖTELEZŐ** az **`http_api_get_all`**
+   (`/parcels/{id}/ownerships` vagy ekvivalens). **TILOS** sima
+   `http_api_get` erre a path-ra — az gyakran csak az első oldalt adja
+   (pl. 50 sort), és az egyeztetés százas hamis „Új rekord" sort gyárt.
+3. Ha a válasz archívumba / `tool-outputs/…http_api_get_all…` fájlba került:
+   az **eredeti, változatlan** tool-kimenetet add át közvetlenül
+   `nyilvantartasPath`-ként az egyeztetőnek. Az `{ items: [...] }` kimenet
+   strukturált `get_all` eredet-metaadata igazolja a végiglapozást; a
+   `partnerNev` / `id` / `jogcim` mezőaliasokat az egyeztető normalizálja.
+   `tool_result_extract` csak akkor kell, ha a válasz más alakú.
+   **Ne** extracteld az első get-oldalt `nyilvantartas.json`-ba.
 4. Frissítsd az `egyeztetes_progress.json`-t.
 5. A teljes listát NE olvasd vissza `file_read` / `tool_result_read`-del.
 
@@ -80,6 +85,10 @@ Ha a lekérdezés üres listát ad, az nem azt jelenti, hogy minden tulajdonos �
 Előbb győződj meg róla, hogy a helyrajzi számot a végpont elvárt formátumában
 adtad át (pl. „43/15" vs „043/15" vs külön település és hrsz). Ha nem tudod
 eldönteni, kérdezz — ne tippelj.
+
+Ha az egyeztető `ok: false` + csonka-lista figyelmeztetést ad: **ne** add át
+késznek a feladatot — hívd újra `http_api_get_all`-lal, majd az egyeztetést.
+`confirmNyilvantartasComplete=true` csak akkor, ha get_all után is ennyi a sor.
 
 ## 2. Az egyeztetés — EGY hívás
 

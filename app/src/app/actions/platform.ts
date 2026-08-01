@@ -105,6 +105,8 @@ import {
   deleteKbDocumentSchema,
   kbArtifactReviewSchema,
   rollbackMemorySchema,
+  proposeMemoryItemChangeSchema,
+  listTrainingMemoryVersionsSchema,
   memoryCandidateIdSchema,
   consequenceApprovalIdSchema,
   rejectMemoryCandidateSchema,
@@ -3338,6 +3340,58 @@ export async function createTrainingTicket(input: {
     return ok(ticket)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to create training ticket')
+  }
+}
+
+export async function proposeMemoryItemChange(
+  input: z.infer<typeof proposeMemoryItemChangeSchema>,
+) {
+  try {
+    const parsed = proposeMemoryItemChangeSchema.parse(input)
+    const user = await requireTenantRole('operator')
+    const change =
+      parsed.operation === 'add'
+        ? { operation: 'add' as const, text: parsed.text }
+        : parsed.operation === 'update'
+          ? {
+              operation: 'update' as const,
+              itemIndex: parsed.itemIndex,
+              text: parsed.text,
+            }
+          : { operation: 'remove' as const, itemIndex: parsed.itemIndex }
+
+    const ticket = await services.training.proposeMemoryItemChange({
+      agentId: parsed.agentId,
+      change,
+      actor: trainingActor(user),
+    })
+
+    if (parsed.apply && hasMinimumRole(user.activeTenantRole, 'approver')) {
+      const approved = await services.training.approveTraining(ticket.id, trainingActor(user))
+      return ok({ ticket, approved })
+    }
+
+    return ok({ ticket, approved: null })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to propose memory item change')
+  }
+}
+
+export async function listTrainingMemoryVersions(input: {
+  agentId: string
+  limit?: number
+}) {
+  try {
+    const user = await requireTenantRole('viewer')
+    const parsed = listTrainingMemoryVersionsSchema.parse(input)
+    const data = await services.training.listMemoryVersionsForTraining(
+      parsed.agentId,
+      trainingActor(user),
+      parsed.limit,
+    )
+    return ok(data)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to list memory versions')
   }
 }
 
