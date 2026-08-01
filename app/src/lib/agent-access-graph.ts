@@ -45,6 +45,8 @@ export type AgentAccessTargetNode = {
   outboundRestricted: boolean
   /** Katalógus-alkalmassági szabály; NEM a gráf része (lásd `target_hidden`). */
   hiddenFromOperators: boolean
+  /** Perzisztált rendszer-szerep; csak a Web-Egress kezelt biztonsági principal. */
+  systemRole?: string | null
   status: string
 }
 

@@ -229,8 +229,10 @@ async function main() {
     assert.match(tenantAction, /tenants\.findByIds\(/)
     assert.doesNotMatch(tenantAction, /membershipTenantIds\]\.map\(\(id\) => repositories\.tenants\.findById/)
 
+    // Web-Egress feloldás: systemRole + tenant fail-closed (nem N+1 capability scan).
     const egress = read('src/domain/tool-broker/tool-broker-delegation.ts')
-    assert.match(egress, /findCapabilitiesForAgents\(/)
+    assert.match(egress, /selectActiveTenantWebEgress\(/)
+    assert.doesNotMatch(egress, /findCapabilitiesForAgents\(/)
 
     const processAction = read('src/app/actions/process.ts')
     assert.match(processAction, /listSuitableAgentsForVersion/)

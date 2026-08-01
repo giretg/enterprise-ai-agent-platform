@@ -332,6 +332,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'skill.deactivated',
   'skill.deleted',
   'skill.access_denied',
+  'skill.blocked_unready',
   'skill.run_snapshot',
   // issue #161 — `preferredMode: 'task'`: a chat helyett a boardon fut végig.
   'skill.task_promoted',

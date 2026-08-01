@@ -61,6 +61,7 @@ function node(over: Partial<AgentGraphNode> & { id: string }): AgentGraphNode {
     personaNickname: null,
     personaTrait: null,
     role: 'worker',
+    systemRole: null,
     status: 'active',
     hiddenFromOperators: false,
     inboundRestricted: false,
@@ -369,6 +370,7 @@ async function serviceTests() {
   const webEgress = node({
     id: 'egress',
     name: 'Web-Egress Worker',
+    systemRole: 'web_egress',
     inboundRestricted: true,
     outboundRestricted: true,
     hiddenFromOperators: true,
@@ -386,7 +388,7 @@ async function serviceTests() {
     for (const agent of allAgents) {
       // A lista a napi operátori felületet modellezi: a csak-admin csomópont ott nem
       // jelenik meg, ezért az elemenkénti összevetésből is kihagyjuk.
-      if (agent.name === 'Web-Egress Worker') continue
+      if (agent.systemRole === 'web_egress') continue
       const d = await service.canAccessAgent(subject, agent.id, 'view')
       if (d.allowed) perItem.push(agent.id)
     }

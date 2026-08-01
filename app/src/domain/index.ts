@@ -109,6 +109,7 @@ import { resolveConnectorApiKey } from '@/domain/connector/http-api-client'
 import { createTtlSecretCache } from '@/lib/crypto/ttl-secret-cache'
 import { prisma } from '@/lib/db'
 import { AgentAccessService } from '@/domain/agent-access/agent-access-service'
+import { isWebEgressAgent } from '@/lib/platform-agent-registry'
 import { AGENT_GRAPH_NODE_SELECT } from '@/domain/agent-access/agent-graph-node-select'
 import { createHash } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
@@ -926,10 +927,12 @@ const provisioningAssistant = new ProvisioningAssistant({
       return results
     },
     runWebFetch: async ({ url, sourceType, allowedSourceUrls, allowlistHosts, agentId, fetchIndex, maxContentChars }) => {
-      // §7.4 kapu: a web_fetch KIZÁRÓLAG web-egress role capabilityvel hívható.
+      // §7.4 kapu: a web_fetch KIZÁRÓLAG a perzisztált Web-Egress rendszer-szerep
+      // ÉS a deny-by-default capability együttesével hívható. Egy agent neve vagy
+      // pusztán egy hibásan kiosztott capability nem jogosíthat fel webes egressre.
       const cap = await repositories.toolBroker.findCapability(agentId, 'web_fetch')
       const agent = await repositories.agents.findById(agentId)
-      if (cap?.allowed !== true) {
+      if (cap?.allowed !== true || !agent || !isWebEgressAgent(agent)) {
         await repositories.audit.append({
           actorType: 'agent',
           actorId: agentId,
@@ -941,7 +944,9 @@ const provisioningAssistant = new ProvisioningAssistant({
           inputRef: null,
           outputRef: null,
           policyDecision: 'denied',
-          metadata: { reason: 'TOOL_NOT_AUTHORIZED' },
+          metadata: {
+            reason: cap?.allowed === true && agent ? 'WEB_EGRESS_ROLE_REQUIRED' : 'TOOL_NOT_AUTHORIZED',
+          },
         })
         return { ok: false, reason: 'fetch_failed', detail: 'not_authorized' }
       }

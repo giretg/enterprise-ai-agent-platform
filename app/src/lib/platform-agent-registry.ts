@@ -17,12 +17,11 @@
  *     hívható, kimenő éle nincs, és a napi operátori felületeken (katalógus,
  *     felelős-választó, chat-indító) nem jelenik meg.
  */
-import { WEB_EGRESS_ROLE_TEMPLATE } from '@/domain/agents/web-egress-role'
 import { PLAYBOOK_AUTHOR_TEMPLATE } from '@/domain/playbook/playbook-author-agent'
 import { PROVISIONING_ASSISTANT_TEMPLATE } from '@/domain/provisioning/provisioning-assistant'
 
-/** A Web-Egress agent kanonikus neve (a tenant-példányok is ezt viselik). */
-export const WEB_EGRESS_AGENT_NAME: string = WEB_EGRESS_ROLE_TEMPLATE.name
+/** A Web-Egress perzisztált rendszer-szerepazonosítója. */
+export const WEB_EGRESS_SYSTEM_ROLE = 'web_egress' as const
 
 /**
  * A dedikált-panel varázslók nevei. A Skill Distiller és a Skill Review a
@@ -43,18 +42,17 @@ export function isPanelWizardAgent(agent: { name: string; tenantId: string | nul
 }
 
 /**
- * True, ha az agent Web-Egress szolgáltató. A tenant-példány normál gráfcsomópont, de
- * a NAPI operátori felületeken (katalógus, felelős-választó, chat-indító) nem szabad
- * megjelennie: a webes kutatást agent kéri agenttől, nem ember címzi közvetlenül.
+ * True, ha az agent Web-Egress szolgáltató. A rendszer-szerep szándékosan NEM az
+ * agent nevéből következik: a név szerkeszthető UI-adat lenne egy biztonsági kapun.
  */
-export function isWebEgressAgent(agent: { name: string }): boolean {
-  return agent.name === WEB_EGRESS_AGENT_NAME
+export function isWebEgressAgent(agent: { systemRole?: string | null }): boolean {
+  return agent.systemRole === WEB_EGRESS_SYSTEM_ROLE
 }
 
 /**
  * True, ha az agent CSAK admin/kormányzási felületen látszik. Ma ez a Web-Egress; az
  * org-ábra és az admin kormányzási felület megkapja, az operátori felületek nem.
  */
-export function isAdminOnlyGraphNode(agent: { name: string }): boolean {
+export function isAdminOnlyGraphNode(agent: { systemRole?: string | null }): boolean {
   return isWebEgressAgent(agent)
 }
