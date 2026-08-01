@@ -1952,6 +1952,20 @@ export function buildToolInvokeInput(
 }
 
 /**
+ * A `Capability(agentId, toolName)` sor neve egy toolhoz (D6). A grant-kiosztó
+ * utak (seed, provisioning, role/skill-materializáció) EZT használják, hogy egy
+ * tool átnevezése ne hagyjon maga után árva jogosultsági sorokat.
+ */
+export function toolCapabilityName(tool: ToolName): string {
+  return TOOL_REGISTRY[tool].capability
+}
+
+/** Több tool capability-neve egyszerre — a seed/materializáció ciklusaihoz. */
+export function toolCapabilityNames(tools: readonly ToolName[]): string[] {
+  return tools.map(toolCapabilityName)
+}
+
+/**
  * A modellnek küldött JSON Schema (D2). A Zod-alakból képződik; a `$schema`
  * kulcsot levágjuk, mert a function-calling felületek nem várják.
  */
