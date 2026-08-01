@@ -436,9 +436,9 @@ const TOOL_SCHEMAS: Record<ChatPlatformToolName, ToolSchema> = {
   },
   create_html: {
     description:
-      'HTML fájl (.html) létrehozása a munkaterületen — letölthető, önálló weboldal. HTML dokumentum készítéséhez EZT hívd, ne a file_write-ot. ' +
+      'HTML fájl (.html) létrehozása a munkaterületen — a felhasználó a Workspace fájlok panelből egy kattintással megnyithatja. HTML dokumentum készítéséhez EZT hívd, ne a file_write-ot. ' +
       'A `html` lehet teljes dokumentum (<!doctype…) vagy csak törzs-töredék — utóbbit érvényes HTML5 vázba csomagolom (a `title` a lap címe). ' +
-      'FONTOS: ez sima munkaterületi fájl, amit a felhasználó letölt és a saját gépén nyit meg. NEM izolált, platformon belül futtatható mini-app — ha megnyitható/futtatható, önálló felületre van szükség, azt a sandbox_app_* eszközökkel, mini-appként készítsd.',
+      'FONTOS: a megnyitás izolált, ezért interaktív mini-app helyett önálló, statikus HTML riportot készíts. Futtatható mini-apphoz sandbox_app_* eszköz kell.',
     inputSchema: objectSchema({ path: STR, html: STR, title: STR }, ['path', 'html']),
   },
   file_edit: {
@@ -2132,7 +2132,11 @@ export async function runAgentToolLoop(params: {
    * Workspace fájl írása (issue #179): hétköznapi másolat nagy eredményhez,
    * illetve a `tool_result_extract` kimenete. Ha hiányzik, az extract hibázik.
    */
-  writeWorkspaceFile?: (path: string, content: string) => Promise<{ bytes: number } | null>
+  writeWorkspaceFile?: (
+    path: string,
+    content: string,
+    audience?: 'user' | 'internal',
+  ) => Promise<{ bytes: number } | null>
   /** Workspace fájllista — archívum-map hidratálásához forduló elején. */
   listWorkspaceFiles?: () => Promise<string[]>
   /** Workspace fájl olvasása — lusta betöltés a hidratált archívum-maphoz. */
@@ -2990,7 +2994,7 @@ export async function runAgentToolLoop(params: {
         }
 
         const outContent = `${JSON.stringify(extracted.rows, null, 2)}\n`
-        const written = await params.writeWorkspaceFile(outputPath, outContent)
+        const written = await params.writeWorkspaceFile(outputPath, outContent, 'internal')
         if (!written) {
           pushToolResult(
             call,
@@ -3451,7 +3455,7 @@ export async function runAgentToolLoop(params: {
             const workspacePath = workspaceCopyPathForArchive(archive.path)
             if (params.writeWorkspaceFile && workspacePath !== archive.path) {
               try {
-                const copy = await params.writeWorkspaceFile(workspacePath, archiveContent)
+                const copy = await params.writeWorkspaceFile(workspacePath, archiveContent, 'internal')
                 if (copy) {
                   rememberArchived(workspacePath, {
                     content: archiveContent,

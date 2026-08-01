@@ -6,6 +6,7 @@ import {
   conversationWorkspaceFilesUrl,
   uploadConversationWorkspaceFile,
 } from '@/lib/conversation-workspace-files-client'
+import { isHtmlWorkspaceFile, workspaceFileLink } from '@/lib/workspace-file-visibility'
 
 export type ConversationFilesPanelHandle = {
   refresh: () => void
@@ -16,9 +17,10 @@ type WorkspaceFile = { path: string }
 type Props = {
   conversationId: string
   panelRef?: React.Ref<ConversationFilesPanelHandle>
+  onFilesChange?: (paths: string[]) => void
 }
 
-export function ConversationFilesPanel({ conversationId, panelRef }: Props) {
+export function ConversationFilesPanel({ conversationId, panelRef, onFilesChange }: Props) {
   const [files, setFiles] = useState<WorkspaceFile[]>([])
   const [loading, setLoading] = useState(false)
   const [open, setOpen] = useState(false)
@@ -27,7 +29,7 @@ export function ConversationFilesPanel({ conversationId, panelRef }: Props) {
 
   const listUrl = conversationWorkspaceFilesUrl(conversationId)
 
-  const visibleFiles = files.filter((file) => !file.path.startsWith('.tool-results/'))
+  const visibleFiles = files
 
   const loadFiles = useCallback(async (quiet = false) => {
     if (!quiet) setLoading(true)
@@ -37,11 +39,12 @@ export function ConversationFilesPanel({ conversationId, panelRef }: Props) {
       const json = (await res.json()) as { success: boolean; data?: { files: string[] } }
       const next = (json.data?.files ?? []).map((path) => ({ path }))
       setFiles(next)
-      if (next.some((file) => !file.path.startsWith('.tool-results/'))) setOpen(true)
+      onFilesChange?.(next.map((file) => file.path))
+      if (next.length > 0) setOpen(true)
     } finally {
       if (!quiet) setLoading(false)
     }
-  }, [listUrl])
+  }, [listUrl, onFilesChange])
 
   // Beszélgetésváltáskor a conversationId (és így listUrl/loadFiles) változik,
   // ezért a listát újra kell tölteni.
@@ -56,31 +59,19 @@ export function ConversationFilesPanel({ conversationId, panelRef }: Props) {
         if (!json || controller.signal.aborted) return
         const next = (json.data?.files ?? []).map((path) => ({ path }))
         setFiles(next)
-        if (next.some((file) => !file.path.startsWith('.tool-results/'))) setOpen(true)
+        onFilesChange?.(next.map((file) => file.path))
+        if (next.length > 0) setOpen(true)
       })
       .catch((err: unknown) => {
         if (!controller.signal.aborted) console.error('Failed to load conversation files', err)
       })
     return () => controller.abort()
-  }, [listUrl])
+  }, [listUrl, onFilesChange])
 
   useImperativeHandle(panelRef, () => ({ refresh: () => void loadFiles(true) }), [loadFiles])
 
   async function handleDownload(path: string) {
-    const signedRes = await fetch(`${listUrl}?path=${encodeURIComponent(path)}&signed=1`)
-    if (signedRes.ok) {
-      const json = (await signedRes.json()) as { success: boolean; data?: { url: string } }
-      if (json.success && json.data?.url) {
-        window.open(json.data.url, '_blank', 'noopener,noreferrer')
-        return
-      }
-    }
-    const a = document.createElement('a')
-    a.href = `${listUrl}?path=${encodeURIComponent(path)}`
-    a.download = path.split('/').pop() ?? path
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
+    window.open(workspaceFileLink(listUrl, path), '_blank', 'noopener,noreferrer')
   }
 
   function uploadFile(file: File) {
@@ -130,15 +121,21 @@ export function ConversationFilesPanel({ conversationId, panelRef }: Props) {
             <ul className="divide-y divide-line">
               {visibleFiles.map((f) => (
                 <li key={f.path} className="flex items-center justify-between py-1.5">
-                  <span className="truncate text-xs text-ink" title={f.path}>
+                  <a
+                    href={workspaceFileLink(listUrl, f.path)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="truncate text-xs text-ink hover:text-sky hover:underline"
+                    title={f.path}
+                  >
                     {f.path}
-                  </span>
+                  </a>
                   <button
                     type="button"
                     onClick={() => void handleDownload(f.path)}
                     className="ml-2 shrink-0 text-xs font-medium text-sky hover:underline"
                   >
-                    Letöltés
+                    {isHtmlWorkspaceFile(f.path) ? 'Megnyitás' : 'Letöltés'}
                   </button>
                 </li>
               ))}

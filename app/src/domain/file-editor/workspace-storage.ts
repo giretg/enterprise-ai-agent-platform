@@ -1,4 +1,10 @@
 import { createHash } from 'node:crypto'
+import {
+  isWorkspaceFileUserFacing,
+  type WorkspaceFileAudience,
+  WORKSPACE_FILE_AUDIENCE_MANIFEST,
+  WORKSPACE_FILE_AUDIENCE_PREFIX,
+} from '@/lib/workspace-file-visibility'
 
 /**
  * GCS workspace storage adapter.
@@ -305,6 +311,74 @@ export class WorkspaceStorage {
     if (!res.ok) throw new FileEditorError('GCS_LIST_FAILED', `GCS list failed: HTTP ${res.status}`)
     const data = (await res.json()) as { items?: Array<{ name: string }> }
     return (data.items ?? []).map((item) => item.name.slice(prefixLen)).sort()
+  }
+
+  /**
+   * A fájl eredetét fájlonkénti, rejtett marker tartja nyilván. Ez párhuzamos
+   * feltöltés/agent-írás esetén sem írja felül egy másik fájl besorolását.
+   */
+  async setFileAudience(
+    tenantId: string,
+    ticketId: string,
+    filePath: string,
+    audience: WorkspaceFileAudience,
+  ): Promise<void> {
+    await this.write(
+      tenantId,
+      ticketId,
+      `${WORKSPACE_FILE_AUDIENCE_PREFIX}${Buffer.from(filePath, 'utf8').toString('base64url')}`,
+      Buffer.from(audience, 'utf8'),
+    )
+  }
+
+  async listUserFacing(tenantId: string, ticketId: string): Promise<string[]> {
+    const [files, audiences] = await Promise.all([
+      this.list(tenantId, ticketId),
+      this.readFileAudiences(tenantId, ticketId),
+    ])
+    return files.filter((path) => isWorkspaceFileUserFacing(path, audiences[path]))
+  }
+
+  private async readFileAudiences(
+    tenantId: string,
+    ticketId: string,
+  ): Promise<Record<string, WorkspaceFileAudience>> {
+    const audiences = await this.readLegacyFileAudiences(tenantId, ticketId)
+    try {
+      const markers = await this.list(tenantId, ticketId, WORKSPACE_FILE_AUDIENCE_PREFIX.slice(0, -1))
+      await Promise.all(
+        markers.map(async (marker) => {
+          const encodedPath = marker.split('/').pop()
+          if (!encodedPath) return
+          const path = Buffer.from(encodedPath, 'base64url').toString('utf8')
+          const value = await this.read(tenantId, ticketId, marker)
+          const audience = value?.toString('utf8')
+          if (audience === 'user' || audience === 'internal') audiences[path] = audience
+        }),
+      )
+      return audiences
+    } catch {
+      return audiences
+    }
+  }
+
+  private async readLegacyFileAudiences(
+    tenantId: string,
+    ticketId: string,
+  ): Promise<Record<string, WorkspaceFileAudience>> {
+    const manifest = await this.read(tenantId, ticketId, WORKSPACE_FILE_AUDIENCE_MANIFEST)
+    if (!manifest) return {}
+    try {
+      const parsed: unknown = JSON.parse(manifest.toString('utf8'))
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+      return Object.fromEntries(
+        Object.entries(parsed).filter(
+          ([, audience]) => audience === 'user' || audience === 'internal',
+        ),
+      ) as Record<string, WorkspaceFileAudience>
+    } catch {
+      return {}
+    }
   }
 
   async getSignedDownloadUrl(

@@ -7,6 +7,7 @@ import {
   ticketWorkspaceFilesUrl,
   uploadTicketWorkspaceFile,
 } from '@/lib/ticket-workspace-files-client'
+import { isHtmlWorkspaceFile, workspaceFileLink } from '@/lib/workspace-file-visibility'
 
 type WorkspaceFile = { path: string }
 
@@ -24,7 +25,7 @@ export function TicketFilesPanel({ ticketId, ticketState }: TicketFilesPanelProp
 
   const listUrl = ticketWorkspaceFilesUrl(ticketId)
   const isReadOnly = ['done', 'rejected', 'approved'].includes(ticketState)
-  const visibleFiles = files.filter((file) => !file.path.startsWith('.tool-results/'))
+  const visibleFiles = files
 
   const loadFiles = useCallback(async () => {
     setLoading(true)
@@ -50,25 +51,7 @@ export function TicketFilesPanel({ ticketId, ticketState }: TicketFilesPanelProp
   }, [loadFiles])
 
   async function handleDownload(path: string) {
-    const signedRes = await fetch(`${listUrl}?path=${encodeURIComponent(path)}&signed=1`)
-    if (signedRes.ok) {
-      const json = (await signedRes.json()) as {
-        success: boolean
-        data?: { url: string }
-      }
-      if (json.success && json.data?.url) {
-        window.open(json.data.url, '_blank', 'noopener,noreferrer')
-        return
-      }
-    }
-
-    const url = `${listUrl}?path=${encodeURIComponent(path)}`
-    const a = document.createElement('a')
-    a.href = url
-    a.download = path.split('/').pop() ?? path
-    document.body.appendChild(a)
-    a.click()
-    document.body.removeChild(a)
+    window.open(workspaceFileLink(listUrl, path), '_blank', 'noopener,noreferrer')
   }
 
   function uploadFile(file: File) {
@@ -107,15 +90,21 @@ export function TicketFilesPanel({ ticketId, ticketState }: TicketFilesPanelProp
         <ul className="divide-y divide-line">
           {visibleFiles.map((f) => (
             <li key={f.path} className="flex items-center justify-between py-2">
-              <span className="truncate text-sm text-ink" title={f.path}>
+              <a
+                href={workspaceFileLink(listUrl, f.path)}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="truncate text-sm text-ink hover:text-sky hover:underline"
+                title={f.path}
+              >
                 {f.path}
-              </span>
+              </a>
               <button
                 type="button"
                 onClick={() => void handleDownload(f.path)}
                 className="ml-2 shrink-0 text-sm font-medium text-sky hover:underline"
               >
-                Letöltés
+                {isHtmlWorkspaceFile(f.path) ? 'Megnyitás' : 'Letöltés'}
               </button>
             </li>
           ))}

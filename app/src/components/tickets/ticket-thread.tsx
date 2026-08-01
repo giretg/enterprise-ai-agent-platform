@@ -1,7 +1,7 @@
 'use client'
 
 import { useRouter } from 'next/navigation'
-import { useMemo, useState, useTransition } from 'react'
+import { useEffect, useMemo, useState, useTransition } from 'react'
 import { addTicketComment, uploadTicketCommentAttachment } from '@/app/actions/platform'
 import { Badge, Card } from '@/components/ui/shell'
 import { ChatMarkdown } from '@/components/chat/chat-markdown'
@@ -276,6 +276,19 @@ export function TicketThread({
   }
   comments: TicketThreadComment[]
 }) {
+  const [workspaceFilePaths, setWorkspaceFilePaths] = useState<string[]>([])
+  useEffect(() => {
+    const controller = new AbortController()
+    void fetch(`/api/v1/tickets/${ticket.id}/workspace/files`, { signal: controller.signal })
+      .then(async (response) => (response.ok ? response.json() : null))
+      .then((json: { data?: { files?: string[] } } | null) => {
+        if (!controller.signal.aborted) setWorkspaceFilePaths(json?.data?.files ?? [])
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setWorkspaceFilePaths([])
+      })
+    return () => controller.abort()
+  }, [ticket.id])
   const originalTask = ticket.taskDescription?.trim() || ticket.title
   const canHandBack = Boolean(
     ticket.agentId && !ticket.processInstanceId && ['done', 'awaiting_human'].includes(ticket.state),
@@ -335,7 +348,12 @@ export function TicketThread({
                 {typeof structured.model === 'string' && <Badge tone="neutral">{structured.model}</Badge>}
               </div>
               {isAgent ? (
-                <ChatMarkdown content={comment.body} variant="agent" />
+                <ChatMarkdown
+                  content={comment.body}
+                  variant="agent"
+                  workspaceBaseUrl={`/api/v1/tickets/${ticket.id}/workspace/files`}
+                  workspaceFilePaths={workspaceFilePaths}
+                />
               ) : (
                 <p className="whitespace-pre-wrap text-sm leading-relaxed text-ink-soft">{comment.body}</p>
               )}
@@ -361,7 +379,12 @@ export function TicketThread({
                 <Badge tone="neutral">{payloadFallbackStructured.model}</Badge>
               )}
             </div>
-            <ChatMarkdown content={payloadFallbackAnswer} variant="agent" />
+            <ChatMarkdown
+              content={payloadFallbackAnswer}
+              variant="agent"
+              workspaceBaseUrl={`/api/v1/tickets/${ticket.id}/workspace/files`}
+              workspaceFilePaths={workspaceFilePaths}
+            />
           </article>
         )}
 

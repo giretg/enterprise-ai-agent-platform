@@ -2,17 +2,23 @@ import Link from 'next/link'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { Components } from 'react-markdown'
+import {
+  linkWorkspaceFileReferences,
+  workspaceFileLink,
+} from '@/lib/workspace-file-visibility'
 
 function MarkdownLink({
   href,
   children,
   className,
+  forceExternal = false,
 }: {
   href?: string
   children?: React.ReactNode
   className?: string
+  forceExternal?: boolean
 }) {
-  if (href?.startsWith('/')) {
+  if (href?.startsWith('/') && !forceExternal) {
     return (
       <Link href={href} className={className}>
         {children}
@@ -29,7 +35,8 @@ function MarkdownLink({
 const linkClassName =
   'font-medium text-coral underline decoration-coral/40 underline-offset-2 hover:text-coral-deep'
 
-const agentComponents: Components = {
+function agentComponentsFor(workspaceBaseUrl?: string, workspaceFilePaths: string[] = []): Components {
+  return {
   p: ({ children }) => <p className="mb-3 last:mb-0 leading-relaxed">{children}</p>,
   strong: ({ children }) => <strong className="font-semibold text-ink">{children}</strong>,
   em: ({ children }) => <em className="italic">{children}</em>,
@@ -54,6 +61,18 @@ const agentComponents: Components = {
         </code>
       )
     }
+    const content = String(children).replace(/\n$/, '')
+    if (workspaceBaseUrl && workspaceFilePaths.includes(content)) {
+      return (
+        <MarkdownLink
+          href={workspaceFileLink(workspaceBaseUrl, content)}
+          className={`${linkClassName} rounded bg-night-2 px-1.5 py-0.5 font-mono text-[0.85em]`}
+          forceExternal
+        >
+          {children}
+        </MarkdownLink>
+      )
+    }
     return (
       <code className="rounded bg-night-2 px-1.5 py-0.5 font-mono text-[0.85em]">{children}</code>
     )
@@ -70,6 +89,7 @@ const agentComponents: Components = {
     </MarkdownLink>
   ),
   hr: () => <hr className="my-3 border-line" />,
+  }
 }
 
 const userComponents: Components = {
@@ -79,9 +99,14 @@ const userComponents: Components = {
 export function ChatMarkdown({
   content,
   variant,
+  workspaceBaseUrl,
+  workspaceFilePaths = [],
 }: {
   content: string
   variant: 'user' | 'agent'
+  /** A beszélgetés/ticket saját, hitelesített workspace-fájl route-ja. */
+  workspaceBaseUrl?: string
+  workspaceFilePaths?: string[]
 }) {
   if (variant === 'user') {
     return (
@@ -95,8 +120,13 @@ export function ChatMarkdown({
 
   return (
     <div className="chat-markdown chat-markdown--agent text-sm text-ink-soft">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={agentComponents}>
-        {content}
+      <ReactMarkdown
+        remarkPlugins={[remarkGfm]}
+        components={agentComponentsFor(workspaceBaseUrl, workspaceFilePaths)}
+      >
+        {workspaceBaseUrl
+          ? linkWorkspaceFileReferences(content, workspaceFilePaths, workspaceBaseUrl)
+          : content}
       </ReactMarkdown>
     </div>
   )

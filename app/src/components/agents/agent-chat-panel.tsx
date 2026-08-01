@@ -963,6 +963,8 @@ function MessageBubble({
   onMemoryCandidateUpdate,
   onConsequenceApprovalUpdate,
   onConsequenceApproved,
+  workspaceBaseUrl,
+  workspaceFilePaths,
 }: {
   message: ChatMessage
   isBusy: boolean
@@ -974,6 +976,8 @@ function MessageBubble({
     patch: Partial<ConsequenceApprovalCard>,
   ) => void
   onConsequenceApproved: (approvalIds: string[]) => void
+  workspaceBaseUrl?: string
+  workspaceFilePaths: string[]
 }) {
   const isUser = message.role === 'user'
   const isDeleted = Boolean(message.contentDeletedAt)
@@ -1014,7 +1018,12 @@ function MessageBubble({
                   <ChatMarkdown content={message.text} variant="user" />
                 </div>
               ) : (
-                <ChatMarkdown content={message.text} variant="agent" />
+                <ChatMarkdown
+                  content={message.text}
+                  variant="agent"
+                  workspaceBaseUrl={workspaceBaseUrl}
+                  workspaceFilePaths={workspaceFilePaths}
+                />
               ))}
             {/*
               A jóváhagyó kártya a SZÖVEG UTÁN áll: az agent a válasza végén mondja
@@ -1128,6 +1137,7 @@ export function AgentChatPanel({
   const dockId = useId()
   const [input, setInput] = useState('')
   const [conversationId, setConversationId] = useState<string | null>(null)
+  const [workspaceFilePaths, setWorkspaceFilePaths] = useState<string[]>([])
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([])
   const [statusMessage, setStatusMessage] = useState<string | null>(null)
@@ -2814,6 +2824,12 @@ export function AgentChatPanel({
                       onMemoryCandidateUpdate={handleMemoryCandidateUpdate}
                       onConsequenceApprovalUpdate={handleConsequenceApprovalUpdate}
                       onConsequenceApproved={handleConsequenceApproved}
+                      workspaceBaseUrl={
+                        conversationId
+                          ? `/api/v1/conversations/${conversationId}/workspace/files`
+                          : undefined
+                      }
+                      workspaceFilePaths={workspaceFilePaths}
                     />
                   ))}
                   {isAgentTyping &&
@@ -2829,6 +2845,7 @@ export function AgentChatPanel({
               <ConversationFilesPanel
                 conversationId={conversationId}
                 panelRef={filesRef}
+                onFilesChange={setWorkspaceFilePaths}
               />
             )}
 

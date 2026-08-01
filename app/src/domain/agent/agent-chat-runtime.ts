@@ -82,6 +82,10 @@ import {
   type TurnSnapshotFlush,
 } from './agent-turn-snapshot'
 import { resolveStaleTurnMs, closeTurnAsWatchdog } from './agent-turn-watchdog'
+import {
+  isInternalWorkspaceFile,
+  referencedWorkspaceFiles,
+} from '@/lib/workspace-file-visibility'
 
 /**
  * Ugyanarra a forduló-azonosítóra már fut futtatás EBBEN a processben. Ez a
@@ -1078,10 +1082,17 @@ export class AgentChatRuntime {
       conversationId,
       attachmentDocs,
       presentFiles,
+      'user',
     )
     const knowledgeDocs = await this.loadAgentKnowledgeDocuments(params.agentId)
-    await this.materializeDocumentsToWorkspace(tenantKey, conversationId, knowledgeDocs, presentFiles)
-    const workspaceFiles = await this.listWorkspaceFiles(tenantKey, conversationId)
+    await this.materializeDocumentsToWorkspace(
+      tenantKey,
+      conversationId,
+      knowledgeDocs,
+      presentFiles,
+      'internal',
+    )
+    const workspaceFiles = await this.listUserFacingWorkspaceFiles(tenantKey, conversationId)
 
     let persistedUserMessage: Message | null = null
     let userMessage: Message
@@ -1499,10 +1510,11 @@ export class AgentChatRuntime {
             : {}),
           archiveLargeToolResult: (input) =>
             this.archiveLargeToolResult(tenantKey, conversationId, input),
-          writeWorkspaceFile: async (path, content) => {
+          writeWorkspaceFile: async (path, content, audience = 'internal') => {
             try {
               const bytes = Buffer.from(content, 'utf8')
               await this.workspaceStorage.write(tenantKey, conversationId, path, bytes)
+              await this.workspaceStorage.setFileAudience(tenantKey, conversationId, path, audience)
               return { bytes: bytes.length }
             } catch {
               return null
@@ -1581,6 +1593,7 @@ export class AgentChatRuntime {
           return
         }
         reply = result.value.content
+        await this.publishReferencedWorkspaceFiles(tenantKey, conversationId, reply)
         loopToolCallCount = result.value.toolCallCount
         loopDeniedCount = result.value.deniedCount
         if (result.value.status === 'exhausted') {
@@ -2158,6 +2171,7 @@ export class AgentChatRuntime {
     conversationId: string,
     docs: Array<{ filename: string; extractedText: string | null }>,
     skipExisting: Set<string>,
+    audience: 'user' | 'internal',
   ): Promise<void> {
     const MAX_BYTES = 5 * 1024 * 1024
     for (const doc of docs) {
@@ -2183,6 +2197,7 @@ export class AgentChatRuntime {
 
       try {
         await this.workspaceStorage.write(tenantId, conversationId, targetPath, bytes)
+        await this.workspaceStorage.setFileAudience(tenantId, conversationId, targetPath, audience)
         skipExisting.add(targetPath)
       } catch {
         // Egy fájl kiírási hibája ne akassza meg a beszélgetést.
@@ -2213,6 +2228,34 @@ export class AgentChatRuntime {
       return await this.workspaceStorage.list(tenantId, conversationId)
     } catch {
       return []
+    }
+  }
+
+  private async listUserFacingWorkspaceFiles(
+    tenantId: string,
+    conversationId: string,
+  ): Promise<string[]> {
+    try {
+      return await this.workspaceStorage.listUserFacing(tenantId, conversationId)
+    } catch {
+      return []
+    }
+  }
+
+  private async publishReferencedWorkspaceFiles(
+    tenantId: string,
+    conversationId: string,
+    answer: string,
+  ): Promise<void> {
+    try {
+      const workspaceFiles = await this.listWorkspaceFiles(tenantId, conversationId)
+      await Promise.all(
+        referencedWorkspaceFiles(answer, workspaceFiles)
+          .filter((path) => !isInternalWorkspaceFile(path))
+          .map((path) => this.workspaceStorage.setFileAudience(tenantId, conversationId, path, 'user')),
+      )
+    } catch {
+      // A fájl publikálási metaadata nem szakíthatja meg a már kész választ.
     }
   }
 
@@ -2460,13 +2503,13 @@ export class AgentChatRuntime {
           workspaceFiles.map((p) => `- ${p}`).join('\n') +
           `\n\nEzeket a file_read / xlsx_read_sheet / file_search stb. eszközökkel éred el a fenti pontos néven. ` +
           `Csatolmány PDF/DOCX tartalmához (documentId a csatolmány-blokkban) a document_read eszközt használd oldalra vagy keresésre — ne a teljes .txt-t file_read-del. ` +
-          `Ha a kért adat egy itt felsorolt fájlban van, onnan dolgozz. Új fájlt (pl. Excel → xlsx_create, prezentáció → pptx_create, Word → docx_create, egyéb → file_write) az eszközökkel hozz létre — a felhasználó a chat „Workspace fájlok" panelről tölti le.`,
+          `Ha a kért adat egy itt felsorolt fájlban van, onnan dolgozz. Új fájlt (pl. Excel → xlsx_create, prezentáció → pptx_create, Word → docx_create, egyéb → file_write) az eszközökkel hozz létre. A kész, felhasználónak szánt fájlra a válaszodban mindig csak a pontos, backtickbe tett fájlnévvel hivatkozz (pl. \`riport.html\`) — ebből kattintható link lesz; a HTML megnyitható, a többi letölthető.`,
       })
     } else {
       variableContext.push({
         role: 'system',
         content:
-          'A beszélgetés munkaterülete jelenleg üres (nincs feltöltött fájl). Ha a felhasználó létező fájlra hivatkozik, kérd meg, hogy csatolja (📎). Csatolt PDF/DOCX esetén a document_read eszközt használd (pages/query). Új fájlt (pl. Excel → xlsx_create, prezentáció → pptx_create, Word → docx_create, egyéb → file_write) az eszközökkel hozhatsz létre — a felhasználó a „Workspace fájlok" panelről tölti le.',
+          'A beszélgetés munkaterülete jelenleg üres (nincs feltöltött fájl). Ha a felhasználó létező fájlra hivatkozik, kérd meg, hogy csatolja (📎). Csatolt PDF/DOCX esetén a document_read eszközt használd (pages/query). Új fájlt (pl. Excel → xlsx_create, prezentáció → pptx_create, Word → docx_create, egyéb → file_write) az eszközökkel hozhatsz létre. A kész, felhasználónak szánt fájlt a válaszodban pontos, backtickbe tett fájlnévvel említsd, hogy kattintható legyen.',
       })
     }
 

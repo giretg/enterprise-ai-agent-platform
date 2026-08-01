@@ -63,6 +63,10 @@ import type { WorkspaceStorage } from '../file-editor/workspace-storage'
 import { formatAttachmentBlock } from './agent-chat-runtime'
 import { listAllowedChatTools, resolveToolLoopMaxTurns, runAgentToolLoop, AgentToolLoopCancelledError, type LoadSkillFn } from './chat-tool-loop'
 import { formatTaskWorkspaceFilesPrompt } from '@/lib/task-workspace-prompt'
+import {
+  isInternalWorkspaceFile,
+  referencedWorkspaceFiles,
+} from '@/lib/workspace-file-visibility'
 import type { SkillService } from '../skill/skill-service'
 import type { PromptSegments } from './prompt-assembler'
 import {
@@ -201,7 +205,7 @@ export class GeneralTaskRuntime {
     const conversationContext = await this.loadConversationContext(ticket)
     const wsTenant = ticket.tenantId ?? 'global'
     const workspaceFiles = await this.workspaceStorage
-      .list(wsTenant, ticket.id)
+      .listUserFacing(wsTenant, ticket.id)
       .catch(() => [] as string[])
 
     const threadComments = await this.tickets.listComments(ticket.id)
@@ -291,7 +295,9 @@ export class GeneralTaskRuntime {
         )
       }
     }
-    const filesBefore = deliverable ? workspaceFiles : null
+    const filesBefore = deliverable
+      ? await this.workspaceStorage.list(wsTenant, ticket.id).catch(() => [] as string[])
+      : null
 
     // Level-0 skill-index + load_skill a task-ághoz is (WP-5/D9).
     const skillIndexPrompt = this.skills
@@ -366,10 +372,11 @@ export class GeneralTaskRuntime {
         loadSkill,
         archiveLargeToolResult: (input) =>
           this.archiveLargeToolResult(wsTenant, ticket.id, input),
-        writeWorkspaceFile: async (path, content) => {
+        writeWorkspaceFile: async (path, content, audience = 'internal') => {
           try {
             const bytes = Buffer.from(content, 'utf8')
             await this.workspaceStorage.write(wsTenant, ticket.id, path, bytes)
+            await this.workspaceStorage.setFileAudience(wsTenant, ticket.id, path, audience)
             return { bytes: bytes.length }
           } catch {
             return null
@@ -450,6 +457,7 @@ export class GeneralTaskRuntime {
 
     await persistProgress(true)
     const { content: answer, toolCallCount } = loopResult
+    await this.publishReferencedWorkspaceFiles(wsTenant, ticket.id, answer)
 
     if (loopResult.status === 'exhausted') {
       const updated = await this.routeNonOkStepOutcome({
@@ -930,6 +938,23 @@ export class GeneralTaskRuntime {
         runRef: { ticketId: params.ticket.id },
       }),
     })
+  }
+
+  private async publishReferencedWorkspaceFiles(
+    tenantId: string,
+    ticketId: string,
+    answer: string,
+  ): Promise<void> {
+    try {
+      const workspaceFiles = await this.workspaceStorage.list(tenantId, ticketId)
+      await Promise.all(
+        referencedWorkspaceFiles(answer, workspaceFiles)
+          .filter((path) => !isInternalWorkspaceFile(path))
+          .map((path) => this.workspaceStorage.setFileAudience(tenantId, ticketId, path, 'user')),
+      )
+    } catch {
+      // A fájl publikálási metaadata nem szakíthatja meg a már kész választ.
+    }
   }
 
   private async archiveLargeToolResult(

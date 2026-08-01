@@ -1,8 +1,10 @@
 /**
- * Board/task prompt: workspace fájlok pontos listája (UI Fájlok panellel egyező).
+ * Board/task prompt: felhasználói workspace-fájlok listája (UI Fájlok panellel egyező).
  */
+import { isWorkspaceFileUserFacing } from '@/lib/workspace-file-visibility'
+
 export function formatTaskWorkspaceFilesPrompt(workspaceFiles: string[]): string {
-  const visible = workspaceFiles.filter((path) => !path.startsWith('.tool-results/'))
+  const visible = workspaceFiles.filter((path) => isWorkspaceFileUserFacing(path))
   if (visible.length === 0) {
     return (
       'A ticket munkaterülete jelenleg üres (nincs feltöltött fájl). ' +
@@ -20,7 +22,7 @@ export function formatTaskWorkspaceFilesPrompt(workspaceFiles: string[]): string
       `Workspace PDF/DOCX-hez NE találj ki documentId-t — a document_read csak a csatolmány-blokkban megadott documentId-kre való. ` +
       `Tulajdoni lap (földhivatali TULLAP/INYER PDF) esetén NE pdf_read-del lapozz: hívd a tulajdoni_lap_parse-t ` +
       `(chat csatolmánynál documentId, workspace fájlnál path — pl. path: "fajl.pdf" vagy "fajl.pdf.txt"). ` +
-      `Ha a kért adat egy itt felsorolt fájlban van, onnan dolgozz.`,
+      `Ha a kért adat egy itt felsorolt fájlban van, onnan dolgozz. Kész fájlra a válaszodban pontos, backtickbe tett fájlnévvel hivatkozz (pl. \`riport.xlsx\`), hogy a felhasználó egy kattintással letölthesse; HTML-nél a link megnyitja a riportot.`,
   ]
 
   if (pdfs.length > 0) {

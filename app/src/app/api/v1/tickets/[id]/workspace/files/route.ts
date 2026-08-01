@@ -4,6 +4,7 @@ import { prisma } from '@/lib/db'
 import { WorkspaceStorage } from '@/domain/file-editor/workspace-storage'
 import { FileEditorError } from '@/domain/file-editor/workspace-storage'
 import { resolveWorkspaceTenantKey } from '@/lib/workspace-resource-access'
+import { isHtmlWorkspaceFile } from '@/lib/workspace-file-visibility'
 
 function jsonError(message: string, status: number) {
   return NextResponse.json({ success: false, error: message }, { status })
@@ -22,6 +23,7 @@ async function resolveTicket(ticketId: string, tenantId: string) {
 
 // GET /api/v1/tickets/[id]/workspace/files
 // ?path=filename → stream file as download
+// ?path=filename&disposition=inline → izolált HTML-megnyitás
 // ?path=filename&signed=1 → pre-signed download URL (15 min)
 // (no path) → list workspace files
 export async function GET(
@@ -44,11 +46,15 @@ export async function GET(
   const url = new URL(request.url)
   const filePath = url.searchParams.get('path')
   const signed = url.searchParams.get('signed') === '1'
+  const inline = url.searchParams.get('disposition') === 'inline'
 
   const storage = getStorage()
 
   try {
     if (filePath) {
+      if (inline && !isHtmlWorkspaceFile(filePath)) {
+        return jsonError('Only HTML workspace files can be opened inline', 400)
+      }
       if (signed) {
         const signedUrl = await storage.getSignedDownloadUrl(tenantId, ticketId, filePath, {
           stubDownloadPath: `/api/v1/tickets/${ticketId}/workspace/files`,
@@ -64,14 +70,21 @@ export async function GET(
       const filename = filePath.split('/').pop() ?? filePath
       return new NextResponse(result.stream, {
         headers: {
-          'content-type': result.contentType,
-          'content-disposition': `attachment; filename="${encodeURIComponent(filename)}"`,
+          'content-type': inline ? 'text/html; charset=utf-8' : result.contentType,
+          'content-disposition': `${inline ? 'inline' : 'attachment'}; filename="${encodeURIComponent(filename)}"`,
+          ...(inline
+            ? {
+                'content-security-policy': "sandbox; default-src 'none'; img-src data: https:; style-src 'unsafe-inline'",
+                'x-content-type-options': 'nosniff',
+                'referrer-policy': 'no-referrer',
+              }
+            : {}),
           ...(result.size > 0 ? { 'content-length': String(result.size) } : {}),
         },
       })
     }
 
-    const files = await storage.list(tenantId, ticketId)
+    const files = await storage.listUserFacing(tenantId, ticketId)
     return NextResponse.json({ success: true, data: { files } })
   } catch (e) {
     if (e instanceof FileEditorError) return jsonError(e.message, 400)
@@ -119,6 +132,7 @@ export async function POST(
   try {
     const buf = Buffer.from(await file.arrayBuffer())
     await storage.write(tenantId, ticketId, filePath, buf)
+    await storage.setFileAudience(tenantId, ticketId, filePath, 'user')
     return NextResponse.json({ success: true, data: { path: filePath, bytesWritten: buf.length } })
   } catch (e) {
     if (e instanceof FileEditorError) {
