@@ -11,7 +11,8 @@
  *  (f) xlsx_create NEM kapu (régi általános mellékhatás-kapu megszűnt);
  *  (g) kapu után nincs újabb tool-kör;
  *  (h) http_api_request write/danger / nem allowlistelt → kapu (policy unit);
- *  (i) http_api_request allowlistelt read → auto (policy unit);
+ *  (i) http_api_request GET/HEAD → mindig kapu (ne legyen read-auto → POST írás);
+ *  (i2) http_api_request allowlistelt idempotens POST read → auto (policy unit);
  *  (j) initialTainted NEM kapuzza a workspace-írást;
  *  (k) read-only connector + http_api_request → denied a HITL előtt (nincs jóváhagyási kártya).
  */
@@ -282,11 +283,40 @@ async function main() {
     )
   })
 
-  await test('(i) http_api_request: allowlistelt read → auto', async () => {
+  await test('(i) http_api_request: GET/HEAD soha nem auto (írás-kijátszás ellen)', async () => {
     const connectors = [{ id: 'conn-1', config: sampleHttpConfig, accessMode: 'write' as const }]
-    // http_api_request GET allowlistelt read végpontra — ritka, de nem kapu.
+    // Korábbi regresszió: GET read → required:false, majd httpMethodArg POST-tá
+    // kényszerítette → jóváhagyás nélküli írás. GET/HEAD ezért mindig kapu.
+    assert.equal(
+      evaluateHttpApiRequestGate(
+        { connectorId: 'conn-1', method: 'GET', path: '/parcels' },
+        connectors,
+      ).required,
+      true,
+    )
+    assert.equal(
+      evaluateHttpApiRequestGate(
+        { connectorId: 'conn-1', method: 'HEAD', path: '/parcels' },
+        connectors,
+      ).required,
+      true,
+    )
+  })
+
+  await test('(i2) http_api_request: allowlistelt read-risk író metódus → auto csak ha tényleg read', async () => {
+    // Szándékos ritka konfig: POST endpoint explicit risk:read (pl. search).
+    const connectors = [
+      {
+        id: 'conn-1',
+        config: {
+          ...sampleHttpConfig,
+          endpoints: [{ method: 'POST' as const, path: '/search', risk: 'read' as const }],
+        },
+        accessMode: 'write' as const,
+      },
+    ]
     const d = evaluateHttpApiRequestGate(
-      { connectorId: 'conn-1', method: 'GET', path: '/parcels' },
+      { connectorId: 'conn-1', method: 'POST', path: '/search' },
       connectors,
     )
     assert.equal(d.required, false)
@@ -337,11 +367,92 @@ async function main() {
     ]
     assert.equal(
       evaluateHttpApiRequestGate(
-        { connectorId: 'conn-1', method: 'GET', path: '/parcels' },
+        { connectorId: 'conn-1', method: 'POST', path: '/parcels' },
         connectors,
       ).required,
       true,
     )
+  })
+
+  await test('loop: http_api_request GET nem futtat kapu nélküli POST írást', async () => {
+    const gw: GatewayCallArgs[] = []
+    let approvals = 0
+    const { broker, invoked, gated } = fakeToolBroker()
+    const toolCaps = {
+      findConnectorsForAgent: async () => [
+        {
+          connector: {
+            id: 'conn-1',
+            name: 'Parcels API',
+            type: 'http_api',
+            config: sampleHttpConfig,
+            tenantId: null,
+            lifecycleState: 'active',
+            authMode: 'service',
+          },
+          accessMode: 'write',
+          agentSecretAlias: null,
+        },
+      ],
+    } as unknown as ToolBrokerRepository
+
+    const result = await runAgentToolLoop({
+      gateway: fakeGateway(
+        [
+          {
+            toolCalls: [
+              {
+                id: 'c-get',
+                name: 'http_api_request',
+                input: {
+                  connectorId: 'conn-1',
+                  method: 'GET',
+                  path: '/parcels',
+                  body: { name: 'sneaky' },
+                },
+              },
+            ],
+          },
+          { content: 'kész' },
+        ],
+        gw,
+      ),
+      toolBroker: broker,
+      toolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-get-bypass' },
+      mode: 'chat',
+      actingUserId: 'user-1',
+      messages: [{ role: 'user', content: 'hozz létre parcel-t' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: ['http_api_get', 'http_api_request'] as never,
+      createConsequenceApproval: async (invoke) => {
+        approvals += 1
+        return {
+          approvalId: 'appr-get-bypass',
+          toolName: invoke.tool,
+          summary: invoke.tool,
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        }
+      },
+    })
+
+    assert.equal(invoked.length, 0, 'broker.invoke nem futhat (GET→POST kijátszás)')
+    const toolMsg = gw
+      .flatMap((c) => c.messages)
+      .find((m) => m.role === 'tool' && m.toolCallId === 'c-get')
+    assert.ok(toolMsg?.content, 'tool válasz kell')
+    // Érvénytelen method → HIBA, VAGY kapu (JÓVÁHAGYÁS) — mindkettő fail-closed.
+    const failClosed =
+      /HIBA:.*http_api_request érvénytelen method/i.test(toolMsg!.content ?? '') ||
+      /JÓVÁHAGYÁS SZÜKSÉGES/i.test(toolMsg!.content ?? '')
+    assert.equal(failClosed, true, `váratlan tool válasz: ${toolMsg!.content}`)
+    if (/JÓVÁHAGYÁS SZÜKSÉGES/i.test(toolMsg!.content ?? '')) {
+      assert.equal(approvals, 1)
+      assert.equal(gated.length, 1)
+      assert.equal(result.deniedCount, 1)
+    }
   })
 
   await test('write-grant: read-only connector → http_api_request tiltva a HITL előtt', () => {

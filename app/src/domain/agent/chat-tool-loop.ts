@@ -1927,9 +1927,16 @@ export async function runAgentToolLoop(params: {
           }
         }
 
+        // A kapu az ACTUAL invoke args-ot nézze (buildToolInvokeInput után), ne a
+        // modell nyers inputját. http_api_request-nél a method kényszerítés
+        // (pl. GET→POST) különben read-kockázatként átcsúszhat, miközben írás fut.
+        const gateArgs =
+          'args' in invokeInput && invokeInput.args && typeof invokeInput.args === 'object'
+            ? (invokeInput.args as Record<string, unknown>)
+            : (call.input as Record<string, unknown>)
         const gate = requiresConsequenceApproval(
           toolName,
-          call.input as Record<string, unknown>,
+          gateArgs,
           httpApiGateConnectors,
         )
         if (gate.required) {
