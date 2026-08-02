@@ -485,3 +485,73 @@ A teljes D2/D4 (szerver-oldali `AgentTurn` + loop-finalizer + reconnect GET-SSE)
   ugyanaz a content-guard a köztes snapshotra is?
   → **LEZÁRVA (issue #63):** igen — `guardTurnPartialText` / `redactSensitiveText`
   a köztes és a terminális `partialText` íráson is.
+
+---
+
+## 14. Futás-diagnosztika (issue #180 — MEGÉPÜLT, 2026-08-02)
+
+**Üzleti probléma.** Egy elszaladt agent-futás után a kérdés mindig ugyanaz:
+*mi történt, és miért ennyibe került?* A mért esetben (2026-07-29,
+`/tulajdoni-lap-egyeztetés`) a válasz a DB-ből **nem volt kikövetkeztethető** —
+a diagnózist a beszélgetés-export activity-naplójából kellett kinyerni. Ennek két
+következménye volt: egy drága futás okát kézi nyomozás derítette fel, és nem volt
+mire riasztást tenni, tehát ugyanaz a hiba hat futáson át csendben megismétlődött.
+
+### 14.1 Forduló-számlálók (WP-1)
+
+- A `turn_count` / `tool_call_count` / `denied_count` a lezáráskor **és menet
+  közben** is íródik: a `runAgentToolLoop` `onTurnStart` horga a kör eleji állást
+  is átadja, a runtime pedig `updateProgress`-szel írja ki. Egy FUTÓ forduló így
+  nem mutat nullát — épp akkor látszik, min megy el a keret, amikor még be lehet
+  avatkozni.
+- Elfogadás: `npm run test:tool-loop` („WP-1: az onTurnStart a kör eleji
+  számlálókat is átadja").
+
+### 14.2 `ModelCall` forduló-kötés és cache-számok (WP-2)
+
+- Migráció: `0023_model_call_turn_binding` — `model_calls.agent_turn_id`
+  (nullable FK, `ON DELETE SET NULL`) és `model_calls.cached_prompt_tokens`.
+- A forduló azonosítója a `ToolLoopContext.agentTurnId` mezőn át megy a
+  gateway-hívásokba (a tool nélküli `callStream` ág is megkapja), és mind a négy
+  `modelCalls.create` hívási hely kitölti.
+- Ezután a per-forduló költség és a cache-találat **egyetlen lekérdezés**:
+
+  ```sql
+  select agent_turn_id, sum(prompt_tokens), sum(cached_prompt_tokens)
+    from model_calls group by 1;
+  ```
+
+- `cached_prompt_tokens IS NULL` = a provider nem ad cache-telemetriát
+  („nincs adat" ≠ „nem volt találat").
+
+### 14.3 Belső eszközhívások naplózása (WP-3)
+
+- A `tool_result_read` és a `load_skill` nem a brokeren megy át, ezért eddig
+  egyáltalán nem került a `tool_calls` táblába — a mért futásban 244 olyan hívás
+  futott, amiről a DB nem tudott, és épp ezek okozták a kárt.
+- Mindkettő (a fékbe futott, kimaradt visszaolvasás is) `tool_calls` sort ír,
+  `policy_decision: 'internal'` jelöléssel, `args_meta`-ban az útvonallal /
+  skill-verzióval és a visszaadott karakterszámmal.
+- Metrika: `agent_internal_tool_calls_total{tool,status}`.
+
+### 14.4 Forrás-újraolvasási arány és riasztás (WP-4)
+
+- Döntéshozó: `app/src/domain/agent/turn-cost-signals.ts` —
+  `evaluateTurnCostSignals` (tiszta függvény), a `loop-stop-decision.ts`
+  forrás-számvitelére épülve, ezért **tool-független**: a fájl-újraolvasásra és a
+  dokumentum-lapozásra ugyanúgy érvényes, mint az archívum-visszaolvasásra.
+- Kör záráskor `agent.tool_loop.turn_cost_signals` (info) vagy
+  `agent.tool_loop.turn_cost_alert` (**warn**) megy a naplóba, a becsült
+  újraolvasási token-költséggel.
+- Riasztási okok és küszöbök (env-ből hangolhatók, kikapcsolni nem lehet):
+
+  | Ok | Küszöb | Env |
+  |---|---|---|
+  | `source_reread_ratio` | > 50% (min. 6 eszközhívás a körben) | `AGENT_TURN_REREAD_RATIO_ALERT`, `AGENT_TURN_MIN_TOOL_CALLS_FOR_RATIO` |
+  | `compaction_steps` | > 10 tömörítési lépés | `AGENT_TURN_COMPACTION_STEPS_ALERT` |
+  | `missing_tool_results` | kiadott hívás, nulla könyvelt eredmény | — |
+
+- Metrikák: `agent_turn_source_reread_ratio` (hisztogram),
+  `agent_turn_cost_alerts_total{reason,mode}`.
+- Elfogadás: `npm run test:turn-cost` — a mért eset (132/149 = 89%) riaszt, egy
+  normál, 3–5 eszközhívásos forduló nem.

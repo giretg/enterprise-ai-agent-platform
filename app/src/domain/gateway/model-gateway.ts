@@ -1483,6 +1483,8 @@ export class ModelGateway {
     agentVersion: number | null
     ticketId?: string
     conversationId?: string
+    /** issue #180 WP-2 — a sikertelen kísérlet is a fordulót terheli (latency, retry). */
+    agentTurnId?: string
     targetType: 'ticket' | 'conversation' | 'agent'
     targetId: string
     provider: ModelProvider
@@ -1515,10 +1517,14 @@ export class ModelGateway {
       agentVersion: input.agentVersion,
       ticketId: input.ticketId ?? null,
       conversationId: input.conversationId ?? null,
+      agentTurnId: input.agentTurnId ?? null,
       provider: input.provider.name,
       model: input.model,
       promptTokens: 0,
       completionTokens: 0,
+      // A hibaágon nincs usage, tehát cache-adat sincs — `null` = „nincs mérés",
+      // nem „nem volt találat".
+      cachedPromptTokens: null,
       costEstimate: new Prisma.Decimal(0),
       latencyMs,
       status,
@@ -1665,6 +1671,13 @@ export class ModelGateway {
     tenantId?: string
     ticketId?: string
     conversationId?: string
+    /**
+     * issue #180 WP-2 — a hívást kiváltó chat-forduló rekord azonosítója. Ez köti
+     * a költséget a fordulóhoz: enélkül a per-forduló token-számot csak
+     * időbélyeg-illesztéssel lehetett kikövetkeztetni. A ticket/task úton nincs
+     * forduló-rekord, ott hiányzik.
+     */
+    agentTurnId?: string
     ticketType?: string
     messages: GatewayMessage[]
     modelConfig: ModelConfig
@@ -1744,15 +1757,20 @@ export class ModelGateway {
           await this.loadPricing(),
         )
 
+        // A cache-mérés a rekord ELŐTT fut: a `cached_prompt_tokens` oszlop
+        // ugyanabból az egy forrásból töltődik, mint a metrika (issue #180 WP-2).
+        const promptCache = recordPromptCacheUsage(provider.name, result.usage)
         await this.modelCalls.create({
           agentId: params.agentId,
           agentVersion,
           ticketId: params.ticketId ?? null,
           conversationId: params.conversationId ?? null,
+          agentTurnId: params.agentTurnId ?? null,
           provider: provider.name,
           model: usedModel,
           promptTokens,
           completionTokens,
+          cachedPromptTokens: promptCache.cachedPromptTokens ?? null,
           costEstimate: new Prisma.Decimal(costEstimate),
           latencyMs: result.latencyMs,
           status: 'ok',
@@ -1760,7 +1778,6 @@ export class ModelGateway {
 
         modelCallsTotal.inc({ provider: provider.name, status: 'ok' })
         modelCallLatencyMs.observe(result.latencyMs, { provider: provider.name })
-        const promptCache = recordPromptCacheUsage(provider.name, result.usage)
         logger.info(
           {
             event: 'model.call',
@@ -1822,6 +1839,7 @@ export class ModelGateway {
           agentVersion,
           ticketId: params.ticketId,
           conversationId: params.conversationId,
+          agentTurnId: params.agentTurnId,
           targetType,
           targetId,
           provider,
@@ -1853,6 +1871,8 @@ export class ModelGateway {
     tenantId?: string
     ticketId?: string
     conversationId?: string
+    /** issue #180 WP-2 — a hívást kiváltó chat-forduló rekord azonosítója. */
+    agentTurnId?: string
     ticketType?: string
     messages: GatewayMessage[]
     modelConfig: ModelConfig
@@ -1916,22 +1936,24 @@ export class ModelGateway {
             completionTokens,
             await this.loadPricing(),
           )
+          const promptCache = recordPromptCacheUsage(provider.name, result.usage)
           await this.modelCalls.create({
             agentId: params.agentId,
             agentVersion,
             ticketId: params.ticketId ?? null,
             conversationId: params.conversationId ?? null,
+            agentTurnId: params.agentTurnId ?? null,
             provider: provider.name,
             model: usedModel,
             promptTokens,
             completionTokens,
+            cachedPromptTokens: promptCache.cachedPromptTokens ?? null,
             costEstimate: new Prisma.Decimal(costEstimate),
             latencyMs: result.latencyMs,
             status: 'ok',
           })
           modelCallsTotal.inc({ provider: provider.name, status: 'ok' })
           modelCallLatencyMs.observe(result.latencyMs, { provider: provider.name })
-          const promptCache = recordPromptCacheUsage(provider.name, result.usage)
           await this.audit.append({
             actorType: 'agent',
             actorId: params.agentId,
@@ -1983,22 +2005,24 @@ export class ModelGateway {
         )
         const streamLatencyMs = Date.now() - started
 
+        const promptCache = recordPromptCacheUsage(provider.name, streamUsage)
         await this.modelCalls.create({
           agentId: params.agentId,
           agentVersion,
           ticketId: params.ticketId ?? null,
           conversationId: params.conversationId ?? null,
+          agentTurnId: params.agentTurnId ?? null,
           provider: provider.name,
           model,
           promptTokens,
           completionTokens,
+          cachedPromptTokens: promptCache.cachedPromptTokens ?? null,
           costEstimate: new Prisma.Decimal(costEstimate),
           latencyMs: streamLatencyMs,
           status: 'ok',
         })
         modelCallsTotal.inc({ provider: provider.name, status: 'ok' })
         modelCallLatencyMs.observe(streamLatencyMs, { provider: provider.name })
-        const promptCache = recordPromptCacheUsage(provider.name, streamUsage)
         logger.info(
           {
             event: 'model.call',
@@ -2051,6 +2075,7 @@ export class ModelGateway {
           agentVersion,
           ticketId: params.ticketId,
           conversationId: params.conversationId,
+          agentTurnId: params.agentTurnId,
           targetType,
           targetId,
           provider,

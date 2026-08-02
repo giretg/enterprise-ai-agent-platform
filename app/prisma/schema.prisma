@@ -2029,6 +2029,8 @@ model AgentTurn {
   updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
 
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  // issue #180 WP-2 — a fordulóhoz kötött modellhívások (per-forduló költség).
+  modelCalls   ModelCall[]
 
   @@index([conversationId, status])
   @@index([status, heartbeatAt])
@@ -2600,10 +2602,20 @@ model ModelCall {
   agentVersion     Int?            @map("agent_version")
   ticketId         String?         @map("ticket_id") @db.Uuid
   conversationId   String?         @map("conversation_id") @db.Uuid
+  // issue #180 WP-2 — MELYIK FORDULÓ költötte el. E nélkül egy drága futás
+  // per-forduló költségét csak időbélyeg-illesztéssel lehetett szétszedni; ezzel
+  // egyetlen `group by agent_turn_id` megadja. Nullable: a ticket/task úton és a
+  // bevezetés előtti rekordokon nincs forduló-rekord.
+  agentTurnId      String?         @map("agent_turn_id") @db.Uuid
   provider         String
   model            String
   promptTokens     Int             @map("prompt_tokens")
   completionTokens Int             @map("completion_tokens")
+  // issue #180 WP-2 — a prompt-cache-ből (töredék áron) kiszolgált prompt-tokenek.
+  // A gateway eddig csak metrikába és naplóba tette, a rekordba nem — így utólag
+  // nem volt eldönthető, fogott-e a cache. `null` = a provider nem ad cache-adatot
+  // („nincs adat" ≠ „nem volt találat").
+  cachedPromptTokens Int?          @map("cached_prompt_tokens")
   costEstimate     Decimal         @map("cost_estimate") @db.Decimal(12, 6)
   latencyMs        Int             @default(0) @map("latency_ms")
   status           ModelCallStatus @default(ok)
@@ -2612,11 +2624,14 @@ model ModelCall {
   agent        Agent         @relation(fields: [agentId], references: [id])
   ticket       Ticket?       @relation(fields: [ticketId], references: [id])
   conversation Conversation? @relation(fields: [conversationId], references: [id])
+  agentTurn    AgentTurn?    @relation(fields: [agentTurnId], references: [id], onDelete: SetNull)
 
   @@index([createdAt])
   @@index([agentId, createdAt])
   @@index([ticketId])
   @@index([conversationId])
+  // „mennyibe került ez a forduló?" — a per-forduló összesítés egyetlen indexelt lekérdezés.
+  @@index([agentTurnId])
   @@map("model_calls")
 }
 

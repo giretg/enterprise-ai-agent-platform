@@ -132,7 +132,13 @@ export class PostgresAgentTurnRepository implements AgentTurnRepository {
     lockToken: string,
     data: UpdateAgentTurnProgressInput,
   ): Promise<AgentTurn | null> {
-    if (data.partialText === undefined && data.activities === undefined) {
+    if (
+      data.partialText === undefined &&
+      data.activities === undefined &&
+      data.turnCount === undefined &&
+      data.toolCallCount === undefined &&
+      data.deniedCount === undefined
+    ) {
       return this.findById(id)
     }
     const result = await prisma.agentTurn.updateMany({
@@ -140,6 +146,10 @@ export class PostgresAgentTurnRepository implements AgentTurnRepository {
       data: {
         ...(data.partialText !== undefined ? { partialText: data.partialText } : {}),
         ...(data.activities !== undefined ? { activities: data.activities } : {}),
+        // issue #180 WP-1 — a számlálók a futó fordulón is látszanak.
+        ...(data.turnCount !== undefined ? { turnCount: data.turnCount } : {}),
+        ...(data.toolCallCount !== undefined ? { toolCallCount: data.toolCallCount } : {}),
+        ...(data.deniedCount !== undefined ? { deniedCount: data.deniedCount } : {}),
       },
     })
     if (result.count !== 1) return null
