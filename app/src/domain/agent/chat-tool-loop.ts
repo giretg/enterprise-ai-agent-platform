@@ -1,3 +1,4 @@
+import type { Prisma } from '@prisma/client'
 import type { ToolBrokerInvokeInput } from '@/domain/tool-broker/tool-broker-service'
 import type { ToolBrokerService } from '@/domain/tool-broker/tool-broker-service'
 import type {
@@ -26,7 +27,12 @@ import {
   workspaceCopyPathForArchive,
 } from './tool-result-extract'
 import { logger } from '@/lib/observability/logger'
-import { toolResultReadbackTotal } from '@/lib/observability/metrics'
+import {
+  agentInternalToolCallsTotal,
+  agentTurnCostAlertsTotal,
+  agentTurnRereadRatio,
+  toolResultReadbackTotal,
+} from '@/lib/observability/metrics'
 import { isTulajdoniLapNezet } from '@/lib/tulajdoni-lap'
 import { toolsRequiringConnector } from '@/domain/tool-broker/tool-broker-authorizer'
 // issue #97 — a becsomagolás, issue #195 — a kimenetel közlése: mindkettő a Tool
@@ -69,6 +75,11 @@ import {
   type LoopGuardLimits,
   type LoopStopReason,
 } from './loop-stop-decision'
+import {
+  describeTurnCostAlert,
+  evaluateTurnCostSignals,
+  resolveTurnCostThresholds,
+} from './turn-cost-signals'
 
 /**
  * A chat-vetület a kanonikus regiszterből (issue #194) képződik: `surfaces`
@@ -92,8 +103,8 @@ export type ChatPlatformToolName = ToolName
  * A két ág kölcsönösen kizáró — egyszerre csak az egyik adható meg.
  */
 export type ToolLoopContext =
-  | { conversationId: string; ticketId?: never }
-  | { ticketId: string; conversationId?: never }
+  | { conversationId: string; ticketId?: never; agentTurnId?: string }
+  | { ticketId: string; conversationId?: never; agentTurnId?: string }
 
 export type ToolLoopMode = 'chat' | 'task'
 /** A loop leállási indokai (a `cancelled` külön, kivétel-ágon megy — spec §7). */
@@ -765,8 +776,15 @@ export async function runAgentToolLoop(params: {
    * forduló-rekordra, hogy egy elhalt futás kívülről felismerhető legyen
    * (chat-agent-turn-resilience-spec.md D8/D10). Fail-soft: a hívó feladata, hogy
    * ne dobjon és ne lassítson.
+   *
+   * issue #180 WP-1 — a kör eleji állás (eddigi eszközhívás- és elutasítás-szám)
+   * is átmegy, hogy a FUTÓ forduló rekordja se mutasson nullát: egy elszaladt
+   * futásnál épp menet közben kell látni, min megy el a keret.
    */
-  onTurnStart?: (turnIndex: number) => void | Promise<void>
+  onTurnStart?: (
+    turnIndex: number,
+    counters: { toolCallCount: number; deniedCount: number },
+  ) => void | Promise<void>
   /**
    * Chat "thinking-trace" spec (§5, WP-3) — a modell reasoning-summary deltái,
    * MÁR a tartalom-őrön (D5) átengedve, `turnId`-vel a UI élő bejegyzéséhez. Ha
@@ -1091,6 +1109,10 @@ export async function runAgentToolLoop(params: {
     }
 
     if (committed.length === 0) return
+    // issue #180 WP-4 — a tömörítési lépések száma a körforgás egyik jele: a mért
+    // incidensben a tömörítés körönként ugyanazokat szervezte ki, amiket a modell
+    // rögtön vissza is olvasott.
+    compactionSteps += 1
     const committedResult = {
       evicted: committed,
       freedChars: result.freedChars - restoredChars,
@@ -1206,6 +1228,14 @@ export async function runAgentToolLoop(params: {
   let turnReadBackBlocked = 0
   /** Ahány tool-hívást a modell ebben a körben kiadott (a kimaradtakat is). */
   let turnToolCallsIssued = 0
+  // issue #180 WP-4 — FORRÁS-újraolvasás (nem csak archívum-visszaolvasás): a
+  // fájl-újraolvasás és a dokumentum-lapozás ugyanúgy ide számít. Ez a két
+  // számláló adja a riasztható arány számlálóját és a becsült token-költséget.
+  let turnSourceRereadCalls = 0
+  let turnSourceRereadChars = 0
+  /** Kontextus-tömörítési lépések a fordulóban (tömörítés ↔ visszaolvasás körforgás jele). */
+  let compactionSteps = 0
+  const turnCostThresholds = resolveTurnCostThresholds()
 
   /**
    * Egy forrásból most behozott tartalom könyvelése. Visszaadja, hogy ez a
@@ -1220,11 +1250,67 @@ export async function runAgentToolLoop(params: {
     if (!sourceKey || addedChars <= 0) return false
     const before = ingestedCharsBySource.get(sourceKey) ?? 0
     ingestedCharsBySource.set(sourceKey, before + addedChars)
-    return isRedundantSourceIngest({
+    const redundant = isRedundantSourceIngest({
       ingestedCharsBefore: before,
       sourceChars,
       limits: sourceIngestLimits,
     })
+    // A körforgás mérőszáma ITT keletkezik, egy helyen minden tool-ra — ezért
+    // marad igaz a fájlra, a dokumentumra és az archívumra egyaránt.
+    if (redundant) {
+      turnSourceRereadCalls += 1
+      turnSourceRereadChars += addedChars
+    }
+    return redundant
+  }
+
+  /**
+   * issue #180 WP-3 — a loop SAJÁT (nem brokeren átmenő) eszközhívásainak
+   * naplózása a `tool_calls` táblába.
+   *
+   * ÜZLETI PROBLÉMA: a `tool_result_read` és a `load_skill` nem a brokeren megy
+   * át, ezért eddig egyáltalán nem került rekordba — a mért futásban 244 olyan
+   * hívás futott, amiről az adatbázis nem tudott, és épp ezek okozták a kárt. Így
+   * egy drága futás lefolyását nem lehetett lekérdezéssel rekonstruálni.
+   *
+   * A `policyDecision: 'internal'` különbözteti meg a broker-alapú hívásoktól.
+   * Fail-soft: a napló hibája nem buktathatja a futást.
+   */
+  const recordInternalToolCall = async (input: {
+    toolName: string
+    status: 'ok' | 'error' | 'denied'
+    outcome: 'ok' | 'empty' | 'partial' | 'failed'
+    startedAt: number
+    argsMeta: Record<string, unknown>
+    resultMeta?: Record<string, unknown>
+  }): Promise<void> => {
+    agentInternalToolCallsTotal.inc({ tool: input.toolName, status: input.status })
+    try {
+      await params.toolCaps.createToolCall({
+        agentId: params.agentId,
+        ticketId: params.context.ticketId ?? null,
+        conversationId: params.context.conversationId ?? null,
+        connectorId: null,
+        toolName: input.toolName,
+        status: input.status,
+        argsMeta: input.argsMeta as Prisma.JsonValue,
+        resultMeta: (input.resultMeta ?? {}) as Prisma.JsonValue,
+        latencyMs: Math.max(now() - input.startedAt, 0),
+        // A broker-alapú hívásoktól ez a jelölés különbözteti meg: a sor a loop
+        // saját eszközéről szól, nem policy-döntés eredménye.
+        policyDecision: 'internal',
+        // A loop saját eszközei a futás SAJÁT adatait mozgatják (archívum, skill
+        // instrukció) — nem hoznak be új külső tartalmat.
+        trustClass: 'internal',
+        outcome: input.outcome,
+        effectSummary: null,
+      })
+    } catch (error) {
+      logger.warn(
+        { tool: input.toolName, error },
+        'agent.tool_loop.internal_tool_call_record_failed',
+      )
+    }
   }
   const webSearchGuard: WebSearchGuard = { webSearchRateLimited: false }
 
@@ -1255,7 +1341,7 @@ export async function runAgentToolLoop(params: {
       stopReason = turnDecision.reason
       break
     }
-    await params.onTurnStart?.(turn)
+    await params.onTurnStart?.(turn, { toolCallCount, deniedCount })
     let webSearchCallsThisTurn = 0
     turnToolResultCount = 0
     turnNewToolResultCount = 0
@@ -1263,6 +1349,8 @@ export async function runAgentToolLoop(params: {
     turnReadBackCalls = 0
     turnReadBackBlocked = 0
     turnToolCallsIssued = 0
+    turnSourceRereadCalls = 0
+    turnSourceRereadChars = 0
     const reasoningTurnId = `reasoning-${turn}`
     const placeholderTitle = turn === 0 ? 'Üzenet feldolgozása' : 'Tool eredmények kiértékelése'
     await emitActivity({
@@ -1395,6 +1483,7 @@ export async function runAgentToolLoop(params: {
       // futást semmi nem állított meg a kör-limitig (mért eset: 40 kör, 2,8M token).
       if (call.name === TOOL_RESULT_READ) {
         turnToolCallsIssued += 1
+        const readStartedAt = now()
         const path = typeof call.input.path === 'string' ? call.input.path : ''
         const readSourceKey = toolCallSourceKey(call.name, call.input) ?? `${call.name}:path:${path}`
         const archived = path ? await loadArchivedContent(path) : null
@@ -1404,6 +1493,23 @@ export async function runAgentToolLoop(params: {
           1,
           TOOL_RESULT_READ_MAX_LIMIT,
         )
+        /**
+         * issue #180 WP-3/WP-4 — a fékbe futott visszaolvasás is HÍVÁS: a
+         * `tool_calls` táblába kerül (különben pont a kárt okozó hívások
+         * hiányoznának a naplóból), és újraolvasási szándékként számít az
+         * arány-metrikába.
+         */
+        const recordBlockedRead = async (reason: string): Promise<void> => {
+          turnSourceRereadCalls += 1
+          await recordInternalToolCall({
+            toolName: TOOL_RESULT_READ,
+            status: 'denied',
+            outcome: 'failed',
+            startedAt: readStartedAt,
+            argsMeta: { path, offset, limit, source_key: readSourceKey },
+            resultMeta: { blocked: true, reason },
+          })
+        }
 
         if (archived) {
           // 1. fék — per-kör keret. Enélkül a védett ablak (keepRecentToolResults ×
@@ -1413,6 +1519,7 @@ export async function runAgentToolLoop(params: {
           if (turnReadBackChars >= perTurnBudget) {
             turnReadBackBlocked += 1
             toolResultReadbackTotal.inc({ phase: 'blocked', reason: 'turn_budget' })
+            await recordBlockedRead('turn_budget')
             await skipToolCall(
               call,
               `[LIMIT] Egy körben legfeljebb ${perTurnBudget} karakter olvasható vissza az archívumból, és ez a keret betelt. NE olvass tovább ebben a körben — amit eddig láttál, abból írd ki a szükséges kivonatot a munkaterületre (tool_result_extract, file_write, xlsx_append_rows), és a következő lépésben onnan dolgozz.`,
@@ -1430,6 +1537,7 @@ export async function runAgentToolLoop(params: {
           if (readSoFar >= pathBudget) {
             turnReadBackBlocked += 1
             toolResultReadbackTotal.inc({ phase: 'blocked', reason: 'source_budget' })
+            await recordBlockedRead('source_budget')
             await skipToolCall(
               call,
               `[LOOP-GUARD] Ezt az archívumot (${path}) már végigolvastad ebben a futásban (${readSoFar} karakter, a teljes tartalom ${archived.content.length} karakter). Az újraolvasás nem hoz új információt. Írd ki a szükséges kivonatot a munkaterületre (tool_result_extract, file_write, xlsx_append_rows), és onnan dolgozz tovább — vagy foglald össze, amit eddig megtudtál.`,
@@ -1446,6 +1554,7 @@ export async function runAgentToolLoop(params: {
         if (readRepeatCount > REPEAT_LIMIT) {
           turnReadBackBlocked += 1
           toolResultReadbackTotal.inc({ phase: 'blocked', reason: 'repeat_guard' })
+          await recordBlockedRead('repeat_guard')
           await skipToolCall(
             call,
             `[LOOP-GUARD] Ugyanezt a szeletet (${path}, offset=${offset}, limit=${limit}) már ${readRepeatCount - 1}x visszaolvastad, az eredmény nem változott. Ne ismételd — írd ki a szükséges kivonatot a munkaterületre (tool_result_extract), vagy foglald össze amit eddig megtudtál.`,
@@ -1484,11 +1593,38 @@ export async function runAgentToolLoop(params: {
           const redundant = noteSourceIngest(readSourceKey, chunk.length, content.length)
           // Ismételt behozás: a tartalom mehet, de a kört nem mossa tisztára.
           pushToolResult(call, readContent, redundant ? 'barren' : 'new')
+          // issue #180 WP-3 — a lefutott visszaolvasás is a `tool_calls` táblába
+          // kerül; a visszaadott karakterszám az `argsMeta`-ban a költség alapja.
+          await recordInternalToolCall({
+            toolName: TOOL_RESULT_READ,
+            status: 'ok',
+            // Ismételt behozás = a hívás nem hozott új munkát: `partial`, hogy a
+            // „melyik eszköz jár üresben?" nézet ezt is megmutassa.
+            outcome: redundant ? 'partial' : chunk.length > 0 ? 'ok' : 'empty',
+            startedAt: readStartedAt,
+            argsMeta: {
+              path,
+              offset,
+              limit,
+              source_key: readSourceKey,
+              returned_chars: chunk.length,
+              total_chars: content.length,
+            },
+            resultMeta: { redundant, next_offset: nextOffset },
+          })
         } else {
           // Nem létező archívum: elpazarolt hívás. Ujjlenyomat NÉLKÜL könyveljük,
           // különben az első ilyen hiba „új eredménynek" számítva nullázná a
           // zsákutca-sorozatot — pont azt a kört mosná tisztára, amit fogni kell.
           pushToolResult(call, readContent, 'barren')
+          await recordInternalToolCall({
+            toolName: TOOL_RESULT_READ,
+            status: 'error',
+            outcome: 'failed',
+            startedAt: readStartedAt,
+            argsMeta: { path, offset, limit, source_key: readSourceKey, returned_chars: 0 },
+            resultMeta: { archive_missing: true },
+          })
         }
         await emitActivity({
           id: `tool-${call.id}`,
@@ -1669,6 +1805,7 @@ export async function runAgentToolLoop(params: {
       // capability-allowliston keresztül — az enforcement a hozzárendelés (deny-by-default).
       if (loadSkill && call.name === LOAD_SKILL_TOOL) {
         turnToolCallsIssued += 1
+        const loadSkillStartedAt = now()
         const skillVersionId = strArg(call.input, 'skillVersionId')
         await emitActivity({
           id: `tool-${call.id}`,
@@ -1705,6 +1842,22 @@ export async function runAgentToolLoop(params: {
           skillContent.length,
         )
         pushToolResult(call, skillContent, loaded.ok && !skillRedundant ? 'new' : 'barren')
+        // issue #180 WP-3 — a skill-betöltés is a `tool_calls` táblába kerül: a
+        // skill-verzió és a visszaadott karakterszám nélkül nem lehetett
+        // megmondani, mit húzott be egy futás, és mennyiért.
+        await recordInternalToolCall({
+          toolName: LOAD_SKILL_TOOL,
+          status: loaded.ok ? 'ok' : 'denied',
+          outcome: loaded.ok ? (skillRedundant ? 'partial' : 'ok') : 'failed',
+          startedAt: loadSkillStartedAt,
+          argsMeta: {
+            skill_version_id: skillVersionId || null,
+            returned_chars: skillContent.length,
+          },
+          resultMeta: loaded.ok
+            ? { redundant: skillRedundant, runtime_hints: loaded.runtimeHints ?? null }
+            : { reason: loaded.reason },
+        })
         await emitActivity({
           id: `tool-${call.id}`,
           kind: 'tool',
@@ -2209,7 +2362,10 @@ export async function runAgentToolLoop(params: {
           readBackCalls: turnReadBackCalls,
           readBackBlocked: turnReadBackBlocked,
           readBackChars: turnReadBackChars,
-          estimatedReadBackTokens: Math.round(turnReadBackChars / 4),
+          // A kulcsnév szándékosan nem tartalmazza a „token" szót: a logger a
+          // `token` részstringű mezőket redaktálja, és a becslés így némán
+          // elveszett. Egység: ~1 token / 4 karakter.
+          readBackCostEstimate: Math.round(turnReadBackChars / 4),
         },
         'agent.tool_loop.turn_readback_budget',
       )
@@ -2217,11 +2373,56 @@ export async function runAgentToolLoop(params: {
     // Fail-safe naplózás: ha a modell dolgozni próbált, de a kör mérlegébe nem
     // került eredmény, akkor egy végrehajtási ág kihagyta a könyvelést. A
     // zsákutca-őr ilyenkor is lép (trackTurnProgress), de a rést látni akarjuk.
-    if (turnToolCallsIssued > 0 && turnToolResultCount === 0) {
+    const missingToolResults = turnToolCallsIssued > 0 && turnToolResultCount === 0
+    if (missingToolResults) {
       logger.warn(
         { turn, toolCallsIssued: turnToolCallsIssued },
         'agent.tool_loop.turn_balance_missing_tool_results',
       )
+    }
+
+    // issue #180 WP-4 — forrás-újraolvasási arány: a kör költség-mérlege egyetlen,
+    // riasztható jelben. A mért incidensben ez 89% volt, és NEM volt, ami mérje —
+    // ezért ismétlődhetett meg csendben hat futáson át.
+    const costSignals = evaluateTurnCostSignals(
+      {
+        toolCallsIssued: turnToolCallsIssued,
+        sourceRereadCalls: turnSourceRereadCalls,
+        sourceRereadChars: turnSourceRereadChars,
+        compactionSteps,
+        missingToolResults,
+      },
+      turnCostThresholds,
+    )
+    if (turnToolCallsIssued > 0) {
+      agentTurnRereadRatio.observe(costSignals.rereadRatio, { mode: params.mode })
+    }
+    const costSignalFields = {
+      turn,
+      toolCallsIssued: turnToolCallsIssued,
+      sourceRereadCalls: turnSourceRereadCalls,
+      sourceRereadChars: turnSourceRereadChars,
+      rereadRatio: Number(costSignals.rereadRatio.toFixed(2)),
+      // Lásd fent: a `token` részstringű kulcsot a logger redaktálná.
+      rereadCostEstimate: costSignals.estimatedRereadTokens,
+      compactionSteps,
+      ...(params.context.conversationId ? { conversationId: params.context.conversationId } : {}),
+      ...(params.context.agentTurnId ? { agentTurnId: params.context.agentTurnId } : {}),
+    }
+    if (costSignals.alert) {
+      for (const reason of costSignals.reasons) {
+        agentTurnCostAlertsTotal.inc({ reason, mode: params.mode })
+      }
+      logger.warn(
+        {
+          ...costSignalFields,
+          reasons: costSignals.reasons,
+          why: costSignals.reasons.map(describeTurnCostAlert),
+        },
+        'agent.tool_loop.turn_cost_alert',
+      )
+    } else if (turnToolCallsIssued > 0) {
+      logger.info(costSignalFields, 'agent.tool_loop.turn_cost_signals')
     }
 
     // issue #97 — következmény-kapu után ne égjünk újabb tool-köröket: záró

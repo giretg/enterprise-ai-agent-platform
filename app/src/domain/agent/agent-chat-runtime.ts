@@ -786,6 +786,27 @@ export class AgentChatRuntime {
   }
 
   /**
+   * issue #180 WP-1 — a loop-elszámolók kiírása a FUTÓ forduló rekordjára.
+   *
+   * Enélkül a `turn_count` / `tool_call_count` / `denied_count` csak a lezáráskor
+   * kap értéket, tehát pont amíg egy futás elszalad, addig nulla látszik. Kör
+   * eleji hívás, tehát ugyanolyan ritka, mint a heartbeat. Fail-soft: a
+   * megfigyelhetőség hibája nem buktathatja a fordulót.
+   */
+  private async persistTurnCounters(
+    turn: StreamTurnContext,
+    counters: { turnCount: number; toolCallCount: number; deniedCount: number },
+  ): Promise<void> {
+    if (!this.agentTurns || !turn.turnRecordId || !turn.turnRecordLockToken) return
+    if (turn.turnRecordClosed) return
+    try {
+      await this.agentTurns.updateProgress(turn.turnRecordId, turn.turnRecordLockToken, counters)
+    } catch (error) {
+      console.error('[agent-chat] forduló-számlálók írása sikertelen', error)
+    }
+  }
+
+  /**
    * Forduló-rekord terminális lezárása. Idempotens: a repository csak aktív
    * fordulót zár, és a `turnRecordClosed` flag megakadályozza a dupla hívást a
    * `finally`-ág felől. Szintén fail-soft. A részszöveg tartalom-őrön megy át
@@ -1513,7 +1534,13 @@ export class AgentChatRuntime {
           toolCaps: this.toolCaps,
           agentId: params.agentId,
           agentVersion: agentDetails.agent.currentVersion,
-          context: { conversationId },
+          // issue #180 WP-2 — a forduló azonosítója végigmegy a gateway-hívásokon,
+          // így a per-forduló token- és cache-költség egyetlen lekérdezéssel
+          // megkapható (nem időbélyeg-illesztéssel).
+          context: {
+            conversationId,
+            ...(turn.turnRecordId ? { agentTurnId: turn.turnRecordId } : {}),
+          },
           mode: 'chat',
           actingUserId: params.createdById,
           promptSegments: gatewayPrompt,
@@ -1552,9 +1579,18 @@ export class AgentChatRuntime {
           // Körönkénti életjel: ettől ismerhető fel kívülről az elhalt futás (D10).
           // A `turnIndex` 0-alapú, tehát a MEGKEZDETT körök száma index+1 — így a
           // rekord akkor is a valós körszámot mutatja, ha a loop kivétellel áll le.
-          onTurnStart: async (turnIndex: number) => {
+          onTurnStart: async (turnIndex: number, counters) => {
             loopTurnCount = turnIndex + 1
+            loopToolCallCount = counters.toolCallCount
+            loopDeniedCount = counters.deniedCount
             await this.heartbeatTurnRecord(turn)
+            // issue #180 WP-1 — a számlálók a FUTÓ fordulón is látszanak, nem
+            // csak lezárás után: egy elszaladt futásba csak így lehet beavatkozni.
+            await this.persistTurnCounters(turn, {
+              turnCount: loopTurnCount,
+              toolCallCount: loopToolCallCount,
+              deniedCount: loopDeniedCount,
+            })
             await refreshCancelFromDb()
           },
           onActivity: (activity) => emitActivity(activity),
@@ -1658,6 +1694,8 @@ export class AgentChatRuntime {
           agentId: params.agentId,
           agentVersion: agentDetails.agent.currentVersion,
           conversationId,
+          // issue #180 WP-2 — a tool nélküli ág költsége is a fordulóhoz kötve.
+          ...(turn.turnRecordId ? { agentTurnId: turn.turnRecordId } : {}),
           actingUserId: params.createdById,
           messages: assembleGatewayMessages(gatewayPrompt),
           modelConfig,

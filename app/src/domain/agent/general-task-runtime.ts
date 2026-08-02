@@ -378,6 +378,10 @@ export class GeneralTaskRuntime {
     }
 
     let loopResult: Awaited<ReturnType<typeof runAgentToolLoop>>
+    // issue #180 WP-1 — a MEGKEZDETT körök száma. A `ToolLoopResult` csak a
+    // tool-számlálókat adja vissza; a kör-szám az `onTurnStart` horogból jön, hogy
+    // a ticket-kimeneten is látszódjon, hány körön át futott a lépés.
+    let loopTurnCount = 0
     try {
       loopResult = await runAgentToolLoop({
         gateway: this.gateway,
@@ -428,7 +432,8 @@ export class GeneralTaskRuntime {
           void refreshCancel()
           return dbCancelRequested
         },
-        onTurnStart: async () => {
+        onTurnStart: async (turnIndex: number) => {
+          loopTurnCount = turnIndex + 1
           await refreshCancel()
         },
         onActivity: async (activity) => {
@@ -483,6 +488,7 @@ export class GeneralTaskRuntime {
 
     await persistProgress(true)
     const { content: answer, toolCallCount } = loopResult
+    const deniedCount = loopResult.deniedCount
     await this.publishReferencedWorkspaceFiles(wsTenant, ticket.id, answer)
 
     if (loopResult.status === 'exhausted') {
@@ -494,6 +500,8 @@ export class GeneralTaskRuntime {
         agentVersion,
         answer,
         toolCallCount,
+        turnCount: loopTurnCount,
+        deniedCount: loopResult.deniedCount,
         model: modelConfig.model,
         memoryVersion: agentDetails.memoryVersion,
         payload,
@@ -651,6 +659,8 @@ export class GeneralTaskRuntime {
         agentVersion,
         answer,
         toolCallCount,
+        turnCount: loopTurnCount,
+        deniedCount,
         model: modelConfig.model,
         memoryVersion: agentDetails.memoryVersion,
         payload,
@@ -665,10 +675,15 @@ export class GeneralTaskRuntime {
       }
     }
 
+    // issue #180 WP-1 — a kör- és elutasítás-szám a ticket kimenetén is látszik:
+    // e nélkül egy drága lépésről csak a tool-hívások száma derült ki, az nem,
+    // hogy hány körön át és hány elutasítással jutott el idáig.
     const completionPayload = processStep
       ? {
           ...structuredOutput,
           toolCallCount,
+          turnCount: loopTurnCount,
+          deniedCount,
           agentVersion,
           model: modelConfig.model,
           memoryVersion: agentDetails.memoryVersion,
@@ -678,6 +693,8 @@ export class GeneralTaskRuntime {
       : {
           answer,
           toolCallCount,
+          turnCount: loopTurnCount,
+          deniedCount,
           agentVersion,
           model: modelConfig.model,
           memoryVersion: agentDetails.memoryVersion,
@@ -698,6 +715,8 @@ export class GeneralTaskRuntime {
       extraStructured: {
         model: modelConfig.model,
         toolCallCount,
+        turnCount: loopTurnCount,
+        deniedCount,
         memoryVersion: agentDetails.memoryVersion,
         status: stepOutcome.status,
       },
@@ -751,6 +770,9 @@ export class GeneralTaskRuntime {
     agentVersion: number
     answer: string
     toolCallCount: number
+    /** issue #180 WP-1 — a lépés kör- és elutasítás-száma a ticket kimenetén. */
+    turnCount: number
+    deniedCount: number
     model: string
     memoryVersion: number | null
     payload: Record<string, unknown>
@@ -770,6 +792,8 @@ export class GeneralTaskRuntime {
       answer: input.answer,
       outcome: stepOutcome,
       toolCallCount: input.toolCallCount,
+      turnCount: input.turnCount,
+      deniedCount: input.deniedCount,
       agentVersion,
       model: input.model,
       memoryVersion: input.memoryVersion,
@@ -786,6 +810,8 @@ export class GeneralTaskRuntime {
       extraStructured: {
         model: input.model,
         toolCallCount: input.toolCallCount,
+        turnCount: input.turnCount,
+        deniedCount: input.deniedCount,
         memoryVersion: input.memoryVersion,
         status: stepOutcome.status,
         reason: stepOutcome.reason,

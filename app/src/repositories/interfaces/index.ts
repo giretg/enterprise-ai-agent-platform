@@ -1715,6 +1715,15 @@ export type FinalizeAgentTurnInput = {
 export type UpdateAgentTurnProgressInput = {
   partialText?: string
   activities?: Prisma.InputJsonValue
+  /**
+   * issue #180 WP-1 — a loop-elszámolók MENET KÖZBEN is. E nélkül egy futó
+   * forduló nullát mutat, és egy elszaladt futásról csak a lezárása után derül
+   * ki, hogy tucatnyi körön és több száz eszközhíváson át pörgött — épp akkor
+   * nem látszik, amikor még be lehetne avatkozni.
+   */
+  turnCount?: number
+  toolCallCount?: number
+  deniedCount?: number
 }
 
 /**
