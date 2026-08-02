@@ -276,10 +276,17 @@ checkAsync('connector-count collector mailbox_count capability-n át ad jelet', 
     {
       async invoke(input) {
         calls.push(input)
+        const machineData = { count: 12, query: 'is:unread' }
         return {
           denied: false,
           trust: 'external_untrusted',
-          result: { count: 12, query: 'is:unread' },
+          // issue #195 — kötelező kimenetel + kétcsatornás eredmény.
+          outcome: 'ok',
+          outcomeReason: null,
+          effect: null,
+          modelText: JSON.stringify(machineData),
+          machineData,
+          result: machineData,
           resultMeta: { count: 12 },
           latencyMs: 1,
         }

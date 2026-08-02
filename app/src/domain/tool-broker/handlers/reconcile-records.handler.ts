@@ -1,12 +1,14 @@
-import { unwrapExternalDataEnvelope } from '@/domain/tool-broker/tool-result-envelope'
 import { FileEditorError } from '@/domain/file-editor/file-editor-service'
 import {
   buildReconcileSummaryForModel,
+  MAX_RECONCILE_PAIRS,
+  MAX_RECONCILE_ROWS_PER_SIDE,
   parseReconcileRecordList,
   reconcileRecords,
   type ReconcileCompareField,
   type ReconcileNormalize,
 } from '@/lib/reconcile-records'
+import { assertToolWorkloadWithinLimit } from '../tool-output-contract'
 import type { ToolHandler, ToolHandlerArgs } from './tool-handler'
 
 const NORMALIZE_MODES = new Set<ReconcileNormalize>(['trim', 'lower', 'hu-name', 'year'])
@@ -60,10 +62,17 @@ async function readRecordList(
   }
   let parsed: unknown
   try {
-    // Legacy tool-outputs: korábban az envelope-olt modell-szöveg került fájlba.
-    parsed = JSON.parse(unwrapExternalDataEnvelope(content).trim())
+    parsed = JSON.parse(content.trim())
   } catch {
-    throw new Error(`reconcile_records: a(z) "${path}" fájl nem érvényes JSON`)
+    // issue #195 D5 — a munkaterületre már csak NYERS gépi adat kerül, burkolat
+    // nélkül; ezért itt nincs mit „kicsomagolni". Ha egy régi, még burkolattal
+    // kiírt fájlba futunk, az itt hangosan elbukik — ez a helyes viselkedés:
+    // korábban ez a folt csendben fedte el, hogy a burkolat gépi útra került.
+    throw new Error(
+      `reconcile_records: a(z) "${path}" fájl nem érvényes JSON. ` +
+        'Ha ez egy régi tool-eredmény fájl, futtasd újra a forrás-eszközt — az új ' +
+        'futás nyers, gépi adatot ír ki.',
+    )
   }
   const rows = parseReconcileRecordList(parsed)
   if (!rows) {
@@ -112,6 +121,26 @@ export const reconcileRecordsHandler: ToolHandler = {
     try {
       const left = await readRecordList(fe, tenantId, workspaceId, args.leftPath.trim())
       const right = await readRecordList(fe, tenantId, workspaceId, args.rightPath.trim())
+      // issue #195 D7 — a bemeneti méret is a szerződés része. A párosítás
+      // O(bal × jobb): egy túl nagy összevetés MÁSODPERCEKRE–PERCEKRE befagyasztaná
+      // a feldolgozó szálat, amivel minden párhuzamos agent-forduló elakadna
+      // ugyanazon a példányon. A korlát fölött azonnal, tipizált `failed`-del
+      // állunk meg — a méret csak a fájlok beolvasása után derül ki, ezért fut itt
+      // és nem az args-kapun.
+      assertToolWorkloadWithinLimit({
+        tool: 'reconcile_records',
+        units: Math.max(left.length, right.length),
+        limit: MAX_RECONCILE_ROWS_PER_SIDE,
+        unit: 'sor oldalanként',
+        hint: 'Szűkítsd előbb a listákat (szűrés kulcsmezőre vagy időszakra), vagy darabold több, kisebb egyeztetésre.',
+      })
+      assertToolWorkloadWithinLimit({
+        tool: 'reconcile_records',
+        units: left.length * right.length,
+        limit: MAX_RECONCILE_PAIRS,
+        unit: 'összehasonlítandó pár',
+        hint: 'Adj meg szűkebb kulcsmezőt, vagy darabold a listát egyértelmű csoportokra (pl. kezdőbetű/időszak szerint), és egyeztesd csoportonként.',
+      })
       const compareFields = asCompareFields(args.compareFields)
       // numberTolerances shorthand → compareFields epsilon
       if (args.numberTolerances && typeof args.numberTolerances === 'object') {

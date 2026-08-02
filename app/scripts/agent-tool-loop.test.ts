@@ -20,6 +20,12 @@ import type {
   ToolBrokerInvokeInput,
   ToolBrokerInvokeResult,
 } from '../src/domain/tool-broker/tool-broker-service'
+import {
+  buildToolModelText,
+  validateToolOutput,
+} from '../src/domain/tool-broker/tool-output-contract'
+import { resolveToolOutputContract } from '../src/domain/tool-broker/tool-output-contracts'
+import { isSideEffectingTool } from '../src/domain/tool-broker/tool-trust-registry'
 import type { AuditRepository, ToolBrokerRepository } from '../src/repositories/interfaces'
 
 let failures = 0
@@ -76,6 +82,12 @@ function fakeToolBroker(record: ToolBrokerInvokeInput[]): ToolBrokerService {
   } as unknown as ToolBrokerService
 }
 
+/**
+ * Stub Tool Broker. issue #195 óta a broker KÉT csatornát ad (`modelText` +
+ * `machineData`), és a kimenetel kötelező mező — a stub ugyanazokkal a
+ * tiszta függvényekkel állítja elő, mint az éles keret, hogy a tool-loop a
+ * valódi alakot lássa.
+ */
 function fakeToolBrokerResult(
   record: ToolBrokerInvokeInput[],
   result: Record<string, unknown>,
@@ -84,9 +96,28 @@ function fakeToolBrokerResult(
   return {
     invoke: async (input: ToolBrokerInvokeInput): Promise<ToolBrokerInvokeResult> => {
       record.push(input)
+      const verdict = validateToolOutput({
+        tool: input.tool,
+        output: result,
+        contract: resolveToolOutputContract(input.tool),
+        sideEffecting: isSideEffectingTool(input.tool),
+      })
+      const modelChannel = buildToolModelText({
+        tool: input.tool,
+        trust,
+        outcome: verdict.outcome,
+        reason: verdict.reason,
+        effect: verdict.effect,
+        machineData: result,
+      })
       return {
         denied: false,
         trust,
+        outcome: verdict.outcome,
+        outcomeReason: verdict.reason,
+        effect: verdict.effect,
+        modelText: modelChannel.modelText,
+        machineData: result,
         result,
         resultMeta: {},
         latencyMs: 1,
@@ -492,7 +523,13 @@ async function main() {
         ],
         gwCalls,
       ),
-      toolBroker: fakeToolBrokerResult(brokerCalls, { customers: largeRows }, 'external_untrusted'),
+      // issue #195 — a http_api_get kimeneti szerződése a valódi alakot kéri
+      // (ok + status + body); a stub ezért a tényleges connector-válasszal felel.
+      toolBroker: fakeToolBrokerResult(
+        brokerCalls,
+        { ok: true, status: 200, body: { customers: largeRows } },
+        'external_untrusted',
+      ),
       toolCaps: fakeToolCaps,
       agentId: 'agent-1',
       agentVersion: 1,
@@ -521,7 +558,7 @@ async function main() {
     const workspaceCopy = workspaceWrites.get('tool-outputs/01-http_api_get-crm-call.json')!
     assert.match(workspaceCopy, /Ügyfél 400/)
     assert.doesNotMatch(workspaceCopy, /EXTERNAL_UNTRUSTED_DATA/)
-    assert.ok(JSON.parse(workspaceCopy).customers.length === 400)
+    assert.ok(JSON.parse(workspaceCopy).body.customers.length === 400)
     const toolMessage = gwCalls[1].messages.find((m) => m.role === 'tool')
     assert.ok(toolMessage)
     assert.match(toolMessage.content, /A teljes eredmény elmentve/)

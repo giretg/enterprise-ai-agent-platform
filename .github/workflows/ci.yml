@@ -111,6 +111,7 @@ jobs:
           npm run test:agent-interaction-ticket
           npm run test:tool-registry-drift
           npm run test:tool-trust
+          npm run test:tool-output-contract
           npm run test:consequence-gate
           npm run test:consequence-approval
           npm run test:skill-catalog

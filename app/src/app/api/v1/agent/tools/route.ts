@@ -72,7 +72,24 @@ export async function POST(request: Request) {
       return jsonError(result.reason, 403, result)
     }
 
-    return NextResponse.json({ success: true, data: result })
+    // issue #195 D5 — ez GÉPI fogyasztó: a `machineData` (a `result` alias-a) megy
+    // ki, a modellnek szánt, BURKOLT `modelText` SOHA. Így a védőburkolat nem
+    // kerülhet gépi útra, és a válasz nem hordozza háromszor ugyanazt az adatot.
+    // A kimenetel viszont ide is kell: a hívó agent enélkül nem tudná meg, hogy
+    // az eszköz „sikeresen semmit nem csinált".
+    return NextResponse.json({
+      success: true,
+      data: {
+        denied: false,
+        trust: result.trust,
+        outcome: result.outcome,
+        outcomeReason: result.outcomeReason,
+        effect: result.effect,
+        result: result.machineData,
+        resultMeta: result.resultMeta,
+        latencyMs: result.latencyMs,
+      },
+    })
   } catch (e) {
     return jsonError(e instanceof Error ? e.message : 'Tool invocation failed', 500)
   }

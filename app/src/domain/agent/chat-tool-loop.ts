@@ -26,10 +26,15 @@ import {
   workspaceCopyPathForArchive,
 } from './tool-result-extract'
 import { logger } from '@/lib/observability/logger'
+import { toolResultReadbackTotal } from '@/lib/observability/metrics'
 import { isTulajdoniLapNezet } from '@/lib/tulajdoni-lap'
 import { toolsRequiringConnector } from '@/domain/tool-broker/tool-broker-authorizer'
-// issue #97 — egységes becsomagolás + következmény-kapu (mellékhatásos eszközök).
-import { envelopeToolResultForModel } from '@/domain/tool-broker/tool-result-envelope'
+// issue #97 — a becsomagolás, issue #195 — a kimenetel közlése: mindkettő a Tool
+// Broker határán történik, a fogyasztó a kész `modelText`-et kapja.
+import {
+  describeOutcomeForModel,
+  describeOutcomeForUi,
+} from '@/domain/tool-broker/tool-output-contract'
 import {
   consequenceGateReasonForModel,
   evaluateHttpApiWriteGrant,
@@ -42,7 +47,7 @@ import {
   buildHttpApiEfficiencyGuidance,
   formatHttpApiEndpointCatalogSuffix,
 } from '@/domain/connector/http-api-prompt'
-import type { ToolName, TrustClass } from '@/domain/tool-broker/tool-broker-types'
+import type { ToolName } from '@/domain/tool-broker/tool-broker-types'
 // issue #194 — a chat-vetület KIZÁRÓLAG a kanonikus tool-regiszterből képződik.
 import {
   TOOL_REGISTRY,
@@ -645,18 +650,6 @@ function describeToolResult(result: unknown): string {
 }
 
 /**
- * A modellnek szánt eszköz-eredmény becsomagolása a bizalmi osztály szerint
- * (issue #97). A közös, tiszta `envelopeToolResultForModel` függvényre köt:
- * `external_untrusted` → escape-elt határolókkal, figyelmeztető mondattal,
- * blokkba zárva; `internal`/`trusted` → érintetlen. A régi, `web_research`-re
- * szabott bespoke becsomagolást ez az egységes út váltja ki (a web_research_request
- * továbbra is `external_untrusted`, tehát becsomagolva megy a modellnek).
- */
-function formatToolResultForModel(trust: TrustClass, rawContent: string): string {
-  return envelopeToolResultForModel(trust, rawContent)
-}
-
-/**
  * Azok az eszközök, ahol a `path` MUNKATERÜLET-útvonal — a regiszterből számolva
  * (issue #194): workspace-connectort igénylő tool, aminek a `path` kötelező
  * argumentuma. Ha a modell ide tudásbázis-azonosítót (`doc:` / `kb:` / `okf:`)
@@ -1206,6 +1199,11 @@ export async function runAgentToolLoop(params: {
   const ingestedCharsBySource = new Map<string, number>()
   /** Az aktuális körben archívumból visszaolvasott karakterek (kör elején nullázva). */
   let turnReadBackChars = 0
+  // issue #195 D6 — fordulónkénti visszaolvasás-számvitel. A mért incidensben egy
+  // tömörítés ↔ visszaolvasás körforgás 7 futásból 0-t fejezett be és 5,4M tokent
+  // égetett el; a költséget csak akkor lehet féken tartani, ha MÉRJÜK is.
+  let turnReadBackCalls = 0
+  let turnReadBackBlocked = 0
   /** Ahány tool-hívást a modell ebben a körben kiadott (a kimaradtakat is). */
   let turnToolCallsIssued = 0
 
@@ -1262,6 +1260,8 @@ export async function runAgentToolLoop(params: {
     turnToolResultCount = 0
     turnNewToolResultCount = 0
     turnReadBackChars = 0
+    turnReadBackCalls = 0
+    turnReadBackBlocked = 0
     turnToolCallsIssued = 0
     const reasoningTurnId = `reasoning-${turn}`
     const placeholderTitle = turn === 0 ? 'Üzenet feldolgozása' : 'Tool eredmények kiértékelése'
@@ -1411,6 +1411,8 @@ export async function runAgentToolLoop(params: {
           // tömörítés matematikailag sosem ér a limit alá.
           const perTurnBudget = readBackPerTurnBudget(compactionLimits)
           if (turnReadBackChars >= perTurnBudget) {
+            turnReadBackBlocked += 1
+            toolResultReadbackTotal.inc({ phase: 'blocked', reason: 'turn_budget' })
             await skipToolCall(
               call,
               `[LIMIT] Egy körben legfeljebb ${perTurnBudget} karakter olvasható vissza az archívumból, és ez a keret betelt. NE olvass tovább ebben a körben — amit eddig láttál, abból írd ki a szükséges kivonatot a munkaterületre (tool_result_extract, file_write, xlsx_append_rows), és a következő lépésben onnan dolgozz.`,
@@ -1426,6 +1428,8 @@ export async function runAgentToolLoop(params: {
           const pathBudget = sourceIngestBudget(archived.content.length, sourceIngestLimits)
           const readSoFar = ingestedCharsBySource.get(readSourceKey) ?? 0
           if (readSoFar >= pathBudget) {
+            turnReadBackBlocked += 1
+            toolResultReadbackTotal.inc({ phase: 'blocked', reason: 'source_budget' })
             await skipToolCall(
               call,
               `[LOOP-GUARD] Ezt az archívumot (${path}) már végigolvastad ebben a futásban (${readSoFar} karakter, a teljes tartalom ${archived.content.length} karakter). Az újraolvasás nem hoz új információt. Írd ki a szükséges kivonatot a munkaterületre (tool_result_extract, file_write, xlsx_append_rows), és onnan dolgozz tovább — vagy foglald össze, amit eddig megtudtál.`,
@@ -1440,6 +1444,8 @@ export async function runAgentToolLoop(params: {
         const readRepeatCount = (callRepeatTracker.get(readRepeatKey) ?? 0) + 1
         callRepeatTracker.set(readRepeatKey, readRepeatCount)
         if (readRepeatCount > REPEAT_LIMIT) {
+          turnReadBackBlocked += 1
+          toolResultReadbackTotal.inc({ phase: 'blocked', reason: 'repeat_guard' })
           await skipToolCall(
             call,
             `[LOOP-GUARD] Ugyanezt a szeletet (${path}, offset=${offset}, limit=${limit}) már ${readRepeatCount - 1}x visszaolvastad, az eredmény nem változott. Ne ismételd — írd ki a szükséges kivonatot a munkaterületre (tool_result_extract), vagy foglald össze amit eddig megtudtál.`,
@@ -1473,6 +1479,8 @@ export async function runAgentToolLoop(params: {
         toolCallCount += 1
         if (archived) {
           turnReadBackChars += chunk.length
+          turnReadBackCalls += 1
+          toolResultReadbackTotal.inc({ phase: 'allowed', reason: 'read' })
           const redundant = noteSourceIngest(readSourceKey, chunk.length, content.length)
           // Ismételt behozás: a tartalom mehet, de a kört nem mossa tisztára.
           pushToolResult(call, readContent, redundant ? 'barren' : 'new')
@@ -1998,12 +2006,17 @@ export async function runAgentToolLoop(params: {
         // csak az archívum-visszaolvasást — a szabály egy helyen él mindkettőre.
         const resultBody = result.denied
           ? `DENIED:${result.reason ?? ''}`
-          : JSON.stringify(result.result)
+          : JSON.stringify(result.machineData)
         // file_read: a totalLines ismert → ne unknownSourceChars (200k) legyen a keret,
         // különben a chunk-thrash sokáig „új eredménynek” számít.
         let ingestSourceChars: number | null = null
-        if (!result.denied && toolName === 'file_read' && result.result && typeof result.result === 'object') {
-          const totalLines = (result.result as { totalLines?: unknown }).totalLines
+        if (
+          !result.denied &&
+          toolName === 'file_read' &&
+          result.machineData &&
+          typeof result.machineData === 'object'
+        ) {
+          const totalLines = (result.machineData as { totalLines?: unknown }).totalLines
           if (typeof totalLines === 'number' && Number.isFinite(totalLines) && totalLines > 0) {
             ingestSourceChars = Math.round(totalLines * 80)
           }
@@ -2023,18 +2036,28 @@ export async function runAgentToolLoop(params: {
           markWebSearchRateLimited(webSearchGuard, messages)
         }
 
+        // issue #195 D5 — a GÉPI csatorna: a nyers, sosem burkolt adat. Ez megy az
+        // archívumba és a munkaterületre; a modell a `modelText`-et kapja.
         const rawContent = result.denied
           ? `ELUTASÍTVA: ${result.reason}`
-          : JSON.stringify(result.result)
+          : JSON.stringify(result.machineData)
+        // WP-6 — az `empty` / `partial` kimenetel HÉTKÖZNAPI NYELVEN látszik a
+        // felületen is: a felhasználó ne csak akkor tudja meg, hogy üres lett az
+        // eredmény, amikor megnyitja a fájlt.
+        const outcomeUiDetail = result.denied
+          ? null
+          : describeOutcomeForUi(result.outcome, result.outcomeReason)
         await emitActivity({
           id: `tool-${call.id}`,
           kind: 'tool',
           title: call.name,
-          detail: result.denied ? result.reason : describeToolResult(result.result),
+          detail: result.denied
+            ? result.reason
+            : outcomeUiDetail ?? describeToolResult(result.machineData),
           status: result.denied ? 'skipped' : 'done',
         })
         if (toolName === 'memory_propose' && !result.denied) {
-          const proposeResult = result.result as { ok: boolean } & Partial<ToolLoopMemoryCandidateEvent>
+          const proposeResult = result.machineData as { ok: boolean } & Partial<ToolLoopMemoryCandidateEvent>
           if (proposeResult.ok && proposeResult.candidateId) {
             await params.onMemoryCandidate?.({
               candidateId: proposeResult.candidateId,
@@ -2048,18 +2071,16 @@ export async function runAgentToolLoop(params: {
             })
           }
         }
-        // A becsomagolás a bizalmi osztály szerint (issue #97): csak a sikeres,
-        // `external_untrusted` eredmény kerül határolt, figyelmeztetett blokkba; a
-        // deny-üzenet platform-szöveg, azt nem csomagoljuk.
-        const trust: TrustClass = result.denied ? 'trusted' : result.trust
-        // A modell felé mehet envelope; a workspace/archívum viszont NYERS JSON legyen,
-        // különben a tulajdoni_lap_egyeztetes / reconcile_records JSON.parse-ja elbukik
-        // a <<<EXTERNAL_UNTRUSTED_DATA>>> burkolaton (182 „Új rekord", 0 párosítás).
-        const modelContent = result.denied
-          ? rawContent
-          : formatToolResultForModel(trust, rawContent)
+        // issue #195 D5 — a MODELL csatornája. A becsomagolást (issue #97) és a
+        // kimenetel közlését már a broker végzi (`modelText`), ezért itt nincs
+        // többé se envelope-olás, se burkolat-levétel: a burkolat elvi szinten
+        // nem tud gépi útra kerülni.
+        const modelContent = result.denied ? rawContent : result.modelText
         let toolContent = modelContent
-        if (modelContent.length > TOOL_RESULT_INLINE_LIMIT) {
+        // A méret-döntés a NYERS adaton dől el: a broker `modelText`-je már
+        // tartalmazhat kimenetel-közlést, abból nem szabad archiválási küszöböt
+        // számolni — az archívumba amúgy is a nyers adat kerül.
+        if (rawContent.length > TOOL_RESULT_INLINE_LIMIT) {
           const archiveContent = rawContent
           const archive = params.archiveLargeToolResult
             ? await params.archiveLargeToolResult({
@@ -2116,6 +2137,13 @@ export async function runAgentToolLoop(params: {
               modelContent.slice(0, TOOL_RESULT_INLINE_LIMIT) +
               `\n...[csonkítva — az eredmény ${modelContent.length} kar, limit ${TOOL_RESULT_INLINE_LIMIT}; teljes archívum nem készült]`
           }
+          // issue #195 — a nagy eredmény átformálása (archív-előnézet / csonkolás)
+          // NEM nyelheti el a kimenetelt: az `empty` / `partial` közlés a
+          // munkaterületi hivatkozás mellett is látszik.
+          if (!result.denied) {
+            const notice = describeOutcomeForModel(result.outcome, result.outcomeReason, result.effect)
+            if (notice) toolContent = `${notice}\n${toolContent}`
+          }
         }
 
         pushToolResult(call, toolContent, redundantIngest ? 'barren' : 'new', {
@@ -2133,7 +2161,7 @@ export async function runAgentToolLoop(params: {
         // KB-miss early guidance: ha kb_search 0 találatot adott, figyelmeztessük a modellt
         if ((toolName as string) === 'kb_search' && !result.denied) {
           try {
-            const parsed = result.result as { hits?: unknown[] }
+            const parsed = result.machineData as { hits?: unknown[] }
             if (Array.isArray(parsed?.hits) && parsed.hits.length === 0) {
               messages.push({
                 role: 'system',
@@ -2171,6 +2199,21 @@ export async function runAgentToolLoop(params: {
       toolResultCount: turnToolResultCount,
       newToolResultCount: turnNewToolResultCount,
     })
+    // issue #195 D6 — a fordulónkénti visszaolvasás mérőszáma. Ez a sor mondja
+    // meg utólag, hogy egy futás mennyit költött PUSZTA ÚJRAOLVASÁSRA: a
+    // ~4 karakter/token becsléssel a livelock ára számszerűsíthető.
+    if (turnReadBackCalls > 0 || turnReadBackBlocked > 0) {
+      logger.info(
+        {
+          turn,
+          readBackCalls: turnReadBackCalls,
+          readBackBlocked: turnReadBackBlocked,
+          readBackChars: turnReadBackChars,
+          estimatedReadBackTokens: Math.round(turnReadBackChars / 4),
+        },
+        'agent.tool_loop.turn_readback_budget',
+      )
+    }
     // Fail-safe naplózás: ha a modell dolgozni próbált, de a kör mérlegébe nem
     // került eredmény, akkor egy végrehajtási ág kihagyta a könyvelést. A
     // zsákutca-őr ilyenkor is lép (trackTurnProgress), de a rést látni akarjuk.

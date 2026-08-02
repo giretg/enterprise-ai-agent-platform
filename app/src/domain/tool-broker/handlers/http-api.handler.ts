@@ -115,17 +115,13 @@ export const httpApiHandler: ToolHandler = {
 
     // Sima get + ownership/névsor: ha egy oldalnyi kerek darabszám jön,
     // tereld get_all-ra mielőtt a modell extract→egyeztetést futtatna.
-    if (input.tool === 'http_api_get' && result && typeof result === 'object') {
-      const record = result as { body?: unknown; hint?: string; ok?: boolean }
-      if (record.ok !== false) {
-        const pageHint = buildHttpApiLikelyPaginatedHint({
-          path: input.args.path,
-          body: record.body,
-        })
-        if (pageHint) {
-          const hint = [record.hint, pageHint].filter(Boolean).join(' ')
-          return { ...record, hint }
-        }
+    if (input.tool === 'http_api_get' && result && typeof result === 'object' && result.ok !== false) {
+      const pageHint = buildHttpApiLikelyPaginatedHint({
+        path: input.args.path,
+        body: result.body,
+      })
+      if (pageHint) {
+        return { ...result, hint: [result.hint, pageHint].filter(Boolean).join(' ') }
       }
     }
 

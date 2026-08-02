@@ -6,8 +6,6 @@
  * 250 KB-os API-válasz feldolgozható anélkül, hogy a teljes tartalom a
  * promptba kerülne.
  */
-import { unwrapExternalDataEnvelope } from '@/domain/tool-broker/tool-result-envelope'
-
 export const TOOL_RESULT_EXTRACT_TOOL_NAME = 'tool_result_extract'
 
 const SAMPLE_ROW_LIMIT = 3
@@ -32,11 +30,15 @@ export type ExtractToolResultFailure = {
 export type ExtractToolResultOutcome = ExtractToolResultSuccess | ExtractToolResultFailure
 
 /**
- * Envelope / prose burkolat levétele, majd JSON parse (tömb VAGY objektum).
- * Az `extractJsonObject` csak `{…}`-et keres — az API-válaszok gyakran `[…]`.
+ * JSON parse a tool-eredmény archívumból (tömb VAGY objektum). Az
+ * `extractJsonObject` csak `{…}`-et keres — az API-válaszok gyakran `[…]`.
+ *
+ * issue #195 D5 — az archívumba és a munkaterületre már csak NYERS gépi adat
+ * kerül (a burkolat a modell csatornáján marad), ezért itt nincs burkolat-levétel;
+ * a próza/fence-elt tartalom kezelése viszont megmarad (a modell által beírt fájlok).
  */
 export function parseToolResultJson(content: string): unknown {
-  const unwrapped = unwrapExternalDataEnvelope(content).trim()
+  const unwrapped = content.trim()
   if (!unwrapped) return null
 
   try {

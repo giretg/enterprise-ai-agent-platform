@@ -290,6 +290,16 @@ enum TrustClass {
   external_untrusted
 }
 
+/// Eszközhívás kimenetele (issue #195 D1). Az `empty` és a `partial` NEM hiba,
+/// hanem tény: eddig épp az volt a baj, hogy a „sikeresen semmit nem csinált"
+/// eset `ok`-ként jelent meg (üres Excel, hiányzó sorok, néma adatvesztés).
+enum ToolOutcome {
+  ok
+  empty
+  partial
+  failed
+}
+
 enum ModelCallStatus {
   ok
   error
@@ -2685,6 +2695,14 @@ model ToolCall {
   // audit-lekérdezéshez: „mely futásokat befolyásolt külső tartalom?"). A
   // bevezetés utáni hívásokra töltődik; meglévő rekordokon null.
   trustClass     TrustClass?    @map("trust_class")
+  // issue #195 — a hívás KIMENETELE a kikényszerített kimeneti szerződés szerint.
+  // Ez teszi megválaszolhatóvá: „melyik eszköz ad a leggyakrabban üres vagy
+  // részleges eredményt?" — vagyis melyik eszközt kell javítani. A bevezetés utáni
+  // hívásokra töltődik; meglévő rekordokon null.
+  outcome        ToolOutcome?   @map("outcome")
+  // issue #195 D4 — a MÉRT mellékhatás összegzése (mennyiség + egység + cél).
+  // „Sikeresen írtam" állítás önmagában nem elfogadható kimenet.
+  effectSummary  Json?          @map("effect_summary")
   createdAt      DateTime       @default(now()) @map("created_at") @db.Timestamptz
 
   agent        Agent         @relation(fields: [agentId], references: [id])
@@ -2693,6 +2711,8 @@ model ToolCall {
   connector    Connector?    @relation(fields: [connectorId], references: [id])
 
   @@index([trustClass, createdAt])
+  // issue #195 — „melyik eszköz ad a leggyakrabban empty/partial/failed eredményt?"
+  @@index([outcome, toolName, createdAt])
   @@index([createdAt])
   @@index([agentId, createdAt])
   @@index([ticketId])

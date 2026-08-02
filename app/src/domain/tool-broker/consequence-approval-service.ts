@@ -16,6 +16,7 @@ import type {
 } from '@/repositories/interfaces'
 import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
 import { envelopeToolResultForModel } from './tool-result-envelope'
+import { describeOutcomeForUi, type SettledToolOutcome } from './tool-output-contract'
 import type { ToolBrokerInvokeInput } from './tool-broker-types'
 import type { ToolBrokerService } from './tool-broker-service'
 
@@ -116,10 +117,34 @@ function describeResult(result: unknown): string {
   return clip(text, CONTINUATION_RESULT_MAX_CHARS)
 }
 
+/**
+ * issue #195 — a kimenetel HÉTKÖZNAPI mondata a nyers eredmény elé. A puszta
+ * JSON-kivonat („{path: …}") eddig sikernek látszott akkor is, ha az eszköz
+ * 0 sort írt: a kártya és a folytatás-prompt is ezen a szövegen múlik.
+ */
+function describeToolOutcome(
+  outcome: SettledToolOutcome | undefined,
+  outcomeReason: string | null | undefined,
+  result: unknown,
+): string {
+  const body = describeResult(result)
+  const notice = outcome ? describeOutcomeForUi(outcome, outcomeReason ?? null) : null
+  return notice ? `${notice} — ${body}` : body
+}
+
 /** A `resultMeta`-ból (perzisztált végállapot) ugyanaz a szöveg, mint frissen futtatva. */
 function describeResultMeta(resultMeta: unknown): string {
   if (resultMeta && typeof resultMeta === 'object' && 'result' in resultMeta) {
-    return describeResult((resultMeta as { result: unknown }).result)
+    const meta = resultMeta as { result: unknown; outcome?: unknown; outcomeReason?: unknown }
+    const outcome =
+      meta.outcome === 'empty' || meta.outcome === 'partial' || meta.outcome === 'ok'
+        ? meta.outcome
+        : undefined
+    return describeToolOutcome(
+      outcome,
+      typeof meta.outcomeReason === 'string' ? meta.outcomeReason : null,
+      meta.result,
+    )
   }
   return describeResult(resultMeta)
 }
@@ -384,9 +409,18 @@ export class ConsequenceApprovalService {
       return { ok: false, reason }
     }
 
+    // issue #195 D1 — a kimenetel a JÓVÁHAGYOTT úton is végigmegy. Épp itt futnak
+    // a mellékhatásos eszközök (levélküldés, írás, API-hívás): ha az `empty` /
+    // `partial` ítélet itt elveszne, a folytatás-prompt és a kártya „lefutott"-at
+    // mondana egy olyan hívásra, ami valójában semmit nem termelt.
     const resultMeta = result.denied
       ? { denied: true, reason: result.reason ?? 'denied' }
-      : { denied: false, result: result.result }
+      : {
+          denied: false,
+          result: result.result,
+          outcome: result.outcome,
+          outcomeReason: result.outcomeReason,
+        }
 
     await this.approvals.casUpdateStatus(row.id, 'approved', {
       status: 'approved',
@@ -409,6 +443,8 @@ export class ConsequenceApprovalService {
         tool: row.toolName,
         denied: result.denied,
         reason: result.denied ? result.reason : undefined,
+        tool_outcome: result.denied ? 'failed' : result.outcome,
+        tool_outcome_reason: result.denied ? null : result.outcomeReason,
       },
     })
 
@@ -419,7 +455,7 @@ export class ConsequenceApprovalService {
       ok: true,
       outcome: 'approved',
       result: result.result,
-      resultSummary: describeResult(result.result),
+      resultSummary: describeToolOutcome(result.outcome, result.outcomeReason, result.result),
     }
   }
 

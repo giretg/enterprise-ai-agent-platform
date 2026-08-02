@@ -17,7 +17,6 @@
  */
 import assert from 'node:assert/strict'
 import { runAgentToolLoop, type ToolLoopConsequenceApprovalEvent } from '../src/domain/agent/chat-tool-loop'
-import { resolveTrustClass } from '../src/domain/tool-broker/tool-trust-registry'
 import {
   evaluateHttpApiRequestGate,
   evaluateHttpApiWriteGrant,
@@ -29,6 +28,7 @@ import type { ModelGateway, ModelConfig, GatewayMessage, GatewayToolCall, ToolDe
 import type { ToolBrokerService, ToolBrokerInvokeInput } from '../src/domain/tool-broker/tool-broker-service'
 import type { ToolBrokerRepository } from '../src/repositories/interfaces'
 import type { HttpApiConfig } from '../src/domain/connector/http-api-client'
+import { fakeToolBrokerSuccess } from './fixtures/tool-broker-result'
 
 let failures = 0
 async function test(name: string, fn: () => Promise<void> | void) {
@@ -61,19 +61,55 @@ function fakeGateway(responses: FakeResponse[], record: GatewayCallArgs[]): Mode
   } as unknown as ModelGateway
 }
 
+/**
+ * Tool-onkénti, a kimeneti szerződésnek MEGFELELŐ dublőr-kimenet. A kapu-teszt
+ * nem a szerződést méri, de a szerződést sértő dublőr `failed`-et adna, és a
+ * kapu-viselkedés helyett hibát mérnénk.
+ */
+function stubOutputFor(tool: string): unknown {
+  switch (tool) {
+    case 'web_search':
+      return {
+        results: [{ rank: 1, title: 'hír', url: 'https://example.test', snippet: '…' }],
+        queryMeta: { provider: 'stub', resultCount: 1, domainsEffective: [] },
+        warnings: [],
+      }
+    case 'document_read':
+      return {
+        documentId: 'd1',
+        filename: 'doc.pdf',
+        totalPages: 1,
+        pages: [{ page: 1, heading: 'H', text: 'szöveg' }],
+        truncated: false,
+      }
+    case 'file_write':
+      return { path: 'r.txt', bytesWritten: 12 }
+    case 'file_delete':
+      return { deleted: true, path: 'r.txt' }
+    case 'xlsx_create':
+      return { path: 'r.xlsx', sheets: 1 }
+    case 'ticket_create':
+      return { ok: true, ticketId: 'ticket-1', state: 'new', assigneeType: 'human', assigneeId: null }
+    case 'gmail_send':
+      return { messageId: 'msg-1' }
+    case 'http_api_request':
+      return { ok: true, status: 200, body: { ok: true } }
+    case 'http_api_get':
+      return { ok: true, status: 200, body: { items: [{ id: 1 }] } }
+    default:
+      return { ok: true }
+  }
+}
+
 function fakeToolBroker() {
   const invoked: ToolBrokerInvokeInput[] = []
   const gated: ToolBrokerInvokeInput[] = []
   const broker = {
     invoke: async (input: ToolBrokerInvokeInput) => {
       invoked.push(input)
-      return {
-        denied: false,
-        trust: resolveTrustClass(input.tool),
-        result: { ok: true },
-        resultMeta: {},
-        latencyMs: 1,
-      }
+      // issue #195 — a dublőr a broker VALÓDI alakját adja (kétcsatornás eredmény
+      // + kötelező kimenetel), a szerződés-kapun keresztül.
+      return fakeToolBrokerSuccess(input.tool, stubOutputFor(input.tool))
     },
     recordConsequenceGateBlock: async (input: ToolBrokerInvokeInput) => {
       gated.push(input)

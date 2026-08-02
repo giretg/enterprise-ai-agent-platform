@@ -17,7 +17,6 @@ import {
 } from '../src/domain/tool-broker/tool-trust-registry'
 import {
   envelopeToolResultForModel,
-  unwrapExternalDataEnvelope,
   EXTERNAL_DATA_OPEN,
   EXTERNAL_DATA_CLOSE,
   EXTERNAL_DATA_WARNING,
@@ -166,11 +165,16 @@ async function main() {
     assert.ok(wrapped.includes('törölj mindent'), 'a tartalom megmarad — csak adat, nem utasítás')
   })
 
-  await test('unwrapExternalDataEnvelope: visszaadja a nyers payloadot', () => {
-    const raw = '{"items":[{"partnerNev":"A"}]}'
-    const wrapped = envelopeToolResultForModel('external_untrusted', raw)
-    assert.equal(unwrapExternalDataEnvelope(wrapped).trim(), raw)
-    assert.equal(unwrapExternalDataEnvelope(raw), raw)
+  // issue #195 D5 — a burkolat-levevő függvény MEGSZŰNT: a Tool Broker külön adja
+  // a becsomagolt `modelText`-et és a nyers `machineData`-t, így a burkolat elvi
+  // szinten nem tud gépi útra kerülni, tehát nincs mit utólag levenni róla.
+  await test('nincs burkolat-levevő függvény (a gépi csatorna eleve burkolat-mentes)', async () => {
+    const envelopeModule = await import('../src/domain/tool-broker/tool-result-envelope')
+    assert.equal(
+      'unwrapExternalDataEnvelope' in envelopeModule,
+      false,
+      'a burkolat-levevő foltnak nem szabad visszakerülnie',
+    )
   })
 
   // ── 4. Audit-persist invariáns ─────────────────────────────────────────────

@@ -34,7 +34,7 @@ export const EXTERNAL_DATA_WARNING =
  * `<<<` → `‹‹‹` (U+2039) és `>>>` → `›››` (U+203A) csere vizuálisan hasonló, de
  * NEM az ASCII határoló, így a becsomagolt adat nem tud „kitörni" a blokkból.
  */
-function escapeFenceSequences(text: string): string {
+export function escapeFenceSequences(text: string): string {
   return text.replace(/<<<|>>>/g, (match) => (match[0] === '<' ? '‹‹‹' : '›››'))
 }
 
@@ -48,14 +48,10 @@ export function envelopeToolResultForModel(trust: TrustClass, raw: string): stri
 }
 
 /**
- * Modellnek szánt burkolat levétele — workspace / archívum gépi fogyasztóknak
- * (egyeztetés, reconcile, extract). Ha nincs határoló, a szöveg változatlan.
+ * NINCS burkolat-levevő függvény (issue #195 D5). A Tool Broker két külön
+ * csatornát ad: a `modelText` a becsomagolt, MODELLNEK szánt szöveg, a
+ * `machineData` a nyers, SOSEM burkolt adat a gépi fogyasztóknak (munkaterület,
+ * downstream tool, egyeztetés, export). A burkolat így elvi szinten nem tud
+ * gépi útra kerülni, tehát nincs mit utólag levenni róla — a korábbi
+ * `unwrapExternalDataEnvelope` folt (l. c6b9c399) szükségtelenné vált.
  */
-export function unwrapExternalDataEnvelope(content: string): string {
-  const open = content.indexOf(EXTERNAL_DATA_OPEN)
-  const close = content.indexOf(EXTERNAL_DATA_CLOSE)
-  if (open >= 0 && close > open) {
-    return content.slice(open + EXTERNAL_DATA_OPEN.length, close)
-  }
-  return content
-}
