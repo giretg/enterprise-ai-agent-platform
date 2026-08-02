@@ -1,4 +1,4 @@
-import type { SkillContent } from './skill-content'
+import type { SkillContent, SkillParameter } from './skill-content'
 
 /**
  * Progresszív skill-betöltés context-assembler rétege (spec §D7, WP-5).
@@ -76,6 +76,39 @@ export function buildLoadedSkillPrompt(
     )
   }
   const hintBlock = hintLines.length > 0 ? `\n${hintLines.join('\n')}` : ''
+  // A skill DEKLARÁLT paraméterei (#199). Enélkül a `parameters` sosem jutott
+  // promptig: tárolódott és diffelődött, de a modell nem tudott róla, így a
+  // feladat-indításkor kitöltött értékeket sem tudta hova kötni.
+  const paramBlock =
+    content.parameters.length > 0
+      ? `\n\nA skill paraméterei (a feladat indítója tölti ki, mindegyik opcionális):\n${content.parameters
+          .map((p) => `- ${p.name}${p.description ? `: ${p.description}` : ''}`)
+          .join('\n')}`
+      : ''
   const body = content.instructions.join('\n\n')
-  return `${header}${keywords}${hintBlock}\n\n${body}`.trim()
+  return `${header}${keywords}${hintBlock}${paramBlock}\n\n${body}`.trim()
+}
+
+/**
+ * A feladat indításakor kitöltött skill-paraméter-ÉRTÉKEK prompt-blokkja (#199).
+ * Csak a ténylegesen kitöltött mezők kerülnek bele (v1-ben minden paraméter
+ * opcionális), és a paraméter leírása is megy vele, hogy a modell tudja, mit
+ * jelent az érték. Üres eredmény → a hívó ne injektáljon üzenetet.
+ */
+export function formatSkillParameterValuesPrompt(
+  parameters: SkillParameter[],
+  values: Record<string, string>,
+): string {
+  const lines: string[] = []
+  for (const param of parameters) {
+    const raw = values[param.name]
+    if (typeof raw !== 'string' || raw.trim() === '') continue
+    const label = param.description ? `${param.name} (${param.description})` : param.name
+    lines.push(`- ${label}: ${raw.trim()}`)
+  }
+  if (lines.length === 0) return ''
+  return [
+    'Skill-paraméterek (a feladat indítója adta meg — ezek a feladat bemenetei):',
+    ...lines,
+  ].join('\n')
 }

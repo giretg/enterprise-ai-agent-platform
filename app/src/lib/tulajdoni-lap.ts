@@ -733,6 +733,17 @@ export function parseTulajdoniLap(rawPages: string[]): TulajdoniLapResult {
 
 export type TulajdoniLapNezet = 'osszefoglalo' | 'tulajdonosok' | 'bejegyzesek' | 'terhek'
 
+export const TULAJDONI_LAP_NEZETEK = [
+  'osszefoglalo',
+  'tulajdonosok',
+  'bejegyzesek',
+  'terhek',
+] as const satisfies readonly TulajdoniLapNezet[]
+
+export function isTulajdoniLapNezet(value: unknown): value is TulajdoniLapNezet {
+  return typeof value === 'string' && (TULAJDONI_LAP_NEZETEK as readonly string[]).includes(value)
+}
+
 export type TulajdoniLapViewArgs = {
   nezet?: TulajdoniLapNezet
   /** Bejegyzés-nézeteknél: csak a hatályos sorok (alapértelmezés: igen). */

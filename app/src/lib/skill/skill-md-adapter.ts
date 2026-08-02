@@ -104,7 +104,19 @@ function parseOptionalInt(value: string | string[] | undefined): number | undefi
   return Number.isFinite(n) ? Math.round(n) : undefined
 }
 
-/** Frontmatter → runtimeHints (`max-wall-clock-ms`, `max-tool-calls`, `preferred-mode`). */
+/** Frontmatter → opcionális boolean (`true`/`false`/`yes`/`no`; egyéb → undefined). */
+function parseOptionalBoolean(value: string | string[] | undefined): boolean | undefined {
+  const raw = asString(value).trim().toLowerCase()
+  if (!raw) return undefined
+  if (raw === 'true' || raw === 'yes' || raw === '1') return true
+  if (raw === 'false' || raw === 'no' || raw === '0') return false
+  return undefined
+}
+
+/**
+ * Frontmatter → runtimeHints (`max-wall-clock-ms`, `max-tool-calls`,
+ * `preferred-mode`, `allow-attachments`).
+ */
 function parseRuntimeHints(
   frontmatter: Record<string, string | string[]>,
 ): import('./skill-content').SkillRuntimeHints | undefined {
@@ -121,11 +133,25 @@ function parseRuntimeHints(
     .toLowerCase()
   const preferredMode =
     modeRaw === 'task' || modeRaw === 'chat' ? (modeRaw as 'chat' | 'task') : undefined
-  if (maxWallClockMs == null && maxToolCalls == null && preferredMode == null) return undefined
+  // Csak a TILTÁST tároljuk: a hiányzó érték amúgy is engedettet jelent, így az
+  // importált skillek hash-e és diffje nem zajosodik feleslegesen.
+  const allowAttachmentsRaw = parseOptionalBoolean(
+    frontmatter['allow-attachments'] ?? frontmatter.allowAttachments,
+  )
+  const allowAttachments = allowAttachmentsRaw === false ? false : undefined
+  if (
+    maxWallClockMs == null &&
+    maxToolCalls == null &&
+    preferredMode == null &&
+    allowAttachments == null
+  ) {
+    return undefined
+  }
   return {
     ...(maxWallClockMs != null ? { maxWallClockMs } : {}),
     ...(maxToolCalls != null ? { maxToolCalls } : {}),
     ...(preferredMode != null ? { preferredMode } : {}),
+    ...(allowAttachments != null ? { allowAttachments } : {}),
   }
 }
 

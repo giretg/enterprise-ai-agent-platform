@@ -4,6 +4,7 @@ import { services } from '@/domain'
 import { assertAgentWorkTenantOperable } from '@/lib/agent-work-tenant-gate'
 import { repositories } from '@/repositories/postgres'
 import { toolInvokeSchema } from '@/lib/validators/actions'
+import { buildToolInvokeInput } from '@/domain/tool-broker/tool-registry'
 
 function jsonError(message: string, status: number, data?: unknown) {
   return NextResponse.json({ success: false, error: message, data }, { status })
@@ -43,15 +44,27 @@ export async function POST(request: Request) {
       return jsonError(`Tenant is not operable (${tenantGate.tenantStatus})`, 403, tenantGate)
     }
 
+    // A tipizált broker-inputot a kanonikus regiszter állítja elő (issue #194):
+    // ugyanaz a leképezés fut itt, mint a chat-úton, így a két út nem tud
+    // elcsúszni egymástól.
+    //
     // Az API-kulcs csak az agentet hitelesíti, felhasználót nem. Az
     // actingUserId ezért kizárólag a szerveroldal által létrehozott chat- vagy
-    // futási kontextusból érkezhet, nem az agent által beküldött JSON-ból.
-    const toolInput = { ...parsed.data }
-    delete toolInput.actingUserId
+    // futási kontextusból érkezhet, nem az agent által beküldött JSON-ból —
+    // ezért nem adjuk át a kontextusnak.
+    const invokeInput = buildToolInvokeInput(
+      parsed.data.tool,
+      (parsed.data.args ?? {}) as Record<string, unknown>,
+      {
+        agentId: auth.agentId,
+        agentVersion: agent.currentVersion,
+        ...(parsed.data.ticketId ? { ticketId: parsed.data.ticketId } : {}),
+        ...(parsed.data.conversationId ? { conversationId: parsed.data.conversationId } : {}),
+      },
+    )
+
     const result = await services.toolBroker.invoke({
-      agentId: auth.agentId,
-      agentVersion: agent.currentVersion,
-      ...toolInput,
+      ...invokeInput,
       actingUserSource: 'external_agent_api',
     })
 
@@ -59,7 +72,24 @@ export async function POST(request: Request) {
       return jsonError(result.reason, 403, result)
     }
 
-    return NextResponse.json({ success: true, data: result })
+    // issue #195 D5 — ez GÉPI fogyasztó: a `machineData` (a `result` alias-a) megy
+    // ki, a modellnek szánt, BURKOLT `modelText` SOHA. Így a védőburkolat nem
+    // kerülhet gépi útra, és a válasz nem hordozza háromszor ugyanazt az adatot.
+    // A kimenetel viszont ide is kell: a hívó agent enélkül nem tudná meg, hogy
+    // az eszköz „sikeresen semmit nem csinált".
+    return NextResponse.json({
+      success: true,
+      data: {
+        denied: false,
+        trust: result.trust,
+        outcome: result.outcome,
+        outcomeReason: result.outcomeReason,
+        effect: result.effect,
+        result: result.machineData,
+        resultMeta: result.resultMeta,
+        latencyMs: result.latencyMs,
+      },
+    })
   } catch (e) {
     return jsonError(e instanceof Error ? e.message : 'Tool invocation failed', 500)
   }

@@ -12,7 +12,14 @@ import {
   MODEL_PRICING_SYNCED_SETTING_KEY,
   type ModelPricingTable,
 } from '@/lib/model-pricing'
-import { callChatGptOAuth, callChatGptOAuthStream, resolveReasoningEffort, stubChatStream } from './chatgpt-oauth-bridge'
+import {
+  callChatGptOAuth,
+  callChatGptOAuthStream,
+  chatGptOAuthDiagnostic,
+  resolveReasoningEffort,
+  stubChatStream,
+  type ChatGptOAuthConcurrencyDiagnostic,
+} from './chatgpt-oauth-bridge'
 import { GeminiProvider } from './gemini-provider'
 import { createTokenStoreFromEnv, ensureFreshTokens } from './oauth-token-store'
 import {
@@ -234,6 +241,8 @@ export type ModelProviderResult = {
   latencyMs: number
   /** A provider által ténylegesen használt modell (pl. a feloldott `gpt-5.5`). */
   model?: string
+  /** Szolgáltató-specifikus, tartalommentes konkurencia-diagnosztika. */
+  oauthConcurrency?: ChatGptOAuthConcurrencyDiagnostic
 }
 
 export type ModelProviderUsage = NonNullable<ModelProviderResult['usage']>
@@ -553,6 +562,7 @@ export class ChatGptOAuthProvider implements ModelProvider {
         usage: result.usage,
         latencyMs: Date.now() - started,
         model: result.model,
+        oauthConcurrency: result.oauthConcurrency,
       }
     }
 
@@ -1496,6 +1506,7 @@ export class ModelGateway {
     const status = persistedStatusFromErrorClass(errorClass)
     const latencyMs = Date.now() - input.started
     const message = input.error instanceof Error ? input.error.message : String(input.error)
+    const oauthResponse = chatGptOAuthDiagnostic(input.error)
     const next = input.chain[input.attemptIndex + 1]
     const willFallback = input.allowFallback && isFallbackEligible(errorClass) && !!next
 
@@ -1548,6 +1559,7 @@ export class ModelGateway {
           attemptGroupId: input.attemptGroupId,
           attemptIndex: input.attemptIndex,
           errorClass,
+          ...(oauthResponse ? { oauthResponse } : {}),
           ...(input.stream ? { stream: true } : {}),
         },
         'model gateway call failed',
@@ -1765,6 +1777,7 @@ export class ModelGateway {
             attemptGroupId,
             attemptIndex,
             chainLength: chain.length,
+            ...(result.oauthConcurrency ? { oauthConcurrency: result.oauthConcurrency } : {}),
           },
           'model gateway call',
         )

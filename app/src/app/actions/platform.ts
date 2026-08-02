@@ -37,6 +37,11 @@ import { BOARD_LIST_LIMIT, DEFAULT_LIST_LIMIT } from '@/lib/list-pagination'
 import { ensureAgentKnowledgeBase } from '@/lib/agent-knowledge-base'
 import { assertAgentTenantReachable } from '@/lib/agent-tenant-access'
 import { shouldExcludeHiddenAgents } from '@/lib/agent-operator-visibility'
+import {
+  buildTaskOnlyTaskPrompt,
+  buildTaskOnlyTicketTitle,
+  validateTaskOnlyTaskInput,
+} from '@/lib/task-only-ticket'
 import { isAgentAccessError } from '@/domain/agent-access/agent-access-errors'
 import { isTenantAdmin, tenantUserSubject } from '@/domain/agent-access/tenant-user-subject'
 import { getReportTemplate, listReportTemplates } from '@/domain/report/report-templates'
@@ -55,6 +60,7 @@ import {
 } from '@/lib/ticket-display'
 import { fail, ok, type ActionResult } from '@/lib/result'
 import { NORMAL_TOOL_CAPABILITY_NAMES } from '@/lib/tool-capability-catalog'
+import { toolsRequiringConnector } from '@/domain/tool-broker/tool-broker-authorizer'
 import {
   agentIdSchema,
   approveTrainingSchema,
@@ -85,6 +91,7 @@ import {
   updateAgentSelfEvolutionProfileSchema,
   updateAgentSensitivityPolicySchema,
   updateAgentOperatorVisibilitySchema,
+  updateAgentTaskOnlySchema,
   createHttpApiConnectorSchema,
   createTrainingSchema,
   askWikiSchema,
@@ -467,12 +474,14 @@ export async function createBoardTicket(input: {
   skillVersionIds?: string[]
   dueBy?: string | null
   deferDispatch?: boolean
+  skillParameterValues?: Record<string, string>
 }) {
   try {
     const user = await requireTenantRole('operator')
     const parsed = createBoardTicketSchema.parse(input)
 
-    const promptText = parsed.description?.trim() || parsed.title.trim()
+    let promptText = parsed.description?.trim() || parsed.title.trim()
+    let ticketTitle = parsed.title
     const dueBy = parsed.dueBy ? new Date(parsed.dueBy) : null
     if (dueBy && Number.isNaN(dueBy.getTime())) return fail('Invalid dueBy')
 
@@ -505,13 +514,48 @@ export async function createBoardTicket(input: {
       if (agentDetails.agent.status !== 'active') return fail('Agent is not active')
 
       const requestedSkillIds = [...new Set(parsed.skillVersionIds ?? [])]
+      let assignedSkillIndex: Awaited<
+        ReturnType<typeof services.skills.getAssignedSkillIndex>
+      > = []
       if (requestedSkillIds.length > 0) {
-        const enabled = await services.skills.getAssignedSkillIndex(parsed.assigneeId)
-        const enabledIds = new Set(enabled.map((row) => row.skillVersionId))
+        assignedSkillIndex = await services.skills.getAssignedSkillIndex(parsed.assigneeId)
+        const enabledIds = new Set(assignedSkillIndex.map((row) => row.skillVersionId))
         const invalid = requestedSkillIds.filter((id) => !enabledIds.has(id))
         if (invalid.length > 0) {
           return fail('One or more selected skills are not enabled for this agent')
         }
+      }
+
+      // Feladatkör-korlátozás (#199). A korlátozott agent felülete egyetlen
+      // skill-kötött gombra egyszerűsödik: se cím, se szabad szöveges leírás nem
+      // érkezhet a klienstől. A hibát KIMONDJUK — a csendes eldobás azt a hamis
+      // képet adná a hívónak, hogy a leírása eljutott a modellhez.
+      let taskOnlySkillParameterValues: Record<string, string> = {}
+      if (agentDetails.agent.taskOnly) {
+        const skillEntry = assignedSkillIndex.find(
+          (row) => row.skillVersionId === requestedSkillIds[0],
+        )
+        const skillContent =
+          requestedSkillIds.length === 1
+            ? await services.skills.getSkillContentForVersion(requestedSkillIds[0])
+            : null
+        const validation = validateTaskOnlyTaskInput({
+          description: parsed.description,
+          skillVersionIds: requestedSkillIds,
+          skillParameterValues: parsed.skillParameterValues,
+          declaredParameterNames: (skillContent?.parameters ?? []).map((p) => p.name),
+        })
+        if (!validation.ok) return fail(validation.error)
+        if (!skillEntry) return fail('One or more selected skills are not enabled for this agent')
+        taskOnlySkillParameterValues = validation.parameterValues
+
+        // A cím szerveroldalon generált; a kliens `title` bemenete nem érvényesül.
+        ticketTitle = buildTaskOnlyTicketTitle(skillEntry.name, new Date())
+        // A generált cím NE váljon rejtett prompttá: a runtime a `question`
+        // hiányában a címre esne vissza. Determinisztikus feladat-szöveget írunk.
+        promptText = buildTaskOnlyTaskPrompt(skillEntry.name)
+      } else if (parsed.skillParameterValues) {
+        return fail('Skill-paraméterek csak korlátozott feladatkörű agentnél adhatók meg')
       }
 
       const modelConfig = agentDetails.agent.modelConfig as {
@@ -532,11 +576,17 @@ export async function createBoardTicket(input: {
       if (requestedSkillIds.length > 0) {
         payload.preferredSkillVersionIds = requestedSkillIds
       }
+      if (agentDetails.agent.taskOnly) {
+        payload.taskOnly = true
+        if (Object.keys(taskOnlySkillParameterValues).length > 0) {
+          payload.skillParameterValues = taskOnlySkillParameterValues
+        }
+      }
 
       const ticket = await repositories.tickets.create({
         tenantId: user.activeTenantId,
         type: 'interaction',
-        title: parsed.title,
+        title: ticketTitle,
         state: 'ready',
         assigneeType: 'agent',
         assigneeId: parsed.assigneeId,
@@ -1695,6 +1745,49 @@ export async function updateAgentOperatorVisibility(input: {
     return ok(updated)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to update agent operator visibility')
+  }
+}
+
+/**
+ * Feladatkör-korlátozás (#199). Bekapcsolva az agent EMBERI felületén nincs chat,
+ * csak egyetlen skill-kötött feladat-indító gomb.
+ *
+ * FONTOS: ez UI-egyszerűsítés, NEM jogosultsági korlát. Az agent képességei
+ * változatlanok, és a nem-emberi belépési pontok (`agent_ask`, csatorna-integrációk,
+ * agent API-kulcs, monitor-eszkaláció, ticket-kommentek) nyitva maradnak.
+ */
+export async function updateAgentTaskOnly(input: { agentId: string; taskOnly: boolean }) {
+  try {
+    const user = await requireTenantRole('admin')
+    const parsed = updateAgentTaskOnlySchema.parse(input)
+    const agent = await repositories.agents.findById(parsed.agentId, user.activeTenantId)
+    if (!agent) return fail('Agent not found')
+    if (agent.taskOnly === parsed.taskOnly) {
+      return ok({ taskOnly: agent.taskOnly })
+    }
+
+    const updated = await repositories.agents.updateTaskOnly(parsed)
+
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.user.id,
+      agentVersion: agent.currentVersion,
+      action: 'agent.task_only',
+      targetType: 'agent',
+      targetId: parsed.agentId,
+      modelUsed: null,
+      inputRef: `from:${agent.taskOnly}`,
+      outputRef: `to:${updated.taskOnly}`,
+      policyDecision: 'allowed',
+      metadata: {
+        taskOnly: updated.taskOnly,
+        scope: 'ui_only',
+      },
+    })
+
+    return ok(updated)
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to update agent task-only mode')
   }
 }
 
@@ -4962,46 +5055,17 @@ export async function syncTestDatabaseFromProduction(input: { confirm: true }) {
   }
 }
 
-const KNOWLEDGE_BASE_TOOLS = ['kb_search', 'kb_list_index', 'kb_get_page'] as const
-
-const WORKSPACE_TOOLS = [
-  'repo_prepare',
-  'file_read', 'file_write', 'create_html', 'file_edit', 'file_list', 'file_glob',
-  'file_search', 'file_delete',
-  'xlsx_read_sheet', 'xlsx_write_cells', 'xlsx_append_rows',
-  'xlsx_create', 'xlsx_format_range', 'xlsx_layout',
-  'pptx_create',
-  'docx_read', 'docx_create', 'pdf_read', 'pdf_create',
-] as const
-
-const SANDBOX_APP_TOOLS = [
-  'sandbox_app.create',
-  'sandbox_app.update_artifact',
-  'sandbox_app.preview',
-  'sandbox_app.export',
-  'sandbox_app.list',
-  'sandbox_app.get',
-] as const
-
-const SANDBOX_VERSION_TOOLS = [
-  'sandbox.commit',
-  'sandbox.request_promotion',
-  'sandbox.snapshot',
-] as const
-
-const BOARD_TOOLS = ['ticket_create', 'board_write'] as const
-
-const GMAIL_TOOLS = [
-  'gmail_search',
-  'gmail_get_message',
-  'mailbox_count',
-  'gmail_create_draft',
-  'gmail_send',
-] as const
-
-const GMAIL_WRITE_TOOLS = ['gmail_create_draft', 'gmail_send'] as const
-
-const HTTP_API_TOOLS = ['http_api_get', 'http_api_get_all', 'http_api_request'] as const
+// Az automatikus connector-linkeléshez szükséges tool-halmazok a broker
+// `TOOL_REQUIREMENTS` mátrixából SZÁMOLNAK (issue #194): ami a brokernek
+// connectort igényel, arra a mentés connectort is linkel. A korábbi kézzel írt
+// listákból több workspace-es tool kimaradt, ezért a bepipált jog mellé nem
+// került connector, és az eszköz némán elhasalt.
+const KNOWLEDGE_BASE_TOOLS = toolsRequiringConnector('knowledge_base')
+const WORKSPACE_TOOLS = toolsRequiringConnector('workspace')
+const BOARD_TOOLS = toolsRequiringConnector('board')
+const GMAIL_TOOLS = toolsRequiringConnector('gmail')
+const GMAIL_WRITE_TOOLS = toolsRequiringConnector('gmail', 'write')
+const HTTP_API_TOOLS = toolsRequiringConnector('http_api')
 
 const CONFIGURABLE_AGENT_TOOLS = NORMAL_TOOL_CAPABILITY_NAMES
 
@@ -5082,9 +5146,7 @@ export async function updateAgentCapabilities(input: {
     // be cross-tenant. A konkrét connectort az adminnak explicit hozzá kell rendelnie.
     const needsHttpApi = HTTP_API_TOOLS.some((t) => enabledSet.has(t))
     const needsWebSearch = enabledSet.has('web_search')
-    const needsBoard = [...SANDBOX_APP_TOOLS, ...SANDBOX_VERSION_TOOLS, ...BOARD_TOOLS].some((t) =>
-      enabledSet.has(t),
-    )
+    const needsBoard = BOARD_TOOLS.some((t) => enabledSet.has(t))
 
     if (agent.role === 'orchestrator' && allTools.length > 0) {
       await repositories.audit.append({

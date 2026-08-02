@@ -34,7 +34,7 @@ export const EXTERNAL_DATA_WARNING =
  * `<<<` → `‹‹‹` (U+2039) és `>>>` → `›››` (U+203A) csere vizuálisan hasonló, de
  * NEM az ASCII határoló, így a becsomagolt adat nem tud „kitörni" a blokkból.
  */
-function escapeFenceSequences(text: string): string {
+export function escapeFenceSequences(text: string): string {
   return text.replace(/<<<|>>>/g, (match) => (match[0] === '<' ? '‹‹‹' : '›››'))
 }
 

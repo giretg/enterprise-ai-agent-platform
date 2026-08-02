@@ -16,6 +16,7 @@ import type {
 } from '@/repositories/interfaces'
 import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
 import { envelopeToolResultForModel } from './tool-result-envelope'
+import { describeOutcomeForUi, type SettledToolOutcome } from './tool-output-contract'
 import type { ToolBrokerInvokeInput } from './tool-broker-types'
 import type { ToolBrokerService } from './tool-broker-service'
 
@@ -116,10 +117,34 @@ function describeResult(result: unknown): string {
   return clip(text, CONTINUATION_RESULT_MAX_CHARS)
 }
 
+/**
+ * issue #195 — a kimenetel HÉTKÖZNAPI mondata a nyers eredmény elé. A puszta
+ * JSON-kivonat („{path: …}") eddig sikernek látszott akkor is, ha az eszköz
+ * 0 sort írt: a kártya és a folytatás-prompt is ezen a szövegen múlik.
+ */
+function describeToolOutcome(
+  outcome: SettledToolOutcome | undefined,
+  outcomeReason: string | null | undefined,
+  result: unknown,
+): string {
+  const body = describeResult(result)
+  const notice = outcome ? describeOutcomeForUi(outcome, outcomeReason ?? null) : null
+  return notice ? `${notice} — ${body}` : body
+}
+
 /** A `resultMeta`-ból (perzisztált végállapot) ugyanaz a szöveg, mint frissen futtatva. */
 function describeResultMeta(resultMeta: unknown): string {
   if (resultMeta && typeof resultMeta === 'object' && 'result' in resultMeta) {
-    return describeResult((resultMeta as { result: unknown }).result)
+    const meta = resultMeta as { result: unknown; outcome?: unknown; outcomeReason?: unknown }
+    const outcome =
+      meta.outcome === 'empty' || meta.outcome === 'partial' || meta.outcome === 'ok'
+        ? meta.outcome
+        : undefined
+    return describeToolOutcome(
+      outcome,
+      typeof meta.outcomeReason === 'string' ? meta.outcomeReason : null,
+      meta.result,
+    )
   }
   return describeResult(resultMeta)
 }
@@ -128,6 +153,28 @@ function describeResultMeta(resultMeta: unknown): string {
 function isFailedInvokeResultMeta(resultMeta: unknown): boolean {
   if (!resultMeta || typeof resultMeta !== 'object' || Array.isArray(resultMeta)) return false
   return (resultMeta as { denied?: unknown }).denied === true
+}
+
+/**
+ * Átmeneti „folyamatban" jelzők: az első approve `invoking: true`-t ír a
+ * pending→approved CAS-szal, a retry `retrying: true`-t a `casClaimRetry`-jal.
+ * Ilyenkor a sor státusza `approved`, de a művelet még nem zárult le — nem
+ * szabad se „kész"-ként folytatni, se újra lefoglalni.
+ */
+function isInvokeInFlightResultMeta(resultMeta: unknown): boolean {
+  if (!resultMeta || typeof resultMeta !== 'object' || Array.isArray(resultMeta)) return false
+  const meta = resultMeta as { retrying?: unknown; invoking?: unknown }
+  return meta.retrying === true || meta.invoking === true
+}
+
+/**
+ * Sikeresen lezárt invoke: `denied === false` (a `invokeApproved` írja).
+ * `null` / hiányzó denied / `invoking` → NEM siker — különben párhuzamos
+ * kattintás vagy crash utáni üres meta hamis „kész"-et adna.
+ */
+function isSettledSuccessResultMeta(resultMeta: unknown): boolean {
+  if (!resultMeta || typeof resultMeta !== 'object' || Array.isArray(resultMeta)) return false
+  return (resultMeta as { denied?: unknown }).denied === false
 }
 
 export class ConsequenceApprovalService {
@@ -253,10 +300,24 @@ export class ConsequenceApprovalService {
     const access = await this.assertActorCanDecide(row, actor)
     if (!access.ok) return access
 
+    // Egy MÁR lefoglalt (folyamatban lévő) első invoke / retry: a művelet se nem
+    // futott le, se nem bukott — csak fut. NEM szabad se „siker"-ként jelenteni
+    // (különben egy futó/soha-le-nem-futott toolt mutatnánk késznek), se újra
+    // lefoglalni. A felhasználó egy pillanat múlva újrapróbálhatja.
+    if (isInvokeInFlightResultMeta(row.resultMeta)) {
+      return { ok: false, reason: 'approval_in_flight' }
+    }
+
     const previouslyFailedInvoke = isFailedInvokeResultMeta(row.resultMeta)
 
     if (row.status === 'approved' && !previouslyFailedInvoke) {
       // Sikeres invoke utáni ismételt kattintás: ne futtassuk újra a toolt.
+      // DE: `resultMeta === null` (régi sor / crash) vagy hiányzó lezárás →
+      // NEM siker. Enélkül a párhuzamos második katt az első invoke közben
+      // „kész"-ként vinné tovább a szálat, miközben a mellékhatás még fut.
+      if (!isSettledSuccessResultMeta(row.resultMeta)) {
+        return { ok: false, reason: 'approval_in_flight' }
+      }
       return {
         ok: true,
         outcome: 'approved',
@@ -266,7 +327,12 @@ export class ConsequenceApprovalService {
     }
     if (row.status === 'approved' && previouslyFailedInvoke) {
       // Emberi jóváhagyás megvan, a tool invoke bukott el — Újrapróbálom újrafuttat.
-      return this.invokeApproved(row, actor)
+      // Egyszer-használat a retry úton is: az első jóváhagyást a pending→approved
+      // CAS védi, a retry-t a casClaimRetry. Két párhuzamos kattintás közül csak
+      // az egyik futtat; a vesztes nem futtat semmit.
+      const claimed = await this.approvals.casClaimRetry(row.id)
+      if (!claimed) return { ok: false, reason: 'approval_in_flight' }
+      return this.invokeApproved(claimed, actor)
     }
     if (row.status !== 'pending') {
       return { ok: false, reason: `approval_${row.status}` }
@@ -278,22 +344,19 @@ export class ConsequenceApprovalService {
       return { ok: false, reason: 'approval_expired' }
     }
 
+    // Egyszer-használat az ELSŐ úton is: a pending→approved CAS mellé azonnal
+    // `invoking: true` kerül. Így a párhuzamos második katt (ami már `approved`
+    // sort lát) nem eshet a siker-ágba null meta mellett — ugyanaz a fail-safe,
+    // mint a retry `retrying` jelzője.
     const claimed = await this.approvals.casUpdateStatus(row.id, 'pending', {
       status: 'approved',
       approvedBy: actor.id,
       approvedAt: new Date(),
+      resultMeta: { invoking: true },
     })
     if (!claimed) return { ok: false, reason: 'approval_already_decided' }
 
-    return this.invokeApproved(
-      {
-        ...row,
-        status: 'approved',
-        approvedBy: actor.id,
-        approvedAt: new Date(),
-      },
-      actor,
-    )
+    return this.invokeApproved(claimed, actor)
   }
 
   /**
@@ -346,9 +409,18 @@ export class ConsequenceApprovalService {
       return { ok: false, reason }
     }
 
+    // issue #195 D1 — a kimenetel a JÓVÁHAGYOTT úton is végigmegy. Épp itt futnak
+    // a mellékhatásos eszközök (levélküldés, írás, API-hívás): ha az `empty` /
+    // `partial` ítélet itt elveszne, a folytatás-prompt és a kártya „lefutott"-at
+    // mondana egy olyan hívásra, ami valójában semmit nem termelt.
     const resultMeta = result.denied
       ? { denied: true, reason: result.reason ?? 'denied' }
-      : { denied: false, result: result.result }
+      : {
+          denied: false,
+          result: result.result,
+          outcome: result.outcome,
+          outcomeReason: result.outcomeReason,
+        }
 
     await this.approvals.casUpdateStatus(row.id, 'approved', {
       status: 'approved',
@@ -371,6 +443,8 @@ export class ConsequenceApprovalService {
         tool: row.toolName,
         denied: result.denied,
         reason: result.denied ? result.reason : undefined,
+        tool_outcome: result.denied ? 'failed' : result.outcome,
+        tool_outcome_reason: result.denied ? null : result.outcomeReason,
       },
     })
 
@@ -381,7 +455,7 @@ export class ConsequenceApprovalService {
       ok: true,
       outcome: 'approved',
       result: result.result,
-      resultSummary: describeResult(result.result),
+      resultSummary: describeToolOutcome(result.outcome, result.outcomeReason, result.result),
     }
   }
 
@@ -415,6 +489,12 @@ export class ConsequenceApprovalService {
       const access = await this.assertActorCanDecide(row, actor)
       if (!access.ok) return access
       if (row.status !== 'approved') return { ok: false, reason: `approval_${row.status}` }
+      // Folyamatban lévő első invoke / retry, vagy lezáratlan (null) meta: nem
+      // szabad „kész"-ként továbbvinni — különben az agent úgy folytatná, mintha
+      // a mellékhatás (levél, POST, törlés) már megtörtént volna.
+      if (isInvokeInFlightResultMeta(row.resultMeta) || row.resultMeta == null) {
+        return { ok: false, reason: 'approval_in_flight' }
+      }
 
       // Egy folytatás EGY beszélgetést visz tovább — kevert szál nem értelmezhető.
       if (conversationId && conversationId !== row.conversationId) {
@@ -423,8 +503,8 @@ export class ConsequenceApprovalService {
       conversationId = row.conversationId
       agentId = row.agentId
 
-      const resultMeta = row.resultMeta as { denied?: boolean; reason?: string } | null
-      const outcome = resultMeta?.denied
+      const resultMeta = row.resultMeta as { denied?: boolean; reason?: string }
+      const outcome = resultMeta.denied
         ? `NEM futott le (${resultMeta.reason ?? 'denied'})`
         : `lefutott — eredmény: ${describeResultMeta(row.resultMeta)}`
       lines.push(

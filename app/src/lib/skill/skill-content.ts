@@ -58,6 +58,12 @@ export const skillRuntimeHintsSchema = z.object({
     .max(SKILL_RUNTIME_HINT_LIMITS.maxToolCalls.max)
     .optional(),
   preferredMode: z.enum(['chat', 'task']).optional(),
+  /**
+   * Csatolható-e fájl a skillhez kötött feladathoz (#199). HIÁNYZÓ ÉRTÉK =
+   * ENGEDETT — a meglévő skillek viselkedése változatlan marad. Bináris döntés:
+   * nincs „kötelező csatolmány" állapot.
+   */
+  allowAttachments: z.boolean().optional(),
 })
 
 export const skillContentSchema = z.object({
@@ -78,6 +84,17 @@ export type SkillParameter = z.infer<typeof skillParameterSchema>
 export type SkillRuntimeHints = z.infer<typeof skillRuntimeHintsSchema>
 export type SkillContent = z.infer<typeof skillContentSchema>
 export type SkillRequirement = z.infer<typeof skillRequirementSchema>
+
+/**
+ * Egy forrás MINDEN csatolmány-kapuhoz (#199): korlátozott feladat-modál, normál
+ * feladat-űrlap, `createBoardTicket` és a workspace-feltöltő endpoint. Hiányzó
+ * érték = engedett — a mező bevezetése előtt írt skillek viselkedése változatlan.
+ */
+export function skillAllowsAttachments(
+  hints: SkillRuntimeHints | null | undefined,
+): boolean {
+  return hints?.allowAttachments !== false
+}
 
 /** Provenience (spec §D6/§D14) — forrás + eredeti hash + formátum, auditáláshoz. */
 export const skillProvenanceSchema = z
@@ -118,6 +135,7 @@ export function clampSkillRuntimeHints(
     maxWallClockMs?: number | null
     maxToolCalls?: number | null
     preferredMode?: 'chat' | 'task' | null
+    allowAttachments?: boolean | null
   } | null
   | undefined,
 ): SkillRuntimeHints | undefined {
@@ -131,17 +149,31 @@ export function clampSkillRuntimeHints(
       ? clampToRange(input.maxToolCalls, SKILL_RUNTIME_HINT_LIMITS.maxToolCalls)
       : undefined
   const preferredMode = input.preferredMode ?? undefined
-  if (maxWallClockMs == null && maxToolCalls == null && preferredMode == null) return undefined
+  // A csatolmány-flag alapértéke ENGEDETT, ezért csak a tiltást tároljuk el.
+  // A `true` elhagyása visszafelé kompatibilis hasht és tisztább diffet ad.
+  const allowAttachments = input.allowAttachments === false ? false : undefined
+  if (
+    maxWallClockMs == null &&
+    maxToolCalls == null &&
+    preferredMode == null &&
+    allowAttachments == null
+  ) {
+    return undefined
+  }
   return {
     ...(maxWallClockMs != null ? { maxWallClockMs } : {}),
     ...(maxToolCalls != null ? { maxToolCalls } : {}),
     ...(preferredMode != null ? { preferredMode } : {}),
+    ...(allowAttachments != null ? { allowAttachments } : {}),
   }
 }
 
 /**
  * Több skill hint aggregálása: wallclock / tool-büdzsé → maximum;
- * preferredMode → 'task' nyer, ha bármelyik kéri.
+ * preferredMode → 'task' nyer, ha bármelyik kéri;
+ * allowAttachments → a LEGSZIGORÚBB nyer: egyetlen tiltó skill is letiltja a
+ * csatolást, különben egy megengedő skill kiválasztásával meg lehetne kerülni a
+ * másikon beállított tiltást.
  */
 export function aggregateSkillRuntimeHints(
   hintsList: Array<SkillRuntimeHints | null | undefined>,
@@ -149,8 +181,10 @@ export function aggregateSkillRuntimeHints(
   let maxWallClockMs: number | undefined
   let maxToolCalls: number | undefined
   let preferredMode: 'chat' | 'task' | undefined
+  let allowAttachments: boolean | undefined
   for (const hints of hintsList) {
     if (!hints) continue
+    if (hints.allowAttachments === false) allowAttachments = false
     if (typeof hints.maxWallClockMs === 'number') {
       maxWallClockMs =
         maxWallClockMs == null
@@ -164,11 +198,19 @@ export function aggregateSkillRuntimeHints(
     if (hints.preferredMode === 'task') preferredMode = 'task'
     else if (hints.preferredMode === 'chat' && preferredMode == null) preferredMode = 'chat'
   }
-  if (maxWallClockMs == null && maxToolCalls == null && preferredMode == null) return undefined
+  if (
+    maxWallClockMs == null &&
+    maxToolCalls == null &&
+    preferredMode == null &&
+    allowAttachments == null
+  ) {
+    return undefined
+  }
   return {
     ...(maxWallClockMs != null ? { maxWallClockMs } : {}),
     ...(maxToolCalls != null ? { maxToolCalls } : {}),
     ...(preferredMode != null ? { preferredMode } : {}),
+    ...(allowAttachments != null ? { allowAttachments } : {}),
   }
 }
 

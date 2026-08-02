@@ -75,6 +75,9 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   // Sensitivity router per-agent felmentés ki/bekapcsolása (§4.7.2).
   'agent.sensitivity_policy',
   'agent.suspended',
+  // Tenant admin: feladatkör-korlátozás ki/bekapcsolása (#199). UI-egyszerűsítés,
+  // nem jogosultsági korlát — az agent képességei változatlanok.
+  'agent.task_only',
   'agent.version',
   'behavior_profile.created',
   'capability.update',

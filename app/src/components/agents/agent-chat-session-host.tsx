@@ -1,6 +1,6 @@
 'use client'
 
-import { useSyncExternalStore } from 'react'
+import { useState, useSyncExternalStore } from 'react'
 import { AgentChatPanel } from '@/components/agents/agent-chat-panel'
 import { AgentChatDockHost } from '@/components/agents/agent-chat-dock'
 import {
@@ -21,9 +21,15 @@ export function useAgentChatSessions() {
 /** Control-plane layout: nyitott / tálcán lévő chat-ablakok túlélik az oldalnavigációt. */
 export function AgentChatSessionHost() {
   const sessions = useAgentChatSessions()
+  const [tileTarget, setTileTarget] = useState<HTMLDivElement | null>(null)
 
   return (
     <>
+      <div
+        ref={setTileTarget}
+        className="pointer-events-none fixed inset-0 z-[200] grid grid-cols-1 gap-3 overflow-y-auto p-3 sm:grid-flow-col sm:auto-cols-fr sm:grid-cols-none sm:grid-rows-1 sm:overflow-hidden sm:p-4"
+        aria-label="Megnyitott agent beszélgetések"
+      />
       {sessions.map((session) => (
         <AgentChatPanel
           key={session.id}
@@ -33,6 +39,7 @@ export function AgentChatSessionHost() {
           canDistillSkill={session.canDistillSkill}
           initialConversationId={session.initialConversationId}
           restoreSignal={session.restoreSignal}
+          tileTarget={tileTarget}
         />
       ))}
       <AgentChatDockHost />

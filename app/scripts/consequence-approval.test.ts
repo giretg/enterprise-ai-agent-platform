@@ -85,6 +85,24 @@ function memoryRepo(): ConsequenceApprovalRepository & {
       rows.set(id, next)
       return next
     },
+    async casClaimRetry(id) {
+      // A valódi repo atomi UPDATE-jét utánozza: csak akkor foglal, ha a sor
+      // `approved` ÉS a korábbi invoke bukott (`resultMeta.denied === true`) ÉS
+      // még NINCS `retrying` kulcs rajta (SQL: `jsonb_exists` — a kulcs léte tilt,
+      // nem csak a `true` érték). A jelzőt RÁTESSZÜK (denied megmarad).
+      const row = rows.get(id)
+      if (!row || row.status !== 'approved') return null
+      const meta = row.resultMeta as { denied?: unknown; retrying?: unknown } | null
+      if (!meta || typeof meta !== 'object') return null
+      if (meta.denied !== true || 'retrying' in meta) return null
+      const next: ConsequenceApproval = {
+        ...row,
+        resultMeta: { ...(meta as object), retrying: true } as ConsequenceApproval['resultMeta'],
+        updatedAt: new Date(),
+      }
+      rows.set(id, next)
+      return next
+    },
   }
 }
 
@@ -249,6 +267,147 @@ async function main() {
     const retry = await service.approve(card.approvalId, actor)
     assert.equal(retry.ok, true)
     assert.equal(invoked.length, 2)
+  })
+
+  // Egyszer-használat a retry úton is: az első jóváhagyást a pending→approved CAS
+  // védi, DE egy elbukott invoke után a sor `approved` marad, és két PÁRHUZAMOS
+  // „Újrapróbálom" (dupla klikk / több szerver-instancia) korábban KÉTSZER futtatta
+  // a mellékhatásos toolt. A `casClaimRetry` atomi claimjével már csak az egyik győz.
+  await test('párhuzamos Újrapróbálom: a mellékhatásos tool NEM fut kétszer', async () => {
+    const invoked: ToolBrokerInvokeInput[] = []
+    // failTimes: 1 → az ELSŐ (initial) invoke bukik; utána minden retry sikeres lenne.
+    const { service } = buildService({ invoked, failTimes: 1 })
+    const card = await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
+    const first = await service.approve(card.approvalId, actor)
+    assert.equal(first.ok, false, 'az első invoke bukik (failTimes)')
+    assert.equal(invoked.length, 1)
+
+    // Két egyidejű retry ugyanarra a jóváhagyásra.
+    const [a, b] = await Promise.all([
+      service.approve(card.approvalId, actor),
+      service.approve(card.approvalId, actor),
+    ])
+    const oks = [a, b].filter((r) => r.ok)
+    const inflight = [a, b].filter((r) => !r.ok && r.reason === 'approval_in_flight')
+    assert.equal(oks.length, 1, 'pontosan egy retry győz')
+    assert.equal(inflight.length, 1, 'a vesztes approval_in_flight-ot kap')
+    assert.equal(invoked.length, 2, 'összesen egy initial + egy retry invoke — NEM kettő retry')
+  })
+
+  // A folyamatban lévő (retrying) jelzővel ellátott sor NEM eshet a siker-ágba:
+  // az `approve` ne jelentsen „lefutott"-at egy épp futó / soha-le-nem-futott toolra,
+  // és ne is futtassa újra. (Spec-review finding (c).)
+  await test('folyamatban lévő retry: approve nem jelent hamis sikert és nem futtat', async () => {
+    const invoked: ToolBrokerInvokeInput[] = []
+    const { service, repo } = buildService({ invoked })
+    const card = await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
+    // Kézzel az „approved + folyamatban lévő retry" állapotba állítjuk.
+    const row = repo.rows.get(card.approvalId)!
+    row.status = 'approved'
+    row.resultMeta = { denied: true, reason: 'broker_boom', failed: true, retrying: true } as never
+    const result = await service.approve(card.approvalId, actor)
+    assert.equal(result.ok, false)
+    if (!result.ok) assert.equal(result.reason, 'approval_in_flight')
+    assert.equal(invoked.length, 0, 'folyamatban lévő retry alatt SOHA nem indul újabb invoke')
+  })
+
+  // Az ELSŐ approve úton is: amíg az invoke fut (`invoking` / null meta), a
+  // párhuzamos második katt NEM jelenthet hamis sikert — különben az agent
+  // úgy folytatná a szálat, mintha a mellékhatás már kész lenne.
+  await test('folyamatban lévő első invoke: approve nem jelent hamis sikert', async () => {
+    const invoked: ToolBrokerInvokeInput[] = []
+    const { service, repo } = buildService({ invoked })
+    const card = await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
+    const row = repo.rows.get(card.approvalId)!
+    row.status = 'approved'
+    row.resultMeta = { invoking: true } as never
+    const result = await service.approve(card.approvalId, actor)
+    assert.equal(result.ok, false)
+    if (!result.ok) assert.equal(result.reason, 'approval_in_flight')
+    assert.equal(invoked.length, 0)
+  })
+
+  await test('lezáratlan (null) resultMeta: approve nem jelent hamis sikert', async () => {
+    const invoked: ToolBrokerInvokeInput[] = []
+    const { service, repo } = buildService({ invoked })
+    const card = await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
+    const row = repo.rows.get(card.approvalId)!
+    row.status = 'approved'
+    row.resultMeta = null
+    const result = await service.approve(card.approvalId, actor)
+    assert.equal(result.ok, false)
+    if (!result.ok) assert.equal(result.reason, 'approval_in_flight')
+    assert.equal(invoked.length, 0)
+  })
+
+  await test('getApprovedContinuation: folyamatban lévő invoke-ra nem indul folytatás', async () => {
+    const { service, repo } = buildService()
+    const card = await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
+    const row = repo.rows.get(card.approvalId)!
+    row.status = 'approved'
+    row.resultMeta = { invoking: true } as never
+    const res = await service.getApprovedContinuation([card.approvalId], actor)
+    assert.equal(res.ok, false)
+    if (!res.ok) assert.equal(res.reason, 'approval_in_flight')
+  })
+
+  await test('approve: a pending→approved CAS invoking jelzőt ír (egyszer-használat az első úton)', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const invoked: ToolBrokerInvokeInput[] = []
+    const repo = memoryRepo()
+    const audits: Array<{ action: string }> = []
+    const slowBroker = {
+      invoke: async (input: ToolBrokerInvokeInput) => {
+        invoked.push(input)
+        await gate
+        return {
+          denied: false,
+          trust: 'trusted' as const,
+          result: { path: 'out.xlsx' },
+          resultMeta: {},
+          latencyMs: 1,
+        }
+      },
+    } as unknown as ToolBrokerService
+    const service = new ConsequenceApprovalService(
+      repo,
+      {
+        findByIdForTenant: async () =>
+          ({
+            id: 'conv-1',
+            tenantId: 'tenant-1',
+            createdById: 'user-1',
+            agentId: 'agent-1',
+          }) as never,
+      } as unknown as ConversationRepository,
+      {
+        findById: async () => ({ id: 'agent-1', tenantId: 'tenant-1' }) as never,
+      } as unknown as AgentRepository,
+      {
+        append: async (data: { action: string }) => {
+          audits.push(data)
+          return {} as never
+        },
+      } as unknown as AuditRepository,
+      slowBroker,
+    )
+    const card = await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
+    const firstPromise = service.approve(card.approvalId, actor)
+    // Amíg az első invoke a gate-en vár, a meta invoking kell legyen.
+    await new Promise((r) => setTimeout(r, 10))
+    const mid = repo.rows.get(card.approvalId)!
+    assert.equal(mid.status, 'approved')
+    assert.equal((mid.resultMeta as { invoking?: boolean }).invoking, true)
+    const second = await service.approve(card.approvalId, actor)
+    assert.equal(second.ok, false)
+    if (!second.ok) assert.equal(second.reason, 'approval_in_flight')
+    release()
+    const first = await firstPromise
+    assert.equal(first.ok, true)
+    assert.equal(invoked.length, 1)
   })
 
   await test('reject: nem hív invoke-ot', async () => {
@@ -515,6 +674,24 @@ async function main() {
       assert.ok(result.resultSummary.length < 1000, 'a kártya szövege korlátos marad')
       assert.match(result.resultSummary, /rövidítve/)
     }
+  })
+
+  await test('a jóváhagyott, de ÜRES eredmény nem látszik sikeresnek', async () => {
+    // issue #195 — épp a jóváhagyott úton futnak a mellékhatásos eszközök. Ha a
+    // kimenetel itt elveszne, a kártya és a folytatás-prompt „lefutott"-at
+    // mondana egy olyan xlsx_create-re, ami 0 munkalapot hozott létre.
+    const { service } = buildService({ brokerResult: { path: 'ures.xlsx', sheets: 0 } })
+    const card = await service.createFromBlocked({ invoke: baseInvoke, tenantId: 'tenant-1' })
+    const result = await service.approve(card.approvalId, actor)
+    assert.equal(result.ok, true)
+    if (!result.ok || result.outcome !== 'approved') return
+    assert.match(result.resultSummary, /nem született eredmény/)
+
+    // A folytatás-prompt sem mondhat mást, mint a kártya.
+    const cont = await service.getApprovedContinuation([card.approvalId], actor)
+    assert.equal(cont.ok, true)
+    if (!cont.ok) return
+    assert.match(cont.continuation.prompt, /nem született eredmény/)
   })
 
   await test('szerződés-sértő eszköz-kimenet a jóváhagyás után sem megy át némán', async () => {

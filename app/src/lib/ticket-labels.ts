@@ -23,6 +23,32 @@ export const TICKET_STATE_TONE: Record<
   rejected: 'danger',
 }
 
+/**
+ * Hétköznapi magyarázat minden állapothoz — a badge önmagában nem mondja meg,
+ * hogy most kin a sor. Ez a mondat kerül a feladat fejlécébe.
+ */
+export const TICKET_STATE_HINTS: Record<string, string> = {
+  backlog: 'Még nincs elindítva — a sorban várakozik.',
+  ready: 'Indításra kész: az AI munkatárs bármikor nekiláthat.',
+  in_progress: 'Az AI munkatárs éppen dolgozik rajta.',
+  awaiting_human: 'Rajtad a sor: nézd át és hagyd jóvá vagy dobd vissza.',
+  needs_info: 'Pontosítást kér — válaszolj a feladat-szálban.',
+  approved: 'Jóváhagyva — a rendszer zárja a feladatot.',
+  done: 'Elkészült, nincs több teendő.',
+  rejected: 'Visszadobtad — javítás után újraindítható.',
+}
+
+/** Badge-tónus → pötty/keret osztályok (fejléc, idővonal). */
+export const TICKET_TONE_DOT_CLASS: Record<
+  'neutral' | 'success' | 'warning' | 'danger',
+  string
+> = {
+  neutral: 'bg-ink-faint',
+  success: 'bg-sage',
+  warning: 'bg-honey',
+  danger: 'bg-coral',
+}
+
 export const PROPOSAL_FIELD_LABELS: Record<string, string> = {
   supplier: 'Szállító',
   invoiceNumber: 'Számlaszám',

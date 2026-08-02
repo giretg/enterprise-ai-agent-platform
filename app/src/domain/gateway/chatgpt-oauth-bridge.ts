@@ -150,11 +150,249 @@ export type ChatGptOAuthTokens = {
   accountId: string
 }
 
+export type ChatGptOAuthConcurrencyDiagnostic = {
+  limit: number
+  queueWaitMs: number
+  queueDepthAtEnqueue: number
+}
+
+type ChatGptOAuthConcurrencyLease = {
+  diagnostic: ChatGptOAuthConcurrencyDiagnostic
+  release: () => void
+}
+
+type ChatGptOAuthConcurrencyWaiter = {
+  queuedAt: number
+  queueDepthAtEnqueue: number
+  resolve: (lease: ChatGptOAuthConcurrencyLease) => void
+}
+
+type ChatGptOAuthConcurrencyLane = {
+  active: number
+  waiters: ChatGptOAuthConcurrencyWaiter[]
+}
+
+const concurrencyGlobal = globalThis as typeof globalThis & {
+  __enterpriseAiChatGptOAuthConcurrencyLanes?: Map<string, ChatGptOAuthConcurrencyLane>
+}
+
+// `globalThis`-on tartjuk, hogy Next.js fejlesztői HMR és az eltérő szerver-
+// bundle-ök se hozzanak létre külön sort ugyanabban a Node folyamatban.
+const concurrencyLanes =
+  concurrencyGlobal.__enterpriseAiChatGptOAuthConcurrencyLanes ??=
+    new Map<string, ChatGptOAuthConcurrencyLane>()
+
+export function chatGptOAuthMaxConcurrency(
+  env: Record<string, string | undefined> = process.env,
+): number {
+  const raw = env.CHATGPT_OAUTH_MAX_CONCURRENCY?.trim()
+  const parsed = raw ? Number.parseInt(raw, 10) : 1
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 1
+}
+
+function leaseFor(params: {
+  accountId: string
+  lane: ChatGptOAuthConcurrencyLane
+  limit: number
+  queuedAt: number
+  queueDepthAtEnqueue: number
+}): ChatGptOAuthConcurrencyLease {
+  let released = false
+  return {
+    diagnostic: {
+      limit: params.limit,
+      queueWaitMs: Date.now() - params.queuedAt,
+      queueDepthAtEnqueue: params.queueDepthAtEnqueue,
+    },
+    release: () => {
+      if (released) return
+      released = true
+
+      const next = params.lane.waiters.shift()
+      if (next) {
+        next.resolve(leaseFor({
+          accountId: params.accountId,
+          lane: params.lane,
+          limit: params.limit,
+          queuedAt: next.queuedAt,
+          queueDepthAtEnqueue: next.queueDepthAtEnqueue,
+        }))
+        return
+      }
+
+      params.lane.active--
+      if (params.lane.active === 0) concurrencyLanes.delete(params.accountId)
+    },
+  }
+}
+
+async function acquireChatGptOAuthConcurrency(
+  accountId: string,
+): Promise<ChatGptOAuthConcurrencyLease> {
+  const limit = chatGptOAuthMaxConcurrency()
+  const lane = concurrencyLanes.get(accountId) ?? { active: 0, waiters: [] }
+  concurrencyLanes.set(accountId, lane)
+  const queuedAt = Date.now()
+
+  if (lane.active < limit) {
+    lane.active++
+    return leaseFor({ accountId, lane, limit, queuedAt, queueDepthAtEnqueue: 0 })
+  }
+
+  return new Promise<ChatGptOAuthConcurrencyLease>((resolve) => {
+    const queueDepthAtEnqueue = lane.waiters.length + 1
+    lane.waiters.push({ queuedAt, queueDepthAtEnqueue, resolve })
+  })
+}
+
 export type BridgeResult = {
   content: string
   toolCalls?: GatewayToolCall[]
   usage: { promptTokens: number; completionTokens: number }
   model: string
+  oauthConcurrency: ChatGptOAuthConcurrencyDiagnostic
+}
+
+/**
+ * Diagnosztikai összefoglaló üres OAuth-válaszhoz. Szándékosan csak protokoll-
+ * metaadatot tartalmaz: prompt, token és modell-szöveg nem kerülhet a logba.
+ */
+export type ChatGptOAuthEmptyResponseDiagnostic = {
+  concurrency: ChatGptOAuthConcurrencyDiagnostic
+  request: {
+    /** A POST body UTF-8 mérete; nem maga a body. */
+    serializedChars: number
+    instructionChars: number
+    inputItemCount: number
+    byRole: Record<'system' | 'user' | 'assistant' | 'tool', { count: number; chars: number }>
+    assistantToolCallCount: number
+    toolDefinitions: { count: number; serializedChars: number }
+    /** Csak az utolsó tool-eredmény méretét + nevét őrizzük meg. */
+    lastTool: { name: string; chars: number; callIdPresent: boolean } | null
+  }
+  http: {
+    status: number
+    statusText: string
+    mimeType: string | null
+    requestId: string | null
+  }
+  sse: {
+    eventTypeCounts: Record<string, number>
+    parseErrorCount: number
+    textDeltaCount: number
+    textDeltaChars: number
+    toolCallCount: number
+    outputItemTypeCounts: Record<string, number>
+    terminal: Record<string, string | number | boolean | null>
+  }
+}
+
+function requestProfile(params: {
+  messages: GatewayMessage[]
+  instructions: string
+  inputItemCount: number
+  responseTools: unknown[]
+  serializedBody: string
+}): ChatGptOAuthEmptyResponseDiagnostic['request'] {
+  const byRole: ChatGptOAuthEmptyResponseDiagnostic['request']['byRole'] = {
+    system: { count: 0, chars: 0 },
+    user: { count: 0, chars: 0 },
+    assistant: { count: 0, chars: 0 },
+    tool: { count: 0, chars: 0 },
+  }
+  let assistantToolCallCount = 0
+  let lastTool: ChatGptOAuthEmptyResponseDiagnostic['request']['lastTool'] = null
+
+  for (const message of params.messages) {
+    const text = message.role === 'assistant' ? message.content ?? '' : message.content
+    byRole[message.role].count++
+    byRole[message.role].chars += text.length
+    if (message.role === 'assistant') assistantToolCallCount += message.toolCalls?.length ?? 0
+    if (message.role === 'tool') {
+      lastTool = {
+        name: message.toolName,
+        chars: message.content.length,
+        callIdPresent: Boolean(message.toolCallId),
+      }
+    }
+  }
+
+  return {
+    serializedChars: Buffer.byteLength(params.serializedBody, 'utf8'),
+    instructionChars: params.instructions.length,
+    inputItemCount: params.inputItemCount,
+    byRole,
+    assistantToolCallCount,
+    toolDefinitions: {
+      count: params.responseTools.length,
+      serializedChars: JSON.stringify(params.responseTools).length,
+    },
+    lastTool,
+  }
+}
+
+/** Az upstream sikeres HTTP-válasza nem adott értelmezhető agent-kimenetet. */
+export class ChatGptOAuthEmptyContentError extends Error {
+  constructor(readonly diagnostic: ChatGptOAuthEmptyResponseDiagnostic) {
+    super('ChatGPT OAuth backend returned empty content')
+    this.name = 'ChatGptOAuthEmptyContentError'
+  }
+}
+
+/**
+ * A Responses backend explicit `response.failed` eseményt küldött. Ez nem
+ * tartalmi hiba: a Gateway fallback/retry rétegének szolgáltatói kiesésként
+ * kell kezelnie.
+ */
+export class ChatGptOAuthResponseFailedError extends Error {
+  constructor(
+    readonly diagnostic: ChatGptOAuthEmptyResponseDiagnostic,
+    readonly code: string | null,
+  ) {
+    super(`ChatGPT OAuth provider failed: ${code ?? 'unknown_response_failure'}`)
+    this.name = 'ChatGptOAuthResponseFailedError'
+  }
+}
+
+export function chatGptOAuthDiagnostic(error: unknown): ChatGptOAuthEmptyResponseDiagnostic | undefined {
+  if (
+    error instanceof ChatGptOAuthEmptyContentError ||
+    error instanceof ChatGptOAuthResponseFailedError
+  ) {
+    return error.diagnostic
+  }
+  return undefined
+}
+
+function incrementCounter(counters: Record<string, number>, raw: unknown): void {
+  const key = typeof raw === 'string' && raw ? raw.slice(0, 120) : 'unknown'
+  counters[key] = (counters[key] ?? 0) + 1
+}
+
+/** Csak a hiba okához szükséges, nem érzékeny terminális mezőket emeli ki. */
+function terminalSseFields(event: Record<string, unknown>): Record<string, string | number | boolean | null> {
+  const response = event.response
+  const error = event.error
+  const incomplete = response && typeof response === 'object'
+    ? (response as Record<string, unknown>).incomplete_details
+    : undefined
+  const responseError = response && typeof response === 'object'
+    ? (response as Record<string, unknown>).error
+    : undefined
+
+  const read = (source: unknown, key: string): string | number | boolean | null => {
+    if (!source || typeof source !== 'object') return null
+    const value = (source as Record<string, unknown>)[key]
+    return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean' ? value : null
+  }
+
+  return {
+    eventType: typeof event.type === 'string' ? event.type : null,
+    responseStatus: read(response, 'status'),
+    incompleteReason: read(incomplete, 'reason'),
+    errorCode: read(error, 'code') ?? read(responseError, 'code'),
+    errorType: read(error, 'type') ?? read(responseError, 'type'),
+  }
 }
 
 /** A JWT `exp` (másodperc) kiolvasása lejárat-ellenőrzéshez. */
@@ -238,13 +476,17 @@ function reasoningSummaryDelta(evt: { type?: string; delta?: string }): string |
  * `onReasoningDelta` meg van adva, a reasoning-summary deltákat oldalcsatornán
  * továbbadja (a yield-elt szöveg csak a válasz-token marad).
  */
-export async function* callChatGptOAuthStream(input: {
+type ChatGptOAuthStreamInput = {
   tokens: ChatGptOAuthTokens
   messages: GatewayMessage[]
   model: string
   reasoningEffort?: ReasoningEffort
   onReasoningDelta?: (delta: string) => void
-}): AsyncGenerator<string, void, unknown> {
+}
+
+async function* callChatGptOAuthStreamUnlocked(
+  input: ChatGptOAuthStreamInput,
+): AsyncGenerator<string, void, unknown> {
   const model = resolveModel(input.model)
   const { instructions, input: responsesInput } = toResponsesRequest(input.messages)
 
@@ -314,12 +556,23 @@ export async function* callChatGptOAuthStream(input: {
   }
 }
 
+export async function* callChatGptOAuthStream(
+  input: ChatGptOAuthStreamInput,
+): AsyncGenerator<string, void, unknown> {
+  const lease = await acquireChatGptOAuthConcurrency(input.tokens.accountId)
+  try {
+    yield* callChatGptOAuthStreamUnlocked(input)
+  } finally {
+    lease.release()
+  }
+}
+
 /**
  * Egy modellhívás a ChatGPT Responses backenden át. SSE streamet olvas, a
  * `response.output_text.delta` darabokat összefűzi, a `response.completed`
  * eseményből veszi a token-használatot.
  */
-export async function callChatGptOAuth(input: {
+type ChatGptOAuthCallInput = {
   tokens: ChatGptOAuthTokens
   messages: GatewayMessage[]
   model: string
@@ -331,7 +584,12 @@ export async function callChatGptOAuth(input: {
    * nem-streamelő tool-loopban is (az egész SSE-t inkrementálisan olvassuk).
    */
   onReasoningDelta?: (delta: string) => void
-}): Promise<BridgeResult> {
+}
+
+async function callChatGptOAuthUnlocked(
+  input: ChatGptOAuthCallInput,
+  oauthConcurrency: ChatGptOAuthConcurrencyDiagnostic,
+): Promise<BridgeResult> {
   const model = resolveModel(input.model)
   const { instructions, input: responsesInput } = toResponsesRequest(input.messages)
   const responseToolNameToOriginal = new Map<string, string>()
@@ -349,6 +607,29 @@ export async function callChatGptOAuth(input: {
       }
     }) ?? []
 
+  const requestBody = {
+    model,
+    instructions,
+    input: responsesInput,
+    stream: true,
+    store: false,
+    reasoning: { effort: input.reasoningEffort ?? 'low' },
+    ...(responseTools.length
+      ? {
+          tools: responseTools,
+          tool_choice: 'auto',
+        }
+      : {}),
+  }
+  const serializedRequestBody = JSON.stringify(requestBody)
+  const profile = requestProfile({
+    messages: input.messages,
+    instructions,
+    inputItemCount: responsesInput.length,
+    responseTools,
+    serializedBody: serializedRequestBody,
+  })
+
   const res = await fetch(RESPONSES_URL, {
     method: 'POST',
     headers: {
@@ -360,20 +641,7 @@ export async function callChatGptOAuth(input: {
       originator: 'codex_cli_rs',
       session_id: randomUUID(),
     },
-    body: JSON.stringify({
-      model,
-      instructions,
-      input: responsesInput,
-      stream: true,
-      store: false,
-      reasoning: { effort: input.reasoningEffort ?? 'low' },
-      ...(responseTools.length
-        ? {
-            tools: responseTools,
-            tool_choice: 'auto',
-          }
-        : {}),
-    }),
+    body: serializedRequestBody,
   })
 
   if (!res.ok) {
@@ -387,24 +655,29 @@ export async function callChatGptOAuth(input: {
   let promptTokens = 0
   let completionTokens = 0
   const toolCalls: GatewayToolCall[] = []
+  const eventTypeCounts: Record<string, number> = {}
+  const outputItemTypeCounts: Record<string, number> = {}
+  let parseErrorCount = 0
+  let textDeltaCount = 0
+  let textDeltaChars = 0
+  let terminal: Record<string, string | number | boolean | null> = {}
 
   const handleLine = (line: string) => {
     if (!line.startsWith('data:')) return
     const payload = line.slice(5).trim()
     if (!payload || payload === '[DONE]') return
-    let evt: {
-      type?: string
-      delta?: string
-      item?: { type?: string; name?: string; arguments?: string; call_id?: string; id?: string }
-      response?: { usage?: { input_tokens?: number; output_tokens?: number } }
-    }
+    let evt: Record<string, unknown>
     try {
       evt = JSON.parse(payload)
     } catch {
+      parseErrorCount++
       return
     }
+    incrementCounter(eventTypeCounts, evt.type)
     if (evt.type === 'response.output_text.delta' && typeof evt.delta === 'string') {
       content += evt.delta
+      textDeltaCount++
+      textDeltaChars += evt.delta.length
     }
     // Reasoning-summary delta: érkezéskor, a válasz-token/tool-hívás előtt megy ki.
     if (input.onReasoningDelta) {
@@ -412,14 +685,18 @@ export async function callChatGptOAuth(input: {
       if (reasoning) input.onReasoningDelta(reasoning)
     }
     // A modell egy kész tool hívása: function_call output item.
-    if (evt.type === 'response.output_item.done' && evt.item?.type === 'function_call') {
-      const name = evt.item.name
+    const item = evt.item && typeof evt.item === 'object' ? evt.item as Record<string, unknown> : undefined
+    if (evt.type === 'response.output_item.done' && item) {
+      incrementCounter(outputItemTypeCounts, item.type)
+    }
+    if (evt.type === 'response.output_item.done' && item?.type === 'function_call') {
+      const name = item.name
       if (typeof name === 'string' && name) {
         const resolvedName = responseToolNameToOriginal.get(name) ?? name
         let parsed: Record<string, unknown> = {}
-        if (typeof evt.item.arguments === 'string' && evt.item.arguments.trim()) {
+        if (typeof item.arguments === 'string' && item.arguments.trim()) {
           try {
-            const obj = JSON.parse(evt.item.arguments)
+            const obj = JSON.parse(item.arguments)
             if (obj && typeof obj === 'object' && !Array.isArray(obj)) {
               parsed = obj as Record<string, unknown>
             }
@@ -428,15 +705,20 @@ export async function callChatGptOAuth(input: {
           }
         }
         toolCalls.push({
-          id: evt.item.call_id || evt.item.id || `call_${toolCalls.length}`,
+          id: typeof item.call_id === 'string' ? item.call_id : typeof item.id === 'string' ? item.id : `call_${toolCalls.length}`,
           name: resolvedName,
           input: parsed,
         })
       }
     }
-    if (evt.type === 'response.completed' && evt.response?.usage) {
-      promptTokens = evt.response.usage.input_tokens ?? 0
-      completionTokens = evt.response.usage.output_tokens ?? 0
+    if (evt.type === 'response.completed' || evt.type === 'response.failed' || evt.type === 'response.incomplete') {
+      terminal = terminalSseFields(evt)
+    }
+    const response = evt.response && typeof evt.response === 'object' ? evt.response as Record<string, unknown> : undefined
+    const usage = response?.usage && typeof response.usage === 'object' ? response.usage as Record<string, unknown> : undefined
+    if (evt.type === 'response.completed' && usage) {
+      promptTokens = typeof usage.input_tokens === 'number' ? usage.input_tokens : 0
+      completionTokens = typeof usage.output_tokens === 'number' ? usage.output_tokens : 0
     }
   }
 
@@ -457,10 +739,35 @@ export async function callChatGptOAuth(input: {
   }
   if (buffer) handleLine(buffer)
 
+  const diagnostic = (): ChatGptOAuthEmptyResponseDiagnostic => ({
+    concurrency: oauthConcurrency,
+    request: profile,
+    http: {
+      status: res.status,
+      statusText: res.statusText,
+      mimeType: res.headers.get('content-type'),
+      requestId: res.headers.get('x-request-id') ?? res.headers.get('request-id'),
+    },
+    sse: {
+      eventTypeCounts,
+      parseErrorCount,
+      textDeltaCount,
+      textDeltaChars,
+      toolCallCount: toolCalls.length,
+      outputItemTypeCounts,
+      terminal,
+    },
+  })
+
+  if (terminal.eventType === 'response.failed') {
+    const code = typeof terminal.errorCode === 'string' ? terminal.errorCode : null
+    throw new ChatGptOAuthResponseFailedError(diagnostic(), code)
+  }
+
   // Tool-only válasznál a content üres — csak akkor hiba, ha sem szöveg, sem
   // tool hívás nem jött vissza.
   if (!content.trim() && toolCalls.length === 0) {
-    throw new Error('ChatGPT OAuth backend returned empty content')
+    throw new ChatGptOAuthEmptyContentError(diagnostic())
   }
 
   return {
@@ -468,5 +775,17 @@ export async function callChatGptOAuth(input: {
     ...(toolCalls.length ? { toolCalls } : {}),
     usage: { promptTokens, completionTokens },
     model,
+    oauthConcurrency,
+  }
+}
+
+export async function callChatGptOAuth(
+  input: ChatGptOAuthCallInput,
+): Promise<BridgeResult> {
+  const lease = await acquireChatGptOAuthConcurrency(input.tokens.accountId)
+  try {
+    return await callChatGptOAuthUnlocked(input, lease.diagnostic)
+  } finally {
+    lease.release()
   }
 }

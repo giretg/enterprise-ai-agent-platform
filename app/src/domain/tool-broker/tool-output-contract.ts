@@ -28,7 +28,7 @@
 import { z, type ZodType } from 'zod'
 
 import type { TrustClass } from './tool-broker-types'
-import { envelopeToolResultForModel } from './tool-result-envelope'
+import { envelopeToolResultForModel, escapeFenceSequences } from './tool-result-envelope'
 
 /**
  * D1 — minden tool-eredmény kimenetele. Az `empty` és a `partial` NEM hiba,
@@ -348,14 +348,16 @@ export function buildToolModelText(params: {
 
   let truncationReason: string | null = null
   if (gated.truncated) {
-    truncationReason = params.fullDataRef
-      ? `az eredmény ${gated.originalBytes} bájt volt, a modellbe csak ${limit} bájt fér — a teljes tartalom itt érhető el: ${params.fullDataRef}`
+    // A hivatkozás is a burkolaton KÍVÜLRE kerül, ezért ugyanúgy semlegesítendő.
+    const fullRef = params.fullDataRef ? sanitizeOutcomeNotice(params.fullDataRef) : null
+    truncationReason = fullRef
+      ? `az eredmény ${gated.originalBytes} bájt volt, a modellbe csak ${limit} bájt fér — a teljes tartalom itt érhető el: ${fullRef}`
       : `az eredmény ${gated.originalBytes} bájt volt, a modellbe csak ${limit} bájt fér — a lenti tartalom csonkolt`
     notices.push(
-      `${TOOL_OUTPUT_TRUNCATED_MARKER} bytes=${gated.originalBytes} limit=${limit} full=${params.fullDataRef ?? 'n/a'} — ` +
+      `${TOOL_OUTPUT_TRUNCATED_MARKER} bytes=${gated.originalBytes} limit=${limit} full=${fullRef ?? 'n/a'} — ` +
         `Az eszköz eredménye nem fért be egészben. ${
-          params.fullDataRef
-            ? `A teljes tartalom a munkaterületen van: ${params.fullDataRef} — onnan dolgozz tovább, NE olvasd vissza darabokban.`
+          fullRef
+            ? `A teljes tartalom a munkaterületen van: ${fullRef} — onnan dolgozz tovább, NE olvasd vissza darabokban.`
             : 'A hiányzó rész NEM látszik lentebb — ne következtess a teljes adatra ebből a részletből.'
         }`,
     )
@@ -420,6 +422,33 @@ export function buildToolOutcomeChannels(params: {
 }
 
 /**
+ * A kimenetel-közlésbe kerülő DINAMIKUS szövegtöredék semlegesítése.
+ *
+ * A közlés a burkolaton KÍVÜL, platform-szövegként megy a modellhez — a
+ * `reason` és az `effect` mezői viszont a tool KIMENETÉBŐL származnak, tehát
+ * lehetnek külső, támadó által írt adatok (feltöltött dokumentum fájlneve, egy
+ * connector hibaüzenete, munkalap-név, találati figyelmeztetés). Enélkül a
+ * burkolat (issue #97) megkerülhető lenne: elég egy sortörésekkel és
+ * `<<<END_EXTERNAL_UNTRUSTED_DATA>>>`-szerű szekvenciával megtűzdelt fájlnév.
+ *
+ * Ezért: a határoló-szekvenciák escape-elve, a szöveg EGY sorba fogva (a
+ * beékelt „új utasítás-blokk" így nem tud önálló sornak látszani), és
+ * hosszban korlátozva.
+ */
+const NOTICE_FRAGMENT_MAX_CHARS = 500
+
+export function sanitizeOutcomeNotice(text: string): string {
+  const singleLine = escapeFenceSequences(text)
+    // Sortörés és egyéb vezérlőkarakter → szóköz: a közlés egyetlen sor marad.
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
+  return singleLine.length > NOTICE_FRAGMENT_MAX_CHARS
+    ? `${singleLine.slice(0, NOTICE_FRAGMENT_MAX_CHARS)}…`
+    : singleLine
+}
+
+/**
  * WP-6 — a kimenetel HÉTKÖZNAPI NYELVEN. Nem `outcome: empty`, hanem
  * „Az eszköz lefutott, de egyetlen sort sem talált" — a modellnek is, a
  * felületnek is ez a mondat megy.
@@ -432,14 +461,18 @@ export function describeOutcomeForModel(
   if (outcome === 'ok') return null
   if (outcome === 'empty') {
     return (
-      `FIGYELEM — AZ ESZKÖZ NEM TERMELT EREDMÉNYT: ${reason ?? 'az eszköz lefutott, de nem született eredmény'}. ` +
+      `FIGYELEM — AZ ESZKÖZ NEM TERMELT EREDMÉNYT: ${sanitizeOutcomeNotice(reason ?? 'az eszköz lefutott, de nem született eredmény')}. ` +
       'Ez NEM sikeres elvégzés: ne állítsd a felhasználónak, hogy kész van. ' +
       'Vagy próbáld más bemenettel/eszközzel, vagy mondd el neki érthetően, hogy nem született eredmény és miért.'
     )
   }
-  const measured = effect ? ` Eddig mért hatás: ${effect.amount} ${effect.unit}${effect.target ? ` (${effect.target})` : ''}.` : ''
+  const measured = effect
+    ? ` Eddig mért hatás: ${effect.amount} ${sanitizeOutcomeNotice(effect.unit)}${
+        effect.target ? ` (${sanitizeOutcomeNotice(effect.target)})` : ''
+      }.`
+    : ''
   return (
-    `FIGYELEM — AZ ESZKÖZ CSAK RÉSZBEN VÉGZETT: ${reason ?? 'a művelet egy része kimaradt'}.${measured} ` +
+    `FIGYELEM — AZ ESZKÖZ CSAK RÉSZBEN VÉGZETT: ${sanitizeOutcomeNotice(reason ?? 'a művelet egy része kimaradt')}.${measured} ` +
     'Ne kezeld teljesnek: vagy pótold a hiányzó részt, vagy mondd el a felhasználónak, mi maradt ki.'
   )
 }
@@ -450,8 +483,11 @@ export function describeOutcomeForUi(
   reason: string | null,
 ): string | null {
   if (outcome === 'ok') return null
-  if (outcome === 'empty') return `nem született eredmény — ${reason ?? 'az eszköz üres eredményt adott'}`
-  return `csak részben készült el — ${reason ?? 'a művelet egy része kimaradt'}`
+  const detail = sanitizeOutcomeNotice(reason ?? '')
+  if (outcome === 'empty') {
+    return `nem született eredmény — ${detail || 'az eszköz üres eredményt adott'}`
+  }
+  return `csak részben készült el — ${detail || 'a művelet egy része kimaradt'}`
 }
 
 /**

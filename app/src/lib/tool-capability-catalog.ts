@@ -1,80 +1,26 @@
+import { TOOL_GROUP_ORDER, TOOL_NAMES, TOOL_REGISTRY } from '@/domain/tool-broker/tool-registry'
+
 export type ToolCapabilityGroup = {
   label: string
   tools: readonly string[]
 }
 
-export const NORMAL_TOOL_CAPABILITY_GROUPS = [
-  {
-    label: 'Tudásbázis (KB / OKF)',
-    tools: ['kb_search', 'kb_list_index', 'kb_get_page'],
+/**
+ * A grantolható broker-eszközök csoportjai — a kanonikus `TOOL_REGISTRY`-ből
+ * GENERÁLVA (issue #194, D6). Korábban ez egy kézzel karbantartott lista volt,
+ * ami külön tudott elsodródni a valóságtól: egy új tool működhetett úgy, hogy
+ * a tenant-admin sosem látta a jogosultság-szerkesztőben, tehát sosem tudta
+ * megadni rá a jogot. Az ilyen tool a felhasználó felé „nem működik, és nem
+ * mondja meg, miért" tünettel jelent meg.
+ */
+export const NORMAL_TOOL_CAPABILITY_GROUPS: readonly ToolCapabilityGroup[] = TOOL_GROUP_ORDER.flatMap(
+  (label) => {
+    const tools = TOOL_NAMES.filter(
+      (name) => TOOL_REGISTRY[name].capabilityGroup === label,
+    ).map((name) => TOOL_REGISTRY[name].capability)
+    return tools.length > 0 ? [{ label, tools }] : []
   },
-  {
-    label: 'Fájlkezelés (Workspace)',
-    tools: [
-      'repo_prepare',
-      'file_read', 'file_write', 'file_edit', 'file_list',
-      'file_glob', 'file_search', 'file_delete',
-      'reconcile_records',
-    ],
-  },
-  {
-    label: 'Excel (XLSX)',
-    tools: [
-      'xlsx_read_sheet', 'xlsx_write_cells', 'xlsx_append_rows',
-      'xlsx_create', 'xlsx_format_range', 'xlsx_layout',
-    ],
-  },
-  {
-    label: 'PowerPoint (PPTX)',
-    tools: ['pptx_create'],
-  },
-  {
-    label: 'Dokumentumok',
-    tools: ['docx_read', 'docx_create', 'pdf_read', 'pdf_create', 'create_html', 'document_read'],
-  },
-  {
-    label: 'Ingatlan-nyilvántartás',
-    tools: ['tulajdoni_lap_parse', 'tulajdoni_lap_egyeztetes'],
-  },
-  {
-    label: 'Mini-app',
-    tools: [
-      'sandbox_app.create', 'sandbox_app.update_artifact',
-      'sandbox_app.preview', 'sandbox_app.export',
-      'sandbox_app.list', 'sandbox_app.get',
-    ],
-  },
-  {
-    label: 'Sandbox verziókezelés',
-    tools: ['sandbox.commit', 'sandbox.request_promotion', 'sandbox.snapshot'],
-  },
-  {
-    label: 'Email (Gmail)',
-    tools: [
-      'gmail_search', 'gmail_get_message', 'mailbox_count',
-      'gmail_create_draft', 'gmail_send',
-    ],
-  },
-  {
-    label: 'Agent együttműködés',
-    tools: [
-      'agent_catalog', 'agent_resolve', 'user_directory',
-      'agent_ask', 'ticket_create', 'board_write',
-    ],
-  },
-  {
-    label: 'HTTP API',
-    tools: ['http_api_get', 'http_api_get_all', 'http_api_request'],
-  },
-  {
-    label: 'Webes kutatás',
-    tools: ['web_search', 'web_research_request'],
-  },
-  {
-    label: 'Projektmemória',
-    tools: ['memory_propose'],
-  },
-] as const satisfies readonly ToolCapabilityGroup[]
+)
 
 export const CLOSED_ROLE_CAPABILITY_GROUPS = [
   {
@@ -99,10 +45,10 @@ export const CLOSED_ROLE_CAPABILITY_GROUPS = [
   },
 ] as const satisfies readonly ToolCapabilityGroup[]
 
-export const PLAYBOOK_CAPABILITY_GROUPS = [
+export const PLAYBOOK_CAPABILITY_GROUPS: readonly ToolCapabilityGroup[] = [
   ...NORMAL_TOOL_CAPABILITY_GROUPS,
   ...CLOSED_ROLE_CAPABILITY_GROUPS,
-] as const satisfies readonly ToolCapabilityGroup[]
+]
 
 export function flattenToolCapabilityGroups(groups: readonly ToolCapabilityGroup[]): string[] {
   return [...new Set(groups.flatMap((group) => group.tools))]

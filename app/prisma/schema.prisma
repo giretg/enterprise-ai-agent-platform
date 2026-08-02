@@ -825,6 +825,12 @@ model Agent {
   // nem látják az agentet a listákban és a detail oldalon. A futás/dispatch
   // NEM függ ettől — csak a UI/API láthatóság. Csak tenant admin írhatja.
   hiddenFromOperators           Boolean     @default(false) @map("hidden_from_operators")
+  // Feladatkör-korlátozás (#199): az agent felületén nincs chat, csak egyetlen
+  // skill-kötött feladat-indító gomb. UI-EGYSZERŰSÍTÉS, NEM jogosultsági korlát —
+  // az agent képességei változatlanok, és a nem-emberi belépési pontok
+  // (`agent_ask`, csatorna, agent API-kulcs, ticket-komment) nyitva maradnak.
+  // Csak tenant admin írhatja, minden váltás auditált (`agent.task_only`).
+  taskOnly                      Boolean     @default(false) @map("task_only")
   // Agent-hozzáférési gráf kapcsolói (Access-Policy §agent-scope, C4 kompatibilitási
   // alapérték). `inboundRestricted`: az agent FELÉ tartó view/address kapcsolat csak
   // explicit `AgentAccessGrant`-tal engedett. `outboundRestricted`: az agentBŐL induló

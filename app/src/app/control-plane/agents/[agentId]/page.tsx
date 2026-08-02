@@ -13,6 +13,8 @@ import { UpdateInstructionForm } from '@/components/agents/update-instruction-fo
 import { UpdatePersonaForm } from '@/components/agents/update-persona-form'
 import { SensitivityPolicyForm } from '@/components/agents/sensitivity-policy-form'
 import { OperatorVisibilityForm } from '@/components/agents/operator-visibility-form'
+import { TaskOnlyForm } from '@/components/agents/task-only-form'
+import { AgentTaskButton } from '@/components/agents/agent-task-button'
 import { AgentAvatarUpload } from '@/components/agents/agent-avatar-upload'
 import { UpdateModelConfigForm } from '@/components/agents/update-model-config-form'
 import { UpdateSelfEvolutionProfileForm } from '@/components/agents/update-self-evolution-profile-form'
@@ -21,6 +23,7 @@ import { AssignExistingConnectorForm } from '@/components/agents/assign-existing
 import { ApiConnectorList } from '@/components/agents/api-connector-list'
 import { AgentKnowledgeBasePanel } from '@/components/agents/agent-knowledge-base-panel'
 import { AgentCapabilitiesPanel } from '@/components/agents/agent-capabilities-panel'
+import { AgentToolAccessDiagnostics } from '@/components/agents/agent-tool-access-diagnostics'
 import { AgentSkillsPanel } from '@/components/agents/agent-skills-panel'
 import type { AgentSkillRow, AssignableSkill } from '@/app/actions/skills'
 import { WebSearchPolicyCard } from '@/components/agents/web-search-policy-card'
@@ -158,20 +161,26 @@ export default async function AgentDetailPage({
         <div className="estate-rule my-4" />
         <p className="text-sm leading-relaxed text-ink-soft">{persona.trait}</p>
         <div className="mt-4 flex flex-wrap items-center gap-3">
-          <AgentChatButton
-            agent={{
-              id: agent.id,
-              name: agent.name,
-              status: agent.status,
-              avatarUrl: agent.avatarUrl,
-              personaNickname: agent.personaNickname,
-              personaGreeting: agent.personaGreeting,
-              personaTrait: agent.personaTrait,
-            }}
-            canDistillSkill={isAdmin}
-            initialConversationId={initialConversationId}
-            autoOpen={openChat}
-          />
+          {/* #199 — korlátozott feladatkörű agentnél nincs chat, csak egyetlen
+              skill-kötött feladat-indító gomb. */}
+          {agent.taskOnly ? (
+            <AgentTaskButton agentId={agent.id} />
+          ) : (
+            <AgentChatButton
+              agent={{
+                id: agent.id,
+                name: agent.name,
+                status: agent.status,
+                avatarUrl: agent.avatarUrl,
+                personaNickname: agent.personaNickname,
+                personaGreeting: agent.personaGreeting,
+                personaTrait: agent.personaTrait,
+              }}
+              canDistillSkill={isAdmin}
+              initialConversationId={initialConversationId}
+              autoOpen={openChat}
+            />
+          )}
           <AgentMiniAppsLink agentId={agent.id} />
           <span className="text-sm text-ink-faint">
             {roleInfo.title} — {roleInfo.description}
@@ -409,6 +418,8 @@ export default async function AgentDetailPage({
                 hiddenFromOperators={agent.hiddenFromOperators}
               />
 
+              <TaskOnlyForm agentId={agent.id} taskOnly={agent.taskOnly} />
+
               <UpdateModelConfigForm
                 agentId={agent.id}
                 providers={modelProviders}
@@ -471,11 +482,14 @@ export default async function AgentDetailPage({
               </Card>
 
               {governance && (
-                <AgentCapabilitiesPanel
-                  agentId={agent.id}
-                  currentCapabilities={governance.capabilities}
-                  isOrchestrator={agent.role === 'orchestrator'}
-                />
+                <>
+                  <AgentToolAccessDiagnostics report={governance.toolAccess} />
+                  <AgentCapabilitiesPanel
+                    agentId={agent.id}
+                    currentCapabilities={governance.capabilities}
+                    isOrchestrator={agent.role === 'orchestrator'}
+                  />
+                </>
               )}
 
               {isAdmin && (

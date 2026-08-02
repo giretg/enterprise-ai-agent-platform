@@ -9,7 +9,13 @@
  *  - Feature-kapcsoló (D7/E4): kikapcsolt tenant → nincs engedély (fail-closed).
  */
 import assert from 'node:assert/strict'
-import { callChatGptOAuth } from '../src/domain/gateway/chatgpt-oauth-bridge'
+import {
+  callChatGptOAuth,
+  chatGptOAuthMaxConcurrency,
+  ChatGptOAuthEmptyContentError,
+  ChatGptOAuthResponseFailedError,
+} from '../src/domain/gateway/chatgpt-oauth-bridge'
+import { classifyProviderError, isFallbackEligible } from '../src/domain/gateway/fallback-chain'
 import {
   StreamingSensitiveTextRedactor,
   redactSensitiveText,
@@ -99,6 +105,123 @@ async function main() {
       assert.equal(result.content, 'Szia')
     } finally {
       globalThis.fetch = originalFetch
+    }
+  })
+
+  await check('bridge: üres válasz esetén érzékeny adat nélküli SSE-diagnosztika kerül a hibába', async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () =>
+      sseResponse([
+        'data: {"type":"response.created","response":{"status":"in_progress"}}',
+        'data: {"type":"response.output_item.done","item":{"type":"message","content":[{"type":"refusal","refusal":"nem naplózható"}]}}',
+        'data: {"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}',
+      ])) as typeof fetch
+    try {
+      await assert.rejects(
+        () => callChatGptOAuth({
+          tokens: { accessToken: 'a', accountId: 'b' },
+          messages: [{ role: 'user', content: 'bizalmas prompt nem kerülhet logba' }],
+          model: 'gpt-5.5',
+        }),
+        (error: unknown) => {
+          assert.ok(error instanceof ChatGptOAuthEmptyContentError)
+          assert.deepEqual(error.diagnostic.sse.eventTypeCounts, {
+            'response.created': 1,
+            'response.output_item.done': 1,
+            'response.incomplete': 1,
+          })
+          assert.deepEqual(error.diagnostic.sse.outputItemTypeCounts, { message: 1 })
+          assert.equal(error.diagnostic.sse.terminal.incompleteReason, 'max_output_tokens')
+          assert.deepEqual(error.diagnostic.request.byRole, {
+            system: { count: 0, chars: 0 },
+            user: { count: 1, chars: 34 },
+            assistant: { count: 0, chars: 0 },
+            tool: { count: 0, chars: 0 },
+          })
+          assert.equal(error.diagnostic.request.lastTool, null)
+          assert.ok(error.diagnostic.request.serializedChars > 35)
+          assert.equal(JSON.stringify(error.diagnostic).includes('nem naplózható'), false)
+          assert.equal(JSON.stringify(error.diagnostic).includes('bizalmas prompt'), false)
+          return true
+        },
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await check('bridge: response.failed server_error szolgáltatói, fallback-képes hibává válik', async () => {
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () =>
+      sseResponse([
+        'data: {"type":"response.created"}',
+        'data: {"type":"response.failed","response":{"status":"failed","error":{"code":"server_error","type":"server_error"}}}',
+      ])) as typeof fetch
+    try {
+      await assert.rejects(
+        () => callChatGptOAuth({
+          tokens: { accessToken: 'a', accountId: 'b' },
+          messages: [{ role: 'user', content: 'teszt' }],
+          model: 'gpt-5.5',
+        }),
+        (error: unknown) => {
+          assert.ok(error instanceof ChatGptOAuthResponseFailedError)
+          assert.equal(error.code, 'server_error')
+          assert.equal(classifyProviderError(error), 'provider_unavailable')
+          assert.equal(isFallbackEligible(classifyProviderError(error)), true)
+          return true
+        },
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await check('bridge: azonos OAuth-fiok modellhivasai FIFO sorban, egyesevel futnak', async () => {
+    const originalFetch = globalThis.fetch
+    const originalLimit = process.env.CHATGPT_OAUTH_MAX_CONCURRENCY
+    process.env.CHATGPT_OAUTH_MAX_CONCURRENCY = '1'
+
+    let fetchCalls = 0
+    let releaseFirstFetch!: () => void
+    const firstFetchGate = new Promise<void>((resolve) => {
+      releaseFirstFetch = resolve
+    })
+    globalThis.fetch = (async () => {
+      fetchCalls++
+      if (fetchCalls === 1) await firstFetchGate
+      return sseResponse([
+        'data: {"type":"response.output_text.delta","delta":"ok"}',
+        'data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}',
+      ])
+    }) as typeof fetch
+
+    try {
+      assert.equal(chatGptOAuthMaxConcurrency(), 1)
+      const input = {
+        tokens: { accessToken: 'a', accountId: 'kozos-fiok' },
+        messages: [{ role: 'user' as const, content: 'teszt' }],
+        model: 'gpt-5.5',
+      }
+      const first = callChatGptOAuth(input)
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      assert.equal(fetchCalls, 1)
+
+      const second = callChatGptOAuth(input)
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      assert.equal(fetchCalls, 1, 'a masodik hivas nem erhet el a fetch-ig az elso alatt')
+
+      releaseFirstFetch()
+      const [firstResult, secondResult] = await Promise.all([first, second])
+      assert.equal(fetchCalls, 2)
+      assert.equal(firstResult.oauthConcurrency.queueDepthAtEnqueue, 0)
+      assert.equal(secondResult.oauthConcurrency.queueDepthAtEnqueue, 1)
+      assert.equal(secondResult.oauthConcurrency.limit, 1)
+    } finally {
+      globalThis.fetch = originalFetch
+      if (originalLimit === undefined) delete process.env.CHATGPT_OAUTH_MAX_CONCURRENCY
+      else process.env.CHATGPT_OAUTH_MAX_CONCURRENCY = originalLimit
+      releaseFirstFetch()
     }
   })
 

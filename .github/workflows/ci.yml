@@ -109,6 +109,7 @@ jobs:
           npm run test:dispatch-cycle-endpoint
           npm run test:conversation-session
           npm run test:agent-interaction-ticket
+          npm run test:tool-registry-drift
           npm run test:tool-trust
           npm run test:tool-output-contract
           npm run test:consequence-gate
@@ -117,6 +118,7 @@ jobs:
           npm run test:turn-continuation
           npm run test:agent-ask-deadline
           npm run test:skill-runtime-followup
+          npm run test:agent-task-only
           npm run test:debug-log-export
           npm run test:prompt-assembler
           npm run test:prompt-cache

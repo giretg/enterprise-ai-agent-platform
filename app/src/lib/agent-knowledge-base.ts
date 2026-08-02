@@ -1,6 +1,7 @@
 import type { Agent, Connector, PrismaClient } from '@prisma/client'
 import { prisma } from '@/lib/db'
 import { upsertConnectorByTypeName } from '@/lib/connector-upsert'
+import { toolsRequiringConnector } from '@/domain/tool-broker/tool-broker-authorizer'
 
 export function knowledgeBaseConnectorName(agentId: string): string {
   return `kb:${agentId}`
@@ -73,7 +74,7 @@ export async function ensureAgentKnowledgeBase(
 
   // kb_search + a KB-v3 OKF-navigációs toolok (§9.2/§9.3): a keresés utáni
   // többkörös bejárás (kb_list_index → kb_get_page) elsődleges retrieval-út (D-I).
-  for (const toolName of ['kb_search', 'kb_list_index', 'kb_get_page'] as const) {
+  for (const toolName of toolsRequiringConnector('knowledge_base')) {
     await db.capability.upsert({
       where: { agentId_toolName: { agentId: agent.id, toolName } },
       create: { agentId: agent.id, toolName, allowed: true },

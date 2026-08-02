@@ -11,6 +11,10 @@ import { prisma } from '@/lib/db'
 import type { SkillReadiness } from '@/lib/skill/skill-readiness'
 import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
 import { repositories } from '@/repositories/postgres'
+import {
+  buildAgentToolAccessReport,
+  type AgentToolAccessReport,
+} from '@/domain/tool-broker/tool-access-diagnostics'
 
 const DEFAULT_MEMORY_PROJECT_KEY = '__general__'
 
@@ -62,6 +66,11 @@ export type AgentDetailPageData = {
   governance: {
     capabilities: Awaited<ReturnType<typeof repositories.toolBroker.findCapabilitiesForAgent>>
     connectors: Awaited<ReturnType<typeof repositories.toolBroker.findConnectorsForAgent>>
+    /**
+     * issue #194, WP-5 — „látja, de nincs joga" / „van joga, de nem látja".
+     * A MÁR betöltött capability-sorokból számol, nincs extra DB-kör.
+     */
+    toolAccess: AgentToolAccessReport
   } | null
   modelPolicy: Awaited<ReturnType<typeof services.platformSettings.getModelPolicy>> | null
   connectorCatalog: Awaited<ReturnType<typeof services.provisioning.listCatalog>> | null
@@ -323,7 +332,11 @@ export async function loadAgentDetailPageData(
     const [[capabilities, connectors], policy, catalog, profiles, assignedWithReadiness, skillCatalog] =
       adminLoads
 
-    governance = { capabilities, connectors }
+    governance = {
+      capabilities,
+      connectors,
+      toolAccess: buildAgentToolAccessReport(agentId, capabilities),
+    }
     modelPolicy = policy
     connectorCatalog = catalog
     behaviorProfiles = profiles.map((p) => ({

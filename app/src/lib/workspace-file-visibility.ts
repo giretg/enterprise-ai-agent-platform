@@ -87,3 +87,25 @@ export function workspaceFileLink(baseUrl: string, path: string): string {
   if (isHtmlWorkspaceFile(path)) params.set('disposition', 'inline')
   return `${baseUrl}?${params}`
 }
+
+/**
+ * Az agent olykor maga ír Markdown-linket egy workspace-fájl nevére
+ * (például `[Riport megnyitása](riport.html)`). Ilyenkor a relatív href
+ * nem a workspace-re mutatna, ezért csak ismert fájlnév esetén feloldjuk.
+ */
+export function workspaceFileLinkForReference(
+  href: string | undefined,
+  workspaceFiles: string[],
+  baseUrl: string,
+): string | null {
+  if (!href) return null
+
+  let reference: string
+  try {
+    reference = decodeURIComponent(href).replace(/^\.\//, '')
+  } catch {
+    return null
+  }
+
+  return workspaceFiles.includes(reference) ? workspaceFileLink(baseUrl, reference) : null
+}
