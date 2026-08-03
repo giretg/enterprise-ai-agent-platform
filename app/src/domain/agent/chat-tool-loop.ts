@@ -80,6 +80,13 @@ import {
   evaluateTurnCostSignals,
   resolveTurnCostThresholds,
 } from './turn-cost-signals'
+import {
+  STUCK_THINKING_FALLBACK_MESSAGE,
+  STUCK_THINKING_RETRY_NOTICE,
+  detectStuckFinalAnswer,
+} from './stuck-final-answer'
+
+export { STUCK_THINKING_FALLBACK_MESSAGE }
 
 /**
  * A chat-vetület a kanonikus regiszterből (issue #194) képződik: `surfaces`
@@ -138,7 +145,7 @@ Ha külső adatra (email, fájl, más agent) vagy ticketre / fájlműveletre van
 - Formátum-választás: ha valaki KIFEJEZETTEN „mini appot” / „mini-appot” kér, EGYÉRTELMŰ — ez mindig a sandbox_app.* eszközcsaládot jelenti, ne kérdezz vissza. Ugyanígy MINI-APP-ot készíts akkor is, ha önálló, böngészőben MEGNYITHATÓ nézetet / weboldalt / interaktív riportot / dashboardot vagy VIZUÁLIS bemutatót (pl. színpaletta, színezett/formázott HTML-táblázat) kérnek — a sandbox_app.* eszközökkel (sandbox_app.create → sandbox_app.update_artifact activate=true → sandbox_app.preview, a linket add vissza). A platform ezt a funkciót mindenütt „mini-app”-ként nevezi — a válaszodban is ezt a szót használd, ne „sandbox app”-ot vagy „appot” önmagában. Excelt (xlsx_*) CSAK akkor, ha kifejezetten Excel / xlsx / számolótábla a kérés; PDF-et (pdf_create) csak ha nyomtatható PDF a cél; PowerPoint prezentációt / bemutatót / slide-decket (pptx_create) ha diákból álló előadás a cél; Word dokumentumot / .docx-et (docx_create) ha szerkeszthető Word-fájl a cél. A puszta „táblázat" szó önmagában NEM jelent Excelt — a cél dönt (megjelenítés → mini-app, számolás/adatszerkesztés → xlsx, prezentáció → pptx, Word-dokumentum → docx).
 - Mini-appok kezelése: „milyen mini-appjaid vannak” / „listázd a mini-appjaidat” kérdésnél MINDIG hívd a sandbox_app.list-et — SOHA ne mondd, hogy nincs rá eszközöd. Ha egy MEGLÉVŐ mini-appot kell megnézni vagy módosítani, előbb a sandbox_app.list-tel (vagy ha az appId ismert, közvetlenül) azonosítsd, a sandbox_app.get-tel olvasd be a jelenlegi HTML-t, csak utána hívd a sandbox_app.update_artifact-ot a frissített, TELJES HTML-lel (ez felülír, nem foltoz). Új mini-app létrehozása előtt egy gyors sandbox_app.list-tel nézd meg, nincs-e már hasonló, hogy ne gyártsd le feleslegesen kétszer.
 - Linkek (pl. sandbox_app.preview previewUrl-je, ticket/dokumentum hivatkozás) SOSE nyers URL-ként jelenjenek meg a válaszban — mindig Markdown linkként add vissza, pl. \`[Mini-app megnyitása](https://...)\`, hogy a felület kattinthatóvá tudja alakítani.
-- HTTP API (http_api_get / http_api_get_all): a connector endpoint-katalógusában szereplő query/path paramétereket használd — ne találj ki mezőneveket. Nagy listához http_api_get_all; időszak/összehasonlítás/top-N: aggregált vagy report végpont + period paramok, ne dumpold a teljes listát és ne helyettesíts más proxy-metrikával. Nagy archive → tool_result_extract (ne chunkolt file_read).
+- HTTP API (http_api_get / http_api_get_all): a connector endpoint-katalógusában szereplő query/path paramétereket használd — ne találj ki mezőneveket. Nagy listához http_api_get_all; időszak/összehasonlítás/top-N: aggregált vagy report végpont + period paramok, ne dumpold a teljes listát és ne helyettesíts más proxy-metrikával. Nagy archive → tool_result_extract (ne chunkolt file_read). GitHub Contents (/repos/…/contents/…): a platform a fájl base64 tartalmát automatikusan UTF-8 szövegre dekódolja (encoding:"utf-8") — NE próbáld kézzel dekódolni, és NE állítsd hogy „nem tudod olvasni" csak azért, mert eredetileg base64 volt. Kód-kérdésnél előbb a fájllistát kérd le (/repos/…/git/trees/<branch>?recursive=1 egyetlen hívás), abból válaszd ki a 1–3 releváns fájlt, és csak azokat olvasd be.
 - Ha nincs több eszközszükséglet, válaszolj természetes magyar szöveggel.
 `
 
@@ -1319,6 +1326,8 @@ export async function runAgentToolLoop(params: {
   // Az utolsó kör asszisztens-szövege — ez a részeredmény, amit akkor is ki
   // tudunk adni, ha a záró összefoglaló hívás nem fér bele a türelmi időbe.
   let lastAssistantText = ''
+  /** Stuck-thinking guard: egyszer újrapróbálunk, másodjára fallback üzenet. */
+  let stuckThinkingRetried = false
 
   /** A döntéshozó megkérdezése az aktuális állapottal (kör eleje / tool-hívás előtt). */
   const decideContinuation = (turn: number) =>
@@ -1433,7 +1442,42 @@ export async function runAgentToolLoop(params: {
 
     if (calls.length === 0) {
       const cleaned = stripToolArtifacts(content)
-      if (cleaned) return { content: cleaned, toolCallCount, deniedCount, status: 'completed' }
+      if (cleaned) {
+        const stuck = detectStuckFinalAnswer(cleaned)
+        if (stuck.stuck) {
+          logger.warn(
+            {
+              turn,
+              reason: stuck.reason,
+              chars: cleaned.length,
+              alreadyRetried: stuckThinkingRetried,
+              ...(params.context.conversationId
+                ? { conversationId: params.context.conversationId }
+                : {}),
+              ...(params.context.agentTurnId ? { agentTurnId: params.context.agentTurnId } : {}),
+            },
+            'agent.tool_loop.stuck_final_answer',
+          )
+          if (!stuckThinkingRetried && turn < maxTurns - 1) {
+            stuckThinkingRetried = true
+            // A monológot NEM tesszük vissza az előzménybe — sem egészben, sem
+            // rövidítve: a saját töprengése a legerősebb minta, amit folytatni fog.
+            // Az eddigi tool-eredmények megmaradnak, tehát nem kell újra lekérnie.
+            messages.push({
+              role: 'system',
+              content: STUCK_THINKING_RETRY_NOTICE,
+            })
+            continue
+          }
+          return {
+            content: STUCK_THINKING_FALLBACK_MESSAGE,
+            toolCallCount,
+            deniedCount,
+            status: 'completed',
+          }
+        }
+        return { content: cleaned, toolCallCount, deniedCount, status: 'completed' }
+      }
 
       if (turn < maxTurns - 1) {
         messages.push({

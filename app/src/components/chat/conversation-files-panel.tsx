@@ -108,17 +108,21 @@ export function ConversationFilesPanel({ conversationId, panelRef, onFilesChange
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center justify-between px-4 py-2 text-xs font-medium text-ink-soft hover:text-ink"
+        aria-expanded={open}
+        className="flex w-full items-center justify-between gap-2 px-4 py-2 text-xs font-medium text-ink-soft transition-colors hover:bg-night-2/60 hover:text-ink"
       >
-        <span>
-          Workspace fájlok
+        <span className="flex min-w-0 items-center gap-1.5">
+          <span aria-hidden>📁</span>
+          Fájlok a beszélgetésben
           {visibleFiles.length > 0 && (
-            <span className="ml-1.5 rounded-full bg-sage/20 px-1.5 py-0.5 text-[10px] font-semibold text-sage-deep">
+            <span className="rounded-full bg-sage/20 px-1.5 py-0.5 text-[10px] font-semibold text-sage-deep">
               {visibleFiles.length}
             </span>
           )}
         </span>
-        <span className="text-ink-faint">{open ? '▲' : '▼'}</span>
+        <span className="shrink-0 text-[11px] text-ink-faint">
+          {open ? 'elrejt ▴' : visibleFiles.length > 0 ? 'megnyit ▾' : 'feltöltés ▾'}
+        </span>
       </button>
 
       {open && (

@@ -19,6 +19,7 @@ import {
   parseGitHubRepositoryAccessConfig,
   type GitHubRepositoryAccess,
 } from './github-repository-access'
+import { decodeGitHubContentsBody } from './decode-github-contents-body'
 import {
   buildHttpApiClientErrorHint,
   buildHttpApiOversizedResponseHint,
@@ -152,6 +153,15 @@ const IDEMPOTENCY_HEADER_LOWER = 'idempotency-key'
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/** Az átalakított body mérete karakterben; körkörös/serializálhatatlan alaknál a nyers hossz. */
+function safeJsonLength(value: unknown, fallback: number): number {
+  try {
+    return JSON.stringify(value)?.length ?? fallback
+  } catch {
+    return fallback
+  }
 }
 
 /**
@@ -787,11 +797,18 @@ export class HttpApiClient {
       // Sikeres / parse-olható JSON: a teljes body megmarad (get_all + archive + extract).
       // A maxResponseChars soft jelzés: ne dumpold a modell kontextusába.
       try {
-        body = JSON.parse(text)
-        if (overLimit) {
+        const parsed: unknown = JSON.parse(text)
+        body = decodeGitHubContentsBody(parsed)
+        // A méret-kaput a TÉNYLEGESEN visszaadott alakra mérjük. A GitHub base64
+        // fájltartalma ~33%-kal nagyobb a dekódolt szövegnél, a könyvtárlistából
+        // pedig URL-mezőket hagytunk el — a nyers hosszal mérve egy hiánytalanul
+        // átadott forrásfájl is „túl nagynak”, a szerződés felé `partial`-nak
+        // látszana, és a modell csonkoltnak hinné, amit egészben megkapott.
+        const effectiveChars = body === parsed ? text.length : safeJsonLength(body, text.length)
+        if (effectiveChars > max) {
           truncated = true
           oversizedSoftHint = buildHttpApiOversizedResponseHint({
-            originalChars: text.length,
+            originalChars: effectiveChars,
             maxChars: max,
           })
         }

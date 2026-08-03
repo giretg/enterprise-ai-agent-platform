@@ -552,6 +552,88 @@ async function main() {
     }
   })
 
+  await test('runtime: GitHub Contents base64 body → utf-8 dekódolva', async () => {
+    const markdown = '# Riportok\n\nElérhető riportok listája.\n'
+    const payload = {
+      type: 'file',
+      encoding: 'base64',
+      content: Buffer.from(markdown, 'utf8').toString('base64'),
+      path: 'docs/felhasznaloi-kezikonyv.md',
+      name: 'felhasznaloi-kezikonyv.md',
+      sha: 'deadbeef',
+      download_url: 'https://raw.githubusercontent.com/o/r/main/docs/f.md',
+    }
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify(payload), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })) as typeof fetch
+    try {
+      const config = parseHttpApiConfig({
+        baseUrl: 'https://api.github.com',
+        auth: { scheme: 'bearer' },
+        endpoints: [{ method: 'GET', path: '/repos/:owner/:repo/contents/*' }],
+        restrictToEndpoints: false,
+      })
+      const client = new HttpApiClient(config, 'gh_token')
+      const res = await client.request({
+        method: 'GET',
+        path: '/repos/o/r/contents/docs/felhasznaloi-kezikonyv.md',
+      })
+      assert.equal(res.ok, true)
+      const body = res.body as Record<string, unknown>
+      assert.equal(body.encoding, 'utf-8')
+      assert.equal(body.content, markdown)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await test('runtime: dekódolt forrásfájl nem kap csonkolás-jelzést a base64 hossza miatt', async () => {
+    // A base64 ~33%-kal hosszabb: a nyers válasz átlépi a limitet, a dekódolt
+    // fájl viszont bőven alatta marad — a modellnek nem szabad azt hinnie,
+    // hogy csonka forráskódot kapott.
+    const source = 'export function riport() {\n  return 42\n}\n'.repeat(200)
+    const payload = {
+      type: 'file',
+      encoding: 'base64',
+      content: Buffer.from(source, 'utf8').toString('base64'),
+      path: 'app/src/riport.ts',
+      name: 'riport.ts',
+      sha: 'cafebabe',
+      download_url: 'https://raw.githubusercontent.com/o/r/main/app/src/riport.ts',
+    }
+    const rawJson = JSON.stringify(payload)
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = (async () =>
+      new Response(rawJson, {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })) as typeof fetch
+    try {
+      const config = parseHttpApiConfig({
+        baseUrl: 'https://api.github.com',
+        auth: { scheme: 'bearer' },
+        // A nyers válasz fölötte, a dekódolt tartalom alatta van a limitnek.
+        maxResponseChars: Math.floor((rawJson.length + source.length) / 2),
+        endpoints: [{ method: 'GET', path: '/repos/:owner/:repo/contents/*' }],
+      })
+      assert.ok(rawJson.length > (config.maxResponseChars ?? 0), 'a nyers válasz limit fölött van')
+      const client = new HttpApiClient(config, 'gh_token')
+      const res = await client.request({
+        method: 'GET',
+        path: '/repos/o/r/contents/app/src/riport.ts',
+      })
+      assert.equal(res.ok, true)
+      assert.equal(res.truncated, undefined)
+      assert.equal(res.hint, undefined)
+      assert.equal((res.body as Record<string, unknown>).content, source)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
   await test('runtime: hívó által beadott platform-injektált header → platform_injected_header', async () => {
     const config = parseHttpApiConfig({
       baseUrl: 'https://crm.example/api/v1',

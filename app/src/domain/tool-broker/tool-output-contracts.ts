@@ -161,10 +161,19 @@ export const TOOL_OUTPUT_CONTRACTS: Record<ToolName, ToolOutputContract> = {
       if (Array.isArray(body) && body.length === 0) return 'a válasz üres listát tartalmazott'
       return null
     },
-    partial: (output) =>
-      bool(output, 'truncated') === true
+    // A `truncated` két esetet fed: (a) a törzs tényleg csonkult (ilyenkor a body
+    // maga is `truncated: true` + `preview`), (b) a válasz nagy volt, de HIÁNYTALAN.
+    // A kettőt külön kell közölni: ha a modellnek azt mondjuk, hogy csonkolt adatot
+    // kapott, akkor egy hiánytalanul átadott fájlt/listát is újra és újra visszaolvas
+    // — vagy nem mer válaszolni belőle.
+    partial: (output) => {
+      if (bool(output, 'truncated') !== true) return null
+      const body = rec(output).body
+      const bodyCut = bool(body, 'truncated') === true
+      return bodyCut
         ? 'a válasz nem fért be egészben, ezért csonkolva jött vissza'
-        : null,
+        : 'a válasz nagy volt (a törzs hiánytalan) — a lényeget szűrve emeld ki, ne dumpold a kontextusba'
+    },
   },
   http_api_get_all: {
     outputSchema: z.looseObject({

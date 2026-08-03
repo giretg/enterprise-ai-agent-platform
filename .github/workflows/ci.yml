@@ -95,6 +95,8 @@ jobs:
           npm run test:tool-loop
           npm run test:turn-cost
           npm run test:http-api
+          npm run test:decode-github-contents
+          npm run test:stuck-final-answer
           npm run test:http-api-per-agent-key
           npm run test:connector-template
           npm run test:provisioning
