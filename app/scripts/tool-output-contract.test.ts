@@ -301,6 +301,47 @@ async function main() {
     assert.match(verdict.reason ?? '', /nem adott mért hatás-összegzést/)
   })
 
+  await test('http_api_get_all: első oldal hibája `partial`, nem üres nyilvántartás', () => {
+    // Trigger: a connector első oldala 500/403/rossz arrayPath → ok:false, items:[].
+    // A régi emptiness itemCount===0-ra empty-t adott, mielőtt a partial „ne egyeztess"
+    // üzenete futott volna — a modell/gépi fogyasztó törlésnek nézte a hibát.
+    const verdict = validateToolOutput({
+      tool: 'http_api_get_all',
+      output: {
+        ok: false,
+        path: '/ownership/registry',
+        pageCount: 1,
+        itemCount: 0,
+        items: [],
+        error: 'HTTP 500 a(z) /ownership/registry oldalon',
+      },
+      contract: resolveToolOutputContract('http_api_get_all'),
+      sideEffecting: false,
+    })
+    assert.equal(verdict.outcome, 'partial')
+    assert.match(verdict.reason ?? '', /NEM teljes/)
+    assert.match(verdict.reason ?? '', /ne egyeztess/)
+    assert.doesNotMatch(verdict.reason ?? '', /egyetlen sort sem hozott/)
+  })
+
+  await test('http_api_get_all: sikeres üres lista továbbra is `empty`', () => {
+    const verdict = validateToolOutput({
+      tool: 'http_api_get_all',
+      output: {
+        ok: true,
+        path: '/ownership/registry',
+        pageCount: 1,
+        itemCount: 0,
+        items: [],
+        provenance: { sourceTool: 'http_api_get_all', paginationComplete: true },
+      },
+      contract: resolveToolOutputContract('http_api_get_all'),
+      sideEffecting: false,
+    })
+    assert.equal(verdict.outcome, 'empty')
+    assert.match(verdict.reason ?? '', /egyetlen sort sem hozott/)
+  })
+
   // ── 2. INCIDENS — reconcile_records ───────────────────────────────────────
 
   await test('2. incidens: a párosítás SORRENDFÜGGETLEN — a teljes egyezés nyer', () => {
