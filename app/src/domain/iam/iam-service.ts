@@ -424,6 +424,19 @@ export class IamService {
         metadata: { invitationId: invitation.id, source },
         tenantId: invitation.tenantId,
       })
+      // Kiinduló user→agent jogok — a tagság után, de a beváltást nem buktatjuk el.
+      try {
+        const { materializeDefaultUserAgentGrants } = await import(
+          '@/domain/agent-access/default-user-agent-grants'
+        )
+        await materializeDefaultUserAgentGrants({
+          tenantId: invitation.tenantId,
+          actorUserId: invitation.createdById ?? user.id,
+          userId: user.id,
+        })
+      } catch {
+        // A tagság már aktív; a backfill / admin szinkron pótolhatja.
+      }
     }
 
     await this.audit.append({

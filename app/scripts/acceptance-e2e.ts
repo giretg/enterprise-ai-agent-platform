@@ -3358,6 +3358,7 @@ async function scenarioFileEditor(operatorId: string, agentId: string, agentVers
   console.log('\n[F3] Agent File Editor')
 
   process.env.FILE_EDITOR_STUB = 'true'
+  process.env.FILE_EDITOR_STUB_MEMORY = 'true'
   await ensureWorkspaceForAgent(agentId)
   const storage = new WorkspaceStorage(process.env.WORKSPACE_BUCKET ?? 'platform-workspace-prod')
 

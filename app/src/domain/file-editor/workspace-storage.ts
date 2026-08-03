@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto'
+import { promises as fs } from 'node:fs'
+import path from 'node:path'
 import {
   isWorkspaceFileUserFacing,
   type WorkspaceFileAudience,
@@ -8,7 +10,8 @@ import {
 
 /**
  * GCS workspace storage adapter.
- * FILE_EDITOR_STUB=true → in-memory store (test/dev).
+ * FILE_EDITOR_STUB=true → lokális stub (alapból lemez: `.data/workspace`, túléli a
+ * Next restartot). FILE_EDITOR_STUB_MEMORY=true → tisztán memóriában (E2E/unit).
  * Production: GCS REST API via ambient Cloud Run service account.
  */
 
@@ -31,12 +34,9 @@ export class FileEditorError extends Error {
 
 type StubEntry = { content: Buffer; updatedAt: Date }
 
-// A stub store memóriában él (FILE_EDITOR_STUB=true, dev). Next dev alatt a
-// server action-ök (app-rsc) és az API route handler-ek (app-route) KÜLÖN
-// modulpéldányt kapnak ugyanabban a folyamatban, így modulszintű Map-pel két
-// külön tár jönne létre: az agent által írt fájlt (server action) a letöltő
-// panel (route) nem látná. Ezért a Map-et a folyamatszintű globalThis-en
-// osztjuk meg — egyetlen tár minden runtime-rétegnek (prisma-szerű singleton).
+// Tiszta memória-stub (FILE_EDITOR_STUB_MEMORY=true). Next dev alatt a
+// server action-ök és az API route-ok külön modulpéldányt kaphatnak — ezért
+// globalThis-en osztjuk a Map-et.
 const globalStub = globalThis as typeof globalThis & {
   __workspaceStubStore__?: Map<string, StubEntry>
 }
@@ -45,12 +45,57 @@ const stubStore: Map<string, StubEntry> = (globalStub.__workspaceStubStore__ ??=
   StubEntry
 >())
 
+function isStubEnabled(): boolean {
+  return process.env.FILE_EDITOR_STUB === 'true'
+}
+
+/** E2E/unit: ne írjon lemezre, restart után üres legyen. */
+function isMemoryStub(): boolean {
+  return process.env.FILE_EDITOR_STUB_MEMORY === 'true'
+}
+
+function stubRootDir(): string {
+  const configured = process.env.WORKSPACE_STUB_DIR?.trim()
+  return path.resolve(configured && configured.length > 0 ? configured : path.join(process.cwd(), '.data', 'workspace'))
+}
+
 function stubKey(tenantId: string, ticketId: string, filePath: string): string {
   return `${tenantId}/${ticketId}/${filePath}`
 }
 
 function ticketStubPrefix(tenantId: string, ticketId: string): string {
   return `${tenantId}/${ticketId}/`
+}
+
+function stubAbsolutePath(tenantId: string, ticketId: string, filePath: string): string {
+  const root = stubRootDir()
+  const absolute = path.resolve(root, tenantId, ticketId, filePath)
+  const rootPrefix = root.endsWith(path.sep) ? root : `${root}${path.sep}`
+  if (absolute !== root && !absolute.startsWith(rootPrefix)) {
+    throw new FileEditorError('INVALID_PATH', 'Path escapes workspace stub root')
+  }
+  return absolute
+}
+
+async function walkFiles(dir: string, relativePrefix = ''): Promise<string[]> {
+  let entries
+  try {
+    entries = await fs.readdir(dir, { withFileTypes: true })
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+    throw error
+  }
+  const out: string[] = []
+  for (const entry of entries) {
+    const rel = relativePrefix ? `${relativePrefix}/${entry.name}` : entry.name
+    const absolute = path.join(dir, entry.name)
+    if (entry.isDirectory()) {
+      out.push(...(await walkFiles(absolute, rel)))
+    } else if (entry.isFile()) {
+      out.push(rel)
+    }
+  }
+  return out
 }
 
 async function resolveGcsToken(): Promise<string> {
@@ -108,12 +153,25 @@ export class WorkspaceStorage {
   constructor(private readonly bucket: string) {}
 
   private isStub(): boolean {
-    return process.env.FILE_EDITOR_STUB === 'true'
+    return isStubEnabled()
+  }
+
+  private usesMemoryStub(): boolean {
+    return this.isStub() && isMemoryStub()
   }
 
   async getFileSize(tenantId: string, ticketId: string, filePath: string): Promise<number> {
-    if (this.isStub()) {
+    if (this.usesMemoryStub()) {
       return stubStore.get(stubKey(tenantId, ticketId, filePath))?.content.length ?? 0
+    }
+    if (this.isStub()) {
+      try {
+        const stat = await fs.stat(stubAbsolutePath(tenantId, ticketId, filePath))
+        return stat.isFile() ? stat.size : 0
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 0
+        throw error
+      }
     }
 
     const token = await resolveGcsToken()
@@ -129,10 +187,18 @@ export class WorkspaceStorage {
   async getWorkspaceSize(tenantId: string, ticketId: string): Promise<number> {
     const prefix = ticketStubPrefix(tenantId, ticketId)
 
-    if (this.isStub()) {
+    if (this.usesMemoryStub()) {
       let total = 0
       for (const [key, entry] of stubStore) {
         if (key.startsWith(prefix)) total += entry.content.length
+      }
+      return total
+    }
+    if (this.isStub()) {
+      const paths = await this.list(tenantId, ticketId)
+      let total = 0
+      for (const filePath of paths) {
+        total += await this.getFileSize(tenantId, ticketId, filePath)
       }
       return total
     }
@@ -181,8 +247,20 @@ export class WorkspaceStorage {
   }
 
   async read(tenantId: string, ticketId: string, filePath: string): Promise<Buffer | null> {
-    if (this.isStub()) {
+    if (this.usesMemoryStub()) {
       return stubStore.get(stubKey(tenantId, ticketId, filePath))?.content ?? null
+    }
+    if (this.isStub()) {
+      try {
+        const buf = await fs.readFile(stubAbsolutePath(tenantId, ticketId, filePath))
+        if (buf.length > MAX_FILE_SIZE_BYTES) {
+          throw new FileEditorError('FILE_TOO_LARGE', 'File exceeds 50 MB read limit')
+        }
+        return buf
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+        throw error
+      }
     }
 
     const token = await resolveGcsToken()
@@ -204,8 +282,14 @@ export class WorkspaceStorage {
     }
     await this.ensureWorkspaceQuota(tenantId, ticketId, filePath, data.length)
 
-    if (this.isStub()) {
+    if (this.usesMemoryStub()) {
       stubStore.set(stubKey(tenantId, ticketId, filePath), { content: data, updatedAt: new Date() })
+      return
+    }
+    if (this.isStub()) {
+      const absolute = stubAbsolutePath(tenantId, ticketId, filePath)
+      await fs.mkdir(path.dirname(absolute), { recursive: true })
+      await fs.writeFile(absolute, data)
       return
     }
 
@@ -225,8 +309,17 @@ export class WorkspaceStorage {
   }
 
   async delete(tenantId: string, ticketId: string, filePath: string): Promise<void> {
-    if (this.isStub()) {
+    if (this.usesMemoryStub()) {
       stubStore.delete(stubKey(tenantId, ticketId, filePath))
+      return
+    }
+    if (this.isStub()) {
+      try {
+        await fs.unlink(stubAbsolutePath(tenantId, ticketId, filePath))
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+        throw error
+      }
       return
     }
 
@@ -240,6 +333,14 @@ export class WorkspaceStorage {
 
   async deleteTicketWorkspace(tenantId: string, ticketId: string): Promise<number> {
     const paths = await this.list(tenantId, ticketId)
+    if (this.isStub() && !this.usesMemoryStub()) {
+      try {
+        await fs.rm(path.join(stubRootDir(), tenantId, ticketId), { recursive: true, force: true })
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      }
+      return paths.length
+    }
     for (const filePath of paths) {
       await this.delete(tenantId, ticketId, filePath)
     }
@@ -249,7 +350,7 @@ export class WorkspaceStorage {
   async deleteTenantWorkspaces(tenantId: string): Promise<number> {
     const prefix = `${tenantId}/`
 
-    if (this.isStub()) {
+    if (this.usesMemoryStub()) {
       let deleted = 0
       for (const key of [...stubStore.keys()]) {
         if (key.startsWith(prefix)) {
@@ -258,6 +359,16 @@ export class WorkspaceStorage {
         }
       }
       return deleted
+    }
+    if (this.isStub()) {
+      const tenantDir = path.join(stubRootDir(), tenantId)
+      const files = await walkFiles(tenantDir)
+      try {
+        await fs.rm(tenantDir, { recursive: true, force: true })
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+      }
+      return files.length
     }
 
     const token = await resolveGcsToken()
@@ -295,7 +406,7 @@ export class WorkspaceStorage {
     const prefix = workspacePrefix(tenantId, ticketId) + (subpath ? `${subpath}/` : '')
     const prefixLen = workspacePrefix(tenantId, ticketId).length
 
-    if (this.isStub()) {
+    if (this.usesMemoryStub()) {
       const results: string[] = []
       for (const key of stubStore.keys()) {
         if (key.startsWith(prefix)) {
@@ -303,6 +414,13 @@ export class WorkspaceStorage {
         }
       }
       return results.sort()
+    }
+    if (this.isStub()) {
+      const ticketRoot = path.join(stubRootDir(), tenantId, ticketId)
+      const walkRoot = subpath ? path.join(ticketRoot, subpath) : ticketRoot
+      const relativePrefix = subpath ?? ''
+      const files = await walkFiles(walkRoot, relativePrefix)
+      return files.sort()
     }
 
     const token = await resolveGcsToken()
@@ -449,9 +567,10 @@ export class WorkspaceStorage {
     filePath: string,
   ): Promise<{ stream: ReadableStream; contentType: string; size: number } | null> {
     if (this.isStub()) {
-      const entry = stubStore.get(stubKey(tenantId, ticketId, filePath))
-      if (!entry) return null
-      const buf = entry.content
+      const buf = this.usesMemoryStub()
+        ? stubStore.get(stubKey(tenantId, ticketId, filePath))?.content ?? null
+        : await this.read(tenantId, ticketId, filePath)
+      if (!buf) return null
       return {
         stream: new ReadableStream({
           start(controller) {

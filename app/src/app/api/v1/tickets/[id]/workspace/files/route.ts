@@ -6,6 +6,10 @@ import { WorkspaceStorage } from '@/domain/file-editor/workspace-storage'
 import { FileEditorError } from '@/domain/file-editor/workspace-storage'
 import { resolveWorkspaceTenantKey } from '@/lib/workspace-resource-access'
 import { isHtmlWorkspaceFile } from '@/lib/workspace-file-visibility'
+import {
+  INLINE_HTML_CONTENT_TYPE,
+  inlineHtmlPreviewSecurityHeaders,
+} from '@/lib/workspace-inline-html-headers'
 import { readTicketPreferredSkillVersionIds } from '@/lib/task-only-ticket'
 
 function jsonError(message: string, status: number) {
@@ -72,15 +76,12 @@ export async function GET(
       const filename = filePath.split('/').pop() ?? filePath
       return new NextResponse(result.stream, {
         headers: {
-          'content-type': inline ? 'text/html; charset=utf-8' : result.contentType,
+          'content-type': inline ? INLINE_HTML_CONTENT_TYPE : result.contentType,
           'content-disposition': `${inline ? 'inline' : 'attachment'}; filename="${encodeURIComponent(filename)}"`,
-          ...(inline
-            ? {
-                'content-security-policy': "sandbox; default-src 'none'; img-src data: https:; style-src 'unsafe-inline'",
-                'x-content-type-options': 'nosniff',
-                'referrer-policy': 'no-referrer',
-              }
-            : {}),
+          // Az agent/felhasználó által készített HTML ugyanazon az originen
+          // érkezik: opak sandboxba zárjuk (nincs script és nincs KÜLSŐ egress,
+          // pl. kép-beacon), l. workspace-inline-html-headers.
+          ...(inline ? inlineHtmlPreviewSecurityHeaders() : {}),
           ...(result.size > 0 ? { 'content-length': String(result.size) } : {}),
         },
       })

@@ -79,6 +79,8 @@ export interface AgentSkillRow {
   parameters: Array<{ name: string; description: string }>
   /** Csatolható-e fájl a skillhez kötött feladathoz (#199). Hiányzó érték = engedett. */
   allowAttachments: boolean
+  /** Várt csatolmány leírása — a feladat-indító űrlapon jelenik meg (#199). */
+  attachmentDescription?: string
 }
 
 export async function getAgentSkillsAction(
@@ -105,6 +107,7 @@ export async function getAgentSkillsAction(
           description: p.description,
         })),
         allowAttachments: skillAllowsAttachments(r.content.runtimeHints),
+        attachmentDescription: r.content.runtimeHints?.attachmentDescription?.trim() || undefined,
       })),
     )
   } catch (err) {

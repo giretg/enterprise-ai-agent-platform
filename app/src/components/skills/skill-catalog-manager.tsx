@@ -24,6 +24,7 @@ import type { SkillDiff } from '@/lib/skill/skill-diff'
 import type { SkillParameter, SkillRuntimeHints } from '@/lib/skill/skill-content'
 import {
   SKILL_RUNTIME_HINT_LIMITS,
+  SKILL_ATTACHMENT_DESCRIPTION_MAX,
   clampSkillRuntimeHints,
 } from '@/lib/skill/skill-content'
 import { NORMAL_TOOL_CAPABILITY_GROUPS } from '@/lib/tool-capability-catalog'
@@ -91,6 +92,8 @@ type RuntimeHintsDraft = {
   preferredMode: '' | 'chat' | 'task'
   /** #199 — csatolható-e fájl a skillhez kötött feladathoz. Alapérték: igen. */
   allowAttachments: boolean
+  /** Várt csatolmány leírása — a feladat-indító űrlapon jelenik meg. */
+  attachmentDescription: string
 }
 
 const EMPTY_RUNTIME_HINTS: RuntimeHintsDraft = {
@@ -98,6 +101,7 @@ const EMPTY_RUNTIME_HINTS: RuntimeHintsDraft = {
   toolCalls: '',
   preferredMode: '',
   allowAttachments: true,
+  attachmentDescription: '',
 }
 
 function runtimeHintsToDraft(hints: SkillRuntimeHints | undefined): RuntimeHintsDraft {
@@ -107,6 +111,7 @@ function runtimeHintsToDraft(hints: SkillRuntimeHints | undefined): RuntimeHints
     preferredMode: hints?.preferredMode ?? '',
     // Hiányzó érték = engedett (visszafelé kompatibilitás a meglévő skillekkel).
     allowAttachments: hints?.allowAttachments !== false,
+    attachmentDescription: hints?.attachmentDescription ?? '',
   }
 }
 
@@ -118,6 +123,7 @@ function draftToRuntimeHints(draft: RuntimeHintsDraft): SkillRuntimeHints | unde
     maxToolCalls: draft.toolCalls.trim() && Number.isFinite(calls) ? calls : null,
     preferredMode: draft.preferredMode === '' ? null : draft.preferredMode,
     allowAttachments: draft.allowAttachments ? null : false,
+    attachmentDescription: draft.allowAttachments ? draft.attachmentDescription : null,
   })
 }
 
@@ -130,6 +136,7 @@ function describeRuntimeHints(hints: SkillRuntimeHints | undefined): string | nu
   if (hints.preferredMode === 'task') parts.push('a boardon fut')
   else if (hints.preferredMode === 'chat') parts.push('chatben fut')
   if (hints.allowAttachments === false) parts.push('nem csatolható fájl')
+  if (hints.attachmentDescription) parts.push('csatolmány-leírás')
   return parts.length > 0 ? parts.join(' · ') : null
 }
 
@@ -232,7 +239,13 @@ function SkillRuntimeHintsFields({
         <input
           type="checkbox"
           checked={draft.allowAttachments}
-          onChange={(e) => onChange({ ...draft, allowAttachments: e.target.checked })}
+          onChange={(e) =>
+            onChange({
+              ...draft,
+              allowAttachments: e.target.checked,
+              ...(!e.target.checked ? { attachmentDescription: '' } : {}),
+            })
+          }
           className="mt-0.5"
         />
         <span>
@@ -244,6 +257,23 @@ function SkillRuntimeHintsFields({
           </span>
         </span>
       </label>
+      {draft.allowAttachments && (
+        <label className="mt-3 block text-[11px] text-ink-faint">
+          Milyen fájlt várunk?
+          <textarea
+            value={draft.attachmentDescription}
+            onChange={(e) => onChange({ ...draft, attachmentDescription: e.target.value })}
+            maxLength={SKILL_ATTACHMENT_DESCRIPTION_MAX}
+            rows={2}
+            placeholder="Pl.: Excel táblázat az értékesítési adatokkal, PDF formátumú számla…"
+            className="mt-1 w-full rounded-lg border border-ink-faint/30 bg-transparent px-2 py-1.5 text-sm text-ink"
+          />
+          <span className="mt-1 block">
+            Ez a szöveg a feladat-indító űrlapon a fájlcsatolás fölött jelenik meg, és elmagyarázza
+            a felhasználónak, milyen csatolmányt érdemes feltölteni.
+          </span>
+        </label>
+      )}
     </div>
   )
 }

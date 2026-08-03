@@ -117,6 +117,53 @@ test('SKILL.md import: `allow-attachments: true` nem zajosítja a hasht', () => 
   assert.equal(parsed.content.runtimeHints, undefined)
 })
 
+test('clampSkillRuntimeHints: csatolmány-leírás trimmelve és mentve', () => {
+  assert.deepEqual(
+    clampSkillRuntimeHints({ attachmentDescription: '  Excel táblázat  ' }),
+    { attachmentDescription: 'Excel táblázat' },
+  )
+  assert.equal(clampSkillRuntimeHints({ attachmentDescription: '   ' }), undefined)
+})
+
+test('clampSkillRuntimeHints: csatolmány-tiltásnál a leírás nem kerül mentésre', () => {
+  assert.deepEqual(
+    clampSkillRuntimeHints({
+      allowAttachments: false,
+      attachmentDescription: 'Excel táblázat',
+    }),
+    { allowAttachments: false },
+  )
+})
+
+test('diffSkillVersions: a csatolmány-leírás megjelenik a verzió-diffben', () => {
+  const before = parseSkillContent({ instructions: ['a'] })
+  const after = parseSkillContent({
+    instructions: ['a'],
+    runtimeHints: { attachmentDescription: 'PDF számla' },
+  })
+  const diff = diffSkillVersions(
+    { content: before, requires: [] },
+    { content: after, requires: [] },
+  )
+  const change = diff.changes.find((c) => c.detail.startsWith('attachmentDescription'))
+  assert.ok(change, 'a diffnek jeleznie kell az attachmentDescription változást')
+  assert.match(change.detail, /PDF számla/)
+})
+
+test('SKILL.md import: `attachment-description` átjön a runtimeHints-be', () => {
+  const parsed = parseSkillMd(
+    [
+      '---',
+      'name: Számlafeldolgozás',
+      'attachment-description: PDF formátumú számla',
+      '---',
+      '',
+      '# Lépések',
+    ].join('\n'),
+  )
+  assert.equal(parsed.content.runtimeHints?.attachmentDescription, 'PDF formátumú számla')
+})
+
 // ── 2. Korlátozott feladat-bemenet validációja ───────────────────────────────
 
 test('validateTaskOnlyTaskInput: a szabad szöveges leírás HANGOS hiba', () => {

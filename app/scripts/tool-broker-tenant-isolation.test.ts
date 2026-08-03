@@ -94,6 +94,7 @@ function toGraphNode(a: Agent) {
     hiddenFromOperators: false,
     inboundRestricted: false,
     outboundRestricted: false,
+    taskOnly: false,
   }
 }
 

@@ -26,6 +26,8 @@
  *  8. Az él csak ELÉRÉST ad: nem ad tool capabilityt, nem kölcsönöz skillt.
  */
 
+import { isWebEgressAgent } from '@/lib/platform-agent-registry'
+
 /** Az elérési igék. Két független boolean, nem skála. */
 export type AgentAccessVerb = 'view' | 'address'
 
@@ -176,11 +178,16 @@ export function evaluateAgentAccess(params: {
     return { allowed: false, reason: 'target_hidden' }
   }
 
-  // 4. C4 kompatibilitási alapérték + explicit él.
+  // 4. Explicit él szükségessége.
+  // - user→agent: a cél `inboundRestricted` (üzleti alap: true → grant-mátrix)
+  // - agent→agent: a forrás `outboundRestricted`, PLUSZ a Web-Egress cél inboundja
+  //   (az marad grant-kötött). Normál tenant-agent inboundja CSAK az ember→agent
+  //   pipákat zárja — különben a tömeges inbound=true minden agent_ask / roster /
+  //   playbook-átadást missing_grant-re vinne.
   const needsGrant =
     subject.kind === 'user'
       ? target.inboundRestricted
-      : (source?.outboundRestricted ?? true) || target.inboundRestricted
+      : (source?.outboundRestricted ?? true) || isWebEgressAgent(target)
 
   if (!needsGrant) {
     return { allowed: true, basis: { kind: 'default-open' } }
@@ -276,6 +283,32 @@ export function reachableAgentIds(params: {
  * rendszer NEM vágja el, csak jelzi az adminnak, hogy egy grant meddig ér el.
  */
 export const REACHABILITY_DEPTH_WARNING_THRESHOLD = 5
+
+/**
+ * Grant-alanyként / org-ábra munkatárs-sávjában elfogadott tagság-státuszok.
+ *
+ * Az `active` mellett a `pending` is kell: az admin előkészített, első belépésre
+ * váró kollégáknak (user.status = pending + membership.status = pending) már az
+ * első login ELŐTT be kell tudnia állítani, mely agenteket láthatják /
+ * szólíthatják meg. A `suspended` szándékosan kimarad.
+ */
+export const AGENT_ACCESS_SUBJECT_MEMBERSHIP_STATUSES = ['active', 'pending'] as const
+
+export type AgentAccessSubjectMembershipStatus =
+  (typeof AGENT_ACCESS_SUBJECT_MEMBERSHIP_STATUSES)[number]
+
+/** True, ha a tagság grant-alany / org-ábra szerkeszthető munkatárs lehet. */
+export function isEligibleAgentAccessSubjectMembership(status: string): boolean {
+  return (AGENT_ACCESS_SUBJECT_MEMBERSHIP_STATUSES as readonly string[]).includes(status)
+}
+
+/**
+ * Org-ábra user-sáv: aktív és első belépésre váró (pending) userek.
+ * Felfüggesztett userek kimaradnak.
+ */
+export function isEligibleAgentAccessGraphUserStatus(status: string): boolean {
+  return status === 'active' || status === 'pending'
+}
 
 /**
  * True, ha a tenant gráfja TELJESEN korlátozás nélküli. Ilyenkor az implicit élek

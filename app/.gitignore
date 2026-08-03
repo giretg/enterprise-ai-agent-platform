@@ -53,6 +53,7 @@ infra/gcp/dispatch-cycle-scheduler.env
 next-env.d.ts
 
 /uploads
+/.data
 .seed-demo-api-key
 /.connector-grants
 /.connector-secrets

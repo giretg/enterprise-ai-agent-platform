@@ -4,7 +4,7 @@ import { useRouter } from 'next/navigation'
 import { useState, useTransition } from 'react'
 import Link from 'next/link'
 import type { ProcessStatus } from '@prisma/client'
-import { transitionTicket } from '@/app/actions/platform'
+import { transitionTicket, deleteBoardTicket } from '@/app/actions/platform'
 import { exportTicketDebugLog } from '@/app/actions/debug-log'
 import { startProcessFromTicket } from '@/app/actions/process'
 import { authorizeTicketRunAs, revokeTicketRunAs } from '@/app/actions/connector-grants'
@@ -451,11 +451,16 @@ export function TicketMeta({
   ticket,
   isAdmin = false,
   canDispatch = false,
+  canDelete = false,
+  isAdminDelete = false,
 }: {
   ticket: TicketView
   isAdmin?: boolean
   canDispatch?: boolean
+  canDelete?: boolean
+  isAdminDelete?: boolean
 }) {
+  const router = useRouter()
   const dispatchTicket = useTicketDispatch()
   const payload = ticket.payload as Record<string, unknown> | null
   const proposal = payload?.proposal as Record<string, unknown> | undefined
@@ -464,6 +469,7 @@ export function TicketMeta({
   const contractReview = contractReviewFromPayload(payload)
   const [debugLogPending, startDebugLogTransition] = useTransition()
   const [dispatchPending, startDispatchTransition] = useTransition()
+  const [deletePending, startDeleteTransition] = useTransition()
   const [headerMessage, setHeaderMessage] = useState<{ tone: 'ok' | 'err'; text: string } | null>(
     null,
   )
@@ -505,6 +511,25 @@ export function TicketMeta({
         tone: res.warning ? 'err' : 'ok',
         text: res.warning ?? 'Feldolgozás elindítva.',
       })
+    })
+  }
+
+  function handleDelete() {
+    const confirmMessage = isAdminDelete
+      ? 'Biztosan véglegesen törlöd ezt a feladatot (admin)? A művelet nem vonható vissza, és a csatolt fájlok is törlődnek.'
+      : 'Biztosan törlöd ezt a feladatot? A művelet nem vonható vissza, és a csatolt fájlok is törlődnek.'
+    if (!window.confirm(confirmMessage)) {
+      return
+    }
+
+    startDeleteTransition(async () => {
+      setHeaderMessage(null)
+      const res = await deleteBoardTicket({ ticketId: ticket.id })
+      if (!res.success) {
+        setHeaderMessage({ tone: 'err', text: res.error })
+        return
+      }
+      router.replace('/control-plane/board')
     })
   }
 
@@ -567,11 +592,26 @@ export function TicketMeta({
                 <button
                   type="button"
                   onClick={handleStartDispatch}
-                  disabled={dispatchPending}
+                  disabled={dispatchPending || deletePending}
                   className="rounded-full bg-coral px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-coral-deep disabled:opacity-40"
                   title="Kézi feldolgozás indítása — függetlenül a dispatcher állapotától"
                 >
                   {dispatchPending ? 'Indítás…' : 'Feldolgozás indítása'}
+                </button>
+              )}
+              {canDelete && (
+                <button
+                  type="button"
+                  onClick={handleDelete}
+                  disabled={deletePending || dispatchPending}
+                  className="rounded-full border border-coral/35 bg-coral/10 px-4 py-2.5 text-sm font-semibold text-coral transition-colors hover:bg-coral/20 disabled:opacity-40"
+                  title={
+                    isAdminDelete
+                      ? 'Admin törlés — bármilyen állapotú feladat'
+                      : 'A feladat törlése — csak feldolgozás megkezdése előtt'
+                  }
+                >
+                  {deletePending ? 'Törlés…' : 'Törlés'}
                 </button>
               )}
               {isAdmin && (
