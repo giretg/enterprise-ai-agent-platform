@@ -484,6 +484,46 @@ gráf elutasította volna — auditál, nem blokkol), valamint
 `agent_access.grant.create` / `.revoke` és `agent_access.restriction.update`.
 A grant-írás és az audit-esemény ugyanabban a tranzakcióban keletkezik.
 
+### Menü-hozzáférés (melyik szerepkör milyen menüt lát)
+
+**Fájlok:** `src/lib/nav-visibility.ts` (tiszta policy),
+`src/lib/control-plane-nav.ts` (nav-katalógus + szűrés),
+`src/lib/nav-visibility-server.ts` (kérés-scope-olt betöltés),
+`src/app/actions/menu-access.ts` (írás + audit),
+`src/app/control-plane/menu-access` (admin felület)
+
+A fejléc-navigáció teljes tartalma egyetlen katalógusban él
+(`CONTROL_PLANE_NAV_CATALOG`); minden menüpont és almenü stabil `key`-t kap. A
+tenant admin szerepkörönként (`viewer` / `operator` / `approver` / `admin`)
+elrejtheti ezeket a kulcsokat. A policy a `tenants.settings.navVisibility`
+mezőben lakik — nincs séma-migráció, és az **üres policy az alapérték**, tehát a
+meglévő telepítések menüje változatlan.
+
+**Ez kurálás, nem jogosultság.** A szűrés sorrendje: előbb a szerep-követelmény
+(`requires.tenantRole` / `requires.platformRole`), utána a láthatósági policy —
+így a policy csak **szűkíthet**, sosem jeleníthet meg olyan menüpontot, amihez a
+felhasználónak nincs szerepe. Az oldalak `requireTenantRole` guardjai
+változatlanul az egyetlen authorizációs határ: az elrejtett menüpont útvonala
+közvetlen URL-lel továbbra is annyira elérhető, amennyire a szerepkör engedi.
+
+**Normatív invariánsok:**
+
+1. **Nincs kizárás:** az `admin` szerepkör elől sem az `admin` csoport, sem az
+   `admin.menu-access` levél nem rejthető el (`NAV_KEYS_LOCKED_FOR_ADMIN`) —
+   különben egyetlen mentés visszavonhatatlanná tenné a beállítást. A
+   `sanitizeNavVisibilityPolicy` minden olvasási és írási úton kikényszeríti.
+2. **Üresre szűkült csoport eltűnik:** nem marad a fejlécben olyan legördülő,
+   ami semmit nem nyit ki.
+3. **Ismeretlen kulcs kiesik:** a mentés a katalógushoz méri az inputot, így a
+   policy nem hivatkozhat megszűnt menüpontra.
+4. **Szerep nélküli hívó elől nem rejtünk:** a tisztán platform-szerepű
+   (tenant-role nélküli) superadmin menüje érintetlen.
+5. **Fail-open betöltés:** ha a tenant nem oldható fel, üres policy-vel megy
+   tovább — egy DB-hiba nem zárhatja ki a felhasználót a saját menüjéből.
+
+**Audit:** `tenant.nav_visibility.update`, a metadatában a teljes előtte/utána
+policy-vel; a settings-írás és az audit-esemény egy tranzakcióban keletkezik.
+
 ### Feladatkör-korlátozás (taskOnly agent)
 
 **Fájlok:** `prisma/schema.prisma` (`Agent.taskOnly`),
@@ -883,6 +923,7 @@ Az agent képes egyszerű, egyfájlos HTML alkalmazásokat generálni (A0 szint)
 | `/control-plane/connectors` | `connectors/page.tsx` | Connector kezelés |
 | `/control-plane/governance` | `governance/page.tsx` | Governance dashboard |
 | `/control-plane/iam` | `iam/page.tsx` | IAM + meghívók |
+| `/control-plane/menu-access` | `menu-access/page.tsx` | Menü-hozzáférés — melyik szerepkör milyen menüt lát (admin) |
 | `/control-plane/scheduled-tasks` | `scheduled-tasks/page.tsx` | Ütemezett feladatok |
 | `/control-plane/system` | `system/page.tsx` | Platform beállítások |
 | `/control-plane/training` | `training/page.tsx` | Agent tanítás |

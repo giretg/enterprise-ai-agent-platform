@@ -935,6 +935,22 @@ export const setTenantLanguageSchema = z.object({
   language: z.enum(['hu', 'en']),
 })
 
+/**
+ * Menü-hozzáférés: szerepkör → elrejtett fejléc-menü kulcsok. A kulcsok érvényességét
+ * (katalógusban létező-e) és a kizárási invariánst az action ellenőrzi — itt csak a
+ * durva alak és a méret korlátozott, hogy egy elszabadult input ne írjon a settingsbe.
+ */
+const navVisibilityKeyList = z.array(z.string().min(1).max(120)).max(200)
+
+export const setNavVisibilitySchema = z.object({
+  policy: z.object({
+    viewer: navVisibilityKeyList,
+    operator: navVisibilityKeyList,
+    approver: navVisibilityKeyList,
+    admin: navVisibilityKeyList,
+  }),
+})
+
 /** Web Fetch (WS-D) platform-tool vezérlés (WebFetch-Egress §14). Legalább az egyik mező. */
 export const setWebFetchControlsSchema = z
   .object({
