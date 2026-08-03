@@ -75,6 +75,7 @@ jobs:
           npm run test:playbook-v2-registry
           npm run test:playbook-process-def
           npm run test:iam-policy
+          npm run test:control-plane-nav
           npm run test:agent-access-graph
           npm run test:memory-approval
           npm run test:training-tenant
