@@ -1,13 +1,21 @@
 'use client'
 
 import { useCallback, useEffect, useState, useTransition } from 'react'
+import {
+  HtmlPreviewModal,
+  type HtmlPreviewTarget,
+} from '@/components/workspace/html-preview-modal'
 import { WorkspaceFileDropzone } from '@/components/workspace/workspace-file-dropzone'
 import { Card } from '@/components/ui/shell'
 import {
   ticketWorkspaceFilesUrl,
   uploadTicketWorkspaceFile,
 } from '@/lib/ticket-workspace-files-client'
-import { isHtmlWorkspaceFile, workspaceFileLink } from '@/lib/workspace-file-visibility'
+import {
+  isHtmlWorkspaceFile,
+  workspaceFileLink,
+  workspaceHtmlPreviewTarget,
+} from '@/lib/workspace-file-visibility'
 
 type WorkspaceFile = { path: string }
 
@@ -22,6 +30,7 @@ export function TicketFilesPanel({ ticketId, ticketState }: TicketFilesPanelProp
   const [error, setError] = useState<string | null>(null)
   const [uploading, startUpload] = useTransition()
   const [uploadError, setUploadError] = useState<string | null>(null)
+  const [htmlPreview, setHtmlPreview] = useState<HtmlPreviewTarget | null>(null)
 
   const listUrl = ticketWorkspaceFilesUrl(ticketId)
   const isReadOnly = ['done', 'rejected', 'approved'].includes(ticketState)
@@ -50,7 +59,12 @@ export function TicketFilesPanel({ ticketId, ticketState }: TicketFilesPanelProp
     return () => window.clearTimeout(timeout)
   }, [loadFiles])
 
-  async function handleDownload(path: string) {
+  function handleOpen(path: string) {
+    const preview = workspaceHtmlPreviewTarget(listUrl, path)
+    if (preview) {
+      setHtmlPreview(preview)
+      return
+    }
     window.open(workspaceFileLink(listUrl, path), '_blank', 'noopener,noreferrer')
   }
 
@@ -90,18 +104,29 @@ export function TicketFilesPanel({ ticketId, ticketState }: TicketFilesPanelProp
         <ul className="divide-y divide-line">
           {visibleFiles.map((f) => (
             <li key={f.path} className="flex items-center justify-between py-2">
-              <a
-                href={workspaceFileLink(listUrl, f.path)}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="truncate text-sm text-ink hover:text-sky hover:underline"
-                title={f.path}
-              >
-                {f.path}
-              </a>
+              {isHtmlWorkspaceFile(f.path) ? (
+                <button
+                  type="button"
+                  onClick={() => handleOpen(f.path)}
+                  className="truncate text-left text-sm text-ink hover:text-sky hover:underline"
+                  title={f.path}
+                >
+                  {f.path}
+                </button>
+              ) : (
+                <a
+                  href={workspaceFileLink(listUrl, f.path)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="truncate text-sm text-ink hover:text-sky hover:underline"
+                  title={f.path}
+                >
+                  {f.path}
+                </a>
+              )}
               <button
                 type="button"
-                onClick={() => void handleDownload(f.path)}
+                onClick={() => handleOpen(f.path)}
                 className="ml-2 shrink-0 text-sm font-medium text-sky hover:underline"
               >
                 {isHtmlWorkspaceFile(f.path) ? 'Megnyitás' : 'Letöltés'}
@@ -114,6 +139,9 @@ export function TicketFilesPanel({ ticketId, ticketState }: TicketFilesPanelProp
         <p className="mt-3 text-xs text-ink-faint">
           A feladat lezárva — a fájlok letölthetők (pre-signed URL), új feltöltés nem engedélyezett.
         </p>
+      )}
+      {htmlPreview && (
+        <HtmlPreviewModal target={htmlPreview} onClose={() => setHtmlPreview(null)} />
       )}
     </Card>
   )

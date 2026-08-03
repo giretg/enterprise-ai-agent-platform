@@ -12,6 +12,7 @@
  */
 import { Prisma } from '@prisma/client'
 import type { AgentAccessGrant } from '@prisma/client'
+import { AGENT_ACCESS_SUBJECT_MEMBERSHIP_STATUSES } from '@/lib/agent-access-graph'
 import { prisma } from '@/lib/db'
 import type {
   AgentAccessGrantDeleteResult,
@@ -89,7 +90,8 @@ export class PostgresAgentAccessGrantRepository implements AgentAccessGrantRepos
 
     return prisma.$transaction(async (tx) => {
       // Cross-table tenant-invariáns (I7). A cél MINDIG a grant tenantjában van;
-      // user alanynál AKTÍV tagság kell, agent alanynál egyező agent-tenant.
+      // user alanynál érvényes (active VAGY pending — első belépés előtt előkészített)
+      // tagság kell, agent alanynál egyező agent-tenant.
       const target = await tx.agent.findUnique({
         where: { id: input.targetAgentId },
         select: { tenantId: true },
@@ -100,7 +102,11 @@ export class PostgresAgentAccessGrantRepository implements AgentAccessGrantRepos
 
       if (input.subjectType === 'user') {
         const membership = await tx.tenantMembership.findFirst({
-          where: { tenantId: input.tenantId, userId: input.subjectUserId!, status: 'active' },
+          where: {
+            tenantId: input.tenantId,
+            userId: input.subjectUserId!,
+            status: { in: [...AGENT_ACCESS_SUBJECT_MEMBERSHIP_STATUSES] },
+          },
           select: { id: true },
         })
         if (!membership) return { ok: false as const, reason: 'subject_not_in_tenant' as const }

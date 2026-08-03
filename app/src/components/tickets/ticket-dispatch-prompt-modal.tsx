@@ -1,6 +1,7 @@
 'use client'
 
-import { type RefObject, useEffect, useId, useRef } from 'react'
+import { type RefObject, useEffect, useId, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 
 /**
  * „Feladat létrehozva — kezdődjön a feldolgozás?" megerősítő modál.
@@ -8,6 +9,9 @@ import { type RefObject, useEffect, useId, useRef } from 'react'
  * Közös komponens: a normál feladat-űrlap és a korlátozott feladatkörű agent
  * (#199) feladat-indítója is ezt használja, hogy a létrehozás utáni élmény
  * mindkét úton azonos legyen.
+ *
+ * Portal: a Munkatársak kártyán `hover:-translate-y-1` van — a transform
+ * containing blockot csinál a `fixed` overlaynek, ezért body-ra portalozunk.
  */
 export type DispatchPrompt = {
   ticketId: string
@@ -41,14 +45,23 @@ export function TicketDispatchPromptModal({
   const descriptionId = useId()
   const laterButtonRef = useRef<HTMLButtonElement>(null)
   const startButtonRef = useRef<HTMLButtonElement>(null)
+  const [mounted, setMounted] = useState(false)
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- client portal mount gate
+    setMounted(true)
+  }, [])
+
+  useEffect(() => {
+    if (!mounted) return
     const returnFocusTarget = returnFocusRef.current
     startButtonRef.current?.focus()
     return () => returnFocusTarget?.focus()
-  }, [returnFocusRef])
+  }, [mounted, returnFocusRef])
 
-  return (
+  if (!mounted) return null
+
+  return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4"
       onClick={() => !pending && onLater()}
@@ -110,6 +123,7 @@ export function TicketDispatchPromptModal({
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   )
 }

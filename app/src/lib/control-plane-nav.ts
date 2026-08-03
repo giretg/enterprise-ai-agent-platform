@@ -97,18 +97,12 @@ export const CONTROL_PLANE_NAV_CATALOG: readonly ControlPlaneNavCatalogEntry[] =
         label: 'Lépés-sablonok',
       },
       { key: 'automation.processes', href: '/control-plane/processes', label: 'Folyamatok' },
-    ],
-  },
-  {
-    key: 'operations',
-    label: 'Üzemeltetés',
-    children: [
       {
-        key: 'operations.scheduled-tasks',
+        key: 'automation.scheduled-tasks',
         href: '/control-plane/scheduled-tasks',
         label: 'Ütemezés',
       },
-      { key: 'operations.monitors', href: '/control-plane/monitors', label: 'Monitorok' },
+      { key: 'automation.monitors', href: '/control-plane/monitors', label: 'Monitorok' },
     ],
   },
   {

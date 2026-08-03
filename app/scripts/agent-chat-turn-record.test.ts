@@ -63,6 +63,7 @@ function permissiveAgentAccess(): AgentAccessService {
         hiddenFromOperators: false,
         inboundRestricted: false,
         outboundRestricted: false,
+        taskOnly: false,
       }),
       listForTenant: async () => [],
       setRestrictions: async () => ({

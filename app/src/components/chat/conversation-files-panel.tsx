@@ -1,12 +1,20 @@
 'use client'
 
 import { useCallback, useEffect, useImperativeHandle, useState, useTransition } from 'react'
+import {
+  HtmlPreviewModal,
+  type HtmlPreviewTarget,
+} from '@/components/workspace/html-preview-modal'
 import { WorkspaceFileDropzone } from '@/components/workspace/workspace-file-dropzone'
 import {
   conversationWorkspaceFilesUrl,
   uploadConversationWorkspaceFile,
 } from '@/lib/conversation-workspace-files-client'
-import { isHtmlWorkspaceFile, workspaceFileLink } from '@/lib/workspace-file-visibility'
+import {
+  isHtmlWorkspaceFile,
+  workspaceFileLink,
+  workspaceHtmlPreviewTarget,
+} from '@/lib/workspace-file-visibility'
 
 export type ConversationFilesPanelHandle = {
   refresh: () => void
@@ -26,6 +34,7 @@ export function ConversationFilesPanel({ conversationId, panelRef, onFilesChange
   const [open, setOpen] = useState(false)
   const [uploading, startUpload] = useTransition()
   const [uploadError, setUploadError] = useState<string | null>(null)
+  const [htmlPreview, setHtmlPreview] = useState<HtmlPreviewTarget | null>(null)
 
   const listUrl = conversationWorkspaceFilesUrl(conversationId)
 
@@ -70,7 +79,12 @@ export function ConversationFilesPanel({ conversationId, panelRef, onFilesChange
 
   useImperativeHandle(panelRef, () => ({ refresh: () => void loadFiles(true) }), [loadFiles])
 
-  async function handleDownload(path: string) {
+  function handleOpen(path: string) {
+    const preview = workspaceHtmlPreviewTarget(listUrl, path)
+    if (preview) {
+      setHtmlPreview(preview)
+      return
+    }
     window.open(workspaceFileLink(listUrl, path), '_blank', 'noopener,noreferrer')
   }
 
@@ -121,18 +135,29 @@ export function ConversationFilesPanel({ conversationId, panelRef, onFilesChange
             <ul className="divide-y divide-line">
               {visibleFiles.map((f) => (
                 <li key={f.path} className="flex items-center justify-between py-1.5">
-                  <a
-                    href={workspaceFileLink(listUrl, f.path)}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="truncate text-xs text-ink hover:text-sky hover:underline"
-                    title={f.path}
-                  >
-                    {f.path}
-                  </a>
+                  {isHtmlWorkspaceFile(f.path) ? (
+                    <button
+                      type="button"
+                      onClick={() => handleOpen(f.path)}
+                      className="truncate text-left text-xs text-ink hover:text-sky hover:underline"
+                      title={f.path}
+                    >
+                      {f.path}
+                    </button>
+                  ) : (
+                    <a
+                      href={workspaceFileLink(listUrl, f.path)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="truncate text-xs text-ink hover:text-sky hover:underline"
+                      title={f.path}
+                    >
+                      {f.path}
+                    </a>
+                  )}
                   <button
                     type="button"
-                    onClick={() => void handleDownload(f.path)}
+                    onClick={() => handleOpen(f.path)}
                     className="ml-2 shrink-0 text-xs font-medium text-sky hover:underline"
                   >
                     {isHtmlWorkspaceFile(f.path) ? 'Megnyitás' : 'Letöltés'}
@@ -142,6 +167,9 @@ export function ConversationFilesPanel({ conversationId, panelRef, onFilesChange
             </ul>
           )}
         </div>
+      )}
+      {htmlPreview && (
+        <HtmlPreviewModal target={htmlPreview} onClose={() => setHtmlPreview(null)} />
       )}
     </div>
   )

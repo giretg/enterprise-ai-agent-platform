@@ -60,4 +60,14 @@ export class WorkspaceLifecycleService {
     const storage = this.storageFactory(resolveBucket(config))
     return storage.deleteTenantWorkspaces(tenantId)
   }
+
+  async purgeTicketWorkspace(tenantId: string | null, ticketId: string): Promise<number> {
+    const connector = await this.connectors.findWorkspaceConnector(tenantId)
+    if (!connector) return 0
+
+    const config = connector.config as WorkspaceConnectorConfig
+    const storage = this.storageFactory(resolveBucket(config))
+    const workspaceTenantKey = tenantId ?? connector.tenantId ?? 'global'
+    return storage.deleteTicketWorkspace(workspaceTenantKey, ticketId)
+  }
 }

@@ -12,7 +12,8 @@ const ACTIVE_TICKET_STATES = ['in_progress', 'awaiting_human', 'needs_info'] as 
 const COMPLETED_TICKET_STATES = ['done', 'rejected'] as const
 
 /**
- * Tenant-szintű futások: aktív + friss lefutott chat-fordulók és ticketek.
+ * Saját futások: a bejelentkezett user chat-fordulói, plusz az általa indított
+ * vagy human assignee-ként rá szignált ticketek.
  */
 export async function GET() {
   const auth = await requireTenantApiUser('operator')
@@ -20,18 +21,24 @@ export async function GET() {
   const { user } = auth
 
   const tenantId = user.activeTenantId
+  const userId = user.user.id
 
   const [activeTurns, terminalTurns, activeTicketPage, completedTicketPage] = await Promise.all([
-    repositories.agentTurns.listActiveByTenant(tenantId, { limit: 50 }),
-    repositories.agentTurns.listRecentTerminalByTenant(tenantId, { limit: 30 }),
+    repositories.agentTurns.listActiveByTenant(tenantId, { createdById: userId, limit: 50 }),
+    repositories.agentTurns.listRecentTerminalByTenant(tenantId, {
+      createdById: userId,
+      limit: 30,
+    }),
     repositories.tickets.listPage({
       tenantId,
+      belongingToUserId: userId,
       state: [...ACTIVE_TICKET_STATES],
       excludeTest: true,
       limit: 50,
     }),
     repositories.tickets.listPage({
       tenantId,
+      belongingToUserId: userId,
       state: [...COMPLETED_TICKET_STATES],
       excludeTest: true,
       limit: 30,

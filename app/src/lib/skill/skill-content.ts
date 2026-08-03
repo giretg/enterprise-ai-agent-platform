@@ -23,6 +23,8 @@ export const SKILL_DESCRIPTION_MAX = 1024
 // Egy skill teljes instrukció-törzsének (Level-1) méret-limitje karakterben.
 export const SKILL_INSTRUCTIONS_MAX = 20_000
 export const SKILL_NAME_MAX = 120
+/** Skillhez kötött feladat csatolmány-leírása — a feladat-indító űrlapon jelenik meg. */
+export const SKILL_ATTACHMENT_DESCRIPTION_MAX = 500
 
 export const skillParameterSchema = z.object({
   name: z.string().min(1).max(120),
@@ -64,6 +66,11 @@ export const skillRuntimeHintsSchema = z.object({
    * nincs „kötelező csatolmány" állapot.
    */
   allowAttachments: z.boolean().optional(),
+  /**
+   * Szabad szöveges útmutató a várt csatolmányról — a feladat-indító űrlapon a
+   * fájlfeltöltés fölött jelenik meg. Csak akkor értelmes, ha a csatolás engedett.
+   */
+  attachmentDescription: z.string().max(SKILL_ATTACHMENT_DESCRIPTION_MAX).optional(),
 })
 
 export const skillContentSchema = z.object({
@@ -136,6 +143,7 @@ export function clampSkillRuntimeHints(
     maxToolCalls?: number | null
     preferredMode?: 'chat' | 'task' | null
     allowAttachments?: boolean | null
+    attachmentDescription?: string | null
   } | null
   | undefined,
 ): SkillRuntimeHints | undefined {
@@ -152,11 +160,20 @@ export function clampSkillRuntimeHints(
   // A csatolmány-flag alapértéke ENGEDETT, ezért csak a tiltást tároljuk el.
   // A `true` elhagyása visszafelé kompatibilis hasht és tisztább diffet ad.
   const allowAttachments = input.allowAttachments === false ? false : undefined
+  const attachmentDescriptionRaw =
+    typeof input.attachmentDescription === 'string'
+      ? input.attachmentDescription.trim()
+      : ''
+  const attachmentDescription =
+    allowAttachments !== false && attachmentDescriptionRaw
+      ? attachmentDescriptionRaw.slice(0, SKILL_ATTACHMENT_DESCRIPTION_MAX)
+      : undefined
   if (
     maxWallClockMs == null &&
     maxToolCalls == null &&
     preferredMode == null &&
-    allowAttachments == null
+    allowAttachments == null &&
+    attachmentDescription == null
   ) {
     return undefined
   }
@@ -165,6 +182,7 @@ export function clampSkillRuntimeHints(
     ...(maxToolCalls != null ? { maxToolCalls } : {}),
     ...(preferredMode != null ? { preferredMode } : {}),
     ...(allowAttachments != null ? { allowAttachments } : {}),
+    ...(attachmentDescription != null ? { attachmentDescription } : {}),
   }
 }
 

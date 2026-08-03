@@ -3,15 +3,9 @@
 /**
  * Kapcsolati ábra — az agent-hozzáférési gráf admin szerkesztője (issue #142).
  *
- * ÜZLETI JELENTÉS: ez a „ki kivel beszélhet" szerkesztő. A felhasználónak NEM kell
- * ismernie a `view` / `address` / inbound / outbound / principal szakkifejezéseket:
- * a felület végig hétköznapi magyarul beszél („láthatja" / „megszólíthatja",
- * „csak engedéllyel érhető el"), és minden művelet mellett ott a magyarázat.
- *
- * Az ábra MAGA a policy: a felül lévő sávban a munkatársak, alattuk az agentek; egy
- * irányított kapcsolat két, egymástól FÜGGETLEN sávot hordoz — kék „L" (láthatja) és
- * bordó „M" (megszólíthatja). A két jog nem csak színnel különül el: mindkettőnek van
- * felirata, ikonja, fókuszállapota és billentyűzetes művelete.
+ * ÜZLETI JELENTÉS: ki kivel dolgozhat. Két független jog pipával: „Láthatja" és
+ * „Megszólíthatja". Kiindulás: minden munkatárs mindkettőt megkapja; az admin
+ * pipával vesz el. Nincs „alapból" középső állapot a felületen.
  */
 import { useCallback, useMemo, useState, useTransition } from 'react'
 import {
@@ -22,7 +16,6 @@ import {
 } from '@/app/actions/agent-access'
 import { Badge, Card } from '@/components/ui/shell'
 import {
-  connectionState,
   reachabilityConeFor,
   type GraphAgentView,
   type GraphGrantView,
@@ -117,20 +110,6 @@ export function AgentAccessGraphEditor({
     })
   }, [selected, tenantId, agents, grants])
 
-  const stateFor = useCallback(
-    (subject: GraphSubject, targetAgentId: string, verb: 'view' | 'address') =>
-      connectionState({
-        tenantId,
-        agents,
-        grants,
-        subject,
-        targetAgentId,
-        verb,
-        subjectIsTenantAdmin: true,
-      }),
-    [tenantId, agents, grants],
-  )
-
   /** Egy ige ki/be kapcsolása. Ha mindkettő lekerül, a kapcsolat sora törlődik. */
   const toggleVerb = (subject: GraphSubject, targetAgentId: string, verb: 'view' | 'address') => {
     const existing = grants.find(
@@ -138,9 +117,50 @@ export function AgentAccessGraphEditor({
         g.targetAgentId === targetAgentId &&
         (subject.kind === 'user' ? g.subjectUserId === subject.id : g.subjectAgentId === subject.id),
     )
-    const nextView = verb === 'view' ? !(existing?.canView ?? false) : existing?.canView ?? false
+    // Két állapot: van pipa (grant ige) vagy nincs. Nincs „alapból” középső út.
+    const grantedNow = existing
+      ? verb === 'view'
+        ? existing.canView
+        : existing.canAddress
+      : false
+    const nextView = verb === 'view' ? !grantedNow : existing?.canView ?? false
     const nextAddress =
-      verb === 'address' ? !(existing?.canAddress ?? false) : existing?.canAddress ?? false
+      verb === 'address' ? !grantedNow : existing?.canAddress ?? false
+
+    // Optimista UI: a pipa azonnal vált.
+    const previousGrants = grants
+    if (!nextView && !nextAddress) {
+      setGrants((rows) =>
+        rows.filter(
+          (g) =>
+            !(
+              g.targetAgentId === targetAgentId &&
+              (subject.kind === 'user'
+                ? g.subjectUserId === subject.id
+                : g.subjectAgentId === subject.id)
+            ),
+        ),
+      )
+    } else if (existing) {
+      setGrants((rows) =>
+        rows.map((g) =>
+          g.id === existing.id ? { ...g, canView: nextView, canAddress: nextAddress } : g,
+        ),
+      )
+    } else {
+      setGrants((rows) => [
+        ...rows,
+        {
+          id: `optimistic-${subject.kind}-${subject.id}-${targetAgentId}`,
+          subjectType: subject.kind,
+          subjectUserId: subject.kind === 'user' ? subject.id : null,
+          subjectAgentId: subject.kind === 'agent' ? subject.id : null,
+          targetAgentId,
+          canView: nextView,
+          canAddress: nextAddress,
+        },
+      ])
+    }
 
     startTransition(async () => {
       setError(null)
@@ -153,13 +173,14 @@ export function AgentAccessGraphEditor({
         canAddress: nextAddress,
       })
       if (!res.success) {
+        setGrants(previousGrants)
         setError(res.error)
         return
       }
       setNotice(
         !nextView && !nextAddress
-          ? 'A kapcsolat megszűnt.'
-          : 'A kapcsolat mentve. Azonnal érvényes minden felületen.',
+          ? 'A jogot levettük — ez a kolléga már nem éri el így az agentet.'
+          : 'A jog mentve. Azonnal érvényes minden felületen.',
       )
       await refresh()
     })
@@ -216,16 +237,15 @@ export function AgentAccessGraphEditor({
           létezik, és hogy <strong>megszólíthatja-e</strong>. A kettő független — egy agent lehet
           úgy elrejtve a listákból, hogy közben egy megnevezett kolléga mégis írhat neki.
         </p>
-        {fullyDefaultOpen ? (
+        <p className="mt-3 text-sm text-ink-faint">
+          Kiindulásként minden munkatárs láthatja és megszólíthatja a szervezet agentjeit. A pipa
+          levétele azonnal elveszi a jogot ettől a kollégától.
+        </p>
+        {agents.some((a) => !a.inboundRestricted) && (
           <p className="mt-3 rounded-lg border border-honey/40 bg-honey/10 px-3 py-2 text-sm">
-            Jelenleg <strong>nincs korlátozás</strong>: a szervezeten belül mindenki elér mindenkit.
-            Ez a jog az egész szervezet agenthálózatára kiterjed. Ha szűkíteni szeretnél, kapcsold be
-            a korlátozást annál az agentnél, akit védeni akarsz — előtte megmutatjuk, mi szűnne meg.
-          </p>
-        ) : (
-          <p className="mt-3 text-sm text-ink-faint">
-            Néhány agentnél korlátozás van bekapcsolva, ezért ott csak a felvett kapcsolatok
-            működnek. A többi agentnél továbbra sincs korlátozás.
+            Figyelem: még van olyan agent, ahol nincs belépési korlátozás beállítva. Futtasd a
+            jogosultság-szinkront, vagy kapcsold be a korlátozást — addig a pipa önmagában nem
+            mindig elég az elvételhez.
           </p>
         )}
       </Card>
@@ -254,7 +274,7 @@ export function AgentAccessGraphEditor({
               Válassz ki egy munkatársat, hogy lásd és beállítsd, mely agenteket éri el.
             </p>
             <div className="flex flex-wrap gap-2">
-              {users.length === 0 && <p className="text-sm text-ink-faint">Nincs aktív munkatárs.</p>}
+              {users.length === 0 && <p className="text-sm text-ink-faint">Nincs szerkeszthető munkatárs.</p>}
               {users.map((u) => (
                 <button
                   key={u.id}
@@ -269,6 +289,11 @@ export function AgentAccessGraphEditor({
                 >
                   <span className="block font-medium">{u.name}</span>
                   <span className="block text-xs text-ink-faint">{u.email}</span>
+                  {u.status === 'pending' && (
+                    <span className="mt-1 inline-block">
+                      <Badge tone="warning">Vár első belépésre</Badge>
+                    </span>
+                  )}
                 </button>
               ))}
             </div>
@@ -296,9 +321,7 @@ export function AgentAccessGraphEditor({
                   <span className="mt-1 flex flex-wrap gap-1">
                     {a.status !== 'active' && <Badge tone="warning">{a.status}</Badge>}
                     {a.adminOnly && <Badge tone="neutral">csak adminoknak</Badge>}
-                    {(a.inboundRestricted || a.outboundRestricted) && (
-                      <Badge tone="danger">korlátozott</Badge>
-                    )}
+                    {a.outboundRestricted && <Badge tone="danger">csak engedéllyel kezdeményez</Badge>}
                   </span>
                 </button>
               ))}
@@ -308,18 +331,21 @@ export function AgentAccessGraphEditor({
           {selected && (
             <Card title={`${selectedLabel} kapcsolatai`}>
               <p className="mb-3 text-xs text-ink-faint">
-                Kapcsold be vagy ki jogonként. Ha mindkét jog lekerül, a kapcsolat megszűnik.
-                Ahol nincs korlátozás, ott a kapcsolat <em>alapból</em> működik — ilyenkor a
-                gomb bekapcsolása csak akkor számít, ha később korlátozást kapcsolsz be.
+                Pipa = <strong>igen</strong>, üres = <strong>nem</strong>. Kattints a váltáshoz.
               </p>
               <ul className="space-y-2">
                 {agents
                   .filter((a) => !(selected.kind === 'agent' && a.id === selected.id))
                   .map((a) => {
-                    const view = stateFor(selected, a.id, 'view')
-                    const address = stateFor(selected, a.id, 'address')
-                    if (filter === 'view' && !view.allowed) return null
-                    if (filter === 'address' && !address.allowed) return null
+                    const verbs =
+                      filter === 'all' ? (['view', 'address'] as const) : ([filter] as const)
+                    const existing = grants.find(
+                      (g) =>
+                        g.targetAgentId === a.id &&
+                        (selected.kind === 'user'
+                          ? g.subjectUserId === selected.id
+                          : g.subjectAgentId === selected.id),
+                    )
                     return (
                       <li
                         key={a.id}
@@ -329,33 +355,39 @@ export function AgentAccessGraphEditor({
                           <span className="block text-sm font-medium">{a.nickname}</span>
                           <span className="block text-xs text-ink-faint">{a.name}</span>
                         </span>
-                        <span className="flex items-center gap-2">
-                          {(['view', 'address'] as const).map((verb) => {
-                            const state = verb === 'view' ? view : address
+                        <span className="flex flex-wrap items-center gap-2">
+                          {verbs.map((verb) => {
+                            // Explicit grant az igazság — ne az „alapból engedett” runtime.
+                            const on = existing
+                              ? verb === 'view'
+                                ? existing.canView
+                                : existing.canAddress
+                              : false
                             return (
                               <button
                                 key={verb}
                                 type="button"
                                 disabled={pending}
                                 onClick={() => toggleVerb(selected, a.id, verb)}
-                                aria-pressed={state.basis === 'grant'}
+                                aria-pressed={on}
                                 title={`${VERB_LABEL[verb].name} — ${VERB_LABEL[verb].hint}`}
-                                className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-semibold focus-visible:outline focus-visible:outline-2 ${
-                                  state.basis === 'grant'
-                                    ? verb === 'view'
-                                      ? 'border-[#4d86a6] bg-[#4d86a6]/20'
-                                      : 'border-[#8c2840] bg-[#8c2840]/20'
-                                    : 'border-line text-ink-faint'
+                                className={`inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-sm font-medium transition-colors focus-visible:outline focus-visible:outline-2 disabled:cursor-wait disabled:opacity-60 ${
+                                  on
+                                    ? 'border-sage/50 bg-sage/15 text-ink'
+                                    : 'border-dashed border-line bg-paper text-ink-soft hover:border-accent hover:bg-accent/10'
                                 }`}
                               >
-                                <span aria-hidden>{verb === 'view' ? '👁' : '💬'}</span>
-                                <span>{VERB_LABEL[verb].short}</span>
-                                <span className="sr-only">
-                                  {VERB_LABEL[verb].name} — {a.nickname}
+                                <span
+                                  aria-hidden
+                                  className={`inline-flex h-5 w-5 shrink-0 items-center justify-center rounded border text-xs font-bold ${
+                                    on
+                                      ? 'border-sage bg-sage text-white'
+                                      : 'border-line bg-paper text-transparent'
+                                  }`}
+                                >
+                                  ✓
                                 </span>
-                                {state.allowed && state.basis === 'implicit' && (
-                                  <span className="font-normal">(alapból)</span>
-                                )}
+                                <span>{VERB_LABEL[verb].name}</span>
                               </button>
                             )
                           })}
@@ -422,7 +454,7 @@ export function AgentAccessGraphEditor({
   )
 }
 
-/** A kiválasztott agent két korlátozás-kapcsolója, kötelező hatás-előnézettel. */
+/** Agent→agent kimenő korlátozás (az ember→agent jogok a kapcsolati listában vannak). */
 function RestrictionPanel({
   agent,
   pending,
@@ -434,44 +466,27 @@ function RestrictionPanel({
 }) {
   if (!agent) return null
   return (
-    <Card title={`${agent.nickname} korlátozásai`}>
+    <Card title={`${agent.nickname} — kimenő kapcsolatok`}>
       <p className="mb-3 text-xs text-ink-faint">
-        Amíg egy korlátozás ki van kapcsolva, a szervezeten belül mindenki eléri ezt az agentet.
-        Bekapcsolás után csak a kifejezetten felvett kapcsolatok működnek.
+        Azt, hogy <em>kik</em> látják / szólíthatják meg ezt az agentet, a bal oldali pipák
+        döntik el. Itt csak azt állítod, hogy ez az agent kiket érhet el maga.
       </p>
-      <div className="space-y-3">
-        <label className="flex items-start gap-3 rounded-lg border border-line px-3 py-3 text-sm">
-          <input
-            type="checkbox"
-            checked={agent.inboundRestricted}
-            disabled={pending}
-            onChange={(e) => onPreview(agent, { inboundRestricted: e.currentTarget.checked })}
-            className="mt-1"
-          />
-          <span>
-            <span className="block font-medium">Csak engedéllyel érhető el</span>
-            <span className="mt-1 block text-xs text-ink-faint">
-              Ezt az agentet csak azok látják és szólíthatják meg, akiknek kifejezetten felvetted
-              a kapcsolatát.
-            </span>
+      <label className="flex items-start gap-3 rounded-lg border border-line px-3 py-3 text-sm">
+        <input
+          type="checkbox"
+          checked={agent.outboundRestricted}
+          disabled={pending}
+          onChange={(e) => onPreview(agent, { outboundRestricted: e.currentTarget.checked })}
+          className="mt-1"
+        />
+        <span>
+          <span className="block font-medium">Csak engedéllyel kezdeményezhet</span>
+          <span className="mt-1 block text-xs text-ink-faint">
+            Ez az agent csak azokat az agenteket éri el, akikhez kifejezetten felvetted a
+            kapcsolatát.
           </span>
-        </label>
-        <label className="flex items-start gap-3 rounded-lg border border-line px-3 py-3 text-sm">
-          <input
-            type="checkbox"
-            checked={agent.outboundRestricted}
-            disabled={pending}
-            onChange={(e) => onPreview(agent, { outboundRestricted: e.currentTarget.checked })}
-            className="mt-1"
-          />
-          <span>
-            <span className="block font-medium">Csak engedéllyel kezdeményezhet</span>
-            <span className="mt-1 block text-xs text-ink-faint">
-              Ez az agent csak azokat a kollégákat éri el, akiket kifejezetten megadtál neki.
-            </span>
-          </span>
-        </label>
-      </div>
+        </span>
+      </label>
     </Card>
   )
 }

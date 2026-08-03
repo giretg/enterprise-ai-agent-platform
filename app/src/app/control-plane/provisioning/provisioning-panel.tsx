@@ -379,6 +379,8 @@ export function ProvisioningPanel() {
 
   // Custom connector-sablon szerkesztő láthatósága (alapból csak egy gomb)
   const [templateEditorOpen, setTemplateEditorOpen] = useState(false)
+  // Új draft connector wizard (alapból csak egy gomb)
+  const [showCreateDraftForm, setShowCreateDraftForm] = useState(false)
 
   // Connector sablon-katalógus
   const [selectedTemplateId, setSelectedTemplateId] = useState('')
@@ -632,25 +634,31 @@ export function ProvisioningPanel() {
       return !!source[field.name]?.trim()
     })
 
+  const closeCreateDraftForm = useCallback(() => {
+    setShowCreateDraftForm(false)
+    setName('')
+    setCreateStep('basics')
+  }, [])
+
   const onCreate = useCallback(() => {
     if (sourceMethod === 'template') {
       if (!selectedTemplate) {
         setError('Válassz connector-sablont.')
         return
       }
-      run(
-        () =>
-          createConnectorFromTemplateAction({
-            templateId: selectedTemplate.id,
-            name,
-            authMethodKind: effectiveTemplateAuthMethod,
-            instanceValues: templateValues,
-            secretAliases: templateSecretAliases,
-            selectedScopes,
-            selectedEndpoints,
-          }),
-        'Sablonból draft connector létrehozva.',
-      )
+      run(async () => {
+        const result = await createConnectorFromTemplateAction({
+          templateId: selectedTemplate.id,
+          name,
+          authMethodKind: effectiveTemplateAuthMethod,
+          instanceValues: templateValues,
+          secretAliases: templateSecretAliases,
+          selectedScopes,
+          selectedEndpoints,
+        })
+        if (result.success) closeCreateDraftForm()
+        return result
+      }, 'Sablonból draft connector létrehozva.')
       return
     }
     let parsed: unknown
@@ -660,18 +668,19 @@ export function ProvisioningPanel() {
       setError('A config nem érvényes JSON.')
       return
     }
-    run(
-      () =>
-        createConnectorDraft({
-          name,
-          sourceType,
-          sourceRef: docSourceRef ?? undefined,
-          sourceContent: docText.trim() || undefined,
-          generatedConfig: parsed,
-        }),
-      'Draft létrehozva.',
-    )
+    run(async () => {
+      const result = await createConnectorDraft({
+        name,
+        sourceType,
+        sourceRef: docSourceRef ?? undefined,
+        sourceContent: docText.trim() || undefined,
+        generatedConfig: parsed,
+      })
+      if (result.success) closeCreateDraftForm()
+      return result
+    }, 'Draft létrehozva.')
   }, [
+    closeCreateDraftForm,
     configText,
     docSourceRef,
     docText,
@@ -728,7 +737,27 @@ export function ProvisioningPanel() {
 
       <SelfUpdatingConnectorsPanel embedded />
 
+      {!showCreateDraftForm ? (
+        <div>
+          <button
+            type="button"
+            onClick={() => setShowCreateDraftForm(true)}
+            className="inline-flex items-center gap-2 rounded-md border border-ink/15 bg-card px-4 py-2 text-sm font-semibold text-ink transition hover:border-coral/40 hover:text-coral-deep"
+          >
+            Új draft connector
+          </button>
+        </div>
+      ) : (
       <Card title="Új draft connector">
+        <div className="mb-4 flex justify-end">
+          <button
+            type="button"
+            onClick={closeCreateDraftForm}
+            className="rounded-md border border-ink/15 px-3 py-1.5 text-xs font-semibold text-ink-soft transition hover:border-ink/30 hover:text-ink"
+          >
+            Bezárás
+          </button>
+        </div>
         <div className="grid gap-5 lg:grid-cols-[15rem_1fr]">
           <ol className="space-y-2">
             {[
@@ -1318,6 +1347,7 @@ export function ProvisioningPanel() {
           </div>
         </div>
       </Card>
+      )}
 
       {!templateEditorOpen ? (
         <div>

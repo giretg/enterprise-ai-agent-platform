@@ -70,6 +70,8 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'agent_access.grant.create',
   'agent_access.grant.revoke',
   'agent_access.restriction.update',
+  // Tenant user↔agent kiinduló jogmátrix (minden tag látja/megszólíthatja a tenant agenteket).
+  'agent_access.default_grants.materialize',
   // Tenant admin: agent elrejtése / megjelenítése az operátorok listájából.
   'agent.operator_visibility',
   'agent.persona',
@@ -310,6 +312,7 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   'ticket.comment.add',
   'ticket.comment.attachment.uploaded',
   'ticket.debug_log.export',
+  'ticket.delete',
   'ticket.handback',
   'ticket.runas.authorize',
   'ticket.runas.revoke',

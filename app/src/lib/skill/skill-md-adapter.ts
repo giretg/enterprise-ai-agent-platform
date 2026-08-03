@@ -1,5 +1,6 @@
 import { createHash } from 'crypto'
 import type { SkillContent, SkillProvenance, SkillRequirement } from './skill-content'
+import { SKILL_ATTACHMENT_DESCRIPTION_MAX } from './skill-content'
 
 /**
  * `SKILL.md` import-adapter (spec §D6, WP-2). Az Anthropic Agent Skills formátum:
@@ -139,11 +140,19 @@ function parseRuntimeHints(
     frontmatter['allow-attachments'] ?? frontmatter.allowAttachments,
   )
   const allowAttachments = allowAttachmentsRaw === false ? false : undefined
+  const attachmentDescriptionRaw = asString(
+    frontmatter['attachment-description'] ?? frontmatter.attachmentDescription,
+  ).trim()
+  const attachmentDescription =
+    allowAttachments !== false && attachmentDescriptionRaw
+      ? attachmentDescriptionRaw.slice(0, SKILL_ATTACHMENT_DESCRIPTION_MAX)
+      : undefined
   if (
     maxWallClockMs == null &&
     maxToolCalls == null &&
     preferredMode == null &&
-    allowAttachments == null
+    allowAttachments == null &&
+    attachmentDescription == null
   ) {
     return undefined
   }
@@ -152,6 +161,7 @@ function parseRuntimeHints(
     ...(maxToolCalls != null ? { maxToolCalls } : {}),
     ...(preferredMode != null ? { preferredMode } : {}),
     ...(allowAttachments != null ? { allowAttachments } : {}),
+    ...(attachmentDescription != null ? { attachmentDescription } : {}),
   }
 }
 

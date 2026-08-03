@@ -125,9 +125,9 @@ function main() {
     const nav = buildControlPlaneNav({
       tenantRole: 'operator',
       platformRoles: [],
-      navVisibility: policyWith({ operator: ['operations'] }),
+      navVisibility: policyWith({ operator: ['automation'] }),
     })
-    assert.ok(!nav.some((entry) => 'children' in entry && entry.label === 'Üzemeltetés'))
+    assert.ok(!nav.some((entry) => 'children' in entry && entry.label === 'Automatizálás'))
     assert.ok(!flattenNavHrefs(nav).includes('/control-plane/monitors'))
   })
 
@@ -136,10 +136,16 @@ function main() {
       tenantRole: 'operator',
       platformRoles: [],
       navVisibility: policyWith({
-        operator: ['operations.scheduled-tasks', 'operations.monitors'],
+        operator: [
+          'automation.playbooks',
+          'automation.step-templates',
+          'automation.processes',
+          'automation.scheduled-tasks',
+          'automation.monitors',
+        ],
       }),
     })
-    assert.ok(!nav.some((entry) => 'children' in entry && entry.label === 'Üzemeltetés'))
+    assert.ok(!nav.some((entry) => 'children' in entry && entry.label === 'Automatizálás'))
   })
 
   check('policy cannot widen access beyond the role gate', () => {
