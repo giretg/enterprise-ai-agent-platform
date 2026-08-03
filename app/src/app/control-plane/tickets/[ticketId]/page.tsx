@@ -15,6 +15,7 @@ import { TicketThread } from '@/components/tickets/ticket-thread'
 import { TicketFilesPanel } from '@/components/tickets/ticket-files-panel'
 import { TicketHistory } from '@/components/tickets/ticket-history'
 import { TicketActivityHistory } from '@/components/tickets/ticket-activity-history'
+import { canDeleteBoardTicket } from '@/lib/ticket-display'
 
 export default async function TicketDetailPage({
   params,
@@ -37,6 +38,11 @@ export default async function TicketDetailPage({
   const isAdmin = hasMinimumRole(ctx?.activeTenantRole, 'admin')
   const canManageRunAs = hasMinimumRole(ctx?.activeTenantRole, 'operator')
   const canStartProcess = hasMinimumRole(ctx?.activeTenantRole, 'operator')
+  const deleteInfo = canDeleteBoardTicket(ticket, {
+    isAdmin,
+    canManage: canManageRunAs,
+    userId: ctx?.user.id,
+  })
   const definitions: TicketStartableProcessDefinition[] =
     canStartProcess && definitionsRes.success
       ? definitionsRes.data
@@ -58,7 +64,13 @@ export default async function TicketDetailPage({
 
   return (
     <div className="space-y-6">
-      <TicketMeta ticket={ticket} isAdmin={isAdmin} canDispatch={canManageRunAs} />
+      <TicketMeta
+        ticket={ticket}
+        isAdmin={isAdmin}
+        canDispatch={canManageRunAs}
+        canDelete={deleteInfo.allowed}
+        isAdminDelete={deleteInfo.isAdminDelete}
+      />
 
       {/* Fő sáv: mi történik most → mit kell döntened → a beszélgetés.
           Oldalsáv: kísérő adatok (fájlok, engedélyek, előzmények). */}

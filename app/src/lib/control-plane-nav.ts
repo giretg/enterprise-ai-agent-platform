@@ -75,11 +75,6 @@ export function buildControlPlaneNav(ctx: ControlPlaneNavContext): ControlPlaneN
         { href: '/control-plane/playbooks', label: 'Playbookok' },
         { href: '/control-plane/step-templates', label: 'Lépés-sablonok' },
         { href: '/control-plane/processes', label: 'Folyamatok' },
-      ],
-    },
-    {
-      label: 'Üzemeltetés',
-      children: [
         { href: '/control-plane/scheduled-tasks', label: 'Ütemezés' },
         { href: '/control-plane/monitors', label: 'Monitorok' },
       ],

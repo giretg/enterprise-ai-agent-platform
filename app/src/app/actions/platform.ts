@@ -33,6 +33,7 @@ import { repositories } from '@/repositories/postgres'
 import { isClerkEnabled } from '@/lib/clerk-config'
 import { prisma, ensureActiveDatabaseMode } from '@/lib/db'
 import { logger } from '@/lib/observability'
+import { resolveBoardDateRange } from '@/lib/board-date-range'
 import { BOARD_LIST_LIMIT, DEFAULT_LIST_LIMIT } from '@/lib/list-pagination'
 import { ensureAgentKnowledgeBase } from '@/lib/agent-knowledge-base'
 import { assertAgentTenantReachable } from '@/lib/agent-tenant-access'
@@ -130,6 +131,7 @@ import {
   modelPolicyEntrySchema,
   createBoardTicketSchema,
   dispatchBoardTicketSchema,
+  deleteBoardTicketSchema,
   inviteUserSchema,
   provisionUserSchema,
   redeemInvitationSchema,
@@ -338,6 +340,7 @@ export async function listBoardAssignees() {
           personaNickname: agent.personaNickname,
           personaTrait: agent.personaTrait,
           status: agent.status,
+          taskOnly: agent.taskOnly,
         })),
       users: memberships.map((membership) => ({
         id: membership.user.id,
@@ -685,13 +688,60 @@ export async function dispatchBoardTicket(input: { ticketId: string }) {
   }
 }
 
-export async function listBoardTickets() {
+export async function deleteBoardTicket(input: { ticketId: string }) {
   try {
     const user = await requireTenantRole('viewer')
+    const { ticketId } = deleteBoardTicketSchema.parse(input)
+    const ticket = await repositories.tickets.findById(ticketId)
+    if (!ticket) return fail('Ticket not found')
+    assertTicketTenantScope(ticket, user.activeTenantId)
+
+    const isAdmin = hasMinimumRole(user.activeTenantRole, 'admin')
+    if (!isAdmin && !canWriteTicketComment(ticket, user)) {
+      return fail('Insufficient permissions')
+    }
+
+    const tenantId = ticket.tenantId ?? user.activeTenantId
+    // Workspace előbb — ha a GCS törlés elbukik, a ticket sor még megvan (újrapróbálható).
+    await services.workspaceLifecycle.purgeTicketWorkspace(tenantId, ticketId)
+    await repositories.tickets.deleteTicket(ticketId, { force: isAdmin })
+    await repositories.audit.append({
+      actorType: 'human',
+      actorId: user.user.id,
+      agentVersion: null,
+      action: 'ticket.delete',
+      targetType: 'ticket',
+      targetId: ticketId,
+      modelUsed: null,
+      inputRef: ticket.state,
+      outputRef: 'deleted',
+      policyDecision: 'allowed',
+      metadata: {
+        force: isAdmin,
+        title: ticket.title,
+        assigneeType: ticket.assigneeType,
+        assigneeId: ticket.assigneeId,
+      },
+      tenantId: ticket.tenantId,
+      ticketId,
+    })
+
+    return ok({ ticketId })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to delete board ticket')
+  }
+}
+
+export async function listBoardTickets(input?: { updatedFrom?: string; updatedTo?: string }) {
+  try {
+    const user = await requireTenantRole('viewer')
+    const range = resolveBoardDateRange({ from: input?.updatedFrom, to: input?.updatedTo })
     const page = await repositories.tickets.listPage({
       excludeTest: true,
       tenantId: user.activeTenantId,
       limit: BOARD_LIST_LIMIT,
+      updatedAtGte: range.updatedAtGte,
+      updatedAtLte: range.updatedAtLte,
     })
     const tickets = page.items
 
@@ -1616,6 +1666,31 @@ export async function createAgent(input: {
       policyDecision: 'allowed',
       metadata: { role: result.agent.role, status: result.agent.status },
     })
+
+    // Kiinduló jog: a tenant minden tagja láthatja / megszólíthatja az új agentet.
+    // Az agent már létrejött — grant-hiba ne mutasson „létrehozás sikertelen”-t.
+    if (user.activeTenantId) {
+      try {
+        const { materializeDefaultUserAgentGrants } = await import(
+          '@/domain/agent-access/default-user-agent-grants'
+        )
+        await materializeDefaultUserAgentGrants({
+          tenantId: user.activeTenantId,
+          actorUserId: user.user.id,
+          agentId: result.agent.id,
+        })
+      } catch (err) {
+        logger.error(
+          {
+            event: 'agent_access.default_grants.materialize_failed',
+            agentId: result.agent.id,
+            tenantId: user.activeTenantId,
+            error: String(err),
+          },
+          'Default user→agent grants failed after agent.create',
+        )
+      }
+    }
 
     return ok(result)
   } catch (e) {
@@ -4086,6 +4161,15 @@ export async function provisionUser(input: { email: string; role: string }) {
       role: parsed.role,
       createdById: ctx.user.id,
       tenantId: ctx.activeTenantId,
+    })
+    // Kiinduló jog: az új kolléga a tenant minden agentjét láthatja / megszólíthatja.
+    const { materializeDefaultUserAgentGrants } = await import(
+      '@/domain/agent-access/default-user-agent-grants'
+    )
+    await materializeDefaultUserAgentGrants({
+      tenantId: ctx.activeTenantId,
+      actorUserId: ctx.user.id,
+      userId: result.user.id,
     })
     return ok({ userId: result.user.id, membershipId: result.membership.id })
   } catch (e) {

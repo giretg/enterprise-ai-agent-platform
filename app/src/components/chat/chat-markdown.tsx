@@ -1,11 +1,19 @@
+'use client'
+
 import Link from 'next/link'
+import { useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import type { Components } from 'react-markdown'
 import {
+  HtmlPreviewModal,
+  type HtmlPreviewTarget,
+} from '@/components/workspace/html-preview-modal'
+import {
   linkWorkspaceFileReferences,
   workspaceFileLink,
   workspaceFileLinkForReference,
+  workspaceHtmlPreviewFromLink,
 } from '@/lib/workspace-file-visibility'
 
 function MarkdownLink({
@@ -13,12 +21,31 @@ function MarkdownLink({
   children,
   className,
   forceExternal = false,
+  onOpenHtml,
 }: {
   href?: string
   children?: React.ReactNode
   className?: string
   forceExternal?: boolean
+  onOpenHtml?: (target: HtmlPreviewTarget) => void
 }) {
+  const htmlPreview = href ? workspaceHtmlPreviewFromLink(href) : null
+
+  if (htmlPreview && onOpenHtml) {
+    return (
+      <a
+        href={href}
+        className={className}
+        onClick={(event) => {
+          event.preventDefault()
+          onOpenHtml(htmlPreview)
+        }}
+      >
+        {children}
+      </a>
+    )
+  }
+
   if (href?.startsWith('/') && !forceExternal) {
     return (
       <Link href={href} className={className}>
@@ -36,7 +63,11 @@ function MarkdownLink({
 const linkClassName =
   'font-medium text-coral underline decoration-coral/40 underline-offset-2 hover:text-coral-deep'
 
-function agentComponentsFor(workspaceBaseUrl?: string, workspaceFilePaths: string[] = []): Components {
+function agentComponentsFor(
+  workspaceBaseUrl: string | undefined,
+  workspaceFilePaths: string[],
+  onOpenHtml: (target: HtmlPreviewTarget) => void,
+): Components {
   return {
   p: ({ children }) => <p className="mb-3 last:mb-0 leading-relaxed">{children}</p>,
   strong: ({ children }) => <strong className="font-semibold text-ink">{children}</strong>,
@@ -69,6 +100,7 @@ function agentComponentsFor(workspaceBaseUrl?: string, workspaceFilePaths: strin
           href={workspaceFileLink(workspaceBaseUrl, content)}
           className={`${linkClassName} rounded bg-night-2 px-1.5 py-0.5 font-mono text-[0.85em]`}
           forceExternal
+          onOpenHtml={onOpenHtml}
         >
           {children}
         </MarkdownLink>
@@ -93,6 +125,7 @@ function agentComponentsFor(workspaceBaseUrl?: string, workspaceFilePaths: strin
         href={workspaceHref ?? href}
         className={linkClassName}
         forceExternal={Boolean(workspaceHref)}
+        onOpenHtml={onOpenHtml}
       >
         {children}
       </MarkdownLink>
@@ -118,6 +151,8 @@ export function ChatMarkdown({
   workspaceBaseUrl?: string
   workspaceFilePaths?: string[]
 }) {
+  const [htmlPreview, setHtmlPreview] = useState<HtmlPreviewTarget | null>(null)
+
   if (variant === 'user') {
     return (
       <div className="chat-markdown chat-markdown--user text-sm">
@@ -129,16 +164,21 @@ export function ChatMarkdown({
   }
 
   return (
-    <div className="chat-markdown chat-markdown--agent text-sm text-ink-soft">
-      <ReactMarkdown
-        remarkPlugins={[remarkGfm]}
-        components={agentComponentsFor(workspaceBaseUrl, workspaceFilePaths)}
-      >
-        {workspaceBaseUrl
-          ? linkWorkspaceFileReferences(content, workspaceFilePaths, workspaceBaseUrl)
-          : content}
-      </ReactMarkdown>
-    </div>
+    <>
+      <div className="chat-markdown chat-markdown--agent text-sm text-ink-soft">
+        <ReactMarkdown
+          remarkPlugins={[remarkGfm]}
+          components={agentComponentsFor(workspaceBaseUrl, workspaceFilePaths, setHtmlPreview)}
+        >
+          {workspaceBaseUrl
+            ? linkWorkspaceFileReferences(content, workspaceFilePaths, workspaceBaseUrl)
+            : content}
+        </ReactMarkdown>
+      </div>
+      {htmlPreview && (
+        <HtmlPreviewModal target={htmlPreview} onClose={() => setHtmlPreview(null)} />
+      )}
+    </>
   )
 }
 

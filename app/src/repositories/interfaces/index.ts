@@ -140,6 +140,17 @@ export type TicketFilter = {
   source?: TicketSource | TicketSource[]
   /** Board / dashboard: user + system ticketek, teszt kizárva. */
   excludeTest?: boolean
+  /** Ha megadott: csak a felhasználó által létrehozott ticketek. */
+  createdById?: string
+  /**
+   * Futások panel: a user által létrehozott VAGY human assignee-ként rá
+   * szignált ticketek (`createdById` / `assigneeType=human`+`assigneeId`).
+   */
+  belongingToUserId?: string
+  /** updatedAt alsó határ (inklúzív). */
+  updatedAtGte?: Date
+  /** updatedAt felső határ (inklúzív). */
+  updatedAtLte?: Date
   /** Ha megadott: take+1 pagináció. Üresen korlátlan (full dump / internal). */
   limit?: number
   offset?: number
@@ -242,6 +253,8 @@ export interface TicketRepository {
   listComments(ticketId: string): Promise<TicketCommentWithAttachments[]>
   /** Transition statistics for the governance dashboard (§11: kontroll — jóváhagyott vs. automatikus lépések, visszadobási arány). */
   getTransitionStats(since?: Date): Promise<TransitionStats>
+  /** Csak backlog/ready, lock nélkül — a kapcsolódó sorokat is takarítja. `force` esetén admin: bármilyen állapot. */
+  deleteTicket(id: string, options?: { force?: boolean }): Promise<void>
 }
 
 export type TicketCommentWithAttachments = TicketComment & {
@@ -1736,8 +1749,9 @@ export interface AgentTurnRepository {
     options?: { createdById?: string; limit?: number },
   ): Promise<AgentTurn[]>
   /**
-   * Tenant-szintű friss terminális fordulók (Futások panel — lefutott lista).
+   * Friss terminális fordulók (Futások panel — lefutott lista).
    * `finishedAt` szerint csökkenő; null finishedAt a végére kerül.
+   * `createdById` megadása esetén csak a felhasználó saját futásai.
    */
   listRecentTerminalByTenant(
     tenantId: string | null,

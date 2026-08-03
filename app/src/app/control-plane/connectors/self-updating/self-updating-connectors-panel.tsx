@@ -157,6 +157,7 @@ function CapabilityList({ title, capabilities, emptyHint }: {
 
 export function SelfUpdatingConnectorsPanel({ embedded = false }: { embedded?: boolean }) {
   const [rows, setRows] = useState<ConnectorRow[]>([])
+  const [loadedOnce, setLoadedOnce] = useState(false)
   const [tenantAuto, setTenantAuto] = useState(false)
   const [name, setName] = useState('')
   const [apiKey, setApiKey] = useState('')
@@ -168,9 +169,14 @@ export function SelfUpdatingConnectorsPanel({ embedded = false }: { embedded?: b
 
   const reload = useCallback(async () => {
     const result = await listSelfUpdatingConnectors()
-    if (!result.success) { setError(result.error); return }
+    if (!result.success) {
+      setError(result.error)
+      setLoadedOnce(true)
+      return
+    }
     setRows(result.data.connectors as ConnectorRow[])
     setTenantAuto(result.data.tenantAutoApproveEnabled)
+    setLoadedOnce(true)
   }, [])
 
   useEffect(() => { startTransition(reload) }, [reload])
@@ -316,9 +322,17 @@ export function SelfUpdatingConnectorsPanel({ embedded = false }: { embedded?: b
         </label>
       </Card>
 
-      <Card title={`Önfrissítő kapcsolatok (${rows.length})`}>
-        {rows.length === 0 ? <p className="text-sm text-ink-soft">Még nincs önfrissítő kapcsolat.</p> : (
-          <div className="space-y-4">{rows.map((row) => <ConnectorCard key={row.id} row={row} pending={pending} run={run} onSync={syncOne} />)}</div>
+      <Card title={loadedOnce ? `Önfrissítő kapcsolatok (${rows.length})` : 'Önfrissítő kapcsolatok'}>
+        {!loadedOnce ? (
+          <p className="text-sm text-ink-soft">Betöltés…</p>
+        ) : rows.length === 0 ? (
+          <p className="text-sm text-ink-soft">Még nincs önfrissítő kapcsolat.</p>
+        ) : (
+          <div className="space-y-3">
+            {rows.map((row) => (
+              <ConnectorCard key={row.id} row={row} pending={pending} run={run} onSync={syncOne} />
+            ))}
+          </div>
         )}
       </Card>
     </div>
@@ -330,6 +344,7 @@ function ConnectorCard({ row, pending, run, onSync }: {
   run: (operation: () => Promise<{ success: boolean; error?: string }>, success: string) => void
   onSync: (connectorId: string) => void
 }) {
+  const [editing, setEditing] = useState(false)
   const [detailsOpen, setDetailsOpen] = useState(false)
   const [newApiKey, setNewApiKey] = useState('')
   const proposal = row.versions.find((version) => version.status === 'proposed')
@@ -343,129 +358,265 @@ function ConnectorCard({ row, pending, run, onSync }: {
       ? `Jelenlegi API részletei (v${active.versionNo})`
       : 'API részletei'
   const diffCapabilities = [...(proposal?.capabilities ?? []), ...(active?.capabilities ?? [])]
+  const lastSyncedLabel = row.lastSyncedAt
+    ? new Date(row.lastSyncedAt).toLocaleString('hu-HU')
+    : 'még nem volt sync'
 
   return (
     <article className="rounded-lg border border-ink/12 bg-paper p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <div><h3 className="font-semibold">{row.name}</h3><p className="mt-1 break-all text-xs text-ink-soft">{row.specUrl}</p></div>
-        <div className="flex gap-2"><Badge tone={row.urlApproved ? 'success' : 'warning'}>{row.urlApproved ? 'link jóváhagyva' : 'link jóváhagyásra vár'}</Badge><Badge tone={row.trusted ? 'success' : 'warning'}>{row.trusted ? 'megbízható partner' : 'bizalom nincs jóváhagyva'}</Badge></div>
-      </div>
-
-      <div className="mt-3 flex flex-wrap gap-2">
-        {!row.urlApproved ? <button disabled={pending} className="rounded-md border border-sage/40 px-3 py-1.5 text-xs font-semibold" onClick={() => run(() => approveSelfUpdatingSource({ connectorId: row.id }), 'A link jóváhagyva.')}>Link jóváhagyása</button> : null}
-        {!row.trusted ? <button disabled={pending} className="rounded-md border border-sage/40 px-3 py-1.5 text-xs font-semibold" onClick={() => run(() => trustSelfUpdatingPartner({ connectorId: row.id }), 'A partner megbízhatónak minősítve.')}>Megbízhatónak minősítem</button> : null}
-        <button disabled={pending || !row.urlApproved || !row.trusted} className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50" onClick={() => onSync(row.id)}>🔄 Frissítés keresése</button>
-        <button
-          type="button"
-          disabled={!active && !proposal}
-          className="rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold disabled:opacity-50"
-          onClick={() => setDetailsOpen((open) => !open)}
-          aria-expanded={detailsOpen}
-        >
-          {detailsOpen ? 'API részletek elrejtése' : 'API részletei'}
-        </button>
-      </div>
-      <p className="mt-2 text-xs text-ink-soft">Megmutatjuk pontosan, mi változott. Amíg nem hagyod jóvá, minden a régiben marad.</p>
-
-      {detailsOpen ? (
-        <div className="mt-4">
-          <CapabilityList
-            title={detailsTitle}
-            capabilities={detailsCapabilities}
-            emptyHint="Ehhez a kapcsolathoz még nincs átvett vagy javasolt képességlista. Először keress frissítést."
-          />
+        <div className="min-w-0">
+          <h3 className="font-semibold">{row.name}</h3>
+          <p className="mt-1 text-xs text-ink-soft">
+            Utolsó sync: {lastSyncedLabel}
+            {active ? ` · v${active.versionNo}` : ''}
+          </p>
         </div>
-      ) : null}
-
-      <div className="mt-4 space-y-2 border-t border-ink/10 pt-3">
-        <h4 className="text-sm font-semibold">Hozzáférési kulcs cseréje</h4>
-        <p className="text-xs text-ink-soft">
-          Az új kulcs azonnal felülírja a régit a titoktárolóban, és a következő hívástól ez lesz érvényben.
-          A képességlista és a verziók nem változnak. Mentés után a „Frissítés keresése” gombbal ellenőrizhető,
-          hogy a partner elfogadja-e az új kulcsot.
-        </p>
-        <div className="flex flex-wrap items-end gap-2">
-          <label className="min-w-[16rem] flex-1 text-xs">
-            <span className="mb-1 block font-semibold">Új hozzáférési kulcs</span>
-            <input
-              type="password"
-              value={newApiKey}
-              onChange={(e) => setNewApiKey(e.target.value)}
-              disabled={pending}
-              autoComplete="new-password"
-              placeholder="A partnertől kapott új kulcs"
-              className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2 text-sm disabled:opacity-50"
-            />
-          </label>
+        <div className="flex flex-wrap items-center gap-2">
+          <Badge tone={row.urlApproved ? 'success' : 'warning'}>
+            {row.urlApproved ? 'link jóváhagyva' : 'link jóváhagyásra vár'}
+          </Badge>
+          <Badge tone={row.trusted ? 'success' : 'warning'}>
+            {row.trusted ? 'megbízható partner' : 'bizalom nincs jóváhagyva'}
+          </Badge>
+          {proposal ? <Badge tone="warning">frissítés vár</Badge> : null}
           <button
             type="button"
-            disabled={pending || !newApiKey.trim()}
-            className="rounded-md border border-ink/20 px-3 py-2 text-xs font-semibold disabled:opacity-50"
-            onClick={() => {
-              const apiKey = newApiKey.trim()
-              run(async () => {
-                const result = await updateSelfUpdatingConnectorApiKey({ connectorId: row.id, apiKey })
-                if (result.success) setNewApiKey('')
-                return result
-              }, 'A hozzáférési kulcs frissült.')
-            }}
+            className="rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold"
+            onClick={() => setEditing((open) => !open)}
+            aria-expanded={editing}
           >
-            Kulcs mentése
+            {editing ? 'Bezárás' : 'Szerkesztés'}
           </button>
         </div>
       </div>
 
-      <label className="mt-4 flex items-start gap-2 border-t border-ink/10 pt-3 text-xs">
-        <input type="checkbox" checked={row.autoApproveEnabled} disabled={pending} onChange={(e) => run(() => setSelfUpdatingAutoApprove({ connectorId: row.id, enabled: e.target.checked }), 'A kapcsolat automatikus átvételi szabálya frissült.')} />
-        <span>Ennél a kapcsolatnál a kizárólag új, csak olvasási képességek automatikusan átvehetők, ha a tenant kapcsolója is be van kapcsolva.</span>
-      </label>
+      {editing ? (
+        <div className="mt-4 space-y-4 border-t border-ink/10 pt-4">
+          <p className="break-all text-xs text-ink-soft">{row.specUrl}</p>
 
-      {proposal?.diffSummary ? (
-        <div className="mt-4 space-y-3 border-t border-ink/10 pt-4">
-          <h3 className="font-semibold">Változások a(z) „{row.name}” kapcsolatban</h3>
-          <DiffGroup
-            title="🟢 Új képességek"
-            tone="success"
-            items={proposal.diffSummary.added}
-            capabilities={diffCapabilities}
-          />
-          <DiffGroup
-            title="🔴 Törésveszélyes változások"
-            tone="danger"
-            items={proposal.diffSummary.breaking}
-            capabilities={diffCapabilities}
-          />
-          <DiffGroup
-            title="🟠 Visszavont képességek"
-            tone="warning"
-            items={proposal.diffSummary.narrowed}
-            capabilities={diffCapabilities}
-          />
-          <DiffGroup
-            title="🔴 Beléptetési vagy kötelező fejléc-változások"
-            tone="danger"
-            items={proposal.diffSummary.auth}
-            capabilities={diffCapabilities}
-          />
-          <CapabilityList
-            title="Teljes funkciólista a javasolt frissítés után"
-            capabilities={proposal.capabilities ?? []}
-            emptyHint="A javasolt verzióhoz nem sikerült kiolvasni a képességlistát."
-          />
           <div className="flex flex-wrap gap-2">
-            <button disabled={pending} className="rounded-md border border-ink/20 px-3 py-2 text-xs font-semibold" onClick={() => run(() => rejectSelfUpdatingVersion({ connectorId: row.id, versionId: proposal.id }), 'A változásokat elutasítottad; minden a régiben maradt.')}>Mégse — minden marad a régiben</button>
-            <button disabled={pending} className="rounded-md bg-coral px-3 py-2 text-xs font-semibold text-white" onClick={() => run(() => approveSelfUpdatingVersion({ connectorId: row.id, versionId: proposal.id }), 'A változások jóváhagyva és rögzítve.')}>Jóváhagyom ezeket a változásokat</button>
+            {!row.urlApproved ? (
+              <button
+                disabled={pending}
+                className="rounded-md border border-sage/40 px-3 py-1.5 text-xs font-semibold"
+                onClick={() => run(() => approveSelfUpdatingSource({ connectorId: row.id }), 'A link jóváhagyva.')}
+              >
+                Link jóváhagyása
+              </button>
+            ) : null}
+            {!row.trusted ? (
+              <button
+                disabled={pending}
+                className="rounded-md border border-sage/40 px-3 py-1.5 text-xs font-semibold"
+                onClick={() => run(() => trustSelfUpdatingPartner({ connectorId: row.id }), 'A partner megbízhatónak minősítve.')}
+              >
+                Megbízhatónak minősítem
+              </button>
+            ) : null}
+            <button
+              disabled={pending || !row.urlApproved || !row.trusted}
+              className="rounded-md bg-ink px-3 py-1.5 text-xs font-semibold text-card disabled:opacity-50"
+              onClick={() => onSync(row.id)}
+            >
+              🔄 Frissítés keresése
+            </button>
+            <button
+              type="button"
+              disabled={!active && !proposal}
+              className="rounded-md border border-ink/20 px-3 py-1.5 text-xs font-semibold disabled:opacity-50"
+              onClick={() => setDetailsOpen((open) => !open)}
+              aria-expanded={detailsOpen}
+            >
+              {detailsOpen ? 'API részletek elrejtése' : 'API részletei'}
+            </button>
+          </div>
+          <p className="text-xs text-ink-soft">
+            Megmutatjuk pontosan, mi változott. Amíg nem hagyod jóvá, minden a régiben marad.
+          </p>
+
+          {detailsOpen ? (
+            <CapabilityList
+              title={detailsTitle}
+              capabilities={detailsCapabilities}
+              emptyHint="Ehhez a kapcsolathoz még nincs átvett vagy javasolt képességlista. Először keress frissítést."
+            />
+          ) : null}
+
+          <div className="space-y-2 border-t border-ink/10 pt-3">
+            <h4 className="text-sm font-semibold">Hozzáférési kulcs cseréje</h4>
+            <p className="text-xs text-ink-soft">
+              Az új kulcs azonnal felülírja a régit a titoktárolóban, és a következő hívástól ez lesz érvényben.
+              A képességlista és a verziók nem változnak. Mentés után a „Frissítés keresése” gombbal ellenőrizhető,
+              hogy a partner elfogadja-e az új kulcsot.
+            </p>
+            <div className="flex flex-wrap items-end gap-2">
+              <label className="min-w-[16rem] flex-1 text-xs">
+                <span className="mb-1 block font-semibold">Új hozzáférési kulcs</span>
+                <input
+                  type="password"
+                  value={newApiKey}
+                  onChange={(e) => setNewApiKey(e.target.value)}
+                  disabled={pending}
+                  autoComplete="new-password"
+                  placeholder="A partnertől kapott új kulcs"
+                  className="w-full rounded-md border border-ink/15 bg-paper px-3 py-2 text-sm disabled:opacity-50"
+                />
+              </label>
+              <button
+                type="button"
+                disabled={pending || !newApiKey.trim()}
+                className="rounded-md border border-ink/20 px-3 py-2 text-xs font-semibold disabled:opacity-50"
+                onClick={() => {
+                  const apiKey = newApiKey.trim()
+                  run(async () => {
+                    const result = await updateSelfUpdatingConnectorApiKey({ connectorId: row.id, apiKey })
+                    if (result.success) setNewApiKey('')
+                    return result
+                  }, 'A hozzáférési kulcs frissült.')
+                }}
+              >
+                Kulcs mentése
+              </button>
+            </div>
+          </div>
+
+          <label className="flex items-start gap-2 border-t border-ink/10 pt-3 text-xs">
+            <input
+              type="checkbox"
+              checked={row.autoApproveEnabled}
+              disabled={pending}
+              onChange={(e) =>
+                run(
+                  () => setSelfUpdatingAutoApprove({ connectorId: row.id, enabled: e.target.checked }),
+                  'A kapcsolat automatikus átvételi szabálya frissült.',
+                )
+              }
+            />
+            <span>
+              Ennél a kapcsolatnál a kizárólag új, csak olvasási képességek automatikusan átvehetők, ha a tenant
+              kapcsolója is be van kapcsolva.
+            </span>
+          </label>
+
+          {proposal?.diffSummary ? (
+            <div className="space-y-3 border-t border-ink/10 pt-4">
+              <h3 className="font-semibold">Változások a(z) „{row.name}” kapcsolatban</h3>
+              <DiffGroup
+                title="🟢 Új képességek"
+                tone="success"
+                items={proposal.diffSummary.added}
+                capabilities={diffCapabilities}
+              />
+              <DiffGroup
+                title="🔴 Törésveszélyes változások"
+                tone="danger"
+                items={proposal.diffSummary.breaking}
+                capabilities={diffCapabilities}
+              />
+              <DiffGroup
+                title="🟠 Visszavont képességek"
+                tone="warning"
+                items={proposal.diffSummary.narrowed}
+                capabilities={diffCapabilities}
+              />
+              <DiffGroup
+                title="🔴 Beléptetési vagy kötelező fejléc-változások"
+                tone="danger"
+                items={proposal.diffSummary.auth}
+                capabilities={diffCapabilities}
+              />
+              <CapabilityList
+                title="Teljes funkciólista a javasolt frissítés után"
+                capabilities={proposal.capabilities ?? []}
+                emptyHint="A javasolt verzióhoz nem sikerült kiolvasni a képességlistát."
+              />
+              <div className="flex flex-wrap gap-2">
+                <button
+                  disabled={pending}
+                  className="rounded-md border border-ink/20 px-3 py-2 text-xs font-semibold"
+                  onClick={() =>
+                    run(
+                      () => rejectSelfUpdatingVersion({ connectorId: row.id, versionId: proposal.id }),
+                      'A változásokat elutasítottad; minden a régiben maradt.',
+                    )
+                  }
+                >
+                  Mégse — minden marad a régiben
+                </button>
+                <button
+                  disabled={pending}
+                  className="rounded-md bg-coral px-3 py-2 text-xs font-semibold text-white"
+                  onClick={() =>
+                    run(
+                      () => approveSelfUpdatingVersion({ connectorId: row.id, versionId: proposal.id }),
+                      'A változások jóváhagyva és rögzítve.',
+                    )
+                  }
+                >
+                  Jóváhagyom ezeket a változásokat
+                </button>
+              </div>
+            </div>
+          ) : null}
+
+          <div className="border-t border-ink/10 pt-4">
+            <h4 className="font-semibold">Korábbi állapotok</h4>
+            <p className="mt-1 text-xs text-ink-soft">
+              Minden átvett frissítést megőrzünk. Ha gondot okoz, egy kattintással visszaállíthatod.
+            </p>
+            <div className="mt-2 overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="text-ink-soft">
+                    <th className="py-2">Verzió</th>
+                    <th>Átvéve</th>
+                    <th>Ki hagyta jóvá</th>
+                    <th>Állapot</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {row.versions.map((version) => {
+                    const isActive = version.id === row.activeSpecVersionId
+                    return (
+                      <tr key={version.id} className="border-t border-ink/8">
+                        <td className="py-2">
+                          v{version.versionNo}
+                          {isActive ? ' (jelenlegi)' : ''}
+                        </td>
+                        <td>{new Date(version.approvedAt ?? version.fetchedAt).toLocaleString('hu-HU')}</td>
+                        <td>{version.approvedByName}</td>
+                        <td>{version.status}</td>
+                        <td className="text-right">
+                          {!isActive && ['approved', 'superseded', 'rolled_back'].includes(version.status) ? (
+                            <button
+                              disabled={pending}
+                              className="rounded border border-sage/35 px-2 py-1 font-semibold"
+                              onClick={() =>
+                                run(
+                                  () =>
+                                    rollbackSelfUpdatingVersion({
+                                      connectorId: row.id,
+                                      versionId: version.id,
+                                    }),
+                                  `A kapcsolat visszaállt a v${version.versionNo} állapotra.`,
+                                )
+                              }
+                            >
+                              Visszaállítás
+                            </button>
+                          ) : null}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       ) : null}
-
-      <div className="mt-5 border-t border-ink/10 pt-4">
-        <h4 className="font-semibold">Korábbi állapotok</h4>
-        <p className="mt-1 text-xs text-ink-soft">Minden átvett frissítést megőrzünk. Ha gondot okoz, egy kattintással visszaállíthatod.</p>
-        <div className="mt-2 overflow-x-auto"><table className="w-full text-left text-xs"><thead><tr className="text-ink-soft"><th className="py-2">Verzió</th><th>Átvéve</th><th>Ki hagyta jóvá</th><th>Állapot</th><th /></tr></thead><tbody>
-          {row.versions.map((version) => { const active = version.id === row.activeSpecVersionId; return <tr key={version.id} className="border-t border-ink/8"><td className="py-2">v{version.versionNo}{active ? ' (jelenlegi)' : ''}</td><td>{new Date(version.approvedAt ?? version.fetchedAt).toLocaleString('hu-HU')}</td><td>{version.approvedByName}</td><td>{version.status}</td><td className="text-right">{!active && ['approved', 'superseded', 'rolled_back'].includes(version.status) ? <button disabled={pending} className="rounded border border-sage/35 px-2 py-1 font-semibold" onClick={() => run(() => rollbackSelfUpdatingVersion({ connectorId: row.id, versionId: version.id }), `A kapcsolat visszaállt a v${version.versionNo} állapotra.`)}>Visszaállítás</button> : null}</td></tr> })}
-        </tbody></table></div>
-      </div>
     </article>
   )
 }

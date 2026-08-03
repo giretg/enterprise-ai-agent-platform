@@ -258,6 +258,85 @@ async function main() {
     if (!res.ok) assert.equal(res.reason, 'subject_not_in_tenant')
   })
 
+  await check('előkészített (pending) tagságú userre is írható grant — első belépés előtt', async () => {
+    const suffix = randomUUID().slice(0, 8)
+    const pendingUser = await prisma.user.create({
+      data: {
+        externalAuthId: `preprovisioned:${randomUUID()}`,
+        email: `awaiting-${suffix}@example.test`,
+        name: `awaiting-${suffix}@example.test`,
+        status: 'pending',
+        role: 'operator',
+        tenantId: s.tenantA.id,
+      },
+    })
+    await prisma.tenantMembership.create({
+      data: {
+        tenantId: s.tenantA.id,
+        userId: pendingUser.id,
+        role: 'operator',
+        status: 'pending',
+      },
+    })
+    const res = await repo.upsertEdge({
+      tenantId: s.tenantA.id,
+      subjectType: 'user',
+      subjectUserId: pendingUser.id,
+      subjectAgentId: null,
+      targetAgentId: s.agentA1.id,
+      canView: true,
+      canAddress: true,
+      grantedById: s.admin.id,
+      buildAudit: auditFor('agent_access.grant.create', s.admin.id),
+    })
+    assert.equal(res.ok, true, 'pending tagságú előkészített usernél a grant-írásnak sikerülnie kell')
+    const rows = await prisma.agentAccessGrant.findMany({
+      where: {
+        tenantId: s.tenantA.id,
+        subjectUserId: pendingUser.id,
+        targetAgentId: s.agentA1.id,
+      },
+    })
+    assert.equal(rows.length, 1)
+    assert.equal(rows[0]?.canView, true)
+    assert.equal(rows[0]?.canAddress, true)
+  })
+
+  await check('felfüggesztett tagságú userre NEM írható grant', async () => {
+    const suffix = randomUUID().slice(0, 8)
+    const suspendedUser = await prisma.user.create({
+      data: {
+        externalAuthId: `ext-susp-${suffix}`,
+        email: `susp-${suffix}@example.test`,
+        name: 'Felfüggesztett',
+        status: 'suspended',
+        role: 'operator',
+        tenantId: s.tenantA.id,
+      },
+    })
+    await prisma.tenantMembership.create({
+      data: {
+        tenantId: s.tenantA.id,
+        userId: suspendedUser.id,
+        role: 'operator',
+        status: 'suspended',
+      },
+    })
+    const res = await repo.upsertEdge({
+      tenantId: s.tenantA.id,
+      subjectType: 'user',
+      subjectUserId: suspendedUser.id,
+      subjectAgentId: null,
+      targetAgentId: s.agentA1.id,
+      canView: true,
+      canAddress: true,
+      grantedById: s.admin.id,
+      buildAudit: auditFor('agent_access.grant.create', s.admin.id),
+    })
+    assert.equal(res.ok, false)
+    if (!res.ok) assert.equal(res.reason, 'subject_not_in_tenant')
+  })
+
   await check('elutasított írásnál NEM keletkezik audit-esemény (fail-closed)', async () => {
     const before = await prisma.auditLog.count({ where: { action: 'agent_access.grant.create' } })
     await repo.upsertEdge({

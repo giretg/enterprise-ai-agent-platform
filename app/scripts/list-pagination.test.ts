@@ -86,6 +86,8 @@ assert.doesNotMatch(
 
 const activeRuns = read('src/app/api/v1/active-runs/route.ts')
 assert.match(activeRuns, /tickets\.listPage/, 'active-runs uses listPage')
+assert.match(activeRuns, /createdById/, 'active-runs scopes chat turns to the viewer')
+assert.match(activeRuns, /belongingToUserId/, 'active-runs includes created or assigned tickets')
 assert.doesNotMatch(activeRuns, /\.slice\(0,\s*50\)/, 'active-runs no client-side slice after full fetch')
 
 const startable = read('src/domain/playbook/playbook-v2-service.ts')

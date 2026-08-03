@@ -821,13 +821,14 @@ model Agent {
   // (`agent_ask`, csatorna, agent API-kulcs, ticket-komment) nyitva maradnak.
   // Csak tenant admin írhatja, minden váltás auditált (`agent.task_only`).
   taskOnly                      Boolean     @default(false) @map("task_only")
-  // Agent-hozzáférési gráf kapcsolói (Access-Policy §agent-scope, C4 kompatibilitási
-  // alapérték). `inboundRestricted`: az agent FELÉ tartó view/address kapcsolat csak
-  // explicit `AgentAccessGrant`-tal engedett. `outboundRestricted`: az agentBŐL induló
-  // agent→agent view/address kapcsolat csak explicit granttal engedett. Alapérték
-  // false/false → korlátozás nélkül a tenanton belüli kapcsolat grant nélkül engedett
-  // (nincs migrációs élgenerálás, nincs shadow rollout).
-  inboundRestricted             Boolean     @default(false) @map("inbound_restricted")
+  // Agent-hozzáférési gráf kapcsolói.
+  // `inboundRestricted`: user→agent view/address csak explicit granttal.
+  // Üzleti alap: true — a tenant tagok kiinduló jogait `AgentAccessGrant` sorok
+  // hordozzák (mindenki látja/megszólíthatja, az admin pipával vesz el).
+  // Normál agent→agent utat NEM zárja (az a forrás `outboundRestricted`-je);
+  // Web-Egress célra az evaluate továbbra is grantot követel.
+  // `outboundRestricted`: agent→agent kimenő él csak explicit granttal.
+  inboundRestricted             Boolean     @default(true) @map("inbound_restricted")
   outboundRestricted            Boolean     @default(false) @map("outbound_restricted")
   selfEvolutionProfile          Json?       @map("self_evolution_profile")
   memoryId                      String      @unique @map("memory_id") @db.Uuid

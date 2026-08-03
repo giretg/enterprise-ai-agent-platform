@@ -158,7 +158,7 @@ export function ActiveRunsPanel() {
               <div>
                 <p className="text-sm font-semibold text-ink">Futások</p>
                 <p className="text-[11px] text-ink-faint">
-                  Aktív és frissen lefutott chat-válaszok és feladatok
+                  A te chat-válaszaid, indított és rád szignált feladataid
                 </p>
               </div>
               <button

@@ -132,13 +132,20 @@ Azonnali törlés: `{tenantId}/` prefix alatti összes objektum.
 
 ## 6. Dev / acceptance
 
-Lokálisan és acceptance tesztben:
+Lokálisan (local-wiki / `next dev`):
 
 ```env
 FILE_EDITOR_STUB=true
 ```
 
-→ in-memory storage, GCS nélkül. Pre-signed URL stub URL-t ad vissza.
+→ lemezre ír (`.data/workspace`), GCS nélkül — **túléli a Next restartot**. Pre-signed URL stub URL-t ad vissza.
+
+E2E / acceptance (izolált, restart után üres):
+
+```env
+FILE_EDITOR_STUB=true
+FILE_EDITOR_STUB_MEMORY=true
+```
 
 Acceptance: `npm run test:acceptance` — `scenarioFileEditor`
 E2E UI: `npm run test:e2e` — Playwright W7 (feltöltés + lista)

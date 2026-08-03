@@ -24,6 +24,8 @@
 import assert from 'node:assert/strict'
 import {
   evaluateAgentAccess,
+  isEligibleAgentAccessGraphUserStatus,
+  isEligibleAgentAccessSubjectMembership,
   isFullyDefaultOpen,
   reachableAgentIds,
   disclosureForDeny,
@@ -33,6 +35,7 @@ import {
   type AgentAccessTargetNode,
   type AgentAccessVerb,
 } from '../src/lib/agent-access-graph'
+import { connectionState, type GraphAgentView } from '../src/lib/agent-access-graph-view'
 import {
   AgentAccessService,
   type AgentGraphNode,
@@ -66,6 +69,7 @@ function node(over: Partial<AgentGraphNode> & { id: string }): AgentGraphNode {
     hiddenFromOperators: false,
     inboundRestricted: false,
     outboundRestricted: false,
+    taskOnly: false,
     ...over,
   }
 }
@@ -88,6 +92,81 @@ async function pureCoreTests() {
   const userSubject: AgentAccessSubject = { kind: 'user', userId: 'u1', tenantId: TENANT }
   const agentSubject: AgentAccessSubject = { kind: 'agent', agentId: 'a1', tenantId: TENANT }
   const source = { id: 'a1', tenantId: TENANT as string | null, outboundRestricted: false }
+
+  await check('org-ábra / grant-alany: pending tagság is elfogadott (első belépés előtt)', () => {
+    assert.equal(isEligibleAgentAccessSubjectMembership('active'), true)
+    assert.equal(isEligibleAgentAccessSubjectMembership('pending'), true)
+    assert.equal(isEligibleAgentAccessSubjectMembership('suspended'), false)
+    assert.equal(isEligibleAgentAccessGraphUserStatus('active'), true)
+    assert.equal(isEligibleAgentAccessGraphUserStatus('pending'), true)
+    assert.equal(isEligibleAgentAccessGraphUserStatus('suspended'), false)
+  })
+
+  await check('szerkesztő: előzetes grant default-open agentnél is grant-ként látszik', () => {
+    const openAgent: GraphAgentView = {
+      id: 'open',
+      name: 'Open',
+      nickname: 'Open',
+      role: 'worker',
+      status: 'active',
+      hiddenFromOperators: false,
+      inboundRestricted: false,
+      outboundRestricted: false,
+      adminOnly: false,
+    }
+    // Runtime C4: default-open, grant nélkül is engedett.
+    const without = connectionState({
+      tenantId: TENANT,
+      agents: [openAgent],
+      grants: [],
+      subject: { kind: 'user', id: 'u1' },
+      targetAgentId: 'open',
+      verb: 'view',
+    })
+    assert.deepEqual(without, { allowed: true, basis: 'implicit' })
+
+    // Admin előre felvett kapcsolatot — a gombnak bekapcsoltnak kell látszania,
+    // különben a mentés után is „(alapból)" marad (úgy tűnik, nem lehet állítani).
+    const withGrant = connectionState({
+      tenantId: TENANT,
+      agents: [openAgent],
+      grants: [
+        {
+          id: 'g1',
+          subjectType: 'user',
+          subjectUserId: 'u1',
+          subjectAgentId: null,
+          targetAgentId: 'open',
+          canView: true,
+          canAddress: false,
+        },
+      ],
+      subject: { kind: 'user', id: 'u1' },
+      targetAgentId: 'open',
+      verb: 'view',
+    })
+    assert.deepEqual(withGrant, { allowed: true, basis: 'grant' })
+
+    const addressStillImplicit = connectionState({
+      tenantId: TENANT,
+      agents: [openAgent],
+      grants: [
+        {
+          id: 'g1',
+          subjectType: 'user',
+          subjectUserId: 'u1',
+          subjectAgentId: null,
+          targetAgentId: 'open',
+          canView: true,
+          canAddress: false,
+        },
+      ],
+      subject: { kind: 'user', id: 'u1' },
+      targetAgentId: 'open',
+      verb: 'address',
+    })
+    assert.deepEqual(addressStillImplicit, { allowed: true, basis: 'implicit' })
+  })
 
   // C4 kompatibilitási alapérték: korlátozás nélkül grant nélkül is engedett.
   for (const verb of ['view', 'address'] as AgentAccessVerb[]) {
@@ -122,6 +201,28 @@ async function pureCoreTests() {
       verb: 'address',
     })
     assert.equal(d.allowed, false)
+  })
+
+  await check('inbound zárva NEM zárja az agent→agent default-open utat (normál agent)', () => {
+    const d = evaluateAgentAccess({
+      subject: agentSubject,
+      target: target({ inboundRestricted: true }),
+      source,
+      verb: 'address',
+    })
+    assert.equal(d.allowed, true)
+    if (d.allowed) assert.equal(d.basis.kind, 'default-open')
+  })
+
+  await check('Web-Egress cél: agent→agent inbound továbbra is grant-kötött', () => {
+    const d = evaluateAgentAccess({
+      subject: agentSubject,
+      target: target({ inboundRestricted: true, systemRole: 'web_egress' }),
+      source,
+      verb: 'address',
+    })
+    assert.equal(d.allowed, false)
+    if (!d.allowed) assert.equal(d.reason, 'missing_grant')
   })
 
   await check('user→agent-nél a forrás outbound-ja IRRELEVÁNS (a usernek nincs ilyen)', () => {
@@ -251,7 +352,9 @@ async function coneTests() {
     })
   }
   // Lánc: a→b→c→d→e→f (6 hop), és f→a visszacsatolás (ciklus).
-  for (const id of ['a', 'b', 'c', 'd', 'e', 'f']) mk(id)
+  // outboundRestricted: a lánc CSAK az explicit agent-éleken menjen (az inbound
+  // a user→agent mátrixot zárja, nem az agent→agent default-open utat).
+  for (const id of ['a', 'b', 'c', 'd', 'e', 'f']) mk(id, { outboundRestricted: true })
 
   const agentGrants = new Map<string, Map<string, AgentAccessGrantEdge>>()
   const link = (from: string, to: string) => {
@@ -281,8 +384,8 @@ async function coneTests() {
 
   await check('teljesen nyitott gráf felismerése (nincs N² él-rajzolás)', () => {
     const open = [
-      { ...nodes.get('a')!, inboundRestricted: false },
-      { ...nodes.get('b')!, inboundRestricted: false },
+      { ...nodes.get('a')!, inboundRestricted: false, outboundRestricted: false },
+      { ...nodes.get('b')!, inboundRestricted: false, outboundRestricted: false },
     ]
     assert.equal(isFullyDefaultOpen(open), true)
     assert.equal(isFullyDefaultOpen([...open, nodes.get('c')!]), false)
@@ -591,10 +694,11 @@ async function serviceTests() {
   })
 
   await check('a shadow-check deny esetén `agent.access.bypass`-t ír, engedésnél semmit', async () => {
+    // Web-Egress agent→agent grant nélkül deny — a shadow ezt naplózza.
     const denied = buildService({ agents: allAgents })
     await denied.service.recordProcessBypass({
       subject: { kind: 'agent', agentId: caller.id, tenantId: TENANT },
-      targetAgentId: closed.id,
+      targetAgentId: webEgress.id,
       verb: 'address',
       processInstanceId: 'proc-1',
     })
@@ -625,9 +729,13 @@ async function serviceTests() {
   })
 
   await check('a kúp az AGENTEK saját jogán megy tovább (I1 — confused deputy hatás)', async () => {
-    // u1 csak `caller`-t szólíthatja meg; `caller` viszont explicit éllel eléri `closed`-et.
+    // u1 csak `caller`-t szólíthatja meg; `caller` outbound-zárt, de explicit éllel
+    // eléri `closed`-et. `other` outbound-zárt és nincs rá él → kimarad.
+    const lockedCaller = node({ id: 'caller', outboundRestricted: true })
+    const lockedClosed = node({ id: 'closed', inboundRestricted: true, outboundRestricted: true })
+    const lockedOther = node({ id: 'other', inboundRestricted: true, outboundRestricted: true })
     const { service } = buildService({
-      agents: [caller, closed, node({ id: 'other', inboundRestricted: true })],
+      agents: [lockedCaller, lockedClosed, lockedOther],
       grants: [
         {
           id: 'g-user-caller',
@@ -635,7 +743,7 @@ async function serviceTests() {
           subjectType: 'user',
           subjectUserId: 'u1',
           subjectAgentId: null,
-          targetAgentId: caller.id,
+          targetAgentId: lockedCaller.id,
           canView: true,
           canAddress: true,
         },
@@ -644,8 +752,8 @@ async function serviceTests() {
           tenantId: TENANT,
           subjectType: 'agent',
           subjectUserId: null,
-          subjectAgentId: caller.id,
-          targetAgentId: closed.id,
+          subjectAgentId: lockedCaller.id,
+          targetAgentId: lockedClosed.id,
           canView: false,
           canAddress: true,
         },
@@ -653,7 +761,6 @@ async function serviceTests() {
     })
     const cone = await service.reachabilityCone({ kind: 'user', userId: 'u1', tenantId: TENANT })
     assert.deepEqual([...cone.agentIds].sort(), ['caller', 'closed'])
-    // `other` zárt és nincs rá él → nem kerül a kúpba.
     assert.ok(!cone.agentIds.includes('other'))
   })
 }

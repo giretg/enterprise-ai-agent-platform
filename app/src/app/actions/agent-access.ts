@@ -19,6 +19,10 @@ import { repositories } from '@/repositories/postgres'
 import { prisma } from '@/lib/db'
 import { fail, ok } from '@/lib/result'
 import { isTenantAdmin, tenantUserSubject } from '@/domain/agent-access/tenant-user-subject'
+import {
+  AGENT_ACCESS_SUBJECT_MEMBERSHIP_STATUSES,
+  isEligibleAgentAccessGraphUserStatus,
+} from '@/lib/agent-access-graph'
 import { isAdminOnlyGraphNode } from '@/lib/platform-agent-registry'
 import { personaFor } from '@/lib/agent-persona'
 
@@ -57,8 +61,14 @@ export async function loadAgentAccessGraph() {
     const [graph, memberships] = await Promise.all([
       services.agentAccess.loadTenantGraph(tenantId),
       prisma.tenantMembership.findMany({
-        where: { tenantId, status: 'active', user: { status: 'active' } },
-        include: { user: { select: { id: true, name: true, email: true } } },
+        // Első belépésre váró (pending) kollégák is: az admin előre beállíthassa
+        // a láthatóság / megszólíthatóság jogokat, mielőtt a user belépne.
+        where: {
+          tenantId,
+          status: { in: [...AGENT_ACCESS_SUBJECT_MEMBERSHIP_STATUSES] },
+          user: { status: { in: [...AGENT_ACCESS_SUBJECT_MEMBERSHIP_STATUSES] } },
+        },
+        include: { user: { select: { id: true, name: true, email: true, status: true } } },
         orderBy: { user: { name: 'asc' } },
       }),
     ])
@@ -78,12 +88,16 @@ export async function loadAgentAccessGraph() {
         outboundRestricted: node.outboundRestricted,
         adminOnly: isAdminOnlyGraphNode(node),
       })),
-      users: memberships.map((m) => ({
-        id: m.user.id,
-        name: m.user.name,
-        email: m.user.email,
-        role: m.role,
-      })),
+      users: memberships
+        .filter((m) => isEligibleAgentAccessGraphUserStatus(m.user.status))
+        .map((m) => ({
+          id: m.user.id,
+          name: m.user.name,
+          email: m.user.email,
+          role: m.role,
+          status: m.user.status,
+          membershipStatus: m.status,
+        })),
       grants: graph.grants,
       /**
        * Ha a tenantban egyetlen korlátozás sincs bekapcsolva, az implicit élek száma

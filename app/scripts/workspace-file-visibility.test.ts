@@ -8,8 +8,11 @@ import {
   isInternalWorkspaceFile,
   linkWorkspaceFileReferences,
   referencedWorkspaceFiles,
+  workspaceFileDownloadLink,
   workspaceFileLink,
   workspaceFileLinkForReference,
+  workspaceHtmlPreviewFromLink,
+  workspaceHtmlPreviewTarget,
 } from '../src/lib/workspace-file-visibility'
 import { WorkspaceStorage } from '../src/domain/file-editor/workspace-storage'
 
@@ -79,8 +82,28 @@ async function main() {
     assert.equal(workspaceFileLinkForReference('https://example.com/report.html', files, baseUrl), null)
   })
 
+  await check('a HTML előnézet célja külön inline és letöltési URL-t ad', () => {
+    const baseUrl = '/api/v1/conversations/c-1/workspace/files'
+    const target = workspaceHtmlPreviewTarget(baseUrl, 'havi riport.html')
+    assert.ok(target)
+    assert.equal(target.url, `${baseUrl}?path=havi+riport.html&disposition=inline`)
+    assert.equal(target.downloadUrl, `${baseUrl}?path=havi+riport.html`)
+    assert.equal(target.fileName, 'havi riport.html')
+    assert.equal(workspaceHtmlPreviewTarget(baseUrl, 'adatok.xlsx'), null)
+    assert.equal(
+      workspaceFileDownloadLink(baseUrl, 'havi riport.html'),
+      `${baseUrl}?path=havi+riport.html`,
+    )
+    assert.deepEqual(
+      workspaceHtmlPreviewFromLink(`${baseUrl}?path=havi+riport.html&disposition=inline`),
+      target,
+    )
+    assert.equal(workspaceHtmlPreviewFromLink('https://example.com/report.html'), null)
+  })
+
   await check('a workspace manifest külön kezeli a feltöltött és a belső azonos nevű JSON-okat', async () => {
     process.env.FILE_EDITOR_STUB = 'true'
+    process.env.FILE_EDITOR_STUB_MEMORY = 'true'
     const storage = new WorkspaceStorage('test-bucket')
     const tenantId = 'workspace-file-visibility-test'
     const workspaceId = 'audience-separation'
