@@ -16,6 +16,7 @@ export const ticketFilterSchema = z.object({
       'rejected',
     ])
     .optional(),
+  excludeTest: z.boolean().optional(),
 })
 
 export const ticketIdSchema = z.object({

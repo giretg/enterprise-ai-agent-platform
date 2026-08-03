@@ -1,12 +1,14 @@
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
-import { getDashboardStats, listAgents, listTickets } from '@/app/actions/platform'
+import { getDashboardStats, listAgents, listBoardAssignees } from '@/app/actions/platform'
 import { getCurrentUser } from '@/auth'
 import { getAuthContext } from '@/auth/context'
 import { hasMinimumRole } from '@/auth/types'
 import { Badge, Card } from '@/components/ui/shell'
 import { DashboardAgentCard } from '@/components/agents/dashboard-agent-card'
-import { TICKET_STATE_LABELS, TICKET_STATE_TONE } from '@/lib/ticket-labels'
+import { DashboardRunsList } from '@/components/active-runs/dashboard-runs-list'
+import { loadActiveRuns } from '@/lib/active-runs-load'
+import { summarizeAgentActivity } from '@/lib/agent-activity'
 
 function greeting() {
   const h = new Date().getHours()
@@ -23,18 +25,33 @@ export default async function DashboardPage() {
 
   const ctx = await getAuthContext()
   const isAdmin = hasMinimumRole(ctx?.activeTenantRole, 'admin')
+  const canCreateTicket = hasMinimumRole(ctx?.activeTenantRole, 'operator')
+  const canSeeRuns = hasMinimumRole(ctx?.activeTenantRole, 'operator')
 
-  const [statsRes, agentsRes, ticketsRes] = await Promise.all([
-    getDashboardStats(),
+  const [statsRes, agentsRes, activeRuns, assigneesRes] = await Promise.all([
+    isAdmin ? getDashboardStats() : Promise.resolve({ success: false as const, error: '' }),
     listAgents(),
-    listTickets(),
+    canSeeRuns && ctx?.activeTenantId && ctx.user
+      ? loadActiveRuns({
+          tenantId: ctx.activeTenantId,
+          userId: ctx.user.id,
+          activeTenantRole: ctx.activeTenantRole,
+        })
+      : Promise.resolve([]),
+    canCreateTicket ? listBoardAssignees() : Promise.resolve(null),
   ])
 
-  const stats = statsRes.success ? statsRes.data : null
+  const stats = isAdmin && statsRes.success ? statsRes.data : null
   const agents = agentsRes.success ? agentsRes.data : []
   const agentsLoadError = agentsRes.success ? null : agentsRes.error
-  const tickets = ticketsRes.success ? ticketsRes.data : []
-  const awaitingHuman = tickets.filter((t) => t.state === 'awaiting_human').length
+  const assigneeOptions =
+    assigneesRes && assigneesRes.success ? assigneesRes.data : undefined
+  const awaitingHuman = activeRuns.filter(
+    (r) => r.phase === 'active' && r.status === 'awaiting_human',
+  ).length
+  // A kártyák „min dolgozik / mi vár rád” sávja ebből él. A relatív időt itt,
+  // szerveren formázzuk, hogy hidratáláskor ne térjen el a kliens szövegétől.
+  const activityByAgent = summarizeAgentActivity(activeRuns)
   const activeCount = agents.filter((a) => a.status === 'active').length
 
   const statCards = [
@@ -70,18 +87,19 @@ export default async function DashboardPage() {
         </p>
       </header>
 
-      {/* Stat strip — soft cream tiles, each with a face */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
-        {statCards.map((c) => (
-          <Card key={c.label}>
-            <span className="text-2xl" aria-hidden>
-              {c.icon}
-            </span>
-            <p className={`mt-3 font-display text-[2rem] leading-none ${c.tone}`}>{c.value}</p>
-            <p className="mt-1.5 text-sm text-ink-faint">{c.label}</p>
-          </Card>
-        ))}
-      </div>
+      {isAdmin && (
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+          {statCards.map((c) => (
+            <Card key={c.label}>
+              <span className="text-2xl" aria-hidden>
+                {c.icon}
+              </span>
+              <p className={`mt-3 font-display text-[2rem] leading-none ${c.tone}`}>{c.value}</p>
+              <p className="mt-1.5 text-sm text-ink-faint">{c.label}</p>
+            </Card>
+          ))}
+        </div>
+      )}
 
       {/* The team — lovable coworkers, front and centre */}
       <section className="space-y-4">
@@ -100,9 +118,15 @@ export default async function DashboardPage() {
           </Link>
         </div>
 
-        <div className="grid gap-4 md:grid-cols-3">
-          {agents.slice(0, 3).map((agent) => (
-            <DashboardAgentCard key={agent.id} agent={agent} />
+        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+          {agents.map((agent) => (
+            <DashboardAgentCard
+              key={agent.id}
+              agent={agent}
+              canCreateTicket={canCreateTicket}
+              assigneeOptions={assigneeOptions}
+              activity={activityByAgent.get(agent.id)}
+            />
           ))}
           {agentsLoadError && (
             <Card className="md:col-span-3 border-coral/40 bg-coral/5">
@@ -163,27 +187,14 @@ export default async function DashboardPage() {
         </div>
       )}
 
-      <Card title="Legutóbbi ügyek">
-        <ul className="divide-y divide-line">
-          {tickets.slice(0, 6).map((ticket) => (
-            <li
-              key={ticket.id}
-              className="flex items-center justify-between gap-3 py-3 first:pt-0 last:pb-0"
-            >
-              <Link
-                href={`/control-plane/tickets/${ticket.id}`}
-                className="font-medium hover:text-coral-deep"
-              >
-                {ticket.title}
-              </Link>
-              <Badge tone={TICKET_STATE_TONE[ticket.state] ?? 'neutral'}>
-                {TICKET_STATE_LABELS[ticket.state] ?? ticket.state}
-              </Badge>
-            </li>
-          ))}
-          {tickets.length === 0 && <p className="py-2 text-sm text-ink-faint">Még nincs ügy</p>}
-        </ul>
-      </Card>
+      {canSeeRuns && (
+        <Card title="Legutóbbi ügyek">
+          <p className="-mt-2 mb-3 text-xs text-ink-faint">
+            Chat-válaszaid és a rád tartozó feladatok — kattints egy sorra a megnyitáshoz.
+          </p>
+          <DashboardRunsList initialRuns={activeRuns} />
+        </Card>
+      )}
     </div>
   )
 }

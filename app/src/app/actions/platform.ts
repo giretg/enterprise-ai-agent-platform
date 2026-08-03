@@ -43,6 +43,7 @@ import {
   buildTaskOnlyTicketTitle,
   validateTaskOnlyTaskInput,
 } from '@/lib/task-only-ticket'
+import { skillDisplayLabel } from '@/lib/skill/skill-name'
 import { isAgentAccessError } from '@/domain/agent-access/agent-access-errors'
 import { isTenantAdmin, tenantUserSubject } from '@/domain/agent-access/tenant-user-subject'
 import { getReportTemplate, listReportTemplates } from '@/domain/report/report-templates'
@@ -553,9 +554,11 @@ export async function createBoardTicket(input: {
         taskOnlySkillParameterValues = validation.parameterValues
 
         // A cím szerveroldalon generált; a kliens `title` bemenete nem érvényesül.
-        ticketTitle = buildTaskOnlyTicketTitle(skillEntry.name, new Date())
+        // Megjelenített név (ha van), különben a technikai slug.
+        ticketTitle = buildTaskOnlyTicketTitle(skillDisplayLabel(skillEntry), new Date())
         // A generált cím NE váljon rejtett prompttá: a runtime a `question`
         // hiányában a címre esne vissza. Determinisztikus feladat-szöveget írunk.
+        // A promptban a technikai név marad — ez egyezik a betöltött skill `name`-jével.
         promptText = buildTaskOnlyTaskPrompt(skillEntry.name)
       } else if (parsed.skillParameterValues) {
         return fail('Skill-paraméterek csak korlátozott feladatkörű agentnél adhatók meg')

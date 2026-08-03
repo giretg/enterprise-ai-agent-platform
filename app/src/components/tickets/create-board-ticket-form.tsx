@@ -3,6 +3,7 @@
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { useEffect, useMemo, useRef, useState, useTransition } from 'react'
+import { createPortal } from 'react-dom'
 import { createBoardTicket } from '@/app/actions/platform'
 import { getAgentSkillsAction } from '@/app/actions/skills'
 import { AgentAssigneeSelect } from '@/components/agents/agent-assignee-select'
@@ -20,6 +21,7 @@ import {
 import { Badge, Card } from '@/components/ui/shell'
 import { personaFor } from '@/lib/agent-persona'
 import { uploadTicketWorkspaceFiles } from '@/lib/ticket-workspace-files-client'
+import { skillDisplayLabel } from '@/lib/skill/skill-name'
 
 type AssigneeOptions = {
   agents: {
@@ -42,6 +44,7 @@ type PendingFile = {
 type SkillOption = {
   skillVersionId: string
   name: string
+  displayName?: string | null
   description: string
   /** #199 — csatolható-e fájl, ha ez a skill van kiválasztva. */
   allowAttachments: boolean
@@ -53,16 +56,36 @@ function makePendingFile(file: File): PendingFile {
   return { id: `${file.name}-${file.size}-${file.lastModified}`, file }
 }
 
-export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: AssigneeOptions }) {
+type CreateBoardTicketFormProps = {
+  assigneeOptions: AssigneeOptions
+  /** Agent kártyáról: a felelős mező előre kitöltve. */
+  initialAgentId?: string
+  /** `dialog`: portal modál (pl. dashboard kártya); `inline`: a táblán (alapértelmezett). */
+  presentation?: 'inline' | 'dialog'
+  trigger?: {
+    label: string
+    compact?: boolean
+    className?: string
+    title?: string
+  }
+}
+
+export function CreateBoardTicketForm({
+  assigneeOptions,
+  initialAgentId,
+  presentation = 'inline',
+  trigger,
+}: CreateBoardTicketFormProps) {
   const router = useRouter()
   const dispatchTicket = useTicketDispatch()
   const createButtonRef = useRef<HTMLButtonElement>(null)
   const [pending, startTransition] = useTransition()
   const [open, setOpen] = useState(false)
+  const [mounted, setMounted] = useState(false)
   const [title, setTitle] = useState('')
   const [description, setDescription] = useState('')
   const [assigneeType, setAssigneeType] = useState<'agent' | 'human'>('agent')
-  const [assigneeId, setAssigneeId] = useState('')
+  const [assigneeId, setAssigneeId] = useState(initialAgentId ?? '')
   const [selectedSkillIds, setSelectedSkillIds] = useState<string[]>([])
   /** Agenthez kötött cache — a UI ebből vezet le, így assignee váltáskor nincs sync setState az effectben. */
   const [skillsCache, setSkillsCache] = useState<{
@@ -123,6 +146,7 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
         enabledBySkill.set(row.skillId, {
           skillVersionId: row.skillVersionId,
           name: row.name,
+          displayName: row.displayName,
           description: row.description,
           allowAttachments: row.allowAttachments,
           attachmentDescription: row.attachmentDescription,
@@ -139,11 +163,38 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
     }
   }, [assigneeType, assigneeId])
 
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- client portal mount gate
+    setMounted(true)
+  }, [])
+
+  useEffect(() => {
+    if (presentation !== 'dialog' || !open || !mounted) return
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape' && !pending) {
+        event.preventDefault()
+        setOpen(false)
+        setMessage(null)
+        setPendingFiles([])
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [presentation, open, mounted, pending])
+
+  const openForm = () => {
+    if (initialAgentId) {
+      setAssigneeType('agent')
+      setAssigneeId(initialAgentId)
+    }
+    setOpen(true)
+  }
+
   const resetForm = () => {
     setTitle('')
     setDescription('')
     setAssigneeType('agent')
-    setAssigneeId('')
+    setAssigneeId(initialAgentId ?? '')
     setSelectedSkillIds([])
     setSkillsCache(null)
     setPendingFiles([])
@@ -155,7 +206,7 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
   // töltsön fel előbb fájlt, és csak utána kapjon hibát.
   const attachmentsBlockedBy = agentSkills
     .filter((skill) => selectedSkillIds.includes(skill.skillVersionId) && !skill.allowAttachments)
-    .map((skill) => skill.name)
+    .map((skill) => skillDisplayLabel(skill))
   const attachmentsAllowed = attachmentsBlockedBy.length === 0
   const attachmentGuidance = agentSkills.filter(
     (skill) =>
@@ -268,7 +319,7 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
       setLastTicketId(null)
       try {
         const res = await createBoardTicket({
-          title: skill?.name ?? 'Feladat',
+          title: skill ? skillDisplayLabel(skill) : 'Feladat',
           assigneeType: 'agent',
           assigneeId,
           skillVersionIds: [skillVersionId],
@@ -339,43 +390,37 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
     />
   ) : null
 
-  if (!open) {
-    return (
-      <>
-        {modal}
-        <div className="flex flex-wrap items-center gap-3">
-        <button
-          ref={createButtonRef}
-          type="button"
-          onClick={() => setOpen(true)}
-          className="rounded-lg border border-coral/40 bg-coral/10 px-4 py-2 text-sm font-medium text-coral transition hover:bg-coral/15"
-        >
-          + Új feladat létrehozása
-        </button>
-        {lastTicketId && (
-          <p className={`text-sm ${message ? 'text-honey' : 'text-sage'}`}>
-            {message ? (
-              message
-            ) : (
-              <>
-                Feladat létrehozva —{' '}
-                <Link href={`/control-plane/tickets/${lastTicketId}`} className="underline hover:text-ink">
-                  megnyitás
-                </Link>
-              </>
-            )}
-          </p>
-        )}
-        </div>
-      </>
-    )
+  const triggerButton = (
+    <button
+      ref={createButtonRef}
+      type="button"
+      title={trigger?.title}
+      onClick={(e) => {
+        if (presentation === 'dialog') {
+          e.preventDefault()
+          e.stopPropagation()
+        }
+        openForm()
+      }}
+      className={
+        trigger?.className ||
+        (trigger?.compact
+          ? 'rounded-full border border-line bg-card px-3 py-1.5 text-xs font-semibold text-ink-soft transition-colors hover:border-coral/40 hover:text-coral-deep'
+          : 'rounded-lg border border-coral/40 bg-coral/10 px-4 py-2 text-sm font-medium text-coral transition hover:bg-coral/15')
+      }
+    >
+      {trigger?.label ?? '+ Új feladat létrehozása'}
+    </button>
+  )
+
+  const closeForm = () => {
+    setOpen(false)
+    setMessage(null)
+    setPendingFiles([])
   }
 
-  return (
-    <>
-      {modal}
-      <Card title="Új feladat létrehozása" className="!p-5">
-      <div className="space-y-4">
+  const formBody = (
+    <div className="space-y-4">
         <div className="flex flex-wrap gap-4">
           <fieldset>
             <legend className="text-sm font-medium text-ink-soft">Hozzárendelve</legend>
@@ -384,7 +429,7 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
                 type="button"
                 onClick={() => {
                   setAssigneeType('agent')
-                  setAssigneeId('')
+                  setAssigneeId(initialAgentId ?? '')
                   setSelectedSkillIds([])
                 }}
                 className={`rounded-lg border px-3 py-1.5 text-sm transition ${
@@ -470,11 +515,7 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
                 pending={pending}
                 message={message}
                 submitLabel="Feladat létrehozása"
-                onCancel={() => {
-                  setOpen(false)
-                  setMessage(null)
-                  setPendingFiles([])
-                }}
+                onCancel={closeForm}
                 onSubmit={handleTaskOnlySubmit}
               />
             )
@@ -545,7 +586,14 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
                               className="mt-0.5"
                             />
                             <span className="min-w-0">
-                              <span className="block text-sm text-ink">{skill.name}</span>
+                              <span className="block text-sm text-ink">
+                                {skillDisplayLabel(skill)}
+                              </span>
+                              {skill.displayName?.trim() && skill.displayName.trim() !== skill.name ? (
+                                <span className="block font-mono text-[11px] text-ink-faint">
+                                  {skill.name}
+                                </span>
+                              ) : null}
                               {skill.description ? (
                                 <span
                                   className="block truncate text-xs text-ink-faint"
@@ -589,7 +637,7 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
                     <p key={skill.skillVersionId} className="text-sm text-ink-soft">
                       {attachmentGuidance.length > 1 ? (
                         <>
-                          <span className="font-medium">{skill.name}:</span>{' '}
+                          <span className="font-medium">{skillDisplayLabel(skill)}:</span>{' '}
                           {skill.attachmentDescription}
                         </>
                       ) : (
@@ -660,11 +708,7 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
               <button
                 type="button"
                 disabled={pending}
-                onClick={() => {
-                  setOpen(false)
-                  setMessage(null)
-                  setPendingFiles([])
-                }}
+                onClick={closeForm}
                 className="rounded-lg border border-line px-4 py-2 text-sm text-ink-soft transition hover:bg-night-2"
               >
                 Mégse
@@ -672,8 +716,82 @@ export function CreateBoardTicketForm({ assigneeOptions }: { assigneeOptions: As
             </div>
           </>
         )}
-      </div>
+    </div>
+  )
+
+  const formCard = (
+    <Card title="Új feladat létrehozása" className="!p-5">
+      {formBody}
     </Card>
+  )
+
+  if (!open) {
+    if (presentation === 'dialog') {
+      return (
+        <>
+          {modal}
+          {triggerButton}
+        </>
+      )
+    }
+
+    return (
+      <>
+        {modal}
+        <div className="flex flex-wrap items-center gap-3">
+          {triggerButton}
+          {lastTicketId && (
+            <p className={`text-sm ${message ? 'text-honey' : 'text-sage'}`}>
+              {message ? (
+                message
+              ) : (
+                <>
+                  Feladat létrehozva —{' '}
+                  <Link href={`/control-plane/tickets/${lastTicketId}`} className="underline hover:text-ink">
+                    megnyitás
+                  </Link>
+                </>
+              )}
+            </p>
+          )}
+        </div>
+      </>
+    )
+  }
+
+  if (presentation === 'dialog' && mounted) {
+    return (
+      <>
+        {modal}
+        {triggerButton}
+        {createPortal(
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-ink/40 p-4"
+            onClick={() => !pending && closeForm()}
+          >
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="board-ticket-create-title"
+              className="max-h-[90vh] w-full max-w-2xl overflow-y-auto"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div id="board-ticket-create-title" className="sr-only">
+                Új feladat létrehozása
+              </div>
+              {formCard}
+            </div>
+          </div>,
+          document.body,
+        )}
+      </>
+    )
+  }
+
+  return (
+    <>
+      {modal}
+      {formCard}
     </>
   )
 }

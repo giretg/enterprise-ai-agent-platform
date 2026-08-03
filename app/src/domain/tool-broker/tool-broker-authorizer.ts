@@ -303,9 +303,8 @@ export class AllowlistAuthorizer implements Authorizer {
       }
       // workspace path → fall through connector feloldásra
     }
-    // A `tulajdoni_lap_egyeztetes` ÍR is (munkafüzet a munkaterületre), ezért
-    // documentId-forrásnál sem kaphat rövidebb utat: mindig a workspace
-    // connector írás-jogán megy át. A forrás érvényességét a delegáció nézi.
+    // A `tulajdoni_lap_egyeztetes` Excel-t CSAK `kimenet` mellett ír; JSON-only
+    // úton elég a workspace read. A forrás érvényességét a delegáció nézi.
     if (input.tool === 'tulajdoni_lap_egyeztetes') {
       try {
         resolveTulajdoniLapParseSource({
@@ -322,6 +321,16 @@ export class AllowlistAuthorizer implements Authorizer {
     if (!requirement) {
       return { allowed: false, reason: 'tool_not_configured' }
     }
+    const kimenetRaw =
+      input.tool === 'tulajdoni_lap_egyeztetes' && typeof input.args?.kimenet === 'string'
+        ? input.args.kimenet.trim()
+        : ''
+    const accessMode: ConnectorAccessMode =
+      input.tool === 'tulajdoni_lap_egyeztetes'
+        ? kimenetRaw
+          ? 'write'
+          : 'read'
+        : requirement.accessMode
     const requestedConnectorId =
       (input.tool === 'http_api_get' ||
         input.tool === 'http_api_get_all' ||
@@ -335,21 +344,21 @@ export class AllowlistAuthorizer implements Authorizer {
           input.agentId,
           requestedConnectorId,
           requirement.connectorType,
-          requirement.accessMode,
+          accessMode,
           effectiveTenantId,
         )
       : await this.tools.findConnectorForAgent(
           input.agentId,
           requirement.connectorType,
-          requirement.accessMode,
+          accessMode,
           effectiveTenantId,
         )
     if (!link) {
       return {
         allowed: false,
         reason: requestedConnectorId
-          ? `missing_${requirement.connectorType}_connector_${requirement.accessMode}_${requestedConnectorId}`
-          : `missing_${requirement.connectorType}_connector_${requirement.accessMode}`,
+          ? `missing_${requirement.connectorType}_connector_${accessMode}_${requestedConnectorId}`
+          : `missing_${requirement.connectorType}_connector_${accessMode}`,
       }
     }
     const { connector, agentSecretAlias } = link

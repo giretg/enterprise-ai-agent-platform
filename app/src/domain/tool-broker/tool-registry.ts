@@ -1785,8 +1785,10 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
   tulajdoni_lap_egyeztetes: descriptor({
     description:
       'Tulajdoni lap ↔ nyilvántartás EGYEZTETÉSE EGY hívásban: kiolvassa a lapot, párosítja a ' +
-      'nyilvántartás soraival, és kész Excel munkafüzetet ír a munkaterületre (Egyeztetés + Ingatlan lap, ' +
-      'legördülő státusz, összegsor).\n' +
+      'nyilvántartás soraival, és visszaadja az összegzést + az ELTÉRŐ sorokat.\n' +
+      'Excel: CSAK ha megadod a `kimenet` path-ot (pl. "egyeztetes.xlsx") — akkor Egyeztetés + ' +
+      'Ingatlan lap, legördülő státusz, összegsor. Ha NINCS `kimenet`, NEM készül Excel ' +
+      '(pl. Ostoros Föld frissítő skill: a JSON a forrás). A skill dönti el a deliverable-t, ne a tool.\n' +
       'HA egyeztetni kell, EZT hívd — ne a tulajdoni_lap_parse-t lapozgatva, ne köztes JSON-nal, ' +
       'ne cellánkénti xlsx-írással: az sokszoros költség és kifut a forduló keretéből.\n' +
       'Lap-forrás (EGYIK kötelező): documentId (UUID csatolmány) VAGY path (munkaterület-fájl).\n' +
@@ -1800,7 +1802,7 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
       'tűnik (pl. 50 sor vs százas tulajdonosi lista — tipikus get első oldal), NEM készül tábla: ' +
       'ok=false + figyelmeztetes. Ilyenkor http_api_get_all → újra egyeztetés; ' +
       'confirmNyilvantartasComplete=true CSAK ha get_all után is ennyi a sor.\n' +
-      'A válasz összegzést és az ELTÉRŐ sorokat adja (nem a teljes táblát) — a részletek az Excelben vannak.',
+      'A válasz mindig összegzést és az ELTÉRŐ sorokat adja; Excel csak `kimenet` mellett.',
     argsSchema: z.object({
       documentId: z.string().max(200).optional(),
       path: z.string().max(500).optional(),

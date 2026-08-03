@@ -332,7 +332,7 @@ export type TulajdoniLapParseResult = TulajdoniLapView & {
 }
 
 /**
- * Egy hívásos egyeztetés (issue #161): lap-parse → párosítás → kész Excel.
+ * Egy hívásos egyeztetés (issue #161): lap-parse → párosítás → opcionális Excel.
  * A nyilvántartás oldala vagy közvetlenül jön (`nyilvantartas`), vagy egy
  * munkaterület-beli JSON fájlból (`nyilvantartasPath`) — utóbbi a nagy
  * névsoroknál kíméli a modell kontextusát.
@@ -342,7 +342,11 @@ export type TulajdoniLapEgyeztetesArgs = {
   path?: string
   nyilvantartas?: EgyeztetesNyilvantartasSor[]
   nyilvantartasPath?: string
-  /** Kimeneti munkafüzet a munkaterületen. Alap: `egyeztetes.xlsx`. */
+  /**
+   * Ha megadod: Excel munkafüzet a munkaterületre (pl. `egyeztetes.xlsx`).
+   * Ha nincs: NEM készül Excel — a válasz JSON (`osszegzes` + `eltero`) a
+   * deliverable (pl. Ostoros Föld frissítő skill). A skill dönti el a kimenetet, nem a tool.
+   */
   kimenet?: string
   /**
    * Csonka-lista védelem felülírása. Csak akkor true, ha http_api_get_all után

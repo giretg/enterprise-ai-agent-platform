@@ -271,9 +271,8 @@ export const TOOL_OUTPUT_CONTRACTS: Record<ToolName, ToolOutputContract> = {
     },
   },
   /**
-   * ÜRES EXCEL — 1. INCIDENS. A tool a munkaterületre ír, ezért mellékhatásos:
-   * a mért hatás az egyeztetési tábla SORSZÁMA. 0 sor → `empty`, tehát a modell
-   * (és a felhasználó) megtudja, hogy üres munkafüzet készült.
+   * Egyeztetett sorok száma a mért hatás (Excel opcionális — `path` lehet null).
+   * 0 sor → `empty`.
    */
   tulajdoni_lap_egyeztetes: {
     outputSchema: z.looseObject({ ok: z.boolean() }),
@@ -283,7 +282,7 @@ export const TOOL_OUTPUT_CONTRACTS: Record<ToolName, ToolOutputContract> = {
     },
     partial: (output) => {
       const warning = str(output, 'figyelmeztetes')
-      if (warning) return `a lap ellenőrzése bukott: ${warning} — a tábla nem teljes`
+      if (warning) return `a lap ellenőrzése bukott: ${warning} — az egyeztetés nem teljes`
       const needsAttention = arr(rec(output).egyeztetes, 'figyelmet_igenyel') ?? []
       return needsAttention.length > 0
         ? `${needsAttention.length} tétel emberi ellenőrzést igényel, ezek nincsenek lezárva`

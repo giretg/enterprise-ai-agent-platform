@@ -70,6 +70,8 @@ export interface AgentSkillRow {
   enabled: boolean
   skillId: string
   name: string
+  /** Embernek szóló feladatnév — select / modál. Hiányzik → `name`. */
+  displayName: string | null
   description: string
   version: number
   riskTier: SkillRiskTier
@@ -97,6 +99,7 @@ export async function getAgentSkillsAction(
         enabled: r.enabled,
         skillId: r.skillId,
         name: r.name,
+        displayName: r.displayName,
         description: r.description,
         version: r.version,
         riskTier: r.riskTier,
@@ -118,6 +121,7 @@ export async function getAgentSkillsAction(
 export interface AssignableSkill {
   skillId: string
   name: string
+  displayName: string | null
   description: string
   riskTier: SkillRiskTier
   activeVersionId: string
@@ -146,6 +150,7 @@ export async function listAssignableSkillsAction(
       rows.push({
         skillId: skill.id,
         name: skill.name,
+        displayName: skill.displayName,
         description: skill.description,
         riskTier: skill.riskTier,
         activeVersionId: active.id,
@@ -214,6 +219,7 @@ export async function setSkillEnabledAction(input: {
 export interface SkillCatalogEntry {
   id: string
   name: string
+  displayName: string | null
   description: string
   catalogScope: 'global' | 'tenant'
   sourceType: 'authored' | 'imported'
@@ -239,6 +245,7 @@ export async function listSkillCatalogAction(): Promise<ActionResult<SkillCatalo
       skills.map((s) => ({
         id: s.id,
         name: s.name,
+        displayName: s.displayName,
         description: s.description,
         catalogScope: s.catalogScope,
         sourceType: s.sourceType,
@@ -304,6 +311,15 @@ export async function importSkillMdAction(
 
 const createSchema = z.object({
   name: z.string().min(1).max(SKILL_NAME_MAX),
+  displayName: z
+    .string()
+    .max(SKILL_NAME_MAX)
+    .optional()
+    .nullable()
+    .transform((v) => {
+      const t = v?.trim()
+      return t ? t : null
+    }),
   description: z.string().min(1).max(SKILL_DESCRIPTION_MAX),
   scope: z.enum(['tenant', 'global']).default('tenant'),
   content: skillContentSchema,
@@ -333,6 +349,7 @@ export async function createSkillAction(
     }
     const { skill, versionId } = await services.skills.createSkill({
       name: parsed.name,
+      displayName: parsed.displayName,
       description: parsed.description,
       catalogScope: parsed.scope,
       tenantId: parsed.scope === 'global' ? null : ctx.activeTenantId,
@@ -346,6 +363,60 @@ export async function createSkillAction(
     })
     revalidatePath('/control-plane/skills')
     return ok({ skillId: skill.id, versionId })
+  } catch (err) {
+    return fail(messageFrom(err))
+  }
+}
+
+const updateDisplayNameSchema = z.object({
+  skillId: z.string().uuid(),
+  displayName: z
+    .string()
+    .max(SKILL_NAME_MAX)
+    .nullable()
+    .optional()
+    .transform((v) => {
+      const t = v?.trim()
+      return t ? t : null
+    }),
+})
+
+export async function updateSkillDisplayNameAction(
+  input: z.input<typeof updateDisplayNameSchema>,
+): Promise<ActionResult<{ displayName: string | null }>> {
+  try {
+    const parsed = updateDisplayNameSchema.parse(input)
+    const ctx = await requireTenantRole('admin')
+    const skill = await services.skills.updateDisplayName({
+      skillId: parsed.skillId,
+      displayName: parsed.displayName,
+      actor: actorFrom(ctx),
+    })
+    revalidatePath('/control-plane/skills')
+    return ok({ displayName: skill.displayName })
+  } catch (err) {
+    return fail(messageFrom(err))
+  }
+}
+
+const updateDescriptionSchema = z.object({
+  skillId: z.string().uuid(),
+  description: z.string().min(1).max(SKILL_DESCRIPTION_MAX),
+})
+
+export async function updateSkillDescriptionAction(
+  input: z.input<typeof updateDescriptionSchema>,
+): Promise<ActionResult<{ description: string }>> {
+  try {
+    const parsed = updateDescriptionSchema.parse(input)
+    const ctx = await requireTenantRole('admin')
+    const skill = await services.skills.updateDescription({
+      skillId: parsed.skillId,
+      description: parsed.description,
+      actor: actorFrom(ctx),
+    })
+    revalidatePath('/control-plane/skills')
+    return ok({ description: skill.description })
   } catch (err) {
     return fail(messageFrom(err))
   }

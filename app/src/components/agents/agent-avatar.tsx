@@ -6,23 +6,33 @@ const SIZES = {
   lg: { box: 'h-20 w-20', text: 'text-4xl', dot: 'h-3.5 w-3.5' },
 } as const
 
+const DOT_BY_TONE = {
+  working: 'animate-soul bg-coral',
+  available: 'bg-sage',
+  unknown: 'animate-soul bg-sage',
+  idle: 'bg-ink-faint',
+} as const
+
 /** A living portrait of an agent: an uploaded photo when present, otherwise a
- *  face that gently breathes, with a soul-dot that pulses when they're awake. */
+ *  face that gently breathes, with a soul-dot that pulses when they're working. */
 export function AgentAvatar({
   name,
   status = 'active',
   size = 'md',
   avatarUrl,
   personaNickname,
+  isWorking,
 }: {
   name: string
   status?: string
   size?: keyof typeof SIZES
   avatarUrl?: string | null
   personaNickname?: string | null
+  /** Ha meg van adva, a saját futások alapján dönt a státusz-pöttyről. */
+  isWorking?: boolean
 }) {
   const persona = personaFor(name, { personaNickname })
-  const { mood } = humanStatus(status)
+  const { label, tone } = humanStatus(status, isWorking)
   const s = SIZES[size]
 
   return (
@@ -52,10 +62,8 @@ export function AgentAvatar({
         </div>
       )}
       <span
-        className={`absolute -bottom-0.5 -right-0.5 rounded-full ring-2 ring-card ${s.dot} ${
-          mood === 'awake' ? 'animate-soul bg-sage' : 'bg-ink-faint'
-        }`}
-        title={mood === 'awake' ? 'Most épp dolgozik' : 'Kávészünetet tart'}
+        className={`absolute -bottom-0.5 -right-0.5 rounded-full ring-2 ring-card ${s.dot} ${DOT_BY_TONE[tone]}`}
+        title={label}
       />
     </div>
   )

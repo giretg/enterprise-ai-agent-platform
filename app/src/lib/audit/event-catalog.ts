@@ -332,6 +332,8 @@ export const REGISTERED_AUDIT_ACTIONS = new Set<string>([
   // Skill-katalógus (skill-catalog-spec.md, WP-7)
   'skill.imported',
   'skill.created',
+  'skill.display_name_updated',
+  'skill.description_updated',
   'skill.version.proposed',
   'skill.version.reviewed',
   'skill.version.approved',

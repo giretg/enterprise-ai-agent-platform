@@ -11,6 +11,7 @@ import {
 } from '@/app/actions/skills'
 import { Badge, Card } from '@/components/ui/shell'
 import type { SkillReadinessColor } from '@/lib/skill/skill-readiness'
+import { skillDisplayLabel } from '@/lib/skill/skill-name'
 import { formatToolUiName } from '@/lib/tool-ui-labels'
 
 const READINESS_TONE: Record<SkillReadinessColor, 'success' | 'warning' | 'danger'> = {
@@ -79,7 +80,10 @@ export function AgentSkillsPanel({
             <li key={s.skillVersionId} className="atelier-soft p-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div className="min-w-0">
-                  <span className="font-medium text-ink">{s.name}</span>
+                  <span className="font-medium text-ink">{skillDisplayLabel(s)}</span>
+                  {s.displayName?.trim() && s.displayName.trim() !== s.name ? (
+                    <span className="ml-2 font-mono text-[11px] text-ink-faint">{s.name}</span>
+                  ) : null}
                   <span className="ml-2 text-xs text-ink-faint">v{s.version}</span>
                   <span className="ml-2 text-xs uppercase text-ink-faint">{s.riskTier}</span>
                 </div>
@@ -163,7 +167,7 @@ export function AgentSkillsPanel({
             >
               {assignable.map((s) => (
                 <option key={s.activeVersionId} value={s.activeVersionId}>
-                  {s.name} (v{s.version}, {s.riskTier})
+                  {skillDisplayLabel(s)} (v{s.version}, {s.riskTier})
                 </option>
               ))}
             </select>

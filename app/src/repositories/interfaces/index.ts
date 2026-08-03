@@ -1202,6 +1202,7 @@ export type AgentSkillWithVersion = AgentSkill & {
 
 export interface CreateSkillInput {
   name: string
+  displayName?: string | null
   description: string
   catalogScope: SkillCatalogScope
   tenantId: string | null
@@ -1243,6 +1244,10 @@ export interface SkillRepository {
   /** Batch skill-verzió betöltés — preload / slash path N+1 elkerülésére. */
   findVersionsByIds(versionIds: string[]): Promise<(SkillVersion & { skill: Skill })[]>
   createSkill(input: CreateSkillInput): Promise<{ skill: Skill; version: SkillVersion }>
+  /** Embernek szóló feladatnév — nem verziózott metaadat. */
+  updateDisplayName(skillId: string, displayName: string | null): Promise<Skill>
+  /** Level-0 index leírás — nem verziózott metaadat (katalógus / skill-választó). */
+  updateDescription(skillId: string, description: string): Promise<Skill>
   addVersion(input: AddSkillVersionInput): Promise<SkillVersion>
   /** Jóváhagyás: az adott verzió `active`, az addigi aktív `retired`, agentek átkötése. */
   approveVersion(

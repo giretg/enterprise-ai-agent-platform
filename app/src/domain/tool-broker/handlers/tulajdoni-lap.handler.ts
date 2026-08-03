@@ -20,9 +20,9 @@ export const tulajdoniLapHandler: ToolHandler = {
 }
 
 /**
- * tulajdoni_lap_egyeztetes — egy hívásban parse + párosítás + munkafüzet
- * (issue #161). Ugyanaz a forrás-feloldás, mint a parse-nál; a kimenet a
- * munkaterületre íródik, ezért a jogosultsága workspace-írás.
+ * tulajdoni_lap_egyeztetes — egy hívásban parse + párosítás + opcionális
+ * munkafüzet (issue #161). Excel csak `kimenet` mellett; különben JSON
+ * összegzés. Workspace-írás jogosultság kell (Excel esetén tényleges írás).
  */
 export const tulajdoniLapEgyeztetesHandler: ToolHandler = {
   id: 'tulajdoni_lap_egyeztetes',

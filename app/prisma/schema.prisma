@@ -1004,6 +1004,8 @@ model RecipeVersion {
 model Skill {
   id           String            @id @default(uuid()) @db.Uuid
   name         String
+  /** Embernek szóló feladatnév (select / modál). Hiányzik → `name`. */
+  displayName  String?           @map("display_name")
   description  String // Level-0 index szöveg (méret-limitált)
   catalogScope SkillCatalogScope @default(tenant)
   tenantId     String?           @map("tenant_id") @db.Uuid // null ⇔ global

@@ -16,6 +16,7 @@ import {
   type DispatchPrompt,
 } from '@/components/tickets/ticket-dispatch-prompt-modal'
 import { uploadTicketWorkspaceFiles } from '@/lib/ticket-workspace-files-client'
+import { skillDisplayLabel } from '@/lib/skill/skill-name'
 
 /**
  * Feladatkör-korlátozás (#199) — a chat-gomb helyére lépő feladat-indító.
@@ -168,7 +169,7 @@ function AgentTaskModal({
       setMessage(null)
       try {
         const res = await createBoardTicket({
-          title: skill.name,
+          title: skillDisplayLabel(skill),
           assigneeType: 'agent',
           assigneeId: agentId,
           skillVersionIds: [skillVersionId],
@@ -255,7 +256,7 @@ function AgentTaskModal({
         onClick={(e) => e.stopPropagation()}
       >
         <h3 id={titleId} className="font-display text-lg font-semibold">
-          {modalSkill ? modalSkill.name : 'Feladat indítása'}
+          {modalSkill ? skillDisplayLabel(modalSkill) : 'Feladat indítása'}
         </h3>
 
         <div className="mt-4">

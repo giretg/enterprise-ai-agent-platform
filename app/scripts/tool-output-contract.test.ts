@@ -279,6 +279,34 @@ async function main() {
     assert.match(verdict.reason ?? '', /0 egyeztetett sor/)
   })
 
+  await test('tulajdoni_lap_egyeztetes Excel nélkül (path=null) is mérhető', () => {
+    const verdict = validateToolOutput({
+      tool: 'tulajdoni_lap_egyeztetes',
+      output: {
+        ok: true,
+        figyelmeztetes: null,
+        path: null,
+        meta: {},
+        osszesites: {},
+        egyeztetes: {
+          osszesSor: 12,
+          rendben: 10,
+          modositas: 2,
+          torles: 0,
+          ujRekord: 0,
+          bizonytalanParositas: 0,
+          figyelmet_igenyel: [],
+        },
+        eltero: [],
+        szeljegyDb: 0,
+      },
+      contract: resolveToolOutputContract('tulajdoni_lap_egyeztetes'),
+      sideEffecting: true,
+    })
+    assert.equal(verdict.outcome, 'ok')
+    assert.equal(verdict.effect?.amount, 12)
+  })
+
   await test('1. incidens: file_edit 0 cserével sem „sikeres szerkesztés"', () => {
     const verdict = validateToolOutput({
       tool: 'file_edit',

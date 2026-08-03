@@ -5,15 +5,42 @@ import { readTicketRuntimeProgress } from '@/domain/agent/ticket-runtime-progres
 /** Sync a repository ACTIVE_AGENT_TURN_STATUSES listájával. */
 const ACTIVE_CHAT_STATUSES = new Set(['queued', 'running', 'streaming'])
 
+/**
+ * A lezárt lépés státusza nem hordoz információt („… (done)” minden során),
+ * a folyamatban lévő vagy hibás viszont igen — csak azt írjuk ki, magyarul.
+ */
+function activityStatusSuffix(status: string | null): string | null {
+  switch (status) {
+    case null:
+    case 'done':
+    case 'completed':
+    case 'ok':
+    case 'success':
+      return null
+    case 'running':
+    case 'in_progress':
+      return 'folyamatban'
+    case 'error':
+    case 'failed':
+      return 'hiba'
+    case 'pending':
+    case 'queued':
+      return 'várakozik'
+    default:
+      return status
+  }
+}
+
 function summarizeActivities(activities: unknown): string | null {
   if (!Array.isArray(activities) || activities.length === 0) return null
   const last = activities[activities.length - 1] as { title?: unknown; kind?: unknown; status?: unknown }
   const title = typeof last.title === 'string' ? last.title : null
   const kind = typeof last.kind === 'string' ? last.kind : null
   const status = typeof last.status === 'string' ? last.status : null
-  if (title) return status ? `${title} (${status})` : title
-  if (kind) return status ? `${kind} (${status})` : kind
-  return null
+  const suffix = activityStatusSuffix(status)
+  const text = title ?? kind
+  if (!text) return null
+  return suffix ? `${text} — ${suffix}` : text
 }
 
 export type ActiveRunViewer = {

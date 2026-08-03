@@ -26,6 +26,7 @@ import {
   type ValidationResult,
   type TenantValidationContext,
 } from '@/domain/playbook/playbook-validator'
+import { PLAYBOOK_AUTHOR_AGENT_NAME } from '@/lib/platform-agent-registry'
 import { PLAYBOOK_SCHEMA_VERSION } from '@/lib/playbook-v2/spec'
 import {
   DEFAULT_TENANT_LANGUAGE,
@@ -78,7 +79,7 @@ If you are given an EXISTING spec to edit, return the FULL edited spec (not a di
 
 /** Agent Registry szerep-sablon (§6). Nem-üres LLM, de v1-ben nincs eszközjoga. */
 export const PLAYBOOK_AUTHOR_TEMPLATE = {
-  name: 'Playbook Author',
+  name: PLAYBOOK_AUTHOR_AGENT_NAME,
   role: 'worker' as const,
   roleInstruction: PLAYBOOK_AUTHOR_ROLE_INSTRUCTION,
   behaviorProfile:

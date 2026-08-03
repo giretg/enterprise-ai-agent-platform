@@ -1973,8 +1973,9 @@ async function loadTulajdoniLapPages(
 }
 
 /**
- * tulajdoni_lap_egyeztetes — EGY hívás: lap-parse → párosítás → kész munkafüzet
- * (issue #161).
+ * tulajdoni_lap_egyeztetes — EGY hívás: lap-parse → párosítás → opcionális
+ * munkafüzet (issue #161). Excel CSAK ha a hívó megadja a `kimenet` path-ot;
+ * különben a JSON összegzés + eltérő sorok a kimenet (pl. Ostoros Föld frissítés).
  *
  * Korábban ez a chatben, sok LLM-körben zajlott: a tulajdonos-nézet lapozása
  * (minden hívás ÚJRA parse-olta a PDF-et), ad-hoc JSON köztes fájlok, majd
@@ -2064,54 +2065,57 @@ export async function tulajdoniLapEgyeztetes(
     }
   }
 
-  const munkafuzet = buildEgyeztetesMunkafuzet({ sorok, parsed })
+  const kimenetRaw = typeof input.args.kimenet === 'string' ? input.args.kimenet.trim() : ''
+  let path: string | null = null
+  if (kimenetRaw) {
+    const munkafuzet = buildEgyeztetesMunkafuzet({ sorok, parsed })
+    path = kimenetRaw.toLowerCase().endsWith('.xlsx') ? kimenetRaw : `${kimenetRaw}.xlsx`
 
-  const kimenet = (input.args.kimenet ?? 'egyeztetes.xlsx').trim() || 'egyeztetes.xlsx'
-  const path = kimenet.toLowerCase().endsWith('.xlsx') ? kimenet : `${kimenet}.xlsx`
-
-  // A munkafüzet egyetlen menetben áll elő: létrehozás → cellák → elrendezés →
-  // fejléc-kiemelés. Ez korábban 4+ külön eszközhívás volt, körönként.
-  await self.fileEditor.xlsxCreate(tenantId, workspaceId, {
-    path,
-    sheets: [
-      { name: 'Egyeztetés', rows: munkafuzet.egyeztetesSorok },
-      { name: 'Ingatlan', rows: munkafuzet.ingatlanSorok },
-    ],
-  })
-  await self.fileEditor.xlsxLayout(tenantId, workspaceId, {
-    path,
-    sheet: 'Egyeztetés',
-    freeze: { rows: 1 },
-    autoFilter: `A1:L1`,
-    columnWidths: [
-      { column: 'A', width: 16 },
-      { column: 'B', width: 30 },
-      { column: 'C', width: 12 },
-      { column: 'D', width: 26 },
-      { column: 'E', width: 14 },
-      { column: 'F', width: 14 },
-      { column: 'G', width: 10 },
-      { column: 'H', width: 16 },
-      { column: 'I', width: 12 },
-      { column: 'J', width: 10 },
-      { column: 'K', width: 22 },
-      { column: 'L', width: 60 },
-    ],
-    dataValidations: [
-      {
-        range: `K2:K${Math.max(2, munkafuzet.utolsoAdatSor)}`,
-        values: EGYEZTETES_STATUSZOK,
-        errorTitle: 'Érvénytelen státusz',
-        error: 'Válassz a legördülő listából.',
-      },
-    ],
-  })
-  await self.fileEditor.xlsxFormatRange(tenantId, workspaceId, {
-    path,
-    sheet: 'Egyeztetés',
-    range: 'A1:L1',
-    style: { font: { bold: true } },
-  })
+    // A munkafüzet egyetlen menetben áll elő: létrehozás → cellák → elrendezés →
+    // fejléc-kiemelés. Ez korábban 4+ külön eszközhívás volt, körönként.
+    // Excel CSAK explicit `kimenet` mellett — a skill dönti el a deliverable-t.
+    await self.fileEditor.xlsxCreate(tenantId, workspaceId, {
+      path,
+      sheets: [
+        { name: 'Egyeztetés', rows: munkafuzet.egyeztetesSorok },
+        { name: 'Ingatlan', rows: munkafuzet.ingatlanSorok },
+      ],
+    })
+    await self.fileEditor.xlsxLayout(tenantId, workspaceId, {
+      path,
+      sheet: 'Egyeztetés',
+      freeze: { rows: 1 },
+      autoFilter: `A1:L1`,
+      columnWidths: [
+        { column: 'A', width: 16 },
+        { column: 'B', width: 30 },
+        { column: 'C', width: 12 },
+        { column: 'D', width: 26 },
+        { column: 'E', width: 14 },
+        { column: 'F', width: 14 },
+        { column: 'G', width: 10 },
+        { column: 'H', width: 16 },
+        { column: 'I', width: 12 },
+        { column: 'J', width: 10 },
+        { column: 'K', width: 22 },
+        { column: 'L', width: 60 },
+      ],
+      dataValidations: [
+        {
+          range: `K2:K${Math.max(2, munkafuzet.utolsoAdatSor)}`,
+          values: EGYEZTETES_STATUSZOK,
+          errorTitle: 'Érvénytelen státusz',
+          error: 'Válassz a legördülő listából.',
+        },
+      ],
+    })
+    await self.fileEditor.xlsxFormatRange(tenantId, workspaceId, {
+      path,
+      sheet: 'Egyeztetés',
+      range: 'A1:L1',
+      style: { font: { bold: true } },
+    })
+  }
 
   const eltero = sorok
     .filter((sor) => sor.statusz !== 'Rendben')

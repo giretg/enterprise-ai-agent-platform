@@ -3197,6 +3197,7 @@ export function AgentChatButton({
   agent,
   className = '',
   compact = false,
+  label = '💬 Beszélgetés',
   canDistillSkill = false,
   initialConversationId = null,
   autoOpen = false,
@@ -3204,6 +3205,7 @@ export function AgentChatButton({
   agent: ChatAgent
   className?: string
   compact?: boolean
+  label?: string
   canDistillSkill?: boolean
   initialConversationId?: string | null
   autoOpen?: boolean
@@ -3238,7 +3240,7 @@ export function AgentChatButton({
           : 'rounded-full bg-sage px-4 py-2 text-sm font-semibold text-card shadow-[0_8px_20px_-12px_rgba(93,138,79,0.7)] transition-transform hover:-translate-y-0.5')
       }
     >
-      💬 {compact ? 'Beszél' : 'Beszélgetés'}
+      {label}
     </button>
   )
 }

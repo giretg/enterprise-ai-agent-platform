@@ -1,5 +1,6 @@
 ---
 name: tulajdoni-lap-egyeztetes
+title: Tulajdoni lap egyeztetés
 description: Tulajdoni lap összevetése a saját tulajdonosi nyilvántartásunkkal, és a különbségek átadása Excel egyeztető táblában emberi ellenőrzésre. Használd, ha tulajdoni lapot kell a nyilvántartással egyeztetni, ha „mi változott a tulajdonosoknál", vagy ha egy hrsz-re kérnek egyeztetést.
 max-wall-clock-ms: 900000
 max-tool-calls: 40
@@ -99,12 +100,13 @@ akár kivonat):
 tulajdoni_lap_egyeztetes({
   documentId: "…",                  // vagy path: "043_15 2026.07.16.pdf"
   nyilvantartasPath: "tool-outputs/15-http_api_get_all-….json",
-  kimenet: "egyeztetes-043-15.xlsx"
+  kimenet: "egyeztetes-043-15.xlsx" // KÖTELEZŐ ebben a skillben — ez a deliverable
 })
 ```
 
 Ez a hívás elvégzi a lap kiolvasását, a párosítást és a kész munkafüzet
-megírását. **Ne bontsd szét.** A párosítás determinisztikus munka: a kód végzi.
+megírását. **Ne bontsd szét.** A `kimenet` nélkül NEM készül Excel — ebben a
+skillben mindig add meg. A párosítás determinisztikus munka: a kód végzi.
 
 Általános (nem tulajdoni-lap) listák egyeztetéséhez a platform
 `reconcile_records` eszközét használd: két workspace JSON + `keyFields` →

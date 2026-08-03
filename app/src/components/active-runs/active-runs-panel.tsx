@@ -2,41 +2,15 @@
 
 import { useRouter } from 'next/navigation'
 import { useCallback, useEffect, useState } from 'react'
+import { RunRow, RunsSummaryChips } from '@/components/active-runs/run-row'
 import { activeRunKey, type ActiveRun } from '@/lib/active-runs'
-import { composeRunsPanel, type ComposedRun } from '@/lib/active-runs-compose'
+import {
+  composeRunsPanel,
+  runsSummaryChips,
+  summarizeRuns,
+  type ComposedRun,
+} from '@/lib/active-runs-compose'
 import { loadSeenRunKeys, markRunSeen, pruneSeenRunKeys } from '@/lib/active-runs-seen'
-
-function formatStartedAt(iso: string): string {
-  const date = new Date(iso)
-  return date.toLocaleTimeString('hu-HU', { hour: '2-digit', minute: '2-digit' })
-}
-
-function kindLabel(kind: ActiveRun['kind']): string {
-  return kind === 'chat_turn' ? 'Chat' : 'Feladat'
-}
-
-function statusLabel(run: ActiveRun): string | null {
-  if (run.phase === 'active') {
-    if (run.status === 'cancelling') return 'Leállítás…'
-    if (run.status === 'awaiting_human') return 'Döntésre vár'
-    if (run.status === 'needs_info') return 'Információra vár'
-    return null
-  }
-  switch (run.status) {
-    case 'completed':
-    case 'done':
-      return 'Kész'
-    case 'cancelled':
-      return 'Leállítva'
-    case 'failed':
-    case 'exhausted':
-      return 'Sikertelen'
-    case 'rejected':
-      return 'Elutasítva'
-    default:
-      return 'Lefutott'
-  }
-}
 
 export function ActiveRunsPanel() {
   const router = useRouter()
@@ -117,6 +91,8 @@ export function ActiveRunsPanel() {
     router.push(run.href)
   }
 
+  const chips = runsSummaryChips(summarizeRuns(runs))
+
   return (
     <div className="relative">
       <button
@@ -152,107 +128,58 @@ export function ActiveRunsPanel() {
           <div
             role="dialog"
             aria-label="Futások"
-            className="absolute right-0 top-full z-50 mt-2 w-[min(22rem,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-line bg-card shadow-[0_20px_50px_-24px_rgba(15,23,42,0.45)]"
+            className="absolute right-0 top-full z-50 mt-2 w-[min(23rem,calc(100vw-2rem))] overflow-hidden rounded-2xl border border-line bg-card shadow-[0_20px_50px_-24px_rgba(15,23,42,0.45)]"
           >
-            <div className="flex items-center justify-between border-b border-line px-4 py-3">
-              <div>
-                <p className="text-sm font-semibold text-ink">Futások</p>
-                <p className="text-[11px] text-ink-faint">
-                  A te chat-válaszaid, indított és rád szignált feladataid
-                </p>
+            <div className="flex items-center justify-between gap-2 border-b border-line px-3 py-2">
+              <div className="min-w-0">
+                <p className="text-[13px] font-semibold text-ink">Futások</p>
+                {chips.length > 0 ? (
+                  <div className="mt-1">
+                    <RunsSummaryChips chips={chips} />
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-ink-faint">Chat-válaszaid és feladataid</p>
+                )}
               </div>
               <button
                 type="button"
                 onClick={() => setOpen(false)}
-                className="rounded-full px-2 py-1 text-xs text-ink-faint hover:bg-night-2 hover:text-ink"
+                aria-label="Bezár"
+                className="shrink-0 rounded-full p-1 text-ink-faint transition-colors hover:bg-night-2 hover:text-ink"
               >
-                Bezár
+                <svg viewBox="0 0 16 16" fill="none" aria-hidden className="h-3.5 w-3.5">
+                  <path d="m4 4 8 8M12 4l-8 8" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                </svg>
               </button>
             </div>
 
-            <div className="max-h-[min(24rem,60vh)] overflow-y-auto p-2">
+            <div className="max-h-[min(20rem,55vh)] overflow-y-auto p-1.5">
               {loading && runs.length === 0 ? (
-                <p className="px-2 py-4 text-xs text-ink-faint">Betöltés…</p>
+                <p className="px-2 py-3 text-xs text-ink-faint">Betöltés…</p>
               ) : error && runs.length === 0 ? (
-                <p className="px-2 py-4 text-xs text-coral">{error}</p>
+                <p className="px-2 py-3 text-xs text-coral">{error}</p>
               ) : runs.length === 0 ? (
-                <p className="px-2 py-4 text-xs text-ink-faint">Nincs aktív vagy új lefutott futás.</p>
+                <p className="px-2 py-3 text-xs text-ink-faint">
+                  Most nincs futó ügyed. Ha elindítasz egy chatet vagy feladatot, itt követheted.
+                </p>
               ) : (
-                <ul className="space-y-1.5">
-                  {runs.map((run) => {
-                    const label = statusLabel(run)
-                    const completed = run.phase === 'completed'
-                    const highlightUnseen = completed && !run.seen
-                    const cardClass = `rounded-xl border px-3 py-2.5 text-left transition-colors ${
-                      highlightUnseen
-                        ? 'border-sky/35 bg-sky/5'
-                        : 'border-line/80 bg-night/20'
-                    } ${completed ? 'w-full cursor-pointer hover:border-coral/40' : ''}`
-                    const meta = (
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-1.5">
-                          <span className="rounded-full border border-line px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-ink-faint">
-                            {kindLabel(run.kind)}
-                          </span>
-                          {label && (
-                            <span className="rounded-full border border-line px-1.5 py-0.5 text-[10px] font-semibold text-ink-faint">
-                              {label}
-                            </span>
-                          )}
-                          <span className="text-[10px] text-ink-faint">
-                            {formatStartedAt(run.finishedAt ?? run.startedAt)}
-                          </span>
-                        </div>
-                        <p className="mt-1 truncate text-sm font-medium text-ink">{run.title}</p>
-                        {!completed && run.latestActivity && (
-                          <p className="mt-0.5 line-clamp-2 text-[11px] text-ink-faint">
-                            {run.latestActivity}
-                          </p>
-                        )}
-                      </div>
-                    )
-                    return (
-                      <li key={activeRunKey(run)}>
-                        {completed ? (
-                          <button
-                            type="button"
-                            onClick={() => openRun(run)}
-                            className={cardClass}
-                          >
-                            {meta}
-                          </button>
-                        ) : (
-                          <div className={cardClass}>
-                            {meta}
-                            <div className="mt-2 flex items-center gap-2">
-                              <button
-                                type="button"
-                                onClick={() => openRun(run)}
-                                className="rounded-full border border-line bg-card px-2.5 py-1 text-[11px] font-semibold text-ink-soft hover:border-coral/40 hover:text-coral-deep"
-                              >
-                                Megnyitás
-                              </button>
-                              {run.canStop && (
-                                <button
-                                  type="button"
-                                  disabled={stoppingId === run.id}
-                                  onClick={() => void stopRun(run)}
-                                  className="rounded-full border border-coral/35 bg-coral/10 px-2.5 py-1 text-[11px] font-semibold text-coral-deep hover:bg-coral/15 disabled:opacity-50"
-                                >
-                                  {stoppingId === run.id ? 'Leállítás…' : 'Leállítás'}
-                                </button>
-                              )}
-                            </div>
-                          </div>
-                        )}
-                      </li>
-                    )
-                  })}
+                <ul className="divide-y divide-line/50">
+                  {runs.map((run) => (
+                    <li key={activeRunKey(run)}>
+                      <RunRow
+                        run={run}
+                        dense
+                        stopping={stoppingId === run.id}
+                        onOpen={openRun}
+                        onStop={(target) => void stopRun(target)}
+                      />
+                    </li>
+                  ))}
                 </ul>
               )}
             </div>
             {error && runs.length > 0 && (
-              <p className="border-t border-line px-4 py-2 text-[11px] text-coral">{error}</p>
+              <p className="border-t border-line px-3 py-1.5 text-[11px] text-coral">{error}</p>
             )}
           </div>
         </>

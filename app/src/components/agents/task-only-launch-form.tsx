@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState, type RefObject } from 'react'
 import { WorkspaceFileDropzone } from '@/components/workspace/workspace-file-dropzone'
+import { skillDisplayLabel } from '@/lib/skill/skill-name'
 
 /**
  * Korlátozott feladatkörű agent (#199) skill-kötött indító űrlapja.
@@ -13,6 +14,7 @@ import { WorkspaceFileDropzone } from '@/components/workspace/workspace-file-dro
 export type LaunchableSkill = {
   skillVersionId: string
   name: string
+  displayName?: string | null
   description: string
   parameters: Array<{ name: string; description: string }>
   allowAttachments: boolean
@@ -24,6 +26,7 @@ type AgentSkillRow = {
   skillId: string
   skillVersionId: string
   name: string
+  displayName?: string | null
   description: string
   readiness: { color: string }
   parameters: Array<{ name: string; description: string }>
@@ -46,6 +49,7 @@ export function filterLaunchableSkills(rows: AgentSkillRow[]): LaunchableSkill[]
     bySkill.set(row.skillId, {
       skillVersionId: row.skillVersionId,
       name: row.name,
+      displayName: row.displayName,
       description: row.description,
       parameters: row.parameters,
       allowAttachments: row.allowAttachments,
@@ -178,7 +182,7 @@ export function TaskOnlyLaunchForm({
           >
             {skills.map((skill) => (
               <option key={skill.skillVersionId} value={skill.skillVersionId}>
-                {skill.name}
+                {skillDisplayLabel(skill)}
               </option>
             ))}
           </select>

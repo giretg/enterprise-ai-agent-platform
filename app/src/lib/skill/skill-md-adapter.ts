@@ -1,6 +1,7 @@
 import { createHash } from 'crypto'
 import type { SkillContent, SkillProvenance, SkillRequirement } from './skill-content'
-import { SKILL_ATTACHMENT_DESCRIPTION_MAX } from './skill-content'
+import { SKILL_ATTACHMENT_DESCRIPTION_MAX, SKILL_NAME_MAX } from './skill-content'
+import { normalizeSkillDisplayName } from './skill-name'
 
 /**
  * `SKILL.md` import-adapter (spec §D6, WP-2). Az Anthropic Agent Skills formátum:
@@ -14,6 +15,8 @@ import { SKILL_ATTACHMENT_DESCRIPTION_MAX } from './skill-content'
 
 export interface ParsedSkillMd {
   name: string
+  /** Embernek szóló feladatnév — frontmatter `title` / `display-name`. */
+  displayName: string | null
   description: string
   content: SkillContent
   /** Frontmatter `allowed-tools`-ból levezetett capability-javaslat (requires). */
@@ -196,6 +199,10 @@ export function parseSkillMd(raw: string, source?: { url?: string }): ParsedSkil
   const { frontmatter, body } = parseFrontmatter(raw)
 
   const name = asString(frontmatter.name).trim() || 'Untitled skill'
+  const displayNameRaw = asString(
+    frontmatter.title ?? frontmatter['display-name'] ?? frontmatter.displayName,
+  )
+  const displayName = normalizeSkillDisplayName(displayNameRaw)?.slice(0, SKILL_NAME_MAX) ?? null
   const description = asString(frontmatter.description).trim()
   const license = asString(frontmatter.license).trim() || null
   const triggerKeywords = asList(frontmatter['trigger-keywords'] ?? frontmatter.triggers)
@@ -223,6 +230,7 @@ export function parseSkillMd(raw: string, source?: { url?: string }): ParsedSkil
 
   return {
     name,
+    displayName,
     description,
     content,
     suggestedRequires,
