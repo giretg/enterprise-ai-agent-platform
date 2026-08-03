@@ -1,5 +1,5 @@
 import { Prisma } from '@prisma/client'
-import type { Ticket, TicketState, TicketTransition } from '@prisma/client'
+import type { Ticket, TicketTransition } from '@prisma/client'
 import { notifyTicketReady } from '@/lib/dispatch-notify'
 import { prisma } from '@/lib/db'
 import { prismaPageArgs, toListPage } from '@/lib/list-pagination'

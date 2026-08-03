@@ -132,6 +132,7 @@ function AgentTaskModal({
   const startRef = useRef<HTMLButtonElement>(null)
 
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- client portal mount gate
     setMounted(true)
   }, [])
 

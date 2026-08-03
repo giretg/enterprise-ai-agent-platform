@@ -89,6 +89,17 @@ export function TaskOnlyLaunchForm({
   const [paramValues, setParamValues] = useState<Record<string, string>>({})
   const [pendingFiles, setPendingFiles] = useState<PendingFile[]>([])
   const submitRef = useRef<HTMLButtonElement>(null)
+  const skillsKey = skills.map((s) => s.skillVersionId).join('\0')
+  const [skillsEpoch, setSkillsEpoch] = useState(skillsKey)
+
+  // Skills-lista csere (ritka): űrlapállapot vissza az első skillre — render közben,
+  // hogy ne kelljen setState-in-effect.
+  if (skillsKey !== skillsEpoch) {
+    setSkillsEpoch(skillsKey)
+    setSelectedId(skills[0]?.skillVersionId ?? '')
+    setParamValues({})
+    setPendingFiles([])
+  }
 
   const selected = skills.find((s) => s.skillVersionId === selectedId) ?? skills[0]
 
@@ -100,12 +111,6 @@ export function TaskOnlyLaunchForm({
   useEffect(() => {
     onSelectedSkillChange?.(selected)
   }, [selected, onSelectedSkillChange])
-
-  useEffect(() => {
-    setSelectedId(skills[0]?.skillVersionId ?? '')
-    setParamValues({})
-    setPendingFiles([])
-  }, [skills])
 
   const addPendingFile = (file: File) => {
     setPendingFiles((prev) => {
