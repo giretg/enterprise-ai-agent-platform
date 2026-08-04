@@ -101,46 +101,59 @@ export default async function DashboardPage() {
         </div>
       )}
 
-      {/* The team — lovable coworkers, front and centre */}
-      <section className="space-y-4">
-        <div className="flex items-end justify-between">
-          <div>
-            <h2 className="font-display text-2xl font-semibold">A csapat ma</h2>
-            <p className="text-sm text-ink-soft">
-              Hús-vér munkatársak — mindegyiknek van neve és stílusa.
-            </p>
+      {/* Csapat + legutóbbi ügyek: nagy képernyőn 3/4 + 1/4, mobilon egymás alatt. */}
+      <div className={canSeeRuns ? 'grid items-start gap-6 lg:grid-cols-4' : undefined}>
+        <section className={`space-y-4 ${canSeeRuns ? 'lg:col-span-3' : ''}`}>
+          <div className="flex items-end justify-between gap-3">
+            <div>
+              <h2 className="font-display text-2xl font-semibold">A csapat ma</h2>
+              <p className="text-sm text-ink-soft">
+                Hús-vér munkatársak — mindegyiknek van neve és stílusa.
+              </p>
+            </div>
+            <Link
+              href="/control-plane/agents"
+              className="shrink-0 text-sm font-semibold text-coral-deep hover:underline"
+            >
+              Egész csapat →
+            </Link>
           </div>
-          <Link
-            href="/control-plane/agents"
-            className="text-sm font-semibold text-coral-deep hover:underline"
-          >
-            Egész csapat →
-          </Link>
-        </div>
 
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {agents.map((agent) => (
-            <DashboardAgentCard
-              key={agent.id}
-              agent={agent}
-              canCreateTicket={canCreateTicket}
-              assigneeOptions={assigneeOptions}
-              activity={activityByAgent.get(agent.id)}
-            />
-          ))}
-          {agentsLoadError && (
-            <Card className="md:col-span-3 border-coral/40 bg-coral/5">
-              <p className="text-sm font-medium text-coral-deep">A csapat betöltése sikertelen</p>
-              <p className="mt-1 text-sm text-ink-soft">{agentsLoadError}</p>
-            </Card>
-          )}
-          {!agentsLoadError && agents.length === 0 && (
-            <Card className="md:col-span-3">
-              <p className="text-sm text-ink-faint">Még senki sincs a csapatban ebben a tenantban.</p>
-            </Card>
-          )}
-        </div>
-      </section>
+          <div
+            className={`grid gap-4 md:grid-cols-2 ${canSeeRuns ? 'xl:grid-cols-3' : 'lg:grid-cols-3'}`}
+          >
+            {agents.map((agent) => (
+              <DashboardAgentCard
+                key={agent.id}
+                agent={agent}
+                canCreateTicket={canCreateTicket}
+                assigneeOptions={assigneeOptions}
+                activity={activityByAgent.get(agent.id)}
+              />
+            ))}
+            {agentsLoadError && (
+              <Card className="border-coral/40 bg-coral/5 md:col-span-2 xl:col-span-3">
+                <p className="text-sm font-medium text-coral-deep">A csapat betöltése sikertelen</p>
+                <p className="mt-1 text-sm text-ink-soft">{agentsLoadError}</p>
+              </Card>
+            )}
+            {!agentsLoadError && agents.length === 0 && (
+              <Card className="md:col-span-2 xl:col-span-3">
+                <p className="text-sm text-ink-faint">Még senki sincs a csapatban ebben a tenantban.</p>
+              </Card>
+            )}
+          </div>
+        </section>
+
+        {canSeeRuns && (
+          <Card title="Legutóbbi ügyek" className="min-w-0 lg:col-span-1">
+            <p className="-mt-2 mb-3 text-xs text-ink-faint">
+              Chat-válaszaid és a rád tartozó feladatok — kattints egy sorra a megnyitáshoz.
+            </p>
+            <DashboardRunsList initialRuns={activeRuns} />
+          </Card>
+        )}
+      </div>
 
       {isAdmin && (
         <div className="grid gap-6 lg:grid-cols-3">
@@ -185,15 +198,6 @@ export default async function DashboardPage() {
             </ol>
           </Card>
         </div>
-      )}
-
-      {canSeeRuns && (
-        <Card title="Legutóbbi ügyek">
-          <p className="-mt-2 mb-3 text-xs text-ink-faint">
-            Chat-válaszaid és a rád tartozó feladatok — kattints egy sorra a megnyitáshoz.
-          </p>
-          <DashboardRunsList initialRuns={activeRuns} />
-        </Card>
       )}
     </div>
   )

@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from 'react'
 import type { Agent } from '@prisma/client'
+import type { AssigneeOptions } from '@/components/agents/agent-card-actions'
 import { AgentRegistryCard } from '@/components/agents/agent-registry-card'
 import { Card } from '@/components/ui/shell'
 
@@ -10,6 +11,8 @@ export function AgentRegistryList({
   canDelete,
   loadError,
   workingAgentIds = [],
+  canCreateTicket = false,
+  assigneeOptions,
 }: {
   agents: Agent[]
   canDelete: boolean
@@ -17,6 +20,8 @@ export function AgentRegistryList({
   loadError?: string | null
   /** Agent-id-k, akiknek van aktívan futó ügyük — dashboarddal azonos forrás. */
   workingAgentIds?: readonly string[]
+  canCreateTicket?: boolean
+  assigneeOptions?: AssigneeOptions
 }) {
   const workingIds = new Set(workingAgentIds)
   const [showRetired, setShowRetired] = useState(false)
@@ -64,6 +69,8 @@ export function AgentRegistryList({
             agent={agent}
             canDelete={canDelete}
             isWorking={workingIds.has(agent.id)}
+            canCreateTicket={canCreateTicket}
+            assigneeOptions={assigneeOptions}
           />
         ))}
         {!loadError && visibleAgents.length === 0 && (

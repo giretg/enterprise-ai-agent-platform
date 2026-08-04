@@ -9,12 +9,12 @@ import {
   proposeMemoryItemChange,
   rollbackMemory,
 } from '@/app/actions/platform'
+import { AgentAssigneeSelect } from '@/components/agents/agent-assignee-select'
 import { Badge, Card } from '@/components/ui/shell'
 import {
   EMPTY_MEMORY_PLACEHOLDER,
   parseMemoryItems,
 } from '@/domain/training/memory-items'
-import { agentDisplayName } from '@/lib/agent-persona'
 
 type TrainingPayload = {
   diff?: { before?: string; after?: string; summary?: string }
@@ -126,13 +126,17 @@ export function TrainingWorkspace({
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center gap-3">
-        <label className="text-sm text-ink-soft">
-          AI munkatárs:
-          <select
+      <div className="flex flex-wrap items-end gap-3">
+        <div className="min-w-[280px] max-w-md flex-1">
+          <label htmlFor="training-agent" className="text-sm text-ink-soft">
+            AI munkatárs
+          </label>
+          <AgentAssigneeSelect
+            id="training-agent"
+            agents={agents}
             value={agentId}
-            onChange={(e) => {
-              const nextAgentId = e.target.value
+            disabled={pending}
+            onChange={(nextAgentId) => {
               // A szerkesztett tétel indexe az aktuális agent memóriájára
               // vonatkozik. Agentváltáskor nem vihetjük át másik szabálylistára.
               setEditingIndex(null)
@@ -145,26 +149,19 @@ export function TrainingWorkspace({
               setAgentId(nextAgentId)
               router.push(`/control-plane/training?agentId=${nextAgentId}`)
             }}
-            className="ml-2 rounded-lg border border-line bg-night-2 px-3 py-2 text-sm"
-          >
-            {agents.map((a) => (
-              <option key={a.id} value={a.id}>
-                {agentDisplayName(a.name, a)}
-              </option>
-            ))}
-          </select>
-        </label>
+          />
+        </div>
         {selectedAgent && (
           <Link
             href={`/control-plane/agents/${selectedAgent.id}`}
-            className="text-sm text-sky hover:underline"
+            className="mb-2 text-sm text-sky hover:underline"
           >
             Anatómia →
           </Link>
         )}
       </div>
 
-      <Card title="Megtanult szabályok">
+      <Card title="Megtanult dolgok">
         <p className="mb-3 text-sm text-ink-soft">
           Ezeket használja a mindennapi munkában. Itt módosíthatod vagy törölheted a rossz
           szabályokat — minden változás új memória-verziót hoz létre.
@@ -250,9 +247,9 @@ export function TrainingWorkspace({
         )}
       </Card>
 
-      <Card title="Új szabály hozzáadása">
+      <Card title="Új dolog megtanítása">
         <p className="mb-3 text-sm text-ink-soft">
-          A meglévő szabályok megmaradnak — ez csak hozzáad egy újat.
+          Írd le ide, hogy mit szeretnél, hogy megtanuljon a munkatárs!
         </p>
         <textarea
           className="mb-3 w-full rounded-lg border border-line bg-night-2 p-3 text-sm"

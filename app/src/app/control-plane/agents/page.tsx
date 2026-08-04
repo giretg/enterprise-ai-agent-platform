@@ -1,5 +1,5 @@
 import Link from 'next/link'
-import { listAgents } from '@/app/actions/platform'
+import { listAgents, listBoardAssignees } from '@/app/actions/platform'
 import { getAuthContext } from '@/auth/context'
 import { hasMinimumRole } from '@/auth/types'
 import { AgentRegistryList } from '@/components/agents/agent-registry-list'
@@ -9,7 +9,8 @@ import { loadActiveRuns } from '@/lib/active-runs-load'
 export default async function AgentRegistryPage() {
   const ctx = await getAuthContext()
   const canSeeRuns = hasMinimumRole(ctx?.activeTenantRole, 'operator')
-  const [res, activeRuns] = await Promise.all([
+  const canCreateTicket = hasMinimumRole(ctx?.activeTenantRole, 'operator')
+  const [res, activeRuns, assigneesRes] = await Promise.all([
     listAgents(),
     canSeeRuns && ctx?.activeTenantId && ctx.user
       ? loadActiveRuns({
@@ -18,6 +19,7 @@ export default async function AgentRegistryPage() {
           activeTenantRole: ctx.activeTenantRole,
         })
       : Promise.resolve([]),
+    canCreateTicket ? listBoardAssignees() : Promise.resolve(null),
   ])
   const agents = res.success ? res.data : []
   const loadError = res.success ? null : res.error
@@ -25,6 +27,8 @@ export default async function AgentRegistryPage() {
   const canCreate = canDelete
   // Ugyanaz a döntés, mint a dashboard-kártyán: csak valóban futó ügyek számítanak.
   const workingIds = [...workingAgentIds(activeRuns)]
+  const assigneeOptions =
+    assigneesRes && assigneesRes.success ? assigneesRes.data : undefined
 
   return (
     <div className="space-y-8">
@@ -54,6 +58,8 @@ export default async function AgentRegistryPage() {
         canDelete={canDelete}
         loadError={loadError}
         workingAgentIds={workingIds}
+        canCreateTicket={canCreateTicket}
+        assigneeOptions={assigneeOptions}
       />
     </div>
   )

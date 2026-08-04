@@ -242,7 +242,7 @@ function makeRun(partial: Partial<ActiveRun> & Pick<ActiveRun, 'id' | 'phase' | 
   }
 }
 
-check('composeRunsPanel: unseen completed above seen tail; badge ignores seen', () => {
+check('composeRunsPanel: keeps recency order; seen only flips flag (no drop / no re-order)', () => {
   const runs = [
     makeRun({ id: 'active-1', phase: 'active', startedAt: '2026-07-31T12:00:00.000Z' }),
     makeRun({
@@ -268,13 +268,16 @@ check('composeRunsPanel: unseen completed above seen tail; badge ignores seen', 
   const composed = composeRunsPanel({ runs, seenKeys })
   assert.deepEqual(
     composed.runs.map((r) => r.id),
-    ['active-1', 'unseen-new', 'unseen-older', 'seen-old'],
+    ['active-1', 'unseen-new', 'seen-old', 'unseen-older'],
   )
   assert.equal(composed.badgeCount, 3)
-  assert.equal(composed.runs.at(-1)?.seen, true)
+  assert.deepEqual(
+    composed.runs.map((r) => r.seen),
+    [false, false, true, false],
+  )
 })
 
-check('composeRunsPanel: keeps only last 5 seen completed at bottom', () => {
+check('composeRunsPanel: keeps all seen completed in place (no limit/tail)', () => {
   const seenRuns = Array.from({ length: 7 }, (_, i) =>
     makeRun({
       id: `seen-${i}`,
@@ -284,12 +287,12 @@ check('composeRunsPanel: keeps only last 5 seen completed at bottom', () => {
     }),
   )
   const seenKeys = new Set(seenRuns.map((r) => activeRunKey(r)))
-  const composed = composeRunsPanel({ runs: seenRuns, seenKeys, seenLimit: 5 })
-  assert.equal(composed.runs.length, 5)
+  const composed = composeRunsPanel({ runs: seenRuns, seenKeys })
+  assert.equal(composed.runs.length, 7)
   assert.equal(composed.badgeCount, 0)
   assert.deepEqual(
     composed.runs.map((r) => r.id),
-    ['seen-6', 'seen-5', 'seen-4', 'seen-3', 'seen-2'],
+    ['seen-6', 'seen-5', 'seen-4', 'seen-3', 'seen-2', 'seen-1', 'seen-0'],
   )
   assert.ok(composed.runs.every((r) => r.seen))
 })

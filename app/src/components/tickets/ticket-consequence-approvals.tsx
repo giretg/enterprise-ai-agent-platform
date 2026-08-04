@@ -77,6 +77,10 @@ export function TicketConsequenceApprovals({
     [initial, decisions],
   )
   const anyBusy = busyIds.size > 0 || batchBusy
+  // A kártyák futás közben születnek — látszódhatnak, de a CTA csak akkor
+  // biztonságos, amikor a runtime már `awaiting_human`-re állt (különben race
+  // a loop végével, és a resume sem indul el).
+  const canDecide = ticketState === 'awaiting_human'
 
   // Élő lista: amíg a ticket dolgozhat vagy van nyitott kártya, újratöltjük. A
   // kártyák a futás KÖZBEN születnek — pillanatkép mellett a felhasználó úgy
@@ -104,6 +108,7 @@ export function TicketConsequenceApprovals({
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({})
 
   const approveOne = async (approvalId: string) => {
+    if (!canDecide) return
     markBusy(approvalId, true)
     setRowErrors((prev) => ({ ...prev, [approvalId]: '' }))
     try {
@@ -113,7 +118,11 @@ export function TicketConsequenceApprovals({
         return
       }
       const resultSummary = (res.data as { resultSummary?: string }).resultSummary
-      decide(approvalId, { status: 'approved', ...(resultSummary ? { note: resultSummary } : {}) })
+      const warning = (res.data as { warning?: string }).warning
+      decide(approvalId, {
+        status: 'approved',
+        ...(resultSummary ? { note: resultSummary } : warning ? { note: warning } : {}),
+      })
       router.refresh()
     } catch (error) {
       setRowErrors((prev) => ({
@@ -126,6 +135,7 @@ export function TicketConsequenceApprovals({
   }
 
   const rejectOne = async (approvalId: string) => {
+    if (!canDecide) return
     markBusy(approvalId, true)
     try {
       const res = await rejectConsequenceApproval({ approvalId })
@@ -141,7 +151,7 @@ export function TicketConsequenceApprovals({
   }
 
   const approveAll = async () => {
-    if (anyBusy) return
+    if (anyBusy || !canDecide) return
     setBatchBusy(true)
     setBatchNote(null)
     try {
@@ -156,6 +166,7 @@ export function TicketConsequenceApprovals({
         remaining: number
         failed: { summary: string; reason: string }[]
         ticketResumed: boolean
+        warning?: string
       }
       const parts = [`${data.approved}/${data.total} művelet lefutott.`]
       if (data.failed.length > 0) {
@@ -174,8 +185,14 @@ export function TicketConsequenceApprovals({
         parts.push(
           `Még ${data.remaining} művelet vár — nyomd meg újra a gombot, onnan folytatja.`,
         )
+      } else if (data.ticketResumed) {
+        parts.push(data.warning ?? 'A feladat magától folytatódik.')
+      } else if (data.approved > 0 && data.failed.length === 0) {
+        parts.push(
+          data.warning ??
+            'A műveletek lefutottak — ha a feladat nem indul újra, frissítsd az oldalt.',
+        )
       }
-      if (data.ticketResumed) parts.push('A feladat magától folytatódik.')
       setBatchNote(parts.join(' '))
       router.refresh()
     } catch (error) {
@@ -188,15 +205,26 @@ export function TicketConsequenceApprovals({
   const decidedRows = initial.filter((a) => decisions[a.approvalId])
   if (open.length === 0 && decidedRows.length === 0 && !batchNote) return null
 
+  const collecting = open.length > 0 && !canDecide
+
   return (
-    <Card title={open.length > 0 ? `${open.length} művelet vár jóváhagyásra` : 'Jóváhagyott API-műveletek'}>
+    <Card
+      title={
+        open.length > 0
+          ? collecting
+            ? `${open.length} művelet gyűlik — jóváhagyás a futás vége után`
+            : `${open.length} művelet vár jóváhagyásra`
+          : 'Jóváhagyott API-műveletek'
+      }
+    >
       <div className="space-y-3">
         <p className="text-sm text-ink-faint">
-          Ezeket a külső rendszerbe író hívásokat a platform nem futtatta le magától.
-          A gomb megnyomása után sorban lefutnak, és a feladat magától folytatódik.
+          {collecting
+            ? 'Az AI munkatárs még dolgozik; a külső rendszerbe író hívások sorban gyűlnek. A jóváhagyó gomb akkor lesz elérhető, amikor a futás emberi döntésre áll.'
+            : 'Ezeket a külső rendszerbe író hívásokat a platform nem futtatta le magától. A gomb megnyomása után sorban lefutnak, és a feladat magától folytatódik.'}
         </p>
 
-        {open.length > 0 && (
+        {open.length > 0 && canDecide && (
           <div className="flex flex-wrap items-center gap-3">
             <button
               type="button"
@@ -214,6 +242,16 @@ export function TicketConsequenceApprovals({
               {showDetails ? 'Részletek elrejtése' : 'Műveletek megtekintése egyenként'}
             </button>
           </div>
+        )}
+
+        {open.length > 0 && collecting && (
+          <button
+            type="button"
+            onClick={() => setShowDetails((v) => !v)}
+            className="text-sm text-ink-faint underline underline-offset-2"
+          >
+            {showDetails ? 'Részletek elrejtése' : 'Gyűlő műveletek megtekintése'}
+          </button>
         )}
 
         {batchNote && <p className="text-sm text-ink">{batchNote}</p>}
@@ -248,13 +286,15 @@ export function TicketConsequenceApprovals({
                           ? 'Elutasítva'
                           : a.expired && !a.failedReason
                             ? 'Lejárt'
-                            : 'Várakozik'}
+                            : collecting
+                              ? 'Gyűlik'
+                              : 'Várakozik'}
                     </Badge>
                     <span className="font-medium text-ink">{a.toolName}</span>
                   </div>
                   <p className="text-ink-faint">{a.summary}</p>
                   {note && <p className="mt-1 text-xs text-ink-faint">{note}</p>}
-                  {openRow && (
+                  {openRow && canDecide && (
                     <div className="mt-2 flex flex-wrap gap-2">
                       <button
                         type="button"

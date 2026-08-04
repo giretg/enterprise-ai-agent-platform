@@ -41,6 +41,8 @@ type TicketView = {
   agentId?: string | null
   processInstanceId?: string | null
   taskDescription?: string | null
+  /** Nyitott következmény-kapu kártyák — ticket-szintű Approve elrejtéséhez. */
+  pendingConsequenceApprovals?: unknown[] | null
   assignee?: {
     type: string | null
     label: string
@@ -326,7 +328,10 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
   const [note, setNote] = useState('')
 
   const isTrainingTicket = ticket.type === 'training'
-  const canApprove = ticket.state === 'awaiting_human'
+  const hasPendingConsequence = (ticket.pendingConsequenceApprovals?.length ?? 0) > 0
+  // Consequence-kapu mellett a ticket-szintű Approve bezárná a feladatot API
+  // futtatás nélkül (cade35e7) — ilyenkor csak a „Mind jóváhagyom" a helyes út.
+  const canApprove = ticket.state === 'awaiting_human' && !hasPendingConsequence
   const canReject = REJECTABLE_STATES.has(ticket.state)
   const callCapMessage = readTicketCallCapMessageFromPayload(ticket.payload)
   const canRerun = ticket.state === 'rejected' && !callCapMessage
@@ -334,10 +339,18 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
   const showRejectedCallCapNotice = ticket.state === 'rejected' && Boolean(callCapMessage)
   const hasActions = canApprove || canReject || canRerun || showRejectedCallCapNotice
   const isWikiFollowUp = hasWikiAnswer(ticket.payload)
+  // A note csak hard-stop / lezárás indoklás — az agentnek szánt pontosítás a
+  // feladat-szál „Pontosítás + visszaadás" gombja. Futás közbeni rejectnél
+  // (nem wiki) ne jelenjen meg párhuzamos „prompt az agentnek" mező.
+  const showNoteField =
+    canApprove ||
+    canRerun ||
+    (canReject &&
+      (isWikiFollowUp || ticket.state === 'awaiting_human' || ticket.state === 'done'))
 
   const act = (toState: string) => {
     if (toState === 'rejected' && isWikiFollowUp && !note.trim()) {
-      setError('Pontosító kérdés vagy indoklás megadása kötelező a visszadobáshoz.')
+      setError('Indoklás megadása kötelező a visszadobáshoz.')
       return
     }
 
@@ -355,23 +368,31 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
 
   if (!hasActions) return null
 
+  const hint = hasPendingConsequence
+    ? ticket.state === 'awaiting_human'
+      ? 'Külső műveletek várnak jóváhagyásra — használd a fenti „Mind jóváhagyom” gombot a folytatáshoz. A visszadobás megállítja a feladatot.'
+      : 'Külső műveletek gyűlnek a futás alatt; a jóváhagyás a futás vége után lesz elérhető. A visszadobás megállítja a feladatot.'
+    : (TICKET_STATE_HINTS[ticket.state] ?? 'Válaszd ki, hogyan folytatódjon a feladat.')
+
   return (
     <Card title="Döntés">
-      <p className="-mt-2 mb-4 text-sm text-ink-soft">
-        {TICKET_STATE_HINTS[ticket.state] ?? 'Válaszd ki, hogyan folytatódjon a feladat.'}
-      </p>
+      <p className="-mt-2 mb-4 text-sm text-ink-soft">{hint}</p>
       {error && <p className="mb-3 text-sm text-coral">{error}</p>}
-      <textarea
-        className="mb-3 w-full rounded-lg border border-line bg-night-2 p-3 text-sm text-ink"
-        placeholder={
-          isWikiFollowUp && canReject
-            ? 'Pontosító kérdés vagy indoklás (visszadobáshoz kötelező)'
-            : 'Indoklás vagy pontosító kérdés (opcionális)'
-        }
-        value={note}
-        onChange={(e) => setNote(e.target.value)}
-        rows={3}
-      />
+      {showNoteField && (
+        <textarea
+          className="mb-3 w-full rounded-lg border border-line bg-night-2 p-3 text-sm text-ink"
+          placeholder={
+            isWikiFollowUp && canReject && !canApprove
+              ? 'Indoklás a visszadobáshoz (kötelező)'
+              : canApprove
+                ? 'Indoklás (opcionális)'
+                : 'Indoklás a visszadobáshoz (opcionális)'
+          }
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          rows={3}
+        />
+      )}
       <div className="flex flex-wrap gap-2">
         {canApprove && (
           <button
@@ -408,6 +429,8 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
         <p className="mt-3 whitespace-pre-wrap text-sm leading-relaxed text-coral">{callCapMessage}</p>
       )}
       <p className="mt-3 text-xs text-ink-faint">
+        {hasPendingConsequence &&
+          'A ticket-szintű jóváhagyás most rejtve van: az nem futtatja le a külső API-műveleteket. '}
         {canApprove &&
           isTrainingTicket &&
           'Tanítási feladat: a jóváhagyás write-gate-en keresztül frissíti az AI munkatárs memóriáját, majd done állapotba zár. '}
@@ -416,8 +439,9 @@ export function TicketActions({ ticket }: { ticket: TicketView }) {
           'Jóváhagyás után a szerver automatikusan: approved → done. '}
         {canReject &&
           !callCapMessage &&
-          'Visszadobás után az «Újra feldolgozás» gombbal indíthatod újra az AI munkatársat — a pontosító kérdés bekerül a kontextusba. '}
-        {canRerun && 'Újra feldolgozás után a feladat ready állapotba kerül, és a dispatcher újraindítja az AI munkatársat.'}
+          'Visszadobás megállítja a feladatot (rejected). Pontosítással folytatni a feladat-szál alján tudsz. '}
+        {canRerun &&
+          'Újra feldolgozás azonnal újraindítja az AI munkatársat — nem kell a dispatcherre várni.'}
       </p>
     </Card>
   )

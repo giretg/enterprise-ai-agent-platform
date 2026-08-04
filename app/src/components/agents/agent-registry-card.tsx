@@ -3,7 +3,7 @@
 import Link from 'next/link'
 import type { Agent } from '@prisma/client'
 import { AgentAvatar } from '@/components/agents/agent-avatar'
-import { AgentCardActions } from '@/components/agents/agent-card-actions'
+import { AgentCardActions, type AssigneeOptions } from '@/components/agents/agent-card-actions'
 import { DeleteAgentButton } from '@/components/agents/delete-agent-button'
 import { personaFor, humanStatus } from '@/lib/agent-persona'
 import { modelLabel, modelTypeLabel } from '@/lib/model-providers'
@@ -55,11 +55,15 @@ export function AgentRegistryCard({
   agent,
   canDelete,
   isWorking = false,
+  canCreateTicket = false,
+  assigneeOptions,
 }: {
   agent: Agent
   canDelete: boolean
   /** Aktívan futó ügy a saját futásokból — dashboard `act.working` párja. */
   isWorking?: boolean
+  canCreateTicket?: boolean
+  assigneeOptions?: AssigneeOptions
 }) {
   const p = personaFor(agent.name, agent)
   const mood = humanStatus(agent.status, isWorking)
@@ -121,7 +125,11 @@ export function AgentRegistryCard({
         </p>
       </Link>
 
-      <AgentCardActions agent={agent} />
+      <AgentCardActions
+        agent={agent}
+        canCreateTicket={canCreateTicket}
+        assigneeOptions={assigneeOptions}
+      />
     </article>
   )
 }

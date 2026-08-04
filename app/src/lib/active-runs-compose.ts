@@ -1,9 +1,7 @@
 import { activeRunKey, type ActiveRun } from '@/lib/active-runs'
 
-export const SEEN_COMPLETED_LIMIT = 5
-
 export type ComposedRun = ActiveRun & {
-  /** Lefutott és a user már megnyitotta — a lista alján jelenik meg. */
+  /** Lefutott és a user már megnyitotta — csak a szín/jelölés változik, a sor marad. */
   seen: boolean
 }
 
@@ -14,48 +12,29 @@ export type ComposeRunsPanelResult = {
 }
 
 /**
- * Panel lista: aktív + megnézetlen lefutott (időrend, legújabb felül),
- * alul az utolsó N megnézett lefutott (köztük is legújabb felül).
+ * Panel lista: minden futás időrendben (legújabb felül).
+ * A megnyitott lefutottak nem esnek ki és nem csúsznak le — csak `seen` jelölést kapnak.
  */
 export function composeRunsPanel(input: {
   runs: ActiveRun[]
   seenKeys: ReadonlySet<string>
-  seenLimit?: number
 }): ComposeRunsPanelResult {
-  const seenLimit = input.seenLimit ?? SEEN_COMPLETED_LIMIT
   const byRecency = (a: ActiveRun, b: ActiveRun) =>
     runRecencyMs(b) - runRecencyMs(a)
 
-  const active: ActiveRun[] = []
-  const unseenCompleted: ActiveRun[] = []
-  const seenCompleted: ActiveRun[] = []
-
-  for (const run of input.runs) {
+  const sorted = [...input.runs].sort(byRecency)
+  let badgeCount = 0
+  const runs: ComposedRun[] = sorted.map((run) => {
     if (run.phase === 'active') {
-      active.push(run)
-      continue
+      badgeCount += 1
+      return { ...run, seen: false }
     }
-    if (input.seenKeys.has(activeRunKey(run))) {
-      seenCompleted.push(run)
-    } else {
-      unseenCompleted.push(run)
-    }
-  }
+    const seen = input.seenKeys.has(activeRunKey(run))
+    if (!seen) badgeCount += 1
+    return { ...run, seen }
+  })
 
-  active.sort(byRecency)
-  unseenCompleted.sort(byRecency)
-  seenCompleted.sort(byRecency)
-
-  const primary = [...active, ...unseenCompleted].sort(byRecency)
-  const seenTail = seenCompleted.slice(0, seenLimit)
-
-  return {
-    runs: [
-      ...primary.map((run) => ({ ...run, seen: false })),
-      ...seenTail.map((run) => ({ ...run, seen: true })),
-    ],
-    badgeCount: primary.length,
-  }
+  return { runs, badgeCount }
 }
 
 function runRecencyMs(run: ActiveRun): number {

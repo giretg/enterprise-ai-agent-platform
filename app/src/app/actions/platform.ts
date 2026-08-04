@@ -398,13 +398,13 @@ async function runAgentTicketDispatch(
     if (dispatchResult.status === 'paused') {
       return {
         warning:
-          'Ticket létrejött (ready), de a dispatcher ki van kapcsolva — System → Dispatcher panelen kapcsold be.',
+          'A ticket ready állapotban van, de a dispatcher ki van kapcsolva — System → Dispatcher panelen kapcsold be, vagy indítsd kézzel.',
       }
     }
     if (dispatchResult.status === 'skipped') {
       return {
         warning:
-          'Ticket létrejött (ready), de a feldolgozás most nem indult el — a cron safety-net vagy egy kézi dispatch veszi fel.',
+          'A ticket ready állapotban van, de a feldolgozás most nem indult el — a cron safety-net vagy egy kézi dispatch veszi fel.',
       }
     }
     return {}
@@ -1156,7 +1156,10 @@ export async function addTicketComment(input: {
         ticketId: ticket.id,
       })
       if (!ticket.agentId) return fail('A ticket nincs agenthez rendelve')
-      const dispatchOutcome = await runAgentTicketDispatch(ticket.id, ticket.agentId)
+      // User-intent handback: ne a cron/dispatcher enable-re várjunk.
+      const dispatchOutcome = await runAgentTicketDispatch(ticket.id, ticket.agentId, {
+        bypassDispatcherEnabledCheck: true,
+      })
       warning = dispatchOutcome.error ?? dispatchOutcome.warning
     }
 
@@ -1226,7 +1229,10 @@ export async function transitionTicket(input: {
     }
 
     if (parsed.toState === 'ready' && existing.agentId) {
-      await runAgentTicketDispatch(parsed.id, existing.agentId)
+      // „Újra feldolgozás" user-intent — ne a dispatcher enable-re várjunk.
+      await runAgentTicketDispatch(parsed.id, existing.agentId, {
+        bypassDispatcherEnabledCheck: true,
+      })
     }
 
     return ok(ticket)
@@ -3659,10 +3665,20 @@ export async function approveConsequenceApproval(input: { approvalId: string }) 
       tenantId: user.activeTenantId,
       role: user.activeTenantRole,
     }
+    const existing = await repositories.consequenceApprovals.findById(parsed.approvalId)
+    // Task-only ticket: mid-run approve race a loop végével — csak awaiting_human-nél.
+    if (existing?.ticketId && !existing.conversationId) {
+      const ticket = await repositories.tickets.findById(existing.ticketId)
+      if (ticket && ticket.state !== 'awaiting_human') {
+        return fail(
+          'A jóváhagyás csak akkor indítható, amikor a ticket emberi jóváhagyásra vár.',
+        )
+      }
+    }
     const result = await services.consequenceApproval.approve(parsed.approvalId, actor)
     if (!result.ok) return fail(result.reason)
 
-    const row = await repositories.consequenceApprovals.findById(parsed.approvalId)
+    const row = existing ?? (await repositories.consequenceApprovals.findById(parsed.approvalId))
     const resume = row?.ticketId
       ? await resumeTicketAfterConsequenceApprovals(row.ticketId, row.conversationId, {
           id: user.user.id,
@@ -3745,7 +3761,10 @@ async function resumeTicketAfterConsequenceApprovals(
     authorType: 'system',
     body: 'Visszaadva újrafeldolgozásra (következmény-kapu után)',
   })
-  const dispatchOutcome = await runAgentTicketDispatch(ticket.id, ticket.agentId)
+  // User-intent folytatás a kapu után — ne a dispatcher enable / cron-ra várjunk.
+  const dispatchOutcome = await runAgentTicketDispatch(ticket.id, ticket.agentId, {
+    bypassDispatcherEnabledCheck: true,
+  })
   const warning = dispatchOutcome.error ?? dispatchOutcome.warning
   return { ticketResumed: true, ...(warning ? { warning } : {}) }
 }
@@ -3772,6 +3791,15 @@ export async function approveTicketConsequenceApprovals(input: { ticketId: strin
       id: user.user.id,
       tenantId: user.activeTenantId,
       role: user.activeTenantRole,
+    }
+
+    const ticket = await repositories.tickets.findById(parsed.ticketId)
+    if (!ticket) return fail('ticket_not_found')
+    assertTicketTenantScope(ticket, user.activeTenantId)
+    if (ticket.state !== 'awaiting_human') {
+      return fail(
+        'A jóváhagyás csak akkor indítható, amikor a ticket emberi jóváhagyásra vár.',
+      )
     }
 
     const open = await services.consequenceApproval.listOpenForTicket(parsed.ticketId, actor)

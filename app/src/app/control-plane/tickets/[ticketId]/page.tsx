@@ -73,20 +73,10 @@ export default async function TicketDetailPage({
         isAdminDelete={deleteInfo.isAdminDelete}
       />
 
-      {/* Fő sáv: mi történik most → mit kell döntened → a beszélgetés.
-          Oldalsáv: kísérő adatok (fájlok, engedélyek, előzmények). */}
+      {/* Fő sáv: primer akció (jóváhagyás) → kontextus (szál) → aktivitás.
+          Oldalsáv: kísérő adatok (fájlok, engedélyek, állapot-előzmények). */}
       <div className="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_21rem] xl:grid-cols-[minmax(0,1fr)_23rem]">
         <div className="min-w-0 space-y-6">
-          <TicketActivityHistory
-            ticket={{
-              id: ticket.id,
-              state: ticket.state,
-              payload: ticket.payload,
-              cancelRequested: ticket.cancelRequested,
-              lockedAt: ticket.lockedAt,
-            }}
-          />
-          <TicketActions ticket={ticket} />
           {/* Feltétel nélkül renderelve: a kártyák a futás KÖZBEN születnek, és a
               komponens maga tölti újra a listát — feltételes mountnál a nulláról
               induló lista sosem frissülne magától. */}
@@ -96,6 +86,16 @@ export default async function TicketDetailPage({
             ticketState={ticket.state}
           />
           <TicketThread ticket={ticket} comments={commentsRes.success ? commentsRes.data : []} />
+          <TicketActions ticket={ticket} />
+          <TicketActivityHistory
+            ticket={{
+              id: ticket.id,
+              state: ticket.state,
+              payload: ticket.payload,
+              cancelRequested: ticket.cancelRequested,
+              lockedAt: ticket.lockedAt,
+            }}
+          />
         </div>
 
         <aside className="min-w-0 space-y-6">
