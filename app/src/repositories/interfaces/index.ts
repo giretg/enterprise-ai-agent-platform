@@ -910,6 +910,29 @@ export interface ConsequenceApprovalRepository {
     conversationId: string,
     createdAfter: Date,
   ): Promise<ConsequenceApproval[]>
+  /** Task-only ticket függő jóváhagyásai (conversationId nélkül). */
+  listOpenByTicket(ticketId: string, createdAfter: Date): Promise<ConsequenceApproval[]>
+  /**
+   * Ugyanaz a még EL NEM DÖNTÖTT (pending, le nem járt) művelet ugyanabban a
+   * szálban/ticketben — a kártya-duplikáció ellen.
+   *
+   * ÜZLETI OK: egy megszakadt futás folytatásakor a modell a szöveges
+   * checkpointból újraszámolja a hátralévő tételeket, és a már kártyázott
+   * műveletet ismét beküldi. A `f7ef867f` ticketen 4 ownership kapott kétszer
+   * DELETE kártyát: egy „Jóváhagyom mind" mindkettőt lefuttatta volna, a
+   * második 404-gyel. A felhasználónak ugyanaz a törlés kétszer jelenik meg —
+   * nem tudja eldönteni, két külön tételről van-e szó.
+   *
+   * Csak `pending` sorra egyezik: egy MÁR lefutott művelet szándékos
+   * megismétlését nem akadályozzuk.
+   */
+  findOpenDuplicate(input: {
+    conversationId?: string | null
+    ticketId?: string | null
+    toolName: string
+    args: unknown
+    now: Date
+  }): Promise<ConsequenceApproval | null>
   /**
    * CAS állapotváltás: csak akkor sikerül, ha a sor még `expectedStatus`.
    * Concurrent approve/reject ellen — a vesztes null-t kap.

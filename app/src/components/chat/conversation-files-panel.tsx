@@ -104,12 +104,18 @@ export function ConversationFilesPanel({ conversationId, panelRef, onFilesChange
   if (loading && files.length === 0) return null
 
   return (
-    <div className="border-t border-line">
+    <div
+      className={
+        open
+          ? 'flex max-h-[25%] min-h-0 shrink-0 flex-col border-t border-line'
+          : 'border-t border-line'
+      }
+    >
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
         aria-expanded={open}
-        className="flex w-full items-center justify-between gap-2 px-4 py-2 text-xs font-medium text-ink-soft transition-colors hover:bg-night-2/60 hover:text-ink"
+        className="flex w-full shrink-0 items-center justify-between gap-2 px-4 py-2 text-xs font-medium text-ink-soft transition-colors hover:bg-night-2/60 hover:text-ink"
       >
         <span className="flex min-w-0 items-center gap-1.5">
           <span aria-hidden>📁</span>
@@ -126,7 +132,7 @@ export function ConversationFilesPanel({ conversationId, panelRef, onFilesChange
       </button>
 
       {open && (
-        <div className="max-h-[33vh] overflow-y-auto px-4 pb-3">
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-3">
           <div className="mb-2">
             <WorkspaceFileDropzone compact uploading={uploading} onFileSelected={uploadFile} />
           </div>

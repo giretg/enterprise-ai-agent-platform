@@ -1097,6 +1097,12 @@ async function main() {
       systemPrompts.some((p) => p.includes('eszköz-hatóköre szűkebb')),
       'a modell előre megkapja a szűkítést, nem csak az elutasításból tudja meg',
     )
+    assert.ok(
+      systemPrompts.some(
+        (p) => p.includes('tool_result_read') && p.includes('tool_result_extract') && p.includes('infrastruktúra'),
+      ),
+      'a skill-hatókör mellett az infra-eszközök (extract/read) továbbra is jelezve vannak',
+    )
     assert.equal(result.deniedCount, 1, 'a hívás elutasításra került')
     assert.ok(result.content.includes('Nem tudom elvégezni.'))
   })

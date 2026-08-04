@@ -9,6 +9,7 @@ export function kindLabel(kind: ActiveRun['kind']): string {
 export function statusLabel(run: ActiveRun): string | null {
   if (run.phase === 'active') {
     if (run.status === 'cancelling') return 'Leállítás…'
+    if (run.status === 'ready') return 'Végrehajtásra vár'
     if (run.status === 'awaiting_human') return 'Döntésre vár'
     if (run.status === 'needs_info') return 'Információra vár'
     if (run.status === 'in_progress') return 'Fut'
@@ -42,7 +43,13 @@ export function isRoutineStatus(run: ActiveRun): boolean {
 
 export function runPhaseTone(run: ActiveRun): RunTone {
   if (run.phase === 'active') {
-    if (run.status === 'awaiting_human' || run.status === 'needs_info') return 'warning'
+    if (
+      run.status === 'awaiting_human' ||
+      run.status === 'needs_info' ||
+      run.status === 'ready'
+    ) {
+      return 'warning'
+    }
     if (run.status === 'cancelling') return 'danger'
     return 'neutral'
   }

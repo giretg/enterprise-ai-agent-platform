@@ -748,6 +748,7 @@ const consequenceApprovalService = new ConsequenceApprovalService(
   repositories.agents,
   repositories.audit,
   toolBrokerService,
+  repositories.tickets,
 )
 const knowledgeBaseService = new KnowledgeBaseService(
   repositories.tickets,
@@ -1124,6 +1125,7 @@ const generalTaskRuntime = new GeneralTaskRuntime(
   memoryRetrievalService,
   () => platformSettingsService.getStructuringModel(),
   agentAccessService,
+  consequenceApprovalService,
 )
 toolBrokerService.setDelegationProcessor(async ({ ticketId, targetAgentId }) => {
   await wikiRuntime.processTicket({ ticketId, agentId: targetAgentId })

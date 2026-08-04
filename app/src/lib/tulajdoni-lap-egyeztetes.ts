@@ -60,7 +60,8 @@ export function normalizeNyilvantartasRow(
     anyjaNeve: firstString(row, ['anyjaNeve', 'anyja_neve', 'motherName', 'anyja']),
     hanyad: firstString(row, ['hanyad', 'ownershipShare', 'share', 'tulajdoniHanyad']),
     cim: firstString(row, ['cim', 'address', 'lakcim']),
-    azonosito: firstString(row, ['azonosito', 'id', 'partnerId', 'ownershipId', 'uuid']),
+    // Ownership rekord ID (PATCH/DELETE path). NE partnerId — az a partner, nem az ownership.
+    azonosito: firstString(row, ['azonosito', 'ownershipId', 'id', 'uuid']),
     megjegyzes: firstString(row, ['megjegyzes', 'jogcim', 'note', 'title', 'jogallas']),
   }
 }
@@ -96,6 +97,11 @@ export type EgyeztetesSor = {
   megjegyzes: string
   /** A lap II. részének sorszámai, amikből a hányad összeáll (visszakereséshez). */
   bejegyzesSorszamok: number[]
+  /**
+   * Nyilvántartásbeli ownership / rekord ID (PATCH/DELETE).
+   * Új rekordnál null — ott még nincs ownership id.
+   */
+  azonosito: string | null
 }
 
 export type EgyeztetesOsszegzes = {
@@ -320,6 +326,7 @@ export function egyeztetesSorok(input: {
         statusz: 'Új rekord',
         megjegyzes: megjegyzesek.join(' '),
         bejegyzesSorszamok: owner.bejegyzesSorszamok,
+        azonosito: null,
       })
       figyelmet_igenyel.push(`Új rekord: ${owner.nev}`)
       continue
@@ -381,6 +388,7 @@ export function egyeztetesSorok(input: {
       statusz,
       megjegyzes: megjegyzesek.join(' '),
       bejegyzesSorszamok: owner.bejegyzesSorszamok,
+      azonosito: parositott.reg.azonosito ?? null,
     })
     if (statusz !== 'Rendben') {
       figyelmet_igenyel.push(`Módosítás: ${owner.nev}`)
@@ -407,6 +415,7 @@ export function egyeztetesSorok(input: {
         .filter(Boolean)
         .join(' '),
       bejegyzesSorszamok: [],
+      azonosito: reg.azonosito ?? null,
     })
     figyelmet_igenyel.push(`Törlés szükséges: ${reg.nev}`)
   })

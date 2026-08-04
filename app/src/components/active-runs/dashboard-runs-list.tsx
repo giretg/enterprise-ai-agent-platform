@@ -3,6 +3,7 @@
 import { useRouter } from 'next/navigation'
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { RunRow, RunsSummaryChips } from '@/components/active-runs/run-row'
+import { useTicketDispatch } from '@/components/tickets/ticket-dispatch-client'
 import { activeRunKey, type ActiveRun } from '@/lib/active-runs'
 import {
   composeRunsPanel,
@@ -30,11 +31,13 @@ function groupByDay(runs: ComposedRun[]): { label: string; runs: ComposedRun[] }
 
 export function DashboardRunsList({ initialRuns }: { initialRuns: ActiveRun[] }) {
   const router = useRouter()
+  const dispatchTicket = useTicketDispatch()
   const [runs, setRuns] = useState<ComposedRun[]>(() =>
     composeRunsPanel({ runs: initialRuns, seenKeys: loadSeenRunKeys() }).runs,
   )
   const [expanded, setExpanded] = useState(false)
   const [stoppingId, setStoppingId] = useState<string | null>(null)
+  const [startingId, setStartingId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const applyRuns = useCallback((raw: ActiveRun[]) => {
@@ -67,7 +70,7 @@ export function DashboardRunsList({ initialRuns }: { initialRuns: ActiveRun[] })
   }, [refresh])
 
   const stopRun = async (run: ActiveRun) => {
-    if (!run.canStop || stoppingId) return
+    if (!run.canStop || stoppingId || startingId) return
     setStoppingId(run.id)
     try {
       const response =
@@ -86,6 +89,24 @@ export function DashboardRunsList({ initialRuns }: { initialRuns: ActiveRun[] })
       setError('Leállítás sikertelen.')
     } finally {
       setStoppingId(null)
+    }
+  }
+
+  const startRun = async (run: ActiveRun) => {
+    if (!run.canStart || run.kind !== 'ticket' || startingId || stoppingId) return
+    setStartingId(run.id)
+    try {
+      const result = await dispatchTicket(run.id)
+      if (!result.success) {
+        setError(result.error || 'Indítás sikertelen.')
+      } else {
+        setError(null)
+      }
+      await refresh()
+    } catch {
+      setError('Indítás sikertelen.')
+    } finally {
+      setStartingId(null)
     }
   }
 
@@ -131,8 +152,10 @@ export function DashboardRunsList({ initialRuns }: { initialRuns: ActiveRun[] })
                   <RunRow
                     run={run}
                     stopping={stoppingId === run.id}
+                    starting={startingId === run.id}
                     onOpen={openRun}
                     onStop={(target) => void stopRun(target)}
+                    onStart={(target) => void startRun(target)}
                   />
                 </li>
               ))}

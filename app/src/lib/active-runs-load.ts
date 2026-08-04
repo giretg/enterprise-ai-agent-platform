@@ -5,7 +5,7 @@ import { agentDisplayName } from '@/lib/agent-persona'
 import { repositories } from '@/repositories/postgres'
 import type { UserRole } from '@prisma/client'
 
-const ACTIVE_TICKET_STATES = ['in_progress', 'awaiting_human', 'needs_info'] as const
+const ACTIVE_TICKET_STATES = ['ready', 'in_progress', 'awaiting_human', 'needs_info'] as const
 const COMPLETED_TICKET_STATES = ['done', 'rejected'] as const
 
 export type ActiveRunsLoadContext = {

@@ -134,6 +134,7 @@ async function runLoop(
     ) => Promise<ToolLoopConsequenceApprovalEvent>
     onConsequenceApproval?: (event: ToolLoopConsequenceApprovalEvent) => void | Promise<void>
     initialTainted?: boolean
+    mode?: 'chat' | 'task'
   },
 ) {
   const { broker, invoked, gated } = fakeToolBroker()
@@ -144,7 +145,7 @@ async function runLoop(
     agentId: 'agent-1',
     agentVersion: 1,
     context: { conversationId: 'conv-1' },
-    mode: 'chat',
+    mode: extras?.mode ?? 'chat',
     actingUserId: 'user-1',
     messages: [{ role: 'user', content: 'feladat' }],
     modelConfig: MODEL_CONFIG,
@@ -328,6 +329,32 @@ async function main() {
     assert.equal(d.required, false)
   })
 
+  await test('(i2) http_api_request: POST risk:read (olvasó query) → auto, nincs HITL', () => {
+    const connectors = [
+      {
+        id: 'conn-1',
+        config: {
+          ...sampleHttpConfig,
+          endpoints: [
+            ...sampleHttpConfig.endpoints!,
+            { method: 'POST', path: '/reports/query', risk: 'read' as const },
+          ],
+        },
+        accessMode: 'write' as const,
+      },
+    ]
+    const d = evaluateHttpApiRequestGate(
+      {
+        connectorId: 'conn-1',
+        method: 'POST',
+        path: '/reports/query',
+        body: { preset: 'turnover', period: { from: '2026-01-01', to: '2026-06-30' } },
+      },
+      connectors,
+    )
+    assert.equal(d.required, false)
+  })
+
   await test('(j) initialTainted NEM kapuzza a workspace-írást', async () => {
     const gw: GatewayCallArgs[] = []
     const { invoked, gated } = await runLoop(
@@ -502,6 +529,66 @@ async function main() {
     assert.match(catalog.content ?? '', /ÍRÁSJOG NINCS/)
     assert.match(catalog.content ?? '', /NEM HÍVHATÓ \(nincs írásjog\)/)
     assert.match(catalog.content ?? '', /Hívói fejlécek: X-Partner-Scope \(kötelező\)/)
+  })
+
+  await test(
+    'task: a kapu-jelzés a modell ZÁRÓ SZÖVEGE után is megmarad (nem vész el a gomb)',
+    async () => {
+      // Regresszió (`f7ef867f`, 2026-08-04): task módban a loop a kapu után is
+      // fut tovább, és a modell tipikusan egy záró szöveggel fejezi be a kört.
+      // Az az ág korábban a kapu-mezők NÉLKÜL tért vissza, ezért a ticket nem a
+      // „gombra vár" állapotba került, hanem a `deniedCount > 0` miatt hibásan
+      // lezárult — 43 jóváhagyatlan művelettel a háta mögött.
+      const gw: GatewayCallArgs[] = []
+      const { result, gated } = await runLoop(
+        [
+          { toolCalls: [{ id: 'c1', name: 'gmail_send', input: { to: 'x@y.hu' } }] },
+          { content: 'Előkészítettem a műveletet, jóváhagyásra vár.' },
+        ],
+        ['gmail_send'],
+        gw,
+        {
+          mode: 'task',
+          createConsequenceApproval: async (invoke) => ({
+            approvalId: 'appr-task-1',
+            toolName: invoke.tool,
+            summary: invoke.tool,
+            expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+          }),
+        },
+      )
+      assert.equal(gated.length, 1)
+      assert.equal(result.status, 'completed')
+      assert.equal(result.awaitingConsequenceApproval, true)
+      assert.deepEqual(result.consequenceApprovalIds, ['appr-task-1'])
+    },
+  )
+
+  await test('task: a MÁR kártyázott művelet nem duplázza az azonosítót', async () => {
+    // A létrehozó dedupál (azonos, még el nem döntött hívásra ugyanazt a kártyát
+    // adja vissza). A loopnak ilyenkor NEM szabad kétszer felvennie az id-t:
+    // a felhasználónak ígért „db=N" különben többet mondana, mint ahány gomb van.
+    const gw: GatewayCallArgs[] = []
+    const { result } = await runLoop(
+      [
+        { toolCalls: [{ id: 'c1', name: 'gmail_send', input: { to: 'x@y.hu' } }] },
+        { toolCalls: [{ id: 'c2', name: 'gmail_send', input: { to: 'x@y.hu' } }] },
+        { content: 'kész' },
+      ],
+      ['gmail_send'],
+      gw,
+      {
+        mode: 'task',
+        // Ugyanaz az argumentum → a szolgáltatás ugyanazt a sort adja vissza.
+        createConsequenceApproval: async (invoke) => ({
+          approvalId: 'appr-dup',
+          toolName: invoke.tool,
+          summary: invoke.tool,
+          expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+        }),
+      },
+    )
+    assert.deepEqual(result.consequenceApprovalIds, ['appr-dup'])
   })
 
   if (failures > 0) {

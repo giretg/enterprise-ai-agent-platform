@@ -296,6 +296,40 @@ test('eltérő hányad → Módosítás szükséges, indoklással', () => {
   assert.ok(sorok[0].megjegyzes.includes('1/2'))
 })
 
+test('azonosito végigmegy: módosítás / törlés / új rekord (Föld PATCH-DELETE path)', () => {
+  const { sorok } = egyeztetesSorok({
+    lapTulajdonosok: [
+      owner({ nev: 'A Anna', szuletesiEv: '1970', anyjaNeve: 'M Mária', hanyad: '3/4', szazalek: 75 }),
+      owner({ nev: 'B Béla', szuletesiEv: '1980', anyjaNeve: 'N Nóra', hanyad: '1/4', szazalek: 25 }),
+    ],
+    nyilvantartas: [
+      {
+        nev: 'A Anna',
+        szuletesiEv: '1970',
+        anyjaNeve: 'M Mária',
+        hanyad: '1/2',
+        azonosito: 'own-anna',
+      },
+      { nev: 'C Csaba', szuletesiEv: '1960', anyjaNeve: 'O Olga', hanyad: '1/4', azonosito: 'own-csaba' },
+    ],
+  })
+  const modositas = sorok.find((r) => r.statusz === 'Módosítás szükséges')
+  const torles = sorok.find((r) => r.statusz === 'Törlés szükséges')
+  const uj = sorok.find((r) => r.statusz === 'Új rekord')
+  assert.equal(modositas?.azonosito, 'own-anna')
+  assert.equal(torles?.azonosito, 'own-csaba')
+  assert.equal(uj?.azonosito, null)
+})
+
+test('partnerId NEM ownership azonosito — ne keverjük a DELETE path-ba', () => {
+  const rows = normalizeNyilvantartasRows([
+    { partnerNev: 'A Anna', partnerId: 'partner-1', hanyad: '1/1' },
+    { partnerNev: 'B Béla', ownershipId: 'own-2', partnerId: 'partner-2', hanyad: '1/1' },
+  ])
+  assert.equal(rows[0].azonosito, null)
+  assert.equal(rows[1].azonosito, 'own-2')
+})
+
 test('bizonytalan párosítás jelölve van és számolódik', () => {
   const { sorok, osszegzes } = egyeztetesSorok({
     lapTulajdonosok: [

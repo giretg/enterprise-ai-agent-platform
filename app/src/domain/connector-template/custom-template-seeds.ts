@@ -377,6 +377,26 @@ export const GLOBAL_CUSTOM_CONNECTOR_TEMPLATES: TemplateDescriptor[] = [
         default: true,
       },
       {
+        name: 'query_report',
+        method: 'POST',
+        path: '/reports/query',
+        access: 'read',
+        risk: 'read',
+        description:
+          'Riportlekérdezés (nem módosít). Kötelező: period.from + period.to (YYYY-MM-DD, inkluzív); plusz preset VAGY dataset+measures. Példa: {"preset":"turnover","period":{"from":"2026-01-01","to":"2026-06-30"}}',
+        default: true,
+      },
+      {
+        name: 'export_report',
+        method: 'POST',
+        path: '/reports/exports',
+        access: 'read',
+        risk: 'read',
+        description:
+          'Riportexport (nem módosít). Ugyanaz a body, mint /reports/query, plusz format: "csv"|"xlsx".',
+        default: true,
+      },
+      {
         name: 'update_insights_nl_summary',
         method: 'PUT',
         path: '/insights/nl-summary',

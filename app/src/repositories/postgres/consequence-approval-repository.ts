@@ -2,6 +2,16 @@ import { Prisma, type ConsequenceApproval, type ConsequenceApprovalStatus } from
 import { prisma } from '@/lib/db'
 import type { ConsequenceApprovalRepository } from '@/repositories/interfaces'
 
+/**
+ * Egy szál/ticket egyszerre látható jóváhagyásainak felső korlátja.
+ *
+ * A korábbi 50 NEM elméleti plafon volt: egy valós tulajdoni-lap szinkron 93
+ * kártyát termelt (`f7ef867f`), tehát a lista némán csonkolt — a „Jóváhagyom
+ * mind" a levágott tételeket ki is hagyta volna, és a felhasználó úgy zárta
+ * volna le a feladatot, hogy közben műveletek maradtak végrehajtatlanul.
+ */
+const CONSEQUENCE_APPROVAL_LIST_LIMIT = 500
+
 export class PostgresConsequenceApprovalRepository implements ConsequenceApprovalRepository {
   async create(
     data: Omit<ConsequenceApproval, 'id' | 'createdAt' | 'updatedAt'>,
@@ -23,10 +33,9 @@ export class PostgresConsequenceApprovalRepository implements ConsequenceApprova
     conversationId: string,
     createdAfter: Date,
   ): Promise<ConsequenceApproval[]> {
-    // A `[conversationId, status]` index fedi (az `in` is index-barát); a
-    // beszélgetésenkénti darabszám természetesen kicsi, de a felső korlát
-    // megvéd egy elszabadult futástól. Az `approved` sorokra azért van szükség,
-    // mert az elbukott tool-hívás is approved státuszon marad — a hívó szűri.
+    // A `[conversationId, status]` index fedi (az `in` is index-barát). Az
+    // `approved` sorokra azért van szükség, mert az elbukott tool-hívás is
+    // approved státuszon marad — a hívó szűri.
     return prisma.consequenceApproval.findMany({
       where: {
         conversationId,
@@ -34,7 +43,47 @@ export class PostgresConsequenceApprovalRepository implements ConsequenceApprova
         createdAt: { gt: createdAfter },
       },
       orderBy: { createdAt: 'asc' },
-      take: 50,
+      take: CONSEQUENCE_APPROVAL_LIST_LIMIT,
+    })
+  }
+
+  async listOpenByTicket(
+    ticketId: string,
+    createdAfter: Date,
+  ): Promise<ConsequenceApproval[]> {
+    return prisma.consequenceApproval.findMany({
+      where: {
+        ticketId,
+        status: { in: ['pending', 'approved'] },
+        createdAt: { gt: createdAfter },
+      },
+      orderBy: { createdAt: 'asc' },
+      take: CONSEQUENCE_APPROVAL_LIST_LIMIT,
+    })
+  }
+
+  async findOpenDuplicate(input: {
+    conversationId?: string | null
+    ticketId?: string | null
+    toolName: string
+    args: unknown
+    now: Date
+  }): Promise<ConsequenceApproval | null> {
+    // A szál-azonosító KÖTELEZŐ: enélkül a szűrés kifutna a beszélgetésből /
+    // ticketből, és egy másik felhasználó azonos alakú műveletére egyezne.
+    if (!input.conversationId && !input.ticketId) return null
+    // A Prisma `equals` a JSON-t jsonb-ként hasonlítja: kulcssorrendtől független,
+    // tehát ugyanaz a hívás azonos alakban mindig egyezik.
+    return prisma.consequenceApproval.findFirst({
+      where: {
+        ...(input.conversationId ? { conversationId: input.conversationId } : {}),
+        ...(input.ticketId ? { ticketId: input.ticketId } : {}),
+        toolName: input.toolName,
+        status: 'pending',
+        expiresAt: { gt: input.now },
+        args: { equals: input.args as Prisma.InputJsonValue },
+      },
+      orderBy: { createdAt: 'asc' },
     })
   }
 

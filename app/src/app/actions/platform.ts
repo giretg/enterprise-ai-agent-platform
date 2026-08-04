@@ -899,11 +899,21 @@ export async function getTicket(input: { id: string }) {
       })
     }
 
+    const pendingConsequenceApprovals = await services.consequenceApproval.listOpenForTicket(
+      id,
+      {
+        id: user.user.id,
+        tenantId: user.activeTenantId,
+        role: user.activeTenantRole,
+      },
+    )
+
     return ok({
       ...ticket,
       reproduction,
       ...display,
       process,
+      pendingConsequenceApprovals,
       creator: formatTicketCreator({
         createdById: ticket.createdById,
         payload: ticket.payload,
@@ -3644,14 +3654,164 @@ export async function approveConsequenceApproval(input: { approvalId: string }) 
   try {
     const user = await requireTenantRole('operator')
     const parsed = consequenceApprovalIdSchema.parse(input)
-    const result = await services.consequenceApproval.approve(parsed.approvalId, {
+    const actor = {
       id: user.user.id,
       tenantId: user.activeTenantId,
       role: user.activeTenantRole,
+    }
+    const result = await services.consequenceApproval.approve(parsed.approvalId, actor)
+    if (!result.ok) return fail(result.reason)
+
+    const row = await repositories.consequenceApprovals.findById(parsed.approvalId)
+    const resume = row?.ticketId
+      ? await resumeTicketAfterConsequenceApprovals(row.ticketId, row.conversationId, {
+          id: user.user.id,
+          name: user.user.name,
+          tenantId: user.activeTenantId,
+          role: user.activeTenantRole,
+        })
+      : { ticketResumed: false as const }
+
+    return ok({
+      ...result,
+      ticketResumed: resume.ticketResumed,
+      ...('warning' in resume && resume.warning ? { warning: resume.warning } : {}),
     })
-    return result.ok ? ok(result) : fail(result.reason)
   } catch (e) {
     return fail(e instanceof Error ? e.message : 'Failed to approve consequence action')
+  }
+}
+
+/**
+ * Task-only ticket folytatása a következmény-kapu ALATT lefutott műveletek után.
+ *
+ * Ha nincs több függő kártya, handback + dispatch — különben a Föld PATCH lefut,
+ * de az agent soha nem folytatja a terv többi sorát / a záró összefoglalót
+ * (cade35e7: ticket-szintű „Jóváhagyás" ≠ API invoke). A visszatérés a hívó két
+ * útján (egyedi és batch jóváhagyás) KÖZÖS, hogy a folytatás feltétele egy
+ * helyen éljen.
+ */
+async function resumeTicketAfterConsequenceApprovals(
+  ticketId: string,
+  conversationId: string | null,
+  actor: { id: string; name: string | null; tenantId: string; role: UserRole },
+): Promise<{ ticketResumed: boolean; warning?: string }> {
+  if (conversationId) return { ticketResumed: false }
+  const open = await services.consequenceApproval.listOpenForTicket(ticketId, {
+    id: actor.id,
+    tenantId: actor.tenantId,
+    role: actor.role,
+  })
+  if (open.length > 0) return { ticketResumed: false }
+
+  const ticket = await repositories.tickets.findById(ticketId)
+  if (!ticket?.agentId || ticket.state !== 'awaiting_human') return { ticketResumed: false }
+
+  const prevPayload =
+    ticket.payload && typeof ticket.payload === 'object' && !Array.isArray(ticket.payload)
+      ? { ...(ticket.payload as Record<string, unknown>) }
+      : {}
+  delete prevPayload.awaitingConsequenceApproval
+  delete prevPayload.consequenceApprovalIds
+  await repositories.tickets.update(ticket.id, {
+    payload: {
+      ...prevPayload,
+      consequenceApprovalsCompletedAt: new Date().toISOString(),
+    } as Prisma.JsonValue,
+  })
+  await repositories.tickets.appendComment({
+    ticketId: ticket.id,
+    kind: 'human_comment',
+    authorType: 'human',
+    authorUserId: actor.id,
+    authorDisplayName: actor.name,
+    body:
+      '✅ Jóváhagyva — a kapu alatti API-műveletek lefutottak. Folytasd a feladatot a munkaterület checkpointjából (fold_muveletek / fold_frissites_progress); ne egyeztess újra elölről.',
+  })
+  await services.tickets.transition({
+    ticketId: ticket.id,
+    toState: 'needs_info',
+    actor: { type: 'human', userId: actor.id, role: actor.role },
+    note: 'Következmény-kapu jóváhagyás utáni folytatás',
+  })
+  await services.tickets.transition({
+    ticketId: ticket.id,
+    toState: 'ready',
+    actor: { type: 'system' },
+  })
+  await repositories.tickets.appendComment({
+    ticketId: ticket.id,
+    kind: 'system_note',
+    authorType: 'system',
+    body: 'Visszaadva újrafeldolgozásra (következmény-kapu után)',
+  })
+  const dispatchOutcome = await runAgentTicketDispatch(ticket.id, ticket.agentId)
+  const warning = dispatchOutcome.error ?? dispatchOutcome.warning
+  return { ticketResumed: true, ...(warning ? { warning } : {}) }
+}
+
+/**
+ * EGY döntés — N művelet. A ticket összes nyitott kártyáját a SZERVEREN futtatja
+ * le, sorban, friss listából.
+ *
+ * ÜZLETI OK (`f7ef867f`, 2026-08-04): a felhasználó 30 műveletből 10-et hagyott
+ * jóvá, mert a gomb a lapbetöltés pillanatképéből dolgozott, és a futás közben
+ * született 20 kártyát nem látta. A friss lista itt a szerveren áll össze, tehát
+ * a „mind" tényleg mindet jelenti. A sorrend a létrehozás sorrendje: a műveleti
+ * terv (PATCH → POST → DELETE) így marad érvényes.
+ *
+ * Részleges hiba nem állítja meg a sort: a hívó megkapja, MI bukott el és miért.
+ */
+const CONSEQUENCE_BATCH_BUDGET_MS = 60_000
+
+export async function approveTicketConsequenceApprovals(input: { ticketId: string }) {
+  try {
+    const user = await requireTenantRole('operator')
+    const parsed = z.object({ ticketId: z.string().uuid() }).parse(input)
+    const actor = {
+      id: user.user.id,
+      tenantId: user.activeTenantId,
+      role: user.activeTenantRole,
+    }
+
+    const open = await services.consequenceApproval.listOpenForTicket(parsed.ticketId, actor)
+    const decidable = open.filter((card) => !card.expired || card.failedReason)
+    let approved = 0
+    let remaining = 0
+    const failed: { approvalId: string; summary: string; reason: string }[] = []
+    // Falióra-korlát: egy valós szinkron 89 külső HTTP-hívást jelent, ez egyetlen
+    // szerver-akcióban időtúllépésbe futna — a felhasználó pedig nem tudná meg,
+    // mi futott le. Ezért a sort itt vágjuk el, és MEGMONDJUK, mennyi maradt:
+    // a gomb újbóli megnyomása onnan folytatja (a lefutott sorok már nem nyitottak).
+    const deadline = Date.now() + CONSEQUENCE_BATCH_BUDGET_MS
+    for (const card of decidable) {
+      if (Date.now() >= deadline) {
+        remaining += 1
+        continue
+      }
+      const result = await services.consequenceApproval.approve(card.approvalId, actor)
+      if (result.ok) approved += 1
+      else failed.push({ approvalId: card.approvalId, summary: card.summary, reason: result.reason })
+    }
+
+    const resume = await resumeTicketAfterConsequenceApprovals(parsed.ticketId, null, {
+      id: user.user.id,
+      name: user.user.name,
+      tenantId: user.activeTenantId,
+      role: user.activeTenantRole,
+    })
+
+    return ok({
+      total: decidable.length,
+      approved,
+      failed,
+      remaining,
+      skippedExpired: open.length - decidable.length,
+      ticketResumed: resume.ticketResumed,
+      ...(resume.warning ? { warning: resume.warning } : {}),
+    })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to approve consequence actions')
   }
 }
 

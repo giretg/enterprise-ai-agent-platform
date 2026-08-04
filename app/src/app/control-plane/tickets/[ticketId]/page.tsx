@@ -12,6 +12,7 @@ import {
   type TicketStartableProcessDefinition,
 } from '@/components/tickets/ticket-detail'
 import { TicketThread } from '@/components/tickets/ticket-thread'
+import { TicketConsequenceApprovals } from '@/components/tickets/ticket-consequence-approvals'
 import { TicketFilesPanel } from '@/components/tickets/ticket-files-panel'
 import { TicketHistory } from '@/components/tickets/ticket-history'
 import { TicketActivityHistory } from '@/components/tickets/ticket-activity-history'
@@ -86,6 +87,14 @@ export default async function TicketDetailPage({
             }}
           />
           <TicketActions ticket={ticket} />
+          {/* Feltétel nélkül renderelve: a kártyák a futás KÖZBEN születnek, és a
+              komponens maga tölti újra a listát — feltételes mountnál a nulláról
+              induló lista sosem frissülne magától. */}
+          <TicketConsequenceApprovals
+            initial={ticket.pendingConsequenceApprovals ?? []}
+            ticketId={ticket.id}
+            ticketState={ticket.state}
+          />
           <TicketThread ticket={ticket} comments={commentsRes.success ? commentsRes.data : []} />
         </div>
 

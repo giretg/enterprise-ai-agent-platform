@@ -1924,7 +1924,8 @@ model Conversation {
 /// args-ával. Jóváhagyáskor a szerver egyszer lefuttatja a toolt (agent újraindítás nélkül).
 model ConsequenceApproval {
   id             String                     @id @default(uuid()) @db.Uuid
-  conversationId String                     @map("conversation_id") @db.Uuid
+  /// Chat-kötött jóváhagyás. Task-only ticketnél null — ilyenkor a `ticketId` kötelező.
+  conversationId String?                    @map("conversation_id") @db.Uuid
   agentId        String                     @map("agent_id") @db.Uuid
   agentVersion   Int                        @map("agent_version")
   tenantId       String?                    @map("tenant_id") @db.Uuid
@@ -1944,10 +1945,12 @@ model ConsequenceApproval {
   createdAt      DateTime                   @default(now()) @map("created_at") @db.Timestamptz
   updatedAt      DateTime                   @updatedAt @map("updated_at") @db.Timestamptz
 
-  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  agent        Agent        @relation("ConsequenceApprovalAgent", fields: [agentId], references: [id], onDelete: Cascade)
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  ticket       Ticket?       @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  agent        Agent         @relation("ConsequenceApprovalAgent", fields: [agentId], references: [id], onDelete: Cascade)
 
   @@index([conversationId, status])
+  @@index([ticketId, status])
   @@index([agentId, status])
   @@index([expiresAt, status])
   @@map("consequence_approvals")
@@ -2372,6 +2375,7 @@ model Ticket {
   linkedMessages                Message[]
   scheduledTaskMaterializations ScheduledTask[]
   comments                      TicketComment[]
+  consequenceApprovals          ConsequenceApproval[]
 
   @@index([source, state])
   @@index([tenantId, state])

@@ -68,6 +68,8 @@ export type RunsSummary = {
   running: number
   /** Emberi döntésre vagy információra vár — ez a felhasználó teendője. */
   waiting: number
+  /** Végrehajtásra vár (`ready`) — a felhasználó indíthatja. */
+  ready: number
   /** Lefutott, de a felhasználó még nem nyitotta meg. */
   fresh: number
   /** Hibával vagy elutasítással zárult. */
@@ -79,10 +81,11 @@ export type RunsSummary = {
  * a felhasználónak dolga van. A listát nem duplikálja, csak összegzi.
  */
 export function summarizeRuns(runs: readonly ComposedRun[]): RunsSummary {
-  const summary: RunsSummary = { running: 0, waiting: 0, fresh: 0, failed: 0 }
+  const summary: RunsSummary = { running: 0, waiting: 0, ready: 0, fresh: 0, failed: 0 }
   for (const run of runs) {
     if (run.phase === 'active') {
-      if (run.status === 'awaiting_human' || run.status === 'needs_info') summary.waiting += 1
+      if (run.status === 'ready') summary.ready += 1
+      else if (run.status === 'awaiting_human' || run.status === 'needs_info') summary.waiting += 1
       else summary.running += 1
       continue
     }
@@ -100,6 +103,9 @@ export type RunsSummaryChip = { key: keyof RunsSummary; label: string; tone: 'ne
 export function runsSummaryChips(summary: RunsSummary): RunsSummaryChip[] {
   const chips: RunsSummaryChip[] = []
   if (summary.running > 0) chips.push({ key: 'running', label: `${summary.running} fut`, tone: 'neutral' })
+  if (summary.ready > 0) {
+    chips.push({ key: 'ready', label: `${summary.ready} indításra vár`, tone: 'warning' })
+  }
   if (summary.waiting > 0) chips.push({ key: 'waiting', label: `${summary.waiting} vár rád`, tone: 'warning' })
   if (summary.fresh > 0) chips.push({ key: 'fresh', label: `${summary.fresh} új eredmény`, tone: 'success' })
   if (summary.failed > 0) chips.push({ key: 'failed', label: `${summary.failed} sikertelen`, tone: 'danger' })

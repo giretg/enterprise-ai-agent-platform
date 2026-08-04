@@ -69,6 +69,7 @@ import {
   referencedWorkspaceFiles,
 } from '@/lib/workspace-file-visibility'
 import type { SkillService } from '../skill/skill-service'
+import type { ConsequenceApprovalService } from '../tool-broker/consequence-approval-service'
 import type { PromptSegments } from './prompt-assembler'
 import {
   TicketProgressFlusher,
@@ -187,6 +188,8 @@ export class GeneralTaskRuntime {
      * Ha nincs bekötve, a roster ÜRES (fail-closed) — nem a teljes agent-lista.
      */
     private agentAccess?: AgentAccessService,
+    /** Következmény-kapu (http_api_request write) — task ticketen is kell gomb. */
+    private consequenceApprovals?: ConsequenceApprovalService,
   ) {}
 
   async processTicket(params: { ticketId: string; agentId: string }) {
@@ -427,6 +430,18 @@ export class GeneralTaskRuntime {
             return null
           }
         },
+        ...(this.consequenceApprovals
+          ? {
+              createConsequenceApproval: async (invoke: import('../tool-broker/tool-broker-types').ToolBrokerInvokeInput) =>
+                this.consequenceApprovals!.createFromBlocked({
+                  invoke: {
+                    ...invoke,
+                    ticketId: invoke.ticketId ?? ticket.id,
+                  },
+                  tenantId: ticket.tenantId ?? null,
+                }),
+            }
+          : {}),
         shouldCancel: () => {
           if (dbCancelRequested) return true
           void refreshCancel()
@@ -490,6 +505,147 @@ export class GeneralTaskRuntime {
     const { content: answer, toolCallCount } = loopResult
     const deniedCount = loopResult.deniedCount
     await this.publishReferencedWorkspaceFiles(wsTenant, ticket.id, answer)
+
+    // Következmény-kapu: a http_api_request (write) gombra vár — a ticket NEM lehet
+    // done, amíg a felhasználó a ticket UI-n nem hagyja jóvá a műveleteket.
+    // A feltétel szándékosan NEM köti a `status === 'completed'`-et: a függő
+    // jóváhagyás erősebb jelzés, mint a loop leállásának módja. Ha van nyitott
+    // kártya, a ticket a gombra vár — nem eshet se hibaágra (a kapu miatti
+    // `deniedCount > 0` „failed" outcome-ra), se `done`-ra.
+    if (loopResult.awaitingConsequenceApproval) {
+      const approvalIds = loopResult.consequenceApprovalIds ?? []
+      if (approvalIds.length === 0) {
+        // Kapu blokkolt, de kártya nincs — ne ígérjünk gombot (cade35e7 repro).
+        const failedAnswer =
+          `${answer.trim()}\n\n` +
+          '⚠️ Platform hiba: a következmény-kapu blokkolta az író műveletet, ' +
+          'de nem jött létre jóváhagyó kártya a ticketen. Indítsd újra a feladatot, ' +
+          'vagy jelezd a hibát — ticket-szintű „Jóváhagyás” NEM futtatja le a Föld API hívást.'
+        await this.tickets.appendComment({
+          ticketId: ticket.id,
+          kind: 'system_note',
+          authorType: 'system',
+          body:
+            'Következmény-kapu: jóváhagyó kártya létrehozása sikertelen (üres consequenceApprovalIds).',
+        })
+        await this.appendAgentAnswerComment({
+          ticketId: ticket.id,
+          agentId: params.agentId,
+          agentName: agentDetails.agent.name,
+          agentVersion,
+          answerPayload: {
+            answer: failedAnswer,
+            toolCallCount,
+            turnCount: loopTurnCount,
+            deniedCount,
+            awaitingConsequenceApproval: false,
+            consequenceApprovalIds: [],
+            consequenceApprovalCreateFailed: true,
+            agentVersion,
+            model: modelConfig.model,
+            memoryVersion: agentDetails.memoryVersion,
+          },
+          extraStructured: {
+            model: modelConfig.model,
+            toolCallCount,
+            turnCount: loopTurnCount,
+            deniedCount,
+            status: 'awaiting_human',
+            consequenceApprovalCreateFailed: true,
+          },
+        })
+        const write = await this.toolBroker.invoke({
+          agentId: params.agentId,
+          agentVersion,
+          ticketId: ticket.id,
+          tool: 'board_write',
+          args: {
+            ticketId: ticket.id,
+            patch: {
+              state: 'awaiting_human',
+              payload: {
+                answer: failedAnswer,
+                toolCallCount,
+                turnCount: loopTurnCount,
+                deniedCount,
+                awaitingConsequenceApproval: false,
+                consequenceApprovalIds: [],
+                consequenceApprovalCreateFailed: true,
+                agentVersion,
+                model: modelConfig.model,
+                memoryVersion: agentDetails.memoryVersion,
+              },
+            },
+          },
+        })
+        if (write.denied) {
+          throw new Error(`board_write denied: ${write.reason}`)
+        }
+        return {
+          ticketId: ticket.id,
+          answer: failedAnswer,
+          toolCallCount,
+          ticket: await this.tickets.findById(ticket.id),
+        }
+      }
+      await this.appendAgentAnswerComment({
+        ticketId: ticket.id,
+        agentId: params.agentId,
+        agentName: agentDetails.agent.name,
+        agentVersion,
+        answerPayload: {
+          answer,
+          toolCallCount,
+          turnCount: loopTurnCount,
+          deniedCount,
+          awaitingConsequenceApproval: true,
+          consequenceApprovalIds: approvalIds,
+          agentVersion,
+          model: modelConfig.model,
+          memoryVersion: agentDetails.memoryVersion,
+        },
+        extraStructured: {
+          model: modelConfig.model,
+          toolCallCount,
+          turnCount: loopTurnCount,
+          deniedCount,
+          awaitingConsequenceApproval: true,
+          status: 'awaiting_human',
+        },
+      })
+      const write = await this.toolBroker.invoke({
+        agentId: params.agentId,
+        agentVersion,
+        ticketId: ticket.id,
+        tool: 'board_write',
+        args: {
+          ticketId: ticket.id,
+          patch: {
+            state: 'awaiting_human',
+            payload: {
+              answer,
+              toolCallCount,
+              turnCount: loopTurnCount,
+              deniedCount,
+              awaitingConsequenceApproval: true,
+              consequenceApprovalIds: approvalIds,
+              agentVersion,
+              model: modelConfig.model,
+              memoryVersion: agentDetails.memoryVersion,
+            },
+          },
+        },
+      })
+      if (write.denied) {
+        throw new Error(`board_write denied: ${write.reason}`)
+      }
+      return {
+        ticketId: ticket.id,
+        answer,
+        toolCallCount,
+        ticket: await this.tickets.findById(ticket.id),
+      }
+    }
 
     if (loopResult.status === 'exhausted') {
       const updated = await this.routeNonOkStepOutcome({

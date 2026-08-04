@@ -3,6 +3,7 @@
 import { useRouter } from 'next/navigation'
 import { useCallback, useEffect, useState } from 'react'
 import { RunRow, RunsSummaryChips } from '@/components/active-runs/run-row'
+import { useTicketDispatch } from '@/components/tickets/ticket-dispatch-client'
 import { activeRunKey, type ActiveRun } from '@/lib/active-runs'
 import {
   composeRunsPanel,
@@ -14,11 +15,13 @@ import { loadSeenRunKeys, markRunSeen, pruneSeenRunKeys } from '@/lib/active-run
 
 export function ActiveRunsPanel() {
   const router = useRouter()
+  const dispatchTicket = useTicketDispatch()
   const [open, setOpen] = useState(false)
   const [runs, setRuns] = useState<ComposedRun[]>([])
   const [badgeCount, setBadgeCount] = useState(0)
   const [loading, setLoading] = useState(false)
   const [stoppingId, setStoppingId] = useState<string | null>(null)
+  const [startingId, setStartingId] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const applyRuns = useCallback((raw: ActiveRun[]) => {
@@ -59,7 +62,7 @@ export function ActiveRunsPanel() {
   }, [refresh])
 
   const stopRun = async (run: ActiveRun) => {
-    if (!run.canStop || stoppingId) return
+    if (!run.canStop || stoppingId || startingId) return
     setStoppingId(run.id)
     try {
       const response =
@@ -78,6 +81,24 @@ export function ActiveRunsPanel() {
       setError('Leállítás sikertelen.')
     } finally {
       setStoppingId(null)
+    }
+  }
+
+  const startRun = async (run: ActiveRun) => {
+    if (!run.canStart || run.kind !== 'ticket' || startingId || stoppingId) return
+    setStartingId(run.id)
+    try {
+      const result = await dispatchTicket(run.id)
+      if (!result.success) {
+        setError(result.error || 'Indítás sikertelen.')
+      } else {
+        setError(null)
+      }
+      await refresh()
+    } catch {
+      setError('Indítás sikertelen.')
+    } finally {
+      setStartingId(null)
     }
   }
 
@@ -170,8 +191,10 @@ export function ActiveRunsPanel() {
                         run={run}
                         dense
                         stopping={stoppingId === run.id}
+                        starting={startingId === run.id}
                         onOpen={openRun}
                         onStop={(target) => void stopRun(target)}
+                        onStart={(target) => void startRun(target)}
                       />
                     </li>
                   ))}

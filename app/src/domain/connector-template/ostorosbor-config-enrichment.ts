@@ -1,4 +1,4 @@
-import type { ConnectorConfig } from '@/domain/provisioning/connector-config'
+import type { ConnectorConfig, ProposedTool } from '@/domain/provisioning/connector-config'
 import { OSTOROSBOR_CRM_REQUEST_HEADERS } from './custom-template-seeds'
 
 export const OSTOROSBOR_TEMPLATE_KEYS = new Set([
@@ -6,28 +6,110 @@ export const OSTOROSBOR_TEMPLATE_KEYS = new Set([
   'ostorosbor-crm-service-insight',
 ])
 
+/** Ostoros connector API path — report query/export POST-ok itt olvasók. */
+const OSTOROSBOR_CONNECTOR_API_SUFFIX = /\/api\/connector\/v1\/?$/i
+
+/**
+ * Olvasó POST riportvégpontok — a következmény-kapu `risk: read` alapján
+ * engedi őket HITL nélkül (az `access` POST-on továbbra is write lehet).
+ */
+export const OSTOROSBOR_READ_POST_REPORT_TOOLS: readonly ProposedTool[] = [
+  {
+    name: 'query_report',
+    method: 'POST',
+    path: '/reports/query',
+    access: 'write',
+    risk: 'read',
+    description:
+      'Riportlekérdezés (nem módosít). Kötelező: period.from + period.to (YYYY-MM-DD, inkluzív); plusz preset VAGY dataset+measures. Példa: {"preset":"turnover","period":{"from":"2026-01-01","to":"2026-06-30"}}',
+  },
+  {
+    name: 'export_report',
+    method: 'POST',
+    path: '/reports/exports',
+    access: 'write',
+    risk: 'read',
+    description:
+      'Riportexport (nem módosít). Ugyanaz a body, mint /reports/query, plusz format: "csv"|"xlsx".',
+  },
+]
+
 export function ostorosborTemplateKey(config: ConnectorConfig): string | null {
   const key = config.provenance?.templateKey ?? config.provider
   return key && OSTOROSBOR_TEMPLATE_KEYS.has(key) ? key : null
 }
 
+function isOstorosborConnectorApi(config: ConnectorConfig): boolean {
+  if (ostorosborTemplateKey(config)) return true
+  return OSTOROSBOR_CONNECTOR_API_SUFFIX.test(config.baseUrl)
+}
+
+function toolKey(tool: Pick<ProposedTool, 'method' | 'path'>): string {
+  return `${tool.method.toUpperCase()} ${tool.path}`
+}
+
 /**
- * Régi (DB-ben elavult sablonból materializált) Ostorosbor draftok kiegészítése:
- * a CRM kötelező trace fejlécei hiányozhatnak a perzisztált configból.
+ * Biztosítja, hogy a ismert olvasó report POST-ok `risk: read` legyenek.
+ * Hiányzó végpontot csak a service-insight sablonra tesz be.
+ */
+export function enrichOstorosborReadPostReports(config: ConnectorConfig): {
+  config: ConnectorConfig
+  changed: boolean
+} {
+  if (!isOstorosborConnectorApi(config)) {
+    return { config, changed: false }
+  }
+
+  const templateKey = ostorosborTemplateKey(config)
+  const canAddMissing = templateKey === 'ostorosbor-crm-service-insight'
+  let changed = false
+  const nextTools = [...config.proposedTools]
+
+  for (const canonical of OSTOROSBOR_READ_POST_REPORT_TOOLS) {
+    const key = toolKey(canonical)
+    const existingIdx = nextTools.findIndex((t) => toolKey(t) === key)
+    if (existingIdx >= 0) {
+      const existing = nextTools[existingIdx]
+      if (existing.risk !== 'read') {
+        nextTools[existingIdx] = {
+          ...existing,
+          risk: 'read',
+          ...(existing.description ? {} : { description: canonical.description }),
+        }
+        changed = true
+      }
+      continue
+    }
+    if (!canAddMissing) continue
+    nextTools.push({ ...canonical })
+    changed = true
+  }
+
+  if (!changed) return { config, changed: false }
+  return { config: { ...config, proposedTools: nextTools }, changed: true }
+}
+
+/**
+ * Régi (DB-ben elavult) Ostorosbor configok kiegészítése:
+ * kötelező trace fejlécek + olvasó report POST `risk` jelölés.
  */
 export function enrichOstorosborConnectorConfig(config: ConnectorConfig): {
   config: ConnectorConfig
   changed: boolean
 } {
-  if (!ostorosborTemplateKey(config)) {
-    return { config, changed: false }
+  let changed = false
+  let next = { ...config }
+
+  if (ostorosborTemplateKey(config)) {
+    if (!next.requestHeaders || Object.keys(next.requestHeaders).length === 0) {
+      next = { ...next, requestHeaders: { ...OSTOROSBOR_CRM_REQUEST_HEADERS } }
+      changed = true
+    }
   }
 
-  let changed = false
-  const next = { ...config }
-
-  if (!next.requestHeaders || Object.keys(next.requestHeaders).length === 0) {
-    next.requestHeaders = { ...OSTOROSBOR_CRM_REQUEST_HEADERS }
+  const reports = enrichOstorosborReadPostReports(next)
+  if (reports.changed) {
+    next = reports.config
     changed = true
   }
 

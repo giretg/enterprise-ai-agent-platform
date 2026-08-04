@@ -50,22 +50,26 @@ function KindIcon({ kind }: { kind: ComposedRun['kind'] }) {
 
 /**
  * Egy futás egy sorban: állapot-pötty, ki dolgozik rajta, mit csinál éppen,
- * mikor — és csak akkor gomb, ha tényleg tehetsz vele valamit (leállítás).
+ * mikor — és csak akkor gomb, ha tényleg tehetsz vele valamit (indítás / leállítás).
  * Maga a sor kattintható a megnyitáshoz, így nem kell külön „Megtekintés”.
  */
 export function RunRow({
   run,
   dense = false,
   stopping = false,
+  starting = false,
   onOpen,
   onStop,
+  onStart,
 }: {
   run: ComposedRun
   /** Fejléc-panel: szűkebb sorok, kisebb betű. */
   dense?: boolean
   stopping?: boolean
+  starting?: boolean
   onOpen: (run: ComposedRun) => void
   onStop?: (run: ComposedRun) => void
+  onStart?: (run: ComposedRun) => void
 }) {
   const tone = runPhaseTone(run)
   const active = run.phase === 'active'
@@ -75,6 +79,8 @@ export function RunRow({
   const stamp = run.finishedAt ?? run.startedAt
   const when = active ? formatRunElapsed(run.startedAt) : formatRunClock(stamp)
   const canStop = active && run.canStop && onStop
+  const canStart = active && run.canStart && onStart
+  const actionBusy = stopping || starting
 
   return (
     <div
@@ -83,7 +89,7 @@ export function RunRow({
       } ${unseen ? 'bg-sky/[0.06]' : ''}`}
     >
       <span className="relative flex h-2 w-2 shrink-0" aria-hidden>
-        {active && (
+        {active && run.status !== 'ready' && (
           <span
             className={`absolute inline-flex h-full w-full animate-ping rounded-full opacity-60 ${DOT_CLASS[tone]}`}
           />
@@ -134,10 +140,21 @@ export function RunRow({
         {when}
       </span>
 
+      {canStart && (
+        <button
+          type="button"
+          disabled={actionBusy}
+          onClick={() => onStart?.(run)}
+          className="shrink-0 rounded-full border border-honey/40 bg-honey/10 px-2 py-0.5 text-[11px] font-semibold text-honey transition-colors hover:border-honey/60 hover:bg-honey/20 disabled:opacity-50"
+        >
+          {starting ? 'Indítás…' : 'Indítás'}
+        </button>
+      )}
+
       {canStop && (
         <button
           type="button"
-          disabled={stopping}
+          disabled={actionBusy}
           onClick={() => onStop?.(run)}
           className="shrink-0 rounded-full border border-coral/30 px-2 py-0.5 text-[11px] font-semibold text-coral-deep transition-colors hover:bg-coral/10 disabled:opacity-50"
         >

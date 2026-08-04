@@ -23,27 +23,30 @@ Föld-frissítő skill, és javasold a `tulajdoni-lap-egyeztetes` skillt.
 
 # Két kemény szabály
 
-**Írj a Föld-be — de csak egyeztetés után, és csak a biztos eltérésekre.** A
+**Írj a Föld-be — egyeztetés után, az összes eltérésre.** A
 `http_api_request` (POST/PUT/PATCH/DELETE) ebben a skillben **engedett és
 kötelező a célhoz**. A platform író hívásai emberi jóváhagyásra (HITL /
 consequence gate) mehetnek: készítsd elő a hívásokat, ne kerülgesd a kaput.
 
-**A Föld API hívás nem „veszélyes végleges írás".** Az Ostoros Föld 
+**A Föld draft ugyanaz a szerep, mint az Excel-tábla.** Az Ostoros Föld
 ownership POST/PATCH/DELETE ebben a környezetben **csak draft / proposal
 állapotot** hoz létre vagy módosít — a tényleges nyilvántartás-változás előtt
-a Föld-en belül **emberi ellenőrzés és jóváhagyás** történik. Emiatt:
+a Föld-en belül **emberi ellenőrzés és jóváhagyás** történik. Nincs külön
+„előszűrés emberi döntésre” a tervben: minden eltérést vidd be draftként, a
+Föld-beli jóváhagyás dönt. Emiatt:
 
 - **ne** állj meg „túl kockázatos / nincs biztonságosan végrehajtható művelet"
-  indokkal, ha van biztos eltérés;
+  indokkal, ha van eltérés (bizonytalan párosítás / joggyakorló-gyanú / széljegy
+  sem ok a megállásra);
 - **ne** tedd meg a kockázatkerülést az Excel-egyeztető tábla javára;
-- ha a connector írási joga megvan, hívd az `http_api_request`-et a
-  `pending_human: false` tételekre; a Föld draft-jóváhagyás a második, Föld-beli
-  emberi kapu.
+- ha a connector írási joga megvan, hívd az `http_api_request`-et a terv
+  **minden** tételeire; a Föld draft-jóváhagyás az emberi kapu.
 
 **A kimeneti formátumot ne kérdezd meg** — ez a skill Föld-írás. Csak akkor állj
 meg kérdezni, ha a lap ellenőrzése bukott, ha a nyilvántartás lekérdezése
-kétséges, ha egy párosítás emberi döntést igényel, vagy ha a Föld body-sémája
-nem egyértelmű a katalógusból / meglévő rekordból.
+kétséges, vagy ha a Föld body-sémája nem egyértelmű a katalógusból / meglévő
+rekordból. Bizonytalan párosítás **nem** megállási ok: draftold, és a válaszban
+jelezd.
 
 **Ne gyűjts a kontextusba. Ne párosíts a modellben.** Nagy API-válasz / parse-
 eredmény SOHA ne kerüljön teljes egészében a promptba, és 10+ soros listát NE
@@ -61,7 +64,9 @@ NE csináld:
 - ugyanazt a JSON fájlt sokszor `file_read`-del offset/limit-tel
 - kézi párosítás / `xlsx_create` + `xlsx_append_rows` cellázás
 - `kimenet: "….xlsx"` megadása az egyeztetőnek, vagy Excel átadása deliverable-ként
-- Föld-írás megtagadása „kockázat" miatt (a Föld írás draft + Föld-beli emberi jóváhagyás)
+- Föld-írás megtagadása „kockázat" / „bizonytalan párosítás" / „emberi ellenőrzés kell"
+  / „nincs extract a skillben" miatt — a `tool_result_read` / `tool_result_extract`
+  infrastruktúra, és az `elteroPath` a teljes ownership-id lista
 - Föld-írás egyeztetés nélkül, vagy „Rendben" sorokra
 - mezőnevek kitalálása 400/422 után találgatással — előbb katalógus / meglévő rekord
 
@@ -122,13 +127,29 @@ tulajdoni_lap_egyeztetes({
 
 Ez a hívás elvégzi a lap kiolvasását és a párosítást. **Ne bontsd szét.**
 **Ne add meg a `kimenet` paramétert** — nélküle a tool **nem** ír Excel-t.
-A Föld műveleti terv forrása a tool **JSON válasza** (`osszegzes` + `eltero`).
+A Föld műveleti terv forrása:
+- `elteroPath` (tipikusan `egyeztetes-eltero.json`) — a **teljes** kompakt
+  eltérő lista `azonosito` (ownership id) + hányad mezőkkel;
+- a válaszbeli `eltero` csak rövid minta; `elteroDb` a teljes darabszám.
+
+Ha `elteroPath` megvan: **EGY** `tool_result_read` az `elteroPath`-ra (infra-
+eszköz; workspace JSON-t is olvas, nem csak tool-archívumot), abból építsd a
+`fold_muveletek.json`-t, majd hívd az `http_api_request`-eket.
+Az író hívások a ticket felületén jóváhagyásra várnak — ez rendben van, ne állj
+meg „nincs eszköz" indokkal. A felhasználó egyetlen „Mind jóváhagyom" gombbal
+engedélyezi az összeset, és a feladat utána MAGÁTÓL folytatódik: ne kérd meg,
+hogy indítsa újra a ticketet, és ne kérj tőle szöveges „ok"-t.
 Excel csak a `tulajdoni-lap-egyeztetes` skillben kell (`kimenet` megadásával).
 
 A `tulajdoni_lap_parse`-ot csak akkor hívd, ha az egyeztetésen túl kell
 magyaráznod valamit (törölt bejegyzések, terhek).
 
-Frissítsd a checkpointot: `"status": "egyeztetes_done"`.
+Frissítsd a checkpointot: `"status": "egyeztetes_done"`, `"elteroPath": "…"`.
+
+Ha az egyeztető `partial` / „emberi ellenőrzést igényel" figyelmeztetést ad:
+ez **nem** tiltja a Föld-írást. Draftold az eltéréseket; a Föld-beli jóváhagyás
+az emberi ellenőrzés. A válaszban sorold fel a bizonytalan / figyelmet igénylő
+tételeket.
 
 ## 3. Műveleti terv — `fold_muveletek.json`
 
@@ -144,11 +165,12 @@ Az eltérő sorokból állíts össze egy rövid, végrehajtható tervet, és í
 
 Szabályok a tervhez:
 
-1. **Csak biztos eltérés.** Bizonytalan párosítás, joggyakorló-gyanú, széljegy
-   miatti vitás tétel → a tervben `pending_human: true`, **ne** hívd rá az
-   `http_api_request`-et, amíg ember nem dönt.
-2. **Ownership id** a nyilvántartás `id` / `azonosito` mezőjéből jön (PATCH/DELETE).
-   Új rekordnál nincs ownership id.
+1. **Minden eltérés a tervbe.** Bizonytalan párosítás, joggyakorló-gyanú, széljegy
+   miatti vitás tétel is — draftold; a megjegyzésben / válaszban jelezd a
+   bizonytalanságot, hogy a Föld-beli jóváhagyó közérthetően lássa.
+2. **Ownership id** az `eltero[].azonosito` mezőből jön (PATCH/DELETE path).
+   Új rekordnál null — ott nincs ownership id. Ha Módosítás/Törlés sornál hiányzik:
+   állj meg és jelezd (ne tippelj id-t).
 3. **Partner.** Új ownershiphoz kell `partnerId`. Először keresd
    `http_api_get_all` `/partners` (search / szűrés) a név (+ születési adat)
    alapján. Ha nincs partner: hozd létre `POST /partners`-szel a connector
@@ -175,7 +197,7 @@ Példa terv-elem:
   "path": "/parcels/seed-parcel-…/ownerships/own-…",
   "method": "PATCH",
   "body": { "hanyad": "1/2" },
-  "pending_human": false
+  "megjegyzes": null
 }
 ```
 
@@ -183,14 +205,15 @@ Checkpoint: `"status": "muveletek_ready"`, `"muveletekPath": "fold_muveletek.jso
 
 ## 4. Végrehajtás — `http_api_request`
 
-A terv `pending_human: false` elemeire hívd az `http_api_request`-et, sorban
-(vagy a tervben rögzített biztonságos sorrendben). Író connector kell
-(olvasás + írás); ha a connector read-only, állj meg és jelezd — de **ne**
-helyettesítsd Excel-táblával a Föld-írást.
+A terv **minden** elemére hívd az `http_api_request`-et, sorban (vagy a tervben
+rögzített biztonságos sorrendben). Író connector kell (olvasás + írás); ha a
+connector read-only, állj meg és jelezd — de **ne** helyettesítsd Excel-táblával
+a Föld-írást.
 
 Emlékeztető: ezek a hívások **draftot** indítanak a Föld-ben; a véglegesítés
 Föld-beli emberi jóváhagyáshoz kötött. Ne torzítsd le a futást „kockázatos
-írás" indokkal, és ne kérj külön Excel-ellenőrzést a draft helyett.
+írás" / „részleges egyeztetés" indokkal, és ne kérj külön Excel-ellenőrzést a
+draft helyett.
 
 Minden hívás után frissítsd a tervet / checkpointot (`applied` / `failed` /
 `awaiting_approval`). Ha HITL jóváhagyásra vár: ne indíts párhuzamosan
@@ -216,7 +239,9 @@ Fogalmazd meg:
 - a végrehajtott POST/PATCH/DELETE tételek névvel és hányaddal,
 - hogy a Föld oldalon a draftok még emberi jóváhagyásra várnak a véglegesítés
   előtt,
-- a `pending_human` tételek (bizonytalan párosítás, joggyakorló, széljegy),
+- a bizonytalan / figyelmet igénylő tételek (bizonytalan párosítás, joggyakorló-
+  gyanú, széljegy) — ezek is draftban vannak, de a jóváhagyónak külön figyelni
+  kell rájuk,
 - a lap kelte (`meta.kelt`) — a szinkron csak ehhez képest érvényes.
 
 A hányadokat emberi szövegben százalékkal add meg, a törtet legfeljebb
@@ -237,7 +262,9 @@ másolatnál teljes másolat kell a földhivataltól.
   egy ownership rekord / partner a cél; ne hozz létre annyi ownership sort,
   ahány II. rész sorszám van, ha a nyilvántartás összevont alakot vár.
 - **Joggyakorló ≠ tulajdonos.** „Tulajdonosi joggyakorló" (NFK, MNV, stb.)
-  automatikus törlése tilos — `pending_human`.
+  a nyilvántartásban külön rekordként gyakran „Törlés szükséges"-ként jön ki —
+  draftold a törlést, és a válaszban / megjegyzésben jelezd, hogy joggyakorló
+  lehet; a Föld-beli jóváhagyó dönt.
 - **A terhek nem tulajdonosok.** Haszonélvezet / jelzálog nem ownership
   POST/PATCH cél, hacsak a felhasználó kifejezetten terhet kér (akkor a
   `/encumbrances` végpontok, külön döntéssel).
@@ -255,4 +282,3 @@ meg a `fold_frissites_progress.json`-t és a munkaterület fájljait.
   meg a checkpoint `applied` listáját.
 - TILOS újra: parse a teljes lapra, felesleges `http_api_get_all` ugyanarra a
   pathra, chunkolt `file_read` a már meglévő JSON-okon.
-

@@ -1802,7 +1802,10 @@ export const TOOL_REGISTRY: { [N in ToolName]: ToolDescriptor<N> } = {
       'tűnik (pl. 50 sor vs százas tulajdonosi lista — tipikus get első oldal), NEM készül tábla: ' +
       'ok=false + figyelmeztetes. Ilyenkor http_api_get_all → újra egyeztetés; ' +
       'confirmNyilvantartasComplete=true CSAK ha get_all után is ennyi a sor.\n' +
-      'A válasz mindig összegzést és az ELTÉRŐ sorokat adja; Excel csak `kimenet` mellett.',
+      'A válasz: összegzés + `elteroPath` (teljes kompakt eltérő lista a munkaterületen: ' +
+      'nev/statusz/hanyad/azonosito) + rövid `eltero` minta. Föld PATCH/DELETE: az ' +
+      '`elteroPath` fájlból dolgozz (tool_result_read egyszer, vagy a mintából ha elfér) — ' +
+      'az `azonosito` az ownership id. Excel csak `kimenet` mellett.',
     argsSchema: z.object({
       documentId: z.string().max(200).optional(),
       path: z.string().max(500).optional(),

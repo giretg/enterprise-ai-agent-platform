@@ -52,9 +52,20 @@ function chatPhase(status: string): ActiveRunPhase {
 }
 
 function ticketPhase(state: string): ActiveRunPhase {
-  return state === 'in_progress' || state === 'awaiting_human' || state === 'needs_info'
+  return state === 'ready' ||
+    state === 'in_progress' ||
+    state === 'awaiting_human' ||
+    state === 'needs_info'
     ? 'active'
     : 'completed'
+}
+
+function ticketCanStart(ticket: Ticket): boolean {
+  return (
+    ticket.state === 'ready' &&
+    ticket.assigneeType === 'agent' &&
+    Boolean(ticket.assigneeId)
+  )
 }
 
 /**
@@ -82,6 +93,7 @@ export function activeRunFromChatTurn(
     startedAt: turn.startedAt.toISOString(),
     finishedAt: turn.finishedAt ? turn.finishedAt.toISOString() : null,
     canStop: phase === 'active' && turn.createdById === viewer.userId,
+    canStart: false,
     targetId: turn.conversationId,
     agentId: turn.agentId,
   }
@@ -90,6 +102,7 @@ export function activeRunFromChatTurn(
 export function activeRunFromTicket(ticket: Ticket): ActiveRun {
   const progress = readTicketRuntimeProgress(ticket.payload)
   const phase = ticketPhase(ticket.state)
+  const canStart = ticketCanStart(ticket)
   return {
     kind: 'ticket',
     id: ticket.id,
@@ -97,10 +110,16 @@ export function activeRunFromTicket(ticket: Ticket): ActiveRun {
     href: `/control-plane/tickets/${ticket.id}`,
     status: ticket.state,
     phase,
-    latestActivity: progress ? summarizeActivities(progress.activities) : null,
+    latestActivity:
+      progress
+        ? summarizeActivities(progress.activities)
+        : canStart
+          ? 'Indításra kész — kattints az Indítás gombra'
+          : null,
     startedAt: (ticket.lockedAt ?? ticket.updatedAt).toISOString(),
     finishedAt: phase === 'completed' ? ticket.updatedAt.toISOString() : null,
     canStop: ticket.state === 'in_progress',
+    canStart,
     targetId: ticket.id,
     agentId: ticket.agentId,
   }

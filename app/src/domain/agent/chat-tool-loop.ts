@@ -53,6 +53,8 @@ import {
   buildHttpApiEfficiencyGuidance,
   formatHttpApiEndpointCatalogSuffix,
 } from '@/domain/connector/http-api-prompt'
+import { enrichOstorosborConnectorConfig } from '@/domain/connector-template/ostorosbor-config-enrichment'
+import { normalizeConnectorConfig } from '@/domain/provisioning/connector-config'
 import type { ToolName } from '@/domain/tool-broker/tool-broker-types'
 // issue #194 — a chat-vetület KIZÁRÓLAG a kanonikus tool-regiszterből képződik.
 import {
@@ -117,13 +119,29 @@ export type ToolLoopMode = 'chat' | 'task'
 /** A loop leállási indokai (a `cancelled` külön, kivétel-ágon megy — spec §7). */
 export type ToolLoopStopReason = Exclude<LoopStopReason, 'cancelled'>
 export type ToolLoopResult =
-  | { content: string; toolCallCount: number; deniedCount: number; status: 'completed'; reason?: undefined }
+  | {
+      content: string
+      toolCallCount: number
+      deniedCount: number
+      status: 'completed'
+      reason?: undefined
+      /** Következmény-kapu: van függő jóváhagyás (task ticketen is). */
+      awaitingConsequenceApproval?: boolean
+      consequenceApprovalIds?: string[]
+    }
   | {
       content: string
       toolCallCount: number
       deniedCount: number
       status: 'exhausted'
       reason: ToolLoopStopReason
+      /**
+       * A kapu az erőforrás-alapú leállás ágán is jelez: a függő jóváhagyás
+       * ERŐSEBB jelzés, mint a kimerülés — a hívó ilyenkor is a „gombra vár"
+       * állapotba viszi a ticketet, nem hibaágra.
+       */
+      awaitingConsequenceApproval?: boolean
+      consequenceApprovalIds?: string[]
     }
 
 export const TOOL_LOOP_EXHAUSTED_MESSAGE =
@@ -254,7 +272,9 @@ function objectSchema(
 const TOOL_RESULT_READ_DEFINITION: ToolDefinition = {
   name: TOOL_RESULT_READ,
   description:
-    'Korábban elmentett nagy tool-eredmény részletének visszaolvasása. Csak a rendszer által megadott path értékkel használd; offset karakter-alapú, limit karakterben értendő. Előnyben részesítsd a tool_result_extract-et, ha mezőkivonat kell.',
+    'Korábban elmentett nagy tool-eredmény VAGY munkaterületi JSON fájl (pl. egyeztetes-eltero.json) részletének visszaolvasása. ' +
+    'path: `.tool-results/…`, `tool-outputs/…` vagy relatív workspace path. Offset karakter-alapú, limit karakterben. ' +
+    'Mezőkivonathoz előnyben: tool_result_extract.',
   inputSchema: objectSchema({ path: STR, offset: NUM, limit: NUM }, ['path']),
 }
 
@@ -876,8 +896,11 @@ export async function runAgentToolLoop(params: {
     loopStablePreamble.push({
       role: 'system',
       content:
-        `A betöltött skill eszköz-hatóköre szűkebb: ebben a feladatban KIZÁRÓLAG ezeket hívhatod — ` +
-        `${[...params.initialSkillToolScope].sort().join(', ')}. A többi eszköz hívását a platform elutasítja. ` +
+        `A betöltött skill eszköz-hatóköre szűkebb: a skill capability-eszközei közül KIZÁRÓLAG ezeket hívhatod — ` +
+        `${[...params.initialSkillToolScope].sort().join(', ')}. ` +
+        `A platform infrastruktúra-eszközei (tool_result_read, tool_result_extract` +
+        `${loadSkill ? ', load_skill' : ''}) továbbra is elérhetők — nagy / archivált tool-eredményhez ezeket használd. ` +
+        `A többi capability-eszköz hívását a platform elutasítja. ` +
         `Ha a feladat ezekkel nem oldható meg, ne kerüld meg kézzel: állj meg, és mondd el a felhasználónak, mi hiányzik.`,
     })
   }
@@ -931,6 +954,30 @@ export async function runAgentToolLoop(params: {
   // issue #97 — ha a kapu legalább egyszer blokkolt mellékhatást, ne indítsunk
   // újabb tool-körös modellhívást (tokenégetés elkerülése); záró összefoglaló jön.
   let consequenceGateTriggered = false
+  const consequenceApprovalIds: string[] = []
+  /**
+   * A kapu végállapota MINDEN kilépési ponton.
+   *
+   * ÜZLETI HIBA, amit zár (2026-08-04, `f7ef867f` ticket): a kapu-mezőket eddig
+   * csak a turnLoop UTÁNI ág töltötte ki. Ha viszont a modell egy kört záró
+   * szöveggel fejezett be (nincs benne tool-hívás — a TIPIKUS eset), a loop
+   * korábban tért vissza, és a mezők elvesztek. Ilyenkor a ticket nem
+   * `awaiting_human` lett, hanem a `deniedCount > 0` miatt `failed`/`done`:
+   * a felület KÉSZNEK mutatott egy futást, ami mögött 43 jóváhagyatlan
+   * Föld-művelet állt, a jóváhagyás utáni automatikus folytatás pedig
+   * (`ticket.state === 'awaiting_human'` feltétel) sosem indult el —
+   * a felhasználónak kézzel kellett újraindítania a ticketet, körönként.
+   */
+  const consequenceGateFields = (): {
+    awaitingConsequenceApproval?: boolean
+    consequenceApprovalIds?: string[]
+  } =>
+    consequenceGateTriggered
+      ? {
+          awaitingConsequenceApproval: consequenceApprovalIds.length > 0,
+          consequenceApprovalIds: [...consequenceApprovalIds],
+        }
+      : {}
   const archivedToolResults = new Map<
     string,
     { content: string | null; bytes: number; toolName: string }
@@ -1474,9 +1521,16 @@ export async function runAgentToolLoop(params: {
             toolCallCount,
             deniedCount,
             status: 'completed',
+            ...consequenceGateFields(),
           }
         }
-        return { content: cleaned, toolCallCount, deniedCount, status: 'completed' }
+        return {
+          content: cleaned,
+          toolCallCount,
+          deniedCount,
+          status: 'completed',
+          ...consequenceGateFields(),
+        }
       }
 
       if (turn < maxTurns - 1) {
@@ -1491,6 +1545,7 @@ export async function runAgentToolLoop(params: {
         toolCallCount,
         deniedCount,
         status: 'completed',
+        ...consequenceGateFields(),
       }
     }
 
@@ -1530,7 +1585,25 @@ export async function runAgentToolLoop(params: {
         const readStartedAt = now()
         const path = typeof call.input.path === 'string' ? call.input.path : ''
         const readSourceKey = toolCallSourceKey(call.name, call.input) ?? `${call.name}:path:${path}`
-        const archived = path ? await loadArchivedContent(path) : null
+        let archived = path ? await loadArchivedContent(path) : null
+        // Workspace fájl (pl. egyeztetes-eltero.json): nem tool-archívum, de a
+        // skill útmutatója tool_result_read-et kér rá. Extract már így működik.
+        if (!archived && path && params.readWorkspaceFile && isSafeWorkspaceRelativePath(path)) {
+          try {
+            const workspaceContent = await params.readWorkspaceFile(path)
+            if (workspaceContent != null) {
+              const loaded = {
+                content: workspaceContent,
+                bytes: Buffer.byteLength(workspaceContent, 'utf8'),
+                toolName: 'workspace',
+              }
+              rememberArchived(path, loaded)
+              archived = loaded
+            }
+          } catch (error) {
+            logger.warn({ path, error }, 'agent.tool_loop.workspace_read_fallback_failed')
+          }
+        }
         const offset = clamp(numArg(call.input, 'offset') ?? 0, 0, archived?.content.length ?? 0)
         const limit = clamp(
           numArg(call.input, 'limit') ?? TOOL_RESULT_READ_DEFAULT_LIMIT,
@@ -1921,6 +1994,25 @@ export async function runAgentToolLoop(params: {
       const toolName = fromWireToolName(call.name)
       turnToolCallsIssued += 1
 
+      // Következmény-kapu után: chatben minden további tool kimarad (token +
+      // board_write/done védelem). Task módban csak a board_write tilos — a többi
+      // író http_api_request külön kártyát kap (Approve all), olvasó/partner
+      // keresés és workspace checkpoint mehet.
+      if (consequenceGateTriggered) {
+        const block =
+          params.mode === 'task' ? toolName === 'board_write' : true
+        if (block) {
+          await skipToolCall(
+            call,
+            params.mode === 'task'
+              ? '[LEÁLLÁS] Következmény-kapu: board_write nem fut le, amíg a jóváhagyásra váró API-műveletek nyitva vannak.'
+              : '[LEÁLLÁS] Következmény-kapu: van jóváhagyásra váró művelet — további eszközhívás nem fut le ebben a fordulóban.',
+            'következmény-kapu után kimaradt',
+          )
+          continue
+        }
+      }
+
       if (!isChatPlatformTool(toolName) || !params.allowedTools.includes(toolName)) {
         // Elutasítás: nem hoz új információt. Ha egy modell körönként ugyanazt a
         // nem elérhető eszközt hívja, a kör zsákutcaként számoljon — enélkül a
@@ -2144,6 +2236,12 @@ export async function runAgentToolLoop(params: {
           if (params.createConsequenceApproval) {
             try {
               approvalCard = await params.createConsequenceApproval(invokeInput)
+              // A létrehozó dedupál: azonos, még el nem döntött műveletre a MÁR
+              // meglévő kártyát adja vissza — ilyenkor ne duplázzuk az id-t sem
+              // (a felhasználónak megígért „db=N" különben hazudna).
+              if (!consequenceApprovalIds.includes(approvalCard.approvalId)) {
+                consequenceApprovalIds.push(approvalCard.approvalId)
+              }
               await params.onConsequenceApproval?.(approvalCard)
             } catch (error) {
               // Fail-soft: a kapu továbbra is blokkol; a UI-kártya elmaradhat. DE ez
@@ -2156,6 +2254,7 @@ export async function runAgentToolLoop(params: {
                   tool: toolName,
                   agentId: params.agentId,
                   conversationId: params.context.conversationId ?? null,
+                  ticketId: params.context.ticketId ?? null,
                   error: error instanceof Error ? error.message : String(error),
                 },
                 'A következmény-kapu jóváhagyó kártyája nem jött létre — a felhasználónak nem lesz gombja.',
@@ -2164,21 +2263,26 @@ export async function runAgentToolLoop(params: {
           }
           consequenceGateTriggered = true
           const why = consequenceGateReasonForModel(gate.reason)
+          const approvalSurface =
+            params.mode === 'task' ? 'a ticket felületén' : 'a chatben'
           const approvalHint = approvalCard
             ? `A művelet a felületen JÓVÁHAGYÁSRA VÁR (approvalId=${approvalCard.approvalId}). ` +
-              'Mondd el a felhasználónak, hogy a chatben megjelenő „Jóváhagyom" gombbal engedélyezheti — ' +
+              `Mondd el a felhasználónak, hogy ${approvalSurface} megjelenő „Jóváhagyom" gombbal engedélyezheti — ` +
               'NE kérj tőle szöveges „ok"/„jóváhagyom" választ, és NE indítsd újra a teljes folyamatot.'
-            : 'Kérd meg a felhasználót, hogy a felületen hagyja jóvá a műveletet, ha van rá gomb; ' +
-              'addig NE indítsd újra ezt a lépést.'
+            : 'A jóváhagyó kártya NEM jött létre (platform hiba). NE ígérj „Jóváhagyom" gombot. ' +
+              'Mondd el, hogy a művelet blokkolva van, és a felhasználónak újra kell indítania a feladatot / jeleznie a hibát. ' +
+              'NE indítsd újra ezt a lépést.'
           // A jóváhagyásra várás nem előrehaladás: a lépés nem futott le.
           pushToolResult(
             call,
             `JÓVÁHAGYÁS SZÜKSÉGES: ezt a lépést (${call.name}) nem futtattam le automatikusan, ` +
               `mert ${why}. ` +
               approvalHint +
-              ' NE hívd újra ezt az eszközt csak azért, hogy újra megpróbáld. ' +
-              'Addig folytasd legfeljebb alacsony kockázatú (olvasó / workspace-író) lépésekkel, ' +
-              'majd foglald össze röviden, mi vár jóváhagyásra.',
+              (approvalCard && params.mode === 'task'
+                ? ' Ha van még tervezett Föld írás (PATCH/POST/DELETE), hívd azokat is — a felhasználó EGY „Mind jóváhagyom" gombbal engedélyezi az összeset; board_write/done tilos a kapu alatt.'
+                : ' NE hívd újra ezt az eszközt csak azért, hogy újra megpróbáld. ' +
+                  'Addig folytasd legfeljebb alacsony kockázatú (olvasó / workspace-író) lépésekkel, ' +
+                  'majd foglald össze röviden, mi vár jóváhagyásra.'),
             'barren',
           )
           await emitActivity({
@@ -2186,8 +2290,8 @@ export async function runAgentToolLoop(params: {
             kind: 'tool',
             title: call.name,
             detail: approvalCard
-              ? 'kockázatos művelet — emberi jóváhagyás szükséges (gomb a chatben)'
-              : 'kockázatos művelet — emberi jóváhagyás szükséges',
+              ? `kockázatos művelet — emberi jóváhagyás szükséges (gomb ${params.mode === 'task' ? 'a ticketen' : 'a chatben'})`
+              : 'kockázatos művelet — jóváhagyó kártya létrehozása sikertelen',
             status: 'skipped',
           })
           continue
@@ -2469,20 +2573,29 @@ export async function runAgentToolLoop(params: {
       logger.info(costSignalFields, 'agent.tool_loop.turn_cost_signals')
     }
 
-    // issue #97 — következmény-kapu után ne égjünk újabb tool-köröket: záró
-    // összefoglaló jön, a mellékhatás a UI-gombra vár.
-    if (consequenceGateTriggered) {
+    // issue #97 — chat: kapu után ne égjünk újabb tool-köröket (folytatás a
+    // gomb után). Task: maradjunk a loopban, hogy a modell a terv többi írását
+    // is be tudja sorolni külön kártyákra (Approve all), amíg a limit engedi.
+    if (consequenceGateTriggered && params.mode !== 'task') {
       break turnLoop
     }
   }
 
   if (consequenceGateTriggered) {
+    const approvalSurface =
+      params.mode === 'task' ? 'a ticket felületén' : 'a chatben'
+    const hasCards = consequenceApprovalIds.length > 0
     messages.push({
       role: 'system',
-      content:
-        'Fogalmazd meg a felhasználónak magyarul RÖVIDEN: mely mellékhatásos művelet(ek) várnak a chatben megjelenő „Jóváhagyom" gombra, és miért (külső, nem megbízható forrás befolyásolta a fordulót). ' +
-        'NE kérj szöveges „ok"/„jóváhagyom" választ, NE ígérd hogy újraindítod a folyamatot, NE hívd újra az eszközöket. ' +
-        'A gomb megnyomása után a platform magától lefuttatja a jóváhagyott műveletet — te ne próbáld újra.',
+      content: hasCards
+        ? `Fogalmazd meg a felhasználónak magyarul RÖVIDEN: mely mellékhatásos művelet(ek) várnak ${approvalSurface} megjelenő jóváhagyó gombra (db=${consequenceApprovalIds.length}), és miért (külső, nem megbízható forrás befolyásolta a fordulót). ` +
+          (params.mode === 'task'
+            ? 'Mondd el, hogy egyetlen „Mind jóváhagyom" gomb elvégzi az összeset, és utána a feladat MAGÁTÓL folytatódik — nem kell újraindítani. '
+            : '') +
+          'NE kérj szöveges „ok"/„jóváhagyom" választ, NE ígérd hogy újraindítod a folyamatot, NE hívd újra az eszközöket. ' +
+          'A gomb megnyomása után a platform magától lefuttatja a jóváhagyott műveletet — te ne próbáld újra.'
+        : 'Fogalmazd meg a felhasználónak magyarul RÖVIDEN: a mellékhatásos művelet blokkolva van, de a jóváhagyó gomb NEM jött létre (platform hiba). ' +
+          'NE ígérj „Jóváhagyom" gombot. Kérd, hogy jelezze a hibát / indítsa újra a feladatot.',
     })
     const gateFinal = await params.gateway.call({
       agentId: params.agentId,
@@ -2493,10 +2606,16 @@ export async function runAgentToolLoop(params: {
     const gateContent =
       stripToolArtifacts(gateFinal.content) || gateFinal.content.trim() || lastAssistantText.trim()
     return {
-      content: gateContent || 'A művelet jóváhagyásra vár a chatben megjelenő gombon.',
+      content:
+        gateContent ||
+        (hasCards
+          ? `A művelet jóváhagyásra vár ${params.mode === 'task' ? 'a ticket' : 'a chat'} felületén megjelenő gombon.`
+          : 'A művelet blokkolva van, de a jóváhagyó kártya nem jött létre — indítsd újra a feladatot.'),
       toolCallCount,
       deniedCount,
       status: 'completed',
+      awaitingConsequenceApproval: hasCards,
+      consequenceApprovalIds: [...consequenceApprovalIds],
     }
   }
 
@@ -2549,6 +2668,7 @@ export async function runAgentToolLoop(params: {
     deniedCount,
     status: 'exhausted',
     reason: stopReason,
+    ...consequenceGateFields(),
   }
 }
 
@@ -2609,6 +2729,15 @@ function endpointCatalogSuffix(endpoint: unknown): string {
  * A http_api connector(ek) emberi nyelvű leírása a modellnek + structured
  * config a következmény-kapuhoz. Titkot (API-kulcs) SOHA nem tartalmaz.
  */
+/** Ugyanaz a feloldás, mint a tool-broker invoke úton — enrichment (risk:read report POST) a kapun is. */
+function resolveHttpApiConfigForGate(raw: unknown): unknown {
+  try {
+    return enrichOstorosborConnectorConfig(normalizeConnectorConfig(raw)).config
+  } catch {
+    return raw
+  }
+}
+
 async function loadHttpApiConnectorsForGate(
   toolCaps: ToolBrokerRepository,
   agentId: string,
@@ -2621,7 +2750,7 @@ async function loadHttpApiConnectorsForGate(
   const blocks = apis.map(({ connector, accessMode }) => {
     let parsed = null as ReturnType<typeof parseHttpApiConfig> | null
     try {
-      parsed = parseHttpApiConfig(connector.config ?? {})
+      parsed = parseHttpApiConfig(resolveHttpApiConfigForGate(connector.config ?? {}))
       gateConnectors.push({
         id: connector.id,
         config: parsed,

@@ -1,4 +1,9 @@
-import { FileEditorError, WorkspaceStorage } from './workspace-storage'
+import {
+  FileEditorError,
+  WorkspaceStorage,
+  WORKSPACE_IO_CONCURRENCY,
+  type WorkspaceQuotaSession,
+} from './workspace-storage'
 import { requiresDeleteConfirm } from './delete-confirm-policy'
 import {
   assertPatternLength,
@@ -239,14 +244,19 @@ export class FileEditorService {
     return this.storage.read(tenantId, ticketId, safePath)
   }
 
+  /**
+   * `opts.quota`: köteg-írásokhoz (repo-import) átadható kvóta-session — ilyenkor
+   * a kvótát a session könyveli, nem fájlonkénti teljes workspace-listázás.
+   */
   async writeFile(
     tenantId: string,
     ticketId: string,
     args: { path: string; content: string },
+    opts: { quota?: WorkspaceQuotaSession } = {},
   ): Promise<FileWriteResult> {
     const safePath = resolveSafePath(args.path)
     const buf = Buffer.from(args.content, 'utf8')
-    await this.storage.write(tenantId, ticketId, safePath, buf)
+    await this.storage.write(tenantId, ticketId, safePath, buf, opts)
     return { path: safePath, bytesWritten: buf.length }
   }
 
@@ -359,18 +369,45 @@ export class FileEditorService {
       truncated = true
     }
 
-    outer: for (const filePath of files) {
-      const buf = await this.storage.read(tenantId, ticketId, filePath)
-      if (!buf) continue
+    const scanFile = (filePath: string, buf: Buffer): FileSearchMatch[] => {
+      const found: FileSearchMatch[] = []
       const lines = buf.toString('utf8').split('\n')
       for (let i = 0; i < lines.length; i++) {
         // Sor-hossz plafon ablakonként (ReDoS); hosszú JSON sorokon átfedő scan.
         const line = lines[i]
         if (lineMatchesUserRegex(line, regex)) {
-          matches.push({ path: filePath, lineNumber: i + 1, line: line.slice(0, MAX_LINE_SCAN_LENGTH) })
+          found.push({ path: filePath, lineNumber: i + 1, line: line.slice(0, MAX_LINE_SCAN_LENGTH) })
+          // Egy fájlon belül sincs értelme a plafon fölé gyűjteni.
+          if (found.length >= maxResults) break
+        }
+      }
+      return found
+    }
+
+    /**
+     * A fájlokat KÖTEGENKÉNT, párhuzamosan olvassuk be — a tár-olvasás hálózati
+     * várakozás, sorosan a keresés a fájlszámmal lineárisan lassul (mért eset:
+     * 659 fájl = 29,5 mp, miközben a felhasználó a chatben várt).
+     *
+     * A köteghatár fix és a fájlsorrend rendezett, ezért az eredmény
+     * DETERMINISZTIKUS: ugyanaz a keresés ugyanazt a találat-listát adja,
+     * ugyanabban a sorrendben — a korai leállás is csak köteghatáron történhet.
+     */
+    for (let start = 0; start < files.length && matches.length < maxResults; start += WORKSPACE_IO_CONCURRENCY) {
+      const batch = files.slice(start, start + WORKSPACE_IO_CONCURRENCY)
+      const batchMatches = await Promise.all(
+        batch.map(async (filePath) => {
+          const buf = await this.storage.read(tenantId, ticketId, filePath)
+          return buf ? scanFile(filePath, buf) : []
+        }),
+      )
+      for (const fileMatches of batchMatches) {
+        for (const match of fileMatches) {
+          matches.push(match)
+          // Ugyanaz a szemantika, mint a soros változatban: a keret betelése
+          // önmagában csonkolásnak számít (lehet még nem látott találat).
           if (matches.length >= maxResults) {
-            truncated = true
-            break outer
+            return { matches, truncated: true }
           }
         }
       }
@@ -393,6 +430,34 @@ export class FileEditorService {
     }
     await this.storage.delete(tenantId, ticketId, safePath)
     return { deleted: true, path: safePath }
+  }
+
+  /**
+   * Több fájl törlése egy menetben, korlátozott párhuzamossággal (repo-import
+   * takarítása). A törlés-jóváhagyási policy fájlonként ugyanúgy érvényes, mint
+   * az egyes `deleteFile`-nál — csak a hálózati körök futnak kötegelve.
+   */
+  async deleteFiles(
+    tenantId: string,
+    ticketId: string,
+    args: { paths: string[]; confirm?: boolean },
+  ): Promise<{ deleted: number }> {
+    const safePaths = args.paths.map((p) => resolveSafePath(p))
+    for (const safePath of safePaths) {
+      if (requiresDeleteConfirm(safePath) && args.confirm !== true) {
+        throw new FileEditorError(
+          'CONFIRM_REQUIRED',
+          `A(z) ${safePath} deliverable/fájl törléséhez confirm:true kell.`,
+        )
+      }
+    }
+    const deleted = await this.storage.deleteMany(tenantId, ticketId, safePaths)
+    return { deleted }
+  }
+
+  /** Kvóta-session nyitása köteg-íráshoz (lásd `writeFile` `opts.quota`). */
+  async openQuotaSession(tenantId: string, ticketId: string): Promise<WorkspaceQuotaSession> {
+    return this.storage.openQuotaSession(tenantId, ticketId)
   }
 
   async xlsxReadSheet(

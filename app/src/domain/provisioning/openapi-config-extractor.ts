@@ -501,12 +501,17 @@ function extractProposedTools(spec: OpenApiSpec): ProposedTool[] {
       const idempotent =
         WRITE_METHODS.has(httpMethod) && operationRequiresIdempotencyKey(spec, pathItem, operation)
       const parameters = operationParameters(spec, pathItem, operation, httpMethod)
+      // Olvasó POST (report/query): az OpenAPI `x-action-class` / `x-write: false`
+      // extensionje → risk. Az `access` metódus-alapú marad (normalize write-ra
+      // kényszeríti a POST-ot); a következmény-kapu a `risk` mezőt nézi.
+      const risk = riskFromOpenApiOperation(operation)
 
       tools.push({
         name,
         method: httpMethod,
         path: pathTemplate,
         access: WRITE_METHODS.has(httpMethod) ? 'write' : 'read',
+        ...(risk ? { risk } : {}),
         ...(descriptionForOperation(operation) ? { description: descriptionForOperation(operation) } : {}),
         ...(idempotent ? { idempotent: true } : {}),
         ...(parameters.length ? { parameters } : {}),
@@ -515,6 +520,26 @@ function extractProposedTools(spec: OpenApiSpec): ProposedTool[] {
   }
 
   return tools
+}
+
+/**
+ * CRM / partner OpenAPI extensionök → következmény-kapu `risk`.
+ * Elfogadott jelek (ebben a sorrendben):
+ * - `x-action-class`: "read" | "write" | "danger"
+ * - `x-write: false` → read (olvasó POST/PUT/PATCH jelölés)
+ */
+export function riskFromOpenApiOperation(
+  operation: Record<string, unknown>,
+): 'read' | 'write' | 'danger' | undefined {
+  const actionClass = operation['x-action-class']
+  if (typeof actionClass === 'string') {
+    const normalized = actionClass.trim().toLowerCase()
+    if (normalized === 'read' || normalized === 'write' || normalized === 'danger') {
+      return normalized
+    }
+  }
+  if (operation['x-write'] === false) return 'read'
+  return undefined
 }
 
 function providerFromSpec(spec: OpenApiSpec, providerHint?: string): string {

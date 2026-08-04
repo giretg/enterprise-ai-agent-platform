@@ -17,6 +17,8 @@ export type ActiveRun = {
   /** Terminális futásoknál a befejezés ideje; aktívnál null. */
   finishedAt: string | null
   canStop: boolean
+  /** Ticket `ready` + agent assignee — a felhasználó indíthatja a feldolgozást. */
+  canStart: boolean
   /** Chat: conversationId; Ticket: ticketId (ugyanaz mint id). */
   targetId: string
   agentId: string | null
@@ -32,11 +34,17 @@ export function activeRunKey(run: Pick<ActiveRun, 'kind' | 'id'>): string {
 
 /**
  * Az agent épp dolgozik ezen a futáson (számol / streamel) —
- * nem számít, ha emberi inputra vár (`awaiting_human` / `needs_info`).
+ * nem számít, ha emberi inputra vagy indításra vár.
  */
 export function isAgentActivelyWorking(run: ActiveRun): boolean {
   if (run.phase !== 'active' || !run.agentId) return false
-  if (run.status === 'awaiting_human' || run.status === 'needs_info') return false
+  if (
+    run.status === 'awaiting_human' ||
+    run.status === 'needs_info' ||
+    run.status === 'ready'
+  ) {
+    return false
+  }
   return true
 }
 

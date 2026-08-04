@@ -292,11 +292,20 @@ export async function repoPrepare(self: ToolBrokerService,
       path: REPO_WORKSPACE_PATH,
       recursive: true,
     })
-    await Promise.all(
-      current.entries
-        .filter((entry) => entry.type === 'file')
-        .map((entry) => self.fileEditor.deleteFile(tenantId, workspaceId, { path: entry.path })),
-    )
+    // Korlátozott párhuzamosság: 660 fájlnál a korábbi `Promise.all` egyszerre
+    // 660 HTTPS-kapcsolatot nyitott a tár felé (socket-kimerülés, 429-kockázat).
+    await self.fileEditor.deleteFiles(tenantId, workspaceId, {
+      paths: current.entries.filter((entry) => entry.type === 'file').map((entry) => entry.path),
+    })
+
+    /**
+     * A kvótát EGYETLEN kezdeti méret-listázásból könyveljük az import teljes
+     * idejére. Enélkül minden egyes fájl kiírása újra lekérdezte az egész
+     * workspace méretét: 660 fájlnál ~1300 felesleges hálózati kör, és a
+     * költség négyzetesen nőtt a repo méretével. (A session a takarítás UTÁN
+     * nyílik, hogy a most törölt fájlok már ne számítsanak bele.)
+     */
+    const quota = await self.fileEditor.openQuotaSession(tenantId, workspaceId)
 
     const blobs = tree.tree.filter((item) => item.type === 'blob')
     const candidates = blobs
@@ -329,10 +338,15 @@ export async function repoPrepare(self: ToolBrokerService,
         filesSkipped += 1
         return
       }
-      await self.fileEditor.writeFile(tenantId, workspaceId, {
-        path: `${REPO_WORKSPACE_PATH}/${item.path}`,
-        content: buffer.toString('utf8'),
-      })
+      await self.fileEditor.writeFile(
+        tenantId,
+        workspaceId,
+        {
+          path: `${REPO_WORKSPACE_PATH}/${item.path}`,
+          content: buffer.toString('utf8'),
+        },
+        { quota },
+      )
       bytesWritten += buffer.length
       filesWritten += 1
     }
@@ -356,10 +370,15 @@ export async function repoPrepare(self: ToolBrokerService,
       bytesWritten,
       preparedAt: new Date().toISOString(),
     }
-    await self.fileEditor.writeFile(tenantId, workspaceId, {
-      path: REPO_METADATA_PATH,
-      content: JSON.stringify(metadata, null, 2),
-    })
+    await self.fileEditor.writeFile(
+      tenantId,
+      workspaceId,
+      {
+        path: REPO_METADATA_PATH,
+        content: JSON.stringify(metadata, null, 2),
+      },
+      { quota },
+    )
 
     return {
       ok: true,
@@ -2025,6 +2044,8 @@ export async function tulajdoniLapEgyeztetes(
       osszesites: view.osszesites,
       egyeztetes: null,
       eltero: [],
+      elteroPath: null,
+      elteroDb: 0,
       szeljegyDb: parsed.szeljegyek.length,
     }
   }
@@ -2061,6 +2082,8 @@ export async function tulajdoniLapEgyeztetes(
       osszesites: view.osszesites,
       egyeztetes: osszegzes,
       eltero: [],
+      elteroPath: null,
+      elteroDb: 0,
       szeljegyDb: parsed.szeljegyek.length,
     }
   }
@@ -2117,16 +2140,50 @@ export async function tulajdoniLapEgyeztetes(
     })
   }
 
-  const eltero = sorok
+  // Kompakt eltérő lista (ownership id-val). A hosszú megjegyzés + a 200+
+  // `figyelmet_igenyel` tétel korábban 50kB-ra duzzasztotta a választ → 12k
+  // felett archívumba került, és a 10k preview AZ ELŐTT vágott, hogy az
+  // `eltero` kulcs egyáltalán megjelenjen → a modell „nincs ID" indokkal állt meg.
+  const elteroCompact = sorok
     .filter((sor) => sor.statusz !== 'Rendben')
-    .slice(0, 100)
     .map((sor) => ({
       nev: sor.nev,
       statusz: sor.statusz,
       hanyadLap: sor.hanyadLap,
       hanyadNyilvantartas: sor.hanyadNyilvantartas,
-      megjegyzes: sor.megjegyzes,
+      azonosito: sor.azonosito,
     }))
+
+  let elteroPath: string | null = null
+  if (elteroCompact.length > 0) {
+    elteroPath = 'egyeztetes-eltero.json'
+    await self.fileEditor.writeFile(tenantId, workspaceId, {
+      path: elteroPath,
+      content: JSON.stringify(
+        {
+          parcelMeta: view.meta,
+          osszegzes: {
+            osszesSor: osszegzes.osszesSor,
+            rendben: osszegzes.rendben,
+            modositas: osszegzes.modositas,
+            torles: osszegzes.torles,
+            ujRekord: osszegzes.ujRekord,
+            bizonytalanParositas: osszegzes.bizonytalanParositas,
+          },
+          eltero: elteroCompact,
+        },
+        null,
+        2,
+      ),
+    })
+  }
+
+  const FIGYELMET_MINTA = 20
+  const ELTERO_MINTA = 12
+  const egyeztetesForModel = {
+    ...osszegzes,
+    figyelmet_igenyel: osszegzes.figyelmet_igenyel.slice(0, FIGYELMET_MINTA),
+  }
 
   const figyelmeztetes = [view.figyelmeztetes, completeness.warn ? completeness.indok : null]
     .filter((part): part is string => Boolean(part?.trim()))
@@ -2138,8 +2195,10 @@ export async function tulajdoniLapEgyeztetes(
     path,
     meta: view.meta,
     osszesites: view.osszesites,
-    egyeztetes: osszegzes,
-    eltero,
+    egyeztetes: egyeztetesForModel,
+    eltero: elteroCompact.slice(0, ELTERO_MINTA),
+    elteroPath,
+    elteroDb: elteroCompact.length,
     szeljegyDb: parsed.szeljegyek.length,
   }
 }

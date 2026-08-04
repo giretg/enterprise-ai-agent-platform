@@ -13,6 +13,7 @@ import type {
   AuditRepository,
   ConsequenceApprovalRepository,
   ConversationRepository,
+  TicketRepository,
 } from '@/repositories/interfaces'
 import { isAgentReachableFromTenant } from '@/lib/tenant-reachability'
 import { envelopeToolResultForModel } from './tool-result-envelope'
@@ -184,6 +185,7 @@ export class ConsequenceApprovalService {
     private readonly agents: AgentRepository,
     private readonly audit: AuditRepository,
     private readonly toolBroker: ToolBrokerService,
+    private readonly tickets?: TicketRepository,
   ) {}
 
   async createFromBlocked(input: {
@@ -191,10 +193,32 @@ export class ConsequenceApprovalService {
     tenantId?: string | null
     blockedToolCallId?: string | null
   }): Promise<ConsequenceApprovalCard> {
-    const conversationId = input.invoke.conversationId
-    if (!conversationId) {
-      throw new Error('consequence_approval_requires_conversation')
+    const conversationId = input.invoke.conversationId ?? null
+    const ticketId = input.invoke.ticketId ?? null
+    if (!conversationId && !ticketId) {
+      throw new Error('consequence_approval_requires_conversation_or_ticket')
     }
+    // Kártya-dedup: ugyanaz a még el nem döntött művelet ne kapjon második
+    // kártyát. Folytatás után a modell a checkpointból újraszámolja a hátralévő
+    // tételeket, és a már kártyázott hívást ismét beküldi — a felhasználó
+    // ilyenkor ugyanazt a törlést kétszer látja, és egy „Jóváhagyom mind"
+    // kétszer futtatná le.
+    const existing = await this.approvals.findOpenDuplicate({
+      conversationId,
+      ticketId,
+      toolName: input.invoke.tool,
+      args: input.invoke.args,
+      now: new Date(),
+    })
+    if (existing) {
+      return {
+        approvalId: existing.id,
+        toolName: existing.toolName,
+        summary: summarizeArgs(existing.toolName, (existing.args ?? {}) as Record<string, unknown>),
+        expiresAt: existing.expiresAt.toISOString(),
+      }
+    }
+
     const expiresAt = new Date(Date.now() + CONSEQUENCE_APPROVAL_TTL_MS)
     const row = await this.approvals.create({
       conversationId,
@@ -202,7 +226,7 @@ export class ConsequenceApprovalService {
       agentVersion: input.invoke.agentVersion,
       tenantId: input.tenantId ?? null,
       actingUserId: input.invoke.actingUserId ?? null,
-      ticketId: input.invoke.ticketId ?? null,
+      ticketId,
       toolName: input.invoke.tool,
       args: input.invoke.args as object,
       status: 'pending',
@@ -220,8 +244,8 @@ export class ConsequenceApprovalService {
       actorId: input.invoke.agentId,
       agentVersion: input.invoke.agentVersion,
       action: 'consequence.approval.pending',
-      targetType: 'conversation',
-      targetId: conversationId,
+      targetType: conversationId ? 'conversation' : 'ticket',
+      targetId: conversationId ?? ticketId!,
       modelUsed: null,
       inputRef: input.invoke.tool,
       outputRef: row.id,
@@ -230,6 +254,8 @@ export class ConsequenceApprovalService {
         approval_id: row.id,
         tool: input.invoke.tool,
         expires_at: expiresAt.toISOString(),
+        ticket_id: ticketId,
+        conversation_id: conversationId,
       },
     })
 
@@ -262,7 +288,30 @@ export class ConsequenceApprovalService {
       conversationId,
       new Date(now - CONSEQUENCE_APPROVAL_VISIBILITY_MS),
     )
+    return this.toOpenCards(rows, actor, now)
+  }
 
+  /** Task-only ticket függő jóváhagyásai a ticket UI-hoz. */
+  async listOpenForTicket(
+    ticketId: string,
+    actor: ConsequenceApprovalActor,
+  ): Promise<ConsequenceApprovalCard[]> {
+    const access = await this.assertActorCanAccessTicket(ticketId, actor)
+    if (!access.ok) return []
+
+    const now = Date.now()
+    const rows = await this.approvals.listOpenByTicket(
+      ticketId,
+      new Date(now - CONSEQUENCE_APPROVAL_VISIBILITY_MS),
+    )
+    return this.toOpenCards(rows, actor, now)
+  }
+
+  private async toOpenCards(
+    rows: ConsequenceApproval[],
+    actor: ConsequenceApprovalActor,
+    now: number,
+  ): Promise<ConsequenceApprovalCard[]> {
     const cards: ConsequenceApprovalCard[] = []
     for (const row of rows) {
       // A sikeresen lefutott jóváhagyás lezárt ügy — nem kérünk rá újra gombot.
@@ -370,12 +419,14 @@ export class ConsequenceApprovalService {
     const invokeInput = {
       agentId: row.agentId,
       agentVersion: row.agentVersion,
-      conversationId: row.conversationId,
+      ...(row.conversationId ? { conversationId: row.conversationId } : {}),
       ...(row.ticketId ? { ticketId: row.ticketId } : {}),
       ...(row.actingUserId ? { actingUserId: row.actingUserId } : {}),
       tool: row.toolName,
       args: row.args,
     } as ToolBrokerInvokeInput
+
+    const auditTarget = this.auditTargetFor(row)
 
     let result: Awaited<ReturnType<ToolBrokerService['invoke']>>
     try {
@@ -393,8 +444,8 @@ export class ConsequenceApprovalService {
         actorId: actor.id,
         agentVersion: row.agentVersion,
         action: 'consequence.approval.approved',
-        targetType: 'conversation',
-        targetId: row.conversationId,
+        targetType: auditTarget.type,
+        targetId: auditTarget.id,
         modelUsed: null,
         inputRef: row.toolName,
         outputRef: row.id,
@@ -432,8 +483,8 @@ export class ConsequenceApprovalService {
       actorId: actor.id,
       agentVersion: row.agentVersion,
       action: 'consequence.approval.approved',
-      targetType: 'conversation',
-      targetId: row.conversationId,
+      targetType: auditTarget.type,
+      targetId: auditTarget.id,
       modelUsed: null,
       inputRef: row.toolName,
       outputRef: row.id,
@@ -496,6 +547,11 @@ export class ConsequenceApprovalService {
         return { ok: false, reason: 'approval_in_flight' }
       }
 
+      if (!row.conversationId) {
+        // Task-only jóváhagyás: a tool a gombbal lefut; chat-folytatás nincs.
+        return { ok: false, reason: 'approval_ticket_only_no_chat_continuation' }
+      }
+
       // Egy folytatás EGY beszélgetést visz tovább — kevert szál nem értelmezhető.
       if (conversationId && conversationId !== row.conversationId) {
         return { ok: false, reason: 'approval_conversation_mismatch' }
@@ -548,13 +604,14 @@ export class ConsequenceApprovalService {
     })
     if (!claimed) return { ok: false, reason: 'approval_already_decided' }
 
+    const auditTarget = this.auditTargetFor(row)
     await this.audit.append({
       actorType: 'human',
       actorId: actor.id,
       agentVersion: row.agentVersion,
       action: 'consequence.approval.rejected',
-      targetType: 'conversation',
-      targetId: row.conversationId,
+      targetType: auditTarget.type,
+      targetId: auditTarget.id,
       modelUsed: null,
       inputRef: row.toolName,
       outputRef: row.id,
@@ -565,11 +622,24 @@ export class ConsequenceApprovalService {
     return { ok: true, outcome: 'rejected' }
   }
 
+  private auditTargetFor(row: ConsequenceApproval): {
+    type: 'conversation' | 'ticket'
+    id: string
+  } {
+    if (row.conversationId) return { type: 'conversation', id: row.conversationId }
+    if (row.ticketId) return { type: 'ticket', id: row.ticketId }
+    return { type: 'ticket', id: row.id }
+  }
+
   private async assertActorCanDecide(
     row: ConsequenceApproval,
     actor: ConsequenceApprovalActor,
   ): Promise<{ ok: true } | { ok: false; reason: string }> {
-    const access = await this.assertActorCanAccessConversation(row.conversationId, actor)
+    const access = row.conversationId
+      ? await this.assertActorCanAccessConversation(row.conversationId, actor)
+      : row.ticketId
+        ? await this.assertActorCanAccessTicket(row.ticketId, actor)
+        : { ok: false as const, reason: 'approval_not_found' }
     if (!access.ok) return access
 
     // Defense-in-depth: az agent is elérhető kell legyen a döntéshozó tenantjából.
@@ -597,6 +667,25 @@ export class ConsequenceApprovalService {
 
     // A beszélgetés létrehozója vagy operator+ dönthet — a chat user a tipikus döntéshozó.
     const isCreator = conversation.createdById === actor.id
+    const isElevated = actor.role === 'admin' || actor.role === 'approver' || actor.role === 'operator'
+    if (!isCreator && !isElevated) {
+      return { ok: false, reason: 'forbidden' }
+    }
+    return { ok: true }
+  }
+
+  private async assertActorCanAccessTicket(
+    ticketId: string,
+    actor: ConsequenceApprovalActor,
+  ): Promise<{ ok: true } | { ok: false; reason: string }> {
+    if (!this.tickets) return { ok: false, reason: 'ticket_not_found' }
+    const ticket = await this.tickets.findById(ticketId)
+    if (!ticket) return { ok: false, reason: 'ticket_not_found' }
+    // Tenant-határ: idegen tenant ticketje „nincs ilyen".
+    if (ticket.tenantId && ticket.tenantId !== actor.tenantId) {
+      return { ok: false, reason: 'ticket_not_found' }
+    }
+    const isCreator = ticket.createdById === actor.id
     const isElevated = actor.role === 'admin' || actor.role === 'approver' || actor.role === 'operator'
     if (!isCreator && !isElevated) {
       return { ok: false, reason: 'forbidden' }

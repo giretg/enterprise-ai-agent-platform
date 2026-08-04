@@ -400,14 +400,22 @@ export type TulajdoniLapEgyeztetesResult = {
   meta: TulajdoniLapView['meta']
   osszesites: TulajdoniLapView['osszesites']
   egyeztetes: EgyeztetesOsszegzes | null
-  /** A beavatkozást igénylő sorok — a modell ezekből fogalmazza a választ. */
+  /**
+   * Eltérő sorok — a modellnek SZÁNDÉKOSAN kompakt / mintavételezett
+   * (hosszú `megjegyzes` nélkül), hogy a 12k inline-küszöb alatt maradjon.
+   * A teljes lista az `elteroPath` fájlban van (Föld PATCH/DELETE forrás).
+   */
   eltero: Array<{
     nev: string
     statusz: string
     hanyadLap: string | null
     hanyadNyilvantartas: string | null
-    megjegyzes: string
+    azonosito: string | null
   }>
+  /** Teljes kompakt eltérő lista a munkaterületen — Föld-írás / extract forrás. */
+  elteroPath: string | null
+  /** Az `elteroPath` / teljes eltérő lista elemszáma (nem a mintáé). */
+  elteroDb: number
   szeljegyDb: number
 }
 

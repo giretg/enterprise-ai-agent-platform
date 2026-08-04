@@ -217,6 +217,57 @@ async function run() {
     )
   })
 
+  await test('x-action-class: read → POST risk:read (access továbbra is write)', () => {
+    const spec = {
+      openapi: '3.0.3',
+      info: { title: 'Service Insight', version: '1.0.0' },
+      servers: [{ url: 'https://crm.example/api/connector/v1' }],
+      components: {
+        securitySchemes: {
+          BearerAuth: { type: 'http', scheme: 'bearer' },
+        },
+      },
+      security: [{ BearerAuth: [] }],
+      paths: {
+        '/reports/query': {
+          post: {
+            operationId: 'queryReport',
+            summary: 'Riportlekérdezés',
+            'x-action-class': 'read',
+            'x-write': false,
+          },
+        },
+        '/reports/exports': {
+          post: {
+            operationId: 'exportReport',
+            'x-write': false,
+          },
+        },
+        '/accounts': {
+          post: {
+            operationId: 'createAccount',
+            'x-action-class': 'write',
+          },
+        },
+      },
+    }
+    const result = tryExtractConnectorConfigFromOpenApi(JSON.stringify(spec), 'ostoros-insight')
+    assert.equal(result.ok, true)
+    if (!result.ok) return
+    const query = result.config.proposedTools.find((t) => t.path === '/reports/query')
+    const exp = result.config.proposedTools.find((t) => t.path === '/reports/exports')
+    const create = result.config.proposedTools.find((t) => t.path === '/accounts')
+    assert.ok(query)
+    assert.equal(query.method, 'POST')
+    assert.equal(query.access, 'write')
+    assert.equal(query.risk, 'read')
+    assert.ok(exp)
+    assert.equal(exp.access, 'write')
+    assert.equal(exp.risk, 'read')
+    assert.ok(create)
+    assert.equal(create.risk, 'write')
+  })
+
   await test('idempotencia: operation-szintű kötelező Idempotency-Key → idempotent: true', () => {
     const result = tryExtractConnectorConfigFromOpenApi(JSON.stringify(IDEMPOTENCY_OPENAPI), 'ledger')
     assert.equal(toolByName(result, 'createOrder').idempotent, true)
