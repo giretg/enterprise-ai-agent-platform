@@ -423,12 +423,29 @@ export class WorkspaceStorage {
       return files.sort()
     }
 
+    // Lapozás kötelező: a GCS `maxResults` felső korlát, nem „összes”.
+    // Egy oldalas listánál a repo_open_pull_request a hiányzó fájlokat törlésnek
+    // venné — >1000 objektumos workspace-en tömeges, hallgatólagos adatvesztés.
     const token = await resolveGcsToken()
-    const url = `https://storage.googleapis.com/storage/v1/b/${this.bucket}/o?prefix=${encodeURIComponent(prefix)}&maxResults=1000`
-    const res = await fetch(url, { headers: { authorization: `Bearer ${token}` } })
-    if (!res.ok) throw new FileEditorError('GCS_LIST_FAILED', `GCS list failed: HTTP ${res.status}`)
-    const data = (await res.json()) as { items?: Array<{ name: string }> }
-    return (data.items ?? []).map((item) => item.name.slice(prefixLen)).sort()
+    const results: string[] = []
+    let pageToken: string | undefined
+    do {
+      const params = new URLSearchParams({ prefix, maxResults: '1000' })
+      if (pageToken) params.set('pageToken', pageToken)
+      const url = `https://storage.googleapis.com/storage/v1/b/${this.bucket}/o?${params}`
+      const res = await fetch(url, { headers: { authorization: `Bearer ${token}` } })
+      if (!res.ok) throw new FileEditorError('GCS_LIST_FAILED', `GCS list failed: HTTP ${res.status}`)
+      const data = (await res.json()) as {
+        items?: Array<{ name: string }>
+        nextPageToken?: string
+      }
+      for (const item of data.items ?? []) {
+        results.push(item.name.slice(prefixLen))
+      }
+      pageToken = data.nextPageToken
+    } while (pageToken)
+
+    return results.sort()
   }
 
   /**
