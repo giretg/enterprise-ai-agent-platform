@@ -197,7 +197,7 @@ function BindingEditor({
               {trustMode === 'strict' && (
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <label className="block text-sm">
-                    <span className="text-ink-soft">Író hívás / futás (max 500)</span>
+                    <span className="text-ink-soft">Író hívás / agent-futás (max 500)</span>
                     <input
                       type="number"
                       min={1}
@@ -207,6 +207,11 @@ function BindingEditor({
                       className={INPUT}
                       required
                     />
+                    <span className="mt-1 block text-xs text-ink-faint">
+                      A limit EGY agent-futásra szól. Egy hosszabb feladat több futásból
+                      állhat, ilyenkor a keret futásonként újraindul — ez nem a feladat
+                      összes írására vonatkozó plafon.
+                    </span>
                   </label>
                   <label className="block text-sm">
                     <span className="text-ink-soft">Lejárat</span>
@@ -330,13 +335,29 @@ function BindingEditor({
   )
 }
 
-function writeApprovalBadge(item: ConnectorItem): { label: string; tone: 'warning' | 'neutral' | 'success' } | null {
+/**
+ * A jelvény a KIKAPCSOLT kaput jelzi, nem egy elért állapotot — ezért `warning`,
+ * nem `success`: zöld pipával az „előzetesen engedélyezve” azt sugallná, hogy ez
+ * az egészségesebb beállítás, holott itt fut írás emberi jóváhagyás nélkül.
+ */
+function writeApprovalBadge(
+  item: ConnectorItem,
+): { label: string; tone: 'warning' | 'neutral'; title: string } | null {
   if (item.accessMode !== 'write') return null
   if (item.writeApproval === 'preapproved') {
     const mode = item.preapprovedTrustMode === 'strict' ? 'szigorú' : 'laza'
-    return { label: `előzetesen engedélyezve (${mode})`, tone: 'success' }
+    return {
+      label: `kapu nélkül — előzetesen engedélyezve (${mode})`,
+      tone: 'warning',
+      title:
+        'Az allowlistelt író hívások jóváhagyó kártya nélkül futnak ezen a kapcsolaton. Ismeretlen végpont továbbra is kapu.',
+    }
   }
-  return { label: 'hívásonkénti kapu', tone: 'neutral' }
+  return {
+    label: 'hívásonkénti kapu',
+    tone: 'neutral',
+    title: 'Minden író hívás külön emberi jóváhagyást kér.',
+  }
 }
 
 export function ApiConnectorList({
@@ -395,7 +416,11 @@ export function ApiConnectorList({
                 <Badge tone={item.accessMode === 'write' ? 'warning' : 'neutral'}>
                   {connectorAccessLabel(item.accessMode)}
                 </Badge>
-                {trustBadge && <Badge tone={trustBadge.tone}>{trustBadge.label}</Badge>}
+                {trustBadge && (
+                  <Badge tone={trustBadge.tone} title={trustBadge.title}>
+                    {trustBadge.label}
+                  </Badge>
+                )}
                 <button
                   type="button"
                   onClick={() => setEditingId(editing ? null : item.connector.id)}

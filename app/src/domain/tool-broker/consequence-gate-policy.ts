@@ -152,12 +152,9 @@ export function evaluateHttpApiRequestGate(
   // issue #220 — nem allowlistelt / ismeretlen path MINDIG kapu (fail-safe),
   // preapproved trust mellett is. A trust a megismert felületre szól.
   if (!endpoint) {
-    // Visszafelé kompatibilis: defaultRisk write/danger esetén a régi ok is
-    // `http_api_write_or_danger` volt allowlist nélkül is — de a fail-safe
-    // üzenet a nem allowlistelt pathot jelzi (preapproved escape hatch NINCS).
-    if (config.defaultRisk === 'write' || config.defaultRisk === 'danger') {
-      return { required: true, reason: 'http_api_not_allowlisted' }
-    }
+    // A defaultRisk itt szándékosan nem számít: preapproved escape hatch NINCS,
+    // és a modellnek a NEM ALLOWLISTELT path a használható visszajelzés
+    // (korábban write/danger defaultRisk mellett `http_api_write_or_danger` volt).
     return { required: true, reason: 'http_api_not_allowlisted' }
   }
 

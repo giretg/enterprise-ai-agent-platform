@@ -1638,12 +1638,24 @@ export async function updateAgentConnectorBinding(input: {
     if (!trustValidated.ok) return fail(trustValidated.error)
     const trust = trustValidated.trust
 
-    const consequenceBoundary =
+    const requestedBoundary =
       input.consequenceBoundary === 'external_draft' || input.consequenceBoundary === 'platform'
         ? input.consequenceBoundary
         : input.consequenceBoundary === null
           ? null
           : undefined
+
+    // A címke a CONNECTOR sorára megy, az pedig platformszintű (tenantId = null)
+    // is lehet — ilyet több tenant használ, egy tenant-admin nem írhatja át
+    // mások alatt. A kötés-mentő űrlap minden mentésnél küldi a mezőt, ezért
+    // csak a TÉNYLEGES változtatást utasítjuk vissza (és hangosan, nem némán).
+    const currentBoundary = link.connector.consequenceBoundary ?? null
+    const boundaryChanged = requestedBoundary !== undefined && requestedBoundary !== currentBoundary
+    if (boundaryChanged && link.connector.tenantId !== (user.activeTenantId ?? null)) {
+      return fail(
+        'Ez a kapcsolat platformszintű (több tenant használja) — a következmény-határ címkéjét itt nem lehet átírni. Az írási bizalom (kötés-szintű) továbbra is állítható.',
+      )
+    }
 
     await prisma.$transaction(async (tx) => {
       await tx.agentConnector.update({
@@ -1660,10 +1672,10 @@ export async function updateAgentConnectorBinding(input: {
           dangerPreapproved: trust.dangerPreapproved,
         },
       })
-      if (consequenceBoundary !== undefined) {
+      if (boundaryChanged) {
         await tx.connector.update({
           where: { id: input.connectorId },
-          data: { consequenceBoundary },
+          data: { consequenceBoundary: requestedBoundary },
         })
       }
     })
@@ -1688,6 +1700,7 @@ export async function updateAgentConnectorBinding(input: {
         preapprovedExpiresAt: trust.expiresAt?.toISOString() ?? null,
         preapprovedWriteLimit: trust.writeLimitPerRun,
         dangerPreapproved: trust.dangerPreapproved,
+        ...(boundaryChanged ? { consequenceBoundary: requestedBoundary } : {}),
         perAgentKeyRotated: Boolean(input.apiKey?.trim()),
         perAgentKeyCleared: Boolean(input.clearApiKey),
       },

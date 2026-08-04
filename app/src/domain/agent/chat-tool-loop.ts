@@ -46,7 +46,6 @@ import {
   consumePreapprovedBudget,
   createPreapprovedRunBudget,
   evaluateHttpApiWriteGrant,
-  formatPreapprovedRunSummary,
   httpApiWriteGrantDeniedMessage,
   requiresConsequenceApproval,
   summarizePreapprovedBudget,
@@ -2259,6 +2258,28 @@ export async function runAgentToolLoop(params: {
         )
         if (gate.preapprovedSkip) {
           consumePreapprovedBudget(preapprovedBudget, gate.preapprovedSkip)
+          // A kapu KIMARADT — ez egy tudatosan kikapcsolt biztonsági kontroll, ezért
+          // hívásonként nyomot hagy. Enélkül utólag csak annyi látszana, hogy a
+          // művelet lefutott, az viszont nem, hogy MIÉRT nem kért jóváhagyást
+          // (melyik kötés, melyik trust-mód, hányadik hívás a kereten belül).
+          logger.info(
+            {
+              event: 'consequence_gate_preapproved_skip',
+              tool: toolName,
+              agentId: params.agentId,
+              connectorId: gate.preapprovedSkip.connectorId,
+              trustMode: gate.preapprovedSkip.trustMode,
+              risk: gate.preapprovedSkip.risk,
+              writeCallsUsed: gate.preapprovedSkip.used,
+              writeCallLimit: gate.preapprovedSkip.limit,
+              method: String((call.input as Record<string, unknown>).method ?? '').toUpperCase(),
+              // Query nélkül: az allowlist a path-ra szól, a paraméterek üzleti adatot vihetnek.
+              path: String((call.input as Record<string, unknown>).path ?? '').split('?')[0],
+              conversationId: params.context.conversationId ?? null,
+              ticketId: params.context.ticketId ?? null,
+            },
+            'Író hívás következmény-kapu nélkül futott (előzetes engedély a kötésen).',
+          )
           // Diszkrét státusz — nem kattintható kapu (issue #220).
           if (!preapprovedNoticesShown.has(gate.preapprovedSkip.connectorId)) {
             preapprovedNoticesShown.add(gate.preapprovedSkip.connectorId)
