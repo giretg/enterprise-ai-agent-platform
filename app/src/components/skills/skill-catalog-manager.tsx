@@ -938,16 +938,19 @@ function SkillDisplayNameEditor({
   const propSaved = skill.displayName ?? ''
   const [committed, setCommitted] = useState(propSaved)
   const [value, setValue] = useState(propSaved)
+  const propEpoch = `${skill.id}\0${propSaved}`
+  const [appliedEpoch, setAppliedEpoch] = useState(propEpoch)
 
-  useEffect(() => {
-    // Üres props + meglévő committed = stale Prisma-read a refresh után — ne wipe-oljuk.
-    // Nem-üres props mindig nyer (szerver az igazság).
-    if (!propSaved.trim() && committed.trim()) return
-    setCommitted(propSaved)
-    setValue(propSaved)
-    // committed szándékosan kimarad: csak prop-változásra reagálunk.
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- lásd fent
-  }, [skill.id, propSaved])
+  // Prop-csere: render közben szinkronizálunk (ne setState-in-effect).
+  // Üres props + meglévő committed = stale Prisma-read a refresh után — ne wipe-oljuk.
+  // Nem-üres props mindig nyer (szerver az igazság).
+  if (propEpoch !== appliedEpoch) {
+    setAppliedEpoch(propEpoch)
+    if (propSaved.trim() || !committed.trim()) {
+      setCommitted(propSaved)
+      setValue(propSaved)
+    }
+  }
 
   const dirty = value.trim() !== committed.trim()
 
@@ -1008,10 +1011,14 @@ function SkillDescriptionEditor({
 }) {
   const saved = skill.description
   const [value, setValue] = useState(saved)
+  const propEpoch = `${skill.id}\0${saved}`
+  const [appliedEpoch, setAppliedEpoch] = useState(propEpoch)
 
-  useEffect(() => {
+  // Prop-csere: render közben szinkronizálunk (ne setState-in-effect).
+  if (propEpoch !== appliedEpoch) {
+    setAppliedEpoch(propEpoch)
     setValue(saved)
-  }, [skill.id, saved])
+  }
 
   const trimmed = value.trim()
   const dirty = trimmed !== saved.trim()
