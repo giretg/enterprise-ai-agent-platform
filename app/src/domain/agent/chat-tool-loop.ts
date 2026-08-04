@@ -216,6 +216,12 @@ export type ToolLoopConsequenceApprovalEvent = {
   toolName: string
   summary: string
   expiresAt: string
+  /**
+   * A művelet MÁR sorban állt: a létrehozó a meglévő kártyát adta vissza, új
+   * sor nem született. A loop ebből tudja, hogy a kör NEM hozott új munkát —
+   * enélkül egy ugyanazt ismételgető modell örökké életben tartaná a futást.
+   */
+  deduplicated?: boolean
 }
 
 export function resolveToolLoopMaxTurns(
@@ -2265,25 +2271,58 @@ export async function runAgentToolLoop(params: {
           const why = consequenceGateReasonForModel(gate.reason)
           const approvalSurface =
             params.mode === 'task' ? 'a ticket felületén' : 'a chatben'
-          const approvalHint = approvalCard
-            ? `A művelet a felületen JÓVÁHAGYÁSRA VÁR (approvalId=${approvalCard.approvalId}). ` +
-              `Mondd el a felhasználónak, hogy ${approvalSurface} megjelenő „Jóváhagyom" gombbal engedélyezheti — ` +
-              'NE kérj tőle szöveges „ok"/„jóváhagyom" választ, és NE indítsd újra a teljes folyamatot.'
-            : 'A jóváhagyó kártya NEM jött létre (platform hiba). NE ígérj „Jóváhagyom" gombot. ' +
-              'Mondd el, hogy a művelet blokkolva van, és a felhasználónak újra kell indítania a feladatot / jeleznie a hibát. ' +
-              'NE indítsd újra ezt a lépést.'
-          // A jóváhagyásra várás nem előrehaladás: a lépés nem futott le.
+          const queuedNewCard = Boolean(approvalCard && !approvalCard.deduplicated)
+
+          // Task mód: a kapuzott hívás SORBAÁLLÍTÁS, nem zsákutca. A szöveg
+          // szándékosan RÖVID és tényszerű, és NEM szólítja fel a modellt, hogy
+          // most forduljon a felhasználóhoz.
+          //
+          // ÜZLETI OK (`35672220`, 2026-08-04): a régi szöveg minden egyes
+          // kapuzott híváson azt mondta, hogy „mondd el a felhasználónak, hogy a
+          // gombbal engedélyezheti". A modell 30–40 ilyen után engedelmeskedett:
+          // abbahagyta a terv feldolgozását és összefoglalt. Ezért a 89 műveletet
+          // HÁROM külön futásban, három külön jóváhagyással kellett bevinni. A
+          // gomb-utasítást a futás végén EGYSZER a platform fűzi a válasz alá
+          // (`general-task-runtime` approvalNotice) — ne a modell ismételgesse.
+          //
+          // Két kapu-kör: ami a jóváhagyás EREDMÉNYÉTŐL függ (pl. visszaadott
+          // id), azt NE állítsa sorba most — az a következő kör a gomb után.
+          const queueHint =
+            params.mode === 'task' && approvalCard
+              ? `Sorba állítva jóváhagyásra (eddig ${consequenceApprovalIds.length} tétel ebben a futásban). ` +
+                'FOLYTASD a műveleti terv KÖVETKEZŐ, ebben a körben még előkészíthető tételével. ' +
+                'Ami a jóváhagyás eredményétől függ, azt NE állítsd sorba most — az a következő kapu-kör. ' +
+                'Ne foglalj össze és ne állj meg, amíg van most előkészíthető tétel. ' +
+                'board_write/done tilos a kapu alatt.'
+              : approvalCard
+                ? `A művelet a felületen JÓVÁHAGYÁSRA VÁR (approvalId=${approvalCard.approvalId}). ` +
+                  `Mondd el a felhasználónak, hogy ${approvalSurface} megjelenő „Jóváhagyom" gombbal engedélyezheti — ` +
+                  'NE kérj tőle szöveges „ok"/„jóváhagyom" választ, és NE indítsd újra a teljes folyamatot. ' +
+                  'NE hívd újra ezt az eszközt csak azért, hogy újra megpróbáld. ' +
+                  'Addig folytasd legfeljebb alacsony kockázatú (olvasó / workspace-író) lépésekkel, ' +
+                  'majd foglald össze röviden, mi vár jóváhagyásra.'
+                : 'A jóváhagyó kártya NEM jött létre (platform hiba). NE ígérj „Jóváhagyom" gombot. ' +
+                  'Mondd el, hogy a művelet blokkolva van, és a felhasználónak újra kell indítania a feladatot / jeleznie a hibát. ' +
+                  'NE indítsd újra ezt a lépést.'
+
+          // Az ÚJ kártya valódi előrehaladás: a kör új, végrehajtandó munkát
+          // termelt. Enélkül a csupa-sorbaállítás kör zsákutcának számított, és a
+          // `no_progress` őr néhány kör után leállította a futást — pont azt a
+          // munkát büntetve, amit el akarunk végeztetni. A DEDUPLIKÁLT kártya
+          // viszont `barren` marad: ugyanazt ismételgetve a futás nem élhet örökké.
           pushToolResult(
             call,
             `JÓVÁHAGYÁS SZÜKSÉGES: ezt a lépést (${call.name}) nem futtattam le automatikusan, ` +
               `mert ${why}. ` +
-              approvalHint +
-              (approvalCard && params.mode === 'task'
-                ? ' Ha van még tervezett Föld írás (PATCH/POST/DELETE), hívd azokat is — a felhasználó EGY „Mind jóváhagyom" gombbal engedélyezi az összeset; board_write/done tilos a kapu alatt.'
-                : ' NE hívd újra ezt az eszközt csak azért, hogy újra megpróbáld. ' +
-                  'Addig folytasd legfeljebb alacsony kockázatú (olvasó / workspace-író) lépésekkel, ' +
-                  'majd foglald össze röviden, mi vár jóváhagyásra.'),
-            'barren',
+              queueHint,
+            queuedNewCard ? 'new' : 'barren',
+            {
+              toolName,
+              // Az ujjlenyomat a KÁRTYA azonosítója: a szöveg tételről tételre
+              // szinte azonos, tehát tartalmi ujjlenyomattal a második
+              // sorbaállítás sem számítana újnak.
+              ...(approvalCard ? { fingerprintContent: `APPROVAL:${approvalCard.approvalId}` } : {}),
+            },
           )
           await emitActivity({
             id: `tool-${call.id}`,
@@ -2590,8 +2629,11 @@ export async function runAgentToolLoop(params: {
       content: hasCards
         ? `Fogalmazd meg a felhasználónak magyarul RÖVIDEN: mely mellékhatásos művelet(ek) várnak ${approvalSurface} megjelenő jóváhagyó gombra (db=${consequenceApprovalIds.length}), és miért (külső, nem megbízható forrás befolyásolta a fordulót). ` +
           (params.mode === 'task'
-            ? 'Mondd el, hogy egyetlen „Mind jóváhagyom" gomb elvégzi az összeset, és utána a feladat MAGÁTÓL folytatódik — nem kell újraindítani. '
-            : '') +
+            ? // A „Mind jóváhagyom" / folytatás mondatot a platform fűzi a válasz
+              // alá — itt NE ismételd, különben a ticketen kétszer jelenik meg.
+              'Ha a műveleti tervből MARADT feldolgozatlan tétel (pl. a jóváhagyás eredményétől függő következő kapu-kör), azt is mondd meg, hány. ' +
+              'A gomb használatát NE magyarázd. '
+            : 'Mondd el, hogy a „Jóváhagyom" gomb után a feladat folytatódik — nem kell újraindítani. ') +
           'NE kérj szöveges „ok"/„jóváhagyom" választ, NE ígérd hogy újraindítod a folyamatot, NE hívd újra az eszközöket. ' +
           'A gomb megnyomása után a platform magától lefuttatja a jóváhagyott műveletet — te ne próbáld újra.'
         : 'Fogalmazd meg a felhasználónak magyarul RÖVIDEN: a mellékhatásos művelet blokkolva van, de a jóváhagyó gomb NEM jött létre (platform hiba). ' +

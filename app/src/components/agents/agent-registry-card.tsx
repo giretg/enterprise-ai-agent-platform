@@ -54,12 +54,15 @@ function Chip({
 export function AgentRegistryCard({
   agent,
   canDelete,
+  isWorking = false,
 }: {
   agent: Agent
   canDelete: boolean
+  /** Aktívan futó ügy a saját futásokból — dashboard `act.working` párja. */
+  isWorking?: boolean
 }) {
   const p = personaFor(agent.name, agent)
-  const mood = humanStatus(agent.status)
+  const mood = humanStatus(agent.status, isWorking)
   const brainLabel = agentBrainLabel(agent)
   const detailHref = `/control-plane/agents/${agent.id}`
 
@@ -81,6 +84,7 @@ export function AgentRegistryCard({
             size="lg"
             avatarUrl={agent.avatarUrl}
             personaNickname={agent.personaNickname}
+            isWorking={isWorking}
           />
         </Link>
         <div className="min-w-0 flex-1">

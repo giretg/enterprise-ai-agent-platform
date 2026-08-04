@@ -43,6 +43,8 @@ export type ConsequenceApprovalCard = {
   toolName: string
   summary: string
   expiresAt: string
+  /** A művelet már sorban állt — ez a MEGLÉVŐ kártya, nem új sor. */
+  deduplicated?: boolean
   /**
    * A szerver órája szerint lejárt-e. A kliens órájára nem bízzuk: egy elállított
    * gép „még él" gombot mutatna egy halott jóváhagyáshoz.
@@ -216,6 +218,7 @@ export class ConsequenceApprovalService {
         toolName: existing.toolName,
         summary: summarizeArgs(existing.toolName, (existing.args ?? {}) as Record<string, unknown>),
         expiresAt: existing.expiresAt.toISOString(),
+        deduplicated: true,
       }
     }
 

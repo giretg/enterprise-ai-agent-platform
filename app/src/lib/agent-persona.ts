@@ -89,8 +89,8 @@ function basePersonaFor(name: string): AgentPersona {
 export type HumanStatusTone = 'working' | 'available' | 'unknown' | 'idle'
 
 /** A warm, human reading of a machine status.
- *  `isWorking`: ha ismert (dashboard a saját futásokból), az dönt az active
- *  agent feliratáról; ha nincs megadva, a régi „Most épp dolgozik” marad. */
+ *  `isWorking`: ha ismert (saját futásokból — dashboard / csapatlista), az dönt
+ *  az active agent feliratáról; ha nincs megadva, a régi „Most épp dolgozik” marad. */
 export function humanStatus(
   status: string,
   isWorking?: boolean,

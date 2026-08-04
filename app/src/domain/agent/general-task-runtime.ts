@@ -588,13 +588,23 @@ export class GeneralTaskRuntime {
           ticket: await this.tickets.findById(ticket.id),
         }
       }
+      // A gombra vonatkozó mondat PLATFORM-szöveg, nem a modellé. A kapuzott
+      // hívások eredménye szándékosan már nem szólítja fel a modellt, hogy
+      // minden egyes tételnél a felhasználóhoz forduljon (attól hagyta abba a
+      // terv feldolgozását) — így viszont a záró szövegéből kimaradhatna, hogy
+      // MIT kell tennie a felhasználónak. Ez a mondat determinisztikusan ott lesz.
+      const approvalNotice =
+        `\n\n---\n\n**${approvalIds.length} külső rendszerbe író művelet vár jóváhagyásra.** ` +
+        'Az alábbi „Mind jóváhagyom" gombbal egyszerre engedélyezheted mindet; ' +
+        'a műveletek lefutnak, és a feladat magától folytatódik — nem kell újraindítanod.'
+      const answerWithNotice = `${answer.trim()}${approvalNotice}`
       await this.appendAgentAnswerComment({
         ticketId: ticket.id,
         agentId: params.agentId,
         agentName: agentDetails.agent.name,
         agentVersion,
         answerPayload: {
-          answer,
+          answer: answerWithNotice,
           toolCallCount,
           turnCount: loopTurnCount,
           deniedCount,
@@ -623,7 +633,7 @@ export class GeneralTaskRuntime {
           patch: {
             state: 'awaiting_human',
             payload: {
-              answer,
+              answer: answerWithNotice,
               toolCallCount,
               turnCount: loopTurnCount,
               deniedCount,
@@ -641,7 +651,7 @@ export class GeneralTaskRuntime {
       }
       return {
         ticketId: ticket.id,
-        answer,
+        answer: answerWithNotice,
         toolCallCount,
         ticket: await this.tickets.findById(ticket.id),
       }

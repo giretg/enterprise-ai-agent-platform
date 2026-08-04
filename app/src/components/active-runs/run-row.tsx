@@ -81,12 +81,14 @@ export function RunRow({
   const canStop = active && run.canStop && onStop
   const canStart = active && run.canStart && onStart
   const actionBusy = stopping || starting
+  // Futó: kék wash; kész de még nem megnyitott: zöld; megnézett: semmi.
+  const rowWash = active ? 'bg-sky/10' : unseen ? 'bg-sage/10' : ''
 
   return (
     <div
       className={`group flex items-center gap-2.5 rounded-xl px-2.5 transition-colors hover:bg-coral/[0.06] ${
         dense ? 'py-1.5' : 'py-2'
-      } ${unseen ? 'bg-sky/[0.06]' : ''}`}
+      } ${rowWash}`}
     >
       <span className="relative flex h-2 w-2 shrink-0" aria-hidden>
         {active && run.status !== 'ready' && (
@@ -123,7 +125,7 @@ export function RunRow({
               </span>
             ))}
           {unseen && (
-            <span className="shrink-0 rounded-full bg-sky/15 px-1.5 py-0.5 text-[10px] font-semibold text-sky">
+            <span className="shrink-0 rounded-full bg-sage/15 px-1.5 py-0.5 text-[10px] font-semibold text-sage">
               új
             </span>
           )}

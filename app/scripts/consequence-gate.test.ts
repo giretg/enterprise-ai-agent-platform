@@ -591,6 +591,86 @@ async function main() {
     assert.deepEqual(result.consequenceApprovalIds, ['appr-dup'])
   })
 
+  await test('task: a sorbaállítás ELŐREHALADÁS — a zsákutca-őr nem állítja le a tervet', async () => {
+    // Regresszió (`35672220`, 2026-08-04): a kapuzott hívás `barren` volt, ezért
+    // egy csupa-sorbaállítás kör zsákutcának számított. A `no_progress` őr néhány
+    // kör után leállt, és a 89 műveletet HÁROM futásban, három külön
+    // jóváhagyással kellett bevinni. Öt egymást követő, csak sorbaállítást
+    // tartalmazó körnek le kell futnia (a task-limit 4 zsákutca-kör).
+    const gw: GatewayCallArgs[] = []
+    let created = 0
+    const { result } = await runLoop(
+      [
+        ...Array.from({ length: 5 }, (_, i) => ({
+          toolCalls: [{ id: `c${i}`, name: 'gmail_send', input: { to: `x${i}@y.hu` } }],
+        })),
+        { content: 'kész' },
+      ],
+      ['gmail_send'],
+      gw,
+      {
+        mode: 'task',
+        createConsequenceApproval: async (invoke) => {
+          created += 1
+          return {
+            approvalId: `appr-${created}`,
+            toolName: invoke.tool,
+            summary: invoke.tool,
+            expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+          }
+        },
+      },
+    )
+    assert.equal(created, 5, 'mind az 5 kör lefutott (nem állt le a zsákutca-őr)')
+    assert.equal(result.consequenceApprovalIds?.length, 5)
+    assert.equal(result.awaitingConsequenceApproval, true)
+    // Task tool-result: ne szólítsa fel a modellt, hogy minden tételnél a
+    // felhasználóhoz forduljon — az állította le a terv feldolgozását.
+    const toolMsgs = gw.flatMap((c) => c.messages).filter((m) => m.role === 'tool')
+    assert.ok(toolMsgs.length >= 5)
+    for (const m of toolMsgs) {
+      assert.doesNotMatch(m.content ?? '', /Mondd el a felhasználónak/)
+      assert.doesNotMatch(m.content ?? '', /egyetlen jóváhagyás fogja mindet/)
+      assert.match(m.content ?? '', /előkészíthető|következő kapu-kör/i)
+    }
+  })
+
+  await test('task: a deduplikált kártya barren — a zsákutca-őr leállítja a futást', async () => {
+    // A fenti lazítás párja: ha a létrehozó deduplikált kártyát ad vissza
+    // (nincs új munka), a kör `barren` marad. Task `maxNoProgressTurns` = 4 →
+    // 1 új kártya + 4 barren kör után nincs több tool-kör (5 create hívás).
+    // Az argumentumok SZÁNDÉKOSAN különböznek, hogy a REPEAT_LIMIT ne mosson
+    // bele — itt a `deduplicated` → barren progress-útvonalat mérjük.
+    const gw: GatewayCallArgs[] = []
+    let calls = 0
+    const { result } = await runLoop(
+      [
+        ...Array.from({ length: 8 }, (_, i) => ({
+          toolCalls: [{ id: `c${i}`, name: 'gmail_send', input: { to: `x${i}@y.hu` } }],
+        })),
+        { content: 'kész' },
+      ],
+      ['gmail_send'],
+      gw,
+      {
+        mode: 'task',
+        createConsequenceApproval: async (invoke) => {
+          calls += 1
+          return {
+            approvalId: 'appr-same',
+            toolName: invoke.tool,
+            summary: invoke.tool,
+            expiresAt: new Date(Date.now() + 3_600_000).toISOString(),
+            ...(calls > 1 ? { deduplicated: true } : {}),
+          }
+        },
+      },
+    )
+    assert.equal(calls, 5, '1 új + 4 barren kör után állt le (task no_progress=4)')
+    assert.deepEqual(result.consequenceApprovalIds, ['appr-same'])
+    assert.equal(result.awaitingConsequenceApproval, true)
+  })
+
   if (failures > 0) {
     console.error(`\n${failures} teszt elbukott.`)
     process.exit(1)

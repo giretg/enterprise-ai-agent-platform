@@ -9,12 +9,16 @@ export function AgentRegistryList({
   agents,
   canDelete,
   loadError,
+  workingAgentIds = [],
 }: {
   agents: Agent[]
   canDelete: boolean
   /** Ha a lista lekérése elbukott — ne „üres csapat / seed” üzenetet mutassunk. */
   loadError?: string | null
+  /** Agent-id-k, akiknek van aktívan futó ügyük — dashboarddal azonos forrás. */
+  workingAgentIds?: readonly string[]
 }) {
+  const workingIds = new Set(workingAgentIds)
   const [showRetired, setShowRetired] = useState(false)
 
   const retiredCount = useMemo(
@@ -55,7 +59,12 @@ export function AgentRegistryList({
 
       <div className="grid gap-5 md:grid-cols-2">
         {visibleAgents.map((agent) => (
-          <AgentRegistryCard key={agent.id} agent={agent} canDelete={canDelete} />
+          <AgentRegistryCard
+            key={agent.id}
+            agent={agent}
+            canDelete={canDelete}
+            isWorking={workingIds.has(agent.id)}
+          />
         ))}
         {!loadError && visibleAgents.length === 0 && (
           <Card className="md:col-span-2">
