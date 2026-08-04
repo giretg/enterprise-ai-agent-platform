@@ -70,6 +70,7 @@ import {
 } from '@/lib/workspace-file-visibility'
 import type { SkillService } from '../skill/skill-service'
 import type { ConsequenceApprovalService } from '../tool-broker/consequence-approval-service'
+import { formatPreapprovedRunSummary } from '../tool-broker/consequence-gate-policy'
 import type { PromptSegments } from './prompt-assembler'
 import {
   TicketProgressFlusher,
@@ -502,8 +503,13 @@ export class GeneralTaskRuntime {
     }
 
     await persistProgress(true)
-    const { content: answer, toolCallCount } = loopResult
+    const { toolCallCount } = loopResult
     const deniedCount = loopResult.deniedCount
+    // issue #220 — utólagos futás-összesítő (N író hívás, trust mód, limit).
+    const preapprovedNotice = formatPreapprovedRunSummary(loopResult.preapprovedWriteSummary ?? [])
+    const answer = preapprovedNotice
+      ? `${loopResult.content.trim()}\n\n---\n\n_${preapprovedNotice}_`
+      : loopResult.content
     await this.publishReferencedWorkspaceFiles(wsTenant, ticket.id, answer)
 
     // Következmény-kapu: a http_api_request (write) gombra vár — a ticket NEM lehet

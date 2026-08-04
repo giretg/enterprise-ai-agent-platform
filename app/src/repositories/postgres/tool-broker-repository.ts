@@ -116,9 +116,7 @@ export class PostgresToolBrokerRepository implements ToolBrokerRepository {
     })
   }
 
-  async findConnectorsForAgent(
-    agentId: string,
-  ): Promise<{ connector: Connector; accessMode: ConnectorAccessMode; agentSecretAlias: string | null }[]> {
+  async findConnectorsForAgent(agentId: string) {
     const rows = await prisma.agentConnector.findMany({
       where: { agentId },
       include: { connector: { include: { activeSpecVersion: { select: { capabilitySet: true } } } } },
@@ -127,7 +125,18 @@ export class PostgresToolBrokerRepository implements ToolBrokerRepository {
     return rows.flatMap((r) => {
       const connector = toRuntimeConnector(r.connector)
       return connector
-        ? [{ connector, accessMode: r.accessMode, agentSecretAlias: r.secretAlias ?? null }]
+        ? [
+            {
+              connector,
+              accessMode: r.accessMode,
+              agentSecretAlias: r.secretAlias ?? null,
+              writeApproval: r.writeApproval,
+              preapprovedTrustMode: r.preapprovedTrustMode,
+              preapprovedExpiresAt: r.preapprovedExpiresAt,
+              preapprovedWriteLimit: r.preapprovedWriteLimit,
+              dangerPreapproved: r.dangerPreapproved,
+            },
+          ]
         : []
     })
   }

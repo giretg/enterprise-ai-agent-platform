@@ -18,11 +18,17 @@
 import assert from 'node:assert/strict'
 import { runAgentToolLoop, type ToolLoopConsequenceApprovalEvent } from '../src/domain/agent/chat-tool-loop'
 import {
+  consumePreapprovedBudget,
+  createPreapprovedRunBudget,
   evaluateHttpApiRequestGate,
   evaluateHttpApiWriteGrant,
   httpApiWriteGrantDeniedMessage,
   requiresConsequenceApproval,
 } from '../src/domain/tool-broker/consequence-gate-policy'
+import {
+  validateWriteApprovalBinding,
+  type WriteApprovalTrust,
+} from '../src/domain/tool-broker/write-approval-trust'
 import { EXTERNAL_DATA_WARNING, EXTERNAL_DATA_OPEN } from '../src/domain/tool-broker/tool-result-envelope'
 import type { ModelGateway, ModelConfig, GatewayMessage, GatewayToolCall, ToolDefinition } from '../src/domain/gateway/model-gateway'
 import type { ToolBrokerService, ToolBrokerInvokeInput } from '../src/domain/tool-broker/tool-broker-service'
@@ -633,6 +639,276 @@ async function main() {
       assert.doesNotMatch(m.content ?? '', /egyetlen jóváhagyás fogja mindet/)
       assert.match(m.content ?? '', /előkészíthető|következő kapu-kör/i)
     }
+  })
+
+  await test('issue #220: preapproved write — allowlistelt write NEM kapu', () => {
+    const trust: WriteApprovalTrust = {
+      mode: 'preapproved',
+      trustMode: 'lax',
+      expiresAt: null,
+      writeLimitPerRun: null,
+      dangerPreapproved: false,
+    }
+    const connectors = [
+      {
+        id: 'conn-1',
+        name: 'Fold',
+        config: sampleHttpConfig,
+        accessMode: 'write' as const,
+        writeApproval: trust,
+      },
+    ]
+    const budget = createPreapprovedRunBudget()
+    const d = evaluateHttpApiRequestGate(
+      { connectorId: 'conn-1', method: 'POST', path: '/parcels' },
+      connectors,
+      budget,
+    )
+    assert.equal(d.required, false)
+    assert.ok(d.preapprovedSkip)
+    assert.equal(d.preapprovedSkip?.connectorName, 'Fold')
+    consumePreapprovedBudget(budget, d.preapprovedSkip!)
+    assert.equal(budget.usedByConnector.get('conn-1'), 1)
+  })
+
+  await test('issue #220: preapproved — nem allowlistelt path MINDIG kapu', () => {
+    const connectors = [
+      {
+        id: 'conn-1',
+        config: sampleHttpConfig,
+        accessMode: 'write' as const,
+        writeApproval: {
+          mode: 'preapproved' as const,
+          trustMode: 'lax' as const,
+          expiresAt: null,
+          writeLimitPerRun: null,
+          dangerPreapproved: false,
+        },
+      },
+    ]
+    const d = evaluateHttpApiRequestGate(
+      { connectorId: 'conn-1', method: 'POST', path: '/unknown' },
+      connectors,
+    )
+    assert.equal(d.required, true)
+    assert.equal(d.reason, 'http_api_not_allowlisted')
+    assert.equal(d.preapprovedSkip, undefined)
+  })
+
+  await test('issue #220: preapproved — danger default off → kapu', () => {
+    const connectors = [
+      {
+        id: 'conn-1',
+        config: sampleHttpConfig,
+        accessMode: 'write' as const,
+        writeApproval: {
+          mode: 'preapproved' as const,
+          trustMode: 'lax' as const,
+          expiresAt: null,
+          writeLimitPerRun: null,
+          dangerPreapproved: false,
+        },
+      },
+    ]
+    const d = evaluateHttpApiRequestGate(
+      { connectorId: 'conn-1', method: 'DELETE', path: '/parcels/1' },
+      connectors,
+    )
+    assert.equal(d.required, true)
+    assert.equal(d.reason, 'http_api_write_or_danger')
+  })
+
+  await test('issue #220: preapproved + dangerPreapproved → danger skip', () => {
+    const connectors = [
+      {
+        id: 'conn-1',
+        config: sampleHttpConfig,
+        accessMode: 'write' as const,
+        writeApproval: {
+          mode: 'preapproved' as const,
+          trustMode: 'lax' as const,
+          expiresAt: null,
+          writeLimitPerRun: null,
+          dangerPreapproved: true,
+        },
+      },
+    ]
+    const d = evaluateHttpApiRequestGate(
+      { connectorId: 'conn-1', method: 'DELETE', path: '/parcels/1' },
+      connectors,
+      createPreapprovedRunBudget(),
+    )
+    assert.equal(d.required, false)
+    assert.ok(d.preapprovedSkip)
+  })
+
+  await test('issue #220: szigorú limit túllépés → visszaesés per_call-ra', () => {
+    const connectors = [
+      {
+        id: 'conn-1',
+        config: sampleHttpConfig,
+        accessMode: 'write' as const,
+        writeApproval: {
+          mode: 'preapproved' as const,
+          trustMode: 'strict' as const,
+          expiresAt: new Date(Date.now() + 86_400_000),
+          writeLimitPerRun: 2,
+          dangerPreapproved: false,
+        },
+      },
+    ]
+    const budget = createPreapprovedRunBudget()
+    for (let i = 0; i < 2; i++) {
+      const d = evaluateHttpApiRequestGate(
+        { connectorId: 'conn-1', method: 'POST', path: '/parcels' },
+        connectors,
+        budget,
+      )
+      assert.equal(d.required, false, `skip #${i + 1}`)
+      consumePreapprovedBudget(budget, d.preapprovedSkip!)
+    }
+    const over = evaluateHttpApiRequestGate(
+      { connectorId: 'conn-1', method: 'POST', path: '/parcels' },
+      connectors,
+      budget,
+    )
+    assert.equal(over.required, true)
+    assert.equal(over.reason, 'http_api_write_or_danger')
+  })
+
+  await test('issue #220: lejárat után a következő hívás kapu', () => {
+    const connectors = [
+      {
+        id: 'conn-1',
+        config: sampleHttpConfig,
+        accessMode: 'write' as const,
+        writeApproval: {
+          mode: 'preapproved' as const,
+          trustMode: 'lax' as const,
+          expiresAt: new Date('2020-01-01T00:00:00.000Z'),
+          writeLimitPerRun: null,
+          dangerPreapproved: false,
+        },
+      },
+    ]
+    const d = evaluateHttpApiRequestGate(
+      { connectorId: 'conn-1', method: 'POST', path: '/parcels' },
+      connectors,
+      createPreapprovedRunBudget(),
+      new Date('2026-08-04T12:00:00.000Z'),
+    )
+    assert.equal(d.required, true)
+  })
+
+  await test('issue #220: preapproved mentés — mód kötelező, nincs default', () => {
+    const missing = validateWriteApprovalBinding({ writeApproval: 'preapproved' })
+    assert.equal(missing.ok, false)
+    const lax = validateWriteApprovalBinding({
+      writeApproval: 'preapproved',
+      preapprovedTrustMode: 'lax',
+    })
+    assert.equal(lax.ok, true)
+    const strictMissing = validateWriteApprovalBinding({
+      writeApproval: 'preapproved',
+      preapprovedTrustMode: 'strict',
+    })
+    assert.equal(strictMissing.ok, false)
+    const strictOk = validateWriteApprovalBinding({
+      writeApproval: 'preapproved',
+      preapprovedTrustMode: 'strict',
+      preapprovedWriteLimit: 100,
+      preapprovedExpiresAt: new Date(Date.now() + 90 * 86_400_000).toISOString(),
+    })
+    assert.equal(strictOk.ok, true)
+  })
+
+  await test('issue #220: loop — preapproved write NINCS jóváhagyási kártya', async () => {
+    const gw: GatewayCallArgs[] = []
+    let approvals = 0
+    const { broker, invoked, gated } = fakeToolBroker()
+    const toolCaps = {
+      findConnectorsForAgent: async () => [
+        {
+          connector: {
+            id: 'fee173de-preapp',
+            name: 'CRM Preapproved',
+            type: 'http_api',
+            config: {
+              baseUrl: 'https://crm.example/api/v1',
+              auth: { scheme: 'bearer' },
+              endpoints: [
+                { method: 'GET', path: '/orders', risk: 'read' },
+                { method: 'POST', path: '/reports/query', risk: 'write' },
+              ],
+            },
+            tenantId: null,
+            lifecycleState: 'active',
+            authMode: 'service',
+          },
+          accessMode: 'write',
+          agentSecretAlias: null,
+          writeApproval: 'preapproved',
+          preapprovedTrustMode: 'lax',
+          preapprovedExpiresAt: null,
+          preapprovedWriteLimit: null,
+          dangerPreapproved: false,
+        },
+      ],
+    } as unknown as ToolBrokerRepository
+
+    const activities: string[] = []
+    const result = await runAgentToolLoop({
+      gateway: fakeGateway(
+        [
+          {
+            toolCalls: [
+              {
+                id: 'c1',
+                name: 'http_api_request',
+                input: {
+                  connectorId: 'fee173de-preapp',
+                  method: 'POST',
+                  path: '/reports/query',
+                  body: { q: 'x' },
+                },
+              },
+            ],
+          },
+          { content: 'kész' },
+        ],
+        gw,
+      ),
+      toolBroker: broker,
+      toolCaps,
+      agentId: 'agent-1',
+      agentVersion: 1,
+      context: { conversationId: 'conv-pre' },
+      mode: 'task',
+      actingUserId: 'user-1',
+      messages: [{ role: 'user', content: 'riport' }],
+      modelConfig: MODEL_CONFIG,
+      allowedTools: ['http_api_get', 'http_api_request'] as never,
+      createConsequenceApproval: async () => {
+        approvals += 1
+        return {
+          approvalId: 'should-not-create',
+          toolName: 'http_api_request',
+          summary: 'nope',
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+        }
+      },
+      onActivity: async (a) => {
+        if (a.title.includes('előzetesen')) activities.push(a.detail ?? a.title)
+      },
+    })
+
+    assert.equal(approvals, 0)
+    assert.equal(gated.length, 0)
+    assert.deepEqual(toolNames(invoked), ['http_api_request'])
+    assert.equal(result.awaitingConsequenceApproval, undefined)
+    assert.ok(result.preapprovedWriteSummary?.length)
+    assert.equal(result.preapprovedWriteSummary?.[0]?.writeCalls, 1)
+    assert.ok(activities.some((a) => a.includes('CRM Preapproved')))
   })
 
   await test('task: a deduplikált kártya barren — a zsákutca-őr leállítja a futást', async () => {

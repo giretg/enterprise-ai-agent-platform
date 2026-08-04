@@ -56,6 +56,7 @@ import {
   type ToolLoopActivityEvent,
   type ToolLoopStopReason,
 } from './chat-tool-loop'
+import { formatPreapprovedRunSummary } from '../tool-broker/consequence-gate-policy'
 import type { SkillService } from '../skill/skill-service'
 import { assembleGatewayMessages, type PromptSegments } from './prompt-assembler'
 import {
@@ -1653,7 +1654,12 @@ export class AgentChatRuntime {
           await this.persistFailedTurn(turn, message, snapshot.partialText)
           return
         }
-        reply = result.value.content
+        const preapprovedNotice = formatPreapprovedRunSummary(
+          result.value.preapprovedWriteSummary ?? [],
+        )
+        reply = preapprovedNotice
+          ? `${result.value.content.trim()}\n\n_${preapprovedNotice}_`
+          : result.value.content
         await this.publishReferencedWorkspaceFiles(tenantKey, conversationId, reply)
         loopToolCallCount = result.value.toolCallCount
         loopDeniedCount = result.value.deniedCount

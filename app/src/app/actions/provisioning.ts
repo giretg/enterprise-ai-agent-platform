@@ -777,6 +777,14 @@ export async function createConnectorFromTemplateAction(input: unknown) {
       actorOf(user),
     )
 
+    // issue #220 — sablon címke → connector (nem kapcsolja a kaput).
+    if (descriptor.consequenceBoundary) {
+      await prisma.connector.update({
+        where: { id: res.connectorId },
+        data: { consequenceBoundary: descriptor.consequenceBoundary },
+      })
+    }
+
     await repositories.audit.append({
       actorType: 'human',
       actorId: user.user.id,
@@ -792,6 +800,7 @@ export async function createConnectorFromTemplateAction(input: unknown) {
         templateKey: template.key,
         templateVersion: template.version,
         templateOrigin: template.origin,
+        consequenceBoundary: descriptor.consequenceBoundary ?? null,
       },
     })
 

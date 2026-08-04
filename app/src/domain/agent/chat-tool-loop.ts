@@ -43,11 +43,16 @@ import {
 } from '@/domain/tool-broker/tool-output-contract'
 import {
   consequenceGateReasonForModel,
+  consumePreapprovedBudget,
+  createPreapprovedRunBudget,
   evaluateHttpApiWriteGrant,
   httpApiWriteGrantDeniedMessage,
   requiresConsequenceApproval,
+  summarizePreapprovedBudget,
   type HttpApiGateConnector,
+  type PreapprovedRunSummary,
 } from '@/domain/tool-broker/consequence-gate-policy'
+import { writeApprovalTrustFromRow } from '@/domain/tool-broker/write-approval-trust'
 import { parseHttpApiConfig, resolveHttpApiEndpointRisk } from '@/domain/connector/http-api-client'
 import {
   buildHttpApiEfficiencyGuidance,
@@ -128,6 +133,8 @@ export type ToolLoopResult =
       /** Következmény-kapu: van függő jóváhagyás (task ticketen is). */
       awaitingConsequenceApproval?: boolean
       consequenceApprovalIds?: string[]
+      /** issue #220 — preapproved író hívások futás-összesítője. */
+      preapprovedWriteSummary?: PreapprovedRunSummary[]
     }
   | {
       content: string
@@ -142,6 +149,8 @@ export type ToolLoopResult =
        */
       awaitingConsequenceApproval?: boolean
       consequenceApprovalIds?: string[]
+      /** issue #220 — preapproved író hívások futás-összesítője. */
+      preapprovedWriteSummary?: PreapprovedRunSummary[]
     }
 
 export const TOOL_LOOP_EXHAUSTED_MESSAGE =
@@ -961,6 +970,8 @@ export async function runAgentToolLoop(params: {
   // újabb tool-körös modellhívást (tokenégetés elkerülése); záró összefoglaló jön.
   let consequenceGateTriggered = false
   const consequenceApprovalIds: string[] = []
+  const preapprovedBudget = createPreapprovedRunBudget()
+  const preapprovedNoticesShown = new Set<string>()
   /**
    * A kapu végállapota MINDEN kilépési ponton.
    *
@@ -974,16 +985,25 @@ export async function runAgentToolLoop(params: {
    * (`ticket.state === 'awaiting_human'` feltétel) sosem indult el —
    * a felhasználónak kézzel kellett újraindítania a ticketet, körönként.
    */
+  const preapprovedSummaryFields = (): {
+    preapprovedWriteSummary?: PreapprovedRunSummary[]
+  } => {
+    const summary = summarizePreapprovedBudget(preapprovedBudget, httpApiGateConnectors)
+    return summary.length > 0 ? { preapprovedWriteSummary: summary } : {}
+  }
   const consequenceGateFields = (): {
     awaitingConsequenceApproval?: boolean
     consequenceApprovalIds?: string[]
-  } =>
-    consequenceGateTriggered
+    preapprovedWriteSummary?: PreapprovedRunSummary[]
+  } => ({
+    ...(consequenceGateTriggered
       ? {
           awaitingConsequenceApproval: consequenceApprovalIds.length > 0,
           consequenceApprovalIds: [...consequenceApprovalIds],
         }
-      : {}
+      : {}),
+    ...preapprovedSummaryFields(),
+  })
   const archivedToolResults = new Map<
     string,
     { content: string | null; bytes: number; toolName: string }
@@ -2234,7 +2254,44 @@ export async function runAgentToolLoop(params: {
           toolName,
           call.input as Record<string, unknown>,
           httpApiGateConnectors,
+          preapprovedBudget,
         )
+        if (gate.preapprovedSkip) {
+          consumePreapprovedBudget(preapprovedBudget, gate.preapprovedSkip)
+          // A kapu KIMARADT — ez egy tudatosan kikapcsolt biztonsági kontroll, ezért
+          // hívásonként nyomot hagy. Enélkül utólag csak annyi látszana, hogy a
+          // művelet lefutott, az viszont nem, hogy MIÉRT nem kért jóváhagyást
+          // (melyik kötés, melyik trust-mód, hányadik hívás a kereten belül).
+          logger.info(
+            {
+              event: 'consequence_gate_preapproved_skip',
+              tool: toolName,
+              agentId: params.agentId,
+              connectorId: gate.preapprovedSkip.connectorId,
+              trustMode: gate.preapprovedSkip.trustMode,
+              risk: gate.preapprovedSkip.risk,
+              writeCallsUsed: gate.preapprovedSkip.used,
+              writeCallLimit: gate.preapprovedSkip.limit,
+              method: String((call.input as Record<string, unknown>).method ?? '').toUpperCase(),
+              // Query nélkül: az allowlist a path-ra szól, a paraméterek üzleti adatot vihetnek.
+              path: String((call.input as Record<string, unknown>).path ?? '').split('?')[0],
+              conversationId: params.context.conversationId ?? null,
+              ticketId: params.context.ticketId ?? null,
+            },
+            'Író hívás következmény-kapu nélkül futott (előzetes engedély a kötésen).',
+          )
+          // Diszkrét státusz — nem kattintható kapu (issue #220).
+          if (!preapprovedNoticesShown.has(gate.preapprovedSkip.connectorId)) {
+            preapprovedNoticesShown.add(gate.preapprovedSkip.connectorId)
+            await emitActivity({
+              id: `preapproved-${gate.preapprovedSkip.connectorId}`,
+              kind: 'tool',
+              title: 'írás előzetesen engedélyezve',
+              detail: `írás előzetesen engedélyezve (${gate.preapprovedSkip.connectorName})`,
+              status: 'done',
+            })
+          }
+        }
         if (gate.required) {
           deniedCount += 1
           await params.toolBroker.recordConsequenceGateBlock?.(invokeInput)
@@ -2658,6 +2715,7 @@ export async function runAgentToolLoop(params: {
       status: 'completed',
       awaitingConsequenceApproval: hasCards,
       consequenceApprovalIds: [...consequenceApprovalIds],
+      ...preapprovedSummaryFields(),
     }
   }
 
@@ -2789,14 +2847,17 @@ async function loadHttpApiConnectorsForGate(
   if (apis.length === 0) return { spec: null, gateConnectors: [] }
 
   const gateConnectors: HttpApiGateConnector[] = []
-  const blocks = apis.map(({ connector, accessMode }) => {
+  const blocks = apis.map((link) => {
+    const { connector, accessMode } = link
     let parsed = null as ReturnType<typeof parseHttpApiConfig> | null
     try {
       parsed = parseHttpApiConfig(resolveHttpApiConfigForGate(connector.config ?? {}))
       gateConnectors.push({
         id: connector.id,
+        name: connector.name,
         config: parsed,
         accessMode: accessMode === 'write' ? 'write' : 'read',
+        writeApproval: writeApprovalTrustFromRow(link),
       })
     } catch {
       // Hibás config: a modell-leírás fallback JSON-ból megy; a kapu fail-safe.
@@ -2858,9 +2919,22 @@ async function loadHttpApiConnectorsForGate(
           : undefined
 
     const writeAllowed = accessMode === 'write'
+    const writeTrust = writeApprovalTrustFromRow(link)
     const lines = [`### ${connector.name}`]
     lines.push(`connectorId: ${connector.id}`)
     lines.push(`Hozzáférés: ${writeAllowed ? 'olvasás + írás' : 'csak olvasás'}`)
+    if (writeAllowed && writeTrust.mode === 'preapproved') {
+      const modeLabel = writeTrust.trustMode === 'strict' ? 'szigorú' : 'laza'
+      lines.push(
+        `Írás-bizalom: előzetesen engedélyezve (${modeLabel}) — az allowlistelt write` +
+          (writeTrust.dangerPreapproved ? '/danger' : '') +
+          ' http_api_request hívások NEM kérnek külön jóváhagyást (audit megmarad).',
+      )
+    } else if (writeAllowed) {
+      lines.push(
+        'Írás-bizalom: hívásonkénti jóváhagyás — az író / danger http_api_request a következmény-kapun megy át.',
+      )
+    }
     if (!writeAllowed) {
       lines.push(
         'ÍRÁSJOG NINCS: ezen a connectoron a http_api_request (POST/PUT/PATCH/DELETE) TILOS és jóváhagyással sem oldható fel. Csak http_api_get / http_api_get_all (GET) hívható.',

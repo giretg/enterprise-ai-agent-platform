@@ -1137,6 +1137,18 @@ export interface ModelBudgetRepository {
 
 export { ModelBudgetPeriod, ModelBudgetScope, ModelRoutingScope }
 
+/** issue #220 — agent↔connector kötés a kapu / admin UI számára. */
+export type AgentConnectorBinding = {
+  connector: Connector
+  accessMode: ConnectorAccessMode
+  agentSecretAlias: string | null
+  writeApproval: 'per_call' | 'preapproved'
+  preapprovedTrustMode: 'lax' | 'strict' | null
+  preapprovedExpiresAt: Date | null
+  preapprovedWriteLimit: number | null
+  dangerPreapproved: boolean
+}
+
 export interface ToolBrokerRepository {
   findCapability(agentId: string, toolName: string): Promise<{ allowed: boolean } | null>
   /**
@@ -1161,7 +1173,7 @@ export interface ToolBrokerRepository {
     tenantId?: string | null,
   ): Promise<{ connector: Connector; agentSecretAlias: string | null } | null>
   findCapabilitiesForAgent(agentId: string): Promise<{ toolName: string; allowed: boolean }[]>
-  findConnectorsForAgent(agentId: string): Promise<{ connector: Connector; accessMode: ConnectorAccessMode; agentSecretAlias: string | null }[]>
+  findConnectorsForAgent(agentId: string): Promise<AgentConnectorBinding[]>
   findDocumentsForConnector(
     connectorId: string,
   ): Promise<{ id: string; filename: string; extractedText: string | null }[]>
