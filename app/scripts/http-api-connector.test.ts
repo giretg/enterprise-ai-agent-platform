@@ -711,6 +711,30 @@ async function main() {
     }
   })
 
+  await test('SSRF: azonos hostnév MÁS PORTRA (belső admin) mutató redirectet NEM követ', async () => {
+    const calls: string[] = []
+    const fakeFetch: typeof fetch = async (input) => {
+      calls.push(String(input))
+      // Azonos hostnév, de belső admin/docker port — az origin (host:port) más, ezért blokk.
+      return new Response(null, {
+        status: 302,
+        headers: { location: 'https://posnavigator.eu:2375/v1.40/containers/json' },
+      })
+    }
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = fakeFetch
+    try {
+      const client = new HttpApiClient(baseConfig, 'live-key')
+      await assert.rejects(
+        client.request({ method: 'GET', path: '/banks', context: crmTraceContext }),
+        (e: unknown) => e instanceof HttpApiError && e.code === 'egress_blocked',
+      )
+      assert.equal(calls.length, 1)
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
   await test('redirect: azonos-host átirányítás-hurok a hop-limitnél blokkol', async () => {
     let n = 0
     const fakeFetch: typeof fetch = async () => {

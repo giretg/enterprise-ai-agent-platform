@@ -867,7 +867,12 @@ export class HttpApiClient {
   }
 
   private async fetchWithBackoff(input: URL, init: RequestInit): Promise<Response> {
-    const connectorHost = new URL(this.config.baseUrl).hostname.toLowerCase()
+    const connectorUrl = new URL(this.config.baseUrl)
+    const connectorHost = connectorUrl.hostname.toLowerCase()
+    // A redirect-pinning ORIGIN-szinten köt (séma + host + port), nem csak hostname-en: egy
+    // azonos-hostnevű, de más PORTRA mutató (pl. `:2375` belső admin/docker) vagy `https→http`
+    // downgrade átirányítás különben átcsúszna a puszta hostname-egyezésen.
+    const connectorOrigin = connectorUrl.origin
     if (this.config.selfUpdatingPinned) {
       const guard = await guardEgressUrl({
         url: input.toString(),
@@ -887,7 +892,7 @@ export class HttpApiClient {
     const guardedInit: RequestInit = { ...init, redirect: 'manual' }
     const delays = [250, 750]
     for (let attempt = 0; attempt <= delays.length; attempt += 1) {
-      const res = await this.fetchFollowingSameHostRedirects(input, guardedInit, connectorHost)
+      const res = await this.fetchFollowingSameOriginRedirects(input, guardedInit, connectorOrigin)
       // 429 / 5xx → korlátozott backoff; minden mást (a 4xx-eket is) felfelé adunk
       // strukturált válaszként, hogy a modell reagálhasson rá.
       if (![429, 500, 502, 503, 504].includes(res.status) || attempt === delays.length) {
@@ -899,17 +904,18 @@ export class HttpApiClient {
   }
 
   /**
-   * A redirecteket kézzel, a connector KONFIGURÁLT hostjára pinnelve követi (deny-by-default a
-   * más hostra mutató átirányításokra). Pin-elt (önfrissítő) connectornál MINDEN 3xx tilos — ez
-   * a korábbi, szigorúbb viselkedés. Nem-pin-elt connectornál az azonos-host redirect legfeljebb
-   * `MAX_SAME_HOST_REDIRECTS`-szer követhető; a Location nélküli 3xx-et és minden nem-3xx választ
-   * változatlanul visszaadja. Így a host-pinning invariáns a redirect-láncon is áll, és az
-   * SSRF-út (allowlistolt host → 3xx → belső/metadata) zárva marad.
+   * A redirecteket kézzel, a connector KONFIGURÁLT ORIGIN-jére (séma + host + port) pinnelve
+   * követi (deny-by-default a más originre mutató átirányításokra). Pin-elt (önfrissítő)
+   * connectornál MINDEN 3xx tilos — ez a korábbi, szigorúbb viselkedés. Nem-pin-elt connectornál
+   * az azonos-origin redirect legfeljebb `MAX_SAME_HOST_REDIRECTS`-szer követhető; a Location
+   * nélküli 3xx-et és minden nem-3xx választ változatlanul visszaadja. Így a host-pinning
+   * invariáns a redirect-láncon is áll, és az SSRF-út (allowlistolt host → 3xx → belső/metadata,
+   * vagy azonos hostnév más porton / `https→http` downgrade) zárva marad.
    */
-  private async fetchFollowingSameHostRedirects(
+  private async fetchFollowingSameOriginRedirects(
     input: URL,
     init: RequestInit,
-    connectorHost: string,
+    connectorOrigin: string,
   ): Promise<Response> {
     let currentUrl = input
     for (let hop = 0; ; hop += 1) {
@@ -931,11 +937,12 @@ export class HttpApiClient {
       } catch {
         throw new HttpApiError('runtime redirect blocked: invalid redirect target', 'egress_blocked')
       }
-      // A redirect csak a connector SAJÁT hostján maradhat; bármi más (belső szolgáltatás,
-      // felhő-metadata, idegen exfil-host) SSRF → blokk. A connector-kliens szándékosan nem
-      // ismeri a tágabb egress-allowlistet, ezért a self-contained szabály a same-host-only.
-      if (target.hostname.toLowerCase() !== connectorHost) {
-        throw new HttpApiError('runtime redirect blocked: cross-host redirect', 'egress_blocked')
+      // A redirect csak a connector SAJÁT originjén maradhat (séma+host+port); bármi más (belső
+      // szolgáltatás, felhő-metadata, azonos hostnév más porton, https→http downgrade, idegen
+      // exfil-host) SSRF → blokk. A connector-kliens szándékosan nem ismeri a tágabb
+      // egress-allowlistet, ezért a self-contained szabály a same-origin-only.
+      if (target.origin !== connectorOrigin) {
+        throw new HttpApiError('runtime redirect blocked: cross-origin redirect', 'egress_blocked')
       }
       currentUrl = target
     }
