@@ -1,5 +1,24 @@
 # Enterprise code review log
 
+## 2026-08-04 - ChatGPT OAuth runtime: titokmentes hibakezelés és beragadt stream-ek elleni időkorlát
+
+- Áttekintett, korábban önállóan nem naplózott kritikus komponens:
+  - app/src/domain/gateway/chatgpt-oauth-bridge.ts — a szerveroldali ChatGPT/Codex Responses-híd, amely a központilag őrzött OAuth access tokennel indít modellhívást és SSE-választ olvas.
+  - app/src/domain/gateway/oauth-token-store.ts — a frissítő token Secret Manager-alapú beolvasása és visszaírása.
+  - Hívói/audit kontextusban: app/src/domain/gateway/model-gateway.ts (a provider-hiba üzenetét auditba, strukturált logba és végül a felhasználói hibaágba továbbítja), app/src/domain/gateway/fallback-chain.ts (hibakategória/fallback), a Model Gateway specifikáció 1–6. invariánsai.
+- Ellenőrzött és rendben talált védelmek: az agent nem kap OAuth-kredenciált; a token csak a Gateway/sidecar szerverfolyamatban él; a hívás account-szintű konkurencia-sávban fut; a Responses-kérés store:false; a prompt és token nem része az üres-válasz diagnosztikának.
+- **Lelet 1 (közepes, bizalmasság):** a híd a nem-2xx Responses-válasz, a token refresh és a Secret Manager hiba nyers választestét belefűzte az Error.message-be. A ModelGateway.handleAttemptFailure() ezt a message-et változtatás nélkül audit-metaadatba és logba írja, a végső hiba pedig egyes API/chat útvonalakon a hívóhoz is eljut. Egy upstream/proxy a kérés részletét, személyes adatot vagy véletlenül egy titkot visszhangozva így tartós audit-szivárgást okozhatott — közvetlenül sértve a token/prompt sosem logban enterprise-invariánst.
+- **Lelet 2 (közepes, rendelkezésre állás):** a ChatGPT OAuth fetch-eknek — különösen a végtelen ideig nyitva maradó SSE-olvasásnak — nem volt időkorlátja. Az alapértelmezett accountonkénti konkurencia 1, tehát egy beragadt upstream kapcsolat a teljes közös ChatGPT OAuth-fiók várólistáját tartósan blokkolhatta; a tenantok modellhívásai megálltak volna, miközben a fallback csak hiba után aktiválódhat.
+- **Lelet 3 (magas, rendelkezésre állás):** a bridge első javítását vizsgáló Spec-tengely két lyukat talált, ezeket a PR-en lezártam: a nyers hibát kiváltó network hiba kezdetben nem esett fallback-képes kategóriába, és a Gateway → külső OAuth sidecar kapcsolata még korlátlanul várhatott. Mindkettő a teljes modellút hibatűrését nullázhatta volna.
+- Javítás:
+  - CHATGPT_OAUTH_REQUEST_TIMEOUT_MS konfigurálható, fail-safe 120 másodperces határ. Az AbortController a HTTP fejlécektől az SSE stream végéig él; timeoutkor a kérés megszakad, a konkurencia-lease finally ágon felszabadul, és a normál hibakategorizálás/fallback folytatható.
+  - A Gateway → külső OAuth-sidecar hívás is a meglévő provider-timeout helperen fut; beragadt sidecar esetén így auditálható, fallback-képes hiba keletkezik.
+  - ChatGptOAuthBackendError kizárólag stabil hibakategóriát és HTTP-státuszt közöl. A Responses, refresh és Secret Manager választestét többé nem olvassuk/beírjuk hibába; a diagnosztika és az audit továbbra is a szükséges metaadatokat kapja nyers adat nélkül.
+  - Új, CI-ben indítható regressziós teszt: npm run test:chatgpt-oauth-runtime-safety ellenőrzi a nyers upstream adat kizárását, a refresh/Secret Manager hiba utat, a network-fallbackot, a bridge- és sidecar-timeoutot, valamint az érvénytelen timeout-konfiguráció fail-safe értékét.
+- Üzleti hatás: a platform így egy külső modellhiba alatt sem rögzít ügyféladatot az auditnaplóba, és egyetlen akadozó szolgáltatói kapcsolat nem állítja le az összes tenant ChatGPT-alapú agentjét. A felhasználó kiszámítható, biztonságos hibaüzenetet kap; az üzemeltető diagnosztizálható státuszt, de nem érzékeny tartalmat.
+- Ellenőrzés: npm run test:chatgpt-oauth-runtime-safety; npm run test:chat-thinking-trace; célzott ESLint; npx tsc --noEmit; git diff --check — zöld. A code-review két tengelyes utóellenőrzése: Standards — nincs hard violation, egy rövid error-path duplikációt közös helperrel megszüntetve; Spec — két P1 rés megtalálva és regressziós teszttel lezárva.
+- Nyitott / követendő (nem-cél ebben a PR-ben): a tokenfrissítés folyamaton belül sincs single-flight módon sorosítva, és a Secret Manager addVersion nem ad elosztott CAS-t. Ha az OAuth-szolgáltató refresh-token rotációt követel, két külön App Hosting példány egyszerre próbálhat azonos refresh tokennel frissíteni; ezt külön, verziózott secret + compare-and-retry vagy dedikált token-broker terve mellett kell kezelni.
+
 ## 2026-08-04 - Generikus HTTP connector futásidő: agent-elérhető SSRF a redirect-követésen keresztül (host-pinning kijátszása)
 
 - Áttekintett modul (a napló eddig a `web_fetch` SSRF-határát fedte 2026-07-04-én, és a `http_api` connectort a `reconcile_records` párosítás felől 2026-07-31-én — de a **generikus HTTP connector futásidő-egressét (`fetchWithBackoff`)** nem; ez a `http_api_get` / `http_api_request` eszközök mögötti tényleges kimenő-hálózati út, amit AGENT hív, path/query az agent kezében):

@@ -101,7 +101,9 @@ export class SecretManagerTokenStore implements OAuthTokenStore {
       { headers: { authorization: `Bearer ${token}` } },
     )
     if (!res.ok) {
-      throw new Error(`Secret Manager access failed: ${res.status} ${(await res.text()).slice(0, 200)}`)
+      // A Secret Manager választeste külső hibaadat; ne kerüljön auditba vagy
+      // felhasználói hibaüzenetbe, még akkor sem, ha egy proxy visszhangozza.
+      throw new Error(`Secret Manager access failed: ${res.status}`)
     }
     const data = (await res.json()) as { payload?: { data?: string } }
     if (!data.payload?.data) throw new Error('Secret Manager version payload empty')
@@ -120,7 +122,7 @@ export class SecretManagerTokenStore implements OAuthTokenStore {
       },
     )
     if (!res.ok) {
-      throw new Error(`Secret Manager addVersion failed: ${res.status} ${(await res.text()).slice(0, 200)}`)
+      throw new Error(`Secret Manager addVersion failed: ${res.status}`)
     }
   }
 }

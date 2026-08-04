@@ -573,7 +573,7 @@ export class ChatGptOAuthProvider implements ModelProvider {
     }
 
     const started = Date.now()
-    const response = await fetch(providerUrl, {
+    const response = await fetchWithProviderTimeout(providerUrl, {
       method: 'POST',
       headers: {
         authorization: `Bearer ${internalKey}`,
