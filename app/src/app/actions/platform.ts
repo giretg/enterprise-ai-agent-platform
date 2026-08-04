@@ -1568,6 +1568,17 @@ export async function updateAgentConnectorBinding(input: {
   apiKey?: string
   /** Ha true: a per-agent kulcs törlődik, az agent a tenant-szintű kulcsra esik vissza. */
   clearApiKey?: boolean
+  /**
+   * issue #220 — írási bizalom. Csak admin; `preapproved` esetén kötelező a
+   * laza/szigorú módválasztás (nincs előjelölt default).
+   */
+  writeApproval?: 'per_call' | 'preapproved'
+  preapprovedTrustMode?: 'lax' | 'strict' | null
+  preapprovedExpiresAt?: string | null
+  preapprovedWriteLimit?: number | null
+  dangerPreapproved?: boolean
+  /** Opcionális connector-címke (nem kapcsolja a kaput). */
+  consequenceBoundary?: 'external_draft' | 'platform' | null
 }) {
   try {
     const user = await requireTenantRole('admin')
@@ -1609,14 +1620,52 @@ export async function updateAgentConnectorBinding(input: {
       nextSecretAlias = buildConnectorSecretRef(scopedSecretId)
     }
 
-    await prisma.agentConnector.update({
-      where: {
-        agentId_connectorId: { agentId: input.agentId, connectorId: input.connectorId },
-      },
-      data: {
-        accessMode,
-        ...(nextSecretAlias !== undefined ? { secretAlias: nextSecretAlias } : {}),
-      },
+    // issue #220 — read módban nincs értelme a preapproved trustnak; mindig per_call.
+    const { validateWriteApprovalBinding } = await import(
+      '@/domain/tool-broker/write-approval-trust'
+    )
+    const writeApprovalInput =
+      accessMode === 'read'
+        ? { writeApproval: 'per_call' as const }
+        : {
+            writeApproval: input.writeApproval === 'preapproved' ? ('preapproved' as const) : ('per_call' as const),
+            preapprovedTrustMode: input.preapprovedTrustMode,
+            preapprovedExpiresAt: input.preapprovedExpiresAt,
+            preapprovedWriteLimit: input.preapprovedWriteLimit,
+            dangerPreapproved: input.dangerPreapproved,
+          }
+    const trustValidated = validateWriteApprovalBinding(writeApprovalInput)
+    if (!trustValidated.ok) return fail(trustValidated.error)
+    const trust = trustValidated.trust
+
+    const consequenceBoundary =
+      input.consequenceBoundary === 'external_draft' || input.consequenceBoundary === 'platform'
+        ? input.consequenceBoundary
+        : input.consequenceBoundary === null
+          ? null
+          : undefined
+
+    await prisma.$transaction(async (tx) => {
+      await tx.agentConnector.update({
+        where: {
+          agentId_connectorId: { agentId: input.agentId, connectorId: input.connectorId },
+        },
+        data: {
+          accessMode,
+          ...(nextSecretAlias !== undefined ? { secretAlias: nextSecretAlias } : {}),
+          writeApproval: trust.mode,
+          preapprovedTrustMode: trust.trustMode,
+          preapprovedExpiresAt: trust.expiresAt,
+          preapprovedWriteLimit: trust.writeLimitPerRun,
+          dangerPreapproved: trust.dangerPreapproved,
+        },
+      })
+      if (consequenceBoundary !== undefined) {
+        await tx.connector.update({
+          where: { id: input.connectorId },
+          data: { consequenceBoundary },
+        })
+      }
     })
 
     await syncHttpApiCapabilities(input.agentId, input.connectorId, accessMode)
@@ -1634,6 +1683,11 @@ export async function updateAgentConnectorBinding(input: {
       policyDecision: 'allowed',
       metadata: {
         accessMode,
+        writeApproval: trust.mode,
+        preapprovedTrustMode: trust.trustMode,
+        preapprovedExpiresAt: trust.expiresAt?.toISOString() ?? null,
+        preapprovedWriteLimit: trust.writeLimitPerRun,
+        dangerPreapproved: trust.dangerPreapproved,
         perAgentKeyRotated: Boolean(input.apiKey?.trim()),
         perAgentKeyCleared: Boolean(input.clearApiKey),
       },

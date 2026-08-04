@@ -85,6 +85,11 @@ export const templateDescriptorSchema = z.object({
   /** Minden hívásra injektált sablonfejlécek (pl. CRM audit/trace fejlécek). */
   requestHeaders: z.record(z.string(), z.string()).optional(),
   instanceFields: z.array(instanceFieldSchema).default([]),
+  /**
+   * issue #220 — opcionális következmény-határ címke. Materializáláskor a
+   * Connector.consequenceBoundary-re másolható; NEM kapcsolja a kaput.
+   */
+  consequenceBoundary: z.enum(['external_draft', 'platform']).optional(),
 })
 export type TemplateDescriptor = z.infer<typeof templateDescriptorSchema>
 

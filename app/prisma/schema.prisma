@@ -193,6 +193,27 @@ enum ConnectorAccessMode {
   write
 }
 
+/// issue #220 — agent↔connector írás-bizalom a következmény-kapuhoz.
+/// `per_call` = mai viselkedés (minden író hívás külön kártya); `preapproved` = kapu-skip
+/// allowlistelt write(/danger) hívásokra, audit + opcionális szigorú fékekkel.
+enum WriteApprovalMode {
+  per_call
+  preapproved
+}
+
+/// `preapproved` trust mód: laza = csak audit; szigorú = hívásszám-limit + lejárat.
+enum PreapprovedTrustMode {
+  lax
+  strict
+}
+
+/// Opcionális címke: hol van a „valódi” emberi következmény-határ.
+/// Nem kapcsolja a kaput — UI javaslat az adminnak (issue #220).
+enum ConsequenceBoundary {
+  external_draft
+  platform
+}
+
 // ── Fázis 2: Provisioning Assistant (Connector Onboarding) ──────────────────
 // A connector életciklus-állapota. DEFAULT `active`, hogy a meglévő sorok
 // viselkedése változatlan maradjon; a draft-connector `draft|validated`
@@ -1626,6 +1647,9 @@ model Connector {
   activeSpecVersionId String?               @map("active_spec_version_id") @db.Uuid
   activeSpecVersion   ConnectorSpecVersion? @relation("ActiveSpecVersion", fields: [activeSpecVersionId], references: [id], onDelete: SetNull)
 
+  /// issue #220 — opcionális UI címke / admin-javaslat (NEM kapcsolja a kaput).
+  consequenceBoundary ConsequenceBoundary? @map("consequence_boundary")
+
   agentConnectors    AgentConnector[]
   toolCalls          ToolCall[]
   documents          Document[]
@@ -1765,6 +1789,17 @@ model AgentConnector {
   connectorId String              @map("connector_id") @db.Uuid
   accessMode  ConnectorAccessMode @map("access_mode")
   secretAlias String?             @map("secret_alias")
+
+  /// issue #220 — írás-bizalom. Új `write` kötésnél default `per_call`.
+  writeApproval        WriteApprovalMode     @default(per_call) @map("write_approval")
+  /// Kötelező, ha `writeApproval = preapproved` (laza | szigorú).
+  preapprovedTrustMode PreapprovedTrustMode? @map("preapproved_trust_mode")
+  /// Szigorú módban kötelező; laza módban opcionális visszavonási határ.
+  preapprovedExpiresAt DateTime?             @map("preapproved_expires_at") @db.Timestamptz
+  /// Szigorú: max író hívás / futás (hard cap a domain rétegben).
+  preapprovedWriteLimit Int?                 @map("preapproved_write_limit")
+  /// Danger risk is skipelhető-e preapproved alatt. Default off.
+  dangerPreapproved    Boolean               @default(false) @map("danger_preapproved")
 
   agent     Agent     @relation(fields: [agentId], references: [id], onDelete: Cascade)
   connector Connector @relation(fields: [connectorId], references: [id], onDelete: Cascade)
