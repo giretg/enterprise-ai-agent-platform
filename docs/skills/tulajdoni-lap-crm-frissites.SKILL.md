@@ -14,7 +14,7 @@ allowed-tools: tulajdoni_lap_egyeztetes, http_api_get_all, http_api_get, http_ap
 Kiolvasni a tulajdoni lapból a valós tulajdonosi összetételt, összevetni az
 Ostoros Föld nyilvántartással, majd a különbségeket **a Föld API-n végrehajtani**
 (ownership létrehozás / módosítás / törlés). Egy futás = egy tulajdoni lap =
-egy parcel tulajdonosi állapota az Ostoros Föld-ben.
+egy parcel tulajdonosi állapota az Ostoros Föld-ben = **egy proposal-csomag**.
 
 Ez **nem** az Excel-egyeztető skill. **Ne készíts és ne ígérj Excel-táblát** —
 a deliverable az Ostoros Föld API-n indított módosítás (draft) és annak szöveges
@@ -33,7 +33,25 @@ ownership POST/PATCH/DELETE ebben a környezetben **csak draft / proposal
 állapotot** hoz létre vagy módosít — a tényleges nyilvántartás-változás előtt
 a Föld-en belül **emberi ellenőrzés és jóváhagyás** történik. Nincs külön
 „előszűrés emberi döntésre” a tervben: minden eltérést vidd be draftként, a
-Föld-beli jóváhagyás dönt. Emiatt:
+Föld-beli jóváhagyás dönt.
+
+**Csomagolni kell — Föld proposal-szerződés.** A Föld API elvárása egyértelmű:
+
+- *„Egy föld korrekciója = egy csomag”*
+- *„proposalId nélkül minden hívás új egytételes csomagot nyithat”*
+- `X-Proposal-Id` / `body.proposalId` **kötelező** összefüggő Ownership-írásoknál
+- A `proposalId` **CSAK** a Föld által visszaadott azonosító (cuid, pl. `cmsei…`)
+- **TILOS** kliensoldali UUID / placeholder (pl. `11111111-1111-4111-8111-…`) —
+  a Föld 404-et ad: *„Javaslatcsomag nem található”*
+
+Tehát egy parcel összes ownership POST/PATCH/DELETE tétele **ugyanabba** a
+proposal-csomagba tartozik. A csomagot **előbb** nyisd meg (`POST /proposals`),
+a válasz `body.id`-jét tedd a checkpointba, és **minden** Ownership-írásnál
+add át (`headers["X-Proposal-Id"]` **és** `body.proposalId`). `proposalId`
+nélkül minden hívás külön egytételes csomagot nyithat — ez a szerződés
+megszegése, ne csináld.
+
+Emiatt:
 
 - **ne** állj meg „túl kockázatos / nincs biztonságosan végrehajtható művelet"
   indokkal, ha van eltérés (bizonytalan párosítás / joggyakorló-gyanú / széljegy
@@ -68,6 +86,13 @@ NE csináld:
   / „nincs extract a skillben" miatt — a `tool_result_read` / `tool_result_extract`
   infrastruktúra, és az `elteroPath` a teljes ownership-id lista
 - Föld-írás egyeztetés nélkül, vagy „Rendben" sorokra
+- Ownership-írások `proposalId` / `X-Proposal-Id` nélkül (minden hívás külön
+  egytételes csomagot nyithat) — egy parcel korrekciója = **egy** csomag
+- kliens generált / kitalált `proposalId` (UUID, placeholder) — csak a Föld
+  `POST /proposals` válasz `id`-je érvényes
+- `POST /proposals` + Ownership-írások **ugyanabban** a kapu-batchben előre
+  kitalált ID-vel — előbb nyisd a csomagot, kapd meg az `id`-t, **azután**
+  sorold az Ownership tételeket
 - mezőnevek kitalálása 400/422 után találgatással — előbb katalógus / meglévő rekord
 
 # A menet: gyűjtés → egyeztetés → műveleti terv → Föld írás
@@ -81,12 +106,17 @@ Minden lényeges lépés után frissítsd (vagy hozd létre) a
 {
   "hrsz": "043/15",
   "parcelId": "…",
+  "proposalId": null,
   "nyilvantartasPath": "nyilvantartas.json",
   "pagesFetched": "all",
   "muveletekPath": "fold_muveletek.json",
   "status": "nyilvantartas_ready"
 }
 ```
+
+A `proposalId` a `POST /proposals` sikeres válasza után kitöltendő (a Föld
+`body.id`-je) — a folytatás és az összes Ownership-hívás ebből dolgozik.
+Kliens UUID / placeholder ide **nem** kerülhet.
 
 Ha a futás megszakad, a következő forduló EBBŐL indul — ne kezdd elölről.
 
@@ -136,9 +166,11 @@ Ha `elteroPath` megvan: **EGY** `tool_result_read` az `elteroPath`-ra (infra-
 eszköz; workspace JSON-t is olvas, nem csak tool-archívumot), abból építsd a
 `fold_muveletek.json`-t, majd hívd az `http_api_request`-eket.
 Az író hívások a ticket felületén jóváhagyásra várnak — ez rendben van, ne állj
-meg „nincs eszköz" indokkal. A felhasználó egyetlen „Mind jóváhagyom" gombbal
-engedélyezi az összeset, és a feladat utána MAGÁTÓL folytatódik: ne kérd meg,
-hogy indítsa újra a ticketet, és ne kérj tőle szöveges „ok"-t.
+meg „nincs eszköz" indokkal. Tipikusan **két kapu-kör** kell: (1) csak
+`POST /proposals`, (2) az összes Ownership írás a visszaadott `id`-vel.
+A „Mind jóváhagyom" az adott kör tételeit engedi; a feladat utána MAGÁTÓL
+folytatódik — ne kérd meg, hogy indítsa újra a ticketet, és ne kérj szöveges
+„ok"-t.
 Excel csak a `tulajdoni-lap-egyeztetes` skillben kell (`kimenet` megadásával).
 
 A `tulajdoni_lap_parse`-ot csak akkor hívd, ha az egyeztetésen túl kell
@@ -184,51 +216,104 @@ Szabályok a tervhez:
    adnak 1-et. Tervezd meg a sorrendet: először a PATCH-ek (aránymódosítás),
    aztán a POST-ok, végül a DELETE-ek — vagy ha egyértelmű átruházás, preferáld
    a `/parcels/{id}/ownership-transfer` végpontot, ha a katalógusban elérhető.
-6. **Idempotency-Key.** A platform írási hívásoknál automatikusan küldi — a
-   `headers` mezőt ehhez ne töltsd.
+6. **Egy csomag / proposalId.** A terv tetején legyen `proposalId` (kezdetben
+   `null`). Egy föld korrekciója = egy csomag: az összes Ownership-írás
+   ugyanarra a **Föld által kiadott** `proposalId`-re megy. Partner-keresés /
+   `POST /partners` nem Ownership-írás — azok a csomagon kívül történhetnek;
+   a létrehozott `partnerId`-t az Ownership POST body-ba tedd. A `proposalId`-t
+   **ne** generáld előre.
+7. **Idempotency-Key vs. X-Proposal-Id.** Az `Idempotency-Key`-t a platform
+   automatikusan küldi — azt **ne** töltsd a `headers`-be. Az
+   `X-Proposal-Id`-t viszont **igen**: összefüggő Ownership-írásoknál kötelező
+   (`headers["X-Proposal-Id"]` **és** `body.proposalId` = a Föld `id`-je).
 
-Példa terv-elem:
+Példa terv (kivonat):
 
 ```json
 {
-  "action": "patch",
-  "statusFromEgyeztetes": "Módosítás szükséges",
-  "nev": "Kovács János",
-  "path": "/parcels/seed-parcel-…/ownerships/own-…",
-  "method": "PATCH",
-  "body": { "hanyad": "1/2" },
-  "megjegyzes": null
+  "parcelId": "seed-parcel-…",
+  "proposalId": null,
+  "items": [
+    {
+      "action": "patch",
+      "statusFromEgyeztetes": "Módosítás szükséges",
+      "nev": "Kovács János",
+      "path": "/parcels/seed-parcel-…/ownerships/own-…",
+      "method": "PATCH",
+      "body": { "hanyad": "1/2" },
+      "megjegyzes": null
+    }
+  ]
 }
 ```
 
 Checkpoint: `"status": "muveletek_ready"`, `"muveletekPath": "fold_muveletek.json"`.
 
-## 4. Végrehajtás — `http_api_request`
+## 4. Végrehajtás — `http_api_request` (egy csomagban)
 
-A terv **minden** elemére hívd az `http_api_request`-et, sorban (vagy a tervben
-rögzített biztonságos sorrendben). Író connector kell (olvasás + írás); ha a
-connector read-only, állj meg és jelezd — de **ne** helyettesítsd Excel-táblával
-a Föld-írást.
+A terv **minden** Ownership elemére hívd az `http_api_request`-et, sorban (vagy
+a tervben rögzített biztonságos sorrendben), **ugyanazzal a `proposalId`-vel**.
+Író connector kell (olvasás + írás); ha a connector read-only, állj meg és
+jelezd — de **ne** helyettesítsd Excel-táblával a Föld-írást.
 
-Emlékeztető: ezek a hívások **draftot** indítanak a Föld-ben; a véglegesítés
-Föld-beli emberi jóváhagyáshoz kötött. Ne torzítsd le a futást „kockázatos
-írás" / „részleges egyeztetés" indokkal, és ne kérj külön Excel-ellenőrzést a
-draft helyett.
+**Csomagolási menet (kötelező — `POST /proposals` előbb, nem kliens-UUID):**
 
-Minden hívás után frissítsd a tervet / checkpointot (`applied` / `failed` /
-`awaiting_approval`). Ha HITL jóváhagyásra vár: ne indíts párhuzamosan
-ellentmondó törlést ugyanarra a rekordra.
+1. Ha a checkpoint / terv már tartalmaz **érvényes, Föld által kiadott**
+   `proposalId`-t (folytatás): használd azt az **összes** Ownership-írásnál.
+   (Ha a korábbi ID UUID / placeholder / 404-et kapott: dobd el, nyiss új
+   csomagot a 2. pont szerint.)
+2. **Kötelező út — `POST /proposals` előbb (külön kapu-kör):**
+   - Csak ezt az egy írást állítsd sorba: `POST /proposals`
+     body pl. `{ "cim": "<hrsz> tulajdoni lap frissítés" }`.
+   - Jóváhagyás után a válaszból vedd ki a `body.id`-t (cuid) — ez a
+     `proposalId`. Írd a checkpointba és a `fold_muveletek.json`-be.
+   - **Csak ezután** sorold az összes Ownership PATCH/POST/DELETE-et ugyanezzel
+     az `id`-vel. TILOS ugyanabban a kapu-batchben összerakni a
+     `POST /proposals`-t és az Ownership írásokat előre kitalált ID-vel.
+3. Ismert (Föld-kiadott) `proposalId` mellett minden Ownership-írásnál küldd:
+   - `headers: { "X-Proposal-Id": "<proposalId>" }`
+   - `body.proposalId: "<proposalId>"`
+   (mindkettőbe ugyanazt az értéket).
+4. **TILOS** Ownership-írást `proposalId` nélkül indítani — minden ilyen hívás
+   új egytételes csomagot nyithat. **TILOS** kliens UUID / placeholder
+   `proposalId`. A Föld 404 *„Javaslatcsomag nem található”* = rossz/nem
+   létező ID — ne tippelj újat; hívd újra a `POST /proposals`-t.
+5. Használd a kitöltött **Ostoros Föld API** connectort (ne üres Autfresh /
+   hiányos katalógust) — a `POST /proposals`, `GET /proposals`,
+   `GET /proposals/{id}` és az Ownership író végpontok a katalógusban legyenek.
+
+**EGY korrekció = egy csomag, a teljes terv.** Ha a Föld-kiadott `proposalId`
+már megvan, a fennmaradó Ownership tételeket **ne** hagyd későbbre
+összefoglaló miatt: állítsd sorba ugyanazzal az ID-vel. A kapuzott hívás nem
+hiba. A tételenkénti megállás összefoglalóval, vagy a csomagolás elmaradása
+széttöredezett egytételes proposalokat szül — ez a szerződés megszegése.
+
+Emlékeztető: ezek a hívások **draftot** indítanak a Föld-ben (egy proposal-
+csomagban); a véglegesítés Föld-beli emberi jóváhagyáshoz kötött. Ne torzítsd
+le a futást „kockázatos írás" / „részleges egyeztetés" indokkal, és ne kérj
+külön Excel-ellenőrzést a draft helyett.
+
+Minden hívás után frissítsd a tervet / checkpointot (`proposalId`, `applied` /
+`failed` / `awaiting_approval`). Ha HITL jóváhagyásra vár: ne indíts
+párhuzamosan ellentmondó törlést ugyanarra a rekordra — de a következő
+tételeket ugyanabba a csomagba sorold.
 
 Ha 400/422: **ne tippelj új body-t vakon**. Olvasd el a hibát, egyeztesd a
 katalógussal / meglévő rekorddal; ha nem egyértelmű, kérdezz. Ha részben már
 írva van, a válaszban mondd el, mi ment át és mi nem — ne kezdd elölről a
 teljes parcel állapotot.
 
+Ha Ownership írás `404` + *„Javaslatcsomag nem található”* / `outcome=empty`:
+ez **sikertelen** futás — mondd ki számszerűen (pl. `0/89 ownership draft`),
+javítsd a `proposalId`-t a 2. pont szerint, és **ne** állíts
+`"status": "fold_done"`-t, amíg a terv tételei nem mentek át.
+
 Sikeres kör után opcionálisan ellenőrizhetsz egy új
 `http_api_get_all` `/parcels/{id}/ownerships` hívással (ne parse-old a teljes
 listát a kontextusba — elég a darabszám / rövid kivonat).
 
-Checkpoint: `"status": "fold_done"`.
+Checkpoint: `"status": "fold_done"` — **csak** ha az Ownership tételek
+ténylegesen lefutottak (nem 404 / nem empty).
 
 ## 5. A válasz
 
@@ -236,18 +321,23 @@ Fogalmazd meg:
 
 - hány rekord volt rendben, hány Föld művelet (draft) készült / platform
   jóváhagyásra vár / elutasítva / sikertelen,
-- a végrehajtott POST/PATCH/DELETE tételek névvel és hányaddal,
-- hogy a Föld oldalon a draftok még emberi jóváhagyásra várnak a véglegesítés
+- a **proposalId** (egy Föld-kiadott csomag) és a végrehajtott
+  POST/PATCH/DELETE tételek névvel és hányaddal,
+- hogy a Föld oldalon a draft-csomag még emberi jóváhagyásra vár a véglegesítés
   előtt,
 - a bizonytalan / figyelmet igénylő tételek (bizonytalan párosítás, joggyakorló-
   gyanú, széljegy) — ezek is draftban vannak, de a jóváhagyónak külön figyelni
   kell rájuk,
 - a lap kelte (`meta.kelt`) — a szinkron csak ehhez képest érvényes.
 
+Ha a kapu utáni Ownership írások elbuktak (pl. rossz `proposalId` → 404):
+**ne** kerüld meg „nem tudom igazolni a csomagolást” szófordulattal — mondd ki,
+hogy sikertelen volt, mi volt a hiba, és mi a következő lépés.
+
 A hányadokat emberi szövegben százalékkal add meg, a törtet legfeljebb
 zárójelben. Ne ígérj „kész / végleges Föld állapotot", ha HITL vagy Föld draft-
-jóváhagyás még függőben van, vagy részleges volt a futás. **Ne** zárd Excel-
-fájl átadásával a választ.
+jóváhagyás még függőben van, vagy részleges / sikertelen volt a futás. **Ne**
+zárd Excel-fájl átadásával a választ.
 
 # Ha az ellenőrzés bukik
 
@@ -277,8 +367,9 @@ meg a `fold_frissites_progress.json`-t és a munkaterület fájljait.
 - Ha a nyilvántartás megvan: NE kérdezd le újra; hívd az egyeztetőt (ha még
   nem kész).
 - Ha a `fold_muveletek.json` megvan: NE egyeztess újra — folytasd a még nem
-  alkalmazott / nem jóváhagyott műveletekkel.
+  alkalmazott / nem jóváhagyott műveletekkel, a meglévő `proposalId`-vel
+  (ne nyiss új csomagot).
 - Ha egy írás már sikeres volt: ne ismételd ugyanazzal a body-val vakon; nézd
-  meg a checkpoint `applied` listáját.
+  meg a checkpoint `applied` listáját és a `proposalId`-t.
 - TILOS újra: parse a teljes lapra, felesleges `http_api_get_all` ugyanarra a
   pathra, chunkolt `file_read` a már meglévő JSON-okon.
