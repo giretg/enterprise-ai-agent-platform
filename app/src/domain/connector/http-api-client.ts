@@ -150,6 +150,12 @@ const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 const DEFAULT_MAX_RESPONSE_CHARS = 20_000
 /** Runtime által injektált idempotencia-fejléc (kisbetűs egyeztetéshez). */
 const IDEMPOTENCY_HEADER_LOWER = 'idempotency-key'
+/**
+ * Hány azonos-host átirányítás követhető egy connector-híváson belül (deny-by-default a
+ * más hostra mutató redirectekre). Ugyanaz a szigor, mint a `web_fetch` útján — a redirect
+ * nem viheti ki a hívást a connector konfigurált hostjáról (SSRF-védelem).
+ */
+const MAX_SAME_HOST_REDIRECTS = 3
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -861,24 +867,27 @@ export class HttpApiClient {
   }
 
   private async fetchWithBackoff(input: URL, init: RequestInit): Promise<Response> {
+    const connectorHost = new URL(this.config.baseUrl).hostname.toLowerCase()
     if (this.config.selfUpdatingPinned) {
-      const pinnedHost = new URL(this.config.baseUrl).hostname.toLowerCase()
       const guard = await guardEgressUrl({
         url: input.toString(),
-        allowlistHosts: [pinnedHost],
+        allowlistHosts: [connectorHost],
         resolveHostIps: async (host) => (await lookup(host, { all: true })).map((entry) => entry.address),
       })
-      if (!guard.ok || guard.host !== pinnedHost) {
+      if (!guard.ok || guard.host !== connectorHost) {
         throw new HttpApiError(`runtime egress blocked: ${guard.ok ? 'host_mismatch' : guard.reason}`, 'egress_blocked')
       }
     }
-    const guardedInit = this.config.selfUpdatingPinned ? { ...init, redirect: 'manual' as const } : init
+    // Host-pinning a redirecteken is: a `fetch` alapból KÖVETI a 3xx-eket, ezért egy
+    // allowlistolt host egyetlen átirányítással kivihetné a hívást egy belső szolgáltatásra
+    // vagy a felhő-metadata hostra (169.254.169.254) — ez SSRF, és a path/query az agent
+    // kezében van (nyílt-redirect végponton is kiváltható). Ezért MINDEN connectornál
+    // `redirect: 'manual'`, és a redirecteket kézzel, a connector SAJÁT hostjára pinnelve
+    // követjük; idegen hostra mutató átirányítás → blokk.
+    const guardedInit: RequestInit = { ...init, redirect: 'manual' }
     const delays = [250, 750]
     for (let attempt = 0; attempt <= delays.length; attempt += 1) {
-      const res = await fetch(input, guardedInit)
-      if (this.config.selfUpdatingPinned && res.status >= 300 && res.status < 400) {
-        throw new HttpApiError('runtime redirect blocked for pinned connector', 'egress_blocked')
-      }
+      const res = await this.fetchFollowingSameHostRedirects(input, guardedInit, connectorHost)
       // 429 / 5xx → korlátozott backoff; minden mást (a 4xx-eket is) felfelé adunk
       // strukturált válaszként, hogy a modell reagálhasson rá.
       if (![429, 500, 502, 503, 504].includes(res.status) || attempt === delays.length) {
@@ -887,6 +896,49 @@ export class HttpApiClient {
       await sleep(delays[attempt])
     }
     throw new HttpApiError('request failed before response', 'network_error')
+  }
+
+  /**
+   * A redirecteket kézzel, a connector KONFIGURÁLT hostjára pinnelve követi (deny-by-default a
+   * más hostra mutató átirányításokra). Pin-elt (önfrissítő) connectornál MINDEN 3xx tilos — ez
+   * a korábbi, szigorúbb viselkedés. Nem-pin-elt connectornál az azonos-host redirect legfeljebb
+   * `MAX_SAME_HOST_REDIRECTS`-szer követhető; a Location nélküli 3xx-et és minden nem-3xx választ
+   * változatlanul visszaadja. Így a host-pinning invariáns a redirect-láncon is áll, és az
+   * SSRF-út (allowlistolt host → 3xx → belső/metadata) zárva marad.
+   */
+  private async fetchFollowingSameHostRedirects(
+    input: URL,
+    init: RequestInit,
+    connectorHost: string,
+  ): Promise<Response> {
+    let currentUrl = input
+    for (let hop = 0; ; hop += 1) {
+      const res = await fetch(currentUrl, init)
+      if (res.status < 300 || res.status >= 400) return res
+
+      if (this.config.selfUpdatingPinned) {
+        throw new HttpApiError('runtime redirect blocked for pinned connector', 'egress_blocked')
+      }
+      const location = res.headers.get('location')
+      // Location nélküli 3xx: nincs mit követni — adjuk vissza strukturáltan a modellnek.
+      if (!location) return res
+      if (hop >= MAX_SAME_HOST_REDIRECTS) {
+        throw new HttpApiError('runtime redirect blocked: too many redirects', 'egress_blocked')
+      }
+      let target: URL
+      try {
+        target = new URL(location, currentUrl)
+      } catch {
+        throw new HttpApiError('runtime redirect blocked: invalid redirect target', 'egress_blocked')
+      }
+      // A redirect csak a connector SAJÁT hostján maradhat; bármi más (belső szolgáltatás,
+      // felhő-metadata, idegen exfil-host) SSRF → blokk. A connector-kliens szándékosan nem
+      // ismeri a tágabb egress-allowlistet, ezért a self-contained szabály a same-host-only.
+      if (target.hostname.toLowerCase() !== connectorHost) {
+        throw new HttpApiError('runtime redirect blocked: cross-host redirect', 'egress_blocked')
+      }
+      currentUrl = target
+    }
   }
 }
 

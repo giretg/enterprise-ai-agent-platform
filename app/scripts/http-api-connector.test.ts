@@ -654,6 +654,85 @@ async function main() {
     )
   })
 
+  await test('SSRF: idegen hostra mutató redirectet NEM követ (metadata/belső host blokk)', async () => {
+    const calls: string[] = []
+    const fakeFetch: typeof fetch = async (input) => {
+      calls.push(String(input))
+      // Az allowlistolt (konfigurált) host egy nyílt-redirekttel a felhő-metadata hostra
+      // próbál átirányítani — ezt a kliensnek blokkolnia kell, nem szabad követnie.
+      return new Response(null, {
+        status: 302,
+        headers: { location: 'https://169.254.169.254/latest/meta-data/iam/security-credentials/' },
+      })
+    }
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = fakeFetch
+    try {
+      const client = new HttpApiClient(baseConfig, 'live-key')
+      await assert.rejects(
+        client.request({ method: 'GET', path: '/banks', context: crmTraceContext }),
+        (e: unknown) => e instanceof HttpApiError && e.code === 'egress_blocked',
+      )
+      // Csak az eredeti host lett meghívva; a metadata hostra SOSEM ment ki kérés.
+      assert.equal(calls.length, 1)
+      assert.ok(calls[0].startsWith('https://posnavigator.eu/'))
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await test('redirect: azonos-host átirányítást KÖVET, majd a 200-at adja vissza', async () => {
+    const calls: string[] = []
+    const fakeFetch: typeof fetch = async (input) => {
+      const url = String(input)
+      calls.push(url)
+      if (calls.length === 1) {
+        return new Response(null, {
+          status: 302,
+          headers: { location: 'https://posnavigator.eu/api/v1/banks/moved' },
+        })
+      }
+      return new Response(JSON.stringify({ ok: true, moved: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = fakeFetch
+    try {
+      const client = new HttpApiClient(baseConfig, 'live-key')
+      const res = await client.request({ method: 'GET', path: '/banks', context: crmTraceContext })
+      assert.equal(res.ok, true)
+      assert.equal((res.body as Record<string, unknown>).moved, true)
+      assert.equal(calls.length, 2)
+      assert.equal(calls[1], 'https://posnavigator.eu/api/v1/banks/moved')
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
+  await test('redirect: azonos-host átirányítás-hurok a hop-limitnél blokkol', async () => {
+    let n = 0
+    const fakeFetch: typeof fetch = async () => {
+      n += 1
+      return new Response(null, {
+        status: 302,
+        headers: { location: `https://posnavigator.eu/api/v1/loop/${n}` },
+      })
+    }
+    const originalFetch = globalThis.fetch
+    globalThis.fetch = fakeFetch
+    try {
+      const client = new HttpApiClient(baseConfig, 'live-key')
+      await assert.rejects(
+        client.request({ method: 'GET', path: '/banks', context: crmTraceContext }),
+        (e: unknown) => e instanceof HttpApiError && e.code === 'egress_blocked',
+      )
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+  })
+
   if (failures > 0) {
     console.error(`\n${failures} teszt elbukott.`)
     process.exit(1)
