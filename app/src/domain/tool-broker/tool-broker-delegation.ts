@@ -32,10 +32,14 @@ import {
   EGYEZTETES_STATUSZOK,
   assessNyilvantartasCompleteness,
   buildEgyeztetesMunkafuzet,
+  buildFoldMuveletekFromEltero,
+  checkFoldMuveletekCoverage,
+  extractAppliedOwnershipIds,
   hasCompleteHttpApiGetAllProvenance,
   egyeztetesSorok,
   normalizeNyilvantartasRows,
   type EgyeztetesNyilvantartasSor,
+  type FoldMuveletekPlan,
 } from '@/lib/tulajdoni-lap-egyeztetes'
 import { parseReconcileRecordList } from '@/lib/reconcile-records'
 import { FileEditorError } from '@/domain/file-editor/workspace-storage'
@@ -2026,6 +2030,22 @@ export async function tulajdoniLapEgyeztetes(
     connector.tenantId,
   )
 
+  // Csak lefedettség: nem kell újra parse + párosítás (proposal ellenőrzés).
+  const coverageOnly =
+    Boolean(input.args.coverageAppliedPath?.trim()) &&
+    !input.args.documentId?.trim() &&
+    !input.args.path?.trim() &&
+    !input.args.nyilvantartasPath?.trim() &&
+    !(Array.isArray(input.args.nyilvantartas) && input.args.nyilvantartas.length > 0)
+  if (coverageOnly) {
+    return runFoldMuveletekCoverageCheck(self, {
+      tenantId,
+      workspaceId,
+      muveletekPath: input.args.coverageMuveletekPath?.trim() || 'fold_muveletek.json',
+      appliedPath: input.args.coverageAppliedPath!.trim(),
+    })
+  }
+
   const { pages } = await loadTulajdoniLapPages(self, input, actingUserId, extras)
   const parsed = parseTulajdoniLap(pages)
   const view = buildTulajdoniLapView(parsed, { nezet: 'osszefoglalo' })
@@ -2046,6 +2066,9 @@ export async function tulajdoniLapEgyeztetes(
       eltero: [],
       elteroPath: null,
       elteroDb: 0,
+      muveletekPath: null,
+      muveletekDb: 0,
+      coverage: null,
       szeljegyDb: parsed.szeljegyek.length,
     }
   }
@@ -2084,6 +2107,9 @@ export async function tulajdoniLapEgyeztetes(
       eltero: [],
       elteroPath: null,
       elteroDb: 0,
+      muveletekPath: null,
+      muveletekDb: 0,
+      coverage: null,
       szeljegyDb: parsed.szeljegyek.length,
     }
   }
@@ -2155,6 +2181,9 @@ export async function tulajdoniLapEgyeztetes(
     }))
 
   let elteroPath: string | null = null
+  let muveletekPath: string | null = null
+  let muveletekDb = 0
+  let foldPlan: FoldMuveletekPlan | null = null
   if (elteroCompact.length > 0) {
     elteroPath = 'egyeztetes-eltero.json'
     await self.fileEditor.writeFile(tenantId, workspaceId, {
@@ -2176,6 +2205,36 @@ export async function tulajdoniLapEgyeztetes(
         2,
       ),
     })
+
+    // Determinisztikus Föld terv — a modell ne másolja kézzel a 80+ ownership id-t.
+    foldPlan = buildFoldMuveletekFromEltero({
+      eltero: elteroCompact,
+      parcelId: input.args.parcelId,
+    })
+    muveletekPath = 'fold_muveletek.json'
+    muveletekDb = foldPlan.summary.total
+    await self.fileEditor.writeFile(tenantId, workspaceId, {
+      path: muveletekPath,
+      content: JSON.stringify(foldPlan, null, 2),
+    })
+  }
+
+  let coverage: TulajdoniLapEgyeztetesResult['coverage'] = null
+  const coverageAppliedPath = input.args.coverageAppliedPath?.trim()
+  if (coverageAppliedPath && foldPlan) {
+    const appliedRaw = await readWorkspaceJson(self, tenantId, workspaceId, coverageAppliedPath)
+    coverage = checkFoldMuveletekCoverage(foldPlan, extractAppliedOwnershipIds(appliedRaw))
+  } else if (coverageAppliedPath) {
+    // Nulla eltérés ebben a futásban → nincs tervezett PATCH/DELETE; ne követeljük
+    // a korábbi fold_muveletek.json-t (hiányában se dobjuk el a sikeres egyeztetést).
+    coverage = {
+      ok: true,
+      expected: 0,
+      applied: 0,
+      missing: [],
+      extra: [],
+      message: 'Nincs eltérő ownership — lefedettség triviálisan rendben.',
+    }
   }
 
   const FIGYELMET_MINTA = 20
@@ -2185,11 +2244,17 @@ export async function tulajdoniLapEgyeztetes(
     figyelmet_igenyel: osszegzes.figyelmet_igenyel.slice(0, FIGYELMET_MINTA),
   }
 
-  const figyelmeztetes = [view.figyelmeztetes, completeness.warn ? completeness.indok : null]
+  const figyelmeztetes = [
+    view.figyelmeztetes,
+    completeness.warn ? completeness.indok : null,
+    coverage && !coverage.ok ? `Lefedettség: ${coverage.message}` : null,
+  ]
     .filter((part): part is string => Boolean(part?.trim()))
     .join(' ') || null
 
   return {
+    // A lap/párosítás sikere; a coverage külön mező (`coverage.ok`) — ne olvadjon
+    // össze a „hányad ≠ 1 → ne írj a Föld-be" kapuval.
     ok: true,
     figyelmeztetes,
     path,
@@ -2199,7 +2264,87 @@ export async function tulajdoniLapEgyeztetes(
     eltero: elteroCompact.slice(0, ELTERO_MINTA),
     elteroPath,
     elteroDb: elteroCompact.length,
+    muveletekPath,
+    muveletekDb,
+    coverage,
     szeljegyDb: parsed.szeljegyek.length,
+  }
+}
+
+async function readWorkspaceJson(
+  self: ToolBrokerService,
+  tenantId: string,
+  workspaceId: string,
+  path: string,
+): Promise<unknown> {
+  const content = await self.fileEditor.readTextFileOrNull(tenantId, workspaceId, { path })
+  if (content == null) {
+    throw new Error(`tulajdoni_lap_egyeztetes: a(z) "${path}" fájl nem található`)
+  }
+  try {
+    return JSON.parse(content)
+  } catch {
+    throw new Error(`tulajdoni_lap_egyeztetes: a(z) "${path}" nem érvényes JSON`)
+  }
+}
+
+async function runFoldMuveletekCoverageCheck(
+  self: ToolBrokerService,
+  input: {
+    tenantId: string
+    workspaceId: string
+    muveletekPath: string
+    appliedPath: string
+  },
+): Promise<TulajdoniLapEgyeztetesResult> {
+  const planRaw = await readWorkspaceJson(
+    self,
+    input.tenantId,
+    input.workspaceId,
+    input.muveletekPath,
+  )
+  const appliedRaw = await readWorkspaceJson(
+    self,
+    input.tenantId,
+    input.workspaceId,
+    input.appliedPath,
+  )
+  if (!planRaw || typeof planRaw !== 'object' || !Array.isArray((planRaw as FoldMuveletekPlan).items)) {
+    throw new Error(
+      `tulajdoni_lap_egyeztetes coverage: a(z) "${input.muveletekPath}" nem fold_muveletek terv (hiányzik az items tömb)`,
+    )
+  }
+  const plan = planRaw as FoldMuveletekPlan
+  const coverage = checkFoldMuveletekCoverage(plan, extractAppliedOwnershipIds(appliedRaw))
+  return {
+    ok: coverage.ok,
+    figyelmeztetes: coverage.ok ? null : coverage.message,
+    path: null,
+    meta: {
+      oldalak: 0,
+      tipus: 'ismeretlen',
+    },
+    osszesites: {
+      resz2Osszes: 0,
+      resz2Hatalyos: 0,
+      resz2Torolt: 0,
+      resz3Osszes: 0,
+      resz3Hatalyos: 0,
+      szeljegyDb: 0,
+      egyediTulajdonos: 0,
+      hatalyosHanyadOsszeg: 'n/a',
+      hatalyosHanyadOsszegSzazalek: 0,
+      valid: true,
+      megjegyzes: 'coverage-only — nincs lap-parse',
+    },
+    egyeztetes: null,
+    eltero: [],
+    elteroPath: null,
+    elteroDb: 0,
+    muveletekPath: input.muveletekPath,
+    muveletekDb: plan.summary?.total ?? plan.items.length,
+    coverage,
+    szeljegyDb: 0,
   }
 }
 

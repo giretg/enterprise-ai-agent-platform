@@ -1309,6 +1309,11 @@ export function AgentChatPanel({
   const [sessionsOpen, setSessionsOpen] = useState(false)
   const [sessionsFilter, setSessionsFilter] = useState<ChatSessionStatusFilter>('active')
   const [conversationStatus, setConversationStatus] = useState<'active' | 'archived'>('active')
+  /** Ticket → Megbeszélés (#219): forrás feladat a chat fejlécében. */
+  const [continuedFromTicket, setContinuedFromTicket] = useState<{
+    id: string
+    title: string
+  } | null>(null)
   const [chatProcessDefs, setChatProcessDefs] = useState<ChatProcessDefinition[]>([])
   const [selectedProcessDefId, setSelectedProcessDefId] = useState<string | null>(null)
   /**
@@ -1580,6 +1585,7 @@ export function AgentChatPanel({
     setMessages([])
     setStatusMessage(null)
     setLastTicketId(null)
+    setContinuedFromTicket(null)
     setConversationStatus('active')
     setSessionsFilter('active')
     setSessionsOpen(false)
@@ -1849,6 +1855,7 @@ export function AgentChatPanel({
       const refreshed = await loadAgentChatMessages({ conversationId, agentId: agent.id })
       if (refreshed.success) {
         setConversationStatus(refreshed.data.conversation.status)
+        setContinuedFromTicket(refreshed.data.continuedFromTicket ?? null)
         setMessages(
           attachPendingConsequenceApprovals(
             refreshed.data.messages.map((m) => ({
@@ -1945,6 +1952,7 @@ export function AgentChatPanel({
       }
       setConversationId(convId)
       setConversationStatus(res.data.conversation.status)
+      setContinuedFromTicket(res.data.continuedFromTicket ?? null)
       setMessages(
         attachPendingConsequenceApprovals(
           res.data.messages.map((m) => ({
@@ -2221,6 +2229,7 @@ export function AgentChatPanel({
       setConversationId(id)
       setStatusMessage(null)
       setLastTicketId(null)
+      setContinuedFromTicket(null)
       setSessionsOpen(false)
       setSelectedProcessDefId(null)
       setConversationStatus(sessions.find((session) => session.id === id)?.status ?? 'active')
@@ -2228,6 +2237,7 @@ export function AgentChatPanel({
       const res = await loadAgentChatMessages({ conversationId: id, agentId: agent.id })
       if (res.success) {
         setConversationStatus(res.data.conversation.status)
+        setContinuedFromTicket(res.data.continuedFromTicket ?? null)
         setMessages(
           attachPendingConsequenceApprovals(
             res.data.messages.map((m) => ({
@@ -2987,6 +2997,21 @@ export function AgentChatPanel({
             </button>
           </div>
         </header>
+
+        {continuedFromTicket && (
+          <div className="shrink-0 border-b border-sky/25 bg-sky/8 px-3 py-2 sm:px-4">
+            <p className="text-xs leading-snug text-ink-soft">
+              <span className="font-semibold text-sky">Feladat megbeszélése:</span>{' '}
+              <Link
+                href={`/control-plane/tickets/${continuedFromTicket.id}`}
+                className="font-medium text-ink underline decoration-sky/40 underline-offset-2 transition-colors hover:text-coral-deep hover:decoration-coral/50"
+                title={continuedFromTicket.title}
+              >
+                {continuedFromTicket.title}
+              </Link>
+            </p>
+          </div>
+        )}
 
         <div className="relative flex min-h-0 flex-1">
           {sessionsOpen && (

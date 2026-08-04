@@ -23,7 +23,10 @@ import {
 import {
   assessNyilvantartasCompleteness,
   buildEgyeztetesMunkafuzet,
+  buildFoldMuveletekFromEltero,
+  checkFoldMuveletekCoverage,
   egyeztetesSorok,
+  extractAppliedOwnershipIds,
   hasCompleteHttpApiGetAllProvenance,
   matchStrength,
   normalizeNyilvantartasRows,
@@ -436,6 +439,180 @@ test('üres nyilvántartás nagy lap mellett → block', () => {
   })
   assert.equal(verdict.block, true)
   assert.match(verdict.indok!, /üres|0 sor/i)
+})
+
+test('összevonás: sibling DELETE megjegyzés, nem „nem szerepel tulajdonosként”', () => {
+  const { sorok } = egyeztetesSorok({
+    lapTulajdonosok: [
+      owner({
+        nev: 'Soltészné Tarnay Éva Márta',
+        szuletesiEv: '1950',
+        anyjaNeve: 'X',
+        hanyad: '1/2',
+        szazalek: 50,
+      }),
+    ],
+    nyilvantartas: [
+      {
+        nev: 'Soltészné Tarnay Éva Márta',
+        szuletesiEv: '1950',
+        anyjaNeve: 'X',
+        hanyad: '1/3',
+        azonosito: 'own-keep',
+      },
+      {
+        nev: 'Soltészné Tarnay Éva Márta',
+        szuletesiEv: '1950',
+        anyjaNeve: 'X',
+        hanyad: '1/6',
+        azonosito: 'own-sibling',
+      },
+    ],
+  })
+  const patch = sorok.find((r) => r.statusz === 'Módosítás szükséges')
+  const del = sorok.find((r) => r.statusz === 'Törlés szükséges')
+  assert.equal(patch?.azonosito, 'own-keep')
+  assert.equal(del?.azonosito, 'own-sibling')
+  assert.match(del!.megjegyzes, /Összevonás/)
+  assert.doesNotMatch(del!.megjegyzes, /nem szerepel tulajdonosként/)
+})
+
+test('összevonás: azonos név + eltérő születési év → NEM összevonás (apa/fia)', () => {
+  const { sorok } = egyeztetesSorok({
+    lapTulajdonosok: [
+      owner({
+        nev: 'Kovács János',
+        szuletesiEv: '1950',
+        anyjaNeve: 'Nagy Anna',
+        hanyad: '1/1',
+        szazalek: 100,
+      }),
+    ],
+    nyilvantartas: [
+      {
+        nev: 'Kovács János',
+        szuletesiEv: '1950',
+        anyjaNeve: 'Nagy Anna',
+        hanyad: '1/1',
+        azonosito: 'own-apa',
+      },
+      {
+        nev: 'Kovács János',
+        szuletesiEv: '1980',
+        anyjaNeve: 'Kiss Éva',
+        hanyad: '0',
+        azonosito: 'own-fia',
+      },
+    ],
+  })
+  const del = sorok.find((r) => r.azonosito === 'own-fia')
+  assert.equal(del?.statusz, 'Törlés szükséges')
+  assert.match(del!.megjegyzes, /nem szerepel tulajdonosként/)
+  assert.doesNotMatch(del!.megjegyzes, /Összevonás/)
+})
+
+test('fold_muveletek: DELETE→PATCH→POST + coverage fogja a hiányzó siblinget', () => {
+  const plan = buildFoldMuveletekFromEltero({
+    parcelId: 'parcel-1',
+    eltero: [
+      {
+        nev: 'Anna',
+        statusz: 'Módosítás szükséges',
+        hanyadLap: '1/2',
+        azonosito: 'own-a',
+      },
+      {
+        nev: 'Anna',
+        statusz: 'Törlés szükséges',
+        hanyadLap: null,
+        azonosito: 'own-sibling',
+      },
+      {
+        nev: 'Béla',
+        statusz: 'Új rekord',
+        hanyadLap: '1/2',
+        azonosito: null,
+      },
+    ],
+  })
+  assert.deepEqual(
+    plan.items.map((i) => i.action),
+    ['delete', 'patch', 'post'],
+  )
+  assert.equal(plan.items[0].ownershipId, 'own-sibling')
+  assert.equal(plan.items[1].path, '/parcels/parcel-1/ownerships/own-a')
+  assert.equal(plan.summary.total, 3)
+
+  const incomplete = checkFoldMuveletekCoverage(plan, ['own-a'])
+  assert.equal(incomplete.ok, false)
+  assert.equal(incomplete.missing.length, 1)
+  assert.equal(incomplete.missing[0].ownershipId, 'own-sibling')
+
+  const withHallucination = checkFoldMuveletekCoverage(plan, [
+    'own-a',
+    'own-sibling',
+    'cmrp-fake-id',
+  ])
+  assert.equal(withHallucination.ok, false)
+  assert.deepEqual(withHallucination.extra, ['cmrp-fake-id'])
+
+  const ok = checkFoldMuveletekCoverage(plan, extractAppliedOwnershipIds([
+    { muvelet: 'DELETE', entityId: 'own-sibling' },
+    { muvelet: 'UPDATE', entityId: 'own-a' },
+  ]))
+  assert.equal(ok.ok, true)
+})
+
+test('coverage extract: CREATE / Partner / itemId nem lesz extra', () => {
+  const plan = buildFoldMuveletekFromEltero({
+    parcelId: 'parcel-1',
+    eltero: [
+      {
+        nev: 'Anna',
+        statusz: 'Módosítás szükséges',
+        hanyadLap: '1/2',
+        azonosito: 'own-a',
+      },
+      {
+        nev: 'Anna',
+        statusz: 'Törlés szükséges',
+        hanyadLap: null,
+        azonosito: 'own-sibling',
+      },
+      {
+        nev: 'Béla',
+        statusz: 'Új rekord',
+        hanyadLap: '1/2',
+        azonosito: null,
+      },
+    ],
+  })
+  const applied = extractAppliedOwnershipIds({
+    items: [
+      { id: 'item-del', entityType: 'Ownership', entityId: 'own-sibling', muvelet: 'DELETE' },
+      { id: 'item-patch', entityType: 'Ownership', entityId: 'own-a', muvelet: 'UPDATE' },
+      { id: 'item-create', entityType: 'Ownership', entityId: '', muvelet: 'CREATE' },
+      { id: 'item-partner', entityType: 'Partner', entityId: 'partner-1', muvelet: 'CREATE' },
+    ],
+  })
+  assert.deepEqual(applied.sort(), ['own-a', 'own-sibling'])
+  assert.equal(checkFoldMuveletekCoverage(plan, applied).ok, true)
+})
+
+test('fold_muveletek: hiányzó parcelId → placeholder megjegyzés', () => {
+  const plan = buildFoldMuveletekFromEltero({
+    eltero: [
+      {
+        nev: 'Anna',
+        statusz: 'Módosítás szükséges',
+        hanyadLap: '1/2',
+        azonosito: 'own-a',
+      },
+    ],
+  })
+  assert.equal(plan.parcelId, null)
+  assert.match(plan.items[0].path, /\{parcelId\}/)
+  assert.match(plan.items[0].megjegyzes ?? '', /HIÁNYZÓ parcelId/)
 })
 
 test('munkafüzet: fejléc, képletek és összegsor egy menetben állnak elő', () => {

@@ -281,17 +281,42 @@ export const TOOL_OUTPUT_CONTRACTS: Record<ToolName, ToolOutputContract> = {
   },
   /**
    * Egyeztetett sorok száma a mért hatás (Excel opcionális — `path` lehet null).
-   * 0 sor → `empty`.
+   * Coverage-only ágon a `coverage` mező a jel — ne essen a heurisztikus `empty`-re.
+   * 0 egyeztetett sor → `empty` (klasszikus incidens).
    */
   tulajdoni_lap_egyeztetes: {
     outputSchema: z.looseObject({ ok: z.boolean() }),
     effect: (output) => {
+      const coverage = rec(rec(output).coverage)
       const rows = num(rec(output).egyeztetes, 'osszesSor')
+      // Coverage-only: nincs egyeztetes blokk — a lefedett id-k a mért hatás.
+      if (typeof coverage.ok === 'boolean' && rows == null) {
+        const n = Math.max(num(coverage, 'expected') ?? 0, num(coverage, 'applied') ?? 0, 1)
+        return effect(n, 'ellenőrzött ownership-id', str(output, 'muveletekPath'))
+      }
       return effect(rows ?? 0, 'egyeztetett sor', str(output, 'path'))
     },
+    emptiness: (output) => {
+      const coverage = rec(rec(output).coverage)
+      if (typeof coverage.ok === 'boolean') return null
+      const rows = num(rec(output).egyeztetes, 'osszesSor')
+      if (rows === 0) {
+        return 'az eszköz lefutott, de 0 egyeztetett sor lett az eredménye — a művelet nem járt tényleges hatással'
+      }
+      return null
+    },
     partial: (output) => {
+      const coverage = rec(rec(output).coverage)
+      if (typeof coverage.ok === 'boolean' && coverage.ok === false) {
+        const msg = str(coverage, 'message')
+        return msg
+          ? `a proposal lefedettség bukott: ${msg}`
+          : 'a proposal lefedettség bukott — missing/extra ownership id'
+      }
       const warning = str(output, 'figyelmeztetes')
-      if (warning) return `a lap ellenőrzése bukott: ${warning} — az egyeztetés nem teljes`
+      if (warning && !warning.startsWith('Lefedettség:')) {
+        return `a lap ellenőrzése bukott: ${warning} — az egyeztetés nem teljes`
+      }
       const needsAttention = arr(rec(output).egyeztetes, 'figyelmet_igenyel') ?? []
       return needsAttention.length > 0
         ? `${needsAttention.length} tétel emberi ellenőrzést igényel, ezek nincsenek lezárva`

@@ -90,6 +90,7 @@ export class PostgresConversationRepository implements ConversationRepository {
     projectKey?: string | null
     channel?: ChannelType | null
     channelExternalId?: string | null
+    continuedFromTicketId?: string | null
   }): Promise<Conversation> {
     return prisma.$transaction(async (tx) => {
       const now = new Date()
@@ -109,6 +110,10 @@ export class PostgresConversationRepository implements ConversationRepository {
           // D14 — csatorna-megjelölés, hogy a webes felület tudja, ez egy Telegram-szál.
           ...(data.channel != null ? { channel: data.channel } : {}),
           ...(data.channelExternalId != null ? { channelExternalId: data.channelExternalId } : {}),
+          // #219 — ticket-megbeszélés forráskötés.
+          ...(data.continuedFromTicketId != null
+            ? { continuedFromTicketId: data.continuedFromTicketId }
+            : {}),
         },
       })
     })

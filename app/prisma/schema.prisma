@@ -1902,9 +1902,14 @@ model Conversation {
   channel           ChannelType?       @map("channel")
   channelExternalId String?            @map("channel_external_id")
 
-  agent           Agent            @relation(fields: [agentId], references: [id], onDelete: Cascade)
-  createdBy       User             @relation("ConversationCreatedBy", fields: [createdById], references: [id])
-  retentionPolicy RetentionPolicy? @relation(fields: [retentionPolicyId], references: [id])
+  // Ticket → Megbeszélés (#219): új chat a ticket-szállal prior kontextusként.
+  // Nem az origin `ticket.conversationId`; egy tickethez több ilyen conversation is lehet.
+  continuedFromTicketId String? @map("continued_from_ticket_id") @db.Uuid
+
+  agent               Agent            @relation(fields: [agentId], references: [id], onDelete: Cascade)
+  createdBy           User             @relation("ConversationCreatedBy", fields: [createdById], references: [id])
+  retentionPolicy     RetentionPolicy? @relation(fields: [retentionPolicyId], references: [id])
+  continuedFromTicket Ticket?          @relation("ConversationContinuedFromTicket", fields: [continuedFromTicketId], references: [id], onDelete: SetNull)
   messages             Message[]
   tickets              Ticket[]
   modelCalls           ModelCall[]
@@ -1917,6 +1922,7 @@ model Conversation {
   @@index([tenantId, createdById])
   @@index([retainUntil, legalHold])
   @@index([channel, channelExternalId])
+  @@index([continuedFromTicketId])
   @@map("conversations")
 }
 
@@ -2365,6 +2371,7 @@ model Ticket {
   sourceDocument                Document?           @relation(fields: [sourceDocumentId], references: [id])
   conversation                  Conversation?       @relation(fields: [conversationId], references: [id])
   createdBy                     User                @relation("TicketCreatedBy", fields: [createdById], references: [id])
+  discussionConversations       Conversation[]      @relation("ConversationContinuedFromTicket")
   modelCalls                    ModelCall[]
   toolCalls                     ToolCall[]
   writeGateTokens               WriteGateToken[]

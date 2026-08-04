@@ -353,6 +353,16 @@ export type TulajdoniLapEgyeztetesArgs = {
    * is ugyanez a sorok száma (a nyilvántartás tényleg ennyi).
    */
   confirmNyilvantartasComplete?: boolean
+  /** Parcel id a determinisztikus `fold_muveletek.json` path-okhoz. */
+  parcelId?: string
+  /**
+   * Lefedettség-ellenőrzés: a proposal / alkalmazott ownership id-k JSON path-ja
+   * (pl. `proposal_items_extract.json`). Document nélkül is hívható
+   * (`coverageMuveletekPath` + ez) — ilyenkor NEM fut újra a lap-parse.
+   */
+  coverageAppliedPath?: string
+  /** Terv path a coverage-hez; alapértelmezés: `fold_muveletek.json`. */
+  coverageMuveletekPath?: string
 }
 
 /** Két workspace JSON-lista determinisztikus egyeztetése (issue #179). */
@@ -416,6 +426,21 @@ export type TulajdoniLapEgyeztetesResult = {
   elteroPath: string | null
   /** Az `elteroPath` / teljes eltérő lista elemszáma (nem a mintáé). */
   elteroDb: number
+  /**
+   * Determinisztikus Föld Ownership terv (DELETE→PATCH→POST, teljes `items`).
+   * A modell EBBŐL hívja az `http_api_request`-eket — ne szerkessze az id-ket.
+   */
+  muveletekPath: string | null
+  muveletekDb: number
+  /** `coverageAppliedPath` megadásakor: terv id-k ⊆ proposal id-k. */
+  coverage: {
+    ok: boolean
+    expected: number
+    applied: number
+    missing: Array<{ ownershipId: string; nev: string; action: string }>
+    extra: string[]
+    message: string
+  } | null
   szeljegyDb: number
 }
 

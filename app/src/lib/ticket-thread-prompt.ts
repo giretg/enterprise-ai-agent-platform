@@ -53,13 +53,23 @@ export const TICKET_CONTINUE_RULES = [
   'A „Nem készült el” listából vedd a következő konkrét lépést, és azzal folytasd.',
 ].join('\n')
 
+/** Ticket → Megbeszélés (#219): chat-kontextus, nem ticket-handback. */
+export const TICKET_DISCUSSION_RULES = [
+  'Ez MEGBESZÉLÉS a felhasználóval egy meglévő feladatról — NEM ticket-handback és NEM ticket-folytatás a boardon.',
+  'A ticket állapota, TicketComment szála és handback flow-ja NEM változik ebből a chatből.',
+  'A ticket előzménye tájékoztató kontextus: belőle tájékozódj, a válaszod a chatben hangzik el.',
+].join('\n')
+
 export function buildThreadContextPrompt(input: {
   comments: TicketCommentWithAttachments[]
   originalTask: string
   maxChars?: number
   workspaceFiles?: string[]
+  /** `discussion`: chat-megbeszélés (#219) — continue szabályok helyett megbeszélés-szabályok. */
+  mode?: 'ticket' | 'discussion'
 }): string {
   const maxChars = input.maxChars ?? 14000
+  const mode = input.mode ?? 'ticket'
   const relevant = input.comments.filter((comment) =>
     ['human_comment', 'agent_answer', 'system_note'].includes(comment.kind),
   )
@@ -71,7 +81,9 @@ export function buildThreadContextPrompt(input: {
   const sections: string[] = [
     `Eredeti feladat:\n${clip(input.originalTask.trim(), 2400)}`,
   ]
-  if (isContinuation) {
+  if (mode === 'discussion') {
+    sections.push(`Megbeszelesi szabalyok (kotelezo):\n${TICKET_DISCUSSION_RULES}`)
+  } else if (isContinuation) {
     sections.push(`Folytatasi szabalyok (kotelezo):\n${TICKET_CONTINUE_RULES}`)
   }
   if (lastHuman) {

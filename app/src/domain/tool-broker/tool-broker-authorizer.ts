@@ -305,15 +305,25 @@ export class AllowlistAuthorizer implements Authorizer {
     }
     // A `tulajdoni_lap_egyeztetes` Excel-t CSAK `kimenet` mellett ír; JSON-only
     // úton elég a workspace read. A forrás érvényességét a delegáció nézi.
+    // Coverage-only (proposal lefedettség): nincs lap-forrás — ne követeljük.
     if (input.tool === 'tulajdoni_lap_egyeztetes') {
-      try {
-        resolveTulajdoniLapParseSource({
-          documentId:
-            typeof input.args?.documentId === 'string' ? input.args.documentId : undefined,
-          path: typeof input.args?.path === 'string' ? input.args.path : undefined,
-        })
-      } catch {
-        return { allowed: false, reason: 'missing_parse_source' }
+      const coverageOnly =
+        typeof input.args?.coverageAppliedPath === 'string' &&
+        input.args.coverageAppliedPath.trim().length > 0 &&
+        !(typeof input.args?.documentId === 'string' && input.args.documentId.trim()) &&
+        !(typeof input.args?.path === 'string' && input.args.path.trim()) &&
+        !(typeof input.args?.nyilvantartasPath === 'string' && input.args.nyilvantartasPath.trim()) &&
+        !(Array.isArray(input.args?.nyilvantartas) && input.args.nyilvantartas.length > 0)
+      if (!coverageOnly) {
+        try {
+          resolveTulajdoniLapParseSource({
+            documentId:
+              typeof input.args?.documentId === 'string' ? input.args.documentId : undefined,
+            path: typeof input.args?.path === 'string' ? input.args.path : undefined,
+          })
+        } catch {
+          return { allowed: false, reason: 'missing_parse_source' }
+        }
       }
     }
 

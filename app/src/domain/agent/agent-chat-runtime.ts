@@ -87,6 +87,8 @@ import {
   isInternalWorkspaceFile,
   referencedWorkspaceFiles,
 } from '@/lib/workspace-file-visibility'
+import { buildThreadContextPrompt } from '@/lib/ticket-thread-prompt'
+import { readTicketPromptText } from '@/lib/wiki-ticket-payload'
 
 /**
  * Ugyanarra a forduló-azonosítóra már fut futtatás EBBEN a processben. Ez a
@@ -1480,6 +1482,9 @@ export class AgentChatRuntime {
       const priorToolCalls = await this.toolCaps.listToolCallsForConversation(conversationId)
       const continuationPrompt = await this.buildContinuationPrompt(conversationId, workspaceFiles)
       const delegationPrompt = await this.buildReturnedDelegationPrompt(conversationId)
+      const ticketDiscussionPrompt = await this.buildTicketDiscussionPrompt(
+        history.conversation.continuedFromTicketId,
+      )
       const gatewayPrompt = await this.buildGatewayMessages(
         agentDetails,
         assembledContext.messages,
@@ -1491,6 +1496,7 @@ export class AgentChatRuntime {
         memoryContext.block,
         continuationPrompt,
         delegationPrompt,
+        ticketDiscussionPrompt,
       )
 
       const allowedChatTools = await listAllowedChatTools(this.toolCaps, params.agentId)
@@ -2432,6 +2438,33 @@ export class AgentChatRuntime {
   }
 
   /**
+   * Ticket → Megbeszélés (#219): a forrás ticket szálát prior/system kontextusként
+   * adjuk a modellnek — NEM másoljuk Message buborékként a chatbe, és a ticket
+   * állapota / TicketComment szála nem változik ebből a flow-ból.
+   */
+  private async buildTicketDiscussionPrompt(
+    continuedFromTicketId: string | null | undefined,
+  ): Promise<string | null> {
+    if (!continuedFromTicketId) return null
+    try {
+      const ticket = await this.tickets.findById(continuedFromTicketId)
+      if (!ticket) return null
+      const payload = isRecord(ticket.payload) ? ticket.payload : {}
+      const originalTask = readTicketPromptText(payload) || ticket.title
+      const comments = await this.tickets.listComments(ticket.id)
+      const prompt = buildThreadContextPrompt({
+        comments,
+        originalTask,
+        mode: 'discussion',
+      })
+      return prompt.trim() ? prompt : null
+    } catch (error) {
+      console.error('[agent-chat] ticket-megbeszélés kontextus összeállítás sikertelen', error)
+      return null
+    }
+  }
+
+  /**
    * Időközben megérkezett delegált válaszok beemelése a következő fordulóba (C1).
    *
    * Enélkül a felhasználó kérdésére csend a válasz: a delegált agent válasza egy
@@ -2496,6 +2529,7 @@ export class AgentChatRuntime {
     memoryContextBlock?: string | null,
     continuationPrompt?: string | null,
     returnedDelegationPrompt?: string | null,
+    ticketDiscussionPrompt?: string | null,
   ) {
     // #142: a roster a hívó agent SAJÁT `address` jogán szűrt lista. A korábbi
     // szűretlen `findMany()` más tenant agentjeinek nevét, persona-traitjét és ID-ját
@@ -2578,6 +2612,15 @@ export class AgentChatRuntime {
     // meg, hol tartunk, ez pedig azt, hogy egy hiányzó darab közben megjött.
     if (returnedDelegationPrompt && returnedDelegationPrompt.trim()) {
       variableContext.push({ role: 'system', content: returnedDelegationPrompt })
+    }
+
+    // Ticket → Megbeszélés (#219): a ticket-szál prior kontextus — a chat
+    // buboréklistában nem jelenik meg, csak a modell látja.
+    if (ticketDiscussionPrompt && ticketDiscussionPrompt.trim()) {
+      variableContext.push({
+        role: 'system',
+        content: `Feladat-megbeszélés előzménye (ticket-szál, tájékoztató):\n${ticketDiscussionPrompt}`,
+      })
     }
 
     return {

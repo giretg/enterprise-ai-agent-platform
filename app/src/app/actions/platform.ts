@@ -3234,6 +3234,74 @@ export async function createScheduledAgentTask(input: {
   }
 }
 
+/**
+ * Ticket → Megbeszélés (#219): új conversation a tickethez kötve, az agent chat
+ * panelben megnyitható. Nem az origin `ticket.conversationId`; ismételt hívás
+ * mindig új conversationt hoz létre.
+ */
+export async function createDiscussionFromTicket(input: { ticketId: string }) {
+  try {
+    const user = await requireTenantRole('viewer')
+    const { ticketId } = z.object({ ticketId: z.string().uuid() }).parse(input)
+    const ticket = await repositories.tickets.findById(ticketId)
+    if (!ticket) return fail('Ticket not found')
+    assertTicketTenantScope(ticket, user.activeTenantId)
+
+    const agentId =
+      ticket.agentId ??
+      (ticket.assigneeType === 'agent' && ticket.assigneeId ? ticket.assigneeId : null)
+    if (!agentId) return fail('Ehhez a feladathoz nincs megszólítható AI munkatárs')
+
+    const subject = tenantUserSubject(user)
+    if (!subject) return fail('Agent not found')
+    try {
+      await services.agentAccess.assertCanAccessAgent({
+        subject,
+        targetAgentId: agentId,
+        verb: 'address',
+        subjectIsTenantAdmin: isTenantAdmin(user),
+        audit: {
+          channel: 'chat',
+          ticketId: ticket.id,
+          initiatingUserId: user.user.id,
+        },
+      })
+    } catch (error) {
+      if (isAgentAccessError(error)) return fail(error.message)
+      throw error
+    }
+
+    const agent = await repositories.agents.findById(agentId)
+    if (!agent) return fail('Agent not found')
+
+    const title = `Megbeszélés: ${ticket.title}`.slice(0, 80)
+    const conversation = await services.conversations.createConversation({
+      agentId,
+      createdById: user.user.id,
+      tenantId: user.activeTenantId,
+      title,
+      continuedFromTicketId: ticket.id,
+    })
+
+    return ok({
+      conversationId: conversation.id,
+      ticketId: ticket.id,
+      ticketTitle: ticket.title,
+      agent: {
+        id: agent.id,
+        name: agent.name,
+        status: agent.status,
+        avatarUrl: agent.avatarUrl,
+        personaNickname: agent.personaNickname,
+        personaGreeting: agent.personaGreeting,
+        personaTrait: agent.personaTrait,
+      },
+    })
+  } catch (e) {
+    return fail(e instanceof Error ? e.message : 'Failed to start discussion from ticket')
+  }
+}
+
 export async function loadAgentChatMessages(input: { conversationId: string; agentId: string }) {
   try {
     const user = await requireTenantRole('viewer')
@@ -3296,6 +3364,14 @@ export async function loadAgentChatMessages(input: { conversationId: string; age
       { id: user.user.id, tenantId: user.activeTenantId, role: user.activeTenantRole },
     )
 
+    let continuedFromTicket: { id: string; title: string } | null = null
+    if (conversation.continuedFromTicketId) {
+      const sourceTicket = await repositories.tickets.findById(conversation.continuedFromTicketId)
+      if (sourceTicket && sourceTicket.tenantId === user.activeTenantId) {
+        continuedFromTicket = { id: sourceTicket.id, title: sourceTicket.title }
+      }
+    }
+
     return ok({
       conversationId,
       conversation: {
@@ -3303,7 +3379,9 @@ export async function loadAgentChatMessages(input: { conversationId: string; age
         status: conversation.status,
         title: conversation.title,
         lastMessageAt: conversation.lastMessageAt.toISOString(),
+        continuedFromTicketId: conversation.continuedFromTicketId,
       },
+      continuedFromTicket,
       messages: views,
       pendingConsequenceApprovals,
     })

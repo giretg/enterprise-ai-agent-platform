@@ -4,10 +4,11 @@ import { useRouter } from 'next/navigation'
 import { useState, useTransition } from 'react'
 import Link from 'next/link'
 import type { ProcessStatus } from '@prisma/client'
-import { transitionTicket, deleteBoardTicket } from '@/app/actions/platform'
+import { createDiscussionFromTicket, transitionTicket, deleteBoardTicket } from '@/app/actions/platform'
 import { exportTicketDebugLog } from '@/app/actions/debug-log'
 import { startProcessFromTicket } from '@/app/actions/process'
 import { authorizeTicketRunAs, revokeTicketRunAs } from '@/app/actions/connector-grants'
+import { openAgentChat } from '@/components/agents/agent-chat-session-store'
 import { useTicketDispatch } from '@/components/tickets/ticket-dispatch-client'
 import { ProposalCard } from '@/components/tickets/proposal-card'
 import { Badge, Card } from '@/components/ui/shell'
@@ -494,9 +495,22 @@ export function TicketMeta({
   const [debugLogPending, startDebugLogTransition] = useTransition()
   const [dispatchPending, startDispatchTransition] = useTransition()
   const [deletePending, startDeleteTransition] = useTransition()
+  const [discussPending, startDiscussTransition] = useTransition()
   const [headerMessage, setHeaderMessage] = useState<{ tone: 'ok' | 'err'; text: string } | null>(
     null,
   )
+
+  const discussAgentId =
+    ticket.agentId ??
+    (ticket.assigneeType === 'agent' && ticket.assigneeId ? ticket.assigneeId : null)
+  const assigneeAgentHref =
+    assignee?.type === 'agent'
+      ? ticket.assigneeId
+        ? `/control-plane/agents/${ticket.assigneeId}`
+        : ticket.agentId
+          ? `/control-plane/agents/${ticket.agentId}`
+          : null
+      : null
 
   const canStartDispatch =
     canDispatch &&
@@ -554,6 +568,22 @@ export function TicketMeta({
         return
       }
       router.replace('/control-plane/board')
+    })
+  }
+
+  function handleDiscuss() {
+    if (!discussAgentId) return
+    startDiscussTransition(async () => {
+      setHeaderMessage(null)
+      const res = await createDiscussionFromTicket({ ticketId: ticket.id })
+      if (!res.success) {
+        setHeaderMessage({ tone: 'err', text: res.error })
+        return
+      }
+      openAgentChat({
+        agent: res.data.agent,
+        initialConversationId: res.data.conversationId,
+      })
     })
   }
 
@@ -616,18 +646,29 @@ export function TicketMeta({
                 <button
                   type="button"
                   onClick={handleStartDispatch}
-                  disabled={dispatchPending || deletePending}
+                  disabled={dispatchPending || deletePending || discussPending}
                   className="rounded-full bg-coral px-5 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-coral-deep disabled:opacity-40"
                   title="Kézi feldolgozás indítása — függetlenül a dispatcher állapotától"
                 >
                   {dispatchPending ? 'Indítás…' : 'Feldolgozás indítása'}
                 </button>
               )}
+              {discussAgentId ? (
+                <button
+                  type="button"
+                  onClick={handleDiscuss}
+                  disabled={discussPending || deletePending || dispatchPending}
+                  className="rounded-full border border-sky/35 bg-sky/10 px-4 py-2.5 text-sm font-semibold text-sky transition-colors hover:bg-sky/20 disabled:opacity-40"
+                  title="Új chat az AI munkatárssal — a feladat előzményével a háttérben"
+                >
+                  {discussPending ? 'Megnyitás…' : 'Megbeszélés'}
+                </button>
+              ) : null}
               {canDelete && (
                 <button
                   type="button"
                   onClick={handleDelete}
-                  disabled={deletePending || dispatchPending}
+                  disabled={deletePending || dispatchPending || discussPending}
                   className="rounded-full border border-coral/35 bg-coral/10 px-4 py-2.5 text-sm font-semibold text-coral transition-colors hover:bg-coral/20 disabled:opacity-40"
                   title={
                     isAdminDelete
@@ -666,6 +707,7 @@ export function TicketMeta({
             <HeroFact
               label="Ki dolgozik rajta"
               value={assignee?.label ?? 'Nincs hozzárendelve'}
+              valueHref={assigneeAgentHref}
               hint={assigneeHint}
             />
             <HeroFact
@@ -730,11 +772,13 @@ const STATE_PILL_CLASS: Record<'neutral' | 'success' | 'warning' | 'danger', str
 function HeroFact({
   label,
   value,
+  valueHref,
   hint,
   dotClass,
 }: {
   label: string
   value: string
+  valueHref?: string | null
   hint?: string | null
   dotClass?: string
 }) {
@@ -745,9 +789,19 @@ function HeroFact({
       </dt>
       <dd className="mt-1 flex items-center gap-2 text-sm font-semibold text-ink">
         {dotClass && <span className={`h-2 w-2 shrink-0 rounded-full ${dotClass}`} aria-hidden />}
-        <span className="truncate" title={value}>
-          {value}
-        </span>
+        {valueHref ? (
+          <Link
+            href={valueHref}
+            className="truncate text-sky transition-colors hover:text-coral-deep"
+            title={value}
+          >
+            {value}
+          </Link>
+        ) : (
+          <span className="truncate" title={value}>
+            {value}
+          </span>
+        )}
       </dd>
       {hint && <p className="mt-1 text-xs leading-snug text-ink-soft">{hint}</p>}
     </div>

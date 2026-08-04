@@ -5,6 +5,7 @@
 import assert from 'node:assert/strict'
 import {
   TICKET_CONTINUE_RULES,
+  TICKET_DISCUSSION_RULES,
   buildThreadContextPrompt,
 } from '../src/lib/ticket-thread-prompt'
 import type { TicketCommentWithAttachments } from '../src/repositories/interfaces'
@@ -68,6 +69,26 @@ check('handback után: continue szabály + checkpoint + deliverable lista', () =
   assert.match(prompt, /audit\.xlsx/)
   assert.doesNotMatch(prompt, /\.tool-results/)
   assert.match(prompt, /folytasd/)
+})
+
+check('megbeszélés mód: discussion szabály, nincs continue', () => {
+  const prompt = buildThreadContextPrompt({
+    comments: [
+      comment({
+        seq: 1,
+        kind: 'agent_answer',
+        body: '## Elkészült\n- Excel kész',
+      }),
+      comment({ seq: 2, kind: 'human_comment', body: 'meséld el mi volt' }),
+    ],
+    originalTask: 'csatolva a tulajdoni lap',
+    mode: 'discussion',
+  })
+  assert.match(prompt, /Megbeszelesi szabalyok/)
+  assert.match(prompt, new RegExp(TICKET_DISCUSSION_RULES.slice(0, 40).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+  assert.doesNotMatch(prompt, /Folytatasi szabalyok/)
+  assert.match(prompt, /CHECKPOINT/)
+  assert.match(prompt, /meséld el mi volt/)
 })
 
 if (failures > 0) {

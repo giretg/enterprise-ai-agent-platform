@@ -1643,6 +1643,8 @@ export interface ConversationRepository {
     /** Csatorna-megjelölés (D14): ha a beszélgetés egy csatorna-adapteren (pl. Telegram) él. */
     channel?: ChannelType | null
     channelExternalId?: string | null
+    /** Ticket → Megbeszélés (#219): forrás ticket (prior kontextus). */
+    continuedFromTicketId?: string | null
   }): Promise<Conversation>
   findById(id: string): Promise<Conversation | null>
   findByIdForTenant(id: string, tenantId: string | null): Promise<Conversation | null>

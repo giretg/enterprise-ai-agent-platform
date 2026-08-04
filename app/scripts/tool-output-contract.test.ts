@@ -307,6 +307,75 @@ async function main() {
     assert.equal(verdict.effect?.amount, 12)
   })
 
+  await test('tulajdoni_lap_egyeztetes coverage-only ok → nem empty', () => {
+    const verdict = validateToolOutput({
+      tool: 'tulajdoni_lap_egyeztetes',
+      output: {
+        ok: true,
+        figyelmeztetes: null,
+        path: null,
+        meta: { oldalak: 0, tipus: 'ismeretlen' },
+        osszesites: { megjegyzes: 'coverage-only — nincs lap-parse' },
+        egyeztetes: null,
+        eltero: [],
+        elteroPath: null,
+        elteroDb: 0,
+        muveletekPath: 'fold_muveletek.json',
+        muveletekDb: 2,
+        coverage: {
+          ok: true,
+          expected: 2,
+          applied: 2,
+          missing: [],
+          extra: [],
+          message: 'Lefedettség rendben: 2/2',
+        },
+        szeljegyDb: 0,
+      },
+      contract: resolveToolOutputContract('tulajdoni_lap_egyeztetes'),
+      sideEffecting: true,
+    })
+    assert.equal(verdict.outcome, 'ok')
+    assert.ok((verdict.effect?.amount ?? 0) >= 2)
+  })
+
+  await test('tulajdoni_lap_egyeztetes coverage bukás → partial, nem „lap ellenőrzése”', () => {
+    const verdict = validateToolOutput({
+      tool: 'tulajdoni_lap_egyeztetes',
+      output: {
+        ok: true,
+        figyelmeztetes: 'Lefedettség: Hiányzó 1 tervezett Ownership id',
+        path: null,
+        meta: {},
+        osszesites: {},
+        egyeztetes: {
+          osszesSor: 3,
+          rendben: 0,
+          modositas: 1,
+          torles: 1,
+          ujRekord: 1,
+          bizonytalanParositas: 0,
+          figyelmet_igenyel: [],
+        },
+        eltero: [{ nev: 'A' }],
+        coverage: {
+          ok: false,
+          expected: 2,
+          applied: 1,
+          missing: [{ ownershipId: 'own-x', nev: 'A', action: 'delete' }],
+          extra: [],
+          message: 'Hiányzó 1 tervezett Ownership id (nem került a csomagba).',
+        },
+        szeljegyDb: 0,
+      },
+      contract: resolveToolOutputContract('tulajdoni_lap_egyeztetes'),
+      sideEffecting: true,
+    })
+    assert.equal(verdict.outcome, 'partial')
+    assert.match(verdict.reason ?? '', /lefedettség/i)
+    assert.doesNotMatch(verdict.reason ?? '', /lap ellenőrzése/)
+  })
+
   await test('1. incidens: file_edit 0 cserével sem „sikeres szerkesztés"', () => {
     const verdict = validateToolOutput({
       tool: 'file_edit',
