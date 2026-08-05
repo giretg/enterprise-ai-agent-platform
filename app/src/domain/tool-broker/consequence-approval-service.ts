@@ -21,7 +21,14 @@ import { describeOutcomeForUi, type SettledToolOutcome } from './tool-output-con
 import type { ToolBrokerInvokeInput } from './tool-broker-types'
 import type { ToolBrokerService } from './tool-broker-service'
 
+/** Chat következmény-kapu: rövid ablak — a felhasználó tipikusan a forduló végén dönt. */
 export const CONSEQUENCE_APPROVAL_TTL_MS = 60 * 60 * 1000
+
+/**
+ * Ticket következmény-kapu: multi-körös, hosszú feladatok (pl. Föld-szinkron).
+ * 1 óra itt zsákutca: a ticket `awaiting_human`-en ragad, a gomb pedig eltűnik.
+ */
+export const CONSEQUENCE_APPROVAL_TICKET_TTL_MS = 3 * 24 * 60 * 60 * 1000
 
 /**
  * Meddig mutatjuk még a MÁR LEJÁRT függő jóváhagyást a beszélgetésben?
@@ -31,6 +38,19 @@ export const CONSEQUENCE_APPROVAL_TTL_MS = 60 * 60 * 1000
  * csak zaj lenne a szálban.
  */
 export const CONSEQUENCE_APPROVAL_VISIBILITY_MS = 24 * 60 * 60 * 1000
+
+/**
+ * Ticket listázási lookback: a még érvényes pendingek (TTL) + a frissen lejártak
+ * magyarázata (visibility). Enélkül a 3 napos TTL 24 órán túl láthatatlan lenne.
+ */
+export const CONSEQUENCE_APPROVAL_TICKET_VISIBILITY_MS =
+  CONSEQUENCE_APPROVAL_TICKET_TTL_MS + CONSEQUENCE_APPROVAL_VISIBILITY_MS
+
+export function consequenceApprovalTtlMs(input: {
+  ticketId?: string | null
+}): number {
+  return input.ticketId ? CONSEQUENCE_APPROVAL_TICKET_TTL_MS : CONSEQUENCE_APPROVAL_TTL_MS
+}
 
 export type ConsequenceApprovalActor = {
   id: string
@@ -222,7 +242,7 @@ export class ConsequenceApprovalService {
       }
     }
 
-    const expiresAt = new Date(Date.now() + CONSEQUENCE_APPROVAL_TTL_MS)
+    const expiresAt = new Date(Date.now() + consequenceApprovalTtlMs({ ticketId }))
     const row = await this.approvals.create({
       conversationId,
       agentId: input.invoke.agentId,
@@ -305,7 +325,7 @@ export class ConsequenceApprovalService {
     const now = Date.now()
     const rows = await this.approvals.listOpenByTicket(
       ticketId,
-      new Date(now - CONSEQUENCE_APPROVAL_VISIBILITY_MS),
+      new Date(now - CONSEQUENCE_APPROVAL_TICKET_VISIBILITY_MS),
     )
     return this.toOpenCards(rows, actor, now)
   }

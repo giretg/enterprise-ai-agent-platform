@@ -407,6 +407,7 @@ export class WikiAgentRuntime {
       agentVersion,
       payload,
       context: { ticketId: ticket.id },
+      tenantId: ticket.tenantId,
     })
 
     const write = await this.toolBroker.invoke({
@@ -580,7 +581,10 @@ export class WikiAgentRuntime {
       toolCaps: this.toolCaps,
       agentId: params.agentId,
       agentVersion: params.agentVersion,
-      context: { conversationId: params.conversationId },
+      context: {
+        conversationId: params.conversationId,
+        ...(params.tenantId ? { tenantId: params.tenantId } : {}),
+      },
       mode: 'chat',
       actingUserId: params.actingUserId,
       messages,
@@ -654,6 +658,7 @@ export class WikiAgentRuntime {
       agentId: params.agentId,
       agentVersion: params.agentVersion,
       ...params.context,
+      tenantId: params.tenantId ?? undefined,
       messages: [
         { role: 'system', content: composeSystemPrompt(params.agentDetails.agent) },
         {
