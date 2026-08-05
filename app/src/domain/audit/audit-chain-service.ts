@@ -87,10 +87,13 @@ export class AuditChainService {
     return { ok: true, checked: rows.length }
   }
 
-  async exportJsonLines(since?: Date): Promise<string> {
-    const rows = await this.audit.findAll()
-    const filtered = since ? rows.filter((r) => r.createdAt >= since) : rows
-    return filtered.map((r) => JSON.stringify(serializeRow(r))).join('\n')
+  /**
+   * SIEM-export kizárólag egy aktív tenant evidenciáját tartalmazhatja. A tenant-szűrés
+   * nem opcionális: egy admin szerep csak a SAJÁT szervezet audit-adatait olvashatja.
+   */
+  async exportJsonLines(params: { tenantId: string; since?: Date }): Promise<string> {
+    const rows = await this.audit.findAll(params)
+    return rows.map((r) => JSON.stringify(serializeRow(r))).join('\n')
   }
 }
 
@@ -111,6 +114,9 @@ function serializeRow(row: AuditLog) {
     prev_hash: row.prevHash,
     hash: row.hash,
     metadata: row.metadata,
+    tenant_id: row.tenantId,
+    ticket_id: row.ticketId,
+    conversation_id: row.conversationId,
     created_at: row.createdAt.toISOString(),
   }
 }

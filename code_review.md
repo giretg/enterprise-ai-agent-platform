@@ -1,5 +1,17 @@
 # Enterprise code review log
 
+## 2026-08-05 - Audit control plane: cross-tenant audit-idővonal és SIEM-export lezárása
+
+- Áttekintett, korábban külön nem naplózott komponens: a központi **Audit & Observability control plane** teljes olvasási/export útja — `app/src/app/actions/platform.ts` (`listAuditLog`, `exportAuditSiem`), `app/src/domain/audit/audit-chain-service.ts`, `app/src/repositories/postgres/audit-repository.ts`, az `AuditRepository` szerződés, hash-lánc és SIEM regressziós tesztek. Ez a compliance-bizonyíték, esemény-idővonal és külső SIEM-integráció közös adatkapuja.
+- **Lelet (kritikus, cross-tenant adatbizalmasság):** a `listAuditLog` csak az `approver` tenant-szerepet ellenőrizte, de a repository-hívásból kimaradt az aktív `tenantId`. Emiatt bármely tenant approvere lekérhette az összes szervezet audit-eseményét: agent-azonosítókat, ticket/conversation referenciákat, governance-döntéseket, időbélyegeket és biztonsági incidensre utaló metaadatot. A `exportAuditSiem` ugyanezzel a hibával, `admin` szereppel **az egész globális audit-láncot** töltötte le JSONL-ben. Ez közvetlenül sértette az AuditLog spec tenant-izolációs invariánsát („minden lekérdezés tenant-scope-olt”), és egy ügyfél számára más ügyfelek működési/compliance-adatának exportját tette lehetővé.
+- Javítás:
+  - `listAuditLog` az `requireTenantRole` által visszaadott `activeTenantId`-t kötelező repository-szűrőként adja át.
+  - A SIEM-export API-ja tenant-kötelezővé vált; a Postgres lekérdezés a DB-ben szűr `tenant_id` és opcionális `since` alapján, nem a memóriába töltött globális adathalmazon. A dátum is validált.
+  - Az exportált evidenciasor megkapja a `tenant_id`, `ticket_id` és `conversation_id` mezőket, így a jogszerűen exportált adat továbbra is összeköthető a megfelelő üzleti folyamattal.
+  - Regressziós teszt rögzíti a kötelező tenant-filtert, a másik tenant kizárását és a control-plane actionök tényleges bekötését.
+- Üzleti hatás: audit-jogosultságnak csak a saját szervezet AI-működésének ellenőrzését kell jelentenie. A hiba mellett egy ügyfél jóváhagyója vagy adminja más ügyfelek modell-/tool-használatáról és jóváhagyási döntéseiről tölthetett le bizonyítékot, ami multi-tenant SaaS-ben súlyos szerződéses és compliance-incidens. A javítás után az audit UI és a SIEM-csomag is az aktív szervezet adatára korlátozott, miközben az export megőrzi a szükséges bizonyítási kapcsolatokat.
+- Ellenőrzés: `npm run test:audit-log` — 30/30 zöld; célzott ESLint zöld; `git diff --cached --check` tiszta. A teljes `npx tsc --noEmit` a már jelen lévő, nem ehhez a változathoz tartozó model-budget WIP két hiányzó segédfüggvénye (`isRuleExhausted`, `pickPeakAgent`) miatt bukik; az audit-módosításokon túl nem nyúltam hozzá.
+
 ## 2026-08-04 - Generikus HTTP connector futásidő: agent-elérhető SSRF a redirect-követésen keresztül (host-pinning kijátszása)
 
 - Áttekintett modul (a napló eddig a `web_fetch` SSRF-határát fedte 2026-07-04-én, és a `http_api` connectort a `reconcile_records` párosítás felől 2026-07-31-én — de a **generikus HTTP connector futásidő-egressét (`fetchWithBackoff`)** nem; ez a `http_api_get` / `http_api_request` eszközök mögötti tényleges kimenő-hálózati út, amit AGENT hív, path/query az agent kezében):
