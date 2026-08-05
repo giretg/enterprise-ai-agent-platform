@@ -25,6 +25,7 @@ import {
   buildEgyeztetesMunkafuzet,
   buildFoldMuveletekFromEltero,
   checkFoldMuveletekCoverage,
+  describeInvalidAppliedSource,
   egyeztetesSorok,
   extractAppliedOwnershipIds,
   hasCompleteHttpApiGetAllProvenance,
@@ -597,6 +598,174 @@ test('coverage extract: CREATE / Partner / itemId nem lesz extra', () => {
   })
   assert.deepEqual(applied.sort(), ['own-a', 'own-sibling'])
   assert.equal(checkFoldMuveletekCoverage(plan, applied).ok, true)
+})
+
+test('coverage extract: fold_muveletek terv NEM számít alkalmazottnak (false OK)', () => {
+  const plan = buildFoldMuveletekFromEltero({
+    parcelId: 'parcel-1',
+    eltero: [
+      {
+        nev: 'Anna',
+        statusz: 'Módosítás szükséges',
+        hanyadLap: '1/2',
+        azonosito: 'own-a',
+      },
+      {
+        nev: 'Anna',
+        statusz: 'Törlés szükséges',
+        hanyadLap: null,
+        azonosito: 'own-sibling',
+      },
+    ],
+  })
+  // A modell / hibás skill néha a tervet adja coverageAppliedPath-nak.
+  // A path + ownershipId + action mezők korábban mind „alkalmazottnak” számítottak
+  // → coverage.ok true DELETE nélkül → validate/submit hányad-duplázódással.
+  const fromPlan = extractAppliedOwnershipIds(plan)
+  assert.deepEqual(fromPlan, [])
+  assert.equal(checkFoldMuveletekCoverage(plan, fromPlan).ok, false)
+  assert.equal(
+    checkFoldMuveletekCoverage(plan, fromPlan).missing.map((m) => m.ownershipId).sort().join(','),
+    'own-a,own-sibling',
+  )
+})
+
+test('coverage extract: CREATE pathje és eltero NEM ad hamis id-t', () => {
+  const plan = buildFoldMuveletekFromEltero({
+    parcelId: 'parcel-1',
+    eltero: [
+      {
+        nev: 'Anna',
+        statusz: 'Módosítás szükséges',
+        hanyadLap: '1/2',
+        azonosito: 'own-a',
+      },
+      {
+        nev: 'Anna',
+        statusz: 'Törlés szükséges',
+        hanyadLap: null,
+        azonosito: 'own-sibling',
+      },
+    ],
+  })
+  // Path a CREATE/POST filter ELŐTT került ki → sibling DELETE „megvolt” hamisan.
+  const createWithPath = extractAppliedOwnershipIds([
+    {
+      muvelet: 'CREATE',
+      entityType: 'Ownership',
+      path: '/parcels/parcel-1/ownerships/own-sibling',
+      entityId: '',
+    },
+    { muvelet: 'UPDATE', entityType: 'Ownership', entityId: 'own-a' },
+  ])
+  assert.deepEqual(createWithPath, ['own-a'])
+  assert.equal(checkFoldMuveletekCoverage(plan, createWithPath).ok, false)
+
+  const fromEltero = extractAppliedOwnershipIds({
+    eltero: [
+      { nev: 'Anna', statusz: 'Módosítás szükséges', azonosito: 'own-a' },
+      { nev: 'Anna', statusz: 'Törlés szükséges', azonosito: 'own-sibling' },
+    ],
+  })
+  assert.deepEqual(fromEltero, [])
+})
+
+test('coverage extract: magyar muvelet-nevek és id-lista NEM esnek ki némán', () => {
+  const plan = buildFoldMuveletekFromEltero({
+    parcelId: 'parcel-1',
+    eltero: [
+      {
+        nev: 'Anna',
+        statusz: 'Módosítás szükséges',
+        hanyadLap: '1/2',
+        azonosito: 'own-a',
+      },
+      {
+        nev: 'Anna',
+        statusz: 'Törlés szükséges',
+        hanyadLap: null,
+        azonosito: 'own-sibling',
+      },
+    ],
+  })
+  // A Föld-kimenetek vegyesen írnak angol igét és magyar szót. Ha a magyar
+  // változat kiesne, hamis „hiányzó DELETE" jönne → az agent újraírná a
+  // meglévő tételeket (hányad-duplázódás + token-égés).
+  const magyar = extractAppliedOwnershipIds([
+    { entityType: 'Ownership', entityId: 'own-a', muvelet: 'Módosítás' },
+    { entityType: 'Ownership', entityId: 'own-sibling', muvelet: 'TÖRLÉS' },
+  ])
+  assert.deepEqual(magyar.sort(), ['own-a', 'own-sibling'])
+  assert.equal(checkFoldMuveletekCoverage(plan, magyar).ok, true)
+
+  // Művelet-mező nélküli, de kimondottan Ownership tétel: számít.
+  const muveletNelkul = extractAppliedOwnershipIds([
+    { entityType: 'Ownership', entityId: 'own-a' },
+    { entityType: 'Ownership', entityId: 'own-sibling' },
+  ])
+  assert.deepEqual(muveletNelkul.sort(), ['own-a', 'own-sibling'])
+
+  // A státusz-mondat viszont terv-nyelv, nem alkalmazott írás.
+  const statuszMondat = extractAppliedOwnershipIds([
+    { entityType: 'Ownership', entityId: 'own-a', muvelet: 'Módosítás szükséges' },
+  ])
+  assert.deepEqual(statuszMondat, [])
+
+  // Eltérés-sor tömbként (statusz mező) sem alkalmazás.
+  const elteroSorok = extractAppliedOwnershipIds([
+    { nev: 'Anna', statusz: 'Módosítás szükséges', azonosito: 'own-a' },
+    { nev: 'Anna', statusz: 'Törlés szükséges', azonosito: 'own-sibling' },
+  ])
+  assert.deepEqual(elteroSorok, [])
+})
+
+test('coverage üzenet: nulla alkalmazott id → a rossz fájlra figyelmeztet', () => {
+  const plan = buildFoldMuveletekFromEltero({
+    parcelId: 'parcel-1',
+    eltero: [
+      {
+        nev: 'Anna',
+        statusz: 'Törlés szükséges',
+        hanyadLap: null,
+        azonosito: 'own-sibling',
+      },
+    ],
+  })
+  const ures = checkFoldMuveletekCoverage(plan, [])
+  assert.equal(ures.ok, false)
+  assert.match(ures.message, /coverageAppliedPath/)
+  // Ha van találat, ne zavarjuk össze a modellt a fájl-tippel.
+  const reszben = checkFoldMuveletekCoverage(plan, ['own-sibling', 'cmrp-fake'])
+  assert.doesNotMatch(reszben.message, /coverageAppliedPath/)
+})
+
+test('coverage forrás: a terv és az eltérés-lista beszédes hibát ad', () => {
+  const plan = buildFoldMuveletekFromEltero({
+    parcelId: 'parcel-1',
+    eltero: [
+      {
+        nev: 'Anna',
+        statusz: 'Törlés szükséges',
+        hanyadLap: null,
+        azonosito: 'own-sibling',
+      },
+    ],
+  })
+  assert.match(
+    describeInvalidAppliedSource(plan) ?? '',
+    /fold_muveletek terv/,
+  )
+  assert.match(
+    describeInvalidAppliedSource({ eltero: [] }) ?? '',
+    /egyeztetes-eltero/,
+  )
+  assert.equal(
+    describeInvalidAppliedSource({
+      items: [{ entityType: 'Ownership', entityId: 'own-sibling', muvelet: 'DELETE' }],
+    }),
+    null,
+  )
+  assert.equal(describeInvalidAppliedSource(['own-sibling']), null)
 })
 
 test('fold_muveletek: hiányzó parcelId → placeholder megjegyzés', () => {
