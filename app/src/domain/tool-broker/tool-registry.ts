@@ -146,8 +146,16 @@ function httpHeadersArg(value: unknown): Record<string, string> | undefined {
 }
 
 function httpMethodArg(value: unknown): 'POST' | 'PUT' | 'PATCH' | 'DELETE' {
-  const m = typeof value === 'string' ? value.toUpperCase() : ''
-  return m === 'PUT' || m === 'PATCH' || m === 'DELETE' ? m : 'POST'
+  // Hiányzó metódus → POST (író default). GET/HEAD/egyéb NEM eshet csendben
+  // POST-tá: a következmény-kapu a nyers args.method-ot nézhetné (read → auto),
+  // miközben az invoke már POST-ot futtatna — jóváhagyás nélküli írás.
+  if (value === undefined || value === null || value === '') return 'POST'
+  const m = typeof value === 'string' ? value.trim().toUpperCase() : ''
+  if (m === 'POST' || m === 'PUT' || m === 'PATCH' || m === 'DELETE') return m
+  throw new Error(
+    `http_api_request érvénytelen method: ${typeof value === 'string' ? value : typeof value}. ` +
+      'Csak POST/PUT/PATCH/DELETE engedélyezett; olvasáshoz használd a http_api_get eszközt.',
+  )
 }
 
 function memorySourceRefsArg(

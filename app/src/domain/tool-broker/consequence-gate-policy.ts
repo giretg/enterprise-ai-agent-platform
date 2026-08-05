@@ -139,6 +139,13 @@ export function evaluateHttpApiRequestGate(
     return { required: true, reason: 'http_api_not_allowlisted' }
   }
 
+  // http_api_request írási tool: GET/HEAD nem lehet „read → auto". A wire-leképezés
+  // korábban minden nem-PUT/PATCH/DELETE metódust POST-tá kényszerített, így egy
+  // allowlistelt GET read végpont kapu nélkül POST írást futtathatott.
+  if (method === 'GET' || method === 'HEAD') {
+    return { required: true, reason: 'http_api_write_or_danger' }
+  }
+
   const connector = pickHttpApiConnector(args.connectorId, connectors)
   if (!connector) {
     // Nincs feloldható katalógus → fail-safe kapu.

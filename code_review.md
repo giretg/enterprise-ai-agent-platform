@@ -1,5 +1,13 @@
 # Enterprise code review log
 
+## 2026-08-05 - Következmény-kapu: http_api_request GET→POST jóváhagyás-kijátszás
+
+- Áttekintett komponens: `evaluateHttpApiRequestGate`, `httpMethodArg` (`tool-registry`), tool-loop kapu-hívás (`chat-tool-loop`).
+- **Lelet (kritikus, HITL bypass):** a kapu a modell nyers `method: GET` args-át nézte (allowlistelt read → auto), miközben `httpMethodArg` minden nem-PUT/PATCH/DELETE metódust csendben **POST**-tá kényszerített. Eredmény: jóváhagyás nélküli írás az ügyfél HTTP API-ján.
+- Javítás: GET/HEAD mindig kapu; érvénytelen method throw (nem silent POST); a kapu az actual invoke args-ot nézi `buildToolInvokeInput` után.
+- Üzleti hatás: az agent nem írhat külső rendszerbe emberi jóváhagyás megkerülésével egy „olvasó” GET-nek álcázott hívással.
+- Ellenőrzés: `npm run test:consequence-gate` — zöld (incl. loop GET→POST bypass); `npx tsc --noEmit` tiszta.
+
 ## 2026-08-05 - Ticket következmény-jóváhagyás: 1 órás TTL zsákutca hosszú feladatokon
 
 - Áttekintett komponens: `ConsequenceApprovalService` TTL/listázás, ticket következmény-UI (`ticket-consequence-approvals`, `ticket-detail`), kanban „Fut” jelzés.
